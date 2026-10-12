@@ -87,9 +87,10 @@ try {
     const { E, ELEMENTS, K } = await import('/src/elements.js');
     const { SEED_MAX } = await import('/src/shaders/common.js');
     a.test.park();
+    await a.test.ready();   // (load and the steps need the grid's pipelines)
     const g = sim.g;
     const TREE = new Set(['WOOD', 'PLANT', 'MOSS', 'FUNGUS', 'VINE', 'LEAF', 'LEAVES'].map((k) => E[k]).filter((v) => v !== undefined));
-    const [A, B] = island ? sim.readState() : sim.blankState();
+    const [A, B] = island ? await sim.readState() : sim.blankState();
     const idAt = (x, y, z) => Math.round(A[sim.cellTexel(x, y, z) * 4]);
     const terrain = (id) => id && ELEMENTS[id].kind !== K.GAS && !TREE.has(id);   // (a tree's crown is not the ground)
     const ground = (x, z) => { for (let y = g.ny - 1; y >= 0; y--) if (terrain(idAt(x, y, z))) return y + 1; return 0; };
@@ -186,7 +187,7 @@ try {
     const a = window.__app, sim = a.sim, g = sim.g;
     const { E } = await import('/src/elements.js');
     if (island) return;
-    const [A, B] = sim.readState();
+    const [A, B] = await sim.readState();
     const fallBox = [[40, 3, 50, 70, 31, 78], [96, 3, 14, 124, 34, 42]];
     for (const [x0, y0, z0, x1, y1, z1] of fallBox)
       for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {

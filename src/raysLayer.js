@@ -1,221 +1,177 @@
-import * as THREE from 'three';
 import { RAYS, rayKindOfTool, emitterIds } from './rays.js';
 import {
-  raysAdvanceFrag, raysSpawnFrag, raysPaintFrag, raysRowsFrag, raysTotalFrag,
-  raysDepositVert, raysDepositFrag, raysBrickVert, raysBrickFrag, raysDrawVert, raysDrawFrag,
+  RAYS_KERNELS, RAYS_LAYOUT, RAYS_DRAW_LAYOUT, raysDrawWGSL, raysDrawPipeline, RayDrawParams, raysDispatch,
+  COUNT_WORDS, COUNT, QUAD_VERTICES,
 } from './shaders/rays.js';
-import { stateUniforms } from './shaders/common.js';
+import { frameUniformsOf } from './gfx/uniforms.js';
 
-// The fast-particle layer (docs/particles.md): a list of up to N = RAY_TEX²
-// photons and neutrons beside a Simulation's grid. Simulation.step calls
-// step() before its activity map and settle() after react; while nothing is
-// alive and nothing emits, it costs nothing (active is false).
+// The fast-particle layer (docs/particles.md, docs/webgpu.md G3): a list of up
+// to N = RAY_TEX² photons and neutrons beside a Simulation's grid, attached
+// with sim.attachRays (src/wire/rays.js). Simulation.step calls step(f)
+// before its activity map and settle(f) after react; while nothing is alive
+// and nothing emits, it records nothing (active is false). Its kernels
+// (shaders/rays.js) build when it first wakes, in the background; until they
+// are built a step leaves the particles as they are and a stroke waits for
+// them. The sprites are drawn in the scene pass after the volume (draw;
+// src/wire/rays.js), only the live ones (drawIndirect over the list the
+// deposit kernel compacts).
+//
+//   sim.attachRays(new Rays(sim));
+//   sim.rays.paint({ center, radius, shape, tool, rate });   // a particle tool's stroke
+//   const { l0, l2 } = await sim.rays.readList();             // tools: slot j's l0 at 4j
 
 const N = RAYS.RAY_TEX * RAYS.RAY_TEX;
-const LIST_ATTACHMENTS = 4;    // L0..L3 (shaders/rays.js)
-// Sweep numbers (L3.w) wrap here, well inside a float's exact integers.
+const PARTICLE_BYTES = 64;   // four vec4f (shaders/rays.js Particle)
+const LIST_FLOATS = PARTICLE_BYTES / 4;
+// Sweep numbers (l3.w) wrap here, well inside a float's exact integers.
 const STAMP_WRAP = 1 << 20;
-
-function target(w, h, count, type) {
-  return new THREE.WebGLRenderTarget(w, h, {
-    count, type, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-    depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
-  });
-}
-const raw = (vert, frag, uniforms, extra = {}) => new THREE.RawShaderMaterial({
-  glslVersion: THREE.GLSL3, vertexShader: vert, fragmentShader: frag, uniforms,
-  depthTest: false, depthWrite: false, ...extra,
-});
-const listUniforms = () => ({ tL0: { value: null }, tL1: { value: null }, tL2: { value: null }, tL3: { value: null } });
-// One vertex per list slot (the passes read their slot by gl_VertexID).
-function slotPoints() {
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
-  const pts = new THREE.Points(geo);
-  pts.frustumCulled = false;
-  return pts;
-}
+const SET_BYTES = COUNT_WORDS * 4;
 
 export class Rays {
-  constructor(sim, quadVert) {
+  /** @param {import('./sim.js').Simulation} sim */
+  constructor(sim) {
     this.sim = sim;
-    const g = sim.g, F = THREE.FloatType;
-    this.lists = [target(RAYS.RAY_TEX, RAYS.RAY_TEX, LIST_ATTACHMENTS, F), target(RAYS.RAY_TEX, RAYS.RAY_TEX, LIST_ATTACHMENTS, F)];
-    this.tmp = target(RAYS.RAY_TEX, RAYS.RAY_TEX, LIST_ATTACHMENTS, F);
-    this.cur = 0;
-    // deposits, laid out like the state (react.js reads its cell's texel)
-    this.deposit = target(g.width, g.height, 1, THREE.HalfFloatType);
-    // bricks holding a particle (activity.js quietFrag keeps them and their neighbours awake)
-    this.bricks = target(g.bwidth, g.bheight, 1, THREE.UnsignedByteType);
-    this.rows = target(RAYS.RAY_TEX, 1, 1, F);
-    this.total = target(1, 1, 1, F);
-    this.totalBuf = new Float32Array(4);
-    // steps to sweep the atlas with the spawn pass's stripe (docs/particles.md)
-    this.cycle = Math.ceil((g.width * g.height) / N);
-    this.cursor = 0;          // the paint pass's next slot
+    const gpu = (this.gpu = sim.gpu), g = sim.g;
+    const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
+    const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `rays${sim.id} ${label}`, size: Math.max(16, size), usage });
+    this.list = buf('list', N * PARTICLE_BYTES);
+    // per slot of the state: heat and pressure, fixed point (react.js reads them while `stepped`)
+    this.deposit = buf('deposit', g.slots * 8);
+    // a bit per brick holding a particle (activity.js quietFrag keeps them and their neighbours awake)
+    this.bricks = buf('bricks', Math.ceil(g.nbricks / 32) * 4);
+    // two sets of the sprites' drawIndirect arguments and the counts (shaders/rays.js COUNT)
+    this.counts = buf('counts', 2 * SET_BYTES, S | CS | CD | GPUBufferUsage.INDIRECT);
+    const init = new Uint32Array(2 * COUNT_WORDS);
+    init[COUNT.VERTICES] = init[COUNT_WORDS + COUNT.VERTICES] = QUAD_VERTICES;
+    gpu.queue.writeBuffer(this.counts, 0, init);
+    this.drawList = buf('draw list', N * 4);
+    this.set = 1;   // the counts' set the last compaction filled (the first fills 0)
+    const L = gpu.layout('RAYS', RAYS_LAYOUT);
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    this.group = gpu.bindGroup(L, [b(0, this.list), b(1, this.deposit), b(2, this.bricks), b(3, this.counts), b(4, this.drawList)], 'rays');
+    this.kernels = Object.fromEntries(Object.entries(RAYS_KERNELS).map(([name, [code, params]]) => [name, gpu.kernel({
+      name, code: code(g), layouts: [sim.L.TABLES, sim.L.STATE_RO, L], params, build: 'manual',
+    })]));
+    this.draws = null;   // the sprites' pipeline and group, made at the first draw
+    // steps to sweep every slot with the spawn kernel's stripe (docs/particles.md)
+    this.cycle = Math.ceil(g.slots / N);
+    this.cursor = 0;          // the paint kernel's next slot
     this.active = false;
-    this.stepped = false;     // this step's deposits are in the target (settle zeroes them)
+    this.holds = false;       // the list may hold particles (painted, loaded or spawned since it was last cleared)
+    this.stepped = false;     // this step's deposits are in the buffer (settle zeroes them)
     this.wokeSince = false;   // woken since the count in flight was asked for
     this.reading = false;
+    this.live = 0;            // the last sweep's count of particles...
+    this.seen = 0;            // ...and of slots that saw an emitter
+    this.pointPx = 1;
     this.emitters = new Set(emitterIds());
-
-    const state = stateUniforms;
-    this.mats = {
-      advance: raw(quadVert, raysAdvanceFrag(g), { ...state(), ...listUniforms(), uFrame: { value: 0 } }),
-      spawn: raw(quadVert, raysSpawnFrag(g), {
-        ...state(), ...listUniforms(), uFrame: { value: 0 }, uStride: { value: 1 }, uPhase: { value: 0 },
-        uCycle: { value: this.cycle }, uStamp: { value: 1 },
-      }),
-      paint: raw(quadVert, raysPaintFrag(g), {
-        ...state(), ...listUniforms(), uFrame: { value: 0 }, uCursor: { value: 0 }, uCount: { value: 0 }, uKind: { value: 0 },
-        uCenter: { value: new THREE.Vector3() }, uRadius: { value: 1 }, uShape: { value: 0 },
-      }),
-      rows: raw(quadVert, raysRowsFrag(g), { ...state(), ...listUniforms(), uStamp: { value: 1 } }),
-      total: raw(quadVert, raysTotalFrag(g), { ...state(), ...listUniforms(), tRows: { value: this.rows.texture } }),
-      deposit: raw(raysDepositVert(g), raysDepositFrag, { ...state(), ...listUniforms(), uZero: { value: false } }, {
-        blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
-      }),
-      bricks: raw(raysBrickVert(g), raysBrickFrag, { ...state(), ...listUniforms() }),
-    };
-    for (const [k, m] of Object.entries(this.mats)) m.name = `rays.${k}`;
-    this.pts = slotPoints();
-    this.ptsScene = new THREE.Scene();
-    this.ptsScene.add(this.pts);
-    this.ptsQuads = { mesh: this.pts, scene: this.ptsScene };
-
-    // what the app draws: the list as points, in grid cells (a child of the volume)
-    this.view = slotPoints();
-    this.view.material = new THREE.ShaderMaterial({
-      vertexShader: raysDrawVert, fragmentShader: raysDrawFrag,
-      uniforms: { tL0: { value: null }, tL2: { value: null }, uPointPx: { value: 1 } },
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    });
-    this.view.renderOrder = 1;   // after the volume
-    this.view.visible = false;
+    this._ready = null;
   }
 
-  get list() { return this.lists[this.cur]; }
-  setList(m, t) { ['tL0', 'tL1', 'tL2', 'tL3'].forEach((k, i) => { m.uniforms[k].value = t.textures[i]; }); }
-  setState(m) {
-    const s = this.sim;
-    m.uniforms.tA.value = s.stateA;
-    m.uniforms.tB.value = s.stateB;
-    m.uniforms.tF.value = s.stateF;
+  /** Builds the kernels (once); resolves to the layer when they are built. */
+  prepare() { return (this._ready ??= Promise.all(Object.values(this.kernels).map((k) => k.build())).then(() => this)); }
+  get ready() { return this.prepare(); }
+  get built() { return Object.values(this.kernels).every((k) => k.state === 'ready'); }
+
+  // Records a dispatch into the frame's compute pass and tells the profiler.
+  _dispatch(kernel, params) {
+    const sim = this.sim;
+    kernel.dispatch(this.gpu.frame, raysDispatch(), { bind: [sim.tables, sim.bindRO, this.group], header: sim.header(), params });
+    sim.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
   }
+
+  // The next compaction's counts set, and the stamp of the sweep `frame` is in.
+  _flip() { this.set = 1 - this.set; return this.set; }
+  _stamp(frame = this.sim.frame) { return (Math.floor(frame / this.cycle) % STAMP_WRAP) + 1; }
 
   // Something may make particles: start running (and keep the activity map honest).
   wake() {
-    this.sim.wake();   // invalidate idle readbacks too: particles live outside the state targets
+    this.sim.wake();   // invalidate idle readbacks too: particles live outside the state
     this.active = true;
     this.wokeSince = true;
+    this.prepare();
   }
   // Painting an element that emits wakes the layer (Simulation.paint).
   noteElement(id) { if (this.emitters.has(id)) this.wake(); }
 
   // The brush, for a particle tool (rays.js RAY_TOOLS): new particles in free
   // slots of the next stretch of the list. Returns false for any other tool.
+  // A stroke before the kernels are built is made once they are.
   paint({ center, radius, shape, tool, rate }) {
     const kind = rayKindOfTool(tool);
     if (!kind) return false;
+    this.wake();
+    if (!this.built) {
+      const c = { x: center.x, y: center.y, z: center.z }, sim = this.sim;
+      this.prepare().then(() => { if (!this.disposed && !sim.disposed && !this.gpu.failure) this.paint({ center: c, radius, shape, tool, rate }); }, () => {});
+      return true;
+    }
     const vol = shape === 0 ? (4 / 3) * Math.PI * radius ** 3 : (2 * radius) ** 3;
     const count = Math.min(RAYS.RAY_PAINT_MAX, Math.ceil(vol * RAYS.RAY_PAINT_PER_CELL * rate));
-    const m = this.mats.paint, u = m.uniforms;
-    this.setState(m);
-    this.setList(m, this.list);
-    u.uFrame.value = ++this.sim.paints;
-    u.uCursor.value = this.cursor;
-    u.uCount.value = count;
-    u.uKind.value = kind;
-    u.uCenter.value.copy(center);
-    u.uRadius.value = radius;
-    u.uShape.value = shape;
-    this.sim.run(m, this.lists[1 - this.cur]);
-    this.cur = 1 - this.cur;
+    this._dispatch(this.kernels.raysPaint, {
+      center: [center.x, center.y, center.z], radius, shape, kind, frame: ++this.sim.paints, cursor: this.cursor, count,
+    });
+    this.holds = true;
     this.cursor = (this.cursor + count) % N;
-    this.wake();
+    this._compact();
     return true;
   }
 
-  // Before the activity map: fly every particle, spawn, splat the deposits and
-  // mark the bricks holding particles.
+  // The draw list again (after paint or a load of the list: no step moved them).
+  _compact() {
+    this._dispatch(this.kernels.raysDeposit, { stamp: this._stamp(), countSet: this._flip(), deposit: false });
+  }
+
+  /**
+   * Before the activity map: fly every particle, spawn, add the deposits,
+   * mark the bricks holding particles and list the live ones (into the open
+   * frame, gpu.frame).
+   */
   step() {
     this.stepped = false;
-    if (!this.active) return;
-    const sim = this.sim, { advance, spawn, deposit, bricks } = this.mats;
-    this.setState(advance);
-    this.setList(advance, this.list);
-    advance.uniforms.uFrame.value = sim.frame;
-    sim.run(advance, this.tmp);
-    const sweep = Math.floor(sim.frame / this.cycle);
-    const stamp = (sweep % STAMP_WRAP) + 1;
-    this.setState(spawn);
-    this.setList(spawn, this.tmp);
-    const su = spawn.uniforms;
-    su.uFrame.value = sim.frame;
-    su.uStride.value = 2 * Math.floor(Math.random() * (N / 2)) + 1;   // odd, in [1, N)
-    su.uPhase.value = sim.frame % this.cycle;
-    su.uStamp.value = stamp;
-    sim.run(spawn, this.lists[1 - this.cur]);
-    this.cur = 1 - this.cur;
-    // deposits (from the scratch list: a slot that died this step deposits too)
-    this.setList(deposit, this.tmp);
-    deposit.uniforms.uZero.value = false;
-    deposit.blending = THREE.CustomBlending;
-    sim.run(deposit, this.deposit, this.ptsQuads);
-    // occupied bricks
-    this.clear(this.bricks);
-    this.setList(bricks, this.list);
-    sim.run(bricks, this.bricks, this.ptsQuads);
+    if (!this.active || !this.built) return;
+    const k = this.kernels, frame = this.sim.frame, stamp = this._stamp(frame);
+    this._dispatch(k.raysAdvance, { frame });
+    this._dispatch(k.raysSpawn, {
+      frame, stride: 2 * Math.floor(Math.random() * (N / 2)) + 1, phase: frame % this.cycle, cycle: this.cycle, stamp,
+    });
+    this._dispatch(k.raysDeposit, { stamp, countSet: this._flip(), deposit: true });
     this.stepped = true;
+    this.holds = true;   // (the spawn may have made some)
     // at the end of a sweep, count what's alive and what emits (asynchronously)
-    if (sim.frame % this.cycle === this.cycle - 1) this.count(stamp);
+    if (frame % this.cycle === this.cycle - 1) this.count();
+  }
+
+  // After react: zero the deposits it took, so the buffer is empty between steps.
+  settle() {
+    if (!this.stepped) return;
+    this._dispatch(this.kernels.raysSettle);
+    this.stepped = false;
   }
 
   // Forget every particle (a new state was loaded, or the window moved: their
   // positions are grid cells), then look for emitters.
   reset() {
-    for (const t of this.lists) this.clear(t);
-    this.clear(this.tmp);
+    const f = this.gpu.frame;
+    f.clear(this.list);
+    for (const set of [0, 1]) f.clear(this.counts, set * SET_BYTES + 4, 16);   // (live through seen; the vertex count stays)
+    this.holds = false;
     this.wake();
   }
 
-  // After react: zero the deposits it took, so the target is empty between steps.
-  settle() {
-    if (!this.stepped) return;
-    const d = this.mats.deposit;
-    this.setList(d, this.tmp);
-    d.uniforms.uZero.value = true;
-    d.blending = THREE.NoBlending;
-    this.sim.run(d, this.deposit, this.ptsQuads);
-    this.stepped = false;
-  }
-
-  clear(t) {   // (every attachment)
-    const r = this.sim.renderer;
-    this.clearColor ??= new THREE.Color();
-    r.getClearColor(this.clearColor);
-    const alpha = r.getClearAlpha();
-    r.setRenderTarget(t);
-    r.setClearColor(0x000000, 0);
-    r.clear(true, false, false);
-    r.setClearColor(this.clearColor, alpha);
-  }
-
-  count(stamp) {
+  // The count the last compaction made (its set: live and seen), read back
+  // once a sweep; nothing alive and nothing emitting since puts the layer to sleep.
+  count() {
     if (this.reading) return;
-    const sim = this.sim, { rows, total } = this.mats;
-    this.setList(rows, this.list);
-    rows.uniforms.uStamp.value = stamp;
-    sim.run(rows, this.rows);
-    sim.run(total, this.total);
     this.reading = true;
     this.wokeSince = false;
-    const simId = sim.id;
-    sim.renderer.readRenderTargetPixelsAsync(this.total, 0, 0, 1, 1, this.totalBuf).then(() => {
+    const sim = this.sim, simId = sim.id;
+    this.gpu.readback.buffer(this.counts, this.set * SET_BYTES, SET_BYTES).then((bytes) => {
       this.reading = false;
       if (this.disposed || sim.id !== simId) return;
-      this.live = this.totalBuf[0];
-      this.seen = this.totalBuf[1];
+      const w = new Uint32Array(bytes);
+      this.live = w[COUNT.LIVE];
+      this.seen = w[COUNT.SEEN];
       if (this.live === 0 && this.seen === 0 && !this.wokeSince) this.sleep();
     }, () => { this.reading = false; });
   }
@@ -223,29 +179,84 @@ export class Rays {
   // Nothing alive and nothing emitting: stop, and let the bricks sleep.
   sleep() {
     this.active = false;
-    this.clear(this.bricks);
+    this.holds = false;
+    this.gpu.frame.clear(this.bricks);
     this.sim.actDirty = true;
   }
 
-  // The app's per-frame view update: the current list, and the point size for
-  // a camera (fov in degrees) over a canvas h px tall.
-  updateView(camera, h) {
-    const u = this.view.material.uniforms;
-    u.tL0.value = this.list.textures[0];
-    u.tL2.value = this.list.textures[2];
-    u.uPointPx.value = (h / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov ?? 50) / 2) * this.view.matrixWorld.getMaxScaleOnAxis();
-    this.view.visible = this.active;
+  /**
+   * The list as it is at this call, a Float32Array per vec4 of the Particle
+   * (slot j's at 4j): the WebGL build's four attachments. Tools and saves.
+   * @returns {Promise<{ l0: Float32Array, l1: Float32Array, l2: Float32Array, l3: Float32Array }>}
+   */
+  async readList() {
+    const all = new Float32Array(await this.gpu.readback.buffer(this.list));
+    const out = { l0: new Float32Array(N * 4), l1: new Float32Array(N * 4), l2: new Float32Array(N * 4), l3: new Float32Array(N * 4) };
+    const parts = [out.l0, out.l1, out.l2, out.l3];
+    for (let j = 0; j < N; j++) for (let k = 0; k < 4; k++) parts[k].set(all.subarray(j * LIST_FLOATS + k * 4, j * LIST_FLOATS + k * 4 + 4), j * 4);
+    return out;
   }
 
-  materials() { return Object.values(this.mats).concat(this.view.material); }
+  /**
+   * Replaces the list (a save's: the four attachments one after the other,
+   * N × 4 floats each, as readList returns them), then wakes. Once the
+   * kernels are built, the sprites' list holds them.
+   * @param {Float32Array} lists
+   */
+  writeList(lists) {
+    const all = new Float32Array(N * LIST_FLOATS);
+    for (let j = 0; j < N; j++) for (let k = 0; k < 4; k++) all.set(lists.subarray(k * N * 4 + j * 4, k * N * 4 + j * 4 + 4), j * LIST_FLOATS + k * 4);
+    this.gpu.write(this.list, 0, all);
+    this.holds = true;
+    this.wake();
+    const sim = this.sim;
+    this.prepare().then(() => { if (!this.disposed && !sim.disposed && !this.gpu.failure) this._compact(); }, () => {});
+  }
 
-  dispose(retire = null) {
+  /**
+   * The app's per-frame view update: the point size for a camera (fov in
+   * degrees) over a scene target h px tall, the volume's scale (scene units
+   * per cell) taken from its world matrix (a three Matrix4, or 16 numbers
+   * column-major).
+   */
+  updateView(camera, h, matrixWorld = null) {
+    const e = matrixWorld?.elements ?? matrixWorld;
+    const scale = e ? Math.sqrt(Math.max(e[0] ** 2 + e[1] ** 2 + e[2] ** 2, e[4] ** 2 + e[5] ** 2 + e[6] ** 2, e[8] ** 2 + e[9] ** 2 + e[10] ** 2)) : 1;
+    this.pointPx = (h / 2) / Math.tan(((camera.fov ?? 50) * Math.PI) / 360) * scale;
+  }
+
+  /**
+   * The live particles into a render pass on the scene target (the scene
+   * pass after the volume, or E2's overlay pass: they write no depth), sized
+   * for a target width × height px. Draws nothing while the layer sleeps,
+   * while its list holds none (cleared, and nothing painted, loaded or
+   * spawned since: a loaded box that is paused) or while its pipeline
+   * builds; returns whether it drew.
+   */
+  draw(rp, { width, height }) {
+    if (!this.active || !this.holds) return false;
+    const gpu = this.gpu;
+    if (!this.draws) {
+      const fu = frameUniformsOf(gpu);
+      const L = gpu.layout('RAYS_DRAW', RAYS_DRAW_LAYOUT);
+      this.draws = {
+        fu,
+        pipe: gpu.renderPipeline({ name: 'raysDraw', code: raysDrawWGSL(), layouts: [fu.layout, L], params: RayDrawParams, ...raysDrawPipeline() }),
+        group: gpu.bindGroup(L, [{ binding: 0, resource: { buffer: this.list } }, { binding: 1, resource: { buffer: this.drawList } }], 'rays draw'),
+      };
+    }
+    const { fu, pipe, group } = this.draws;
+    if (pipe.state !== 'ready' || !this.built) return false;
+    pipe.draw(rp, {
+      bind: [fu.group, group], indirect: { buffer: this.counts, offset: this.set * SET_BYTES },
+      params: { pointPx: this.pointPx, viewport: [width, height] },
+    });
+    return true;
+  }
+
+  dispose() {
     this.disposed = true;
-    [...this.lists, this.tmp, this.deposit, this.bricks, this.rows, this.total].forEach((t) => t.dispose());
-    this.pts.geometry.dispose();
-    this.view.geometry.dispose();
-    this.view.removeFromParent();
-    if (retire) retire.push(...this.materials());
-    else this.materials().forEach((m) => m.dispose());
+    if (!this.gpu.failure) this.gpu.flush('rays dispose');
+    for (const b of [this.list, this.deposit, this.bricks, this.counts, this.drawList]) b.destroy();
   }
 }

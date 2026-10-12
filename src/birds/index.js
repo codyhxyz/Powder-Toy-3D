@@ -55,8 +55,12 @@ const smooth = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1
 //        sun (Vector3 toward the key light), sunEl () → rad, player () → { x, y, z } world cells | null }
 export function createBirdLife(env) {
   const { scene, camera, getSim, getVolume, getScale, getWin } = env;
-  const probe = createBirdWorld({ renderer: env.renderer, getSim, getWin });
-  const view = createBirdView({ scene, sun: env.sun, getScale });
+  const probe = createBirdWorld({ getSim, getWin });
+  // The meshes (render.js), made with the first flock: a box without birds
+  // holds nothing of theirs, so a frame there renders no mesh of three's
+  // (docs/webgpu.md F1: such a frame is one command buffer).
+  let view = null;
+  const viewOf = () => (view ??= createBirdView({ scene, sun: env.sun, getScale }));
   const flocks = new Map();   // key → { flock, kind: 'ambient' | 'spawner', shiftT, deadT }
   let night = false, glow = 0, cost = 0, nextAmbient = 1, clock = 0;
   const focus = new THREE.Vector3();
@@ -79,7 +83,7 @@ export function createBirdLife(env) {
       hurt(amount, cause, dir) {
         if (b.state > S.BURN) return;
         b.flock.kill(b, dir);
-        view.feathers(b.v.position, toScene);
+        viewOf().feathers(b.v.position, toScene);
         b.flock.startle(b.v.position);   // the rest go
       },
     });
@@ -88,6 +92,7 @@ export function createBirdLife(env) {
 
   function addFlock(key, kind, home, opts = {}) {
     const n = Math.round(rand(L.FLOCK_MIN, L.FLOCK_MAX + 1) - 0.5);
+    viewOf();
     const flock = new Flock(probe.world, [home.x, home.y, home.z], n, opts);
     for (const b of flock.birds) register(b);
     flocks.set(key, { flock, kind, shiftT: rand(L.HOME_SHIFT_MIN_S, L.HOME_SHIFT_MAX_S), deadT: 0 });
@@ -166,7 +171,7 @@ export function createBirdLife(env) {
         if (b.state > S.BURN || b.v.position.distanceTo(p) > L.BLAST_KILL) continue;
         const dir = new THREE.Vector3().subVectors(b.v.position, p).normalize();
         flock.kill(b, dir);
-        view.feathers(b.v.position, toScene);
+        viewOf().feathers(b.v.position, toScene);
       }
       noise(p, L.LOUD_BLAST);
     }),
@@ -212,7 +217,10 @@ export function createBirdLife(env) {
       else if (!night && el < deg(L.ROOST_EL)) night = true;
       glow = 1 - smooth(deg(L.GLOW_FULL_EL), deg(L.GLOW_NONE_EL), el);
       if (dt > 0) {
-        probe.update(dt);
+        // what the ground is: a world's ambient flocks need it before there are
+        // any, a box only once a flock lives in it (the probe costs a dispatch
+        // and a readback every PROBE_S)
+        if (win || flocks.size) probe.update(dt);
         if (win) ambient(dt);
         spawned(dt);
         const player = env.player();
@@ -224,7 +232,8 @@ export function createBirdLife(env) {
         }
       }
       clock += dt;
-      view.update(dt, gatherRows(), toScene, { glow, camera, span: BIRD.SPAN });
+      if (view) view.update(dt, gatherRows(), toScene, { glow, camera, span: BIRD.SPAN });
+      else rows.length = 0;
       cost += (performance.now() - t0 - cost) * L.COST_EMA;
     },
     // a new grid, scene or preset: every flock goes (the spawners' come back with them)
@@ -232,20 +241,21 @@ export function createBirdLife(env) {
       for (const key of [...flocks.keys()]) dropFlock(key);
       nextAmbient = 1;   // the new world's first flocks are already about
       probe.reset();
-      view.clear();
+      view?.clear();
     },
     get flocks() { return [...flocks.values()].map((e) => e.flock); },
     get count() { return rows.length; },
     get night() { return night; },
     get glow() { return glow; },
     get costMs() { return cost; },   // CPU per frame, running average (ms)
-    get motes() { return view.motes; },
-    probe, view,
+    get motes() { return view?.motes ?? 0; },
+    probe,
+    get view() { return viewOf(); },
     dispose() {
       offs.forEach((f) => f());
       for (const key of [...flocks.keys()]) dropFlock(key);
       probe.dispose();
-      view.dispose();
+      view?.dispose();
     },
   };
 }

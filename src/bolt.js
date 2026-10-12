@@ -37,7 +37,7 @@ export const BOLT = {
   BRANCH_DECAY: 1 / 1.5,   // TPT: each branch segment is this share of the last one's length
   BRANCH_MIN: 1.5,         // cells: a branch ends when its next segment would be shorter
   BRANCH_DEPTH: 2,         // branches of branches, at most this deep
-  MAX_SEGS: 64,            // segments one bolt draws (the pass's uniform arrays)
+  MAX_SEGS: 64,            // segments one bolt draws (the edit's uniform arrays)
   RADIUS: 0.75,            // cells: the main channel's radius (a continuous line of cells)
   BRANCH_RADIUS: 0.6,      // cells: a branch's
   START_JITTER: 6,         // cells: a tool bolt starts this far off the target's vertical, at most
@@ -175,15 +175,16 @@ export function pickStrike(origin, hits) {
   return best;
 }
 
-// The GLSL defines the bolt pass and the storm passes read.
+// The constants the bolt edit and the storm kernels read (shaders/lightning.js;
+// the name is the GLSL version's, docs/webgpu.md W2), as typed WGSL consts.
 export const boltGLSL = () => [
-  `#define BOLT_MAX_SEGS ${BOLT.MAX_SEGS}`,
-  `#define BOLT_P ${BOLT.P.toFixed(1)}`,
-  `#define BOLT_E ${BOLT.E.toFixed(1)}`,
-  `#define STRIKE_E ${BOLT.STRIKE_E.toFixed(1)}`,
-  `#define STRIKE_CORE ${BOLT.STRIKE_CORE}`,
-  `#define STRIKE_P ${BOLT.STRIKE_P.toFixed(1)}`,
-  `#define STRIKE_P_REACH ${BOLT.STRIKE_P_REACH.toFixed(1)}`,
-  `#define BOLT_RNG_SALT ${BOLT.RNG_SALT}u`,
-  `#define STORM_CANDIDATES ${STORM.CANDIDATES}`,
+  `const BOLT_MAX_SEGS: i32 = ${BOLT.MAX_SEGS};`,
+  `const BOLT_P: f32 = ${BOLT.P.toFixed(1)};`,
+  `const BOLT_E: f32 = ${BOLT.E.toFixed(1)};`,
+  `const STRIKE_E: f32 = ${BOLT.STRIKE_E.toFixed(1)};`,
+  `const STRIKE_CORE: f32 = ${BOLT.STRIKE_CORE};`,
+  `const STRIKE_P: f32 = ${BOLT.STRIKE_P.toFixed(1)};`,
+  `const STRIKE_P_REACH: f32 = ${BOLT.STRIKE_P_REACH.toFixed(1)};`,
+  `const BOLT_RNG_SALT: u32 = ${BOLT.RNG_SALT}u;`,
+  `const STORM_CANDIDATES: i32 = ${STORM.CANDIDATES};`,
 ].join('\n');

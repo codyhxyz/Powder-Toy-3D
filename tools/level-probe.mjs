@@ -21,6 +21,7 @@ try {
     const a = window.__app, sim = a.sim, g = sim.g;
     const { E, ELEMENTS } = await import('/src/elements.js');
     a.test.park();
+    await a.test.ready();   // (load and step need the grid's pipelines)
     const [A, B] = sim.blankState();
     for (let y = 2; y < 8; y++) for (let z = 56; z < 72; z++) for (let x = 56; x < 72; x++) {
       const i = sim.cellTexel(x, y, z) * 4;
@@ -30,7 +31,7 @@ try {
     const at = {}, rows = [];
     for (let s = EVERY; s <= MAX; s += EVERY) {
       a.test.step(EVERY);
-      const [S] = sim.readState();
+      const [S] = await sim.readState();
       let top = 0, wet = 0;
       for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
         let h = 0;

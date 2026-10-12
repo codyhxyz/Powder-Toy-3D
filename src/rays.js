@@ -1,6 +1,6 @@
 // Fast particles (docs/particles.md): photons and neutrons, kept in a list
 // beside the grid and flown straight through it. This module is data only:
-// the constants, the per-element nuclear and optical tables, their GLSL, and
+// the constants, the per-element nuclear and optical tables, their WGSL, and
 // a CPU twin of the neutron rules (tools/rays-check.mjs runs it). The GPU
 // layer is src/raysLayer.js, its passes src/shaders/rays.js.
 import { ELEMENTS, E, R, itemByKey } from './elements.js';
@@ -121,21 +121,40 @@ export function sigmas(key) {
 export const reflectOf = (e) => e.reflect ?? 0;
 export const isClear = (e) => e.render !== R.OPAQUE;
 
+// The particle passes' WGSL (shaders/rays.js pastes it after the prelude;
+// the name is the GLSL version's, docs/webgpu.md W2): every RAYS number as a
+// typed f32 const (the GLSL's were float #defines), the kinds as i32, and the
+// per-element tables as functions of the element id. Only a handful of
+// elements have a nuclear row, an emission rate or a reflectance, so each is
+// a switch over those ids rather than an NE-entry array (docs/webgpu.md C6:
+// never a big const array indexed at runtime). Table values keep the GLSL's
+// six significant digits.
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-const arr = (name, fn) => `const float ${name}[NE] = float[NE](${ELEMENTS.map((e) => f(+fn(e).toPrecision(6))).join(', ')});`;
+const g6 = (x) => f(+x.toPrecision(6));
+// fn name(id: i32) -> T over the elements whose value isn't the default
+function switchFn(name, type, rows, fallback) {
+  const cases = rows.map(([e, v]) => `    case E_${e.key}: { return ${v}; }`).join('\n');
+  return `fn ${name}(id: i32) -> ${type} {
+  switch id {
+${cases}
+    default: { return ${fallback}; }
+  }
+}`;
+}
 export function raysGLSL() {
-  const sig = ELEMENTS.map((e) => sigmas(e.key));
-  const nu = (k) => (e) => NUCLEAR[e.key]?.[k] ?? 0;
+  const nuclear = ELEMENTS.filter((e) => NUCLEAR[e.key]).map((e) => {
+    const s = sigmas(e.key).map(g6), n = NUCLEAR[e.key];
+    return [e, `Nuclear(${s.join(', ')}, ${g6(n.nuF)}, ${g6(n.nuT)}, ${g6(n.h)}, ${g6(n.A)})`];
+  });
   return [
-    ...Object.entries(RAYS).map(([k, v]) => `#define ${k} ${f(v)}`),
-    ...Object.entries(RAY_KIND).map(([k, v]) => `#define RAY_${k} ${v}`),
-    ...['SF', 'AF', 'FF', 'ST', 'AT', 'FT'].map((s, i) => arr(`NSIG_${s}`, (e) => sig[e.id][i])),
-    arr('NU_F', nu('nuF')),
-    arr('NU_T', nu('nuT')),
-    arr('N_HSHARE', nu('h')),
-    arr('N_MASS', (e) => NUCLEAR[e.key]?.A ?? 1),
-    arr('SF_RATE', (e) => EMITTERS[e.key] ?? 0),
-    arr('REFLECT', reflectOf),
+    ...Object.entries(RAYS).map(([k, v]) => `const ${k}: f32 = ${f(v)};`),
+    ...Object.entries(RAY_KIND).map(([k, v]) => `const RAY_${k}: i32 = ${v};`),
+    '// a material\'s macroscopic cross-sections per cell, fast and thermal (rays.js sigmas),',
+    '// ν fast and thermal, the share of scatters off hydrogen, the mass number of the rest',
+    'struct Nuclear { sF: f32, aF: f32, fF: f32, sT: f32, aT: f32, fT: f32, nuF: f32, nuT: f32, hShare: f32, mass: f32 }',
+    switchFn('nuclearOf', 'Nuclear', nuclear, 'Nuclear(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)'),
+    switchFn('SF_RATE', 'f32', ELEMENTS.filter((e) => EMITTERS[e.key]).map((e) => [e, g6(EMITTERS[e.key])]), '0.0'),
+    switchFn('REFLECT', 'f32', ELEMENTS.filter((e) => reflectOf(e) > 0).map((e) => [e, g6(reflectOf(e))]), '0.0'),
   ].join('\n');
 }
 
