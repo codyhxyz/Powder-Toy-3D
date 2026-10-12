@@ -321,7 +321,8 @@ const TRANS = /* wgsl */ `
 `;
 
 const TONE_FUNCS = /* wgsl */ `
-// AgX, Benjamin Wrensch's minimal fit (iolite-engine.com, 2023): the curve today's post uses too
+// AgX with Benjamin Wrensch's contrast fit (iolite-engine.com, 2023), the sigmoid today's post uses
+// (src/gfx/post.js) without its Rec.2020 wrap and Punchy look
 fn agxContrast(x: vec3f) -> vec3f {
   let x2 = x * x;
   let x4 = x2 * x2;

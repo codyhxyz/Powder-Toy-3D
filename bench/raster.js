@@ -51,6 +51,7 @@ const NOTES = [
   'The shadow map is redrawn every frame so its cost shows; v2 redraws it at most 30 Hz and only on change.',
   'TAAU reprojects with per-pixel motion and a bilinear history tap, clamps to the 3×3 neighbourhood, and tone maps in the same pass.',
   'Patterns are procedural 16×16 stand-ins for the art pass; the light grid is filled once at load (16 iterations, 26 neighbours).',
+  'Left out: the convex-edge bevel (~5 ALU a pixel), flying cubes and droplets, three.js meshes, bloom and eye adaptation, overlays.',
 ];
 
 const params = new URLSearchParams(location.search);
