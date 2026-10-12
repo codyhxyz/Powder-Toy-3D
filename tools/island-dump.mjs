@@ -11,7 +11,15 @@
 //     SwiftShader: FAR_CHUNKS of them, the nearest);
 //   - timings, the minimum of --runs: the box preset's load (GPU-synced) and a
 //     window move (GPU-synced, its leaving slab read back).
-// usage: node tools/island-dump.mjs <outDir> [--size 64] [--win 64] [--runs 2] [--port N]
+// --compare against a dump of the WebGL2 build's own tool (docs/webgpu.md
+// I4.3, on the Mac: run this one with --size 128 --win 128 --moves 4, the
+// legacy tool's) compares the cells only: the legacy far grid is the
+// complete grid as float texels, this one's the nearest chunks as rgba16uint,
+// so it is left out with a message. Cross-build, cells on a terrain or strata
+// boundary may differ by design (the scenes' cos and sin, thCosSin, put the
+// WebGPU terrain up to ~1e-3 cells off the WebGL build's); within this build
+// every cell and texel must match.
+// usage: node tools/island-dump.mjs <outDir> [--size 64] [--win 64] [--moves 2] [--runs 2] [--port N]
 //        node tools/island-dump.mjs --compare <dirA> <dirB>
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { launchBrowser, newTestPage } from './browser.mjs';
@@ -20,8 +28,9 @@ import { startVite } from './vite-server.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 
-const MOVES = 2;           // window moves along each axis
+const MOVES = +opt('moves', 2);   // window moves along each axis
 const FAR_CHUNKS = 4;      // far chunks drawn around the window (the nearest)
+const FORMAT = 'webgpu';   // this tool's dumps (result.json format; the WebGL2 tool's have none)
 const CHUNK = 1 << 22;     // bytes per base64 chunk out of the page
 
 if (args[0] === '--compare') { process.exit(compare(args[1], args[2]) ? 0 : 1); }
@@ -74,7 +83,7 @@ try {
     if (failed) throw new Error(`boot ${query}: ${failed.slice(0, 400)}`);
     await p.evaluate(() => window.__app.test.ready());
   };
-  const result = {};
+  const result = { format: FORMAT, size, win, moves: MOVES, far: { format: 'rgba16uint', chunks: FAR_CHUNKS } };
 
   // ---- box
   await boot(`/?preset=island&size=${size}&view=plain`);
@@ -109,7 +118,7 @@ try {
   }, FAR_CHUNKS);
   await save('far');
   await save('win0');
-  result.moves = await p.evaluate(async (MOVES) => {
+  result.moveLog = await p.evaluate(async (MOVES) => {
     const a = window.__app, w = a.win, log = [];
     const step = async (dx, dz) => {
       await w.pending;
@@ -144,12 +153,26 @@ process.exit(code);
 // ---------------------------------------------------------------- compare
 // Every cell of the box and the two windows, and every far texel: the same in
 // both dumps, or where and how they differ. Returns whether they are the same.
+// A dump of the WebGL2 build's tool (no format in its result.json) against one
+// of this build's: the cells only (see the header).
 function compare(A, B) {
-  const report = {}, dims = JSON.parse(readFileSync(`${A}/result.json`, 'utf8'));
+  const report = {}, ra = JSON.parse(readFileSync(`${A}/result.json`, 'utf8')), rb = JSON.parse(readFileSync(`${B}/result.json`, 'utf8'));
+  const cross = (ra.format ?? 'webgl') !== (rb.format ?? 'webgl');
+  const dims = ra.box?.dims ? ra : rb;   // (the WebGL2 tool's result has none: this build's dump says)
+  if (cross) {
+    console.log('cross-build: a WebGL2 dump against a WebGPU one. The cells only: the far grids differ in format (the WebGL2 tool dumped the '
+      + 'complete grid as float texels, this one the nearest chunks as rgba16uint) and are left out. Cells on a terrain or strata boundary '
+      + 'may differ by design (thCosSin: the WebGPU terrain sits up to ~1e-3 cells off the WebGL2 build\'s).');
+  }
   let same = true;
   for (const name of ['box', 'win0', 'win1']) {
     if (!existsSync(`${A}/${name}.bin`) || !existsSync(`${B}/${name}.bin`)) continue;
     const a = new Float32Array(readFileSync(`${A}/${name}.bin`).buffer.slice(0)), bb = new Float32Array(readFileSync(`${B}/${name}.bin`).buffer.slice(0));
+    if (a.length !== bb.length) {
+      same = false;
+      report[name] = { cells: [a.length / 4, bb.length / 4], note: 'different grids (run both with the same --size, --win and --moves)' };
+      continue;
+    }
     const [nx, , nz] = name === 'box' ? dims.box.dims : dims.world.dims, n = a.length / 4;
     let id = 0, T = 0, life = 0, w = 0, Tmax = 0;
     const kinds = {}, where = [];
@@ -169,7 +192,7 @@ function compare(A, B) {
     if (id || T || life || w) same = false;
     report[name] = { cells: n, idDiffer: id, kinds, where, TDiffer: T, TmaxDiff: Tmax, lifeDiffer: life, ctypeSeedDiffer: w };
   }
-  if (existsSync(`${A}/far.bin`) && existsSync(`${B}/far.bin`)) {
+  if (!cross && existsSync(`${A}/far.bin`) && existsSync(`${B}/far.bin`)) {
     const a = new Uint16Array(readFileSync(`${A}/far.bin`).buffer.slice(0)), bb = new Uint16Array(readFileSync(`${B}/far.bin`).buffer.slice(0));
     let texels = 0;
     for (let i = 0; i < a.length; i += 4) if (a[i] !== bb[i] || a[i + 1] !== bb[i + 1] || a[i + 2] !== bb[i + 2] || a[i + 3] !== bb[i + 3]) texels++;
