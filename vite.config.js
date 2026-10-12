@@ -18,7 +18,7 @@ import { appPreloadPlugin } from './scripts/app-preload-plugin.mjs';
 // 'virtual:world-bake' (a world harness page), not when the server starts:
 // most harness pages never import it, and the bake keeps a CPU busy a while.
 export default defineConfig(({ mode }) => ({
-  plugins: [wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), appPreloadPlugin()],
+  plugins: [wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), gameOnly(appPreloadPlugin())],
   optimizeDeps: {
     // harness mode: scan only the harness pages for dependencies to pre-bundle (the game imports the bake)
     ...(mode === 'harness' ? { entries: ['tools/harness/*.html'] } : {}),
@@ -39,4 +39,11 @@ export default defineConfig(({ mode }) => ({
 function lazyBake(plugin) {
   const { buildStart, ...rest } = plugin;
   return rest;
+}
+
+// The start menu's preload list belongs to the game's page: the raster bench
+// (bench/raster.html) is standalone and never reads it.
+function gameOnly(plugin) {
+  const { handler, ...hook } = plugin.transformIndexHtml;
+  return { ...plugin, transformIndexHtml: { ...hook, handler: (html, ctx) => (ctx.path === '/index.html' ? handler(html, ctx) : html) } };
 }
