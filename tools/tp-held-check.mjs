@@ -5,13 +5,17 @@
 // held axe, what a tool carries shows on the body (the shovel's heap, the
 // bucket's and the flask's contents, the physgun's beam, the laser's charge),
 // first person puts the viewmodel back at the eye, and the stickman holds tools
-// too.
-// usage: node tools/tp-held-check.mjs [--port 5205 | --url https://tpt3d.codyh.xyz]   (a dev server, or the live site)
+// too. Lit: the held model's meshes wear the body's material (pov/figure.js
+// figureMaterial: the volume's light, U13), not the viewmodel's Lambert.
+// Needs first person's wiring (src/wire/pov.js, U11).
+// usage: node tools/tp-held-check.mjs [--port 5205 | --url https://tpt3d.codyh.xyz]   (its own Vite on --port, or the live site)
 import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5205');
-const url = opt('url', `http://localhost:${port}`);
+const port = Number(opt('port', '5205'));
+const vite = opt('url') ? null : await startVite({ port });
+const url = opt('url', vite?.origin);
 const W = 900, H = 560;
 const SPAWN = [64, 0, 64.5];
 const YAW = -Math.PI / 2;
@@ -65,7 +69,7 @@ try {
     };
     const at = (o) => { o.updateWorldMatrix(true, false); return o.getWorldPosition(new T.Vector3()); };
     const dist = (o, pt) => (o && pt ? +(at(o).distanceTo(pt) / s).toFixed(2) : null);
-    let lambert = 0;
+    let lambert = 0;   // meshes lit as the viewmodel is, not as the body (its own glows and effects keep theirs)
     h.group.traverse((o) => { if (o.isMesh && o.visible && o.material.isMeshLambertMaterial) lambert++; });
     const out = {
       holding: h.holding, weight: +h.weight.toFixed(2), showing: f.showing, lambert,
@@ -255,6 +259,7 @@ try {
   check('no page errors', errs.length === 0, errs.slice(0, 5).join('\n'));
 } finally {
   await b.close();
+  await vite?.close();
 }
 console.log(fails ? `${fails} failed` : 'all passed');
-process.exit(fails ? 1 : 0);
+process.exitCode = fails ? 1 : 0;
