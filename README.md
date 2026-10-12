@@ -213,11 +213,12 @@ and sets into painted glass, and painted wood burns down to painted ash, because
 cell the brush or a construction gives a new element (TPT's `create_part` starts a particle fresh). Undo brings it back, and
 in World it travels with the window: bricks of paint that leave the window are kept and come back with it.
 
-It is stored as a third texture beside the state (`src/deco.js`): one RGBA8 texel per cell in the state's atlas, moved by
-its own pass right after the move's gather, which reads the same slots (`src/shaders/deco.js`). Nothing in the move or
-react passes changes, and the texture, its passes and their programs only exist from the first deco stroke, so a world
-nobody paints pays nothing. The renderer (`src/shaders/gfx/deco.js`) turns a painted surface's albedo toward the paint
-(keeping its texture's light and dark), makes painted liquid and glass scatter the paint's colour, and leaves glow alone,
+It is stored as one RGBA8 word per cell beside the state (`src/deco.js`), in the state's slot order, in a buffer the move
+already binds: the move carries each block's eight words along with its cells (`src/shaders/move.js`; the rules are in
+`src/shaders/deco.js`), and react never touches it. The words, their kernels and the move's share of the work only exist
+from the first deco stroke, and a load switches them off again, so a world nobody paints pays nothing. The renderer
+(`src/shaders/gfx/deco.js`) reads the words directly and turns a painted surface's albedo toward the paint (keeping its
+texture's light and dark), makes painted liquid and glass scatter the paint's colour, and leaves glow alone,
 so hot metal still shines through its paint. Smooth surfaces take the colour of the cell their material comes from, so a
 paint edge on sand follows cells. Smoke, steam and fire don't show paint in the realistic view yet (the plain view tints
 them), reflections and bounced light don't see it, and guests in a multiplayer session neither see nor paint it: the host's

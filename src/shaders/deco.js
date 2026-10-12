@@ -1,27 +1,46 @@
-import { prelude } from './common.js';
-import { quietGLSL } from './activity.js';
-import { slotGLSL } from './move.js';
+import { prelude, LAYOUT, STAGE, gridDims } from './common.js';
 import { slabGLSL, STAGE_W } from './window.js';
-import { decoPackGLSL } from './gfx/deco.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 
-// The decoration layer's passes (src/deco.js runs them): The Powder Toy's
+// The decoration layer's kernels (src/deco.js runs them): The Powder Toy's
 // "deco", a colour painted onto matter that travels with it.
 //
-// Storage: one RGBA8 texel per cell, laid out like the state (atlas()), in a
-// ping-pong pair beside it: (r, g, b) the colour in sRGB and a its strength,
-// TPT's dcolour (src/simulation/Particle.h: one 0xAARRGGBB word per
-// particle). 0 everywhere is "nothing decorated". The simulation never reads
-// it; it only follows the cells:
+// Storage: one u32 per cell, RGBA8 (r in the low byte, as pack4x8unorm packs
+// it), in the state's slot order (docs/webgpu.md C2): (r, g, b) the colour in
+// sRGB and a its strength, TPT's dcolour (src/simulation/Particle.h: one
+// 0xAARRGGBB word per particle). 0 is "nothing decorated". It is a plane of the
+// move's moveSrc buffer (src/sim.js decoPlane), so the move can carry it
+// within its eight storage buffers (docs/webgpu.md C4, Sync log S3), and there
+// is one of it: the WebGL layer ping-ponged two textures only because a pass
+// couldn't write the texture it read. The simulation never reads it; it only
+// follows the cells:
 //   - the move: every cell takes the decoration of the cell its content came
-//     from, by the block pass's slots (decoGatherFrag), after the gather;
+//     from, the block's own 8 words permuted with its cells, in the move
+//     kernel itself (shaders/move.js; WebGL: decoGatherFrag, a pass after the
+//     gather). A cell whose content is air loses it, and still air from past a
+//     void edge brings none. Only blocks that run write it, so air a reaction
+//     left in a block the sleeping rules skip keeps its word until a running
+//     block covers it (the WebGL pass rewrote every cell each step; emptying a
+//     cell marks its brick dirty, so the next map draws it);
 //   - an element change in place keeps it (TPT's transitions go through
 //     Simulation::part_change_type, which leaves dcolour alone:
 //     src/simulation/Simulation.cpp, "ideally transitions should use
-//     create_part(i)"), so painted ice melts into painted water;
+//     create_part(i)"), so painted ice melts into painted water: react never
+//     touches the plane;
 //   - a cell that empties loses it (kill_part), and so does a cell a write
 //     outside the step gives a new element (the brush, a stamp: TPT's
 //     create_part resets the particle to the element's defaults, dcolour 0,
-//     src/simulation/Simulation.cpp create_part; decoScrubFrag).
+//     src/simulation/Simulation.cpp create_part). Those writes are in place
+//     (docs/webgpu.md D6), so the box's element ids are kept just before the
+//     write (decoScrubFrag's keep) and compared just after it (its main).
+//
+// Kernels (group 0 the tables, group 1 the state read-only, group 2
+// DECO_LAYOUT: the plane, the layer's work buffer, a source; group 3 the
+// params), one per job: the brush (two phases: smudge reads the cells around),
+// the scrub (keep, then compare), undo, the window's shift, and the World's
+// stage of a leaving slab. Loads, saves and the World's stored bricks coming
+// back are byte copies the CPU orders (src/deco.js), not kernels.
 
 // TPT's deco modes (src/simulation/SimulationData.h DECO_*), in the order the
 // tools' ids run (elements.js DECO_TOOLS).
@@ -38,186 +57,239 @@ export const DECO_STRENGTH = 0.01;
 const SMUDGE_REACH = 2;
 const SMUDGE_NEAR = 2;
 const SMUDGE_FADE = 3 / 255;
-const g = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
+// A channel's 8 bits from 0..1, rounded as TPT's `+ .5f` rounds (written out
+// rather than pack4x8unorm's, so every device rounds a tie the same way).
+const BYTE_MAX = 255;
 
-const decoGLSL = /* glsl */ `
-uniform sampler2D tDeco;   // the decoration before this pass (src/deco.js)
-out vec4 oD;
-vec4 decoOf(ivec3 c) { return texelFetch(tDeco, atlas(c), 0); }
-`;
+// Group 2 of every deco kernel: the plane (sim.decoPlane: a range of the
+// moveSrc buffer), the layer's work buffer (a plane-sized scratch, or the
+// stage's output), and a read-only source (an undo snapshot's plane; a
+// 16-byte dummy where a kernel reads none).
+export const DECO_LAYOUT = [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+  { binding: 2, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } },
+];
+const decoBindings = /* wgsl */ `
+@group(2) @binding(0) var<storage, read_write> plane: array<u32>;   // the decoration, RGBA8 per slot
+@group(2) @binding(1) var<storage, read_write> work: array<u32>;    // the layer's scratch
+@group(2) @binding(2) var<storage, read> source: array<u32>;        // a snapshot's plane (undo)
+const DECO_BYTE_MAX: f32 = ${BYTE_MAX.toFixed(1)};
+// a paint from its word, and back (clamped to 0..1, each channel rounded half up)
+fn decoUnpack(w: u32) -> vec4f { return unpack4x8unorm(w); }
+fn decoPack(t: vec4f) -> u32 {
+  let b = vec4u(floor(clamp(t, vec4f(0.0), vec4f(1.0)) * DECO_BYTE_MAX + 0.5));
+  return b.x | (b.y << 8u) | (b.z << 16u) | (b.w << 24u);
+}`;
 
-// After the move's gather (tA: the state after the move, tSlots its slots):
-// each cell takes the decoration of the cell its content came from, as the
-// gather took it (shaders/move.js postMove; a block based in a quiet brick
-// stayed put), and an empty cell has none. It draws every cell, as
-// whitewater's field does (shaders/gfx/liquidDetail.js aerationFrag), so the
-// two copies never need settling.
-export const decoGatherFrag = (grid) => /* glsl */ `
-${prelude(grid)}
-${quietGLSL}
-${slotGLSL}
-${decoGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { oD = vec4(0.0); return; }   // a texel holding no cell
-  ivec3 q = p;
-  if (!quietCell(blockBase(p))) { slotOf(p, q); q = edgeCell(q); }   // (past a loop edge: the far side's, as postMove reads it)
-  oD = eid(fetchA(p)) == E_EMPTY || !inGrid(q) ? vec4(0.0) : decoOf(q);   // (from past a void edge: still air, unpainted)
-}
-`;
+// The box kernels' main: a 4×4×4 workgroup per brick the box [lo, hi]
+// (inclusive grid cells, clipped) overlaps, from a folded dispatch over its
+// bricks, x fastest (shaders/common.js editMain's shape); threads outside the
+// box or the grid return. Opens a scope holding p and its slot s.
+const boxMain = (name) => /* wgsl */ `@compute @workgroup_size(4, 4, 4)
+fn ${name}(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_id) lid: vec3u) {
+  let b0 = P.lo >> vec3u(2u);
+  let nb = vec3u((P.hi >> vec3u(2u)) - b0 + 1);
+  let k = foldId(wg, nwg);
+  let p = (b0 + vec3i(vec3u(k % nb.x, (k / nb.x) % nb.y, k / (nb.x * nb.y)))) * BS + vec3i(lid);
+  if (k >= nb.x * nb.y * nb.z || !inGrid(p) || any(p < P.lo) || any(p > P.hi)) { return; }
+  let s = slotOf(p);`;
+/** A box kernel's dispatch: one workgroup per brick of the box (inclusive grid cells, clipped). */
+export const boxDispatch = (lo, hi) => fold([0, 1, 2].reduce((n, k) => n * ((hi[k] >> 2) - (lo[k] >> 2) + 1), 1));
 
-// After a write that isn't a step (tA: the state after it, tPrevA before):
-// a cell that changed element or emptied loses its decoration (TPT's
-// create_part and kill_part; see the top of this file).
-export const decoScrubFrag = (grid) => /* glsl */ `
-${prelude(grid)}
-uniform sampler2D tPrevA;
-${decoGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { oD = vec4(0.0); return; }
-  int id = eid(fetchA(p));
-  oD = id == E_EMPTY || id != eid(texelFetch(tPrevA, atlas(p), 0)) ? vec4(0.0) : decoOf(p);
-}
-`;
+// The whole-plane kernels' main: one thread per slot, its cell p.
+const slotMain = /* wgsl */ `@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let s = foldThread(wg, nwg, li);
+  if (s >= SLOTS) { return; }
+  let p = cellOf(s);`;
+const perSlot = (g) => fold(Math.ceil(gridDims(g).slots / 64));
 
-// The deco brush: TPT's Simulation::ApplyDecoration (src/simulation/Editing.cpp)
-// on every cell holding matter inside the brush (the shape and radius of the
-// element brush, shaders/passes.js paintFrag). uColor is the picker's colour,
-// sRGB, and its alpha, all 0..1 (TPT's colR..colA / 255); the target's 8 bits
-// round as TPT's `+ .5f` does.
-export const decoPaintFrag = (grid) => /* glsl */ `
-${prelude(grid)}
-uniform vec3 uCenter;
-uniform float uRadius;
-uniform int uShape;     // 0 sphere, 1 cube
-uniform int uMode;      // DECO_MODE
-uniform vec4 uColor;
-${decoGLSL}
-${Object.entries(DECO_MODE).map(([k, v]) => `#define DECO_${k} ${v}`).join('\n')}
-#define DECO_STRENGTH ${g(DECO_STRENGTH)}
-#define SMUDGE_REACH ${SMUDGE_REACH}
-#define SMUDGE_NEAR ${SMUDGE_NEAR}
-#define SMUDGE_FADE ${g(SMUDGE_FADE)}
+// ---------------------------------------------------------------- the brush
+// TPT's Simulation::ApplyDecoration (src/simulation/Editing.cpp) on every cell
+// holding matter inside the brush (the shape and radius of the element brush,
+// shaders/passes.js). color is the picker's colour, sRGB, and its alpha, all
+// 0..1 (TPT's colR..colA / 255); the 8 bits round as TPT's `+ .5f` does.
+// Two phases over the brush's box, as an edit that reads its neighbours
+// (docs/webgpu.md D6): main paints into the work buffer reading the plane
+// before the stroke (smudge reads the cells around), apply copies the box's
+// cells into the plane.
+export const DecoPaintParams = uniformStruct('DecoPaintParams', {
+  lo: 'vec3i', hi: 'vec3i',   // the box
+  center: 'vec3f', radius: 'f32',
+  shape: 'u32',               // 0 sphere, 1 cube
+  mode: 'u32',                // DECO_MODE
+  color: 'vec4f',
+});
+export const decoPaintFrag = (g) => /* wgsl */ `
+${prelude(g, { state: 'read' })}
+${DecoPaintParams.wgsl}
+@group(3) @binding(1) var<uniform> P: DecoPaintParams;
+${decoBindings}
+${Object.entries(DECO_MODE).map(([k, v]) => `const DECO_${k}: u32 = ${v}u;`).join('\n')}
+const DECO_STRENGTH: f32 = ${DECO_STRENGTH};
+const SMUDGE_REACH: i32 = ${SMUDGE_REACH};
+const SMUDGE_NEAR: i32 = ${SMUDGE_NEAR};
+const SMUDGE_FADE: f32 = ${SMUDGE_FADE};
 // TPT's DECOSPACE_SRGB conversions (Editing.cpp), the IEC 61966-2-1 curve
-vec4 srgbToLin(vec4 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec4(2.4)), step(0.04045, c)); }
-vec4 linToSrgb(vec4 c) { return mix(c * 12.92, 1.055 * pow(c, vec4(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { oD = vec4(0.0); return; }
-  vec4 t = decoOf(p);
-  oD = t;
-  vec3 d = vec3(p) + 0.5 - uCenter;
-  float r = uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z)));
-  if (r > uRadius || eid(fetchA(p)) == E_EMPTY) return;
-  vec3 c = uColor.rgb * uColor.a * DECO_STRENGTH;
-  if (uMode == DECO_SET) t = uColor;
-  else if (uMode == DECO_CLEAR) t = vec4(0.0);
-  else if (uMode == DECO_ADD) t.rgb += c;            // (TPT leaves alpha alone for these four)
-  else if (uMode == DECO_SUBTRACT) t.rgb -= c;
-  else if (uMode == DECO_MULTIPLY) t.rgb *= 1.0 + c;
-  else if (uMode == DECO_DIVIDE) t.rgb /= 1.0 + c;
-  else if (uMode == DECO_SMUDGE) {
-    vec4 sum = vec4(0.0);
-    float n = 0.0;
-    for (int z = -SMUDGE_REACH; z <= SMUDGE_REACH; z++)
-      for (int y = -SMUDGE_REACH; y <= SMUDGE_REACH; y++)
-        for (int x = -SMUDGE_REACH; x <= SMUDGE_REACH; x++) {
-          ivec3 o = ivec3(x, y, z);
-          ivec3 q = p + o;
-          if (abs(x) + abs(y) + abs(z) <= SMUDGE_NEAR || !inGrid(q)) continue;
-          vec4 dq = decoOf(q);
-          if (dq == vec4(0.0) || eid(fetchA(q)) == E_EMPTY) continue;
-          sum += srgbToLin(dq);
-          n += 1.0;
+fn srgbToLin(c: vec4f) -> vec4f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec4f(2.4)), c >= vec4f(0.04045)); }
+fn linToSrgb(c: vec4f) -> vec4f { return select(c * 12.92, 1.055 * pow(c, vec4f(1.0 / 2.4)) - 0.055, c >= vec4f(0.0031308)); }
+// cell p's word after the stroke, w before it (kept bit for bit where the stroke leaves it)
+fn decoPainted(p: vec3i, w: u32) -> u32 {
+  let d = vec3f(p) + 0.5 - P.center;
+  var r = length(d);
+  if (P.shape != 0u) { r = max(abs(d.x), max(abs(d.y), abs(d.z))); }
+  if (r > P.radius || eid(fetchA(p)) == E_EMPTY) { return w; }
+  var t = decoUnpack(w);
+  let c = P.color.rgb * P.color.a * DECO_STRENGTH;
+  switch (P.mode) {
+    case DECO_SET: { t = P.color; }
+    case DECO_CLEAR: { t = vec4f(0.0); }
+    case DECO_ADD: { t = vec4f(t.rgb + c, t.a); }   // (TPT leaves alpha alone for these four)
+    case DECO_SUBTRACT: { t = vec4f(t.rgb - c, t.a); }
+    case DECO_MULTIPLY: { t = vec4f(t.rgb * (1.0 + c), t.a); }
+    case DECO_DIVIDE: { t = vec4f(t.rgb / (1.0 + c), t.a); }
+    case DECO_SMUDGE: {
+      var sum = vec4f(0.0);
+      var n = 0.0;
+      for (var z = -SMUDGE_REACH; z <= SMUDGE_REACH; z++) {
+        for (var y = -SMUDGE_REACH; y <= SMUDGE_REACH; y++) {
+          for (var x = -SMUDGE_REACH; x <= SMUDGE_REACH; x++) {
+            let q = p + vec3i(x, y, z);
+            if (abs(x) + abs(y) + abs(z) <= SMUDGE_NEAR || !inGrid(q)) { continue; }
+            let wq = plane[slotOf(q)];
+            if (wq == 0u || eid(fetchA(q)) == E_EMPTY) { continue; }
+            sum += srgbToLin(decoUnpack(wq));
+            n += 1.0;
+          }
         }
-    if (n == 0.0) return;
-    vec4 s = linToSrgb(sum / n);
-    if (t == vec4(0.0)) s.a -= SMUDGE_FADE;
-    t = s;
+      }
+      if (n == 0.0) { return w; }
+      var s = linToSrgb(sum / n);
+      if (w == 0u) { s.a -= SMUDGE_FADE; }
+      t = s;
+    }
+    default: {}
   }
-  oD = clamp(t, 0.0, 1.0);
+  return decoPack(t);
+}
+${boxMain('main')}
+  work[s] = decoPainted(p, plane[s]);
+}
+${boxMain('apply')}
+  plane[s] = work[s];
 }
 `;
 
-// Undo (Simulation.undo): cell p takes the snapshot's cell p + uShift (the
-// grid cells the window moved since it was taken, shaders/window.js
-// undoShiftFrag), or none with uBlank (a snapshot from before anything was
+// ---------------------------------------------------------------- the scrub
+// Around a write that isn't a step (sim.edit with { scrub: true }: the brush,
+// a stamp, the console's script), over its box: keep, before it, notes each
+// cell's element in the work buffer; main, after it, takes the decoration off
+// every cell that changed element or emptied (TPT's create_part and
+// kill_part; see the top of this file).
+export const DecoBoxParams = uniformStruct('DecoBoxParams', { lo: 'vec3i', hi: 'vec3i' });
+export const decoScrubFrag = (g) => /* wgsl */ `
+${prelude(g, { state: 'read' })}
+${DecoBoxParams.wgsl}
+@group(3) @binding(1) var<uniform> P: DecoBoxParams;
+${decoBindings}
+${boxMain('keep')}
+  work[s] = u32(eid(fetchA(p)));
+}
+${boxMain('main')}
+  let id = eid(fetchA(p));
+  if (plane[s] != 0u && (id == E_EMPTY || id != i32(work[s]))) { plane[s] = 0u; }
+}
+`;
+
+// ---------------------------------------------------------------- undo and the window
+// Undo (Simulation.undo): cell p takes the snapshot's cell p + shift (the grid
+// cells the window moved since it was taken, shaders/window.js
+// undoShiftFrag), or none with blank (a snapshot from before anything was
 // decorated); cells the snapshot doesn't hold keep what they have.
-export const decoUndoFrag = (grid) => /* glsl */ `
-${prelude(grid)}
-uniform sampler2D tSnap;
-uniform ivec3 uShift;
-uniform bool uBlank;
-${decoGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  ivec3 q = p + uShift;
-  oD = inGrid(p) && inGrid(q) ? (uBlank ? vec4(0.0) : texelFetch(tSnap, atlas(q), 0)) : decoOf(p);
+export const DecoShiftParams = uniformStruct('DecoShiftParams', { shift: 'vec3i', blank: 'u32' });
+export const decoUndoFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${DecoShiftParams.wgsl}
+@group(3) @binding(1) var<uniform> P: DecoShiftParams;
+${decoBindings}
+${slotMain}
+  let q = p + P.shift;
+  if (!inGrid(q)) { return; }
+  if (P.blank != 0u) { plane[s] = 0u; } else { plane[s] = source[slotOf(q)]; }
 }
 `;
 
-// A texture into the decoration, texel for texel (loads: src/deco.js upload).
-export const decoCopyFrag = () => /* glsl */ `
-precision highp float;
-precision highp sampler2D;
-uniform sampler2D tSrc;
-out vec4 oD;
-void main() { oD = texelFetch(tSrc, ivec2(gl_FragCoord.xy), 0); }
-`;
-
-// The view's flow field with the paint packed into its w (src/deco.js
-// viewFlow; shaders/gfx/deco.js says why): flow and paint share a layout.
-export const decoViewPackFrag = () => /* glsl */ `
-precision highp float;
-precision highp sampler2D;
-uniform sampler2D tDeco;
-uniform sampler2D tFlow;
-out vec4 oD;
-${decoPackGLSL}
-void main() {
-  ivec2 t = ivec2(gl_FragCoord.xy);
-  oD = vec4(texelFetch(tFlow, t, 0).xyz, decoPack(texelFetch(tDeco, t, 0)));
+// The window moved (Simulation.shift): cell p takes the decoration of
+// p + shift, into the work buffer (out of place, docs/webgpu.md D8.12; the
+// layer copies it back); the slab uncovered starts undecorated.
+export const decoShiftFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${DecoShiftParams.wgsl}
+@group(3) @binding(1) var<uniform> P: DecoShiftParams;
+${decoBindings}
+${slotMain}
+  let q = p + P.shift;
+  var w = 0u;
+  if (inGrid(q)) { w = plane[slotOf(q)]; }
+  work[s] = w;
 }
 `;
 
-// The World's window (world/window.js): the slab about to leave, staged in
-// the slab layout of shaders/window.js (brick i's 64 cells at texels 64·i ..),
-// one RGBA8 texel per cell, for the readback into the deco store.
-export const decoStageFrag = (grid) => /* glsl */ `
-${prelude(grid)}
+// The World's window (world/window.js): the slab about to leave, its bricks
+// in the slab layout of shaders/window.js (brick i's 64 cells at words 64·i ..,
+// x fastest, then y, then z), into the work buffer for the readback into the
+// deco store. A workgroup per brick of the slab, x fastest.
+export const DecoSlabParams = uniformStruct('DecoSlabParams', { lo: 'vec3i', bricks: 'vec3i' });
+export const decoStageFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${slabGLSL}
-uniform ivec3 uLo;       // the slab's low corner, grid cells (brick-aligned)
-uniform ivec3 uBricks;   // the slab's size in bricks
-${decoGLSL}
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  int t = f.x + STAGE_W * f.y;
-  int i = t / BRICK_CELLS;
-  ivec3 b = ivec3(i % uBricks.x, (i / uBricks.x) % uBricks.y, i / (uBricks.x * uBricks.y));
-  ivec3 p = uLo + b * BS + slabCell(t - i * BRICK_CELLS);
-  oD = b.z >= uBricks.z || !inGrid(p) ? vec4(0.0) : decoOf(p);
+${DecoSlabParams.wgsl}
+@group(3) @binding(1) var<uniform> P: DecoSlabParams;   // lo: the slab's low corner (grid cells, brick-aligned); bricks: its size
+${decoBindings}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldId(wg, nwg);
+  let nb = vec3u(P.bricks);
+  if (i >= nb.x * nb.y * nb.z) { return; }
+  let b = vec3i(vec3u(i % nb.x, (i / nb.x) % nb.y, i / (nb.x * nb.y)));
+  let p = P.lo + b * BS + slabCell(i32(li));
+  var w = 0u;
+  if (inGrid(p)) { w = plane[slotOf(p)]; }
+  work[i * u32(BRICK_CELLS) + li] = w;
 }
 `;
+/** The stage's dispatch for a slab of `bricks` ([x, y, z]) bricks. */
+export const stageDispatch = (bricks) => fold(bricks[0] * bricks[1] * bricks[2]);
 
-// ...and the stored bricks of a slab the window uncovers, written back:
-// tEditIdx holds per grid brick (brickAtlas) its slot in tEditD plus one (0:
-// none), slot s being slab-layout brick s. Every other cell keeps its own.
-export const decoEditFrag = (grid) => /* glsl */ `
-${prelude(grid)}
-${slabGLSL}
-uniform sampler2D tEditIdx;
-uniform sampler2D tEditD;
-${decoGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { oD = vec4(0.0); return; }
-  ivec3 bc = p / BS;
-  int s = int(texelFetch(tEditIdx, brickAtlas(bc), 0).r + 0.5) - 1;
-  if (s < 0) { oD = decoOf(p); return; }
-  int t = s * BRICK_CELLS + slabIndex(p - bc * BS);
-  oD = texelFetch(tEditD, ivec2(t % STAGE_W, t / STAGE_W), 0);
-}
-`;
+// WEBGPU-STUB (docs/webgpu.md J3): the move carries the plane itself (shaders/move.js).
+export function decoGatherFrag() { throw new Error('decoGatherFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (the move carries the plane)'); }
+// WEBGPU-STUB (docs/webgpu.md J3): snapshots are buffer copies, loads a write the CPU orders (src/deco.js).
+export function decoCopyFrag() { throw new Error('decoCopyFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (src/deco.js copies buffers)'); }
+// WEBGPU-STUB (docs/webgpu.md J3): stored bricks come back as writes into the plane (src/deco.js enter).
+export function decoEditFrag() { throw new Error('decoEditFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (src/deco.js enter)'); }
+// WEBGPU-STUB (docs/webgpu.md J3): the view reads the plane (shaders/gfx/deco.js).
+export function decoViewPackFrag() { throw new Error('decoViewPackFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (shaders/gfx/deco.js reads the plane)'); }
 
 export { STAGE_W };
+
+const layouts = () => [LAYOUT.TABLES, LAYOUT.STATE_RO, DECO_LAYOUT];
+// (a box as large as the grid at most)
+const perBox = (g) => fold(gridDims(g).nbricks);
+const BOX = [4, 4, 4], ROW = [64, 1, 1];
+/**
+ * The layer's kernels: src/deco.js builds them when a deco tool is first
+ * picked or the layer is made (never at boot: `warm: false`), and
+ * tools/check-wgsl.mjs checks them.
+ */
+export const DECO_KERNELS = [
+  { name: 'decoPaint', code: decoPaintFrag, entry: 'main', params: DecoPaintParams, workgroupSize: BOX, dispatch: perBox },
+  { name: 'decoPaintApply', code: decoPaintFrag, entry: 'apply', params: DecoPaintParams, workgroupSize: BOX, dispatch: perBox },
+  { name: 'decoKeep', code: decoScrubFrag, entry: 'keep', params: DecoBoxParams, workgroupSize: BOX, dispatch: perBox },
+  { name: 'decoScrub', code: decoScrubFrag, entry: 'main', params: DecoBoxParams, workgroupSize: BOX, dispatch: perBox },
+  { name: 'decoUndo', code: decoUndoFrag, entry: 'main', params: DecoShiftParams, workgroupSize: ROW, dispatch: perSlot },
+  { name: 'decoShift', code: decoShiftFrag, entry: 'main', params: DecoShiftParams, workgroupSize: ROW, dispatch: perSlot },
+  { name: 'decoStage', code: decoStageFrag, entry: 'main', params: DecoSlabParams, workgroupSize: ROW, dispatch: perBox },
+];
+/** tools/check-wgsl.mjs */
+export const WGSL_CHECK = DECO_KERNELS.map((k) => ({ ...k, kind: 'compute', code: (g) => k.code(g), layouts, warm: false }));

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deco check</title>
+  <link rel="stylesheet" href="/src/ui/styles.css">
+  <style>
+    #view { position: fixed; inset: 0; width: 100%; height: 100%; }
+    #log { display: none; }
+  </style>
+</head>
+<body>
+  <!-- tools/deco-check.mjs drives this page: the decoration layer (src/deco.js)
+       on a Simulation of this page's WebGPU device, no app; the view stage
+       draws it with the volume (docs/webgpu.md Sync log S3, U17). -->
+  <canvas id="view" width="400" height="250"></canvas>
+  <pre id="log"></pre>
+  <script type="module" src="./deco-check.js"></script>
+</body>
+</html>
