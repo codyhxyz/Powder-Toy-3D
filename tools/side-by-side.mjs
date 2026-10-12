@@ -74,9 +74,10 @@
 // shot or two a run, as the Week 0 sweep ran it:
 //   node tools/side-by-side.mjs --a-dir /home/user/wt/v1 --b-dir . --shots lab,lab-tank \
 //     --size 320x180 --quality draft --box 64 --win 64 --time-scale 0.1 \
-//     --clip-seconds 1 --fps 8 --append --out <dir>
-// and a browser run half as long, one side a run: the same with --side a,
-// then with --side b.
+//     --clip-seconds 1 --fps 8 --timeout 3600 --append --out <dir>
+// (a 2 s settle alone is 13 minutes of the lab's steps here, both sides at
+// once), and a browser run half as long, one side a run: the same with
+// --side a, then with --side b.
 //
 // Pages run in 'manual' test mode (CLAUDE.md): the loop is parked from boot,
 // so neither side draws a frame or steps the grid on its own time, and both
