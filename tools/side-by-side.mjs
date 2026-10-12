@@ -142,11 +142,10 @@ const TIME_SCALE = Number(opt('time-scale', 1));
 const PORT = Number(opt('port', DEFAULT_PORT));
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const OUT = resolve(opt('out', join(ROOT, '.tmp-side-by-side', stamp)));
-mkdirSync(OUT, { recursive: true });
-
 for (const s of wanted) {
   try { bootQuery(s.scene, { box: boxFor(s), win: WIN }); } catch (e) { console.error(`${s.name}: ${e.message}`); process.exit(2); }
 }
+mkdirSync(OUT, { recursive: true });
 
 const t0 = Date.now();
 const elapsed = () => `${((Date.now() - t0) / 1000).toFixed(0)} s`;
