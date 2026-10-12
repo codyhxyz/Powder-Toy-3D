@@ -107,10 +107,12 @@ const diff = (x, y) => Object.fromEntries([...new Set([...Object.keys(x), ...Obj
   .map((k) => [k, (y[k] ?? 0) - (x[k] ?? 0)]).filter(([, d]) => d));
 const zero = (d) => Object.keys(d).length === 0;
 // What a tool's env holds without the app: no renderer (the transfer engine's key is this env's
-// own object), a scene and a viewmodel group nobody draws, the grid at the world's origin, scale 1.
+// own object), a scene and a viewmodel group nobody draws, the grid's transform at the world's
+// origin, scale 1.
 function toolEnv(sim, toasts, extra = {}) {
+  const volume = new THREE.Object3D();   // (the app's volume: the grid's transform, at the origin here)
   return {
-    renderer: {}, scene: new THREE.Scene(), getSim: () => sim, getVolume: () => ({ position: V() }), getScale: () => 1,
+    renderer: {}, scene: new THREE.Scene(), getSim: () => sim, getVolume: () => volume, getScale: () => 1,
     hud: { toast: (t) => toasts.push(t) }, viewmodel: new THREE.Group(), isActive: () => true, ...extra,
   };
 }
