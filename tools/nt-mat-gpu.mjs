@@ -10,45 +10,36 @@
 //   day-*     every new liquid in a row of rock basins in daylight; close up
 // (The dock tiles run the CPU twin: tools/nt-mat-check.mjs.)
 // usage: node tools/nt-mat-gpu.mjs <outDir> [--port 5432] [--steps 4000]
-import { chromium } from 'playwright';
+//   (the app on your own Vite: npx vite --port 5432 --strictPort)
 import { mkdirSync } from 'fs';
+import { launchBrowser, newTestContext, ready, render } from './browser.mjs';
 const args = process.argv.slice(2);
 const out = args[0];
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5432');
 const STEPS = +opt('steps', '4000');
-const SETTLE = 48;   // app frames after a load or camera move: fields' EMA, GI feedback, TAA
 mkdirSync(out, { recursive: true });
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
+const b = await launchBrowser();
+try {
+// a parked app (manual mode): the steps are ours, the shots converged views (tools/browser.mjs render)
+const ctx = await newTestContext(b, { mode: 'manual', viewport: { width: 1280, height: 800 } });
 await ctx.routeWebSocket(/.*/, () => {});   // no multiplayer relay
 const p = await ctx.newPage();
 const errs = [];
 p.on('console', (m) => {
   const t = m.text();
-  if ((m.type() === 'error' && !t.startsWith('Failed to load resource')) || /GL_INVALID|WebGL:/.test(t)) errs.push(t.slice(0, 2000));
+  if ((m.type() === 'error' && !t.startsWith('Failed to load resource')) || /GPUValidationError|WGSL/.test(t)) errs.push(t.slice(0, 2000));
 });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));
 await p.addInitScript(() => {
   localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ autoRes: false, paused: true, glowLights: true }));
-  // a frame loop that can be held and pumped, on a virtual clock (tools/crystal-check.mjs)
-  const raf = window.requestAnimationFrame.bind(window);
-  let held = null, vt = 0;
-  window.requestAnimationFrame = (cb) => {
-    if (held) { held.push(cb); return 0; }
-    return raf(() => { vt += 1000 / 60; cb(vt); });
-  };
-  window.__hold = () => { held ??= []; };
-  window.__parked = () => held?.length ?? 0;
-  window.__pump = (n) => { for (let i = 0; i < n; i++) { const h = held; held = []; vt += 1000 / 60; h.forEach((cb) => cb(vt)); } };
-  performance.now = () => vt;
 });
 const t0 = Date.now();
 await p.goto(`http://localhost:${port}/?preset=empty&size=64`, { waitUntil: 'commit', timeout: 120000 });
-await p.waitForFunction(() => window.__app?.sim, null, { timeout: 120000 });
+await ready(p);
+await p.evaluate(() => window.__app.test.ready());
 const loadS = (Date.now() - t0) / 1000;
-await p.waitForTimeout(2000);
 const ev = (fn, arg) => p.evaluate(fn, arg);
 
 await ev(async () => {
@@ -57,7 +48,7 @@ await ev(async () => {
   a.settings.paused = true;
   a.day.clock = 0;   // 10 am
   document.querySelectorAll('.toast').forEach((el) => el.remove());
-  window.__hold();
+  a.test.park();
   const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
   const t = {
     fresh() { [t.A, t.B] = sim.blankState(); },
@@ -110,78 +101,75 @@ await ev(async () => {
       a.controls.update();
       a.post.reset();
     },
-    count() {
-      const [A] = sim.readState(), c = {};
+    async count() {
+      const [A] = await sim.readState(), c = {};
       for (let i = 0; i < A.length; i += 4) { const k = ELEMENTS[Math.round(A[i])]?.key; if (k && k !== 'EMPTY') c[k] = (c[k] ?? 0) + 1; }
       return c;
     },
   };
   window.__t = t;
 });
-while (!(await ev(() => window.__parked()))) await p.waitForTimeout(20);
-
-// ---- the activity map against its reference, while the cave steps
+// ---- the activity map against its reference, while the cave steps: after
+// every map the simulation builds, the reference kernel rebuilds the inert
+// map from the state alone (sim.inertRef) and the quiet map follows from it
+// (tools/harness/sim-activity.js, as tools/activity-check.mjs does)
 const act = await ev(async (steps) => {
-  const a = window.__app, sim = a.sim, R = a.renderer, t = window.__t;
-  const { inertRefFrag } = await import('/src/shaders/activity.js');
-  const { rawMat, makeFieldTarget } = await import('/src/sim.js');
-  const g = sim.g, w = g.bwidth, h = g.bheight;
-  const tex = sim.actInert.texture;
-  const refInert = makeFieldTarget(w, h, 1, tex.type, tex.minFilter);
-  const refQuiet = makeFieldTarget(w, h, 1, tex.type, tex.minFilter);
-  const ref = rawMat(inertRefFrag(g), { tA: { value: null }, tB: { value: null }, tRx: { value: sim.reactionTable } });
-  const px = () => new Uint8Array(w * h * 4);
-  const bufs = { inert: px(), quiet: px(), refInert: px(), refQuiet: px() };
-  const read = (tg, buf) => R.readRenderTargetPixels(tg, 0, 0, w, h, buf);
-  const bricks = (g.nx / 4) * (g.ny / 4) * (g.nz / 4);
+  const a = window.__app, sim = a.sim, t = window.__t, g = sim.g;
+  await sim.prepare('inertRef');
   const stat = { builds: 0, inertDiff: 0, quietDiff: 0, quietShare: 0, quietLast: 0 };
+  const pending = [];
   const build = sim.updateActivity.bind(sim);
   sim.updateActivity = () => {
     build();
-    ref.uniforms.tA.value = sim.stateA;
-    ref.uniforms.tB.value = sim.stateB;
-    sim.run(ref, refInert);
-    const q = sim.mats.quiet, keep = q.uniforms.tInert.value;
-    q.uniforms.tInert.value = refInert.texture;
-    sim.run(q, refQuiet);
-    q.uniforms.tInert.value = keep;
-    read(sim.actInert, bufs.inert); read(sim.actQuiet, bufs.quiet);
-    read(refInert, bufs.refInert); read(refQuiet, bufs.refQuiet);
-    let di = 0, dq = 0, nq = 0;
-    for (let i = 0; i < bufs.inert.length; i += 4) {
-      if ((bufs.inert[i] > 127) !== (bufs.refInert[i] > 127)) di++;
-      if ((bufs.quiet[i] > 127) !== (bufs.refQuiet[i] > 127)) dq++;
-      nq += bufs.refQuiet[i] > 127;
-    }
-    stat.builds++; stat.inertDiff += di; stat.quietDiff += dq;
-    stat.quietShare += nq / bricks; stat.quietLast = nq / bricks;
+    const enabled = sim.quietOk;
+    pending.push(Promise.all([sim.readMaps(), sim.inertRef()]).then(([m, ref]) => {
+      let di = 0, dq = 0, nq = 0;
+      for (let i = 0; i < ref.length; i++) {
+        const bx = i % g.bx, by = Math.floor(i / g.bx) % g.by, bz = Math.floor(i / (g.bx * g.by));
+        let q = enabled;
+        for (let z = -1; z <= 1 && q; z++) for (let y = -1; y <= 1 && q; y++) for (let x = -1; x <= 1 && q; x++) {
+          const nx = bx + x, ny = by + y, nz = bz + z;
+          if (nx < 0 || ny < 0 || nz < 0 || nx >= g.bx || ny >= g.by || nz >= g.bz) continue;
+          if (!ref[nx + g.bx * (ny + g.by * nz)]) q = false;
+        }
+        if (m.inert[i] !== ref[i]) di++;
+        if (m.quiet[i] !== (q ? 1 : 0)) dq++;
+        nq += q;
+      }
+      stat.builds++; stat.inertDiff += di; stat.quietDiff += dq;
+      stat.quietShare += nq / ref.length; stat.quietLast = nq / ref.length;
+    }));
   };
   sim.skipQuiet = true;
   t.cave();
-  const before = t.count();
-  const w0 = performance.now();
-  for (let i = 0; i < steps; i++) sim.step();
-  const after = t.count();
+  const before = await t.count();
+  for (let i = 0; i < steps; i++) {
+    sim.step();
+    if (pending.length > 8) { await Promise.all(pending); pending.length = 0; }   // (a few maps in flight at most)
+  }
+  await Promise.all(pending);
+  const after = await t.count();
   sim.updateActivity = build;
-  refInert.dispose(); refQuiet.dispose(); ref.dispose();
-  stat.quietShare /= stat.builds;
+  stat.quietShare /= Math.max(1, stat.builds);
   const pick = (c) => ({ MOSS: c.MOSS, FUNGUS: c.FUNGUS, WOOD: c.WOOD, WATER: c.WATER });
   return { ...stat, before: pick(before), after: pick(after) };
 }, STEPS);
 console.log(JSON.stringify({ loadS, activity: act }));
 
 const shot = (name) => p.screenshot({ path: `${out}/${name}.png` });
-const view = async (pos, tgt) => { await ev(([pos, tgt]) => window.__t.cam(pos, tgt), [pos, tgt]); await ev((n) => window.__pump(n), SETTLE); };
+// a camera, then the view converged (fields' EMA, GI feedback, TAA: tools/browser.mjs render)
+const view = async (pos, tgt) => { await ev(([pos, tgt]) => window.__t.cam(pos, tgt), [pos, tgt]); await render(p); };
 
 // ---- the cave (as it stands after the steps above), then daylight basins
 await view([33, 15, 46], [30, 6, 22]); await shot('cave');
 await view([33, 9, 33], [30, 4, 24]); await shot('cave-log');
 await view([28, 10, 30], [16, 4, 16]); await shot('cave-pool');
 await ev(() => window.__t.basins());
-await ev((n) => window.__pump(n), SETTLE);
 await view([32, 26, 70], [32, 2, 34]); await shot('day-basins');
 await view([16, 9, 44], [16, 2, 30]); await shot('day-close');
 await view([28, 8, 62], [28, 2, 50]); await shot('day-moss-fungus');
 
 console.log(errs.length ? errs.join('\n') : 'no console errors');
-await b.close();
+} finally {
+  await b.close();
+}

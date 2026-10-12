@@ -8,7 +8,7 @@
 //   Cyclone  counterclockwise from above: a cell east of the centre goes north (-z)
 //   PGRV/NGRV matter at the edge pulled in / pushed out; air untouched
 //   AMBP/AMBM air warms / cools by TOOL_HEAT at the centre; matter keeps its temperature
-// Needs a dev server: npx vite --port 5197 --strictPort, then
+// Needs a dev server: npx vite --port 5197 --strictPort, then (every read is awaited: docs/webgpu.md W6)
 // usage: node tools/brush-tools-gpu.mjs [--port 5197]
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
 
@@ -31,6 +31,7 @@ try {
   const res = await page.evaluate(async () => {
     const a = window.__app, sim = a.sim;
     a.test?.park?.();
+    await a.test.ready();   // (load and the brush need the grid's pipelines)
     const { E, ELEMENTS, TOOLS } = await import('/src/elements.js');
     const { PHYS } = await import('/src/physics.js');
     const T = Object.fromEntries(TOOLS.map((t) => [t.key, t.id]));
@@ -53,15 +54,16 @@ try {
       }
       sim.load(A, B);
     };
-    const cell = (x, y, z) => { const [A, B] = sim.readCell(x, y, z); return { id: Math.round(A[0]), T: A[1], v: [B[0], B[1], B[2]], P: B[3] }; };
+    // a cell as it is now (read back: docs/webgpu.md W6)
+    const cell = async (x, y, z) => { const [A, B] = await sim.readCell(x, y, z); return { id: Math.round(A[0]), T: A[1], v: [B[0], B[1], B[2]], P: B[3] }; };
     const near = (x, want, tol = 1e-3) => Math.abs(x - want) <= tol * Math.max(1, Math.abs(want));
 
     // ---- Mix ----
     const layer = (y) => ['SAND', 'SALT', 'WATER', 'OIL', 'STEAM', 'SMOKE'][(y >> 1) % 6];
     scene((x, y, z) => (Math.hypot(x + 0.5 - c[0], z + 0.5 - c[2]) < 12 && y < 2 * c[1] ? ((x + y + z) % 11 === 0 ? 'WALL' : (y % 7 === 6 ? null : layer(y))) : null));
-    const [A0, B0] = sim.readState();
+    const [A0, B0] = await sim.readState();
     paint(T.MIX, { radius: 10, times: 400 });
-    const [A1, B1] = sim.readState();
+    const [A1, B1] = await sim.readState();
     const count = (A) => { const n = {}; for (let i = 0; i < A.length; i += 4) n[Math.round(A[i])] = (n[Math.round(A[i])] ?? 0) + 1; return n; };
     const n0 = count(A0), n1 = count(A1);
     const same = Object.keys({ ...n0, ...n1 }).every((k) => n0[k] === n1[k]);
@@ -80,36 +82,48 @@ try {
     // ---- Vacuum ----
     scene(() => null);
     paint(T.VACUUM);
-    check(near(cell(c[0], c[1], c[2]).P, -PHYS.TOOL_PRESSURE), `Vacuum: -${PHYS.TOOL_PRESSURE} at the centre (${cell(c[0], c[1], c[2]).P})`);
+    const p1 = (await cell(c[0], c[1], c[2])).P;
+    check(near(p1, -PHYS.TOOL_PRESSURE), `Vacuum: -${PHYS.TOOL_PRESSURE} at the centre (${p1})`);
     paint(T.VACUUM, { times: 20 });
-    check(near(cell(c[0], c[1], c[2]).P, PHYS.P_MIN), `Vacuum stops at P_MIN (${cell(c[0], c[1], c[2]).P})`);
+    const p2 = (await cell(c[0], c[1], c[2])).P;
+    check(near(p2, PHYS.P_MIN), `Vacuum stops at P_MIN (${p2})`);
 
     // ---- Wind, Cyclone, gravity wells, ambient heat: on air, a sand cell and a wall cell ----
     const [sx, sy, sz] = [c[0] + 6, c[1], c[2]];   // east of the centre, inside the brush's falloff
     const fresh = () => scene((x, y, z) => (x === sx && y === sy && z === sz ? 'SAND' : x === sx - 1 && y === sy && z === sz ? 'WALL' : null));
-    const air = () => cell(c[0] + 1, c[1], c[2]), sand = () => cell(sx, sy, sz), wall = () => cell(sx - 1, sy, sz);
+    // after a tool: the cell beside the centre (air), the sand cell, the wall cell and the centre
+    const look = async () => {
+      const [air, sand, wall, centre] = await Promise.all([cell(c[0] + 1, c[1], c[2]), cell(sx, sy, sz), cell(sx - 1, sy, sz), cell(c[0], c[1], c[2])]);
+      return { air, sand, wall, centre };
+    };
     fresh();
     paint(T.WIND, { wind: [2, 0, 0] });
+    let k = await look();
     const ra = PHYS.RHO_MIN / Math.max(ELEMENTS[E.SAND].dens * PHYS.RHO_SCALE, PHYS.RHO_MIN);
-    check(near(air().v[0], 2 * PHYS.TOOL_WIND, 0.02), `Wind: air +x at ${air().v[0].toFixed(3)} (want ${2 * PHYS.TOOL_WIND})`);
-    check(sand().v[0] > 0 && sand().v[0] < air().v[0] * ra * 1.01, `Wind: sand takes its share (${sand().v[0].toFixed(4)})`);
-    check(wall().v.every((v) => v === 0), 'Wind: walls stay still');
+    check(near(k.air.v[0], 2 * PHYS.TOOL_WIND, 0.02), `Wind: air +x at ${k.air.v[0].toFixed(3)} (want ${2 * PHYS.TOOL_WIND})`);
+    check(k.sand.v[0] > 0 && k.sand.v[0] < k.air.v[0] * ra * 1.01, `Wind: sand takes its share (${k.sand.v[0].toFixed(4)})`);
+    check(k.wall.v.every((v) => v === 0), 'Wind: walls stay still');
     fresh();
     paint(T.CYCLONE);
-    check(sand().v[2] < 0 && Math.abs(sand().v[0]) < 1e-6, `Cyclone: east of the centre goes north (-z): ${sand().v.map((v) => v.toFixed(4))}`);
+    k = await look();
+    check(k.sand.v[2] < 0 && Math.abs(k.sand.v[0]) < 1e-6, `Cyclone: east of the centre goes north (-z): ${k.sand.v.map((v) => v.toFixed(4))}`);
     fresh();
     paint(T.GRAV_IN);
-    check(sand().v[0] < 0 && air().v.every((v) => v === 0), `PGRV pulls sand in (${sand().v[0].toFixed(3)}), not air`);
+    k = await look();
+    check(k.sand.v[0] < 0 && k.air.v.every((v) => v === 0), `PGRV pulls sand in (${k.sand.v[0].toFixed(3)}), not air`);
     fresh();
     paint(T.GRAV_OUT);
-    check(sand().v[0] > 0, `NGRV pushes sand out (${sand().v[0].toFixed(3)})`);
+    k = await look();
+    check(k.sand.v[0] > 0, `NGRV pushes sand out (${k.sand.v[0].toFixed(3)})`);
     fresh();
-    const T0 = sand().T;
+    const T0 = (await cell(sx, sy, sz)).T;
     paint(T.AMB_HEAT);
-    check(near(cell(c[0], c[1], c[2]).T, PHYS.AMBIENT + PHYS.TOOL_HEAT) && sand().T === T0, `AMBP warms air (${cell(c[0], c[1], c[2]).T}), not sand (${sand().T})`);
+    k = await look();
+    check(near(k.centre.T, PHYS.AMBIENT + PHYS.TOOL_HEAT) && k.sand.T === T0, `AMBP warms air (${k.centre.T}), not sand (${k.sand.T})`);
     fresh();
     paint(T.AMB_COOL);
-    check(near(cell(c[0], c[1], c[2]).T, PHYS.AMBIENT - PHYS.TOOL_HEAT) && sand().T === T0, `AMBM cools air (${cell(c[0], c[1], c[2]).T}), not sand`);
+    k = await look();
+    check(near(k.centre.T, PHYS.AMBIENT - PHYS.TOOL_HEAT) && k.sand.T === T0, `AMBM cools air (${k.centre.T}), not sand`);
     return out;
   });
   for (const line of res) { console.log(line); if (line.startsWith('FAIL')) failed++; }

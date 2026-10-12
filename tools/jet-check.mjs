@@ -44,6 +44,7 @@ try {
     const { SEED_MAX } = await import('/src/shaders/common.js');
     const { PHYS, SIM_GRAVITY } = await import('/src/physics.js');
     a.test.park();
+    await a.test.ready();   // (load and step need the grid's pipelines)
     const HOLE = [39, 30, 64];            // the hole (tools/whitewater-shots.mjs)
     const SURFACE = 44;                   // the tank's water runs to y = 43, under the clone lid
     const OUT_X = HOLE[0] + 1;            // outside the tank
@@ -69,7 +70,7 @@ try {
     const yMax = 32, sty = Math.ceil(yMax / 8);
     const rows = Math.ceil((g.stx * g.stz * sty) / g.stw) * 32;
     const A = new Float32Array(g.width * rows * 4), B = new Float32Array(g.width * rows * 4);
-    const read = () => sim.readStateRect(0, 0, g.width, rows, A, B);
+    const read = () => sim.readStateRect(0, 0, g.width, rows, A, B, true);   // (as it is after the step: docs/webgpu.md W6)
     const at = (x, y, z) => sim.cellTexel(x, y, z) * 4;
     const isW = (i) => Math.round(A[i]) === E.WATER;
 
@@ -80,7 +81,7 @@ try {
     let lastOut = null, jetCells = 0, frames = 0;
     for (let s = 0; s < SAMPLES; s++) {
       a.test.step(1);
-      read();
+      await read();
       let out = 0;
       const jet = [];
       for (let y = 0; y < yMax; y++) for (let z = 0; z < g.nz; z++) for (let x = OUT_X; x < g.nx; x++) {
@@ -146,15 +147,15 @@ try {
     };
 
     // ---- conservation: the tank with a water lid instead of the clone ----
-    const count = () => {
-      const c = sim.census(), o = {};
+    const count = async () => {
+      const c = await sim.census(), o = {};
       for (const k in c) o[ELEMENTS[k].key] = c[k].n;
       return o;
     };
     build(E.WATER);
-    const c0 = count();
+    const c0 = await count();
     a.test.step(CONSERVE_STEPS);
-    const c1 = count();
+    const c1 = await count();
     const conserve = Object.keys({ ...c0, ...c1 }).filter((k) => c0[k] !== c1[k]).map((k) => `${k} ${c0[k]} → ${c1[k]}`);
     return { summary, levelRows, side: pic(side, OUT_X - 1, OUT_X + 60), front: pic(front, HOLE[2] - 12, HOLE[2] + 13), conserve, water: c0.WATER };
   }, [WARM, SAMPLES, CONSERVE_STEPS]);

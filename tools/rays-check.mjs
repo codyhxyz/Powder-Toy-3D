@@ -8,14 +8,11 @@
 //      measured, not assumed;
 //   4. the photon rules' numbers (water's attenuation, metal's reflection, a
 //      photon lighting wood);
-//   5. every particle pass, and react and quiet with their particle inputs,
-//      through glslangValidator as GLSL ES 3.00 for each grid size.
+//   5. the particle kernels' WGSL: each WGSL_CHECK entry of shaders/rays.js
+//      generates for each grid size (tools/check-wgsl.mjs --file shaders/rays
+//      validates and builds them on a device: docs/webgpu.md I1).
 // usage: node tools/rays-check.mjs [--quick]
-import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync } from 'node:fs';
 import { registerHooks } from 'node:module';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ELEMENTS, E } from '../src/elements.js';
 
 // shaders/far.js refuses more than 32 elements until branch `farids` lands;
@@ -33,9 +30,6 @@ if (ELEMENTS.length > FAR_ID_CAP) {
 const { gridLayout } = await import('../src/sim.js');
 const { RAYS, NUCLEAR, EMITTERS, sigmas, crossSections, neutronSpeed, scatterEnergy, reflectOf } = await import('../src/rays.js');
 const rays = await import('../src/shaders/rays.js');
-const { reactFrag } = await import('../src/shaders/react.js');
-const { quietFrag } = await import('../src/shaders/activity.js');
-const { quadVert } = await import('../src/shaders/common.js');
 
 const quick = process.argv.includes('--quick');
 let failures = 0;
@@ -51,9 +45,9 @@ for (const key of Object.keys(NUCLEAR)) {
   if (n.fF || n.fT) ok(Math.max(n.nuF, n.nuT) <= 1 + RAYS.RAY_CHILDREN, `${key}: ν ≤ 1 + RAY_CHILDREN`);
 }
 for (const [label, dims] of Object.entries(GRIDS)) {
-  const g = gridLayout(...dims), cycle = Math.ceil((g.width * g.height) / N);
+  const g = gridLayout(...dims), cycle = Math.ceil(g.slots / N);   // (raysLayer.js: the spawn kernel's stripe over the slots)
   const p = Math.max(...Object.values(EMITTERS)) * cycle;
-  ok(p <= 1, `${label}: stripe sweeps the atlas in ${cycle} steps, emission probability ${p.toExponential(2)} ≤ 1`);
+  ok(p <= 1, `${label}: stripe sweeps the slots in ${cycle} steps, emission probability ${p.toExponential(2)} ≤ 1`);
 }
 
 // ---- 2. nuclear table ----
@@ -173,47 +167,20 @@ const dTwood = RAYS.PHOTON_HEAT / wood.cap;
 ok(dTwood + 20 >= wood.ignite, `one white photon warms wood ${dTwood.toFixed(0)} °C: lights it (${wood.ignite} °C)`);
 
 // ---- 5. shaders ----
-const shaderMatFrag = `#version 300 es
-precision highp float;
-precision highp int;
-#define varying in
-layout(location = 0) out highp vec4 pc_fragColor;
-#define gl_FragColor pc_fragColor
-`;
-const shaderMatVert = `#version 300 es
-precision highp float;
-precision highp int;
-uniform mat4 modelMatrix, modelViewMatrix, projectionMatrix, viewMatrix;
-in vec3 position;
-`;
-const raw = '#version 300 es\n';
-const dir = mkdtempSync(join(tmpdir(), 'rays-glsl-'));
-function check(name, src, stage) {
-  const f = join(dir, `${name}.${stage}`);
-  writeFileSync(f, src);
-  try {
-    execFileSync('glslangValidator', [f], { stdio: 'pipe' });
-  } catch (e) {
-    failures++;
-    console.log(`FAIL ${name}\n${String(e.stdout).split('\n').filter((l) => /ERROR/.test(l)).slice(0, 12).join('\n')}`);
-  }
-}
+// The WGSL each kernel's WGSL_CHECK entry generates, for every grid size: it
+// must generate (no JS error) and declare its entry point; check-wgsl
+// validates it with Tint and builds it.
 let n = 0;
 for (const [label, dims] of Object.entries(GRIDS)) {
   const g = gridLayout(...dims);
-  for (const k of ['raysAdvanceFrag', 'raysSpawnFrag', 'raysPaintFrag', 'raysRowsFrag', 'raysTotalFrag']) { check(`${k}-${label}`, raw + rays[k](g), 'frag'); n++; }
-  for (const k of ['raysDepositVert', 'raysBrickVert']) { check(`${k}-${label}`, raw + rays[k](g), 'vert'); n++; }
-  check(`react-${label}`, raw + reactFrag(g), 'frag');
-  check(`quiet-${label}`, raw + quietFrag(g), 'frag');
-  n += 2;
+  for (const e of rays.WGSL_CHECK) {
+    let src = '';
+    try { src = e.code(g); } catch (err) { src = ''; console.log(`  ${e.name}@${label}: ${err.message}`); }
+    ok(/fn (main|vs|fs)\b/.test(src), `${e.name} (${label}): ${src.split('\n').length} lines of WGSL`);
+    n++;
+  }
 }
-check('raysDepositFrag', raw + rays.raysDepositFrag, 'frag');
-check('raysBrickFrag', raw + rays.raysBrickFrag, 'frag');
-check('raysDrawVert', shaderMatVert + rays.raysDrawVert, 'vert');
-check('raysDrawFrag', shaderMatFrag + rays.raysDrawFrag, 'frag');
-check('quadVert', raw + quadVert, 'vert');
-n += 5;
-console.log(`\n${n} programs through glslangValidator`);
+console.log(`\n${n} kernels generated (validate and build them: node tools/check-wgsl.mjs --file shaders/rays)`);
 
 console.log(failures ? `\n${failures} failed` : '\nall rays checks pass');
 process.exit(failures ? 1 : 0);
