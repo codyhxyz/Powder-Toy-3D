@@ -45,6 +45,7 @@ import { WAND_EFFECTS, WAND_COMMANDS } from '/src/shaders/wands.js';
 import { createTransfer, Load, cellsNear } from '/src/pov/tools/transfer.js';
 import { readCells } from '/src/pov/ai/world.js';
 import { decodeTempCode, TEXEL_BYTES } from '/src/net/codec.js';
+import { ELEC, SPARK_BORN, CONDUCTS, packSpark, sparkOf } from '/src/electricity.js';
 
 const h = await boot({ label: 'pov-check' });
 const gpu = h.gpu;
@@ -75,14 +76,14 @@ async function make(n, opts = {}) {
   log(`pov kernels for ${nx}×${ny}×${nz}: ${Math.round(performance.now() - t0)} ms`);
   return sim;
 }
-// Loads a scene built on the CPU: fill(set, g), set(x, y, z, id, { temp, vel }).
+// Loads a scene built on the CPU: fill(set, g), set(x, y, z, id, { temp, vel, pressure, ctype }).
 function load(sim, fill, s = 12345) {
   seed(s);
   const g = sim.g, [A, B] = sim.blankState();
-  const set = (x, y, z, id, { temp, vel, pressure } = {}) => {
+  const set = (x, y, z, id, { temp, vel, pressure, ctype = 0 } = {}) => {
     if (x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) return;
     const i = cellTexel(g, x, y, z) * 4, e = ELEMENTS[id];
-    A[i] = id; A[i + 1] = temp ?? e.temp; A[i + 2] = e.life; A[i + 3] = Math.random() * SEED_MAX;
+    A[i] = id; A[i + 1] = temp ?? e.temp; A[i + 2] = e.life; A[i + 3] = ctype + Math.random() * SEED_MAX;
     if (vel) B.set(vel, i);
     if (pressure !== undefined) B[i + 3] = pressure;
   };
@@ -142,6 +143,11 @@ test('stage:probes', async ({ size = 32 } = {}) => {
       box(set, [24, 3, 24], [28, 8, 28], E.WALL);
       box(set, [12, 20, 10], [15, 23, 13], E.SAND, { vel: [0.25, -0.5, 0], pressure: -2 });
       box(set, [26, 22, 3], [30, 26, 7], E.SAND);   // the physgun's: nothing else within its reach
+      // a metal wire in the body's box: a full spark, a weaker one, and two cells at rest (no spark)
+      set(8, 4, 15, E.METAL, { ctype: packSpark(SPARK_BORN, ELEC.SPARK_V) });
+      set(9, 4, 15, E.METAL, { ctype: packSpark(SPARK_BORN, 2) });
+      set(10, 4, 15, E.METAL, { ctype: packSpark(ELEC.SPARK_REST, ELEC.SPARK_V) });
+      set(11, 4, 15, E.METAL);
     });
     const S = await state(sim);
 
@@ -150,16 +156,19 @@ test('stage:probes', async ({ size = 32 } = {}) => {
     const probe = pov.probe('povProbe', { boxLo });
     check(out, 'body probe: issued (its kernel built by prepare)', probe);
     const f = new Float32Array(await probe);
-    let bad = 0, firstBad = '', outside = 0;
+    let bad = 0, firstBad = '', outside = 0, sparked = 0;
     for (let i = 0; i < PROBE_CELLS; i++) {
       const x = boxLo[0] + (i % PROBE.X), z = boxLo[2] + (Math.floor(i / PROBE.X) % PROBE.Z), y = boxLo[1] + Math.floor(i / (PROBE.X * PROBE.Z));
       const o = Array.from(f.subarray(i * 4, i * 4 + 4));
       let want;
       if (x < 0 || y < 0 || z < 0 || x >= S.g.nx || y >= S.g.ny || z >= S.g.nz) { want = [PROBE_OUTSIDE, SIM_PHYS.AMBIENT, 0, 0]; outside++; }
-      else want = [S.id(x, y, z), S.a(x, y, z)[1], S.b(x, y, z)[3], o[3]];   // (w: the spark phase, not in A/B as such)
-      if (o.some((v, k) => v !== Math.fround(want[k]))) { bad++; firstBad ||= `(${x},${y},${z}) got ${vec(o)} want ${vec(want)}`; }
+      else want = [S.id(x, y, z), S.a(x, y, z)[1], S.b(x, y, z)[3], sparkOf(S.id(x, y, z), S.a(x, y, z)[3])];   // (w: electricity.js cellSpark of the cell read back)
+      if (want[3] > 0) sparked++;
+      // (the spark is a quotient: f32 division, within an ulp of the JS one rounded)
+      if (o.some((v, k) => (k === 3 ? Math.abs(v - want[3]) > 1e-6 : v !== Math.fround(want[k])))) { bad++; firstBad ||= `(${x},${y},${z}) got ${vec(o)} want ${vec(want)}`; }
     }
-    check(out, `body probe: ${PROBE_CELLS} cells = readState's id, T and pressure (${outside} outside the grid read as OUTSIDE at ambient)`, bad === 0, `${bad} differ; first ${firstBad}`);
+    check(out, `body probe: ${PROBE_CELLS} cells = readState's id, T, pressure and spark (${outside} outside the grid read as OUTSIDE at ambient, ${sparked} sparked)`,
+      bad === 0 && sparked === 2 && CONDUCTS[E.METAL], `${bad} differ; first ${firstBad}; ${sparked} sparked`);
 
     // the hook's cells: what a few cells hold (state A), outside → −1
     const cells = [[21, 8, 10, 0], [9, 10, 8, 0], [5, 5, 5, 0], [-1, 4, 4, 0], [31, 31, 31, 0]];
@@ -328,6 +337,14 @@ test('stage:edits', async ({ size = 32 } = {}) => {
         m.dispatches === want && (m.bytesAllocated === 0 || (twoPhase && m.bytesAllocated <= nb * 64 * 32)), JSON.stringify(m));
       check(out, `${name}: nothing changes outside its box ${vec(b.lo)}–${vec(b.hi)}`, outside.length === 0, `${outside.length} outside, e.g. ${outside.slice(0, 3).map(vec).join(' ')}`);
       check(out, `${name}: no out-of-grid reads`, (await sim.readDebug()) === dbg0);
+      // the box is big enough: the same edit over the whole grid gives the same state (the update's
+      // own test picks nothing outside the box its caller works out)
+      scene();
+      const [, valuesAll, optsAll] = make_();
+      pov.edit(name, { lo: [0, 0, 0], hi: [sim.g.nx - 1, sim.g.ny - 1, sim.g.nz - 1] }, valuesAll, optsAll);
+      const sAll = await state(sim);
+      const differ = changed(s1, sAll);
+      check(out, `${name}: its box holds everything it changes (over the whole grid: the same state)`, differ.length === 0, `${differ.length} cells differ, e.g. ${differ.slice(0, 3).map(vec).join(' ')}`);
     }
     comBuf?.destroy();
     check(out, 'every edit family checked', families.size === 0, [...families].join(', '));
@@ -586,8 +603,18 @@ test('stage:laser', async ({ size = [128, 64, 64] } = {}) => {
       const lo = s.muzzle.map((v, k) => Math.floor(Math.min(v, end[k]) - pad)), hi = s.muzzle.map((v, k) => Math.floor(Math.max(v, end[k]) + pad));
       const outside = d.filter((c) => !inBox(c, lo, hi));
       check(out, `laser ${s.name}: ${d.length} cells changed, none outside the beam's box`, d.length > 0 && outside.length === 0, `${outside.length} outside`);
+      // the indirect args the reach kernel wrote: one workgroup per brick of the box it wrote (fold()ed, B5),
+      // and that box the axis to the reach padded by the rim, clipped to the grid (within a cell: f32)
+      const [beamBytes, argBytes] = await Promise.all([gpu.readback.buffer(pov.d.beam, 0, 32), gpu.readback.buffer(pov.d.beamArgs, 0, 12)]);
+      const beamI = new Int32Array(beamBytes), args = new Uint32Array(argBytes);
+      const bLo = [beamI[0], beamI[1], beamI[2]], bHi = [beamI[4], beamI[5], beamI[6]];
+      const nb = [0, 1, 2].map((k) => (bHi[k] >> 2) - (bLo[k] >> 2) + 1).reduce((x, y) => x * y);
+      const fy = Math.max(1, Math.ceil(nb / 65535)), want3 = [Math.ceil(nb / fy), fy, 1];
+      const N = [S0.g.nx, S0.g.ny, S0.g.nz];
+      const boxNear = [0, 1, 2].every((k) => Math.abs(bLo[k] - Math.max(lo[k], 0)) <= 1 && Math.abs(bHi[k] - Math.min(hi[k], N[k] - 1)) <= 1);
+      check(out, `laser ${s.name}: its apply's indirect args are the ${nb} bricks of the box the reach kernel wrote ${vec(bLo)}–${vec(bHi)}`,
+        args[0] === want3[0] && args[1] === want3[1] && args[2] === 1 && boxNear, `args ${Array.from(args)} want ${want3}; box ${vec(bLo)}–${vec(bHi)} vs ${vec(lo)}–${vec(hi)}`);
     }
-    // the indirect args the reach kernel wrote for the last shot: one workgroup per brick of its box
     check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
     return out;
   } finally { sim.dispose(); }
