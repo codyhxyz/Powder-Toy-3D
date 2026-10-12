@@ -8,7 +8,7 @@
 // (tools/outcomes/expected-lean.json), and every test that doesn't pass prints
 // its evidence (level profiles, maps, slices).
 //
-// Expected results: tools/outcomes/expected-<engine>.json records each test's
+// Expected results: tools/outcomes/expected-<engine>.json (or --expected) records each test's
 // status as last measured. The run exits 0 when every test passes or fails
 // exactly as recorded (a recorded fail is an expected fail), and 1 when
 // anything changed: a pass that broke, a recorded fail that now passes (update
@@ -29,7 +29,7 @@
 // harness page by hand (tools/harness/outcomes.html, ?run=<group>).
 //
 // usage: node tools/outcomes.mjs [--engine v1|lean|v2] [--group liquids,solids,...] [--tests utube,puddle]
-//          [--strict [--phase P2]] [--json results.json] [--record] [--verbose] [--list]
+//          [--strict [--phase P2]] [--json results.json] [--record] [--expected file.json] [--verbose] [--list]
 //          [--port N] [--app-url http://127.0.0.1:N] [--app-query engine=v2] [--seed N]
 //   groups: liquids, solids, fire, blasts, world, census, controls
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -49,10 +49,12 @@ const PHASE = opt('phase', 'P6');
 const BATCH_SECONDS = 150;   // a browser run's budget of tests' estimated cost (the ~3 minutes, less a pipeline build)
 const BUDGET_MS = 240000;    // a test's own wall-clock budget, past which it is an error
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
-const recordPath = here(`./outcomes/expected-${ENGINE}.json`);
+const recordPath = opt('expected') ?? here(`./outcomes/expected-${ENGINE}.json`);
+const JSON_OUT = opt('json');
 
 if (!['v1', 'lean', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean or v2, not ${ENGINE}`);
 if (!PHASES.includes(PHASE)) throw new Error(`--phase ${PHASES.join(', ')}`);
+if (flag('json') && !JSON_OUT) throw new Error('--json needs a path');
 const tests = select({ tests: opt('tests', ''), groups: opt('group', '') });
 
 if (flag('list')) {
@@ -109,7 +111,11 @@ if (ENGINE === 'lean') {
           if (!adapterLine) { const g = await gpuInfo(page); adapterLine = `${g.vendor} ${g.architecture} ${g.description}${g.isFallbackAdapter ? ' (fallback adapter: SwiftShader numbers, not representative)' : ''}`; }
           for (const t of b.tests) {
             const r = await page.evaluate(([n, o]) => window.__harness.run('outcome', n, o), [t.name, { seed: SEED, budgetMs: BUDGET_MS }]);
-            if (errors.length) { r.pageErrors = errors.splice(0); if (r.status !== 'error') r.status = 'error', r.reason = `page errors: ${r.pageErrors.join(' | ').slice(0, 500)}`; }
+            // an error in the page (a GPU validation error, an exception) voids the result
+            if (errors.length) {
+              r.pageErrors = errors.splice(0);
+              if (r.status !== 'error') { r.status = 'error'; r.reason = `page errors: ${r.pageErrors.join(' | ').slice(0, 500)}`; }
+            }
             results.push(r);
             say(`${t.name}: ${r.status} (${r.wallSeconds} s)`);
           }
@@ -179,11 +185,9 @@ const count = (s) => results.filter((r) => r.status === s).length;
 console.log(`${results.length} tests: ${count('pass')} pass, ${count('fail')} fail, ${count('n/a')} n/a, ${count('error')} error; ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 console.log(failed.length ? `NOT AS RECORDED: ${failed.map((v) => `${v.name} (${v.verdict})`).join('; ')}` : flag('strict') ? 'strict: every required test passes' : 'as recorded');
 
-if (flag('json')) {
-  const out = opt('json');
-  if (!out) throw new Error('--json needs a path');
-  writeFileSync(out, JSON.stringify({ engine: ENGINE, adapter: adapterLine, date: new Date().toISOString(), results }, null, 1));
-  console.log(`results: ${out}`);
+if (JSON_OUT) {
+  writeFileSync(JSON_OUT, JSON.stringify({ engine: ENGINE, adapter: adapterLine, date: new Date().toISOString(), results }, null, 1));
+  console.log(`results: ${JSON_OUT}`);
 }
 if (flag('record')) {
   const errs = results.filter((r) => r.status === 'error');

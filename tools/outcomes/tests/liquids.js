@@ -117,37 +117,38 @@ export const puddle = {
 };
 
 export const pipe = {
-  name: 'pipe', group: 'liquids', size: [48, 16, 8], needs: ['WALL', 'WATER'], cost: 120,
+  name: 'pipe', group: 'liquids', size: [48, 16, 8], needs: ['WALL', 'WATER'], cost: 165,
   title: "a tank drains through a 30-cell pipe to the pipe's level",
   audit: 'audit-liquids B2: a lidded cell has no head, and pipe flow only keeps the speed a cell came in with, so a full pipe stops with head behind it',
   async run(e) {
     const O = OUTCOMES.pipe;
-    // a 2×2 tank 14 deep (y 2-15, 56 cells: the 30-cell bore holds about half) whose 1×1 bore (y 2, z 3)
-    // runs 30 cells (x 3-32: its own wall and 29 more) to fall 2 cells into an open basin (x 33-47, and
-    // under the bore): audit-liquids 2.1's tank and bore, the bore 30 long as docs/v2.md 4.4 asks, the
-    // tank as small as still fills it
-    e.box([0, 0, 2], [3, 15, 5], 'WALL'); e.box([1, 2, 3], [2, 15, 4], 'AIR');
-    e.box([4, 1, 2], [32, 3, 4], 'WALL'); e.box([3, 2, 3], [32, 2, 3], 'AIR');
-    e.box([1, 2, 3], [2, 15, 4], 'WATER');
+    // a 4×4 tank 14 deep (y 2-15, 224 cells: 7 times what the bore holds, as a reservoir is) whose 1×1
+    // bore (y 2, z 3) runs 30 cells (x 5-34: its own wall and 29 more) to fall 2 cells into an open basin
+    // (x 35-47, and under the bore): audit-liquids 2.1's tank and bore, the bore 30 long as docs/v2.md 4.4
+    // asks. (A 2×2 tank empties into the bore before today's pipe flow has decayed: it drains, and shows
+    // nothing.)
+    e.box([0, 0, 1], [5, 15, 6], 'WALL'); e.box([1, 2, 2], [4, 15, 5], 'AIR');
+    e.box([6, 1, 2], [34, 3, 4], 'WALL'); e.box([5, 2, 3], [34, 2, 3], 'AIR');
+    e.box([1, 2, 2], [4, 15, 5], 'WATER');
     const BORE_TOP = 3;   // the bore's cells are y = 2: its top face
-    const tank = (g) => meanLevel(g, 1, 2, 3, 4);
+    const tank = (g) => meanLevel(g, 1, 4, 2, 5);
     const bore = (g) => {
       let n = 0, f = 0, moving = 0;
-      for (let x = 3; x <= 32; x++) { const i = at(g, x, 2, 3); if (g.amount[i] > 0) { n++; if (g.moving?.[i]) moving++; } f += g.amount[i]; }
+      for (let x = 5; x <= 34; x++) { const i = at(g, x, 2, 3); if (g.amount[i] > 0) { n++; if (g.moving?.[i]) moving++; } f += g.amount[i]; }
       return { n, f, moving };
     };
     // what has left: everything past the bore's end, and under the bore
     const out = (g) => {
       let f = 0;
-      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) if (x >= 33 || y < 2 || z < 2 || z > 4) f += g.amount[at(g, x, y, z)];
+      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 6; x < g.nx; x++) if (x >= 35 || y < 2 || z < 2 || z > 4) f += g.amount[at(g, x, y, z)];
       return f;
     };
     let g = await e.read();
     const m0 = liquidMass(g);
-    setup(same(tank(g), 16) && same(m0, 56) && bore(g).n === 0 && e.kindOf(g.id[at(g, 20, 2, 3)]) === 'air' && e.kindOf(g.id[at(g, 33, 2, 3)]) === 'air',
-      `start: tank level ${tank(g)} (16), ${m0} cells (56), the bore open and dry`);
-    // it ends when the tank reaches the bore's top, or when it has stopped: a full pipe with head behind it
-    // that passes nothing for STALL seconds is clogged, whatever it might do later
+    setup(same(tank(g), 16) && same(m0, 224) && bore(g).n === 0 && e.kindOf(g.id[at(g, 20, 2, 3)]) === 'air' && e.kindOf(g.id[at(g, 35, 2, 3)]) === 'air',
+      `start: tank level ${tank(g)} (16), ${m0} cells (224), the bore open and dry`);
+    // it ends when the tank reaches the bore's top, or when it has stopped: a tank with head over its pipe
+    // whose level hasn't moved for `stall` seconds is clogged, whatever it might do later
     const hist = [], levels = [];
     let reached = null, stalled = null;
     while (e.time < O.seconds - 1e-9 && reached === null && stalled === null) {
@@ -156,18 +157,18 @@ export const pipe = {
       levels.push([e.time, l]);
       if (l - BORE_TOP <= O.levelTol) reached = e.time;
       const back = levels.find(([t]) => t >= e.time - O.stall - 1e-9);
-      if (e.time >= O.stall && back && Math.abs(back[1] - l) < 0.01 && b.n === 30) stalled = [back[0], e.time, l];
+      if (e.time >= O.stall && back && back[0] <= e.time - O.stall + 1e-9 && Math.abs(back[1] - l) < 0.01) stalled = [back[0], e.time, l];
       if (every(e.time, 1)) hist.push(`${r2(e.time)} s: tank ${r3(l)}, bore ${b.n}/30 wet (${r2(b.f)} cells${gg.moving ? `, ${b.moving} moving` : ''}), out ${r2(out(gg))}`);
     }
     g = await e.read();
     const level = tank(g), m = liquidMass(g), b = bore(g);
     return {
-      headline: `tank at ${r3(level)} after ${r2(e.time)} s (the bore's top is ${BORE_TOP})${reached !== null ? `, reached at ${r2(reached)} s` : ''}${stalled ? `, stopped at ${r2(stalled[2])} from ${r2(stalled[0])} to ${r2(stalled[1])} s with the bore full` : ''}; ${r2(out(g))} cells out`,
+      headline: `tank at ${r3(level)} after ${r2(e.time)} s (the bore's top is ${BORE_TOP})${reached !== null ? `, reached at ${r2(reached)} s` : ''}${stalled ? `, stopped: no change from ${r2(stalled[0])} to ${r2(stalled[1])} s, ${b.n}/30 of the bore wet` : ''}; ${r2(out(g))} cells out`,
       criteria: [
         crit("tank level over the bore's top", r3(level - BORE_TOP), level - BORE_TOP <= O.levelTol, `≤ ${O.levelTol}`, 'cells'),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
-      evidence: [`over time:\n${hist.join('\n')}`, `bore (x = 3…32) at the end: ${Array.from({ length: 30 }, (_, k) => (g.amount[at(g, 3 + k, 2, 3)] > 0 ? (g.moving?.[at(g, 3 + k, 2, 3)] ? '>' : '~') : '.')).join('')} (~ still water, > moving)`],
+      evidence: [`over time:\n${hist.join('\n')}`, `bore (x = 5…34) at the end: ${Array.from({ length: 30 }, (_, k) => (g.amount[at(g, 5 + k, 2, 3)] > 0 ? (g.moving?.[at(g, 5 + k, 2, 3)] ? '>' : '~') : '.')).join('')} (~ water, > water moving, . dry)`],
       numbers: { level, reached, stalled, bore: b.n, boreFill: b.f, massDrift: m - m0 },
     };
   },

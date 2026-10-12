@@ -49,12 +49,13 @@ export const OUTCOMES = {
   pipe: {
     phase: 'P2',
     // "a tank drains through a 30-cell pipe to the pipe's level" (docs/v2.md 4.4): the surface ends within
-    // this many cells of the bore's top (3 cm). lean gets there at 11 s (its own 13-cell pipe from a 6×6 tank
-    // 27 deep was still draining at 60 s: the bench's tank is 2×2, 14 deep)
+    // this many cells of the bore's top (3 cm). lean gets there at 44 s (its own 13-cell pipe from a 6×6 tank
+    // 27 deep was still draining at 60 s: the bench's tank is 4×4, 14 deep). Its drain is viscous (the face
+    // flux is damped): the level falls exponentially, so the tail is slow
     levelTol: 0.1,
-    seconds: 16,
-    // a full bore that passes nothing for this long, with head behind it, is clogged: the test ends there
-    // (lean's level falls every second until it gets there)
+    seconds: 60,
+    // a tank with head over its pipe whose level hasn't moved for this long is clogged: the test ends there
+    // (lean's level falls 0.2 cell or more every 3 s until it gets there)
     stall: 3,
   },
   hole: {
@@ -89,8 +90,9 @@ export const OUTCOMES = {
     // R2's classes: drop 1 = 45° (free-flowing: sand's measured 34° quantised), drop 2 = 63° (cohesive: wheat
     // flour). Slope is peak / axis reach (lean: sand 0.89, flour 1.79)
     slope: { SAND: [0.7, 1.3], FLOUR: [1.4, 2.6] },
-    // idle after the pour ends (lean: sand 1.55 s, flour 2.65 s on its own heaps)
-    restSeconds: 3,
+    // idle after the pour ends (lean: sand 1.55 s, flour 2.65 s on its own heaps; 0.93 s and 1.57 s on the
+    // bench's)
+    restSeconds: 2.5,
   },
   throw: {
     phase: 'P2',

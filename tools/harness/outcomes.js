@@ -53,8 +53,10 @@ const menu = document.getElementById('menu');
 const run = params.get('run');
 if (!run && engine) {
   const link = (q, text) => `<a href="?engine=${ENGINE}&run=${q}">${text}</a>`;
+  // (the app tests boot the game itself: tools/outcomes.mjs runs those)
+  const groups = Object.keys(GROUPS).filter((g) => GROUPS[g].some((n) => (byName(n).kind ?? 'harness') === 'harness'));
   menu.innerHTML = `<p>Outcome bench, engine ${ENGINE}, on ${h.gpu.adapterInfo.vendor} ${h.gpu.adapterInfo.architecture}${h.gpu.adapterInfo.isFallbackAdapter ? ' (fallback adapter: numbers not representative)' : ''}.</p>
-<p>Run: ${Object.keys(GROUPS).map((g) => link(g, g)).join(' · ')} · ${link(Object.keys(GROUPS).join(','), 'everything')}</p>
+<p>Run: ${groups.map((g) => link(g, g)).join(' · ')} · ${link(groups.join(','), 'everything')}</p>
 <p>${TESTS.filter((t) => (t.kind ?? 'harness') === 'harness').map((t) => link(t.name, t.name)).join(' · ')}</p>`;
 }
 if (run && engine) {

@@ -33,8 +33,8 @@ export async function runTest(test, engine, { seed = 1, budgetMs = 0, log = () =
     return advance(s);
   };
   try {
-    await engine.create(test.size, { seed });
-    const ctx = { log, fresh: () => engine.create(test.size, { seed }) };
+    await engine.create(test.size, { seed, url: test.url });
+    const ctx = { log, fresh: () => engine.create(test.size, { seed, url: test.url }) };
     const r = await test.run(engine, ctx);
     const status = r.na ? 'n/a' : r.criteria.every((c) => c.ok) ? 'pass' : 'fail';
     return { ...base, status, ...r, gameSeconds: +engine.time.toFixed(3), steps: engine.steps, wallSeconds: +((now() - t0) / 1000).toFixed(1) };
