@@ -12,6 +12,8 @@
     "check:gpu": "node tools/gpu-foundation-check.mjs",
     "check:budget": "node tools/budget-check.mjs",
     "check:async": "node tools/check-async-reads.mjs",
+    "check:icons": "node tools/bake-icons.mjs --check",
+    "bake:icons": "node tools/bake-icons.mjs",
     "relay": "wrangler dev --config relay/wrangler.toml",
     "construct": "node scripts/construct.mjs",
     "mcp:construct": "node scripts/mcp-construct.mjs"
@@ -33,7 +35,6 @@
     "ai-sdk-ollama": "^4.4.0",
     "fengari": "0.1.5",
     "three": "^0.186.1",
-    "three.quarks": "^0.17.1",
     "yuka": "^0.7.8",
     "zod": "^4.6.5",
     "zzfx": "^1.4.0"

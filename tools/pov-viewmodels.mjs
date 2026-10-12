@@ -1,25 +1,30 @@
-// POV viewmodel check (Gunplay v2): every tool's model shows,
-// it doesn't clip into a wall you stand against, the spring recoil overshoots
-// and settles, and the tools announce their actions on the POV event bus.
-// usage: node tools/pov-viewmodels.mjs [--port 5242] [--sheet out.jpg]   (needs a dev server)
+// POV viewmodel check (Gunplay v2): every tool's model shows (compiled for
+// the viewmodel pass and on its layer: on WebGPU a model three hasn't compiled
+// waits on gfx/meshLight.js PENDING_LAYER first, U13), it doesn't clip into a
+// wall you stand against, the spring recoil overshoots and settles, and the
+// tools announce their actions on the POV event bus. Needs first person's
+// wiring (src/wire/pov.js, U11) to be ready.
+// usage: node tools/pov-viewmodels.mjs [--port 5242] [--sheet out.jpg]   (runs its own Vite on --port)
 import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5242');
+const port = Number(opt('port', '5242'));
 const sheet = opt('sheet', null);
 const W = 960, H = 600;
 const THUMB = 0.4;   // contact-sheet frames, as a share of the viewport
 
+const vite = await startVite({ port });
 const b = await launchBrowser();
+let fails = 0;
 const p = await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
-await p.goto(`http://localhost:${port}/?preset=empty`);
-await p.waitForFunction(() => window.__app?.pov, null, { timeout: 20000 });
+await p.goto(vite.url('/?preset=empty'));
+await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
 await p.waitForTimeout(1500);
 
-let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
 const ev = (fn, arg) => p.evaluate(fn, arg);
 const settle = (ms) => p.waitForTimeout(ms);
@@ -63,6 +68,12 @@ await stand(30, 64, -Math.PI / 2, -0.05);
 for (let i = 0; i < MODEL.length; i++) {
   await slot(i + 1);
   await p.waitForFunction((k) => window.__app.pov.viewmodel.getObjectByName(`viewmodel-${k}`), MODEL[i], { timeout: 8000 }).catch(() => {});
+  // its meshes on the viewmodel's layer, none still waiting on their pipelines
+  await p.waitForFunction((k) => {
+    let waiting = 0;
+    window.__app.pov.viewmodel.getObjectByName(`viewmodel-${k}`)?.traverse((o) => { if (o.isMesh && o.layers.mask !== 1 << 5) waiting++; });
+    return waiting === 0;
+  }, MODEL[i], { timeout: 20000 }).catch(() => {});
   await settle(400);
   const seen = await ev((k) => {
     const vm = window.__app.pov.viewmodel, obj = vm.getObjectByName(`viewmodel-${k}`);
@@ -209,4 +220,5 @@ if (sheet) {
 console.log(errs.length ? `console errors:\n  ${[...new Set(errs)].slice(0, 8).join('\n  ')}` : 'no console errors');
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 await b.close();
-process.exit(fails ? 1 : 0);
+await vite.close();
+process.exitCode = fails ? 1 : 0;
