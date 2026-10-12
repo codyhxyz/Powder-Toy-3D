@@ -39,7 +39,9 @@
 //                     lead-in) times f: the container's smoke runs only, where a
 //                     game second of steps takes minutes
 //   --out <dir>       where the run goes (default .tmp-side-by-side/<time>);
-//                     --append keeps the shots an earlier run left there on the sheet
+//                     --append keeps the shots an earlier run left there on the sheet;
+//                     --recompose composites and encodes an earlier run's frames
+//                     there again and rebuilds its sheet (no builds, no capture)
 //   --serial          one side after the other (default: both at once; the
 //                     frames don't depend on it, the timings do)
 //   --fresh           a new page for every shot (default: one page per boot
@@ -72,8 +74,9 @@
 // is driven through it instead of today's.
 //
 // Output, in --out: <shot>/a.png, b.png, ab.png (labelled, A left), diff.png
-// (|A−B| ×4); a clip's a/, b/, ab/ frames and ab.mp4 (ffmpeg, libx264; without
-// ffmpeg the sheet plays the frames); run.json; index.html, the sheet.
+// (|A−B| ×4); a clip's a/, b/, ab/ frames, ab.mp4 (H.264) and ab.webm (VP9 or
+// VP8) by ffmpeg (without ffmpeg the sheet plays the frames); run.json;
+// index.html, the sheet.
 // ImageMagick isn't needed: the compositing is a canvas in the same browser.
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
@@ -189,7 +192,7 @@ for (const k of ['a', 'b']) {
   const url = opt(k), dir = opt(`${k}-dir`) ?? (url ? null : ROOT);
   sides[k] = { key: k, url, dir: dir ? resolve(dir) : null, label: opt(`${k}-label`), server: null, extra: {} };
 }
-if (!opt('a') && !opt('a-dir') && !opt('b') && !opt('b-dir')) log('no builds given: this checkout against itself (the determinism check)');
+if (!has('recompose') && !opt('a') && !opt('a-dir') && !opt('b') && !opt('b-dir')) log('no builds given: this checkout against itself (the determinism check)');
 
 const servers = [];
 async function startServers() {
@@ -372,11 +375,11 @@ async function compositor(browser) {
 
 const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' }).status === 0;
 
-async function composite(shotResults) {
+async function composite(shotResults, list = wanted) {
   const browser = await launchBrowser();
   try {
     const { run } = await compositor(browser);
-    for (const shot of wanted) {
+    for (const shot of list) {
       const r = shotResults[shot.name];
       if (r.a?.error || r.b?.error || !r.a || !r.b) continue;
       const s = shot.name;
@@ -389,15 +392,12 @@ async function composite(shotResults) {
         const n = Math.min(r.a.frames, r.b.frames);
         const per = [];
         for (let i = 1; i <= n; i++) per.push(await run(`${s}/a/${pad(i)}.png`, `${s}/b/${pad(i)}.png`, `${s}/ab/${pad(i)}.png`, null));
+        const fps = r.fps ?? FPS;
         r.files.frames = n;
-        r.diff = summarise(per);
+        r.diff = summarise(per, fps);
         r.diffPerFrame = per.map((d) => d && +d.mean.toFixed(4));
-        if (hasFfmpeg) {
-          const v = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', join(OUT, s, 'ab', '%04d.png'),
-            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-movflags', '+faststart', join(OUT, s, 'ab.mp4')], { encoding: 'utf8' });
-          if (v.status === 0) r.files.video = 'ab.mp4';
-          else log(`${s}: ffmpeg failed: ${(v.stderr || '').trim().slice(0, 300)}`);
-        }
+        if (hasFfmpeg) r.files.videos = encode(join(OUT, s), fps);
+        if (hasFfmpeg && !r.files.videos.length) log(`${s}: ffmpeg made no video`);
       }
       log(`${s}: A vs B mean |d| ${r.diff ? r.diff.mean.toFixed(3) : '–'}/255, ${r.diff ? (100 * r.diff.over8).toFixed(2) : '–'}% px > 8 levels, max ${r.diff?.max ?? '–'}`);
       writeRun(shotResults);
@@ -407,8 +407,26 @@ async function composite(shotResults) {
   }
 }
 
+// A clip's A|B frames (dir/ab/NNNN.png) as video: H.264 in mp4 (Safari, Chrome)
+// and VP9 or VP8 in WebM (Chromium without the H.264 decoder, Firefox), the
+// sheet offering both. Returns the files made.
+const VIDEO = [
+  ['ab.mp4', ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-movflags', '+faststart']],
+  ['ab.webm', ['-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-crf', '30', '-b:v', '0'], ['-c:v', 'libvpx', '-pix_fmt', 'yuv420p', '-crf', '8', '-b:v', '4M']],
+];
+function encode(dir, fps) {
+  const made = [];
+  for (const [file, ...codecs] of VIDEO) {
+    for (const codec of codecs) {
+      const v = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(fps), '-i', join(dir, 'ab', '%04d.png'), ...codec, join(dir, file)], { encoding: 'utf8' });
+      if (v.status === 0) { made.push(file); break; }
+    }
+  }
+  return made;
+}
+
 // a clip's frames' differences, summed up
-function summarise(per) {
+function summarise(per, fps) {
   const ok = per.filter(Boolean);
   if (!ok.length) return null;
   const first = per.findIndex((d) => d && d.max > 8);
@@ -424,7 +442,7 @@ function summarise(per) {
     max: Math.max(...ok.map((d) => d.max)),
     psnr: mse ? 10 * Math.log10(65025 / mse) : null,
     firstDiff: first < 0 ? null : first + 1,
-    firstDiffT: first < 0 ? null : first / FPS,
+    firstDiffT: first < 0 ? null : first / fps,
     worst: worst + 1,
     worstMean: per[worst]?.mean ?? null,
   };
@@ -447,18 +465,21 @@ const meta = {
 };
 // --append: the shots an earlier run left in --out stay on the sheet (a run
 // split into groups, as the container's are), each with its own capture settings
-const previous = has('append') && existsSync(join(OUT, 'run.json')) ? JSON.parse(readFileSync(join(OUT, 'run.json'), 'utf8')) : null;
+// --recompose: an earlier run's frames composited and encoded again (the sheet
+// rebuilt: after installing ffmpeg, say), no browser for the builds
+const RECOMPOSE = has('recompose');
+const previous = (has('append') || RECOMPOSE) && existsSync(join(OUT, 'run.json')) ? JSON.parse(readFileSync(join(OUT, 'run.json'), 'utf8')) : null;
 const capture = { size: `${W}×${H}`, quality: QUALITY, timeScale: TIME_SCALE, box: BOX, win: WIN, settings: SETTINGS_ARG, run: stamp };
-function writeRun(results) {
+function writeRun(results, list = wanted) {
   meta.ms = Date.now() - t0;
   for (const k of ['a', 'b']) meta.sides[k] = { label: sides[k].label, url: sides[k].url, dir: sides[k].dir, adapter: sides[k].adapter, browser: sides[k].browserVersion };
-  const now = wanted.map((s) => ({
+  const now = list.map((s) => ({
     name: s.name, kind: s.kind, title: s.title, look: s.look, seconds: CLIP_S, fps: FPS, capture, ...results[s.name],
   }));
   const kept = (previous?.shots ?? []).filter((p) => !now.some((n) => n.name === p.name));
   const order = (x) => SHOTS.findIndex((s) => s.name === x.name);
   const shots = [...kept, ...now].sort((x, y) => order(x) - order(y));
-  const runs = [...(previous?.meta.runs ?? []), { started: meta.started, shots: wanted.map((s) => s.name), ms: meta.ms }];
+  const runs = [...(previous?.meta.runs ?? []), { started: meta.started, shots: list.map((s) => s.name), ms: meta.ms, ...(RECOMPOSE ? { recompose: true } : {}) }];
   const run = { meta: { ...meta, runs }, shots };
   writeFileSync(join(OUT, 'run.json'), JSON.stringify(run, null, 1));
   writeFileSync(join(OUT, 'index.html'), sheetHtml(run));
@@ -467,6 +488,18 @@ function writeRun(results) {
 // ---------------------------------------------------------------- main
 const results = Object.fromEntries(wanted.map((s) => [s.name, {}]));
 let code = 0;
+if (RECOMPOSE) {
+  if (!previous) { console.error(`--recompose: no run.json in ${OUT}`); process.exit(2); }
+  const { started, runs, sides: was, ...rest } = previous.meta;
+  Object.assign(meta, rest);
+  for (const k of ['a', 'b']) Object.assign(sides[k], { label: was[k].label, url: was[k].url, dir: was[k].dir, adapter: was[k].adapter, browserVersion: was[k].browser });
+  const list = wanted.filter((s) => previous.shots.some((p) => p.name === s.name));
+  for (const p of previous.shots) if (results[p.name]) Object.assign(results[p.name], p);
+  await composite(results, list);
+  writeRun(results, list);
+  log(`recomposed ${list.length} shots: ${join(OUT, 'index.html')}`);
+  process.exit(0);
+}
 try {
   await startServers();
   log(`${wanted.length} shots, ${W}×${H}, ${QUALITY}, clips ${CLIP_S} s at ${FPS} fps → ${OUT}`);

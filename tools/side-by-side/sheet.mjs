@@ -25,7 +25,7 @@ function diffTable(d, clip) {
     ['pixels > 8 levels', pct(d.over8)],
     ['pixels > 32 levels', pct(d.over32)],
     ['largest', `${d.max} / 255`],
-    ['PSNR', d.psnr === Infinity ? '∞' : `${num(d.psnr, 1)} dB`],
+    ['PSNR', d.max === 0 ? '∞ (identical)' : `${num(d.psnr, 1)} dB`],
   ];
   if (clip) {
     rows.push(['frames identical', `${d.framesSame} of ${d.frames}`]);
@@ -49,9 +49,11 @@ function media(shot) {
     return `<a href="${s}/ab.png"><img class="pair" src="${s}/ab.png" alt="${esc(shot.title)}: A left, B right"></a>
       <p class="files"><a href="${s}/a.png">A</a> · <a href="${s}/b.png">B</a>${shot.files.diff ? ` · <a href="${s}/diff.png">|A−B| ×4</a>` : ''}</p>`;
   }
-  if (shot.files?.video) {
-    return `<video class="pair" src="${s}/${shot.files.video}" controls loop muted playsinline preload="metadata"></video>
-      <p class="files"><a href="${s}/${shot.files.video}">video</a> · frames: <a href="${s}/a/">A</a>, <a href="${s}/b/">B</a>, <a href="${s}/ab/">A|B</a></p>`;
+  const videos = shot.files?.videos ?? (shot.files?.video ? [shot.files.video] : []);
+  if (videos.length) {
+    const type = (f) => (f.endsWith('.webm') ? 'video/webm' : 'video/mp4');
+    return `<video class="pair" controls loop muted playsinline preload="metadata">${videos.map((f) => `<source src="${s}/${f}" type="${type(f)}">`).join('')}</video>
+      <p class="files">${videos.map((f) => `<a href="${s}/${f}">${f}</a>`).join(' · ')} · frames: <a href="${s}/a/">A</a>, <a href="${s}/b/">B</a>, <a href="${s}/ab/">A|B</a></p>`;
   }
   if (shot.files?.frames) {
     return `<div class="flip" data-dir="${s}/ab/" data-n="${shot.files.frames}" data-fps="${shot.fps}">
@@ -60,6 +62,13 @@ function media(shot) {
       <p class="files">no ffmpeg on this machine: a flipbook of the frames · <a href="${s}/ab/">A|B frames</a></p>`;
   }
   return '<p class="err">no frames</p>';
+}
+
+// the capture's time: this run's, or every run's that put shots on the sheet (--append)
+function runTime(meta) {
+  const runs = (meta.runs ?? []).filter((r) => !r.recompose);
+  if (runs.length < 2) return secs(runs[0]?.ms ?? meta.ms);
+  return `${secs(runs.reduce((t, r) => t + (r.ms ?? 0), 0))} over ${runs.length} runs`;
 }
 
 // a shot captured by an earlier run (--append) with other settings than the sheet's header says
@@ -144,7 +153,7 @@ export function sheetHtml(run) {
         <tr><th>boxes, worlds</th><td>${esc(meta.box ? `boxes at ${meta.box}³` : 'boxes at their own size')}, ${esc(meta.win ? `world windows ${meta.win} wide` : 'world windows at their own size')}</td></tr>
         <tr><th>engine</th><td>${esc(firstDescribe ? `${firstDescribe.engine}; a game second = ${firstDescribe.gameSecond}` : '–')}</td></tr>
         <tr><th>tool</th><td>${esc(meta.tool)}</td></tr>
-        <tr><th>run time</th><td>${secs(meta.ms)}</td></tr>
+        <tr><th>run time</th><td>${runTime(meta)}</td></tr>
       </table></div>
       <div><h3>Not deterministic</h3><ul>${[...meta.nondeterminism, ...engineNotes].map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div>
     </div>
