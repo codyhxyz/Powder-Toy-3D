@@ -35,8 +35,9 @@
 // so a game second is 240 steps; v2's tick is 60 Hz (docs/v2.md 5.1).
 //
 // Determinism (both sides of an identical build must give identical frames):
-// Math.random is seeded before each load (three.js draws ids from it, and the
-// cells their seeds); the sim's step and stroke counters, the GI and the day
+// Math.random is seeded before each load and again after it (three.js draws
+// ids from it, and the cells their seeds; how often the load itself draws
+// can differ per page); the sim's step and stroke counters, the GI and the day
 // clock start over; nothing runs on the wall clock: steps through
 // __app.test.step, the first-person body through pov.update with a fixed dt,
 // frames through test.render/renderOnce. The scene's animations run on the
@@ -48,9 +49,9 @@
 // that parks a mesh waits for it before the next, which shows it on both
 // sides at the same frame. Wires that run only in the app's own tick (birds,
 // lightning, the world's window following the camera) don't run, so no bird
-// flies and no storm strikes; a world's shrine perks, rolled at boot, are
-// rolled again from the seed. What still differs, or stands still, is listed
-// in describe().nondeterminism.
+// flies and no storm strikes; a shrine's perks are rolled again from a seeded
+// stream of their own. What still differs, or stands still, is listed in
+// describe().nondeterminism.
 
 /** Game ticks a second: today's game steps on every frame, frames at 60 a second (gfx/pacing.js MAX_FPS). */
 export const TICK_HZ = 60;
@@ -421,14 +422,19 @@ export async function createEngine(app, { live = false, quality = 'full', tables
       const o = [0, 2].map((i, j) => Math.min(Math.max(Math.round((scene.focus[j] - n[j] / 2) / step) * step, 0), size[i] - n[j]));
       app.worldLoad([o[0], 0, o[1]]);
     }
-    // a world's shrine got its perk orbs at boot, from an unseeded Math.random
-    // (wire/world.js worldShrine): the same altars, the perks rolled from the seed
-    if (app.perkOrbs) {
-      const shrines = new Map();
-      for (const o of app.perkOrbs.toJSON()) (shrines.get(o.shrine) ?? shrines.set(o.shrine, []).get(o.shrine)).push(o.world);
-      app.perkOrbs.clear();
-      for (const feet of shrines.values()) app.perkOrbs.shrineAt(feet.map((w) => new THREE.Vector3(...toGrid(w))));
-    }
+  }
+  // A shrine's perks are rolled from Math.random (perkOrbs.js shrineAt): a
+  // world's at boot, unseeded (wire/world.js worldShrine); an arena's as it
+  // loads, after draws whose number depends on the page (each perk's icon
+  // texture is made once a page, and three.js draws its id from Math.random).
+  // The same altars, the perks rolled again from a stream of their own.
+  function rollPerks(seed) {
+    if (!app.perkOrbs?.list.length) return;
+    const shrines = new Map();
+    for (const o of app.perkOrbs.toJSON()) (shrines.get(o.shrine) ?? shrines.set(o.shrine, []).get(o.shrine)).push(o.world);
+    app.perkOrbs.clear();
+    const random = seeded(seed ^ 0x5eed);
+    for (const feet of shrines.values()) app.perkOrbs.shrineAt(feet.map((w) => new THREE.Vector3(...toGrid(w))), random);
   }
   async function load(s) {
     shot = s;
@@ -448,9 +454,11 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     try {
       await loadScene(scene);
       if (test) await test.ready();
+      rollPerks(s.seed ?? 1);
     } finally {
       restore();
     }
+    Math.random = seeded(s.seed ?? 1);   // (again: the load drew a number of times that can differ per page)
     k = scene.grid && !scene.world && !scene.arena ? sim().g.nx / scene.grid : 1;
     sim().frame = 0;     // the sim's random streams are keyed on its step counter...
     sim().paints = 0;    // ...and the brush's on its stroke counter
