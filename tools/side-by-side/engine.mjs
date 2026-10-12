@@ -11,7 +11,8 @@
 // methods, and the runner uses it instead, so the shot list and the tool
 // don't change.
 //
-// What an engine is, in plain terms:
+// What an engine is, in plain terms (bootQuery and linkQuery below are this
+// module's, read by the tool in Node; the rest are the engine object's):
 //   bootQuery(scene, opts)   the URL query that boots the scene (a page per boot)
 //   describe()               grid, view, settings and anything else worth printing
 //   load(shot)               the scene in its starting state, seeded, built (shot.build)
@@ -25,7 +26,7 @@
 //
 // Positions are cells of the shot's scene. A box scene's are given on its
 // nominal grid (scene.grid, 128 for the menu's boxes) and scaled to the grid
-// the page runs (the container runs boxes at 64³ or 32³), unless it has no
+// the page runs (the container runs them at 64³), unless it has no
 // grid (first person: the body doesn't scale); a world's and an arena's are
 // their own cells and never scale. Times are game seconds: today's
 // game steps its grid settings.steps (4) times a frame at 60 frames a second,
@@ -38,8 +39,10 @@
 // runs on the wall clock: steps through __app.test.step, the first-person body
 // through pov.update with a fixed dt, frames through test.render/renderOnce.
 // Wires that run only in the app's own tick (birds, lightning, the world's
-// window following the camera) don't run, so birds hold still and no storm
-// strikes. What can still differ is listed in describe().nondeterminism.
+// window following the camera) don't run, so no bird flies and no storm
+// strikes; the scene's own animations (perk orbs) are run on game time, and a
+// world's shrine perks, rolled at boot, are rolled again from the seed. What
+// can still differ is listed in describe().nondeterminism.
 
 /** Game ticks a second: today's game steps on every frame, frames at 60 a second (gfx/pacing.js MAX_FPS). */
 export const TICK_HZ = 60;
@@ -95,7 +98,7 @@ export function seeded(seed) {
  * The URL query that boots `scene` in today's build. Box scenes boot the
  * empty box at their grid and load their preset per shot (so every box shot
  * shares one boot), arenas boot their own grid, worlds their scene and seed.
- * opts.box: a box size to run box scenes at instead ('64', '32'); opts.win: a
+ * opts.box: a box size to run box scenes at instead ('64', '96'); opts.win: a
  * world window's width instead of 128 (?win=).
  * @returns {Record<string, string>}
  */
