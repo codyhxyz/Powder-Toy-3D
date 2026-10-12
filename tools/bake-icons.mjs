@@ -9,9 +9,13 @@
 // page draws (models.js iconScene, classPortraits.js portraitScene): every
 // object's type, transform and geometry, every material's look (colours,
 // sides, blending, the toon ramp, the outline's width) and every light, the
-// camera, plus three's revision and the bake page's source. So --check says
-// exactly which sprites a change to a model, a class's colours or the bake
-// left stale, without a GPU.
+// camera. So --check says exactly which sprites a change to a model or a
+// class's colours left stale, without a GPU. What a scene doesn't show, a
+// node material's TSL graph and WGSL (models.js's ember, the figures' light)
+// and the outline pass's colours (models.js outlineSprite), is in the source
+// of the modules the bake draws with (SOURCES) and the figures' light WGSL:
+// their text, three's revision and the bake page's source make a key every
+// sprite shares, so an edit there marks them all stale.
 //
 // The portraits: every class (pov/classes.js) holding each tool of its
 // loadout that has a model (pov/tools/catalog.js), and holding nothing (the
@@ -30,6 +34,7 @@ import { MODELS, iconScene, ICON_DIR } from '../src/pov/models.js';
 import { portraitScene, portraitFile } from '../src/pov/classPortraits.js';
 import { CLASSES } from '../src/pov/classes.js';
 import { gearByKey } from '../src/pov/tools/catalog.js';
+import { meshLightWGSL } from '../src/gfx/meshLight.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'public', ICON_DIR);
@@ -93,8 +98,22 @@ export function sceneFingerprint(scene, camera) {
   return h.digest('hex').slice(0, 32);
 }
 
-// what every sprite depends on besides its scene: three and the bake page
-const globalKey = () => ({ three: REVISION, page: createHash('sha256').update(readFileSync(PAGE)).digest('hex').slice(0, 32) });
+// what every sprite depends on besides its scene: three, the bake page, and
+// the modules whose code makes the sprites' materials and outline (the
+// figures' parts, outline and light; the models, their node materials and
+// outlineSprite; the portraits' poses), with the light's WGSL as it is
+// emitted (it takes numbers from shaders/gfx/lighting.js and clouds.js)
+const SOURCES = [
+  'src/pov/models.js', 'src/pov/classPortraits.js', 'src/pov/figure.js', 'src/pov/figureCrasher.js', 'src/pov/limbs.js',
+  'src/pov/constants.js', 'src/gfx/meshLight.js',
+];
+const hash32 = (h) => h.digest('hex').slice(0, 32);
+function globalKey() {
+  const src = createHash('sha256');
+  for (const f of SOURCES) src.update(`${f}\n`).update(readFileSync(join(ROOT, f)));
+  src.update(meshLightWGSL);
+  return { three: REVISION, page: hash32(createHash('sha256').update(readFileSync(PAGE))), sources: hash32(src) };
+}
 
 function fingerprints(list) {
   return Object.fromEntries(list.map((e) => {
@@ -115,6 +134,7 @@ function check() {
   else {
     if (have.three !== global.three) problems.push(`baked with three r${have.three}, now r${global.three}`);
     if (have.page !== global.page) problems.push('tools/harness/icons.js changed since the bake');
+    if (have.sources !== global.sources) problems.push(`the modules the sprites are drawn with changed since the bake (one of ${SOURCES.join(', ')}, or the figures' light WGSL)`);
     for (const [file, fp] of Object.entries(want)) {
       if (!have.files?.[file]) problems.push(`${file}: not baked`);
       else if (have.files[file] !== fp) problems.push(`${file}: its scene changed since the bake`);
