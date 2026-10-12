@@ -9,9 +9,12 @@
 //            neighbourhood clamp, upscale) with the same tone map
 //   light    the per-cell sky and block light grid, filled once at load
 //
-// `nonce` goes into every module and into a comparison every entry point
-// makes against a uniform that never holds it. A new nonce is new shader
-// text all the way down to the Metal source, so no pipeline cache (the
+// `nonce` goes into every module and into a comparison every entry point,
+// vertex, fragment and compute, makes against a uniform that never holds it
+// (Frame.grid.w, -1; the light kernels' key.x, -1). Dawn writes each entry
+// point's Metal source on its own and drops what it doesn't use, so each one
+// needs its own use of the nonce: then a new nonce is new shader text all the
+// way down to every stage's Metal source, and no pipeline cache (the
 // browser's or the system's) has seen it: ?cold=1's cold compile.
 
 const COMMON = /* wgsl */ `
@@ -127,6 +130,7 @@ struct VOut {
   o.ao = f.ao;
   o.info = f.info;
   o.shadow = shadowCoord(f.world + dirNormal(f.info.y) * 0.04);
+  if (nonceHit()) { o.pos.z += 1e-7; }
   return o;
 }
 `;
@@ -170,7 +174,9 @@ fn shade(world: vec3f, uv: vec2f, ao: f32, info: vec4u, shadow: vec3f) -> vec3f 
 // The sky and the ground plane (box mode stands on one, docs/v2.md 3.4), as one full-screen triangle.
 @vertex fn vsFull(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-  return vec4f(p * 2.0 - 1.0, 0.5, 1.0);
+  var o = vec4f(p * 2.0 - 1.0, 0.5, 1.0);
+  if (nonceHit()) { o.z = 0.25; }
+  return o;
 }
 struct SkyHit { color: vec3f, dist: f32, world: vec3f }
 fn skyAt(px: vec2f) -> SkyHit {
@@ -248,6 +254,7 @@ struct VOutTaa {
   o.shadow = shadowCoord(f.world + dirNormal(f.info.y) * 0.04);
   o.cur = F.viewProjNoJit * vec4f(f.world, 1.0);
   o.prev = F.prevViewProj * vec4f(f.world, 1.0);
+  if (nonceHit()) { o.pos.z += 1e-7; }
   return o;
 }
 @fragment fn fsOpaqueTaa(in: VOutTaa) -> TaaOut {
@@ -347,7 +354,9 @@ fn toSrgb(c: vec3f) -> vec3f {
 }
 @vertex fn vsFull(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-  return vec4f(p * 2.0 - 1.0, 0.5, 1.0);
+  var o = vec4f(p * 2.0 - 1.0, 0.5, 1.0);
+  if (nonceHit()) { o.z = 0.25; }
+  return o;
 }
 `;
 

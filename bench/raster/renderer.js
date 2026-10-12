@@ -147,8 +147,9 @@ export class Renderer {
       shadow: L('shadow', [ub(SS.VERTEX), ro(SS.VERTEX)]),
       scene: L('scene', [ub(VF), ro(VF), ro(VF), tex(VF, '2d-array'), smp(VF), tex(VF, '2d', 'depth'), smp(VF, 'comparison'), tex(VF, '3d'), smp(VF)]),
       trans: L('translucent inputs', [tex(F), tex(F), tex(F, '3d', 'uint')]),
-      tone: L('tone map', [ub(F), tex(F), tex(F)]),
-      taa: L('TAAU resolve', [ub(F), tex(F), tex(F), tex(F), tex(F), smp(F)]),
+      // (the frame is the vertex stage's too: vsFull's nonce reads it)
+      tone: L('tone map', [ub(VF), tex(F), tex(F)]),
+      taa: L('TAAU resolve', [ub(VF), tex(F), tex(F), tex(F), tex(F), smp(F)]),
       light: L('light grid', [ub(C), tex(C, '3d', 'uint'), ro(C), ro(C), ro(C), { visibility: C, buffer: { type: 'storage' } },
         { visibility: C, storageTexture: { access: 'write-only', format: 'rgba8unorm', viewDimension: '3d' } }]),
     };
