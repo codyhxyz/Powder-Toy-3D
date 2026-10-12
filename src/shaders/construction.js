@@ -53,10 +53,13 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   } else {
     s = stampCell(vec3i(q.x, 0, q.z));
     if (s.w < 0.5) { return; }
-    // nothing that bears weight between this cell and the base...
+    // nothing that bears weight between this cell and the base... (a base
+    // above the grid's top has nothing over the grid: slotOf of a cell there
+    // is another, real cell, H1.29)
     for (var i = 1; i <= MAX_FOOT; i++) {
       let y = P.at.y - i;
       if (y < p.y) { break; }
+      if (y >= NY) { continue; }
       if (bearsWeight(vec3i(p.x, y, p.z))) { return; }
     }
     // ...and ground somewhere below it, within reach
@@ -64,6 +67,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     for (var i = 1; i <= MAX_FOOT; i++) {
       let y = P.at.y - i;
       if (i > P.foot) { break; }
+      if (y >= NY) { continue; }
       if (y < 0 || bearsWeight(vec3i(p.x, y, p.z))) { ground = true; break; }
     }
     if (!ground) { return; }

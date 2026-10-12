@@ -231,7 +231,8 @@ export class Constructions {
   }
 
   // The stamp's kernel for the current grid, made when a construction is
-  // first previewed or stamped (its pipeline builds while the ghost shows).
+  // first previewed or stamped (its pipeline builds while the ghost shows),
+  // or ahead of that by prepareStamp.
   _stampKernel() {
     const sim = this.getSim();
     if (this.stampSim !== sim) {
@@ -339,15 +340,31 @@ export class Constructions {
   // Stamp already baked cells (runtime.js bake) with their low corner at grid cell origin.
   stampBaked(s, origin) { this._stamp(s, origin); }
 
+  /**
+   * Builds the stamp's kernel for the current grid now (src/wire/mesh.js
+   * attach, in a world: its shrine and glade trees are stamped once the
+   * world's passes are built). Resolves when it is ready: a stamp from then
+   * on is an edit at its call.
+   * @returns {Promise<unknown>}
+   */
+  prepareStamp() { return this._stampKernel().ready; }
+
   // One box writer (shaders/construction.js) writing baked cells into the grid
   // at origin: an edit in call order (docs/webgpu.md D6), so the caller's undo
-  // snapshot, taken first, holds the grid from before it. Its first use waits
-  // for the kernel's pipeline.
+  // snapshot, taken first, holds the grid from before it. A stamp made before
+  // the kernel's pipeline is built waits for it, so it lands after the edits
+  // made meanwhile; it keeps what it was placed against: it moves with the
+  // window (grid cells are the world's less the window's origin), and it is
+  // dropped if that grid is gone, its undo step was taken back or the history
+  // was dropped (a load, a moved window's snapshots).
   _stamp(s, origin) {
     const sim = this.getSim(), kernel = this._stampKernel();
     if (kernel.main.state !== 'ready' || kernel.apply.state !== 'ready') {
-      const at = origin.clone();
-      kernel.ready.then(() => { if (this.getSim() === sim && !sim.disposed) this._stamp(s, at); }, () => {});
+      const at = origin.clone(), o = sim.origin.clone(), history = sim.history, top = history.at(-1) ?? null;
+      kernel.ready.then(() => {
+        if (this.getSim() !== sim || sim.disposed || sim.history !== history || (top && !history.includes(top))) return;
+        this._stamp(s, at.add(o).sub(sim.origin));
+      }, () => {});
       return;
     }
     // the baked cells into the stamp's buffer, in order with the edits around it (gpu.write)

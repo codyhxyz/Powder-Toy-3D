@@ -15,7 +15,10 @@ const SMOOTHING_S = 0.06;
 // Each brush is the brush's pipeline (brush.js), drawn into the scene pass
 // with everything else of ours (docs/webgpu.md F1): src/wire/mesh.js's scene
 // hook calls drawRemoteCursors(rp). `gpu` defaults to the app's device
-// (gfx/meshLight.js setMeshGpu); `scene` is no longer used (nothing joins it).
+// (gfx/meshLight.js setMeshGpu), looked up whenever a brush is made: the
+// multiplayer wire boots before the mesh wire sets it (src/wire/index.js
+// WIRES), so a device read once at creation would stay null. `scene` is no
+// longer used (nothing joins it).
 
 const sets = new Set();   // every live createRemoteCursors, for drawRemoteCursors
 
@@ -28,7 +31,8 @@ export function drawRemoteCursors(rp) {
   for (const s of sets) s.draw(rp);
 }
 
-export function createRemoteCursors({ camera, getVolume, gpu = getMeshGpu() }) {
+export function createRemoteCursors({ camera, getVolume, gpu = null }) {
+  const device = () => gpu ?? getMeshGpu();
   const layer = Object.assign(document.createElement('div'), { className: 'net-cursors' });
   document.body.append(layer);
   const peers = new Map();
@@ -47,8 +51,9 @@ export function createRemoteCursors({ camera, getVolume, gpu = getMeshGpu() }) {
     set(id, { name, color }, msg) {
       let p = peers.get(id);
       if (!p) {
-        if (!gpu) return;   // (no device yet: the next message places it)
-        const brush = createBrushCursor(gpu);
+        const dev = device();
+        if (!dev) return;   // (no device yet: the peer's next message places it)
+        const brush = createBrushCursor(dev);
         const label = Object.assign(document.createElement('div'), { className: 'net-cursor', textContent: name });
         label.style.setProperty('--peer', color);
         label.style.setProperty('--peer-ink', inkFor(color));
