@@ -11,12 +11,13 @@
 // by touch and by drink, Regeneration, Berserk, Polymorph, Teleportitis's safe spots and the drunk sway.
 // Part 1 runs in the POV tools' harness page (tools/harness/pov-tools.js, stage flask: no app);
 // part 2 boots the app at 64³ and runs the body's frames itself (tools/pov-app.mjs), so its
-// times are game time (frames), not the wall's.
-// usage: node tools/flask-check.mjs [--cpu | --app] [--shot file.png]
+// times are game time (frames), not the wall's, in parts, each an app of its own (a few minutes
+// at most here): drink, potions-a, potions-b, potions-c, effects.
+// usage: node tools/flask-check.mjs [--cpu | --app] [--only drink,potions-a,...] [--shot file.png]
 //   --cpu: the node part only; without it the GPU parts follow (each with its own Vite: tools/vite-server.mjs)
-//   --app: the node part and part 2 (the shell and body), not part 1
+//   --app: the node part and part 2 (the shell and body), not part 1; --only picks part 2's parts
 import { runStages, TOOLS_PAGE } from './pov-gpu-check.mjs';
-import { openPovApp } from './pov-app.mjs';
+import { runParts, argList } from './pov-app.mjs';
 import { E } from '../src/elements.js';
 import { createVitals } from '../src/pov/vitals.js';
 import { createPerkSet } from '../src/pov/perks.js';
@@ -32,7 +33,7 @@ const shot = opt('shot');
 const cpuOnly = args.includes('--cpu'), appOnly = args.includes('--app');
 const W = 960, H = 600;
 let fails = 0;
-const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${typeof info === 'string' ? info : JSON.stringify(info)}` : ''}`); };
+let check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${typeof info === 'string' ? info : JSON.stringify(info)}` : ''}`); };
 const zero = (d) => Object.keys(d).length === 0;
 
 // ================= the CPU part
@@ -98,48 +99,40 @@ if (cpuOnly) { console.log(fails ? `${fails} failed` : 'all ok'); process.exit(f
 // ================= part 1: the toolbelt alone (the POV tools' harness page, stage flask: no app)
 if (!appOnly) fails += await runStages(['flask'], { page: TOOLS_PAGE });
 
-// ================= part 2: the real shell and body (the app at 64³, its frames run by the check: tools/pov-app.mjs)
-let app = null;
-try {
-  app = await openPovApp({ viewport: { width: W, height: H } });
+// ================= part 2: the real shell and body (the app at 64³, its frames run by the check:
+// tools/pov-app.mjs), in parts, each an app of its own (its own browser, a few minutes at most here):
+// drink, potions-a, potions-b, potions-c, effects
+const POTIONS = [['LEVITATIUM', 'LEVITATING'], ['TELEPORTATIUM', 'TELEPORTITIS'], ['HEALTHIUM', 'REGENERATION'],
+  ['BERSERKIUM', 'BERSERK'], ['PHEROMONE', 'CHARMED'], ['POLYMORPHINE', 'POLYMORPH'], ['TOXIC', 'TOXIC']];
+const POOL_R = 2;   // cells: the pool painted round the legs
+
+// One part's page helpers.
+function helpers(app) {
   const p = app.page;
-  console.log(`\nthe shell and body (boot ${app.boot.toFixed(0)} s)`);
   const frames = (n) => p.evaluate((n) => __pov.frames(n), n);
-  // a key held for a few frames, then the frames after it (game time: the frames' dt)
-  const press = async (key, held = 3, after = 9) => { await p.keyboard.down(key); await frames(held); await p.keyboard.up(key); await frames(after); };
+  return {
+    p, frames,
+    // a key held for a few frames, then the frames after it (game time: the frames' dt)
+    press: async (key, held = 3, after = 9) => { await p.keyboard.down(key); await frames(held); await p.keyboard.up(key); await frames(after); },
+  };
+}
+
+// What every part's app needs first: the body dropped in, the flask in hand.
+async function setupShell(app) {
+  const { p, frames } = helpers(app);
   const entered = await app.enter();
   check('drops into the body', entered.mode === 'on' && entered.onGround, entered);
   await p.evaluate(() => window.__app.pov.toolbelt.select('FLASK'));
   await frames(15);
-  // H: a gulp of water through the body
-  const h0 = await p.evaluate(() => { const pl = window.__app.pov.player; return { health: pl.health, skinT: pl.skinT, n: window.__app.pov.toolbelt.tool('FLASK').load.count }; });
-  await press('h');
-  const h1 = await p.evaluate(() => { const pov = window.__app.pov, f = pov.toolbelt.tool('FLASK'); return { health: pov.player.health, skinT: pov.player.skinT, n: f.load.count, body: f.lastDrink?.body, doses: f.lastDrink?.doses.map((d) => [d.key, d.n]) }; });
-  check('H drinks through the body (water: no harm)', h1.n === h0.n - DRINK_CELLS && h1.body === true && h1.health === h0.health, { h0, h1 });
-  if (shot) {
-    await p.evaluate(() => { const l = window.__app.pov.toolbelt.tool('FLASK').load; l.cells.splice(0, 60); l.version++; });   // show a half-full flask
-    await frames(12);
-    await p.evaluate(() => __app.test.renderOnce());
-    await p.screenshot({ path: shot, scale: 'css' });
-  }
-  // whiskey's row (the element comes with nt-mat): the view sways
-  const dr = await p.evaluate(async () => {
-    const { ingestionRow } = await import('/src/pov/ingest.js');
-    const pov = window.__app.pov;
-    ingestionRow('WHISKEY')(pov.player, { share: 1 });
-    const d0 = pov.feel.drunk;
-    await __pov.frames(Math.round(2.5 / __pov.dt));
-    return { d0, d1: pov.feel.drunk, sway: pov.feel.drunkSway, roll: pov.feel.offsets.roll };
-  });
-  check('whiskey: 30 s of Drunk, and the view sways', Math.abs(dr.d0 - 30) < 0.5 && dr.sway > 0.05 && dr.d1 < dr.d0, dr);
-  // ================= Noita's potions (potions.js): each status by touch and by drink, through the real body
-  const POTIONS = [['LEVITATIUM', 'LEVITATING'], ['TELEPORTATIUM', 'TELEPORTITIS'], ['HEALTHIUM', 'REGENERATION'],
-    ['BERSERKIUM', 'BERSERK'], ['PHEROMONE', 'CHARMED'], ['POLYMORPHINE', 'POLYMORPH'], ['TOXIC', 'TOXIC']];
-  const POOL_R = 2;   // cells: the pool painted round the legs
-  // touch: a pool round the legs until the status comes on (or 3 s of frames),
-  // then the grid cleared (the empty box again) and so are the statuses. (An
-  // erase brush leaves the cells that ran out of it, a film over the floor that
-  // never sleeps, and a 64³ grid awake costs SwiftShader seconds a frame.)
+}
+
+// Noita's potions (potions.js): each status by touch and by drink, through the real body.
+// touch: a pool round the legs until the status comes on (or 3 s of frames), then the grid
+// cleared (the empty box again) and so are the statuses. (An erase brush leaves the cells that
+// ran out of it, a film over the floor that never sleeps, and a 64³ grid awake costs SwiftShader
+// seconds a frame.) drink: a flask of it, H through the shell.
+async function potions(app, list) {
+  const { p, frames, press } = helpers(app);
   const touch = (key, status) => p.evaluate(async ([key, status, POOL_R]) => {
     const { E } = await import('/src/elements.js');
     const a = window.__app, pl = a.pov.player, V3 = a.camera.position.constructor;
@@ -153,7 +146,6 @@ try {
     pl.status.clearAll();
     return { on, left: +left.toFixed(1), frames: n };
   }, [key, status, POOL_R]);
-  // drink: a flask of it, H through the shell
   const fill = (key, n = 26) => p.evaluate(async ([key, n]) => {
     const { E, ELEMENTS } = await import('/src/elements.js');
     const pov = window.__app.pov, l = pov.toolbelt.tool('FLASK').load;
@@ -165,7 +157,7 @@ try {
   const statusOf = (status) => p.evaluate((s) => { const pl = window.__app.pov.player; return { on: pl.status.has(s), left: +pl.status.time(s).toFixed(1) }; }, status);
   await p.evaluate(() => { const pl = window.__app.pov.player; pl.spawn(pl.pos.clone()); });   // full health, no drunk carry-over
   await frames(20);
-  for (const [key, status] of POTIONS) {
+  for (const [key, status] of list) {
     const t = await touch(key, status);
     check(`${status} by touching ${key}`, t.on, t);
     await fill(key);
@@ -176,73 +168,106 @@ try {
     await p.evaluate(() => window.__app.pov.player.status.clearAll());
     await frames(20);   // the gulp's refire wait
   }
-  // what they do
-  const fx = await p.evaluate(async () => {
-    const pov = window.__app.pov, pl = pov.player, belt = pov.toolbelt;
-    const { dealtScale } = await import('/src/pov/targets.js');
-    const out = {};
-    // Regeneration heals 10% of a life a second
-    pl.hurt(0.5, 'test', { shielded: false });
-    const h0 = pl.health;
-    pl.status.add('REGENERATION', 7.5);
-    await __pov.frames(Math.round(1.5 / __pov.dt));
-    out.regen = { h0: +h0.toFixed(2), h1: +pl.health.toFixed(2) };
-    pl.status.clearAll();
-    // Berserk doubles what the player's weapons deal
-    out.berserk = { off: dealtScale(null) };
-    pl.status.add('BERSERK', 15);
-    out.berserk.on = dealtScale(null);
-    pl.status.clearAll();
-    // Polymorph: no tools (the flask's gulp does nothing)
-    belt.select('FLASK');
-    out.poly = { n0: belt.tool('FLASK').load.count };
-    pl.status.add('POLYMORPH', 20);
-    return out;
-  });
-  await press('h', 2, 8);
-  fx.poly.n1 = await p.evaluate(() => window.__app.pov.toolbelt.tool('FLASK').load.count);
-  await p.evaluate(() => window.__app.pov.player.status.clearAll());
-  check('Regeneration heals ~10% a second', fx.regen.h1 - fx.regen.h0 > 0.08, fx.regen);
-  check('Berserk: the player\'s weapons deal 2×', fx.berserk.off === 1 && fx.berserk.on === 2, fx.berserk);
-  check('Polymorph: no tools (H does nothing)', fx.poly.n1 === fx.poly.n0, fx.poly);
-  // Levitating: hold jump in the air: the jet climbs and the tank holds
-  const lev = await p.evaluate(() => { const pl = window.__app.pov.player; pl.status.add('LEVITATING', 20); return { y0: pl.pos.y }; });
-  await press('Space', 45, 0);
-  const lev1 = await p.evaluate(() => { const pl = window.__app.pov.player; return { y1: pl.pos.y, fuel: pl.jetFuel, jetting: pl.jetting }; });
-  await p.evaluate(() => window.__app.pov.player.status.clearAll());
-  await frames(36);
-  check('Levitating: flies on a full tank', lev1.y1 - lev.y0 > 5 && lev1.fuel === 1, { ...lev, ...lev1 });
-  // Teleportitis: jumps to a safe open spot within a few seconds
-  const tp = await p.evaluate(async () => {
-    const pov = window.__app.pov, pl = pov.player;
-    const jumps = [];
-    const off = pov.events.on('teleport', (e) => { if (!e.by) jumps.push({ from: e.from.toArray().map(Math.round), to: e.to.toArray().map(Math.round) }); });
-    pl.status.add('TELEPORTITIS', 5);
-    const n = await __pov.frames(Math.round(6 / __pov.dt), () => jumps.length > 0);
-    off();
-    pl.status.clearAll();
-    await __pov.frames(Math.round(0.8 / __pov.dt));
-    return { jumps, frames: n, health: +pl.health.toFixed(2), onGround: pl.onGround, dead: pl.dead };
-  });
-  check('Teleportitis: a jump to a safe spot, and the body stands there', tp.jumps.length > 0 && !tp.dead && tp.onGround, tp);
-  // a flask of lava: one gulp kills, and says so
-  await p.evaluate(async () => {
-    const { E, ELEMENTS } = await import('/src/elements.js');
-    const pov = window.__app.pov, l = pov.toolbelt.tool('FLASK').load;
-    l.cells.length = 0;
-    for (let i = 0; i < 20; i++) l.cells.push([E.LAVA, ELEMENTS[E.LAVA].temp, 0, 0.5]);
-    l.version++;
-    pov.player.perks.clear();
-  });
-  await press('h');
-  const dead = await p.evaluate(() => ({ dead: window.__app.pov.player.dead, cause: window.__app.pov.player.cause }));
-  check('a gulp of lava kills, with its cause', dead.dead && /Drank lava, 1,600 °C/.test(dead.cause), dead);
-  check(`no page or GPU errors (${app.secs()})`, !app.errors.length, app.errors.slice(0, 5).join(' | '));
-} catch (err) {
-  fails++;
-  console.log('FAIL', err.message);
-} finally {
-  await app?.close();
 }
+
+const parts = [
+  // H drinks through the body; whiskey's row sways the view
+  ['drink', async (app) => {
+    const { p, frames, press } = helpers(app);
+    const h0 = await p.evaluate(() => { const pl = window.__app.pov.player; return { health: pl.health, skinT: pl.skinT, n: window.__app.pov.toolbelt.tool('FLASK').load.count }; });
+    await press('h');
+    const h1 = await p.evaluate(() => { const pov = window.__app.pov, f = pov.toolbelt.tool('FLASK'); return { health: pov.player.health, skinT: pov.player.skinT, n: f.load.count, body: f.lastDrink?.body, doses: f.lastDrink?.doses.map((d) => [d.key, d.n]) }; });
+    check('H drinks through the body (water: no harm)', h1.n === h0.n - DRINK_CELLS && h1.body === true && h1.health === h0.health, { h0, h1 });
+    if (shot) {
+      await p.evaluate(() => { const l = window.__app.pov.toolbelt.tool('FLASK').load; l.cells.splice(0, 60); l.version++; });   // show a half-full flask
+      await frames(12);
+      await p.evaluate(() => __app.test.renderOnce());
+      await p.screenshot({ path: shot, scale: 'css' });
+    }
+    // whiskey's row (the element comes with nt-mat): the view sways
+    const dr = await p.evaluate(async () => {
+      const { ingestionRow } = await import('/src/pov/ingest.js');
+      const pov = window.__app.pov;
+      ingestionRow('WHISKEY')(pov.player, { share: 1 });
+      const d0 = pov.feel.drunk;
+      await __pov.frames(Math.round(2.5 / __pov.dt));
+      return { d0, d1: pov.feel.drunk, sway: pov.feel.drunkSway, roll: pov.feel.offsets.roll };
+    });
+    check('whiskey: 30 s of Drunk, and the view sways', Math.abs(dr.d0 - 30) < 0.5 && dr.sway > 0.05 && dr.d1 < dr.d0, dr);
+  }],
+  ['potions-a', (app) => potions(app, POTIONS.slice(0, 2))],
+  ['potions-b', (app) => potions(app, POTIONS.slice(2, 4))],
+  ['potions-c', (app) => potions(app, POTIONS.slice(4))],
+  // what they do
+  ['effects', async (app) => {
+    const { p, frames, press } = helpers(app);
+    const fx = await p.evaluate(async () => {
+      const pov = window.__app.pov, pl = pov.player, belt = pov.toolbelt;
+      const { dealtScale } = await import('/src/pov/targets.js');
+      const out = {};
+      // Regeneration heals 10% of a life a second
+      pl.hurt(0.5, 'test', { shielded: false });
+      const h0 = pl.health;
+      pl.status.add('REGENERATION', 7.5);
+      await __pov.frames(Math.round(1.5 / __pov.dt));
+      out.regen = { h0: +h0.toFixed(2), h1: +pl.health.toFixed(2) };
+      pl.status.clearAll();
+      // Berserk doubles what the player's weapons deal
+      out.berserk = { off: dealtScale(null) };
+      pl.status.add('BERSERK', 15);
+      out.berserk.on = dealtScale(null);
+      pl.status.clearAll();
+      // Polymorph: no tools (the flask's gulp does nothing)
+      belt.select('FLASK');
+      out.poly = { n0: belt.tool('FLASK').load.count };
+      pl.status.add('POLYMORPH', 20);
+      return out;
+    });
+    await press('h', 2, 8);
+    fx.poly.n1 = await p.evaluate(() => window.__app.pov.toolbelt.tool('FLASK').load.count);
+    await p.evaluate(() => window.__app.pov.player.status.clearAll());
+    check('Regeneration heals ~10% a second', fx.regen.h1 - fx.regen.h0 > 0.08, fx.regen);
+    check('Berserk: the player\'s weapons deal 2×', fx.berserk.off === 1 && fx.berserk.on === 2, fx.berserk);
+    check('Polymorph: no tools (H does nothing)', fx.poly.n1 === fx.poly.n0, fx.poly);
+    // Levitating: hold jump in the air: the jet climbs and the tank holds
+    const lev = await p.evaluate(() => { const pl = window.__app.pov.player; pl.status.add('LEVITATING', 20); return { y0: pl.pos.y }; });
+    await press('Space', 45, 0);
+    const lev1 = await p.evaluate(() => { const pl = window.__app.pov.player; return { y1: pl.pos.y, fuel: pl.jetFuel, jetting: pl.jetting }; });
+    await p.evaluate(() => window.__app.pov.player.status.clearAll());
+    await frames(36);
+    check('Levitating: flies on a full tank', lev1.y1 - lev.y0 > 5 && lev1.fuel === 1, { ...lev, ...lev1 });
+    // Teleportitis: jumps to a safe open spot within a few seconds
+    const tp = await p.evaluate(async () => {
+      const pov = window.__app.pov, pl = pov.player;
+      const jumps = [];
+      const off = pov.events.on('teleport', (e) => { if (!e.by) jumps.push({ from: e.from.toArray().map(Math.round), to: e.to.toArray().map(Math.round) }); });
+      pl.status.add('TELEPORTITIS', 5);
+      const n = await __pov.frames(Math.round(6 / __pov.dt), () => jumps.length > 0);
+      off();
+      pl.status.clearAll();
+      await __pov.frames(Math.round(0.8 / __pov.dt));
+      return { jumps, frames: n, health: +pl.health.toFixed(2), onGround: pl.onGround, dead: pl.dead };
+    });
+    check('Teleportitis: a jump to a safe spot, and the body stands there', tp.jumps.length > 0 && !tp.dead && tp.onGround, tp);
+    // a flask of lava: one gulp kills, and says so
+    await p.evaluate(async () => {
+      const { E, ELEMENTS } = await import('/src/elements.js');
+      const pov = window.__app.pov, l = pov.toolbelt.tool('FLASK').load;
+      l.cells.length = 0;
+      for (let i = 0; i < 20; i++) l.cells.push([E.LAVA, ELEMENTS[E.LAVA].temp, 0, 0.5]);
+      l.version++;
+      pov.player.perks.clear();
+    });
+    await press('h');
+    const dead = await p.evaluate(() => ({ dead: window.__app.pov.player.dead, cause: window.__app.pov.player.cause }));
+    check('a gulp of lava kills, with its cause', dead.dead && /Drank lava, 1,600 °C/.test(dead.cause), dead);
+  }],
+];
+// (each part's own checks count through app.check; the node part's and part 1's through check)
+const shellCheck = (app) => { check = (...a) => app.check(...a); };
+fails += await runParts(parts, {
+  only: argList('only'), open: { viewport: { width: W, height: H } },
+  setup: async (app) => { shellCheck(app); await setupShell(app); },
+});
 console.log(fails ? `${fails} failed` : 'all ok');
 process.exit(fails ? 1 : 0);

@@ -21,7 +21,8 @@ import { startVite } from './vite-server.mjs';
 
 export const POV_STEPS = 4;     // sim steps a body frame (the app's default)
 export const POV_DT = 1 / 30;   // s a body frame
-// three's warnings for the meshes the mesh layer ports (U13), allowed until it lands
+// three's warnings for a GLSL material it can't take as a node material: the two the mesh layer
+// (U13) has still to port in U11's files, the physgun's rim and the worm's skin (docs/webgpu.md J3)
 const ALLOW = [/NodeBuilder: Material "(Raw)?ShaderMaterial" is not compatible/];
 // what the page may log that isn't ours: the relay the UI asks for quota (not running here)
 const IGNORE = [/Failed to load resource: net::ERR_CONNECTION_REFUSED/, /favicon/];
@@ -100,6 +101,7 @@ export async function openPovApp({ query = '?size=64&preset=empty&view=plain', v
     let failures = 0;
     const check = (name, ok, info = '') => {
       if (!ok) failures++;
+      if (info && typeof info === 'object') info = JSON.stringify(info);   // (a tool's numbers, not [object Object])
       console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`);
       return ok;
     };
@@ -169,7 +171,7 @@ export async function runParts(parts, { only = null, open, setup } = {}) {
       await setup?.(app);
       await run(app);
       app.check(`${name}: no page or GPU errors`, !app.errors.length, app.errors.slice(0, 5).join(' | '));
-      if (app.allowed.length) console.log(`  (${app.allowed.length} allowed three.js material warnings, until U13)`);
+      if (app.allowed.length) console.log(`  (${app.allowed.length} allowed three.js material warnings: the GLSL materials U13 has still to port)`);
     } catch (e) {
       failures++;
       console.log(`FAIL ${name} threw ${String(e?.stack ?? e).slice(0, 600)}`);
