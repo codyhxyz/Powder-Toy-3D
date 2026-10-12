@@ -257,6 +257,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     // three.js's time node (gfx: the flames' cards), from its node frame
     const nodeFrame = app.renderer?._nodes?.nodeFrame;
     if (typeof nodeFrame?.update === 'function') {
+      clocks.nodeFrame = nodeFrame;
       nodeFrame.update = function () {
         this.frameId++;
         this.lastTime = performance.now();
@@ -299,6 +300,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   let frameNo = 0;   // frames drawn since the shot's camera was set
   async function draw() {
     driveClocks();
+    if (clocks.nodeFrame) clocks.nodeFrame.time = clocks.anim;   // (read where three draws nothing, too: describe)
     await test.renderOnce();
     frameNo++;
     await meshesCompiled(frameNo === 1 ? 'the first frame' : `frame ${frameNo}`);
@@ -463,6 +465,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     if (live) return;
     const t0 = performance.now();
     driveClocks();
+    if (clocks.nodeFrame) clocks.nodeFrame.time = clocks.anim;
     let n = DRAFT_STILL_FRAMES;
     if (quality === 'draft') { for (let i = 0; i < n; i++) await draw(); }
     else {
@@ -500,7 +503,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
       detailShown: app.view?.detailShown ?? null,
       elementIds: ids,
       gameSecond: `${TICK_HZ} ticks × ${app.settings.steps} steps`,
-      clocks: { view: +clocks.view.toFixed(3), anim: +clocks.anim.toFixed(3), three: app.renderer?._nodes?.nodeFrame?.time ?? null },
+      clocks: { view: +clocks.view.toFixed(3), anim: +clocks.anim.toFixed(3), three: clocks.nodeFrame ? +clocks.nodeFrame.time.toFixed(3) : null },
       meshWaits: [...meshWaits],
       nondeterminism: [
         'TAA history: the post pass\'s jitter index counts every frame the page drew (not resettable); manual mode draws none before the shot, so both sides start at the same index if they ran the same shots before it',
