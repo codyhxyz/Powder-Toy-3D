@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>POV check</title>
+  <style>
+    body { margin: 0; background: #111; color: #ddd; font: 12px monospace; }
+    #log { white-space: pre-wrap; padding: 8px; }
+  </style>
+</head>
+<body>
+  <!-- tools/pov-gpu-check.mjs drives this page: the first person's GPU work
+       (src/pov/gpu.js: its edits, probes, the exact transfer, the laser and
+       the NPCs' cell readback) on a Simulation of this page's WebGPU device,
+       no app (docs/webgpu.md G2, U11). -->
+  <pre id="log"></pre>
+  <script type="module" src="./pov-check.js"></script>
+</body>
+</html>
