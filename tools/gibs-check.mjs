@@ -2,10 +2,10 @@
 // engine's heat and chars past its fat's flash point, Quake's gib rule, and
 // eating cooked meat. The CPU part runs in node (the dock tiles' engine port,
 // src/ui/tiles/engine.js, and vitals.js); --gpu adds one headless GPU run of
-// the app (its own Vite: tools/vite-server.mjs, on --port N if given): meat
+// the app at 64³ (its own Vite: tools/vite-server.mjs, on --port N if given): meat
 // cooked and charred in the real sim, a rocket kill that gibs an NPC into the
 // body's mass in meat, and cooked meat eaten (raw meat not).
-// usage: node tools/gibs-check.mjs [--gpu] [--port N] [--shots dir]
+// usage: node tools/gibs-check.mjs [--gpu [--only cook,body]] [--port N] [--shots dir]
 import { World } from '../src/ui/tiles/engine.js';
 import { E, ELEMENTS } from '../src/elements.js';
 import { createVitals, GIB_HEALTH, EAT_HEAL, VITALS } from '../src/pov/vitals.js';
@@ -15,6 +15,7 @@ const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const gpuRun = args.includes('--gpu') || args.includes('--port');
 const shots = opt('shots', null);
+const gpuParts = opt('only', 'cook,body').split(',');   // the GPU run's parts: cook (meat in the sim's heat), body (first person: gibs, eating)
 
 let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
@@ -118,155 +119,171 @@ check('a blast that only just kills leaves a body', just.every((r) => r.dead && 
 }
 
 // ---------------------------------------------------------------- GPU (the app)
+// The empty box at 64³ with the lab's enemy spawner where the lab has it
+// (app.js LAB_ENEMY_AT), booted through ready() and its frames run by the check
+// (tools/pov-app.mjs): the waits are game time (frames), not the wall's. What
+// is checked needs a floor, the meat, the heat and an NPC; the lab's scenery
+// would keep the grid awake, which costs SwiftShader seconds a frame (a run in
+// the lab managed 60 frames in 7 minutes).
+const LAB_ENEMY_AT = [0.555, 0.86];   // the lab's enemy spawner, shares of the box (app.js)
 if (gpuRun) {
-  const { launchBrowser, newTestPage } = await import('./browser.mjs');
-  const { startVite } = await import('./vite-server.mjs');
-  const W = 960, H = 600;
-  const vite = await startVite();
-  const b = await launchBrowser();
-  const p = await newTestPage(b, { mode: 'preview', viewport: { width: W, height: H } });
-  const errs = [];
-  p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });   // the dev server has no API
-  p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
+  const { openPovApp } = await import('./pov-app.mjs');
+  const W = 640, H = 400;
+  const app = await openPovApp({ query: '?size=64&preset=empty&view=plain', viewport: { width: W, height: H } });
+  const p = app.page;
+  console.log(`booted in ${app.boot.toFixed(0)} s`);
+  // (the spawners are the mesh layer's, src/wire/mesh.js: none until it is ready, U13, and then no NPC)
+  const spawners = await p.evaluate((at) => {
+    const a = window.__app, g = a.sim.g;
+    if (!a.spawners) return false;
+    a.spawners.add('enemy', new a.THREE.Vector3(Math.round(g.nx * at[0]), 0, Math.round(g.nz * at[1])));
+    return true;
+  }, LAB_ENEMY_AT);
   const ev = (fn, arg) => p.evaluate(fn, arg);
-  const wait = (ms) => p.waitForTimeout(ms);
-  const shot = async (name) => { if (shots) await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 70 }); };
+  const frames = (n) => ev((n) => __pov.frames(n), n);
+  const secs = (s) => ev((s) => __pov.frames(Math.max(1, Math.round(s / __pov.dt))), s);
+  const shot = async (name) => { if (shots) { await ev(() => __app.test.renderOnce()); await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 70 }); } };
   const census = () => ev(async () => {
     const { ELEMENTS } = await import('/src/elements.js');
     return Object.fromEntries(Object.entries(await window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
   });
   try {
-    await p.goto(vite.url('/?preset=lab'));
-    await p.waitForFunction(() => window.__app?.pov, null, { timeout: 90000 });
-    // (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
-    await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
-    await wait(1500);
     await ev(async () => {
       const { povEvents } = await import('/src/pov/events.js');
       window.__gib = []; window.__eat = [];
-      povEvents.on('body:gib', (x) => window.__gib.push({ cells: x.cells, lost: x.lost, by: x.by ?? null, t: +(performance.now() / 1000).toFixed(1) }));
+      povEvents.on('body:gib', (x) => window.__gib.push({ cells: x.cells, lost: x.lost, by: x.by ?? null }));
       povEvents.on('body:eat', (x) => window.__eat.push({ cells: x.cells, by: x.by ?? null }));
     });
 
     const g = await ev(() => { const { nx, ny, nz } = window.__app.sim.g; return { nx, ny, nz }; });
     const at = (fx, fz, y = 0) => ({ x: Math.floor(g.nx * fx) + 0.5, y, z: Math.floor(g.nz * fz) + 0.5 });
     const fill = async (key, c, r) => ev(async ({ key, c, r }) => {
-      const a = window.__app, { E, ELEMENTS } = await import('/src/elements.js'), V = a.camera.position.constructor;
+      const a = window.__app, { E, ELEMENTS } = await import('/src/elements.js'), V = a.THREE.Vector3;
       a.sim.paint({ center: new V(c.x, c.y, c.z), radius: r, shape: 1, tool: E[key], rate: 1 / ELEMENTS[E[key]].spawn, replace: false });
     }, { key, c, r });
-    const heat = (c) => ev((c) => { const a = window.__app, V = a.camera.position.constructor; a.sim.paint({ center: new V(c.x, c.y, c.z), radius: 4, shape: 0, tool: -2, rate: 1, replace: false }); }, c);
+    const heat = (c) => ev((c) => { const a = window.__app, V = a.THREE.Vector3; a.sim.paint({ center: new V(c.x, c.y, c.z), radius: 4, shape: 0, tool: -2, rate: 1, replace: false }); }, c);
 
-    // cooking in the real sim: a meat block on the lab's open south floor, held under the Heat brush
-    const SPOT = at(0.5, 0.8, 1.5);
-    await fill('MEAT', SPOT, 1);
-    await wait(800);
-    const k0 = await census();
-    const meat0 = k0.MEAT ?? 0;
-    let cookedSeen = 0;
-    for (let i = 0; i < 60; i++) {
-      await heat(SPOT);
-      await wait(50);
-      if (i % 10 === 9) cookedSeen = Math.max(cookedSeen, (await census()).COOKED_MEAT ?? 0);
-    }
-    const kc = await census();
-    check('GPU: heat cooks meat', meat0 > 0 && cookedSeen > 0, `meat ${meat0}, cooked up to ${cookedSeen}, raw left ${kc.MEAT ?? 0}`);
-    await shot('cooked');
-    for (let i = 0; i < 120; i++) { await heat(SPOT); await wait(40); }
-    await wait(3000);
-    const k1 = await census();
-    check('GPU: kept on, cooked meat chars and burns', (k1.COOKED_MEAT ?? 0) < cookedSeen && (k1.ASH ?? 0) > (k0.ASH ?? 0),
-      `cooked ${cookedSeen}→${k1.COOKED_MEAT ?? 0}, ash ${k0.ASH ?? 0}→${k1.ASH ?? 0}, fire ${k1.FIRE ?? 0}`);
-    await shot('charred');
-
-    // first person, with the lab's NPC
-    await p.mouse.move(W / 2, H / 2);
-    await p.keyboard.press('f');
-    await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 30000 }).catch(() => {});
-    check('dropped in', (await ev(() => window.__app.pov.mode)) === 'on');
-    await ev(() => { window.__app.pov.test.assumeLocked = true; });
-    await p.waitForFunction(() => window.__app.pov.npc?.placeAt, null, { timeout: 30000 }).catch(() => {});
-    const hasNpc = await ev(() => !!window.__app.pov.npc);
-    check('the lab has an NPC', hasNpc);
-    const PL = at(0.33, 0.9);
-    const spawnPlayer = () => ev((s) => { const a = window.__app, V = a.camera.position.constructor; a.pov.player.spawn(new V(s.x, s.y, s.z)); }, PL);
-    await spawnPlayer();
-    await wait(1500);
-
-    // gibs: a clean kill leaves a body; a rocket kill bursts it into meat
-    if (hasNpc) {
-      const NP = { x: PL.x + 14, y: 0, z: PL.z };
-      const place = () => ev((s) => { const a = window.__app; a.pov.npc.placeAt(new a.camera.position.constructor(s.x, s.y, s.z)); }, NP);
-      await place();
-      await wait(800);
-      await ev(() => window.__app.pov.npc.body.hurt(1.1, 'test'));
-      await wait(300);
-      const clean = await ev(() => ({ dead: window.__app.pov.npc.body.dead, gibbed: window.__app.pov.npc.body.gibbed }));
-      check('GPU: a kill that isn\'t overkill leaves a body', clean.dead && !clean.gibbed, JSON.stringify(clean));
-
-      await ev(async () => { const { inventory } = await import('/src/pov/tools/inventory.js'); inventory.give('ROCKET'); window.__app.pov.toolbelt.select('ROCKET'); });
-      // meat laid in the rocket's fire may cook at once: count both
-      const meatOf = (c) => (c.MEAT ?? 0) + (c.COOKED_MEAT ?? 0);
-      const m0 = meatOf(await census());
-      const g0 = await ev(() => window.__gib.length);
-      let gibbed = false, shots_ = 0;
-      for (; shots_ < 4 && !gibbed; shots_++) {
-        await place();
-        await wait(400);
-        await ev(() => {
-          const pov = window.__app.pov, q = pov.player.pos, t = pov.npc.body.pos;
-          const dx = t.x - q.x, dy = (t.y + 2.75) - (q.y + 5), dz = t.z - q.z;
-          pov.setLook(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
-        });
-        await wait(100);
-        await p.mouse.down(); await wait(40); await p.mouse.up();
-        await wait(1500);
-        gibbed = await ev(() => window.__app.pov.npc.body.gibbed);
+    if (gpuParts.includes('cook')) {
+      // cooking in the real sim: a meat block on the floor where the lab's is open, held under the Heat brush
+      const SPOT = at(0.5, 0.8, 1.5);
+      await fill('MEAT', SPOT, 1);
+      await secs(0.8);
+      const k0 = await census();
+      const meat0 = k0.MEAT ?? 0;
+      let cookedSeen = 0;
+      for (let i = 0; i < 60; i++) {
+        await heat(SPOT);
+        await frames(2);
+        if (i % 10 === 9) cookedSeen = Math.max(cookedSeen, (await census()).COOKED_MEAT ?? 0);
       }
-      await wait(500);
-      const k2 = await census(), m1 = meatOf(k2);
-      const gibs = await ev((g0) => window.__gib.slice(g0), g0);
-      const npcVisible = await ev(() => { let v = false; window.__app.pov.npc.root.traverseVisible(() => { v = true; }); return v && window.__app.pov.npc.root.visible; });
-      check('GPU: a rocket kill gibs the NPC', gibbed && gibs.some((x) => x.by), `${shots_} rockets, ${JSON.stringify(gibs)}`);
-      check('GPU: the gib is the body\'s mass in meat', gibs.length > 0 && gibs.every((x) => x.cells + x.lost === GIB_CELLS) && m1 - m0 === gibs.reduce((t, x) => t + x.cells, 0),
-        `meat ${m0}→${m1} (+${m1 - m0}, ${k2.COOKED_MEAT ?? 0} cooked), laid ${gibs.map((x) => x.cells).join(',')}, body = ${GIB_CELLS} cells`);
-      check('GPU: the gibbed NPC is no longer drawn', !npcVisible);
-      // look down at where it burst
-      await ev((s) => {
-        const pov = window.__app.pov, q = pov.player.pos;
-        const dx = s.x - q.x, dy = 0.5 - (q.y + 5), dz = s.z - q.z;
-        pov.setLook(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
-      }, NP);
-      await wait(800);
-      await shot('gibbed');
-      console.log('     every burst this run:', JSON.stringify(await ev(() => window.__gib)));
+      const kc = await census();
+      check('GPU: heat cooks meat', meat0 > 0 && cookedSeen > 0, `meat ${meat0}, cooked up to ${cookedSeen}, raw left ${kc.MEAT ?? 0}`);
+      await shot('cooked');
+      for (let i = 0; i < 120; i++) { await heat(SPOT); await frames(1); }
+      await secs(3);
+      const k1 = await census();
+      check('GPU: kept on, cooked meat chars and burns', (k1.COOKED_MEAT ?? 0) < cookedSeen && (k1.ASH ?? 0) > (k0.ASH ?? 0),
+        `cooked ${cookedSeen}→${k1.COOKED_MEAT ?? 0}, ash ${k0.ASH ?? 0}→${k1.ASH ?? 0}, fire ${k1.FIRE ?? 0}`);
+      await shot('charred');
+      // the box emptied after: the fire's heat would keep the grid awake, which costs SwiftShader seconds a frame
+      await ev(() => window.__app.sim.clear());
     }
 
-    // eating (the NPC is dead for a while): cooked meat at the feet, raw meat on the other side,
-    // laid while at full health (nothing eaten), then hurt
-    await spawnPlayer();
-    await wait(1200);
-    await fill('COOKED_MEAT', { x: PL.x - 2, y: 1.5, z: PL.z }, 1);
-    await fill('MEAT', { x: PL.x + 2, y: 1.5, z: PL.z }, 1);
-    await wait(1500);
-    const e0 = await ev(() => window.__eat.length);
-    const c0 = await census();
-    await ev(() => window.__app.pov.player.hurt(0.6, 'test'));
-    const h0 = await ev(() => window.__app.pov.player.health);
-    await wait(2500);
-    const h1 = await ev(() => window.__app.pov.player.health);
-    const c1 = await census();
-    const eats = await ev((e0) => window.__eat.slice(e0).filter((e) => !e.by), e0);
-    const eaten = eats.reduce((t, e) => t + e.cells, 0);
-    check('GPU: cooked meat touching you is eaten and heals', eaten > 0 && Math.abs(h1 - Math.min(1, h0 + eaten * EAT_HEAL)) < 1e-6,
-      `${eaten} eaten in ${eats.length} bites, health ${h0.toFixed(2)}→${h1.toFixed(2)}`);
-    check('GPU: eating takes the cells out of the sim, no more', (c1.COOKED_MEAT ?? 0) + eaten === (c0.COOKED_MEAT ?? 0),
-      `cooked in grid ${c0.COOKED_MEAT ?? 0}→${c1.COOKED_MEAT ?? 0}, eaten ${eaten}`);
-    check('GPU: raw meat isn\'t eaten', (c1.MEAT ?? 0) === (c0.MEAT ?? 0), `raw ${c0.MEAT ?? 0}→${c1.MEAT ?? 0}`);
-    await shot('ate');
-    check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
+    if (gpuParts.includes('body')) {
+      // first person, with the spawner's NPC
+      const entered = await app.enter();
+      check('dropped in', entered.mode === 'on', `${entered.s.toFixed(0)} s, ${entered.frames} frames`);
+      let hasNpc = false;
+      if (spawners) {
+        await ev(() => __pov.frames(Math.round(30 / __pov.dt), () => window.__app.pov.npc?.placeAt));
+        hasNpc = await ev(() => !!window.__app.pov.npc);
+        check('the enemy spawner brings an NPC', hasNpc);
+      } else console.log('SKIP the gibs (an NPC): no spawners in this build (src/wire/mesh.js isn\'t ready until U13)');
+      const PL = at(0.33, 0.9);
+      const spawnPlayer = () => ev((s) => { const a = window.__app, V = a.THREE.Vector3; a.pov.player.spawn(new V(s.x, s.y, s.z)); }, PL);
+      await spawnPlayer();
+      await secs(1.5);
+
+      // gibs: a clean kill leaves a body; a rocket kill bursts it into meat
+      if (hasNpc) {
+        const NP = { x: PL.x + 14, y: 0, z: PL.z };
+        const place = () => ev((s) => { const a = window.__app; a.pov.npc.placeAt(new a.THREE.Vector3(s.x, s.y, s.z)); }, NP);
+        await place();
+        await secs(0.8);
+        await ev(() => window.__app.pov.npc.body.hurt(1.1, 'test'));
+        await secs(0.3);
+        const clean = await ev(() => ({ dead: window.__app.pov.npc.body.dead, gibbed: window.__app.pov.npc.body.gibbed }));
+        check('GPU: a kill that isn\'t overkill leaves a body', clean.dead && !clean.gibbed, JSON.stringify(clean));
+
+        await ev(async () => { const { inventory } = await import('/src/pov/tools/inventory.js'); inventory.give('ROCKET'); });
+        await app.hold('ROCKET');   // (in hand, its slot selector gone: a click while it's up only closes it)
+        // meat laid in the rocket's fire may cook at once: count both
+        const meatOf = (c) => (c.MEAT ?? 0) + (c.COOKED_MEAT ?? 0);
+        const m0 = meatOf(await census());
+        const g0 = await ev(() => window.__gib.length);
+        let gibbed = false, rockets = 0;
+        for (; rockets < 4 && !gibbed; rockets++) {
+          await place();
+          await secs(0.4);
+          await ev(() => {
+            const pov = window.__app.pov, q = pov.player.pos, t = pov.npc.body.pos;
+            const dx = t.x - q.x, dy = (t.y + 2.75) - (q.y + 5), dz = t.z - q.z;
+            pov.setLook(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
+          });
+          await frames(3);
+          await p.mouse.down(); await frames(1); await p.mouse.up();
+          await ev(() => __pov.frames(Math.round(1.5 / __pov.dt), () => window.__app.pov.npc.body.gibbed));
+          gibbed = await ev(() => window.__app.pov.npc.body.gibbed);
+        }
+        await secs(0.5);
+        const k2 = await census(), m1 = meatOf(k2);
+        const gibs = await ev((g0) => window.__gib.slice(g0), g0);
+        const npcVisible = await ev(() => { let v = false; window.__app.pov.npc.root.traverseVisible(() => { v = true; }); return v && window.__app.pov.npc.root.visible; });
+        check('GPU: a rocket kill gibs the NPC', gibbed && gibs.some((x) => x.by), `${rockets} rockets, ${JSON.stringify(gibs)}`);
+        check('GPU: the gib is the body\'s mass in meat', gibs.length > 0 && gibs.every((x) => x.cells + x.lost === GIB_CELLS) && m1 - m0 === gibs.reduce((t, x) => t + x.cells, 0),
+          `meat ${m0}→${m1} (+${m1 - m0}, ${k2.COOKED_MEAT ?? 0} cooked), laid ${gibs.map((x) => x.cells).join(',')}, body = ${GIB_CELLS} cells`);
+        check('GPU: the gibbed NPC is no longer drawn', !npcVisible);
+        if (shots) {   // look down at where it burst
+          await ev((s) => {
+            const pov = window.__app.pov, q = pov.player.pos;
+            const dx = s.x - q.x, dy = 0.5 - (q.y + 5), dz = s.z - q.z;
+            pov.setLook(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
+          }, NP);
+          await secs(0.8);
+          await shot('gibbed');
+        }
+        console.log('     every burst this run:', JSON.stringify(await ev(() => window.__gib)));
+      }
+
+      // eating (the NPC is dead for a while): cooked meat at the feet, raw meat on the other side,
+      // laid while at full health (nothing eaten), then hurt
+      await spawnPlayer();
+      await secs(1.2);
+      await fill('COOKED_MEAT', { x: PL.x - 2, y: 1.5, z: PL.z }, 1);
+      await fill('MEAT', { x: PL.x + 2, y: 1.5, z: PL.z }, 1);
+      await secs(1.5);
+      const e0 = await ev(() => window.__eat.length);
+      const c0 = await census();
+      await ev(() => window.__app.pov.player.hurt(0.6, 'test'));
+      const h0 = await ev(() => window.__app.pov.player.health);
+      await secs(2.5);
+      const h1 = await ev(() => window.__app.pov.player.health);
+      const c1 = await census();
+      const eats = await ev((e0) => window.__eat.slice(e0).filter((e) => !e.by), e0);
+      const eaten = eats.reduce((t, e) => t + e.cells, 0);
+      check('GPU: cooked meat touching you is eaten and heals', eaten > 0 && Math.abs(h1 - Math.min(1, h0 + eaten * EAT_HEAL)) < 1e-6,
+        `${eaten} eaten in ${eats.length} bites, health ${h0.toFixed(2)}→${h1.toFixed(2)}`);
+      check('GPU: eating takes the cells out of the sim, no more', (c1.COOKED_MEAT ?? 0) + eaten === (c0.COOKED_MEAT ?? 0),
+        `cooked in grid ${c0.COOKED_MEAT ?? 0}→${c1.COOKED_MEAT ?? 0}, eaten ${eaten}`);
+      check('GPU: raw meat isn\'t eaten', (c1.MEAT ?? 0) === (c0.MEAT ?? 0), `raw ${c0.MEAT ?? 0}→${c1.MEAT ?? 0}`);
+      await shot('ate');
+    }
+    check(`no page or GPU errors (${app.secs()})`, app.errors.length === 0, app.errors.slice(0, 3).join(' | '));
+  } catch (err) {
+    fails++;
+    console.log('FAIL threw', String(err).slice(0, 500));
   } finally {
-    await b.close();
-    await vite.close();
+    await app.close();
   }
 }
 
