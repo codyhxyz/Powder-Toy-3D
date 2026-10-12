@@ -142,6 +142,8 @@ const drewText = (s) => `volume ${s.drawn ? 'drawn' : 'NOT drawn'}, ${pct(s.adde
 // traces are the game's own.
 const POV_STEPS = 4;          // sim steps a body frame (the app's default)
 const POV_DT = 1 / 30;        // s a body frame
+const LIVE_TICKS = 3;         // the app's own ticks the stage waits for, POV active...
+const LIVE_WAIT_MS = 90000;   // ...at most this long (a tick of the live app on a loaded SwiftShader)
 async function povStage(browser, vite, secs) {
   // (the empty box: its bricks sleep, so a frame's steps cost next to nothing and the frames are the body's)
   const { page, errors, allowed, failed } = await boot(browser, vite, '?size=64&preset=empty&view=plain');
@@ -213,6 +215,20 @@ async function povStage(browser, vite, secs) {
   ok(held === 'GUN' && used.fires > 0 && used.impacts.length > 0,
     `pov: the pistol fires (${used.fires}) and its round strikes (${used.impacts.map((i) => `id ${i.id} at ${i.point.map((v) => v.toFixed(1)).join(', ')}`).join('; ') || 'nothing'}) within ${shotFrames} frames`
     + (used.impacts.length ? '' : ` (shot from ${used.origin} along ${used.dir}, ${used.flying} flying, look ${used.look})`));
+  // the app's own ticks, not the test's frames: the body runs from src/wire/pov.js's beforeStep at
+  // the loop's pace, the crosshair's pick requested by the tick; a few of them, then parked again
+  const live = await page.evaluate(async ({ ticks, waitMs }) => {
+    const pov = __app.pov, update = pov.update;
+    let calls = 0;
+    pov.update = (dt) => { calls++; return update(dt); };
+    __app.test.resume();
+    const t0 = performance.now();
+    while (calls < ticks && performance.now() - t0 < waitMs) await new Promise((r) => setTimeout(r, 100));
+    __app.test.park();
+    pov.update = update;
+    return { calls, ms: Math.round(performance.now() - t0), mode: pov.mode };
+  }, { ticks: LIVE_TICKS, waitMs: LIVE_WAIT_MS });
+  ok(live.calls >= LIVE_TICKS && live.mode === 'on', `pov: the app's own ticks run the body (src/wire/pov.js beforeStep): ${live.calls} updates in ${live.ms} ms`);
   await page.evaluate(() => __app.test.renderOnce());
   await page.screenshot({ path: join(OUT, 'pov.png') });
   ok(!errors.length, `pov: no page or GPU errors (${secs()})${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
