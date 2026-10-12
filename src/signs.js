@@ -1,6 +1,5 @@
-import * as THREE from 'three';
-import { quadVert } from './shaders/common.js';
-import { signProbeFrag, MAX_SIGNS } from './shaders/probe.js';
+import * as THREE from 'three/webgpu';
+import { signProbeFrag, MAX_SIGNS, SignParams, SIGN_LAYOUT } from './shaders/probe.js';
 import { ELEMENTS } from './elements.js';
 import './signs.css';
 
@@ -8,10 +7,11 @@ import './signs.css';
 //
 // Each sign is an HTML plate floating above its anchor (the centre of the clicked
 // face), joined to it by a 1px stem and a dot. Labels are positioned with our own
-// projection every frame. A tiny GPU pass (one fragment per sign) marches a DDA
-// ray from the camera to every anchor to find out whether voxels hide it, and
-// reads the attached cell's state for the live placeholders {t} {p} {e}. That
-// pass runs at most every PROBE_MS and is read back asynchronously.
+// projection every frame. A tiny GPU kernel (one workgroup, a thread per sign:
+// shaders/probe.js) marches a DDA ray from the camera to every anchor to find
+// out whether voxels hide it, and reads the attached cell's state for the live
+// placeholders {t} {p} {e}. It runs at most every PROBE_MS and its results
+// come back through a readback ring (docs/webgpu.md G4), a few frames later.
 //
 // A sign is pinned to a world cell: in a world larger than the grid (the
 // massive world's window, docs/scaling.md D11) it stays put while the window
@@ -58,17 +58,9 @@ export class Signs {
     this.layer.className = 'tpt-signs';
     container.appendChild(this.layer);
 
-    // sign data for the probe: row 0 anchors, row 1 sample cells
+    // sign data for the probe: the anchors, then the sample cells (shaders/probe.js)
     this.signData = new Float32Array(MAX_SIGNS * 2 * 4);
-    this.signTex = new THREE.DataTexture(this.signData, MAX_SIGNS, 2, THREE.RGBAFormat, THREE.FloatType);
-    this.signTex.needsUpdate = true;
-    this.probeTarget = new THREE.WebGLRenderTarget(MAX_SIGNS, 1, {
-      type: THREE.FloatType, format: THREE.RGBAFormat,
-      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-      depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
-    });
-    this.probeBuf = new Float32Array(MAX_SIGNS * 4);
-    this.probeMat = null;
+    this.probe = null;     // the kernel, its buffers and groups, for one simulation's device and grid (_ensureProbe)
     this.gridKey = '';
     this.pending = false;
     this.lastProbe = -1e9;
@@ -190,8 +182,7 @@ export class Signs {
   // The sim/volume were recreated: recompile the probe for the new grid layout.
   rebuild() {
     this.generation++;
-    this.probeMat?.dispose();
-    this.probeMat = null;
+    this.probe = null;
     this.gridKey = '';
     this.dataDirty = true;
     this.at.set(NaN, NaN, NaN);
@@ -244,31 +235,30 @@ export class Signs {
     this.clear();
     this.ro.disconnect();
     this.layer.remove();
-    this.probeMat?.dispose();
-    this.probeTarget.dispose();
-    this.signTex.dispose();
+    this.probe?.data.destroy();
+    this.probe = null;
     this.disposed = true;
   }
 
   // ------------------------------------------------------------------ probe
 
+  // The kernel for sim's grid on its device (pipelines are cached by source),
+  // the signs' data buffer and the result ring.
   _ensureProbe(sim) {
-    const g = sim.g;
+    const g = sim.g, gpu = sim.gpu;
     const key = `${g.nx}x${g.ny}x${g.nz}`;
-    if (this.probeMat && key === this.gridKey) return;
-    if (this.probeMat) this.rebuild();
+    if (this.probe?.gpu === gpu && key === this.gridKey) return;
+    if (this.probe) this.rebuild();
     this.gridKey = key;
-    this.probeMat = new THREE.RawShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader: quadVert,
-      fragmentShader: signProbeFrag(g),
-      uniforms: {
-        tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tSigns: { value: this.signTex },
-        uCam: { value: new THREE.Vector3() }, uCount: { value: 0 },
-      },
-      depthTest: false,
-      depthWrite: false,
-    });
+    const L = gpu.layout('SIGN', SIGN_LAYOUT);
+    this.probe = {
+      gpu, L,
+      kernel: gpu.kernel({ name: 'signProbe', code: signProbeFrag(g), layouts: [sim.L.TABLES, sim.L.STATE_RO, L], params: SignParams }),
+      data: gpu.createBuffer({ label: 'signs', size: this.signData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+      ring: gpu.readback.ring('signs', MAX_SIGNS * 16, 2),
+      groups: new WeakMap(),   // the brick map's buffer → its group
+    };
+    this.dataDirty = true;
   }
 
   // Sign s in the grid of sim (whose window may have moved over the world), and whether the window holds it.
@@ -302,36 +292,38 @@ export class Signs {
       if (c.x < 0 || c.y < 0 || c.z < 0 || c.x >= g.nx || c.y >= g.ny || c.z >= g.nz) c.add(s.normal);
       d.set([c.x, c.y, c.z, 0], row + i * 4);
     });
-    this.signTex.needsUpdate = true;
+    this.probe.gpu.write(this.probe.data, 0, d);
     this.dataDirty = false;
   }
 
   _probe(sim, info) {
+    const pr = this.probe, brick = sim.brick;
+    // (no brick map before the derived passes' first frame; the kernel builds in the background)
+    if (!brick || pr.kernel.state !== 'ready') return;
     if (this.dataDirty) this._uploadSigns(sim.g);
     const n = this.batch.length;
     this.lastProbe = info.now;
     if (!n) return;
-    const u = this.probeMat.uniforms;
-    u.tA.value = sim.stateA;
-    u.tB.value = sim.stateB;
-    u.tBrick.value = sim.brick.texture;
-    u.uCam.value.copy(info.camGrid);
-    u.uCount.value = n;
-
-    const prev = this.renderer.getRenderTarget();
-    sim.run(this.probeMat, this.probeTarget);
-    this.renderer.setRenderTarget(prev);
-
+    let group = pr.groups.get(brick);
+    if (!group) {
+      const b = (binding, buffer) => ({ binding, resource: { buffer } });
+      group = pr.gpu.bindGroup(pr.L, [b(0, brick), b(1, pr.data), b(2, pr.ring.buffer)], 'signs');
+      pr.groups.set(brick, group);
+    }
+    const slot = pr.ring.next();
+    pr.kernel.dispatch(pr.gpu.frame, [1, 1, 1], {
+      bind: [sim.tables, sim.bindRO, group], header: sim.header(), params: { cam: info.camGrid, count: n, slot },
+    });
     const batch = this.batch.slice();
     const gen = this.generation;
-    const buf = this.probeBuf.subarray(0, n * 4);
     const t0 = info.now;
     this.pending = true;
     this.stats.probes++;
-    this.renderer.readRenderTargetPixelsAsync(this.probeTarget, 0, 0, n, 1, buf).then(() => {
+    pr.ring.read(slot).then((bytes) => {
       this.pending = false;
       if (this.disposed || gen !== this.generation) return;
       this.stats.lastProbeMs = performance.now() - t0;
+      const buf = new Float32Array(bytes);
       batch.forEach((s, i) => {
         if (!this.list.includes(s)) return;
         const o = i * 4;

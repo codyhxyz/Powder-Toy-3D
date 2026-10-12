@@ -1,57 +1,93 @@
-import { lib } from './render.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE } from './common.js';
+import { brickInfoWGSL } from './bindings.js';
+import { ddaGLSL } from './gfx/core.js';
+import { materialsGLSL } from '../gfx/materials.js';
+import { uniformStruct } from '../gpu/params.js';
 
 export const MAX_SIGNS = 64;
 
-// Sign probe: one fragment per sign (target is MAX_SIGNS × 1, RGBA32F).
-//
-// tSigns (MAX_SIGNS × 2 float texture):
-//   row 0 = (anchor xyz in grid coords, unused)  the point on the face the sign is pinned to
-//   row 1 = (cell xyz to sample, unused)          the attached voxel (or the one above a floor sign)
-//
-// Output per sign: (transmittance camera → anchor, element id or -1, temperature °C, air pressure).
-// Transmittance is 0 as soon as an opaque voxel is in the way; liquids and glass attenuate it
-// with the same Beer–Lambert extinction the renderer uses; gases and fire don't block.
-export const signProbeFrag = (g) => /* glsl */ `
-${lib(g)}
-uniform sampler2D tSigns;
-uniform vec3 uCam;
-uniform int uCount;
-out vec4 oC;
+// The sign probe (src/signs.js; docs/webgpu.md G4): one workgroup of
+// MAX_SIGNS threads, a sign each. Group 2:
+//   brick     the brick map (src/derived.js), read for which bricks hold matter
+//   signData  2 · MAX_SIGNS vec4f: the anchors (xyz in grid coordinates: the
+//             point on the face the sign is pinned to), then the cells to
+//             sample (the attached voxel, or the one above a floor sign)
+//   result    the sign ring (gpu.readback.ring): MAX_SIGNS vec4f a slot
+// Output per sign: (transmittance camera → anchor, element id or -1,
+// temperature °C, air pressure). Transmittance is 0 as soon as an opaque
+// voxel is in the way; liquids and glass attenuate it with the same
+// Beer–Lambert extinction the renderer uses; gases and fire don't block.
+// A walk of the state alone: the prelude, the materials' table accessors and
+// core.js's DDA helpers, no lighting group (shaders/gfx/lib.js's bare probe).
+export const SignParams = uniformStruct('SignParams', {
+  cam: 'vec3f',    // the eye, grid cells
+  count: 'i32',    // signs in signData
+  slot: 'u32',     // the ring slot
+});
+const ro = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } });
+export const SIGN_LAYOUT = [ro(0), ro(1), { binding: 2, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 
-float sightLine(vec3 ro, vec3 target) {
-  vec3 dv = target - ro;
-  float tEnd = length(dv);
-  if (tEnd < 1e-3) return 1.0;
-  vec3 rd = safeDir(dv / tEnd);
-  vec3 bh = boxHit(ro, rd);
-  float t0 = max(bh.x, 0.0);
+export const signProbeFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+${materialsGLSL()}
+${ddaGLSL(g)}
+${brickInfoWGSL}
+${SignParams.wgsl}
+@group(3) @binding(1) var<uniform> P: SignParams;
+const MAX_SIGNS: u32 = ${MAX_SIGNS}u;
+@group(2) @binding(0) var<storage, read> brick: array<BrickInfo>;
+@group(2) @binding(1) var<storage, read> signData: array<vec4f>;
+@group(2) @binding(2) var<storage, read_write> result: array<vec4f>;
+
+// Jump the DDA to the exit of brick bc, which holds no matter: as one step
+// would, updates *cell, *tMax and *tEnter (shaders/gfx/core.js skipBrick,
+// which needs the lighting group's declarations this walk goes without).
+fn skipBrickSign(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
+                 cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>, tEnter: ptr<function, f32>) {
+  let bmin = vec3f(bc * BS);
+  let bmax = bmin + f32(BS);
+  let tb = (mix(bmin, bmax, step(vec3f(0.0), rd)) - ro) / rd;
+  let ax = argmin3(tb);
+  let tx = tb[ax];
+  var c = vec3i(floor(ro + rd * tx));
+  c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
+  *cell = c;
+  *tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
+  *tEnter = tx;
+}
+
+fn sightLine(ro: vec3f, toward: vec3f) -> f32 {
+  let dv = toward - ro;
+  let tEnd = length(dv);
+  if (tEnd < 1e-3) { return 1.0; }
+  let rd = safeDir(dv / tEnd);
+  let bh = boxHit(ro, rd);
+  let t0 = max(bh.x, 0.0);
   // stop just short of the face the sign sits on, so the attached voxel only
   // counts when the ray actually passes through it (camera behind the face)
-  float t1 = min(bh.y, tEnd - 0.02);
-  if (t1 <= t0) return 1.0;
-
-  ivec3 istp = ivec3(sign(rd));
-  vec3 tDelta = abs(1.0 / rd);
-  ivec3 cell = clamp(ivec3(floor(ro + rd * (t0 + 1e-4))), ivec3(0), GRID - 1);
-  vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  float tEnter = t0;
-  ivec3 lastB = ivec3(-1);
-  float occ = 0.0;
-  float tau = 0.0;
-
-  for (int i = 0; i < ${g.maxSteps}; i++) {
-    if (outside(cell) || tEnter >= t1) break;
-    ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
-    if (occ < 0.5) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    int ax = argmin3(tMax);
-    float seg = min(tMax[ax], t1) - tEnter;
-    int id = eid(fetchA(cell));
+  let t1 = min(bh.y, tEnd - 0.02);
+  if (t1 <= t0) { return 1.0; }
+  let istp = vec3i(sign(rd));
+  let tDelta = abs(1.0 / rd);
+  var cell = clamp(vec3i(floor(ro + rd * (t0 + 1e-4))), vec3i(0), GRID - 1);
+  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var tEnter = t0;
+  var lastB = vec3i(-1);
+  var occ = false;
+  var tau = 0.0;
+  for (var i = 0; i < MAX_STEPS; i++) {
+    if (outside(cell) || tEnter >= t1) { break; }
+    let bc = cell / BS;
+    if (any(bc != lastB)) { lastB = bc; occ = brickMatter(brick[brickId(bc)].info); }
+    if (!occ) { skipBrickSign(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
+    let ax = argmin3(tMax);
+    let seg = min(tMax[ax], t1) - tEnter;
+    let id = eid(fetchA(cell));
     if (id != E_EMPTY) {
-      int rc = RCLASS[id];
+      let rc = RCLASS(id);
       // ignore rays that only graze a voxel edge
-      if (rc == R_OPAQUE && seg > 0.03) return 0.0;
-      if (rc == R_LIQUID || rc == R_GLASS) tau += dot(SIGMA[id], vec3(1.0 / 3.0)) * seg;
+      if (rc == R_OPAQUE && seg > 0.03) { return 0.0; }
+      if (rc == R_LIQUID || rc == R_GLASS) { tau += dot(SIGMA(id), vec3f(1.0 / 3.0)) * seg; }
     }
     tEnter = tMax[ax];
     cell[ax] += istp[ax];
@@ -60,14 +96,25 @@ float sightLine(vec3 ro, vec3 target) {
   return exp(-tau);
 }
 
-void main() {
-  int i = int(gl_FragCoord.x);
-  if (i >= uCount) { oC = vec4(1.0, -1.0, AMBIENT, 0.0); return; }
-  vec3 anchor = texelFetch(tSigns, ivec2(i, 0), 0).xyz;
-  ivec3 c = ivec3(floor(texelFetch(tSigns, ivec2(i, 1), 0).xyz + 0.5));
-  float tr = sightLine(uCam, anchor);
-  if (outside(c)) { oC = vec4(tr, -1.0, AMBIENT, 0.0); return; }
-  vec4 a = fetchA(c);
-  oC = vec4(tr, float(eid(a)), a.y, fetchB(c).w);
+@compute @workgroup_size(${MAX_SIGNS})
+fn main(@builtin(local_invocation_index) i: u32) {
+  var o = vec4f(1.0, -1.0, AMBIENT, 0.0);
+  if (i32(i) < P.count) {
+    let anchor = signData[i].xyz;
+    let c = vec3i(floor(signData[MAX_SIGNS + i].xyz + 0.5));
+    let tr = sightLine(P.cam, anchor);
+    o = vec4f(tr, -1.0, AMBIENT, 0.0);
+    if (!outside(c)) {
+      let a = fetchA(c);
+      o = vec4f(tr, f32(eid(a)), a.y, fetchB(c).w);
+    }
+  }
+  result[P.slot * MAX_SIGNS + i] = o;
 }
 `;
+
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  { name: 'signProbe', kind: 'compute', code: signProbeFrag, params: SignParams, warm: false,
+    layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, SIGN_LAYOUT], dispatch: () => [1, 1, 1] },
+];
