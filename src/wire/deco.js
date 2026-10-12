@@ -1,8 +1,8 @@
 // TPT's decoration layer (src/deco.js; docs/webgpu.md Sync log S3, U17): a
 // colour painted onto matter that travels with it. Its tools, Ctrl+B, its
-// save sections and the console's sim.decoColor. Moved here from app.js as it
-// was (WebGL): U17 ports it. Until then app.js greys out the deco tools and
-// Ctrl+B, and the view stands in for the layer (shaders/render.js DECO_VIEW).
+// save sections and the console's sim.decoColor. The layer is made on the
+// first deco stroke (sim.ensureDeco); its save section reads the plane back
+// without a stall, recorded in the save's moment (saves/sections.js).
 import { decoView, prepareDeco, readDeco, uploadDeco, ensureDeco, DECO_BYTES, setDecoColor } from '../deco.js';
 import { registerSaveSection } from '../saves/sections.js';
 import { registerConsoleApi } from '../console/registry.js';
@@ -19,15 +19,16 @@ const BYTE = 256;
 
 const deco = {
   name: 'deco',
-  ready: false,
+  ready: true,
 
   boot(app) {
     registerSaveSection('deco', {
+      // (the read is recorded now, the save's moment; null while nothing is painted)
       save: () => {
-        const data = readDeco(app.sim);   // (null while nothing is painted)
-        if (!data) return undefined;
-        const g = app.sim.g;
-        return packCells([g.nx, g.ny, g.nz], (x, y, z) => cellTexel(g, x, y, z), [data]);
+        const sim = app.sim, read = readDeco(sim);
+        if (!read) return undefined;
+        const g = sim.g;
+        return read.then((data) => (data ? packCells([g.nx, g.ny, g.nz], (x, y, z) => cellTexel(g, x, y, z), [data]) : undefined));
       },
       load: (planes, h) => {
         const g = app.sim.g, data = new Uint8Array(g.width * g.height * DECO_BYTES);

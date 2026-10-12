@@ -1,4 +1,3 @@
-import * as THREE from 'three';
 import { encodeSave, decodeSave, packCells, unpackCells } from './format.js';
 import { collectSections, applySections, savedSettingKeys } from './sections.js';
 import { cellTexel } from '../sim.js';
@@ -10,8 +9,9 @@ import { RAYS } from '../rays.js';
 //             seed) and B (velocity, pressure), shuffled into byte planes
 //             (format.js packCells). What derives from them (activity flags,
 //             render fields, bricks, GI) is rebuilt on load, as after any load.
-//   rays      the fast-particle list (raysLayer.js) and where its brush writes
-//             next, while any are flying
+//   rays      the fast-particle list (raysLayer.js: its four vec4s a particle,
+//             as the WebGL build's four attachments, one after the other) and
+//             where its brush writes next, while any are flying
 //   settings  the settings that belong to the world (sections.js registerSavedSettings)
 //   world     in World: the stored edits outside the window (world/store.js)
 //             and the brick columns whose trees are in, with the window's
@@ -19,11 +19,13 @@ import { RAYS } from '../rays.js';
 // then every registered section (signs, spawners, the camera, the day...).
 //
 // The state is read back the way the multiplayer host reads it
-// (net/codec.js): readRenderTargetPixelsAsync, which queues the copy at once
-// and resolves when the GPU gets there, so the frame never stalls and the
-// save is the state at the moment it was asked for.
+// (net/codec.js): the copies are recorded at once (sim.readState, the
+// particles' readList, a section's own reads: docs/webgpu.md B7) and resolve
+// when the GPU gets there, so the frame never stalls and the save is the state
+// at the moment it was asked for. Their kernels are built first, so nothing
+// in that moment waits.
 //
-// app: { renderer, settings, getSim, getWin, header(), thumbnail(), prepare(header), finish(header), onSettings() }
+// app: { settings, getSim, getWin, header(), thumbnail(), prepare(header), finish(header), onSettings() }
 //   header()         the save's description of the scene: { map, mapName, size, preset, world: { scene, seed } | null }
 //   thumbnail()      resolves to the save's picture (a data URL) or null
 //   prepare(header)  gets the grid ready for a save (switching map or size, an undo snapshot): resolves false to refuse
@@ -31,25 +33,13 @@ import { RAYS } from '../rays.js';
 //   onSettings()     after the saved settings were set
 
 const CHANNELS = 4;                   // RGBA per texel
-const RAY_LISTS = 4;                  // the particle list's attachments (raysLayer.js LIST_ATTACHMENTS)
+const RAY_LISTS = 4;                  // the particle's vec4s (shaders/rays.js Particle; the WebGL build's attachments)
 const RAY_SLOTS = RAYS.RAY_TEX * RAYS.RAY_TEX;
-
-// One attachment of a render target, read back without stalling: resolves to `out`.
-export function readTargetAsync(renderer, target, index, out, w = target.width, h = target.height) {
-  return renderer.readRenderTargetPixelsAsync(target, 0, 0, w, h, out, undefined, index);
-}
-
-// CPU data into one texture of a render target (an attachment), without a pass.
-function uploadInto(renderer, data, w, h, texture) {
-  const src = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
-  renderer.copyTextureToTexture(src, texture);
-  src.dispose();
-}
 
 export class SaveRefused extends Error {}
 
 export function createSaves(app) {
-  const { renderer, settings } = app;
+  const { settings } = app;
 
   // Capture the game now: resolves to the save's bytes. name: the save's name.
   async function capture(name) {
@@ -60,19 +50,15 @@ export function createSaves(app) {
       while (win.pending) await win.pending.catch(() => {});
       if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
     }
+    // the conversion to the atlas order and the particles' kernels, built before the moment
+    await Promise.all([sim.prepare('toAtlas'), sim.rays.prepare?.()]);
+    if (sim !== app.getSim() || sim.disposed) throw new SaveRefused('The map changed while saving');
     // ---- from here to the readbacks, one task: everything below is the same moment ----
-    const g = sim.g, t = sim.targets[sim.cur], texels = g.width * g.height;
-    const A = new Float32Array(texels * CHANNELS), B = new Float32Array(texels * CHANNELS);
-    const reads = [readTargetAsync(renderer, t, 0, A), readTargetAsync(renderer, t, 1, B)];
+    const g = sim.g;
+    const reads = [sim.readState()];
     let rays = null;
-    const raysCursor = sim.rays.cursor;   // (where the particle brush writes next)
-    if (sim.rays.active) {
-      rays = new Float32Array(RAY_LISTS * RAY_SLOTS * CHANNELS);
-      const list = sim.rays.list;
-      for (let i = 0; i < RAY_LISTS; i++) {
-        reads.push(readTargetAsync(renderer, list, i, rays.subarray(i * RAY_SLOTS * CHANNELS, (i + 1) * RAY_SLOTS * CHANNELS)));
-      }
-    }
+    const raysCursor = sim.rays.cursor ?? 0;   // (where the particle brush writes next)
+    if (sim.rays.active) rays = sim.rays.readList();
     const scene = app.header(), thumbnail = app.thumbnail?.() ?? null;
     const header = {
       name, created: new Date().toISOString(), ...scene,
@@ -85,11 +71,15 @@ export function createSaves(app) {
     if (win) core.push({ key: 'worldStore', data: win.store.toBytes() }, { key: 'worldPlanted', data: win.planted.slice() });
     const extra = collectSections();
     // ---- (the moment ends) ----
-    await Promise.all(reads);
+    const [[A, B], list] = await Promise.all([reads[0], rays]);
     header.thumbnail = await thumbnail;
     const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), [A, B]);
     const sections = [{ key: 'cells', data: cells }, ...core];
-    if (rays) sections.push({ key: 'rays', data: rays }, { key: 'raysCursor', data: { cursor: raysCursor } });
+    if (list) {
+      const data = new Float32Array(RAY_LISTS * RAY_SLOTS * CHANNELS);
+      [list.l0, list.l1, list.l2, list.l3].forEach((l, i) => data.set(l, i * RAY_SLOTS * CHANNELS));
+      sections.push({ key: 'rays', data }, { key: 'raysCursor', data: { cursor: raysCursor } });
+    }
     sections.push(...await extra);
     return encodeSave(header, sections);
   }
@@ -114,13 +104,9 @@ export function createSaves(app) {
     // the particles in flight (sim.load let the old ones go). The step counter
     // isn't saved: storms and the cloud deck time themselves by it, and it only runs forward.
     const rays = sections.get('rays');
-    if (rays?.length === RAY_LISTS * RAY_SLOTS * CHANNELS) {
-      const list = sim.rays.list;
-      for (let i = 0; i < RAY_LISTS; i++) {
-        uploadInto(renderer, rays.subarray(i * RAY_SLOTS * CHANNELS, (i + 1) * RAY_SLOTS * CHANNELS), RAYS.RAY_TEX, RAYS.RAY_TEX, list.textures[i]);
-      }
+    if (rays?.length === RAY_LISTS * RAY_SLOTS * CHANNELS && sim.rays.writeList) {
+      sim.rays.writeList(rays);
       sim.rays.cursor = (sections.get('raysCursor')?.cursor ?? 0) % RAY_SLOTS;
-      sim.rays.wake();
     }
     const saved = sections.get('settings');
     if (saved) {
