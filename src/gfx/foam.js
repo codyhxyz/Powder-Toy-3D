@@ -18,8 +18,10 @@
 // argument that this is exact), the args kernel sizes the indirect dispatch,
 // and the aeration kernel writes the other copy over them. An idle world
 // (Simulation.step returns early) keeps stepping it, every cell held in
-// place, for AER_IDLE_STEPS, then clears it: the foam left on still water
-// bursts, then the frame loop may sleep (wire/foam.js busy).
+// place, until no foam is visible (its count, read back every
+// FOAM_CHECK_STEPS idle steps) or for AER_IDLE_STEPS at most, then clears
+// it: the foam left on still water bursts, then the frame loop may sleep
+// (wire/foam.js busy).
 import {
   aerationFrag, aerListFrag, aerArgsFrag, AerParams, AerListParams, AER_LAYOUT, AER_LIST_LAYOUT, AER_LIST_STATE, AER_IDLE_STEPS,
 } from '../shaders/gfx/liquidDetail.js';
@@ -33,6 +35,10 @@ const RECORD_BYTES = 8;   // vec2u: (aeration, liquid) and (fall, grounded) as f
 // shift, switched on): the foams words and the nz history say nothing then,
 // and two steps write both copies everywhere.
 const START_STEPS = 2;
+// Idle steps between reads of the visible foam's count (the word after the
+// nz words): once none is left, the idle steps end there (it clears), so a
+// settled world sleeps without waiting out AER_IDLE_STEPS.
+const FOAM_CHECK_STEPS = 8;
 
 class Aeration {
   constructor(sim) {
@@ -43,6 +49,7 @@ class Aeration {
     this.allSteps = START_STEPS;
     this.idleSteps = AER_IDLE_STEPS + 1;   // idle steps run since the world went idle (nothing to burst yet)
     this.offAt = null;         // sim.version when it was switched off
+    this.generation = 0;       // a real step or a reset: a foam count read before it is stale
     // test only (tools/aeration-check.mjs): dropHistory lists a brick by the
     // foams words alone (the negative control: stale copies and wakes left behind)
     this.test = { dropHistory: false };
@@ -63,7 +70,8 @@ class Aeration {
     const field = (label) => {
       const f = {
         buffer: gpu.createBuffer({ label, size: 2 * this.bytes, usage: S }),
-        nz: gpu.createBuffer({ label: `${label} nz`, size: Math.max(16, g.nbricks * 4), usage: S }),
+        // a word per brick, then the visible foam's count
+        nz: gpu.createBuffer({ label: `${label} nz`, size: Math.ceil((g.nbricks + 1) / 4) * 16, usage: S }),
         groups: new Map(),   // per moveSrc buffer (sim.moveSrc is remade when a side plane comes or goes)
       };
       f.listGroup = gpu.bindGroup(this.listL, [{ binding: 0, resource: { buffer: sim.args } }, { binding: 1, resource: { buffer: f.nz } }], `${label} list`);
@@ -86,6 +94,7 @@ class Aeration {
   // plane at word moveSrcAt of its buffer (sim.js step).
   step(f, { pre, moveSrc, moveSrcAt }) {
     this.idleSteps = 0;
+    this.generation++;
     this._run(f, { still: 0, src: pre, moveSrc, srcAt: moveSrcAt });
   }
 
@@ -95,6 +104,13 @@ class Aeration {
     if (this.idleSteps++ === AER_IDLE_STEPS) { this.reset(f); return; }
     const sim = this.sim;
     this._run(f, { still: 1, src: sim.cur, moveSrc: sim.moveSrc, srcAt: sim.moveSrcAt });
+    // the foam still visible after this step: none, and the next idle step clears what's left
+    if (this.idleSteps % FOAM_CHECK_STEPS === 1) {
+      const gen = this.generation;
+      this.gpu.readback.buffer(this.field.nz, this.g.nbricks * 4, 4).then((bytes) => {
+        if (gen === this.generation && this.idleSteps < AER_IDLE_STEPS && new Uint32Array(bytes)[0] === 0) this.idleSteps = AER_IDLE_STEPS;
+      }, () => {});
+    }
   }
 
   _run(f, { still, src, moveSrc, srcAt }) {
@@ -159,6 +175,7 @@ class Aeration {
     }
     this.allSteps = START_STEPS;
     this.idleSteps = AER_IDLE_STEPS + 1;   // nothing left to burst
+    this.generation++;
   }
 
   /**

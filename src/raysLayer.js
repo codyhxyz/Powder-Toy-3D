@@ -57,6 +57,7 @@ export class Rays {
     this.cycle = Math.ceil(g.slots / N);
     this.cursor = 0;          // the paint kernel's next slot
     this.active = false;
+    this.holds = false;       // the list may hold particles (painted, loaded or spawned since it was last cleared)
     this.stepped = false;     // this step's deposits are in the buffer (settle zeroes them)
     this.wokeSince = false;   // woken since the count in flight was asked for
     this.reading = false;
@@ -110,6 +111,7 @@ export class Rays {
     this._dispatch(this.kernels.raysPaint, {
       center: [center.x, center.y, center.z], radius, shape, kind, frame: ++this.sim.paints, cursor: this.cursor, count,
     });
+    this.holds = true;
     this.cursor = (this.cursor + count) % N;
     this._compact();
     return true;
@@ -135,6 +137,7 @@ export class Rays {
     });
     this._dispatch(k.raysDeposit, { stamp, countSet: this._flip(), deposit: true });
     this.stepped = true;
+    this.holds = true;   // (the spawn may have made some)
     // at the end of a sweep, count what's alive and what emits (asynchronously)
     if (frame % this.cycle === this.cycle - 1) this.count();
   }
@@ -152,6 +155,7 @@ export class Rays {
     const f = this.gpu.frame;
     f.clear(this.list);
     for (const set of [0, 1]) f.clear(this.counts, set * SET_BYTES + 4, 16);   // (live through seen; the vertex count stays)
+    this.holds = false;
     this.wake();
   }
 
@@ -175,6 +179,7 @@ export class Rays {
   // Nothing alive and nothing emitting: stop, and let the bricks sleep.
   sleep() {
     this.active = false;
+    this.holds = false;
     this.gpu.frame.clear(this.bricks);
     this.sim.actDirty = true;
   }
@@ -202,6 +207,7 @@ export class Rays {
     const all = new Float32Array(N * LIST_FLOATS);
     for (let j = 0; j < N; j++) for (let k = 0; k < 4; k++) all.set(lists.subarray(k * N * 4 + j * 4, k * N * 4 + j * 4 + 4), j * LIST_FLOATS + k * 4);
     this.gpu.write(this.list, 0, all);
+    this.holds = true;
     this.wake();
     const sim = this.sim;
     this.prepare().then(() => { if (!this.disposed && !sim.disposed && !this.gpu.failure) this._compact(); }, () => {});
@@ -222,11 +228,13 @@ export class Rays {
   /**
    * The live particles into a render pass on the scene target (the scene
    * pass after the volume, or E2's overlay pass: they write no depth), sized
-   * for a target width × height px. Draws nothing while the layer sleeps or
-   * its pipeline builds; returns whether it drew.
+   * for a target width × height px. Draws nothing while the layer sleeps,
+   * while its list holds none (cleared, and nothing painted, loaded or
+   * spawned since: a loaded box that is paused) or while its pipeline
+   * builds; returns whether it drew.
    */
   draw(rp, { width, height }) {
-    if (!this.active) return false;
+    if (!this.active || !this.holds) return false;
     const gpu = this.gpu;
     if (!this.draws) {
       const fu = frameUniformsOf(gpu);

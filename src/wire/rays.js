@@ -28,8 +28,10 @@ const rays = {
     const t = app.post.sceneTarget;
     app.sim.rays.draw?.(rp, { width: t.width, height: t.height });
   },
-  // particles fly between frames: the loop keeps ticking while any may be alive
-  busy(app) { return !!app.sim.rays.active; },
+  // particles fly between frames: the loop keeps ticking while any may be
+  // alive, unless paused (they fly only with the steps; a load wakes the layer
+  // until a sweep finds it empty, which a paused box would never run)
+  busy(app) { return !!app.sim.rays.active && !app.settings.paused; },
 };
 
 export default rays;

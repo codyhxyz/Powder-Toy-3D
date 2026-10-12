@@ -477,9 +477,11 @@ ${AerParams.wgsl}
 ${simModesGLSL}
 @group(2) @binding(0) var<storage, read> moveSrc: array<u32>;
 @group(2) @binding(1) var<storage, read_write> aer: array<vec2u>;
-@group(2) @binding(2) var<storage, read_write> nz: array<u32>;
+@group(2) @binding(2) var<storage, read_write> nz: array<atomic<u32>>;
 ${aerConsts()}
+const AER_VISIBLE_MIN: f32 = ${g(AER_VISIBLE_MIN)};
 var<workgroup> wgNz: atomic<u32>;
+var<workgroup> wgFoam: atomic<u32>;
 fn aerPrev(c: vec3i) -> vec4f {
   let w = aer[P.cur * SLOTS + slotOf(c)];
   return vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
@@ -584,7 +586,9 @@ fn aeration(p: vec3i) -> vec4f {
   return vec4f(min(F, 1.0), select(1.0, 2.0, pour), fall, select(0.0, 1.0, grounded));
 }
 // A workgroup per brick of the AER list (P.all: of the grid), a thread per
-// cell: the other copy's record, and the brick's nz bit 0.
+// cell: the other copy's record, and the brick's nz bit 0; and the field's
+// count of visible foam (liquid at AER_VISIBLE_MIN or more) into the word
+// after the bricks' (gfx/foam.js reads it on idle steps).
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let k = foldId(wg, nwg);
@@ -600,9 +604,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let w = vec2u(pack2x16float(o.xy), pack2x16float(o.zw));
     aer[(1u - P.cur) * SLOTS + s] = w;
     if (any(w != vec2u(0u))) { atomicOr(&wgNz, 1u); }
+    if (o.y > 0.5 && o.x >= AER_VISIBLE_MIN) { atomicAdd(&wgFoam, 1u); }
   }
   workgroupBarrier();
-  if (li == 0u && valid) { nz[b] = (nz[b] & 2u) | atomicLoad(&wgNz); }
+  if (li == 0u && valid) {
+    atomicStore(&nz[b], (atomicLoad(&nz[b]) & 2u) | atomicLoad(&wgNz));
+    let foam = atomicLoad(&wgFoam);
+    if (foam != 0u) { atomicAdd(&nz[NBRICKS], foam); }
+  }
 }
 `;
 
@@ -666,6 +675,7 @@ fn main() {
   let n = atomicLoad(&act[ACT_COUNT + AER_APPEND]);
   atomicStore(&act[ACT_COUNT + CNT_AER], n);
   atomicStore(&act[ACT_COUNT + AER_APPEND], 0u);
+  nz[NBRICKS] = 0u;   // the visible foam's count, which this step's aeration adds up
   let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
   args[ARGS_AER] = (n + y - 1u) / y;
   args[ARGS_AER + 1u] = y;
