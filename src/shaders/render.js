@@ -140,7 +140,8 @@ const DATA_VIEWS = ['heat', 'pressure', 'flow', 'xray'];
 export const DECO_VIEW = true;
 
 // The volume's own values (group 3 binding 1): the meshes' cut (gfx/meshCut.js),
-// the first-person eye clip and Whitewater's current aeration copy.
+// the first-person eye clip, Whitewater's current aeration copy and whether the
+// decoration is drawn.
 export const VolumeParams = uniformStruct('VolumeParams', {
   ...MESH_CUT_FIELDS,
   marchNear: 'f32',   // cells: nothing nearer the camera is drawn (first person's eye clip, pov/index.js EYE_CLIP)
