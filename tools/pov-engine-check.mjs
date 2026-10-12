@@ -5,8 +5,9 @@
 // hand, one browser a scene, its numbers printed. A scene that follows a few
 // cells reads just those each step; one that follows matter anywhere reads
 // the whole state (slugs and keg every step, sandDrop every 4). Each scene
-// takes up to about 3 minutes here, slugs and keg the most; keg runs 2 ranges
-// × 3 offsets unless --full (the old check's 4 × 7).
+// takes minutes on SwiftShader (blastProfile 5 on a loaded host), slugs and
+// keg the most; keg runs 2 ranges × 3 offsets unless --full (the old check's
+// 4 × 7).
 // usage: node tools/pov-engine-check.mjs [--port N] [--full] [scene ...]   (its own Vite: tools/vite-server.mjs)
 //   scenes: blastProfile paneLoad slugs keg blast sandDrop debris (default: all)
 import { runStages, TOOLS_PAGE } from './pov-gpu-check.mjs';
