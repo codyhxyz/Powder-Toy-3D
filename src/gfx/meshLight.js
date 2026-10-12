@@ -445,19 +445,90 @@ export const getMeshGpu = () => meshGpu;
  * culling is off for the compile. Resolves when three's pipelines are built;
  * at once when there is no device yet.
  * @param {object} object
- * @param {{ camera?: object, scene?: object, target?: object }} [opts]
+ * @param {{ camera?: object, scene?: object, target?: object, alone?: boolean }} [opts]
+ *   alone: the object only, not what is under it
  * @returns {Promise<void>}
  */
-export function prepareMesh(object, opts = {}) {
+export function prepareMesh(object, { alone = false, ...opts } = {}) {
   const three = meshGpu?.three;
   if (!three || meshGpu.failure || meshGpu.lost) return Promise.resolve();
-  const saved = [];
-  object.traverse((o) => { saved.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; });
+  for (const k of Object.keys(opts)) if (opts[k] === undefined) delete opts[k];   // (left out: the defaults')
+  const saved = [], done = [];
+  const sig = targetSig(opts.target ?? three.defaults.target);
+  object.traverse((o) => {
+    saved.push([o, o.visible, o.frustumCulled]);
+    o.visible = !alone || o === object;
+    o.frustumCulled = false;
+    if (o.material && o.visible) done.push([o, o.material]);
+  });
+  // three keys a render object's lights and environment by the renderer's
+  // render-call count (NodeManager.getCacheKey caches it per info.calls): a
+  // compile after a light came or went, with no render since, would take the
+  // last render's key, and the next render would throw the compiled pipeline
+  // away and build it again synchronously. A count no render has had keeps
+  // the compile's key fresh. (Belongs in gpu.three.prepare: hand-back.)
+  const info = three.renderer.info, calls = info.calls;
+  info.calls = -(++prepares);
   let p;
   try {
-    p = three.prepare(object, opts);   // (three reads visibility before its first await)
+    p = three.prepare(object, opts);   // (three reads visibility, and the key, before its first await)
   } finally {
+    info.calls = calls;
     for (const [o, v, fc] of saved) { o.visible = v; o.frustumCulled = fc; }
   }
-  return Promise.resolve(p).then(() => {}, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); });
+  return Promise.resolve(p).then(() => {
+    for (const [o, m] of done) preparedWith.set(o, { material: m, sig });
+  }, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); });
+}
+
+let prepares = 0;
+// what a pipeline depends on in the target it draws into
+const targetSig = (t) => (t ? `${t.texture?.type}|${t.texture?.format}|${t.samples}|${t.depthBuffer}|${t.stencilBuffer}` : 'none');
+
+// ---------------------------------------------------------------- meshes three hasn't compiled yet
+
+/** The layer no camera draws: a mesh waits on it while its pipelines build (guardMeshes). */
+export const PENDING_LAYER = 31;
+/** An object's layers.mask while it waits there (three keeps masks unsigned). */
+export const PENDING_MASK = (1 << PENDING_LAYER) >>> 0;
+const preparedWith = new WeakMap();   // mesh → { material, sig }: what it was compiled with, and for which target
+const waiting = new WeakMap();        // mesh → the layers it goes back to
+/**
+ * Catches the meshes under `root` that `camera` would draw and three hasn't
+ * compiled (a module that added a mesh without prepareMesh, or swapped its
+ * material): each waits on PENDING_LAYER while prepareMesh builds its
+ * pipelines, then goes back to its layers, so three never builds a pipeline
+ * synchronously at a first draw (F8). A frame or two without the mesh is the
+ * cost, against a hitch of up to a second for a cold pipeline. Objects for
+ * which skip(o) is true are left alone with everything under them.
+ * @param {object} root
+ * @param {object} camera
+ * @param {{ target?: object, scene?: object, skip?: (o: object) => boolean, onReady?: () => void }} [opts]
+ *   target and scene: what the meshes are drawn into and lit by (prepareMesh's)
+ * @returns {number} how many meshes wait
+ */
+export function guardMeshes(root, camera, { target, scene, skip, onReady } = {}) {
+  if (!meshGpu?.three) return 0;
+  let n = 0;
+  const stack = [root];
+  while (stack.length) {
+    const o = stack.pop();
+    if (!o.visible || skip?.(o)) continue;
+    for (const c of o.children) stack.push(c);
+    if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) continue;
+    if (waiting.has(o)) { n++; continue; }
+    if (!o.layers.test(camera.layers)) continue;
+    const was = preparedWith.get(o);
+    if (was && was.material === o.material && was.sig === targetSig(target ?? meshGpu.three.defaults.target)) continue;
+    waiting.set(o, o.layers.mask);
+    n++;
+    prepareMesh(o, { camera, target, scene, alone: true }).then(() => {
+      // (a module that moved it to another layer meanwhile keeps its own)
+      if (o.layers.mask === PENDING_MASK) o.layers.mask = waiting.get(o);
+      waiting.delete(o);
+      onReady?.();
+    });
+    o.layers.set(PENDING_LAYER);
+  }
+  return n;
 }

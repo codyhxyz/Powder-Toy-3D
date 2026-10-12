@@ -37,9 +37,9 @@
 //           finds every one of them built, so the only pipelines Start makes
 //           are the test mode's own (WARM_TEST_ONLY)
 //
-// Until U13 lands, three.js's warnings for its meshes' ShaderMaterials are
-// allowed (ALLOW). Runs its own Vite (tools/vite-server.mjs) and launches
-// through tools/browser.mjs.
+// three.js's warnings are errors here: every mesh material is a node
+// material (U13), so ALLOW is empty. Runs its own Vite
+// (tools/vite-server.mjs) and launches through tools/browser.mjs.
 import { mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -63,8 +63,10 @@ const DIFF = 12;
 const MIN_CHANGED = 0.02;
 // the pipelines Start makes in test mode that a player's session doesn't (sim.js: the tools' read-backs)
 const WARM_TEST_ONLY = new Set(['toAtlas', 'copy']);
-// three's warnings for a built-in or GLSL material it can't take as a node material (U13 ports them)
-const ALLOW = [/NodeBuilder: Material "ShaderMaterial" is not compatible/, /NodeBuilder: Material "RawShaderMaterial" is not compatible/];
+// what the page may log that would otherwise be an error: nothing since U13
+// (three's 'Material "ShaderMaterial" is not compatible' warnings were here until
+// every mesh material was a node material)
+const ALLOW = [];
 // what the page may log without it being an error of ours: the relay the UI asks for quota (not running here)
 const IGNORE = [/Failed to load resource: net::ERR_CONNECTION_REFUSED/];
 
@@ -232,7 +234,7 @@ try {
         }
       }
       ok(!errors.length, `no page or GPU errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
-      if (allowed.length) console.log(`(${allowed.length} allowed three.js material warnings, until U13)`);
+      if (allowed.length) console.log(`(${allowed.length} allowed warnings)`);
     }
     await page.close();
   }
