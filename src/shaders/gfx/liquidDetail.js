@@ -1,4 +1,9 @@
 import { CELL_M } from '../../scale.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, stateLayout } from '../common.js';
+import { ARGS } from '../activity.js';
+import { simModesGLSL, SIM_MODE_FIELDS } from '../../simModes.js';
+import { uniformStruct } from '../../gpu/params.js';
+import { fold, MAX_WORKGROUPS } from '../../gpu/kernels.js';
 
 // Close-up liquid detail (gfx/detail.js switches): what a liquid surface shows
 // once a pixel is a few millimetres across. Each part compiles in only with
@@ -383,15 +388,14 @@ const FOAM_V_FULL = 4.0;          // m/s
 // falling blob or spray has no such parcel behind it, so those look as they
 // always did, without tails.
 //
-// The kernel is U12's to port, here (docs/webgpu.md J1, G4: a list of
-// bricks, the pre-move copy and moveSrc in place of the slots). Its GLSL is
-// main's aerationFrag as of the last sync (docs/webgpu.md Sync log, Sync 3:
-// `git show 5551bd7:src/shaders/gfx/liquidDetail.js`). Main reverted
-// whitewater v1 and v2 between Sync 2 and Sync 3 (the jet's fall-height
-// aeration, the streaks), so the model is the WebGPU branch's starting one
-// (Pilch & Erdman's breakup for liquid in the air, `grounded` from the
-// liquid below's w alone) with these changes, per cell p whose content came
-// from q (the move's source, or p on an idle step):
+// The kernel follows main's aerationFrag as of the last sync (docs/webgpu.md
+// Sync log, Sync 3: `git show 5551bd7:src/shaders/gfx/liquidDetail.js`), with
+// a list of bricks, the pre-move copy and moveSrc in place of the slots
+// (docs/webgpu.md G4). Main reverted whitewater v1 and v2 between Sync 2 and
+// Sync 3 (the jet's fall-height aeration, the streaks), so the model is the
+// WebGPU branch's starting one (Pilch & Erdman's breakup for liquid in the
+// air, `grounded` from the liquid below's w alone) with these changes, per
+// cell p whose content came from q (the move's source, or p on an idle step):
 //   - q is wrapped past a loop edge (simModes.js edgeCell), and a q past a
 //     void edge is still air: the record is 0;
 //   - p not filled with foaming liquid holds a wake (wakeAt): 0 where p
@@ -408,19 +412,276 @@ const FOAM_V_FULL = 4.0;          // m/s
 //     with y < 0 at p or one of p's four horizontal neighbours whose
 //     dot(normalize(xzw), dir) > JOIN_COS, dir = normalize(B(q).xyz), the
 //     pre-move velocity (0 if it is 0).
-// The wakes live in air cells, so the output is no longer zero wherever the
-// source cell's pre-move content doesn't foam (G4's argument for the AER
-// list): a brick a parcel left keeps records for TRAIL_JOIN_STEPS steps. The
-// list must keep such bricks that long (aerSeen over TRAIL_JOIN_STEPS + 1
-// steps, or a per-brick bit of nonzero records), and the pour test reads the
-// previous records of p's horizontal neighbours and the pre-move state of
-// q's. Its inputs are the model's constants in this file: MS_PER_CELL_STEP,
-// STEP_S, FOAM_TAU_S, BUBBLE_RISE_MS, AIR_RHO, WE_ONSET, PE_FIT, LIQ_PROPS,
-// TRAIL_JOIN_STEPS, JOIN_COS, FOAM_V_ONSET and FOAM_V_FULL.
-// WEBGPU-STUB (docs/webgpu.md J3): the GLSL aeration pass, replaced by U12's WGSL kernel.
-export const aerationFrag = () => {
-  throw new Error('aerationFrag removed in the WebGPU port: docs/webgpu.md G4');
-};
+//
+// Where p's content came from is the move's own record: a block that ran
+// (a cell of it in a DRAWN unit, as the move decides) and isn't based in a
+// quiet brick wrote moveSrc (the source 0..7 in the block, P.srcAt); a
+// quiet-base block and a block that didn't run stayed put (q = p), as the
+// gather's slots said in the WebGL build.
+//
+// The AER list (docs/webgpu.md G4). The wakes live in air cells, so the
+// output isn't zero only where the source cell's pre-move content foams, and
+// the list doesn't count steps for them: it keeps what the field itself
+// says. A brick is listed at a step when
+//   - a brick within one brick of it (wrapped past loop edges) may hold a
+//     foaming liquid (marks.foams: react's word for the bricks it wrote, 1 from
+//     any writer; the pre-move content, since the move only changes DRAWN
+//     bricks, which react then rewrites): p's q is within a cell of p;
+//   - or its output was not all zero at either of the last two steps (nz, a
+//     word per brick: bit 0 the last step's, bit 1 the one before, which the
+//     aeration kernel sets and the list kernel shifts);
+//   - or the field starts over (P.all: after a reset or a window shift, for
+//     two steps, as the foams words and the copies then say nothing).
+// Exact: a cell's output is nonzero only if its q's content foams (then its
+// brick is near a foams brick) or its previous record was nonzero (then its
+// brick's nz bit 0 is set). So a brick off the list has an all-zero output,
+// and the copy it would have written holds zeros too: that copy was last
+// written two steps ago, when its output (bit 1) was all zero, or the brick
+// was off the list then too (by induction from the zeroed start). The
+// reference runs the same kernel over every brick (P.all, I2.6: tools/
+// aeration-check.mjs compares the two bit for bit at every step).
+const AER_FOAMS_NOTE = 'FOAMS(id): the tables\' (gfx/materials.js FOAMS), which react lists by';
+export const AerParams = uniformStruct('AerParams', {
+  ...SIM_MODE_FIELDS,   // gravMode, edge (src/simModes.js: edgeCell)
+  still: 'u32',         // an idle step: every cell stays put
+  parity: 'u32',        // the move's block offset (frame & 1)
+  srcAt: 'u32',         // moveSrc's plane in its buffer (words)
+  cur: 'u32',           // the aeration copy read; the other is written
+  all: 'u32',           // every brick (the reference), not the list
+});
+// Group 2: moveSrc (sim.moveSrc), the aeration's two copies (vec2u: f16
+// pairs), the nz words.
+export const AER_LAYOUT = [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+  { binding: 2, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+];
+const aerConsts = () => `const MS_PER_CELL_STEP: f32 = ${g(MS_PER_CELL_STEP)};   // m/s per cell/step
+const STEP_S: f32 = ${g(STEP_S)};             // physical s per step
+const AER_KEEP: f32 = ${g(Math.exp(-STEP_S / FOAM_TAU_S))};           // per step at a free surface
+const AER_RISE: f32 = ${g((BUBBLE_RISE_MS * STEP_S) / CELL_M)};          // share rising a cell per step
+const FOAM_V_ONSET: f32 = ${g(FOAM_V_ONSET)};   // m/s
+const FOAM_V_FULL: f32 = ${g(FOAM_V_FULL)};     // m/s
+const AIR_RHO: f32 = ${g(AIR_RHO)};          // kg/m³
+const WE_ONSET: f32 = ${g(WE_ONSET)};
+const TRAIL_FADE: f32 = ${g(1 / TRAIL_JOIN_STEPS)};   // a wake record's fade per step
+const JOIN_COS: f32 = ${g(JOIN_COS)};
+${perLiquidFn('AER_SIGMA', (q) => q.sigma)}   // surface tension, N/m
+${perLiquidFn('AER_RHO', (q) => q.rho)}       // density, kg/m³`;
+const peFitWGSL = PE_FIT.map(([lim, c, e]) => `${lim === Infinity ? '' : `if (we < ${g(lim)}) { `}return ${g(c)} * pow(x, ${g(e)});${lim === Infinity ? '' : ' }'}`).join('\n  ');
+
+export const aerationFrag = (grid) => /* wgsl */ `
+${prelude(grid, STATE_OPTS.STATE_ACT)}
+${AerParams.wgsl}
+@group(3) @binding(1) var<uniform> P: AerParams;
+${simModesGLSL}
+@group(2) @binding(0) var<storage, read> moveSrc: array<u32>;
+@group(2) @binding(1) var<storage, read_write> aer: array<vec2u>;
+@group(2) @binding(2) var<storage, read_write> nz: array<u32>;
+${aerConsts()}
+var<workgroup> wgNz: atomic<u32>;
+fn aerPrev(c: vec3i) -> vec4f {
+  let w = aer[P.cur * SLOTS + slotOf(c)];
+  return vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
+}
+fn supports(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS; }
+// ${AER_FOAMS_NOTE}
+fn foams(id: i32) -> bool { return FOAMS(id); }
+// Air (or gas) at p, its content now from q: a wake if liquid off the ground
+// just left it, else what wake it had, faded (pours, above).
+fn wakeAt(p: vec3i, q: vec3i, id: i32) -> vec4f {
+  if (supports(id)) { return vec4f(0.0); }   // (filled with something)
+  let f = aerPrev(p);
+  if (f.y > 0.5) {
+    var v = fetchB(p).xyz;   // the parcel's velocity before it left
+    if (all(q == p) || f.w > 0.5 || dot(v, v) == 0.0) { return vec4f(0.0); }   // (it was on the ground)
+    v = normalize(v) * select(0.5, 1.0, f.y > 1.5);
+    return vec4f(v.x, -1.0, v.y, v.z);
+  }
+  let rec = -f.y - TRAIL_FADE;
+  if (f.y < 0.0 && rec > 0.0) { return vec4f(f.x, -rec, f.z, f.w); }
+  return vec4f(0.0);
+}
+// a wake at c whose maker went the way dir does
+fn wake(c: vec3i, dir: vec3f) -> bool {
+  if (!inGrid(c)) { return false; }
+  let f = aerPrev(c);
+  return f.y < 0.0 && dot(normalize(f.xzw), dir) > JOIN_COS;
+}
+fn wet(c: vec3i) -> bool { return inGrid(c) && foams(eid(fetchA(c))); }
+// Pilch & Erdman's total breakup time, in units of t* (We > WE_ONSET)
+fn breakupT(we: f32) -> f32 {
+  let x = we - WE_ONSET;
+  ${peFitWGSL}
+}
+// Where p's content was before the move (outside the grid: past a void edge)
+fn sourceOf(p: vec3i) -> vec3i {
+  if (P.still != 0u) { return p; }
+  let par = i32(P.parity);
+  let base = ((p - par) >> vec3u(1u)) * 2 + par;
+  // a block that didn't run, or is based in a quiet brick, stayed put (shaders/move.js)
+  var ran = false;
+  for (var i = 0; i < 8; i++) {
+    let c = edgeCell(base + vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1));
+    if (inGrid(c) && drawnUnit(unitOfCell(c))) { ran = true; }
+  }
+  if (!ran || quietCell(edgeCell(base))) { return p; }
+  let i = i32(moveSrc[P.srcAt + slotOf(p)]);
+  return edgeCell(base + vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1));   // (past a loop edge: the far side's)
+}
+fn aeration(p: vec3i) -> vec4f {
+  let q = sourceOf(p);
+  if (!inGrid(q)) { return vec4f(0.0); }   // (in from past a void edge: still air)
+  let id = eid(fetchA(q));
+  if (!foams(id)) { return wakeAt(p, q, id); }
+  let UP = vec3i(0, 1, 0);
+  let f0 = aerPrev(q);
+  var F = f0.x;
+  var fall = f0.z;
+  var below = E_WALL;
+  if (q.y > 0) { below = eid(fetchA(q - UP)); }
+  var above = E_EMPTY;
+  if (q.y < NY - 1) { above = eid(fetchA(q + UP)); }
+  var fb = vec4f(0.0);   // the field under it
+  if (q.y > 0) { fb = aerPrev(q - UP); }
+  let airborne = !supports(below);
+  // grounded: resting on the ground through whatever liquid is under it (a
+  // pool) rather than on liquid that is itself falling. Propagates up a
+  // liquid column a cell per step.
+  let grounded = !airborne && (!foams(below) || fb.w > 0.5);
+  let bq = fetchB(q).xyz;
+  let vy = bq.y;   // cells/step, before the move
+  // liquid new here (poured, melted, condensed since the last step): clear,
+  // and falling as fast as it was made to
+  if (f0.y < 0.5) { F = 0.0; fall = max(-vy, 0.0); }
+  if (foams(above)) { F -= AER_RISE * F; }
+  else if (!airborne) { F *= AER_KEEP; }
+  if (foams(below)) { F += AER_RISE * fb.x; }
+  if (airborne) {
+    let v = abs(vy) * MS_PER_CELL_STEP;
+    let we = AIR_RHO * v * v * CELL_M / AER_SIGMA(id);
+    if (we > WE_ONSET) { F += STEP_S * v / (breakupT(we) * CELL_M * sqrt(AER_RHO(id) / AIR_RHO)); }
+  }
+  // In free fall, or fell a cell: at this speed. Resting on falling liquid it
+  // rides along with what it has (a blob's upper part; drops meeting in the
+  // air merge rather than trap air). Resting on grounded matter it has
+  // landed: it hit at its fall.
+  if (airborne || (q.y > p.y && q.x == p.x && q.z == p.z)) { fall = max(-vy, 0.0); }
+  else if (grounded) {
+    F = max(F, smoothstep(FOAM_V_ONSET, FOAM_V_FULL, fall * MS_PER_CELL_STEP));
+    fall = 0.0;
+  }
+  // a pour's parcel (pours, above): alone off the ground, it followed one
+  // (moved into a wake going its way, or beside one), or did before
+  let X = vec3i(1, 0, 0);
+  let Z = vec3i(0, 0, 1);
+  let alone = airborne && !foams(above) && !wet(q + X) && !wet(q - X) && !wet(q + Z) && !wet(q - Z);
+  var dir = vec3f(0.0);
+  if (dot(bq, bq) > 0.0) { dir = normalize(bq); }
+  let moved = any(q != p);
+  let pour = alone && f0.y > 0.5 && (f0.y > 1.5 || (moved && (wake(p, dir) || wake(p + X, dir)
+    || wake(p - X, dir) || wake(p + Z, dir) || wake(p - Z, dir))));
+  return vec4f(min(F, 1.0), select(1.0, 2.0, pour), fall, select(0.0, 1.0, grounded));
+}
+// A workgroup per brick of the AER list (P.all: of the grid), a thread per
+// cell: the other copy's record, and the brick's nz bit 0.
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let k = foldId(wg, nwg);
+  var valid = k < NBRICKS;
+  var b = k;
+  if (P.all == 0u) {
+    valid = k < act[ACT_COUNT + CNT_AER];
+    if (valid) { b = act[ACT_AERL + k]; }
+  }
+  if (valid) {
+    let s = b * 64u + li;
+    let o = aeration(cellOf(s));
+    let w = vec2u(pack2x16float(o.xy), pack2x16float(o.zw));
+    aer[(1u - P.cur) * SLOTS + s] = w;
+    if (any(w != vec2u(0u))) { atomicOr(&wgNz, 1u); }
+  }
+  workgroupBarrier();
+  if (li == 0u && valid) { nz[b] = (nz[b] & 2u) | atomicLoad(&wgNz); }
+}
+`;
+
+// The AER list kernel: a thread per brick (above), appending to the list and
+// an append counter of its own (the count's word AER_APPEND, after
+// ACT_COUNTS'); then the args kernel, one thread, takes its length into
+// CNT_AER (the aeration kernel's bound), starts the counter over and writes
+// the aeration's indirect arguments (ARGS.AER, fold()ed).
+export const AER_APPEND = 6;   // act's count words: ACT_COUNTS uses 0-5
+export const AerListParams = uniformStruct('AerListParams', {
+  still: 'u32',   // an idle step: a brick's own foams word is enough (nothing moves)
+  all: 'u32',     // list every brick
+  hist: 'u32',    // the nz bits that list a brick: 3 (test only: 0, tools/aeration-check.mjs's negative control)
+  wrap: 'u32',    // loop edges: the dilation wraps (edgeCell; 'loop' is reserved in WGSL)
+});
+// group 1 (marks, act read_write: no state) and group 2 (args, nz)
+export const AER_LIST_STATE = { state: false, marks: true, act: 'read_write' };
+export const AER_LIST_LAYOUT = [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+];
+const aerListHead = (grid) => `
+${prelude(grid, AER_LIST_STATE)}
+${AerListParams.wgsl}
+@group(3) @binding(1) var<uniform> P: AerListParams;
+@group(2) @binding(0) var<storage, read_write> args: array<u32>;
+@group(2) @binding(1) var<storage, read_write> nz: array<u32>;
+const AER_APPEND: u32 = ${AER_APPEND}u;
+const ARGS_AER: u32 = ${ARGS.AER / 4}u;   // words
+const MAX_WG: u32 = ${MAX_WORKGROUPS}u;`;
+export const aerListFrag = (grid) => /* wgsl */ `
+${aerListHead(grid)}
+fn foamsAt(c: vec3i) -> bool {
+  var n = c;
+  if (P.wrap != 0u) { n = (c + vec3i(BX, BY, BZ)) % vec3i(BX, BY, BZ); }
+  else if (any(n < vec3i(0)) || any(n >= vec3i(BX, BY, BZ))) { return false; }
+  return atomicLoad(&marks[MARK_FOAMS + brickId(n)]) != 0u;
+}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let b = foldThread(wg, nwg, li);
+  if (b >= NBRICKS) { return; }
+  let h = nz[b];
+  var on = P.all != 0u || (h & P.hist) != 0u;
+  let c = brickCoord(b);
+  if (!on && P.still != 0u) { on = foamsAt(c); }
+  for (var i = 0; i < 27 && !on && P.still == 0u; i++) {
+    on = foamsAt(c + vec3i(i % 3, (i / 3) % 3, i / 9) - 1);
+  }
+  nz[b] = (h << 1u) & 2u;
+  if (on) {
+    let k = atomicAdd(&act[ACT_COUNT + AER_APPEND], 1u);
+    atomicStore(&act[ACT_AERL + k], b);
+  }
+}
+`;
+export const aerArgsFrag = (grid) => /* wgsl */ `
+${aerListHead(grid)}
+@compute @workgroup_size(1)
+fn main() {
+  let n = atomicLoad(&act[ACT_COUNT + AER_APPEND]);
+  atomicStore(&act[ACT_COUNT + CNT_AER], n);
+  atomicStore(&act[ACT_COUNT + AER_APPEND], 0u);
+  let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
+  args[ARGS_AER] = (n + y - 1u) / y;
+  args[ARGS_AER + 1u] = y;
+  args[ARGS_AER + 2u] = 1u;
+}
+`;
+
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+const listLayouts = () => [LAYOUT.TABLES, stateLayout(AER_LIST_STATE), AER_LIST_LAYOUT];
+export const WGSL_CHECK = [
+  { name: 'aeration', kind: 'compute', code: aerationFrag, params: AerParams, warm: false,
+    layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_ACT, AER_LAYOUT], dispatch: (grid) => fold(grid.nbricks) },
+  { name: 'aerList', kind: 'compute', code: aerListFrag, params: AerListParams, warm: false,
+    layouts: listLayouts, dispatch: (grid) => fold(Math.ceil(grid.nbricks / 64)) },
+  { name: 'aerArgs', kind: 'compute', code: aerArgsFrag, params: AerListParams, warm: false, layouts: listLayouts, dispatch: () => [1, 1, 1] },
+];
 
 // Steps an idle world's foam takes to burst to AER_VISIBLE_MIN (gfx/foam.js idle).
 export const AER_IDLE_STEPS = Math.ceil((Math.log(1 / AER_VISIBLE_MIN) * FOAM_TAU_S) / STEP_S);
