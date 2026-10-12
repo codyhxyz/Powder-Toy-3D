@@ -12,7 +12,7 @@ import { tally, liquidMass, levelRange, cellsOf, advanceWatching, crit, r2, r3 }
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
 export const census = {
-  name: 'census', group: 'census', size: [16, 16, 16], needs: ['SAND', 'WATER', 'WALL'], cost: 60,
+  name: 'census', group: 'census', size: [16, 16, 16], needs: ['SAND', 'WATER', 'WALL'], cost: 50,
   title: 'liquid and particle mass exact, cells per element kept, through a pour and a splash',
   async run(e) {
     const O = OUTCOMES.census;
@@ -83,7 +83,7 @@ export const tankStill = {
 };
 
 export const sandFalls = {
-  name: 'sandFalls', group: 'controls', size: [16, 16, 16], needs: ['SAND'], cost: 30,
+  name: 'sandFalls', group: 'controls', size: [16, 16, 16], needs: ['SAND'], cost: 20,
   title: 'control: a block of sand in the air falls and lands',
   async run(e) {
     const O = OUTCOMES.sandFalls;

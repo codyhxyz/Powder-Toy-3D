@@ -12,7 +12,7 @@ import { tally, cellsOf, heightMap, reach, mapText, digit, advanceWatching, crit
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
 export const slab = {
-  name: 'slab', group: 'solids', size: [32, 32, 32], needs: ['SAND'], cost: 30,
+  name: 'slab', group: 'solids', size: [32, 32, 32], needs: ['SAND'], cost: 75,
   title: 'a slab stays a slab and falls on its own law',
   audit: 'audit-physics B2, B3: a cell moves with probability |v| only on its parity\'s steps, each grain on its own coin, so a slab smears over 21 cells at 65 % of its own velocity',
   expressible: (e) => (e.fall('SAND', 0.1) === null ? `${e.name} declares no fall law` : null),
@@ -104,7 +104,7 @@ export const heapSand = heapTest('heapSand', 'SAND');
 export const heapFlour = heapTest('heapFlour', 'FLOUR');
 
 export const throwLump = {
-  name: 'throw', group: 'solids', size: [32, 32, 32], needs: ['SAND'], cost: 40,
+  name: 'throw', group: 'solids', size: [32, 32, 32], needs: ['SAND'], cost: 30,
   title: 'a thrown lump lands where its velocity says',
   audit: 'audit-physics B2: sideways moves skip a cell that moved this step and drag eats the rest, so a throw goes 33-57 % as far as its velocity says',
   expressible: (e) => (e.flight('SAND', [1, 0], 0.1) === null ? `${e.name} has no thrown matter (its particles are liquid only)` : null),

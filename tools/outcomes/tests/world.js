@@ -9,7 +9,7 @@ import { OUTCOMES } from '../thresholds.js';
 import { advanceWatching, crit, r2 } from '../lib.js';
 
 export const settledWorld = {
-  name: 'settledWorld', group: 'world', kind: 'app', url: OUTCOMES.settledWorld.url, needs: [], cost: 90,
+  name: 'settledWorld', group: 'world', kind: 'app', url: OUTCOMES.settledWorld.url, needs: [], cost: 110,
   title: 'the default island certifies idle (with water in it)',
   expressible: (e) => (e.app ? null : `${e.name} is a bare simulation: this test boots the game (engine-app.js)`),
   async run(e) {

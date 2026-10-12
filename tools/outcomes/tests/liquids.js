@@ -14,7 +14,7 @@ const same = (a, b) => Math.abs(a - b) < 1e-6;
 const every = (t, period) => Math.abs(t / period - Math.round(t / period)) < 1e-6;   // t is a multiple of period
 
 export const utube = {
-  name: 'utube', group: 'liquids', size: [16, 16, 8], needs: ['WALL', 'WATER'], cost: 120,
+  name: 'utube', group: 'liquids', size: [16, 16, 8], needs: ['WALL', 'WATER'], cost: 140,
   title: 'a U-tube equalises within 1 cm and rests',
   audit: 'audit-liquids B1: no rule gives a liquid an upward velocity, and the rest test calls a column beside an empty arm inert (left 25, right 5, certified idle)',
   async run(e) {
@@ -52,7 +52,7 @@ export const utube = {
 };
 
 export const partial = {
-  name: 'partial', group: 'liquids', size: [16, 8, 16], needs: ['WALL', 'WATER'], cost: 70,
+  name: 'partial', group: 'liquids', size: [16, 8, 16], needs: ['WALL', 'WATER'], cost: 120,
   title: 'a pool of any volume rests flat',
   audit: 'audit-liquids B4: a top-layer cell with an open side is kicked toward it forever (FLOW_SURFACE), so a partial layer beads and never rests',
   async run(e) {
@@ -84,7 +84,7 @@ export const partial = {
 };
 
 export const puddle = {
-  name: 'puddle', group: 'liquids', size: [32, 8, 24], needs: ['WATER'], cost: 150,
+  name: 'puddle', group: 'liquids', size: [32, 8, 24], needs: ['WATER'], cost: 180,
   title: 'a spill rests as a puddle with an edge, then AWAKE = 0',
   audit: 'audit-liquids B3: film edges keep 0.27 cells/step of cohesion pull and droplets re-roll a direction, so a spill smears to a speckle that never sleeps',
   async run(e) {
@@ -117,7 +117,7 @@ export const puddle = {
 };
 
 export const pipe = {
-  name: 'pipe', group: 'liquids', size: [48, 16, 8], needs: ['WALL', 'WATER'], cost: 165,
+  name: 'pipe', group: 'liquids', size: [48, 16, 8], needs: ['WALL', 'WATER'], cost: 160,
   title: "a tank drains through a 30-cell pipe to the pipe's level",
   audit: 'audit-liquids B2: a lidded cell has no head, and pipe flow only keeps the speed a cell came in with, so a full pipe stops with head behind it',
   async run(e) {
@@ -175,7 +175,7 @@ export const pipe = {
 };
 
 export const hole = {
-  name: 'hole', group: 'liquids', size: [48, 32, 8], needs: ['WALL', 'WATER'], cost: 60,
+  name: 'hole', group: 'liquids', size: [48, 32, 8], needs: ['WALL', 'WATER'], cost: 120,
   title: 'a hole pours one unbroken stream within 5 % of the √(2gh) parabola at every head',
   audit: 'audit-liquids B7, B14: the 2×2×2 block dots a falling column into parcels, and the head scan saturates at ~16 cells, so a jet is single cells scattered over the floor',
   async run(e) {
@@ -246,7 +246,7 @@ export const hole = {
 };
 
 export const yieldSlope = {
-  name: 'yield', group: 'liquids', size: [16, 8, 16], needs: ['WATER', 'MUD'], cost: 80,
+  name: 'yield', group: 'liquids', size: [16, 8, 16], needs: ['WATER', 'MUD'], cost: 140,
   title: 'slope rises with yield: mud holds a mound, water spreads',
   audit: 'audit-liquids B9: viscosity maps only to speed (flow, drag), with no yield, so mud and slime level into 1-2 cell films',
   async run(e, ctx) {

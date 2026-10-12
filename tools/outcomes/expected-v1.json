@@ -1,0 +1,472 @@
+{
+ "engine": "v1",
+ "adapter": "google swiftshader SwiftShader Device (Subzero) (fallback adapter: SwiftShader numbers, not representative)",
+ "recorded": "2026-10-12",
+ "tests": {
+  "utube": {
+   "status": "fail",
+   "headline": "left 12.25, right 2.75 cells: 285 cm apart; not idle",
+   "criteria": [
+    {
+     "name": "arms level",
+     "measured": 285,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": false
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": "never",
+     "unit": "s",
+     "threshold": "≤ 10",
+     "ok": false
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "partial": {
+   "status": "fail",
+   "headline": "surface 3…4 cells (30 cm; flat would be 3.36); not idle",
+   "criteria": [
+    {
+     "name": "surface flat",
+     "measured": 30,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": false
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": "never",
+     "unit": "s",
+     "threshold": "≤ 8",
+     "ok": false
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "puddle": {
+   "status": "fail",
+   "headline": "8 wet columns, 0 cells from the nearest wall, liquid up to y = 0; not idle (70 of 96 units awake)",
+   "criteria": [
+    {
+     "name": "rests (certified idle)",
+     "measured": "never",
+     "unit": "s",
+     "threshold": "≤ 6",
+     "ok": false
+    },
+    {
+     "name": "has an edge (cells to the nearest wall)",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "≥ 1",
+     "ok": false
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "pipe": {
+   "status": "fail",
+   "headline": "tank at 7.875 after 9 s (the bore's top is 3), stopped: no change from 6 to 9 s, 26/30 of the bore wet; 104 cells out",
+   "criteria": [
+    {
+     "name": "tank level over the bore's top",
+     "measured": 4.875,
+     "unit": "cells",
+     "threshold": "≤ 0.1",
+     "ok": false
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "hole": {
+   "status": "fail",
+   "headline": "3.5 s: head 13.14 cells; no water crossing y = 7 (√(2gh) parabola: 19.18); broken from the hole to the floor",
+   "criteria": [
+    {
+     "name": "one unbroken stream at every checkpoint",
+     "measured": "no",
+     "unit": "",
+     "threshold": "yes",
+     "ok": false
+    },
+    {
+     "name": "reach off the √(2gh) parabola (worst checkpoint)",
+     "measured": 100,
+     "unit": "%",
+     "threshold": "≤ 5",
+     "ok": false
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "yield": {
+   "status": "fail",
+   "headline": "after 5 s a 4³ block stands 1 cells tall as mud over 64 columns, 1 as water over 64",
+   "criteria": [
+    {
+     "name": "mud mound height",
+     "measured": 1,
+     "unit": "cells",
+     "threshold": "≥ 2",
+     "ok": false
+    },
+    {
+     "name": "water spreads to a layer or less",
+     "measured": 1,
+     "unit": "cells",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "mud stands taller than water",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "> 0",
+     "ok": false
+    }
+   ]
+  },
+  "slab": {
+   "status": "fail",
+   "headline": "0.15 s: fallen 6.1 cells (its law: 10.05), layers y 15…28 (14 thick)",
+   "criteria": [
+    {
+     "name": "thickest while falling",
+     "measured": 22,
+     "unit": "layers",
+     "threshold": "1",
+     "ok": false
+    },
+    {
+     "name": "fall off its law (worst, in tolerances: a cell or 5 %)",
+     "measured": 6.97,
+     "unit": "",
+     "threshold": "≤ 1 (at 0.25 s)",
+     "ok": false
+    },
+    {
+     "name": "lands as one layer",
+     "measured": 556,
+     "unit": "grains on the floor",
+     "threshold": "576",
+     "ok": false
+    },
+    {
+     "name": "grains kept",
+     "measured": 576,
+     "unit": "",
+     "threshold": "576",
+     "ok": true
+    }
+   ]
+  },
+  "heapSand": {
+   "status": "fail",
+   "headline": "456 grains: peak 7, reach 6.25 along the axes and 8.49 on the diagonals (×1.36), slope 1.12; not idle",
+   "criteria": [
+    {
+     "name": "round: diagonal reach / axis reach",
+     "measured": 1.36,
+     "unit": "",
+     "threshold": "1 ± 0.15",
+     "ok": false
+    },
+    {
+     "name": "slope (peak / axis reach) in its class",
+     "measured": 1.12,
+     "unit": "",
+     "threshold": "0.7…1.3",
+     "ok": true
+    },
+    {
+     "name": "rests after the pour ends",
+     "measured": "never",
+     "unit": "s",
+     "threshold": "≤ 2.5",
+     "ok": false
+    },
+    {
+     "name": "grains kept",
+     "measured": 456,
+     "unit": "",
+     "threshold": "456",
+     "ok": true
+    }
+   ]
+  },
+  "heapFlour": {
+   "status": "fail",
+   "headline": "432 grains: peak 6, reach 6 along the axes and 8.49 on the diagonals (×1.41), slope 1; not idle",
+   "criteria": [
+    {
+     "name": "round: diagonal reach / axis reach",
+     "measured": 1.41,
+     "unit": "",
+     "threshold": "1 ± 0.15",
+     "ok": false
+    },
+    {
+     "name": "slope (peak / axis reach) in its class",
+     "measured": 1,
+     "unit": "",
+     "threshold": "1.4…2.6",
+     "ok": false
+    },
+    {
+     "name": "rests after the pour ends",
+     "measured": "never",
+     "unit": "s",
+     "threshold": "≤ 2.5",
+     "ok": false
+    },
+    {
+     "name": "grains kept",
+     "measured": 432,
+     "unit": "",
+     "threshold": "432",
+     "ok": true
+    }
+   ]
+  },
+  "throw": {
+   "status": "fail",
+   "headline": "thrown at 49.73 m/s, its law lands it at x = 19; it rests at x = 12.63 (60.16 % of the throw), cells ±6.88 about it",
+   "criteria": [
+    {
+     "name": "lands where its law says (off by)",
+     "measured": 6.38,
+     "unit": "cells",
+     "threshold": "≤ 1",
+     "ok": false
+    },
+    {
+     "name": "lands as a lump (farthest cell from its centre)",
+     "measured": 6.88,
+     "unit": "cells",
+     "threshold": "≤ 2",
+     "ok": false
+    },
+    {
+     "name": "grains kept",
+     "measured": 8,
+     "unit": "",
+     "threshold": "8",
+     "ok": true
+    }
+   ]
+  },
+  "flameWood": {
+   "status": "fail",
+   "headline": "not lit after 2 s: 2 s: wood 64 (0 burning, hottest 25.57 °C), flames 0, smoke 0, ash 0",
+   "criteria": [
+    {
+     "name": "wood lit",
+     "measured": "never",
+     "unit": "s",
+     "threshold": "≤ 2",
+     "ok": false
+    }
+   ]
+  },
+  "woodBurns": {
+   "status": "pass",
+   "headline": "1 s: wood 64 (52 burning, hottest 900 °C), flames 196, smoke 379, ash 0",
+   "criteria": [
+    {
+     "name": "wood burning",
+     "measured": 52,
+     "unit": "cells",
+     "threshold": "> 0",
+     "ok": true
+    }
+   ]
+  },
+  "blast": {
+   "status": "fail",
+   "headline": "212 bricks broken; the crater reaches 7.5 along the axes and 5.3 on the diagonals (×0.71)",
+   "criteria": [
+    {
+     "name": "a crater (axis reach)",
+     "measured": 7.5,
+     "unit": "cells",
+     "threshold": "≥ 2",
+     "ok": true
+    },
+    {
+     "name": "round: diagonal reach / axis reach",
+     "measured": 0.71,
+     "unit": "",
+     "threshold": "1 ± 0.15",
+     "ok": false
+    }
+   ]
+  },
+  "vessel": {
+   "status": "fail",
+   "headline": "mean overpressure inside 2.99 at 0.25 s, 0 10 s later (0.01 % kept); outside at most 0",
+   "criteria": [
+    {
+     "name": "a blast at all (overpressure at 0.25 s)",
+     "measured": 2.99,
+     "unit": "engine units",
+     "threshold": "> 0",
+     "ok": true
+    },
+    {
+     "name": "kept after 10 s",
+     "measured": 0,
+     "unit": "",
+     "threshold": "≥ 0.9",
+     "ok": false
+    },
+    {
+     "name": "contained (outside / inside)",
+     "measured": 0,
+     "unit": "",
+     "threshold": "≤ 0.01",
+     "ok": true
+    },
+    {
+     "name": "vessel intact (wall cells)",
+     "measured": 728,
+     "unit": "",
+     "threshold": "728",
+     "ok": true
+    }
+   ]
+  },
+  "settledWorld": {
+   "status": "pass",
+   "headline": "64×128×64 window, 10277 water and 0 salt water cells: idle at 0.2 s",
+   "criteria": [
+    {
+     "name": "certifies idle",
+     "measured": 0.2,
+     "unit": "s",
+     "threshold": "≤ 2",
+     "ok": true
+    }
+   ]
+  },
+  "census": {
+   "status": "pass",
+   "headline": "20 checks over 2 s: water off by at most 0 cells, sand by 0, wall by 0",
+   "criteria": [
+    {
+     "name": "liquid + particle mass exact (worst drift)",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    },
+    {
+     "name": "sand cells kept (worst drift)",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    },
+    {
+     "name": "wall cells kept (worst drift)",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "tankStill": {
+   "status": "pass",
+   "headline": "surface 4…4 (4 is full), idle at 0.25 s",
+   "criteria": [
+    {
+     "name": "stays full (lowest surface)",
+     "measured": 4,
+     "unit": "cells",
+     "threshold": "3.85…4",
+     "ok": true
+    },
+    {
+     "name": "stays flat",
+     "measured": 0,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": 0.25,
+     "unit": "s",
+     "threshold": "≤ 4",
+     "ok": true
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "sandFalls": {
+   "status": "pass",
+   "headline": "mean height 11.5 → 0.25; 64 of 64 grains resting on something",
+   "criteria": [
+    {
+     "name": "fell (mean height)",
+     "measured": 0.25,
+     "unit": "cells",
+     "threshold": "< 3",
+     "ok": true
+    },
+    {
+     "name": "landed (grains with something under them)",
+     "measured": 64,
+     "unit": "",
+     "threshold": "64",
+     "ok": true
+    },
+    {
+     "name": "grains kept",
+     "measured": 64,
+     "unit": "",
+     "threshold": "64",
+     "ok": true
+    }
+   ]
+  }
+ }
+}

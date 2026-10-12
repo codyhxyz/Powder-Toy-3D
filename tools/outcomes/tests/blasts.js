@@ -9,7 +9,7 @@ import { reach, mapText, digit, crit, r2 } from '../lib.js';
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
 export const blastCrater = {
-  name: 'blast', group: 'blasts', size: [32, 16, 32], needs: ['BRICK', 'C4'], cost: 90,
+  name: 'blast', group: 'blasts', size: [32, 16, 32], needs: ['BRICK', 'C4'], cost: 75,
   title: 'a charge on open ground leaves a round crater',
   audit: 'audit-physics B4: pressure is a max-plus front that travels in the L1 metric, so what a charge breaks is a diamond around it',
   async run(e) {
@@ -45,7 +45,7 @@ export const blastCrater = {
 };
 
 export const vessel = {
-  name: 'vessel', group: 'blasts', size: [16, 16, 16], needs: ['WALL', 'GUNPOWDER'], cost: 60,
+  name: 'vessel', group: 'blasts', size: [16, 16, 16], needs: ['WALL', 'GUNPOWDER'], cost: 105,
   title: 'a blast in a sealed vessel is contained and keeps its pressure',
   audit: 'audit-physics B5: a global 3 % decay a step deletes pressure, sealed or not (E5: 100 to 4.8 in 100 steps)',
   expressible: (e) => (e.info.pressure ? null : `${e.name} has no air pressure (docs/v2.md P4 adds the air grid)`),

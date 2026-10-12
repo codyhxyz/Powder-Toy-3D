@@ -30,7 +30,7 @@ const lit = (s0, s) => s.burning > 0 || s.wood < s0.wood;
 const needsFire = (e) => (e.info.burning ? null : `${e.name} has no burning state`);
 
 export const flameWood = {
-  name: 'flameWood', group: 'fire', size: [16, 16, 16], needs: ['WOOD', 'FIRE'], cost: 40,
+  name: 'flameWood', group: 'fire', size: [16, 16, 16], needs: ['WOOD', 'FIRE'], cost: 60,
   title: 'two 1,000 °C flames light a wooden block',
   audit: 'audit-physics B9: ignition is a temperature threshold only; buoyant flames warm the wood to ~39 °C and are gone',
   expressible: needsFire,
@@ -59,7 +59,7 @@ export const flameWood = {
 };
 
 export const woodBurns = {
-  name: 'woodBurns', group: 'controls', size: [16, 16, 16], needs: ['WOOD'], cost: 30,
+  name: 'woodBurns', group: 'controls', size: [16, 16, 16], needs: ['WOOD'], cost: 20,
   title: 'control: wood with a 450 °C edge burns (the Campfire)',
   expressible: needsFire,
   async run(e) {
