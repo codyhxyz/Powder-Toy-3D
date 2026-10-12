@@ -13,9 +13,9 @@ const args = process.argv.slice(2);
 const port = args[args.indexOf('--port') + 1] || '5281';
 const WORLD_WAIT_MS = 120000;
 
-// in the page: the state's cells, as one Uint32 array (bits, cell order)
-const cellsBits = () => {
-  const sim = window.__app.sim, g = sim.g, [a, b] = sim.readState();
+// in the page: the state's cells as they are now, as one Uint32 array (bits, cell order; read back: docs/webgpu.md W6)
+const cellsBits = async () => {
+  const sim = window.__app.sim, g = sim.g, [a, b] = await sim.readState();
   const ua = new Uint32Array(a.buffer), ub = new Uint32Array(b.buffer), out = new Uint32Array(g.nx * g.ny * g.nz * 8);
   let i = 0;
   for (let y = 0; y < g.ny; y++)
@@ -51,17 +51,17 @@ try {
     sim.paint({ center: new THREE.Vector3(40, 60, 40), radius: 6, shape: 0, tool: E.SAND, rate: 1, replace: false });
     app.test.step(40);
     app.signs?.add({ cell: new THREE.Vector3(20, 4, 20), normal: new THREE.Vector3(0, 1, 0), text: 'saved {t}', edit: false });
-    const saved = cells();
+    const saved = await cells();
     const meta = await app.saveGame('saves-gpu-check');
     if (!meta) throw new Error('saveGame returned null');
     app.loadPreset('empty');   // something else entirely
     app.test.step(4);
-    const before = cells();
+    const before = await cells();
     const loaded = await app.openSave(meta.id);
-    const back = cells();
+    const back = await cells();
     const signs = app.signs?.toJSON() ?? [];
     app.undo();
-    const undone = cells();
+    const undone = await cells();
     return {
       loaded, bytes: meta.bytes, exact: same(saved, back), signs: signs.map((s) => s.text),
       undo: same(before, undone), changed: !same(saved, before),
@@ -97,12 +97,12 @@ try {
     await settle(() => sim.origin.x - o0.x >= 64 && !win.pending);
     app.worldFocus = null;
     const stored = win.store.size;
-    const saved = cells(), origin = sim.origin.toArray();
+    const saved = await cells(), origin = sim.origin.toArray();
     const meta = await app.saveGame('saves-gpu-check world');
     if (!meta) throw new Error('saveGame returned null');
     sim.paint({ center: new THREE.Vector3(64, 100, 64), radius: 8, shape: 1, tool: E.EMPTY, rate: 1, replace: true });
     const loaded = await app.openSave(meta.id);
-    return { loaded, stored, storedBack: win.store.size, exact: same(saved, cells()), origin: same(origin, sim.origin.toArray()), bytes: meta.bytes };
+    return { loaded, stored, storedBack: win.store.size, exact: same(saved, await cells()), origin: same(origin, sim.origin.toArray()), bytes: meta.bytes };
   }, { cellsSrc: cellsBits.toString(), waitMs: WORLD_WAIT_MS });
   assert.ok(world.loaded, 'world: loaded');
   assert.ok(world.stored > 0, 'world: the edit went into the store');

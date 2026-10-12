@@ -62,6 +62,7 @@ export function createConsole(app) {
   });
 
   let lua = null, loading = null, open = false;
+  let running = false;   // a typed command waiting for a read (submit)
   let history = [];
   try { history = JSON.parse(localStorage.getItem(HISTORY_STORE) || '[]').slice(-MAX_HISTORY); } catch { /* no storage */ }
   let hIndex = history.length, draft = '';
@@ -95,9 +96,10 @@ export function createConsole(app) {
 
   function sync() {
     const n = lua?.handlerCount() ?? 0;
-    status.textContent = app.isGuest() ? 'Guest: scripts run on the host' : n ? `${n} event handler${n === 1 ? '' : 's'}` : '';
+    status.textContent = app.isGuest() ? 'Guest: scripts run on the host' : running ? 'Reading the world…'
+      : n ? `${n} event handler${n === 1 ? '' : 's'}` : '';
     stopBtn.hidden = !n;
-    input.disabled = app.isGuest();
+    input.disabled = app.isGuest() || running;
     prompt.textContent = lua?.continuing ? '…' : '>';
     input.rows = Math.min(8, Math.max(1, input.value.split('\n').length));
   }
@@ -127,9 +129,9 @@ export function createConsole(app) {
     } else if (document.activeElement === input) input.blur();
   }
 
-  function submit() {
+  async function submit() {
     const code = input.value;
-    if (!code.trim() && !lua?.continuing) return;
+    if (running || (!code.trim() && !lua?.continuing)) return;
     if (app.isGuest()) { showError('Scripts run on the host only.'); return; }
     if (!lua) { showError('Lua is still loading…'); return; }
     print(`${lua.continuing ? '…' : '>'} ${code}`, 'cmd');
@@ -146,15 +148,29 @@ export function createConsole(app) {
     let r;
     try {
       r = lua.run(code);
+      // A read that waits for the GPU (console/gpu.js) yielded the command:
+      // its writes so far go first, so the read sees them, and it resumes
+      // once the read is in (frames go on meanwhile; their handlers' writes
+      // aren't the command's, so they take no undo snapshot).
+      while (r.wait) {
+        world.flush();
+        running = true;
+        inCommand = false;
+        sync();
+        try { await r.wait(); } catch (e) { lua.abandon(); throw e; }
+        inCommand = true;
+        r = lua.resume();
+      }
       world.flush();
     } catch (e) {
-      r = { ok: false, error: e.message ?? String(e) };   // (a GPU failure while applying the writes)
-    } finally { inCommand = false; }
+      r = { ok: false, error: e.message ?? String(e) };   // (a GPU failure while applying the writes or reading)
+    } finally { inCommand = false; running = false; }
     if (r.more) showError('');
     else if (r.ok) { showError(''); if (r.text != null) print(r.text, 'out'); }
     else { showError(r.error); print(r.error, 'error'); }
     app.requestRender();
     sync();
+    if (open && document.activeElement !== input) input.focus();   // (back from a wait, which disabled it)
   }
 
   input.addEventListener('keydown', (e) => {

@@ -1,10 +1,11 @@
-import * as THREE from 'three';
-import { prelude, quadVert } from '../shaders/common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE } from '../shaders/common.js';
+import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, E, K } from '../elements.js';
 
 // What the birds know of the world (the `world` flock.js reads): one small
-// GPU pass a few times a second that walks one column in every PROBE_STEP² of
-// the window from the top down and writes, per column, a texel of
+// GPU kernel a few times a second, a thread per column in every PROBE_STEP²
+// of the window (docs/webgpu.md G4), that walks it from the top down and
+// writes, per column, a vec4f of
 //   R  the surface: the top of the topmost solid, powder or liquid (cells; 0: none)
 //   G  its element id
 //   B  its rise: how far that top stands over the next surface down, across a
@@ -13,7 +14,8 @@ import { ELEMENTS, E, K } from '../elements.js';
 //      cave, say), not a perch, and the walk stops there
 //   A  the column's hot band: lowest·HOT_PACK + highest + 1 of the cells hotter
 //      than BIRD_IGNITE_T (0: none), so a bird inside it catches fire
-// read back asynchronously (64 KB for a 128² window), so it never stalls a frame. Outside the window, in a world, the scene's own ground
+// read back asynchronously (64 KB for a 128² window, through gpu.readback), so
+// it never stalls a frame. Outside the window, in a world, the scene's own ground
 // (scene.ground, the generator's CPU twin) stands in, raised by TREE_ALLOWANCE
 // for the trees it doesn't know about; a box's outside is its floor.
 //
@@ -33,39 +35,63 @@ const PERCHES_MAX = 4096;          // perch columns kept per probe (a 128² wind
 const TREE_IDS = new Set([E.PLANT, E.WOOD]);
 
 const f = (x) => x.toFixed(1);
-const probeFrag = (g) => /* glsl */ `
-${prelude(g)}
-#define IGNITE_T ${f(BIRD_IGNITE_T)}
-#define HOT_PACK ${f(HOT_PACK)}
-#define PERCH_RUN_MAX ${PERCH_RUN_MAX}
-#define PROBE_STEP ${PROBE_STEP}
-out vec4 oP;
-void main() {
-  ivec2 c = ivec2(gl_FragCoord.xy) * PROBE_STEP;   // the column (x, z)
-  float top = 0.0, topId = 0.0, rise = 0.0, hotLo = -1.0, hotHi = -1.0;
-  int state = 0;   // 0: above the top, 1: in the top run, 2: in the air under it
-  for (int y = NY - 1; y >= 0; y--) {
-    vec4 a = fetchA(ivec3(c.x, y, c.y));
-    int id = eid(a);
-    if (a.y > IGNITE_T) { if (hotHi < 0.0) hotHi = float(y); hotLo = float(y); }
-    bool matter = !isGasLike(id);
-    if (state == 0) { if (matter) { top = float(y + 1); topId = float(id); state = 1; } }
-    else if (state == 1) {
-      if (!matter) state = 2;
-      else if (top - float(y) > float(PERCH_RUN_MAX)) break;   // ground: no perch, and nothing under it a bird reaches
+// the kernel (the name is the WebGL pass's, docs/webgpu.md W2): a thread per
+// probed column, its result at gz · (NX / PROBE_STEP) + gx
+const probeFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+const IGNITE_T: f32 = ${f(BIRD_IGNITE_T)};
+const HOT_PACK: f32 = ${f(HOT_PACK)};
+const PERCH_RUN_MAX: i32 = ${PERCH_RUN_MAX};
+const PROBE_STEP: i32 = ${PROBE_STEP};
+const PX: u32 = ${g.nx / PROBE_STEP}u;   // probed columns along x and z
+const PZ: u32 = ${g.nz / PROBE_STEP}u;
+@group(2) @binding(0) var<storage, read_write> cols: array<vec4f>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldThread(wg, nwg, li);
+  if (i >= PX * PZ) { return; }
+  let c = vec2i(i32(i % PX), i32(i / PX)) * PROBE_STEP;   // the column (x, z)
+  var top = 0.0;
+  var topId = 0.0;
+  var rise = 0.0;
+  var hotLo = -1.0;
+  var hotHi = -1.0;
+  var state = 0;   // 0: above the top, 1: in the top run, 2: in the air under it
+  for (var y = NY - 1; y >= 0; y--) {
+    let a = fetchA(vec3i(c.x, y, c.y));
+    let id = eid(a);
+    if (a.y > IGNITE_T) {
+      if (hotHi < 0.0) { hotHi = f32(y); }
+      hotLo = f32(y);
     }
-    else if (matter) { rise = top - float(y + 1); break; }   // the next surface under the gap
+    let matter = !isGasLike(id);
+    if (state == 0) {
+      if (matter) { top = f32(y + 1); topId = f32(id); state = 1; }
+    } else if (state == 1) {
+      if (!matter) { state = 2; }
+      else if (top - f32(y) > f32(PERCH_RUN_MAX)) { break; }   // ground: no perch, and nothing under it a bird reaches
+    } else if (matter) { rise = top - f32(y + 1); break; }   // the next surface under the gap
   }
-  if (state == 2 && rise == 0.0) rise = top;   // air down to the floor under an overhang
-  oP = vec4(top, topId, rise, hotHi < 0.0 ? 0.0 : hotLo * HOT_PACK + hotHi + 1.0);
-}`;
+  if (state == 2 && rise == 0.0) { rise = top; }   // air down to the floor under an overhang
+  var hot = 0.0;
+  if (hotHi >= 0.0) { hot = hotLo * HOT_PACK + hotHi + 1.0; }
+  cols[i] = vec4f(top, topId, rise, hot);
+}
+`;
 export { probeFrag };
+const PROBE_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
+const probeColumns = (g) => (g.nx / PROBE_STEP) * (g.nz / PROBE_STEP);
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  { name: 'birdProbe', kind: 'compute', code: probeFrag, warm: false,
+    layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, PROBE_LAYOUT], dispatch: (g) => fold(Math.ceil(probeColumns(g) / 64)) },
+];
 
 const KIND = ELEMENTS.map((e) => e.kind);
 
-// env: { renderer, getSim, getWin: () => WorldWindow | null }
-export function createBirdWorld({ renderer, getSim, getWin }) {
-  let g = null, mat = null, target = null, buf = null, spare = null;
+// env: { getSim, getWin: () => WorldWindow | null } (and renderer, unused: each simulation's gpu is its own)
+export function createBirdWorld({ getSim, getWin }) {
+  let g = null, gpu = null, kernel = null, out = null, group = null, buf = null, spare = null;
   let busy = false, age = Infinity;
   let generation = 0, disabled = false, disposed = false;
   // the last probe: its grid, origin and columns
@@ -73,20 +99,19 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
   const groundCache = new Map();
   let groundScene = null;
 
+  // the kernel and the columns' buffer for sim's grid on its device
   function ensure(sim) {
-    if (g === sim.g) return;
+    if (g === sim.g && gpu === sim.gpu) return;
     g = sim.g;
-    mat?.dispose(); target?.dispose();
-    mat = new THREE.RawShaderMaterial({
-      glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader: probeFrag(g),
-      uniforms: { tA: { value: null } }, depthTest: false, depthWrite: false,
-    });
-    mat.name = 'birdProbe';
-    target = new THREE.WebGLRenderTarget(g.nx / PROBE_STEP, g.nz / PROBE_STEP, {
-      type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-    });
-    buf = new Float32Array(target.width * target.height * 4);
-    spare = new Float32Array(target.width * target.height * 4);
+    gpu = sim.gpu;
+    out?.destroy();
+    const L = gpu.layout('BIRD_PROBE', PROBE_LAYOUT);
+    kernel = gpu.kernel({ name: 'birdProbe', code: probeFrag(g), layouts: [sim.L.TABLES, sim.L.STATE_RO, L] });
+    const bytes = probeColumns(g) * 16;
+    out = gpu.createBuffer({ label: 'bird probe', size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    group = gpu.bindGroup(L, [{ binding: 0, resource: { buffer: out } }], 'bird probe');
+    buf = new Float32Array(bytes / 4);
+    spare = new Float32Array(bytes / 4);
     data = null;
   }
 
@@ -162,21 +187,20 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
     world,
     get ready() { return !!data; },
     get perchCount() { return perchCols.length; },
-    get pass() { return { mat, target }; },   // (checks time it: tools/birds-shots.mjs)
+    get pass() { return { kernel, buffer: out }; },   // (checks time it: tools/birds-shots.mjs)
     // every frame: starts a probe when the last is PROBE_S old
     update(dt) {
       age += dt;
       const sim = getSim();
-      if (!sim || busy || disabled || disposed || age < PROBE_S || renderer.getContext().isContextLost()) return;
+      if (!sim || busy || disabled || disposed || age < PROBE_S || sim.gpu.lost || sim.gpu.failure) return;
       ensure(sim);
-      mat.uniforms.tA.value = sim.stateA;
-      sim.run(mat, target);
-      renderer.setRenderTarget(null);
+      if (kernel.state !== 'ready') return;   // (it builds in the background)
+      kernel.dispatch(gpu.frame, fold(Math.ceil(probeColumns(g) / 64)), { bind: [sim.tables, sim.bindRO, group], header: sim.header() });
       busy = true;
       age = 0;
-      const o = sim.origin.clone(), from = sim, token = generation;
-      renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height, buf)
-        .then(() => { if (token === generation && from === getSim()) ingest(from, o); })
+      const o = sim.origin.clone(), from = sim, token = generation, into = buf;
+      gpu.readback.buffer(out, 0, out.size, { into: into.buffer })
+        .then(() => { if (token === generation && from === getSim()) { buf = into; ingest(from, o); } })
         .catch((err) => {
           if (token !== generation) return;
           disabled = true; generation++;
@@ -187,6 +211,6 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
     // a new grid or scene: forget the old one's columns
     suspend() { generation++; disabled = true; },
     reset() { generation++; disabled = false; data = null; perchCols = []; groundCache.clear(); groundScene = null; age = Infinity; },
-    dispose() { generation++; disposed = true; mat?.dispose(); target?.dispose(); },
+    dispose() { generation++; disposed = true; out?.destroy(); out = null; },
   };
 }

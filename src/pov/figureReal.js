@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
@@ -6,9 +6,10 @@ import { BODY_HEIGHT, EYE_HEIGHT } from './constants.js';
 import { BODY_MODEL_URL } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import {
-  createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
+  createFigure, createContactShadow, JET_NOZZLES, figureMaterial, figureUniforms, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
   CROUCH_POSE, HEAD_LOOK, HEAD_LOOK_MAX, ELBOW_POLE, KNEE_POLE,
 } from './figure.js';
+import { prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
 import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limbs.js';
 
 // The realistic body: Quaternius's Superhero Male (Universal Base Characters,
@@ -23,10 +24,10 @@ import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limb
 // compile, update, setVisible, dispose), so the shell swaps them freely.
 // choice() is read every frame: 'stick' or 'real'.
 //
-// Lighting: his meshes use figure.js's figureFrag, the world's own lighting
-// (sun and its shadow map, GI probes, glow from hot matter), with a skinned
-// version of its vertex shader, his albedo and normal maps read through it. He
-// glows when hot like the stickman.
+// Lighting: his meshes use figure.js's figureMaterial, the world's own lighting
+// (sun and its shadow map, GI probes, glow from hot matter; gfx/meshLight.js),
+// skinned by three's node pipeline, his albedo and normal maps read through it.
+// He glows when hot like the stickman.
 
 // Tints over each glTF material's albedo map (linear). The eyebrows' map is a
 // greyscale hair mask, tinted in the pack's engines by Quaternius's hair shader:
@@ -78,11 +79,7 @@ function garbFor(gltf, meshes) {
 
 // The body from a loaded glTF. Same per-frame state as the stickman.
 function createRealFigure(gltf) {
-  const uniforms = {
-    uEmit: { value: new THREE.Vector3() },
-    uTint: { value: new THREE.Vector4() },
-    uWorldToGrid: { value: new THREE.Matrix4() },
-  };
+  const u = figureUniforms();
   const tint = [0, 0, 0, 0];
   const model = cloneSkinned(gltf.scene);   // the download is shared; each body poses its own rig
   const meshes = [];
@@ -111,6 +108,11 @@ function createRealFigure(gltf) {
     body.parent.add(garment);
     meshes.push(garment);
   }
+  // his lit materials (figure.js), one per mesh: its albedo and maps
+  const mats = meshes.map((mesh) => {
+    const { albedo, map, normalMap, normalScale, side } = mesh.userData.look;
+    return (mesh.material = figureMaterial({ albedo, u, map, normalMap, normalScale, side }));
+  });
   const cellsPerUnit = BODY_HEIGHT / (box.max.y - box.min.y);
   const modelHolder = new THREE.Group();
   modelHolder.scale.setScalar(cellsPerUnit);
@@ -185,7 +187,7 @@ function createRealFigure(gltf) {
   const w = { ground: 1, air: 0, swim: 0, tread: 0, death: 0 };
   const tw = { ...w };
   const gaitW = Object.fromEntries(GAIT.map((k) => [k, 0]));
-  let mats = [], boundTo = null, compiled = null;
+  let compiled = null;
   let facing = 0, gaitPhase = 0, wasDead = false;
 
   // the crouch's bend, on top of the clips
@@ -244,32 +246,12 @@ function createRealFigure(gltf) {
 
   return {
     root,
-    bind(volume, g) {
-      if (boundTo === volume) return;
-      boundTo = volume;
-      for (const m of mats) m.dispose();
-      mats = meshes.map((mesh) => {
-        const { albedo, map, normalMap, normalScale, side } = mesh.userData.look;
-        const mat = new THREE.ShaderMaterial({
-          vertexShader: figureSkinnedVert,
-          fragmentShader: figureFrag(g),
-          side,
-          defines: { ...(map && { FIG_MAP: '' }), ...(normalMap && { FIG_NORMAL_MAP: '' }) },
-          uniforms: {
-            ...volume.material.uniforms, ...uniforms,
-            uAlbedo: { value: new THREE.Vector3(...albedo) },
-            ...(map && { uMap: { value: map } }),
-            ...(normalMap && { uNormalMap: { value: normalMap }, uNormalScale: { value: normalScale } }),
-          },
-        });
-        mesh.material = mat;
-        return mat;
-      });
-    },
-    compile(renderer, camera, scene) {
-      if (compiled === mats[0]) return Promise.resolve();
-      compiled = mats[0];
-      return renderer.compileAsync(root, camera, scene).catch(() => {});
+    // the light is the volume's whatever the grid (gfx/meshLight.js): nothing to rebuild
+    bind() {},
+    // compile his materials for the scene target before he is first drawn (B5, F8)
+    compile() {
+      if (!compiled && getMeshGpu()) compiled = prepareMesh(root);
+      return compiled ?? Promise.resolve();
     },
     // s: the stickman's state, plus headInLiquid
     update(dt, s) {
@@ -279,9 +261,9 @@ function createRealFigure(gltf) {
       root.position.copy(s.feet);
       root.position.y += (s.lift ?? 0) * s.scale;
       root.scale.setScalar(s.scale);
-      uniforms.uWorldToGrid.value.copy(s.worldToGrid);
-      uniforms.uEmit.value.set(...FIGURE_HEAT_GLOW).multiplyScalar(s.heat ?? 0);
-      uniforms.uTint.value.set(...(s.status ? s.status.tint(tint) : tint.fill(0)));
+      u.worldToGrid.value.copy(s.worldToGrid);
+      u.emit.value.set(...FIGURE_HEAT_GLOW).multiplyScalar(s.heat ?? 0);
+      u.tint.value.set(...(s.status ? s.status.tint(tint) : tint.fill(0)));
       if (!s.dead) facing = s.yaw;
       root.rotation.set(0, facing, 0);
 
@@ -396,7 +378,7 @@ export function createBody({ choice }) {
   const stick = createFigure();
   const light = [stick];   // the procedural body: cheap, always built
   let real = null, failed = false, loading = false;
-  let bound = null, compileArgs = null;
+  let bound = null;
   const root = new THREE.Group();
   root.visible = false;
   for (const f of light) { root.add(f.root); f.setVisible(true); }   // the parts show or hide by choice; root is the body's visibility
@@ -409,7 +391,7 @@ export function createBody({ choice }) {
       .then(async (gltf) => {
         const fig = createRealFigure(gltf);
         if (bound) fig.bind(...bound);
-        if (compileArgs) await fig.compile(...compileArgs);   // off the main thread, so switching doesn't hitch
+        await fig.compile();   // its pipelines built before it joins the scene, so switching doesn't hitch (B5)
         root.add(fig.root);
         real = fig;
       })
@@ -427,9 +409,8 @@ export function createBody({ choice }) {
       if (wantsReal()) load();
     },
     get material() { return active().material; },
-    compile(renderer, camera, scene) {
-      compileArgs = [renderer, camera, scene];
-      return Promise.all([...light.map((f) => f.compile(renderer, camera, scene)), real?.compile(renderer, camera, scene)]);
+    compile() {
+      return Promise.all([...light.map((f) => f.compile()), real?.compile()]);
     },
     update(dt, s) {
       if (wantsReal()) load();

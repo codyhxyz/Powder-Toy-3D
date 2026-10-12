@@ -1,8 +1,8 @@
 // The scripting console, ` (src/console; docs/webgpu.md Sync log S4, U12):
 // TPT's Lua API on the simulation, its event.tick, and the Simulation options
-// by TPT's names. Its writes are edits and its reads block reads (src/console/gpu.js,
-// sim.readStateRect). Moved here from app.js as it was: U12 ports it. Until
-// then the console doesn't open.
+// by TPT's names. Its writes are edits (sim.edit) and its reads block reads
+// (src/console/gpu.js, sim.readStateRect), which a typed command waits for as
+// a coroutine (src/console/lua.js) instead of stalling.
 import * as THREE from 'three';
 import { createConsole } from '../console/index.js';
 import { registerConsoleApi } from '../console/registry.js';
@@ -19,7 +19,7 @@ const CONSOLE_GRAVITY_MAX = 0.06;
 
 const console_ = {
   name: 'console',
-  ready: false,
+  ready: true,
 
   boot(app) {
     const { settings } = app;

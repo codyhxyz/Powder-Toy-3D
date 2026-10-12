@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Icon bake</title>
+  <style>
+    #view { display: none; }
+    #log { display: none; }
+  </style>
+</head>
+<body>
+  <!-- tools/bake-icons.mjs drives this page: the hotbar icons and the class
+       portraits drawn through the game's own materials on WebGPU, once, into
+       public/icons (docs/webgpu.md F8, U13). -->
+  <canvas id="view" width="64" height="64"></canvas>
+  <pre id="log"></pre>
+  <script type="module" src="./icons.js"></script>
+</body>
+</html>

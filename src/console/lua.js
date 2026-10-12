@@ -166,7 +166,12 @@ export function createLua({ log, now = () => performance.now() }) {
   lualib.luaL_openlibs(L);
   const ctx = { mode: 'command', log: (s) => log(String(s), 'out') };
   const handlers = Object.values(EVENTS).map(() => []);   // per event type: registry refs
-  let deadline = Infinity, hookCount = HOOK_EVERY, pending = '';
+  let deadline = Infinity, pending = '';
+  // A typed command runs as a coroutine: a read that waits for the GPU yields
+  // it (console/gpu.js), run and resume return { wait }, and the console
+  // resumes it once the read is in. left: its time limit's remainder (the
+  // wait doesn't count).
+  let command = null, waiting = null, left = 0;
 
   // JS errors inside Lua (a too-long string.rep...) become Lua errors
   lua.lua_atnativeerror(L, (L1) => {
@@ -175,16 +180,50 @@ export function createLua({ log, now = () => performance.now() }) {
     return 1;
   });
 
+  // (hooks are per thread: L's for handlers, the command's coroutine's, a script's own coroutines')
   const hook = (L1) => {
     if (now() <= deadline) return;
-    if (hookCount !== 1) { hookCount = 1; lua.lua_sethook(L, hook, lua.LUA_MASKCOUNT, 1); }
+    lua.lua_sethook(L1, hook, lua.LUA_MASKCOUNT, 1);
     raise(L1, `stopped: ran longer than ${ctx.mode === 'command' ? COMMAND_LIMIT_MS : HANDLER_LIMIT_MS} ms`);
   };
-  const arm = (ms) => {
+  const arm = (ms, L1 = L) => {
     deadline = now() + ms;
-    if (hookCount !== HOOK_EVERY) { hookCount = HOOK_EVERY; lua.lua_sethook(L, hook, lua.LUA_MASKCOUNT, HOOK_EVERY); }
+    lua.lua_sethook(L1, hook, lua.LUA_MASKCOUNT, HOOK_EVERY);
   };
   lua.lua_sethook(L, hook, lua.LUA_MASKCOUNT, HOOK_EVERY);
+  // pcall and xpcall as lbaselib.js has them, but marking the call's
+  // CIST_OAH bit (lstate.js) first: fengari's recover() (ldo.js) restores a
+  // coroutine's allowhook from that bit, which its lua_pcallk never sets, so
+  // once a pcall in the command's coroutine caught an error that coroutine's
+  // hooks would stay off, and with them the time limit. With the bit set,
+  // recovery leaves hooks on, as Lua's own setoah does.
+  const CIST_OAH = 1 << 0;
+  const finishpcall = (L1, status, extra) => {
+    if (status !== lua.LUA_OK && status !== lua.LUA_YIELD) {
+      lua.lua_pushboolean(L1, 0);
+      lua.lua_pushvalue(L1, -2);
+      return 2;
+    }
+    return lua.lua_gettop(L1) - extra;
+  };
+  lua.lua_pushcfunction(L, (L1) => {
+    lauxlib.luaL_checkany(L1, 1);
+    lua.lua_pushboolean(L1, 1);
+    lua.lua_insert(L1, 1);
+    L1.ci.callstatus |= CIST_OAH;
+    return finishpcall(L1, lua.lua_pcallk(L1, lua.lua_gettop(L1) - 2, lua.LUA_MULTRET, 0, 0, finishpcall), 0);
+  });
+  lua.lua_setglobal(L, to_luastring('pcall'));
+  lua.lua_pushcfunction(L, (L1) => {
+    const n = lua.lua_gettop(L1);
+    lauxlib.luaL_checktype(L1, 2, lua.LUA_TFUNCTION);
+    lua.lua_pushboolean(L1, 1);
+    lua.lua_pushvalue(L1, 1);
+    lua.lua_rotate(L1, 3, 2);
+    L1.ci.callstatus |= CIST_OAH;
+    return finishpcall(L1, lua.lua_pcallk(L1, n - 2, lua.LUA_MULTRET, 2, 2, finishpcall), 2);
+  });
+  lua.lua_setglobal(L, to_luastring('xpcall'));
 
   // the sandbox: drop what reaches files, the network or the hook
   const drop = (tbl, ...names) => {
@@ -199,17 +238,34 @@ export function createLua({ log, now = () => performance.now() }) {
   drop('os', 'execute', 'exit', 'remove', 'rename', 'tmpname', 'getenv', 'setlocale');
 
   // ---- the registry's tables
-  const wrap = (entry) => (L1) => {
-    const n = lua.lua_gettop(L1);
-    const args = [];
-    for (let i = 1; i <= n; i++) args.push(toJs(L1, i));
-    let r;
-    try { r = entry.fn.apply(ctx, args); } catch (e) { return raise(L1, e?.message ?? e); }
-    const m = multiValues(r);
-    if (m) { m.forEach((v) => pushJs(L1, v)); return m.length; }
-    if (r === undefined) return 0;
-    pushJs(L1, r);
-    return 1;
+  const wrap = (entry) => {
+    const call = (L1) => {
+      const n = lua.lua_gettop(L1);
+      const args = [];
+      for (let i = 1; i <= n; i++) args.push(toJs(L1, i));
+      let r;
+      try { r = entry.fn.apply(ctx, args); } catch (e) {
+        if (typeof e?.retry === 'function') return wait(L1, e.retry, call);
+        return raise(L1, e?.message ?? e);
+      }
+      const m = multiValues(r);
+      if (m) { m.forEach((v) => pushJs(L1, v)); return m.length; }
+      if (r === undefined) return 0;
+      pushJs(L1, r);
+      return 1;
+    };
+    return call;
+  };
+  // A builtin's read waits for the GPU (console/gpu.js: an error carrying
+  // retry, thrown before the builtin changed anything): the command's
+  // coroutine yields, and on resume the builtin runs again with its
+  // arguments (still on the stack) and finds the blocks read.
+  const wait = (L1, retry, call) => {
+    if (L1 !== command || !lua.lua_isyieldable(L1)) {
+      return raise(L1, 'this read waits for the GPU, which it can\'t from inside your own coroutine or a function such as table.sort or string.gsub calls: read the cell before');
+    }
+    waiting = retry;
+    return lua.lua_yieldk(L1, 0, 0, (L2) => call(L2));
   };
   const tableOf = (name) => {
     lua.lua_getglobal(L, to_luastring(name));
@@ -303,11 +359,38 @@ export function createLua({ log, now = () => performance.now() }) {
     return s;
   };
 
+  // Runs the command's coroutine until it ends ({ ok, text } or { ok: false,
+  // error }) or a read waits for the GPU ({ wait }: a function whose promise
+  // resolves once the read is in; resume() then).
+  function resume() {
+    const T = command;
+    if (!T) return { ok: false, error: 'no command is waiting' };
+    ctx.mode = 'command';
+    arm(left, T);
+    const status = lua.lua_resume(T, L, 0);
+    left = Math.max(0, deadline - now());
+    deadline = Infinity;
+    if (status === lua.LUA_YIELD) {
+      const w = waiting;
+      waiting = null;
+      if (w) return { wait: w };
+      command = null;   // a coroutine.yield of the command itself: it has no one to yield to
+      return { ok: false, error: 'attempt to yield from outside a coroutine' };
+    }
+    command = null;
+    if (status !== lua.LUA_OK) return { ok: false, error: errorText(T) };
+    const out = [];
+    for (let i = 1; i <= lua.lua_gettop(T); i++) out.push(loggable(T, i));
+    lua.lua_settop(T, 0);
+    return { ok: true, text: out.length ? out.join(', ') : null };
+  }
+
   return {
     // A typed command (TPT's CommandInterface::Command, LuaScriptInterface.cpp):
     // tried as `return <code>` first so an expression prints its value; an
     // unfinished chunk (an error near <eof>) waits for more lines.
-    // Returns { ok, text } or { ok: false, error } or { more: true }.
+    // Returns { ok, text } or { ok: false, error } or { more: true }, or
+    // { wait } while a read waits for the GPU (resume() once it resolves).
     run(code) {
       const src = pending ? `${pending}\n${code}` : code;
       lua.lua_settop(L, 0);
@@ -323,16 +406,18 @@ export function createLua({ log, now = () => performance.now() }) {
         return { ok: false, error };
       }
       pending = '';
-      ctx.mode = 'command';
-      arm(COMMAND_LIMIT_MS);
-      status = lua.lua_pcall(L, 0, lua.LUA_MULTRET, 0);
-      deadline = Infinity;
-      if (status !== lua.LUA_OK) return { ok: false, error: errorText(L) };
-      const out = [];
-      for (let i = 1; i <= lua.lua_gettop(L); i++) out.push(loggable(L, i));
+      // the chunk goes to a fresh coroutine (a read may yield it: see wait)
+      command = lua.lua_newthread(L);
+      lua.lua_insert(L, -2);
+      lua.lua_xmove(L, command, 1);
       lua.lua_settop(L, 0);
-      return { ok: true, text: out.length ? out.join(', ') : null };
+      left = COMMAND_LIMIT_MS;
+      return resume();
     },
+    // After { wait }: the read is in, the command goes on. Returns as run does.
+    resume,
+    // A command waiting for a read that failed (the grid changed): dropped.
+    abandon() { command = null; waiting = null; },
 
     // Throw away an unfinished multi-line chunk.
     cancel() { pending = ''; },

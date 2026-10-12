@@ -1,11 +1,11 @@
 // Signs (src/signs.js; docs/webgpu.md G4, U12): text pinned to cells, kept on
-// the surface they were put on by a probe of the state. Moved here from app.js
-// as it was (WebGL): U12 ports it. Until then app.js greys out the Sign tool.
+// the surface they were put on by a probe of the state (a kernel whose
+// results come back through a readback ring).
 import { Signs } from '../signs.js';
 
 const signs = {
   name: 'signs',
-  ready: false,
+  ready: true,
 
   boot(app) {
     const signLayer = Object.assign(document.createElement('div'), { className: 'sign-layer' });

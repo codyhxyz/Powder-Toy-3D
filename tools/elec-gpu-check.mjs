@@ -12,8 +12,9 @@
 //   - stills of the wire and the tank, by day and by night
 // Prints JSON and writes the stills to <outDir>.
 // usage: node tools/elec-gpu-check.mjs <outDir> [--port 5416]
-import { chromium } from 'playwright';
+//   (the app on your own Vite: npx vite --port 5416 --strictPort)
 import { mkdirSync } from 'fs';
+import { launchBrowser, newTestContext, ready, render } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const out = args[0];
@@ -23,12 +24,13 @@ mkdirSync(out, { recursive: true });
 
 const VIEW = { width: 960, height: 600 };   // small stills
 const SEED = 12345;                         // Math.random seed (mulberry32, as tools/activity-check.mjs)
-const CONVERGE_FRAMES = 30;                 // frames per still (TAA, GI)
 const DAY = { az: 60, el: 35 };
 const NIGHT = { az: 60, el: -20 };
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const ctx = await b.newContext({ viewport: VIEW });
+const b = await launchBrowser();
+try {
+// a parked app (manual mode): the steps are ours, the stills converged views (tools/browser.mjs render)
+const ctx = await newTestContext(b, { mode: 'manual', viewport: VIEW });
 await ctx.routeWebSocket(/.*/, () => {});   // no multiplayer relay
 await ctx.addInitScript((seed) => {
   let s = seed;
@@ -41,11 +43,11 @@ const errs = [];
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
 p.on('console', (m) => {
   const t = m.text();
-  if ((m.type() === 'error' && !t.startsWith('Failed to load resource')) || /GL_INVALID|WebGL:|Shader Error/.test(t)) errs.push(t.slice(0, 600));
+  if ((m.type() === 'error' && !t.startsWith('Failed to load resource')) || /GPUValidationError|WGSL/.test(t)) errs.push(t.slice(0, 600));
 });
 await p.goto(`http://localhost:${port}/?preset=empty&size=128`, { timeout: 180000, waitUntil: 'domcontentloaded' });
-await p.waitForFunction(() => window.__app?.sim, null, { timeout: 120000 });
-await p.waitForTimeout(1500);
+await ready(p);
+await p.evaluate(() => window.__app.test.ready());
 
 // The scene, in cells. Wires along x, 2×2 thick, at y WY, WY+1.
 const L = {
@@ -59,15 +61,11 @@ const L = {
 };
 
 const res = await p.evaluate(async (L) => {
-  const a = window.__app, sim = a.sim, R = a.renderer;
+  const a = window.__app, sim = a.sim;
   const { E, ELEMENTS, TOOLS } = await import('/src/elements.js');
-  const { isLive, sparkOf, SPARK_CYCLE, ELEC } = await import('/src/electricity.js');
-  const { inertRefFrag } = await import('/src/shaders/activity.js');
-  const { rawMat, makeFieldTarget } = await import('/src/sim.js');
-  a.settings.paused = true;
+  const { isLive, sparkOf, SPARK_CYCLE } = await import('/src/electricity.js');
+  a.test.park();
   if (a.autoRes) a.autoRes.enabled = false;
-  const frames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
-  window.__frames = frames;
   window.__scene = (x, y, z) => { const s = a.scale, o = sim.origin, v = a.volume.position; return [v.x + (x - o.x) * s, v.y + y * s, v.z + (z - o.z) * s]; };
 
   // ---- the scene ----
@@ -109,44 +107,52 @@ const res = await p.evaluate(async (L) => {
     sim.load(A, B);
     sim.frame = 0;
   };
-  const cell = (x, y, z) => { const [ca] = sim.readCell(x, y, z); return { id: Math.round(ca[0]), T: ca[1], life: ca[2], w: ca[3] }; };
-  const liveAt = (x, y, z) => { const c = cell(x, y, z); return isLive(c.id, c.w); };
+  // cells as they are now (read back: docs/webgpu.md W6); many at once share the wait
+  const cell = async (x, y, z) => { const [ca] = await sim.readCell(x, y, z); return { id: Math.round(ca[0]), T: ca[1], life: ca[2], w: ca[3] }; };
+  const cells = (list) => Promise.all(list.map((c) => cell(...c)));
+  const liveAt = async (x, y, z) => { const c = await cell(x, y, z); return isLive(c.id, c.w); };
   const steps = (k) => { for (let i = 0; i < k; i++) sim.step(); };
 
-  // ---- the activity map against its reference, at every build (tools/activity-check.mjs) ----
-  const g = sim.g, bw = g.bwidth, bh = g.bheight;
-  const tex = sim.actInert.texture;
-  const refInert = makeFieldTarget(bw, bh, 1, tex.type, tex.minFilter), refQuiet = makeFieldTarget(bw, bh, 1, tex.type, tex.minFilter);
-  const ref = rawMat(inertRefFrag(g), { tA: { value: null }, tB: { value: null } });
-  const px = () => new Uint8Array(bw * bh * 4);
-  const bufs = { inert: px(), quiet: px(), refInert: px(), refQuiet: px() };
-  const readT = (t, buf) => R.readRenderTargetPixels(t, 0, 0, bw, bh, buf);
+  // ---- the activity map against its reference, at every build (tools/harness/sim-activity.js:
+  // the reference kernel rebuilds the inert map from the state, the quiet map follows from it) ----
+  const g = sim.g;
+  await sim.prepare('inertRef');
   const act = { builds: 0, inertDiff: 0, quietDiff: 0, quietShare: 0 };
+  const pending = [];
   const buildMap = sim.updateActivity.bind(sim);
   sim.updateActivity = () => {
     buildMap();
-    ref.uniforms.tA.value = sim.stateA; ref.uniforms.tB.value = sim.stateB;
-    sim.run(ref, refInert);
-    const q = sim.mats.quiet, keep = q.uniforms.tInert.value;
-    q.uniforms.tInert.value = refInert.texture; sim.run(q, refQuiet); q.uniforms.tInert.value = keep;
-    readT(sim.actInert, bufs.inert); readT(sim.actQuiet, bufs.quiet); readT(refInert, bufs.refInert); readT(refQuiet, bufs.refQuiet);
-    let n = 0, qn = 0;
-    for (let i = 0; i < bufs.inert.length; i += 4) {
-      if ((bufs.inert[i] > 127) !== (bufs.refInert[i] > 127)) act.inertDiff++;
-      if ((bufs.quiet[i] > 127) !== (bufs.refQuiet[i] > 127)) act.quietDiff++;
-      n++; qn += bufs.refQuiet[i] > 127;
-    }
-    act.builds++; act.quietShare += qn / n;
+    const enabled = sim.quietOk;
+    pending.push(Promise.all([sim.readMaps(), sim.inertRef()]).then(([m, ref]) => {
+      let qn = 0;
+      for (let i = 0; i < ref.length; i++) {
+        const bx = i % g.bx, by = Math.floor(i / g.bx) % g.by, bz = Math.floor(i / (g.bx * g.by));
+        let q = enabled;
+        for (let z = -1; z <= 1 && q; z++) for (let y = -1; y <= 1 && q; y++) for (let x = -1; x <= 1 && q; x++) {
+          const nx = bx + x, ny = by + y, nz = bz + z;
+          if (nx < 0 || ny < 0 || nz < 0 || nx >= g.bx || ny >= g.by || nz >= g.bz) continue;
+          if (!ref[nx + g.bx * (ny + g.by * nz)]) q = false;
+        }
+        if (m.inert[i] !== ref[i]) act.inertDiff++;
+        if (m.quiet[i] !== (q ? 1 : 0)) act.quietDiff++;
+        qn += q;
+      }
+      act.builds++; act.quietShare += qn / ref.length;
+    }));
   };
 
   const out = {};
   window.__reseed(); build(); sim.skipQuiet = true;
   // 1. the wire's front: the farthest live cell along it after k steps
   const W = L.wire;
-  const front = () => { let f = -1; for (let x = W.x0; x < W.x1; x++) if (liveAt(x, W.y, W.z)) f = x; return f; };
+  const front = async () => {
+    const xs = []; for (let x = W.x0; x < W.x1; x++) xs.push([x, W.y, W.z]);
+    let f = -1; (await cells(xs)).forEach((c, k) => { if (isLive(c.id, c.w)) f = xs[k][0]; });
+    return f;
+  };
   out.front = {};
   let done = 0;
-  for (const k of [10, 40, 75]) { steps(k - done); done = k; out.front[k] = front(); }
+  for (const k of [10, 40, 75]) { steps(k - done); done = k; out.front[k] = await front(); }
   out.frontWant = Object.fromEntries([10, 40, 75].map((k) => [k, W.x0 - 1 + k]));
   // 2. the water at the wire's tip: strongest spark seen per cell over 3 cycles
   const tip = W.x1 - 1;
@@ -156,44 +162,54 @@ const res = await p.evaluate(async (L) => {
   const maxS = Object.fromEntries(Object.keys(probes).map((k) => [k, 0]));
   for (let s = 0; s < 3 * SPARK_CYCLE; s++) {
     steps(1); done++;
-    for (const [k, c] of Object.entries(probes)) { const cc = cell(...c); maxS[k] = Math.max(maxS[k], sparkOf(cc.id, cc.w)); }
+    const cs = await cells(Object.values(probes));
+    Object.keys(probes).forEach((k, n) => { maxS[k] = Math.max(maxS[k], sparkOf(cs[n].id, cs[n].w)); });
   }
   out.water = maxS;
-  out.waterIds = Object.fromEntries(Object.entries(probes).map(([k, c]) => [k, ELEMENTS[cell(...c).id].key]));
+  const ids = await cells(Object.values(probes));
+  out.waterIds = Object.fromEntries(Object.keys(probes).map((k, n) => [k, ELEMENTS[ids[n].id].key]));
   // 3. the diode lines, the sensor, the powered clone
   const D = L.diode, S = L.tsns, C = L.pcln;
   const seen = { fwd: false, rev: false, revBeforeJunction: false, tsns: false };
   for (let s = 0; s < 2 * SPARK_CYCLE; s++) {
     steps(1); done++;
-    seen.fwd ||= liveAt(D.x0 + D.len - 1, D.y, D.z);
-    seen.rev ||= liveAt(D.x0 + D.len - 1, D.y, D.z + 4) || liveAt(D.x0 + 6, D.y, D.z + 4);
-    seen.revBeforeJunction ||= liveAt(D.x0 + 5, D.y, D.z + 4);
-    seen.tsns ||= liveAt(S.x0 + 10, S.y, S.z);
+    const [f, r0, r1, rb, ts] = await Promise.all([liveAt(D.x0 + D.len - 1, D.y, D.z), liveAt(D.x0 + D.len - 1, D.y, D.z + 4),
+      liveAt(D.x0 + 6, D.y, D.z + 4), liveAt(D.x0 + 5, D.y, D.z + 4), liveAt(S.x0 + 10, S.y, S.z)]);
+    seen.fwd ||= f;
+    seen.rev ||= r0 || r1;
+    seen.revBeforeJunction ||= rb;
+    seen.tsns ||= ts;
   }
   out.circuits = seen;
-  const V3 = sim.mats.paint.uniforms.uCenter.value.constructor;
+  const V3 = function (x, y, z) { return { x, y, z }; };
   const sparkId = TOOLS.find((t) => t.key === 'SPARK').id;
-  const sand = () => { let n = 0; for (let y = 0; y <= C.y + 3; y++) for (let x = C.x - 3; x <= C.x + 3; x++) for (let z = C.z - 3; z <= C.z + 3; z++) n += cell(x, y, z).id === E.SAND; return n; };
-  const sandOff = sand();
+  const sand = async () => {
+    const [SA] = await sim.readState();
+    let n = 0;
+    for (let y = 0; y <= C.y + 3; y++) for (let x = C.x - 3; x <= C.x + 3; x++) for (let z = C.z - 3; z <= C.z + 3; z++) n += Math.round(SA[sim.cellTexel(x, y, z) * 4]) === E.SAND;
+    return n;
+  };
+  const sandOff = await sand();
   sim.paint({ center: new V3(C.x - 1 + 0.5, C.y + 0.5, C.z + 0.5), radius: 0.6, shape: 0, tool: sparkId, rate: 1, replace: false });
   steps(30); done += 30;
-  out.pcln = { sandWhileOff: sandOff, sandAfterP: sand(), life: cell(C.x, C.y, C.z).life };
+  out.pcln = { sandWhileOff: sandOff, sandAfterP: await sand(), life: (await cell(C.x, C.y, C.z)).life };
   // 4. the Spark tool on the bare bar
   const Bb = L.bar;
   sim.paint({ center: new V3(Bb.x0 + 0.5, Bb.y + 0.5, Bb.z + 0.5), radius: 1.5, shape: 0, tool: sparkId, rate: 1, replace: false });
   steps(12); done += 12;
-  let bf = -1; for (let x = Bb.x0; x < Bb.x1; x++) if (liveAt(x, Bb.y, Bb.z)) bf = x;
+  const bar = []; for (let x = Bb.x0; x < Bb.x1; x++) bar.push([x, Bb.y, Bb.z]);
+  let bf = -1; (await cells(bar)).forEach((c, k) => { if (isLive(c.id, c.w)) bf = bar[k][0]; });
   out.sparkTool = { front: bf, want: Bb.x0 + 1 + 12, note: 'painted x0 and x0+1, then 12 steps' };
-  // awake share of supertiles now, with the battery running
-  const sh = new Float32Array(4);
-  R.readRenderTargetPixels(sim.superShare, 0, 0, 1, 1, sh);
-  out.awakeShareRunning = +sh[0].toFixed(4);
+  // the awake share of sleeping units now, with the battery running
+  const counts = await sim.readCounts();
+  out.awakeShareRunning = +(counts.awake / counts.units).toFixed(4);
+  await Promise.all(pending);
   out.activity = { ...act, quietShare: +(act.quietShare / act.builds).toFixed(3) };
 
   // 5. spark states with quiet bricks skipped against none skipped: the same box, the same steps
   const box = [L.bat[0], L.tank.x1, 0, 20, 36, L.tank.z1 + 30];   // x0 x1 y0 y1 z0 z1: the wire, tank, diodes, sensor, clone
-  const snap = () => {
-    const [SA] = sim.readState();
+  const snap = async () => {
+    const [SA] = await sim.readState();
     const r = [];
     for (let x = box[0]; x < box[1]; x++) for (let y = box[2]; y < box[3]; y++) for (let z = box[4]; z < box[5]; z++) {
       if (z >= g.nz) continue;
@@ -203,12 +219,12 @@ const res = await p.evaluate(async (L) => {
     return r;
   };
   const runFor = (skip) => { window.__reseed(); build(); sim.skipQuiet = skip; steps(150); return snap(); };
-  const s1 = runFor(true), s0 = runFor(false);
+  const s1 = await runFor(true), s0 = await runFor(false);
   let diff = 0; for (let i = 0; i < s1.length; i++) diff += s1[i] !== s0[i];
   out.skipVsNoSkip = { values: s1.length, differing: diff };
   sim.skipQuiet = true;
+  await Promise.all(pending);
   sim.updateActivity = buildMap;
-  refInert.dispose(); refQuiet.dispose(); ref.dispose();
 
   // leave a running circuit for the stills
   window.__reseed(); build(); steps(110);
@@ -224,16 +240,15 @@ const look = async (pos, tgt, sun) => {
     a.controls.update();
     a.post.reset();
   }, [pos, tgt, sun]);
-  await p.evaluate((n) => window.__frames(n), CONVERGE_FRAMES);
 };
 // a still at a moment the wire is live near the camera: step one at a time until the cell under the camera is
 const shotLive = async (name, pos, tgt, sun, at) => {
   await look(pos, tgt, sun);
   await p.evaluate(async (at) => {
     const a = window.__app, { isLive } = await import('/src/electricity.js');
-    for (let k = 0; k < 9; k++) { const [c] = a.sim.readCell(...at); if (isLive(Math.round(c[0]), c[3])) break; a.sim.step(); }
-    await window.__frames(2);
+    for (let k = 0; k < 9; k++) { const [c] = await a.sim.readCell(...at); if (isLive(Math.round(c[0]), c[3])) break; a.sim.step(); }
   }, at);
+  await render(p);   // the view converged (TAA, GI), no steps
   await p.screenshot({ path: `${out}/${name}.png` });
 };
 const W = L.wire;
@@ -242,4 +257,6 @@ await shotLive('wire-night', [W.x0 + 30, W.y + 14, W.z + 26], [W.x0 + 40, W.y, W
 await shotLive('tank-night', [W.x1 - 14, W.y + 22, W.z + 24], [W.x1 + 2, W.y, W.z], NIGHT, [W.x1 - 1, W.y, W.z]);
 res.errors = errs;
 console.log(JSON.stringify(res, null, 1));
-await b.close();
+} finally {
+  await b.close();
+}

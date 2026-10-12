@@ -1,8 +1,9 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { povEvents } from './events.js';
-import { NV_PHOSPHOR } from '../gfx/post.js';
-import { brickTexel } from '../sim.js';
+import { flameOverlay } from './flame.js';
+import { useWebGPUCamera, gpuTextureOf } from '../gpu/three.js';
+import { guardMeshes, PENDING_MASK } from '../gfx/meshLight.js';
 import { BRICK } from '../shaders/common.js';
 import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_SHADOW_BIAS } from '../shaders/gfx/lighting.js';
 
@@ -28,20 +29,22 @@ import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_
 //   rig.kick(1);                           // the hand's kick alone
 //   rig.state                              // { pos, rot, spring } the rig's current offset (cells, rad), for checks
 //
-// The pass. The hands are drawn after the main post pass, in their own render
-// (renderViewmodels, one call in app.js's frame loop), so they never go
-// through TAA (which smears anything that moves with the camera) and never
-// clip into walls: their own camera (the main camera's pose and FOV, a near
-// plane of VM_NEAR cells), their own depth buffer, lit like the world (the sun's
-// direction and colour, the sky and ground fill: gfx/uniforms.js), tone mapped
-// with the post pass's exposure and composited over the frame. Everything under
+// The pass. The hands are drawn in their own render (renderViewmodels, once a
+// presented frame, before post.render), so they never go through TAA (which
+// smears anything that moves with the camera) and never clip into walls: their
+// own camera (the main camera's pose and FOV, a near plane of VM_NEAR cells),
+// their own multisampled target and depth, lit like the world (the sun's
+// direction and colour, the light of the GI probe at the eye). Post's canvas
+// pass tone maps them with the frame's exposure and composites them over it
+// (docs/webgpu.md F3): renderViewmodels returns the resolved target, and the
+// glow layer's, for post.render's { viewmodel, glow }. Everything under
 // env.viewmodel goes on VIEWMODEL_LAYER, which the main camera doesn't see. It
 // stays in the main scene graph, so the frame loop's scene key (and with it
 // render-on-demand) still notices when a hand moves.
 
 export const VIEWMODEL_LAYER = 5;     // three.js layer the viewmodels draw on (the main camera sees layer 0 only)
-// Light the hands give off (a torch's flame: flame.js 'overlay'), drawn after the hands straight onto
-// the finished frame, added and tone mapped by itself: the hands' pass has no bloom, and light with no
+// Light the hands give off (a torch's flame: flame.js 'overlay'), drawn into its own target and added
+// over the finished frame, tone mapped by itself: the hands' pass has no bloom, and light with no
 // coverage can't go through its straight-colour composite. A mesh goes on it with userData.vmLayer.
 export const VIEWMODEL_GLOW_LAYER = 6;
 
@@ -114,7 +117,7 @@ const REST_EPS = 1e-4;                // cells, rad and their rates
 // the overlay pass
 const VM_NEAR = 0.01;                 // cells: near plane (the hands sit 1–2 cells from the eye)
 const VM_FAR = 12;                    // cells: far plane (the physgun's beam doesn't draw here)
-const VM_MSAA = 4;                    // samples: the hands skip TAA, so they get MSAA
+const VM_MSAA = 4;                    // samples: the hands skip TAA, so they get MSAA (resolved for post's composite)
 // three's Lambert BRDF is albedo/π; the engine's shading is albedo × light. Lights at π make them agree.
 const LIGHT_SCALE = Math.PI;
 // The world's light at the eye: the GI probe the camera is in, read back a few
@@ -254,13 +257,14 @@ export function heldMaterial(color) {
   return new THREE.MeshLambertMaterial({ color, flatShading: true });
 }
 
-// every viewmodel object on its layer; true if any is on the glow layer
+// every viewmodel object on its layer (but one waiting on its pipelines: guardMeshes moves
+// it back); true if any is on the glow layer
 function setLayers(obj) {
   let glow = false;
   obj.traverse((o) => {
     const layer = o.userData.vmLayer ?? VIEWMODEL_LAYER;
-    o.layers.set(layer);
-    if (layer === VIEWMODEL_GLOW_LAYER) glow = true;
+    if (o.layers.mask !== PENDING_MASK) o.layers.set(layer);
+    if (layer === VIEWMODEL_GLOW_LAYER && o.visible) glow = true;
   });
   return glow;
 }
@@ -269,52 +273,34 @@ function setLayers(obj) {
 
 let pass = null;
 
-function createPass(renderer) {
-  const cam = new THREE.PerspectiveCamera();
+function createPass() {
+  const cam = useWebGPUCamera(new THREE.PerspectiveCamera());
   cam.layers.set(VIEWMODEL_LAYER);
   cam.matrixAutoUpdate = false;
   const sun = new THREE.DirectionalLight(0xffffff, LIGHT_SCALE);
   const sky = new THREE.LightProbe();   // the eye's GI probe (eyeLight)
   sun.layers.set(VIEWMODEL_LAYER);
   sky.layers.set(VIEWMODEL_LAYER);
-  const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: VM_MSAA });
-  // composite: linear premultiplied radiance → three's AgX at the post pass's exposure → sRGB, over the frame.
-  // Tone mapping and the sRGB curve are nonlinear, so they run on straight colour: applied to premultiplied
-  // colour they brighten every partly covered (anti-aliased) edge pixel into a pale outline.
-  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
-    uniforms: { tColor: { value: target.texture }, uNight: { value: 0 } },
-    vertexShader: /* glsl */ `
-      varying vec2 vUv;
-      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
-    fragmentShader: /* glsl */ `
-      uniform sampler2D tColor;
-      uniform float uNight;   // the Night Vision goggles' share of the picture (post.js): the tool seen through them too
-      varying vec2 vUv;
-      void main() {
-        vec4 c = texture2D(tColor, vUv);
-        if (c.a <= 0.0) discard;
-        gl_FragColor = vec4(c.rgb / c.a, c.a);
-        gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(${NV_PHOSPHOR.join(', ')}) * dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722) /* Rec.709 luminance */), uNight);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-        gl_FragColor.rgb *= gl_FragColor.a;
-      }`,
-    depthTest: false, depthWrite: false, transparent: true, premultipliedAlpha: true,
-  }));
-  quad.frustumCulled = false;
-  const quadScene = new THREE.Scene();
-  quadScene.add(quad);
-  const quadCam = new THREE.OrthographicCamera();
+  // Linear premultiplied radiance, multisampled and resolved; the samples
+  // themselves are only needed inside the pass. Post's canvas pass tone maps
+  // it on straight colour (tone mapping is nonlinear: on premultiplied colour
+  // every partly covered edge pixel would brighten into a pale outline).
+  const target = new THREE.RenderTarget(1, 1, {
+    type: THREE.HalfFloatType, samples: VM_MSAA, stencilBuffer: false,
+    storeMultisampledColorBuffer: false, storeMultisampledDepthBuffer: false,
+  });
+  target.texture.name = 'viewmodel';
+  // the glow layer: display values (its materials tone map themselves), added over the frame
+  const glowTarget = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+  glowTarget.texture.name = 'viewmodel glow';
   const size = new THREE.Vector2(), clear = new THREE.Color();
   const eye = {
-    bufs: [0, 1, 2, 3].map(() => new Uint16Array(4)),   // the probe's four bands, half floats
     read: new Float32Array(16),   // the last read: band 0 (rgb, sky visibility), band 1 x, y, z
     cur: new Float32Array(16),    // what lights the hands now, easing toward it
     have: false, pending: false, readAt: -Infinity, at: 0, pos: new THREE.Vector3(),
-    sunBuf: new Float32Array(4),  // the sun shadow map's texel at the eye
     sunRead: 1, sunCur: 1,        // the sun's share at the eye: the last read, and easing toward it
   };
-  return { cam, sun, sky, target, quadScene, quadCam, size, clear, eye, attached: null };
+  return { cam, sun, sky, target, glowTarget, size, clear, eye, attached: null };
 }
 
 // The probe bands of an open hemisphere: sky radiance sky over the upper half,
@@ -330,18 +316,19 @@ function hemisphereSH(out, sky, ground) {
   out[7] = out[11] = out[15] = 0;
 }
 
-// Where the window's sun shadow map (app.js shadowMap, render.js shadowFrag)
-// holds grid point p: its texel (x, y) and p's depth d along the sun, as
-// lighting.js sunBasis and sunMapShadow(p) find them.
+// Where the window's sun shadow map (volume.shadowTextures.map, render.js
+// shadowFrag) holds grid point p: its texel (x, y) and p's depth d along the
+// sun, as lighting.js sunBasis and sunMapShadowAt(p) find them.
 const UP = new THREE.Vector3(0, 1, 0);
-const sb = { u: new THREE.Vector3(), v: new THREE.Vector3(), c: new THREE.Vector3(), q: new THREE.Vector3() };
+const sb = { u: new THREE.Vector3(), v: new THREE.Vector3(), c: new THREE.Vector3(), q: new THREE.Vector3(), o: new THREE.Vector3() };
 function shadowTexel(g, origin, sun, res, p) {
   const R = 0.5 * Math.hypot(g.nx, g.ny, g.nz) + SHADOW_PAD, T = (2 * R) / res;
-  const { u, v, c, q } = sb;
+  const { u, v, c, q, o } = sb;
   u.crossVectors(UP, sun).normalize();
   v.crossVectors(sun, u);
   // the map's centre, snapped to whole texels across the sun as the window moves
-  const ou = origin.dot(u) / T, ov = origin.dot(v) / T;
+  o.set(origin?.x ?? 0, origin?.y ?? 0, origin?.z ?? 0);
+  const ou = o.dot(u) / T, ov = o.dot(v) / T;
   c.set(g.nx / 2, g.ny / 2, g.nz / 2).addScaledVector(u, (Math.round(ou) - ou) * T).addScaledVector(v, (Math.round(ov) - ov) * T);
   q.subVectors(p, c);
   const texel = (s) => Math.min(Math.max(Math.floor(((s / R) * 0.5 + 0.5) * res), 0), res - 1);
@@ -357,10 +344,12 @@ function sunThrough(sm, d) {
   return Math.exp(-(sm[3] - tid * SHADOW_TINT_ID_SCALE) * frac);
 }
 
-// Read the probe and the sun at the eye (now and then) and ease the hands'
-// light toward them. Returns the share of the sun reaching the eye.
-function eyeLight(renderer, camera, eye, sky) {
-  const app = globalThis.__app, sim = app?.sim, volume = app?.volume;
+// Read the probe and the sun at the eye (now and then: both reads are async,
+// B7) and ease the hands' light toward them. Returns the share of the sun
+// reaching the eye.
+function eyeLight(camera, eye, sky) {
+  const app = globalThis.__app, sim = app?.sim, volume = app?.volume, vol = app?.vol;
+  const derived = app?.derived ?? sim?.derived;
   const now = performance.now() / 1000;
   const dt = Math.min(now - eye.at, 1);
   eye.at = now;
@@ -369,23 +358,25 @@ function eyeLight(renderer, camera, eye, sky) {
   const g = sim?.g;
   const b = p && [Math.floor(p.x / BRICK), Math.floor(p.y / BRICK), Math.floor(p.z / BRICK)];
   const inside = b && b[0] >= 0 && b[1] >= 0 && b[2] >= 0 && b[0] < g.nx / BRICK && b[1] < g.ny / BRICK && b[2] < g.nz / BRICK;
-  const map = app?.shadowMap, sun = app?.SUN;
-  if (inside && map && sun && !eye.pending && now - eye.readAt >= EYE_READ_S) {
-    const i = brickTexel(g, b[0], b[1], b[2]), x = i % g.bwidth, y = Math.floor(i / g.bwidth);
-    const st = shadowTexel(g, sim.origin, sun, map.width, p);
+  const sun = app?.SUN, gpu = app?.gpu;
+  if (inside && derived?.readProbe && vol && sun && gpu && !eye.pending && now - eye.readAt >= EYE_READ_S) {
+    // (no shadow map yet, or none in this view: the sun as the volume has it, unshadowed)
+    const st = vol.shadowState === 'ready' ? shadowTexel(g, sim.origin, sun, vol.shadowRes, p) : null;
     eye.pending = true;
     eye.readAt = now;
     Promise.all([
-      ...eye.bufs.map((buf, k) => renderer.readRenderTargetPixelsAsync(sim.giProbes, x, y, 1, 1, buf, undefined, k)),
-      renderer.readRenderTargetPixelsAsync(map, st.x, st.y, 1, 1, eye.sunBuf),
+      derived.readProbe(b),
+      st ? gpu.readback.texture(vol.shadowTextures.map, { origin: [st.x, st.y, 0], size: [1, 1, 1] }) : null,
     ])
-      .then(() => {
-        eye.bufs.forEach((buf, k) => { for (let c = 0; c < 4; c++) eye.read[k * 4 + c] = THREE.DataUtils.fromHalfFloat(buf[c]); });
-        eye.sunRead = sunThrough(eye.sunBuf, st.d);
+      .then(([probe, sm]) => {
+        if (!probe) return;
+        eye.read.set(probe);
+        eye.sunRead = sm ? sunThrough(sm, st.d) : 1;
         if (!eye.have) { eye.cur.set(eye.read); eye.sunCur = eye.sunRead; }   // the first read: no easing in from nothing
         eye.have = true;
+        app.requestRender?.();
       })
-      .catch(() => {})
+      .catch(() => {})   // (a grid replaced or the device lost under the read: the next one)
       .finally(() => { eye.pending = false; });
   }
   let sunTarget = eye.sunRead;
@@ -407,13 +398,35 @@ function eyeLight(renderer, camera, eye, sky) {
   return eye.sunCur;
 }
 
-// Draw the viewmodels over the finished frame. Call right after post.render
-// (and before anything reads the canvas, like the screenshot).
-export function renderViewmodels(renderer, scene, camera, post) {
+// what this frame's pass drew: { frame (gpu.frameNo), drawn }
+let last = { frame: -1, drawn: null };
+
+/**
+ * Draws the viewmodels into their own targets for this presented frame: the
+ * hands (linear premultiplied, resolved from VM_MSAA samples) and their glow
+ * layer (display values). Pass what it returns as post.render's
+ * { viewmodel, glow } (src/wire/mesh.js does, as app.viewmodel and app.glow).
+ * Draws once a frame: a second call in the same frame (src/wire/pov.js asks
+ * too) returns the first's. Null when there is nothing to draw; glow null
+ * when no glow mesh shows.
+ * @param {object} three three's renderer (app.renderer)
+ * @param {object} scene
+ * @param {object} camera
+ * @param {object} [post] gfx/post.js's (its exposure and raw switch light the glow layer)
+ * @returns {{ viewmodel: GPUTexture, glow: GPUTexture | null } | null}
+ */
+export function renderViewmodels(three, scene, camera, post) {
+  const frame = globalThis.__app?.gpu?.frameNo;
+  if (frame != null && frame === last.frame) return last.drawn;
+  last = { frame: frame ?? -1, drawn: drawViewmodels(three, scene, camera, post) };
+  return last.drawn;
+}
+
+function drawViewmodels(three, scene, camera, post) {
   const vm = scene.getObjectByName('pov-viewmodel');
-  if (!vm?.visible || !vm.parent) return;
-  pass ??= createPass(renderer);
-  const { cam, sun, sky, target, quadScene, quadCam, size, clear, eye } = pass;
+  if (!vm?.visible || !vm.parent) return null;
+  pass ??= createPass();
+  const { cam, sun, sky, target, glowTarget, size, clear, eye } = pass;
   if (pass.attached !== scene) { scene.add(sun, sky); pass.attached = scene; }
   const glow = setLayers(vm);
 
@@ -432,39 +445,47 @@ export function renderViewmodels(renderer, scene, camera, post) {
   // reaches the eye, and the light of the probe the eye is in
   const SUN = globalThis.__app?.SUN;
   if (SUN) sun.position.copy(SUN);
-  const lit = eyeLight(renderer, camera, eye, sky);
+  const lit = eyeLight(camera, eye, sky);
   // the key light: the sun by day, the dim blue moon by night (gfx/daylight.js)
   const [kr, kg, kb] = gfxUniforms.uKeyLight?.value ?? [1, 1, 1];
-  const [sr, sg, sb] = gfxUniforms.uSunCol.value;
-  sun.color.setRGB(sr * kr * lit, sg * kg * lit, sb * kb * lit);
+  const [sr, sg, sb2] = gfxUniforms.uSunCol.value;
+  sun.color.setRGB(sr * kr * lit, sg * kg * lit, sb2 * kb * lit);
+  // the glow layer's tone map: post's exposure (its viewmodel composite's), or none in a raw view
+  flameOverlay.exposure.value = 2 ** (post?.settings.exposure ?? 0);
+  flameOverlay.raw.value = post?.settings.raw ? 1 : 0;
 
-  renderer.getDrawingBufferSize(size);
-  if (target.width !== size.x || target.height !== size.y) target.setSize(size.x, size.y);
+  three.getDrawingBufferSize(size);
+  const w = Math.max(1, size.x), h = Math.max(1, size.y);
+  if (target.width !== w || target.height !== h) { target.setSize(w, h); glowTarget.setSize(w, h); }
 
-  const prev = {
-    target: renderer.getRenderTarget(), autoClear: renderer.autoClear, alpha: renderer.getClearAlpha(),
-    toneMapping: renderer.toneMapping, exposure: renderer.toneMappingExposure,
-  };
-  renderer.getClearColor(clear);
-  renderer.setRenderTarget(target);
-  renderer.setClearColor(0x000000, 0);
-  renderer.autoClear = false;
-  renderer.clear(true, true, false);
-  renderer.render(scene, cam);
-  renderer.setRenderTarget(null);
-  renderer.toneMapping = post?.settings.raw ? THREE.NoToneMapping : THREE.AgXToneMapping;
-  // the post pass's exposure, the eyes' adjustment to the dark included (post.js ADAPT)
-  renderer.toneMappingExposure = 2 ** (post?.settings.exposure ?? 0) * (post?.adaptation?.gain ?? 1);
-  quadScene.children[0].material.uniforms.uNight.value = post?.settings.raw ? 0 : post?.settings.night ?? 0;
-  renderer.render(quadScene, quadCam);
-  if (glow) {   // the hands' light, added over it all (its materials tone map themselves)
+  // a mesh three hasn't compiled for these targets waits until it has (no pipeline built at a draw)
+  const wake = () => globalThis.__app?.requestRender?.();
+  guardMeshes(vm, cam, { target, scene, onReady: wake });
+  if (glow) {
     cam.layers.set(VIEWMODEL_GLOW_LAYER);
-    renderer.render(scene, cam);
+    guardMeshes(vm, cam, { target: glowTarget, scene, onReady: wake });
     cam.layers.set(VIEWMODEL_LAYER);
   }
-  renderer.toneMapping = prev.toneMapping;
-  renderer.toneMappingExposure = prev.exposure;
-  renderer.autoClear = prev.autoClear;
-  renderer.setClearColor(clear, prev.alpha);
-  renderer.setRenderTarget(prev.target);
+
+  const prev = { target: three.getRenderTarget(), autoClear: three.autoClear, alpha: three.getClearAlpha() };
+  three.getClearColor(clear);
+  try {
+    // cleared in the pass itself: a separate clear pass would store samples the draw then loads
+    three.autoClear = true;
+    three.setClearColor(0x000000, 0);
+    three.setRenderTarget(target);
+    three.render(scene, cam);
+    if (glow) {   // the hands' light, its own target added over the frame by post
+      cam.layers.set(VIEWMODEL_GLOW_LAYER);
+      three.setRenderTarget(glowTarget);
+      three.render(scene, cam);
+    }
+  } finally {
+    cam.layers.set(VIEWMODEL_LAYER);
+    three.autoClear = prev.autoClear;
+    three.setClearColor(clear, prev.alpha);
+    three.setRenderTarget(prev.target);
+  }
+  // (three's GPUTextures: made anew on a resize, so fetched each frame)
+  return { viewmodel: gpuTextureOf(three, target.texture), glow: glow ? gpuTextureOf(three, glowTarget.texture) : null };
 }

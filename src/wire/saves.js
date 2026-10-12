@@ -4,8 +4,8 @@
 // Mod's way: a save is named for its map and the time, and listed with its
 // thumbnail. A box save loads as a scene change, so ⌘Z takes it back; a World
 // save, like any world load, can't be undone. A save is a full-state readback
-// like the codec's. Moved here from app.js as it was: U12 ports it. Until then
-// app.js greys out Save and says loading isn't in this version yet.
+// like the codec's, recorded at the moment it is asked for and read back
+// without a stall (saves/game.js).
 import { createSaves, SaveRefused } from '../saves/game.js';
 import { registerSaveSection, registerSavedSettings } from '../saves/sections.js';
 import { putSave, getSave, cleanName } from '../saves/local.js';
@@ -28,7 +28,7 @@ let saving = false, loadingSave = false;
 
 const savesWire = {
   name: 'saves',
-  ready: false,
+  ready: true,
 
   boot(app) {
     const { settings } = app;
@@ -43,7 +43,7 @@ const savesWire = {
       absent: () => app.resetSimModes(),
     });
     saves = createSaves({
-      renderer: app.renderer, settings, getSim: () => app.sim, getWin: () => app.win,
+      settings, getSim: () => app.sim, getWin: () => app.win,
       header: () => {
         const m = mapOf(settings);
         return {

@@ -1,14 +1,14 @@
 // Birds (src/birds; docs/webgpu.md G4, U12, U13): a World's ambient flocks
-// and the Bird flock spawners', their ground probe (a thread per column) and
-// their meshes. Moved here from app.js as it was (WebGL): U12 and U13 port it.
-// Until then no birds fly and app.js greys out the Bird flock spawner.
+// and the Bird flock spawners', their ground probe (a thread per column, read
+// back twice a second: U12) and their meshes (birds/render.js: U13), made
+// with the first flock, so a box without birds draws nothing of theirs.
 import { createBirdLife } from '../birds/index.js';
 import { BODY_HEIGHT } from '../pov/constants.js';
 import { dayPhase, sunElevation } from '../gfx/daylight.js';
 
 const birds = {
   name: 'birds',
-  ready: false,
+  ready: true,
 
   boot(app) {
     app.birds = createBirdLife({
