@@ -293,6 +293,19 @@ const TAU = 2 * Math.PI;
 // the jet) keeps them bright, then they vanish rather than dim.
 const BEAM_POOL = 4;                    // laser beams alive at once (each lingers BEAM_LINGER): the oldest is reused
 
+// The muzzle light: one for good, in the scene from the app's start
+// (src/wire/mesh.js boot adds it, at 0): a light that comes or goes makes
+// three build every mesh's program again (gfx/meshLight.js guardMeshes), so
+// the first drop-in would blink every mesh in the scene.
+let muzzle = null;
+export function muzzleLight() {
+  if (!muzzle) {
+    muzzle = new THREE.PointLight(FLASH_LIGHT_COLOR, 0, 0, 2);
+    muzzle.name = 'pov-muzzle-light';
+  }
+  return muzzle;
+}
+
 // env = { scene, camera, getVolume, getScale, isActive: () => bool }
 export function createVfx(env) {
   const { scene, camera } = env;
@@ -321,9 +334,8 @@ export function createVfx(env) {
   let disposed = false;
   const scaleNow = () => env.getScale();
 
-  const light = new THREE.PointLight(FLASH_LIGHT_COLOR, 0, 0, 2);
-  light.name = 'pov-muzzle-light';
-  scene.add(light);   // always in the scene (at 0 when off): adding and removing lights recompiles lit materials
+  const light = muzzleLight();
+  if (light.parent !== scene) scene.add(light);   // always in the scene (at 0 when off): adding and removing lights recompiles materials
   let lightT = 0;
 
   let lastDt = 0;   // the last frame's step (the aim's motes)
@@ -1011,7 +1023,8 @@ export function createVfx(env) {
       offs.forEach((f) => f());
       fadeBeams(Infinity);
       for (const pl of Object.values(pools)) pl.dispose();
-      scene.remove(batch, light);
+      scene.remove(batch);
+      light.intensity = 0;   // (the light stays: muzzleLight)
       for (const b of [...beamPool, aimBeam]) b.mats.forEach((m) => m.dispose());
       beamGeo.dispose(); taperGeo.dispose();
     },

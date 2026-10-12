@@ -26,7 +26,7 @@
 // synchronously at the first draw).
 import {
   Vector3, Vector4, Matrix4, DataTexture, Data3DTexture, RGBAFormat, FloatType, HalfFloatType, UnsignedByteType,
-  NearestFilter, LinearFilter, ClampToEdgeWrapping, RepeatWrapping, NoColorSpace,
+  NearestFilter, LinearFilter, ClampToEdgeWrapping, RepeatWrapping, NoColorSpace, MeshBasicNodeMaterial,
 } from 'three/webgpu';
 import { uniform, texture, texture3D, sampler, wgslFn, code, vec4, float, positionWorld, normalWorld, smoothstep, max, dot } from 'three/tsl';
 import { externalTexture } from '../gpu/three.js';
@@ -429,6 +429,18 @@ export function updateMeshLight(app) {
   if (volume) L.worldToGrid.value.copy(inv.copy(volume.matrixWorld).invert());
 }
 
+/**
+ * A material that takes no light (a glow, an outline, a shadow decal): three's
+ * basic node material with its lights off (a basic material is lit by
+ * default, for light maps), so its program has no lights in it.
+ * @param {object} [params] MeshBasicNodeMaterial's
+ */
+export function unlitMaterial(params) {
+  const m = new MeshBasicNodeMaterial(params);
+  m.lights = false;
+  return m;
+}
+
 // ---------------------------------------------------------------- the device, and compiling new meshes
 
 let meshGpu = null;
@@ -454,7 +466,8 @@ export function prepareMesh(object, { alone = false, ...opts } = {}) {
   if (!three || meshGpu.failure || meshGpu.lost) return Promise.resolve();
   for (const k of Object.keys(opts)) if (opts[k] === undefined) delete opts[k];   // (left out: the defaults')
   const saved = [], done = [];
-  const sig = targetSig(opts.target ?? three.defaults.target);
+  const tSig = targetSig(opts.target ?? three.defaults.target);
+  const lSig = lightsSig(opts.scene ?? three.defaults.scene, opts.camera ?? three.defaults.camera);
   object.traverse((o) => {
     saved.push([o, o.visible, o.frustumCulled]);
     o.visible = !alone || o === object;
@@ -477,13 +490,23 @@ export function prepareMesh(object, { alone = false, ...opts } = {}) {
     for (const [o, v, fc] of saved) { o.visible = v; o.frustumCulled = fc; }
   }
   return Promise.resolve(p).then(() => {
-    for (const [o, m] of done) preparedWith.set(o, { material: m, sig });
+    for (const [o, m] of done) preparedWith.set(o, { material: m, key: keyOf(tSig, lSig) });
   }, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); });
 }
 
 let prepares = 0;
 // what a pipeline depends on in the target it draws into
 const targetSig = (t) => (t ? `${t.texture?.type}|${t.texture?.format}|${t.samples}|${t.depthBuffer}|${t.stencilBuffer}` : 'none');
+// and the lights the camera sees: a light that comes or goes changes the key
+// three files every render object's program under (NodeManager.getCacheKey),
+// a lit material's or not, so the next draw builds them all again
+function lightsSig(scene, camera) {
+  if (!scene || !camera) return '';
+  const out = [];
+  scene.traverseVisible((o) => { if (o.isLight && o.layers.test(camera.layers)) out.push(`${o.type}${o.castShadow ? '*' : ''}`); });
+  return out.sort().join(',');
+}
+const keyOf = (tSig, lSig) => `${tSig}#${lSig}`;
 
 // ---------------------------------------------------------------- meshes three hasn't compiled yet
 
@@ -491,12 +514,13 @@ const targetSig = (t) => (t ? `${t.texture?.type}|${t.texture?.format}|${t.sampl
 export const PENDING_LAYER = 31;
 /** An object's layers.mask while it waits there (three keeps masks unsigned). */
 export const PENDING_MASK = (1 << PENDING_LAYER) >>> 0;
-const preparedWith = new WeakMap();   // mesh → { material, sig }: what it was compiled with, and for which target
+const preparedWith = new WeakMap();   // mesh → { material, key }: what it was compiled with, for which target and lights
 const waiting = new WeakMap();        // mesh → the layers it goes back to
 /**
  * Catches the meshes under `root` that `camera` would draw and three hasn't
  * compiled (a module that added a mesh without prepareMesh, or swapped its
- * material): each waits on PENDING_LAYER while prepareMesh builds its
+ * material, or a lit one after a light came or went): each waits on
+ * PENDING_LAYER while prepareMesh builds its
  * pipelines, then goes back to its layers, so three never builds a pipeline
  * synchronously at a first draw (F8). A frame or two without the mesh is the
  * cost, against a hitch of up to a second for a cold pipeline. Objects for
@@ -510,6 +534,8 @@ const waiting = new WeakMap();        // mesh → the layers it goes back to
 export function guardMeshes(root, camera, { target, scene, skip, onReady } = {}) {
   if (!meshGpu?.three) return 0;
   let n = 0;
+  const tSig = targetSig(target ?? meshGpu.three.defaults.target);
+  const lSig = lightsSig(scene ?? meshGpu.three.defaults.scene, camera);
   const stack = [root];
   while (stack.length) {
     const o = stack.pop();
@@ -519,7 +545,7 @@ export function guardMeshes(root, camera, { target, scene, skip, onReady } = {})
     if (waiting.has(o)) { n++; continue; }
     if (!o.layers.test(camera.layers)) continue;
     const was = preparedWith.get(o);
-    if (was && was.material === o.material && was.sig === targetSig(target ?? meshGpu.three.defaults.target)) continue;
+    if (was && was.material === o.material && was.key === keyOf(tSig, lSig)) continue;
     waiting.set(o, o.layers.mask);
     n++;
     prepareMesh(o, { camera, target, scene, alone: true }).then(() => {

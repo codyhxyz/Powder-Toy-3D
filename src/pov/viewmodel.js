@@ -398,16 +398,17 @@ function eyeLight(camera, eye, sky) {
   return eye.sunCur;
 }
 
-// what the last renderViewmodels drew, for this frame's post.render (takeViewmodel)
-let drawn = null;
+// what this frame's pass drew: { frame (gpu.frameNo), drawn }
+let last = { frame: -1, drawn: null };
 
 /**
  * Draws the viewmodels into their own targets for this presented frame: the
  * hands (linear premultiplied, resolved from VM_MSAA samples) and their glow
- * layer (display values). Call once a frame before post.render, and pass what
- * it returns as post.render's { viewmodel, glow } (src/wire/mesh.js does, with
- * takeViewmodel). Null when there is nothing to draw; glow null when no glow
- * mesh shows.
+ * layer (display values). Pass what it returns as post.render's
+ * { viewmodel, glow } (src/wire/mesh.js does, as app.viewmodel and app.glow).
+ * Draws once a frame: a second call in the same frame (src/wire/pov.js asks
+ * too) returns the first's. Null when there is nothing to draw; glow null
+ * when no glow mesh shows.
  * @param {object} three three's renderer (app.renderer)
  * @param {object} scene
  * @param {object} camera
@@ -415,7 +416,13 @@ let drawn = null;
  * @returns {{ viewmodel: GPUTexture, glow: GPUTexture | null } | null}
  */
 export function renderViewmodels(three, scene, camera, post) {
-  drawn = null;
+  const frame = globalThis.__app?.gpu?.frameNo;
+  if (frame != null && frame === last.frame) return last.drawn;
+  last = { frame: frame ?? -1, drawn: drawViewmodels(three, scene, camera, post) };
+  return last.drawn;
+}
+
+function drawViewmodels(three, scene, camera, post) {
   const vm = scene.getObjectByName('pov-viewmodel');
   if (!vm?.visible || !vm.parent) return null;
   pass ??= createPass();
@@ -480,18 +487,5 @@ export function renderViewmodels(three, scene, camera, post) {
     three.setRenderTarget(prev.target);
   }
   // (three's GPUTextures: made anew on a resize, so fetched each frame)
-  drawn = { viewmodel: gpuTextureOf(three, target.texture), glow: glow ? gpuTextureOf(three, glowTarget.texture) : null };
-  return drawn;
-}
-
-/**
- * What renderViewmodels drew since the last call, once (null if it drew
- * nothing): src/wire/mesh.js hands it to post.render as app.viewmodel and
- * app.glow.
- * @returns {{ viewmodel: GPUTexture, glow: GPUTexture | null } | null}
- */
-export function takeViewmodel() {
-  const d = drawn;
-  drawn = null;
-  return d;
+  return { viewmodel: gpuTextureOf(three, target.texture), glow: glow ? gpuTextureOf(three, glowTarget.texture) : null };
 }

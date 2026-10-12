@@ -4,9 +4,9 @@
 // cheapest view to build: realistic and the data views are --views'), and a
 // shot of every scene is saved for review.
 //
-//   node tools/smoke.mjs [--stage boxes,worlds,arenas,views,warm] [--views heat,realistic] [--out dir]
+//   node tools/smoke.mjs [--stage boxes,meshes,worlds,arenas,views,warm] [--views heat,realistic] [--out dir]
 //
-// Stages (default: boxes,worlds, one to two minutes here; each well under 3 minutes):
+// Stages (default: boxes,meshes,worlds, two to three minutes here; each well under 3 minutes):
 //   boxes   one boot at 64³; each box scene (Empty, the lab, the volcano,
 //           the Islet) loaded and drawn with test.renderOnce: no GPU error,
 //           and the scene drawn. The canvas is opaque (F7): the sky, the floor
@@ -18,6 +18,13 @@
 //           the canvas, and the volume drawn (__app.view.volumeDrawn). The
 //           negative control: Empty drawn again differs from its first frame
 //           by less than that
+//   meshes  three's meshes in the booted app (U13), each compiled before it
+//           shows: a stickman lit by the volume's light, an impact's
+//           particles and a tracer, a construction's ghost and the held gun
+//           in its own pass, composited by post (a hand under the camera, as
+//           first person's wiring puts it). The shot differs from the empty
+//           box's by MIN_CHANGED at least, and three built no pipeline
+//           synchronously at a first draw
 //   worlds  every World map: with the world's wiring ready (src/wire/world.js,
 //           U10) each boots at ?win=64, simulates a 64-wide window and draws;
 //           until then a World map falls back to a box with a toast (a boot
@@ -49,7 +56,7 @@ import { startVite } from './vite-server.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const arg = (k, d) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : d);
-const STAGES = arg('stage', 'boxes,worlds').split(',');
+const STAGES = arg('stage', 'boxes,meshes,worlds').split(',');
 const OUT = arg('out', join(ROOT, '.tmp-smoke'));   // (ignored by git: .tmp-*)
 const VIEWPORT = { width: 400, height: 250 };
 const BOXES = ['empty', 'lab', 'volcano', 'island'];   // (Empty first: the others are measured against it)
@@ -184,7 +191,7 @@ const browser = await launchBrowser();
 const t0 = Date.now();
 const secs = () => `${((Date.now() - t0) / 1000).toFixed(0)} s`;
 try {
-  if (STAGES.includes('boxes') || STAGES.includes('views') || STAGES.includes('worlds')) {
+  if (STAGES.includes('boxes') || STAGES.includes('meshes') || STAGES.includes('views') || STAGES.includes('worlds')) {
     const { page, errors, allowed, failed } = await boot(browser, vite, '?size=64&preset=lab&view=plain');
     ok(!failed, `boot ?size=64&preset=lab&view=plain (${secs()})${failed ? `: ${failed.slice(0, 300)}` : ''}`);
     if (!failed) {
@@ -204,6 +211,90 @@ try {
         await page.evaluate(() => __app.loadPreset('empty', false));
         const s = await draw(page, 'box-empty-again');
         ok(s.drawn && s.content < MIN_CHANGED, `empty again: ${drewText(s)}: below the floor, as a scene with nothing in it must be (${secs()})`);
+        await page.evaluate(() => { delete window.__smokeEmpty; });
+      }
+      if (STAGES.includes('meshes')) {
+        // the empty box seen from close by (the god view's controls), without the meshes: the reference
+        await page.evaluate(() => {
+          const a = __app, T = a.THREE, look = new T.Vector3(31, 3, 31).multiplyScalar(a.scale).add(a.volume.position);
+          a.loadPreset('empty', false);
+          a.controls.target.copy(look);
+          a.camera.position.copy(look).add(new T.Vector3(4.5, 3.5, 6));
+          a.camera.lookAt(look);
+          a.controls.update();
+        });
+        const ui = await page.addStyleTag({ content: 'body *{visibility:hidden !important} #app, #app canvas{visibility:visible !important}' });
+        await draw(page, 'meshes-none', { baseline: true });
+        const r = await page.evaluate(async () => {
+          const a = __app, T = a.THREE, s = a.scale;
+          // three's synchronous pipeline builds from here on, through the shot (ours are all asynchronous)
+          const create = a.gpu.device.createRenderPipeline;
+          const count = window.__smokeSync = { n: 0, labels: [], create };
+          a.gpu.device.createRenderPipeline = (d) => { count.n++; count.labels.push(d.label); return create.call(a.gpu.device, d); };
+          // (pipelines build in the background: waited out without frames, which only slow them here)
+          const until = async (cond, what) => {
+            for (const t = performance.now(); !cond();) {
+              if (performance.now() - t > 60000) throw new Error(`smoke meshes: no ${what} after 60 s`);
+              await new Promise((res) => setTimeout(res, 100));
+            }
+          };
+          const at = (x, y, z) => new T.Vector3(x, y, z).multiplyScalar(s).add(a.volume.position);
+          const [{ createFigure }, { createVfx }, { povEvents }, { viewmodelRig }, { attachModel }, { bake, runGenerator }, { BUILTINS }] = await Promise.all([
+            import('/src/pov/figure.js'), import('/src/pov/vfx.js'), import('/src/pov/events.js'), import('/src/pov/viewmodel.js'),
+            import('/src/pov/models.js'), import('/src/constructions/runtime.js'), import('/src/constructions/builtins.js'),
+          ]);
+          // a stickman on the floor
+          const fig = createFigure();
+          fig.update(1 / 60, {
+            feet: at(26, 1, 30), scale: s, yaw: 0.6, worldToGrid: new T.Matrix4().copy(a.volume.matrixWorld).invert(),
+            speedH: 0, velY: 0, onGround: true, inLiquid: false, dead: false, heat: 0, crouch: 0, look: { pitch: 0, spine: 0 },
+          });
+          fig.setVisible(true);
+          await fig.compile();
+          a.scene.add(fig.root);
+          // an impact on stone and a tracer (the effects' pools join the scene once compiled)
+          const vfx = createVfx({ scene: a.scene, camera: a.camera, getVolume: () => a.volume, getScale: () => s, isActive: () => true });
+          await until(() => vfx.batch.parent === a.scene, 'effects');
+          const V = (x, y, z) => new T.Vector3(x, y, z);
+          povEvents.emit('impact', { point: V(38, 1, 34), id: 3, source: 'gun', normal: V(0, 1, 0), broke: true });
+          povEvents.emit('round:move', { kind: 'round', from: V(6, 12, 6), to: V(38, 1, 34) });
+          vfx.update(1 / 60);
+          // a house's ghost where the pointer would put it
+          const house = bake(runGenerator(BUILTINS.HOUSE, { size: 2, seed: 7 }), 0);
+          a.builds.baked = house;
+          a.builds._setGhost(house);
+          await until(() => a.builds.ghostReady === true, 'ghost');
+          a.builds._placeGhost({ cell: V(36, 0, 22), face: 2 });
+          // the held gun: a hand under the camera, drawn by the viewmodel's pass (its meshes compile first)
+          const addedCamera = !a.camera.parent;
+          if (addedCamera) a.scene.add(a.camera);
+          const vm = new T.Group();
+          vm.name = 'pov-viewmodel';
+          a.camera.add(vm);
+          const rig = viewmodelRig({ viewmodel: vm, getScale: () => s });
+          const hand = rig.hand([0.7, -0.8, -2.2]);
+          attachModel(hand, 'gun');
+          hand.visible = true;
+          rig.update({ dt: 1 / 60, dir: V(0, 0, -1), player: {} });
+          await a.test.renderOnce();   // (its pass sees the gun, and starts compiling it for its targets)
+          await until(() => { let n = 0; vm.traverse((o) => { if (o.isMesh && o.layers.mask !== 1 << 5) n++; }); return n === 0; }, 'held gun');
+          window.__smokeMeshes = { fig, vfx, vm, rig, addedCamera };
+          return { effects: Object.values(vfx.counts()).reduce((x, y) => x + y, 0), ghost: a.builds.group.visible };
+        });
+        const s = await draw(page, 'meshes');
+        await ui.evaluate((el) => el.remove());
+        // (then out of the scene again, the device's call as it was)
+        const sync = await page.evaluate(() => {
+          const m = window.__smokeMeshes, a = __app, c = window.__smokeSync;
+          a.scene.remove(m.fig.root); m.vfx.dispose(); m.rig.dispose(); m.vm.removeFromParent(); a.builds.group.visible = false;
+          if (m.addedCamera) a.scene.remove(a.camera);
+          a.gpu.device.createRenderPipeline = c.create;
+          delete window.__smokeMeshes; delete window.__smokeSync;
+          return c.labels;
+        });
+        ok(r.effects > 0 && r.ghost && s.content >= MIN_CHANGED,
+          `meshes: a stickman, ${r.effects} particles, a house's ghost and the held gun drawn: ${pct(s.content)} of the canvas differing from the same view without them (floor ${pct(MIN_CHANGED)}) (${secs()})`);
+        ok(!sync.length, `meshes: three built ${sync.length} pipeline(s) synchronously at a first draw${sync.length ? ` (${sync.join(', ')})` : ''}`);
         await page.evaluate(() => { delete window.__smokeEmpty; });
       }
       if (STAGES.includes('worlds')) {

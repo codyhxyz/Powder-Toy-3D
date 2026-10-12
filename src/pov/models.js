@@ -370,6 +370,13 @@ fn emberNoise(x: vec3f) -> f32 {
 fn emberHash(p0: vec3f) -> f32 { var p = fract(p0 * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }`)])]);
 // the ember's clock: TSL's time (s), or a fixed one for the icons' bake (emberClock.value)
 export const emberClock = uniform(-1);
+// a glow's material: it takes no light (its lights off, so the scene's lights never change its program)
+function unlit(params) {
+  const m = new THREE.MeshBasicNodeMaterial(params);
+  m.lights = false;
+  return m;
+}
+
 function emberMaterial() {
   const mat = new THREE.MeshBasicNodeMaterial();
   mat.lights = false;
@@ -389,7 +396,7 @@ function material(key) {
     const color = jagexColor(COLORS[key]).multiplyScalar(GLOW_GAIN[key] ?? 1);
     const see = SEE_THROUGH[key] ? { transparent: true, opacity: SEE_THROUGH[key], depthWrite: false } : {};
     materials.set(key, UNLIT.has(key)
-      ? new THREE.MeshBasicMaterial({ color })
+      ? unlit({ color })
       : new THREE.MeshLambertMaterial({ color, flatShading: true, ...see }));
   }
   return materials.get(key);

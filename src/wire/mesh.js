@@ -16,8 +16,9 @@ import { PerkOrbs } from '../perkOrbs.js';
 import { ArenaMarkers } from '../arenas/markers.js';
 import { Constructions } from '../constructions.js';
 import { setMeshGpu, getMeshGpu, updateMeshLight, guardMeshes } from '../gfx/meshLight.js';
-import { takeViewmodel } from '../pov/viewmodel.js';
+import { renderViewmodels } from '../pov/viewmodel.js';
 import { drawRemoteCursors } from '../net/cursors.js';
+import { muzzleLight } from '../pov/vfx.js';
 
 // the held tool's subtree has its own targets and camera (pov/viewmodel.js guards it)
 const ownPass = (o) => o.name === 'pov-viewmodel';
@@ -29,6 +30,7 @@ const mesh = {
 
   boot(app) {
     setMeshGpu(app.gpu);
+    app.scene.add(muzzleLight());   // the scene's one light, from the start (pov/vfx.js muzzleLight)
     const env = { scene: app.scene, getSim: () => app.sim, getVolume: () => app.volume, getScale: () => app.scale };
     app.spawners = new Spawners(env);   // seeded by build()'s loadPreset, once there is a grid
     app.perkOrbs = new PerkOrbs(env);
@@ -52,8 +54,8 @@ const mesh = {
   beforeView(app) {
     if (getMeshGpu() !== app.gpu) setMeshGpu(app.gpu);   // (a device replaced at Start)
     updateMeshLight(app);
-    // what the held tool's pass drew this frame (src/wire/pov.js runs it first) goes to post
-    const vm = takeViewmodel();
+    // the held tool's pass (once a frame: src/wire/pov.js may have run it already), to post
+    const vm = renderViewmodels(app.renderer, app.scene, app.camera, app.post);
     app.viewmodel = vm?.viewmodel ?? null;
     app.glow = vm?.glow ?? null;
     guardMeshes(app.scene, app.camera, { skip: ownPass, onReady: () => app.requestRender() });

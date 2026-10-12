@@ -183,7 +183,7 @@ export class Constructions {
     this.capacity = 0;
     this.ghostReady = null;   // the ghost's meshes compiled (prepareMesh): it shows once they are
     this.outline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-      new THREE.LineBasicMaterial({ color: 0xf4f6fa, transparent: true, opacity: 0.28, depthTest: false }));
+      new THREE.LineBasicNodeMaterial({ color: 0xf4f6fa, transparent: true, opacity: 0.28, depthTest: false }));
     this.outline.renderOrder = 11;
     this.group.add(this.outline);
     scene.add(this.group);

@@ -7,7 +7,8 @@
 // body skinned and lit), viewmodel (the held tool's MSAA pass composited by
 // post, its glow layer added), particles (the effects' billboard pools and
 // the birds' motes), construction (the ghost; a house stamped with its
-// footing), guard (a mesh added without prepare waits, then draws). Every
+// footing), guard (a mesh added without prepare waits, then draws; and
+// again when a light comes, which changes every program). Every
 // one counts three's synchronous pipeline builds at first draws: none.
 // Shots and each test's JSON go to --out (default .tmp-mesh).
 //
@@ -63,6 +64,8 @@ const CHECKS = {
   guard: (r) => [
     ...noSync(r),
     ...need(r.parked, 'the unprepared mesh was not parked'),
+    ...need(r.parkedForLight && r.syncAfterLight === 0, `a light coming: parked ${r.parkedForLight}, ${r.syncAfterLight} pipeline(s) built at the draw`),
+    ...need(r.syncUnguarded > 0, 'the negative control: an unguarded light change built nothing at the draw (the guard proves nothing)'),
     ...need(r.shown.some((v, i) => Math.abs(v - r.hidden[i]) > 30), 'the mesh never showed'),
   ],
 };

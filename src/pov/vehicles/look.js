@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { figureMaterial, figureUniforms } from '../figure.js';
+import { unlitMaterial } from '../../gfx/meshLight.js';
 
 // The vehicles' look: low-poly primitives lit the way the Castle Crashers
 // wizard is (figure.js's figureMaterial, toon: the volume's own sun, shadow
@@ -18,7 +19,7 @@ import { figureMaterial, figureUniforms } from '../figure.js';
 const OUTLINE_M = 0.045;                 // m, the outline's thickness (figure.js draws the wizard's at ~0.05 m)
 const CHAR_ALBEDO = 0.12;                // share of its colour a burnt-out wreck keeps
 
-const OUTLINE_MAT = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+const OUTLINE_MAT = unlitMaterial({ color: 0x000000, side: THREE.BackSide });
 const linear = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };   // THREE.Color is linear
 
 export function createLook() {
@@ -59,7 +60,7 @@ export function createLook() {
       return m;
     },
     glow(parent, geo, rgb) {
-      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: new THREE.Color(...rgb) }));
+      const m = new THREE.Mesh(geo, unlitMaterial({ color: new THREE.Color(...rgb) }));
       parent.add(m);
       return m;
     },

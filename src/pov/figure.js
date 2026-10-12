@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import {
   uniform, texture, uv, vec3, float, mix, smoothstep, length, normalWorld, positionWorld, positionLocal, normalLocal, faceDirection,
 } from 'three/tsl';
-import { litColor, gridPosition, figNormalMappedFn, prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
+import { litColor, gridPosition, figNormalMappedFn, prepareMesh, getMeshGpu, unlitMaterial } from '../gfx/meshLight.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 import { limb as ikLimb, solveLimb } from './limbs.js';
 
@@ -170,7 +170,7 @@ export function figureMaterial({ albedo, u = null, toon = false, map = null, nor
 // Outlines: the mesh again, pushed out along its normals and drawn back faces
 // only, in black (the inverted-hull outline of cel-shaded games).
 export function outlineMaterial(width, color = 0x000000) {
-  const mat = new THREE.MeshBasicNodeMaterial({ color, side: THREE.BackSide });
+  const mat = unlitMaterial({ color, side: THREE.BackSide });
   mat.positionNode = positionLocal.add(normalLocal.mul(float(width)));
   mat.name = 'figure outline';
   mat.userData.outlineWidth = width;   // (what the icon bake's fingerprint reads: tools/bake-icons.mjs)
@@ -182,7 +182,7 @@ export function outlineMaterial(width, color = 0x000000) {
 function contactMaterial() {
   const r = length(uv().sub(0.5)).mul(2);
   const k = float(1).sub(smoothstep(0, 1, r));
-  const mat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.MultiplyBlending, premultipliedAlpha: true });
+  const mat = unlitMaterial({ transparent: true, depthWrite: false, blending: THREE.MultiplyBlending, premultipliedAlpha: true });
   mat.colorNode = vec3(mix(float(1), float(CONTACT_DARK), k));
   mat.name = 'contact shadow';
   return mat;
@@ -193,7 +193,7 @@ function contactMaterial() {
 // A mesh in `parent` with its albedo (linear rgb) on it; bind() gives it the
 // material. opts.glow: unlit, this HDR colour instead. opts.outline: false
 // leaves it out of the look's outline.
-const UNBOUND = new THREE.MeshBasicMaterial();   // until bind() builds the lit materials
+const UNBOUND = unlitMaterial();   // until bind() builds the lit materials
 export function part(parent, geo, albedo, { glow = null, outline = true } = {}) {
   const m = new THREE.Mesh(geo, UNBOUND);
   m.userData.albedo = albedo;
@@ -261,7 +261,7 @@ export function createFigure(build = buildStick) {
   const byColor = new Map(), glowMats = [];
   for (const m of meshes) {
     if (m.userData.glow) {
-      const mat = new THREE.MeshBasicMaterial();
+      const mat = unlitMaterial();
       mat.color.setRGB(...m.userData.glow);
       m.material = mat;
       glowMats.push(mat);

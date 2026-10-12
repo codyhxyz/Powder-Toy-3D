@@ -368,6 +368,7 @@ test('viewmodel', async () => {
   const parked = [];
   vm.traverse((o) => { if (o.layers.mask === PENDING_MASK) parked.push(o.name || o.type); });
   await until(() => { let n = 0; vm.traverse((o) => { if (o.layers.mask === PENDING_MASK) n++; }); return n === 0; }, 20000, 'the hands compiled');
+  await frame({});   // (the pass draws once a frame: the next one)
   r = renderViewmodels(three, scene, camera, post);
   const cap = await frame({ viewmodel: r.viewmodel, glow: r.glow });
   const out = {
@@ -498,6 +499,24 @@ test('guard', async () => {
     waiting, parked, syncAtFirstDraw: syncPipelines - before, at: project(box.position), hidden: px(hidden, project(box.position)), shown: px(cap, project(box.position)),
     changed: changed(cap, hidden), mask: box.layers.mask, inScene: !!box.parent,
   };
+  // a light comes: three would build the box's program again at its next draw; the guard parks it first
+  const light = new THREE.PointLight(0xffffff, 0);
+  scene.add(light);
+  const beforeLight = syncPipelines;
+  guardMeshes(scene, camera, {});
+  r.parkedForLight = box.layers.mask === PENDING_MASK;
+  await until(() => box.layers.mask !== PENDING_MASK, 20000, 'the guard after a light');
+  await frame({});
+  r.syncAfterLight = syncPipelines - beforeLight;
+  scene.remove(light);
+  guardMeshes(scene, camera, {});
+  await until(() => box.layers.mask !== PENDING_MASK, 20000, 'the guard after the light went');
+  // the negative control: the same light, unguarded: three builds the box's pipeline at the draw
+  scene.add(light);
+  const unguarded = syncPipelines;
+  await frame({});
+  r.syncUnguarded = syncPipelines - unguarded;
+  scene.remove(light);
   scene.remove(box);
   return { ...r, failures: h.failures };
 });
