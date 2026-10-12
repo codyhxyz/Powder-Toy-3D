@@ -30,9 +30,20 @@ export const PAGE = '/tools/harness/pov-check.html';
 // pov-player-check, pov-engine-check run its stages)
 export const TOOLS_PAGE = '/tools/harness/pov-tools.html';
 
+// A stage that takes a list of cases (pov-tools.js: the body's tests, the
+// engine's scenes) runs them from arg.from until it has spent BUDGET_MS on
+// them, and says where it stopped (r.next); runStages then goes on from there
+// in a browser of its own. So a part stays a few minutes however loaded the
+// host is (docs/webgpu.md I1: a run under ~3 minutes; the launcher stops a
+// browser at 10): the boot, the cases begun within the budget, the last of
+// them finishing past it.
+export const BUDGET_MS = 75000;
+
 /**
  * Runs `stages` of a POV harness page, a browser each; prints every check
- * (and a stage's numbers, when it reports some).
+ * (and a stage's numbers, when it reports some). A stage that answers with
+ * `next` (the first of its cases it didn't run) is run again from there, in a
+ * browser of its own, until it has run them all.
  * @param {(string | [string, object])[]} stages a stage's name, or [name, the argument its test takes]
  * @param {{ page?: string }} [opts]
  * @returns {Promise<number>} failures
@@ -40,8 +51,10 @@ export const TOOLS_PAGE = '/tools/harness/pov-tools.html';
 export async function runStages(stages, { page: path = PAGE } = {}) {
   const vite = await startVite({ harness: true });
   let failures = 0, printedGpu = false;
+  const queue = [...stages];
   try {
-    for (const entry of stages) {
+    while (queue.length) {
+      const entry = queue.shift();
       const [stage, arg] = Array.isArray(entry) ? entry : [entry, undefined];
       const label = arg ? `${stage} ${JSON.stringify(arg)}` : stage;
       const browser = await launchBrowser();
@@ -63,6 +76,10 @@ export async function runStages(stages, { page: path = PAGE } = {}) {
           console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}${c.ok || !c.detail ? '' : `\n     ${c.detail}`}`);
         }
         if (r.numbers && Object.keys(r.numbers).length) console.log(JSON.stringify(r.numbers, null, 1));
+        if (r.next != null) {   // (its budget spent: the rest of its cases in a browser of their own)
+          console.log(`     cases ${arg?.from ?? 0}–${r.next - 1} of ${r.of}; the rest next`);
+          queue.unshift([stage, { ...arg, from: r.next }]);
+        }
         if (r.ms && Object.keys(r.ms).length) console.log(`     ms: ${JSON.stringify(r.ms, (k, v) => (typeof v === 'number' ? Math.round(v) : v))}`);
         const logs = await page.evaluate(() => window.__harness.log.filter((l) => /pov kernels/.test(l)));
         if (logs.length) console.log(`     ${logs.join('; ')}`);

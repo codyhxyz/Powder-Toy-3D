@@ -5,16 +5,25 @@
 // its numbers printed: falls, a sand pile, ledges, a wall, water and oil,
 // drowning, lava, a blast, a fire, and how a wading body pushes water (the
 // old floor test is `falls`: a test named like Math.floor trips
-// check-async-reads). Two
-// browsers by default. Their scenes keep the grid awake (sand, water, lava,
-// a blast, a fire), which costs SwiftShader seconds a frame at 64³: under a
-// loaded host a group runs past 20 minutes (--only picks tests).
-// usage: node tools/pov-player-check.mjs [--port N] [--only name,name]   (its own Vite: tools/vite-server.mjs)
-import { runStages, TOOLS_PAGE } from './pov-gpu-check.mjs';
+// check-async-reads). The tests run in parts, each in a browser of its own: as
+// many as fit in pov-gpu-check.mjs's BUDGET_MS, then the rest in the next
+// (runStages).
+// By default only the tests that fit a part here run: falls, sandPile, stepUp,
+// wall (two parts, 144 s and 40 s). The others (water, oil, drown, lava,
+// blast, fire, coupling) keep the 64³ box awake for their whole run (a pool's
+// waves, a blast, a fire), which costs SwiftShader most of a second a step:
+// oil alone took 106 to 168 s, each of the rest alone ran past 4 minutes,
+// water past 9, so they run when named (--only) or with --all. Their
+// witnesses in the container: pov-body-cpu-check (the body itself in water,
+// oil, lava, drowning, a blast and hot gas, over a mock probe), pov-gpu-check's
+// probes stage (the probe reads cells, temperature and pressure exactly) and
+// its edits stage's povCouple (the body pushes the water it stands in).
+// usage: node tools/pov-player-check.mjs [--port N] [--only name,name | --all]   (its own Vite: tools/vite-server.mjs)
+import { runStages, TOOLS_PAGE, BUDGET_MS } from './pov-gpu-check.mjs';
 
+const DEFAULT = ['falls', 'sandPile', 'stepUp', 'wall'];
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const only = opt('only', '')?.split(',').filter(Boolean);
-const GROUPS = [['falls', 'sandPile', 'stepUp', 'wall', 'blast', 'fire'], ['water', 'oil', 'drown', 'lava', 'coupling']];
-const runs = only.length ? [['player', { only }]] : GROUPS.map((g) => ['player', { only: g }]);
-process.exit(await runStages(runs, { page: TOOLS_PAGE }) ? 1 : 0);
+const named = opt('only', '')?.split(',').filter(Boolean);
+const only = named.length ? named : args.includes('--all') ? null : DEFAULT;
+process.exit(await runStages([['player', { only, budgetMs: BUDGET_MS }]], { page: TOOLS_PAGE }) ? 1 : 0);

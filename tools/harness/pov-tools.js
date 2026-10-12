@@ -1,25 +1,31 @@
 // The first person's tools, body and engine work in the harness (U11;
 // docs/webgpu.md G2, I1): the real tool code (the toolbelt, the flask, the
 // axe, the physgun), the real body (pov/player.js) and the engine's breaking
-// and blast rules, each on a Simulation of this page's device at 64³, no app,
-// so no app boot and no first-person drop-in before the check. A frame is what
-// the app's tick does with them: the tools' or the body's update, the frame's
-// steps, the GPU done with them, their answers landed. Game time is the
-// frames' dt, never the wall's.
-//   toolbelt   (tools/pov-tools-a.mjs) the hotbar's keys and wheel; the shovel scoops and
-//              throws sand, breaks rock into stone, refuses WALL; the bucket scoops and pours
-//              water, keeps lava hot; takes and puts overlapping in flight: every phase's grid
-//              census plus every load is exactly what it was (stone for rock, cell for cell)
+// and blast rules, each on a Simulation of this page's device (32³ for the
+// tools, 64³ for the axe, the body and the engine), no app, so no app boot and
+// no first-person drop-in before the check. A frame is what the app's tick
+// does with them: the tools' or the body's update, the frame's steps, the GPU
+// done with them, their answers landed. Game time is the frames' dt, never
+// the wall's.
+//   toolbelt   (tools/pov-tools-a.mjs; parts shovel, bucket) the hotbar's keys and wheel; the
+//              shovel scoops and throws sand, breaks rock into stone, refuses WALL; the bucket
+//              scoops and pours water, keeps lava hot; takes and puts overlapping in flight:
+//              every phase's grid census plus every load is exactly what it was (stone for
+//              rock, cell for cell)
 //   flask      (tools/flask-check.mjs, part 1) the flask's pour, scoop, drink, mixed scoop and
 //              drink, and throw: conserved, the shatter adding exactly FLASK_GLASS shards
 //   hand       (tools/pov-tools-b.mjs) the axe on six materials (what breaks, into what, nothing
 //              made or lost), the physgun lifting sand and water to a hold point and flinging it
+//   char       (tools/gibs-check.mjs --gpu, part burn) cooked meat under its flash point stays,
+//              past it burns to ash
+//   meat       (tools/gibs-check.mjs --gpu, part lay) a body's burst laid as meat exactly (in the
+//              open, buried), cooked meat eaten exactly
 //   player:<tests>  (tools/pov-player-check.mjs) the body in small scenes: its numbers
 //   engine:<scene>  (tools/pov-engine-check.mjs) impact breaking, heat and blasts: its numbers
 
 import { boot, ready, test, log } from './harness.js';
 import { Simulation, cellTexel } from '/src/sim.js';
-import { E, ELEMENTS } from '/src/elements.js';
+import { E, ELEMENTS, K } from '/src/elements.js';
 import { SEED_MAX } from '/src/shaders/common.js';
 import { preparePov } from '/src/pov/gpu.js';
 import * as THREE from 'three';
@@ -46,6 +52,7 @@ const DT = 1 / 60;        // s a frame (the app's tick at 60 Hz)
 // agents is slow (docs/webgpu.md I1).
 const TOOL_STEPS = 2;
 const TOOL_DT = 1 / 30;
+const STRESS_FRAMES = 150;   // frames of four overlapping transfers each: 600 transfers, the old pov-tools-a's
 
 // A simulation at n³ with its POV kernels built.
 async function make(n = 64, opts = {}) {
@@ -130,7 +137,7 @@ function toolCtx(sim, player, aimCell, id, extra = {}) {
 const paint = (sim, center, radius, tool, shape = 1) => sim.paint({ center: V(...center), radius, shape, tool, rate: 4, replace: true });
 
 // ---------------------------------------------------------------- toolbelt
-test('stage:toolbelt', async () => {
+test('stage:toolbelt', async ({ parts = ['shovel', 'bucket'] } = {}) => {
   const out = { checks: [], ms: {}, numbers: {} };
   const sim = await make(32);
   sim.frameSteps = TOOL_STEPS;
@@ -152,118 +159,123 @@ test('stage:toolbelt', async () => {
     for (let i = 0; i < 10; i++) await frame(sim);
     progress('the scene settled');
 
-    // ---- hotbar: a number key picks its slot, the wheel the next tool
-    dispatchEvent(new KeyboardEvent('keydown', { key: '2' }));
-    const keySel = belt.selected;
-    belt.update(ctx(null, -1, { wheel: 1 }));
-    const wheelSel = belt.selected;
-    check(out, 'hotbar: key 2 picks a tool of slot 2, the wheel the next', gearByKey(keySel)?.slot === 1 && wheelSel !== keySel, { keySel, wheelSel });
-
-    // ---- shovel: scoop sand, throw it elsewhere
-    belt.select('SHOVEL');
-    const shovel = belt.tool('SHOVEL'), pack = shovel.load;
-    const t0 = await totals(sim, [pack]);
     let S = null;
-    for (let i = 0; i < 120 && pack.count + pack.reserved < 30; i++) {
-      if (i % 8 === 0) S = await snap(sim);   // (the aim follows the heap's top about once a scoop: SCOOP_INTERVAL)
-      const y = S.top(8, 8);
-      await frame(sim, () => belt.update(ctx(V(8, y, 8), S.id(8, y, 8), { primary: true })));
-    }
-    await settle();
-    const t1 = await totals(sim, [pack]);
-    out.numbers.shovelScoop = { load: pack.status(), diff: diff(t0, t1) };
-    check(out, 'shovel: scoops sand into the pack, grid + pack conserved exactly', pack.totals()[E.SAND] >= 30 && zero(diff(t0, t1)), out.numbers.shovelScoop);
-    // right-click throws a bladeful at the floor ahead (aimed at the top of what's there by then)
-    const throwAt = async (x, z) => { const T = await snap(sim), y = T.top(x, z); await frame(sim, () => belt.update(ctx(V(x, y, z), T.id(x, y, z), { secondaryPressed: true }))); await settle(); };
-    for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 12 + (i % 3));
-    for (let i = 0; i < 10; i++) await frame(sim);
-    const t2 = await totals(sim, [pack]);
-    check(out, 'shovel: throws the load back into the world, nothing lost', pack.count === 0 && zero(diff(t0, t2)), { left: pack.count, diff: diff(t0, t2) });
+    if (parts.includes('shovel')) {
+      // ---- hotbar: a number key picks its slot, the wheel the next tool
+      dispatchEvent(new KeyboardEvent('keydown', { key: '2' }));
+      const keySel = belt.selected;
+      belt.update(ctx(null, -1, { wheel: 1 }));
+      const wheelSel = belt.selected;
+      check(out, 'hotbar: key 2 picks a tool of slot 2, the wheel the next', gearByKey(keySel)?.slot === 1 && wheelSel !== keySel, { keySel, wheelSel });
 
-    // ---- shovel on rock: it breaks into stone, cell for cell
-    const r0 = await totals(sim, [pack]);
-    for (let i = 0; i < 45; i++) {
-      if (i % 8 === 0) S = await snap(sim);
-      const y = S.top(8, 23);
-      await frame(sim, () => belt.update(ctx(V(8, y, 23), S.id(8, y, 23), { primary: true })));
-    }
-    await settle();
-    const r1 = await totals(sim, [pack]), dr = diff(r0, r1);
-    out.numbers.shovelRock = { load: pack.status(), diff: dr };
-    check(out, 'shovel: digs rock into stone (ROCK → STONE, cell for cell)', (pack.totals()[E.STONE] ?? 0) > 0
-      && Object.keys(dr).every((k) => k === 'ROCK' || k === 'STONE') && (dr.ROCK ?? 0) + (dr.STONE ?? 0) === 0, out.numbers.shovelRock);
-    // WALL refuses (the basin's rim)
-    toasts.length = 0;
-    belt.update(ctx(V(18, 7, 23), E.WALL, { primary: true }));
-    check(out, 'shovel: WALL refuses, with a toast', toasts.length > 0, toasts);
-    for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 6 + (i % 3));
-    for (let i = 0; i < 10; i++) await frame(sim);
-    const r2 = await totals(sim, [pack]), dr2 = diff(r0, r2);
-    check(out, 'shovel: the stone thrown back out, still cell for cell', pack.count === 0 && Object.keys(dr2).every((k) => k === 'ROCK' || k === 'STONE') && (dr2.ROCK ?? 0) + (dr2.STONE ?? 0) === 0, { left: pack.count, diff: dr2 });
+      // ---- shovel: scoop sand, throw it elsewhere
+      belt.select('SHOVEL');
+      const shovel = belt.tool('SHOVEL'), pack = shovel.load;
+      const t0 = await totals(sim, [pack]);
+      for (let i = 0; i < 120 && pack.count + pack.reserved < 30; i++) {
+        if (i % 8 === 0) S = await snap(sim);   // (the aim follows the heap's top about once a scoop: SCOOP_INTERVAL)
+        const y = S.top(8, 8);
+        await frame(sim, () => belt.update(ctx(V(8, y, 8), S.id(8, y, 8), { primary: true })));
+      }
+      await settle();
+      const t1 = await totals(sim, [pack]);
+      out.numbers.shovelScoop = { load: pack.status(), diff: diff(t0, t1) };
+      check(out, 'shovel: scoops sand into the pack, grid + pack conserved exactly', pack.totals()[E.SAND] >= 30 && zero(diff(t0, t1)), out.numbers.shovelScoop);
+      // right-click throws a bladeful at the floor ahead (aimed at the top of what's there by then)
+      const throwAt = async (x, z) => { const T = await snap(sim), y = T.top(x, z); await frame(sim, () => belt.update(ctx(V(x, y, z), T.id(x, y, z), { secondaryPressed: true }))); await settle(); };
+      for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 12 + (i % 3));
+      for (let i = 0; i < 10; i++) await frame(sim);
+      const t2 = await totals(sim, [pack]);
+      check(out, 'shovel: throws the load back into the world, nothing lost', pack.count === 0 && zero(diff(t0, t2)), { left: pack.count, diff: diff(t0, t2) });
 
-    // ---- bucket: scoop water
-    belt.select('BUCKET');
-    const bucket = belt.tool('BUCKET'), pail = bucket.load;
-    const w0 = await totals(sim, [pack, pail]);
-    for (let i = 0; i < 60 && pail.count + pail.reserved < 60; i++) {
-      if (i % 5 === 0) S = await snap(sim);
-      const y = S.top(23, 23);
-      await frame(sim, () => belt.update(ctx(V(23, y, 23), S.id(23, y, 23), { primary: true, primaryPressed: i === 0 })));
+      // ---- shovel on rock: it breaks into stone, cell for cell
+      const r0 = await totals(sim, [pack]);
+      for (let i = 0; i < 45; i++) {
+        if (i % 8 === 0) S = await snap(sim);
+        const y = S.top(8, 23);
+        await frame(sim, () => belt.update(ctx(V(8, y, 23), S.id(8, y, 23), { primary: true })));
+      }
+      await settle();
+      const r1 = await totals(sim, [pack]), dr = diff(r0, r1);
+      out.numbers.shovelRock = { load: pack.status(), diff: dr };
+      check(out, 'shovel: digs rock into stone (ROCK → STONE, cell for cell)', (pack.totals()[E.STONE] ?? 0) > 0
+        && Object.keys(dr).every((k) => k === 'ROCK' || k === 'STONE') && (dr.ROCK ?? 0) + (dr.STONE ?? 0) === 0, out.numbers.shovelRock);
+      // WALL refuses (the basin's rim)
+      toasts.length = 0;
+      belt.update(ctx(V(18, 7, 23), E.WALL, { primary: true }));
+      check(out, 'shovel: WALL refuses, with a toast', toasts.length > 0, toasts);
+      for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 6 + (i % 3));
+      for (let i = 0; i < 10; i++) await frame(sim);
+      const r2 = await totals(sim, [pack]), dr2 = diff(r0, r2);
+      check(out, 'shovel: the stone thrown back out, still cell for cell', pack.count === 0 && Object.keys(dr2).every((k) => k === 'ROCK' || k === 'STONE') && (dr2.ROCK ?? 0) + (dr2.STONE ?? 0) === 0, { left: pack.count, diff: dr2 });
     }
-    await settle();
-    const w1 = await totals(sim, [pack, pail]);
-    out.numbers.bucketScoop = { load: pail.status(), diff: diff(w0, w1) };
-    check(out, 'bucket: scoops water, grid + bucket conserved exactly', (pail.totals()[E.WATER] ?? 0) > 0 && zero(diff(w0, w1)), out.numbers.bucketScoop);
-    // ---- stress: overlapping takes and puts in flight together, the sim running
-    const tx = belt.transfer, g = sim.g;
-    const LA = new Load(200), LB = new Load(200);
-    paint(sim, [14, 3, 14], 2, E.SAND);
-    for (let i = 0; i < 10; i++) await frame(sim);
-    const loads = [pack, pail, LA, LB];
-    const s0 = await totals(sim, loads);
-    let ops = 0, moved = 0;
-    const c = V(14.5, 2, 14.5), up = V(14.5, 6, 14.5);
-    for (let i = 0; i < 40; i++) {
-      const r = [
-        tx.take(LA, { cells: cellsNear(c, 3, g), kinds: [2] }),
-        tx.put(LA, { cells: cellsNear(up, 3, g), max: 10 }),
-        tx.take(LB, { cells: cellsNear(c, 2.5, g), kinds: [2], limit: 7 }),
-        tx.put(LB, { cells: cellsNear(c, 3, g), max: 5 }),
-      ];
-      for (const q of r) if (q) { ops++; q.then((v) => { moved += Array.isArray(v) ? v.length : v; }); }
-      await frame(sim);
+
+    if (parts.includes('bucket')) {
+      const pack = belt.tool('SHOVEL').load;   // (empty here: it counts in the totals all the same)
+      // ---- bucket: scoop water
+      belt.select('BUCKET');
+      const bucket = belt.tool('BUCKET'), pail = bucket.load;
+      const w0 = await totals(sim, [pack, pail]);
+      for (let i = 0; i < 60 && pail.count + pail.reserved < 60; i++) {
+        if (i % 5 === 0) S = await snap(sim);
+        const y = S.top(23, 23);
+        await frame(sim, () => belt.update(ctx(V(23, y, 23), S.id(23, y, 23), { primary: true, primaryPressed: i === 0 })));
+      }
+      await settle();
+      const w1 = await totals(sim, [pack, pail]);
+      out.numbers.bucketScoop = { load: pail.status(), diff: diff(w0, w1) };
+      check(out, 'bucket: scoops water, grid + bucket conserved exactly', (pail.totals()[E.WATER] ?? 0) > 0 && zero(diff(w0, w1)), out.numbers.bucketScoop);
+      // ---- stress: overlapping takes and puts in flight together, the sim running
+      const tx = belt.transfer, g = sim.g;
+      const LA = new Load(200), LB = new Load(200);
+      paint(sim, [14, 3, 14], 3, E.SAND);
+      for (let i = 0; i < 10; i++) await frame(sim);
+      const loads = [pack, pail, LA, LB];
+      const s0 = await totals(sim, loads);
+      let ops = 0, moved = 0;
+      const c = V(14.5, 2, 14.5), up = V(14.5, 6, 14.5);
+      for (let i = 0; i < STRESS_FRAMES; i++) {
+        const r = [
+          tx.take(LA, { cells: cellsNear(c, 3, g), kinds: [2] }),
+          tx.put(LA, { cells: cellsNear(up, 3, g), max: 10 }),
+          tx.take(LB, { cells: cellsNear(c, 2.5, g), kinds: [2], limit: 7 }),
+          tx.put(LB, { cells: cellsNear(c, 3, g), max: 5 }),
+        ];
+        for (const q of r) if (q) { ops++; q.then((v) => { moved += Array.isArray(v) ? v.length : v; }); }
+        await frame(sim);
+      }
+      await settle();
+      const s1 = await totals(sim, loads);
+      out.numbers.stress = { ops, moved, inLoads: LA.count + LB.count, diff: diff(s0, s1) };
+      check(out, 'transfer: overlapping takes and puts, in flight across steps: grid + loads exact', ops > 50 && moved > 0 && zero(diff(s0, s1)), out.numbers.stress);
+
+      // ---- the player's bucket is bottomless (bucket.tool.js): a pour puts its cells exactly and copies
+      // back what landed, so the world gains exactly what landed, of the bucket's liquid, and the bucket stays as full
+      const landedBefore = pail.count;
+      let landed = 0;
+      const put = tx.put;
+      tx.put = (load, spec) => { const q = put.call(tx, load, spec); if (load === pail) q?.then((v) => { landed += Array.isArray(v) ? v.length : v; }); return q; };
+      const p0 = await totals(sim, [pack, pail, LA, LB]);
+      const pourCtx = () => ({ ...ctx(null, -1, { secondary: true }), eye: V(12, 10, 6), dir: V(0.3, -0.2, 0.93).normalize() });
+      for (let i = 0; i < 30; i++) await frame(sim, () => belt.update(pourCtx()));
+      await settle();
+      tx.put = put;
+      const dp = diff(p0, await totals(sim, [pack, pail, LA, LB]));
+      out.numbers.bucketPour = { landed, bucket: pail.count, diff: dp };
+      check(out, 'bucket: pours exactly what lands, and the bottomless bucket copies it back (the world gains just that water)',
+        landed > 0 && pail.count === landedBefore && Object.keys(dp).length === 1 && dp.WATER === landed, out.numbers.bucketPour);
+
+      // ---- lava keeps its temperature in the bucket
+      paint(sim, [26, 1, 6], 2, E.LAVA);
+      for (let i = 0; i < 5; i++) await frame(sim);
+      S = await snap(sim);
+      const ly = S.top(26, 6);
+      for (let i = 0; i < 3; i++) await frame(sim, () => belt.update(ctx(V(26, ly, 6), E.LAVA, { primary: true, primaryPressed: i === 0 })));
+      await settle();
+      const hot = pail.cells.filter((c) => c[0] === E.LAVA).map((c) => c[1]);
+      out.numbers.lava = { status: pail.status(), T: hot.slice(0, 3).map((t) => +t.toFixed(0)) };
+      check(out, 'bucket: lava keeps its heat in the bucket', hot.length > 0 && Math.min(...hot) > 900, out.numbers.lava);
     }
-    await settle();
-    const s1 = await totals(sim, loads);
-    out.numbers.stress = { ops, moved, inLoads: LA.count + LB.count, diff: diff(s0, s1) };
-    check(out, 'transfer: overlapping takes and puts, in flight across steps: grid + loads exact', ops > 50 && moved > 0 && zero(diff(s0, s1)), out.numbers.stress);
-
-    // ---- the player's bucket is bottomless (bucket.tool.js): a pour puts its cells exactly and copies
-    // back what landed, so the world gains exactly what landed, of the bucket's liquid, and the bucket stays as full
-    const landedBefore = pail.count;
-    let landed = 0;
-    const put = tx.put;
-    tx.put = (load, spec) => { const q = put.call(tx, load, spec); if (load === pail) q?.then((v) => { landed += Array.isArray(v) ? v.length : v; }); return q; };
-    const p0 = await totals(sim, [pack, pail, LA, LB]);
-    const pourCtx = () => ({ ...ctx(null, -1, { secondary: true }), eye: V(12, 10, 6), dir: V(0.3, -0.2, 0.93).normalize() });
-    for (let i = 0; i < 30; i++) await frame(sim, () => belt.update(pourCtx()));
-    await settle();
-    tx.put = put;
-    const dp = diff(p0, await totals(sim, [pack, pail, LA, LB]));
-    out.numbers.bucketPour = { landed, bucket: pail.count, diff: dp };
-    check(out, 'bucket: pours exactly what lands, and the bottomless bucket copies it back (the world gains just that water)',
-      landed > 0 && pail.count === landedBefore && Object.keys(dp).length === 1 && dp.WATER === landed, out.numbers.bucketPour);
-
-    // ---- lava keeps its temperature in the bucket
-    paint(sim, [26, 1, 6], 2, E.LAVA);
-    for (let i = 0; i < 5; i++) await frame(sim);
-    S = await snap(sim);
-    const ly = S.top(26, 6);
-    for (let i = 0; i < 3; i++) await frame(sim, () => belt.update(ctx(V(26, ly, 6), E.LAVA, { primary: true, primaryPressed: i === 0 })));
-    await settle();
-    const hot = pail.cells.filter((c) => c[0] === E.LAVA).map((c) => c[1]);
-    out.numbers.lava = { status: pail.status(), T: hot.slice(0, 3).map((t) => +t.toFixed(0)) };
-    check(out, 'bucket: lava keeps its heat in the bucket', hot.length > 0 && Math.min(...hot) > 900, out.numbers.lava);
 
     out.numbers.statuses = [...document.querySelectorAll('.hb-status')].map((e) => e.textContent).filter(Boolean);
     check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
@@ -402,17 +414,22 @@ test('stage:flask', async () => {
 });
 
 // ---------------------------------------------------------------- hand (axe, physgun)
-// pov-tools-b's scenes on 32³: the axe's slabs narrower and closer (its patch,
-// AXE.RADIUS 3, still reaches no neighbour), the physgun's basin nearer the
-// origin. The axe's swing lands by its own clock (the world isn't stepped);
-// the physgun's frames are the old pov-tools-b's, the app's tick: DT and
-// STEPS steps (its spring works per step), 0.5 s gathering, 2 s raising, 3 s
-// holding. It holds a ball, not the pool: the falloff's full-strength core
-// (PHYS.CORE of its RADIUS, PHYS.PACKING of it matter) is ~140 cells, and the
-// check asks for at least half that above the basin, round the hold point.
+// pov-tools-b's scenes. The axe's: the old check's slabs, cell for cell (9
+// tall, 9 wide, 3 deep, 20 cells apart), two rows of three on 64³ where the
+// old 128³ had one of six; its swing lands by its own clock (the world isn't
+// stepped). The physgun's on 32³, its basin nearer the origin (the matter and
+// the hold point 12 cells up as the old 128³ check had them), its frames the
+// old pov-tools-b's, the app's tick: DT and STEPS steps (its spring works per
+// step), 0.5 s gathering, 2 s raising, 3 s holding. It holds a ball, not the
+// pool: the falloff's full-strength core (PHYS.CORE of its RADIUS, PHYS.PACKING
+// of it matter) is ~140 cells. A powder fills it: sand must lift at least half
+// that ball above the basin, round the hold point. A liquid drains from it as
+// it is held; how much water stays up is printed, as the old check printed it
+// (no WebGL figure was ever recorded for it: docs/webgpu.md I4's cross-build
+// list has it).
 test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'WATER'] } = {}) => {
   const out = { checks: [], ms: {}, numbers: {} };
-  const sim = await make(32);
+  const sim = await make(only.includes('axe') ? 64 : 32);
   const toasts = [];
   const env = toolEnv(sim, toasts);
   const count = async () => Object.fromEntries(Object.entries(await sim.census()).map(([k, v]) => [k, v.n]));
@@ -421,19 +438,20 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
       const axe = (await import('/src/pov/tools/axe.tool.js')).default;
       const tool = axe.create(env);
       const mats = ['WOOD', 'GLASS', 'ICE', 'PLANT', 'ROCK', 'METAL'];
-      // a 3×5×3 slab of each, facing −x, at z = 3, 8, …
+      // a 3 × 9 × 9 slab of each, facing −x: three at z = 10, 30, 50 with x from 30, three with x from 50
+      const at = (i) => ({ x0: 30 + 20 * Math.floor(i / 3), zc: 10 + 20 * (i % 3) });
       load(sim, (set) => mats.forEach((m, i) => {
-        const zc = 3 + 5 * i;
-        for (let x = 26; x < 29; x++) for (let y = 2; y < 7; y++) for (let z = zc - 1; z <= zc + 1; z++) set(x, y, z, E[m]);
+        const { x0, zc } = at(i);
+        for (let x = x0; x < x0 + 3; x++) for (let y = 2; y < 11; y++) for (let z = zc - 4; z <= zc + 4; z++) set(x, y, z, E[m]);
       }));
       const c0 = await count();
       const player = { pos: V(), vel: V(), applyImpulse() {} };
       const res = {};
       for (const [i, m] of mats.entries()) {
-        const zc = 3 + 5 * i;
-        const ctx = (over) => ({ sim, dt: DT, stepsPerFrame: STEPS, eye: V(22.5, 4.5, zc + 0.5), dir: V(1, 0, 0),
+        const { x0, zc } = at(i);
+        const ctx = (over) => ({ sim, dt: DT, stepsPerFrame: STEPS, eye: V(x0 - 3.5, 6.5, zc + 0.5), dir: V(1, 0, 0),
           primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
-          aim: { valid: true, cell: V(26, 4, zc), face: 0, id: E[m], dist: 3.5 }, player, ...over });
+          aim: { valid: true, cell: V(x0, 6, zc), face: 0, id: E[m], dist: 3.5 }, player, ...over });
         const before = await count();
         tool.update(ctx({ primaryPressed: true, primary: true }));
         for (let f = 0; f < 40; f++) tool.update(ctx({}));   // the swing lands (its own clock), the world not stepped
@@ -484,7 +502,7 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
           const k = THREE.MathUtils.clamp((f - gather) / raise, 0, 1);
           dir = surface.clone().lerp(target, k).sub(eye).normalize();
           await frame(sim, () => tool.update(ctx({})));
-          if (f % 60 === 0) progress(`physgun ${mat}: frame ${f} of ${gather + raise + hold}`);
+          if (f % 60 === 0) progress(`physgun ${mat}: frame ${f} of ${gather + raise + hold}, ${(await sim.readCounts()).awake} of ${sim.unit.units} bricks awake`);
         }
         const holdAt = tool.hold, com = await tool.readCom();
         const cells = (await snap(sim)).cells(id);
@@ -500,7 +518,9 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
           hold: holdAt?.toArray().map((v) => +v.toFixed(1)), com: com?.map((v) => +v.toFixed(1)), lifted: lifted.length, of: n0, ball: BALL,
           meanDistFromHold: +dist.toFixed(2), flingV: vFling.toArray().map((v) => +v.toFixed(2)), along: +vFling.dot(dir).toFixed(2), census: [n0, n1],
         };
-        check(out, `physgun: lifts ${mat} to the hold point 12 cells up (a ball round it)`, holdAt && holdAt.y > 14 && lifted.length >= BALL / 2 && dist < PHYS.CORE * PHYS.RADIUS, r);
+        // the beam holds matter round the hold point, raised 12 cells (both); a powder fills the ball's core (sand)
+        check(out, `physgun: lifts ${mat} to the hold point 12 cells up, round it`, holdAt && holdAt.y > 14 && lifted.length > 0 && dist < PHYS.CORE * PHYS.RADIUS, r);
+        if (ELEMENTS[id].kind === K.POWDER) check(out, `physgun: the ${mat} fills at least half the ball's core (${BALL} cells)`, lifted.length >= BALL / 2, r);
         check(out, `physgun: flings the ${mat} along the aim`, r.along > 0, r);
         check(out, `physgun: ${mat} conserved`, n0 === n1, r.census);
         tool.deselect?.(); tool.dispose?.();
@@ -519,7 +539,7 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
 // 20 fps app (the body's own frame cap is 0.1 s), as the old check's frames
 // mostly were in headless Chromium. Numbers, not pass or fail.
 const BODY_DT = 0.05;
-test('stage:player', async ({ only = null } = {}) => {
+test('stage:player', async ({ only = null, from = 0, budgetMs = Infinity } = {}) => {
   const out = { checks: [], ms: {}, numbers: {} };
   const sim = await make(64);
   const { createPlayer } = await import('/src/pov/player.js');
@@ -729,17 +749,25 @@ test('stage:player', async ({ only = null } = {}) => {
       return { state: state(pl), samples, censusDiff: d, water: census1[E.WATER]?.n, sand: census1[E.SAND]?.n };
     },
   };
+  // the tests from `from` on, until budgetMs is spent (out.next: the first not run; tools/pov-gpu-check.mjs runStages)
+  const names = Object.keys(tests).filter((n) => !only || only.includes(n));
+  const unknown = (only ?? []).filter((n) => !tests[n]);
+  if (unknown.length) check(out, 'player: the tests asked for exist', false, `no test ${unknown.join(', ')} (have: ${Object.keys(tests).join(', ')})`);
   try {
-    for (const [name, fn] of Object.entries(tests)) {
-      if (only && !only.includes(name)) continue;
-      const t0 = performance.now();
+    const start = performance.now();
+    let i = from;
+    for (; i < names.length && (i === from || performance.now() - start < budgetMs); i++) {
+      const name = names[i], t0 = performance.now();
       try {
-        out.numbers[name] = await fn();
+        out.numbers[name] = await tests[name]();
       } catch (e) {
         check(out, `player: ${name} ran`, false, String(e).slice(0, 500));
       }
       out.ms[name] = performance.now() - t0;
+      progress(`player: ${name} done`);
     }
+    out.next = i < names.length ? i : null;
+    out.of = names.length;
     check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
     return out;
   } finally {
@@ -748,16 +776,121 @@ test('stage:player', async ({ only = null } = {}) => {
   }
 });
 
+// ---------------------------------------------------------------- char
+// tools/gibs-check.mjs --gpu's part burn, the app part char's witness on this
+// host (char wakes the 64³ box's air with its heat and fire and takes ten
+// minutes and more on SwiftShader, so it runs when asked): a block of cooked
+// meat in open air, stepped by hand at the app's 4 steps a frame. Held just
+// under its fat's flash point (elements.js COOKED_MEAT ignite) it stays meat;
+// brought past it, it chars and burns to ash. On a 16³ world: the smoke and
+// fire wake every brick of any box, and the burn is the box's size's to
+// cost but not to change (here: ash first seen after 140 frames at 32³ and at
+// 16³, 8 and 9 cells of it, in 199 s and 55 s; `size` picks the world).
+const CHAR_BELOW = 20, CHAR_OVER = 10;   // °C under the flash point for the control, over it for the burn
+const CHAR_CONTROL_FRAMES = 30, CHAR_MAX_FRAMES = 300, CHAR_LOOK_EVERY = 10;
+test('stage:char', async ({ size = 16 } = {}) => {
+  const out = { checks: [], ms: {}, numbers: {} };
+  const sim = await make(size);
+  try {
+    const g = sim.g, cx = g.nx / 2 - 1, cz = g.nz / 2 - 1, ignite = ELEMENTS[E.COOKED_MEAT].ignite;
+    const block = (temp) => load(sim, (set) => {
+      for (let y = 0; y < 3; y++) for (let z = cz; z < cz + 3; z++) for (let x = cx; x < cx + 3; x++) set(x, y, z, E.COOKED_MEAT, { temp });
+    });
+    const count = async () => Object.fromEntries(Object.entries(await sim.census()).filter(([k]) => +k !== E.EMPTY).map(([k, v]) => [ELEMENTS[k].key, v.n]));
+    const awake = async () => (await sim.readCounts()).awake;
+    // the control: just under the flash point, the meat neither chars nor burns
+    block(ignite - CHAR_BELOW);
+    for (let f = 0; f < CHAR_CONTROL_FRAMES; f++) await frame(sim);
+    const c0 = await count();
+    out.numbers.under = { T: ignite - CHAR_BELOW, frames: CHAR_CONTROL_FRAMES, ...c0 };
+    check(out, `char: cooked meat at ${ignite - CHAR_BELOW} °C (under its flash point, ${ignite} °C) stays meat`, c0.COOKED_MEAT === 27 && !c0.ASH && !c0.FIRE, c0);
+    progress(`char: the control done, ${await awake()} bricks awake`);
+    // past it: it chars and burns, leaving ash
+    block(ignite + CHAR_OVER);
+    let c1 = null, f = 0, fireSeen = 0;
+    while (f < CHAR_MAX_FRAMES) {
+      for (let i = 0; i < CHAR_LOOK_EVERY; i++, f++) await frame(sim);
+      c1 = await count();
+      fireSeen = Math.max(fireSeen, c1.FIRE ?? 0);
+      if ((c1.ASH ?? 0) > 0 && (c1.COOKED_MEAT ?? 0) < 27) break;
+      if (f % 60 === 0) progress(`char: frame ${f}, ${await awake()} bricks awake, ${JSON.stringify(c1)}`);
+    }
+    out.numbers.over = { T: ignite + CHAR_OVER, frames: f, fireSeen, ...c1 };
+    check(out, `char: past its flash point (${ignite + CHAR_OVER} °C) cooked meat burns and leaves ash`, (c1.ASH ?? 0) > 0 && (c1.COOKED_MEAT ?? 0) < 27 && fireSeen > 0, out.numbers.over);
+    check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
+    return out;
+  } finally { sim.dispose(); }
+});
+
+// ---------------------------------------------------------------- meat
+// tools/gibs-check.mjs --gpu's part lay, the app part gib's witness on this
+// host (gib waits for the lab spawner's NPC and fires rockets at it, which
+// wakes the 64³ box and takes over ten minutes on SwiftShader, so it runs when
+// asked; the rules of when a body gibs are the check's CPU part): a body's
+// burst (pov/meat.js gib) on a 32³ world, its meat laid through the exact
+// transfer, in open air and buried in rock; and cooked meat eaten (meat.js
+// eat) leaving the grid exactly.
+const LAY_FRAMES = 30;   // frames a burst has to finish in (GIB_TRIES of them at most, one put in flight each)
+test('stage:meat', async () => {
+  const out = { checks: [], ms: {}, numbers: {} };
+  const { createMeat, GIB_CELLS } = await import('/src/pov/meat.js');
+  const sim = await make(32);
+  try {
+    const g = sim.g, meat = createMeat({ renderer: {}, getSim: () => sim });
+    const burst = async (pos) => {
+      const t0 = await totals(sim);
+      let done = null;
+      meat.gib(pos, V(0, 0, 0), STEPS / DT, (placed, lost) => { done = { placed, lost }; });
+      for (let f = 0; f < LAY_FRAMES && !done; f++) await frame(sim, () => meat.update());
+      for (let f = 0; f < 5; f++) await frame(sim);
+      return { done, diff: diff(t0, await totals(sim)) };
+    };
+    // in open air on the floor: all of it laid
+    const open = await burst(V(g.nx / 2, 0, g.nz / 2));
+    out.numbers.open = open;
+    check(out, `meat: a burst in the open lays the body's mass, ${GIB_CELLS} cells of meat, exactly`,
+      open.done?.placed === GIB_CELLS && open.done.lost === 0 && open.diff.MEAT === GIB_CELLS && Object.keys(open.diff).length === 1, open);
+    // buried in rock: what found no room is lost, and only what was laid is in the grid
+    load(sim, (set) => { for (let y = 0; y < 24; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) set(x, y, z, E.ROCK); });
+    for (let f = 0; f < 5; f++) await frame(sim);
+    const buried = await burst(V(g.nx / 2, 8, g.nz / 2));
+    out.numbers.buried = buried;
+    check(out, 'meat: a burst buried in rock: laid + lost is the body\'s mass, the grid gains just what was laid',
+      buried.done && buried.done.placed + buried.done.lost === GIB_CELLS && (buried.diff.MEAT ?? 0) === buried.done.placed
+        && Object.keys(buried.diff).every((k) => k === 'MEAT'), buried);
+    // eating: cooked meat on the floor, a want of 5 cells
+    load(sim, (set) => { for (let z = 14; z < 18; z++) for (let x = 14; x < 18; x++) set(x, 0, z, E.COOKED_MEAT); });
+    for (let f = 0; f < 5; f++) await frame(sim);
+    const e0 = await totals(sim);
+    const cells = [];
+    for (let z = 14; z < 18; z++) for (let x = 14; x < 18; x++) cells.push([x, 0, z]);
+    let eaten = 0;
+    meat.eat(cells, 5, (n) => { eaten += n; });
+    for (let f = 0; f < 10 && meat.busy; f++) await frame(sim, () => meat.update());
+    const de = diff(e0, await totals(sim));
+    out.numbers.eat = { eaten, diff: de };
+    check(out, 'meat: eating takes what it wants of the cooked meat, and exactly that leaves the grid',
+      eaten === 5 && de.COOKED_MEAT === -5 && Object.keys(de).length === 1, out.numbers.eat);
+    check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
+    return out;
+  } finally { sim.dispose(); }
+});
+
 // ---------------------------------------------------------------- engine
 // tools/pov-engine-check.mjs's scenes (hardness and breaking, impact heat,
-// blasts, conservation) on a 64³ world built on the CPU and stepped by hand,
-// one scene a run. Where a scene follows a few cells step by step it reads
+// blasts, conservation) on a 64³ world built on the CPU and stepped by hand.
+// Each scene is a list of cases (a ball, a pane, a shot, a keg's range and
+// offset…), the old check's every one; a run takes the requested scenes'
+// cases from `from` until it has spent budgetMs, and says where it stopped
+// (out.next: tools/pov-gpu-check.mjs runStages goes on from there in a
+// browser of its own). Where a case follows a few cells step by step it reads
 // just those (readCell, one flush for all of them); where it follows matter
 // anywhere it reads the whole state, every step (slugs, keg) or every
 // SAND_DROP_EVERY steps (sandDrop: impact heat lingers for many steps).
 // Numbers, not pass or fail.
 const SAND_DROP_EVERY = 4;
-test('stage:engine', async ({ scene: name = 'blast', full = false } = {}) => {
+const ENGINE_SCENES = ['blastProfile', 'paneLoad', 'slugs', 'keg', 'blast', 'sandDrop', 'debris'];
+test('stage:engine', async ({ scenes: names = ENGINE_SCENES, from = 0, budgetMs = Infinity } = {}) => {
   const out = { checks: [], ms: {}, numbers: {} };
   const sim = await make(64);
   const g = sim.g, idx = (x, y, z) => cellTexel(g, x, y, z) * 4;
@@ -800,23 +933,25 @@ test('stage:engine', async ({ scene: name = 'blast', full = false } = {}) => {
     async edit(fn) { await t.read(); fn((x, y, z) => idx(x, y, z)); sim.load(t.rA, t.rB); },
     total() { return Object.values(t.counts()).reduce((a, c) => a + c.n, 0); },
   };
-  const scenes = {
-    // peak blast pressure in open air at distance d from a gunpowder ball, and from a pile lit at a corner
-    async blastProfile() {
-      const res = {};
-      const D = [1, 2, 3, 4, 6, 8, 10, 14, 18];
-      for (const r of [1, 2]) {
-        t.fresh();
-        t.box(20 - r, 20 + r, 30 - r, 30 + r, 32 - r, 32 + r, 'GUNPOWDER', { T: 250 });
-        t.load();
-        const peak = {};
-        for (let s = 0; s < 40; s++) {
-          t.step();
-          const P = await t.pressures(D.map((d) => [20 + r + d, 30, 32]));
-          D.forEach((d, k) => { peak[d] = Math.max(peak[d] ?? -1e9, +P[k].toFixed(2)); });
-        }
-        res[`ball ${2 * r + 1}³`] = peak;
+
+  // ---- the scenes' cases: [name, run → its numbers]
+  const scenes = {};
+  // peak blast pressure in open air at distance d from a gunpowder ball, and from a pile lit at a corner
+  const D = [1, 2, 3, 4, 6, 8, 10, 14, 18];
+  scenes.blastProfile = [
+    ...[1, 2].map((r) => [`ball ${2 * r + 1}³`, async () => {
+      t.fresh();
+      t.box(20 - r, 20 + r, 30 - r, 30 + r, 32 - r, 32 + r, 'GUNPOWDER', { T: 250 });
+      t.load();
+      const peak = {};
+      for (let s = 0; s < 40; s++) {
+        t.step();
+        const P = await t.pressures(D.map((d) => [20 + r + d, 30, 32]));
+        D.forEach((d, k) => { peak[d] = Math.max(peak[d] ?? -1e9, +P[k].toFixed(2)); });
       }
+      return peak;
+    }]),
+    ['9³ pile, lit at a corner', async () => {
       t.fresh();
       t.box(10, 18, 2, 10, 28, 36, 'GUNPOWDER');
       t.set(9, 2, 28, 'FIRE');
@@ -829,152 +964,125 @@ test('stage:engine', async ({ scene: name = 'blast', full = false } = {}) => {
         for (let k = 0; k < 9; k++) pin = Math.max(pin, +P[k].toFixed(2));
         D2.forEach((d, k) => { peak[d] = Math.max(peak[d] ?? -1e9, +P[9 + k].toFixed(2)); });
       }
-      res['9³ pile, lit at a corner'] = { inside: pin, ...peak };
-      return res;
-    },
-    // peak pressure on a WALL pane's face at distance d from lit piles
-    async paneLoad() {
-      const res = {};
-      for (const n of [1, 3, 5, 7]) for (const lit of ['flame', 'heat']) {
-        const r = {};
-        for (const [da, db] of [[1, 2], [3, 4], [6, 8]]) {
-          t.fresh();
-          const a0 = 32 - (n >> 1), a1 = a0 + n - 1, y0 = 10, y1 = y0 + n - 1;
-          t.box(a0, a1, y0, y1, a0, a1, 'GUNPOWDER', lit === 'heat' ? { T: 250 } : {});
-          if (lit === 'flame') t.set(a0 - 1, y0, a0, 'FIRE');
-          const yc = (y0 + y1) >> 1;
-          t.box(a1 + da, a1 + da, y0 - 6, y1 + 6, a0 - 6, a1 + 6, 'WALL');
-          t.box(a0 - db, a0 - db, y0 - 6, y1 + 6, a0 - 6, a1 + 6, 'WALL');
-          t.load();
-          let pa = 0, pb = 0;
-          for (let s = 0; s < 60; s++) {
-            t.step();
-            const [qa, qb] = await t.pressures([[a1 + da - 1, yc, 32], [a0 - db + 1, yc, 32]]);
-            pa = Math.max(pa, qa); pb = Math.max(pb, qb);
-          }
-          r[da] = +pa.toFixed(0); r[db] = +pb.toFixed(0);
-        }
-        res[`${n}³ ${lit === 'flame' ? 'lit by a flame' : 'all at once'}`] = r;
+      return { inside: pin, ...peak };
+    }],
+  ];
+  // peak pressure on a WALL pane's face at distance d from lit piles: panes da cells off on +x and db on −x
+  scenes.paneLoad = [1, 3, 5, 7].flatMap((n) => ['flame', 'heat'].flatMap((lit) => [[1, 2], [3, 4], [6, 8]].map(([da, db]) => [
+    `${n}³ ${lit === 'flame' ? 'lit by a flame' : 'all at once'}, panes ${da} and ${db} off`, async () => {
+      t.fresh();
+      const a0 = 32 - (n >> 1), a1 = a0 + n - 1, y0 = 10, y1 = y0 + n - 1;
+      t.box(a0, a1, y0, y1, a0, a1, 'GUNPOWDER', lit === 'heat' ? { T: 250 } : {});
+      if (lit === 'flame') t.set(a0 - 1, y0, a0, 'FIRE');
+      const yc = (y0 + y1) >> 1;
+      t.box(a1 + da, a1 + da, y0 - 6, y1 + 6, a0 - 6, a1 + 6, 'WALL');
+      t.box(a0 - db, a0 - db, y0 - 6, y1 + 6, a0 - 6, a1 + 6, 'WALL');
+      t.load();
+      let pa = 0, pb = 0;
+      for (let s = 0; s < 60; s++) {
+        t.step();
+        const [qa, qb] = await t.pressures([[a1 + da - 1, yc, 32], [a0 - db + 1, yc, 32]]);
+        pa = Math.max(pa, qa); pb = Math.max(pb, qb);
       }
-      return res;
-    },
-    // a SCRAP slug at vx = 1 into a pane or block of each material
-    async slugs() {
-      const res = {};
-      const shoot = async (target, thick, gap, steps = 40, v = { vx: 1 }, extra) => {
-        const x0 = 40;
-        t.fresh();
-        t.box(x0, x0 + thick - 1, 28, 52, 22, 42, target);
-        extra?.();
-        t.set(x0 - 1 - gap, 40, 32, 'SCRAP', v);
-        t.load(); await t.read();
-        const before = t.counts(), debris = ELEMENTS[E[target]].breakInto;
-        const slug = () => t.where('SCRAP').map((c) => [c, t.cell(c[0], c[1], c[2])]).sort((a, b) => b[1].v[0] - a[1].v[0])[0];
-        const peak = {};
-        let prev = slug(), hit = null;
-        for (let s = 1; s <= steps; s++) {
-          t.step(); await t.read();
-          for (const [k, c] of Object.entries(t.counts())) peak[k] = Math.max(peak[k] ?? -1e9, c.Tmax);
-          const cur = slug();
-          if (!hit && cur && prev && cur[1].v[0] < prev[1].v[0] - 0.05) hit = { step: s, vxBefore: prev[1].v[0], vxAfter: cur[1].v[0], debrisV: debris && t.where(debris).map((c) => t.cell(c[0], c[1], c[2]).v[0]) };
-          prev = cur ?? prev;
-        }
-        const after = t.counts();
-        return {
-          before: Object.fromEntries(Object.entries(before).map(([k, c]) => [k, c.n])),
-          after: Object.fromEntries(Object.entries(after).map(([k, c]) => [k, `${c.n} (peak T ${peak[k]})`])),
-          hit, Ehit: hit && +(0.5 * 78 * hit.vxBefore ** 2).toFixed(1),
-          conserved: t.total() === Object.values(before).reduce((a, c) => a + c.n, 0),
-        };
-      };
-      res['GLASS pane, 1 thick, gap 5'] = await shoot('GLASS', 1, 5);
-      res['GLASS pane, 3 thick, gap 5'] = await shoot('GLASS', 3, 5);
-      res['METAL plate, 2 thick, gap 5'] = await shoot('METAL', 2, 5);
-      res['ROCK block, 6 thick, gap 2'] = await shoot('ROCK', 6, 2);
-      res['ROCK block, 6 thick, gap 12'] = await shoot('ROCK', 6, 12);
-      res['WOOD plank, 2 thick, gap 5'] = await shoot('WOOD', 2, 5);
-      res['WALL, gap 5'] = await shoot('WALL', 2, 5);
-      res['GLASS pane, gap 20'] = await shoot('GLASS', 1, 20);   // the pane starts out in quiet bricks and has to wake in time
-      res['GLASS pane, diagonal xz'] = await shoot('GLASS', 1, 5, 40, { vx: 0.8, vz: 0.6 });
-      res['GLASS corner, diagonal down'] = await shoot('GLASS', 1, 3, 40, { vx: 0.75, vy: -0.75 }, () => t.box(20, 39, 35, 35, 22, 42, 'GLASS'));
-      return res;
-    },
-    // a slug into a powder keg (constructions/builtins.js barrel 'keg') from several ranges
-    // (full: the old check's 4 ranges × 7 offsets; else 2 × 3, a full read a step being what it costs)
-    async keg() {
-      const res = {};
-      const { barrel } = await import('/src/constructions/builtins.js');
-      for (const gap of full ? [1, 6, 14, 24] : [6, 14]) {
-        const r = [];
-        const y0 = 6 + Math.round(0.0125 * (gap + 1) ** 2);   // aim higher from further out: the slug drops ~g·n²/2
-        for (const trial of full ? [-3, -2, -1, 0, 1, 2, 3] : [-1, 0, 1]) {
-          t.fresh();
-          t.box(0, 63, 0, 0, 0, 63, 'ROCK');
-          barrel({ put: (x, y, z, key) => key !== 'AIR' && t.set(32 + x, 1 + y, 32 + z, key), T: 1 }, 'keg');
-          t.set(32 - 5 - gap, y0, 32 + trial, 'SCRAP', { vx: 1 });
-          t.load();
-          await t.read();
-          const gp0 = t.where('GUNPOWDER').length;
-          let boom = null, broke = null;
-          for (let s = 1; s <= 90 && boom === null; s++) {
-            t.step(); await t.read();
-            if (broke === null && t.where('SAWDUST').length) broke = s;
-            if (t.where('GUNPOWDER').length < gp0) boom = s;
-          }
-          r.push(`z${trial}: ${broke === null ? 'shell held' : `shell broke at step ${broke}`}, ${boom === null ? 'no boom' : `BOOM at ${boom}`}`);
-        }
-        res[`gap ${gap}`] = r;
-      }
-      return res;
-    },
-    // gunpowder blasts next to panes: touching on +x, 3 cells off on −x, 6 off on +z
-    async blast() {
-      const res = {};
-      const run = async (mat, pile) => {
-        t.fresh();
-        const [a0, a1] = pile === 'small' ? [31, 33] : [29, 35];
-        const y0 = 10, y1 = y0 + a1 - a0;
-        t.box(a0, a1, y0, y1, a0, a1, 'GUNPOWDER', pile === 'small' ? { T: 250 } : {});
-        if (pile !== 'small') t.set(a0 - 1, y0, a0, 'FIRE');
-        const panes = {
-          touching: [a1 + 1, a1 + 1, y0 - 4, y1 + 4, a0 - 4, a1 + 4],
-          'gap 3': [a0 - 4, a0 - 4, y0 - 4, y1 + 4, a0 - 4, a1 + 4],
-          'gap 6': [a0 - 2, a1 + 2, y0 - 4, y1 + 4, a1 + 7, a1 + 7],
-        };
-        for (const b of Object.values(panes)) t.box(...b, mat);
-        t.load();
-        const n0 = {};
-        await t.read();
-        const inPane = (b) => { let n = 0; for (let x = b[0]; x <= b[1]; x++) for (let y = b[2]; y <= b[3]; y++) for (let z = b[4]; z <= b[5]; z++) if (t.cell(x, y, z).key === mat) n++; return n; };
-        for (const [k, b] of Object.entries(panes)) n0[k] = inPane(b);
-        t.step(80); await t.read();
-        return Object.fromEntries(Object.entries(panes).map(([k, b]) => [k, `${n0[k] - inPane(b)}/${n0[k]} broken`]));
-      };
-      for (const pile of ['small', 'big']) for (const mat of ['GLASS', 'ICE', 'PLANT', 'WOOD', 'ROCK', 'METAL']) res[`${pile} ${mat}`] = await run(mat, pile);
-      return res;
-    },
-    // sand dropped onto a rock floor and onto the box floor: how warm does it get?
-    async sandDrop() {
-      const res = {};
-      for (const floor of ['ROCK', 'box']) for (const hgt of [10, 30, 55]) {
-        t.fresh();
-        if (floor === 'ROCK') t.box(0, 63, 0, 1, 0, 63, 'ROCK');
-        const y = (floor === 'ROCK' ? 2 : 0) + hgt;
-        t.box(30, 34, y, y + 1, 30, 34, 'SAND');
-        t.load();
-        let sMax = -1e9, rMax = -1e9;
-        for (let s = 0; s < 160; s += SAND_DROP_EVERY) {
-          t.step(SAND_DROP_EVERY); await t.read();
-          for (const c of t.where('SAND')) sMax = Math.max(sMax, c[3]);
-          if (floor === 'ROCK') for (let x = 30; x <= 34; x++) for (let z = 30; z <= 34; z++) rMax = Math.max(rMax, t.cell(x, 1, z).T);
-        }
-        res[`${floor} floor, drop ${hgt}`] = { sandTmax: sMax, floorTmax: floor === 'ROCK' ? rMax : null, sandCount: t.where('SAND').length };
-      }
-      return res;
-    },
-    // debris: shards resist acid, sawdust burns, shards and scrap melt and recast
-    async debris() {
-      const res = {};
+      return { [da]: +pa.toFixed(0), [db]: +pb.toFixed(0) };
+    }])));
+  // a SCRAP slug at vx = 1 into a pane or block of each material
+  const shoot = async (target, thick, gap, steps = 40, v = { vx: 1 }, extra) => {
+    const x0 = 40;
+    t.fresh();
+    t.box(x0, x0 + thick - 1, 28, 52, 22, 42, target);
+    extra?.();
+    t.set(x0 - 1 - gap, 40, 32, 'SCRAP', v);
+    t.load(); await t.read();
+    const before = t.counts(), debris = ELEMENTS[E[target]].breakInto;
+    const slug = () => t.where('SCRAP').map((c) => [c, t.cell(c[0], c[1], c[2])]).sort((a, b) => b[1].v[0] - a[1].v[0])[0];
+    const peak = {};
+    let prev = slug(), hit = null;
+    for (let s = 1; s <= steps; s++) {
+      t.step(); await t.read();
+      for (const [k, c] of Object.entries(t.counts())) peak[k] = Math.max(peak[k] ?? -1e9, c.Tmax);
+      const cur = slug();
+      if (!hit && cur && prev && cur[1].v[0] < prev[1].v[0] - 0.05) hit = { step: s, vxBefore: prev[1].v[0], vxAfter: cur[1].v[0], debrisV: debris && t.where(debris).map((c) => t.cell(c[0], c[1], c[2]).v[0]) };
+      prev = cur ?? prev;
+    }
+    const after = t.counts();
+    return {
+      before: Object.fromEntries(Object.entries(before).map(([k, c]) => [k, c.n])),
+      after: Object.fromEntries(Object.entries(after).map(([k, c]) => [k, `${c.n} (peak T ${peak[k]})`])),
+      hit, Ehit: hit && +(0.5 * 78 * hit.vxBefore ** 2).toFixed(1),
+      conserved: t.total() === Object.values(before).reduce((a, c) => a + c.n, 0),
+    };
+  };
+  scenes.slugs = [
+    ['GLASS pane, 1 thick, gap 5', () => shoot('GLASS', 1, 5)],
+    ['GLASS pane, 3 thick, gap 5', () => shoot('GLASS', 3, 5)],
+    ['METAL plate, 2 thick, gap 5', () => shoot('METAL', 2, 5)],
+    ['ROCK block, 6 thick, gap 2', () => shoot('ROCK', 6, 2)],
+    ['ROCK block, 6 thick, gap 12', () => shoot('ROCK', 6, 12)],
+    ['WOOD plank, 2 thick, gap 5', () => shoot('WOOD', 2, 5)],
+    ['WALL, gap 5', () => shoot('WALL', 2, 5)],
+    ['GLASS pane, gap 20', () => shoot('GLASS', 1, 20)],   // the pane starts out in quiet bricks and has to wake in time
+    ['GLASS pane, diagonal xz', () => shoot('GLASS', 1, 5, 40, { vx: 0.8, vz: 0.6 })],
+    ['GLASS corner, diagonal down', () => shoot('GLASS', 1, 3, 40, { vx: 0.75, vy: -0.75 }, () => t.box(20, 39, 35, 35, 22, 42, 'GLASS'))],
+  ];
+  // a slug into a powder keg (constructions/builtins.js barrel 'keg') from the old check's 4 ranges × 7 offsets
+  scenes.keg = [1, 6, 14, 24].flatMap((gap) => [-3, -2, -1, 0, 1, 2, 3].map((trial) => [`gap ${gap}, z${trial}`, async () => {
+    const { barrel } = await import('/src/constructions/builtins.js');
+    const y0 = 6 + Math.round(0.0125 * (gap + 1) ** 2);   // aim higher from further out: the slug drops ~g·n²/2
+    t.fresh();
+    t.box(0, 63, 0, 0, 0, 63, 'ROCK');
+    barrel({ put: (x, y, z, key) => key !== 'AIR' && t.set(32 + x, 1 + y, 32 + z, key), T: 1 }, 'keg');
+    t.set(32 - 5 - gap, y0, 32 + trial, 'SCRAP', { vx: 1 });
+    t.load();
+    await t.read();
+    const gp0 = t.where('GUNPOWDER').length;
+    let boom = null, broke = null;
+    for (let s = 1; s <= 90 && boom === null; s++) {
+      t.step(); await t.read();
+      if (broke === null && t.where('SAWDUST').length) broke = s;
+      if (t.where('GUNPOWDER').length < gp0) boom = s;
+    }
+    return `${broke === null ? 'shell held' : `shell broke at step ${broke}`}, ${boom === null ? 'no boom' : `BOOM at ${boom}`}`;
+  }]));
+  // gunpowder blasts next to panes: touching on +x, 3 cells off on −x, 6 off on +z
+  scenes.blast = ['small', 'big'].flatMap((pile) => ['GLASS', 'ICE', 'PLANT', 'WOOD', 'ROCK', 'METAL'].map((mat) => [`${pile} ${mat}`, async () => {
+    t.fresh();
+    const [a0, a1] = pile === 'small' ? [31, 33] : [29, 35];
+    const y0 = 10, y1 = y0 + a1 - a0;
+    t.box(a0, a1, y0, y1, a0, a1, 'GUNPOWDER', pile === 'small' ? { T: 250 } : {});
+    if (pile !== 'small') t.set(a0 - 1, y0, a0, 'FIRE');
+    const panes = {
+      touching: [a1 + 1, a1 + 1, y0 - 4, y1 + 4, a0 - 4, a1 + 4],
+      'gap 3': [a0 - 4, a0 - 4, y0 - 4, y1 + 4, a0 - 4, a1 + 4],
+      'gap 6': [a0 - 2, a1 + 2, y0 - 4, y1 + 4, a1 + 7, a1 + 7],
+    };
+    for (const b of Object.values(panes)) t.box(...b, mat);
+    t.load();
+    const n0 = {};
+    await t.read();
+    const inPane = (b) => { let n = 0; for (let x = b[0]; x <= b[1]; x++) for (let y = b[2]; y <= b[3]; y++) for (let z = b[4]; z <= b[5]; z++) if (t.cell(x, y, z).key === mat) n++; return n; };
+    for (const [k, b] of Object.entries(panes)) n0[k] = inPane(b);
+    t.step(80); await t.read();
+    return Object.fromEntries(Object.entries(panes).map(([k, b]) => [k, `${n0[k] - inPane(b)}/${n0[k]} broken`]));
+  }]));
+  // sand dropped onto a rock floor and onto the box floor: how warm does it get?
+  scenes.sandDrop = ['ROCK', 'box'].flatMap((floor) => [10, 30, 55].map((hgt) => [`${floor} floor, drop ${hgt}`, async () => {
+    t.fresh();
+    if (floor === 'ROCK') t.box(0, 63, 0, 1, 0, 63, 'ROCK');
+    const y = (floor === 'ROCK' ? 2 : 0) + hgt;
+    t.box(30, 34, y, y + 1, 30, 34, 'SAND');
+    t.load();
+    let sMax = -1e9, rMax = -1e9;
+    for (let s = 0; s < 160; s += SAND_DROP_EVERY) {
+      t.step(SAND_DROP_EVERY); await t.read();
+      for (const c of t.where('SAND')) sMax = Math.max(sMax, c[3]);
+      if (floor === 'ROCK') for (let x = 30; x <= 34; x++) for (let z = 30; z <= 34; z++) rMax = Math.max(rMax, t.cell(x, 1, z).T);
+    }
+    return { sandTmax: sMax, floorTmax: floor === 'ROCK' ? rMax : null, sandCount: t.where('SAND').length };
+  }]));
+  // debris: shards resist acid, sawdust burns, shards and scrap melt and recast
+  scenes.debris = [
+    ['acid', async () => {
       t.fresh();
       t.box(10, 20, 0, 1, 10, 20, 'SHARDS');
       t.box(30, 40, 0, 1, 10, 20, 'SAND');
@@ -982,32 +1090,44 @@ test('stage:engine', async ({ scene: name = 'blast', full = false } = {}) => {
       t.box(30, 40, 2, 4, 10, 20, 'ACID');
       t.load();
       t.step(200); await t.read();
-      res.acid = { shardsLeft: `${t.where('SHARDS').length}/242`, sandLeft: `${t.where('SAND').length}/242` };
+      return { shardsLeft: `${t.where('SHARDS').length}/242`, sandLeft: `${t.where('SAND').length}/242` };
+    }],
+    ['sawdust', async () => {
       t.fresh();
       t.box(20, 24, 0, 1, 20, 24, 'SAWDUST', { T: 300 });
       t.load();
       t.step(300); await t.read();
       const c = t.counts();
-      res.sawdust = { SAWDUST: c.SAWDUST?.n ?? 0, ASH: c.ASH?.n ?? 0, FIRE: c.FIRE?.n ?? 0, SMOKE: c.SMOKE?.n ?? 0 };
-      for (const key of ['SHARDS', 'SCRAP']) {
-        t.fresh();
-        t.box(0, 63, 0, 0, 0, 63, 'WALL');
-        t.set(32, 1, 32, key, { T: key === 'SHARDS' ? 1450 : 1550 });
-        t.load();
-        t.step(2); await t.read();
-        const melted = t.cell(32, 1, 32);
-        await t.edit((at) => { t.rA[at(32, 1, 32) + 1] = 1000; });
-        t.step(2); await t.read();
-        res[key] = { melted: `${melted.key}, remembers ${ELEMENTS[melted.ctype].key}`, cooled: t.cell(32, 1, 32).key };
-      }
-      return res;
-    },
-  };
+      return { SAWDUST: c.SAWDUST?.n ?? 0, ASH: c.ASH?.n ?? 0, FIRE: c.FIRE?.n ?? 0, SMOKE: c.SMOKE?.n ?? 0 };
+    }],
+    ...['SHARDS', 'SCRAP'].map((key) => [key, async () => {
+      t.fresh();
+      t.box(0, 63, 0, 0, 0, 63, 'WALL');
+      t.set(32, 1, 32, key, { T: key === 'SHARDS' ? 1450 : 1550 });
+      t.load();
+      t.step(2); await t.read();
+      const melted = t.cell(32, 1, 32);
+      await t.edit((at) => { t.rA[at(32, 1, 32) + 1] = 1000; });
+      t.step(2); await t.read();
+      return { melted: `${melted.key}, remembers ${ELEMENTS[melted.ctype].key}`, cooled: t.cell(32, 1, 32).key };
+    }]),
+  ];
+
   try {
-    if (!scenes[name]) throw new Error(`engine: no scene ${name} (have: ${Object.keys(scenes).join(', ')})`);
-    const t0 = performance.now();
-    out.numbers[name] = await scenes[name]();
-    out.ms[name] = performance.now() - t0;
+    const bad = names.filter((n) => !scenes[n]);
+    if (bad.length) throw new Error(`engine: no scene ${bad.join(', ')} (have: ${Object.keys(scenes).join(', ')})`);
+    // the cases from `from` on, until budgetMs is spent
+    const cases = names.flatMap((n) => scenes[n].map(([c, run]) => [n, c, run]));
+    const start = performance.now();
+    let i = from;
+    for (; i < cases.length && (i === from || performance.now() - start < budgetMs); i++) {
+      const [scene, name, run] = cases[i], t0 = performance.now();
+      (out.numbers[scene] ??= {})[name] = await run();
+      out.ms[`${scene}: ${name}`] = performance.now() - t0;
+      progress(`engine: ${scene}, ${name}`);
+    }
+    out.next = i < cases.length ? i : null;
+    out.of = cases.length;
     check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
     return out;
   } finally { sim.dispose(); }
