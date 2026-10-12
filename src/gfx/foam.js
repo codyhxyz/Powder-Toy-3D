@@ -226,7 +226,7 @@ export function setAeration(sim, on) {
 export function dropAeration(sim) {
   const aer = kept.get(sim);
   if (!aer) return;
-  if (sim.aeration === aer) sim.attachAeration(null);
+  if (sim.aeration === aer && !sim.disposed) sim.attachAeration(null);
   aer.dispose();
   kept.delete(sim);
 }
