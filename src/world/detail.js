@@ -52,8 +52,9 @@ export class WorldDetail {
         void main() {
           if (all(greaterThanEqual(vWorld.xz, vec2(uWinLo.xz))) &&
               all(lessThan(vWorld.xz, vec2(uWinLo.xz + ivec2(${far.sim.g.nx}, ${far.sim.g.nz}))))) discard;
-          vec3 eye = (uSceneToWorld * vec4(cameraPosition, 1.0)).xyz;
-          gl_FragColor = vec4(length(vWorld - eye), 0.0, 0.0, 1.0);
+          // Actual raster depth, including presentation deformation. The coarse
+          // pass reconstructs display-ray t with the jittered inverse projection.
+          gl_FragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0);
         }`,
     });
     // Runs after post has applied this frame's projection jitter. The coarse
@@ -145,7 +146,7 @@ export class WorldDetail {
     this.depthGroup.matrix.copy(far.worldToScene);
     this.depthGroup.matrixWorldNeedsUpdate = true;
     const eye = camera.position.clone().applyMatrix4(far.sceneToWorld);
-    const viewKey = `${camera.matrixWorld.elements}|${camera.fov}|${camera.aspect}|${this.renderer.domElement.height}|${far.sim.origin.toArray()}`;
+    const viewKey = `${camera.matrixWorld.elements}|${camera.fov}|${camera.aspect}|${this.renderer.domElement.height}|${far.sim.origin.toArray()}|${far.presentation?.key}`;
     if (viewKey === this.viewKey) return;
     this.viewKey = viewKey;
     this.blocked.clear();
@@ -157,7 +158,7 @@ export class WorldDetail {
       if (lo[0] >= o.x && hi[0] <= o.x + g.nx && lo[2] >= o.z && hi[2] <= o.z + g.nz) continue;
       const box = new THREE.Box3(new THREE.Vector3(...lo), new THREE.Vector3(...hi));
       const distance = Math.max(1, box.distanceToPoint(eye));
-      if (pixels * 4 / distance < CELL_PIXELS || !frustum.intersectsBox(box.applyMatrix4(far.worldToScene))) continue;
+      if (pixels * 4 / distance < CELL_PIXELS || (!far.presentation?.active && !frustum.intersectsBox(box.applyMatrix4(far.worldToScene)))) continue;
       // Two geometric levels: real cells where coarse cells span >3 pixels,
       // the existing coarse field otherwise. Adjacent cached chunks share a
       // lattice; independent step sizes would open cracks between them.
@@ -301,6 +302,7 @@ export class WorldDetail {
     r.setRenderTarget(this.depthTarget);
     r.setClearColor(0, 0);
     r.clear();
+    this.far.presentation?.prepare(this.depthScene,camera);
     r.render(this.depthScene, camera);
     r.setClearColor(color, alpha);
     r.setRenderTarget(target);

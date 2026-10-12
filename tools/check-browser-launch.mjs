@@ -23,7 +23,7 @@ const LEGACY = new Set([
   'tools/creatures-check.mjs', 'tools/crystal-check.mjs', 'tools/dock-check.mjs', 'tools/elec-gpu-check.mjs',
   'tools/elements-gpu-check.mjs', 'tools/far-regress.mjs', 'tools/flask-check.mjs', 'tools/gibs-check.mjs',
   'tools/headless-cost.mjs', 'tools/island-dump.mjs', 'tools/keys-check.mjs', 'tools/kick-hook-check.mjs',
-  'tools/landforms-gpu.mjs', 'tools/lights-check.mjs', 'tools/map-thumbs.mjs', 'tools/menu-check.mjs',
+  'tools/landforms-gpu.mjs', 'tools/lights-check.mjs', 'tools/menu-check.mjs',
   'tools/modes-check.mjs', 'tools/nt-mat-gpu.mjs', 'tools/perks-check.mjs', 'tools/rays-gpu.mjs',
   'tools/rock-check.mjs', 'tools/scene-check.mjs', 'tools/status-check.mjs', 'tools/structures-check.mjs',
   'tools/tool-selection-check.mjs', 'tools/topbar-check.mjs', 'tools/torch-look.mjs', 'tools/vehicles-check.mjs',

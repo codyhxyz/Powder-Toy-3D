@@ -36,7 +36,9 @@ import * as far from '../src/shaders/far.js';
 import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
 import { probeFrag as birdProbeFrag } from '../src/birds/probe.js';
 import { birdVert, birdFrag } from '../src/birds/render.js';
-import { ShaderChunk } from 'three';
+import { ShaderChunk, ShaderMaterial } from 'three';
+import { TAA_FRAG, TAAU_FRAG } from '../src/gfx/post.js';
+import { installPresentation } from '../src/gfx/presentation.js';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
 // and RawShaderMaterial with glslVersion GLSL3.
@@ -155,5 +157,16 @@ const includes = (src) => src.replace(/^[ \t]*#include +<(\w+)>/gm, (_, k) => in
 check('figureSkinnedVert', `${shaderMatVert}#define USE_SKINNING\nin vec3 normal;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
 // ...and with a textured mesh's maps (figureReal.js)
 check('figureSkinnedVertMapped', `${shaderMatVert}#define USE_SKINNING\n#define FIG_MAP\n#define FIG_NORMAL_MAP\nin vec3 normal;\nin vec2 uv;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
+check('taa-presentation',raw+TAA_FRAG,'frag');
+check('taau-presentation',raw+TAAU_FRAG,'frag');
+for (const [name,vertexShader] of Object.entries({
+  detail: `${shaderMatVert}precision highp int;\n#define attribute in\n#define varying out\nin vec3 normal;\n${far.farMeshVert}`,
+  skinned: `${shaderMatVert}precision highp int;\n#define USE_SKINNING\nin vec3 normal;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`,
+  instanced: `${shaderMatVert}precision highp int;\n#define attribute in\n#define varying out\nin vec3 normal;\nin mat4 instanceMatrix;\n${birdVert}`,
+})) {
+  const material=new ShaderMaterial(), shader={vertexShader,uniforms:{}};
+  installPresentation(material,{}); material.onBeforeCompile(shader);
+  check(`presentation-${name}`,shader.vertexShader,'vert'); material.dispose();
+}
 console.log(failures ? `${failures} shader(s) failed` : 'all shaders OK');
 process.exit(failures ? 1 : 0);

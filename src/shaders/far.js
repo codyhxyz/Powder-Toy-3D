@@ -1,5 +1,6 @@
 import { prelude, BRICK } from './common.js';
 import { lib } from './render.js';
+import { presentationGLSL } from '../gfx/presentationMath.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { cloudsGLSL } from './gfx/clouds.js';
@@ -1130,6 +1131,17 @@ vec3 farHazePremul(vec3 col, float alpha, vec3 eye, vec3 p) {
 
 export const farFrag = (g, L, mesh = false) => /* glsl */ `
 ${lib(g)}
+${presentationGLSL}
+uniform mat4 uWarpClipToWorld;
+WarpRay gFarRay;
+vec4 gFarWindow, gFarWorld;
+vec3 farPath(vec3 ro, vec3 rd, float t) { return uWarpK == 0.0 ? ro + rd*t : warpAt(gFarRay,t); }
+vec3 farDirection(vec3 rd, float t) { return uWarpK == 0.0 ? rd : normalize(warpSlope(gFarRay,t)); }
+float farPlaneHit(WarpRay r, float level) {
+  vec2 roots = warpPlane(r,1,level);
+  for (int i=0; i<2; i++) if (roots[i] >= 0.0 && roots[i] < WARP_INF && warpSlope(r,roots[i]).y < 0.0) return roots[i];
+  return WARP_INF;
+}
 #define LOOK_NO_STATE   // no window state here (tA is the volume's): looks skip their neighbour lookups
 ${surfaceGLSL}
 ${liquidGLSL}
@@ -1210,7 +1222,8 @@ vec2 farSlab(vec3 ro, vec3 inv, vec3 lo, vec3 hi) {
   return vec2(max(max(tn.x, tn.y), tn.z), min(min(tf.x, tf.y), tf.z));
 }
 // t at which the ray leaves the cube [lo, lo + size)
-float farExit(vec3 ro, vec3 inv, vec3 lo, float size) {
+float farExit(vec3 ro, vec3 inv, vec3 lo, float size, float t) {
+  if (uWarpK != 0.0) return warpExit(gFarRay, lo, lo+size, t).x;
   vec3 tf = (lo + step(0.0, inv) * size - ro) * inv;
   return min(tf.x, min(tf.y, tf.z));
 }
@@ -1219,7 +1232,7 @@ float farExit(vec3 ro, vec3 inv, vec3 lo, float size) {
 float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
   for (int k = 0; k < FAR_ROOT_STEPS; k++) {
     float tm = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), FAR_ROOT_SPLIT_LO, FAR_ROOT_SPLIT_HI));
-    float fm = farTraceMatter(ro + rd * tm);
+    float fm = farTraceMatter(farPath(ro, rd, tm));
     if (fm < FAR_ISO) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
   return mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
@@ -1241,9 +1254,15 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out boo
   bool o2 = false, o1 = false;
   int lastDetail = -1;
   for (int i = 0; i < FAR_MAX_STEPS; i++) {
+    if (uWarpK != 0.0) {
+      float next = warpResume(t, gFarWorld);
+      if (next != t) f = -1.0;
+      t = next;
+      if (t >= gFarWindow.z && t < gFarWindow.w) { t = gFarWindow.w + FAR_NUDGE; f = -1.0; continue; }
+    }
     if (t >= t1) break;
     if (t >= w0 && t < w1) { t = w1 + FAR_NUDGE; f = -1.0; continue; }
-    vec3 p = ro + rd * t;
+    vec3 p = farPath(ro, rd, t);
     int detail = detailAt(p);
     if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
     if (detail == 1) {
@@ -1256,22 +1275,26 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out boo
     ivec3 c = clamp(ivec3(floor(p)), ivec3(0), WORLD - 1);
     ivec3 n2 = c / FAR_L2_CELLS;
     if (n2 != n2Last) { n2Last = n2; o2 = farOcc2(n2); }
-    if (!o2) { t = farExit(ro, inv, vec3(n2 * FAR_L2_CELLS), float(FAR_L2_CELLS)) + FAR_NUDGE; f = -1.0; continue; }
+    if (!o2) { t = farExit(ro, inv, vec3(n2 * FAR_L2_CELLS), float(FAR_L2_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
     ivec3 n1 = c / FAR_L1_CELLS;
     if (n1 != n1Last) { n1Last = n1; o1 = farOcc1(n1); }
-    if (!o1) { t = farExit(ro, inv, vec3(n1 * FAR_L1_CELLS), float(FAR_L1_CELLS)) + FAR_NUDGE; f = -1.0; continue; }
-    if (!farNear(c / BS)) { t = farExit(ro, inv, vec3(c / BS * BS), float(BS)) + FAR_NUDGE; f = -1.0; continue; }
+    if (!o1) { t = farExit(ro, inv, vec3(n1 * FAR_L1_CELLS), float(FAR_L1_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
+    if (!farNear(c / BS)) { t = farExit(ro, inv, vec3(c / BS * BS), float(BS), t) + FAR_NUDGE; f = -1.0; continue; }
     int seg = BS;   // Distance alone must not erase surviving thin matter.
-    float te = min(farExit(ro, inv, vec3(c / seg * seg), float(seg)), t1);
+    float te = min(farExit(ro, inv, vec3(c / seg * seg), float(seg), t), t1);
+    if (uWarpK != 0.0) {
+      if (t < gFarWindow.z) te = min(te,gFarWindow.z);
+      if (t < gFarWorld.y) te = min(te,gFarWorld.y);
+    }
     if (t < w0 && te > w0) te = w0;   // the window starts inside this brick
     if (f < 0.0) {
       f = farTraceMatter(p);
       if (f >= FAR_ISO) { cut = true; return t; }   // (started inside matter: past the window, or at the camera)
     }
-    float fe = farTraceMatter(ro + rd * max(t, te - FAR_NUDGE));
+    float fe = farTraceMatter(farPath(ro, rd, max(t, te - FAR_NUDGE)));
     if (max(f, fe) > FAR_NEAR) {
       float tm = 0.5 * (t + te);
-      float fm = farTraceMatter(ro + rd * tm);
+      float fm = farTraceMatter(farPath(ro, rd, tm));
       if (fm >= FAR_ISO) return farRoot(ro, rd, t, tm, f, fm);
       if (fe >= FAR_ISO) return farRoot(ro, rd, tm, te, fm, fe);
     }
@@ -1396,26 +1419,30 @@ vec3 farLiquid(vec3 p, vec3 rd, int lid, float sunVis, float bedY) {
   vec3 refl = envReflect(p, r, vec3(sunVis)) * sky;
   vec3 rt = refract(rd, n, 1.0 / IOR[lid]);
   if (dot(rt, rt) < 1e-6) rt = vec3(0.0, -1.0, 0.0);
+  WarpRay transmitted = warpRay(warpPoint(p), normalize(warpVector(p,rt)));
   float s = -1.0;
   vec3 bed = vec3(0.0);
   if (bedY >= 0.0) {
-    s = (p.y - bedY) / max(-rt.y, FAR_FLAT_EPS);
-    vec3 q = p + rt * s;
+    s = uWarpK == 0.0 ? (p.y - bedY) / max(-rt.y, FAR_FLAT_EPS) : farPlaneHit(transmitted,bedY);
+    vec3 q = uWarpK == 0.0 ? p + rt*s : warpAt(transmitted,s);
     bed = farShadeBed(FAR_OCEAN_BED, q, vec3(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis, sky);
   } else {
     float ta = 0.0, fa = farSample(p).r;
     for (int i = 1; i <= FAR_WATER_STEPS; i++) {
       float tb = float(i) * FAR_WATER_STEP;
-      float fb = farSample(p + rt * tb).r;
+      float fb = farSample(uWarpK == 0.0 ? p + rt*tb : warpAt(transmitted,tb)).r;
       if (fb >= FAR_ISO) {
         s = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
-        vec3 q = p + rt * s, nq = farNormal(q, 0);
+        vec3 q = uWarpK == 0.0 ? p + rt*s : warpAt(transmitted,s);
+        vec3 nq = farNormal(q, 0);
         bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0), sky);
         break;
       }
       ta = tb; fa = fb;
     }
   }
+  // Optical distance is in flat material space, not display-ray t.
+  if (uWarpK != 0.0 && s >= 0.0 && s < WARP_INF) s = warpArc(transmitted,0.0,s);
   vec3 att = s >= 0.0 ? exp(-SIGMA[lid] * s) : vec3(0.0);
   vec3 body = bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
   return F * refl + (1.0 - F) * body;
@@ -1433,7 +1460,7 @@ vec3 farSky(vec3 ro, vec3 rd) {
 }
 
 float farDepth(vec3 p) {
-  vec4 clip = projectionMatrix * viewMatrix * uWorldToScene * vec4(p, 1.0);
+  vec4 clip = projectionMatrix * viewMatrix * uWorldToScene * vec4(warpPoint(p), 1.0);
   return clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
 }
 
@@ -1442,29 +1469,49 @@ void main() {
   vec3 p = vWorld;
   vec3 ro = (uSceneToWorld * vec4(cameraPosition, 1.0)).xyz;
   vec3 rd = normalize(p - ro);
-  surfView(ro, rd);
+  vec3 displayRd = rd;
+  float displayDist = length(p-ro);
+  if (uWarpK != 0.0) {
+    vec3 displayed = warpPoint(p);
+    displayDist = length(displayed-ro);
+    displayRd = (displayed-ro)/max(displayDist,1e-8);
+    WarpRay ray = warpRay(ro,displayRd);
+    rd = normalize(warpSlope(ray,displayDist));
+  }
+  surfView(ro, displayRd);
   if (all(greaterThanEqual(p.xz, vec2(uWinLo.xz))) && all(lessThan(p.xz, vec2((uWinLo + GRID).xz)))) discard;
   vec3 n = normalize(vNormal);
   float sunVis = farSunLit(p, 0);
   // The coarse crown's density is not this leaf's shadow: sampling it here
   // would turn detailed branches black inside the old, inflated silhouette.
   vec3 col = farShadeMaterial(p, n, rd, sunVis, int(vElement + 0.5));
-  gl_FragColor = vec4(farHaze(col, rd, length(p - ro), farAirLit(ro - vec3(uWinLo), p - vec3(uWinLo))), 1.0);
+  gl_FragColor = vec4(farHaze(col, displayRd, displayDist, farAirLit(ro - vec3(uWinLo), p - vec3(uWinLo))), 1.0);
 }
 ` : `
 void main() {
   vec3 ro = (uSceneToWorld * vec4(cameraPosition, 1.0)).xyz;
   vec3 rd = safeDir(normalize(vFar.xyz / vFar.w - ro));
   surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)
+  if (uWarpK != 0.0) {
+    gFarRay = warpRay(ro,rd);
+    gFarWindow = warpSpans(gFarRay,vec3(uWinLo),vec3(uWinLo+GRID),0.0,WARP_INF);
+    gFarWorld = warpSpans(gFarRay,vec3(0.0),vec3(WORLD),0.0,WARP_INF);
+  }
   vec3 inv = 1.0 / rd;
   vec2 tw = farSlab(ro, inv, vec3(uWinLo), vec3(uWinLo + GRID));
   if (tw.x > tw.y || tw.y < 0.0) tw = vec2(NO_HIT);
   vec2 tb = farSlab(ro, inv, vec3(0.0), vec3(WORLD));
   float t0 = max(tb.x, 0.0), t1 = tb.y;
+  if (uWarpK != 0.0) { tw = gFarWindow.xy; t0 = gFarWorld.x; t1 = gFarWorld.z < WARP_INF ? gFarWorld.w : gFarWorld.y; }
   float cached = 0.0;
   if (uDetailHasDepth) {
     cached = texelFetch(tDetailDepth, ivec2(gl_FragCoord.xy), 0).r;
-    if (cached > 0.0) t1 = min(t1, cached);
+    if (cached > 0.0) {
+      vec2 uv = gl_FragCoord.xy / vec2(textureSize(tDetailDepth,0));
+      vec4 p = uWarpClipToWorld * vec4(uv*2.0-1.0,cached*2.0-1.0,1.0);
+      cached = length(p.xyz/p.w - ro);
+      t1 = min(t1, cached);
+    }
   }
   bool cut = false;
   float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y, cut) : NO_HIT;
@@ -1475,14 +1522,16 @@ void main() {
   bool plain = uSea <= 0.0;
   float level = plain ? uFloor : uSea;
   float tSea = rd.y < 0.0 && ro.y > level ? (level - ro.y) / rd.y : NO_HIT;
-  vec3 ps = ro + rd * tSea;
+  if (uWarpK != 0.0) tSea = farPlaneHit(gFarRay,level);
+  vec3 ps = farPath(ro, rd, tSea);
   bool seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
   if (plain && !seaOut) {
     tSea = rd.y < 0.0 && ro.y > 0.0 ? -ro.y / rd.y : NO_HIT;
-    ps = ro + rd * tSea;
+    if (uWarpK != 0.0) tSea = farPlaneHit(gFarRay,0.0);
+    ps = farPath(ro, rd, tSea);
     seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
   }
-  bool seaWin = tSea >= tw.x && tSea <= tw.y;
+  bool seaWin = uWarpK == 0.0 ? tSea >= tw.x && tSea <= tw.y : warpInside(tSea,gFarWindow);
   bool ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
     && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));
   // A nearer exterior ocean/plain still occludes the cached mesh. Inside
@@ -1493,11 +1542,12 @@ void main() {
   float depth = 1.0;
   if (ocean) {
     col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0), 1.0)
-                : farLiquid(ps, rd, E_WATER, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
+                : farLiquid(ps, farDirection(rd,tSea), E_WATER, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
     col = farHaze(col, rd, tSea, farAirLit(ro - vec3(uWinLo), ps - vec3(uWinLo)));
     depth = farDepth(ps);
   } else if (tHit < NO_HIT) {
-    vec3 p = ro + rd * tHit;
+    vec3 p = farPath(ro, rd, tHit);
+    vec3 localRd = farDirection(rd,tHit);
     if (cut) {
       // came out of the window inside matter. Behind the window's ground: hidden
       // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
@@ -1510,10 +1560,10 @@ void main() {
     } else {
       vec4 v = farSample(p);
       float sunVis = farSunLit(p, 0);
-      if (v.g > v.r) col = farLiquid(p, rd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
+      if (v.g > v.r) col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
       else {
       vec3 n = farNormal(p, 0);
-      col = farShadeMaterial(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), farElement(p, n));
+      col = farShadeMaterial(p, n, localRd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), farElement(p, n));
     }
     }
     col = farHaze(col, rd, tHit, farAirLit(ro - vec3(uWinLo), p - vec3(uWinLo)));

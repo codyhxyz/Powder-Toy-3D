@@ -1,4 +1,6 @@
 import { prelude } from './common.js';
+import { presentationGLSL } from '../gfx/presentationMath.js';
+import { presentationNearGLSL } from './gfx/presentation.js';
 import { AIR_FLAGS } from './passes.js';
 import { ELEMENTS } from '../elements.js';
 import { COLORMAPS, VIEWS, xrayDensity } from '../views.js';
@@ -39,10 +41,18 @@ ${crystalGLSL}
 `;
 
 export const volumeVert = /* glsl */ `
+uniform float uWarpK;
+uniform mat4 uWarpInvProjection, uWarpViewToGrid;
 out vec3 vGrid;
 void main() {
   vGrid = position;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  if (uWarpK != 0.0) {
+    // In curved mode the proxy is a fullscreen triangle, NOT warped box corners.
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+    vec4 p = uWarpViewToGrid * uWarpInvProjection * vec4(position.xy, 1.0, 1.0);
+    vGrid = p.xyz / p.w;
+  }
 }
 `;
 
@@ -114,6 +124,9 @@ export const volumeFrag = (g, haze = '') => {
     const { decl = '', onBrick = '', airBrick = '', flush = '' } = hooks;
     return /* glsl */ `
 void ${name}(vec3 ro, vec3 rd, float t0, int ax, inout vec3 col, inout float trans, inout float tHit) {
+  bool curved = uWarpK != 0.0;
+  WarpWalk walk;
+  if (curved) walk = warpWalk(ro,rd,t0);
   ivec3 istp = ivec3(sign(rd));
   vec3 tDelta = abs(1.0 / rd);
   ivec3 cell = clamp(ivec3(floor(ro + rd * (t0 + DDA_START_NUDGE))), ivec3(0), GRID - 1);
@@ -124,22 +137,37 @@ void ${name}(vec3 ro, vec3 rd, float t0, int ax, inout vec3 col, inout float tra
   float occ = 0.0;
   bool live = false, airOn = false;
 ${decl}
-  for (int i = 0; i < ${g.maxSteps}; i++) {
+  for (int i = 0; i < ${2 * g.maxSteps}; i++) {
+    if (!curved && i >= ${g.maxSteps}) break;
+    if (curved) {
+      vec3 fp; float ft;
+      if (warpFloor(walk,fp,ft)) break;
+      float chord; int exitAxis;
+      if (!warpSegment(walk,cell,ro,rd,chord,exitAxis)) break;
+      tEnter = walk.t; ro -= rd*tEnter;
+      ax = walk.axis; istp = ivec3(sign(rd));
+      tMax = vec3(WARP_INF); tMax[exitAxis] = tEnter+chord;
+    }
     if (outside(cell)) break;
     ivec3 bc = cell / BS;
-    if (bc != lastB) {
+    if (bc != lastB || curved) {
       lastB = bc;
       occ = brickOcc(bc);
       airOn = (brickFlags(occ) & ${air}) != 0;
       live = occ > 0.5 || airOn;
 ${onBrick}
     }
-    if (!live) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); prevId = E_EMPTY; continue; }
+    if (!live) {
+      if (curved) warpSkip(walk,bc,false);
+      else ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
+      prevId = E_EMPTY; continue;
+    }
     if (occ < -0.5) {
       // only air: integrate the whole chord through the brick, then jump past it
 ${flush}
       float tB0 = tEnter;
-      ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
+      if (curved) { tEnter = min(tMax.x,min(tMax.y,tMax.z)); warpAdvance(walk); }
+      else ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
       float tB1 = tEnter;
 ${airBrick}
       prevId = E_EMPTY;
@@ -159,15 +187,18 @@ ${body}
     if (tHit < 0.0 && trans < DATA_DEPTH_TRANS) tHit = tEnter;
     if (trans < RAY_MIN_TRANS) break;
     prevId = id;
+    if (curved) { warpAdvance(walk); if (warpCell(walk.ray,walk.t).y < 0) break; continue; }
     ax = argmin3(tMax);
     tEnter = tExit;
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
 ${flush}
-  if (trans >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
-    float tf = -ro.y / rd.y;
-    vec3 hp = ro + rd * tf;
+  vec3 floorP; float floorT;
+  bool curvedFloor = curved && warpFloor(walk,floorP,floorT);
+  if (trans >= RAY_MIN_TRANS && (curved ? curvedFloor : cell.y < 0 && rd.y < 0.0)) {
+    float tf = curved ? floorT : -ro.y / rd.y;
+    vec3 hp = curved ? floorP : ro + rd * tf;
     col += trans * (${floor});
     if (tHit < 0.0) tHit = tf;
     trans = 0.0;
@@ -187,6 +218,7 @@ ${flush}
 #define BRICK_DIST_IN_LIGHT   // the empty-space distance from tLight's alpha (gfx/core.js): a texture unit for meshCut
 ${lib(g)}
 ${decoViewGLSL}
+${presentationNearGLSL}
 ${surfaceGLSL}
 ${liquidGLSL}
 ${decoSurfGLSL}
@@ -690,9 +722,13 @@ void main() {
   if (CUR_VIEW == VIEW_FLOW) gPix = length(fwidth(rd)) * uPixScale;
   surfView(uCam, rd);   // pixel footprint for material LOD (needs uniform control flow)
   gCubicEye = gEye; gCubicPixAng = gPixAng;   // and for reading fields cubic up close (gfx/core.js cubicClose)
+  bool curved = uWarpK != 0.0;
+  WarpWalk walk;
+  if (curved) walk = warpWalk(ro, rd, uMarchNear);
   vec3 bh = boxHit(ro, rd);
+  if (curved) bh = vec3(walk.spans.xy, float(walk.axis));
   float t0 = max(bh.x, uMarchNear);
-  if (bh.y <= t0) discard;
+  if (bh.y <= t0 || t0 >= WARP_INF) discard;
   if (CUR_VIEW == VIEW_PLAIN) { plainView(ro, rd, t0, bh); return; }
   if (CUR_VIEW != VIEW_REALISTIC) { dataView(ro, rd, t0, bh); return; }
   float jit = ign(gl_FragCoord.xy, float(uFrame));
@@ -700,6 +736,7 @@ void main() {
   float mOp = 0.0;                  // opacity of the media so far
   // hot air bends light (heat shimmer): perturb the ray once, up front
   rd = safeDir(hazeBend(uCam, rd, t0, bh.y));
+  if (curved) walk = warpWalk(ro, rd, uMarchNear);
 
   // ray (ro, rd) and its DDA state; refraction restarts both
   ivec3 istp = ivec3(sign(rd));
@@ -732,7 +769,7 @@ void main() {
 
   ivec3 lastB = ivec3(-1);
   int flags = 0;
-  vec4 phiA = surfSample(ro + rd * tEnter);   // fields at the current segment start
+  vec4 phiA = surfSample(curved ? warpAt(walk.ray, walk.t) : ro + rd * tEnter);   // fields at the current segment start
   bool phiStale = false;
   // the hit that ends the ray (HIT_*), shaded after the march
   int hitK = HIT_NONE, hitCh = -1, hitId = E_EMPTY;
@@ -741,7 +778,7 @@ void main() {
   vec4 hitA = vec4(0.0);
 
   // Entering the box inside a smooth material: the box wall cuts it open.
-  {
+  if (!curved) {
     int ch = -1;
     float best = SURF_ISO;
     for (int c = 0; c < 4; c++) if (phiA[c] >= best) { best = phiA[c]; ch = c; }
@@ -767,13 +804,24 @@ void main() {
     }
   }
 
-  for (int i = 0; i < ${g.maxSteps + BEND_EXTRA_STEPS}; i++) {
+  for (int i = 0; i < ${2 * g.maxSteps + BEND_EXTRA_STEPS}; i++) {
+    if (!curved && i >= ${g.maxSteps + BEND_EXTRA_STEPS}) break;
+    float chord = 0.0; int exitAxis = 0;
+    if (curved) {
+      vec3 fp; float ft;
+      if (warpFloor(walk,fp,ft)) break;
+      if (!warpSegment(walk, cell, ro, rd, chord, exitAxis)) break;
+      tEnter = 0.0; ax = walk.axis; istp = ivec3(sign(rd));
+      tMax = vec3(WARP_INF); tMax[exitAxis] = chord;
+      phiA = surfSample(ro); phiStale = true;
+    }
     if (stop || outside(cell)) break;
     if (tEnter >= tCut) { cut = true; break; }
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
     if (flags == 0) {
-      ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter);
+      if (curved) warpSkip(walk, bc, true);
+      else ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter);
       prevCrisp = E_EMPTY;
       phiStale = true;
       continue;
@@ -934,6 +982,7 @@ void main() {
         cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
         tEnter = 0.0; lastB = ivec3(-1); ax = argmin3(tMax);
         phiA = surfSample(ro); phiStale = false;
+        if (curved) warpRestart(walk, ro, rd);
         continue;
       }
 #endif
@@ -966,6 +1015,7 @@ void main() {
             tEnter = 0.0; lastB = ivec3(-1); ax = 1;
             gThin = brickThin(brickInfo(clamp(cell, ivec3(0), GRID - 1) / BS));
             phiA = surfSample(ro); phiStale = false;
+            if (curved) warpRestart(walk, ro, rd);
             // restarted inside something opaque (sand under the water line)
             int oc = -1;
             for (int c = 1; c < 4; c++) if (phiA[c] >= SURF_ISO) oc = c;
@@ -984,6 +1034,13 @@ void main() {
     }
 
     if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) break;
+    if (curved) {
+      mNext -= tExit;
+      warpAdvance(walk);
+      cell = walk.boundary ? warpCellAfter(walk.ray,walk.t,walk.axis) : warpCell(walk.ray,walk.t);
+      if (cell.y < 0) break; // opaque physical floor; do not draw the second span through it
+      continue;
+    }
     ax = argmin3(tMax);
     tEnter = tExit;
     cell[ax] += istp[ax];
@@ -1024,9 +1081,12 @@ void main() {
     if (pass == 0) {
       if (hitK != HIT_NONE) { col += trans * c; trans = vec3(0.0); }
       // floor of the box
-      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
-        float tf = -ro.y / rd.y;
-        vec3 hp = ro + rd * tf;
+      vec3 floorP; float floorT;
+      bool curvedFloor = curved && warpFloor(walk,floorP,floorT);
+      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && (curved ? curvedFloor : cell.y < 0 && rd.y < 0.0)) {
+        float tf = curved ? floorT : -ro.y / rd.y;
+        vec3 hp = curved ? floorP : ro + rd * tf;
+        if (curved) rd = normalize(warpSlope(walk.ray,tf));
         if (!anyHit) { anyHit = true; hitPos = hp; }
         col += trans * shadeFloor(hp, rd);
         trans = vec3(0.0);
@@ -1046,9 +1106,9 @@ void main() {
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
   // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
   gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);${haze && `
-  if (uFar) gl_FragColor.rgb = farHazePremul(gl_FragColor.rgb, alpha, uCam, hitPos);`}
+  if (uFar) gl_FragColor.rgb = farHazePremul(gl_FragColor.rgb, alpha, uCam, warpGridPoint(hitPos));`}
 
-  vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(hitPos, 1.0);
+  vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(warpGridPoint(hitPos), 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
 }
 `;
@@ -1058,6 +1118,8 @@ void main() {
 // non-gas voxel it hits. Pixel 0 = (cell xyz, face), pixel 1 = (id, T, P, life).
 export const pickFrag = (g) => /* glsl */ `
 ${lib(g)}
+${presentationNearGLSL}
+uniform bool uPresentationPick;
 // Face codes are axis * 2 + (1 if the ray steps +axis); the face's normal is
 // minus that step. The floor is hit stepping down y.
 #define PICK_FACE_FLOOR 2
@@ -1066,6 +1128,29 @@ uniform vec3 uRd;
 out vec4 oC;
 
 void main() {
+  if (uPresentationPick && uWarpK != 0.0) {
+    WarpWalk walk = warpWalk(uRo, normalize(uRd), 0.0);
+    for (int i=0; i<${2 * g.maxSteps}; i++) {
+      ivec3 cell;
+      if (!warpLocate(walk,cell)) break;
+      vec4 a = fetchA(cell); int id = eid(a);
+      if (id != E_EMPTY && KIND[id] != K_GAS) {
+        int axis = warpEntryAxis(walk.ray,walk.t);
+        int face = 2*axis + (warpSlope(walk.ray,walk.t)[axis] > 0.0 ? 1 : 0);
+        oC = gl_FragCoord.x < 1.0 ? vec4(vec3(cell),float(face)) : vec4(float(id),a.y,fetchB(cell).w,a.z);
+        return;
+      }
+      vec2 ex = warpExit(walk.ray,vec3(cell),vec3(cell+1),walk.t);
+      if (ex.x <= walk.t) break;
+      walk.t = ex.x; walk.axis = int(ex.y); walk.boundary = true;
+      vec3 p = warpAt(walk.ray,walk.t);
+      if (p.y <= WARP_EPS && warpSlope(walk.ray,walk.t).y < 0.0) {
+        oC = gl_FragCoord.x < 1.0 ? vec4(floor(p.x),-1.0,floor(p.z),float(PICK_FACE_FLOOR)) : vec4(-1.0,AMBIENT,0.0,0.0);
+        return;
+      }
+    }
+    oC = vec4(0.0,0.0,0.0,-1.0); return;
+  }
   vec3 ro = uRo;
   vec3 rd = safeDir(normalize(uRd));
   vec4 miss = vec4(0.0, 0.0, 0.0, -1.0);

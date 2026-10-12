@@ -77,6 +77,7 @@
 // Every number in a scene is a named constant (JS, and a #define in its GLSL).
 // tools/check-scenes.mjs compiles every scene's GLSL and checks start and ground.
 import { island } from './island.js';
+import { willowCove } from './willowCove.js';
 import { labWorld } from './labWorld.js';
 import { volcanoWorld } from './volcanoWorld.js';
 import { giantVolcano } from './giantVolcano.js';
@@ -86,5 +87,5 @@ import { DESCENT_LEVELS } from './descent/levels.js';
 // Descent's levels (descent/scenes.js; docs/descent-contract.md) start at their levels.js spawns
 DESCENT_SCENES.forEach((s, i) => s.setSpawn(DESCENT_LEVELS[i].spawn));
 
-export const WORLD_SCENES = [island, labWorld, volcanoWorld, giantVolcano, ...DESCENT_SCENES];
+export const WORLD_SCENES = [island, willowCove, labWorld, volcanoWorld, giantVolcano, ...DESCENT_SCENES];
 export const sceneByKey = (key) => WORLD_SCENES.find((s) => s.key === key) ?? island;

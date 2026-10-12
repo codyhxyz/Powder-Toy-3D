@@ -135,6 +135,10 @@ vec3 plainFloor(vec3 hp) {
 }
 
 void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
+  bool curved = uWarpK != 0.0;
+  WarpWalk walk;
+  if (curved) walk = warpWalk(ro,rd,t0);
+  vec3 displayRo = ro, displayRd = rd;
   ivec3 istp = ivec3(sign(rd));
   vec3 tDelta = abs(1.0 / rd);
   ivec3 cell = clamp(ivec3(floor(ro + rd * (t0 + 1e-4))), ivec3(0), GRID - 1);
@@ -151,13 +155,24 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   float tCut = meshCutT(rd);   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
   bool cut = false;
 
-  for (int i = 0; i < ${g.maxSteps}; i++) {
+  for (int i = 0; i < ${2 * g.maxSteps}; i++) {
+    if (!curved && i >= ${g.maxSteps}) break;
+    if (curved) {
+      vec3 fp; float ft;
+      if (warpFloor(walk,fp,ft)) break;
+      float chord; int exitAxis;
+      if (!warpSegment(walk,cell,ro,rd,chord,exitAxis)) break;
+      tEnter = walk.t; ro -= rd*tEnter;
+      ax = walk.axis; istp = ivec3(sign(rd));
+      tMax = vec3(WARP_INF); tMax[exitAxis] = tEnter+chord;
+    }
     if (outside(cell)) break;
     if (tEnter >= tCut) { cut = true; break; }
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) {
-      ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
+      if (curved) warpSkip(walk,bc,false);
+      else ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
       prevId = E_EMPTY;
       continue;
     }
@@ -213,6 +228,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
     }
     if (max(trans.x, max(trans.y, trans.z)) < PLAIN_OPAQUE) break;
     prevId = id;
+    if (curved) { warpAdvance(walk); if (warpCell(walk.ray,walk.t).y < 0) break; continue; }
     ax = argmin3(tMax);
     tEnter = tExit;
     cell[ax] += istp[ax];
@@ -220,10 +236,12 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   }
 
   // floor of the box
-  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
-    float tf = -ro.y / rd.y;
+  vec3 floorP; float floorT;
+  bool curvedFloor = curved && warpFloor(walk,floorP,floorT);
+  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && (curved ? curvedFloor : cell.y < 0 && rd.y < 0.0)) {
+    float tf = curved ? floorT : -ro.y / rd.y;
     if (tHit < 0.0) tHit = tf;
-    col += trans * plainFloor(ro + rd * tf);
+    col += trans * plainFloor(curved ? floorP : ro + rd * tf);
     trans = vec3(0.0);
   }
 
@@ -231,7 +249,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
   // finished colour; post (raw) only encodes it to sRGB
   gl_FragColor = vec4(aces(col * PLAIN_EXPOSURE), alpha);
-  vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(ro + rd * tHit, 1.0);
+  vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(displayRo + displayRd * tHit, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
 }
 `;

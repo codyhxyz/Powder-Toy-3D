@@ -161,6 +161,7 @@ export function createPov(app) {
   });
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
+  viewmodel.userData.presentationOverlay = true;
   camera.add(viewmodel);
   viewmodel.visible = false;
   // Halo's grenades (G), red reticle and hitmarker in a Halo match (combat.js; the melee is kick.js)
@@ -470,9 +471,15 @@ export function createPov(app) {
     if (!createPlayer) { hud.toast('First-person mode is still being built', { kind: 'error' }); return; }
     requestLock();   // while the key press still counts as a user gesture
     starting = true;
+    const fromSim = app.getSim();
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
     try {
       await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
+      if (fromSim !== app.getSim() || opts.valid?.() === false) {
+        starting = false;
+        if (document.pointerLockElement === canvas) document.exitPointerLock();
+        return;
+      }
       ensureParts();
       // the figure may compile for a while, and a world's window move meanwhile
       const o = app.getSim().origin;
@@ -888,7 +895,7 @@ export function createPov(app) {
   // The pick ray in grid space (for app's requestPick): the screen centre.
   // In third person it starts level with the eye, so nothing between the
   // camera and the body gets picked.
-  function aimRay(ro, rd) {
+  function aimRay(ro, rd, presentation = false) {
     if (!active() || !player) return false;
     const scale = app.getScale();
     ro.copy(camera.position).sub(app.getVolume().position).divideScalar(scale);
@@ -896,6 +903,9 @@ export function createPov(app) {
     if (mode === 'on' && !deadSeen) povCam.dir(rd);
     else camera.getWorldDirection(rd);
     const eye = vA.copy(player.pos).setY(player.pos.y + player.eyeHeight);
+    // Visible targeting advances on the displayed ray to the displayed eye.
+    // Collision, camera-arm and ballistic queries keep the default flat path.
+    if (presentation) app.presentationPoint(eye, eye);
     const skip = Math.max(0, vB.subVectors(eye, ro).dot(rd));
     ro.addScaledVector(rd, skip);
     return true;

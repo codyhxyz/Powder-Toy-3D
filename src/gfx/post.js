@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { presentationGLSL } from './presentationMath.js';
 
 // HDR post-processing: scene → RGBA16F (+ depth) → TAA → bloom → AgX → sRGB canvas.
 //
@@ -228,6 +229,16 @@ uniform sampler2D tColor;
 uniform sampler2D tDepth;
 uniform sampler2D tHistory;
 uniform mat4 uReproj;      // prevViewProj · inverse(curViewProj), both unjittered
+${presentationGLSL}
+uniform mat4 uWarpTemporalToWorld, uWarpPrevWorldToClip;
+uniform float uWarpPrevK;
+uniform vec2 uWarpPrevAnchor, uWarpPrevDir;
+vec4 presentationReproject(vec4 clip) {
+  if (clip.z >= clip.w || (uWarpK == 0.0 && uWarpPrevK == 0.0)) return uReproj * clip;
+  vec4 displayWorld = uWarpTemporalToWorld * clip;
+  vec3 flatWorld = unwarpPoint(displayWorld.xyz / displayWorld.w);
+  return uWarpPrevWorldToClip * vec4(warpPointWith(flatWorld,uWarpPrevK,uWarpPrevAnchor,uWarpPrevDir),1.0);
+}
 uniform vec2 uJitter;      // where this frame sampled, in pixels from the pixel centre
 uniform vec2 uSize;
 uniform bool uHistoryValid;
@@ -276,7 +287,7 @@ vec4 clipBox(vec4 bmin, vec4 bmax, vec4 p, vec4 q) {
 }
 `;
 
-const TAA_FRAG = /* glsl */ `
+export const TAA_FRAG = /* glsl */ `
 ${TAA_LIB}
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -306,7 +317,7 @@ void main() {
     if (zz < z) { z = zz; zo = o; }
   }
   vec2 uvq = (vec2(p + zo) + 0.5) / uSize;
-  vec4 pc = uReproj * vec4(uvq * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
+  vec4 pc = presentationReproject(vec4(uvq * 2.0 - 1.0, z * 2.0 - 1.0, 1.0));
   vec2 prevUV = pc.xy / pc.w * 0.5 + 0.5 - vec2(zo) / uSize;
 
   vec4 res = cur;
@@ -326,7 +337,7 @@ void main() {
 `;
 
 // TAAU: tColor/tDepth are uInSize, the output (and history) uSize.
-const TAAU_FRAG = /* glsl */ `
+export const TAAU_FRAG = /* glsl */ `
 ${TAA_LIB}
 uniform vec2 uInSize;
 uniform float uMeanConf;   // mean over the jitter cycle of conf (below)
@@ -365,7 +376,7 @@ void main() {
     if (zz < z) { z = zz; zo = o; }
   }
   vec2 uvq = (pIn + vec2(zo)) / uInSize;
-  vec4 pc = uReproj * vec4(uvq * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
+  vec4 pc = presentationReproject(vec4(uvq * 2.0 - 1.0, z * 2.0 - 1.0, 1.0));
   vec2 prevUV = pc.xy / pc.w * 0.5 + 0.5 - vec2(zo) / uInSize;
 
   vec4 res = curSoft;
@@ -717,7 +728,7 @@ function halton(i, b) {
  *   pixel's size in rendered pixels before each scene render (the shaders' LOD bias)
  * @returns post-processing pipeline; see the file header.
  */
-export function createPost(renderer, { pixScale } = {}) {
+export function createPost(renderer, { pixScale, presentation } = {}) {
   const hdr = (w, h, filter, extra = {}) => new THREE.WebGLRenderTarget(w, h, {
     type: THREE.HalfFloatType, format: THREE.RGBAFormat, minFilter: filter, magFilter: filter,
     depthBuffer: false, stencilBuffer: false, generateMipmaps: false, ...extra,
@@ -733,6 +744,10 @@ export function createPost(renderer, { pixScale } = {}) {
     uReproj: { value: new THREE.Matrix4() }, uJitter: { value: new THREE.Vector2() },
     uSize: { value: new THREE.Vector2() }, uHistoryValid: { value: false },
     uWeight: { value: new THREE.Vector2(TAA_WEIGHT_STABLE, TAA_WEIGHT_CHANGING) }, uThresh: thresh,
+    uWarpK: { value: 0 }, uWarpAnchor: { value: new THREE.Vector2() }, uWarpDir: { value: new THREE.Vector2(0,1) },
+    ...(presentation?.uniforms ?? {}),
+    uWarpTemporalToWorld: { value: new THREE.Matrix4() }, uWarpPrevWorldToClip: { value: new THREE.Matrix4() },
+    uWarpPrevK: { value: 0 }, uWarpPrevAnchor: { value: new THREE.Vector2() }, uWarpPrevDir: { value: new THREE.Vector2(0,1) },
   });
   const taauMat = mat(TAAU_FRAG, {
     ...taaMat.uniforms,
@@ -893,6 +908,7 @@ export function createPost(renderer, { pixScale } = {}) {
       try {
         renderer.setRenderTarget(sceneRT);
         renderer.clear();
+        presentation?.prepare(scene, camera);
         renderer.render(scene, camera);
       } finally {
         camera.projectionMatrix.copy(savedProj);
@@ -914,6 +930,7 @@ export function createPost(renderer, { pixScale } = {}) {
         u.tDepth.value = sceneRT.depthTexture;
         u.tHistory.value = history[cur].texture;
         u.uReproj.value.multiplyMatrices(prevVP, invVP.copy(curVP).invert());
+        if (presentation) u.uWarpTemporalToWorld.value.multiplyMatrices(presentation.sceneToWorld, invVP);
         u.uJitter.value.set(jx, jy);
         u.uSize.value.copy(size);
         u.uHistoryValid.value = historyValid;
@@ -924,6 +941,13 @@ export function createPost(renderer, { pixScale } = {}) {
         historyValid = true;
       }
       prevVP.copy(curVP);
+      if (presentation) {
+        const u = taaMat.uniforms;
+        u.uWarpPrevWorldToClip.value.multiplyMatrices(curVP,presentation.worldToScene);
+        u.uWarpPrevK.value = u.uWarpK.value;
+        u.uWarpPrevAnchor.value.copy(u.uWarpAnchor.value);
+        u.uWarpPrevDir.value.copy(u.uWarpDir.value);
+      }
       frame++;
       if (s.meter && !s.raw) meter(color);
 
@@ -995,7 +1019,11 @@ export function createPost(renderer, { pixScale } = {}) {
       renderer.setRenderTarget(still);
       renderer.clear();
       if (pixScale) pixScale.value = 1;
-      renderer.render(scene, camera);
+      if (presentation) presentation.neutral(() => {
+        presentation.prepare(scene,camera);
+        renderer.render(scene,camera);
+      }, scene);
+      else renderer.render(scene, camera);
       const s = { ...POST_DEFAULTS, ...post.settings };
       const u = compMat.uniforms;
       u.tColor.value = still.texture;
@@ -1014,6 +1042,7 @@ export function createPost(renderer, { pixScale } = {}) {
     },
 
     dispose() {
+      presentation?.dispose();
       [sceneRT, still, meterRT, ...history, ...down, ...up].forEach((t) => t?.dispose());
       sceneRT?.depthTexture?.dispose();
       [taaMat, taauMat, prefilterMat, downMat, upMat, compMat, meterMat, lumMat, adaptMat, histMat].forEach((m) => m.dispose());
