@@ -33,6 +33,7 @@ import {
 import { frameUniformsOf } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
+import { decoShown } from '../deco.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
@@ -115,14 +116,21 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
     }
     return group;
   }
-  // group 0 of the volume: the tables, FrameUniforms and the meshes' depth (gfx/meshCut.js)
+  // group 0 of the volume: the tables, FrameUniforms, the meshes' depth
+  // (gfx/meshCut.js) and the decoration plane (src/deco.js: a range of the
+  // sim's moveSrc buffer, which whitewater remakes; the dummy while there is
+  // none), per depth texture and plane buffer
   const frameGroups = new WeakMap();
   function volumeFrameGroup(depth) {
-    let group = frameGroups.get(depth);
+    const plane = sim.decoPlane ?? { buffer: dummy.buffer, offset: 0, size: dummy.buffer.size };
+    let byPlane = frameGroups.get(depth);
+    if (!byPlane) frameGroups.set(depth, byPlane = new WeakMap());
+    let group = byPlane.get(plane.buffer);
     if (!group) {
-      frameGroups.set(depth, group = gpu.bindGroup(L.VOLUME_FRAME, [
+      byPlane.set(plane.buffer, group = gpu.bindGroup(L.VOLUME_FRAME, [
         { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: fu.uniforms.buffer } },
         { binding: 2, resource: viewOf(depth, {}) },
+        { binding: 3, resource: { buffer: plane.buffer, offset: plane.offset, size: plane.size } },
       ], `${label('volume frame')} ${depth.label}`));
     }
     return group;
@@ -211,7 +219,8 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number }} [opts]
      *   meshDepth: the meshes' depth this frame (gfx/meshCut.js take()), or null for no cut;
      *   marchNear: cells nothing nearer the eye is drawn (first person's eye clip);
-     *   aerCopy: Whitewater's current aeration copy (0 or 1)
+     *   aerCopy: Whitewater's current aeration copy (0 or 1). The decoration is
+     *   drawn when src/deco.js decoShown(sim) says so (painted, display on)
      * @returns {boolean}
      */
     draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0 } = {}) {
@@ -221,7 +230,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
         bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header: sim.header(),
-        params: { meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy },
+        params: { meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy, deco: decoShown(sim) && sim.decoPlane ? 1 : 0 },
         count: VOLUME_VERTICES,
       });
       return true;

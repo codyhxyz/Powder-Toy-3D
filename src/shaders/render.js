@@ -13,6 +13,7 @@ import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
+import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
 import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
@@ -51,7 +52,8 @@ import { gateVariants } from '../gfx/detailGate.js';
 //
 // Bindings: the render library's (shaders/gfx/lib.js) with group 0 extended by
 // the meshes' depth (VOLUME_LAYOUTS):
-//   group 0  tables, FrameUniforms (FU), the meshes' depth (copied: meshCut)
+//   group 0  tables, FrameUniforms (FU), the meshes' depth (copied: meshCut),
+//            the decoration plane (gfx/deco.js)
 //   group 1  A and B (read)
 //   group 2  L.LIGHTING (fields, light, GI, shadow map, noise, bricks, flow, aeration)
 //   group 3  the header (the window's origin, the current copy) and VolumeParams (P)
@@ -128,39 +130,14 @@ const BEND_EXTRA_STEPS = 128;
 export const VOLUME_VIEWS = VIEWS.map((v) => v.key);
 const DATA_VIEWS = ['heat', 'pressure', 'flow', 'xray'];
 
-// The decoration layer (TPT's deco colour, src/deco.js) in the view: U17
-// ports shaders/gfx/deco.js to WGSL and turns this on. Off, the view pastes
-// the stand-ins below for everything deco.js gives it: decoViewGLSL's
-// lookups (decoAt, decoLinear, decoTint and their constants; plain.js calls
-// them) and decoSurfGLSL's hooks (decoSurf, absorbDeco; the realistic
-// tracer calls them). They draw what an undecorated cell looks like, exactly
-// as uDeco off did: decoAt reads no paint, so decoTint keeps the albedo.
-export const DECO_VIEW = false;
-// [name, declaration]; the constants' values are deco.js's.
-const DECO_STANDINS = [
-  ['DECO_SIGMA', 'const DECO_SIGMA: f32 = 2.0;'],
-  ['DECO_DETAIL_MAX', 'const DECO_DETAIL_MAX: f32 = 2.0;'],
-  ['DECO_LUM_MIN', 'const DECO_LUM_MIN: f32 = 1e-3;'],
-  ['DECO_LUM', 'const DECO_LUM: vec3f = vec3f(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance weights'],
-  ['decoAt', 'fn decoAt(c: vec3i) -> vec4f { return vec4f(0.0); }'],
-  ['decoLinear', 'fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }'],
-  ['decoTint', /* wgsl */ `fn decoTint(alb: vec3f, base: vec3f, d: vec4f) -> vec3f {
-  if (d.a <= 0.0) { return alb; }
-  let detail = clamp(dot(alb, DECO_LUM) / max(dot(base, DECO_LUM), DECO_LUM_MIN), 0.0, DECO_DETAIL_MAX);
-  return mix(alb, decoLinear(d.rgb) * detail, d.a);
-}`],
-  ['decoSurf', 'fn decoSurf(s: ptr<function, Surf>) {}'],
-  ['absorbDeco', /* wgsl */ `fn absorbDeco(id: i32, c: vec3i, p: vec3f, seg: f32, sunVis: vec3f, T: f32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) {
-  absorbSegment(id, p, seg, sunVis, T, col, trans);
-}`],
-];
-// The stand-ins a module's other parts don't already declare at module scope
-// (a material module that brings its own keeps it: WGSL rejects a second).
-const decoStandins = (text) => {
-  const declared = (name) => new RegExp(`(^|\\n)(const|override|alias)\\s+${name}\\b|\\bfn\\s+${name}\\s*\\(`).test(text);
-  const own = DECO_STANDINS.filter(([name]) => !declared(name)).map(([, decl]) => decl);
-  return own.length ? `// ---- the decoration's lookups and hooks (gfx/deco.js), off: no cell is painted ----\n${own.join('\n')}` : '';
-};
+// The decoration layer (TPT's deco colour, src/deco.js) in the view: every
+// view pastes shaders/gfx/deco.js, its lookups (decoAt, decoLinear, decoTint
+// and their constants: plain.js calls them) and its hooks (decoSurf,
+// absorbDeco: the realistic tracer calls them), reading the plane at group 0
+// binding 3. VolumeParams.deco switches the lookups off (Ctrl+B, or nothing
+// decorated: decoAt reads no paint, so decoTint keeps the albedo), so drawing
+// it or not builds nothing.
+export const DECO_VIEW = true;
 
 // The volume's own values (group 3 binding 1): the meshes' cut (gfx/meshCut.js),
 // the first-person eye clip and Whitewater's current aeration copy.
@@ -168,6 +145,7 @@ export const VolumeParams = uniformStruct('VolumeParams', {
   ...MESH_CUT_FIELDS,
   marchNear: 'f32',   // cells: nothing nearer the camera is drawn (first person's eye clip, pov/index.js EYE_CLIP)
   aerCopy: 'u32',     // the aeration copy the view reads (0 or 1: gfx/liquidDetail.js gAerCopy)
+  deco: 'u32',        // the decoration is drawn (src/deco.js decoShown): decoAt reads the plane
 });
 
 // What every view's module defines beside the material library: the
@@ -1236,7 +1214,9 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, debug = false }
     lib(g, { variant: 'LIGHTING', far: false, aeration: true, debug, detail: d }),
     TRACER_WGSL,
     surfaceGLSL(d),
+    decoViewGLSL,
     liquidGLSL,
+    decoSurfGLSL,
     liquidDetailGLSL(d),
     mediaGLSL(d),
     grainsGLSL(d),
@@ -1245,17 +1225,16 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, debug = false }
   else if (view === 'plain') parts.push(plainGLSL(g), plainView());
   else parts.push(DATA_COMMON, DATA_CODE[view](), dataView(view));
   parts.push(volumeVert, volumeEntry(view, view === 'realistic' || plainCut));
-  if (!DECO_VIEW) parts.push(decoStandins(parts.join('\n')));
   return parts.join('\n');
 };
 
 // ---- the pipeline (docs/webgpu.md F1, F2) ----
 
 // The volume's bind group layouts, groups 0-3: the render library's, group 0
-// with the meshes' depth.
+// with the meshes' depth and the decoration plane.
 export const VOLUME_LAYOUTS = () => {
   const [, state, lighting, params] = libLayouts('LIGHTING');
-  return [[...RENDER_LAYOUT.FRAME, MESH_DEPTH_ENTRY], state, lighting, params];
+  return [[...RENDER_LAYOUT.FRAME, MESH_DEPTH_ENTRY, DECO_PLANE_ENTRY], state, lighting, params];
 };
 // premultiplied colour over what is there
 const OVER = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } };

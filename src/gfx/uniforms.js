@@ -17,6 +17,7 @@ import { WAND_LIGHTS } from '../shaders/gfx/lighting.js';
 import { FRAME_UNIFORM_FIELDS, RENDER_LAYOUT } from '../shaders/bindings.js';
 import { tablesBuffer } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
+import { decoShown } from '../deco.js';
 export { WAND_LIGHTS };
 
 // The media detail clock (simulation steps) wraps here, seamlessly for the
@@ -47,7 +48,7 @@ export const gfxUniforms = {
   uClouds: { value: false },      // World's cumulus deck (shaders/gfx/clouds.js): on in a world (world/far.js attach)...
   uCloudShift: { value: [0, 0] }, // ...its wind drift (cells)...
   uCloudSea: { value: 0 },        // ...and the sea level its height counts from (world cells)
-  uDeco: { value: false },    // TPT's decoration layer (src/deco.js) drawn: painted, display on (Ctrl+B); U17 sets it
+  uDeco: { value: false },    // TPT's decoration layer (src/deco.js) drawn: painted, display on (Ctrl+B); the volume reads the same each draw (VolumeParams.deco)
   uSunExt: { value: [1, 1, 1] }, // sky values that depend only on the sun (gfx/sky.js)
   uSunCol: { value: [1, 1, 1] },
   uSkyUp: { value: [0, 0, 0] },
@@ -86,6 +87,7 @@ export function updateGfxUniforms(sim, sun, light) {
   gfxUniforms.uMatDetail.value = gfx.materials;
   gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), BEVEL_MAX);
   gfxUniforms.uGlints.value = gfx.glints;
+  gfxUniforms.uDeco.value = decoShown(sim);
 }
 
 // ---------------------------------------------------------------- FrameUniforms
