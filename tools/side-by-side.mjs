@@ -48,11 +48,19 @@
 //   --timeout S       a side's limit per shot (default 900)
 //   --real-gpu        refuse a software adapter (tools/browser.mjs; the default on macOS)
 //
-// The Mac (full quality, both checkouts of the repo side by side):
+// The Mac (full quality: 1280×720, 5 s clips at 30 fps, every shot), with
+// today's build checked out beside this one (git worktree add ../v1 c953a6c,
+// then npm ci in it):
 //   node tools/side-by-side.mjs --a-dir ../v1 --b-dir . --out ~/Desktop/sbs
-// This container (SwiftShader: slow, and its numbers aren't the GPU's), e.g.:
-//   node tools/side-by-side.mjs --a-dir /home/user/wt/v1 --b-dir . --shots lab \
-//     --size 320x180 --quality draft --box 32 --fps 4 --clip-seconds 1
+//   open ~/Desktop/sbs/index.html
+// A shot group at a time into one sheet (--append), e.g. the stills first:
+//   node tools/side-by-side.mjs --a-dir ../v1 --b-dir . --shots stills --out ~/Desktop/sbs --append
+// This container (SwiftShader: a 64³ step is ~1 s and a 320×180 frame
+// 15-80 s, so everything is cut down, and its timings aren't a GPU's): one
+// group per run, each side in turn, as the Week 0 sweep ran it:
+//   node tools/side-by-side.mjs --a-dir /home/user/wt/v1 --b-dir . --shots lab,lab-tank \
+//     --size 320x180 --quality draft --box 64 --win 64 --time-scale 0.1 \
+//     --clip-seconds 0.25 --fps 8 --serial --append --out <dir>
 //
 // Pages run in 'manual' test mode (CLAUDE.md): the loop is parked from boot,
 // so neither side draws a frame or steps the grid on its own time, and both
@@ -67,7 +75,7 @@
 // (|A−B| ×4); a clip's a/, b/, ab/ frames and ab.mp4 (ffmpeg, libx264; without
 // ffmpeg the sheet plays the frames); run.json; index.html, the sheet.
 // ImageMagick isn't needed: the compositing is a canvas in the same browser.
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
