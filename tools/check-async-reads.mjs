@@ -65,10 +65,6 @@ const PENDING = {
   'tools/headless-check.mjs': 'U8', 'tools/idle-check.mjs': 'U8',
   'tools/caves-check.mjs': 'U10', 'tools/far-check.mjs': 'U10', 'tools/gen-check.mjs': 'U10',
   'tools/island-dump.mjs': 'U10', 'tools/landforms-gpu.mjs': 'U10', 'tools/world-check.mjs': 'U10',
-  'tools/burrower-laser-check.mjs': 'U11', 'tools/flask-check.mjs': 'U11', 'tools/gibs-check.mjs': 'U11',
-  'tools/kick-hook-check.mjs': 'U11', 'tools/pov-engine-check.mjs': 'U11', 'tools/pov-player-check.mjs': 'U11',
-  'tools/pov-tools-a.mjs': 'U11', 'tools/pov-tools-b.mjs': 'U11',
-  'scripts/check-wand-recipes.mjs': 'U11', 'scripts/check-wand-world.mjs': 'U11',
   'tools/elec-gpu-check.mjs': 'U12', 'tools/nt-mat-gpu.mjs': 'U12', 'tools/rays-gpu.mjs': 'U12',
   'tools/bench.mjs': 'U14b', 'tools/headless-cost.mjs': 'U14b', 'tools/state-hash.mjs': 'U14b',
   // no J1 owner: its timing fence is raw GL (a 1×1 WebGLRenderTarget and gl.readPixels), a

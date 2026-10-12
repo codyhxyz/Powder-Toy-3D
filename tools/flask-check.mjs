@@ -9,9 +9,10 @@
 // The CPU part runs first, in node: the drink's shares and the ingestion rows on a body built as
 // player.js builds it (vitals, perks, a status set fed made-up contact cells), each potion's status
 // by touch and by drink, Regeneration, Berserk, Polymorph, Teleportitis's safe spots and the drunk sway.
-// usage: node tools/flask-check.mjs [--cpu] [--port 5433] [--shot file.png]
-//   --cpu: the node part only; without it the GPU part follows (needs a dev server; AC power)
-import { chromium } from 'playwright';
+// usage: node tools/flask-check.mjs [--cpu] [--port N] [--shot file.png]
+//   --cpu: the node part only; without it the GPU part follows (its own Vite: tools/vite-server.mjs)
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 import { E } from '../src/elements.js';
 import { createVitals } from '../src/pov/vitals.js';
 import { createPerkSet } from '../src/pov/perks.js';
@@ -23,7 +24,6 @@ import { createFeel } from '../src/pov/feel.js';
 import { DRINK_CELLS } from '../src/pov/tools/flask.tool.js';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5433');
 const shot = opt('shot');
 const cpuOnly = args.includes('--cpu');
 const W = 960, H = 600;
@@ -91,15 +91,16 @@ const zero = (d) => Object.keys(d).length === 0;
 }
 if (cpuOnly) { console.log(fails ? `${fails} failed` : 'all ok'); process.exit(fails ? 1 : 0); }
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const vite = await startVite();
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'preview', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
 
 try {
   // ================= part 1: the toolbelt alone
-  await p.goto(`http://localhost:${port}/?preset=empty&size=64`, { timeout: 90000 });
+  await p.goto(vite.url('/?preset=empty&size=64'), { timeout: 90000 });
   await p.waitForFunction(() => window.__app?.sim, null, { timeout: 60000 });
   await p.waitForTimeout(1500);
   const r = await p.evaluate(async () => {
@@ -122,12 +123,16 @@ try {
     belt.setVisible(true);
     belt.select('FLASK');
     const flask = belt.tool('FLASK');
-    const cell = (x, y, z) => Math.round(sim().readCell(x, y, z)[0][0]);
-    const top = (x, z) => { for (let y = sim().g.ny - 1; y >= 0; y--) if (cell(x, y, z) !== E.EMPTY) return y; return -1; };
+    // the cells as they are now, read back once: an element by cell, a column's top
+    const snap = async () => {
+      const s = sim(), [A] = await s.readState();
+      const id = (x, y, z) => Math.round(A[s.cellTexel(x, y, z) * 4]);
+      return { id, top: (x, z) => { for (let y = s.g.ny - 1; y >= 0; y--) if (id(x, y, z) !== E.EMPTY) return y; return -1; } };
+    };
     // matter: the grid plus the flask, plus any broken flask still spilling
     const extra = new Set();
-    function totals() {
-      const c = sim().census();
+    async function totals() {
+      const c = await sim().census();
       const t = {};
       for (const k in c) if (+k !== E.EMPTY) t[ELEMENTS[k].key] = c[k].n;
       for (const load of [flask.load, ...extra]) for (const [id, n] of Object.entries(load.totals())) t[ELEMENTS[id].key] = (t[ELEMENTS[id].key] ?? 0) + n;
@@ -163,48 +168,48 @@ try {
     out.start = { inHand: flask.inHand, status: flask.status(), totals: named(flask.load.totals()) };
 
     // ---- left-click at nothing in reach pours: the starting water goes into the world
-    const t0 = totals();
+    const t0 = await totals();
     const pourCtx = (o) => ({ ...ctx(null, -1, o), eye: new V3(24, 12, 24), dir: new V3(0.3, -0.2, 0.93).normalize() });
     for (let i = 0; i < 400 && flask.load.count; i++) { belt.update(pourCtx({ primary: true, primaryPressed: i === 0 })); await frame(); }
     await settle();
-    out.pour = { left: flask.load.count, diff: diff(t0, totals()) };
+    out.pour = { left: flask.load.count, diff: diff(t0, await totals()) };
 
     // ---- empty, it scoops: fill from the pool
-    const t1 = totals();
+    const t1 = await totals();
     for (let i = 0; i < 240 && flask.load.free > 0; i++) {
-      const y = top(46, 46);
-      belt.update(ctx(new V3(46, y, 46), cell(46, y, 46), { primary: true, primaryPressed: i === 0 }));
+      const S = await snap(), y = S.top(46, 46);
+      belt.update(ctx(new V3(46, y, 46), S.id(46, y, 46), { primary: true, primaryPressed: i === 0 }));
       await frame();
     }
     await settle();
-    out.fill = { count: flask.load.count, status: flask.status(), diff: diff(t1, totals()) };
+    out.fill = { count: flask.load.count, status: flask.status(), diff: diff(t1, await totals()) };
     // full and pointed at the pool: a press pours there instead of scooping
-    const tFull = totals();
+    const tFull = await totals();
     {
-      const y = top(46, 46);
-      for (let i = 0; i < 12; i++) { belt.update(ctx(new V3(46, y, 46), cell(46, y, 46), { primary: true, primaryPressed: i === 0 })); await frame(); }
-      belt.update(ctx(new V3(46, y, 46), cell(46, y, 46)));
+      const S = await snap(), y = S.top(46, 46);
+      for (let i = 0; i < 12; i++) { belt.update(ctx(new V3(46, y, 46), S.id(46, y, 46), { primary: true, primaryPressed: i === 0 })); await frame(); }
+      belt.update(ctx(new V3(46, y, 46), S.id(46, y, 46)));
       await settle();
     }
-    out.fullPress = { count: flask.load.count, diff: diff(tFull, totals()) };
+    out.fullPress = { count: flask.load.count, diff: diff(tFull, await totals()) };
 
     // ---- a drink: DRINK_CELLS, water quenches a hot skin and cools it toward the water
     body.skinT = 70;
-    const t2 = totals();
+    const t2 = await totals();
     belt.update(ctx(null, -1, { drink: true, drinkPressed: true }));
     belt.update(ctx(null, -1));
     out.drink = { count: flask.load.count, doses: flask.lastDrink?.doses.map((d) => ({ key: d.key, n: d.n, share: +d.share.toFixed(2), T: Math.round(d.T) })),
-      skinT: +body.skinT.toFixed(1), hurts: body.hurts.length, diff: diff(t2, totals()) };
+      skinT: +body.skinT.toFixed(1), hurts: body.hurts.length, diff: diff(t2, await totals()) };
 
     // ---- pointed at sand with room: it scoops sand in on top (mixed)
-    const t3 = totals();
+    const t3 = await totals();
     for (let i = 0; i < 60 && flask.load.free > 0; i++) {
-      const y = top(16, 16);
-      belt.update(ctx(new V3(16, y, 16), cell(16, y, 16), { primary: true, primaryPressed: i === 0 }));
+      const S = await snap(), y = S.top(16, 16);
+      belt.update(ctx(new V3(16, y, 16), S.id(16, y, 16), { primary: true, primaryPressed: i === 0 }));
       await frame();
     }
     await settle();
-    out.mix = { status: flask.status(), totals: named(flask.load.totals()), diff: diff(t3, totals()) };
+    out.mix = { status: flask.status(), totals: named(flask.load.totals()), diff: diff(t3, await totals()) };
 
     // ---- a mixed drink: Noita's same share of each material
     for (let i = 0; i < 45; i++) { belt.update(ctx(null, -1)); await frame(); }   // past the gulp's refire wait
@@ -216,7 +221,7 @@ try {
 
     // ---- throw: it flies, strikes the wall and shatters: contents + FLASK_GLASS shards, nothing else
     const held = named(flask.load.totals());
-    const t4 = totals();
+    const t4 = await totals();
     const throwCtx = (o) => ({ ...ctx(null, -1, o), eye: new V3(32.5, 5, 14.5), dir: new V3(0, 0.15, 1).normalize() });
     belt.update(throwCtx({ secondary: true, secondaryPressed: true }));
     out.afterThrow = { inHand: flask.inHand, flying: flask.flying, left: flask.load.count };
@@ -228,7 +233,7 @@ try {
     const sh = flask.lastShatter;
     out.shatter = sh ? { frames, point: [sh.point.x, sh.point.y, sh.point.z].map((v) => +v.toFixed(1)), held: sh.held, glass: sh.glass, id: ELEMENTS[sh.id]?.key,
       spillLeft: sh.load.count, lost: flask.lost } : null;
-    out.throwDiff = { held, diff: diff(t4, totals()) };
+    out.throwDiff = { held, diff: diff(t4, await totals()) };
 
     // ---- empty-handed: every button refuses
     toasts.length = 0;
@@ -271,7 +276,7 @@ try {
   check('the palette gives a fresh flask of water', r.given.inHand && r.given.status === 'WATR 100%', r.given);
 
   // ================= part 2: the real shell and body
-  await p.goto(`http://localhost:${port}/?preset=empty&size=64`, { timeout: 90000 });
+  await p.goto(vite.url('/?preset=empty&size=64'), { timeout: 90000 });
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
   await p.waitForTimeout(1500);
   await p.mouse.move(W / 2, H * 0.62);
@@ -427,4 +432,5 @@ try {
 if (errs.length) { console.log(errs.join('\n')); }
 console.log(fails ? `${fails} failed` : 'all ok');
 await b.close();
+await vite.close();
 process.exit(fails ? 1 : 0);

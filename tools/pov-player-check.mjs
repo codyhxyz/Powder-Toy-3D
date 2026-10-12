@@ -1,19 +1,20 @@
 // Headless check of the first-person body (src/pov/player.js) on a real GPU.
 // Builds small scenes, drops a body into them and prints numbers.
-// usage: node tools/pov-player-check.mjs [--port 5192] [--only name,name]
+// usage: node tools/pov-player-check.mjs [--port N] [--only name,name]   (its own Vite: tools/vite-server.mjs)
 import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5192');
 const only = opt('only', '')?.split(',').filter(Boolean);
 
+const vite = await startVite();
 const b = await launchBrowser();
 const page = await newTestPage(b, { viewport: { width: 640, height: 400 } });
 const errs = [];
 page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 2000)); });
 page.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));
-await page.goto(`http://localhost:${port}/?preset=empty`);
+await page.goto(vite.url('/?preset=empty'));
 await page.waitForFunction(() => window.__app?.sim, null, { timeout: 30000 });
 await page.waitForTimeout(1500);
 
@@ -59,7 +60,7 @@ await page.evaluate(async () => {
         last = now;
         t += Math.min(dt, 0.1);
         p.t = t;
-        each?.(p);
+        await each?.(p);
       }
     },
     async settle(secs) { const t0 = performance.now(); while (performance.now() - t0 < secs * 1000) await frame(); },
@@ -238,7 +239,7 @@ const tests = {
       p.spawn(new t.THREE.Vector3(63, 0, 64));
       let maxSpeed = 0;
       await t.run(p, 5, {}, (p) => { maxSpeed = Math.max(maxSpeed, p.vel.length()); });
-      const c = window.__app.sim.census();
+      const c = await window.__app.sim.census();
       return { state: t.state(p), maxSpeed: +maxSpeed.toFixed(1), drift: +(p.pos.x - 63).toFixed(2), fire: c[t.E.FIRE]?.n ?? 0 };
     });
   },
@@ -252,15 +253,15 @@ const tests = {
         box(31, 4, 60, 40, 6, 70, t.E.SAND);
       });
       await t.settle(1.5);
-      const census0 = a.sim.census();
+      const census0 = await a.sim.census();
       const p = t.player();
       p.spawn(new t.THREE.Vector3(40, 1, 64));
       // Velocity of water cells whose centres are inside a body-sized box at
       // (x, z), read right after the frame's coupling pass: mean speed along
       // +x (the walking direction) and outward from the box's axis.
-      const readV = (cx, cz) => {
+      const readV = async (cx, cz) => {
         const sim = a.sim;
-        const [A, B] = sim.readState();
+        const [A, B] = await sim.readState();
         const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
         let n = 0, fwd = 0, out = 0;
         for (let y = 1; y < 4; y++) for (let z = Math.floor(cz - 1); z <= cz + 1; z++) for (let x = Math.floor(cx - 1); x <= cx + 1; x++) {
@@ -273,17 +274,17 @@ const tests = {
         return { n, fwd: +(fwd / Math.max(n, 1)).toFixed(3), out: +(out / Math.max(n, 1)).toFixed(3) };
       };
       const body = [], control = [];
-      await t.run(p, 4, { move: { x: 1, z: 0 }, sprint: true }, (p) => {
+      await t.run(p, 4, { move: { x: 1, z: 0 }, sprint: true }, async (p) => {
         if (p.pos.x > 45 && p.pos.x < 80 && body.length < 20) {
-          body.push(readV(p.pos.x, p.pos.z));
-          control.push(readV(p.pos.x, p.pos.z + 15));
+          body.push(await readV(p.pos.x, p.pos.z));
+          control.push(await readV(p.pos.x, p.pos.z + 15));
         }
       });
       const avg = (arr, k) => +(arr.reduce((s, r) => s + r[k], 0) / Math.max(arr.length, 1)).toFixed(3);
       const samples = { frames: body.length, body: { fwd: avg(body, 'fwd'), out: avg(body, 'out'), n: avg(body, 'n') },
         control: { fwd: avg(control, 'fwd'), out: avg(control, 'out'), n: avg(control, 'n') } };
       await t.settle(1);
-      const census1 = a.sim.census();
+      const census1 = await a.sim.census();
       const diff = {};
       for (const k of new Set([...Object.keys(census0), ...Object.keys(census1)])) {
         const d = (census1[k]?.n ?? 0) - (census0[k]?.n ?? 0);
@@ -305,3 +306,4 @@ for (const [name, fn] of Object.entries(tests)) {
 }
 if (errs.length) console.log('\nconsole errors:\n' + errs.slice(0, 10).join('\n'));
 await b.close();
+await vite.close();

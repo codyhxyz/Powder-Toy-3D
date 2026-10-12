@@ -3,11 +3,11 @@
 // body can walk through, and adds no matter; the laser charges for its full
 // time (releasing early cancels), then one beam vaporises and melts a long
 // tunnel through rock and metal and hits the body in it.
-// usage: node tools/burrower-laser-check.mjs [--port 5423] [--shots dir]   (needs a dev server)
-import { chromium } from 'playwright';
+// usage: node tools/burrower-laser-check.mjs [--port N] [--shots dir]   (runs its own Vite: tools/vite-server.mjs)
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5423');
 const shots = opt('shots', null);
 const W = 960, H = 600;
 
@@ -20,16 +20,17 @@ const ROCK2 = { x: 48, y: 8, r: 8 }; // rock, 17 cells deep...
 const METAL = { x: 70, y: 8, r: 4 }; // ...then 9 of metal
 const EYE_Y = 5;                     // the body's eye over its feet (pov/constants.js EYE_HEIGHT)
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const vite = await startVite();
+const b = await launchBrowser();
 let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
 try {
-  const p = await b.newPage({ viewport: { width: W, height: H } });
+  const p = await newTestPage(b, { mode: 'preview', viewport: { width: W, height: H } });
   const errs = [];
   p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
   p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
   await p.addInitScript(() => { try { localStorage.removeItem('tpt3d.pov.given'); } catch { /* */ } });
-  await p.goto(`http://localhost:${port}/?preset=empty`);
+  await p.goto(vite.url('/?preset=empty'));
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
   // (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
   await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
@@ -39,7 +40,7 @@ try {
   const shot = async (name) => { if (shots) await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 70 }); };
   const census = () => ev(async () => {
     const { ELEMENTS } = await import('/src/elements.js');
-    return Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, { n: v.n, Tmax: v.Tmax }]));
+    return Object.fromEntries(Object.entries(await window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, { n: v.n, Tmax: v.Tmax }]));
   });
   const n = (c, k) => c[k]?.n ?? 0;
   const GASES = new Set(['EMPTY', 'FIRE', 'SMOKE', 'STEAM', 'CLOUD']);
@@ -91,7 +92,7 @@ try {
   check('the burrower adds no matter', matter(b1) === matter(b0), `${matter(b0)}→${matter(b1)}`);
   // the tunnel's corridor inside the hill: a body's footprint (1.6 wide), its height above the tunnel floor
   const corridor = await ev(async ({ HILL, LANE_Z }) => {
-    const a = window.__app, sim = a.sim, [st] = sim.readState(), { ELEMENTS, K } = await import('/src/elements.js');
+    const a = window.__app, sim = a.sim, [st] = await sim.readState(), { ELEMENTS, K } = await import('/src/elements.js');
     const idAt = (x, y, z) => Math.round(st[sim.cellTexel(x, y, z) * 4]);
     const blocks = (id) => ELEMENTS[id].kind === K.SOLID || ELEMENTS[id].kind === K.POWDER;
     const out = [];
@@ -158,6 +159,8 @@ try {
   await p.mouse.down();
   await p.waitForFunction(() => window.__laser.fires > 0, null, { timeout: 10000 }).catch(() => {});
   const tFire = await ev(() => window.__laser.fireT ?? -1);
+  // the beam's reach comes back from the GPU a frame or few after the shot (its ring: docs/webgpu.md W17), and with it lastShot
+  await p.waitForFunction(() => window.__app.pov.toolbelt.tool('LASER').lastShot, null, { timeout: 10000 }).catch(() => {});
   await wait(60);
   await shot('laser-beam');
   await p.mouse.up();
@@ -191,6 +194,7 @@ try {
   console.log('FAIL threw', String(err).slice(0, 500));
 } finally {
   await b.close();
+  await vite.close();
 }
 console.log(fails ? `${fails} FAILED` : 'all ok');
 process.exit(fails ? 1 : 0);

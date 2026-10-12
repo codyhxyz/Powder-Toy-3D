@@ -1,11 +1,11 @@
 // Gibs and cooking check (docs/pov.md "Gibs and eating"): meat cooks in the
 // engine's heat and chars past its fat's flash point, Quake's gib rule, and
 // eating cooked meat. The CPU part runs in node (the dock tiles' engine port,
-// src/ui/tiles/engine.js, and vitals.js); --port adds one headless GPU run
-// against a dev server: meat cooked and charred in the real sim, a rocket kill
-// that gibs an NPC into the body's mass in meat, and cooked meat eaten (raw
-// meat not).
-// usage: node tools/gibs-check.mjs [--port 5422] [--shots dir]   (--port: a dev server; AC power)
+// src/ui/tiles/engine.js, and vitals.js); --gpu adds one headless GPU run of
+// the app (its own Vite: tools/vite-server.mjs, on --port N if given): meat
+// cooked and charred in the real sim, a rocket kill that gibs an NPC into the
+// body's mass in meat, and cooked meat eaten (raw meat not).
+// usage: node tools/gibs-check.mjs [--gpu] [--port N] [--shots dir]
 import { World } from '../src/ui/tiles/engine.js';
 import { E, ELEMENTS } from '../src/elements.js';
 import { createVitals, GIB_HEALTH, EAT_HEAL, VITALS } from '../src/pov/vitals.js';
@@ -13,7 +13,7 @@ import { GIB_CELLS } from '../src/pov/meat.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', null);
+const gpuRun = args.includes('--gpu') || args.includes('--port');
 const shots = opt('shots', null);
 
 let fails = 0;
@@ -117,12 +117,14 @@ check('a blast that only just kills leaves a body', just.every((r) => r.dead && 
   check('eating stops at full health', v.health === 1 && v.eatWant() === 0);
 }
 
-// ---------------------------------------------------------------- GPU (a dev server)
-if (port) {
-  const { chromium } = await import('playwright');
+// ---------------------------------------------------------------- GPU (the app)
+if (gpuRun) {
+  const { launchBrowser, newTestPage } = await import('./browser.mjs');
+  const { startVite } = await import('./vite-server.mjs');
   const W = 960, H = 600;
-  const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-  const p = await b.newPage({ viewport: { width: W, height: H } });
+  const vite = await startVite();
+  const b = await launchBrowser();
+  const p = await newTestPage(b, { mode: 'preview', viewport: { width: W, height: H } });
   const errs = [];
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });   // the dev server has no API
   p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
@@ -131,10 +133,10 @@ if (port) {
   const shot = async (name) => { if (shots) await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 70 }); };
   const census = () => ev(async () => {
     const { ELEMENTS } = await import('/src/elements.js');
-    return Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
+    return Object.fromEntries(Object.entries(await window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
   });
   try {
-    await p.goto(`http://localhost:${port}/?preset=lab`);
+    await p.goto(vite.url('/?preset=lab'));
     await p.waitForFunction(() => window.__app?.pov, null, { timeout: 90000 });
     // (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
     await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
@@ -264,6 +266,7 @@ if (port) {
     check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
   } finally {
     await b.close();
+    await vite.close();
   }
 }
 

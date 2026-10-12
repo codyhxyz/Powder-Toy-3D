@@ -1,14 +1,16 @@
 // Headless GPU checks for hardness and breaking (POV engine work): impact
 // breaking, impact heat, blast breaking and mass conservation, on a 64³ grid.
 // Each scene is built on the CPU, uploaded with sim.load and stepped by hand.
-// usage: node tools/pov-engine-check.mjs [--port 5191] [scene ...]
+// usage: node tools/pov-engine-check.mjs [--port N] [scene ...]   (its own Vite: tools/vite-server.mjs)
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args.splice(i, 2)[1] : d; };
-const port = opt('port', '5191');
+opt('port', null);   // (out of the scene list: startVite takes --port N from the command line itself)
 const only = args;
 
+const vite = await startVite();
 const b = await launchBrowser();
 const p = await newTestPage(b, { mode: 'manual', viewport: { width: 480, height: 320 } });
 const errs = [];
@@ -17,7 +19,7 @@ p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));
 await p.addInitScript(() => {
   localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ autoRes: false, res: 0.5, liveTiles: false }));
 });
-await p.goto(`http://localhost:${port}/?preset=empty&size=64`);
+await p.goto(vite.url('/?preset=empty&size=64'));
 await ready(p);
 
 // ---- helpers, installed in the page ----
@@ -41,7 +43,7 @@ await p.evaluate(async () => {
     },
     load() { sim.frame = 0; sim.load(t.A, t.B); },
     step(n = 1) { for (let i = 0; i < n; i++) sim.step(); },
-    read() { [t.rA, t.rB] = sim.readState(); },
+    async read() { [t.rA, t.rB] = await sim.readState(); },
     cell(x, y, z) {
       const i = idx(x, y, z);
       return { id: Math.round(t.rA[i]), key: ELEMENTS[Math.round(t.rA[i])].key, T: +t.rA[i + 1].toFixed(1),
@@ -68,8 +70,8 @@ await p.evaluate(async () => {
       return out;
     },
     // read the state, change it, and put it back (keeps the step counter)
-    edit(fn) {
-      t.read();
+    async edit(fn) {
+      await t.read();
       fn((x, y, z) => idx(x, y, z));
       sim.load(t.rA, t.rB);
     },
@@ -82,7 +84,7 @@ await p.evaluate(async () => {
 const scenes = {
   // Probe: peak blast pressure in open air at distance d from a gunpowder ball.
   async blastProfile() {
-    return p.evaluate(() => {
+    return p.evaluate(async () => {
       const t = window.__t, out = {};
       for (const r of [1, 2]) {
         t.fresh();
@@ -91,7 +93,7 @@ const scenes = {
         const peak = {};
         for (let s = 0; s < 40; s++) {
           t.step();
-          t.read();
+          await t.read();
           for (const d of [1, 2, 3, 4, 6, 8, 10, 14, 18]) {
             const x = 20 + r + d;
             peak[d] = Math.max(peak[d] ?? -1e9, t.cell(x, 30, 32).P);
@@ -109,7 +111,7 @@ const scenes = {
       let pin = 0;
       for (let s = 0; s < 120; s++) {
         t.step();
-        t.read();
+        await t.read();
         for (let x = 10; x <= 18; x++) pin = Math.max(pin, t.cell(x, 6, 32).P);
         for (const d of [1, 2, 3, 4, 6, 8, 10, 14]) peak[d] = Math.max(peak[d] ?? -1e9, t.cell(18 + d, 6, 32).P);
       }
@@ -120,7 +122,7 @@ const scenes = {
 
   // Peak pressure on a WALL pane's face at distance d from lit piles (what a pane there would feel).
   async paneLoad() {
-    return p.evaluate(() => {
+    return p.evaluate(async () => {
       const t = window.__t, out = {};
       for (const n of [1, 3, 5, 7]) for (const lit of ['flame', 'heat']) {
         const res = {};
@@ -135,7 +137,7 @@ const scenes = {
           t.load();
           let pa = 0, pb = 0;
           for (let s = 0; s < 60; s++) {
-            t.step(); t.read();
+            t.step(); await t.read();
             pa = Math.max(pa, t.cell(a1 + da - 1, yc, 32).P);
             pb = Math.max(pb, t.cell(a0 - db + 1, yc, 32).P);
           }
@@ -149,22 +151,22 @@ const scenes = {
 
   // A SCRAP slug at vx = 1 into a pane or block of each material.
   async slugs() {
-    return p.evaluate(() => {
+    return p.evaluate(async () => {
       const t = window.__t, out = {};
-      const shoot = (target, thick, gap, steps = 40, v = { vx: 1 }, extra) => {
+      const shoot = async (target, thick, gap, steps = 40, v = { vx: 1 }, extra) => {
         const x0 = 40;
         t.fresh();
         t.box(x0, x0 + thick - 1, 28, 52, 22, 42, target);
         extra?.();
         t.set(x0 - 1 - gap, 40, 32, 'SCRAP', v);
-        t.load(); t.read();
+        t.load(); await t.read();
         const before = t.counts(), debris = t.ELEMENTS[t.E[target]].breakInto;
         // the slug is the SCRAP cell with the largest x-speed until it hits, then the one furthest along
         const slug = () => t.where('SCRAP').map((c) => [c, t.cell(c[0], c[1], c[2])]).sort((a, b) => b[1].v[0] - a[1].v[0])[0];
         const peak = {};
         let prev = slug(), hit = null;
         for (let s = 1; s <= steps; s++) {
-          t.step(); t.read();
+          t.step(); await t.read();
           for (const [k, v] of Object.entries(t.counts())) peak[k] = Math.max(peak[k] ?? -1e9, v.Tmax);
           const cur = slug();
           if (!hit && cur[1].v[0] < prev[1].v[0] - 0.05) hit = { step: s, vxBefore: prev[1].v[0], vxAfter: cur[1].v[0], debrisV: debris && t.where(debris).map((c) => t.cell(c[0], c[1], c[2]).v[0]) };
@@ -178,18 +180,18 @@ const scenes = {
           conserved: t.total() === Object.values(before).reduce((s, v) => s + v.n, 0),
         };
       };
-      out['GLASS pane, 1 thick, gap 5'] = shoot('GLASS', 1, 5);
-      out['GLASS pane, 3 thick, gap 5'] = shoot('GLASS', 3, 5);
-      out['METAL plate, 2 thick, gap 5'] = shoot('METAL', 2, 5);
-      out['ROCK block, 6 thick, gap 2'] = shoot('ROCK', 6, 2);
-      out['ROCK block, 6 thick, gap 12'] = shoot('ROCK', 6, 12);
-      out['WOOD plank, 2 thick, gap 5'] = shoot('WOOD', 2, 5);
-      out['WALL, gap 5'] = shoot('WALL', 2, 5);
+      out['GLASS pane, 1 thick, gap 5'] = await shoot('GLASS', 1, 5);
+      out['GLASS pane, 3 thick, gap 5'] = await shoot('GLASS', 3, 5);
+      out['METAL plate, 2 thick, gap 5'] = await shoot('METAL', 2, 5);
+      out['ROCK block, 6 thick, gap 2'] = await shoot('ROCK', 6, 2);
+      out['ROCK block, 6 thick, gap 12'] = await shoot('ROCK', 6, 12);
+      out['WOOD plank, 2 thick, gap 5'] = await shoot('WOOD', 2, 5);
+      out['WALL, gap 5'] = await shoot('WALL', 2, 5);
       // the pane starts out in quiet bricks (shaders/activity.js) and has to wake up in time
-      out['GLASS pane, gap 20'] = shoot('GLASS', 1, 20);
+      out['GLASS pane, gap 20'] = await shoot('GLASS', 1, 20);
       // diagonal in xz, and diagonal down into a corner of glass (pane + floor)
-      out['GLASS pane, diagonal xz'] = shoot('GLASS', 1, 5, 40, { vx: 0.8, vz: 0.6 });
-      out['GLASS corner, diagonal down'] = shoot('GLASS', 1, 3, 40, { vx: 0.75, vy: -0.75 }, () => t.box(20, 39, 35, 35, 22, 42, 'GLASS'));
+      out['GLASS pane, diagonal xz'] = await shoot('GLASS', 1, 5, 40, { vx: 0.8, vz: 0.6 });
+      out['GLASS corner, diagonal down'] = await shoot('GLASS', 1, 3, 40, { vx: 0.75, vy: -0.75 }, () => t.box(20, 39, 35, 35, 22, 42, 'GLASS'));
       return out;
     });
   },
@@ -209,12 +211,12 @@ const scenes = {
           barrel({ put: (x, y, z, key) => key !== 'AIR' && t.set(32 + x, 1 + y, 32 + z, key), T: 1 }, 'keg');
           t.set(32 - 5 - gap, y0, 32 + trial, 'SCRAP', { vx: 1 });
           t.load();
-          t.read();
+          await t.read();
           const gp0 = t.where('GUNPOWDER').length;
           let boom = null, broke = null, sawMax = -1e9;
           for (let s = 1; s <= 90 && boom === null; s++) {
             t.sim ??= null;
-            t.step(); t.read();
+            t.step(); await t.read();
             const saw = t.where('SAWDUST');
             if (saw.length && broke === null) broke = s;
             for (const c of saw) sawMax = Math.max(sawMax, c[3]);
@@ -230,9 +232,9 @@ const scenes = {
 
   // Gunpowder blasts next to panes: touching on +x, 3 cells off on -x, 6 off on +z.
   async blast() {
-    return p.evaluate(() => {
+    return p.evaluate(async () => {
       const t = window.__t, out = {};
-      const run = (mat, pile) => {
+      const run = async (mat, pile) => {
         t.fresh();
         const [a0, a1] = pile === 'small' ? [31, 33] : [29, 35];
         const y0 = 10, y1 = y0 + a1 - a0;
@@ -246,20 +248,20 @@ const scenes = {
         for (const b of Object.values(panes)) t.box(...b, mat);
         t.load();
         const n0 = {};
-        t.read();
+        await t.read();
         const inPane = (b) => { let n = 0; for (let x = b[0]; x <= b[1]; x++) for (let y = b[2]; y <= b[3]; y++) for (let z = b[4]; z <= b[5]; z++) if (t.cell(x, y, z).key === mat) n++; return n; };
         for (const [k, b] of Object.entries(panes)) n0[k] = inPane(b);
-        t.step(80); t.read();
+        t.step(80); await t.read();
         return Object.fromEntries(Object.entries(panes).map(([k, b]) => [k, `${n0[k] - inPane(b)}/${n0[k]} broken`]));
       };
-      for (const pile of ['small', 'big']) for (const mat of ['GLASS', 'ICE', 'PLANT', 'WOOD', 'ROCK', 'METAL']) out[`${pile} ${mat}`] = run(mat, pile);
+      for (const pile of ['small', 'big']) for (const mat of ['GLASS', 'ICE', 'PLANT', 'WOOD', 'ROCK', 'METAL']) out[`${pile} ${mat}`] = await run(mat, pile);
       return out;
     });
   },
 
   // Sand dropped onto a rock floor and onto the box floor: how warm does it get?
   async sandDrop() {
-    return p.evaluate(() => {
+    return p.evaluate(async () => {
       const t = window.__t, out = {};
       for (const floor of ['ROCK', 'box']) for (const h of [10, 30, 55]) {
         t.fresh();
@@ -269,7 +271,7 @@ const scenes = {
         t.load();
         let sMax = -1e9, rMax = -1e9;
         for (let s = 0; s < 160; s++) {
-          t.step(); t.read();
+          t.step(); await t.read();
           for (const c of t.where('SAND')) sMax = Math.max(sMax, c[3]);
           if (floor === 'ROCK') for (let x = 30; x <= 34; x++) for (let z = 30; z <= 34; z++) rMax = Math.max(rMax, t.cell(x, 1, z).T);
         }
@@ -281,7 +283,7 @@ const scenes = {
 
   // Debris: shards resist acid, sawdust burns, shards and scrap melt and recast.
   async debris() {
-    return p.evaluate(() => {
+    return p.evaluate(async () => {
       const t = window.__t, out = {};
       // acid on a bed of shards next to a bed of sand
       t.fresh();
@@ -290,13 +292,13 @@ const scenes = {
       t.box(10, 20, 2, 4, 10, 20, 'ACID');
       t.box(30, 40, 2, 4, 10, 20, 'ACID');
       t.load();
-      t.step(200); t.read();
+      t.step(200); await t.read();
       out.acid = { shardsLeft: `${t.where('SHARDS').length}/242`, sandLeft: `${t.where('SAND').length}/242` };
       // hot sawdust in air
       t.fresh();
       t.box(20, 24, 0, 1, 20, 24, 'SAWDUST', { T: 300 });
       t.load();
-      t.step(300); t.read();
+      t.step(300); await t.read();
       const c = t.counts();
       out.sawdust = { SAWDUST: c.SAWDUST?.n ?? 0, ASH: c.ASH?.n ?? 0, FIRE: c.FIRE?.n ?? 0, SMOKE: c.SMOKE?.n ?? 0 };
       // shards and scrap melted, then cooled
@@ -305,10 +307,10 @@ const scenes = {
         t.box(0, 63, 0, 0, 0, 63, 'WALL');
         t.set(32, 1, 32, key, { T: key === 'SHARDS' ? 1450 : 1550 });
         t.load();
-        t.step(2); t.read();
+        t.step(2); await t.read();
         const melted = t.cell(32, 1, 32);
-        t.edit((idx) => { t.rA[idx(32, 1, 32) + 1] = 1000; });
-        t.step(2); t.read();
+        await t.edit((idx) => { t.rA[idx(32, 1, 32) + 1] = 1000; });
+        t.step(2); await t.read();
         out[key] = { melted: `${melted.key}, remembers ${t.ELEMENTS[melted.ctype].key}`, cooled: t.cell(32, 1, 32).key };
       }
       return out;
@@ -323,3 +325,4 @@ for (const [name, fn] of Object.entries(scenes)) {
 }
 console.log(errs.length ? errs.join('\n') : 'no console errors');
 await b.close();
+await vite.close();

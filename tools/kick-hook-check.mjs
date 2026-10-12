@@ -2,20 +2,21 @@
 // glass, shoves loose sand, throws you off a wall in the air and off the floor
 // standing, and shoves a body; the hook reels you to a wall, hangs you to swing
 // on, and brings a bite of sand to you, with matter conserved.
-// usage: node tools/kick-hook-check.mjs [--port 5421] [--shots dir]   (needs a dev server)
-import { chromium } from 'playwright';
+// usage: node tools/kick-hook-check.mjs [--port N] [--shots dir]   (runs its own Vite: tools/vite-server.mjs)
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5421');
 const shots = opt('shots', null);
 const W = 960, H = 600;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const vite = await startVite();
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'preview', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });   // (no local multiplayer relay)
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=empty`);
+await p.goto(vite.url('/?preset=empty'));
 await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
 // (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
 await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
@@ -28,7 +29,7 @@ const wait = (ms) => p.waitForTimeout(ms);
 const shot = async (name) => { if (shots) await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 60, scale: 'css' }); };
 const census = () => ev(async () => {
   const { ELEMENTS } = await import('/src/elements.js');
-  return Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
+  return Object.fromEntries(Object.entries(await window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
 });
 const GASES = new Set(['EMPTY', 'FIRE', 'SMOKE', 'STEAM', 'CLOUD']);
 const matter = (c) => Object.entries(c).filter(([k]) => !GASES.has(k)).reduce((s, [, n]) => s + n, 0);
@@ -47,7 +48,7 @@ const kick = async () => { await p.keyboard.press('f'); await wait(60); return e
 // the SAND cells' mean x (a full readback)
 const sandX = () => ev(async () => {
   const a = window.__app, { E } = await import('/src/elements.js');
-  const g = a.sim.g, [A] = a.sim.readState();
+  const g = a.sim.g, [A] = await a.sim.readState();
   let n = 0, sx = 0;
   for (let z = 0; z < g.nz; z++) for (let y = 0; y < g.ny; y++) for (let x = 0; x < g.nx; x++) {
     if (Math.round(A[a.sim.cellTexel(x, y, z) * 4]) === E.SAND) { n++; sx += x; }
@@ -228,5 +229,6 @@ check('sand conserved through the hook', (c0.SAND ?? 0) === (c1.SAND ?? 0), `${c
 
 check('no errors', errs.length === 0, errs.slice(0, 5).join(' | '));
 await b.close();
+await vite.close();
 console.log(fails ? `${fails} FAILED` : 'all ok');
 process.exit(fails ? 1 : 0);
