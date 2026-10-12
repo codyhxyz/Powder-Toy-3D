@@ -82,27 +82,41 @@ export const PRE_MARGIN = 1;
 export const preWords = (dims) => 8 + dims[0] * dims[1] * dims[2];
 export const PreParams = uniformStruct('PreParams', { lo: 'vec3i', dims: 'vec3i' });
 /**
- * WGSL of a prepass kernel: a thread a cell of the region writes
- * `fn(x, y, z)` (an i32) into it; thread 0 writes the header. After the
- * scene's head with its data read_write.
+ * WGSL of a prepass kernel: a thread a cell of the region computes
+ * `fn(x, y, z)` (an i32); thread 0 writes the header. The data is vec4s, so
+ * a workgroup's 64 cells (16 whole vec4s: the region starts on one) are
+ * gathered in workgroup memory and stored a vec4 a thread: a word stored
+ * alone through a dynamic component index may be lowered as a read-modify-
+ * write of its vec4 (Tint's polyfill on some backends), a race between the
+ * four threads that share it on a real GPU. After the scene's head with its
+ * data read_write. Dispatch: fold(ceil(cells / 64)).
  * @param {string} fn the costly part's name (the scene's WGSL defines it)
  */
 export const preMainWGSL = (fn) => /* wgsl */ `
 ${PreParams.wgsl}
 @group(3) @binding(1) var<uniform> P: PreParams;
+var<workgroup> preCells: array<u32, 64>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
-  let i = (wg.x + wg.y * nwg.x) * 64u + li;
+  let w = wg.x + wg.y * nwg.x;
+  let i = w * 64u + li;
   let d = vec3u(P.dims);
-  let base = SU.uPreAt * 4u;
+  let n = d.x * d.y * d.z;
   if (i == 0u) {
     SD[SU.uPreAt] = bitcast<vec4u>(vec4i(P.lo, 0));
     SD[SU.uPreAt + 1u] = bitcast<vec4u>(vec4i(P.dims, 0));
   }
-  if (i >= d.x * d.y * d.z) { return; }
-  let c = P.lo + vec3i(vec3u(i % d.x, (i / d.x) % d.y, i / (d.x * d.y)));
-  let w = base + 8u + i;
-  SD[w >> 2u][w & 3u] = bitcast<u32>(${fn}(c.x, c.y, c.z));
+  var v = 0u;
+  if (i < n) {
+    let c = P.lo + vec3i(vec3u(i % d.x, (i / d.x) % d.y, i / (d.x * d.y)));
+    v = bitcast<u32>(${fn}(c.x, c.y, c.z));
+  }
+  preCells[li] = v;
+  workgroupBarrier();
+  let k = li * 4u;
+  if (li < 16u && w * 64u + k < n) {
+    SD[SU.uPreAt + 2u + w * 16u + li] = vec4u(preCells[k], preCells[k + 1u], preCells[k + 2u], preCells[k + 3u]);
+  }
 }
 `;
 /**
