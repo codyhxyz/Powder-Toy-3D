@@ -7,7 +7,7 @@
 // wood past its ignition point burns (fire.js woodBurns), the census itself.
 import { at, SetupError } from '../engine.js';
 import { OUTCOMES, LEVEL_CM } from '../thresholds.js';
-import { tally, liquidMass, levelRange, cellsOf, advanceWatching, crit, r2, r3 } from '../lib.js';
+import { tally, liquidMass, levelRange, cellsOf, advanceWatching, restNote, crit, r2, r3 } from '../lib.js';
 
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
@@ -63,7 +63,7 @@ export const tankStill = {
     let g = await e.read();
     const m0 = liquidMass(g);
     setup(m0 === 588, `start: ${m0} water (588)`);
-    const { idleAt } = await advanceWatching(e, O.seconds, { every: 0.25 });
+    const { idleAt, resolution } = await advanceWatching(e, O.seconds, { every: O.every });
     g = await e.read();
     const [lo, hi] = levelRange(g, 1, 14, 1, 14), m = liquidMass(g);
     // full: the surface within the hidden mass docs/v2.md 4.1 allows a compressible liquid (≤ 5 % of its depth)
@@ -73,7 +73,7 @@ export const tankStill = {
       criteria: [
         crit('stays full (lowest surface)', r3(lo), lo >= full && hi <= 4 + 1e-6, `${r2(full)}…4`, 'cells'),
         crit('stays flat', r2((hi - lo) * 30), (hi - lo) * 30 <= LEVEL_CM, `≤ ${LEVEL_CM}`, 'cm'),
-        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's'),
+        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's', restNote(resolution)),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
       evidence: [],

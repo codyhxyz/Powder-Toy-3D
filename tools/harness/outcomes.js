@@ -4,6 +4,7 @@
 // default; v2 once P2 writes tools/outcomes/engine-v2.js).
 //   __harness.run('outcome', name, { seed, budgetMs })   one test's result (tools/outcomes/run.js)
 //   __harness.run('tests')                               the tests: name, group, size, cost
+//   __harness.run('info')                                the engine's info (its clock, its g, what it has)
 // By hand (the Mac's Chrome or Safari: `npm run harness`, then this page):
 // ?run=liquids,throw runs those groups and tests here, one after another, and
 // prints a table and the results as JSON to paste back; with no ?run= it lists
@@ -38,6 +39,7 @@ try {
 }
 
 test('tests', () => TESTS.map((t) => ({ name: t.name, group: t.group, kind: t.kind ?? 'harness', size: t.size, cost: t.cost })));
+test('info', () => engine?.info ?? null);
 test('outcome', async (name, opts = {}) => {
   const t = byName(name);
   if (!t) throw new Error(`no test ${name}`);
@@ -73,9 +75,9 @@ if (run && engine) {
     const cls = r.status === 'n/a' ? 'na' : r.status;
     tr.innerHTML = `<td>${t.name}</td><td class="${cls}">${r.status}</td><td>${(r.headline ?? r.reason ?? '').replace(/</g, '&lt;')}</td><td>${r.wallSeconds ?? ''}</td>`;
     body.appendChild(tr);
-    for (const c of r.criteria ?? []) log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.measured} ${c.unit} (want ${c.threshold})`);
+    for (const c of r.criteria ?? []) log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.measured} ${c.unit}${c.note ? ` [${c.note}]` : ''} (want ${c.threshold})`);
     if (r.status !== 'pass') for (const ev of r.evidence ?? []) log(ev);
   }
   json.hidden = false;
-  json.value = JSON.stringify({ engine: ENGINE, adapter: h.gpu.adapterInfo, userAgent: navigator.userAgent, results }, null, 1);
+  json.value = JSON.stringify({ engine: ENGINE, adapter: h.gpu.adapterInfo, info: engine.info, userAgent: navigator.userAgent, results }, null, 1);
 }

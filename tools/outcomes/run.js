@@ -20,7 +20,7 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
  */
 export async function runTest(test, engine, { seed = 1, budgetMs = 0, log = () => {} } = {}) {
   const row = OUTCOMES[test.key ?? test.name] ?? {};
-  const base = { name: test.name, title: test.title, group: test.group, phase: row.phase ?? 'P2', engine: engine.name, size: test.size, audit: test.audit };
+  const base = { name: test.name, title: test.title, group: test.group, phase: row.phase ?? 'P2', engine: engine.name, size: test.size, audit: test.audit, clock: engine.info.clock };
   const missing = (test.needs ?? []).filter((n) => engine.id(n) === null);
   if (missing.length) return { ...base, status: 'n/a', reason: `${engine.name} has no ${missing.join(', ')}` };
   const why = test.expressible?.(engine);
@@ -37,7 +37,8 @@ export async function runTest(test, engine, { seed = 1, budgetMs = 0, log = () =
     const ctx = { log, fresh: () => engine.create(test.size, { seed, url: test.url }) };
     const r = await test.run(engine, ctx);
     const status = r.na ? 'n/a' : r.criteria.every((c) => c.ok) ? 'pass' : 'fail';
-    return { ...base, status, ...r, gameSeconds: +engine.time.toFixed(3), steps: engine.steps, wallSeconds: +((now() - t0) / 1000).toFixed(1) };
+    // (an app engine knows its clock only once its page has booted)
+    return { ...base, clock: engine.info.clock, status, ...r, gameSeconds: +engine.time.toFixed(3), steps: engine.steps, wallSeconds: +((now() - t0) / 1000).toFixed(1) };
   } catch (err) {
     const reason = err instanceof SetupError ? `setup: ${err.message}` : err instanceof BudgetError ? `budget: ${err.message}` : String(err?.stack ?? err);
     return { ...base, status: 'error', reason, wallSeconds: +((now() - t0) / 1000).toFixed(1) };

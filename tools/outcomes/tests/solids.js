@@ -7,7 +7,7 @@
 // that two engines share a g.
 import { at, SetupError } from '../engine.js';
 import { OUTCOMES, ROUND_TOL } from '../thresholds.js';
-import { tally, cellsOf, heightMap, reach, mapText, digit, advanceWatching, crit, r2 } from '../lib.js';
+import { tally, cellsOf, heightMap, roundness, mapText, digit, advanceWatching, restNote, crit, r2 } from '../lib.js';
 
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
@@ -59,6 +59,14 @@ export const slab = {
   },
 };
 
+// The hopper: a 32-cell disc about the column corner (16, 12) at y = 14, as [z, x0, x1] rows, and its cells
+// nearest the centre first (the order a partial last layer fills in, so it stays centred).
+const HOPPER = [[9, 14, 17], [10, 13, 18], [11, 13, 18], [12, 13, 18], [13, 13, 18], [14, 14, 17]];
+const HOPPER_Y = 14, HOPPER_C = [16, 12];
+const HOPPER_CELLS = HOPPER.flatMap(([z, x0, x1]) => Array.from({ length: x1 - x0 + 1 }, (_, k) => [x0 + k, z]))
+  .sort((a, b) => Math.hypot(a[0] + 0.5 - HOPPER_C[0], a[1] + 0.5 - HOPPER_C[1]) - Math.hypot(b[0] + 0.5 - HOPPER_C[0], b[1] + 0.5 - HOPPER_C[1])
+    || Math.atan2(a[1] + 0.5 - HOPPER_C[1], a[0] + 0.5 - HOPPER_C[0]) - Math.atan2(b[1] + 0.5 - HOPPER_C[1], b[0] + 0.5 - HOPPER_C[0]));
+
 function heapTest(name, element) {
   return {
     name, key: 'heap', group: 'solids', size: [32, 16, 24], needs: [element], cost: 170,
@@ -66,36 +74,41 @@ function heapTest(name, element) {
     audit: 'audit-physics B1, 4.2: every powder piles to the automaton\'s one square, terraced heap (slide only sets the time), and the rest test assumes 8 lower neighbours the move can\'t reach, so a settled heap never sleeps',
     async run(e) {
       const O = OUTCOMES.heap, id = e.id(element), [nx, , nz] = this.size;
-      // poured from a 6×6 hopper (x 13-18, z 9-14) at y = 14, a layer each 1/15 s into its empty cells,
-      // until 432 grains are in (lean-sim heap's hopper, half its grains)
+      // poured from a round hopper (HOPPER) a layer each 1/15 s into its empty cells until exactly 432 grains
+      // are in: the last layer only what is left, nearest the centre first (lean-sim heap's pour, half its
+      // grains, through a disc so a round heap isn't asked of a square pour)
       const count = (g) => tally(g, e).cells[e.nameOf(id)] ?? 0;
-      let poured = 0;
+      let g = await e.read(), poured = count(g), partial = 0;
       while (poured < O.grains && e.time < 20) {
-        e.box([13, 14, 9], [18, 14, 14], element, { onlyEmpty: true });
+        const empty = HOPPER_CELLS.filter(([x, z]) => e.kindOf(g.id[at(g, x, HOPPER_Y, z)]) === 'air');
+        if (empty.length <= O.grains - poured) for (const [z, x0, x1] of HOPPER) e.box([x0, HOPPER_Y, z], [x1, HOPPER_Y, z], element, { onlyEmpty: true });
+        else for (const [x, z] of empty.slice(0, (partial = O.grains - poured))) e.box([x, HOPPER_Y, z], [x, HOPPER_Y, z], element);
         await e.advance(1 / 15);
-        poured = count(await e.read());
+        g = await e.read();
+        poured = count(g);
       }
-      setup(poured >= O.grains, `the pour stalled at ${poured} grains`);
+      setup(poured === O.grains, `the pour ended at ${poured} grains (${O.grains})`);
       const pourEnd = e.time;
-      const { idleAt } = await advanceWatching(e, O.restSeconds, { every: 0.25 });
-      const g = await e.read(), n = count(g);
+      const { idleAt, resolution } = await advanceWatching(e, O.restSeconds, { every: O.every });
+      g = await e.read();
+      const n = count(g);
       const H = heightMap(g, [id]);
-      let peak = 0, foot = 0;
-      for (const h of H) { peak = Math.max(peak, h); if (h) foot++; }
-      const r = reach(nx, nz, 16, 12, (x, z) => H[x + nx * z] > 0);
-      const ratio = r.rDiag / r.rAxis, slope = peak / r.rAxis, band = O.slope[element];
+      let peak = 0;
+      for (const h of H) peak = Math.max(peak, h);
+      const r = roundness(nx, nz, (x, z) => H[x + nx * z] > 0);
+      const slope = peak / r.rEq, band = O.slope[element];
       const rest = idleAt === null ? null : idleAt - pourEnd;
       return {
-        headline: `${n} grains: peak ${peak}, reach ${r2(r.rAxis)} along the axes and ${r2(r.rDiag)} on the diagonals (×${r2(ratio)}), slope ${r2(slope)}; ${rest === null ? 'not idle' : `idle ${r2(Math.max(rest, 0))} s after the pour`}`,
+        headline: `${n} grains: peak ${peak}, footprint ${r.area} columns (radius ${r2(r.rEq)}), slope ${r2(slope)}; diagonal / axis reach ×${r2(r.raw)} (×${r2(r.ratio)} of a round one); ${rest === null ? 'not idle' : `idle ${r2(Math.max(rest, 0))} s after the pour`}`,
         criteria: [
-          crit('round: diagonal reach / axis reach', r2(ratio), Math.abs(ratio - 1) <= ROUND_TOL, `1 ± ${ROUND_TOL}`),
-          crit(`slope (peak / axis reach) in its class`, r2(slope), slope >= band[0] && slope <= band[1], `${band[0]}…${band[1]}`),
-          crit('rests after the pour ends', rest === null ? 'never' : r2(Math.max(rest, 0)), rest !== null && rest <= O.restSeconds, `≤ ${O.restSeconds}`, 's'),
+          crit('round: diagonal / axis reach, of a round footprint\'s', r2(r.ratio), Math.abs(r.ratio - 1) <= ROUND_TOL, `1 ± ${ROUND_TOL}`),
+          crit('slope (peak / footprint radius) in its class', r2(slope), slope >= band[0] && slope <= band[1], `${band[0]}…${band[1]}`),
+          crit('rests after the pour ends', rest === null ? 'never' : r2(Math.max(rest, 0)), rest !== null && rest <= O.restSeconds, `≤ ${O.restSeconds}`, 's', restNote(resolution)),
           crit('grains kept', n, n === poured, `${poured}`),
         ],
-        evidence: [`height map at ${r2(e.time)} s (pour ended at ${r2(pourEnd)} s), x 4…27, z 0…23:\n${mapText(nx, nz, (x, z) => digit(H[x + nx * z]), { x0: 4, x1: 27 })}`,
-          `reach: axes ${r.axis.map(r2).join(' ')}, diagonals ${r.diag.map(r2).join(' ')}`],
-        numbers: { grains: n, peak, foot, rAxis: r.rAxis, rDiag: r.rDiag, ratio, slope, pourEnd, idleAt },
+        evidence: [`height map at ${r2(e.time)} s (pour ended at ${r2(pourEnd)} s, its last layer ${partial || 'whole'}), x 4…27, z 0…23:\n${mapText(nx, nz, (x, z) => digit(H[x + nx * z]), { x0: 4, x1: 27 })}`,
+          `from the centroid (${r2(r.cx)}, ${r2(r.cz)}): reach ${r2(r.rAxis)} along the axes, ${r2(r.rDiag)} on the diagonals (×${r2(r.raw)}); a round footprint of ${r.area} cells reads ×${r2(r.lattice)}`],
+        numbers: { grains: n, peak, area: r.area, rEq: r.rEq, rAxis: r.rAxis, rDiag: r.rDiag, raw: r.raw, ratio: r.ratio, slope, pourEnd, idleAt },
       };
     },
   };

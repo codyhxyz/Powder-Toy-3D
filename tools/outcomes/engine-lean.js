@@ -3,7 +3,8 @@
 // the bench's tests and thresholds are measured on the prototype exactly as on
 // the GPU (tools/outcomes.mjs --engine lean). Node only. Its elements are
 // air, wall, sand, flour and water; everything else is not expressible (n/a).
-// It has no heat, fire, pressure or thrown solids. Contract: ./engine.js.
+// It has no heat, fire, pressure, cell velocities (its flux lives on faces) or
+// thrown solids. Contract: ./engine.js.
 import { World, AIR, WALL, SAND, FLOUR, WATER, FULL, TICK_HZ, CELL_M, G_MS2, G, VT_SAND } from '../v2/lean-sim.mjs';
 import { stepClock } from './engine.js';
 import { tally } from './lib.js';
@@ -16,7 +17,10 @@ export function createEngine() {
   let w = null, clock = stepClock(TICK_HZ), lastBusy = 0;
   return {
     name: 'lean',
-    info: { label: 'lean-sim World (CPU prototype, 60 Hz, 2 g)', stepsPerSecond: TICK_HZ, gravity: G_MS2, cellM: CELL_M, fillQuantum: 1 / FULL, pressure: false, burning: false },
+    info: {
+      label: 'lean-sim World (CPU prototype, 60 Hz, 2 g)', stepsPerSecond: TICK_HZ, clock: `${TICK_HZ} ticks a game second (Speed 1×)`,
+      gravity: G_MS2, cellM: CELL_M, fillQuantum: 1 / FULL, velocity: false, pressure: false, airCell: null, burning: false,
+    },
     id: (name) => IDS[name] ?? null,
     nameOf: (id) => NAMES[id] ?? `#${id}`,
     kindOf: (id) => KINDS[id] ?? 'solid',
@@ -47,12 +51,13 @@ export function createEngine() {
     async read() {
       const n = w.n, id = Int32Array.from(w.id), amount = new Float32Array(n);
       for (let i = 0; i < n; i++) if (w.id[i] === WATER) amount[i] = w.fill[i] / FULL;
-      const particles = w.parts.map((p) => ({ x: p.x, y: p.y, z: p.z, vx: p.vx, vy: p.vy, vz: p.vz, mass: p.m / FULL, id: WATER }));
+      // (its particles' velocities are cells/s)
+      const particles = w.parts.map((p) => ({ x: p.x, y: p.y, z: p.z, vx: p.vx * CELL_M, vy: p.vy * CELL_M, vz: p.vz * CELL_M, mass: p.m / FULL, id: WATER }));
       for (const p of particles) {
         const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
         if (w.inside(x, y, z)) amount[w.at(x, y, z)] += p.mass;
       }
-      return { nx: w.nx, ny: w.ny, nz: w.nz, id, amount, T: null, burning: null, pressure: null, moving: null, particles };
+      return { nx: w.nx, ny: w.ny, nz: w.nz, id, amount, T: null, burning: null, pressure: null, moving: null, vel: null, particles };
     },
     async census() { return tally(await this.read(), this); },
     async activity() {

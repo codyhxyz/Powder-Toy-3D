@@ -1,12 +1,12 @@
 // Liquid outcomes (docs/v2.md 4.4, GPU acceptance): U-tube, partial layer,
-// puddle, pipe, hole jet, yield. Scenes after lean-sim's (tools/v2/lean-sim.mjs)
+// puddle, pipe, hole jet, splash, yield. Scenes after lean-sim's (tools/v2/lean-sim.mjs)
 // and audit-liquids.md 2.1, sized for SwiftShader: each its smallest grid that
 // still shows its outcome. Every test checks its scene before it runs it
 // (SetupError: the result would say nothing about physics) and prints the
 // evidence a failure needs: level profiles, maps, slices.
-import { at, SetupError } from '../engine.js';
+import { at, inGrid, SetupError } from '../engine.js';
 import { OUTCOMES, CELL_M } from '../thresholds.js';
-import { columnLevel, meanLevel, levelRange, liquidMass, mapText, sliceText, amountChar, advanceWatching, crit, r2, r3, wet } from '../lib.js';
+import { columnLevel, meanLevel, levelRange, liquidMass, mapText, sliceText, amountChar, advanceWatching, restNote, crit, r2, r3, wet } from '../lib.js';
 
 const cm = (cells) => cells * CELL_M * 100;
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
@@ -16,7 +16,7 @@ const every = (t, period) => Math.abs(t / period - Math.round(t / period)) < 1e-
 export const utube = {
   name: 'utube', group: 'liquids', size: [16, 16, 8], needs: ['WALL', 'WATER'], cost: 140,
   title: 'a U-tube equalises within 1 cm and rests',
-  audit: 'audit-liquids B1: no rule gives a liquid an upward velocity, and the rest test calls a column beside an empty arm inert (left 25, right 5, certified idle)',
+  audit: 'audit-liquids B1, B4: no rule gives a liquid an upward velocity, so the right arm never rises above the channel (B1); and each arm\'s partial top layer beads, so the tube never rests either (B4: audit-liquids\' own U-tube, whole layers in each arm, stopped at left 25, right 5 and certified that idle)',
   async run(e) {
     const O = OUTCOMES.utube, [nx, ny] = this.size;
     // two 2×2 arms (x 1-2 and 13-14, z 3-4) open to the top, joined at their feet by a 10-cell channel
@@ -30,7 +30,7 @@ export const utube = {
     const m0 = liquidMass(g), [L0, R0] = arms(g);
     setup(same(L0, 14) && same(R0, 0) && same(m0, 52 + 40), `start: arms at ${L0}, ${R0} (14, 0), mass ${m0} (92)`);
     const hist = [];
-    const { idleAt } = await advanceWatching(e, O.seconds, {
+    const { idleAt, resolution } = await advanceWatching(e, O.seconds, {
       every: 0.5,
       onChunk: async (t) => { if (every(t, 2)) { const [L, R] = arms(await e.read()); hist.push(`${r2(t)} s: left ${r3(L)}, right ${r3(R)}`); } },
     });
@@ -42,7 +42,7 @@ export const utube = {
       headline: `left ${r3(L)}, right ${r3(R)} cells: ${r2(cm(Math.abs(L - R)))} cm apart; ${idleAt === null ? 'not idle' : `idle at ${r2(idleAt)} s`}`,
       criteria: [
         crit('arms level', r2(cm(Math.abs(L - R))), cm(Math.abs(L - R)) <= O.levelCm, `≤ ${O.levelCm}`, 'cm'),
-        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's'),
+        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's', restNote(resolution)),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
       evidence: [`surface along the channel (z = 3), x = 1…14 at ${r2(e.time)} s:\n${profile.join(' ')}`, `arms over time:\n${hist.join('\n')}`],
@@ -66,7 +66,7 @@ export const partial = {
     const m0 = liquidMass(g);
     setup(same(m0, 392 + 70), `start: ${m0} cells of water (462)`);
     const flatAt = 3 + 70 / 196;
-    const { idleAt } = await advanceWatching(e, O.seconds, { every: 0.5 });
+    const { idleAt, resolution } = await advanceWatching(e, O.seconds, { every: 0.5 });
     g = await e.read();
     const [lo, hi] = levelRange(g, 1, 14, 1, 14), m = liquidMass(g);
     const top = mapText(16, 16, (x, z) => (x % 15 && z % 15 ? (wet(g, x, 3, z) ? '~' : '.') : '#'));
@@ -74,7 +74,7 @@ export const partial = {
       headline: `surface ${r2(lo)}…${r2(hi)} cells (${r2(cm(hi - lo))} cm; flat would be ${r2(flatAt)}); ${idleAt === null ? 'not idle' : `idle at ${r2(idleAt)} s`}`,
       criteria: [
         crit('surface flat', r2(cm(hi - lo)), cm(hi - lo) <= O.levelCm, `≤ ${O.levelCm}`, 'cm'),
-        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's'),
+        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's', restNote(resolution)),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
       evidence: [`top layer (y = 3) at ${r2(e.time)} s, ~ water, # wall:\n${top}`],
@@ -93,7 +93,7 @@ export const puddle = {
     let g = await e.read();
     const m0 = liquidMass(g);
     setup(same(m0, 8), `start: ${m0} cells of water (8)`);
-    const { idleAt, activity } = await advanceWatching(e, O.seconds, { every: 0.5 });
+    const { idleAt, activity, resolution } = await advanceWatching(e, O.seconds, { every: 0.5 });
     g = await e.read();
     const m = liquidMass(g), { nx, nz } = g;
     let edge = Infinity, wetCols = 0, high = 0;
@@ -106,7 +106,7 @@ export const puddle = {
     return {
       headline: `${wetCols} wet columns, ${edge === Infinity ? 'none' : edge} cells from the nearest wall, liquid up to y = ${high}; ${idleAt === null ? `not idle (${activity.awake} of ${activity.units} units awake)` : `idle at ${r2(idleAt)} s`}`,
       criteria: [
-        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's'),
+        crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's', restNote(resolution)),
         crit('has an edge (cells to the nearest wall)', edge === Infinity ? 0 : edge, edge >= O.wallGap && edge !== Infinity, `≥ ${O.wallGap}`, 'cells'),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
@@ -175,72 +175,171 @@ export const pipe = {
 };
 
 export const hole = {
-  name: 'hole', group: 'liquids', size: [48, 32, 8], needs: ['WALL', 'WATER'], cost: 120,
+  name: 'hole', group: 'liquids', size: [48, 32, 8], needs: ['WALL', 'WATER'], cost: 160,
   title: 'a hole pours one unbroken stream within 5 % of the √(2gh) parabola at every head',
-  audit: 'audit-liquids B7, B14: the 2×2×2 block dots a falling column into parcels, and the head scan saturates at ~16 cells, so a jet is single cells scattered over the floor',
+  audit: 'audit-liquids B7: the 2×2×2 block dots a falling column into parcels, a parcel on every other row at a time (alternate rows at alternate steps), so the jet is broken (B14\'s head-scan cap at ~16 cells doesn\'t bite here: every head is under 16)',
   async run(e) {
     const O = OUTCOMES.hole;
     // a 7×6 tank 18 deep (y 13-30) on a 13-cell pedestal, a 1-cell hole at the foot of its +x wall
     // (x 8, y 14, z 3): lean-sim hole, audit-liquids 2.1
     e.box([0, 0, 0], [8, 31, 7], 'WALL'); e.box([1, 13, 1], [7, 31, 6], 'AIR'); e.box([1, 13, 1], [7, 30, 6], 'WATER');
     e.box([8, 14, 3], [8, 14, 3], 'AIR');
-    const EXIT_X = 9, EXIT_Y = 14.5, ROW = 7;   // the hole's outer face and centre; the row measured, half way down
+    const EXIT_X = 9, EXIT_Y = 14.5, BAND = [6, 7, 8];   // the hole's outer face and centre; the rows measured, half way down
     const tankLevel = (g) => meanLevel(g, 1, 7, 1, 6);
     let g = await e.read();
     const m0 = liquidMass(g);
     setup(same(tankLevel(g), 31) && same(m0, 7 * 6 * 18) && e.kindOf(g.id[at(g, 8, 14, 3)]) === 'air', `start: level ${tankLevel(g)} (31), ${m0} cells (756), the hole open`);
-    const gCells = e.info.gravity / CELL_M;   // cells/s²
-    const flight = Math.sqrt(2 * (EXIT_Y - (ROW + 0.5)) / gCells);   // s from the hole to the row
-    const rows = [], slices = [];
-    let worstReach = 0, allUnbroken = true;
-    for (const t of O.checkpoints) {
-      // the head when the water now at the row left the hole
-      await e.advance(Math.max(0, t - flight - e.time));
-      const h = tankLevel(await e.read()) - EXIT_Y;
-      await e.advance(t - e.time);
-      g = await e.read();
-      // the stream's mean x at the row, in the hole's plane (z 2-4), past the wall
-      let sx = 0, sw = 0;
-      for (let z = 2; z <= 4; z++) for (let x = EXIT_X; x < g.nx; x++) { const a = g.amount[at(g, x, ROW, z)]; sx += a * (x + 0.5); sw += a; }
-      const ideal = 2 * Math.sqrt(Math.max(h, 0) * (EXIT_Y - (ROW + 0.5)));
-      const reach = sw > 0 ? sx / sw - EXIT_X : 0, err = ideal > 0 ? Math.abs(reach - ideal) / ideal : 1;
-      worstReach = Math.max(worstReach, err);
-      // unbroken: in the slice, liquid within a cell of liquid links the hole's mouth to the floor
-      const wetXY = (x, y) => { for (let z = 2; z <= 4; z++) if (g.amount[at(g, x, y, z)] > 0) return true; return false; };
+    const gCells = e.info.gravity / CELL_M, dt = 1 / e.info.stepsPerSecond;   // cells/s², s
+    const drop = (y) => EXIT_Y - (y + 0.5), flight = (y) => Math.sqrt((2 * drop(y)) / gCells);   // cells, s from the hole to row y
+    const ideal = (h, y) => 2 * Math.sqrt(Math.max(h, 0) * drop(y));   // the parabola's x at row y for head h
+    // the tank's level by game time, from every read, and the head when water now at row y left the hole
+    const levels = [];
+    const headAt = (t) => {
+      let k = levels.length - 1;
+      while (k > 0 && levels[k - 1][0] >= t) k--;
+      const [ta, la] = levels[Math.max(k - 1, 0)], [tb, lb] = levels[k];
+      return (tb > ta ? la + ((lb - la) * Math.min(Math.max(t - ta, 0), tb - ta)) / (tb - ta) : lb) - EXIT_Y;
+    };
+    // unbroken: in the hole's plane (z 2-4), liquid within two cells of liquid links the mouth to the floor
+    const linked = (gg) => {
+      const wetXY = (x, y) => { for (let z = 2; z <= 4; z++) if (gg.amount[at(gg, x, y, z)] > 0) return true; return false; };
       const seen = new Set(), stack = [];
       for (let y = 13; y <= 15; y++) if (wetXY(EXIT_X, y)) { stack.push([EXIT_X, y]); seen.add(EXIT_X + 64 * y); }
-      let floor = false;
       while (stack.length) {
         const [x, y] = stack.pop();
-        if (y <= 1) floor = true;
+        if (y <= 1) return true;
         for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
           const X = x + dx, Y = y + dy;
-          if (X < EXIT_X || Y < 0 || X >= g.nx || Y >= g.ny || seen.has(X + 64 * Y) || !wetXY(X, Y)) continue;
+          if (X < EXIT_X || Y < 0 || X >= gg.nx || Y >= gg.ny || seen.has(X + 64 * Y) || !wetXY(X, Y)) continue;
           seen.add(X + 64 * Y); stack.push([X, Y]);
         }
       }
-      allUnbroken &&= floor;
-      rows.push(`${t} s: head ${r2(h)} cells; ${sw > 0 ? `the stream ${r2(reach)} cells out at y = ${ROW}` : `no water crossing y = ${ROW}`} (√(2gh) parabola: ${r2(ideal)}${sw > 0 ? `, ${r2(100 * err)} % off` : ''}); ${floor ? 'unbroken' : 'broken'} from the hole to the floor`);
-      const par = (x) => EXIT_Y - ((x - EXIT_X) / 2) ** 2 / Math.max(h, 1e-6);   // the ideal stream's y at x
-      slices.push(`at ${t} s (# wall, ~ ≥ ½ cell, , less, + the ideal parabola):\n${sliceText(g, (x, y) => {
-        const id = g.id[at(g, x, y, 3)];
+      return false;
+    };
+    const rows = [], slices = [];
+    let worst = 0, measured = true, worstUnbroken = 1;
+    for (const t of O.checkpoints) {
+      // every step of the window [t - w/2, t + w/2], and of the flight time before it (the heads its water left at)
+      const t0 = t - O.window / 2, t1 = t + O.window / 2;
+      await e.advance(Math.max(0, t0 - flight(BAND[0]) - 2 * dt - e.time));
+      const acc = BAND.map(() => ({ x: 0, ideal: 0, a: 0 }));
+      let reads = 0, unbroken = 0, gt = null, ht = 0;
+      while (e.time < t1 - 1e-9) {
+        await e.advance(dt);
+        const gg = await e.read();
+        levels.push([e.time, tankLevel(gg)]);
+        if (e.time < t0 - 1e-9) continue;
+        reads++;
+        if (linked(gg)) unbroken++;
+        BAND.forEach((y, k) => {
+          const id = ideal(headAt(e.time - flight(y)), y);
+          for (let z = 2; z <= 4; z++) for (let x = EXIT_X; x < gg.nx; x++) {
+            const a = gg.amount[at(gg, x, y, z)];
+            if (a > 0) { acc[k].x += a * (x + 0.5 - EXIT_X); acc[k].ideal += a * id; acc[k].a += a; }
+          }
+        });
+        if (!gt && e.time >= t - 1e-9) { gt = gg; ht = headAt(e.time - flight(7)); }
+      }
+      const sx = acc.reduce((s, r) => s + r.x, 0), si = acc.reduce((s, r) => s + r.ideal, 0), sa = acc.reduce((s, r) => s + r.a, 0);
+      const err = sa > 0 ? Math.abs(sx / si - 1) : null, share = unbroken / reads;
+      if (err === null) measured = false; else worst = Math.max(worst, err);
+      worstUnbroken = Math.min(worstUnbroken, share);
+      const perRow = BAND.map((y, k) => (acc[k].a > 0 ? `y ${y}: ${r2(acc[k].x / acc[k].a)} (parabola ${r2(acc[k].ideal / acc[k].a)}, ${r2(acc[k].a)} cells·reads)` : `y ${y}: no water`)).join('; ');
+      rows.push(`${t} s ± ${O.window / 2} s (${reads} steps): head ${r2(headAt(t0))}…${r2(headAt(t1))} cells; ${err === null ? `no water crossed rows ${BAND[0]}-${BAND.at(-1)}: reach not measured` : `the stream ${r2(100 * err)} % off the √(2gh) parabola`} [${perRow}]; unbroken from the hole to the floor in ${unbroken} of ${reads} reads`);
+      const par = (x) => EXIT_Y - ((x - EXIT_X) / 2) ** 2 / Math.max(ht, 1e-6);   // the ideal stream's y at x
+      slices.push(`at ${r2(t)} s (# wall, ~ ≥ ½ cell, , less, + the ideal parabola):\n${sliceText(gt, (x, y) => {
+        const id = gt.id[at(gt, x, y, 3)];
         if (e.kindOf(id) === 'solid') return '#';
-        let a = 0; for (let z = 2; z <= 4; z++) a = Math.max(a, g.amount[at(g, x, y, z)]);
+        let a = 0; for (let z = 2; z <= 4; z++) a = Math.max(a, gt.amount[at(gt, x, y, z)]);
         if (a >= 0.5) return '~';
         if (a > 0) return ',';
         return x >= EXIT_X && Math.abs(par(x + 0.5) - (y + 0.5)) < 0.5 ? '+' : ' ';
       }, { y1: 20 })}`);
     }
+    g = await e.read();
     const m = liquidMass(g);
     return {
-      headline: rows.at(-1),
+      headline: rows.at(-1).replace(/ \[.*\]/, ''),
       criteria: [
-        crit('one unbroken stream at every checkpoint', allUnbroken ? 'yes' : 'no', allUnbroken, 'yes'),
-        crit('reach off the √(2gh) parabola (worst checkpoint)', r2(100 * worstReach), worstReach <= O.reachTol, `≤ ${100 * O.reachTol}`, '%'),
+        crit('one unbroken stream (worst window: share of its reads)', r2(worstUnbroken), worstUnbroken >= O.unbroken, `≥ ${O.unbroken}`),
+        crit('reach off the √(2gh) parabola (worst window)', measured ? r2(100 * worst) : 'not measured', measured && worst <= O.reachTol, `≤ ${100 * O.reachTol}`, measured ? '%' : ''),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
       evidence: [rows.join('\n'), ...slices],
-      numbers: { worstReach, unbroken: allUnbroken, massDrift: m - m0 },
+      numbers: { worstReach: measured ? worst : null, unbroken: worstUnbroken, massDrift: m - m0 },
+    };
+  },
+};
+
+export const splash = {
+  name: 'splash', group: 'liquids', size: [32, 16, 32], needs: ['WATER'], cost: 70,
+  title: 'a block dropped into a pool splashes at most 0.3 of its kinetic energy out of it',
+  audit: 'audit-liquids B5, B6: a liquid cell that lands gets a random sideways speed of 0.9 cells/step plus 0.3·|vy| (per component up to V_MAX), so a landing makes kinetic energy, not spends it (×160-210 from a 1-cell drop)',
+  expressible: (e) => (e.info.velocity ? null : `${e.name} reports no cell velocities`),
+  async run(e) {
+    const O = OUTCOMES.splash, S = 3;   // the pool's surface: layers y 0-2 are full
+    // a pool 3 deep over the whole floor, and a 4×4×2 block of water whose foot is 6 cells over it
+    e.box([0, 0, 0], [31, S - 1, 31], 'WATER');
+    e.box([14, S + 6, 14], [17, S + 7, 17], 'WATER');
+    // kinetic energy of liquid (fill or particle mass × speed², in cells·(m/s)²: the same ρ throughout, so
+    // the ratio is the energies'), all of it, and of what is at or above the surface and not falling: the splash
+    const water = e.id('WATER');
+    const energy = (g) => {
+      let all = 0, out = 0, lowest = Infinity, cellsOut = 0;
+      const inFlight = new Map();   // (amount bins each particle into its cell: the cell's own fill is the rest)
+      for (const p of g.particles ?? []) {
+        const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
+        if (inGrid(g, x, y, z)) inFlight.set(at(g, x, y, z), (inFlight.get(at(g, x, y, z)) ?? 0) + p.mass);
+      }
+      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
+        const i = at(g, x, y, z), a = g.id[i] === water ? g.amount[i] - (inFlight.get(i) ?? 0) : 0;
+        if (!(a > 0)) continue;
+        const vx = g.vel[3 * i], vy = g.vel[3 * i + 1], vz = g.vel[3 * i + 2], k = a * (vx * vx + vy * vy + vz * vz);
+        all += k;
+        if (y >= S && vy >= 0) { out += k; if (k > 0) cellsOut++; }
+        if (y >= S) lowest = Math.min(lowest, y);
+      }
+      for (const p of g.particles ?? []) {
+        const k = p.mass * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz);
+        all += k; if (p.y >= S && p.vy >= 0) out += k;
+        lowest = Math.min(lowest, Math.floor(p.y));
+      }
+      return { all, out, lowest, cellsOut };
+    };
+    let g = await e.read();
+    const m0 = liquidMass(g), k0 = energy(g);
+    setup(same(m0, 32 * 32 * S + 32) && k0.all < 1e-9, `start: ${m0} cells of water (${32 * 32 * S + 32}), kinetic energy ${k0.all} (0)`);
+    // fall to contact: the read before the block's foot reaches the surface layer (y = S) is the incoming
+    const dt = 1 / e.info.stepsPerSecond;
+    let incoming = 0, contact = null, fallTime = 0;
+    while (contact === null && e.time < 3) {
+      await e.advance(dt);
+      g = await e.read();
+      const k = energy(g);
+      if (k.lowest <= S) contact = e.time; else { incoming = k.all; fallTime = e.time; }
+    }
+    setup(contact !== null && incoming > 0, `the block never reached the pool (${r2(e.time)} s)`);
+    const vIdeal = Math.sqrt(2 * e.info.gravity * 6 * CELL_M);   // m/s at 6 cells of free fall
+    const vIn = Math.sqrt(incoming / 32);
+    let peak = 0, peakAt = 0, peakAll = 0, peakCells = 0;
+    const hist = [];
+    while (e.time < contact + O.seconds - 1e-9) {
+      await e.advance(dt);
+      g = await e.read();
+      const k = energy(g);
+      if (k.out > peak) { peak = k.out; peakAt = e.time - contact; peakCells = k.cellsOut; }
+      peakAll = Math.max(peakAll, k.all);
+      if (Math.round((e.time - contact) / dt) % Math.max(1, Math.round(0.05 / dt)) === 0) hist.push(`${r2(e.time - contact)} s: out of the pool ${r2(k.out / incoming)} of the incoming (${k.cellsOut} cells moving), all liquid ${r2(k.all / incoming)}`);
+    }
+    const ratio = peak / incoming, m = liquidMass(g);
+    return {
+      headline: `the block met the pool at ${r2(vIn)} m/s (free fall: ${r2(vIdeal)}); at its peak, ${r2(peakAt)} s after contact, the splash carried ${r2(ratio)} of that energy (${peakCells} cells); all liquid at most ${r2(peakAll / incoming)}`,
+      criteria: [
+        crit('splash kinetic energy / incoming (peak)', r2(ratio), ratio <= O.keRatio, `≤ ${O.keRatio}`),
+        crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
+      ],
+      evidence: [`fell ${r2(fallTime)} s to contact at ${r2(contact)} s; after contact:\n${hist.join('\n')}`],
+      numbers: { ratio, incoming, vIn, vIdeal, peakAll: peakAll / incoming, peakAt },
     };
   },
 };
@@ -261,12 +360,12 @@ export const yieldSlope = {
       return { peak, cols, map: mapText(16, 16, (x, z) => amountChar(g, x, z)) };
     };
     const water = await one('WATER'), mud = await one('MUD');
+    const taller = cm(mud.peak - water.peak);
     return {
       headline: `after ${O.seconds} s a 4³ block stands ${r2(mud.peak)} cells tall as mud over ${mud.cols} columns, ${r2(water.peak)} as water over ${water.cols}`,
       criteria: [
-        crit('mud mound height', r2(mud.peak), mud.peak >= O.mudPeak, `≥ ${O.mudPeak}`, 'cells'),
+        crit('mud stands taller than water', r2(taller), taller > O.tallerCm, `> ${O.tallerCm}`, 'cm'),
         crit('water spreads to a layer or less', r2(water.peak), water.peak <= O.waterPeak, `≤ ${O.waterPeak}`, 'cells'),
-        crit('mud stands taller than water', r2(mud.peak - water.peak), mud.peak > water.peak, '> 0', 'cells'),
       ],
       evidence: [`mud per column (tenths of a cell; A = 1, B = 2 …):\n${mud.map}`, `water per column:\n${water.map}`],
       numbers: { mudPeak: mud.peak, waterPeak: water.peak, mudCols: mud.cols, waterCols: water.cols },
@@ -274,4 +373,4 @@ export const yieldSlope = {
   },
 };
 
-export default [utube, partial, puddle, pipe, hole, yieldSlope];
+export default [utube, partial, puddle, pipe, hole, splash, yieldSlope];

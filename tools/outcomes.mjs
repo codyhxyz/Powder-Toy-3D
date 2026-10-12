@@ -21,22 +21,27 @@
 // Harness tests run in tools/harness/outcomes.html (a bare simulation; Vite in
 // harness mode on --port, default 5366), batched by grid size into browser runs
 // of under ~3 minutes each on SwiftShader. App tests (the default island)
-// boot the game itself (Vite on --port + 1, or --app-url: any build at any
-// origin, e.g. the frozen /v1/ build or a v2 candidate with --app-query
-// engine=v2). In the container, numbers are SwiftShader's, not representative
+// boot the game itself (Vite on --port + 1, or --app-url: a dev server of any
+// checkout, e.g. the frozen v1 checkout's or a v2 candidate's with --app-query
+// engine=v2; a bundled build needs __app.test.elements: engine-app.js).
+//
+// Every run first checks the roundness measure on footprints whose answer is
+// known (lib.js selfCheck: lattice discs read round, squares and diamonds
+// don't), and stops if it is broken; --self-check prints that table alone. In the container, numbers are SwiftShader's, not representative
 // of a device: run it on the Mac (Chrome, a real GPU: --real-gpu is the
 // default there) and paste the table back; on a phone or in Safari, open the
 // harness page by hand (tools/harness/outcomes.html, ?run=<group>).
 //
 // usage: node tools/outcomes.mjs [--engine v1|lean|v2] [--group liquids,solids,...] [--tests utube,puddle]
 //          [--strict [--phase P2]] [--json results.json] [--record] [--expected file.json] [--verbose] [--list]
-//          [--port N] [--app-url http://127.0.0.1:N] [--app-query engine=v2] [--seed N]
+//          [--port N] [--app-url http://127.0.0.1:N] [--app-query engine=v2] [--seed N] [--self-check]
 //   groups: liquids, solids, fire, blasts, world, census, controls
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TESTS, GROUPS, select } from './outcomes/tests/index.js';
 import { runTest } from './outcomes/run.js';
-import { OUTCOMES } from './outcomes/thresholds.js';
+import { OUTCOMES, ROUND_TOL } from './outcomes/thresholds.js';
+import { selfCheck } from './outcomes/lib.js';
 
 const argv = process.argv.slice(2);
 const opt = (k, d = null) => { const i = argv.indexOf(`--${k}`); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d; };
@@ -47,7 +52,7 @@ const SEED = Number(opt('seed', 1));
 const PHASES = ['P2', 'P3', 'P4', 'P5', 'P6'];
 const PHASE = opt('phase', 'P6');
 const BATCH_SECONDS = 150;   // a browser run's budget of tests' estimated cost (the ~3 minutes, less a pipeline build)
-const BUDGET_MS = 240000;    // a test's own wall-clock budget, past which it is an error
+const BUDGET_MS = 300000;    // a test's own wall-clock budget, past which it is an error (the pipe takes 150-230 s on a shared 4-CPU SwiftShader)
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const recordPath = opt('expected') ?? here(`./outcomes/expected-${ENGINE}.json`);
 const JSON_OUT = opt('json');
@@ -56,6 +61,17 @@ if (!['v1', 'lean', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean o
 if (!PHASES.includes(PHASE)) throw new Error(`--phase ${PHASES.join(', ')}`);
 if (flag('json') && !JSON_OUT) throw new Error('--json needs a path');
 const tests = select({ tests: opt('tests', ''), groups: opt('group', '') });
+
+// the roundness measure, on footprints whose answer is known
+{
+  const { bad, rows } = selfCheck(ROUND_TOL);
+  if (flag('self-check')) {
+    for (const [label, r] of rows) console.log(`${r.toFixed(3)}  ${label}`);
+    console.log(bad.length ? `roundness self-check FAILED: ${bad.join('; ')}` : `roundness self-check: ${rows.length} footprints as expected`);
+    process.exit(bad.length ? 1 : 0);
+  }
+  if (bad.length) { console.log(`roundness self-check FAILED (lib.js roundness): ${bad.join('; ')}`); process.exit(1); }
+}
 
 if (flag('list')) {
   for (const [g, names] of Object.entries(GROUPS)) {
@@ -71,7 +87,7 @@ const lean = readJSON(here('./outcomes/expected-lean.json'));
 
 // ---------------------------------------------------------------- running
 const results = [];
-let adapterLine = '';
+let adapterLine = '', engineInfo = null;
 const t0 = Date.now();
 const say = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0).padStart(4)} s] ${s}`);
 
@@ -79,6 +95,7 @@ if (ENGINE === 'lean') {
   const { createEngine } = await import('./outcomes/engine-lean.js');
   const engine = createEngine();
   adapterLine = engine.info.label;
+  engineInfo = engine.info;
   for (const t of tests) {
     const r = (t.kind ?? 'harness') === 'app' ? { name: t.name, title: t.title, group: t.group, phase: OUTCOMES[t.key ?? t.name]?.phase, engine: 'lean', status: 'n/a', reason: 'lean is a bare simulation: this test boots the game' }
       : await runTest(t, engine, { seed: SEED });
@@ -109,6 +126,7 @@ if (ENGINE === 'lean') {
           say(`browser run: ${b.tests.map((t) => t.name).join(', ')} (${b.key}, ~${b.cost} s on SwiftShader)`);
           const page = await openHarness(browser, vite, `/tools/harness/outcomes.html?engine=${ENGINE}`, { errors });
           if (!adapterLine) { const g = await gpuInfo(page); adapterLine = `${g.vendor} ${g.architecture} ${g.description}${g.isFallbackAdapter ? ' (fallback adapter: SwiftShader numbers, not representative)' : ''}`; }
+          engineInfo ??= await page.evaluate(() => window.__harness.run('info'));
           for (const t of b.tests) {
             const r = await page.evaluate(([n, o]) => window.__harness.run('outcome', n, o), [t.name, { seed: SEED, budgetMs: BUDGET_MS }]);
             // an error in the page (a GPU validation error, an exception) voids the result
@@ -172,7 +190,7 @@ for (const r of results) {
   console.log(`      ${r.headline ?? r.reason ?? ''}`);
   for (const c of r.criteria ?? []) {
     const l = leanOf(r.name, c.name);
-    console.log(`      ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.measured}${c.unit ? ` ${c.unit}` : ''} (want ${c.threshold}${c.unit ? ` ${c.unit}` : ''}; prototype ${l ? `${l.measured}${l.unit ? ` ${l.unit}` : ''}` : lean?.tests?.[r.name]?.status === 'n/a' ? 'n/a' : '—'})`);
+    console.log(`      ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: ${c.measured}${c.unit ? ` ${c.unit}` : ''}${c.note ? ` [${c.note}]` : ''} (want ${c.threshold}${c.unit ? ` ${c.unit}` : ''}; prototype ${l ? `${l.measured}${l.unit ? ` ${l.unit}` : ''}${l.note ? ` [${l.note}]` : ''}` : lean?.tests?.[r.name]?.status === 'n/a' ? 'n/a' : '—'})`);
   }
   if (r.status === 'n/a' || r.status === 'error') console.log(`      ${r.status === 'n/a' ? 'not expressible' : 'error'}: ${String(r.reason).split('\n').slice(0, 6).join('\n      ')}`);
   console.log(`      → ${verdict}${r.wallSeconds !== undefined ? `   [${r.gameSeconds ?? 0} game s, ${r.steps ?? 0} steps, ${r.wallSeconds} s wall]` : ''}`);
@@ -183,10 +201,15 @@ for (const r of results) {
 const failed = verdicts.filter((v) => v.bad);
 const count = (s) => results.filter((r) => r.status === s).length;
 console.log(`${results.length} tests: ${count('pass')} pass, ${count('fail')} fail, ${count('n/a')} n/a, ${count('error')} error; ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-console.log(failed.length ? `NOT AS RECORDED: ${failed.map((v) => `${v.name} (${v.verdict})`).join('; ')}` : flag('strict') ? 'strict: every required test passes' : 'as recorded');
+console.log(failed.length ? `NOT AS RECORDED: ${failed.map((v) => `${v.name} (${v.verdict})`).join('; ')}` : flag('strict') ? `strict: every required test of ${PHASE} and before passes` : 'as recorded');
+if (flag('strict')) {
+  if (results.length < TESTS.length) console.log(`(only ${results.length} of the bench's ${TESTS.length} tests ran: --group / --tests)`);
+  // what a phase's exit asks that this bench doesn't measure
+  console.log('not in this bench: P2\'s exit also asks for sim-check\'s race probe and list permutation (docs/webgpu.md I4.0), a settled lab certifying idle, the tick budgets and the user\'s motion sheet; P3\'s, a dam break that surges then rests and foam by row; P4\'s, vacuum pulling and a blast waking only the air grid');
+}
 
 if (JSON_OUT) {
-  writeFileSync(JSON_OUT, JSON.stringify({ engine: ENGINE, adapter: adapterLine, date: new Date().toISOString(), results }, null, 1));
+  writeFileSync(JSON_OUT, JSON.stringify({ engine: ENGINE, adapter: adapterLine, info: engineInfo, date: new Date().toISOString(), results }, null, 1));
   console.log(`results: ${JSON_OUT}`);
 }
 if (flag('record')) {
@@ -194,10 +217,10 @@ if (flag('record')) {
   if (errs.length) { console.log(`not recording: ${errs.map((r) => r.name).join(', ')} errored`); process.exit(1); }
   const keep = record?.tests ?? {};
   for (const r of results) {
-    keep[r.name] = { status: r.status, headline: r.headline ?? r.reason, criteria: (r.criteria ?? []).map(({ name, measured, unit, threshold, ok }) => ({ name, measured, unit, threshold, ok })) };
+    keep[r.name] = { status: r.status, headline: r.headline ?? r.reason, criteria: (r.criteria ?? []).map(({ name, measured, unit, threshold, ok, note }) => ({ name, measured, unit, threshold, ok, ...(note ? { note } : {}) })) };
   }
   const sorted = Object.fromEntries(Object.entries(keep).sort(([a], [b]) => (order.get(a) ?? 1e9) - (order.get(b) ?? 1e9)));
-  writeFileSync(recordPath, `${JSON.stringify({ engine: ENGINE, adapter: adapterLine, recorded: new Date().toISOString().slice(0, 10), tests: sorted }, null, 1)}\n`);
+  writeFileSync(recordPath, `${JSON.stringify({ engine: ENGINE, adapter: adapterLine, clock: engineInfo?.clock, recorded: new Date().toISOString().slice(0, 10), tests: sorted }, null, 1)}\n`);
   console.log(`recorded: ${recordPath}`);
   process.exit(0);
 }

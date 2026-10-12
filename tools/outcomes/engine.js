@@ -7,9 +7,14 @@
 //
 // An engine (every method that touches a GPU is async):
 //   name                       'v1', 'lean', 'v2', 'app'
-//   info                       { label, stepsPerSecond, gravity (m/s²), cellM (m), fillQuantum (cells:
-//                                1 for whole-cell liquids), pressure: bool (it has an air pressure field),
-//                                burning: bool (it marks burning fuel) }
+//   info                       { label, stepsPerSecond, clock (what a game second is on it, in words),
+//                                gravity (m/s²), cellM (m), fillQuantum (cells: 1 for whole-cell liquids),
+//                                velocity: bool (read() gives cell velocities), pressure: bool (it has an
+//                                air pressure field), airCell (cells per side of its air grid's cell: 1 per
+//                                cell, 4 for 4³ bricks), burning: bool (it marks burning fuel) }
+//                              A game second is the engine's own, at the speed its tests are judged at:
+//                              v2's is 60 ticks (Speed 1×) whatever Speed the box runs at (engine-v2.js),
+//                              so every time limit means the same thing on every run
 //   app                        true for the game at a URL (engine-app.js): app tests need it
 //   id(name)                   the engine's id for a bench element name (ELEMENTS below), or null when
 //                              it has no such element (the test is then not expressible: n/a)
@@ -45,9 +50,10 @@
 //
 // A Grid: { nx, ny, nz, id (Int32Array), amount (Float32Array: liquid in cells, its fill, plus any
 // particle in flight binned into the cell it is in), T (Float32Array °C) | null, burning (Uint8Array) |
-// null, pressure (Float32Array, the engine's units over ambient) | null, moving (Uint8Array: the cell
-// carries a velocity) | null, particles: [{ x, y, z, vx, vy, vz, mass, id }] }, cell (x, y, z) at
-// index x + nx·(z + nz·y) (at()).
+// null, pressure (Float32Array, the engine's units over ambient: an air cell's value in every grid cell
+// of it, not interpolated across its faces) | null, moving (Uint8Array: the cell carries a velocity) |
+// null, vel (Float32Array, 3 a cell: its velocity in m/s, x, y, z) | null, particles: [{ x, y, z (cells),
+// vx, vy, vz (m/s), mass (cells of liquid), id }] }, cell (x, y, z) at index x + nx·(z + nz·y) (at()).
 
 // Every bench scene's sides are multiples of these (today's supertile is 16×8×8 cells: shaders/common.js
 // SUPER_CELLS), so one scene runs on every engine.

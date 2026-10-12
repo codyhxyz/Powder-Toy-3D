@@ -3,12 +3,14 @@
 // tools/harness/sim-check.js drives it. Runs in tools/harness/outcomes.html.
 // Contract: ./engine.js.
 //   clock     NOMINAL_STEP_RATE steps a game second (physics.js: 4 a frame at
-//             60 fps), SIM_GRAVITY cells/step² at it: 432 m/s² at 0.30 m
-//             cells, today's ~44 g
+//             60 fps, the game's default), SIM_GRAVITY cells/step² at it:
+//             432 m/s² at 0.30 m cells, today's ~44 g
 //   box       one edit (sim.editKernel, docs/webgpu.md D6): A = (id, T, life,
 //             ctype + the cell's own seed), B = (v in cells/step, pressure);
 //             the bricks it changes are marked, so the next step wakes them
 //   liquids   whole cells (fill 1), so a level moves in steps of a cell
+//   read      B's velocity (cells/step) as m/s; B's pressure per cell (the
+//             air cell is the cell: airCell 1)
 //   burning   a flammable cell that has burnt some of its life (react.js: fuel
 //             at its ignition point burns `life` down)
 //   activity  sim.readCounts() AWAKE units and sim.idleCertified (D4's idle
@@ -67,7 +69,8 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
     name: 'v1',
     info: {
       label: `today's Simulation (src/sim.js), ${gpu.adapterInfo.vendor} ${gpu.adapterInfo.architecture}${gpu.adapterInfo.isFallbackAdapter ? ' (fallback adapter)' : ''}`,
-      stepsPerSecond: STEPS_PER_S, gravity: SIM_GRAVITY * STEPS_PER_S ** 2 * CELL_M, cellM: CELL_M, fillQuantum: 1, pressure: true, burning: true,
+      stepsPerSecond: STEPS_PER_S, clock: `${STEPS_PER_S} steps a game second (physics.js NOMINAL_STEP_RATE: 4 a frame at 60 fps)`,
+      gravity: SIM_GRAVITY * STEPS_PER_S ** 2 * CELL_M, cellM: CELL_M, fillQuantum: 1, velocity: true, pressure: true, airCell: 1, burning: true,
     },
     id: idOf,
     nameOf: (id) => { const k = ELEMENTS[id]?.key ?? `#${id}`; return BENCH[k] ?? k; },
@@ -107,8 +110,9 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       const { nx, ny, nz } = sim.g, n = nx * ny * nz;
       const g = {
         nx, ny, nz, id: new Int32Array(n), amount: new Float32Array(n), T: new Float32Array(n),
-        burning: new Uint8Array(n), pressure: new Float32Array(n), moving: new Uint8Array(n), particles: [],
+        burning: new Uint8Array(n), pressure: new Float32Array(n), moving: new Uint8Array(n), vel: new Float32Array(3 * n), particles: [],
       };
+      const ms = CELL_M * STEPS_PER_S;   // cells/step to m/s
       for (let i = 0; i < n; i++) {
         const t = texel[i], id = Math.floor(A[t] + 0.5), e = ELEMENTS[id];
         g.id[i] = id;
@@ -117,6 +121,7 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
         if (e?.ignite > 0 && e.life > 0 && A[t + 2] < e.life) g.burning[i] = 1;
         g.pressure[i] = B[t + 3];
         if (B[t] || B[t + 1] || B[t + 2]) g.moving[i] = 1;
+        g.vel[3 * i] = B[t] * ms; g.vel[3 * i + 1] = B[t + 1] * ms; g.vel[3 * i + 2] = B[t + 2] * ms;
       }
       return g;
     },

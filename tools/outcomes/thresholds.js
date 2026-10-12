@@ -4,7 +4,8 @@
 // (CLAUDE.md) or the CPU prototype (tools/v2/lean-sim.mjs, whose World the
 // bench runs as `--engine lean`, so these are the prototype's thresholds too).
 // Times are game seconds on the engine's own clock (engine.info.stepsPerSecond:
-// today's 240 steps a second, v2's 60 ticks). "lean" in a comment is the
+// today's 240 steps a second; v2's 60 ticks, at Speed 1× whatever Speed the box
+// runs at: engine-v2.js). "lean" in a comment is the
 // prototype's number on its own scene (docs/v2/evidence/lean-sim.log); the
 // bench's scenes are smaller (SwiftShader), and `--engine lean` measures the
 // prototype on exactly the bench's scenes.
@@ -23,7 +24,9 @@ export const LEVEL_CM = 1;
 // A 2-D footprint is round when its reach along the diagonals is within 15 %
 // of its reach along the axes: docs/v2.md 11 P4's blast exit ("a blast's
 // diagonal/axis ratio within 15 %"), the only roundness tolerance v2 states.
-// A square measures 1.41, a diamond 0.71; lean's heaps 1.02.
+// lib.js roundness() reads it from the footprint's centroid with sub-cell rays
+// and against the roundest footprint the lattice allows with as many cells, so a
+// round footprint reads 1: squares read 1.18-1.41, diamonds 0.70-0.84.
 export const ROUND_TOL = 0.15;
 
 export const OUTCOMES = {
@@ -62,21 +65,38 @@ export const OUTCOMES = {
   },
   hole: {
     phase: 'P3',   // docs/v2.md 11 P3's exit: "the hole jet lands within 5 % of the √(2gh) parabola at every head"
-    // the stream's mean x half way down, against x(y) = 2√(h·d) from the hole's outer face (Torricelli's
-    // speed √(2gh) on a parabola under the same g, so the reach doesn't depend on g)
+    // the stream's mass-weighted x on rows 6-8 (half way down), against x(y) = 2√(h·d) from the hole's outer
+    // face with h the head when that water left the hole (Torricelli's speed √(2gh) on a parabola under the
+    // same g, so the reach doesn't depend on g)
     reachTol: 0.05,
     // game seconds, from once the first water has had time to reach the floor (at 2 g the drop from the
     // hole takes 0.67 s, and the first parcels leave slow while the flow through the hole builds up) as the
-    // head falls from ~13 to ~7 cells
+    // head falls from ~13 to ~7 cells; each a window this long of consecutive steps (every step read, so a
+    // stream that moves in parcels on alternate rows at alternate steps is seen on every row)
     checkpoints: [1.5, 2.5, 3.5],
+    window: 0.25,
+    // unbroken from the hole to the floor in this share of a window's reads (one stray read is not a break)
+    unbroken: 0.9,
+  },
+  splash: {
+    phase: 'P3',   // docs/v2.md 4.2 and 4.4 ("splash KE ≤ 0.3 × incoming"), P3's exit
+    // a 4×4×2 block of water dropped 6 cells into a pool 3 deep: the kinetic energy of the liquid that the
+    // impact sends up or sideways out of the pool (at or above its surface, not falling), at its peak over
+    // `seconds` after contact, over the block's at contact
+    keRatio: 0.3,
+    seconds: 0.75,
   },
   yield: {
     phase: 'P2',
-    // "slope rises with yield" (docs/v2.md 4.4); mud is a Bingham plastic with a yield stress of tens of Pa
-    // (Coussot, Mudflow Rheology and Dynamics, 1997: what today's MUD row cites). A 4³ block of it holds a
-    // mound at least this tall; water's spreads to a layer or less. No prototype number (lean has one liquid).
+    // "slope rises with yield" (docs/v2.md 4.4): from a 4³ block, mud stands taller than water by more than
+    // the bench's level tolerance, and water spreads to a layer or less. How tall mud stands is v2's dead band
+    // (5.4: "rest and yield are one knob", re-tuned on the motion sheet in P3), not a number the bench can
+    // derive: real mud (a Bingham plastic of tens of Pa, Coussot, Mudflow Rheology and Dynamics, 1997, which
+    // today's MUD row cites) would hold a mound of only ~0.1 m (a third of a cell) from this block at 2 g;
+    // a game mud that reads as mud from the god view is a game multiplier on that. No prototype number (lean
+    // has one liquid).
     seconds: 5,
-    mudPeak: 2,
+    tallerCm: LEVEL_CM,
     waterPeak: 1,
   },
   // ---- solids (docs/v2.md 5.3, 5.5 R1-R2) ----
@@ -88,13 +108,15 @@ export const OUTCOMES = {
   },
   heap: {
     phase: 'P2',
-    grains: 432,
+    grains: 432,   // exactly: the last layer of the pour is partial
     // R2's classes: drop 1 = 45° (free-flowing: sand's measured 34° quantised), drop 2 = 63° (cohesive: wheat
-    // flour). Slope is peak / axis reach (lean: sand 0.89, flour 1.79)
+    // flour). Slope is peak / the radius of a disc of the footprint's area (lean-sim's own heap test reads
+    // peak / axis reach: sand 0.89, flour 1.79)
     slope: { SAND: [0.7, 1.3], FLOUR: [1.4, 2.6] },
-    // idle after the pour ends (lean: sand 1.55 s, flour 2.65 s on its own heaps; 0.93 s and 1.57 s on the
-    // bench's)
+    // idle after the pour ends (lean: sand 1.55 s, flour 2.65 s on its own heaps; on the bench's, see
+    // expected-lean.json), read every `every` s
     restSeconds: 2.5,
+    every: 0.1,
   },
   throw: {
     phase: 'P2',
@@ -107,10 +129,16 @@ export const OUTCOMES = {
   // ---- fire (docs/v2.md 5.5 R8) ----
   flameWood: {
     phase: 'P2',
-    // "Two 1,000 °C flames now light a wooden block within a second or two" (R8). TPT's touchstone: its
-    // FIRE update lights a neighbour with chance Flammable/1000 a frame, and WOOD's Flammable is 20: 2 % a
-    // frame per touching flame at 60 fps, ~0.8 s for one flame, ~0.4 s for two
+    // "Two 1,000 °C flames now light a wooden block within a second or two" (R8). R8 makes ignition a
+    // chance (flammability per second per flame) and FIRE short-lived (~0.5-1 s) and buoyant, so one trial
+    // proves little: the scene is `trials` blocks in walled bays, each with its own two flames, and at least
+    // `lit` of them must light within `seconds`. A design that lights 19 times in 20 passes 97 % of the time,
+    // 9 in 10 89 %, a coin flip 11 %. TPT's touchstone: FIRE lives 120-169 frames and lights a neighbour
+    // with chance Flammable/1000 a frame (WOOD's Flammable is 20: 2 % a frame per touching flame at 60 fps),
+    // so two flames light wood within 2 s 99 % of the time
     seconds: 2,
+    trials: 6,
+    lit: 5,
   },
   // ---- blasts (docs/v2.md 5.5 R10, R12) ----
   blast: {
@@ -124,6 +152,9 @@ export const OUTCOMES = {
     seconds: 10,
     // a sealed WALL vessel lets out nothing: the air outside stays within 1 % of the inside's excess
     leak: 0.01,
+    // the vessel's shell lies on these cells' faces, with a whole one of free air outside it: an engine whose
+    // air cell (engine.info.airCell, v2's 4³ bricks) doesn't divide it can't resolve the shell (n/a)
+    airCell: 4,
   },
   // ---- the world (docs/v2.md 4.4 "a settled world with water in it certifies idle", 5.6) ----
   settledWorld: {
@@ -141,7 +172,7 @@ export const OUTCOMES = {
   },
   // ---- positive controls: scenes every engine handles, so a broken adapter can't pass for broken physics ----
   // lean: 3 full layers settle 0.024 cell low (its compression) and rest at 2.55 s
-  tankStill: { phase: 'P2', seconds: 4, hidden: 0.05 },
+  tankStill: { phase: 'P2', seconds: 4, hidden: 0.05, every: 0.1 },
   sandFalls: { phase: 'P2', seconds: 1.5 },
   woodBurns: { phase: 'P2', seconds: 1 },
 };

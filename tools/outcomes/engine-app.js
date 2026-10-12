@@ -1,14 +1,19 @@
 // The outcome bench's engine on the game itself, at a URL (tools/outcomes.mjs
 // runs it in Node over a Playwright page): the app tests (tests/world.js) boot
 // a scene the game makes for itself (?map=island&win=64) and measure it through
-// window.__app only, so the same test runs on any build served at any URL:
-// today's checkout, the frozen /v1/ build, a v2 candidate (--app-query
-// engine=v2). Contract: ./engine.js; box() is not offered (the scene is the
-// game's), and read() isn't either (a world window is half a million cells:
-// census() counts in the page).
-//   clock     the game's steps a second: sim.stepsPerSecond when it has one
-//             (v2's tick), else settings.steps a frame at 60 frames a second
-//             (app.js tick; physics.js NOMINAL_STEP_RATE)
+// window.__app, so the same test runs on any checkout's dev server: this one,
+// the frozen v1 checkout (/home/user/wt/v1 here), a v2 candidate's (--app-query
+// engine=v2). The element table comes from __app.test.elements ([{ key, kind }])
+// when the build offers it, else from the page's own /src/elements.js, which
+// only a dev server serves: a bundled build (a deploy, the /v1/ build) needs
+// the hook (today's app has none, so --app-url must be a dev server). Contract:
+// ./engine.js; box() is not offered (the scene is the game's), and read()
+// isn't either (a world window is half a million cells: census() counts in
+// the page).
+//   clock     the game's steps a game second: sim.stepsPerSecond when it has
+//             one (v2's 60 ticks, Speed 1×: engine-v2.js), else settings.steps
+//             a frame at 60 frames a second (app.js tick; physics.js
+//             NOMINAL_STEP_RATE)
 //   advance   __app.test.step(n) on the parked page (CLAUDE.md: manual mode)
 //   activity  __app.sim.readCounts() and __app.sim.idleCertified
 import { newTestPage } from '../browser.mjs';
@@ -28,7 +33,7 @@ export function createEngine(browser, { base, query = '', errors = [] }) {
   let page = null, meta = null, clock = stepClock(240);
   const engine = {
     name: 'app', app: true,
-    info: { label: '', stepsPerSecond: 240, gravity: NaN, cellM: 0.3, fillQuantum: 1, pressure: false, burning: false },
+    info: { label: '', stepsPerSecond: 240, clock: '', gravity: NaN, cellM: 0.3, fillQuantum: 1, velocity: false, pressure: false, airCell: null, burning: false },
     id: (name) => { const k = TODAY[name] ?? name, i = meta?.keys.indexOf(k) ?? -1; return i >= 0 ? i : null; },
     nameOf: (id) => { const k = meta?.keys[id] ?? `#${id}`; return Object.entries(TODAY).find(([, t]) => t === k)?.[0] ?? k; },
     kindOf: (id) => KINDS[meta?.kinds[id]] ?? 'solid',
@@ -52,16 +57,22 @@ export function createEngine(browser, { base, query = '', errors = [] }) {
         const a = window.__app;
         await a.test.ready();
         a.test.park();
-        const { ELEMENTS } = await import('/src/elements.js');
+        // (a build's own table when it offers one; else the checkout's module, which only a dev server serves)
+        const table = a.test.elements ?? (await import('/src/elements.js').catch((err) => {
+          throw new Error(`no element table: __app.test.elements is missing and /src/elements.js didn't load (${err.message}): --app-url must be a dev server of a checkout`);
+        })).ELEMENTS;
         const info = a.gpu?.adapterInfo ?? {};
         return {
-          keys: ELEMENTS.map((e) => e?.key ?? ''), kinds: ELEMENTS.map((e) => e?.kind ?? 1),
-          sps: a.sim.stepsPerSecond ?? a.settings.steps * 60, size: [a.sim.g.nx, a.sim.g.ny, a.sim.g.nz],
+          keys: table.map((e) => e?.key ?? ''), kinds: table.map((e) => e?.kind ?? 1),
+          sps: a.sim.stepsPerSecond ?? a.settings.steps * 60, steps: a.sim.stepsPerSecond ? null : a.settings.steps, size: [a.sim.g.nx, a.sim.g.ny, a.sim.g.nz],
           adapter: `${info.vendor ?? ''} ${info.architecture ?? ''}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}`,
         };
       });
       clock = stepClock(meta.sps);
-      Object.assign(engine.info, { label: `the game at ${base}${url}${query ? ` +${query}` : ''}, ${meta.adapter}`, stepsPerSecond: meta.sps });
+      Object.assign(engine.info, {
+        label: `the game at ${base}${url}${query ? ` +${query}` : ''}, ${meta.adapter}`, stepsPerSecond: meta.sps,
+        clock: meta.steps ? `${meta.sps} steps a game second (${meta.steps} a frame at 60 fps)` : `${meta.sps} ticks a game second`,
+      });
     },
     box() { throw new Error('app: the scene is the game\'s own (no box writes)'); },
     async advance(seconds) {
