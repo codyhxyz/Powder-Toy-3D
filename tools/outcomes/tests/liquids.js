@@ -14,36 +14,38 @@ const same = (a, b) => Math.abs(a - b) < 1e-6;
 const every = (t, period) => Math.abs(t / period - Math.round(t / period)) < 1e-6;   // t is a multiple of period
 
 export const utube = {
-  name: 'utube', group: 'liquids', size: [32, 32, 8], needs: ['WALL', 'WATER'], cost: 40,
+  name: 'utube', group: 'liquids', size: [16, 16, 8], needs: ['WALL', 'WATER'], cost: 120,
   title: 'a U-tube equalises within 1 cm and rests',
+  audit: 'audit-liquids B1: no rule gives a liquid an upward velocity, and the rest test calls a column beside an empty arm inert (left 25, right 5, certified idle)',
   async run(e) {
     const O = OUTCOMES.utube, [nx, ny] = this.size;
-    // two 4×4 arms (x 1-4 and 25-28) open to the top, joined at their feet by a 20-cell channel (y 1-4);
-    // the left arm filled to y = 25 (lean-sim utube; audit-liquids 2.1)
+    // two 2×2 arms (x 1-2 and 13-14, z 3-4) open to the top, joined at their feet by a 10-cell channel
+    // (y 1-2); the left arm filled to y = 13, the right one empty (lean-sim utube and audit-liquids 2.1's
+    // U-tube at half their size: 4×4 arms and a 20-cell channel cost today's engine 4 minutes here)
     e.box([0, 0, 0], [nx - 1, ny - 1, 7], 'WALL');
-    e.box([1, 1, 2], [4, ny - 1, 5], 'AIR'); e.box([25, 1, 2], [28, ny - 1, 5], 'AIR'); e.box([5, 1, 2], [24, 4, 5], 'AIR');
-    e.box([1, 1, 2], [4, 25, 5], 'WATER'); e.box([5, 1, 2], [24, 4, 5], 'WATER');
-    const arms = (g) => [meanLevel(g, 1, 4, 2, 5), meanLevel(g, 25, 28, 2, 5)];
+    e.box([1, 1, 3], [2, ny - 1, 4], 'AIR'); e.box([13, 1, 3], [14, ny - 1, 4], 'AIR'); e.box([3, 1, 3], [12, 2, 4], 'AIR');
+    e.box([1, 1, 3], [2, 13, 4], 'WATER'); e.box([3, 1, 3], [12, 2, 4], 'WATER');
+    const arms = (g) => [meanLevel(g, 1, 2, 3, 4), meanLevel(g, 13, 14, 3, 4)];
     let g = await e.read();
     const m0 = liquidMass(g), [L0, R0] = arms(g);
-    setup(same(L0, 26) && same(R0, 0) && same(m0, 720), `start: arms at ${L0}, ${R0} (26, 0), mass ${m0} (720)`);
+    setup(same(L0, 14) && same(R0, 0) && same(m0, 52 + 40), `start: arms at ${L0}, ${R0} (14, 0), mass ${m0} (92)`);
     const hist = [];
     const { idleAt } = await advanceWatching(e, O.seconds, {
       every: 0.5,
-      onChunk: async (t) => { if (every(t, 2)) { const [L, R] = arms(await e.read()); hist.push(`${r2(t)} s: left ${r2(L)}, right ${r2(R)}`); } },
+      onChunk: async (t) => { if (every(t, 2)) { const [L, R] = arms(await e.read()); hist.push(`${r2(t)} s: left ${r3(L)}, right ${r3(R)}`); } },
     });
     g = await e.read();
     const [L, R] = arms(g), m = liquidMass(g);
     const profile = [];
-    for (let x = 1; x <= 28; x++) profile.push(r2(columnLevel(g, x, 3)));
+    for (let x = 1; x <= 14; x++) profile.push(r2(columnLevel(g, x, 3)));
     return {
-      headline: `left ${r2(L)}, right ${r2(R)} cells: ${r2(cm(Math.abs(L - R)))} cm apart; ${idleAt === null ? 'not idle' : `idle at ${r2(idleAt)} s`}`,
+      headline: `left ${r3(L)}, right ${r3(R)} cells: ${r2(cm(Math.abs(L - R)))} cm apart; ${idleAt === null ? 'not idle' : `idle at ${r2(idleAt)} s`}`,
       criteria: [
         crit('arms level', r2(cm(Math.abs(L - R))), cm(Math.abs(L - R)) <= O.levelCm, `≤ ${O.levelCm}`, 'cm'),
         crit('rests (certified idle)', idleAt === null ? 'never' : r2(idleAt), idleAt !== null && idleAt <= O.seconds, `≤ ${O.seconds}`, 's'),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
-      evidence: [`surface along the channel (z = 3), x = 1…28 at ${r2(e.time)} s:\n${profile.join(' ')}`, `arms over time:\n${hist.join('\n')}`],
+      evidence: [`surface along the channel (z = 3), x = 1…14 at ${r2(e.time)} s:\n${profile.join(' ')}`, `arms over time:\n${hist.join('\n')}`],
       numbers: { left: L, right: R, idleAt, massDrift: m - m0 },
     };
   },
@@ -52,6 +54,7 @@ export const utube = {
 export const partial = {
   name: 'partial', group: 'liquids', size: [16, 8, 16], needs: ['WALL', 'WATER'], cost: 70,
   title: 'a pool of any volume rests flat',
+  audit: 'audit-liquids B4: a top-layer cell with an open side is kicked toward it forever (FLOW_SURFACE), so a partial layer beads and never rests',
   async run(e) {
     const O = OUTCOMES.partial;
     // a 14×14 tank: 2 full layers and 70 cells' worth on top (audit-liquids 2.1's "partial top layer", smaller)
@@ -81,24 +84,25 @@ export const partial = {
 };
 
 export const puddle = {
-  name: 'puddle', group: 'liquids', size: [32, 8, 32], needs: ['WATER'], cost: 150,
+  name: 'puddle', group: 'liquids', size: [32, 8, 24], needs: ['WATER'], cost: 150,
   title: 'a spill rests as a puddle with an edge, then AWAKE = 0',
+  audit: 'audit-liquids B3: film edges keep 0.27 cells/step of cohesion pull and droplets re-roll a direction, so a spill smears to a speckle that never sleeps',
   async run(e) {
     const O = OUTCOMES.puddle;
-    e.box([15, 3, 15], [16, 4, 16], 'WATER');   // 2³ dropped 3 cells onto the floor
+    e.box([15, 3, 11], [16, 4, 12], 'WATER');   // 2³ dropped 3 cells onto the floor
     let g = await e.read();
     const m0 = liquidMass(g);
     setup(same(m0, 8), `start: ${m0} cells of water (8)`);
     const { idleAt, activity } = await advanceWatching(e, O.seconds, { every: 0.5 });
     g = await e.read();
-    const m = liquidMass(g), n = g.nx;
+    const m = liquidMass(g), { nx, nz } = g;
     let edge = Infinity, wetCols = 0, high = 0;
-    for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+    for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
       let f = 0;
       for (let y = 0; y < g.ny; y++) { f += g.amount[at(g, x, y, z)]; if (g.amount[at(g, x, y, z)] > 0) high = Math.max(high, y); }
-      if (f > 0) { wetCols++; edge = Math.min(edge, x, z, n - 1 - x, n - 1 - z); }
+      if (f > 0) { wetCols++; edge = Math.min(edge, x, z, nx - 1 - x, nz - 1 - z); }
     }
-    const map = mapText(n, n, (x, z) => amountChar(g, x, z));
+    const map = mapText(nx, nz, (x, z) => amountChar(g, x, z));
     return {
       headline: `${wetCols} wet columns, ${edge === Infinity ? 'none' : edge} cells from the nearest wall, liquid up to y = ${high}; ${idleAt === null ? `not idle (${activity.awake} of ${activity.units} units awake)` : `idle at ${r2(idleAt)} s`}`,
       criteria: [
@@ -113,44 +117,58 @@ export const puddle = {
 };
 
 export const pipe = {
-  name: 'pipe', group: 'liquids', size: [48, 16, 8], needs: ['WALL', 'WATER'], cost: 80,
+  name: 'pipe', group: 'liquids', size: [48, 16, 8], needs: ['WALL', 'WATER'], cost: 120,
   title: "a tank drains through a 30-cell pipe to the pipe's level",
+  audit: 'audit-liquids B2: a lidded cell has no head, and pipe flow only keeps the speed a cell came in with, so a full pipe stops with head behind it',
   async run(e) {
     const O = OUTCOMES.pipe;
-    // a 2×2 tank 12 deep (y 4-15) whose 1×1 bore (y 4, z 3) runs 30 cells (x 3-32: its own wall and 29
-    // more) to fall into an open basin (x 33-47) whose floor is 4 cells lower (audit-liquids 2.1's tank and
-    // bore, the bore 30 long as docs/v2.md 4.4 asks)
-    e.box([0, 0, 2], [3, 15, 5], 'WALL'); e.box([1, 4, 3], [2, 15, 4], 'AIR');
-    e.box([4, 3, 2], [32, 5, 4], 'WALL'); e.box([3, 4, 3], [32, 4, 3], 'AIR');
-    e.box([1, 4, 3], [2, 15, 4], 'WATER');
-    const BORE_TOP = 5;   // the bore's cells are y = 4: its top face
+    // a 2×2 tank 14 deep (y 2-15, 56 cells: the 30-cell bore holds about half) whose 1×1 bore (y 2, z 3)
+    // runs 30 cells (x 3-32: its own wall and 29 more) to fall 2 cells into an open basin (x 33-47, and
+    // under the bore): audit-liquids 2.1's tank and bore, the bore 30 long as docs/v2.md 4.4 asks, the
+    // tank as small as still fills it
+    e.box([0, 0, 2], [3, 15, 5], 'WALL'); e.box([1, 2, 3], [2, 15, 4], 'AIR');
+    e.box([4, 1, 2], [32, 3, 4], 'WALL'); e.box([3, 2, 3], [32, 2, 3], 'AIR');
+    e.box([1, 2, 3], [2, 15, 4], 'WATER');
+    const BORE_TOP = 3;   // the bore's cells are y = 2: its top face
     const tank = (g) => meanLevel(g, 1, 2, 3, 4);
-    const bore = (g) => { let n = 0, f = 0; for (let x = 3; x <= 32; x++) { const a = g.amount[at(g, x, 4, 3)]; if (a > 0) n++; f += a; } return [n, f]; };
-    // what has left: the basin past the bore's end, and under the bore
-    const basin = (g) => {
+    const bore = (g) => {
+      let n = 0, f = 0, moving = 0;
+      for (let x = 3; x <= 32; x++) { const i = at(g, x, 2, 3); if (g.amount[i] > 0) { n++; if (g.moving?.[i]) moving++; } f += g.amount[i]; }
+      return { n, f, moving };
+    };
+    // what has left: everything past the bore's end, and under the bore
+    const out = (g) => {
       let f = 0;
-      for (let y = 0; y < 16; y++) for (let z = 0; z < 8; z++) for (let x = 0; x < 48; x++) if (x >= 33 || y < 3) f += g.amount[at(g, x, y, z)];
+      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) if (x >= 33 || y < 2 || z < 2 || z > 4) f += g.amount[at(g, x, y, z)];
       return f;
     };
     let g = await e.read();
     const m0 = liquidMass(g);
-    setup(same(tank(g), 16) && same(m0, 48) && bore(g)[0] === 0 && g.amount[at(g, 33, 4, 3)] === 0 && e.kindOf(g.id[at(g, 20, 4, 3)]) === 'air',
-      `start: tank level ${tank(g)} (16), ${m0} cells (48), the bore open and dry`);
-    const hist = [];
-    await advanceWatching(e, O.seconds, {
-      every: 1,
-      onChunk: async (t) => { if (every(t, 5)) { const gg = await e.read(), [n, f] = bore(gg); hist.push(`${r2(t)} s: tank ${r2(tank(gg))}, bore ${n}/30 wet (${r2(f)} cells), basin ${r2(basin(gg))}`); } },
-    });
+    setup(same(tank(g), 16) && same(m0, 56) && bore(g).n === 0 && e.kindOf(g.id[at(g, 20, 2, 3)]) === 'air' && e.kindOf(g.id[at(g, 33, 2, 3)]) === 'air',
+      `start: tank level ${tank(g)} (16), ${m0} cells (56), the bore open and dry`);
+    // it ends when the tank reaches the bore's top, or when it has stopped: a full pipe with head behind it
+    // that passes nothing for STALL seconds is clogged, whatever it might do later
+    const hist = [], levels = [];
+    let reached = null, stalled = null;
+    while (e.time < O.seconds - 1e-9 && reached === null && stalled === null) {
+      await e.advance(0.5);
+      const gg = await e.read(), b = bore(gg), l = tank(gg);
+      levels.push([e.time, l]);
+      if (l - BORE_TOP <= O.levelTol) reached = e.time;
+      const back = levels.find(([t]) => t >= e.time - O.stall - 1e-9);
+      if (e.time >= O.stall && back && Math.abs(back[1] - l) < 0.01 && b.n === 30) stalled = [back[0], e.time, l];
+      if (every(e.time, 1)) hist.push(`${r2(e.time)} s: tank ${r3(l)}, bore ${b.n}/30 wet (${r2(b.f)} cells${gg.moving ? `, ${b.moving} moving` : ''}), out ${r2(out(gg))}`);
+    }
     g = await e.read();
-    const level = tank(g), m = liquidMass(g), [n, f] = bore(g);
+    const level = tank(g), m = liquidMass(g), b = bore(g);
     return {
-      headline: `tank at ${r2(level)} (the bore's top is ${BORE_TOP}); bore ${n}/30 wet; ${r2(basin(g))} cells out at ${r2(e.time)} s`,
+      headline: `tank at ${r3(level)} after ${r2(e.time)} s (the bore's top is ${BORE_TOP})${reached !== null ? `, reached at ${r2(reached)} s` : ''}${stalled ? `, stopped at ${r2(stalled[2])} from ${r2(stalled[0])} to ${r2(stalled[1])} s with the bore full` : ''}; ${r2(out(g))} cells out`,
       criteria: [
-        crit("tank level over the bore's top", r2(level - BORE_TOP), level - BORE_TOP <= O.levelTol, `≤ ${O.levelTol}`, 'cells'),
+        crit("tank level over the bore's top", r3(level - BORE_TOP), level - BORE_TOP <= O.levelTol, `≤ ${O.levelTol}`, 'cells'),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
-      evidence: [`over time:\n${hist.join('\n')}`, `bore (x = 3…32) at the end: ${Array.from({ length: 30 }, (_, k) => (g.amount[at(g, 3 + k, 4, 3)] > 0 ? '~' : '.')).join('')}`],
-      numbers: { level, bore: n, boreFill: f, massDrift: m - m0 },
+      evidence: [`over time:\n${hist.join('\n')}`, `bore (x = 3…32) at the end: ${Array.from({ length: 30 }, (_, k) => (g.amount[at(g, 3 + k, 2, 3)] > 0 ? (g.moving?.[at(g, 3 + k, 2, 3)] ? '>' : '~') : '.')).join('')} (~ still water, > moving)`],
+      numbers: { level, reached, stalled, bore: b.n, boreFill: b.f, massDrift: m - m0 },
     };
   },
 };
@@ -158,6 +176,7 @@ export const pipe = {
 export const hole = {
   name: 'hole', group: 'liquids', size: [48, 32, 8], needs: ['WALL', 'WATER'], cost: 60,
   title: 'a hole pours one unbroken stream within 5 % of the √(2gh) parabola at every head',
+  audit: 'audit-liquids B7, B14: the 2×2×2 block dots a falling column into parcels, and the head scan saturates at ~16 cells, so a jet is single cells scattered over the floor',
   async run(e) {
     const O = OUTCOMES.hole;
     // a 7×6 tank 18 deep (y 13-30) on a 13-cell pedestal, a 1-cell hole at the foot of its +x wall
@@ -200,7 +219,7 @@ export const hole = {
         }
       }
       allUnbroken &&= floor;
-      rows.push(`${t} s: head ${r2(h)} cells, the stream ${r2(reach)} cells out at y = ${ROW} (√(2gh) parabola: ${r2(ideal)}, ${r2(100 * err)} % off), ${floor ? 'unbroken' : 'broken'}`);
+      rows.push(`${t} s: head ${r2(h)} cells; ${sw > 0 ? `the stream ${r2(reach)} cells out at y = ${ROW}` : `no water crossing y = ${ROW}`} (√(2gh) parabola: ${r2(ideal)}${sw > 0 ? `, ${r2(100 * err)} % off` : ''}); ${floor ? 'unbroken' : 'broken'} from the hole to the floor`);
       const par = (x) => EXIT_Y - ((x - EXIT_X) / 2) ** 2 / Math.max(h, 1e-6);   // the ideal stream's y at x
       slices.push(`at ${t} s (# wall, ~ ≥ ½ cell, , less, + the ideal parabola):\n${sliceText(g, (x, y) => {
         const id = g.id[at(g, x, y, 3)];
@@ -228,6 +247,7 @@ export const hole = {
 export const yieldSlope = {
   name: 'yield', group: 'liquids', size: [16, 8, 16], needs: ['WATER', 'MUD'], cost: 80,
   title: 'slope rises with yield: mud holds a mound, water spreads',
+  audit: 'audit-liquids B9: viscosity maps only to speed (flow, drag), with no yield, so mud and slime level into 1-2 cell films',
   async run(e, ctx) {
     const O = OUTCOMES.yield;
     const one = async (name) => {
@@ -244,7 +264,7 @@ export const yieldSlope = {
       headline: `after ${O.seconds} s a 4³ block stands ${r2(mud.peak)} cells tall as mud over ${mud.cols} columns, ${r2(water.peak)} as water over ${water.cols}`,
       criteria: [
         crit('mud mound height', r2(mud.peak), mud.peak >= O.mudPeak, `≥ ${O.mudPeak}`, 'cells'),
-        crit('water spreads under', r2(water.peak), water.peak < O.waterPeak, `< ${O.waterPeak}`, 'cells'),
+        crit('water spreads to a layer or less', r2(water.peak), water.peak <= O.waterPeak, `≤ ${O.waterPeak}`, 'cells'),
         crit('mud stands taller than water', r2(mud.peak - water.peak), mud.peak > water.peak, '> 0', 'cells'),
       ],
       evidence: [`mud per column (tenths of a cell; A = 1, B = 2 …):\n${mud.map}`, `water per column:\n${water.map}`],

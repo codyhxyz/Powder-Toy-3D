@@ -28,13 +28,13 @@ export function levelRange(g, x0, x1, z0, z1) {
 }
 
 /**
- * The mass census (engine.census()): cells per element name, cells per class (air, solid, powder, liquid,
+ * The mass census of a Grid (what engine.census() returns): cells per element name, cells per class (air, solid, powder, liquid,
  * gas), liquid per element (fills, plus particles in flight over liquid cells, in cells) and particles in
  * flight per element (in cells of liquid).
  * @param {object} g a Grid
  * @param {object} e the engine (nameOf, kindOf)
  */
-export function census(g, e) {
+export function tally(g, e) {
   const cells = {}, classes = {}, liquid = {}, particles = {};
   for (let i = 0; i < g.id.length; i++) {
     const n = e.nameOf(g.id[i]), k = e.kindOf(g.id[i]);

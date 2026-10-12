@@ -170,6 +170,7 @@ for (const r of results) {
   }
   if (r.status === 'n/a' || r.status === 'error') console.log(`      ${r.status === 'n/a' ? 'not expressible' : 'error'}: ${String(r.reason).split('\n').slice(0, 6).join('\n      ')}`);
   console.log(`      → ${verdict}${r.wallSeconds !== undefined ? `   [${r.gameSeconds ?? 0} game s, ${r.steps ?? 0} steps, ${r.wallSeconds} s wall]` : ''}`);
+  if (r.status === 'fail' && r.audit) console.log(`      today's build, as audited: ${r.audit}`);
   if ((r.status === 'fail' || flag('verbose')) && r.evidence?.length) for (const ev of r.evidence) console.log(`      ${ev.replace(/\n/g, '\n      ')}`);
   console.log('');
 }

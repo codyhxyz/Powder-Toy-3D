@@ -20,7 +20,7 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
  */
 export async function runTest(test, engine, { seed = 1, budgetMs = 0, log = () => {} } = {}) {
   const row = OUTCOMES[test.key ?? test.name] ?? {};
-  const base = { name: test.name, title: test.title, group: test.group, phase: row.phase ?? 'P2', engine: engine.name, size: test.size };
+  const base = { name: test.name, title: test.title, group: test.group, phase: row.phase ?? 'P2', engine: engine.name, size: test.size, audit: test.audit };
   const missing = (test.needs ?? []).filter((n) => engine.id(n) === null);
   if (missing.length) return { ...base, status: 'n/a', reason: `${engine.name} has no ${missing.join(', ')}` };
   const why = test.expressible?.(engine);

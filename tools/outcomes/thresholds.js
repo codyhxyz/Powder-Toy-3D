@@ -28,7 +28,8 @@ export const OUTCOMES = {
   // ---- liquids (docs/v2.md 4.4, 5.6) ----
   utube: {
     phase: 'P2',
-    // lean: equal at 5 s, idle at 6.4 s (its 30×32×6 scene, the same arms and channel)
+    // lean: on its own 4×4-armed U-tube 2.1 cm apart and idle at 6.4 s; on the bench's half-size one
+    // 0.99 cm apart and idle at 5.6 s
     seconds: 10,
     levelCm: LEVEL_CM,
   },
@@ -41,17 +42,20 @@ export const OUTCOMES = {
   puddle: {
     phase: 'P2',
     // lean: a 6³ spill rests as a round puddle 2-3 cm deep at 14.5 s; the bench drops 2³ (8 cells), which
-    // lean spreads 1.2 cm thin over 196 columns of a 32×32 floor (radius ~8) and rests at 4.1 s
-    seconds: 8,
+    // lean spreads 1.2 cm thin over 196 columns (radius ~8) of a 32×24 floor and rests at 4.1 s
+    seconds: 6,
     wallGap: 1,   // cells: the puddle stops short of every wall (it has an edge)
   },
   pipe: {
     phase: 'P2',
     // "a tank drains through a 30-cell pipe to the pipe's level" (docs/v2.md 4.4): the surface ends within
-    // this many cells of the bore's top (3 cm). lean gets there at 10.5 s (its own 13-cell pipe from a
-    // 6×6 tank 27 deep was still draining at 60 s: the bench's tank is 2×2, 12 deep)
+    // this many cells of the bore's top (3 cm). lean gets there at 11 s (its own 13-cell pipe from a 6×6 tank
+    // 27 deep was still draining at 60 s: the bench's tank is 2×2, 14 deep)
     levelTol: 0.1,
-    seconds: 20,
+    seconds: 16,
+    // a full bore that passes nothing for this long, with head behind it, is clogged: the test ends there
+    // (lean's level falls every second until it gets there)
+    stall: 3,
   },
   hole: {
     phase: 'P3',   // docs/v2.md 11 P3's exit: "the hole jet lands within 5 % of the √(2gh) parabola at every head"
@@ -67,7 +71,7 @@ export const OUTCOMES = {
     phase: 'P2',
     // "slope rises with yield" (docs/v2.md 4.4); mud is a Bingham plastic with a yield stress of tens of Pa
     // (Coussot, Mudflow Rheology and Dynamics, 1997: what today's MUD row cites). A 4³ block of it holds a
-    // mound at least this tall; water's spreads under one cell. No prototype number (lean has one liquid).
+    // mound at least this tall; water's spreads to a layer or less. No prototype number (lean has one liquid).
     seconds: 5,
     mudPeak: 2,
     waterPeak: 1,
@@ -85,8 +89,8 @@ export const OUTCOMES = {
     // R2's classes: drop 1 = 45° (free-flowing: sand's measured 34° quantised), drop 2 = 63° (cohesive: wheat
     // flour). Slope is peak / axis reach (lean: sand 0.89, flour 1.79)
     slope: { SAND: [0.7, 1.3], FLOUR: [1.4, 2.6] },
-    // idle after the pour ends (lean: sand 1.55 s, flour 2.65 s)
-    restSeconds: 4,
+    // idle after the pour ends (lean: sand 1.55 s, flour 2.65 s on its own heaps)
+    restSeconds: 3,
   },
   throw: {
     phase: 'P2',

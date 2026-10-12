@@ -7,13 +7,14 @@
 // that two engines share a g.
 import { at, SetupError } from '../engine.js';
 import { OUTCOMES, ROUND_TOL } from '../thresholds.js';
-import { census, cellsOf, heightMap, reach, mapText, digit, advanceWatching, crit, r2 } from '../lib.js';
+import { tally, cellsOf, heightMap, reach, mapText, digit, advanceWatching, crit, r2 } from '../lib.js';
 
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
 export const slab = {
   name: 'slab', group: 'solids', size: [32, 32, 32], needs: ['SAND'], cost: 30,
   title: 'a slab stays a slab and falls on its own law',
+  audit: 'audit-physics B2, B3: a cell moves with probability |v| only on its parity\'s steps, each grain on its own coin, so a slab smears over 21 cells at 65 % of its own velocity',
   expressible: (e) => (e.fall('SAND', 0.1) === null ? `${e.name} declares no fall law` : null),
   async run(e) {
     const O = OUTCOMES.slab, Y0 = 28, N = 24 * 24;
@@ -60,16 +61,17 @@ export const slab = {
 
 function heapTest(name, element) {
   return {
-    name, key: 'heap', group: 'solids', size: [32, 16, 32], needs: [element], cost: 150,
+    name, key: 'heap', group: 'solids', size: [32, 16, 24], needs: [element], cost: 170,
     title: `a ${element === 'SAND' ? 'sand' : 'flour'} heap takes its angle, comes out round and rests`,
+    audit: 'audit-physics B1, 4.2: every powder piles to the automaton\'s one square, terraced heap (slide only sets the time), and the rest test assumes 8 lower neighbours the move can\'t reach, so a settled heap never sleeps',
     async run(e) {
-      const O = OUTCOMES.heap, id = e.id(element);
-      // poured from a 4×4 hopper (x, z 14-17) at y = 14, a layer each 1/15 s into its empty cells, until
-      // 432 grains are in (lean-sim heap's hopper, half its grains)
-      const count = (g) => census(g, e).cells[e.nameOf(id)] ?? 0;
+      const O = OUTCOMES.heap, id = e.id(element), [nx, , nz] = this.size;
+      // poured from a 6×6 hopper (x 13-18, z 9-14) at y = 14, a layer each 1/15 s into its empty cells,
+      // until 432 grains are in (lean-sim heap's hopper, half its grains)
+      const count = (g) => tally(g, e).cells[e.nameOf(id)] ?? 0;
       let poured = 0;
       while (poured < O.grains && e.time < 20) {
-        e.box([14, 14, 14], [17, 14, 17], element, { onlyEmpty: true });
+        e.box([13, 14, 9], [18, 14, 14], element, { onlyEmpty: true });
         await e.advance(1 / 15);
         poured = count(await e.read());
       }
@@ -80,7 +82,7 @@ function heapTest(name, element) {
       const H = heightMap(g, [id]);
       let peak = 0, foot = 0;
       for (const h of H) { peak = Math.max(peak, h); if (h) foot++; }
-      const r = reach(32, 32, 16, 16, (x, z) => H[x + 32 * z] > 0);
+      const r = reach(nx, nz, 16, 12, (x, z) => H[x + nx * z] > 0);
       const ratio = r.rDiag / r.rAxis, slope = peak / r.rAxis, band = O.slope[element];
       const rest = idleAt === null ? null : idleAt - pourEnd;
       return {
@@ -91,7 +93,7 @@ function heapTest(name, element) {
           crit('rests after the pour ends', rest === null ? 'never' : r2(Math.max(rest, 0)), rest !== null && rest <= O.restSeconds, `≤ ${O.restSeconds}`, 's'),
           crit('grains kept', n, n === poured, `${poured}`),
         ],
-        evidence: [`height map at ${r2(e.time)} s (pour ended at ${r2(pourEnd)} s), x, z 4…27:\n${mapText(32, 32, (x, z) => digit(H[x + 32 * z]), { x0: 4, x1: 27, z0: 4, z1: 27 })}`,
+        evidence: [`height map at ${r2(e.time)} s (pour ended at ${r2(pourEnd)} s), x 4…27, z 0…23:\n${mapText(nx, nz, (x, z) => digit(H[x + nx * z]), { x0: 4, x1: 27 })}`,
           `reach: axes ${r.axis.map(r2).join(' ')}, diagonals ${r.diag.map(r2).join(' ')}`],
         numbers: { grains: n, peak, foot, rAxis: r.rAxis, rDiag: r.rDiag, ratio, slope, pourEnd, idleAt },
       };
@@ -104,6 +106,7 @@ export const heapFlour = heapTest('heapFlour', 'FLOUR');
 export const throwLump = {
   name: 'throw', group: 'solids', size: [32, 32, 32], needs: ['SAND'], cost: 40,
   title: 'a thrown lump lands where its velocity says',
+  audit: 'audit-physics B2: sideways moves skip a cell that moved this step and drag eats the rest, so a throw goes 33-57 % as far as its velocity says',
   expressible: (e) => (e.flight('SAND', [1, 0], 0.1) === null ? `${e.name} has no thrown matter (its particles are liquid only)` : null),
   async run(e) {
     const O = OUTCOMES.throw, DROP = 24, X0 = 3;   // the lump's bottom at y = 24, its centre at x = 3

@@ -32,6 +32,7 @@ const needsFire = (e) => (e.info.burning ? null : `${e.name} has no burning stat
 export const flameWood = {
   name: 'flameWood', group: 'fire', size: [16, 16, 16], needs: ['WOOD', 'FIRE'], cost: 40,
   title: 'two 1,000 °C flames light a wooden block',
+  audit: 'audit-physics B9: ignition is a temperature threshold only; buoyant flames warm the wood to ~39 °C and are gone',
   expressible: needsFire,
   async run(e) {
     const O = OUTCOMES.flameWood;

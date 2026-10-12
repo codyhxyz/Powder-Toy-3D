@@ -21,7 +21,7 @@ import { E, ELEMENTS, K } from '/src/elements.js';
 import { CELL_M } from '/src/scale.js';
 import { NOMINAL_STEP_RATE, SIM_GRAVITY, PHYS } from '/src/physics.js';
 import { stepClock } from './engine.js';
-import { census } from './lib.js';
+import { tally } from './lib.js';
 
 // bench names that are named otherwise today
 const TODAY = { AIR: 'EMPTY', FLOUR: 'DUST' };
@@ -120,7 +120,7 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       }
       return g;
     },
-    async census() { return census(await engine.read(), engine); },
+    async census() { return tally(await engine.read(), engine); },
     async activity() {
       await sim.gpuSync();
       if (sim.idleRead) await sim.idleRead;

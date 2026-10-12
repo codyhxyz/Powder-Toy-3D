@@ -7,7 +7,7 @@
 // wood past its ignition point burns (fire.js woodBurns), the census itself.
 import { at, SetupError } from '../engine.js';
 import { OUTCOMES, LEVEL_CM } from '../thresholds.js';
-import { census as censusOf, liquidMass, levelRange, cellsOf, advanceWatching, crit, r2, r3 } from '../lib.js';
+import { tally, liquidMass, levelRange, cellsOf, advanceWatching, crit, r2, r3 } from '../lib.js';
 
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
@@ -23,7 +23,7 @@ export const census = {
     e.box([1, 2, 1], [1, 4, 14], 'WALL'); e.box([14, 2, 1], [14, 4, 14], 'WALL');
     e.box([6, 6, 6], [8, 13, 8], 'WATER');
     e.box([5, 14, 9], [8, 15, 10], 'SAND');
-    const count = (g) => { const c = censusOf(g, e).cells; return [c.SAND ?? 0, c.WALL ?? 0]; };
+    const count = (g) => { const c = tally(g, e).cells; return [c.SAND ?? 0, c.WALL ?? 0]; };
     let g = await e.read();
     const m0 = liquidMass(g), [s0, w0] = count(g);
     setup(m0 === 72 && s0 === 512 + 16 && w0 === 4 * 13 * 3, `start: ${m0} water (72), ${s0} sand (528), ${w0} wall (156)`);

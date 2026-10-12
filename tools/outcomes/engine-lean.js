@@ -6,7 +6,7 @@
 // It has no heat, fire, pressure or thrown solids. Contract: ./engine.js.
 import { World, AIR, WALL, SAND, FLOUR, WATER, FULL, TICK_HZ, CELL_M, G_MS2, G, VT_SAND } from '../v2/lean-sim.mjs';
 import { stepClock } from './engine.js';
-import { census } from './lib.js';
+import { tally } from './lib.js';
 
 const IDS = { AIR, WALL, SAND, FLOUR, WATER };
 const NAMES = ['AIR', 'WALL', 'SAND', 'FLOUR', 'WATER'];
@@ -54,7 +54,7 @@ export function createEngine() {
       }
       return { nx: w.nx, ny: w.ny, nz: w.nz, id, amount, T: null, burning: null, pressure: null, moving: null, particles };
     },
-    async census() { return census(await this.read(), this); },
+    async census() { return tally(await this.read(), this); },
     async activity() {
       const idle = w.idleAt >= 0;
       return { awake: lastBusy, units: w.busy.length, idle, idleSince: idle ? w.idleAt / TICK_HZ : undefined };
