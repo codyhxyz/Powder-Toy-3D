@@ -1,5 +1,8 @@
-import * as THREE from 'three';
-import { lib } from '../shaders/render.js';
+import * as THREE from 'three/webgpu';
+import {
+  uniform, texture, uv, vec3, float, mix, smoothstep, length, normalWorld, positionWorld, positionLocal, normalLocal, faceDirection,
+} from 'three/tsl';
+import { litColor, gridPosition, figNormalMappedFn, prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 import { limb as ikLimb, solveLimb } from './limbs.js';
 
@@ -11,12 +14,12 @@ import { limb as ikLimb, solveLimb } from './limbs.js';
 // (figureCrasher.js). A look can ask for outlines (an inverted hull), two-tone
 // cel shading, unlit glowing parts and jetpack flames.
 //
-// It is lit by the same light as the volume: the same lighting GLSL
-// (shaders/gfx/lighting.js) with the volume's own uniforms, so the sun and its
+// It is lit by the same light as the volume (gfx/meshLight.js: the volume's
+// lighting, function for function, on its own textures), so the sun and its
 // shadow map, the GI probes (sky and bounce light, dark in caves) and the
 // glow of hot matter fall on it the way they fall on the sand next to it. It
-// writes depth, and the volume (drawn after it, writing its hit depth) tests
-// against it.
+// is drawn before the volume, which marches to its depth (docs/webgpu.md Sync
+// log S1: water in front of a body tints it).
 
 // Proportions, in cells. Feet at 0, eye at the head's centre (EYE_HEIGHT 5).
 const HEAD = 1.0;                        // edge of the square head
@@ -43,8 +46,6 @@ export const JET_NOZZLES = { back: 0.6, up: 3.2, side: 0.3 };
 const FLAME_FLICKER = 0.35;               // ± share of a jet flame's length, frame to frame
 const TOON_EDGE = 0.08;                  // n·l over which a cel-shaded look goes from shade to lit
 const HEAT_GLOW = [2.4, 0.9, 0.25];      // radiance added at full heat (feel.heat = 1): a burning body glows
-const SHADOW_LIFT = 0.6;                 // cells: shadow lookups move this far toward the sun (off the body's own cells)
-const GI_LIFT = 1.5;                     // cells: GI probes are read this far out along the normal
 
 // Contact shadow under the feet on the ground: the volume can't shadow the
 // figure's own occlusion, so a soft darkening grounds it.
@@ -114,94 +115,77 @@ export const KNEE_POLE = [0, -0.5, -2];      // ahead
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
-export const figureVert = /* glsl */ `
-uniform mat4 uWorldToGrid;
-out vec3 vGrid;
-out vec3 vN;
-void main() {
-  vec4 w = modelMatrix * vec4(position, 1.0);
-  vGrid = (uWorldToGrid * w).xyz;
-  vN = mat3(modelMatrix) * normal;   // uniform scale only
-  gl_Position = projectionMatrix * viewMatrix * w;
-}`;
+// ---- the materials (docs/webgpu.md F8): TSL, lit by gfx/meshLight.js
 
-export const figureFrag = (g) => /* glsl */ `
-${lib(g)}
-#define FIG_SHADOW_LIFT ${SHADOW_LIFT.toFixed(3)}
-#define FIG_GI_LIFT ${GI_LIFT.toFixed(3)}
-#define FIG_TOON_EDGE ${TOON_EDGE.toFixed(3)}
-uniform vec3 uAlbedo;   // with FIG_MAP, multiplies the map (a tint)
-uniform vec3 uEmit;
-uniform vec4 uTint;   // a stain over the albedo (status.js tint): rgb, share
-in vec3 vGrid;
-in vec3 vN;
-#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
-in vec2 vFigUv;
-#endif
-#ifdef FIG_MAP
-uniform sampler2D uMap;   // albedo, sRGB (sampled linear)
-#endif
-#ifdef FIG_NORMAL_MAP
-uniform sampler2D uNormalMap;   // tangent space
-uniform vec2 uNormalScale;      // the loaded material's (GLTFLoader flips y for derivative tangents)
-in vec3 vFigWorld;
-// three.js's getTangentFrame (normalmap_pars_fragment): the tangent frame from
-// screen-space derivatives of the position and UV, for meshes with no tangents
-// (Mikkelsen, "Bump Mapping Unparametrized Surfaces on the GPU", 2010)
-vec3 figNormalMapped(vec3 n, float face) {
-  vec3 q0 = dFdx(vFigWorld), q1 = dFdy(vFigWorld);
-  vec2 st0 = dFdx(vFigUv), st1 = dFdy(vFigUv);
-  vec3 q1perp = cross(q1, n), q0perp = cross(n, q0);
-  vec3 T = q1perp * st0.x + q0perp * st1.x;
-  vec3 B = q1perp * st0.y + q0perp * st1.y;
-  float det = max(dot(T, T), dot(B, B));
-  float s = det == 0.0 ? 0.0 : face * inversesqrt(det);
-  vec3 m = texture(uNormalMap, vFigUv).xyz * 2.0 - 1.0;
-  m.xy *= uNormalScale;
-  return normalize(T * (m.x * s) + B * (m.y * s) + n * m.z);
+// WEBGPU-STUB (docs/webgpu.md J3): the GLSL vertex shader; figureMaterial builds the lit material
+export const figureVert = '';
+// WEBGPU-STUB (docs/webgpu.md J3)
+export function figureFrag() { throw new Error('figureFrag removed in the WebGPU port: docs/webgpu.md F8 (figure.js figureMaterial)'); }
+
+/**
+ * A figure's per-body values, shared by its materials: emit (linear HDR
+ * radiance added unlit: heat glow, a burning wreck), tint (a stain over the
+ * albedo: rgb, share) and worldToGrid (scene → grid cells). Uniform nodes:
+ * set .value.
+ */
+export function figureUniforms() {
+  return { emit: uniform(new THREE.Vector3()), tint: uniform(new THREE.Vector4()), worldToGrid: uniform(new THREE.Matrix4()) };
 }
-#endif
-void main() {
-  float face = gl_FrontFacing ? 1.0 : -1.0;
-  vec3 n = normalize(vN) * face;
-#ifdef FIG_NORMAL_MAP
-  n = figNormalMapped(n, face);
-#endif
-  vec3 sh = uShadows ? sunShadow(vGrid + uSun * FIG_SHADOW_LIFT) : vec3(1.0);
-  vec3 irr = giIrradiance(probeAt(vGrid + n * FIG_GI_LIFT), n);
-  vec3 local = sampleLight(vGrid) * uLightGain;
-  // linear HDR radiance, like the volume (post tone-maps both)
-  float ndl = max(dot(n, uSun), 0.0);
-#ifdef FIG_TOON
-  ndl = smoothstep(0.0, FIG_TOON_EDGE, ndl);   // cel shading: lit or not, with a thin soft edge
-#endif
-  vec3 base = uAlbedo;
-#ifdef FIG_MAP
-  base *= texture(uMap, vFigUv).rgb;
-#endif
-  vec3 albedo = mix(base, uTint.rgb, uTint.a);
-  gl_FragColor = vec4(albedo * (SUN_COL * ndl * sh + irr + local) + uEmit, 1.0);
-}`;
+
+/**
+ * The lit material of figures, vehicles and a tool held on the body (and the
+ * worm's, the skinned mannequin's): linear HDR radiance, like the volume (post
+ * tone-maps both), albedo × (sun × n·l × shadow + GI + glow) + emit, from the
+ * same light as the volume (gfx/meshLight.js). Opaque, depth-writing.
+ *   albedo     [r, g, b] linear; material.uniforms.uAlbedo.value is its Vector3
+ *              (a team's look and a wreck's char set it, as on the GLSL material)
+ *   u          figureUniforms() of its body (null: no emit, no tint, the shared worldToGrid)
+ *   toon       cel shading: lit or not, with a thin soft edge (FIG_TOON)
+ *   map        an albedo texture (sRGB, read linear) on the first UV set, × albedo
+ *   normalMap  a tangent-space normal map on it (normalScale: the loaded material's)
+ *   side       THREE.DoubleSide (default) or FrontSide
+ * @param {{ albedo: number[], u?: object | null, toon?: boolean, map?: object, normalMap?: object, normalScale?: object, side?: number }} o
+ */
+export function figureMaterial({ albedo, u = null, toon = false, map = null, normalMap = null, normalScale = null, side = THREE.DoubleSide }) {
+  const uAlbedo = uniform(new THREE.Vector3(...albedo));
+  let base = uAlbedo;
+  if (map) base = base.mul(texture(map).rgb);
+  const tinted = u ? mix(base, u.tint.xyz, u.tint.w) : base;
+  let n = normalWorld;
+  if (normalMap) {
+    const scale = uniform(new THREE.Vector2().copy(normalScale ?? new THREE.Vector2(1, 1)));
+    n = figNormalMappedFn({ n: normalWorld, face: faceDirection, wp: positionWorld, uv: uv(), m0: texture(normalMap).xyz, scale });
+  }
+  const mat = new THREE.MeshBasicNodeMaterial({ side });
+  mat.lights = false;
+  mat.colorNode = litColor({
+    albedo: tinted, n, grid: gridPosition(u?.worldToGrid), emit: u ? u.emit : null, toon, toonEdge: TOON_EDGE,
+  });
+  mat.name = 'figure';
+  // what the GLSL material held, for its callers (npc.js's team colours, look.js's char)
+  mat.uniforms = { uAlbedo };
+  return mat;
+}
 
 // Outlines: the mesh again, pushed out along its normals and drawn back faces
 // only, in black (the inverted-hull outline of cel-shaded games).
-const outlineVert = /* glsl */ `
-uniform float uWidth;
-void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position + normal * uWidth, 1.0); }`;
-const outlineFrag = /* glsl */ `
-void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }`;
+export function outlineMaterial(width, color = 0x000000) {
+  const mat = new THREE.MeshBasicNodeMaterial({ color, side: THREE.BackSide });
+  mat.positionNode = positionLocal.add(normalLocal.mul(float(width)));
+  mat.name = 'figure outline';
+  return mat;
+}
 
-const contactFrag = /* glsl */ `
-varying vec2 vUv;
-uniform float uDark;
-void main() {
-  float r = length(vUv - 0.5) * 2.0;
-  float k = 1.0 - smoothstep(0.0, 1.0, r);
-  gl_FragColor = vec4(vec3(mix(1.0, uDark, k)), 1.0);
-}`;
-const contactVert = /* glsl */ `
-varying vec2 vUv;
-void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+// The soft contact shadow under the feet: darkens what is already drawn
+// (multiply), most at its centre.
+function contactMaterial() {
+  const r = length(uv().sub(0.5)).mul(2);
+  const k = float(1).sub(smoothstep(0, 1, r));
+  const mat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.MultiplyBlending, premultipliedAlpha: true });
+  mat.colorNode = vec3(mix(float(1), float(CONTACT_DARK), k));
+  mat.name = 'contact shadow';
+  return mat;
+}
 
 // ---- building a look (also for figureCrasher.js)
 
@@ -260,16 +244,8 @@ export function buildStick() {
 }
 
 export function createFigure(build = buildStick) {
-  const uniforms = {
-    uEmit: { value: new THREE.Vector3() },
-    uTint: { value: new THREE.Vector4() },
-    uWorldToGrid: { value: new THREE.Matrix4() },
-  };
+  const u = figureUniforms();
   const tint = [0, 0, 0, 0];
-  // materials are compiled per grid (their GLSL bakes the grid size in), one per albedo
-  let mats = [];
-  let boundTo = null, compiled = null;
-
   const root = new THREE.Group();      // at the feet, turned to face the look direction
   root.visible = false;
   const rig = build();
@@ -280,30 +256,27 @@ export function createFigure(build = buildStick) {
   root.add(body);
   const meshes = [];
   body.traverse((o) => { if (o.isMesh && o.userData.albedo) meshes.push(o); });
-  const glowMats = [];
+  // one lit material per albedo (shared by its parts), unlit ones for the glows
+  const byColor = new Map(), glowMats = [];
   for (const m of meshes) {
-    if (!m.userData.glow) continue;
-    const mat = new THREE.MeshBasicMaterial();
-    mat.color.setRGB(...m.userData.glow);
-    m.material = mat;
-    glowMats.push(mat);
+    if (m.userData.glow) {
+      const mat = new THREE.MeshBasicMaterial();
+      mat.color.setRGB(...m.userData.glow);
+      m.material = mat;
+      glowMats.push(mat);
+      continue;
+    }
+    const key = m.userData.albedo.join();
+    if (!byColor.has(key)) byColor.set(key, figureMaterial({ albedo: m.userData.albedo, u, toon: !!rig.toon }));
+    m.material = byColor.get(key);
   }
-  const outlineMat = rig.outline ? new THREE.ShaderMaterial({
-    vertexShader: outlineVert, fragmentShader: outlineFrag, side: THREE.BackSide,
-    uniforms: { uWidth: { value: rig.outline } },
-  }) : null;
+  const mats = [...byColor.values()];
+  const outlineMat = rig.outline ? outlineMaterial(rig.outline) : null;
   if (outlineMat) for (const m of meshes) if (m.userData.outline) m.add(new THREE.Mesh(m.geometry, outlineMat));
 
-  const contact = new THREE.Mesh(new THREE.PlaneGeometry(2 * CONTACT_R, 2 * CONTACT_R).rotateX(-Math.PI / 2),
-    new THREE.ShaderMaterial({
-      vertexShader: contactVert, fragmentShader: contactFrag,
-      uniforms: { uDark: { value: CONTACT_DARK } },
-      transparent: true, depthWrite: false,
-      blending: THREE.MultiplyBlending, premultipliedAlpha: true,
-    }));
-  contact.position.y = CONTACT_LIFT;
-  contact.renderOrder = 1;               // after the volume (transparent, order 0)
+  const contact = createContactShadow();
   root.add(contact);
+  let compiled = null;
 
   // pose state: current joint angles, blend weights
   const J = { hipL: 0, hipR: 0, knL: 0, knR: 0, shL: 0, shR: 0, elL: 0, elR: 0, armOut: 0, legOut: 0, lean: 0, drop: 0, headPitch: 0 };
@@ -322,35 +295,15 @@ export function createFigure(build = buildStick) {
 
   return {
     root,
-    // Rebuild the material for a new volume (grid size): it shares the
-    // volume's uniforms, so it sees the same sun, shadow map, GI and glow.
-    bind(volume, g) {
-      if (boundTo === volume) return;
-      boundTo = volume;
-      for (const m of mats) m.dispose();
-      const byColor = new Map();
-      const frag = figureFrag(g);
-      for (const mesh of meshes) {
-        if (mesh.userData.glow) continue;
-        const key = mesh.userData.albedo.join();
-        if (!byColor.has(key)) {
-          byColor.set(key, new THREE.ShaderMaterial({
-            vertexShader: figureVert, fragmentShader: frag, side: THREE.DoubleSide,
-            defines: rig.toon ? { FIG_TOON: '' } : {},
-            uniforms: { ...volume.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...mesh.userData.albedo) } },
-          }));
-        }
-        mesh.material = byColor.get(key);
-      }
-      mats = [...byColor.values()];
-    },
+    // The light is the volume's whatever the grid (gfx/meshLight.js): nothing
+    // to rebuild for a new one. Kept for the shell's calls.
+    bind() {},
     get material() { return mats[0]; },
-    // Compile the shader without blocking (KHR_parallel_shader_compile), so
-    // the first drop-in doesn't stall on it.
-    compile(renderer, camera, scene) {
-      if (compiled === mats[0]) return Promise.resolve();
-      compiled = mats[0];
-      return renderer.compileAsync(root, camera, scene).catch(() => {});
+    // Compile its materials for the scene target before it is first drawn
+    // (docs/webgpu.md B5, F8); the arguments are the WebGL call's, unused.
+    compile() {
+      if (!compiled && getMeshGpu()) compiled = prepareMesh(root);
+      return compiled ?? Promise.resolve();
     },
     // s = { feet (world), scale, yaw, worldToGrid (Matrix4), speedH (cells/s), velY (cells/s),
     //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body),
@@ -364,9 +317,9 @@ export function createFigure(build = buildStick) {
       root.position.copy(s.feet);
       root.position.y += (s.lift ?? 0) * s.scale;
       root.scale.setScalar(s.scale);
-      uniforms.uWorldToGrid.value.copy(s.worldToGrid);
-      uniforms.uEmit.value.set(...HEAT_GLOW).multiplyScalar(s.heat ?? 0);
-      uniforms.uTint.value.set(...(s.status ? s.status.tint(tint) : tint.fill(0)));
+      u.worldToGrid.value.copy(s.worldToGrid);
+      u.emit.value.set(...HEAT_GLOW).multiplyScalar(s.heat ?? 0);
+      u.tint.value.set(...(s.status ? s.status.tint(tint) : tint.fill(0)));
       if (!s.dead) facing = s.yaw;
       root.rotation.set(0, facing, 0);
 
@@ -550,51 +503,16 @@ export function createFigure(build = buildStick) {
 // The stickman's albedo and heat glow, so another body matches it.
 export { ALBEDO as FIGURE_ALBEDO, HEAT_GLOW as FIGURE_HEAT_GLOW };
 
-// figureVert for a SkinnedMesh: three's skinning chunks pose the vertex and
-// its normal, then it goes to grid space like the stickman's. Pair it with
-// figureFrag(g) and the volume's uniforms (plus uAlbedo, uEmit, uWorldToGrid).
-// Defines FIG_MAP (uMap) and FIG_NORMAL_MAP (uNormalMap, uNormalScale) add a
-// textured mesh's maps, on its first UV set.
-export const figureSkinnedVert = /* glsl */ `
-#include <skinning_pars_vertex>
-uniform mat4 uWorldToGrid;
-out vec3 vGrid;
-out vec3 vN;
-#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
-out vec2 vFigUv;
-#endif
-#ifdef FIG_NORMAL_MAP
-out vec3 vFigWorld;
-#endif
-void main() {
-  #include <beginnormal_vertex>
-  #include <skinbase_vertex>
-  #include <skinnormal_vertex>
-  #include <begin_vertex>
-  #include <skinning_vertex>
-  vec4 w = modelMatrix * vec4(transformed, 1.0);
-  vGrid = (uWorldToGrid * w).xyz;
-  vN = mat3(modelMatrix) * objectNormal;   // uniform scale only
-#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
-  vFigUv = uv;
-#endif
-#ifdef FIG_NORMAL_MAP
-  vFigWorld = w.xyz;
-#endif
-  gl_Position = projectionMatrix * viewMatrix * w;
-}`;
+// WEBGPU-STUB (docs/webgpu.md J3): the skinned GLSL vertex shader. A
+// SkinnedMesh takes figureMaterial as it is: three's node pipeline skins it.
+export const figureSkinnedVert = '';
 
 // The soft contact shadow the stickman stands on, for another body: a child
-// of the body's root (at the feet), drawn after the volume.
+// of the body's root (at the feet), drawn after the opaque meshes and the
+// volume (transparent).
 export function createContactShadow() {
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2 * CONTACT_R, 2 * CONTACT_R).rotateX(-Math.PI / 2),
-    new THREE.ShaderMaterial({
-      vertexShader: contactVert, fragmentShader: contactFrag,
-      uniforms: { uDark: { value: CONTACT_DARK } },
-      transparent: true, depthWrite: false,
-      blending: THREE.MultiplyBlending, premultipliedAlpha: true,
-    }));
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2 * CONTACT_R, 2 * CONTACT_R).rotateX(-Math.PI / 2), contactMaterial());
   mesh.position.y = CONTACT_LIFT;
-  mesh.renderOrder = 1;                  // after the volume (transparent, order 0)
+  mesh.renderOrder = 1;
   return mesh;
 }

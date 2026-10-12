@@ -1,0 +1,463 @@
+// The meshes' light (docs/webgpu.md F8): what three.js's materials read of
+// ours, so a figure, a vehicle or a tool in hand is lit as the sand next to it
+// is. The same sun and its shadow map (with the tint of liquid and glass it
+// passed through, the ripples' caustics and the clouds' shadow), the same GI
+// probes (sky and bounce light, dark in caves) and the same glow of hot matter
+// (the light volume) and wand lights, read from our textures through
+// THREE.ExternalTexture (src/gpu/three.js, B10). The float shadow map is read
+// with textureLoad only, as lighting.js reads it (B10: three binds float
+// textures unfilterable).
+//
+// One set of nodes serves every material: the textures' nodes are repointed
+// when the grid's textures are made again (updateMeshLight), and the per-frame
+// values are uniform nodes, so a material is built once per albedo, not per
+// grid as the GLSL materials were (they baked the grid size in).
+//
+// The WGSL is lighting.js's, function for function (sunBasis,
+// sunMapShadowAt, underPool, causticGain, cloudDensity, cloudShadow, probeTex,
+// giIrradiance, sampleLight, wandLight), with what those read from
+// FrameUniforms, the header and the tables passed as parameters instead:
+// three.js's node builder declares the bindings, so a function it calls can't
+// name ours. tools/mesh-check.mjs compares the two on the GPU at random points.
+//
+// Also here, for every module that adds meshes: the app's device (setMeshGpu,
+// from src/wire/mesh.js), and prepareMesh(object), which compiles a new kind of
+// mesh before it joins the scene (B5: three otherwise builds its pipeline
+// synchronously at the first draw).
+import {
+  Vector3, Vector4, Matrix4, DataTexture, Data3DTexture, RGBAFormat, FloatType, HalfFloatType, UnsignedByteType,
+  NearestFilter, LinearFilter, ClampToEdgeWrapping, RepeatWrapping, NoColorSpace,
+} from 'three/webgpu';
+import { uniform, texture, texture3D, sampler, wgslFn, code, vec4, float, positionWorld, normalWorld, smoothstep, max, dot } from 'three/tsl';
+import { externalTexture } from '../gpu/three.js';
+import { glslMod } from '../gpu/wgsl.js';
+import { gfxUniforms, WAND_LIGHTS } from './uniforms.js';
+import { createMediaNoise } from './mediaNoise.js';
+import { noiseGLSL } from '../shaders/gfx/noise.js';
+import { SH_Y0, SH_Y1, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_SHADOW_BIAS } from '../shaders/gfx/lighting.js';
+import { CLOUD } from '../shaders/gfx/clouds.js';
+import { BRICK } from '../shaders/common.js';
+import { ELEMENTS, R } from '../elements.js';
+import { CELL_M } from '../scale.js';
+
+// The glow volume's gain: FrameUniforms.lightGain, as app.js writes it (its GLOW_GAIN)
+export const MESH_GLOW_GAIN = 1.6;
+// Figures sit in the window's light at these offsets (cells): shadow lookups
+// move toward the sun (off the body's own cells), GI probes are read out along
+// the normal (figure.js's FIG_SHADOW_LIFT, FIG_GI_LIFT)
+export const SHADOW_LIFT = 0.6;
+export const GI_LIFT = 1.5;
+
+const f = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s) ? s : `${s}.0`; };
+
+// ---------------------------------------------------------------- the WGSL
+
+// lighting.js's, with FrameUniforms' fields as parameters: sun (xyz, w: the
+// shadows switch), grid (nx, ny, nz, shadowRes), origin (the window's, cells;
+// w: the animation clock, FU.time), cave (the scene's ambient floor; w: the
+// caustics switch), cloud (clouds on, cloudSea, cloudShift)
+const LIGHT_WGSL = /* wgsl */ `
+${glslMod}
+${noiseGLSL}
+const FIG_PI: f32 = 3.14159265;
+const FIG_BS: f32 = ${f(BRICK)};
+const FIG_SH_Y0: f32 = ${SH_Y0.toFixed(6)};
+const FIG_SH_Y1: f32 = ${SH_Y1.toFixed(6)};
+const FIG_SH_COS1: f32 = 2.0 / 3.0;
+const FIG_TINT_ID_SCALE: f32 = ${f(SHADOW_TINT_ID_SCALE)};
+const FIG_SHADOW_PAD: f32 = ${f(SHADOW_PAD)};
+const FIG_VOLUME_SHADOW_BIAS: f32 = ${f(VOLUME_SHADOW_BIAS)};
+const FIG_SUN_TAN_RADIUS: f32 = 0.021;
+const FIG_RIPPLE_FREQ: f32 = 0.3;
+const FIG_RIPPLE_DRIFT: f32 = 0.6;
+const FIG_RIPPLE_OCT2: f32 = 2.1;
+const FIG_RIPPLE_OCT2_AMP: f32 = 0.5;
+const FIG_RIPPLE_OCT2_DRIFT: f32 = 1.3;
+const FIG_RIPPLE_OCT2_SHIFT: f32 = 7.3;
+const FIG_CAUSTIC_BEND: f32 = 0.25;
+const FIG_CAUSTIC_SLOPE: f32 = 0.18;
+const FIG_CAUSTIC_EPS: f32 = 0.35;
+const FIG_CAUSTIC_BED_GAP: f32 = 2.0;
+const FIG_CAUSTIC_FILL: f32 = 0.7;
+const FIG_CAUSTIC_MAX: f32 = 4.0;
+const FIG_CAUSTIC_MIN: f32 = 0.3;
+const FIG_CLOUD_BASE: f32 = ${f(CLOUD.baseM / CELL_M)};
+const FIG_CLOUD_THICK: f32 = ${f(CLOUD.thickM / CELL_M)};
+const FIG_CLOUD_COVER: f32 = ${f(CLOUD.cover)};
+const FIG_CLOUD_SHAPE_A_F: f32 = ${f(CELL_M / CLOUD.shapeAM)};
+const FIG_CLOUD_SHAPE_B_F: f32 = ${f(CELL_M / CLOUD.shapeBM)};
+const FIG_CLOUD_SHAPE_B_W: f32 = ${f(CLOUD.shapeBW)};
+const FIG_CLOUD_SLICE_A: f32 = ${f(CLOUD.sliceA)};
+const FIG_CLOUD_SLICE_B: f32 = ${f(CLOUD.sliceB)};
+const FIG_CLOUD_ERODE: f32 = ${f(CLOUD.erode)};
+const FIG_CLOUD_NOISE_MEAN: f32 = 0.5;
+const FIG_CLOUD_ROUND_LO: f32 = ${f(CLOUD.roundLo)};
+const FIG_CLOUD_ROUND_HI: f32 = ${f(CLOUD.roundHi)};
+const FIG_CLOUD_DOME: f32 = ${f(CLOUD.dome)};
+const FIG_CLOUD_SIGMA: f32 = ${f(CLOUD.sigmaM * CELL_M)};
+const FIG_CLOUD_SHADOW_N: i32 = ${CLOUD.shadowSamples};
+const FIG_CLOUD_SHADOW_SKIP: f32 = ${f(CLOUD.shadowSkip)};
+
+// sigma (rgb) and the liquid flag (a) of element id: the tables' SIGMA and RCLASS == R_LIQUID
+fn figSigma(sig: texture_2d<f32>, id: i32) -> vec4f {
+  return textureLoad(sig, vec2i(clamp(id, 0, i32(textureDimensions(sig).x) - 1), 0), 0);
+}
+// lighting.js sunBasis
+fn figSunBasis(sun: vec3f, grid: vec4f, origin: vec3f, c: ptr<function, vec3f>, R: ptr<function, f32>,
+               u: ptr<function, vec3f>, v: ptr<function, vec3f>) {
+  *c = grid.xyz * 0.5;
+  *R = 0.5 * length(grid.xyz) + FIG_SHADOW_PAD;
+  *u = normalize(cross(vec3f(0.0, 1.0, 0.0), sun));
+  *v = cross(sun, *u);
+  let T = 2.0 * *R / max(grid.w, 1.0);
+  let ot = vec2f(dot(origin, *u), dot(origin, *v)) / T;
+  let snap = (round(ot) - ot) * T;
+  *c += snap.x * *u + snap.y * *v;
+}
+// lighting.js rippleH, underPool, causticGain
+fn figRippleH(q: vec2f, t: f32) -> f32 {
+  return vnoise(vec3f(q, t)) + FIG_RIPPLE_OCT2_AMP * vnoise(vec3f(q * FIG_RIPPLE_OCT2 + FIG_RIPPLE_OCT2_SHIFT, t * FIG_RIPPLE_OCT2_DRIFT));
+}
+fn figUnderPool(sm: vec4f, d: f32, s: vec4f, tid: i32) -> bool {
+  if (s.w < 0.5 || d <= sm.y || d >= sm.z + FIG_CAUSTIC_BED_GAP) { return false; }
+  let lenL = (sm.w - f32(tid) * FIG_TINT_ID_SCALE) / max(dot(s.rgb, vec3f(1.0 / 3.0)), 1e-4);
+  return lenL >= FIG_CAUSTIC_FILL * (min(d, sm.z) - sm.y);
+}
+fn figCausticGain(p: vec3f, D: f32, sun: vec3f, origin: vec4f) -> f32 {
+  let s = p + sun * D;
+  let q = (s + origin.xyz).xz * FIG_RIPPLE_FREQ;
+  let t = origin.w * FIG_RIPPLE_DRIFT;
+  let h0 = figRippleH(q, t);
+  let lapQ = (figRippleH(q + vec2f(FIG_CAUSTIC_EPS, 0.0), t) + figRippleH(q - vec2f(FIG_CAUSTIC_EPS, 0.0), t)
+            + figRippleH(q + vec2f(0.0, FIG_CAUSTIC_EPS), t) + figRippleH(q - vec2f(0.0, FIG_CAUSTIC_EPS), t) - 4.0 * h0)
+            / (FIG_CAUSTIC_EPS * FIG_CAUSTIC_EPS);
+  let lap = FIG_CAUSTIC_SLOPE * FIG_RIPPLE_FREQ * lapQ;
+  let I = clamp(1.0 / max(1.0 + D * FIG_CAUSTIC_BEND * lap, 1e-3), FIG_CAUSTIC_MIN, FIG_CAUSTIC_MAX);
+  let blur = D * FIG_SUN_TAN_RADIUS * FIG_RIPPLE_FREQ * 2.0 * FIG_PI;
+  return mix(1.0, I, exp(-0.5 * blur * blur));
+}
+// lighting.js sunMapShadowAt: the sun at a point p inside a volume, from the map
+fn figSunMapShadowAt(p: vec3f, sm0: texture_2d<f32>, sig: texture_2d<f32>, sun: vec3f, grid: vec4f, origin: vec4f, caustics: bool) -> vec3f {
+  var c: vec3f;
+  var R: f32;
+  var u: vec3f;
+  var v: vec3f;
+  figSunBasis(sun, grid, origin.xyz, &c, &R, &u, &v);
+  let res = i32(grid.w);
+  let q = p - c;
+  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
+  let d = R - dot(q, sun);
+  let fp = st * grid.w - 0.5;
+  let i0 = vec2i(floor(fp));
+  let w = fp - vec2f(i0);
+  var acc = vec3f(0.0);
+  var cD = 0.0;
+  var cW = 0.0;
+  for (var k = 0; k < 4; k++) {
+    let o = vec2i(k & 1, k >> 1u);
+    let sm = textureLoad(sm0, clamp(i0 + o, vec2i(0), vec2i(res - 1)), 0);
+    var lit = select(vec3f(0.0), vec3f(1.0), d < sm.x + FIG_VOLUME_SHADOW_BIAS);
+    let tid = i32(sm.w / FIG_TINT_ID_SCALE);
+    let wk = select(1.0 - w.x, w.x, o.x == 1) * select(1.0 - w.y, w.y, o.y == 1);
+    if (tid > 0 && d > sm.y) {
+      let s = figSigma(sig, tid);
+      let tau = sm.w - f32(tid) * FIG_TINT_ID_SCALE;
+      let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
+      let tint = s.rgb / max(dot(s.rgb, vec3f(1.0 / 3.0)), 1e-4);
+      lit *= exp(-tint * tau * frac);
+      if (figUnderPool(sm, d, s, tid)) { cD += (d - sm.y) * wk; cW += wk; }
+    }
+    acc += lit * wk;
+  }
+  if (caustics && cW > 0.0) { acc *= mix(1.0, figCausticGain(p, cD / cW, sun, origin), cW); }
+  return acc;
+}
+// clouds.js cloudDensity (detail 0: the light's) and cloudShadow
+fn figCloudDensity(p: vec3f, noise: texture_3d<f32>, rep: sampler, cloud: vec4f) -> f32 {
+  let h = (p.y - cloud.y - FIG_CLOUD_BASE) / FIG_CLOUD_THICK;
+  if (h <= 0.0 || h >= 1.0) { return 0.0; }
+  let xz = p.xz + cloud.zw;
+  let w = mix(textureSampleLevel(noise, rep, vec3f(xz * FIG_CLOUD_SHAPE_A_F, FIG_CLOUD_SLICE_A), 0.0).r,
+              textureSampleLevel(noise, rep, vec3f(xz.yx * FIG_CLOUD_SHAPE_B_F, FIG_CLOUD_SLICE_B), 0.0).g, FIG_CLOUD_SHAPE_B_W);
+  let cov = (w - (1.0 - FIG_CLOUD_COVER)) / FIG_CLOUD_COVER;
+  if (cov <= 0.0) { return 0.0; }
+  let prof = smoothstep(0.0, FIG_CLOUD_ROUND_LO, h) * (1.0 - smoothstep(FIG_CLOUD_ROUND_HI, 1.0, h));
+  let d = cov - FIG_CLOUD_DOME * (1.0 - prof);
+  if (d <= 0.0) { return 0.0; }
+  return clamp(d - FIG_CLOUD_ERODE * (1.0 - FIG_CLOUD_NOISE_MEAN), 0.0, 1.0);
+}
+fn figCloudShadow(wp: vec3f, sun: vec3f, noise: texture_3d<f32>, rep: sampler, cloud: vec4f) -> f32 {
+  if (cloud.x < 0.5) { return 1.0; }
+  var od = 0.0;
+  for (var k = 0; k < FIG_CLOUD_SHADOW_N; k++) {
+    let y = cloud.y + FIG_CLOUD_BASE + (f32(k) + 0.5) / f32(FIG_CLOUD_SHADOW_N) * FIG_CLOUD_THICK;
+    od += figCloudDensity(wp + sun * ((y - wp.y) / sun.y), noise, rep, cloud);
+  }
+  return exp(-FIG_CLOUD_SIGMA * od * FIG_CLOUD_THICK / (sun.y * f32(FIG_CLOUD_SHADOW_N)));
+}
+// lighting.js probeTex: one band at p, held to the edge probes' centres
+fn figProbeTex(t: texture_3d<f32>, s: sampler, p: vec3f, grid: vec3f) -> vec4f {
+  let B = grid / FIG_BS;
+  let q = clamp(p / FIG_BS, vec3f(0.5), B - 0.5);
+  return textureSampleLevel(t, s, q / B, 0.0);
+}
+// lighting.js wandLight: row 0 the lights' positions (xyz) and reach (w), row 1 their colours (rgb) and intensity (w)
+fn figWandLight(p: vec3f, wand: texture_2d<f32>, count: i32) -> vec3f {
+  var light = vec3f(0.0);
+  for (var i = 0; i < ${WAND_LIGHTS}; i++) {
+    if (i >= count) { break; }
+    let pr = textureLoad(wand, vec2i(i, 0), 0);
+    let ci = textureLoad(wand, vec2i(i, 1), 0);
+    let d = p - pr.xyz;
+    let falloff = max(1.0 - dot(d, d) / (pr.w * pr.w), 0.0);
+    light += ci.rgb * ci.w * falloff * falloff;
+  }
+  return light;
+}
+`;
+const lightCode = code(LIGHT_WGSL, [], 'wgsl');
+
+// The sunlight falling on grid point p: FU.sunCol × sunShadowAt(p) (lighting.js:
+// the clouds' shadow, and the map if light gets through them), or the whole of
+// it without the map (sun.w: the shadows switch).
+const figSunFn = wgslFn(/* wgsl */ `
+fn figSun(p: vec3f, sm: texture_2d<f32>, sig: texture_2d<f32>, noise: texture_3d<f32>, rep: sampler,
+          sun: vec4f, sunCol: vec4f, grid: vec4f, origin: vec4f, cave: vec4f, cloud: vec4f) -> vec3f {
+  if (sun.w < 0.5) { return sunCol.rgb; }
+  let c = figCloudShadow(p + origin.xyz, sun.xyz, noise, rep, cloud);
+  if (c <= FIG_CLOUD_SHADOW_SKIP) { return vec3f(0.0); }
+  return sunCol.rgb * c * figSunMapShadowAt(p, sm, sig, sun.xyz, grid, origin, cave.w > 0.5);
+}`, [lightCode]);
+
+// The light from everything else at grid point p of a surface facing n: the GI
+// probes' irradiance read at q (lighting.js giIrradiance(probeAt(q), n), with the
+// scene's ambient floor), and the glow volume and wand lights at p (sampleLight)
+// × the glow's gain (sunCol.w).
+const figAmbientFn = wgslFn(/* wgsl */ `
+fn figAmbient(p: vec3f, q: vec3f, n: vec3f, gi0: texture_3d<f32>, gi1: texture_3d<f32>, gi2: texture_3d<f32>, gi3: texture_3d<f32>,
+              light: texture_3d<f32>, s: sampler, wand: texture_2d<f32>, wandCount: f32, sunCol: vec4f, grid: vec4f, cave: vec4f) -> vec3f {
+  let c0 = figProbeTex(gi0, s, q, grid.xyz);
+  let cx = figProbeTex(gi1, s, q, grid.xyz);
+  let cy = figProbeTex(gi2, s, q, grid.xyz);
+  let cz = figProbeTex(gi3, s, q, grid.xyz);
+  let irr = max(FIG_SH_Y0 * c0.rgb + FIG_SH_COS1 * FIG_SH_Y1 * (cx.rgb * n.x + cy.rgb * n.y + cz.rgb * n.z), vec3f(0.0)) + cave.rgb;
+  let local = figProbeTex(light, s, p, grid.xyz).rgb + figWandLight(p, wand, i32(wandCount));
+  return irr + local * sunCol.w;
+}`, [lightCode]);
+
+// three.js's getTangentFrame (normalmap_pars_fragment), as figure.js's GLSL
+// figNormalMapped had it: the tangent frame from screen-space derivatives of
+// the position and UV, for meshes with no tangents (Mikkelsen, "Bump Mapping
+// Unparametrized Surfaces on the GPU", 2010). m: the map's texel (0..1).
+export const figNormalMappedFn = wgslFn(/* wgsl */ `
+fn figNormalMapped(n: vec3f, face: f32, wp: vec3f, uv: vec2f, m0: vec3f, scale: vec2f) -> vec3f {
+  let q0 = dpdx(wp);
+  let q1 = dpdy(wp);
+  let st0 = dpdx(uv);
+  let st1 = dpdy(uv);
+  let q1perp = cross(q1, n);
+  let q0perp = cross(n, q0);
+  let T = q1perp * st0.x + q0perp * st1.x;
+  let B = q1perp * st0.y + q0perp * st1.y;
+  let det = max(dot(T, T), dot(B, B));
+  var s = 0.0;
+  if (det != 0.0) { s = face * inverseSqrt(det); }
+  var m = m0 * 2.0 - 1.0;
+  m = vec3f(m.xy * scale, m.z);
+  return normalize(T * (m.x * s) + B * (m.y * s) + n * m.z);
+}`);
+
+// ---------------------------------------------------------------- the shared nodes
+
+// stand-ins until a grid's textures are in (the formats theirs have, so the
+// materials' bindings don't change when they are swapped in)
+function data2D(w, h, data) {
+  const t = new DataTexture(data, w, h, RGBAFormat, FloatType);
+  t.minFilter = t.magFilter = NearestFilter;
+  t.wrapS = t.wrapT = ClampToEdgeWrapping;
+  t.generateMipmaps = false;
+  t.colorSpace = NoColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+function data3D(type, data, wrap = ClampToEdgeWrapping) {
+  const t = new Data3DTexture(data, 1, 1, 1);
+  t.format = RGBAFormat;
+  t.type = type;
+  t.minFilter = t.magFilter = LinearFilter;
+  t.wrapS = t.wrapT = t.wrapR = wrap;
+  t.generateMipmaps = false;
+  t.unpackAlignment = 1;
+  t.colorSpace = NoColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+// sigma and the liquid flag per element (the tables' SIGMA, RCLASS == R_LIQUID)
+function sigmaTable() {
+  const n = ELEMENTS.length, a = new Float32Array(4 * n);
+  ELEMENTS.forEach((e, i) => {
+    const s = e.sigma ?? [0, 0, 0];
+    a.set([s[0] ?? 0, s[1] ?? 0, s[2] ?? 0, e.render === R.LIQUID ? 1 : 0], 4 * i);
+  });
+  return data2D(n, 1, a);
+}
+
+const stand = {
+  // a shadow map that shadows nothing: depth 1e9 in every texel, no tint
+  shadow: data2D(1, 1, new Float32Array([1e9, 0, 0, 0])),
+  band: data3D(HalfFloatType, new Uint16Array(4)),
+  noise: data3D(UnsignedByteType, new Uint8Array([128, 128, 128, 128]), RepeatWrapping),
+};
+const wandData = new Float32Array(4 * WAND_LIGHTS * 2);
+
+/**
+ * The light's nodes, shared by every lit material: texture nodes (their
+ * `.value` repointed by updateMeshLight) and uniform nodes (set every frame).
+ */
+export const meshLight = {
+  shadow: texture(stand.shadow),
+  sigma: texture(sigmaTable()),
+  wand: texture(data2D(WAND_LIGHTS, 2, wandData)),
+  gi: [0, 1, 2, 3].map(() => texture3D(stand.band)),
+  light: texture3D(stand.band),
+  noise: texture3D(stand.noise),
+  sun: uniform(new Vector4(0, 1, 0, 0)),        // toward the key light; w: the shadow map is read
+  sunCol: uniform(new Vector4(1, 1, 1, MESH_GLOW_GAIN)),   // FU.sunCol; w: the glow's gain
+  grid: uniform(new Vector4(64, 64, 64, 1)),    // the grid (cells); w: the shadow map's texels per side
+  origin: uniform(new Vector4(0, 0, 0, 0)),     // the window's origin (cells); w: the animation clock (s)
+  cave: uniform(new Vector4(0, 0, 0, 0)),       // the scene's ambient floor; w: caustics on
+  cloud: uniform(new Vector4(0, 0, 0, 0)),      // clouds on, their sea level, their drift (x, z)
+  wandCount: uniform(0),
+  worldToGrid: uniform(new Matrix4()),          // scene → grid cells (the volume's matrixWorld, inverted)
+};
+
+/**
+ * The radiance of a lit surface (linear HDR, as the volume's), TSL:
+ * albedo × (sun × n·l × shadow + GI + glow) + emit, as figure.js's GLSL had it.
+ *   albedo  vec3 node (linear)
+ *   n       the shading normal, world (= grid axes), facing the eye
+ *   grid    the point in grid cells (default: positionWorld through worldToGrid)
+ *   emit    vec3 node added unlit (heat glow, embers), or null
+ *   toon    cel shading: n·l through a thin smoothstep (TOON_EDGE)
+ * @param {{ albedo: object, n?: object, grid?: object, emit?: object | null, toon?: boolean, toonEdge?: number }} o
+ */
+export function litColor({ albedo, n = normalWorld, grid = null, emit = null, toon = false, toonEdge = 0.08 }) {
+  const L = meshLight;
+  const p = grid ?? gridPosition();
+  const sunDir = L.sun.xyz;
+  const sun = figSunFn({
+    p: p.add(sunDir.mul(SHADOW_LIFT)), sm: L.shadow, sig: L.sigma, noise: L.noise, rep: sampler(L.noise),
+    sun: L.sun, sunCol: L.sunCol, grid: L.grid, origin: L.origin, cave: L.cave, cloud: L.cloud,
+  });
+  const ambient = figAmbientFn({
+    p, q: p.add(n.mul(GI_LIFT)), n, gi0: L.gi[0], gi1: L.gi[1], gi2: L.gi[2], gi3: L.gi[3], light: L.light, s: sampler(L.light),
+    wand: L.wand, wandCount: L.wandCount, sunCol: L.sunCol, grid: L.grid, cave: L.cave,
+  });
+  let ndl = max(dot(n, sunDir), float(0));
+  if (toon) ndl = smoothstep(float(0), float(toonEdge), ndl);
+  const lit = albedo.mul(sun.mul(ndl).add(ambient));
+  return emit ? lit.add(emit) : lit;
+}
+
+/**
+ * The fragment's point in grid cells: worldToGrid (default the shared one) × positionWorld.
+ * @param {object} [worldToGrid] a mat4 uniform node
+ */
+export const gridPosition = (worldToGrid = meshLight.worldToGrid) => worldToGrid.mul(vec4(positionWorld, 1)).xyz;
+
+// ---------------------------------------------------------------- per frame
+
+const ext = new Map();   // a node's key → { source: GPUTexture, tex: ExternalTexture }
+function point(key, node, source, opts) {
+  const had = ext.get(key);
+  if (had?.source === source) return;
+  if (!source) {
+    if (had) { node.value = had.stand; had.tex.dispose(); ext.delete(key); }
+    return;
+  }
+  const tex = externalTexture(source, opts);
+  if (opts?.wrap) tex.wrapS = tex.wrapT = tex.wrapR = opts.wrap;
+  const standIn = had?.stand ?? node.value;
+  node.value = tex;
+  had?.tex.dispose();
+  ext.set(key, { source, tex, stand: standIn });
+}
+
+const sunV = new Vector3(), inv = new Matrix4();
+/**
+ * Brings the light's nodes up to this frame (src/wire/mesh.js beforeView):
+ * the grid's textures (repointed when its shadow map, light or GI bands are
+ * made again: a new grid), the sun and sky, the window, the wand lights.
+ * @param {{ gpu: object, sim: object, derived?: object, vol?: object, volume?: object, sun: object,
+ *   viewTimeUniform?: { value: number } }} app
+ */
+export function updateMeshLight(app) {
+  const L = meshLight, u = gfxUniforms;
+  const { sim, vol, volume } = app;
+  const derived = app.derived ?? sim?.derived;
+  const shadows = vol?.shadowState === 'ready';
+  point('shadow', L.shadow, shadows ? vol.shadowTextures.map : null, { dimension: '2d' });
+  derived?.giTextures?.forEach((t, k) => point(`gi${k}`, L.gi[k], t, { dimension: '3d' }));
+  point('light', L.light, derived?.light ?? null, { dimension: '3d' });
+  const noise = app.gpu ? createMediaNoise(app.gpu).texture : null;
+  point('noise', L.noise, noise, { dimension: '3d', wrap: RepeatWrapping });
+
+  sunV.copy(app.sun ?? sunV.set(0, 1, 0)).normalize();
+  L.sun.value.set(sunV.x, sunV.y, sunV.z, shadows ? 1 : 0);
+  const sc = u.uSunCol.value;
+  L.sunCol.value.set(sc[0], sc[1], sc[2], MESH_GLOW_GAIN);
+  const g = sim?.g;
+  if (g) L.grid.value.set(g.nx, g.ny, g.nz, vol?.shadowRes ?? 1);
+  const o = sim?.origin;
+  L.origin.value.set(o?.x ?? 0, o?.y ?? 0, o?.z ?? 0, app.viewTimeUniform?.value ?? 0);
+  const cave = u.uCaveAmbient.value;
+  L.cave.value.set(cave[0], cave[1], cave[2], u.uCaustics.value ? 1 : 0);
+  const shift = u.uCloudShift.value;
+  L.cloud.value.set(u.uClouds.value ? 1 : 0, u.uCloudSea.value, shift[0], shift[1]);
+  // the wand lights (lighting.js wandLight), when they change
+  const n = Math.min(u.uWandLightCount.value | 0, WAND_LIGHTS);
+  let changed = n !== L.wandCount.value;
+  for (let i = 0; i < n; i++) {
+    const p = u.uWandLightPosition.value[i], c = u.uWandLightColor.value[i];
+    const a = 4 * i, b = 4 * (WAND_LIGHTS + i);
+    for (const [k, x] of [[a, p.x], [a + 1, p.y], [a + 2, p.z], [a + 3, p.w], [b, c.x], [b + 1, c.y], [b + 2, c.z], [b + 3, c.w]]) {
+      if (wandData[k] !== x) { wandData[k] = x; changed = true; }
+    }
+  }
+  L.wandCount.value = n;
+  if (changed) L.wand.value.needsUpdate = true;
+  if (volume) L.worldToGrid.value.copy(inv.copy(volume.matrixWorld).invert());
+}
+
+// ---------------------------------------------------------------- the device, and compiling new meshes
+
+let meshGpu = null;
+/** The app's device (src/wire/mesh.js boot): the modules that add meshes compile them through it. */
+export function setMeshGpu(gpu) { meshGpu = gpu ?? null; }
+/** The device set by setMeshGpu, or null (no app: Node, the icon bake's own page). */
+export const getMeshGpu = () => meshGpu;
+
+/**
+ * Compiles a new kind of mesh (`object` and everything under it) before it
+ * joins the scene (docs/webgpu.md B5, F8), for the scene target's formats
+ * (gpu.three.defaults) unless opts says otherwise. Hidden parts are compiled
+ * too (they are shown later: a hand's model, a jet's flames), and frustum
+ * culling is off for the compile. Resolves when three's pipelines are built;
+ * at once when there is no device yet.
+ * @param {object} object
+ * @param {{ camera?: object, scene?: object, target?: object }} [opts]
+ * @returns {Promise<void>}
+ */
+export function prepareMesh(object, opts = {}) {
+  const three = meshGpu?.three;
+  if (!three || meshGpu.failure || meshGpu.lost) return Promise.resolve();
+  const saved = [];
+  object.traverse((o) => { saved.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; });
+  let p;
+  try {
+    p = three.prepare(object, opts);   // (three reads visibility before its first await)
+  } finally {
+    for (const [o, v, fc] of saved) { o.visible = v; o.frustumCulled = fc; }
+  }
+  return Promise.resolve(p).then(() => {}, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); });
+}
