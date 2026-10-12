@@ -31,6 +31,7 @@ const IGNORE = [/Failed to load resource: net::ERR_CONNECTION_REFUSED/, /favicon
  * @param {{ query?: string, viewport?: { width: number, height: number }, steps?: number, dt?: number }} [opts]
  * @returns {Promise<{ page: import('playwright').Page, errors: string[], allowed: string[], boot: number,
  *   enter: (at?: number[]) => Promise<{ mode: string, onGround: boolean, pos: number[], frames: number, s: number }>,
+ *   hold: (key: string) => Promise<string | null>,
  *   check: (name: string, ok: boolean, info?: string) => boolean, failures: () => number,
  *   secs: () => string, close: () => Promise<void> }>}
  */
@@ -60,8 +61,12 @@ export async function openPovApp({ query = '?size=64&preset=empty&view=plain', v
     if (failed) throw new Error(`the app didn't boot: ${failed.slice(0, 300)}`);
     await page.evaluate(() => { __app.post.settings.taa = false; return __app.test.ready(); });
     const boot = (Date.now() - t0) / 1000;
-    // (headless has no pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
-    await page.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
+    // Headless Chrome grants the pointer lock pov.enter asks for, but its synthetic mouse reports a
+    // click with a stale movement (a mousemove of −x, −y of the cursor) that would turn the view: the
+    // checks aim with __app.pov.setLook (or frames' look), and no mousemove reaches pov. If the lock
+    // is ever refused, the hotbar over the crosshair would take the clicks: they pass through it.
+    await page.addStyleTag({ content: '.hotbar, .hotbar *, .hb-stack { pointer-events: none !important; }' });
+    await page.evaluate(() => addEventListener('mousemove', (e) => e.stopImmediatePropagation(), true));
     await page.evaluate(({ steps, dt }) => {
       // (a manual page starts paused; the frames below step the sim themselves, and the tools pace by its steps)
       __app.settings.paused = false;
@@ -97,13 +102,22 @@ export async function openPovApp({ query = '?size=64&preset=empty&view=plain', v
     return {
       page, errors, allowed, boot, check, secs,
       failures: () => failures,
+      // Puts tool `key` in hand (toolbelt.select) and waits, on the wall's clock, for the slot selector it
+      // brings up to go (hotbar.js: 1.5 s): while it's up under a locked pointer, a click only closes it
+      // (HL2's weapon selection swallows the click). With the pointer free it stays up and clicks go through.
+      // Resolves to the key in hand.
+      async hold(key) {
+        await page.evaluate((key) => __app.pov.toolbelt.select(key), key);
+        await page.waitForFunction(() => !document.pointerLockElement || !document.querySelector('.hotbar.open'), null, { timeout: 10000 });
+        return page.evaluate(() => __app.pov.toolbelt.selectedKey);
+      },
       // Drops the body in (at `at`, feet in grid cells, else where it looks) and runs frames until it stands.
       async enter(at = null) {
         const t = Date.now();
         await page.mouse.move(viewport.width / 2, viewport.height / 2);
         await page.evaluate(async (at) => {
           await __app.pov.enter({ swoop: 0, hint: false, ...(at ? { at: new __app.THREE.Vector3(...at) } : {}) });
-          __app.pov.test.assumeLocked = true;   // (headless has no pointer lock)
+          __app.pov.test.assumeLocked = true;   // (in case the pointer lock is refused)
         }, at);
         const frames = await page.evaluate(() => __pov.frames(60, () => __app.pov.mode === 'on' && __app.pov.player?.onGround));
         const s = await page.evaluate(() => ({ mode: __app.pov.mode, onGround: !!__app.pov.player?.onGround, pos: __app.pov.player?.pos.toArray() ?? [] }));
