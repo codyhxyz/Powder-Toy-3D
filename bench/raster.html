@@ -9,7 +9,8 @@
   real cells drawn as v2 would draw them, as 4× MSAA at the output size and as
   TAAU at ⅔, on this device, with pass times, cold compile times, transient
   attachments and 1 or 2 frames in flight. Go/no-go: if the MSAA frame costs
-  more than 1.5× the TAAU frame, v2 falls back to TAAU (judge 1, gate 1).
+  more than 1.5× the TAAU frame, both without the shadow pass they share, v2
+  falls back to TAAU (judge 1, gate 1).
   Standalone: it imports nothing from src/. bench/raster.js has the options.
 -->
 <style>
@@ -117,8 +118,8 @@
     <li>The scene's real cells (the game's lab or volcano preset at 128³), drawn as v2 draws them: a sun shadow map, the opaque faces, then liquids and glass at 1× over the resolved colour and depth, then the tone map.</li>
     <li><b>MSAA</b>: the opaque pass at the output size with 4× MSAA, resolved, its samples discarded. <b>TAAU</b>: the opaque pass at ⅔ size, jittered, then a resolve that reprojects history and upscales.</li>
     <li>Each is run with 1 and 2 frames in flight, and MSAA also with transient attachments where the browser has them. The camera follows the same orbit in every run.</li>
-    <li>GPU time per pass comes from timestamp queries where the browser has them; otherwise from the time between submitting a frame and the GPU finishing it.</li>
-    <li>The verdict: if the MSAA frame costs more than 1.5× the TAAU frame, v2's default anti-aliasing becomes TAAU (docs/v2.md, section 11).</li>
+    <li>GPU time per pass comes from timestamp queries where the browser has them; otherwise from the time between submitting a frame and the GPU finishing it, with extra runs that skip the shadow pass.</li>
+    <li>The verdict: if the MSAA frame costs more than 1.5× the TAAU frame, v2's default anti-aliasing becomes TAAU (docs/v2.md, section 11). Both frames are compared without the shadow pass, which is the same in both and which v2 redraws only when the sun or the cells change; the whole frame's ratio is shown beside it.</li>
   </ul>
 </div>
 

@@ -388,10 +388,13 @@ export class Renderer {
 
   /**
    * Encodes and submits frame `i` of the current variant into the canvas.
+   * shadow false: no shadow pass (the map keeps what it held; an empty
+   * compute pass takes its timestamps), so submit-to-done timing can tell
+   * the anti-aliasing's cost from the shadow's without timestamps.
    * @returns {{ cpuMs: number, submitAt: number, done: Promise<number>, gpu: Promise<object | null> }}
    *   done: when onSubmittedWorkDone resolved (performance.now()); gpu: the passes' timestamps
    */
-  frame(i, first) {
+  frame(i, first, { shadow = true } = {}) {
     const t0 = performance.now();
     const d = this.device, T = this.targets, P = this.pipelines, V = T.views, { w, h } = T;
     const cam = this.camera(i, w / h);
@@ -406,15 +409,18 @@ export class Renderer {
     const ts = (p) => (this.querySet ? { timestampWrites: { querySet: this.querySet, beginningOfPassWriteIndex: 2 * p, endOfPassWriteIndex: 2 * p + 1 } } : {});
     const enc = d.createCommandEncoder();
     // 1. the sun's shadow map (v2 redraws it at ≤ 30 Hz and only on change; here every frame, so its cost shows)
-    let pass = enc.beginRenderPass({
-      colorAttachments: [],
-      depthStencilAttachment: { view: this.shadowView ??= this.shadow.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
-      ...ts(0),
-    });
-    pass.setPipeline(P.shadow);
-    pass.setBindGroup(0, T.shadowBG);
-    pass.draw(6 * this.nOpaque);
-    pass.end();
+    let pass;
+    if (shadow) {
+      pass = enc.beginRenderPass({
+        colorAttachments: [],
+        depthStencilAttachment: { view: this.shadowView ??= this.shadow.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+        ...ts(0),
+      });
+      pass.setPipeline(P.shadow);
+      pass.setBindGroup(0, T.shadowBG);
+      pass.draw(6 * this.nOpaque);
+      pass.end();
+    } else if (this.querySet) enc.beginComputePass(ts(0)).end();
     // 2. the opaque pass: sky and ground, then the faces
     const clear0 = { loadOp: 'clear', clearValue: [0, 0, 0, 1] }, clearFar = { loadOp: 'clear', clearValue: [FAR, 0, 0, 0] };
     if (T.variant === 'msaa') {

@@ -12,6 +12,10 @@
 //   msaa-1  msaa-2    4× MSAA at the output size, 1 or 2 frames in flight
 //   taau-1  taau-2    TAAU at ⅔, 1 or 2 frames in flight
 //   msaaT-1 msaaT-2   MSAA with transient attachments (where the browser has them)
+//   msaa-1-ns taau-1-ns  (msaaT-1-ns with transient attachments) the same at 1
+//                     frame in flight without the shadow pass: run only when
+//                     there are no usable timestamps, to split the shadow's
+//                     cost from the anti-aliasing's
 //
 // 1 frame in flight: a frame is submitted only after the last one's
 // onSubmittedWorkDone; 2: one queued frame is allowed. A requestAnimationFrame
@@ -22,13 +26,21 @@
 // 120 Hz), per-pass GPU time from timestamp queries where the device has
 // them, submit-to-onSubmittedWorkDone time per frame (the method when there
 // are no timestamps), CPU encode time, each pipeline's compile time, and the
-// verdict: MSAA's GPU frame time over TAAU's (1 frame in flight; MSAA with
-// transient attachments where there are some); above 1.5, "TAAU".
+// verdict: MSAA's GPU time over TAAU's at 1 frame in flight (MSAA with
+// transient attachments where there are some); above 1.5, "TAAU". The call
+// uses the frame without the shadow pass, which is the same in both variants
+// (and which v2 redraws at most 30 Hz, only on change): from the opaque
+// pass's start to the tone map's or resolve's end by timestamps, else the
+// -ns runs' submit-to-done. The whole frame's ratio is shown beside it.
+// Timestamps that are zero, not finite, or longer than the frame's
+// submit-to-done (some browsers expose the feature and write nonsense) are
+// refused, recorded as refused, and the submit-to-done timing used instead.
 //
 // URL options (the form's, for links and tools/raster-bench.mjs):
 //   ?scene=lab|volcano|lab,volcano   ?res=both|device|v2   ?frames=300   ?warmup=60
 //   ?shadow=1024|2048   ?cold=1|0   ?dpr=<number> (instead of devicePixelRatio)
-//   ?pace=raf|free (a frame per animation frame, or back to back: the GPU at saturated clocks)
+//   ?pace=raf|free (a frame per animation frame, or back to back: at 2 frames in flight the GPU
+//   always has a frame queued, so it runs at a saturated GPU's clocks)
 //   ?still=msaa|taau ?stillFrame=<i> (the still drawn after the runs)
 //   ?only=msaa-1,taau-1 (some configurations)   ?timestamps=0 (time by submit-to-done, as without
 //   timestamp-query)   ?auto=1 (start at once)
@@ -36,7 +48,7 @@
 import { loadScene, extractFaces, columnHeights } from './raster/scene.js';
 import { Renderer, PASSES, TAAU_SCALE, probeTransient } from './raster/renderer.js';
 
-const VERSION = 'tpt3d-raster-bench/1';
+const VERSION = 'tpt3d-raster-bench/2';   // 2: the verdict without the shadow pass, -ns runs, timestamp checks
 const THRESHOLD = 1.5;   // docs/v2.md 11: MSAA costing more than 1.5× TAAU at ⅔ means TAAU
 // tools/v2/crisp/faces.txt, the face counts v2's design quotes (docs/v2.md 3.2)
 const FACES_TXT = { lab: { opaque: 10972, liquid: 10752, glass: 19424 }, volcano: { opaque: 22200, liquid: 13952, glass: 0 } };
@@ -48,7 +60,7 @@ const NOTES = [
   'Liquids are whole cells with flat tops (no fill levels in a preset); glass and ice are drawn in the translucent pass with the liquids, unsorted, liquids first.',
   'Gas: none; these presets hold no gas cells at load, so the gas march is not drawn.',
   'Linear depth is r16float in both variants: r32float cannot be a resolve target in WebGPU, and r16float can.',
-  'The shadow map is redrawn every frame so its cost shows; v2 redraws it at most 30 Hz and only on change.',
+  'The shadow map is redrawn every frame so its cost shows; v2 redraws it at most 30 Hz and only on change, so the verdict leaves it out (the whole frame\'s ratio is shown too).',
   'TAAU reprojects with per-pixel motion and a bilinear history tap, clamps to the 3×3 neighbourhood, and tone maps in the same pass.',
   'Patterns are procedural 16×16 stand-ins for the art pass; the light grid is filled once at load (16 iterations, 26 neighbours).',
   'Left out: the convex-edge bevel (~5 ALU a pixel), flying cubes and droplets, three.js meshes, bloom and eye adaptation, overlays.',
@@ -115,40 +127,52 @@ function ratios(option) {
 
 /**
  * Runs one configuration: warm-up, then `frames` measured frames, one per
- * animation frame (pace 'raf'), or as fast as the frames-in-flight limit
- * lets them go (pace 'free': the GPU never idles, so it runs at the clocks a
- * saturated GPU holds rather than the ones a 60 or 120 Hz cadence settles at).
+ * animation frame (pace 'raf'), or back to back (pace 'free'): the next frame
+ * is encoded as soon as the frames-in-flight limit lets it, in a task of its
+ * own (a MessageChannel message: nested setTimeout(0)s are clamped to 4 ms),
+ * and a frame the limit holds back waits for one to finish instead of
+ * polling. At 2 frames in flight the GPU then always has a frame queued, so
+ * it runs at the clocks a saturated GPU holds rather than the ones a 60 or
+ * 120 Hz cadence settles at; at 1 it idles for the encode and the done
+ * notification's trip.
  */
 function runConfig(r, cfg, { warmup, frames, pace }, errors, label) {
-  const next = pace === 'free' ? (fn) => setTimeout(() => fn(performance.now()), 0) : requestAnimationFrame;
+  const free = pace === 'free';
   return new Promise((resolve, reject) => {
     const recs = [];
-    let i = 0, inFlight = 0, pending = 0, skipped = 0;
+    let i = 0, inFlight = 0, pending = 0, skipped = 0, waiting = false;
     const total = warmup + frames;
+    const chan = free ? new MessageChannel() : null;
+    const next = free ? () => chan.port2.postMessage(0) : () => requestAnimationFrame(tick);
+    // held back: rAF pace tries again next animation frame; free pace sleeps until a frame finishes
+    const wait = free ? () => { waiting = true; } : next;
+    const wake = () => { if (waiting) { waiting = false; next(); } };
+    const finish = (fn) => { chan?.port1.close(); fn(); };
     const tick = (now) => {
-      if (errors.length) { reject(new Error(errors[0])); return; }
+      if (errors.length) { finish(() => reject(new Error(errors[0]))); return; }
       if (i >= total) {
-        if (inFlight || pending) next(tick);
-        else resolve({ recs, skipped });
+        if (inFlight || pending) wait();
+        else finish(() => resolve({ recs, skipped }));
         return;
       }
       if (inFlight >= cfg.inflight) {
-        if (i >= warmup) skipped++;
-        next(tick);
+        if (i >= warmup && !free) skipped++;
+        wait();
         return;
       }
-      const f = r.frame(i, i === 0);
+      const f = r.frame(i, i === 0, { shadow: cfg.shadow !== false });
       const rec = { i, raf: now, cpu: f.cpuMs, submitDone: null, gpu: null };
       inFlight++;
       pending++;
-      f.done.then((t) => { rec.submitDone = t - f.submitAt; inFlight--; }, (e) => errors.push(String(e)));
-      f.gpu.then((g) => { rec.gpu = g; pending--; }, () => { pending--; });
+      f.done.then((t) => { rec.submitDone = t - f.submitAt; inFlight--; wake(); }, (e) => { errors.push(String(e)); inFlight--; wake(); });
+      f.gpu.then((g) => { rec.gpu = g; pending--; wake(); }, () => { pending--; wake(); });
       if (i >= warmup) recs.push(rec);
       i++;
       if (i % 20 === 0 || i === total) hud.textContent = `${label} · ${cfg.key} · ${Math.max(0, i - warmup)}/${frames}`;
-      next(tick);
+      next();
     };
-    next(tick);
+    if (free) chan.port1.onmessage = () => tick(performance.now());
+    next();
   });
 }
 
@@ -156,12 +180,14 @@ function summarize(cfg, { recs, skipped }, targets) {
   const gaps = recs.slice(1).map((r, k) => r.raf - recs[k].raf);
   const gpu = recs.map((r) => r.gpu).filter(Boolean);
   const frame = stats(gaps);
-  return {
-    config: cfg.key, aa: cfg.aa, framesInFlight: cfg.inflight, transient: cfg.transient,
+  const out = {
+    config: cfg.key, aa: cfg.aa, framesInFlight: cfg.inflight, transient: cfg.transient, shadow: cfg.shadow !== false,
     frames: recs.length, skippedRaf: skipped,
     frameMs: frame, fps: frame ? round(1000 / frame.mean, 1) : null,
     gpuMs: gpu.length ? {
       frame: stats(gpu.map((g) => g.span)),
+      // the opaque pass's start to the last pass's end: the frame less the shadow pass
+      afterShadow: stats(gpu.map((g) => (g.raw.length >= 8 ? (g.raw[7] - g.raw[2]) / 1e6 : null))),
       passes: Object.fromEntries(PASSES[cfg.aa].map((p, k) => [p, stats(gpu.map((g) => g.passes[k]))])),
     } : null,
     submitToDoneMs: stats(recs.map((r) => r.submitDone)),
@@ -170,24 +196,59 @@ function summarize(cfg, { recs, skipped }, targets) {
     timestampsOn100us: gpu.length ? gpu.every((g) => g.raw.every((x) => x % 100000 === 0)) : null,
     targets: { internal: targets.internal, bytes: targets.bytes, msaaBytes: targets.msaaBytes, transientBytes: targets.transientBytes },
   };
+  out.timestampProblem = out.gpuMs ? timestampProblem(out) : null;
+  return out;
 }
 
+/**
+ * Why a run's timestamps can't be used, or null. A browser may expose
+ * timestamp-query and write zeros or nonsense: a span that is 0 or not
+ * finite, or longer than the frame's submit-to-onSubmittedWorkDone (which
+ * contains the GPU's work at 1 frame in flight; the slack covers the two
+ * clocks' rounding), is refused.
+ */
+function timestampProblem(run) {
+  const f = run.gpuMs?.frame?.median, a = run.gpuMs?.afterShadow?.median, s = run.submitToDoneMs?.median;
+  if (f == null) return 'no timestamps';
+  if (!(Number.isFinite(f) && f > 0 && Number.isFinite(a) && a > 0)) return `GPU frame ${f} ms, after the shadow ${a} ms`;
+  if (run.framesInFlight === 1 && s != null && f > s * 1.05 + 0.25) return `GPU frame ${f} ms is longer than its submit→done ${s} ms`;
+  return null;
+}
+
+/**
+ * The verdict for one resolution: MSAA's GPU time over TAAU's at 1 frame in
+ * flight, without the shadow pass (the call) and for the whole frame.
+ */
 function verdict(runs, floor, transient) {
-  const pick = (aa, tr) => runs.find((r) => r.aa === aa && r.framesInFlight === 1 && r.transient === tr && !r.error);
-  const msaa = (transient && pick('msaa', true)) || pick('msaa', false), taau = pick('taau', false);
+  const pick = (aa, shadow, tr) => runs.find((r) => r.aa === aa && r.framesInFlight === 1 && r.shadow === shadow && (tr == null || r.transient === tr) && !r.error);
+  const msaa = (transient && pick('msaa', true, true)) || pick('msaa', true, false), taau = pick('taau', true, false);
   if (!msaa || !taau) return null;
-  let method, m, t;
-  if (msaa.gpuMs?.frame && taau.gpuMs?.frame) {
-    method = 'timestamp-query: the median GPU frame, first pass begin to last pass end';
-    m = msaa.gpuMs.frame.median; t = taau.gpuMs.frame.median;
+  const problem = timestampProblem(msaa) ?? timestampProblem(taau);
+  const f = floor?.median ?? 0;
+  let method, whole, split, splitConfigs = [msaa.config, taau.config];
+  if (!problem) {
+    method = 'timestamp-query: median GPU time per frame';
+    whole = [msaa.gpuMs.frame.median, taau.gpuMs.frame.median];
+    split = [msaa.gpuMs.afterShadow.median, taau.gpuMs.afterShadow.median];
   } else {
     method = 'submit to onSubmittedWorkDone at 1 frame in flight (median), less the empty-submit floor';
-    m = msaa.submitToDoneMs.median - (floor?.median ?? 0); t = taau.submitToDoneMs.median - (floor?.median ?? 0);
+    whole = [msaa.submitToDoneMs?.median - f, taau.submitToDoneMs?.median - f];
+    const m = pick('msaa', false), t = pick('taau', false);
+    split = m && t ? [m.submitToDoneMs?.median - f, t.submitToDoneMs?.median - f] : null;
+    splitConfigs = m && t ? [m.config, t.config] : null;
   }
-  const ratio = m / t;
+  const ratioOf = (p) => (p && p.every((x) => Number.isFinite(x) && x > 0) ? p[0] / p[1] : null);
+  const call = (r) => (r == null ? null : r > THRESHOLD ? 'TAAU' : 'MSAA');
+  const rWhole = ratioOf(whole), rSplit = ratioOf(split);
+  const used = rSplit != null ? { basis: 'without the shadow pass', ratio: rSplit, ms: split } : { basis: 'the whole frame (no shadow-free timing)', ratio: rWhole, ms: whole };
   return {
-    choice: ratio > THRESHOLD ? 'TAAU' : 'MSAA', ratio: round(ratio), threshold: THRESHOLD,
-    msaaMs: round(m), taauMs: round(t), msaaConfig: msaa.config, taauConfig: taau.config, method,
+    choice: call(used.ratio), ratio: round(used.ratio), threshold: THRESHOLD, basis: used.basis,
+    msaaMs: round(used.ms?.[0]), taauMs: round(used.ms?.[1]),
+    withoutShadow: rSplit != null ? { ratio: round(rSplit), msaaMs: round(split[0]), taauMs: round(split[1]), choice: call(rSplit), configs: splitConfigs } : null,
+    wholeFrame: { ratio: round(rWhole), msaaMs: round(whole[0]), taauMs: round(whole[1]), choice: call(rWhole), configs: [msaa.config, taau.config] },
+    msaaConfig: msaa.config, taauConfig: taau.config, method,
+    timestampsRefused: problem && problem !== 'no timestamps' ? problem : null,
+    noVerdict: used.ratio == null ? `the times don't make a ratio (MSAA ${used.ms?.[0]} ms, TAAU ${used.ms?.[1]} ms)` : null,
   };
 }
 
@@ -286,14 +347,12 @@ async function run() {
       if (errors.length) throw new Error(errors[0]);
 
       sc.resolutions = [];
-      const configs = [
-        { key: 'msaa-1', aa: 'msaa', inflight: 1, transient: false },
-        { key: 'taau-1', aa: 'taau', inflight: 1, transient: false },
-        ...(transientUsage ? [{ key: 'msaaT-1', aa: 'msaa', inflight: 1, transient: true }] : []),
-        { key: 'msaa-2', aa: 'msaa', inflight: 2, transient: false },
-        { key: 'taau-2', aa: 'taau', inflight: 2, transient: false },
-        ...(transientUsage ? [{ key: 'msaaT-2', aa: 'msaa', inflight: 2, transient: true }] : []),
-      ].filter((c) => !opts.only || opts.only.includes(c.key));
+      const T = Boolean(transientUsage), want = (c) => !opts.only || opts.only.includes(c.key);
+      const cfg = (key, aa, inflight, transient, shadow = true) => ({ key, aa, inflight, transient, shadow });
+      const first = [cfg('msaa-1', 'msaa', 1, false), cfg('taau-1', 'taau', 1, false), ...(T ? [cfg('msaaT-1', 'msaa', 1, true)] : [])].filter(want);
+      // without usable timestamps: the verdict's pair again without the shadow pass, to take the shadow out
+      const noShadow = [cfg(T ? 'msaaT-1-ns' : 'msaa-1-ns', 'msaa', 1, T, false), cfg('taau-1-ns', 'taau', 1, false, false)].filter(want);
+      const second = [cfg('msaa-2', 'msaa', 2, false), cfg('taau-2', 'taau', 2, false), ...(T ? [cfg('msaaT-2', 'msaa', 2, true)] : [])].filter(want);
       for (const { label, ratio } of ratios(opts.res)) {
         document.body.classList.add('running');
         const cssW = innerWidth, cssH = innerHeight;
@@ -303,20 +362,23 @@ async function run() {
         canvas.height = Math.max(1, Math.round(cssH * ratio));
         await nextFrame();
         const res = { label, pixelRatio: ratio, css: [cssW, cssH], pixels: [canvas.width, canvas.height], megapixels: round(canvas.width * canvas.height / 1e6, 2), runs: [] };
-        for (const cfg of configs) {
-          status(`${name}, ${label} pixels (${canvas.width}×${canvas.height}): ${cfg.key}`);
+        const runOne = async (c) => {
+          status(`${name}, ${label} pixels (${canvas.width}×${canvas.height}): ${c.key}`);
           // a phone may refuse a big MSAA target set: that run is recorded as refused, the others go on
           device.pushErrorScope('out-of-memory');
-          const targets = renderer.setup(cfg.aa, canvas.width, canvas.height, cfg.transient);
+          const targets = renderer.setup(c.aa, canvas.width, canvas.height, c.transient);
           const oom = await device.popErrorScope();
           if (oom) {
             renderer.release();
-            res.runs.push({ config: cfg.key, aa: cfg.aa, framesInFlight: cfg.inflight, transient: cfg.transient, error: `out of memory: ${oom.message}`, targets });
-            continue;
+            res.runs.push({ config: c.key, aa: c.aa, framesInFlight: c.inflight, transient: c.transient, shadow: c.shadow, error: `out of memory: ${oom.message}`, targets });
+            return;
           }
-          const out = await runConfig(renderer, cfg, opts, errors, `${name} ${label}`);
-          res.runs.push(summarize(cfg, out, targets));
-        }
+          const out = await runConfig(renderer, c, opts, errors, `${name} ${label}`);
+          res.runs.push(summarize(c, out, targets));
+        };
+        for (const c of first) await runOne(c);
+        if (!timestamps || res.runs.some((x) => x.framesInFlight === 1 && !x.error && x.timestampProblem)) for (const c of noShadow) await runOne(c);
+        for (const c of second) await runOne(c);
         renderer.release();
         res.verdict = verdict(res.runs, result.device.queueFloorMs, Boolean(transientUsage));
         sc.resolutions.push(res);
@@ -376,19 +438,24 @@ function show(r) {
     const verdicts = el('div', { class: 'verdicts' });
     for (const res of sc.resolutions ?? []) {
       const v = res.verdict;
+      const ratioLine = (x, what) => (x ? `${what}: MSAA ${x.msaaMs} ms ÷ TAAU ${x.taauMs} ms = ${x.ratio ?? '–'}` : '');
       verdicts.append(el('div', { class: 'card verdict' },
         el('div', { class: 'muted' }, `${res.label} pixels, ${res.pixels.join('×')} (${res.megapixels} MP)`),
-        el('div', { class: `choice ${v ? v.choice.toLowerCase() : ''}` }, v ? v.choice : '–'),
-        v ? el('div', {}, `MSAA ${v.msaaMs} ms ÷ TAAU ${v.taauMs} ms = ${v.ratio} (TAAU above ${v.threshold})`) : el('div', {}, 'needs msaa-1 and taau-1'),
-        v ? el('div', { class: 'muted' }, v.method) : ''));
+        el('div', { class: `choice ${v?.choice ? v.choice.toLowerCase() : ''}` }, v?.choice ?? '–'),
+        !v ? el('div', {}, 'needs msaa-1 and taau-1')
+          : v.noVerdict ? el('div', {}, `No verdict: ${v.noVerdict}`)
+            : el('div', {}, `${ratioLine(v.withoutShadow ?? v.wholeFrame, v.withoutShadow ? 'Without the shadow pass' : 'Whole frame')} (the call: TAAU above ${v.threshold})`),
+        v?.withoutShadow ? el('div', {}, `${ratioLine(v.wholeFrame, 'Whole frame, shadow included')}${v.wholeFrame.choice && v.wholeFrame.choice !== v.choice ? ` (would say ${v.wholeFrame.choice})` : ''}`) : '',
+        v ? el('div', { class: 'muted' }, v.method) : '',
+        v?.timestampsRefused ? el('div', { class: 'muted' }, `Timestamps refused: ${v.timestampsRefused}`) : ''));
     }
     out.append(verdicts);
     for (const res of sc.resolutions ?? []) {
       out.append(el('h3', {}, `Runs at ${res.label} pixels (${res.pixels.join('×')})`));
       const passes = [...new Set(res.runs.flatMap((x) => Object.keys(x.gpuMs?.passes ?? {})))];
       out.append(table(
-        ['config', 'frame ms', 'fps', 'GPU ms', ...passes.map((p) => `${p} ms`), 'submit→done ms', 'CPU ms', 'skipped', 'targets'],
-        res.runs.map((x) => (x.error ? [x.config, x.error] : [x.config, ms(x.frameMs), x.fps ?? '–', ms(x.gpuMs?.frame), ...passes.map((p) => ms(x.gpuMs?.passes[p])),
+        ['config', 'frame ms', 'fps', 'GPU ms', 'no shadow ms', ...passes.map((p) => `${p} ms`), 'submit→done ms', 'CPU ms', 'skipped', 'targets'],
+        res.runs.map((x) => (x.error ? [x.config, x.error] : [x.config, ms(x.frameMs), x.fps ?? '–', ms(x.gpuMs?.frame), ms(x.gpuMs?.afterShadow), ...passes.map((p) => ms(x.gpuMs?.passes[p])),
           ms(x.submitToDoneMs), ms(x.cpuEncodeMs), x.skippedRaf, `${mb(x.targets.bytes)}${x.targets.transientBytes ? ` (${mb(x.targets.transientBytes)} transient)` : ''}`])),
       ));
     }
