@@ -591,35 +591,40 @@ const SITES_KEEP = 8;                 // worlds whose sites are kept (picking on
 const siteCache = new Map();
 
 // ---------------------------------------------------------------- uniforms
-// The sites on the GPU: uniforms, read through the accessors the source calls.
-const HEAD_GLSL = /* glsl */ `
-uniform vec4 uLandRia;                     // the ria's mouth (x, z) and inland direction (unit x, z)
-uniform vec2 uLandRiaLen;                  // its length and its drowned part's, cells (0: no ria)
-uniform vec3 uLandMesa;                    // the mesa region's centre (x, z) and radius, cells (0: none)
-uniform int uLandLakes;                    // tarns: how many, and each one's centre (x, z), radius and water level
-uniform vec4 uLandLake[LAND_LAKES_MAX];
-uniform int uLandStacks;                   // sea stacks: how many, and each one's centre (x, z), radius and top
-uniform vec4 uLandStack[LAND_STACKS_MAX];
-float lfRiaX() { return uLandRia.x; }
-float lfRiaZ() { return uLandRia.y; }
-float lfRiaDx() { return uLandRia.z; }
-float lfRiaDz() { return uLandRia.w; }
-float lfRiaLen() { return uLandRiaLen.x; }
-float lfRiaDrown() { return uLandRiaLen.y; }
-float lfMesaX() { return uLandMesa.x; }
-float lfMesaZ() { return uLandMesa.y; }
-float lfMesaR() { return uLandMesa.z; }
-int lfLakeCount() { return uLandLakes; }
-float lfLakeX(int i) { return uLandLake[i].x; }
-float lfLakeZ(int i) { return uLandLake[i].y; }
-float lfLakeR(int i) { return uLandLake[i].z; }
-float lfLakeLevel(int i) { return uLandLake[i].w; }
-int lfStackCount() { return uLandStacks; }
-float lfStackX(int i) { return uLandStack[i].x; }
-float lfStackZ(int i) { return uLandStack[i].y; }
-float lfStackR(int i) { return uLandStack[i].z; }
-float lfStackTop(int i) { return uLandStack[i].w; }
+// The sites on the GPU: fields of the island's uniform struct (SU,
+// scenes/sceneGpu.js), read through the accessors the source calls (WGSL).
+const FIELDS = {
+  uLandRia: 'vec4f',                         // the ria's mouth (x, z) and inland direction (unit x, z)
+  uLandRiaLen: 'vec2f',                      // its length and its drowned part's, cells (0: no ria)
+  uLandMesa: 'vec3f',                        // the mesa region's centre (x, z) and radius, cells (0: none)
+  uLandLakes: 'i32',                         // tarns: how many, and each one's centre (x, z), radius and water level
+  uLandLake: `array<vec4f, ${L.ints.LAKES_MAX}>`,
+  uLandStacks: 'i32',                        // sea stacks: how many, and each one's centre (x, z), radius and top
+  uLandStack: `array<vec4f, ${L.ints.STACKS_MAX}>`,
+};
+const HEAD_GLSL = /* wgsl */ `
+fn lfRiaX() -> f32 { return SU.uLandRia.x; }
+fn lfRiaZ() -> f32 { return SU.uLandRia.y; }
+fn lfRiaDx() -> f32 { return SU.uLandRia.z; }
+fn lfRiaDz() -> f32 { return SU.uLandRia.w; }
+fn lfRiaLen() -> f32 { return SU.uLandRiaLen.x; }
+fn lfRiaDrown() -> f32 { return SU.uLandRiaLen.y; }
+fn lfMesaX() -> f32 { return SU.uLandMesa.x; }
+fn lfMesaZ() -> f32 { return SU.uLandMesa.y; }
+fn lfMesaR() -> f32 { return SU.uLandMesa.z; }
+fn lfLakeCount() -> i32 { return SU.uLandLakes; }
+fn lfLakeX(i: i32) -> f32 { return SU.uLandLake[i].x; }
+fn lfLakeZ(i: i32) -> f32 { return SU.uLandLake[i].y; }
+fn lfLakeR(i: i32) -> f32 { return SU.uLandLake[i].z; }
+fn lfLakeLevel(i: i32) -> f32 { return SU.uLandLake[i].w; }
+fn lfStackCount() -> i32 { return SU.uLandStacks; }
+fn lfStackX(i: i32) -> f32 { return SU.uLandStack[i].x; }
+fn lfStackZ(i: i32) -> f32 { return SU.uLandStack[i].y; }
+fn lfStackR(i: i32) -> f32 { return SU.uLandStack[i].z; }
+fn lfStackTop(i: i32) -> f32 { return SU.uLandStack[i].w; }
 `;
+// the accessors' result types (the WGSL emitter's externs: cheap reads of the uniforms)
+const EXTERNS = Object.fromEntries([...HEAD_GLSL.matchAll(/fn (lf\w+)\([^)]*\) -> (\w+)/g)].map((m) => [m[1], [m[2], true]]));
 const NO_SITES = { ria: null, mesa: null, lakes: [], stacks: [] };
 // the uniforms' values for world P's sites (P.landforms)
 function values(P) {
@@ -656,7 +661,8 @@ function scope(P) {
 //   prefix, tables  its constants (#defines LAND_*, the same names in the twin)
 //   src             the column bake's source (with the strata's beds, which the terraces read)
 //   cellSrc         the cell stage's (islandLakeClearance, for the caves)
-//   head            GLSL before both stages' sources: the sites' uniforms and accessors
+//   head            WGSL before both stages' sources: the sites' accessors
+//   fields          their uniforms (fields of the island's uniform struct), externs the accessors' types
 //   values(P)       those uniforms' values for world P
 //   scope(P)        the twin's accessors for world P
 //   sites(P, T)     world P's sites (P.landforms), T the twin of P without them
@@ -669,6 +675,8 @@ ${COLUMN_SRC}`,
   cellSrc: `${COMMON_SRC}
 ${CELL_SRC}`,
   head: HEAD_GLSL,
+  fields: FIELDS,
+  externs: EXTERNS,
   values,
   scope,
   sites(P, T) {

@@ -54,62 +54,76 @@ export function pcg(v) {
   return ((w >>> 22) ^ w) >>> 0;
 }
 
-export const helpersGLSL = /* glsl */ `
-#define TH_SHARE_ONE ${SHARE_ONE}
-#define TH_LATTICE_ONE ${LATTICE_ONE}.0
-#define TH_TAU ${TAU}
-#define TH_NOISE_NORM ${NOISE_NORM}
-uniform uint uSceneSeed;
+// The GPU halves (WGSL; the name is the GLSL version's, docs/webgpu.md W2),
+// after the prelude (pcg, u32ToF32, UINT_TO_UNIT) and the scene's uniform
+// struct, whose first field is the world seed: SU.uSceneSeed
+// (sceneUniformsWGSL). thNoised's derivatives are module-scope privates
+// (H1.11: no function reads them by pointer).
+export const helpersGLSL = /* wgsl */ `
+const TH_SHARE_ONE: i32 = ${SHARE_ONE};
+const TH_LATTICE_ONE: f32 = ${LATTICE_ONE}.0;
+const TH_TAU: f32 = ${TAU};
+const TH_NOISE_NORM: f32 = ${NOISE_NORM};
 // a hash of integer coordinates (a, b) in the world seed's stream salt
-uint thHash2(int a, int b, uint salt) { return pcg(uint(a) + pcg(uint(b) + pcg(uSceneSeed + salt))); }
+fn thHash2(a: i32, b: i32, salt: u32) -> u32 { return pcg(u32(a) + pcg(u32(b) + pcg(SU.uSceneSeed + salt))); }
 // parameter k's own hash, from the hash of what it belongs to
-uint thKey(uint h, int k) { return pcg(h + uint(k)); }
+fn thKey(h: u32, k: i32) -> u32 { return pcg(h + u32(k)); }
 // an integer in [lo, hi] (lo when hi < lo)
-int thRange(uint h, int lo, int hi) { return lo + int(h % uint(max(hi - lo + 1, 1))); }
+fn thRange(h: u32, lo: i32, hi: i32) -> i32 { return lo + i32(h % u32(max(hi - lo + 1, 1))); }
 // a share in [0, TH_SHARE_ONE)
-int thShare(uint h) { return int(h & 0xffffu); }
+fn thShare(h: u32) -> i32 { return i32(h & 0xffffu); }
 // a float in [0, 1), 16 bits
-float thUnit(uint h) { return float(h & 0xffffu) / float(TH_SHARE_ONE); }
+fn thUnit(h: u32) -> f32 { return f32(h & 0xffffu) / f32(TH_SHARE_ONE); }
 // a float in [0, 1), 24 bits, at lattice point (ix, iz) of stream salt
-float thLattice(int ix, int iz, uint salt) { return float(thHash2(ix, iz, salt) >> 8u) / TH_LATTICE_ONE; }
-// floor division and modulo of ints (b > 0), the same for negative a in GLSL and JS
-int thDiv(int a, int b) { return a >= 0 ? a / b : -((b - 1 - a) / b); }
-int thMod(int a, int b) { return a - b * thDiv(a, b); }
-float thFdiv(float a, float b) { return a / b; }
-int thFloor(float x) { return int(floor(x)); }
-int thRound(float x) { return int(floor(x + 0.5)); }
+fn thLattice(ix: i32, iz: i32, salt: u32) -> f32 { return f32(thHash2(ix, iz, salt) >> 8u) / TH_LATTICE_ONE; }
+// floor division and modulo of ints (b > 0), the same for negative a in WGSL and JS
+fn thDiv(a: i32, b: i32) -> i32 {
+  if (a >= 0) { return a / b; }
+  return -((b - 1 - a) / b);
+}
+fn thMod(a: i32, b: i32) -> i32 { return a - b * thDiv(a, b); }
+fn thFdiv(a: f32, b: f32) -> f32 { return a / b; }
+fn thFloor(x: f32) -> i32 { return i32(floor(x)); }
+fn thRound(x: f32) -> i32 { return i32(floor(x + 0.5)); }
 // a noise field's hash stream: the world seed's stream salt, k further on (octave k gets its own)
-uint thStream(uint salt, int k) { return pcg(uSceneSeed + salt) + uint(k); }
+fn thStream(salt: u32, k: i32) -> u32 { return pcg(SU.uSceneSeed + salt) + u32(k); }
 // Gradient noise at (x, z) in stream s, about ±1, with its derivatives, which
 // thNoiseDx() and thNoiseDz() read until the next call. Gradients are unit
 // vectors at a hashed angle per lattice point; the fade is Perlin's quintic
 // 6t⁵ - 15t⁴ + 10t³ (its published coefficients, and its derivative's: 30t²(t - 1)²).
-float thNoiseDxLast, thNoiseDzLast;
-vec2 thGrad(ivec2 c, uint s) {
-  float a = float(pcg(uint(c.x) + pcg(uint(c.y) + s))) * UINT_TO_UNIT * TH_TAU;
-  return vec2(cos(a), sin(a));
+var<private> thNoiseDxLast: f32;
+var<private> thNoiseDzLast: f32;
+fn thGrad(c: vec2i, s: u32) -> vec2f {
+  // (the hash to [0, 1) correctly rounded, as the twin's double and Metal's float() round it: H1.28)
+  let a = u32ToF32(pcg(u32(c.x) + pcg(u32(c.y) + s))) * UINT_TO_UNIT * TH_TAU;
+  return vec2f(cos(a), sin(a));
 }
-float thNoised(float x, float z, uint s) {
-  vec2 p = vec2(x, z);
-  vec2 i = floor(p), f = p - i;
-  ivec2 c = ivec2(i);
-  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-  vec2 ga = thGrad(c, s), gb = thGrad(c + ivec2(1, 0), s);
-  vec2 gc = thGrad(c + ivec2(0, 1), s), gd = thGrad(c + ivec2(1, 1), s);
-  float va = dot(ga, f), vb = dot(gb, f - vec2(1.0, 0.0));
-  float vc = dot(gc, f - vec2(0.0, 1.0)), vd = dot(gd, f - vec2(1.0));
-  float k = va - vb - vc + vd;
-  float v = va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * k;
-  vec2 d = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd)
-         + du * (u.yx * k + vec2(vb, vc) - va);
-  vec3 n = vec3(v, d) * TH_NOISE_NORM;
+fn thNoised(x: f32, z: f32, s: u32) -> f32 {
+  let p = vec2f(x, z);
+  let i = floor(p);
+  let f = p - i;
+  let c = vec2i(i);
+  let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  let ga = thGrad(c, s);
+  let gb = thGrad(c + vec2i(1, 0), s);
+  let gc = thGrad(c + vec2i(0, 1), s);
+  let gd = thGrad(c + vec2i(1, 1), s);
+  let va = dot(ga, f);
+  let vb = dot(gb, f - vec2f(1.0, 0.0));
+  let vc = dot(gc, f - vec2f(0.0, 1.0));
+  let vd = dot(gd, f - vec2f(1.0));
+  let k = va - vb - vc + vd;
+  let v = va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * k;
+  let d = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd)
+        + du * (u.yx * k + vec2f(vb, vc) - va);
+  let n = vec3f(v, d) * TH_NOISE_NORM;
   thNoiseDxLast = n.y;
   thNoiseDzLast = n.z;
   return n.x;
 }
-float thNoiseDx() { return thNoiseDxLast; }
-float thNoiseDz() { return thNoiseDzLast; }
+fn thNoiseDx() -> f32 { return thNoiseDxLast; }
+fn thNoiseDz() -> f32 { return thNoiseDzLast; }
 `;
 
 // The CPU halves, for world seed `seed`.
@@ -189,24 +203,29 @@ function helpersJs(seed) {
 // cut, PREFIX_<PICK>_<NAME>_CUT; pickGLSL writes the function that picks one.
 const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 function flatten(prefix, { ints = {}, floats = {}, salts = {}, picks = {} }) {
-  const out = [];   // [name, js value, glsl text]
-  for (const [k, v] of Object.entries(ints)) out.push([`${prefix}_${k}`, v, v < 0 ? `(${v})` : String(v)]);
-  for (const [k, v] of Object.entries(floats)) out.push([`${prefix}_${k}`, v, v < 0 ? `(${glslFloat(v)})` : glslFloat(v)]);
-  for (const [k, v] of Object.entries(salts)) out.push([`${prefix}_SALT_${k}`, v, `${v}u`]);
+  const out = [];   // [name, js value, wgsl text, wgsl type]
+  for (const [k, v] of Object.entries(ints)) out.push([`${prefix}_${k}`, v, String(v), 'i32']);
+  for (const [k, v] of Object.entries(floats)) out.push([`${prefix}_${k}`, v, glslFloat(v), 'f32']);
+  for (const [k, v] of Object.entries(salts)) out.push([`${prefix}_SALT_${k}`, v, `${v}u`, 'u32']);
   for (const [pick, list] of Object.entries(picks)) {
     let cum = 0;
     list.forEach(([name, w], i) => {
       cum += w;
       const cut = Math.round(cum * SHARE_ONE);
-      out.push([`${prefix}_${pick}_${name}`, i, String(i)]);
-      out.push([`${prefix}_${pick}_${name}_CUT`, cut, String(cut)]);
+      out.push([`${prefix}_${pick}_${name}`, i, String(i), 'i32']);
+      out.push([`${prefix}_${pick}_${name}_CUT`, cut, String(cut), 'i32']);
     });
     if (Math.abs(cum - 1) > 1e-9) throw new Error(`${prefix} pick ${pick}: weights sum to ${cum}, not 1`);
   }
   return out;
 }
+// A scene's constants as typed WGSL consts (H1.7; the name is the GLSL
+// version's, which wrote #defines: docs/webgpu.md W2), and their types for
+// the WGSL emitter (toWgsl's consts).
 export const definesGLSL = (prefix, tables) =>
-  flatten(prefix, tables).map(([name, , text]) => `#define ${name} ${text}`).join('\n');
+  flatten(prefix, tables).map(([name, , text, type]) => `const ${name}: ${type} = ${text};`).join('\n');
+export const definesTypes = (prefix, tables) =>
+  Object.fromEntries(flatten(prefix, tables).map(([name, , , type]) => [name, type]));
 export const jsConstants = (prefix, tables) =>
   Object.fromEntries(flatten(prefix, tables).map(([name, v]) => [name, v]));
 

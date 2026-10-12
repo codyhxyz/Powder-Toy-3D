@@ -1,6 +1,6 @@
 import { BRICK } from '../shaders/common.js';
 import { structureClear } from './structures.js';
-import { pcg, definesGLSL, jsConstants, compileShared } from './scenes/themedShared.js';
+import { pcg, definesGLSL, definesTypes, jsConstants, compileShared } from './scenes/themedShared.js';
 import { landforms } from './island/landforms.js';
 import { strata } from './island/strata.js';
 import { caves } from './island/caves.js';
@@ -23,7 +23,7 @@ export { pcg };
 //     noise, domain warped, under a noisy island mask), then the landforms
 //     hook, two band noises, and the standing water's level (the landforms
 //     hook's islandWaterLevel). The GPU bakes these once per world into a
-//     texture (scenes/island.js IslandColumns); the twin caches them;
+//     buffer (scenes/island.js islandColumnFrag); the twin caches them;
 //   - per cell (ISLAND_CELL_SRC), reading a column and its neighbours' baked
 //     data (genColHeight, genColBand, genColMeadow, genColWater): which layers
 //     the column holds (sand, snow, plant cover), the strata hook for the rock
@@ -197,7 +197,7 @@ export function worldParams({ size, seed = WORLD_SEED, snow = true, sites = null
 }
 
 // The world's parameters by the names the source reads them by: uniforms on
-// the GPU (scenes/island.js islandUniforms), constants in the twin.
+// the GPU (fields of scenes/island.js's uniform struct), constants in the twin.
 export const islandParamValues = (P) => ({
   uGenSea: P.sea, uGenRelief: P.relief, uGenFloor: P.floor,
   uGenCenterX: P.center[0], uGenCenterZ: P.center[1], uGenRadius: P.radius,
@@ -205,7 +205,7 @@ export const islandParamValues = (P) => ({
   uGenSnow: P.snow,
   ...landforms.values(P),
 });
-// GLSL before both stages' sources, after the world's parameters: the hooks' uniforms (scenes/island.js)
+// WGSL before both stages' sources, after the world's parameters: the hooks' accessors (scenes/island.js)
 export const ISLAND_HEAD_GLSL = landforms.head;
 
 // ---------------------------------------------------------------- the source
@@ -418,8 +418,11 @@ const tables = () => [
   ['GEN_TREE', { floats: treeGround() }],
   ...[landforms, strata, caves, nature].map((h) => [h.prefix, h.tables]),
 ];
-// Every #define the source needs (scenes/island.js puts it before the source).
+// Every constant the source needs, as typed WGSL consts (scenes/island.js puts
+// them before the source; the name is the GLSL version's #defines'), and
+// their types (the WGSL emitter's consts).
 export const islandDefinesGLSL = () => tables().map(([prefix, t]) => definesGLSL(prefix, t)).join('\n');
+export const islandDefinesTypes = () => Object.assign({}, ...tables().map(([prefix, t]) => definesTypes(prefix, t)));
 const islandConstants = () => Object.assign({}, ...tables().map(([prefix, t]) => jsConstants(prefix, t)));
 
 // ---------------------------------------------------------------- the twin

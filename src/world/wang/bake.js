@@ -1,8 +1,7 @@
-import * as THREE from 'three';
 import { E } from '../../elements.js';
 import { compileKit, MAT, MAT_NAMES, MAT_COUNT, WANG_OUT, WANG_NO_TEMP } from './kit.js';
 import { generateTiling, bakeAtlas, atlasLayout, packPlacement, makeSampler } from './tiling.js';
-import { wangGLSL } from './glsl.js';
+import { wangGLSL, wangData } from './glsl.js';
 
 // bakeWang({ kit, seed, size, origin, entry, exit }): a world's Wang tiling,
 // ready to sample on the GPU and the CPU.
@@ -18,9 +17,9 @@ import { wangGLSL } from './glsl.js';
 //           leaves by (its floor shaft opens out of the region's bottom);
 //           default a fifth in from the high-x side
 // Returns:
-//   glsl            wangGLSL(kit): include it in the scene's glsl(g)
-//   uniforms()      { tWangAtlas, tWangPlace, uWangOrigin, uWangUnits } (three.js
-//                   textures made on first call; add them to the scene's uniforms(P))
+//   glsl            wangGLSL(kit): include it in the scene's glsl(g) (WGSL)
+//   data()          { words, values }: the tiling as the scene's integer data and
+//                   its uniform fields (glsl.js wangData; made on first call)
 //   wangCellJS(w)   the CPU twin of GLSL wangCell: the material code at world
 //                   cell w [x, y, z] (or x, y, z)
 //   elementJS(code) the element id a code is (the palette's)
@@ -33,10 +32,10 @@ import { wangGLSL } from './glsl.js';
 //   torches         [[x, y, z], ...]: every wall torch's head (MAT.TORCH) the tiling
 //                   left standing, world cells (world/torchLights.js lights them)
 //   tiling          the generator's result (bricks, placement) for tools
-//   dispose()       frees the textures
-// A scene bakes in its prepare(renderer, P) (scenes/index.js); the bake is CPU
-// work (rasterizing the kit's tiles and the tiling: tens of milliseconds) and
-// pure in (kit, seed, size, entry, exit), so its twin and its textures agree.
+//   dispose()       forgets the data
+// A scene bakes in its prepare(P) (scenes/index.js); the bake is CPU work
+// (rasterizing the kit's tiles and the tiling: tens of milliseconds) and pure
+// in (kit, seed, size, entry, exit), so its twin and its data agree.
 export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, exit }) {
   const kit = compileKit(rawKit), G = kit.geom;
   const units = [Math.floor(size[0] / G.U), Math.floor(size[1] / G.H), Math.floor(size[2] / G.U)];
@@ -85,31 +84,16 @@ export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, e
       if (wangCellJS(w) === MAT.TORCH) torches.push(w);
     }
   }
-  let tex = null;
-  const textures = () => {
-    if (tex) return tex;
-    const at = new THREE.Data3DTexture(atlas.data, ...atlas.dims);
-    at.format = THREE.RedIntegerFormat; at.type = THREE.UnsignedByteType; at.internalFormat = 'R8UI';
-    const pl = new THREE.Data3DTexture(placement, units[0], units[2], units[1]);
-    pl.format = THREE.RGBAIntegerFormat; pl.type = THREE.UnsignedByteType; pl.internalFormat = 'RGBA8UI';
-    for (const t of [at, pl]) { t.unpackAlignment = 1; t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; }
-    return (tex = { at, pl });
-  };
+  let data = null;
   return {
     kit, units, origin, glsl: wangGLSL(kit), tiling, atlas, placement, sites, torches,
-    uniforms: () => {
-      const t = textures();
-      return {
-        tWangAtlas: { value: t.at }, tWangPlace: { value: t.pl },
-        uWangOrigin: { value: new THREE.Vector3(...origin) }, uWangUnits: { value: new THREE.Vector3(...units) },
-      };
-    },
+    data: () => (data ??= wangData({ kit, units, origin, atlas, placement })),
     wangCellJS, elementJS, tempJS,
     entry: shaftMouth(tiling.entryEdge, origin[1] + units[1] * G.H),
     exit: shaftMouth(tiling.exitEdge, origin[1]),
     mainPath: tiling.mainPath.map((id) => brickBox(tiling.bricks[id])),
     brickBox,
     OUT: WANG_OUT,
-    dispose() { if (tex) { tex.at.dispose(); tex.pl.dispose(); tex = null; } },
+    dispose() { data = null; },
   };
 }

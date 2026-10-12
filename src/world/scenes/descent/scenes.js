@@ -1,4 +1,7 @@
-import { helpersGLSL, definesGLSL, jsConstants, compileShared, groundScan } from '../themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan } from '../themedShared.js';
+import { toWgsl } from '../subsetWgsl.js';
+import { sceneStruct, sceneHeadWGSL } from '../sceneGpu.js';
+import { WANG_FIELDS } from '../../wang/glsl.js';
 import { E } from '../../../elements.js';
 import { PHYS } from '../../../physics.js';
 import { bakeWang, wangGLSL, minesKit, coalKit, snowKit, MAT, GEOM, WANG_OUT } from '../../wang/index.js';
@@ -571,22 +574,25 @@ export function descentWang(level) {
 const dsWangJS = (W) => (W
   ? (x, y, z) => { const c = W.wangCellJS(x, y, z); return c === WANG_OUT || c === MAT.ROCK ? -1 : W.elementJS(c); }
   : () => -1);
-// ...and on the GPU (after wangGLSL(kit))
-const dsWangGLSL = (kit) => (kit ? /* glsl */ `
+// ...and on the GPU (after wangGLSL(kit): WGSL)
+const dsWangGLSL = (kit) => (kit ? /* wgsl */ `
 ${wangGLSL(kit)}
-int dsWang(int x, int y, int z) {
-  int c = wangCell(ivec3(x, y, z));
-  return c == WANG_OUT || c == WANG_ROCK ? -1 : wangElement(c);
+fn dsWang(x: i32, y: i32, z: i32) -> i32 {
+  let c = wangCell(vec3i(x, y, z));
+  if (c == WANG_OUT || c == WANG_ROCK) { return -1; }
+  return wangElement(c);
 }
 // the temperature the kit lays the cell at w down at (its temps: burning coal, a lake's water), if
 // the cell is the tile's (id is what dsCell made of it); else T
-float dsWangT(ivec3 w, int id, float T) {
-  int c = wangCell(w);
-  if (c == WANG_OUT || c == WANG_ROCK || wangElement(c) != id) return T;
-  float t = wangTemp(c);
-  return t > WANG_NO_TEMP ? t : T;
-}` : `int dsWang(int x, int y, int z) { return -1; }
-float dsWangT(ivec3 w, int id, float T) { return T; }`);
+fn dsWangT(w: vec3i, id: i32, T: f32) -> f32 {
+  let c = wangCell(w);
+  if (c == WANG_OUT || c == WANG_ROCK || wangElement(c) != id) { return T; }
+  let t = wangTemp(c);
+  if (t > WANG_NO_TEMP) { return t; }
+  return T;
+}` : /* wgsl */ `
+fn dsWang(x: i32, y: i32, z: i32) -> i32 { return -1; }
+fn dsWangT(w: vec3i, id: i32, T: f32) -> f32 { return T; }`);
 
 // ---- the JS twins, one per level
 const twins = new Map();
@@ -603,24 +609,40 @@ export function descentConstants(level) {
   return { ...t.ints, ...t.floats };
 }
 
-const glsl = (level) => () => /* glsl */ `
-${definesGLSL(PREFIX, tables(level))}
+// The level's WGSL (scenes/sceneGpu.js): its uniforms (a Wang level's tiling:
+// wang/glsl.js WANG_FIELDS), constants, the helpers, its Wang sampler, the
+// geometry (from the subset: scenes/subsetWgsl.js) and sceneCell.
+const structs = new Map();
+const structOf = (level) => {
+  if (!structs.has(level)) structs.set(level, sceneStruct(DS_LEVEL_DEFS[level].kit ? WANG_FIELDS : {}));
+  return structs.get(level);
+};
+const srcWgsl = new Map();
+const glsl = (level) => () => {
+  const U = structOf(level), t = tables(level);
+  if (!srcWgsl.has(level)) {
+    srcWgsl.set(level, toWgsl(SRC, { consts: definesTypes(PREFIX, t), uniforms: U.sceneTypes, externs: { dsWang: 'i32' } }));
+  }
+  return /* wgsl */ `
+${sceneHeadWGSL(U, { data: !!DS_LEVEL_DEFS[level].kit })}
+${definesGLSL(PREFIX, t)}
 ${helpersGLSL}
 ${dsWangGLSL(DS_LEVEL_DEFS[level].kit)}
-${SRC}
-void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
-  int id = dsCell(w.x, w.y, w.z);
+${srcWgsl.get(level)}
+fn sceneCell(w: vec3i) -> SceneCell {
+  let id = dsCell(w.x, w.y, w.z);
   // room-temperature matter (and the air) at the level's air temperature; at or
   // under freezing, snow and ice no colder than it (they rest there, chilling nothing)
-  float T = SPAWNT[id] == AMBIENT ? DS_AIR_T : SPAWNT[id];
-  if ((id == E_SNOW || id == E_ICE) && DS_AIR_T <= 0.0) T = max(T, DS_AIR_T);
-  if (DS_LEVEL == 2) T = min(T, DS_COLD_T);   // the Snowy Depths are frozen through
-  if (dsTemple(w.x, w.y, w.z) < 0) T = dsWangT(w, id, T);   // ...but for what a kit lays down warm (or burning)
-  float seed = float(seedWorld(w, uSceneSeed, DS_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  A = vec4(float(id), T, SPAWNLIFE[id], seed);
-  B = vec4(0.0);
+  var T = SPAWNT(id);
+  if (SPAWNT(id) == AMBIENT) { T = DS_AIR_T; }
+  if ((id == E_SNOW || id == E_ICE) && DS_AIR_T <= 0.0) { T = max(T, DS_AIR_T); }
+  if (DS_LEVEL == 2) { T = min(T, DS_COLD_T); }   // the Snowy Depths are frozen through
+  if (dsTemple(w.x, w.y, w.z) < 0) { T = dsWangT(w, id, T); }   // ...but for what a kit lays down warm (or burning)
+  let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, DS_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), seed), vec4f(0.0));
 }
 `;
+};
 
 // A low neutral light everywhere (radiance, as the GI probes' irradiance / π):
 // Noita never draws a cave pitch black, its rock faintly visible between the
@@ -655,9 +677,12 @@ function makeScene(level) {
     view: { dir: VIEW_DIR, dist: VIEW_DIST, lift: VIEW_LIFT },
     params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: 0, floor: COMMON.FLOOR }),
     glsl: glsl(level),
+    uniformStruct: structOf(level),
     // a Wang level: the bake is CPU work, done here or on the first uniforms() (descentWang)
     prepare: async () => { descentWang(level); },
-    uniforms: () => ({ uSceneSeed: { value: DS_SEED }, ...(def.kit ? descentWang(level).uniforms() : {}) }),
+    uniforms: () => ({ uSceneSeed: DS_SEED, ...(def.kit ? descentWang(level).data().values : {}) }),
+    // a Wang level's tiling (wang/glsl.js wangData)
+    ...(def.kit ? { data: () => ({ at: 0, words: descentWang(level).data().words }) } : {}),
     dispose: () => { if (def.kit) descentWang(level).dispose(); },
     start: () => (spawn ? [spawn[0], spawn[2]] : [COMMON.TX0, COMMON.TZC]),
     setSpawn(s) { spawn = s; },
