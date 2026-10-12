@@ -213,6 +213,9 @@ async function povStage(browser, vite, secs) {
   // use a tool: the pistol at the floor ahead; its round traces (a probe) and strikes (an edit)
   const look = await page.evaluate(() => { __app.pov.toolbelt.select('GUN'); return [__app.pov.camera.look.yaw, -0.6]; });
   const held = await page.evaluate((l) => window.__povFrames(10, () => false, l).then(() => __app.pov.toolbelt.selectedKey), look);
+  // the slot selector the switch brought up goes on the wall's clock (hotbar.js SHOW_MS): while it's up
+  // under a locked pointer a click only closes it (HL2's weapon selection swallows the click)
+  await page.waitForFunction(() => !document.pointerLockElement || !document.querySelector('.hotbar.open'), null, { timeout: 10000 });
   await page.mouse.down();
   await page.evaluate((l) => window.__povFrames(3, () => false, l), look);
   await page.mouse.up();
