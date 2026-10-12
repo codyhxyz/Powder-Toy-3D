@@ -1,7 +1,9 @@
-import { createPacker, decodeTempCode, TEXEL_BYTES } from '../../net/codec.js';
+import { decodeTempCode, TEXEL_BYTES } from '../../net/codec.js';
 import { ELEMENTS, E, K } from '../../elements.js';
 import { cellTexel } from '../../sim.js';
-import { BRICK } from '../../shaders/common.js';
+import { BRICK, SUPER_TEX, TILE, prelude, STATE_OPTS, LAYOUT, gridDims, atlasDims } from '../../shaders/common.js';
+import { uniformStruct } from '../../gpu/params.js';
+import { fold } from '../../gpu/kernels.js';
 import { BODY_HEIGHT } from '../constants.js';
 import { deswizzle, columnTops, ID_BITS } from './deswizzle.js';
 
@@ -17,8 +19,8 @@ import { deswizzle, columnTops, ID_BITS } from './deswizzle.js';
 // NPCs, the vehicles, each body with Teleportitis) a view of it with its own
 // refresh clock, and the views together start at most one readback per
 // REFRESH_S: a readback that lands restarts every view's clock. A view holds
-// nothing; the model (its packer's targets, its worker, its cells) lives as
-// long as the renderer does, as one consumer's model did before.
+// nothing; the model (its worker, its cells) lives as long as the renderer
+// does, as one consumer's model did before.
 //
 // The de-swizzle (deswizzle.js: the atlas's bytes into row-major cells, ~5 ms
 // on Dam Valley's 3.1M cells) runs in a worker (world-worker.js), on the main
@@ -41,7 +43,7 @@ const HOT_T = 300;                     // °C: hotter than this burns a body tha
 const TEMP_C = Float64Array.from({ length: 256 }, (_, code) => decodeTempCode(code));   // °C of each temperature code
 if (TEXEL_BYTES !== Uint32Array.BYTES_PER_ELEMENT) throw new Error('world model: deswizzle.js reads a packed texel as one 32-bit word');
 
-// ---- the GPU readback: the one place the model touches the GPU (a WebGPU port reimplements this)
+// ---- the GPU readback: the one place the model touches the GPU
 //
 // readCells(renderer, sim) → null when no capture buffer is free (call again
 // on a later frame), else a Promise of { bytes, g, dims, release }:
@@ -56,13 +58,107 @@ if (TEXEL_BYTES !== Uint32Array.BYTES_PER_ELEMENT) throw new Error('world model:
 //          (the same length), which goes back into the ring.
 // It captures the state as it is at the call and resolves any number of frames
 // later. A rejected readback has released itself.
-const packers = new WeakMap();         // renderer → its packer, kept as long as the renderer
-export function readCells(renderer, sim) {
-  let packer = packers.get(renderer);
-  if (!packer) packers.set(renderer, (packer = createPacker(renderer)));
-  const g = sim.g, job = packer.pack(sim);
-  return job && job.then(({ bytes, dims, release }) => ({ bytes, g, dims, release }));
+//
+// On WebGPU (docs/webgpu.md C2, G4) one kernel packs every cell's two bytes into
+// its atlas texel's word of a scratch buffer, and the readback service copies
+// the buffer at the call (B7) and, once it lands, the mapped range into one of
+// PACK_SLOTS pooled ArrayBuffers (mapped memory can't be transferred to a
+// worker). The temperature code is net/codec.js's: its thresholds come from
+// decodeTempCode, so this kernel and the multiplayer packer can't disagree.
+// (The packer itself is U12's to port: once both are in, this can be a thin
+// wrapper over it again.)
+const PACK_SLOTS = 3;                  // captures in flight at once
+const TEMP_CODES = 256;
+// the temperature at which each code starts: code c covers [decode(c − ½), decode(c + ½)) (codec.js's rounding), +∞ past the last
+const TEMP_STARTS = Array.from({ length: TEMP_CODES }, (_, i) => (i + 1 < TEMP_CODES ? decodeTempCode(i + 0.5) : Infinity));
+const PackParams = uniformStruct('PackParams', { starts: `array<vec4f, ${TEMP_CODES / 4}>` });
+const PACK_LAYOUT = [{ binding: 0, buffer: { type: 'storage' } }];
+// One thread per cell: its element id in byte 0 of its atlas texel's word, its
+// temperature code in byte 1 (air as ambient, as the codec sends it).
+export const packCellsFrag = (g) => {
+  const at = atlasDims(g);
+  return /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+${PackParams.wgsl}
+@group(3) @binding(1) var<uniform> P: PackParams;
+@group(2) @binding(0) var<storage, read_write> packed: array<u32>;   // a word per atlas texel (sim.js cellTexel)
+const STW: i32 = ${at.stw};               // supertiles per atlas row
+const ATLAS_W: u32 = ${at.width}u;        // texels per atlas row
+const TILES: i32 = ${SUPER_TEX / TILE};   // brick tiles per supertile edge
+const TILE: u32 = ${TILE}u;               // texels per brick tile edge
+
+// codec.js's temperature code of T: how many codes start at or below it, past the first
+fn tempCode(T: f32) -> u32 {
+  var lo = 0u;
+  var hi = ${TEMP_CODES}u;
+  while (lo < hi) {
+    let mid = (lo + hi) / 2u;
+    if (P.starts[mid / 4u][mid % 4u] <= T) { lo = mid + 1u; } else { hi = mid; }
+  }
+  return min(lo, ${TEMP_CODES - 1}u);
 }
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let s = foldThread(wg, nwg, li);
+  if (s >= SLOTS) { return; }
+  let a = fetchAs(s);
+  let id = eid(a);
+  var T = a.y;
+  if (id == E_EMPTY) { T = AMBIENT; }
+  // its brick's tile in the atlas, and its place in the tile (a brick's slots are its tile's texels in order)
+  let b = cellOf(s) >> vec3u(2u);
+  let st = b / SUPER_B;
+  let k = b - st * SUPER_B;
+  let i = st.x + STX * (st.z + STZ * st.y);
+  let tile = vec2i((i % STW) * TILES + k.x, (i / STW) * TILES + k.z + SUPER_B.z * k.y);
+  let l = s & 63u;
+  packed[(u32(tile.y) * TILE + (l >> 3u)) * ATLAS_W + u32(tile.x) * TILE + (l & 7u)] = u32(id) | (tempCode(T) << 8u);
+}
+`;
+};
+
+const PACK_STARTS = Array.from({ length: TEMP_CODES / 4 }, (_, i) => TEMP_STARTS.slice(4 * i, 4 * i + 4));
+const packers = new WeakMap();         // device → its pack kernels and scratch (per grid size), the free byte buffers
+export function readCells(renderer, sim) {
+  const gpu = sim.gpu, g = sim.g;
+  let p = packers.get(gpu);
+  if (!p) packers.set(gpu, (p = { layout: gpu.layout('pov pack', PACK_LAYOUT), grids: new Map(), pool: [], busy: 0 }));
+  if (p.busy >= PACK_SLOTS) return null;
+  const key = `${g.nx}x${g.ny}x${g.nz}`;
+  let q = p.grids.get(key);
+  if (!q) {
+    const buffer = gpu.createBuffer({ label: `pov pack ${key}`, size: g.width * g.height * TEXEL_BYTES, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    q = {
+      kernel: gpu.kernel({ name: 'povPack', code: packCellsFrag(g), params: PackParams, layouts: [sim.L.TABLES, sim.L.STATE_RO, p.layout] }),
+      buffer, group: gpu.bindGroup(p.layout, [{ binding: 0, resource: { buffer } }], `pov pack ${key}`),
+    };
+    p.grids.set(key, q);
+  }
+  if (q.kernel.state !== 'ready') return null;   // (still building: call again later)
+  const bytes = g.width * g.height * TEXEL_BYTES;
+  sim._dispatch(q.kernel, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRO, q.group], header: sim.header(), params: { starts: PACK_STARTS } });
+  // the copy is recorded now (B7): the bytes are the state at this call
+  let into = p.pool.pop();
+  if (into?.byteLength !== bytes) into = new ArrayBuffer(bytes);
+  const read = gpu.readback.buffer(q.buffer, 0, bytes, { into });
+  p.busy++;
+  const dims = [g.nx, g.ny, g.nz];
+  let released = false;
+  const release = (back) => {
+    if (released) return;
+    released = true;
+    p.busy--;
+    const buf = back?.buffer ?? back ?? into;
+    if (buf && !buf.detached && buf.byteLength === bytes && p.pool.length < PACK_SLOTS) p.pool.push(buf);
+  };
+  return read.then((buf) => ({ bytes: new Uint8Array(buf), g, dims, release }), (err) => { release(); throw err; });
+}
+
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  { name: 'povPack', kind: 'compute', code: (g) => packCellsFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, PACK_LAYOUT], dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)) },
+];
 
 // The atlas's brick table for grid g (deswizzle.js): the texel of each brick's
 // first cell, bricks numbered (by·BZ + bz)·BX + bx, and the offset from it of
