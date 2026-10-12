@@ -277,6 +277,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     while (!pov.figure?.loaded && performance.now() < until) await new Promise((r) => setTimeout(r, 100));
     pov.player.spawn(at());
     pov.setLook(yaw, pitch);
+    if (!live) pov.update(0);   // the camera onto the body and the look, with no time passing
     test?.resetView();
     rendered = false;
   }
