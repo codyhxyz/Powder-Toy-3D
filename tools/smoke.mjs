@@ -6,7 +6,7 @@
 //
 //   node tools/smoke.mjs [--stage boxes,worlds,arenas,views,warm] [--views heat,realistic] [--out dir]
 //
-// Stages (default: boxes,worlds, about 110 s here; each well under 3 minutes):
+// Stages (default: boxes,worlds, one to two minutes here; each well under 3 minutes):
 //   boxes   one boot at 64³; each box scene (Empty, the lab, the volcano,
 //           the Islet) loaded and drawn with test.renderOnce: no GPU error,
 //           and the scene drawn. The canvas is opaque (F7): the sky, the floor
