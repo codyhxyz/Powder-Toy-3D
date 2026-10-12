@@ -173,6 +173,7 @@ export function outlineMaterial(width, color = 0x000000) {
   const mat = new THREE.MeshBasicNodeMaterial({ color, side: THREE.BackSide });
   mat.positionNode = positionLocal.add(normalLocal.mul(float(width)));
   mat.name = 'figure outline';
+  mat.userData.outlineWidth = width;   // (what the icon bake's fingerprint reads: tools/bake-icons.mjs)
   return mat;
 }
 

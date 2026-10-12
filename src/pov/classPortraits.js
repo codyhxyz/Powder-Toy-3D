@@ -1,16 +1,17 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { buildCrasher, CRASHER_COLORS } from './figureCrasher.js';
-import { attachModel, MODELS } from './models.js';
+import { attachModel, MODELS, ICON_DIR } from './models.js';
+import { outlineMaterial } from './figure.js';
 
 // The class picker's portraits: the Castle Crashers wizard (figureCrasher.js)
 // in each class's colours, posed with its tool in its mitten, cel-shaded with
 // black outlines and a rim light in the class colour, as TF2's class-select
-// screen poses its nine. Drawn once each, one after another, by ONE small
-// offscreen renderer of their own that is let go when the last is done
-// (models.js draws the hotbar icons the same way). The game's renderer isn't
-// touched.
+// screen poses its nine. Baked at build time with the hotbar icons
+// (docs/webgpu.md F8, tools/bake-icons.mjs: every class with every tool it may
+// hold, through the real materials, into public/icons), so the game draws none.
 //
-//   renderPortraits([{ key, color, pose, model }], (key, url) => ...)  → Promise, when all are drawn
+//   renderPortraits([{ key, color, pose, model }], (key, url) => ...)  → Promise, when all are handed out
+//   portraitScene({ color, pose, model })  → { scene, camera, dispose }: what the bake draws
 
 export const PORTRAIT_W = 240;          // px drawn (the card shows it at half: sharp on a 2x screen)
 export const PORTRAIT_H = 300;
@@ -58,44 +59,24 @@ const POSES = {
 const lin = (hex) => new THREE.Color(hex);   // three keeps colours linear: setStyle converts the sRGB hex
 const shade = (c, k) => [c.r * k, c.g * k, c.b * k];
 
-let kit = null;
-function getKit() {
-  if (kit) return kit;
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-  renderer.setPixelRatio(1);
-  renderer.setSize(PORTRAIT_W, PORTRAIT_H, false);
-  renderer.setClearColor(0x000000, 0);
-  const scene = new THREE.Scene();
-  scene.add(new THREE.AmbientLight(0xffffff, AMBIENT));
-  const key = new THREE.DirectionalLight(0xffffff, KEY);
-  key.position.set(...KEY_DIR);
-  const rim = new THREE.DirectionalLight(0xffffff, RIM);
-  rim.position.set(...RIM_DIR);
-  scene.add(key, rim);
-  const camera = new THREE.PerspectiveCamera(FOV, PORTRAIT_W / PORTRAIT_H, 0.1, 200);
-  const ramp = new THREE.DataTexture(new Uint8Array(TONES.flatMap((t) => [255 * t, 255 * t, 255 * t, 255])), TONES.length, 1);
+// The page's base URL (Vite's), or '/' where there is none (Node: the bake's --check)
+const BASE = (() => { try { return import.meta.env?.BASE_URL ?? '/'; } catch { return '/'; } })();
+/** The file a class's portrait holding `model` (null: nothing) is baked into, under public/. */
+export const portraitFile = (key, model) => `${ICON_DIR}portrait-${key}-${model ?? 'none'}.png`;
+
+// the toon ramp, made once
+let ramp = null;
+function rampTexture() {
+  if (ramp) return ramp;
+  ramp = new THREE.DataTexture(new Uint8Array(TONES.flatMap((t) => [255 * t, 255 * t, 255 * t, 255])), TONES.length, 1);
   ramp.minFilter = ramp.magFilter = THREE.NearestFilter;
   ramp.needsUpdate = true;
-  const outline = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    uniforms: { uWidth: { value: OUTLINE_W }, uColor: { value: new THREE.Color(OUTLINE_COLOR) } },
-    vertexShader: 'uniform float uWidth; void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position + normal * uWidth, 1.0); }',
-    fragmentShader: 'uniform vec3 uColor; void main() { gl_FragColor = vec4(uColor, 1.0); }',
-  });
-  kit = { renderer, scene, camera, rim, ramp, outline };
-  return kit;
-}
-function dropKit() {
-  if (!kit) return;
-  kit.ramp.dispose();
-  kit.outline.dispose();
-  kit.renderer.dispose();
-  kit.renderer.forceContextLoss();
-  kit = null;
+  return ramp;
 }
 
 // The wizard for one class, posed, its materials made here.
 function buildFigure({ color, pose, model }, k) {
+  // k: { ramp, outline }
   const accent = lin(color);
   const palette = {
     ...CRASHER_COLORS,
@@ -150,37 +131,46 @@ function buildFigure({ color, pose, model }, k) {
   };
 }
 
-function draw(entry) {
-  const k = getKit();
-  const fig = buildFigure(entry, k);
-  k.rim.color.copy(fig.accent);
-  k.scene.add(fig.root);
+/**
+ * What draws one portrait (tools/bake-icons.mjs): the posed, lit wizard and
+ * the camera that frames it, at PORTRAIT_W × PORTRAIT_H.
+ * @param {{ color: string, pose: string, model: string | null }} entry
+ */
+export function portraitScene(entry) {
+  const scene = new THREE.Scene();
+  scene.add(new THREE.AmbientLight(0xffffff, AMBIENT));
+  const key = new THREE.DirectionalLight(0xffffff, KEY);
+  key.position.set(...KEY_DIR);
+  const rim = new THREE.DirectionalLight(0xffffff, RIM);
+  rim.position.set(...RIM_DIR);
+  scene.add(key, rim);
+  const camera = new THREE.PerspectiveCamera(FOV, PORTRAIT_W / PORTRAIT_H, 0.1, 200);
+  const outline = outlineMaterial(OUTLINE_W, OUTLINE_COLOR);
+  const fig = buildFigure(entry, { ramp: rampTexture(), outline });
+  rim.color.copy(fig.accent);
+  scene.add(fig.root);
   fig.root.updateMatrixWorld(true);
   // frame the posed figure: its box, from the front (the figure faces −z)
   const box = new THREE.Box3().setFromObject(fig.root, true).expandByPoint(new THREE.Vector3(0, 0, 0));   // and the ground under it (a hover reads)
   const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
   c.y += s.y * FRAME_LIFT;
-  const half = (Math.max(s.y, s.x / k.camera.aspect) / 2) * FRAME_MARGIN;
+  const half = (Math.max(s.y, s.x / camera.aspect) / 2) * FRAME_MARGIN;
   const dist = half / Math.tan(THREE.MathUtils.degToRad(FOV / 2)) + s.z / 2;
-  k.camera.position.set(c.x, c.y - Math.sin(LOW_ANGLE) * dist, c.z - Math.cos(LOW_ANGLE) * dist);
-  k.camera.lookAt(c);
-  k.renderer.render(k.scene, k.camera);
-  const url = k.renderer.domElement.toDataURL('image/png');
-  k.scene.remove(fig.root);
-  fig.dispose();
-  return url;
+  camera.position.set(c.x, c.y - Math.sin(LOW_ANGLE) * dist, c.z - Math.cos(LOW_ANGLE) * dist);
+  camera.lookAt(c);
+  camera.updateMatrixWorld();
+  return { scene, camera, dispose() { fig.dispose(); outline.dispose(); } };
 }
 
-// Draw every entry's portrait, one per animation frame (the picker opens at
-// once and they arrive), calling onEach(key, dataUrl). The renderer goes when
-// the last is done.
+// Hand out every entry's baked portrait: onEach(key, url), one per animation
+// frame as before (the picker opens at once and they arrive).
 export function renderPortraits(entries, onEach) {
   return new Promise((resolve) => {
     const queue = [...entries];
     const next = () => {
       const e = queue.shift();
-      if (!e) { dropKit(); resolve(); return; }
-      try { onEach(e.key, draw(e)); } catch (err) { console.error(`class portrait ${e.key} failed`, err); }
+      if (!e) { resolve(); return; }
+      try { onEach(e.key, `${BASE}${portraitFile(e.key, e.model && MODELS[e.model] ? e.model : null)}`); } catch (err) { console.error(`class portrait ${e.key} failed`, err); }
       requestAnimationFrame(next);
     };
     requestAnimationFrame(next);

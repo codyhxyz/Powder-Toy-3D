@@ -1,4 +1,5 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
+import { wgslFn, positionGeometry, time, uniform } from 'three/tsl';
 
 // The POV tools' held models, in a RuneScape (RS2 / Old School) style: low-poly
 // primitives, no textures, one flat colour per face from Jagex's 16-bit HSL
@@ -344,38 +345,38 @@ const PARTS = {
 };
 
 // Glowing coals (the torch's head): charred black, its cracks glowing orange and slowly
-// shifting, in linear HDR like the other light sources. Unlit; one material, one clock.
+// shifting, in linear HDR like the other light sources. Unlit; one material, one clock
+// (TSL's time, docs/webgpu.md F8).
 const EMBER_SCALE = 34;               // noise cells per model unit
 const EMBER_DRIFT = [0.25, 0.4];      // the cracks' drift, noise cells/s (up, through)
 const EMBER_HOT = [4.2, 1.1, 0.16];   // linear HDR, the hottest crack
 const EMBER_CHAR = [0.035, 0.022, 0.016];
-const emberTime = { value: 0 };
+const v3 = (c) => `vec3f(${c.map((x) => x.toFixed(3)).join(', ')})`;
+const emberColor = wgslFn(/* wgsl */ `
+fn emberColor(pos: vec3f, t: f32) -> vec3f {
+  let q = pos * ${EMBER_SCALE.toFixed(1)} + vec3f(0.0, -t * ${EMBER_DRIFT[0].toFixed(2)}, t * ${EMBER_DRIFT[1].toFixed(2)});
+  let n = 0.65 * emberNoise(q) + 0.35 * emberNoise(q * 2.3 + 5.0);
+  let crack = smoothstep(0.5, 0.78, n);
+  let pulse = 0.75 + 0.25 * emberNoise(vec3f(t * 2.0, 3.0, 1.0));
+  return mix(${v3(EMBER_CHAR)}, ${v3(EMBER_HOT)} * pulse, crack * crack);
+}`, [wgslFn(/* wgsl */ `
+fn emberNoise(x: vec3f) -> f32 {
+  let i = floor(x);
+  var f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(emberHash(i), emberHash(i + vec3f(1.0, 0.0, 0.0)), f.x), mix(emberHash(i + vec3f(0.0, 1.0, 0.0)), emberHash(i + vec3f(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(emberHash(i + vec3f(0.0, 0.0, 1.0)), emberHash(i + vec3f(1.0, 0.0, 1.0)), f.x), mix(emberHash(i + vec3f(0.0, 1.0, 1.0)), emberHash(i + vec3f(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}`, [wgslFn(/* wgsl */ `
+fn emberHash(p0: vec3f) -> f32 { var p = fract(p0 * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }`)])]);
+// the ember's clock: TSL's time (s), or a fixed one for the icons' bake (emberClock.value)
+export const emberClock = uniform(-1);
 function emberMaterial() {
-  const v3 = (c) => `vec3(${c.map((x) => x.toFixed(3)).join(', ')})`;
-  return new THREE.ShaderMaterial({
-    uniforms: { uTime: emberTime },
-    vertexShader: /* glsl */ `
-      varying vec3 vPos;
-      void main() { vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: /* glsl */ `
-      uniform float uTime;
-      varying vec3 vPos;
-      float h3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
-      float n3(vec3 x) {
-        vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(mix(h3(i), h3(i + vec3(1, 0, 0)), f.x), mix(h3(i + vec3(0, 1, 0)), h3(i + vec3(1, 1, 0)), f.x), f.y),
-                   mix(mix(h3(i + vec3(0, 0, 1)), h3(i + vec3(1, 0, 1)), f.x), mix(h3(i + vec3(0, 1, 1)), h3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
-      }
-      void main() {
-        vec3 q = vPos * ${EMBER_SCALE.toFixed(1)} + vec3(0.0, -uTime * ${EMBER_DRIFT[0].toFixed(2)}, uTime * ${EMBER_DRIFT[1].toFixed(2)});
-        float n = 0.65 * n3(q) + 0.35 * n3(q * 2.3 + 5.0);
-        float crack = smoothstep(0.5, 0.78, n);
-        float pulse = 0.75 + 0.25 * n3(vec3(uTime * 2.0, 3.0, 1.0));
-        gl_FragColor = vec4(mix(${v3(EMBER_CHAR)}, ${v3(EMBER_HOT)} * pulse, crack * crack), 1.0);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-      }`,
-  });
+  const mat = new THREE.MeshBasicNodeMaterial();
+  mat.lights = false;
+  const t = emberClock.greaterThanEqual(0).select(emberClock, time);
+  mat.colorNode = emberColor({ pos: positionGeometry, t });
+  mat.name = 'ember';
+  return mat;
 }
 
 const materials = new Map();   // COLORS key → material, shared by every model
@@ -417,7 +418,6 @@ function build(key) {
     m.position.set(...p.p);
     if (p.rot) m.rotation.set(...p.rot);
     if (p.name) m.name = p.name;
-    if (p.m === 'ember') m.onBeforeRender = () => { emberTime.value = performance.now() / 1000; };
     m.userData.part = true;   // the model's own (held.js tells a tool's additions from them)
     g.add(m);
   }
@@ -486,8 +486,12 @@ export function attachModel(parent, key, onLoad, { arm: withArm = true } = {}) {
 // freeze frame of the same parts, posed by MODELS[key].icon, lit from up
 // front left and drawn by an orthographic camera at ICON_PX pixels with no
 // antialiasing, then given OSRS's 1 px black outline and its dark shadow one
-// pixel down and right. Drawn once per key by a small renderer of its own,
-// which is let go as soon as the icons in hand are done.
+// pixel down and right. Baked at build time (docs/webgpu.md F8):
+// tools/bake-icons.mjs draws every one through the real materials in headless
+// Chromium, once, into public/icons/<key>.png, with a manifest holding a hash
+// of what they are drawn from (bake-icons --check, CPU only, says when a model
+// changed without a re-bake). So the game draws none at runtime, and
+// modelIcon(key) is the sprite's URL, at once.
 export const ICON_PX = 36;           // the sprite's size, in pixels (OSRS items are 36×32)
 const ICON_PAD = 2;                  // px kept clear at each edge for the outline and shadow
 const ICON_OUTLINE = [0, 0, 0];      // OSRS's item outline
@@ -497,33 +501,52 @@ const ICON_AMBIENT = 1.6;            // light on the icon: a flat fill plus a ke
 const ICON_KEY = 2.2;
 const ICON_KEY_DIR = [-1, 2, 3];
 const ICON_CAMERA_Z = 10;            // model units in front of the model; any distance clear of it
-const icons = new Map();             // key → data URL
-let iconKit = null;                  // { renderer, scene, camera } while icons are being drawn
+export const ICON_DIR = 'icons/';    // under the site's base (public/icons)
 
-function getIconKit() {
-  if (iconKit) return iconKit;
-  const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, preserveDrawingBuffer: true });
-  renderer.setPixelRatio(1);
-  renderer.setSize(ICON_PX, ICON_PX, false);
-  renderer.setClearColor(0x000000, 0);
+// The page's base URL (Vite's), or '/' where there is none (Node: the bake's --check)
+const BASE = (() => { try { return import.meta.env?.BASE_URL ?? '/'; } catch { return '/'; } })();
+
+// The hotbar icon of model `key`: the URL of its baked ICON_PX square sprite.
+export function modelIcon(key) {
+  if (!MODELS[key]) throw new Error(`modelIcon: no model ${key}`);
+  return `${BASE}${ICON_DIR}${key}.png`;
+}
+
+/**
+ * What draws model `key`'s icon (tools/bake-icons.mjs): the posed model in a
+ * scene with its lights, and the orthographic camera that frames it.
+ * @param {string} key
+ * @returns {{ scene: object, camera: object, obj: object, dispose: () => void }}
+ */
+export function iconScene(key) {
+  const pose = MODELS[key].icon;
   const scene = new THREE.Scene();
   scene.add(new THREE.AmbientLight(0xffffff, ICON_AMBIENT));
-  const key = new THREE.DirectionalLight(0xffffff, ICON_KEY);
-  key.position.set(...ICON_KEY_DIR);
-  scene.add(key);
-  const camera = new THREE.OrthographicCamera();
-  iconKit = { renderer, scene, camera };
-  setTimeout(() => {   // after this batch of icons
-    renderer.dispose();
-    renderer.forceContextLoss();
-    iconKit = null;
-  });
-  return iconKit;
+  const light = new THREE.DirectionalLight(0xffffff, ICON_KEY);
+  light.position.set(...ICON_KEY_DIR);
+  scene.add(light);
+  const { obj } = normalised(key, false);
+  const q = new THREE.Quaternion();
+  const turn = (axis, angle) => q.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
+  turn(new THREE.Vector3(0, 1, 0), pose.yaw);
+  turn(new THREE.Vector3(1, 0, 0), pose.tilt);
+  turn(new THREE.Vector3(0, 0, 1), pose.roll);
+  obj.quaternion.copy(q);
+  scene.add(obj);
+  obj.updateMatrixWorld(true);
+  // fit the posed model's box in the square, less the padding
+  const box = new THREE.Box3().setFromObject(obj, true);
+  const c = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3());
+  const half = (Math.max(sz.x, sz.y) / 2) * (ICON_PX / (ICON_PX - 2 * ICON_PAD));
+  const camera = new THREE.OrthographicCamera(-half, half, half, -half, 0.1, ICON_CAMERA_Z * 2);
+  camera.position.set(c.x, c.y, c.z + ICON_CAMERA_Z);
+  camera.updateMatrixWorld();
+  return { scene, camera, obj, dispose() { obj.traverse((o) => o.geometry?.dispose()); } };
 }
 
 // OSRS's outline and shadow round the sprite's opaque pixels (antialias is off,
-// so a pixel is all there or not at all).
-function outlineSprite(img) {
+// so a pixel is all there or not at all): img is { data (RGBA bytes), width, height }.
+export function outlineSprite(img) {
   const { data, width: w, height: hgt } = img;
   const solid = (x, y) => x >= 0 && y >= 0 && x < w && y < hgt && data[(y * w + x) * 4 + 3] > 0;
   const set = (x, y, rgb) => { const i = (y * w + x) * 4; data.set([...rgb, 255], i); };
@@ -540,39 +563,4 @@ function outlineSprite(img) {
     if (!solid(x, y) && solid(x - d, y - d)) set(x, y, ICON_SHADOW);
   }
   return img;
-}
-
-// The hotbar icon of model `key`, as a data URL of an ICON_PX square sprite.
-export function modelIcon(key) {
-  if (icons.has(key)) return icons.get(key);
-  const pose = MODELS[key].icon;
-  const { renderer, scene, camera } = getIconKit();
-  const { obj } = normalised(key, false);
-  const q = new THREE.Quaternion();
-  const turn = (axis, angle) => q.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
-  turn(new THREE.Vector3(0, 1, 0), pose.yaw);
-  turn(new THREE.Vector3(1, 0, 0), pose.tilt);
-  turn(new THREE.Vector3(0, 0, 1), pose.roll);
-  obj.quaternion.copy(q);
-  scene.add(obj);
-  obj.updateMatrixWorld(true);
-  // fit the posed model's box in the square, less the padding
-  const box = new THREE.Box3().setFromObject(obj, true);
-  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
-  const half = (Math.max(s.x, s.y) / 2) * (ICON_PX / (ICON_PX - 2 * ICON_PAD));
-  Object.assign(camera, { left: -half, right: half, top: half, bottom: -half, near: 0.1, far: ICON_CAMERA_Z * 2 });
-  camera.position.set(c.x, c.y, c.z + ICON_CAMERA_Z);
-  camera.updateProjectionMatrix();
-  renderer.render(scene, camera);
-  scene.remove(obj);
-  obj.traverse((o) => o.geometry?.dispose());
-
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = ICON_PX;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(renderer.domElement, 0, 0);
-  ctx.putImageData(outlineSprite(ctx.getImageData(0, 0, ICON_PX, ICON_PX)), 0, 0);
-  const url = canvas.toDataURL();
-  icons.set(key, url);
-  return url;
 }
