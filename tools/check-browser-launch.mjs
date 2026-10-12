@@ -21,7 +21,7 @@ const LEGACY = new Set([
   'tools/arena-check.mjs', 'tools/bench.mjs', 'tools/birds-shots.mjs', 'tools/burrower-laser-check.mjs',
   'tools/cave-refl-check.mjs', 'tools/classes-check.mjs', 'tools/combat-check.mjs',
   'tools/creatures-check.mjs', 'tools/crystal-check.mjs', 'tools/dock-check.mjs', 'tools/elec-gpu-check.mjs',
-  'tools/elements-gpu-check.mjs', 'tools/far-regress.mjs', 'tools/flask-check.mjs', 'tools/gibs-check.mjs',
+  'tools/elements-gpu-check.mjs', 'tools/flask-check.mjs', 'tools/gibs-check.mjs',
   'tools/headless-cost.mjs', 'tools/keys-check.mjs', 'tools/kick-hook-check.mjs',
   'tools/lights-check.mjs', 'tools/map-thumbs.mjs', 'tools/menu-check.mjs',
   'tools/modes-check.mjs', 'tools/nt-mat-gpu.mjs', 'tools/perks-check.mjs', 'tools/rays-gpu.mjs',

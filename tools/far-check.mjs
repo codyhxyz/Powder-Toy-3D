@@ -121,7 +121,7 @@ try {
 
   // ------------------------------------------------------------- view
   if (STAGES.includes('view')) {
-    const { p, errs } = await boot(`/?map=labWorld&win=${WIN}`, { width: 160, height: 100 });
+    const { p, errs } = await boot(`/?map=labWorld&win=${WIN}`, { width: 128, height: 80 });
     const r = await p.evaluate(async ([N, DIFF]) => {
       const a = window.__app, f = a.win.far, gpu = a.gpu;
       f.queue = f.queue.slice(-N);
