@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ELEMENTS } from '../../elements.js';
-import { flamerFrag, flameBox, toolPass, FLAMER } from '../../shaders/povTools.js';
+import { flamerFrag, flameBox, FLAMER } from '../../shaders/povTools.js';
+import { toolPass } from '../gpu.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
@@ -41,10 +42,7 @@ export default {
     const flame = mesh.obj.getObjectByName('flame');
     flame.visible = false;
     const baseLen = flame.scale.y;
-    const pass = toolPass(flamerFrag, () => ({
-      uNozzle: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
-      uReach: { value: 0 }, uDt: { value: 0 }, uFrame: { value: 0 },
-    }));
+    const pass = toolPass(flamerFrag);
     let burning = false, frame = 0;
     const nozzle = new THREE.Vector3();
 
@@ -69,15 +67,7 @@ export default {
       const aim = ctx.aim;
       const toFace = aim?.valid && Number.isFinite(aim.dist) ? aim.dist - t : Infinity;
       const reach = THREE.MathUtils.clamp(toFace, 0, FLAMER.LENGTH);
-      const mat = pass(sim);
-      const u = mat.uniforms;
-      u.uNozzle.value.copy(nozzle);
-      u.uDir.value.copy(dir);
-      u.uReach.value = reach;
-      u.uDt.value = toolDt(ctx);
-      u.uFrame.value = ++frame;
-      sim.touchCentres(...flameBox(FLAMER, nozzle, dir, reach));
-      sim.pass(mat);
+      pass(sim, { nozzle, dir, reach, dt: toolDt(ctx), frame: ++frame }, sim.touchCentres(...flameBox(FLAMER, nozzle, dir, reach)));
       muzzle.updateWorldMatrix(true, false);
       povEvents.emit('flame', { muzzleWorld: muzzle.getWorldPosition(new THREE.Vector3()), dir, length: reach + (t - NOZZLE_REACH), dt: ctx.dt });
     }

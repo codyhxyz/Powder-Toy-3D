@@ -1,22 +1,25 @@
-import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
-import { materialsGLSL } from '../gfx/materials.js';
-import { coreGLSL } from './gfx/core.js';
+import { prelude, editKernelWGSL, EDIT_FIELDS, EDIT_SCRATCH_BINDING, LAYOUT, STATE_OPTS, gridDims } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
+import { ddaGLSL } from './gfx/core.js';
+import { RING_LAYOUT, ringWGSL } from './povBody.js';
 
-// GPU passes for the guns' ballistic rounds (src/pov/ballistics.js).
+// GPU work for the guns' ballistic rounds (src/pov/ballistics.js), on WebGPU
+// (docs/webgpu.md G2).
 //
 // A round flies outside the sim, on the CPU, with real ballistics. Each frame
 // traceFrag marches the stretch of path it will cover next through the grid,
-// one fragment per round, and the CPU reads the answers back a frame or two
-// later. Where a round strikes matter, strikeFrag spends its energy on what it
-// meets: it breaks and shoves cells, and adds none.
+// one thread per round, into a slot of a result ring the CPU reads back a
+// frame or two later. Where a round strikes matter, the strike spends its
+// energy on what it meets: it breaks and shoves cells, and adds none.
 //
 // Units: grid cells, cells/step for the sim's velocities.
 
 export const TRACE = {
-  ROUNDS: 16,        // texels across the trace target: rounds traced per pass
-  ROWS: 3,           // texel rows per round (see traceFrag's output)
+  ROUNDS: 16,        // rounds traced per dispatch (a thread each)
+  ROWS: 3,           // vec4s of answer per round (see traceFrag's output)
 };
-// A round's strike (strikeFrag):
+// A round's strike (strikeWGSL):
 export const STRIKE = {
   DEPTH_MAX: 64,     // cells: the longest path a strike walks (the most any gun's round goes through)
   CHIP_MAX: 0.5,     // cells/step: fastest the debris of a cell a round breaks flies on
@@ -26,90 +29,107 @@ export const STRIKE = {
 // face's normal is minus that step. The floor is hit stepping down y.
 export const TRACE_FACE_FLOOR = 2;
 export const TRACE_MISS = -1;   // face of a segment that hit nothing
-// uFrom[i].w of an active segment: what stops it
+// starts[i].w of an active segment (TraceParams): what stops it
 export const TRACE_ROUND = 1;   // a round: liquids, powders and solids
 export const TRACE_SIGHT = 2;   // a camera's line of sight (pov/cameraArm.js): powders and solids, liquids let it through
+// bytes of one trace's answer (a ring slot): ROWS × ROUNDS vec4s, row-major
+export const TRACE_BYTES = TRACE.ROUNDS * TRACE.ROWS * 16;
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+// A JS number as a WGSL f32 literal (H1.7)
+const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
 
-// The grid walk of render.js's pickFrag, with its brick skipping (gfx/core.js),
-// without the shading the renderer's lib() also brings: a smaller program.
-const traceLib = (g) => `${prelude(g)}\n${materialsGLSL()}\n${coreGLSL(g)}`;
+// The segments (grid cells; starts[i].w as above, 0 for an idle thread) and the
+// ring slot the answer goes to.
+export const TraceParams = uniformStruct('TraceParams', {
+  starts: `array<vec4f, ${TRACE.ROUNDS}>`,
+  ends: `array<vec4f, ${TRACE.ROUNDS}>`,
+  slot: 'u32',
+});
 
-// One fragment per (round, row) of a TRACE.ROUNDS × TRACE.ROWS target. Every
-// row marches the round's segment uFrom[i].xyz → uTo[i] the same way (the DDA
-// and brick skipping of render.js's pickFrag) and writes its share of the
-// answer: the first cell holding a liquid, powder or solid (air and gases let a
-// round through; a TRACE_SIGHT segment passes liquids too).
+// One thread per round: it marches the round's segment starts[i].xyz → ends[i]
+// cell by cell (the DDA of render.js's pickFrag, without its brick skipping:
+// docs/webgpu.md G2, the presentation's brick map can be stale against the
+// state this reads) and writes all three rows of its answer: the first cell
+// holding a liquid, powder or solid (air and gases let a round through; a
+// TRACE_SIGHT segment passes liquids too).
 //   row 0: (struck cell xyz, face), face TRACE_MISS if the segment is clear
 //   row 1: (last air or gas cell before it xyz, element id); xyz −1 if unknown
 //   row 2: (entry point xyz, share of the segment flown to it, 0..1)
-// uFrom[i].w = 0 marks an idle texel. A segment that runs out through the
-// floor (y = 0 is the floor, below the grid) strikes it: the engine treats
-// what lies outside the box as WALL. Through the sides or the top it is clear.
-export const traceFrag = (g) => /* glsl */ `
-${traceLib(g)}
-#define TRACE_ROUNDS ${TRACE.ROUNDS}
-#define TRACE_FACE_FLOOR ${TRACE_FACE_FLOOR}
-#define TRACE_MISS ${f(TRACE_MISS)}
-#define TRACE_SIGHT ${f(TRACE_SIGHT)}
-#define TRACE_NUDGE 1e-3   // cells: how far back from a start point inside a cell the cell before it is looked for
-uniform vec4 uFrom[TRACE_ROUNDS];   // xyz grid, w 1 = active
-uniform vec3 uTo[TRACE_ROUNDS];
-out vec4 oC;
+// Row k of round i is vec4 k·ROUNDS + i of the slot. A segment that runs out
+// through the floor (y = 0 is the floor, below the grid) strikes it: the
+// engine treats what lies outside the box as WALL. Through the sides or the
+// top it is clear.
+export const traceFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+${ddaGLSL(g)}
+${TraceParams.wgsl}
+@group(3) @binding(1) var<uniform> P: TraceParams;
+${ringWGSL()}
+const TRACE_ROUNDS: u32 = ${TRACE.ROUNDS}u;
+const TRACE_ROWS: u32 = ${TRACE.ROWS}u;
+const TRACE_FACE_FLOOR: f32 = ${lit(TRACE_FACE_FLOOR)};
+const TRACE_MISS: f32 = ${lit(TRACE_MISS)};
+const TRACE_SIGHT: f32 = ${lit(TRACE_SIGHT)};
+const TRACE_NUDGE: f32 = 1e-3;   // cells: how far back from a start point inside a cell the cell before it is looked for
 
-void main() {
-  int i = int(gl_FragCoord.x), row = int(gl_FragCoord.y);
-  vec4 miss = row == 0 ? vec4(0.0, 0.0, 0.0, TRACE_MISS) : vec4(-1.0, -1.0, -1.0, 0.0);
-  oC = miss;
-  vec4 from = uFrom[i];
-  if (from.w < 0.5) return;
-  bool sight = from.w > TRACE_SIGHT - 0.5;
-  vec3 ro = from.xyz;
-  vec3 dv = uTo[i] - ro;
-  float len = length(dv);
-  if (len <= 0.0) return;
-  vec3 rd = safeDir(dv / len);
+fn answer(i: u32, r0: vec4f, r1: vec4f, r2: vec4f) {
+  let at = P.slot * TRACE_ROUNDS * TRACE_ROWS + i;
+  ringOut[at] = r0;
+  ringOut[at + TRACE_ROUNDS] = r1;
+  ringOut[at + 2u * TRACE_ROUNDS] = r2;
+}
+
+@compute @workgroup_size(${TRACE.ROUNDS})
+fn main(@builtin(local_invocation_index) i: u32) {
+  let unknown = vec4f(-1.0, -1.0, -1.0, 0.0);
+  let start = P.starts[i];
+  if (start.w < 0.5) { answer(i, vec4f(0.0, 0.0, 0.0, TRACE_MISS), unknown, unknown); return; }
+  let sight = start.w > TRACE_SIGHT - 0.5;
+  let ro = start.xyz;
+  let dv = P.ends[i].xyz - ro;
+  let len = length(dv);
+  if (len <= 0.0) { answer(i, vec4f(0.0, 0.0, 0.0, TRACE_MISS), unknown, unknown); return; }
+  let rd = safeDir(dv / len);
 
   // the floor, where the segment would run out through it
-  float tFloor = rd.y < 0.0 ? -ro.y / rd.y : -1.0;
-  vec3 atFloor = ro + rd * tFloor;
-  bool floorHit = tFloor >= 0.0 && tFloor <= len
-    && atFloor.x >= 0.0 && atFloor.x < float(NX) && atFloor.z >= 0.0 && atFloor.z < float(NZ);
+  var tFloor = -1.0;
+  if (rd.y < 0.0) { tFloor = -ro.y / rd.y; }
+  let atFloor = ro + rd * tFloor;
+  let floorHit = tFloor >= 0.0 && tFloor <= len
+    && atFloor.x >= 0.0 && atFloor.x < f32(NX) && atFloor.z >= 0.0 && atFloor.z < f32(NZ);
 
-  vec3 bh = boxHit(ro, rd);
-  float t0 = max(bh.x, 0.0);
-  float tEnd = min(bh.y, len);
-  ivec3 istp = ivec3(sign(rd));
-  vec3 tDelta = abs(1.0 / rd);
-  ivec3 cell = clamp(ivec3(floor(ro + rd * (t0 + DDA_START_NUDGE))), ivec3(0), GRID - 1);
-  vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  float tEnter = t0;
+  let bh = boxHit(ro, rd);
+  let t0 = max(bh.x, 0.0);
+  let tEnd = min(bh.y, len);
+  let istp = vec3i(sign(rd));
+  let tDelta = abs(1.0 / rd);
+  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
+  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var tEnter = t0;
   // the axis the first cell was entered across: the box face, or for a start
   // inside the box the one the path left the cell before it through
-  vec3 back = floor(ro - rd * TRACE_NUDGE);
-  vec3 moved = abs(back - vec3(cell));
-  int ax = bh.x > 0.0 ? int(bh.z) : (moved.x > 0.0 ? 0 : moved.y > 0.0 ? 1 : moved.z > 0.0 ? 2 : -1);
-  ivec3 lastB = ivec3(-1);
-  int flags = 0;
+  let back = floor(ro - rd * TRACE_NUDGE);
+  let moved = abs(back - vec3f(cell));
+  var ax = -1;
+  if (bh.x > 0.0) { ax = i32(bh.z); } else if (moved.x > 0.0) { ax = 0; } else if (moved.y > 0.0) { ax = 1; } else if (moved.z > 0.0) { ax = 2; }
 
-  for (int k = 0; k < ${g.maxSteps}; k++) {
-    if (t0 >= tEnd || tEnter > tEnd || outside(cell)) break;
-    ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
-    if (flags == 0) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    vec4 a = fetchA(cell);
-    int id = eid(a);
-    if (id != E_EMPTY && KIND[id] != K_GAS && !(sight && KIND[id] == K_LIQUID)) {
+  for (var k = 0; k < MAX_STEPS; k++) {
+    if (t0 >= tEnd || tEnter > tEnd || outside(cell)) { break; }
+    let a = fetchA(cell);
+    let id = eid(a);
+    if (id != E_EMPTY && KIND(id) != K_GAS && !(sight && KIND(id) == K_LIQUID)) {
       // entered from outside the box, or from an unknown side: no cell before it
-      bool known = ax >= 0 && !(k == 0 && bh.x > 0.0);
-      int axis = ax >= 0 ? ax : argmin3(-abs(rd));
-      ivec3 prev = cell;
-      if (known) prev[axis] -= istp[axis];
-      int face = axis * 2 + (istp[axis] > 0 ? 1 : 0);   // normal = -step
-      if (row == 0) oC = vec4(vec3(cell), float(face));
-      else if (row == 1) oC = vec4(known ? vec3(prev) : vec3(-1.0), float(id));
-      else oC = vec4(ro + rd * tEnter, tEnter / len);
+      let known = ax >= 0 && !(k == 0 && bh.x > 0.0);
+      var axis = argmin3(-abs(rd));
+      if (ax >= 0) { axis = ax; }
+      var prev = cell;
+      if (known) { prev[axis] -= istp[axis]; }
+      var up = 0;
+      if (istp[axis] > 0) { up = 1; }
+      let face = axis * 2 + up;   // normal = -step
+      var r1 = vec4f(-1.0, -1.0, -1.0, f32(id));
+      if (known) { r1 = vec4f(vec3f(prev), f32(id)); }
+      answer(i, vec4f(vec3f(cell), f32(face)), r1, vec4f(ro + rd * tEnter, tEnter / len));
       return;
     }
     ax = argmin3(tMax);
@@ -118,83 +138,102 @@ void main() {
     tMax[ax] += tDelta[ax];
   }
   if (floorHit) {
-    ivec3 under = ivec3(floor(atFloor.x), -1, floor(atFloor.z));
-    if (row == 0) oC = vec4(vec3(under), float(TRACE_FACE_FLOOR));
-    else if (row == 1) oC = vec4(vec3(under) + vec3(0.0, 1.0, 0.0), float(E_WALL));
-    else oC = vec4(vec3(atFloor.x, 0.0, atFloor.z), tFloor / len);
+    let under = vec3f(floor(atFloor.x), -1.0, floor(atFloor.z));
+    answer(i, vec4f(under, TRACE_FACE_FLOOR), vec4f(under + vec3f(0.0, 1.0, 0.0), f32(E_WALL)),
+      vec4f(atFloor.x, 0.0, atFloor.z, tFloor / len));
+    return;
   }
+  answer(i, vec4f(0.0, 0.0, 0.0, TRACE_MISS), unknown, unknown);
 }
 `;
 
-// A round strikes: from the struck face's entry point uEntry it walks on along
-// uDir (a DDA, as the trace) for up to uDepth cells, spending its energy
-// uEnergy (the sim's kinetic energy units, as HARD) cell by cell. That is the
-// engine's projectile rule (react.js): every breakable solid a projectile
-// breaks costs it that solid's hardness.
+// A round strikes: from the struck face's entry point it walks on along dir
+// (a DDA, as the trace) for up to depth cells, spending its energy (the sim's
+// kinetic energy units, as HARD) cell by cell. That is the engine's
+// projectile rule (react.js): every breakable solid a projectile breaks costs
+// it that solid's hardness.
 //   breakable solid, energy ≥ its hardness: breaks into its debris in place
-//     (only the element changes), which flies on along uDir with the energy
+//     (only the element changes), which flies on along dir with the energy
 //     left (CHIP_MAX at most); the round pays the hardness
 //   any other solid: the round stops there
-//   powder or liquid: shoved along uDir; the round pays DENS · DRAG
+//   powder or liquid: shoved along dir; the round pays DENS · DRAG
 //   air or gas: free
 // Nothing is added to the world: each change turns a cell into its own debris
-// or gives it a velocity. The walk re-reads the state this pass sees, so it
-// meets whatever moved in since the trace. Every fragment near the path (in
-// uLo..uHi and within a cell of the line) runs the same walk and changes only
-// its own cell, so they agree.
-export const strikeFrag = (g) => /* glsl */ `
-${prelude(g)}
-#define STRIKE_DEPTH_MAX ${STRIKE.DEPTH_MAX}
-#define STRIKE_CHIP_MAX ${f(STRIKE.CHIP_MAX)}
-#define STRIKE_DRAG ${f(STRIKE.DRAG)}
-#define STRIKE_NUDGE 1e-3   // cells: the walk starts this far past the entry point, inside the struck cell
-#define STRIKE_NEAR 1.0     // cells from the path's line a fragment must be within to be on it
-${stateOutGLSL}
-uniform vec3 uEntry;    // grid cells
-uniform vec3 uDir;      // unit heading of the round
-uniform float uEnergy;  // the round's energy at the face
-uniform float uDepth;   // cells the walk goes at most (≤ STRIKE_DEPTH_MAX)
-uniform vec3 uLo;       // the walk's bounding box, in cells
-uniform vec3 uHi;
+// or gives it a velocity. The walk re-reads the state the edit sees, so it
+// meets whatever moved in since the trace. An edit over the walk's box, in two
+// phases (docs/webgpu.md D7, W4): every cell near the path (in lo..hi and
+// within a cell of the line) runs the same walk over the state before the
+// strike and changes only its own cell, so they agree; the second phase
+// stores what the first worked out.
+export const StrikeParams = uniformStruct('StrikeParams', {
+  ...EDIT_FIELDS,
+  entry: 'vec3f',     // grid cells
+  energy: 'f32',      // the round's energy at the face
+  dir: 'vec3f',       // unit heading of the round
+  depth: 'f32',       // cells the walk goes at most (≤ STRIKE.DEPTH_MAX)
+  lo: 'vec3f',        // the walk's bounding box, in cells
+  hi: 'vec3f',
+});
+export const strikeWGSL = /* wgsl */ `
+const STRIKE_DEPTH_MAX: i32 = ${STRIKE.DEPTH_MAX};
+const STRIKE_CHIP_MAX: f32 = ${lit(STRIKE.CHIP_MAX)};
+const STRIKE_DRAG: f32 = ${lit(STRIKE.DRAG)};
+const STRIKE_NUDGE: f32 = 1e-3;   // cells: the walk starts this far past the entry point, inside the struck cell
+const STRIKE_NEAR: f32 = 1.0;     // cells from the path's line a cell must be within to be on it
 
-void strike(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 pc = vec3(p);
-  if (any(lessThan(pc, uLo)) || any(greaterThan(pc, uHi))) return;
-  vec3 d = pc + 0.5 - uEntry;
-  if (length(d - dot(d, uDir) * uDir) > STRIKE_NEAR) return;
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let pc = vec3f(p);
+  if (any(pc < P.lo) || any(pc > P.hi)) { return; }
+  let d = pc + 0.5 - P.entry;
+  if (length(d - dot(d, P.dir) * P.dir) > STRIKE_NEAR) { return; }
 
-  vec3 rd = vec3(abs(uDir.x) < 1e-6 ? 1e-6 : uDir.x, abs(uDir.y) < 1e-6 ? 1e-6 : uDir.y, abs(uDir.z) < 1e-6 ? 1e-6 : uDir.z);
-  vec3 ro = uEntry + rd * STRIKE_NUDGE;
-  ivec3 istp = ivec3(sign(rd));
-  vec3 tDelta = abs(1.0 / rd);
-  ivec3 c = ivec3(floor(ro));
-  vec3 tMax = (vec3(c) + step(0.0, rd) - ro) / rd;
-  float E = uEnergy, tEnter = 0.0;
-  for (int k = 0; k < STRIKE_DEPTH_MAX; k++) {
-    if (tEnter > uDepth || E <= 0.0 || !inGrid(c)) return;
-    int id = c == p ? eid(a) : eid(fetchA(c));
-    int kind = KIND[id];
-    if (c == p) {
+  let rd = select(P.dir, vec3f(1e-6), abs(P.dir) < vec3f(1e-6));
+  let ro = P.entry + rd * STRIKE_NUDGE;
+  let istp = vec3i(sign(rd));
+  let tDelta = abs(1.0 / rd);
+  var c = vec3i(floor(ro));
+  var tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
+  var E = P.energy;
+  var tEnter = 0.0;
+  for (var k = 0; k < STRIKE_DEPTH_MAX; k++) {
+    if (tEnter > P.depth || E <= 0.0 || !inGrid(c)) { return; }
+    let here = all(c == p);
+    var id: i32;
+    if (here) { id = eid(a); } else { id = eid(fetchA(c)); }
+    let kind = KIND(id);
+    if (here) {
       if (kind == K_SOLID) {
-        int into = BREAKINTO[id];
-        if (into < 0 || E < HARD[id]) return;
-        oA.x = float(into);
-        oB.xyz = uDir * min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), STRIKE_CHIP_MAX);
+        let into = BREAKINTO(id);
+        if (into < 0 || E < HARD(id)) { return; }
+        (*oA).x = f32(into);
+        *oB = vec4f(P.dir * min(sqrt(2.0 * (E - HARD(id)) / DENS(into)), STRIKE_CHIP_MAX), b.w);
       } else if (kind == K_POWDER || kind == K_LIQUID) {
-        oB.xyz = clamp(b.xyz + uDir * min(sqrt(2.0 * E / DENS[id]), V_MAX), -V_MAX, V_MAX);
+        *oB = vec4f(clamp(b.xyz + P.dir * min(sqrt(2.0 * E / DENS(id)), V_MAX), vec3f(-V_MAX), vec3f(V_MAX)), b.w);
       }
       return;
     }
     if (kind == K_SOLID) {
-      if (BREAKINTO[id] < 0 || E < HARD[id]) return;
-      E -= HARD[id];
+      if (BREAKINTO(id) < 0 || E < HARD(id)) { return; }
+      E -= HARD(id);
     } else if (kind == K_POWDER || kind == K_LIQUID) {
-      E -= DENS[id] * STRIKE_DRAG;
+      E -= DENS(id) * STRIKE_DRAG;
     }
-    int ax = tMax.x <= tMax.y && tMax.x <= tMax.z ? 0 : (tMax.y <= tMax.z ? 1 : 2);
+    var ax = 2;
+    if (tMax.x <= tMax.y && tMax.x <= tMax.z) { ax = 0; } else if (tMax.y <= tMax.z) { ax = 1; }
     tEnter = tMax[ax];
     c[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
 }
-${copyThroughMain('strike')}`;
+`;
+export const strikeFrag = (g) => editKernelWGSL(g, { update: strikeWGSL, params: StrikeParams, reads: 'neighbours' });
+
+// This module's edit family, as sim.editKernel takes it (src/pov/gpu.js).
+export const POV_TRACE_EDITS = { povStrike: { update: strikeWGSL, params: StrikeParams, reads: 'neighbours' } };
+
+const SCRATCH = [{ binding: EDIT_SCRATCH_BINDING, buffer: { type: 'storage' } }];   // the two-phase edit's scratch (sim.editKernel adds it)
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  { name: 'povTrace', kind: 'compute', code: (g) => traceFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, RING_LAYOUT], dispatch: () => [1, 1, 1] },
+  { name: 'povStrike', kind: 'compute', code: (g) => strikeFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, SCRATCH], dispatch: (g) => fold(gridDims(g).nbricks) },
+];

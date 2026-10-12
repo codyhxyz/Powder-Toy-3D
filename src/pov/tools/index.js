@@ -13,8 +13,10 @@ import { levelByScene } from '../wands/descentSites.js';
 import { viewmodelRig, heldMaterial, HIT, VIEWMODEL_GLOW_LAYER } from '../viewmodel.js';
 import { wandLook } from '../wands/look.js';
 import { flaskLabel } from '../descent/items.js';
+import { glowMaterial, setGlowTone } from './glow.js';
 import { potionColor } from '../descent/flasks.js';
 import { ELEMENTS } from '../../elements.js';
+import { povGpu } from '../gpu.js';
 
 export { emptyLoads };
 
@@ -106,33 +108,6 @@ const GEM_WHITE_SHARP = 6;            // ...falling off as (N·V)^this
 const HALO_DETAIL = 3;                // icosphere subdivisions (a smooth falloff needs smooth normals)
 const HALO_SOFT = 3;                  // the halo's glow falls as (N·V)^this, to nothing at its silhouette
 
-// Something lit from within, bright where it faces the eye: the gem (opaque: { rim, white, whiteSharp })
-// or its additive halo ({ soft, opacity }). uColor is its colour (HDR); renderer tone mapping applies.
-function glowMaterial({ rim = 0, white = 0, whiteSharp = 1, soft = 1, opacity = 1 }) {
-  const halo = opacity < 1;
-  return new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: new THREE.Color('#efcf79') } },
-    vertexShader: /* glsl */ `
-      varying vec3 vN, vV;
-      void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vN = normalMatrix * normal; vV = -mv.xyz;
-        gl_Position = projectionMatrix * mv;
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform vec3 uColor;
-      varying vec3 vN, vV;
-      void main() {
-        float face = clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
-        vec3 rgb = uColor * mix(${rim.toFixed(4)}, 1.0, pow(face, ${soft.toFixed(4)})) + vec3(pow(face, ${whiteSharp.toFixed(4)}) * ${white.toFixed(4)});
-        gl_FragColor = vec4(rgb * ${opacity.toFixed(4)}, 1.0);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-      }`,
-    ...(halo ? { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending } : {}),
-  });
-}
-
 export function createToolbelt(env) {
   const hotbar = createHotbar((i) => pressSlot(i), (key) => select(key));
   const transfer = sharedTransfer(env);
@@ -177,8 +152,9 @@ export function createToolbelt(env) {
     const cards = wandRuntime.definition?.cards ?? null;
     if (cards !== gemCards) { gemCards = cards; gemLook = wandLook(cards ?? []); }
     gemFlash *= Math.exp(-GEM_FLASH_DECAY * dt);
-    gem.material.uniforms.uColor.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + GEM_FLASH_GAIN * gemFlash));
-    halo.material.uniforms.uColor.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + HALO_FLASH_GAIN * gemFlash));
+    gem.material.userData.color.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + GEM_FLASH_GAIN * gemFlash));
+    halo.material.userData.color.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + HALO_FLASH_GAIN * gemFlash));
+    setGlowTone(env.getPost?.());   // the halo tone maps itself (glow.js)
     halo.scale.setScalar(1 + HALO_FLASH_GROW * gemFlash);
   }
   let wandSelected = false, wandSlot = 0, wandId = null, custom = null;
@@ -537,6 +513,7 @@ export function createToolbelt(env) {
     select,
     pressSlot,
     update(ctx) {
+      ctx = waitForKernels(ctx, env);
       lastCtx = ctx;
       syncDescent();
       if (loot.update()) env.requestRender?.();
@@ -607,6 +584,17 @@ export function createToolbelt(env) {
   };
 }
 
+// A tool's use waits while the POV kernels build (docs/webgpu.md B5: a new
+// grid while in POV, or a check that hasn't built them): the frame's ctx
+// without its buttons, so tools keep their animations and timers but nothing
+// fires, swings, pours or grabs, and none of a use's events go out without
+// its edit.
+const IDLE_INPUT = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, drink: false, drinkPressed: false };
+function waitForKernels(ctx, env) {
+  const sim = ctx.sim ?? env.getSim?.();
+  return !sim || povGpu(sim).ready ? ctx : { ...ctx, ...IDLE_INPUT };
+}
+
 // An NPC's tools (npc.js): every tool the player has, headless. The same tool
 // code, so the same physics and rules; its own pack and bucket (env.owner); the
 // shared projectiles (env.ballistics, the player's toolbelt's, which flies them);
@@ -638,6 +626,7 @@ export function createKit(env) {
     get lastRefusal() { return lastRefusal; },
     // run tool `key` this frame with ctx (the one held before is put away first)
     use(key, ctx) {
+      ctx = waitForKernels(ctx, env);
       if (noHands(ctx)) { tools.get(held)?.deselect?.(); held = null; return; }
       if (held !== key) { tools.get(held)?.deselect?.(); held = key; }
       tools.get(key)?.update(ctx);

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { MovingEntity, Vehicle, PursuitBehavior, SeekBehavior, WanderBehavior, Vector3 as YVector3 } from 'yuka';
 import { ELEMENTS, E, K } from '../elements.js';
-import { toolPass, wormFrag, wormGiantFrag, WORM_BITE, WORM_GIANT_BITE } from '../shaders/povTools.js';
+import { wormFrag, wormGiantFrag, WORM_BITE, WORM_GIANT_BITE } from '../shaders/povTools.js';
+import { toolPass } from './gpu.js';
 import { figureFrag } from './figure.js';
 import { addTarget, allTargets, PLAYER } from './targets.js';
 import { povEvents } from './events.js';
@@ -23,7 +24,7 @@ import { BODY_HEIGHT } from './constants.js';
 //   nothing to push on and flies ballistic under gravity, so it breaches in an
 //   arc and dives back in, Noita's signature.
 // - Terrain, physics first: every couple of cells the head bites
-//   (shaders/povTools.js blowFrag with WORM_BITE, the pickaxe's GPU pass): the
+//   (shaders/povTools.js blowWGSL with WORM_BITE, the pickaxe's GPU edit): the
 //   solids its energy beats break into their debris in place, loose powder and
 //   liquid are parted out of its way. Nothing is deleted (Noita's worms eat what
 //   they touch; this one leaves a tunnel of rubble). WALL, CLONE, METAL and the
@@ -74,7 +75,7 @@ const SUBSTEP = 0.5;                    // cells: the longest move between colli
 const MAX_DT = 0.1;                     // s: longer frames are moved as this long
 
 // digging (the bite's ball is its size's)
-const DIG_MIN_S = 1 / 30;               // s between bites at most (the pass is a full-grid one)
+const DIG_MIN_S = 1 / 30;               // s between bites at most
 const DIG_LEAD = 1;                     // cells ahead of the head the bite is centred
 
 // senses (Noita's WormAIComponent)
@@ -181,7 +182,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
   const look = buildLook(size);
   const uniforms = { uEmit: { value: new THREE.Vector3() }, uWorldToGrid: { value: new THREE.Matrix4() } };
   let mats = [], boundTo = null, compiled = null;
-  const pass = toolPass(size.frag, () => ({ uCenter: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } }));
+  const pass = toolPass(size.frag);
 
   // the head is a Yuka vehicle: its position and velocity are the worm's
   const v = new Vehicle();
@@ -409,7 +410,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     for (; i < segs.length; i++) segs[i].copy(prev);
   }
 
-  // ---- digging: the pickaxe's pass, every DIG_STEP cells, where there's something to bite
+  // ---- digging: the pickaxe's blow, every DIG_STEP cells, where there's something to bite
   function dig(dt) {
     digWait = Math.max(0, digWait - dt);
     const p = v.position, sp = v.velocity.length();
@@ -421,13 +422,10 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     const ids = [world.id(p.x, p.y, p.z), world.id(cx, cy, cz), world.id(cx + d.x * R, cy + d.y * R, cz + d.z * R)];
     if (!ids.some((i) => i >= 0 && i !== E.EMPTY && (breaks(i, BITE.ENERGY) || KIND[i] === K.POWDER || KIND[i] === K.LIQUID))) return;
     const sim = env.getSim();
-    const mat = pass(sim);
-    mat.uniforms.uCenter.value.set(cx, cy, cz);
-    mat.uniforms.uDir.value.copy(d);
-    // it changes cells within the bite's ball only: the derived passes and the activity map redo just those (sim.js)
+    // one edit over the bite's ball: it changes no cell outside it (sim.js)
     const reach = Math.max(BITE.RADIUS, BITE.DEPTH);
-    sim.touchCentres([cx - reach, cy - reach, cz - reach], [cx + reach, cy + reach, cz + reach]);
-    sim.pass(mat);
+    // (its kernel still building, B5: no bite this frame, and the next frame tries again)
+    if (!pass(sim, { center: [cx, cy, cz], dir: d }, sim.touchCentres([cx - reach, cy - reach, cz - reach], [cx + reach, cy + reach, cz + reach]))) return;
     digAt = { x: p.x, y: p.y, z: p.z };
     digWait = DIG_MIN_S;
     stats.digs++;

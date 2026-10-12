@@ -4,7 +4,7 @@
 // cheapest view to build: realistic and the data views are --views'), and a
 // shot of every scene is saved for review.
 //
-//   node tools/smoke.mjs [--stage boxes,meshes,worlds,arenas,views,warm] [--views heat,realistic] [--maps island,labWorld] [--fresh] [--out dir]
+//   node tools/smoke.mjs [--stage boxes,meshes,worlds,arenas,views,pov,warm] [--views heat,realistic] [--maps island,labWorld] [--fresh] [--out dir]
 //
 // Stages (default: boxes,worlds; the boxes a minute or two here, the worlds minutes; meshes
 // goes in a run of its own, node tools/smoke.mjs --stage meshes, about 2.5 minutes with the boot):
@@ -41,6 +41,13 @@
 //   views   the booted lab in each view of --views (default: every view),
 //           each one's pipeline built on first use as the app builds it, and
 //           drawn: the volume drew, and changed MIN_CHANGED of the canvas
+//   pov     first person (src/wire/pov.js, U11): in the empty box at 64³
+//           the body drops in and stands, walks forward on W, and fires the
+//           pistol at the floor: its round's trace lands (a probe) and
+//           strikes (an edit), all with no page or GPU error. The test runs
+//           the body's frames itself (the crosshair's pick, pov.update and
+//           the frame's steps), so it holds on a slow GPU. A minute or two here, so not in the
+//           default run
 //   warm    the start menu's warm-up (src/preload.js, B5): the page opens on
 //           the menu (the Lab last played, in the plain view), the warm-up
 //           builds the Lab's grid's pipelines, then Start boots it: the game
@@ -148,6 +155,110 @@ const pct = (x) => `${(100 * x).toFixed(1)}%`;
 const drewScene = (s, what = 'added') => s.drawn && s[what] >= MIN_CHANGED;
 const drewText = (s) => `volume ${s.drawn ? 'drawn' : 'NOT drawn'}, ${pct(s.added)} of the canvas changed by it`
   + `${s.content == null ? '' : `, ${pct(s.content)} differing from the empty box`} (floor ${pct(MIN_CHANGED)})`;
+
+// First person: drop in, stand, walk, use a tool (U11). Manual mode: the
+// test drives the body's frames itself (the crosshair's pick, pov.update,
+// then the frame's steps, then the GPU done with them), so the check holds
+// however slow the frames are; the body's probes and the tools' edits and
+// traces are the game's own.
+const POV_STEPS = 4;          // sim steps a body frame (the app's default)
+const POV_DT = 1 / 30;        // s a body frame
+const LIVE_TICKS = 3;         // the app's own ticks the stage waits for, POV active...
+const LIVE_WAIT_MS = 90000;   // ...at most this long (a tick of the live app on a loaded SwiftShader)
+async function povStage(browser, vite, secs) {
+  // (the empty box: its bricks sleep, so a frame's steps cost next to nothing and the frames are the body's)
+  const { page, errors, allowed, failed } = await boot(browser, vite, '?size=64&preset=empty&view=plain');
+  ok(!failed && await page.evaluate(() => __app.wires.pov), `pov: the empty box boots with first person wired${failed ? `: ${failed.slice(0, 300)}` : ''} (${secs()})`);
+  if (failed) { await page.close(); return; }
+  // (headless has no pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the click meant for the tool)
+  await page.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
+  await page.evaluate(async ({ steps, dt }) => {
+    const { inventory } = await import('/src/pov/tools/inventory.js');
+    inventory.give('GUN');
+    __app.pov.test.assumeLocked = true;   // (headless has no pointer lock)
+    // (a manual page starts paused; the frames below step the sim themselves, and the tools fly their rounds by its steps)
+    __app.settings.paused = false;
+    const { povEvents } = await import('/src/pov/events.js');
+    window.__smokePov = { fires: 0, impacts: [] };
+    povEvents.on('gun:fire', () => { window.__smokePov.fires++; });
+    povEvents.on('impact', (e) => { if (e.source === 'gun') window.__smokePov.impacts.push({ id: e.id, point: e.point.toArray() }); });
+    // n body frames, until done() says so; resolves to the frames run. Each
+    // holds the look (yaw, pitch: headless Chromium can lock the pointer and
+    // turn the view on a click) and picks the crosshair's cell first, as the
+    // app's tick does (requestPick: the tools aim at it), then runs the body
+    // and its steps.
+    const ro = new __app.THREE.Vector3(), rd = new __app.THREE.Vector3(), hv = __app.hover;
+    window.__povFrames = async (n, done = () => false, look = null) => {
+      for (let i = 0; i < n; i++) {
+        if (look) __app.pov.setLook(...look);
+        if (__app.pov.aimRay(ro, rd)) {
+          const hit = await __app.vol.pick(ro, rd);
+          hv.valid = hit.valid;
+          if (hit.valid) { hv.cell.fromArray(hit.cell); hv.face = hit.face; hv.id = hit.id; hv.T = hit.T; hv.P = hit.P; }
+        }
+        __app.pov.update(dt);
+        __app.test.step(steps);
+        await __app.gpu.fence();
+        await new Promise((r) => setTimeout(r, 0));   // (the frame's probes land)
+        if (done()) return i + 1;
+      }
+      return n;
+    };
+  }, { steps: POV_STEPS, dt: POV_DT });
+  // the pointer over the canvas's middle now: once in the body, moving it turns the view
+  await page.mouse.move(VIEWPORT.width / 2, VIEWPORT.height / 2);
+  // drop in: the drop point, the figure and the POV kernels (pov/gpu.js prepare), then the body stands on its probes
+  const t = Date.now();
+  await page.evaluate(() => __app.pov.enter({ swoop: 0, hint: false }));
+  const standFrames = await page.evaluate(() => window.__povFrames(60, () => __app.pov.mode === 'on' && __app.pov.player?.onGround));
+  const stood = await page.evaluate(() => ({ mode: __app.pov.mode, onGround: !!__app.pov.player?.onGround, pos: __app.pov.player?.pos.toArray() }));
+  ok(stood.mode === 'on' && stood.onGround,
+    `pov: drops in and stands (${stood.mode}, feet ${stood.pos?.map((v) => v.toFixed(1)).join(', ')}) after ${standFrames} frames, ${((Date.now() - t) / 1000).toFixed(1)} s`);
+  // walk: W held
+  await page.keyboard.down('w');
+  const walkFrames = await page.evaluate((a) => window.__povFrames(90, () => { const q = __app.pov.player.pos; return Math.hypot(q.x - a[0], q.z - a[2]) > 2; }), stood.pos ?? [0, 0, 0]);
+  await page.keyboard.up('w');
+  const p1 = await page.evaluate(() => __app.pov.player.pos.toArray());
+  const walked = Math.hypot(p1[0] - stood.pos[0], p1[2] - stood.pos[2]);
+  ok(walked > 2, `pov: walks on W (${walked.toFixed(1)} cells in ${walkFrames} frames)`);
+  // use a tool: the pistol at the floor ahead; its round traces (a probe) and strikes (an edit)
+  const look = await page.evaluate(() => { __app.pov.toolbelt.select('GUN'); return [__app.pov.camera.look.yaw, -0.6]; });
+  const held = await page.evaluate((l) => window.__povFrames(10, () => false, l).then(() => __app.pov.toolbelt.selectedKey), look);
+  // the slot selector the switch brought up goes on the wall's clock (hotbar.js SHOW_MS): while it's up
+  // under a locked pointer a click only closes it (HL2's weapon selection swallows the click)
+  await page.waitForFunction(() => !document.pointerLockElement || !document.querySelector('.hotbar.open'), null, { timeout: 10000 });
+  await page.mouse.down();
+  await page.evaluate((l) => window.__povFrames(3, () => false, l), look);
+  await page.mouse.up();
+  const shotFrames = await page.evaluate((l) => window.__povFrames(60, () => window.__smokePov.impacts.length > 0, l), look);
+  const used = await page.evaluate(() => {
+    const shot = __app.pov.toolbelt.tool('GUN')?.lastShot;
+    return { ...window.__smokePov, dir: shot?.dir.toArray().map((v) => +v.toFixed(2)), origin: shot?.origin.toArray().map((v) => +v.toFixed(1)),
+      flying: __app.pov.toolbelt.ballistics.count, look: [__app.pov.camera.look.yaw, __app.pov.camera.look.pitch].map((v) => +v.toFixed(2)) };
+  });
+  ok(held === 'GUN' && used.fires > 0 && used.impacts.length > 0,
+    `pov: the pistol fires (${used.fires}) and its round strikes (${used.impacts.map((i) => `id ${i.id} at ${i.point.map((v) => v.toFixed(1)).join(', ')}`).join('; ') || 'nothing'}) within ${shotFrames} frames`
+    + (used.impacts.length ? '' : ` (shot from ${used.origin} along ${used.dir}, ${used.flying} flying, look ${used.look})`));
+  // the app's own ticks, not the test's frames: the body runs from src/wire/pov.js's beforeStep at
+  // the loop's pace, the crosshair's pick requested by the tick; a few of them, then parked again
+  const live = await page.evaluate(async ({ ticks, waitMs }) => {
+    const pov = __app.pov, update = pov.update;
+    let calls = 0;
+    pov.update = (dt) => { calls++; return update(dt); };
+    __app.test.resume();
+    const t0 = performance.now();
+    while (calls < ticks && performance.now() - t0 < waitMs) await new Promise((r) => setTimeout(r, 100));
+    __app.test.park();
+    pov.update = update;
+    return { calls, ms: Math.round(performance.now() - t0), mode: pov.mode };
+  }, { ticks: LIVE_TICKS, waitMs: LIVE_WAIT_MS });
+  ok(live.calls >= LIVE_TICKS && live.mode === 'on', `pov: the app's own ticks run the body (src/wire/pov.js beforeStep): ${live.calls} updates in ${live.ms} ms`);
+  await page.evaluate(() => __app.test.renderOnce());
+  await page.screenshot({ path: join(OUT, 'pov.png') });
+  ok(!errors.length, `pov: no page or GPU errors (${secs()})${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
+  if (allowed.length) console.log(`(${allowed.length} allowed warnings)`);
+  await page.close();
+}
 
 // The start menu's warm-up, then Start: what Start builds that the menu didn't.
 async function warmStage(browser, vite, secs) {
@@ -407,6 +518,7 @@ try {
     }
   }
 
+  if (STAGES.includes('pov')) await povStage(browser, vite, secs);
   if (STAGES.includes('warm')) await warmStage(browser, vite, secs);
 } finally {
   await browser.close();

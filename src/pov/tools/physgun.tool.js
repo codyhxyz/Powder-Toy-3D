@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { PHYS as ENGINE } from '../../physics.js';
-import { physgunFrag, physgunComFrag, blastFrag, toolPass, PHYS, PHYS_MODE, BLAST, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { PHYS, PHYS_MODE, BLAST, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { povGpu } from '../gpu.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
@@ -8,9 +9,9 @@ import { toolDt } from './action.js';
 import { gear } from './catalog.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
-// hold left-click to grab what's around the aim point: every frame one pass
+// hold left-click to grab what's around the aim point: every frame one kernel
 // finds the centre of mass of the movable cells near the hold point (eye +
-// aim · distance) and a second gives them a spring velocity that brings it to
+// aim · distance) and an edit gives them a spring velocity that brings it to
 // the hold point, plus the gravity they lose over the frame
 // (shaders/povTools.js PHYS), so the matter gathers into a floating ball that
 // follows the aim. The wheel moves the hold point nearer
@@ -114,18 +115,26 @@ export default {
   ...gear('PHYSGUN'),
   create(env) {
     const model = buildModel(env);
-    const pass = toolPass(physgunFrag, () => ({
-      tCom: { value: null }, uHold: { value: new THREE.Vector3() }, uCarry: { value: new THREE.Vector3() },
-      uSteps: { value: 0 }, uGravity: { value: 0 }, uMode: { value: PHYS_MODE.HOLD }, uFling: { value: new THREE.Vector3() },
-    }));
-    const comPass = toolPass(physgunComFrag, () => ({ uHold: { value: new THREE.Vector3() } }));
-    const blastPass = toolPass(blastFrag, () => ({
-      uMuzzle: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() }, uReach: { value: 0 },
-      uPulse: { value: new THREE.Vector3() }, uPulseP: { value: 0 },
-    }));
-    const comTarget = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
-    });
+    // the held matter's centre of mass (xyz) and cells (w): written by the COM
+    // kernel, read by the hold's edit in the same pass (GPU to GPU), on the
+    // device of the simulation it was made for
+    let com = null;
+    const comBuffer = (gpu) => {
+      if (com?.gpu !== gpu) {
+        dropCom();
+        com = { gpu, buffer: gpu.createBuffer({ label: 'physgun com', size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }) };
+      }
+      return com.buffer;
+    };
+    // (once what is recorded with it has run: the open frame goes out first)
+    function dropCom() {
+      if (!com) return;
+      const { gpu, buffer } = com;
+      com = null;
+      if (gpu.failure || gpu.lost) { buffer.destroy(); return; }
+      gpu.flush('physgun gone');
+      gpu.queue.onSubmittedWorkDone().then(() => buffer.destroy(), () => buffer.destroy());
+    }
     const prevHold = new THREE.Vector3(), carry = new THREE.Vector3();
     let time = 0, holding = false, dist = PHYS.HOLD_MIN, blastWait = 0, flash = 0;
     const hold = new THREE.Vector3();   // where the beam holds the ball: chases `aimPt`
@@ -152,26 +161,17 @@ export default {
 
     function run(ctx, mode) {
       const sim = ctx.sim ?? env.getSim();
-      const com = comPass(sim);
-      com.uniforms.tA.value = sim.stateA;
-      com.uniforms.uHold.value.copy(hold);
-      sim.run(com, comTarget);
-      const mat = pass(sim);
-      const u = mat.uniforms;
-      u.tCom.value = comTarget.texture;
-      u.uHold.value.copy(hold);
+      const pov = povGpu(sim), buffer = comBuffer(sim.gpu);
+      if (!pov.com(buffer, hold.toArray())) return;   // (its kernels are still building: B5)
       // the hold point's velocity, so the ball keeps up as the aim moves
       carry.subVectors(hold, prevHold).divideScalar(Math.max(ctx.stepsPerFrame, 1)).clampLength(0, ENGINE.V_MAX);
-      u.uCarry.value.copy(carry);
-      u.uSteps.value = ctx.stepsPerFrame;
-      u.uGravity.value = sim.gravity;
-      u.uMode.value = mode;
-      u.uFling.value.copy(ctx.dir).normalize().multiplyScalar(PHYS.FLING);
       // it changes only cells whose centres are within the beam's reach of the
-      // hold point (shaders/povTools.js), so only those are rebuilt and woken (Simulation.touch)
+      // hold point (shaders/povTools.js): one edit over them
       const at = hold.toArray();
-      sim.touchCentres(at.map((x) => x - PHYS.RADIUS), at.map((x) => x + PHYS.RADIUS));
-      sim.pass(mat);
+      pov.edit('povPhysgun', sim.touchCentres(at.map((x) => x - PHYS.RADIUS), at.map((x) => x + PHYS.RADIUS)), {
+        hold, carry, steps: ctx.stepsPerFrame, gravity: sim.gravity, mode,
+        fling: ctx.dir.clone().normalize().multiplyScalar(PHYS.FLING),
+      }, { bind: [{ buffer }] });
     }
 
     // One shove along the aim, stopping just past the aimed face, and a
@@ -181,21 +181,17 @@ export default {
       const sim = ctx.sim ?? env.getSim();
       const face = ctx.aim?.valid && ctx.aim.dist + BLAST.PULSE_DEPTH <= BLAST.RANGE ? ctx.aim.dist : Infinity;
       const reach = Math.min(face + BLAST.BITE, BLAST.RANGE);
-      const mat = blastPass(sim);
-      const u = mat.uniforms;
-      u.uMuzzle.value.copy(ctx.eye);
-      u.uDir.value.copy(ctx.dir).normalize();
-      u.uReach.value = reach;
+      const dir = ctx.dir.clone().normalize();
       const pulse = Number.isFinite(face);
-      u.uPulse.value.copy(ctx.eye).addScaledVector(u.uDir.value, pulse ? face + BLAST.PULSE_DEPTH : 0);
-      u.uPulseP.value = pulse ? BLAST.PULSE_P : 0;
-      hold.copy(ctx.eye).addScaledVector(u.uDir.value, reach);
+      hold.copy(ctx.eye).addScaledVector(dir, reach);
       // the cone's bounding box: both ends, padded by the radius at the far end
       // (and the pulse's, which sits inside the cone's reach)
       const pad = Math.max(BLAST.RADIUS0 + BLAST.SPREAD * reach, BLAST.PULSE_RADIUS);
       const a = ctx.eye.toArray(), b = hold.toArray();
-      sim.touchCentres(a.map((x, i) => Math.min(x, b[i]) - pad), a.map((x, i) => Math.max(x, b[i]) + pad));
-      sim.pass(mat);
+      povGpu(sim).edit('povBlast', sim.touchCentres(a.map((x, i) => Math.min(x, b[i]) - pad), a.map((x, i) => Math.max(x, b[i]) + pad)), {
+        muzzle: ctx.eye, dir, reach,
+        pulse: ctx.eye.clone().addScaledVector(dir, pulse ? face + BLAST.PULSE_DEPTH : 0), pulseP: pulse ? BLAST.PULSE_P : 0,
+      });
       model.rig.hit(HIT.FLING);
       povEvents.emit('tool:action', { tool: 'physgun', action: 'blast', point: hold.clone() });
       blastWait = BLAST.COOLDOWN;
@@ -287,12 +283,12 @@ export default {
         for (const v of [hold, prevHold, aimPt, prevEye]) { v.x -= dx; v.z -= dz; }
       },
       get hold() { return holding ? hold.clone() : null; },   // for checks
-      readCom() {   // for checks: [com x, y, z, cells] of the last frame (a synchronous readback)
-        const buf = new Float32Array(4);
-        env.renderer.readRenderTargetPixels(comTarget, 0, 0, 1, 1, buf);
-        return [...buf];
+      // for checks: [com x, y, z, cells] of the last hold, as it is at this call (docs/webgpu.md W6: asynchronous)
+      async readCom() {
+        if (!com) return [0, 0, 0, 0];
+        return [...new Float32Array(await com.gpu.readback.buffer(com.buffer, 0, 16))];
       },
-      dispose() { pass.dispose(); comPass.dispose(); blastPass.dispose(); comTarget.dispose(); model.dispose(); },
+      dispose() { dropCom(); model.dispose(); },
     };
   },
 };

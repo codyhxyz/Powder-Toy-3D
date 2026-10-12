@@ -1,4 +1,8 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
+import {
+  attribute, varying, uniform, code, wgslFn, Fn, Discard, vec2, vec3, vec4, float, length, normalize, cross, abs, min, max, mix,
+  smoothstep, select, positionGeometry, modelWorldMatrix, cameraViewMatrix, cameraProjectionMatrix, cameraPosition,
+} from 'three/tsl';
 import { lookOf } from './look.js';
 
 // How spells look in the air: three instanced draws, whatever is cast.
@@ -58,7 +62,7 @@ const SHOCK_GAIN = 2.5;                 // its rim's brightness at birth
 const SHELL_DETAIL = 3;                 // icosphere subdivisions
 // styles (the shader's iStyle)
 const STYLE = Object.freeze({ glow: 0, pull: 1, push: 2, void: 3, cloud: 4, shock: 5 });
-// shader constants (GLSL defines)
+// shader constants (written into the WGSL)
 const SHELL_RIM_GAIN = 2.2;             // HDR: the rim's colour × this
 const SHELL_FILL = 0.35;                // a glow shell's face-on fill
 const SHELL_RINGS = 3;                  // rings across a pull/push shell
@@ -88,15 +92,158 @@ const BEAM_TEXTURE = 0.5;               // texture cells per cell of beam
 const BEAM_TEXTURE_DEPTH = 0.45;        // share of brightness the texture takes and gives
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
-const f = (x) => x.toFixed(4);          // a number as a GLSL float
+const f = (x) => x.toFixed(4);          // a number as a WGSL float
 
-const NOISE_GLSL = /* glsl */ `
-  float hash3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
-  float vnoise(vec3 x) {
-    vec3 i = floor(x), u = fract(x); u = u * u * (3.0 - 2.0 * u);
-    return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), u.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), u.x), u.y),
-               mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), u.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), u.x), u.y), u.z);
-  }`;
+// The three draws' materials are TSL node materials (docs/webgpu.md F8): each
+// places its instances in the vertex stage from per-instance attributes, as
+// the GLSL did, and shades them in a WGSL function of the GLSL's arithmetic.
+// They take no light and no fog, and write linear HDR into the scene target.
+
+// the shells' and beams' value noise (its own: kept as drawn)
+const NOISE = code(/* wgsl */ `
+fn wandHash3(p0: vec3f) -> f32 { var p = fract(p0 * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+fn wandNoise(x: vec3f) -> f32 {
+  let i = floor(x);
+  var u = fract(x);
+  u = u * u * (3.0 - 2.0 * u);
+  return mix(mix(mix(wandHash3(i), wandHash3(i + vec3f(1.0, 0.0, 0.0)), u.x), mix(wandHash3(i + vec3f(0.0, 1.0, 0.0)), wandHash3(i + vec3f(1.0, 1.0, 0.0)), u.x), u.y),
+             mix(mix(wandHash3(i + vec3f(0.0, 0.0, 1.0)), wandHash3(i + vec3f(1.0, 0.0, 1.0)), u.x), mix(wandHash3(i + vec3f(0.0, 1.0, 1.0)), wandHash3(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+}`, [], 'wgsl');
+
+// A core's light at q (halo radii from its segment's middle, x along the
+// streak; h the segment's half-length in them), or w < 0 outside its halo.
+const coreColor = wgslFn(/* wgsl */ `
+fn wandCore(q: vec2f, h: f32, color: vec3f, alpha: f32) -> vec4f {
+  let dx = max(abs(q.x) - h, 0.0);
+  let r = length(vec2f(dx, q.y));
+  if (r >= 1.0) { return vec4f(0.0, 0.0, 0.0, -1.0); }
+  let halo = (1.0 - r) * (1.0 - r);
+  let core = exp(-r * r * ${f(CORE_SHARP)});
+  var tail = 1.0;   // brightest at the head
+  if (h > 0.0) { tail = smoothstep(-h - 1.0, h, q.x); }
+  let rgb = color * halo * ${f(CORE_GAIN)} + vec3f(core * ${f(CORE_WHITE)});
+  return vec4f(rgb * alpha * mix(0.35, 1.0, tail), 1.0);
+}`);
+
+// A shell's premultiplied colour at its unit-sphere point pDir (world w, the
+// eye at eye), by its style.
+const shellColor = wgslFn(/* wgsl */ `
+fn wandShell(pDir: vec3f, w: vec3f, eye: vec3f, color: vec3f, styleF: f32, alpha: f32, seed: f32, time: f32) -> vec4f {
+  let V = normalize(eye - w);
+  let face = abs(dot(pDir, V));
+  let rim = 1.0 - face;
+  let t = time + seed;
+  let n = wandNoise(pDir * ${f(NOISE_SCALE)} + vec3f(0.0, t * ${f(NOISE_SPEED)}, seed));
+  let style = i32(styleF + 0.5);
+  var rgb = vec3f(0.0);
+  var a = 0.0;
+  if (style == ${STYLE.glow}) {
+    rgb = color * (rim * rim * ${f(SHELL_RIM_GAIN)} + pow(face, 3.0) * ${f(SHELL_FILL)} * (0.6 + 0.8 * n));
+  } else if (style == ${STYLE.pull} || style == ${STYLE.push}) {
+    var dir = -1.0;   // pull: rings run in toward the middle; push: out
+    if (style == ${STYLE.pull}) { dir = 1.0; }
+    var ring = 0.5 + 0.5 * sin(6.2831853 * (rim * ${f(SHELL_RINGS)} + dir * t * ${f(SHELL_RING_SPEED)}));
+    ring = smoothstep(0.6, 1.0, ring) * (0.5 + n);
+    rgb = color * (rim * rim * ${f(SHELL_RIM_GAIN)} * 0.6 + ring * ${f(SHELL_RING_GAIN)} * (0.25 + rim));
+  } else if (style == ${STYLE.void}) {
+    // a black heart, an accretion band swirling round its edge and a bright rim
+    a = smoothstep(0.15, 0.7, face) * ${f(VOID_ALPHA)};
+    let ang = t * ${f(VOID_SWIRL)};
+    let q = vec3f(pDir.x * cos(ang) - pDir.z * sin(ang), pDir.y, pDir.x * sin(ang) + pDir.z * cos(ang));
+    let swirl = wandNoise(q * ${f(NOISE_SCALE * 2)} + vec3f(seed));
+    let band = smoothstep(0.35, 0.65, rim) * (1.0 - smoothstep(0.85, 1.0, rim));
+    rgb = color * (pow(rim, 3.0) * ${f(SHELL_RIM_GAIN * 2)} + band * swirl * ${f(SHELL_RING_GAIN)});
+  } else if (style == ${STYLE.cloud}) {
+    let m = n + 0.5 * wandNoise(pDir * ${f(NOISE_SCALE * 2)} - vec3f(t * ${f(NOISE_SPEED)}));
+    let dens = pow(face, 1.5) * smoothstep(0.45, 1.1, m);
+    a = dens * ${f(CLOUD_ALPHA)};
+    rgb = color * ${f(CLOUD_LIGHT)} * a;
+  } else {
+    rgb = color * pow(rim, 3.0) * ${f(SHOCK_GAIN)} * (0.7 + 0.6 * n);
+  }
+  return vec4f(rgb * alpha, a * alpha);
+}`, [NOISE]);
+
+// A beam's light where its surface (normal n, world w) faces the eye, along
+// cells from the wand's tip.
+const beamColor = wgslFn(/* wgsl */ `
+fn wandBeam(n: vec3f, w: vec3f, eye: vec3f, along: f32, color: vec3f, alpha: f32, seed: f32, time: f32) -> vec4f {
+  let face = abs(dot(normalize(n), normalize(eye - w)));
+  let tex = wandNoise(vec3f((along - time * ${f(BEAM_SCROLL)}) * ${f(BEAM_TEXTURE)}, seed, face * 2.0));
+  let shade = 1.0 + ${f(BEAM_TEXTURE_DEPTH)} * (2.0 * tex - 1.0);
+  let rgb = color * pow(face, ${f(BEAM_SOFT)}) * ${f(BEAM_GAIN)} + vec3f(pow(face, ${f(BEAM_CORE_SOFT)}) * ${f(BEAM_CORE_WHITE)});
+  return vec4f(rgb * shade * alpha, 1.0);
+}`, [NOISE]);
+
+// a material of these draws: unlit, unfogged, over the scene without depth writes
+function drawMaterial(name, blend) {
+  const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, ...blend });
+  m.lights = false;
+  m.fog = false;
+  m.name = name;
+  return m;
+}
+const ADDITIVE = { blending: THREE.AdditiveBlending };
+// premultiplied (rgb adds light, alpha darkens what's behind)
+const PREMULTIPLIED = {
+  blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+};
+const inst = (name, type) => attribute(name, type);
+
+// the cores: a quad, x along the streak, y across, facing the eye
+function coreMaterial() {
+  const mat = drawMaterial('wand cores', ADDITIVE);
+  const size = inst('iSize', 'float');
+  const c = cameraViewMatrix.mul(vec4(inst('iCenter', 'vec3'), 1));
+  const d = cameraViewMatrix.mul(vec4(inst('iVel', 'vec3'), 0)).xy;   // mat3(viewMatrix) · velocity
+  const dl = length(d);
+  const ax = select(dl.greaterThan(1e-5), d.div(dl), vec2(1, 0)), px = vec2(ax.y.negate(), ax.x);
+  const halo = size.mul(CORE_HALO);
+  const h = min(dl.mul(STREAK_S), size.mul(STREAK_MAX)).mul(0.5);
+  // the quad covers the segment from the tail (−streak) to the head, plus the halo round it
+  const xy = c.xy.add(ax.mul(h.negate().add(positionGeometry.x.mul(h.add(halo))))).add(px.mul(positionGeometry.y.mul(halo)));
+  mat.vertexNode = cameraProjectionMatrix.mul(vec4(xy, c.z, c.w));
+  const q = varying(vec2(positionGeometry.x.mul(h.add(halo)), positionGeometry.y.mul(halo)).div(halo));   // in halo radii, from the segment's middle
+  const hq = varying(h.div(halo));
+  mat.colorNode = Fn(() => {
+    const k = coreColor({ q, h: hq, color: inst('iColor', 'vec3'), alpha: inst('iAlpha', 'float') }).toVar();
+    Discard(k.w.lessThan(0));
+    return k.xyz;
+  })();
+  return mat;
+}
+
+// the shells: spheres round each centre, radius iRadius
+function shellMaterial(time) {
+  const mat = drawMaterial('wand shells', PREMULTIPLIED);
+  const w = modelWorldMatrix.mul(vec4(inst('iCenter', 'vec3').add(positionGeometry.mul(inst('iRadius', 'float'))), 1));
+  mat.vertexNode = cameraProjectionMatrix.mul(cameraViewMatrix.mul(w));
+  mat.colorNode = shellColor({
+    pDir: varying(normalize(positionGeometry)), w: varying(w.xyz), eye: cameraPosition,
+    color: inst('iColor', 'vec3'), styleF: inst('iStyle', 'float'), alpha: inst('iAlpha', 'float'), seed: inst('iSeed', 'float'), time,
+  });
+  return mat;
+}
+
+// the beams: an open cylinder from iFrom to iTo, tapered at the tip
+function beamMaterial(time, scaleU) {
+  const mat = drawMaterial('wand beams', { ...ADDITIVE, side: THREE.DoubleSide });
+  const from = inst('iFrom', 'vec3'), axis = inst('iTo', 'vec3').sub(from);
+  const len = max(length(axis), 1e-5);
+  const dir = axis.div(len);
+  const up = select(abs(dir.y).lessThan(0.99), vec3(0, 1, 0), vec3(1, 0, 0));
+  const bx = normalize(cross(up, dir)), bz = cross(dir, bx);
+  const taper = mix(float(BEAM_TIP_SHARE), float(1), smoothstep(0, min(scaleU.mul(BEAM_TAPER_CELLS).div(len), 0.5), positionGeometry.y));
+  const n = bx.mul(positionGeometry.x).add(bz.mul(positionGeometry.z));
+  const w = from.add(axis.mul(positionGeometry.y)).add(n.mul(inst('iRadius', 'float')).mul(taper));
+  mat.vertexNode = cameraProjectionMatrix.mul(cameraViewMatrix.mul(vec4(w, 1)));
+  mat.colorNode = beamColor({
+    n: varying(n), w: varying(w), eye: cameraPosition, along: varying(positionGeometry.y.mul(len).div(scaleU)),
+    color: inst('iColor', 'vec3'), alpha: inst('iAlpha', 'float'), seed: inst('iSeed', 'float'), time,
+  });
+  return mat;
+}
 
 // an instanced geometry over `base` with per-instance float attributes { name: size }
 function instanced(base, max, layout) {
@@ -119,144 +266,35 @@ function drawMesh(name, geometry, material) {
 }
 
 export function createWandVisuals(env) {
-  const time = { value: 0 };
-  const scaleU = { value: 1 };
+  const time = uniform(0);
+  const scaleU = uniform(1);
 
   // ---- cores: a quad, x along the streak, y across
   const coreBase = new THREE.PlaneGeometry(2, 2);
   const cores = instanced(coreBase, CORE_MAX, { iCenter: 3, iVel: 3, iColor: 3, iSize: 1, iAlpha: 1 });
-  const coreMat = new THREE.ShaderMaterial({
-    uniforms: {},
-    vertexShader: /* glsl */ `
-      attribute vec3 iCenter, iVel, iColor;
-      attribute float iSize, iAlpha;
-      varying vec2 vQ; varying float vH; varying vec3 vColor; varying float vAlpha;
-      void main() {
-        vec4 c = viewMatrix * vec4(iCenter, 1.0);
-        vec2 d = (mat3(viewMatrix) * iVel).xy;
-        float dl = length(d);
-        vec2 ax = dl > 1e-5 ? d / dl : vec2(1.0, 0.0), px = vec2(-ax.y, ax.x);
-        float halo = iSize * ${f(CORE_HALO)};
-        float streak = min(dl * ${f(STREAK_S)}, iSize * ${f(STREAK_MAX)});
-        float h = streak * 0.5;
-        // the quad covers the segment from the tail (−streak) to the head, plus the halo round it
-        c.xy += ax * (-h + position.x * (h + halo)) + px * position.y * halo;
-        vQ = vec2(position.x * (h + halo), position.y * halo) / halo;   // in halo radii, from the segment's middle
-        vH = h / halo;
-        vColor = iColor; vAlpha = iAlpha;
-        gl_Position = projectionMatrix * c;
-      }`,
-    fragmentShader: /* glsl */ `
-      varying vec2 vQ; varying float vH; varying vec3 vColor; varying float vAlpha;
-      void main() {
-        float dx = max(abs(vQ.x) - vH, 0.0);
-        float r = length(vec2(dx, vQ.y));
-        if (r >= 1.0) discard;
-        float halo = (1.0 - r) * (1.0 - r);
-        float core = exp(-r * r * ${f(CORE_SHARP)});
-        float tail = vH > 0.0 ? smoothstep(-vH - 1.0, vH, vQ.x) : 1.0;   // brightest at the head
-        vec3 rgb = vColor * halo * ${f(CORE_GAIN)} + vec3(core * ${f(CORE_WHITE)});
-        gl_FragColor = vec4(rgb * vAlpha * mix(0.35, 1.0, tail), 1.0);
-      }`,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  });
-  const coreMesh = drawMesh('wand-cores', cores.g, coreMat);
+  const coreMesh = drawMesh('wand-cores', cores.g, coreMaterial());
 
   // ---- shells: premultiplied (rgb adds light, alpha darkens what's behind)
   const shellBase = new THREE.IcosahedronGeometry(1, SHELL_DETAIL);
   const shells = instanced(shellBase, SHELL_MAX, { iCenter: 3, iColor: 3, iRadius: 1, iStyle: 1, iAlpha: 1, iSeed: 1 });
-  const shellMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: time },
-    vertexShader: /* glsl */ `
-      attribute vec3 iCenter, iColor;
-      attribute float iRadius, iStyle, iAlpha, iSeed;
-      varying vec3 vW, vP, vColor; varying float vStyle, vAlpha, vSeed;
-      void main() {
-        vP = normalize(position);
-        vec4 w = modelMatrix * vec4(iCenter + position * iRadius, 1.0);
-        vW = w.xyz; vColor = iColor; vStyle = iStyle; vAlpha = iAlpha; vSeed = iSeed;
-        gl_Position = projectionMatrix * viewMatrix * w;
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform float uTime;
-      varying vec3 vW, vP, vColor; varying float vStyle, vAlpha, vSeed;
-      ${NOISE_GLSL}
-      void main() {
-        vec3 V = normalize(cameraPosition - vW);
-        float face = abs(dot(vP, V)), rim = 1.0 - face;
-        float t = uTime + vSeed;
-        float n = vnoise(vP * ${f(NOISE_SCALE)} + vec3(0.0, t * ${f(NOISE_SPEED)}, vSeed));
-        int style = int(vStyle + 0.5);
-        vec3 rgb = vec3(0.0); float a = 0.0;
-        if (style == ${STYLE.glow}) {
-          rgb = vColor * (rim * rim * ${f(SHELL_RIM_GAIN)} + pow(face, 3.0) * ${f(SHELL_FILL)} * (0.6 + 0.8 * n));
-        } else if (style == ${STYLE.pull} || style == ${STYLE.push}) {
-          float dir = style == ${STYLE.pull} ? 1.0 : -1.0;   // pull: rings run in toward the middle; push: out
-          float ring = 0.5 + 0.5 * sin(6.2831853 * (rim * ${f(SHELL_RINGS)} + dir * t * ${f(SHELL_RING_SPEED)}));
-          ring = smoothstep(0.6, 1.0, ring) * (0.5 + n);
-          rgb = vColor * (rim * rim * ${f(SHELL_RIM_GAIN)} * 0.6 + ring * ${f(SHELL_RING_GAIN)} * (0.25 + rim));
-        } else if (style == ${STYLE.void}) {
-          // a black heart, an accretion band swirling round its edge and a bright rim
-          a = smoothstep(0.15, 0.7, face) * ${f(VOID_ALPHA)};
-          float ang = t * ${f(VOID_SWIRL)};
-          vec3 q = vec3(vP.x * cos(ang) - vP.z * sin(ang), vP.y, vP.x * sin(ang) + vP.z * cos(ang));
-          float swirl = vnoise(q * ${f(NOISE_SCALE * 2)} + vec3(vSeed));
-          float band = smoothstep(0.35, 0.65, rim) * (1.0 - smoothstep(0.85, 1.0, rim));
-          rgb = vColor * (pow(rim, 3.0) * ${f(SHELL_RIM_GAIN * 2)} + band * swirl * ${f(SHELL_RING_GAIN)});
-        } else if (style == ${STYLE.cloud}) {
-          float m = n + 0.5 * vnoise(vP * ${f(NOISE_SCALE * 2)} - vec3(t * ${f(NOISE_SPEED)}));
-          float dens = pow(face, 1.5) * smoothstep(0.45, 1.1, m);
-          a = dens * ${f(CLOUD_ALPHA)};
-          rgb = vColor * ${f(CLOUD_LIGHT)} * a;
-        } else {
-          rgb = vColor * pow(rim, 3.0) * ${f(SHOCK_GAIN)} * (0.7 + 0.6 * n);
-        }
-        gl_FragColor = vec4(rgb * vAlpha, a * vAlpha);
-      }`,
-    transparent: true, depthWrite: false,
-    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
-    blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
-  });
-  const shellMesh = drawMesh('wand-shells', shells.g, shellMat);
+  const shellMesh = drawMesh('wand-shells', shells.g, shellMaterial(time));
 
   // ---- beams: an open cylinder, y 0 → 1 from the tip to the end
   const beamBase = new THREE.CylinderGeometry(1, 1, 1, BEAM_SIDES, 1, true).translate(0, 0.5, 0);
   const beams = instanced(beamBase, BEAM_MAX, { iFrom: 3, iTo: 3, iColor: 3, iRadius: 1, iAlpha: 1, iSeed: 1 });
-  const beamMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: time, uScale: scaleU },
-    vertexShader: /* glsl */ `
-      uniform float uScale;
-      attribute vec3 iFrom, iTo, iColor;
-      attribute float iRadius, iAlpha, iSeed;
-      varying vec3 vN, vW, vColor; varying float vAlong, vAlpha, vSeed;
-      void main() {
-        vec3 axis = iTo - iFrom;
-        float len = max(length(axis), 1e-5);
-        vec3 dir = axis / len;
-        vec3 up = abs(dir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        vec3 bx = normalize(cross(up, dir)), bz = cross(dir, bx);
-        float taper = mix(${f(BEAM_TIP_SHARE)}, 1.0, smoothstep(0.0, min(${f(BEAM_TAPER_CELLS)} * uScale / len, 0.5), position.y));
-        vN = bx * position.x + bz * position.z;
-        vec3 w = iFrom + axis * position.y + vN * iRadius * taper;
-        vW = w; vAlong = position.y * len / uScale;
-        vColor = iColor; vAlpha = iAlpha; vSeed = iSeed;
-        gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform float uTime;
-      varying vec3 vN, vW, vColor; varying float vAlong, vAlpha, vSeed;
-      ${NOISE_GLSL}
-      void main() {
-        float face = abs(dot(normalize(vN), normalize(cameraPosition - vW)));
-        float tex = vnoise(vec3((vAlong - uTime * ${f(BEAM_SCROLL)}) * ${f(BEAM_TEXTURE)}, vSeed, face * 2.0));
-        float shade = 1.0 + ${f(BEAM_TEXTURE_DEPTH)} * (2.0 * tex - 1.0);
-        vec3 rgb = vColor * pow(face, ${f(BEAM_SOFT)}) * ${f(BEAM_GAIN)} + vec3(pow(face, ${f(BEAM_CORE_SOFT)}) * ${f(BEAM_CORE_WHITE)});
-        gl_FragColor = vec4(rgb * shade * vAlpha, 1.0);
-      }`,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-  });
-  const beamMesh = drawMesh('wand-beams', beams.g, beamMat);
-  env.scene?.add(coreMesh, shellMesh, beamMesh);
+  const beamMesh = drawMesh('wand-beams', beams.g, beamMaterial(time, scaleU));
+  // Three builds a mesh's pipelines at its first draw unless they were
+  // compiled first (docs/webgpu.md B5, F8): the draws join the scene once
+  // theirs are built (gpu.three.prepare), off the frame. Without a device
+  // (the node checks) they join it at once.
+  let disposed = false;
+  const prepare = env.getSim?.()?.gpu?.three?.prepare;
+  const join = () => { if (!disposed) env.scene?.add(coreMesh, shellMesh, beamMesh); };
+  if (prepare && env.scene) {
+    const group = new THREE.Group();
+    group.add(coreMesh, shellMesh, beamMesh);
+    prepare(group).then(join, (err) => console.error('Wand visuals failed to compile', err));
+  } else join();
 
   const pulses = [];
   const vP = new THREE.Vector3(), vQ = new THREE.Vector3();
@@ -369,6 +407,7 @@ export function createWandVisuals(env) {
         capacity: CORE_MAX + SHELL_MAX + BEAM_MAX, drawCalls: 3 };
     },
     dispose() {
+      disposed = true;
       for (const mesh of [coreMesh, shellMesh, beamMesh]) { mesh.removeFromParent(); mesh.geometry.dispose(); mesh.material.dispose(); }
       coreBase.dispose(); shellBase.dispose(); beamBase.dispose();
       pulses.length = 0;

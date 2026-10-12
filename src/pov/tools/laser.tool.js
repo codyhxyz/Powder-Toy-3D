@@ -1,7 +1,6 @@
 import * as THREE from 'three';
-import { quadVert, stateUniforms } from '../../shaders/common.js';
-import { laserFrag, laserReachFrag, LASER } from '../../shaders/povBore.js';
-import { toolPass } from '../../shaders/povTools.js';
+import { LASER } from '../../shaders/povBore.js';
+import { povGpu } from '../gpu.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
@@ -31,9 +30,13 @@ import { bodyExit } from './transfer.js';
 // punch (Halo 3's Spartan Laser never throws your aim), and the shake only rolls
 // the view, which turns it about the crosshair.
 //
-// The beam's reach comes back from one small pass (laserReachFrag) read at
-// once, a short GPU wait once a shot, before the beam itself (laserFrag) runs
-// on the same state.
+// The beam's reach is worked out on the GPU (laserReachFrag), which then runs
+// the beam itself (laserFrag) over the cells it reaches, dispatched from what
+// the reach wrote (docs/webgpu.md G2): nothing waits for the GPU. The reach
+// comes back to the CPU 1–3 frames later, and the shot's effects that need it
+// (the bodies in the beam, the beam's look, lastShot) happen on the first
+// frame after it lands; the beam fades over a third of a second, so the
+// frames between don't show.
 //
 // Events: laser:charge { amount 0..1, dt } every frame it charges (audio.js's
 // rising whine); tool:action 'laser' 'charge' / 'cancel' / 'fire'; gun:fire
@@ -50,7 +53,6 @@ const TREMBLE = 0.035;         // cells the gun shudders in the hands at full ch
 const GLOW_IDLE = 0.15;        // the charge strip's brightness when idle, as a share of full
 const GLOW_FULL = 4;           // ...and at full charge (HDR: it blooms)
 const GLOW_FLICKER = 0.15;     // share the strip's brightness flickers by while charging
-const RGBA = 4;
 
 // viewmodel, in cells (camera space): shouldered low at the hip, long and heavy, as Halo holds it
 const HELD_POS = [0.55, -0.62, -1.9];
@@ -71,71 +73,53 @@ export default {
     let glow = null, glowBase = null;
     if (strips.length) { glow = strips[0].material.clone(); for (const o of strips) o.material = glow; glowBase = glow.color.clone(); }
     const restPos = mesh.obj.position.clone();
-    const beam = toolPass(laserFrag, () => ({
-      uFrom: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
-      uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
-    }));
-    let reachMat = null, reachSim = -1;
-    const reachTarget = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
-      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
-    });
-    const reachBuf = new Float32Array(RGBA);
     let charge = 0, standby = 0, armed = true, lastShot = null;
+    // shots fired whose reach hasn't been dealt with: in flight (reach null) or landed
+    const shots = [];
 
     function setGlow(share) {
       if (glow) glow.color.copy(glowBase).multiplyScalar(share);
     }
 
-    function reachFor(sim) {
-      if (sim.id !== reachSim) {
-        reachMat?.dispose();
-        reachMat = new THREE.RawShaderMaterial({
-          glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader: laserReachFrag(sim.g),
-          uniforms: { ...stateUniforms(), uFrom: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } },
-          depthTest: false, depthWrite: false,
-        });
-        reachSim = sim.id;
-      }
-      return reachMat;
-    }
-
+    // The shot: the beam on the GPU now, its reach-dependent effects once the reach lands (land()).
+    // False when its kernels are still building (B5): it stays charged and fires on a later frame.
     function fire(ctx) {
       const sim = ctx.sim ?? env.getSim();
       const dir = ctx.dir.clone().normalize();
       const feet = ctx.player?.pos;
       const from = ctx.eye.clone().addScaledVector(dir, feet ? bodyExit(ctx.eye, dir, feet, BODY_CLEARANCE) : 0);
-      // how far it gets, on the state as it is now
-      const rm = reachFor(sim), ru = rm.uniforms;
-      ru.tA.value = sim.stateA; ru.tB.value = sim.stateB; ru.tF.value = sim.stateF;
-      ru.uFrom.value.copy(from); ru.uDir.value.copy(dir);
-      sim.run(rm, reachTarget);
-      env.renderer.readRenderTargetPixels(reachTarget, 0, 0, 1, 1, reachBuf);
-      const reach = Math.min(Math.max(reachBuf[0], 0), LASER.LENGTH), stopId = Math.round(reachBuf[1]);
-      // the beam
-      const mat = beam(sim), u = mat.uniforms;
-      u.uFrom.value.copy(from); u.uDir.value.copy(dir);
-      const end = from.clone().addScaledVector(dir, reach);
-      const lo = from.clone().min(end).subScalar(LASER.RIM_RADIUS + 1).floor();
-      const hi = from.clone().max(end).addScalar(LASER.RIM_RADIUS + 1).floor();
-      u.uLo.value.copy(lo); u.uHi.value.copy(hi);
-      sim.touchCentres(lo.toArray(), hi.toArray());
-      sim.pass(mat);
-      // every body in it
-      const hits = beamTargets(from, dir, reach, LASER.RIM_RADIUS, povEvents.actor?.id ?? PLAYER);
-      for (const h of hits) {
-        h.target.hurt(LASER.DAMAGE, 'Lasered', dir.clone());
-        povEvents.emit('impact', { source: 'laser', point: h.point.clone(), normal: dir.clone().negate(), id: -1, energy: LASER.ENERGY, broke: null, body: true });
-      }
-      lastShot = { from: from.clone(), dir: dir.clone(), reach, stopId, end: end.clone(), hits: hits.map((h) => h.target.id) };
+      const reach = povGpu(sim).laser(from.toArray(), dir.toArray());
+      if (!reach) return false;
       rig.hit(HIT.LASER);
       muzzle.updateWorldMatrix(true, false);
       const muzzleWorld = hand.visible ? muzzle.getWorldPosition(new THREE.Vector3()) : null;
-      const toWorld = (g) => g.clone().multiplyScalar(env.getScale()).add(env.getVolume().position);
+      const shot = { from, dir, muzzleWorld, actor: povEvents.actor, simId: sim.id, reach: null, stopId: -1 };
+      shots.push(shot);
+      reach.then((r) => { shot.reach = Math.min(Math.max(r.reach, 0), LASER.LENGTH); shot.stopId = r.stopId; },
+        () => { shots.splice(shots.indexOf(shot), 1); });   // (graphics stopped: the shot is gone with the world)
       povEvents.emit('tool:action', { tool: 'laser', action: 'fire' });
       povEvents.emit('gun:fire', { origin: from.clone(), dir: dir.clone(), muzzleWorld, gun: 'LASER', sound: { voice: 'laserFire', rate: 1, gain: 1.4, thump: 2.5 } });
-      povEvents.emit('laser', { from: muzzleWorld ?? toWorld(from), to: toWorld(end), dir: dir.clone(), radius: LASER.CORE_RADIUS * env.getScale(), hit: reach < LASER.LENGTH });
       povEvents.emit('shake', { trauma: SHAKE });
+      return true;
+    }
+
+    // The landed shots' effects (on a running frame, as the shooter's): every body in the beam, the beam's look, lastShot.
+    function land(sim) {
+      while (shots.length && shots[0].reach !== null) {
+        const { from, dir, reach, stopId, muzzleWorld, actor, simId } = shots.shift();
+        if (sim?.id !== simId) continue;   // a replaced world: its beam is gone with it
+        povEvents.as(actor, () => {
+          const end = from.clone().addScaledVector(dir, reach);
+          const hits = beamTargets(from, dir, reach, LASER.RIM_RADIUS, actor?.id ?? PLAYER);
+          for (const h of hits) {
+            h.target.hurt(LASER.DAMAGE, 'Lasered', dir.clone());
+            povEvents.emit('impact', { source: 'laser', point: h.point.clone(), normal: dir.clone().negate(), id: -1, energy: LASER.ENERGY, broke: null, body: true });
+          }
+          lastShot = { from: from.clone(), dir: dir.clone(), reach, stopId, end: end.clone(), hits: hits.map((h) => h.target.id) };
+          const toWorld = (g) => g.clone().multiplyScalar(env.getScale()).add(env.getVolume().position);
+          povEvents.emit('laser', { from: muzzleWorld ?? toWorld(from), to: toWorld(end), dir: dir.clone(), radius: LASER.CORE_RADIUS * env.getScale(), hit: reach < LASER.LENGTH });
+        });
+      }
     }
 
     // the sighting beam while it charges: from the muzzle to what the crosshair is on
@@ -158,6 +142,7 @@ export default {
       update(ctx) {
         hand.visible = true;
         rig.update(ctx);
+        land(ctx.sim ?? env.getSim());   // (a bot's kit runs only the tool in hand: tick isn't called there)
         const dt = toolDt(ctx);
         standby = Math.max(0, standby - dt);
         if (!ctx.primary) { cancel(); armed = true; }
@@ -166,8 +151,7 @@ export default {
           charge += dt;
           povEvents.emit('laser:charge', { amount: Math.min(1, charge / CHARGE_S), dt });
           aim(ctx, Math.min(1, charge / CHARGE_S));
-          if (charge >= CHARGE_S) {
-            fire(ctx);
+          if (charge >= CHARGE_S && fire(ctx)) {
             charge = 0; standby = REFIRE_S; armed = false;
           }
         }
@@ -180,15 +164,18 @@ export default {
       deselect() { hand.visible = false; cancel(); armed = true; setGlow(GLOW_IDLE); },
       // the charge while charging, the standby after a shot
       status: () => (charge > 0 ? `${Math.floor(100 * charge / CHARGE_S)}%` : standby > 0 ? '…' : null),
-      windowShifted(dx, dz) { if (lastShot) for (const v of [lastShot.from, lastShot.end]) { v.x -= dx; v.z -= dz; } },
+      windowShifted(dx, dz) {
+        if (lastShot) for (const v of [lastShot.from, lastShot.end]) { v.x -= dx; v.z -= dz; }
+        for (const s of shots) { s.from.x -= dx; s.from.z -= dz; }
+      },
+      // a shot's reach lands while another tool is in hand, or the body is out of POV for it
+      tick(ctx) { land(ctx.sim ?? env.getSim()); },
       // for checks
       get charge() { return charge / CHARGE_S; },
       get lastShot() { return lastShot; },
       dispose() {
         cancel();
-        beam.dispose();
-        reachMat?.dispose();
-        reachTarget.dispose();
+        shots.length = 0;
         glow?.dispose();
         mesh.dispose();
         hand.removeFromParent();

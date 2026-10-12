@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { quadVert, stateUniforms } from '../../shaders/common.js';
-import { WAND_COMMANDS, WAND_RAYS, WAND_EFFECTS, wandApplyFrag, wandTraceFrag, wandClearanceFrag } from '../../shaders/wands.js';
+import { WAND_COMMANDS, WAND_RAYS, WAND_EFFECTS } from '../../shaders/wands.js';
+import { povGpu } from '../gpu.js';
 import { ELEMENTS, E } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { gfxUniforms, WAND_LIGHTS } from '../../gfx/uniforms.js';
@@ -9,32 +9,15 @@ const READBACKS = 3;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const finiteVec = (v) => v && [v.x, v.y, v.z].every((x) => Number.isFinite(x) && Math.abs(x) <= 1e6);
 const vector = (v) => new THREE.Vector3(v.x, v.y, v.z);
-const texture = (data, width, height) => {
-  const t = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.FloatType);
-  t.needsUpdate = true;
-  return t;
-};
-const material = (name, fragmentShader, uniforms) => new THREE.RawShaderMaterial({
-  name, glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader,
-  uniforms: { ...stateUniforms(), ...uniforms }, depthTest: false, depthWrite: false, blending: THREE.NoBlending,
-});
-
 // All coordinates are grid cells, velocity cells/s. No inventory ownership.
-export function createWandWorld({ renderer, getSim }) {
+// The world's GPU side is src/pov/gpu.js's: one edit per flush (the command
+// batch, docs/webgpu.md D7), probes into result rings for traces and clearance.
+export function createWandWorld({ getSim }) {
   const commands = [];
-  const commandData = new Float32Array(WAND_COMMANDS * 4 * 4);
-  const commandTex = texture(commandData, WAND_COMMANDS, 4);
-  const segmentData = new Float32Array(WAND_RAYS * 2 * 4);
-  const segmentTex = texture(segmentData, WAND_RAYS, 2);
-  const slots = Array.from({ length: READBACKS }, () => ({
-    busy: false,
-    target: new THREE.WebGLRenderTarget(WAND_RAYS, 3, {
-      type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter, depthBuffer: false, stencilBuffer: false,
-    }),
-  }));
-  let sim = null, simId, mats = null, generation = 0, disposed = false;
-  let context = { dt: 0, stepsPerFrame: 0 }, flushed = false, shiftVersion = 0;
+  const commandData = Array.from({ length: WAND_COMMANDS * 4 }, () => [0, 0, 0, 0]);   // row r of command i at r · WAND_COMMANDS + i
+  const segmentData = Array.from({ length: WAND_RAYS * 2 }, () => [0, 0, 0, 0]);   // from rows, then to rows
+  let sim = null, simId, generation = 0, disposed = false;
+  let context = { dt: 0, stepsPerFrame: 0 }, flushed = false, held = false, shiftVersion = 0;
   const shifted = new THREE.Vector3();
   const stats = {
     queued: 0, rejected: 0, passes: 0, commands: 0, rays: 0, readbacks: 0,
@@ -53,19 +36,9 @@ export function createWandWorld({ renderer, getSim }) {
       generation++;
       commands.length = 0;
       clearLights();
-      if (mats) Object.values(mats).forEach((m) => m.dispose());
-      mats = null; sim = next; simId = next?.id;
+      sim = next; simId = next?.id;
       shifted.set(0, 0, 0);
     }
-    if (!sim) return null;
-    if (!mats) mats = {
-      apply: material('wand-apply', wandApplyFrag(sim.g), {
-        tCommands: { value: commandTex }, uCount: { value: 0 },
-        uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
-      }),
-      trace: material('wand-trace', wandTraceFrag(sim.g), { tSegments: { value: segmentTex } }),
-      clearance: material('wand-clearance', wandClearanceFrag(sim.g), { uFeet: { value: new THREE.Vector3() } }),
-    };
     return sim;
   }
   function reject() { stats.rejected++; return false; }
@@ -102,47 +75,40 @@ export function createWandWorld({ renderer, getSim }) {
     const lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = lo.clone().negate();
     for (let i = 0; i < commands.length; i++) {
       const c = commands[i];
-      commandData.set([...c.center.toArray(), c.radius], i * 4);
-      commandData.set([c.effect, c.power, c.id, c.temperature], (WAND_COMMANDS + i) * 4);
-      commandData.set([...c.velocity.toArray(), c.force], (2 * WAND_COMMANDS + i) * 4);
-      commandData.set([...c.dir.toArray(), 0], (3 * WAND_COMMANDS + i) * 4);
+      commandData[i] = [...c.center.toArray(), c.radius];
+      commandData[WAND_COMMANDS + i] = [c.effect, c.power, c.id, c.temperature];
+      commandData[2 * WAND_COMMANDS + i] = [...c.velocity.toArray(), c.force];
+      commandData[3 * WAND_COMMANDS + i] = [...c.dir.toArray(), 0];
       lo.min(c.center.clone().addScalar(-c.radius)); hi.max(c.center.clone().addScalar(c.radius));
     }
     lo.max(new THREE.Vector3()); hi.min(new THREE.Vector3(s.g.nx, s.g.ny, s.g.nz));
     if (lo.x > hi.x || lo.y > hi.y || lo.z > hi.z) { commands.length = 0; return; }
-    commandTex.needsUpdate = true;
-    const u = mats.apply.uniforms;
-    u.uCount.value = commands.length; u.uLo.value.copy(lo); u.uHi.value.copy(hi);
-    s.touchCentres(lo.toArray(), hi.toArray());
-    const previous = renderer.getRenderTarget();
-    try { s.pass(mats.apply); }
-    finally { renderer.setRenderTarget(previous); }
+    // (the POV kernels still building, B5: the batch waits, kept for the next frame's flush ahead of that frame's)
+    if (!povGpu(s).ready) { held = true; return; }
+    povGpu(s).edit('povWand', s.touchCentres(lo.toArray(), hi.toArray()), { count: commands.length, lo, hi, commands: commandData });
     stats.passes++; stats.totalPasses++;
     stats.commands += commands.length; stats.totalCommands += commands.length;
     stats.touched = { lo: lo.toArray(), hi: hi.toArray() };
     commands.length = 0;
   }
-  // Each busy target is held until its async read completes, even on disposal.
-  // Failed traces reject: unavailable GPU evidence must never mean empty space.
-  // Clearance alone has a fail-closed false result.
-  async function probe(s, mat, width, height, decode, fallback) {
-    const slot = slots.find((x) => !x.busy);
-    if (!slot || stats.readbacks >= READBACKS) {
+  // At most READBACKS answers are in flight; each probe's answer lands in a
+  // ring slot (src/pov/gpu.js). Failed traces reject: unavailable GPU evidence
+  // must never mean empty space. Clearance alone has a fail-closed false result.
+  async function probe(s, name, params, decode, fallback) {
+    if (stats.pending >= READBACKS || stats.readbacks >= READBACKS) {
       if (fallback !== undefined) return fallback;
       throw new Error('Wand trace capacity reached');
     }
     const mine = generation, id = s.id, origin = shifted.clone();
-    slot.busy = true;
+    const read = povGpu(s).probe(name, params);
+    if (!read) {   // (its kernel is still building: B5)
+      if (fallback !== undefined) return fallback;
+      throw new Error('Wand trace unavailable: its kernel is still building');
+    }
     stats.pending++; stats.maxPending = Math.max(stats.maxPending, stats.pending);
-    const buf = new Float32Array(width * height * 4);
-    const previous = renderer.getRenderTarget();
+    stats.readbacks++; stats.totalReadbacks++;
     try {
-      mat.uniforms.tA.value = s.stateA;
-      mat.uniforms.tB.value = s.stateB;
-      s.run(mat, slot.target);
-      renderer.setRenderTarget(previous);
-      stats.readbacks++; stats.totalReadbacks++;
-      await renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, width, height, buf);
+      const buf = new Float32Array(await read);
       if (disposed || generation !== mine || getSim() !== s || s.id !== id) {
         stats.staleResults++;
         if (fallback !== undefined) return fallback;
@@ -154,43 +120,38 @@ export function createWandWorld({ renderer, getSim }) {
       if (fallback !== undefined) return fallback;
       throw error;
     } finally {
-      // Do not restore render state after awaiting: another frame owns it now.
-      if (renderer.getRenderTarget() === slot.target) renderer.setRenderTarget(previous);
-      slot.busy = false; stats.pending--;
-      if (disposed) slot.target.dispose();
+      stats.pending--;
     }
   }
   function trace(segments) {
     if (!Array.isArray(segments) || segments.length > WAND_RAYS) return Promise.reject(new RangeError(`trace accepts at most ${WAND_RAYS} segments`));
     const count = segments.length, s = current();
     if (!count) return Promise.resolve([]);
-    if (!s || stats.readbacks >= READBACKS || slots.every((x) => x.busy))
+    if (!s || stats.readbacks >= READBACKS || stats.pending >= READBACKS)
       return Promise.reject(new Error('Wand trace unavailable'));
     if (segments.some((seg) => !finiteVec(seg?.from) || !finiteVec(seg?.to)))
       return Promise.reject(new TypeError('Wand trace needs finite endpoints'));
-    segmentData.fill(0);
     segments.forEach((seg, i) => {
-      segmentData.set([seg.from.x, seg.from.y, seg.from.z, 1], i * 4);
-      segmentData.set([seg.to.x, seg.to.y, seg.to.z, 0], (WAND_RAYS + i) * 4);
+      segmentData[i] = [seg.from.x, seg.from.y, seg.from.z, 1];
+      segmentData[WAND_RAYS + i] = [seg.to.x, seg.to.y, seg.to.z, 0];
     });
-    segmentTex.needsUpdate = true;
     stats.rays += segments.length; stats.totalRays += segments.length;
-    return probe(s, mats.trace, count, 3, (buf, back) => Array.from({ length: count }, (_, i) => {
+    // row r of ray i is vec4 r · WAND_RAYS + i of the answer (shaders/wands.js)
+    return probe(s, 'povWandTrace', { segments: segmentData, count }, (buf, back) => Array.from({ length: count }, (_, i) => {
       const face = buf[i * 4 + 3];
       if (face < 0) return null;
-      const p = (count + i) * 4;
+      const p = (WAND_RAYS + i) * 4;
       const normal = new THREE.Vector3(); normal.setComponent(Math.floor(face / 2), face % 2 ? -1 : 1);
       return { cell: new THREE.Vector3().fromArray(buf, i * 4).add(back), normal,
         point: new THREE.Vector3().fromArray(buf, p).add(back), fraction: buf[p + 3],
-        id: buf[(2 * count + i) * 4 + 3] };
+        id: buf[(2 * WAND_RAYS + i) * 4 + 3] };
     }));
   }
   function clearance(feet) {
     const s = current();
     if (!s || !finiteVec(feet)) return Promise.resolve(false);
     const version = shiftVersion;
-    mats.clearance.uniforms.uFeet.value.copy(feet);
-    return probe(s, mats.clearance, 1, 1, (buf) => version === shiftVersion && buf[0] > 0.5, false);
+    return probe(s, 'povWandClearance', { feet }, (buf) => version === shiftVersion && buf[0] > 0.5, false);
   }
   function setLights(lights) {
     if (!current()) return;
@@ -210,7 +171,8 @@ export function createWandWorld({ renderer, getSim }) {
     stats, queue, flush, trace, clearance, setLights,
     begin(ctx = {}) {
       current();
-      commands.length = 0; flushed = false;
+      if (!held) commands.length = 0;
+      held = false; flushed = false;
       context = { dt: Number.isFinite(ctx.dt) ? clamp(ctx.dt, 0, 0.25) : 0,
         stepsPerFrame: Number.isFinite(ctx.stepsPerFrame) ? Math.floor(clamp(ctx.stepsPerFrame, 0, 1000)) : 0 };
       for (const k of ['queued', 'rejected', 'passes', 'commands', 'rays', 'readbacks']) stats[k] = 0;
@@ -229,9 +191,6 @@ export function createWandWorld({ renderer, getSim }) {
     dispose() {
       if (disposed) return;
       disposed = true; generation++; commands.length = 0; clearLights();
-      commandTex.dispose(); segmentTex.dispose();
-      if (mats) Object.values(mats).forEach((m) => m.dispose());
-      slots.filter((s) => !s.busy).forEach((s) => s.target.dispose());
     },
   };
 }

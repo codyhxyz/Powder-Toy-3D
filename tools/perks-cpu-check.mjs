@@ -1,12 +1,14 @@
 // CPU check of the body perks (Slow Fall, Shrink, Rain Cloud) in node, no GPU and no server:
-// the real body (src/pov/player.js) over a mock sim whose probe readback is filled from a
-// voxel function, so collision, falling and the cloud's seeding run the shipped code.
+// the real body (src/pov/player.js) over a mock sim whose probe (its POV GPU work stood in
+// for: pov/gpu.js setPovGpu) is filled from a voxel function, so collision, falling and the
+// cloud's seeding run the shipped code.
 // usage: node tools/perks-cpu-check.mjs
 import * as THREE from 'three';
 import { createPlayer } from '../src/pov/player.js';
 import { createPerkSet } from '../src/pov/perks.js';
 import { E } from '../src/elements.js';
-import { PROBE } from '../src/shaders/povBody.js';
+import { PROBE, PROBE_CELLS } from '../src/shaders/povBody.js';
+import { setPovGpu } from '../src/pov/gpu.js';
 
 const STEPS = 4;            // sim steps per frame (240 steps/s at 60 fps)
 const DT = 1 / 60;
@@ -17,25 +19,27 @@ const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? '
 function makeSim(cell, n = [64, 160, 64]) {
   const paints = [];
   const sim = {
-    g: { nx: n[0], ny: n[1], nz: n[2] }, frame: 0, gravity: 0.025, stateA: null, stateB: null,
-    run(mat, target) { if (mat.uniforms.uBoxLo) target.box = mat.uniforms.uBoxLo.value.clone(); },
-    touchCentres() {}, pass() {},
+    g: { nx: n[0], ny: n[1], nz: n[2] }, frame: 0, gravity: 0.025,
+    touchCentres(lo, hi) { return { lo, hi }; },
     paint(o) { paints.push({ ...o, center: o.center.clone(), frame: sim.frame }); },
     paints,
   };
-  const renderer = {
-    readRenderTargetPixelsAsync(target, x, y, w, h, buf) {
-      const b = target.box;
+  // the body's POV GPU work: its probe answered from cell() (the box at boxLo, x fastest, then z, then y), its edits taken
+  setPovGpu(sim, {
+    ready: true,
+    edit: () => true,
+    probe(name, { boxLo: b }) {
+      const buf = new Float32Array(PROBE_CELLS * 4);
       for (let ly = 0; ly < PROBE.Y; ly++) for (let lz = 0; lz < PROBE.Z; lz++) for (let lx = 0; lx < PROBE.X; lx++) {
         const i = ((ly * PROBE.Z + lz) * PROBE.X + lx) * 4;
-        const cx = b.x + lx, cy = b.y + ly, cz = b.z + lz;
+        const cx = b[0] + lx, cy = b[1] + ly, cz = b[2] + lz;
         const out = cx < 0 || cz < 0 || cy < 0 || cx >= n[0] || cz >= n[2] || cy >= n[1];
         buf[i] = out ? -1 : cell(cx, cy, cz); buf[i + 1] = 20; buf[i + 2] = 0; buf[i + 3] = 0;
       }
-      return Promise.resolve();
+      return Promise.resolve(buf.buffer);
     },
-  };
-  return { sim, renderer };
+  });
+  return { sim, renderer: null };
 }
 
 async function run(body, sim, frames, input = {}, each = null) {

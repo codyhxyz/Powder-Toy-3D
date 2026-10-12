@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { rocketFrag, toolPass, ROCKET } from '../shaders/povTools.js';
+import { ROCKET } from '../shaders/povTools.js';
+import { povGpu } from './gpu.js';
 import { gravityScale, ROUND_GRAVITY } from './ballistics.js';
 import { povEvents } from './events.js';
 import { areaTargets, dealtScale, PLAYER } from './targets.js';
@@ -17,7 +18,7 @@ import { wu, points, CAUSE } from './halo.js';
 // as Halo 2's and 3's do.
 //
 // Going off is two things:
-// - the sim's own blast: the rocket's pass (shaders/povTools.js rocketFrag: a
+// - the sim's own blast: the rocket's edit (shaders/povTools.js rocketWGSL: a
 //   crater, a fireball and the pressure wave the engine carries on), so it
 //   breaks what a rocket breaks, throws loose matter and bodies about, and its
 //   overpressure hurts every body as any blast does (vitals.js), teammates and
@@ -89,7 +90,6 @@ export const throwFrag = (body, eye, dir) => current?.throw(body, eye, dir) ?? f
 export const haloSplash = (center, spec) => current?.splash(center, spec, povEvents.actor?.id ?? PLAYER) ?? [];
 
 export function createFrags({ scene, getSim, getVolume, getScale, ballistics, world = () => null }) {
-  const pass = toolPass(rocketFrag, () => ({ uCenter: { value: new THREE.Vector3() }, uFrame: { value: 0 } }));
   const group = new THREE.Group();
   group.name = 'pov-frags';
   scene.add(group);
@@ -194,12 +194,10 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
     const center = g.resting ? g.face.clone().addScaledVector(g.normal, STANDOFF) : g.pos.clone();
     remove(g);
     if (!sim) return;
-    const mat = pass(sim);
-    mat.uniforms.uCenter.value.copy(center);
-    mat.uniforms.uFrame.value = ++frame;
     const r = ROCKET.PULSE_RADIUS;
-    sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]);
-    sim.pass(mat);
+    povGpu(sim).edit('povRocket', sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]), {
+      center, frame: ++frame,
+    });
     let hurt = [];
     povEvents.as(g.actor, () => {
       povEvents.emit('blast', { point: center.clone(), kind: KIND });
@@ -268,11 +266,13 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
     // every frame; stepsPerFrame 0 (paused): the fuses wait, as the grenades in the air do
     update(dt, stepsPerFrame = 1) {
       if (!(dt > 0) || stepsPerFrame === 0) return;
+      // (the POV kernels still building, B5: a fuse that runs out waits for its blast's edit)
+      const sim = getSim(), blasts = !sim || povGpu(sim).ready;
       for (const g of [...live]) {
         g.t += dt;
         if (g.armed) {
           const fuse = g.bounced == null ? FUSE_MAX_S : Math.max(FUSE_MIN_S, g.bounced + FUSE_AFTER_BOUNCE_S);
-          if (g.t >= fuse) detonate(g);
+          if (g.t >= fuse && blasts) detonate(g);
         } else if (g.t >= PICKUP_LIFE_S) remove(g);
       }
       // the dead spill theirs; the living pick them up
@@ -309,7 +309,6 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
       self.clear();
       group.removeFromParent();
       bodyGeo.dispose(); capGeo.dispose(); bodyMat.dispose(); capMat.dispose();
-      pass.dispose();
       if (current === self) current = null;
     },
   };

@@ -17,8 +17,8 @@ import { deswizzle, columnTops, ID_BITS } from './deswizzle.js';
 // NPCs, the vehicles, each body with Teleportitis) a view of it with its own
 // refresh clock, and the views together start at most one readback per
 // REFRESH_S: a readback that lands restarts every view's clock. A view holds
-// nothing; the model (its packer's targets, its worker, its cells) lives as
-// long as the renderer does, as one consumer's model did before.
+// nothing; the model (its worker, its cells) lives as long as the renderer
+// does, as one consumer's model did before.
 //
 // The de-swizzle (deswizzle.js: the atlas's bytes into row-major cells, ~5 ms
 // on Dam Valley's 3.1M cells) runs in a worker (world-worker.js), on the main
@@ -41,7 +41,7 @@ const HOT_T = 300;                     // °C: hotter than this burns a body tha
 const TEMP_C = Float64Array.from({ length: 256 }, (_, code) => decodeTempCode(code));   // °C of each temperature code
 if (TEXEL_BYTES !== Uint32Array.BYTES_PER_ELEMENT) throw new Error('world model: deswizzle.js reads a packed texel as one 32-bit word');
 
-// ---- the GPU readback: the one place the model touches the GPU (a WebGPU port reimplements this)
+// ---- the GPU readback: the one place the model touches the GPU
 //
 // readCells(renderer, sim) → null when no capture buffer is free (call again
 // on a later frame), else a Promise of { bytes, g, dims, release }:
@@ -56,12 +56,24 @@ if (TEXEL_BYTES !== Uint32Array.BYTES_PER_ELEMENT) throw new Error('world model:
 //          (the same length), which goes back into the ring.
 // It captures the state as it is at the call and resolves any number of frames
 // later. A rejected readback has released itself.
-const packers = new WeakMap();         // renderer → its packer, kept as long as the renderer
+//
+// On WebGPU (docs/webgpu.md C2, G4) it is the multiplayer packer's capture
+// (net/codec.js createPacker): its kernel writes every cell's word at its
+// atlas texel, the readback service copies it at the call (B7, so the bytes
+// are the state at the call; only a grid's first capture, while its kernel
+// builds, is taken once it is built), and the mapped range is copied into
+// one of the packer's pooled byte buffers. One packer per device, whatever
+// the grid: a new grid frees the old one's buffers. (The renderer is the
+// WebGL build's; each simulation brings its own gpu.)
+const packers = new WeakMap();         // gpu → its packer
 export function readCells(renderer, sim) {
-  let packer = packers.get(renderer);
-  if (!packer) packers.set(renderer, (packer = createPacker(renderer)));
+  let packer = packers.get(sim.gpu);
+  if (!packer) packers.set(sim.gpu, (packer = createPacker()));
   const g = sim.g, job = packer.pack(sim);
-  return job && job.then(({ bytes, dims, release }) => ({ bytes, g, dims, release }));
+  return job && job.then(({ bytes, dims, release }) => {
+    let released = false;   // (exactly once: a second release would put its buffer in the pool twice)
+    return { bytes, g, dims, release: (back) => { if (!released) { released = true; release(back); } } };
+  });
 }
 
 // The atlas's brick table for grid g (deswizzle.js): the texel of each brick's
@@ -108,6 +120,10 @@ export function voxelRay(idAt, top, origin, dir, maxDist, stops, out = {}) {
   }
   return out;
 }
+
+// What the model reads the cells through: readCells, or a stand-in with its contract
+// (tools/world-model-node-check.mjs: a fake sim's cells, no GPU).
+export const cellsSource = { read: readCells };
 
 const models = new WeakMap();          // renderer → its one shared model
 
@@ -193,7 +209,7 @@ function createModel(renderer) {
     if (!sim) return;
     const state = `${sim.id}:${sim.version}:${sim.origin.toArray()}`;
     if (state === packed) { epoch++; return; }   // nothing written since the last capture: as good as a fresh one
-    const job = readCells(renderer, sim);
+    const job = cellsSource.read(renderer, sim);
     if (!job) return;
     busy = true;
     job.then((r) => {

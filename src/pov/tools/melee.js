@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
-import { toolPass } from '../../shaders/povTools.js';
+import { toolPass } from '../gpu.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
@@ -11,8 +11,8 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 
 // A melee tool (the axe, the pickaxe): a short-range swing that breaks
 // breakable solids in a patch around the struck cell into their debris
-// (shaders/povTools.js blowFrag; spec.blow is its tuning, AXE or PICK, and
-// spec.frag its pass). Every break swaps one element for its debris in place,
+// (shaders/povTools.js blowWGSL; spec.blow is its tuning, AXE or PICK, and
+// spec.frag its pass: axeFrag, …). Every break swaps one element for its debris in place,
 // so mass is conserved. What one tool breaks and another bounces off is only
 // the blow's energy against each element's hardness.
 //
@@ -72,7 +72,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
     key, name, model: modelKey, desc,
     create(env) {
       const model = buildModel(env);
-      const pass = toolPass(frag, () => ({ uCenter: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } }));
+      const pass = toolPass(frag);
       const button = trigger(refire);
       const motion = (m) => ({ rest: POSE.rest, hit: m.hit, miss: m.miss, strike: POSE.strike, settle: refire });
       const pose = swing(motion(POSE));
@@ -113,12 +113,10 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         }
         if (!aim?.valid || aim.dist > reach || aim.cell.y < 0) return { landed: false };   // air, or the floor
         const sim = ctx.sim ?? env.getSim();
-        const mat = pass(sim);
-        mat.uniforms.uCenter.value.copy(aim.cell).addScalar(0.5);
-        mat.uniforms.uDir.value.copy(ctx.dir).normalize();
-        const c = mat.uniforms.uCenter.value, r = Math.max(blow.RADIUS, blow.DEPTH);   // blowFrag's BLOW_REACH
-        sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]);
-        sim.pass(mat);
+        const c = aim.cell.clone().addScalar(0.5), swingDir = ctx.dir.clone().normalize();
+        const r = Math.max(blow.RADIUS, blow.DEPTH);   // the blow's reach (blowWGSL)
+        // (its kernel still building, B5: the swing lands nothing rather than announce a blow it didn't strike)
+        if (!pass(sim, { center: c, dir: swingDir }, sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]))) return { landed: false };
         lastHit = { cell: aim.cell.clone(), id: aim.id };
         // the struck cell breaks if the blow's full energy (it lands at the patch centre) beats its hardness
         const el = ELEMENTS[aim.id];
@@ -127,7 +125,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         const point = aim.cell.clone().addScalar(0.5);
         if (load) {
           const debris = broke ? ELEMENTS.findIndex((d) => d.key === el.breakInto) : DEBRIS.has(aim.id) ? aim.id : -1;
-          if (debris >= 0) gather(sim, point, mat.uniforms.uDir.value, debris);
+          if (debris >= 0) gather(sim, point, swingDir, debris);
         }
         povEvents.emit('impact', { source, point, normal: faceNormal(aim.face), id: aim.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);

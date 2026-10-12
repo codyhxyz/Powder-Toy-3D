@@ -1,20 +1,25 @@
 import * as THREE from 'three';
-import { prelude, quadVert, stateOutGLSL, copyThroughMain, stateUniforms } from './common.js';
+import { prelude, editKernelWGSL, EDIT_FIELDS, LAYOUT, STATE_OPTS, gridDims } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 import { ELEMENTS, E } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 
-// GPU passes for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js),
-// and the worm's head (src/pov/worm.js).
+// GPU work for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js),
+// and the worm's head (src/pov/worm.js), on WebGPU (docs/webgpu.md G2, D6, D7).
 //
-// Each is a full-grid ping-pong pass run through sim.pass(mat), like the
-// brush (paintFrag in passes.js): every texel copies its cell, and only the
-// cells inside the tool's small region change. The tools only set up inputs
-// the engine already understands (which element a cell holds, its velocity);
-// the move and react passes do the physics from there.
+// Each tool's write is an edit (sim.edit): one dispatch over the box its
+// region fits in, in call order, writing the current state in place (every
+// update reads only the cell it writes) and marking the bricks it changes, as
+// the brush does (passes.js paint). Tools of one kind share one pipeline per
+// grid size (a family: the blow, the flame), their tuning travelling in the
+// edit's params (src/pov/gpu.js toolPass). The tools only set up inputs the
+// engine already understands (which element a cell holds, its velocity); the
+// move and react passes do the physics from there.
 //
 // Units: cells, cells/step, and the sim's kinetic energy ½·DENS·|v|² (the
-// unit of ELEMENTS[].hard, HARD[] in GLSL).
+// unit of ELEMENTS[].hard, HARD() in WGSL).
 
 // Axe: one swing delivers AXE.ENERGY at the centre of a wide, shallow patch
 // (an ellipsoid, flat along the swing) and less toward its rim:
@@ -32,7 +37,7 @@ export const AXE = {
   SHOVE: 0.25,       // cells/step pushed into loose powder at the patch centre
 };
 
-// Pickaxe: the same blow (blowFrag below) from a heavier, pointed head, so
+// Pickaxe: the same blow (blowWGSL below) from a heavier, pointed head, so
 // more energy in a patch that is narrower for its depth: it bites into rock
 // where the axe bounces off. With ENERGY 52, RADIUS 2.2, DEPTH 2.5:
 //   ROCK  (30)  r² ≤ 0.42: the hit cell's 3×3 face, and the cell behind it and
@@ -86,7 +91,7 @@ export const WORM_GIANT_BITE = { ...WORM_BITE, RADIUS: 7.5, DEPTH: 7.5 };
 // point (powders, liquids, gases within RADIUS of it, fading toward RADIUS).
 //
 // physgunComFrag sums that matter (mass = DENS, times the falloff) into one
-// texel: its centre of mass and how many cells it is. physgunFrag then moves
+// vec4: its centre of mass and how many cells it is. physgunFrag then moves
 // it as one ball:
 //   v_ball = carry + (hold − com)·SPRING
 // carry is the hold point's own velocity, so the ball keeps up as you turn.
@@ -100,7 +105,7 @@ export const WORM_GIANT_BITE = { ...WORM_BITE, RADIUS: 7.5, DEPTH: 7.5 };
 // step (the damping), weighted by the falloff. The field bears the full weight
 // of everything within RADIUS, so what it reaches floats while it's drawn in.
 //
-// Gravity: the pass runs once per frame, before the frame's N steps, and
+// Gravity: the edit runs once per frame, before the frame's N steps, and
 // each step's react takes g·GRAV from the velocity after its move. The moves
 // see on average (N − 1)/2 steps of it, so a held cell is launched at
 //   v = v_mean + g·GRAV·(N − 1)/2
@@ -156,60 +161,72 @@ export const BLAST = {
 };
 BLAST.PULSE_P = BLAST.PULSE_SHARE * WEAKEST_HARD * ENGINE.P_BREAK_PER_HARD;
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-const defines = (prefix, obj) =>
-  Object.entries(obj).map(([k, v]) => `#define ${prefix}_${k} ${v < 0 ? `(${f(v)})` : f(v)}`).join('\n');
+// A JS number as a WGSL f32 literal; a tuning block as typed consts (H1.7)
+const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
+const consts = (prefix, obj) => Object.entries(obj).map(([k, v]) => `const ${prefix}_${k}: f32 = ${lit(v)};`).join('\n');
 
-const head = (g) => /* glsl */ `
-${prelude(g)}
-${stateOutGLSL}
-`;
-
-// A melee blow (the axe, the pickaxe, the knife, a worm's head; P is AXE, PICK,
-// KNIFE or WORM_BITE): break breakable solids in its patch into their debris,
-// 1:1 (same cell, temperature, life and ctype: only the element changes), and
-// nudge loose powder along the swing (P.PART: part powder and liquid out from it).
-const blowFrag = (P) => (g) => /* glsl */ `
-${head(g)}
-${defines('BLOW', P)}
-#define BLOW_REACH max(BLOW_RADIUS, BLOW_DEPTH)
-uniform vec3 uCenter;   // grid cells: the centre of the struck cell
-uniform vec3 uDir;      // unit swing direction
-
-void blow(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 d = vec3(p) + 0.5 - uCenter;
-  if (dot(d, d) >= BLOW_REACH * BLOW_REACH) return;
-  float along = dot(d, uDir);
-  vec3 across = d - along * uDir;
-  float r2 = dot(across, across) / (BLOW_RADIUS * BLOW_RADIUS) + along * along / (BLOW_DEPTH * BLOW_DEPTH);
-  if (r2 >= 1.0) return;
-  float E = BLOW_ENERGY * (1.0 - r2);
-  int id = eid(a);
-  int into = BREAKINTO[id];
-#ifdef BLOW_PART
-  // a burrower's head: out from its axis (a cell on the axis goes to one fixed side)
-  float off = length(across);
-  vec3 push = off > BLOW_AXIS_EPS ? across / off : normalize(cross(uDir, abs(uDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
-  bool loose = KIND[id] == K_POWDER || KIND[id] == K_LIQUID;
-#else
-  vec3 push = uDir;
-  bool loose = KIND[id] == K_POWDER;
-#endif
-  if (KIND[id] == K_SOLID && into >= 0 && E >= HARD[id]) {
-    oA.x = float(into);
+// A melee blow (the axe, the pickaxe, the knife, a worm's head; its tuning is
+// AXE, PICK, KNIFE or WORM_BITE): break breakable solids in its patch into
+// their debris, 1:1 (same cell, temperature, life and ctype: only the element
+// changes), and nudge loose powder along the swing (part: part powder and
+// liquid out from it). One pipeline for every blow: the tuning is in its params.
+export const BlowParams = uniformStruct('BlowParams', {
+  ...EDIT_FIELDS,
+  center: 'vec3f',    // grid cells: the centre of the struck cell
+  energy: 'f32',      // its tuning's ENERGY, RADIUS, DEPTH, CHIP_MAX, SHOVE
+  dir: 'vec3f',       // unit swing direction
+  radius: 'f32',
+  depth: 'f32',
+  chipMax: 'f32',
+  shove: 'f32',
+  part: 'u32',        // PART: part loose matter out from the axis
+  axisEps: 'f32',     // AXIS_EPS
+});
+export const blowWGSL = /* wgsl */ `
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let d = vec3f(p) + 0.5 - P.center;
+  let reach = max(P.radius, P.depth);
+  if (dot(d, d) >= reach * reach) { return; }
+  let along = dot(d, P.dir);
+  let across = d - along * P.dir;
+  let r2 = dot(across, across) / (P.radius * P.radius) + along * along / (P.depth * P.depth);
+  if (r2 >= 1.0) { return; }
+  let E = P.energy * (1.0 - r2);
+  let id = eid(a);
+  let into = BREAKINTO(id);
+  var push = P.dir;
+  var loose = KIND(id) == K_POWDER;
+  if (P.part != 0u) {
+    // a burrower's head: out from its axis (a cell on the axis goes to one fixed side)
+    let off = length(across);
+    if (off > P.axisEps) {
+      push = across / off;
+    } else {
+      var side = vec3f(1.0, 0.0, 0.0);
+      if (abs(P.dir.y) < 0.9) { side = vec3f(0.0, 1.0, 0.0); }
+      push = normalize(cross(P.dir, side));
+    }
+    loose = KIND(id) == K_POWDER || KIND(id) == K_LIQUID;
+  }
+  if (KIND(id) == K_SOLID && into >= 0 && E >= HARD(id)) {
+    (*oA).x = f32(into);
     // what the cut doesn't use flies off with the chip: ½·DENS·v² = E − hard
-    float v = min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), BLOW_CHIP_MAX);
-    oB.xyz = push * v;
+    let v = min(sqrt(2.0 * (E - HARD(id)) / DENS(into)), P.chipMax);
+    *oB = vec4f(push * v, b.w);
   } else if (loose) {
-    oB.xyz = clamp(b.xyz + push * BLOW_SHOVE * (1.0 - r2), -V_MAX, V_MAX);
+    *oB = vec4f(clamp(b.xyz + push * P.shove * (1.0 - r2), vec3f(-V_MAX), vec3f(V_MAX)), b.w);
   }
 }
-${copyThroughMain('blow')}`;
-export const axeFrag = blowFrag(AXE);
-export const pickaxeFrag = blowFrag(PICK);
-export const knifeFrag = blowFrag(KNIFE);
-export const wormFrag = blowFrag(WORM_BITE);
-export const wormGiantFrag = blowFrag(WORM_GIANT_BITE);
+`;
+// A tool's pass (src/pov/gpu.js toolPass): its family's edit and its tuning as that edit's params.
+const blowTool = (P) => ({ edit: 'povBlow', values: {
+  energy: P.ENERGY, radius: P.RADIUS, depth: P.DEPTH, chipMax: P.CHIP_MAX, shove: P.SHOVE, part: P.PART ? 1 : 0, axisEps: P.AXIS_EPS ?? 0,
+} });
+export const axeFrag = blowTool(AXE);
+export const pickaxeFrag = blowTool(PICK);
+export const knifeFrag = blowTool(KNIFE);
+export const wormFrag = blowTool(WORM_BITE);
+export const wormGiantFrag = blowTool(WORM_GIANT_BITE);
 
 // A flame: a cone from a nozzle along a direction (P: FLAMER, the
 // flamethrower's, or TORCH_FIRE, a thrown torch's). Air in the cone becomes
@@ -266,42 +283,54 @@ export const BODY_FIRE = {
   BITE: 0,
 };
 
-const flameFrag = (P) => (g) => /* glsl */ `
-${head(g)}
-${defines('FLM', P)}   // (FLM_: FLAME_ is the renderer's)
-uniform vec3 uNozzle;   // grid cells
-uniform vec3 uDir;      // unit direction
-uniform float uReach;   // cells along it to the struck face (the flame stops there), ≤ FLM_LENGTH
-uniform float uDt;      // s this frame
-uniform uint uFrame;
-#define FLM_RNG_SALT 0x70u   // keeps the flame's random draws apart from other passes'
+export const FlameParams = uniformStruct('FlameParams', {
+  ...EDIT_FIELDS,
+  nozzle: 'vec3f',    // grid cells
+  reach: 'f32',       // cells along it to the struck face (the flame stops there), ≤ its LENGTH
+  dir: 'vec3f',       // unit direction
+  dt: 'f32',          // s this frame
+  frame: 'u32',       // the flame's random stream
+  flameT: 'f32',      // its tuning's FLAME_T, RADIUS0, SPREAD, SPAWN, SPEED, HEAT_RATE, BITE
+  radius0: 'f32',
+  spread: 'f32',
+  spawn: 'f32',
+  speed: 'f32',
+  heatRate: 'f32',
+  bite: 'f32',
+});
+export const flameWGSL = /* wgsl */ `
+const FLM_RNG_SALT: u32 = 0x70u;   // keeps the flame's random draws apart from other passes'
 
-void flame(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 d = vec3(p) + 0.5 - uNozzle;
-  float along = dot(d, uDir);
-  if (along < 0.0 || along > uReach + FLM_BITE) return;
-  float r = length(d - along * uDir);
-  float radius = FLM_RADIUS0 + FLM_SPREAD * along;
-  if (r > radius) return;
-  int id = eid(a);
-  uint rs = seed3(p, uFrame, FLM_RNG_SALT);
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let d = vec3f(p) + 0.5 - P.nozzle;
+  let along = dot(d, P.dir);
+  if (along < 0.0 || along > P.reach + P.bite) { return; }
+  let r = length(d - along * P.dir);
+  let radius = P.radius0 + P.spread * along;
+  if (r > radius) { return; }
+  let id = eid(a);
+  var rs = seed3(p, P.frame, FLM_RNG_SALT);
   if (isGasLike(id)) {
-    if (along > uReach || rnd(rs) > FLM_SPAWN) return;
-    oA = vec4(float(E_FIRE), FLM_FLAME_T, SPAWNLIFE[E_FIRE], rnd(rs) * SEED_MAX);
-    oB.xyz = uDir * FLM_SPEED;
+    if (along > P.reach || rnd(&rs) > P.spawn) { return; }
+    let seed = rnd(&rs) * SEED_MAX;
+    *oA = vec4f(f32(E_FIRE), P.flameT, SPAWNLIFE(E_FIRE), seed);
+    *oB = vec4f(P.dir * P.speed, b.w);
   } else {
-    float k = 1.0 - exp(-FLM_HEAT_RATE * uDt / CAP[id]);
-    oA.y = a.y + max(FLM_FLAME_T - a.y, 0.0) * k;
+    let k = 1.0 - exp(-P.heatRate * P.dt / CAP(id));
+    (*oA).y = a.y + max(P.flameT - a.y, 0.0) * k;
   }
 }
-${copyThroughMain('flame')}`;
-export const flamerFrag = flameFrag(FLAMER);
-export const torchFireFrag = flameFrag(TORCH_FIRE);
-export const bodyFireFrag = flameFrag(BODY_FIRE);
+`;
+const flameTool = (P) => ({ edit: 'povFlame', values: {
+  flameT: P.FLAME_T, radius0: P.RADIUS0, spread: P.SPREAD, spawn: P.SPAWN, speed: P.SPEED, heatRate: P.HEAT_RATE, bite: P.BITE,
+} });
+export const flamerFrag = flameTool(FLAMER);
+export const torchFireFrag = flameTool(TORCH_FIRE);
+export const bodyFireFrag = flameTool(BODY_FIRE);
 
-// The box of cell centres a flame pass (flameFrag, tuning P) may change, for
-// sim.touchCentres: the cone's axis out to uReach + BITE, widened by its
-// radius there. Without it the pass wakes every supertile and rebuilds every brick.
+// The box of cell centres a flame edit (tuning P) may change, for
+// sim.touchCentres: the cone's axis out to reach + BITE, widened by its
+// radius there: the edit's box.
 export function flameBox(P, nozzle, dir, reach) {
   const len = reach + P.BITE, r = P.RADIUS0 + P.SPREAD * len;
   const lo = [], hi = [];
@@ -313,119 +342,150 @@ export function flameBox(P, nozzle, dir, reach) {
   return [lo, hi];
 }
 
-const physGLSL = /* glsl */ `
-${defines('PHYS', PHYS)}
-${Object.entries(PHYS_MODE).map(([k, v]) => `#define PHYS_MODE_${k} ${v}`).join('\n')}
-#define PHYS_SPAN int(ceil(PHYS_RADIUS))
-#define FOUR_THIRDS_PI 4.18879
+const physWGSL = /* wgsl */ `
+${consts('PHYS', PHYS)}
+const PHYS_MODE_HOLD: u32 = ${PHYS_MODE.HOLD}u;
+const PHYS_MODE_FLING: u32 = ${PHYS_MODE.FLING}u;
+const PHYS_SPAN: i32 = ${Math.ceil(PHYS.RADIUS)};
+const FOUR_THIRDS_PI: f32 = 4.18879;
 // what the beam can hold: loose matter, never solids or plain air
-bool physHeld(int id) { int k = KIND[id]; return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
-float physFalloff(float r) { return 1.0 - smoothstep(PHYS_RADIUS * PHYS_CORE, PHYS_RADIUS, r); }
+fn physHeld(id: i32) -> bool { let k = KIND(id); return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
+fn physFalloff(r: f32) -> f32 { return 1.0 - smoothstep(PHYS_RADIUS * PHYS_CORE, PHYS_RADIUS, r); }
 `;
 
-// One texel: the held matter's centre of mass (xyz, grid cells) and its size
-// in cells (w), falloff-weighted. Loops over the cube around the hold point.
-export const physgunComFrag = (g) => /* glsl */ `
-${prelude(g)}
-${physGLSL}
-uniform vec3 uHold;
-out vec4 oC;
+// The held matter's centre of mass (xyz, grid cells) and its size in cells
+// (w), falloff-weighted, into the physgun's own COM buffer (group 2), which
+// its edit reads in the same pass (docs/webgpu.md G2: GPU to GPU). One
+// workgroup over the cube around the hold point: each thread sums its share
+// of the cube in order, then the workgroup adds the 64 sums up pairwise (a
+// fixed order, so the result is the same every time).
+export const ComParams = uniformStruct('ComParams', { hold: 'vec3f' });
+export const COM_LAYOUT = [{ binding: 0, buffer: { type: 'storage' } }];
+export const physgunComFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+${physWGSL}
+${ComParams.wgsl}
+@group(3) @binding(1) var<uniform> P: ComParams;
+@group(2) @binding(0) var<storage, read_write> com: array<vec4f>;
+const SIDE: i32 = 2 * PHYS_SPAN + 1;
+var<workgroup> sums: array<vec4f, 64>;   // (Σ at·DENS·w, Σ DENS·w)
+var<workgroup> cellSums: array<f32, 64>;   // Σ w
 
-void main() {
-  ivec3 c = ivec3(floor(uHold));
-  vec3 sum = vec3(0.0);
-  float mass = 0.0, cells = 0.0;
-  for (int z = -PHYS_SPAN; z <= PHYS_SPAN; z++)
-  for (int y = -PHYS_SPAN; y <= PHYS_SPAN; y++)
-  for (int x = -PHYS_SPAN; x <= PHYS_SPAN; x++) {
-    ivec3 q = c + ivec3(x, y, z);
-    if (!inGrid(q)) continue;
-    vec3 at = vec3(q) + 0.5;
-    float r = length(at - uHold);
-    if (r >= PHYS_RADIUS) continue;
-    int id = eid(fetchA(q));
-    if (!physHeld(id)) continue;
-    float w = physFalloff(r);
-    sum += at * DENS[id] * w;
-    mass += DENS[id] * w;
-    cells += w;
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_index) li: u32) {
+  let c = vec3i(floor(P.hold));
+  var sum = vec4f(0.0);
+  var n = 0.0;
+  for (var k = i32(li); k < SIDE * SIDE * SIDE; k += 64) {
+    let q = c + vec3i(k % SIDE, (k / SIDE) % SIDE, k / (SIDE * SIDE)) - PHYS_SPAN;
+    if (!inGrid(q)) { continue; }
+    let at = vec3f(q) + 0.5;
+    let r = length(at - P.hold);
+    if (r >= PHYS_RADIUS) { continue; }
+    let id = eid(fetchA(q));
+    if (!physHeld(id)) { continue; }
+    let w = physFalloff(r);
+    sum += vec4f(at * DENS(id) * w, DENS(id) * w);
+    n += w;
   }
-  oC = vec4(mass > 0.0 ? sum / mass : uHold, cells);
+  sums[li] = sum;
+  cellSums[li] = n;
+  for (var s = 32u; s > 0u; s >>= 1u) {
+    workgroupBarrier();
+    if (li < s) { sums[li] += sums[li + s]; cellSums[li] += cellSums[li + s]; }
+  }
+  workgroupBarrier();
+  if (li == 0u) {
+    let t = sums[0];
+    var at = P.hold;
+    if (t.w > 0.0) { at = t.xyz / t.w; }
+    com[0] = vec4f(at, cellSums[0]);
+  }
 }
 `;
 
-// Hold the matter around uHold as a ball (see PHYS), or fling it along uFling.
-export const physgunFrag = (g) => /* glsl */ `
-${head(g)}
-${physGLSL}
-uniform sampler2D tCom;   // physgunComFrag's texel
-uniform vec3 uHold;       // grid cells
-uniform vec3 uCarry;      // cells/step, the hold point's own velocity
-uniform float uSteps;     // sim steps per frame
-uniform float uGravity;   // cells/step² (sim.gravity)
-uniform int uMode;
-uniform vec3 uFling;      // cells/step
+// Hold the matter around hold as a ball (see PHYS), or fling it along fling.
+export const PhysgunParams = uniformStruct('PhysgunParams', {
+  ...EDIT_FIELDS,
+  hold: 'vec3f',      // grid cells
+  steps: 'f32',       // sim steps per frame
+  carry: 'vec3f',     // cells/step, the hold point's own velocity
+  gravity: 'f32',     // cells/step² (sim.gravity)
+  fling: 'vec3f',     // cells/step
+  mode: 'u32',        // PHYS_MODE
+});
+export const PHYSGUN_LAYOUT = [{ binding: 0, buffer: { type: 'read-only-storage' } }];
+export const physgunDeclsWGSL = `${physWGSL}
+@group(2) @binding(0) var<storage, read> physCom: array<vec4f>;   // physgunComFrag's (centre of mass, cells)
+`;
+export const physgunWGSL = /* wgsl */ `
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let at = vec3f(p) + 0.5;
+  let r = length(at - P.hold);
+  if (r >= PHYS_RADIUS) { return; }
+  let id = eid(a);
+  if (!physHeld(id)) { return; }
+  if (P.mode == PHYS_MODE_FLING) { *oB = vec4f(clamp(P.fling, vec3f(-V_MAX), vec3f(V_MAX)), b.w); return; }
 
-void physgun(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 at = vec3(p) + 0.5;
-  float r = length(at - uHold);
-  if (r >= PHYS_RADIUS) return;
-  int id = eid(a);
-  if (!physHeld(id)) return;
-  if (uMode == PHYS_MODE_FLING) { oB.xyz = clamp(uFling, -V_MAX, V_MAX); return; }
-
-  vec4 com = texelFetch(tCom, ivec2(0), 0);
-  vec3 vBall = uCarry + (uHold - com.xyz) * PHYS_SPRING;
-  float rBall = pow(com.w / (PHYS_PACKING * FOUR_THIRDS_PI), 1.0 / 3.0) + PHYS_CORE_PAD;
-  vec3 toCom = com.xyz - at;
-  float rc = length(toCom);
-  bool inBall = rc < rBall;
-  float w = inBall ? 1.0 : physFalloff(r);
-  float g = uGravity * GRAV[id];   // the field carries the weight of all it reaches
-  vec3 target = vBall;
-  if (!inBall) target += toCom / max(rc, 1.0) * min((rc - rBall) * PHYS_PULL, PHYS_PULL_MAX);
-  float grip = inBall ? 1.0 : w * (1.0 - pow(1.0 - PHYS_GRIP, uSteps));
-  vec3 vMean = b.xyz + vec3(0.0, g * (uSteps + 1.0) * 0.5, 0.0);   // what it moved at last frame
-  vec3 v = mix(vMean, target, grip) + vec3(0.0, g * (uSteps - 1.0) * 0.5, 0.0);
-  oB.xyz = clamp(v, -V_MAX, V_MAX);
+  let com = physCom[0];
+  let vBall = P.carry + (P.hold - com.xyz) * PHYS_SPRING;
+  let rBall = pow(com.w / (PHYS_PACKING * FOUR_THIRDS_PI), 1.0 / 3.0) + PHYS_CORE_PAD;
+  let toCom = com.xyz - at;
+  let rc = length(toCom);
+  let inBall = rc < rBall;
+  var w = physFalloff(r);
+  if (inBall) { w = 1.0; }
+  let g = P.gravity * GRAV(id);   // the field carries the weight of all it reaches
+  var goal = vBall;
+  if (!inBall) { goal += toCom / max(rc, 1.0) * min((rc - rBall) * PHYS_PULL, PHYS_PULL_MAX); }
+  var grip = 1.0;
+  if (!inBall) { grip = w * (1.0 - pow(1.0 - PHYS_GRIP, P.steps)); }
+  let vMean = b.xyz + vec3f(0.0, g * (P.steps + 1.0) * 0.5, 0.0);   // what it moved at last frame
+  let v = mix(vMean, goal, grip) + vec3f(0.0, g * (P.steps - 1.0) * 0.5, 0.0);
+  *oB = vec4f(clamp(v, vec3f(-V_MAX), vec3f(V_MAX)), b.w);
 }
-${copyThroughMain('physgun')}`;
+`;
+export const physgunFrag = (g) => editKernelWGSL(g, { update: physgunWGSL, params: PhysgunParams, decls: physgunDeclsWGSL });
 
 // Blast the loose matter in the cone (see BLAST).
-export const blastFrag = (g) => /* glsl */ `
-${head(g)}
-${defines('BLAST', BLAST)}
-uniform vec3 uMuzzle;   // grid cells
-uniform vec3 uDir;      // unit aim
-uniform float uReach;   // cells along the aim it pushes, ≤ BLAST_RANGE
-uniform vec3 uPulse;    // grid cells: the pressure pulse's centre...
-uniform float uPulseP;  // ...and its pressure (0: the cone met no surface)
-
-void blast(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  int id = eid(a);
-  int k = KIND[id];
-  float rp = length(vec3(p) + 0.5 - uPulse);
-  if (k != K_SOLID && rp < BLAST_PULSE_RADIUS)
-    oB.w = max(b.w, uPulseP * (1.0 - smoothstep(BLAST_EDGE, 1.0, rp / BLAST_PULSE_RADIUS)));
-  vec3 d = vec3(p) + 0.5 - uMuzzle;
-  float along = dot(d, uDir);
-  if (along < 0.0 || along > uReach) return;
-  float radius = BLAST_RADIUS0 + BLAST_SPREAD * along;
-  float r = length(d - along * uDir);
-  if (r > radius) return;
-  if (k != K_POWDER && k != K_LIQUID && k != K_GAS) return;
-  float w = (1.0 - smoothstep(BLAST_EDGE, 1.0, along / BLAST_RANGE)) * (1.0 - smoothstep(BLAST_EDGE, 1.0, r / radius));
-  vec3 away = d / max(length(d), 1.0);
-  oB.xyz = clamp(b.xyz + away * min(BLAST_IMPULSE / DENS[id], V_MAX) * w, -V_MAX, V_MAX);
+export const BlastParams = uniformStruct('BlastParams', {
+  ...EDIT_FIELDS,
+  muzzle: 'vec3f',    // grid cells
+  reach: 'f32',       // cells along the aim it pushes, ≤ BLAST.RANGE
+  dir: 'vec3f',       // unit aim
+  pulseP: 'f32',      // the pressure pulse's pressure (0: the cone met no surface)...
+  pulse: 'vec3f',     // ...and its centre, grid cells
+});
+export const blastWGSL = /* wgsl */ `
+${consts('BLAST', BLAST)}
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let id = eid(a);
+  let k = KIND(id);
+  let rp = length(vec3f(p) + 0.5 - P.pulse);
+  if (k != K_SOLID && rp < BLAST_PULSE_RADIUS) {
+    (*oB).w = max(b.w, P.pulseP * (1.0 - smoothstep(BLAST_EDGE, 1.0, rp / BLAST_PULSE_RADIUS)));
+  }
+  let d = vec3f(p) + 0.5 - P.muzzle;
+  let along = dot(d, P.dir);
+  if (along < 0.0 || along > P.reach) { return; }
+  let radius = BLAST_RADIUS0 + BLAST_SPREAD * along;
+  let r = length(d - along * P.dir);
+  if (r > radius) { return; }
+  if (k != K_POWDER && k != K_LIQUID && k != K_GAS) { return; }
+  let w = (1.0 - smoothstep(BLAST_EDGE, 1.0, along / BLAST_RANGE)) * (1.0 - smoothstep(BLAST_EDGE, 1.0, r / radius));
+  let away = d / max(length(d), 1.0);
+  let v = clamp(b.xyz + away * min(BLAST_IMPULSE / DENS(id), V_MAX) * w, vec3f(-V_MAX), vec3f(V_MAX));
+  *oB = vec4f(v, (*oB).w);
 }
-${copyThroughMain('blast')}`;
+`;
+export const blastFrag = (g) => editKernelWGSL(g, { update: blastWGSL, params: BlastParams });
 
 // Rocket (rocket.tool.js): one blast where it strikes, adding no matter to the
 // world. Its reach is Team Fortress 2's rocket's (146 HU ≈ 2.8 m ≈ 9 cells).
 // Around the centre, r cells out:
 //   - a solid within BREAK_RADIUS takes a blow of E(r) = ENERGY·(1 − (r/R)²)
 //     and breaks into its debris where E beats its hardness (as the axe's
-//     blow, blowFrag): ROCK (30) out to 0.82 R, METAL (60) out to 0.58 R. The
+//     blow): ROCK (30) out to 0.82 R, METAL (60) out to 0.58 R. The
 //     debris flies outward with what the break didn't use (CHIP_MAX at most).
 //   - air and gas within FIRE_RADIUS turn to engine FIRE at the gunpowder
 //     blast's temperature, blown outward (it burns out, as the blowtorch's).
@@ -450,69 +510,75 @@ export const ROCKET = {
 };
 ROCKET.FIRE_T = ELEMENTS[E.GUNPOWDER].blast.T;   // °C, the gunpowder blast's (elements.js)
 
-export const rocketFrag = (g) => /* glsl */ `
-${head(g)}
-${defines('ROCKET', ROCKET)}
-#define ROCKET_RNG_SALT 0x72u   // keeps the rocket's random draws apart from other passes'
-uniform vec3 uCenter;   // grid cells
-uniform uint uFrame;
+export const RocketParams = uniformStruct('RocketParams', {
+  ...EDIT_FIELDS,
+  center: 'vec3f',    // grid cells
+  frame: 'u32',       // the blast's random stream
+});
+export const rocketWGSL = /* wgsl */ `
+${consts('ROCKET', ROCKET)}
+const ROCKET_RNG_SALT: u32 = 0x72u;   // keeps the rocket's random draws apart from other passes'
 
-float rocketFade(float x) { return 1.0 - smoothstep(ROCKET_EDGE, 1.0, x); }
+fn rocketFade(x: f32) -> f32 { return 1.0 - smoothstep(ROCKET_EDGE, 1.0, x); }
 
-void rocket(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 d = vec3(p) + 0.5 - uCenter;
-  float r = length(d);
-  if (r >= ROCKET_PULSE_RADIUS) return;
-  uint rs = seed3(p, uFrame, ROCKET_RNG_SALT);
-  vec3 away = r > 0.5 ? d / r : normalize(vec3(rnd(rs) - 0.5, rnd(rs), rnd(rs) - 0.5) + vec3(0.0, 0.1, 0.0));
-  int id = eid(a);
-  if (KIND[id] == K_SOLID) {
-    float x = r / ROCKET_BREAK_RADIUS;
-    float E = ROCKET_ENERGY * (1.0 - x * x);
-    int into = BREAKINTO[id];
-    if (x >= 1.0 || into < 0 || E < HARD[id]) return;
-    oA.x = float(into);
-    oB.xyz = away * min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), ROCKET_CHIP_MAX);
-    id = into;
-  } else if (isGasLike(id) && r < ROCKET_FIRE_RADIUS && rnd(rs) < ROCKET_FIRE_SPAWN) {
-    oA = vec4(float(E_FIRE), ROCKET_FIRE_T, SPAWNLIFE[E_FIRE], rnd(rs) * SEED_MAX);
-    oB.xyz = away * ROCKET_FIRE_SPEED;
-    id = E_FIRE;
-  } else if (!isGasLike(id)) {
-    float w = rocketFade(r / ROCKET_PULSE_RADIUS);
-    oB.xyz = clamp(b.xyz + away * min(ROCKET_IMPULSE / DENS[id], V_MAX) * w, -V_MAX, V_MAX);
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let d = vec3f(p) + 0.5 - P.center;
+  let r = length(d);
+  if (r >= ROCKET_PULSE_RADIUS) { return; }
+  var rs = seed3(p, P.frame, ROCKET_RNG_SALT);
+  var away: vec3f;
+  if (r > 0.5) {
+    away = d / r;
+  } else {
+    let x = rnd(&rs) - 0.5;
+    let y = rnd(&rs);
+    let z = rnd(&rs) - 0.5;
+    away = normalize(vec3f(x, y, z) + vec3f(0.0, 0.1, 0.0));
   }
-  oB.w = max(oB.w, ROCKET_PULSE_P * rocketFade(r / ROCKET_PULSE_RADIUS));
+  let id = eid(a);
+  if (KIND(id) == K_SOLID) {
+    let x = r / ROCKET_BREAK_RADIUS;
+    let E = ROCKET_ENERGY * (1.0 - x * x);
+    let into = BREAKINTO(id);
+    if (x >= 1.0 || into < 0 || E < HARD(id)) { return; }
+    (*oA).x = f32(into);
+    *oB = vec4f(away * min(sqrt(2.0 * (E - HARD(id)) / DENS(into)), ROCKET_CHIP_MAX), b.w);
+  } else if (isGasLike(id) && r < ROCKET_FIRE_RADIUS && rnd(&rs) < ROCKET_FIRE_SPAWN) {
+    let seed = rnd(&rs) * SEED_MAX;
+    *oA = vec4f(f32(E_FIRE), ROCKET_FIRE_T, SPAWNLIFE(E_FIRE), seed);
+    *oB = vec4f(away * ROCKET_FIRE_SPEED, b.w);
+  } else if (!isGasLike(id)) {
+    let w = rocketFade(r / ROCKET_PULSE_RADIUS);
+    *oB = vec4f(clamp(b.xyz + away * min(ROCKET_IMPULSE / DENS(id), V_MAX) * w, vec3f(-V_MAX), vec3f(V_MAX)), b.w);
+  }
+  (*oB).w = max((*oB).w, ROCKET_PULSE_P * rocketFade(r / ROCKET_PULSE_RADIUS));
 }
-${copyThroughMain('rocket')}`;
+`;
+export const rocketFrag = (g) => editKernelWGSL(g, { update: rocketWGSL, params: RocketParams });
 
-// A pass material for the current simulation. Grids can be rebuilt (a size
-// change makes a new sim), so callers keep one per sim: see toolPass.
-function passMaterial(frag, g, uniforms) {
-  return new THREE.RawShaderMaterial({
-    glslVersion: THREE.GLSL3,
-    vertexShader: quadVert,
-    fragmentShader: frag(g),
-    uniforms: { ...stateUniforms(), ...uniforms },
-    depthTest: false,
-    depthWrite: false,
-  });
-}
+// This module's edit families, as sim.editKernel takes them (src/pov/gpu.js).
+export const POV_TOOL_EDITS = {
+  povBlow: { update: blowWGSL, params: BlowParams },
+  povFlame: { update: flameWGSL, params: FlameParams },
+  povPhysgun: { update: physgunWGSL, params: PhysgunParams, decls: physgunDeclsWGSL, layout: PHYSGUN_LAYOUT },
+  povBlast: { update: blastWGSL, params: BlastParams },
+  povRocket: { update: rocketWGSL, params: RocketParams },
+};
+// WEBGPU-STUB (docs/webgpu.md J3): a tool's pass is pov/gpu.js toolPass(tool)
+// now, an edit of its family; this module can't re-export it (pov/gpu.js
+// imports this one, and the cycle would leave POV_TOOL_EDITS unset there).
+export function toolPass() { throw new Error('toolPass removed in the WebGPU port: docs/webgpu.md G2'); }
 
-// toolPass(frag, uniforms) → (sim) => material, rebuilt when the sim is.
-export function toolPass(frag, makeUniforms) {
-  let simId = -1, mat = null;
-  const get = (sim) => {
-    if (sim.id !== simId) {
-      mat?.dispose();
-      mat = passMaterial(frag, sim.g, makeUniforms());
-      simId = sim.id;
-    }
-    return mat;
-  };
-  get.dispose = () => { mat?.dispose(); mat = null; simId = -1; };
-  return get;
-}
+const perBox = (g) => fold(gridDims(g).nbricks);
+const editCheck = ([name, e]) => ({
+  name, kind: 'compute', dispatch: perBox, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, ...(e.layout ? [e.layout] : [])],
+  code: (g) => editKernelWGSL(g, { update: e.update, params: e.params, decls: e.decls ?? '' }),
+});
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  ...Object.entries(POV_TOOL_EDITS).map(editCheck),
+  { name: 'povCom', kind: 'compute', code: (g) => physgunComFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, COM_LAYOUT], dispatch: () => [1, 1, 1] },
+];
 
 // ---- viewmodel helpers (the held tools are drawn in cells, scaled to world) ----
 

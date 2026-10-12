@@ -1,16 +1,16 @@
 // First person's wiring (src/pov; docs/webgpu.md G2, U11): the POV shell
-// (the body, its tools, vehicles, the team games), its per-frame update, and
-// the held tool drawn over the frame (pov/viewmodel.js; U13's viewmodel target
-// and glow layer go to post's canvas pass, F3, F7). Moved here from app.js as
-// it was (WebGL): U11 and U13 port it. Until then the god view is the only
-// camera, and app.js greys out the first- and third-person buttons.
+// (the body, its tools, vehicles, the team games) and its per-frame update.
+// The body's and the tools' edits and probes are pov/gpu.js's (sim.edit,
+// sim.probe and the result rings: nothing in it waits on the GPU), built for
+// each grid as the body enters it. The held tool drawn over the frame
+// (pov/viewmodel.js) is the mesh layer's: U13's viewmodel target and glow
+// layer go to post's canvas pass (F3, F7) through app.viewmodel and app.glow.
 import { createPov } from '../pov/index.js';
-import { renderViewmodels } from '../pov/viewmodel.js';
 import { isGearTool } from '../elements.js';
 
 const pov = {
   name: 'pov',
-  ready: false,
+  ready: true,
 
   // The shell, once, on the first grid (it lives on through rebuilds: the body
   // is told when the world under it is replaced)
@@ -39,9 +39,6 @@ const pov = {
     if (app.bootMatch) p.game.prepare();   // a match was picked: the bots' module loads during the first frames
   },
   beforeStep(app, dt) { if (app.pov?.active) app.pov.update(dt); },
-  // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
-  // own depth, so it never clips into walls); before the screenshot reads the canvas
-  beforeView(app) { renderViewmodels(app.renderer, app.scene, app.camera, app.post); },
   busy(app) { return !!app.pov?.active; },
 };
 

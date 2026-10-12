@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { CELL_M } from '../../scale.js';
-import { hookCellFrag } from '../../shaders/povKick.js';
-import { toolPass, disposeTree } from '../../shaders/povTools.js';
+import { disposeTree } from '../../shaders/povTools.js';
+import { povGpu } from '../gpu.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
@@ -95,11 +95,6 @@ export default {
   create(env) {
     const model = buildModel(env);
     const load = persistentLoad(ownedKey('HOOK', env.owner), CLAW_CELLS);
-    const cellPass = toolPass(hookCellFrag, () => ({ uCell: { value: new THREE.Vector3() } }));
-    const cellTarget = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
-    });
-    const cellBuf = new Float32Array(4);
     let checking = false, generation = 0;
 
     // state: idle | out (flying) | bite (waiting for the take) | anchor | body | carry (a bite coming home) | back (empty, coming home)
@@ -205,19 +200,17 @@ export default {
       return !!p;
     }
 
-    // Is the anchor still solid? One texel read back (shaders/povKick.js hookCellFrag).
+    // Is the anchor still solid? Its cell read back (shaders/povKick.js hookCellFrag).
     function checkAnchor(sim) {
       if (checking || anchorCell.y < 0) return;
+      const read = povGpu(sim).probe('povCells', { cells: [[anchorCell.x, anchorCell.y, anchorCell.z, 0]], count: 1 });
+      if (!read) return;   // (its kernel is still building: B5)
       checking = true;
-      const m = cellPass(sim);
-      m.uniforms.tA.value = sim.stateA;
-      m.uniforms.uCell.value.copy(anchorCell);
-      sim.run(m, cellTarget);
       const gen = generation;
-      env.renderer.readRenderTargetPixelsAsync(cellTarget, 0, 0, 1, 1, cellBuf).then(() => {
+      read.then((bytes) => {
         checking = false;
         if (gen !== generation || state !== 'anchor') return;
-        if (!isAnchor(Math.round(cellBuf[0]))) letGo('tear');
+        if (!isAnchor(Math.round(new Float32Array(bytes)[0]))) letGo('tear');
       }).catch(() => { checking = false; });
     }
 
@@ -337,7 +330,7 @@ export default {
       get claw() { return claw.clone(); },    // for checks
       dispose() {
         myBody?.tether?.(null); theirBody?.tether?.(null);
-        cellPass.dispose(); cellTarget.dispose(); model.dispose();
+        model.dispose();
       },
     };
   },

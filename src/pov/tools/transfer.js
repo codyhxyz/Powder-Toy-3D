@@ -1,8 +1,6 @@
 import * as THREE from 'three';
-import { quadVert, stateUniforms } from '../../shaders/common.js';
-import {
-  transferProbeFrag, transferApplyFrag, TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT,
-} from '../../shaders/transfer.js';
+import { TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT } from '../../shaders/transfer.js';
+import { povGpu } from '../gpu.js';
 import { ELEMENTS } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
@@ -11,21 +9,24 @@ import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 // of the grid and put them back, conserving matter exactly although readbacks
 // are asynchronous and the world keeps moving.
 //
-// take(): the caller lists candidate cells (nearest first) and a filter. A tiny
-// probe pass writes what each qualifying cell holds into a TRANSFER_SLOTS × 1
-// target, and a full-grid pass over the same state turns exactly those cells
-// into air (shaders/transfer.js: both evaluate the same rule). The probe is read
-// back asynchronously, and the promise resolves with the cells taken.
+// take(): the caller lists candidate cells (nearest first) and a filter. One
+// dispatch (shaders/transfer.js) tests every listed cell against the state,
+// turns exactly the qualifying ones into air, and writes what each held into a
+// ring slot (docs/webgpu.md D7, B7): the test and the change read the same
+// state. The answer is read back asynchronously, and the promise resolves with
+// the cells taken.
 // put(): the same, the other way round. Each target cell must be empty air (a
-// gas or anything else stays where it is); the probe tells which items landed.
+// gas or anything else stays where it is); the answer tells which items landed.
 //
-// Between the passes and the readback the matter is "in flight": gone from the
-// grid (take) or in the grid and reserved in the load (put). Load tracks both,
-// so a load never over-fills and an item is never placed twice.
+// Between the dispatch and the readback the matter is "in flight": gone from
+// the grid (take) or in the grid and reserved in the load (put). Load tracks
+// both, so a load never over-fills and an item is never placed twice. If
+// graphics stop before an answer lands, the world is gone with the device: a
+// take keeps nothing and a put gets its items back, so nothing is counted
+// twice when a new world loads.
 
-const MAX_IN_FLIGHT = 8;                 // transfers awaiting readback at once (one probe target each)
-const SLOT_COMPONENTS = 4;               // RGBA per slot texel
-const SLOT_ROWS = 2;                     // row 0: cells, row 1: items to place
+const MAX_IN_FLIGHT = 8;                 // transfers awaiting readback at once
+const SLOT_COMPONENTS = 4;               // vec4 per slot: (cell xyz, wanted id); an item; an answer
 const ANY_ID = -1;                       // slot filter: any element of the allowed kinds
 
 export { TRANSFER_SLOTS };
@@ -156,104 +157,37 @@ export function emptyLoads() {
 
 // ---------------------------------------------------------------- the transfer engine
 
-function rawMat(frag, uniforms) {
-  return new THREE.RawShaderMaterial({
-    glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader: frag, uniforms,
-    depthTest: false, depthWrite: false,
-  });
-}
-
-function makeProbeTarget() {
-  return new THREE.WebGLRenderTarget(TRANSFER_SLOTS, 1, {
-    type: THREE.FloatType, format: THREE.RGBAFormat,
-    minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-    depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
-  });
-}
-
-export function createTransfer({ renderer, getSim }) {
-  const slotData = new Float32Array(TRANSFER_SLOTS * SLOT_ROWS * SLOT_COMPONENTS);
-  const slotTex = new THREE.DataTexture(slotData, TRANSFER_SLOTS, SLOT_ROWS, THREE.RGBAFormat, THREE.FloatType);
-  const free = [...Array(MAX_IN_FLIGHT)].map(makeProbeTarget);
-  let mats = null, matsKey = '';
+export function createTransfer({ getSim }) {
   let inFlight = 0;
 
-  const uniforms = () => ({
-    ...stateUniforms(), tSlots: { value: slotTex },
-    uCount: { value: 0 }, uLimit: { value: 0 }, uMode: { value: 0 }, uKinds: { value: 0 }, uBreak: { value: false },
-  });
-  function materials(sim) {
-    const { nx, ny, nz } = sim.g;
-    const key = `${nx}x${ny}x${nz}`;
-    if (key !== matsKey) {
-      mats?.probe.dispose(); mats?.apply.dispose();
-      mats = {
-        probe: rawMat(transferProbeFrag(sim.g), uniforms()),
-        apply: rawMat(transferApplyFrag(sim.g), {
-          ...uniforms(), uBoxMin: { value: new THREE.Vector3() }, uBoxMax: { value: new THREE.Vector3() },
-          uVel: { value: new THREE.Vector3() },
-        }),
-      };
-      matsKey = key;
-    }
-    return mats;
-  }
-
-  // Upload the slots, run both passes, and read the probe back.
+  // Record the transfer's one dispatch and read its answer back.
   function run({ cells, wants, items, mode, kinds = 0, breakDebris = false, limit, vel }) {
     const sim = getSim();
     const n = Math.min(cells.length, TRANSFER_SLOTS);
-    if (!sim || !n || limit <= 0 || !free.length) return null;
-    // a cell listed twice would be taken (or filled) twice by the probe but once in the grid
+    if (!sim || !n || limit <= 0 || inFlight >= MAX_IN_FLIGHT) return null;
+    // a cell listed twice would be taken (or filled) twice by the answer but once in the grid
     const seen = new Set();
-    let count = 0;
-    const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    const slots = [];
     for (let i = 0; i < n; i++) {
       const [x, y, z] = cells[i];
       const k = keyOf(x, y, z);
       if (seen.has(k)) continue;
       seen.add(k);
-      slotData.set([x, y, z, wants?.[i] ?? ANY_ID], count * SLOT_COMPONENTS);
-      for (let a = 0; a < 3; a++) { box[a] = Math.min(box[a], cells[i][a]); box[a + 3] = Math.max(box[a + 3], cells[i][a]); }
-      count++;
+      slots.push([x, y, z, wants?.[i] ?? ANY_ID]);
     }
-    const row1 = TRANSFER_SLOTS * SLOT_COMPONENTS;
-    if (items) for (let r = 0; r < Math.min(items.length, TRANSFER_SLOTS); r++) slotData.set(items[r], row1 + r * SLOT_COMPONENTS);
-    slotTex.needsUpdate = true;
-
-    const { probe, apply } = materials(sim);
-    for (const m of [probe, apply]) {
-      const u = m.uniforms;
-      u.uCount.value = count;
-      u.uLimit.value = Math.min(limit, TRANSFER_SLOTS);
-      u.uMode.value = mode;
-      u.uKinds.value = kinds;
-      u.uBreak.value = breakDebris;
-    }
-    apply.uniforms.uBoxMin.value.set(box[0], box[1], box[2]);
-    apply.uniforms.uBoxMax.value.set(box[3], box[4], box[5]);
-    apply.uniforms.uVel.value.copy(vel ?? new THREE.Vector3());
-
-    // both passes read the same state: the probe first, then the grid pass replaces it
-    const target = free.pop();
-    probe.uniforms.tA.value = sim.stateA;
-    probe.uniforms.tB.value = sim.stateB;
-    sim.run(probe, target);
-    sim.touch(box.slice(0, 3), box.slice(3));   // apply copies every cell outside the box through
-    sim.pass(apply);
-
-    const buf = new Float32Array(count * SLOT_COMPONENTS);
-    inFlight++;
-    const done = () => { inFlight--; free.push(target); return buf; };
-    return renderer.readRenderTargetPixelsAsync(target, 0, 0, count, 1, buf).then(done, () => {
-      // the async path failed (context trouble): the probe is still in the target
-      renderer.readRenderTargetPixels(target, 0, 0, count, 1, buf);
-      return done();
+    const count = slots.length;
+    const answer = povGpu(sim).transfer({
+      count, limit: Math.min(limit, TRANSFER_SLOTS), mode, kinds, breaks: breakDebris ? 1 : 0,
+      vel: vel ?? [0, 0, 0], cells: slots, items: items ? items.slice(0, TRANSFER_SLOTS) : [],
     });
+    if (!answer) return null;   // (its kernel is still building: B5)
+    inFlight++;
+    return answer.then((bytes) => { inFlight--; return new Float32Array(bytes, 0, count * SLOT_COMPONENTS); },
+      (err) => { inFlight--; throw err; });
   }
 
   return {
-    get busy() { return free.length === 0; },
+    get busy() { return inFlight >= MAX_IN_FLIGHT; },
     get pending() { return inFlight; },
 
     // Take up to `load.free` (or `limit`) qualifying cells from `cells` (nearest
@@ -275,6 +209,11 @@ export function createTransfer({ renderer, getSim }) {
         load.cells.push(...got);
         load.version++;
         return got;
+      }, (err) => {
+        // graphics stopped: the world it came from is gone, so nothing was taken
+        load.reserved -= n;
+        load.version++;
+        throw err;
       });
     },
 
@@ -305,18 +244,20 @@ export function createTransfer({ renderer, getSim }) {
         load.cells.push(...items.slice(landed).reverse());
         load.version++;
         return landed;
+      }, (err) => {
+        // graphics stopped: the world it went into is gone, so every item comes back
+        load.out -= n;
+        load.cells.push(...items.slice().reverse());
+        load.version++;
+        throw err;
       });
     },
 
-    dispose() {
-      free.forEach((t) => t.dispose());
-      slotTex.dispose();
-      mats?.probe.dispose(); mats?.apply.dispose();
-    },
+    dispose() {},
   };
 }
 
-// One transfer engine per renderer, shared by every tool (and every toolbelt).
+// One transfer engine per renderer (the page's), shared by every tool (and every toolbelt).
 const engines = new WeakMap();
 export function sharedTransfer(env) {
   if (!engines.has(env.renderer)) engines.set(env.renderer, createTransfer(env));

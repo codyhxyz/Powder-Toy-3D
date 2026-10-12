@@ -1,101 +1,117 @@
-import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
+import { prelude, LAYOUT, STATE_OPTS } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { RING_LAYOUT, ringWGSL } from './povBody.js';
 
 // Exact cell transfer (src/pov/tools/transfer.js): taking cells out of the grid
 // and putting them back with nothing lost or duplicated.
 //
-// A transfer is a short list of slots (cells), uploaded as tSlots:
-//   row 0, texel i = (cell xyz, wanted element id or -1 for any)
-//   row 1, texel r = the r-th cell's contents to place (state A), puts only
+// A transfer is a short list of slots (cells), in its params:
+//   cells[i] = (cell xyz, wanted element id or -1 for any)
+//   items[r] = the r-th cell's contents to place (state A), puts only
 // A slot qualifies when its cell passes the transfer's filter: for a take, the
 // cell holds a wanted element of an allowed kind (and, when breaking, a solid
 // that can break); for a put, the cell is empty air. Of the qualifying slots
-// only the first uLimit act, in slot order, so the caller decides which cells
+// only the first `limit` act, in slot order, so the caller decides which cells
 // go first (nearest the aim) and how many at most (what the load can hold).
 //
-// Two passes read the same state and evaluate the same rule:
-//   transferProbeFrag  TRANSFER_SLOTS × 1 target, read back by the CPU: per slot,
-//                      what was taken (state A, debris id when breaking) or the
-//                      rank of the item placed there, else id/rank -1
-//   transferApplyFrag  full grid (sim.pass): the acting cells become air at
-//                      ambient (take) or the placed item (put)
-// so the CPU learns exactly what the grid gained or lost, however the world
-// moves while the readback is in flight.
+// One dispatch of one workgroup, a thread per slot (docs/webgpu.md D7, W18):
+// every thread tests its slot against the state, the workgroup ranks the
+// qualifying slots (an exclusive prefix sum over the slot order), and only
+// then does each acting thread write its own cell: the acting cells become air
+// at the ambient temperature (take) or the placed item (put), and the answer
+// for the CPU, per slot, goes into a ring slot (B7): what was taken (state A,
+// the debris id when breaking) or the rank of the item placed there, else
+// id/rank -1. Every test reads the state before any write, and the CPU never
+// lists a cell twice, so the CPU learns exactly what the grid gained or lost,
+// however the world moves while the readback is in flight.
 
-export const TRANSFER_SLOTS = 256;      // cells one transfer can touch (= texels read back)
-export const TRANSFER_TAKE = 0;         // uMode
+export const TRANSFER_SLOTS = 256;      // cells one transfer can touch (= vec4s read back)
+export const TRANSFER_TAKE = 0;         // mode
 export const TRANSFER_PUT = 1;
+export const TRANSFER_BYTES = TRANSFER_SLOTS * 16;   // one transfer's answer (a ring slot)
 
-const slotLib = (g) => /* glsl */ `
-${prelude(g)}
-#define TRANSFER_SLOTS ${TRANSFER_SLOTS}
-#define MODE_TAKE ${TRANSFER_TAKE}
-#define MODE_PUT ${TRANSFER_PUT}
-uniform sampler2D tSlots;
-uniform int uCount;     // slots in use
-uniform int uLimit;     // at most this many qualifying slots act (in slot order)
-uniform int uMode;      // MODE_TAKE or MODE_PUT
-uniform int uKinds;     // take: bit (1 << kind) for each element kind it may take
-uniform bool uBreak;    // take: solids come out as their debris (BREAKINTO)
+export const TransferParams = uniformStruct('TransferParams', {
+  count: 'u32',       // slots in use
+  limit: 'u32',       // at most this many qualifying slots act (in slot order)
+  mode: 'u32',        // TRANSFER_TAKE or TRANSFER_PUT
+  kinds: 'u32',       // take: bit (1 << kind) for each element kind it may take
+  vel: 'vec3f',       // put: velocity of the placed cells, cells/step
+  breaks: 'u32',      // take: solids come out as their debris (BREAKINTO)
+  slot: 'u32',        // the ring slot the answer goes to
+  cells: `array<vec4f, ${TRANSFER_SLOTS}>`,
+  items: `array<vec4f, ${TRANSFER_SLOTS}>`,
+});
 
-ivec3 slotCell(int i) { return ivec3(floor(texelFetch(tSlots, ivec2(i, 0), 0).xyz + 0.5)); }
+export const transferFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RW)}
+${TransferParams.wgsl}
+@group(3) @binding(1) var<uniform> P: TransferParams;
+${ringWGSL()}
+const TRANSFER_SLOTS: u32 = ${TRANSFER_SLOTS}u;
+const MODE_PUT: u32 = ${TRANSFER_PUT}u;
+var<workgroup> ranks: array<u32, ${TRANSFER_SLOTS}>;   // qualifying slots up to each one (inclusive)
 
-bool qualifies(int i) {
-  vec4 s = texelFetch(tSlots, ivec2(i, 0), 0);
-  ivec3 c = ivec3(floor(s.xyz + 0.5));
-  if (!inGrid(c)) return false;
-  int id = eid(fetchA(c));
-  if (uMode == MODE_PUT) return id == E_EMPTY;
-  int want = int(floor(s.w + 0.5));
-  if (id == E_EMPTY || (want >= 0 && id != want)) return false;
-  if ((uKinds & (1 << KIND[id])) == 0) return false;
-  return !uBreak || BREAKINTO[id] >= 0;
+// Does slot i's cell, holding a, pass the transfer's filter?
+fn qualifies(i: u32, a: vec4f) -> bool {
+  let id = eid(a);
+  if (P.mode == MODE_PUT) { return id == E_EMPTY; }
+  let want = i32(floor(P.cells[i].w + 0.5));
+  if (id == E_EMPTY || (want >= 0 && id != want)) { return false; }
+  if ((P.kinds & (1u << u32(KIND(id)))) == 0u) { return false; }
+  return P.breaks == 0u || BREAKINTO(id) >= 0;
 }
 
-// The slot's rank among the qualifying slots before it, or -1 if it doesn't act.
-int actingRank(int i) {
-  if (!qualifies(i)) return -1;
-  int r = 0;
-  for (int j = 0; j < i; j++) if (qualifies(j)) r++;
-  return r < uLimit ? r : -1;
-}
-`;
-
-export const transferProbeFrag = (g) => /* glsl */ `
-${slotLib(g)}
-out vec4 oC;
-void main() {
-  int i = int(gl_FragCoord.x);
-  oC = vec4(-1.0, 0.0, 0.0, 0.0);
-  if (i >= uCount) return;
-  int r = actingRank(i);
-  if (r < 0) return;
-  if (uMode == MODE_PUT) { oC = vec4(float(r), 0.0, 0.0, 0.0); return; }
-  vec4 a = fetchA(slotCell(i));
-  int id = eid(a);
-  oC = vec4(float(uBreak ? BREAKINTO[id] : id), a.yzw);
-}
-`;
-
-export const transferApplyFrag = (g) => /* glsl */ `
-${slotLib(g)}
-uniform ivec3 uBoxMin;   // bounds of the slots' cells (inclusive): every other cell copies through
-uniform ivec3 uBoxMax;
-uniform vec3 uVel;       // put: velocity of the placed cells, cells/step
-${stateOutGLSL}
-void transfer(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  if (any(lessThan(p, uBoxMin)) || any(greaterThan(p, uBoxMax))) return;
-  int slot = -1;
-  for (int i = 0; i < uCount; i++) if (slotCell(i) == p) { slot = i; break; }
-  if (slot < 0) return;
-  int r = actingRank(slot);
-  if (r < 0) return;
-  if (uMode == MODE_PUT) {
-    oA = texelFetch(tSlots, ivec2(r, 1), 0);
-    oB = vec4(uVel, b.w);
-  } else {
-    // air at ambient, keeping the cell's random seed and the air pressure
-    oA = vec4(float(E_EMPTY), uAirT, 0.0, fract(a.w));
-    oB = vec4(0.0, 0.0, 0.0, b.w);
+@compute @workgroup_size(${TRANSFER_SLOTS})
+fn main(@builtin(local_invocation_index) i: u32) {
+  // 1. the test, on the state before the transfer
+  var q = 0u;
+  var c = vec3i(0);
+  var a = vec4f(0.0);
+  var b = vec4f(0.0);
+  if (i < P.count) {
+    c = vec3i(floor(P.cells[i].xyz + 0.5));
+    if (inGrid(c)) {
+      a = fetchA(c);
+      b = fetchB(c);
+      if (qualifies(i, a)) { q = 1u; }
+    }
   }
+  // 2. the ranks: an inclusive prefix sum over the slots (Hillis & Steele)
+  ranks[i] = q;
+  for (var off = 1u; off < TRANSFER_SLOTS; off <<= 1u) {
+    workgroupBarrier();
+    var v = ranks[i];
+    if (i >= off) { v += ranks[i - off]; }
+    workgroupBarrier();
+    ranks[i] = v;
+  }
+  workgroupBarrier();
+  let rank = ranks[i] - q;
+  // 3. the acting slots write their own cells (no two slots share one)
+  var out = vec4f(-1.0, 0.0, 0.0, 0.0);
+  if (q == 1u && rank < P.limit) {
+    var oA: vec4f;
+    var oB: vec4f;
+    if (P.mode == MODE_PUT) {
+      out = vec4f(f32(rank), 0.0, 0.0, 0.0);
+      oA = P.items[rank];
+      oB = vec4f(P.vel, b.w);
+    } else {
+      let id = eid(a);
+      var got = id;
+      if (P.breaks != 0u) { got = BREAKINTO(id); }
+      out = vec4f(f32(got), a.yzw);
+      // air at ambient, keeping the cell's random seed and the air pressure
+      oA = vec4f(f32(E_EMPTY), airT(), 0.0, fract(a.w));
+      oB = vec4f(0.0, 0.0, 0.0, b.w);
+    }
+    if (writeCell(c, a, b, fetchF(c), oA, oB)) { markBrick(brickId(c >> vec3u(2u))); }
+  }
+  if (i < P.count) { ringOut[P.slot * TRANSFER_SLOTS + i] = out; }
 }
-${copyThroughMain('transfer')}`;
+`;
+
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  { name: 'povTransfer', kind: 'compute', code: (g) => transferFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] },
+];
