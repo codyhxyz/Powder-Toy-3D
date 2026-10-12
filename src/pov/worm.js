@@ -424,7 +424,8 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     const sim = env.getSim();
     // one edit over the bite's ball: it changes no cell outside it (sim.js)
     const reach = Math.max(BITE.RADIUS, BITE.DEPTH);
-    pass(sim, { center: [cx, cy, cz], dir: d }, sim.touchCentres([cx - reach, cy - reach, cz - reach], [cx + reach, cy + reach, cz + reach]));
+    // (its kernel still building, B5: no bite this frame, and the next frame tries again)
+    if (!pass(sim, { center: [cx, cy, cz], dir: d }, sim.touchCentres([cx - reach, cy - reach, cz - reach], [cx + reach, cy + reach, cz + reach]))) return;
     digAt = { x: p.x, y: p.y, z: p.z };
     digWait = DIG_MIN_S;
     stats.digs++;

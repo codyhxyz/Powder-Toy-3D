@@ -220,7 +220,8 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
 
   function kick(dirIn) {
     const sim = getSim();
-    if (!sim || wait > 0 || body.dead) return null;
+    // (its kernels still building, B5: the kick waits, as a tool's use does)
+    if (!sim || wait > 0 || body.dead || !povGpu(sim).ready) return null;
     const halo = haloMatch();
     wait = halo ? MELEE_REFIRE : KICK_REFIRE;
     poseT = 0;

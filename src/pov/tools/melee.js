@@ -115,7 +115,8 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         const sim = ctx.sim ?? env.getSim();
         const c = aim.cell.clone().addScalar(0.5), swingDir = ctx.dir.clone().normalize();
         const r = Math.max(blow.RADIUS, blow.DEPTH);   // the blow's reach (blowWGSL)
-        pass(sim, { center: c, dir: swingDir }, sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]));
+        // (its kernel still building, B5: the swing lands nothing rather than announce a blow it didn't strike)
+        if (!pass(sim, { center: c, dir: swingDir }, sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]))) return { landed: false };
         lastHit = { cell: aim.cell.clone(), id: aim.id };
         // the struck cell breaks if the blow's full energy (it lands at the patch centre) beats its hardness
         const el = ELEMENTS[aim.id];

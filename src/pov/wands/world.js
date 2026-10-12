@@ -17,7 +17,7 @@ export function createWandWorld({ getSim }) {
   const commandData = Array.from({ length: WAND_COMMANDS * 4 }, () => [0, 0, 0, 0]);   // row r of command i at r · WAND_COMMANDS + i
   const segmentData = Array.from({ length: WAND_RAYS * 2 }, () => [0, 0, 0, 0]);   // from rows, then to rows
   let sim = null, simId, generation = 0, disposed = false;
-  let context = { dt: 0, stepsPerFrame: 0 }, flushed = false, shiftVersion = 0;
+  let context = { dt: 0, stepsPerFrame: 0 }, flushed = false, held = false, shiftVersion = 0;
   const shifted = new THREE.Vector3();
   const stats = {
     queued: 0, rejected: 0, passes: 0, commands: 0, rays: 0, readbacks: 0,
@@ -83,7 +83,8 @@ export function createWandWorld({ getSim }) {
     }
     lo.max(new THREE.Vector3()); hi.min(new THREE.Vector3(s.g.nx, s.g.ny, s.g.nz));
     if (lo.x > hi.x || lo.y > hi.y || lo.z > hi.z) { commands.length = 0; return; }
-    // (false while its kernel is still building, B5: the batch is dropped, as a full one is)
+    // (the POV kernels still building, B5: the batch waits, kept for the next frame's flush ahead of that frame's)
+    if (!povGpu(s).ready) { held = true; return; }
     povGpu(s).edit('povWand', s.touchCentres(lo.toArray(), hi.toArray()), { count: commands.length, lo, hi, commands: commandData });
     stats.passes++; stats.totalPasses++;
     stats.commands += commands.length; stats.totalCommands += commands.length;
@@ -170,7 +171,8 @@ export function createWandWorld({ getSim }) {
     stats, queue, flush, trace, clearance, setLights,
     begin(ctx = {}) {
       current();
-      commands.length = 0; flushed = false;
+      if (!held) commands.length = 0;
+      held = false; flushed = false;
       context = { dt: Number.isFinite(ctx.dt) ? clamp(ctx.dt, 0, 0.25) : 0,
         stepsPerFrame: Number.isFinite(ctx.stepsPerFrame) ? Math.floor(clamp(ctx.stepsPerFrame, 0, 1000)) : 0 };
       for (const k of ['queued', 'rejected', 'passes', 'commands', 'rays', 'readbacks']) stats[k] = 0;

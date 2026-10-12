@@ -266,11 +266,13 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
     // every frame; stepsPerFrame 0 (paused): the fuses wait, as the grenades in the air do
     update(dt, stepsPerFrame = 1) {
       if (!(dt > 0) || stepsPerFrame === 0) return;
+      // (the POV kernels still building, B5: a fuse that runs out waits for its blast's edit)
+      const sim = getSim(), blasts = !sim || povGpu(sim).ready;
       for (const g of [...live]) {
         g.t += dt;
         if (g.armed) {
           const fuse = g.bounced == null ? FUSE_MAX_S : Math.max(FUSE_MIN_S, g.bounced + FUSE_AFTER_BOUNCE_S);
-          if (g.t >= fuse) detonate(g);
+          if (g.t >= fuse && blasts) detonate(g);
         } else if (g.t >= PICKUP_LIFE_S) remove(g);
       }
       // the dead spill theirs; the living pick them up

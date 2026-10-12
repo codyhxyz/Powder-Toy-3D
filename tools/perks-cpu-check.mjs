@@ -26,6 +26,7 @@ function makeSim(cell, n = [64, 160, 64]) {
   };
   // the body's POV GPU work: its probe answered from cell() (the box at boxLo, x fastest, then z, then y), its edits taken
   setPovGpu(sim, {
+    ready: true,
     edit: () => true,
     probe(name, { boxLo: b }) {
       const buf = new Float32Array(PROBE_CELLS * 4);

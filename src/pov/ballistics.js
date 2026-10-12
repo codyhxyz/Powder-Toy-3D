@@ -275,6 +275,9 @@ export function createBallistics() {
       ensureWorld(sim);
       frameNo++;
       if (!rounds.length || stepsPerFrame === 0 || !(dt > 0)) return;
+      // the POV kernels still building (B5: a new grid while in POV): the rounds hold where they
+      // are, as when paused, rather than strike or burst with no edit to do it
+      if (!povGpu(sim).ready) return;
       frameTime = dt;
       // each round's events are its shooter's (an NPC's carry by, events.js)
       for (const r of [...rounds]) povEvents.as(r.actor, () => fly(sim, r));

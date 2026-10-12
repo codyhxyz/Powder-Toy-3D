@@ -13,12 +13,16 @@
 // Kernels are the sim's (an edit kernel's bind groups hold its buffers), but
 // their pipelines are cached by their text, so another simulation of the same
 // grid size builds nothing new (G2: never per sim.id). They build when POV
-// starts (prepare(), from src/wire/pov.js: B5's "POV families on entering
+// starts (prepare(), from src/pov/index.js: B5's "POV families on entering
 // POV") or on first use; until a kernel is built, its use is skipped (an edit
-// returns false, a probe null), which every caller already allows for: a
-// probe that doesn't land is one more frame of latency, a transfer that isn't
-// issued is a busy engine. The rings and the laser's shot buffers belong to
-// the device, shared by every simulation on it.
+// returns false, a probe null). What has a cost besides its edit waits for
+// every kernel (`ready`, B5's "a POV tool's use waits"): the toolbelt takes
+// no input, the kick doesn't kick, rounds and grenades hold in the air with
+// their blasts, the wands' batches stay queued. What is left skips a frame's
+// edit harmlessly: a probe that doesn't land is one more frame of latency, a
+// transfer that isn't issued is a busy engine, the body's coupling resumes
+// next frame. The rings and the laser's shot buffers belong to the device,
+// shared by every simulation on it.
 
 import { POV_BODY_EDITS, povProbeFrag, ProbeParams, PROBE_BYTES, PROBE_DISPATCH, RING_LAYOUT } from '../shaders/povBody.js';
 import { POV_KICK_EDITS, hookCellFrag, CellsParams, CELLS_MAX } from '../shaders/povKick.js';
@@ -275,16 +279,27 @@ class PovGpu {
    * @returns {Promise<unknown>}
    */
   prepare() {
-    this.prepared ??= Promise.all([
-      ...Object.keys(POV_EDITS).map((n) => this.editKernel(n).ready),
-      ...Object.keys(PROBES).map((n) => this._probeKernel(n).ready),
-      ...[this._comKernel(), this._transferKernel(), ...this._laserKernels()].map((k) => k.ready),
-    ]).then(() => { this.built = true; });
+    if (!this.prepared) {
+      this.prepared = Promise.all([
+        ...Object.keys(POV_EDITS).map((n) => this.editKernel(n).ready),
+        ...Object.keys(PROBES).map((n) => this._probeKernel(n).ready),
+        ...[this._comKernel(), this._transferKernel(), ...this._laserKernels()].map((k) => k.ready),
+      ]).then(() => { this.built = true; });
+      // (a kernel that fails to build fails the device, gpu.fail: B9; whoever awaits this still sees it)
+      this.prepared.catch(() => {});
+    }
     return this.prepared;
   }
 
-  /** Whether prepare() has built every POV kernel of this simulation. */
-  get ready() { return this.built === true; }
+  /**
+   * Whether every POV kernel of this simulation is built (B5: what has a cost
+   * besides its edit waits for them). Asking starts their build if nothing
+   * has (prepare(): an NPC's tool, a check's toolbelt).
+   */
+  get ready() {
+    if (!this.built) this.prepare();
+    return this.built === true;
+  }
 }
 
 /**

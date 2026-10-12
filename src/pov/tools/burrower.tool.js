@@ -267,7 +267,8 @@ export default {
         if (!drills.length) return;
         const sim = ctx.sim ?? env.getSim();
         const dt = ctx.stepsPerFrame === 0 ? 0 : ctx.dt;
-        if (!(dt > 0) || !sim) return;
+        // (the POV kernels still building, B5: the drills hold, as when paused, rather than fly on without boring)
+        if (!(dt > 0) || !sim || !povGpu(sim).ready) return;
         for (const d of [...drills]) { flyDrill(sim, d, dt); if (d.alive) draw(d, dt); }
         env.requestRender?.();
       },

@@ -16,6 +16,7 @@ import { flaskLabel } from '../descent/items.js';
 import { glowMaterial, setGlowTone } from './glow.js';
 import { potionColor } from '../descent/flasks.js';
 import { ELEMENTS } from '../../elements.js';
+import { povGpu } from '../gpu.js';
 
 export { emptyLoads };
 
@@ -512,6 +513,7 @@ export function createToolbelt(env) {
     select,
     pressSlot,
     update(ctx) {
+      ctx = waitForKernels(ctx, env);
       lastCtx = ctx;
       syncDescent();
       if (loot.update()) env.requestRender?.();
@@ -582,6 +584,17 @@ export function createToolbelt(env) {
   };
 }
 
+// A tool's use waits while the POV kernels build (docs/webgpu.md B5: a new
+// grid while in POV, or a check that hasn't built them): the frame's ctx
+// without its buttons, so tools keep their animations and timers but nothing
+// fires, swings, pours or grabs, and none of a use's events go out without
+// its edit.
+const IDLE_INPUT = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, drink: false, drinkPressed: false };
+function waitForKernels(ctx, env) {
+  const sim = ctx.sim ?? env.getSim?.();
+  return !sim || povGpu(sim).ready ? ctx : { ...ctx, ...IDLE_INPUT };
+}
+
 // An NPC's tools (npc.js): every tool the player has, headless. The same tool
 // code, so the same physics and rules; its own pack and bucket (env.owner); the
 // shared projectiles (env.ballistics, the player's toolbelt's, which flies them);
@@ -613,6 +626,7 @@ export function createKit(env) {
     get lastRefusal() { return lastRefusal; },
     // run tool `key` this frame with ctx (the one held before is put away first)
     use(key, ctx) {
+      ctx = waitForKernels(ctx, env);
       if (noHands(ctx)) { tools.get(held)?.deselect?.(); held = null; return; }
       if (held !== key) { tools.get(held)?.deselect?.(); held = key; }
       tools.get(key)?.update(ctx);
