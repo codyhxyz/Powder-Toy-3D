@@ -205,6 +205,11 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   }
   const keysAt = (clipTime) => (shot?.clip?.keys ?? []).filter((h) => clipTime >= h.from && clipTime < h.to).map((h) => h.key);
 
+  // The scene's own animations on game time, as the app's tick runs them
+  // (wire/mesh.js afterStep: perk orbs bob on the simulation's clock); they
+  // were last placed on the wall clock (perkOrbs.add), which differs per page.
+  const animate = () => app.perkOrbs?.update(ticks / TICK_HZ);
+
   // ---- game time
   async function steps(n) {
     for (let left = n; left > 0; left -= STEP_BATCH) {
@@ -241,7 +246,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
         await new Promise((r) => setTimeout(r, 0));   // (the body's probes land)
       }
       await steps(per);
-      if (render) await test.renderOnce();
+      if (render) { animate(); await test.renderOnce(); }
     }
     rendered = render;
     if (n > 1) say(`${n} ticks (${n * per} steps${render ? ', a frame each' : ''}${pov ? ', the body' : ''}) in ${since(t0)}`);
@@ -325,6 +330,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   async function converge() {
     if (live) return;
     const t0 = performance.now();
+    animate();
     let n = DRAFT_STILL_FRAMES;
     if (quality === 'draft') { for (let i = 0; i < n; i++) await test.renderOnce(); }
     else n = await test.render();
@@ -333,6 +339,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   }
   async function present() {
     if (live || rendered) return;
+    animate();
     await test.renderOnce();
     rendered = true;
   }
@@ -359,6 +366,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
       nondeterminism: [
         'TAA history: the post pass\'s jitter index counts every frame the page drew (not resettable); manual mode draws none before the shot, so both sides start at the same index',
         ...(app.pov?.active ? ['first person: the body\'s probes are read back asynchronously; each tick waits one task for them'] : []),
+        ...(app.arena ? ['the arena\'s team banners sway from the wall clock of the moment they were placed (arenas/markers.js; not reachable from __app)'] : []),
         ...notes,
       ],
     };
