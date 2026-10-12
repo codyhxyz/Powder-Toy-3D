@@ -36,7 +36,7 @@ function descentLoad(app, key) {
 
 const descent = {
   name: 'descent',
-  ready: false,
+  ready: true,
 
   // the runner, once the POV shell exists (pov.js attaches first)
   attach(app) {

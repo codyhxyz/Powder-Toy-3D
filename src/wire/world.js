@@ -1,8 +1,7 @@
 // World mode's wiring (docs/scaling.md D11; docs/webgpu.md G1, U10): the
 // window over a world, its far field, the god view's home over it, the window
 // following the focus, the shrine every world gets, and the Island box
-// scene's generator. Moved here from app.js as it was (WebGL): U10 ports it.
-// Until then app.js builds a box for a world map and says so.
+// scene's generator.
 import * as THREE from 'three';
 import { structureClear, shrineAltars as worldShrineAltars } from '../world/structures.js';
 import { loadIsland, releaseGenerator } from '../world/gpu.js';
@@ -41,7 +40,7 @@ const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's mi
 
 const world = {
   name: 'world',
-  ready: false,
+  ready: true,
   order: -1,   // the far field draws before the volume (docs/webgpu.md F1)
 
   // A world's grid: the window over it (app.worldMode set by build()), its far field.
@@ -51,8 +50,15 @@ const world = {
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
-    win.far = new FarField(app.renderer, win, { sun: app.sun, time: app.viewTimeUniform });
-    win.far.attach(app.vol, app.derived);   // its haze and shadows on the window
+    win.far = new FarField(app.renderer, win, { sun: app.sun });
+    win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window
+    // its view builds with the view that draws it (B5: at boot in the realistic view, else on switching to it),
+    // and the frame that follows its build draws it
+    if (app.settings.view === 0) world.buildFarView(app, win.far);
+  },
+  buildFarView(app, far) {
+    if (far.viewPipe.state !== 'idle') return;
+    far.buildView().then(() => app.pacer?.wake(), () => {});
   },
   detach(app) {
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
@@ -64,9 +70,12 @@ const world = {
     const { win } = app;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
     torchLights.update(win?.scene ?? null, app.camGrid, app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
-    win?.far.view(app.volume, app.settings.view === 0, app.camera);
+    if (win?.far && app.settings.view === 0) world.buildFarView(app, win.far);
+    win?.far?.view(app.volume, app.settings.view === 0, app.camera);
   },
-  scene(app, rp) { app.win?.far.draw?.(rp); },
+  // the detail meshes' distances, before the scene pass (world/far.js prepass: their own render pass)
+  compute(app) { app.win?.far?.prepass(app.post?.sceneTarget); },
+  scene(app, rp) { app.win?.far?.draw?.(rp, app.post?.sceneTarget); },
   invalidate(app) {
     const { win } = app;
     if (win) {
@@ -75,8 +84,25 @@ const world = {
     }
   },
 
-  // The Island box scene (presets: 'island'): world/gpu.js's generator on the box.
-  loadIsland(app) { loadIsland(app.sim, { seed: app.worldSeed }); },
+  // The Island box scene (presets: 'island'): world/gpu.js's generator on the
+  // box. It fills once the generator's kernels are built (seconds, the first
+  // time), so the load carries a token: it lands only if it is still the
+  // latest, the box still shows the Islet on the same grid, and its undo
+  // snapshot (loadPreset's, the top of the history now) hasn't been undone.
+  // Another scene, a Clear or an Undo meanwhile wins; cancelIsland is for the
+  // other whole-grid writers (a save's load, a session's frame).
+  loadIsland(app) {
+    const sim = app.sim, t = world._islandLoad = { sim, mark: sim.history.at(-1) ?? null };
+    t.done = loadIsland(sim, {
+      seed: app.worldSeed,
+      still: () => world._islandLoad === t && app.sim === sim && app.settings.preset === 'island' && !app.win
+        && (t.mark === null || sim.history.includes(t.mark)),
+    });
+    t.done.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
+  },
+  // A pending Island load (above) is dropped.
+  cancelIsland() { world._islandLoad = null; },
+  _islandLoad: null,
 
   // A world has one scene, its own: loading starts it over (and can't be
   // undone). Its passes compile in the background first (the first time):

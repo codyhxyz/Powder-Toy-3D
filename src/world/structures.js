@@ -623,78 +623,105 @@ export function structureCellAt(P, x, y, z, id, cellAt) {
 const bears = (id) => id !== E.EMPTY && ELEMENTS[id].kind !== K.GAS && ELEMENTS[id].kind !== K.LIQUID;
 
 // ---------------------------------------------------------------- GPU
-// The textures for world P (one set per world, kept), and the uniforms that bind them.
-const gpu = new Map();
-export function structureUniforms(P) {
-  // until a worker has placed them (structuresReady), empty textures: the window asks again after prepare
+// World P's structures as part of its scene's data (scenes/sceneGpu.js SD,
+// docs/webgpu.md G1: storage, not integer textures), from word uStructAt on
+// (the scene places them): the index, a word per world brick column (r | g <<
+// 8), then the info, INFO_W vec4i a slot, then the cell atlas, four cells a
+// word; and the island's uniform fields that find them (STRUCT_FIELDS, the
+// offsets within its words). Until a worker has placed them
+// (structuresReady), empty: the window asks again after prepare. One set per
+// world, kept.
+export const STRUCT_FIELDS = {
+  uStructOn: 'bool', uStructBX: 'i32', uStructBZ: 'i32', uStructAW: 'i32', uStructAH: 'i32',
+  uStructAt: 'u32', uStructInfoAt: 'u32', uStructCellsAt: 'u32',
+};
+const words = new Map();
+export function structureWords(P) {
   const ready = placedYet(P), k = ready ? JSON.stringify(P) : `pending:${P.size}`;
-  let t = gpu.get(k);
-  if (!t) {
+  let w = words.get(k);
+  if (!w) {
     const d = ready ? structureData(P) : structureData(P, Object.assign([], { pending: true }));
-    const index = new THREE.DataTexture(d.index, d.BX, d.BZ, THREE.RGBAIntegerFormat, THREE.UnsignedByteType);
-    index.internalFormat = 'RGBA8UI';
-    const info = new THREE.DataTexture(d.info, INFO_W, Math.max(1, d.list.length), THREE.RGBAIntegerFormat, THREE.IntType);
-    info.internalFormat = 'RGBA32I';
-    const cells = new THREE.Data3DTexture(d.cells, ...d.size);
-    cells.format = THREE.RedIntegerFormat;
-    cells.type = THREE.UnsignedByteType;
-    cells.internalFormat = 'R8UI';
-    cells.unpackAlignment = 1;
-    for (const tex of [index, info, cells]) { tex.minFilter = tex.magFilter = THREE.NearestFilter; tex.needsUpdate = true; }
-    t = { index, info, cells };
-    if (gpu.size >= PLACED_KEEP) disposeStructureTextures();
-    gpu.set(k, t);
+    const nIndex = d.BX * d.BZ, nInfo = d.info.length, nCells = Math.ceil(d.cells.length / 4);
+    const data = new Uint32Array(nIndex + nInfo + nCells);
+    data.set(new Uint32Array(d.index.buffer, d.index.byteOffset, nIndex), 0);
+    data.set(new Uint32Array(d.info.buffer, d.info.byteOffset, nInfo), nIndex);
+    new Uint8Array(data.buffer, (nIndex + nInfo) * 4, d.cells.length).set(d.cells);
+    w = {
+      data,
+      values: {
+        uStructOn: !!P.structures, uStructBX: d.BX, uStructBZ: d.BZ, uStructAW: d.size[0], uStructAH: d.size[1],
+        uStructInfoAt: nIndex, uStructCellsAt: nIndex + nInfo,
+      },
+    };
+    if (words.size >= PLACED_KEEP) words.clear();
+    words.set(k, w);
   }
-  return {
-    uStructOn: { value: !!P.structures },
-    tStructIndex: { value: t.index }, tStructInfo: { value: t.info }, tStructCells: { value: t.cells },
-  };
+  return w;
 }
-export function disposeStructureTextures() {
-  for (const t of gpu.values()) Object.values(t).forEach((tex) => tex.dispose());
-  gpu.clear();
-}
+// (the name is the WebGL version's, which kept textures)
+export function disposeStructureTextures() { words.clear(); }
 
-// structureCell(w, id, cellAt): sceneCell's id at world cell w with the structures
-// in. The scene defines int structureGround(ivec3 w): its own cell there (the
-// footing's search). structureClears(ivec2 bc): no tree in brick column bc.
-export const STRUCT_GLSL = /* glsl */ `
-precision highp usampler2D;
-precision highp isampler2D;
-precision highp usampler3D;
-uniform bool uStructOn;
-uniform usampler2D tStructIndex;
-uniform isampler2D tStructInfo;
-uniform usampler3D tStructCells;
-#define STRUCT_FOOT_BIT ${FOOT_BIT}u
-int structureGround(ivec3 w);
-bool structBears(int id) { return id != E_EMPTY && KIND[id] != K_GAS && KIND[id] != K_LIQUID; }
-bool structureClears(ivec2 bc) {
-  if (!uStructOn || any(lessThan(bc, ivec2(0))) || any(greaterThanEqual(bc, textureSize(tStructIndex, 0)))) return false;
-  return texelFetch(tStructIndex, bc, 0).g > 0u;
+// structureCell(w, id): sceneCell's id at world cell w with the structures in.
+// The scene defines fn structureGround(w: vec3i) -> i32: its own cell there
+// (the footing's search, from one call: the test device inlines each, W23).
+// structureClears(bc): no tree in brick column bc. WGSL, after the scene's
+// head (SU, sdWord) and the prelude (tables, BS).
+export const STRUCT_GLSL = /* wgsl */ `
+const STRUCT_FOOT_BIT: u32 = ${FOOT_BIT}u;
+const STRUCT_INFO_W: i32 = ${INFO_W};
+fn structBears(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS && KIND(id) != K_LIQUID; }
+// brick column bc's index entry: x the slot + 1 over it (0: none), y 1 where trees give way
+fn structIndex(bc: vec2i) -> vec2u {
+  let w = sdWord(SU.uStructAt + u32(bc.x + SU.uStructBX * bc.y));
+  return vec2u(w & 255u, (w >> 8u) & 255u);
 }
-int structureCell(ivec3 w, int id) {
-  if (!uStructOn) return id;
-  ivec2 bc = w.xz / BS;
-  if (any(lessThan(w.xz, ivec2(0))) || any(greaterThanEqual(bc, textureSize(tStructIndex, 0)))) return id;
-  int slot = int(texelFetch(tStructIndex, bc, 0).r) - 1;
-  if (slot < 0) return id;
-  ivec4 lo = texelFetch(tStructInfo, ivec2(0, slot), 0), box = texelFetch(tStructInfo, ivec2(1, slot), 0);
-  int az = texelFetch(tStructInfo, ivec2(2, slot), 0).x;
-  ivec3 q = w - lo.xyz;
-  if (q.x < 0 || q.z < 0 || q.x >= box.x || q.z >= box.z || q.y >= box.y || q.y < -lo.w) return id;
+// slot's info texel n: (box low corner x, y, z; footing depth), (w, h, d; atlas x), (atlas z; 0, 0, 0)
+fn structInfo(n: i32, slot: i32) -> vec4i {
+  let i = SU.uStructAt + SU.uStructInfoAt + u32(4 * (n + STRUCT_INFO_W * slot));
+  return vec4i(bitcast<i32>(sdWord(i)), bitcast<i32>(sdWord(i + 1u)), bitcast<i32>(sdWord(i + 2u)), bitcast<i32>(sdWord(i + 3u)));
+}
+// the cell atlas at c: id + 1 (0: the scene's cell), + STRUCT_FOOT_BIT on a base cell that grows a footing
+fn structCell(c: vec3i) -> u32 {
+  let i = u32(c.x + SU.uStructAW * (c.y + SU.uStructAH * c.z));
+  return (sdWord(SU.uStructAt + SU.uStructCellsAt + (i >> 2u)) >> ((i & 3u) * 8u)) & 255u;
+}
+fn structureClears(bc: vec2i) -> bool {
+  if (SU.uStructOn == 0u || any(bc < vec2i(0)) || bc.x >= SU.uStructBX || bc.y >= SU.uStructBZ) { return false; }
+  return structIndex(bc).y > 0u;
+}
+fn structureCell(w: vec3i, id: i32) -> i32 {
+  if (SU.uStructOn == 0u) { return id; }
+  let bc = w.xz / BS;
+  if (any(w.xz < vec2i(0)) || bc.x >= SU.uStructBX || bc.y >= SU.uStructBZ) { return id; }
+  let slot = i32(structIndex(bc).x) - 1;
+  if (slot < 0) { return id; }
+  let lo = structInfo(0, slot);
+  let box = structInfo(1, slot);
+  let az = structInfo(2, slot).x;
+  let q = w - lo.xyz;
+  if (q.x < 0 || q.z < 0 || q.x >= box.x || q.z >= box.z || q.y >= box.y || q.y < -lo.w) { return id; }
   if (q.y >= 0) {
-    uint c = texelFetch(tStructCells, ivec3(box.w + q.x, q.y, az + q.z), 0).r & (STRUCT_FOOT_BIT - 1u);
-    return c > 0u ? int(c) - 1 : id;
+    let c = structCell(vec3i(box.w + q.x, q.y, az + q.z)) & (STRUCT_FOOT_BIT - 1u);
+    if (c > 0u) { return i32(c) - 1; }
+    return id;
   }
-  // a footing: the base cell above grows one, down through what bears no weight to ground within reach
-  uint c = texelFetch(tStructCells, ivec3(box.w + q.x, 0, az + q.z), 0).r;
-  if ((c & STRUCT_FOOT_BIT) == 0u || structBears(id)) return id;
-  for (int y = lo.y - 1; y > w.y; y--) if (structBears(structureGround(ivec3(w.x, y, w.z)))) return id;
-  for (int i = 1; i <= ${MAX_FOOT}; i++) {
-    if (i > lo.w) break;
-    int y = lo.y - i;
-    if (y < 0 || structBears(structureGround(ivec3(w.x, y, w.z)))) return int(c & (STRUCT_FOOT_BIT - 1u)) - 1;
+  // a footing: the base cell above grows one, down through what bears no weight
+  // to ground within reach: first the cells between it and the base, then
+  // those under it within the depth (one loop, so one call of structureGround)
+  let c = structCell(vec3i(box.w + q.x, 0, az + q.z));
+  if ((c & STRUCT_FOOT_BIT) == 0u || structBears(id)) { return id; }
+  let above = max(lo.y - 1 - w.y, 0);   // cells strictly between it and the base
+  for (var k = 0; k < above + ${MAX_FOOT}; k++) {
+    var y: i32;
+    if (k < above) { y = lo.y - 1 - k; } else {
+      let i = k - above + 1;
+      if (i > lo.w) { break; }
+      y = lo.y - i;
+      if (y < 0) { return i32(c & (STRUCT_FOOT_BIT - 1u)) - 1; }
+    }
+    let bears = structBears(structureGround(vec3i(w.x, y, w.z)));
+    if (k < above && bears) { return id; }
+    if (k >= above && bears) { return i32(c & (STRUCT_FOOT_BIT - 1u)) - 1; }
   }
   return id;
 }

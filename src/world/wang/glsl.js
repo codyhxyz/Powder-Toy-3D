@@ -2,122 +2,167 @@ import { E } from '../../elements.js';
 import { MAT, MAT_NAMES, MAT_COUNT, COL, SIDE_PORTS, WANG_OUT, WANG_NO_TEMP, compileKit } from './kit.js';
 import { SOLID_TILE } from './tiling.js';
 
-// The GPU sampler of a baked Wang tiling (bake.js): GLSL to include after the
-// prelude in a scene's glsl(g). It defines
-//   int wangCell(ivec3 w)      the kit's material code at world cell w (MAT in
-//                              kit.js; WANG_OUT outside the tiled region): two
-//                              texel fetches (the unit's placement, the tile's
-//                              cell) and a few compares for the ports
-//   int wangElement(int code)  the element (elements.js id) a code is, by the kit's palette
-//   float wangTemp(int code)   the °C the kit lays it down at (its temps), else WANG_NO_TEMP
-// and declares the uniforms bakeWang's uniforms() binds:
-//   tWangAtlas   usampler3D R8UI: every tile's cells in its canonical frame
-//   tWangPlace   usampler3D RGBA8UI: per unit (x, k, layer) its tile, transform, ports
-//   uWangOrigin  ivec3: the region's low corner in world cells
-//   uWangUnits   ivec3: the region in units (x, layers, z)
-// Its CPU twin is tiling.js makeSampler (bake.js wangCellJS): keep them in step.
+// The GPU sampler of a baked Wang tiling (bake.js): WGSL to include after the
+// prelude and the scene's head in a scene's glsl(g) (the name is the GLSL
+// version's, docs/webgpu.md W2). It defines
+//   fn wangCell(w: vec3i) -> i32      the kit's material code at world cell w (MAT in
+//                                     kit.js; WANG_OUT outside the tiled region): two
+//                                     data reads (the unit's placement, the tile's
+//                                     cell) and a few compares for the ports
+//   fn wangElement(code: i32) -> i32  the element (elements.js id) a code is, by the kit's palette
+//   fn wangTemp(code: i32) -> f32     the °C the kit lays it down at (its temps), else WANG_NO_TEMP
+// and reads the scene's uniform fields WANG_FIELDS and its data (sdWord,
+// scenes/sceneGpu.js), as wangData lays them out: the palette (a word a code),
+// the temps (f32 bits a code), the placement (a word a unit: tile, transform,
+// the port colours' two bytes; unit (x, layer, z) at x + nx · (z + nz ·
+// layer)) and the atlas (four cells a word: every tile's cells in its
+// canonical frame). Its CPU twin is tiling.js makeSampler (bake.js
+// wangCellJS): keep them in step.
+export const WANG_FIELDS = {
+  uWangOrigin: 'vec3i',    // the region's low corner in world cells
+  uWangUnits: 'vec3i',     // the region in units (x, layers, z)
+  uWangPlaceAt: 'u32',     // the placement's first word in SD
+  uWangAtlasAt: 'u32',     // the atlas's first word in SD
+  uWangAX: 'i32',          // the atlas's size along x and y, cells
+  uWangAY: 'i32',
+};
 export function wangGLSL(rawKit) {
   const kit = rawKit.geom && rawKit.tiles[0]?.accepts ? rawKit : compileKit(rawKit);
   const G = kit.geom;
-  const elemOf = (name) => {
-    const id = E[kit.palette[name]];
-    if (id === undefined) throw new Error(`wang: kit ${kit.name} palette ${name}: no element ${kit.palette[name]}`);
-    return id;
-  };
-  const palette = MAT_NAMES.slice(0, MAT_COUNT).map(elemOf);
-  const temps = MAT_NAMES.slice(0, MAT_COUNT).map((n) => (kit.temps?.[n] ?? WANG_NO_TEMP).toFixed(1));
-  return /* glsl */ `
-precision highp usampler3D;
-uniform usampler3D tWangAtlas;
-uniform usampler3D tWangPlace;
-uniform ivec3 uWangOrigin;
-uniform ivec3 uWangUnits;
-#define WANG_U ${G.U}
-#define WANG_H ${G.H}
-#define WANG_BORDER ${G.BORDER}
-#define WANG_FLOOR ${G.FLOOR}
-#define WANG_HIGH_FLOOR ${G.HIGH_FLOOR}
-#define WANG_DOOR_W ${G.DOOR_W}
-#define WANG_DOOR_H ${G.DOOR_H}
-#define WANG_PORT_DEPTH ${G.PORT_DEPTH}
-#define WANG_PORT_DEPTH_SIDE ${G.PORT_DEPTH_SIDE}
-#define WANG_FRAME_DEPTH ${G.FRAME_DEPTH}
-#define WANG_RAIL_GAUGE ${G.RAIL_GAUGE}
-#define WANG_SHAFT_W ${G.SHAFT_W}
-#define WANG_SHAFT_CUT ${G.SHAFT_CUT}
-#define WANG_JITTER ${G.JITTER}
-#define WANG_OPEN ${G.OPEN ? 1 : 0}
-#define WANG_SPINE ${G.SPINE ?? 0}
-#define WANG_JITTER_BIT 16u
-#define WANG_SIDE_PORTS ${SIDE_PORTS}
-#define WANG_COL_RAIL ${COL.RAIL}
-#define WANG_COL_HIGH ${COL.HIGH}
-#define WANG_SOLID_TILE ${SOLID_TILE}u
-#define WANG_ATLAS_PER_COL ${Math.floor(256 / G.U)}
-#define WANG_XF_TRANSPOSE 4u
-#define WANG_XF_SECOND 8u
-#define WANG_OUT ${WANG_OUT}
-${MAT_NAMES.map((n) => `#define WANG_${n} ${MAT[n]}`).join('\n')}
-const int WANG_PALETTE[${MAT_COUNT}] = int[${MAT_COUNT}](${palette.join(', ')});
-int wangElement(int code) { return code >= 0 && code < ${MAT_COUNT} ? WANG_PALETTE[code] : ${E.ROCK}; }
-#define WANG_NO_TEMP ${WANG_NO_TEMP.toFixed(1)}
-const float WANG_TEMP[${MAT_COUNT}] = float[${MAT_COUNT}](${temps.join(', ')});
+  return /* wgsl */ `
+const WANG_U: i32 = ${G.U};
+const WANG_H: i32 = ${G.H};
+const WANG_BORDER: i32 = ${G.BORDER};
+const WANG_FLOOR: i32 = ${G.FLOOR};
+const WANG_HIGH_FLOOR: i32 = ${G.HIGH_FLOOR};
+const WANG_DOOR_W: i32 = ${G.DOOR_W};
+const WANG_DOOR_H: i32 = ${G.DOOR_H};
+const WANG_PORT_DEPTH: i32 = ${G.PORT_DEPTH};
+const WANG_PORT_DEPTH_SIDE: i32 = ${G.PORT_DEPTH_SIDE};
+const WANG_FRAME_DEPTH: i32 = ${G.FRAME_DEPTH};
+const WANG_RAIL_GAUGE: i32 = ${G.RAIL_GAUGE};
+const WANG_SHAFT_W: i32 = ${G.SHAFT_W};
+const WANG_SHAFT_CUT: i32 = ${G.SHAFT_CUT};
+const WANG_JITTER: i32 = ${G.JITTER};
+const WANG_OPEN: i32 = ${G.OPEN ? 1 : 0};
+const WANG_SPINE: i32 = ${G.SPINE ?? 0};
+const WANG_JITTER_BIT: u32 = 16u;
+const WANG_SIDE_PORTS: i32 = ${SIDE_PORTS};
+const WANG_COL_RAIL: i32 = ${COL.RAIL};
+const WANG_COL_HIGH: i32 = ${COL.HIGH};
+const WANG_SOLID_TILE: u32 = ${SOLID_TILE}u;
+const WANG_ATLAS_PER_COL: i32 = ${Math.floor(256 / G.U)};
+const WANG_XF_TRANSPOSE: u32 = 4u;
+const WANG_XF_SECOND: u32 = 8u;
+const WANG_OUT: i32 = ${WANG_OUT};
+const WANG_MAT_COUNT: i32 = ${MAT_COUNT};
+${MAT_NAMES.map((n) => `const WANG_${n}: i32 = ${MAT[n]};`).join('\n')}
+const WANG_NO_TEMP: f32 = ${WANG_NO_TEMP.toFixed(1)};
+// the element a code is (the kit's palette: SD's first MAT_COUNT words)
+fn wangElement(code: i32) -> i32 {
+  if (code >= 0 && code < WANG_MAT_COUNT) { return bitcast<i32>(sdWord(u32(code))); }
+  return ${E.ROCK};
+}
 // the temperature the kit lays a code down at (its temps), WANG_NO_TEMP for its element's own
-float wangTemp(int code) { return code >= 0 && code < ${MAT_COUNT} ? WANG_TEMP[code] : WANG_NO_TEMP; }
+fn wangTemp(code: i32) -> f32 {
+  if (code >= 0 && code < WANG_MAT_COUNT) { return bitcast<f32>(sdWord(u32(WANG_MAT_COUNT + code))); }
+  return WANG_NO_TEMP;
+}
 
-uint wangHash(ivec3 r) {
-  uint h = (uint(r.x) * 0x8da6b343u) ^ (uint(r.y) * 0xd8163841u) ^ (uint(r.z) * 0xcb1ab31fu);
-  h = (h ^ (h >> 15)) * 0x2c1b3c6du;
-  h = (h ^ (h >> 12)) * 0x297a2d39u;
-  return h ^ (h >> 15);
+fn wangHash(r: vec3i) -> u32 {
+  var h = (u32(r.x) * 0x8da6b343u) ^ (u32(r.y) * 0xd8163841u) ^ (u32(r.z) * 0xcb1ab31fu);
+  h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+  h = (h ^ (h >> 12u)) * 0x297a2d39u;
+  return h ^ (h >> 15u);
 }
 // The ports a placed tile has open, cut into its cell (canonical c, region-relative r)
-int wangPorts(int code, int ports, ivec3 c, ivec3 r) {
-  int half_ = WANG_DOOR_W / 2;
-  int j = int((wangHash(r) >> WANG_JITTER_BIT) & 1u) * WANG_JITTER;
-  for (int p = 0; p < WANG_SIDE_PORTS; p++) {
-    int col = (ports >> (2 * p)) & 3;
-    if (col == 0) continue;
-    int depth, lat;
-    if (p < 2) { depth = p == 0 ? c.x : 2 * WANG_U - 1 - c.x; lat = c.z - WANG_U / 2; }
-    else { int unit = (p - 2) & 1; depth = p < 4 ? c.z : WANG_U - 1 - c.z; lat = c.x - unit * WANG_U - WANG_U / 2; }
-    if (depth >= (p < 2 ? WANG_PORT_DEPTH : WANG_PORT_DEPTH_SIDE)) continue;
-    int yb = col == WANG_COL_HIGH ? WANG_HIGH_FLOOR : WANG_FLOOR;
-    if (c.y < yb || c.y >= yb + WANG_DOOR_H + j || lat < -half_ - j || lat >= half_ + j) continue;
+fn wangPorts(code_in: i32, ports: i32, c: vec3i, r: vec3i) -> i32 {
+  var code = code_in;
+  let half_ = WANG_DOOR_W / 2;
+  let j = i32((wangHash(r) >> WANG_JITTER_BIT) & 1u) * WANG_JITTER;
+  for (var p = 0; p < WANG_SIDE_PORTS; p++) {
+    let col = (ports >> u32(2 * p)) & 3;
+    if (col == 0) { continue; }
+    var depth: i32;
+    var lat: i32;
+    if (p < 2) {
+      depth = select(2 * WANG_U - 1 - c.x, c.x, p == 0);
+      lat = c.z - WANG_U / 2;
+    } else {
+      let unit = (p - 2) & 1;
+      depth = select(WANG_U - 1 - c.z, c.z, p < 4);
+      lat = c.x - unit * WANG_U - WANG_U / 2;
+    }
+    if (depth >= select(WANG_PORT_DEPTH_SIDE, WANG_PORT_DEPTH, p < 2)) { continue; }
+    let yb = select(WANG_FLOOR, WANG_HIGH_FLOOR, col == WANG_COL_HIGH);
+    if (c.y < yb || c.y >= yb + WANG_DOOR_H + j || lat < -half_ - j || lat >= half_ + j) { continue; }
     if (c.y >= yb + WANG_DOOR_H || lat < -half_ || lat >= half_) { code = WANG_AIR; continue; }
-    if (depth == WANG_FRAME_DEPTH && (lat == -half_ || lat == half_ - 1 || c.y == yb + WANG_DOOR_H - 1)) return WANG_BEAM;
-    if (col == WANG_COL_RAIL && c.y == yb && (lat == -WANG_RAIL_GAUGE / 2 || lat == WANG_RAIL_GAUGE / 2 - 1)) return WANG_RAIL;
+    if (depth == WANG_FRAME_DEPTH && (lat == -half_ || lat == half_ - 1 || c.y == yb + WANG_DOOR_H - 1)) { return WANG_BEAM; }
+    if (col == WANG_COL_RAIL && c.y == yb && (lat == -WANG_RAIL_GAUGE / 2 || lat == WANG_RAIL_GAUGE / 2 - 1)) { return WANG_RAIL; }
     return WANG_AIR;
   }
-  for (int p = 0; p < 4; p++) {
-    if (((ports >> (2 * WANG_SIDE_PORTS + p)) & 1) == 0) continue;
-    int unit = p & 1;
-    int dx = c.x - unit * WANG_U - WANG_U / 2, dz = c.z - WANG_U / 2, sh = WANG_SHAFT_W / 2;
-    if (dx < -sh || dx >= sh || dz < -sh || dz >= sh) continue;
-    if (p >= 2 ? c.y >= WANG_H - WANG_BORDER : c.y < (WANG_OPEN == 1 ? WANG_SPINE + 1 : WANG_FLOOR + WANG_SHAFT_CUT)) return WANG_AIR;
+  for (var p = 0; p < 4; p++) {
+    if (((ports >> u32(2 * WANG_SIDE_PORTS + p)) & 1) == 0) { continue; }
+    let unit = p & 1;
+    let dx = c.x - unit * WANG_U - WANG_U / 2;
+    let dz = c.z - WANG_U / 2;
+    let sh = WANG_SHAFT_W / 2;
+    if (dx < -sh || dx >= sh || dz < -sh || dz >= sh) { continue; }
+    var cut: bool;
+    if (p >= 2) { cut = c.y >= WANG_H - WANG_BORDER; }
+    else { cut = c.y < select(WANG_FLOOR + WANG_SHAFT_CUT, WANG_SPINE + 1, WANG_OPEN == 1); }
+    if (cut) { return WANG_AIR; }
   }
   return code;
 }
-int wangCell(ivec3 w) {
-  ivec3 r = w - uWangOrigin;
-  if (any(lessThan(r, ivec3(0)))) return WANG_OUT;
-  ivec3 u = ivec3(r.x / WANG_U, r.y / WANG_H, r.z / WANG_U);
-  if (any(greaterThanEqual(u, uWangUnits))) return WANG_OUT;
-  uvec4 q = texelFetch(tWangPlace, ivec3(u.x, u.z, u.y), 0);
-  if (q.r == WANG_SOLID_TILE) return WANG_ROCK;
-  uint xf = q.g & 7u;
-  bool tr = (xf & WANG_XF_TRANSPOSE) != 0u;
-  ivec3 a = u;
-  if ((q.g & WANG_XF_SECOND) != 0u) { if (tr) a.z -= 1; else a.x -= 1; }
-  ivec3 l = r - ivec3(a.x * WANG_U, a.y * WANG_H, a.z * WANG_U);
-  int ca = tr ? l.z : l.x, cb = tr ? l.x : l.z;
-  ivec3 c = ivec3((xf & 1u) != 0u ? 2 * WANG_U - 1 - ca : ca, l.y, (xf & 2u) != 0u ? WANG_U - 1 - cb : cb);
-  int tile = int(q.r);
-  ivec3 t0 = ivec3(0, (tile / WANG_ATLAS_PER_COL) * WANG_H, (tile % WANG_ATLAS_PER_COL) * WANG_U);
-  int code = int(texelFetch(tWangAtlas, t0 + c, 0).r);
+fn wangCell(w: vec3i) -> i32 {
+  let r = w - SU.uWangOrigin;
+  if (any(r < vec3i(0))) { return WANG_OUT; }
+  let u = vec3i(r.x / WANG_U, r.y / WANG_H, r.z / WANG_U);
+  if (any(u >= SU.uWangUnits)) { return WANG_OUT; }
+  let qw = sdWord(SU.uWangPlaceAt + u32(u.x + SU.uWangUnits.x * (u.z + SU.uWangUnits.z * u.y)));
+  let q = vec4u(qw & 255u, (qw >> 8u) & 255u, (qw >> 16u) & 255u, qw >> 24u);
+  if (q.r == WANG_SOLID_TILE) { return WANG_ROCK; }
+  let xf = q.g & 7u;
+  let tr = (xf & WANG_XF_TRANSPOSE) != 0u;
+  var a = u;
+  if ((q.g & WANG_XF_SECOND) != 0u) { if (tr) { a.z -= 1; } else { a.x -= 1; } }
+  let l = r - vec3i(a.x * WANG_U, a.y * WANG_H, a.z * WANG_U);
+  let ca = select(l.x, l.z, tr);
+  let cb = select(l.z, l.x, tr);
+  let c = vec3i(select(ca, 2 * WANG_U - 1 - ca, (xf & 1u) != 0u), l.y, select(cb, WANG_U - 1 - cb, (xf & 2u) != 0u));
+  let tile = i32(q.r);
+  let t0 = vec3i(0, (tile / WANG_ATLAS_PER_COL) * WANG_H, (tile % WANG_ATLAS_PER_COL) * WANG_U);
+  let ac = t0 + c;
+  let ai = u32(ac.x + SU.uWangAX * (ac.y + SU.uWangAY * ac.z));
+  var code = i32((sdWord(SU.uWangAtlasAt + (ai >> 2u)) >> ((ai & 3u) * 8u)) & 255u);
   // an open kit's caps (kit.js openCap)
-  if (WANG_OPEN == 1 && ((u.y == uWangUnits.y - 1 && c.y >= WANG_H - WANG_BORDER) || (u.y == 0 && c.y < WANG_FLOOR))) code = WANG_ROCK;
-  return wangPorts(code, int(q.b) | (int(q.a) << 8), c, r);
+  if (WANG_OPEN == 1 && ((u.y == SU.uWangUnits.y - 1 && c.y >= WANG_H - WANG_BORDER) || (u.y == 0 && c.y < WANG_FLOOR))) { code = WANG_ROCK; }
+  return wangPorts(code, i32(q.b) | (i32(q.a) << 8u), c, r);
 }
 `;
+}
+
+/**
+ * A bake's tables and tiling as the scene's integer data (SD) and the
+ * uniform fields that find them (WANG_FIELDS): the palette and temps, the
+ * placement, the atlas.
+ * @param {{ kit: object, units: number[], origin: number[], atlas: { data: Uint8Array, dims: number[] }, placement: Uint8Array }} bake
+ */
+export function wangData({ kit, units, origin, atlas, placement }) {
+  const palette = MAT_NAMES.slice(0, MAT_COUNT).map((n) => E[kit.palette[n]]);
+  const temps = MAT_NAMES.slice(0, MAT_COUNT).map((n) => kit.temps?.[n] ?? WANG_NO_TEMP);
+  const nPlace = units[0] * units[1] * units[2], nAtlas = Math.ceil(atlas.data.length / 4);
+  const words = new Uint32Array(2 * MAT_COUNT + nPlace + nAtlas);
+  words.set(Uint32Array.from(palette, (v) => v >>> 0), 0);
+  new Float32Array(words.buffer, MAT_COUNT * 4, MAT_COUNT).set(temps);
+  words.set(new Uint32Array(placement.buffer.slice(placement.byteOffset, placement.byteOffset + nPlace * 4)), 2 * MAT_COUNT);
+  new Uint8Array(words.buffer, (2 * MAT_COUNT + nPlace) * 4, atlas.data.length).set(atlas.data);
+  return {
+    words,
+    values: {
+      uWangOrigin: origin, uWangUnits: units, uWangPlaceAt: 2 * MAT_COUNT, uWangAtlasAt: 2 * MAT_COUNT + nPlace,
+      uWangAX: atlas.dims[0], uWangAY: atlas.dims[1],
+    },
+  };
 }

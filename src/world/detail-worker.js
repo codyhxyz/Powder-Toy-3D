@@ -16,10 +16,11 @@ self.onmessage = ({ data: d }) => {
     const index = (x, y, z) => x + L.side * (y + sy * z);
     const localIndex = (p) => index(p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]);
     const volume = [...origin, ...origin.map((v, i) => v + size[i])];
+    // the scene cells (shaders/far.js farSceneCellsFrag): a word a cell, (id, °C) as two halves,
+    // cell (x, y, z) of the chunk's columns at x + side · (z + side · y)
     for (let z = 0; z < L.side; z++) for (let y = 0; y < sy; y++) for (let x = 0; x < L.side; x++) {
       const wy = y - pad;
-      const texel = x + (z % L.cols) * L.side + (wy + Math.floor(z / L.cols) * height) * L.width;
-      ids[index(x, y, z)] = wy < 0 ? E.ROCK : wy >= height ? E.EMPTY : DataUtils.fromHalfFloat(raw[texel * 4]);
+      ids[index(x, y, z)] = wy < 0 ? E.ROCK : wy >= height ? E.EMPTY : DataUtils.fromHalfFloat(raw[x + L.side * (z + L.side * wy)] & 0xffff);
     }
     // The same construction and rotation as WorldWindow.bakeTree. Only new
     // columns get generated trees: visited columns come from stored edits,

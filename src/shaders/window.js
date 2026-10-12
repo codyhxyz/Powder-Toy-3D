@@ -1,13 +1,15 @@
-import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims } from './common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims, EDIT_FIELDS, editKernelWGSL } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 
 // Passes that move the window over the world (docs/scaling.md D11; driven by
-// world/window.js through Simulation.shift and the store). Every one runs out
-// of place (docs/webgpu.md D8.12): it reads the source at p + shift and writes
-// the other copy or a scratch, since in place a thread would overwrite a cell
-// another thread still has to read. The slab passes (stage, edit, gather) and
-// the GI probes' shift are U10's and U4's.
+// world/window.js through Simulation.shift and the store). Every shift runs
+// out of place (docs/webgpu.md D8.12): it reads the source at p + shift and
+// writes the other copy or a scratch, since in place a thread would overwrite
+// a cell another thread still has to read. The leaving slab is one kernel of
+// shaders/generate.js (sceneDiffFrag, G1); the stored bricks coming back are
+// an edit over the entering slab (editFrag, below); the GI probes' shift is
+// the derived passes' (U4).
 //
 // Slab layout. A slab (the cells about to leave the window, or a set of stored
 // bricks coming back) is exchanged with the CPU brick by brick, in the D5
@@ -15,9 +17,10 @@ import { fold } from '../gpu/kernels.js';
 // fastest, then y, then z (SLAB_CELL). world/store.js keeps bricks in the same
 // order.
 export const BRICK_CELLS = 64;                         // cells per 4³ brick
-export const STAGE_BRICKS_PER_ROW = 16;                // bricks per staging-texture row (WebGL; U10)
-export const STAGE_W = BRICK_CELLS * STAGE_BRICKS_PER_ROW;
-export const SLOT_W = 64;                              // slots per row of the slot list (WebGL; U10)
+// WEBGPU-STUB (docs/webgpu.md J3): the WebGL staging targets' layout (bricks a row, texels a row, slots a row)
+export const STAGE_BRICKS_PER_ROW = null;
+export const STAGE_W = null;
+export const SLOT_W = null;
 
 // A slab's cell order, for the kernels that exchange slabs with the store (the
 // world's stage and edit, U10; the decoration's, U17): local cell l of a brick
@@ -96,12 +99,43 @@ ${slotMain}
 }
 `;
 
+// Stored bricks back (world/window.js restore): an edit (docs/webgpu.md D6,
+// G1) over the slab of grid cells [lo, lo + 4·bricks) that a move uncovered,
+// after the fill. Per slab brick (x fastest, then y, then z) restoreIdx holds
+// its stored brick's slot + 1 (0: none, the fill stands), and restoreCells
+// the slots' cells in the store's slab order: 64 A, then 64 B a slot
+// (world/store.js decodeBrick). Both are one persistent upload buffer of the
+// window's (written with gpu.write before the edit), its index first.
+export const RestoreParams = uniformStruct('RestoreParams', {
+  ...EDIT_FIELDS,
+  lo: 'vec3i',      // the slab's low corner, grid cells
+  bricks: 'vec3i',  // its size in bricks
+  cellsAt: 'u32',   // the slots' cells' first vec4 in the buffer (after the index)
+});
+export const RESTORE_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
+const RESTORE_DECLS = /* wgsl */ `
+@group(2) @binding(0) var<storage, read> restore: array<vec4u>;   // the index (four slots a vec4), then the cells (vec4f bits)
+${slabGLSL}`;
+const RESTORE_UPDATE = /* wgsl */ `
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let r = p - P.lo;
+  let sb = r / BS;
+  let k = u32(sb.x + P.bricks.x * (sb.y + P.bricks.y * sb.z));
+  let s = restore[k >> 2u][k & 3u];
+  if (s == 0u) { return; }
+  let at = P.cellsAt + (s - 1u) * ${2 * BRICK_CELLS}u + u32(slabIndex(r - sb * BS));
+  *oA = bitcast<vec4f>(restore[at]);
+  *oB = bitcast<vec4f>(restore[at + ${BRICK_CELLS}u]);
+}`;
+/** The restore's edit kernel (sim.editKernel takes this). */
+export const restoreEdit = () => ({ update: RESTORE_UPDATE, decls: RESTORE_DECLS, params: RestoreParams, reads: 'own', layout: RESTORE_LAYOUT });
+// (the name is the WebGL pass's, docs/webgpu.md W2)
+export const editFrag = (g) => editKernelWGSL(g, restoreEdit());
+
 const stub = (name, unit) => () => { throw new Error(`${name} removed in the WebGPU port: docs/webgpu.md G1 (${unit})`); };
-// WEBGPU-STUB (docs/webgpu.md J3): the leaving slab is one kernel (U10, G1)
+// WEBGPU-STUB (docs/webgpu.md J3): the leaving slab is one kernel (shaders/generate.js sceneDiffFrag, G1)
 export const stageFrag = stub('stageFrag', 'U10');
-// WEBGPU-STUB (docs/webgpu.md J3): stored bricks are an edit over the slab (U10, G1)
-export const editFrag = stub('editFrag', 'U10');
-// WEBGPU-STUB (docs/webgpu.md J3)
+// WEBGPU-STUB (docs/webgpu.md J3): the leaving slab is one kernel (shaders/generate.js sceneDiffFrag, G1)
 export const gatherFrag = stub('gatherFrag', 'U10');
 // WEBGPU-STUB (docs/webgpu.md J3): the GI probes' shift is the derived passes' (U4, E)
 export const giShiftFrag = stub('giShiftFrag', 'U4');
@@ -109,12 +143,16 @@ export const giShiftFrag = stub('giShiftFrag', 'U4');
 const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
 /**
  * tools/check-wgsl.mjs, and the pipelines a grid needs (B5): undoShift every
- * grid (undo is it with no shift), shift and flowShift a world's grid only.
+ * grid (undo is it with no shift), shift, flowShift and the stored bricks'
+ * restore a world's grid only.
  */
 export const WGSL_CHECK = [
   { name: 'shift', kind: 'compute', code: (g) => shiftFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
   { name: 'undoShift', kind: 'compute', code: (g) => undoShiftFrag(g), layouts: () => [...rw(), UNDO_LAYOUT], dispatch: perSlot },
   { name: 'flowShift', kind: 'compute', code: flowShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FLOW_SHIFT_LAYOUT], dispatch: perSlot, windowed: true },
+  // (the world's kernels build on entering it, B5: the warm-up leaves this out)
+  { name: 'restore', kind: 'compute', code: (g) => editFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RESTORE_LAYOUT],
+    params: RestoreParams, dispatch: (g) => fold(g.nbricks), windowed: true, warm: false },
   // slabGLSL on its own (its kernels are U10's and U17's): validated, never warmed
   { name: 'slabProbe', kind: 'compute', tool: true, layouts: () => [LAYOUT.TABLES], dispatch: () => [1, 1, 1],
     code: (g) => `${prelude(g, { state: false })}

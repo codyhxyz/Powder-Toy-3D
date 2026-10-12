@@ -1,4 +1,6 @@
-import { helpersGLSL, definesGLSL, jsConstants, pickGLSL, compileShared } from './themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, pickGLSL, compileShared } from './themedShared.js';
+import { toWgsl } from './subsetWgsl.js';
+import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 import { ISLAND_VIEW_XZ } from './island.js';
 import { E } from '../../elements.js';
 
@@ -428,6 +430,27 @@ function twin(P) {
   return twins.get(P.seed);
 }
 
+// The scene's WGSL (scenes/sceneGpu.js): constants, the helpers, the geometry
+// (from the subset: scenes/subsetWgsl.js) and sceneCell.
+const VOL_U = sceneStruct();
+let srcWgsl = null;
+const volWgsl = () => /* wgsl */ `
+${sceneHeadWGSL(VOL_U)}
+${definesGLSL(P_, V)}
+${helpersGLSL}
+${srcWgsl ??= toWgsl(SRC, { consts: definesTypes(P_, V), uniforms: VOL_U.sceneTypes })}
+fn sceneCell(w: vec3i) -> SceneCell {
+  let id = volCell(w.x, w.y, w.z);
+  var T = SPAWNT(id);
+  var ctype = 0.0;
+  if (id == E_ROCK) { T = mix(SPAWNT(E_ROCK), SPAWNT(E_SNOW), volFrost(w.y)); }
+  if (id == E_LAVA) { T = VOL_MAGMA_T; ctype = f32(E_STONE); }   // magma, which sets to stone
+  if (id == E_CLONE) { ctype = f32(E_LAVA); }                    // the endless lava source
+  let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, VOL_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
+}
+`;
+
 export const VOL = { ...V.ints, ...V.floats };
 export const VOL_KINDS = V.picks.KIND.map(([k]) => k);   // site kinds by index (volSiteKind)
 export const volcanoTwin = twin;   // (tools/scene-themed-preview.mjs, tools/scene-themed-check.mjs)
@@ -438,22 +461,9 @@ export const volcanoWorld = {
   key: 'volcanoWorld',
   label: 'Volcano isles',
   params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: V.ints.SEA, floor: V.ints.FLOOR }),
-  glsl: () => /* glsl */ `
-${definesGLSL(P_, V)}
-${helpersGLSL}
-${SRC}
-void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
-  int id = volCell(w.x, w.y, w.z);
-  float T = SPAWNT[id], ctype = 0.0;
-  if (id == E_ROCK) T = mix(SPAWNT[E_ROCK], SPAWNT[E_SNOW], volFrost(w.y));
-  if (id == E_LAVA) { T = VOL_MAGMA_T; ctype = float(E_STONE); }   // magma, which sets to stone
-  if (id == E_CLONE) ctype = float(E_LAVA);                        // the endless lava source
-  float seed = float(seedWorld(w, uSceneSeed, VOL_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  A = vec4(float(id), T, SPAWNLIFE[id], ctype + seed);
-  B = vec4(0.0);
-}
-`,
-  uniforms: (P) => ({ uSceneSeed: { value: P.seed } }),
+  glsl: () => volWgsl(),
+  uniformStruct: VOL_U,
+  uniforms: (P) => ({ uSceneSeed: P.seed }),
   // The active volcano nearest the world's centre (bigger ones count as nearer),
   // seen from the camera's side.
   start(P, win) {
