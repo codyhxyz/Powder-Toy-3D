@@ -86,7 +86,11 @@ export async function openPovApp({ query = '?size=64&preset=empty&view=plain', v
             __app.test.step(steps);
             await __app.gpu.fence();
             await new Promise((r) => setTimeout(r, 0));   // (the frame's probes land)
-            if (++window.__pov.count % PROGRESS_EVERY === 0) console.log(`· ${window.__pov.count} frames (${((performance.now() - t0) / 1000).toFixed(0)} s)`);
+            if (++window.__pov.count % PROGRESS_EVERY === 0) {
+              // (the bricks awake are what a frame costs here: SwiftShader steps their cells on the CPU)
+              const c = await __app.sim.readCounts();
+              console.log(`· ${window.__pov.count} frames (${((performance.now() - t0) / 1000).toFixed(0)} s, ${c.awake} of ${c.units} bricks awake)`);
+            }
             if (done()) return i + 1;
           }
           return n;
@@ -133,4 +137,54 @@ export async function openPovApp({ query = '?size=64&preset=empty&view=plain', v
     await vite.close();
     throw e;
   }
+}
+
+/**
+ * Runs a check's parts one after another, each in an app of its own (its own
+ * Vite and browser): docs/webgpu.md I1 keeps a run under ~3 minutes and
+ * tools/browser.mjs stops a browser at 10, and an awake 64³ grid costs
+ * SwiftShader about a second a frame, so a check that needs more frames than
+ * that is split here, the way tools/pov-gpu-check.mjs's runStages splits the
+ * harness's. Prints each part's checks and wall time; a part that throws
+ * fails and the next one still runs.
+ * @param {[string, (app: Awaited<ReturnType<typeof openPovApp>>) => Promise<void>][]} parts [name, run]
+ * @param {{ only?: string[] | null, open?: Parameters<typeof openPovApp>[0], setup?: (app: Awaited<ReturnType<typeof openPovApp>>) => Promise<void> }} [opts]
+ *   only: the parts to run (all when null); setup: run on each part's app before the part
+ * @returns {Promise<number>} failures
+ */
+export async function runParts(parts, { only = null, open, setup } = {}) {
+  const names = parts.map(([n]) => n);
+  const unknown = (only ?? []).filter((n) => !names.includes(n));
+  if (unknown.length) throw new Error(`no part ${unknown.join(', ')} (parts: ${names.join(', ')})`);
+  let failures = 0;
+  const t0 = Date.now();
+  for (const [name, run] of parts) {
+    if (only && !only.includes(name)) continue;
+    const t = Date.now();
+    console.log(`\n${name}`);
+    let app = null;
+    try {
+      app = await openPovApp(open);
+      console.log(`  booted in ${app.boot.toFixed(0)} s`);
+      await setup?.(app);
+      await run(app);
+      app.check(`${name}: no page or GPU errors`, !app.errors.length, app.errors.slice(0, 5).join(' | '));
+      if (app.allowed.length) console.log(`  (${app.allowed.length} allowed three.js material warnings, until U13)`);
+    } catch (e) {
+      failures++;
+      console.log(`FAIL ${name} threw ${String(e?.stack ?? e).slice(0, 600)}`);
+    } finally {
+      failures += app?.failures() ?? 0;
+      await app?.close();
+    }
+    console.log(`  (${name}: ${((Date.now() - t) / 1000).toFixed(0)} s)`);
+  }
+  console.log(failures ? `\n${failures} FAILED (${((Date.now() - t0) / 1000).toFixed(0)} s)` : `\nall ok (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+  return failures;
+}
+
+/** The comma-separated list after --`name` on the command line, or null. */
+export function argList(name, argv = process.argv) {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && argv[i + 1] ? argv[i + 1].split(',').filter(Boolean) : null;
 }
