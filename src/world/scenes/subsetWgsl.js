@@ -41,6 +41,8 @@ const BUILTINS = {
   floor: 'f32', sqrt: 'f32', pow: 'f32', cos: 'f32', sin: 'f32', smoothstep: 'f32', exp: 'f32', fract: 'f32',
   float: 'f32', int: 'i32', uint: 'u32', bool: 'bool',
 };
+// builtins emitted as the helpers' own (themedShared.js helpersGLSL): cos and sin to about an ulp
+const EMIT_AS = { cos: 'thCos', sin: 'thSin' };
 
 // ---------------------------------------------------------------- tokens
 function tokenize(src) {
@@ -370,7 +372,7 @@ export function toWgsl(src, { consts = {}, uniforms = {}, externs = {}, uniformS
       if (e.name === 'uint') return `u32(${args[0]})`;
       if (e.name === 'bool') return `bool(${args[0]})`;
       if (!(e.name in BUILTINS) && !sigs.has(e.name)) throw where(`calls ${e.name}, which nothing defines`);
-      return `${e.name in BUILTINS ? e.name : rename(e.name)}(${args.join(', ')})`;
+      return `${e.name in BUILTINS ? EMIT_AS[e.name] ?? e.name : rename(e.name)}(${args.join(', ')})`;
     }
 
     // statements → lines

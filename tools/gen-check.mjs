@@ -6,17 +6,17 @@
 //     GPU-synced, the minimum of FILL_RUNS (other sessions share the device:
 //     the minimum is the uncontended cost);
 //   - the JS twin against the GPU: the baked column heights (the scene data's
-//     first vec4s) against heightAt, exactly, and every cell's element (the
+//     first vec4s) against heightAt (to HEIGHT_EPS, the ground they round to exactly), and every cell's element (the
 //     fill, no trees) against islandCellAt;
 //   - seams: the grid generated at a shifted world origin matches the
 //     overlapping cells exactly (all of state A), and a slab fill (a window
 //     move's) keeps the cells outside it as the full fill made them;
 //   - stability: the element at every cell after --steps steps vs right after
 //     loading (cells whose element changed, by from → to);
-//   - with an outDir, a still of the box (test render).
+//   - with an outDir, a still of the box (one frame).
 // usage: node tools/gen-check.mjs [outDir] [--size 64|32|128|wide] [--seed N] [--steps 30] [--verbose] [--port N]
 import { mkdirSync } from 'node:fs';
-import { launchBrowser, newTestPage, render } from './browser.mjs';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 
 const args = process.argv.slice(2);
@@ -27,6 +27,9 @@ const seed = opt('seed', null);
 const steps = +opt('steps', 30);
 const verbose = args.includes('--verbose');
 const FILL_RUNS = 3;
+// cells: how far the baked heights may sit from the twin's (the GPU's floats
+// against the twin's doubles; the ground they round to must be the same)
+const HEIGHT_EPS = 1e-3;
 const SHIFT = 16;   // cells: the seams' shift (a window step, world/window.js WIN_STEP)
 if (out) mkdirSync(out, { recursive: true });
 
@@ -35,7 +38,7 @@ const b = await launchBrowser();
 let failures = 0;
 const ok = (cond, what) => { if (!cond) failures++; console.log(`${cond ? 'ok  ' : 'FAIL'} ${what}`); };
 try {
-  const p = await newTestPage(b, { mode: 'manual', viewport: { width: 640, height: 400 } });
+  const p = await newTestPage(b, { mode: 'manual', viewport: { width: 320, height: 200 } });
   const errs = [];
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
   p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e.stack || e).slice(0, 600)));
@@ -155,13 +158,14 @@ try {
   console.log(JSON.stringify({ world: res.world, fillMs: res.fillMs, census: res.census }, null, 1));
   if (verbose && res.list.length) console.log(res.list.join('\n'));
   const t = res.twin, s = res.seams;
-  ok(t.maxHeightDiff === 0 && t.groundDiffColumns === 0, `twin: the baked columns' heights against heightAt over ${t.columns} columns: max difference ${t.maxHeightDiff}, ${t.groundDiffColumns} ground cells apart`);
+  ok(t.maxHeightDiff <= HEIGHT_EPS && t.groundDiffColumns === 0, `twin: the baked columns' heights against heightAt over ${t.columns} columns: max difference ${t.maxHeightDiff.toExponential(2)} (at most ${HEIGHT_EPS}), ${t.groundDiffColumns} ground cells apart`);
   ok(t.cellsDiffering === 0, `twin: every cell of the fill against islandCellAt: ${t.cellsDiffering} of ${t.cells} differ${t.cellsDiffering ? ` (${JSON.stringify(t.kinds)})` : ''}`);
   ok(s.cellsDiffering === 0, `seams: a fill shifted by ${s.shift} cells against the overlap: ${s.cellsDiffering} cells differ`);
   ok(s.slabFillCellsDiffering === 0, `seams: a slab fill keeps the rest of the grid: ${s.slabFillCellsDiffering} cells differ`);
   console.log(`stability: ${res.stability.changed} cells changed element in ${res.stability.steps} steps (${res.stability.shareOfMatter} of the matter): ${JSON.stringify(res.stability.changes)}`);
   if (out) {
-    await render(p);
+    // (one frame for a look: a converged render is minutes of SwiftShader here)
+    await p.evaluate(() => window.__app.test.renderOnce());
     await p.screenshot({ path: `${out}/island-${size}.png` });
   }
   ok(!errs.length, `no page or GPU errors${errs.length ? `:\n  ${errs.join('\n  ')}` : ''}`);

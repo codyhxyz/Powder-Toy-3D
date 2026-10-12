@@ -93,10 +93,34 @@ fn thStream(salt: u32, k: i32) -> u32 { return pcg(SU.uSceneSeed + salt) + u32(k
 // 6t⁵ - 15t⁴ + 10t³ (its published coefficients, and its derivative's: 30t²(t - 1)²).
 var<private> thNoiseDxLast: f32;
 var<private> thNoiseDzLast: f32;
+// cos and sin of x to about an ulp, (cos, sin): the GPU's own are up to 2e-4
+// off (SwiftShader's; fast-math ones elsewhere), which moves the terrain's
+// heights 1e-3 cells from the twin's and flips the odd cell on a boundary
+// (docs/webgpu.md, the risks: the twin stays exact). Cephes' sinf and cosf:
+// x reduced by the nearest multiple of π/2 in three parts, their polynomials,
+// the quadrant's swap and signs by select (no branch: SwiftShader inlines
+// every call, and a branch in each made the volcanoes' fill minutes to
+// build). The subset's cos and sin are these (scenes/subsetWgsl.js); |x| up
+// to 8192.
+fn thCosSin(x: f32) -> vec2f {
+  let ax = abs(x);
+  let j = (i32(ax * 1.27323954473516) + 1) & -2;   // (4/π: octants, rounded to an even one)
+  let y = f32(j);
+  let r = ((ax - y * 0.78515625) - y * 2.4187564849853515625e-4) - y * 3.77489497744594108e-8;
+  let z = r * r;
+  let s = ((-1.9515295891e-4 * z + 8.3321608736e-3) * z - 1.6666654611e-1) * z * r + r;
+  let c = ((2.443315711809948e-5 * z - 1.388731625493765e-3) * z + 4.166664568298827e-2) * z * z - 0.5 * z + 1.0;
+  let q = (j >> 1u) & 3;   // |x| = qπ/2 + r
+  var cs = select(vec2f(c, s), vec2f(-s, c), (q & 1) == 1);
+  cs = select(cs, -cs, q >= 2);
+  return vec2f(cs.x, select(cs.y, -cs.y, x < 0.0));
+}
+fn thCos(x: f32) -> f32 { return thCosSin(x).x; }
+fn thSin(x: f32) -> f32 { return thCosSin(x).y; }
 fn thGrad(c: vec2i, s: u32) -> vec2f {
   // (the hash to [0, 1) correctly rounded, as the twin's double and Metal's float() round it: H1.28)
   let a = u32ToF32(pcg(u32(c.x) + pcg(u32(c.y) + s))) * UINT_TO_UNIT * TH_TAU;
-  return vec2f(cos(a), sin(a));
+  return thCosSin(a);
 }
 fn thNoised(x: f32, z: f32, s: u32) -> f32 {
   let p = vec2f(x, z);

@@ -24,6 +24,7 @@ const WIN = +opt('win', 64);
 const SHIFT = 16;            // cells: the seam check's origin shift (D11's window step)
 const BAKE_STRIDE = 2;       // columns compared with the twin: every this many along x and z
 const SITES_DEFAULT = 3;     // landforms a run checks without --sites (the first ones)
+const HEIGHT_EPS = 1e-3;     // cells: the bake's heights against the twin's (floats against doubles; the ground they round to is exact)
 
 const vite = await startVite();
 const b = await launchBrowser();
@@ -78,8 +79,8 @@ try {
   }, [seed, BAKE_STRIDE]);
   if (list) console.log(`landforms: ${head.sites.map((s) => s[0]).join(', ')}`);
   const bk = head.bake;
-  ok(bk.maxHeight === 0 && !bk.groundDiff && !bk.waterDiff && !bk.bareDiff,
-    `the column bake against the twin over ${bk.compared} columns: max height difference ${bk.maxHeight}, ${bk.groundDiff} ground, ${bk.waterDiff} water level and ${bk.bareDiff} bare columns differ (${secs()})`);
+  ok(bk.maxHeight <= HEIGHT_EPS && !bk.groundDiff && !bk.waterDiff && !bk.bareDiff,
+    `the column bake against the twin over ${bk.compared} columns: max height difference ${bk.maxHeight.toExponential(2)} (at most ${HEIGHT_EPS}), ${bk.groundDiff} ground, ${bk.waterDiff} water level and ${bk.bareDiff} bare columns differ (${secs()})`);
 
   const sites = head.sites.filter(([label], i) => (only ? only.includes(label) : i < SITES_DEFAULT));
   for (const [label, cx, cz] of sites) {
