@@ -88,6 +88,13 @@ const JET_RISE = 95 * PX;              // cells/s (14 m/s): the climb the jet ea
 const LEVITATE_RISE = 1.75;            // × the jet's climb while Levitating (Noita's Faster Levitation: 75% faster)
 const JET_EASE = 0.25;                 // share of the gap to JET_RISE closed per Noita frame, gravity off while it fires (fly_speed_change_spd)
 const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the jet fires (fly_velocity_x)
+// The jet spools instead of switching. Side-on, Noita's ease reads as snappy; in the eyes it jolted the
+// view to the full climb in a few frames and turned a fall around in one. So the push fades in and
+// out (smoothstep: no jolt at either end) and changes the climb no faster than JET_RAMP_S allows.
+// The climb, tank and flight speed are Noita's still.
+const JET_SPOOL_UP_S = 0.2;            // s for the push to come on fully after a press
+const JET_SPOOL_DOWN_S = 0.3;          // s for it to die away after a release: the climb crests instead of dropping
+const JET_RAMP_S = 0.15;               // s from a hover to the full climb at the jet's hardest push (caps it at climb / this)
 
 // ---- Slow Fall: a canopy's quadratic air drag on the way down, a = k·v², so the body comes down at
 // most at the terminal speed √(g/k). One stack lands it at a round parachute's rate (the US Army
@@ -213,6 +220,7 @@ const POGO_WINDOW_S = (24 - 9) / KEEN_TICS;   // s: a press this close to a land
 
 // share of a gap closed over dt by an ease of `share` per Noita frame (frame-rate independent)
 const ease = (share, dt) => 1 - (1 - share) ** (NOITA_FPS * dt);
+const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const DENS = ELEMENTS.map((e) => e.dens);
@@ -305,6 +313,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     jetting: false,               // the jetpack is firing this frame
     jetBurnS: 0,                  // s the current press has fired
     jetIdleS: 0,                  // s since the jet last fired
+    jetSpool: 0,                  // how far the jet has spooled up, 0..1 (JET_SPOOL_*): its push is smooth01 of it
+    knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
     perks,                        // its perks (perks.js)
@@ -341,7 +351,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   p.status = createStatusSet(p, statusCtx);
   kicker = createKick({ body: p, owner: id, renderer, getSim, cellAt: (x, y, z) => (probe.valid && g ? idAt(x, y, z) : UNKNOWN), unknown: UNKNOWN });
   const impulse = new THREE.Vector3();
-  const vB = new THREE.Vector3();
+  const vB = new THREE.Vector3(), vK = new THREE.Vector3();
 
   // ---------------------------------------------------------------- probe
   function ensureMats(sim) {
@@ -805,8 +815,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.aimScale * p.status.moveScale * gait
       * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
     const jetFly = JET_FLY_SPEED * gait;
-    const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
-      : sprinting ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
+    const footRun = sprinting ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
+    const jetRun = Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H));
+    const runSpeed = footRun + (jetRun - footRun) * smooth01(p.jetSpool);   // the flight speed spools with the jet
     const swingingOnRope = !!rope?.hard && !p.onGround && !swimming;
     if (swingingOnRope) {
       // on a rope in the air: Noita's ease only ever adds speed toward the wished
@@ -866,11 +877,14 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jetWants = alive && !!input.jump && !pogoing;
     const clings = jetWants && !p.onGround && !swimming && ((perks.has('LUKKI') && clinging()) || levitating);
     const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
+    p.jetSpool = jet ? Math.min(1, p.jetSpool + dt / JET_SPOOL_UP_S) : Math.max(0, p.jetSpool - dt / JET_SPOOL_DOWN_S);
+    const thrust = smooth01(p.jetSpool);
+    // Noita's ease toward the climb, at most the ramp's push, as far as the jet has spooled
+    if (thrust > 0 && v.y < jetRise) v.y += Math.min((jetRise - v.y) * ease(JET_EASE, dt), jetRise / JET_RAMP_S * dt) * thrust;
     if (jet) {
       if (!clings) p.jetFuel = Math.max(0, p.jetFuel - dt / tankS);
       p.jetBurnS += dt;
       p.jetIdleS = 0;
-      if (v.y < jetRise) v.y += (jetRise - v.y) * ease(JET_EASE, dt);
     } else {
       if (p.jetting && p.jetBurnS < JET_TAP_S && !clings) p.jetFuel = Math.max(0, p.jetFuel - (JET_TAP_S - p.jetBurnS) / tankS);
       p.jetBurnS = 0;
@@ -879,7 +893,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (jet !== p.jetting) { p.jetting = jet; if (!quiet) povEvents.emit('player:jet', { on: jet }); }
 
     // gravity and buoyancy (Archimedes over the submerged share)
-    v.y += (env2.buoy - (jet ? 0 : 1)) * grav * dt;   // the jet holds you up as Noita's does
+    v.y += (env2.buoy - (1 - thrust)) * grav * dt;   // the jet holds you up as Noita's does, as far as it has spooled
     // Slow Fall: the canopy's drag on the way down, taken implicitly (v' = v − k·v'·|v'|·dt, solved
     // for v'), so it settles on √(g/k) exactly at any frame rate
     const canopy = perks.slowFallArea;
@@ -894,6 +908,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     }
 
     // pressure: a = −∇P·P_ACCEL/ρ per step², for each step the sim took
+    vK.copy(v);   // (what pressure and impulses change from here is the knock)
     if (steps > 0) {
       const k = -PHYS.P_ACCEL / RHO_BODY * steps * stepRate;   // (cells/step² per unit ∇P) × steps × (steps/s) → cells/s
       const before = v.length();
@@ -911,6 +926,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       if (v.length() > cap) v.setLength(cap);
     } else v.add(impulse);
     impulse.set(0, 0, 0);
+    p.knock = vK.sub(v).length();
     if (rope && alive) pullRope(v, dt);
     if (v.length() > MAX_SPEED) v.setLength(MAX_SPEED);
 
@@ -1020,6 +1036,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; sinceJumpPress = Infinity; sinceBounce = Infinity;
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
+    p.jetSpool = 0; p.knock = 0;
     generation++; probe.valid = false;   // reject in-flight probes from the old spot
     env.contactN = 0; env.headInLiquid = false; env.liquidId = E.WATER; env.buriedId = -1; env.pressure = 0;
     contactId.fill(0); contactT.fill(0); contactSpark.fill(0);
