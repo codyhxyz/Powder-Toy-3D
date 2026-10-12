@@ -393,10 +393,40 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   }
 
   // ---- loading
+  // Today's build disposes three.js's one Sprite geometry, which every sprite
+  // shares, when it removes a perk orb (perkOrbs.js remove): once a sprite has
+  // been drawn, the next one drawn reads destroyed buffers and graphics stop
+  // ("Buffer used in submit while destroyed"). A scene loaded over one that
+  // drew its orbs (dam-valley's, then dam-break's, on one page) keeps it.
+  const spriteGeometry = new THREE.Sprite().geometry;
+  function keepSprites() {
+    const dispose = spriteGeometry.dispose;
+    spriteGeometry.dispose = () => {};
+    return () => { spriteGeometry.dispose = dispose; };
+  }
   async function whenWorldLoaded() {
     const until = performance.now() + 300000;
     while (app.win && !app.win.loaded && performance.now() < until) await new Promise((r) => setTimeout(r, 100));
     if (app.win && !app.win.loaded) throw new Error('the world window did not load');
+  }
+  // the scene in its starting state: a world's window where the shot is, a box's or an arena's map loaded again
+  async function loadScene(scene) {
+    if (!scene.world) { app.loadPreset(scene.arena ?? scene.preset, false); return; }
+    await whenWorldLoaded();
+    if (scene.focus) {
+      const n = [sim().g.nx, sim().g.nz], step = 16;   // (world/window.js WIN_STEP)
+      const size = app.win.size;
+      const o = [0, 2].map((i, j) => Math.min(Math.max(Math.round((scene.focus[j] - n[j] / 2) / step) * step, 0), size[i] - n[j]));
+      app.worldLoad([o[0], 0, o[1]]);
+    }
+    // a world's shrine got its perk orbs at boot, from an unseeded Math.random
+    // (wire/world.js worldShrine): the same altars, the perks rolled from the seed
+    if (app.perkOrbs) {
+      const shrines = new Map();
+      for (const o of app.perkOrbs.toJSON()) (shrines.get(o.shrine) ?? shrines.set(o.shrine, []).get(o.shrine)).push(o.world);
+      app.perkOrbs.clear();
+      for (const feet of shrines.values()) app.perkOrbs.shrineAt(feet.map((w) => new THREE.Vector3(...toGrid(w))));
+    }
   }
   async function load(s) {
     shot = s;
@@ -412,26 +442,13 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     app.day.clock = 0;
     Math.random = seeded(s.seed ?? 1);
     const scene = s.scene;
-    if (scene.world) {
-      await whenWorldLoaded();
-      if (scene.focus) {
-        const n = [sim().g.nx, sim().g.nz], step = 16;   // (world/window.js WIN_STEP)
-        const size = app.win.size;
-        const o = [0, 2].map((i, j) => Math.min(Math.max(Math.round((scene.focus[j] - n[j] / 2) / step) * step, 0), size[i] - n[j]));
-        app.worldLoad([o[0], 0, o[1]]);
-      }
-      // a world's shrine got its perk orbs at boot, from an unseeded Math.random
-      // (wire/world.js worldShrine): the same altars, the perks rolled from the seed
-      if (app.perkOrbs) {
-        const shrines = new Map();
-        for (const o of app.perkOrbs.toJSON()) (shrines.get(o.shrine) ?? shrines.set(o.shrine, []).get(o.shrine)).push(o.world);
-        app.perkOrbs.clear();
-        for (const feet of shrines.values()) app.perkOrbs.shrineAt(feet.map((w) => new THREE.Vector3(...toGrid(w))));
-      }
-    } else {
-      app.loadPreset(scene.arena ?? scene.preset, false);
+    const restore = keepSprites();
+    try {
+      await loadScene(scene);
+      if (test) await test.ready();
+    } finally {
+      restore();
     }
-    if (test) await test.ready();
     k = scene.grid && !scene.world && !scene.arena ? sim().g.nx / scene.grid : 1;
     sim().frame = 0;     // the sim's random streams are keyed on its step counter...
     sim().paints = 0;    // ...and the brush's on its stroke counter
