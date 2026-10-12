@@ -313,6 +313,14 @@ export async function createEngine(app, { live = false, quality = 'full', tables
         const o = [0, 2].map((i, j) => Math.min(Math.max(Math.round((scene.focus[j] - n[j] / 2) / step) * step, 0), size[i] - n[j]));
         app.worldLoad([o[0], 0, o[1]]);
       }
+      // a world's shrine got its perk orbs at boot, from an unseeded Math.random
+      // (wire/world.js worldShrine): the same altars, the perks rolled from the seed
+      if (app.perkOrbs) {
+        const shrines = new Map();
+        for (const o of app.perkOrbs.toJSON()) (shrines.get(o.shrine) ?? shrines.set(o.shrine, []).get(o.shrine)).push(o.world);
+        app.perkOrbs.clear();
+        for (const feet of shrines.values()) app.perkOrbs.shrineAt(feet.map((w) => new THREE.Vector3(...toGrid(w))));
+      }
     } else {
       app.loadPreset(scene.arena ?? scene.preset, false);
     }
