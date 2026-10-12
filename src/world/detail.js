@@ -4,6 +4,7 @@ import { BRICK } from '../shaders/common.js';
 import {
   DETAIL_CHUNK, DETAIL_PAD, detailChunks, detailMaskAt, farSceneLayout, farSceneCellsFrag, farFrag, farMeshPipeline,
   SceneCellsParams, sceneCellsDispatch, SCENE_CELLS_LAYOUT_OF, SCENE_CELLS_BINDING, FarViewParams,
+  farDetailDepthFrag, farDetailDepthPipeline, FAR_DETAIL_DEPTH_FORMAT,
 } from '../shaders/far.js';
 import { TREE } from './generator.js';
 
@@ -21,16 +22,19 @@ export { DETAIL_CHUNK };
 // mesh (the detail mask, after the occupancy levels in the far field's
 // occupancy buffer: 1 a dry chunk, which it crosses whole; 2 one with
 // liquids, whose surface stays the field's) and depth-tests against it.
+// Before the scene pass the meshes' distances from the eye go into a target
+// of their own (depth: our depth-only pass, docs/webgpu.md G1), where the far
+// view's march stops, so a dry pit dug below sea level in a meshed chunk
+// isn't flooded by the coarse sea beyond (shaders/far.js farFrag: cached).
 // Chunks are wanted where a cell would span more than CELL_PIXELS of the
 // screen, nearest first, one in flight at a time, at most MAX_CHUNKS of them
-// and MAX_BYTES of geometry; a chunk the window covers isn't kept.
-// (The WebGL build also drew the meshes' distances into a target the far
-// view's march stopped at; here the depth test does that job, so in a dug-out
-// chunk below sea level the open sea may show through where the WebGL build
-// showed nothing.)
+// and MAX_BYTES of geometry; a chunk the window covers isn't kept. The cells
+// kernel and both pipelines build the first time the far view is drawn
+// (B5: nothing of it builds in views that don't draw it).
 const PAD = DETAIL_PAD, MAX_CHUNKS = 96, MAX_BYTES = 96 * 1024 * 1024;
 const CELL_PIXELS = 3; // largest projected cell before requesting finer geometry
 const BUFFER = { VERTEX: 0x20, INDEX: 0x10, COPY_DST: 0x08, STORAGE: 0x80, COPY_SRC: 0x04 };   // (GPUBufferUsage's bits)
+const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };                   // (GPUTextureUsage's bits)
 
 export class WorldDetail {
   constructor(far) {
@@ -55,17 +59,24 @@ export class WorldDetail {
     this.disposed = false;
     this.layout = farSceneLayout(L, DETAIL_CHUNK + 2 * PAD);
     this.cells = gpu.createBuffer({ label: 'detail cells', size: this.layout.cells * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC });
-    // its kernel and pipeline build in the background (the window's don't wait for them)
+    // its kernel and pipelines build when the far view is first drawn (tick); the window's don't wait for them
     const scene = this.win.scene, sceneKey = JSON.stringify(SCENE_CELLS_LAYOUT_OF(scene));
     this.stage = gpu.kernel({
       name: `${scene.key} detailCells`, code: farSceneCellsFrag(g, L, scene.glsl(g), this.layout, true),
       layouts: [this.sim.L.TABLES, this.sim.L.STATE_RO, gpu.layout(`far scene cells ${sceneKey}`, SCENE_CELLS_LAYOUT_OF(scene))],
-      params: SceneCellsParams, build: 'idle',
+      params: SceneCellsParams, build: 'manual',
     });
     this.pipe = gpu.renderPipeline({
       name: 'far detail', code: farFrag(g, L, true), layouts: [far.viewFrameLayout, this.sim.L.STATE_RO, gpu.L.LIGHTING],
-      params: FarViewParams, ...farMeshPipeline(), build: 'idle',
+      params: FarViewParams, ...farMeshPipeline(), build: 'manual',
     });
+    this.depthPipe = gpu.renderPipeline({
+      name: 'far detail depth', code: farDetailDepthFrag(g), layouts: [], params: FarViewParams, ...farDetailDepthPipeline(), build: 'manual',
+    });
+    // the meshes' distances (depth): made at the scene target's size on first use
+    this.depthTex = null;
+    this.depthZ = null;
+    this.depthView = null;
     this.group = null;   // the cells kernel's group 2 (the scene's resources: made on first use)
     this._m = { worldToScene: new Matrix4(), sceneToWorld: new Matrix4(), eye: new Vector3(), proj: new Matrix4(), frustum: new Frustum(), box: new Box3() };
     this.worker = new Worker(new URL('./detail-worker.js', import.meta.url), { type: 'module' });
@@ -206,7 +217,9 @@ export class WorldDetail {
   // cells recorded now and read back, then meshed in the worker.
   tick() {
     if (this.failed || this.pending || !this.far.built || !this.visible || this.win.pending) return;
-    if (this.stage.state !== 'ready') { this.stage.build(); this.pipe.build(); return; }
+    // (no mesh is made before all three are built: a published mask hands its chunk to a mesh that draws)
+    const pipes = [this.stage, this.pipe, this.depthPipe];
+    if (pipes.some((k) => k.state !== 'ready')) { for (const k of pipes) k.build(); return; }
     const job = this.wanted.find((c) => !this.blocked.has(c.key) && this.entries.get(c.key)?.step !== c.step);
     if (!job) return;
     // A chunk that couldn't be kept isn't built: before this check the nearest
@@ -307,10 +320,50 @@ export class WorldDetail {
     return this.entries.size;
   }
 
+  /**
+   * The meshes' distances from the eye (cells; 0 where none) into the depth
+   * target, at the scene target's size, in a render pass of its own recorded
+   * now: before the scene pass, after FrameUniforms is written (the far
+   * field's prepass). Returns whether it drew (nothing to draw, or its
+   * pipeline building: the view goes without).
+   * @param {{ width: number, height: number }} size the scene target's
+   * @param {object} params the far view's (FarViewParams values) for this frame
+   */
+  depth(size, params) {
+    if (!this.visible || !this.entries.size || this.depthPipe.state !== 'ready') return false;
+    const gpu = this.gpu, w = size.width, h = size.height;
+    if (!this.depthTex || this.depthTex.width !== w || this.depthTex.height !== h) {
+      this._dropDepth();
+      // (copied out only by tools: world-detail-check reads it back)
+      const usage = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING | (gpu.testMode ? TEX.COPY_SRC : 0);
+      this.depthTex = gpu.createTexture({ label: 'far detail depth', size: [w, h], format: FAR_DETAIL_DEPTH_FORMAT, usage });
+      this.depthZ = gpu.createTexture({ label: 'far detail depth z', size: [w, h], format: 'depth32float', usage: TEX.RENDER_ATTACHMENT });
+      this.depthView = this.depthTex.createView({ label: 'far detail depth' });
+    }
+    const rp = gpu.frame.render({
+      colorAttachments: [{ view: this.depthView, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
+      depthStencilAttachment: { view: this.depthZ.createView(), depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'discard' },
+    }, 'far detail depth');
+    try {
+      for (const e of this.entries.values()) {
+        this.depthPipe.draw(rp, { params, count: e.count, vertexBuffers: [e.buffers[0]], index: { buffer: e.buffers[3], format: e.format } });
+      }
+    } finally {
+      rp.end();
+    }
+    return true;
+  }
+
+  _dropDepth() {
+    for (const t of [this.depthTex, this.depthZ]) if (t) this.sim._retire(t);
+    this.depthTex = this.depthZ = this.depthView = null;
+  }
+
   dispose() {
     this.disposed = true;
     this.reset();
     this.worker.terminate();
     this.sim._retire(this.cells);
+    this._dropDepth();
   }
 }

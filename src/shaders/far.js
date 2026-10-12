@@ -216,6 +216,16 @@ const trunkCells = (v, k) => {
   if (v === 'dead') return rodCells(Math.max(0.5, T));
   return 1;
 };
+// treeTrunkCells(variant, size): a trunk's cross-section in cells (trunkCells), as code
+const treeTrunkCellsGLSL = () => {
+  const arms = TREE_VARIANTS.map((v) => {
+    const c = Array.from({ length: TREE_SIZES }, (_, k) => glf(trunkCells(v, k)));
+    const body = c.every((x) => x === c[0]) ? `return ${c[0]};`
+      : `${c.slice(0, -1).map((x, k) => `if (size == ${k}) { return ${x}; }`).join(' ')} return ${c.at(-1)};`;
+    return `  if (v == TV_${v.toUpperCase()}) { ${body} }`;
+  });
+  return `fn treeTrunkCells(v: i32, size: i32) -> f32 {\n${arms.join('\n')}\n  return 1.0;\n}`;
+};
 // treeCandidate's choice of kind, generated from the zone tables
 const zoneGLSL = (zone) => zone.map(([v, w]) => `if (pick < ${glf(w)}) { return TV_${v.toUpperCase()}; }`).join(' ');
 const treeGLSL = () => /* wgsl */ `
@@ -229,12 +239,13 @@ const TREE_NONE_LO: f32 = 1e4;            // band of a column with no tree in re
 const TREE_NONE_HI: f32 = -1e4;
 const TREE_VARIANTS: i32 = ${TREE_VARIANTS.length};
 ${TREE_VARIANTS.map((v, i) => `const TV_${v.toUpperCase()}: i32 = ${i};`).join('\n')}
-const TREE_T = array<f32, ${TREE_SIZES}>(${Array.from({ length: TREE_SIZES }, (_, k) => glf(+treeT(k).toFixed(4))).join(', ')});
-const TREE_TRUNK_CELLS = array<f32, ${TREE_VARIANTS.length * TREE_SIZES}>(${TREE_VARIANTS.flatMap((v) => Array.from({ length: TREE_SIZES }, (_, k) => glf(trunkCells(v, k)))).join(', ')});
+// (tables indexed at run time: small ones as private arrays, the trunks' as a function; docs/webgpu.md C6, H1.16)
+var<private> TREE_T: array<f32, ${TREE_SIZES}> = array<f32, ${TREE_SIZES}>(${Array.from({ length: TREE_SIZES }, (_, k) => glf(+treeT(k).toFixed(4))).join(', ')});
+${treeTrunkCellsGLSL()}
 ${Object.entries(TREE_SHAPE).filter(([k]) => k !== 'REACH').map(([k, v]) => (Array.isArray(v)
     ? `const TS_${k}_LO: f32 = ${glf(v[0])};\nconst TS_${k}_HI: f32 = ${glf(v[1])};`
     : `const TS_${k}: f32 = ${glf(v)};`)).join('\n')}
-const TS_REACH = array<f32, ${TREE_VARIANTS.length}>(${TREE_SHAPE.REACH.map(glf).join(', ')});
+var<private> TS_REACH: array<f32, ${TREE_VARIANTS.length}> = array<f32, ${TREE_VARIANTS.length}>(${TREE_SHAPE.REACH.map(glf).join(', ')});
 const TREE_TAU: f32 = 6.28318530718;
 fn treeVariant(coast: bool, high: bool, pick: f32) -> i32 {
   if (coast) { return TV_PALM; }
@@ -309,7 +320,7 @@ fn treeFill(t: Tree, p: vec3f) -> vec3f {
   let T = t.T;
   var crown = 1e9;
   var trunkTop = 0.0;
-  let cells = TREE_TRUNK_CELLS[t.variant * TREE_SIZES + t.size];
+  let cells = treeTrunkCells(t.variant, t.size);
   if (t.variant == TV_OAK) {
     let th = jsRound(H * mbRange(t.seed, 1, TS_OAK_TRUNK_LO, TS_OAK_TRUNK_HI));
     let tr = max(0.5, TS_OAK_TR * T);
@@ -937,6 +948,7 @@ export const FarViewParams = uniformStruct('FarViewParams', {
   sea: 'f32',               // sea level (cells): the open sea beyond the world (0: none, a plain instead)
   winLo: 'vec3i',           // the window's low corner (world cells): the volume draws [winLo, winLo + GRID)
   floor: 'f32',             // the sea floor beyond the world, or the plain (cells)
+  detailDepth: 'u32',       // 1: the detail meshes' distances (tDetailDepth) were drawn for this frame and target
 });
 
 // The view (docs/webgpu.md G1): a full-screen triangle in our scene pass,
@@ -960,6 +972,8 @@ ${occupancyGLSL('read')}
 ${farSkyGLSL}
 ${FarViewParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;
+${mesh ? '' : `// the detail meshes' distance from the eye at each pixel (cells; 0: none), drawn before the scene pass (farDetailDepthFrag)
+@group(0) @binding(4) var tDetailDepth: texture_2d<f32>;`}
 // the air's sky share at window point q: the probes in the window, the far field's sky past it
 fn farAirSky(q: vec3f) -> f32 {
   if (all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
@@ -993,7 +1007,7 @@ const FAR_ID_JITTER_F: f32 = ${glf(FAR_VIEW.ID_JITTER_F)};
 const FAR_ID_DITHER: f32 = ${glf(FAR_VIEW.ID_DITHER)};
 const FAR_ID_DEEPER: f32 = ${glf(FAR_VIEW.ID_DEEPER)};
 const FAR_SUN_RAY_N: i32 = ${FAR_VIEW.SUN_RAY.length};
-const FAR_SUN_RAY = array<f32, ${FAR_VIEW.SUN_RAY.length}>(${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
+var<private> FAR_SUN_RAY: array<f32, ${FAR_VIEW.SUN_RAY.length}> = array<f32, ${FAR_VIEW.SUN_RAY.length}>(${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
 const FAR_SUN_RAY_LIFT: f32 = ${glf(FAR_VIEW.SUN_RAY_LIFT)};
 const FAR_SUN_RAY_LO: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[0])};
 const FAR_SUN_RAY_HI: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[1])};
@@ -1295,7 +1309,14 @@ struct FarOut {
   if (tw.x > tw.y || tw.y < 0.0) { tw = vec2f(NO_HIT); }
   let tb = farSlab(ro, inv, vec3f(0.0), vec3f(WORLD));
   let t0 = max(tb.x, 0.0);
-  let t1 = tb.y;
+  var t1 = tb.y;
+  // the detail meshes in front (world/detail.js): the march stops at them, so
+  // the coarse field (and the sea below) doesn't show through a meshed chunk
+  var cached = 0.0;
+  if (P.detailDepth != 0u) {
+    cached = textureLoad(tDetailDepth, vec2i(v.position.xy), 0).r;
+    if (cached > 0.0) { t1 = min(t1, cached); }
+  }
   var cut = false;
   var tHit = NO_HIT;
   if (t0 < t1) { tHit = farMarch(ro, rd, t0, t1, tw.x, tw.y, &cut); }
@@ -1316,7 +1337,11 @@ struct FarOut {
     seaOut = any(ps.xz < vec2f(0.0)) || any(ps.xz > vec2f(WORLD.xz));
   }
   let seaWin = tSea >= tw.x && tSea <= tw.y;
-  let ocean = tSea < NO_HIT && tSea < tHit && (seaOut || (tHit == NO_HIT && !seaWin));
+  let ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
+    && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));
+  // A nearer exterior ocean or plain still hides a meshed chunk; inside one, a
+  // dry pit below sea level isn't flooded by the coarse sea: the mesh shows.
+  if (cached > 0.0 && tHit == NO_HIT && !ocean) { discard; }
 
   var col: vec3f;
   var o: FarOut;
@@ -1407,6 +1432,8 @@ export const FAR_VIEW_FRAME = [
   ...RENDER_LAYOUT.FRAME,
   { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
   { binding: 3, visibility: STAGE.FRAGMENT, buffer: { type: 'read-only-storage' } },
+  // the detail meshes' distances (r32float: textureLoad only); the view's 16th sampled texture, the stage's limit (B2)
+  { binding: 4, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
 ];
 export const FAR_VIEW_LAYOUTS = () => {
   const [, state, lighting, params] = libLayouts('LIGHTING');
@@ -1433,6 +1460,42 @@ export const farMeshPipeline = () => ({
   fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
   primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+});
+
+// The detail meshes' distances (docs/webgpu.md G1: their depth prepass, our
+// own depth-only pass, as the WebGL build's nested render was): each mesh's
+// eye distance (world cells) into an r32float target the size of the scene
+// target, the nearest kept by a depth test, 0 where there is none, the
+// window's columns left out (the volume draws there). The view's march stops
+// at it (farFrag: tDetailDepth). Its own small module: positions only, no
+// lighting, so it builds in a moment beside the meshes' pipeline.
+export const FAR_DETAIL_DEPTH_FORMAT = 'r32float';
+export const farDetailDepthFrag = (g) => /* wgsl */ `
+// far detail depth
+${FarViewParams.wgsl}
+@group(3) @binding(1) var<uniform> P: FarViewParams;
+const GRID_XZ: vec2f = vec2f(${glf(g.nx)}, ${glf(g.nz)});
+struct DepthVarying {
+  @builtin(position) position: vec4f,
+  @location(0) world: vec3f,
+}
+@vertex fn vs(@location(0) pos: vec3f) -> DepthVarying {
+  var o: DepthVarying;
+  o.position = P.worldToClip * vec4f(pos, 1.0);
+  o.world = pos;
+  return o;
+}
+@fragment fn fs(v: DepthVarying) -> @location(0) vec4f {
+  let winLo = vec3f(P.winLo);
+  if (all(v.world.xz >= winLo.xz) && all(v.world.xz < winLo.xz + GRID_XZ)) { discard; }
+  return vec4f(length(v.world - P.eye), 0.0, 0.0, 1.0);
+}`;
+/** The detail depth pass's pipeline: the meshes' positions (float32x3), r32float out, its own depth32float (less, written). */
+export const farDetailDepthPipeline = () => ({
+  vertex: { entry: 'vs', buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }] },
+  fragment: { entry: 'fs', targets: [{ format: FAR_DETAIL_DEPTH_FORMAT }] },
+  primitive: { topology: 'triangle-list', cullMode: 'none' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
 });
 
 // WEBGPU-STUB (docs/webgpu.md J3): the WebGL region quads, full-screen pass
@@ -1497,5 +1560,9 @@ export const WGSL_CHECK = () => [
   {
     name: 'far detail', kind: 'render', grids: ['64'], warm: false, code: (g) => farFrag(g, Lw, true),
     layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farMeshPipeline(),
+  },
+  {
+    name: 'far detail depth', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farDetailDepthFrag(g),
+    layouts: () => [], params: FarViewParams, ...farDetailDepthPipeline(),
   },
 ];

@@ -60,12 +60,15 @@ import { WorldDetail } from './detail.js';
 // beyond the world and the far grid, with depth, so the window's volume
 // composites over it, depth-tested against the meshes three drew first. It
 // marches the far grid past the window's box, which the volume draws. Its
-// pipeline builds in the background (it is as big as the volume's): the far
-// field shows once it is ready.
+// pipeline builds the first time the realistic view shows the world (it is
+// as big as the volume's; B5: the data views never build it): the far field
+// shows once it is ready.
 //
 // Near the window the detail meshes (world/detail.js, docs/world-lod.md:
 // render-only meshes of the chunks' cells) replace the coarse field: drawn
-// just before the view, which leaves their chunks' opaque field to them.
+// just before the view, which leaves their chunks' opaque field to them, and
+// before the scene pass their distances from the eye (prepass), where the
+// view's march stops.
 
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
@@ -77,6 +80,7 @@ const SOFTWARE_CHUNKS_PER_FRAME = 1;   // on a software adapter (SwiftShader: th
                                        // seconds of CPU: one a frame, whatever the scene says
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
 const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
+const NO_DETAIL_DEPTH = new WeakMap();   // per device: a 1×1 r32float the view binds while there are no meshes' distances
 const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };                                // (GPUBufferUsage's bits)
 
 // The open level beyond a world's edge (cells): its sea, or for a world
@@ -177,7 +181,7 @@ export class FarField {
     };
     this.g = null;
 
-    // the view: its pipeline in the background, the far field shown once it is ready
+    // the view: its pipeline built when the realistic view first draws the world (view), shown once it is ready
     const P = win.P;
     this.level = beyondLevel(this.scene, P);
     this.sea = P.sea;
@@ -186,13 +190,17 @@ export class FarField {
     this.viewFrameLayout = layout('FAR_VIEW_FRAME', FAR_VIEW_FRAME);
     this.viewPipe = gpu.renderPipeline({
       name: 'far view', code: farFrag(g, L), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
-      params: FarViewParams, ...farViewPipeline(), build: 'idle',
+      params: FarViewParams, ...farViewPipeline(), build: 'manual',
     });
-    this.viewFrameGroup = gpu.bindGroup(this.viewFrameLayout, [
-      { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
-      { binding: 2, resource: v.field }, { binding: 3, resource: { buffer: this.occ } },
-    ], 'far view frame');
-    this.viewParams = { clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor };
+    if (!NO_DETAIL_DEPTH.has(gpu)) {
+      NO_DETAIL_DEPTH.set(gpu, gpu.createTexture({ label: 'far no detail depth', size: [1, 1], format: 'r32float', usage: TEX.TEXTURE_BINDING }).createView());
+    }
+    this.viewFrameGroup = null;   // (_frameGroup: it holds the detail meshes' distances)
+    this.viewFrameDepth = null;
+    this.depthFor = null;         // the scene target the meshes' distances were drawn for this frame (prepass), else null
+    this.viewParams = {
+      clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor, detailDepth: 0,
+    };
     this._m = { toWorld: new Matrix4(), eye: new Vector3(), worldToScene: new Matrix4() };
     this.detail = new WorldDetail(this);
     this.ready = false;   // (the build kernels: whenReady)
@@ -202,10 +210,24 @@ export class FarField {
   // The view's pipeline is ready (the far field shows once it is).
   get viewReady() { return this.viewPipe.state === 'ready'; }
 
-  /** Resolves when the build's kernels are ready (the window's whenReady waits for it); the view builds meanwhile. */
+  /** Starts building the view's pipeline (once: the realistic view draws it); resolves when it is ready. */
+  buildView() { return this.viewPipe.build(); }
+
+  /** Resolves when the build's kernels are ready (the window's whenReady waits for it); the view builds when it is first drawn (view). */
   whenReady() {
-    this.viewPipe.build();
     return (this._ready ??= Promise.all(Object.values(this.k).map((k) => k.ready)).then(() => { this.ready = true; return this; }));
+  }
+
+  // The view's group 0 (FrameUniforms, the field, the occupancy, the detail
+  // meshes' distances), made again when the distances' texture is.
+  _frameGroup() {
+    const depth = this.detail.depthView ?? NO_DETAIL_DEPTH.get(this.gpu);
+    if (this.viewFrameGroup && this.viewFrameDepth === depth) return this.viewFrameGroup;
+    this.viewFrameDepth = depth;
+    return (this.viewFrameGroup = this.gpu.bindGroup(this.viewFrameLayout, [
+      { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
+      { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } }, { binding: 4, resource: depth },
+    ], 'far view frame'));
   }
 
   // The bind groups over the scene's resources (the window's generator's,
@@ -442,11 +464,39 @@ export class FarField {
   // data views draw the window alone). (volume and camera: the WebGL view's
   // transforms; draw reads FrameUniforms' camera.)
   view(volume, visible, camera) {
+    if (visible && this.built) this.buildView();   // (once: the first time the realistic view shows the world)
     this.visible = visible && this.built && this.viewReady;
     const o = this.sim.origin, m = this._m;
     if (volume?.matrixWorld) m.worldToScene.copy(volume.matrixWorld).multiply(m.toWorld.makeTranslation(-o.x, -o.y, -o.z));
     this.detail.view(camera, this.visible, volume?.matrixWorld ? m.worldToScene : null);
     if (this.built) this.refresh();
+  }
+
+  // The view's params for the camera FrameUniforms holds now (the frame's
+  // jittered one, or a still's): world cells → clip and back, the eye.
+  _params() {
+    const o = this.sim.origin, last = this.fu.last, p = this.viewParams, m = this._m;
+    // world cells → clip: the volume's model (grid → scene) after world → grid
+    m.toWorld.makeTranslation(-o.x, -o.y, -o.z);
+    p.worldToClip.multiplyMatrices(last.viewProj, last.model).multiply(m.toWorld);
+    p.clipToWorld.copy(p.worldToClip).invert();
+    m.eye.copy(last.eye).applyMatrix4(m.toWorld.copy(last.model).invert());
+    p.eye = [m.eye.x + o.x, m.eye.y + o.y, m.eye.z + o.z];
+    p.winLo = [o.x, o.y, o.z];
+    return p;
+  }
+
+  /**
+   * Before the scene pass, after FrameUniforms is written (the world wire's
+   * compute hook): the detail meshes' distances, for the scene target the
+   * frame draws into (post.sceneTarget: { width, height }), in a render pass
+   * of their own (world/detail.js depth). The view of this frame then stops
+   * its march at them; a still (renderStill: no compute hook) goes without.
+   */
+  prepass(target) {
+    this.depthFor = null;
+    if (!this.visible || !this.viewReady || !this.vol || !target) return;
+    if (this.detail.depth(target, { ...this._params(), detailDepth: 0 })) this.depthFor = { target, width: target.width, height: target.height };
   }
 
   /**
@@ -455,19 +505,16 @@ export class FarField {
    * frame: its camera is the view's. Nothing while it isn't visible (view) or
    * its pipeline builds.
    * @param {GPURenderPassEncoder} rp
+   * @param {{ width: number, height: number }} [target] the scene target it draws into (post.sceneTarget)
    * @returns {boolean} whether it drew
    */
-  draw(rp) {
+  draw(rp, target = null) {
+    const d = this.depthFor;
+    this.depthFor = null;   // (this frame's only)
     if (!this.visible || !this.viewReady || !this.vol) return false;
-    const sim = this.sim, o = sim.origin, last = this.fu.last, p = this.viewParams, m = this._m;
-    // world cells → clip: the volume's model (grid → scene) after world → grid
-    m.toWorld.makeTranslation(-o.x, -o.y, -o.z);
-    p.worldToClip.multiplyMatrices(last.viewProj, last.model).multiply(m.toWorld);
-    p.clipToWorld.copy(p.worldToClip).invert();
-    m.eye.copy(last.eye).applyMatrix4(m.toWorld.copy(last.model).invert());
-    p.eye = [m.eye.x + o.x, m.eye.y + o.y, m.eye.z + o.z];
-    p.winLo = [o.x, o.y, o.z];
-    const bind = [this.viewFrameGroup, sim.bindRO, this.vol.lightingGroup];
+    const sim = this.sim, p = this._params();
+    p.detailDepth = d && d.target === target && d.width === target.width && d.height === target.height ? 1 : 0;
+    const bind = [this._frameGroup(), sim.bindRO, this.vol.lightingGroup];
     this.detail.draw(rp, p, bind);   // (first: the view depth-tests against the meshes)
     this.viewPipe.draw(rp, {
       bind, header: { origin: [0, 0, 0], src: sim.cur, dst: sim.cur },   // (world cells throughout: worldPos() is the identity)

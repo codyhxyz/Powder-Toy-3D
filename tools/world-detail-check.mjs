@@ -10,6 +10,11 @@
 //   - the draw: the frame with the meshes (and their chunks' field left to them)
 //     differs from the coarse field's alone over more than MIN_CHANGED of the
 //     canvas, and nothing fails;
+//   - the depth prepass (world/detail.js depth): the frame's view had the
+//     meshes' distances, they cover the meshes' pixels with plausible values,
+//     and with a sea raised over the meshed ground the view leaves the meshes
+//     alone, where without the prepass the coarse sea floods them (the dry pit
+//     below sea level, far-lod-check's predicate, in pixels);
 //   - the stale-job contract: a job valid before an invalidate isn't after
 //     it, and the chunk's mesh and mask entry are gone.
 // usage: node tools/world-detail-check.mjs [outDir] [--map labWorld] [--win 64] [--port N]
@@ -26,6 +31,9 @@ const FAR_CHUNKS = 2;        // far chunks built around the window (the nearest:
 const CHUNKS = 4;            // detail chunks meshed (the nearest wanted)
 const MIN_CHANGED = 0.005;   // share of the canvas the meshes must change
 const DIFF = 12;             // levels (0-255) a pixel must change by to count
+const MIN_FLOODED = 0.1;     // share of the meshes' pixels the raised sea must flood without the prepass
+const MAX_KEPT_DIFF = 0.1;   // ...and at most this share of them may change with it (per-frame dither aside)
+const SEA_LIFT = 12;         // cells over the ground by the window that sea is raised to (the camera is 24 over it)
 const MAX_BYTES = 96 * 1024 * 1024;   // world/detail.js's
 if (out) mkdirSync(out, { recursive: true });
 
@@ -59,7 +67,7 @@ try {
     const a = window.__app, f = a.win.far, d = f.detail, gpu = a.gpu;
     f.queue = f.queue.slice(-N);
     while (f.queue.length) { f.sceneChunks(1); await gpu.fence(); }
-    await Promise.all([f.viewPipe.build(), d.stage.build(), d.pipe.build()]);
+    await Promise.all([f.viewPipe.build(), d.stage.build(), d.pipe.build(), d.depthPipe.build()]);
     a.post.settings.taa = false;
     a.day.fixed = { az: 215, el: 38 };
     const g = a.sim.g, s = a.scale, v = a.volume.position;
@@ -70,10 +78,11 @@ try {
     a.controls.target.set(...scene([edge + 40 * out, ground, g.nz / 2 + 8]));
     a.controls.update();
     await a.test.renderOnce();
-    return { stage: d.stage.state, pipe: d.pipe.state, wanted: d.wanted.length, nx: d.nx, nz: d.nz };
+    window.__ground = ground;
+    return { stage: d.stage.state, pipe: d.pipe.state, depth: d.depthPipe.state, wanted: d.wanted.length, nx: d.nx, nz: d.nz };
   }, FAR_CHUNKS);
-  ok(head.stage === 'ready' && head.pipe === 'ready' && head.wanted > 0,
-    `the detail kernel ${head.stage}, its pipeline ${head.pipe}; the view wants ${head.wanted} of ${head.nx * head.nz} chunks (${secs()})`);
+  ok(head.stage === 'ready' && head.pipe === 'ready' && head.depth === 'ready' && head.wanted > 0,
+    `the detail kernel ${head.stage}, its pipelines ${head.pipe} and ${head.depth} (depth); the view wants ${head.wanted} of ${head.nx * head.nz} chunks (${secs()})`);
 
   // the cells of the chunk by the window's edge (its padding reaches into the
   // window) against the window's live cells
@@ -143,15 +152,15 @@ try {
   if (out) await p.screenshot({ path: `${out}/detail.png` });
   await p.evaluate(async () => {
     const a = window.__app, d = a.win.far.detail;
-    window.__restore = { mask: d.mask.slice(), draw: d.draw };
-    d.mask.fill(0); d.maskDirty = true; d.draw = () => 0;
+    window.__restore = { mask: d.mask.slice(), draw: d.draw, depth: d.depth };
+    d.mask.fill(0); d.maskDirty = true; d.draw = () => 0; d.depth = () => false;
     a.test.resetView();
     window.__bare = await a.test.renderOnce({ capture: true });
   });
   if (out) await p.screenshot({ path: `${out}/coarse.png` });
   const frame = await p.evaluate(async (DIFF) => {
     const a = window.__app, d = a.win.far.detail, shot = window.__shot, bare = window.__bare;
-    d.mask.set(window.__restore.mask); d.maskDirty = true; d.draw = window.__restore.draw;
+    d.mask.set(window.__restore.mask); d.maskDirty = true; d.draw = window.__restore.draw; d.depth = window.__restore.depth;
     await a.test.renderOnce();
     let n = 0;
     for (let i = 0; i < shot.data.length; i += 4) {
@@ -161,6 +170,52 @@ try {
   }, DIFF);
   ok(frame.visible && frame.changed >= MIN_CHANGED,
     `the draw: ${(100 * frame.changed).toFixed(1)}% of the canvas changed by the meshes (floor ${100 * MIN_CHANGED}%; a frame ${ms.toFixed(0)} ms; ${secs()})`);
+
+  // the depth prepass: this frame's distances, then the sea raised over the
+  // meshed ground with and without them
+  const depth = await p.evaluate(async ([LIFT, DIFF]) => {
+    const a = window.__app, f = a.win.far, d = f.detail, gpu = a.gpu;
+    a.test.resetView();
+    const normal = await a.test.renderOnce({ capture: true });
+    const had = f.viewParams.detailDepth;
+    const z = await gpu.readback.texture(d.depthTex);
+    const zw = d.depthTex.width, zh = d.depthTex.height;
+    let covered = 0, bad = 0, lo = Infinity, hi = 0;
+    const diag = Math.hypot(...a.win.size);
+    for (const v of z) {
+      if (v === 0) continue;
+      covered++;
+      if (!(v > 0 && v < diag)) bad++;
+      lo = Math.min(lo, v); hi = Math.max(hi, v);
+    }
+    const sea = f.viewParams.sea;
+    f.viewParams.sea = window.__ground + LIFT;
+    a.test.resetView();
+    const kept = await a.test.renderOnce({ capture: true });
+    const prepass = d.depth;
+    d.depth = () => false;
+    a.test.resetView();
+    const flooded = await a.test.renderOnce({ capture: true });
+    d.depth = prepass;
+    f.viewParams.sea = sea;
+    await a.test.renderOnce();
+    // over the meshes' pixels (the distances mapped onto the canvas): what the raised sea changes
+    const differ = (x, y, i) => Math.max(Math.abs(x.data[i] - y.data[i]), Math.abs(x.data[i + 1] - y.data[i + 1]), Math.abs(x.data[i + 2] - y.data[i + 2])) > DIFF;
+    let mesh = 0, keptDiff = 0, floodDiff = 0;
+    for (let y = 0; y < normal.height; y++)
+      for (let x = 0; x < normal.width; x++) {
+        if (!z[Math.floor(x * zw / normal.width) + zw * Math.floor(y * zh / normal.height)]) continue;
+        mesh++;
+        const i = 4 * (x + normal.width * y);
+        if (differ(kept, normal, i)) keptDiff++;
+        if (differ(flooded, kept, i)) floodDiff++;
+      }
+    return { had, covered, bad, lo, hi, pixels: zw * zh, mesh, keptDiff, floodDiff, sea: window.__ground + LIFT };
+  }, [SEA_LIFT, DIFF]);
+  ok(depth.had === 1 && depth.covered > 0 && !depth.bad,
+    `the prepass: the view had the meshes' distances (${depth.had}); ${depth.covered} of ${depth.pixels} pixels covered, ${depth.bad} implausible, ${depth.lo.toFixed(1)}–${depth.hi.toFixed(1)} cells (${secs()})`);
+  ok(depth.mesh > 0 && depth.floodDiff >= MIN_FLOODED * depth.mesh && depth.keptDiff <= MAX_KEPT_DIFF * depth.mesh,
+    `the sea raised to ${depth.sea}: of the meshes' ${depth.mesh} pixels ${depth.keptDiff} change with the prepass (at most ${100 * MAX_KEPT_DIFF}%), ${depth.floodDiff} are flooded without it (at least ${100 * MIN_FLOODED}%)`);
 
   // the stale-job contract (nothing persisted changes)
   const own = await p.evaluate(() => {
