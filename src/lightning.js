@@ -1,119 +1,93 @@
-import * as THREE from 'three';
-import { quadVert, stateUniforms } from './shaders/common.js';
-import { boltFrag, stormBrickFrag, stormRowsFrag, stormPickFrag, stormScanFrag } from './shaders/lightning.js';
+import {
+  BoltParams, boltUpdateWGSL, boltDeclsWGSL, stormBrickFrag, stormScanFrag, StormParams, ScanParams, STORM_LAYOUT, STORM_KEY,
+} from './shaders/lightning.js';
 import { BOLT, STORM, boltPath, boltStart, toolStrikeR, stormColumns, pickStrike } from './bolt.js';
+import { slotCell } from './sim.js';
+import { fold } from './gpu/kernels.js';
 
 // Lightning on the GPU: the Lightning tool's strikes and storms' (src/bolt.js
-// has the shape and the rules, shaders/lightning.js the passes). One bolt for
-// both: strike() builds its path on the CPU and draws it in one pass.
+// has the shape and the rules, shaders/lightning.js the kernels;
+// docs/webgpu.md G4). One bolt for both: strike() builds its path on the CPU
+// and writes it with one edit over its bounds (sim.edit: in place, the
+// bricks it changes marked for the activity map).
 //
-// Storms. Every STORM.POLL_STEPS steps, three small reductions find the most
-// charged cloud cell (react.js charges freezing cloud that snow falls through)
-// and one texel is read back. If it is at breakdown and STORM.MIN_STEPS have
-// passed since the last natural strike, a second small pass scans the columns
-// around it for the highest matter below, that is read back, and the bolt
-// strikes the nearest (conductors counting nearer), spending the charge
-// around its origin.
+// Storms. Every STORM.POLL_STEPS steps, one dispatch finds the most charged
+// cloud cell (react.js charges freezing cloud that snow falls through) and
+// its key is read back through a result ring (gpu.readback.ring), a few
+// frames later. If it is at breakdown and STORM.MIN_STEPS have passed since
+// the last natural strike, a second small kernel scans the columns around it
+// for the highest matter below, that is read back, and the bolt strikes the
+// nearest (conductors counting nearer), spending the charge around its origin.
 //
-// A strike sparks the conductors it lands on (shaders/lightning.js boltFrag
-// calls src/electricity.js sparkCell; the CPU twin's World.strike, spark).
+// A strike sparks the conductors it lands on (shaders/lightning.js calls
+// src/electricity.js sparkCell; the CPU twin's World.strike, spark).
 
-const RGBA = 4;
+const RESULT_SLOTS = 4;   // storm reads in flight at most (one a poll, POLL_STEPS steps apart)
+const VEC4 = 4;
 
-function rawMat(frag, uniforms) {
-  return new THREE.RawShaderMaterial({
-    glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader: frag, uniforms,
-    depthTest: false, depthWrite: false,
-  });
-}
-const floatTarget = (w, h) => new THREE.WebGLRenderTarget(w, h, {
-  type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
-  minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
-});
-
-export function createLightning({ renderer }) {
-  let mats = null, targets = null, simId = -1;
-  let nextPoll = 0, lastStrike = -Infinity, busy = false, ready = false;
+// gpu: unused (each simulation's device is its own gpu); kept for the wire's call
+export function createLightning() {
+  let k = null, simId = -1, frame = 0;
+  let nextPoll = 0, lastStrike = -Infinity, busy = false;
   const rng = Math.random;
   const api = {
     strikes: 0,             // natural strikes so far (tools/mat-check)
     lastBolt: null,         // the last bolt's { from, to, segs, id } (tools/mat-check)
     strikeTool, update, strike,
+    /** Resolves when the current simulation's kernels are built. */
+    get ready() { return k?.ready ?? Promise.resolve(); },
   };
 
+  // The kernels for sim's grid (pipelines are cached by source, so a rebuilt
+  // grid of the same size builds nothing) and the storm's result rings.
   function ensure(sim) {
     if (sim.id === simId) return;
-    dispose();
-    const g = sim.g;
-    mats = {
-      bolt: rawMat(boltFrag(g), {
-        ...stateUniforms(), uFrame: { value: 0 },
-        uSegA: { value: [...Array(BOLT.MAX_SEGS)].map(() => new THREE.Vector4()) },
-        uSegB: { value: [...Array(BOLT.MAX_SEGS)].map(() => new THREE.Vector4()) },
-        uSegs: { value: 0 }, uStrike: { value: new THREE.Vector3() }, uStrikeR: { value: 1 },
-        uBoltFrom: { value: new THREE.Vector3() }, uDischargeR: { value: 0 },
-        uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
-      }),
-      brick: rawMat(stormBrickFrag(g), { tA: { value: null } }),
-      rows: rawMat(stormRowsFrag(g), { tSrc: { value: null } }),
-      pick: rawMat(stormPickFrag(g), { tSrc: { value: null } }),
-      scan: rawMat(stormScanFrag(g), {
-        tA: { value: null }, uCols: { value: [...Array(STORM.CANDIDATES)].map(() => new THREE.Vector2()) },
-        uCount: { value: 0 }, uFromY: { value: 0 },
-      }),
+    const gpu = sim.gpu, g = sim.g;
+    if (g.slots - 1 > STORM_KEY.SLOT_MAX) throw new Error(`lightning: a ${g.nx}×${g.ny}×${g.nz} grid has more slots than a storm key holds`);
+    const L = gpu.layout('STORM', STORM_LAYOUT);
+    const layouts = [sim.L.TABLES, sim.L.STATE_RO, L];
+    const pick = gpu.readback.ring('storm pick', VEC4 * 4, RESULT_SLOTS);
+    const scan = gpu.readback.ring('storm scan', STORM.CANDIDATES * VEC4 * 4, RESULT_SLOTS);
+    const group = (ring, name) => gpu.bindGroup(L, [{ binding: 0, resource: { buffer: ring.buffer } }], name);
+    k = {
+      bolt: sim.editKernel('bolt', { update: boltUpdateWGSL, params: BoltParams, reads: 'own', decls: boltDeclsWGSL }),
+      search: gpu.kernel({ name: 'stormSearch', code: stormBrickFrag(g), layouts, params: StormParams, build: 'idle' }),
+      scan: gpu.kernel({ name: 'stormScan', code: stormScanFrag(g), layouts, params: ScanParams, build: 'idle' }),
+      pick, scanRing: scan, pickGroup: group(pick, 'storm pick'), scanGroup: group(scan, 'storm scan'),
     };
-    for (const [k, m] of Object.entries(mats)) m.name = `lightning-${k}`;
-    targets = {
-      brick: floatTarget(g.bwidth, g.bheight), rows: floatTarget(g.bheight, 1), pick: floatTarget(1, 1),
-      scan: floatTarget(STORM.CANDIDATES, 1),
-    };
+    k.ready = Promise.all([k.bolt.ready, k.search.ready, k.scan.ready]);
     simId = sim.id;
     nextPoll = sim.frame + STORM.POLL_STEPS;
     lastStrike = -Infinity;
     busy = false;
-    // compile in the background (KHR_parallel_shader_compile, as pov/ballistics.js
-    // does), so storms never stall a frame; a tool strike before then compiles
-    // its pass on the spot
-    ready = false;
-    const built = mats, keep = sim.quad.material;
-    Promise.all(Object.values(mats).map((m) => {
-      sim.quad.material = m;
-      return renderer.compileAsync(sim.scene, sim.camera);
-    })).then(() => { if (mats === built) ready = true; }).catch(() => {});
-    sim.quad.material = keep;
   }
-  function dispose() {
-    if (mats) Object.values(mats).forEach((m) => m.dispose());
-    if (targets) Object.values(targets).forEach((t) => t.dispose());
-    mats = targets = null;
-  }
+  const built = (kernel) => kernel.state === 'ready';
 
   // Draw one bolt from `from` to `to` (cells, [x, y, z]). strikeR: the strike's
-  // radius; origin and dischargeR: the cloud charge it spends (storms).
+  // radius; origin and dischargeR: the cloud charge it spends (storms). Its
+  // path is made now; the edit is recorded now, or once the kernel is built.
   function strike(sim, from, to, { strikeR = STORM.STRIKE_R, dischargeR = 0, id = -1 } = {}) {
     ensure(sim);
     const g = sim.g, size = [g.nx, g.ny, g.nz];
     const segs = boltPath(from, to, rng, size);
-    const u = mats.bolt.uniforms;
+    const segA = [], segB = [];
     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-    const grow = (p, r) => { for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k] - r); hi[k] = Math.max(hi[k], p[k] + r); } };
-    segs.forEach((s, i) => {
-      u.uSegA.value[i].set(s.a[0], s.a[1], s.a[2], s.r);
-      u.uSegB.value[i].set(s.b[0], s.b[1], s.b[2], 0);
+    const grow = (p, r) => { for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i] - r); hi[i] = Math.max(hi[i], p[i] + r); } };
+    for (const s of segs) {
+      segA.push([s.a[0], s.a[1], s.a[2], s.r]);
+      segB.push([s.b[0], s.b[1], s.b[2], 0]);
       grow(s.a, s.r); grow(s.b, s.r);
-    });
+    }
     grow(to, strikeR + BOLT.STRIKE_P_REACH);
     if (dischargeR > 0) grow(from, dischargeR);
-    u.uSegs.value = segs.length;
-    u.uStrike.value.fromArray(to);
-    u.uStrikeR.value = strikeR;
-    u.uBoltFrom.value.fromArray(from);
-    u.uDischargeR.value = dischargeR;
-    u.uLo.value.fromArray(lo);
-    u.uHi.value.fromArray(hi);
-    u.uFrame.value = (u.uFrame.value + 1) >>> 0;
-    sim.touchCentres(lo, hi);
-    sim.pass(mats.bolt);
+    frame = (frame + 1) >>> 0;
+    const values = { segA, segB, segs: segs.length, strike: to, strikeR, boltFrom: from, dischargeR, lo, hi, frame };
+    const write = () => sim.edit(k.bolt, sim.touchCentres(lo, hi), values);
+    if (built(k.bolt.main)) write();
+    else {
+      const kernels = k;
+      kernels.bolt.ready.then(() => { if (k === kernels && !sim.disposed && !sim.gpu.failure) write(); }, () => {});
+    }
     api.lastBolt = { from, to, segs, id };
     return segs;
   }
@@ -125,45 +99,42 @@ export function createLightning({ renderer }) {
     const g = sim.g, size = [g.nx, g.ny, g.nz];
     const n = [0, 0, 0];
     n[Math.floor(hit.face / 2)] = hit.face % 2 === 0 ? 1 : -1;
-    const to = [0, 1, 2].map((k) => hit.cell.getComponent(k) + 0.5 + n[k] * 0.5);
+    const cell = [hit.cell.x, hit.cell.y, hit.cell.z];
+    const to = [0, 1, 2].map((i) => cell[i] + 0.5 + n[i] * 0.5);
     return strike(sim, boltStart(to, rng, size), to, { strikeR: toolStrikeR(radius), id: hit.id });
   }
 
   // Storms: call once per frame after the steps (host only).
   function update(sim) {
     ensure(sim);
-    if (!ready || busy || sim.frame < nextPoll) return;
+    if (busy || sim.frame < nextPoll || !built(k.search) || !built(k.scan) || !built(k.bolt.main)) return;
     nextPoll = sim.frame + STORM.POLL_STEPS;
     if (sim.frame - lastStrike < STORM.MIN_STEPS) return;
     busy = true;
-    const id0 = sim.id;
-    const m = mats;
-    m.brick.uniforms.tA.value = sim.stateA;
-    sim.run(m.brick, targets.brick);
-    m.rows.uniforms.tSrc.value = targets.brick.texture;
-    sim.run(m.rows, targets.rows);
-    m.pick.uniforms.tSrc.value = targets.rows.texture;
-    sim.run(m.pick, targets.pick);
-    const buf = new Float32Array(RGBA);
-    renderer.readRenderTargetPixelsAsync(targets.pick, 0, 0, 1, 1, buf).then(() => {
-      if (sim.id !== id0 || buf[3] <= 0) { busy = false; return; }
-      return scan(sim, [buf[0], buf[1], buf[2]]);
+    const id0 = sim.id, kernels = k, f = sim.gpu.frame;
+    const slot = kernels.pick.next();
+    f.clear(kernels.pick.buffer, kernels.pick.offset(slot), kernels.pick.slotBytes);   // (its key is an atomicMax)
+    kernels.search.dispatch(f, fold(sim.g.nbricks), { bind: [sim.tables, sim.bindRO, kernels.pickGroup], header: sim.header(), params: { slot } });
+    kernels.pick.read(slot).then((bytes) => {
+      const key = new Uint32Array(bytes)[0];
+      if (sim.id !== id0 || k !== kernels || sim.disposed || key === 0) return undefined;
+      const [x, y, z] = slotCell(sim.g, STORM_KEY.SLOT_MAX - (key & STORM_KEY.SLOT_MAX));
+      return scan(sim, [x + 0.5, y + 0.5, z + 0.5]);
     }).catch(() => {}).finally(() => { busy = false; });
   }
 
   function scan(sim, origin) {
-    const g = sim.g, id0 = sim.id;
+    const g = sim.g, id0 = sim.id, kernels = k;
     const cols = stormColumns(origin, [g.nx, g.ny, g.nz]);
-    const su = mats.scan.uniforms;
-    cols.forEach((c, i) => su.uCols.value[i].set(c[0], c[1]));
-    su.uCount.value = cols.length;
-    su.uFromY.value = Math.floor(origin[1]);
-    su.tA.value = sim.stateA;
-    sim.run(mats.scan, targets.scan);
-    const buf = new Float32Array(STORM.CANDIDATES * RGBA);
-    return renderer.readRenderTargetPixelsAsync(targets.scan, 0, 0, STORM.CANDIDATES, 1, buf).then(() => {
-      if (sim.id !== id0 || sim.frame - lastStrike < STORM.MIN_STEPS) return;
-      const hits = cols.map((c, i) => ({ x: c[0], z: c[1], top: buf[i * RGBA], id: Math.round(buf[i * RGBA + 1]), ok: buf[i * RGBA + 2] > 0 }))
+    const slot = kernels.scanRing.next();
+    kernels.scan.dispatch(sim.gpu.frame, [1, 1, 1], {
+      bind: [sim.tables, sim.bindRO, kernels.scanGroup], header: sim.header(),
+      params: { cols: cols.map((c) => [c[0], c[1], 0, 0]), count: cols.length, fromY: Math.floor(origin[1]), slot },
+    });
+    return kernels.scanRing.read(slot).then((bytes) => {
+      if (sim.id !== id0 || k !== kernels || sim.disposed || sim.frame - lastStrike < STORM.MIN_STEPS) return;
+      const buf = new Float32Array(bytes);
+      const hits = cols.map((c, i) => ({ x: c[0], z: c[1], top: buf[i * VEC4], id: Math.round(buf[i * VEC4 + 1]), ok: buf[i * VEC4 + 2] > 0 }))
         .filter((h) => h.ok);
       const best = pickStrike(origin, hits);
       if (!best) return;
@@ -173,6 +144,7 @@ export function createLightning({ renderer }) {
     });
   }
 
-  api.dispose = dispose;
+  // (the rings are the device's, its kernels cached by source: nothing of ours to free)
+  api.dispose = () => { k = null; simId = -1; };
   return api;
 }
