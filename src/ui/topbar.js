@@ -11,8 +11,10 @@ export function createBrand() {
 const legendCSS = (legend) =>
   legend ? `linear-gradient(90deg, ${legend.stops.map(([t, c]) => `${c} ${(t * 100).toFixed(1)}%`).join(', ')})` : null;
 
-// Top-right toolbar plus the views popover.
-export function createToolbar({ views, settings, actions }) {
+// Top-right toolbar plus the views popover. available: what this build can
+// do yet ({ camera: the first- and third-person cameras, saves: Save }); what
+// it can't is greyed out (app.js: src/wire's subsystems not ported yet).
+export function createToolbar({ views, settings, actions, available = {} }) {
   const swatch = h('span.swatch');
   const viewName = h('span.view-name');
   const viewBtn = h('button.view-btn', { type: 'button', title: 'Change view', 'aria-haspopup': 'dialog' },
@@ -41,6 +43,14 @@ export function createToolbar({ views, settings, actions }) {
   // the shortcut sheet needs a keyboard: touch-first devices hide it (styles.css); the
   // cameras stay, first person having thumb controls there (pov/touch.js)
   help.classList.add('keys-only');
+
+  const unavailable = (el, what) => {
+    el.disabled = true;
+    el.style.opacity = 0.4;
+    el.title = `${what}: not in this WebGPU version yet`;   // (app.js notYet)
+  };
+  if (available.camera === false) for (const b of walk.querySelectorAll('button[data-cam="first"], button[data-cam="third"]')) unavailable(b, 'Walking in first or third person');
+  if (available.saves === false) unavailable(saveGame, 'Saving the game');
 
   const bar = h('div.toolbar.panel', { role: 'group', 'aria-label': 'Simulation controls' },
     pause, h('span.sep'), viewBtn, walk, h('span.sep'), undo, recenter, saveGame, shot, maps, gear, help);
@@ -71,12 +81,14 @@ export function createToolbar({ views, settings, actions }) {
     viewBtn.setAttribute('aria-expanded', 'true');
     pop.classList.add('open');
     sync();
-    // render live thumbnails of the current scene, one per frame so it stays smooth
+    // render live thumbnails of the current scene, one at a time so it stays
+    // smooth (each is a GPU still read back: a view drawn for the first time
+    // builds its pipeline first)
     let i = 0;
-    const next = () => {
+    const next = async () => {
       if (!isOpen || i >= cards.length) return;
-      actions.renderThumb(cards[i].v.id, cards[i].canvas);
-      i++;
+      const c = cards[i++];
+      try { await actions.renderThumb(c.v.id, c.canvas); } catch (err) { console.warn('views: no thumbnail', err); }
       requestAnimationFrame(next);
     };
     requestAnimationFrame(next);

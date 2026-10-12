@@ -1,28 +1,44 @@
-import * as THREE from 'three';
+// The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
+// UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
+//
+// A presented frame (B3, F1; post.render's hooks, gfx/post.js): E1's work
+// first (the brush, the steps), then FrameUniforms, the derived passes, the
+// shadow map and the picks; three.js's opaque meshes if it has any (Sync log
+// S1); our scene pass (the floor grid, the volume, the box's edges, the
+// brush); three's transparent meshes and the rays' sprites; post; the canvas.
+// In box mode three has nothing to draw, so a frame is one command buffer.
+// Every pipeline builds asynchronously (B5): the boot waits for the ones the
+// session draws with (warm from the start menu, src/preload.js), and a view
+// switched to for the first time builds then, drawing without the volume
+// meanwhile. A settled scene schedules no animation frames at all (deep idle,
+// F7): the frame loop stops and input, a resize, a setting or a landed read
+// starts it again.
+//
+// What hooks into the game (the world, first person, rays, lightning, signs,
+// birds, multiplayer, the meshes, whitewater, decoration, the console, saves)
+// is wired in src/wire/*.js, one module per subsystem (J3). A wire whose
+// unit hasn't ported it to WebGPU yet isn't called, and what it serves is
+// greyed out (its tools, the first-person camera, Save, the World maps).
+import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
-import { Simulation } from './sim.js';
-import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool } from './elements.js';
+import { createGpu } from './gpu/device.js';
+import { createPresenter } from './gpu/present.js';
+import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/three.js';
+import { Simulation, GI_BLEND } from './sim.js';
+import { Derived } from './derived.js';
+import { createVolume } from './gfx/volume.js';
+import { viewShadows } from './shaders/render.js';
+import { createOverlays, FLOOR_SPAN, FLOOR_Y, EDGE_OPACITY } from './gfx/overlays.js';
+import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
+import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
-import { isDecoTool } from './elements.js';
-import { createLightning } from './lightning.js';
-import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
-import { createBirdLife } from './birds/index.js';
-import { BODY_HEIGHT, HAND_REACH } from './pov/constants.js';
-import { PerkOrbs } from './perkOrbs.js';
+import { SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
+import { HAND_REACH } from './pov/constants.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
-import { ArenaMarkers } from './arenas/markers.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
-import './world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
-import { structureClear, shrineAltars as worldShrineAltars } from './world/structures.js';
-import { loadIsland, releaseGenerator } from './world/gpu.js';
-import { WorldWindow, WIN_STEP } from './world/window.js';
-import { bakedAir } from './constructions/runtime.js';
 import { sceneByKey } from './world/scenes/index.js';
-import { FarField } from './world/far.js';
-import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
-import { quadVert } from './shaders/common.js';
+import { WORLD_SIZE } from './shaders/farShared.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
 import { createMeshCut } from './gfx/meshCut.js';
@@ -33,54 +49,30 @@ import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
-import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
-import { createTorchLights } from './world/torchLights.js';
-import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
-import { createDetailGate } from './gfx/detailGate.js';
+import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms } from './gfx/uniforms.js';
+import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
+import { createDetailGate, gateVariants } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
-import { createGpuLossTracker, silentLinkFailure, processLossMessage, lossDetails } from './gfx/gpuLoss.js';
-import { setAeration } from './gfx/foam.js';
-import { decoView, prepareDeco, readDeco, uploadDeco, ensureDeco, DECO_BYTES, setDecoColor } from './deco.js';
-import { claimPrograms } from './gfx/programs.js';
+import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
-import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
+import { createPacer, settleFrames, createViewKey, createFrameLoop, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
-import { DAY, dayPhase, phaseSteps, keyLight, sunElevation } from './gfx/daylight.js';
-import { GI_BLEND, cellTexel } from './sim.js';
-import { createMultiplayer } from './net/multiplayer.js';
+import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { createProfiler } from './gfx/profiler.js';
 import { PHYS } from './physics.js';
 import { createProfilerPanel } from './ui/profiler.js';
-import { createPov } from './pov/index.js';
-import { createDescentRunner, runSnapshot, LOAD_POLL_MS, LOAD_WAIT_MS } from './pov/descent/switch.js';
-import { createDescentOverlay } from './pov/descent/overlay.js';
-import { DESCENT_LEVELS, levelByScene } from './world/scenes/descent/levels.js';
-import { descentWands } from './pov/wands/descentRun.js';
+import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { inventory } from './pov/tools/inventory.js';
 import { gearByKey, SLOTS } from './pov/tools/catalog.js';
-import { renderViewmodels } from './pov/viewmodel.js';
-import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
-import { createSaves, SaveRefused } from './saves/game.js';
-import { registerSaveSection, registerSavedSettings } from './saves/sections.js';
-import { packCells, unpackCells } from './saves/format.js';
-import { BRICK_CELLS } from './shaders/window.js';
-import { putSave, getSave, cleanName } from './saves/local.js';
-import { SIM_MODE_DEFAULTS, SIM_MODE_KEYS, EDGE, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
-import { createConsole } from './console/index.js';
-import { registerConsoleApi } from './console/registry.js';
-
-// Optional modules (built in parallel); the app works without them.
-const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
-const VIEWS = optional['./views.js']?.VIEWS ?? [
-  { id: 0, hotkey: '1', name: 'Realistic', desc: 'Sunlight, shadows and glowing heat.', legend: null },
-  { id: 1, hotkey: '2', name: 'Heat', desc: 'Colour shows temperature.', legend: null },
-];
-const SignsClass = optional['./signs.js']?.Signs;
-const BuildsClass = optional['./constructions.js']?.Constructions;
+import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
+import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
+import { VIEWS, viewKey as viewKeyOf } from './views.js';
+import { WIRES, wireNamed } from './wire/index.js';
+import { offline as OFFLINE } from './wire/mp.js';
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160],
   valley: ARENA_PRESETS.damValley.size };
@@ -99,11 +91,6 @@ const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
 const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE } };
 // the world and window a WORLDS entry holds with scene s: the window spans the world's height
 const worldOf = (w, s) => (s.size ? { size: s.size, win: [w.win[0], s.size[1], w.win[2]] } : w);
-// God view over a world: the orbit target on the ground, the camera this far
-// off it along the box view's direction (scene units), so the window fills
-// about as much of the view as a box does
-const WORLD_VIEW_DIR = [11, 9.5, 13];
-const WORLD_VIEW_DIST = 21;
 // WASD in a world: no faster than the window can follow the orbit target
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
@@ -117,8 +104,26 @@ const SPAWNER_SET = {
 };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
-// the most gravity a script may set (sim.gravity): the Gravity slider's top
-const CONSOLE_GRAVITY_MAX = 0.06;
+
+// ---------------------------------------------------------------- the subsystems' wiring (src/wire)
+// The wires whose units have landed: their hooks run (src/wire/index.js).
+const live = WIRES.filter((w) => w.ready);
+// A subsystem's wire if it is ready, else null.
+const wire = (name) => (wireNamed(name)?.ready ? wireNamed(name) : null);
+// What a subsystem that isn't ported yet says when asked for (its tool, its
+// button, its map): 'World maps: not in this WebGPU version yet'.
+const notYet = (what) => `${what}: not in this WebGPU version yet`;
+// The subsystem a tool needs (src/wire), or null for the brush's own.
+function toolWire(id) {
+  if (id === LIGHTNING_TOOL) return 'lightning';
+  if (id === SIGN_TOOL) return 'signs';
+  if (SPAWNER_KIND[id] === SPAWNER.BIRDS) return 'birds';
+  if (isSpawnerTool(id) || isBuild(id)) return 'mesh';
+  if (isDecoTool(id)) return 'deco';
+  if (rayKindOfTool(id) !== RAY_KIND.NONE) return 'rays';
+  if (wandPresetForTool(id) || isGearTool(id)) return 'pov';
+  return null;
+}
 
 // ---------------------------------------------------------------- settings
 // the box the Scene row goes back to from World, and phones' grid
@@ -163,10 +168,22 @@ const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
 const GLOW_GAIN = 1.6;
-const torchLights = createTorchLights();
-const NO_AMBIENT = [0, 0, 0];   // a scene without an ambient floor (world scene `ambient`)
 
-const settings = { ...DEFAULTS };
+// The frame loop (gfx/pacing.js createFrameLoop): it stops when a frame
+// finds nothing to do (deep idle, F7) and anything that changes what the view
+// shows wakes it.
+let loop = null;
+function wakeLoop() { loop?.wake(); }
+// A setting that changes wakes a sleeping frame loop: the drawer's rows, the
+// dock and tools all write through here.
+const settings = new Proxy({ ...DEFAULTS }, {
+  set(t, k, v) {
+    const changed = t[k] !== v;
+    t[k] = v;
+    if (changed) wakeLoop();
+    return true;
+  },
+});
 Object.assign(settings, SIM_MODE_DEFAULTS);   // world options (simModes.js): not remembered, a fresh scene starts them over
 try {
   // only keys still in use: values of removed settings must not linger
@@ -187,6 +204,36 @@ if (knownSize(params.get('size'))) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
 if (params.get('scene')) settings.scene = params.get('scene');
 settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed: the island)
+// ?view=plain (or a view's id): the view to boot in. The test tools boot the
+// plain view, the cheapest to build (docs/webgpu.md B5, I1).
+const viewParam = params.get('view');
+if (viewParam !== null) {
+  const v = VIEWS.find((x) => x.key === viewParam || String(x.id) === viewParam);
+  if (v) settings.view = v.id;
+}
+// ?win=<x>[,<y>,<z>]: a world window of another size, for the test tools
+// (docs/webgpu.md G1: container tests run world scenes 64 wide), applied by
+// build() before the window's Simulation is made (worldModeOf). x and z are
+// whole supertiles (WIN_ALIGN), z defaulting to x. y only where the scene's
+// world allows: a window always spans its world's height (world/window.js),
+// so a y other than that height is ignored, with a warning.
+const WIN_ALIGN = 16;   // cells: world/window.js WIN_STEP, whole supertiles along x and z
+const winParam = params.get('win')?.split(',').map(Number);
+let winSize = winParam?.every((n) => Number.isInteger(n) && n > 0)
+  ? [winParam[0], winParam.length > 1 ? winParam[1] : null, winParam[2] ?? winParam[0]] : null;
+if (winSize && (winSize[0] % WIN_ALIGN || winSize[2] % WIN_ALIGN)) {
+  console.warn(`?win=${params.get('win')}: a window's x and z are multiples of ${WIN_ALIGN}; ignored`);
+  winSize = null;
+}
+// World mode's world and window for WORLDS size `size` with scene `scene` (a key): ?win='s window, if any
+function worldModeOf(size, scene) {
+  const w = worldOf(WORLDS[size], sceneByKey(scene));
+  if (!winSize) return w;
+  if (winSize[1] !== null && winSize[1] !== w.win[1]) console.warn(`?win=: a window spans its world's height, ${w.win[1]} here; y ${winSize[1]} ignored`);
+  return { ...w, win: [winSize[0], w.win[1], winSize[2]] };
+}
+// Why the device can't hold a grid of `dims` cells (B2: both copies of the state in one binding), or null if it can.
+const gridRefusal = (dims) => gpu.fitsReason({ nx: dims[0], ny: dims[1], nz: dims[2] });
 // the Island scene's world seed (world/generator.js), and World's; its default world without one
 // (a loaded save sets it to the save's: saves/game.js)
 let worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
@@ -213,92 +260,119 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])), [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* ignore */ }
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])), [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
   }, 300);
 }
 
-// ---------------------------------------------------------------- renderer / scene
-// The canvas only ever receives post's full-screen composite (no depth test; TAA
-// does the antialiasing upstream), so it gets neither MSAA nor a depth buffer:
-// both would only cost memory and bandwidth (~165 MB at 2880×1800).
-const renderer = new THREE.WebGLRenderer({ antialias: false, depth: false, alpha: true, powerPreference: 'high-performance' });
-let graphicsFailure = null;
-let invalidateGpuWork = () => {};
-function stopGraphics(error) {
-  if (!graphicsFailure) {
-    error.name = 'GraphicsFailure';
-    graphicsFailure = error;
-    // Also stop direct tool/async draws outside the frame loop. A failed
-    // state pass must throw before its caller swaps state histories.
-    renderer.render = () => { throw graphicsFailure; };
-    invalidateGpuWork();
-    const el = document.getElementById('error');
-    el.style.display = 'flex';
-    el.textContent = `${error.message}\n\nRendering and simulation stopped. Reload to restart.\nUnsaved simulation changes may be lost.`;
-    console.error('Graphics stopped:', error);
+// ---------------------------------------------------------------- the device, three.js and the canvas
+// The device: the one the start menu made while it was up (src/preload.js),
+// else one now. A refused device is the WebGPU error page's case, not a bug
+// in here: main.js tells them apart by launch.deviceError (G5).
+let gpu;
+try {
+  gpu = await (launch.gpu ??= createGpu({ adapter: launch.adapter ?? undefined, label: 'tpt3d' }));
+  // The menu's device lost (or stopped) while the menu was up: the GPU
+  // process restarted, a phone put the tab away. Nothing of the game lived on
+  // it yet (B9's "no restore" is about the state on the GPU, which starts
+  // here), so the game starts on a new one, on a new adapter: an adapter
+  // makes one device.
+  if (gpu.lost || gpu.failure) {
+    gpu.destroy();
+    gpu = await (launch.gpu = createGpu({ label: 'tpt3d' }));
   }
-  return graphicsFailure;
+} catch (err) {
+  launch.deviceError = err;
+  throw err;
 }
-// What the page was doing when the GPU went away (gfx/gpuLoss.js): a dead
-// GPU process first shows as a link failure with no text, not a lost context.
-const gpuLoss = createGpuLossTracker(renderer);
-const meshCut = createMeshCut(renderer);   // the volume's march stops at the opaque meshes in it
-renderer.domElement.addEventListener('webglcontextlost', () => {
-  // Three restores its renderer, not our GPU-only state, undo history, or
-  // manually attached array layers. Never resume those as an intact world.
-  const seen = gpuLoss.snapshot();
-  if (!graphicsFailure) gpuLoss.record({ kind: 'contextLost', ...seen });
-  stopGraphics(new Error(`The browser lost the WebGL context. The cause is not available from this event.\n${lossDetails(seen)}`));
-});
-renderer.debug.onShaderError = (gl, program, vertex, fragment) => {
-  const name = renderer.info.programs.find(p => p.program === program)?.name || 'unnamed';
-  if (silentLinkFailure(gl, program, vertex, fragment)) {
-    const seen = gpuLoss.snapshot();
-    gpuLoss.record({ kind: 'gpuProcessLost', linking: name, ...seen });
-    throw stopGraphics(new Error(processLossMessage(name, seen)));
-  }
-  const logs = [
-    gl.getProgramInfoLog(program), gl.getShaderInfoLog(vertex), gl.getShaderInfoLog(fragment),
-  ].filter(Boolean).join('\n');
-  gpuLoss.record({ kind: 'shaderFailed', linking: name, log: logs.slice(0, 2000) });
-  throw stopGraphics(new Error(`GPU shader failed: ${name}.\n${logs}`));
-};
-renderer.setClearColor(0x000000, 0);
+// The canvas is ours: three.js sizes it and renders only into render targets,
+// and post's canvas pass presents (docs/webgpu.md W7, F7). It is opaque (the
+// composite draws the page's sky), with neither MSAA nor a depth buffer: TAA
+// antialiases upstream.
+const canvas = document.createElement('canvas');
+document.getElementById('app').appendChild(canvas);
+const presenter = createPresenter(gpu, canvas);
+const renderer = await createThreeRenderer(gpu, canvas);
 // Keep the existing CSS-native output; adaptation only changes scene pixels.
 const pixelRatio = Math.min(devicePixelRatio, 1);
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
-renderer.autoClear = false;
-document.getElementById('app').appendChild(renderer.domElement);
-// the Lightning tool's bolts and storms' (src/lightning.js)
-const lightning = createLightning({ renderer });
-// HDR post: TAA, bloom, AgX tone mapping (src/gfx/post.js)
-const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
+// the grid: the simulation, its derived passes and its volume (made per grid: build)
+let sim, derived, vol, scale;
+// world mode (a WORLDS size): the world, the window over it (src/wire/world.js)
+let worldMode = null, win = null;
+let wired = false;   // the wires have booted (their invalidate hooks can run)
+
+let graphicsFailure = null;
+// What the page was doing when its GPU work stopped (gfx/gpuLoss.js), kept for the bug report.
+const gpuLoss = createGpuLossTracker(gpu);
+// Graphics stop once, for good (docs/webgpu.md B9): device loss, an uncaptured
+// error (ours or three's) or a pipeline that didn't build. After it gpu.frame
+// throws the same GraphicsFailure, so every entry point that would record GPU
+// work (a step, a stroke, a load, a map) throws it, and the frame loop stops.
+// There is no restore: the state lived on the GPU.
+function stopGraphics(error) {
+  if (!graphicsFailure) {
+    graphicsFailure = error;
+    gpuLoss.record({ kind: failureKind(error.message), message: error.message.slice(0, 2000), ...gpuLoss.snapshot() });
+    invalidateGpuWork();
+    const el = document.getElementById('error');
+    el.style.display = 'flex';
+    const lost = failureKind(error.message) === 'deviceLost' ? `\n${lossDetails(gpuLoss.snapshot())}` : '';
+    el.textContent = `${error.message}${lost}\n\nRendering and simulation stopped. Reload to restart.\nUnsaved simulation changes may be lost.`;
+    console.error('Graphics stopped:', error);
+  }
+  return graphicsFailure;
+}
+gpu.onFailure(stopGraphics);
+// HDR post: TAA, bloom, AgX tone mapping, the canvas (src/gfx/post.js); made
+// after three's renderer, so its scene target is three's (docs/webgpu.md F3).
+// A change to its settings wakes the frame loop, as the app's do.
+const post = createPost(gpu, { presenter, pixScale: gfxUniforms.uPixScale });
+post.settings = new Proxy(post.settings, {
+  set(t, k, v) {
+    const changed = t[k] !== v;
+    t[k] = v;
+    if (changed) wakeLoop();
+    return true;
+  },
+});
+// the floor grid and the box's edges, and the brush cursor: pipelines of ours in the scene pass (F1)
+const overlays = createOverlays(gpu);
+const brush = createBrushCursor(gpu);
+// the volume's march stops at the opaque meshes in it (gfx/meshCut.js; Sync log S1)
+const cut = createMeshCut(gpu);
+
+// three.js's scene: the meshes (src/wire's), and two transforms of ours whose
+// changes the view key sees (gfx/pacing.js createViewKey): the grid's box
+// (`volume`: grid cells → scene; the raymarch draws it) and the floor grid's.
 const scene = new THREE.Scene();
-let perkOrbs = null;   // perk orbs (perkOrbs.js), made with the spawners
-let lastShrine = 0;    // the shrine id the last placement's orbs got (0: it set none)
-let spawners = null;   // enemy and player spawners (spawners.js), made once the volume is
-let birds = null;      // the birds (birds/index.js): a World's ambient flocks and the Bird flock spawners'
-const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
-const controls = new OrbitControls(camera, renderer.domElement);
+const camera = useWebGPUCamera(new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200));
+const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.12;
 controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 controls.zoomToCursor = true;
 controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };   // one finger paints (touchDown)
+// What gpu.three.prepare(object) compiles a new kind of mesh for (B5, F8):
+// this camera and scene, and the formats of the scene target three renders
+// the meshes into (post's; sized here if no frame has sized it yet). The
+// target is the same RenderTarget across resizes (post resizes it in place).
+gpu.three.defaults = {
+  camera, scene,
+  get target() {
+    if (!post.sceneTarget.rt) post.setSize(undefined, undefined, post.renderScale);
+    return post.sceneTarget.rt;
+  },
+};
 
-const FLOOR_SPAN = 80;   // scene units the floor grid spans, a line every unit (a world's is stretched over it)
-const floorGrid = new THREE.GridHelper(FLOOR_SPAN, FLOOR_SPAN, 0x2b3240, 0x1b2029);
-floorGrid.position.y = -0.002;
-// GL lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
-// so the grid and the box outline fade by the render scale to keep their weight.
-// Transparent for that, but still drawn before the other transparent objects.
-floorGrid.material.transparent = true;
-floorGrid.material.depthWrite = false;   // (the volume's march stops at the depth meshes leave: gfx/meshCut.js)
-floorGrid.renderOrder = -1;
-const EDGE_OPACITY = 0.55;
+// three's GridHelper(FLOOR_SPAN, FLOOR_SPAN) as it was, now drawn by
+// gfx/overlays.js: its transform here (a world's is stretched over it)
+const floorGrid = Object.assign(new THREE.Object3D(), { name: 'floorGrid' });
+floorGrid.position.y = FLOOR_Y;
 scene.add(floorGrid);
+const volume = Object.assign(new THREE.Object3D(), { name: 'volume' });
+scene.add(volume);
 
 // The key light (gfx/daylight.js): its direction and colour scale follow the
 // day clock, in simulation steps. Tools pin it with __app.day.fixed = { az, el }.
@@ -315,9 +389,6 @@ function updateSun() {
 }
 updateSun();
 
-const brush = createBrushCursor();
-scene.add(brush.mesh, ...brush.extras);
-
 const isTyping = () => {
   const a = document.activeElement;
   return !!(signs?.editing || (a && (a.tagName === 'TEXTAREA' || a.isContentEditable ||
@@ -325,55 +396,70 @@ const isTyping = () => {
 };
 const rig = createCameraRig(camera, controls, isTyping);
 
-let sim, volume, edges, pickMat, shadowMat, shadowTarget, scale;
-// world mode (a WORLDS size): the world, the window over it, and the world cell (x, z) at the scene's origin
-let worldMode = null, win = null;
-invalidateGpuWork = () => {
+// the subsystems the wires fill in (src/wire), null while theirs isn't ready
+let pov = null, mp = OFFLINE, signs = null, builds = null, spawners = null, perkOrbs = null, arenaMarkers = null;
+let birds = null, lightning = null, scripts = null, descent = null;
+let lastShrine = 0;    // the shrine id the last placement's orbs got (0: it set none)
+// Stop work that would read back a world the GPU no longer has.
+function invalidateGpuWork() {
   sim?.wake(); // reject an outstanding idle certification
-  birds?.probe.suspend();
-  if (win) {
-    win.epoch++; // reject readbacks without clearing surviving CPU edits
-    if (win.far?.detail) win.far.detail.epoch++;
-  }
-};
+  if (wired) for (const w of live) w.invalidate?.(ctx);
+}
 const anchor = new THREE.Vector2();
-const pickTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
-const pickBuf = new Float32Array(8);
 let pickPending = false;
+// the grid's pipelines (B5): coreReady once the ones a frame draws with are built
+let coreReady = false, coreWait = Promise.resolve();
+const readySims = new WeakSet();   // simulations whose own pipelines are ready (a load can be recorded)
+let viewTime = 0;   // s the scene's animations have run (FrameUniforms.time: it runs with the simulation)
 
 function build() {
   if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
   pov?.worldReplaced();
-  // The old grid's materials, disposed of only once the new grid's have
-  // claimed their programs (the end of build): every program both use carries
-  // over instead of compiling again (gfx/programs.js). A box and a world share
-  // all of them but the world's own passes, so a switch compiles nothing big.
-  const retired = [];
   if (sim) {
-    releaseGenerator(sim, retired);   // the Island scene's, made for this grid
-    sim.dispose(retired);
-    scene.remove(volume, edges);
-    volume.geometry.dispose();
-    retired.push(volume.material, pickMat, shadowMat);
-    edges.geometry.dispose();
-    edges.material.dispose();
-    shadowTarget.dispose();
+    for (const w of live) w.detach?.(ctx);
+    // (what is recorded on the old grid goes out first: each dispose flushes)
+    vol.dispose();
+    derived.dispose?.();
+    sim.dispose();
   }
-  worldMode = settings.size in WORLDS ? worldOf(WORLDS[settings.size], sceneByKey(settings.scene)) : null;
+  worldMode = settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
+  if (worldMode && !wire('world')) {
+    // (until the world's port lands: the box, and why)
+    worldMode = null;
+    settings.size = boxSize;
+    hud.toast(`${notYet('World maps')}. Here is a box instead`, { kind: 'error' });
+  }
+  // a grid the device can't hold (B2; from a link or the menu's first Start): the default box, and why
+  const refused = gridRefusal(worldMode?.win ?? SIZES[settings.size]);
+  if (refused) {
+    hud.toast(`${dimsName(worldMode?.win ?? SIZES[settings.size])} ${refused}. Here is a ${dimsName(SIZES[BOX_DEFAULT])} box instead`, { kind: 'error' });
+    worldMode = null;
+    settings.size = boxSize = BOX_DEFAULT;
+  }
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
-  win?.dispose(retired);   // (a new window over the world shares most of its passes' programs)
   win = null;
-  sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
+  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
+  derived = new Derived(sim);
+  vol = createVolume(gpu, sim, { shadows: viewShadows(viewKeyOf(settings.view)) });
+  // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
+  const s = sim, simWake = s.wake.bind(s);
+  s.wake = () => { simWake(); wakeLoop(); };
   sim.gravity = settings.gravity;
   sim.airT = worldMode ? sceneByKey(settings.scene).airT ?? PHYS.AMBIENT : PHYS.AMBIENT;   // (a box: room temperature)
   applySimModes(sim, settings);
-  sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
-  if (worldMode) {
-    win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed, scene: sceneByKey(settings.scene) });
-    sim.origin.fromArray(worldStart());
-  }
+  volume.scale.setScalar(scale);
+  // the pipelines a frame needs (warm from the start menu, or building now)
+  coreReady = false;
+  s.ready.then(() => readySims.add(s), () => {});
+  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
+    vol.viewReady(viewKeyOf(settings.view), baseDetail())]).then(() => {
+    if (coreWait === core) { coreReady = true; wakeLoop(); }
+  });
+  core.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
+  prepareGI();
+  for (const w of live) w.attach?.(ctx);   // (a world's window sets sim.origin)
   // the grid starts centred on the scene's origin
   anchor.set(sim.origin.x + nx / 2, sim.origin.z + nz / 2);
   // the floor grid: under a box, or across a world's whole footprint
@@ -381,205 +467,53 @@ function build() {
   floorGrid.scale.set(span[0] / FLOOR_SPAN, 1, span[1] / FLOOR_SPAN);
   floorGrid.position.x = win ? (win.size[0] / 2 - anchor.x) * scale : 0;
   floorGrid.position.z = win ? (win.size[2] / 2 - anchor.y) * scale : 0;
-
-  const geo = new THREE.BoxGeometry(nx, ny, nz);
-  geo.translate(nx / 2, ny / 2, nz / 2);
-  // The view, shadow and GI programs hold a world's far-field parts for every
-  // grid, off until a far field attaches (world/far.js attach): a box and a
-  // world share all of them, so switching between them compiles nothing big.
-  volume = new THREE.Mesh(geo, new THREE.ShaderMaterial({
-    vertexShader: volumeVert,
-    fragmentShader: volumeFrag(sim.g, farHazeGLSL),
-    uniforms: {
-      tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
-      uCam: { value: new THREE.Vector3() }, uMarchNear: { value: 0 },
-      uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
-      uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
-      uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
-      uFar: { value: false },
-      ...gfxUniforms,
-      ...meshCut.uniforms,   // bodies in water show through it (gfx/meshCut.js)
-    },
-    side: THREE.BackSide,
-    transparent: true,
-    depthWrite: true,
-    blending: THREE.CustomBlending,
-    blendSrc: THREE.OneFactor,
-    blendDst: THREE.OneMinusSrcAlphaFactor,
-  }));
-  volume.scale.setScalar(scale);
-  volume.onBeforeRender = meshCut.hook;
-  volume.frustumCulled = false;
-  scene.add(volume);
-  volume.add(sim.rays.view);   // photons and neutrons as points, in grid cells (raysLayer.js)
-  // world mode: the world outside the window (world/far.js), drawn before everything else
-  if (win) scene.add((win.far = new FarField(renderer, win, { sun: SUN, time: volume.material.uniforms.uTime })).mesh);
-
-  edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
-    new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
-  edges.scale.copy(volume.scale);
-  scene.add(edges);
+  floorGrid.updateMatrixWorld();
   placeVolume();
-
-  pickMat = new THREE.RawShaderMaterial({
-    name: 'pick',
-    glslVersion: THREE.GLSL3,
-    vertexShader: quadVert,
-    fragmentShader: pickFrag(sim.g),
-    uniforms: {
-      tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
-      tBrickDist: gfxUniforms.tBrickDist,
-      uRo: { value: new THREE.Vector3() }, uRd: { value: new THREE.Vector3() },
-    },
-    depthTest: false,
-    depthWrite: false,
-  });
-
-  const shadowRes = Math.min(1024, 4 * Math.max(nx, ny, nz));
-  shadowTarget = new THREE.WebGLRenderTarget(shadowRes, shadowRes, {
-    type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
-  });
-  shadowMat = new THREE.RawShaderMaterial({
-    name: 'shadow',
-    glslVersion: THREE.GLSL3,
-    vertexShader: quadVert,
-    fragmentShader: shadowFrag(sim.g, farCastersGLSL(farLayout(sim.world))),
-    uniforms: {
-      tA: { value: null }, tBrick: { value: null }, tLight: { value: null },
-      uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: shadowRes },
-      uFar: { value: false }, tFarShadow: { value: null },
-      ...gfxUniforms,
-    },
-    depthTest: false,
-    depthWrite: false,
-  });
   gfxUniforms.uClouds.value = false;   // a box has no sky of its own (a world's far field turns its clouds on)
-  win?.far.attach(volume.material, shadowMat);   // world mode: the far field's haze and shadows on the window
   applyDetail();
-  coldShader.watch(volume.material);
-  volume.material.uniforms.tShadow.value = shadowTarget.texture;
-  volume.material.uniforms.uShadowRes.value = shadowRes;
 
   const h = ny * scale;
   if (win) homeOver(anchor.x, anchor.y);
   else rig.setHome(new THREE.Vector3(11, h * 0.9 + 3, 13), new THREE.Vector3(0, h * 0.25, 0));
   rig.setMaxSpeed(win ? WORLD_CAM_SPEED_MAX : Infinity);
   rig.reset(true);
-  if (signs) { signs.clear(); signs.rebuild(); }
-  claimPrograms(renderer, [...sim.materials(), pickMat, shadowMat], { lights: scene });
-  claimPrograms(renderer, [volume.material], { geometry: volume.geometry, lights: scene });
   // an arena only fits its own grid: in another, the lab
   if (!win && settings.preset in ARENA_GRID && ARENA_GRID[settings.preset] !== settings.size) settings.preset = 'lab';
-  loadPreset(settings.preset, false);   // (the Island's generator claims its programs as it runs; a world's start compiling)
-  retired.forEach((m) => m.dispose());
+  loadPreset(settings.preset, false);   // (once the simulation's pipelines are ready: whenSimReady)
 }
 
-// World: the window's first origin (world cells): centred on the column its
-// scene starts at (where the most is going on: the island's shore, seen from
-// the sea), snapped to WIN_STEP and inside the world.
-function worldStart() {
-  const P = win.P, g = sim.g, n = [g.nx, g.nz];
-  const c = win.scene.start(P, n);
-  const origin = [0, 1].map((k) => {
-    const o = Math.round((c[k] - n[k] / 2) / WIN_STEP) * WIN_STEP;
-    return THREE.MathUtils.clamp(o, 0, P.size[2 * k] - n[k]);
-  });
-  return [origin[0], 0, origin[1]];
+// Runs fn now if the simulation's own pipelines are built (a load or a stroke
+// can be recorded), else once they are, unless the grid was rebuilt meanwhile.
+function whenSimReady(fn) {
+  if (readySims.has(sim)) { fn(); return; }
+  const s = sim;
+  s.ready.then(() => { if (s === sim && !graphicsFailure) fn(); }, () => {});
 }
 
-// World: every world gets a shrine (constructions/builtins.js shrine, with its
-// perk orbs) near the middle of its first window, where the god view starts:
-// on flat dry ground, with as few trees about as it can find, in a clearing
-// (the island's trees around it are felled: stamped over with air, exactly as
-// they were planted). It's stamped into the window like a placed one, so the
-// window keeps it as an edit when it moves away (world/store.js).
-const SHRINE_HALF = [9, 6];        // cells: half the shrine's footprint (x, z), a cell to spare
-const SHRINE_SEARCH = 40;          // cells from the window's middle it looks within...
-const SHRINE_SEARCH_STEP = 4;      // ...on a lattice this fine
-const SHRINE_SAMPLE = 2;           // cells between the ground samples under a footprint
-const SHRINE_FLAT = 3;             // cells of rise and fall it accepts under its floor
-const SHRINE_DRY = 2;              // cells above the sea its lowest ground must be
-const SHRINE_HEADROOM = 16;        // cells of window it needs above its floor (the roof, and a hop)
-const SHRINE_GLADE = 10;           // cells around its footprint the clearing reaches (trunks within it are felled)
-const SHRINE_TREE_COST = 2;        // a spot's score: cells of rise, plus this per tree to fell...
-const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's middle (lowest wins)
-function worldShrine() {
-  if (!win || !builds || win.scene.shrine === false) return;   // (Descent's temples have their own altars)
-  const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
-  // a scene with structures places its own (world/structures.js: generated, in a clearing): set its orbs
-  const altars = worldShrineAltars(P);
-  if (altars) { perkOrbs?.shrineAt(altars.map((a) => a.sub(o))); return; }
-  const sea = P.sea ?? 0;
-  const fits = (x, z) => x - hx >= 0 && z - hz >= 0 && x + hx < g.nx && z + hz < g.nz;
-  // the ground's lowest and highest under a footprint centred on grid column (x, z)
-  const span = (x, z) => {
-    let lo = Infinity, hi = -Infinity;
-    for (let i = -hx; i <= hx; i += SHRINE_SAMPLE)
-      for (let k = -hz; k <= hz; k += SHRINE_SAMPLE) {
-        if (structureClear(P, o.x + x + i, o.z + z + k)) return [0, Infinity];   // not on the world's structures (world/structures.js)
-        const h = win.scene.ground(o.x + x + i, o.z + z + k, P);
-        lo = Math.min(lo, h); hi = Math.max(hi, h);
-      }
-    return [lo, hi];
-  };
-  // the trees whose trunks stand in its glade (the scene's, if it plants any: the island's)
-  const glade = (x, z) => (win.scene.trees
-    ? win.scene.trees.treesIn(o.x + x - hx - SHRINE_GLADE, o.z + z - hz - SHRINE_GLADE, o.x + x + hx + SHRINE_GLADE + 1, o.z + z + hz + SHRINE_GLADE + 1, P, win.candidates)
-    : []);
-  const cx = Math.round(g.nx / 2), cz = Math.round(g.nz / 2);
-  let best = null;
-  for (let dx = -SHRINE_SEARCH; dx <= SHRINE_SEARCH; dx += SHRINE_SEARCH_STEP)
-    for (let dz = -SHRINE_SEARCH; dz <= SHRINE_SEARCH; dz += SHRINE_SEARCH_STEP) {
-      const x = cx + dx, z = cz + dz;
-      if (!fits(x, z)) continue;
-      const [lo, hi] = span(x, z);
-      if (hi - lo > SHRINE_FLAT || lo < sea + SHRINE_DRY || hi + SHRINE_HEADROOM > g.ny) continue;
-      const trees = glade(x, z);
-      const score = hi - lo + SHRINE_TREE_COST * trees.length + SHRINE_FAR_COST * Math.hypot(dx, dz);
-      if (!best || score < best.score) best = { x, z, y: Math.ceil(hi), trees, score };
-    }
-  if (!best) return;
-  for (const t of best.trees) {
-    const baked = win.bakeTree(t);
-    if (baked) builds.stampBaked(bakedAir(baked), new THREE.Vector3(t.x - o.x - baked.base.x, t.y - o.y - baked.base.y, t.z - o.z - baked.base.z));
-  }
-  builds.stampAt('SHRINE', new THREE.Vector3(best.x, best.y, best.z));   // (onPlaced sets its orbs)
+// The realistic view's detail the volume draws first (the gate's base variant, gfx/detailGate.js); other views have none.
+const baseDetail = () => (viewKeyOf(settings.view) === 'realistic' ? gateVariants(settings).base : {});
+
+// The GI's kernels (derived.prepareGI, U9) build with the realistic view, the
+// only one that has GI (B5: at boot in it, or on switching to it). Until they
+// are built updateGI records nothing and the probes stay dark; their ready
+// re-keys the derived passes (giBuilt), so the next frame traces them, and
+// test.ready() waits for them (giWait).
+let giWait = Promise.resolve(), giBuilt = 0;
+function prepareGI() {
+  const d = derived;
+  if (viewKeyOf(settings.view) !== 'realistic' || !d?.prepareGI) return;
+  const p = giWait = Promise.resolve(d.prepareGI()).then(() => { if (d === derived) { giBuilt++; wakeLoop(); } });
+  p.catch(() => {});   // (a kernel that fails stops graphics: stopGraphics says why)
 }
 
-// World: the god view's home over world column (x, z), the orbit target on
-// the ground there (the scene's: on the sea where the sea floor is lower), or
-// as the scene's view has it (world/scenes/index.js)
-function homeOver(x, z) {
-  const v = win.scene.view;
-  const ground = win.scene.ground(x, z, win.P) + (v?.lift ?? 0);
-  const target = new THREE.Vector3((x - anchor.x) * scale, ground * scale, (z - anchor.y) * scale);
-  rig.setHome(new THREE.Vector3(...(v?.dir ?? WORLD_VIEW_DIR)).setLength(v ? v.dist * scale : WORLD_VIEW_DIST).add(target), target);
-}
+// World: the god view's home over world column (x, z) (src/wire/world.js)
+function homeOver(x, z) { wire('world')?.homeOver(ctx, x, z); }
 
 // The grid's box in the scene: at its world origin, so a window moving over
 // the world leaves the camera and everything already drawn where they are.
 function placeVolume() {
   volume.position.set((sim.origin.x - anchor.x) * scale, 0, (sim.origin.z - anchor.y) * scale);
-  edges.position.copy(volume.position);
   volume.updateMatrixWorld();
-  edges.updateMatrixWorld();
-}
-
-// World mode: keep the window on the focus, the POV body or else the orbit
-// target (a tool may pin it: __app.worldFocus = [x, z] in world cells).
-function moveWindow() {
-  let fx, fz;
-  if (worldFocus) [fx, fz] = worldFocus;
-  else if (pov?.active && pov.player) { fx = pov.player.pos.x + sim.origin.x; fz = pov.player.pos.z + sim.origin.z; }
-  else { fx = controls.target.x / scale + anchor.x; fz = controls.target.z / scale + anchor.y; }
-  const move = win.update(fx, fz);
-  if (!move) return;
-  const [dx, dz] = move;
-  placeVolume();
-  pov?.windowShifted(dx, dz);
-  hover.cell.x -= dx;   // the last pick, in the moved grid (signs follow sim.origin themselves)
-  hover.cell.z -= dz;
-  if (hover.valid && !inWindow(hover.cell)) hover.valid = false;
 }
 let worldFocus = null;
 
@@ -598,19 +532,30 @@ function pickedNow(cell, o) {
 // Multiplayer guests follow the host's grid size (a box: never World).
 function setGrid(dims) {
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
-  if (!size) return false;
+  if (!size || !gridFits(SIZES[size])) return false;
   settings.size = boxSize = size;
   build();
   return true;
 }
 
-// Switch the grid to `size` (SIZES or WORLDS) and rebuild.
+// The cells of size `size`'s grid (SIZES, or a WORLDS window with scene `scene`).
+const dimsOf = (size, scene = settings.scene) => (size in WORLDS ? worldModeOf(size, scene).win : SIZES[size]);
+// A grid the device can't hold is refused, with the reason (B2). True if it can.
+function gridFits(dims) {
+  const why = gridRefusal(dims);
+  if (why) hud.toast(`${dimsName(dims)} ${why}`, { kind: 'error' });
+  return !why;
+}
+
+// Switch the grid to `size` (SIZES or WORLDS) and rebuild. False if the device can't hold it.
 function setSize(size) {
   if (graphicsFailure) throw graphicsFailure;
+  if (!gridFits(dimsOf(size))) return false;
   settings.size = size;
   if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
   build();
   save();
+  return true;
 }
 
 // A map (maps.js) is a scene at its own grid size: the settings that load it.
@@ -625,6 +570,8 @@ function openMap(key, mode = 'sandbox') {
   if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key);
   if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
+  if (isWorld(m) && !wire('world')) { hud.toast(notYet(`${m.name} (World maps)`), { kind: 'error' }); return false; }
+  if (!gridFits(dimsOf(m.size, m.scene))) return false;
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
   else { useMap(m); setSize(m.size); }
   hud.toast(`Loaded ${m.name}`);
@@ -651,7 +598,7 @@ async function startMode(mode, { fresh = false } = {}) {
   game.prepare();
   // the start menu's Play over a game is a click: the mouse is taken now, while it counts as a
   // gesture (a drop-in from the god view asks for it itself)
-  if (pov.active && !pov.locked) try { renderer.domElement.requestPointerLock?.()?.catch?.(() => {}); } catch { /* not allowed here */ }
+  if (pov.active && !pov.locked) try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* not allowed here */ }
   // Halo puts you in your eyes at a spawn: no swoop down from the god view, no sandbox key hint
   await pov.enter({ swoop: 0, hint: false });
   mark('entered');
@@ -664,43 +611,37 @@ for (const m of MAPS) {
   const ok = dims && dims.every((n, i) => n === m.dims[i]) && (isWorld(m) ? m.size in WORLDS && sceneByKey(m.scene).key === m.scene : m.size in SIZES);
   if (!ok) console.error(`maps.js: map '${m.key}' doesn't match app.js (size '${m.size}', ${m.dims.join('×')})`);
 }
-if (WORLD_DIMS.some((n, i) => n !== WORLD_SIZE[i])) console.error('maps.js: WORLD_DIMS is not shaders/far.js WORLD_SIZE');
+if (WORLD_DIMS.some((n, i) => n !== WORLD_SIZE[i])) console.error('maps.js: WORLD_DIMS is not shaders/farShared.js WORLD_SIZE');
 // cells [nx, ny, nz] for a toast: '128^3' (as maps.js sizeTag), '160 × 96 × 160'; for the HUD: '2.1M'
 const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}^3` : d.join(' × '));
 const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
 
 // what undoing a scene load names: its map ('Undone Lab'), and the Empty map, TPT's Clear
 function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m) => m.preset === preset)?.name ?? preset; }
+// Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
+const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
+  if (!win && presetWire(name) && !wire(presetWire(name))) {
+    hud.toast(`${notYet(sceneLabel(name))}. Here is the Lab instead`, { kind: 'error' });
+    name = 'lab';
+  }
   if (undoable && !win) sim.snapshot(sceneLabel(name));
   settings.preset = name;
-  if (win) {
-    // A world has one scene, its own: loading starts it over (and can't be
-    // undone). Its passes compile in the background first (the first time):
-    // till then the window is empty air, and the world fills in when they're done.
-    const w = win, epoch = w.epoch;
-    if (!w.loaded) sim.clear();
-    w.whenReady().then(() => {
-      if (win !== w || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
-      w.load(worldStart());
-      placeVolume();
-      post.reset();
-      pov?.worldReplaced();
-      birds?.worldReplaced();
-      worldShrine();
-    }, (err) => console.error('world: its passes failed to compile, or its scene to prepare', err));
-    toolbar.setUndoEnabled(false);
-  } else if (name === 'empty') sim.clear();
-  else if (name === 'island') loadIsland(sim, { seed: worldSeed });
-  else arenaLayout = buildPreset(name, sim);
-  if (win || !(name in ARENA_GRID)) arenaLayout = null;
-  resetSimModes();
-  post.reset();
-  signs?.clear();
-  resetSpawners(name);
-  pov?.worldReplaced();
+  // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
+  whenSimReady(() => {
+    if (win) wire('world').loadScene(ctx);
+    else if (name === 'empty') sim.clear();
+    else if (name === 'island') wire('world').loadIsland(ctx);
+    else arenaLayout = buildPreset(name, sim);
+    if (win || !(name in ARENA_GRID)) arenaLayout = null;
+    resetSimModes();
+    post.reset();
+    signs?.clear();
+    resetSpawners(name);
+    pov?.worldReplaced();
+  });
   save();
   return true;
 }
@@ -725,54 +666,6 @@ function resetSpawners(name) {
 }
 // the loaded arena's layout (arenas/damValley.js DAM_VALLEY_LAYOUT), else null: __app.arena
 let arenaLayout = null;
-let arenaMarkers = null;   // its team banners (arenas/markers.js)
-
-// ---------------------------------------------------------------- Descent's level switch
-// Descent (docs/descent-contract.md, "D"): each level is its own world scene;
-// the temple's exit loads the next one here, in the same session, and drops
-// the body in at its spawn. The POV shell, the body (health, perks, statuses),
-// the toolbelt, the run's wands (wands/descentRun.js) and gold (pov.descent)
-// all outlive build(), so the run comes through: nothing is rebuilt but the world.
-let descent = null;   // pov/descent/switch.js createDescentRunner, made with the POV shell
-const descentFeet = new THREE.Vector3();
-// a level's spawn as grid feet (the middle of its cell), or null
-function descentSpawn(level) {
-  if (!level?.spawn || !sim) return null;
-  const [x, y, z] = level.spawn;
-  return new THREE.Vector3(x + 0.5, y, z + 0.5).sub(sim.origin);
-}
-// Load world scene `key` (as the map menu does a world map) and resolve once its window has filled.
-function descentLoad(key) {
-  settings.scene = key;
-  setSize('world');
-  const t0 = performance.now();
-  return new Promise((resolve, reject) => {
-    const check = () => {
-      if (win?.loaded && win.scene.key === key) resolve();
-      else if (performance.now() - t0 > LOAD_WAIT_MS) reject(new Error(`Descent: '${key}' took too long to load`));
-      else setTimeout(check, LOAD_POLL_MS);
-    };
-    check();
-  });
-}
-function descentFrame() {
-  const p = pov?.player;
-  const live = !!(win && p && pov.mode === 'on' && !p.dead);
-  descent.frame({
-    key: win ? settings.scene : null,
-    feet: live ? descentFeet.copy(p.pos).add(sim.origin) : null,
-    live, load: win,
-  });
-}
-
-// ---------------------------------------------------------------- signs (optional module)
-const signLayer = Object.assign(document.createElement('div'), { className: 'sign-layer' });
-Object.assign(signLayer.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: 4 });
-document.body.append(signLayer);
-let signs = null;
-let builds = null; // constructions (optional module)
-let pov = null;    // first-person mode (src/pov)
-let scripts = null; // the scripting console, ` (src/console)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -781,6 +674,8 @@ let pointerClient = [0, 0];
 const raycaster = new THREE.Raycaster();
 const hover = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0 };
 let painting = false;
+let strokePainted = false;    // the stroke under way has painted at least once
+let releasePending = false;   // its button went up before it had: it stops after its next paint
 let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the tool gun's eraser
 let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
 let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
@@ -794,55 +689,46 @@ const windFrom = new THREE.Vector3();
 let windFromValid = false;
 const invVolume = new THREE.Matrix4();
 
+// The pointer's ray in grid cells (the camera unjittered: casts are made outside post's frame).
 function gridRay() {
   raycaster.setFromCamera(pointer, camera);
   return raycaster.ray.clone().applyMatrix4(invVolume.copy(volume.matrixWorld).invert());
 }
 
 // In POV the pick follows the crosshair (the screen centre) instead of the pointer.
+// The ray is marched by the volume's pick kernel (gfx/volume.js, F5), recorded
+// with the next frame (post's compute hook) or on its own, and its result lands
+// 1-3 frames later; a pick asked for on an old grid is dropped.
 const povRay = new THREE.Ray();
 function requestPick() {
   const fromPov = !!pov?.aimRay(povRay.origin, povRay.direction);
   if (pickPending || (!pointerInside && !fromPov)) return;
   const ray = fromPov ? povRay : gridRay();
-  pickMat.uniforms.uRo.value.copy(ray.origin);
-  pickMat.uniforms.uRd.value.copy(ray.direction);
-  pickMat.uniforms.tA.value = sim.stateA;
-  pickMat.uniforms.tB.value = sim.stateB;
-  pickMat.uniforms.tBrick.value = sim.brick.texture;
-  sim.run(pickMat, pickTarget);
   pickPending = true;
   const from = sim, o = sim.origin.clone();
-  renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, 2, 1, pickBuf).then(() => {
+  vol.pick(ray.origin, ray.direction).then((hit) => {
     pickPending = false;
     if (from !== sim) return;   // a new grid since
-    hover.valid = pickBuf[3] >= 0;
+    hover.valid = hit.valid;
     if (hover.valid) {
-      pickedNow(hover.cell.set(pickBuf[0], pickBuf[1], pickBuf[2]), o);
+      pickedNow(hover.cell.fromArray(hit.cell), o);
       hover.valid = inWindow(hover.cell);
-      hover.face = pickBuf[3];
-      hover.id = Math.round(pickBuf[4]);
-      hover.T = pickBuf[5];
-      hover.P = pickBuf[6];
+      hover.face = hit.face;
+      hover.id = hit.id;
+      hover.T = hit.T;
+      hover.P = hit.P;
     }
-  }).catch(() => { pickPending = false; });
+    wakeLoop();   // (the brush follows the pick)
+  }, () => { pickPending = false; });
 }
 
 // One-off pick along a grid-space ray (ro, rd), e.g. to find the ground: resolves to
 // { valid, cell, face, id, T, P } like `hover`.
-const rayTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
 function pickRay(ro, rd) {
-  pickMat.uniforms.uRo.value.copy(ro);
-  pickMat.uniforms.uRd.value.copy(rd);
-  pickMat.uniforms.tA.value = sim.stateA;
-  pickMat.uniforms.tB.value = sim.stateB;
-  pickMat.uniforms.tBrick.value = sim.brick.texture;
-  sim.run(pickMat, rayTarget);
-  const buf = new Float32Array(8);
   const o = sim.origin.clone();
-  return renderer.readRenderTargetPixelsAsync(rayTarget, 0, 0, 2, 1, buf).then(() => {
-    const cell = pickedNow(new THREE.Vector3(buf[0], buf[1], buf[2]), o);
-    return { valid: buf[3] >= 0 && inWindow(cell), cell, face: buf[3], id: Math.round(buf[4]), T: buf[5], P: buf[6] };
+  return vol.pick(ro, rd).then((hit) => {
+    const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
+    return { valid: hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
   });
 }
 
@@ -865,7 +751,6 @@ function hoverBrushCenter(out, tool = settings.tool) {
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const tmpV = new THREE.Vector3();
 function updateBrush() {
-  const g = sim.g;
   brushValid = false;
   if (pov?.active) { shapeDrag = null; updateGunBrush(); return; }
   if (isBrush(settings.tool)) {
@@ -891,6 +776,16 @@ function updateBrush() {
     color: toolById(settings.tool).color,
   });
   builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
+}
+
+// The brush's state as the view key sees it (the brush is ours, not in three's scene).
+function brushKey() {
+  let k = '';
+  for (const m of Object.values(brush.parts)) {
+    if (!m.visible) { k += '-|'; continue; }
+    k += `${m.shape},${m.position.x},${m.position.y},${m.position.z},${m.scale.x},${m.scale.y},${m.scale.z},${m.quaternion.x},${m.quaternion.y},${m.quaternion.z},${m.quaternion.w}|`;
+  }
+  return k;
 }
 
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
@@ -1110,13 +1005,20 @@ function accentFor(hex) {
 let lastPaintTool = E.SAND;
 function selectTool(id) {
   setEyedropper(false);
+  // a tool whose subsystem isn't ported yet stays greyed out (src/wire)
+  const needs = toolWire(id);
+  if (needs && !wire(needs)) {
+    hud.toast(notYet(toolById(id)?.name ?? 'That tool'), { kind: 'error' });
+    if (!toolById(settings.tool) || (toolWire(settings.tool) && !wire(toolWire(settings.tool)))) selectTool(DEFAULTS.tool);
+    return;
+  }
   const wand = wandPresetForTool(id);
   if (wand) {
     pov?.equipWand(wand).catch((err) => { console.error('Wand equip failed', err); hud.toast('Could not equip this wand. Try entering first person with V.'); });
     return;   // Never save or send starter IDs to the paint shader.
   }
   if (!isBuild(id)) lastPaintTool = id;
-  if (isDecoTool(id) && sim) prepareDeco(sim);   // its passes compile while the colour is picked (src/deco.js)
+  if (isDecoTool(id) && sim) wire('deco')?.prepare(ctx);   // its passes compile while the colour is picked (src/deco.js)
   settings.tool = id;
   const it = toolById(id);
   const accent = accentFor(it.color);
@@ -1130,6 +1032,7 @@ function selectTool(id) {
 // A first-person tool from the palette's Tools group (GMod's spawn menu): every
 // tool is carried (inventory.js), so it goes in hand, now in first person or at the next drop-in.
 function giveGear(id) {
+  if (!wire('pov')) { hud.toast(notYet(toolById(id)?.name ?? 'That tool'), { kind: 'error' }); return; }
   const it = toolById(id);
   const g = gearByKey(it.gear);
   inventory.give(g.key);
@@ -1174,13 +1077,11 @@ const dock = createDock({
 });
 hud.setEditMode(editModeText());
 
-// TPT's Ctrl+B (src/gui/game/GameView.cpp): draw decoration or not. The paint
-// stays either way (src/deco.js); off, everything draws as if undecorated.
+// TPT's Ctrl+B: draw decoration or not (src/wire/deco.js)
 function toggleDeco() {
-  decoView.show = !decoView.show;
-  dock.sync();
-  pacer.wake();
-  hud.toast(decoView.show ? 'Decoration shown' : 'Decoration hidden');
+  const d = wire('deco');
+  if (d) d.toggle(ctx);
+  else hud.toast(notYet('Decoration'), { kind: 'error' });
 }
 
 // Eyedropper: the next click on the scene selects whatever element it lands on.
@@ -1205,13 +1106,18 @@ const actions = {
     rig.reset();
     hud.toast('Camera reset');
   },
-  screenshot: () => { wantShot = true; },
+  screenshot: () => { wantShot = true; pacer.wake(); },
   saveGame: () => saveGame(),
   // the map menu on its Saves list (Garry's Mod's Saves; ⌘O)
   openSaves: () => { painting = false; launch.openMenu?.({ saves: true }); },
-  firstPerson: () => { painting = false; pov?.toggle(); },
+  firstPerson: () => {
+    painting = false;
+    if (!wire('pov')) { hud.toast(notYet('First person'), { kind: 'error' }); return; }
+    pov?.toggle();
+  },
   // 'god' leaves the walking body; 'first' / 'third' drops in, or switches the camera if already in
   setCamera: (id) => {
+    if (!wire('pov')) { if (id !== 'god') hud.toast(notYet('First and third person'), { kind: 'error' }); return; }
     if (!pov) { hud.toast('Your body is still loading'); return; }
     if (id === 'god') { if (camState() !== 'god') pov.exit(); return; }
     pov.camera.third = id === 'third';
@@ -1224,8 +1130,8 @@ const actions = {
   setView,
   renderThumb,
 };
-const toolbar = createToolbar({ views: VIEWS, settings, actions });
-const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win, score: () => scoreboard.mine });
+// (greyed out until their subsystems are ported: src/wire)
+const toolbar = createToolbar({ views: VIEWS, settings, actions, available: { camera: !!wire('pov'), saves: !!wire('saves') } });
 // Tab held: Garry's Mod's scoreboard (ui/scoreboard.js), in the body and in the god view, while
 // you're on the world: with the mouse held by the body, or nothing focused (a click on the world
 // lets go of the controls: press). With a control or a dialog focused, Tab moves through them.
@@ -1233,7 +1139,7 @@ const scoreboard = createScoreboard({
   wantsTab() {
     if (isTyping() || pov?.editingWand) return false;
     const a = document.activeElement;
-    return !!pov?.locked || !a || a === document.body || a === renderer.domElement;
+    return !!pov?.locked || !a || a === document.body || a === canvas;
   },
   map: () => mapOf(settings)?.name ?? null,
   match: () => pov?.game?.scoreboard?.() ?? null,
@@ -1321,17 +1227,14 @@ const settingsPanel = createSettings({
 // and into the view only while the camera is near enough for them to show
 // (gfx/detailGate.js). The shadow map sees every switched-on feature.
 let detailVersion = 0;
-const DETAIL_FOAM = DETAIL.find((f) => f.key === 'liquidFoam');   // whitewater also runs a field with the sim
-const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
-// The view program's first draw after an update freezes the page while the
-// GPU driver builds it: say so first (gfx/coldShader.js), on the start menu's
-// loading screen too while it is up.
+// A view or detail variant whose pipeline is still building when the frame
+// wants it is drawn without the volume meanwhile, with a toast after a moment
+// (gfx/coldShader.js); its ready wakes the frame loop.
+const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
 const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
-  shadowMat.defines = detailDefines(settings);
-  shadowMat.needsUpdate = true;
-  setAeration(sim, !!settings[settingKey(DETAIL_FOAM)]);   // whitewater's per-step field
-  detailGate.configure(volume, settings, camera, scene);
+  for (const w of live) w.detail?.(ctx);   // whitewater's per-step field (src/wire/foam.js)
+  detailGate.configure(vol, settings, settings.view);
   detailVersion++;   // the shadow map is a derived pass: redo it
   post.reset();
 }
@@ -1377,45 +1280,6 @@ function setSimModes(modes) {
 }
 function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }); }
 
-// The Simulation options in the console by TPT's Lua names and numbers
-// (src/lua/LuaSimulation.cpp gravityMode, airMode, ambientHeatSim, edgeMode):
-// no argument reads, one sets. TPT numbers its edges void 0, solid 1, loop 2
-// (SimulationSettings.h EdgeMode); ours start at solid.
-const TPT_EDGES = [EDGE.VOID, EDGE.SOLID, EDGE.LOOP];
-function consoleMode(key, toOurs = (v) => v, toTpt = (v) => v) {
-  return function (v) {
-    if (v === undefined || v === null) return toTpt(settings[key]);
-    const ours = toOurs(v);
-    if (sanitizeModes({ ...settings, [key]: ours })[key] !== ours) throw new Error(`${key}: no mode ${v}`);
-    const lock = simModeLock(key);
-    if (lock) throw new Error(lock);
-    setSimMode(key, ours);
-    return toTpt(settings[key]);
-  };
-}
-registerConsoleApi('sim', 'gravityMode', consoleMode('gravityMode'),
-  { args: '[mode]', doc: 'Gravity: 0 vertical, 1 off, 2 radial (toward the box centre).', writes: true });
-registerConsoleApi('sim', 'airMode', consoleMode('airMode'),
-  { args: '[mode]', doc: 'Air: 0 on, 1 pressure off, 2 velocity off, 3 off, 4 no update.', writes: true });
-registerConsoleApi('sim', 'ambientHeatSim', consoleMode('ambientHeat', (v) => !!v),
-  { args: '[on]', doc: 'Ambient heat: whether air holds and trades heat.', writes: true });
-registerConsoleApi('sim', 'edgeMode', consoleMode('edgeMode', (v) => TPT_EDGES[v] ?? -1, (v) => TPT_EDGES.indexOf(v)),
-  { args: '[mode]', doc: 'Box edges (TPT numbering): 0 void, 1 solid, 2 loop. World keeps solid.', writes: true });
-// TPT's sim.decoColor: the deco tools' colour, read as a packed 0xAARRGGBB, set
-// packed or as r, g, b[, a] (0-255).
-const BYTE = 256;
-registerConsoleApi('sim', 'decoColor', function (r, g, b, a) {
-  if (r !== undefined && r !== null) {
-    const rgba = g === undefined || g === null
-      ? [(r >>> 16) & 0xff, (r >>> 8) & 0xff, r & 0xff, (r >>> 24) & 0xff]
-      : [r, g, b ?? 0, a ?? BYTE - 1];
-    setDecoColor(rgba);
-    dock.sync();
-  }
-  const [cr, cg, cb, ca] = decoView.color;
-  return ((ca * BYTE + cr) * BYTE + cg) * BYTE + cb;
-}, { args: '[packed | r, g, b[, a]]', doc: 'The deco tools\' colour, as 0xAARRGGBB.', writes: false });
-
 function setSettingsOpen(v) {
   settingsPanel.setOpen(v);
   toolbar.setSettingsOpen(v);
@@ -1428,10 +1292,17 @@ function setPaused(p) {
   toolbar.sync();
 }
 
+// A view (src/views.js) is a pipeline of its own (shaders/render.js): one not
+// drawn yet this session builds now, the frame drawing without the volume
+// meanwhile (B5); the shadow map's kernel builds with the first view that reads it.
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
   if (settings.view !== id) post.reset();
   settings.view = id;
+  detailGate.setView(id);
+  prepareGI();
+  const key = viewKeyOf(id);
+  if (viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   toolbar.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
   save();
@@ -1443,7 +1314,7 @@ function undo() {
   const shrine = note?.shrine;
   if (sim.undo()) {
     if (shrine) perkOrbs?.removeShrine(shrine);
-    if (note?.scene) restoreSceneExtras(note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
+    if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
     pov?.worldReplaced();
     hud.toast(label ? `Undone ${label}` : 'Undone', { kind: 'undo' });   // Garry's Mod's "Undone Prop": it names what was undone
   }
@@ -1452,236 +1323,19 @@ function undo() {
   toolbar.setUndoEnabled(sim.canUndo);
 }
 
-// ---------------------------------------------------------------- saves (src/saves)
-// ⌘S or the toolbar's Save keeps the game in the Saves list, with a picture;
-// the map menu's Saves (Esc, ⌘O) loads one, exports it as a .tpt3d file or
-// opens one. Garry's Mod's way: a save is named for its map and the time, and
-// listed with its thumbnail. A box save loads as a scene change, so ⌘Z takes
-// it back; a World save, like any world load, can't be undone.
-const SAVE_THUMB_BG = '#0e1117';   // what a thumbnail's clear pixels (a box has no sky) sit on: the page's background
-const SAVE_THUMB_TYPE = 'image/jpeg', SAVE_THUMB_QUALITY = 0.82;
-const MB = 1024 * 1024;
-// the gravity and speed a world was saved with come back with it (TPT keeps gravity in a save)
-registerSavedSettings(['gravity', 'steps']);
-// The decoration layer (src/deco.js) goes with its save, as TPT saves deco with
-// each particle: RGBA8 per cell in the save's cell order (format.js packCells),
-// and a World's painted bricks outside the window as [brick key u32, its
-// bytes] records. Both load after the cells, since Simulation.load wipes the paint.
-const DECO_KEY_BYTES = 4;
-registerSaveSection('deco', {
-  save: () => {
-    const data = readDeco(sim);   // (null while nothing is painted)
-    if (!data) return undefined;
-    const g = sim.g;
-    return packCells([g.nx, g.ny, g.nz], (x, y, z) => cellTexel(g, x, y, z), [data]);
-  },
-  load: (planes, h) => {
-    const g = sim.g, data = new Uint8Array(g.width * g.height * DECO_BYTES);
-    unpackCells(h.dims, (x, y, z) => cellTexel(g, x, y, z), planes, [data]);
-    uploadDeco(sim, data);
-  },
-});
-registerSaveSection('decoStore', {
-  save: () => {
-    const store = sim.deco?.store;
-    if (!store?.size) return undefined;
-    const rec = DECO_KEY_BYTES + store.values().next().value.length;
-    const out = new Uint8Array(store.size * rec), view = new DataView(out.buffer);
-    let at = 0;
-    for (const [k, b] of store) { view.setUint32(at, k, true); out.set(b, at + DECO_KEY_BYTES); at += rec; }
-    return out;
-  },
-  load: (bytes) => {
-    const store = ensureDeco(sim).store, view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const rec = DECO_KEY_BYTES + BRICK_CELLS * DECO_BYTES;
-    for (let at = 0; at + rec <= bytes.length; at += rec) store.set(view.getUint32(at, true), bytes.slice(at + DECO_KEY_BYTES, at + rec));
-  },
-});
-// The simulation modes (simModes.js) are the world's, as TPT keeps gravity,
-// air and edge modes in each save; a save from before them gets its map's
-// defaults back, not whatever was on before it loaded.
-registerSaveSection('simModes', {
-  save: () => Object.fromEntries(SIM_MODE_KEYS.map((k) => [k, settings[k]])),
-  load: (m) => setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes, ...m }),
-  absent: () => resetSimModes(),
-});
-const saves = createSaves({
-  renderer, settings, getSim: () => sim, getWin: () => win,
-  header: () => {
-    const m = mapOf(settings);
-    return {
-      map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: win ? null : settings.preset,
-      world: win ? { scene: settings.scene, seed: worldSeed ?? null } : null,
-      guestCopy: mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
-    };
-  },
-  thumbnail: saveThumbnail,
-  prepare: prepareSave,
-  finish: () => {
-    if (win) placeVolume();
-    post.reset();
-    pov?.worldReplaced();
-    birds?.worldReplaced();
-    toolbar.setUndoEnabled(sim.canUndo);
-    dock.sync();
-    toolbar.sync();
-    settingsPanel.sync();
-    save();
-    pacer.wake();
-  },
-  onSettings: () => { sim.gravity = settings.gravity; },
-});
-
-// The save's picture for the Saves list: the next frame on screen, cropped and
-// scaled down, read from the canvas in the frame's own task as the screenshot
-// is (saveScreenshot). It draws nothing extra (no second render, no program to
-// build). Resolves to a data URL, or null if no frame comes (a parked test page).
-const SAVE_THUMB_SIZE = [320, 200];   // px: the views menu's thumbnails' size
-const SAVE_THUMB_WAIT_MS = 1500;
-function saveThumbnail() {
-  return new Promise((resolve) => {
-    thumbWaiters.push(resolve);
-    pacer.wake();
-    setTimeout(() => {
-      const i = thumbWaiters.indexOf(resolve);
-      if (i >= 0) { thumbWaiters.splice(i, 1); resolve(null); }
-    }, SAVE_THUMB_WAIT_MS);
-  });
+// ---------------------------------------------------------------- saves (src/wire/saves.js)
+// ⌘S or the toolbar's Save keeps the game in the Saves list; the map menu's
+// Saves (Esc, ⌘O) loads one. Resolves to the save's meta, or null.
+function saveGame(name) {
+  const s = wire('saves');
+  if (!s) { hud.toast(notYet('Saves'), { kind: 'error' }); return Promise.resolve(null); }
+  return s.saveGame(ctx, name);
 }
-function takeSaveThumbnail() {
-  const waiting = thumbWaiters;
-  thumbWaiters = [];
-  let url = null;
-  try {
-    const src = renderer.domElement, [w, h] = SAVE_THUMB_SIZE;
-    const out = Object.assign(document.createElement('canvas'), { width: w, height: h });
-    const ctx = out.getContext('2d');
-    ctx.fillStyle = SAVE_THUMB_BG;
-    ctx.fillRect(0, 0, w, h);
-    const k = Math.min(src.width / w, src.height / h);   // (cover: the middle of the view)
-    ctx.drawImage(src, (src.width - w * k) / 2, (src.height - h * k) / 2, w * k, h * k, 0, 0, w, h);
-    url = out.toDataURL(SAVE_THUMB_TYPE, SAVE_THUMB_QUALITY);
-  } catch (err) {
-    console.warn('save: no thumbnail', err);
-  }
-  for (const resolve of waiting) resolve(url);
-}
-
-// Get the grid ready for a save: its map and size (a rebuild if they differ),
-// else an undo snapshot. Resolves false to refuse.
-async function prepareSave(h) {
-  if (graphicsFailure) throw graphicsFailure;
-  if (mp.guard()) return false;
-  painting = false;
-  pov?.exit(true);   // the body is left out of a save; you come back in the god view
-  if (h.world) {
-    if (mp.guardWorld()) return false;
-    const scene = sceneByKey(h.world.scene);
-    if (!(h.size in WORLDS) || scene.key !== h.world.scene) throw new SaveRefused('That save is of a world this version doesn\'t have');
-    const seed = h.world.seed ?? undefined;
-    if (!win || settings.size !== h.size || settings.scene !== scene.key || worldSeed !== seed) {
-      settings.scene = scene.key;
-      worldSeed = seed;
-      setSize(h.size);
-    }
-    const w = win;
-    if (w.size.some((n, i) => n !== h.world.size?.[i])) throw new SaveRefused('That save\'s world is a different size');
-    await w.whenReady();   // (after the world's own start, which the switch queued first)
-    return win === w;      // (switched again meanwhile: the newer pick wins)
-  }
-  const fits = (k) => SIZES[k]?.every((n, i) => n === h.dims[i]);
-  const size = fits(h.size) ? h.size : Object.keys(SIZES).find(fits);
-  if (!size) throw new SaveRefused(`This version has no ${h.dims.join(' × ')} grid`);
-  const preset = h.preset ?? 'empty';
-  if (settings.size !== size) {
-    settings.preset = 'empty';   // (the save brings the cells: no building the map's scene first)
-    setSize(size);
-  } else {
-    // undoable like any scene change; TPT takes a history snapshot before opening a local save (GameController.cpp OpenLocalBrowse)
-    sim.snapshot('Loaded save');
-    sim.history.at(-1).note = { scene: sceneExtras() };
-  }
-  settings.preset = preset;
-  // an arena's layout (spawns, flags, shrines) is its build's, without its cells
-  arenaLayout = preset in ARENA_PRESETS ? ARENA_PRESETS[preset].build().layout : null;
-  signs?.clear();
-  resetSpawners(preset);
-  return true;
-}
-
-// What a box holds besides its cells (its scene, signs, spawners, perk orbs), for undoing a load.
-const sceneExtras = () => ({ preset: settings.preset, signs: signs?.toJSON(), spawners: spawners?.toJSON(), perkOrbs: perkOrbs?.toJSON() });
-function restoreSceneExtras(x) {
-  settings.preset = x.preset;
-  arenaLayout = x.preset in ARENA_PRESETS ? ARENA_PRESETS[x.preset].build().layout : null;
-  resetSpawners(x.preset);
-  spawners?.fromJSON(x.spawners);
-  perkOrbs?.fromJSON(x.perkOrbs);
-  signs?.fromJSON(x.signs);
-  save();
-}
-
-// the god camera in world cells, so it comes back over the same ground in a world whose window has moved
-const camToCells = (v) => [v.x / scale + anchor.x, v.y / scale, v.z / scale + anchor.y];
-const camFromCells = (a, out) => out.set((a[0] - anchor.x) * scale, a[1] * scale, (a[2] - anchor.y) * scale);
-registerSaveSection('camera', {
-  save: () => (camState() === 'god' ? { position: camToCells(camera.position), target: camToCells(controls.target) } : undefined),
-  load: (d) => {
-    camFromCells(d.position, camera.position);
-    camFromCells(d.target, controls.target);
-    controls.update();
-  },
-  // saved in the body: in a world, the god view over the window (the window would chase a camera left elsewhere)
-  absent: () => { if (win) { homeOver(sim.origin.x + sim.g.nx / 2, sim.origin.z + sim.g.nz / 2); rig.reset(true); } },
-});
-registerSaveSection('day', {
-  save: () => ({ clock: day.clock }),
-  load: (d) => { if (Number.isFinite(d.clock)) { day.clock = d.clock; updateSun(); } },
-});
-registerSaveSection('signs', { save: () => signs?.toJSON(), load: (d) => signs?.fromJSON(d), absent: () => signs?.clear() });
-registerSaveSection('spawners', { save: () => spawners?.toJSON(), load: (d) => spawners?.fromJSON(d) });
-registerSaveSection('perkOrbs', { save: () => perkOrbs?.toJSON(), load: (d) => perkOrbs?.fromJSON(d) });
-
-const saveName = () => {
-  const d = new Date(), pad = (n) => String(n).padStart(2, '0');
-  return `${mapOf(settings)?.name ?? 'Custom'} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
-let saving = false;
-// Save the game into the Saves list. Resolves to the save's meta (saves/local.js), or null.
-async function saveGame(name) {
-  if (saving) return null;
-  saving = true;
-  hud.toast('Saving…');
-  try {
-    const bytes = await saves.capture(cleanName(name) || saveName());
-    const meta = await putSave(bytes);
-    hud.toast(`Saved "${meta.name}" (${(bytes.length / MB).toFixed(1)} MB). Esc → Saves to load it`);
-    return meta;
-  } catch (err) {
-    if (!(err instanceof SaveRefused)) console.error('save failed', err);
-    hud.toast(err instanceof SaveRefused ? err.message : `Couldn't save: ${err.message}`);
-    return null;
-  } finally {
-    saving = false;
-  }
-}
-let loadingSave = false;
 // Load a save: a local save's id, or a save file's bytes. Resolves to whether it loaded.
-async function openSave(what) {
-  if (loadingSave) return false;
-  loadingSave = true;
-  try {
-    const bytes = typeof what === 'string' ? await getSave(what) : what;
-    const h = await saves.apply(bytes);
-    if (h) hud.toast(`Loaded "${h.name}"${h.world ? '' : sim.canUndo ? ' (⌘Z takes it back)' : ''}`);
-    return !!h;
-  } catch (err) {
-    if (!(err instanceof SaveRefused)) console.error('load failed', err);
-    hud.toast(err instanceof SaveRefused ? err.message : `Couldn't load that save: ${err.message}`);
-    return false;
-  } finally {
-    loadingSave = false;
-  }
+function openSave(what) {
+  const s = wire('saves');
+  if (!s) { hud.toast(notYet('Loading a save'), { kind: 'error' }); return Promise.resolve(false); }
+  return s.openSave(ctx, what);
 }
 
 // UI elements shouldn't show the brush or receive paint
@@ -1691,46 +1345,62 @@ for (const el of document.querySelectorAll('.panel, .dock-tab')) {
 }
 
 // ---------------------------------------------------------------- thumbnails for the views menu
-const thumbTarget = new THREE.WebGLRenderTarget(320, 200, { depthBuffer: true });
-const thumbCam = new THREE.PerspectiveCamera();
-const thumbPixels = new Uint8Array(320 * 200 * 4);
-function renderThumb(viewId, canvas) {
+// A still of the current scene in each view (post.renderStill: no TAA, the
+// last adaptation, its alpha kept) into a 320×200 target, read back, made
+// straight (un-premultiplied) and put on the card's canvas (F5). A view not
+// drawn yet this session builds its pipeline first: the menu is its first use.
+const THUMB_SIZE = [320, 200];
+const thumbCam = useWebGPUCamera(new THREE.PerspectiveCamera());
+let thumbTarget = null;
+async function renderThumb(viewId, out) {
+  if (graphicsFailure || !coreReady) return false;
+  const view = viewKeyOf(viewId), detail = view === 'realistic' ? gateVariants(settings).base : {};
+  const v = vol;
+  await Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]);
+  if (graphicsFailure || v !== vol) return false;
+  thumbTarget ??= gpu.createTexture({
+    label: 'view thumbnail', size: THUMB_SIZE, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+  });
   thumbCam.copy(camera, false);   // not its children (the POV viewmodel)
-  thumbCam.aspect = 1.6;
-  thumbCam.updateProjectionMatrix();
-  const u = volume.material.uniforms;
-  const prev = u.uView.value;
-  u.uView.value = viewId;
-  const brushWas = brush.mesh.visible;
-  brush.mesh.visible = false;
+  thumbCam.aspect = THUMB_SIZE[0] / THUMB_SIZE[1];
+  useWebGPUCamera(thumbCam);
   const rawWas = post.settings.raw;
   post.settings.raw = viewId !== 0;
-  post.renderStill(scene, thumbCam, thumbTarget);
-  post.settings.raw = rawWas;
-  renderer.readRenderTargetPixels(thumbTarget, 0, 0, 320, 200, thumbPixels);
-  renderer.setRenderTarget(null);
-  u.uView.value = prev;
-  brush.mesh.visible = brushWas;
-  // flip vertically and un-premultiply
-  const ctx = canvas.getContext('2d');
-  const img = ctx.createImageData(320, 200);
-  for (let y = 0; y < 200; y++) {
-    for (let x = 0; x < 320; x++) {
-      const s = ((199 - y) * 320 + x) * 4, d = (y * 320 + x) * 4;
-      const a = thumbPixels[s + 3] / 255 || 1;
-      img.data[d] = Math.min(255, thumbPixels[s] / a);
-      img.data[d + 1] = Math.min(255, thumbPixels[s + 1] / a);
-      img.data[d + 2] = Math.min(255, thumbPixels[s + 2] / a);
-      img.data[d + 3] = thumbPixels[s + 3];
-    }
+  try {
+    post.renderStill({
+      prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); },
+      // the meshes too, as a frame draws them (the stills' target is post's still one)
+      opaque: (p) => (threeMeshes(p, false, thumbCam) ? cut.capture(p.sceneTarget.depth) : false),
+      draw(rp) {
+        if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1 });
+        vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
+        if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], opacity: EDGE_OPACITY });
+      },
+      meshes: (p) => { threeMeshes(p, true, thumbCam); },
+    }, thumbCam, thumbTarget);
+  } finally {
+    post.settings.raw = rawWas;
   }
-  ctx.putImageData(img, 0, 0);
-  canvas.dataset.rendered = '1';
+  const px = await gpu.readback.texture(thumbTarget);
+  const [w, hgt] = THUMB_SIZE;
+  const ctx2d = out.getContext('2d');
+  const img = ctx2d.createImageData(w, hgt);
+  // un-premultiply (rows are top down already: F4)
+  for (let i = 0; i < w * hgt * 4; i += 4) {
+    const a = px[i + 3] / 255 || 1;
+    img.data[i] = Math.min(255, px[i] / a);
+    img.data[i + 1] = Math.min(255, px[i + 1] / a);
+    img.data[i + 2] = Math.min(255, px[i + 2] / a);
+    img.data[i + 3] = px[i + 3];
+  }
+  ctx2d.putImageData(img, 0, 0);
+  out.dataset.rendered = '1';
   if (viewId === settings.view) toolbar.sync();
+  return true;
 }
 
 // ---------------------------------------------------------------- input
-const canvasEl = renderer.domElement;
+const canvasEl = canvas;
 canvasEl.addEventListener('pointermove', (e) => {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   pointerClient = [e.clientX, e.clientY];
@@ -1778,11 +1448,12 @@ function clickTool() {
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) { signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) }); return true; }
-    if (!signs) hud.toast('Signs are still loading');
+    if (!signs) hud.toast(wire('signs') ? 'Signs are still loading' : notYet('Signs'));
     return false;
   }
   if (settings.tool === LIGHTNING_TOOL) {
     if (mp.guard()) return false;
+    if (!lightning) { hud.toast(notYet('Lightning'), { kind: 'error' }); return false; }
     if (!hover.valid) { hud.toast('Click a surface to strike it', { kind: 'error' }); return false; }
     sim.snapshot(toolById(LIGHTNING_TOOL).name);
     toolbar.setUndoEnabled(true);
@@ -1793,6 +1464,7 @@ function clickTool() {
   }
   if (isSpawnerTool(settings.tool)) {
     if (mp.guard()) return false;
+    if (!spawners) { hud.toast(notYet('Spawners'), { kind: 'error' }); return false; }
     if (!hover.valid) { hud.toast('Click a surface to set it on', { kind: 'error' }); return false; }
     const kind = SPAWNER_KIND[settings.tool];
     const r = spawners.toggle(kind, feetOnHit(hover));
@@ -1803,7 +1475,7 @@ function clickTool() {
   }
   if (isBuild(settings.tool)) {
     if (mp.guard()) return false;
-    if (!builds) { hud.toast('Constructions are still loading'); return false; }
+    if (!builds) { hud.toast(wire('mesh') ? 'Constructions are still loading' : notYet('Constructions')); return false; }
     if (!builds.ready) return false;
     sim.snapshot(toolById(settings.tool)?.name);
     toolbar.setUndoEnabled(true);
@@ -1825,8 +1497,10 @@ function startStroke(tool) {
   }
   strokeTool = tool;
   painting = true;
+  strokePainted = releasePending = false;
   windFromValid = false;
   hud.dismissHint();
+  pacer.wake();
 }
 
 // The tool gun (pov/tools/toolgun.tool.js, Garry's Mod's gmod_tool): the god
@@ -1862,7 +1536,10 @@ const toolGun = {
 };
 addEventListener('pointerup', (e) => {
   if (e.button !== 0) return;
-  painting = false;
+  // a click shorter than the GPU's frame (its frames still in flight, B3)
+  // has painted nothing yet: it paints once, on the next tick that runs
+  if (painting && !strokePainted) releasePending = true;
+  else painting = false;
   if (shapeDrag) finishShape();
 });
 
@@ -1917,8 +1594,11 @@ function setRadius(r) {
 let stepOnce = false;
 let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
-let thumbWaiters = [];   // saves waiting for the next presented frame as their thumbnail (saveThumbnail)
-const wantFrame = () => wantShot || thumbWaiters.length > 0;
+// Calls waiting for the next presented frame (a save's thumbnail: src/wire/saves.js),
+// run in that frame's task once it is submitted, so the canvas still holds it.
+const frameWaiters = [];
+function onNextFrame(fn) { frameWaiters.push(fn); pacer.wake(); }
+const wantFrame = () => wantShot || frameWaiters.length > 0;
 
 addEventListener('keydown', (e) => {
   if (pov?.editingWand) return;
@@ -1945,7 +1625,7 @@ addEventListener('keydown', (e) => {
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
-  else if (k === '.') stepOnce = true;
+  else if (k === '.') { stepOnce = true; pacer.wake(); }
   else if (k === '[') setRadius(settings.radius - 1);
   else if (k === ']') setRadius(settings.radius + 1);
   else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
@@ -1980,6 +1660,8 @@ addEventListener('blur', () => {
   painting = false;
   shapeDrag = null;
 });
+// (no frame is open here: each tick submits its own before it returns, so the
+// canvas texture it drew into is never resized under a pending submit)
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -1987,23 +1669,18 @@ addEventListener('resize', () => {
 });
 
 // ---------------------------------------------------------------- profiler (Settings → Developer)
-// gfx/profiler.js measures and ui/profiler.js shows. Off, the pass hooks are unset.
+// gfx/profiler.js measures (gpu.timing in split mode) and ui/profiler.js shows.
 const profPanel = createProfilerPanel();
-const prof = createProfiler(renderer, {
-  describe: () => ({
-    sim, renderScale: post.renderScale,
-    targets: [sim, post.allTargets, shadowTarget, pickTarget, rayTarget, thumbTarget],
-  }),
+const prof = createProfiler(gpu, {
+  describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes }),
   onSample: profPanel.update,
 });
-const simPass = (name, target) => prof.pass(name, target);
 // post's passes after the scene (the view's raymarch) are a phase of their own
-const postPass = (name, target) => { prof.pass(name, target); if (name === 'scene') prof.phase('post'); };
+const postPass = (name) => { if (name === 'scene') prof.phase('post'); };
 function applyProfiler() {
   const on = settings.profiler;
   prof.enable(on);
   profPanel.show(on);
-  sim.onPass = on ? simPass : null;
   post.onPass = on ? postPass : null;
 }
 
@@ -2016,13 +1693,17 @@ let frames = 0, fpsTime = 0, fps = 60, idleTime = 0, lastDrawAt = null;
 let stepTime = 0, stepCount = 0, stepRate = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
-// converged; the view once TAA's history has (upscaled, it accumulates for longer).
+// converged; the view once TAA's history has (upscaled, it accumulates for
+// longer), or at once without TAA (tools turn it off: no history to converge).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
   derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
-  viewSettle: () => settleFrames(post.settleWeight),
+  viewSettle: () => (post.settings.taa ? settleFrames(post.settleWeight) : 1),
   presentHz: testMode === 'preview' ? PREVIEW_HZ : MAX_FPS,
+  onWake: wakeLoop,
 });
+// the view's key: a counter that changes when what the view shows does (gfx/pacing.js)
+const viewKey = createViewKey();
 // input of any kind may change what the view shows
 for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
   addEventListener(type, () => { autoRes.wake(); pacer.wake(); }, { capture: true, passive: true });
@@ -2033,17 +1714,17 @@ const capCheck = createCapCheck();
 let lastIdle = false;
 const CAP_NOTICE = 'Your browser is holding this page at 30 fps. In Chrome, turn off Energy Saver (Settings → Performance); on a Mac, Low Power Mode does the same.';
 const CAP_NOTICE_MS = 9000;
-const DT_MAX = 0.1;      // s: longer gaps (a hidden tab) count as this, so animations don't jump
+const DT_MAX = 0.1;      // s: longer gaps (a hidden tab, a sleeping loop) count as this, so animations don't jump
 const FPS_WINDOW = 0.5;  // s over which the fps readout averages
 const invVol = new THREE.Matrix4();
 const autoRes = createAutoResolution();
 autoRes.enabled = !testMode || testMode === 'visual'; // intentional preview caps are not GPU slowness
+post.onRead = wakeLoop;   // an eye-adaptation reading landed: the view may have more adapting to do
 
-// Screenshots: the canvas is transparent where the page's sky shows through
-// (body's background in ui/styles.css), so the shot paints that sky first, then
-// the scene, then a small credit so shared images lead back to the app.
-const SHOT_SKY = [[0, '#232b3a'], [0.55, '#161b25'], [1, '#0e1117']];   // the sky's linear gradient, top to bottom
-const SHOT_GLOW = { color: 'rgba(255, 196, 120, 0.06)', x: 0.5, y: 1.08, rx: 1.2, ry: 0.7, end: 0.6 };   // its warm radial glow
+// Screenshots: the canvas, read in the task that submitted its frame (the
+// drawing buffer is still the frame's then), and a small credit so shared
+// images lead back to the app. The canvas is opaque: its sky is drawn in
+// post's composite (docs/webgpu.md F7).
 const SHOT_CREDIT = 'tpt3d.codyh.xyz';
 const SHOT_CREDIT_SIZE = 0.022;   // credit text height, as a share of the image height
 const SHOT_CREDIT_MIN_PX = 12;
@@ -2052,34 +1733,21 @@ const SHOT_MARK_SCALE = 1.5;      // logo mark size relative to the text
 const shotMark = Object.assign(new Image(), { src: '/favicon.svg' });
 
 function saveScreenshot() {
-  const src = renderer.domElement, w = src.width, h = src.height;
+  const src = canvas, w = src.width, h = src.height;
   const shot = Object.assign(document.createElement('canvas'), { width: w, height: h });
-  const ctx = shot.getContext('2d');
-  const sky = ctx.createLinearGradient(0, 0, 0, h);
-  for (const [t, c] of SHOT_SKY) sky.addColorStop(t, c);
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, w, h);
-  ctx.save();
-  ctx.translate(SHOT_GLOW.x * w, SHOT_GLOW.y * h);
-  ctx.scale(SHOT_GLOW.rx * w, SHOT_GLOW.ry * h);
-  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-  glow.addColorStop(0, SHOT_GLOW.color);
-  glow.addColorStop(SHOT_GLOW.end, 'transparent');
-  ctx.fillStyle = glow;
-  ctx.fillRect(-SHOT_GLOW.x / SHOT_GLOW.rx, -SHOT_GLOW.y / SHOT_GLOW.ry, 1 / SHOT_GLOW.rx, 1 / SHOT_GLOW.ry);
-  ctx.restore();
-  ctx.drawImage(src, 0, 0);   // same task as the render, so the drawing buffer is still intact
+  const ctx2d = shot.getContext('2d');
+  ctx2d.drawImage(src, 0, 0);   // same task as the frame's submit, so the drawing buffer is still intact
 
   const px = Math.max(SHOT_CREDIT_MIN_PX, Math.round(h * SHOT_CREDIT_SIZE)), mark = px * SHOT_MARK_SCALE;
-  ctx.font = `600 ${px}px Archivo, sans-serif`;
-  ctx.textBaseline = 'middle';
-  ctx.globalAlpha = SHOT_CREDIT_ALPHA;
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
-  ctx.shadowBlur = px / 2;
-  ctx.fillStyle = '#e7eaf0';
-  const tw = ctx.measureText(SHOT_CREDIT).width, y = h - px - mark / 2;
-  ctx.fillText(SHOT_CREDIT, w - px - tw, y);
-  if (shotMark.complete && shotMark.naturalWidth) ctx.drawImage(shotMark, w - px - tw - px / 2 - mark, y - mark / 2, mark, mark);
+  ctx2d.font = `600 ${px}px Archivo, sans-serif`;
+  ctx2d.textBaseline = 'middle';
+  ctx2d.globalAlpha = SHOT_CREDIT_ALPHA;
+  ctx2d.shadowColor = 'rgba(0, 0, 0, 0.6)';
+  ctx2d.shadowBlur = px / 2;
+  ctx2d.fillStyle = '#e7eaf0';
+  const tw = ctx2d.measureText(SHOT_CREDIT).width, y = h - px - mark / 2;
+  ctx2d.fillText(SHOT_CREDIT, w - px - tw, y);
+  if (shotMark.complete && shotMark.naturalWidth) ctx2d.drawImage(shotMark, w - px - tw - px / 2 - mark, y - mark / 2, mark, mark);
 
   shot.toBlob((blob) => {
     if (!blob) return;
@@ -2093,23 +1761,146 @@ function saveScreenshot() {
   });
 }
 
+// ---------------------------------------------------------------- a presented frame
+// FrameUniforms for a frame of `cam` in view `view` (gfx/uniforms.js): written
+// once per frame, in post's prepare hook, from the jittered camera.
+function frameValues(cam, view, jitter) {
+  return {
+    camera: cam, model: volume.matrixWorld, sun: SUN, view, shadowRes: vol.shadowRes, time: viewTime, lightGain: GLOW_GAIN,
+    shadows: true, far: !!win?.far, sea: win?.P?.sea ?? 0, jitter,
+  };
+}
+let frameDerived = false;   // this frame runs the derived passes (pacer.derived)
+let frameDetail = {};       // the realistic view's detail this frame (gfx/detailGate.js)
+const camGrid = new THREE.Vector3();   // the eye in grid cells (the volume's uCam)
+// wakes the frame loop once a pipeline the frame wanted is built
+const waited = new WeakSet();
+function wakeWhen(promise) {
+  if (waited.has(promise)) return;
+  waited.add(promise);
+  promise.then(() => pacer.wake(), () => {});
+}
+// the wires that draw into the scene pass, before the volume and after it, and into the overlay pass
+const sceneWires = live.filter((w) => w.scene).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+const before = sceneWires.filter((w) => (w.order ?? 0) < 0), after = sceneWires.filter((w) => (w.order ?? 0) >= 0);
+const overlayWires = live.filter((w) => w.overlay);
+
+// three.js's meshes of one kind into the scene target, seen by `cam`: the
+// opaque ones before our scene pass (clearing it; Sync log S1: the volume
+// marches to their depth), the transparent ones after it. False when there are none.
+const isTransparent = (o) => (Array.isArray(o.material) ? o.material.some((m) => m.transparent) : !!o.material?.transparent);
+function threeMeshes(p, transparent, cam = camera) {
+  if (!threeHasVisible(scene, cam)) return false;
+  const others = [];
+  let any = false;
+  scene.traverseVisible((o) => {
+    if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) return;
+    if (isTransparent(o) === transparent) any = true;
+    else others.push(o);
+  });
+  if (!any) return false;
+  for (const o of others) o.visible = false;
+  try {
+    renderer.setRenderTarget(p.sceneTarget.rt);
+    if (!transparent) { renderer.setClearColor(0x000000, 0); renderer.autoClear = true; }
+    renderer.render(scene, cam);
+  } finally {
+    renderer.autoClear = false;
+    renderer.setRenderTarget(null);
+    for (const o of others) o.visible = true;
+  }
+  return true;
+}
+
+// The scene pass (F1): the floor grid, the wires below the volume (a world's
+// far field), the volume, the wires above it, the box's edges, the brush.
+// Lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
+// so the grid and the box outline fade by the render scale to keep their weight.
+let volumeDrawn = false;   // the last presented frame drew the volume (__app.view.volumeDrawn)
+let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
+function drawScene(rp) {
+  const g = sim.g, view = viewKeyOf(settings.view);
+  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: post.renderScale });
+  for (const w of before) w.scene(ctx, rp);
+  const meshDepth = cut.take();
+  const drew = volumeDrawn = !testNoVolume && vol.draw(rp, {
+    view, detail: frameDetail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0,
+  });
+  if (!drew && !testNoVolume) {
+    // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
+    const pipe = vol.pipeline(view, frameDetail);
+    coldShader.watch(pipe);
+    wakeWhen(pipe.ready);
+  }
+  for (const w of after) w.scene(ctx, rp);
+  if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY * post.renderScale });
+  brush.draw(rp);
+}
+
+// post.render's hooks (gfx/post.js), made once
+const frameHooks = {
+  prepare: (p) => writeFrameUniforms(gpu, frameValues(camera, settings.view, p.jitter)),
+  // E1's work that reads FrameUniforms, after it is written: the derived
+  // passes, the shadow map (views that read it), GI (the realistic view), the
+  // wires' upkeep, the picks asked for this tick
+  compute: () => {
+    if (frameDerived) {
+      prof.phase('derived');
+      sim.updateBricks();
+      if (viewShadows(viewKeyOf(settings.view))) {
+        prof.phase('shadow');
+        if (!vol.recordShadow()) wakeWhen(vol.shadowReady());   // (its kernel builds: the derived key moves when it is ready)
+      }
+      if (settings.view === 0) {
+        prof.phase('gi');
+        sim.updateGI(SUN, vol.shadowTextures, vol.shadowRes);
+      }
+    }
+    prof.phase('view');
+    for (const w of live) w.compute?.(ctx);
+    vol.recordPicks();
+  },
+  opaque: (p) => (threeMeshes(p, false) ? cut.capture(p.sceneTarget.depth) : false),
+  draw: drawScene,
+  meshes: (p) => { threeMeshes(p, true); },
+  overlay: overlayWires.length ? (rp) => { for (const w of overlayWires) w.overlay(ctx, rp); } : undefined,
+};
+
+// The simulation records nothing per step (certified idle: sim.js step()), so ticking it is pointless.
+const simAsleep = () => sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
+  && sim.quietOk && sim.skipSleeping && !sim.rays.active;
+
 // the camera the toolbar shows: god view, or the body's first / third person
 const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
 let camShown = '';
+let loopCallbacks = 0;   // frames the loop has run (tools/idle-check.mjs: none while asleep)
+let captureNext = null;  // test.renderOnce({ capture }): takes the next presented frame's canvas
+let settledSleep = false;   // the last tick stopped the loop because the page had settled (deep idle)
+// The animation frame: false stops the loop (deep idle, or graphics stopped, or a parked test page).
 function frame(now) {
-  if (graphicsFailure) return;
-  requestAnimationFrame(frame);
-  if (testParked) return;   // leave browser/UI rAF alone (Playwright actionability needs it)
-  try { tick(now); gpuLoss.settle(); }
-  catch (error) { if (error !== graphicsFailure) throw error; }
+  loopCallbacks++;
+  if (graphicsFailure || testParked) return false;   // (resume() wakes it; nothing restarts a stopped GPU)
+  try {
+    const keep = tick(now);
+    gpuLoss.settle();
+    if (!keep && settledSleep) gpuLoss.sleep();   // (a loss from here on happened to a page with nothing to draw)
+    return keep;
+  } catch (error) {
+    if (error !== graphicsFailure) throw error;
+    return false;
+  }
 }
+// One tick: input, the steps, and, when due, a presented frame. Returns
+// whether the loop should go on (false: nothing to do until something wakes it).
 function tick(now, renderOnly = false) {
   if (graphicsFailure) throw graphicsFailure;
-  if (!renderOnly && coldShader.hold()) return;   // a cold-compile message is painting
+  settledSleep = false;
+  if (!coreReady) return false;   // (the grid's pipelines wake the loop when they are built)
   if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, { kind: 'hint', ms: CAP_NOTICE_MS });
   const t0 = performance.now();
   lastIdle = false;
-  if (!renderOnly && !pacer.due(now)) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return; }
+  // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
+  if (!renderOnly && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
   if (prof.on !== settings.profiler) applyProfiler();
   prof.beginFrame(now);
   if (!renderOnly) clock.update(now);
@@ -2118,17 +1909,18 @@ function tick(now, renderOnly = false) {
   if (!renderOnly && renderedLast && post.settings.taa) autoRes.update(dt, clock.getElapsed());
   // Set before pacing's view key so a scale change always schedules a render.
   post.settings.resolutionScale = autoRes.scale;
+  ctx.renderOnly = renderOnly;
 
   if (!renderOnly) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
-    if (pov?.active) pov.update(dt);
-    if (descent) descentFrame();
+    for (const w of live) w.beforeStep?.(ctx, dt);   // the body, Descent's level switch
+    // (after the body's update, which can leave it: then the god view moves this tick)
     if (!pov?.active) {
       rig.update(dt);
       controls.update();
     }
-    if (win) moveWindow();
+    for (const w of live) w.follow?.(ctx, dt);   // the world's window following the focus
     updateBrush();
 
     prof.phase('paint');
@@ -2138,48 +1930,40 @@ function tick(now, renderOnly = false) {
       windFrom.copy(tmpV);
       windFromValid = true;
       paintStroke({ ...brushStroke(strokeTool), wind });   // (a guest's: the host paints it)
+      strokePainted = true;
     } else windFromValid = false;
+    if (releasePending) painting = releasePending = false;   // (the button went up before this tick: its one paint)
   }
-  // The world continues beyond its simulation window: don't outline the window.
-  edges.visible = !win;
   prof.phase('sim');
   const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
+  ctx.stepping = stepping;
   if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
   if (stepping) {
     for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
-    lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   if (!renderOnly) scripts?.endFrame();
   updateSun();
-  if (birds) {
-    prof.phase('other');   // (their probe pass, birdProbe, counts here)
-    birds.update(settings.paused ? 0 : dt);   // they hold still with the world
-    if (!renderOnly && !settings.paused && birds.count) pacer.wake();
-  }
+  for (const w of live) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
   if (settings.time !== timeShown) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
   }
   prof.phase('other');
-  if (!renderOnly) mp.update(dt, {
-    visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
-    radius: settings.radius, shape: settings.shape, tool: settings.tool,
-  });
   const worldChanged = sim.version !== lastVersion;
   if (worldChanged) autoRes.wake();
   lastVersion = sim.version;
   // Keep animation time tied to simulation, not the test preview's draw rate.
-  if (worldChanged) volume.material.uniforms.uTime.value += dt;
+  if (worldChanged) viewTime += dt;
   const present = renderOnly || pacer.present(now, wantFrame());
   const runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}`);
   let runView = present && pacer.view(
-    `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
-    + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
-    + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
+    viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
+      `${win?.far?.chunksDrawn}|${brushKey()}`,   // a world scene's far field filling in (world/far.js); the brush (ours)
+      settings, gfx, post.settings),
     runDerived || wantFrame() || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
   if (present && !runView && autoRes.recover(clock.getElapsed())) {
     post.settings.resolutionScale = autoRes.scale;
@@ -2200,69 +1984,37 @@ function tick(now, renderOnly = false) {
     idleTime = runView ? 0 : idleTime + dt;
     renderedLast = runView;
   }
-  if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
-  if (runView) gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
-  if (runDerived) {
-    prof.phase('derived');
-    sim.updateBricks();
-    if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
-      prof.phase('shadow');
-      shadowMat.uniforms.tA.value = sim.stateA;
-      shadowMat.uniforms.tBrick.value = sim.brick.texture;
-      sim.run(shadowMat, shadowTarget);
-    }
-    if (settings.view === 0) {
-      prof.phase('gi');
-      sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
-    }
-  }
-
+  // Picking is input work, not presentation: a preview must keep it responsive.
+  // (Asked for before the frame, so the frame's compute pass marches it.)
+  if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
   if (runView) {
     prof.phase('view');
+    updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
+    for (const w of live) w.beforeView?.(ctx, dt);   // the world's far field and ambient, signs, the held tool
     volume.updateMatrixWorld();
-    const u = volume.material.uniforms;
-    u.tA.value = sim.stateA;
-    u.tB.value = sim.stateB;
-    u.tBrick.value = sim.brick.texture;
-    u.tLight.value = sim.lightTexture;
-    u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-    u.uMarchNear.value = pov?.marchNear ?? 0;
-    detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
-    torchLights.update(win?.scene ?? null, u.uCam.value, sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
-    win?.far.view(volume, settings.view === 0, camera);
-    u.uView.value = settings.view;
-
+    camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     post.settings.raw = settings.view !== 0;
     post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
-    sim.rays.updateView(camera, renderer.domElement.height * post.renderScale);
-    floorGrid.material.opacity = post.renderScale;
-    edges.material.opacity = EDGE_OPACITY * post.renderScale;
-    post.render(scene, camera, null, dt);   // its passes after the scene count as 'post' (postPass)
-    coldShader.drew();
+    frameDerived = runDerived;
+    post.render(frameHooks, camera, null, dt, { viewmodel: ctx.viewmodel, glow: ctx.glow });   // its passes after the scene count as 'post'
+    // (a test's capture: the canvas texture is this frame's only until the task ends)
+    if (captureNext) { const c = captureNext; captureNext = null; c(post.capture()); }
     prof.phase('other');
-    // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
-    // own depth, so it never clips into walls); before the screenshot reads the canvas
-    renderViewmodels(renderer, scene, camera, post);
-    if (wantShot) { wantShot = false; saveScreenshot(); }
-    if (thumbWaiters.length) takeSaveThumbnail();
-
-    signs?.update();
   }
-  // Picking is input work, not presentation: a preview must keep it responsive.
-  if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
-  if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
-  // they hold still with the world, like the birds: on wall-clock time they moved every
-  // frame, so the view key (sceneKey) never settled and a paused scene redrew at full rate
-  perkOrbs?.update(animTime);
-  arenaMarkers?.update(animTime);
-  if (renderOnly) { prof.endFrame(0); return; }
+  gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
+  if (runView) {
+    if (wantShot) { wantShot = false; saveScreenshot(); }
+    for (const fn of frameWaiters.splice(0)) fn();
+  }
+  if (renderOnly) { prof.endFrame(0); return true; }
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
   if (povReadout) {
-    const r = renderer.domElement.getBoundingClientRect();
+    const r = canvas.getBoundingClientRect();
     hud.showReadout(r.left + r.width / 2, r.top + r.height / 2, povReadout);
   } else if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
@@ -2270,9 +2022,19 @@ function tick(now, renderOnly = false) {
   } else {
     hud.showReadout(0, 0, null);
   }
+  // Deep idle (docs/webgpu.md F7): a presentable tick that drew nothing (so
+  // auto resolution has had its say), with the view and the derived passes
+  // settled, no steps that would record anything (paused, or certified idle),
+  // no stroke, nothing waiting for a frame or adapting, no profiler and no
+  // wire animating: the loop stops. Input, a setting, a write, a landed read
+  // or a built pipeline wakes it.
+  const wantsSteps = !mp.isGuest && (!settings.paused || stepOnce) && !simAsleep();
+  const busy = wantsSteps || painting || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
+  settledSleep = present && !runView && pacer.settled && !busy;
   const g = sim.g;
   hud.setStats({
-    fpsV: idleTime > FPS_WINDOW ? null : fps,   // null: idle
+    // null: idle (and a sleeping loop is idle until it wakes: it ticks no idle time meanwhile)
+    fpsV: settledSleep || idleTime > FPS_WINDOW ? null : fps,
     stepsV: settings.paused || mp.isGuest ? 0 : stepRate, // preview fps is not the simulation rate
     // the cells simulated (a world's window), and the world's
     cellsV: `${millions([g.nx, g.ny, g.nz])}${win ? ` of ${millions(win.size)}` : ''}`,
@@ -2280,18 +2042,65 @@ function tick(now, renderOnly = false) {
   });
   prof.endFrame(stepping ? settings.steps : 0);
   lastIdle = !runView && !stepping && performance.now() - t0 < CAP_IDLE_MS;
+  return !settledSleep;
 }
+
+// ---------------------------------------------------------------- the wires' view of the app (src/wire)
+// What a subsystem's wiring reads and sets: the device, the grid, the scene,
+// the UI, and the subsystems' slots, which the wires fill.
+const ctx = {
+  // J3's app: { gpu, three, sim, derived, scene, camera, settings, pacer, post } (three is the renderer, also as `renderer`)
+  gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
+  hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
+  get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
+  get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },
+  get win() { return win; }, set win(v) { win = v; },
+  get worldSeed() { return worldSeed; }, set worldSeed(v) { worldSeed = v; },
+  get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
+  get pov() { return pov; }, set pov(v) { pov = v; },
+  get mp() { return mp; }, set mp(v) { mp = v ?? OFFLINE; },
+  get signs() { return signs; }, set signs(v) { signs = v; },
+  get builds() { return builds; }, set builds(v) { builds = v; },
+  get spawners() { return spawners; }, set spawners(v) { spawners = v; },
+  get perkOrbs() { return perkOrbs; }, set perkOrbs(v) { perkOrbs = v; },
+  get arenaMarkers() { return arenaMarkers; }, set arenaMarkers(v) { arenaMarkers = v; },
+  get birds() { return birds; }, set birds(v) { birds = v; },
+  get lightning() { return lightning; }, set lightning(v) { lightning = v; },
+  get scripts() { return scripts; }, set scripts(v) { scripts = v; },
+  get descent() { return descent; }, set descent(v) { descent = v; },
+  get arenaLayout() { return arenaLayout; }, set arenaLayout(v) { arenaLayout = v; },
+  get lastShrine() { return lastShrine; }, set lastShrine(v) { lastShrine = v; },
+  get painting() { return painting; }, set painting(v) { painting = v; },
+  get pointerInside() { return pointerInside; }, get uiHover() { return uiHover; },
+  get brushValid() { return brushValid; }, get brushCenter() { return brushCenter; },
+  get menuPick() { return menuPick; }, get gamemode() { return gamemode; },
+  get animTime() { return animTime; }, get graphicsFailure() { return graphicsFailure; },
+  // the animation clock as the far field's uniform-like reader takes it ({ value })
+  viewTimeUniform: { get value() { return viewTime; } },
+  // set by wires per tick: whether it stepped, a renderOnly (test) frame, the held tool's targets (F3)
+  stepping: false, renderOnly: false, viewmodel: null, glow: null,
+  // a match picked with the map: the bots' module loads during the first frames
+  bootMatch: !!(bootMap && launch.mode && launch.mode !== 'sandbox' && launch.mode !== 'noita'),
+  // the UI
+  get hud() { return hud; }, get dock() { return dock; }, get toolbar() { return toolbar; }, get settingsPanel() { return settingsPanel; },
+  get scoreboard() { return scoreboard; }, get prof() { return prof; }, actions,
+  // the app's own
+  build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
+  isTyping, selectTool, leaveBuild, setPaused, setRadius, setSimMode, setSimModes, resetSimModes, simModeLock,
+  updateSun, save, camState, onNextFrame,
+  requestRender: () => pacer.wake(),
+};
 
 // ---------------------------------------------------------------- boot
 // The start menu's loading screen comes down once the first map is on screen:
-// a frame after the first frame (that one compiles the renderer), and in a
-// world once its window has filled (or after a while, whatever it's doing).
-// A team gamemode picked with it starts behind the loading screen first (the
-// body drops in, the bots are built and compiled), so the screen comes down
-// on the match running, not on the hitches of setting it up.
+// a frame after the first frame, and in a world once its window has filled (or
+// after a while, whatever it's doing). A team gamemode picked with it starts
+// behind the loading screen first (the body drops in, the bots are built and
+// compiled), so the screen comes down on the match running, not on the hitches
+// of setting it up.
 const READY_POLL_MS = 100;
 const READY_WAIT_MS = 20000;
-const MATCH_WAIT_MS = 30000;   // the longest the loading screen waits on a match starting (a cold shader compile)
+const MATCH_WAIT_MS = 30000;   // the longest the loading screen waits on a match starting (a cold pipeline build)
 function bootReady(pending = null) {
   const t0 = performance.now();
   let settled = !pending;   // (a save picked on the menu: it loads first)
@@ -2314,34 +2123,25 @@ function bootReady(pending = null) {
   requestAnimationFrame(() => requestAnimationFrame(check));
 }
 
+// Everything the session's settings draw with is built (docs/webgpu.md B5):
+// the grid's pipelines, the view's module (the realistic view's base
+// variant), the shadow kernel if the view reads it, and whatever else is
+// still building (the near-detail variant's prefetch, a wire's meshes).
+async function allReady() {
+  for (;;) {
+    const s = sim, v = vol;
+    await coreWait;
+    const view = viewKeyOf(settings.view);
+    await Promise.all([v.viewReady(view, baseDetail()), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait]);
+    await gpu.settled();
+    if (graphicsFailure) throw graphicsFailure;
+    if (s === sim && v === vol && coreReady) return;   // (rebuilt meanwhile: wait for the new grid)
+  }
+}
+
 try {
-  if (!renderer.capabilities.isWebGL2) throw new Error('This needs WebGL2, which your browser does not provide.');
-  if (SignsClass) {
-    signs = new SignsClass({
-      renderer, camera, container: signLayer,
-      getSim: () => sim, getVolume: () => volume,
-      onChange: () => {},
-    });
-  }
-  spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });   // seeded by build()'s loadPreset, once there is a grid
-  perkOrbs = new PerkOrbs({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
-  birds = createBirdLife({
-    renderer, scene, camera, sun: SUN,
-    getSim: () => sim, getVolume: () => volume, getScale: () => scale, getWin: () => win, getSpawners: () => spawners,
-    sunEl: () => sunElevation(dayPhase(day.clock), day.fixed),
-    // the body in first person, at its middle (world cells): it flushes birds near it
-    player: () => (pov?.active && pov.player && !pov.player.dead
-      ? { x: pov.player.pos.x + sim.origin.x, y: pov.player.pos.y + BODY_HEIGHT / 2, z: pov.player.pos.z + sim.origin.z } : null),
-  });
-  arenaMarkers = new ArenaMarkers({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
-  if (BuildsClass) {
-    builds = new BuildsClass({
-      scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
-      requestRender: () => pacer.wake(),
-      // a shrine: a random perk orb over each plinth
-      onPlaced: ({ key, anchors }) => { if (key === 'SHRINE') lastShrine = perkOrbs?.shrineAt(anchors)?.[0]?.shrine ?? 0; },
-    });
-  }
+  for (const w of live) w.boot?.(ctx);   // the subsystems that outlive a grid (a session, birds, signs, spawners)
+  wired = true;
   // a guest gets the host's box (multiplayer.js): opening an invite in World starts in a box, not the world
   if (mp.joining && settings.size in WORLDS) settings.size = boxSize;
   build();
@@ -2350,81 +2150,34 @@ try {
   setView(settings.view);
   setPaused(settings.paused);
   toolbar.setUndoEnabled(false);
-  pov = createPov({
-    renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping, post,
-    getSim: () => sim, getVolume: () => volume, getScale: () => scale,
-    hover, pointerHover: () => pointerInside && !uiHover, pickRay,
-    getSpawners: () => spawners,
-    getPerkOrbs: () => perkOrbs,
-    loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
-    getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
-    dropAt: () => descentSpawn(levelByScene(win ? settings.scene : null)),   // a Descent level: you start (and respawn) at its spawn
-    requestRender: () => pacer.wake(),
-    inWorld: () => !!win,
-    gamemode: () => gamemode,   // Noita's rules (wands only) are its gamemode's, not Descent's: Sandbox there has the tools
-    toolGun,   // the tool gun's click at the crosshair
-    // Q in first person: the spawn menu where it was left (at first, at what's selected)
-    showToolsMenu: () => dock.reveal((it) => it.id === (menuPick ?? settings.tool)) || dock.reveal((it) => isGearTool(it.id)),
-    hideToolsMenu: () => dock.setCollapsed(true),
-  });
-  pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
-  // the scripting console, ` (optional: the game runs without it)
-  try {
-    scripts = createConsole({
-      getSim: () => sim, isGuest: () => mp.isGuest,
-      paused: () => settings.paused, setPaused,
-      stepNow: (n) => { for (let i = 0; i < n; i++) sim.step(); if (DAY.running) day.clock += n; },
-      gravity: () => settings.gravity / DEFAULTS.gravity,
-      setGravity: (g) => {
-        settings.gravity = THREE.MathUtils.clamp(g * DEFAULTS.gravity, 0, CONSOLE_GRAVITY_MAX);
-        sim.gravity = settings.gravity;
-        if (settingsPanel.isOpen) settingsPanel.sync();
-        save();
-      },
-      brushRadius: () => settings.radius, setBrushRadius: setRadius,
-      brushShape: () => settings.shape, setBrushShape: (v) => { settings.shape = v; dock.sync(); save(); },
-      selected: () => settings.tool, select: selectTool,
-      paint: ({ x, y, z, radius, shape, tool }) => sim.paint({
-        center: new THREE.Vector3(x, y, z).addScalar(0.5), radius, shape, tool, rate: settings.rate, replace: false,
-      }),
-      snapshot: () => { sim.snapshot(); toolbar.setUndoEnabled(true); },
-      requestRender: () => pacer.wake(),
-      exitPointerLock: () => { if (document.pointerLockElement) document.exitPointerLock(); },
-    });
-  } catch (err) { console.error('Console unavailable', err); }
-  pov.game.useLayout(arenaLayout);
-  descent = createDescentRunner({
-    levels: DESCENT_LEVELS,
-    emit: (name, payload) => pov.events.emit(name, payload),
-    loadScene: descentLoad,
-    enterAt: async (spawn) => {
-      await pov.enter({ at: descentSpawn({ spawn }) });
-      if (!pov.active) throw new Error("the body didn't drop in");
-    },
-    snapshot: () => runSnapshot({ player: pov.player, gold: pov.descent?.gold ?? null, wands: descentWands }),
-    overlay: createDescentOverlay(),
-    toast: (text, opts) => hud.toast(text, opts),
-    finish: () => { pov.exit(); actions.openMenu(); },
-    wait: (s) => new Promise((resolve) => setTimeout(resolve, s * 1000)),
-    loadId: () => win,
-  });
-  if (bootMap && launch.mode && launch.mode !== 'sandbox' && launch.mode !== 'noita') pov.game.prepare();   // a match was picked: the bots' module loads during the first frames
   mark('app');
+  // The pipelines this session draws with: warm from the start menu
+  // (src/preload.js), or building now behind its loading screen.
+  launch.progress?.('compile');
+  await coreWait;
+  if (graphicsFailure) throw graphicsFailure;
   window.__app = {
-    get sim() { return sim; }, get volume() { return volume; }, get shadowMap() { return shadowTarget; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
+    get sim() { return sim; }, get derived() { return derived; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
+    // the grid's box (grid cells → scene: a three Object3D, its transform only) and its GPU volume (gfx/volume.js: pick, shadowTextures, pipelines)
+    volume, get vol() { return vol; }, get shadowMap() { return vol.shadowTextures; },
     get pov() { return pov; },
     get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },
     get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },
     get scripts() { return scripts; },   // the console (src/console): .setOpen, .world
-    lightning,     // the Lightning tool's and storms' bolts (src/lightning.js)
+    get lightning() { return lightning; },   // the Lightning tool's and storms' bolts (src/lightning.js)
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
     get win() { return win; },
     get lastGpuFailure() { return gpuLoss.last; },   // the last GPU failure's report, kept across reloads (gfx/gpuLoss.js)
     // world mode: start the world over with the window at `origin` (world cells)
-    worldLoad(origin) { if (graphicsFailure) throw graphicsFailure; win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
+    worldLoad(origin) {
+      if (graphicsFailure) throw graphicsFailure;
+      const w = wire('world');
+      if (!w || !win) throw new Error(`worldLoad: ${notYet('World maps')}`);
+      w.worldLoad(ctx, origin);
+    },
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
@@ -2437,46 +2190,96 @@ try {
     fill: (req) => runFill(sim, req, { openSides: !!win }),   // a flood fill on the current grid (editing.js runFill), for tools
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
+    gpu,           // the WebGPU device and its frame, stats, readback (src/gpu)
+    // the volume's per-frame values that were uniforms (tools read them): its animation clock, the frame counter, the detail drawn
+    // volumeDrawn: the last presented frame drew the volume (false while its pipeline builds)
+    view: { get time() { return viewTime; }, get frame() { return gfxUniforms.uFrame.value; }, get detailShown() { return detailGate.shown; }, get volumeDrawn() { return volumeDrawn; } },
+    // the frame loop: asleep when settled (deep idle, F7); callbacks: animation frames it ran
+    loop: { get asleep() { return loop.asleep; }, get callbacks() { return loopCallbacks; } },
+    wires: Object.fromEntries(WIRES.map((w) => [w.name, w.ready])),   // which subsystems are ported (src/wire)
     applyDetail,   // after changing settings.detail_* by hand
     detailGate,    // .level / .shown: which close-up features the view has compiled in
-    THREE,         // for tools (tools/detail-bench.mjs makes its own targets)
+    THREE,         // for tools
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
     // Manual mode parks only this app loop. Browser/UI callbacks remain live.
     test: testMode ? {
       mode: testMode,
       get parked() { return testParked; },
       park() { testParked = true; },
-      resume() { clock.reset(); testParked = false; },
+      resume() { clock.reset(); testParked = false; loop.wake(); },
       step(count = 1) {
         if (graphicsFailure) throw graphicsFailure;
         if (!testParked || mp.isGuest) throw new Error('Park a local test page before stepping');
         if (!Number.isSafeInteger(count) || count < 0 || count > 10000) throw new RangeError('steps must be an integer from 0 to 10000');
+        if (!readySims.has(sim)) throw new Error('The grid is still building its pipelines: await __app.test.ready() first');
         for (let i = 0; i < count; i++) sim.step();
         if (DAY.running) day.clock += count;
       },
-      render() {
-        // No physics, input, player, or multiplayer updates while converging a snapshot.
+      // Every pipeline the current settings need is built, ours and three's (B5).
+      ready: allReady,
+      // A converged snapshot: frames until the view settles, with no physics,
+      // input, player or multiplayer updates, then the GPU done with them.
+      async render() {
+        await coreWait;
+        if (graphicsFailure) throw graphicsFailure;
         // Two initial frames observe post-setting and spawner-transform changes.
-        pacer.wake(); // also covers direct uniform edits that aren't in the scene key
+        pacer.wake(); // also covers direct setting edits that aren't in the view key
         let n = 0;
         // The first render applies the requested upscale, which changes the limit.
         do { tick(performance.now(), true); n++; } while ((n < 2 || !pacer.settled) && n < pacer.settleLimit);
         if (!pacer.settled) throw new Error('Test render did not converge');
+        await gpu.fence();
         return n;
+      },
+      // The view's clocks back to their start (its animation time and the
+      // frame counter its noise is keyed on) and the post history dropped:
+      // tools/regress.mjs's fixed shot, whatever frames the page ran before.
+      resetView() {
+        viewTime = 0;
+        gfxUniforms.uFrame.value = 0;
+        post.reset();
+        pacer.wake();
+      },
+      // One frame (no convergence), the GPU done with it: the smoke test's
+      // shot (docs/webgpu.md I1). capture: resolves to the canvas as that
+      // frame presented it ({ width, height, data }: RGBA bytes). volume:
+      // false draws the frame without the volume (the smoke test's reference
+      // for what the volume adds); __app.view.volumeDrawn says whether it drew.
+      async renderOnce({ capture = false, volume = true } = {}) {
+        await coreWait;
+        if (graphicsFailure) throw graphicsFailure;
+        pacer.wake();
+        let shot = null;
+        if (capture) captureNext = (p) => { shot = p; };
+        testNoVolume = !volume;
+        try {
+          tick(performance.now(), true);
+        } finally {
+          testNoVolume = false;
+          captureNext = null;
+        }
+        await gpu.fence();
+        return shot ? await shot : null;
       },
     } : null,
   };
   gpuLoss.settle();
-  launch.progress?.('compile');   // the first frame compiles the view (the loading screen's step)
-  requestAnimationFrame(frame);
+  loop = createFrameLoop(frame);
+  loop.start();
   bootReady(launch.save ? openSave(launch.save) : null);   // a save picked on the menu's Saves before the game had loaded
 } catch (err) {
-  if (err !== graphicsFailure) {
+  // A stop of graphics is stopGraphics's to explain, with the first failure,
+  // which is the cause: a lost device rejects every pipeline still building,
+  // each with its own 'GPU shader failed', and the one the boot awaited can
+  // be any of them (gpu.fail keeps the first). The stack-trace page is for a
+  // bug in here.
+  if (err?.name === 'GraphicsFailure') gpu.fail(err);
+  if (!graphicsFailure) {
     const el = document.getElementById('error');
     el.style.display = 'flex';
     el.textContent = String(err.stack || err);
   }
-  throw err;
+  throw graphicsFailure ?? err;
 }
 
 // for the start menu (src/main.js)
