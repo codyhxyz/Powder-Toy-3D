@@ -1,8 +1,9 @@
 // CPU-only check of the shared world model (src/pov/ai/world.js), no browser or
-// GPU: a fake renderer's readRenderTargetPixelsAsync fills the packer's buffer
-// with a fake sim's cells in the state's atlas layout (sim.js cellTexel), junk
-// in the bytes the model doesn't read, and lands 1 to 3 frames late (as a
-// WebGPU ring of staging buffers would). Checked, on the main thread and
+// GPU: a stand-in for readCells (world.js cellsSource, readCells's contract:
+// null while its 3 buffers are out, the capture at the call) fills a pooled
+// buffer with a fake sim's cells in the state's atlas layout (sim.js
+// cellTexel), junk in the bytes the model doesn't read, and lands 1 to 3 frames
+// late (as the readback service's staging buffers do). Checked, on the main thread and
 // through the worker (world-worker.js, run here by a stand-in Worker with real
 // transfers, so a buffer the model forgot to hand back is detached):
 // - every cell's id() and T() is the sim's;
@@ -19,7 +20,7 @@
 import { gridLayout, cellTexel } from '../src/sim.js';
 import { decodeTempCode } from '../src/net/codec.js';
 import { E, K, ELEMENTS } from '../src/elements.js';
-import { createWorldModel } from '../src/pov/ai/world.js';
+import { createWorldModel, cellsSource } from '../src/pov/ai/world.js';
 import { columnTops } from '../src/pov/ai/deswizzle.js';
 
 let fails = 0;
@@ -41,24 +42,40 @@ function fakeSim(nx, ny, nz, seed) {
   };
 }
 
-// a fake renderer: a readback captures the sim at the call and lands `lag()` frames later
+// a fake renderer, readCells's stand-in (world.js cellsSource): a capture of the sim at the call
+// into one of SLOTS pooled buffers (null while they are all out), landing `lag()` frames later;
+// release(back) puts `back` (or the buffer) back in the pool, so a buffer the model forgot to hand
+// back after a transfer is caught detached at its next use. A new grid starts a fresh pool, and a
+// buffer of the old one released late is dropped (as net/codec.js createPacker's generations do).
+const SLOTS = 3;
 function fakeRenderer(getSim) {
   const pending = [];
+  let pool = [], out = 0, grid = '', generation = 0;
   const r = {
     reads: 0, lag: () => 1 + ((Math.random() * 3) | 0),
-    setRenderTarget() {},
-    readRenderTargetPixelsAsync(target, x, y, w, h, buf) {
-      if (buf.byteLength !== w * h * 4) return Promise.reject(new Error(`a readback into a ${buf.byteLength}-byte buffer (detached?)`));
-      r.reads++;
-      const sim = getSim();
+    readCells(sim) {
+      const g = sim.g, size = g.width * g.height * 4, key = `${g.nx},${g.ny},${g.nz}`;
+      if (key !== grid) { grid = key; generation++; pool = []; out = 0; }
+      if (out >= SLOTS) return null;
+      const buf = pool.pop() ?? new Uint8Array(size), gen = generation;
+      if (buf.byteLength !== size) return Promise.reject(new Error(`a readback into a ${buf.byteLength}-byte buffer (detached?)`));
+      out++; r.reads++;
       for (let i = 0; i < buf.length; i++) buf[i] = (Math.random() * 256) | 0;   // the texels' life and ctype bytes
       for (let i = 0; i < sim.ids.length; i++) { buf[sim.texel[i] * 4] = sim.ids[i]; buf[sim.texel[i] * 4 + 1] = sim.temps[i]; }
-      return new Promise((resolve) => pending.push({ left: r.lag(), resolve }));
+      let released = false;
+      const release = (back) => {
+        if (released) return;
+        released = true;
+        if (gen === generation) { out--; pool.push(back ?? buf); }
+      };
+      const job = { bytes: buf, g, dims: [g.nx, g.ny, g.nz], release };
+      return new Promise((resolve) => pending.push({ left: r.lag(), resolve: () => resolve(job) }));
     },
     frame() { for (let i = pending.length - 1; i >= 0; i--) if (--pending[i].left <= 0) { pending[i].resolve(); pending.splice(i, 1); } },
   };
   return r;
 }
+cellsSource.read = (renderer, sim) => renderer.readCells(sim);
 const settle = async () => { for (let i = 0; i < 4; i++) await new Promise((r) => setImmediate(r)); };
 
 // a stand-in Worker: the real world-worker.js (a fresh module each), messages structured-cloned with their transfers

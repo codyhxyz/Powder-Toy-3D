@@ -121,6 +121,10 @@ export function voxelRay(idAt, top, origin, dir, maxDist, stops, out = {}) {
   return out;
 }
 
+// What the model reads the cells through: readCells, or a stand-in with its contract
+// (tools/world-model-node-check.mjs: a fake sim's cells, no GPU).
+export const cellsSource = { read: readCells };
+
 const models = new WeakMap();          // renderer → its one shared model
 
 function createModel(renderer) {
@@ -205,7 +209,7 @@ function createModel(renderer) {
     if (!sim) return;
     const state = `${sim.id}:${sim.version}:${sim.origin.toArray()}`;
     if (state === packed) { epoch++; return; }   // nothing written since the last capture: as good as a fresh one
-    const job = readCells(renderer, sim);
+    const job = cellsSource.read(renderer, sim);
     if (!job) return;
     busy = true;
     job.then((r) => {
