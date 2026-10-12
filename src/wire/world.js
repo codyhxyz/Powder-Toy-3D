@@ -74,8 +74,25 @@ const world = {
     }
   },
 
-  // The Island box scene (presets: 'island'): world/gpu.js's generator on the box.
-  loadIsland(app) { loadIsland(app.sim, { seed: app.worldSeed }); },
+  // The Island box scene (presets: 'island'): world/gpu.js's generator on the
+  // box. It fills once the generator's kernels are built (seconds, the first
+  // time), so the load carries a token: it lands only if it is still the
+  // latest, the box still shows the Islet on the same grid, and its undo
+  // snapshot (loadPreset's, the top of the history now) hasn't been undone.
+  // Another scene, a Clear or an Undo meanwhile wins; cancelIsland is for the
+  // other whole-grid writers (a save's load, a session's frame).
+  loadIsland(app) {
+    const sim = app.sim, t = world._islandLoad = { sim, mark: sim.history.at(-1) ?? null };
+    t.done = loadIsland(sim, {
+      seed: app.worldSeed,
+      still: () => world._islandLoad === t && app.sim === sim && app.settings.preset === 'island' && !app.win
+        && (t.mark === null || sim.history.includes(t.mark)),
+    });
+    t.done.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
+  },
+  // A pending Island load (above) is dropped.
+  cancelIsland() { world._islandLoad = null; },
+  _islandLoad: null,
 
   // A world has one scene, its own: loading starts it over (and can't be
   // undone). Its passes compile in the background first (the first time):

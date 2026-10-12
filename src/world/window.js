@@ -104,6 +104,7 @@ export class WorldWindow {
     // stored bricks back: an edit over the uncovered slab, from one upload buffer (made on first use)
     this.restoreKernel = sim.editKernel('restore', restoreEdit());
     this.restoreBuf = null;
+    this.restoreRead = -1;   // gpu.stats.flushes when a restore edit last read restoreBuf (still unsubmitted while equal)
   }
 
   // Resolves once the window's kernels and the far field's are built and the
@@ -282,12 +283,18 @@ export class WorldWindow {
     if (!this.restoreBuf || this.restoreBuf.size < bytes) {
       if (this.restoreBuf) sim._retire(this.restoreBuf);
       this.restoreBuf = this.gpu.createBuffer({ label: `sim${sim.id} restore`, size: Math.max(bytes, 2 * VEC4 * (cellsAt + 64 * 2 * BRICK_CELLS)), usage: BUFFER.STORAGE | BUFFER.COPY_DST });
+      this.restoreRead = -1;   // (nothing reads the new one yet)
     }
     const cells = new Float32Array(keys.length * 2 * BRICK_FLOATS);
     keys.forEach((key, s) => decodeBrick(this.store.map.get(key), cells, s * 2 * BRICK_FLOATS, cells, s * 2 * BRICK_FLOATS + BRICK_FLOATS));
-    this.gpu.write(this.restoreBuf, 0, index);
-    this.gpu.write(this.restoreBuf, cellsAt * VEC4, cells);
+    // Unordered unless a restore recorded in the open encoder still reads the
+    // buffer (two moves in one frame: a tool's): an ordered write would flush
+    // the move's work so far, a second submit for every move that restores.
+    const ordered = this.restoreRead === this.gpu.stats.flushes;
+    this.gpu.write(this.restoreBuf, 0, index, { ordered });
+    this.gpu.write(this.restoreBuf, cellsAt * VEC4, cells, { ordered: false });   // (the first flushed, if it had to)
     sim.edit(this.restoreKernel, { lo, hi: lo.map((v, i) => v + bricks[i] * BRICK - 1) }, { lo, bricks, cellsAt }, { bind: [{ buffer: this.restoreBuf }] });
+    this.restoreRead = this.gpu.stats.flushes;
     for (const key of keys) this.store.drop(key);
     return keys.length;
   }

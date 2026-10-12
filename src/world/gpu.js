@@ -158,17 +158,28 @@ export class Stamper {
     this.pool = null;
     this.used = 0;
     this.shapes = new Map();   // key → { s, base }
+    this.poolRead = -1;        // gpu.stats.flushes when a stamp last read the pool (still unsubmitted while equal)
   }
 
-  // room for `need` more vec4s of shapes: start over (or grow) when the pool is full
-  _room(need) {
+  // A write to the pool: unordered unless a stamp recorded in the open
+  // encoder still reads it (an ordered write flushes the frame first: a window
+  // move's planting would cost a second submit; gpu.write)
+  _write(offset, data) {
+    this.gpu.write(this.pool, offset, data, { ordered: this.poolRead === this.gpu.stats.flushes });
+  }
+
+  // Room for `need` more vec4s of shapes (the batch's not in the pool yet);
+  // when the pool is full it starts over, and then the batch uploads every
+  // shape it stamps again (`all` vec4s): the pool grows if they don't fit.
+  _room(need, all) {
     if (this.pool && this.used + need <= this.cap) return;
     this.shapes.clear();
     this.used = this.maskVec4s;
-    if (this.pool && this.used + need <= this.cap) return;
+    if (this.pool && this.used + all <= this.cap) return;
     if (this.pool) this.sim._retire(this.pool);
-    this.cap = Math.max(POOL_VEC4S, 2 * (this.maskVec4s + need));
+    this.cap = Math.max(POOL_VEC4S, 2 * (this.maskVec4s + all));
     this.pool = this.gpu.createBuffer({ label: `sim${this.sim.id} stamp pool`, size: this.cap * 16, usage: BUFFER.STORAGE | BUFFER.COPY_DST });
+    this.poolRead = -1;   // (nothing reads the new one yet)
   }
 
   /**
@@ -184,16 +195,17 @@ export class Stamper {
   stamp(list, { mask = null, scrub = false } = {}) {
     list = list.filter((t) => t.s);
     if (!list.length) return 0;
+    // the vec4s the batch uploads: its shapes not in the pool, or after a fresh start at most all of them
+    const size = (t) => t.s.w * t.s.h * t.s.d;
     const fresh = (t) => !(t.key != null && this.shapes.get(t.key)?.s === t.s);
-    const need = list.reduce((n, t) => n + (fresh(t) ? t.s.w * t.s.h * t.s.d : 0), 0);
-    this._room(need);
-    // the shapes not in the pool yet, then the mask, then the edits (so only the first write flushes the frame)
+    this._room(list.reduce((n, t) => n + (fresh(t) ? size(t) : 0), 0), list.reduce((n, t) => n + size(t), 0));
+    // the shapes not in the pool yet, then the mask, then the edits (so at most the first write flushes the frame)
     const bases = new Map();
     for (const t of list) {
       const had = t.key != null ? this.shapes.get(t.key) : null;
       if (had?.s === t.s) { bases.set(t, had.base); continue; }
       const base = this.used;
-      this.gpu.write(this.pool, base * 16, t.s.data);
+      this._write(base * 16, t.s.data);
       this.used += t.s.w * t.s.h * t.s.d;
       bases.set(t, base);
       if (t.key != null) this.shapes.set(t.key, { s: t.s, base });
@@ -201,7 +213,7 @@ export class Stamper {
     if (mask) {
       const bits = new Uint32Array(this.maskVec4s * 4);
       for (let i = 0; i < mask.length; i++) if (mask[i]) bits[i >> 5] |= 1 << (i & 31);
-      this.gpu.write(this.pool, 0, bits);
+      this._write(0, bits);
     }
     const sim = this.sim, bind = [{ buffer: this.pool }];
     for (const t of list) {
@@ -210,6 +222,7 @@ export class Stamper {
         at, foot, size: [s.w, s.h, s.d], base: bases.get(t), seed: t.seed >>> 0, masked: mask ? 1 : 0, maskW: this.maskW,
       }, { bind, scrub });
     }
+    this.poolRead = this.gpu.stats.flushes;
     return list.length;
   }
 
@@ -340,8 +353,9 @@ export function generatorFor(sim, P = worldParams({ size: [sim.g.nx, sim.g.ny, s
   }
   return current;
 }
-// The simulation is going away: so does its generator, if it has one.
+// The simulation is going away: so do its generator, if it has one, and its stamper's pool.
 export function releaseGenerator(sim) {
+  stampers.get(sim)?.dispose();
   if (current?.sim !== sim) return;
   current.dispose();
   current = null;
@@ -350,14 +364,20 @@ export function releaseGenerator(sim) {
 /**
  * The Island scene: a world the size of the grid, at origin 0, with its
  * trees. Resolves with its world P once it is recorded (the kernels and the
- * columns' bake first: the first time, they build).
+ * columns' bake first: the first time, they build), or with null when it
+ * didn't: the generator was replaced, the grid went, or `still()` said the
+ * load was overtaken while it waited (another scene loaded, an undo: the
+ * caller's, src/wire/world.js). The old WebGL load was synchronous; this one
+ * waits at least a microtask, so whatever is loaded meanwhile must win.
+ * @param {import('../sim.js').Simulation} sim
+ * @param {{ seed?: number, still?: () => boolean }} [opts]
  */
-export async function loadIsland(sim, { seed } = {}) {
+export async function loadIsland(sim, { seed, still = null } = {}) {
   const { nx, ny, nz } = sim.g;
   const P = worldParams({ size: [nx, ny, nz], seed });
   const gen = generatorFor(sim, P);
   await gen.ready;
-  if (current !== gen || sim.disposed) return P;   // (replaced meanwhile)
+  if (current !== gen || sim.disposed || (still && !still())) return null;   // (replaced or overtaken meanwhile)
   gen.fill(P);
   gen.plantTrees(P);
   // a new scene: the render fields and GI start over instead of blending in, and nothing is moving

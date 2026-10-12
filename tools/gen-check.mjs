@@ -13,7 +13,9 @@
 //     move's) keeps the cells outside it as the full fill made them;
 //   - stability: the element at every cell after --steps steps vs right after
 //     loading (cells whose element changed, by from → to);
-//   - with an outDir, a still of the box (one frame).
+//   - with an outDir, a still of the box (one frame);
+//   - the race: the Islet's load waits for its generator, so a scene loaded
+//     meanwhile (the Lab) or an undo of the load wins, and on its own it lands.
 // usage: node tools/gen-check.mjs [outDir] [--size 64|32|128|wide] [--seed N] [--steps 30] [--verbose] [--port N]
 import { mkdirSync } from 'node:fs';
 import { launchBrowser, newTestPage } from './browser.mjs';
@@ -168,6 +170,33 @@ try {
     await p.evaluate(() => window.__app.test.renderOnce());
     await p.screenshot({ path: `${out}/island-${size}.png` });
   }
+  // The Islet's load waits for its generator (at least a microtask): a scene
+  // loaded meanwhile, or an undo of the load, wins (src/wire/world.js loadIsland).
+  const race = await p.evaluate(async () => {
+    const a = window.__app;
+    const { default: world } = await import('/src/wire/world.js');
+    const ids = async () => { const A = (await a.sim.readState())[0], n = new Uint8Array(A.length / 4); for (let i = 0; i < n.length; i++) n[i] = Math.round(A[i * 4]); return n; };
+    const differ = (x, y) => { let n = 0; for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) n++; return n; };
+    a.loadPreset('lab');
+    const lab = await ids();
+    a.loadPreset('island');
+    const t1 = world._islandLoad;
+    a.loadPreset('lab');
+    const overtaken = await t1.done;
+    const afterLab = differ(await ids(), lab);
+    a.loadPreset('island');
+    const t2 = world._islandLoad;
+    a.undo();
+    const undone = await t2.done;
+    const afterUndo = differ(await ids(), lab);
+    a.loadPreset('island');
+    const landed = await world._islandLoad.done;
+    const islet = differ(await ids(), lab);
+    return { overtaken: overtaken !== null, afterLab, undone: undone !== null, afterUndo, landed: landed !== null, islet, cells: lab.length };
+  });
+  ok(!race.overtaken && race.afterLab === 0, `race: the Islet then the Lab at once: the Islet ${race.overtaken ? 'landed' : 'stood down'}, ${race.afterLab} cells differ from the Lab`);
+  ok(!race.undone && race.afterUndo === 0, `race: the Islet's load undone before it landed: the Islet ${race.undone ? 'landed' : 'stood down'}, ${race.afterUndo} cells differ from the Lab`);
+  ok(race.landed && race.islet > 0, `race: the Islet on its own lands (${race.islet} of ${race.cells} cells differ from the Lab)`);
   ok(!errs.length, `no page or GPU errors${errs.length ? `:\n  ${errs.join('\n  ')}` : ''}`);
   await p.close();
 } catch (e) {
