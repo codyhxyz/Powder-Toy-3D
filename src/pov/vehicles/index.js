@@ -7,6 +7,7 @@ import { povEvents } from '../events.js';
 import { addTarget, targetsInBox, PLAYER } from '../targets.js';
 import { createWorldModel } from '../ai/world.js';
 import { sharedTransfer, Load, cellsNear, ballRadius } from '../tools/transfer.js';
+import { volumeLight } from '../gpu.js';
 import { loadRapier, createPhysics } from './physics.js';
 import { createLook } from './look.js';
 import { JEEP, buildJeep } from './jeep.js';
@@ -461,7 +462,7 @@ export function createVehicles(env) {
       r.position.copy(worldPos);
       r.quaternion.copy(rotQ(v));
       r.scale.setScalar(scale / CELL_M);
-      v.look.bind(vol, g);
+      v.look.bind(volumeLight(vol), g);
       v.look.update(f.worldToGrid);
       v.impl.pose(dt);
     }

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { E } from '../elements.js';
-import { bodyFireFrag, flameBox, toolPass, BODY_FIRE } from '../shaders/povTools.js';
+import { bodyFireFrag, flameBox, BODY_FIRE } from '../shaders/povTools.js';
+import { toolPass } from './gpu.js';
 import { SEED_MAX } from '../shaders/common.js';
 import { BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { VITALS } from './vitals.js';
@@ -167,21 +168,10 @@ export function createBodyWorld({ renderer, getSim }) {
       fireWait = BURN_FIRE_INTERVAL;
       const sim = getSim();
       if (!sim) return;
-      fire ??= toolPass(bodyFireFrag, () => ({
-        uNozzle: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
-        uReach: { value: 0 }, uDt: { value: 0 }, uFrame: { value: 0 },
-      }));
+      fire ??= toolPass(bodyFireFrag);
       side += GOLDEN_ANGLE;
       nozzle.set(body.pos.x + Math.cos(side) * BURN_FIRE_OUT, body.pos.y, body.pos.z + Math.sin(side) * BURN_FIRE_OUT);
-      const mat = fire(sim);
-      const u = mat.uniforms;
-      u.uNozzle.value.copy(nozzle);
-      u.uDir.value.copy(up);
-      u.uReach.value = BODY_HEIGHT;
-      u.uDt.value = BURN_FIRE_INTERVAL;
-      u.uFrame.value = ++frame;
-      sim.touchCentres(...flameBox(BODY_FIRE, nozzle, up, BODY_HEIGHT));
-      sim.pass(mat);
+      fire(sim, { nozzle, dir: up, reach: BODY_HEIGHT, dt: BURN_FIRE_INTERVAL, frame: ++frame }, sim.touchCentres(...flameBox(BODY_FIRE, nozzle, up, BODY_HEIGHT)));
     },
     // spill n cells of element id at temperature t from the body's chest into the air
     // around it (tools/transfer.js put: what finds no room isn't spilled)

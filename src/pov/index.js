@@ -33,6 +33,7 @@ import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
 import { createDescent } from './descent/index.js';
+import { preparePov, volumeLight } from './gpu.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -369,13 +370,26 @@ export function createPov(app) {
       figure = createBody({ choice: () => app.settings.character });   // realistic or stickman, live
       scene.add(figure.root);
     }
-    figure.bind(app.getVolume(), app.getSim().g);
+    figure.bind(volumeLight(app.getVolume()), app.getSim().g);
     return figure.compile(renderer, camera, scene);
   }
-  // compile the figure's shader once the page has settled, not on the first F
+  // The body's and the tools' kernels (pov/gpu.js), built for each grid the
+  // body is in (docs/webgpu.md B5): until they are, its edits and probes are
+  // skipped, so the drop-in waits for them as it does for the figure.
+  let kernelsFor = null, kernelsBuilt = null;
+  function ensureKernels() {
+    const sim = app.getSim();
+    if (sim !== kernelsFor) {
+      kernelsFor = sim;
+      kernelsBuilt = preparePov(sim);
+      kernelsBuilt.catch((err) => console.error('POV kernels failed to build', err));
+    }
+    return kernelsBuilt;
+  }
+  // compile the figure's shader and build the kernels once the page has settled, not on the first F
   if (createPlayer) {
     const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, PREWARM_DELAY_MS));
-    setTimeout(() => idle(() => { if (app.getSim()) ensureFigure(); }), PREWARM_DELAY_MS);
+    setTimeout(() => idle(() => { if (app.getSim()) { ensureFigure(); ensureKernels(); } }), PREWARM_DELAY_MS);
   }
   function ensureParts() {
     if (!player) {
@@ -472,7 +486,7 @@ export function createPov(app) {
     starting = true;
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
     try {
-      await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
+      await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure(), ensureKernels()]);
       ensureParts();
       // the figure may compile for a while, and a world's window move meanwhile
       const o = app.getSim().origin;
@@ -628,6 +642,7 @@ export function createPov(app) {
     if (!active()) return;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     const g = sim.g;
+    ensureKernels();   // (a new grid: its kernels)
     vol.updateMatrixWorld();
     worldToGrid.copy(vol.matrixWorld).invert();
     box.min.copy(vol.position);
@@ -687,7 +702,7 @@ export function createPov(app) {
           : npcMod.createNpc({ ...spec, style: s.kind === SPAWNER.GUNNER ? 'gunner' : 'axeman' });
         scene.add(n.root);
         n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
-        n.bind(app.getVolume(), g);
+        n.bind(volumeLight(app.getVolume()), g);
         n.compile(renderer, camera, scene);
         npcs.set(s.id, n);
       }
@@ -698,7 +713,7 @@ export function createPov(app) {
       }
       if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
       if (npcsWanted && npcs.size) {
-        for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, npcFrame); }
+        for (const n of npcs.values()) { n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame); }
       } else for (const n of npcs.values()) n.reset();
     }
     game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
@@ -757,7 +772,7 @@ export function createPov(app) {
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose, crouch: player.crouch,
       look: { pitch: povCam.look.pitch, spine: holding.spine }, lift: holding.lift, ride: holding.ride,
     });
-    held.bind(vol, g);
+    held.bind(volumeLight(vol), g);
     held.frame({ figure, yaw: povCam.look.yaw, pitch: povCam.look.pitch, scale: scale * player.size, feet: vFeet, worldToGrid, camera, viewmodel });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'

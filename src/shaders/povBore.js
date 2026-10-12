@@ -1,19 +1,23 @@
-import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
+import { prelude, editKernelWGSL, EDIT_FIELDS, LAYOUT, STATE_OPTS, gridDims } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 import { STRIKE } from './povTrace.js';
+import { RING_LAYOUT, ringWGSL } from './povBody.js';
 
-// GPU passes for the two boring weapons: the burrower's drill and the laser
-// cannon (src/pov/tools/burrower.tool.js, laser.tool.js). Both add nothing to
-// the world: every cell they touch turns into its own debris, its own vapour,
-// or the same matter hotter.
+// GPU work for the two boring weapons: the burrower's drill and the laser
+// cannon (src/pov/tools/burrower.tool.js, laser.tool.js), on WebGPU
+// (docs/webgpu.md G2, D7). Both add nothing to the world: every cell they
+// touch turns into its own debris, its own vapour, or the same matter hotter.
 //
 // Units: grid cells, cells/step, the sim's kinetic energy units (HARD) for the
 // drill, and the engine's heat (CAP · °C per cell, a water cell's CAP = 1) for
 // the laser.
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-// #defines for a constants block; the keys in `ints` stay integers (loop bounds, array sizes)
-const defines = (prefix, obj, ints = []) =>
-  Object.entries(obj).map(([k, v]) => `#define ${prefix}_${k} ${ints.includes(k) ? String(v) : v < 0 ? `(${f(v)})` : f(v)}`).join('\n');
+// A JS number as a WGSL f32 literal; a tuning block as typed consts (H1.7),
+// the keys in `ints` as i32 (loop bounds, array sizes)
+const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
+const consts = (prefix, obj, ints = []) => Object.entries(obj)
+  .map(([k, v]) => (ints.includes(k) ? `const ${prefix}_${k}: i32 = ${v};` : `const ${prefix}_${k}: f32 = ${lit(v)};`)).join('\n');
 
 // ---------------------------------------------------------------- burrower
 // A drill is power-limited, so it advances at its power over the work a cell
@@ -21,7 +25,7 @@ const defines = (prefix, obj, ints = []) =>
 // drilling": rate of penetration = P / (SE · A), the specific energy SE times
 // the face's area A). The engine's hardness already is that specific energy
 // (elements.js: hard ≈ UCS / 5 MPa, after Teale), and a powder or liquid
-// costs what it costs a round (povTrace.js strikeFrag: DENS · STRIKE.DRAG), so
+// costs what it costs a round (povTrace.js strike: DENS · STRIKE.DRAG), so
 // the work of one cell of advance is the sum over the bore's face disc:
 //   W = Σ HARD (breakable solids) + Σ DENS · DRAG (powder, liquid)
 //   v = min(FLIGHT, POWER / W)
@@ -42,60 +46,100 @@ export const BURROW = {
 };
 const BURROW_SPAN = Math.ceil(BURROW.RADIUS) + 1;   // cells around a slice's centre its disc can reach
 
-const burrowDefines = `${defines('BURROW', BURROW, ['PATH_MAX', 'PROBE_AHEAD'])}
-#define BURROW_SPAN ${BURROW_SPAN}
-#define STRIKE_DRAG ${f(STRIKE.DRAG)}`;
+const burrowConsts = `${consts('BURROW', BURROW, ['PATH_MAX', 'PROBE_AHEAD'])}
+const BURROW_SPAN: i32 = ${BURROW_SPAN};
+const STRIKE_DRAG: f32 = ${lit(STRIKE.DRAG)};`;
 
-// One texel per slice k (BURROW.PROBE_AHEAD wide, one row): the face disc a
-// cell deep, k + ½ cells ahead of uHead along uDir.
+// One vec4 per slice k (BURROW.PROBE_AHEAD of them, into a ring slot): the
+// face disc a cell deep, k + ½ cells ahead of head along dir.
 //   (work W of the slice, unbreakable solids near the axis, the id of the
 //    matter nearest the axis or −1, breakable solids in it)
 // Below the floor counts as unbreakable (the engine's WALL); out through the
-// sides or top is open.
-export const burrowProbeFrag = (g) => /* glsl */ `
-${prelude(g)}
-${burrowDefines}
-uniform vec3 uHead;   // grid cells: the drill's nose
-uniform vec3 uDir;    // unit heading
-out vec4 oC;
+// sides or top is open. A workgroup per slice: each thread sums its share of
+// the slice's cube in order, then the workgroup adds the shares up pairwise
+// and keeps the nearest cell (ties: the first in z, y, x order, the GLSL's
+// loop order), so the answer is the same every time.
+export const BurrowProbeParams = uniformStruct('BurrowProbeParams', { head: 'vec3f', slot: 'u32', dir: 'vec3f' });
+export const burrowProbeFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+${burrowConsts}
+${BurrowProbeParams.wgsl}
+@group(3) @binding(1) var<uniform> P: BurrowProbeParams;
+${ringWGSL()}
+const SIDE: i32 = 2 * BURROW_SPAN + 1;
+const NO_CELL: u32 = 0xffffffffu;
+var<workgroup> sums: array<vec4f, 64>;   // (work, blocked, solids, 0)
+var<workgroup> nearR: array<f32, 64>;
+var<workgroup> nearAt: array<u32, 64>;   // the nearest cell's place in loop order (NO_CELL: none)
+var<workgroup> nearId: array<i32, 64>;
 
-void main() {
-  int k = int(gl_FragCoord.x);
-  vec3 c = uHead + uDir * (float(k) + 0.5);
-  ivec3 ci = ivec3(floor(c));
-  float work = 0.0, blocked = 0.0, solids = 0.0, axisId = -1.0, nearest = 1e9;
-  for (int z = -BURROW_SPAN; z <= BURROW_SPAN; z++)
-  for (int y = -BURROW_SPAN; y <= BURROW_SPAN; y++)
-  for (int x = -BURROW_SPAN; x <= BURROW_SPAN; x++) {
-    ivec3 q = ci + ivec3(x, y, z);
-    vec3 d = vec3(q) + 0.5 - c;
-    float along = dot(d, uDir);
-    if (abs(along) > 0.5) continue;
-    float r = length(d - along * uDir);
-    if (r > BURROW_RADIUS) continue;
-    if (!inGrid(q)) { if (q.y < 0 && r < BURROW_AXIS_CORE) blocked += 1.0; continue; }
-    int id = eid(fetchA(q));
-    int kind = KIND[id];
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let k = wg.x;
+  let c = P.head + P.dir * (f32(k) + 0.5);
+  let ci = vec3i(floor(c));
+  var s = vec4f(0.0);
+  var best = 1e9;
+  var bestAt = NO_CELL;
+  var bestId = -1;
+  for (var n = i32(li); n < SIDE * SIDE * SIDE; n += 64) {
+    let q = ci + vec3i(n % SIDE, (n / SIDE) % SIDE, n / (SIDE * SIDE)) - BURROW_SPAN;
+    let d = vec3f(q) + 0.5 - c;
+    let along = dot(d, P.dir);
+    if (abs(along) > 0.5) { continue; }
+    let r = length(d - along * P.dir);
+    if (r > BURROW_RADIUS) { continue; }
+    if (!inGrid(q)) {
+      if (q.y < 0 && r < BURROW_AXIS_CORE) { s.y += 1.0; }
+      continue;
+    }
+    let id = eid(fetchA(q));
+    let kind = KIND(id);
     if (kind == K_SOLID) {
-      if (BREAKINTO[id] < 0) { if (r < BURROW_AXIS_CORE) blocked += 1.0; continue; }
-      work += HARD[id];
-      solids += 1.0;
+      if (BREAKINTO(id) < 0) {
+        if (r < BURROW_AXIS_CORE) { s.y += 1.0; }
+        continue;
+      }
+      s.x += HARD(id);
+      s.z += 1.0;
     } else if (kind == K_POWDER || kind == K_LIQUID) {
-      work += DENS[id] * STRIKE_DRAG;
-    } else continue;
-    if (r < nearest) { nearest = r; axisId = float(id); }
+      s.x += DENS(id) * STRIKE_DRAG;
+    } else {
+      continue;
+    }
+    if (r < best) { best = r; bestAt = u32(n); bestId = id; }   // (n grows: the first of equals stays)
   }
-  oC = vec4(work, blocked, axisId, solids);
+  sums[li] = s;
+  nearR[li] = best;
+  nearAt[li] = bestAt;
+  nearId[li] = bestId;
+  for (var h = 32u; h > 0u; h >>= 1u) {
+    workgroupBarrier();
+    if (li < h) {
+      sums[li] += sums[li + h];
+      let r = nearR[li + h];
+      if (r < nearR[li] || (r == nearR[li] && nearAt[li + h] < nearAt[li])) {
+        nearR[li] = r; nearAt[li] = nearAt[li + h]; nearId[li] = nearId[li + h];
+      }
+    }
+  }
+  workgroupBarrier();
+  if (li == 0u) {
+    let t = sums[0];
+    ringOut[P.slot * u32(BURROW_PROBE_AHEAD) + k] = vec4f(t.x, t.y, f32(nearId[0]), t.z);
+  }
 }
 `;
+export const BURROW_PROBE_DISPATCH = [BURROW.PROBE_AHEAD, 1, 1];
 
-// The drill this frame. Inside the capsule round the nose's stretch
-// uFrom → uTo (radius RADIUS), while uCut is 1:
+// The drill this frame, an edit over the box of everything it may change.
+// Inside the capsule round the nose's stretch nose0 → nose1 (radius RADIUS), while
+// cut is 1:
 //   breakable solid: becomes its debris in place (only the element changes:
-//     strikeFrag's rule), thrown back along the bore at SPOIL_SPEED
+//     the strike's rule), thrown back along the bore at SPOIL_SPEED
 //   powder or liquid: thrown back the same way
 //   anything else: left as it is
-// Along the bore behind it (the centre line uPath, mouth first), loose
+// Along the bore behind it (the centre line path, mouth first), loose
 // cuttings (powders) are carried back toward the mouth at SPOIL_SPEED: a
 // tunnel-boring machine's muck conveyor, which runs the tunnel's length. In
 // its first stretch and APRON cells past the mouth it throws them up and out
@@ -103,59 +147,66 @@ void main() {
 // instead of damming it (a heap at the angle of repose right at the mouth
 // fills it: tested). The tunnel stays open to walk through; nothing is added
 // or taken away.
-export const burrowFrag = (g) => /* glsl */ `
-${prelude(g)}
-${stateOutGLSL}
-${burrowDefines}
-uniform vec3 uFrom;                  // grid cells: the nose's stretch this frame
-uniform vec3 uTo;
-uniform vec3 uDir;                   // unit heading
-uniform int uCut;                    // 1: the nose cuts this frame
-uniform vec4 uPath[BURROW_PATH_MAX]; // the bore's centre line, mouth first (w 1: a point)
-uniform int uPathN;                  // points in uPath
-uniform vec3 uLo;                    // the box of everything this pass may change
-uniform vec3 uHi;
-
+export const BurrowParams = uniformStruct('BurrowParams', {
+  ...EDIT_FIELDS,
+  nose0: 'vec3f',     // grid cells: the nose's stretch this frame
+  cut: 'u32',         // 1: the nose cuts this frame
+  nose1: 'vec3f',
+  pathN: 'u32',       // points in path
+  dir: 'vec3f',       // unit heading
+  lo: 'vec3f',        // the box of everything this edit may change (cell corners)
+  hi: 'vec3f',
+  path: `array<vec4f, ${BURROW.PATH_MAX}>`,   // the bore's centre line, mouth first (w 1: a point)
+});
+export const burrowWGSL = /* wgsl */ `
+${burrowConsts}
 // distance from p to the segment a → b
-float segDist(vec3 p, vec3 a, vec3 b) {
-  vec3 ab = b - a;
-  float l2 = dot(ab, ab);
-  float t = l2 > 0.0 ? clamp(dot(p - a, ab) / l2, 0.0, 1.0) : 0.0;
+fn segDist(p: vec3f, a: vec3f, b: vec3f) -> f32 {
+  let ab = b - a;
+  let l2 = dot(ab, ab);
+  var t = 0.0;
+  if (l2 > 0.0) { t = clamp(dot(p - a, ab) / l2, 0.0, 1.0); }
   return length(p - a - ab * t);
 }
 
-void burrow(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 pc = vec3(p);
-  if (any(lessThan(pc, uLo)) || any(greaterThan(pc, uHi))) return;
-  pc += 0.5;
-  int id = eid(a);
-  if (isGasLike(id)) return;
-  int kind = KIND[id];
-  if (uCut == 1 && segDist(pc, uFrom, uTo) <= BURROW_RADIUS) {
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let pc0 = vec3f(p);
+  if (any(pc0 < P.lo) || any(pc0 > P.hi)) { return; }
+  let pc = pc0 + 0.5;
+  let id = eid(a);
+  if (isGasLike(id)) { return; }
+  let kind = KIND(id);
+  if (P.cut == 1u && segDist(pc, P.nose0, P.nose1) <= BURROW_RADIUS) {
     if (kind == K_SOLID) {
-      int into = BREAKINTO[id];
-      if (into < 0) return;
-      oA.x = float(into);
+      let into = BREAKINTO(id);
+      if (into < 0) { return; }
+      (*oA).x = f32(into);
     }
-    oB.xyz = -uDir * BURROW_SPOIL_SPEED;
+    *oB = vec4f(-P.dir * BURROW_SPOIL_SPEED, b.w);
     return;
   }
-  if (kind != K_POWDER) return;
-  float best = BURROW_RADIUS + BURROW_CONVEY_PAD;
-  vec3 back = vec3(0.0);
-  bool mouth = false;
-  for (int i = 0; i + 1 < BURROW_PATH_MAX; i++) {
-    if (i + 1 >= uPathN) break;
-    vec3 a0 = uPath[i].xyz, a1 = uPath[i + 1].xyz;
-    if (dot(a0 - a1, a0 - a1) <= 0.0) continue;
-    vec3 dir = normalize(a0 - a1);
-    if (i == 0) a0 += dir * BURROW_APRON;   // the first stretch reaches out past the mouth
-    float d = segDist(pc, a0, a1);
-    if (d < best) { best = d; back = dir; mouth = i == 0; }
+  if (kind != K_POWDER) { return; }
+  var best = BURROW_RADIUS + BURROW_CONVEY_PAD;
+  var back = vec3f(0.0);
+  var mouth = false;
+  let n = min(P.pathN, u32(BURROW_PATH_MAX));
+  for (var i = 0u; i + 1u < n; i++) {
+    var a0 = P.path[i].xyz;
+    let a1 = P.path[i + 1u].xyz;
+    if (dot(a0 - a1, a0 - a1) <= 0.0) { continue; }
+    let dir = normalize(a0 - a1);
+    if (i == 0u) { a0 += dir * BURROW_APRON; }   // the first stretch reaches out past the mouth
+    let d = segDist(pc, a0, a1);
+    if (d < best) { best = d; back = dir; mouth = i == 0u; }
   }
-  if (best < BURROW_RADIUS + BURROW_CONVEY_PAD) oB.xyz = back * BURROW_SPOIL_SPEED + vec3(0.0, mouth ? BURROW_SPOIL_LIFT : 0.0, 0.0);
+  if (best < BURROW_RADIUS + BURROW_CONVEY_PAD) {
+    var lift = 0.0;
+    if (mouth) { lift = BURROW_SPOIL_LIFT; }
+    *oB = vec4f(back * BURROW_SPOIL_SPEED + vec3f(0.0, lift, 0.0), b.w);
+  }
 }
-${copyThroughMain('burrow')}`;
+`;
+export const burrowFrag = (g) => editKernelWGSL(g, { update: burrowWGSL, params: BurrowParams });
 
 // ---------------------------------------------------------------- laser
 // The laser cannon: one instant beam along the aim, as Halo's Spartan Laser.
@@ -211,119 +262,204 @@ LASER.CORE_AREA = Math.PI * LASER.CORE_RADIUS ** 2;   // cells in the core's sli
 LASER.STEPS_MAX = Math.ceil(LASER.LENGTH * Math.sqrt(3)) + 2;   // DDA steps a LENGTH walk can take
 LASER.SHADOW_N = Math.ceil(LASER.RIM_RADIUS / LASER.SHADOW_STEP) + 1;   // looks along the longest such line
 
-const laserGLSL = /* glsl */ `
-${defines('LASER', LASER, ['STEPS_MAX', 'SHADOW_N'])}
-uniform vec3 uFrom;   // grid cells: where the beam leaves the body
-uniform vec3 uDir;    // unit aim
+// The shot's numbers: where it leaves the body and the unit aim (grid
+// cells), and the ring slot the reach kernel answers the CPU in.
+export const LaserParams = uniformStruct('LaserParams', { muzzle: 'vec3f', slot: 'u32', dir: 'vec3f' });
+
+const laserWGSL = /* wgsl */ `
+${consts('LASER', LASER, ['STEPS_MAX', 'SHADOW_N'])}
+${LaserParams.wgsl}
+@group(3) @binding(1) var<uniform> P: LaserParams;
+// The shot: how far the beam got (cells from the muzzle), what stopped it (-1 if
+// it ran out of energy or length), and the box the apply runs over (grid
+// cells, inclusive, clipped to the grid; empty: lo > hi). The reach kernel
+// writes it, the apply reads it (docs/webgpu.md G2).
+struct LaserBeam { lo: vec3i, reach: f32, hi: vec3i, stopId: i32 }
 
 // matter the beam can't touch: it neither breaks, melts nor burns
-bool laserProof(int id) { return KIND[id] == K_SOLID && BREAKINTO[id] < 0 && MELT[id] <= 0.0 && IGNITE[id] <= 0.0; }
+fn laserProof(id: i32) -> bool { return KIND(id) == K_SOLID && BREAKINTO(id) < 0 && MELT(id) <= 0.0 && IGNITE(id) <= 0.0; }
+`;
 
-// How far along the axis the beam gets (cells from uFrom), and what stopped it
-// (stopId: −1 if it ran out of energy or length). Every fragment walks it the
-// same way, so they agree.
-float laserReach(out int stopId) {
-  stopId = -1;
-  vec3 rd = vec3(abs(uDir.x) < 1e-6 ? 1e-6 : uDir.x, abs(uDir.y) < 1e-6 ? 1e-6 : uDir.y, abs(uDir.z) < 1e-6 ? 1e-6 : uDir.z);
-  ivec3 istp = ivec3(sign(rd));
-  vec3 tDelta = abs(1.0 / rd);
-  ivec3 c = ivec3(floor(uFrom));
-  vec3 tMax = (vec3(c) + step(0.0, rd) - uFrom) / rd;
-  float E = LASER_ENERGY, tEnter = 0.0;
-  bool entered = false;
-  for (int k = 0; k < LASER_STEPS_MAX; k++) {
-    if (tEnter >= LASER_LENGTH) return LASER_LENGTH;
+// group 2 of the reach kernel: the shot (written), the apply's indirect args
+// (written: a separate buffer, as B6 wants of an indirect dispatch's args),
+// the ring; of the apply: the shot (read)
+export const LASER_REACH_LAYOUT = [
+  { binding: 0, buffer: { type: 'storage' } },
+  { binding: 1, buffer: { type: 'storage' } },
+  { binding: 2, buffer: { type: 'storage' } },
+];
+export const LASER_APPLY_LAYOUT = [{ binding: 0, buffer: { type: 'read-only-storage' } }];
+export const LASER_BEAM_BYTES = 32;   // LaserBeam
+export const LASER_REACH_BYTES = 16;  // the ring's answer: (reach, stopId, 0, 1)
+
+// The reach kernel: one thread walks the beam's axis from the muzzle, every
+// cell it enters costing the heat that takes the core's slice of it to VAPOR_T
+// (see LASER), writes how far it got and the apply's box and dispatch size,
+// and answers the CPU through the ring: its reach lands there 1–3 frames
+// later (the damage, the beam's look, lastShot), so nothing waits for it.
+export const laserReachFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+${laserWGSL}
+@group(2) @binding(0) var<storage, read_write> beam: LaserBeam;
+@group(2) @binding(1) var<storage, read_write> beamArgs: array<u32, 3>;
+@group(2) @binding(2) var<storage, read_write> ringOut: array<vec4f>;   // the result ring (B7)
+
+// How far along the axis the beam gets (cells from the muzzle), and what stopped it.
+fn laserReach(stopId: ptr<function, i32>) -> f32 {
+  *stopId = -1;
+  let rd = select(P.dir, vec3f(1e-6), abs(P.dir) < vec3f(1e-6));
+  let istp = vec3i(sign(rd));
+  let tDelta = abs(1.0 / rd);
+  var c = vec3i(floor(P.muzzle));
+  var tMax = (vec3f(c) + step(vec3f(0.0), rd) - P.muzzle) / rd;
+  var E = LASER_ENERGY;
+  var tEnter = 0.0;
+  var entered = false;
+  for (var k = 0; k < LASER_STEPS_MAX; k++) {
+    if (tEnter >= LASER_LENGTH) { return LASER_LENGTH; }
     if (!inGrid(c)) {
-      if (c.y < 0) { stopId = E_WALL; return tEnter; }   // the floor
-      if (entered) return LASER_LENGTH;   // out of the box (a ray never comes back into it): nothing more to touch
+      if (c.y < 0) { *stopId = E_WALL; return tEnter; }   // the floor
+      if (entered) { return LASER_LENGTH; }   // out of the box (a ray never comes back into it): nothing more to touch
     } else {
       entered = true;
-      vec4 a = fetchA(c);
-      int id = eid(a);
+      let a = fetchA(c);
+      let id = eid(a);
       if (!isGasLike(id)) {
-        if (laserProof(id)) { stopId = id; return tEnter; }
-        float cost = CAP[id] * max(LASER_VAPOR_T - a.y, 0.0) * LASER_CORE_AREA;
-        if (E < cost) { stopId = id; return tEnter + E / cost; }
+        if (laserProof(id)) { *stopId = id; return tEnter; }
+        let cost = CAP(id) * max(LASER_VAPOR_T - a.y, 0.0) * LASER_CORE_AREA;
+        if (E < cost) { *stopId = id; return tEnter + E / cost; }
         E -= cost;
       }
     }
-    int ax = tMax.x <= tMax.y && tMax.x <= tMax.z ? 0 : (tMax.y <= tMax.z ? 1 : 2);
+    var ax = 2;
+    if (tMax.x <= tMax.y && tMax.x <= tMax.z) { ax = 0; } else if (tMax.y <= tMax.z) { ax = 1; }
     tEnter = tMax[ax];
     c[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
   return min(tEnter, LASER_LENGTH);
 }
-`;
 
-// One texel: (reach, what stopped it or −1, 0, 1), for the CPU (the beam's
-// drawn length and the bodies in it).
-export const laserReachFrag = (g) => /* glsl */ `
-${prelude(g)}
-${laserGLSL}
-out vec4 oC;
-void main() {
-  int stopId;
-  float reach = laserReach(stopId);
-  oC = vec4(reach, float(stopId), 0.0, 1.0);
+@compute @workgroup_size(1)
+fn main() {
+  var stopId: i32;
+  let reach = laserReach(&stopId);
+  // the cells the beam may change: its axis to where it stopped, padded by the rim (the GLSL's uLo, uHi)
+  let end = P.muzzle + P.dir * reach;
+  let pad = LASER_RIM_RADIUS + 1.0;
+  let lo = max(vec3i(floor(min(P.muzzle, end) - pad)), vec3i(0));
+  let hi = min(vec3i(floor(max(P.muzzle, end) + pad)), vec3i(NX, NY, NZ) - 1);
+  beam = LaserBeam(lo, reach, hi, stopId);
+  // a workgroup per brick of the box, folded (B5)
+  var n = 0u;
+  if (all(lo <= hi)) {
+    let nb = vec3u((hi >> vec3u(2u)) - (lo >> vec3u(2u)) + 1);
+    n = nb.x * nb.y * nb.z;
+  }
+  let y = max(1u, (n + 65534u) / 65535u);
+  beamArgs[0] = (n + y - 1u) / y;
+  beamArgs[1] = y;
+  beamArgs[2] = 1u;
+  ringOut[P.slot] = vec4f(reach, f32(stopId), 0.0, 1.0);
 }
 `;
 
-// The beam (see LASER).
-export const laserFrag = (g) => /* glsl */ `
-${prelude(g)}
-${stateOutGLSL}
-${laserGLSL}
-uniform vec3 uLo;   // the box round the beam's whole length
-uniform vec3 uHi;
+// The beam (see LASER): an edit over the reach kernel's box, dispatched
+// indirectly from its args, in place. Each cell reads its own state and the
+// shot; the shadow test also reads the cells between the bore and it, but
+// only for whether they are proof against the beam, and this edit never
+// makes or unmakes such a cell (the core turns matter into gases, the rim
+// only heats it or spalls a solid into debris that melts), so every thread
+// sees the same answer whatever the others have written: exact in place.
+export const laserFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RW)}
+${laserWGSL}
+@group(2) @binding(0) var<storage, read> beam: LaserBeam;
 
 // Whether a solid the beam can't touch stands between the bore's point q and
 // the centre pc of cell p (p itself doesn't count): the heat doesn't get past it.
-bool laserShadowed(ivec3 p, vec3 q, vec3 pc) {
-  vec3 v = pc - q;
-  int n = int(ceil(length(v) / LASER_SHADOW_STEP));
-  for (int i = 1; i < LASER_SHADOW_N; i++) {
-    if (i >= n) break;
-    ivec3 c = ivec3(floor(q + v * (float(i) / float(n))));
-    if (c == p || !inGrid(c)) continue;
-    if (laserProof(eid(fetchA(c)))) return true;
+fn laserShadowed(p: vec3i, q: vec3f, pc: vec3f) -> bool {
+  let v = pc - q;
+  let n = i32(ceil(length(v) / LASER_SHADOW_STEP));
+  for (var i = 1; i < LASER_SHADOW_N; i++) {
+    if (i >= n) { break; }
+    let c = vec3i(floor(q + v * (f32(i) / f32(n))));
+    if (all(c == p) || !inGrid(c)) { continue; }
+    if (laserProof(eid(fetchA(c)))) { return true; }
   }
   return false;
 }
 
-void laser(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 pc = vec3(p);
-  if (any(lessThan(pc, uLo)) || any(greaterThan(pc, uHi))) return;
-  vec3 d = pc + 0.5 - uFrom;
-  float along = dot(d, uDir);
-  if (along < 0.0 || along > LASER_LENGTH + LASER_RIM_RADIUS) return;
-  float r = length(d - along * uDir);
-  if (r > LASER_RIM_RADIUS) return;
-  int stopId;
-  float reach = laserReach(stopId);
+fn laser(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let pc = vec3f(p);
+  let d = pc + 0.5 - P.muzzle;
+  let along = dot(d, P.dir);
+  if (along < 0.0 || along > LASER_LENGTH + LASER_RIM_RADIUS) { return; }
+  var r = length(d - along * P.dir);
+  if (r > LASER_RIM_RADIUS) { return; }
+  let reach = beam.reach;
   // past where it stopped, r is from that point (the hole's round end); a beam that didn't stop just ends
-  bool past = along > reach;
+  let past = along > reach;
   if (past) {
-    if (reach >= LASER_LENGTH) return;
-    r = length(d - reach * uDir);
-    if (r > LASER_RIM_RADIUS) return;
+    if (reach >= LASER_LENGTH) { return; }
+    r = length(d - reach * P.dir);
+    if (r > LASER_RIM_RADIUS) { return; }
   }
-  int id = eid(a);
-  bool proof = laserProof(id);
+  let id = eid(a);
+  let proof = laserProof(id);
   if (!past && r <= LASER_CORE_RADIUS && !proof) {
-    if (isGasLike(id)) { oA.y = max(a.y, LASER_VAPOR_T); return; }
-    int into = (id == E_WATER || id == E_ICE || id == E_SNOW) ? E_STEAM : IGNITE[id] > 0.0 ? E_FIRE : E_SMOKE;
-    oA = vec4(float(into), LASER_VAPOR_T, SPAWNLIFE[into], fract(a.w));   // keeps the cell's seed, clears its ctype
-    oB.xyz = -uDir * LASER_PLUME_SPEED;
+    if (isGasLike(id)) { (*oA).y = max(a.y, LASER_VAPOR_T); return; }
+    var into = E_SMOKE;
+    if (id == E_WATER || id == E_ICE || id == E_SNOW) { into = E_STEAM; } else if (IGNITE(id) > 0.0) { into = E_FIRE; }
+    *oA = vec4f(f32(into), LASER_VAPOR_T, SPAWNLIFE(into), fract(a.w));   // keeps the cell's seed, clears its ctype
+    *oB = vec4f(-P.dir * LASER_PLUME_SPEED, b.w);
     return;
   }
-  if (!proof && laserShadowed(p, uFrom + uDir * min(along, reach), pc + 0.5)) return;
-  float T = mix(LASER_RIM_T, LASER_RIM_EDGE_T, clamp((r - LASER_CORE_RADIUS) / (LASER_RIM_RADIUS - LASER_CORE_RADIUS), 0.0, 1.0));
-  int into = BREAKINTO[id];
-  if (KIND[id] == K_SOLID && MELT[id] <= 0.0 && IGNITE[id] <= 0.0 && into >= 0 && MELT[into] > 0.0) {
-    oA.x = float(into);
-    oB.xyz = vec3(0.0);
+  if (!proof && laserShadowed(p, P.muzzle + P.dir * min(along, reach), pc + 0.5)) { return; }
+  let T = mix(LASER_RIM_T, LASER_RIM_EDGE_T, clamp((r - LASER_CORE_RADIUS) / (LASER_RIM_RADIUS - LASER_CORE_RADIUS), 0.0, 1.0));
+  let into = BREAKINTO(id);
+  if (KIND(id) == K_SOLID && MELT(id) <= 0.0 && IGNITE(id) <= 0.0 && into >= 0 && MELT(into) > 0.0) {
+    (*oA).x = f32(into);
+    *oB = vec4f(0.0, 0.0, 0.0, b.w);
   }
-  oA.y = max(a.y, T);
+  (*oA).y = max(a.y, T);
 }
-${copyThroughMain('laser')}`;
+
+// editMain (shaders/common.js) over the shot's box instead of the params':
+// a 64-thread workgroup per brick, threads outside the box or the grid skip,
+// each changed brick marked once.
+var<workgroup> editChanged: atomic<u32>;
+@compute @workgroup_size(4, 4, 4)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u,
+        @builtin(local_invocation_id) lid: vec3u, @builtin(local_invocation_index) li: u32) {
+  let lo = beam.lo;
+  let hi = beam.hi;
+  let b0 = lo >> vec3u(2u);
+  let nb = vec3u((hi >> vec3u(2u)) - b0 + 1);
+  let k = foldId(wg, nwg);
+  let b = b0 + vec3i(vec3u(k % nb.x, (k / nb.x) % nb.y, k / (nb.x * nb.y)));
+  let p = b * BS + vec3i(lid);
+  let inBox = k < nb.x * nb.y * nb.z && inGrid(p) && all(p >= lo) && all(p <= hi);
+  if (inBox) {
+    let a = fetchA(p);
+    let bb = fetchB(p);
+    var oA = a;
+    var oB = bb;
+    laser(p, a, bb, &oA, &oB);
+    if (writeCell(p, a, bb, fetchF(p), oA, oB)) { atomicOr(&editChanged, 1u); }
+  }
+  workgroupBarrier();
+  if (li == 0u && atomicLoad(&editChanged) != 0u) { markBrick(brickId(b)); }
+}
+`;
+
+// This module's edit families, as sim.editKernel takes them (src/pov/gpu.js).
+export const POV_BORE_EDITS = { povBurrow: { update: burrowWGSL, params: BurrowParams } };
+
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  { name: 'povBurrowProbe', kind: 'compute', code: (g) => burrowProbeFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, RING_LAYOUT], dispatch: () => BURROW_PROBE_DISPATCH },
+  { name: 'povBurrow', kind: 'compute', code: (g) => burrowFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW], dispatch: (g) => fold(gridDims(g).nbricks) },
+  { name: 'povLaserReach', kind: 'compute', code: (g) => laserReachFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, LASER_REACH_LAYOUT], dispatch: () => [1, 1, 1] },
+  { name: 'povLaser', kind: 'compute', code: (g) => laserFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, LASER_APPLY_LAYOUT], dispatch: (g) => fold(gridDims(g).nbricks) },
+];

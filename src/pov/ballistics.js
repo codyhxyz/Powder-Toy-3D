@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { quadVert, stateUniforms } from '../shaders/common.js';
-import { traceFrag, strikeFrag, TRACE, TRACE_MISS, TRACE_ROUND, STRIKE } from '../shaders/povTrace.js';
+import { TRACE, TRACE_MISS, TRACE_ROUND, STRIKE } from '../shaders/povTrace.js';
+import { povGpu } from './gpu.js';
 import { ELEMENTS, K } from '../elements.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
@@ -20,13 +20,13 @@ import { segmentTarget, dealtScale, PLAYER } from './targets.js';
 //   1. Flight. A round's position is the closed form p0 + v0·t + ½·g·t² of its
 //      flight time t, which advances by the frame's dt while the sim runs
 //      (pausing the sim freezes rounds in the air).
-//   2. Trace. One small GPU pass (shaders/povTrace.js traceFrag) marches each
+//   2. Trace. One small GPU dispatch (shaders/povTrace.js traceFrag) marches each
 //      round's path a little ahead of it, LOOKAHEAD frames past the readback
 //      latency, through the grid and reports the first liquid, powder or solid
 //      on it. Several readbacks stay in flight, like the player's probe, so an
 //      answer lands every frame. The world keeps moving for the frame or two
 //      an answer takes; that's the price of not stalling the GPU.
-//   3. Impact. When a round reaches a reported hit, strikeFrag spends the
+//   3. Impact. When a round reaches a reported hit, the strike (an edit) spends the
 //      round's energy along its path from the struck face, by the engine's own
 //      projectile rule (react.js: each solid it breaks costs it that solid's
 //      hardness): glass shatters, wood breaks into sawdust, a pool or a pile
@@ -74,14 +74,7 @@ const HARD = ELEMENTS.map((e) => e.hard);
 const BREAKS = ELEMENTS.map((e) => !!e.breakInto);
 const NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];   // face code → outward normal (−step)
 
-function rawMat(frag, uniforms) {
-  return new THREE.RawShaderMaterial({
-    glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader: frag, uniforms,
-    depthTest: false, depthWrite: false,
-  });
-}
-
-export function createBallistics({ renderer }) {
+export function createBallistics() {
   const rounds = [];                     // in flight, oldest first
   let nextId = 1;
   // grid cells the window has moved over the world in all (docs/scaling.md
@@ -90,61 +83,15 @@ export function createBallistics({ renderer }) {
   // readback latency in frames (what matters is how far a round flies before
   // an answer lands), and the last frame's length
   let latency = LATENCY_INIT, frameTime = FRAME_INIT, frameNo = 0;
-  let mats = null, simId = -1;
+  let simId = -1, tracing = 0;   // the world the rounds fly in; traces awaiting their answer
+  const starts = [...Array(TRACE.ROUNDS)].map(() => [0, 0, 0, 0]);
+  const ends = [...Array(TRACE.ROUNDS)].map(() => [0, 0, 0, 0]);
 
-  const slots = [...Array(TRACE_INFLIGHT)].map(() => ({
-    target: new THREE.WebGLRenderTarget(TRACE.ROUNDS, TRACE.ROWS, {
-      type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
-      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
-    }),
-    buf: new Float32Array(TRACE.ROUNDS * TRACE.ROWS * TRACE_RGBA), busy: false,
-  }));
-
-  function ensureMats(sim) {
+  // A new world: rounds of a replaced one are gone with it.
+  function ensureWorld(sim) {
     if (sim.id === simId) return;
-    mats?.trace.dispose(); mats?.strike.dispose();
-    const from = [...Array(TRACE.ROUNDS)].map(() => new THREE.Vector4());
-    const to = [...Array(TRACE.ROUNDS)].map(() => new THREE.Vector3());
-    mats = {
-      trace: rawMat(traceFrag(sim.g), {
-        tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tBrickDist: { value: null }, tLight: { value: null },
-        uFrom: { value: from }, uTo: { value: to },
-      }),
-      strike: rawMat(strikeFrag(sim.g), {
-        ...stateUniforms(),
-        uEntry: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
-        uEnergy: { value: 0 }, uDepth: { value: 0 }, uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
-      }),
-    };
     simId = sim.id;
-    // rounds of a replaced world are gone with it
     while (rounds.length) end(rounds[0]);
-    // compile in the background (KHR_parallel_shader_compile), then draw once
-    const built = mats;
-    const keep = sim.quad.material;
-    Promise.all([mats.trace, mats.strike].map((m) => {
-      sim.quad.material = m;
-      return renderer.compileAsync(sim.scene, sim.camera);
-    })).then(() => { if (mats === built && sim.id === simId) warm(sim); }).catch(() => {});
-    sim.quad.material = keep;
-  }
-
-  // Draw both passes once, doing nothing, so the pipelines a first draw builds
-  // (on Metal) are ready before the first shot rather than stalling it: an
-  // idle trace into a trace target, and a strike with an empty walk box into
-  // a one-texel target shaped like the state.
-  function warm(sim) {
-    const tu = mats.trace.uniforms;
-    tu.uFrom.value.forEach((v) => { v.w = 0; });
-    tu.tA.value = sim.stateA; tu.tB.value = sim.stateB;
-    tu.tBrick.value = sim.brick.texture; tu.tBrickDist.value = sim.brickDistTexture;
-    sim.run(mats.trace, slots[0].target);
-    const scratch = sim.makeStateTarget(1, 1);
-    const hu = mats.strike.uniforms;
-    hu.tA.value = sim.stateA; hu.tB.value = sim.stateB; hu.tF.value = sim.stateF;
-    hu.uLo.value.setScalar(Infinity); hu.uHi.value.setScalar(-Infinity);
-    sim.run(mats.strike, scratch);
-    scratch.dispose();
   }
 
   // position and velocity of round r at flight time t
@@ -197,41 +144,42 @@ export function createBallistics({ renderer }) {
   function inBox(p, g) { return p.x >= 0 && p.y >= 0 && p.z >= 0 && p.x < g.nx && p.y < g.ny && p.z < g.nz; }
 
   function requestTrace(sim) {
-    const slot = slots.find((s) => !s.busy);
-    if (!slot) return;
-    const u = mats.trace.uniforms;
+    if (tracing >= TRACE_INFLIGHT) return;
     const jobs = [];
     const want = (latency + LOOKAHEAD_FRAMES) * frameTime;
-    for (let i = 0; i < TRACE.ROUNDS; i++) u.uFrom.value[i].w = 0;
+    for (let i = 0; i < TRACE.ROUNDS; i++) starts[i][3] = 0;
     rounds.forEach((r, i) => {
       if (i >= TRACE.ROUNDS || r.hit) return;
       const from = posAt(r, r.tTraced);
       if (!inBox(from, sim.g)) return;   // the rest of its path is outside: nothing to strike
       const tTo = Math.min(r.t + want, r.tTraced + chordTime(r));
       if (tTo <= r.tTraced) return;
-      u.uFrom.value[i].set(from.x, from.y, from.z, TRACE_ROUND);
-      posAt(r, tTo, u.uTo.value[i]);
+      starts[i][0] = from.x; starts[i][1] = from.y; starts[i][2] = from.z; starts[i][3] = TRACE_ROUND;
+      const to = posAt(r, tTo);
+      ends[i][0] = to.x; ends[i][1] = to.y; ends[i][2] = to.z;
       const job = { r, slot: i, tFrom: r.tTraced, tTo, done: false };
       jobs.push(job);
       r.pending.push(job);
       r.tTraced = tTo;
     });
     if (!jobs.length) return;
-    u.tA.value = sim.stateA;
-    u.tB.value = sim.stateB;
-    u.tBrick.value = sim.brick.texture;
-    u.tBrickDist.value = sim.brickDistTexture;
-    sim.run(mats.trace, slot.target);
-    slot.busy = true;
+    const read = povGpu(sim).probe('povTrace', { starts, ends });
+    if (!read) {
+      // (its kernel is still building: B5) the stretches count as clear rather than stall the rounds
+      for (const j of jobs) settle(j);
+      return;
+    }
+    tracing++;
     const f0 = frameNo, mySim = simId, asked = shifted.clone();
-    renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, TRACE.ROUNDS, TRACE.ROWS, slot.buf).then(() => {
-      slot.busy = false;
+    read.then((bytes) => {
+      tracing--;
       latency += (frameNo - f0 - latency) * LATENCY_EASE;
       if (mySim !== simId) return;
       const back = asked.sub(shifted);   // its grid → today's
-      for (const j of jobs) land(j, slot.buf, back);
+      const buf = new Float32Array(bytes);
+      for (const j of jobs) land(j, buf, back);
     }).catch(() => {
-      slot.busy = false;
+      tracing--;
       for (const j of jobs) settle(j);   // lost: its stretch counts as clear rather than stall the round
     });
   }
@@ -264,7 +212,7 @@ export function createBallistics({ renderer }) {
     };
   }
 
-  // The round strikes: announce it and spend it on the cells (strikeFrag).
+  // The round strikes: announce it and spend it on the cells (the strike's edit).
   function strike(sim, r) {
     const h = r.hit;
     // (an answer that came late finds the round already past the hit: nothing left to show)
@@ -282,16 +230,10 @@ export function createBallistics({ renderer }) {
   }
 
   function pass(sim, r, h, dir) {
-    const u = mats.strike.uniforms;
-    u.uEntry.value.copy(h.point);
-    u.uDir.value.copy(dir);
-    u.uEnergy.value = r.energy;
-    u.uDepth.value = r.depth;
     const far = h.point.clone().addScaledVector(dir, r.depth + 1);
-    u.uLo.value.copy(h.point).min(far).floor().subScalar(1);
-    u.uHi.value.copy(h.point).max(far).floor().addScalar(1);
-    sim.touch(u.uLo.value.toArray(), u.uHi.value.toArray());   // (the shader changes nothing outside it)
-    sim.pass(mats.strike);
+    const lo = h.point.clone().min(far).floor().subScalar(1), hi = h.point.clone().max(far).floor().addScalar(1);
+    // a two-phase edit over the walk's box (it changes nothing outside it)
+    povGpu(sim).edit('povStrike', sim.touch(lo.toArray(), hi.toArray()), { entry: h.point, dir, energy: r.energy, depth: r.depth, lo, hi });
   }
 
   // one round's frame: strike, or fly on (and hit a body on the way)
@@ -329,10 +271,10 @@ export function createBallistics({ renderer }) {
 
   return {
     fire,
-    prepare(sim) { if (sim) ensureMats(sim); },   // build the passes ahead of the first shot
+    prepare(sim) { if (sim) ensureWorld(sim); },   // (the kernels build on entering POV: src/pov/gpu.js prepare)
     // ctx: { sim, dt, stepsPerFrame } (see docs/pov.md); stepsPerFrame 0 = paused
     update({ sim, dt, stepsPerFrame }) {
-      ensureMats(sim);
+      ensureWorld(sim);
       frameNo++;
       if (!rounds.length || stepsPerFrame === 0 || !(dt > 0)) return;
       frameTime = dt;
@@ -362,9 +304,7 @@ export function createBallistics({ renderer }) {
     cancel(id) { const r = rounds.find((x) => x.id === id); if (r) end(r); },
     dispose() {
       while (rounds.length) end(rounds[0]);
-      slots.forEach((s) => s.target.dispose());
-      mats?.trace.dispose(); mats?.strike.dispose();
-      mats = null; simId = -1;
+      simId = -1;
     },
   };
 }

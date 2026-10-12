@@ -1,7 +1,6 @@
 import * as THREE from 'three';
-import { quadVert, stateUniforms } from '../../shaders/common.js';
-import { burrowProbeFrag, burrowFrag, BURROW } from '../../shaders/povBore.js';
-import { toolPass } from '../../shaders/povTools.js';
+import { BURROW } from '../../shaders/povBore.js';
+import { povGpu } from '../gpu.js';
 import { CELL_METERS } from '../vitals.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
@@ -80,33 +79,8 @@ export default {
     const held = attachModel(hand, 'burrower');
     const heldBit = held.obj.getObjectByName('bit');
     const button = trigger(REFIRE);
-    const bore = toolPass(burrowFrag, () => ({
-      uFrom: { value: new THREE.Vector3() }, uTo: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
-      uCut: { value: 0 }, uPath: { value: [...Array(BURROW.PATH_MAX)].map(() => new THREE.Vector4()) }, uPathN: { value: 0 },
-      uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
-    }));
-
-    // the probe: its material per sim, and readback slots shared by every drill
-    let probeMat = null, probeSim = -1;
-    function probeFor(sim) {
-      if (sim.id !== probeSim) {
-        probeMat?.dispose();
-        probeMat = new THREE.RawShaderMaterial({
-          glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader: burrowProbeFrag(sim.g),
-          uniforms: { ...stateUniforms(), uHead: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } },
-          depthTest: false, depthWrite: false,
-        });
-        probeSim = sim.id;
-      }
-      return probeMat;
-    }
-    const slots = [...Array(PROBE_INFLIGHT)].map(() => ({
-      target: new THREE.WebGLRenderTarget(BURROW.PROBE_AHEAD, 1, {
-        type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
-        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
-      }),
-      buf: new Float32Array(BURROW.PROBE_AHEAD * RGBA), busy: false,
-    }));
+    // the probe's answers in flight (every drill's together)
+    let probing = 0;
 
     const drills = [];   // in flight (and conveying), oldest first
     let lastHit = null, lastLaunch = null, nextId = 1;
@@ -117,23 +91,18 @@ export default {
 
     // ask the GPU what lies ahead of drill d (an answer lands a frame or two later)
     function probe(sim, d) {
-      const slot = slots.find((s) => !s.busy);
-      if (!slot) return;
-      const mat = probeFor(sim);
-      const u = mat.uniforms;
-      u.tA.value = sim.stateA; u.tB.value = sim.stateB; u.tF.value = sim.stateF;
-      u.uHead.value.copy(d.pos);
-      u.uDir.value.copy(d.dir);
-      sim.run(mat, slot.target);
-      slot.busy = true;
+      if (probing >= PROBE_INFLIGHT) return;
+      const read = povGpu(sim).probe('povBurrowProbe', { head: d.pos, dir: d.dir });
+      if (!read) return;   // (its kernel is still building: B5)
+      probing++;
       const asked = { origin: d.pos.clone(), dir: d.dir.clone(), simId: sim.id, shift: d.shift.clone() };
-      env.renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, BURROW.PROBE_AHEAD, 1, slot.buf).then(() => {
-        slot.busy = false;
+      read.then((bytes) => {
+        probing--;
         if (!d.alive || asked.simId !== sim.id) return;
         // a window shift since it was asked moves its origin with the world (docs/scaling.md D11)
         asked.origin.sub(d.shift).add(asked.shift);
-        d.probe = { origin: asked.origin, dir: asked.dir, data: slot.buf.slice() };
-      }).catch(() => { slot.busy = false; });
+        d.probe = { origin: asked.origin, dir: asked.dir, data: new Float32Array(bytes) };
+      }).catch(() => { probing--; });
     }
 
     // what the last probe says of the slice the nose is entering: { work, blocked, id }
@@ -173,26 +142,22 @@ export default {
       d.dir.applyQuaternion(vQ.setFromAxisAngle(vW.normalize(), rate * dt)).normalize();
     }
 
-    // the bore pass for this frame: cut from → to (cut), convey along the path
+    // the bore's edit for this frame: cut from → to (cut), convey along the path
     function runBore(sim, d, from, to, cut) {
-      const mat = bore(sim);
-      const u = mat.uniforms;
-      u.uFrom.value.copy(from); u.uTo.value.copy(to); u.uDir.value.copy(d.dir);
-      u.uCut.value = cut ? 1 : 0;
       const n = Math.min(d.path.length, BURROW.PATH_MAX);
       const lo = from.clone().min(to), hi = from.clone().max(to);
+      const path = [];
       for (let i = 0; i < n; i++) {
         const q = d.path[d.path.length - n + i];
-        u.uPath.value[i].set(q.x, q.y, q.z, 1);
+        path.push([q.x, q.y, q.z, 1]);
         lo.min(q); hi.max(q);
       }
       // the nose's own point closes the centre line
-      u.uPathN.value = n;
       const pad = BURROW.RADIUS + BURROW.CONVEY_PAD + BURROW.APRON + 1;   // the conveyor reaches APRON past the mouth
       lo.subScalar(pad).floor(); hi.addScalar(pad).floor();
-      u.uLo.value.copy(lo); u.uHi.value.copy(hi);
-      sim.touchCentres(lo.toArray(), hi.toArray());
-      sim.pass(mat);
+      povGpu(sim).edit('povBurrow', sim.touchCentres(lo.toArray(), hi.toArray()), {
+        nose0: from, nose1: to, dir: d.dir, cut: cut ? 1 : 0, path, pathN: n, lo, hi,
+      });
     }
 
     function stop(d, why) {
@@ -323,9 +288,6 @@ export default {
       dispose() {
         while (drills.length) end(drills[0]);
         world.removeFromParent();
-        slots.forEach((s) => s.target.dispose());
-        probeMat?.dispose();
-        bore.dispose();
         held.dispose();
         hand.removeFromParent();
       },
