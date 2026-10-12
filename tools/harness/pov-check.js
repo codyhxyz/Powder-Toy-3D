@@ -23,6 +23,8 @@
 //             buffer is out) and release
 //   wands     the wands' world (src/pov/wands/world.js): every effect, the batch bound, traces
 //             and clearance (scripts/check-wand-world.mjs's checks on WebGPU)
+//   look      the wands' TSL draws (the spells' cores, shells and beams; the gem and its halo)
+//             compile through gpu.three.prepare and draw what the GLSL drew
 //   recipes   every preset wand cast on a small world, its effects in the cells
 //             (scripts/check-wand-recipes.mjs's checks on WebGPU)
 //   budget:pov  what each costs in gpu.stats (tools/budgets/pov.mjs)
@@ -746,6 +748,139 @@ test('stage:wands', async () => {
     check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
     return out;
   } finally { world.dispose(); sim.dispose(); }
+});
+
+// ---------------------------------------------------------------- look
+// The wands' draws (wands/visuals.js: the spells' cores, shells and beams)
+// and the held wand's gem and halo (tools/glow.js) are TSL node materials
+// (docs/webgpu.md F8): each compiles through gpu.three.prepare with no error
+// and draws into a half-float scene target what the GLSL drew: a still core's
+// middle is its colour × CORE_GAIN + CORE_WHITE, every shell style and the
+// beam light their place and nothing far from it, the gem's middle is its
+// colour + its white heat, the halo's (a display value) the sRGB of its share
+// of its colour in a raw view and AgX's below 1 otherwise.
+test('stage:look', async () => {
+  const out = { checks: [], ms: {} };
+  const THREE = await import('three/webgpu');
+  const { createThreeRenderer, initRenderTarget, gpuTextureOf, useWebGPUCamera } = await import('/src/gpu/three.js');
+  const { halfsToFloats } = await import('/src/gpu/readback.js');
+  const { createWandVisuals } = await import('/src/pov/wands/visuals.js');
+  const { glowMaterial, GLOW_TONE } = await import('/src/pov/tools/glow.js');
+  const W = 160, H = 100;
+  const canvas = Object.assign(document.createElement('canvas'), { width: W, height: H });
+  const three = await createThreeRenderer(gpu, canvas);
+  three.setPixelRatio(1);
+  three.setSize(W, H, false);
+  three.autoClear = true;
+  three.setClearColor(0x000000, 0);
+  const camera = useWebGPUCamera(new THREE.PerspectiveCamera(50, W / H, 0.1, 100));
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  const scene = new THREE.Scene();
+  const target = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(W, H, THREE.FloatType) });
+  initRenderTarget(three, target);
+  gpu.three.defaults = { camera, scene, target };
+  const v = (x, y, z) => new THREE.Vector3(x, y, z);
+  const frame = async () => {
+    three.setRenderTarget(target);
+    three.render(scene, camera);
+    three.setRenderTarget(null);
+    return halfsToFloats(await gpu.readback.texture(gpuTextureOf(three, target.texture)));
+  };
+  const pixel = (p) => { const q = p.clone().project(camera); return [Math.floor((q.x * 0.5 + 0.5) * W), Math.floor((0.5 - q.y * 0.5) * H)]; };
+  const at = (img, [x, y]) => Array.from(img.subarray(4 * (y * W + x), 4 * (y * W + x) + 3));
+  // the brightest pixel (r + g + b) within `r` px of `p`
+  const peak = (img, p, r = 2) => {
+    const [cx, cy] = pixel(p);
+    let best = [0, 0, 0];
+    for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) {
+      const c = at(img, [x, y]);
+      if (c[0] + c[1] + c[2] > best[0] + best[1] + best[2]) best = c;
+    }
+    return best;
+  };
+  const finite = (img) => img.every(Number.isFinite);
+  const close = (got, want, rel) => got.every((g, k) => Math.abs(g - want[k]) <= rel * Math.abs(want[k]) + 2e-3);
+  const fmt = (c) => `(${c.map((x) => x.toFixed(3)).join(', ')})`;
+  const env = { scene, getSim: () => ({ gpu }), getScale: () => 1, getVolume: () => ({ position: v(0, 0, 0) }) };
+  let visuals = null;
+  try {
+    // the spells' draws join the scene once three has built their pipelines
+    let t0 = performance.now();
+    visuals = createWandVisuals(env);
+    const joined = async () => {
+      for (let i = 0; i < 1200 && !scene.getObjectByName('wand-cores'); i++) await new Promise((r) => setTimeout(r, 50));
+      return !!scene.getObjectByName('wand-beams');
+    };
+    check(out, 'look: the spells\' draws compile (gpu.three.prepare) and join the scene', await joined(), 'not in the scene after 60 s');
+    out.ms.visualsCompile = performance.now() - t0;
+    const { lookOf } = await import('/src/pov/wands/look.js');
+    // a still bolt's core (no streak): its middle is the colour × CORE_GAIN + CORE_WHITE (both 1 at r = 0)
+    visuals.update([{ kind: 'bolt', position: v(-3, 1.5, 0), effect: 'spark', radius: 1 }], 1 / 60);
+    let img = await frame();
+    const rgb = lookOf('spark').rgb, want = rgb.map((c) => c * 3.2 + 6);
+    const got = peak(img, v(-3, 1.5, 0));
+    check(out, 'look: a still core\'s middle is colour × CORE_GAIN + CORE_WHITE', close(got, want, 0.15) && got.every((c, k) => c <= want[k] * 1.001 + 2e-3), `${fmt(got)} want ${fmt(want)}`);
+    check(out, 'look: nothing lit far from the core', at(img, pixel(v(3, -1.5, 0))).every((c) => c === 0) && finite(img), fmt(at(img, pixel(v(3, -1.5, 0)))));
+    // a moving bolt streaks along its velocity: its tail lit behind it, nothing ahead past its halo
+    visuals.update([{ kind: 'bolt', position: v(0, 0, 0), effect: 'spark', radius: 1, velocity: v(60, 0, 0) }], 1 / 60);
+    img = await frame();
+    const tail = peak(img, v(-0.8, 0, 0), 0), ahead = at(img, pixel(v(1.6, 0, 0)));
+    check(out, 'look: a moving core streaks behind it (STREAK_S of travel)', tail[0] + tail[1] + tail[2] > 0.5 && ahead.every((c) => c === 0), `tail ${fmt(tail)} ahead ${fmt(ahead)}`);
+    // every shell style lights its sphere's place and nothing far from it
+    for (const [effect, style] of [['spark', 'glow'], ['attract', 'pull'], ['repel', 'push'], ['erase', 'void'], ['emit', 'cloud']]) {
+      visuals.update([{ kind: 'field', position: v(0, 0, 0), effect, radius: 2.5, age: 1, left: 1 }], 1 / 60);
+      img = await frame();
+      let lit = 0;
+      const [cx, cy] = pixel(v(0, 0, 0)), rpx = Math.abs(pixel(v(2.5, 0, 0))[0] - cx);
+      for (let y = cy - rpx; y <= cy + rpx; y++) for (let x = cx - rpx; x <= cx + rpx; x++) { const c = at(img, [x, y]); if (c[0] + c[1] + c[2] > 0.01) lit++; }
+      const far = at(img, pixel(v(6, 3.5, 0)));
+      check(out, `look: a ${style} shell lights its sphere`, lit > rpx * rpx / 2 && far.every((c) => c === 0) && finite(img), `${lit} px lit of ${(2 * rpx + 1) ** 2}, far ${fmt(far)}`);
+    }
+    // a blast's shock shell and flash, and a beam from the wand's tip
+    visuals.clear();
+    visuals.pulse(v(0, 0, 0), 'pressure', 2);
+    visuals.update([], 0.05);
+    img = await frame();
+    check(out, 'look: a blast lights a flash and a shock shell', peak(img, v(0, 0, 0)).some((c) => c > 0.5) && finite(img), fmt(peak(img, v(0, 0, 0))));
+    visuals.clear();
+    visuals.pulse(v(4, 0, 0), 'spark', 2, v(-4, 0, 0));
+    visuals.update([], 0.01);
+    img = await frame();
+    const mid = peak(img, v(0, 0, 0), 0), above = at(img, pixel(v(0, 1.5, 0)));
+    check(out, 'look: a beam lights its line and nothing a cell and a half off it', mid.some((c) => c > 1) && above.every((c) => c === 0) && finite(img), `on ${fmt(mid)} off ${fmt(above)}`);
+    visuals.clear();
+    // the gem and its halo
+    const color = [1, 0.5, 0.25];
+    const gem = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5, 1), glowMaterial({ rim: 0.45, white: 1.2, whiteSharp: 6 }));
+    const halo = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5, 3), glowMaterial({ soft: 3, opacity: 0.35 }));
+    for (const m of [gem, halo]) m.material.userData.color.value.setRGB(...color);
+    t0 = performance.now();
+    await Promise.all([gpu.three.prepare(gem), gpu.three.prepare(halo)]);
+    out.ms.glowCompile = performance.now() - t0;
+    scene.add(gem);
+    img = await frame();
+    const gemWant = color.map((c) => c + 1.2), gemGot = peak(img, v(0, 0, 0), 1);
+    check(out, 'look: the gem\'s middle is its colour + its white heat (N·V = 1)', close(gemGot, gemWant, 0.06), `${fmt(gemGot)} want ${fmt(gemWant)}`);
+    gem.removeFromParent();
+    scene.add(halo);
+    GLOW_TONE.raw.value = 1;
+    img = await frame();
+    const srgb = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+    const haloWant = color.map((c) => srgb(Math.min(c * 0.35, 1))), haloRaw = peak(img, v(0, 0, 0), 1);
+    check(out, 'look: the halo\'s middle in a raw view is sRGB(colour × opacity)', close(haloRaw, haloWant, 0.05), `${fmt(haloRaw)} want ${fmt(haloWant)}`);
+    GLOW_TONE.raw.value = 0;
+    img = await frame();
+    const haloAgx = peak(img, v(0, 0, 0), 1);
+    check(out, 'look: the halo tone maps itself (AgX: a display value, not the raw one)', haloAgx.every((c) => c > 0 && c < 1) && haloAgx.some((c, k) => Math.abs(c - haloRaw[k]) > 0.01), `${fmt(haloAgx)} raw ${fmt(haloRaw)}`);
+    halo.removeFromParent();
+    check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
+    return out;
+  } finally {
+    visuals?.dispose();
+    target.dispose();
+  }
 });
 
 // ---------------------------------------------------------------- recipes

@@ -13,15 +13,17 @@
 //             at the atlas texels; its pool's bound
 //   wands     the wands' world: effects, the batch bound, traces, clearance (scripts/check-wand-world.mjs)
 //   recipes   every preset wand on a small world (scripts/check-wand-recipes.mjs)
+//   look      the wands' TSL draws (spells' cores, shells, beams; the gem and halo): compiled through
+//             gpu.three.prepare, drawing what the GLSL drew
 //
-// usage: node tools/pov-gpu-check.mjs [--stage probes,edits,transfer,laser,cells,wands,recipes] [--port N]
+// usage: node tools/pov-gpu-check.mjs [--stage probes,edits,transfer,laser,cells,wands,recipes,look] [--port N]
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
 
-export const ALL = ['probes', 'edits', 'transfer', 'laser', 'cells', 'wands', 'recipes'];
+export const ALL = ['probes', 'edits', 'transfer', 'laser', 'cells', 'wands', 'recipes', 'look'];
 
 /**
  * Runs `stages` of the POV harness page, a browser each; prints every check.
