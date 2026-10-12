@@ -9,7 +9,7 @@
 // many as fit in pov-gpu-check.mjs's BUDGET_MS, then the rest in the next
 // (runStages).
 // By default only the tests that fit a part here run: falls, sandPile, stepUp,
-// wall (two parts, 144 s and 40 s). The others (water, oil, drown, lava,
+// wall (two parts, 143 s and 35 s). The others (water, oil, drown, lava,
 // blast, fire, coupling) keep the 64³ box awake for their whole run (a pool's
 // waves, a blast, a fire), which costs SwiftShader most of a second a step:
 // oil alone took 106 to 168 s, each of the rest alone ran past 4 minutes,

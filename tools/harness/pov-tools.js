@@ -881,7 +881,7 @@ test('stage:meat', async () => {
 // blasts, conservation) on a 64³ world built on the CPU and stepped by hand.
 // Each scene is a list of cases (a ball, a pane, a shot, a keg's range and
 // offset…), the old check's every one; a run takes the requested scenes'
-// cases from `from` until it has spent budgetMs, and says where it stopped
+// cases (the first perScene of each) from `from` until it has spent budgetMs, and says where it stopped
 // (out.next: tools/pov-gpu-check.mjs runStages goes on from there in a
 // browser of its own). Where a case follows a few cells step by step it reads
 // just those (readCell, one flush for all of them); where it follows matter
@@ -890,7 +890,7 @@ test('stage:meat', async () => {
 // Numbers, not pass or fail.
 const SAND_DROP_EVERY = 4;
 const ENGINE_SCENES = ['blastProfile', 'paneLoad', 'slugs', 'keg', 'blast', 'sandDrop', 'debris'];
-test('stage:engine', async ({ scenes: names = ENGINE_SCENES, from = 0, budgetMs = Infinity } = {}) => {
+test('stage:engine', async ({ scenes: names = ENGINE_SCENES, perScene = Infinity, from = 0, budgetMs = Infinity } = {}) => {
   const out = { checks: [], ms: {}, numbers: {} };
   const sim = await make(64);
   const g = sim.g, idx = (x, y, z) => cellTexel(g, x, y, z) * 4;
@@ -1117,7 +1117,7 @@ test('stage:engine', async ({ scenes: names = ENGINE_SCENES, from = 0, budgetMs 
     const bad = names.filter((n) => !scenes[n]);
     if (bad.length) throw new Error(`engine: no scene ${bad.join(', ')} (have: ${Object.keys(scenes).join(', ')})`);
     // the cases from `from` on, until budgetMs is spent
-    const cases = names.flatMap((n) => scenes[n].map(([c, run]) => [n, c, run]));
+    const cases = names.flatMap((n) => scenes[n].slice(0, perScene ?? Infinity).map(([c, run]) => [n, c, run]));
     const start = performance.now();
     let i = from;
     for (; i < cases.length && (i === from || performance.now() - start < budgetMs); i++) {
