@@ -37,10 +37,16 @@ export function createEngine(browser, { base, query = '', errors = [] }) {
       page = await newTestPage(browser, { mode: 'manual', viewport: { width: 320, height: 200 } });
       page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
       page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(`console: ${m.text().slice(0, 300)}`); });
-      await page.goto(`${base}${url}${query ? `${url.includes('?') ? '&' : '?'}${query}` : ''}`);
-      await page.waitForFunction(() => (window.__app?.sim && (!window.__app.win || window.__app.win.loaded)) || document.getElementById('error')?.textContent,
-        null, { polling: 250, timeout: LOAD_TIMEOUT });
-      const failed = await page.evaluate(() => document.getElementById('error')?.textContent || null);
+      const boot = async () => {
+        await page.goto(`${base}${url}${query ? `${url.includes('?') ? '&' : '?'}${query}` : ''}`);
+        await page.waitForFunction(() => (window.__app?.sim && (!window.__app.win || window.__app.win.loaded)) || document.getElementById('error')?.textContent,
+          null, { polling: 250, timeout: LOAD_TIMEOUT });
+        return page.evaluate(() => document.getElementById('error')?.textContent || null);
+      };
+      let failed = await boot();
+      // a server whose dependency cache is cold re-optimizes on the first load, and with HMR off the
+      // page's first import of the app fails: once more, warm
+      if (failed && /Failed to fetch dynamically imported module/.test(failed)) failed = await boot();
       if (failed) throw new Error(`boot: ${failed.slice(0, 300)}`);
       meta = await page.evaluate(async () => {
         const a = window.__app;

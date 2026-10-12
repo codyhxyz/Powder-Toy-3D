@@ -30,5 +30,5 @@
 //   flight      R4 particles: ballistic under g with the row's quadratic drag
 //               (terminal speed vt), so a throw is held to the law v2 declares
 export function createEngine() {
-  throw new Error('engine v2: not built yet (docs/v2.md P2 writes tools/outcomes/engine-v2.js; its contract is in this file and ./engine.js)');
+  throw new Error('not built yet (docs/v2.md P2 writes tools/outcomes/engine-v2.js; its contract is in this file and ./engine.js)');
 }

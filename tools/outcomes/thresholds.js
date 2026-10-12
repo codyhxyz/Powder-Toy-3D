@@ -14,8 +14,10 @@ export const CELL_M = 0.3;   // docs/v2.md 2.1: the cell stays 0.30 m
 // One tolerance for every resting liquid surface: 1 cm. docs/v2.md 4.4 asks a
 // U-tube to equalise "within one quantum"; the unit brief reads that as 1 cm
 // (Minecraft's flowing water steps by 1/8 block, 3.75 cm at this cell size: the
-// bench asks a little better than a block game shows). lean's U-tube rests
-// 2.1 cm apart (12.35 vs 12.28 cells), so the prototype misses this bar as tuned.
+// bench asks a little better than a block game shows). The prototype sits on
+// this bar: its own U-tube rests 2.1 cm apart (12.35 vs 12.28 cells), the
+// bench's half-size one 0.99 cm (its dead band in compressed cells grows with
+// depth: 0.4 cm with the left arm filled to 11, 1.3 cm to 15).
 export const LEVEL_CM = 1;
 
 // A 2-D footprint is round when its reach along the diagonals is within 15 %
@@ -35,7 +37,7 @@ export const OUTCOMES = {
   },
   partial: {
     phase: 'P2',
-    // lean: flat to 0.02 cell, idle at 4.3 s (a 24×24 pool; the bench's is 14×14)
+    // lean: flat to 0.02 cell, idle at 4.3 s on its 24×24 pool; 0.16 cm and 4.1 s on the bench's 14×14
     seconds: 8,
     levelCm: LEVEL_CM,
   },
@@ -105,9 +107,9 @@ export const OUTCOMES = {
   // ---- fire (docs/v2.md 5.5 R8) ----
   flameWood: {
     phase: 'P2',
-    // "Two 1,000 °C flames now light a wooden block within a second or two" (R8). TPT's touchstone: WOOD's
-    // Flammable 20 is a 20/1000 chance a frame per touching flame at 60 fps (Simulation.cpp), so ~0.8 s
-    // for one flame, ~0.4 s for two
+    // "Two 1,000 °C flames now light a wooden block within a second or two" (R8). TPT's touchstone: its
+    // FIRE update lights a neighbour with chance Flammable/1000 a frame, and WOOD's Flammable is 20: 2 % a
+    // frame per touching flame at 60 fps, ~0.8 s for one flame, ~0.4 s for two
     seconds: 2,
   },
   // ---- blasts (docs/v2.md 5.5 R10, R12) ----
