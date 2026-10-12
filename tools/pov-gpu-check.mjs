@@ -25,51 +25,63 @@ import { openHarness } from './harness/open.mjs';
 
 export const ALL = ['probes', 'edits', 'transfer', 'laser', 'cells', 'wands', 'recipes', 'look'];
 
+export const PAGE = '/tools/harness/pov-check.html';
+// tools/harness/pov-tools.*: the tools', the body's and the engine's checks (pov-tools-a/b, flask-check,
+// pov-player-check, pov-engine-check run its stages)
+export const TOOLS_PAGE = '/tools/harness/pov-tools.html';
+
 /**
- * Runs `stages` of the POV harness page, a browser each; prints every check.
- * @param {string[]} stages
+ * Runs `stages` of a POV harness page, a browser each; prints every check
+ * (and a stage's numbers, when it reports some).
+ * @param {(string | [string, object])[]} stages a stage's name, or [name, the argument its test takes]
+ * @param {{ page?: string }} [opts]
  * @returns {Promise<number>} failures
  */
-export async function runStages(stages) {
+export async function runStages(stages, { page: path = PAGE } = {}) {
   const vite = await startVite({ harness: true });
   let failures = 0, printedGpu = false;
   try {
-    for (const stage of stages) {
+    for (const entry of stages) {
+      const [stage, arg] = Array.isArray(entry) ? entry : [entry, undefined];
+      const label = arg ? `${stage} ${JSON.stringify(arg)}` : stage;
       const browser = await launchBrowser();
       const errors = [];
       const t0 = Date.now();
       try {
-        const page = await openHarness(browser, vite, '/tools/harness/pov-check.html', { errors });
+        const page = await openHarness(browser, vite, path, { errors });
+        // a stage's progress lines ('· …', tools/harness/pov-tools.js) as they come
+        page.on('console', (m) => { if (m.type() === 'log' && m.text().startsWith('· ')) console.log(`  ${m.text()}`); });
         if (!printedGpu) {
           const info = await gpuInfo(page);
           console.log(`gpu: ${info.vendor} ${info.architecture}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}`);
           printedGpu = true;
         }
-        const r = await page.evaluate((s) => window.__harness.run(`stage:${s}`), stage);
-        console.log(`\n${stage} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+        const r = await page.evaluate(([s, a]) => window.__harness.run(`stage:${s}`, a), [stage, arg]);
+        console.log(`\n${label} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
         for (const c of r.checks) {
           if (!c.ok) failures++;
           console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}${c.ok || !c.detail ? '' : `\n     ${c.detail}`}`);
         }
+        if (r.numbers && Object.keys(r.numbers).length) console.log(JSON.stringify(r.numbers, null, 1));
         if (r.ms && Object.keys(r.ms).length) console.log(`     ms: ${JSON.stringify(r.ms, (k, v) => (typeof v === 'number' ? Math.round(v) : v))}`);
         const logs = await page.evaluate(() => window.__harness.log.filter((l) => /pov kernels/.test(l)));
         if (logs.length) console.log(`     ${logs.join('; ')}`);
       } catch (e) {
         failures++;
-        console.log(`\n${stage}\nFAIL ${e.message.split('\n')[0]}`);
+        console.log(`\n${label}\nFAIL ${e.message.split('\n')[0]}`);
       } finally {
         await browser.close();
       }
       const bad = errors.filter((e) => !/Failed to load resource/.test(e));
       if (bad.length) {
         failures++;
-        console.log(`FAIL page errors in ${stage}: ${bad.slice(0, 3).join(' | ')}`);
+        console.log(`FAIL page errors in ${label}: ${bad.slice(0, 3).join(' | ')}`);
       }
     }
   } finally {
     await vite.close();
   }
-  console.log(failures ? `\n${failures} failure(s)` : `\n${stages.join(', ')}: OK`);
+  console.log(failures ? `\n${failures} failure(s)` : `\n${stages.map((e) => (Array.isArray(e) ? e[0] : e)).join(', ')}: OK`);
   return failures;
 }
 
