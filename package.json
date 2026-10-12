@@ -33,7 +33,6 @@
     "ai-sdk-ollama": "^4.4.0",
     "fengari": "0.1.5",
     "three": "^0.186.1",
-    "three.quarks": "^0.17.1",
     "yuka": "^0.7.8",
     "zod": "^4.6.5",
     "zzfx": "^1.4.0"

@@ -1,8 +1,7 @@
-import * as THREE from 'three';
-import {
-  BatchedRenderer, ParticleSystem, RenderMode, ConstantValue, ConstantColor, Vector4, Vector3 as QVector3,
-  PointEmitter, Gradient, ColorOverLife, SizeOverLife, PiecewiseBezier, Bezier,
-} from 'three.quarks';
+import * as THREE from 'three/webgpu';
+import { uniform, vec3, float, abs, dot, normalize, pow, sin, positionView, positionWorld, normalView } from 'three/tsl';
+import { createBillboards, FADE } from '../gfx/billboards.js';
+import { prepareMesh } from '../gfx/meshLight.js';
 import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
 import { JET_NOZZLES } from './figure.js';
@@ -10,14 +9,15 @@ import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
 
-// POV effects, with three.quarks: muzzle flash (and a short light), sparks,
-// dust and chips, splash mist and tracers. Cosmetic only: the real debris,
-// splashes and heat are sim cells the engine makes itself, so everything here
-// is small, short and pooled. One BatchedRenderer in the main scene, one
-// particle system per effect (one draw call each), all created on the first
-// drop-in. Each system never emits on its own; bursts are spawned by hand at
-// the event's point through a behaviour (Spawner) that sets each new
-// particle's position, velocity, size, colour and life in world space.
+// POV effects: muzzle flash (and a short light), sparks, dust and chips,
+// splash mist and tracers. Cosmetic only: the real debris, splashes and heat
+// are sim cells the engine makes itself, so everything here is small, short
+// and pooled. The particles are gfx/billboards.js's analytic pools (three.quarks
+// had no WebGPU path, docs/webgpu.md F8): one pool, one draw, per sprite,
+// blending and mode, as quarks batched them, each effect capped to its own
+// share of it. Bursts are spawned by hand at the event's point: each new
+// particle's position, velocity, size, colour, life, gravity and drag in
+// world space, its whole flight then worked out on the GPU.
 //
 // Effect constants are in grid cells, seconds and linear HDR radiance (the
 // scene renders to an HDR target; above about 1.6 blooms). Positions in
@@ -284,160 +284,62 @@ const WAND_TELEPORT_MAX = 90;           // ...at most this many
 const WAND_TELEPORT_LIFE = [0.25, 0.5]; // s
 const WAND_TELEPORT_FLASH = 3;          // cells across, the arrival flash
 
-// ---- textures
-const TEX_SIZE = 64;                   // px square
-const DOT_FALLOFF = 2;                  // alpha = (1 − r²)^this
-const FLASH_SPIKES = 6;                 // rays in the flash texture
-const FLASH_SPIKE_SHARP = 6;            // higher = thinner rays
-const FLASH_CORE = 0.35;                // radius share of the flash's round core
-
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 const randIn = ([lo, hi]) => rand(lo, hi);
 const TAU = 2 * Math.PI;
 
-function makeTexture(alphaAt) {
-  const data = new Uint8Array(TEX_SIZE * TEX_SIZE * 4);
-  for (let y = 0; y < TEX_SIZE; y++) {
-    for (let x = 0; x < TEX_SIZE; x++) {
-      const u = (x + 0.5) / TEX_SIZE * 2 - 1, v = (y + 0.5) / TEX_SIZE * 2 - 1;
-      const a = Math.min(1, Math.max(0, alphaAt(Math.hypot(u, v), Math.atan2(v, u))));
-      const i = (y * TEX_SIZE + x) * 4;
-      data[i] = data[i + 1] = data[i + 2] = 255;
-      data[i + 3] = Math.round(a * 255);
-    }
-  }
-  const t = new THREE.DataTexture(data, TEX_SIZE, TEX_SIZE);
-  t.magFilter = t.minFilter = THREE.LinearFilter;
-  t.needsUpdate = true;
-  return t;
-}
-const dotAlpha = (r) => (r >= 1 ? 0 : (1 - r * r) ** DOT_FALLOFF);
-const flashAlpha = (r, th) => {
-  if (r >= 1) return 0;
-  const core = dotAlpha(r / FLASH_CORE);
-  const ray = Math.abs(Math.cos(th * FLASH_SPIKES / 2)) ** FLASH_SPIKE_SHARP * (1 - r) ** 2;
-  return core + ray + dotAlpha(r) * 0.25;
-};
-
-// A behaviour that hands each new particle to `init` (set per burst), then
-// moves it with its own gravity and drag (p.gravity cells/s², scaled to world
-// units; p.drag 1/s), which init sets.
-class Spawner {
-  constructor(getScale) {
-    this.type = 'PovSpawner';
-    this.init = null;
-    this.getScale = getScale;
-  }
-  initialize(p) { this.init?.(p); }
-  update(p, dt) {
-    if (p.gravity) p.velocity.y -= p.gravity * this.getScale() * dt;
-    if (p.drag) p.velocity.multiplyScalar(Math.exp(-p.drag * dt));
-  }
-  frameUpdate() {}
-  reset() {}
-  toJSON() { return { type: this.type }; }
-  clone() { return new Spawner(this.getScale); }
-}
-
-const FADE_OUT = () => new ColorOverLife(new Gradient([[new QVector3(1, 1, 1), 0], [new QVector3(1, 1, 1), 1]], [[1, 0], [0, 1]]));
-// fast in, eased out: for the flash and tracers, which should vanish, not dim
-const FADE_SHARP = () => new ColorOverLife(new Gradient([[new QVector3(1, 1, 1), 0], [new QVector3(1, 1, 1), 1]], [[1, 0], [0.6, 0.4], [0, 1]]));
-const GROW = (k) => new SizeOverLife(new PiecewiseBezier([[new Bezier(1, 1 + (k - 1) * 0.6, 1 + (k - 1) * 0.9, k), 0]]));
+// Particles grow (from each one's own start size) by these factors over their
+// life; fade: FADE.OUT dims them linearly, FADE.SHARP (the flash, tracers,
+// the jet) keeps them bright, then they vanish rather than dim.
+const BEAM_POOL = 4;                    // laser beams alive at once (each lingers BEAM_LINGER): the oldest is reused
 
 // env = { scene, camera, getVolume, getScale, isActive: () => bool }
 export function createVfx(env) {
   const { scene, camera } = env;
-  const batch = new BatchedRenderer();
+  // the pools: one draw each (gfx/billboards.js), sized for the effects they hold
+  const batch = new THREE.Group();
   batch.name = 'pov-vfx';
-  scene.add(batch);
-  const emitters = new THREE.Group();   // emitters stay at the origin; bursts are placed by Spawner
-  emitters.name = 'pov-vfx-emitters';
-  scene.add(emitters);
-
-  const dot = makeTexture(dotAlpha);
-  const star = makeTexture(flashAlpha);
-  const additive = (map) => new THREE.MeshBasicMaterial({ map, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  const normal = (map) => new THREE.MeshBasicMaterial({ map, transparent: true, depthWrite: false, blending: THREE.NormalBlending });
-  const materials = [additive(star), additive(dot), normal(dot)];
-  const [starAdd, dotAdd, dotNormal] = materials;
-
-  const scaleNow = () => env.getScale();
+  const pool = (name, effects, opts) => createBillboards({ name, capacity: effects.reduce((n, [, max]) => n + max, 0), ...opts });
+  const LAYOUT = {
+    starAdd: [[['flash', FLASH_MAX]], { texture: 'star', blending: 'additive' }],
+    streakAdd: [[['spark', SPARK_MAX], ['tracer', TRACER_MAX]], { texture: 'dot', blending: 'additive', stretched: true }],
+    dotNormal: [[['debris', DEBRIS_MAX], ['chip', CHIP_MAX], ['mist', MIST_MAX], ['jetSmoke', JET_SMOKE_MAX]], { texture: 'dot', blending: 'normal' }],
+    dotAdd: [[['jet', JET_MAX], ['flame', FLAME_MAX], ['ember', EMBER_MAX], ['mote', MOTE_MAX], ['wandTrail', WAND_TRAIL_MAX]], { texture: 'dot', blending: 'additive' }],
+  };
+  // how each effect's particles age: dust and mist puffs grow (from each one's own start size); chips don't
+  const LOOK = {
+    flash: { fade: FADE.SHARP }, tracer: { fade: FADE.SHARP }, jet: { fade: FADE.SHARP },
+    debris: { grow: DUST_GROW }, mist: { grow: MIST_GROW }, jetSmoke: { grow: JET_SMOKE_GROW }, flame: { grow: FLAME_GROW },
+  };
+  const pools = {};
   const fx = {};
-  function system(name, { max, material, renderMode = RenderMode.BillBoard, behaviors = [] }) {
-    const spawner = new Spawner(scaleNow);
-    const sys = new ParticleSystem({
-      looping: true, duration: 1, worldSpace: true,
-      emissionOverTime: new ConstantValue(0),
-      startLife: new ConstantValue(1), startSpeed: new ConstantValue(0), startSize: new ConstantValue(1),
-      startColor: new ConstantColor(new Vector4(1, 1, 1, 1)),
-      shape: new PointEmitter(),
-      material, renderMode,
-      rendererEmitterSettings: renderMode === RenderMode.StretchedBillBoard ? { speedFactor: 1, lengthFactor: 0 } : undefined,
-      behaviors: [spawner, ...behaviors],
-    });
-    batch.addSystem(sys);
-    emitters.add(sys.emitter);
-    fx[name] = { sys, spawner, max };
-    return fx[name];
+  for (const [name, [effects, opts]] of Object.entries(LAYOUT)) {
+    const pl = pools[name] = pool(`pov-vfx-${name}`, effects, opts);
+    batch.add(pl.mesh);
+    for (const [key, max] of effects) fx[key] = { name: key, pool: pl, max, fade: LOOK[key]?.fade ?? FADE.OUT, grow: LOOK[key]?.grow ?? 1, speedFactor: 0, stretched: !!opts.stretched };
   }
-  system('flash', { max: FLASH_MAX, material: starAdd, behaviors: [FADE_SHARP()] });
-  system('spark', { max: SPARK_MAX, material: dotAdd, renderMode: RenderMode.StretchedBillBoard, behaviors: [FADE_OUT()] });
-  system('debris', { max: DEBRIS_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
-  system('chip', { max: CHIP_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
-  system('mist', { max: MIST_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
-  system('tracer', { max: TRACER_MAX, material: dotAdd, renderMode: RenderMode.StretchedBillBoard, behaviors: [FADE_SHARP()] });
-  system('jet', { max: JET_MAX, material: dotAdd, behaviors: [FADE_SHARP()] });
-  system('jetSmoke', { max: JET_SMOKE_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
-  system('flame', { max: FLAME_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
-  system('ember', { max: EMBER_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
-  system('mote', { max: MOTE_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
-  system('wandTrail', { max: WAND_TRAIL_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
-  // dust and mist puffs grow (from each particle's own start size); chips don't.
-  // Systems with the same material and mode share one batch (one draw call).
-  fx.debris.sys.addBehavior(GROW(DUST_GROW));
-  fx.mist.sys.addBehavior(GROW(MIST_GROW));
-  fx.jetSmoke.sys.addBehavior(GROW(JET_SMOKE_GROW));
-  fx.flame.sys.addBehavior(GROW(FLAME_GROW));
+  let disposed = false;
+  const scaleNow = () => env.getScale();
 
   const light = new THREE.PointLight(FLASH_LIGHT_COLOR, 0, 0, 2);
   light.name = 'pov-muzzle-light';
   scene.add(light);   // always in the scene (at 0 when off): adding and removing lights recompiles lit materials
   let lightT = 0;
-  // New particles are born between renders but aged by the next frame's dt
-  // before they are first drawn; they start that much younger than zero, so
-  // even a flash shorter than a slow frame is seen once at full strength.
-  let lastDt = 0;
+
+  let lastDt = 0;   // the last frame's step (the aim's motes)
 
   // ---- spawning
-  const burstState = {
-    isBursting: false, burstParticleIndex: 0, burstParticleCount: 0, burstIndex: 0,
-    burstWaveIndex: 0, time: 0, waitEmiting: 0, travelDistance: 0,
-  };
-  const IDENTITY = new THREE.Matrix4();
+  let cur = null;   // the effect whose particles are being set (setP)
   function burst(f, n, init) {
-    n = Math.min(Math.round(n), f.max - f.sys.particleNum);
-    if (n <= 0) return 0;
-    f.spawner.init = init;
-    burstState.waitEmiting = n;
-    burstState.time = 0;
-    burstState.burstIndex = 0;
-    f.sys.emit(0, burstState, IDENTITY);
-    f.spawner.init = null;
-    return n;
+    cur = f;
+    return f.pool.burst(n, init, { tag: f.name, max: f.max });
   }
-  // set a new particle: world position, velocity (world units/s), size (world), colour, life (s)
+  // set a new particle: world position, velocity (world units/s), size (world), colour, life (s),
+  // gravity (cells/s², down) and drag (1/s); a stretched one streaks speedFactor × size seconds of travel
   function setP(p, pos, vel, size, rgb, alpha, life, gravity = 0, drag = 0) {
-    p.position.set(pos.x, pos.y, pos.z);
-    p.velocity.set(vel.x, vel.y, vel.z);
-    p.startSize.set(size, size, size);
-    p.size.copy(p.startSize);
-    p.startColor.set(rgb[0], rgb[1], rgb[2], alpha);
-    p.color.copy(p.startColor);
-    p.life = life;
-    p.age = -lastDt;
-    p.rotation = Math.random() * TAU;
-    p.gravity = gravity;
-    p.drag = drag;
+    p.set(pos, vel, size, rgb, alpha, life, {
+      gravity: gravity * scaleNow(), drag, grow: cur.grow, fade: cur.fade, stretch: cur.stretched ? cur.speedFactor * size : 0,
+    });
   }
 
   const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
@@ -462,7 +364,7 @@ export function createVfx(env) {
     burst(fx.flash, 1, (p) => setP(p, vV.copy(at).addScaledVector(dir, FLASH_FORWARD * s), vT.set(0, 0, 0),
       FLASH_SIZE * s, FLASH_COLOR, 1, FLASH_LIFE));
     burst(fx.flash, 1, (p) => setP(p, at, vT.set(0, 0, 0), FLASH_CORE_SIZE * s, FLASH_CORE_COLOR, 1, FLASH_LIFE));
-    fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+    fx.spark.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
     burst(fx.spark, FLASH_EMBERS, (p) => {
       vV.randomDirection().multiplyScalar(FLASH_EMBER_SPREAD).add(dir).multiplyScalar(randIn(FLASH_EMBER_SPEED) * s);
       setP(p, at, vV, SPARK_WIDTH * s, SPARK_COLOR, 1, randIn(SPARK_LIFE) * 0.5, SPARK_GRAVITY, SPARK_DRAG);
@@ -479,7 +381,7 @@ export function createVfx(env) {
 
   function sparks(at, n, normalDir, rgb = SPARK_COLOR) {
     const s = env.getScale();
-    fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+    fx.spark.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
     burst(fx.spark, n, (p) => {
       around(normalDir, SPARK_SPREAD, vV).multiplyScalar(randIn(SPARK_SPEED) * s);
       setP(p, at, vV, SPARK_WIDTH * s, rgb, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
@@ -533,10 +435,10 @@ export function createVfx(env) {
     if (cq < 0) t0 = -bq + Math.sqrt(bq * bq - cq);
     if (t0 >= len) return;
     const visible = len - t0;
-    fx.tracer.sys.rendererEmitterSettings.speedFactor = 1 / (TRACER_WIDTH * s);
+    fx.tracer.speedFactor = 1 / (TRACER_WIDTH * s);
     burst(fx.tracer, 1, (p) => {
       setP(p, b, vV.copy(vD).multiplyScalar(visible), TRACER_WIDTH * s, TRACER_COLOR, 1, TRACER_LIFE);
-      p.speedModifier = 0;   // the velocity only orients and sizes the streak; it stays where it was drawn
+      p.move = 0;   // the velocity only orients and sizes the streak; it stays where it was drawn
     });
   }
 
@@ -596,7 +498,7 @@ export function createVfx(env) {
   function blast(at) {
     const s = env.getScale();
     burst(fx.flash, 1, (p) => setP(p, at, vT.set(0, 0, 0), BLAST_FLASH_SIZE * s, FLASH_COLOR, 1, BLAST_FLASH_LIFE));
-    fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+    fx.spark.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
     burst(fx.spark, BLAST_EMBERS, (p) => {
       vV.randomDirection().multiplyScalar(randIn(BLAST_EMBER_SPEED) * s);
       setP(p, at, vV, SPARK_WIDTH * s, SPARK_COLOR, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
@@ -628,7 +530,7 @@ export function createVfx(env) {
       setP(p, vP, vT.set(0, 0, 0), randIn(SHIELD_MOTE_SIZE) * s, SHIELD_COLOR, 1, randIn(SHIELD_MOTE_LIFE));
     });
     if (!pop) return;
-    fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+    fx.spark.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
     burst(fx.spark, SHIELD_POP_SPARKS, (p) => {
       vV.randomDirection().multiplyScalar(randIn(SHIELD_POP_SPEED) * s);
       setP(p, vC, vV, SPARK_WIDTH * s, SHIELD_COLOR, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
@@ -650,35 +552,31 @@ export function createVfx(env) {
   // the laser's beam from `from` to `to` (world), the bore `radius` (world units) across
   const beamGeo = new THREE.CylinderGeometry(1, 1, 1, BEAM_SIDES, 1, true).translate(0, 0.5, 0);
   const taperGeo = new THREE.CylinderGeometry(1, BEAM_MUZZLE_SHARE, 1, BEAM_SIDES, 1, true).translate(0, 0.5, 0);   // narrow end at the muzzle
-  const beamMat = (rgb, soft) => new THREE.ShaderMaterial({
-    uniforms: {
-      uColor: { value: new THREE.Vector3(...rgb) }, uBright: { value: 1 }, uSoft: { value: soft },
-      uFrom: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3(0, 1, 0) }, uScale: { value: 1 },
-      uTime: { value: 0 }, uPulse: { value: BEAM_PULSE_DEPTH },
-    },
-    vertexShader: /* glsl */ `
-      varying vec3 vN, vV, vW;
-      void main() {
-        vec4 w = modelMatrix * vec4(position, 1.0);
-        vW = w.xyz;
-        vec4 v = viewMatrix * w;
-        vV = -v.xyz;
-        vN = normalize(mat3(viewMatrix) * mat3(modelMatrix) * normal);
-        gl_Position = projectionMatrix * v;
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform vec3 uColor, uFrom, uDir;
-      uniform float uBright, uSoft, uScale, uTime, uPulse;
-      varying vec3 vN, vV, vW;
-      void main() {
-        float face = abs(dot(normalize(vN), normalize(vV)));   // 1 face-on, 0 at the silhouette
-        float glow = pow(face, uSoft);
-        float along = dot(vW - uFrom, uDir) / uScale;           // cells from the muzzle
-        float pulse = 1.0 + uPulse * sin(6.2831853 * (along - uTime * ${BEAM_PULSE_SPEED.toFixed(1)}) / ${BEAM_PULSE_SPACING.toFixed(1)});
-        gl_FragColor = vec4(uColor * glow * pulse * uBright, 1.0);
-      }`,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-  });
+  // a beam layer's soft-edged glow (TSL): brightest face-on, fading to nothing at its
+  // silhouette, with pulses running down it. Its values are uniform nodes: m.uniforms.
+  const beamMat = (rgb, soft) => {
+    const u = {
+      uColor: uniform(new THREE.Vector3(...rgb)), uBright: uniform(1), uSoft: uniform(soft),
+      uFrom: uniform(new THREE.Vector3()), uDir: uniform(new THREE.Vector3(0, 1, 0)), uScale: uniform(1),
+      uTime: uniform(0), uPulse: uniform(BEAM_PULSE_DEPTH),
+    };
+    const face = abs(dot(normalize(normalView), normalize(positionView.negate())));   // 1 face-on, 0 at the silhouette
+    const glow = pow(face, u.uSoft);
+    const along = dot(positionWorld.sub(u.uFrom), u.uDir).div(u.uScale);            // cells from the muzzle
+    const pulse = float(1).add(u.uPulse.mul(sin(float(6.2831853).mul(along.sub(u.uTime.mul(BEAM_PULSE_SPEED))).div(BEAM_PULSE_SPACING))));
+    const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    m.lights = false;
+    m.colorNode = vec3(u.uColor.mul(glow).mul(pulse).mul(u.uBright));
+    m.opacityNode = float(1);
+    // the WebGL additive blend (non-premultiplied: src·α + dst, colour and alpha)
+    Object.assign(m, {
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneFactor,
+      blendSrcAlpha: THREE.SrcAlphaFactor, blendDstAlpha: THREE.OneFactor,
+    });
+    m.uniforms = u;
+    m.name = 'laser beam';
+    return m;
+  };
   // a beam: one group of tapered-then-full cylinders per layer, every layer's mesh scaled by
   // radius × its share; returned with its materials so the caller can drive them
   const UP = new THREE.Vector3(0, 1, 0);
@@ -712,23 +610,32 @@ export function createVfx(env) {
     const keepWidth = () => { for (const mesh of meshes) mesh.userData.r0 = mesh.scale.x; };
     return { group, mats, lay, width, keepWidth };
   }
-  const beams = [];   // { beam, t, age }
+  // a few beams made once and laid again for each shot (a new beam per shot would be a new
+  // kind of mesh to compile each time): the oldest goes when they are all lingering
+  const beamPool = Array.from({ length: BEAM_POOL }, () => {
+    const beam = beamMesh('pov-laser-beam', BEAM_LAYERS);
+    beam.group.visible = false;
+    batch.add(beam.group);
+    return beam;
+  });
+  const beams = [];   // { beam, t, age }, oldest first
   const vBeamDir = new THREE.Vector3(), vBack = new THREE.Vector3();
   let beamClock = 0;
   function laserBeam(from, to, radius, hit) {
     const s = env.getScale();
-    const beam = beamMesh('pov-laser-beam', BEAM_LAYERS);
-    if (!beam.lay(from, to, radius)) { beam.mats.forEach((m) => m.dispose()); return; }
+    const free = beamPool.find((b) => !beams.some((x) => x.beam === b));
+    const beam = free ?? beams.shift().beam;
+    if (!beam.lay(from, to, radius)) { beam.group.visible = false; return; }
     beam.keepWidth();
     beam.width(BEAM_FLASH_WIDTH);
-    scene.add(beam.group);
+    beam.group.visible = true;
     beams.push({ beam, t: BEAM_LINGER, age: 0 });
     const len = vD.subVectors(to, from).length(), dir = vBeamDir.copy(vD).divideScalar(len);
     // flares at both ends
     burst(fx.flash, 1, (p) => setP(p, from, vT.set(0, 0, 0), BEAM_MUZZLE_FLARE * s, BEAM_FLARE_COLOR, 1, BEAM_IMPACT_LIFE));
     if (hit) {
       burst(fx.flash, 1, (p) => setP(p, to, vT.set(0, 0, 0), BEAM_IMPACT_FLARE * s, BEAM_FLARE_COLOR, 1, BEAM_IMPACT_LIFE));
-      fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+      fx.spark.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
       const back = vBack.copy(dir).negate();
       burst(fx.spark, BEAM_SPARKS, (p) => {
         around(back, SPARK_SPREAD, vV).multiplyScalar(randIn(BEAM_SPARK_SPEED) * s);
@@ -754,7 +661,7 @@ export function createVfx(env) {
     for (let i = beams.length - 1; i >= 0; i--) {
       const b = beams[i];
       b.t -= dt; b.age += dt;
-      if (b.t <= 0) { scene.remove(b.beam.group); b.beam.mats.forEach((m) => m.dispose()); beams.splice(i, 1); continue; }
+      if (b.t <= 0) { b.beam.group.visible = false; beams.splice(i, 1); continue; }
       const k = b.t / BEAM_LINGER;
       const open = Math.min(1, b.age / BEAM_FLASH_S);
       b.beam.width((BEAM_FLASH_WIDTH + (1 - BEAM_FLASH_WIDTH) * open) * Math.pow(k, BEAM_THIN));
@@ -767,7 +674,7 @@ export function createVfx(env) {
   const aimBeam = beamMesh('pov-laser-aim', [{ radius: 1, color: AIM_COLOR, soft: 1 }]);
   aimBeam.group.visible = false;
   aimBeam.mats[0].uniforms.uPulse.value = 0;
-  scene.add(aimBeam.group);
+  batch.add(aimBeam.group);
   let aimT = 0, moteOwed = 0;
   function laserAim(from, to, amount, dt) {
     const s = env.getScale();
@@ -965,6 +872,9 @@ export function createVfx(env) {
   }
   const bodyMiddle = (feet, out) => toWorld(out.copy(feet).setY(feet.y + BODY_HEIGHT / 2), out);
 
+  // the pools and beams join the scene once their pipelines are built (docs/webgpu.md B5)
+  prepareMesh(batch).then(() => { if (!disposed) scene.add(batch); });
+
   // ---- events
   const live = () => env.isActive();
   const offs = [
@@ -1050,7 +960,7 @@ export function createVfx(env) {
 
   const count = () => {
     let n = beams.length + (aimBeam.group.visible ? 1 : 0);
-    for (const k in fx) n += fx[k].sys.particleNum;
+    for (const pl of Object.values(pools)) n += pl.count();
     return n;
   };
 
@@ -1069,7 +979,7 @@ export function createVfx(env) {
     burn(feet, dt) { if (live()) burn(feet, dt); },
     // every POV frame; true while anything is still showing (keep rendering)
     update(dt) {
-      batch.update(dt);
+      for (const pl of Object.values(pools)) pl.update(dt);
       fadeBeams(dt);
       fadeAim(dt);
       lastDt = dt;
@@ -1084,27 +994,25 @@ export function createVfx(env) {
     // particle counts per effect (checks)
     counts() {
       const o = {};
-      for (const k in fx) o[k] = fx[k].sys.particleNum;
+      for (const k in fx) o[k] = fx[k].pool.count(k);
       return o;
     },
     get busy() { return lightT > 0 || count() > 0; },
     setVisible(v) { batch.visible = v; },
     // drop everything in flight (leaving POV)
     clear() {
-      for (const k in fx) { fx[k].sys.particleNum = 0; }
+      for (const pl of Object.values(pools)) pl.clear();
       fadeBeams(Infinity);
       lightT = 0;
       light.intensity = 0;
-      batch.update(0);
     },
     dispose() {
+      disposed = true;
       offs.forEach((f) => f());
-      for (const k in fx) fx[k].sys.dispose();
-      scene.remove(batch, emitters, light);
-      materials.forEach((m) => m.dispose());
-      dot.dispose(); star.dispose();
       fadeBeams(Infinity);
-      scene.remove(aimBeam.group); aimBeam.mats.forEach((m) => m.dispose());
+      for (const pl of Object.values(pools)) pl.dispose();
+      scene.remove(batch, light);
+      for (const b of [...beamPool, aimBeam]) b.mats.forEach((m) => m.dispose());
       beamGeo.dispose(); taperGeo.dispose();
     },
   };
