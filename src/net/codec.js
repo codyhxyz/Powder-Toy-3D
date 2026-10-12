@@ -1,5 +1,5 @@
-import * as THREE from 'three';
-import { prelude, quadVert, stateOutGLSL } from '../shaders/common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, TILE, SUPER, SUPER_TEX, atlasDims } from '../shaders/common.js';
+import { fold } from '../gpu/kernels.js';
 
 // World stream codec. The host packs the state into 4 bytes per cell holding
 // only what guests render, and sends a keyframe or an XOR delta against the
@@ -15,6 +15,13 @@ import { prelude, quadVert, stateOutGLSL } from '../shaders/common.js';
 // Velocity and pressure aren't sent (so a guest's grains are textured in
 // place, without flow), and the per-grain colour seed is re-derived from the
 // cell position on the guest.
+//
+// The bytes are in the state atlas's texel order (sim.js cellTexel: what the
+// WebGL build's RGBA8 target held, texels past the last supertile 0), so the
+// wire format is unchanged and WebGL and WebGPU peers read each other's frames
+// (docs/webgpu.md C2). On the GPU (G4) the pack kernel reads the brick-major
+// slots and writes each cell's word at its texel; unpack uploads the bytes and
+// a kernel writes the current copy with fresh flags, a whole-grid write.
 
 const BYTE_MAX = 255;
 export const TEXEL_BYTES = 4; // RGBA8
@@ -35,62 +42,106 @@ const TEMP_LOG_CODES = BYTE_MAX - TEMP_LINEAR_CODES;
 const SEED_SALT = 0x5eed;
 const SEED_SPAN = 0.999;
 
-const f = (x) => x.toFixed(4); // a JS number as a GLSL float literal
+const f = (x) => x.toFixed(4); // a JS number as a WGSL f32 literal
 
-const codecGLSL = /* glsl */ `
-#define BYTE_MAX ${f(BYTE_MAX)}
-#define TEMP_MIN ${f(TEMP.MIN)}
-#define TEMP_LINEAR_STEP ${f(TEMP.LINEAR_STEP)}
-#define TEMP_LOG_START ${f(TEMP.LOG_START)}
-#define TEMP_MAX ${f(TEMP.MAX)}
-#define TEMP_LINEAR_CODES ${f(TEMP_LINEAR_CODES)}
-#define TEMP_LOG_CODES ${f(TEMP_LOG_CODES)}
-#define SEED_SALT ${SEED_SALT}u
-#define SEED_SPAN ${f(SEED_SPAN)}
+const codecGLSL = /* wgsl */ `
+const BYTE_MAX: f32 = ${f(BYTE_MAX)};
+const TEMP_MIN: f32 = ${f(TEMP.MIN)};
+const TEMP_LINEAR_STEP: f32 = ${f(TEMP.LINEAR_STEP)};
+const TEMP_LOG_START: f32 = ${f(TEMP.LOG_START)};
+const TEMP_MAX: f32 = ${f(TEMP.MAX)};
+const TEMP_LINEAR_CODES: f32 = ${f(TEMP_LINEAR_CODES)};
+const TEMP_LOG_CODES: f32 = ${f(TEMP_LOG_CODES)};
+const SEED_SALT: u32 = ${SEED_SALT}u;
+const SEED_SPAN: f32 = ${f(SEED_SPAN)};
 
-float encodeTemp(float T) {
-  float code = T < TEMP_LOG_START
-    ? (max(T, TEMP_MIN) - TEMP_MIN) / TEMP_LINEAR_STEP
-    : TEMP_LINEAR_CODES + TEMP_LOG_CODES * log(min(T, TEMP_MAX) / TEMP_LOG_START) / log(TEMP_MAX / TEMP_LOG_START);
+fn encodeTemp(T: f32) -> f32 {
+  var code: f32;
+  if (T < TEMP_LOG_START) {
+    code = (max(T, TEMP_MIN) - TEMP_MIN) / TEMP_LINEAR_STEP;
+  } else {
+    code = TEMP_LINEAR_CODES + TEMP_LOG_CODES * log(min(T, TEMP_MAX) / TEMP_LOG_START) / log(TEMP_MAX / TEMP_LOG_START);
+  }
   return clamp(round(code), 0.0, BYTE_MAX);
 }
-float decodeTemp(float code) {
-  return code <= TEMP_LINEAR_CODES
-    ? TEMP_MIN + code * TEMP_LINEAR_STEP
-    : TEMP_LOG_START * pow(TEMP_MAX / TEMP_LOG_START, (code - TEMP_LINEAR_CODES) / TEMP_LOG_CODES);
+fn decodeTemp(code: f32) -> f32 {
+  if (code <= TEMP_LINEAR_CODES) { return TEMP_MIN + code * TEMP_LINEAR_STEP; }
+  return TEMP_LOG_START * pow(TEMP_MAX / TEMP_LOG_START, (code - TEMP_LINEAR_CODES) / TEMP_LOG_CODES);
 }
-bool sendsLife(int id) { return id == E_SMOKE || id == E_FIRE; }
+fn sendsLife(id: i32) -> bool { return id == E_SMOKE || id == E_FIRE; }
 `;
 
-const packFrag = (g) => /* glsl */ `
-${prelude(g)}
+// Cell p's texel in the state atlas (sim.js cellTexel; shaders/passes.js
+// converts the state to and from it the same way): supertile i's square at
+// (i % STW, i / STW), its brick k's tile at (k.x, k.z + SUPER.z·k.y), the
+// cell at (x + BRICK·(y & 1), z + BRICK·(y >> 1)) in the tile.
+const atlasWGSL = (g) => {
+  const at = atlasDims(g);
+  return /* wgsl */ `
+const STW: i32 = ${at.stw};   // supertiles per atlas row
+const ATLAS_W: i32 = ${at.width};
+@group(2) @binding(0) var<storage, ${'${ACCESS}'}> packed: array<u32>;   // a texel's RGBA8, R in the low byte
+fn atlasIndex(p: vec3i) -> u32 {
+  let b = p >> vec3u(2u);
+  let st = b / SUPER_B;
+  let k = b - st * SUPER_B;
+  let i = st.x + STX * (st.z + STZ * st.y);
+  let ly = p.y & 3;
+  let u = (i % STW) * ${SUPER_TEX} + k.x * ${TILE} + (p.x & 3) + ${BRICK} * (ly & 1);
+  let v = (i / STW) * ${SUPER_TEX} + (k.z + ${SUPER.z} * k.y) * ${TILE} + (p.z & 3) + ${BRICK} * (ly >> 1u);
+  return u32(v * ATLAS_W + u);
+}`;
+};
+const slotMain = /* wgsl */ `@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let s = foldThread(wg, nwg, li);
+  if (s >= SLOTS) { return; }`;
+
+// pack: a thread per slot, its cell's word at its texel (the padding texels
+// are never written: the buffer starts zeroed and stays so there)
+const packFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
 ${codecGLSL}
-out vec4 oP;
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { oP = vec4(0.0); return; }   // a texel holding no cell
-  vec4 a = fetchA(p);
-  int id = eid(a);
-  float T = encodeTemp(id == E_EMPTY ? AMBIENT : a.y);
-  float life = sendsLife(id) ? round(clamp(a.z, 0.0, 1.0) * BYTE_MAX) : 0.0;
-  float ct = CONDUCTS[id] ? float(sparkPhase(floor(a.w))) : floor(a.w);
-  oP = vec4(float(id), T, life, clamp(ct, 0.0, BYTE_MAX)) / BYTE_MAX;
+${atlasWGSL(g).replace('${ACCESS}', 'read_write')}
+${slotMain}
+  let a = fetchAs(s);
+  let id = eid(a);
+  var T = a.y;
+  if (id == E_EMPTY) { T = AMBIENT; }
+  var life = 0.0;
+  if (sendsLife(id)) { life = round(clamp(a.z, 0.0, 1.0) * BYTE_MAX); }
+  var ct = floor(a.w);
+  if (CONDUCTS(id)) { ct = f32(sparkPhase(floor(a.w))); }
+  let q = vec4u(vec4f(f32(id), encodeTemp(T), life, clamp(ct, 0.0, BYTE_MAX)));
+  packed[atlasIndex(cellOf(s))] = q.x | (q.y << 8u) | (q.z << 16u) | (q.w << 24u);
 }
 `;
 
-const unpackFrag = (g) => /* glsl */ `
-${prelude(g)}
+// unpack: a thread per slot, the current copy (H.dst) from its texel's word,
+// with fresh flags (velocity and pressure aren't sent: 0)
+const unpackFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RW)}
 ${codecGLSL}
-uniform sampler2D tPacked;   // in the state's atlas layout: texel f holds cell cellFromFrag(f)
-${stateOutGLSL}
-void main() {
-  ivec2 fc = ivec2(gl_FragCoord.xy);
-  vec4 q = round(texelFetch(tPacked, fc, 0) * BYTE_MAX);
-  uint rs = seed3(cellFromFrag(fc), 0u, SEED_SALT);
-  vec4 a = vec4(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(rs) * SEED_SPAN), b = vec4(0.0);
-  writeState(a, b, freshFlags(a, b));
+${atlasWGSL(g).replace('${ACCESS}', 'read')}
+${slotMain}
+  let p = cellOf(s);
+  let w = packed[atlasIndex(p)];
+  let q = vec4f(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u), f32(w >> 24u));
+  var rs = seed3(p, 0u, SEED_SALT);
+  let a = vec4f(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(&rs) * SEED_SPAN);
+  let b = vec4f(0.0);
+  writeStateS(s, a, b, freshFlags(a, b));
 }
 `;
+export { packFrag, unpackFrag };
+const PACK_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
+const UNPACK_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
+const perSlot = (g) => fold(Math.ceil(g.slots / 64));
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = [
+  { name: 'pack', kind: 'compute', code: packFrag, warm: false, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, PACK_LAYOUT], dispatch: perSlot },
+  { name: 'unpack', kind: 'compute', code: unpackFrag, warm: false, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, UNPACK_LAYOUT], dispatch: perSlot },
+];
 
 // decodeTemp, on the CPU: a packed temperature code (byte G) back to °C (the NPCs' world model reads it)
 export function decodeTempCode(code) {
@@ -99,10 +150,6 @@ export function decodeTempCode(code) {
     : TEMP.LOG_START * (TEMP.MAX / TEMP.LOG_START) ** ((code - TEMP_LINEAR_CODES) / TEMP_LOG_CODES);
 }
 
-const passMaterial = (fragmentShader, uniforms) => new THREE.RawShaderMaterial({
-  glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader, uniforms, depthTest: false, depthWrite: false,
-});
-
 const sameGrid = (a, b) => a && b && a.nx === b.nx && a.ny === b.ny && a.nz === b.nz;
 
 // Captures in flight at once. A readback resolves only once the GPU has
@@ -110,60 +157,83 @@ const sameGrid = (a, b) => a && b && a.nx === b.nx && a.ny === b.ny && a.nz === 
 // the GPU is the bottleneck, so captures overlap to keep the frame rate up.
 const PACK_SLOTS = 3;
 
-// Host side: pack the current state on the GPU and read it back without stalling.
-export function createPacker(renderer) {
-  let g = null, mat = null, free = [], generation = 0;
-  function reset(next) {
-    free.forEach((s) => s.target.dispose());
-    mat?.dispose();
-    g = next;
+// Host side: pack the current state on the GPU and read it back without
+// stalling. (Its argument, the WebGL build's renderer, is unused: each
+// simulation brings its own gpu.)
+export function createPacker() {
+  let g = null, gpu = null, kernel = null, layout = null, free = [], generation = 0;
+  function reset(sim) {
+    free.forEach((s) => s.buffer.destroy());
+    g = sim.g;
+    gpu = sim.gpu;
     generation++;
-    mat = passMaterial(packFrag(g), { tA: { value: null } });
-    free = Array.from({ length: PACK_SLOTS }, () => ({
-      target: new THREE.WebGLRenderTarget(g.width, g.height, {
-        depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-      }),
-      bytes: new Uint8Array(g.width * g.height * TEXEL_BYTES),
-    }));
+    layout = gpu.layout('PACK', PACK_LAYOUT);
+    kernel = gpu.kernel({ name: 'pack', code: packFrag(g), layouts: [sim.L.TABLES, sim.L.STATE_RO, layout] });
+    const bytes = g.width * g.height * TEXEL_BYTES;
+    free = Array.from({ length: PACK_SLOTS }, () => {
+      const buffer = gpu.createBuffer({ label: 'pack', size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      return { buffer, group: gpu.bindGroup(layout, [{ binding: 0, resource: { buffer } }], 'pack'), bytes: new Uint8Array(bytes) };
+    });
+  }
+  // records the pack of sim's current copy into a slot and its readback
+  function capture(sim, slot) {
+    const gen = generation, dims = [g.nx, g.ny, g.nz];
+    const release = (back) => {
+      if (back) slot.bytes = back;
+      if (gen === generation) free.push(slot); else slot.buffer.destroy();
+    };
+    kernel.dispatch(gpu.frame, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRO, slot.group], header: sim.header() });
+    return gpu.readback.buffer(slot.buffer, 0, slot.buffer.size, { into: slot.bytes.buffer })
+      .then(() => ({ bytes: slot.bytes, dims, release }), (err) => { release(); throw err; });
   }
   return {
     // Starts a capture of the sim's current state; resolves to { bytes, dims, release }
     // (call release() once done with bytes). Returns null while all slots are busy.
     // bytes may be transferred to a worker: pass what comes back to release(back)
-    // and the slot reads into it next time.
+    // and the slot reads into it next time. The copy is recorded at this call
+    // (docs/webgpu.md B7); only the first capture on a grid, while its kernel
+    // builds, is taken once it is built.
     pack(sim) {
-      if (!sameGrid(g, sim.g)) reset(sim.g);
+      if (!sameGrid(g, sim.g) || gpu !== sim.gpu) reset(sim);
       const slot = free.pop();
       if (!slot) return null;
-      mat.uniforms.tA.value = sim.stateA;
-      sim.run(mat, slot.target);
-      renderer.setRenderTarget(null);
-      const gen = generation, dims = [g.nx, g.ny, g.nz];
-      const release = (back) => {
-        if (back) slot.bytes = back;
-        if (gen === generation) free.push(slot); else slot.target.dispose();
-      };
-      return renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, g.width, g.height, slot.bytes)
-        .then(() => ({ bytes: slot.bytes, dims, release }), (err) => { release(); throw err; });
+      if (kernel.state === 'ready') return capture(sim, slot);
+      const gen = generation;
+      return kernel.ready.then(() => {
+        if (gen !== generation || sim.disposed) { slot.buffer.destroy(); throw new Error('codec: the grid changed while the pack kernel built'); }
+        return capture(sim, slot);
+      });
     },
   };
 }
 
-// Guest side: upload packed bytes and expand them into the sim's state.
+// Guest side: upload packed bytes and expand them into the sim's state (its
+// current copy, fresh flags, a whole-grid write: sim.noteWrite). Returns a
+// promise of the write being recorded: at once, or, while the kernel for a
+// new grid builds, once it is (later unpacks wait behind it, in order).
 export function createUnpacker() {
-  let g = null, tex = null, mat = null;
+  let g = null, gpu = null, kernel = null, buffer = null, group = null, pending = Promise.resolve();
+  const write = (sim) => {
+    kernel.dispatch(gpu.frame, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRW, group], header: sim.header() });
+    sim.noteWrite();
+    sim.stillFlow();   // no velocity is sent, so a guest's grains are textured in place
+  };
   return {
     unpack(sim, bytes) {
-      if (!sameGrid(g, sim.g)) {
-        tex?.dispose(); mat?.dispose();
+      if (!sameGrid(g, sim.g) || gpu !== sim.gpu) {
+        buffer?.destroy();
         g = sim.g;
-        tex = new THREE.DataTexture(bytes, g.width, g.height, THREE.RGBAFormat, THREE.UnsignedByteType);
-        mat = passMaterial(unpackFrag(g), { tPacked: { value: tex } });
+        gpu = sim.gpu;
+        const layout = gpu.layout('UNPACK', UNPACK_LAYOUT);
+        kernel = gpu.kernel({ name: 'unpack', code: unpackFrag(g), layouts: [sim.L.TABLES, sim.L.STATE_RW, layout] });
+        buffer = gpu.createBuffer({ label: 'unpack', size: g.width * g.height * TEXEL_BYTES, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        group = gpu.bindGroup(layout, [{ binding: 0, resource: { buffer } }], 'unpack');
       }
-      tex.image.data = bytes;
-      tex.needsUpdate = true;
-      sim.run(mat, sim.targets[sim.cur]);
-      sim.stillFlow();   // no velocity is sent, so a guest's grains are textured in place
+      gpu.write(buffer, 0, bytes.subarray(0, buffer.size));
+      if (kernel.state === 'ready') { write(sim); return Promise.resolve(); }
+      const k = kernel;
+      pending = pending.then(() => k.ready).then(() => { if (k === kernel && !sim.disposed && !gpu.failure) write(sim); });
+      return pending;
     },
   };
 }

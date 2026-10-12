@@ -1,8 +1,8 @@
-// Multiplayer (src/net; docs/webgpu.md G4, U12): a host streams its box to
-// guests through the codec's pack kernel, a guest paints through the host.
-// Moved here from app.js as it was (WebGL): U12 ports it. Until then the app
-// plays alone: `offline` stands in for the session, so app.js's guards say
-// yes, no one is a guest, and nothing joins.
+// Multiplayer (src/net; docs/webgpu.md G4): a host streams its box to guests
+// through the codec's pack kernel (read back a few frames later, never a
+// stall), a guest unpacks it into its state and paints through the host.
+// `offline` stands in for the session until boot (and wherever the wire isn't
+// on): app.js's guards say yes, no one is a guest, and nothing joins.
 import { createMultiplayer } from '../net/multiplayer.js';
 
 /** The session while multiplayer isn't wired: alone, always the host. */
@@ -14,11 +14,11 @@ export const offline = Object.freeze({
 
 const mp = {
   name: 'mp',
-  ready: false,
+  ready: true,
 
   boot(app) {
     app.mp = createMultiplayer({
-      renderer: app.renderer, scene: app.scene, camera: app.camera, hud: app.hud, getSim: () => app.sim, getVolume: () => app.volume,
+      gpu: app.gpu, scene: app.scene, camera: app.camera, hud: app.hud, getSim: () => app.sim, getVolume: () => app.volume,
       setGrid: app.setGrid, inWorld: () => !!app.win, score: () => app.scoreboard.mine,
     });
   },
