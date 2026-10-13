@@ -1,9 +1,30 @@
-// CPU-only; no browser or simulation mutation. node tools/check-presentation.mjs
+// The rolling log's presentation layer, CPU only (no browser, no GPU, no
+// simulation): node tools/check-presentation.mjs
+//
+// The JS mapping and its ray algebra (gfx/presentationMath.js: the twin the
+// app's picking and planes use), the mesh subdivision's edge bound, the
+// gamemodes' resolution (maps.js), and the WebGPU port's equivalents of
+// main's GLSL: the TSL vertex bend that replaces installPresentation's
+// onBeforeCompile (chained onto a material's own vertex stage, idempotent,
+// restored), the presentation's lifecycle (install's and prepare's installs,
+// the meshes whose program changed, overlays, opt-outs and the guard's parked
+// meshes left alone, neutral, select/dispose restoring), and, statically,
+// that the WGSL passes carry the bend: the volume's curved variants walk the
+// displayed rays (shaders/gfx/presentation.js), its flat ones don't, the far
+// view's curved variant marches the parabola, the pick and TAA's reprojection
+// take it, and no GLSL is left in the presentation's modules.
+// tools/presentation-check.mjs runs the GPU side.
 import assert from 'node:assert/strict';
-import * as THREE from 'three';
-import { IDENTITY, ROLLING_LOG, effectParameters, warp, warpTangent, inverseRay, rayPoint, roots, planeRoots, boxSpans, nextExit, chordLimit, rayCell, rayEntryAxis, arcLength } from '../src/gfx/presentationMath.js';
+import * as THREE from 'three/webgpu';
+import { vec4 } from 'three/tsl';
+import { IDENTITY, ROLLING_LOG, effectParameters, warp, warpTangent, inverseRay, rayPoint, roots, planeRoots, boxSpans, nextExit, chordLimit, rayCell, rayEntryAxis, arcLength, presentationWGSL, presentationGLSL } from '../src/gfx/presentationMath.js';
 import { createPresentation, installPresentation } from '../src/gfx/presentation.js';
 import { MESH_EDGE_CELLS, subdividePresentation } from '../src/gfx/presentationGeometry.js';
+import { presentationNearWGSL, presentationNearGLSL } from '../src/shaders/gfx/presentation.js';
+import { volumeFrag, pickFrag, VOLUME_VIEWS } from '../src/shaders/render.js';
+import { farFrag, farDetailDepthFrag, farLayout, WORLD_SIZE } from '../src/shaders/far.js';
+import { taaWGSL } from '../src/gfx/post.js';
+import { gridLayout } from '../src/sim.js';
 import { mapByKey, mapsFor, resolveMode, modeByKey } from '../src/maps.js';
 const close = (a,b,eps=1e-8) => {
   assert.equal(a.length,b.length);
@@ -74,25 +95,36 @@ for (let j=0;j<100;j++) {
   }
 }
 
-let calls=0, wakes=0;
-const mat=new THREE.MeshBasicMaterial();
-const original=function(shader) { calls++; shader.vertexShader += '\n// chained customization'; };
-mat.onBeforeCompile=original;
-mat.customProgramCacheKey=()=>'custom-key';
+// ---- the TSL bend (installPresentation): chained onto the material's own vertex stage ----
+// the nodes a node reaches (its inputs, theirs, …)
+const reach = (node) => {
+  const seen = new Set(), stack = [node];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    for (const c of n.getChildren?.() ?? []) stack.push(c);
+  }
+  return seen;
+};
+let wakes=0;
 const p=createPresentation(()=>wakes++);
+const mat=new THREE.MeshBasicNodeMaterial(), own=vec4(1,2,3,1);
+mat.vertexNode=own;   // a material's own vertex stage (a billboard's, a bird's)
+mat.customProgramCacheKey=()=>'custom-key';
 const undo=installPresentation(mat,p.uniforms), key=mat.customProgramCacheKey();
-assert.equal(installPresentation(mat,p.uniforms),undo);
+assert.notEqual(mat.vertexNode,own);
+assert.equal(installPresentation(mat,p.uniforms),undo);   // idempotent
 assert.equal(mat.customProgramCacheKey(),key);
-assert(key.includes('custom-key'));
-const shader={vertexShader:'void main() { gl_Position=vec4(1.0); }',uniforms:{}};
-mat.onBeforeCompile(shader);
-assert.equal(calls,1);
-assert.equal((shader.vertexShader.match(/void main\(/g)||[]).length,1);
-assert(shader.vertexShader.includes('presentationOriginalMain();'));
-assert(shader.vertexShader.includes('// chained customization'));
-assert.equal(shader.uniforms.uWarpK,p.uniforms.uWarpK);
-undo(); assert.equal(mat.onBeforeCompile,original); assert.equal(mat.customProgramCacheKey(),'custom-key');
+assert(key.includes('custom-key') && key.includes('presentation'));
+const graph=reach(mat.vertexNode);
+assert(graph.has(own), 'the bend reads the material\'s own clip position');
+for (const u of Object.values(p.uniforms)) assert(graph.has(u), 'the bend reads the presentation\'s uniforms');
+undo(); assert.equal(mat.vertexNode,own); assert.equal(mat.customProgramCacheKey(),'custom-key');
+const plain=new THREE.MeshBasicNodeMaterial();   // no vertex stage of its own: three's modelViewProjection is bent
+installPresentation(plain,p.uniforms)(); assert.equal(plain.vertexNode,null);
 
+// ---- the presentation's lifecycle ----
 const cove=mapByKey('willowCove');
 assert.equal(resolveMode(cove,'animalCrossing').effect,'rollingLog');
 assert(!modeByKey('animalCrossing').team);
@@ -107,19 +139,104 @@ p.update(camera,new THREE.Matrix4());
 assert(p.parameters.dir.every(Number.isFinite));
 close(warp(camera.position.toArray(),p.parameters),camera.position.toArray());
 const scene=new THREE.Scene(), mesh=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),mat);
-scene.add(mesh); p.prepare(scene,camera); assert.equal(mesh.frustumCulled,false);
+// opted out (the GLSL's volume and far meshes), an overlay's (the viewmodel), another layer's: never bent
+const optOut=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicNodeMaterial()); optOut.userData.presentation=false;
+const overlay=new THREE.Group(); overlay.userData.presentationOverlay=true;
+const held=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicNodeMaterial()); overlay.add(held);
+const hidden=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicNodeMaterial()); hidden.layers.set(5);
+// a mesh parked on the guard's layer (gfx/meshLight.js guardMeshes: its pipelines building) waits until it is back
+const parkedMesh=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicNodeMaterial()); parkedMesh.layers.set(31);
+const sharer=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),mat);   // (mat, shared: both change)
+scene.add(mesh,optOut,overlay,hidden,parkedMesh,sharer); p.install(scene,camera);
+assert.equal(mesh.frustumCulled,false); assert.notEqual(mat.vertexNode,own);
+for (const o of [optOut,held,hidden,parkedMesh]) { assert.equal(o.material.vertexNode,null); assert.equal(o.frustumCulled,true); }
+// the meshes whose program changed, once each: src/wire/mesh.js compiles them before they draw (F8)
+assert.deepEqual(new Set(p.takeChanged()),new Set([mesh,sharer])); assert.deepEqual(p.takeChanged(),[]);
+p.prepare(scene,camera); assert.deepEqual(p.takeChanged(),[]);
+parkedMesh.layers.set(0); p.prepare(scene,camera); assert.deepEqual(p.takeChanged(),[parkedMesh]);
+sharer.removeFromParent(); parkedMesh.removeFromParent(); p.prepare(scene,camera);
+// the uniforms' clip ↔ world pair inverts, through the scene → world transform
+const m4=new THREE.Matrix4().multiplyMatrices(p.uniforms.uWarpWorldToClip.value,p.uniforms.uWarpClipToWorld.value);
+m4.elements.forEach((v,i) => assert(Math.abs(v-(i%5===0?1:0))<1e-6));
 const revision=p.revision;
-assert.throws(()=>p.neutral(()=>{assert.equal(p.uniforms.uWarpK.value,0); throw new Error('restore');}));
+assert.throws(()=>p.neutral(()=>{assert.equal(p.uniforms.uWarpK.value,0); assert(!p.active); throw new Error('restore');}));
 assert(p.active); assert(p.uniforms.uWarpK.value>0);
 p.select(null); assert(p.revision>revision); assert.equal(mesh.frustumCulled,true);
-assert.equal(mat.onBeforeCompile,original); assert.equal(p.uniforms.uWarpK.value,0);
+assert.equal(mat.vertexNode,own); assert.equal(p.uniforms.uWarpK.value,0);
+assert.deepEqual(p.takeChanged(),[mesh]);   // (restored: flat again, another program)
 p.select('rollingLog'); p.prepare(scene,camera); mesh.removeFromParent(); assert.equal(mesh.frustumCulled,true);
-p.dispose(); assert(!p.active);
+p.dispose(); assert(!p.active); assert.equal(mat.vertexNode,own);
+
+// ---- TAA's reprojection through the bend (gfx/post.js presentationReproject and the
+// matrices createPost builds for it): a flat point displayed this frame comes back to
+// where the last frame displayed it, the camera and the bend's anchor both moved ----
+{
+  const q=createPresentation(), T=new THREE.Matrix4().makeScale(1/0.1,1/0.1,1/0.1).setPosition(300,0,200);
+  q.select('rollingLog');
+  const vp=(cam) => new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);
+  const camA=new THREE.PerspectiveCamera(50,1.6,0.05,200); camA.position.set(3,2,4); camA.lookAt(0,0,0); camA.updateMatrixWorld();
+  q.update(camA,T);
+  const prevWarp=q.parameters, prevWorldToClip=new THREE.Matrix4().multiplyMatrices(vp(camA),q.worldToScene);   // (post: after a frame)
+  const camB=camA.clone(); camB.position.set(2.2,2.1,4.6); camB.lookAt(0.3,0,0); camB.updateMatrixWorld();
+  q.update(camB,T);
+  const cur=q.parameters, invVP=vp(camB).invert(), temporalToWorld=new THREE.Matrix4().multiplyMatrices(q.sceneToWorld,invVP);
+  const clipOf=(m,w) => new THREE.Vector4(...w,1).applyMatrix4(m);
+  let worst=0;
+  for (let i=0;i<64;i++) {
+    const P=[300+((i*37)%64)-32,(i*13)%24,200+((i*29)%64)-32];   // world cells around the camera's ground
+    const c=clipOf(new THREE.Matrix4().multiplyMatrices(vp(camB),q.worldToScene),warp(P,cur));
+    const ndc=new THREE.Vector4(c.x/c.w,c.y/c.w,c.z/c.w,1);                     // this frame's pixel and depth
+    const d=ndc.clone().applyMatrix4(temporalToWorld), shown=[d.x/d.w,d.y/d.w,d.z/d.w];
+    const back=clipOf(prevWorldToClip,warp(warp(shown,cur,true),prevWarp));   // unwarp now, warp as last frame did
+    const want=clipOf(prevWorldToClip,warp(P,prevWarp));
+    worst=Math.max(worst,Math.abs(back.x/back.w-want.x/want.w),Math.abs(back.y/back.w-want.y/want.w));
+  }
+  assert(worst<1e-6, `TAA's reprojection through the bend: ${worst}`);
+  assert(Math.abs(prevWarp.anchor[0]-cur.anchor[0])>1, 'the case moves the bend\'s anchor');
+}
 
 const large=new THREE.Mesh(new THREE.PlaneGeometry(128,128));
 const split=subdividePresentation(large,MESH_EDGE_CELLS);
 assert(split); const a=split.attributes.position;
 for (let i=0;i<a.count;i+=3) for (const [j,k] of [[0,1],[1,2],[2,0]])
   assert(new THREE.Vector3().fromBufferAttribute(a,i+j).distanceTo(new THREE.Vector3().fromBufferAttribute(a,i+k))<=MESH_EDGE_CELLS+1e-6);
-split.dispose(); large.geometry.dispose(); large.material.dispose(); mesh.geometry.dispose(); mat.dispose();
-console.log('presentation: mapping, inverse, roots, turn/reentry, tangency, chord bound, material chaining, lifecycle, mode resolution and mesh edge bound OK');
+split.dispose(); large.geometry.dispose(); large.material.dispose(); mat.dispose();
+
+// ---- the WGSL side, statically (the GPU runs it: tools/presentation-check.mjs) ----
+const fns = (code) => new Set([...code.matchAll(/\bfn\s+([A-Za-z_]\w*)/g)].map((m) => m[1]));
+// every function the GLSL had, under its name (docs/webgpu.md W2)
+const twin=fns(presentationWGSL);
+for (const f of ['warpPointWith','warpPoint','unwarpPoint','warpVector','warpRay','warpAt','warpSlope','warpRoots','warpPlane','warpSpans',
+  'warpInside','warpResume','warpExit','warpChordLimit','warpArcPrimitive','warpArc','warpCell','warpCellAfter','warpEntryAxis'])
+  assert(twin.has(f), `presentationWGSL: ${f}`);
+assert.equal(presentationGLSL,presentationWGSL);
+const near=fns(presentationNearGLSL);
+for (const f of ['warpWalk','warpRestart','warpLocate','warpSegment','warpAdvance','warpSkip','warpFloor','warpGridPoint']) assert(near.has(f), `presentationNearWGSL: ${f}`);
+assert(!fns(presentationNearWGSL({ skip: false })).has('warpSkip'), 'the pick\'s walk has no brick skipping');
+// no GLSL left: the presentation's modules and the passes that bend
+const GLSL = /\buniform\s+(float|vec[234]|mat4|bool|int)\b|#define|gl_(FragColor|Position|FragDepth|FragCoord)|\bivec[234]\(|\bvec[234]\(|onBeforeCompile|texelFetch\(/;
+const g=gridLayout(64,64,64), Lw=farLayout(WORLD_SIZE);
+const modules = {
+  presentationWGSL, presentationNearGLSL, pick: pickFrag(g), taa: taaWGSL(), farDetailDepth: farDetailDepthFrag(g),
+  ...Object.fromEntries(VOLUME_VIEWS.flatMap((v) => [[`volume.${v}`, volumeFrag(g, { view: v })], [`volume.${v}.curved`, volumeFrag(g, { view: v, curved: true })]])),
+};
+for (const [name, code] of Object.entries(modules)) assert(!GLSL.test(code.replace(/\/\/[^\n]*/g, '')), `${name}: GLSL left`);
+// the curved variants walk the displayed ray (and only they)
+for (const v of VOLUME_VIEWS) {
+  const flat=modules[`volume.${v}`], curved=modules[`volume.${v}.curved`];
+  assert(!/warpWalk|warpUse/.test(flat), `volume.${v}: the flat variant carries none of the bend`);
+  for (const call of ['warpUse(P.warpK','warpWalk(','warpSegment(&walk','warpAdvance(&walk','warpFloor(walk','meshInv * vec4f(ndc'])
+    assert(curved.includes(call), `volume.${v}.curved: ${call}`);
+}
+const realisticCurved=modules['volume.realistic.curved'];
+for (const call of ['warpSkip(&walk, bc, true)','warpRestart(&walk, ro, rd)','warpGridPoint(hitPos)','MESH_CUT_NONE']) assert(realisticCurved.includes(call), `volume.realistic.curved: ${call}`);
+assert(!/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: no mesh cut (its straight-ray distance isn\'t the chord march\'s)');
+assert(/meshCutDepth\(h\.depth\)/.test(modules['volume.realistic']), 'flat: the mesh cut');
+assert(modules.pick.includes('fn pickCurved') && modules.pick.includes('warpUse(P.ro[i].w'), 'pick: the displayed ray for a curved pick');
+assert(modules.taa.includes('fn presentationReproject') && modules.taa.includes('warpPointWith(flatWorld, P.prevK'), 'TAA: reprojection through the bend');
+const farCurved=farFrag(g,Lw,false,{curved:true}), farFlat=farFrag(g,Lw), farMesh=farFrag(g,Lw,true);
+for (const call of ['gFarRay = warpRay(ro, rd)','warpSpans(gFarRay','farPlaneHit(gFarRay','warpResume(t, gFarWorld)','warpArc(transmitted','warpPoint(p)']) assert(farCurved.includes(call), `far view curved: ${call}`);
+assert(!farFlat.includes('gFarRay'), 'far view: the flat variant has no parabola');
+assert(farMesh.includes('warpPoint(pos)') && modules.farDetailDepth.includes('warpPoint(pos)'), 'the detail meshes bend in their vertex stage, and their depth prepass with them');
+assert(modules.farDetailDepth.includes('v.position.z'), 'the depth prepass writes the rasterized depth');
+console.log('presentation: mapping, inverse, roots, turn/reentry, tangency, chord bound, TSL vertex bend (chained, idempotent, restored), lifecycle (opt-outs, overlays, layers, the guard\'s parked meshes, changed programs, neutral), mode resolution, TAA reprojection algebra, mesh edge bound, WGSL twins (curved variants only, pick, TAA, far view and meshes, no GLSL) OK');
