@@ -61,7 +61,7 @@ const FLAME_HEIGHT = 0.85;
 const FLAME_HEART = 0.3;       // share of the flame's height its light and embers come from
 const WIND_FOLLOW = 9;         // 1/s: how fast the flame's lean follows its motion
 // The flame lights the torch and the fist that holds it (the viewmodel pass's own point light). They
-// sit inside the soft core of its light (lampLight gives about 2 × its colour there), but three's point
+// sit inside the soft core of its light (lampLight gives about 1.5 × its colour there), but three's point
 // light has no core: hung right at the flame it burns the head's parts under it white. So it hangs a
 // cell toward the eye, which keeps every part at about the same distance and lights the sides you see.
 const HAND_LIGHT_BACK = 1;     // cells toward the eye from the flame's heart

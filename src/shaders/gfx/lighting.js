@@ -659,6 +659,41 @@ const NEAR_RAND_STREAMS: i32 = 8;       // random streams per frame (near-field 
 fn pixRand(k: i32) -> vec2f {
   return hash33(vec3f(gFragCoord, ${frame} * f32(NEAR_RAND_STREAMS) + f32(k))).xy;
 }
+
+// A hand lamp's falloff: inverse-square with a soft core and Unreal's window
+// to its reach (Karis 2013, "Real Shading in Unreal Engine 4"):
+// (U² + s²) / (d² + s²) × (1 − (d/R)⁴)₊², so its colour is the irradiance at
+// U = LAMP_UNIT, close up it doesn't blow out and it carries out to most of
+// its reach before fading.
+const LAMP_UNIT: f32 = ${LAMP_UNIT.toFixed(1)};        // cells at which a lamp's colour is its irradiance
+const LAMP_SOFT: f32 = ${LAMP_SOFT.toFixed(1)};        // cells: the soft core's radius
+fn lampFall(d2: f32, R: f32) -> f32 {
+  let x2 = d2 / (R * R);
+  let fade = max(1.0 - x2 * x2, 0.0);
+  return (LAMP_UNIT * LAMP_UNIT + LAMP_SOFT * LAMP_SOFT) / (d2 + LAMP_SOFT * LAMP_SOFT) * fade * fade;
+}
+// A fixed lamp (a wall torch's) is lit while its cell is still a torch: dug out or burnt, it goes dark.
+fn lampLive(i: i32) -> bool {
+  if (FU.lampCol[i].w < 0.5) { return true; }
+  let lc = vec3i(floor(FU.lampPos[i].xyz));
+  return !outside(lc) && eid(fetchA(lc)) == E_WALL_TORCH;
+}
+// The lamps' light on a surface at p (normal n), unshadowed: what a near-field
+// bounce ray sees on the matter it hits. That matter is where the lamp's light
+// falls as often as not, and its bounce is what fills a torch's shadows in a
+// cave or a room (the probes don't carry hand lamps' light).
+fn lampSeen(p: vec3f, n: vec3f) -> vec3f {
+  var sum = vec3f(0.0);
+  for (var i = 0; i < LAMP_MAX; i++) {
+    if (i >= FU.lampCount) { break; }
+    let dv = FU.lampPos[i].xyz - p;
+    let d2 = dot(dv, dv);
+    let R = FU.lampPos[i].w;
+    if (d2 >= R * R || !lampLive(i)) { continue; }
+    sum += FU.lampCol[i].rgb * max(dot(n, dv) * inverseSqrt(max(d2, 1e-4)), 0.0) * lampFall(d2, R);
+  }
+  return sum;
+}
 ${shadowMap && probes ? /* wgsl */ `
 // Voxel AO and nearby bounce light (Teardown style). NEAR_RAYS cosine-
 // distributed rays per pixel and frame (TAA averages them) walk the grid up to
@@ -710,6 +745,8 @@ fn nearField(p: vec3f, ng: vec3f, n: vec3f, irr: vec3f, vis: ptr<function, f32>)
     }
     let Lhit = alb * (sun + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * FU.lightGain) + emit;
     sum += mix(irr, Lhit, w);
+    // the lamps' light off what it hits, in full: the probes have none of it to hand back
+    if (FU.lampCount > 0) { sum += alb * lampSeen(hp, hn); }
     vs += 1.0 - w;
   }
   *vis = max(vs / f32(NEAR_RAYS), NEAR_VIS_MIN);
@@ -781,19 +818,22 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
 
 // ---- hand lamps ----
 // The light of the lamps at surface point p (normal n, geometric normal ng),
-// to be multiplied by the albedo: each an inverse-square point light with a
-// soft core and Unreal's window to its reach (Karis 2013, "Real Shading in
-// Unreal Engine 4"): (U² + s²) / (d² + s²) × (1 − (d/R)⁴)₊² × its colour, so
-// its colour is the irradiance at U = LAMP_UNIT, close up it doesn't blow out
-// and it carries out to most of its reach before fading; shadowed by a traced
-// ray to it (opaque matter only, as the glow lights').
-const LAMP_UNIT: f32 = ${LAMP_UNIT.toFixed(1)};        // cells at which a lamp's colour is its irradiance
-const LAMP_SOFT: f32 = ${LAMP_SOFT.toFixed(1)};        // cells: the soft core's radius
+// to be multiplied by the albedo: each falls off as lampFall, shadowed by a
+// traced ray (opaque matter only, as the glow lights') to a random point of
+// the flame's ball (LAMP_RADIUS) each frame, so its shadows have the soft
+// penumbras the TAA averages a real flame's into, not a point light's knife
+// edges. The light the room bounces back into its shadows comes from
+// nearField (lampSeen at its hits); with that off, a LAMP_FILL share of the
+// lamp's light, unshadowed and wrapped (Valve's half-Lambert, Half-Life 2 /
+// GMod), stands in for it.
 const LAMP_START: f32 = 0.55;      // cells off the surface a shadow ray starts
 const LAMP_SELF_SKIP: f32 = 1.0;   // smooth-surface cells ignored this close to its start
 const LAMP_PAD: f32 = 0.3;         // cells short of the lamp the shadow ray stops (it hangs in air)
 const LAMP_FIXED_PAD: f32 = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
 const LAMP_FIXED_SELF: f32 = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
+const LAMP_RADIUS: f32 = 1.0;      // cells: half the side of the box a shadow ray aims into (a flame with its glow, ~30 cm)
+const LAMP_FILL: f32 = 0.12;       // share of a lamp's light the room bounces back, when nearField is off
+const LAMP_RAND: f32 = 0.37;       // keeps the lamps' random stream off the near rays' and the glow's
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f {
   var sum = vec3f(0.0);
   for (var i = 0; i < LAMP_MAX; i++) {
@@ -804,23 +844,22 @@ fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f {
     let R = FU.lampPos[i].w;
     if (d2 >= R * R) { continue; }
     let fixedLamp = FU.lampCol[i].w > 0.5;
-    if (fixedLamp) {   // a wall torch's: lit while its cell is still a torch (dug out, burnt, it goes dark)
-      let lc = vec3i(floor(FU.lampPos[i].xyz));
-      if (outside(lc) || eid(fetchA(lc)) != E_WALL_TORCH) { continue; }
-      if (all(abs(p - FU.lampPos[i].xyz) < vec3f(LAMP_FIXED_SELF))) { continue; }   // the torch's own head: its glow is its emission
-    }
+    if (!lampLive(i)) { continue; }
+    if (fixedLamp && all(abs(p - FU.lampPos[i].xyz) < vec3f(LAMP_FIXED_SELF))) { continue; }   // the torch's own head: its glow is its emission
     let d = sqrt(d2);
-    let l = dv / max(d, 1e-4);
-    let nl = dot(n, l);
+    let nl = dot(n, dv / max(d, 1e-4));
+    let lit = FU.lampCol[i].rgb * lampFall(d2, R);
+    if (FU.nearGI == 0u) { let h = 0.5 + 0.5 * nl; sum += lit * (LAMP_FILL * h * h); }
     if (nl <= 0.0) { continue; }
-    let x2 = d2 / (R * R);
-    let fade = 1.0 - x2 * x2;
-    let fall = (LAMP_UNIT * LAMP_UNIT + LAMP_SOFT * LAMP_SOFT) / (d2 + LAMP_SOFT * LAMP_SOFT) * fade * fade;
+    // aim at a random point of the flame; stop the ray as far short of it as it was moved, so it ends by the light, never in the wall a torch hangs on
+    let j = (hash33(vec3f(gFragCoord, ${frame} * f32(LAMP_MAX) + f32(i) + LAMP_RAND)) - 0.5) * (2.0 * LAMP_RADIUS);
+    let sv = dv + j;
+    let sd = length(sv);
     var hc: vec3i;
     var hn: vec3f;
-    let pad = select(LAMP_PAD, LAMP_FIXED_PAD, fixedLamp);
-    if (traceNear(ro, l, max(d - pad, 0.0), true, LAMP_SELF_SKIP, &hc, &hn) >= 0.0) { continue; }
-    sum += FU.lampCol[i].rgb * nl * fall;
+    let pad = select(LAMP_PAD, LAMP_FIXED_PAD, fixedLamp) + length(j);
+    if (traceNear(ro, sv / max(sd, 1e-4), max(sd - pad, 0.0), true, LAMP_SELF_SKIP, &hc, &hn) >= 0.0) { continue; }
+    sum += lit * nl;
   }
   return sum;
 }
