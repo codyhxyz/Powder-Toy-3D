@@ -14,15 +14,19 @@
 //          the one the bent view shows; an ordinary mesh shows where the bend
 //          puts it, an overlay (the viewmodel's) and an opted-out mesh aren't
 //          bent; a figure bends where it stands; TAA stays steady while
-//          the camera, and with it the bend's anchor, moves; deep idle (no
-//          submits) with the effect on; the gamemodes resolve on a map
+//          the camera, and with it the bend's anchor, moves, and the
+//          TaaParams createPost packs for its own draw reproject through the
+//          bend; deep idle (no submits) with the effect on; the gamemodes resolve on a map
 //          without the mode (Sandbox); dropping the effect restores every mesh
+//   boot   the gamemode's effect selected before the grid is built (boot and
+//          openMap: the build waits on the curved variant only; the Island
+//          given Animal Crossing for it, maps.js served patched)
 //   world  the Island at ?win=64 in the realistic view: the far view's
 //          curved variant draws (and the volume's), and the frame differs
 //          from the flat one. (The Animal Crossing gamemode's own map, Willow
 //          Cove, gets its world WGSL from DP4-W: --map willowCove then.)
 //
-//   node tools/presentation-check.mjs [--stage math,box,world] [--map island] [--out dir]
+//   node tools/presentation-check.mjs [--stage math,box,boot,world] [--map island] [--out dir]
 import { mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +36,7 @@ import { startVite } from './vite-server.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const arg = (k, d) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : d);
-const STAGES = arg('stage', 'math,box').split(',');
+const STAGES = arg('stage', 'math,box,boot').split(',');
 const MAP = arg('map', 'island');
 const OUT = arg('out', join(ROOT, '.tmp-presentation'));   // (ignored by git: .tmp-*)
 const VIEWPORT = { width: 400, height: 250 };
@@ -86,6 +90,45 @@ const PAGE_HELPERS = () => {
     let s = 0;
     for (let i = 0; i < a.data.length; i += 4) s += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
     return s / (3 * a.width * a.height);
+  };
+  // TAA's reprojection as post ships it (gfx/post.js taaWGSL's reproject, in a
+  // compute entry added to its module) with TaaParams bytes: this frame's
+  // [uv (y down), depth] → the last frame's clip position, or { errs }
+  window.__taaReproject = async (params, pts) => {
+    const device = __app.gpu.device;
+    if (!window.__taaPipe) {
+      const entry = (await import('/src/gfx/post.js')).WGSL_CHECK.find((e) => e.name === 'taa');
+      const code = `${entry.code()}
+@group(0) @binding(0) var<storage, read> qin: array<vec4f>;
+@group(0) @binding(1) var<storage, read_write> qout: array<vec4f>;
+@compute @workgroup_size(64) fn reprojTest(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= arrayLength(&qin)) { return; }
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
+  qout[id.x] = reproject(qin[id.x].xy, qin[id.x].z);
+}`;
+      const module = device.createShaderModule({ code, label: 'presentation taa reprojection' });
+      const errs = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error').map((m) => `${m.lineNum}:${m.linePos} ${m.message}`);
+      if (errs.length) return { errs };
+      window.__taaPipe = await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'reprojTest' } });
+    }
+    const pipeline = window.__taaPipe;
+    const buf = (data, usage) => {
+      const b = device.createBuffer({ size: data.byteLength, usage: usage | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(b, 0, data);
+      return b;
+    };
+    const inBuf = buf(new Float32Array(pts.map(([u, v, z]) => [u, v, z, 0]).flat()), GPUBufferUsage.STORAGE);
+    const outBuf = device.createBuffer({ size: pts.length * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const pBuf = buf(new Uint8Array(params), GPUBufferUsage.UNIFORM);
+    const g0 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: inBuf } }, { binding: 1, resource: { buffer: outBuf } }] });
+    const g3 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(3), entries: [{ binding: 1, resource: { buffer: pBuf } }] });
+    __app.gpu.flush('presentation taa');
+    const enc = device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(pipeline); pass.setBindGroup(0, g0); pass.setBindGroup(3, g3); pass.dispatchWorkgroups(Math.ceil(pts.length / 64)); pass.end();
+    device.queue.submit([enc.finish()]);
+    const out = new Float32Array(await __app.gpu.readback.buffer(outBuf, 0, pts.length * 16));
+    inBuf.destroy(); outBuf.destroy(); pBuf.destroy();
+    return { clip: pts.map((_, i) => [out[4 * i], out[4 * i + 1], out[4 * i + 2], out[4 * i + 3]]) };
   };
 };
 
@@ -187,21 +230,10 @@ struct In { o: vec4f, d: vec4f }
   // the module: a flat point shown this frame, its pixel and depth, come back
   // to where the last frame showed it, the camera and the bend's anchor both
   // moved. The camera-only reprojection (P.reproj) misses by far more.
+  await page.evaluate(PAGE_HELPERS);
   const taa = await page.evaluate(async (gain) => {
     const M = await import('/src/gfx/presentationMath.js'), post = await import('/src/gfx/post.js');
-    const T3 = __app.THREE, device = __app.gpu.device, entry = post.WGSL_CHECK.find((e) => e.name === 'taa');
-    const code = `${entry.code()}
-@group(0) @binding(0) var<storage, read> qin: array<vec4f>;
-@group(0) @binding(1) var<storage, read_write> qout: array<vec4f>;
-@compute @workgroup_size(64) fn reprojTest(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= arrayLength(&qin)) { return; }
-  warpUse(P.warpK, P.warpAnchor, P.warpDir);
-  qout[id.x] = reproject(qin[id.x].xy, qin[id.x].z);
-}`;
-    const module = device.createShaderModule({ code, label: 'presentation taa reprojection' });
-    const errs = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error').map((m) => `${m.lineNum}:${m.linePos} ${m.message}`);
-    if (errs.length) return { errs };
-    const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'reprojTest' } });
+    const T3 = __app.THREE, entry = post.WGSL_CHECK.find((e) => e.name === 'taa');
     // two frames: the scene → world cells transform, two cameras (the app's clip space), the bend anchored under each
     const toWorld = new T3.Matrix4().makeScale(10, 10, 10).setPosition(300, 0, 200), toScene = toWorld.clone().invert();
     const cam = (pos, at) => {
@@ -221,9 +253,10 @@ struct In { o: vec4f, d: vec4f }
     const prevWorldToClip = new T3.Matrix4().multiplyMatrices(vp(camA), toScene);
     const invVP = vp(camB).invert();
     const temporalToWorld = new T3.Matrix4().multiplyMatrices(toWorld, invVP), reproj = new T3.Matrix4().multiplyMatrices(vp(camA), invVP);
+    // (bent, post packs this frame's clip → world cells where the flat reprojection goes)
     const params = entry.params.pack({
-      reproj, warpK: cur.k, warpAnchor: cur.anchor, warpDir: cur.dir, prevK: prev.k, prevAnchor: prev.anchor, prevDir: prev.dir,
-      temporalToWorld, prevWorldToClip,
+      reproj: temporalToWorld, warpK: cur.k, warpAnchor: cur.anchor, warpDir: cur.dir, prevK: prev.k, prevAnchor: prev.anchor, prevDir: prev.dir,
+      prevWorldToClip,
     });
     const clipOf = (m, w) => new T3.Vector4(...w, 1).applyMatrix4(m);
     const curWorldToClip = new T3.Matrix4().multiplyMatrices(vp(camB), toScene);
@@ -232,30 +265,16 @@ struct In { o: vec4f, d: vec4f }
       const P = [300 + ((i * 37) % 64) - 32, (i * 13) % 24, 200 + ((i * 29) % 64) - 32];   // world cells around the eyes' ground
       const c = clipOf(curWorldToClip, M.warp(P, cur));
       if (c.w <= 0) continue;
-      pts.push([(c.x / c.w + 1) / 2, (1 - c.y / c.w) / 2, c.z / c.w, 0]);   // this frame's uv (y down) and depth
+      pts.push([(c.x / c.w + 1) / 2, (1 - c.y / c.w) / 2, c.z / c.w]);   // this frame's uv (y down) and depth
       const w = clipOf(prevWorldToClip, M.warp(P, prev));
       want.push([w.x / w.w, w.y / w.w]);
     }
-    const buf = (data, usage) => {
-      const b = device.createBuffer({ size: data.byteLength, usage: usage | GPUBufferUsage.COPY_DST });
-      device.queue.writeBuffer(b, 0, data);
-      return b;
-    };
-    const inBuf = buf(new Float32Array(pts.flat()), GPUBufferUsage.STORAGE);
-    const outBuf = device.createBuffer({ size: pts.length * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-    const pBuf = buf(new Uint8Array(params), GPUBufferUsage.UNIFORM);
-    const g0 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: inBuf } }, { binding: 1, resource: { buffer: outBuf } }] });
-    const g3 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(3), entries: [{ binding: 1, resource: { buffer: pBuf } }] });
-    __app.gpu.flush('presentation taa');
-    const enc = device.createCommandEncoder(), pass = enc.beginComputePass();
-    pass.setPipeline(pipeline); pass.setBindGroup(0, g0); pass.setBindGroup(3, g3); pass.dispatchWorkgroups(Math.ceil(pts.length / 64)); pass.end();
-    device.queue.submit([enc.finish()]);
-    const out = new Float32Array(await __app.gpu.readback.buffer(outBuf, 0, pts.length * 16));
-    inBuf.destroy(); outBuf.destroy(); pBuf.destroy();
+    const got = await window.__taaReproject(params, pts);
+    if (got.errs) return got;
     let worst = 0, cameraOnly = 0;
     pts.forEach((p, i) => {
-      const x = out[4 * i] / out[4 * i + 3], y = out[4 * i + 1] / out[4 * i + 3];
-      worst = Math.max(worst, Math.abs(x - want[i][0]), Math.abs(y - want[i][1]));
+      const [x, y, , w] = got.clip[i];
+      worst = Math.max(worst, Math.abs(x / w - want[i][0]), Math.abs(y / w - want[i][1]));
       const r = new T3.Vector4(p[0] * 2 - 1, 1 - p[1] * 2, p[2], 1).applyMatrix4(reproj);
       cameraOnly = Math.max(cameraOnly, Math.abs(r.x / r.w - want[i][0]), Math.abs(r.y / r.w - want[i][1]));
     });
@@ -460,6 +479,73 @@ async function boxStage(browser, vite, secs) {
   ok(taa.curved <= Math.max(1.5 * taa.flat, taa.flat + 1.5),
     `box: TAA steady while the camera moves bent (${TAA_K_GAIN}× the bend): ${taa.curved.toFixed(2)} levels from a fresh frame after the walk (flat: ${taa.flat.toFixed(2)})`);
 
+  // TAA's reprojection as createPost builds it (finish(): this frame's clip →
+  // world cells, the last frame's parameters and world → clip, swapped after
+  // the draw), not as the test builds it: the TaaParams post's own TAA draw
+  // packs on a frame after the camera, and the bend's anchor, moved (captured
+  // at the draw) bring this frame's displayed points back to where the last
+  // frame showed them. The two ways it could be wired wrong miss by far more:
+  // the camera alone, and the last frame's parameters swapped in too early.
+  const wired = await page.evaluate(async (gain) => {
+    const a = __app, p = a.presentation, T = a.THREE, M = await import('/src/gfx/presentationMath.js');
+    const { RenderPipe } = await import('/src/gpu/kernels.js'), entry = (await import('/src/gfx/post.js')).WGSL_CHECK.find((e) => e.name === 'taa');
+    const real = Object.getOwnPropertyDescriptor(p, 'parameters'), draw = RenderPipe.prototype.draw;
+    const meshes = Object.values(window.__presentationMeshes);
+    const start = a.camera.position.clone(), look = new T.Vector3(0, 1.5, 0);
+    let packed = null;
+    try {
+      Object.defineProperty(p, 'parameters', { configurable: true, get: () => ({ ...real.get.call(p), k: p.active ? real.get.call(p).k * gain : 0 }) });
+      RenderPipe.prototype.draw = function (rp, o) {
+        if (this.name === 'taa' || this.name === 'taau') packed = entry.params.pack(o.params);   // (as the ring packs them: the matrices change after the draw)
+        return draw.call(this, rp, o);
+      };
+      for (const o of meshes) o.visible = false;
+      a.post.settings.taa = true;
+      const vp = () => new T.Matrix4().multiplyMatrices(a.camera.projectionMatrix, a.camera.matrixWorldInverse);   // (unjittered after a frame)
+      a.camera.lookAt(look); a.camera.updateMatrixWorld();
+      for (let i = 0; i < 3; i++) await a.test.renderOnce();
+      const vpA = vp(), prev = p.parameters;
+      a.camera.position.x -= 0.6 * a.scale * 4; a.camera.position.z += 0.3 * a.scale * 4;   // 2.4 and 1.2 cells
+      a.camera.lookAt(look); a.camera.updateMatrixWorld();
+      packed = null;
+      await a.test.renderOnce();
+      if (!packed) return { none: true };
+      const vpB = vp(), cur = p.parameters, toScene = p.worldToScene.clone(), o = a.sim.origin;
+      const clipOf = (m, w) => new T.Vector4(...w, 1).applyMatrix4(m);
+      const ndc = (c) => [c.x / c.w, c.y / c.w];
+      const toClip = (vpm) => new T.Matrix4().multiplyMatrices(vpm, toScene);
+      const pts = [], want = [], early = [];
+      for (let i = 0; i < 64; i++) {
+        const P = [o.x + 4 + ((i * 37) % 56), o.y + ((i * 13) % 40), o.z + 4 + ((i * 29) % 56)];   // world cells in the box
+        const c = clipOf(toClip(vpB), M.warp(P, cur));
+        if (c.w <= 0 || Math.abs(c.x / c.w) > 1 || Math.abs(c.y / c.w) > 1) continue;
+        pts.push([(c.x / c.w + 1) / 2, (1 - c.y / c.w) / 2, c.z / c.w]);
+        want.push(ndc(clipOf(toClip(vpA), M.warp(P, prev))));
+        early.push(ndc(clipOf(toClip(vpA), M.warp(P, cur))));   // (the last frame's parameters swapped in before the draw)
+      }
+      const got = await window.__taaReproject(packed, pts);
+      if (got.errs) return got;
+      const reproj = new T.Matrix4().multiplyMatrices(vpA, vpB.clone().invert());
+      let worst = 0, cameraOnly = 0, swapped = 0;
+      pts.forEach((q, i) => {
+        const [x, y, , w] = got.clip[i];
+        worst = Math.max(worst, Math.abs(x / w - want[i][0]), Math.abs(y / w - want[i][1]));
+        const r = new T.Vector4(q[0] * 2 - 1, 1 - q[1] * 2, q[2], 1).applyMatrix4(reproj);
+        cameraOnly = Math.max(cameraOnly, Math.abs(r.x / r.w - want[i][0]), Math.abs(r.y / r.w - want[i][1]));
+        swapped = Math.max(swapped, Math.abs(early[i][0] - want[i][0]), Math.abs(early[i][1] - want[i][1]));
+      });
+      return { n: pts.length, worst, cameraOnly, swapped, moved: Math.hypot(prev.anchor[0] - cur.anchor[0], prev.anchor[1] - cur.anchor[1]) };
+    } finally {
+      RenderPipe.prototype.draw = draw;
+      Object.defineProperty(p, 'parameters', real);
+      a.post.settings.taa = false;
+      a.camera.position.copy(start); a.camera.lookAt(look); a.camera.updateMatrixWorld();
+      for (const o of meshes) o.visible = true;
+    }
+  }, TAA_K_GAIN);
+  ok(!wired.none && !wired.errs && wired.n >= 32 && wired.worst < 1e-3 && wired.cameraOnly > 20 * wired.worst && wired.swapped > 20 * wired.worst,
+    `box: TAA's reprojection as createPost wires it (its own TaaParams, the anchor ${wired.moved?.toFixed(1)} cells on) brings ${wired.n} shown points back to the last frame's: worst ${wired.worst?.toExponential(1)} (NDC); the camera alone ${wired.cameraOnly?.toExponential(1)}, the parameters swapped early ${wired.swapped?.toExponential(1)}${wired.errs ? `: ${wired.errs.join('; ')}` : ''}${wired.none ? ': no TAA draw captured' : ''}`);
+
   // deep idle with the effect on: the loop sleeps, no submits
   await page.evaluate(() => __app.test.resume());
   await page.waitForFunction(() => __app.loop.asleep, null, { polling: 250, timeout: 60000 }).catch(() => {});
@@ -530,9 +616,58 @@ async function worldStage(browser, vite, secs) {
   await page.close();
 }
 
+// ---------------------------------------------------------------- boot
+// The gamemode's effect is selected before the grid is built (app.js's boot
+// and openMap), so the build, and the loading screen with it, wait on the
+// curved variant the view draws, never on a flat one it won't. Willow Cove,
+// the gamemode's map, gets its world WGSL from DP4-W: the Island is given
+// Animal Crossing here instead (maps.js served with it in the Island's modes).
+async function bootStage(browser, vite, secs) {
+  const page = await newTestPage(browser, { mode: 'manual', viewport: VIEWPORT });
+  const errors = watch(page);
+  let patched = false;
+  await page.route('**/src/maps.js*', async (route) => {
+    const res = await route.fetch(), text = await res.text();
+    const body = text.replace("scene: 'island', dims: WORLD_DIMS,", "scene: 'island', dims: WORLD_DIMS, modes: ['animalCrossing'],");
+    patched ||= body !== text;
+    await route.fulfill({ response: res, body });
+  });
+  await page.goto(vite.url('/?map=island&win=64&view=plain&mode=animalCrossing'));
+  await page.waitForFunction(() => window.__app?.sim || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 150000 });
+  const failed = await page.evaluate(() => document.getElementById('error')?.textContent || null);
+  if (failed) throw new Error(`boot: ${failed.slice(0, 600)}`);
+  if (!gpuShown) {
+    gpuShown = true;
+    const g = await gpuInfo(page);
+    console.log(`gpu: ${g.vendor} ${g.architecture}${g.isFallbackAdapter ? ' (fallback adapter)' : ''}`);
+  }
+  // (__app is set once the build's pipelines are: app.js awaits coreWait first)
+  const booted = await page.evaluate(() => ({
+    effect: __app.presentation.effect, pipes: __app.vol.pipelines.map((p) => `${p.key} ${p.state}`),
+  }));
+  ok(patched && booted.effect === 'rollingLog' && booted.pipes.includes('plain||curved ready') && !booted.pipes.some((p) => p.startsWith('plain| ')),
+    `boot: the URL's gamemode bends the view before the grid is built, which waited on the curved variant only: ${booted.pipes.join(', ')} (${secs()})`);
+  // a map opened over it (the start menu's Start): the gamemode's effect, then the build
+  const reopen = await page.evaluate(() => {
+    const a = __app, keys = () => a.vol.pipelines.map((p) => p.key);
+    a.openMap('island', 'sandbox');
+    const flat = { effect: a.presentation.effect, pipes: keys() };
+    a.openMap('island', 'animalCrossing');
+    const bent = { effect: a.presentation.effect, pipes: keys() };
+    return { flat, bent };
+  });
+  ok(reopen.flat.effect === null && reopen.flat.pipes.includes('plain|') && !reopen.flat.pipes.includes('plain||curved'),
+    `boot: openMap into Sandbox builds the flat variant only: ${JSON.stringify(reopen.flat)}`);
+  ok(reopen.bent.effect === 'rollingLog' && reopen.bent.pipes.includes('plain||curved') && !reopen.bent.pipes.includes('plain|'),
+    `boot: openMap into Animal Crossing builds the curved variant only: ${JSON.stringify(reopen.bent)}`);
+  await page.evaluate(() => __app.test.ready());
+  ok(!errors.length, `boot: no page or GPU errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
+  await page.close();
+}
+
 const t0 = Date.now(), secs = () => `${((Date.now() - t0) / 1000).toFixed(0)} s`;
 for (const stage of STAGES) {
-  const fn = { math: mathStage, box: boxStage, world: worldStage }[stage];
+  const fn = { math: mathStage, box: boxStage, world: worldStage, boot: bootStage }[stage];
   if (!fn) { ok(false, `no stage ${stage}`); continue; }
   const vite = await startVite();
   const browser = await launchBrowser({ lifetimeMs: LIFETIME_MS });

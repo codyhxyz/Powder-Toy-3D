@@ -21,9 +21,9 @@ import { IDENTITY, ROLLING_LOG, effectParameters, warp, warpTangent, inverseRay,
 import { createPresentation, installPresentation } from '../src/gfx/presentation.js';
 import { MESH_EDGE_CELLS, subdividePresentation } from '../src/gfx/presentationGeometry.js';
 import { presentationNearWGSL, presentationNearGLSL } from '../src/shaders/gfx/presentation.js';
-import { volumeFrag, pickFrag, VOLUME_VIEWS } from '../src/shaders/render.js';
+import { volumeFrag, pickFrag, VOLUME_VIEWS, warmChecks } from '../src/shaders/render.js';
 import { farFrag, farDetailDepthFrag, farLayout, WORLD_SIZE } from '../src/shaders/far.js';
-import { taaWGSL } from '../src/gfx/post.js';
+import { taaWGSL, WGSL_CHECK as postChecks } from '../src/gfx/post.js';
 import { gridLayout } from '../src/sim.js';
 import { mapByKey, mapsFor, resolveMode, modeByKey } from '../src/maps.js';
 const close = (a,b,eps=1e-8) => {
@@ -153,8 +153,26 @@ for (const o of [optOut,held,hidden,parkedMesh]) { assert.equal(o.material.verte
 // the meshes whose program changed, once each: src/wire/mesh.js compiles them before they draw (F8)
 assert.deepEqual(new Set(p.takeChanged()),new Set([mesh,sharer])); assert.deepEqual(p.takeChanged(),[]);
 p.prepare(scene,camera); assert.deepEqual(p.takeChanged(),[]);
-parkedMesh.layers.set(0); p.prepare(scene,camera); assert.deepEqual(p.takeChanged(),[parkedMesh]);
-sharer.removeFromParent(); parkedMesh.removeFromParent(); p.prepare(scene,camera);
+// back from the guard's layer: the next frame's install (src/wire/mesh.js, before the guard) bends and reports it
+const frame=() => { p.update(camera,new THREE.Matrix4()); p.install(scene,camera); return p.takeChanged(); };
+parkedMesh.layers.set(0); assert.deepEqual(frame(),[parkedMesh]);
+// in full once a frame: prepare's install (just before three draws) only meets what the frame's
+// didn't (a mesh added since), bends it and doesn't report it (it draws now, whatever three has built)
+const late=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicNodeMaterial()); scene.add(late);
+p.prepare(scene,camera); assert(late.material.vertexNode); assert.equal(late.frustumCulled,false); assert.deepEqual(p.takeChanged(),[]);
+assert.deepEqual(frame(),[]);   // (its program since: unchanged)
+// a mesh whose geometry install subdivides (another vertex layout) is reported, its material bent long before
+const grows=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),mat); scene.add(grows);
+assert.deepEqual(frame(),[grows]); assert.deepEqual(frame(),[]);
+const plane=grows.geometry=new THREE.PlaneGeometry(400,400);
+assert.deepEqual(frame(),[grows]); assert.notEqual(grows.geometry,plane);
+// parked by the guard a while (src/wire/mesh.js parks what it compiles too), it keeps its record: back
+// with the program it had, it isn't reported again (else it would be parked again, frame after frame)
+const owned=grows.geometry;
+grows.layers.set(31); assert.deepEqual(frame(),[]); assert.equal(grows.frustumCulled,false); assert.equal(grows.geometry,owned);
+grows.layers.set(0); assert.deepEqual(frame(),[]);
+sharer.removeFromParent(); parkedMesh.removeFromParent(); late.removeFromParent(); grows.removeFromParent(); p.prepare(scene,camera);
+assert.equal(grows.geometry,plane);   // (restored when it left)
 // the uniforms' clip ↔ world pair inverts, through the scene → world transform
 const m4=new THREE.Matrix4().multiplyMatrices(p.uniforms.uWarpWorldToClip.value,p.uniforms.uWarpClipToWorld.value);
 m4.elements.forEach((v,i) => assert(Math.abs(v-(i%5===0?1:0))<1e-6));
@@ -193,7 +211,18 @@ p.dispose(); assert(!p.active); assert.equal(mat.vertexNode,own);
   }
   assert(worst<1e-6, `TAA's reprojection through the bend: ${worst}`);
   assert(Math.abs(prevWarp.anchor[0]-cur.anchor[0])>1, 'the case moves the bend\'s anchor');
+  // the sky (depth 1) goes by the cameras: bent, post packs the two halves only, and
+  // their product is the camera-only reprojection while the scene → world transform holds
+  const halves=new THREE.Matrix4().multiplyMatrices(prevWorldToClip,temporalToWorld), cameras=new THREE.Matrix4().multiplyMatrices(vp(camA),invVP);
+  let sky=0;
+  for (const [x,y] of [[-1,-1],[1,1],[0.3,-0.7],[-0.9,0.2],[0,0]]) {
+    const a=new THREE.Vector4(x,y,1,1).applyMatrix4(halves), b=new THREE.Vector4(x,y,1,1).applyMatrix4(cameras);
+    sky=Math.max(sky,Math.abs(a.x/a.w-b.x/b.w),Math.abs(a.y/a.w-b.y/b.w));
+  }
+  assert(sky<1e-9, `TAA: the sky's reprojection, bent, is the cameras': ${sky}`);
 }
+// TaaParams fits one 256-byte slot of the param ring (docs/webgpu.md B4; tools/budgets/post.mjs's upload)
+assert(postChecks.find((x) => x.name==='taa').params.size<=256, `TaaParams: ${postChecks.find((x) => x.name==='taa').params.size} bytes`);
 
 const large=new THREE.Mesh(new THREE.PlaneGeometry(128,128));
 const split=subdividePresentation(large,MESH_EDGE_CELLS);
@@ -233,6 +262,12 @@ for (const call of ['warpSkip(&walk, bc, true)','warpRestart(&walk, ro, rd)','wa
 assert(!/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: no mesh cut (its straight-ray distance isn\'t the chord march\'s)');
 assert(/meshCutDepth\(h\.depth\)/.test(modules['volume.realistic']), 'flat: the mesh cut');
 assert(modules.pick.includes('fn pickCurved') && modules.pick.includes('warpUse(P.ro[i].w'), 'pick: the displayed ray for a curved pick');
+// the menu's warm-up (src/preload.js) for a gamemode that bends the view: its curved variants, the ones it draws
+for (const v of ['realistic','plain']) {
+  const vols=(curved) => warmChecks(v,{},{curved}).filter((x) => x.kind==='render');
+  assert(vols(true).length && vols(true).every((x) => x.curved && /warpWalk/.test(x.code(g))), `warmChecks ${v}, curved: the curved variants`);
+  assert(vols(false).every((x) => !x.curved && !/warpWalk/.test(x.code(g))), `warmChecks ${v}: the flat ones`);
+}
 assert(modules.taa.includes('fn presentationReproject') && modules.taa.includes('warpPointWith(flatWorld, P.prevK'), 'TAA: reprojection through the bend');
 const farCurved=farFrag(g,Lw,false,{curved:true}), farFlat=farFrag(g,Lw), farMesh=farFrag(g,Lw,true);
 for (const call of ['gFarRay = warpRay(ro, rd)','warpSpans(gFarRay','farPlaneHit(gFarRay','warpResume(t, gFarWorld)','warpArc(transmitted','warpPoint(p)']) assert(farCurved.includes(call), `far view curved: ${call}`);
