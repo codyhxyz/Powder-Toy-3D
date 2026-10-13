@@ -18,6 +18,8 @@ export const TORCH_LIGHT = {
   slots: LAMP_MAX - 2,     // at most this many lit at once, the nearest: the hand's torch and a thrown one keep theirs
   reach: 40,               // cells: no farther from the eye than this (past it a pool is a speck)
   moved: 1,                // cells the eye (or the window) moves before the nearest are picked again
+  radius: 0.5,             // cells: the light is the burning head, one cell (gfx/lamps.js: a tube light of the light's own size)
+  length: 0,
 };
 
 export function createTorchLights() {
@@ -44,7 +46,7 @@ export function createTorchLights() {
       near.sort((a, b) => a[0] - b[0]);
       const color = TORCH_LIGHT.color.map((c) => c * TORCH_LIGHT.intensity);
       lamps.setFixed(near.slice(0, TORCH_LIGHT.slots).map(([, t]) => ({
-        pos: [t[0] + 0.5 - origin.x, t[1] + 0.5 - origin.y, t[2] + 0.5 - origin.z], range: TORCH_LIGHT.range, color,
+        pos: [t[0] + 0.5 - origin.x, t[1] + 0.5 - origin.y, t[2] + 0.5 - origin.z], range: TORCH_LIGHT.range, color, radius: TORCH_LIGHT.radius, length: TORCH_LIGHT.length,
       })));
       lit = Math.min(near.length, TORCH_LIGHT.slots);
     },

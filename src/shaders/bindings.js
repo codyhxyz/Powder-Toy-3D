@@ -34,6 +34,7 @@ export const FRAME_UNIFORMS = [
   ['model', 'mat4x4f', 'the volume: grid cells → world (render.js modelMatrix)'],
   ['lampPos', `array<vec4f, ${LAMP_MAX}>`, 'uLampPos'],
   ['lampCol', `array<vec4f, ${LAMP_MAX}>`, 'uLampCol'],
+  ['lampShape', `array<vec4f, ${LAMP_MAX}>`, 'uLampShape'],
   ['wandLightPosition', `array<vec4f, ${WAND_LIGHTS}>`, 'uWandLightPosition'],
   ['wandLightColor', `array<vec4f, ${WAND_LIGHTS}>`, 'uWandLightColor'],
   ['cam', 'vec3f', 'uCam (the eye in grid cells)'],

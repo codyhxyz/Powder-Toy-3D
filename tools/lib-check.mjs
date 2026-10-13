@@ -931,7 +931,8 @@ ${body}
     // by the torch's cell (LAMP_PAD), and a dug-out torch lights nothing.
     {
       const torch = elementsM.E.WALL_TORCH, slots = g.nx * g.ny * g.nz, nbricks = slots / 64;
-      const [{ cellSlot }, { LAMP_UNIT: U, LAMP_SOFT: S }] = await Promise.all([src('sim.js'), src('gfx/lamps.js')]);
+      const [{ cellSlot }, { LAMP_UNIT: U }] = await Promise.all([src('sim.js'), src('gfx/lamps.js')]);
+      const S = 0;   // the lamp is a point (lampShape 0): its soft core is its radius, so none, and its shadow ray aims at its centre
       const L = [10.5, 8.5, 12.5], R = 14, col = [1, 0.5, 0.25];
       const state = (withTorch) => {
         const a = new Float32Array(2 * slots * 4);

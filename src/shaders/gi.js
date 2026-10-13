@@ -11,8 +11,9 @@ import { fold } from '../gpu/kernels.js';
 //   it along x, y and z it blocks (the projected coverage of its opaque cells,
 //   so a one-cell plate still blocks the light crossing it, plus the optical
 //   depth of liquid, glass and smoke), and the light its exposed faces send
-//   back out: albedo × (sunlight from the shadow map + last frame's probe
-//   light at that brick), plus what they give off themselves (emission():
+//   back out: albedo × (sunlight from the shadow map + the hand lamps' and
+//   wall torches' light by traced shadow rays + last frame's probe light at
+//   that brick), plus what they give off themselves (emission():
 //   lava, hot metal, luminous crystal, a live wire, a lit lamp). Feeding the
 //   probes back makes bounces add up over frames, so a glowing thing lights a
 //   room by bounce too. A workgroup per brick, a thread per cell.
@@ -248,6 +249,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
         }
         e += FU.sunCol * nl * sunVis;
       }
+      // and the lamps' (the torch, the lantern, the wall torches), shadowed as the sun is: so their
+      // light bounces into their own shadows the way the sun's does (lighting.js lampSum)
+      if (FU.lampCount > 0) { e += lampSum(vec3f(c) + 0.5 + nrm * 0.5, nrm, nrm, false); }
       let L = alb * e + em;
       rad += L;
       dir += nrm * dot(L, vec3f(1.0 / 3.0));

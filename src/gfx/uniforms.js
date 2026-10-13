@@ -63,6 +63,7 @@ export const gfxUniforms = {
   uLampCount: { value: 0 },   // hand lamps (gfx/lamps.js; src/pov/lamps.js sets them)
   uLampPos: { value: new Float32Array(4 * LAMP_MAX) },
   uLampCol: { value: new Float32Array(4 * LAMP_MAX) },
+  uLampShape: { value: new Float32Array(4 * LAMP_MAX) },   // x radius, y length (cells): the light's own size
   uCaveAmbient: { value: [0, 0, 0] },   // the scene's ambient floor (a world scene's `ambient`: Descent's caves), radiance
 };
 
@@ -161,7 +162,7 @@ export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRe
   const u = gfxUniforms;
   uniforms.write({
     viewProj: last.viewProj, invViewProj: last.invViewProj, model: last.model,
-    lampPos: vec4s(u.uLampPos.value), lampCol: vec4s(u.uLampCol.value),
+    lampPos: vec4s(u.uLampPos.value), lampCol: vec4s(u.uLampCol.value), lampShape: vec4s(u.uLampShape.value),
     wandLightPosition: u.uWandLightPosition.value, wandLightColor: u.uWandLightColor.value,
     cam, time, sun, lightGain,
     sunExt: u.uSunExt.value, simClock: u.uSimClock.value, sunCol: u.uSunCol.value, pixScale: u.uPixScale.value,

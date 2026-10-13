@@ -61,8 +61,8 @@ const FLAME_HEIGHT = 0.85;
 const FLAME_HEART = 0.3;       // share of the flame's height its light and embers come from
 const WIND_FOLLOW = 9;         // 1/s: how fast the flame's lean follows its motion
 // The flame lights the torch and the fist that holds it (the viewmodel pass's own point light). They
-// sit inside the soft core of its light (lampLight gives about 1.5 × its colour there), but three's point
-// light has no core: hung right at the flame it burns the head's parts under it white. So it hangs a
+// sit right by its light (lampLight climbs toward the flame's own radius there), but three's point
+// light has no size: hung right at the flame it burns the head's parts under it white. So it hangs a
 // cell toward the eye, which keeps every part at about the same distance and lights the sides you see.
 const HAND_LIGHT_BACK = 1;     // cells toward the eye from the flame's heart
 const HAND_LIGHT = 0.45;       // irradiance at that distance, × the lamp's colour (what lampLight gives at LAMP_UNIT)
@@ -114,6 +114,16 @@ export function fanFlame(f, dt, flicker) {
   f.setFlicker(flicker);
 }
 
+// The light's own size (gfx/lamps.js: a tube light, Karis 2013), cells, measured off what shines:
+// the live flame (burn) or the model's glowing part (the lantern's glass, 'glow'). A capsule as tall
+// as the part and as wide: its ball's radius, swept over the height the two caps leave.
+function lightBody(m, burn) {
+  const k = m.info.unit;   // cells per model unit
+  const glow = burn ? null : m.obj.getObjectByName('glow')?.geometry.parameters;
+  const [r, h] = burn ? [FLAME_WIDTH, FLAME_HEIGHT] : glow ? [Math.max(glow.radiusTop, glow.radiusBottom), glow.height] : [0, 0];
+  return { radius: r * k, length: Math.max(h - 2 * r, 0) * k };
+}
+
 export function lampTool({ key, name, model: modelKey, desc, light, burn = null, pose }) {
   const tool = key.toLowerCase();
   const color = light.color.map((c) => c * light.intensity);
@@ -128,6 +138,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
       held.rotation.y = pose.yaw ?? 0;
       hand.add(held);
       const heldMesh = attachModel(held, modelKey);
+      const body = lightBody(heldMesh, burn);
       const thrower = trigger(THROW_REFIRE, { button: 'secondary', hold: false });
       const toucher = trigger(TOUCH_REFIRE);
       const fire = burn ? toolPass(torchFireFrag) : null;
@@ -153,7 +164,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
       const flickerNow = (offset = 0) => (light.flicker ? flickerAt(performance.now() / MS_PER_S + offset, light.flicker) : 1);
       const shine = (k, pos, f, held_ = false) => {
         for (let i = 0; i < 3; i++) lightColor[i] = color[i] * f;
-        lamps.set(k, { pos, range: light.range, color: lightColor, held: held_ });
+        lamps.set(k, { pos, range: light.range, color: lightColor, held: held_, ...body });
       };
 
       // ---- in flight: drawn and lit where the shared projectiles say

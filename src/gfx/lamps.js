@@ -7,6 +7,7 @@ export const LAMP_MAX = 8;     // lamps lit at once (the shader loops over this 
 // ray stops this far short of the cell's centre, out of the cell (√3/2 is its corner).
 export const LAMP_FIXED_PAD = 0.9;   // cells
 export const LAMP_UNIT = 3;    // cells (about 1 m) at which a lamp's colour is the irradiance it gives
-// A flame or a lantern's glass isn't a point: inside about this radius its light stops
-// climbing as 1/d², so what's right by it doesn't blow out (Karis 2013's soft falloff).
-export const LAMP_SOFT = 4.5;  // cells: a torch held by a wall mustn't burn it white
+// A lamp's light has the size of what shines: a tube light (Karis 2013), its radius and
+// upright length in cells (pov/lamps.js `radius`, `length`). The flame's or the lantern
+// glass's are measured off their models (pov/tools/lamp.js lightBody); a wall torch's
+// is its head, one cell (world/torchLights.js).
