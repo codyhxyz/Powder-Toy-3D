@@ -20,10 +20,13 @@ export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
 // Material texture LOD (shaders/gfx/surface.js lodFade): detail of spatial
 // frequency f is fully drawn up to DETAIL_FADE_LO cycles per pixel and gone at
-// DETAIL_FADE_HI, the Nyquist limit. TAA's sub-pixel jitter resolves what lies
-// between, so fading had started at 0.15 (~7 px per cycle) washed textures out
-// a few metres from the camera: bark was smooth plastic from any normal view.
-export const DETAIL_FADE_LO = 0.25, DETAIL_FADE_HI = 0.5;
+// DETAIL_FADE_HI. This is what trilinear mipmapping does to a texture (Minecraft's
+// Mipmap Levels; any GPU): mip 0 keeps every frequency up to Nyquist, 0.5 cycles
+// per pixel, and the blend into mip 1 averages that finest band away by 1 cycle
+// per pixel, where a pixel's box filter (TAA's jittered accumulation) would
+// average it to its mean anyway. Fading earlier (0.15, then 0.25) washed
+// textures out a few metres from the camera: bark was smooth plastic.
+export const DETAIL_FADE_LO = 0.5, DETAIL_FADE_HI = 1.0;
 
 // Cost tiers, by extra GPU ms per frame (measured as above).
 export const COST_LOW_MS = 0.5;       // below this: low

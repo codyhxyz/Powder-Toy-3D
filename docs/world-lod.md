@@ -9,7 +9,7 @@ The simulation window controls physics, not the limit of visible detail.
 - A chunk mask changes ownership only after its mesh is ready.
 - Edits invalidate affected chunks and their padding. Revision checks reject old worker results.
 - Uncached chunks retain the coarse field while the worker builds their geometry.
-- The cache retains at most 96 chunks and 96 MiB of geometry arrays.
+- The cache retains at most 192 chunks and 96 MiB of geometry arrays.
   GPU geometry duplicates those arrays. Worker storage and render targets are additional memory.
 - The coarse and fine boundaries can have small shape differences. Surface nets can have non-manifold diagonal contacts.
 

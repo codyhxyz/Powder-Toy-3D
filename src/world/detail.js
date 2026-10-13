@@ -30,13 +30,16 @@ export { DETAIL_CHUNK };
 // in their vertex stage, the prepass's too (the view's params carry the
 // effect), the chunks wanted change with it (the view key), and none is
 // culled by the flat frustum: bent down, a chunk outside it can show.
-// Chunks are wanted where a cell would span more than CELL_PIXELS of the
-// screen, nearest first, one in flight at a time, at most MAX_CHUNKS of them
+// Chunks are wanted where a coarse brick would span more than BRICK_PIXELS of
+// the screen, nearest first, one in flight at a time, at most MAX_CHUNKS of them
 // and MAX_BYTES of geometry; a chunk the window covers isn't kept. The cells
 // kernel and both pipelines build the first time the far view is drawn
 // (B5: nothing of it builds in views that don't draw it).
-const PAD = DETAIL_PAD, MAX_CHUNKS = 96, MAX_BYTES = 96 * 1024 * 1024;
-const CELL_PIXELS = 3; // largest projected cell before requesting finer geometry
+// The nearest MAX_CHUNKS in view are meshed; past them the coarse brick field
+// shows. 96 ended cell detail ~100 m out on the Island (13 MB of geometry);
+// 192 reaches ~150 m and stays well inside MAX_BYTES.
+const PAD = DETAIL_PAD, MAX_CHUNKS = 192, MAX_BYTES = 96 * 1024 * 1024;
+const BRICK_PIXELS = 3; // a coarse brick spanning more pixels than this asks for real cells
 const BUFFER = { VERTEX: 0x20, INDEX: 0x10, COPY_DST: 0x08, STORAGE: 0x80, COPY_SRC: 0x04 };   // (GPUBufferUsage's bits)
 const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };                   // (GPUTextureUsage's bits)
 
@@ -178,8 +181,8 @@ export class WorldDetail {
       if (lo[0] >= o.x && hi[0] <= o.x + g.nx && lo[2] >= o.z && hi[2] <= o.z + g.nz) continue;
       const box = m.box.set(new Vector3(...lo), new Vector3(...hi));
       const distance = Math.max(1, box.distanceToPoint(eye));
-      if (pixels * 4 / distance < CELL_PIXELS || (!bent && !m.frustum.intersectsBox(box.applyMatrix4(m.worldToScene)))) continue;
-      // Two geometric levels: real cells where coarse cells span >3 pixels,
+      if (pixels * BRICK / distance < BRICK_PIXELS || (!bent && !m.frustum.intersectsBox(box.applyMatrix4(m.worldToScene)))) continue;
+      // Two geometric levels: real cells where coarse bricks span >BRICK_PIXELS,
       // the existing coarse field otherwise. Adjacent cached chunks share a
       // lattice; independent step sizes would open cracks between them.
       candidates.push({ key: x + z * this.nx, x: lo[0], z: lo[2], step: 1, distance });

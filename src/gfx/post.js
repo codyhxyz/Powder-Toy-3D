@@ -159,8 +159,18 @@ export const ADAPT = {
 
 // Frame-time trials, not a refresh-rate target alone: a capped 30 Hz page can
 // regain detail too. Failed trials back off so CPU-bound scenes don't keep cycling.
+export const AUTO_RES = {
+  WINDOW: 1.2,        // s of frames averaged per measurement
+  BUDGET: 1 / 50,     // s: a slower average frame tries a lower scale
+  DOWN: 0.85,         // scale × this per step down…
+  UP: 1.08,           // …and × this per step back up
+  KEEP: 0.93,         // a step is kept only if the frame time moves by this ratio
+  MIN: 0.6,           // lowest multiple of the selected render scale
+  HOLD: 15,           // s between trials…
+  MAX_HOLD: 120,      // …doubling after each failed one, up to this
+};
 export function createAutoResolution() {
-  const WINDOW = 1.2, MIN = 0.6, HOLD = 15, MAX_HOLD = 120;
+  const { WINDOW, BUDGET, DOWN, UP, KEEP, MIN, HOLD, MAX_HOLD } = AUTO_RES;
   let time = 0, frames = 0, trial = null, resting = false;
   let downAt = 0, upAt = HOLD, downHold = HOLD, upHold = HOLD;
   const auto = {
@@ -186,7 +196,7 @@ export function createAutoResolution() {
       time = frames = 0;
       if (trial) {
         const { scale, baseline, up } = trial;
-        const accepted = up ? avg <= baseline / 0.93 : avg <= baseline * 0.93;
+        const accepted = up ? avg <= baseline / KEEP : avg <= baseline * KEEP;
         if (!accepted) auto.scale = scale;
         if (up) {
           upAt = now + (accepted ? WINDOW : upHold);
@@ -202,9 +212,9 @@ export function createAutoResolution() {
         return;
       }
       const up = auto.scale < 1 && now >= upAt;
-      if (up || (avg > 1 / 50 && auto.scale > MIN && now >= downAt)) {
+      if (up || (avg > BUDGET && auto.scale > MIN && now >= downAt)) {
         trial = { scale: auto.scale, baseline: avg, up };
-        auto.scale = up ? Math.min(1, auto.scale * 1.08) : Math.max(MIN, auto.scale * 0.85);
+        auto.scale = up ? Math.min(1, auto.scale * UP) : Math.max(MIN, auto.scale * DOWN);
       }
     },
   };
@@ -1334,7 +1344,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     /** Render scale per axis the next render uses (upscaling is TAA's job). */
     get renderScale() {
       const s = settingsOf();
-      return s.taa ? s.upscale * Math.min(1, Math.max(0.6, s.resolutionScale)) : 1;
+      return s.taa ? s.upscale * Math.min(1, Math.max(AUTO_RES.MIN, s.resolutionScale)) : 1;
     },
     /** GPUTextures: { scene, depth, history, bloom, down, up } (width and height on each). */
     get targets() { return { scene: main.color, depth: main.depth, history: history[cur], bloom: up[0] ?? down[0], down, up }; },
