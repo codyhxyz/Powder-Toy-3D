@@ -1353,16 +1353,18 @@ fn albedoOf(id: i32, p: vec3f, seed: f32) -> vec3f {
 
 const MAT_ROUGH_MIN: f32 = 0.04;   // smoothest a textured surface may get (GGX roughness)
 const BUMP_MAX_SLOPE: f32 = 1.5;   // cap on the bump's tangential height gradient
+// bump: tilt normal ng by the tangential part of the height gradient g (the far field's surfaces too)
+fn bumpNormal(ng: vec3f, g: vec3f) -> vec3f {
+  var gt = g - ng * dot(ng, g);
+  let gl = length(gt);
+  if (gl > BUMP_MAX_SLOPE) { gt *= BUMP_MAX_SLOPE / gl; }
+  return normalize(ng - gt);
+}
 fn applyMat(s: ptr<function, Surf>, m: Mat) {
   (*s).albedo = max(m.alb, vec3f(0.0)); (*s).rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0); (*s).metal = m.metal; (*s).f0 = m.f0;
   (*s).sss = m.sss; (*s).sssCol = m.sssCol; (*s).glint = m.glint; (*s).glintDens = m.glintDens;
   (*s).cav = clamp(m.cav, 0.0, 1.0); (*s).aniso = m.aniso; (*s).tang = m.tang; (*s).trans = m.trans; (*s).emit = m.emit;
-  // bump: tilt the normal by the tangential part of the height gradient
-  let ng = (*s).ng;
-  var gt = m.g - ng * dot(ng, m.g);
-  let gl = length(gt);
-  if (gl > BUMP_MAX_SLOPE) { gt *= BUMP_MAX_SLOPE / gl; }
-  (*s).n = normalize(ng - gt);
+  (*s).n = bumpNormal((*s).ng, m.g);
 }
 ${relief ? reliefGLSL : ''}
 // Surface record for a smooth-channel hit: blend the material of the cells of
@@ -1761,6 +1763,27 @@ const ON_SIGMA_RATE: f32 = 1.6;
 // Sun diffuse: this much ignores the cavity term, plus SUN_CAV_GAIN × cavity.
 const SUN_CAV_MIN: f32 = 0.5;
 const SUN_CAV_GAIN: f32 = 0.5;
+// The sun's terms shadeSurf and the far field's surfaces (shaders/far.js) share.
+// Bumped normal n kept on the visible side of v (toward the eye).
+fn faceView(n: vec3f, v: vec3f) -> vec3f {
+  var o = n;
+  let nv = dot(n, v);
+  if (nv < SHADE_NV_MIN) { o = normalize(n + v * (SHADE_NV_MIN - nv)); }
+  return o;
+}
+// Sun diffuse of diffuse colour kD (rough powders back-scatter: Oren–Nayar; porous
+// stuff, sss, wraps light past the terminator, tinted sssCol). lv = l·v.
+fn sunDiffuse(kD: vec3f, nl: f32, nv: f32, lv: f32, rough: f32, sss: f32, sssCol: vec3f) -> vec3f {
+  let lam = orenNayar(nl, nv, lv, max(rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE);
+  let wrap = max(nl + sss, 0.0) / ((1.0 + sss) * (1.0 + sss));
+  return kD * mix(vec3f(lam), wrap * sssCol, sss);
+}
+// The sun's light through visibility sh: diffuse dSun (sunDiffuse) under the
+// cavity term, and specular spec (FU.sunCol is irradiance / pi in this
+// renderer's units, hence the pi on the BRDF term).
+fn sunTerm(sh: vec3f, dSun: vec3f, cav: f32, spec: vec3f) -> vec3f {
+  return FU.sunCol * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * spec);
+}
 // Leaves: thickness of the clump toward the sun, from two samples of the natural-solids field
 // (distance along the sun ray, cells; cells of path each stands for).
 const LEAF_TH_D1: f32 = 0.9;
@@ -1831,9 +1854,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   }
   var local = sampleLight(s.p + ng * LOCAL_PROBE_LIFT) * FU.lightGain;
   // keep the bumped normal on the visible side
-  var n = s.n;
-  let nvr = dot(n, v);
-  if (nvr < SHADE_NV_MIN) { n = normalize(n + v * (SHADE_NV_MIN - nvr)); }
+  let n = faceView(s.n, v);
   let nv = clamp(dot(n, v), 1e-4, 1.0);
   let l = FU.sun;
   let nl = dot(n, l);
@@ -1860,10 +1881,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   let kD = s.albedo * (1.0 - s.metal) * (1.0 - FssEss - Fms * Ems);
 
   // sun: diffuse (rough powders back-scatter; porous stuff wraps light past the terminator)
-  let sigma = max(s.rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE;
-  let lam = orenNayar(nl, nv, dot(l, v), sigma);
-  let wrap = max(nl + w, 0.0) / ((1.0 + w) * (1.0 + w));
-  let dSun = kD * mix(vec3f(lam), wrap * s.sssCol, w);
+  let dSun = sunDiffuse(kD, nl, nv, dot(l, v), s.rough, w, s.sssCol);
   // sun: specular, with multiple-scattering energy compensation
   let msK = 1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0);   // (the lamps' specular below takes it too)
   var spec = ggxSpecA(n, v, l, s.rough, F0, s.tang, s.aniso) * msK;
@@ -1874,8 +1892,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
     if (s.flowW > 0.0) { gs = mix(gs, glintSpec(s.tp1, n, v, l, s.rough, F0, s.glintDens), s.flowW); }
     spec = mix(spec, gs, g);
   }
-  // (FU.sunCol is irradiance / pi in this renderer's units, hence the pi on the BRDF term)
-  var c = FU.sunCol * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * s.cav) + PI_S * spec);${relief ? `
+  var c = sunTerm(sh, dSun, s.cav, spec);${relief ? `
   // down a carved crevice: less sky and ambient (the sun had reliefSunVis)
   {
     let sky = reliefSkyVis();

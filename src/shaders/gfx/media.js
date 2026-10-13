@@ -173,11 +173,7 @@ fn gasDensity(p0: vec3f, warp: f32, m: ptr<function, vec4f>, nf: ptr<function, v
   return d;
 }
 
-fn hgPhase(mu: f32, g: f32) -> f32 {
-  let k = 1.0 + g * g - 2.0 * g * mu;
-  return (1.0 - g * g) / (4.0 * PI_L * k * sqrt(k));
-}
-fn gasPhase(mu: f32, g: f32) -> f32 { return mix(hgPhase(mu, PHASE_BACK_G * g), hgPhase(mu, g), PHASE_FWD_W); }
+fn gasPhase(mu: f32, g: f32) -> f32 { return hgPhase2(mu, PHASE_BACK_G * g, g, PHASE_FWD_W); }
 
 // Skylight (the gas above shades it) plus the glow volume, scattered.
 fn gasAmbient(p: vec3f) -> vec3f {

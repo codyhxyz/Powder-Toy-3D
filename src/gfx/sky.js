@@ -113,6 +113,14 @@ export function skyViewGLSL() {
   return /* wgsl */ `
 const HORIZON_BLEND: f32 = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
 
+// Henyey–Greenstein phase function: the share of light scattered through
+// angle acos(mu) by a medium of asymmetry g, per steradian (the haze here,
+// the clouds and gas lighting.js's hgPhase2 mixes two of).
+fn hgPhase(mu: f32, g: f32) -> f32 {
+  let k = 1.0 + g * g - 2.0 * g * mu;
+  return (1.0 - g * g) / (4.0 * PI_L * k * sqrt(k));
+}
+
 // Relative air mass toward zenith cosine cz (airMass above).
 fn airMass(cz0: f32) -> f32 {
   let cz = max(cz0, 0.0);
@@ -126,8 +134,7 @@ fn skyRadiance(d: vec3f) -> vec3f {
   let mv = airMass(d.y);
   let ms = airMass(FU.sun.y);
   let pR = 3.0 / (16.0 * PI_L) * (1.0 + mu * mu);
-  let g2 = AEROSOL_G * AEROSOL_G;
-  let pM = (1.0 - g2) / (4.0 * PI_L * pow(1.0 + g2 - 2.0 * AEROSOL_G * mu, 1.5));
+  let pM = hgPhase(mu, AEROSOL_G);
   // the integral over height of e^(-tau ms x) e^(-tau mv (1 - x)) (x = relative air density)
   let dm = mv - ms;
   let ev = exp(-TAU_AIR * mv);

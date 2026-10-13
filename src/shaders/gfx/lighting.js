@@ -104,6 +104,11 @@ ${skyGLSL()}
 ${cloudDeckGLSL}
 // airMass, skyRadiance, skyColor: gfx/sky.js skyViewGLSL (the box's backdrop draws the same sky, gfx/overlays.js)
 ${skyViewGLSL()}
+// Two Henyey–Greenstein lobes (hgPhase, gfx/sky.js): back lobe gBack, forward
+// lobe gFwd with weight wFwd (the clouds' silver lining, the gas's glow).
+fn hgPhase2(mu: f32, gBack: f32, gFwd: f32, wFwd: f32) -> f32 {
+  return mix(hgPhase(mu, gBack), hgPhase(mu, gFwd), wFwd);
+}
 // Rough open-environment irradiance / pi on a surface facing n (no occlusion):
 // the sky over the share of n's hemisphere it covers, the ground below. The GI
 // probes integrate the real thing; this is for code without them.
@@ -188,10 +193,12 @@ const CAUSTIC_FILL: f32 = 0.7;        // share of the path below the liquid's to
                                       // (water soaked into sand or gravel has no open surface to focus with)
 const CAUSTIC_MAX: f32 = 4.0;         // brightest focus (beams cross past it)
 const CAUSTIC_MIN: f32 = 0.3;         // darkest spread
+// Mean extinction of element id over the three channels (an optical depth's grey share).
+fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }
 // Whether a shadow-map texel sm, seen from depth d, has the receiver under a body of liquid tid.
 fn underPool(sm: vec4f, d: f32, tid: i32) -> bool {
   if (RCLASS(tid) != R_LIQUID || d <= sm.y || d >= sm.z + CAUSTIC_BED_GAP) { return false; }
-  let lenL = (sm.w - f32(tid) * SHADOW_TINT_ID_SCALE) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
+  let lenL = (sm.w - f32(tid) * SHADOW_TINT_ID_SCALE) / max(meanSigma(tid), 1e-4);
   return lenL >= CAUSTIC_FILL * (min(d, sm.z) - sm.y);
 }
 // The light the ripples focus on grid point p lying D cells under the surface (along the sun).
@@ -283,6 +290,33 @@ ${shadowMap ? /* wgsl */ `
 // frame. Eight entries, so a private array (docs/webgpu.md C6).
 var<private> VOGEL: array<vec2f, ${PCSS_TAPS}> = array<vec2f, ${PCSS_TAPS}>(${vogel(PCSS_TAPS)});
 
+// Point p in the map whose frame is sunBasis's (c, R, u, v): its depth along
+// the sun, *d, and its 2×2 taps (the low texel *i0, the bilinear fraction *w:
+// wk0). Returns its map coordinate st, 0..1 across the disc.
+fn shadowProject(p: vec3f, c: vec3f, R: f32, u: vec3f, v: vec3f, d: ptr<function, f32>, i0: ptr<function, vec2i>, w: ptr<function, vec2f>) -> vec2f {
+  let q = p - c;
+  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
+  *d = R - dot(q, FU.sun);
+  let f = st * f32(FU.shadowRes) - 0.5;
+  *i0 = vec2i(floor(f));
+  *w = f - vec2f(*i0);
+  return st;
+}
+// The light map texel sm lets through to depth d: tinted by its translucent
+// stretch (its tint element's colour, the proportional share of its optical
+// depth), 1 outside it.
+fn shadowTexelAtt(sm: vec4f, d: f32) -> vec3f {
+  var att = vec3f(1.0);
+  let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
+  if (tid > 0 && d > sm.y) {
+    let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
+    let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
+    let tint = SIGMA(tid) / max(meanSigma(tid), 1e-4);
+    att = exp(-tint * tau * frac);
+  }
+  return att;
+}
+
 // Sun visibility at a surface point hp with normal n, from the map (sunShadow
 // below adds the clouds).
 fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
@@ -292,18 +326,16 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var v: vec3f;
   sunBasis(&c, &R, &u, &v);
   let p = hp + n * SHADOW_NORMAL_OFFSET;
-  let q = p - c;
-  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
-  let d = R - dot(q, FU.sun);
+  var d: f32;
+  var i0: vec2i;
+  var w: vec2f;
+  let st = shadowProject(p, c, R, u, v, &d, &i0, &w);
   // Depth bias. A PCF tap one texel (T voxels) away sees the receiver's own face
   // up to T*(|n.u|+|n.v|)/(n.s) closer, and at the foot of a sun-facing wall it
   // sees that wall up to ~0.6 closer: hence >= 0.8. It must stay well below
   // 1/sun.y (1.23), the depth gap to the top of a 1-voxel step.
   let T = 2.0 * R / f32(FU.shadowRes);
   let bias = max(SHADOW_BIAS_MIN, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, FU.sun), SHADOW_BIAS_NS_MIN) + SHADOW_BIAS_PAD);
-  let f = st * f32(FU.shadowRes) - 0.5;
-  let i0 = vec2i(floor(f));
-  let w = f - vec2f(i0);
   var acc = vec3f(0.0);
   var tr = vec3f(0.0);
   var nLit = 0.0;
@@ -314,14 +346,8 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
     let o = vec2i(k & 1, k >> 1u);
     let sm = textureLoad(tShadow, clamp(i0 + o, vec2i(0), vec2i(FU.shadowRes - 1)), 0);
     let lit = select(0.0, 1.0, d < sm.x + bias);
-    var att = vec3f(1.0);
+    let att = shadowTexelAtt(sm, d);
     let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
-    if (tid > 0 && d > sm.y) {
-      let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
-      let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-      let tint = SIGMA(tid) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
-      att = exp(-tint * tau * frac);
-    }
     let wk = wk0(o, w);
     if (tid > 0 && underPool(sm, d, tid)) { cD += (d - sm.y) * wk; cW += wk; }
     acc += lit * att * wk;
@@ -384,28 +410,21 @@ fn sunMapShadowAt(p: vec3f) -> vec3f {
   var u: vec3f;
   var v: vec3f;
   sunBasis(&c, &R, &u, &v);
-  let q = p - c;
-  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
-  let d = R - dot(q, FU.sun);
-  let f = st * f32(FU.shadowRes) - 0.5;
-  let i0 = vec2i(floor(f));
-  let w = f - vec2f(i0);
+  var d: f32;
+  var i0: vec2i;
+  var w: vec2f;
+  shadowProject(p, c, R, u, v, &d, &i0, &w);
   var acc = vec3f(0.0);
   var cD = 0.0;
   var cW = 0.0;
   for (var k = 0; k < 4; k++) {
     let o = vec2i(k & 1, k >> 1u);
     let sm = textureLoad(tShadow, clamp(i0 + o, vec2i(0), vec2i(FU.shadowRes - 1)), 0);
-    var lit = select(vec3f(0.0), vec3f(1.0), d < sm.x + VOLUME_SHADOW_BIAS);
+    let lit = select(vec3f(0.0), vec3f(1.0), d < sm.x + VOLUME_SHADOW_BIAS) * shadowTexelAtt(sm, d);
     let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
-    if (tid > 0 && d > sm.y) {
-      let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
-      let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-      let tint = SIGMA(tid) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
-      lit *= exp(-tint * tau * frac);
-      if (underPool(sm, d, tid)) { cD += (d - sm.y) * wk0(o, w); cW += wk0(o, w); }
-    }
-    acc += lit * wk0(o, w);
+    let wk = wk0(o, w);
+    if (tid > 0 && underPool(sm, d, tid)) { cD += (d - sm.y) * wk; cW += wk; }
+    acc += lit * wk;
   }
   if (${caustics} && cW > 0.0) { acc *= mix(1.0, causticGain(p, cD / cW), cW); }
   return acc;
