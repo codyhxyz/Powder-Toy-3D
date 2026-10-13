@@ -55,7 +55,7 @@ export const MAPS = [
 export const GAMEMODES = [
   { key: 'sandbox', name: 'Sandbox', desc: 'Pour, build, burn and blow it up. Every map.' },
   { key: 'noita', name: 'Noita', desc: 'Wands only. Go down through the Mines and the Holy Mountains, finding wands and spells on the way.' },
-  { key: 'animalCrossing', name: 'Animal Crossing', effect: 'rollingLog', desc: 'Willow Cove with a rolling-log horizon. The same Sandbox, a different view.' },
+  { key: 'animalCrossing', name: 'Animal Crossing', effect: 'rollingLog', desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Willow Cove.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },
   { key: 'koth', name: 'King of the Hill', team: true, desc: 'Hold the hill alone to score. It moves every minute.' },
