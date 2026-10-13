@@ -1,7 +1,7 @@
 // Post check (docs/webgpu.md U7's acceptance): src/gfx/post.js on its harness
 // page (tools/harness/post.html), a synthetic scene target at 400×250, no app.
 //
-//   passes      a presented frame is the scene pass, 3 render passes and 1
+//   passes      a presented frame is the scene pass, 4 render passes and 1
 //               compute pass of post's, and the canvas pass: one submit. An E1
 //               kernel that reads FrameUniforms, recorded in compute() after
 //               prepare()'s write, sees this frame's jitter and pixScale, and the
@@ -30,9 +30,10 @@
 //   chain       the plane over the sky (TAA, bloom, sharpening): each bloom level
 //               (prefilter, down 1–5, up 4–1, up[0]) against the WGSL's taps and
 //               weights in JS from the GPU's level before, its energy, and every
-//               canvas pixel against the composite in JS (CAS, the bloom term,
-//               AgX, sRGB, the sky behind partial coverage, the dither) from the
-//               GPU's resolved frame and up[0]; with stronger settings again
+//               canvas pixel against the composite in JS (CAS, the bloom term: one
+//               bilinear tap of up[0]'s 3×3 tent, AgX, sRGB, the sky behind partial
+//               coverage, the dither) from the GPU's resolved frame and up[0]; with
+//               stronger settings again, and upscaled (TAAU at 1/1.5)
 //   canvas      an empty scene: the opaque canvas presents the sky gradient (alpha
 //               255; the capture against this file's gradient and against
 //               Playwright's screenshot of the page, and Chrome's own rendering of
@@ -202,8 +203,15 @@ function ign(x, y) {
   const a = r(r(r(x) * r(0.06711056)) + r(r(y) * r(0.00583715)));
   return fract(r(r(52.9829189) * r(fract(a))));
 }
-// one canvas pixel (0..255, before the 8-bit rounding) from the resolved frame and up[0]
-function compositeAt(hist, up0, s, x, y, noise = ign(x, y)) {
+// the bloom pass: up[0]'s 3×3 tent (1-2-1 ⊗ 1-2-1) on its texel grid, edges clamped; the
+// composite takes one bilinear tap of it (the old nine-tap tent9 of up[0], inside the frame)
+const tentRef = (src) => makeImage(src.w, src.h, (x, y) => {
+  let acc = [0, 0, 0];
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) acc = addTo(acc, texelAt(src, x + i, y + j), (2 - Math.abs(i)) * (2 - Math.abs(j)) / 16);
+  return acc;
+});
+// one canvas pixel (0..255, before the 8-bit rounding) from the resolved frame and the bloom image (tentRef of up[0])
+function compositeAt(hist, bloom, s, x, y, noise = ign(x, y)) {
   const u = (x + 0.5) / hist.w, v = (y + 0.5) / hist.h;
   const c = sanitize(texelAt(hist, x, y));
   let rad = c.slice(0, 3);
@@ -221,7 +229,7 @@ function compositeAt(hist, up0, s, x, y, noise = ign(x, y)) {
     rad = t.map((z) => z / lt);
   }
   if (s.bloom > 0 && !s.raw) {
-    const b = tent9(up0, u, v), br = bright(c, [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)]);
+    const b = sample(bloom, u, v), br = bright(c, [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)]);
     rad = rad.map((z, k) => z + s.bloom * (b[k] - br[k]));
   }
   let o = s.raw ? srgb(rad.map((z) => clamp(z, 0, 1))) : srgb(tonemap(rad.map((z) => Math.max(z, 0) * 2 ** s.exposure), s));
@@ -247,9 +255,9 @@ try {
   if (want('passes')) {
     console.log('\npasses');
     const { stats } = await run('budget:frame');
-    check(stats.renderPasses === 5 && stats.computePasses === 1 && stats.submits === TAAU_SUBMITS,
-      `a presented frame: ${stats.renderPasses} render passes (scene + taa, prefilter, bloom up0 + canvas), ${stats.computePasses} compute pass, ${stats.submits} submit`);
-    check(stats.dispatches === 10 && stats.draws === 5, `${stats.dispatches} dispatches (bloom down 5, up 4, reduce 1), ${stats.draws} draws (scene 1 + post 4)`);
+    check(stats.renderPasses === 6 && stats.computePasses === 1 && stats.submits === TAAU_SUBMITS,
+      `a presented frame: ${stats.renderPasses} render passes (scene + motion, prefilter, bloom up0, bloom + canvas), ${stats.computePasses} compute pass, ${stats.submits} submit`);
+    check(stats.dispatches === 10 && stats.draws === 6, `${stats.dispatches} dispatches (bloom down 5, up 4, reduce 1), ${stats.draws} draws (scene 1 + post 5)`);
     check(stats.bytesAllocated === 0 && stats.pipelinesCreated === 0, `nothing allocated or built per frame (${stats.bytesAllocated} B, ${stats.pipelinesCreated} pipelines)`);
     for (const upscale of [1, 1 / 1.5]) {
       const r = await run('frameUniforms', { route: 'hooks', upscale });
@@ -376,10 +384,15 @@ try {
 
   if (want('chain')) {
     console.log('\nchain (the plane over the sky: each bloom level from the GPU\'s level before, every canvas pixel from the GPU\'s resolved frame and up[0])');
-    for (const [label, settings] of [['defaults (adaptation held at 1)', {}], ['bloom 1, sharpen 1, look 0, exposure +1.5', { bloom: 1, sharpen: 1, look: 0, exposure: 1.5 }]]) {
+    const chains = [
+      ['defaults (adaptation held at 1)', {}],
+      ['bloom 1, sharpen 1, look 0, exposure +1.5', { bloom: 1, sharpen: 1, look: 0, exposure: 1.5 }],
+      ['upscaled 1/1.5', { upscale: 1 / 1.5 }],
+    ];
+    for (const [label, settings] of chains) {
       const r = await run('chain', { settings });
       const s = r.settings;
-      const hist = image(r.history), down = r.down.map(image), up = r.up.map(image);
+      const hist = image(r.history), down = r.down.map(image), up = r.up.map(image), bloom = tentRef(up[0]);
       const th = [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)];
       const levels = [['prefilter', prefilterRef(hist, down[0].w, down[0].h, th), down[0]]];
       for (let i = 1; i < MIPS; i++) levels.push([`down ${i}`, downRef(down[i - 1], down[i].w, down[i].h), down[i]]);
@@ -387,7 +400,7 @@ try {
       const errs = levels.map(([name, ref, got]) => ({ name, ...levelError(ref, got) }));
       const worst = errs.reduce((a, b) => (b.rel > a.rel ? b : a));
       console.log(`     ${label}: ${errs.map((e) => `${e.name} ${e.rel.toExponential(1)}`).join(', ')} (mean relative error)`);
-      check(errs.every((e) => e.rel < 2e-3 && e.max < 2e-3), `${label}: 11 bloom levels match the taps and weights, worst ${worst.name}: relative ${worst.rel.toExponential(2)}, max |Δ| ${Math.max(...errs.map((e) => e.max)).toExponential(2)} (half floats)`);
+      check(errs.every((e) => e.rel < 2e-3 && e.max < 2e-3), `${label}: ${levels.length} bloom levels match the taps and weights, worst ${worst.name}: relative ${worst.rel.toExponential(2)}, max |Δ| ${Math.max(...errs.map((e) => e.max)).toExponential(2)} (half floats)`);
       const mean = (t) => { let m = 0; for (let i = 0; i < t.d.length; i += 4) m += t.d[i] + t.d[i + 1] + t.d[i + 2]; return m / (t.d.length / 4); };
       const energy = mean(up[0]) / mean(down[0]);
       check(Math.abs(energy - 1) < 0.03 && mean(down[0]) > 1e-3, `${label}: the chain keeps the bright part's energy: mean up[0] / mean down[0] = ${energy.toFixed(4)}`);
@@ -397,9 +410,9 @@ try {
       for (let y = 0; y < r.canvas.h; y++) {
         for (let x = 0; x < r.canvas.w; x++) {
           const i = 4 * (y * r.canvas.w + x), noise = ign(x, y);
-          const ref = compositeAt(hist, up[0], s, x, y, noise);
+          const ref = compositeAt(hist, bloom, s, x, y, noise);
           // (next to a wrap of the noise: the other side's value too)
-          const alt = Math.min(noise, 1 - noise) < IGN_WRAP ? compositeAt(hist, up[0], s, x, y, noise < 0.5 ? noise + 1 : noise - 1) : ref;
+          const alt = Math.min(noise, 1 - noise) < IGN_WRAP ? compositeAt(hist, bloom, s, x, y, noise < 0.5 ? noise + 1 : noise - 1) : ref;
           const a = texelAt(hist, x, y)[3];
           if (a > 0.02 && a < 0.98) partial++;
           for (let k = 0; k < 3; k++) {
@@ -412,7 +425,7 @@ try {
       // how much the CAS and bloom terms move pixels (the check is only as strong as they are), every 5th pixel
       for (let k = 0; k < (r.canvas.w / 5) * (r.canvas.h / 5); k++) {
         const x = 5 * (k % (r.canvas.w / 5)), y = 5 * Math.floor(k / (r.canvas.w / 5));
-        const base = compositeAt(hist, up[0], { ...s, sharpen: 0, bloom: 0 }, x, y), withCas = compositeAt(hist, up[0], { ...s, bloom: 0 }, x, y), all = compositeAt(hist, up[0], s, x, y);
+        const base = compositeAt(hist, bloom, { ...s, sharpen: 0, bloom: 0 }, x, y), withCas = compositeAt(hist, bloom, { ...s, bloom: 0 }, x, y), all = compositeAt(hist, bloom, s, x, y);
         sharpened = Math.max(sharpened, ...withCas.map((z, k) => Math.abs(z - base[k])));
         bloomed = Math.max(bloomed, ...all.map((z, k) => Math.abs(z - withCas[k])));
       }
