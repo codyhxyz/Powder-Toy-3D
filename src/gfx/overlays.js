@@ -10,13 +10,20 @@
 // Colours are three's for the same hex values (sRGB → linear), blended
 // premultiplied over the scene target.
 //
+// In the realistic view a box stands under the sky that lights it (drawSky,
+// first): the clear sky of gfx/sky.js with the sun's (or moon's) disc, the open
+// ground below the horizon, as a world's far view draws it (shaders/far.js
+// farSky), so what water, glass and metal mirror is what is on screen; the
+// grid's lines are then the floor's own seams continued over that ground.
+//
 //   const overlays = createOverlays(gpu);
-//   draw(rp) { overlays.drawGrid(rp, { model, opacity }); volume.draw(rp, …); overlays.drawEdges(rp, { size, opacity }); }
+//   draw(rp) { overlays.drawSky(rp); overlays.drawGrid(rp, { model, opacity, lit }); volume.draw(rp, …); overlays.drawEdges(rp, { size, opacity }); }
 import { Color } from 'three/webgpu';
 import { frameBindings, RENDER_LAYOUT } from '../shaders/bindings.js';
 import { uniformStruct } from '../gpu/params.js';
 import { frameUniformsOf } from './uniforms.js';
 import { SCENE_FORMATS } from '../shaders/render.js';
+import { SKY, skyGLSL, skyViewGLSL, SUN_TAN_RADIUS, SUN_DISC, SUN_DISC_EDGE, glf } from './sky.js';
 
 // The floor grid: three's GridHelper(FLOOR_SPAN, FLOOR_SPAN, …), a line every
 // scene unit, the centre lines brighter; a world's is stretched over its footprint.
@@ -37,6 +44,7 @@ export const GridParams = uniformStruct('GridParams', {
   half: 'f32',          // half the span, grid units
   step: 'f32',          // between lines
   divisions: 'u32',
+  lit: 'u32',           // 1: under the sky (drawSky): the floor's seams over the open ground, not three's colours
 });
 export const EdgeParams = uniformStruct('EdgeParams', {
   color: 'vec4f',       // linear rgb, opacity
@@ -53,6 +61,8 @@ struct LineOut {
 
 export const gridWGSL = () => /* wgsl */ `
 ${LINES_WGSL}
+// the floor's seams over the open ground (FLOOR_LINE_ALB / GROUND_ALB, gfx/sky.js)
+const FLOOR_SEAM: vec3f = vec3f(${SKY.floorLineAlb.map((a, k) => glf(+(a / SKY.groundAlb[k]).toFixed(4))).join(', ')});
 ${GridParams.wgsl}
 @group(3) @binding(1) var<uniform> P: GridParams;
 // GridHelper's vertices: for each i in 0..divisions, a line along x at
@@ -66,10 +76,42 @@ ${GridParams.wgsl}
   if (e < 2u) { p = vec3f(select(-P.half, P.half, e == 1u), 0.0, k); }
   var c = P.line;
   if (line == P.divisions / 2u) { c = P.center; }
+  if (P.lit != 0u) { c = vec4f(FU.ground * FLOOR_SEAM, c.a); }
   var o: LineOut;
   o.position = FU.viewProj * P.model * vec4f(p, 1.0);
   o.color = vec4f(c.rgb * c.a, c.a);
   return o;
+}`;
+
+// The box's backdrop: the sky toward the pixel's ray, the ground below the
+// horizon (skyColor), and the key light's disc, opaque, under everything.
+export const skyWGSL = () => /* wgsl */ `
+${frameBindings()}
+const PI_L: f32 = 3.14159265;
+${skyGLSL()}
+${skyViewGLSL()}
+const SUN_TAN_RADIUS: f32 = ${glf(SUN_TAN_RADIUS)};
+const SKY_SUN_DISC: f32 = ${glf(SUN_DISC)};
+const SKY_SUN_DISC_EDGE: f32 = ${glf(SUN_DISC_EDGE)};
+const SKY_RAY_Z: f32 = 0.5;   // clip depth of the second point the pixel's ray is taken through (the first is on the near plane)
+struct SkyOut {
+  @builtin(position) position: vec4f,
+  @location(0) ndc: vec2f,
+}
+@vertex fn vs(@builtin(vertex_index) i: u32) -> SkyOut {
+  let ndc = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;   // a full-screen triangle
+  var o: SkyOut;
+  o.position = vec4f(ndc, 1.0, 1.0);
+  o.ndc = ndc;
+  return o;
+}
+@fragment fn fs(v: SkyOut) -> @location(0) vec4f {
+  let a = FU.invViewProj * vec4f(v.ndc, 0.0, 1.0);
+  let b = FU.invViewProj * vec4f(v.ndc, SKY_RAY_Z, 1.0);
+  let rd = normalize(b.xyz / b.w - a.xyz / a.w);
+  let r = SUN_TAN_RADIUS;
+  let disc = smoothstep(cos(r * (1.0 + SKY_SUN_DISC_EDGE)), cos(r * (1.0 - SKY_SUN_DISC_EDGE)), dot(rd, FU.sun));
+  return vec4f(skyColor(rd) + disc * FU.sunCol * SKY_SUN_DISC * step(0.0, rd.y), 1.0);
 }`;
 
 export const edgesWGSL = () => /* wgsl */ `
@@ -103,11 +145,19 @@ const lines = (depthWriteEnabled) => ({
   depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled, depthCompare: 'less-equal' },
 });
 const LAYOUTS = () => [RENDER_LAYOUT.FRAME];
+// opaque, behind everything: no depth written or tested
+const SKY_PIPE = {
+  vertex: { entry: 'vs' },
+  fragment: { entry: 'fs', targets: [{ format: SCENE_FORMATS.color }] },
+  primitive: { topology: 'triangle-list' },
+  depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled: false, depthCompare: 'always' },
+};
 
 /** tools/check-wgsl.mjs (and the menu's warm-up, B5) */
 export const WGSL_CHECK = [
   { name: 'floorGrid', kind: 'render', grids: false, code: gridWGSL, layouts: LAYOUTS, layoutNames: ['FRAME'], params: GridParams, ...lines(false) },
   { name: 'boxEdges', kind: 'render', grids: false, code: edgesWGSL, layouts: LAYOUTS, layoutNames: ['FRAME'], params: EdgeParams, ...lines(true) },
+  { name: 'boxSky', kind: 'render', grids: false, code: skyWGSL, layouts: LAYOUTS, layoutNames: ['FRAME'], ...SKY_PIPE },
 ];
 
 /**
@@ -120,21 +170,27 @@ export function createOverlays(gpu) {
     name: e.name, code: e.code(), layouts: [fu.layout], params: e.params,
     vertex: e.vertex, fragment: e.fragment, primitive: e.primitive, depthStencil: e.depthStencil,
   });
-  const [grid, edges] = WGSL_CHECK.map(pipe);
+  const [grid, edges, sky] = WGSL_CHECK.map(pipe);
   const center = linear(FLOOR_COLOR_CENTER), line = linear(FLOOR_COLOR_LINE), edge = linear(EDGE_COLOR);
   return {
-    ready: Promise.all([grid.ready, edges.ready]),
+    ready: Promise.all([grid.ready, edges.ready, sky.ready]),
+    /** The box's backdrop (first, realistic view): the sky that lights it. */
+    drawSky(rp) {
+      if (sky.state !== 'ready') return false;
+      sky.draw(rp, { bind: [fu.group], count: 3 });
+      return true;
+    },
     /**
      * The floor grid (before the volume). model: grid units → scene, 16
      * numbers column-major or a three Matrix4 (GridHelper's position and
      * scale: under a box, y = FLOOR_Y; a world's spans its footprint); opacity:
      * the render scale (lines are one rendered pixel wide).
      */
-    drawGrid(rp, { model, opacity = 1, span = FLOOR_SPAN, divisions = FLOOR_SPAN }) {
+    drawGrid(rp, { model, opacity = 1, span = FLOOR_SPAN, divisions = FLOOR_SPAN, lit = false }) {
       if (grid.state !== 'ready') return false;
       grid.draw(rp, {
         bind: [fu.group], count: GRID_VERTICES(divisions),
-        params: { model, center: [...center, opacity], line: [...line, opacity], half: span / 2, step: span / divisions, divisions },
+        params: { model, center: [...center, opacity], line: [...line, opacity], half: span / 2, step: span / divisions, divisions, lit: lit ? 1 : 0 },
       });
       return true;
     },

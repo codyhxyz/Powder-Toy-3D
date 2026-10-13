@@ -7,6 +7,7 @@ import { cloudsGLSL } from './gfx/clouds.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE, fold } from '../gpu/kernels.js';
 import { CELL_M } from '../scale.js';
+import { SUN_DISC, SUN_DISC_EDGE } from '../gfx/sky.js';
 import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
 import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
@@ -893,8 +894,8 @@ export const FAR_VIEW = {
   AO_MIN: 0.35,            // ...down to this
   WATER_STEP: 4.0,         // the refracted ray's steps under water, looking for the bed...
   WATER_STEPS: 8,          // ...this many at most (deeper reads as open water)
-  SUN_DISC: 40.0,          // the sun's disc radiance, × the sunlight at the ground (the real ratio blooms the whole sky)
-  SUN_DISC_EDGE: 0.15,     // its soft edge, share of its radius
+  SUN_DISC,                // the sun's disc radiance, × the sunlight at the ground (gfx/sky.js: the box's backdrop draws it too)
+  SUN_DISC_EDGE,           // its soft edge, share of its radius
   HAZE: FAR_HAZE,          // extinction per cell of the air, green (farShared.js)
   OCEAN_ROCK: 'ROCK',      // the open sea's bed beyond the world (the generator's floor)
 };
@@ -1257,7 +1258,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  let refl = envReflect(p, r, vec3f(sunVis)) * sky;
+  let refl = (skyColor(r) + sunGlint(n, -rd, ROUGH(lid), vec3f(sunVis))) * sky;
   var rt = refract(rd, n, 1.0 / IOR(lid));
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }${curved ? `
   // the refracted ray, displayed straight: a parabola under the surface too

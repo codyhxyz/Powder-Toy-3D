@@ -1,4 +1,4 @@
-import { skyGLSL } from '../../gfx/sky.js';
+import { skyGLSL, skyViewGLSL, SUN_TAN_RADIUS } from '../../gfx/sky.js';
 import { cloudDeckGLSL } from './clouds.js';
 import { LAMP_UNIT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 import { WAND_LIGHTS } from '../bindings.js';
@@ -102,35 +102,8 @@ const PI_L: f32 = 3.14159265;
 ${skyGLSL()}
 // World's cumulus deck (clouds.js): sunShadow multiplies its shadow in.
 ${cloudDeckGLSL}
-const HORIZON_BLEND: f32 = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
-
-// Relative air mass toward zenith cosine cz (gfx/sky.js airMass).
-fn airMass(cz0: f32) -> f32 {
-  let cz = max(cz0, 0.0);
-  return 1.0 / (cz + AIRMASS_HORIZON * exp(-AIRMASS_FALLOFF * cz));
-}
-
-// Clear-sky radiance toward unit d (d.y >= 0; lower directions see the
-// horizon), without the sun's disc (gfx/sky.js has its JS twin).
-fn skyRadiance(d: vec3f) -> vec3f {
-  let mu = dot(d, FU.sun);
-  let mv = airMass(d.y);
-  let ms = airMass(FU.sun.y);
-  let pR = 3.0 / (16.0 * PI_L) * (1.0 + mu * mu);
-  let g2 = AEROSOL_G * AEROSOL_G;
-  let pM = (1.0 - g2) / (4.0 * PI_L * pow(1.0 + g2 - 2.0 * AEROSOL_G * mu, 1.5));
-  // the integral over height of e^(-tau ms x) e^(-tau mv (1 - x)) (x = relative air density)
-  let dm = mv - ms;
-  let ev = exp(-TAU_AIR * mv);
-  var path: vec3f;
-  if (abs(dm) < AIRMASS_EQ_EPS) { path = TAU_AIR * mv * ev; } else { path = mv * (FU.sunExt - ev) / dm; }
-  return FU.keyLight * SKY_MULTI * PI_L * SUN_TOA * (TAU_RAYLEIGH * pR + TAU_AEROSOL * pM) / TAU_AIR * path;
-}
-
-// Radiance of the environment toward unit d: sky above the horizon, ground below.
-fn skyColor(d: vec3f) -> vec3f {
-  return mix(FU.ground, skyRadiance(d), smoothstep(-HORIZON_BLEND, HORIZON_BLEND, d.y));
-}
+// airMass, skyRadiance, skyColor: gfx/sky.js skyViewGLSL (the box's backdrop draws the same sky, gfx/overlays.js)
+${skyViewGLSL()}
 // Rough open-environment irradiance / pi on a surface facing n (no occlusion):
 // the sky over the share of n's hemisphere it covers, the ground below. The GI
 // probes integrate the real thing; this is for code without them.
@@ -176,7 +149,7 @@ const SUN_RAY_NUDGE: f32 = 1e-4;           // voxels past the box entry at which
 // distance from its caster. tan of the sun's apparent radius: the real sun is
 // 0.27 deg; 1.2 deg stands in for a slightly hazy sky, so penumbrae read at
 // the scale of the box while contact shadows stay crisp.
-const SUN_TAN_RADIUS: f32 = 0.021;
+const SUN_TAN_RADIUS: f32 = ${SUN_TAN_RADIUS};   // (gfx/sky.js: the backdrop's sun disc is this size too)
 const PCSS_TAPS: i32 = ${PCSS_TAPS};                 // taps for the blocker search, and again for the filter
 const PCSS_HARD_TEXELS: f32 = 1.0;  // penumbra radius (texels) below which the hard path settles the edge
 const PCSS_NS_MIN: f32 = 0.2;       // n.sun floor for the receiver-plane slope (grazing receivers)
@@ -711,6 +684,28 @@ fn lampSeen(p: vec3f, n: vec3f) -> vec3f {
 }
 
 ${shadowMap && probes ? /* wgsl */ `
+// The light a secondary ray sees on the matter it meets at p (normal n, lifted
+// off the face): albedo alb times the sun (shadow-mapped), the lamps (lampSeen,
+// unshadowed), the probes' light and the glow there, plus emit, its own light
+// (gfx/materials.js cellEmission + sparkEmit, what the view shows). One cheap
+// model for every second-hand view of a surface, so they all agree: the
+// near-field bounce's hits (nearField) and what a liquid or glass mirrors
+// (liquid.js reflShade, the floor included). No texture, AO or specular:
+// reflections are dimmed by Fresnel and wobbled by ripples, and bounce light
+// is blurred by TAA, so they wouldn't show for the cost.
+fn hitLight(p: vec3f, n: vec3f, alb: vec3f, emit: vec3f) -> vec3f {
+  let ndl = max(dot(n, FU.sun), 0.0);
+  var sun = vec3f(0.0);
+  if (ndl > 0.0) {
+    var shade = vec3f(1.0);
+    if (FU.shadows != 0u) { shade = sunShadowAt(p); }
+    sun = FU.sunCol * ndl * shade;
+  }
+  var lamp = vec3f(0.0);
+  if (FU.lampCount > 0) { lamp = lampSeen(p, n); }   // and the lamps', as the sun's
+  return alb * (sun + lamp + giIrradiance(probeAt(p + n * GI_OFFSET), n) + sampleLight(p) * FU.lightGain) + emit;
+}
+
 // Voxel AO and nearby bounce light (Teardown style). NEAR_RAYS cosine-
 // distributed rays per pixel and frame (TAA averages them) walk the grid up to
 // NEAR_RANGE cells. A ray that hits matter sees that matter's own light: its
@@ -751,18 +746,8 @@ fn nearField(p: vec3f, ng: vec3f, n: vec3f, irr: vec3f, vis: ptr<function, f32>)
     let hid = eid(ah);
     var alb = GROUND_ALB;
     var emit = vec3f(0.0);
-    if (!floorHit) { alb = ALBEDO(hid); emit = cellEmission(hid, ah.y) + sparkEmit(hid, floor(ah.w)); }   // a live conductor, a lit lamp
-    let ndl = max(dot(hn, FU.sun), 0.0);
-    var sun = vec3f(0.0);
-    if (ndl > 0.0) {
-      var shade = vec3f(1.0);
-      if (FU.shadows != 0u) { shade = sunShadowAt(hp); }
-      sun = FU.sunCol * ndl * shade;
-    }
-    var lamp = vec3f(0.0);
-    if (FU.lampCount > 0) { lamp = lampSeen(hp, hn); }   // and the lamps', as the sun's
-    let Lhit = alb * (sun + lamp + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * FU.lightGain) + emit;
-    sum += mix(irr, Lhit, w);
+    if (!floorHit) { alb = ALBEDO(hid); emit = cellEmission(hid, ah.y, floor(ah.w)) + sparkEmit(hid, floor(ah.w)); }   // a live conductor, a lit lamp
+    sum += mix(irr, hitLight(hp, hn, alb, emit), w);
     vs += 1.0 - w;
   }
   *vis = max(vs / f32(NEAR_RAYS), NEAR_VIS_MIN);
