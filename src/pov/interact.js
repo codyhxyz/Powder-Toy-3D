@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { h } from '../ui/dom.js';
+import { createActionButtons } from '../ui/actionButtons.js';
 import { HAND_REACH } from './constants.js';
 
 // Look at a thing and press E: Noita's pick-up rule (wands, potions, a Holy
@@ -19,9 +20,8 @@ export function createInteract() {
   const providers = new Set();
   const title = h('b.pov-use-title');
   const lines = h('span.pov-use-lines');
-  const verb = h('span.pov-use-verb');
-  const prompt = h('div.pov-use.panel', { role: 'status', 'aria-live': 'polite' }, title, lines,
-    h('span.pov-use-key', {}, h('kbd', { text: 'E' }), verb));
+  const actions = createActionButtons('Interaction');
+  const prompt = h('div.pov-use.panel', { role: 'status', 'aria-live': 'polite' }, title, lines, actions.root);
   document.body.append(prompt);
   const to = new THREE.Vector3();
   let focus = null, shownKey = '';
@@ -31,10 +31,16 @@ export function createInteract() {
     if (key === shownKey) return;
     shownKey = key;
     prompt.classList.toggle('show', !!t);
+    actions.update(t ? [{ id: 'use', label: t.verb ?? 'Take', key: 'E', run: use }] : []);
     if (!t) return;
     title.textContent = t.title;
     lines.replaceChildren(...(t.lines ?? []).map((l) => h('span', { text: l })));
-    verb.textContent = ` ${t.verb ?? 'Take'}`;
+  }
+  function use() {
+    if (!focus) return false;
+    focus.use();
+    shownKey = null;   // force the next update, including when the used target disappeared
+    return true;
   }
 
   return {
@@ -58,12 +64,7 @@ export function createInteract() {
     },
     get focus() { return focus; },
     // E: use the thing in focus; false when there is none (E does its other jobs)
-    use() {
-      if (!focus) return false;
-      focus.use();
-      shownKey = '';   // its label may have changed (a price, a stack)
-      return true;
-    },
-    dispose() { providers.clear(); prompt.remove(); },
+    use,
+    dispose() { providers.clear(); actions.dispose(); prompt.remove(); },
   };
 }

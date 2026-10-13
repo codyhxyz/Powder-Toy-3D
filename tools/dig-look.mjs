@@ -18,6 +18,8 @@ mkdirSync(out, { recursive: true });
 const W = 960, H = 600;
 const HOLD_MS = 1200;        // a held dig into the sand: about eight digs at the shovel's 0.15 s
 const LOOK_HEAP = -0.2;      // rad: at the heap's flank
+const TP_FRAMES = 6;         // third-person stills through a held dig
+const TP_GAP_MS = 40;
 const LOOK_ROCK = -0.1;      // rad: at the boulder's face, from a step back
 
 const vite = site ? { url: (path) => new URL(path, site).href, close: async () => {} } : await startVite({ port });
@@ -94,6 +96,15 @@ try {
   await settle(1000);
   console.log('shovel, sand:', JSON.stringify(await state('SHOVEL')), 'digs', JSON.stringify(await digs()), 'takes', JSON.stringify(await ev(() => window.__takes.splice(0))));
   await shot('3-shovel-dug');
+  // ---- third person (F5): the body digs (holds.js GESTURES dig), a burst of frames through a held dig
+  await stand(31, 50, -Math.PI / 2, LOOK_HEAP);
+  await p.keyboard.press('F5');
+  await settle(1500);
+  await down();
+  for (let i = 0; i < TP_FRAMES; i++) { await shot(`tp-dig-${i}`); await settle(TP_GAP_MS); }
+  await up();
+  await p.keyboard.press('F5');
+  await settle(800);
   // ---- the shovel on rock: two digs crack it (it takes five)
   await stand(27, 90, -Math.PI / 2, LOOK_ROCK);
   await settle(800);

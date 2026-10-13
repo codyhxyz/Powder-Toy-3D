@@ -11,7 +11,8 @@ import { RING_LAYOUT, ringWGSL } from './povBody.js';
 // A slot qualifies when its cell passes the transfer's filter: for a take, the
 // cell holds a wanted element of an allowed kind (and, when breaking, a solid
 // comes out only if it can break and its hardness is at most maxHard: what
-// the blows so far have beaten; loose kinds come out as they are); for a put,
+// the blows so far have beaten; loose kinds come out as they are; with `only`,
+// just the elements whose bit is set in `allow`: a tool's own materials); for a put,
 // the cell is empty air. Of the qualifying slots
 // only the first `limit` act, in slot order, so the caller decides which cells
 // go first (nearest the aim) and how many at most (what the load can hold).
@@ -31,6 +32,8 @@ export const TRANSFER_SLOTS = 256;      // cells one transfer can touch (= vec4s
 export const TRANSFER_TAKE = 0;         // mode
 export const TRANSFER_PUT = 1;
 export const TRANSFER_BYTES = TRANSFER_SLOTS * 16;   // one transfer's answer (a ring slot)
+export const ALLOW_IDS = 256;           // element ids an `allow` mask covers (ids stay ≤ 255: the far field's bytes)
+const ALLOW_VEC4S = ALLOW_IDS / 128;    // 128 bits a vec4u
 
 export const TransferParams = uniformStruct('TransferParams', {
   count: 'u32',       // slots in use
@@ -40,6 +43,8 @@ export const TransferParams = uniformStruct('TransferParams', {
   vel: 'vec3f',       // put: velocity of the placed cells, cells/step
   breaks: 'u32',      // take: solids come out as their debris (BREAKINTO)
   maxHard: 'f32',     // take, breaking: the hardest solid that comes out (HARD units)
+  only: 'u32',        // take: 1 = only the elements in `allow`
+  allow: `array<vec4u, ${ALLOW_VEC4S}>`,   // take: a bit per element id (id >> 5 picks the u32, id & 31 the bit)
   slot: 'u32',        // the ring slot the answer goes to
   cells: `array<vec4f, ${TRANSFER_SLOTS}>`,
   items: `array<vec4f, ${TRANSFER_SLOTS}>`,
@@ -61,6 +66,10 @@ fn qualifies(i: u32, a: vec4f) -> bool {
   let want = i32(floor(P.cells[i].w + 0.5));
   if (id == E_EMPTY || (want >= 0 && id != want)) { return false; }
   if ((P.kinds & (1u << u32(KIND(id)))) == 0u) { return false; }
+  if (P.only != 0u) {
+    let u = u32(id);
+    if (((P.allow[u >> 7u][(u >> 5u) & 3u] >> (u & 31u)) & 1u) == 0u) { return false; }
+  }
   if (P.breaks == 0u || KIND(id) != K_SOLID) { return true; }
   return BREAKINTO(id) >= 0 && HARD(id) <= P.maxHard;
 }
