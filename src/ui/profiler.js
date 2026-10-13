@@ -1,12 +1,15 @@
 import { h } from './dom.js';
-import { PHASES, HISTORY } from '../gfx/profiler.js';
+import { PHASES, HISTORY, FRAMES } from '../gfx/profiler.js';
 import { MAX_FPS } from '../gfx/pacing.js';
 import './profiler.css';
 
-// Profiler overlay (Settings → Developer; the measuring is gfx/profiler.js): the
-// last measured frame as a GPU waterfall, a few live numbers, and Copy for a
-// plain-text report. Redrawn once per sample, never per frame. Only its buttons
-// take the pointer; the rest lets input through to the canvas.
+// Profiler overlay (Settings → Developer; the measuring is gfx/profiler.js): live
+// frame rate and frame time, a frame-time bar graph for spotting spikes, the last
+// sampled frame as a GPU waterfall, and Copy for a plain-text report. The graph
+// is one 2D canvas redrawn per frame; the DOM is rewritten once per sample and
+// the live numbers a few times a second. Only the buttons and the graph (hover
+// one bar to read that frame and hold the graph still) take the pointer; the
+// rest lets input through to the canvas.
 
 const MS_PER_S = 1000;
 const BUDGET_MS = MS_PER_S / MAX_FPS;   // one frame at the frame cap: the waterfall spans at least this, marked
@@ -15,6 +18,18 @@ const DETAIL_ROWS = 8;                  // an open phase lists its costliest pas
 const MB = 1024 * 1024;
 const MILLION = 1e6;
 const PCT = 100;
+// the frame-time graph; the bar colours follow how many refreshes a frame took
+const GRAPH_H = 72;                 // CSS px
+const LIVE_MS = 250;                // between rewrites of the live numbers
+const SLOW = 1.25;                  // × the budget: a frame this long missed its refresh (amber)
+const SPIKE = 1.75;                 // × the budget: a spike, two refreshes or more (red; counted)
+const SCALES = [2, 4, 6, 12];       // × the budget: the graph's top, the least that fits the window
+const GUIDES = [1, 2];              // × the budget: lines labelled with their frame rate (60, 30 fps)
+const WAIT_ALPHA = 0.38;            // a bar's part past its own CPU work (GPU, vsync, the browser)
+const LABEL_PAD = 3;                // CSS px, a guide's label from the graph edge
+const TOP_PHASES = 3;               // phases a hovered frame lists by CPU time
+const PHASE_MIN_MS = 0.05;          // …if they took at least this
+
 
 const ms = (v) => (v == null ? '–' : v.toFixed(2));
 const pct = (v) => `${v * PCT}%`;
@@ -26,6 +41,30 @@ const simPhase = (s) => s.phases.find((p) => p.id === 'sim');
 const drawnText = (s, label) => (s.drawn == null ? '' : `${label}${share(s.drawn)}`);   // bricks the step's kernels run over
 const rateText = (s) => `${s.fps == null ? '–' : s.fps.toFixed(0)} fps · ${s.stepsPerSec == null ? '–' : s.stepsPerSec.toFixed(0)} steps/s`
   + ` · ${ms(perStep(s, simPhase(s).gpu))} ms/step`;
+
+// The frames in the ring, oldest first: i-th → slot.
+const slotOf = (f, i) => (f.head + i) % FRAMES;
+
+// avg / worst / spikes over the window
+function frameStats(f) {
+  let sum = 0, worst = 0, spikes = 0;
+  const n = f.count;
+  for (let i = 0; i < n; i++) {
+    const v = f.ms[slotOf(f, i)];
+    sum += v;
+    if (v > worst) worst = v;
+    if (v > SPIKE * BUDGET_MS) spikes++;
+  }
+  return n ? { avg: sum / n, worst, spikes } : null;
+}
+
+// One frame in words: its time, its CPU work and the phases that took most of it.
+function frameText(f, i) {
+  const k = slotOf(f, i), P = PHASES.length;
+  const top = PHASES.map((p, j) => [p.label, f.phases[k * P + j]]).sort((a, b) => b[1] - a[1]).slice(0, TOP_PHASES)
+    .filter(([, v]) => v >= PHASE_MIN_MS).map(([l, v]) => `${l} ${v.toFixed(1)}`).join(' · ');
+  return `${f.ms[k].toFixed(1)} ms · CPU ${f.work[k].toFixed(1)}${top ? `: ${top}` : ''}`;
+}
 
 // Plain text for pasting into a chat.
 function report(s) {
@@ -56,7 +95,18 @@ export function createProfilerPanel() {
     + ' every pass of ours is timed, and while the profiler is on every dispatch runs as a pass of its own.'
     + ' Timings assume nothing else is using the GPU.' });
   const copy = h('button.copy', { type: 'button', text: 'Copy', title: 'Copy a plain-text report' });
-  const rates = h('div.line'), state = h('div.line');
+  const tile = (key, title) => {
+    const v = h('b', { text: '–' });
+    return { v, el: h('div.tile', { title }, v, h('span', { text: key })) };
+  };
+  const tFps = tile('fps', 'Frames per second over the graph\'s window');
+  const tFrame = tile('ms / frame', `Mean frame time over the graph's window (${BUDGET_MS.toFixed(1)} ms at ${MAX_FPS} fps)`);
+  const tCpu = tile('cpu ms', 'CPU time of a frame (mean of the frames since the last sample)');
+  const tGpu = tile('gpu ms', 'GPU time of the last sampled frame');
+  const canvas = h('canvas', { style: { height: `${GRAPH_H}px` } });
+  const ctx = canvas.getContext('2d');
+  const gline = h('div.gline');
+  const rates = h('div.line'), state = h('div.line.faint');
   const rows = PHASES.map((p) => {
     const cpu = h('span.num'), gpu = h('span.num'), track = h('span.track');
     const detail = h('div.detail', { style: { '--c': `var(--prof-${p.id})` } });
@@ -74,15 +124,20 @@ export function createProfilerPanel() {
   const spark = [...Array(HISTORY)].map(() => h('i'));
   const el = h('div.prof', { role: 'region', 'aria-label': 'Profiler' },
     h('header', {}, h('b', { text: 'Profiler' }), status, copy),
+    h('div.tiles', {}, tFps.el, tFrame.el, tCpu.el, tGpu.el),
+    h('div.section', {}, h('span', { text: 'Frame time' }), h('span.hint', { text: 'hover a bar to hold' })),
+    h('div.graph', {}, canvas),
+    gline,
     rates, state,
+    h('div.section', {}, h('span', { text: 'GPU passes' }), h('span.hint', { text: 'one sampled frame · click a phase' })),
     h('div.row.head', {}, h('span.name', { text: 'phase' }), h('span.num', { text: 'cpu' }), h('span.num', { text: 'gpu' }),
-      h('span', { text: 'GPU timeline (ms)' })),
+      h('span', { text: 'timeline (ms)' })),
     rows.flatMap((r) => [r.row, r.detail]),
     h('div.row.total', {}, h('span.name', { text: 'frame' }), totalCpu, totalGpu, totalTrack),
     h('div.spark', { title: `GPU time of the last ${HISTORY} sampled frames (line: ${BUDGET_MS.toFixed(1)} ms, ${MAX_FPS} fps)` }, spark));
   document.body.append(el);
 
-  let last = null, lastRates = '';
+  let last = null, lastRates = '', shown = false;
   let copyTimer = 0;
   copy.addEventListener('click', async () => {
     if (!last) return;
@@ -94,6 +149,93 @@ export function createProfilerPanel() {
     copyTimer = setTimeout(() => { copy.textContent = 'Copy'; }, COPIED_MS);
   });
 
+  // ---- the frame-time graph: newest frame on the right, one bar per frame
+  let ring = null;     // the profiler's frame ring
+  let held = null;     // a copy of it while the pointer is on the graph
+  let hover = -1;      // the hovered frame (index, oldest first) in `held`
+  let colors = null;   // read from the CSS once shown
+  let lastLive = -Infinity;
+  const readColors = () => {
+    const cs = getComputedStyle(el), v = (n) => cs.getPropertyValue(n).trim();
+    colors = { ok: v('--prof-ok'), slow: v('--prof-slow'), over: v('--prof-over'),
+      guide: v('--prof-tick'), label: v('--faint'), hover: v('--text') };
+  };
+  const barColor = (v) => (v > SPIKE * BUDGET_MS ? colors.over : v > SLOW * BUDGET_MS ? colors.slow : colors.ok);
+
+  function draw() {
+    const f = held ?? ring;
+    const w = canvas.clientWidth, H = GRAPH_H, dpr = devicePixelRatio || 1;
+    if (!w || !f) return;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(H * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(H * dpr);
+    }
+    if (!colors) readColors();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, H);
+    let max = 0;
+    for (let i = 0; i < f.count; i++) max = Math.max(max, f.ms[slotOf(f, i)]);
+    const top = BUDGET_MS * (SCALES.find((m) => m * BUDGET_MS >= max) ?? SCALES[SCALES.length - 1]);
+    const y = (v) => H - (Math.min(v, top) / top) * H;
+    const bw = w / FRAMES, gap = bw > 2 ? 0.5 : 0;
+    for (let i = 0; i < f.count; i++) {
+      const k = slotOf(f, i), x = w - (f.count - i) * bw, v = f.ms[k];
+      ctx.fillStyle = barColor(v);
+      ctx.globalAlpha = WAIT_ALPHA;
+      ctx.fillRect(x, y(v), bw - gap, H - y(v));
+      ctx.globalAlpha = 1;
+      const work = Math.min(f.work[k], v);
+      ctx.fillRect(x, y(work), bw - gap, H - y(work));
+      if (v > top) ctx.fillRect(x, 0, bw - gap, 2);   // off the scale: a cap
+    }
+    if (hover >= 0 && held) {
+      const x = w - (f.count - hover) * bw;
+      ctx.fillStyle = colors.hover;
+      ctx.fillRect(x - 0.5, 0, Math.max(1, bw) + 1, H);
+    }
+    // guides at the frame budget and twice it, labelled with their frame rate
+    ctx.font = `9px ui-monospace, 'SF Mono', Menlo, monospace`;
+    ctx.textBaseline = 'bottom';
+    ctx.textAlign = 'right';
+    for (const m of GUIDES) {
+      const gy = Math.round(y(m * BUDGET_MS)) + 0.5;
+      ctx.fillStyle = colors.guide;
+      ctx.fillRect(0, gy, w, 1);
+      ctx.fillStyle = colors.label;
+      ctx.fillText(`${(MAX_FPS / m).toFixed(0)} fps`, w - LABEL_PAD, gy - 1);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`${top.toFixed(0)} ms`, LABEL_PAD, LABEL_PAD);
+  }
+
+  function live() {
+    const st = ring && frameStats(ring);
+    tFps.v.textContent = st ? (MS_PER_S / st.avg).toFixed(0) : '–';
+    tFrame.v.textContent = st ? st.avg.toFixed(1) : '–';
+    tFrame.el.classList.toggle('warn', !!st && st.avg > SLOW * BUDGET_MS);
+    if (held) return;
+    gline.classList.remove('hold');
+    gline.replaceChildren(...(st ? [
+      h('span', { text: `avg ${st.avg.toFixed(1)} ms` }),
+      h(st.worst > SPIKE * BUDGET_MS ? 'span.bad' : 'span', { text: `worst ${st.worst.toFixed(1)} ms` }),
+      h(st.spikes ? 'span.bad' : 'span', { text: `${st.spikes} spike${st.spikes === 1 ? '' : 's'}`,
+        title: `frames over ${(SPIKE * BUDGET_MS).toFixed(1)} ms in the last ${FRAMES}` }),
+    ] : [h('span', { text: 'waiting for frames' })]));
+  }
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!ring?.count) return;
+    if (!held) held = { ms: ring.ms.slice(), work: ring.work.slice(), phases: ring.phases.slice(), head: ring.head, count: ring.count };
+    const r = canvas.getBoundingClientRect(), bw = r.width / FRAMES;
+    const i = held.count - 1 - Math.floor((r.right - e.clientX) / bw);
+    hover = i >= 0 && i < held.count ? i : -1;
+    gline.classList.add('hold');
+    gline.textContent = hover < 0 ? 'no frame here' : `${held.count - 1 - hover} back · ${frameText(held, hover)}`;
+    draw();
+  });
+  canvas.addEventListener('pointerleave', () => { held = null; hover = -1; lastLive = -Infinity; live(); draw(); });
+
   function idle() {
     status.textContent = 'idle: nothing is rendering';
     rates.textContent = last ? `idle (last sample: ${lastRates})` : 'idle';
@@ -102,8 +244,22 @@ export function createProfilerPanel() {
 
   return {
     show(v) {
+      shown = v;
       el.classList.toggle('show', v);
-      if (v && !last) { status.textContent = 'waiting for a frame'; rates.textContent = state.textContent = ''; }
+      if (v && !last) {
+        status.textContent = 'waiting for a frame';
+        rates.textContent = state.textContent = '';
+        tCpu.v.textContent = tGpu.v.textContent = '–';
+      }
+      if (v) { colors = null; draw(); }
+    },
+    // f: the profiler's frame ring, as each frame's time is known
+    frame(f) {
+      ring = f;
+      if (!shown) return;
+      if (!held) draw();
+      const now = performance.now();
+      if (now - lastLive >= LIVE_MS) { lastLive = now; live(); }
     },
     // s: a sample from gfx/profiler.js, or null when rendering went idle
     update(s) {
@@ -111,6 +267,10 @@ export function createProfilerPanel() {
       last = s;
       el.classList.remove('idle');
       status.textContent = s.gpu == null ? 'sampled · no GPU timestamps' : `sampled · timestamps${s.split ? ', split passes' : ''}`;
+      tCpu.v.textContent = ms(s.cpu);
+      tGpu.v.textContent = ms(s.gpu);
+      tCpu.el.classList.toggle('warn', s.cpu != null && s.cpu > BUDGET_MS);
+      tGpu.el.classList.toggle('warn', s.gpu != null && s.gpu > BUDGET_MS);
       lastRates = rateText(s);
       rates.textContent = lastRates;
       state.textContent = `awake ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)} · ${s.canvas.join('×')}`

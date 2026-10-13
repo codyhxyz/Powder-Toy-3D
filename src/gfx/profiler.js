@@ -13,6 +13,10 @@
 // SAMPLE_INTERVAL_MS the latest landed frame becomes a sample. A still scene
 // renders nothing (gfx/pacing.js): the profiler doesn't wake it, it reports idle.
 //
+// Every frame also lands in a ring for the live frame-time graph: the time from
+// its start to the next frame's start (what a hitch looks like), its own CPU
+// work, and that work by phase.
+//
 // What it can't see: three's passes (the meshes; three keeps its own
 // timestamps) and the cost of splitting itself (a pass per dispatch costs a
 // little on a tiled GPU; tools/profile-check.mjs measures the difference).
@@ -24,6 +28,7 @@ const SAMPLE_INTERVAL_MS = 1000;   // between samples
 const IDLE_AFTER_MS = 500;         // without GPU work before the overlay says idle
 const FRAMES_KEPT = 16;            // frames whose passes are kept while their timestamps are in flight
 export const HISTORY = 40;         // recent samples' GPU totals kept for the spike strip
+export const FRAMES = 180;         // recent frames kept for the frame-time graph (3 s at the 60 fps cap)
 const UNNAMED = '(unnamed)';       // label of a pass with no name
 const MS_PER_S = 1000;
 const CANVAS_BYTES = 4;            // per canvas pixel: RGBA8 (the presenter's)
@@ -61,18 +66,28 @@ function watchTimedPasses(timing) {
 /**
  * @param {object} gpu the gpu from createGpu (src/gpu/device.js)
  * @param {{ describe: () => { sim?: object | null, renderScale: number, canvas?: number[], pixelRatio?: number, bytes?: number },
- *           onSample: (sample: object | null) => void }} opts
+ *           onSample: (sample: object | null) => void, onFrame?: (ring: object) => void }} opts
  *   describe: called once per sample for what the report shows besides timings
  *   (canvas: the drawing buffer [w, h]; bytes: GPU memory gpu.memory() doesn't
  *   count, such as three's scene targets); onSample: gets each sample, or null
- *   when rendering went idle.
+ *   when rendering went idle; onFrame: called as each frame's time is known
+ *   (the frame ring, see `ring`).
  */
-export function createProfiler(gpu, { describe, onSample }) {
+export function createProfiler(gpu, { describe, onSample, onFrame }) {
   const timing = gpu.timing;
   const hook = watchTimedPasses(timing);
   const cpuFrame = new Float64Array(PHASES.length);   // ms per phase, this frame
   const cpuSum = new Float64Array(PHASES.length);     // …summed over this window's frames that worked
   const totals = [];
+  // the frame ring: slot = (head + i) % FRAMES for the i-th oldest of `count`
+  const ring = {
+    ms: new Float32Array(FRAMES),                      // start to the next frame's start
+    work: new Float32Array(FRAMES),                    // its own CPU time, start to end
+    phases: new Float32Array(FRAMES * PHASES.length),  // that work by phase
+    head: 0, count: 0,
+  };
+  const pendPhases = new Float64Array(PHASES.length);  // the last frame's, until the next one starts
+  let pendWork = 0, pending = false;
   const frames = new Map();    // gpu frame (as gpu.timing.lastFrame will name it) → { passes: [{ name, phase }], wall, steps }
   let latest = null;           // the last sample
   let gpuName = '';
@@ -169,12 +184,26 @@ export function createProfiler(gpu, { describe, onSample }) {
     onSample(sample);
   }
 
+  // The last frame's time is known once the next one starts.
+  function recordFrame(ms) {
+    pending = false;
+    const slot = (ring.head + ring.count) % FRAMES;
+    if (ring.count < FRAMES) ring.count++;
+    else ring.head = (ring.head + 1) % FRAMES;
+    ring.ms[slot] = ms;
+    ring.work[slot] = pendWork;
+    ring.phases.set(pendPhases, slot * PHASES.length);
+    onFrame?.(ring);
+  }
+
   return {
     get on() { return on; },
     /** Always false: no frame is measured with syncs any more (kept for callers that ask). */
     get measuring() { return false; },
     /** The last sample (for the console and tools). */
     get last() { return latest; },
+    /** The recent frames' times (see the ring above). */
+    get ring() { return ring; },
 
     enable(v) {
       v = Boolean(v);
@@ -200,12 +229,15 @@ export function createProfiler(gpu, { describe, onSample }) {
         prevWorked = idle = false;
         lastWorked = performance.now();
         maps = { awake: null, drawn: null };
+        ring.head = ring.count = 0;
+        pending = false;
       }
     },
 
     /** Start of a frame that is due (now: its rAF timestamp, ms). */
     beginFrame(now) {
       if (!on) return;
+      if (pending) recordFrame(now - frameNow);
       frameNow = now;
       frameStart = performance.now();
       cpuFrame.fill(0);
@@ -231,6 +263,9 @@ export function createProfiler(gpu, { describe, onSample }) {
       if (!on) return;
       const t = performance.now();
       cpuFrame[cur] += t - mark;
+      pendWork = t - frameStart;
+      pendPhases.set(cpuFrame);
+      pending = true;
       const worked = passCount() > passesAtBegin;
       if (worked) {
         lastWorked = frameNow;

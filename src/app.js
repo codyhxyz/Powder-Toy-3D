@@ -1747,6 +1747,7 @@ const profPanel = createProfilerPanel();
 const prof = createProfiler(gpu, {
   describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes }),
   onSample: profPanel.update,
+  onFrame: profPanel.frame,
 });
 // post's passes after the scene (the view's raymarch) are a phase of their own
 const postPass = (name) => { if (name === 'scene') prof.phase('post'); };
