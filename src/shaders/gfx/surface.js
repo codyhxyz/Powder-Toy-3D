@@ -686,7 +686,12 @@ const MACRO_F: f32 = CELL_M / MACRO_M;    // their frequency, per cell
 const MACRO_LAC: f32 = 2.37;              // frequency ratio between octaves (3.2, 1.35, 0.57 m; not 2, so lattices don't line up)
 const MACRO_W: vec3f = vec3f(0.5, 0.3, 0.2);   // octave weights (sum 1: as fbm3's)
 const MACRO_OCT_SHIFT: f32 = 11.3;        // lattice offset per octave (decorrelates them)
-const MACRO_SPAN: f32 = 2.0;              // value noise in [0, 1] → centred, about ±1
+// Value noise in [0, 1] → centred, p5..p95 about ±0.8 (std ~0.46). Three
+// blended octaves of value noise have a std of only 0.115 about their mean
+// (measured on a CPU port of this function), so 2x left 90% of the ground
+// within ±12% at PLANT's amplitude: still flat. 4x makes a material's
+// macro.tone its typical swing.
+const MACRO_SPAN: f32 = 4.0;
 // Warm ↔ cool: sun-bleached, dry, iron-stained ↔ shaded, damp, lichen-grey;
 // on foliage lush blue-green ↔ sun-dried yellow-green (+red, -blue). Its
 // luma is ~+0.04 per unit, so a hue swing barely shifts the brightness.

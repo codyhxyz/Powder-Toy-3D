@@ -194,7 +194,7 @@ export const MEDIA_NOISE_CELLS = 64;
 //   macro  the shared play-distance variation every opaque material gets
 //          (shaders/gfx/surface.js matMacro): { tone, hue, rough, size }:
 //          albedo swing, warm/cool hue swing, roughness swing (each per unit
-//          of a centred noise, about ±1) and the size of its patches as a
+//          of a centred noise, p5..p95 about ±0.8) and the size of its patches as a
 //          multiple of MACRO_M there. Defaults by kind: MACRO_DEFAULT
 // Albedo sources (approximate, visible band): dry quartz sand 0.35-0.55, fresh
 // snow 0.85-0.95, concrete 0.25-0.4, wood ash 0.3-0.4, black powder ~0.04,
