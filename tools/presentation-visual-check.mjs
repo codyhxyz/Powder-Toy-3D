@@ -36,6 +36,9 @@ const WIN = arg('win', null);
 const VIEW = arg('view', null);
 const OWN_MODE = MAP === 'willowCove';   // (maps.js: the only map with Animal Crossing)
 const DRAIN = OWN_MODE || args.includes('--drain');
+// a stage's browser lifetime (TPT_TEST_TIMEOUT_MS raises it on a slow or shared machine: Willow Cove's
+// far field drains ~255 detail chunks while bent, culling off as in main, about a minute a hundred on SwiftShader)
+const STAGE_MS = Number(process.env.TPT_TEST_TIMEOUT_MS) || 175000;
 const VIEWPORT = { width: 480, height: 320 };   // (main's 1200×800, scaled down: the Island's frames take seconds on SwiftShader)
 // the frame below the HUD's bars (main's 310,280 790×400 of 1200×800), scaled
 const CROP = [310 / 1200, 280 / 800, 790 / 1200, 400 / 800].map((f, i) => Math.round(f * (i % 2 ? VIEWPORT.height : VIEWPORT.width)));
@@ -73,7 +76,7 @@ async function launch(page, vite) {
   await page.waitForFunction((drain) => {
     const a = window.__app;
     return performance.getEntriesByName('join:ready').length && a.win.loaded && a.win.far.ready && a.win.far.built && (!drain || !a.win.far.queue.length);
-  }, DRAIN, { timeout: 150000, polling: 250 });
+  }, DRAIN, { timeout: STAGE_MS - 25000, polling: 250 });
   if (!OWN_MODE) {
     const launched = await page.evaluate(() => ({ current: window.__app.current(), effect: window.__app.presentation.effect }));
     assert.equal(launched.current.mode, 'sandbox', `${MAP} has no Animal Crossing: the URL launch falls back to Sandbox`);
@@ -223,6 +226,9 @@ async function pickStage(page, vite) {
   // it shows; on SwiftShader one renderOnce, not render(), each: TAA is off)
   const magenta = (c) => c[0] > c[1] * 1.2 && c[2] > c[1] * 1.2;
   let meshPixel = null;
+  // the canvas alone: the HUD (Willow Cove's tool chip, the hover label) can
+  // sit over the marker's projection, and a page screenshot samples the HUD
+  await page.addStyleTag({ content: 'body * { visibility: hidden !important } canvas { visibility: visible !important }' });
   for (let i = 0; i < 6 && !(meshPixel && magenta(meshPixel)); i++) {
     if (i === 0 && !software) await render(page); else await page.evaluate(() => window.__app.test.renderOnce());
     const markerImage = await page.screenshot({ path: `${out}/targets.png` });
@@ -331,7 +337,7 @@ try {
   for (const stage of STAGES) {
     const fn = { launch: launchStage, pick: pickStage, mode: modeStage, fallback: fallbackStage }[stage];
     if (!fn) throw new Error(`no stage ${stage}`);
-    const browser = await launchBrowser({ lifetimeMs: 175000 });   // (a stage: under three minutes)
+    const browser = await launchBrowser({ lifetimeMs: STAGE_MS });   // (a stage: under three minutes on an idle machine)
     try {
       await fn(await newTestPage(browser, { mode: 'ui', viewport: VIEWPORT }), vite);
     } finally {
