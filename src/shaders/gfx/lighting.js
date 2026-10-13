@@ -55,7 +55,8 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  *   near field          nearSmoothIn, traceNear(ro, rd, tLim, opaqueOnly, selfSkip, &hc, &hn),
  *                       pixRand(k), nearField(p, ng, n, irr, &vis) (map + probes)
  *   glow lights         glowWorthIt(local, irr), glowLightScale(p, ng, n)
- *   hand lamps          lampLight(p, ng, n)
+ *   hand lamps          lampLight(p, ng, n), lampShade(p, ng, n, soft, view) (+ specular)
+ *   GGX specular        smithV, ggxSpecA, ggxSpec
  * Options (lib() sets them per L.LIGHTING variant): shadowMap: false leaves
  * out what reads the shadow map (the shadow kernel writes it); probes: false
  * what samples the GI bands (GI gather writes them). nearField needs both.
@@ -831,6 +832,112 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
   return select(0.0, 2.0 * nl, t < 0.0);
 }
 
+// ---- specular: the GGX microfacet BRDF ----
+// The sun's (gfx/surface.js shadeSurf, far.js) and the hand lamps' (lampShade below).
+const GGX_ALPHA_MIN: f32 = 2e-3;   // floor on GGX alpha (= roughness²): keeps the lobe finite
+
+// Height-correlated Smith visibility, V = G2 / (4 n·l n·v).
+fn smithV(nl: f32, nv: f32, a: f32) -> f32 {
+  let a2 = a * a;
+  let gv = nl * sqrt(nv * nv * (1.0 - a2) + a2);
+  let gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
+  return 0.5 / max(gv + gl, 1e-5);
+}
+
+// GGX specular BRDF times n·l, optionally anisotropic: grooves along t are
+// smoother along t than across, so the highlight stretches across them.
+fn ggxSpecA(n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f, t0: vec3f, aniso: f32) -> vec3f {
+  let nl = dot(n, l);
+  if (nl <= 0.0) { return vec3f(0.0); }
+  let h = normalize(v + l);
+  let nv = max(dot(n, v), 1e-4);
+  let nh = max(dot(n, h), 0.0);
+  let vh = max(dot(v, h), 0.0);
+  var a = max(rough * rough, GGX_ALPHA_MIN);
+  var D: f32;
+  if (aniso > 0.0) {
+    let b = normalize(cross(n, t0));
+    let t = cross(b, n);
+    let at = max(a * (1.0 - aniso), GGX_ALPHA_MIN);
+    let ab = max(a * (1.0 + aniso), GGX_ALPHA_MIN);
+    let th = dot(t, h) / at;
+    let bh = dot(b, h) / ab;
+    let d = th * th + bh * bh + nh * nh;
+    D = 1.0 / (PI_L * at * ab * d * d);
+    a = sqrt(at * ab);
+  } else {
+    let a2 = a * a;
+    let d = nh * nh * (a2 - 1.0) + 1.0;
+    D = a2 / (PI_L * d * d);
+  }
+  let F = F0 + (1.0 - F0) * pow(1.0 - vh, 5.0);
+  return D * smithV(nl, nv, a) * F * nl;
+}
+fn ggxSpec(n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f) -> vec3f {
+  return ggxSpecA(n, v, l, rough, F0, vec3f(1.0, 0.0, 0.0), 0.0);
+}
+
+
+// ---- hand lamps: their specular ----
+// A lamp is a tube of radius r and length h (lampNearest), so its highlight is
+// Karis 2013's ("Real Shading in Unreal Engine 4", Area Lights): the BRDF lit
+// from a representative point, the point of the light nearest the reflection
+// ray r. The tube's line first, eq. 19 (shortest distance between the
+// segment L0 + t·Ld and r), then the sphere around that point, eq. 11; l
+// points at the result. Moving the light's origin onto its body widens the
+// lobe, so the energy is put back as the paper does, by the ratio of GGX's
+// normalisation (π α²) at the widened α' to the original: eq. 14,
+// (α / α')², for the sphere, and eq. 20, α / α', for the line (widened in
+// one dimension, anisotropic GGX's π αx αy); the two are accumulated ("these
+// operations can be accumulated ... approximates a convolution of the
+// shapes"). α' is the paper's own widening, eq. 10 (which eq. 14 says it
+// reuses, "the same reasoning used by the specular D modification"):
+// α' = saturate(α + sourceRadius / (3 · distance)); for the line, its
+// half-length is the radius it subtends along its length.
+const LAMP_SPEC_WIDEN: f32 = 1.0 / 3.0;   // α' = α + LAMP_SPEC_WIDEN · radius / d (Karis 2013, eq. 10)
+const LAMP_SPEC_EPS: f32 = 1e-6;    // cells²: a segment this short, or r along it, has no nearest-point solve (t = 0.5)
+// What lampShade needs for the specular: the view direction v (toward the eye),
+// the surface's GGX roughness, F0 and anisotropy (ggxSpecA), and on (false: diffuse only).
+struct LampSpecIn { v: vec3f, rough: f32, F0: vec3f, tang: vec3f, aniso: f32, on: bool }
+struct LampLit { diff: vec3f, spec: vec3f }
+// Lamp i's specular at p (normal n) per unit of its irradiance there, as the
+// sun's is per unit of FU.sunCol (× π: the colour is irradiance / π).
+fn lampSpec(i: i32, p: vec3f, n: vec3f, view: LampSpecIn) -> vec3f {
+  let rr = reflect(-view.v, n);
+  let len = FU.lampShape[i].y;
+  let rad = FU.lampShape[i].x;
+  let L0 = FU.lampPos[i].xyz - p - vec3f(0.0, 0.5 * len, 0.0);
+  let Ld = vec3f(0.0, len, 0.0);
+  let rLd = dot(rr, Ld);
+  let den = dot(Ld, Ld) - rLd * rLd;
+  var t = 0.5;
+  if (den > LAMP_SPEC_EPS) { t = (dot(rr, L0) * rLd - dot(L0, Ld)) / den; }   // eq. 19
+  let Lc = L0 + Ld * clamp(t, 0.0, 1.0);
+  let toRay = dot(Lc, rr) * rr - Lc;                                         // eq. 11
+  let Lp = Lc + toRay * clamp(rad / max(length(toRay), LAMP_SPEC_EPS), 0.0, 1.0);
+  let d = max(length(Lc), LAMP_SPEC_EPS);
+  let a = max(view.rough * view.rough, GGX_ALPHA_MIN);
+  let aS = a / clamp(a + LAMP_SPEC_WIDEN * rad / d, 0.0, 1.0);               // eq. 14's ratio
+  let aL = a / clamp(a + LAMP_SPEC_WIDEN * 0.5 * len / d, 0.0, 1.0);         // eq. 20 (its half-length)
+  return PI_L * ggxSpecA(n, view.v, normalize(Lp), view.rough, view.F0, view.tang, view.aniso) * (aS * aS * aL);
+}
+
+// The lamps' specular at p (normal n) unshadowed, as lampSeen's diffuse: for
+// the clear interfaces (liquid.js liquidInterface: water, ice), which reflect
+// what the light falls on them from the lamps' own bodies.
+fn lampSpecSeen(p: vec3f, n: vec3f, view: LampSpecIn) -> vec3f {
+  var sum = vec3f(0.0);
+  for (var i = 0; i < LAMP_MAX; i++) {
+    if (i >= FU.lampCount) { break; }
+    let dv = lampNearest(i, p) - p;
+    let d2 = dot(dv, dv);
+    let R = FU.lampPos[i].w;
+    if (d2 >= R * R || dot(n, dv) <= 0.0 || !lampLive(i)) { continue; }
+    sum += FU.lampCol[i].rgb * lampFall(d2, R, FU.lampShape[i].x) * lampSpec(i, p, n, view);
+  }
+  return sum;
+}
+
 // ---- hand lamps: their shadows ----
 // The light of the lamps at surface point p (normal n, geometric normal ng),
 // to be multiplied by the albedo: each lampFall's, shadowed by a traced ray
@@ -847,8 +954,10 @@ const LAMP_SELF_SKIP: f32 = 1.0;   // smooth-surface cells ignored this close to
 const LAMP_PAD: f32 = 0.3;         // cells short of the lamp the shadow ray stops (it hangs in air)
 const LAMP_FIXED_PAD: f32 = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
 const LAMP_FIXED_SELF: f32 = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
-fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
+// view: what the specular needs (lampSpec, off in lampSum); the shadow ray is shared.
+fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> LampLit {
   var sum = vec3f(0.0);
+  var spec = vec3f(0.0);
   for (var i = 0; i < LAMP_MAX; i++) {
     if (i >= FU.lampCount) { break; }
     let ro = p + ng * LAMP_START;
@@ -880,9 +989,14 @@ fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
     // stop as far short of the aim as it is off the nearest point, so the ray ends by the light, never in the wall a torch hangs on
     let pad = select(LAMP_PAD, LAMP_FIXED_PAD, fixedLamp) + distance(aim, near);
     if (traceNear(ro, sv / max(sd, 1e-4), max(sd - pad, 0.0), true, LAMP_SELF_SKIP, &hc, &hn) >= 0.0) { continue; }
-    sum += FU.lampCol[i].rgb * nl * lampFall(d2, R, r);
+    let E = FU.lampCol[i].rgb * lampFall(d2, R, r);
+    sum += E * nl;
+    if (view.on) { spec += E * lampSpec(i, p, n, view); }
   }
-  return sum;
+  return LampLit(sum, spec);
+}
+fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
+  return lampShade(p, ng, n, soft, LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false)).diff;
 }
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f { return lampSum(p, ng, n, true); }
 `;

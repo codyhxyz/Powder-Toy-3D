@@ -1553,48 +1553,8 @@ fn envBRDF(nv: f32, rough: f32) -> vec2f {
   return c3 * a004 + r.zw;
 }
 
-const GGX_ALPHA_MIN: f32 = 2e-3;   // floor on GGX alpha (= roughness²): keeps the lobe finite
-
-// Height-correlated Smith visibility, V = G2 / (4 n·l n·v).
-fn smithV(nl: f32, nv: f32, a: f32) -> f32 {
-  let a2 = a * a;
-  let gv = nl * sqrt(nv * nv * (1.0 - a2) + a2);
-  let gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
-  return 0.5 / max(gv + gl, 1e-5);
-}
-
-// GGX specular BRDF times n·l, optionally anisotropic: grooves along t are
-// smoother along t than across, so the highlight stretches across them.
-fn ggxSpecA(n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f, t0: vec3f, aniso: f32) -> vec3f {
-  let nl = dot(n, l);
-  if (nl <= 0.0) { return vec3f(0.0); }
-  let h = normalize(v + l);
-  let nv = max(dot(n, v), 1e-4);
-  let nh = max(dot(n, h), 0.0);
-  let vh = max(dot(v, h), 0.0);
-  var a = max(rough * rough, GGX_ALPHA_MIN);
-  var D: f32;
-  if (aniso > 0.0) {
-    let b = normalize(cross(n, t0));
-    let t = cross(b, n);
-    let at = max(a * (1.0 - aniso), GGX_ALPHA_MIN);
-    let ab = max(a * (1.0 + aniso), GGX_ALPHA_MIN);
-    let th = dot(t, h) / at;
-    let bh = dot(b, h) / ab;
-    let d = th * th + bh * bh + nh * nh;
-    D = 1.0 / (PI_S * at * ab * d * d);
-    a = sqrt(at * ab);
-  } else {
-    let a2 = a * a;
-    let d = nh * nh * (a2 - 1.0) + 1.0;
-    D = a2 / (PI_S * d * d);
-  }
-  let F = F0 + (1.0 - F0) * pow(1.0 - vh, 5.0);
-  return D * smithV(nl, nv, a) * F * nl;
-}
-fn ggxSpec(n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f) -> vec3f {
-  return ggxSpecA(n, v, l, rough, F0, vec3f(1.0, 0.0, 0.0), 0.0);
-}
+// (GGX_ALPHA_MIN, smithV, ggxSpecA and ggxSpec live in gfx/lighting.js, beside
+// the hand lamps' specular, which shares them with the sun's here)
 
 // Glints: a world-space lattice of tiny mirror facets (one ball per lattice
 // cell around a jittered centre, cut by the surface into a disc) whose
@@ -1739,7 +1699,8 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   let wrap = max(nl + w, 0.0) / ((1.0 + w) * (1.0 + w));
   let dSun = kD * mix(vec3f(lam), wrap * s.sssCol, w);
   // sun: specular, with multiple-scattering energy compensation
-  var spec = ggxSpecA(n, v, l, s.rough, F0, s.tang, s.aniso) * (1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0));
+  let msK = 1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0);   // (the lamps' specular below takes it too)
+  var spec = ggxSpecA(n, v, l, s.rough, F0, s.tang, s.aniso) * msK;
   let g = s.glint * FU.glints;   // (glintSpec sizes its facets to the pixel, so no distance fade)
   if (g > 0.0) {
     // glints are part of the texture, so flowing grains carry them too
@@ -1802,7 +1763,13 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   // iron by a torch catches its light instead of staying a black slab
   let kL = kD + F0 * (s.metal * LOCAL_METAL_DIFFUSE);
   c += kD * ind + kL * local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT);
-  if (FU.lampCount > 0) { c += kL * lampLight(s.p, ng, n); }   // a torch or lantern (traced shadows, so no AO)
+  // a torch or lantern (traced shadows, so no AO); it has a direction and a
+  // size too, so it also reflects as the sun does (lighting.js lampShade:
+  // Karis 2013's tube light), with the same multiple-scattering compensation
+  if (FU.lampCount > 0) {
+    let lit = lampShade(s.p, ng, n, true, LampSpecIn(v, s.rough, F0, s.tang, s.aniso, true));
+    c += kL * lit.diff + lit.spec * msK;
+  }
   return c + s.emit;
 }
 
