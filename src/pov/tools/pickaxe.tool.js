@@ -3,17 +3,22 @@ import { HIT } from '../viewmodel.js';
 import { meleeTool } from './melee.js';
 import { gear } from './catalog.js';
 
-// Pickaxe: the axe's swing (melee.js) with a heavier, pointed head: a slower
-// blow with more energy in a narrower, deeper patch (shaders/povTools.js PICK),
-// so it bites into rock, about a 3×3 face two cells deep a swing, where the
-// axe bounces off. Still bounces off metal. The rock breaks into STONE and
-// the swing gathers it into the pack (melee.js collect), so the hole stays open.
+// Pickaxe: the axe's swing (melee.js) with a heavier, pointed head, that digs
+// like Minecraft's pickaxe (dig.js): every blow lands on the outlined 0.9 m
+// block you aim at, and a block it has beaten comes up whole, rock as STONE,
+// into the pack, leaving a clean, square hole. POWER is the hardness one blow
+// beats: rock and every softer breakable solid in one blow; wood it leaves to
+// the axe (a toast says so). It never digs a
+// solid harder than its blow's energy (PICK.ENERGY 52): metal (60) still
+// rings off it, as before.
 
-const REFIRE = 0.6;          // s between swings: a heavier head than the axe's
+const REFIRE = 0.4;          // s between blows: Half-Life 2's crowbar (weapon_crowbar.h CROWBAR_REFIRE); was 0.6
+const DIGS = ['loose', 'soil', 'mineral'];   // dig.js materials: everything breakable but wood (the axe's, as in Minecraft)
+const POWER = 30;            // hardness one blow beats: ROCK's 30, the hardest rock a world is made of
 
 export default meleeTool({
   ...gear('PICKAXE'),
-  blow: PICK, frag: pickaxeFrag, hit: HIT.PICK, refire: REFIRE, collect: true,
+  blow: PICK, frag: pickaxeFrag, hit: HIT.PICK, refire: REFIRE, dig: { power: POWER, digs: DIGS },
   body: {
     damage: 0.4,             // health a blow takes from a body (an NPC): three blows kill
     energy: 50,              // the impact's energy for the shake and hitmarker

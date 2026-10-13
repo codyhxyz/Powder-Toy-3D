@@ -34,9 +34,12 @@
   are slots (Dig, Build, Guns, Explosives, Gadgets); pressing one again steps to the next tool in it, and the
   wheel steps through everything carried. God powers (infinite painting) stay in god view, one `V` away. The
   list below is the original ten; the guns and the rocket launcher are under "Guns" below.
-  1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
-     refuses), into the **pack** (the inventory, `transfer.js` `pack()`, 1,000 cells). Right-click throws a
-     bladeful from it where you aim.
+  1. **Shovel**: digs like Minecraft's (`tools/dig.js`): each click (or every 0.15 s held) takes the
+     outlined bite, 3 cells deep behind the face you aim at and the trowel's 3×3 lattice square across it,
+     into the **pack** (the inventory, `transfer.js` `pack()`, Minecraft's 36 × 64 blocks). Powder comes up in
+     one dig, and so does soil (moss, fungus); wood is the axe's and rock the pickaxe's (`dig.js` `material`,
+     Minecraft's best tool per block): they refuse with a toast naming the tool. Right-click throws a block's
+     worth from it where you aim; hold to keep throwing. Third person plays its dig and toss (`holds.js` GESTURES).
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.
   3. **Axe**: a short-range swing that breaks breakable solids in a wide, shallow patch into debris. It's
      weaker and less focused than the gun, and chops trees and smashes windows.
@@ -54,10 +57,12 @@
   9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
      charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
      and the blasts stack; the blast is the engine's.
-  10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js, shaders/povTools.js
-      `PICK`): a slower blow with more energy in a narrower, deeper patch. It mines rock, a 3×3 face two
-      cells deep a swing, into STONE that each swing gathers into the pack (so the rubble never plugs the
-      hole; with the pack full it stays put). Metal still turns it away.
+  10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js `dig`), at the HL2
+      crowbar's 0.4 s. Each blow digs the outlined bite (`tools/dig.js`, the shovel's) whole: rock and
+      anything softer in one blow, as its debris (ROCK → STONE) into the pack. Wood it leaves to the axe;
+      nothing harder than its blow's energy (`PICK.ENERGY` 52): metal still turns it away.
+      Digging sounds are recorded (`public/sfx/dig`, Kenney's Impact Sounds, CC0): the blade's bite over its
+      material's texture (sand, gravel, soil), strikes by material (rock, glass, metal, wood), a load's thud.
 - Mouse look with pointer lock. `F5` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
@@ -537,7 +542,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `round:move` | guns, bomb, rocket | `{ id, kind, from, to }` (kind 'round', 'bomb' or 'rocket'). A round in flight moved this frame (grid), for tracers and the rocket's smoke. |
 | `round:end` | guns, bomb, rocket | `{ id, kind }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe, pickaxe, knife, flask | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife'\|'flask', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb, flask | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'\|'flask'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'\|'shatter'\|'drink'. Physgun 'hold' state is read from the tool, not an event. |
+| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb, flask | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'\|'flask'; action is 'dig'\|'chip'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'\|'shatter'\|'drink'. Physgun 'hold' state is read from the tool, not an event. |
 | `drunk` | ingest.js (whiskey) | `{ seconds }`. Seconds of Drunk added to the player (feel.js sways the view; an NPC's has `by`). |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |

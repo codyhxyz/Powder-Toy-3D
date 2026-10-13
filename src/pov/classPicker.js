@@ -20,8 +20,9 @@ import './classPicker.css';
 //
 // A team game can open it as TF2 does on joining a team (open({ joined: true })):
 // the pointer is taken back when it closes, and closing it without a class ever
-// picked plays DEFAULT_CLASS. A Halo match has no classes (allowed() false):
-// comma does nothing and spawned() takes the class off.
+// picked plays DEFAULT_CLASS. Classes exist only in a TF2-style match (Siege);
+// elsewhere allowed() is false: comma passes on (settings), no tip, and
+// spawned() takes the class off.
 //
 // env: { isActive, getBody, getToolbelt, lock, unlock, isLocked, toast,
 //        allowed?() (classes on now; default yes), inRoom?() (the game's respawn room) }
@@ -247,7 +248,7 @@ export function createClassPicker(env) {
   // the shell, on every spawn of the player's body
   function spawned(body) {
     spawnAt = performance.now();
-    if (!allowed()) {   // a Halo match: everyone equal, no class (its perks and scales come off)
+    if (!allowed()) {   // not a TF2-style match: no class (its perks and scales come off)
       if (body.cls) applyClassTo(body, null);
       return null;
     }
@@ -266,7 +267,7 @@ export function createClassPicker(env) {
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!open) {
-      if (e.key === ',' && !e.repeat && env.isActive()) { e.preventDefault(); e.stopImmediatePropagation(); show(); }   // (nothing in a Halo match)
+      if (e.key === ',' && !e.repeat && env.isActive() && allowed()) { e.preventDefault(); e.stopImmediatePropagation(); show(); }   // (outside Siege, comma is settings)
       return;
     }
     const digit = /^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1;

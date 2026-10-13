@@ -205,7 +205,8 @@ const world = {
   moveWindow(app) {
     const { win, sim, pov, controls, scale, anchor, hover } = app;
     let fx, fz;
-    if (app.worldFocus) [fx, fz] = app.worldFocus;
+    const focus = app.villageFocus ?? app.worldFocus;   // (Animal Crossing streams toward your cottage first)
+    if (focus) [fx, fz] = focus;
     else if (pov?.active && pov.player) { fx = pov.player.pos.x + sim.origin.x; fz = pov.player.pos.z + sim.origin.z; }
     else { fx = controls.target.x / scale + anchor.x; fz = controls.target.z / scale + anchor.y; }
     const move = win.update(fx, fz);
@@ -216,6 +217,7 @@ const world = {
     hover.cell.x -= dx;   // the last pick, in the moved grid (signs follow sim.origin themselves)
     hover.cell.z -= dz;
     if (hover.valid && !app.inWindow(hover.cell)) hover.valid = false;
+    return move;
   },
 };
 

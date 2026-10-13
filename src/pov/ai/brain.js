@@ -13,6 +13,7 @@ import { CHARGE_S as LASER_CHARGE_S, REFIRE_S as LASER_REFIRE_S } from '../tools
 import { FRAG_SPEED, FRAG_GRAVITY } from '../frag.js';
 import { MELEE_LUNGE } from '../kick.js';
 import { haloMatch } from '../halo.js';
+import { material } from '../tools/dig.js';
 
 // An NPC's mind, from Mat Buckland's "Programming Game AI by Example" as Yuka
 // implements it (github.com/Mugen87/yuka):
@@ -71,7 +72,7 @@ const ROCKET_AIM_UP = 0.5;           // cells over the target's feet it aims (th
 const LASER_SLACK_S = 0.2;           // s it keeps the trigger held past the laser's charge (it fires itself when full)
 const AXE_WINDUP = 0.6;              // s it faces the target, axe up, before a blow (the tell)
 const AXE_COOLDOWN = 0.5;            // s after a blow
-const PICK_COOLDOWN = 0.7;           // s after a pickaxe blow (its refire is 0.6)
+const PICK_COOLDOWN = 0.5;           // s after a pickaxe blow (its refire is 0.4)
 const AXE_RANGE = Math.min(HAND_REACH, 6);   // cells: it swings from closer than the hand's reach
 const TORCH_RANGE = 1.5 + FLAMER.LENGTH;      // cells: nozzle reach + flame
 const BOMB_MIN = 10;                 // cells: closer than this a bomb would hurt itself
@@ -123,9 +124,10 @@ const WANDER_S = 3;
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const LOOSE = (i) => i !== E.EMPTY && i >= 0 && (KIND[i] === K.POWDER || KIND[i] === K.LIQUID);
-const DIGGABLE = (i) => i >= 0 && i !== E.EMPTY && (KIND[i] === K.POWDER || (KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ELEMENTS[i].hard <= 40));
+// what the shovel and the pickaxe dig (tools/dig.js: each tool its own materials, as the player's)
+const DIGGABLE = (i) => i >= 0 && i !== E.EMPTY && ['loose', 'soil'].includes(material(ELEMENTS[i]));
 const AXEABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ELEMENTS[i].hard <= AXE.ENERGY;
-const PICKABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ELEMENTS[i].hard <= PICK.ENERGY;
+const PICKABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ['soil', 'mineral'].includes(material(ELEMENTS[i])) && ELEMENTS[i].hard <= PICK.ENERGY;
 const BOMBABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto;
 
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);

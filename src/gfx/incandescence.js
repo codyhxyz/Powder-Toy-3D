@@ -78,6 +78,9 @@ function colourOf(spd) {
 }
 // blackbody at tC (°C)
 const blackbody = (tC) => colourOf((l) => planck(l, tC + KELVIN));
+// The colour of a blackbody at tK (kelvin): linear sRGB of unit luminance (a flame's
+// light, gfx/lamps.js FLAME_COLOR). Unreal's light Temperature is the same idea.
+export const blackbodyChroma = (tK) => colourOf((l) => planck(l, tK)).chroma;
 
 // Luminescence (gfx/materials.js emit): a mineral's emission band, a Gaussian
 // peaking at peak nm, fwhm nm wide, through the same colour matching. Returns

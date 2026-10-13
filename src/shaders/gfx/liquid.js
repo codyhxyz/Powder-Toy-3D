@@ -246,6 +246,11 @@ fn liquidInterface(hp: vec3f, n0: vec3f, entering: bool, id: i32, mirror: bool, 
     if (mirror) { wr = smoothstep(REFL_F_LO, REFL_F_HI, F); }
     if (wr > 0.0) { env = mix(env, reflectTrace(hp + n * REFL_START, r, env), wr); }
     *col += *trans * F * env;
+    // a torch or lantern's highlight (lighting.js lampSpec: its own Fresnel, from the IOR's F0)
+    if (FU.lampCount > 0) {
+      let f0 = (1.0 - ior) / (1.0 + ior);
+      *col += *trans * lampSpecSeen(hp, n, LampSpecIn(-*rd, ROUGH(id), vec3f(f0 * f0), vec3f(1.0, 0.0, 0.0), 0.0, true));
+    }
     *trans *= 1.0 - F;
     let rt = refract(*rd, n, 1.0 / ior);
     *rd = rt;

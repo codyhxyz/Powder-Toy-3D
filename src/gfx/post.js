@@ -375,6 +375,18 @@ fn sanitize(c0: vec4f) -> vec4f {
   return c;
 }
 
+// The temporal resolve's range (Karis 2014, "High Quality Temporal
+// Supersampling": tonemap before the resolve, invert after). three's TAAU
+// averages what it is given, so one sample many times brighter than its
+// neighbours (a leaf mirroring the sun) would show as a blip for a frame
+// before its variance clip takes it out; given c / (1 + max(c)), that sample
+// counts for at most 1 and averages in. Max channel, as three's own
+// flickerReduction compresses: the scale keeps the hue, so expand inverts it
+// exactly, up to sanitize's cap.
+const TAA_EXPAND_MIN: f32 = 1.0 / (1.0 + MAX_RADIANCE);   // 1 - max of a compressed MAX_RADIANCE
+fn taaCompress(c: vec4f) -> vec4f { return vec4f(c.rgb / (1.0 + max(c.r, max(c.g, c.b))), c.a); }
+fn taaExpand(c: vec4f) -> vec4f { return vec4f(c.rgb / max(1.0 - max(c.r, max(c.g, c.b)), TAA_EXPAND_MIN), c.a); }
+
 // Soft-knee bright pass on the max channel: the share of the light that blooms (th: threshold, knee).
 fn bright(c: vec3f, th: vec2f) -> vec3f {
   let br = max(c.r, max(c.g, c.b));
@@ -400,7 +412,8 @@ fn tent9(t: texture_2d<f32>, s: sampler, uv: vec2f, texel: vec2f) -> vec3f {
  * createTemporalUpscaler), the scene's velocity (location 0: this frame's
  * unjittered NDC minus the last frame's, three's VelocityNode's convention,
  * from depth and the cameras, through the rolling log's bend) and its colour,
- * sanitized (location 1: a NaN or Inf would live on in the node's history).
+ * sanitized (location 1: a NaN or Inf would live on in the node's history)
+ * and compressed into the resolve's range (taaCompress; expandWGSL undoes it).
  */
 export const motionWGSL = () => /* wgsl */ `
 ${fullscreenVert('vs')}
@@ -435,7 +448,7 @@ struct Motion {
   warpUse(P.warpK, P.warpAnchor, P.warpDir);
   let p = vec2i(in.position.xy);
   var o: Motion;
-  o.color = sanitize(textureLoad(tColor, p, 0));
+  o.color = taaCompress(sanitize(textureLoad(tColor, p, 0)));
   o.velocity = vec2f(HISTORY_GONE);
   if (P.historyValid == 0u) { return o; }
   let uv = in.position.xy / P.size;
@@ -444,6 +457,16 @@ struct Motion {
   if (prev.w <= 0.0) { return o; }   // (behind last frame's camera: no history)
   o.velocity = ndc + P.jitterNdc - prev.xy / prev.w;
   return o;
+}
+`;
+
+/** TAAU's resolve back to radiance (taaExpand), at output size: what bloom, adaptation and the composite read. */
+export const expandWGSL = () => /* wgsl */ `
+${fullscreenVert('vs')}
+${COMMON}
+@group(2) @binding(0) var tSrc: texture_2d<f32>;   // three's TAAU's resolve, in taaCompress's range
+@fragment fn fs(in: FullScreen) -> @location(0) vec4f {
+  return taaExpand(textureLoad(tSrc, vec2i(in.position.xy), 0));
 }
 `;
 
@@ -946,6 +969,7 @@ const compositeEntry = (format) => renderEntry(`composite ${format}`, compositeW
 /** The pipelines post builds (docs/webgpu.md I1, B5: the start menu warms the same list). */
 export const WGSL_CHECK = [
   renderEntry('motion', motionWGSL, 'MOTION', MotionParams, 'fs', HDR, MOTION_FORMATS),
+  renderEntry('taaExpand', expandWGSL, 'PAIR'),
   renderEntry('prefilter', prefilterWGSL, 'PAIR', PrefilterParams),
   renderEntry('bloomUp0', bloomUp0WGSL, 'PAIR', MipParams),
   renderEntry('bloomTent', bloomTentWGSL, 'PAIR', null),
@@ -1099,6 +1123,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const L = Object.fromEntries(Object.entries(POST_LAYOUTS).map(([k, entries]) => [k, gpu.layout(`POST_${k}`, entries)]));
   const pipes = {
     motion: postPipe(gpu, PIPES.motion),
+    expand: postPipe(gpu, PIPES.taaExpand),
     prefilter: postPipe(gpu, PIPES.prefilter),
     up0: postPipe(gpu, PIPES.bloomUp0),
     tent: postPipe(gpu, PIPES.bloomTent),
@@ -1128,6 +1153,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let active = main;
   let size = [0, 0], inSize = [0, 0];
   let down = [], up = [], bloomImage = null, resolved = null;
+  let expanded = null;   // TAAU's resolve, expanded (expandWGSL), at output size
   let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
   let jitter = [0, 0], taaNow = false;
   // the cameras' view-projections: last frame's and this frame's unjittered, this frame's jittered (as the scene drew)
@@ -1253,6 +1279,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       if (outChanged) {
         if (down.length) gpu.flush('post resize');   // (as the scene target's resize)
         [...down, ...up, bloomImage].forEach((t) => t?.destroy());
+        expanded?.destroy();
+        expanded = make('post taa', size, ATTACH);
         down = z.mips.map((m, i) => make(`post down ${i}`, m, i === 0 ? ATTACH : STORE));
         up = z.mips.slice(0, MIPS - 1).map((m, i) => make(`post up ${i}`, m, i === 0 ? ATTACH : STORE));
         bloomImage = make('post bloom', z.mips[0], ATTACH);
@@ -1408,7 +1436,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           },
         });
         rp.end();
-        color = resolved = temporal.resolve(prevCamera, main.rt?.depthTexture, size);
+        const taau = temporal.resolve(prevCamera, main.rt?.depthTexture, size);
+        drawPass(pipes.expand, viewOf(expanded), 'taa expand', group(L.PAIR, [taau, taau], () => [texEntry(0, taau), texEntry(1, taau), samplerEntry(2)]));
+        color = resolved = expanded;
         post.onPass?.('taa', { kind: 'render' });
         historyValid = true;
       }
@@ -1574,7 +1604,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       presentation?.dispose();
       temporal?.dispose();
       [...down, ...up, bloomImage, blank].forEach((t) => t?.destroy());
-      down = []; up = []; bloomImage = null; resolved = null;
+      expanded?.destroy();
+      down = []; up = []; bloomImage = null; resolved = null; expanded = null;
       main.destroy();
       still.destroy();
       adaptState.destroy();
