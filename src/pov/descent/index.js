@@ -4,7 +4,7 @@ import { SPELL_BY_ID } from '../wands/catalog.js';
 import { DESCENT_LEVELS, levelByScene, generator, descentWands } from './deps.js';
 import { createPurse, siteNuggets, splitGold, enemyGold, DROP_LIFETIME_S, DROP_BLINK_S, NUGGET } from './gold.js';
 import { rollShop, buy } from './shop.js';
-import { hashString, mixSeed } from './rng.js';
+import { hashString, mixSeed } from '../../rng.js';
 import { createDescentItems } from './items.js';
 
 // The Holy Mountain (docs/descent-contract.md, C): Noita's temple between biomes,

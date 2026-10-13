@@ -4,6 +4,9 @@
 
 import { CELL_M } from '../scale.js';
 
+// s a dead creature (an NPC, a worm) stays gone before another comes
+export const RESPAWN_S = 8;
+
 // The body: an upright box the player stands in.
 export const BODY_HEIGHT = 5.5;         // cells, about 1.7 m
 export const BODY_WIDTH = 1.6;          // cells, square footprint

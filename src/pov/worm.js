@@ -4,11 +4,11 @@ import { ELEMENTS, E, K } from '../elements.js';
 import { wormFrag, wormGiantFrag, WORM_BITE, WORM_GIANT_BITE } from '../shaders/povTools.js';
 import { toolPass } from './gpu.js';
 import { figureFrag } from './figure.js';
-import { addTarget, allTargets, PLAYER } from './targets.js';
+import { addTarget, allTargets, spotAround, PLAYER } from './targets.js';
 import { povEvents } from './events.js';
 import { OUTSIDE } from './ai/world.js';
 import { ROUND_GRAVITY, gravityScale } from './ballistics.js';
-import { BODY_HEIGHT } from './constants.js';
+import { BODY_HEIGHT, RESPAWN_S } from './constants.js';
 
 // A worm: Noita's Mato (data/entities/animals/worm.xml), a chain of segments
 // that tunnels through the ground and hunts whatever walks on it.
@@ -95,7 +95,6 @@ const BURN_RATE = 0.5;                  // health/s it loses burning
 const CAUSE = 'Eaten by a worm';
 
 // life
-const RESPAWN_S = 8;                    // s dead before another comes (npc.js)
 const CORPSE_S = 4;                     // s the corpse stays
 const STRANDED_SPEED = 2;               // cells/s: out of matter and slower than this, it's stranded and its body slumps
 const SPAWN_DIST = 40;                  // cells from the player it comes up, with no spawner
@@ -247,8 +246,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
       // under the ground, SPAWN_DIST from the nearest body
       const t = nearestBody(Infinity);
       const c = t ? t.center : { x: g.nx / 2, y: 0, z: g.nz / 2 };
-      const a = Math.random() * 2 * Math.PI;
-      const x = THREE.MathUtils.clamp(c.x + Math.cos(a) * SPAWN_DIST, R, g.nx - R), z = THREE.MathUtils.clamp(c.z + Math.sin(a) * SPAWN_DIST, R, g.nz - R);
+      const { x, z } = spotAround(c, SPAWN_DIST, R, g);
       p = { x, y: Math.max(R, world.standAt(x, z) - ROAM_DEPTH), z };
     }
     v.position.set(p.x, p.y, p.z);

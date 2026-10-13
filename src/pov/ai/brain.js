@@ -5,7 +5,7 @@ import {
   Vector3 as YVector3,
 } from 'yuka';
 import { ELEMENTS, E, K } from '../../elements.js';
-import { HAND_REACH, BODY_HEIGHT, EYE_HEIGHT } from '../constants.js';
+import { HAND_REACH, BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT } from '../constants.js';
 import { AXE, PICK, FLAMER, PHYS, ROCKET } from '../../shaders/povTools.js';
 import { ROUND_GRAVITY, gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from '../tools/bomb.tool.js';
@@ -583,21 +583,38 @@ class GatherGoal extends CompositeGoal {
 // ---------------------------------------------------------------- weapons in use
 
 function chooseWeapon(a) {
-  // keep the current weapon a while unless it can't be used any more
-  if (a.weapon && a.now - a.weaponAt < WEAPON_SWITCH_S && usable(a, a.weapon) && (!a.weapons || a.weapons.has(a.weapon))) return a.weapon;
-  let best = null, bw = 0;
-  for (const [key, w] of Object.entries(WEAPONS)) {
-    if (a.weapons ? !a.weapons.has(key) : w.carried) continue;   // a game's limits (an infected: melee only; Halo's two guns)
-    if (!usable(a, key)) continue;
+  return pickWeapon(a, WEAPONS, WEAPON_SWITCH_S, {
+    // keep the current weapon a while unless it can't be used any more
+    keep: (key) => usable(a, key) && (!a.weapons || a.weapons.has(key)),
+    // a game's limits (an infected: melee only; Halo's two guns)
+    ok: (key, w) => (a.weapons ? a.weapons.has(key) : !w.carried) && usable(a, key),
+  });
+}
+// Raven's fuzzy weapon choice, for any mind with a table of { rate(dist) }: the
+// weapon in hand is kept switchS s while keep(key) holds; then every candidate
+// that's ok(key, w) rates its desirability at the target's distance, plus a whim
+// (WEAPON_NOISE), and the best over `floor` wins (null if none).
+function pickWeapon(a, table, switchS, { keep = () => true, ok = () => true, floor = 0 } = {}) {
+  if (Object.hasOwn(table, a.weapon) && a.now - a.weaponAt < switchS && keep(a.weapon)) return a.weapon;
+  let best = null, bw = floor;
+  for (const [key, w] of Object.entries(table)) {
+    if (!ok(key, w)) continue;
     const d = w.rate(a.dist3) + (Math.random() * 2 - 1) * WEAPON_NOISE;
     if (d > bw) { bw = d; best = key; }
   }
   // the hold starts over with every choice, the same weapon's too: kept only when it
-  // changed, the choice above ran every frame once WEAPON_SWITCH_S had passed (the
-  // whim re-rolled 60 times a second, and PHYSGUN and BUCKET's usable() scans of
-  // thousands of cells with it) instead of once per WEAPON_SWITCH_S
+  // changed, the choice above ran every frame once switchS had passed (the whim
+  // re-rolled 60 times a second, and PHYSGUN and BUCKET's usable() scans of
+  // thousands of cells with it) instead of once per switchS
   a.weapon = best; a.weaponAt = a.now;
   return best;
+}
+// the state of the tool in use (its wind-up's or burst's clock, s.t), started
+// over (and init(s)) when it was another tool's
+function useStateFor(a, key, init) {
+  const s = a.useState ??= {};
+  if (s.tool !== key) { s.tool = key; s.t = 0; init?.(s); }
+  return s;
 }
 // can weapon `key` be used from here, now?
 const GATED = new Set(['BOMB', 'PHYSGUN', 'BUCKET']);   // unusable during their cooldown (the gun and axe wait while held)
@@ -640,8 +657,7 @@ function aimWith(a, p, err = 0) {
 
 const USE = {
   AXE(a) {
-    const s = a.useState ??= {};
-    if (s.tool !== 'AXE') { s.tool = 'AXE'; s.t = 0; }
+    const s = useStateFor(a, 'AXE');
     a.hold('AXE');
     a.lookAt(a.chest());
     if (a.dist3 > AXE_RANGE) { a.chase(); s.t = 0; return; }
@@ -662,8 +678,7 @@ const USE = {
   },
   // held through the charge (its red sighting beam is the tell), then let go through the standby
   LASER(a) {
-    const s = a.useState ??= {};
-    if (s.tool !== 'LASER') { s.tool = 'LASER'; s.t = 0; }
+    const s = useStateFor(a, 'LASER');
     a.hold('LASER');
     s.t += a.dt;
     aimWith(a, a.chest(), aimError(a));
@@ -671,8 +686,7 @@ const USE = {
     if (s.t >= LASER_CHARGE_S + LASER_SLACK_S + LASER_REFIRE_S) s.tool = null;
   },
   BOMB(a) {
-    const s = a.useState ??= {};
-    if (s.tool !== 'BOMB') { s.tool = 'BOMB'; s.t = 0; }
+    const s = useStateFor(a, 'BOMB');
     s.t += a.dt;
     a.hold('BOMB');
     a.lookAt(a.chest());
@@ -685,8 +699,7 @@ const USE = {
   },
   // Halo's frag: a beat with the arm back (the tell), then lobbed to land at its feet; npc.js throws it (intent.frag)
   FRAG(a) {
-    const s = a.useState ??= {};
-    if (s.tool !== 'FRAG') { s.tool = 'FRAG'; s.t = 0; }
+    const s = useStateFor(a, 'FRAG');
     s.t += a.dt;
     a.hold(WEAPONS.FRAG.holds(a));
     a.lookAt(a.chest());
@@ -698,8 +711,7 @@ const USE = {
     s.tool = null;
   },
   BLOWTORCH(a) {
-    const s = a.useState ??= {};
-    if (s.tool !== 'BLOWTORCH') { s.tool = 'BLOWTORCH'; s.t = 0; }
+    const s = useStateFor(a, 'BLOWTORCH');
     a.hold('BLOWTORCH');
     a.lookAt(a.chest());
     if (a.dist3 > TORCH_RANGE - 0.5) { a.chase(); s.t = 0; return; }
@@ -709,8 +721,7 @@ const USE = {
     if (s.t > TORCH_IGNITE_S + TORCH_BURST_S) { a.cooldown('ATTACK', TORCH_REST_S); s.tool = null; }
   },
   PHYSGUN(a) {
-    const s = a.useState ??= {};
-    if (s.tool !== 'PHYSGUN') { s.tool = 'PHYSGUN'; s.t = 0; s.cell = a.npc.world.nearest(a.eye(), PHYS_FIND, LOOSE); }
+    const s = useStateFor(a, 'PHYSGUN', (st) => { st.cell = a.npc.world.nearest(a.eye(), PHYS_FIND, LOOSE); });
     a.hold('PHYSGUN');
     s.t += a.dt;
     if (s.t < PHYS_GRAB_S && s.cell) {
@@ -730,8 +741,7 @@ const USE = {
     a.hold('BUCKET');
     if (b.id === E.LAVA && b.n >= BUCKET_WANT / 2) {
       // carry it over and pour it on them
-      const s = a.useState ??= {};
-      if (s.tool !== 'BUCKET') { s.tool = 'BUCKET'; s.t = 0; }
+      const s = useStateFor(a, 'BUCKET');
       if (a.dist > POUR_RANGE) { a.chase(); a.lookAt(a.chest()); return; }
       a.lookAt({ x: a.target.pos.x, y: a.target.pos.y + 1, z: a.target.pos.z });
       a.intent.secondary = true;
@@ -752,19 +762,21 @@ function aimError(a) {
   const t = a.target, ramp = Math.min(a.inSight / AIM_RAMP_S, 1);
   return AIM_ERROR_START + (AIM_ERROR - AIM_ERROR_START) * ramp + AIM_ERROR_MOVING * Math.hypot(t.vel.x, t.vel.z);
 }
+// The first shot since it spotted you: a near miss to one side (WARNING_MISS body
+// widths), fired when `key` is ready, `interval` before the next. True until it's gone.
+function warningShot(a, key, interval) {
+  if (a.warnedAt === a.record.timeBecameVisible) return false;
+  const c = a.chest(), e = a.eye(), dx = c.x - e.x, dz = c.z - e.z, d = Math.hypot(dx, dz) || 1, side = Math.random() < 0.5 ? -1 : 1;
+  a.lookAt({ x: c.x - (dz / d) * side * WARNING_MISS * BODY_WIDTH, y: c.y, z: c.z + (dx / d) * side * WARNING_MISS * BODY_WIDTH });
+  if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, interval); a.warnedAt = a.record.timeBecameVisible; }
+  return true;
+}
 // A gun: a near miss first (the warning), then aimed shots every `interval`, each holding the trigger
 // for `burst` s (an automatic's burst), closing in from farther than `chaseFrom`.
 function fireGun(a, key, interval, { burst = 0, chaseFrom = GUN_CHASE } = {}) {
   a.hold(key);
-  const c = a.chest();
-  if (a.warnedAt !== a.record.timeBecameVisible) {
-    // the first shot since it spotted you: a near miss to one side
-    const e = a.eye(), dx = c.x - e.x, dz = c.z - e.z, d = Math.hypot(dx, dz) || 1, side = Math.random() < 0.5 ? -1 : 1;
-    a.lookAt({ x: c.x - (dz / d) * side * WARNING_MISS * 1.6, y: c.y, z: c.z + (dx / d) * side * WARNING_MISS * 1.6 });
-    if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, interval); a.warnedAt = a.record.timeBecameVisible; }
-    return;
-  }
-  aimWith(a, c, aimError(a));
+  if (warningShot(a, key, interval)) return;
+  aimWith(a, a.chest(), aimError(a));
   if (a.dist3 > chaseFrom) a.chase(0.6);
   if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, interval); a.burstUntil = a.now + burst; }
   else if (a.now < (a.burstUntil ?? 0)) a.intent.primary = true;
@@ -899,8 +911,9 @@ for (const [G, label] of [[AttackGoal, 'Attack'], [HuntGoal, 'Hunt'], [BreachGoa
   [ExtinguishGoal, 'Extinguish'], [GatherGoal, 'Gather'], [WanderGoal, 'Wander'], [GoToGoal, 'GoTo'], [ToolGoal, 'Tool']]) G.prototype.label = label;
 
 export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT, GoToGoal, WanderGoal };
-// for other minds on this one (ai/gunner.js): Raven's fuzzy distance module, the aim's error, the shared strategies
+// for other minds on this one (ai/gunner.js): Raven's fuzzy distance module and weapon choice, the
+// fairness rules (the reaction delay, the warning miss, the aim's error), the tool state, the shared strategies
 export {
-  distanceModule, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
-  REACTION_S, AIM_ERROR_START, AIM_ERROR, AIM_RAMP_S, AIM_ERROR_MOVING, WARNING_MISS,
+  distanceModule, pickWeapon, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
+  REACTION_S, warningShot, aimError, useStateFor,
 };

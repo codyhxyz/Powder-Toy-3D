@@ -14,7 +14,7 @@ import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
 import './potions.js';   // Noita's potion statuses: stains and drinks (registers them)
-import { addTarget, PLAYER } from './targets.js';
+import { addTarget, bodyTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { createInteract } from './interact.js';
 import { ORB_LIFT } from '../perkOrbs.js';
@@ -137,25 +137,12 @@ export function createPov(app) {
   const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
     .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
-  addTarget({
-    id: PLAYER,
-    get alive() { return !!player && !player.dead && mode === 'on'; },
-    box(min, max) {
-      const hw = player.width / 2;   // (its own size: Shrink)
-      min.set(player.pos.x - hw, player.pos.y, player.pos.z - hw);
-      max.set(player.pos.x + hw, player.pos.y + player.height, player.pos.z + hw);
-    },
-    facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
-    get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
-    hurt(amount, cause, d, opts) {
-      povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
-      player.hurt(amount * (opts?.exact ? 1 : PLAYER_DAMAGE_TAKEN), cause, opts);   // exact: Halo's numbers (halo.js)
-      // d null: the weapon shoves by momentum itself (the kick: shove below)
-      if (d) player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
-    },
-    shove(dv) { player.applyImpulse(dv); },   // a momentum shove (an NPC's kick, cells/s)
-    get body() { return player; },            // the body (a hook pulls on it: player.js tether)
-  });
+  addTarget(bodyTarget(PLAYER, () => player, {
+    alive: () => !!player && !player.dead && mode === 'on',
+    facing: (out) => povCam.dir(out),   // where the player looks
+    damageScale: PLAYER_DAMAGE_TAKEN, knockback: PLAYER_KNOCKBACK, knockUp: PLAYER_KNOCK_UP,
+    onHurt: (amount) => povEvents.emit('player:hit', { amount }),   // inside the attacker's povEvents.as(): carries its id
+  }));
   // Halo's four modes use armor; Siege and sandbox keep the chosen body.
   const character = () => game.running && ['slayer', 'ctf', 'koth', 'infection'].includes(game.mode)
     ? 'spartan' : app.settings.character;

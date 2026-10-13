@@ -6,7 +6,7 @@ import { PHYS } from '../../physics.js';
 import { gfxUniforms, WAND_LIGHTS } from '../../gfx/uniforms.js';
 
 const READBACKS = 3;
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const { clamp } = THREE.MathUtils;
 const finiteVec = (v) => v && [v.x, v.y, v.z].every((x) => Number.isFinite(x) && Math.abs(x) <= 1e6);
 const vector = (v) => new THREE.Vector3(v.x, v.y, v.z);
 // All coordinates are grid cells, velocity cells/s. No inventory ownership.
