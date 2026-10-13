@@ -273,35 +273,22 @@ const FAMILY_REF = {
 // session, level-matched to one loudness (-20 dB RMS, peaks under -1 dB) and mono. A sound is
 // SAMPLE_TAKES takes, one picked at random but never the last one again (Minecraft keeps 4-6 takes
 // a block sound, sounds.json). A dig layers the blade's bite over its material's texture (a
-// transient over a texture, the usual layering); a material sounds as Minecraft's sound groups
-// and Noita's per-material audio do: sand, gravel, soil; rock, glass, metal, wood.
+// transient over a texture, the usual layering); each element names its group (elements.js
+// `dig`), as Minecraft's sound groups and Noita's per-material audio do: sand, gravel, soil;
+// rock, glass, metal, wood.
 const SAMPLE_TAKES = 5;
 const SAMPLE_GROUPS = ['bite', 'sand', 'gravel', 'soil', 'rock', 'glass', 'metal', 'wood', 'dump'];
 const SAMPLE_NAMES = new Set(SAMPLE_GROUPS.map((g) => `dig:${g}`));
 const SAMPLE_BASE = `${import.meta.env?.BASE_URL ?? '/'}sfx/dig/`;
 const sampleUrl = (group, take) => `${SAMPLE_BASE}${group}-${take}.mp3`;
-// loose matter that sounds like gravel (stony grains) or soil (soft, organic); other powder is sand
-const GRAVELLY = new Set([E.STONE, E.RUBBLE, E.BROKENCOAL, E.NUGGETS, E.SCRAP, E.SHARDS, E.CRYSTAL_DUST]);
-const SOILY = new Set([E.SAWDUST, E.PLANT, E.MOSS, E.FUNGUS, E.CLAY, E.ASH]);
-const SAMPLE_BY_FAMILY = { shatter: 'glass', ping: 'metal', thunk: 'wood', crack: 'rock' };
-const BRITTLE = new Set([E.ICE, E.DRY_ICE]);   // ices ring like glass, not like rock
 const DIG_SOURCES = new Set(['axe', 'pickaxe']);   // the swung tools whose blows on cells play the dig samples
 const DIG_TEXTURE_GAIN = 0.8;           // the material's texture under the blade's bite
 const DUMP_TEXTURE_GAIN = 0.5;          // the grains' texture under a load's thud
 const CHIP_GAIN = 0.5;                  // a blow that only cracked: its material at half (Minecraft's hit is a quieter break)
 const BREAK_TEXTURE_GAIN = 0.6;         // a blow that broke a solid: the debris' texture under its strike
 
-// The dig sample group for element id: loose matter by its grains, solids by their family; null for
-// liquids and gases (they have their own sounds).
-export function digSampleOf(id) {
-  const el = ELEMENTS[id];
-  if (!el) return null;
-  if (el.kind === K.POWDER) return GRAVELLY.has(id) ? 'gravel' : SOILY.has(id) ? 'soil' : 'sand';
-  if (el.kind !== K.SOLID) return null;
-  if (SOILY.has(id)) return 'soil';
-  if (BRITTLE.has(id)) return 'glass';
-  return SAMPLE_BY_FAMILY[familyOf(id)] ?? 'rock';
-}
+// The dig sample group for element id: its elements.js `dig` (null for liquids and gases: they have their own sounds).
+export const digSampleOf = (id) => ELEMENTS[id]?.dig ?? null;
 
 // the shovel's dump of a load adds the pieces' own sound (glass tinkles, scrap clanks)
 const DUMP_RINGS = new Set(['shatter', 'ping']);

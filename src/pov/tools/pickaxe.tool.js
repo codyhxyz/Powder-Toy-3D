@@ -13,12 +13,12 @@ import { gear } from './catalog.js';
 // rings off it, as before.
 
 const REFIRE = 0.4;          // s between blows: Half-Life 2's crowbar (weapon_crowbar.h CROWBAR_REFIRE); was 0.6
-const DIGS = ['loose', 'soil', 'mineral'];   // dig.js materials: everything breakable but wood (the axe's, as in Minecraft)
+const TOOLS = ['pickaxe', 'shovel'];   // the elements it digs (elements.js tool): its own and loose ground, never wood (the axe's, as in Minecraft)
 const POWER = 30;            // hardness one blow beats: ROCK's 30, the hardest rock a world is made of
 
 export default meleeTool({
   ...gear('PICKAXE'),
-  blow: PICK, frag: pickaxeFrag, hit: HIT.PICK, refire: REFIRE, dig: { power: POWER, digs: DIGS },
+  blow: PICK, frag: pickaxeFrag, hit: HIT.PICK, refire: REFIRE, dig: { power: POWER, tools: TOOLS },
   body: {
     damage: 0.4,             // health a blow takes from a body (an NPC): three blows kill
     energy: 50,              // the impact's energy for the shake and hitmarker

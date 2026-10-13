@@ -43,6 +43,14 @@ import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
 //   sound  what it sounds like struck, in first person (pov/audio.js
 //          families); omitted = by kind (solids crack, powders puff,
 //          liquids splash)
+//   tool   the hand tool that digs it (pov/tools/dig.js): 'shovel', 'pickaxe'
+//          or 'axe', Minecraft's mineable/<tool> block tags. Omitted = by kind:
+//          powder the shovel's, a breakable solid the pickaxe's (null: nothing
+//          digs it). Set 'axe' on wood, 'shovel' on ground a shovel cuts (grass)
+//   dig    which recorded dig sound it makes (pov/audio.js, public/sfx/dig):
+//          'sand', 'gravel', 'soil', 'rock', 'glass', 'metal' or 'wood'.
+//          Omitted = powder 'sand', a solid by its sound (shatter glass, ping
+//          metal, thunk wood, else rock)
 //   conducts  an electrical conductor (src/electricity.js; see elec)
 //   elec   electrical conductivity σ, S/m (real values): it carries sparks
 //          (src/electricity.js, docs/electricity.md), losing SPARK_DROP / σ
@@ -380,7 +388,7 @@ const defs = [
   { key: 'SAND', abbr: 'SAND', name: 'Sand', kind: K.POWDER, render: R.OPAQUE, color: '#dcbc74', var: 0.22,
     dens: 16, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.9, melt: 1700, meltInto: 'GLASS', spawn: 0.3,
     desc: 'Sand, Heavy particles. Piles into slopes and sinks in water. Melts into glass above 1700 °C.' },
-  { key: 'STONE', abbr: 'STNE', name: 'Stone', kind: K.POWDER, render: R.OPAQUE, color: '#78726c', var: 0.18,
+  { key: 'STONE', abbr: 'STNE', name: 'Stone', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#78726c', var: 0.18,
     dens: 26, cond: 0.03, cap: 0.5, drag: 0.04, slide: 0.55, melt: 1200, spawn: 0.3, sound: 'crack',
     desc: 'Stone. Heavy particles, sinks through anything lighter. Melts into lava at 1200 °C.' },
   { key: 'SNOW', abbr: 'SNOW', name: 'Snow', kind: K.POWDER, render: R.OPAQUE, color: '#eef4ff', var: 0.06,
@@ -389,7 +397,7 @@ const defs = [
   { key: 'GUNPOWDER', abbr: 'GUNP', name: 'Gunpowder', kind: K.POWDER, render: R.OPAQUE, color: '#3d3d47', var: 0.35,
     dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: GUNPOWDER_BLAST,
     desc: 'Gunpowder. Explodes on contact with fire, or past 200 °C.' },
-  { key: 'ASH', abbr: 'ASH', name: 'Ash', kind: K.POWDER, render: R.OPAQUE, color: '#9b968d', var: 0.2,
+  { key: 'ASH', abbr: 'ASH', name: 'Ash', kind: K.POWDER, dig: 'soil', render: R.OPAQUE, color: '#9b968d', var: 0.2,
     dens: 4, cond: 0.003, cap: 0.2, drag: 0.1, slide: 0.5, spawn: 0.3,
     desc: 'Ash. What burnt wood leaves behind. Light, floats on water.' },
 
@@ -425,10 +433,10 @@ const defs = [
     dens: 0.5, cond: 0.04, cap: 0.3, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 1000, life: 1,
     rad: 0.01, spawn: 0.3, desc: 'Fire. Ignites flammable materials. Heats air. Hot, short-lived and rising.' },
 
-  { key: 'WOOD', abbr: 'WOOD', name: 'Wood', kind: K.SOLID, render: R.OPAQUE, color: '#7a4a26', var: 0.12,
+  { key: 'WOOD', abbr: 'WOOD', name: 'Wood', kind: K.SOLID, tool: 'axe', render: R.OPAQUE, color: '#7a4a26', var: 0.12,
     cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
     hard: 20, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
-  { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, render: R.OPAQUE, color: '#3da236', var: 0.25,
+  { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
   // Steel: carbon steel's resistivity ~1.43·10⁻⁷ Ω·m, σ ≈ 7·10⁶ S/m (CRC Handbook).
@@ -438,7 +446,7 @@ const defs = [
   { key: 'GLASS', abbr: 'GLAS', name: 'Glass', kind: K.SOLID, render: R.GLASS, color: '#d2ecf2',
     cond: 0.015, cap: 0.5, melt: 1400, sigma: [0.05, 0.025, 0.03], hard: 8, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
     desc: 'Glass. Clear and acid-proof; photons pass through it. Shatters under pressure. Melts at 1400 °C.' },
-  { key: 'ICE', abbr: 'ICE', name: 'Ice', kind: K.SOLID, render: R.GLASS, color: '#a9d8f2',
+  { key: 'ICE', abbr: 'ICE', name: 'Ice', kind: K.SOLID, dig: 'glass', render: R.GLASS, color: '#a9d8f2',
     cond: 0.04, cap: 0.5, temp: -20, sigma: [0.055, 0.031, 0.028], hard: 6, breakInto: 'SNOW', desc: 'Ice. Frozen water. Crushes into snow under pressure. Melts at 0 °C and chills whatever it touches.' },
   { key: 'CLONE', abbr: 'CLNE', name: 'Clone', kind: K.SOLID, render: R.OPAQUE, color: '#d9b81e', var: 0.05,
     cond: 0.001, cap: 1.0, desc: 'Clone. Duplicates the first element that touches it, forever.' },
@@ -447,13 +455,13 @@ const defs = [
     cond: 0.03, cap: 0.5, melt: 0,
     hard: 30, breakInto: 'STONE', desc: 'Rock. Natural bedrock for terrain and mountains. Never moves and never melts; conducts heat like stone.' },
   // Debris: what breakable solids turn into when they break (see hard/breakInto).
-  { key: 'SHARDS', abbr: 'BGLA', name: 'Broken glass', kind: K.POWDER, render: R.OPAQUE, color: '#b9dbe3', var: 0.15,
+  { key: 'SHARDS', abbr: 'BGLA', name: 'Broken glass', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#b9dbe3', var: 0.15,
     dens: 25, cond: 0.015, cap: 0.5, drag: 0.04, slide: 0.6, melt: 1400, meltInto: 'GLASS', spawn: 0.3, acidProof: true, sound: 'shatter',
     desc: 'Broken glass, heavy particles formed when glass breaks. Acid-proof like glass; melts back into clear glass at 1400 °C.' },
-  { key: 'SAWDUST', abbr: 'SAWD', name: 'Sawdust', kind: K.POWDER, render: R.OPAQUE, color: '#c99a62', var: 0.2,
+  { key: 'SAWDUST', abbr: 'SAWD', name: 'Sawdust', kind: K.POWDER, dig: 'soil', render: R.OPAQUE, color: '#c99a62', var: 0.2,
     dens: 4, cond: 0.006, cap: 0.3, drag: 0.1, slide: 0.45, ignite: 250, burnRate: 0.006, burnHeat: 3, flameT: 900,
     life: 1, spawn: 0.3, sound: 'thunk', desc: 'Sawdust. Floats on water. Chips and splinters of wood or plant; burns faster than a log.' },
-  { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, render: R.OPAQUE, color: '#8e939c', var: 0.1,
+  { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#8e939c', var: 0.1,
     dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping', reflect: METAL_REFLECT,
     conducts: true, elec: 7e6,   // the same steel (TPT's BRMT conducts as METL does)
     desc: 'Scrap metal. Created when metal breaks. Heavy, and carries electricity. Melts at 1500 °C and recasts as solid metal.' },
@@ -478,7 +486,7 @@ const defs = [
     desc: 'Crystal. Fluorite. Glows blue-violet by itself, enough to light a dark cave. Brittle: it shatters into glowing dust. Melts at 1418 °C.' },
   // Its debris. Crushed, it keeps the crystal's glow (as powdered phosphors do)
   // and its grains' density; molten and cooled it grows back into crystal.
-  { key: 'CRYSTAL_DUST', abbr: 'CDST', name: 'Crystal dust', kind: K.POWDER, render: R.OPAQUE, color: '#c3aee0', var: 0.15,
+  { key: 'CRYSTAL_DUST', abbr: 'CDST', name: 'Crystal dust', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#c3aee0', var: 0.15,
     dens: 32, cond: 0.05, cap: 0.65, drag: 0.04, slide: 0.6, melt: 1418, meltInto: 'CRYSTAL', spawn: 0.3, sound: 'shatter',
     desc: 'Crystal dust. Crushed fluorite. Still glows, so pour it wherever you need light. Melts back into crystal at 1418 °C.' },
   // Rocks beside ROCK (a weathered basalt), for the island's strata.
@@ -523,7 +531,7 @@ const defs = [
   // ~38°, between sand's and stone's). Like sawdust from wood, the bared
   // surface burns ~3.3× faster; a heap holds 0.85 / 1.35 of the seam's heat
   // (bulk over solid density), so burnHeat = 3 × 3.3 × 0.63 ≈ 6.
-  { key: 'BROKENCOAL', abbr: 'BCOL', name: 'Broken coal', kind: K.POWDER, render: R.OPAQUE, color: '#39383c', var: 0.2,
+  { key: 'BROKENCOAL', abbr: 'BCOL', name: 'Broken coal', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#39383c', var: 0.2,
     dens: 13.5, cond: 0.01, cap: 0.4, drag: 0.04, slide: 0.7, ignite: 450, burnRate: 0.0017, burnHeat: 6, flameT: 1100,
     life: 1, spawn: 0.3, sound: 'crack',
     desc: 'Broken coal. Heavy particles: lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
@@ -627,7 +635,7 @@ const defs = [
   { key: 'BRICK', abbr: 'BRCK', name: 'Brick', kind: K.SOLID, render: R.OPAQUE, color: '#a4553d', var: 0.1,
     cond: 0.018, cap: 0.38, melt: 1300, meltInto: 'STONE', hard: 12, breakInto: 'RUBBLE', acidProof: true, sound: 'crack',
     desc: 'Brick, breakable building material. A blast breaks it into rubble. It stands any wood fire and melts only past 1300 °C. Acid-proof.' },
-  { key: 'RUBBLE', abbr: 'BRBL', name: 'Brick rubble', kind: K.POWDER, render: R.OPAQUE, color: '#b0705a', var: 0.2,
+  { key: 'RUBBLE', abbr: 'BRBL', name: 'Brick rubble', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#b0705a', var: 0.2,
     dens: 19, cond: 0.01, cap: 0.38, drag: 0.04, slide: 0.6, melt: 1300, meltInto: 'STONE', spawn: 0.3, acidProof: true, sound: 'crack',
     desc: 'Brick rubble. Crushed brick, what a blast leaves of a brick wall. Sinks in water; melts past 1300 °C.' },
   // Titanium: 4.51 g/cm³, melts at 1,668 °C; k 21.9 W/m·K (cond 0.07), 0.52
@@ -670,7 +678,7 @@ const defs = [
   { key: 'GOLD', abbr: 'GOLD', name: 'Gold', kind: K.SOLID, render: R.OPAQUE, color: '#dcad2c', var: 0.04,
     cond: 0.1, cap: 0.6, melt: 1064, hard: 24, breakInto: 'NUGGETS', acidProof: true, conducts: true, elec: 4.1e7, sound: 'ping',
     desc: 'Gold. Corrosion resistant metal: acid can\'t touch it. Excellent conductor. Soft and heavy: tools and blasts break it into nuggets. Melts at 1064 °C.' },
-  { key: 'NUGGETS', abbr: 'NUGT', name: 'Gold nuggets', kind: K.POWDER, render: R.OPAQUE, color: '#e7bd45', var: 0.15,
+  { key: 'NUGGETS', abbr: 'NUGT', name: 'Gold nuggets', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#e7bd45', var: 0.15,
     dens: 193, cond: 0.1, cap: 0.6, drag: 0.01, slide: 0.5, melt: 1064, meltInto: 'GOLD', spawn: 0.3, acidProof: true,
     conducts: true, elec: 4.1e7, sound: 'ping',
     desc: 'Gold nuggets. Lumps of gold. They sink through every liquid, mercury included, and melt back into gold at 1064 °C.' },
@@ -757,7 +765,7 @@ const defs = [
   // Dry ice: c_p ~1.2 J/(g·K) near −80 °C (Giauque & Egan 1937), k ~0.28 W/(m·K).
   // It sublimes straight into CO₂ at −78.5 °C, setting free
   // 1.56 / 44.01 mol × 24.06 L = 853 volumes of gas.
-  { key: 'DRY_ICE', abbr: 'DRIC', name: 'Dry ice', kind: K.SOLID, render: R.OPAQUE, color: '#e6ebf0', var: 0.04,
+  { key: 'DRY_ICE', abbr: 'DRIC', name: 'Dry ice', kind: K.SOLID, dig: 'glass', render: R.OPAQUE, color: '#e6ebf0', var: 0.04,
     cond: condOf(0.28), cap: capOf(DRY_ICE_RHO, 1.2), temp: SUBLIME_T - DRY_ICE_SPAWN_BELOW, acidProof: true,
     hot: { T: SUBLIME_T, into: 'CO2', latent: CO2_SUBLIME, puff: gasVolumes(DRY_ICE_RHO / CO2_M) },
     desc: 'Dry ice, formed when CO₂ is cooled. Starts at −80 °C. It never melts: it turns straight into heavy CO₂ gas, chilling what it touches.' },
@@ -843,7 +851,7 @@ const defs = [
   // to ceramic: kaolinite loses its water at 450-600 °C and sinters into
   // spinel and then mullite from ~980 °C (Brindley & Nakahira, J. Am. Ceram.
   // Soc. 42, 1959); earthenware is fired at 1000-1150 °C. It never slakes again.
-  { key: 'CLAY', abbr: 'CLST', name: 'Clay', kind: K.POWDER, render: R.OPAQUE, color: '#d9d2c3', var: 0.1,
+  { key: 'CLAY', abbr: 'CLST', name: 'Clay', kind: K.POWDER, dig: 'soil', render: R.OPAQUE, color: '#d9d2c3', var: 0.1,
     dens: 12, cond: 0.01, cap: 0.26, drag: 0.06, slide: 0.35, spawn: 0.3,
     hot: { T: 1000, into: 'CERAMIC' },
     desc: 'Clay. Clay dust: kaolin. Produces mud when mixed with water; fired past 1000 °C it bakes into ceramic.' },
@@ -966,7 +974,7 @@ const defs = [
   // lit fuse beside it or 300 °C (its sheath chars like wood), and the burnt
   // end spits a gunpowder flame that sets off whatever it touches. Jute and
   // tar: low conductance; it breaks into fibre (sawdust) like a plant stem.
-  { key: 'FUSE', abbr: 'FUSE', name: 'Fuse', kind: K.SOLID, render: R.OPAQUE, color: '#2f5a26', var: 0.08,
+  { key: 'FUSE', abbr: 'FUSE', name: 'Fuse', kind: K.SOLID, tool: 'axe', render: R.OPAQUE, color: '#2f5a26', var: 0.08,
     cond: 0.005, cap: 0.4, ignite: 300, life: 1, hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
     desc: 'Fuse. Burns slowly: about a cell every 4.5 s, even underwater, because it carries its own oxidiser. Lights from a flame or at 300 °C, then spits a flame at its end.' },
   // ---- Noita's materials (docs/elements.md, "Noita materials") ----
@@ -1026,7 +1034,7 @@ const defs = [
   // Ignition Handbook 2003) and burns fast (sawdust's rate); damp moss must
   // first dry (above DAMP_DRY_T its water is gone; its latent heat isn't
   // modelled). Soft as plant (hard), and breaks into plant debris.
-  { key: 'MOSS', abbr: 'MOSS', name: 'Moss', kind: K.SOLID, render: R.OPAQUE, color: '#4d7a2c', var: 0.22,
+  { key: 'MOSS', abbr: 'MOSS', name: 'Moss', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#4d7a2c', var: 0.22,
     cond: 0.006, cap: 0.6, ignite: 250, burnRate: 0.006, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
     desc: 'Moss. Creeps slowly over damp rock wherever water is near, and stops when it has covered it. Burns once dry.' },
@@ -1039,7 +1047,7 @@ const defs = [
   // keeps, and the sim has no sunlight on cells. The glow is real but far
   // dimmer than drawn (gfx/materials.js FOXFIRE_BAND). It burns like
   // punk wood: lights at ~250 °C and smoulders.
-  { key: 'FUNGUS', abbr: 'FUNG', name: 'Fungus', kind: K.SOLID, render: R.OPAQUE, color: '#b5e08a', var: 0.2,
+  { key: 'FUNGUS', abbr: 'FUNG', name: 'Fungus', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#b5e08a', var: 0.2,
     cond: 0.008, cap: 0.6, ignite: 250, burnRate: 0.003, burnHeat: 2, flameT: 700, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
     desc: 'Fungus. Glows, like foxfire. It slowly rots damp wood, sawdust and plants into more of itself. Burns.' },
@@ -1130,7 +1138,7 @@ const defs = [
   // TORCH_GLOW) and a flame to look at, never heat: it sets nothing alight and never
   // burns down (the user's call, 2026-10-11: torches lighting the world misbehaved).
   // Pitch-soaked wood's numbers; a kick knocks it out (sawdust).
-  { key: 'WALL_TORCH', abbr: 'WTRC', name: 'Wall torch', kind: K.SOLID, render: R.OPAQUE, color: '#ffb25e', var: 0.06,
+  { key: 'WALL_TORCH', abbr: 'WTRC', name: 'Wall torch', kind: K.SOLID, tool: 'axe', render: R.OPAQUE, color: '#ffb25e', var: 0.06,
     cond: 0.008, cap: 0.6, hard: 4, breakInto: 'SAWDUST', sound: 'thunk',
     desc: 'Wall torch. A burning torch in a bracket: a warm, flickering light in a dark cave. Its flame sets nothing alight and never burns down.' },
   // Embers: the Coal Pits' light (world/wang/kits/coal.js), smouldering coal in
@@ -1145,6 +1153,10 @@ const defs = [
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
 // poorest common one, mercury (1.04·10⁶), already loses nothing to speak of.
 const ELEC_METAL = 1e6;
+// The tool that digs an element, and its dig sound, when its row doesn't say (see `tool`, `dig`).
+const toolOf = (d) => (d.kind === K.POWDER ? 'shovel' : d.kind === K.SOLID && d.breakInto ? 'pickaxe' : null);
+const DIG_BY_SOUND = { shatter: 'glass', ping: 'metal', thunk: 'wood' };
+const digOf = (d) => (d.kind === K.POWDER ? 'sand' : d.kind === K.SOLID ? DIG_BY_SOUND[d.sound] ?? 'rock' : null);
 // A row of defs with every field filled in (the check scripts add test rows
 // the same way: tools/elements-core-check.mjs).
 export const elementRow = (d, id) => ({
@@ -1152,6 +1164,7 @@ export const elementRow = (d, id) => ({
   flash: d.ignite ?? 0, burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
   hard: 0, breakInto: null, meltInto: null, acidProof: false, acid: false, fizz: 0, ash: true, sound: null,
   cold: null, hot: null, crush: null, blast: null, conducts: false,
+  tool: toolOf(d), dig: digOf(d),
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
   elec: d.elec ?? (d.conducts ? ELEC_METAL : 0),

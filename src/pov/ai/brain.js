@@ -13,7 +13,6 @@ import { CHARGE_S as LASER_CHARGE_S, REFIRE_S as LASER_REFIRE_S } from '../tools
 import { FRAG_SPEED, FRAG_GRAVITY } from '../frag.js';
 import { MELEE_LUNGE } from '../kick.js';
 import { haloMatch } from '../halo.js';
-import { material } from '../tools/dig.js';
 
 // An NPC's mind, from Mat Buckland's "Programming Game AI by Example" as Yuka
 // implements it (github.com/Mugen87/yuka):
@@ -124,10 +123,10 @@ const WANDER_S = 3;
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const LOOSE = (i) => i !== E.EMPTY && i >= 0 && (KIND[i] === K.POWDER || KIND[i] === K.LIQUID);
-// what the shovel and the pickaxe dig (tools/dig.js: each tool its own materials, as the player's)
-const DIGGABLE = (i) => i >= 0 && i !== E.EMPTY && ['loose', 'soil'].includes(material(ELEMENTS[i]));
+// what the shovel and the pickaxe dig (elements.js `tool`, as the player's: tools/dig.js)
+const DIGGABLE = (i) => i >= 0 && i !== E.EMPTY && ELEMENTS[i].tool === 'shovel';
 const AXEABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ELEMENTS[i].hard <= AXE.ENERGY;
-const PICKABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ['soil', 'mineral'].includes(material(ELEMENTS[i])) && ELEMENTS[i].hard <= PICK.ENERGY;
+const PICKABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ['pickaxe', 'shovel'].includes(ELEMENTS[i].tool) && ELEMENTS[i].hard <= PICK.ENERGY;
 const BOMBABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto;
 
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);

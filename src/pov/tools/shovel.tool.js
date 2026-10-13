@@ -28,7 +28,7 @@ import { gear } from './catalog.js';
 const REFIRE = 0.15;                 // s between digs while held: Minecraft's iron shovel on dirt (minecraft.wiki/w/Shovel)
 const THROW_REFIRE = 0.2;            // s between throws while held: Minecraft's 4-tick use delay (the trowel's)
 const POWER = 6;                     // hardness one dig beats: soil (moss, fungus: 6) in one
-const DIGS = ['loose', 'soil'];      // dig.js materials: Minecraft's shovel blocks (dirt, sand, gravel, snow, grass) and plants; wood is the axe's, rock the pickaxe's
+const TOOLS = ['shovel'];            // the elements it digs: elements.js tool 'shovel' (Minecraft's mineable/shovel: sand, gravel, snow, grass); wood is the axe's, rock the pickaxe's
 const BLADE_LOAD = BLOCK ** 3;       // cells one throw takes from the pack: one dug block
 const THROW_SPEED = 8;               // cells/s along the aim, on top of the body's velocity
 const DUMP_REACH = 2.5;              // cells from the eye where a load lands when nothing is aimed at
@@ -67,7 +67,7 @@ export default {
     const transfer = env.transfer;
     const digs = trigger(REFIRE);
     const throws = trigger(THROW_REFIRE, { button: 'secondary' });
-    const dig = digger(env, { power: POWER, digs: DIGS, reach: HAND_REACH });
+    const dig = digger(env, { power: POWER, tools: TOOLS, reach: HAND_REACH });
     const tilt = swing({ rest: 0, hit: -JAB_PITCH, miss: -JAB_PITCH * JAB_MISS, strike: JAB_STRIKE, settle: REFIRE });
     const thrust = swing({ rest: 0, hit: JAB_THRUST, miss: JAB_THRUST * JAB_MISS, strike: JAB_STRIKE, settle: REFIRE });
     const flick = swing({ rest: 0, hit: FLICK_PITCH, miss: FLICK_PITCH, strike: FLICK_STRIKE, settle: THROW_REFIRE });

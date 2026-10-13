@@ -41,7 +41,7 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //             thrust?: [hit, miss],                 // cells it drives forward on a blow: a stab, not a chop
 //             ready?, readyPos?: [x, y, z],         // rad and cells offset while tell() holds
 //             lethal?: { hit, miss, thrust } },     // a lethal blow's own motion (the backstab's plunge)
-//     dig });                  // { power, digs }: the blow digs a whole lattice block instead (dig.js, the pickaxe):
+//     dig });                  // { power, tools }: the blow digs a whole lattice block instead (dig.js, the pickaxe):
 //                              //   outlined, cracking over ceil(hard / power) blows, all of it into the pack;
 //                              //   never a solid harder than blow.ENERGY
 //
@@ -86,7 +86,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
       const push = thrust({ thrust: POSE.thrust }), lethalPush = thrust({ thrust: POSE.lethal?.thrust });
       let turning = pose, driving = push, tellK = 0, telling = false;
       const load = pack(env.owner);
-      const digs = dig ? digger(env, { power: dig.power, limit: blow.ENERGY, digs: dig.digs, reach }) : null;   // no harder than the blow's energy (melee.js's rule)
+      const digs = dig ? digger(env, { power: dig.power, limit: blow.ENERGY, tools: dig.tools, reach }) : null;   // no harder than the blow's energy (melee.js's rule)
       let lastHit = null, aimed = null;
       const full = (id) => { if (!load.busy) env.feedback?.refuse('Your pack is full: build with the trowel or throw some with the shovel', { id }); };
 
