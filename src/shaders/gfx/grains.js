@@ -154,7 +154,6 @@ const PEB_AO_GAIN: f32 = 0.6;             // contact occlusion: darkening per un
 const PEB_AO_MAX: f32 = 0.85;             // ... at most this much
 const GRAIN_NUDGE: f32 = 1e-3;            // cells off a surface where its sun ray starts
 const DUAL_NUDGE: f32 = 1e-4;             // sub-lattice units past the start of a walk
-const TWO_PI_G: f32 = 6.2831853;
 const GRAIN_SALT: u32 = 0x9e3779b9u;      // golden-ratio odd constant: spreads site / lobe indices apart in the hash
 
 // a uniform draw from hash stream *h (u32ToF32: rounded the same on every device, H1.28)
@@ -200,8 +199,8 @@ fn grainWMax(fp: f32) -> f32 {
 // A uniformly random turn (Shoemake's quaternion), as axes (columns).
 fn randomTurn(h: ptr<function, u32>) -> mat3x3f {
   let q1 = u01(h);
-  let q2 = TWO_PI_G * u01(h);
-  let q3 = TWO_PI_G * u01(h);
+  let q2 = TWO_PI * u01(h);
+  let q3 = TWO_PI * u01(h);
   let q = vec4f(sqrt(1.0 - q1) * vec2f(sin(q2), cos(q2)), sqrt(q1) * vec2f(sin(q3), cos(q3)));
   let x = q.x;
   let y = q.y;
@@ -398,7 +397,7 @@ fn clodBuild(cell: vec3i, id: i32, a: vec4f, C: ptr<function, array<vec3f, CLOD_
     } else {
       r = CLOD_LUMP_R + CLOD_LUMP_VAR * u01(&h);
       let z = 2.0 * u01(&h) - 1.0;
-      let ph = TWO_PI_G * u01(&h);
+      let ph = TWO_PI * u01(&h);
       let dist = CLOD_LUMP_OFF + CLOD_LUMP_OFF_VAR * u01(&h);
       let rz = sqrt(max(1.0 - z * z, 0.0));
       o = dist * vec3f(rz * cos(ph), z, rz * sin(ph));

@@ -86,10 +86,6 @@ const BRICK_WORDS: u32 = ${Math.ceil(gridDims(g).nbricks / 32)}u;   // the brick
 const COUNT_WORDS: u32 = ${COUNT_WORDS}u;
 const COUNT_LIVE: u32 = ${COUNT.LIVE}u;
 const COUNT_SEEN: u32 = ${COUNT.SEEN}u;
-const RAY_SALT: u32 = 0x5a7u;         // salts of the particle kernels' random streams
-const RAY_SPAWN_SALT: u32 = 0x5b1u;
-const RAY_PAINT_SALT: u32 = 0x5c3u;
-const TWO_PI: f32 = 6.2831853;
 const THIRD: f32 = 1.0 / 3.0;
 const GRID_INSET: f32 = 0.001;        // keeps a painted particle's position inside the grid's last cell
 struct Particle { l0: vec4f, l1: vec4f, l2: vec4f, l3: vec4f }
@@ -110,9 +106,9 @@ fn matOf(a: vec4f) -> i32 {
 }
 fn randDir(rs: ptr<function, u32>) -> vec3f {   // uniform on the sphere
   let z = 2.0 * rnd(rs) - 1.0;
-  let ph = TWO_PI * rnd(rs);
+  let d = randDir2(rs);
   let r = sqrt(max(0.0, 1.0 - z * z));
-  return vec3f(r * cos(ph), r * sin(ph), z);
+  return vec3f(r * d.x, r * d.y, z);
 }
 // rays.js fastShare and neutronSpeed
 fn fastShare(E: f32) -> f32 { return clamp(log(E / NEUT_E_THERMAL) / log(NEUT_E_FAST / NEUT_E_THERMAL), 0.0, 1.0); }
@@ -147,7 +143,7 @@ ${slotMain}
     }
     return;
   }
-  var rs = pcg(u32(j) + pcg(P.frame * LCG_MUL + RAY_SALT));
+  var rs = seedSlot(u32(j), P.frame, SALT_RAY);
   var pos = l0.xyz;
   var v = l1.xyz;
   var life = l1.w - 1.0;
@@ -259,7 +255,7 @@ ${slotMain}
   let j = i32(t);
   if (kindOf(list[t].l0) != RAY_NONE) { return; }
   let l3 = list[t].l3;
-  var rs = pcg(u32(j) + pcg(P.frame * LCG_MUL + RAY_SPAWN_SALT));
+  var rs = seedSlot(u32(j), P.frame, SALT_RAY_SPAWN);
   for (var k = 1; k <= RCHILD; k++) {
     let pj = u32((j + k * (RN - P.stride)) % RN);   // (stride in [1, RN): no negative %)
     let p0 = list[pj].l0;
@@ -296,7 +292,7 @@ ${slotMain}
   let j = (P.cursor + i32(t)) % RN;
   let s = u32(j);
   if (kindOf(list[s].l0) != RAY_NONE) { return; }
-  var rs = pcg(u32(j) + pcg(P.frame * LCG_MUL + RAY_PAINT_SALT));
+  var rs = seedSlot(u32(j), P.frame, SALT_RAY_PAINT);
   var d: vec3f;
   if (P.shape == 0) {
     d = randDir(&rs) * P.radius * pow(rnd(&rs), THIRD);

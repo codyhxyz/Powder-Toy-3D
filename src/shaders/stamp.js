@@ -27,7 +27,6 @@ export { MAX_FOOT };
 // columns it visits for the first time, world/window.js). The stamp itself
 // travels in the params: its low corner, size, footing depth, seed and its
 // voxels' place in the pool.
-export const STAMP_RNG_SALT = 0x57a3;   // a stamped cell's colour seed stream
 export const StampParams = uniformStruct('StampParams', {
   ...EDIT_FIELDS,
   at: 'vec3i',       // grid cell of the stamp's low corner
@@ -39,20 +38,14 @@ export const StampParams = uniformStruct('StampParams', {
   maskW: 'i32',      // the mask's brick columns along x (the grid's)
 });
 export const STAMP_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
-const STAMP_DECLS = /* wgsl */ `
-@group(2) @binding(0) var<storage, read> stampData: array<vec4u>;   // the brick-column mask, then the shape pool
-const STAMP_RNG_SALT: u32 = ${STAMP_RNG_SALT}u;
+// What both stamp writers (this and shaders/construction.js) share: the
+// footing test and a stamped cell's new state. Their params hold at, foot and seed.
+export const STAMP_LIB = /* wgsl */ `
 const MAX_FOOT: i32 = ${MAX_FOOT};
-fn stampColumn(c: vec2i) -> bool {
-  let i = u32(c.x + P.maskW * c.y);
-  return ((stampData[i >> 7u][(i >> 5u) & 3u] >> (i & 31u)) & 1u) != 0u;
-}
-// does what is at grid cell c bear weight? (outside the grid: nothing)
-fn bearsWeight(c: vec3i) -> bool {
-  if (!inGrid(c)) { return false; }
-  let id = eid(fetchA(c));
-  return id != E_EMPTY && KIND(id) != K_GAS && KIND(id) != K_LIQUID;
-}
+// does what is at grid cell c bear weight (not air, gas or liquid)? Outside
+// the grid nothing does (a base above the grid's top has nothing over the
+// grid: slotOf of a cell there is another, real cell, H1.29)
+fn bearsWeight(c: vec3i) -> bool { return inGrid(c) && !isFluid(eid(fetchA(c))); }
 // Does a footing reach down from base height y0 to grid cell p? Nothing that
 // bears weight between p and the base, and ground (or the grid's floor) within foot cells below it.
 fn footing(p: vec3i, y0: i32, foot: i32) -> bool {
@@ -67,7 +60,22 @@ fn footing(p: vec3i, y0: i32, foot: i32) -> bool {
     if (y < 0 || bearsWeight(vec3i(p.x, y, p.z))) { return true; }
   }
   return false;
+}
+// Cell p (state B b) stamped with voxel s: its element, temperature and
+// ctype, a fresh colour seed, at rest.
+fn stampPut(p: vec3i, s: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let id = i32(s.x + 0.5) - 1;
+  var rs = seed3(p, P.seed, SALT_STAMP);
+  *oA = vec4f(f32(id), s.y, SPAWNLIFE(id), s.z + rnd(&rs) * SEED_MAX);
+  *oB = vec4f(0.0, 0.0, 0.0, b.w);
 }`;
+const STAMP_DECLS = /* wgsl */ `
+@group(2) @binding(0) var<storage, read> stampData: array<vec4u>;   // the brick-column mask, then the shape pool
+fn stampColumn(c: vec2i) -> bool {
+  let i = u32(c.x + P.maskW * c.y);
+  return ((stampData[i >> 7u][(i >> 5u) & 3u] >> (i & 31u)) & 1u) != 0u;
+}
+${STAMP_LIB}`;
 const STAMP_UPDATE = /* wgsl */ `
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   if (P.masked != 0u && !stampColumn(p.xz / BS)) { return; }
@@ -76,10 +84,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let s = bitcast<vec4f>(stampData[P.base + u32(q.x + P.size.x * (max(q.y, 0) + P.size.y * q.z))]);
   if (q.y < 0 && (s.w < 0.5 || !footing(p, P.at.y, P.foot))) { return; }
   if (s.x < 0.5) { return; }
-  let id = i32(s.x + 0.5) - 1;
-  var rs = seed3(p, P.seed, STAMP_RNG_SALT);
-  *oA = vec4f(f32(id), s.y, SPAWNLIFE(id), s.z + rnd(&rs) * SEED_MAX);
-  *oB = vec4f(0.0, 0.0, 0.0, b.w);
+  stampPut(p, s, b, oA, oB);
 }`;
 /** The stamp's edit kernel (sim.editKernel takes this). */
 export const stampEdit = () => ({ update: STAMP_UPDATE, decls: STAMP_DECLS, params: StampParams, reads: 'neighbours', layout: STAMP_LAYOUT });

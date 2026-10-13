@@ -14,6 +14,7 @@ import { PHYS } from '../../physics.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 import { GRAV as GRAV_MODE } from '../../simModes.js';
 import { PACE } from '../../shaders/move.js';
+import { SALT } from '../../shaders/common.js';
 import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
@@ -67,8 +68,6 @@ const RX_LOOKUP = M.lookup, RX_ANY = M.rx.length > 0;
 // RX_PAIRINGS steps (react.js RX_PAIRINGS is 3·2).
 const RX_AXES = 2, RX_PARITIES = 2;
 const RX_PAIRINGS = RX_AXES * RX_PARITIES;
-const RX_SALT = 0x52;   // (react.js)
-const SING_SALT = 0x5a;   // a singularity's stream (react.js)
 // the softest breakable solid (react.js HARD_MIN)
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
@@ -112,7 +111,7 @@ const pcg = (v) => {
 const LCG_MUL = 1664525;   // (shaders/common.js)
 const UINT_TO_UNIT = 1 / 4294967296;
 const pairStream = { s: 0 };
-const pairSeed = (cell, frame, salt = RX_SALT) => { pairStream.s = pcg(cell + pcg(Math.imul(frame, LCG_MUL) + salt)); };
+const pairSeed = (cell, frame, salt = SALT.RX) => { pairStream.s = pcg(cell + pcg(Math.imul(frame, LCG_MUL) + salt)); };
 const pairRnd = () => { pairStream.s = pcg(pairStream.s); return pairStream.s * UINT_TO_UNIT; };
 // the product of spec sp (react.js pickOut): one draw from `draw` for a weighted list, -1 = SAME
 function pickOut(sp, draw) {
@@ -690,7 +689,7 @@ export class World {
         const partnerIn = qx >= 0 && qy >= 0 && qx < nx && qy < ny;
         let swallow = false;
         if (partnerIn && (id === E.SINGULARITY ? singEats(nid[q]) : nid[q] === E.SINGULARITY && singEats(id)) && !RX_LOOKUP[id * NE + nid[q]]) {
-          pairSeed(base ? i : qy * nx + qx, this.frame, SING_SALT);
+          pairSeed(base ? i : qy * nx + qx, this.frame, SALT.SING);
           swallow = pairRnd() < PHYS.SING_EAT * RX_PAIRINGS;
         }
         if (RX_ANY) {

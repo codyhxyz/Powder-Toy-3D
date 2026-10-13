@@ -15,8 +15,7 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 // touching pair is partners once every RX_PAIRINGS steps, and a reaction's
 // chance per step becomes chance·RX_PAIRINGS per pairing.
 export const RX_PAIRINGS = 3 * 2;
-export const FACES = 6;   // a cell's face neighbours: the react pass's P.faces
-const RX_SALT = 0x52;   // keeps a pair's random stream apart from the cells' own (seed3 salt)
+export { FACES } from '../elements.js';   // a cell's face neighbours: the react pass's P.faces
 
 export const ReactParams = uniformStruct('ReactParams', {
   frame: 'u32',
@@ -127,9 +126,7 @@ ${inertNearGLSL}
 ${electricReactGLSL}
 ${simModesGLSL}
 
-// The face neighbours (activity.js FACES: +x, -x, +y, -y, +z, -z).
-fn DIRS(i: i32) -> vec3i { return FACES(i); }
-// the DIRS index of a unit axis vector
+// the FACES index (activity.js: +x, -x, +y, -y, +z, -z) of a unit axis vector
 fn faceOf(d: vec3f) -> i32 {
   if (d.x > 0.5) { return 0; }
   if (d.x < -0.5) { return 1; }
@@ -141,7 +138,6 @@ fn faceOf(d: vec3f) -> i32 {
 
 const HARD_MIN: f32 = ${HARD_MIN.toFixed(1)};   // the softest breakable solid's hardness
 const RX_PAIRINGS: f32 = ${RX_PAIRINGS.toFixed(1)};   // steps per cycle of partner choices (RX_PAIRINGS)
-const RX_SALT: u32 = ${RX_SALT}u;
 
 // The product of an \`into\` (elements.js mechanisms specs): one draw from s
 // when it is a weighted list, none when it is a single element. -1 = SAME.
@@ -223,7 +219,6 @@ fn latentChance(T: ptr<function, f32>, Tp: f32, C: f32, L: f32, rising: bool, s:
 // Singularity (physics.js SING_*). What it swallows: any matter but the wall
 // and void (which drains it instead; another singularity merges), its partner
 // in the reactions' pairing.
-const SING_SALT: u32 = 0x5au;   // its stream (the reactions' is RX_SALT)
 fn singEats(j: i32) -> bool { return j != E_EMPTY && j != E_WALL && j != E_VOID && j != E_SINGULARITY; }
 // The vacuum one of mass m holds.
 fn singVacuum(m: f32) -> f32 { return max(P_MIN, -SING_P_PER_MASS * m); }
@@ -270,13 +265,13 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   let seed = fract(a.w);
   var v = b.xyz;
   let P0 = b.w;
-  var rs = seed3(p, P.frame, 0x7au);
+  var rs = seed3(p, P.frame, SALT_REACT);
 
   var na: array<vec4f, 6>;
   var nb: array<vec4f, 6>;
   var nid: array<i32, 6>;
   for (var i = 0; i < faces; i++) {
-    let q = edgeCell(p + DIRS(i));   // (past a loop edge: the far side)
+    let q = edgeCell(p + FACES(i));   // (past a loop edge: the far side)
     if (inGrid(q)) {
       na[i] = fetchA(q);
       nb[i] = fetchB(q);
@@ -299,7 +294,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     for (var i = 0; i < faces; i++) {
       let s = nid[i];
       if (BREAKINTO(s) < 0) { continue; }
-      let n = vec3f(DIRS(i));
+      let n = vec3f(FACES(i));
       if (impactKE(id, a.y, b.xyz, n) < HARD(s)) { continue; }
       let u = dot(b.xyz, n);
       dvBreak -= n * (u - shatter(m, u, HARD(s), densityOf(BREAKINTO(s), a.y)).x);
@@ -314,7 +309,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   if (BREAKINTO(id) >= 0) {
     let M = densityOf(BREAKINTO(id), a.y);
     for (var i = 0; i < faces; i++) {
-      let n = -vec3f(DIRS(i));   // from the neighbour toward me
+      let n = -vec3f(FACES(i));   // from the neighbour toward me
       if (impactKE(nid[i], na[i].y, nb[i].xyz, n) < HARD(id)) { continue; }
       let u = dot(nb[i].xyz, n);
       vDebris += n * shatter(densityOf(nid[i], na[i].y), u, HARD(id), M).y;
@@ -340,7 +335,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     let meSolid = KIND(id) == K_SOLID;
     for (var i = 0; i < faces; i++) {
       let j = nid[i];
-      let u = dot(b.xyz - nb[i].xyz, vec3f(DIRS(i)));
+      let u = dot(b.xyz - nb[i].xyz, vec3f(FACES(i)));
       if (j == id || isGasLike(j) || u <= 0.0) { continue; }
       let mj = densityOf(j, na[i].y);
       var ke: f32;
@@ -378,12 +373,12 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   let par = i32((P.frame / 3u) & 1u);
   let w = p + H.origin;   // world cell: the pairing doesn't depend on where the window is
   let base = ((w[ax] + par) & 1) == 0;
-  let k = 2 * ax + select(1, 0, base);   // the partner's DIRS index
-  let pk = edgeCell(p + DIRS(k));         // ...and cell
+  let k = 2 * ax + select(1, 0, base);   // the partner's FACES index
+  let pk = edgeCell(p + FACES(k));        // ...and cell
   let pb = select(pk, p, base);           // the pair's base cell
   // A singularity swallows its partner (any matter it has no reaction with),
   // on a draw of the pair's own stream, so both cells agree (physics.js SING_*).
-  var ss = seed3(pb, P.frame, SING_SALT);
+  var ss = seed3(pb, P.frame, SALT_SING);
   var eats = nid[k] == E_SINGULARITY && singEats(id);
   if (id == E_SINGULARITY) { eats = singEats(nid[k]); }
   let swallow = eats && inGrid(pk) && rxAt(id, nid[k]) == 0 && rnd(&ss) < SING_EAT * RX_PAIRINGS;
@@ -392,7 +387,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     if (rx > 0 && inGrid(pk)) {
       let r = (rx - 1) >> 1u;
       let isA = ((rx - 1) & 1) == 0;
-      var ps = seed3(pb, P.frame, RX_SALT);
+      var ps = seed3(pb, P.frame, SALT_RX);
       if (rxGate(r, a.y, na[k].y) && rnd(&ps) < RX(r).x * RX_PAIRINGS) {
         let ida = select(nid[k], id, isA);
         let idb = select(id, nid[k], isA);
@@ -493,7 +488,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     // gravity, and the move pass lands it with its splash, scatter and heat.
     // (The box's floor is a wall face, nid[fd]; past a void edge it is air.)
     let d = densityOf(id, a.y);
-    let held = (KIND(id) == K_POWDER || KIND(id) == K_LIQUID) && bF.y >= 0.0 && (KIND(nid[fd]) == K_SOLID
+    let held = isLoose(id) && bF.y >= 0.0 && (KIND(nid[fd]) == K_SOLID
       || (!canMove(id, nid[fd], d, densityOf(nid[fd], na[fd].y), 0) && nbF.y >= 0.0));
     if (held) { v.y = max(v.y, 0.0); }
     // Drag. Not on a liquid in free fall (nothing under it but air, or the
@@ -518,12 +513,12 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     // liquid holds no pressure and nothing pushes it. Without gravity there is
     // no head and nothing to rest on.
     let up = nid[fd ^ 1];
-    let head = KIND(up) == K_LIQUID || KIND(up) == K_POWDER;   // weight above us
+    let head = isLoose(up);   // weight above us
     if (KIND(id) == K_LIQUID && P.gravity > 0.0 && held) {
       var open = false;
       var od = vec3f(0.0);   // toward the open sides
       for (var i = 0; i < faces; i++) {
-        if ((i >> 1u) != (fd >> 1u) && canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2)) { open = true; od += vec3f(DIRS(i)); }
+        if ((i >> 1u) != (fd >> 1u) && canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2)) { open = true; od += vec3f(FACES(i)); }
       }
       let onLiquid = !supported;                                  // surface of a pool
       let f = FLOW(id);
@@ -543,10 +538,10 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
         var q = p;
         var gas = false;
         for (var k = 0; k < i32(P.headScan) && 2.0 * gh * h < f * f; k++) {
-          q = edgeCell(q + DIRS(fd ^ 1));
+          q = edgeCell(q + FACES(fd ^ 1));
           var e = E_WALL;
           if (inGrid(q)) { e = eid(fetchA(q)); }
-          let weight = KIND(e) == K_LIQUID || KIND(e) == K_POWDER;
+          let weight = isLoose(e);
           if (!weight && (gas || !isGasLike(e))) { break; }
           gas = !weight;
           if (weight) { h += DENS(e) / d; }
@@ -569,8 +564,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
             v.z = h.y;
           }
         } else if (open && hv < want * FLOW_KICK) {
-          let ang = rnd(&rs) * 6.2831853;
-          let h = vec2f(cos(ang), sin(ang)) * want;
+          let h = randDir2(&rs) * want;
           v.x = h.x;
           v.z = h.y;
         }
@@ -582,7 +576,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
         var coh = vec3f(0.0);
         var alone = true;
         for (var i = 0; i < faces; i++) {
-          if ((i >> 1u) != (fd >> 1u) && KIND(nid[i]) == K_LIQUID) { coh += vec3f(DIRS(i)); alone = false; }
+          if ((i >> 1u) != (fd >> 1u) && KIND(nid[i]) == K_LIQUID) { coh += vec3f(FACES(i)); alone = false; }
         }
         if (radial) { coh = GF * coh; }
         let h = v.xz * FILM_KEEP + select(vec2f(0.0), coh.xz * f * FILM_COHESION, open);
@@ -590,8 +584,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
         v.z = h.y;
         if (open && alone && rnd(&rs) < DROPLET_WANDER) {
           // isolated droplets wander until they meet others
-          let ang = rnd(&rs) * 6.2831853;
-          let w2 = vec2f(cos(ang), sin(ang)) * f * DROPLET_SPEED;
+          let w2 = randDir2(&rs) * f * DROPLET_SPEED;
           v.x = w2.x;
           v.z = w2.y;
         }
@@ -608,7 +601,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       let v0 = v;
       for (var i = 0; i < faces; i++) {
         if (i != (fd ^ 1) && !movable(nid[i])) {
-          var n = vec3f(DIRS(i));
+          var n = vec3f(FACES(i));
           if (radial) { n = GF * n; }
           v -= n * max(dot(v, n), 0.0);
         }
@@ -673,7 +666,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     if (mossBed(j)) { bed[i >> 1u] = true; }
     if (j == E_EMPTY) { nAir++; }
     if (j == E_CLOUD) { nCloud++; }
-    if (!isGasLike(j) && (inGrid(p + DIRS(i)) || i == 3)) { surface = true; }
+    if (!isGasLike(j) && (inGrid(p + FACES(i)) || i == 3)) { surface = true; }
     if (j == E_FIRE) { nFire++; }
     if (j == E_OXYGEN) { nOxy++; }
     if (j == E_FIRE && floor(na[i].w) == f32(E_OXYGEN)) { nOxyFire++; }   // a flame burning in oxygen
@@ -682,7 +675,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     if (ACIDIC(j)) { nAcid++; }
     if (j == E_PLANT) { nPlant++; }
     if (j == E_VOID) { nVoid++; }
-    if (j == E_SNOW) { closing += max(dot(b.xyz - nb[i].xyz, vec3f(DIRS(i))), 0.0); }
+    if (j == E_SNOW) { closing += max(dot(b.xyz - nb[i].xyz, vec3f(FACES(i))), 0.0); }
     if ((j == E_CLONE || (j == E_PCLN && na[i].z == SWITCH_ON)) && na[i].w >= 1.0) { cloneOf = i32(floor(na[i].w)); }   // a powered clone only while on
     if (IGNITE(j) > 0.0 && INTO(j)[PH_BLAST] < 0 && na[i].y >= IGNITE(j)) { nBurning++; flame = max(flame, FLAMET(j)); }   // (explosives go off instead)
     else if (FLASH(j) < IGNITE(j) && INTO(j)[PH_BLAST] < 0 && na[i].y >= FLASH(j)) { nFlash++; flashFlame = max(flashFlame, FLAMET(j)); }
@@ -822,7 +815,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     var taken = false;
     for (var i = 0; i < faces; i++) {
       if (nid[i] == E_SINGULARITY) {
-        if (singTakes(life, p, na[i].z, p + DIRS(i))) { m += na[i].z; } else { taken = true; }
+        if (singTakes(life, p, na[i].z, p + FACES(i))) { m += na[i].z; } else { taken = true; }
       }
     }
     if (swallow) { m += densityOf(nid[k], na[k].y) / DENS(E_WATER); }

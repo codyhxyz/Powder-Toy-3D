@@ -1228,7 +1228,7 @@ fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3
   let lam = orenNayar(nl, nv, dot(FU.sun, v), max(rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE);
   let dSun = kD * mix(vec3f(lam), wrap * m.sssCol, m.sss);
   let cav = clamp(m.cav, 0.0, 1.0);
-  let c = FU.sunCol * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * ggxSpec(ns, v, FU.sun, rough, F0));
+  let c = FU.sunCol * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI * ggxSpec(ns, v, FU.sun, rough, F0));
   let ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
   return c + kD * ambient + m.emit;
 }
@@ -1305,8 +1305,7 @@ fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
 }
 
 fn farDepth(p: vec3f) -> f32 {
-  let clip = P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0);   // (curved: where it is displayed)
-  return clamp(clip.z / clip.w, 0.0, 1.0);
+  return clipDepth(P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0));   // (curved: where it is displayed)
 }
 
 ${mesh ? FAR_MESH_ENTRY : `struct FarVarying {

@@ -206,7 +206,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
       if (abs(P.dir.y) < 0.9) { side = vec3f(0.0, 1.0, 0.0); }
       push = normalize(cross(P.dir, side));
     }
-    loose = KIND(id) == K_POWDER || KIND(id) == K_LIQUID;
+    loose = isLoose(id);
   }
   if (KIND(id) == K_SOLID && into >= 0 && E >= HARD(id)) {
     (*oA).x = f32(into);
@@ -299,7 +299,6 @@ export const FlameParams = uniformStruct('FlameParams', {
   bite: 'f32',
 });
 export const flameWGSL = /* wgsl */ `
-const FLM_RNG_SALT: u32 = 0x70u;   // keeps the flame's random draws apart from other passes'
 
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   let d = vec3f(p) + 0.5 - P.nozzle;
@@ -309,7 +308,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let radius = P.radius0 + P.spread * along;
   if (r > radius) { return; }
   let id = eid(a);
-  var rs = seed3(p, P.frame, FLM_RNG_SALT);
+  var rs = seed3(p, P.frame, SALT_FLAME);
   if (isGasLike(id)) {
     if (along > P.reach || rnd(&rs) > P.spawn) { return; }
     let seed = rnd(&rs) * SEED_MAX;
@@ -348,8 +347,6 @@ const PHYS_MODE_HOLD: u32 = ${PHYS_MODE.HOLD}u;
 const PHYS_MODE_FLING: u32 = ${PHYS_MODE.FLING}u;
 const PHYS_SPAN: i32 = ${Math.ceil(PHYS.RADIUS)};
 const FOUR_THIRDS_PI: f32 = 4.18879;
-// what the beam can hold: loose matter, never solids or plain air
-fn physHeld(id: i32) -> bool { let k = KIND(id); return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
 fn physFalloff(r: f32) -> f32 { return 1.0 - smoothstep(PHYS_RADIUS * PHYS_CORE, PHYS_RADIUS, r); }
 `;
 
@@ -383,7 +380,7 @@ fn main(@builtin(local_invocation_index) li: u32) {
     let r = length(at - P.hold);
     if (r >= PHYS_RADIUS) { continue; }
     let id = eid(fetchA(q));
-    if (!physHeld(id)) { continue; }
+    if (!isLooseOrGas(id)) { continue; }   // what the beam can hold: loose matter or gas, never solids or plain air
     let w = physFalloff(r);
     sum += vec4f(at * DENS(id) * w, DENS(id) * w);
     n += w;
@@ -424,7 +421,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let r = length(at - P.hold);
   if (r >= PHYS_RADIUS) { return; }
   let id = eid(a);
-  if (!physHeld(id)) { return; }
+  if (!isLooseOrGas(id)) { return; }
   if (P.mode == PHYS_MODE_FLING) { *oB = vec4f(clamp(P.fling, vec3f(-V_MAX), vec3f(V_MAX)), b.w); return; }
 
   let com = physCom[0];
@@ -471,7 +468,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let radius = BLAST_RADIUS0 + BLAST_SPREAD * along;
   let r = length(d - along * P.dir);
   if (r > radius) { return; }
-  if (k != K_POWDER && k != K_LIQUID && k != K_GAS) { return; }
+  if (!isLooseOrGas(id)) { return; }
   let w = (1.0 - smoothstep(BLAST_EDGE, 1.0, along / BLAST_RANGE)) * (1.0 - smoothstep(BLAST_EDGE, 1.0, r / radius));
   let away = d / max(length(d), 1.0);
   let v = clamp(b.xyz + away * min(BLAST_IMPULSE / DENS(id), V_MAX) * w, vec3f(-V_MAX), vec3f(V_MAX));
@@ -517,7 +514,6 @@ export const RocketParams = uniformStruct('RocketParams', {
 });
 export const rocketWGSL = /* wgsl */ `
 ${consts('ROCKET', ROCKET)}
-const ROCKET_RNG_SALT: u32 = 0x72u;   // keeps the rocket's random draws apart from other passes'
 
 fn rocketFade(x: f32) -> f32 { return 1.0 - smoothstep(ROCKET_EDGE, 1.0, x); }
 
@@ -525,7 +521,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let d = vec3f(p) + 0.5 - P.center;
   let r = length(d);
   if (r >= ROCKET_PULSE_RADIUS) { return; }
-  var rs = seed3(p, P.frame, ROCKET_RNG_SALT);
+  var rs = seed3(p, P.frame, SALT_ROCKET);
   var away: vec3f;
   if (r > 0.5) {
     away = d / r;

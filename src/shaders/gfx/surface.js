@@ -37,7 +37,6 @@ export const surfaceGLSL = (detail = {}) => {
   const relief = !!detail.DETAIL_RELIEF;
   const grains = !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
   return /* wgsl */ `
-const PI_S: f32 = 3.14159265;
 ${grains ? `
 // Close-up grains (gfx/grains.js, gfx/detail.js): compiled in only when switched on.
 var<private> gGrainSun: f32 = 1.0;   // sun visibility past a grain's neighbours, set around its shadeSurf` : ''}
@@ -314,7 +313,6 @@ fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
 // away and runs INCAND_SKIN_DROP below the bulk, while crevices and pores (low
 // cavity term) show the hot interior: heat reads as glowing cracks rather than
 // a tint over the whole surface.
-const LUMA_W: vec3f = vec3f(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance (render.js luma)
 // (gfx/materials.js kirchhoff; cellEmission is the same without the texture,
 // for everything that sees the surface second-hand.)
 // glow of material m of element id with its visible surface at Ts (°C)
@@ -662,7 +660,7 @@ fn crystalLook(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, T: f32, fp: f
   let x = s.len - dot(q, s.d);   // back from the apex: the nested points narrow toward it
   let z = zr / max(min(s.r, x / CRYS_TIP_K), CRYS_ZONE_EPS);   // 0 on the axis, 1 on the faces
   let bands = mix(CRYS_BANDS_MIN, CRYS_BANDS_MAX, fract(s.seed * CRYS_SALT));
-  let band = 0.5 + 0.5 * cos(2.0 * PI_S * z * bands);
+  let band = 0.5 + 0.5 * cos(2.0 * PI * z * bands);
   let lz = lodFade(bands / s.r, fp);
   let zoned = mix(col, mix(col, FLUORITE_BLUE + FLUORITE_VIOLET - col, CRYS_BAND_MIX * band), lz);
   (*m).alb = mix(FLUORITE_MILK, zoned, mix(1.0 - CRYS_PALE_MIX, 1.0, coloured));
@@ -1689,7 +1687,7 @@ const GLINT_R0: f32 = 0.17;           // facet ball radius: solid core, ...
 const GLINT_R1: f32 = 0.25;           // ... soft edge (lattice units)
 const GLINT_COV: f32 = 0.0396;        // volume of that soft ball = the disc area it covers on average
 const GLINT_DELTA: f32 = 0.12;        // angular tolerance (radians)
-const GLINT_OMEGA: f32 = PI_S * GLINT_DELTA * GLINT_DELTA * 0.5;   // integral of the kernel below
+const GLINT_OMEGA: f32 = PI * GLINT_DELTA * GLINT_DELTA * 0.5;   // integral of the kernel below
 // Cap on the facets' slope spread: the crystal faces that flash lie flatter
 // than the grains' overall roughness, so sparkles gather around the sun's
 // reflection instead of peppering the whole surface.
@@ -1697,7 +1695,6 @@ const GLINT_FACET_ROUGH: f32 = 0.5;
 const GLINT_LEVEL_SALT: f32 = 17.3;   // decorrelates the facets of different levels
 const GLINT_NORMAL_SALT: f32 = 41.7;  // decorrelates a facet's normal from its position
 const GLINT_FRAME_UP_MAX: f32 = 0.9;  // |n.y| above which the tangent frame is built from x instead of y
-const TWO_PI_S: f32 = 6.2831853;
 
 // Kernel weight times coverage of the facet in q's lattice cell.
 fn glintFacet(q: vec3f, n: vec3f, t1: vec3f, t2: vec3f, h: vec3f, a2: f32, salt: f32) -> f32 {
@@ -1706,7 +1703,7 @@ fn glintFacet(q: vec3f, n: vec3f, t1: vec3f, t2: vec3f, h: vec3f, a2: f32, salt:
   let cov = 1.0 - smoothstep(GLINT_R0, GLINT_R1, length(q - ci - (GLINT_R1 + (1.0 - 2.0 * GLINT_R1) * h1)));
   if (cov <= 0.0) { return 0.0; }
   let h2 = hash33(ci + salt + GLINT_NORMAL_SALT);
-  let phi = TWO_PI_S * h2.x;
+  let phi = TWO_PI * h2.x;
   let ct = sqrt((1.0 - h2.y) / (1.0 + (a2 - 1.0) * h2.y));
   let st = sqrt(max(1.0 - ct * ct, 0.0));
   let m = (t1 * cos(phi) + t2 * sin(phi)) * st + n * ct;
@@ -1742,7 +1739,7 @@ fn glintSpec(p: vec3f, n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f, dens
 fn orenNayar(nl: f32, nv: f32, lv: f32, sigma: f32) -> f32 {
   let s = lv - nl * nv;
   let t = select(1.0, max(max(nl, nv), 1e-3), s > 0.0);
-  let A = 1.0 / (1.0 + (0.5 - 2.0 / (3.0 * PI_S)) * sigma);
+  let A = 1.0 / (1.0 + (0.5 - 2.0 / (3.0 * PI)) * sigma);
   return max(nl, 0.0) * A * (1.0 + sigma * s / t);
 }
 
@@ -1875,7 +1872,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
     spec = mix(spec, gs, g);
   }
   // (FU.sunCol is irradiance / pi in this renderer's units, hence the pi on the BRDF term)
-  var c = FU.sunCol * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * s.cav) + PI_S * spec);${relief ? `
+  var c = FU.sunCol * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * s.cav) + PI * spec);${relief ? `
   // down a carved crevice: less sky and ambient (the sun had reliefSunVis)
   {
     let sky = reliefSkyVis();

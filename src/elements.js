@@ -192,7 +192,7 @@ const heatOf = (kJmol, molcm3) => +(kJmol * 1000 * molcm3 / WATER_VOL_HEAT).toFi
 // 0.6 W/(m·K)) for liquids, from air's (EMPTY: 0.0005 at 0.026) for gases.
 // Each is held under the stability limit, 6·cond/cap < 1 (COND_STABLE of it).
 const WATER_K = 0.6, WATER_COND = 0.03, AIR_K = 0.026, AIR_COND = 0.0005, COND_STABLE = 0.95;
-const FACES = 6;
+export const FACES = 6;   // a cell's face neighbours (shaders/activity.js FACES; the react pass's P.faces)
 const stableCond = (cond, cap) => +Math.min(cond, COND_STABLE * cap / FACES).toPrecision(2);
 const condOf = (k) => +(WATER_COND * k / WATER_K).toPrecision(2);
 const gasCondOf = (k) => +(AIR_COND * k / AIR_K).toPrecision(2);
