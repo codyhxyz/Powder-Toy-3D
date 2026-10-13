@@ -262,12 +262,7 @@ fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
   return a;
 }
 
-// Lava freezes back into its ctype at MELT - LAVA_FREEZE_BELOW (src/physics.js).
-fn solidusOf(ctype: f32) -> f32 {
-  var ct = i32(ctype);
-  if (ct <= 0 || ct >= NE || MELT(ct) <= 0.0) { ct = E_STONE; }
-  return MELT(ct) - LAVA_FREEZE_BELOW;
-}
+// (Lava's solidus, solidusOf, and its crust model are gfx/materials.js's: the cells' glow shares them.)
 
 // Glow of an opaque surface whose bulk is at T (°C): its thermal glow plus
 // any luminescence of element id (emission). Kirchhoff: a surface emits what
@@ -276,19 +271,14 @@ fn solidusOf(ctype: f32) -> f32 {
 // away and runs INCAND_SKIN_DROP below the bulk, while crevices and pores (low
 // cavity term) show the hot interior: heat reads as glowing cracks rather than
 // a tint over the whole surface.
-const LUMA_W: vec3f = vec3f(0.2126, 0.7152, 0.0722);
+const LUMA_W: vec3f = vec3f(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance (render.js luma)
+// (gfx/materials.js kirchhoff; cellEmission is the same without the texture,
+// for everything that sees the surface second-hand.)
 // glow of material m of element id with its visible surface at Ts (°C)
-fn glowAt(m: Mat, id: i32, Ts: f32) -> vec3f {
-  let refl = mix(m.f0 + (1.0 - m.f0) * m.alb, m.alb, m.metal);
-  return emissionWith(id, Ts, 1.0 - clamp(dot(refl, LUMA_W), 0.0, 1.0));
-}
+fn glowAt(m: Mat, id: i32, Ts: f32) -> vec3f { return emissionWith(id, Ts, kirchhoff(m.alb, m.f0, m.metal)); }
 fn hotEmit(m: Mat, id: i32, T: f32) -> vec3f { return glowAt(m, id, T - INCAND_SKIN_DROP * clamp(m.cav, 0.0, 1.0)); }
 
-// Hot steel's mill scale (E_METAL)
-const OXIDE_T0: f32 = 400.0;     // °C: scale starts to darken the steel…
-const OXIDE_T1: f32 = 650.0;     // …and covers it (wüstite forms above ~570 °C)
-const OXIDE_ALB: vec3f = vec3f(0.03, 0.027, 0.025);   // black, a touch of rust brown
-const OXIDE_F0: f32 = 0.05;      // porous, dull: little sky in it, even at grazing angles
+// Hot steel's mill scale (E_METAL; OXIDE_T0/T1/ALB/F0 are gfx/materials.js's, which the cells' glow shares)
 const OXIDE_ROUGH: f32 = 0.8;
 const SCALE_M: f32 = 0.073;      // m, patches of thick scale
 const SCALE_FREQ: f32 = CELL_M / SCALE_M;   // per cell
@@ -306,19 +296,11 @@ const LAVA_SKIN_FREQ: f32 = CELL_M / LAVA_SKIN_M;   // per cell
 const LAVA_SKIN_OCT: i32 = 2;        // fBm octaves of the skin pattern
 const LAVA_SKIN_VAR: f32 = 0.6;      // how far the skin pattern shifts the crust line
 const LAVA_SKIN_DT: f32 = 150.0;     // °C: skin temperature swing on the melt
-const LAVA_MELT_RANGE: f32 = 450.0;  // °C above the solidus where it is fully molten
-const LAVA_CRUST_X0: f32 = 0.2;      // crust starts to break up (fraction of that range)…
-const LAVA_CRUST_X1: f32 = 0.8;      // …and is gone
 const LAVA_PLATE_M: f32 = 0.1;       // m, crust plate size
 const LAVA_PLATE_FREQ: f32 = CELL_M / LAVA_PLATE_M;   // crust plates per cell
 const LAVA_CRACK_LOD: f32 = 4.0;     // cracks are narrow: fade them at this multiple of the plate frequency
 const LAVA_CRACK_CORE: f32 = 0.5;    // fraction of the crack half-width that is fully open melt
-const LAVA_CRACK_OPEN: f32 = 1.0;    // crack half-width once the crust has broken up (no plates left)…
-const LAVA_CRACK_SHUT: f32 = 0.04;   // …and once it has set (cellular-noise units)
 const LAVA_RIM: f32 = 0.12;          // plate edge still glowing beside a crack
-const LAVA_CRACK_AREA: f32 = 1.6;    // area share of cracks per unit half-width (far LOD)
-const LAVA_CRUST_T: f32 = 450.0;     // °C: top of a crust right at the solidus…
-const LAVA_CRUST_K: f32 = 0.8;       // …rising this much per °C of melt above it
 const LAVA_MELT_ALB: vec3f = vec3f(0.05, 0.035, 0.025);   // dark glassy melt
 const LAVA_MELT_ROUGH: f32 = 0.25;
 const LAVA_CRUST_ROUGH: f32 = 0.55;  // glassy, silvery basalt skin (pahoehoe)
@@ -676,8 +658,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   m.emit = vec3f(0.0);
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (FU.matDetail < 0.5) {
-    if (id == E_METAL) { m.emit = glowAt(m, id, T); } else { m.emit = hotEmit(m, id, T); }
-    m.emit += sparkEmit(id, ctype);
+    m.emit = cellEmission(id, T, ctype) + sparkEmit(id, ctype);   // (no texture: the cells' own glow)
     return m;
   }
 
@@ -1198,25 +1179,28 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     // Molten well above the solidus; nearer it a crust skins over. The crust
     // radiates its heat away far below the bulk temperature and breaks into
     // plates: the cracks between them show the melt, brightest down the middle
-    // and dull red where they meet the cooler plate edges.
+    // and dull red where they meet the cooler plate edges. (The crust model is
+    // gfx/materials.js's, which cellEmission averages for the lava's reflection
+    // and the light it sheds; emissivity is the element's, emissivityOf.)
     let Ts = solidusOf(ctype);
     let sk = mFbmD(p + vec3f(0.0, FU.time * LAVA_CHURN, 0.0), LAVA_SKIN_FREQ, LAVA_SKIN_OCT, fp);   // churning skin
     let x = (T - Ts) / LAVA_MELT_RANGE + LAVA_SKIN_VAR * sk.x;   // 0 = at the solidus, 1 = fully molten
-    let crust = 1.0 - smoothstep(LAVA_CRUST_X0, LAVA_CRUST_X1, x);
+    let crust = lavaCrust(x);
     var ge: vec3f;
     var r1: vec3f;
     let c = mCell(p * LAVA_PLATE_FREQ, &ge, &r1);   // crust plates
     let lwc = lodFade(LAVA_PLATE_FREQ * LAVA_CRACK_LOD, fp);
     // crack half-width: hairlines once the crust has set, wide enough to
     // swallow the plates once it has broken up
-    let w = mix(LAVA_CRACK_SHUT, LAVA_CRACK_OPEN, (1.0 - crust) * (1.0 - crust));
+    let w = lavaCrackW(crust);
     let crk = mix(1.0 - smoothstep(LAVA_CRACK_CORE * w, w, c.y), min(LAVA_CRACK_AREA * w, 1.0), 1.0 - lwc);   // open melt
     let rim = 1.0 - smoothstep(LAVA_CRACK_CORE * w, w + LAVA_RIM, c.y);   // 1 in the melt .. 0 on the plate
     let Tmelt = T + LAVA_SKIN_DT * sk.x;
     // young crust is thin and still glows; old crust is cold on top
-    let Tcrust = mix(T, min(T, LAVA_CRUST_T + LAVA_CRUST_K * (T - Ts)), crust);
-    let eNear = emission(id, mix(Tcrust, Tmelt, rim * rim));
-    let eFar = mix(emission(id, Tcrust), emission(id, Tmelt), crk);
+    let Tcrust = lavaCrustT(T, Ts, crust);
+    let ev = emissivityOf(id, T);
+    let eNear = emissionWith(id, mix(Tcrust, Tmelt, rim * rim), ev);
+    let eFar = mix(emissionWith(id, Tcrust, ev), emissionWith(id, Tmelt, ev), crk);
     m.emit = mix(eFar, eNear, lwc);
     let solid = 1.0 - crk;
     m.alb = mix(LAVA_MELT_ALB, ALBEDO(id) * (1.0 + LAVA_CRUST_VAR * (c.z - 0.5)), solid);
@@ -1661,8 +1645,11 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
   let v = -rd;
   let ng = s.ng;
-  var ao: f32;
-  if (s.ch >= 0) { ao = fieldAO(s.p, ng); } else { ao = faceAO(s.cell, s.face, s.p); }
+  // AO, unless the traced near field replaces it below (FU.nearGI: it brings its own occlusion)
+  var ao = 1.0;
+  if (FU.nearGI == 0u) {
+    if (s.ch >= 0) { ao = fieldAO(s.p, ng); } else { ao = faceAO(s.cell, s.face, s.p); }
+  }
   var local = sampleLight(s.p + ng * LOCAL_PROBE_LIFT) * FU.lightGain;
   // keep the bumped normal on the visible side
   var n = s.n;
@@ -1783,7 +1770,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
 // t·(drd − rd·drd.y / rd.y): the plane's own derivative, which fwidth's
 // difference between neighbouring pixels is to first order, anywhere on the
 // screen and for any camera. The ray is taken as straight from the eye
-// (hazeBend and refraction bend it a little; the quad difference saw that).
+// (refraction bends it a little; the quad difference saw that).
 // A render-only change: within a pixel of the GLSL's except where the floor
 // meets other geometry, where the derivative across the edge was meaningless.
 const FLOOR_FW_SIN_MIN: f32 = 1e-3;   // floor on |rd.y| (a ray along the floor sees it infinitely stretched)
@@ -1827,25 +1814,35 @@ fn floorFwidthMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec2f {
   return floorFwidthRay(length(v) + distance(m, hp), rd, dx, dy);
 }
 
-const FLOOR_LINE_ALB: vec3f = vec3f(0.075, 0.078, 0.085);   // the grid's seams, darker than the floor
+// (FLOOR_LINE_ALB, the grid's seams: gfx/sky.js, which the backdrop's grid shares)
 const FLOOR_LINE_CELLS: f32 = 8.0;   // cells between the floor's grid lines
 fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f { return shadeFloorFw(hp, floorFwidth(hp, rd)); }
 // fw: the grid lines' fwidth there (floorFwidth, or floorFwidthMirror in a reflection)
-fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
+// the floor's albedo at hp: concrete with grid lines (fw: their fwidth there)
+fn floorAlb(hp: vec3f, fw: vec2f) -> vec3f {
   let q = worldPos(hp).xz / FLOOR_LINE_CELLS;
   let gq = abs(fract(q - 0.5) - 0.5) / max(fw / FLOOR_LINE_CELLS, vec2f(1e-4));
   let line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  let alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);
+  return mix(GROUND_ALB, FLOOR_LINE_ALB, line);
+}
+fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
+  let alb = floorAlb(hp, fw);
   let n = vec3f(0.0, 1.0, 0.0);
   let ndl = max(FU.sun.y, 0.0);
   var sh = vec3f(1.0);
   if (FU.shadows != 0u) { sh = sunShadow(hp, n); }
-  var ao = min(faceAO(vec3i(i32(floor(hp.x)), -1, i32(floor(hp.z))), vec3i(0, 1, 0), hp), fieldAO(vec3f(hp.x, 0.0, hp.z), n));
   var local = sampleLight(vec3f(hp.x, 0.5, hp.z)) * FU.lightGain;
   let irr = giIrradiance(surfProbe(vec3f(hp.x, 0.0, hp.z), n), n);
-  var ind = irr * ao;
   let pf = vec3f(hp.x, 0.0, hp.z);
+  // indirect: the traced near field, which brings its own occlusion, or the
+  // probes' light times AO (worked out only when it is used)
+  var ao: f32;
+  var ind: vec3f;
   if (FU.nearGI != 0u) { ind = nearField(pf, n, n, irr, &ao); }
+  else {
+    ao = min(faceAO(vec3i(i32(floor(hp.x)), -1, i32(floor(hp.z))), vec3i(0, 1, 0), hp), fieldAO(pf, n));
+    ind = irr * ao;
+  }
   if (glowWorthIt(local, irr)) { local *= glowLightScale(pf, n, n); }
   var lamps = vec3f(0.0);
   if (FU.lampCount > 0) { lamps = lampLight(pf, n, n); }
@@ -1954,13 +1951,12 @@ const realisticBody = (d) => /* wgsl */ `
   let inside = liquidInterface(p, nl, s > 0.5, lid, true, &lro, &lrd, &col, &trans, &ml);
   absorbSegment(lid, lro, thinBodySeg(p, s), ml, AMBIENT, &col, &trans);   // (drops and pours show their colour, as the tracer)
   acc += vec4f(col + trans + lro + lrd, select(0.0, 1.0, inside));
-  acc.w += fresnelSchlick(s, IOR(lid)) + skyInAt(probeAt(p)) + gSkyIn + envReflect(p, nl, ml).x;
+  acc.w += fresnelSchlick(s, IOR(lid)) + skyInAt(probeAt(p)) + gSkyIn + envReflect(p, nl, -rd, ROUGH(lid), ml).x;
   // a media segment, the media lattice carrying on from the ray's jitter
   var next = ign(gFragCoord, f32(FU.frame)) * MEDIA_STEP;
   var mcol = vec3f(0.0);
   var mtrans = vec3f(1.0);
-  let mrd = safeDir(hazeBend(ro, rd, s, s + 4.0));
-  let al = mediaSegment(ro, mrd, s, s + 4.0, &next, &mcol, &mtrans);
+  let al = mediaSegment(ro, rd, s, s + 4.0, &next, &mcol, &mtrans);
   acc += vec4f(mcol + mtrans, al + next);`;
 
 // The probe's fragment entry: gFragCoord and the aeration copy set first, then

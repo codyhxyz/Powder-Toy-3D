@@ -534,11 +534,86 @@ const vec3 = (a) => `vec3f(${a.map(f).join(', ')})`;
 const LUMINOUS = ELEMENTS.filter((e) => LOOK[e.id].emit.some((v) => v > 0));
 const EMISSION_GLSL = /* wgsl */ `
 fn emissionWith(id: i32, Ts: f32, emissivity: f32) -> vec3f { return emissivity * incandescence(Ts) + EMIT(id); }
+// A body's own glow, emissivity 1: what a participating medium (a liquid's or
+// glass's interior, paint in it) gives off per unit of (1 - transmittance), its
+// absorptivity being its emissivity (Kirchhoff's law for a volume).
 fn emission(id: i32, Ts: f32) -> vec3f { return emissionWith(id, Ts, 1.0); }
+
+// ---- the glow of an opaque surface: ONE model, everywhere it is seen ----
+// The view (gfx/surface.js matOf: hotEmit, lava, steel) and everything that sees
+// a surface second-hand (reflections, liquid.js reflShade; the near-field
+// bounce, lighting.js nearField; the GI's sources, gi.js; the glow volume,
+// passes.js) use the same skin temperature and the same emissivity, so hot
+// matter glows as brightly in a pool as it does in direct view.
+// Kirchhoff (1860): a surface emits what it doesn't reflect, emissivity =
+// 1 - its reflectance (luminance-weighted, ITU-R BT.709): pale rock glows less
+// than black crust, polished gold hardly at all.
+const EMIT_LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
+fn kirchhoff(alb: vec3f, f0: f32, metal: f32) -> f32 {
+  let refl = mix(f0 + (1.0 - f0) * alb, alb, metal);
+  return 1.0 - clamp(dot(refl, EMIT_LUMA), 0.0, 1.0);
+}
+// Hot steel's mill scale (E_METAL; surface.js draws its patches): above ~570 °C
+// wüstite (FeO, stable above 570 °C in the Fe–O diagram) forms: a black, porous dielectric
+const OXIDE_T0: f32 = 400.0;     // °C: scale starts to darken the steel…
+const OXIDE_T1: f32 = 650.0;     // …and covers it
+const OXIDE_ALB: vec3f = vec3f(0.03, 0.027, 0.025);   // black, a touch of rust brown
+const OXIDE_F0: f32 = 0.05;      // porous, dull: little sky in it, even at grazing angles
+fn oxideCover(T: f32) -> f32 { return smoothstep(OXIDE_T0, OXIDE_T1, T); }
+// Element id's emissivity at T (°C) from its table look (ALBEDO, IOR, METAL;
+// steel under its scale): the texture-free mean of what matOf's glowAt finds.
+fn emissivityOf(id: i32, T: f32) -> f32 {
+  var f0 = (IOR(id) - 1.0) / (IOR(id) + 1.0);
+  f0 *= f0;
+  var alb = ALBEDO(id);
+  var metal = METAL(id);
+  if (id == E_METAL) {
+    let ox = oxideCover(T);
+    alb = mix(alb, OXIDE_ALB, ox);
+    metal *= 1.0 - ox;
+    f0 = mix(f0, OXIDE_F0, ox);
+  }
+  return kirchhoff(alb, f0, metal);
+}
 // The open skin of hot matter runs INCAND_SKIN_DROP below its bulk T (metals,
 // conducting well, keep none): what an exposed cell of it gives off.
 fn skinT(id: i32, T: f32) -> f32 { return T - select(INCAND_SKIN_DROP, 0.0, id == E_METAL); }
-fn cellEmission(id: i32, T: f32) -> vec3f { return emission(id, skinT(id, T)); }
+// Lava (surface.js matOf draws its plates and cracks): molten well above the
+// solidus; nearer it a crust skins over, radiating far below the bulk T, and
+// breaks into plates with the melt showing in the cracks between them.
+// Lava freezes back into its ctype at MELT - LAVA_FREEZE_BELOW (src/physics.js).
+const LAVA_MELT_RANGE: f32 = 450.0;  // °C above the solidus where it is fully molten
+const LAVA_CRUST_X0: f32 = 0.2;      // crust starts to break up (fraction of that range)…
+const LAVA_CRUST_X1: f32 = 0.8;      // …and is gone
+const LAVA_CRACK_OPEN: f32 = 1.0;    // crack half-width once the crust has broken up (no plates left)…
+const LAVA_CRACK_SHUT: f32 = 0.04;   // …and once it has set (cellular-noise units)
+const LAVA_CRACK_AREA: f32 = 1.6;    // area share of cracks per unit half-width (past the cracks' LOD)
+const LAVA_CRUST_T: f32 = 450.0;     // °C: top of a crust right at the solidus…
+const LAVA_CRUST_K: f32 = 0.8;       // …rising this much per °C of melt above it
+fn solidusOf(ctype: f32) -> f32 {
+  var ct = i32(ctype);
+  if (ct <= 0 || ct >= NE || MELT(ct) <= 0.0) { ct = E_STONE; }
+  return MELT(ct) - LAVA_FREEZE_BELOW;
+}
+// crust cover at x (0 = at the solidus, 1 = fully molten)
+fn lavaCrust(x: f32) -> f32 { return 1.0 - smoothstep(LAVA_CRUST_X0, LAVA_CRUST_X1, x); }
+// the cracks' half-width: hairlines once the crust has set, wide enough to swallow the plates once it has broken up
+fn lavaCrackW(crust: f32) -> f32 { return mix(LAVA_CRACK_SHUT, LAVA_CRACK_OPEN, (1.0 - crust) * (1.0 - crust)); }
+// the crust's top: young crust is thin and still glows; old crust is cold on top
+fn lavaCrustT(T: f32, Ts: f32, crust: f32) -> f32 { return mix(T, min(T, LAVA_CRUST_T + LAVA_CRUST_K * (T - Ts)), crust); }
+// What an exposed cell of element id at bulk T (°C) gives off (ctype: lava's
+// rock, the floor of state A's w): its skin's glow at its emissivity; lava's
+// averaged over its plates and cracks, as matOf draws it past the cracks' LOD.
+fn cellEmission(id: i32, T: f32, ctype: f32) -> vec3f {
+  let e = emissivityOf(id, T);
+  if (id == E_LAVA) {
+    let Ts = solidusOf(ctype);
+    let crust = lavaCrust((T - Ts) / LAVA_MELT_RANGE);
+    let crk = min(LAVA_CRACK_AREA * lavaCrackW(crust), 1.0);
+    return mix(emissionWith(id, lavaCrustT(T, Ts, crust), e), emissionWith(id, T, e), crk);
+  }
+  return emissionWith(id, skinT(id, T), e);
+}
 // a lit lamp (src/electricity.js LAMP_HOLD: its spark level holds while it is lit)
 fn lampLit(id: i32, ctype: f32) -> bool { return id == E_LAMP && sparkLevel(ctype) > 0; }
 // a live conductor's spark (ctype: the cell's, floor of state A's w), or a lit lamp's light

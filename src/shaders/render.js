@@ -789,8 +789,7 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   let jit = ign(gFragCoord, f32(FU.frame));
   var mNext = jit * MEDIA_STEP;   // next media sample along the ray (gfx/media.js)
   var mOp = 0.0;                  // opacity of the media so far
-  // hot air bends light (heat shimmer): perturb the ray once, up front
-  var rd = safeDir(hazeBend(FU.cam, rd0, t0, bh.y));${curved ? `
+  var rd = safeDir(rd0);${curved ? `
   // the rolling log (shaders/gfx/presentation.js): the displayed ray's parabola, walked a chord at a time
   var walk = warpWalk(ro, rd, P.marchNear);` : ''}
 
@@ -929,7 +928,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           let gi = surfProbe(hp, nFace);
           gSkyIn = skyInAt(gi);
           let r = reflect(rd, nFace);
-          paneEnv = envReflectGI(gi, r, mediumLight);
+          paneEnv = envReflectGI(gi, nFace, -rd, ROUGH(id), mediumLight);
           if (panes < GLASS_TRACED_PANES) { paneEnv = reflectTrace(hp + nFace * REFL_START, r, paneEnv); }
           paneAx = ax;
           panes++;
@@ -953,7 +952,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           let F = fresnelSchlick(abs(dot(nX, rd)), IOR(id)) * select(1.0, GLASS_IN_LIQUID_F, SURFCH(nid) == CH_LIQUID);
           let r = reflect(rd, nX);
           var env = paneEnv;
-          if (xa != paneAx) { env = envReflectGI(surfProbe(hx, -nX), r, mediumLight); }
+          if (xa != paneAx) { env = envSky(surfProbe(hx, -nX), r); }   // (inside the pane: no sun highlight, as liquid.js's exit)
           col += trans * F * env;
           trans *= 1.0 - F;
         }

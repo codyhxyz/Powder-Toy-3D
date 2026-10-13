@@ -244,12 +244,6 @@ fn gasLamps(p: vec3f, rd: vec3f, sigT: f32, g0: f32, bMul: f32) -> vec3f {
   return sum;
 }
 
-// Heat shimmer: hot air has a lower refractive index, so rays bend. Returns
-// the (possibly perturbed) primary ray direction for the box span [t0, t1].
-fn hazeBend(ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> vec3f {
-  return rd;
-}
-
 // Integrate the media over the ray segment [ta, tb]. *next is the next
 // lattice sample along the ray (start it at jitter * MEDIA_STEP); it carries
 // over between segments. Returns the opacity added, for depth decisions.

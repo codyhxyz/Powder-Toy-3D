@@ -11,23 +11,37 @@ fn fresnelSchlick(cosi: f32, ior: f32) -> f32 {
   return f0 + (1.0 - f0) * pow(1.0 - clamp(cosi, 0.0, 1.0), 5.0);
 }
 
-// Radiance arriving along reflected direction r at an interface at p: the sky
-// plus the sun's highlight (a tight lobe standing in for the sun's disc).
-const SUN_GLINT_EXP: f32 = 400.0;   // sharpness of the highlight lobe
-const SUN_GLINT_GAIN: f32 = 6.0;    // its peak, relative to the sun's colour
-fn sunGlint(r: vec3f, sunVis: vec3f) -> vec3f {
-  return FU.sunCol * sunVis * pow(max(dot(r, FU.sun), 0.0), SUN_GLINT_EXP) * SUN_GLINT_GAIN;
+// The sun's highlight on a clear interface with normal n seen from v (toward
+// the eye), GGX roughness rough, per unit of Fresnel (the callers multiply
+// by theirs): the GGX lobe shadeSurf lights every other surface with
+// (lighting.js ggxSpec, F0 = 1 here), lit by the sun's disc as Karis 2013's
+// sphere light, as lampSpec lights the hand lamps' tubes: the point of the
+// disc nearest the reflection ray (eq. 11), the lobe's normalisation put back
+// for the disc's widening (eq. 10 and 14), the disc SUN_TAN_RADIUS across.
+// (It was a Phong lobe, pow(r.l, 400) x 6: far wider and dimmer than a
+// 0.02-rough mirror of the sun, and a different model from every other surface.)
+fn sunGlint(n: vec3f, v: vec3f, rough: f32, sunVis: vec3f) -> vec3f {
+  let r = reflect(-v, n);
+  let toRay = dot(FU.sun, r) * r - FU.sun;
+  let l = normalize(FU.sun + toRay * clamp(SUN_TAN_RADIUS / max(length(toRay), LAMP_SPEC_EPS), 0.0, 1.0));
+  let a = max(rough * rough, GGX_ALPHA_MIN);
+  let aS = a / clamp(a + LAMP_SPEC_WIDEN * SUN_TAN_RADIUS, 0.0, 1.0);
+  return PI_L * FU.sunCol * sunVis * ggxSpec(n, v, l, rough, vec3f(1.0)) * (aS * aS);
 }
-fn envReflect(p: vec3f, r: vec3f, sunVis: vec3f) -> vec3f {
-  return skyColor(r) + sunGlint(r, sunVis);
+// Radiance arriving along r = reflect(-v, n) at a clear interface (GGX
+// roughness rough) at p: the sky plus the sun's highlight.
+fn envReflect(p: vec3f, n: vec3f, v: vec3f, rough: f32, sunVis: vec3f) -> vec3f {
+  return skyColor(reflect(-v, n)) + sunGlint(n, v, rough, sunVis);
 }
 // The same inside the grid, where the GI probes know what's overhead: the sky
 // only as far as they say it is open toward r, their light (bounce, the rock
 // around) for the rest, as surface.js's sharp environment does. So a pool in a
 // cave mirrors the cave, not a sky it can't see. gi: the interface's probe,
 // surfProbe(p, n) with n its normal on the side r leaves from.
-fn envReflectGI(gi: Probe, r: vec3f, sunVis: vec3f) -> vec3f {
-  return mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r)) + sunGlint(r, sunVis);
+fn envSky(gi: Probe, r: vec3f) -> vec3f { return mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r)); }
+// ...and with the sun's highlight (sunGlint: n, v and rough as there, r = reflect(-v, n)).
+fn envReflectGI(gi: Probe, n: vec3f, v: vec3f, rough: f32, sunVis: vec3f) -> vec3f {
+  return envSky(gi, reflect(-v, n)) + sunGlint(n, v, rough, sunVis);
 }
 
 // Offsets off a transparent interface (cells): a ray restarts IFACE_NUDGE past
@@ -131,23 +145,15 @@ const REFL_MAX_STEPS: i32 = 32;   // DDA steps (cells or skipped bricks) before 
 const REFL_START: f32 = 0.05;     // start offset off the surface, cells
 const REFL_PROBE: f32 = 0.5;      // a smooth hit's element is looked up this far inside it, then twice that
 const REFL_NORMAL_STEP: f32 = 0.5;   // forward-difference step of a reflected smooth hit's normal, cells
-// What the reflection shows of a hit at hp: the element's albedo lit as the
-// near field lights its hits (gfx/lighting.js nearField): the sun
-// (shadow-mapped), the probes' light and the glow there, plus its own glow
-// (emission). Shadows and the probes' occlusion keep a cave's walls dark in its
-// pool. Reflections are dimmed by Fresnel and wobbled by ripples, so texture
-// detail and AO wouldn't show for the cost.
+// What the reflection shows of a hit at hp (state a, normal n): the element lit
+// as the near field lights its hits (lighting.js hitLight), plus the glow the
+// view shows on it (materials.js cellEmission: the same skin temperature and
+// emissivity) and a live conductor's or a lit lamp's light. Shadows and the
+// probes' occlusion keep a cave's walls dark in its pool.
 fn reflShade(a: vec4f, hp: vec3f, n: vec3f) -> vec3f {
   let id = eid(a);
-  let q = hp + n * IFACE_PROBE;
-  let ndl = max(dot(n, FU.sun), 0.0);
-  var sun = vec3f(0.0);
-  if (ndl > 0.0) {
-    var vis = vec3f(1.0);
-    if (FU.shadows != 0u) { vis = sunShadowAt(q); }
-    sun = FU.sunCol * ndl * vis;
-  }
-  return ALBEDO(id) * (sun + giIrradiance(surfProbe(hp, n), n) + sampleLight(q) * FU.lightGain) + emission(id, a.y);
+  let ct = floor(a.w);
+  return hitLight(hp + n * IFACE_PROBE, n, ALBEDO(id), cellEmission(id, a.y, ct) + sparkEmit(id, ct));
 }
 // env: what the ray sees if it meets nothing (envReflectGI at the interface).
 fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
@@ -217,9 +223,10 @@ fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     tMax[ax] += tDelta[ax];
   }
   if (cell.y < 0 && rd.y < 0.0) {
-    // the floor, its grid lines as wide as the whole path from the eye makes them
+    // the floor, its grid lines as wide as the whole path from the eye makes
+    // them, lit as every other reflected hit is (hitLight), not as the view lights it
     let hp = ro - rd * (ro.y / rd.y);
-    return shadeFloorFw(hp, floorFwidthMirror(hp, rd, ro));
+    return hitLight(vec3f(hp.x, IFACE_PROBE, hp.z), vec3f(0.0, 1.0, 0.0), floorAlb(hp, floorFwidthMirror(hp, rd, ro)), vec3f(0.0));
   }
   return env;
 }
@@ -241,7 +248,7 @@ fn liquidInterface(hp: vec3f, n0: vec3f, entering: bool, id: i32, mirror: bool, 
     let r = reflect(*rd, n);
     let gi = surfProbe(hp, n);
     gSkyIn = skyInAt(gi);
-    var env = envReflectGI(gi, r, ml);
+    var env = envReflectGI(gi, n, -*rd, ROUGH(id), ml);
     var wr = 0.0;
     if (mirror) { wr = smoothstep(REFL_F_LO, REFL_F_HI, F); }
     if (wr > 0.0) { env = mix(env, reflectTrace(hp + n * REFL_START, r, env), wr); }
@@ -265,7 +272,13 @@ fn liquidInterface(hp: vec3f, n0: vec3f, entering: bool, id: i32, mirror: bool, 
     *ro = hp + rr * IFACE_NUDGE;
     return true;
   }
-  *trans *= 1.0 - fresnelSchlick(dot(rt, n), ior);
+  // Leaving, the face reflects Fx back inside. That light isn't lost: it
+  // leaves the body elsewhere, showing what lies along the reflected ray, so
+  // the face adds it as the glass panes' far faces do (render.js), from the
+  // probe on the inner side (no sun highlight: the sun isn't seen from inside).
+  let Fx = fresnelSchlick(dot(rt, n), ior);
+  *col += *trans * Fx * envSky(surfProbe(hp, -n), reflect(*rd, n));
+  *trans *= 1.0 - Fx;
   *rd = rt;
   *ro = hp + rt * IFACE_NUDGE;
   return false;

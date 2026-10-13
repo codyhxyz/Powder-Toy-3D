@@ -237,7 +237,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       if (!looked) {
         looked = true;
         alb = ALBEDO(cid) * (1.0 - METAL(cid) * (1.0 - GI_METAL_DIFFUSE));
-        em = cellEmission(cid, a.y) + sparkEmit(cid, floor(a.w));   // a live conductor, a lit lamp
+        em = cellEmission(cid, a.y, floor(a.w)) + sparkEmit(cid, floor(a.w));   // a live conductor, a lit lamp
       }
       let nrm = vec3f(nv);
       var e = giIrradiance(pr, nrm);

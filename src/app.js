@@ -1478,7 +1478,9 @@ async function renderThumb(viewId, out) {
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
       draw(rp) {
-        if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1 });
+        const lit = !win && view === 'realistic';   // under the sky that lights it (gfx/overlays.js drawSky)
+        if (lit) overlays.drawSky(rp);
+        if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit });
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: !win });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
@@ -1931,7 +1933,11 @@ let volumeDrawn = false;   // the last presented frame drew the volume (__app.vi
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(settings.view);
-  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio) });   // one scene pixel wide: fade as it widens past a CSS pixel
+  // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
+  // daylit scene disagreed with what its water and metal mirrored); the data views keep the page's sky
+  const lit = !win && view === 'realistic';
+  if (lit) overlays.drawSky(rp);
+  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit });   // one scene pixel wide: fade as it widens past a CSS pixel
   for (const w of before) w.scene(ctx, rp);
   if (blocks) {
     // the blocks renderer (gfx/blocks.js): the opaque faces and a box's floor,
