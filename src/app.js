@@ -296,7 +296,7 @@ try {
 const canvas = document.createElement('canvas');
 document.getElementById('app').appendChild(canvas);
 const presenter = createPresenter(gpu, canvas);
-const renderer = await createThreeRenderer(gpu, canvas);
+const renderer = await createThreeRenderer(gpu, canvas, { hdr: presenter.hdr });
 // Keep the existing CSS-native output; adaptation only changes scene pixels.
 const pixelRatio = Math.min(devicePixelRatio, 1);
 renderer.setPixelRatio(pixelRatio);
