@@ -1495,7 +1495,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     } else if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) { oC.x = tEnter; hit = true; break; }
       if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = id; }
-      tau += dot(SIGMA(id), vec3f(1.0 / 3.0)) * (tExit - tEnter);
+      tau += meanSigma(id) * (tExit - tEnter);
       oC.z = tExit;
       phiStale = true;
     } else if (brickSurf(flags) || brickMedia(flags)) {
@@ -1515,7 +1515,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
       if (lenL > 0.0) {
         if (SURFCH(id) == CH_LIQUID) { lid = id; }
         if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = lid; }
-        tau += dot(SIGMA(lid), vec3f(1.0 / 3.0)) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
+        tau += meanSigma(lid) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
         oC.z = tEnd;
       }
       if (brickMedia(flags)) {
