@@ -844,6 +844,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 
   var lastB = vec3i(-1);
   var flags = 0u;
+  var bid = 0u;              // the brick's number (brickId(lastB)) ...
+  var occM = vec2u(0u);      // ... and its occupancy mask (shaders/occupancy.js), loaded with flags
   var phiA = surfSample(${curved ? 'warpAt(walk.ray, walk.t)' : 'ro + rd * tEnter'});   // fields at the current segment start
   var phiStale = false;
   // the hit that ends the ray (HIT_*), shaded after the march
@@ -908,7 +910,13 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     if (stop || outside(cell)) { break; }
     if (tEnter >= tCut) { cut = true; break; }
     let bc = cell / BS;
-    if (any(bc != lastB)) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
+    if (any(bc != lastB)) {
+      lastB = bc;
+      bid = brickId(bc);
+      flags = brickInfoOf(bid);
+      gThin = brickThin(flags);
+      if (flags != 0u) { occM = occMaskOf(bid); }
+    }
     if (flags == 0u) {
       ${curved ? 'warpSkip(&walk, bc, true);' : 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
       prevCrisp = E_EMPTY;
@@ -916,8 +924,29 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       continue;
     }
     let tExit = min(tMax.x, min(tMax.y, tMax.z));
-    let a = fetchA(cell);
-    let id = eid(a);
+    // The cell's element from the brick's occupancy (shaders/occupancy.js),
+    // what eid(fetchA(cell)) reads: an empty cell reads nothing, any other
+    // one byte. State A itself is read only where its values are used (the
+    // crisp hit, a pane, a grain, a liquid's own cell): an empty cell's are
+    // never, so its march reads no state at all.
+    let id = occCellId(occM, bid, cell);${curved ? '' : `
+    // An empty cell of a brick that holds crisp matter only (no smooth
+    // surface or media reaching it), out of liquid and before the mesh cut,
+    // draws nothing: the body below would only note that it passed it (and,
+    // with grains, look for the gravel's pebbles in it, gPebInside). Pass it
+    // here as the body would, with the same DDA arithmetic and the same loop
+    // count, so every hit is the one the full march finds, at the same t.
+    if (id == E_EMPTY && (flags & (BRICK_SURF | BRICK_MEDIA)) == 0u && liq == E_EMPTY && tExit < tCut${grains ? ' && !gPebInside' : ''}) {
+      prevCrisp = E_EMPTY;
+      phiStale = true;
+      phiA = vec4f(0.0);   // (the body's phiB: no smooth surface here)
+      if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
+      ax = argmin3(tMax);
+      tEnter = tExit;
+      cell[ax] += istp[ax];
+      tMax[ax] += tDelta[ax];
+      continue;
+    }`}
 
     if (isCrisp(id)) {
       // ---- crisp voxel ----
@@ -931,7 +960,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           if (th > tCut) { cut = true; break; }   // (a bevelled voxel's face behind the mesh)
           let hp = ro + rd * th;
           if (!anyHit) { anyHit = true; hitPos = hp; }
-          hitK = HIT_CRISP; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = a;
+          hitK = HIT_CRISP; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = fetchA(cell);
           break;
         }
         phiStale = true;
@@ -953,7 +982,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           col += trans * F * paneEnv;
           trans *= 1.0 - F;
         }
-        absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, a.y, &col, &trans);   // (stained glass: gfx/deco.js)
+        absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, fetchA(cell).y, &col, &trans);   // (stained glass: gfx/deco.js)
         // Leaving the pane, its far face reflects as much again (into air; less
         // into liquid; none against something opaque, which it touches, the
         // floor included, nor behind a mesh). A face parallel to the front one
@@ -1045,7 +1074,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
 
       if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
       // grains (gfx/grains.js), not past the cut either: geometry in front of it may still end the segment
-      grainEvent(cell, id, a, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
+      // (grainEvent reads the cell's state only for a grain element's cell: its cand)
+      var ga = vec4f(0.0);
+      if (grainElement(id)) { ga = fetchA(cell); }
+      grainEvent(cell, id, ga, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
       cut = ev == EV_NONE && tEv >= tCut;` : ''}
 
       // ---- what lies along [tEnter, tEv] ----
@@ -1061,7 +1093,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         mediumLight = lightRef * exp(-SIGMA(liq) * max(lightY - pm.y, 0.0) / max(FU.sun.y, LIQ_SUN_Y_MIN));
         let own = SURFCH(id) == CH_LIQUID;
         // (painted liquid: gfx/deco.js; drops and pours show their colour: gfx/liquid.js thinBodySeg)
-        absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, select(AMBIENT, a.y, own), &col, &trans);
+        var tOwn = AMBIENT;   // (the cell's temperature where it is the liquid's own)
+        if (own) { tOwn = fetchA(cell).y; }
+        absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, tOwn, &col, &trans);
       } else if (brickMedia(flags)) {
         let al = mediaSegment(ro, rd, tEnter, tEv, &mNext, &col, &trans);
         // until something is hit, hitPos tracks the first gas, and the gas
@@ -1491,6 +1525,8 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   var tEnter = t;
   var lastB = vec3i(-1);
   var flags = 0u;
+  var bid = 0u;           // the brick's number and occupancy mask (shaders/occupancy.js)
+  var occM = vec2u(0u);
   var tid = 0;
   var lid = E_WATER;
   var tau = 0.0;
@@ -1501,11 +1537,17 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   for (var i = 0; i < MAX_STEPS; i++) {
     if (hit || outside(cell)) { break; }
     let bc = cell / BS;
-    if (any(bc != lastB)) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
+    if (any(bc != lastB)) {
+      lastB = bc;
+      bid = brickId(bc);
+      flags = brickInfoOf(bid);
+      gThin = brickThin(flags);
+      if (flags != 0u) { occM = occMaskOf(bid); }
+    }
     if (flags == 0u) { skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); phiStale = true; continue; }
     let ax = argmin3(tMax);
     let tExit = tMax[ax];
-    let id = eid(fetchA(cell));
+    let id = occCellId(occM, bid, cell);   // eid(fetchA(cell)), from the brick's occupancy: nothing read for an empty cell
     if (id == E_CRYSTAL) {
       // its prisms (gfx/crystal.js), as the view draws them
       var th = tEnter;

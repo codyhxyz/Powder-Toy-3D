@@ -1,5 +1,6 @@
 import { libChecks } from './lib.js';
 import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
+import { occupancyReadWGSL } from '../occupancy.js';
 
 // Shared render core: brick and field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals), in WGSL (the
@@ -55,8 +56,11 @@ fn cellFlow(c: vec3i) -> vec3f {
 fn brickOcc(bc: vec3i) -> u32 { return brickAt(bc).info; }
 // The realistic view's test: 0 = skip the brick (empty or air only), else its
 // info word, for the brick* predicates below.
-fn brickInfo(bc: vec3i) -> u32 {
-  let w = brickOcc(bc);
+fn brickInfo(bc: vec3i) -> u32 { return brickInfoOf(brickId(bc)); }
+// The same by brick number (brickId), for a march that keeps it for the
+// brick's occupancy too (occMaskOf, occIdOf).
+fn brickInfoOf(id: u32) -> u32 {
+  let w = brick[id].info;
   return select(0u, w, brickMatter(w));
 }
 fn brickHas(f: u32, bit: u32) -> bool { return (f & bit) != 0u; }
@@ -65,6 +69,7 @@ fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
 fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
+${occupancyReadWGSL}
 
 // ---- brick skipping (the brick map and brickDist) ----
 // Jump the DDA to the exit of empty brick bc: updates *cell, *tMax and

@@ -159,7 +159,7 @@ const LIGHTING_BINDINGS = [
   [14, 'linearClamp', 'sampler', { sampler: { type: 'filtering' } }],
   [15, 'linearRepeat', 'sampler', { sampler: { type: 'filtering' } }],
   [16, 'brick', 'array<BrickInfo>', readBuffer],        // the brick map, brickId order
-  [17, 'brickDist', 'array<u32>', readBuffer],          // empty-space distance + 1 per brick (brickDistAt)
+  [17, 'brickDist', 'array<u32>', readBuffer],          // empty-space distance + 1 per brick (brickDistAt), then the occupancy (shaders/occupancy.js)
   [18, 'flow', 'array<vec2u>', readBuffer],             // flow, per slot: 3 × f16 + 0 (pack2x16float)
   [19, 'aeration', 'array<vec2u>', readBuffer],         // whitewater's aeration, both copies (G4)
 ];

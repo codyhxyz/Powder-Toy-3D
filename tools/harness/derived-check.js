@@ -823,7 +823,7 @@ test('budget:move', async () => {
 
 // ---------------------------------------------------------------- bench (tools/derived-bench.mjs)
 const DERIVED_KERNELS = ['noteAwake', 'awake', 'age', 'dirty', 'dirtyArgs', 'fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0',
-  'fieldBoost', 'fieldPeak', 'brick', 'brickDist', 'blur', 'blurLast'];
+  'fieldBoost', 'fieldPeak', 'brick', 'occupancy', 'brickDist', 'blur', 'blurLast'];
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)] ?? NaN; };
 const nextFrame = () => new Promise((r) => setTimeout(r, 0));
 // ms per derived frame per kernel (split timestamps) over `frames` frames of

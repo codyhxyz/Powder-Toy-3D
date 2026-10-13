@@ -18,6 +18,7 @@ import { libLayouts } from './shaders/gfx/lib.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
 import { createMediaNoise } from './gfx/mediaNoise.js';
 import { GI_BLEND } from './sim.js';
+import { Occupancy, occupancyWords } from './shaders/occupancy.js';
 
 // The derived passes (docs/webgpu.md E): what the renderer reads of the
 // simulation, rebuilt from its state once per derived frame, in the open
@@ -58,6 +59,7 @@ import { GI_BLEND } from './sim.js';
 //   fieldSurf, fieldMedia, fieldThin   the final fields, rgba16float 3D textures       3 × 17 MB
 //   brick      BrickInfo per brick (shaders/bindings.js)                                  512 KB
 //   brickDist  u32 per brick: empty-space distance (bindings.js brickDistAt)              128 KB
+//              then the march's occupancy, 18 words a brick (shaders/occupancy.js)     2.3 MB
 //   scratchB   4 words per brick: brickDist's middle axis, the per-brick shifts          512 KB
 //   lightA, lightB   the light blur's ping-pong, vec4f per brick                     2 × 512 KB
 //   light      the glow volume, rgba16float BX×BY×BZ                                      256 KB
@@ -131,7 +133,7 @@ export class Derived {
     this.tmpB = buf('field scratch B', TMP_PLANES * slots * 4, S | CS | CD);   // (resetGI clears a run of it)
     this.blurred = buf('fields blurred', BLURRED_PLANES * slots * 4, S);
     this.brick = buf('brick', n * 16);
-    this.brickDist = buf('brickDist', n * 4);
+    this.brickDist = buf('brickDist', occupancyWords(g) * 4);   // and after the distances, the march's occupancy (shaders/occupancy.js)
     this.scratchB = buf('brick scratch', n * 16, S | CS);
     this.lightA = buf('light blur A', n * 16, S);
     this.lightB = buf('light blur B', n * 16, S);
@@ -196,6 +198,7 @@ export class Derived {
       blur: kernel('blur', blurFrag(g), E, L.PAIR, BlurParams),
       blurLast: kernel('blurLast', blurFrag(g, { last: true }), E, L.LIGHT, BlurParams),
     };
+    this.occupancy = new Occupancy(this);   // (its kernel joins this.kernels)
     this.passes = {};
     this._lazy = {
       fieldShift: () => kernel('fieldShift', fieldShiftFrag(g), E, L.PAIR, FieldShiftParams),
@@ -342,6 +345,7 @@ export class Derived {
     this.updateDirty();
     this.updateFields();
     this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.brick], header: sim.header() });
+    this.occupancy.update();   // over the brick map's list
     const per = this._perBrick;
     for (let axis = 0; axis < 3; axis++) this._dispatch(k.brickDist, per, { bind: [tables, empty, gr.dist[axis]], params: { axis } });
     const { fromBrick, aToB, bToA, aToLight } = gr.light;
@@ -660,6 +664,7 @@ export class Derived {
 
   dispose() {
     this._offShift?.();
+    this.occupancy.dispose();
     if (this.sim.derived === this) this.sim.attachDerived(null);
     if (!this.gpu.failure) this.gpu.flush('derived dispose');
     for (const x of [this.age, this.dlist, this.ema, this.tmpA, this.tmpB, this.blurred, this.brick, this.brickDist, this.scratchB,
