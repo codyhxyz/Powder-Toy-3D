@@ -67,8 +67,14 @@ import { WorldDetail } from './detail.js';
 // Near the window the detail meshes (world/detail.js, docs/world-lod.md:
 // render-only meshes of the chunks' cells) replace the coarse field: drawn
 // just before the view, which leaves their chunks' opaque field to them, and
-// before the scene pass their distances from the eye (prepass), where the
-// view's march stops.
+// before the scene pass their depth (prepass), where the view's march stops.
+//
+// The rolling log (gfx/presentation.js: `presentation`, set by
+// src/wire/world.js): while a gamemode's effect bends the view, the view draws
+// its curved variant (shaders/far.js farFrag's: its own pipeline, built the
+// first time it is wanted, the far field showing once it is ready) and the
+// detail meshes bend in their vertex stage, both from the effect's parameters
+// in the view's params.
 
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
@@ -80,7 +86,7 @@ const SOFTWARE_CHUNKS_PER_FRAME = 1;   // on a software adapter (SwiftShader: th
                                        // seconds of CPU: one a frame, whatever the scene says
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
 const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
-const NO_DETAIL_DEPTH = new WeakMap();   // per device: a 1×1 r32float the view binds while there are no meshes' distances
+const NO_DETAIL_DEPTH = new WeakMap();   // per device: a 1×1 r32float the view binds while there is no meshes' depth
 const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };                                // (GPUBufferUsage's bits)
 
 // The open level beyond a world's edge (cells): its sea, or for a world
@@ -192,14 +198,18 @@ export class FarField {
       name: 'far view', code: farFrag(g, L), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
       params: FarViewParams, ...farViewPipeline(), build: 'manual',
     });
+    // the rolling log's view (made the first time it is wanted)
+    this.viewPipeCurved = null;
+    this.presentation = null;
     if (!NO_DETAIL_DEPTH.has(gpu)) {
       NO_DETAIL_DEPTH.set(gpu, gpu.createTexture({ label: 'far no detail depth', size: [1, 1], format: 'r32float', usage: TEX.TEXTURE_BINDING }).createView());
     }
-    this.viewFrameGroup = null;   // (_frameGroup: it holds the detail meshes' distances)
+    this.viewFrameGroup = null;   // (_frameGroup: it holds the detail meshes' depth)
     this.viewFrameDepth = null;
-    this.depthFor = null;         // the scene target the meshes' distances were drawn for this frame (prepass), else null
+    this.depthFor = null;         // the scene target the meshes' depth was drawn for this frame (prepass), else null
     this.viewParams = {
       clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor, detailDepth: 0,
+      warpK: 0, warpAnchor: [0, 0], warpDir: [0, 1],
     };
     this._m = { toWorld: new Matrix4(), eye: new Vector3(), worldToScene: new Matrix4() };
     this.detail = new WorldDetail(this);
@@ -207,11 +217,24 @@ export class FarField {
     this.disposed = false;
   }
 
-  // The view's pipeline is ready (the far field shows once it is).
-  get viewReady() { return this.viewPipe.state === 'ready'; }
+  // Whether the rolling log bends the view now (gfx/presentation.js).
+  get curved() { return !!this.presentation?.active && this.presentation.parameters.k !== 0; }
 
-  /** Starts building the view's pipeline (once: the realistic view draws it); resolves when it is ready. */
-  buildView() { return this.viewPipe.build(); }
+  // The view's pipeline for the view as it is now (flat, or the rolling log's).
+  get viewPipeline() {
+    if (!this.curved) return this.viewPipe;
+    return (this.viewPipeCurved ??= this.gpu.renderPipeline({
+      name: 'far view curved', code: farFrag(this.sim.g, this.L, false, { curved: true }),
+      layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
+      params: FarViewParams, ...farViewPipeline(), build: 'manual',
+    }));
+  }
+
+  // The view's pipeline is ready (the far field shows once it is).
+  get viewReady() { return this.viewPipeline.state === 'ready'; }
+
+  /** Starts building the view's pipeline (once: the realistic view draws it; curved, the rolling log's); resolves when it is ready. */
+  buildView() { return this.viewPipeline.build(); }
 
   /** Resolves when the build's kernels are ready (the window's whenReady waits for it); the view builds when it is first drawn (view). */
   whenReady() {
@@ -219,7 +242,7 @@ export class FarField {
   }
 
   // The view's group 0 (FrameUniforms, the field, the occupancy, the detail
-  // meshes' distances), made again when the distances' texture is.
+  // meshes' depth), made again when the depth's texture is.
   _frameGroup() {
     const depth = this.detail.depthView ?? NO_DETAIL_DEPTH.get(this.gpu);
     if (this.viewFrameGroup && this.viewFrameDepth === depth) return this.viewFrameGroup;
@@ -483,12 +506,17 @@ export class FarField {
     m.eye.copy(last.eye).applyMatrix4(m.toWorld.copy(last.model).invert());
     p.eye = [m.eye.x + o.x, m.eye.y + o.y, m.eye.z + o.z];
     p.winLo = [o.x, o.y, o.z];
+    // the rolling log's parameters (world cells, as these are), or flat
+    const w = this.curved ? this.presentation.parameters : null;
+    p.warpK = w ? w.k : 0;
+    p.warpAnchor = w ? w.anchor : [0, 0];
+    p.warpDir = w ? w.dir : [0, 1];
     return p;
   }
 
   /**
    * Before the scene pass, after FrameUniforms is written (the world wire's
-   * compute hook): the detail meshes' distances, for the scene target the
+   * compute hook): the detail meshes' depth, for the scene target the
    * frame draws into (post.sceneTarget: { width, height }), in a render pass
    * of their own (world/detail.js depth). The view of this frame then stops
    * its march at them; a still (renderStill: no compute hook) goes without.
@@ -516,7 +544,7 @@ export class FarField {
     p.detailDepth = d && d.target === target && d.width === target.width && d.height === target.height ? 1 : 0;
     const bind = [this._frameGroup(), sim.bindRO, this.vol.lightingGroup];
     this.detail.draw(rp, p, bind);   // (first: the view depth-tests against the meshes)
-    this.viewPipe.draw(rp, {
+    this.viewPipeline.draw(rp, {
       bind, header: { origin: [0, 0, 0], src: sim.cur, dst: sim.cur },   // (world cells throughout: worldPos() is the identity)
       params: p, count: 3,
     });

@@ -37,8 +37,12 @@ ${ELEMENTS.filter((e) => PLAIN_SIGMA[e.key]).map((e) => `  if (id == E_${e.key})
   return SIGMA(id);
 }`;
 
-// g: the grid (kept for the GLSL's signature; the march's bound is the library's MAX_STEPS)
-export const plainGLSL = (g) => /* wgsl */ `
+// g: the grid (kept for the GLSL's signature; the march's bound is the library's MAX_STEPS).
+// curved: the rolling log's variant (shaders/render.js volumeFrag), which walks
+// the displayed ray's parabola a chord at a time (shaders/gfx/presentation.js:
+// pasted before it), each chord a ray of its own whose t is the displayed
+// ray's; no mesh cut there (meshCutT measures a straight ray).
+export const plainGLSL = (g, { curved = false } = {}) => /* wgsl */ `
 ${sigmaGLSL()}
 const PLAIN_SUN: vec3f = vec3f(1.25, 1.15, 1.0);          // sun colour
 const PLAIN_SKY_LO: vec3f = vec3f(0.05, 0.05, 0.06);      // sky gradient, horizon and below...
@@ -169,8 +173,10 @@ struct PlainOut {
   hit: bool,
 }
 
-fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
-  let istp = vec3i(sign(rd));
+fn plainView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> PlainOut {
+  var ro = ro0;
+  var rd = rd0;
+  var istp = vec3i(sign(rd));
   let tDelta = abs(1.0 / rd);
   var cell = clamp(vec3i(floor(ro + rd * (t0 + 1e-4))), vec3i(0), GRID - 1);
   var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
@@ -184,16 +190,29 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
   var mediumLight = vec3f(1.0);
   var lastB = vec3i(-1);
   var occ = 0u;
-  let tCut = meshCutT(rd);   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
-  var cut = false;
+  let tCut = ${curved ? 'MESH_CUT_NONE' : 'meshCutT(rd)'};   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
+  var cut = false;${curved ? `
+  var walk = warpWalk(ro, rd, t0);` : ''}
 
-  for (var i = 0; i < MAX_STEPS; i++) {
+  for (var i = 0; i < ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'}; i++) {${curved ? `
+    var fp: vec3f;
+    var ft: f32;
+    if (warpFloor(walk, &fp, &ft)) { break; }
+    var chord: f32;
+    var exitAxis: i32;
+    if (!warpSegment(&walk, &cell, &ro, &rd, &chord, &exitAxis)) { break; }
+    tEnter = walk.t;
+    ro -= rd * tEnter;
+    ax = walk.axis;
+    istp = vec3i(sign(rd));
+    tMax = vec3f(WARP_INF);
+    tMax[exitAxis] = tEnter + chord;` : ''}
     if (outside(cell)) { break; }
     if (tEnter >= tCut) { cut = true; break; }
     let bc = cell / BS;
     if (any(bc != lastB)) { lastB = bc; occ = brickOcc(bc); }
     if (!brickMatter(occ)) {
-      ax = skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter);
+      ${curved ? 'warpSkip(&walk, bc, false);' : 'ax = skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
       prevId = E_EMPTY;
       continue;
     }
@@ -250,18 +269,23 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
       }
     }
     if (max(trans.x, max(trans.y, trans.z)) < PLAIN_OPAQUE) { break; }
-    prevId = id;
+    prevId = id;${curved ? `
+    warpAdvance(&walk);
+    if (warpCell(walk.ray, walk.t).y < 0) { break; }` : `
     ax = argmin3(tMax);
     tEnter = tExit;
     cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    tMax[ax] += tDelta[ax];`}
   }
 
-  // floor of the box
-  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
-    let tf = -ro.y / rd.y;
+  // floor of the box${curved ? `
+  var floorP: vec3f;
+  var floorT: f32;
+  let onFloor = warpFloor(walk, &floorP, &floorT);` : ''}
+  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
+    let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
     if (tHit < 0.0) { tHit = tf; }
-    col += trans * plainFloor(ro + rd * tf, rd);
+    col += trans * plainFloor(${curved ? 'floorP, normalize(warpSlope(walk.ray, tf))' : 'ro + rd * tf, rd'});
     trans = vec3f(0.0);
   }
 
@@ -270,7 +294,8 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
   let alpha = 1.0 - dot(trans, vec3f(1.0 / 3.0));
   // finished colour; post (raw) only encodes it to sRGB
   o.color = vec4f(aces(col * PLAIN_EXPOSURE), alpha);
-  let clip = FU.viewProj * FU.model * vec4f(ro + rd * max(tHit, 0.0), 1.0);
+  // (the displayed ray's point: curved, tHit is its t too)
+  let clip = FU.viewProj * FU.model * vec4f(ro0 + rd0 * max(tHit, 0.0), 1.0);
   o.depth = clamp(clip.z / clip.w, 0.0, 1.0);
   return o;
 }

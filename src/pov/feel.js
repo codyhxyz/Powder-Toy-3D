@@ -41,11 +41,11 @@ const IMPACT_ENERGY_FULL = 60;          // impact energy that gives the full TRA
 const TRAUMA_IMPACT = 0.5;              // trauma of a full-energy impact at the eye
 const IMPACT_NEAR = 3;                  // cells: closer than this counts as at the eye
 const IMPACT_FAR = 24;                  // cells: no shake from impacts this far away
-// blasts: 'hurt' with cause 'Blown up' (pressure damage), and big sudden velocity changes
+// blasts: 'hurt' with cause 'Blown up' (pressure damage), and big sudden pushes from outside (player.knock)
 const BLAST_CAUSE = 'Blown up';         // vitals.js's cause for pressure damage
 const TRAUMA_PER_BLAST_HEALTH = 8;      // trauma per unit of health a blast takes
 const TRAUMA_BLAST_MAX = 0.6;           // most trauma from one blast hurt event
-const BLAST_DV_MIN = 18;                // cells/s of velocity change in one frame that counts as a blast (a jump is ≈ 12)
+const BLAST_DV_MIN = 18;                // cells/s of push from outside in one frame that counts as a blast
 const BLAST_DV_FULL = 60;               // cells/s of change for TRAUMA_BLAST_DV
 const TRAUMA_BLAST_DV = 0.8;
 // optional: mean air pressure over the body, if the player exposes player.pressure
@@ -109,8 +109,6 @@ export function createFeel({ hud }) {
   let player = null, unbindPlayer = [];
   let live = false;                      // in the eyes and alive (events outside it are ignored)
   const eye = { x: 0, y: 0, z: 0 };      // grid, for impact distances
-  const prevVel = { x: 0, y: 0, z: 0 };
-  let prevValid = false, prevGround = false;
   const offsets = { pitch: 0, yaw: 0, roll: 0, punchPitch: 0, punchYaw: 0 };   // punch*: the view punch's share of pitch and yaw
 
   const addTrauma = (x) => { if (x > 0) trauma = Math.min(1, trauma + x); };
@@ -186,14 +184,12 @@ export function createFeel({ hud }) {
       unbindPlayer.forEach((f) => f?.());
       player = p;
       unbindPlayer = p ? [p.on('hurt', onHurt), p.on('land', onLand)] : [];
-      prevValid = false;
     },
     // a fresh body (drop in, respawn): nothing carried over
     reset() {
       trauma = rumble = bloom = hitT = 0;
       drunk = drunkSway = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
-      prevValid = false;
       offsets.pitch = offsets.yaw = offsets.roll = offsets.punchPitch = offsets.punchYaw = 0;
     },
     // Every POV frame. s = { dt, live (in the eyes and alive), eye (grid) }.
@@ -203,22 +199,14 @@ export function createFeel({ hud }) {
       time += dt;
       if (e) { eye.x = e.x; eye.y = e.y; eye.z = e.z; }
 
-      // blasts: a sudden velocity change the body's own moves can't make
-      // (landings are 'land', so a frame that touches down is skipped)
+      // blasts: a sudden push from outside (player.knock: pressure and impulses), never the
+      // body's own moves (a jump, the jet, a pogo bounce, a rope reel) or a landing ('land')
       if (player && live) {
-        const v = player.vel;
-        const landed = player.onGround && !prevGround;
-        if (prevValid && !landed) {
-          const dv = Math.hypot(v.x - prevVel.x, v.y - prevVel.y, v.z - prevVel.z);
-          addTrauma(TRAUMA_BLAST_DV * clamp01((dv - BLAST_DV_MIN) / (BLAST_DV_FULL - BLAST_DV_MIN)));
-        }
-        prevVel.x = v.x; prevVel.y = v.y; prevVel.z = v.z;
-        prevGround = player.onGround;
-        prevValid = true;
+        addTrauma(TRAUMA_BLAST_DV * clamp01(((player.knock ?? 0) - BLAST_DV_MIN) / (BLAST_DV_FULL - BLAST_DV_MIN)));
         if (typeof player.pressure === 'number') {
           addTrauma(TRAUMA_PRESSURE_RATE * dt * clamp01((player.pressure - PRESSURE_SHAKE_MIN) / PRESSURE_SHAKE_SPAN));
         }
-      } else prevValid = false;
+      }
 
       if (punch.pitch ** 2 + punch.yaw ** 2 > PUNCH_EPS || punch.vp ** 2 + punch.vy ** 2 > PUNCH_EPS) {
         punch.pitch += punch.vp * dt; punch.yaw += punch.vy * dt;

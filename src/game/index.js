@@ -80,6 +80,7 @@ export function createGame(shell) {
   let flags = null, hill = null, siege = null;
   let npc = null, npcLoad = null;
   let starting = null;
+  let startEpoch = 0;                // end() bumps it: a start still loading its bots gives up (a later map/mode owns the session)
   let lastStart = null;              // { mode, opts } of the match running or just played: the next one's
   let next = null;                   // { at (s, now()), mode, opts }: the next match, counting down over the report
   let myDeath = null;                // { at (game time), killer, killerTeam, weapon, cause }: the player's last death
@@ -257,9 +258,11 @@ export function createGame(shell) {
     const { fresh = false, ...over } = opts;
     next = null;
     hud.closeReport();
+    const epoch = ++startEpoch;
     starting = (async () => {
       if (running) stop();
       npc ??= await prepare();
+      if (epoch !== startEpoch || !shell.player || !sim()) return false;
       const g = sim().g;
       layout = fitLayout(userLayout ?? app.getArena?.(), g) ?? labLayout(g);   // useLayout's, the loaded arena's (Dam Valley), else the lab's
       mode = m;
@@ -320,6 +323,7 @@ export function createGame(shell) {
       mark('match');
       return true;
     })();
+    // (b72b890 dropped this: `starting` then never cleared, so every later start returned the first match's promise)
     try { return await starting; } finally { starting = null; }
   }
 
@@ -346,6 +350,7 @@ export function createGame(shell) {
   // the match is over: by its rules (winner: a team, or null for a draw), with the carnage
   // report and the next match counting down; or by hand (no winner given), with a line
   function end(winner = undefined, why = '') {
+    startEpoch++;   // also cancel a pending load: a later map/mode owns the session
     if (!running) return;
     const p = me();
     const result = { mode, winner: winner ?? null, score: { ...teamScore }, why, roster: board() };

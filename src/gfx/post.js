@@ -3,7 +3,7 @@
 // eye adaptation → bloom → sharpen + AgX + sRGB + dither (+ night vision) →
 // the canvas, composited there over the page's sky gradient.
 //
-//   const post = createPost(gpu, { presenter, pixScale });
+//   const post = createPost(gpu, { presenter, pixScale, presentation });   // presentation: gfx/presentation.js (TAA through the rolling log)
 //   await post.ready;                    // its pipelines (built at once: boot needs post)
 //   post.render({ prepare, compute, opaque, draw, meshes, overlay }, camera, null, dt);
 //   post.reset();                        // after anything that invalidates history
@@ -84,12 +84,17 @@
 // vertically. The jitter is a pixel offset (jx, jy) measured with y down; it goes
 // into camera.projectionMatrix in place (row 0 += 2·jx/w · row 3, row 1 −= 2·jy/h ·
 // row 3), so three's meshes jitter with our passes, and comes out after the scene.
+// The rolling log (gfx/presentation.js): while a gamemode's effect bends the view,
+// or bent the last frame, TAA reprojects through the displayed world: this frame's
+// depth back to its displayed point (unjittered), unwarped with this frame's
+// parameters, warped with the last frame's, into the last frame's clip space.
 
 import {
   Matrix4, Vector3, Quaternion, RenderTarget, DepthTexture, HalfFloatType, FloatType, NearestFilter,
 } from 'three/webgpu';
 import { uniformStruct, fullscreenVert, luma as lumaWGSL, STAGE } from '../gpu/index.js';
 import { initRenderTarget, gpuTextureOf } from '../gpu/three.js';
+import { IDENTITY, presentationWGSL } from './presentationMath.js';
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -256,13 +261,25 @@ const vec2 = ([x, y]) => `vec2f(${f(x)}, ${f(y)})`;
 // ---------------------------------------------------------------- params
 
 const TaaParams = uniformStruct('TaaParams', {
-  reproj: 'mat4x4f',     // prevViewProj · inverse(curViewProj), both unjittered
+  // prevViewProj · inverse(curViewProj), both unjittered; while the rolling log
+  // bends this frame or bent the last (warpK or prevK not 0), this frame's clip →
+  // displayed world cells (unjittered) instead, the first half of the reprojection
+  reproj: 'mat4x4f',
   jitter: 'vec2f',       // where this frame sampled, in pixels from the pixel centre (y down)
   size: 'vec2f',         // output (and history) size
   inSize: 'vec2f',       // the scene's size (TAAU)
   weight: 'vec2f',       // current-frame weight (stable, changing)
   historyValid: 'bool',
   meanConf: 'f32',       // TAAU: mean over the jitter cycle of conf
+  // the rolling log (gfx/presentation.js): this frame's and the last frame's parameters (k 0: flat)
+  warpK: 'f32',
+  prevK: 'f32',
+  warpAnchor: 'vec2f',
+  warpDir: 'vec2f',
+  prevAnchor: 'vec2f',
+  prevDir: 'vec2f',
+  // ...and, bent, the last frame's world cells → clip: the second half (208 bytes in all: one ring slot)
+  prevWorldToClip: 'mat4x4f',
 });
 const PrefilterParams = uniformStruct('PrefilterParams', { thresh: 'vec2f' });
 const MipParams = uniformStruct('MipParams', {
@@ -417,9 +434,24 @@ fn blendHistory(cur: vec4f, m1: vec4f, m2: vec4f, mn: vec4f, mx: vec4f, prevUV: 
   return mix(h, cur, mix(P.weight.y, wStable, k * k));
 }
 
+${presentationWGSL}
+// Last frame's clip position of this frame's clip position: by the cameras
+// alone, or while the rolling log bends this frame or bent the last, through
+// the flat world under the displayed point (P.reproj then takes the clip
+// position to the displayed world cells). The background, at depth 1, goes
+// by the cameras: it is the sky, and the halves' product is the cameras'
+// reprojection while the scene → world cells transform holds (it changes
+// only with the grid, app.js build(), which resets the history).
+fn presentationReproject(clip: vec4f) -> vec4f {
+  if (P.warpK == 0.0 && P.prevK == 0.0) { return P.reproj * clip; }
+  let displayWorld = P.reproj * clip;
+  if (clip.z >= clip.w) { return P.prevWorldToClip * displayWorld; }
+  let flatWorld = unwarpPoint(displayWorld.xyz / displayWorld.w);
+  return P.prevWorldToClip * vec4f(warpPointWith(flatWorld, P.prevK, P.prevAnchor, P.prevDir), 1.0);
+}
 // Last frame's clip position of this frame's uv (y down) at depth z (0..1).
 fn reproject(uv: vec2f, z: f32) -> vec4f {
-  return P.reproj * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
+  return presentationReproject(vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0));
 }
 // …as a uv, or a value outside 0..1 when it was behind the camera.
 fn prevUvOf(pc: vec4f) -> vec2f {
@@ -430,6 +462,7 @@ fn prevUvOf(pc: vec4f) -> vec2f {
 fn inUnit(uv: vec2f) -> bool { return all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)); }
 
 @fragment fn taa(in: FullScreen) -> @location(0) vec4f {
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
   let p = vec2i(in.position.xy);
   let hi = vec2i(P.size) - 1;
   var m1 = vec4f(0.0);
@@ -473,6 +506,7 @@ fn inUnit(uv: vec2f) -> bool { return all(uv >= vec2f(0.0)) && all(uv <= vec2f(1
 
 // TAAU: tColor and tDepth are P.inSize, the output (and history) P.size.
 @fragment fn taau(in: FullScreen) -> @location(0) vec4f {
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
   let scale = P.inSize / P.size;          // input pixels per output pixel
   let pIn = in.position.xy * scale;       // this pixel's centre, in input pixels
   let hi = vec2i(P.inSize) - 1;
@@ -525,6 +559,11 @@ fn inUnit(uv: vec2f) -> bool { return all(uv >= vec2f(0.0)) && all(uv <= vec2f(1
   return sanitize(fromSpace(res));
 }
 `;
+
+// WEBGPU-STUB (docs/webgpu.md J3): main's GLSL TAA and TAAU passes, which
+// tools/check-shaders.mjs (a GLSL tool U14b retires) imports; they are taaWGSL's entries here
+export const TAA_FRAG = '';
+export const TAAU_FRAG = '';
 
 /** The bloom prefilter: the resolved frame's bright part, 2×2 → down[0] (half resolution). */
 export const prefilterWGSL = () => /* wgsl */ `
@@ -1127,7 +1166,7 @@ function createSceneTarget(gpu, label) {
  *   readable: tests only, the history and bloom levels get COPY_SRC so a tool can read them
  * @returns post-processing pipeline; see the file header.
  */
-export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours(), readable = false } = {}) {
+export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours(), readable = false, presentation = null } = {}) {
   const L = Object.fromEntries(Object.entries(POST_LAYOUTS).map(([k, entries]) => [k, gpu.layout(`POST_${k}`, entries)]));
   const pipes = {
     taa: postPipe(gpu, PIPES.taa),
@@ -1164,6 +1203,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
   let jitter = [0, 0];
   const prevVP = new Matrix4(), curVP = new Matrix4(), invVP = new Matrix4(), reproj = new Matrix4();
+  // the rolling log's (gfx/presentation.js) for TAA: the last frame's parameters and world cells → clip
+  const prevWorldToClip = new Matrix4();
+  let prevWarp = IDENTITY;
   const prevPos = new Vector3(), prevQuat = new Quaternion();
   // the jittered camera's own projection and the jittered one (withoutJitter swaps them)
   const savedProj = new Matrix4(), savedProjInv = new Matrix4(), jitProj = new Matrix4(), jitProjInv = new Matrix4();
@@ -1408,19 +1450,29 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         const scale = inSize[0] / size[0];
         if (upscale && confScale !== scale) { meanConf = meanConfidence(scale); confScale = scale; }
         invVP.copy(curVP).invert();
-        reproj.multiplyMatrices(prevVP, invVP);
+        const warp = presentation?.active ? presentation.parameters : IDENTITY;
+        // (bent, this frame or the last: this frame's clip → displayed world cells, prevWorldToClip the rest)
+        if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(presentation.sceneToWorld, invVP);
+        else reproj.multiplyMatrices(prevVP, invVP);
         const src = history[cur];
         cur = 1 - cur;
         const bind = group(L.TAA, [scene, depth, src], () => [texEntry(0, scene), texEntry(1, depth), texEntry(2, src), samplerEntry(3)]);
         drawPass(upscale ? pipes.taau : pipes.taa, viewOf(history[cur]), 'taa', bind, {
           reproj, jitter, size, inSize, historyValid,
           weight: [upscale ? TAAU_WEIGHT_STABLE : TAA_WEIGHT_STABLE, TAA_WEIGHT_CHANGING], meanConf,
+          warpK: warp.k, warpAnchor: warp.anchor, warpDir: warp.dir,
+          prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, prevWorldToClip,
         });
         post.onPass?.('taa', { kind: 'render' });
         color = history[cur];
         historyValid = true;
       }
       prevVP.copy(curVP);
+      if (presentation) {
+        // (the next frame's "last": this camera, this frame's parameters)
+        prevWorldToClip.multiplyMatrices(curVP, presentation.worldToScene);
+        prevWarp = presentation.active ? presentation.parameters : IDENTITY;
+      }
       frame++;
 
       adaptOn = s.adapt && !s.raw;   // (the data views and the plain view keep their exact colours)
@@ -1571,6 +1623,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
     dispose() {
       gpu.flush('post dispose');
+      presentation?.dispose();
       [...history, ...down, ...up, blank].forEach((t) => t.destroy());
       history = []; down = []; up = [];
       main.destroy();

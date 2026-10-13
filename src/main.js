@@ -64,15 +64,16 @@ launch.menuOpen = () => menu.isOpen;
 // map (data-map) and the picked one aria-selected (ui/menu.js).
 const menuEl = () => document.querySelector('.mm');
 const pickedMap = () => menuEl()?.querySelector('.mm-card[aria-selected="true"][data-map]')?.dataset.map ?? null;
+const pickedMode = () => menuEl()?.querySelector('.mm-mode[aria-pressed="true"][data-mode]')?.dataset.mode ?? 'sandbox';
 function warmFrom(e) {
   if (app) return;
   const card = e.target.closest?.('.mm-card[data-map]');
-  if (card) warmMap(card.dataset.map);
+  if (card) warmMap(card.dataset.map, pickedMode());
   // a click may have picked another map, or another mode whose maps start
   // elsewhere: read the pick once the menu's own click handler has run (a
   // task later; a microtask would still run before it, this listener being
   // the document's capture-phase one)
-  if (e.type === 'click') setTimeout(() => { const m = pickedMap(); if (m && !app) warmMap(m); }, 0);
+  if (e.type === 'click') setTimeout(() => { const m = pickedMap(); if (m && !app) warmMap(m, pickedMode()); }, 0);
 }
 document.addEventListener('pointerover', warmFrom, { passive: true });
 document.addEventListener('click', warmFrom, { passive: true, capture: true });

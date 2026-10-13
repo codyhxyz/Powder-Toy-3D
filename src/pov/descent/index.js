@@ -69,7 +69,8 @@ function sprite(tex, w, h) {
   s.renderOrder = 1;
   return s;
 }
-const disposeObj = (o) => o.traverse((m) => { m.geometry?.dispose?.(); m.material?.map?.dispose(); m.material?.dispose?.(); });
+// (a sprite's geometry is three's one quad, every Sprite's: kept, perkOrbs.js remove says why)
+const disposeObj = (o) => o.traverse((m) => { if (!m.isSprite) m.geometry?.dispose?.(); m.material?.map?.dispose(); m.material?.dispose?.(); });
 
 const spellName = (id) => SPELL_BY_ID[id]?.name ?? id;
 const spellDesc = (id) => SPELL_BY_ID[id]?.description ?? '';

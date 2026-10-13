@@ -30,7 +30,9 @@
 //           the world's wiring ready (src/wire/world.js, U10) the first boots
 //           from its link at ?win=64 and each next is loaded as the map menu
 //           loads it (--fresh: each boots from its link), simulates a 64-wide
-//           window (the giant volcano's 384 tall) and draws; until then a
+//           window (the giant volcano's 384 tall) and draws, then draws its
+//           perk orbs close up with graphics still running (drawOrbs: three's
+//           sprites, which a switch from a world with a shrine once broke); until then a
 //           World map falls back to a box with a toast (a boot from ?map=),
 //           and the menu's openMap refuses it, and nothing throws. All of
 //           them are minutes here: give them over several runs (--maps)
@@ -72,11 +74,11 @@ const VIEWPORT = { width: 400, height: 250 };
 const BOXES = ['empty', 'lab', 'volcano', 'island'];   // (Empty first: the others are measured against it)
 // the World maps and Descent's levels: [name, link, how the map menu loads it in a running page]
 const WORLD_MAPS = [
-  ...['island', 'volcanoWorld', 'labWorld', 'giantVolcano', 'descent'].map((m) => [m, `?map=${m}`, new Function(`__app.openMap('${m}')`)]),
+  ...['island', 'volcanoWorld', 'labWorld', 'giantVolcano', 'descent', 'willowCove'].map((m) => [m, `?map=${m}`, new Function(`__app.openMap('${m}')`)]),
   ...['descentCoal', 'descentSnow'].map((k) => [k, `?size=world&scene=${k}`, new Function(`__app.settings.scene = '${k}'; __app.setSize('world')`)]),
 ];
 // the scene each loads (maps.js)
-const sceneOf = { island: 'island', volcanoWorld: 'volcanoWorld', labWorld: 'labWorld', giantVolcano: 'giantVolcano', descent: 'descentMines', descentCoal: 'descentCoal', descentSnow: 'descentSnow' };
+const sceneOf = { island: 'island', volcanoWorld: 'volcanoWorld', labWorld: 'labWorld', giantVolcano: 'giantVolcano', descent: 'descentMines', descentCoal: 'descentCoal', descentSnow: 'descentSnow', willowCove: 'willowCove' };
 const WORLD_VIEW = [[11, 9.5, 13], 21];   // the god view's home over a world: wire/world.js WORLD_VIEW_DIR and _DIST (scene units)
 const WORLD_TIMEOUT = 300000;   // ms a world may take to boot or load (minutes here when the container is busy)
 const BOX_DIMS = '128,128,128';   // the menu's box maps' grid; a box map on another is an arena (app.js ARENA_GRID)
@@ -149,6 +151,59 @@ async function draw(page, name, { baseline = false } = {}) {
   }, { diff: DIFF, baseline });
   await page.screenshot({ path: join(OUT, `${name}.png`) });
   return s;
+}
+// A world's perk orbs (src/perkOrbs.js: a sprite and a pad each, three's
+// meshes), drawn close up once three has compiled them (gfx/meshLight.js
+// guardMeshes parks them till then): whether three drew them (its draw calls
+// with the orbs shown, less those with them hidden) and whether graphics
+// still run. Loaded over another world, this is the switch's check: the last
+// world's orbs went with perkOrbs.clear(), which disposed three's one sprite
+// quad (every Sprite's) until that stopped, and the next sprite drawn then
+// submitted its destroyed vertex buffer ("[Buffer] used in submit while
+// destroyed"). A world with no orb in its window (Willow Cove has no shrine)
+// gets one set down in its middle for the check, and taken away after.
+const ORB_VIEW_DIST = 3;      // scene units from the camera to the orb's icon (the window is 10 across)
+const ORB_WAIT_MS = 60000;    // ms three may take to compile the orbs here
+async function drawOrbs(page, name) {
+  const r = await page.evaluate(async ({ dir, dist, waitMs }) => {
+    const a = __app, T = a.THREE, orbs = a.perkOrbs, g = a.sim.g, o = a.sim.origin, info = a.renderer.info;
+    const [{ PERK }, { PENDING_MASK }] = await Promise.all([import('/src/pov/perks.js'), import('/src/gfx/meshLight.js')]);
+    const own = orbs.list.filter((x) => x.obj.visible).length;
+    let added = null;
+    if (!own) {
+      const y = a.win.scene.ground(o.x + g.nx / 2, o.z + g.nz / 2, a.win.P) - o.y;
+      added = orbs.add(Object.keys(PERK)[0], new T.Vector3(Math.floor(g.nx / 2), Math.ceil(y), Math.floor(g.nz / 2)));
+    }
+    const orb = orbs.list.find((x) => x.obj.visible);
+    const out = { own, added: !!added, frames: 0, drawn: 0, failure: null };
+    try {
+      if (!orb) throw new Error('no orb in the window, even the one set down for the check');
+      const at = orb.obj.userData.icon.getWorldPosition(new T.Vector3());
+      a.rig.setHome(new T.Vector3(...dir).setLength(dist).add(at), at);
+      a.rig.reset(true);
+      const parked = () => { let n = 0; orbs.root.traverse((m) => { if (m.layers.mask === PENDING_MASK) n++; }); return n; };
+      for (const t = performance.now(); ; out.frames++) {
+        await a.test.renderOnce();
+        if (!parked()) break;
+        if (performance.now() - t > waitMs) throw new Error(`the orbs still compiling after ${waitMs / 1000} s`);
+        await new Promise((res) => setTimeout(res, 100));
+      }
+      // (reset first: a frame in which three has nothing visible doesn't render, and leaves the last count)
+      const calls = async (show) => { orbs.root.visible = show; info.reset(); await a.test.renderOnce(); return info.render.drawCalls; };
+      const hidden = await calls(false);
+      out.drawn = await calls(true) - hidden;
+      await new Promise((res) => setTimeout(res, 250));   // (a validation error reaches stopGraphics as an event)
+    } catch (e) {
+      out.failure = e.message;
+    } finally {
+      orbs.root.visible = true;
+    }
+    out.failure = a.graphicsFailure?.message ?? out.failure;
+    if (added && !a.graphicsFailure) orbs.remove(added);
+    return out;
+  }, { dir: WORLD_VIEW[0], dist: ORB_VIEW_DIST, waitMs: ORB_WAIT_MS });
+  await page.screenshot({ path: join(OUT, `${name}.png`) });
+  return r;
 }
 const pct = (x) => `${(100 * x).toFixed(1)}%`;
 // the volume drew, and `what` (added or content) changed at least MIN_CHANGED of the canvas
@@ -496,6 +551,11 @@ try {
       }, WORLD_VIEW);
       const s = await draw(b.page, `world-${m}`);
       ok(drewScene(s), `${m}: ${drewText(s)} (${secs()})`);
+      const orbs = await drawOrbs(b.page, `world-${m}-orbs`);
+      ok(!orbs.failure && orbs.drawn >= 2,
+        `${m}: perk orbs ${i && !fresh ? `after the switch from ${maps[i - 1][0]}` : 'after the boot'} (${orbs.own} in the window${orbs.added ? ': one set down for the check' : ''}): `
+        + `three drew them in ${orbs.drawn} draw calls (a pad and a sprite each), ${orbs.frames} frame${orbs.frames === 1 ? '' : 's'} to compile; `
+        + `graphics ${orbs.failure ? `STOPPED: ${orbs.failure.split('\n')[0]}` : 'running'} (${secs()})`);
       ok(!b.errors.length, `${m}: no page or GPU errors${b.errors.length ? `:\n  ${b.errors.splice(0).join('\n  ')}` : ''}`);
     }
     if (b) await b.page.close();

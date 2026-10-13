@@ -474,6 +474,10 @@ const counts = await ring.read(slot);                                // after th
   (`WebGPUBindingUtils.js:547-557`), which ours does by design, but still binds a filtering sampler for TSL
   `texture()`. So float textures (the shadow maps) are read in TSL with `textureLoad` only, as `lighting.js:256-336`
   already reads them with `texelFetch`.
+- **Never dispose a `THREE.Sprite`'s geometry.** It is the one quad every Sprite shares (three's `Sprite.js`), and
+  r186's WebGPU backend destroys its interleaved buffer but keeps it cached (`WebGPUAttributeUtils.destroyAttribute`
+  forgets the attribute, not its `InterleavedBuffer`), so the next sprite drawn submits a destroyed buffer and graphics
+  stop (Sync 4). Dispose a sprite's material and textures only.
 - A boot self-test (`tools/gpu-foundation-check.mjs`) renders a three mesh into a target we then read, samples an
   external 3D texture from a TSL material, swaps the external texture's source once, and checks error routing. All
   rely on internals, so they must fail loudly on a three upgrade.
@@ -1779,6 +1783,36 @@ get a delta-port when they land. What else `main` brought, and where it goes:
 - **S5.** New three.js material users: the held tool (`src/pov/held.js`) → **U13**; the camera spring arm's GPU trace
   and readback (`src/pov/cameraArm.js`) → **U11**.
 - **S6.** New world scenes in the shared GLSL subset (`world/scenes/descent/*`, `world/wang/*`) → **U10**.
+
+### Sync 3 (`main` ff7ee51 → 5551bd7)
+Delta-port units: **DP-E1** (the simulation: move pacing (`PACE`), diagonal moves and contact, `ORIFICE_CV`,
+`REST_FLUX`, `inertNear`'s single exit, and the sim, passes and window deltas) and **DP-E2** (pours as a field jet,
+liquid's thin-body segment, liquidDetail's spray, surface `kL`, cave ambient and fixed lamps, and the volume's
+matching changes). `liquid.js` took the port's side by hand: git's auto-merge had put `main`'s GLSL into its WGSL.
+
+### Sync 4 (`main` 5551bd7 → d9d07a6)
+Delta-port units: **DP4-P** (the presentation layer) and **DP4-W** (Willow Cove, the jetpack, the deploy gate), in
+parallel.
+- **S7. Presentation effects** (`gfx/presentation*.js`: a gamemode picks an effect by name, `GAMEMODES.effect`; Animal
+  Crossing's rolling log bends the shown world, physics stays flat). `main` patched three's materials with
+  `onBeforeCompile`, which WebGPURenderer never runs. The port bends meshes through TSL instead: a bend chained onto each
+  node material's clip position. The volume, the pick, the far view and the plain view get curved variants (the
+  displayed ray walked as chords of its parabola), and TAA reprojects through unwarp and the last frame's warp, within
+  `TaaParams`' 256 B. The mesh cut is off while curved, as in `main`. Boot, `openMap` and the menu warm-up select the
+  mode's effect before the grid is built, so the curved variants compile behind the loading screen. Still unbent:
+  remote cursors, the rays' sprites, the floor grid, the box edges and the brush shapes (a box only shows the last three
+  when the effect is forced on it).
+- **S8. Willow Cove** (`world/scenes/willowCove.js`) in the shared GLSL subset, converted by `toWgsl` like the other
+  themed scenes. `game.start` regained the `try/finally` that `main`'s b72b890 dropped (a second match never started).
+- **S9. The deploy gate.** `tools/check-sampler-budget.mjs` counted GLSL texture units (ANGLE's way) and crashed on
+  WGSL. It now counts every `WGSL_CHECK` pipeline's per-stage bindings (sampled textures, samplers, storage textures,
+  storage buffers, uniform buffers; external textures as 4 + 1 + 1) against WebGPU's limits, in Node with no GPU, and
+  fails when it finds no pipeline at all. `check-shaders.mjs` and `sampler-count.mjs` are gone.
+- **A port bug found by the sync's tests** (present since U13): disposing a `THREE.Sprite`'s geometry destroys the one
+  quad every Sprite shares, and three r186's WebGPU backend keeps binding the destroyed buffer (it forgets the
+  interleaved attribute, not its `InterleavedBuffer`). A world switch's perk-orb clear then stopped graphics at the next
+  world's first orb. Nothing disposes a sprite's geometry now (`perkOrbs.js`, Descent's shop, the physgun's glow), and
+  smoke's world stage draws the orbs after every switch.
 
 ## Review log
 

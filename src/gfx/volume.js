@@ -23,10 +23,18 @@
 // when prefetch() queues it for idle time (the detail gate's near variant,
 // B5). draw() draws nothing while its pipeline is pending (the caller keeps
 // the previous variant meanwhile: gfx/detailGate.js).
+//
+// The rolling log (gfx/presentation.js; docs/webgpu.md Sync log, Sync 4):
+// while a gamemode's effect bends the view, draw() and pick() take its
+// parameters (warp: { k, anchor, dir }, presentation.parameters). A view
+// draws its curved module then (volumeFrag's curved variant: a full-screen
+// triangle, the displayed rays' parabolas walked a chord at a time, no mesh
+// cut), a pipeline of its own that builds on first use like any variant; a
+// pick walks the displayed ray in the same pick kernel.
 import { Matrix4 } from 'three/webgpu';
 import { WORLD_SIZE } from '../shaders/farShared.js';
 import {
-  volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_VIEWS,
+  volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES, VOLUME_VIEWS,
   shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, shadowDispatch, SHADOW_WORKGROUP,
   pickFrag, PICK_LAYOUTS, PickParams, PICK_BATCH, PICK_RESULT_BYTES, LAYOUT_NAMES,
 } from '../shaders/render.js';
@@ -37,6 +45,8 @@ import { decoShown } from '../deco.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
+// Whether the rolling log's parameters bend the view (a k of 0: flat, the same as none).
+const isCurved = (warp) => !!warp && warp.k !== 0;
 const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
 
 /** A defines object's key: its switched-on names, sorted. */
@@ -190,25 +200,27 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      * @param {object} [detail] the realistic view's detail defines (gfx/detail.js;
      *   on a software adapter without SOFTWARE_UNDRAWABLE)
      * @param {'now' | 'idle' | 'manual'} [build] when to build it if it isn't yet
+     * @param {boolean} [curved] the rolling log's variant
      */
-    pipeline(view, detail = {}, build = 'now') {
+    pipeline(view, detail = {}, build = 'now', curved = false) {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
       const d = view === 'realistic' ? drawable(detail) : {};
-      const key = `${view}|${detailKey(d)}`;
+      const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}`;
       let p = pipes.get(key);
       if (!p) {
+        const name = view === 'realistic' ? `volume.realistic(${detailKey(d) || 'off'})` : `volume.${view}`;
         pipes.set(key, p = gpu.renderPipeline({
-          name: view === 'realistic' ? `volume.realistic(${detailKey(d) || 'off'})` : `volume.${view}`,
-          code: volumeFrag(g, { view, detail: d }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
+          name: curved ? `${name}.curved` : name,
+          code: volumeFrag(g, { view, detail: d, curved }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
           params: VolumeParams, ...volumePipeline(), build,
         }));
       } else if (build === 'now' && p.state === 'idle') p.build();
       return p;
     },
     /** Queues a view's pipeline for idle time (B5); resolves with it when it is ready. */
-    prefetch(view, detail = {}) { const p = volume.pipeline(view, detail, 'idle'); return p.ready; },
+    prefetch(view, detail = {}, curved = false) { const p = volume.pipeline(view, detail, 'idle', curved); return p.ready; },
     /** Builds a view's pipeline now; resolves when it is ready. */
-    viewReady(view, detail = {}) { return volume.pipeline(view, detail, 'now').ready; },
+    viewReady(view, detail = {}, curved = false) { return volume.pipeline(view, detail, 'now', curved).ready; },
 
     /**
      * Draws the view into the scene pass (post's draw hook). Draws nothing and
@@ -216,22 +228,29 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      * must have been written this frame (gfx/uniforms.js writeFrameUniforms):
      * the mesh cut's matrix comes from the same values.
      * @param {GPURenderPassEncoder} rp
-     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number }} [opts]
+     * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number, warp?: object | null }} [opts]
      *   meshDepth: the meshes' depth this frame (gfx/meshCut.js take()), or null for no cut;
      *   marchNear: cells nothing nearer the eye is drawn (first person's eye clip);
-     *   aerCopy: Whitewater's current aeration copy (0 or 1). The decoration is
+     *   aerCopy: Whitewater's current aeration copy (0 or 1); warp: the rolling
+     *   log's parameters while it bends the view ({ k, anchor, dir }, world
+     *   cells: gfx/presentation.js parameters), else null. The decoration is
      *   drawn when src/deco.js decoShown(sim) says so (painted, display on)
      * @returns {boolean}
      */
-    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0 } = {}) {
-      const pipe = volume.pipeline(view, detail);
+    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null } = {}) {
+      const curved = isCurved(warp);
+      const pipe = volume.pipeline(view, detail, 'now', curved);
       if (pipe.state !== 'ready') return false;
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
         bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header: sim.header(),
-        params: { meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy, deco: decoShown(sim) && sim.decoPlane ? 1 : 0 },
-        count: VOLUME_VERTICES,
+        params: {
+          meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth && !curved ? 1 : 0, marchNear, aerCopy,
+          deco: decoShown(sim) && sim.decoPlane ? 1 : 0,
+          warpK: curved ? warp.k : 0, warpAnchor: curved ? warp.anchor : [0, 0], warpDir: curved ? warp.dir : [0, 1],
+        },
+        count: curved ? VOLUME_SCREEN_VERTICES : VOLUME_VERTICES,
       });
       return true;
     },
@@ -256,13 +275,18 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      * later through the pick ring (B7). It reads the state current when it is
      * recorded; the caller keeps its own staleness tokens (the grid, the
      * window's origin), as app.js's pickedNow does.
+     * A ray asked for with the rolling log's parameters (warp, as draw takes
+     * them, while it bends the view) is the displayed ray from the eye: it
+     * walks that ray's parabola, so it finds what the pixel shows.
      * @param {number[] | { x: number, y: number, z: number }} ro
      * @param {number[] | { x: number, y: number, z: number }} rd
+     * @param {{ k: number, anchor: number[], dir: number[] } | null} [warp]
      * @returns {Promise<{ valid: boolean, cell: number[], face: number, id: number, T: number, P: number, life: number, raw: Float32Array }>}
      */
-    pick(ro, rd) {
+    pick(ro, rd, warp = null) {
       const v3 = (v) => (Array.isArray(v) ? [...v] : [v.x, v.y, v.z]);
-      const p = new Promise((resolve, reject) => pickQueue.push({ ro: v3(ro), rd: v3(rd), resolve, reject }));
+      const w = isCurved(warp) ? { k: warp.k, anchor: [...warp.anchor], dir: [...warp.dir] } : null;   // (as asked: the parameters move with the camera)
+      const p = new Promise((resolve, reject) => pickQueue.push({ ro: v3(ro), rd: v3(rd), warp: w, resolve, reject }));
       if (!pickScheduled) {
         pickScheduled = true;
         queueMicrotask(() => { pickScheduled = false; if (!disposed && pickQueue.length) recordPicksQuietly(); });
@@ -288,7 +312,8 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
             bind: [sim.tables, sim.bindRO, pickGroup], header: sim.header(),
             params: {
-              ro: batch.map((b) => [...b.ro, 0]), rd: batch.map((b) => [...b.rd, 0]),
+              ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, 0]),
+              warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])),
               slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
             },
           });

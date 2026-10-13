@@ -103,6 +103,7 @@
 // and shaders/far.js WGSL_CHECK); tools/scene-check.mjs, gen-check.mjs and
 // caves-check.mjs hold the GPU to the twins, cell for cell.
 import { island } from './island.js';
+import { willowCove } from './willowCove.js';
 import { labWorld } from './labWorld.js';
 import { volcanoWorld } from './volcanoWorld.js';
 import { giantVolcano } from './giantVolcano.js';
@@ -112,5 +113,5 @@ import { DESCENT_LEVELS } from './descent/levels.js';
 // Descent's levels (descent/scenes.js; docs/descent-contract.md) start at their levels.js spawns
 DESCENT_SCENES.forEach((s, i) => s.setSpawn(DESCENT_LEVELS[i].spawn));
 
-export const WORLD_SCENES = [island, labWorld, volcanoWorld, giantVolcano, ...DESCENT_SCENES];
+export const WORLD_SCENES = [island, willowCove, labWorld, volcanoWorld, giantVolcano, ...DESCENT_SCENES];
 export const sceneByKey = (key) => WORLD_SCENES.find((s) => s.key === key) ?? island;

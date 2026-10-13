@@ -29,7 +29,7 @@
 // Start, makes a new one.
 import { BODY_MODEL_URL } from './pov/bodyModel.js';
 import { launch } from './launch.js';
-import { mapByKey, isWorld } from './maps.js';
+import { mapByKey, isWorld, resolveMode } from './maps.js';
 
 const PRELOAD_LIST = 'app-preload';   // scripts/app-preload-plugin.mjs PRELOAD_LIST
 const IDLE_TIMEOUT_MS = 2000;         // the longest it waits for an idle moment once the page has loaded
@@ -133,14 +133,20 @@ function deviceLost(p) {
  * Starts building map `key`'s pipeline set for its grid (once per grid), on
  * warmDevice()'s device. Quietly does nothing for an unknown map, without an
  * adapter, or for a grid the device can't hold (the menus refuse it, B2).
+ * A gamemode with a presentation effect (maps.js GAMEMODES.effect: Animal
+ * Crossing's rolling log) draws the volume's curved variants instead, so its
+ * pick warms those too (once per grid; the grid's other kernels aren't redone).
  * @param {string} key a maps.js key
+ * @param {string} [mode] the gamemode picked on the menu
  */
-export function warmMap(key) {
+export function warmMap(key, mode = 'sandbox') {
   const m = mapByKey(key);
   if (!m || !launch.adapter) return;
-  const grid = gridOf(m);
-  if (warmed.has(grid.key)) return;
-  warmed.add(grid.key);
+  const grid = { ...gridOf(m), curved: !!resolveMode(m, mode).effect };
+  const asked = grid.curved ? `${grid.key} curved` : grid.key;
+  if (warmed.has(asked)) return;
+  grid.volumeOnly = warmed.has(grid.key) || warmed.has(`${grid.key} curved`);
+  warmed.add(asked);
   if (warmer) warmer.grid(grid);
   else if (wanted.push(grid) === 1) startWarmer();
 }
@@ -206,12 +212,12 @@ async function startWarmer() {
   // the grid's own first (the simulation's kernels take longest), then post
   // (the canvas's composite and the stills'), the overlays and the brush
   warmer = {
-    grid({ dims, windowed, world, key }) {
+    grid({ dims, windowed, world, key, curved = false, volumeOnly = false }) {
       const g = sim.gridLayout(...dims);
       g.windowed = windowed;
       if (!gpu.fits(g)) return;
-      state.grids.push(key);
-      for (const mod of lists) {
+      state.grids.push(curved ? `${key} curved` : key);
+      for (const mod of volumeOnly ? [] : lists) {
         for (const e of listed(mod)) {
           if (!inSession(e, g)) continue;
           build(e, g);
@@ -219,7 +225,7 @@ async function startWarmer() {
         }
       }
       // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick
-      const volume = render.warmChecks(view, settings, { fallback });
+      const volume = render.warmChecks(view, settings, { fallback, curved });
       const own = (e) => (e.name === 'shadow' ? { ...e, code: (gg) => render.shadowFrag(gg, world ? { world } : {}) } : e);
       for (const e of volume.filter((x) => !x.idle)) build(own(e), g);
       for (const e of volume.filter((x) => x.idle)) build(e, g);
