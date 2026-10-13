@@ -1,7 +1,8 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { attachModel } from './models.js';
 import { holdFor, gesturePose, SHOULDER_DROP } from './holds.js';
-import { figureVert, figureFrag } from './figure.js';
+import { figureMaterial, figureUniforms } from './figure.js';
+import { prepareMesh } from '../gfx/meshLight.js';
 import { liveFlame, fanFlame } from './tools/lamp.js';
 
 // The tool in hand on the body, whenever the body is drawn (third person): its
@@ -27,7 +28,7 @@ import { liveFlame, fanFlame } from './tools/lamp.js';
 // laser's charge strips, the tool gun's screen) show it on the body too.
 //
 //   const held = createHeld({ scene });
-//   held.bind(volume, g);                       // the world's light (once per grid)
+//   held.bind(volume, g);                       // a grid's world to light it in
 //   const h = held.pick(modelKey | null, dt);   // before the body's update: { lift, ride, spine } for it
 //   held.frame({ figure, yaw, pitch, scale, feet, camera, viewmodel });   // after it, before the tools run
 //   held.place({ figure, dt });                 // after the tools: the model, then the hands
@@ -53,24 +54,18 @@ export function createHeld({ scene }) {
   group.name = 'pov-held';
   group.visible = false;
   scene.add(group);
-  const uniforms = {
-    uEmit: { value: new THREE.Vector3() },
-    uTint: { value: new THREE.Vector4(0, 0, 0, 0) },   // no stain (its share, w, is 0)
-    uWorldToGrid: { value: new THREE.Matrix4() },
-  };
+  const u = figureUniforms();   // no glow, no stain (its share, w, is 0)
   const models = new Map();             // model key → its held model, built the first time it's held
-  let mats = new Map(), boundTo = null, grid = null;
+  const mats = new Map();
+  let boundTo = null;
   let key = null, rec = null, weight = 0;
   let active = false, moved = false;
   let last = null;                      // the last reach: where the hands and feet went (checks)
   const frameM = new THREE.Matrix4();   // the grip's rest frame this frame (world), × the model's scale
   const restInv = new THREE.Matrix4();
 
-  // a lit material (figure.js's light) for this grid, with its own albedo
-  const litMaterial = (albedo) => new THREE.ShaderMaterial({
-    vertexShader: figureVert, fragmentShader: figureFrag(grid), side: THREE.DoubleSide,
-    uniforms: { ...boundTo.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...albedo) } },
-  });
+  // a lit material (figure.js's light), with its own albedo
+  const litMaterial = (albedo) => figureMaterial({ albedo, u });
   // one per albedo, shared by the models' parts
   function lit(albedo) {
     const k = albedo.join();
@@ -114,6 +109,9 @@ export function createHeld({ scene }) {
     holder.visible = false;
     group.add(holder);
     light(r);
+    // its pipelines built before it is first shown (docs/webgpu.md B5)
+    r.ready = false;
+    prepareMesh(holder).then(() => { r.ready = true; });
     return r;
   }
 
@@ -154,7 +152,7 @@ export function createHeld({ scene }) {
       c.visible = true;
       if (o.isMesh) c.geometry = o.geometry;   // (the flask's contents are rebuilt as its level changes)
       if (o.material.isMeshLambertMaterial) {
-        if (c.userData.litFor !== boundTo) { c.userData.lit?.dispose(); c.userData.lit = litMaterial([0, 0, 0]); c.userData.litFor = boundTo; }
+        c.userData.lit ??= litMaterial([0, 0, 0]);
         c.material = c.userData.lit;
         const col = o.material.color;
         c.material.uniforms.uAlbedo.value.set(col.r, col.g, col.b);
@@ -189,12 +187,10 @@ export function createHeld({ scene }) {
 
   return {
     group,
-    bind(volume, g) {
+    // the world it is lit in (a grid's volume): the held model shows from then on
+    bind(volume) {
       if (boundTo === volume) return;
       boundTo = volume;
-      grid = g;
-      for (const m of mats.values()) m.dispose();
-      mats = new Map();
       for (const r of models.values()) if (r) light(r);
     },
     // The tool held now (a models.js key; null: nothing, or the body isn't drawn). Returns
@@ -216,10 +212,10 @@ export function createHeld({ scene }) {
     // yaw, pitch: the look (rad); scale: world units per cell of this body; feet: world.
     frame({ figure, yaw, pitch, scale, feet, worldToGrid, camera, viewmodel }) {
       active = !!rec && weight > 0;
-      for (const r of models.values()) if (r) r.holder.visible = active && r === rec;
+      for (const r of models.values()) if (r) r.holder.visible = active && r === rec && r.ready;
       group.visible = active;
       if (!active) { resetViewmodel(viewmodel); return; }
-      uniforms.uWorldToGrid.value.copy(worldToGrid);
+      u.worldToGrid.value.copy(worldToGrid);
       const h = rec.hold;
       const at = h.feet ? vA.copy(feet) : figure.anchor(vA);
       eulerAim.set(pitch * h.pitch, yaw, 0);

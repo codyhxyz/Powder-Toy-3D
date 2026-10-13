@@ -1,4 +1,9 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
+import {
+  uniform, varying, code, wgslFn, vec2, vec3, vec4, float, length, normalize, cross, dot, mix, max, clamp, select,
+  modelWorldMatrix, modelViewMatrix, cameraViewMatrix, cameraProjectionMatrix, positionGeometry, time, Discard,
+  agxToneMapping, sRGBTransferOETF, Fn,
+} from 'three/tsl';
 
 // A live flame (the torch's), drawn by a shader on a card that faces the eye
 // and stands along the world's up, so the flame always rises, however the
@@ -25,8 +30,12 @@ import * as THREE from 'three';
 //
 // mode 'world': drawn into the scene's HDR target (light added, its coverage in
 // alpha, as the effects' particles are). mode 'overlay': drawn by the
-// viewmodel pass straight onto the finished frame, tone mapped by itself
-// (viewmodel.js renderViewmodels, its glow layer: the hands get no bloom).
+// viewmodel pass into the hands' glow layer, which post adds to the finished
+// frame (docs/webgpu.md F3), tone mapped by itself (viewmodel.js
+// renderViewmodels: the hands get no bloom).
+//
+// TSL (docs/webgpu.md F8): the card in the vertex stage, the flame's noise and
+// colours in WGSL, as the GLSL had them.
 
 // card shape, in units of the flame's height (y) and half-width (x)
 const FOOT = 0.2;              // the card reaches this far below the foot (the egg's round bottom)
@@ -52,163 +61,166 @@ const OUTER_GAIN = 0.45;       // its brightness: a dim red-orange
 const TIP = 1.2;               // the card reaches this far up (× height): the licks break off above the body
 const SEEDS = 97;              // flames' noise offsets are spread over this many units
 
-const time = { value: 0 };
 let seedNext = 0;
 
-const VERT = /* glsl */ `
-uniform vec3 uSize;      // half-width, height, card half-width (object units)
-uniform vec2 uSpan;      // the card's y range (× height)
-uniform vec3 uWind;      // world units/s of air past the flame
-uniform float uTopView;
-uniform float uScreenUp;   // how far its up leans toward the screen's (0 = the world's)
-varying vec2 vUv;        // x: −1..1 across the card; y: the card's span (× height, 0 = foot)
-varying vec2 vLean;      // lean (half-widths at the tip) and stretch (share of the height)
-void main() {
-  float s = length(modelMatrix[0].xyz);
-  vec3 base = (modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-  vec3 up = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz + vec3(0.0, uScreenUp, 0.0));
-  vec3 toEye = normalize(-base);
-  vec3 right = cross(up, toEye);
-  float side = length(right);   // sin of the angle between up and the eye's ray
-  right = side > 1e-3 ? right / side : vec3(1.0, 0.0, 0.0);
-  vec3 upq = normalize(cross(toEye, right));
-  float h = uSize.y * s * mix(uTopView, 1.0, side);
-  vec3 w = (viewMatrix * vec4(uWind, 0.0)).xyz / max(uSize.y * s, 1e-6);
-  vLean = vec2(clamp(dot(w, right) * ${LEAN_GAIN.toFixed(3)}, -${LEAN_MAX.toFixed(2)}, ${LEAN_MAX.toFixed(2)}),
-               clamp(-dot(w, upq) * ${STRETCH_GAIN.toFixed(3)}, -0.3, ${STRETCH_MAX.toFixed(2)}));
-  float y = mix(uSpan.x, uSpan.y, position.y);
-  vUv = vec2(position.x, y);
-  vec3 p = base + right * position.x * uSize.z * s + upq * y * h;
-  gl_Position = projectionMatrix * vec4(p, 1.0);
-}`;
-
-const NOISE = /* glsl */ `
-float hash3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
-float vnoise(vec3 x) {
-  vec3 i = floor(x), f = fract(x);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
-             mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+// The card faces the eye and stands along the world's up (the screen's too in
+// the hand), built in the vertex stage from the flame's origin and scale
+// (modelMatrix, viewMatrix): x across the card, y up it (× the flame's height).
+// Returns the clip position, and sets uvOut (x −1..1 across, y the card's span)
+// and leanOut (lean in half-widths at the tip, stretch as a share of the height).
+function cardVertex({ size, span, wind, topView, screenUp }) {
+  const s = length(modelWorldMatrix.element(0).xyz);
+  const base = modelViewMatrix.mul(vec4(0, 0, 0, 1)).xyz;
+  const up = normalize(cameraViewMatrix.mul(vec4(0, 1, 0, 0)).xyz.add(vec3(0, screenUp, 0)));
+  const toEye = normalize(base.negate());
+  const right0 = cross(up, toEye);
+  const side = length(right0);   // sin of the angle between up and the eye's ray
+  const right = select(side.greaterThan(1e-3), right0.div(side), vec3(1, 0, 0));
+  const upq = normalize(cross(toEye, right));
+  const h = size.y.mul(s).mul(mix(topView, float(1), side));
+  const w = cameraViewMatrix.mul(vec4(wind, 0)).xyz.div(max(size.y.mul(s), 1e-6));
+  const lean = vec2(clamp(dot(w, right).mul(LEAN_GAIN), -LEAN_MAX, LEAN_MAX), clamp(dot(w, upq).negate().mul(STRETCH_GAIN), -0.3, STRETCH_MAX));
+  const y = mix(span.x, span.y, positionGeometry.y);
+  const p = base.add(right.mul(positionGeometry.x).mul(size.z).mul(s)).add(upq.mul(y).mul(h));
+  return { clip: cameraProjectionMatrix.mul(vec4(p, 1)), uv: vec2(positionGeometry.x, y), lean };
 }
-float fbm(vec3 p) {
-  float s = 0.0, a = 0.5;
-  for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; }
+
+// the flame's noise: its own hash and value noise (not shaders/gfx/noise.js's: kept as drawn)
+const NOISE = code(/* wgsl */ `
+fn flameHash3(p0: vec3f) -> f32 { var p = fract(p0 * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+fn flameNoise(x: vec3f) -> f32 {
+  let i = floor(x);
+  var f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(flameHash3(i), flameHash3(i + vec3f(1.0, 0.0, 0.0)), f.x), mix(flameHash3(i + vec3f(0.0, 1.0, 0.0)), flameHash3(i + vec3f(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(flameHash3(i + vec3f(0.0, 0.0, 1.0)), flameHash3(i + vec3f(1.0, 0.0, 1.0)), f.x), mix(flameHash3(i + vec3f(0.0, 1.0, 1.0)), flameHash3(i + vec3f(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}
+fn flameFbm(p0: vec3f) -> f32 {
+  var p = p0;
+  var s = 0.0;
+  var a = 0.5;
+  for (var i = 0; i < 4; i++) { s += a * flameNoise(p); p = p * 2.03 + vec3f(1.7, 9.2, 3.1); a *= 0.5; }
   return s / 0.9375;
-}`;
+}`, [], 'wgsl');
 
-// out: radiance (linear HDR) and coverage
-const OUT_WORLD = 'gl_FragColor = vec4(rad, cover);';
-const OUT_OVERLAY = /* glsl */ `gl_FragColor = vec4(rad, 1.0);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
-  gl_FragColor.a = 0.0;`;
-
-const flameFrag = (out) => /* glsl */ `
-uniform float uTime, uSeed, uGain, uWidthShare;
-varying vec2 vUv;
-varying vec2 vLean;
-${NOISE}
-void main() {
-  float t = uTime + uSeed;
+// The flame's radiance (linear HDR, rgb) and coverage (w), or w < 0 where
+// nothing of it is (discarded).
+const flameColor = wgslFn(/* wgsl */ `
+fn flameColor(uv: vec2f, lean: vec2f, time: f32, seed: f32, gain: f32, widthShare: f32) -> vec4f {
+  let t = time + seed;
   // flame space: x in the flame's half-widths, y in its height (0 = foot)
-  vec2 p = vec2(vUv.x / uWidthShare, vUv.y / (1.0 + vLean.y));
-  float y = clamp(p.y, 0.0, 1.0);
-  p.x -= vLean.x * y * y;
+  var p = vec2f(uv.x / widthShare, uv.y / (1.0 + lean.y));
+  let y = clamp(p.y, 0.0, 1.0);
+  p.x -= lean.x * y * y;
   // turbulence rising through it: a slow sway of the whole flame, big eddies, small fast licks
-  float sway = vnoise(vec3(t * 1.1, uSeed, 0.0)) - 0.5;
-  float slow = fbm(vec3(p.x * 0.6, p.y * 1.5 - t * 1.7, t * 0.3 + uSeed));
-  float fast = fbm(vec3(p.x * 1.5, p.y * 3.4 - t * 3.8, t * 0.5 + uSeed * 1.3));
-  float fine = vnoise(vec3(p.x * 3.5, p.y * 7.0 - t * 7.0, t * 0.8 + uSeed));
+  let sway = flameNoise(vec3f(t * 1.1, seed, 0.0)) - 0.5;
+  let slow = flameFbm(vec3f(p.x * 0.6, p.y * 1.5 - t * 1.7, t * 0.3 + seed));
+  let fast = flameFbm(vec3f(p.x * 1.5, p.y * 3.4 - t * 3.8, t * 0.5 + seed * 1.3));
+  let fine = flameNoise(vec3f(p.x * 3.5, p.y * 7.0 - t * 7.0, t * 0.8 + seed));
   p.x += (sway * 0.9 + (slow - 0.5) * 2.4) * y;
   // the egg: round below its widest (WIDE up the flame), drawn up to a ragged point
-  const float WIDE = 0.16;
-  float below = p.y < WIDE ? (WIDE - p.y) / (WIDE + ${FOOT.toFixed(2)}) : 0.0;
-  float above = p.y > WIDE ? (p.y - WIDE) / (1.0 - WIDE) : 0.0;
-  float halfW = mix(1.0, 0.25, pow(above, 0.75));
-  float r = length(vec2(p.x / halfW, below + above * 0.42));
-  float heat = 1.0 - r;
+  let WIDE = 0.16;
+  var below = 0.0;
+  if (p.y < WIDE) { below = (WIDE - p.y) / (WIDE + ${FOOT.toFixed(2)}); }
+  var above = 0.0;
+  if (p.y > WIDE) { above = (p.y - WIDE) / (1.0 - WIDE); }
+  let halfW = mix(1.0, 0.25, pow(above, 0.75));
+  let r = length(vec2f(p.x / halfW, below + above * 0.42));
+  var heat = 1.0 - r;
   heat += (fast - 0.5) * 1.1 * (0.25 + y) + (fine - 0.5) * 0.35 * y;
   heat -= smoothstep(0.25, 1.0, y) * fast * 0.95;   // the top tears into licks
   heat -= smoothstep(1.0, 1.25, p.y);
   // a wider, more torn envelope of cooler flame round the body: the torch's bushy outer flame
-  float outer = 1.0 - length(vec2(p.x / (halfW * ${OUTER_WIDTH.toFixed(2)}), below * 0.8 + above * 0.38));
+  var outer = 1.0 - length(vec2f(p.x / (halfW * ${OUTER_WIDTH.toFixed(2)}), below * 0.8 + above * 0.38));
   outer += (fast - 0.5) * 1.3 * (0.3 + y) - smoothstep(0.15, 1.0, y) * fast * 1.15 - smoothstep(1.0, 1.25, p.y);
-  if (heat <= 0.0 && outer <= 0.0) discard;
+  if (heat <= 0.0 && outer <= 0.0) { return vec4f(0.0, 0.0, 0.0, -1.0); }
   heat = clamp(heat * 1.5, 0.0, 1.0);
   // colour by heat: deep red at the edges, orange, yellow, a pale core low in the flame
-  vec3 col = mix(vec3(0.5, 0.03, 0.0), vec3(1.0, 0.24, 0.02), smoothstep(0.0, 0.3, heat));
-  col = mix(col, vec3(1.0, 0.48, 0.08), smoothstep(0.25, 0.6, heat));
-  col = mix(col, vec3(1.0, 0.72, 0.32), smoothstep(0.6, 1.0, heat) * (1.0 - 0.6 * y));
-  float cover = smoothstep(0.0, 0.18, heat);
-  float shimmer = 0.8 + 0.4 * fine;
-  vec3 rad = col * cover * shimmer * uGain * mix(${EDGE_GAIN.toFixed(3)}, ${CORE_GAIN.toFixed(3)}, heat * heat);
-  float o = smoothstep(0.0, 0.35, outer);
-  rad += vec3(1.0, 0.2, 0.015) * o * shimmer * uGain * ${OUTER_GAIN.toFixed(3)};
+  var col = mix(vec3f(0.5, 0.03, 0.0), vec3f(1.0, 0.24, 0.02), smoothstep(0.0, 0.3, heat));
+  col = mix(col, vec3f(1.0, 0.48, 0.08), smoothstep(0.25, 0.6, heat));
+  col = mix(col, vec3f(1.0, 0.72, 0.32), smoothstep(0.6, 1.0, heat) * (1.0 - 0.6 * y));
+  var cover = smoothstep(0.0, 0.18, heat);
+  let shimmer = 0.8 + 0.4 * fine;
+  var rad = col * cover * shimmer * gain * mix(${EDGE_GAIN.toFixed(3)}, ${CORE_GAIN.toFixed(3)}, heat * heat);
+  let o = smoothstep(0.0, 0.35, outer);
+  rad += vec3f(1.0, 0.2, 0.015) * o * shimmer * gain * ${OUTER_GAIN.toFixed(3)};
   cover = max(cover, o * 0.5);
-  ${out}
-}`;
+  return vec4f(rad, cover);
+}`, [NOISE]);
 
-const glowFrag = (out) => /* glsl */ `
-uniform float uGain;
-varying vec2 vUv;
-void main() {
-  vec2 q = vec2(vUv.x, (vUv.y - ${GLOW_CENTRE.toFixed(2)}) / ${GLOW_RADIUS.toFixed(2)});
-  float d2 = dot(q, q);
-  if (d2 >= 1.0) discard;
-  float a = (exp(-d2 * 5.0) - exp(-5.0)) / (1.0 - exp(-5.0));
-  float cover = 0.0;
-  vec3 rad = vec3(1.0, 0.42, 0.1) * a * a * uGain * ${GLOW_GAIN.toFixed(3)};
-  ${out}
-}`;
+// the glow round it: a soft round haze (no coverage)
+const glowColor = wgslFn(/* wgsl */ `
+fn flameGlow(uv: vec2f, gain: f32) -> vec4f {
+  let q = vec2f(uv.x, (uv.y - ${GLOW_CENTRE.toFixed(2)}) / ${GLOW_RADIUS.toFixed(2)});
+  let d2 = dot(q, q);
+  if (d2 >= 1.0) { return vec4f(0.0, 0.0, 0.0, -1.0); }
+  let a = (exp(-d2 * 5.0) - exp(-5.0)) / (1.0 - exp(-5.0));
+  return vec4f(vec3f(1.0, 0.42, 0.1) * a * a * gain * ${GLOW_GAIN.toFixed(3)}, 0.0);
+}`);
+
+// The overlay's tone mapping (mode 'overlay', the hands' glow layer): what
+// three applied at the viewmodel pass's exposure, AgX then sRGB, or the sRGB
+// curve alone in the raw views (post.settings.raw). viewmodel.js sets them.
+export const flameOverlay = { exposure: uniform(1), raw: uniform(0) };
 
 const quad = () => new THREE.PlaneGeometry(2, 1).translate(0, 0.5, 0);   // x −1..1, y 0..1
 
-function cardMaterial(mode, frag, uniforms) {
+function cardMaterial(mode, color, u) {
   const overlay = mode === 'overlay';
-  return new THREE.ShaderMaterial({
-    uniforms,
-    vertexShader: VERT,
-    fragmentShader: frag(overlay ? OUT_OVERLAY : OUT_WORLD),
+  const v = cardVertex(u);
+  const uvV = varying(v.uv), leanV = varying(v.lean);
+  const c = color(uvV, leanV);
+  const mat = new THREE.MeshBasicNodeMaterial({
     transparent: true, depthWrite: false, depthTest: !overlay,
-    toneMapped: overlay,
     blending: THREE.CustomBlending,
     blendEquation: THREE.AddEquation,
     blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
     blendSrcAlpha: overlay ? THREE.ZeroFactor : THREE.OneFactor,
     blendDstAlpha: overlay ? THREE.OneFactor : THREE.OneMinusSrcAlphaFactor,
   });
+  mat.lights = false;
+  mat.vertexNode = v.clip;
+  // nothing of the flame here: discarded (the GLSL's discard)
+  const kept = (node) => Fn(() => { Discard(c.w.lessThan(0)); return node; })();
+  if (overlay) {
+    const rad = max(c.xyz, vec3(0));
+    const mapped = select(flameOverlay.raw.greaterThan(0.5), clamp(rad, 0, 1), agxToneMapping(rad, flameOverlay.exposure));
+    mat.colorNode = kept(sRGBTransferOETF(mapped));
+    mat.opacityNode = float(0);
+  } else {
+    mat.colorNode = kept(c.xyz);
+    mat.opacityNode = c.w;
+  }
+  mat.name = `flame ${mode}`;
+  return mat;
 }
 
 export function createFlame({ width, height, mode = 'world' }) {
-  const seed = ((seedNext++ * 0.618034) % 1) * SEEDS;
+  const seed = uniform(((seedNext++ * 0.618034) % 1) * SEEDS);
   const wind = new THREE.Vector3();
-  const gain = { value: 1 };
-  const shared = { uWind: { value: wind }, uTopView: { value: TOP_VIEW }, uScreenUp: { value: mode === 'overlay' ? SCREEN_UP : 0 } };
+  const gain = uniform(1);
+  const shared = { wind: uniform(wind), topView: float(TOP_VIEW), screenUp: float(mode === 'overlay' ? SCREEN_UP : 0) };
 
-  const flameMat = cardMaterial(mode, flameFrag, {
+  const flameMat = cardMaterial(mode, (uvN, lean) => flameColor({ uv: uvN, lean, time, seed, gain, widthShare: float(1 / CARD_WIDTH) }), {
     ...shared,
-    uSize: { value: new THREE.Vector3(width, height, width * CARD_WIDTH) },
-    uSpan: { value: new THREE.Vector2(-FOOT, TIP + STRETCH_MAX) },
-    uTime: time, uSeed: { value: seed }, uGain: gain,
-    uWidthShare: { value: 1 / CARD_WIDTH },
+    size: uniform(new THREE.Vector3(width, height, width * CARD_WIDTH)),
+    span: uniform(new THREE.Vector2(-FOOT, TIP + STRETCH_MAX)),
   });
-  const glowMat = cardMaterial(mode, glowFrag, {
+  const glowMat = cardMaterial(mode, (uvN) => glowColor({ uv: uvN, gain }), {
     ...shared,
-    uSize: { value: new THREE.Vector3(height * GLOW_RADIUS, height, height * GLOW_RADIUS) },
-    uSpan: { value: new THREE.Vector2(GLOW_CENTRE - GLOW_RADIUS, GLOW_CENTRE + GLOW_RADIUS) },
-    uGain: gain,
+    size: uniform(new THREE.Vector3(height * GLOW_RADIUS, height, height * GLOW_RADIUS)),
+    span: uniform(new THREE.Vector2(GLOW_CENTRE - GLOW_RADIUS, GLOW_CENTRE + GLOW_RADIUS)),
   });
   const obj = new THREE.Group();
   obj.name = 'flame';
   const glow = new THREE.Mesh(quad(), glowMat);
   const body = new THREE.Mesh(quad(), flameMat);
   for (const m of [glow, body]) {
-    m.frustumCulled = false;   // the vertex shader places the card
+    m.frustumCulled = false;   // the vertex stage places the card
     obj.add(m);
   }
   glow.renderOrder = 1;
   body.renderOrder = 2;
-  body.onBeforeRender = () => { time.value = performance.now() / 1000; };
 
   return {
     obj,

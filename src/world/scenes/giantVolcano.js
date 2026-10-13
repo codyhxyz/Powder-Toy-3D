@@ -1,6 +1,8 @@
 import { E } from '../../elements.js';
-import { WORLD_SIZE } from '../../shaders/far.js';
-import { helpersGLSL, definesGLSL, jsConstants, compileShared } from './themedShared.js';
+import { WORLD_SIZE } from '../../shaders/farShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared } from './themedShared.js';
+import { toWgsl } from './subsetWgsl.js';
+import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 import { ISLAND_VIEW_XZ } from './island.js';
 
 // The giant volcano: one stratovolcano filling its world, 105 m tall in the
@@ -516,6 +518,27 @@ const VIEW_LIFT = 150;            // cells the orbit target hangs over the shore
 // cost what the island's 64 do: the cone is whole within 7 frames of load.
 const FAR_CHUNKS_PER_FRAME = 40;
 
+// The scene's WGSL (scenes/sceneGpu.js): constants, the helpers, the geometry
+// (from the subset: scenes/subsetWgsl.js) and sceneCell.
+const GV_U = sceneStruct();
+let srcWgsl = null;
+const gvWgsl = () => /* wgsl */ `
+${sceneHeadWGSL(GV_U)}
+${definesGLSL(P_, G)}
+${helpersGLSL}
+${srcWgsl ??= toWgsl(SRC, { consts: definesTypes(P_, G), uniforms: GV_U.sceneTypes })}
+fn sceneCell(w: vec3i) -> SceneCell {
+  let id = gvCell(w.x, w.y, w.z);
+  var T = SPAWNT(id);
+  var ctype = 0.0;
+  if (id == E_ROCK || id == E_BASALT) { T = mix(SPAWNT(id), SPAWNT(E_SNOW), gvFrost(w.x, w.y, w.z)); }   // frozen under the snow
+  if (id == E_LAVA) { T = GV_MAGMA_T; ctype = f32(E_STONE); }   // hotter than spawned lava, setting to stone powder that rolls off the source
+  if (id == E_CLONE) { ctype = f32(E_LAVA); }                   // the endless lava source
+  let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, GV_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
+}
+`;
+
 export const giantVolcano = {
   key: 'giantVolcano',
   label: 'Giant volcano',
@@ -526,22 +549,9 @@ export const giantVolcano = {
     lift: VIEW_LIFT,
   },
   params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: I.SEA, floor: I.FLOOR }),
-  glsl: () => /* glsl */ `
-${definesGLSL(P_, G)}
-${helpersGLSL}
-${SRC}
-void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
-  int id = gvCell(w.x, w.y, w.z);
-  float T = SPAWNT[id], ctype = 0.0;
-  if (id == E_ROCK || id == E_BASALT) T = mix(SPAWNT[id], SPAWNT[E_SNOW], gvFrost(w.x, w.y, w.z));   // frozen under the snow
-  if (id == E_LAVA) { T = GV_MAGMA_T; ctype = float(E_STONE); }   // hotter than spawned lava, setting to stone powder that rolls off the source
-  if (id == E_CLONE) ctype = float(E_LAVA);                       // the endless lava source
-  float seed = float(seedWorld(w, uSceneSeed, GV_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  A = vec4(float(id), T, SPAWNLIFE[id], ctype + seed);
-  B = vec4(0.0);
-}
-`,
-  uniforms: (P) => ({ uSceneSeed: { value: P.seed } }),
+  glsl: () => gvWgsl(),
+  uniformStruct: GV_U,
+  uniforms: (P) => ({ uSceneSeed: P.seed }),
   start(P, win) {
     const T = twin(P), len = Math.hypot(...ISLAND_VIEW_XZ), dir = ISLAND_VIEW_XZ.map((v) => v / len);
     const at = (r) => [F.CX + dir[0] * r, F.CZ + dir[1] * r];

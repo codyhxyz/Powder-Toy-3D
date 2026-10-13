@@ -160,9 +160,10 @@ console.log(`     (ridge shrines reachable on foot: ${ridges} of 2; they're mean
 
 // ---------------------------------------------------------------- GPU
 if (port) {
-  const { chromium } = await import('playwright');
-  const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-  const p = await b.newPage({ viewport: { width: SHOT_W, height: SHOT_H } });
+  const [{ launchBrowser, newTestPage }, { pageGpu }] = await Promise.all([import('./browser.mjs'), import('./page-gpu.mjs')]);
+  const b = await launchBrowser();
+  // visual: the app's own cadence, for the step timings and the shots
+  const p = await pageGpu(await newTestPage(b, { mode: 'visual', viewport: { width: SHOT_W, height: SHOT_H } }));
   const errs = [];
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
   p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
@@ -188,16 +189,16 @@ if (port) {
     check('perk orbs over every shrine', app.orbs === 3 * layout.shrines.length, `${app.orbs}`);
 
     // ---- the GPU state matches the CPU build, then nothing churns
-    const readIds = () => ev(() => {
-      const a = window.__app, g = a.sim.g, [A] = a.sim.readState();
+    const readIds = () => ev(async () => {
+      const a = window.__app, g = a.sim.g, [A] = await window.__pageGpu.readState(a.sim);
       const out = new Uint8Array(g.nx * g.ny * g.nz);
       for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++)
         out[(y * g.nz + z) * g.nx + x] = Math.round(A[a.sim.cellTexel(x, y, z) * 4]);
       window.__ids = out;
       return out.length;
     });
-    const diff = (prev) => ev((prev) => {
-      const a = window.__app, g = a.sim.g, [A] = a.sim.readState();
+    const diff = (prev) => ev(async (prev) => {
+      const a = window.__app, g = a.sim.g, [A] = await window.__pageGpu.readState(a.sim);
       const pairs = {}, cur = new Uint8Array(window.__ids.length);
       let n = 0, hot = 0;
       for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
@@ -217,7 +218,7 @@ if (port) {
     await ev(() => { window.__ids0 = window.__ids; });
     const census = () => ev(async () => {
       const { E } = await import('/src/elements.js');
-      const c = window.__app.sim.census();
+      const c = await window.__pageGpu.census();
       return Object.fromEntries(['WATER', 'FIRE', 'SMOKE', 'STEAM', 'SAND', 'GUNPOWDER', 'PLANT', 'WOOD', 'LAVA', 'CLOUD'].map((k) => [k, c[E[k]]?.n ?? 0]));
     });
     const c0 = await census();
@@ -235,21 +236,29 @@ if (port) {
     check('nothing churns', d.n <= 0.0005 * NX * NY * NZ, `${d.n} cells changed; ${d.hot} hot; top old>new: ${JSON.stringify(d.pairs)}`);
 
     // ---- step cost: Dam Valley's grid vs 'wide' (160×96×160) with the Lab
-    const stepMs = () => ev(([iters, chunks]) => {
+    const stepMs = () => ev(async ([iters, chunks]) => {
       const a = window.__app, sim = a.sim, out = { sleep: [], noSleep: [], awake: [] };
-      for (const [k, sleep, quiet] of [['sleep', true, true], ['noSleep', false, true], ['awake', false, false]]) {
-        sim.skipSleeping = sleep;
-        sim.skipQuiet = quiet;
-        for (let i = 0; i < 5; i++) sim.step();
-        sim.gpuSync();
-        for (let c = 0; c < chunks; c++) {
-          const t = performance.now();
-          for (let i = 0; i < iters; i++) sim.step();
-          sim.gpuSync();
-          out[k].push((performance.now() - t) / iters);
+      // each fence yields to the page, where the app loop would draw a frame inside the
+      // timing (the old build's gpuSync() kept it all one task): park the loop meanwhile
+      const parked = a.test?.parked;
+      a.test?.park();
+      try {
+        for (const [k, sleep, quiet] of [['sleep', true, true], ['noSleep', false, true], ['awake', false, false]]) {
+          sim.skipSleeping = sleep;
+          sim.skipQuiet = quiet;
+          for (let i = 0; i < 5; i++) sim.step();
+          await window.__pageGpu.fence(sim);
+          for (let c = 0; c < chunks; c++) {
+            const t = performance.now();
+            for (let i = 0; i < iters; i++) sim.step();
+            await window.__pageGpu.fence(sim);
+            out[k].push((performance.now() - t) / iters);
+          }
+          out[k].sort((u, v) => u - v);
+          out[k] = +out[k][Math.floor(chunks / 2)].toFixed(3);
         }
-        out[k].sort((u, v) => u - v);
-        out[k] = +out[k][Math.floor(chunks / 2)].toFixed(3);
+      } finally {
+        if (!parked) a.test?.resume();
       }
       sim.skipSleeping = sim.skipQuiet = true;
       return out;
@@ -305,7 +314,7 @@ if (port) {
     if (flood) {
       const where = () => ev(async (P) => {
         const { E } = await import('/src/elements.js');
-        const a = window.__app, g = a.sim.g, [A] = a.sim.readState();
+        const a = window.__app, g = a.sim.g, [A] = await window.__pageGpu.readState(a.sim);
         let out = 0, tunnel = 0, gate = 0, baseWet = 0, fire = 0;
         for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
           const k = Math.round(A[a.sim.cellTexel(x, y, z) * 4]);

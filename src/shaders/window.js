@@ -1,170 +1,164 @@
-import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims, EDIT_FIELDS, editKernelWGSL } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 
 // Passes that move the window over the world (docs/scaling.md D11; driven by
-// world/window.js through Simulation.shift and the store). All of them read and
-// write the state through the prelude's accessors.
+// world/window.js through Simulation.shift and the store). Every shift runs
+// out of place (docs/webgpu.md D8.12): it reads the source at p + shift and
+// writes the other copy or a scratch, since in place a thread would overwrite
+// a cell another thread still has to read. The leaving slab is one kernel of
+// shaders/generate.js (sceneDiffFrag, G1); the stored bricks coming back are
+// an edit over the entering slab (editFrag, below); the GI probes' shift is
+// the derived passes' (U4).
 //
 // Slab layout. A slab (the cells about to leave the window, or a set of stored
 // bricks coming back) is exchanged with the CPU brick by brick, in the D5
-// float layout: brick i's 64 cells are texels 64·i .. 64·i + 63, row-major in
-// a STAGE_W-wide pair of RGBA32F textures (A and B), its cells x fastest,
-// then y, then z (SLAB_CELL). world/store.js keeps bricks in the same order.
-
+// float layout: brick i's 64 cells are entries 64·i .. 64·i + 63, its cells x
+// fastest, then y, then z (SLAB_CELL). world/store.js keeps bricks in the same
+// order.
 export const BRICK_CELLS = 64;                         // cells per 4³ brick
-export const STAGE_BRICKS_PER_ROW = 16;                // bricks per staging-texture row
-export const STAGE_W = BRICK_CELLS * STAGE_BRICKS_PER_ROW;   // texels per staging-texture row
+// WEBGPU-STUB (docs/webgpu.md J3): the WebGL staging targets' layout (bricks a row, texels a row, slots a row)
+export const STAGE_BRICKS_PER_ROW = null;
+export const STAGE_W = null;
+export const SLOT_W = null;
 
-export const slabGLSL = /* glsl */ `
-#define BRICK_CELLS ${BRICK_CELLS}
-#define STAGE_W ${STAGE_W}
-// local cell l of a brick (x fastest, then y, then z) and back
-ivec3 slabCell(int l) { return ivec3(l % BS, (l / BS) % BS, l / (BS * BS)); }
-int slabIndex(ivec3 c) { return c.x + BS * (c.y + BS * c.z); }
+// A slab's cell order, for the kernels that exchange slabs with the store (the
+// world's stage and edit, U10; the decoration's, U17): local cell l of a brick
+// (x fastest, then y, then z) and back. WGSL, for a module with the prelude
+// (BS); the name is the GLSL version's (docs/webgpu.md W2).
+export const slabGLSL = /* wgsl */ `
+const BRICK_CELLS: i32 = ${BRICK_CELLS};
+fn slabCell(l: i32) -> vec3i { return vec3i(l % BS, (l / BS) % BS, l / (BS * BS)); }
+fn slabIndex(c: vec3i) -> i32 { return c.x + BS * (c.y + BS * c.z); }
 `;
 
-// Shift: cell p takes the state of p + uShift, so the content moves by
-// -uShift as the window moves by +uShift over the world. Cells whose source is
-// outside the grid were uncovered: they become still air at ambient until the
-// generator fills them. Padding texels (no cell) copy through.
-export const shiftFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform ivec3 uShift;   // grid cells the window moved (a multiple of a supertile)
-${stateOutGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  ivec3 q = inGrid(p) ? p + uShift : p;
-  // a moved cell keeps its state but not its neighbours, so its flags start
-  // over (FLAG_DIRTY: the next activity map redoes its neighbour tests)
-  vec4 a = fetchA(q), b = fetchB(q);
-  if (inGrid(p) && !inGrid(q)) { a = vec4(float(E_EMPTY), uAirT, 0.0, 0.0); b = vec4(0.0); }
-  writeState(a, b, freshFlags(a, b));
+export const ShiftParams = uniformStruct('ShiftParams', { shift: 'vec3i' });
+const perSlot = (g) => fold(Math.ceil(gridDims(g).slots / 64));
+const slotMain = /* wgsl */ `${ShiftParams.wgsl}
+@group(3) @binding(1) var<uniform> P: ShiftParams;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let s = foldThread(wg, nwg, li);
+  if (s >= SLOTS) { return; }
+  let p = cellOf(s);
+  let q = p + P.shift;`;
+
+// Shift: cell p of the copy H.dst takes the state of p + shift in H.src, so
+// the content moves by -shift as the window moves by +shift over the world.
+// Cells whose source is outside the grid were uncovered: they become still
+// air at ambient until the generator fills them. A moved cell keeps its state
+// but not its neighbours, so its flags start over (freshFlags: the next
+// activity map redoes its neighbour tests).
+export const shiftFrag = (g, { debug = false } = {}) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
+${slotMain}
+  var a = vec4f(f32(E_EMPTY), airT(), 0.0, 0.0);
+  var b = vec4f(0.0);
+  if (inGrid(q)) { a = fetchA(q); b = fetchB(q); }
+  writeStateS(s, a, b, freshFlags(a, b));
 }
 `;
 
-// Undo after the window moved (docs/scaling.md D10, D11): grid cell p takes
-// the snapshot's cell p + uShift, tA/tB being the snapshot, which holds the
-// window where it was when it was taken. Cells the snapshot doesn't hold are
-// discarded, so they keep what the target (the current state) holds.
-export const undoShiftFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform ivec3 uShift;   // grid cells the window moved since the snapshot
-${stateOutGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  ivec3 q = p + uShift;
-  if (!inGrid(p) || !inGrid(q)) discard;
-  vec4 a = fetchA(q), b = fetchB(q);
-  writeState(a, b, freshFlags(a, b));   // restored cells redo their neighbour tests
+// Undo after the window moved (docs/scaling.md D10, D11): cell p of the
+// current copy takes the snapshot's cell p + shift (the snapshot holds the
+// window where it was when it was taken: its A and B in slot order, group 2).
+// Cells the snapshot doesn't hold keep what they hold. Restored cells redo
+// their neighbour tests (freshFlags). With no shift it is the plain undo.
+export const UNDO_LAYOUT = [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } },
+];
+export const undoShiftFrag = (g, { debug = false } = {}) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
+@group(2) @binding(0) var<storage, read> snapA: array<vec4f>;   // the snapshot, slot order
+@group(2) @binding(1) var<storage, read> snapB: array<vec4f>;
+${slotMain}
+  if (!inGrid(q)) { return; }
+  let a = snapA[slotOf(q)];
+  let b = snapB[slotOf(q)];
+  writeStateS(s, a, b, freshFlags(a, b));
 }
 `;
 
-// Stage: copies the slab of grid cells [uLo, uLo + 4·uBricks) into the staging
-// textures (slab layout above), brick i at slab brick (i % bx, i / bx % by, i / bx / by).
-export const stageFrag = (g) => /* glsl */ `
-${prelude(g)}
+// The flow field (shaders/move.js) follows the cells like the state: slot s
+// of dst takes the flow of cell p + shift in src; cells shifted in from
+// outside are still. Any field of two words per slot shifts this way
+// (whitewater's aeration too).
+export const FLOW_SHIFT_LAYOUT = [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+];
+export const flowShiftFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+@group(2) @binding(0) var<storage, read> src: array<vec2u>;
+@group(2) @binding(1) var<storage, read_write> dst: array<vec2u>;
+${slotMain}
+  var w = vec2u(0u);
+  if (inGrid(q)) { w = src[slotOf(q)]; }
+  dst[s] = w;
+}
+`;
+
+// Stored bricks back (world/window.js restore): an edit (docs/webgpu.md D6,
+// G1) over the slab of grid cells [lo, lo + 4·bricks) that a move uncovered,
+// after the fill. Per slab brick (x fastest, then y, then z) restoreIdx holds
+// its stored brick's slot + 1 (0: none, the fill stands), and restoreCells
+// the slots' cells in the store's slab order: 64 A, then 64 B a slot
+// (world/store.js decodeBrick). Both are one persistent upload buffer of the
+// window's (written with gpu.write before the edit), its index first.
+export const RestoreParams = uniformStruct('RestoreParams', {
+  ...EDIT_FIELDS,
+  lo: 'vec3i',      // the slab's low corner, grid cells
+  bricks: 'vec3i',  // its size in bricks
+  cellsAt: 'u32',   // the slots' cells' first vec4 in the buffer (after the index)
+});
+export const RESTORE_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
+const RESTORE_DECLS = /* wgsl */ `
+@group(2) @binding(0) var<storage, read> restore: array<vec4u>;   // the index (four slots a vec4), then the cells (vec4f bits)
+${slabGLSL}`;
+const RESTORE_UPDATE = /* wgsl */ `
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let r = p - P.lo;
+  let sb = r / BS;
+  let k = u32(sb.x + P.bricks.x * (sb.y + P.bricks.y * sb.z));
+  let s = restore[k >> 2u][k & 3u];
+  if (s == 0u) { return; }
+  let at = P.cellsAt + (s - 1u) * ${2 * BRICK_CELLS}u + u32(slabIndex(r - sb * BS));
+  *oA = bitcast<vec4f>(restore[at]);
+  *oB = bitcast<vec4f>(restore[at + ${BRICK_CELLS}u]);
+}`;
+/** The restore's edit kernel (sim.editKernel takes this). */
+export const restoreEdit = () => ({ update: RESTORE_UPDATE, decls: RESTORE_DECLS, params: RestoreParams, reads: 'own', layout: RESTORE_LAYOUT });
+// (the name is the WebGL pass's, docs/webgpu.md W2)
+export const editFrag = (g) => editKernelWGSL(g, restoreEdit());
+
+const stub = (name, unit) => () => { throw new Error(`${name} removed in the WebGPU port: docs/webgpu.md G1 (${unit})`); };
+// WEBGPU-STUB (docs/webgpu.md J3): the leaving slab is one kernel (shaders/generate.js sceneDiffFrag, G1)
+export const stageFrag = stub('stageFrag', 'U10');
+// WEBGPU-STUB (docs/webgpu.md J3): the leaving slab is one kernel (shaders/generate.js sceneDiffFrag, G1)
+export const gatherFrag = stub('gatherFrag', 'U10');
+// WEBGPU-STUB (docs/webgpu.md J3): the GI probes' shift is the derived passes' (U4, E)
+export const giShiftFrag = stub('giShiftFrag', 'U4');
+
+const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
+/**
+ * tools/check-wgsl.mjs, and the pipelines a grid needs (B5): undoShift every
+ * grid (undo is it with no shift), shift, flowShift and the stored bricks'
+ * restore a world's grid only.
+ */
+export const WGSL_CHECK = [
+  { name: 'shift', kind: 'compute', code: (g) => shiftFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
+  { name: 'undoShift', kind: 'compute', code: (g) => undoShiftFrag(g), layouts: () => [...rw(), UNDO_LAYOUT], dispatch: perSlot },
+  { name: 'flowShift', kind: 'compute', code: flowShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FLOW_SHIFT_LAYOUT], dispatch: perSlot, windowed: true },
+  // (the world's kernels build on entering it, B5: the warm-up leaves this out)
+  { name: 'restore', kind: 'compute', code: (g) => editFrag(g), layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RESTORE_LAYOUT],
+    params: RestoreParams, dispatch: (g) => fold(g.nbricks), windowed: true, warm: false },
+  // slabGLSL on its own (its kernels are U10's and U17's): validated, never warmed
+  { name: 'slabProbe', kind: 'compute', tool: true, layouts: () => [LAYOUT.TABLES], dispatch: () => [1, 1, 1],
+    code: (g) => `${prelude(g, { state: false })}
 ${slabGLSL}
-uniform ivec3 uLo;       // the slab's low corner, grid cells (brick-aligned)
-uniform ivec3 uBricks;   // the slab's size in bricks
-layout(location = 0) out vec4 oSA;
-layout(location = 1) out vec4 oSB;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  int t = f.x + STAGE_W * f.y;
-  int i = t / BRICK_CELLS;
-  ivec3 b = ivec3(i % uBricks.x, (i / uBricks.x) % uBricks.y, i / (uBricks.x * uBricks.y));
-  ivec3 p = uLo + b * BS + slabCell(t - i * BRICK_CELLS);
-  if (b.z >= uBricks.z || !inGrid(p)) { oSA = oSB = vec4(0.0); return; }
-  oSA = fetchA(p);
-  oSB = fetchB(p);
-}
-`;
-
-// Edits: writes stored bricks back into the grid. tEditIdx holds, per grid
-// brick (brickAtlas), its slot in tEditA/tEditB plus one (0: no edit); slot s
-// is staging-layout brick s. Every other cell copies through.
-export const editFrag = (g) => /* glsl */ `
-${prelude(g)}
-${slabGLSL}
-uniform sampler2D tEditIdx;
-uniform sampler2D tEditA;
-uniform sampler2D tEditB;
-${stateOutGLSL}
-void edit(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  ivec3 bc = p / BS;
-  int s = int(texelFetch(tEditIdx, brickAtlas(bc), 0).r + 0.5) - 1;
-  if (s < 0) return;
-  int t = s * BRICK_CELLS + slabIndex(p - bc * BS);
-  ivec2 tx = ivec2(t % STAGE_W, t / STAGE_W);
-  oA = texelFetch(tEditA, tx, 0);
-  oB = texelFetch(tEditB, tx, 0);
-}
-${copyThroughMain('edit')}`;
-
-// GI probes (shaders/gi.js) follow the cells: probe b takes probe b + uShift
-// (bricks). Probes shifted in from outside take the nearest one inside, and
-// converge from there as the gather blends in.
-export const giShiftFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform sampler2D tGI0;   // the probe volume's four L1 SH bands (shaders/gi.js)
-uniform sampler2D tGI1;
-uniform sampler2D tGI2;
-uniform sampler2D tGI3;
-uniform ivec3 uShift;   // bricks the window moved
-layout(location = 0) out vec4 o0;
-layout(location = 1) out vec4 o1;
-layout(location = 2) out vec4 o2;
-layout(location = 3) out vec4 o3;
-void main() {
-  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
-  if (bc.y >= BY) { o0 = o1 = o2 = o3 = vec4(0.0); return; }
-  ivec2 s = brickAtlas(clamp(bc + uShift, ivec3(0), ivec3(BX, BY, BZ) - 1));
-  o0 = texelFetch(tGI0, s, 0);
-  o1 = texelFetch(tGI1, s, 0);
-  o2 = texelFetch(tGI2, s, 0);
-  o3 = texelFetch(tGI3, s, 0);
-}
-`;
-
-// The flow field (shaders/move.js moveFlowFrag, Simulation.flowV) follows the
-// cells like the state: it is laid out like the state (atlas()), so texel
-// p takes the flow of cell p + uShift; cells shifted in from outside are still.
-export const flowShiftFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform sampler2D tFlowSrc;
-uniform ivec3 uShift;   // grid cells the window moved
-out vec4 oV;
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  ivec3 q = p + uShift;
-  oV = inGrid(p) && inGrid(q) ? texelFetch(tFlowSrc, atlas(q), 0) : vec4(0.0);
-}
-`;
-
-// Gather: the bricks of a staged slab that differ from the generator, packed
-// for the readback (world/window.js reads the flags first, then only these):
-// slot s of the target takes staged brick tSlots[s] (one texel per slot,
-// SLOT_W per row). Reads the staging textures, not the state.
-export const SLOT_W = 64;   // slots per row of the slot list
-export const gatherFrag = () => /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-#define BRICK_CELLS ${BRICK_CELLS}
-#define STAGE_W ${STAGE_W}
-#define SLOT_W ${SLOT_W}
-uniform sampler2D tStageA;
-uniform sampler2D tStageB;
-uniform sampler2D tSlots;
-layout(location = 0) out vec4 oSA;
-layout(location = 1) out vec4 oSB;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  int t = f.x + STAGE_W * f.y;
-  int s = t / BRICK_CELLS;
-  int i = int(texelFetch(tSlots, ivec2(s % SLOT_W, s / SLOT_W), 0).r + 0.5);
-  int src = i * BRICK_CELLS + (t - s * BRICK_CELLS);
-  ivec2 st = ivec2(src % STAGE_W, src / STAGE_W);
-  oSA = texelFetch(tStageA, st, 0);
-  oSB = texelFetch(tStageB, st, 0);
-}
-`;
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_index) li: u32) {
+  _ = slabIndex(slabCell(i32(li) % BRICK_CELLS));
+}` },
+];

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPU harness</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; background: #111; color: #ddd; }
+    a { color: #8cf; }
+  </style>
+</head>
+<body>
+  <h1>GPU harness</h1>
+  <p>Pages that run the WebGPU code without the app (docs/webgpu.md I1). Each is also driven by a tool.</p>
+  <ul id="pages"></ul>
+  <script type="module">
+    // every *.html beside this one, listed by the dev server's own module graph
+    const pages = import.meta.glob('./*.html', { query: '?url', import: 'default' });
+    const ul = document.getElementById('pages');
+    for (const path of Object.keys(pages).sort()) {
+      if (path === './index.html') continue;
+      const li = document.createElement('li');
+      li.innerHTML = `<a href="${path}">${path.slice(2)}</a>`;
+      ul.append(li);
+    }
+  </script>
+</body>
+</html>

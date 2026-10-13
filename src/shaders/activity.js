@@ -1,4 +1,6 @@
-import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, sleepUnitOf, gridDims, actLayout, ACT_COUNTS, ACT_MAP } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold, MAX_WORKGROUPS } from '../gpu/kernels.js';
 
 // Activity map: which 4×4×4 bricks the simulation may skip.
 //
@@ -37,15 +39,15 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //
 // The test has two halves: inertSelf, on the cell's own state
 // (shaders/common.js), and inertNear, on its neighbours' states A. Rather than
-// run both over the whole state per brick, the brick pass reduces the
-// activity flags every state writer leaves beside a cell (common.js FLAG):
-// SELF is always exact, and NEAR is the react pass's evaluation of inertNear,
-// which may have seen a neighbour before the step changed it. So NEAR is
-// trusted only where nothing a brick's neighbour tests read is DIRTY (changed
-// since the last map in a way they read), and inertNear is rerun from the
-// state where something is. A brick that was quiet all period has NEAR set by
-// react (its cells were inert when the map was built, and are unchanged), so
-// the result is the test above, exactly: inertRefFrag runs it the old way, for
+// run both over the whole state per brick, the build reduces the activity
+// flags every state writer leaves beside a cell (common.js FLAG): SELF is
+// always exact, and NEAR is the react pass's evaluation of inertNear, which
+// may have seen a neighbour before the step changed it. So NEAR is trusted
+// only where nothing a brick's neighbour tests read is DIRTY (changed since
+// the last map in a way they read), and inertNear is rerun from the state
+// where something is. A brick that was quiet all period has NEAR set by react
+// (its cells were inert when the map was built, and are unchanged), so the
+// result is the test above, exactly: inertRefFrag runs it the old way, for
 // tools/activity-check.mjs to compare.
 
 // Cells a change can travel in one step: one by moving, one by the react pass's stencil.
@@ -56,68 +58,74 @@ export const activityPeriod = (brickSize) => Math.floor(brickSize / INFLUENCE_PE
 // The neighbour half of the rest test, for cell c holding a, given its face
 // neighbours' states A in FACES order (nA; those outside the box are skipped:
 // the box walls insulate, never react and can't be entered). It reads the
-// lower ring itself, from the pass's input state (fetchA).
-export const inertNearGLSL = /* glsl */ `
-const ivec3 FACES[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
+// lower ring itself, from the pass's input state (fetchA). (WGSL; the name is
+// the GLSL version's, docs/webgpu.md W2.)
+export const inertNearGLSL = /* wgsl */ `
+// A cell's face neighbours, in this order: +x, -x, +y, -y, +z, -z (axis i >> 1,
+// toward - when i is odd). Arithmetic, not a table (docs/webgpu.md C6).
+fn FACES(i: i32) -> vec3i {
+  var d = vec3i(0);
+  d[i >> 1u] = 1 - 2 * (i & 1);
+  return d;
+}
 
 // What acid eats (react.js): all matter that isn't acid-proof (elements.js
 // acidProof: acid itself, walls, glass, water). Never air or gases.
-bool acidEats(int j) { return KIND[j] != K_EMPTY && KIND[j] != K_GAS && !ACIDPROOF[j]; }
+fn acidEats(j: i32) -> bool { return KIND(j) != K_EMPTY && KIND(j) != K_GAS && !ACIDPROOF(j); }
 
-// Reactions (elements.js REACTIONS, mechanisms().lookup): texel (b, a) of
-// tRx is 0 when a cell of element a has no reaction with a neighbour of b,
-// else 2·r + role + 1 (reaction r; role 0: the cell is the row's a).
-uniform highp usampler2D tRx;
-int rxAt(int a, int b) { return RX_ANY ? int(texelFetch(tRx, ivec2(b, a), 0).r) : 0; }
 // Does reaction r's temperature gate pass for a pair at Ta and Tb? It reads
 // the hotter cell: a hot spot lights a mixture, and too hot a cell stops it.
-bool rxGate(int r, float Ta, float Tb) {
-  float Th = max(Ta, Tb);
-  return Th >= RX[r].y && Th <= RX[r].z;
+// (rxAt, the reaction lookup, is the element tables': shaders/common.js.)
+fn rxGate(r: i32, Ta: f32, Tb: f32) -> bool {
+  let Th = max(Ta, Tb);
+  return Th >= RX(r).y && Th <= RX(r).z;
 }
 
 // Growers (react.js; physics.js DAMP_REACH): moss and fungus keep their damp
 // in their ctype. A grower's damp, given its temperature and face neighbours.
-bool grower(int j) { return j == E_MOSS || j == E_FUNGUS; }
-bool mossBed(int j) { return j == E_ROCK || j == E_BASALT || j == E_STONE || j == E_LIMESTONE || j == E_SANDSTONE; }   // the rock moss creeps over
-bool fungusFood(int j) { return j == E_WOOD || j == E_SAWDUST || j == E_PLANT; }                     // what fungus rots
-float dampOf(float T, vec4 nA[6]) {
-  if (T >= DAMP_DRY_T) return 0.0;
-  float h = 0.0;
-  for (int i = 0; i < 6; i++) {
-    int j = eid(nA[i]);
-    if (j == E_WATER) return DAMP_REACH;
-    if (grower(j)) h = max(h, floor(nA[i].w) - 1.0);
+fn grower(j: i32) -> bool { return j == E_MOSS || j == E_FUNGUS; }
+fn mossBed(j: i32) -> bool { return j == E_ROCK || j == E_BASALT || j == E_STONE || j == E_LIMESTONE || j == E_SANDSTONE; }   // the rock moss creeps over
+fn fungusFood(j: i32) -> bool { return j == E_WOOD || j == E_SAWDUST || j == E_PLANT; }                     // what fungus rots
+fn dampOf(T: f32, nA: ptr<function, array<vec4f, 6>>) -> f32 {
+  if (T >= DAMP_DRY_T) { return 0.0; }
+  var h = 0.0;
+  for (var i = 0; i < 6; i++) {
+    let j = eid((*nA)[i]);
+    if (j == E_WATER) { return DAMP_REACH; }
+    if (grower(j)) { h = max(h, floor((*nA)[i].w) - 1.0); }
   }
   return h;
 }
 // Moss creeps into an air cell that touches damp moss and bare rock on faces
 // across from each other's axis (so the mat follows the rock's surface).
 // wet and bed: which axes (x, y, z) hold them.
-bool mossSite(bvec3 wet, bvec3 bed) {
+fn mossSite(wet: vec3<bool>, bed: vec3<bool>) -> bool {
   return (wet.x && (bed.y || bed.z)) || (wet.y && (bed.x || bed.z)) || (wet.z && (bed.x || bed.y));
 }
 
-bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
-  int id = eid(a);
-  if (id == E_EMPTY) return true;   // what changes air is a neighbour that isn't inert
-  int k = KIND[id];
-  float T = a.y, d = densityOf(id, T);
+fn inertNear(c: vec3i, a: vec4f, nA: ptr<function, array<vec4f, 6>>) -> bool {
+  let id = eid(a);
+  if (id == E_EMPTY) { return true; }   // what changes air is a neighbour that isn't inert
+  let k = KIND(id);
+  let T = a.y;
+  let d = densityOf(id, T);
   // a grower: its damp still settling, or damp with somewhere to grow (for
   // moss, an air face whose other faces, across its axis, touch bare rock:
   // cells along the edges of this one, read from the pass's input state)
   if (grower(id)) {
-    float h = floor(a.w);
-    if (dampOf(T, nA) != h) return false;
-    if (h >= 1.0) for (int i = 0; i < 6; i++) {
-      ivec3 q = c + FACES[i];
-      if (!inGrid(q)) continue;
-      int j = eid(nA[i]);
-      if (id == E_FUNGUS && fungusFood(j)) return false;
-      if (id == E_MOSS && j == E_EMPTY) {
-        for (int m = 0; m < 6; m++) {
-          ivec3 r = q + FACES[m];
-          if ((m >> 1) != (i >> 1) && inGrid(r) && mossBed(eid(fetchA(r)))) return false;
+    let h = floor(a.w);
+    if (dampOf(T, nA) != h) { return false; }
+    if (h >= 1.0) {
+      for (var i = 0; i < 6; i++) {
+        let q = c + FACES(i);
+        if (!inGrid(q)) { continue; }
+        let j = eid((*nA)[i]);
+        if (id == E_FUNGUS && fungusFood(j)) { return false; }
+        if (id == E_MOSS && j == E_EMPTY) {
+          for (var m = 0; m < 6; m++) {
+            let r = q + FACES(m);
+            if ((m >> 1u) != (i >> 1u) && inGrid(r) && mossBed(eid(fetchA(r)))) { return false; }
+          }
         }
       }
     }
@@ -125,387 +133,520 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
   // One exit after the faces, not one per test: inlined into the react pass
   // (its last call), a return per test and face made ANGLE/Metal's cold build
   // of that pass ~8x slower: 17-20 s, this way 2.3 s (tools/program-bench.mjs).
-  bool busy = false;
-  for (int i = 0; i < 6; i++) {
-    if (!inGrid(c + FACES[i])) continue;
-    vec4 n = nA[i];
-    int j = eid(n);
+  var busy = false;
+  for (var i = 0; i < 6; i++) {
+    let f = FACES(i);
+    if (!inGrid(c + f)) { continue; }
+    let n = (*nA)[i];
+    let j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
     // (a face with no conductance, a temperature sensor's, carries none)
     // (a matter face: the heat it carries, physics.js REST_FLUX)
-    float cf = min(COND[id], COND[j]);
-    if (cf > 0.0 && (j == E_EMPTY ? abs(T - uAirT) > AIR_REST_T : abs(T - n.y) > min(REST_FLUX / cf, AIR_REST_T))) busy = true;
-    if (!electricQuietNear(id, a, j, n)) busy = true;   // src/electricity.js
-    if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) busy = true;   // acid, caustic gas (elements.js acid)
-    if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) busy = true;
-    if (fungusFood(id) && j == E_FUNGUS && floor(n.w) >= 1.0 && T < DAMP_DRY_T) busy = true;   // damp fungus rots it
-    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) busy = true;   // (cloneable: src/electricity.js)
+    let cf = min(COND(id), COND(j));
+    if (cf > 0.0) {
+      if (j == E_EMPTY) {
+        if (abs(T - airT()) > AIR_REST_T) { busy = true; }
+      } else if (abs(T - n.y) > min(REST_FLUX / cf, AIR_REST_T)) { busy = true; }
+    }
+    if (!electricQuietNear(id, a, j, n)) { busy = true; }   // src/electricity.js
+    // acid, caustic gas (elements.js acid)
+    if (ACIDIC(j)) {
+      if (acidEats(id)) { busy = true; }
+    } else if (ACIDIC(id) && acidEats(j)) { busy = true; }
+    if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) { busy = true; }
+    if (fungusFood(id) && j == E_FUNGUS && floor(n.w) >= 1.0 && T < DAMP_DRY_T) { busy = true; }   // damp fungus rots it
+    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) { busy = true; }   // (cloneable: src/electricity.js)
     // an explosive with an ignition point: a hot touch sets it off
-    if (INTO[id][PH_BLAST] >= 0 && IGNITE[id] > 0.0 && !isGasLike(j) && n.y >= IGNITE[id]) busy = true;
+    if (INTO(id)[PH_BLAST] >= 0 && IGNITE(id) > 0.0 && !isGasLike(j) && n.y >= IGNITE(id)) { busy = true; }
     // a reaction partner past its temperature gate (one below it lets both rest)
-    int rx = rxAt(id, j);
-    if (rx > 0 && rxGate((rx - 1) >> 1, T, n.y)) busy = true;
-    if (j == E_VOID && k != K_SOLID) busy = true;   // void drains it (react.js)
-    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) busy = true;   // it may be swallowed (react.js singEats)
+    let rx = rxAt(id, j);
+    if (rx > 0 && rxGate((rx - 1) >> 1u, T, n.y)) { busy = true; }
+    if (j == E_VOID && k != K_SOLID) { busy = true; }   // void drains it (react.js)
+    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) { busy = true; }   // it may be swallowed (react.js singEats)
     // a fuse lights from a lit fuse beside it, or a hot touch (react.js)
-    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE[id]))) busy = true;
+    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE(id)))) { busy = true; }
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
-    bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
-    if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) busy = true;
-    if (busy) break;
+    let way = f.y < 0 || (k == K_LIQUID && f.y == 0);
+    if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), select(2, 0, f.y < 0))) { busy = true; }
+    if (busy) { break; }
   }
-  if (busy) return false;
-  if (k == K_SOLID) return true;
+  if (busy) { return false; }
+  if (k == K_SOLID) { return true; }
   // ... nor to topple into, in the rest of the lower ring
-  for (int z = -1; z <= 1; z++)
-  for (int x = -1; x <= 1; x++) {
-    ivec3 q = c + ivec3(x, -1, z);
-    if ((x == 0 && z == 0) || !inGrid(q)) continue;
-    vec4 n = fetchA(q);
-    int j = eid(n);
-    if (canMove(id, j, d, densityOf(j, n.y), 0)) return false;
+  for (var z = -1; z <= 1; z++) {
+    for (var x = -1; x <= 1; x++) {
+      let q = c + vec3i(x, -1, z);
+      if ((x == 0 && z == 0) || !inGrid(q)) { continue; }
+      let n = fetchA(q);
+      let j = eid(n);
+      if (canMove(id, j, d, densityOf(j, n.y), 0)) { return false; }
+    }
   }
   return true;
 }
 
 // inertNear of cell c, its neighbours read from the pass's input state.
-bool inertNearHere(ivec3 c) {
-  vec4 nA[6];
-  for (int i = 0; i < 6; i++) {
-    ivec3 q = c + FACES[i];
-    nA[i] = inGrid(q) ? fetchA(q) : vec4(0.0);
+fn inertNearHere(c: vec3i) -> bool {
+  var nA: array<vec4f, 6>;
+  for (var i = 0; i < 6; i++) {
+    let q = c + FACES(i);
+    if (inGrid(q)) { nA[i] = fetchA(q); } else { nA[i] = vec4f(0.0); }
   }
-  return inertNear(c, fetchA(c), nA);
+  return inertNear(c, fetchA(c), &nA);
 }
 `;
 
-// The inert map takes three passes, so the re-tests run in parallel:
-//   inertFrag      brick resolution: decides each brick from its flags where
-//                  it can (r: inert), else marks it stale (g)
-//   inertRowsFrag  BS × BS fragments per brick (target bwidth·BS × bheight·BS),
-//                  each re-testing the BS cells along x of one row (y, z) of a
-//                  stale brick: 1 if they all pass
-//   inertJoinFrag  brick resolution: the decision, or the AND of the rows
-// (A stale brick in one fragment would run up to BS³ neighbour tests in a row.)
+// WEBGPU-STUB (docs/webgpu.md J3): quietCell is the prelude's now, with the
+// act binding (shaders/common.js, STATE_OPTS with act). Kept for the modules
+// that paste it until their units port them.
+export const quietGLSL = '';
 
-// Brick pass (needs uniform tF): r = 1 if the brick is inert by its flags,
-// g = 1 if they don't decide it (inertRowsFrag re-tests it).
-export const inertFrag = (g) => /* glsl */ `
-${prelude(g)}
-out vec4 oC;
+// ---- sleeping (docs/webgpu.md W12, D4, D5) ----
+// The steps run over lists the GPU builds with every activity map, one entry
+// per sleeping unit (a brick: SLEEP_UNIT in shaders/common.js), dispatched
+// indirectly:
+//   AWAKE  this map's steps may change the unit: a brick that isn't quiet lies
+//          in it, or just below it along x, y or z (a Margolus block reaches one
+//          cell past its home brick at partition offset 1: shaders/move.js)
+//   DRAWN  the steps run it (react writes every cell of it, the move runs
+//          every block with a cell in it): AWAKE, or written since the last map
+//          by something other than a step (the writers' marks, D6), or drawn
+//          under the last map and not yet settled (the run counter below)
+//   MOVE   the move's list per partition offset: at 0 every block lies in its
+//          home brick, so MOVE0 = DRAWN; at 1 a block reaches into the next
+//          brick along each axis, so MOVE1 = DRAWN dilated a unit toward -x,
+//          -y, -z (a superset; the move trims it per block)
+// The settle rule (D5.3). Under a map that leaves a unit asleep (not AWAKE),
+// its steps leave its cells as they are: the move runs no block that changes
+// one (a quiet base block only settles flags) and react writes each one back
+// as quiet, with its flags settled: its own, NEAR, and DIRTY as the move left
+// it, which the map's first step clears. So after two such steps (in one map
+// or two: a unit's first such step is always a map's first, which clears
+// DIRTY) both state copies hold the unit's cells with settled flags. The run
+// counter counts them: steps of maps under which the unit was drawn and not
+// AWAKE, reset by a write into it (forced) or by its being AWAKE. A unit stays
+// DRAWN until the counter reaches SUPER_SETTLE_STEPS. Writes elsewhere don't
+// touch it, so unlike docs/scaling.md D8's rule a write between steps doesn't
+// count as settling, and a one-step map counts its one step.
+// The invariant every pass keeps: in a unit not DRAWN under the current map,
+// both copies hold the same A, B and F, and F is settled (own flags | NEAR,
+// DIRTY clear). tools/skip-model.mjs checks the rule on a CPU model at both
+// unit sizes, with its negative controls.
+// WEBGPU-STUB (docs/webgpu.md J3): the supertile map's channels are gone; the
+// object stays for the profiler until its unit ports it.
+export const SUPER_MAP = { AWAKE: 0, STEPS: 1, DRAWN: 2, BLOCKS: 3 };
+// Steps under maps that settle both copies of a unit sleeping under them (above).
+export const SUPER_SETTLE_STEPS = 2;
+// WEBGPU-STUB (docs/webgpu.md J3): one full-screen quad or regions is gone
+// (an indirect dispatch has no instancing to trade against).
+export const STEP_FULL_SHARE = 0.9;
 
-// Is anything the brick's neighbour tests read outside it (within a cell of
-// it: its faces' cells and the lower rings) dirty?
-bool haloDirty(ivec3 o) {
-  for (int z = -1; z <= BS; z++)
-  for (int y = -1; y <= BS; y++)
-  for (int x = -1; x <= BS; x++) {
-    ivec3 l = ivec3(x, y, z);
-    if (all(greaterThanEqual(l, ivec3(0))) && all(lessThan(l, ivec3(BS)))) continue;   // the brick itself
-    ivec3 q = o + l;
-    if (inGrid(q) && (fetchF(q) & FLAG_DIRTY) != 0u) return true;
-  }
-  return false;
-}
+// The build's parameters, one struct for all its kernels (each reads its own).
+export const BuildParams = uniformStruct('BuildParams', {
+  full: 'u32',       // inertList: list every brick (a full rebuild: load, shift, forceAll, a skipQuiet toggle, a new grid)
+  enabled: 'u32',    // quiet: skipQuiet (0 clears the quiet map)
+  rays: 'u32',       // quiet: the rays layer is active (rayBricks holds its bricks)
+  carry: 'u32',      // quiet: note the outgoing quiet map in `changed` first (steps used it since the derived passes)
+  noted: 'u32',      // quiet: `changed` holds a map noted since the derived passes (else the first note overwrites)
+  forceAll: 'u32',   // drawn: every unit was written since the last map
+  nPrev: 'u32',      // drawn: steps under the last map (the run counter's increment)
+  all: 'u32',        // drawn: skipSleeping = false, every unit DRAWN
+  slot: 'u32',       // args: the counts' first word in the args buffer (a result ring slot)
+  list: 'u32',       // permute: the list (ACT_COUNTS)
+  order: 'u32',      // permute: 1 reverse, 2 shuffle
+  seed: 'u32',       // permute: the shuffle's seed
+});
 
-void main() {
-  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
-  oC = vec4(0.0);
-  if (bc.y >= BY) return;
-  ivec3 o = bc * BS;
-  uint every = ~0u, some = 0u;   // AND and OR of the brick's flags
-  for (int z = 0; z < BS; z++)
-  for (int y = 0; y < BS; y++)
-  for (int x = 0; x < BS; x++) {
-    uint f = fetchF(o + ivec3(x, y, z));
-    every &= f;
-    some |= f;
+// The indirect arguments live in a buffer of their own (B6: a dispatch can't
+// take its arguments from a buffer it writes, and the inert kernel, dispatched
+// over the INERT list, writes the act buffer): the byte offset of each
+// dispatch's [x, y, z]. After them, the activity counts' result ring
+// (gpu.readback.ring over this buffer: B7, D4): nAWAKE, nDRAWN, nMOVE1,
+// nINERT per build.
+export const ARGS = { INERT: 0, REACT: 16, MOVE0: 32, MOVE1: 48, AER: 64, RING: 128 };   // (AER: the aeration list's, G4)
+export const COUNTS_SLOTS = 64;      // slots of the counts ring
+export const COUNTS_BYTES = 16;
+// (+1: the slot a build writes when nothing reads its counts)
+export const ARGS_BYTES = ARGS.RING + (COUNTS_SLOTS + 1) * COUNTS_BYTES;
+// INERT entries one inert workgroup takes: more than one only when the list
+// may be longer than a dispatch's limit (the giant volcano's window).
+export const inertFold = (g) => Math.ceil(gridDims(g).nbricks / MAX_WORKGROUPS);
+
+// Group 2 of the build kernels (docs/webgpu.md C4): the indirect arguments
+// (read_write) and the rays layer's brick bitset (read). The inert kernel,
+// dispatched over the arguments, binds none (L.EMPTY).
+export const BUILD_LAYOUT = [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } },
+];
+// The reference's output (inertRefFrag): one word per brick.
+export const REF_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
+
+const buildHead = (g, { args = true, debug = false } = {}) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_BUILD, debug })}
+${BuildParams.wgsl}
+@group(3) @binding(1) var<uniform> P: BuildParams;
+${args ? `@group(2) @binding(0) var<storage, read_write> args: array<atomic<u32>>;
+@group(2) @binding(1) var<storage, read> rayBricks: array<u32>;   // a bit per brick: a fast particle is in it (raysLayer.js)` : ''}
+const ARGS_INERT: u32 = ${ARGS.INERT / 4}u;   // words
+const ARGS_REACT: u32 = ${ARGS.REACT / 4}u;
+const ARGS_MOVE0: u32 = ${ARGS.MOVE0 / 4}u;
+const ARGS_MOVE1: u32 = ${ARGS.MOVE1 / 4}u;
+const INERT_FOLD: u32 = ${inertFold(g)}u;   // INERT entries per inert workgroup
+const MAX_WG: u32 = ${MAX_WORKGROUPS}u;
+const SUPER_SETTLE_STEPS: u32 = ${SUPER_SETTLE_STEPS}u;
+fn actStore(i: u32, v: u32) { atomicStore(&act[i], v); }
+// marks.act's bit for brick id: a writer changed it since the last map (D6)
+fn markedAct(id: u32) -> bool { return (atomicLoad(&marks[MARK_ACT + (id >> 5u)]) & (1u << (id & 31u))) != 0u; }
+// Appends to a list, one global atomic per workgroup (docs/webgpu.md D4):
+// the workgroup counts its entries in workgroup memory, one thread adds them
+// to the list's count, then each thread writes its entry. Call it from uniform
+// control flow (it has barriers). Returns where this workgroup's entries
+// start in the list and where they end.
+var<workgroup> wgCount: atomic<u32>;
+var<workgroup> wgSpan: vec2u;
+fn append(on: bool, entry: u32, list: u32, cnt: u32, li: u32) -> vec2u {
+  var mine = 0u;
+  if (on) { mine = atomicAdd(&wgCount, 1u); }
+  workgroupBarrier();
+  if (li == 0u) {
+    let n = atomicLoad(&wgCount);
+    let base = atomicAdd(&act[ACT_COUNT + cnt], n);
+    wgSpan = vec2u(base, base + n);
+    atomicStore(&wgCount, 0u);
   }
-  if ((every & FLAG_SELF) == 0u) return;   // a cell moves, reacts, or is off its rest temperature
-  // only air: nothing to test against the neighbours
-  if ((some & FLAG_MATTER) == 0u) { oC = vec4(1.0); return; }
-  // nothing the neighbour tests read changed since the last map: their NEAR stands
-  if ((some & FLAG_DIRTY) == 0u && !haloDirty(o)) {
-    if ((every & FLAG_NEAR) != 0u) oC = vec4(1.0);
-    return;
+  let span = workgroupUniformLoad(&wgSpan);
+  if (on) { actStore(list + span.x + mine, entry); }
+  return span;
+}`;
+
+// inertList: one thread per brick. Lists brick b for the inert kernel if a
+// brick of b + {-1, 0, 1}³ was DRAWN under the last map or written since
+// (marks.act), or for a full rebuild: flags change nowhere else, and one brick
+// of dilation covers the neighbour tests' reach (one cell: the faces, the
+// lower ring, the halo the flags are scanned over). A brick not listed keeps
+// its inert bit. Also sizes the inert kernel's dispatch.
+export const inertListFrag = (g) => /* wgsl */ `
+${buildHead(g)}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let b = foldThread(wg, nwg, li);
+  var on = false;
+  if (b < NBRICKS) {
+    on = P.full != 0u;
+    if (!on) {
+      let bc = brickCoord(b);
+      for (var z = -1; z <= 1; z++) {
+        for (var y = -1; y <= 1; y++) {
+          for (var x = -1; x <= 1; x++) {
+            let n = bc + vec3i(x, y, z);
+            if (!inBricks(n)) { continue; }
+            let nid = brickId(n);
+            if (drawnUnit(unitOfBrick(nid)) || markedAct(nid)) { on = true; }
+          }
+        }
+      }
+    }
   }
-  oC = vec4(0.0, 1.0, 0.0, 0.0);   // else the rows redo them from the state
+  let span = append(on, b, ACT_INERTL, CNT_INERT, li);
+  // the inert dispatch: ceil(entries / INERT_FOLD) workgroups (the largest
+  // end a workgroup reached is the list's length)
+  if (li == 0u) { atomicMax(&args[ARGS_INERT], (span.y + INERT_FOLD - 1u) / INERT_FOLD); }
 }
 `;
 
-// Row pass (needs tA, tF and tClass, the brick pass's output).
-export const inertRowsFrag = (g) => /* glsl */ `
-${prelude(g)}
+// inert: a workgroup per INERT entry (indirect), a thread per cell: AND and OR
+// of the brick's 64 flags in workgroup memory, the halo's DIRTY scan split
+// across the threads; where the flags don't decide it, each matter cell
+// redoes inertNearHere from the state. The decision of the old inert,
+// inertRows and inertJoin passes in one (docs/webgpu.md D4).
+export const inertFrag = (g, { debug = false } = {}) => /* wgsl */ `
+${buildHead(g, { args: false, debug })}
 ${inertNearGLSL}
-uniform sampler2D tClass;
-out vec4 oC;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy), bf = f / BS, row = f - bf * BS;   // brick texel, and the row (y, z) in it
-  oC = vec4(1.0);
-  if (texelFetch(tClass, bf, 0).g < 0.5) return;   // decided by its flags
-  ivec3 o = brickFromFrag(bf) * BS + ivec3(0, row.x, row.y);
-  for (int x = 0; x < BS; x++) {
-    ivec3 c = o + ivec3(x, 0, 0);
-    if ((fetchF(c) & FLAG_MATTER) != 0u && !inertNearHere(c)) { oC = vec4(0.0); return; }
+const UNDECIDED: u32 = 2u;
+var<workgroup> wgN: u32;
+var<workgroup> wgEvery: atomic<u32>;
+var<workgroup> wgSome: atomic<u32>;
+var<workgroup> wgHalo: atomic<u32>;
+var<workgroup> wgFail: atomic<u32>;
+var<workgroup> wgState: u32;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  if (li == 0u) { wgN = atomicLoad(&act[ACT_COUNT + CNT_INERT]); }
+  let n = workgroupUniformLoad(&wgN);
+  for (var r = 0u; r < INERT_FOLD; r++) {
+    let e = foldId(wg, nwg) * INERT_FOLD + r;
+    if (e >= n) { break; }
+    if (li == 0u) {
+      atomicStore(&wgEvery, 0xffffffffu);
+      atomicStore(&wgSome, 0u);
+      atomicStore(&wgHalo, 0u);
+      atomicStore(&wgFail, 0u);
+    }
+    workgroupBarrier();
+    let b = actLoad(ACT_INERTL + e);
+    let o = brickCoord(b) * BS;
+    let p = cellOf(b * 64u + li);
+    let f = fetchF(p);
+    atomicAnd(&wgEvery, f);
+    atomicOr(&wgSome, f);
+    // Is anything the brick's neighbour tests read outside it (within a cell
+    // of it: its faces' cells and the lower rings) dirty? The 6³ cube around
+    // the brick less its 4³ core, four cells a thread.
+    for (var t = li; t < 216u; t += 64u) {
+      let l = vec3i(i32(t % 6u), i32((t / 6u) % 6u), i32(t / 36u)) - 1;
+      if (all(l >= vec3i(0)) && all(l < vec3i(BS))) { continue; }   // the brick itself
+      let q = o + l;
+      if (inGrid(q) && (fetchF(q) & FLAG_DIRTY) != 0u) { atomicOr(&wgHalo, 1u); }
+    }
+    workgroupBarrier();
+    if (li == 0u) {
+      let every = atomicLoad(&wgEvery);
+      let some = atomicLoad(&wgSome);
+      var st = UNDECIDED;   // the matter cells redo their neighbour tests from the state
+      if ((every & FLAG_SELF) == 0u) { st = 0u; }         // a cell moves, reacts, or is off its rest temperature
+      else if ((some & FLAG_MATTER) == 0u) { st = 1u; }   // only air: nothing to test against the neighbours
+      // nothing the neighbour tests read changed since the last map: their NEAR stands
+      else if ((some & FLAG_DIRTY) == 0u && atomicLoad(&wgHalo) == 0u) { st = select(0u, 1u, (every & FLAG_NEAR) != 0u); }
+      wgState = st;
+    }
+    let st = workgroupUniformLoad(&wgState);
+    if (st == UNDECIDED && (f & FLAG_MATTER) != 0u && !inertNearHere(p)) { atomicOr(&wgFail, 1u); }
+    workgroupBarrier();
+    if (li == 0u) {
+      var inert = st;
+      if (st == UNDECIDED) { inert = select(1u, 0u, atomicLoad(&wgFail) != 0u); }
+      actStore(ACT_INERT + b, inert);
+    }
+    workgroupBarrier();
   }
-}
-`;
-
-// Join pass (needs tClass and tRows): the inert map, 1 if the brick is inert.
-export const inertJoinFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform sampler2D tClass;
-uniform sampler2D tRows;
-out vec4 oC;
-void main() {
-  ivec2 bf = ivec2(gl_FragCoord.xy);
-  vec4 decided = texelFetch(tClass, bf, 0);
-  oC = vec4(decided.r);
-  if (decided.g < 0.5) return;
-  for (int z = 0; z < BS; z++)
-  for (int y = 0; y < BS; y++)
-    if (texelFetch(tRows, bf * BS + ivec2(y, z), 0).r < 0.5) { oC = vec4(0.0); return; }
-  oC = vec4(1.0);
 }
 `;
 
 // The same map computed from the state alone, the way the brick pass did
-// before the activity flags (needs tA, tB): the reference the flags must
-// reproduce exactly (tools/activity-check.mjs).
-export const inertRefFrag = (g) => /* glsl */ `
-${prelude(g)}
-${inertSelfGLSL}
+// before the activity flags: a full rebuild, the reference the flags and the
+// incremental build must reproduce exactly (tools/activity-check.mjs; sim.js
+// passes.inertRef). A workgroup per brick (direct), a thread per cell;
+// out[b] = 1 if inert.
+export const inertRefFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
 ${inertNearGLSL}
-#define MASK_WORDS ((BS * BS * BS + 31) / 32)   // uints for one bit per cell of a brick
-out vec4 oC;
-void main() {
-  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
-  oC = vec4(0.0);
-  if (bc.y >= BY) return;
-  ivec3 o = bc * BS;
-  // every cell's own state first: it is cheap and rules out most awake
-  // bricks. It also notes which cells hold matter, the only ones whose
-  // neighbours matter (bit x + BS·(y + BS·z) of the mask).
-  uint matter[MASK_WORDS];
-  for (int w = 0; w < MASK_WORDS; w++) matter[w] = 0u;
-  for (int z = 0; z < BS; z++)
-  for (int y = 0; y < BS; y++)
-  for (int x = 0; x < BS; x++) {
-    ivec3 c0 = o + ivec3(x, y, z);
-    vec4 a = fetchA(c0);
-    if (!inertSelf(a, fetchB(c0))) return;
-    int i = x + BS * (y + BS * z);
-    if (eid(a) != E_EMPTY) matter[i >> 5] |= 1u << (i & 31);
+@group(2) @binding(0) var<storage, read_write> out: array<u32>;
+var<workgroup> wgFail: atomic<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let b = foldId(wg, nwg);
+  if (b >= NBRICKS) { return; }   // the whole workgroup
+  let p = cellOf(b * 64u + li);
+  let a = fetchA(p);
+  // the cell's own state, then, for matter, its neighbours
+  if (!inertSelf(a, fetchB(p)) || (eid(a) != E_EMPTY && !inertNearHere(p))) { atomicOr(&wgFail, 1u); }
+  workgroupBarrier();
+  if (li == 0u) { out[b] = select(1u, 0u, atomicLoad(&wgFail) != 0u); }
+}
+`;
+
+// quiet: one thread per brick. The carry note from the outgoing map first,
+// then quiet = enabled, and every brick of b + {-1, 0, 1}³ inert (outside the
+// box counts as inert: the box walls are) and holding no fast particle (a
+// particle flies at most a brick in the steps a map lives, rays.js RAY_V_MAX,
+// so every cell it can heat stays awake), then the note of the new map:
+// changed = noted ? changed | !quiet : !quiet (the old MAX blend). Brick 0's
+// thread also starts this build's DRAWN and MOVE1 lists over (the last map's
+// steps, their readers, ran before).
+export const quietFrag = (g) => /* wgsl */ `
+${buildHead(g)}
+fn rayBrick(id: u32) -> bool { return (rayBricks[id >> 5u] & (1u << (id & 31u))) != 0u; }
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let b = foldThread(wg, nwg, li);
+  if (b >= NBRICKS) { return; }
+  if (b == 0u) {
+    actStore(ACT_COUNT + CNT_DRAWN, 0u);
+    actStore(ACT_COUNT + CNT_MOVE1, 0u);
+    actStore(ACT_COUNT + CNT_AWAKE, 0u);
   }
-  for (int z = 0; z < BS; z++)
-  for (int y = 0; y < BS; y++)
-  for (int x = 0; x < BS; x++) {
-    int i = x + BS * (y + BS * z);
-    if ((matter[i >> 5] & (1u << (i & 31))) == 0u) continue;
-    if (!inertNearHere(o + ivec3(x, y, z))) return;
+  var changed = actLoad(ACT_CHANGED + b) != 0u;
+  var noted = P.noted != 0u;
+  if (P.carry != 0u) {
+    let qOld = actLoad(ACT_QUIET + b) != 0u;
+    changed = select(!qOld, changed || !qOld, noted);
+    noted = true;
   }
-  oC = vec4(1.0);
-}
-`;
-
-// Brick resolution: 1 if the brick and its 26 neighbours are inert (outside
-// the box counts as inert: the box walls are). uEnabled = false clears the map.
-// A brick holding a fast particle (raysLayer.js: tRays, when uRays) counts as
-// not inert: a particle flies at most a brick in the steps a map lives
-// (rays.js RAY_V_MAX), so every cell it can heat stays awake.
-export const quietFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform sampler2D tInert;
-uniform bool uEnabled;
-uniform sampler2D tRays;
-uniform bool uRays;
-out vec4 oC;
-void main() {
-  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
-  oC = vec4(0.0);
-  if (bc.y >= BY || !uEnabled) return;
-  for (int z = -1; z <= 1; z++)
-  for (int y = -1; y <= 1; y++)
-  for (int x = -1; x <= 1; x++) {
-    ivec3 b = bc + ivec3(x, y, z);
-    if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, ivec3(BX, BY, BZ)))) continue;
-    if (texelFetch(tInert, brickAtlas(b), 0).x < 0.5) return;
-    if (uRays && texelFetch(tRays, brickAtlas(b), 0).x > 0.5) return;
+  var q = P.enabled != 0u;
+  if (q) {
+    let bc = brickCoord(b);
+    for (var z = -1; z <= 1; z++) {
+      for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+          let n = bc + vec3i(x, y, z);
+          if (!inBricks(n)) { continue; }
+          let nid = brickId(n);
+          if (actLoad(ACT_INERT + nid) == 0u || (P.rays != 0u && rayBrick(nid))) { q = false; }
+        }
+      }
+    }
   }
-  oC = vec4(1.0);
+  changed = select(!q, changed || !q, noted);
+  actStore(ACT_QUIET + b, select(0u, 1u, q));
+  actStore(ACT_CHANGED + b, select(0u, 1u, changed));
 }
 `;
 
-// For the sim passes: is cell c in a quiet brick?
-export const quietGLSL = /* glsl */ `
-uniform sampler2D tQuiet;   // brick-resolution quiet map (shaders/activity.js)
-bool quietCell(ivec3 c) {
-  ivec3 b = clamp(c, ivec3(0), ivec3(NX, NY, NZ) - 1) / BS;
-  return texelFetch(tQuiet, brickAtlas(b), 0).x > 0.5;
-}
-`;
-
-// ---- sleeping supertiles (docs/scaling.md D8) ----
-// The step passes draw one instanced quad per supertile of their target (4×2×2
-// bricks: one SUPER_TEX square of the state atlas; gfx/regions.js), and the
-// vertex shader drops the supertiles nothing can change, so their tiles are
-// never loaded. Inside a drawn supertile, quiet bricks still take the passes'
-// own early-outs. Built with every activity map, per supertile (superMapFrag;
-// texel (i % STW, i / STW), its slot in the state atlas), a byte per channel:
-//   AWAKE  this map's steps may change it: a brick in it is not quiet, or one
-//          just below it along x, y or z (with the partition offset at 1 a
-//          Margolus block belongs to the brick holding its base cell, and
-//          reaches one cell past it along each axis: shaders/move.js)
-//   STEPS  a brick in it is not quiet: the flow pass writes only such bricks'
-//          cells, so it draws these supertiles
-//   BLOCKS a brick in it is not quiet, or one just above it along x, y or z:
-//          the block pass draws these. It solves the blocks based in bricks
-//          that aren't quiet (the gather reads them), and gives a block based
-//          in a quiet brick its identity slots, which the flow pass reads for
-//          that block's cells in a brick that isn't quiet (shaders/move.js)
-//   DRAWN  the gather and react passes draw it: AWAKE under this map or the
-//          last one, or written since the last map by something other than a
-//          step (Simulation.noteWrite)
-// The two-map rule. Under a map that leaves a supertile asleep (not AWAKE),
-// its steps leave its cells as they are: the gather copies them (no block
-// reaching into it moves) and react writes each one back as quiet, with its
-// flags settled: its own, NEAR, and DIRTY as the gather left it, which the
-// map's first step clears. So once a map's steps have drawn a supertile that
-// sleeps under it, the current state copy holds its cells with settled flags
-// and the other copy the same cells; after a second step the same flags too.
-// A write that isn't a step can end a map after one step, but it either copies
-// the current state into both copies there (sim.pass copies through every cell
-// outside the box it declared) or marks the supertile written
-// (Simulation.noteWrite). If the supertile still sleeps under the next map,
-// that map's steps would write exactly what both copies hold: they skip it. A
-// map whose steps didn't settle what slept under it (none, or one with no
-// write after it: a tool building maps by hand) passes its DRAWN on instead
-// (uPrevSettled).
-export const SUPER_MAP = { AWAKE: 0, STEPS: 1, DRAWN: 2, BLOCKS: 3 };
-// Steps under one map that settle both copies of a supertile sleeping under it (above).
-export const SUPER_SETTLE_STEPS = 2;
-const superMapGLSL = Object.entries(SUPER_MAP).map(([k, v]) => `#define SUPER_${k} ${v}`).join('\n');
-
-// Share of a step pass's supertiles above which it draws one full-screen quad
-// instead of a quad per supertile (gfx/regions.js). Measured on an M5 (ANGLE
-// Metal, 128³, steps alternating between the two at the same states): a quad
-// per drawn supertile costs 0.75 of one full-screen quad with 32% drawn, 0.86
-// at 49%, 0.91 at 73%, 0.98 at 87%, 1.02 at 97% and 1.06 at 100%. It reaches
-// the vertex shaders as a uniform (uFullShare), so a tool can move it.
-export const STEP_FULL_SHARE = 0.9;
-const superCount = (g) => g.stx * g.sty * g.stz;
-
-// The supertile map (target: one texel per supertile slot, STW × the atlas's
-// rows of supertiles). Needs tQuiet (this map), tPrev (the last supertile map)
-// and the uniforms below.
-export const superMapFrag = (g) => /* glsl */ `
-${prelude(g)}
-${superMapGLSL}
-uniform sampler2D tQuiet;
-uniform sampler2D tPrev;
-uniform bool uPrevSettled;   // the last map's steps settled what slept under it (else its DRAWN carries over)
-uniform bool uForceAll;      // every supertile was written since the last map by something other than a step
-uniform ivec3 uForceLo;      // ...or the ones in this box (supertiles, inclusive; none if lo > hi)
-uniform ivec3 uForceHi;
-out vec4 oC;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  int i = f.x + STW * f.y;
-  oC = vec4(0.0);
-  if (i >= STX * STY * STZ) return;   // a slot past the last supertile
-  ivec3 s = ivec3(i % STX, i / (STX * STZ), (i / STX) % STZ), b0 = s * SUPER_B;
-  bool awake = false, steps = false, blocks = false;
-  // its bricks; the ones just below it, whose blocks reach into it (the grid's
-  // low margin has none: blocks there belong to brick 0); and the ones just
-  // above it, which its blocks reach into
-  for (int z = -1; z <= SBZ; z++)
-  for (int y = -1; y <= SBY; y++)
-  for (int x = -1; x <= SBX; x++) {
-    ivec3 l = ivec3(x, y, z), b = b0 + l;
-    if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, ivec3(BX, BY, BZ)))) continue;
-    if (texelFetch(tQuiet, brickAtlas(b), 0).x > 0.5) continue;
-    bool below = any(lessThan(l, ivec3(0))), above = any(greaterThanEqual(l, SUPER_B));
-    awake = awake || !above;
-    blocks = blocks || !below;
-    steps = steps || (!below && !above);
+// drawn: one thread per unit. AWAKE = a brick that isn't quiet lies in the
+// unit or just below it (the unit's bricks − {0, 1}³); forced = a writer
+// marked a brick of it since the last map, or every unit was; then the run
+// counter and DRAWN (docs/webgpu.md D5.3), the map word, the DRAWN list and
+// the count of AWAKE units.
+export const drawnFrag = (g) => /* wgsl */ `
+${buildHead(g)}
+var<workgroup> wgAwake: atomic<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let un = foldThread(wg, nwg, li);
+  var drawn = false;
+  if (un < NUNITS) {
+    var awake = false;
+    let lo = unitCoord(un) * SLEEP_UNIT;
+    for (var z = lo.z - 1; z < lo.z + SLEEP_UNIT.z; z++) {
+      for (var y = lo.y - 1; y < lo.y + SLEEP_UNIT.y; y++) {
+        for (var x = lo.x - 1; x < lo.x + SLEEP_UNIT.x; x++) {
+          let n = vec3i(x, y, z);
+          if (inBricks(n) && !quietBrick(brickId(n))) { awake = true; }
+        }
+      }
+    }
+    var forced = P.forceAll != 0u;
+    for (var i = 0u; i < UNIT_B; i++) { forced = forced || markedAct(un * UNIT_B + i); }
+    let old = actLoad(ACT_MAP + un);
+    let prevDrawn = (old & MAP_DRAWN) != 0u;
+    let prevAwake = (old & MAP_AWAKE) != 0u;
+    // steps of maps under which the unit was drawn and not AWAKE, since a write into it
+    var run = 0u;
+    if (!forced && prevDrawn && !prevAwake) { run = min((old >> MAP_RUN_SHIFT) + P.nPrev, MAP_RUN_MAX); }
+    drawn = P.all != 0u || awake || forced || (prevDrawn && run < SUPER_SETTLE_STEPS);
+    actStore(ACT_MAP + un, (run << MAP_RUN_SHIFT) | select(0u, MAP_DRAWN, drawn) | select(0u, MAP_AWAKE, awake));
+    if (awake) { atomicAdd(&wgAwake, 1u); }
   }
-  bool forced = uForceAll || (all(greaterThanEqual(s, uForceLo)) && all(lessThanEqual(s, uForceHi)));
-  vec4 prev = texelFetch(tPrev, f, 0);
-  bool drawn = awake || forced || (uPrevSettled ? prev[SUPER_AWAKE] : prev[SUPER_DRAWN]) > 0.5;
-  oC[SUPER_AWAKE] = awake ? 1.0 : 0.0;
-  oC[SUPER_STEPS] = steps ? 1.0 : 0.0;
-  oC[SUPER_DRAWN] = drawn ? 1.0 : 0.0;
-  oC[SUPER_BLOCKS] = blocks ? 1.0 : 0.0;
+  append(drawn, un, ACT_DRAWNL, CNT_DRAWN, li);
+  if (li == 0u) { atomicAdd(&act[ACT_COUNT + CNT_AWAKE], atomicLoad(&wgAwake)); }
 }
 `;
 
-// The share of supertiles on in each channel of the supertile map, in two
-// passes, so no fragment sums them all (one summing 2048 cost ~0.06 ms here):
-//   superRowsFrag   one texel per row of supertile slots (target: rows × 1):
-//                   the supertiles on in it, per channel
-//   superShareFrag  one texel: those counts summed, over the supertiles
-// (Counts are whole numbers far below 2^24: exact in floats.)
-const superSumsGLSL = (g) => /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-out vec4 oC;
-#define STW ${g.stw}                   // supertile slots per row
-#define STH ${g.height / SUPER_TEX}   // rows of supertile slots
-#define NSUPER ${superCount(g)}
-`;
-export const superRowsFrag = (g) => /* glsl */ `
-${superSumsGLSL(g)}
-uniform sampler2D tSuper;
-void main() {
-  int v = int(gl_FragCoord.x);
-  vec4 n = vec4(0.0);
-  for (int u = 0; u < STW; u++) n += texelFetch(tSuper, ivec2(u, v), 0);
-  oC = n;
-}
-`;
-export const superShareFrag = (g) => /* glsl */ `
-${superSumsGLSL(g)}
-uniform sampler2D tRows;
-void main() {
-  vec4 n = vec4(0.0);
-  for (int v = 0; v < STH; v++) n += texelFetch(tRows, ivec2(v, 0), 0);
-  oC = n / float(NSUPER);
+// move1: one thread per unit. MOVE1 = a unit of u + {0, 1}³ is DRAWN (a block
+// based in u at partition offset 1 reaches the next unit along each axis);
+// the list. The writers' marks start over here (inertList and drawn have read
+// them).
+export const move1Frag = (g) => /* wgsl */ `
+${buildHead(g)}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let un = foldThread(wg, nwg, li);
+  var on = false;
+  if (un < NUNITS) {
+    let uc = unitCoord(un);
+    for (var z = 0; z <= 1; z++) {
+      for (var y = 0; y <= 1; y++) {
+        for (var x = 0; x <= 1; x++) {
+          let n = uc + vec3i(x, y, z);
+          if (inUnits(n) && drawnUnit(unitId(n))) { on = true; }
+        }
+      }
+    }
+    for (var i = 0u; i < UNIT_B; i++) {
+      let id = un * UNIT_B + i;
+      atomicAnd(&marks[MARK_ACT + (id >> 5u)], ~(1u << (id & 31u)));
+    }
+  }
+  append(on, un, ACT_MOVE1L, CNT_MOVE1, li);
 }
 `;
 
-// regionVert's GLSL (gfx/regions.js) for a step pass: region i < NSUPER is
-// supertile i, drawn where channel `ch` of the supertile map is on, over the
-// state atlas (its SUPER_TEX squares; the flow field shares that layout) or,
-// with block, the block atlas (shaders/common.js BLOCK_TILE: a supertile's
-// home blocks fill a SUPER.x·BLOCK_TILE.x × SUPER.z·SUPER.y·BLOCK_TILE.y
-// rect). Region NSUPER is the block atlas's rows for the grid's low margin,
-// whose blocks exist at partition offset 1 only (needs uParity).
-export function stepRegionsGLSL(g, ch, block = false) {
-  const size = block ? [SUPER.x * BLOCK_TILE.x, SUPER.z * SUPER.y * BLOCK_TILE.y] : [SUPER_TEX, SUPER_TEX];
-  const [w, h] = block ? [g.mwidth, g.mheight] : [g.width, g.height];
-  return /* glsl */ `
-#define REGION_COUNT ${superCount(g) + 1}   // the supertiles, then the block atlas's low margin
-#define NSUPER ${superCount(g)}
-#define STW ${g.stw}            // supertiles per atlas row
-#define SUPER_CH ${ch}          // the supertile map's channel that draws a supertile (SUPER_MAP)
-const vec2 TARGET = vec2(${w}.0, ${h}.0);      // texels
-const vec2 SUPER_RECT = vec2(${size[0]}.0, ${size[1]}.0);   // a supertile's rect in it
-uniform sampler2D tSuper;        // supertile map (shaders/activity.js superMapFrag)
-uniform sampler2D tSuperShare;   // share of supertiles on in each of its channels
-uniform float uFullShare;        // above this share, one full-screen quad (STEP_FULL_SHARE)
-${block ? 'uniform int uParity;      // the step\'s partition offset' : ''}
-float superShare() { return texelFetch(tSuperShare, ivec2(0), 0)[SUPER_CH]; }
-vec2 regionTarget() { return TARGET; }
-bool regionsFull() { return superShare() > uFullShare; }
-bool regionOn(int i) {
-  if (i == NSUPER) return ${block ? 'uParity == 1 && superShare() > 0.0' : 'false'};
-  return texelFetch(tSuper, ivec2(i % STW, i / STW), 0)[SUPER_CH] > 0.5;
+// args: one thread. The steps' indirect arguments from the lists' lengths,
+// fold()ed as src/gpu/kernels.js folds ([ceil(n / y), y, 1], y = ceil(n /
+// 65535)): react a workgroup per brick of DRAWN, the move 64 blocks a
+// workgroup (8 a brick) over DRAWN (offset 0) and MOVE1 (offset 1); and the
+// counts for the CPU into its ring slot. Then the INERT list starts over for
+// the next build (the inert kernel has run), its length kept in INERT_LAST
+// (sim.readCounts).
+export const argsFrag = (g) => /* wgsl */ `
+${buildHead(g)}
+fn writeFold(at: u32, n: u32) {
+  let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
+  atomicStore(&args[at], (n + y - 1u) / y);
+  atomicStore(&args[at + 1u], y);
+  atomicStore(&args[at + 2u], 1u);
 }
-vec4 regionRect(int i) {
-  ${block ? `if (i == NSUPER) return vec4(0.0, ${g.mmainh}.0, TARGET);   // (below the home blocks)` : ''}
-  vec2 lo = vec2(i % STW, i / STW) * SUPER_RECT;
-  return vec4(lo, lo + SUPER_RECT);
+@compute @workgroup_size(1)
+fn main() {
+  let nD = actLoad(ACT_COUNT + CNT_DRAWN);
+  let nM = actLoad(ACT_COUNT + CNT_MOVE1);
+  writeFold(ARGS_REACT, nD * UNIT_B);
+  writeFold(ARGS_MOVE0, (nD * UNIT_B * 8u + 63u) / 64u);
+  writeFold(ARGS_MOVE1, (nM * UNIT_B * 8u + 63u) / 64u);
+  atomicStore(&args[P.slot], actLoad(ACT_COUNT + CNT_AWAKE));
+  atomicStore(&args[P.slot + 1u], nD);
+  atomicStore(&args[P.slot + 2u], nM);
+  let nI = actLoad(ACT_COUNT + CNT_INERT);
+  atomicStore(&args[P.slot + 3u], nI);
+  actStore(ACT_COUNT + CNT_INERT_LAST, nI);
+  actStore(ACT_COUNT + CNT_INERT, 0u);
+  atomicStore(&args[ARGS_INERT], 0u);
 }
 `;
+
+// Test only (sim.test.listOrder, docs/webgpu.md I2.1): reverses or shuffles
+// one list in place, so a result that depends on list order (an append race,
+// a workgroup reading another's cells) shows up even on a device that runs
+// workgroups in order. One workgroup; the shuffle is one thread's
+// Fisher-Yates over pcg.
+export const permuteFrag = (g) => /* wgsl */ `
+${buildHead(g)}
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_index) li: u32) {
+  var list = ACT_DRAWNL;
+  if (P.list == CNT_MOVE1) { list = ACT_MOVE1L; }
+  if (P.list == CNT_INERT) { list = ACT_INERTL; }
+  if (P.list == CNT_AER) { list = ACT_AERL; }
+  let n = actLoad(ACT_COUNT + P.list);
+  if (P.order == 1u) {
+    for (var i = li; i < n / 2u; i += 64u) {
+      let t = actLoad(list + i);
+      actStore(list + i, actLoad(list + n - 1u - i));
+      actStore(list + n - 1u - i, t);
+    }
+  } else if (P.order == 2u && li == 0u && n > 1u) {
+    var s = P.seed;
+    for (var i = n - 1u; i > 0u; i--) {
+      s = pcg(s);
+      let j = s % (i + 1u);
+      let t = actLoad(list + i);
+      actStore(list + i, actLoad(list + j));
+      actStore(list + j, t);
+    }
+  }
 }
+`;
+
+// tool: built only by the tools that run it, never warmed for a session (docs/webgpu.md B5)
+const entry = (name, code, dispatch, layouts, tool = false) => ({ name, kind: 'compute', code, layouts, dispatch, ...(tool && { tool }) });
+const buildLayouts = () => [LAYOUT.TABLES, LAYOUT.STATE_BUILD, BUILD_LAYOUT];
+const perBrick = (g) => fold(Math.ceil(gridDims(g).nbricks / 64));
+const perUnit = (g) => fold(Math.ceil(sleepUnitOf(g).units / 64));
+
+/**
+ * tools/check-wgsl.mjs, and the pipelines a grid needs for its activity
+ * build (the start menu's warm-up, docs/webgpu.md B5).
+ */
+export const WGSL_CHECK = [
+  entry('inertList', inertListFrag, perBrick, buildLayouts),
+  entry('inert', (g) => inertFrag(g), (g) => fold(Math.ceil(gridDims(g).nbricks / inertFold(g))), () => [LAYOUT.TABLES, LAYOUT.STATE_BUILD, 'EMPTY']),
+  entry('quiet', quietFrag, perBrick, buildLayouts),
+  entry('drawn', drawnFrag, perUnit, buildLayouts),
+  entry('move1', move1Frag, perUnit, buildLayouts),
+  entry('args', argsFrag, () => [1, 1, 1], buildLayouts),
+  // the tools' kernels (activity-check's reference, sim-check's listOrder)
+  entry('inertRef', inertRefFrag, (g) => fold(gridDims(g).nbricks), () => [LAYOUT.TABLES, LAYOUT.STATE_RO, REF_LAYOUT], true),
+  entry('permute', permuteFrag, () => [1, 1, 1], buildLayouts, true),
+];
+export { actLayout, ACT_COUNTS, ACT_MAP };

@@ -3,6 +3,7 @@
 // feedback and viewmodel it sets off, and the realistic body in third person.
 // usage: node tools/gp-integration.mjs [--port 5296] [--shots dir]   (needs a dev server)
 import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5296');
@@ -10,8 +11,8 @@ const shots = opt('shots', null);
 const W = 960, H = 600;
 const RANGE = 60;   // cells from the shooter to the pane
 
-const b = await launchBrowser({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
-const p = await newTestPage(b, { mode: shots ? 'visual' : 'preview', viewport: { width: W, height: H } });
+const b = await launchBrowser({ args: ['--autoplay-policy=no-user-gesture-required'] });
+const p = await pageGpu(await newTestPage(b, { mode: shots ? 'visual' : 'preview', viewport: { width: W, height: H } }));
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
@@ -26,7 +27,7 @@ const wait = (ms) => p.waitForTimeout(ms);
 const shot = async (name) => { if (shots) await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 70 }); };
 const census = () => ev(async () => {
   const { ELEMENTS } = await import('/src/elements.js');
-  return Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
+  return Object.fromEntries(Object.entries(await window.__pageGpu.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
 });
 
 // record every POV event

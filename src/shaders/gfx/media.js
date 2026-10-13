@@ -32,228 +32,246 @@
 // so a big fire is a crown of tongues, not a ball. Inside, the soot gathers
 // on thin wrinkled sheets (flamelets) around the noise's mid-level, which
 // keeps the mean density: a flame is streaked, not an even glow.
-import { mediaDetailGLSL } from './mediaDetail.js';
+//
+// WGSL (the names are the GLSL version's, docs/webgpu.md W2), pasted after
+// surfaceGLSL (footprint, lodFade). The detail noise is a 64³ rgba8unorm 3D
+// texture (lighting group binding 10) read through the repeating sampler
+// (binding 15) at level 0; GLSL's mod is glslMod (the clock's wrap can go
+// negative, H1.2). The close-up switches (mediaDetail.js) are JS template
+// switches: detail is the defines object of gfx/detail.js.
+import { mediaDetailGLSL, MEDIA_DETAIL_ON } from './mediaDetail.js';
 
-export const mediaGLSL = /* glsl */ `
-// tMediaNoise (r billows, g wisps, b flame tongues, a flicker; gba: warp) is declared with the cloud deck (clouds.js, in lighting.js)
+export const mediaGLSL = (detail = {}) => {
+  const flow = !!detail.DETAIL_MEDIA_FLOW;
+  const fine = !!detail.DETAIL_MEDIA_FINE;
+  return /* wgsl */ `
+// tMediaNoise (r billows, g wisps, b flame tongues, a flicker; gba: warp) is the lighting group's binding 10 (shaders/bindings.js)
 
-#define MEDIA_STEP 1.0          // march step (cells): the finest detail is ~4 cells, TAA averages the jitter
-#define MEDIA_MAX_PER_SEG 2     // lattice samples in one cell segment (<= sqrt(3) / MEDIA_STEP, rounded up)
-#define MEDIA_MIN_SIGMA 1e-4    // extinction (1/cell) below which a sample adds nothing visible
-#define MEDIA_DEPTH_ALPHA 0.5   // a pixel's depth goes where the gas has become this opaque...
-#define MEDIA_KEEP_ALPHA 0.002  // ...and thinner gas than this, with nothing behind it, is dropped
-#define MEDIA_KEEP_RADIANCE 0.002   // unless it glows this much (flames are nearly transparent)
+const MEDIA_STEP: f32 = 1.0;          // march step (cells): the finest detail is ~4 cells, TAA averages the jitter
+const MEDIA_MAX_PER_SEG: i32 = 2;     // lattice samples in one cell segment (<= sqrt(3) / MEDIA_STEP, rounded up)
+const MEDIA_MIN_SIGMA: f32 = 1e-4;    // extinction (1/cell) below which a sample adds nothing visible
+const MEDIA_DEPTH_ALPHA: f32 = 0.5;   // a pixel's depth goes where the gas has become this opaque...
+const MEDIA_KEEP_ALPHA: f32 = 0.002;  // ...and thinner gas than this, with nothing behind it, is dropped
+const MEDIA_KEEP_RADIANCE: f32 = 0.002;   // unless it glows this much (flames are nearly transparent)
 
 // ---- sub-cell detail ----
-#define BILLOW_EDGE 0.9         // detail modulation of thin gas: edges fray into wisps
-#define BILLOW_CORE 0.3         // ...of dense gas: structure to shade, no holes
-#define BILLOW_CORE_D 0.15      // density from which gas counts as dense (spreading plumes are mostly 0.02-0.2)
-#define WISP_AMT 0.45           // finer wisps on top of the billows (relative)
-#define GAS_WARP 0.8            // how far the noise displaces the gas (cells)
-#define GAS_EDGE 0.1            // density over which gas fades in from nothing: edges sharper than
-                                // the blurred field's ~3 cells, and lone cells (peak ~0.065) stay faint
-#define NOISE_MEAN 0.5          // mean of every detail-noise channel (equalised to uniform on [0, 1])
+const BILLOW_EDGE: f32 = 0.9;         // detail modulation of thin gas: edges fray into wisps
+const BILLOW_CORE: f32 = 0.3;         // ...of dense gas: structure to shade, no holes
+const BILLOW_CORE_D: f32 = 0.15;      // density from which gas counts as dense (spreading plumes are mostly 0.02-0.2)
+const WISP_AMT: f32 = 0.45;           // finer wisps on top of the billows (relative)
+const GAS_WARP: f32 = 0.8;            // how far the noise displaces the gas (cells)
+const GAS_EDGE: f32 = 0.1;            // density over which gas fades in from nothing: edges sharper than
+                                      // the blurred field's ~3 cells, and lone cells (peak ~0.065) stay faint
+const NOISE_MEAN: f32 = 0.5;          // mean of every detail-noise channel (equalised to uniform on [0, 1])
 // Flames are sheets with a sharp luminous edge: the fire density, displaced by
 // rising tongue noise, crosses FLAME_LEVEL there.
-#define FLAME_STRETCH 2.0       // tongues are this much taller than wide (a power of 2: seamless clock wrap)
-#define FLAME_SCALE 2.0         // tongue noise read this many times finer than smoke's (a whole number:
-                                // seamless clock wrap): its finest tongues ~2 cells (0.6 m) across
-#define FLAME_DETAIL 0.3        // how far the tongues displace the flame's edge (fire density units)
-#define FLAME_SPLIT 0.85        // ...and how much they scale the fire around its mean (0-1): dense fire splits too
-#define FLAME_SHEET 0.6         // share of the soot that gathers on the flamelet sheets (0 = an even glow)
-#define FLAME_SHEET_EXP 2.0     // their sharpness: soot ~ (1 - |2n - 1|)^this, (this + 1) times that keeps the mean
-#define FLAME_LEVEL 0.12        // fire density at the flame's edge
-#define FLAME_SOFT 0.05         // half-width of that edge
-#define FLAME_FLICKER 0.12      // turbulent temperature fluctuation of flames (relative)
+const FLAME_STRETCH: f32 = 2.0;       // tongues are this much taller than wide (a power of 2: seamless clock wrap)
+const FLAME_SCALE: f32 = 2.0;         // tongue noise read this many times finer than smoke's (a whole number:
+                                      // seamless clock wrap): its finest tongues ~2 cells (0.6 m) across
+const FLAME_DETAIL: f32 = 0.3;        // how far the tongues displace the flame's edge (fire density units)
+const FLAME_SPLIT: f32 = 0.85;        // ...and how much they scale the fire around its mean (0-1): dense fire splits too
+const FLAME_SHEET: f32 = 0.6;         // share of the soot that gathers on the flamelet sheets (0 = an even glow)
+const FLAME_SHEET_EXP: f32 = 2.0;     // their sharpness: soot ~ (1 - |2n - 1|)^this, (this + 1) times that keeps the mean
+const FLAME_LEVEL: f32 = 0.12;        // fire density at the flame's edge
+const FLAME_SOFT: f32 = 0.05;         // half-width of that edge
+const FLAME_FLICKER: f32 = 0.12;      // turbulent temperature fluctuation of flames (relative)
 
 // ---- light ----
-#define PHASE_BACK_G -0.3       // anisotropy of the weak back lobe (droplets and soot backscatter a little)
-#define PHASE_FWD_W 0.85        // weight of the forward lobe
-#define MS_OCTAVES 3
-#define MS_B 0.75               // energy (times albedo) carried by each further octave
-#define MS_C 0.5                // anisotropy left in each further octave
-#define SELF_SHADOW_DIST 2.0    // cells toward the sun sampled through the detailed gas
-#define SELF_SHADOW_MIN_SIGMA 0.04   // extinction (1/cell) below which gas skips that sample
-#define SKY_PROBE 3.0           // cells up: how much gas hides the sky
-// The glow volume is irradiance / pi (like SUN_COL); isotropic in-scatter of
+const PHASE_BACK_G: f32 = -0.3;       // anisotropy of the weak back lobe (droplets and soot backscatter a little)
+const PHASE_FWD_W: f32 = 0.85;        // weight of the forward lobe
+const MS_OCTAVES: i32 = 3;
+const MS_B: f32 = 0.75;               // energy (times albedo) carried by each further octave
+const MS_C: f32 = 0.5;                // anisotropy left in each further octave
+const SELF_SHADOW_DIST: f32 = 2.0;    // cells toward the sun sampled through the detailed gas
+const SELF_SHADOW_MIN_SIGMA: f32 = 0.04;   // extinction (1/cell) below which gas skips that sample
+const SKY_PROBE: f32 = 3.0;           // cells up: how much gas hides the sky
+// The glow volume is irradiance / pi (like FU.sunCol); isotropic in-scatter of
 // irradiance E is E / (4 pi) per unit albedo, so pi / (4 pi).
-#define GLOW_SCATTER 0.25
+const GLOW_SCATTER: f32 = 0.25;
 
 // ---- flames ----
-#define FLAME_RADIANCE 3.0      // soot blackbody radiance at FLAME_REF_K (sunlit white ~1)
-#define FLAME_REF_K 1273.15     // 1000 °C
-#define FLAME_T_EXP 4.0         // radiance ~ T^4 (Stefan–Boltzmann)
+const FLAME_RADIANCE: f32 = 3.0;      // soot blackbody radiance at FLAME_REF_K (sunlit white ~1)
+const FLAME_REF_K: f32 = 1273.15;     // 1000 °C
+const FLAME_T_EXP: f32 = 4.0;         // radiance ~ T^4 (Stefan–Boltzmann)
 // The luminous soot in a flame's core burns hotter than the cell average the
 // simulation tracks (~750-900 °C for a wood fire): real soot glows at
 // ~1200-1500 °C there (wood's adiabatic flame temperature is ~1950 °C), cooling
 // toward the edges and tips. This is what makes cores yellow and tips red.
-#define FLAME_SOOT_DT 1000.0    // soot temperature above the gas's, in the core (°C)
-#define FLAME_CORE_D 0.25       // fire density from which a flame counts as core
-#define FLAME_MIN_FIRE 0.02     // fire density below which there is no flame to draw
-#define FLAME_T_PRIOR 800.0     // typical burning-gas temperature in the simulation (°C)...
-#define FLAME_PRIOR_W 0.15      // ...weighted as this much fire density
+const FLAME_SOOT_DT: f32 = 1000.0;    // soot temperature above the gas's, in the core (°C)
+const FLAME_CORE_D: f32 = 0.25;       // fire density from which a flame counts as core
+const FLAME_MIN_FIRE: f32 = 0.02;     // fire density below which there is no flame to draw
+const FLAME_T_PRIOR: f32 = 800.0;     // typical burning-gas temperature in the simulation (°C)...
+const FLAME_PRIOR_W: f32 = 0.15;      // ...weighted as this much fire density
 
 // Gas densities (smoke, steam, fire) from the fields, the brick floor removed.
-vec3 gasBase(vec4 m) { return max(m.xyz - MEDIA_FLOOR, 0.0) * (1.0 / (1.0 - MEDIA_FLOOR)); }
+fn gasBase(m: vec4f) -> vec3f { return max(m.xyz - MEDIA_FLOOR, vec3f(0.0)) * (1.0 / (1.0 - MEDIA_FLOOR)); }
 // Transport extinction (similarity relation): forward-scattered light still
 // gets through, so diffuse light sees sigma_t (1 - albedo g).
-const vec3 MD_TRANSPORT = MD_EXT * (1.0 - MD_ALBEDO * MD_G);
+const MD_TRANSPORT: vec3f = MD_EXT * (1.0 - MD_ALBEDO * MD_G);
 
-${mediaDetailGLSL}
+${mediaDetailGLSL(detail)}
 
 // Detail noise at p, read 'scale' times finer (a whole number), drifting up
 // at 'rise' cells/step and stretched along y.
-vec4 gasNoise(vec3 p, float rise, float stretch, float scale) {
-#ifdef DETAIL_MEDIA_FLOW
-  return flowNoise(p, scale, vec3(0.0), stretch);   // riding the flow instead
-#endif
-  p = worldPos(p);   // anchored in the world
-  p.y = (p.y - mod(uSimClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
-  return texture(tMediaNoise, p * (scale / MEDIA_NOISE_CELLS));
+fn gasNoise(p0: vec3f, rise: f32, stretch: f32, scale: f32) -> vec4f {${flow ? `
+  return flowNoise(p0, scale, vec3f(0.0), stretch);   // riding the flow instead` : `
+  var p = worldPos(p0);   // anchored in the world
+  p.y = (p.y - glslMod(FU.simClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
+  return textureSampleLevel(tMediaNoise, linearRepeat, p * (scale / MEDIA_NOISE_CELLS), 0.0);`}
 }
 
 // Smoke and steam detail: dense gas billows (finer wisps on top); thin gas,
 // lone cells included, frays into the finer wisps alone.
-vec2 gasDetail(vec2 d, vec4 n) {
-  vec2 dense = smoothstep(vec2(0.0), vec2(BILLOW_CORE_D), d);
-  float wisp = 2.0 * n.g - 1.0;
-  vec2 b = mix(vec2(wisp), vec2(2.0 * n.r - 1.0 + WISP_AMT * wisp), dense);
-  vec2 amt = mix(vec2(BILLOW_EDGE), vec2(BILLOW_CORE), dense);
-  return d * smoothstep(vec2(0.0), vec2(GAS_EDGE), d) * max(1.0 + amt * b, 0.0);
+fn gasDetail(d: vec2f, n: vec4f) -> vec2f {
+  let dense = smoothstep(vec2f(0.0), vec2f(BILLOW_CORE_D), d);
+  let wisp = 2.0 * n.g - 1.0;
+  let b = mix(vec2f(wisp), vec2f(2.0 * n.r - 1.0 + WISP_AMT * wisp), dense);
+  let amt = mix(vec2f(BILLOW_EDGE), vec2f(BILLOW_CORE), dense);
+  return d * smoothstep(vec2f(0.0), vec2f(GAS_EDGE), d) * max(1.0 + amt * b, vec2f(0.0));
 }
 
 // Detailed densities (smoke, steam, fire) at p. The fields are read at a
 // point displaced by up to 'warp' cells along the noise: that curls the gas,
 // so lone cells and edges turn into irregular wisps instead of the lattice's
-// star-shaped blobs. m returns the fields read, nf the flame noise.
-vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
-  m = mediaField(p);
-  nf = vec4(NOISE_MEAN);
-  if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) return vec3(0.0);
-#ifdef DETAIL_MEDIA_FLOW
+// star-shaped blobs. *m returns the fields read, *nf the flame noise.
+fn gasDensity(p0: vec3f, warp: f32, m: ptr<function, vec4f>, nf: ptr<function, vec4f>) -> vec3f {
+  var p = p0;
+  var mf = mediaField(p);
+  *m = mf;
+  *nf = vec4f(NOISE_MEAN);
+  if (max(mf.x, max(mf.y, mf.z)) <= MEDIA_FLOOR) { return vec3f(0.0); }${flow ? `
   // always the flow: any blend toward another velocity across space (e.g. by
   // transmittance, a shell around the eye) shears the advected noise into rings
-  gFlowV = flowVel(p);
-#endif
-  vec4 n = gasNoise(p, MD_RISE.y, 1.0, 1.0);
+  gFlowV = flowVel(p);` : ''}
+  let n = gasNoise(p, MD_RISE.y, 1.0, 1.0);
   if (warp > 0.0) {
     p += warp * (2.0 * n.gba - 1.0);
-    m = mediaField(p);
+    mf = mediaField(p);
+    *m = mf;
   }
-  vec3 d = gasBase(m);
-  d.xy = gasDetail(d.xy, n);
-#ifdef DETAIL_MEDIA_FINE
-  vec2 fw = fineWeights(p);
-  vec4 f1, f2;
+  var d = gasBase(mf);
+  d = vec3f(gasDetail(d.xy, n), d.z);${fine ? `
+  let fw = fineWeights(p);
+  var f1 = vec4f(NOISE_MEAN);
+  var f2 = vec4f(NOISE_MEAN);
   if (fw.x > 0.0) {
-    fineNoise(p, fw, f1, f2);
-    d.xy = gasFine(d.xy, fw, f1, f2);
-  }
-#endif
+    fineNoise(p, fw, &f1, &f2);
+    d = vec3f(gasFine(d.xy, fw, f1, f2), d.z);
+  }` : ''}
   if (d.z > 0.0) {
-    nf = gasNoise(p, MD_RISE.z, FLAME_STRETCH, FLAME_SCALE);
-    float v = d.z * (1.0 + FLAME_SPLIT * (2.0 * nf.b - 1.0)) + FLAME_DETAIL * (nf.b - NOISE_MEAN);
-#ifdef DETAIL_MEDIA_FINE
-    if (fw.x > 0.0) v += flameFine(fw, f1, f2);
-#endif
+    let nfv = gasNoise(p, MD_RISE.z, FLAME_STRETCH, FLAME_SCALE);
+    *nf = nfv;
+    var v = d.z * (1.0 + FLAME_SPLIT * (2.0 * nfv.b - 1.0)) + FLAME_DETAIL * (nfv.b - NOISE_MEAN);${fine ? `
+    if (fw.x > 0.0) { v += flameFine(fw, f1, f2); }` : ''}
     d.z = smoothstep(FLAME_LEVEL - FLAME_SOFT, FLAME_LEVEL + FLAME_SOFT, v);
     // flamelets: the soot on the sheets where the wisp noise crosses its mean
-    float sheet = (FLAME_SHEET_EXP + 1.0) * pow(1.0 - abs(2.0 * nf.g - 1.0), FLAME_SHEET_EXP);
+    let sheet = (FLAME_SHEET_EXP + 1.0) * pow(1.0 - abs(2.0 * nfv.g - 1.0), FLAME_SHEET_EXP);
     d.z *= 1.0 + FLAME_SHEET * (sheet - 1.0);
   }
   return d;
 }
 
-float hgPhase(float mu, float g) {
-  float k = 1.0 + g * g - 2.0 * g * mu;
+fn hgPhase(mu: f32, g: f32) -> f32 {
+  let k = 1.0 + g * g - 2.0 * g * mu;
   return (1.0 - g * g) / (4.0 * PI_L * k * sqrt(k));
 }
-float gasPhase(float mu, float g) { return mix(hgPhase(mu, PHASE_BACK_G * g), hgPhase(mu, g), PHASE_FWD_W); }
+fn gasPhase(mu: f32, g: f32) -> f32 { return mix(hgPhase(mu, PHASE_BACK_G * g), hgPhase(mu, g), PHASE_FWD_W); }
 
 // Skylight (the gas above shades it) plus the glow volume, scattered.
-vec3 gasAmbient(vec3 p) {
-  float skyT = exp(-dot(MD_TRANSPORT, gasBase(mediaField(p + vec3(0.0, SKY_PROBE, 0.0)))) * SKY_PROBE);
-  return 0.5 * (skyAmbient(vec3(0.0, 1.0, 0.0)) * skyT + skyAmbient(vec3(0.0, -1.0, 0.0)))
-       + sampleLight(p) * uLightGain * GLOW_SCATTER;
+fn gasAmbient(p: vec3f) -> vec3f {
+  let skyT = exp(-dot(MD_TRANSPORT, gasBase(mediaField(p + vec3f(0.0, SKY_PROBE, 0.0)))) * SKY_PROBE);
+  return 0.5 * (skyAmbient(vec3f(0.0, 1.0, 0.0)) * skyT + skyAmbient(vec3f(0.0, -1.0, 0.0)))
+       + sampleLight(p) * FU.lightGain * GLOW_SCATTER;
 }
 
 // Visible sunlight at p inside gas of extinction sigT: the shadow map from
 // SELF_SHADOW_DIST toward the sun on, and one sample of the detailed gas
 // before that (unwarped and flames as their field: cheaper, and soft anyway).
 // Thin gas barely shades itself: there the shadow map at p does.
-vec3 gasSun(vec3 p, float sigT) {
-  if (sigT < SELF_SHADOW_MIN_SIGMA) return uShadows ? sunShadow(p) : vec3(1.0);
-  vec3 T = uShadows ? sunShadow(p + uSun * SELF_SHADOW_DIST) : vec3(1.0);
-  vec3 q = p + uSun * (0.5 * SELF_SHADOW_DIST);
-  vec4 m = mediaField(q);
-  if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) return T;
-  vec3 d = gasBase(m);
-  d.xy = gasDetail(d.xy, gasNoise(q, MD_RISE.y, 1.0, 1.0));
+fn gasSun(p: vec3f, sigT: f32) -> vec3f {
+  if (sigT < SELF_SHADOW_MIN_SIGMA) {
+    if (FU.shadows != 0u) { return sunShadowAt(p); }
+    return vec3f(1.0);
+  }
+  var T = vec3f(1.0);
+  if (FU.shadows != 0u) { T = sunShadowAt(p + FU.sun * SELF_SHADOW_DIST); }
+  let q = p + FU.sun * (0.5 * SELF_SHADOW_DIST);
+  let m = mediaField(q);
+  if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) { return T; }
+  var d = gasBase(m);
+  d = vec3f(gasDetail(d.xy, gasNoise(q, MD_RISE.y, 1.0, 1.0)), d.z);
   return T * exp(-dot(MD_EXT, d) * SELF_SHADOW_DIST);
 }
 
 // Heat shimmer: hot air has a lower refractive index, so rays bend. Returns
 // the (possibly perturbed) primary ray direction for the box span [t0, t1].
-vec3 hazeBend(vec3 ro, vec3 rd, float t0, float t1) {
+fn hazeBend(ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> vec3f {
   return rd;
 }
 
-// Integrate the media over the ray segment [ta, tb]. 'next' is the next
+// Integrate the media over the ray segment [ta, tb]. *next is the next
 // lattice sample along the ray (start it at jitter * MEDIA_STEP); it carries
 // over between segments. Returns the opacity added, for depth decisions.
-float mediaSegment(vec3 ro, vec3 rd, float ta, float tb, inout float next, inout vec3 col, inout vec3 trans) {
-  float st = MEDIA_STEP_AT(ta);
-  if (next < ta || next >= ta + st) next = ta + mod(next - ta, st);
-  if (next >= tb) return 0.0;
+fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>, col: ptr<function, vec3f>,
+                trans: ptr<function, vec3f>) -> f32 {
+  let st = mediaStepAt(ta);
+  if (*next < ta || *next >= ta + st) { *next = ta + glslMod(*next - ta, st); }
+  if (*next >= tb) { return 0.0; }
   // Nothing here outlives the call: state kept across the tracer's loop costs
   // registers, and so occupancy, for the whole shader.
-  float mu = dot(rd, uSun);
-  vec3 amb = vec3(-1.0);   // per segment, on its first lit sample
-  float tr = 1.0;
-  for (int k = 0; k < MEDIA_SEG_SAMPLES; k++) {
-    if (next >= tb) break;
-#ifdef MEDIA_DETAIL_ON
-    gMediaVis = max(trans.r, max(trans.g, trans.b));
-#endif
-    vec3 p = ro + rd * next;
-    float dt = MEDIA_STEP_AT(next);   // this sample stands for [next, next + dt)
-    next += dt;
-    vec4 m, nf;
-    vec3 sig = MD_EXT * gasDensity(p, GAS_WARP, m, nf);
-    float sigT = sig.x + sig.y + sig.z;
-    if (sigT < MEDIA_MIN_SIGMA) continue;
-    vec2 sigS2 = sig.xy * MD_ALBEDO.xy;   // fire (soot) doesn't scatter
-    float sigS = sigS2.x + sigS2.y;
-    vec3 S = vec3(0.0);
+  let mu = dot(rd, FU.sun);
+  var amb = vec3f(-1.0);   // per segment, on its first lit sample
+  var tr = 1.0;
+  for (var k = 0; k < MEDIA_SEG_SAMPLES; k++) {
+    if (*next >= tb) { break; }${MEDIA_DETAIL_ON(detail) ? `
+    let tv = *trans;
+    gMediaVis = max(tv.r, max(tv.g, tv.b));` : ''}
+    let p = ro + rd * (*next);
+    let dt = mediaStepAt(*next);   // this sample stands for [next, next + dt)
+    *next += dt;
+    var m: vec4f;
+    var nf: vec4f;
+    let sig = MD_EXT * gasDensity(p, GAS_WARP, &m, &nf);
+    let sigT = sig.x + sig.y + sig.z;
+    if (sigT < MEDIA_MIN_SIGMA) { continue; }
+    let sigS2 = sig.xy * MD_ALBEDO.xy;   // fire (soot) doesn't scatter
+    let sigS = sigS2.x + sigS2.y;
+    var S = vec3f(0.0);
     if (sigS > MEDIA_MIN_SIGMA) {
       // sun, octave by octave: each sees half the optical depth (sqrt of T)
-      vec3 Ts = gasSun(p, sigT), Lsun = vec3(0.0);
-      float g = dot(sigS2, MD_G.xy) / sigS, b = 1.0, bMul = MS_B * sigS / sigT;
-      for (int i = 0; i < MS_OCTAVES; i++) {
+      var Ts = gasSun(p, sigT);
+      var Lsun = vec3f(0.0);
+      var g = dot(sigS2, MD_G.xy) / sigS;
+      var b = 1.0;
+      let bMul = MS_B * sigS / sigT;
+      for (var i = 0; i < MS_OCTAVES; i++) {
         Lsun += b * gasPhase(mu, g) * Ts;
-        b *= bMul; g *= MS_C;
+        b *= bMul;
+        g *= MS_C;
         Ts = sqrt(Ts);
       }
-      if (amb.x < 0.0) amb = gasAmbient(ro + rd * (0.5 * (ta + tb)));
-      // SUN_COL is irradiance / pi
-      S = sigS * (PI_L * SUN_COL * Lsun + amb);
+      if (amb.x < 0.0) { amb = gasAmbient(ro + rd * (0.5 * (ta + tb))); }
+      // FU.sunCol is irradiance / pi
+      S = sigS * (PI_L * FU.sunCol * Lsun + amb);
     }
     if (sig.z > 0.0 && m.z > FLAME_MIN_FIRE) {
       // flames: soot emits blackbody light at the burning gas's temperature
-      float core = smoothstep(FLAME_LEVEL, FLAME_CORE_D, m.z);
+      let core = smoothstep(FLAME_LEVEL, FLAME_CORE_D, m.z);
       // gas temperature = w / fire, pulled toward FLAME_T_PRIOR where there is
       // little fire: both fields carry 8-bit rounding, which the ratio would
       // blow up into colour bands
-      float Tgas = (m.w * HEAT_RANGE + FLAME_PRIOR_W * (FLAME_T_PRIOR - AMBIENT)) / (m.z + FLAME_PRIOR_W);
-      float T = AMBIENT + (Tgas + FLAME_SOOT_DT * core) * (1.0 + FLAME_FLICKER * (2.0 * nf.a - 1.0));
+      let Tgas = (m.w * HEAT_RANGE + FLAME_PRIOR_W * (FLAME_T_PRIOR - AMBIENT)) / (m.z + FLAME_PRIOR_W);
+      let T = AMBIENT + (Tgas + FLAME_SOOT_DT * core) * (1.0 + FLAME_FLICKER * (2.0 * nf.a - 1.0));
       S += sig.z * FLAME_RADIANCE * blackbody(T) * pow((T + C_TO_K) / FLAME_REF_K, FLAME_T_EXP);
     }
     // energy-conserving integration over the step (Hillaire 2015)
-    float att = exp(-sigT * dt);
-    col += trans * S * ((1.0 - att) / sigT);
-    trans *= att;
+    let att = exp(-sigT * dt);
+    *col += *trans * S * ((1.0 - att) / sigT);
+    *trans *= att;
     tr *= att;
   }
   return 1.0 - tr;
 }
 `;
+};
+

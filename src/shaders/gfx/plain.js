@@ -4,7 +4,22 @@
 // glass tint what's behind them, gases are soft blobs and flames glow. It
 // writes a finished colour (ACES curve applied here) and goes through post in
 // raw mode, like the data views, so no bloom, exposure or film look.
+//
+// WGSL (the names are the GLSL version's, docs/webgpu.md W2), after the
+// render library and surfaceGLSL (floorFwidth, so surfView must have run, as
+// the tracer runs it before choosing a view). Like the GLSL it calls
+// softBlob(cell, ro, rd, t0, t1) -> f32 and aces(x) -> vec3f, which the
+// tracer (shaders/render.js) defines, and meshCutT(rd) -> f32 (the distance
+// along the eye ray to the nearest opaque mesh, gfx/meshCut.js: the march
+// stops there; docs/webgpu.md Sync log S1) and the decoration's lookups
+// decoAt, decoTint, decoLinear and DECO_SIGMA (shaders/gfx/deco.js
+// decoViewGLSL), which the view pastes before it. A function can't discard
+// for its caller, so plainView returns what it drew (PlainOut): the caller
+// discards where nothing was hit and writes the colour and frag_depth. The
+// depth is that of the first thing hit through FU.viewProj · FU.model, the
+// jittered camera, in WebGPU's [0, 1] (docs/webgpu.md F2, F4).
 import { ELEMENTS } from '../../elements.js';
+import { materialChecks } from './surface.js';
 
 // Liquid tints from the original renderer. The smooth renderer later retuned
 // SIGMA for its own optics; elements not listed use SIGMA.
@@ -15,241 +30,276 @@ const PLAIN_SIGMA = {
   ICE: [0.12, 0.05, 0.025],
 };
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-const vec3 = (v) => `vec3(${v.map(f).join(', ')})`;
-const sigmaGLSL = () =>
-  `const vec3 PLAIN_SIGMA[NE] = vec3[NE](${ELEMENTS.map((e) => vec3(PLAIN_SIGMA[e.key] ?? e.sigma)).join(', ')});`;
+const vec3 = (v) => `vec3f(${v.map(f).join(', ')})`;
+// four elements, so a comparison chain rather than an NE-entry table (docs/webgpu.md C6)
+const sigmaGLSL = () => `fn PLAIN_SIGMA(id: i32) -> vec3f {
+${ELEMENTS.filter((e) => PLAIN_SIGMA[e.key]).map((e) => `  if (id == E_${e.key}) { return ${vec3(PLAIN_SIGMA[e.key])}; }`).join('\n')}
+  return SIGMA(id);
+}`;
 
-export const plainGLSL = (g) => /* glsl */ `
+// g: the grid (kept for the GLSL's signature; the march's bound is the library's MAX_STEPS).
+// curved: the rolling log's variant (shaders/render.js volumeFrag), which walks
+// the displayed ray's parabola a chord at a time (shaders/gfx/presentation.js:
+// pasted before it), each chord a ray of its own whose t is the displayed
+// ray's; no mesh cut there (meshCutT measures a straight ray).
+export const plainGLSL = (g, { curved = false } = {}) => /* wgsl */ `
 ${sigmaGLSL()}
-#define PLAIN_SUN vec3(1.25, 1.15, 1.0)          // sun colour
-#define PLAIN_SKY_LO vec3(0.05, 0.05, 0.06)      // sky gradient, horizon and below...
-#define PLAIN_SKY_HI vec3(0.42, 0.52, 0.68)      // ...to straight up
-#define PLAIN_AMB_DOWN vec3(0.07, 0.065, 0.06)   // sky fill on a face pointing down...
-#define PLAIN_AMB_UP vec3(0.32, 0.38, 0.5)       // ...and pointing up
-#define PLAIN_LOCAL_MIN 0.35                     // glow light reaching a fully occluded corner
-#define PLAIN_HOT_FROM 350.0                     // °C: hot surfaces lose reflected light from here...
-#define PLAIN_HOT_TO 1000.0                      // ...to here, where emission dominates
-#define PLAIN_HOT_ALBEDO 0.2
-#define PLAIN_GLOW_FROM 480.0                    // °C, glow fades in from here...
-#define PLAIN_GLOW_TO 800.0                      // ...to here
-#define PLAIN_GLOW_TK 1800.0                     // K, glow brightness ∝ (T/this)^4...
-#define PLAIN_GLOW_GAIN 2.5
-#define PLAIN_GLOW_BASE 0.08                     // ...plus this
-#define PLAIN_LAVA_ALB vec3(0.05, 0.03, 0.02)    // lava's crust, lit only by its own glow
-#define PLAIN_LAVA_FLICKER 0.15
-#define PLAIN_LAVA_HZ 3.0
-#define PLAIN_PLANT_VAR 0.4                      // extra leaf-to-leaf brightness spread
-#define PLAIN_SPEC_METAL 48.0                    // specular exponent and strength
-#define PLAIN_SPEC_METAL_K 0.8
-#define PLAIN_SPEC_WALL 16.0
-#define PLAIN_SPEC_WALL_K 0.08
-#define PLAIN_F0_LIQUID 0.02                     // Fresnel at normal incidence
-#define PLAIN_F0_GLASS 0.045
-#define PLAIN_F_INSIDE 0.3                       // interface seen from inside another medium
-#define PLAIN_GLINT_EXP 400.0
-#define PLAIN_GLINT_GAIN 6.0
-#define PLAIN_LIQ_NORMAL 0.6                     // occupancy gradient bends liquid normals this much
-#define PLAIN_MEDIUM_AMB vec3(0.3, 0.35, 0.42)   // light inside liquids and glass
-#define PLAIN_MEDIUM_SUN 0.6
-#define PLAIN_SCATTER_LIQUID 0.55                // deep liquid reads as its own colour
-#define PLAIN_SCATTER_GLASS 0.15
-#define PLAIN_GAS_AMB vec3(0.3, 0.34, 0.4)
-#define PLAIN_GAS_SUN 0.45
-#define PLAIN_GAS_LONE 0.3                       // a lone gas cell is a faint wisp...
-#define PLAIN_GAS_DENSE 3.0                      // ...a dense plume thick cloud
-#define PLAIN_FIRE_GAIN 2.2
-#define PLAIN_FIRE_T 1000.0
-#define PLAIN_FIRE_LIFE 0.6                      // young flames glow brighter
-#define PLAIN_FIRE_ABSORB 0.12
-#define PLAIN_FLOOR_LO vec3(0.075, 0.078, 0.085) // floor tile and grid line
-#define PLAIN_FLOOR_HI vec3(0.14, 0.15, 0.17)
-#define PLAIN_FLOOR_AMB vec3(0.3, 0.35, 0.45)
-#define PLAIN_FLOOR_GRID 8.0                     // cells per grid square
-#define PLAIN_EXPOSURE 1.1
-#define PLAIN_OPAQUE 0.01                        // stop once this little light gets through
+const PLAIN_SUN: vec3f = vec3f(1.25, 1.15, 1.0);          // sun colour
+const PLAIN_SKY_LO: vec3f = vec3f(0.05, 0.05, 0.06);      // sky gradient, horizon and below...
+const PLAIN_SKY_HI: vec3f = vec3f(0.42, 0.52, 0.68);      // ...to straight up
+const PLAIN_AMB_DOWN: vec3f = vec3f(0.07, 0.065, 0.06);   // sky fill on a face pointing down...
+const PLAIN_AMB_UP: vec3f = vec3f(0.32, 0.38, 0.5);       // ...and pointing up
+const PLAIN_LOCAL_MIN: f32 = 0.35;                        // glow light reaching a fully occluded corner
+const PLAIN_HOT_FROM: f32 = 350.0;                        // °C: hot surfaces lose reflected light from here...
+const PLAIN_HOT_TO: f32 = 1000.0;                         // ...to here, where emission dominates
+const PLAIN_HOT_ALBEDO: f32 = 0.2;
+const PLAIN_GLOW_FROM: f32 = 480.0;                       // °C, glow fades in from here...
+const PLAIN_GLOW_TO: f32 = 800.0;                         // ...to here
+const PLAIN_GLOW_TK: f32 = 1800.0;                        // K, glow brightness ∝ (T/this)^4...
+const PLAIN_GLOW_GAIN: f32 = 2.5;
+const PLAIN_GLOW_BASE: f32 = 0.08;                        // ...plus this
+const PLAIN_LAVA_ALB: vec3f = vec3f(0.05, 0.03, 0.02);    // lava's crust, lit only by its own glow
+const PLAIN_LAVA_FLICKER: f32 = 0.15;
+const PLAIN_LAVA_HZ: f32 = 3.0;
+const PLAIN_PLANT_VAR: f32 = 0.4;                         // extra leaf-to-leaf brightness spread
+const PLAIN_SPEC_METAL: f32 = 48.0;                       // specular exponent and strength
+const PLAIN_SPEC_METAL_K: f32 = 0.8;
+const PLAIN_SPEC_WALL: f32 = 16.0;
+const PLAIN_SPEC_WALL_K: f32 = 0.08;
+const PLAIN_F0_LIQUID: f32 = 0.02;                        // Fresnel at normal incidence
+const PLAIN_F0_GLASS: f32 = 0.045;
+const PLAIN_F_INSIDE: f32 = 0.3;                          // interface seen from inside another medium
+const PLAIN_GLINT_EXP: f32 = 400.0;
+const PLAIN_GLINT_GAIN: f32 = 6.0;
+const PLAIN_LIQ_NORMAL: f32 = 0.6;                        // occupancy gradient bends liquid normals this much
+const PLAIN_MEDIUM_AMB: vec3f = vec3f(0.3, 0.35, 0.42);   // light inside liquids and glass
+const PLAIN_MEDIUM_SUN: f32 = 0.6;
+const PLAIN_SCATTER_LIQUID: f32 = 0.55;                   // deep liquid reads as its own colour
+const PLAIN_SCATTER_GLASS: f32 = 0.15;
+const PLAIN_GAS_AMB: vec3f = vec3f(0.3, 0.34, 0.4);
+const PLAIN_GAS_SUN: f32 = 0.45;
+const PLAIN_GAS_LONE: f32 = 0.3;                          // a lone gas cell is a faint wisp...
+const PLAIN_GAS_DENSE: f32 = 3.0;                         // ...a dense plume thick cloud
+const PLAIN_FIRE_GAIN: f32 = 2.2;
+const PLAIN_FIRE_T: f32 = 1000.0;
+const PLAIN_FIRE_LIFE: f32 = 0.6;                         // young flames glow brighter
+const PLAIN_FIRE_ABSORB: f32 = 0.12;
+const PLAIN_FLOOR_LO: vec3f = vec3f(0.075, 0.078, 0.085); // floor tile and grid line
+const PLAIN_FLOOR_HI: vec3f = vec3f(0.14, 0.15, 0.17);
+const PLAIN_FLOOR_AMB: vec3f = vec3f(0.3, 0.35, 0.45);
+const PLAIN_FLOOR_GRID: f32 = 8.0;                        // cells per grid square
+const PLAIN_EXPOSURE: f32 = 1.1;
+const PLAIN_OPAQUE: f32 = 0.01;                           // stop once this little light gets through
 
-vec3 plainSky(vec3 d) { return mix(PLAIN_SKY_LO, PLAIN_SKY_HI, smoothstep(0.2, 1.0, d.y * 0.5 + 0.5)); }
+fn plainSky(d: vec3f) -> vec3f { return mix(PLAIN_SKY_LO, PLAIN_SKY_HI, smoothstep(0.2, 1.0, d.y * 0.5 + 0.5)); }
 
-vec3 plainGlow(float tC) {
-  float k = (tC + 273.15) / PLAIN_GLOW_TK;
+fn plainGlow(tC: f32) -> vec3f {
+  let k = (tC + 273.15) / PLAIN_GLOW_TK;
   return blackbody(tC) * smoothstep(PLAIN_GLOW_FROM, PLAIN_GLOW_TO, tC) * (k * k * k * k * PLAIN_GLOW_GAIN + PLAIN_GLOW_BASE);
 }
 // what element id at tC gives off: this view's own thermal glow, plus the
 // element's luminescence as the realistic view has it (gfx/materials.js emission)
-vec3 plainEmit(int id, float tC) { return plainGlow(tC) + EMIT[id]; }
+fn plainEmit(id: i32, tC: f32) -> vec3f { return plainGlow(tC) + EMIT(id); }
 
-float plainOccupied(ivec3 c) {
-  if (c.y < 0) return 1.0;
-  if (outside(c)) return 0.0;
-  int id = eid(fetchA(c));
-  return (id == E_EMPTY || KIND[id] == K_GAS) ? 0.0 : 1.0;
+fn plainOccupied(c: vec3i) -> f32 {
+  if (c.y < 0) { return 1.0; }
+  if (outside(c)) { return 0.0; }
+  let id = eid(fetchA(c));
+  return select(1.0, 0.0, id == E_EMPTY || KIND(id) == K_GAS);
 }
 // smooth-ish normal for liquid surfaces from the occupancy gradient
-vec3 plainLiquidNormal(ivec3 c, vec3 faceN) {
-  vec3 gr = vec3(
-    plainOccupied(c + ivec3(1, 0, 0)) - plainOccupied(c - ivec3(1, 0, 0)),
-    plainOccupied(c + ivec3(0, 1, 0)) - plainOccupied(c - ivec3(0, 1, 0)),
-    plainOccupied(c + ivec3(0, 0, 1)) - plainOccupied(c - ivec3(0, 0, 1)));
+fn plainLiquidNormal(c: vec3i, faceN: vec3f) -> vec3f {
+  let gr = vec3f(
+    plainOccupied(c + vec3i(1, 0, 0)) - plainOccupied(c - vec3i(1, 0, 0)),
+    plainOccupied(c + vec3i(0, 1, 0)) - plainOccupied(c - vec3i(0, 1, 0)),
+    plainOccupied(c + vec3i(0, 0, 1)) - plainOccupied(c - vec3i(0, 0, 1)));
   return normalize(faceN - gr * PLAIN_LIQ_NORMAL);
 }
 
-vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
-  float seed = fract(a.w), T = a.y;
-  vec3 alb = decoTint(COLOR[id] * (1.0 + COLORVAR[id] * (seed * 2.0 - 1.0)), COLOR[id], decoAt(cell));   // TPT's deco (gfx/deco.js)
-  vec3 emit;
+fn plainOpaque(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f, rd: vec3f) -> vec3f {
+  let seed = fract(a.w);
+  let T = a.y;
+  var alb = decoTint(COLOR(id) * (1.0 + COLORVAR(id) * (seed * 2.0 - 1.0)), COLOR(id), decoAt(cell));   // TPT's deco (gfx/deco.js)
+  var emit: vec3f;
   if (id == E_LAVA) {
     alb = PLAIN_LAVA_ALB;
-    emit = plainGlow(T) * (1.0 - PLAIN_LAVA_FLICKER + PLAIN_LAVA_FLICKER * sin(uTime * PLAIN_LAVA_HZ + seed * 40.0));
+    emit = plainGlow(T) * (1.0 - PLAIN_LAVA_FLICKER + PLAIN_LAVA_FLICKER * sin(FU.time * PLAIN_LAVA_HZ + seed * 40.0));
   } else {
     // hot surfaces read as glowing: the emission takes over from reflected light
     emit = plainEmit(id, T);
     alb *= mix(1.0, PLAIN_HOT_ALBEDO, smoothstep(PLAIN_HOT_FROM, PLAIN_HOT_TO, T));
   }
-  if (id == E_PLANT) alb *= 1.0 - PLAIN_PLANT_VAR * 0.5 + PLAIN_PLANT_VAR * fract(seed * 7.3);
-  float ndl = max(dot(n, uSun), 0.0);
-  vec3 sh = (uShadows && ndl > 0.0) ? sunShadow(hp, n) : vec3(1.0);
-  float ao = faceAO(cell, ivec3(n), hp);
-  vec3 sky = mix(PLAIN_AMB_DOWN, PLAIN_AMB_UP, n.y * 0.5 + 0.5);
-  vec3 local = sampleLight(hp + n * 0.75) * uLightGain;
-  vec3 lamps = uLampCount > 0 ? lampLight(hp, n, n) : vec3(0.0);   // a torch or lantern
-  vec3 c = alb * (PLAIN_SUN * ndl * sh + sky * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
+  if (id == E_PLANT) { alb *= 1.0 - PLAIN_PLANT_VAR * 0.5 + PLAIN_PLANT_VAR * fract(seed * 7.3); }
+  let ndl = max(dot(n, FU.sun), 0.0);
+  var sh = vec3f(1.0);
+  if (FU.shadows != 0u && ndl > 0.0) { sh = sunShadow(hp, n); }
+  let ao = faceAO(cell, vec3i(n), hp);
+  let sky = mix(PLAIN_AMB_DOWN, PLAIN_AMB_UP, n.y * 0.5 + 0.5);
+  let local = sampleLight(hp + n * 0.75) * FU.lightGain;
+  var lamps = vec3f(0.0);
+  if (FU.lampCount > 0) { lamps = lampLight(hp, n, n); }   // a torch or lantern
+  var c = alb * (PLAIN_SUN * ndl * sh + sky * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
   if (id == E_METAL || id == E_WALL) {
-    vec3 hv = normalize(uSun - rd);
-    bool metal = id == E_METAL;
-    c += PLAIN_SUN * sh * pow(max(dot(n, hv), 0.0), metal ? PLAIN_SPEC_METAL : PLAIN_SPEC_WALL) * (metal ? PLAIN_SPEC_METAL_K : PLAIN_SPEC_WALL_K);
+    let hv = normalize(FU.sun - rd);
+    let metal = id == E_METAL;
+    c += PLAIN_SUN * sh * pow(max(dot(n, hv), 0.0), select(PLAIN_SPEC_WALL, PLAIN_SPEC_METAL, metal))
+       * select(PLAIN_SPEC_WALL_K, PLAIN_SPEC_METAL_K, metal);
   }
   return c + emit;
 }
 
-vec3 plainFloor(vec3 hp) {
-  vec2 q = worldPos(hp).xz / PLAIN_FLOOR_GRID;
-  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
-  float line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  vec3 alb = mix(PLAIN_FLOOR_LO, PLAIN_FLOOR_HI, line);
-  vec3 n = vec3(0.0, 1.0, 0.0);
-  vec3 sh = uShadows ? sunShadow(hp, n) : vec3(1.0);
-  float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
-  vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
-  vec3 lamps = uLampCount > 0 ? lampLight(vec3(hp.x, 0.0, hp.z), n, n) : vec3(0.0);
-  return alb * (PLAIN_SUN * max(uSun.y, 0.0) * sh + PLAIN_FLOOR_AMB * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
+// rd: the ray, for the grid lines' analytic fwidth (surface.js floorFwidth)
+fn plainFloor(hp: vec3f, rd: vec3f) -> vec3f {
+  let q = worldPos(hp).xz / PLAIN_FLOOR_GRID;
+  let gq = abs(fract(q - 0.5) - 0.5) / max(floorFwidth(hp, rd) / PLAIN_FLOOR_GRID, vec2f(1e-4));
+  let line = 1.0 - min(min(gq.x, gq.y), 1.0);
+  let alb = mix(PLAIN_FLOOR_LO, PLAIN_FLOOR_HI, line);
+  let n = vec3f(0.0, 1.0, 0.0);
+  var sh = vec3f(1.0);
+  if (FU.shadows != 0u) { sh = sunShadow(hp, n); }
+  let ao = faceAO(vec3i(i32(floor(hp.x)), -1, i32(floor(hp.z))), vec3i(0, 1, 0), hp);
+  let local = sampleLight(vec3f(hp.x, 0.5, hp.z)) * FU.lightGain;
+  var lamps = vec3f(0.0);
+  if (FU.lampCount > 0) { lamps = lampLight(vec3f(hp.x, 0.0, hp.z), n, n); }
+  return alb * (PLAIN_SUN * max(FU.sun.y, 0.0) * sh + PLAIN_FLOOR_AMB * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
 }
 
-void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
-  bool curved = uWarpK != 0.0;
-  WarpWalk walk;
-  if (curved) walk = warpWalk(ro,rd,t0);
-  vec3 displayRo = ro, displayRd = rd;
-  ivec3 istp = ivec3(sign(rd));
-  vec3 tDelta = abs(1.0 / rd);
-  ivec3 cell = clamp(ivec3(floor(ro + rd * (t0 + 1e-4))), ivec3(0), GRID - 1);
-  vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  float tEnter = t0;
-  int ax = int(bh.z);
+// What plainView drew: the finished colour (ACES applied; alpha = 1 − the
+// mean transmittance), the frag_depth of the first thing hit, and whether
+// anything was (else the caller discards, as the GLSL did).
+struct PlainOut {
+  color: vec4f,
+  depth: f32,
+  hit: bool,
+}
 
-  vec3 col = vec3(0.0), trans = vec3(1.0);
-  float tHit = -1.0;
-  int prevId = E_EMPTY;
-  vec3 mediumLight = vec3(1.0);
-  ivec3 lastB = ivec3(-1);
-  float occ = 0.0;
-  float tCut = meshCutT(rd);   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
-  bool cut = false;
+fn plainView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> PlainOut {
+  var ro = ro0;
+  var rd = rd0;
+  var istp = vec3i(sign(rd));
+  let tDelta = abs(1.0 / rd);
+  var cell = clamp(vec3i(floor(ro + rd * (t0 + 1e-4))), vec3i(0), GRID - 1);
+  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var tEnter = t0;
+  var ax = i32(bh.z);
 
-  for (int i = 0; i < ${2 * g.maxSteps}; i++) {
-    if (!curved && i >= ${g.maxSteps}) break;
-    if (curved) {
-      vec3 fp; float ft;
-      if (warpFloor(walk,fp,ft)) break;
-      float chord; int exitAxis;
-      if (!warpSegment(walk,cell,ro,rd,chord,exitAxis)) break;
-      tEnter = walk.t; ro -= rd*tEnter;
-      ax = walk.axis; istp = ivec3(sign(rd));
-      tMax = vec3(WARP_INF); tMax[exitAxis] = tEnter+chord;
-    }
-    if (outside(cell)) break;
+  var col = vec3f(0.0);
+  var trans = vec3f(1.0);
+  var tHit = -1.0;
+  var prevId = E_EMPTY;
+  var mediumLight = vec3f(1.0);
+  var lastB = vec3i(-1);
+  var occ = 0u;
+  let tCut = ${curved ? 'MESH_CUT_NONE' : 'meshCutT(rd)'};   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
+  var cut = false;${curved ? `
+  var walk = warpWalk(ro, rd, t0);` : ''}
+
+  for (var i = 0; i < ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'}; i++) {${curved ? `
+    var fp: vec3f;
+    var ft: f32;
+    if (warpFloor(walk, &fp, &ft)) { break; }
+    var chord: f32;
+    var exitAxis: i32;
+    if (!warpSegment(&walk, &cell, &ro, &rd, &chord, &exitAxis)) { break; }
+    tEnter = walk.t;
+    ro -= rd * tEnter;
+    ax = walk.axis;
+    istp = vec3i(sign(rd));
+    tMax = vec3f(WARP_INF);
+    tMax[exitAxis] = tEnter + chord;` : ''}
+    if (outside(cell)) { break; }
     if (tEnter >= tCut) { cut = true; break; }
-    ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
-    if (occ < 0.5) {
-      if (curved) warpSkip(walk,bc,false);
-      else ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
+    let bc = cell / BS;
+    if (any(bc != lastB)) { lastB = bc; occ = brickOcc(bc); }
+    if (!brickMatter(occ)) {
+      ${curved ? 'warpSkip(&walk, bc, false);' : 'ax = skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
       prevId = E_EMPTY;
       continue;
     }
-    float tExit = min(tMax.x, min(tMax.y, tMax.z));
-    float seg = min(tExit, tCut) - tEnter;
-    vec4 a = fetchA(cell);
-    int id = eid(a);
-    vec3 n = vec3(0.0);
-    n[ax] = -float(istp[ax]);
+    let tExit = min(tMax.x, min(tMax.y, tMax.z));
+    let seg = min(tExit, tCut) - tEnter;
+    let a = fetchA(cell);
+    let id = eid(a);
+    var n = vec3f(0.0);
+    n[ax] = -f32(istp[ax]);
 
     if (id != E_EMPTY) {
-      int rc = RCLASS[id];
-      if (tHit < 0.0) tHit = tEnter;
-      vec3 hp = ro + rd * tEnter;
+      let rc = RCLASS(id);
+      if (tHit < 0.0) { tHit = tEnter; }
+      let hp = ro + rd * tEnter;
       if (rc == R_OPAQUE) {
         col += trans * plainOpaque(cell, id, a, hp, n, rd);
-        trans = vec3(0.0);
+        trans = vec3f(0.0);
         break;
       } else if (rc == R_LIQUID || rc == R_GLASS) {
         if (id != prevId) {
           // interface: Fresnel reflection of the sky and a sun glint
-          vec3 sn = rc == R_LIQUID ? plainLiquidNormal(cell, n) : n;
-          if (dot(sn, rd) > 0.0) sn = n;
-          float cosi = clamp(-dot(sn, rd), 0.0, 1.0);
-          float f0 = rc == R_LIQUID ? PLAIN_F0_LIQUID : PLAIN_F0_GLASS;
-          bool fromAir = prevId == E_EMPTY || KIND[prevId] == K_GAS;
-          float F = (f0 + (1.0 - f0) * pow(1.0 - cosi, 5.0)) * (fromAir ? 1.0 : PLAIN_F_INSIDE);
-          vec3 r = reflect(rd, sn);
-          mediumLight = uShadows ? sunShadow(hp, n) : vec3(1.0);
-          col += trans * F * (plainSky(r) + PLAIN_SUN * mediumLight * pow(max(dot(r, uSun), 0.0), PLAIN_GLINT_EXP) * PLAIN_GLINT_GAIN);
+          var sn = n;
+          if (rc == R_LIQUID) { sn = plainLiquidNormal(cell, n); }
+          if (dot(sn, rd) > 0.0) { sn = n; }
+          let cosi = clamp(-dot(sn, rd), 0.0, 1.0);
+          let f0 = select(PLAIN_F0_GLASS, PLAIN_F0_LIQUID, rc == R_LIQUID);
+          let fromAir = prevId == E_EMPTY || KIND(prevId) == K_GAS;
+          let F = (f0 + (1.0 - f0) * pow(1.0 - cosi, 5.0)) * select(PLAIN_F_INSIDE, 1.0, fromAir);
+          let r = reflect(rd, sn);
+          mediumLight = vec3f(1.0);
+          if (FU.shadows != 0u) { mediumLight = sunShadow(hp, n); }
+          col += trans * F * (plainSky(r) + PLAIN_SUN * mediumLight * pow(max(dot(r, FU.sun), 0.0), PLAIN_GLINT_EXP) * PLAIN_GLINT_GAIN);
           trans *= 1.0 - F;
         }
-        vec4 dp = decoAt(cell);   // painted: the deco colour, and opaque by its alpha (gfx/deco.js)
-        vec3 att = exp(-mix(PLAIN_SIGMA[id], vec3(DECO_SIGMA), dp.a) * seg);
-        vec3 amb = PLAIN_MEDIUM_AMB + PLAIN_SUN * mediumLight * max(uSun.y, 0.0) * PLAIN_MEDIUM_SUN + sampleLight(hp) * uLightGain;
-        vec3 sc = mix(COLOR[id], decoLinear(dp.rgb), dp.a) * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainEmit(id, a.y);
+        let dp = decoAt(cell);   // painted: the deco colour, and opaque by its alpha (gfx/deco.js)
+        let att = exp(-mix(PLAIN_SIGMA(id), vec3f(DECO_SIGMA), dp.a) * seg);
+        let amb = PLAIN_MEDIUM_AMB + PLAIN_SUN * mediumLight * max(FU.sun.y, 0.0) * PLAIN_MEDIUM_SUN + sampleLight(hp) * FU.lightGain;
+        let sc = mix(COLOR(id), decoLinear(dp.rgb), dp.a) * amb * select(PLAIN_SCATTER_GLASS, PLAIN_SCATTER_LIQUID, rc == R_LIQUID) + plainEmit(id, a.y);
         col += trans * (1.0 - att) * sc;
         trans *= att;
       } else if (rc == R_GAS) {
         // a soft blob per gas cell: lone cells are faint wisps, plumes thick cloud
-        float dens = (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0) * softBlob(cell, ro, rd, tEnter, tExit)
-                   * (PLAIN_GAS_LONE + PLAIN_GAS_DENSE * brickGas(occ));
-        float alpha = 1.0 - exp(-SIGMA[id].x * seg * dens);
-        col += trans * alpha * decoTint(COLOR[id], COLOR[id], decoAt(cell)) * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * uLightGain);
+        let life = select(1.0, clamp(a.z, 0.0, 1.0), id == E_SMOKE);
+        let dens = life * softBlob(cell, ro, rd, tEnter, tExit) * (PLAIN_GAS_LONE + PLAIN_GAS_DENSE * brickGas(occ));
+        let alpha = 1.0 - exp(-SIGMA(id).x * seg * dens);
+        col += trans * alpha * decoTint(COLOR(id), COLOR(id), decoAt(cell)) * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * FU.lightGain);
         trans *= 1.0 - alpha;
       } else if (rc == R_FIRE) {
-        float T = a.y;
-        vec3 e = blackbody(T) * pow(T / PLAIN_FIRE_T, 2.0) * (1.0 - PLAIN_FIRE_LIFE + PLAIN_FIRE_LIFE * clamp(a.z, 0.0, 1.0))
-               * PLAIN_FIRE_GAIN * softBlob(cell, ro, rd, tEnter, tExit);
+        let T = a.y;
+        let e = blackbody(T) * pow(T / PLAIN_FIRE_T, 2.0) * (1.0 - PLAIN_FIRE_LIFE + PLAIN_FIRE_LIFE * clamp(a.z, 0.0, 1.0))
+              * PLAIN_FIRE_GAIN * softBlob(cell, ro, rd, tEnter, tExit);
         col += trans * e * seg;
         trans *= exp(-PLAIN_FIRE_ABSORB * seg);
       }
     }
-    if (max(trans.x, max(trans.y, trans.z)) < PLAIN_OPAQUE) break;
-    prevId = id;
-    if (curved) { warpAdvance(walk); if (warpCell(walk.ray,walk.t).y < 0) break; continue; }
+    if (max(trans.x, max(trans.y, trans.z)) < PLAIN_OPAQUE) { break; }
+    prevId = id;${curved ? `
+    warpAdvance(&walk);
+    if (warpCell(walk.ray, walk.t).y < 0) { break; }` : `
     ax = argmin3(tMax);
     tEnter = tExit;
     cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    tMax[ax] += tDelta[ax];`}
   }
 
-  // floor of the box
-  vec3 floorP; float floorT;
-  bool curvedFloor = curved && warpFloor(walk,floorP,floorT);
-  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && (curved ? curvedFloor : cell.y < 0 && rd.y < 0.0)) {
-    float tf = curved ? floorT : -ro.y / rd.y;
-    if (tHit < 0.0) tHit = tf;
-    col += trans * plainFloor(curved ? floorP : ro + rd * tf);
-    trans = vec3(0.0);
+  // floor of the box${curved ? `
+  var floorP: vec3f;
+  var floorT: f32;
+  let onFloor = warpFloor(walk, &floorP, &floorT);` : ''}
+  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
+    let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
+    if (tHit < 0.0) { tHit = tf; }
+    col += trans * plainFloor(${curved ? 'floorP, normalize(warpSlope(walk.ray, tf))' : 'ro + rd * tf, rd'});
+    trans = vec3f(0.0);
   }
 
-  if (tHit < 0.0) discard;
-  float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
+  var o: PlainOut;
+  o.hit = tHit >= 0.0;
+  let alpha = 1.0 - dot(trans, vec3f(1.0 / 3.0));
   // finished colour; post (raw) only encodes it to sRGB
-  gl_FragColor = vec4(aces(col * PLAIN_EXPOSURE), alpha);
-  vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(displayRo + displayRd * tHit, 1.0);
-  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+  o.color = vec4f(aces(col * PLAIN_EXPOSURE), alpha);
+  // (the displayed ray's point: curved, tHit is its t too)
+  let clip = FU.viewProj * FU.model * vec4f(ro0 + rd0 * max(tHit, 0.0), 1.0);
+  o.depth = clamp(clip.z / clip.w, 0.0, 1.0);
+  return o;
 }
 `;
+
+/** tools/check-wgsl.mjs: the material probes (shaders/gfx/surface.js materialChecks) */
+export const WGSL_CHECK = () => materialChecks('plain');

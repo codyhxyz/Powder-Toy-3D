@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS } from '../physics.js';
-import { quadVert, stateUniforms } from '../shaders/common.js';
-import { povProbeFrag, povCouplingFrag, povFieldFrag, PROBE, PROBE_OUTSIDE } from '../shaders/povBody.js';
+import { PROBE, PROBE_CELLS, PROBE_OUTSIDE } from '../shaders/povBody.js';
+import { povGpu } from './gpu.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
 import { povEvents } from './events.js';
@@ -16,17 +16,17 @@ import { createMeat, EAT_CELLS_MAX } from './meat.js';
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
 //
-// Every frame a small GPU pass (shaders/povBody.js) copies the cells around the
-// body into a PROBE-sized target that is read back asynchronously, so the body
-// always sees the world a frame or two late. From those cells it collides
+// Every frame a small GPU probe (shaders/povBody.js) copies the cells around the
+// body into a ring slot that is read back asynchronously (docs/webgpu.md B7),
+// so the body always sees the world a frame or two late. From those cells it collides
 // (solids and powders block, with an automatic step up 1-cell ledges), floats
 // by Archimedes, feels drag in liquids the way move.js does, gets thrown by
 // pressure gradients with the sim's own a = −∇P·P_ACCEL/ρ, and hands what it
-// touches to vitals.js. A second pass pushes loose matter out of the body's way.
+// touches to vitals.js. An edit pushes loose matter out of the body's way.
 // The body's perks (perks.js) change its moves here (Lukki, Sand Swimmer,
 // Fleet Foot, Rocket Boots, Big Tank, Slow Fall, Shrink) and reach into the
-// world through a third pass (Freeze Field, Revenge Explosion), and through the
-// engine's own brush and the coupling pass (Rain Cloud). A held pogo stick
+// world through another edit (Freeze Field, Revenge Explosion), and through the
+// engine's own brush and the coupling edit (Rain Cloud). A held pogo stick
 // (tools/pogo.tool.js calls holdPogo() every frame) turns its landings into bounces.
 //
 // Units: positions in grid cells (feet = bottom centre of the box), velocities
@@ -234,13 +234,6 @@ const isPowder = (id) => id >= 0 && KIND[id] === K.POWDER;
 const buries = (id) => solidId(id) || isPowder(id);   // what fills the head and chokes it, swimming through it or not
 const isLiquid = (id) => id >= 0 && KIND[id] === K.LIQUID;
 
-function rawMat(frag, uniforms) {
-  return new THREE.RawShaderMaterial({
-    glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader: frag, uniforms,
-    depthTest: false, depthWrite: false,
-  });
-}
-
 // quiet: a body that isn't the player's (an NPC, npc.js) doesn't announce its jet on povEvents.
 // perks: its perk set (perks.js). id: an NPC's id (npc.js), carried as `by` on
 // the povEvents its body sends (gibs, eating); the player's has none.
@@ -282,23 +275,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let sandSwim = false;
   const blocks = (id) => solidId(id) || (!sandSwim && isPowder(id));
 
-  const PN = PROBE.X * PROBE.Y * PROBE.Z;
-  // Readbacks in flight, one requested per frame, so a fresh probe lands every
-  // frame even when each one takes several frames to come back.
-  const slots = [...Array(PROBE_INFLIGHT)].map(() => ({
-    target: new THREE.WebGLRenderTarget(PROBE.X, PROBE.Y * PROBE.Z, {
-      type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
-      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
-    }),
-    buf: new Float32Array(PN * 4), busy: false,
-  }));
+  const PN = PROBE_CELLS;
+  // Readbacks in flight (at most PROBE_INFLIGHT), one requested per frame, so a
+  // fresh probe lands every frame even when each one takes several frames to come back.
+  let inflight = 0;
   // the last probe that landed (seq orders them: readbacks may resolve out of order)
   let probe = { buf: new Float32Array(PN * 4), origin: [0, 0, 0], valid: false, seq: -1 };
   let generation = 0, seq = 0;
   let latency = LATENCY_INIT;
   const shifted = [0, 0];   // grid cells (x, z) the window has moved over the world in all (windowShifted)
 
-  let mats = null, matKey = '';
   let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60;
 
   const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactSpark = new Float32Array(PN);
@@ -354,34 +340,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const vB = new THREE.Vector3(), vK = new THREE.Vector3();
 
   // ---------------------------------------------------------------- probe
-  function ensureMats(sim) {
-    const g = sim.g;
-    const key = `${g.nx}x${g.ny}x${g.nz}`;
-    if (key === matKey) return;
-    mats?.probe.dispose();
-    mats?.couple.dispose();
-    mats?.field.dispose();
-    mats = {
-      probe: rawMat(povProbeFrag(g), { tA: { value: null }, tB: { value: null }, uBoxLo: { value: new THREE.Vector3() } }),
-      couple: rawMat(povCouplingFrag(g), {
-        ...stateUniforms(), uFrame: { value: 0 },
-        uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
-        uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 }, uAhead: { value: new THREE.Vector2() },
-        uOnly: { value: -1 },
-      }),
-      field: rawMat(povFieldFrag(g), {
-        ...stateUniforms(),
-        uCenter: { value: new THREE.Vector3() }, uInner: { value: 0 }, uOuter: { value: 0 },
-        uFeet: { value: new THREE.Vector3() }, uClear: { value: 0 },
-        uCool: { value: 0 }, uFloor: { value: FREEZE_T }, uPressure: { value: 0 },
-      }),
-    };
-    matKey = key;
-  }
-
   function requestProbe(sim) {
-    const slot = slots.find((s) => !s.busy);
-    if (!slot) return;
+    if (inflight >= PROBE_INFLIGHT) return;
     // centre the box where the body will be when the result lands, but keep
     // the body as it is now (and a cell around it) inside, so a fast body
     // never outruns its probe for good
@@ -392,23 +352,18 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const want = Math.round((lo[a] + hi[a]) / 2 + lead[a] - size / 2);
       return Math.min(Math.max(want, c1(hi[a]) + 2 - size), c0(lo[a]) - 1);
     });
-    const u = mats.probe.uniforms;
-    u.tA.value = sim.stateA;
-    u.tB.value = sim.stateB;
-    u.uBoxLo.value.set(...origin);
-    sim.run(mats.probe, slot.target);
-    slot.busy = true;
+    const read = povGpu(sim).probe('povProbe', { boxLo: origin });
+    if (!read) return;   // (its kernel is still building: B5)
+    inflight++;
     const gen = generation, mySeq = seq++, t0 = performance.now(), asked = [...shifted];
-    renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, PROBE.X, PROBE.Y * PROBE.Z, slot.buf).then(() => {
-      slot.busy = false;
+    read.then((bytes) => {
+      inflight--;
       if (gen !== generation || mySeq < probe.seq) return;
       latency += ((performance.now() - t0) / 1000 - latency) * LATENCY_EASE;
-      const old = probe.buf;
       // the cells it read, in the grid as it is now (the window may have moved since)
       const at = [origin[0] + asked[0] - shifted[0], origin[1], origin[2] + asked[1] - shifted[1]];
-      probe = { buf: slot.buf, origin: at, valid: true, seq: mySeq };
-      slot.buf = old;
-    }).catch(() => { slot.busy = false; });
+      probe = { buf: new Float32Array(bytes, 0, PN * 4), origin: at, valid: true, seq: mySeq };
+    }).catch(() => { inflight--; });
   }
 
   const PROBE_SIZE = [PROBE.X, PROBE.Y, PROBE.Z];
@@ -638,24 +593,19 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   }
 
   // ---------------------------------------------------------------- coupling
+  const vC = new THREE.Vector3();
   function couple(sim, stepRate) {
     if (!env2.loose || stepRate <= 0) return;
-    const u = mats.couple.uniforms;
     bounds();
-    u.uMin.value.set(lo[0], lo[1], lo[2]);
-    u.uMax.value.set(hi[0], hi[1], hi[2]);
-    u.uVel.value.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX);
     const speed = p.vel.length();
-    u.uPushFluid.value = DISPLACE_PUSH_FLUID * Math.min(1, speed / DISPLACE_FULL_SPEED);
-    u.uPushPowder.value = DISPLACE_PUSH_POWDER;
-    u.uLift.value = speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0;
-    u.uAhead.value.set(p.vel.x, p.vel.z).multiplyScalar(speed > EPS ? DISPLACE_AHEAD / speed : 0);
-    u.uFrame.value = sim.frame;
-    u.uOnly.value = -1;
-    // it changes only cells whose centres are in the body's box (shaders/povBody.js),
-    // so only those are rebuilt and woken (Simulation.touch)
-    sim.touchCentres(lo, hi);
-    sim.pass(mats.couple);
+    const ahead = speed > EPS ? DISPLACE_AHEAD / speed : 0;
+    // one edit over the cells whose centres are in the body's box (shaders/povBody.js)
+    povGpu(sim).edit('povCouple', sim.touchCentres(lo, hi), {
+      lo, hi, vel: vC.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX),
+      pushFluid: DISPLACE_PUSH_FLUID * Math.min(1, speed / DISPLACE_FULL_SPEED), pushPowder: DISPLACE_PUSH_POWDER,
+      lift: speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0,
+      ahead: [p.vel.x * ahead, p.vel.z * ahead], frame: sim.frame, only: -1,
+    });
   }
 
   // ---------------------------------------------------------------- perk fields
@@ -671,19 +621,12 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     return false;
   }
 
-  // One pass of shaders/povBody.js povFieldFrag over a shell around the body's middle.
+  // One edit of shaders/povBody.js's field over a shell around the body's middle.
   function perkField(sim, { inner, outer, cool = 0, pressure = 0, clear = 0 }) {
-    const u = mats.field.uniforms;
-    u.uCenter.value.set(p.pos.x, p.pos.y + H / 2, p.pos.z);
-    u.uInner.value = inner;
-    u.uOuter.value = outer;
-    u.uFeet.value.copy(p.pos);
-    u.uClear.value = clear;
-    u.uCool.value = cool;
-    u.uPressure.value = pressure;
-    const c = u.uCenter.value;
-    sim.touchCentres([c.x - outer, c.y - outer, c.z - outer], [c.x + outer, c.y + outer, c.z + outer]);
-    sim.pass(mats.field);
+    const c = [p.pos.x, p.pos.y + H / 2, p.pos.z];
+    povGpu(sim).edit('povField', sim.touchCentres(c.map((x) => x - outer), c.map((x) => x + outer)), {
+      center: c, inner, outer, feet: p.pos, clear, cool, floor: FREEZE_T, pressure,
+    });
   }
 
   // Rain Cloud: its sphere over the head, as the probe saw it; the breeze; the brush
@@ -709,15 +652,11 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     cloud.air *= whole; cloud.cloud *= whole;
     // the breeze: what's there moves with the body (cloud only: rain falls out of it freely)
     if (cloud.cloud && stepRate > 0) {
-      const u = mats.couple.uniforms;
-      u.uMin.value.set(c.x - r, c.y - r, c.z - r);
-      u.uMax.value.set(c.x + r, c.y + r, c.z + r);
-      u.uVel.value.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX);
-      u.uPushFluid.value = 0; u.uPushPowder.value = 0; u.uLift.value = 0; u.uAhead.value.set(0, 0);
-      u.uFrame.value = sim.frame;
-      u.uOnly.value = E.CLOUD;
-      sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]);
-      sim.pass(mats.couple);
+      const lo = [c.x - r, c.y - r, c.z - r], hi = [c.x + r, c.y + r, c.z + r];
+      povGpu(sim).edit('povCouple', sim.touchCentres(lo, hi), {
+        lo, hi, vel: vC.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX),
+        pushFluid: 0, pushPowder: 0, lift: 0, ahead: [0, 0], frame: sim.frame, only: E.CLOUD,
+      });
     }
     // the brush: top the air up to CLOUD_FILL, at the seed rate at most, within the budget
     const want = Math.min(CLOUD_FILL * (cloud.air + cloud.cloud) - cloud.cloud, CLOUD_SEED_RATE * dt, CLOUD_BUDGET - cloudOwed);
@@ -755,7 +694,6 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       lastSim = sim; lastFrame = sim.frame;
       g = sim.g;
       generation++; probe.valid = false;
-      ensureMats(sim);
     }
     // sim steps since last frame → step rate (0 while paused)
     const steps = Math.max(0, sim.frame - lastFrame);
@@ -1058,11 +996,6 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     generation++;
     bodyWorld.dispose();
     kicker.dispose();   // its povEvents listeners would keep the body alive and run every round:move
-    slots.forEach((s) => s.target.dispose());
-    mats?.probe.dispose();
-    mats?.couple.dispose();
-    mats?.field.dispose();
-    mats = null; matKey = '';
     for (const k in listeners) delete listeners[k];
   }
 

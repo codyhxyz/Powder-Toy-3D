@@ -107,7 +107,15 @@ export class PerkOrbs {
     if (i < 0) return;
     this.list.splice(i, 1);
     o.obj.removeFromParent();
-    o.obj.traverse((m) => { m.geometry?.dispose(); m.material?.dispose(); });   // the icon textures are shared and kept
+    // The icon textures are shared and kept, and so is the icon's geometry:
+    // three's one sprite quad, which every Sprite on the page draws with
+    // (three's Sprite.js). Disposing it destroys its vertex buffer, and three
+    // r186's WebGPU backend still binds that buffer for the next sprite it
+    // draws (WebGPUAttributeUtils.destroyAttribute forgets the interleaved
+    // attribute, not its InterleavedBuffer's GPUBuffer): a world switch's
+    // clear() then took the next world's shrine orbs down with "[Buffer]
+    // used in submit while destroyed", and graphics stopped.
+    o.obj.traverse((m) => { if (!m.isSprite) m.geometry?.dispose(); m.material?.dispose(); });
   }
 
   clear() { for (const o of [...this.list]) this.remove(o); }

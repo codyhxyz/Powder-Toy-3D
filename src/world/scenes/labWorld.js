@@ -1,4 +1,6 @@
-import { helpersGLSL, definesGLSL, jsConstants, pickGLSL, compileShared, groundScan } from './themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, pickGLSL, compileShared, groundScan } from './themedShared.js';
+import { toWgsl } from './subsetWgsl.js';
+import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 
 // Lab world: the box lab (presets.js 'lab') grown into an endless research
 // facility. The world is a grid of rooms, ROOM cells square, each walled on
@@ -363,6 +365,25 @@ function twin(P) {
   return twins.get(k);
 }
 
+// The scene's WGSL (scenes/sceneGpu.js): its uniforms (uLabWorldX, uLabWorldZ:
+// the world's size along x and z, cells), constants, the helpers, the
+// geometry (from the subset: scenes/subsetWgsl.js) and sceneCell.
+const LAB_U = sceneStruct({ uLabWorldX: 'i32', uLabWorldZ: 'i32' });
+let srcWgsl = null;
+const labWgsl = () => /* wgsl */ `
+${sceneHeadWGSL(LAB_U)}
+${definesGLSL(P_, L)}
+${helpersGLSL}
+${srcWgsl ??= toWgsl(SRC, { consts: definesTypes(P_, L), uniforms: LAB_U.sceneTypes })}
+fn sceneCell(w: vec3i) -> SceneCell {
+  let id = labCell(w.x, w.y, w.z);
+  var ctype = 0.0;
+  if (id == E_LAVA) { ctype = f32(E_STONE); }   // lava remembers it was stone (the box lab's)
+  let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, LAB_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
+  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), ctype + seed), vec4f(0.0));
+}
+`;
+
 export const LAB = L.ints;
 export const labTwin = twin;   // (tools/scene-themed-preview.mjs)
 
@@ -370,25 +391,9 @@ export const labWorld = {
   key: 'labWorld',
   label: 'Lab world',
   params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: 0, floor: L.ints.FLOOR }),
-  glsl: () => /* glsl */ `
-${definesGLSL(P_, L)}
-${helpersGLSL}
-uniform int uLabWorldX;   // the world's size along x and z, cells
-uniform int uLabWorldZ;
-${SRC}
-void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
-  int id = labCell(w.x, w.y, w.z);
-  float ctype = id == E_LAVA ? float(E_STONE) : 0.0;   // lava remembers it was stone (the box lab's)
-  float seed = float(seedWorld(w, uSceneSeed, LAB_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  A = vec4(float(id), SPAWNT[id], SPAWNLIFE[id], ctype + seed);
-  B = vec4(0.0);
-}
-`,
-  uniforms: (P) => ({
-    uSceneSeed: { value: P.seed },
-    uLabWorldX: { value: P.size[0] },
-    uLabWorldZ: { value: P.size[2] },
-  }),
+  glsl: () => labWgsl(),
+  uniformStruct: LAB_U,
+  uniforms: (P) => ({ uSceneSeed: P.seed, uLabWorldX: P.size[0], uLabWorldZ: P.size[2] }),
   // the room corner near the world's centre with the most going on in the four rooms around it
   start(P) {
     const T = twin(P), R = L.ints.ROOM;

@@ -8,13 +8,33 @@ import { appPreloadPlugin } from './scripts/app-preload-plugin.mjs';
 // WebAssembly's ESM integration (vite-plugin-wasm) for Rapier's binary .wasm
 // (@dimforge/rapier3d-simd imports it as a module; it ships as a file of its
 // own, fetched and compiled as it streams, on the first vehicle).
-export default defineConfig({
-  plugins: [wasm(), worldBakePlugin(), appPreloadPlugin()],
-  // fonts stay files (src/fonts.css): a small subset inlined into the page's
-  // CSS would be downloaded by every visitor, needed or not
-  build: { assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined) },
-  // fengari (the console's Lua, src/console/lua.js) reads process.env.FENGARICONF
-  // as it loads; the build replaces process.env, the dev server's pre-bundle
-  // doesn't, and the browser has no process: no config means its defaults
-  optimizeDeps: { rolldownOptions: { transform: { define: { 'process.env.FENGARICONF': 'undefined' } } } },
-});
+//
+// The dev server also serves the GPU harness pages (tools/harness/*.html,
+// docs/webgpu.md I1) like any file under the root. The build ships only the
+// game: its one input is index.html, so no harness page reaches dist/. Mode
+// 'harness' (tools/vite-server.mjs) bakes the World only when a page imports
+// 'virtual:world-bake' (a world harness page), not when the server starts:
+// most harness pages never import it, and the bake keeps a CPU busy a while.
+export default defineConfig(({ mode }) => ({
+  plugins: [wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), appPreloadPlugin()],
+  optimizeDeps: {
+    // harness mode: scan only the harness pages for dependencies to pre-bundle (the game imports the bake)
+    ...(mode === 'harness' ? { entries: ['tools/harness/*.html'] } : {}),
+    // fengari (the console's Lua, src/console/lua.js) reads process.env.FENGARICONF
+    // as it loads; the build replaces process.env, the dev server's pre-bundle
+    // doesn't, and the browser has no process: no config means its defaults
+    rolldownOptions: { transform: { define: { 'process.env.FENGARICONF': 'undefined' } } },
+  },
+  build: {
+    rollupOptions: { input: 'index.html' },
+    // fonts stay files (src/fonts.css): a small subset inlined into the page's
+    // CSS would be downloaded by every visitor, needed or not
+    assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined),
+  },
+}));
+
+// The bake plugin without its eager start: its load() bakes on first use.
+function lazyBake(plugin) {
+  const { buildStart, ...rest } = plugin;
+  return rest;
+}

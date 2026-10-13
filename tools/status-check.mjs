@@ -279,10 +279,10 @@ process.exit(fails ? 1 : 0);
 
 
 async function gpu(port, shotPath) {
-  const { chromium } = await import('playwright');
+  const [{ launchBrowser, newTestPage }, { pageGpu }] = await Promise.all([import('./browser.mjs'), import('./page-gpu.mjs')]);
   const W = 960, H = 600;
-  const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-  const p = await browser.newPage({ viewport: { width: W, height: H } });
+  const browser = await launchBrowser();
+  const p = await pageGpu(await newTestPage(browser, { mode: shotPath ? 'visual' : 'preview', viewport: { width: W, height: H } }));
   const errs = [];
   // (the multiplayer relay isn't running locally: its refused connection isn't ours)
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
@@ -306,8 +306,15 @@ async function gpu(port, shotPath) {
   }, [key, x, y, z, radius, replace]);
   const stand = (x, z, y = 0) => ev(([x, y, z]) => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(x, y, z)); }, [x, y, z]);
   const st = () => ev(() => window.__app.pov.player.status.list().map((s) => s.key));
-  const count = (key) => ev(async (key) => { const { E } = await import('/src/elements.js'); const c = window.__app.sim.census()[E[key]]; return c ? { n: c.n, Tmax: Math.round(c.Tmax) } : { n: 0, Tmax: 0 }; }, key);
+  const count = (key) => ev(async (key) => { const { E } = await import('/src/elements.js'); const c = (await window.__pageGpu.census())[E[key]]; return c ? { n: c.n, Tmax: Math.round(c.Tmax) } : { n: 0, Tmax: 0 }; }, key);
   const until = (fn, arg, ms) => p.waitForFunction(fn, arg, { timeout: ms, polling: 50 }).then(() => true, () => false);
+  // the same for a predicate that reads the state back, which is async: waitForFunction doesn't
+  // await a predicate, and a pending promise is truthy, so this polls through evaluate instead
+  const untilRead = async (fn, arg, ms) => {
+    const end = Date.now() + ms;
+    do { if (await ev(fn, arg)) return true; await settle(50); } while (Date.now() < end);
+    return false;
+  };
   try {
     await dropIn(`http://localhost:${port}/?size=128&preset=empty`);
     check('gpu: dropped in', (await ev(() => window.__app.pov.mode)) === 'on');
@@ -345,9 +352,9 @@ async function gpu(port, shotPath) {
     check('gpu: it burns out', burnOut);
     // oily, it burns long enough to set the wood alight (wood ignites at 300 °C)
     await ev(() => { const q = window.__app.pov.player; q.status.add('OILY', 15); q.status.add('BURNING', 10); });
-    const caught = await until(async () => {
+    const caught = await untilRead(async () => {
       const { E } = await import('/src/elements.js');
-      return (window.__app.sim.census()[E.WOOD]?.Tmax ?? 0) > 300;
+      return ((await window.__pageGpu.census())[E.WOOD]?.Tmax ?? 0) > 300;
     }, null, 10000);
     const w2 = await count('WOOD');
     check('gpu: a burning oily body sets the wood beside it alight', caught, `wood Tmax ${w2.Tmax} °C, ${w2.n} cells left`);

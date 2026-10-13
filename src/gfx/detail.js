@@ -10,8 +10,9 @@
 // worse of the god view and an eye-level close-up (the close-up is the worst
 // case, since there detail covers the whole screen).
 //
-// A feature compiles in only when on: the shaders see `#define <define> 1`
-// (three.js material defines), so a switched-off feature costs nothing.
+// A feature compiles in only when on: the view's WGSL is generated with it
+// (shaders/render.js volumeFrag(g, { detail }), a JS template switch where the
+// GLSL had `#define <define> 1`), so a switched-off feature costs nothing.
 
 import { CELL_M } from '../scale.js';
 
@@ -34,7 +35,8 @@ export const COST = {
 };
 export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS ? 'medium' : 'high');
 
-// The features. key: settings key suffix; define: GLSL macro; label: the
+// The features. key: settings key suffix; define: the switch's name in the
+// defines object the shaders take (the GLSL's macro); label: the
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
 // (put the measured ms in a comment next to it); fadeM: pixel footprint
 // (metres per pixel) above which the feature draws nothing, so the view
@@ -113,16 +115,28 @@ export const DETAIL = [
     desc: 'Liquid that plunges or lands hard turns white with foam that drifts on the flow and bursts over a few seconds; long falls tear into spray' },
 ];
 
+// Features whose realistic module SwiftShader (the software adapter: the test
+// container, ?software=1) builds within budget but can't draw: its GPU
+// process crashes (SIGSEGV, exit code 11) compiling the shader at the first
+// draw, ~15 s in, and the device is lost (Chromium 141, 2026-10-11; each of
+// these alone does it, every other feature draws). On a fallback adapter the
+// volume leaves them out (gfx/volume.js), and shaders/render.js lists the
+// variants holding them on WGSL_MAC_ONLY; a real GPU draws them.
+export const SOFTWARE_UNDRAWABLE = ['DETAIL_RELIEF', 'DETAIL_GRAINS', 'DETAIL_GRAIN_CLUSTERS'];
+/** A defines object as a device draws it: on a software adapter (fallback) without SOFTWARE_UNDRAWABLE. */
+export const drawableDetail = (detail, fallback) =>
+  (fallback ? Object.fromEntries(Object.entries(detail).filter(([k]) => !SOFTWARE_UNDRAWABLE.includes(k))) : detail);
+
 export const settingKey = (f) => `detail_${f.key}`;
 
 // settings defaults for every feature, by cost tier
 export const detailDefaults = () => Object.fromEntries(DETAIL.map((f) => [settingKey(f), COST[f.cost].on]));
 
-// three.js `defines` for the features switched on in `settings`
+// the defines object (shaders/render.js volumeFrag's detail) for the features switched on in `settings`
 export const detailDefines = (settings) =>
   Object.fromEntries(DETAIL.filter((f) => settings[settingKey(f)]).map((f) => [f.define, 1]));
 
-// every feature on (tools/check-shaders.mjs compiles this variant too)
+// every feature on (shaders/render.js WGSL_CHECK builds this variant too)
 export const allDetailDefines = () => Object.fromEntries(DETAIL.map((f) => [f.define, 1]));
 
 // Levels for the one visible control: none, the cost-tier defaults, every feature.

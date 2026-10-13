@@ -9,6 +9,7 @@ import { createWorm } from '../src/pov/worm.js';
 import { addTarget, PLAYER } from '../src/pov/targets.js';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { OUTSIDE } from '../src/pov/ai/world.js';
+import { setPovGpu } from '../src/pov/gpu.js';
 
 const NX = 128, NY = 96, NZ = 128, GROUND = 40, WALL_X = 70, WALL_W = 3, FPS = 60, SECONDS = 20;
 const wall = process.argv.includes('wall'), size = process.argv.includes('giant') ? 'giant' : 'small';
@@ -21,7 +22,9 @@ const id = (x, y, z) => {
 };
 const world = { ready: true, dims: [NX, NY, NZ], id, T: () => 20, kind: (i) => (i === OUTSIDE ? K.SOLID : ELEMENTS[i].kind), standAt: () => GROUND };
 let passes = 0;
-const sim = { id: 1, g: { nx: NX, ny: NY, nz: NZ }, gravity: 0.025, touchCentres() {}, pass() { passes++; } };
+const sim = { id: 1, g: { nx: NX, ny: NY, nz: NZ }, gravity: 0.025, touchCentres() {} };
+// its POV GPU work (pov/gpu.js setPovGpu): the bites only counted, each taken
+setPovGpu(sim, { ready: true, edit: () => { passes++; return true; } });
 const player = { pos: new THREE.Vector3(100, GROUND, 64), vel: new THREE.Vector3(), hurt: 0, cause: null };
 addTarget({
   id: PLAYER, alive: true,

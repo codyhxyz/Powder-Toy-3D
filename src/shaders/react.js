@@ -1,8 +1,10 @@
-import { prelude, stateOutGLSL } from './common.js';
-import { quietGLSL, inertNearGLSL } from './activity.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims } from './common.js';
+import { inertNearGLSL } from './activity.js';
 import { ELEMENTS } from '../elements.js';
 import { electricReactGLSL } from '../electricity.js';
-import { simModesGLSL } from '../simModes.js';
+import { simModesGLSL, SIM_MODE_FIELDS } from '../simModes.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
 // can't break anything, which lets almost every cell skip the impact check.
@@ -13,8 +15,31 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 // touching pair is partners once every RX_PAIRINGS steps, and a reaction's
 // chance per step becomes chance·RX_PAIRINGS per pairing.
 export const RX_PAIRINGS = 3 * 2;
-export const FACES = 6;   // a cell's face neighbours: the react pass's uFaces
+export const FACES = 6;   // a cell's face neighbours: the react pass's P.faces
 const RX_SALT = 0x52;   // keeps a pair's random stream apart from the cells' own (seed3 salt)
+
+export const ReactParams = uniformStruct('ReactParams', {
+  frame: 'u32',
+  gravity: 'f32',
+  // FACES at runtime: a loop to it can't be unrolled. Unrolled, the GPU compiler
+  // inlines every call in every loop body six times over, and ANGLE/Metal took
+  // a minute to build this pass cold (docs/webgpu.md D3).
+  faces: 'u32',
+  // The most cells a liquid looks up its column for its head (the grid's
+  // height; the scan stops at the surface, or once the head is enough for
+  // FLOW). A param, so the loop isn't unrolled.
+  headScan: 'u32',
+  rays: 'u32',   // the rays layer stepped: its deposits are in rayDeposit
+  // simulation modes (src/simModes.js): gravMode, edge, and
+  ...SIM_MODE_FIELDS,
+  airMode: 'u32',       // AIR_*
+  ambientHeat: 'u32',   // heat in the air (off: air holds its ambient, airT(), and matter trades no heat with it)
+});
+
+// Group 2 (docs/webgpu.md C4, D3): what fast particles left in each cell this
+// step (raysLayer.js, docs/particles.md), heat and air pressure, two i32 per
+// slot in fixed point (physics.js RAY_DEPOSIT_SCALE).
+export const REACT_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
 
 // React pass: everything that only changes a cell in place, using its six
 // face neighbours.
@@ -79,63 +104,72 @@ const RX_SALT = 0x52;   // keeps a pair's random stream apart from the cells' ow
 //     batteries and sensors start them, switches gate them.
 //   - The activity flags (shaders/common.js FLAG): the rest test on the cell's
 //     new state, its neighbours as this pass saw them (activity.js).
-export const reactFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform uint uFrame;
-uniform float uGravity;
-// FACES as a uniform: a loop to it can't be unrolled. Unrolled, the GPU compiler
-// inlines every call in every loop body six times over, and ANGLE/Metal took
-// a minute to build this pass cold (tools/program-bench.mjs).
-uniform int uFaces;
-// The most cells a liquid looks up its column for its head (the grid's
-// height; the scan stops at the surface, or once the head is enough for
-// FLOW). A uniform, so the loop isn't unrolled.
-uniform int uHeadScan;
-// What fast particles left in each cell this step (raysLayer.js, docs/particles.md):
-// heat (energy) and air pressure, in a target laid out like the state.
-uniform sampler2D tRayDep;
-uniform bool uRays;
-// simulation modes (src/simModes.js; uEdge and uGravMode come with simModesGLSL)
-uniform int uAirMode;
-uniform bool uAmbientHeat;
-${simModesGLSL}
-${stateOutGLSL}
-${quietGLSL}
+//   - Simulation modes (src/simModes.js): past a void edge a neighbour is
+//     still air at ambient with no pressure, past a loop edge the far side's
+//     cell; with radial gravity the forces use the pull's vector and the
+//     normal force, friction and liquid flow its dominant axis (the move's
+//     frame, gravFrame); the air modes still, empty or freeze the air's
+//     pressure and wind; ambient heat off holds air at AMBIENT and stops
+//     matter trading heat with it. Vertical gravity applies no frame, so it
+//     runs exactly what it ran before.
+// One workgroup per brick of the DRAWN list (indirect), a thread per cell,
+// reading the copy the header names (H.src) and writing every cell of the
+// brick to the other (H.dst): the copy-through that keeps both copies right.
+// A quiet brick is one uniform branch for the workgroup. At the end, the
+// brick's word in marks.foams says whether any cell of it now holds a foaming
+// liquid, the aeration list's input (docs/webgpu.md D3, G4).
+export const reactFrag = (g, { debug = false } = {}) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
+${ReactParams.wgsl}
+@group(3) @binding(1) var<uniform> P: ReactParams;
+@group(2) @binding(0) var<storage, read> rayDeposit: array<i32>;   // per slot: heat, pressure (fixed point)
 ${inertNearGLSL}
 ${electricReactGLSL}
+${simModesGLSL}
 
-const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
-
+// The face neighbours (activity.js FACES: +x, -x, +y, -y, +z, -z).
+fn DIRS(i: i32) -> vec3i { return FACES(i); }
 // the DIRS index of a unit axis vector
-int faceOf(vec3 d) { return d.x > 0.5 ? 0 : d.x < -0.5 ? 1 : d.y > 0.5 ? 2 : d.y < -0.5 ? 3 : d.z > 0.5 ? 4 : 5; }
+fn faceOf(d: vec3f) -> i32 {
+  if (d.x > 0.5) { return 0; }
+  if (d.x < -0.5) { return 1; }
+  if (d.y > 0.5) { return 2; }
+  if (d.y < -0.5) { return 3; }
+  if (d.z > 0.5) { return 4; }
+  return 5;
+}
 
-// Latent heat bookkeeping. acc is energy banked toward a transition at Tp.
-// rising: transition happens when heated past Tp (melting, boiling).
-#define HARD_MIN ${HARD_MIN.toFixed(1)}   // the softest breakable solid's hardness
-#define RX_PAIRINGS ${RX_PAIRINGS.toFixed(1)}   // steps per cycle of partner choices (RX_PAIRINGS)
-#define RX_SALT ${RX_SALT}u
+const HARD_MIN: f32 = ${HARD_MIN.toFixed(1)};   // the softest breakable solid's hardness
+const RX_PAIRINGS: f32 = ${RX_PAIRINGS.toFixed(1)};   // steps per cycle of partner choices (RX_PAIRINGS)
+const RX_SALT: u32 = ${RX_SALT}u;
 
 // The product of an \`into\` (elements.js mechanisms specs): one draw from s
 // when it is a weighted list, none when it is a single element. -1 = SAME.
-int pickOut(int sp, inout uint s) {
-  ivec2 at = SPEC[sp];
-  if (at.y == 1) return int(OUT[at.x].x);
-  float r = rnd(s);
-  for (int k = 0; k < at.y - 1; k++) if (r < OUT[at.x + k].y) return int(OUT[at.x + k].x);
-  return int(OUT[at.x + at.y - 1].x);
+fn pickOut(sp: i32, s: ptr<function, u32>) -> i32 {
+  let at = SPEC(sp);
+  if (at.y == 1) { return i32(OUT(at.x).x); }
+  let r = rnd(s);
+  for (var k = 0; k < at.y - 1; k++) {
+    if (r < OUT(at.x + k).y) { return i32(OUT(at.x + k).x); }
+  }
+  return i32(OUT(at.x + at.y - 1).x);
 }
-// What a product's ctype is: for LAVA, what it sets back into (of, or the
+// What a product's ctype is: for LAVA, what it sets back into (of_, or the
 // element it came from); nothing for anything else.
-float ctypeOf(int prod, int of, int self) { return prod == E_LAVA ? float(of >= 0 ? of : self) : 0.0; }
+fn ctypeOf(prod: i32, of_: i32, self_: i32) -> f32 {
+  if (prod != E_LAVA) { return 0.0; }
+  return f32(select(self_, of_, of_ >= 0));
+}
 // Air pressure from gas set free: puff volumes (at ambient) per volume, scaled
 // from water flashing to steam (physics.js STEAM_BOIL_PUFF), as fizz is.
-float puffP(float puff) { return STEAM_BOIL_PUFF * puff / STEAM_EXPANSION; }
+fn puffP(puff: f32) -> f32 { return STEAM_BOIL_PUFF * puff / STEAM_EXPANSION; }
 
 // Kinetic energy a cell (id, T, v) carries along the unit axis n: ½·ρ·vn², or
 // 0 when it is moving away or can't move.
-float impactKE(int id, float T, vec3 v, vec3 n) {
-  float vn = dot(v, n);
-  return movable(id) && vn > 0.0 ? 0.5 * densityOf(id, T) * vn * vn : 0.0;
+fn impactKE(id: i32, T: f32, v: vec3f, n: vec3f) -> f32 {
+  let vn = dot(v, n);
+  if (movable(id) && vn > 0.0) { return 0.5 * densityOf(id, T) * vn * vn; }
+  return 0.0;
 }
 
 // A projectile (density m, speed u along the axis) breaks a solid of hardness
@@ -143,11 +177,12 @@ float impactKE(int id, float T, vec3 v, vec3 n) {
 // it hits the loose debris head on with the move pass's collision rule
 // (move.js collide). Returns the projectile's speed along the axis and the
 // debris's, both afterwards.
-vec2 shatter(float m, float u, float H, float M) {
-  float u1 = sqrt(max(u * u - 2.0 * H / m, 0.0));
-  if (u1 <= COLLIDE_V) return vec2(u1, 0.0);   // slow contact: the debris just supports it
-  float inv = 1.0 / (m + M), vc = m * u1 * inv;
-  return vec2(vc - RESTITUTION * M * inv * u1, min(vc + RESTITUTION * m * inv * u1, V_MAX));
+fn shatter(m: f32, u: f32, H: f32, M: f32) -> vec2f {
+  let u1 = sqrt(max(u * u - 2.0 * H / m, 0.0));
+  if (u1 <= COLLIDE_V) { return vec2f(u1, 0.0); }   // slow contact: the debris just supports it
+  let inv = 1.0 / (m + M);
+  let vc = m * u1 * inv;
+  return vec2f(vc - RESTITUTION * M * inv * u1, min(vc + RESTITUTION * m * inv * u1, V_MAX));
 }
 
 // Heat flowing into a cell (id a at Ta) from a face neighbour (b at Tb) per
@@ -155,90 +190,102 @@ vec2 shatter(float m, float u, float H, float M) {
 // bring the smaller-capacity cell to the other's temperature (physics.js
 // COND_FLUX_SHARE). Flux and cap are symmetric in the pair, so what one cell
 // gains the other loses.
-float condFlux(int a, float Ta, int b, float Tb) {
-  float dT = Tb - Ta;
-  float lim = abs(dT) * min(CAP[a], CAP[b]) * COND_FLUX_SHARE;
-  return clamp(min(COND[a], COND[b]) * dT, -lim, lim);
+fn condFlux(a: i32, Ta: f32, b: i32, Tb: f32) -> f32 {
+  let dT = Tb - Ta;
+  let lim = abs(dT) * min(CAP(a), CAP(b)) * COND_FLUX_SHARE;
+  return clamp(min(COND(a), COND(b)) * dT, -lim, lim);
 }
 
 // The oxygen in the gas around a cell over air's: 1 in air (flames are burning
 // air), O2_PER_AIR in pure oxygen (physics.js).
-float oxyShare(int nAir, int nOxy) {
-  return nAir + nOxy > 0 ? (float(nAir) + O2_PER_AIR * float(nOxy)) / float(nAir + nOxy) : 1.0;
+fn oxyShare(nAir: i32, nOxy: i32) -> f32 {
+  if (nAir + nOxy > 0) { return (f32(nAir) + O2_PER_AIR * f32(nOxy)) / f32(nAir + nOxy); }
+  return 1.0;
 }
 // A flame of temperature T (°C) in air burns this hot with that much oxygen
 // (OXY_FLAME_GAIN in kelvin, all oxygen).
-float oxyFlameT(float T, float oxy) {
-  float gain = 1.0 + (OXY_FLAME_GAIN - 1.0) * (oxy - 1.0) / (O2_PER_AIR - 1.0);
+fn oxyFlameT(T: f32, oxy: f32) -> f32 {
+  let gain = 1.0 + (OXY_FLAME_GAIN - 1.0) * (oxy - 1.0) / (O2_PER_AIR - 1.0);
   return (T + KELVIN) * gain - KELVIN;
 }
 
 // Latent heat with no bank (elements.js LIFE_BANK false: the cell's life holds
 // something else): the heat crossing Tp this step goes into the change, which
 // happens with that heat over L as its chance. On average that is the bank.
-bool latentChance(inout float T, float Tp, float C, float L, bool rising, inout uint s) {
-  float e = rising ? (T - Tp) * C : (Tp - T) * C;
-  if (e <= 0.0) return false;
-  T = Tp;
+fn latentChance(T: ptr<function, f32>, Tp: f32, C: f32, L: f32, rising: bool, s: ptr<function, u32>) -> bool {
+  var e = (Tp - *T) * C;
+  if (rising) { e = (*T - Tp) * C; }
+  if (e <= 0.0) { return false; }
+  *T = Tp;
   return rnd(s) * L < e;
 }
 
 // Singularity (physics.js SING_*). What it swallows: any matter but the wall
 // and void (which drains it instead; another singularity merges), its partner
 // in the reactions' pairing.
-#define SING_SALT 0x5au   // its stream (the reactions' is RX_SALT)
-bool singEats(int j) { return j != E_EMPTY && j != E_WALL && j != E_VOID && j != E_SINGULARITY; }
+const SING_SALT: u32 = 0x5au;   // its stream (the reactions' is RX_SALT)
+fn singEats(j: i32) -> bool { return j != E_EMPTY && j != E_WALL && j != E_VOID && j != E_SINGULARITY; }
 // The vacuum one of mass m holds.
-float singVacuum(float m) { return max(P_MIN, -SING_P_PER_MASS * m); }
+fn singVacuum(m: f32) -> f32 { return max(P_MIN, -SING_P_PER_MASS * m); }
 // Of two touching singularities (mass, cell), does the first take the second?
 // The heavier does; of two alike, the one first in the grid.
-int cellKey(ivec3 c) { return c.x + NX * (c.y + NY * c.z); }
-bool singTakes(float ma, ivec3 a, float mb, ivec3 b) { return ma > mb || (ma == mb && cellKey(a) < cellKey(b)); }
+fn cellKey(c: vec3i) -> i32 { return c.x + NX * (c.y + NY * c.z); }
+fn singTakes(ma: f32, a: vec3i, mb: f32, b: vec3i) -> bool { return ma > mb || (ma == mb && cellKey(a) < cellKey(b)); }
 
-bool latent(inout float T, inout float acc, float Tp, float C, float L, bool rising) {
+// Latent heat bookkeeping. acc is energy banked toward a transition at Tp.
+// rising: transition happens when heated past Tp (melting, boiling).
+fn latent(T: ptr<function, f32>, acc: ptr<function, f32>, Tp: f32, C: f32, L: f32, rising: bool) -> bool {
   if (rising) {
-    if (T > Tp) { acc += (T - Tp) * C; T = Tp; }
-    else if (acc > 0.0) { float r = min(acc, (Tp - T) * C); acc -= r; T += r / C; }
+    if (*T > Tp) { *acc += (*T - Tp) * C; *T = Tp; }
+    else if (*acc > 0.0) { let r = min(*acc, (Tp - *T) * C); *acc -= r; *T += r / C; }
   } else {
-    if (T < Tp) { acc += (Tp - T) * C; T = Tp; }
-    else if (acc > 0.0) { float r = min(acc, (T - Tp) * C); acc -= r; T -= r / C; }
+    if (*T < Tp) { *acc += (Tp - *T) * C; *T = Tp; }
+    else if (*acc > 0.0) { let r = min(*acc, (*T - Tp) * C); *acc -= r; *T -= r / C; }
   }
-  return acc >= L;
+  return *acc >= L;
 }
 
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
-
-  vec4 a = fetchA(p);
-  vec4 b = fetchB(p);
-  uint dirty = fetchF(p) & FLAG_DIRTY;   // the move pass's mark (shaders/common.js nearChange)
+// Cell p's step. Returns whether what it becomes foams (gfx/materials.js FOAMS).
+fn reactCell(p: vec3i, quiet: bool) -> bool {
+  let faces = i32(P.faces);
+  let a = fetchA(p);
+  let b = fetchB(p);
+  let dirty = fetchF(p) & FLAG_DIRTY;   // the move pass's mark (shaders/common.js nearChange)
   // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
   // Its cells were inert when the activity map was built, so their neighbour
   // tests passed then, and still do unless something around them is dirty.
-  vec2 rayDep = uRays ? texelFetch(tRayDep, atlas(p), 0).xy : vec2(0.0);
-  if (quietCell(p) && rayDep == vec2(0.0)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
-  int id = eid(a);
-  float T = a.y, life = a.z;
-  float ctype = floor(a.w), seed = fract(a.w);
-  vec3 v = b.xyz;
-  float P0 = b.w;
-  uint rs = seed3(p, uFrame, 0x7au);
+  var rayDep = vec2f(0.0);
+  if (P.rays != 0u) {
+    let s = slotOf(p) * 2u;
+    rayDep = vec2f(i32ToF32(rayDeposit[s]), i32ToF32(rayDeposit[s + 1u])) / RAY_DEPOSIT_SCALE;
+  }
+  if (quiet && all(rayDep == vec2f(0.0))) {
+    writeState(p, a, b, ownFlags(a, b) | FLAG_NEAR | dirty);
+    return FOAMS(eid(a));
+  }
+  let id = eid(a);
+  var T = a.y;
+  var life = a.z;
+  var ctype = floor(a.w);
+  let seed = fract(a.w);
+  var v = b.xyz;
+  let P0 = b.w;
+  var rs = seed3(p, P.frame, 0x7au);
 
-  vec4 na[6];
-  vec4 nb[6];
-  int nid[6];
-  for (int i = 0; i < uFaces; i++) {
-    ivec3 q = edgeCell(p + DIRS[i]);   // (past a loop edge: the far side)
+  var na: array<vec4f, 6>;
+  var nb: array<vec4f, 6>;
+  var nid: array<i32, 6>;
+  for (var i = 0; i < faces; i++) {
+    let q = edgeCell(p + DIRS(i));   // (past a loop edge: the far side)
     if (inGrid(q)) {
       na[i] = fetchA(q);
       nb[i] = fetchB(q);
-    } else if (uEdge == EDGE_VOID) {
-      na[i] = VOID_AIR_A;   // open: still air at ambient, no pressure (simModes.js)
-      nb[i] = vec4(0.0);
+    } else if (P.edge == EDGE_VOID) {
+      na[i] = VOID_AIR_A();   // open: still air at ambient, no pressure (simModes.js)
+      nb[i] = vec4f(0.0);
     } else {
-      na[i] = vec4(float(E_WALL), T, 0.0, 0.0); // insulating, pressure-reflecting box
-      nb[i] = vec4(0.0, 0.0, 0.0, P0);
+      na[i] = vec4f(f32(E_WALL), T, 0.0, 0.0);   // insulating, pressure-reflecting box
+      nb[i] = vec4f(0.0, 0.0, 0.0, P0);
     }
     nid[i] = eid(na[i]);
   }
@@ -246,40 +293,40 @@ void main() {
   // ---- breaking (impacts and blasts), from this pass's input state ----
   // As a projectile: every breakable neighbour I hit hard enough breaks, and
   // each costs me its hardness, then a collision with its debris.
-  vec3 dvBreak = vec3(0.0);
+  var dvBreak = vec3f(0.0);
   if (movable(id) && 0.5 * densityOf(id, a.y) * dot(b.xyz, b.xyz) >= HARD_MIN) {
-    float m = densityOf(id, a.y);
-    for (int i = 0; i < uFaces; i++) {
-      int s = nid[i];
-      if (BREAKINTO[s] < 0) continue;
-      vec3 n = vec3(DIRS[i]);
-      if (impactKE(id, a.y, b.xyz, n) < HARD[s]) continue;
-      float u = dot(b.xyz, n);
-      dvBreak -= n * (u - shatter(m, u, HARD[s], densityOf(BREAKINTO[s], a.y)).x);
+    let m = densityOf(id, a.y);
+    for (var i = 0; i < faces; i++) {
+      let s = nid[i];
+      if (BREAKINTO(s) < 0) { continue; }
+      let n = vec3f(DIRS(i));
+      if (impactKE(id, a.y, b.xyz, n) < HARD(s)) { continue; }
+      let u = dot(b.xyz, n);
+      dvBreak -= n * (u - shatter(m, u, HARD(s), densityOf(BREAKINTO(s), a.y)).x);
     }
   }
   // As a breakable solid: the same test from my side. Every neighbour that
   // hits me hard enough pays my hardness, so the fracture work I get as heat is
   // one hardness per hit, and the debris takes each hit's momentum.
-  bool broke = false;
-  float fractureE = 0.0;   // kinetic energy dissipated breaking me
-  vec3 vDebris = vec3(0.0);
-  if (BREAKINTO[id] >= 0) {
-    float M = densityOf(BREAKINTO[id], a.y);
-    for (int i = 0; i < uFaces; i++) {
-      vec3 n = -vec3(DIRS[i]);   // from the neighbour toward me
-      if (impactKE(nid[i], na[i].y, nb[i].xyz, n) < HARD[id]) continue;
-      float u = dot(nb[i].xyz, n);
-      vDebris += n * shatter(densityOf(nid[i], na[i].y), u, HARD[id], M).y;
-      fractureE += HARD[id];
+  var broke = false;
+  var fractureE = 0.0;   // kinetic energy dissipated breaking me
+  var vDebris = vec3f(0.0);
+  if (BREAKINTO(id) >= 0) {
+    let M = densityOf(BREAKINTO(id), a.y);
+    for (var i = 0; i < faces; i++) {
+      let n = -vec3f(DIRS(i));   // from the neighbour toward me
+      if (impactKE(nid[i], na[i].y, nb[i].xyz, n) < HARD(id)) { continue; }
+      let u = dot(nb[i].xyz, n);
+      vDebris += n * shatter(densityOf(nid[i], na[i].y), u, HARD(id), M).y;
+      fractureE += HARD(id);
       broke = true;
     }
     // a blast: the pressure difference across me along any axis (solid
     // neighbours hold no air: 0)
-    float pa[6];
-    for (int i = 0; i < uFaces; i++) pa[i] = KIND[nid[i]] != K_SOLID ? nb[i].w : 0.0;
-    float dP = max(abs(pa[0] - pa[1]), max(abs(pa[2] - pa[3]), abs(pa[4] - pa[5])));
-    if (dP > HARD[id] * P_BREAK_PER_HARD) broke = true;
+    var pa: array<f32, 6>;
+    for (var i = 0; i < faces; i++) { pa[i] = select(0.0, nb[i].w, KIND(nid[i]) != K_SOLID); }
+    let dP = max(abs(pa[0] - pa[1]), max(abs(pa[2] - pa[3]), abs(pa[4] - pa[5])));
+    if (dP > HARD(id) * P_BREAK_PER_HARD) { broke = true; }
   }
 
   // ---- what sets off an explosive or crushes a cell, from this pass's input ----
@@ -287,143 +334,181 @@ void main() {
   // neighbour running into me or me into it, landing included (the move pass
   // left it as it was: common.js impactActs, shockActs), with ½·μ·u² of
   // kinetic energy. Cells of my own element don't count.
-  bool shocked = false;
-  if (BLAST[id].z > 0.0) {
-    float m = densityOf(id, a.y);
-    bool meSolid = KIND[id] == K_SOLID;
-    for (int i = 0; i < uFaces; i++) {
-      int j = nid[i];
-      float u = dot(b.xyz - nb[i].xyz, vec3(DIRS[i]));
-      if (j == id || isGasLike(j) || u <= 0.0) continue;
-      float mj = densityOf(j, na[i].y);
-      float ke = meSolid ? hitKE(mj, m, true, u) : hitKE(m, mj, KIND[j] == K_SOLID, u);
-      shocked = shocked || ke >= BLAST[id].z;
+  var shocked = false;
+  if (BLAST(id).z > 0.0) {
+    let m = densityOf(id, a.y);
+    let meSolid = KIND(id) == K_SOLID;
+    for (var i = 0; i < faces; i++) {
+      let j = nid[i];
+      let u = dot(b.xyz - nb[i].xyz, vec3f(DIRS(i)));
+      if (j == id || isGasLike(j) || u <= 0.0) { continue; }
+      let mj = densityOf(j, na[i].y);
+      var ke: f32;
+      if (meSolid) { ke = hitKE(mj, m, true, u); } else { ke = hitKE(m, mj, KIND(j) == K_SOLID, u); }
+      shocked = shocked || ke >= BLAST(id).z;
     }
   }
   // the highest air pressure on me: my own, and my open neighbours' (a solid holds none)
-  float pOn = KIND[id] == K_SOLID ? P_MIN : P0;
-  bool touchAir = false;
-  for (int i = 0; i < uFaces; i++) {
-    if (KIND[nid[i]] != K_SOLID) pOn = max(pOn, nb[i].w);
+  var pOn = select(P0, P_MIN, KIND(id) == K_SOLID);
+  var touchAir = false;
+  for (var i = 0; i < faces; i++) {
+    if (KIND(nid[i]) != K_SOLID) { pOn = max(pOn, nb[i].w); }
     touchAir = touchAir || nid[i] == E_EMPTY || nid[i] == E_OXYGEN || nid[i] == E_FIRE;
   }
   // an explosive that needs air (blast.air) goes off only touching it, or a
   // flame: the flame front is where fuel and air mix (a fireball draws air in)
-  bool blastAir = BLAST_LIT[id].y == 0.0 || touchAir;
+  let blastAir = BLAST_LIT(id).y == 0.0 || touchAir;
   // set off by a hit or a blast's pressure: an explosive goes off rather than break
-  bool setOff = blastAir && (shocked || (BLAST[id].w > 0.0 && pOn > BLAST[id].w));
+  let setOff = blastAir && (shocked || (BLAST(id).w > 0.0 && pOn > BLAST(id).w));
 
   // ---- reactions (elements.js REACTIONS), decided from this pass's input ----
   // This step every cell's partner is its face neighbour along axis
-  // uFrame % 3: toward + where its world coordinate plus the parity
-  // (uFrame / 3) % 2 is even, else toward −. Partners are mutual, so a cell
+  // frame % 3: toward + where its world coordinate plus the parity
+  // (frame / 3) % 2 is even, else toward −. Partners are mutual, so a cell
   // reacts with at most one, and both cells of a pair evaluate the same
   // predicate on the same input, with one random stream seeded at the pair's
   // base cell: they agree, without a race. A reaction takes precedence over
   // everything else a cell might do this step (both sides know it; neither
   // knows the other's breaking or burning).
-  bool reacted = false;
-  int rxOut = id;
-  float rxT = 0.0, rxP = 0.0;
-  int ax = int(uFrame % 3u), par = int((uFrame / 3u) & 1u);
-  ivec3 w = p + uOrigin;   // world cell: the pairing doesn't depend on where the window is
-  bool base = ((w[ax] + par) & 1) == 0;
-  int k = 2 * ax + (base ? 0 : 1);   // the partner's DIRS index
-  ivec3 pk = edgeCell(p + DIRS[k]);   // ...and cell
+  var reacted = false;
+  var rxOut = id;
+  var rxT = 0.0;
+  var rxP = 0.0;
+  let ax = i32(P.frame % 3u);
+  let par = i32((P.frame / 3u) & 1u);
+  let w = p + H.origin;   // world cell: the pairing doesn't depend on where the window is
+  let base = ((w[ax] + par) & 1) == 0;
+  let k = 2 * ax + select(1, 0, base);   // the partner's DIRS index
+  let pk = edgeCell(p + DIRS(k));         // ...and cell
+  let pb = select(pk, p, base);           // the pair's base cell
   // A singularity swallows its partner (any matter it has no reaction with),
   // on a draw of the pair's own stream, so both cells agree (physics.js SING_*).
-  uint ss = seed3(base ? p : pk, uFrame, SING_SALT);
-  bool swallow = (id == E_SINGULARITY ? singEats(nid[k]) : nid[k] == E_SINGULARITY && singEats(id))
-    && inGrid(pk) && rxAt(id, nid[k]) == 0 && rnd(ss) < SING_EAT * RX_PAIRINGS;
+  var ss = seed3(pb, P.frame, SING_SALT);
+  var eats = nid[k] == E_SINGULARITY && singEats(id);
+  if (id == E_SINGULARITY) { eats = singEats(nid[k]); }
+  let swallow = eats && inGrid(pk) && rxAt(id, nid[k]) == 0 && rnd(&ss) < SING_EAT * RX_PAIRINGS;
   if (RX_ANY) {
-    int rx = rxAt(id, nid[k]);
+    let rx = rxAt(id, nid[k]);
     if (rx > 0 && inGrid(pk)) {
-      int r = (rx - 1) >> 1;
-      bool isA = ((rx - 1) & 1) == 0;
-      uint ps = seed3(base ? p : pk, uFrame, RX_SALT);
-      if (rxGate(r, a.y, na[k].y) && rnd(ps) < RX[r].x * RX_PAIRINGS) {
-        int ida = isA ? id : nid[k], idb = isA ? nid[k] : id;
-        int oa = pickOut(RX_INTO[r].x, ps), ob = pickOut(RX_INTO[r].y, ps);
-        if (oa < 0) oa = ida;   // SAME
-        if (ob < 0) ob = idb;
+      let r = (rx - 1) >> 1u;
+      let isA = ((rx - 1) & 1) == 0;
+      var ps = seed3(pb, P.frame, RX_SALT);
+      if (rxGate(r, a.y, na[k].y) && rnd(&ps) < RX(r).x * RX_PAIRINGS) {
+        let ida = select(nid[k], id, isA);
+        let idb = select(id, nid[k], isA);
+        var oa = pickOut(RX_INTO(r).x, &ps);
+        var ob = pickOut(RX_INTO(r).y, &ps);
+        if (oa < 0) { oa = ida; }   // SAME
+        if (ob < 0) { ob = idb; }
         reacted = true;
-        rxOut = isA ? oa : ob;
+        rxOut = select(ob, oa, isA);
         // the heat, shared so both products warm alike; the gas, half each
-        rxT = RX[r].w / (CAP[oa] + CAP[ob]);
-        rxP = 0.5 * puffP(RX_PUFF[r]);
+        rxT = RX(r).w / (CAP(oa) + CAP(ob));
+        rxP = 0.5 * puffP(RX_PUFF(r));
       }
     }
   }
 
   // ---- heat conduction (energy conserving) ----
-  float C = CAP[id];
-  float dE = 0.0;
+  let C = CAP(id);
+  var dE = 0.0;
   // (ambient heat off: matter trades no heat with the air, simModes.js)
-  for (int i = 0; i < uFaces; i++) if (uAmbientHeat || (id != E_EMPTY && nid[i] != E_EMPTY)) dE += condFlux(id, T, nid[i], na[i].y);
+  for (var i = 0; i < faces; i++) {
+    if (P.ambientHeat != 0u || (id != E_EMPTY && nid[i] != E_EMPTY)) { dE += condFlux(id, T, nid[i], na[i].y); }
+  }
   T += (dE + rayDep.x) / C;   // (and what particles left: photons absorbed, fissions)
   // the open world above the box slowly pulls air back to ambient; gases radiate
-  T += (uAirT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
+  T += (airT() - T) * select(RAD(id), AIR_AMBIENT_PULL, id == E_EMPTY);
 
   // ---- air pressure ----
-  bool solid = KIND[id] == K_SOLID;
-  float P = P0;
-  vec3 gradP = vec3(0.0);
+  let solid = KIND(id) == K_SOLID;
+  var Pr = P0;
+  var gradP = vec3f(0.0);
   if (!solid) {
-    float lap = 0.0, front = 0.0;
-    float pn[6];
-    for (int i = 0; i < uFaces; i++) {
-      bool open = KIND[nid[i]] != K_SOLID;
-      pn[i] = open ? nb[i].w : P0;   // walls reflect pressure
+    var lap = 0.0;
+    var front = 0.0;
+    var pn: array<f32, 6>;
+    for (var i = 0; i < faces; i++) {
+      let open = KIND(nid[i]) != K_SOLID;
+      pn[i] = select(P0, nb[i].w, open);   // walls reflect pressure
       lap += pn[i] - P0;
       front = max(front, pn[i]);
     }
     // (air mode no update: it stays as it is, simModes.js)
-    P = (uAirMode == AIR_NO_UPDATE ? P0 : max(P0 + P_DIFFUSE * lap, front * P_FRONT) * P_DECAY) + rayDep.y;
-    gradP = 0.5 * vec3(pn[0] - pn[1], pn[2] - pn[3], pn[4] - pn[5]);
+    var spread = P0;
+    if (P.airMode != AIR_NO_UPDATE) { spread = max(P0 + P_DIFFUSE * lap, front * P_FRONT) * P_DECAY; }
+    Pr = spread + rayDep.y;
+    gradP = 0.5 * vec3f(pn[0] - pn[1], pn[2] - pn[3], pn[4] - pn[5]);
   } else {
-    P = 0.0;
+    Pr = 0.0;
   }
   // a singularity holds its vacuum, and the open cells touching it SING_RING
   // of it (the front rule spreads only positive pressure, so this is its reach)
-  if (id == E_SINGULARITY) P = singVacuum(life);
-  else if (!solid) for (int i = 0; i < uFaces; i++) if (nid[i] == E_SINGULARITY) P = min(P, SING_RING * singVacuum(na[i].z));
+  if (id == E_SINGULARITY) { Pr = singVacuum(life); }
+  else if (!solid) {
+    for (var i = 0; i < faces; i++) {
+      if (nid[i] == E_SINGULARITY) { Pr = min(Pr, SING_RING * singVacuum(na[i].z)); }
+    }
+  }
 
   // ---- forces ----
   if (!solid) {
-    float rho = max(densityOf(id, T) * RHO_SCALE, RHO_MIN);
-    // (matter feels the air's pressure unless the air mode stills or empties it:
-    // in TPT particles feel pressure only through the air's velocity, simModes.js)
-    if (uAirMode == AIR_ON || uAirMode == AIR_NO_UPDATE) v -= gradP * P_ACCEL / rho;
-    // gravity's pull here (simModes.js gravDir: down, or radial)
-    vec3 gv = gravDir(vec3(p) + 0.5);
+    let rho = max(densityOf(id, T) * RHO_SCALE, RHO_MIN);
+    // (matter feels the air's pressure unless the air mode stills or empties
+    // it: in TPT particles feel pressure only through the air's velocity, simModes.js)
+    if (P.airMode == AIR_ON || P.airMode == AIR_NO_UPDATE) { v -= gradP * P_ACCEL / rho; }
+    // Gravity's pull here (simModes.js gravDir: down, or radial), and the
+    // frame the rules below are written in (down = -y, its face below fd):
+    // with radial gravity turned so that -y is the pull's dominant axis
+    // (gravFrame, as the move turns its blocks); else the grid's own, applied
+    // as no matrix at all.
+    let radial = P.gravMode == GRAV_RADIAL;
+    var gv = vec3f(0.0, -1.0, 0.0);
+    var GF = mat3x3f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);   // (F is the flags)
+    var fd = 3;
+    if (radial) {
+      gv = gravDir(vec3f(p) + 0.5);
+      GF = gravFrame(gv);
+      fd = faceOf(vec3f(0.0, -1.0, 0.0) * GF);
+    }
     // air, and cloud (air carrying droplets), is buoyant by its temperature
-    if (id == E_EMPTY || id == E_CLOUD) v -= gv * (uGravity * clamp((T - uAirT) / (uAirT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI));
-    if (id != E_EMPTY) v += gv * (uGravity * GRAV[id]);
-    // The rules below are written for down = −y and its face neighbour (the
-    // cell below, fd): with radial gravity, turned so that −y is the pull's
-    // dominant axis (simModes.js gravFrame; identity for vertical gravity).
-    mat3 F = gravFrame(gv);
-    int fd = faceOf(vec3(0.0, -1.0, 0.0) * F);
-    v = F * v;
+    if (id == E_EMPTY || id == E_CLOUD) {
+      let lift = P.gravity * clamp((T - airT()) / (airT() + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
+      if (radial) { v -= gv * lift; } else { v.y += lift; }
+    }
+    if (id != E_EMPTY) {
+      if (radial) { v += gv * (P.gravity * GRAV(id)); } else { v.y -= P.gravity * GRAV(id); }
+    }
+    var bF = b.xyz;       // this cell's and the one below's velocity, in the frame
+    var nbF = nb[fd].xyz;
+    if (radial) {
+      v = GF * v;
+      bF = GF * bF;
+      nbF = GF * nbF;
+    }
     // Normal force: a powder or liquid at rest on what it can't push aside
     // (the floor, a solid, or a grain or liquid that isn't falling itself) is
     // held up, so gravity can't start it moving down. One already moving down
     // (falling, landing, knocked from above) isn't at rest: it keeps feeling
     // gravity, and the move pass lands it with its splash, scatter and heat.
     // (The box's floor is a wall face, nid[fd]; past a void edge it is air.)
-    float d = densityOf(id, a.y);
-    bool held = (KIND[id] == K_POWDER || KIND[id] == K_LIQUID) && (F * b.xyz).y >= 0.0 && (KIND[nid[fd]] == K_SOLID
-      || (!canMove(id, nid[fd], d, densityOf(nid[fd], na[fd].y), 0) && (F * nb[fd].xyz).y >= 0.0));
-    if (held) v.y = max(v.y, 0.0);
+    let d = densityOf(id, a.y);
+    let held = (KIND(id) == K_POWDER || KIND(id) == K_LIQUID) && bF.y >= 0.0 && (KIND(nid[fd]) == K_SOLID
+      || (!canMove(id, nid[fd], d, densityOf(nid[fd], na[fd].y), 0) && nbF.y >= 0.0));
+    if (held) { v.y = max(v.y, 0.0); }
     // Drag. Not on a liquid in free fall (nothing under it but air, or the
     // falling liquid ahead of it): a liquid's drag is its viscosity acting on
     // its flow, and the air's drag on a falling parcel is negligible over a
     // few metres, so a jet keeps its horizontal speed and falls in a parabola.
-    bool flying = KIND[id] == K_LIQUID && !held && (isGasLike(nid[fd]) || (KIND[nid[fd]] == K_LIQUID && (F * nb[fd].xyz).y < 0.0));
-    if (!flying) v *= 1.0 - DRAG[id];
+    let flying = KIND(id) == K_LIQUID && !held && (isGasLike(nid[fd]) || (KIND(nid[fd]) == K_LIQUID && nbF.y < 0.0));
+    if (!flying) { v *= 1.0 - DRAG(id); }
     // grains only feel friction while resting on something (pressed on it by gravity)
-    bool supported = uGravity > 0.0 && (KIND[nid[fd]] == K_SOLID || KIND[nid[fd]] == K_POWDER);
-    if (supported) v.xz *= 1.0 - FRICTION[id];
+    let supported = P.gravity > 0.0 && (KIND(nid[fd]) == K_SOLID || KIND(nid[fd]) == K_POWDER);
+    if (supported) {
+      let fr = 1.0 - FRICTION(id);
+      v.x *= fr;
+      v.z *= fr;
+    }
 
     // Liquids at rest: hydrostatic head drives spreading, surface tension
     // stops it. Both push only a liquid that has somewhere to go, a side
@@ -432,35 +517,39 @@ void main() {
     // needs no push: the move pass topples into it regardless.) A falling
     // liquid holds no pressure and nothing pushes it. Without gravity there is
     // no head and nothing to rest on.
-    int up = nid[fd ^ 1];
-    bool head = KIND[up] == K_LIQUID || KIND[up] == K_POWDER;   // weight above us
-    if (KIND[id] == K_LIQUID && uGravity > 0.0 && held) {
-      bool open = false;
-      vec3 od = vec3(0.0);   // toward the open sides
-      for (int i = 0; i < uFaces; i++)
-        if ((i >> 1) != (fd >> 1) && canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2)) { open = true; od += vec3(DIRS[i]); }
-      bool onLiquid = !supported;                                  // surface of a pool
-      float f = FLOW[id];
-      float hv = length(v.xz);
+    let up = nid[fd ^ 1];
+    let head = KIND(up) == K_LIQUID || KIND(up) == K_POWDER;   // weight above us
+    if (KIND(id) == K_LIQUID && P.gravity > 0.0 && held) {
+      var open = false;
+      var od = vec3f(0.0);   // toward the open sides
+      for (var i = 0; i < faces; i++) {
+        if ((i >> 1u) != (fd >> 1u) && canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2)) { open = true; od += vec3f(DIRS(i)); }
+      }
+      let onLiquid = !supported;                                  // surface of a pool
+      let f = FLOW(id);
+      let hv = length(v.xz);
       // Under a head it leaves at Torricelli's speed, ORIFICE_CV·√(2gh), h the
       // weight of the column above in cells of this liquid, to this cell's
       // centre (each parcel the same, so a hole pours one jet); viscosity
       // caps it at FLOW. A bubble in the column (a lone gas cell with liquid
       // over it) weighs nothing but holds the pressure of what is over it,
       // so the count goes on through it; two gas cells is the open air over
-      // the free surface, where it stops.
-      float want = f * FLOW_SURFACE;
+      // the free surface, where it stops. (Past the box it reads wall, as the
+      // GLSL does: the column ends there.)
+      var want = f * FLOW_SURFACE;
       if (head && open) {
-        float gh = uGravity * GRAV[id], h = 0.5;
-        ivec3 q = p;
-        bool gas = false;
-        for (int k = 0; k < uHeadScan && 2.0 * gh * h < f * f; k++) {
-          q = edgeCell(q + DIRS[fd ^ 1]);
-          int e = inGrid(q) ? eid(fetchA(q)) : E_WALL;
-          bool weight = KIND[e] == K_LIQUID || KIND[e] == K_POWDER;
-          if (!weight && (gas || !isGasLike(e))) break;
+        let gh = P.gravity * GRAV(id);
+        var h = 0.5;
+        var q = p;
+        var gas = false;
+        for (var k = 0; k < i32(P.headScan) && 2.0 * gh * h < f * f; k++) {
+          q = edgeCell(q + DIRS(fd ^ 1));
+          var e = E_WALL;
+          if (inGrid(q)) { e = eid(fetchA(q)); }
+          let weight = KIND(e) == K_LIQUID || KIND(e) == K_POWDER;
+          if (!weight && (gas || !isGasLike(e))) { break; }
           gas = !weight;
-          if (weight) h += DENS[e] / d;
+          if (weight) { h += DENS(e) / d; }
         }
         want = min(ORIFICE_CV * sqrt(2.0 * gh * h), f);
       }
@@ -469,28 +558,42 @@ void main() {
         // The pressure drives it out of the opening, not along it: whatever
         // it was doing, it leaves at the speed the head gives. (Open both
         // ways, nothing picks a side: a random one, kept while it flows.)
-        vec2 dir = (F * od).xz;
+        var odF = od;
+        if (radial) { odF = GF * od; }
+        let dir = odF.xz;
         if (dot(dir, dir) > 0.0) {
-          vec2 n = normalize(dir);
-          if (dot(v.xz, n) < want) v.xz = n * want;
+          let n = normalize(dir);
+          if (dot(v.xz, n) < want) {
+            let h = n * want;
+            v.x = h.x;
+            v.z = h.y;
+          }
         } else if (open && hv < want * FLOW_KICK) {
-          float ang = rnd(rs) * 6.2831853;
-          v.xz = vec2(cos(ang), sin(ang)) * want;
+          let ang = rnd(&rs) * 6.2831853;
+          let h = vec2f(cos(ang), sin(ang)) * want;
+          v.x = h.x;
+          v.z = h.y;
         }
       } else if (!movable(up)) {
         // (under a solid lid it is pipe flow, below: no film)
       } else {
         // a thin film on dry ground: cohesion pulls it toward neighbouring
         // liquid, so films gather into puddles with clean edges
-        vec3 coh = vec3(0.0);
-        bool alone = true;
-        for (int i = 0; i < uFaces; i++)
-          if ((i >> 1) != (fd >> 1) && KIND[nid[i]] == K_LIQUID) { coh += vec3(DIRS[i]); alone = false; }
-        v.xz = v.xz * FILM_KEEP + (open ? (F * coh).xz * f * FILM_COHESION : vec2(0.0));
-        if (open && alone && rnd(rs) < DROPLET_WANDER) {
+        var coh = vec3f(0.0);
+        var alone = true;
+        for (var i = 0; i < faces; i++) {
+          if ((i >> 1u) != (fd >> 1u) && KIND(nid[i]) == K_LIQUID) { coh += vec3f(DIRS(i)); alone = false; }
+        }
+        if (radial) { coh = GF * coh; }
+        let h = v.xz * FILM_KEEP + select(vec2f(0.0), coh.xz * f * FILM_COHESION, open);
+        v.x = h.x;
+        v.z = h.y;
+        if (open && alone && rnd(&rs) < DROPLET_WANDER) {
           // isolated droplets wander until they meet others
-          float ang = rnd(rs) * 6.2831853;
-          v.xz = vec2(cos(ang), sin(ang)) * f * DROPLET_SPEED;
+          let ang = rnd(&rs) * 6.2831853;
+          let w2 = vec2f(cos(ang), sin(ang)) * f * DROPLET_SPEED;
+          v.x = w2.x;
+          v.z = w2.y;
         }
       }
     }
@@ -501,142 +604,179 @@ void main() {
     // speed it came in with (in a pipe of one section the speed is set by
     // continuity, not by the angle it came in at), so it leaves a hole
     // straight, whichever way it came in.
-    if (KIND[id] == K_LIQUID && !movable(up) && supported) {
-      vec3 v0 = v;
-      for (int i = 0; i < uFaces; i++)
-        if (i != (fd ^ 1) && !movable(nid[i])) { vec3 n = F * vec3(DIRS[i]); v -= n * max(dot(v, n), 0.0); }
-      if (dot(v.xz, v.xz) > 0.0) v.xz = normalize(v.xz) * length(v0.xz);
+    if (KIND(id) == K_LIQUID && !movable(up) && supported) {
+      let v0 = v;
+      for (var i = 0; i < faces; i++) {
+        if (i != (fd ^ 1) && !movable(nid[i])) {
+          var n = vec3f(DIRS(i));
+          if (radial) { n = GF * n; }
+          v -= n * max(dot(v, n), 0.0);
+        }
+      }
+      if (dot(v.xz, v.xz) > 0.0) {
+        let h = normalize(v.xz) * length(v0.xz);
+        v.x = h.x;
+        v.z = h.y;
+      }
     }
-    v = v * F;   // (out of the frame)
-    if (JITTER[id] > 0.0) v += (vec3(rnd(rs), rnd(rs), rnd(rs)) - 0.5) * JITTER[id];
+    if (radial) { v = v * GF; }   // (out of the frame)
+    if (JITTER(id) > 0.0) {
+      let j0 = rnd(&rs);
+      let j1 = rnd(&rs);
+      let j2 = rnd(&rs);
+      v += (vec3f(j0, j1, j2) - 0.5) * JITTER(id);
+    }
     v += dvBreak;
-    v = clamp(v, -V_MAX, V_MAX);
+    v = clamp(v, vec3f(-V_MAX), vec3f(V_MAX));
     // the air mode (simModes.js): still air, or the wind as it was
-    if (id == E_EMPTY && (uAirMode == AIR_VELOCITY_OFF || uAirMode == AIR_OFF)) v = vec3(0.0);
-    if (id == E_EMPTY && uAirMode == AIR_NO_UPDATE) v = b.xyz;
+    if (id == E_EMPTY && (P.airMode == AIR_VELOCITY_OFF || P.airMode == AIR_OFF)) { v = vec3f(0.0); }
+    if (id == E_EMPTY && P.airMode == AIR_NO_UPDATE) { v = b.xyz; }
     // a held cell's leftover creep stops dead (physics.js REST_V)
-    if (held) v *= step(REST_V, abs(v));
+    if (held) { v *= step(vec3f(REST_V), abs(v)); }
   } else {
-    v = vec3(0.0);
+    v = vec3f(0.0);
   }
 
   // ---- electricity: sparks, switches, sensors (src/electricity.js) ----
-  electric(id, T, life, ctype, na, nid, rs);
+  electric(id, &T, &life, &ctype, &na, &nid, faces, &rs);
 
   // ---- reactions & phase changes ----
-  int nidOut = id;
-  bool reset = false;   // new element: take its spawn life
+  var nidOut = id;
+  var reset = false;   // new element: take its spawn life
 
-  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0, nVoid = 0, nOxy = 0, nOxyFire = 0, nCO2 = 0, nGas = 0;
-  int nWetMoss = 0, nWetFungus = 0, nFlash = 0;
-  float flashFlame = 0.0;
-  bvec3 wetMoss = bvec3(false), bed = bvec3(false);   // axes holding damp moss, bare rock (mossSite)
-  float flame = 0.0;
-  float closing = 0.0;   // snow neighbours' closing speed on me, summed (storm charge)
-  int cloneOf = 0;
-  bool surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
-  for (int i = 0; i < uFaces; i++) {
-    int j = nid[i];
-    bool wet = floor(na[i].w) >= 1.0;
-    if (j == E_MOSS && wet) { nWetMoss++; wetMoss[i >> 1] = true; }
-    if (j == E_FUNGUS && wet) nWetFungus++;
-    if (mossBed(j)) bed[i >> 1] = true;
-    if (j == E_EMPTY) nAir++;
-    if (j == E_CLOUD) nCloud++;
-    if (!isGasLike(j) && (inGrid(p + DIRS[i]) || i == 3)) surface = true;
-    if (j == E_FIRE) nFire++;
-    if (j == E_OXYGEN) nOxy++;
-    if (j == E_FIRE && floor(na[i].w) == float(E_OXYGEN)) nOxyFire++;   // a flame burning in oxygen
-    if (j == E_CO2) nCO2++;
-    if (isGasLike(j)) nGas++;
-    if (ACIDIC[j]) nAcid++;
-    if (j == E_PLANT) nPlant++;
-    if (j == E_VOID) nVoid++;
-    if (j == E_SNOW) closing += max(dot(b.xyz - nb[i].xyz, vec3(DIRS[i])), 0.0);
-    if ((j == E_CLONE || (j == E_PCLN && na[i].z == SWITCH_ON)) && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));   // a powered clone only while on
-    if (IGNITE[j] > 0.0 && INTO[j][PH_BLAST] < 0 && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }   // (explosives go off instead)
-    else if (FLASH[j] < IGNITE[j] && INTO[j][PH_BLAST] < 0 && na[i].y >= FLASH[j]) { nFlash++; flashFlame = max(flashFlame, FLAMET[j]); }
+  var nAir = 0;
+  var nFire = 0;
+  var nAcid = 0;
+  var nPlant = 0;
+  var nBurning = 0;
+  var nCloud = 0;
+  var nVoid = 0;
+  var nOxy = 0;
+  var nOxyFire = 0;
+  var nCO2 = 0;
+  var nGas = 0;
+  var nWetMoss = 0;
+  var nWetFungus = 0;
+  var nFlash = 0;
+  var flashFlame = 0.0;
+  var wetMoss = vec3<bool>(false);   // axes holding damp moss, bare rock (mossSite)
+  var bed = vec3<bool>(false);
+  var flame = 0.0;
+  var closing = 0.0;   // snow neighbours' closing speed on me, summed (storm charge)
+  var cloneOf = 0;
+  var surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
+  for (var i = 0; i < faces; i++) {
+    let j = nid[i];
+    let wet = floor(na[i].w) >= 1.0;
+    if (j == E_MOSS && wet) { nWetMoss++; wetMoss[i >> 1u] = true; }
+    if (j == E_FUNGUS && wet) { nWetFungus++; }
+    if (mossBed(j)) { bed[i >> 1u] = true; }
+    if (j == E_EMPTY) { nAir++; }
+    if (j == E_CLOUD) { nCloud++; }
+    if (!isGasLike(j) && (inGrid(p + DIRS(i)) || i == 3)) { surface = true; }
+    if (j == E_FIRE) { nFire++; }
+    if (j == E_OXYGEN) { nOxy++; }
+    if (j == E_FIRE && floor(na[i].w) == f32(E_OXYGEN)) { nOxyFire++; }   // a flame burning in oxygen
+    if (j == E_CO2) { nCO2++; }
+    if (isGasLike(j)) { nGas++; }
+    if (ACIDIC(j)) { nAcid++; }
+    if (j == E_PLANT) { nPlant++; }
+    if (j == E_VOID) { nVoid++; }
+    if (j == E_SNOW) { closing += max(dot(b.xyz - nb[i].xyz, vec3f(DIRS(i))), 0.0); }
+    if ((j == E_CLONE || (j == E_PCLN && na[i].z == SWITCH_ON)) && na[i].w >= 1.0) { cloneOf = i32(floor(na[i].w)); }   // a powered clone only while on
+    if (IGNITE(j) > 0.0 && INTO(j)[PH_BLAST] < 0 && na[i].y >= IGNITE(j)) { nBurning++; flame = max(flame, FLAMET(j)); }   // (explosives go off instead)
+    else if (FLASH(j) < IGNITE(j) && INTO(j)[PH_BLAST] < 0 && na[i].y >= FLASH(j)) { nFlash++; flashFlame = max(flashFlame, FLAMET(j)); }
   }
   // past its flash point a fuel's vapour carries a flame along it: air (or
   // oxygen) touching a flame and such a fuel catches as if the fuel were burning
   if (nFire > 0 && nFlash > 0) { nBurning += nFlash; flame = max(flame, flashFlame); }
-  float oxy = oxyShare(nAir + nFire - nOxyFire, nOxy + nOxyFire);
-  bool smothered = nCO2 > 0 && float(nCO2) >= CO2_SMOTHER * float(nGas);
+  let oxy = oxyShare(nAir + nFire - nOxyFire, nOxy + nOxyFire);
+  let smothered = nCO2 > 0 && f32(nCO2) >= CO2_SMOTHER * f32(nGas);
 
   if (reacted) {
     T += rxT;
-    P += rxP;
+    Pr += rxP;
     if (rxOut != id) { nidOut = rxOut; reset = true; ctype = 0.0; }
   } else if (broke && !setOff) {
     // debris keeps my temperature, life (fuel, banked latent heat) and ctype,
     // takes the fracture work as heat and flies off with the hits' momentum;
     // it reacts as itself from the next step
-    nidOut = BREAKINTO[id];
-    T += fractureE * KE_TO_HEAT / CAP[nidOut];
-    v = clamp(vDebris, -V_MAX, V_MAX);
+    nidOut = BREAKINTO(id);
+    T += fractureE * KE_TO_HEAT / CAP(nidOut);
+    v = clamp(vDebris, vec3f(-V_MAX), vec3f(V_MAX));
   } else if (id == E_WATER) {
     // signed accumulator: + toward boiling, - toward freezing
-    float up = max(life, 0.0), dn = max(-life, 0.0);
-    bool boil = latent(T, up, 100.0, C, L_BOIL, true);
-    bool freeze = latent(T, dn, 0.0, C, L_FUSE, false);
+    var up = max(life, 0.0);
+    var dn = max(-life, 0.0);
+    let boil = latent(&T, &up, 100.0, C, L_BOIL, true);
+    let freeze = latent(&T, &dn, 0.0, C, L_FUSE, false);
     life = up - dn;
-    if (boil) { nidOut = E_STEAM; life = 0.0; P += STEAM_BOIL_PUFF; }
+    if (boil) { nidOut = E_STEAM; life = 0.0; Pr += STEAM_BOIL_PUFF; }
     else if (freeze) { nidOut = E_ICE; life = 0.0; }
-    if (nPlant > 0 && rnd(rs) < PLANT_GROW * float(nPlant)) { nidOut = E_PLANT; reset = true; }
+    if (nPlant > 0 && rnd(&rs) < PLANT_GROW * f32(nPlant)) { nidOut = E_PLANT; reset = true; }
   } else if (id == E_ICE || id == E_SNOW) {
-    if (latent(T, life, 0.0, C, L_FUSE, true)) { nidOut = E_WATER; life = 0.0; }
+    if (latent(&T, &life, 0.0, C, L_FUSE, true)) { nidOut = E_WATER; life = 0.0; }
   } else if (id == E_STEAM) {
-    if (latent(T, life, 100.0, C, L_BOIL, false)) { nidOut = surface ? E_WATER : E_CLOUD; life = 0.0; }
+    if (latent(&T, &life, 100.0, C, L_BOIL, false)) { nidOut = select(E_CLOUD, E_WATER, surface); life = 0.0; }
   } else if (id == E_CLOUD) {
     // liquid water, as droplets: the same latent heats as a pool (signed accumulator)
-    float up = max(life, 0.0), dn = max(-life, 0.0);
-    bool boil = latent(T, up, 100.0, C, L_BOIL, true);
-    bool freeze = latent(T, dn, 0.0, C, L_FUSE, false);
+    var up = max(life, 0.0);
+    var dn = max(-life, 0.0);
+    let boil = latent(&T, &up, 100.0, C, L_BOIL, true);
+    let freeze = latent(&T, &dn, 0.0, C, L_FUSE, false);
     life = up - dn;
     if (boil) { nidOut = E_STEAM; life = 0.0; }
     else if (freeze) { nidOut = E_SNOW; life = 0.0; }
     else {
       // thick cloud coalesces into raindrops; the edges evaporate into the
       // unsaturated air, the faster the warmer (saturation vapour pressure)
-      float rain = CLOUD_RAIN * max(float(nCloud) - CLOUD_RAIN_NB, 0.0);
-      float es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - uAirT / (uAirT + MAGNUS_B)));
-      float r = rnd(rs);
+      let rain = CLOUD_RAIN * max(f32(nCloud) - CLOUD_RAIN_NB, 0.0);
+      let es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - airT() / (airT() + MAGNUS_B)));
+      let r = rnd(&rs);
       if (r < rain) { nidOut = E_WATER; life = 0.0; }
-      else if (r < rain + CLOUD_EVAP * max(float(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
+      else if (r < rain + CLOUD_EVAP * max(f32(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
     }
     // storm charge (physics.js CHARGE_*): freezing cloud struck by falling
     // snow; the strike that spends it is src/lightning.js's
-    if (nidOut == E_CLOUD && T <= CHARGE_T_MAX && rnd(rs) < CHARGE_RATE * closing) ctype = min(ctype + 1.0, CHARGE_MAX);
-    if (nidOut != E_CLOUD) ctype = 0.0;   // the charge goes with the droplets
+    if (nidOut == E_CLOUD && T <= CHARGE_T_MAX && rnd(&rs) < CHARGE_RATE * closing) { ctype = min(ctype + 1.0, CHARGE_MAX); }
+    if (nidOut != E_CLOUD) { ctype = 0.0; }   // the charge goes with the droplets
   } else if (id == E_LAVA) {
-    int ct = int(ctype);
-    if (ct <= 0 || ct >= NE) ct = E_STONE;
-    if (T < MELT[ct] - LAVA_FREEZE_BELOW) { nidOut = ct; reset = true; ctype = 0.0; }
+    var ct = i32(ctype);
+    if (ct <= 0 || ct >= NE) { ct = E_STONE; }
+    if (T < MELT(ct) - LAVA_FREEZE_BELOW) { nidOut = ct; reset = true; ctype = 0.0; }
   } else if (id == E_FIRE) {
-    life -= FIRE_BURN + FIRE_BURN_SPREAD * rnd(rs);
-    if (life <= 0.0 || T < FIRE_MIN_T || smothered) { nidOut = rnd(rs) < FIRE_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; ctype = 0.0; }
+    life -= FIRE_BURN + FIRE_BURN_SPREAD * rnd(&rs);
+    if (life <= 0.0 || T < FIRE_MIN_T || smothered) {
+      if (rnd(&rs) < FIRE_TO_SMOKE) { nidOut = E_SMOKE; } else { nidOut = E_EMPTY; }
+      reset = true;
+      ctype = 0.0;
+    }
   } else if (id == E_SMOKE) {
     life -= SMOKE_FADE;
     if (life <= 0.0) { nidOut = E_EMPTY; reset = true; }
-  } else if (ACIDIC[id]) {
+  } else if (ACIDIC(id)) {
     // acid, and caustic gas: used up by what they eat
-    int victims = 0;
-    for (int i = 0; i < uFaces; i++) if (acidEats(nid[i])) victims++;
-    life -= ACID_USE * float(victims);
-    if (life <= 0.0) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
+    var victims = 0;
+    for (var i = 0; i < faces; i++) { if (acidEats(nid[i])) { victims++; } }
+    life -= ACID_USE * f32(victims);
+    if (life <= 0.0) {
+      if (rnd(&rs) < ACID_TO_SMOKE) { nidOut = E_SMOKE; } else { nidOut = E_EMPTY; }
+      reset = true;
+    }
   } else if (id == E_EMPTY) {
     // flames lick out of anything burning next to us
-    if (nBurning > 0 && !smothered && rnd(rs) < FLAME_SPREAD * float(nBurning)) {
-      nidOut = E_FIRE; reset = true; ctype = 0.0; T = max(T, flame * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
-    } else if (cloneOf > 0 && rnd(rs) < CLONE_RATE) {
-      nidOut = cloneOf; reset = true; T = SPAWNT[cloneOf];
-      ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
-      v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
-    } else if (nWetMoss > 0 && mossSite(wetMoss, bed) && rnd(rs) < MOSS_GROW * float(nWetMoss)) {
+    if (nBurning > 0 && !smothered && rnd(&rs) < FLAME_SPREAD * f32(nBurning)) {
+      nidOut = E_FIRE; reset = true; ctype = 0.0;
+      T = max(T, flame * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(&rs)));
+    } else if (cloneOf > 0 && rnd(&rs) < CLONE_RATE) {
+      nidOut = cloneOf; reset = true; T = SPAWNT(cloneOf);
+      ctype = select(0.0, f32(E_STONE), cloneOf == E_LAVA);
+      v = vec3f(0.0, select(SPAWN_DROP_V, 0.0, KIND(cloneOf) == K_GAS), 0.0);
+    } else if (nWetMoss > 0 && mossSite(wetMoss, bed) && rnd(&rs) < MOSS_GROW * f32(nWetMoss)) {
       nidOut = E_MOSS; reset = true; ctype = 0.0;   // its damp comes in next step
     }
   } else if (id == E_MOSS || id == E_FUNGUS) {
-    ctype = dampOf(T, na);
+    ctype = dampOf(T, &na);
   } else if (id == E_FUSE) {
     // Safety fuse: a black-powder core in a tarred jute sheath. The powder
     // carries its own oxidiser, so it burns with or without air, at a steady
@@ -645,130 +785,141 @@ void main() {
     // it is down to FUSE_HANDOFF. The sheath doesn't heat up as it burns; a
     // flame lights the core as it does gunpowder (its blast.flame).
     if (life >= 1.0) {
-      bool light = T >= IGNITE[id] || (nFire > 0 && rnd(rs) < BLAST_LIT[E_GUNPOWDER].x);
-      for (int i = 0; i < uFaces; i++)
-        light = light || (nid[i] == E_FUSE && na[i].z <= FUSE_HANDOFF) || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
-      if (light) life = 1.0 - FUSE_BURN;
+      var light = T >= IGNITE(id) || (nFire > 0 && rnd(&rs) < BLAST_LIT(E_GUNPOWDER).x);
+      for (var i = 0; i < faces; i++) {
+        light = light || (nid[i] == E_FUSE && na[i].z <= FUSE_HANDOFF) || (!isGasLike(nid[i]) && na[i].y >= IGNITE(id));
+      }
+      if (light) { life = 1.0 - FUSE_BURN; }
     } else {
       // At the fuse's end (no fuse beside it that burns out later), once the
       // front reaches it, the burning powder spits out of it as hot as
       // gunpowder burns: that lights the charge by touch. Burnt out, it leaves
       // a puff of smoke from the sheath, or at the end, flame.
-      bool end = true;
-      for (int i = 0; i < uFaces; i++) end = end && !(nid[i] == E_FUSE && na[i].z > life);
+      var end = true;
+      for (var i = 0; i < faces; i++) { end = end && !(nid[i] == E_FUSE && na[i].z > life); }
       life -= FUSE_BURN;
-      if (end && life <= FUSE_HANDOFF) T = max(T, BLAST[E_GUNPOWDER].y);
-      if (life <= 0.0) { nidOut = end ? E_FIRE : E_SMOKE; reset = true; }
+      if (end && life <= FUSE_HANDOFF) { T = max(T, BLAST(E_GUNPOWDER).y); }
+      if (life <= 0.0) { nidOut = select(E_SMOKE, E_FIRE, end); reset = true; }
     }
   } else if (id == E_OXYGEN) {
     // flames lick into oxygen as into air, as much more often as it holds more
     // oxygen, and hotter
-    if (nBurning > 0 && !smothered && rnd(rs) < FLAME_SPREAD * O2_PER_AIR * float(nBurning)) {
-      nidOut = E_FIRE; reset = true; ctype = float(E_OXYGEN);
-      T = max(T, oxyFlameT(flame, O2_PER_AIR) * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
+    if (nBurning > 0 && !smothered && rnd(&rs) < FLAME_SPREAD * O2_PER_AIR * f32(nBurning)) {
+      nidOut = E_FIRE; reset = true; ctype = f32(E_OXYGEN);
+      T = max(T, oxyFlameT(flame, O2_PER_AIR) * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(&rs)));
     }
   } else if ((id == E_CLONE || id == E_PCLN) && ctype < 1.0) {
-    for (int i = 0; i < uFaces; i++) {
-      int j = nid[i];
-      if (cloneable(j)) { ctype = float(j); break; }
+    for (var i = 0; i < faces; i++) {
+      let j = nid[i];
+      if (cloneable(j)) { ctype = f32(j); break; }
     }
   } else if (id == E_SINGULARITY) {
     // Its mass is its life. It gains what it swallows (its partner, which
     // goes on the same draw: below) and a lighter singularity touching it, or
     // is taken by a heavier one; it evaporates as 1/m². Full, it bursts;
     // starved, it winks out with what little is left.
-    float m = life;
-    bool taken = false;
-    for (int i = 0; i < uFaces; i++)
+    var m = life;
+    var taken = false;
+    for (var i = 0; i < faces; i++) {
       if (nid[i] == E_SINGULARITY) {
-        if (singTakes(life, p, na[i].z, p + DIRS[i])) m += na[i].z; else taken = true;
+        if (singTakes(life, p, na[i].z, p + DIRS(i))) { m += na[i].z; } else { taken = true; }
       }
-    if (swallow) m += densityOf(nid[k], na[k].y) / DENS[E_WATER];
+    }
+    if (swallow) { m += densityOf(nid[k], na[k].y) / DENS(E_WATER); }
     m -= SING_EVAP / max(m * m, SING_MASS_MIN);
     life = m;
     if (taken) { nidOut = E_EMPTY; reset = true; }
     else if (m < SING_MASS_MIN || m >= SING_MASS_MAX) {
       nidOut = E_FIRE; reset = true; T = SING_BURST_T;
-      P = SING_BURST_P_PER_MASS * max(m, 0.0);
+      Pr = SING_BURST_P_PER_MASS * max(m, 0.0);
     }
   }
 
   // phase changes from the table (elements.js cold, hot). With latent heat,
   // life is a signed bank as water's is (+ toward hot, − toward cold), or, if
   // life holds something else, the change is stochastic (latentChance).
-  if (!reacted && nidOut == id && (INTO[id][PH_HOT] >= 0 || INTO[id][PH_COLD] >= 0)) {
-    float up = max(life, 0.0), dn = max(-life, 0.0);
-    bool goHot = false, goCold = false, bank = LIFE_BANK[id];
-    if (INTO[id][PH_HOT] >= 0) goHot = HOT[id].y == 0.0 ? T >= HOT[id].x
-      : bank ? latent(T, up, HOT[id].x, C, HOT[id].y, true) : latentChance(T, HOT[id].x, C, HOT[id].y, true, rs);
-    if (INTO[id][PH_COLD] >= 0 && !goHot) goCold = COLD[id].y == 0.0 ? T <= COLD[id].x
-      : bank ? latent(T, dn, COLD[id].x, C, COLD[id].y, false) : latentChance(T, COLD[id].x, C, COLD[id].y, false, rs);
-    if (bank && (HOT[id].y > 0.0 || COLD[id].y > 0.0)) life = up - dn;
+  if (!reacted && nidOut == id && (INTO(id)[PH_HOT] >= 0 || INTO(id)[PH_COLD] >= 0)) {
+    var up = max(life, 0.0);
+    var dn = max(-life, 0.0);
+    var goHot = false;
+    var goCold = false;
+    let bank = LIFE_BANK(id);
+    if (INTO(id)[PH_HOT] >= 0) {
+      if (HOT(id).y == 0.0) { goHot = T >= HOT(id).x; }
+      else if (bank) { goHot = latent(&T, &up, HOT(id).x, C, HOT(id).y, true); }
+      else { goHot = latentChance(&T, HOT(id).x, C, HOT(id).y, true, &rs); }
+    }
+    if (INTO(id)[PH_COLD] >= 0 && !goHot) {
+      if (COLD(id).y == 0.0) { goCold = T <= COLD(id).x; }
+      else if (bank) { goCold = latent(&T, &dn, COLD(id).x, C, COLD(id).y, false); }
+      else { goCold = latentChance(&T, COLD(id).x, C, COLD(id).y, false, &rs); }
+    }
+    if (bank && (HOT(id).y > 0.0 || COLD(id).y > 0.0)) { life = up - dn; }
     if (goHot || goCold) {
-      int ph = goHot ? PH_HOT : PH_COLD;
-      nidOut = pickOut(INTO[id][ph], rs);
-      ctype = ctypeOf(nidOut, OF[id][ph], id);
+      let ph = select(PH_COLD, PH_HOT, goHot);
+      nidOut = pickOut(INTO(id)[ph], &rs);
+      ctype = ctypeOf(nidOut, OF(id)[ph], id);
       reset = true;
-      P += puffP(goHot ? HOT[id].z : COLD[id].z);
+      Pr += puffP(select(COLD(id).z, HOT(id).z, goHot));
     }
   }
   // crushed by air pressure (elements.js crush)
-  if (!reacted && nidOut == id && INTO[id][PH_CRUSH] >= 0 && pOn > CRUSH_P[id]) {
-    nidOut = pickOut(INTO[id][PH_CRUSH], rs);
-    ctype = ctypeOf(nidOut, OF[id][PH_CRUSH], id);
+  if (!reacted && nidOut == id && INTO(id)[PH_CRUSH] >= 0 && pOn > CRUSH_P(id)) {
+    nidOut = pickOut(INTO(id)[PH_CRUSH], &rs);
+    ctype = ctypeOf(nidOut, OF(id)[PH_CRUSH], id);
     reset = true;
   }
 
   // melting (stone, sand, metal, glass → lava that remembers what it was)
-  if (!reacted && nidOut == id && MELT[id] > 0.0 && T > MELT[id]) {
-    nidOut = E_LAVA; ctype = float(MELTINTO[id]); life = 0.0;
+  if (!reacted && nidOut == id && MELT(id) > 0.0 && T > MELT(id)) {
+    nidOut = E_LAVA; ctype = f32(MELTINTO(id)); life = 0.0;
   }
 
   // dust clouds (physics.js DUST_*): suspended dust between its lean and rich
   // limits goes off as one when lit by a flame, a hot touch or its own heat.
   // Settled, lean or rich, it burns as any fuel does (combustion, below).
   if (!reacted && nidOut == id && id == E_DUST) {
-    int nFuel = 0;
-    bool hotTouch = false;
-    for (int i = 0; i < uFaces; i++) {
-      if (nid[i] == E_DUST) nFuel++;
-      hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+    var nFuel = 0;
+    var hotTouch = false;
+    for (var i = 0; i < faces; i++) {
+      if (nid[i] == E_DUST) { nFuel++; }
+      hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE(id));
     }
-    bool suspended = length(b.xyz) > DUST_LIFT_V;
-    bool cloud = suspended && float(nFuel) >= DUST_MEC_NB && float(nAir) >= DUST_RICH_AIR;
-    if (cloud && (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < DUST_FIRE))) {
-      nidOut = E_FIRE; reset = true; T = max(T, DUST_FLAME_T); P += DUST_P;
+    let suspended = length(b.xyz) > DUST_LIFT_V;
+    let cloud = suspended && f32(nFuel) >= DUST_MEC_NB && f32(nAir) >= DUST_RICH_AIR;
+    if (cloud && (T >= IGNITE(id) || hotTouch || (nFire > 0 && rnd(&rs) < DUST_FIRE))) {
+      nidOut = E_FIRE; reset = true; T = max(T, DUST_FLAME_T); Pr += DUST_P;
     }
   }
 
   // explosives (elements.js blast) and combustion
-  if (!reacted && nidOut == id && INTO[id][PH_BLAST] >= 0) {
+  if (!reacted && nidOut == id && INTO(id)[PH_BLAST] >= 0) {
     // It goes off at its ignition point, or the moment it touches something
     // that hot (an ember, hot metal, lava, a splinter heated by a shot); a
     // flame's touch flickers, so a flame next to it only might (blast.flame
     // per step). Or by a hard enough hit, or a blast's pressure (setOff).
-    bool lit = false;
+    var lit = false;
     if (blastAir) {
-      if (IGNITE[id] > 0.0) {
-        bool hotTouch = false;
-        for (int i = 0; i < uFaces; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
-        lit = T >= IGNITE[id] || hotTouch;
+      if (IGNITE(id) > 0.0) {
+        var hotTouch = false;
+        for (var i = 0; i < faces; i++) { hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE(id)); }
+        lit = T >= IGNITE(id) || hotTouch;
       }
-      lit = lit || setOff || (nFire > 0 && BLAST_LIT[id].x > 0.0 && rnd(rs) < BLAST_LIT[id].x);
+      lit = lit || setOff || (nFire > 0 && BLAST_LIT(id).x > 0.0 && rnd(&rs) < BLAST_LIT(id).x);
     }
     if (lit) {
-      nidOut = pickOut(INTO[id][PH_BLAST], rs);
-      ctype = ctypeOf(nidOut, OF[id][PH_BLAST], id);
-      reset = true; T = BLAST[id].y; P += BLAST[id].x;
+      nidOut = pickOut(INTO(id)[PH_BLAST], &rs);
+      ctype = ctypeOf(nidOut, OF(id)[PH_BLAST], id);
+      reset = true; T = BLAST(id).y; Pr += BLAST(id).x;
     }
-  } else if (!reacted && nidOut == id && IGNITE[id] > 0.0 && id != E_FUSE) {   // a fuse burns by its own rule
-    if ((T >= IGNITE[id] || (nFire > 0 && T >= FLASH[id])) && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
+  } else if (!reacted && nidOut == id && IGNITE(id) > 0.0 && id != E_FUSE) {   // a fuse burns by its own rule
+    if ((T >= IGNITE(id) || (nFire > 0 && T >= FLASH(id))) && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
       // as fast as oxygen reaches it, so its heat comes out as much faster
-      life -= BURNRATE[id] * oxy;
-      T = max(T, min(T + BURNHEAT[id] * oxy / C, oxyFlameT(FLAMET[id], oxy)));
-      P += BURN_P;
+      life -= BURNRATE(id) * oxy;
+      T = max(T, min(T + BURNHEAT(id) * oxy / C, oxyFlameT(FLAMET(id), oxy)));
+      Pr += BURN_P;
       if (life <= 0.0) {
-        nidOut = (LEAVES_ASH[id] && rnd(rs) < ASH_SHARE) ? E_ASH : E_FIRE;
+        if (LEAVES_ASH(id) && rnd(&rs) < ASH_SHARE) { nidOut = E_ASH; } else { nidOut = E_FIRE; }
         reset = true;
         T = max(T, BURNT_MIN_T);
       }
@@ -776,45 +927,69 @@ void main() {
   }
 
   // damp fungus rots wood, sawdust and plant into more fungus
-  if (!reacted && nidOut == id && nWetFungus > 0 && fungusFood(id) && T < DAMP_DRY_T && rnd(rs) < FUNGUS_GROW * float(nWetFungus)) {
+  if (!reacted && nidOut == id && nWetFungus > 0 && fungusFood(id) && T < DAMP_DRY_T && rnd(&rs) < FUNGUS_GROW * f32(nWetFungus)) {
     nidOut = E_FUNGUS; reset = true;
   }
 
   // acid (and caustic gas) eats its neighbours; what fizzes (limestone) sets its gas free as a puff
   if (!reacted && nidOut == id && nAcid > 0 && acidEats(id)) {
-    if (rnd(rs) < ACID_USE * float(nAcid)) {
-      nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true;
-      P += puffP(FIZZ[id]);
+    if (rnd(&rs) < ACID_USE * f32(nAcid)) {
+      if (rnd(&rs) < ACID_TO_SMOKE) { nidOut = E_SMOKE; } else { nidOut = E_EMPTY; }
+      reset = true;
+      Pr += puffP(FIZZ(id));
     }
   }
 
   // swallowed by the singularity it is partnered with (the draw above); its
   // heat goes in with it
-  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = uAirT; ctype = 0.0; }
+  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = airT(); ctype = 0.0; }
 
   // Void (elements.js VOID) drains whatever can move the step it touches it
-  if (nVoid > 0 && id != E_EMPTY && KIND[id] != K_SOLID) {
-    nidOut = E_EMPTY; reset = true; T = uAirT; v = vec3(0.0); ctype = 0.0;
+  if (nVoid > 0 && id != E_EMPTY && KIND(id) != K_SOLID) {
+    nidOut = E_EMPTY; reset = true; T = airT(); v = vec3f(0.0); ctype = 0.0;
   }
 
   if (nidOut != id) {
-    if (CONDUCTS[id] && !CONDUCTS[nidOut] && nidOut != E_LAVA) ctype = 0.0;   // its spark goes with it
-    if (reset) life = SPAWNLIFE[nidOut];
-    if (grower(nidOut) || grower(id)) ctype = 0.0;   // a new grower's damp comes in next step; an old one's goes
-    if (KIND[nidOut] == K_SOLID) v = vec3(0.0);
-    if (nidOut == E_FIRE) life = FIRE_LIFE_MIN + FIRE_LIFE_SPREAD * rnd(rs);
+    if (CONDUCTS(id) && !CONDUCTS(nidOut) && nidOut != E_LAVA) { ctype = 0.0; }   // its spark goes with it
+    if (reset) { life = SPAWNLIFE(nidOut); }
+    if (grower(nidOut) || grower(id)) { ctype = 0.0; }   // a new grower's damp comes in next step; an old one's goes
+    if (KIND(nidOut) == K_SOLID) { v = vec3f(0.0); }
+    if (nidOut == E_FIRE) { life = FIRE_LIFE_MIN + FIRE_LIFE_SPREAD * rnd(&rs); }
   }
 
   // simModes.js: ambient heat off holds the air at ambient; pressure off holds it at 0
-  if (!uAmbientHeat && nidOut == E_EMPTY) T = uAirT;
-  if (uAirMode == AIR_PRESSURE_OFF || uAirMode == AIR_OFF) P = 0.0;
+  if (P.ambientHeat == 0u && nidOut == E_EMPTY) { T = airT(); }
+  if (P.airMode == AIR_PRESSURE_OFF || P.airMode == AIR_OFF) { Pr = 0.0; }
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
-  vec4 outA = vec4(float(nidOut), T, life, ctype + seed), outB = vec4(v, clamp(P, P_MIN, P_MAX));
+  let outA = vec4f(f32(nidOut), T, life, ctype + seed);
+  let outB = vec4f(v, clamp(Pr, P_MIN, P_MAX));
   // the rest test on what this cell becomes, its neighbours as this pass saw
   // them (the activity map redoes the neighbour test where one has changed: dirty)
-  uint flags = ownFlags(outA, outB) | dirty;
-  if ((flags & FLAG_SELF) != 0u && inertNear(p, outA, na)) flags |= FLAG_NEAR;
-  if (nearChange(a, outA)) flags |= FLAG_DIRTY;
-  writeState(outA, outB, flags);
+  var flags = ownFlags(outA, outB) | dirty;
+  if ((flags & FLAG_SELF) != 0u && inertNear(p, outA, &na)) { flags |= FLAG_NEAR; }
+  if (nearChange(a, outA)) { flags |= FLAG_DIRTY; }
+  writeState(p, outA, outB, flags);
+  return FOAMS(nidOut);
+}
+
+var<workgroup> wgFoams: atomic<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  // workgroup w: brick w % UNIT_B of the DRAWN list's entry w / UNIT_B
+  let w = foldId(wg, nwg);
+  if (w >= act[ACT_COUNT + CNT_DRAWN] * UNIT_B) { return; }   // the whole workgroup
+  let brick = act[ACT_DRAWNL + w / UNIT_B] * UNIT_B + w % UNIT_B;
+  if (reactCell(cellOf(brick * 64u + li), quietBrick(brick))) { atomicOr(&wgFoams, 1u); }
+  workgroupBarrier();
+  if (li == 0u) { atomicStore(&marks[MARK_FOAMS + brick], atomicLoad(&wgFoams)); }
 }
 `;
+
+/** tools/check-wgsl.mjs, and the pipeline a grid needs (the start menu's warm-up, docs/webgpu.md B5). */
+export const WGSL_CHECK = [{
+  name: 'react',
+  kind: 'compute',
+  code: (g) => reactFrag(g),
+  layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, REACT_LAYOUT],
+  dispatch: (g) => fold(gridDims(g).nbricks),   // at most every brick (indirect)
+}];

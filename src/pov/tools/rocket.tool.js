@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CELL_METERS } from '../vitals.js';
-import { rocketFrag, toolPass, ROCKET } from '../../shaders/povTools.js';
+import { ROCKET } from '../../shaders/povTools.js';
+import { povGpu } from '../gpu.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
@@ -13,8 +14,8 @@ import { haloMatch, wu, HALO_HEALTH, HALO_SHIELD } from '../halo.js';
 // Rocket launcher: Team Fortress 2's (the Soldier's): a rocket a click, 0.8 s
 // apart, that flies dead straight at 1100 HU/s (≈ 21 m/s: slow enough to see
 // and to dodge) on the shared projectiles (ballistics.js, no gravity) and goes
-// off where it strikes: a cell, or a body (an NPC). The blast is one pass
-// (shaders/povTools.js rocketFrag): a crater, a fireball and a wave of air
+// off where it strikes: a cell, or a body (an NPC). The blast is one edit
+// (shaders/povTools.js rocketWGSL): a crater, a fireball and a wave of air
 // pressure the engine carries from there, which throws loose matter and
 // bodies, yours included, and hurts them (vitals.js, as a bomb does). Nothing
 // is added to the world.
@@ -51,7 +52,6 @@ export default {
     muzzle.position.set(...MUZZLE);
     hand.add(muzzle);
     const heldMesh = attachModel(hand, 'rpg');
-    const pass = toolPass(rocketFrag, () => ({ uCenter: { value: new THREE.Vector3() }, uFrame: { value: 0 } }));
     const button = trigger(REFIRE);
     let lastBlast = null, frame = 0;
 
@@ -84,12 +84,10 @@ export default {
     // the blast, STANDOFF cells out of the struck face (or where it met a body)
     function explode({ sim, hit, normal }) {
       const center = hit.point.clone().addScaledVector(normal, STANDOFF);
-      const mat = pass(sim);
-      mat.uniforms.uCenter.value.copy(center);
-      mat.uniforms.uFrame.value = ++frame;
       const r = ROCKET.PULSE_RADIUS;   // the farthest the blast reaches
-      sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]);
-      sim.pass(mat);
+      povGpu(sim).edit('povRocket', sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]), {
+        center, frame: ++frame,
+      });
       lastBlast = { point: center.clone(), id: hit.id };
       povEvents.emit('blast', { point: center.clone() });
       if (haloMatch()) haloSplash(center, HALO_SPLASH);
@@ -125,7 +123,6 @@ export default {
         offs.forEach((off) => off());
         flying.forEach((m) => m.dispose());
         world.removeFromParent();
-        pass.dispose();
         heldMesh.dispose();
         hand.removeFromParent();
       },

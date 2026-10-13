@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { HAND_REACH } from '../constants.js';
-import { torchFireFrag, flameBox, toolPass, TORCH_FIRE } from '../../shaders/povTools.js';
+import { torchFireFrag, flameBox, TORCH_FIRE } from '../../shaders/povTools.js';
+import { toolPass } from '../gpu.js';
 import { gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from './bomb.tool.js';
 import { lamps } from '../lamps.js';
@@ -129,10 +130,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
       const heldMesh = attachModel(held, modelKey);
       const thrower = trigger(THROW_REFIRE, { button: 'secondary', hold: false });
       const toucher = trigger(TOUCH_REFIRE);
-      const fire = burn ? toolPass(torchFireFrag, () => ({
-        uNozzle: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
-        uReach: { value: 0 }, uDt: { value: 0 }, uFrame: { value: 0 },
-      })) : null;
+      const fire = burn ? toolPass(torchFireFrag) : null;
       const tag = `${tool}${++instances}`;
       const heldKey = `${tag}:held`;
       let on = true, frame = 0, fireWait = 0, nextProp = 1;
@@ -226,17 +224,9 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
         povEvents.emit('tool:action', { tool, action: 'land', point: p.pos.clone() });
       }
 
-      // a flame pass: from `at` along `dir`, `reach` cells (the torch's head, lying or touched to something)
+      // a flame edit: from `at` along `dir`, `reach` cells (the torch's head, lying or touched to something)
       function flame(sim, at, dir, reach, dt) {
-        const mat = fire(sim);
-        const u = mat.uniforms;
-        u.uNozzle.value.copy(at);
-        u.uDir.value.copy(dir);
-        u.uReach.value = reach;
-        u.uDt.value = dt;
-        u.uFrame.value = ++frame;
-        sim.touchCentres(...flameBox(TORCH_FIRE, at, dir, reach));
-        sim.pass(mat);
+        fire(sim, { nozzle: at, dir, reach, dt, frame: ++frame }, sim.touchCentres(...flameBox(TORCH_FIRE, at, dir, reach)));
       }
 
       function throwIt(ctx) {

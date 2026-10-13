@@ -16,6 +16,7 @@ try {
     const a = window.__app, sim = a.sim, g = sim.g;
     const { E, ELEMENTS } = await import('/src/elements.js');
     a.test.park();
+    await a.test.ready();   // (load and step need the grid's pipelines)
     const [A, B] = sim.blankState();
     const box = (x0, y0, z0, x1, y1, z1, id) => {
       for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
@@ -28,7 +29,7 @@ try {
     const rows = [];
     for (let s = 0; s <= 400; s += 50) {
       if (s) a.test.step(50);
-      const [S] = sim.readState();
+      const [S] = await sim.readState();
       let on = 0, off = 0, top = 0;
       for (let y = 0; y < 24; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
         if (Math.round(S[sim.cellTexel(x, y, z) * 4]) !== E.WATER) continue;

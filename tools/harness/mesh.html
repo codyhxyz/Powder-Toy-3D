@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meshes</title>
+  <link rel="stylesheet" href="/src/ui/styles.css">
+  <style>
+    #view { position: fixed; inset: 0; width: 100%; height: 100%; }
+    #log { display: none; }
+  </style>
+</head>
+<body>
+  <!-- tools/mesh-check.mjs drives this page: a Simulation, its derived passes,
+       the volume and post on their own device, and three.js's mesh layer over
+       them (docs/webgpu.md F8, U13): figures, the viewmodel, the billboards,
+       the constructions' ghost. -->
+  <canvas id="view" width="400" height="250"></canvas>
+  <pre id="log"></pre>
+  <script type="module" src="./mesh.js"></script>
+</body>
+</html>

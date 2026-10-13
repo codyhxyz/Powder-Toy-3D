@@ -128,7 +128,7 @@ check(oneShotRate(E.SAND, 1) * ELEMENTS[E.SAND].spawn >= 1 && oneShotRate(-2, 0.
       g, origin: new THREE.Vector3(), disposed: false, painted: [], snapshots: 0,
       cellTexel: (x, y, z) => cellTexel(g, x, y, z),
       readStateAAsync: async () => { if (shiftBy) sim.origin.x += shiftBy; return a; },
-      paint(stroke) { sim.painted.push({ ...stroke, data: stroke.mask.texture.image.data.slice() }); },
+      paint(stroke) { sim.painted.push({ ...stroke, data: stroke.mask.data.slice() }); },
     };
     return sim;
   };

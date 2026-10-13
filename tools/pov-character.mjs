@@ -1,12 +1,15 @@
 // Headless check of the realistic body (figureReal.js) next to the stickman:
 // the model loads, the clips blend with speed (idle, walk, jog, swim, tread),
 // death plays, the Body setting switches live, no T-pose, and it is lit like
-// the stickman standing in the same spot.
-// usage: node tools/pov-character.mjs [--port 5205] [--shots dir]   (needs a dev server)
+// the stickman standing in the same spot (on WebGPU both read the volume's
+// light, gfx/meshLight.js, U13). Needs first person's wiring (src/wire/pov.js,
+// U11) to be ready.
+// usage: node tools/pov-character.mjs [--port 5205] [--shots dir]   (runs its own Vite on --port)
 import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5205');
+const port = Number(opt('port', '5205'));
 const shots = opt('shots', null);
 const W = 960, H = 600;
 const SHOT_W = 480;                       // px per body in the side-by-side
@@ -22,16 +25,17 @@ const DEAD_HEAD_MAX = 2.5;                // cells: lying down, the head is this
 const POOL_R = 9;                         // cells, radius of the water ball
 const LAVA_R = 4;                         // cells, radius of the lava ball
 
+const vite = await startVite({ port });
 const b = await launchBrowser();
+let fails = 0;
 const p = await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 1000)));
-await p.goto(`http://localhost:${port}/?preset=lab`);
-await p.waitForFunction(() => window.__app?.pov, null, { timeout: 20000 });
+await p.goto(vite.url('/?preset=lab'));
+await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
 await p.waitForTimeout(2500);
 
-let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
 const ev = (fn, arg) => p.evaluate(fn, arg);
 const settle = (ms) => p.waitForTimeout(ms);
@@ -212,5 +216,6 @@ check('swimming forward: swim clip', wSwim.swim > wTread.swim && wSwim.swim > 0.
 
 check('no console errors', errs.length === 0, errs.slice(0, 5).join('\n'));
 await b.close();
+await vite.close();
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
-process.exit(fails ? 1 : 0);
+process.exitCode = fails ? 1 : 0;

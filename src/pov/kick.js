@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS } from '../physics.js';
 import { CELL_M } from '../scale.js';
-import { kickFrag, KICK, kickWeight } from '../shaders/povKick.js';
-import { toolPass } from '../shaders/povTools.js';
+import { KICK, kickWeight } from '../shaders/povKick.js';
+import { povGpu } from './gpu.js';
 import { PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { povEvents } from './events.js';
 import { rayTarget, dealtScale, PLAYER } from './targets.js';
@@ -114,7 +114,6 @@ const debrisOf = (id) => E[ELEMENTS[id].breakInto];
 // cellAt(x, y, z): the element id the body's probe holds there, `unknown`
 // outside it, PROBE_OUTSIDE for the box's floor and walls.
 export function createKick({ body, owner = null, renderer, getSim, cellAt, unknown }) {
-  const pass = toolPass(kickFrag, () => ({ uCenter: { value: new THREE.Vector3() }, uShove: { value: new THREE.Vector3() } }));
   const transfer = () => sharedTransfer({ renderer, getSim });
   const load = persistentLoad(ownedKey('KICK', owner), SOLE_CELLS);   // grains on the boot (kept if a mode or scene change comes mid-kick)
   let carried = null;   // { from, splash, speed, at, vel, tries, flying, flew, round } while grains are on their way
@@ -221,7 +220,8 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
 
   function kick(dirIn) {
     const sim = getSim();
-    if (!sim || wait > 0 || body.dead) return null;
+    // (its kernels still building, B5: the kick waits, as a tool's use does)
+    if (!sim || wait > 0 || body.dead || !povGpu(sim).ready) return null;
     const halo = haloMatch();
     wait = halo ? MELEE_REFIRE : KICK_REFIRE;
     poseT = 0;
@@ -243,14 +243,12 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
       const [, share] = split(BODY_MASS_KG, l.kg);
       if (l.loose && share > 0) carry(struck, share);
       if (l.breaks) {
-        const mat = pass(sim);
-        mat.uniforms.uCenter.value.copy(center);
         // the lump's speed on the sim's clock (cells/step, as player.js's coupling converts)
         const v = body.stepRate > 0 ? KICK_SPEED * share / body.stepRate : 0;
-        mat.uniforms.uShove.value.copy(dir).multiplyScalar(Math.min(v, PHYS.V_MAX));
         const r = KICK.RADIUS;
-        sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]);
-        sim.pass(mat);
+        povGpu(sim).edit('povKick', sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]), {
+          center, shove: dir.clone().multiplyScalar(Math.min(v, PHYS.V_MAX)),
+        });
       }
       res = { hit: 'cell', point: center.clone(), normal: struck.normal, id: struck.id, broke: l.broke, mass: l.kg };
       if (struck.id >= 0) povEvents.emit('impact', { source: 'kick', point: res.point, normal: struck.normal, id: struck.id, energy: KICK.ENERGY, broke: l.broke });
@@ -327,7 +325,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
     get carrying() { return { on: !!carried, load: load.count, busy: load.busy, tries: carried?.tries ?? 0, flying: !!carried?.flying }; },   // for checks
     get lastCarry() { return { ...lastCarry, engine: !!flight }; },   // for checks
     set ballistics(b) { flight = b; },   // the shell hands over the toolbelt's projectile engine
-    dispose() { pass.dispose(); offs.forEach((off) => off()); },   // (grains still on the boot stay in its load: tool loads persist)
+    dispose() { offs.forEach((off) => off()); },   // (grains still on the boot stay in its load: tool loads persist)
   };
 }
 

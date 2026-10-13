@@ -1,6 +1,7 @@
-import * as THREE from 'three';
-import { quadVert, stateUniforms } from './shaders/common.js';
-import { stampFrag } from './shaders/stamp.js';
+import * as THREE from 'three/webgpu';
+import { attribute, normalGeometry, positionLocal, vec3, float, max, dot, uniform } from 'three/tsl';
+import { BUILD_STAMP_KERNEL } from './shaders/construction.js';
+import { prepareMesh } from './gfx/meshLight.js';
 import { ELEMENTS, BUILDS, isBuild } from './elements.js';
 import { h } from './ui/dom.js';
 import { ICON } from './ui/icons.js';
@@ -88,22 +89,39 @@ function avatar(user) {
 
 // ---------------------------------------------------------------- ghost
 
-const ghostVert = /* glsl */ `
-varying vec3 vColor;
-varying vec3 vNormal;
-void main() {
-  vColor = instanceColor;
-  vNormal = normal; // instances are only translated, so these are grid-space normals
-  gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
-}`;
-const ghostFrag = /* glsl */ `
-uniform float uAlpha;
-varying vec3 vColor;
-varying vec3 vNormal;
-void main() {
-  float lit = 0.55 + 0.45 * max(dot(vNormal, normalize(vec3(0.45, 0.8, 0.35))), 0.0);
-  gl_FragColor = vec4(vColor * lit * uAlpha, uAlpha);
-}`;
+const GHOST_LIGHT = new THREE.Vector3(0.45, 0.8, 0.35).normalize();   // the ghost's own fixed light
+// WEBGPU-STUB (docs/webgpu.md J3): the ghost's GLSL; it is ghostMaterial's TSL now
+export const ghostVert = '';
+// WEBGPU-STUB (docs/webgpu.md J3)
+export const ghostFrag = '';
+
+// The ghost's cubes: one box geometry drawn once per cell, its instances
+// placed by the ghostAt attribute (cells are only translated: no instance
+// matrices, and so the box's own normals are grid-space normals).
+const ghostPosition = () => positionLocal.add(attribute('ghostAt', 'vec3'));
+// Its depth pass: the frontmost faces' depth only.
+function ghostDepthMaterial() {
+  const m = new THREE.MeshBasicNodeMaterial({ colorWrite: false, transparent: true });
+  m.lights = false;
+  m.positionNode = ghostPosition();
+  return m;
+}
+// Its colour pass: each cube its element's colour (the ghostColor attribute),
+// lit by a fixed light from above, premultiplied at alpha over what is behind
+// it, only where the depth pass left the frontmost face.
+function ghostMaterial(alpha) {
+  const m = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+  });
+  m.lights = false;
+  m.positionNode = ghostPosition();
+  const lit = float(0.55).add(float(0.45).mul(max(dot(normalGeometry, vec3(GHOST_LIGHT.x, GHOST_LIGHT.y, GHOST_LIGHT.z)), 0)));
+  m.colorNode = attribute('ghostColor', 'vec3').mul(lit).mul(alpha);
+  m.opacityNode = alpha;
+  return m;
+}
 
 // ---------------------------------------------------------------- UI
 
@@ -134,7 +152,8 @@ export class Constructions {
     this.baked = null; this.bakeKey = '';
     this.origin = new THREE.Vector3();
     this.valid = false;
-    this.mat = null; this.gridKey = '';
+    this.stampKernel = null; this.stampSim = null;   // the stamp's box writer (shaders/construction.js), per grid
+    this.stampBuf = null; this.stampGpu = null;       // the baked cells it reads (grown as needed), and its device
 
     // PROMPT: the player's own constructions, their sandbox results, and the agent
     this.mine = loadJSON(MINE_STORE, []).filter((m) => m && typeof m.code === 'string');
@@ -157,18 +176,14 @@ export class Constructions {
     // the frontmost faces, so it reads as one solid object rather than a jumble
     this.group = new THREE.Group();
     this.group.visible = false;
-    this.geo = new THREE.BoxGeometry(1, 1, 1);
-    this.depthMat = new THREE.MeshBasicMaterial({ colorWrite: false, transparent: true });
-    this.colorMat = new THREE.ShaderMaterial({
-      vertexShader: ghostVert, fragmentShader: ghostFrag,
-      uniforms: { uAlpha: { value: GHOST_ALPHA } },
-      transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
-      blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
-    });
+    this.geo = null;   // the cubes: a box with the ghostAt and ghostColor instance attributes, made per capacity (_setGhost)
+    this.depthMat = ghostDepthMaterial();
+    this.colorMat = ghostMaterial(uniform(GHOST_ALPHA));
     this.meshes = [];
     this.capacity = 0;
+    this.ghostReady = null;   // the ghost's meshes compiled (prepareMesh): it shows once they are
     this.outline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-      new THREE.LineBasicMaterial({ color: 0xf4f6fa, transparent: true, opacity: 0.28, depthTest: false }));
+      new THREE.LineBasicNodeMaterial({ color: 0xf4f6fa, transparent: true, opacity: 0.28, depthTest: false }));
     this.outline.renderOrder = 11;
     this.group.add(this.outline);
     scene.add(this.group);
@@ -211,7 +226,20 @@ export class Constructions {
     const key = this._loadCells(build);
     if (!key || !this._bakeFacingCamera(key)) return;
     this._placeGhost(hover);
+    this._stampKernel();   // (its pipeline builds while the ghost shows)
     this.valid = true;
+  }
+
+  // The stamp's kernel for the current grid, made when a construction is
+  // first previewed or stamped (its pipeline builds while the ghost shows),
+  // or ahead of that by prepareStamp.
+  _stampKernel() {
+    const sim = this.getSim();
+    if (this.stampSim !== sim) {
+      this.stampSim = sim;
+      this.stampKernel = sim.editKernel('buildStamp', BUILD_STAMP_KERNEL);
+    }
+    return this.stampKernel;
   }
 
   // Make this.cells the construction to place. Returns its cache key, or null
@@ -268,7 +296,7 @@ export class Constructions {
     const scale = this.getScale();
     this.group.scale.setScalar(scale);
     this.group.position.copy(o).multiplyScalar(scale).add(this.getVolume().position);
-    this.group.visible = true;
+    this.group.visible = this.ghostReady === true;
   }
 
   // Stamp the previewed construction into the grid. The caller snapshots for undo first.
@@ -312,44 +340,51 @@ export class Constructions {
   // Stamp already baked cells (runtime.js bake) with their low corner at grid cell origin.
   stampBaked(s, origin) { this._stamp(s, origin); }
 
-  // One GPU pass (shaders/stamp.js) writing baked cells into the grid at origin.
+  /**
+   * Builds the stamp's kernel for the current grid now (src/wire/mesh.js
+   * attach, in a world: its shrine and glade trees are stamped once the
+   * world's passes are built). Resolves when it is ready: a stamp from then
+   * on is an edit at its call.
+   * @returns {Promise<unknown>}
+   */
+  prepareStamp() { return this._stampKernel().ready; }
+
+  // One box writer (shaders/construction.js) writing baked cells into the grid
+  // at origin: an edit in call order (docs/webgpu.md D6), so the caller's undo
+  // snapshot, taken first, holds the grid from before it. A stamp made before
+  // the kernel's pipeline is built waits for it, so it lands after the edits
+  // made meanwhile; it keeps what it was placed against: it moves with the
+  // window (grid cells are the world's less the window's origin), and it is
+  // dropped if that grid is gone, its undo step was taken back or the history
+  // was dropped (a load, a moved window's snapshots).
   _stamp(s, origin) {
-    const sim = this.getSim(), g = sim.g;
-    const gk = `${g.nx}x${g.ny}x${g.nz}`;
-    if (gk !== this.gridKey) {
-      this.mat?.dispose();
-      this.mat = new THREE.RawShaderMaterial({
-        glslVersion: THREE.GLSL3,
-        vertexShader: quadVert,
-        fragmentShader: stampFrag(g),
-        uniforms: {
-          ...stateUniforms(), tStamp: { value: null },
-          uAt: { value: new THREE.Vector3() }, uSize: { value: new THREE.Vector3() },
-          uFoot: { value: 0 }, uSeed: { value: 0 },
-        },
-        depthTest: false,
-        depthWrite: false,
-      });
-      this.gridKey = gk;
+    const sim = this.getSim(), kernel = this._stampKernel();
+    if (kernel.main.state !== 'ready' || kernel.apply.state !== 'ready') {
+      const at = origin.clone(), o = sim.origin.clone(), history = sim.history, top = history.at(-1) ?? null;
+      kernel.ready.then(() => {
+        if (this.getSim() !== sim || sim.disposed || sim.history !== history || (top && !history.includes(top))) return;
+        this._stamp(s, at.add(o).sub(sim.origin));
+      }, () => {});
+      return;
     }
-    const tex = new THREE.Data3DTexture(s.data, s.w, s.h, s.d);
-    tex.format = THREE.RGBAFormat;
-    tex.type = THREE.FloatType;
-    tex.minFilter = tex.magFilter = THREE.NearestFilter;
-    tex.unpackAlignment = 1;
-    tex.needsUpdate = true;
-    const u = this.mat.uniforms;
-    u.tStamp.value = tex;
-    u.uAt.value.copy(origin);
-    u.uSize.value.set(s.w, s.h, s.d);
-    u.uFoot.value = Math.min(s.foot, MAX_FOOT);
-    u.uSeed.value = newSeed();
-    // the stamp's box, its footings below it included (shaders/stamp.js)
-    const lo = [Math.floor(origin.x), Math.floor(origin.y) - u.uFoot.value, Math.floor(origin.z)];
-    sim.touch(lo, [lo[0] + s.w, lo[1] + u.uFoot.value + s.h, lo[2] + s.d]);
-    sim.pass(this.mat);
-    sim.scrubDeco();   // what it built over loses its decoration, as a TPT stamp replaces particles (src/deco.js)
-    tex.dispose();
+    // the baked cells into the stamp's buffer, in order with the edits around it (gpu.write)
+    const gpu = sim.gpu, bytes = s.data.byteLength;
+    let old = null;
+    if (!this.stampBuf || this.stampBuf.size < bytes || this.stampGpu !== gpu) {
+      old = this.stampGpu === gpu ? this.stampBuf : null;
+      const size = Math.max(64 * 1024, 2 ** Math.ceil(Math.log2(bytes)));
+      this.stampBuf = gpu.createBuffer({ label: 'construction stamp', size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      this.stampGpu = gpu;
+    }
+    gpu.write(this.stampBuf, 0, s.data);
+    // (the write flushed every command that bound the old buffer: it goes once the queue is done with them)
+    if (old) gpu.queue.onSubmittedWorkDone().then(() => old.destroy(), () => old.destroy());
+    const foot = Math.min(s.foot, MAX_FOOT);
+    const at = [Math.floor(origin.x), Math.floor(origin.y), Math.floor(origin.z)];
+    // the stamp's box, its footings below it included; what it builds over
+    // loses its decoration, as a TPT stamp replaces particles (scrub, src/deco.js)
+    sim.edit(kernel, { lo: [at[0], at[1] - foot, at[2]], hi: [at[0] + s.w - 1, at[1] + s.h - 1, at[2] + s.d - 1] },
+      { at, foot, size: [s.w, s.h, s.d], seed: newSeed() }, { bind: [{ buffer: this.stampBuf }], scrub: true });
   }
 
   // New seed (and, when shuffling, maybe a new variant) for the next placement.
@@ -793,41 +828,54 @@ export class Constructions {
 
   _setGhost(s) {
     const n = s.ghost.length / 4;
+    let grown = false;
     if (n > this.capacity) {
-      for (const m of this.meshes) { this.group.remove(m); m.dispose(); }
+      for (const m of this.meshes) this.group.remove(m);
+      this.geo?.dispose();
       this.capacity = Math.max(n, Math.ceil(this.capacity * 1.5), 1024);
-      const depth = new THREE.InstancedMesh(this.geo, this.depthMat, this.capacity);
-      const color = new THREE.InstancedMesh(this.geo, this.colorMat, this.capacity);
-      color.instanceMatrix = depth.instanceMatrix;
-      depth.instanceColor = color.instanceColor =
-        new THREE.InstancedBufferAttribute(new Float32Array(this.capacity * 3), 3);
+      const box = new THREE.BoxGeometry(1, 1, 1);
+      this.geo = new THREE.InstancedBufferGeometry().copy(box);
+      box.dispose();
+      for (const k of ['ghostAt', 'ghostColor']) {
+        const a = new THREE.InstancedBufferAttribute(new Float32Array(this.capacity * 3), 3);
+        a.setUsage(THREE.DynamicDrawUsage);
+        this.geo.setAttribute(k, a);
+      }
+      const depth = new THREE.Mesh(this.geo, this.depthMat);
+      const color = new THREE.Mesh(this.geo, this.colorMat);
       depth.renderOrder = 9;
       color.renderOrder = 10;
       for (const m of [depth, color]) {
         m.frustumCulled = false;
-        m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         this.group.add(m);
       }
       this.meshes = [depth, color];
+      grown = true;
     }
-    const [depth, color] = this.meshes;
-    const mat = depth.instanceMatrix.array, col = depth.instanceColor.array;
+    const at = this.geo.getAttribute('ghostAt'), colors = this.geo.getAttribute('ghostColor');
+    const pos = at.array, col = colors.array;
     const rgb = ELEMENTS.map((e) => hexBytes(e.color).map((v) => v / 255));
     for (let i = 0; i < n; i++) {
       const x = s.ghost[i * 4], y = s.ghost[i * 4 + 1], z = s.ghost[i * 4 + 2], id = s.ghost[i * 4 + 3];
-      mat.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x + 0.5, y + 0.5, z + 0.5, 1], i * 16);
+      pos[i * 3] = x + 0.5; pos[i * 3 + 1] = y + 0.5; pos[i * 3 + 2] = z + 0.5;
       const c = rgb[id], k = GHOST_SHADE_MIN + GHOST_TEXTURE * cellNoise(x, y, z);
       col[i * 3] = c[0] * k; col[i * 3 + 1] = c[1] * k; col[i * 3 + 2] = c[2] * k;
     }
-    depth.count = color.count = n;
-    depth.instanceMatrix.clearUpdateRanges();
-    depth.instanceMatrix.addUpdateRange(0, n * 16);
-    depth.instanceMatrix.needsUpdate = true;
-    depth.instanceColor.clearUpdateRanges();
-    depth.instanceColor.addUpdateRange(0, n * 3);
-    depth.instanceColor.needsUpdate = true;
+    this.geo.instanceCount = n;
+    for (const a of [at, colors]) {
+      a.clearUpdateRanges();
+      a.addUpdateRange(0, n * 3);
+      a.needsUpdate = true;
+    }
     this.outline.scale.set(s.w, s.h, s.d);
     this.outline.position.set(s.w / 2, s.h / 2, s.d / 2);
+    // new meshes are compiled before the ghost shows them (docs/webgpu.md F8)
+    if (grown) {
+      const ready = this.ghostReady = prepareMesh(this.group).then(() => {
+        if (this.ghostReady === ready) this.ghostReady = true;
+        this.requestRender?.();
+      });
+    }
     this.requestRender?.(); // the view key misses instance swaps, e.g. when a generation finishes
   }
 
@@ -835,14 +883,13 @@ export class Constructions {
     removeEventListener('pointermove', this._onMove);
     this.offAccount();
     this.running?.abort();
-    for (const m of this.meshes) m.dispose();
     this.group.removeFromParent();
-    this.geo.dispose();
+    this.geo?.dispose();
     this.depthMat.dispose();
     this.colorMat.dispose();
     this.outline.geometry.dispose();
     this.outline.material.dispose();
-    this.mat?.dispose();
+    this.stampBuf?.destroy();
     this.bar.remove();
     this.editor?.remove();
   }

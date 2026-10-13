@@ -1,31 +1,37 @@
-import * as THREE from 'three';
+import { Matrix4, Vector3 } from 'three/webgpu';
 import { BRICK } from '../shaders/common.js';
 import {
-  farLayout, farRegionVert, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag,
-  farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farVert, farFrag,
-  farSceneCellsFrag, farSceneFrag, farSceneLayout, FAR_SCENE, FAR,
+  farLayout, FAR, FAR_SCENE, farSceneLayout, FAR_FORMATS, occupancyWords,
+  farWinFrag, farSceneFrag, farSceneCellsFrag, farClearFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag,
+  farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farFrag,
+  RegionParams, regionDispatch, SceneCellsParams, sceneCellsDispatch, ShadowParams, columnDispatch, nodeDispatch,
+  FAR_WIN_LAYOUT, FAR_SCENE_LAYOUT, FAR_CLEAR_LAYOUT, FAR_BOOST_LAYOUT, FAR_MIP1_LAYOUT, FAR_MIP2_LAYOUT, FAR_TOP_LAYOUT,
+  FAR_SHADOW_LAYOUT, FAR_TREE_BAND_LAYOUT, SCENE_CELLS_LAYOUT_OF, SCENE_CELLS_BINDING, TREE_CAND_LAYOUT, TREE_THIN_LAYOUT,
+  TREE_CAND_BINDING, FAR_VIEW_FRAME, FarViewParams, farViewPipeline,
 } from '../shaders/far.js';
-import { rawMat, makeFieldTarget } from '../sim.js';
-import { gfxUniforms } from '../gfx/uniforms.js';
+import { gfxUniforms, frameUniformsOf } from '../gfx/uniforms.js';
 import { WorldDetail } from './detail.js';
 
-// The far field of a massive world (docs/scaling.md D11, phase W4; the GLSL
-// and the far grid's layout are in shaders/far.js): a brick-resolution grid of
-// the whole world, drawn wherever the window isn't.
+// The far field of a massive world (docs/scaling.md D11, phase W4;
+// docs/webgpu.md G1; the WGSL and the far grid's layout are in
+// shaders/far.js): a brick-resolution grid of the whole world, drawn wherever
+// the window isn't.
 //
 // Built from the world's scene (world/scenes), progressively: the window's
 // region from its state at once, then the rest a chunk at a time from the
 // scene's sceneCell (shaders/far.js farSceneCellsFrag, farSceneFrag),
 // SCENE_CHUNKS_PER_FRAME chunks a frame (or the scene's farChunksPerFrame)
-// in tick, nearest the window first, so no draw is long and the far field
+// in tick, nearest the window first, so no frame is long and the far field
 // fills in around you; the view draws what is built so far (the rest is the
 // plain or sea beyond: unbuilt bricks are empty). A brick column the window
-// has summarized (on load, a leaving slab, a sweep) is left as it is
-// (winMask): the window's state wins there. The levels, tops and shadows
-// follow every SCENE_REFRESH_FRAMES frames of it, and at its end. A scene
-// with trees (scene.trees: the island) has them placed first, on the GPU (a
-// candidate per brick column, thinned: its treesIn's own placement), and each
-// chunk's bricks join the shapes of the trees in reach.
+// has summarized (on load, a leaving slab, a sweep) is left as it is (the
+// window mask): the window's state wins there. The occupancy levels, tops and
+// shadows follow every SCENE_REFRESH_FRAMES frames of it, and at its end. A
+// scene with trees (scene.trees: the island) has them placed first, on the
+// GPU (a candidate per brick column, thinned: its treesIn's own placement),
+// and each chunk's bricks join the shapes of the trees in reach. The chunks'
+// sceneCell runs after the scene's prepass over the chunk (the island's:
+// world/gpu.js SceneGpu.prepass), the window's generator's resources shared.
 //
 // Kept up to date from the window, whose state wins wherever it has been:
 //   - a move summarizes the slab about to leave (world/window.js, before the
@@ -35,30 +41,53 @@ import { WorldDetail } from './detail.js';
 //     grid's copy of it casts the far field's shadows (and the field next to
 //     the window's sides blends into it);
 //   - after these the occupancy levels, the brick-column tops and the shadow
-//     heights are rebuilt (refresh: after a leaving slab, at once, since the
-//     view marches it; after a sweep, at its end), and the shadow heights
-//     again when the sun or the window moves.
+//     heights are rebuilt (refresh: after a leaving slab, at the next view,
+//     since the view marches it; after a sweep, at its end), and the shadow
+//     heights again when the sun or the window moves.
+// Everything records into the open frame (docs/webgpu.md B3).
 //
 // The window takes three things from the far field (attach): its shadow map
 // the far field's shadows (a mountain outside shades the window, and its GI),
 // its GI the far field past where its rays end (distant hills block the low
 // sky and light it back), and its volume the same aerial perspective, so the
-// window doesn't stand out crisper than the land around it at the same distance.
+// window doesn't stand out crisper than the land around it at the same
+// distance: the grid, the tops and the shadow heights go into the lighting
+// group (gfx/volume.js and src/derived.js attachFar), and FrameUniforms.far
+// turns their branches on.
 //
-// The view is one full-screen pass drawn before everything else in the scene
-// (FarField.mesh): sky, the open sea beyond the world and the far grid, with
-// depth, so the window's volume and the scene's objects composite over it.
-// It marches the far grid past the window's box, which the volume draws.
+// The view is one full-screen pass drawn in our scene pass before the volume
+// (src/wire/world.js: draw), in the realistic view only: sky, the open sea
+// beyond the world and the far grid, with depth, so the window's volume
+// composites over it, depth-tested against the meshes three drew first. It
+// marches the far grid past the window's box, which the volume draws. Its
+// pipeline builds the first time the realistic view shows the world (it is
+// as big as the volume's; B5: the data views never build it): the far field
+// shows once it is ready.
+//
+// Near the window the detail meshes (world/detail.js, docs/world-lod.md:
+// render-only meshes of the chunks' cells) replace the coarse field: drawn
+// just before the view, which leaves their chunks' opaque field to them, and
+// before the scene pass their depth (prepass), where the view's march stops.
+//
+// The rolling log (gfx/presentation.js: `presentation`, set by
+// src/wire/world.js): while a gamemode's effect bends the view, the view draws
+// its curved variant (shaders/far.js farFrag's: its own pipeline, built the
+// first time it is wanted, the far field showing once it is ready) and the
+// detail meshes bend in their vertex stage, both from the effect's parameters
+// in the view's params.
 
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
-const VIEW_ORDER = -10;          // renderOrder of the view: first of the scene's opaque objects
 const SCENE_CHUNKS_PER_FRAME = 1;   // a scene's far build: chunks a frame (each ~0.6M sceneCells, then twice a leaving slab's summary;
                                     // 256 chunks: ~4 s at 60 fps, the chunks around the window in the first few frames),
                                     // unless the scene says how many (farChunksPerFrame: cheap cells)
 const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the levels, tops and shadows while it runs
-const MASK_SET = 255;               // a set byte of the window mask (the shader reads it as 1)
+const SOFTWARE_CHUNKS_PER_FRAME = 1;   // on a software adapter (SwiftShader: the container, ?software=1) a chunk is
+                                       // seconds of CPU: one a frame, whatever the scene says
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
+const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
+const NO_DETAIL_DEPTH = new WeakMap();   // per device: a 1×1 r32float the view binds while there is no meshes' depth
+const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };                                // (GPUBufferUsage's bits)
 
 // The open level beyond a world's edge (cells): its sea, or for a world
 // without one (sea 0: world/scenes) the plain the far view draws there, at the
@@ -75,40 +104,36 @@ function beyondLevel(scene, P) {
   return hs[EDGE_SAMPLES >> 1];
 }
 
-// A full-screen triangle (clip space): the view's geometry.
-function screenTriangle() {
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
-  return geo;
-}
-
-// One quad per brick slice of the far grid (shaders/far.js farRegionVert): x, y the corner, z the slice.
-function sliceQuads(slices) {
-  const corners = [[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]];
-  const v = [];
-  for (let s = 0; s < slices; s++) for (const [x, y] of corners) v.push(x, y, s);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-  return geo;
-}
-
 export class FarField {
-  // win: the WorldWindow; sun: the key light's direction (app.js SUN); time:
-  // the volume's uTime uniform (animated looks: ripples, lava)
-  constructor(renderer, win, { sun, time }) {
-    this.renderer = renderer;
+  // win: the WorldWindow; sun: the key light's direction (app.js SUN, a unit
+  // vector the app keeps current). (The first argument was the WebGL renderer;
+  // the far field works on the window's device. time: the volume's clock,
+  // FrameUniforms.time now.)
+  constructor(_renderer, win, { sun } = {}) {
     this.win = win;
     this.sim = win.sim;
-    const g = this.sim.g, L = this.L = farLayout(win.size);
-    // the view, shadow and GI programs have the simulation's world's far layout compiled in (attach)
-    if (win.size.some((n, i) => n !== this.sim.world[i])) throw new Error(`far field: world ${win.size}, but the programs are built for ${this.sim.world}`);
-    const U8 = THREE.UnsignedByteType, HALF = THREE.HalfFloatType, NEAR = THREE.NearestFilter, LIN = THREE.LinearFilter;
-    this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, HALF, NEAR);   // raw shares, ids, glow (whole numbers: shaders/far.js)
-    this.field = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, LIN);   // what the view draws (farBoostFrag)
-    this.l1 = makeFieldTarget(L.l1.width, L.l1.height, 1, U8, NEAR);
-    this.l2 = makeFieldTarget(L.l2.width, L.l2.height, 1, U8, NEAR);
-    this.top = makeFieldTarget(L.bricks.n[0], L.bricks.n[2], 1, HALF, LIN);
-    this.shadow = makeFieldTarget(L.bricks.n[0], L.bricks.n[2], 1, HALF, LIN);
+    this.gpu = win.sim.gpu;
+    const sim = this.sim, gpu = this.gpu, g = sim.g, L = this.L = farLayout(win.size);
+    // the shadow and GI pipelines have the simulation's world's far layout compiled in (attach)
+    if (sim.world && win.size.some((n, i) => n !== sim.world[i])) throw new Error(`far field: world ${win.size}, but the pipelines are built for ${sim.world}`);
+    const [bx, by, bz] = L.bricks.n;
+    const tex3 = (label, format) => gpu.createTexture({ label, size: [bx, by, bz], dimension: '3d', format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
+    const tex2 = (label, format) => gpu.createTexture({ label, size: [bx, bz], format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
+    this.grid = tex3('far grid', FAR_FORMATS.grid);      // raw shares, ids, glow (shaders/far.js)
+    this.field = tex3('far field', FAR_FORMATS.field);   // what the view draws (farBoostFrag)
+    this.top = tex2('far tops', FAR_FORMATS.top);
+    this.shadow = tex2('far shadow heights', FAR_FORMATS.shadow);
+    this.occ = gpu.createBuffer({ label: 'far occupancy', size: occupancyWords(L) * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC | BUFFER.COPY_DST });   // (written: the detail mask, world/detail.js)
+    this.views = {
+      grid: this.grid.createView({ label: 'far grid', dimension: '3d' }),
+      field: this.field.createView({ label: 'far field', dimension: '3d' }),
+      top: this.top.createView({ label: 'far tops' }),
+      shadow: this.shadow.createView({ label: 'far shadow heights' }),
+    };
+    // a bit per world brick column: the window's state has been summarized there
+    this.winMask = new Uint32Array(Math.ceil(bx * bz / 32));
+    this.winMaskBuf = gpu.createBuffer({ label: 'far window mask', size: Math.max(16, this.winMask.byteLength), usage: BUFFER.STORAGE | BUFFER.COPY_DST });
+    this.maskDirty = false;
     this.sun = sun;
     this.built = false;
     this.dirty = false;          // the far grid changed since the levels, tops and shadows were built
@@ -120,120 +145,152 @@ export class FarField {
     this.scene = win.scene;
     this.queue = [];             // a scene's far build: the chunks still to draw (world brick column [x, z] of each), nearest last
     this.chunksDrawn = 0;        // ...and how many it has drawn (the app redraws the view as it grows)
+    this.cells = null;           // the scene cells of a chunk while a build runs
+    this.trees = null;           // the tree map and bands while a build with trees runs
+    this.visible = false;
+    this.vol = null;
+    this.derived = null;
 
-    // region draws into the far grid (farRegionVert): their own scene
-    const region = (frag, uniforms) => new THREE.RawShaderMaterial({
-      glslVersion: THREE.GLSL3, vertexShader: farRegionVert(L), fragmentShader: frag,
-      uniforms: { ...uniforms, uFarLo: { value: new THREE.Vector3() }, uFarSize: { value: new THREE.Vector3() } },
-      depthTest: false, depthWrite: false,
-    });
-    this.regionMesh = new THREE.Mesh(sliceQuads(L.bricks.n[1]));
-    this.regionMesh.frustumCulled = false;
-    this.regionScene = new THREE.Scene();
-    this.regionScene.add(this.regionMesh);
-    this.regionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.mats = {
-      ...this.sceneMats(region),
-      farWin: region(farWinFrag(g, L), { tA: { value: null }, uOrigin: this.sim.originUniform }),
-      farBoost: region(farBoostFrag(L), { tFar: { value: this.grid.texture } }),
-      farMip1: rawMat(farMip1Frag(L), { tFar: { value: this.field.texture } }),
-      farMip2: rawMat(farMip2Frag(L), { tFar1: { value: this.l1.texture } }),
-      farTop: rawMat(farTopFrag(L), { tFar: { value: this.field.texture } }),
-      farShadow: rawMat(farShadowFrag(L), {
-        tTop: { value: this.top.texture }, uSun: { value: new THREE.Vector3() }, uWinCols: { value: new THREE.Vector4() },
-      }),
-    };
-    for (const [k, m] of Object.entries(this.mats)) m.name = k;   // the profiler's labels
-
-    // the view
-    this.worldToScene = new THREE.Matrix4();
-    this.sceneToWorld = new THREE.Matrix4();
-    const P = win.P;
-    this.level = beyondLevel(this.scene, P);
-    this.mesh = new THREE.Mesh(screenTriangle(), new THREE.ShaderMaterial({
-      name: 'far',
-      vertexShader: farVert,
-      fragmentShader: farFrag(g, L),
-      uniforms: {
-        ...gfxUniforms,
-        tFar: { value: this.grid.texture }, tFarField: { value: this.field.texture },
-        tFar1: { value: this.l1.texture }, tFar2: { value: this.l2.texture }, tFarShadow: { value: this.shadow.texture },
-        tFarTop: { value: this.top.texture },   // the ground's surface over each column: the sky under it (FAR_SKY)
-        uWorldToScene: { value: this.worldToScene }, uSceneToWorld: { value: this.sceneToWorld },
-        uWinLo: { value: new THREE.Vector3() },
-        // the sea beyond the world and its bed, or (sea 0) the plain there
-        uSea: { value: P.sea }, uFloor: { value: P.sea > 0 ? P.floor : this.level },
-        uOrigin: { value: new THREE.Vector3() },   // world cells throughout: the look's worldPos() is the identity
-        uSun: { value: sun }, uTime: time,
-      },
-      // drawn first and everywhere: its depth always goes in (with the test off, GL writes none)
-      depthTest: true,
-      depthFunc: THREE.AlwaysDepth,
-      depthWrite: true,
-      blending: THREE.NoBlending,
-    }));
-    this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = VIEW_ORDER;
-    this.mesh.visible = false;
-    this.detail = new WorldDetail(this);
-    // the view's program is as big as the volume's: compiled in the background
-    // (parallel compile), the far field showing once it's ready, instead of
-    // stalling the first frame
-    this.ready = false;
-    this.compile();
-  }
-
-  // The scene's build passes (and its trees', if it has any), its window mask
-  // (one byte per world brick column) and its cells' target, made at build
-  // (sceneBuild).
-  sceneMats(region) {
-    const g = this.sim.g, L = this.L, [bx, , bz] = L.bricks.n, trees = this.scene.trees, glsl = this.scene.glsl(g);
-    this.winMask = new Uint8Array(bx * bz);
-    this.winMaskTex = new THREE.DataTexture(this.winMask, bx, bz, THREE.RedFormat, THREE.UnsignedByteType);
-    this.winMaskTex.minFilter = this.winMaskTex.magFilter = THREE.NearestFilter;
-    this.winMaskTex.unpackAlignment = 1;
-    this.winMaskTex.needsUpdate = true;
-    this.cells = null;
-    this.trees = null;   // the tree map and bands while a build with trees runs
-    const chunkLo = { value: new THREE.Vector2() };   // (both passes': the chunk being drawn)
-    const treeMaps = trees ? { tTrees: { value: null }, tTreeBand: { value: null } } : {};
-    return {
-      farSceneCells: rawMat(farSceneCellsFrag(g, L, glsl), { ...this.win.sceneU, uChunkLo: chunkLo }),
-      farScene: region(farSceneFrag(g, L, !!trees), {
-        tCells: { value: null }, tWinMask: { value: this.winMaskTex }, uChunkLo: chunkLo, ...treeMaps,
-      }),
+    // the kernels (built while the window's are: whenReady)
+    const S = this.cellsLayout = farSceneLayout(L);
+    const trees = !!this.scene.trees, tl = sim.L, E = gpu.L.EMPTY;
+    const layout = (name, entries) => gpu.layout(name, entries);
+    const kernel = (name, code, g2, params, state = E) => gpu.kernel({ name, code, layouts: [tl.TABLES, state, g2], params });
+    const sceneKey = JSON.stringify(SCENE_CELLS_LAYOUT_OF(this.scene));
+    this.k = {
+      win: kernel('farWin', farWinFrag(g, L), layout('far win', FAR_WIN_LAYOUT), RegionParams, tl.STATE_RO),
+      scene: kernel(`farScene${trees ? ' trees' : ''}`, farSceneFrag(g, L, trees), layout(`far scene${trees ? ' trees' : ''}`, FAR_SCENE_LAYOUT(trees)), RegionParams),
+      cells: kernel(`${this.scene.key} farSceneCells`, farSceneCellsFrag(g, L, this.scene.glsl(g), S), layout(`far scene cells ${sceneKey}`, SCENE_CELLS_LAYOUT_OF(this.scene)), SceneCellsParams),
+      clear: kernel('farClear', farClearFrag(g, L), layout('far clear', FAR_CLEAR_LAYOUT), RegionParams),
+      boost: kernel('farBoost', farBoostFrag(g, L), layout('far boost', FAR_BOOST_LAYOUT), RegionParams),
+      mip1: kernel('farMip1', farMip1Frag(g, L), layout('far mip1', FAR_MIP1_LAYOUT)),
+      mip2: kernel('farMip2', farMip2Frag(g, L), layout('far mip2', FAR_MIP2_LAYOUT)),
+      top: kernel('farTop', farTopFrag(g, L), layout('far top', FAR_TOP_LAYOUT)),
+      shadow: kernel('farShadow', farShadowFrag(g, L), layout('far shadow', FAR_SHADOW_LAYOUT), ShadowParams),
       ...(trees ? {
-        farTreeCand: rawMat(farTreeCandFrag(g, L, glsl, trees.glsl), { ...this.win.sceneU }),
-        farTreeThin: rawMat(farTreeThinFrag(g, L, glsl, trees.glsl), { ...this.win.sceneU, tCand: { value: null } }),
-        farTreeBand: rawMat(farTreeBandFrag(g, L), { tTrees: { value: null } }),
+        cand: kernel(`${this.scene.key} farTreeCand`, farTreeCandFrag(g, L, null, this.scene.trees.glsl()), layout(`far tree cand ${sceneKey}`, TREE_CAND_LAYOUT(this.scene))),
+        thin: kernel(`${this.scene.key} farTreeThin`, farTreeThinFrag(g, L, null, this.scene.trees.glsl()), layout(`far tree thin ${sceneKey}`, TREE_THIN_LAYOUT(this.scene))),
+        band: kernel('farTreeBand', farTreeBandFrag(g, L), layout('far tree band', FAR_TREE_BAND_LAYOUT)),
       } : {}),
     };
-  }
+    // the bind groups that don't change (the scene's are made once its resources are: groups())
+    const v = this.views, b = (buffer) => ({ buffer });
+    const group = (k, entries, label) => gpu.bindGroup(k.groups[2], entries.map(([binding, resource]) => ({ binding, resource })), label);
+    this.groupsFixed = {
+      win: group(this.k.win, [[0, v.grid]], 'far win'),
+      clear: group(this.k.clear, [[0, v.grid], [1, v.field]], 'far clear'),
+      boost: group(this.k.boost, [[0, v.grid], [1, v.field]], 'far boost'),
+      mip1: group(this.k.mip1, [[0, v.field], [1, b(this.occ)]], 'far mip1'),
+      mip2: group(this.k.mip2, [[1, b(this.occ)]], 'far mip2'),
+      top: group(this.k.top, [[0, v.field], [1, v.top]], 'far top'),
+      shadow: group(this.k.shadow, [[0, v.top], [1, gpu._volumeSamplers?.clamp ?? gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear' })], [2, v.shadow]], 'far shadow'),
+    };
+    this.g = null;
 
-  compile() {
-    // post.js's scene target formats, so the program compiled is the one the view uses
-    const target = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: true,
-      depthTexture: new THREE.DepthTexture(1, 1, THREE.FloatType),
+    // the view: its pipeline built when the realistic view first draws the world (view), shown once it is ready
+    const P = win.P;
+    this.level = beyondLevel(this.scene, P);
+    this.sea = P.sea;
+    this.floor = P.sea > 0 ? P.floor : this.level;
+    this.fu = frameUniformsOf(gpu);
+    this.viewFrameLayout = layout('FAR_VIEW_FRAME', FAR_VIEW_FRAME);
+    this.viewPipe = gpu.renderPipeline({
+      name: 'far view', code: farFrag(g, L), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
+      params: FarViewParams, ...farViewPipeline(), build: 'manual',
     });
-    const prev = this.renderer.getRenderTarget();
-    this.renderer.setRenderTarget(target);
-    const done = this.renderer.compileAsync(this.mesh, new THREE.PerspectiveCamera(), new THREE.Scene());
-    this.renderer.setRenderTarget(prev);
-    // (showing it changes the scene's key: a settled view draws again, app.js gfx/pacing.js)
-    done.then(() => { this.ready = true; this.mesh.visible = this.built; },
-      (err) => console.error('far field: the view failed to compile', err))
-      .finally(() => { target.depthTexture.dispose(); target.dispose(); });
+    // the rolling log's view (made the first time it is wanted)
+    this.viewPipeCurved = null;
+    this.presentation = null;
+    if (!NO_DETAIL_DEPTH.has(gpu)) {
+      NO_DETAIL_DEPTH.set(gpu, gpu.createTexture({ label: 'far no detail depth', size: [1, 1], format: 'r32float', usage: TEX.TEXTURE_BINDING }).createView());
+    }
+    this.viewFrameGroup = null;   // (_frameGroup: it holds the detail meshes' depth)
+    this.viewFrameDepth = null;
+    this.depthFor = null;         // the scene target the meshes' depth was drawn for this frame (prepass), else null
+    this.viewParams = {
+      clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor, detailDepth: 0,
+      warpK: 0, warpAnchor: [0, 0], warpDir: [0, 1],
+    };
+    this._m = { toWorld: new Matrix4(), eye: new Vector3(), worldToScene: new Matrix4() };
+    this.detail = new WorldDetail(this);
+    this.ready = false;   // (the build kernels: whenReady)
+    this.disposed = false;
   }
 
-  // Draw material mat into the far grid (or target) over world bricks [lo, lo + size) along x and z (every slice).
-  drawRegion(mat, lo, size, target = this.grid) {
-    mat.uniforms.uFarLo.value.set(lo[0], 0, lo[1]);
-    mat.uniforms.uFarSize.value.set(size[0], this.L.bricks.n[1], size[1]);
-    this.regionMesh.material = mat;
-    this.renderer.setRenderTarget(target);
-    this.renderer.render(this.regionScene, this.regionCamera);
-    this.sim.onPass?.(mat.name, target);
+  // Whether the rolling log bends the view now (gfx/presentation.js).
+  get curved() { return !!this.presentation?.active && this.presentation.parameters.k !== 0; }
+
+  // The view's pipeline for the view as it is now (flat, or the rolling log's).
+  get viewPipeline() {
+    if (!this.curved) return this.viewPipe;
+    return (this.viewPipeCurved ??= this.gpu.renderPipeline({
+      name: 'far view curved', code: farFrag(this.sim.g, this.L, false, { curved: true }),
+      layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
+      params: FarViewParams, ...farViewPipeline(), build: 'manual',
+    }));
+  }
+
+  // The view's pipeline is ready (the far field shows once it is).
+  get viewReady() { return this.viewPipeline.state === 'ready'; }
+
+  /** Starts building the view's pipeline (once: the realistic view draws it; curved, the rolling log's); resolves when it is ready. */
+  buildView() { return this.viewPipeline.build(); }
+
+  /** Resolves when the build's kernels are ready (the window's whenReady waits for it); the view builds when it is first drawn (view). */
+  whenReady() {
+    return (this._ready ??= Promise.all(Object.values(this.k).map((k) => k.ready)).then(() => { this.ready = true; return this; }));
+  }
+
+  // The view's group 0 (FrameUniforms, the field, the occupancy, the detail
+  // meshes' depth), made again when the depth's texture is.
+  _frameGroup() {
+    const depth = this.detail.depthView ?? NO_DETAIL_DEPTH.get(this.gpu);
+    if (this.viewFrameGroup && this.viewFrameDepth === depth) return this.viewFrameGroup;
+    this.viewFrameDepth = depth;
+    return (this.viewFrameGroup = this.gpu.bindGroup(this.viewFrameLayout, [
+      { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
+      { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } }, { binding: 4, resource: depth },
+    ], 'far view frame'));
+  }
+
+  // The bind groups over the scene's resources (the window's generator's,
+  // made once it has prepared) and the build's buffers.
+  groups() {
+    if (this.g) return this.g;
+    const res = this.win.gen.res, gpu = this.gpu, k = this.k;
+    const S = this.cellsLayout, [bx, , bz] = this.L.bricks.n;
+    this.cells = gpu.createBuffer({ label: 'far scene cells', size: S.cells * 4, usage: BUFFER.STORAGE });
+    const g = {
+      cells: gpu.bindGroup(k.cells.groups[2], res.entries([{ binding: SCENE_CELLS_BINDING, resource: { buffer: this.cells } }]), 'far scene cells'),
+    };
+    const sceneEntries = [
+      { binding: 0, resource: this.views.grid }, { binding: 1, resource: { buffer: this.cells } }, { binding: 2, resource: { buffer: this.winMaskBuf } },
+    ];
+    if (this.scene.trees) {
+      const U = BUFFER.STORAGE, cols = bx * bz;
+      this.treeBufs = {
+        cand: gpu.createBuffer({ label: 'far tree candidates', size: cols * 16, usage: U }),
+        map: gpu.createBuffer({ label: 'far tree map', size: cols * 16, usage: U | BUFFER.COPY_SRC }),
+        band: gpu.createBuffer({ label: 'far tree bands', size: cols * 8, usage: U }),
+      };
+      const t = this.treeBufs;
+      g.cand = gpu.bindGroup(k.cand.groups[2], res.entries([{ binding: TREE_CAND_BINDING, resource: { buffer: t.cand } }]), 'far tree cand');
+      g.thin = gpu.bindGroup(k.thin.groups[2], res.entries([
+        { binding: TREE_CAND_BINDING, resource: { buffer: t.cand } }, { binding: TREE_CAND_BINDING + 1, resource: { buffer: t.map } }]), 'far tree thin');
+      g.band = gpu.bindGroup(k.band.groups[2], [{ binding: 0, resource: { buffer: t.map } }, { binding: 1, resource: { buffer: t.band } }], 'far tree band');
+      sceneEntries.push({ binding: 3, resource: { buffer: t.map } }, { binding: 4, resource: { buffer: t.band } });
+    }
+    g.scene = gpu.bindGroup(k.scene.groups[2], sceneEntries, 'far scene');
+    return (this.g = g);
+  }
+
+  // A region kernel over world brick columns [lo, lo + size) (x, z), every height.
+  region(kernel, group, lo, size, opts = {}) {
+    const n = [size[0], this.L.bricks.n[1], size[1]];
+    kernel.dispatch(this.gpu.frame, regionDispatch(n), {
+      bind: [this.sim.tables, opts.state ?? null, group], header: opts.header,
+      params: { lo: [lo[0], 0, lo[1]], size: n, chunkLo: opts.chunkLo ?? [0, 0] },
+    });
   }
 
   // The field over world bricks [lo, lo + size) and the brick around them (their neighbours changed).
@@ -241,28 +298,26 @@ export class FarField {
     const [bx, , bz] = this.L.bricks.n;
     const a = [Math.max(lo[0] - 1, 0), Math.max(lo[1] - 1, 0)];
     const b = [Math.min(lo[0] + size[0] + 1, bx), Math.min(lo[1] + size[1] + 1, bz)];
-    this.drawRegion(this.mats.farBoost, a, [b[0] - a[0], b[1] - a[1]], this.field);
+    this.region(this.k.boost, this.groupsFixed.boost, a, [b[0] - a[0], b[1] - a[1]]);
   }
 
   // Build the far grid from the scene (world/window.js load: the window has
   // just been generated): its region from the window's state now, the rest
-  // over the next frames (tick).
+  // over the next frames (tick). Needs whenReady.
   build() { this.sceneBuild(); }
 
   // A scene's build: the far grid starts empty but for the window's region,
   // summarized from its state, and the chunks are queued nearest the window
   // last (tick draws them from the end).
   sceneBuild() {
+    if (!this.ready) throw new Error('far field: build before its kernels are ready (await whenReady)');
     this.detail.reset();
     const t0 = performance.now();
     const L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
-    const r = this.renderer, prev = r.getRenderTarget(), color = r.getClearColor(new THREE.Color()), alpha = r.getClearAlpha();
-    r.setClearColor(0x000000, 0);
-    for (const t of [this.grid, this.field]) { r.setRenderTarget(t); r.clear(true, false, false); }
-    r.setClearColor(color, alpha);
-    r.setRenderTarget(prev);
+    this.groups();
+    this.region(this.k.clear, this.groupsFixed.clear, [0, 0], [bx, bz]);
     this.winMask.fill(0);
-    this.winMaskTex.needsUpdate = true;
+    this.maskDirty = true;
     this.built = true;
     this.summarizeWindow();
     const o = this.sim.origin, g = this.sim.g;
@@ -274,95 +329,89 @@ export class FarField {
     this.chunksDrawn = 0;
     this.buildFrames = 0;
     this.buildStart = t0;
-    if (!this.cells) {
-      const S = farSceneLayout(L);
-      this.cells = makeFieldTarget(S.width, S.height, 1, THREE.HalfFloatType, THREE.NearestFilter);
-      this.mats.farScene.uniforms.tCells.value = this.cells.texture;
-    }
     if (this.scene.trees) this.placeTreeMaps();
     this.refresh(true);
     this.last = { buildMs: null, chunks: this.queue.length };
   }
 
+  // The window mask to the GPU, if it changed (before a chunk reads it).
+  _uploadMask() {
+    if (!this.maskDirty) return;
+    this.gpu.write(this.winMaskBuf, 0, this.winMask);
+    this.maskDirty = false;
+  }
+
   // Draw the next chunks of a scene's build (tick, every frame while there are any).
-  sceneChunks() {
-    const sim = this.sim, L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
+  sceneChunks(n = this.gpu.adapterInfo?.isFallbackAdapter ? SOFTWARE_CHUNKS_PER_FRAME : this.scene.farChunksPerFrame ?? SCENE_CHUNKS_PER_FRAME) {
+    const L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK, S = this.cellsLayout, res = this.win.gen.res;
     const lo = (FAR.CUBE - BRICK) / 2;   // the cells a brick's cube reaches past it (FAR_CUBE_LO)
-    const { farSceneCells, farScene } = this.mats, n = this.scene.farChunksPerFrame ?? SCENE_CHUNKS_PER_FRAME;
+    const g = this.groups(), f = this.gpu.frame, WY = L.size[1];
+    this._uploadMask();
     for (let k = 0; k < n && this.queue.length; k++) {
       const [x, z] = this.queue.pop(), size = [Math.min(C, bx - x), Math.min(C, bz - z)];
-      farSceneCells.uniforms.uChunkLo.value.set(x * BRICK - lo, z * BRICK - lo);
-      sim.run(farSceneCells, this.cells);
-      this.drawRegion(farScene, [x, z], size);
+      const chunkLo = [x * BRICK - lo, z * BRICK - lo];
+      // the scene's prepass over the columns the cells read (held to the world, as they are)
+      const c0 = chunkLo.map((v, i) => Math.max(0, v)), c1 = chunkLo.map((v, i) => Math.min(L.size[2 * i], v + S.side));
+      res.prepassFor([c0[0], 0, c0[1]], [c1[0], WY, c1[1]]);
+      this.k.cells.dispatch(f, sceneCellsDispatch(S), { bind: [this.sim.tables, null, g.cells], params: { chunkLo } });
+      this.region(this.k.scene, g.scene, [x, z], size, { chunkLo });
       this.boost([x, z], size);
       this.chunksDrawn++;
     }
     this.buildFrames++;
     if (!this.queue.length) {
-      this.cells.dispose();
+      this.sim._retire(this.cells);
       this.cells = null;
-      this.mats.farScene.uniforms.tCells.value = null;
       this.disposeTreeMaps();
+      this.g = null;
       this.dirty = true;
       this.last = { ...this.last, buildMs: performance.now() - this.buildStart, frames: this.buildFrames };
     } else if (this.buildFrames % SCENE_REFRESH_FRAMES === 0) this.dirty = true;
   }
 
-  // The scene's trees, as its treesIn places them: a target with one texel per
-  // brick column (shaders/far.js treeOf; the caller disposes of it).
+  // The scene's trees, as its treesIn places them: the tree map, a vec4f per
+  // brick column (shaders/far.js treeOf), recorded now.
   // (tools/far-check.mjs compares it with treesIn.)
   placeTrees() {
-    const sim = this.sim, [bx, , bz] = this.L.bricks.n, F32 = THREE.FloatType, NEAR = THREE.NearestFilter;
-    const { farTreeCand, farTreeThin } = this.mats;
-    const cand = makeFieldTarget(bx, bz, 1, F32, NEAR), trees = makeFieldTarget(bx, bz, 1, F32, NEAR);
-    sim.run(farTreeCand, cand);
-    farTreeThin.uniforms.tCand.value = cand.texture;
-    sim.run(farTreeThin, trees);
-    cand.dispose();
-    return trees;
+    const g = this.groups(), f = this.gpu.frame, d = columnDispatch(this.L), t = this.sim.tables;
+    this.k.cand.dispatch(f, d, { bind: [t, null, g.cand] });
+    this.k.thin.dispatch(f, d, { bind: [t, null, g.thin] });
+    return this.treeBufs.map;
   }
 
   // The tree map and the band each brick column finds its trees in, for the
   // chunks of a build (sceneBuild; disposeTreeMaps when it's done).
   placeTreeMaps() {
-    this.disposeTreeMaps();
-    const [bx, , bz] = this.L.bricks.n, { farTreeBand, farScene } = this.mats;
-    const map = this.placeTrees(), band = makeFieldTarget(bx, bz, 1, THREE.FloatType, THREE.NearestFilter);
-    farTreeBand.uniforms.tTrees.value = map.texture;
-    this.sim.run(farTreeBand, band);
-    farScene.uniforms.tTrees.value = map.texture;
-    farScene.uniforms.tTreeBand.value = band.texture;
-    this.trees = { map, band };
+    const g = this.groups();
+    this.placeTrees();
+    this.k.band.dispatch(this.gpu.frame, columnDispatch(this.L), { bind: [this.sim.tables, null, g.band] });
+    this.trees = this.treeBufs;
   }
 
   disposeTreeMaps() {
-    if (!this.trees) return;
-    this.trees.map.dispose();
-    this.trees.band.dispose();
+    if (!this.treeBufs) return;
+    for (const b of Object.values(this.treeBufs)) this.sim._retire(b);
+    this.treeBufs = null;
     this.trees = null;
-    this.mats.farScene.uniforms.tTrees.value = this.mats.farScene.uniforms.tTreeBand.value = null;
   }
 
   // Summarize the window's bricks [lo, lo + bricks) (grid cells lo, brick
   // aligned; bricks along x, y, z) into the far grid, at the window's origin:
   // the slab about to leave on a move (before the shift), a slab of a sweep,
   // or all of it. derive: rebuild what derives from the grid before the next view.
-  // sweep: the slab stays in the window, so detail chunks padded into it keep
-  // their meshes until rebuilt ones replace them (WorldDetail.stale), rather
-  // than popping back to the coarse field next to the player every sweep.
+  // sweep: the slab stays in the window (the detail chunks keep their meshes).
   summarize(lo, bricks, derive = true, sweep = false) {
     if (!this.built) return;
-    const o = this.sim.origin, m = this.mats.farWin;
+    const sim = this.sim, o = sim.origin;
     this.detail[sweep ? 'stale' : 'invalidate']([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
     const at = [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], size = [bricks[0], bricks[2]];
-    m.uniforms.tA.value = this.sim.stateA;
-    this.drawRegion(m, at, size);
+    this.region(this.k.win, this.groupsFixed.win, at, size, { state: sim.bindRO, header: sim.header() });
     this.boost(at, size);
     if (derive) this.dirty = true;
-    if (this.winMask) {
-      for (let z = at[1]; z < at[1] + size[1]; z++) this.winMask.fill(MASK_SET, z * this.L.bricks.n[0] + at[0], z * this.L.bricks.n[0] + at[0] + size[0]);
-      this.winMaskTex.needsUpdate = true;
-    }
+    const bx = this.L.bricks.n[0];
+    for (let z = at[1]; z < at[1] + size[1]; z++)
+      for (let x = at[0]; x < at[0] + size[0]; x++) { const i = z * bx + x; this.winMask[i >> 5] |= 1 << (i & 31); }
+    this.maskDirty = true;
   }
 
   summarizeWindow() {
@@ -373,8 +422,8 @@ export class FarField {
     this.version = this.sim.version;
   }
 
-  // Every frame (world/window.js update): sweep over the window's region,
-  // a slab a frame, while the simulation changes it.
+  // Every frame (world/window.js update): the build's next chunks, and a sweep
+  // over the window's region, a slab a frame, while the simulation changes it.
   tick() {
     if (!this.built) return;
     this.detail.tick();
@@ -396,79 +445,121 @@ export class FarField {
   // heights (after that, a sun move or a window move). force: all of it.
   refresh(force = false) {
     if (!this.built) return;
-    const sim = this.sim, o = sim.origin, g = sim.g, s = this.sun;
+    const sim = this.sim, o = sim.origin, g = sim.g, s = this.sun, f = this.gpu.frame, t = sim.tables, F = this.groupsFixed;
     const t0 = performance.now();
     let what = 0;
     if (this.dirty || force) {
-      sim.run(this.mats.farMip1, this.l1);
-      sim.run(this.mats.farMip2, this.l2);
-      sim.run(this.mats.farTop, this.top);
+      this.k.mip1.dispatch(f, nodeDispatch(this.L.l1), { bind: [t, null, F.mip1] });
+      this.k.mip2.dispatch(f, nodeDispatch(this.L.l2), { bind: [t, null, F.mip2] });
+      this.k.top.dispatch(f, columnDispatch(this.L), { bind: [t, null, F.top] });
       this.dirty = false;
       this.shadowKey = '';
       what++;
     }
     const key = `${s.x},${s.y},${s.z}|${o.x},${o.z}`;
     if (key !== this.shadowKey) {
-      const u = this.mats.farShadow.uniforms;
-      u.uSun.value.copy(s);
-      u.uWinCols.value.set(o.x / BRICK, o.z / BRICK, (o.x + g.nx) / BRICK, (o.z + g.nz) / BRICK);
-      sim.run(this.mats.farShadow, this.shadow);
+      this.k.shadow.dispatch(f, columnDispatch(this.L), {
+        bind: [t, null, F.shadow],
+        params: { sun: [s.x, s.y, s.z], winCols: [o.x / BRICK, o.z / BRICK, (o.x + g.nx) / BRICK, (o.z + g.nz) / BRICK] },
+      });
       this.shadowKey = key;
       what++;
     }
     if (what) this.last = { ...this.last, refreshMs: performance.now() - t0 };
   }
 
-  // The window's volume and sun shadow map (the app's materials) and its GI
-  // (the simulation's) take the far field: the volume its aerial perspective
-  // (render.js volumeFrag's haze), the shadow map the shade from outside the
-  // window, by the shadow heights of the columns outside it (shadowFrag's
-  // casters), the GI's rays the far field past their end (gi.js giGatherFrag's
-  // far). Their programs already hold these parts, off (shaders/far.js
-  // WORLD_SIZE, or the simulation's own world): this only turns them on, so nothing compiles.
-  attach(volumeMat, shadowMat) {
-    volumeMat.uniforms.uFar.value = true;
-    shadowMat.uniforms.uFar.value = true;
-    shadowMat.uniforms.tFarShadow.value = this.shadow.texture;
-    const gi = this.sim.mats.giGather.uniforms;
-    gi.uFar.value = true;
-    gi.tFar.value = this.grid.texture;
-    gi.tFarTop.value = this.top.texture;
-    gi.tFarShadow.value = this.shadow.texture;
-    gi.uSea.value = this.win.P.sea;
+  // The window's volume (its shadow kernel's casters, its haze) and its GI
+  // (src/derived.js) take the far field: the grid, the tops and the shadow
+  // heights in the lighting group, their far branches on (FrameUniforms.far,
+  // the app's: win.far), and the cumulus deck overhead.
+  attach(vol, derived) {
+    const far = { grid: this.views.grid, top: this.views.top, shadow: this.views.shadow };
+    this.vol = vol;
+    this.derived = derived;
+    vol?.attachFar(far);
+    derived?.attachFar(far);
     gfxUniforms.uClouds.value = true;   // the cumulus deck overhead, and its shadows (shaders/gfx/clouds.js)
     gfxUniforms.uCloudSea.value = this.level;   // (the sea's, or a sea-less world's plain's)
   }
 
-  // Before the scene renders: the view's transforms for this frame (the
-  // volume's matrix maps grid cells into the scene; world = grid + origin).
-  // visible: the realistic view (the data views draw the window alone).
+  // Before the scene draws: whether the view draws this frame, and what
+  // derives from the grid brought up to date. visible: the realistic view (the
+  // data views draw the window alone). (volume and camera: the WebGL view's
+  // transforms; draw reads FrameUniforms' camera.)
   view(volume, visible, camera) {
-    this.mesh.visible = visible && this.built && this.ready;
-    this.detail.group.visible = this.mesh.visible;
-    if (!this.mesh.visible) return;
-    const o = this.sim.origin;
-    this.worldToScene.copy(volume.matrixWorld).multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z));
-    this.sceneToWorld.copy(this.worldToScene).invert();
-    this.mesh.material.uniforms.uWinLo.value.copy(o);
-    if (camera) this.detail.view(camera, this.mesh.visible);
-    this.refresh();
+    if (visible && this.built) this.buildView();   // (once: the first time the realistic view shows the world)
+    this.visible = visible && this.built && this.viewReady;
+    const o = this.sim.origin, m = this._m;
+    if (volume?.matrixWorld) m.worldToScene.copy(volume.matrixWorld).multiply(m.toWorld.makeTranslation(-o.x, -o.y, -o.z));
+    this.detail.view(camera, this.visible, volume?.matrixWorld ? m.worldToScene : null);
+    if (this.built) this.refresh();
   }
 
-  // retire: as Simulation.dispose's (the view's program and the passes' carry
-  // over to a new far field that claims them before they're disposed of)
-  dispose(retire = null) {
+  // The view's params for the camera FrameUniforms holds now (the frame's
+  // jittered one, or a still's): world cells → clip and back, the eye.
+  _params() {
+    const o = this.sim.origin, last = this.fu.last, p = this.viewParams, m = this._m;
+    // world cells → clip: the volume's model (grid → scene) after world → grid
+    m.toWorld.makeTranslation(-o.x, -o.y, -o.z);
+    p.worldToClip.multiplyMatrices(last.viewProj, last.model).multiply(m.toWorld);
+    p.clipToWorld.copy(p.worldToClip).invert();
+    m.eye.copy(last.eye).applyMatrix4(m.toWorld.copy(last.model).invert());
+    p.eye = [m.eye.x + o.x, m.eye.y + o.y, m.eye.z + o.z];
+    p.winLo = [o.x, o.y, o.z];
+    // the rolling log's parameters (world cells, as these are), or flat
+    const w = this.curved ? this.presentation.parameters : null;
+    p.warpK = w ? w.k : 0;
+    p.warpAnchor = w ? w.anchor : [0, 0];
+    p.warpDir = w ? w.dir : [0, 1];
+    return p;
+  }
+
+  /**
+   * Before the scene pass, after FrameUniforms is written (the world wire's
+   * compute hook): the detail meshes' depth, for the scene target the
+   * frame draws into (post.sceneTarget: { width, height }), in a render pass
+   * of their own (world/detail.js depth). The view of this frame then stops
+   * its march at them; a still (renderStill: no compute hook) goes without.
+   */
+  prepass(target) {
+    this.depthFor = null;
+    if (!this.visible || !this.viewReady || !this.vol || !target) return;
+    if (this.detail.depth(target, { ...this._params(), detailDepth: 0 })) this.depthFor = { target, width: target.width, height: target.height };
+  }
+
+  /**
+   * Draws the view into our scene pass (the world wire's scene hook, before
+   * the volume), the detail meshes first, after FrameUniforms is written this
+   * frame: its camera is the view's. Nothing while it isn't visible (view) or
+   * its pipeline builds.
+   * @param {GPURenderPassEncoder} rp
+   * @param {{ width: number, height: number }} [target] the scene target it draws into (post.sceneTarget)
+   * @returns {boolean} whether it drew
+   */
+  draw(rp, target = null) {
+    const d = this.depthFor;
+    this.depthFor = null;   // (this frame's only)
+    if (!this.visible || !this.viewReady || !this.vol) return false;
+    const sim = this.sim, p = this._params();
+    p.detailDepth = d && d.target === target && d.width === target.width && d.height === target.height ? 1 : 0;
+    const bind = [this._frameGroup(), sim.bindRO, this.vol.lightingGroup];
+    this.detail.draw(rp, p, bind);   // (first: the view depth-tests against the meshes)
+    this.viewPipeline.draw(rp, {
+      bind, header: { origin: [0, 0, 0], src: sim.cur, dst: sim.cur },   // (world cells throughout: worldPos() is the identity)
+      params: p, count: 3,
+    });
+    return true;
+  }
+
+  dispose() {
+    this.disposed = true;
     this.detail.dispose();
     this.queue = [];
-    this.mesh.removeFromParent();
-    this.mesh.geometry.dispose();
-    this.regionMesh.geometry.dispose();
-    for (const t of [this.grid, this.field, this.l1, this.l2, this.top, this.shadow]) t.dispose();
-    this.cells?.dispose();
+    this.vol?.attachFar(null);
+    this.derived?.attachFar(null);
+    const retire = (b) => b && this.sim._retire(b);
+    for (const t of [this.grid, this.field, this.top, this.shadow, this.occ, this.winMaskBuf, this.cells]) retire(t);
+    this.cells = null;
     this.disposeTreeMaps();
-    this.winMaskTex?.dispose();
-    const mats = [this.mesh.material, ...Object.values(this.mats)];
-    if (retire) retire.push(...mats);
-    else mats.forEach((m) => m.dispose());
   }
 }

@@ -14,8 +14,9 @@ import { PHYS } from '../physics.js';
 //
 // Reads come from a CPU cache of blocks of the state (the GPU backend's are
 // supertiles, a 32×32-texel square of the state atlas each), overlaid with the
-// edits still queued. A command typed at the console reads synchronously
-// (exact, one stall per block it touches); an event handler (event.tick and
+// edits still queued. A command typed at the console reads exactly: a block it
+// touches is read fresh once per command (on the GPU backend the command, a
+// coroutine, waits a few frames for it: console/gpu.js); an event handler (event.tick and
 // friends) never stalls: a block it reads that isn't cached yet is requested
 // and the read returns nil until it arrives, and the blocks handlers keep
 // reading are refreshed asynchronously at a bounded rate. So a handler sees the
@@ -27,7 +28,9 @@ import { PHYS } from '../physics.js';
 //   blockCount, blockTexels     blocks in the grid, texels per block
 //   locate(x, y, z)             [block, texel in the block]
 //   readBlocks(blocks, sync)    Map(block → { a, b }) (Float32Array RGBA per texel,
-//                               the fetchA/fetchB layout), or a Promise of one
+//                               the fetchA/fetchB layout), or a Promise of one;
+//                               sync may throw an error carrying retry() instead
+//                               (console/gpu.js: the read waits for the GPU)
 //   applyEdits(chunk)           one pass over a packed chunk (packEdits)
 
 // Edit mask bits (shaders/script.js has the same).
@@ -352,8 +355,8 @@ export class ScriptWorld {
         }
   }
 
-  store(map, now, seq) {
-    for (const [i, d] of map) this.blocks.set(i, { a: d.a, b: d.b, readAt: now, usedAt: now, wroteSeq: seq, stamp: this.stamp });
+  store(map, now, seq, stamp = this.stamp) {
+    for (const [i, d] of map) this.blocks.set(i, { a: d.a, b: d.b, readAt: now, usedAt: now, wroteSeq: seq, stamp });
     if (this.blocks.size > MAX_CACHED_BLOCKS) {
       const old = [...this.blocks].sort((p, q) => p[1].usedAt - q[1].usedAt);
       for (const [i] of old.slice(0, this.blocks.size - MAX_CACHED_BLOCKS)) this.blocks.delete(i);
@@ -376,7 +379,8 @@ export class ScriptWorld {
     }
     if (!list.length) return;
     for (const i of list) this.wanted.delete(i);
-    const epoch = this.epoch, seq = this.seq;
+    // (stamped as of now: a typed command that began since reads it fresh)
+    const epoch = this.epoch, seq = this.seq, stamp = this.stamp;
     this.inflight++;
     Promise.resolve(this.backend.readBlocks(list, false)).then((map) => {
       if (epoch !== this.epoch) return;
@@ -385,7 +389,7 @@ export class ScriptWorld {
         const b = this.blocks.get(i);
         if (b && b.wroteSeq > seq) { map.delete(i); b.readAt = 0; }
       }
-      this.store(map, this.now(), seq);
+      this.store(map, this.now(), seq, stamp);
     }).catch(() => { /* a failed read only leaves the cache as it was */ })
       .finally(() => { this.inflight--; });
   }

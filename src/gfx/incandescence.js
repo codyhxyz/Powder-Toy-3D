@@ -1,5 +1,6 @@
 // Incandescence: the light a hot opaque body gives off, as a table over
-// temperature that the shaders interpolate (common.js, incandescence()).
+// temperature that the shaders interpolate (common.js, incandescence(); the
+// table rides in the element tables' buffer, INCAND_TAB(i)).
 //
 // The colour is physical: Planck's law integrated against the CIE 1931 colour
 // matching functions (Wyman, Sloan & Shirley 2013 multi-lobe fit), converted to
@@ -33,11 +34,11 @@ export const INCAND = {
 
 const LUMA = [0.2126, 0.7152, 0.0722];   // Rec.709 luminance weights (linear sRGB)
 const LAMBDA = [360, 830, 1];            // nm: integration range and step
-export const KELVIN = 273.15;            // °C to K (GLSL: C_TO_K in shaders/common.js)
+export const KELVIN = 273.15;            // °C to K (WGSL: C_TO_K in shaders/common.js)
 // physical constants (SI) and the luminous efficacy of 555 nm light
 const H = 6.62607015e-34, C = 2.99792458e8, KB = 1.380649e-23, KM = 683;
 const M_PER_NM = 1e-9;                   // metres per nanometre
-const GLSL_DIGITS = 6;                   // significant digits of the table as GLSL literals
+const TABLE_DIGITS = 6;                  // significant digits the table keeps (as its GLSL literals had)
 // CIE XYZ (D65) to linear sRGB
 const XYZ_TO_SRGB = [
   [3.2406, -1.5372, -0.4986],
@@ -103,26 +104,32 @@ export const INCAND_TABLE = (() => {
   });
 })();
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(+x.toPrecision(GLSL_DIGITS)));
+const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(+x.toPrecision(TABLE_DIGITS)));
 
+// The table as the GPU holds it (shaders/common.js tablesWGSL: incand, an
+// array of INCAND.N vec4f): each knot at TABLE_DIGITS significant digits.
+export const INCAND_KNOTS = () => INCAND_TABLE.map((k) => k.map((v) => +v.toPrecision(TABLE_DIGITS)));
+
+// WGSL for the shared prelude (shaders/common.js; the name is the GLSL
+// version's, docs/webgpu.md W2). INCAND_TAB(i) reads the table's knot i.
 export function incandescenceGLSL() {
-  return /* glsl */ `
-#define INCAND_T0 ${f(INCAND.T0)}
-#define INCAND_STEP ${f(INCAND.STEP)}
-#define INCAND_N ${INCAND.N}
-#define INCAND_SKIN_DROP ${f(INCAND.SKIN_DROP)}
+  return /* wgsl */ `
+const INCAND_T0: f32 = ${f(INCAND.T0)};
+const INCAND_STEP: f32 = ${f(INCAND.STEP)};
+const INCAND_N: i32 = ${INCAND.N};
+const INCAND_SKIN_DROP: f32 = ${f(INCAND.SKIN_DROP)};
 // rgb = blackbody colour of unit luminance, a = log2 rendered luminance (gfx/incandescence.js)
-const vec4 INCAND_TAB[INCAND_N] = vec4[INCAND_N](
-  ${INCAND_TABLE.map((k) => `vec4(${k.map(f).join(', ')})`).join(',\n  ')});
+fn INCAND_TAB(i: i32) -> vec4f { return TB.incand[i]; }
 // Glow of an opaque blackbody at tC (°C), linear radiance in scene units:
 // nothing below ~500 °C, dull red, cherry, orange, then yellow-white.
-vec3 incandescence(float tC) {
-  float x = (tC - INCAND_T0) / INCAND_STEP;
-  if (x <= 0.0) return vec3(0.0);
-  x = min(x, float(INCAND_N - 1));
-  int i = min(int(x), INCAND_N - 2);
-  float u = x - float(i);
-  vec4 a = INCAND_TAB[i], b = INCAND_TAB[i + 1];
+fn incandescence(tC: f32) -> vec3f {
+  var x = (tC - INCAND_T0) / INCAND_STEP;
+  if (x <= 0.0) { return vec3f(0.0); }
+  x = min(x, f32(INCAND_N - 1));
+  let i = min(i32(x), INCAND_N - 2);
+  let u = x - f32(i);
+  let a = INCAND_TAB(i);
+  let b = INCAND_TAB(i + 1);
   return mix(a.rgb, b.rgb, u) * exp2(mix(a.a, b.a, u));
 }`;
 }

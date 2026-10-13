@@ -1,17 +1,16 @@
-import * as THREE from 'three';
-import { BRICK, stateUniforms } from '../shaders/common.js';
-import { stageFrag, editFrag, gatherFrag, STAGE_W, BRICK_CELLS, SLOT_W } from '../shaders/window.js';
-import { DIFF_W } from '../shaders/generate.js';
-import { rawMat, makeFieldTarget, brickTexel } from '../sim.js';
+import { BRICK } from '../shaders/common.js';
+import { restoreEdit, BRICK_CELLS } from '../shaders/window.js';
+import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../shaders/generate.js';
 import { WorldGenerator } from './gpu.js';
 import { TREE, WORLD_SEED } from './generator.js';
 import { island } from './scenes/island.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
-import { compileInBackground } from '../gfx/programs.js';
+import { farLayout, farSceneLayout } from '../shaders/far.js';
 
-// The window over a massive world (docs/scaling.md D11, phases W1 and W2).
+// The window over a massive world (docs/scaling.md D11, phases W1 and W2;
+// docs/webgpu.md G1).
 //
 // The simulation's grid is a window into a world of `size` cells that the
 // generator defines everywhere. sim.origin is the window's world cell: a
@@ -21,65 +20,69 @@ import { compileInBackground } from '../gfx/programs.js';
 // WIN_HYSTERESIS cells from the window's centre along x or z, the window
 // moves WIN_STEP that way, at most once per frame.
 //
-// A move:
-//   1. the slab about to leave is copied out (shaders/window.js stageFrag) and
-//      compared with the generator brick by brick (shaders/generate.js
-//      sceneDiffFrag). The flags are read back asynchronously: the bricks that
-//      match leave the store, and only the ones that differ are packed
-//      (gatherFrag) and read back in turn, into the store (world/store.js);
-//   2. Simulation.shift moves the state, the render fields' history and GI;
-//   3. the generator fills the slab the move uncovers, then that slab's
-//      stored bricks are written back (editFrag);
+// A move, all of it recorded into the frame's encoder (docs/webgpu.md B3):
+//   1. the slab about to leave is compared with the generator brick by brick
+//      and its differing bricks gathered, in one kernel (shaders/generate.js
+//      sceneDiffFrag); the count, their keys and a prefix of their cells are
+//      read back asynchronously (one round trip unless more differ than the
+//      last move's estimate): the bricks that match leave the store, the ones
+//      that differ go into it (world/store.js);
+//   2. Simulation.shift moves the state and the flow, and the derived passes
+//      and whitewater move theirs (sim.onShift: the render fields, bricks and
+//      GI by whole bricks, only the slab and the edges re-aged);
+//   3. the generator fills the slab the move uncovers (an edit over it), then
+//      that slab's stored bricks are written back (another: restore);
 //   4. the scene's trees (scene.trees: the island's) are stamped into the
 //      brick columns the move visits for the first time, clipped to those
 //      columns (the planted record): a tree is planted once, piece by piece as
 //      its columns are first visited, and comes back from the store as edits
-//      after that;
-//   5. both state copies are made the same.
+//      after that.
+// No syncCopies after it (docs/webgpu.md D6, G1): the shift forces every
+// unit, so the next step's react rewrites the other copy before anything
+// reads it, and the slab's edits mark the bricks they change.
 // No move starts while a leaving slab is still being read back, so the store
-// holds everything a move can bring back.
+// holds everything a move can bring back, and the slab's buffers aren't
+// written again before they are read.
 //
 // The far field (world/far.js), when the app gives the window one (far), is
 // built on load, summarizes the slab about to leave in step 1, and sweeps over
 // the window's region while it changes (update).
 //
-// What the world holds is its scene (world/scenes): P = scene.params. Every
-// scene fills and diffs through its sceneCell (world/gpu.js), its uniforms
-// shared by every pass that includes its GLSL (sceneU: the fill, the diff, the
-// far field's build), and plants its trees if it has any (steps 3 and 4). A
-// scene's prepare (GPU work before its first fill: the island bakes its
-// columns) runs with the background compile (whenReady), and its dispose with
-// the window's.
-//
-// The window's own passes and the far field's are compiled in the background
-// (whenReady); the app loads the world once they are ready, so switching to a
-// world never stalls the page on a compile: the window fills in, then the
-// far field around it as its view's program is ready (world/far.js). Until
-// load the window doesn't move.
+// What the world holds is its scene (world/scenes): P = scene.params. The
+// generator (world/gpu.js) runs the scene's sceneCell for the fill and the
+// diff, its resources (uniforms, data, the island's baked columns) made once
+// it has prepared; whenReady builds the window's kernels and the far field's
+// meanwhile, and the app loads the world once they are ready, so switching to
+// a world never stalls the page on a pipeline: the window fills in, then the
+// far field around it. Until load the window doesn't move.
 
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
 const BAKED_KEEP = 256;              // baked trees kept: a tree straddling slabs is stamped once per slab
 const CANDIDATES_KEEP = 1 << 16;     // tree candidates kept (one per brick column; a move asks for its neighbours again)
-const MASK_SET = 255;                // a set byte of the column mask (the shader reads it as 1)
+const READ_MIN = 64;                 // bricks of a leaving slab's cells read with its count at least...
+const READ_AHEAD = 1.5;              // ...or this many times the last move's (a second read fetches the rest)
+const VEC4 = 16;
+const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08 };   // (GPUBufferUsage's bits)
 
 export class WorldWindow {
-  // sim: the window's Simulation (its grid spans the world's height);
-  // size: the world in cells [x, y, z]; seed: its seed (the generator's
-  // default world's without one); scene: what it holds (world/scenes)
-  constructor(renderer, sim, { size, seed = WORLD_SEED, scene = island }) {
+  // sim: the window's Simulation (its grid spans the world's height); size:
+  // the world in cells [x, y, z]; seed: its seed (the generator's default
+  // world's without one); scene: what it holds (world/scenes). (The first
+  // argument was the WebGL renderer; the window works on the sim's device.)
+  constructor(_renderer, sim, { size, seed = WORLD_SEED, scene = island }) {
     const g = sim.g;
     if (g.ny !== size[1]) throw new Error(`window ${g.ny} cells tall in a world ${size[1]} tall: it spans the world's height`);
     if (size.some((n, i) => n % WIN_STEP && i !== 1)) throw new Error(`world ${size}: x and z must be multiples of ${WIN_STEP}`);
-    this.renderer = renderer;
     this.sim = sim;
+    this.gpu = sim.gpu;
     this.size = size;
     this.scene = scene;
     this.P = scene.params({ size, seed });
-    // a scene's uniforms, the same objects in every pass that includes its GLSL (whenReady refreshes their values)
-    this.sceneU = scene.uniforms(this.P);
     // its own generator, not generatorFor's shared one: tools run two windows
-    this.gen = new WorldGenerator(sim, { glsl: scene.glsl(g), uniforms: this.sceneU, trees: scene.trees });
+    // (its prepass room covers the far field's chunks too: world/far.js)
+    const S = farSceneLayout(farLayout(size));
+    this.gen = new WorldGenerator(sim, scene, this.P, { regions: [[S.side, size[1], S.side]] });
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
     this.store = new BrickStore(this.wb);
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in
@@ -92,58 +95,25 @@ export class WorldWindow {
     this.far = null;                                              // the far field (world/far.js), if the app draws one
     this.loaded = false;                                          // load has filled the window (it moves only after)
     this.ready = null;                                            // whenReady's promise
+    this.lastKept = 0;                                            // bricks the last leaving slab kept (its readback's estimate)
 
-    // the largest slab a move exchanges, and the targets it goes through
+    // the largest slab a move exchanges: its buffers, made once
     const step = WIN_STEP / BRICK, BX = g.nx / BRICK, BY = g.ny / BRICK, BZ = g.nz / BRICK;
-    const maxBricks = Math.max(step * BY * BZ, BX * BY * step);
-    const rows = Math.ceil(maxBricks * BRICK_CELLS / STAGE_W);
-    this.stage = makeFieldTarget(STAGE_W, rows, 2, THREE.FloatType, THREE.NearestFilter);
-    this.packed = makeFieldTarget(STAGE_W, rows, 2, THREE.FloatType, THREE.NearestFilter);   // the differing bricks
-    this.slots = new Float32Array(SLOT_W * Math.ceil(maxBricks / SLOT_W));                 // ...which staged brick each is
-    this.slotsTex = dataTexture(this.slots, SLOT_W, Math.ceil(maxBricks / SLOT_W), THREE.RedFormat, THREE.FloatType);
-    this.diffTarget = makeFieldTarget(DIFF_W, Math.ceil(maxBricks / DIFF_W), 1, THREE.UnsignedByteType, THREE.NearestFilter);
-    this.bufA = new Float32Array(STAGE_W * rows * 4);
-    this.bufB = new Float32Array(STAGE_W * rows * 4);
-    this.bufF = new Uint8Array(DIFF_W * Math.ceil(maxBricks / DIFF_W) * 4);
-    // writing stored bricks back: per grid brick its slot + 1 (0: none), and
-    // per grid brick column whether to plant it
-    this.editIdx = new Float32Array(g.bwidth * g.bheight);
-    this.editIdxTex = dataTexture(this.editIdx, g.bwidth, g.bheight, THREE.RedFormat, THREE.FloatType);
-    this.colMask = new Uint8Array(BX * BZ);
-    this.colMaskTex = dataTexture(this.colMask, BX, BZ, THREE.RedFormat, THREE.UnsignedByteType);
-    const v3 = () => ({ value: new THREE.Vector3() });
-    this.mats = {
-      stage: rawMat(stageFrag(g), { tA: { value: null }, tB: { value: null }, uLo: v3(), uBricks: v3() }),
-      edit: rawMat(editFrag(g), {
-        ...stateUniforms(),
-        tEditIdx: { value: this.editIdxTex }, tEditA: { value: null }, tEditB: { value: null },
-      }),
-      gather: rawMat(gatherFrag(), {
-        tStageA: { value: this.stage.textures[0] }, tStageB: { value: this.stage.textures[1] }, tSlots: { value: this.slotsTex },
-      }),
-    };
-    for (const [k, m] of Object.entries(this.mats)) m.name = k;
+    this.maxBricks = Math.max(step * BY * BZ, BX * BY * step);
+    this.leave = this.gen.diffBuffers(this.maxBricks);
+    // stored bricks back: an edit over the uncovered slab, from one upload buffer (made on first use)
+    this.restoreKernel = sim.editKernel('restore', restoreEdit());
+    this.restoreBuf = null;
+    this.restoreRead = -1;   // gpu.stats.flushes when a restore edit last read restoreBuf (still unsubmitted while equal)
   }
 
-  // Every full-screen pass the window and its far field draw.
-  materials() {
-    this.gen.diffMat();
-    return [...Object.values(this.mats), ...Object.values(this.gen.mats), ...Object.values(this.far?.mats ?? {})];
-  }
-
-  // Resolves once every pass of the window and its far field is compiled and
-  // the scene has prepared (both started in the background on the first call;
-  // give the window its far field first): load and the moves then run without
-  // a compile stall.
+  // Resolves once the window's kernels and the far field's are built and the
+  // scene has prepared (started in the background on the first call; give the
+  // window its far field first): load and the moves then record at once.
   whenReady() {
     return (this.ready ??= Promise.all([
-      compileInBackground(this.renderer, this.materials()),
-      this.scene.prepare?.(this.renderer, this.P),
-    ]).then(() => {
-      // what prepare made (its textures) into the passes' shared uniform objects
-      const fresh = this.scene.uniforms(this.P);
-      for (const [k, u] of Object.entries(fresh)) if (this.sceneU[k]) this.sceneU[k].value = u.value;
-    }));
+      this.gen.ready, this.gen.prepareDiff(), this.restoreKernel.ready, this.far?.whenReady?.(),
+    ]).then(() => this));
   }
 
   // The origin that centres the window in the world.
@@ -152,7 +122,9 @@ export class WorldWindow {
     return [snap((this.size[0] - g.nx) / 2), 0, snap((this.size[2] - g.nz) / 2)];
   }
 
-  // (Re)load the world from the generator with the window at `origin`: no edits, nothing planted.
+  // (Re)load the world from the generator with the window at `origin`: no
+  // edits, nothing planted. A whole-grid write (docs/webgpu.md D6): the next
+  // map draws every unit, so no syncCopies follows (G1). Needs whenReady.
   load(origin = this.centre()) {
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
@@ -162,7 +134,7 @@ export class WorldWindow {
     sim.origin.set(origin[0], 0, origin[2]);
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
     if (this.scene.trees) this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
-    sim.syncCopies();
+    sim.noteWrite();
     this.far?.build();
     sim.dropHistory();   // undo would bring back a window of the old world
     // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
@@ -172,11 +144,12 @@ export class WorldWindow {
   }
 
   // A saved world back (saves/game.js): the window at `origin`, its cells
-  // from fillState() (it loads the saved state into the simulation), the
-  // stored bricks (BrickStore.toBytes) and the planted brick columns as they
-  // were saved. Like load, it drops undo and starts the derived passes over.
-  // The far field is rebuilt from the scene and the window: stored edits
-  // outside the window show from afar once the window has passed over them.
+  // from fillState() (it loads the saved state into the simulation: a
+  // whole-grid write), the stored bricks (BrickStore.toBytes) and the planted
+  // brick columns as they were saved. Like load, it drops undo and starts the
+  // derived passes over. The far field is rebuilt from the scene and the
+  // window: stored edits outside the window show from afar once the window has
+  // passed over them.
   loadSaved(origin, fillState, storeBytes, planted) {
     const sim = this.sim;
     if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
@@ -185,7 +158,6 @@ export class WorldWindow {
     this.planted.set(planted);
     sim.origin.set(origin[0], 0, origin[2]);
     fillState();
-    sim.syncCopies();
     this.far?.build();
     sim.dropHistory();
     sim.fieldReset = sim.giReset = true;
@@ -213,7 +185,7 @@ export class WorldWindow {
     return move;
   }
 
-  // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–5 above.
+  // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–4 above.
   shift(dx, dz) {
     const t0 = performance.now();
     const sim = this.sim, g = sim.g, before = sim.origin.clone();
@@ -224,13 +196,7 @@ export class WorldWindow {
     const enterHi = enterLo.map((v, i) => v + size[i]);
     const bricks = size.map((n) => n / BRICK);
     // 1.
-    const u = this.mats.stage.uniforms;
-    u.tA.value = sim.stateA;
-    u.tB.value = sim.stateB;
-    u.uLo.value.set(...leaveLo);
-    u.uBricks.value.set(...bricks);
-    sim.run(this.mats.stage, this.stage);
-    this.gen.diff(this.P, leaveLo, bricks, this.diffTarget);
+    this.gen.diff(this.P, leaveLo, bricks, this.leave);
     const leaveB = [before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK];
     this.readBack(leaveB, bricks);
     // the decoration of the slab that leaves goes into its own store (src/deco.js)
@@ -246,82 +212,91 @@ export class WorldWindow {
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;
-    // 5.
-    sim.syncCopies();
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
   }
 
-  // Read the leaving slab's diff flags back; the bricks that match the
-  // generator leave the store, and the ones that differ are packed from the
-  // staged slab, read back and kept. base is slab brick 0's world brick.
+  // Read the leaving slab back (its kernel recorded just before): the count,
+  // the kept bricks' keys and a prefix of their cells, one round trip unless
+  // more bricks differ than the estimate (then a second for the rest). The
+  // bricks that match the generator leave the store, the ones that differ go
+  // into it. base is slab brick 0's world brick.
   readBack(base, bricks) {
-    const n = bricks[0] * bricks[1] * bricks[2], drows = Math.ceil(n / DIFF_W);
-    const r = this.renderer, sim = this.sim, t0 = performance.now(), last = () => this.last, epoch = this.epoch;
-    const f = this.bufF.subarray(0, DIFF_W * drows * 4);
-    let keys = [], t1 = 0;
-    this.pending = r.readRenderTargetPixelsAsync(this.diffTarget, 0, 0, DIFF_W, drows, f).then(() => {
-      if (epoch !== this.epoch) return null;
-      t1 = performance.now();
-      this.slots.fill(0);
-      for (let i = 0; i < n; i++) {
-        const bx = i % bricks[0], by = Math.floor(i / bricks[0]) % bricks[1], bz = Math.floor(i / (bricks[0] * bricks[1]));
-        const key = this.store.key(base[0] + bx, base[1] + by, base[2] + bz);
-        if (f[i * 4]) { this.slots[keys.length] = i; keys.push(key); } else this.store.drop(key);
-      }
-      if (!keys.length) return null;
-      this.slotsTex.needsUpdate = true;
-      sim.run(this.mats.gather, this.packed);
-      const rows = Math.ceil(keys.length * BRICK_CELLS / STAGE_W);
-      const a = this.bufA.subarray(0, STAGE_W * rows * 4), b = this.bufB.subarray(0, STAGE_W * rows * 4);
-      return Promise.all([
-        r.readRenderTargetPixelsAsync(this.packed, 0, 0, STAGE_W, rows, a, undefined, 0),
-        r.readRenderTargetPixelsAsync(this.packed, 0, 0, STAGE_W, rows, b, undefined, 1),
-      ]).then(() => [a, b]);
-    }).then((got) => {
+    const n = bricks[0] * bricks[1] * bricks[2], rb = this.gpu.readback, out = this.leave, epoch = this.epoch;
+    const est = Math.min(n, Math.max(READ_MIN, Math.ceil(this.lastKept * READ_AHEAD)));
+    const t0 = performance.now(), last = () => this.last;
+    // (both copies are recorded now, at the request: docs/webgpu.md B7)
+    const head = rb.buffer(out.head, 0, Math.ceil(leaveHeadBytes(n) / 4) * 4);
+    const cells = rb.buffer(out.cells, 0, est * LEAVE_BRICK_BYTES);
+    let t1 = 0, kept = 0;
+    this.pending = Promise.all([head, cells]).then(async ([h, c]) => {
       if (epoch !== this.epoch) return;
-      const t2 = performance.now();
-      if (got) keys.forEach((key, s) => this.store.put(key, encodeBrick(got[0], s * BRICK_FLOATS, got[1], s * BRICK_FLOATS)));
+      t1 = performance.now();
+      const words = new Uint32Array(h), count = Math.min(words[0], n);
+      let floats = new Float32Array(c);
+      if (count > est) {
+        // more differ than the estimate: the rest of them (the buffer is ours until this read lands)
+        const rest = new Float32Array(await rb.buffer(out.cells, est * LEAVE_BRICK_BYTES, (count - est) * LEAVE_BRICK_BYTES));
+        if (epoch !== this.epoch) return;
+        const all = new Float32Array(count * LEAVE_BRICK_BYTES / 4);
+        all.set(floats);
+        all.set(rest, floats.length);
+        floats = all;
+      }
+      const keep = new Set();
+      for (let s = 0; s < count; s++) {
+        const key = words[1 + s];
+        keep.add(key);
+        this.store.put(key, encodeBrick(floats, s * 2 * BRICK_FLOATS, floats, s * 2 * BRICK_FLOATS + BRICK_FLOATS));
+      }
+      for (let i = 0; i < n; i++) {
+        const key = this.store.key(base[0] + (i % bricks[0]), base[1] + Math.floor(i / bricks[0]) % bricks[1], base[2] + Math.floor(i / (bricks[0] * bricks[1])));
+        if (!keep.has(key)) this.store.drop(key);
+      }
+      kept = count;
+      this.lastKept = count;
+    }).then(() => {
       const L = last();
-      if (L) Object.assign(L, { flagsMs: t1 - t0, readbackMs: t2 - t0, keepMs: performance.now() - t2, kept: keys.length, landedAt: performance.now() });
+      if (L && epoch === this.epoch) Object.assign(L, { flagsMs: t1 - t0, readbackMs: t1 - t0, keepMs: performance.now() - t1, kept, landedAt: performance.now() });
     }).catch((err) => {
-      console.error('world window: a leaving slab could not be read back; its edits are lost', err);
+      if (!this.gpu.failure) console.error('world window: a leaving slab could not be read back; its edits are lost', err);
     }).finally(() => { this.pending = null; });
   }
 
   // Write the stored bricks of the slab of grid cells [lo, lo + 4·bricks) back
-  // into the grid, taking them out of the store. Returns how many.
+  // into the grid, taking them out of the store: an edit over the slab from
+  // one upload (the index, then the bricks' cells; shaders/window.js
+  // editFrag). Returns how many.
   restore(lo, bricks) {
-    const sim = this.sim, g = sim.g, o = sim.origin;
+    const sim = this.sim, o = sim.origin;
     const lb = lo.map((v) => v / BRICK), ob = [o.x / BRICK, o.y / BRICK, o.z / BRICK];
-    const slots = [];
+    const n = bricks[0] * bricks[1] * bricks[2], index = new Uint32Array(Math.ceil(n / 4) * 4), keys = [];
     for (let bz = 0; bz < bricks[2]; bz++)
       for (let by = 0; by < bricks[1]; by++)
         for (let bx = 0; bx < bricks[0]; bx++) {
           const key = this.store.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz);
-          if (this.store.has(key)) slots.push([lb[0] + bx, lb[1] + by, lb[2] + bz, key]);
+          if (!this.store.has(key)) continue;
+          keys.push(key);
+          index[bx + bricks[0] * (by + bricks[1] * bz)] = keys.length;
         }
-    if (!slots.length) return 0;
-    const rows = Math.ceil(slots.length * BRICK_CELLS / STAGE_W);
-    const A = new Float32Array(STAGE_W * rows * 4), B = new Float32Array(STAGE_W * rows * 4);
-    this.editIdx.fill(0);
-    slots.forEach(([bx, by, bz, key], s) => {
-      decodeBrick(this.store.map.get(key), A, s * BRICK_FLOATS, B, s * BRICK_FLOATS);
-      this.editIdx[brickTexel(g, bx, by, bz)] = s + 1;
-    });
-    this.editIdxTex.needsUpdate = true;
-    const texA = dataTexture(A, STAGE_W, rows, THREE.RGBAFormat, THREE.FloatType);
-    const texB = dataTexture(B, STAGE_W, rows, THREE.RGBAFormat, THREE.FloatType);
-    const u = this.mats.edit.uniforms;
-    u.tEditA.value = texA;
-    u.tEditB.value = texB;
-    try {
-      sim.pass(this.mats.edit);
-      if (!this.renderer.getContext().isContextLost()) for (const [, , , key] of slots) this.store.drop(key);
-    } finally {
-      texA.dispose();
-      texB.dispose();
+    if (!keys.length) return 0;
+    const cellsAt = index.length / 4, bytes = (cellsAt + keys.length * 2 * BRICK_CELLS) * VEC4;
+    if (!this.restoreBuf || this.restoreBuf.size < bytes) {
+      if (this.restoreBuf) sim._retire(this.restoreBuf);
+      this.restoreBuf = this.gpu.createBuffer({ label: `sim${sim.id} restore`, size: Math.max(bytes, 2 * VEC4 * (cellsAt + 64 * 2 * BRICK_CELLS)), usage: BUFFER.STORAGE | BUFFER.COPY_DST });
+      this.restoreRead = -1;   // (nothing reads the new one yet)
     }
-    return slots.length;
+    const cells = new Float32Array(keys.length * 2 * BRICK_FLOATS);
+    keys.forEach((key, s) => decodeBrick(this.store.map.get(key), cells, s * 2 * BRICK_FLOATS, cells, s * 2 * BRICK_FLOATS + BRICK_FLOATS));
+    // Unordered unless a restore recorded in the open encoder still reads the
+    // buffer (two moves in one frame: a tool's): an ordered write would flush
+    // the move's work so far, a second submit for every move that restores.
+    const ordered = this.restoreRead === this.gpu.stats.flushes;
+    this.gpu.write(this.restoreBuf, 0, index, { ordered });
+    this.gpu.write(this.restoreBuf, cellsAt * VEC4, cells, { ordered: false });   // (the first flushed, if it had to)
+    sim.edit(this.restoreKernel, { lo, hi: lo.map((v, i) => v + bricks[i] * BRICK - 1) }, { lo, bricks, cellsAt }, { bind: [{ buffer: this.restoreBuf }] });
+    this.restoreRead = this.gpu.stats.flushes;
+    for (const key of keys) this.store.drop(key);
+    return keys.length;
   }
 
   // Stamp the scene's trees in the brick columns of grid cells [lo, hi) (x and z,
@@ -329,14 +304,14 @@ export class WorldWindow {
   // columns, and mark them planted. Returns how many trees were stamped.
   plant(lo, hi) {
     const sim = this.sim, g = sim.g, o = sim.origin, BX = g.nx / BRICK;
-    this.colMask.fill(0);
+    const mask = new Uint8Array(BX * (g.nz / BRICK));
     let fresh = 0, x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;   // their bounds, world cells
     for (let bz = lo[2] / BRICK; bz < hi[2] / BRICK; bz++)
       for (let bx = lo[0] / BRICK; bx < hi[0] / BRICK; bx++) {
         const wx = o.x / BRICK + bx, wz = o.z / BRICK + bz, k = wz * this.wb[0] + wx;
         if (this.planted[k]) continue;
         this.planted[k] = 1;
-        this.colMask[bz * BX + bx] = MASK_SET;
+        mask[bz * BX + bx] = 1;
         fresh++;
         x0 = Math.min(x0, wx * BRICK); x1 = Math.max(x1, (wx + 1) * BRICK);
         z0 = Math.min(z0, wz * BRICK); z1 = Math.max(z1, (wz + 1) * BRICK);
@@ -353,13 +328,11 @@ export class WorldWindow {
       // the construction's base point on the ground at the trunk (WorldGenerator.plantTrees)
       const at = [t.x - o.x - s.base.x, t.y - o.y - s.base.y, t.z - o.z - s.base.z];
       if (at[0] + s.w <= x0 - o.x || at[0] >= x1 - o.x || at[2] + s.d <= z0 - o.z || at[2] >= z1 - o.z) continue;
-      list.push({ s, at, seed: t.seed });
+      list.push({ s, at, seed: t.seed, key: `${t.x},${t.z}` });
     }
     if (this.plantCost) this.plantCost.bakeMs += performance.now() - t1;
     if (!list.length) return 0;
-    this.colMaskTex.needsUpdate = true;
-    this.gen.stampMany(list, this.colMaskTex);
-    return list.length;
+    return this.gen.stampMany(list, mask);
   }
 
   bakeTree(t) {
@@ -376,28 +349,12 @@ export class WorldWindow {
     return { bricks: this.store.size, bytes: this.store.bytes, planted: this.planted.reduce((n, v) => n + v, 0) };
   }
 
-  // retire: as Simulation.dispose's (the materials go into it, to be disposed
-  // of once a new window's have claimed the programs they share)
-  dispose(retire = null) {
+  dispose() {
     this.epoch++;
-    this.far?.dispose(retire);
-    this.gen.dispose(retire);
-    this.stage.dispose();
-    this.packed.dispose();
-    this.slotsTex.dispose();
-    this.diffTarget.dispose();
-    this.editIdxTex.dispose();
-    this.colMaskTex.dispose();
-    if (retire) retire.push(...Object.values(this.mats));
-    else Object.values(this.mats).forEach((m) => m.dispose());
+    this.far?.dispose();
+    this.gen.dispose();
+    // (destroyed once the frames that use them are submitted and done)
+    for (const b of [this.leave.head, this.leave.cells, this.restoreBuf]) if (b) this.sim._retire(b);
     this.scene.dispose?.();
   }
-}
-
-function dataTexture(data, w, h, format, type) {
-  const t = new THREE.DataTexture(data, w, h, format, type);
-  t.minFilter = t.magFilter = THREE.NearestFilter;
-  t.unpackAlignment = 1;
-  t.needsUpdate = true;
-  return t;
 }

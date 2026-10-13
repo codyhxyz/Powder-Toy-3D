@@ -2,7 +2,8 @@
 // headless run on the real GPU, a small Lab scene per batch judged by reading
 // the state back, then World loaded with every element, watching for errors.
 // usage: node tools/elements-gpu-check.mjs <outDir> [--port 5418]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestContext } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 import { mkdirSync } from 'fs';
 
 const out = process.argv[2] ?? 'elements-gpu';
@@ -12,8 +13,9 @@ const port = pi > 0 ? process.argv[pi + 1] : '5418';
 const VIEW = { width: 640, height: 400 };
 const SEED = 1234;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const ctx = await b.newContext({ viewport: VIEW });
+const b = await launchBrowser();
+// visual: each scene is drawn once at the app's cadence, and the World is shot
+const ctx = await pageGpu(await newTestContext(b, { mode: 'visual', viewport: VIEW }));
 await ctx.routeWebSocket(/.*/, () => {});   // no multiplayer relay
 await ctx.addInitScript((seed) => {
   let s = seed;
@@ -61,8 +63,8 @@ const res = await p.evaluate(async () => {
   };
   const steps = async (k) => { for (let i = 0; i < k; i++) sim.step(); await frames(2); };
   // per element: count, mean height, mean and max temperature; plus live conductor cells
-  const tally = () => {
-    const [s] = sim.readState();
+  const tally = async () => {
+    const [s] = await window.__pageGpu.readState(sim);
     const o = {};
     let live = 0;
     for (let y = 0; y < ny; y++) for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
@@ -83,20 +85,20 @@ const res = await p.evaluate(async () => {
   // Explosives: a hot C-4 block goes off
   await scene((box) => box(60, 0, 60, 66, 6, 66, 'C4', { T: 1000 }));
   await steps(40);
-  let t = tally();
+  let t = await tally();
   check('C-4 at 1000 °C goes off', n(t, 'C4') === 0, { C4: n(t, 'C4'), FIRE: n(t, 'FIRE') });
 
   // Explosives: thermite lit by lava burns into molten iron on a metal plate
   await scene((box) => { box(40, 20, 40, 80, 21, 80, 'METAL'); box(50, 21, 50, 70, 27, 70, 'THERMITE'); box(49, 21, 49, 50, 22, 50, 'LAVA'); });
   await steps(600);
-  t = tally();
+  t = await tally();
   check('thermite burns into molten metal', n(t, 'THERMITE') < 0.5 * 20 * 6 * 20 && n(t, 'LAVA') > 1, { THERMITE: n(t, 'THERMITE'), LAVA: n(t, 'LAVA'), LAVA_Tmax: t.LAVA?.Tmax });
 
   // Explosives: lit propane pool burns
   await scene((box) => { box(40, 0, 40, 80, 3, 80, 'PROPANE'); box(59, 3, 59, 61, 4, 61, 'FIRE'); });
   const p0 = 40 * 3 * 40;
   await steps(400);
-  t = tally();
+  t = await tally();
   check('a lit propane pool burns', n(t, 'PROPANE') < 0.5 * p0, { PROPANE: n(t, 'PROPANE'), of: p0 });
 
   // Chemistry: liquid nitrogen boils off and freezes the water it floats on
@@ -108,7 +110,7 @@ const res = await p.evaluate(async () => {
   let iceMax = 0;
   for (let k = 0; k < 12; k++) {
     await steps(50);
-    t = tally();
+    t = await tally();
     iceMax = Math.max(iceMax, n(t, 'ICE'));
     trace.push([n(t, 'LIQUID_NITROGEN'), n(t, 'ICE'), t.WATER ? Math.round(t.WATER.T) : null]);
   }
@@ -119,13 +121,13 @@ const res = await p.evaluate(async () => {
   // Chemistry: salt dissolves into water
   await scene((box) => { box(40, 0, 40, 80, 6, 80, 'WATER'); box(55, 6, 55, 65, 9, 65, 'SALT'); });
   await steps(400);
-  t = tally();
+  t = await tally();
   check('salt dissolves into saltwater', n(t, 'SALTWATER') > 0, { SALT: n(t, 'SALT'), SALTWATER: n(t, 'SALTWATER') });
 
   // Chemistry: hydrogen rises, CO2 and propane sink (released mid-air)
   await scene((box) => { box(20, 50, 20, 30, 60, 30, 'HYDROGEN'); box(60, 50, 60, 70, 60, 70, 'CO2'); box(95, 50, 95, 105, 60, 105, 'PROPANE'); });
   await steps(600);
-  t = tally();
+  t = await tally();
   check('hydrogen rises; CO2 and propane sink', t.HYDROGEN?.y > 55 && t.CO2?.y < 55 && t.PROPANE?.y < 55, { H2y: t.HYDROGEN?.y, CO2y: t.CO2?.y, C3H8y: t.PROPANE?.y });
 
   // Materials: stone floats on mercury, gold nuggets sink (in a glass tank)
@@ -136,7 +138,7 @@ const res = await p.evaluate(async () => {
     box(50, 20, 50, 56, 23, 56, 'STONE'); box(64, 20, 64, 70, 23, 70, 'NUGGETS');
   });
   await steps(500);
-  t = tally();
+  t = await tally();
   check('stone floats on mercury, gold sinks', t.STONE?.y >= 6 && t.NUGGETS?.y < t.STONE?.y - 3, { STONEy: t.STONE?.y, NUGGETSy: t.NUGGETS?.y, MERCURYy: t.MERCURY?.y });
 
   // Materials: void drains a falling column of water. The void is the whole
@@ -145,7 +147,7 @@ const res = await p.evaluate(async () => {
   // (tools/void-drain-probe.mjs), which isn't what this checks.
   await scene((box) => { box(0, 0, 0, 128, 1, 128, 'VOID'); box(50, 10, 50, 70, 20, 70, 'WATER'); });
   await steps(400);
-  t = tally();
+  t = await tally();
   check('void drains water', n(t, 'WATER') < 0.2 * 20 * 10 * 20, { WATER: n(t, 'WATER') });
 
   // Batch 4: antimatter annihilates with stone; clay and water make mud; singularity eats sand
@@ -156,7 +158,7 @@ const res = await p.evaluate(async () => {
   });
   const sand0 = 30 * 6 * 30;
   await steps(500);
-  t = tally();
+  t = await tally();
   check('antimatter annihilates', n(t, 'ANTIMATTER') === 0, { ANTIMATTER: n(t, 'ANTIMATTER'), STONE: n(t, 'STONE') });
   check('clay and water make mud', n(t, 'MUD') > 0, { MUD: n(t, 'MUD') });
   check('singularity eats sand', n(t, 'SAND') < sand0, { SAND: n(t, 'SAND'), of: sand0, SINGULARITY: n(t, 'SINGULARITY') });
@@ -164,7 +166,7 @@ const res = await p.evaluate(async () => {
   // Electricity: a battery sparks a metal wire
   await scene((box) => { box(20, 9, 62, 24, 13, 66, 'BATTERY'); box(24, 10, 63, 90, 12, 65, 'METAL'); });
   await steps(60);
-  t = tally();
+  t = await tally();
   check('a battery sparks a wire', t.live > 0, { live: t.live });
 
   return R;

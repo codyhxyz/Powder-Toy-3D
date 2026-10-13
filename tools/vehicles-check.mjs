@@ -6,7 +6,8 @@
 // and the jeep blowing up into a burning wreck and coming back.
 // usage: node tools/vehicles-check.mjs [--port 5402] [--shot prefix]   (needs a dev server; AC power)
 //   --shot writes prefix-jeep.jpg, prefix-bike.jpg and prefix-wreck.jpg
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5402');
@@ -15,8 +16,8 @@ const W = 960, H = 600;
 const DRIFT_SLIP_MIN = 15 * Math.PI / 180;   // rad: a hard turn at speed slides at least this far off the nose
 const FIRE_WINDOW_FRAMES = 60;               // frames the wreck's fire is watched over (spans several of its puffs)
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+const p = await pageGpu(await newTestPage(b, { mode: shotPath ? 'visual' : 'preview', viewport: { width: W, height: H } }));
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
@@ -219,7 +220,7 @@ try {
   await settle(300);
 
   // ---- the jeep goes up: a wreck, fire, and a new one later
-  const fire0 = await ev(async () => { const { E } = await import('/src/elements.js'); return window.__app.sim.census()[E.FIRE]?.n ?? 0; });
+  const fire0 = await ev(async () => { const { E } = await import('/src/elements.js'); return (await window.__pageGpu.census())[E.FIRE]?.n ?? 0; });
   await ev(() => { window.__destroyed = null; window.__app.pov.events.on('vehicle:destroyed', (e) => { window.__destroyed = e; }); });
   await ev(() => { const vs = window.__app.pov.vehicles; const v = vs.list.find((v) => v.kind === 'jeep' && v.alive); vs.damage(v, 100, 'Test'); });
   await settle(1200);
@@ -228,7 +229,7 @@ try {
     const { E } = await import('/src/elements.js');
     let fire = 0, powder = 0;
     for (let i = 0; i < frames; i++) {
-      const c = window.__app.sim.census();
+      const c = await window.__pageGpu.census();
       fire = Math.max(fire, c[E.FIRE]?.n ?? 0); powder = c[E.GUNPOWDER]?.n ?? 0;
       await new Promise((r) => requestAnimationFrame(r));
     }

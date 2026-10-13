@@ -36,6 +36,7 @@
 //     (cond 0, as TPT's), so its temperature is the threshold you set with
 //     the Heat and Cool tools.
 import { ELEMENTS, E } from './elements.js';
+import { accessorsWGSL } from './shaders/hostStruct.js';
 
 const SPARK_REST_STEPS = 4;   // ELEC.SPARK_REST, named here so LAMP_HOLD can build on it
 export const ELEC = {
@@ -106,64 +107,72 @@ export const powered = (id) => id === E.SWITCH || id === E.PCLN;
 // What a clone (CLONE, PCLN) takes as its ctype from a neighbour: not air, walls, clones or the silicon that powers them.
 export const cloneable = (j) => j !== E.EMPTY && j !== E.WALL && j !== E.CLONE && j !== E.PCLN && j !== E.PSCN && j !== E.NSCN;
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-const boolArr = (name, a) => `const bool ${name}[NE] = bool[NE](${a.join(', ')});`;
+// Its table fields (the element tables' struct, shaders/common.js tablesWGSL;
+// shaders/hostStruct.js): CONDUCTS(id), WIRE(id) and SPARK_COST(id) in WGSL.
+// SPARK_COST at the 6 significant digits its GLSL literal had.
+export const ELEC_FIELDS = [
+  { name: 'sparkCost', type: 'f32', fn: 'SPARK_COST', get: (e) => +SPARK_COST[e.id].toPrecision(6) },
+  { name: 'conducts', type: 'u32', fn: 'CONDUCTS', ret: 'bool', get: (e) => +CONDUCTS[e.id] },
+  { name: 'wire', type: 'u32', fn: 'WIRE', ret: 'bool', get: (e) => +WIRE[e.id] },
+];
 
-// GLSL for the shared prelude (shaders/common.js): the constants, the tests
-// above, and sparkCell, the entry point for anything that sparks a cell from
-// outside (the Spark tool, a lightning bolt). Needs eid() and the element arrays.
+const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+
+// WGSL for the shared prelude (shaders/common.js; the name is the GLSL
+// version's, docs/webgpu.md W2): the constants, the tests above, and
+// sparkCell, the entry point for anything that sparks a cell from outside (the
+// Spark tool, a lightning bolt). Needs eid() and the element tables.
 export function electricityGLSL() {
-  return /* glsl */ `
-#define SPARK_LIFE ${ELEC.SPARK_LIFE}
-#define SPARK_REST ${ELEC.SPARK_REST}
-#define SPARK_BORN ${SPARK_BORN}
-#define SPARK_CYCLE ${SPARK_CYCLE}
-#define SPARK_V ${ELEC.SPARK_V}
-#define JOULE_PER_LEVEL ${f(ELEC.JOULE_PER_LEVEL)}
-#define SWITCH_ON ${f(ELEC.SWITCH_ON)}
-#define TSNS_FIRE ${f(ELEC.TSNS_FIRE)}
-#define LAMP_HOLD ${ELEC.LAMP_HOLD}
-#define LAMP_DC_LEVEL ${LAMP_DC_LEVEL}
-${boolArr('CONDUCTS', CONDUCTS)}
-${boolArr('WIRE', WIRE)}
-const float SPARK_COST[NE] = float[NE](${SPARK_COST.map((c) => f(+c.toPrecision(6))).join(', ')});
-int sparkPhase(float ctype) { return int(ctype) % SPARK_CYCLE; }
-int sparkLevel(float ctype) { return int(ctype) / SPARK_CYCLE; }
-float packSpark(int phase, int level) { return float(phase + SPARK_CYCLE * level); }
-bool sparkLive(int id, float ctype) { return CONDUCTS[id] && sparkPhase(ctype) > SPARK_REST; }
+  return /* wgsl */ `
+const SPARK_LIFE: i32 = ${ELEC.SPARK_LIFE};
+const SPARK_REST: i32 = ${ELEC.SPARK_REST};
+const SPARK_BORN: i32 = ${SPARK_BORN};
+const SPARK_CYCLE: i32 = ${SPARK_CYCLE};
+const SPARK_V: i32 = ${ELEC.SPARK_V};
+const JOULE_PER_LEVEL: f32 = ${f(ELEC.JOULE_PER_LEVEL)};
+const SWITCH_ON: f32 = ${f(ELEC.SWITCH_ON)};
+const TSNS_FIRE: f32 = ${f(ELEC.TSNS_FIRE)};
+const LAMP_HOLD: i32 = ${ELEC.LAMP_HOLD};
+const LAMP_DC_LEVEL: i32 = ${LAMP_DC_LEVEL};
+${accessorsWGSL('TB.elem', ELEC_FIELDS)}
+fn sparkPhase(ctype: f32) -> i32 { return i32(ctype) % SPARK_CYCLE; }
+fn sparkLevel(ctype: f32) -> i32 { return i32(ctype) / SPARK_CYCLE; }
+fn packSpark(phase: i32, level: i32) -> f32 { return f32(phase + SPARK_CYCLE * level); }
+fn sparkLive(id: i32, ctype: f32) -> bool { return CONDUCTS(id) && sparkPhase(ctype) > SPARK_REST; }
 // A cell's spark (state A a) as a share of a full one: 0 when it isn't live.
-float cellSpark(vec4 a) {
-  int id = eid(a);
-  float ct = floor(a.w);
-  return sparkLive(id, ct) ? float(sparkLevel(ct)) / float(SPARK_V) : 0.0;
+fn cellSpark(a: vec4f) -> f32 {
+  let id = eid(a);
+  let ct = floor(a.w);
+  if (!sparkLive(id, ct)) { return 0.0; }
+  return f32(sparkLevel(ct)) / f32(SPARK_V);
 }
-bool takesSpark(int id, float life) { return CONDUCTS[id] && (id != E_SWITCH || life == SWITCH_ON); }
-bool conductsInto(int from, int to) {
-  if (to == E_PSCN && from == E_NSCN) return false;
-  if (to == E_SWITCH && (from == E_PSCN || from == E_NSCN)) return false;
-  if (from == E_SWITCH && (to == E_PSCN || to == E_NSCN || to == E_WATER)) return false;
+fn takesSpark(id: i32, life: f32) -> bool { return CONDUCTS(id) && (id != E_SWITCH || life == SWITCH_ON); }
+fn conductsInto(from_: i32, to: i32) -> bool {
+  if (to == E_PSCN && from_ == E_NSCN) { return false; }
+  if (to == E_SWITCH && (from_ == E_PSCN || from_ == E_NSCN)) { return false; }
+  if (from_ == E_SWITCH && (to == E_PSCN || to == E_NSCN || to == E_WATER)) { return false; }
   return true;
 }
-bool tsnsSenses(int j) { return j != E_EMPTY && j != E_TSNS && !WIRE[j]; }
-bool powered(int id) { return id == E_SWITCH || id == E_PCLN; }
-bool cloneable(int j) { return j != E_EMPTY && j != E_WALL && j != E_CLONE && j != E_PCLN && j != E_PSCN && j != E_NSCN; }
+fn tsnsSenses(j: i32) -> bool { return j != E_EMPTY && j != E_TSNS && !WIRE(j); }
+fn powered(id: i32) -> bool { return id == E_SWITCH || id == E_PCLN; }
+fn cloneable(j: i32) -> bool { return j != E_EMPTY && j != E_WALL && j != E_CLONE && j != E_PCLN && j != E_PSCN && j != E_NSCN; }
 // Spark cell state a (in place) with a full spark, if it conducts, can take a
-// spark and is ready. For a pass that writes the state through copyThroughMain:
-// call it on oA (the activity flags follow).
-bool sparkCell(inout vec4 a) {
-  int id = eid(a);
-  float ct = floor(a.w);
-  if (!takesSpark(id, a.z) || sparkPhase(ct) != 0) return false;
-  a.w = packSpark(SPARK_BORN, SPARK_V) + fract(a.w);
+// spark and is ready. For a writer (shaders/common.js editMain): call it on
+// oA (the activity flags follow).
+fn sparkCell(a: ptr<function, vec4f>) -> bool {
+  let id = eid(*a);
+  let ct = floor((*a).w);
+  if (!takesSpark(id, (*a).z) || sparkPhase(ct) != 0) { return false; }
+  (*a).w = packSpark(SPARK_BORN, SPARK_V) + fract((*a).w);
   return true;
 }
 // The rest test's electric half (shaders/common.js inertSelf): a conductor
 // sparking or resting, a switch turning off and a firing sensor all change.
-bool electricQuiet(int id, vec4 a) {
-  if (CONDUCTS[id] && sparkPhase(floor(a.w)) != 0) return false;
-  if (id == E_LAMP && sparkLevel(floor(a.w)) > 0 && sparkLevel(floor(a.w)) != LAMP_DC_LEVEL) return false;   // a lamp's light running down
-  if (powered(id) && a.z > 0.0 && a.z != SWITCH_ON) return false;
-  if (id == E_TSNS && a.z > 0.0) return false;
+fn electricQuiet(id: i32, a: vec4f) -> bool {
+  if (CONDUCTS(id) && sparkPhase(floor(a.w)) != 0) { return false; }
+  if (id == E_LAMP && sparkLevel(floor(a.w)) > 0 && sparkLevel(floor(a.w)) != LAMP_DC_LEVEL) { return false; }   // a lamp's light running down
+  if (powered(id) && a.z > 0.0 && a.z != SWITCH_ON) { return false; }
+  if (id == E_TSNS && a.z > 0.0) { return false; }
   return true;
 }
 // ...and per face neighbour (j holding n; shaders/activity.js inertNear): a
@@ -171,11 +180,11 @@ bool electricQuiet(int id, vec4 a) {
 // powered clone that is on copies into air (and one with nothing to copy yet
 // takes what touches it), a sensor by something hotter fires. (A live
 // neighbour isn't inert itself.)
-bool electricQuietNear(int id, vec4 a, int j, vec4 n) {
-  if (j == E_BATTERY && takesSpark(id, a.z) && sparkPhase(floor(a.w)) == 0 && !(id == E_LAMP && sparkLevel(floor(a.w)) == LAMP_DC_LEVEL)) return false;
-  if (powered(id) && a.z == 0.0 && j == id && n.z >= SWITCH_ON) return false;
-  if (id == E_PCLN && ((a.z == SWITCH_ON && j == E_EMPTY) || (a.w < 1.0 && cloneable(j)))) return false;
-  if (id == E_TSNS && tsnsSenses(j) && n.y > a.y + MATTER_REST_T) return false;
+fn electricQuietNear(id: i32, a: vec4f, j: i32, n: vec4f) -> bool {
+  if (j == E_BATTERY && takesSpark(id, a.z) && sparkPhase(floor(a.w)) == 0 && !(id == E_LAMP && sparkLevel(floor(a.w)) == LAMP_DC_LEVEL)) { return false; }
+  if (powered(id) && a.z == 0.0 && j == id && n.z >= SWITCH_ON) { return false; }
+  if (id == E_PCLN && ((a.z == SWITCH_ON && j == E_EMPTY) || (a.w < 1.0 && cloneable(j)))) { return false; }
+  if (id == E_TSNS && tsnsSenses(j) && n.y > a.y + MATTER_REST_T) { return false; }
   return true;
 }
 `;
@@ -183,60 +192,70 @@ bool electricQuietNear(int id, vec4 a, int j, vec4 n) {
 
 // The react pass's step for one cell (shaders/react.js; ui/tiles/engine.js is
 // its twin): id's temperature T, life and ctype, given its face neighbours'
-// states A (na) and ids (nid), from the pass's input state.
-export const electricReactGLSL = /* glsl */ `
-void electric(int id, inout float T, inout float life, inout float ctype, vec4 na[6], int nid[6], inout uint rs) {
-  float life0 = life;
+// states A (na) and ids (nid), from the pass's input state. faces is the face
+// count the loops run to (react's P.faces, the GLSL's uFaces: a runtime bound,
+// so the loops stay loops, docs/webgpu.md D3); rs the cell's random stream.
+export const electricReactGLSL = /* wgsl */ `
+fn electric(id: i32, T: ptr<function, f32>, life: ptr<function, f32>, ctype: ptr<function, f32>,
+            na: ptr<function, array<vec4f, 6>>, nid: ptr<function, array<i32, 6>>, faces: i32, rs: ptr<function, u32>) {
+  let life0 = *life;
   if (powered(id)) {
     // TPT SWCH and PCLN: turning off counts down; on and off spread through
     // touching cells of the same element (off wins); a live P beside it
     // switches it on, a live N off
-    if (life > 0.0 && life != SWITCH_ON) life -= 1.0;
-    bool offNb = false, onNb = false, pOn = false, nOff = false;
-    for (int i = 0; i < uFaces; i++) {
-      int j = nid[i];
+    if (*life > 0.0 && *life != SWITCH_ON) { *life -= 1.0; }
+    var offNb = false;
+    var onNb = false;
+    var pOn = false;
+    var nOff = false;
+    for (var i = 0; i < faces; i++) {
+      let j = (*nid)[i];
       if (j == id) {
-        if (na[i].z > 0.0 && na[i].z < SWITCH_ON) offNb = true;
-        if (na[i].z >= SWITCH_ON) onNb = true;
+        if ((*na)[i].z > 0.0 && (*na)[i].z < SWITCH_ON) { offNb = true; }
+        if ((*na)[i].z >= SWITCH_ON) { onNb = true; }
       }
-      if (sparkLive(j, floor(na[i].w))) { pOn = pOn || j == E_PSCN; nOff = nOff || j == E_NSCN; }
+      if (sparkLive(j, floor((*na)[i].w))) { pOn = pOn || j == E_PSCN; nOff = nOff || j == E_NSCN; }
     }
-    if (life0 == SWITCH_ON && offNb) life = SWITCH_ON - 1.0;
-    else if (life0 == 0.0 && onNb) life = SWITCH_ON;
-    if (pOn && life0 < SWITCH_ON) life = SWITCH_ON;
-    if (nOff) life = SWITCH_ON - 1.0;
+    if (life0 == SWITCH_ON && offNb) { *life = SWITCH_ON - 1.0; }
+    else if (life0 == 0.0 && onNb) { *life = SWITCH_ON; }
+    if (pOn && life0 < SWITCH_ON) { *life = SWITCH_ON; }
+    if (nOff) { *life = SWITCH_ON - 1.0; }
   } else if (id == E_TSNS) {
-    bool hot = false;
-    for (int i = 0; i < uFaces; i++) hot = hot || (tsnsSenses(nid[i]) && na[i].y > T + MATTER_REST_T);
-    life = hot ? TSNS_FIRE : 0.0;
+    var hot = false;
+    for (var i = 0; i < faces; i++) { hot = hot || (tsnsSenses((*nid)[i]) && (*na)[i].y > *T + MATTER_REST_T); }
+    *life = select(0.0, TSNS_FIRE, hot);
   }
-  if (!CONDUCTS[id]) return;
-  int ph = sparkPhase(ctype), lv = sparkLevel(ctype);
+  if (!CONDUCTS(id)) { return; }
+  var ph = sparkPhase(*ctype);
+  var lv = sparkLevel(*ctype);
   if (id == E_LAMP) {
-    bool dc = false;   // on a battery's direct current (LAMP_DC)
-    for (int i = 0; i < uFaces; i++) dc = dc || nid[i] == E_BATTERY;
-    if (dc) { ctype = packSpark(0, LAMP_DC_LEVEL); return; }
-    if (lv == LAMP_DC_LEVEL) lv = LAMP_HOLD;   // its battery is gone: it runs down
+    var dc = false;   // on a battery's direct current (LAMP_DC)
+    for (var i = 0; i < faces; i++) { dc = dc || (*nid)[i] == E_BATTERY; }
+    if (dc) { *ctype = packSpark(0, LAMP_DC_LEVEL); return; }
+    if (lv == LAMP_DC_LEVEL) { lv = LAMP_HOLD; }   // its battery is gone: it runs down
   }
   if (ph > 0) {
     ph--;
     // the level only matters while live; a lamp keeps it as its light's hold (LAMP_HOLD)
-    if (ph <= SPARK_REST) lv = id != E_LAMP ? 0 : ph == SPARK_REST ? LAMP_HOLD : max(lv - 1, 0);
+    if (ph <= SPARK_REST) {
+      if (id != E_LAMP) { lv = 0; } else if (ph == SPARK_REST) { lv = LAMP_HOLD; } else { lv = max(lv - 1, 0); }
+    }
   } else if (takesSpark(id, life0)) {
-    if (id == E_LAMP) lv = max(lv - 1, 0);
-    int best = 0;   // the strongest spark offered
-    for (int i = 0; i < uFaces; i++) {
-      int j = nid[i];
-      if (j == E_BATTERY || (j == E_TSNS && na[i].z >= TSNS_FIRE)) best = SPARK_V;
-      else if (sparkLive(j, floor(na[i].w)) && conductsInto(j, id)) best = max(best, sparkLevel(floor(na[i].w)));
+    if (id == E_LAMP) { lv = max(lv - 1, 0); }
+    var best = 0;   // the strongest spark offered
+    for (var i = 0; i < faces; i++) {
+      let j = (*nid)[i];
+      if (j == E_BATTERY || (j == E_TSNS && (*na)[i].z >= TSNS_FIRE)) { best = SPARK_V; }
+      else if (sparkLive(j, floor((*na)[i].w)) && conductsInto(j, id)) { best = max(best, sparkLevel(floor((*na)[i].w))); }
     }
     if (best > 0) {
-      float c = SPARK_COST[id];
-      int spent = min(int(c) + (rnd(rs) < fract(c) ? 1 : 0), best);
-      T += float(spent) * JOULE_PER_LEVEL / CAP[id];
+      let c = SPARK_COST(id);
+      let r = rnd(rs);   // drawn whatever fract(c) is, as the GLSL's ?: drew it
+      let spent = min(i32(c) + select(0, 1, r < fract(c)), best);
+      *T += f32(spent) * JOULE_PER_LEVEL / CAP(id);
       if (best > spent) { ph = SPARK_BORN; lv = best - spent; }
     }
   }
-  ctype = packSpark(ph, lv);
+  *ctype = packSpark(ph, lv);
 }
 `;

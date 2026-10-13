@@ -5,6 +5,7 @@
 // impact event, the census change, recoil and the events seen.
 // usage: node tools/gp-gun.mjs [--port 5201] [--only glass,metal,keg,pool,open,floor,away,recoil,dry,pause | e2e] [--shot out.png]
 import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -13,7 +14,7 @@ const only = opt('only', 'glass,metal,keg,pool,open,floor,away,recoil,dry,pause'
 const shot = opt('shot');
 
 const b = await launchBrowser();
-const p = await newTestPage(b, { mode: shot ? 'visual' : 'preview', viewport: { width: 960, height: 600 } });
+const p = await pageGpu(await newTestPage(b, { mode: shot ? 'visual' : 'preview', viewport: { width: 960, height: 600 } }));
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 2000)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));
@@ -46,12 +47,12 @@ async function e2e() {
   await p.waitForTimeout(1200);
   await ev(() => window.__app.pov.toolbelt.select('GUN'));
   await p.waitForTimeout(300);
-  const c0 = await ev(() => Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [k, v.n])));
+  const c0 = await ev(async () => Object.fromEntries(Object.entries(await window.__pageGpu.census()).map(([k, v]) => [k, v.n])));
   await ev(() => { GP.log.length = 0; });
   await p.mouse.down(); await p.waitForTimeout(60); await p.mouse.up();
   await p.waitForTimeout(3000);
   const evs = await ev(() => GP.log);
-  const c1 = await ev(() => Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [k, v.n])));
+  const c1 = await ev(async () => Object.fromEntries(Object.entries(await window.__pageGpu.census()).map(([k, v]) => [k, v.n])));
   const lat = await ev(() => window.__app.pov.toolbelt.tool('GUN')?.ballistics?.latency);
   const t0 = evs.find((x) => x.n === 'gun:fire')?.t;
   const imp = evs.find((x) => x.n === 'impact');
@@ -86,7 +87,7 @@ const results = only.includes('e2e') ? { e2e: await e2e() } : await p.evaluate(a
     sim.load(A, Bs);
     await settle();
   };
-  const count = () => Object.fromEntries(Object.entries(a.sim.census()).map(([k, v]) => [ELEMENTS[k]?.key ?? k, v.n]));
+  const count = async () => Object.fromEntries(Object.entries(await window.__pageGpu.census()).map(([k, v]) => [ELEMENTS[k]?.key ?? k, v.n]));
   const delta = (c0, c1) => {
     const out = {};
     for (const k of new Set([...Object.keys(c0), ...Object.keys(c1)])) {
@@ -139,14 +140,14 @@ const results = only.includes('e2e') ? { e2e: await e2e() } : await p.evaluate(a
   async function shoot(over = {}, after = 0) {
     tool.update(ctx({ dt: 0.5 }));   // the fire interval passes
     const from = log.length;
-    const c0 = count();
+    const c0 = await count();
     tool.update(ctx({ ...over, primaryPressed: true, primary: true }));
     let frames = 0;
     const t0 = performance.now();
     while (tool.ballistics.count && frames < 120) { for (let i = 0; i < 4; i++) a.sim.step(); await raf(); tool.update(ctx(over)); frames++; }
     const flightMs = performance.now() - t0;
     for (let f = 0; f < after; f++) { for (let i = 0; i < 4; i++) a.sim.step(); if (f % 8 === 0) await raf(); }
-    const c1 = count();
+    const c1 = await count();
     return { frames, flightMs: +flightMs.toFixed(0), ...summarize(log.slice(from)), census: delta(c0, c1), conserved: total(c1) - total(c0) };
   }
 
@@ -172,9 +173,9 @@ const results = only.includes('e2e') ? { e2e: await e2e() } : await p.evaluate(a
       }
     });
     const r = await shoot({}, 0);
-    const before = count();
+    const before = await count();
     for (let f = 0; f < 120; f++) { for (let i = 0; i < 4; i++) a.sim.step(); if (f % 8 === 0) await raf(); }
-    const after = count();
+    const after = await count();
     out.keg = { ...r, gunpowderBefore: before.GUNPOWDER ?? 0, gunpowderAfter: after.GUNPOWDER ?? 0, flames: after.FIRE ?? 0 };
   }
   if (only.includes('pool')) {
@@ -193,7 +194,7 @@ const results = only.includes('e2e') ? { e2e: await e2e() } : await p.evaluate(a
       if (f === 0) out.pool.handoff = c && { prev: r3(c.prev), cell: r3(c.cell), vel: r3(c.vel) };
       // where the slug is: read the SCRAP cells
       const sim = a.sim;
-      const [A, Bv] = sim.readState();
+      const [A, Bv] = await window.__pageGpu.readState(sim);
       for (let i = 0; i < A.length; i += 4) if (Math.round(A[i]) === E.SCRAP) {
         const c = sim.texelCell(i / 4);
         if (!c) continue;   // a padding texel
@@ -218,13 +219,13 @@ const results = only.includes('e2e') ? { e2e: await e2e() } : await p.evaluate(a
     // fire, then put the gun away at once: the round still lands
     await world(pane(E.GLASS, 81));
     tool.update(ctx({ dt: 0.5 }));
-    const c0 = count();
+    const c0 = await count();
     tool.update(ctx({ primaryPressed: true, primary: true }));
     tool.deselect();
     let frames = 0;
     while (tool.ballistics.count && frames < 120) { for (let i = 0; i < 4; i++) a.sim.step(); await raf(); frames++; }
     for (let f = 0; f < 15; f++) for (let i = 0; i < 4; i++) a.sim.step();
-    out.away = { frames, inFlight: tool.ballistics.count, census: delta(c0, count()) };
+    out.away = { frames, inFlight: tool.ballistics.count, census: delta(c0, await count()) };
   }
   if (only.includes('recoil')) {
     await world(() => {});

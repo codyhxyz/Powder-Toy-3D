@@ -1,7 +1,8 @@
 // Render looks: how each element is *drawn*, independent of how it behaves.
 // The simulation stays a blocky cellular automaton; the renderer rebuilds
-// continuous surfaces and volumes from it. Like elements.js, this table is
-// baked into the render shaders as GLSL const arrays.
+// continuous surfaces and volumes from it. Like elements.js, this table goes
+// to the GPU in the element tables' buffer (MATERIAL_FIELDS below; read in
+// WGSL through accessors named as the GLSL arrays were: ROUGH(id), ALBEDO(id)).
 //
 //   ch     smooth-surface channel. Cells in a channel are drawn as one
 //          continuous surface (the 0.5 isosurface of a blurred, normalised
@@ -32,6 +33,7 @@
 
 import { ELEMENTS, K } from '../elements.js';
 import { bandGlow } from './incandescence.js';
+import { accessorsWGSL } from '../shaders/hostStruct.js';
 
 // sRGB decoding (IEC 61966-2-1)
 const SRGB_LINEAR_MAX = 0.04045;   // encoded value where the linear segment ends
@@ -402,8 +404,9 @@ const KIND_LOOK = { [K.POWDER]: { ch: 'GRANULAR' }, [K.LIQUID]: { ch: 'LIQUID' }
 // Defaults for elements LOOKS leaves out (the rest default to 0: none).
 const DEFAULT_ROUGH = 0.7;
 const DEFAULT_IOR = 1.5;
-// Decimal places the baked material values are rounded to.
-const GLSL_DIGITS = 4;
+// Decimal places the baked material values are rounded to (as the GLSL
+// literals were).
+const ROUND_DIGITS = 4;
 
 const chIndex = (k) => (k ? CHANNELS.findIndex((c) => c.key === k) : -1);
 const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);
@@ -412,14 +415,14 @@ export const LOOK = ELEMENTS.map((e) => {
   const l = { ...KIND_LOOK[e.kind], ...LOOKS[e.key] };
   return {
     ch: chIndex(l.ch), media: mediaIndex(l.media), haze: l.haze ?? 1, rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
-    alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
+    alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(ROUND_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
     bevel: l.bevel ?? 1,
-    emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(GLSL_DIGITS)),
+    emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(ROUND_DIGITS)),
     shed: l.shed ?? 1,
     surf: SURFS.indexOf(l.surf ?? 'NONE'),
     crag: l.surf === 'CRAG' ? CRAG_PARAMS.map((k) => (l.crag ?? CRAG_DEFAULT)[k] ?? CRAG_DEFAULT[k]) : CRAG_PARAMS.map(() => 0),
     // single-scattering albedo: the scattered share of the extinction
-    scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(GLSL_DIGITS)),
+    scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(ROUND_DIGITS)),
   };
 });
 
@@ -480,65 +483,94 @@ export function bulkPeakCubic(w) {
   return Math.min(1, (ISO * B(0)) / B(THIN_RADIUS));
 }
 
+// Liquids whose churn aerates into whitewater (gfx/foam.js): the liquids whose
+// surface tension the liquid detail models (shaders/gfx/liquidDetail.js
+// LIQ_PROPS, whose aeration pass foams exactly these). On the GPU it is the
+// element tables' FOAMS(id), which the react pass also reads to list the
+// bricks the aeration pass visits (docs/webgpu.md C6, D3, G4).
+// tools/tables-check.mjs fails if the two lists part.
+export const FOAMS = ['WATER', 'OIL', 'ACID'];
+export const FOAMS_FIELD = { name: 'foams', type: 'u32', fn: 'FOAMS', ret: 'bool', get: (e) => +FOAMS.includes(e.key) };
+
+// The looks as the GPU holds them: one struct Material per element in the
+// element tables (shaders/common.js tablesWGSL), read through these accessors
+// (shaders/hostStruct.js; the order is the packing). Values are LOOK's, already
+// rounded to ROUND_DIGITS where the GLSL literals were.
+const look = (e) => {
+  if (!LOOK[e.id]) throw new Error(`${e.key}: no look (LOOK is built from ELEMENTS when this module loads)`);
+  return LOOK[e.id];
+};
+export const MATERIAL_FIELDS = [
+  { name: 'crag', type: 'vec4f', fn: 'CRAG', get: (e) => look(e).crag },
+  { name: 'albedo', type: 'vec3f', fn: 'ALBEDO', get: (e) => look(e).alb },
+  { name: 'surfCh', type: 'i32', fn: 'SURFCH', get: (e) => look(e).ch },
+  { name: 'scatAlb', type: 'vec3f', fn: 'SCATALB', get: (e) => look(e).scatAlb },
+  { name: 'mediaCh', type: 'i32', fn: 'MEDIACH', get: (e) => look(e).media },
+  { name: 'emit', type: 'vec3f', fn: 'EMIT', get: (e) => look(e).emit },
+  { name: 'haze', type: 'f32', fn: 'HAZE', get: (e) => look(e).haze },
+  { name: 'rough', type: 'f32', fn: 'ROUGH', get: (e) => look(e).rough },
+  { name: 'metal', type: 'f32', fn: 'METAL', get: (e) => look(e).metal },
+  { name: 'ior', type: 'f32', fn: 'IOR', get: (e) => look(e).ior },
+  { name: 'sss', type: 'f32', fn: 'SSS', get: (e) => look(e).sss },
+  { name: 'glint', type: 'f32', fn: 'GLINT', get: (e) => look(e).glint },
+  { name: 'bevel', type: 'f32', fn: 'BEVEL', get: (e) => look(e).bevel },
+  { name: 'surf', type: 'i32', fn: 'SURF', get: (e) => look(e).surf },
+  { name: 'shed', type: 'f32', fn: 'SHED', get: (e) => look(e).shed },
+];
+// Their accessors, and FOAMS(id), for the shared prelude (shaders/common.js):
+// the Material struct sits in the prelude's Tables, so its accessors do too.
+export const materialAccessorsWGSL = () => `${accessorsWGSL('TB.mat', MATERIAL_FIELDS)}\n${accessorsWGSL('TB.elem', [FOAMS_FIELD])}`;
+
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+const vec3 = (a) => `vec3f(${a.map(f).join(', ')})`;
 
 // The light matter gives off, as radiance: the thermal glow of its visible skin
 // at Ts (°C; emissivity: the share it emits of a blackbody's, Kirchhoff) plus
 // its own luminescence (EMIT). The one place the two meet: surfaces,
 // transparent bodies, the glow volume (and so the glow lights, the light it
 // sheds on gas and bodies) and the far field all draw matter's light from it.
+// (WGSL has no overloads: the GLSL's three-argument emission is emissionWith.)
 // Elements that luminesce: passes that skip cold matter still visit these.
 const LUMINOUS = ELEMENTS.filter((e) => LOOK[e.id].emit.some((v) => v > 0));
-const EMISSION_GLSL = /* glsl */ `
-vec3 emission(int id, float Ts, float emissivity) { return emissivity * incandescence(Ts) + EMIT[id]; }
-vec3 emission(int id, float Ts) { return emission(id, Ts, 1.0); }
+const EMISSION_GLSL = /* wgsl */ `
+fn emissionWith(id: i32, Ts: f32, emissivity: f32) -> vec3f { return emissivity * incandescence(Ts) + EMIT(id); }
+fn emission(id: i32, Ts: f32) -> vec3f { return emissionWith(id, Ts, 1.0); }
 // The open skin of hot matter runs INCAND_SKIN_DROP below its bulk T (metals,
 // conducting well, keep none): what an exposed cell of it gives off.
-float skinT(int id, float T) { return T - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP); }
-vec3 cellEmission(int id, float T) { return emission(id, skinT(id, T)); }
+fn skinT(id: i32, T: f32) -> f32 { return T - select(INCAND_SKIN_DROP, 0.0, id == E_METAL); }
+fn cellEmission(id: i32, T: f32) -> vec3f { return emission(id, skinT(id, T)); }
 // a lit lamp (src/electricity.js LAMP_HOLD: its spark level holds while it is lit)
-bool lampLit(int id, float ctype) { return id == E_LAMP && sparkLevel(ctype) > 0; }
+fn lampLit(id: i32, ctype: f32) -> bool { return id == E_LAMP && sparkLevel(ctype) > 0; }
 // a live conductor's spark (ctype: the cell's, floor of state A's w), or a lit lamp's light
-vec3 sparkEmit(int id, float ctype) { return lampLit(id, ctype) ? LAMP_GLOW : sparkLive(id, ctype) ? SPARK_GLOW : vec3(0.0); }`;
+fn sparkEmit(id: i32, ctype: f32) -> vec3f {
+  if (lampLit(id, ctype)) { return LAMP_GLOW; }
+  return select(vec3f(0.0), SPARK_GLOW, sparkLive(id, ctype));
+}`;
 
+// WGSL for the render library (after the prelude, which holds the per-element
+// accessors; the name is the GLSL version's, docs/webgpu.md W2): the channel,
+// medium and texture-family ids, the media's optics, and matter's emission.
 export function materialsGLSL() {
-  const ints = (name, key) => `const int ${name}[NE] = int[NE](${LOOK.map((l) => l[key]).join(', ')});`;
-  const floats = (name, key) => `const float ${name}[NE] = float[NE](${LOOK.map((l) => f(l[key])).join(', ')});`;
+  const ids = (prefix, keys) => keys.map((k, i) => `const ${prefix}${k}: i32 = ${i};`);
   return [
-    ...CHANNELS.map((c, i) => `#define CH_${c.key} ${i}`),
-    `const vec4 CH_CUBIC = vec4(${CHANNELS.map((c) => (c.cubic ? '1.0' : '0.0')).join(', ')});   // 1: the channel reads cubic (CHANNELS cubic)`,
-    ...MEDIA.map((m, i) => `#define MD_${m.key} ${i}`),
-    ...SURFS.map((k, i) => `#define SURF_${k} ${i}`),
-    `#define HEAT_RANGE ${f(HEAT_RANGE)}`,
-    `#define FIRE_BASE ${f(FIRE_BASE)}`,
-    `#define MEDIA_FLOOR ${f(MEDIA_FLOOR)}`,
-    `#define MEDIA_NOISE_CELLS ${f(MEDIA_NOISE_CELLS)}`,
+    ...ids('CH_', CHANNELS.map((c) => c.key)),
+    `const CH_CUBIC: vec4f = vec4f(${CHANNELS.map((c) => (c.cubic ? '1.0' : '0.0')).join(', ')});   // 1: the channel reads cubic (CHANNELS cubic)`,
+    ...ids('MD_', MEDIA.map((m) => m.key)),
+    ...ids('SURF_', SURFS),
+    `const HEAT_RANGE: f32 = ${f(HEAT_RANGE)};`,
+    `const FIRE_BASE: f32 = ${f(FIRE_BASE)};`,
+    `const MEDIA_FLOOR: f32 = ${f(MEDIA_FLOOR)};`,
+    `const MEDIA_NOISE_CELLS: f32 = ${f(MEDIA_NOISE_CELLS)};`,
     // per gas (smoke, steam, fire)
     ...['ext', 'albedo', 'g', 'rise'].map((k) =>
-      `const vec3 MD_${k.toUpperCase()} = vec3(${MEDIA.slice(0, N_GASES).map((m) => f(m[k])).join(', ')});`),
-    `#define THIN_MIN_PEAK ${f(THIN_MIN_PEAK)}`,
-    `#define THIN_MASK_LO ${f(THIN_MASK_LO)}`,
-    `#define THIN_MASK_HI ${f(THIN_MASK_HI)}`,
-    ints('SURFCH', 'ch'),
-    ints('MEDIACH', 'media'),
-    floats('HAZE', 'haze'),
-    floats('ROUGH', 'rough'),
-    floats('METAL', 'metal'),
-    floats('IOR', 'ior'),
-    floats('SSS', 'sss'),
-    floats('GLINT', 'glint'),
-    floats('BEVEL', 'bevel'),
-    floats('SHED', 'shed'),
-    `const vec3 ALBEDO[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.alb.map(f).join(', ')})`).join(', ')});`,
-    `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
-    `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,
-    `const vec3 SPARK_GLOW = vec3(${SPARK_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
-    `#define LAMP_ROOM_GAIN ${f(LAMP_ROOM_GAIN)}`,
-    `const vec3 LAMP_GLOW = vec3(${LAMP_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
-    `bool luminous(int id) { return ${LUMINOUS.map((e) => `id == E_${e.key}`).join(' || ') || 'false'}; }`,
+      `const MD_${k.toUpperCase()}: vec3f = ${vec3(MEDIA.slice(0, N_GASES).map((m) => m[k]))};`),
+    `const THIN_MIN_PEAK: f32 = ${f(THIN_MIN_PEAK)};`,
+    `const THIN_MASK_LO: f32 = ${f(THIN_MASK_LO)};`,
+    `const THIN_MASK_HI: f32 = ${f(THIN_MASK_HI)};`,
+    `const SPARK_GLOW: vec3f = ${vec3(SPARK_GLOW.map((v) => +v.toFixed(ROUND_DIGITS)))};`,
+    `const LAMP_ROOM_GAIN: f32 = ${f(LAMP_ROOM_GAIN)};`,
+    `const LAMP_GLOW: vec3f = ${vec3(LAMP_GLOW.map((v) => +v.toFixed(ROUND_DIGITS)))};`,
+    `fn luminous(id: i32) -> bool { return ${LUMINOUS.map((e) => `id == E_${e.key}`).join(' || ') || 'false'}; }`,
     EMISSION_GLSL,
-    ints('SURF', 'surf'),
-    `const vec4 CRAG[NE] = vec4[NE](${LOOK.map((l) => `vec4(${l.crag.map(f).join(', ')})`).join(', ')});`,
   ].join('\n');
 }
-

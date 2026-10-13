@@ -1,64 +1,34 @@
-// Cold shader compiles: say so before the page freezes.
+// Cold pipeline builds: say so while the view waits for one.
 //
-// Chrome on ANGLE/Metal builds a program's GPU pipeline on its first draw, and
-// that draw holds the page's main thread until it is done (measured with
-// tools/compile-bench.mjs --parallel: with KHR_parallel_shader_compile the
-// link runs in the background, but the first drawArrays still blocks for the
-// whole pipeline build). For the view raymarcher that is seconds, once per
-// browser and shader version: after every deploy. A warm cache (the driver
-// keeps compiled pipelines across sessions) makes it near instant.
-//
-// So when the view program is one this browser hasn't drawn before (by a hash
-// of its source, remembered in localStorage), the app shows a message and
-// holds the first frame back long enough for the message to paint; the freeze
-// then happens under it instead of on a blank page.
+// The WebGL build's view program was built by ANGLE/Metal on its first draw,
+// holding the page's main thread for seconds, so the app showed a message and
+// held the first frame long enough for it to paint. Every pipeline of ours is
+// now created asynchronously (docs/webgpu.md W18, B5): nothing stalls the page,
+// and the hold is gone. What stays is the message, for a view whose pipeline
+// is still building when it is wanted (the first view after a deploy, a view
+// switched to for the first time): the view draws without the volume meanwhile
+// and the toast says why. Dawn keeps built pipelines across sessions, so a
+// warm browser rarely sees it.
 
-const STORE = 'powder-toy-3d:warmShaders';
-// programs remembered as warm (grid sizes × detail variants × recent deploys)
-const KEEP = 16;
-// ms between showing the message and the stall, so the page paints it first
-// (gfx/detailGate.js waits the same for its variants)
+// ms between showing a message and the work it announces, so the page paints
+// it first (gfx/detailGate.js waited the same for its variants)
 export const WARN_PAINT_MS = 100;
+// a pipeline still building this long after the view wanted it gets the message
+export const COLD_TOAST_MS = 250;
 
-// FNV-1a, 32 bit: a short fingerprint of a program's source
-const FNV_OFFSET = 0x811c9dc5, FNV_PRIME = 0x01000193;
-function hash(s) {
-  let h = FNV_OFFSET;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), FNV_PRIME);
-  return (h >>> 0).toString(36);
-}
-const programKey = (mat) => hash(`${mat.vertexShader}\n${mat.fragmentShader}\n${Object.entries(mat.defines ?? {}).sort().join(';')}`);
-
-function warmKeys() {
-  try { return JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { return []; }
-}
-
-// warn(): show the message. watch(material) after building a view material;
-// hold() at the top of each frame (true: skip this frame, the message is
-// painting); drew() after a frame drew the view.
+// warn(): show the message. watch(pipe) when the view starts waiting for a
+// pipeline (gpu.renderPipeline or gpu.kernel: its state and ready promise).
+// hold() and drew() stay for the app's calls: nothing is held back any more.
 export function createColdShaderGuard(warn) {
-  let pending = null;   // material to check on the next frame
-  let drawing = null;   // key of the program the next view draw builds
-  let holdUntil = 0;
+  const watched = new WeakSet();
   return {
-    watch(mat) { pending = mat; },
-    hold() {
-      if (pending) {
-        drawing = programKey(pending);
-        pending = null;
-        if (!warmKeys().includes(drawing)) {
-          warn();
-          holdUntil = performance.now() + WARN_PAINT_MS;
-        }
-      }
-      return performance.now() < holdUntil;
+    watch(pipe) {
+      if (!pipe || pipe.state === 'ready' || watched.has(pipe)) return;
+      watched.add(pipe);
+      const timer = setTimeout(() => { if (pipe.state === 'pending' || pipe.state === 'idle') warn(); }, COLD_TOAST_MS);
+      pipe.ready?.then(() => clearTimeout(timer), () => clearTimeout(timer));
     },
-    drew() {
-      if (!drawing) return;
-      const keys = warmKeys().filter((k) => k !== drawing);
-      keys.push(drawing);
-      try { localStorage.setItem(STORE, JSON.stringify(keys.slice(-KEEP))); } catch { /* storage unavailable */ }
-      drawing = null;
-    },
+    hold() { return false; },
+    drew() {},
   };
 }

@@ -3,14 +3,14 @@
 // heat simulation", "Edge mode"), as settings that belong to a world. A fresh
 // scene or map starts them over at DEFAULTS (TPT GameModel.cpp ClearSimulation
 // sets gravity vertical and air on the same way), unless the map says otherwise.
-// The engine reads them as uniforms (sim.js; GLSL below), so switching one
-// compiles nothing.
+// The engine reads them as per-dispatch params (sim.js; WGSL below), so
+// switching one builds nothing.
 //
 //   gravity  vertical: down is −y (today's world, TPT GRAV_VERTICAL)
 //            off: nothing falls, topples, settles or flows downhill (GRAV_OFF)
 //            radial: toward the centre of the box (GRAV_RADIAL; TPT
 //            Simulation.cpp GetGravityField: the full strength, pointed at the
-//            centre). The move pass's rules are written for down = −y, so each
+//            centre). The move's rules are written for down = −y, so each
 //            2×2×2 block runs them turned so that −y is the dominant axis of
 //            its pull (shaders/move.js); the react pass's forces use the full
 //            vector, its normal force, friction and liquid flow the same axis.
@@ -98,32 +98,41 @@ export function applySimModes(sim, s) {
   sim.edgeMode = s.edgeMode;
 }
 
-// The GLSL side (the move and react passes): the mode numbers, and where a
-// cell outside the box comes from. uEdge, uGravMode come from sim.js.
-export const simModesGLSL = /* glsl */ `
-${Object.entries(GRAV).map(([k, v]) => `#define GRAV_${k} ${v}`).join('\n')}
-${Object.entries(AIR).map(([k, v]) => `#define AIR_${k} ${v}`).join('\n')}
-${Object.entries(EDGE).map(([k, v]) => `#define EDGE_${k} ${v}`).join('\n')}
-uniform int uEdge;
-// a cell next to the box: in loop mode, the one on the far side (every axis)
-ivec3 edgeCell(ivec3 q) { return uEdge == EDGE_LOOP ? (q + ivec3(NX, NY, NZ)) % ivec3(NX, NY, NZ) : q; }
+// The WGSL side (the move and react kernels, shaders/move.js and react.js;
+// the name is the GLSL version's, docs/webgpu.md W2): the mode numbers, and
+// where a cell outside the box comes from. The modes are per-dispatch params
+// (docs/webgpu.md B4), so a kernel including this has SIM_MODE_FIELDS in its
+// params struct P (sim.js sets them every step). Switching a mode builds nothing.
+export const SIM_MODE_FIELDS = { gravMode: 'u32', edge: 'u32' };
+export const simModesGLSL = /* wgsl */ `
+${Object.entries(GRAV).map(([k, v]) => `const GRAV_${k}: u32 = ${v}u;`).join('\n')}
+${Object.entries(AIR).map(([k, v]) => `const AIR_${k}: u32 = ${v}u;`).join('\n')}
+${Object.entries(EDGE).map(([k, v]) => `const EDGE_${k}: u32 = ${v}u;`).join('\n')}
+// a cell next to the box: in loop mode, the one on the far side (every axis;
+// q is at most one box away, so q + N is never negative)
+fn edgeCell(q: vec3i) -> vec3i {
+  if (P.edge == EDGE_LOOP) { return (q + vec3i(NX, NY, NZ)) % vec3i(NX, NY, NZ); }
+  return q;
+}
 // what a cell outside the box holds, past a void edge: still air at ambient
-#define VOID_AIR_A vec4(float(E_EMPTY), uAirT, 0.0, 0.0)
-uniform int uGravMode;
+// (the scene's, common.js airT(): a function, as the GLSL's was a macro)
+fn VOID_AIR_A() -> vec4f { return vec4f(f32(E_EMPTY), airT(), 0.0, 0.0); }
 // Which way gravity pulls at x (grid cells): down, or with radial gravity
 // toward the box's centre (none at the centre itself).
-vec3 gravDir(vec3 x) {
-  if (uGravMode != GRAV_RADIAL) return vec3(0.0, -1.0, 0.0);
-  vec3 d = 0.5 * vec3(NX, NY, NZ) - x;
-  return dot(d, d) > 0.0 ? normalize(d) : vec3(0.0);
+fn gravDir(x: vec3f) -> vec3f {
+  if (P.gravMode != GRAV_RADIAL) { return vec3f(0.0, -1.0, 0.0); }
+  let d = 0.5 * vec3f(f32(NX), f32(NY), f32(NZ)) - x;
+  if (dot(d, d) > 0.0) { return normalize(d); }
+  return vec3f(0.0);
 }
 // The frame the move rules are written in (down = −y), for a pull g: −y
 // along g's dominant axis (ties go to y, then x). A signed axis permutation:
-// frame = F · grid, grid = frame · F. Identity for vertical gravity.
-mat3 gravFrame(vec3 g) {
-  vec3 m = abs(g);
-  if (m.x > m.y && m.x >= m.z) return mat3(0.0, g.x > 0.0 ? -1.0 : 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-  if (m.z > m.y && m.z > m.x) return mat3(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, g.z > 0.0 ? -1.0 : 1.0, 0.0);
-  return mat3(1.0, 0.0, 0.0, 0.0, g.y > 0.0 ? -1.0 : 1.0, 0.0, 0.0, 0.0, 1.0);
+// frame = F · grid, grid = frame · F (a row vector times F, as in GLSL).
+// Identity for vertical gravity.
+fn gravFrame(g: vec3f) -> mat3x3f {
+  let m = abs(g);
+  if (m.x > m.y && m.x >= m.z) { return mat3x3f(0.0, select(1.0, -1.0, g.x > 0.0), 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0); }
+  if (m.z > m.y && m.z > m.x) { return mat3x3f(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, select(1.0, -1.0, g.z > 0.0), 0.0); }
+  return mat3x3f(1.0, 0.0, 0.0, 0.0, select(1.0, -1.0, g.y > 0.0), 0.0, 0.0, 0.0, 1.0);
 }
 `;

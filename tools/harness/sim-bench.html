@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim bench</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; margin: 16px; background: #111; color: #ddd; }
+  button, select { font: inherit; margin-right: 8px; }
+  table { border-collapse: collapse; margin: 12px 0; }
+  td, th { padding: 2px 10px; text-align: right; border-bottom: 1px solid #333; }
+  th { color: #9ab; font-weight: normal; }
+  td:first-child, th:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<!-- Mac checkpoint M1 (docs/webgpu.md I4): `npm run harness`, open this page.
+     It reports pipeline creation times of the sim's kernels (the move in both
+     code forms D2 weighed, the unrolled one shipping; react; the activity
+     build) and ms per step per
+     kernel from timestamp queries, at 64³ and 128³, for scaling.md's legacy
+     numbers. ?sizes=64,128&scenes=empty,lab,volcano&steps=60 to change the
+     run; tools drive the same code through window.__harness (bench). -->
+<p>
+  <button id="run">Run</button>
+  <span id="note"></span>
+</p>
+<div id="out"></div>
+<pre id="log"></pre>
+<script type="module" src="./sim-bench.js"></script>
+</body>
+</html>

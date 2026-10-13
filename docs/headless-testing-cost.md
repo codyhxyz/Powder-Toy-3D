@@ -49,6 +49,8 @@ Use preview mode when the assertion needs those systems.
 
 The `render(page)` checkpoint parks the app, then converges full-quality derived fields and TAA without advancing gameplay.
 It waits for delayed base-detail changes and the requested detail shader to compile, then converges again.
+WebGPU port: it awaits `__app.test.ready()` instead (see docs/webgpu.md B5, I3).
+That resolves once every pipeline the current settings need is built, ours and three.js's.
 It leaves the app parked so the subsequent screenshot captures that frame.
 After capture, use `__app.test.resume()` if the test needs live gameplay again.
 It does not wait for unrelated model, world-generation, or audio loading.
@@ -76,7 +78,9 @@ The check covers physics equality, presentation frequency, animation time, parke
 
 ## Measured before and after
 
-Machine: Apple M5, 10 GPU cores. Browser: Playwright Chromium, ANGLE Metal.
+Machine: Apple M5, 10 GPU cores. Browser: Playwright Chromium, ANGLE Metal. These are the WebGL2 build's numbers.
+The WebGPU build counts submits, passes, dispatches and draws in `gpu.stats` instead of draw calls.
+Its runs start a new series (WebGPU port: see docs/webgpu.md B3).
 Scenario: seeded Lab, 128³ cells, 1280×800 viewport, DPR 1, default graphics, automatic resolution disabled.
 Each trial runs exactly 96 physics steps. Each mode repeats three times in alternating order.
 Shader warmup and full-state hashing are outside the timed region.
@@ -131,6 +135,8 @@ The preview experiment also does not exercise pointer lock, asynchronous transfe
 
 1. **Headless still uses the real GPU.**
    The test scripts launch Chromium with `--use-angle=metal --enable-gpu --ignore-gpu-blocklist`.
+   For the WebGPU build the launcher adds `--enable-unsafe-webgpu` and `--enable-webgpu-developer-features`.
+   It passes `--use-angle=metal` on macOS only (WebGPU port: see docs/webgpu.md I3).
    Hiding the window does not remove simulation, raymarching, shadows, GI, or post-processing.
 
 2. **The attempted paused boot does not work.**
@@ -224,7 +230,7 @@ Browser-count limits alone do not guarantee a utilization ceiling.
 
 Neither these changes nor a local benchmark justify promising “99% GPU becomes 10%.”
 If agents consume every saved cycle with additional work, utilization can stay high while throughput improves.
-Idle pages also retain GPU memory until their contexts close.
+Idle pages also retain GPU memory until they close.
 
 ## Reproduce
 

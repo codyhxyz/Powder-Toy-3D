@@ -1,7 +1,8 @@
 import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
 
 // Element definitions. This table is the single source of truth: it drives the
-// UI palette and is baked into every shader as GLSL const arrays.
+// UI palette and the GPU's element tables (one storage buffer, read through
+// accessor functions: ELEMENT_FIELDS below).
 //
 // Units
 //   dens   relative density (air = 1, water = 10). Only ordering + ratios matter.
@@ -146,7 +147,7 @@ import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
 //   4. Give it a LOOKS row in gfx/materials.js: albedo, roughness, smooth
 //      channel, and surf for a shared texture (surf 'CRAG': natural rock,
 //      with per-element crag parameters).
-//   The GLSL arrays, the dock tile (ui/tiles/engine.js reads the same table),
+//   The GPU tables, the dock tile (ui/tiles/engine.js reads the same table),
 //   the first-person tools (hardness), the AI's prompt (ai/prompt.js), the
 //   info card and the World's far field (shaders/far.js: up to 256 elements;
 //   a render R.LIQUID element is a far liquid with its own optics) all follow
@@ -165,6 +166,7 @@ import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
 import { PHYS, SIM_GRAVITY, simSteps } from './physics.js';
 import { CELL_M } from './scale.js';
+import { accessorsWGSL } from './shaders/hostStruct.js';
 
 // Photon reflectance of steel at normal incidence: F0 from its measured
 // complex refractive index, 0.56-0.58 across the visible (gfx/materials.js
@@ -1368,16 +1370,6 @@ const hexToLinear = (hex) => {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => srgbToLinear(v / 255));
 };
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-const floatArr = (name, key) =>
-  `const float ${name}[NE] = float[NE](${ELEMENTS.map((e) => f(e[key])).join(', ')});`;
-const intArr = (name, key) =>
-  `const int ${name}[NE] = int[NE](${ELEMENTS.map((e) => e[key]).join(', ')});`;
-const boolArr = (name, key) =>
-  `const bool ${name}[NE] = bool[NE](${ELEMENTS.map((e) => Boolean(e[key])).join(', ')});`;
-const vec3Arr = (name, fn) =>
-  `const vec3 ${name}[NE] = vec3[NE](${ELEMENTS.map((e) => `vec3(${fn(e).map(f).join(', ')})`).join(', ')});`;
-
 // What a melt sets into as it cools (meltInto): sand, sandstone and broken
 // glass turn into glass, scrap recasts as solid metal, crystal dust regrows as
 // crystal, the rest as themselves.
@@ -1521,8 +1513,8 @@ function intoList(into) {
 }
 
 // Everything the shared mechanisms need, baked from ELEMENTS and REACTIONS
-// into flat tables that the GLSL arrays (elementsGLSL) and the dock tiles' CPU
-// twin (ui/tiles/engine.js) both read:
+// into flat tables that the GPU tables (ELEMENT_FIELDS, mechanismTables) and
+// the dock tiles' CPU twin (ui/tiles/engine.js) both read:
 //   outs   every product of every `into`: [id (-1 = SAME), cumulative weight]
 //   specs  each `into` as [first out, count]: a cell draws one in proportion
 //          to its weight (no draw when there is only one)
@@ -1608,74 +1600,112 @@ export function mechanisms() {
   return baked;
 }
 
-const fl = (x) => (x === Infinity ? '1e30' : x === -Infinity ? '-1e30' : f(x));
-// The mechanisms' tables as GLSL arrays (each at least one entry long: GLSL
-// has no empty arrays).
-function mechanismsGLSL() {
+// ---- the tables on the GPU (docs/webgpu.md C6) ----
+// Every per-element number the passes read lives in one read-only storage
+// buffer, built once per page (shaders/common.js tablesWGSL and tablesBuffer:
+// struct Tables, bound as TB), so editing a row changes the buffer, not the
+// shader text. The WGSL reads a field through an accessor named as the GLSL
+// const array was: KIND[id] is now KIND(id), INTO[id][PH_HOT] INTO(id)[PH_HOT].
+// A field: its struct member and WGSL type, its accessor (fn; ret 'bool' for a
+// u32 read as a bool, docs/webgpu.md H1.15) and its value for element e (get).
+// The order is the packing (shaders/hostStruct.js): vec4s, then each vec3 with
+// a scalar after it. Values are what the GLSL literals were: rounded where they
+// were rounded, ±1e30 for an infinite gate (big).
+const big = (x) => (x === Infinity ? 1e30 : x === -Infinity ? -1e30 : x);
+const mech = () => mechanisms();
+const num = (key) => (e) => e[key];
+const flag = (key) => (e) => (e[key] ? 1 : 0);
+export const ELEMENT_FIELDS = [
+  { name: 'blast', type: 'vec4f', fn: 'BLAST', get: (e) => mech().blast[e.id].map(big) },
+  { name: 'into', type: 'vec4i', fn: 'INTO', get: (e) => mech().into[e.id] },
+  { name: 'of_', type: 'vec4i', fn: 'OF', get: (e) => mech().of[e.id] },
+  { name: 'color', type: 'vec3f', fn: 'COLOR', get: (e) => hexToLinear(e.color).map((v) => +v.toFixed(4)) },
+  { name: 'kind', type: 'i32', fn: 'KIND', get: num('kind') },
+  { name: 'sigma', type: 'vec3f', fn: 'SIGMA', get: num('sigma') },
+  { name: 'rclass', type: 'i32', fn: 'RCLASS', get: num('render') },
+  { name: 'cold', type: 'vec3f', fn: 'COLD', get: (e) => mech().cold[e.id].map(big) },
+  { name: 'crushP', type: 'f32', fn: 'CRUSH_P', get: (e) => big(mech().crushP[e.id]) },
+  { name: 'hot', type: 'vec3f', fn: 'HOT', get: (e) => mech().hot[e.id].map(big) },
+  { name: 'dens', type: 'f32', fn: 'DENS', get: num('dens') },
+  { name: 'blastLit', type: 'vec2f', fn: 'BLAST_LIT', get: (e) => mech().blastLit[e.id].map(big) },
+  { name: 'cond', type: 'f32', fn: 'COND', get: num('cond') },
+  { name: 'cap', type: 'f32', fn: 'CAP', get: num('cap') },
+  { name: 'grav', type: 'f32', fn: 'GRAV', get: num('grav') },
+  { name: 'drag', type: 'f32', fn: 'DRAG', get: num('drag') },
+  { name: 'friction', type: 'f32', fn: 'FRICTION', get: num('friction') },
+  { name: 'jitter', type: 'f32', fn: 'JITTER', get: num('jitter') },
+  { name: 'flow', type: 'f32', fn: 'FLOW', get: num('flow') },
+  { name: 'slide', type: 'f32', fn: 'SLIDE', get: num('slide') },
+  { name: 'melt', type: 'f32', fn: 'MELT', get: (e) => meltPoint(e) },
+  { name: 'ignite', type: 'f32', fn: 'IGNITE', get: num('ignite') },
+  { name: 'flash', type: 'f32', fn: 'FLASH', get: num('flash') },
+  { name: 'burnRate', type: 'f32', fn: 'BURNRATE', get: num('burnRate') },
+  { name: 'burnHeat', type: 'f32', fn: 'BURNHEAT', get: num('burnHeat') },
+  { name: 'flameT', type: 'f32', fn: 'FLAMET', get: num('flameT') },
+  { name: 'spawnT', type: 'f32', fn: 'SPAWNT', get: num('temp') },
+  { name: 'spawnLife', type: 'f32', fn: 'SPAWNLIFE', get: num('life') },
+  { name: 'spawnDens', type: 'f32', fn: 'SPAWNDENS', get: num('spawn') },
+  { name: 'rad', type: 'f32', fn: 'RAD', get: num('rad') },
+  { name: 'colorVar', type: 'f32', fn: 'COLORVAR', get: num('var') },
+  { name: 'hard', type: 'f32', fn: 'HARD', get: num('hard') },
+  { name: 'fizz', type: 'f32', fn: 'FIZZ', get: num('fizz') },
+  { name: 'meltInto', type: 'i32', fn: 'MELTINTO', get: (e) => meltInto(e) },
+  { name: 'breakInto', type: 'i32', fn: 'BREAKINTO', get: (e) => breakInto(e) },
+  { name: 'acidProof', type: 'u32', fn: 'ACIDPROOF', ret: 'bool', get: flag('acidProof') },
+  { name: 'acidic', type: 'u32', fn: 'ACIDIC', ret: 'bool', get: flag('acid') },
+  { name: 'leavesAsh', type: 'u32', fn: 'LEAVES_ASH', ret: 'bool', get: flag('ash') },
+  { name: 'lifeBank', type: 'u32', fn: 'LIFE_BANK', ret: 'bool', get: (e) => +mech().lifeBank[e.id] },
+];
+
+// The reactions (REACTIONS, through mechanisms()): RX(r) = (chance, minT,
+// maxT, heat), RX_INTO(r) the specs of what a and b become, RX_PUFF(r).
+export const RXDEF_FIELDS = [
+  { name: 'gate', type: 'vec4f', fn: 'RX', get: (r) => r.slice(0, 4).map(big) },
+  { name: 'into', type: 'vec2i', fn: 'RX_INTO', get: (r) => [r[5], r[6]] },
+  { name: 'puff', type: 'f32', fn: 'RX_PUFF', get: (r) => big(r[4]) },
+];
+
+// The mechanisms' tables as the GPU holds them: each at least one row long
+// (WGSL has no empty arrays), as the GLSL arrays were; an out is (id, weight)
+// with the id as a float, as OUT was.
+export function mechanismTables() {
   const m = mechanisms();
   const pad = (arr, empty) => (arr.length ? arr : [empty]);
-  const outs = pad(m.outs, [SAME_ID, 1]), specs = pad(m.specs, [0, 1]), rx = pad(m.rx, [0, 0, 0, 0, 0, 0, 0]);
-  const ivec4s = (rows) => rows.map((r) => `ivec4(${r.join(', ')})`).join(', ');
-  return [
-    ...Object.entries(PH).map(([k, v]) => `#define PH_${k} ${v}`),
-    `#define NOUT ${outs.length}`,
-    `#define NSPEC ${specs.length}`,
-    `#define NRX ${rx.length}`,
-    `#define RX_ANY ${m.rx.length > 0}`,
-    `const vec2 OUT[NOUT] = vec2[NOUT](${outs.map(([i, c]) => `vec2(${f(i)}, ${fl(c)})`).join(', ')});`,
-    `const ivec2 SPEC[NSPEC] = ivec2[NSPEC](${specs.map(([a, n]) => `ivec2(${a}, ${n})`).join(', ')});`,
-    `const ivec4 INTO[NE] = ivec4[NE](${ivec4s(m.into)});`,
-    `const ivec4 OF[NE] = ivec4[NE](${ivec4s(m.of)});`,
-    `const vec3 COLD[NE] = vec3[NE](${m.cold.map((c) => `vec3(${c.map(fl).join(', ')})`).join(', ')});`,
-    `const vec3 HOT[NE] = vec3[NE](${m.hot.map((c) => `vec3(${c.map(fl).join(', ')})`).join(', ')});`,
-    `const float CRUSH_P[NE] = float[NE](${m.crushP.map(fl).join(', ')});`,
-    `const vec4 BLAST[NE] = vec4[NE](${m.blast.map((c) => `vec4(${c.map(fl).join(', ')})`).join(', ')});`,
-    `const bool LIFE_BANK[NE] = bool[NE](${m.lifeBank.join(', ')});`,
-    `const vec2 BLAST_LIT[NE] = vec2[NE](${m.blastLit.map((c) => `vec2(${c.map(fl).join(', ')})`).join(', ')});`,
-    `const vec4 RX[NRX] = vec4[NRX](${rx.map((r) => `vec4(${r.slice(0, 4).map(fl).join(', ')})`).join(', ')});`,
-    `const float RX_PUFF[NRX] = float[NRX](${rx.map((r) => fl(r[4])).join(', ')});`,
-    `const ivec2 RX_INTO[NRX] = ivec2[NRX](${rx.map((r) => `ivec2(${r[5]}, ${r[6]})`).join(', ')});`,
-  ];
+  return {
+    outs: pad(m.outs, [SAME_ID, 1]).map(([i, c]) => [i, big(c)]),
+    specs: pad(m.specs, [0, 1]),
+    rx: pad(m.rx, [0, 0, 0, 0, 0, 0, 0]),
+    lookup: m.lookup,
+    any: m.rx.length > 0,
+  };
 }
 
+const consts = (prefix, obj) => Object.entries(obj).map(([k, v]) => `const ${prefix}${k}: i32 = ${v};`);
+
+// WGSL for the shared prelude (shaders/common.js; the name is the GLSL
+// version's, docs/webgpu.md W2): the element, kind, render class and tool ids
+// and the mechanisms' sizes as consts, and the accessors of the element and
+// mechanism tables (the Tables struct and its binding TB are common.js's: it
+// also holds the materials, which import this file).
 export function elementsGLSL() {
+  const t = mechanismTables();
   return [
-    `#define NE ${ELEMENTS.length}`,
-    ...Object.entries(K).map(([k, v]) => `#define K_${k} ${v}`),
-    ...Object.entries(R).map(([k, v]) => `#define R_${k} ${v}`),
-    ...ELEMENTS.map((e) => `#define E_${e.key} ${e.id}`),
-    ...TOOLS.map((t) => `#define T_${t.key} ${t.id}`),
-    intArr('KIND', 'kind'),
-    intArr('RCLASS', 'render'),
-    floatArr('DENS', 'dens'),
-    floatArr('COND', 'cond'),
-    floatArr('CAP', 'cap'),
-    floatArr('GRAV', 'grav'),
-    floatArr('DRAG', 'drag'),
-    floatArr('FRICTION', 'friction'),
-    floatArr('JITTER', 'jitter'),
-    floatArr('FLOW', 'flow'),
-    floatArr('SLIDE', 'slide'),
-    `const float MELT[NE] = float[NE](${ELEMENTS.map((e) => f(meltPoint(e))).join(', ')});`,
-    floatArr('IGNITE', 'ignite'),
-    floatArr('FLASH', 'flash'),
-    floatArr('BURNRATE', 'burnRate'),
-    floatArr('BURNHEAT', 'burnHeat'),
-    floatArr('FLAMET', 'flameT'),
-    floatArr('SPAWNT', 'temp'),
-    floatArr('SPAWNLIFE', 'life'),
-    floatArr('SPAWNDENS', 'spawn'),
-    floatArr('RAD', 'rad'),
-    floatArr('COLORVAR', 'var'),
-    `const int MELTINTO[NE] = int[NE](${ELEMENTS.map(meltInto).join(', ')});`,
-    floatArr('HARD', 'hard'),
-    `const int BREAKINTO[NE] = int[NE](${ELEMENTS.map(breakInto).join(', ')});`,
-    boolArr('ACIDPROOF', 'acidProof'),
-    boolArr('ACIDIC', 'acid'),
-    floatArr('FIZZ', 'fizz'),
-    boolArr('LEAVES_ASH', 'ash'),
-    vec3Arr('COLOR', (e) => hexToLinear(e.color).map((v) => +v.toFixed(4))),
-    vec3Arr('SIGMA', (e) => e.sigma),
-    ...mechanismsGLSL(),
+    `const NE: i32 = ${ELEMENTS.length};`,
+    ...consts('K_', K),
+    ...consts('R_', R),
+    ...ELEMENTS.map((e) => `const E_${e.key}: i32 = ${e.id};`),
+    ...TOOLS.map((tool) => `const T_${tool.key}: i32 = ${tool.id};`),
+    ...consts('PH_', PH),
+    `const NOUT: i32 = ${t.outs.length};`,
+    `const NSPEC: i32 = ${t.specs.length};`,
+    `const NRX: i32 = ${t.rx.length};`,
+    `const RX_ANY: bool = ${t.any};`,
+    accessorsWGSL('TB.elem', ELEMENT_FIELDS),
+    'fn OUT(i: i32) -> vec2f { return TB.outs[i]; }',
+    'fn SPEC(i: i32) -> vec2i { return TB.specs[i]; }',
+    accessorsWGSL('TB.rxDef', RXDEF_FIELDS, 'r'),
+    '// the reaction of a cell of element a with a neighbour of element b: 0 for',
+    '// none, else 2·r + role + 1 (reaction r; role 0: the cell is the row\'s a, 1: its b)',
+    'fn rxAt(a: i32, b: i32) -> i32 { return i32(TB.rx[a * NE + b]); }',
   ].join('\n');
 }

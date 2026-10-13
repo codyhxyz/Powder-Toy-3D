@@ -45,8 +45,8 @@ try {
     };
     const steps = (k) => { for (let i = 0; i < k; i++) sim.step(); };
     // per element: count, mean x/y/z, mean and max |distance from the centre|; air temperature and wind; pressure
-    const tally = () => {
-      const [s, b] = sim.readState();
+    const tally = async () => {
+      const [s, b] = await sim.readState();
       const o = { air: { Tmax: -1e9, Tmin: 1e9, vmax: 0 }, Pabs: 0, Pmax: 0 };
       for (let y = 0; y < ny; y++) for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
         const i = sim.cellTexel(x, y, z) * 4, id = Math.round(s[i]);
@@ -70,7 +70,7 @@ try {
     modes({});
     scene((box) => box(29, 40, 29, 35, 46, 35, 'SAND'));
     steps(300);
-    let t = tally();
+    let t = await tally();
     check('vertical: sand falls to the floor', n(t, 'SAND') === SAND && t.SAND.y < 5, t.SAND);
 
     // off: it stays up; a column on the floor doesn't topple
@@ -78,9 +78,9 @@ try {
     check('off: sim.gravity reads 0 (the body, shots and physgun float)', sim.gravity === 0, sim.gravity);
     scene((box) => { box(29, 40, 29, 35, 46, 35, 'SAND'); box(10, 0, 10, 12, 12, 12, 'SAND'); });
     steps(300);
-    t = tally();
-    const hi = await (async () => { const [s] = sim.readState(); let m = 0; for (let y = 30; y < ny; y++) for (let z = 20; z < 44; z++) for (let x = 20; x < 44; x++) if (Math.round(s[sim.cellTexel(x, y, z) * 4]) === E.SAND) m++; return m; })();
-    const col = (() => { const [s] = sim.readState(); let top = -1; for (let y = 0; y < ny; y++) for (let z = 10; z < 12; z++) for (let x = 10; x < 12; x++) if (Math.round(s[sim.cellTexel(x, y, z) * 4]) === E.SAND) top = Math.max(top, y); return top; })();
+    t = await tally();
+    const hi = await (async () => { const [s] = await sim.readState(); let m = 0; for (let y = 30; y < ny; y++) for (let z = 20; z < 44; z++) for (let x = 20; x < 44; x++) if (Math.round(s[sim.cellTexel(x, y, z) * 4]) === E.SAND) m++; return m; })();
+    const col = await (async () => { const [s] = await sim.readState(); let top = -1; for (let y = 0; y < ny; y++) for (let z = 10; z < 12; z++) for (let x = 10; x < 12; x++) if (Math.round(s[sim.cellTexel(x, y, z) * 4]) === E.SAND) top = Math.max(top, y); return top; })();
     check('off: sand in mid-air stays up', hi > 0.9 * SAND, { aloft: hi, of: SAND });
     check('off: a sand column stands', col === 11, { top: col });
 
@@ -90,9 +90,9 @@ try {
       for (const x of [2, 56]) for (const y of [2, 56]) for (const z of [2, 56]) box(x, y, z, x + 6, y + 6, z + 6, 'SAND');
       box(26, 50, 26, 38, 54, 38, 'WATER');
     });
-    const r0 = tally();
+    const r0 = await tally();
     steps(900);
-    t = tally();
+    t = await tally();
     check('radial: sand gathers at the centre', n(t, 'SAND') === 8 * SAND && t.SAND.r < 0.5 * r0.SAND.r, { r: [r0.SAND.r, t.SAND.r], rmax: t.SAND.rmax });
     check('radial: no cell made or lost (sand, water)', n(t, 'SAND') === 8 * SAND && n(t, 'WATER') === n(r0, 'WATER'), { SAND: n(t, 'SAND'), WATER: [n(r0, 'WATER'), n(t, 'WATER')] });
     check('radial: water falls in too', t.WATER.r < 0.6 * r0.WATER.r, { r: [r0.WATER.r, t.WATER.r] });
@@ -101,52 +101,52 @@ try {
     modes({ edgeMode: EDGE.VOID });
     scene((box) => box(29, 2, 29, 35, 8, 35, 'SAND'));
     steps(200);
-    t = tally();
+    t = await tally();
     check('void: sand falls out of the box', n(t, 'SAND') < 0.2 * SAND, { left: n(t, 'SAND'), of: SAND });
     // ...and a blast vents through the sides
     scene((box) => box(0, 20, 20, 4, 24, 24, 'EMPTY', { P: 100 }));
     steps(60);
-    const pVoid = tally().Pabs;
+    const pVoid = (await tally()).Pabs;
     modes({});
     scene((box) => box(0, 20, 20, 4, 24, 24, 'EMPTY', { P: 100 }));
     steps(60);
-    const pSolid = tally().Pabs;
+    const pSolid = (await tally()).Pabs;
     check('void: pressure drains out of the sides (less is left than with walls)', pVoid < pSolid, { void: +pVoid.toFixed(1), solid: +pSolid.toFixed(1) });
 
     // loop edges: sand falls through the floor and comes back in at the top
     modes({ edgeMode: EDGE.LOOP });
     scene((box) => box(29, 2, 29, 35, 8, 35, 'SAND'));
     steps(120);
-    t = tally();
+    t = await tally();
     check('loop: sand falls through the floor and in at the top, none lost', n(t, 'SAND') === SAND && t.SAND.ymax > ny - 10, t.SAND);
     scene((box) => box(60, 30, 30, 64, 34, 34, 'WATER'));
     for (let i = 0; i < 12; i++) {
-      const [A, B] = sim.readState();
+      const [A, B] = await sim.readState();
       // keep pushing it toward +x
       for (let x = 0; x < nx; x++) for (let y = 0; y < ny; y++) for (let z = 0; z < nz; z++) { const c = sim.cellTexel(x, y, z) * 4; if (Math.round(A[c]) === E.WATER) B[c] = 0.8; }
       sim.load(A, B); steps(3);
     }
-    t = tally();
+    t = await tally();
     // (from x = 60-63 it ends up near the low side: 2026-10-11 run, mean x 9.2)
     check('loop: water thrown out of +x comes in at −x, none lost', n(t, 'WATER') === 64 && t.WATER.x < 40, t.WATER);
 
     // air modes: a blob of pressure
-    const blast = (m) => { modes(m); scene((box) => box(28, 28, 28, 36, 36, 36, 'EMPTY', { P: 80 })); steps(1); const t1 = tally(); steps(30); return [t1, tally()]; };
-    let [a1, a2] = blast({});
+    const blast = async (m) => { modes(m); scene((box) => box(28, 28, 28, 36, 36, 36, 'EMPTY', { P: 80 })); steps(1); const t1 = await tally(); steps(30); return [t1, await tally()]; };
+    let [a1, a2] = await blast({});
     // (the shock front spreads it, so the total grows while the peak falls)
     check('air on: pressure spreads, fades and blows', a2.Pmax < a1.Pmax && a2.air.vmax > 0.05, { Pmax: [a1.Pmax, a2.Pmax], wind: a2.air.vmax });
-    [a1, a2] = blast({ airMode: AIR.PRESSURE_OFF });
+    [a1, a2] = await blast({ airMode: AIR.PRESSURE_OFF });
     check('pressure off: none left', a1.Pmax === 0 && a2.Pmax === 0, { Pmax: [a1.Pmax, a2.Pmax] });
-    [a1, a2] = blast({ airMode: AIR.VELOCITY_OFF });
+    [a1, a2] = await blast({ airMode: AIR.VELOCITY_OFF });
     check('velocity off: pressure stays, the air is still', a2.Pmax > 0 && a2.air.vmax === 0, { Pmax: a2.Pmax, wind: a2.air.vmax });
-    [a1, a2] = blast({ airMode: AIR.OFF });
+    [a1, a2] = await blast({ airMode: AIR.OFF });
     check('air off: no pressure, no wind', a2.Pmax === 0 && a2.air.vmax === 0, { Pmax: a2.Pmax, wind: a2.air.vmax });
-    [a1, a2] = blast({ airMode: AIR.NO_UPDATE });
+    [a1, a2] = await blast({ airMode: AIR.NO_UPDATE });
     check('no update: pressure holds where it is', Math.abs(a2.Pabs - a1.Pabs) < 1e-3 * a1.Pabs, { P: [a1.Pabs, a2.Pabs] });
 
     // ambient heat: a hot metal block in air
-    const hot = (m) => { modes(m); scene((box) => box(28, 28, 28, 36, 36, 36, 'METAL', { T: 600 })); steps(200); return tally(); };
-    const on = hot({}), off = hot({ ambientHeat: false });
+    const hot = async (m) => { modes(m); scene((box) => box(28, 28, 28, 36, 36, 36, 'METAL', { T: 600 })); steps(200); return tally(); };
+    const on = await hot({}), off = await hot({ ambientHeat: false });
     check('ambient heat on: the metal warms the air and cools', on.air.Tmax > 30 && on.METAL.T < 600, { air: on.air.Tmax, metal: on.METAL.T });
     check('ambient heat off: the air stays at ambient, the metal keeps its heat', off.air.Tmax === 20 && off.METAL.T > 599.9, { air: off.air.Tmax, metal: off.METAL.T });
 

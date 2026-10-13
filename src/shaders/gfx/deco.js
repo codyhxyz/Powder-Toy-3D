@@ -11,9 +11,23 @@
 //     by its alpha (DECO_SIGMA), so painted water reads as paint, not dye;
 //   - emission is left alone: hot matter glows through its paint.
 // The blend is in linear light (TPT's is on sRGB bytes; the two agree at
-// alpha 0 and 1). uDeco off (Ctrl+B, or nothing decorated) reads as no deco.
+// alpha 0 and 1). P.deco off (Ctrl+B, or nothing decorated) reads as no deco.
 // The smooth channels take the colour of the cell the surface's material
 // comes from (Surf.cell), so paint edges there follow cells.
+//
+// WGSL (docs/webgpu.md W2; the names are the GLSL version's). The view reads
+// the paint straight from the decoration's plane, the u32 per cell the move
+// carries (src/sim.js decoPlane: RGBA8, r in the low byte, in slot order),
+// bound at the volume's group 0 binding 3 (DECO_PLANE_ENTRY, beside the
+// tables, FrameUniforms and the meshes' depth: shaders/render.js
+// VOLUME_LAYOUTS). The WebGL view had no texture unit left for it and read a
+// copy of the flow field with the paint packed into its spare w, 6 bits a
+// channel; a storage buffer takes no texture unit (the volume's eight storage
+// buffers: tables, the plane, A, B, bricks, brickDist, flow, aeration), so the
+// view reads all 8 bits. The switch is the volume's own param
+// (VolumeParams.deco: gfx/volume.js sets it from src/deco.js decoShown), so
+// turning it on or off builds nothing.
+import { STAGE } from '../../gpu/kernels.js';
 
 // Optical depth per cell of fully painted liquid or glass: a cell of it lets
 // e^-DECO_SIGMA (14%) through.
@@ -24,54 +38,55 @@ const DECO_SIGMA = 2.0;
 const DECO_DETAIL_MAX = 2.0;
 const DECO_LUM_MIN = 1e-3;
 
-// The view can't bind the paint as a texture of its own: with whitewater on it
-// already uses the 16 texture units every GPU has (tools/check-sampler-budget.mjs;
-// a 17th blacks the whole view out). So src/deco.js viewFlow hands it a copy of
-// the flow field (core.js tFlowV, read for xyz only) with each cell's paint
-// packed into the spare w: 6 bits a channel (DECO_PACK_LEVELS + 1 steps), four
-// channels in float32's 24 exact integer bits.
-export const DECO_PACK_LEVELS = 63;
-const DECO_PACK_BASE = DECO_PACK_LEVELS + 1;
-export const decoPackGLSL = /* glsl */ `
-#define DECO_PACK_LEVELS ${DECO_PACK_LEVELS.toFixed(1)}
-const vec4 DECO_PACK_PLACE = vec4(1.0, ${DECO_PACK_BASE}.0, ${DECO_PACK_BASE ** 2}.0, ${DECO_PACK_BASE ** 3}.0);
-float decoPack(vec4 d) { return dot(floor(clamp(d, 0.0, 1.0) * DECO_PACK_LEVELS + 0.5), DECO_PACK_PLACE); }
-vec4 decoUnpack(float v) { return mod(floor(floor(v + 0.5) / DECO_PACK_PLACE), DECO_PACK_LEVELS + 1.0) / DECO_PACK_LEVELS; }
-`;
+/** The volume's group 0 binding of the decoration plane, and its layout entry. */
+export const DECO_PLANE_BINDING = 3;
+export const DECO_PLANE_ENTRY = { binding: DECO_PLANE_BINDING, visibility: STAGE.FRAGMENT, buffer: { type: 'read-only-storage' } };
 
-// Uniforms, lookups and the albedo tint: before surfaceGLSL and plainGLSL.
-export const decoViewGLSL = /* glsl */ `
-uniform bool uDeco;          // draw the decoration (display on, and something is decorated): tFlowV.w holds it then
-${decoPackGLSL}
-#define DECO_SIGMA ${DECO_SIGMA.toFixed(1)}
-#define DECO_DETAIL_MAX ${DECO_DETAIL_MAX.toFixed(1)}
-#define DECO_LUM_MIN ${DECO_LUM_MIN}
-const vec3 DECO_LUM = vec3(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance weights
-vec4 decoAt(ivec3 c) { return uDeco && !outside(c) ? decoUnpack(texelFetch(tFlowV, atlas(c), 0).w) : vec4(0.0); }
-vec3 decoLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+// WEBGPU-STUB (docs/webgpu.md J3): the view reads the plane's 8 bits a
+// channel; nothing packs the paint into the flow field any more.
+export const DECO_PACK_LEVELS = null;
+// WEBGPU-STUB (docs/webgpu.md J3)
+export const decoPackGLSL = '';
+
+// The binding, the lookups and the albedo tint (plain.js and the realistic
+// tracer call them). Needs the render library (slotOf, outside) and the
+// volume's params P (shaders/render.js VolumeParams: deco).
+export const decoViewGLSL = /* wgsl */ `
+@group(0) @binding(${DECO_PLANE_BINDING}) var<storage, read> decoPlane: array<u32>;   // RGBA8 per slot (src/deco.js)
+const DECO_SIGMA: f32 = ${DECO_SIGMA.toFixed(1)};
+const DECO_DETAIL_MAX: f32 = ${DECO_DETAIL_MAX.toFixed(1)};
+const DECO_LUM_MIN: f32 = ${DECO_LUM_MIN};
+const DECO_LUM: vec3f = vec3f(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance weights
+// cell c's paint (sRGB colour and alpha, 0..1): none outside the grid or while P.deco is off
+fn decoAt(c: vec3i) -> vec4f {
+  if (P.deco == 0u || outside(c)) { return vec4f(0.0); }
+  return unpack4x8unorm(decoPlane[slotOf(c)]);
+}
+fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }
 // albedo alb of an element whose mean albedo is base, painted with d
-vec3 decoTint(vec3 alb, vec3 base, vec4 d) {
-  if (d.a <= 0.0) return alb;
-  float detail = clamp(dot(alb, DECO_LUM) / max(dot(base, DECO_LUM), DECO_LUM_MIN), 0.0, DECO_DETAIL_MAX);
+fn decoTint(alb: vec3f, base: vec3f, d: vec4f) -> vec3f {
+  if (d.a <= 0.0) { return alb; }
+  let detail = clamp(dot(alb, DECO_LUM) / max(dot(base, DECO_LUM), DECO_LUM_MIN), 0.0, DECO_DETAIL_MAX);
   return mix(alb, decoLinear(d.rgb) * detail, d.a);
 }
 `;
 
-// The realistic view's hooks: after surfaceGLSL and liquidGLSL.
-export const decoSurfGLSL = /* glsl */ `
+// The realistic view's hooks (with surfaceGLSL's Surf and liquidGLSL's
+// interiorLight).
+export const decoSurfGLSL = /* wgsl */ `
 // a surface record painted with its cell's decoration (render.js, before shadeSurf)
-void decoSurf(inout Surf s) {
-  vec4 d = decoAt(s.cell);
-  if (d.a <= 0.0) return;
-  s.albedo = decoTint(s.albedo, ALBEDO[s.id], d);
-  s.metal *= 1.0 - d.a;
+fn decoSurf(s: ptr<function, Surf>) {
+  let d = decoAt((*s).cell);
+  if (d.a <= 0.0) { return; }
+  (*s).albedo = decoTint((*s).albedo, ALBEDO((*s).id), d);
+  (*s).metal *= 1.0 - d.a;
 }
 // liquid.js absorbSegment through cell c of element id, painted with c's decoration
-void absorbDeco(int id, ivec3 c, vec3 p, float seg, vec3 sunVis, float T, inout vec3 col, inout vec3 trans) {
-  vec4 d = decoAt(c);
-  vec3 att = exp(-mix(SIGMA[id], vec3(DECO_SIGMA), d.a) * seg);
-  vec3 alb = mix(SCATALB[id], decoLinear(d.rgb), d.a);
-  col += trans * (1.0 - att) * (alb * interiorLight(p, sunVis) + emission(id, T));
-  trans *= att;
+fn absorbDeco(id: i32, c: vec3i, p: vec3f, seg: f32, sunVis: vec3f, T: f32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) {
+  let d = decoAt(c);
+  let att = exp(-mix(SIGMA(id), vec3f(DECO_SIGMA), d.a) * seg);
+  let alb = mix(SCATALB(id), decoLinear(d.rgb), d.a);
+  *col += *trans * (1.0 - att) * (alb * interiorLight(p, sunVis) + emission(id, T));
+  *trans *= att;
 }
 `;

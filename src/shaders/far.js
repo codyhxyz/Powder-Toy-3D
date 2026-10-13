@@ -1,24 +1,36 @@
-import { prelude, BRICK } from './common.js';
-import { lib } from './render.js';
-import { presentationGLSL } from '../gfx/presentationMath.js';
+import { prelude, STATE_OPTS, LAYOUT, BRICK } from './common.js';
+import { lib, libLayouts } from './gfx/lib.js';
+import { RENDER_LAYOUT } from './bindings.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { cloudsGLSL } from './gfx/clouds.js';
+import { uniformStruct } from '../gpu/params.js';
+import { STAGE, fold } from '../gpu/kernels.js';
 import { CELL_M } from '../scale.js';
 import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
-import { E } from '../elements.js';
+import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
+import { WORLD_SCENES } from '../world/scenes/index.js';
+import { presentationWGSL } from '../gfx/presentationMath.js';
+// The parts the window's own pipelines read (the layout, haze, casters and GI)
+// live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
+import {
+  FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeFor, farSkyGLSL, FAR_SKY,
+} from './farShared.js';
+export {
+  FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeGLSL,
+  FAR_CASTER_STEPS, farCastersGLSL, FAR_GI_STEPS, FAR_GI_STEP0, farGIGLSL, FAR_SKY, farSkyGLSL, farHazeFor,
+} from './farShared.js';
 
-// The far field (docs/scaling.md D11, "Far field"; phase W4): everything of a
-// massive world outside the simulated window, at brick resolution.
+// The far field (docs/scaling.md D11, "Far field"; phase W4; docs/webgpu.md
+// G1): everything of a massive world outside the simulated window, at brick
+// resolution. WGSL; the names are the GLSL passes' (docs/webgpu.md W2), each
+// a compute kernel now (a "Frag" is its module), but for the view, a
+// fragment pass in our scene pass before the volume.
 //
-// The far grid. One RGBA16F texel per 4³ world brick, in a 2D atlas of
-// horizontal brick slices (farTexel, like the render fields' Y-slices), so a
-// region of it is rewritten in one draw and its channels filter bilinearly
-// inside a slice (farSample finishes the trilinear lerp between two slices).
-// It holds whole numbers below FAR.HALF_EXACT (a half float holds those
-// exactly), read with texelFetch (farUnpack). Each channel's low 8 bits
-// (below FAR.PAYLOAD) carry one value:
+// The far grid. One rgba16uint texel per 4³ world brick, a 3D texture of the
+// world's bricks (farShared.js farLayoutGLSL: farUnpack, farPackTexel), each
+// channel holding exact integers in 8-bit fields:
 //   r  opaque share, in FAR.LEVELS steps: the share of the cube of FAR.CUBE
 //      cells centred on the brick that stops light (solids, powders, lava, glass)
 //   g  liquid share: the same for transparent liquids (farLiquid: water, oil, acid...)
@@ -27,14 +39,11 @@ import { E } from '../elements.js';
 //      rock reads as grass)
 //   a  glow, in FAR.LEVELS steps: how hot its open opaque cells are, from the
 //      incandescence's first knot up over FAR.GLOW_SPAN °C
-// and the bits above them the rest: r's first, whether it holds open opaque
-// cells (the view reads a surface's element from such a brick); and the
-// dominant transparent liquid of its own cells (E_EMPTY: none), an element id
-// spread over g's, b's and r's next ones (FAR.SPARE values each).
+// and above them r's 256 whether it holds open opaque cells (the view reads a
+// surface's element from such a brick), a's high byte the dominant
+// transparent liquid of its own cells (E_EMPTY: none).
 // (The shares and glow keep the 8-bit steps of the RGBA8 grid this was, so
-// the field and the view are what they were. 16 MB at the world's 256×32×256
-// bricks against 8: ids up to 255, with no list of liquids, and one output and
-// one texture as before in every pass that writes or reads it.)
+// the field and the view are what they were.)
 // Values sit at brick centres. The drawn surface is where the trilinear field
 // crosses FAR.ISO, as for the window's smooth surfaces. The cube is twice the
 // brick: a box filter as wide as two sample spacings makes the field linear in
@@ -46,205 +55,100 @@ import { E } from '../elements.js';
 // The field. Thin matter, filling under half its cube with no brick next to
 // it at the surface level (a trunk, a wall up to three cells thick, a roof, a
 // falling stream), would never reach FAR.ISO and vanish, so it reads as
-// FAR.THIN_V (farBoostFrag, into a second, filtered target the view samples):
-// an isolated brick then draws as a blob ~1.6 cells across, a line of them as
-// a rod ~2.3 cells thick, a sheet as a slab one brick thick. Next to a brick at
-// the surface level a brick keeps its share: that is what puts the ground's
-// surface, a crown's or a cliff's, where it is. Scattered matter under
-// FAR.THIN_MIN (less than a line of cells through the cube) keeps its share
-// too: a few loose grains draw nothing.
+// FAR.THIN_V (farBoostFrag, into a second, filtered 3D texture the view
+// samples, rgba8unorm): an isolated brick then draws as a blob ~1.6 cells
+// across, a line of them as a rod ~2.3 cells thick, a sheet as a slab one
+// brick thick. Next to a brick at the surface level a brick keeps its share:
+// that is what puts the ground's surface, a crown's or a cliff's, where it is.
+// Scattered matter under FAR.THIN_MIN (less than a line of cells through the
+// cube) keeps its share too: a few loose grains draw nothing.
 //
 // Occupancy. Two coarser levels say where the surface can be at all: an L1
 // node (4³ bricks, 16³ cells) is set when some brick in it or next to it
 // reaches FAR.ISO (opaque + liquid), an L2 node (4³ L1 nodes, 64³ cells) when
 // one of its L1 nodes is. The trilinear field can only reach FAR.ISO between
 // brick centres one of which does, so a ray skips every unset node whole.
+// (One buffer, a word a node: occupancyWords.)
 //
 // Shadows: per brick column, the top of its opaque matter (farTopFrag), and
 // from those the height below which the sun is blocked (farShadowFrag): a
 // shadow height field, the max over the columns toward the sun of their top
 // less the sun ray's drop on the way. Along a sun ray the height above it
 // can only fall, so a point is lit or not by one lookup, and the window's own
-// shadow map finds where its texel rays first go under it by bisection.
-export const FAR = {
-  ISO: 0.5,            // the field's surface level
-  CUBE: 8,             // cells: the edge of the cube centred on a brick whose share it holds (twice the brick)
-  THIN_MIN: 1 / 80,    // matter filling at least this share of its cube (a line of cells through it, a single-cell
-                       // trunk: 8/512, safely over it in 8 bits), with no brick next to it at ISO, reads as THIN_V...
-  THIN_V: 1.0,         // ...so it stands as a blob, rod or slab instead of vanishing
-  SURFACE_W: 8,        // a cell open above counts this many times toward the dominant element
-  HALF_EXACT: 2048,    // a half float holds every whole number below this exactly (an 11-bit significand)...
-  PAYLOAD: 256,        // ...so a channel holds a value below PAYLOAD (a level, an element id)...
-  SPARE: 8,            // ...and this many values above it (HALF_EXACT / PAYLOAD)
-  LEVELS: 255,         // steps of the shares and the glow (an 8-bit channel's)
-  GLOW_SPAN: 2000,     // °C the glow channel spans above the incandescence table's first knot
-};
-// Every element id, opaque or liquid, must fit below PAYLOAD (the liquid's
-// spread over SPARE³ values, with r's open flag beside its top: farPack):
-// past it the far view misreads ids, so say so at once.
-if (Object.keys(E).length > FAR.PAYLOAD || FAR.PAYLOAD > FAR.SPARE * FAR.SPARE * (FAR.SPARE / 2)
-    || FAR.PAYLOAD * FAR.SPARE > FAR.HALF_EXACT) {
-  throw new Error(`far.js: ${Object.keys(E).length} elements, but the far grid holds element ids below FAR.PAYLOAD (${FAR.PAYLOAD})`);
-}
-
-// Children per node edge at each occupancy level: an L1 node is 4³ bricks, an L2 node 4³ L1 nodes.
-export const FAR_NODE = 4;
-const FAR_ATLAS_MAX = 8192;   // texels: the widest atlas row the far grid may use
-
-// Slices per atlas row for n slices of w × h texels: the smallest divisor of n
-// from the near-square count up (so no slot is empty), else that count.
-function sliceCols(n, w, h) {
-  const root = Math.max(1, Math.ceil(Math.sqrt((n * h) / w)));
-  for (let c = root; c <= n && c * w <= FAR_ATLAS_MAX; c++) if (n % c === 0) return c;
-  return root;
-}
-
-// The one world size (app.js WORLDS). Its far layout is compiled into the
-// box's view, shadow and GI programs too, their far parts off (uFar): a box and
-// a world then share every big program, so switching to a world compiles none.
-export const WORLD_SIZE = [1024, 128, 1024];
-
-// The far grid's layout for a world of `size` cells: bricks, the atlas, the
-// occupancy levels and the brick-column maps.
-export function farLayout(size) {
-  const [wx, wy, wz] = size;
-  if ([wx, wy, wz].some((n) => n % BRICK)) throw new Error(`far field: world ${size} must be whole ${BRICK}-cell bricks`);
-  // (occupancy nodes round up: the last ones along an axis may stick out of the world)
-  const level = (div) => {
-    const n = [wx, wy, wz].map((v) => Math.ceil(v / div));
-    const cols = sliceCols(n[1], n[0], n[2]);
-    return { n, cols, width: cols * n[0], height: Math.ceil(n[1] / cols) * n[2] };
-  };
-  return {
-    size: [wx, wy, wz],
-    bricks: level(BRICK),
-    l1: level(BRICK * FAR_NODE),
-    l2: level(BRICK * FAR_NODE * FAR_NODE),
-  };
-}
-
+// shadow map finds where its texel rays first go under it by bisection
+// (farShared.js farCastersGLSL).
+//
+// Every kernel takes the region it writes in its params; a pass over a region
+// of the grid is a thread per brick of it, x fastest, then y, then z (its
+// regions span the world's height), folded (gpu/kernels.js fold).
 const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+export const FAR_FORMATS = { grid: 'rgba16uint', field: 'rgba8unorm', top: 'rgba16float', shadow: 'rgba16float' };
+const C = STAGE.COMPUTE;
+const store = (binding, format, viewDimension = '3d') => ({ binding, visibility: C, storageTexture: { access: 'write-only', format, viewDimension } });
+const sampled = (binding, sampleType, viewDimension = '3d') => ({ binding, visibility: C, texture: { sampleType, viewDimension } });
+const buf = (binding, type = 'read-only-storage') => ({ binding, visibility: C, buffer: { type } });
 
-// Layout defines and atlas addressing, shared by every far pass.
-export const farLayoutGLSL = (L) => /* glsl */ `
-#define WORLD_X ${L.size[0]}
-#define WORLD_Y ${L.size[1]}
-#define WORLD_Z ${L.size[2]}
-#define WBX ${L.bricks.n[0]}         // world bricks along x, y, z
-#define WBY ${L.bricks.n[1]}
-#define WBZ ${L.bricks.n[2]}
-#define FAR_COLS ${L.bricks.cols}       // brick slices per atlas row
-#define FAR_W ${L.bricks.width}
-#define FAR_H ${L.bricks.height}
-#define F1X ${L.l1.n[0]}         // L1 nodes
-#define F1Y ${L.l1.n[1]}
-#define F1Z ${L.l1.n[2]}
-#define F1_COLS ${L.l1.cols}
-#define F2X ${L.l2.n[0]}         // L2 nodes
-#define F2Y ${L.l2.n[1]}
-#define F2Z ${L.l2.n[2]}
-#define F2_COLS ${L.l2.cols}
-#define FAR_BRICK ${BRICK}            // cells per brick edge (the prelude's BS, for passes without it)
-#define FAR_NODE ${FAR_NODE}
-#define FAR_L1_CELLS ${BRICK * FAR_NODE}
-#define FAR_L2_CELLS ${BRICK * FAR_NODE * FAR_NODE}
-#define FAR_ISO ${glf(FAR.ISO)}
-#define FAR_CUBE ${FAR.CUBE}
-#define FAR_CUBE_LO ${(FAR.CUBE - BRICK) / 2}          // cells the cube reaches past the brick on each side
-#define FAR_THIN_MIN ${glf(FAR.THIN_MIN)}
-#define FAR_THIN_V ${glf(FAR.THIN_V)}
-#define FAR_SURFACE_W ${glf(FAR.SURFACE_W)}
-#define FAR_LEVELS ${glf(FAR.LEVELS)}
-#define FAR_PAYLOAD ${FAR.PAYLOAD}
-#define FAR_SPARE ${FAR.SPARE}
-#define FAR_GLOW_SPAN ${glf(FAR.GLOW_SPAN)}
-const ivec3 WORLD = ivec3(WORLD_X, WORLD_Y, WORLD_Z);
-const ivec3 WB = ivec3(WBX, WBY, WBZ);
-ivec2 farTexel(ivec3 b) { return ivec2((b.y % FAR_COLS) * WBX + b.x, (b.y / FAR_COLS) * WBZ + b.z); }
-ivec3 farBrickFromFrag(ivec2 f) {
-  int tx = f.x / WBX, ty = f.y / WBZ;
-  return ivec3(f.x - tx * WBX, ty * FAR_COLS + tx, f.y - ty * WBZ);
-}
-ivec2 far1Texel(ivec3 n) { return ivec2((n.y % F1_COLS) * F1X + n.x, (n.y / F1_COLS) * F1Z + n.z); }
-ivec3 far1FromFrag(ivec2 f) {
-  int tx = f.x / F1X, ty = f.y / F1Z;
-  return ivec3(f.x - tx * F1X, ty * F1_COLS + tx, f.y - ty * F1Z);
-}
-ivec2 far2Texel(ivec3 n) { return ivec2((n.y % F2_COLS) * F2X + n.x, (n.y / F2_COLS) * F2Z + n.z); }
-ivec3 far2FromFrag(ivec2 f) {
-  int tx = f.x / F2X, ty = f.y / F2Z;
-  return ivec3(f.x - tx * F2X, ty * F2_COLS + tx, f.y - ty * F2Z);
-}
-// A far grid texel (farPack): its shares and glow (levels), its opaque and
-// liquid elements (E_EMPTY: none) and whether it holds open opaque cells.
-struct FarTexel { int s, l, glow, id, liquid; bool open; };
-FarTexel farUnpack(vec4 t) {
-  ivec4 v = ivec4(t + 0.5), lo = v % FAR_PAYLOAD, hi = v / FAR_PAYLOAD;
-  FarTexel f;
-  f.s = lo.r; f.l = lo.g; f.id = lo.b; f.glow = lo.a;
-  f.open = hi.r % 2 == 1;
-  f.liquid = hi.g + FAR_SPARE * (hi.b + FAR_SPARE * (hi.r / 2));
-  return f;
-}
-`;
-
-// Region draws into the far grid: one quad per brick slice covering bricks
-// [uFarLo, uFarLo + uFarSize) along x and z (every slice: regions span the
-// world's height). position = (corner x, corner y, slice).
-export const farRegionVert = (L) => /* glsl */ `
-${farLayoutGLSL(L)}
-in vec3 position;
-uniform ivec3 uFarLo;
-uniform ivec3 uFarSize;
-void main() {
-  int s = int(position.z);
-  vec2 o = vec2(float((s % FAR_COLS) * WBX + uFarLo.x), float((s / FAR_COLS) * WBZ + uFarLo.z));
-  vec2 t = o + position.xy * vec2(uFarSize.xz);
-  gl_Position = vec4(t / vec2(FAR_W, FAR_H) * 2.0 - 1.0, 0.0, 1.0);
-}
-`;
+// A region of world bricks [lo, lo + size) (x and z; size.y the world's
+// height in bricks): the params of every region kernel.
+export const RegionParams = uniformStruct('RegionParams', {
+  lo: 'vec3i',
+  size: 'vec3i',
+  chunkLo: 'vec2i',   // farScene's: world cell (x, z) of its scene cells' column (0, 0)
+});
+const regionMain = (body) => /* wgsl */ `
+${RegionParams.wgsl}
+@group(3) @binding(1) var<uniform> P: RegionParams;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldId(wg, nwg) * 64u + li;
+  let s = vec3u(P.size);
+  if (i >= s.x * s.y * s.z) { return; }
+  let b = P.lo + vec3i(vec3u(i % s.x, (i / s.x) % s.y, i / (s.x * s.y)));
+${body}
+}`;
+/** A region kernel's dispatch over world bricks [lo, lo + size) (size along x, y, z). */
+export const regionDispatch = (size) => fold(Math.ceil(size[0] * size[1] * size[2] / 64));
 
 // Counting a brick's cells into its texel (both summaries: the generator's and the window's).
-const countGLSL = /* glsl */ `
+const countGLSL = /* wgsl */ `
 // what stops light in the far field, and what is a transparent liquid
-bool farOpaque(int id) { return id != E_EMPTY && KIND[id] != K_GAS && RCLASS[id] != R_LIQUID; }
-bool farLiquid(int id) { return RCLASS[id] == R_LIQUID; }
+fn farOpaque(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS && RCLASS(id) != R_LIQUID; }
+fn farLiquid(id: i32) -> bool { return RCLASS(id) == R_LIQUID; }
 struct FarCount {
-  float w[NE];           // weights of the brick's own cells by element: opaque (their dominant one) and liquid
-  float open, heat;      // its open opaque cells, and their degrees above the glow's start
-  float s, l;            // opaque and liquid cells of its cube
-};
-FarCount farCountInit() {
-  FarCount c;
-  for (int i = 0; i < NE; i++) c.w[i] = 0.0;
-  c.open = c.heat = c.s = c.l = 0.0;
-  return c;
+  w: array<f32, NE>,   // weights of the brick's own cells by element: opaque (their dominant one) and liquid
+  open: f32,           // its open opaque cells...
+  heat: f32,           // ...and their degrees above the glow's start
+  s: f32,              // opaque and liquid cells of its cube
+  l: f32,
 }
 // one of the brick's own cells: id at temperature T, with id 'above' over it
-void farCell(inout FarCount c, int id, int above, float T) {
+fn farCell(c: ptr<function, FarCount>, id: i32, above: i32, T: f32) {
   if (farOpaque(id)) {
-    bool open = !farOpaque(above);
-    c.w[id] += open ? FAR_SURFACE_W : 1.0;
-    if (open) { c.open += 1.0; c.heat += max(T - INCAND_T0, 0.0); }
+    let open = !farOpaque(above);
+    (*c).w[id] += select(1.0, FAR_SURFACE_W, open);
+    if (open) { (*c).open += 1.0; (*c).heat += max(T - INCAND_T0, 0.0); }
   } else if (farLiquid(id)) {
-    c.w[id] += 1.0;
+    (*c).w[id] += 1.0;
   }
 }
 // a share or the glow in FAR_LEVELS steps, rounded as the 8-bit channel it was (half up)
-float farLevel(float x) { return floor(clamp(x, 0.0, 1.0) * FAR_LEVELS + 0.5); }
-vec4 farPack(FarCount c) {
-  float n = float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
-  int best = E_EMPTY, liquid = E_EMPTY;   // the dominant opaque element and liquid (ties: the lower id)
-  for (int i = 1; i < NE; i++) {
-    if (farOpaque(i)) { if (c.w[i] > c.w[best]) best = i; }
-    else if (farLiquid(i) && c.w[i] > c.w[liquid]) liquid = i;
+fn farLevel(x: f32) -> i32 { return i32(floor(clamp(x, 0.0, 1.0) * FAR_LEVELS + 0.5)); }
+fn farPack(c: ptr<function, FarCount>) -> vec4u {
+  let n = f32(FAR_CUBE * FAR_CUBE * FAR_CUBE);
+  var best = E_EMPTY;     // the dominant opaque element and liquid (ties: the lower id)
+  var liquid = E_EMPTY;
+  for (var i = 1; i < NE; i++) {
+    if (farOpaque(i)) { if ((*c).w[i] > (*c).w[best]) { best = i; } }
+    else if (farLiquid(i) && (*c).w[i] > (*c).w[liquid]) { liquid = i; }
   }
-  float glow = c.open > 0.0 ? c.heat / c.open / FAR_GLOW_SPAN : 0.0;
-  int open = c.open > 0.0 ? 1 : 0;
-  // farUnpack: the liquid's id in g's, b's and r's spare values (r's first is the open flag)
-  int lg = liquid % FAR_SPARE, lb = (liquid / FAR_SPARE) % FAR_SPARE, lr = liquid / (FAR_SPARE * FAR_SPARE);
-  return vec4(farLevel(c.s / n) + float(FAR_PAYLOAD * (open + 2 * lr)), farLevel(c.l / n) + float(FAR_PAYLOAD * lg),
-              float(best + FAR_PAYLOAD * lb), farLevel(glow));
+  var f: FarTexel;
+  f.s = farLevel((*c).s / n);
+  f.l = farLevel((*c).l / n);
+  f.id = best;
+  f.glow = farLevel(select(0.0, (*c).heat / (*c).open / FAR_GLOW_SPAN, (*c).open > 0.0));
+  f.liquid = liquid;
+  f.open = (*c).open > 0.0;
+  return farPackTexel(f);
 }
 `;
 
@@ -313,66 +217,82 @@ const trunkCells = (v, k) => {
   if (v === 'dead') return rodCells(Math.max(0.5, T));
   return 1;
 };
+// treeTrunkCells(variant, size): a trunk's cross-section in cells (trunkCells), as code
+const treeTrunkCellsGLSL = () => {
+  const arms = TREE_VARIANTS.map((v) => {
+    const c = Array.from({ length: TREE_SIZES }, (_, k) => glf(trunkCells(v, k)));
+    const body = c.every((x) => x === c[0]) ? `return ${c[0]};`
+      : `${c.slice(0, -1).map((x, k) => `if (size == ${k}) { return ${x}; }`).join(' ')} return ${c.at(-1)};`;
+    return `  if (v == TV_${v.toUpperCase()}) { ${body} }`;
+  });
+  return `fn treeTrunkCells(v: i32, size: i32) -> f32 {\n${arms.join('\n')}\n  return 1.0;\n}`;
+};
 // treeCandidate's choice of kind, generated from the zone tables
-const zoneGLSL = (zone) => zone.map(([v, w]) => `if (pick < ${glf(w)}) return TV_${v.toUpperCase()};`).join(' ');
-const treeGLSL = () => /* glsl */ `
-#define TREE_CHANCE ${glf(TREE.CHANCE)}
-#define TREE_SPACING ${glf(TREE.SPACING)}
-#define TREE_THIN_R ${Math.ceil(TREE.SPACING / BRICK)}      // brick columns a candidate's rivals stand within
-#define TREE_REACH_B ${Math.ceil(TREE.REACH / BRICK)}       // brick columns a crown reaches from its trunk
-#define TREE_SIZES ${TREE_SIZES}
-#define TREE_UNIT16 (1.0 / 65536.0)   // a 16-bit hash field to [0, 1)
-#define TREE_NONE_LO 1e4              // band of a column with no tree in reach: empty
-#define TREE_NONE_HI (-1e4)
-#define TREE_VARIANTS ${TREE_VARIANTS.length}
-${TREE_VARIANTS.map((v, i) => `#define TV_${v.toUpperCase()} ${i}`).join('\n')}
-const float TREE_T[TREE_SIZES] = float[TREE_SIZES](${Array.from({ length: TREE_SIZES }, (_, k) => glf(+treeT(k).toFixed(4))).join(', ')});
-const float TREE_TRUNK_CELLS[TREE_VARIANTS * TREE_SIZES] = float[TREE_VARIANTS * TREE_SIZES](${TREE_VARIANTS.flatMap((v) => Array.from({ length: TREE_SIZES }, (_, k) => glf(trunkCells(v, k)))).join(', ')});
+const zoneGLSL = (zone) => zone.map(([v, w]) => `if (pick < ${glf(w)}) { return TV_${v.toUpperCase()}; }`).join(' ');
+const treeGLSL = () => /* wgsl */ `
+const TREE_CHANCE: f32 = ${glf(TREE.CHANCE)};
+const TREE_SPACING: f32 = ${glf(TREE.SPACING)};
+const TREE_THIN_R: i32 = ${Math.ceil(TREE.SPACING / BRICK)};      // brick columns a candidate's rivals stand within
+const TREE_REACH_B: i32 = ${Math.ceil(TREE.REACH / BRICK)};       // brick columns a crown reaches from its trunk
+const TREE_SIZES: i32 = ${TREE_SIZES};
+const TREE_UNIT16: f32 = 1.0 / 65536.0;   // a 16-bit hash field to [0, 1)
+const TREE_NONE_LO: f32 = 1e4;            // band of a column with no tree in reach: empty
+const TREE_NONE_HI: f32 = -1e4;
+const TREE_VARIANTS: i32 = ${TREE_VARIANTS.length};
+${TREE_VARIANTS.map((v, i) => `const TV_${v.toUpperCase()}: i32 = ${i};`).join('\n')}
+// (tables indexed at run time: small ones as private arrays, the trunks' as a function; docs/webgpu.md C6, H1.16)
+var<private> TREE_T: array<f32, ${TREE_SIZES}> = array<f32, ${TREE_SIZES}>(${Array.from({ length: TREE_SIZES }, (_, k) => glf(+treeT(k).toFixed(4))).join(', ')});
+${treeTrunkCellsGLSL()}
 ${Object.entries(TREE_SHAPE).filter(([k]) => k !== 'REACH').map(([k, v]) => (Array.isArray(v)
-    ? `#define TS_${k}_LO ${glf(v[0])}\n#define TS_${k}_HI ${glf(v[1])}`
-    : `#define TS_${k} ${glf(v)}`)).join('\n')}
-const float TS_REACH[TREE_VARIANTS] = float[TREE_VARIANTS](${TREE_SHAPE.REACH.map(glf).join(', ')});
-#define TREE_TAU 6.28318530718
-int treeVariant(bool coast, bool high, float pick) {
-  if (coast) return TV_PALM;
+    ? `const TS_${k}_LO: f32 = ${glf(v[0])};\nconst TS_${k}_HI: f32 = ${glf(v[1])};`
+    : `const TS_${k}: f32 = ${glf(v)};`)).join('\n')}
+var<private> TS_REACH: array<f32, ${TREE_VARIANTS.length}> = array<f32, ${TREE_VARIANTS.length}>(${TREE_SHAPE.REACH.map(glf).join(', ')});
+const TREE_TAU: f32 = 6.28318530718;
+fn treeVariant(coast: bool, high: bool, pick: f32) -> i32 {
+  if (coast) { return TV_PALM; }
   if (high) { ${zoneGLSL(HIGH_TREES)} return TV_DEAD; }
   ${zoneGLSL(MID_TREES)} return TV_DEAD;
 }
 // mulberry32 (constructions/runtime.js makeRng): draw i (from 0) of seed s, and its range helpers
-#define MB_STEP 0x6d2b79f5u
-float mbDraw(uint s, int i) {
-  uint t = s + uint(i + 1) * MB_STEP;
+const MB_STEP: u32 = 0x6d2b79f5u;
+fn mbDraw(s: u32, i: i32) -> f32 {
+  var t = s + u32(i + 1) * MB_STEP;
   t = (t ^ (t >> 15u)) * (t | 1u);
   t ^= t + (t ^ (t >> 7u)) * (t | 61u);
-  return float(t ^ (t >> 14u)) * UINT_TO_UNIT;
+  return u32ToF32(t ^ (t >> 14u)) * UINT_TO_UNIT;
 }
-float mbRange(uint s, int i, float lo, float hi) { return lo + (hi - lo) * mbDraw(s, i); }
-int mbInt(uint s, int i, int lo, int hi) { return lo + int(floor(float(hi - lo + 1) * mbDraw(s, i))); }
-float jsRound(float x) { return floor(x + 0.5); }   // Math.round (half up)
+fn mbRange(s: u32, i: i32, lo: f32, hi: f32) -> f32 { return lo + (hi - lo) * mbDraw(s, i); }
+fn mbInt(s: u32, i: i32, lo: i32, hi: i32) -> i32 { return lo + i32(floor(f32(hi - lo + 1) * mbDraw(s, i))); }
+fn jsRound(x: f32) -> f32 { return floor(x + 0.5); }   // Math.round (half up)
 
-// A tree map texel: x = 1 + offset x + BS · offset z + BS² · (variant + TREE_VARIANTS · size) (0: none),
+// A tree map entry: x = 1 + offset x + BS · offset z + BS² · (variant + TREE_VARIANTS · size) (0: none),
 // y = its ground (the trunk's base cell), z, w = the low and high 16 bits of its key (sceneTreeKey).
-struct Tree { vec3 base; int variant; int size; float T; float H; uint seed; int quarter; };
-Tree treeOf(vec4 t, ivec2 bc) {
-  int k = int(t.x + 0.5) - 1;
-  int rest = k / (BS * BS);
-  Tree r;
-  r.base = vec3(float(bc.x * BS + k % BS), t.y, float(bc.y * BS + (k / BS) % BS)) + 0.5;   // the base cell's centre
+struct Tree { base: vec3f, variant: i32, size: i32, T: f32, H: f32, seed: u32, quarter: i32 }
+fn treeOf(t: vec4f, bc: vec2i) -> Tree {
+  let k = i32(t.x + 0.5) - 1;
+  let rest = k / (BS * BS);
+  var r: Tree;
+  r.base = vec3f(f32(bc.x * BS + k % BS), t.y, f32(bc.y * BS + (k / BS) % BS)) + 0.5;   // the base cell's centre
   r.variant = rest % TREE_VARIANTS;
   r.size = rest / TREE_VARIANTS;
   r.T = TREE_T[r.size];
-  uint key = uint(t.z + 0.5) | (uint(t.w + 0.5) << 16u);
+  let key = u32(t.z + 0.5) | (u32(t.w + 0.5) << 16u);
   r.seed = pcg(key);                    // its construction seed (world/generator.js treeCandidate)
-  r.quarter = int((key >> 20u) & 3u);   // which way it faces (runtime.js bake)
-  vec2 hr = r.variant == TV_OAK ? vec2(TS_OAK_H_LO, TS_OAK_H_HI) : r.variant == TV_BIRCH ? vec2(TS_BIRCH_H_LO, TS_BIRCH_H_HI)
-          : r.variant == TV_PINE ? vec2(TS_PINE_H_LO, TS_PINE_H_HI) : r.variant == TV_PALM ? vec2(TS_PALM_H_LO, TS_PALM_H_HI)
-          : vec2(TS_DEAD_H_LO, TS_DEAD_H_HI);
+  r.quarter = i32((key >> 20u) & 3u);   // which way it faces (runtime.js bake)
+  var hr = vec2f(TS_DEAD_H_LO, TS_DEAD_H_HI);
+  if (r.variant == TV_OAK) { hr = vec2f(TS_OAK_H_LO, TS_OAK_H_HI); }
+  else if (r.variant == TV_BIRCH) { hr = vec2f(TS_BIRCH_H_LO, TS_BIRCH_H_HI); }
+  else if (r.variant == TV_PINE) { hr = vec2f(TS_PINE_H_LO, TS_PINE_H_HI); }
+  else if (r.variant == TV_PALM) { hr = vec2f(TS_PALM_H_LO, TS_PALM_H_HI); }
   r.H = jsRound(mbRange(r.seed, 0, hr.x, hr.y) * r.T);   // draw 0: every kind's height
   return r;
 }
 // a world offset turned back into the construction's frame (the inverse of runtime.js TURN[quarter])
-vec2 treeUnturn(vec2 v, int q) {
-  return q == 0 ? v : (q == 1 ? vec2(-v.y, v.x) : (q == 2 ? -v : vec2(v.y, -v.x)));
+fn treeUnturn(v: vec2f, q: i32) -> vec2f {
+  if (q == 0) { return v; }
+  if (q == 1) { return vec2f(-v.y, v.x); }
+  if (q == 2) { return -v; }
+  return vec2f(v.y, -v.x);
 }
 `;
 
@@ -381,216 +301,238 @@ vec2 treeUnturn(vec2 v, int q) {
 // surface, a trunk's is its cells in the cube), and of the brick there (its
 // element's vote: leaves (PLANT) 0 or 1, its trunk's cells (WOOD)).
 export const TREE_OWN_REACH = 2;   // cells: a brick whose centre is this close to a crown (or inside it) holds leaves (half its width)
-const treeShapeGLSL = /* glsl */ `
-#define TREE_OWN_REACH ${glf(TREE_OWN_REACH)}
-float treeRamp(float d) { return clamp(0.5 - d / float(FAR_CUBE), 0.0, 1.0); }
+const treeShapeGLSL = /* wgsl */ `
+const TREE_OWN_REACH: f32 = ${glf(TREE_OWN_REACH)};
+fn treeRamp(d: f32) -> f32 { return clamp(0.5 - d / f32(FAR_CUBE), 0.0, 1.0); }
 // an ellipsoid's distance (approximate: exact for a sphere) at q, centre c, radii r
-float treeEllipsoid(vec3 q, vec3 c, vec3 r) { return (length((q - c) / r) - 1.0) * min(r.x, r.y); }
+fn treeEllipsoid(q: vec3f, c: vec3f, r: vec3f) -> f32 { return (length((q - c) / r) - 1.0) * min(r.x, r.y); }
 // a vertical trunk of n cells' cross-section from y0 to y1 on the base's axis: its cells in the cube at q
-float treeTrunk(vec3 q, float y0, float y1, float n) {
-  float h = 0.5 * float(FAR_CUBE);
-  if (abs(q.x) > h || abs(q.z) > h) return 0.0;
-  return n * clamp(min(q.y + h, y1) - max(q.y - h, y0), 0.0, float(FAR_CUBE)) / float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
+fn treeTrunk(q: vec3f, y0: f32, y1: f32, n: f32) -> f32 {
+  let h = 0.5 * f32(FAR_CUBE);
+  if (abs(q.x) > h || abs(q.z) > h) { return 0.0; }
+  return n * clamp(min(q.y + h, y1) - max(q.y - h, y0), 0.0, f32(FAR_CUBE)) / f32(FAR_CUBE * FAR_CUBE * FAR_CUBE);
 }
 // t: the tree, p: the cube's centre (world cells). Returns (cube share, leaves here, trunk cells here).
-vec3 treeFill(Tree t, vec3 p) {
-  vec3 q = p - t.base;
-  q.xz = treeUnturn(q.xz, t.quarter);
-  float H = t.H, T = t.T, crown = 1e9, trunkTop = 0.0;
-  float cells = TREE_TRUNK_CELLS[t.variant * TREE_SIZES + t.size];
+fn treeFill(t: Tree, p: vec3f) -> vec3f {
+  var q = p - t.base;
+  let qt = treeUnturn(q.xz, t.quarter);
+  q = vec3f(qt.x, q.y, qt.y);
+  let H = t.H;
+  let T = t.T;
+  var crown = 1e9;
+  var trunkTop = 0.0;
+  let cells = treeTrunkCells(t.variant, t.size);
   if (t.variant == TV_OAK) {
-    float th = jsRound(H * mbRange(t.seed, 1, TS_OAK_TRUNK_LO, TS_OAK_TRUNK_HI));
-    float tr = max(0.5, TS_OAK_TR * T);
-    int R = int(ceil(tr + TS_OAK_FLARE + 1.0));   // the root flare's disc: one draw per cell of its square
-    int i0 = 2 + (2 * R + 1) * (2 * R + 1);
-    int n = mbInt(t.seed, i0, int(TS_OAK_BRANCHES_LO), int(TS_OAK_BRANCHES_HI));
-    float a0 = mbDraw(t.seed, i0 + 1) * TREE_TAU;
-    vec3 rad = vec3(1.0, TS_OAK_CROWN_SY, 1.0) * TS_OAK_CROWN_R * H;
-    crown = treeEllipsoid(q, vec3(0.0, th + TS_OAK_CROWN_Y * H, 0.0), rad);
-    for (int i = 0; i < int(TS_OAK_BRANCHES_HI); i++) {
-      if (i >= n) break;
-      int k = i0 + 2 + 4 * i;
-      float az = a0 + float(i) / float(n) * TREE_TAU + mbRange(t.seed, k, -TS_OAK_AZ_JITTER, TS_OAK_AZ_JITTER);
-      float el = mbRange(t.seed, k + 1, TS_OAK_EL_LO, TS_OAK_EL_HI);
-      float y = th - float(mbInt(t.seed, k + 2, int(TS_OAK_DROP_LO), int(TS_OAK_DROP_HI)));
-      float len = H * mbRange(t.seed, k + 3, TS_OAK_LEN_LO, TS_OAK_LEN_HI);
-      vec3 b = vec3(0.0, y, 0.0) + vec3(cos(az) * cos(el), sin(el), sin(az) * cos(el)) * len;
+    let th = jsRound(H * mbRange(t.seed, 1, TS_OAK_TRUNK_LO, TS_OAK_TRUNK_HI));
+    let tr = max(0.5, TS_OAK_TR * T);
+    let R = i32(ceil(tr + TS_OAK_FLARE + 1.0));   // the root flare's disc: one draw per cell of its square
+    let i0 = 2 + (2 * R + 1) * (2 * R + 1);
+    let n = mbInt(t.seed, i0, i32(TS_OAK_BRANCHES_LO), i32(TS_OAK_BRANCHES_HI));
+    let a0 = mbDraw(t.seed, i0 + 1) * TREE_TAU;
+    let rad = vec3f(1.0, TS_OAK_CROWN_SY, 1.0) * TS_OAK_CROWN_R * H;
+    crown = treeEllipsoid(q, vec3f(0.0, th + TS_OAK_CROWN_Y * H, 0.0), rad);
+    for (var i = 0; i < i32(TS_OAK_BRANCHES_HI); i++) {
+      if (i >= n) { break; }
+      let k = i0 + 2 + 4 * i;
+      let az = a0 + f32(i) / f32(n) * TREE_TAU + mbRange(t.seed, k, -TS_OAK_AZ_JITTER, TS_OAK_AZ_JITTER);
+      let el = mbRange(t.seed, k + 1, TS_OAK_EL_LO, TS_OAK_EL_HI);
+      let y = th - f32(mbInt(t.seed, k + 2, i32(TS_OAK_DROP_LO), i32(TS_OAK_DROP_HI)));
+      let len = H * mbRange(t.seed, k + 3, TS_OAK_LEN_LO, TS_OAK_LEN_HI);
+      let b = vec3f(0.0, y, 0.0) + vec3f(cos(az) * cos(el), sin(el), sin(az) * cos(el)) * len;
       crown = min(crown, treeEllipsoid(q, b, rad));
     }
     trunkTop = th;
   } else if (t.variant == TV_PINE) {
-    float y0 = jsRound(H * mbRange(t.seed, 1, TS_PINE_Y0_LO, TS_PINE_Y0_HI));
-    float R = H * mbRange(t.seed, 2, TS_PINE_R_LO, TS_PINE_R_HI);
-    float tiers = max(TS_PINE_TIERS_MIN, jsRound(mbRange(t.seed, 3, TS_PINE_TIERS_LO, TS_PINE_TIERS_HI) * sqrt(T)));
-    float u = (clamp(q.y, y0, H) - y0) / max(H - y0, 1.0);
-    float r = R * pow(1.0 - u, TS_PINE_TAPER) * (1.0 - TS_PINE_FLARE * fract(u * tiers)) + TS_PINE_TIP;
+    let y0 = jsRound(H * mbRange(t.seed, 1, TS_PINE_Y0_LO, TS_PINE_Y0_HI));
+    let R = H * mbRange(t.seed, 2, TS_PINE_R_LO, TS_PINE_R_HI);
+    let tiers = max(TS_PINE_TIERS_MIN, jsRound(mbRange(t.seed, 3, TS_PINE_TIERS_LO, TS_PINE_TIERS_HI) * sqrt(T)));
+    let u = (clamp(q.y, y0, H) - y0) / max(H - y0, 1.0);
+    let r = R * pow(1.0 - u, TS_PINE_TAPER) * (1.0 - TS_PINE_FLARE * fract(u * tiers)) + TS_PINE_TIP;
     crown = max(length(q.xz) - r, max(y0 - q.y, q.y - H));
     trunkTop = H;
   } else if (t.variant == TV_BIRCH) {
-    crown = treeEllipsoid(q, vec3(0.0, TS_BIRCH_CROWN_Y * H, 0.0), vec3(TS_BIRCH_CROWN_R, TS_BIRCH_CROWN_RV, TS_BIRCH_CROWN_R) * H);
+    crown = treeEllipsoid(q, vec3f(0.0, TS_BIRCH_CROWN_Y * H, 0.0), vec3f(TS_BIRCH_CROWN_R, TS_BIRCH_CROWN_RV, TS_BIRCH_CROWN_R) * H);
     trunkTop = H;
   } else if (t.variant == TV_PALM) {
-    float az = mbDraw(t.seed, 1) * TREE_TAU;
-    float lean = H * mbRange(t.seed, 2, TS_PALM_LEAN_LO, TS_PALM_LEAN_HI);
-    float L = TS_PALM_FROND * H;
-    vec3 top = vec3(cos(az) * lean, H, sin(az) * lean);
-    crown = treeEllipsoid(q, top - vec3(0.0, TS_PALM_CROWN_DROP * L, 0.0), vec3(TS_PALM_CROWN_R, TS_PALM_CROWN_RV, TS_PALM_CROWN_R) * L);
+    let az = mbDraw(t.seed, 1) * TREE_TAU;
+    let lean = H * mbRange(t.seed, 2, TS_PALM_LEAN_LO, TS_PALM_LEAN_HI);
+    let L = TS_PALM_FROND * H;
+    let top = vec3f(cos(az) * lean, H, sin(az) * lean);
+    crown = treeEllipsoid(q, top - vec3f(0.0, TS_PALM_CROWN_DROP * L, 0.0), vec3f(TS_PALM_CROWN_R, TS_PALM_CROWN_RV, TS_PALM_CROWN_R) * L);
     trunkTop = H;
   } else {
     trunkTop = TS_DEAD_TRUNK * H;
   }
-  float share = max(crown < 1e8 ? treeRamp(crown) : 0.0, treeTrunk(q, 0.0, trunkTop, cells));
-  float h = 0.5 * float(BS);
-  float rows = abs(q.x) < h && abs(q.z) < h ? clamp(min(q.y + h, trunkTop) - max(q.y - h, 0.0), 0.0, float(BS)) : 0.0;
-  return vec3(share, crown < TREE_OWN_REACH ? 1.0 : 0.0, cells * rows);
+  let share = max(select(0.0, treeRamp(crown), crown < 1e8), treeTrunk(q, 0.0, trunkTop, cells));
+  let h = 0.5 * f32(BS);
+  var rows = 0.0;
+  if (abs(q.x) < h && abs(q.z) < h) { rows = clamp(min(q.y + h, trunkTop) - max(q.y - h, 0.0), 0.0, f32(BS)); }
+  return vec3f(share, select(0.0, 1.0, crown < TREE_OWN_REACH), cells * rows);
 }
 `;
 
+// The tree passes' buffers, a vec4f (the tree map's: treeOf) or vec2f (the
+// bands) per world brick column, x fastest.
 // Tree candidates, per brick column: the scene's sceneTreeCandidate (its
-// tree hook's GLSL, treesIn's candidates' twin), after its GLSL and the tree
-// constants. x: the packed tree (treeOf), y: its ground, z: its priority.
-export const farTreeCandFrag = (g, L, sceneGLSL, treesGLSL) => /* glsl */ `
-${prelude(g)}
-${sceneGLSL}
+// tree hook's WGSL, treesIn's candidates' twin). x: the packed tree
+// (treeOf), y: its ground, z: its priority.
+export const TREE_CAND_BINDING = SCENE_BINDING.next;   // (after the scene's own, group 2)
+const columnMain = (body) => /* wgsl */ `
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldId(wg, nwg) * 64u + li;
+  if (i >= u32(WBX * WBZ)) { return; }
+  let bc = vec2i(i32(i) % WBX, i32(i) / WBX);
+${body}
+}`;
+/** A brick-column kernel's dispatch over the world's brick columns. */
+export const columnDispatch = (L) => fold(Math.ceil(L.bricks.n[0] * L.bricks.n[2] / 64));
+export const farTreeCandFrag = (g, L, sceneGLSL, treesGLSL) => /* wgsl */ `
+${prelude(g, { state: false })}
+${treesGLSL}
 ${farLayoutGLSL(L)}
 ${treeGLSL()}
-${treesGLSL}
-out vec4 oC;
-void main() {
-  oC = sceneTreeCandidate(ivec2(gl_FragCoord.xy));
-}
+@group(2) @binding(${TREE_CAND_BINDING}) var<storage, read_write> cand: array<vec4f>;
+${columnMain('  cand[i] = sceneTreeCandidate(bc);')}
 `;
 
 // Thinning (treesIn): a candidate with a rival within TREE.SPACING that has a
 // higher priority (ties: the lower brick index) is dropped. Out: the tree map
 // (treeOf), with the candidate's key (sceneTreeKey) for the shapes.
-export const farTreeThinFrag = (g, L, sceneGLSL, treesGLSL) => /* glsl */ `
-${prelude(g)}
-${sceneGLSL}
+export const farTreeThinFrag = (g, L, sceneGLSL, treesGLSL) => /* wgsl */ `
+${prelude(g, { state: false })}
+${treesGLSL}
 ${farLayoutGLSL(L)}
 ${treeGLSL()}
-${treesGLSL}
-uniform sampler2D tCand;
-out vec4 oC;
-vec2 trunkXZ(ivec2 bc, vec4 c) { int k = int(c.x + 0.5) - 1; return vec2(bc * BS + ivec2(k % BS, (k / BS) % BS)); }
-void main() {
-  ivec2 bc = ivec2(gl_FragCoord.xy);
-  vec4 c = texelFetch(tCand, bc, 0);
-  oC = vec4(0.0);
-  if (c.x == 0.0) return;
-  vec2 pc = trunkXZ(bc, c);
-  for (int dz = -TREE_THIN_R; dz <= TREE_THIN_R; dz++)
-  for (int dx = -TREE_THIN_R; dx <= TREE_THIN_R; dx++) {
-    if (dx == 0 && dz == 0) continue;
-    ivec2 nb = bc + ivec2(dx, dz);
-    if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;   // past the world: deep sea, no trees
-    vec4 o = texelFetch(tCand, nb, 0);
-    if (o.x == 0.0 || distance(trunkXZ(nb, o), pc) >= TREE_SPACING) continue;
-    if (o.z > c.z || (o.z == c.z && (dz < 0 || (dz == 0 && dx < 0)))) return;
+@group(2) @binding(${TREE_CAND_BINDING}) var<storage, read> cand: array<vec4f>;
+@group(2) @binding(${TREE_CAND_BINDING + 1}) var<storage, read_write> trees: array<vec4f>;
+fn trunkXZ(bc: vec2i, c: vec4f) -> vec2f { let k = i32(c.x + 0.5) - 1; return vec2f(bc * BS + vec2i(k % BS, (k / BS) % BS)); }
+fn thin(bc: vec2i, c: vec4f) -> vec4f {
+  if (c.x == 0.0) { return vec4f(0.0); }
+  let pc = trunkXZ(bc, c);
+  for (var dz = -TREE_THIN_R; dz <= TREE_THIN_R; dz++) {
+    for (var dx = -TREE_THIN_R; dx <= TREE_THIN_R; dx++) {
+      if (dx == 0 && dz == 0) { continue; }
+      let nb = bc + vec2i(dx, dz);
+      if (any(nb < vec2i(0)) || any(nb >= WB.xz)) { continue; }   // past the world: deep sea, no trees
+      let o = cand[nb.x + WBX * nb.y];
+      if (o.x == 0.0 || distance(trunkXZ(nb, o), pc) >= TREE_SPACING) { continue; }
+      if (o.z > c.z || (o.z == c.z && (dz < 0 || (dz == 0 && dx < 0)))) { return vec4f(0.0); }
+    }
   }
   // kept: its key, in 16-bit halves
-  uint key = sceneTreeKey(bc);
-  oC = vec4(c.x, c.y, float(key & 0xffffu), float(key >> 16u));
+  let key = sceneTreeKey(bc);
+  return vec4f(c.x, c.y, f32(key & 0xffffu), f32(key >> 16u));
 }
+${columnMain('  trees[i] = thin(bc, cand[i]);')}
 `;
 
 // Tree bands, per brick column: the lowest base and highest top (cells) of the
 // trees in reach of it (TREE_NONE_* if none): farSceneFrag looks for trees only
 // in bricks inside the band.
-export const farTreeBandFrag = (g, L) => /* glsl */ `
-${prelude(g)}
+export const FAR_TREE_BAND_LAYOUT = [buf(0), buf(1, 'storage')];
+export const farTreeBandFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
 ${treeGLSL()}
-uniform sampler2D tTrees;
-out vec4 oC;
-void main() {
-  ivec2 bc = ivec2(gl_FragCoord.xy);
-  float lo = TREE_NONE_LO, hi = TREE_NONE_HI;
-  for (int dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++)
-  for (int dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
-    ivec2 nb = bc + ivec2(dx, dz);
-    if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;
-    vec4 t = texelFetch(tTrees, nb, 0);
-    if (t.x == 0.0) continue;
-    Tree tr = treeOf(t, nb);
-    lo = min(lo, t.y);
-    hi = max(hi, t.y + TS_TOP * tr.H);
+@group(2) @binding(0) var<storage, read> trees: array<vec4f>;
+@group(2) @binding(1) var<storage, read_write> band: array<vec2f>;
+fn bandOf(bc: vec2i) -> vec2f {
+  var lo = TREE_NONE_LO;
+  var hi = TREE_NONE_HI;
+  for (var dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++) {
+    for (var dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
+      let nb = bc + vec2i(dx, dz);
+      if (any(nb < vec2i(0)) || any(nb >= WB.xz)) { continue; }
+      let t = trees[nb.x + WBX * nb.y];
+      if (t.x == 0.0) { continue; }
+      let tr = treeOf(t, nb);
+      lo = min(lo, t.y);
+      hi = max(hi, t.y + TS_TOP * tr.H);
+    }
   }
-  oC = vec4(lo, hi, 0.0, 1.0);
+  return vec2f(lo, hi);
 }
+${columnMain('  band[i] = bandOf(bc);')}
 `;
 
 // The trees in reach of a brick, where its cube meets their band, joined to
 // what its cells hold: the union of their shares with the cells', their leaves
 // or trunk voting for the brick's element (farSceneFrag, for a scene with trees).
 export const FAR_TREE_W = 512;   // dominant-element weight of a crown in a brick (a brick's 64 cells, open: over the ground's)
-const farTreesGLSL = /* glsl */ `
+const farTreesGLSL = /* wgsl */ `
 ${treeGLSL()}
 ${treeShapeGLSL}
-uniform sampler2D tTrees;      // the tree map (farTreeThinFrag)
-uniform sampler2D tTreeBand;   // per brick column, the trees' band in reach (farTreeBandFrag)
-#define FAR_TREE_W ${glf(FAR_TREE_W)}
-#define FAR_TREE_PAD ${glf(Math.SQRT2 * FAR.CUBE / 2)}   // cells: a cube's half diagonal across, past a tree's reach
+@group(2) @binding(3) var<storage, read> trees: array<vec4f>;   // the tree map (farTreeThinFrag)
+@group(2) @binding(4) var<storage, read> band: array<vec2f>;    // per brick column, the trees' band in reach (farTreeBandFrag)
+const FAR_TREE_W: f32 = ${glf(FAR_TREE_W)};
+const FAR_TREE_PAD: f32 = ${glf(Math.SQRT2 * FAR.CUBE / 2)};   // cells: a cube's half diagonal across, past a tree's reach
 // b: the brick; o its low corner, y0 its cube's bottom (cells)
-void farTrees(inout FarCount c, ivec3 b, ivec3 o, int y0) {
-  vec2 band = texelFetch(tTreeBand, b.xz, 0).xy;
-  if (float(y0) >= band.y || float(y0 + FAR_CUBE) <= band.x) return;
-  vec3 pc = vec3(o) + 0.5 * float(BS);   // the brick's (and its cube's) centre
-  float ts = 0.0, leaves = 0.0, trunk = 0.0;
-  for (int dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++)
-  for (int dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
-    ivec2 nb = b.xz + ivec2(dx, dz);
-    if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;
-    vec4 t = texelFetch(tTrees, nb, 0);
-    if (t.x == 0.0) continue;
-    Tree tr = treeOf(t, nb);
-    // too far from its trunk, above its top or under its base for the cube
-    if (length(pc.xz - tr.base.xz) > TS_REACH[tr.variant] * tr.H + FAR_TREE_PAD
-        || float(y0) > tr.base.y + TS_TOP * tr.H || float(y0 + FAR_CUBE) < tr.base.y) continue;
-    vec3 f = treeFill(tr, pc);
-    ts = max(ts, f.x);
-    leaves = max(leaves, f.y);
-    trunk += f.z;
+fn farTrees(c: ptr<function, FarCount>, b: vec3i, o: vec3i, y0: i32) {
+  let bd = band[b.x + WBX * b.z];
+  if (f32(y0) >= bd.y || f32(y0 + FAR_CUBE) <= bd.x) { return; }
+  let pc = vec3f(o) + 0.5 * f32(BS);   // the brick's (and its cube's) centre
+  var ts = 0.0;
+  var leaves = 0.0;
+  var trunk = 0.0;
+  for (var dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++) {
+    for (var dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
+      let nb = b.xz + vec2i(dx, dz);
+      if (any(nb < vec2i(0)) || any(nb >= WB.xz)) { continue; }
+      let t = trees[nb.x + WBX * nb.y];
+      if (t.x == 0.0) { continue; }
+      let tr = treeOf(t, nb);
+      // too far from its trunk, above its top or under its base for the cube
+      if (length(pc.xz - tr.base.xz) > TS_REACH[tr.variant] * tr.H + FAR_TREE_PAD
+          || f32(y0) > tr.base.y + TS_TOP * tr.H || f32(y0 + FAR_CUBE) < tr.base.y) { continue; }
+      let f = treeFill(tr, pc);
+      ts = max(ts, f.x);
+      leaves = max(leaves, f.y);
+      trunk += f.z;
+    }
   }
-  c.s = max(c.s, ts * float(FAR_CUBE * FAR_CUBE * FAR_CUBE));
+  (*c).s = max((*c).s, ts * f32(FAR_CUBE * FAR_CUBE * FAR_CUBE));
   // their cells vote as open ones (FAR.SURFACE_W): a crown's outweigh the ground's, a thin trunk's don't
-  if (leaves > 0.0) { c.w[E_PLANT] += FAR_TREE_W; c.open += 1.0; }
-  else if (trunk > 0.0) { c.w[E_WOOD] += trunk * FAR_SURFACE_W; c.open += 1.0; }
+  if (leaves > 0.0) { (*c).w[E_PLANT] += FAR_TREE_W; (*c).open += 1.0; }
+  else if (trunk > 0.0) { (*c).w[E_WOOD] += trunk * FAR_SURFACE_W; (*c).open += 1.0; }
 }
 `;
 
 // Window → far grid: the window's own state, brick by brick, for the region
-// being drawn (world bricks; uOrigin the window's). Below the world counts as
+// being drawn (world bricks; H.origin the window's). Below the world counts as
 // rock, above it as air; a cube reaching past the window's sides repeats them.
-export const farWinFrag = (g, L) => /* glsl */ `
-${prelude(g)}
+// Group 2: the grid, written.
+export const FAR_WIN_LAYOUT = [store(0, FAR_FORMATS.grid)];
+export const farWinFrag = (g, L) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
 ${farLayoutGLSL(L)}
 ${countGLSL}
-out vec4 oC;
-void main() {
-  ivec3 gb = farBrickFromFrag(ivec2(gl_FragCoord.xy)) - uOrigin / BS;   // the grid's brick
-  if (any(lessThan(gb, ivec3(0))) || any(greaterThanEqual(gb, ivec3(BX, BY, BZ)))) discard;
-  FarCount c = farCountInit();
-  ivec3 o = gb * BS;
-  for (int dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++)
-  for (int dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
-    ivec2 col = clamp(o.xz + ivec2(dx, dz), ivec2(0), ivec2(NX, NZ) - 1);
-    bool own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
-    int above = E_EMPTY;
-    // top down through the cube [-lo, BS + lo)
-    for (int dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
-      int y = o.y + dy;
-      vec4 a = y >= NY ? vec4(float(E_EMPTY), AMBIENT, 0.0, 0.0)
-             : (y < 0 ? vec4(float(E_ROCK), AMBIENT, 0.0, 0.0) : fetchA(ivec3(col.x, y, col.y)));
-      int id = eid(a);
-      if (farOpaque(id)) c.s += 1.0;
-      else if (farLiquid(id)) c.l += 1.0;
-      if (own && dy >= 0 && dy < BS) farCell(c, id, above, a.y);
-      above = id;
+@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
+${regionMain(/* wgsl */ `
+  let gb = b - H.origin / BS;   // the grid's brick
+  if (any(gb < vec3i(0)) || any(gb >= vec3i(BX, BY, BZ))) { return; }
+  var c: FarCount;
+  let o = gb * BS;
+  for (var dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++) {
+    for (var dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
+      let col = clamp(o.xz + vec2i(dx, dz), vec2i(0), vec2i(NX, NZ) - 1);
+      let own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
+      var above = E_EMPTY;
+      // top down through the cube [-lo, BS + lo)
+      for (var dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
+        let y = o.y + dy;
+        var a = vec4f(f32(E_EMPTY), AMBIENT, 0.0, 0.0);
+        if (y < 0) { a = vec4f(f32(E_ROCK), AMBIENT, 0.0, 0.0); }
+        else if (y < NY) { a = fetchA(vec3i(col.x, y, col.y)); }
+        let id = eid(a);
+        if (farOpaque(id)) { c.s += 1.0; }
+        else if (farLiquid(id)) { c.l += 1.0; }
+        if (own && dy >= 0 && dy < BS) { farCell(&c, id, above, a.y); }
+        above = id;
+      }
     }
   }
-  oC = farPack(c);
-}
+  textureStore(farOut, b, farPack(&c));`)}
 `;
 
 // ---------------------------------------------------------------- scenes
@@ -599,93 +541,97 @@ void main() {
 // (world/far.js spreads the chunks over frames, nearest the window first):
 //   - farSceneCellsFrag evaluates sceneCell once per cell of the chunk's
 //     columns and the FAR_CUBE_LO columns around them that its bricks' cubes
-//     reach (past the world's edge the edge repeats), every slice, into a
-//     target of (id, °C) texels (scene cells);
+//     reach (past the world's edge the edge repeats), every height, into a
+//     buffer of (id, °C) as two halves (pack2x16float: the half-float target
+//     they were), its scene cells;
 //   - farSceneFrag summarizes the chunk's bricks from those cells exactly as
 //     farWinFrag does from the window's state (below the world rock, above it
 //     air), and for a scene with trees joins the trees in reach (farTrees),
 //     leaving out the brick columns the window has already summarized: the
-//     window's state wins wherever it has been (tWinMask).
+//     window's state wins wherever it has been (the window mask, a bit per
+//     world brick column).
 // Each cell is evaluated once rather than once per cube that holds it (8×).
 export const FAR_SCENE = {
-  CHUNK: 16,   // brick columns along a chunk's edge (64 cells: 256 chunks over the world, each a small draw)
+  CHUNK: 16,   // brick columns along a chunk's edge (64 cells: 256 chunks over the world, each a small dispatch)
 };
-// The scene cells' target: the chunk's columns with their margin, side ×
-// side, each z row of them (side × world height texels) side by side along
-// x, `cols` to a row of the atlas (near square).
+// The scene cells of a chunk: its columns with their margin, side × side,
+// every height of the world: cell (x, y, z) at x + side · (z + side · y).
 export function farSceneLayout(L, side = FAR_SCENE.CHUNK * BRICK + FAR.CUBE - BRICK) {
-  const cols = Math.ceil(Math.sqrt(L.size[1]));   // cols · side wide ≈ (side / cols) · height tall
-  return { side, cols, width: cols * side, height: Math.ceil(side / cols) * L.size[1] };
+  return { side, cells: side * side * L.size[1] };
 }
-const sceneCellsLayoutGLSL = (L, S = farSceneLayout(L)) => {
-  return /* glsl */ `
-#define FSC_SIDE ${S.side}      // cells along the chunk's columns, margin included
-#define FSC_COLS ${S.cols}      // z rows of them per atlas row
-#define FSC_WORLD_X ${L.size[0]}
-#define FSC_WORLD_Y ${L.size[1]}
-#define FSC_WORLD_Z ${L.size[2]}
-uniform ivec2 uChunkLo;   // world cell (x, z) of the chunk's column (0, 0): its first brick column's less FAR_CUBE_LO
-ivec2 fscTexel(ivec3 c) { return ivec2(c.x + FSC_SIDE * (c.z % FSC_COLS), c.y + FSC_WORLD_Y * (c.z / FSC_COLS)); }
+const sceneCellsLayoutGLSL = (L, S = farSceneLayout(L)) => /* wgsl */ `
+const FSC_SIDE: i32 = ${S.side};      // cells along the chunk's columns, margin included
+const FSC_WORLD_X: i32 = ${L.size[0]};
+const FSC_WORLD_Y: i32 = ${L.size[1]};
+const FSC_WORLD_Z: i32 = ${L.size[2]};
+fn fscIndex(c: vec3i) -> u32 { return u32(c.x + FSC_SIDE * (c.z + FSC_SIDE * c.y)); }
 `;
-};
-// sceneGLSL: the scene's glsl(g). Only the prelude comes before it, so its
-// names can't meet the far field's.
-export const farSceneCellsFrag = (g, L, sceneGLSL, S, live = false) => /* glsl */ `
-${prelude(g)}
+export const SceneCellsParams = uniformStruct('SceneCellsParams', { chunkLo: 'vec2i' });
+/** The scene cells' dispatch for layout S (farSceneLayout). */
+export const sceneCellsDispatch = (S) => fold(Math.ceil(S.cells / 64));
+// sceneGLSL: the scene's glsl(g) (its group 2 from binding 0; the cells after
+// it). Only the prelude comes before it, so its names can't meet the far field's.
+export const SCENE_CELLS_BINDING = SCENE_BINDING.next;
+export const farSceneCellsFrag = (g, L, sceneGLSL, S, live = false) => /* wgsl */ `
+${prelude(g, live ? STATE_OPTS.STATE_RO : { state: false })}
 ${sceneGLSL}
 ${sceneCellsLayoutGLSL(L, S)}
-${live ? 'uniform ivec3 uLiveOrigin;' : ''}
-out vec4 oC;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  int zc = f.x / FSC_SIDE, zr = f.y / FSC_WORLD_Y;
-  ivec3 c = ivec3(f.x - zc * FSC_SIDE, f.y - zr * FSC_WORLD_Y, zr * FSC_COLS + zc);
-  oC = vec4(0.0);
-  if (c.z >= FSC_SIDE) return;   // the atlas's last row may have unused slots
-  ivec2 col = clamp(uChunkLo + c.xz, ivec2(0), ivec2(FSC_WORLD_X, FSC_WORLD_Z) - 1);
-  vec4 A, B;
-  sceneCell(ivec3(col.x, c.y, col.y), A, B);
-  ${live ? `ivec3 local = ivec3(col.x, c.y, col.y) - uLiveOrigin;
-  if (all(greaterThanEqual(local, ivec3(0))) && all(lessThan(local, ivec3(NX, NY, NZ)))) A = fetchA(local);` : ''}
-  oC = vec4(A.xy, 0.0, 1.0);
+${SceneCellsParams.wgsl}
+@group(3) @binding(1) var<uniform> P: SceneCellsParams;
+@group(2) @binding(${SCENE_CELLS_BINDING}) var<storage, read_write> cells: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldId(wg, nwg) * 64u + li;
+  let side = u32(FSC_SIDE);
+  if (i >= side * side * u32(FSC_WORLD_Y)) { return; }
+  let c = vec3i(vec3u(i % side, i / (side * side), (i / side) % side));
+  let col = clamp(P.chunkLo + c.xz, vec2i(0), vec2i(FSC_WORLD_X, FSC_WORLD_Z) - 1);
+  var A = sceneCell(vec3i(col.x, c.y, col.y)).A;${live ? `
+  let local = vec3i(col.x, c.y, col.y) - H.origin;
+  if (inGrid(local)) { A = fetchA(local); }` : ''}
+  cells[i] = pack2x16float(A.xy);
 }
 `;
+// The summary's group 2: the grid (written), the scene cells, the window
+// mask, and with trees the tree map and bands (FAR_SCENE_LAYOUT(trees)).
+export const FAR_SCENE_LAYOUT = (trees) => [store(0, FAR_FORMATS.grid), buf(1), buf(2), ...(trees ? [buf(3), buf(4)] : [])];
 // trees: the scene has trees (scene.trees): their tree map and bands join in.
-export const farSceneFrag = (g, L, trees = false) => /* glsl */ `
-${prelude(g)}
+export const farSceneFrag = (g, L, trees = false) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
 ${countGLSL}
 ${sceneCellsLayoutGLSL(L)}
 ${trees ? farTreesGLSL : ''}
-uniform sampler2D tCells;     // the chunk's scene cells (farSceneCellsFrag): id, °C
-uniform sampler2D tWinMask;   // per world brick column: set where the window's state has been summarized
-out vec4 oC;
-void main() {
-  ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
-  if (texelFetch(tWinMask, b.xz, 0).r > 0.5) discard;
-  FarCount c = farCountInit();
-  ivec3 o = b * BS;
-  ivec2 lo = o.xz - uChunkLo;   // the brick's first column among the chunk's
-  for (int dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++)
-  for (int dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
-    ivec2 col = lo + ivec2(dx, dz);
-    bool own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
-    int above = E_EMPTY;
-    // top down through the cube [-lo, BS + lo)
-    for (int dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
-      int y = o.y + dy;
-      vec2 a = y >= WORLD_Y ? vec2(float(E_EMPTY), AMBIENT)
-             : (y < 0 ? vec2(float(E_ROCK), AMBIENT) : texelFetch(tCells, fscTexel(ivec3(col.x, y, col.y)), 0).xy);
-      int id = eid(vec4(a, 0.0, 0.0));
-      if (farOpaque(id)) c.s += 1.0;
-      else if (farLiquid(id)) c.l += 1.0;
-      if (own && dy >= 0 && dy < BS) farCell(c, id, above, a.y);
-      above = id;
+@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
+@group(2) @binding(1) var<storage, read> cells: array<u32>;     // the chunk's scene cells (farSceneCellsFrag): id, °C
+@group(2) @binding(2) var<storage, read> winMask: array<u32>;   // a bit per world brick column: the window's state has been summarized
+${regionMain(/* wgsl */ `
+  let m = u32(b.x + WBX * b.z);
+  if (((winMask[m >> 5u] >> (m & 31u)) & 1u) != 0u) { return; }
+  var c: FarCount;
+  let o = b * BS;
+  let lo = o.xz - P.chunkLo;   // the brick's first column among the chunk's
+  for (var dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++) {
+    for (var dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
+      let col = lo + vec2i(dx, dz);
+      let own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
+      var above = E_EMPTY;
+      // top down through the cube [-lo, BS + lo)
+      for (var dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
+        let y = o.y + dy;
+        var a = vec2f(f32(E_EMPTY), AMBIENT);
+        if (y < 0) { a = vec2f(f32(E_ROCK), AMBIENT); }
+        else if (y < FSC_WORLD_Y) { a = unpack2x16float(cells[fscIndex(vec3i(col.x, y, col.y))]); }
+        let id = eid(vec4f(a, 0.0, 0.0));
+        if (farOpaque(id)) { c.s += 1.0; }
+        else if (farLiquid(id)) { c.l += 1.0; }
+        if (own && dy >= 0 && dy < BS) { farCell(&c, id, above, a.y); }
+        above = id;
+      }
     }
-  }
-  ${trees ? 'farTrees(c, b, o, o.y - FAR_CUBE_LO);' : ''}
-  oC = farPack(c);
-}
+  }${trees ? `
+  farTrees(&c, b, o, o.y - FAR_CUBE_LO);` : ''}
+  textureStore(farOut, b, farPack(&c));`)}
 `;
 
 // The field the view draws, per brick of the region being drawn, from the
@@ -697,109 +643,129 @@ void main() {
 // reaching it. b: 1 if it or a neighbour holds FAR.THIN_MIN of matter: the
 // field can only reach FAR.ISO in a brick next to one at FAR.ISO, boosted or
 // not, so a ray crosses a brick without it in one step.
-export const farBoostFrag = (L) => /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
+// Group 2: the grid (read), the field (written).
+export const FAR_BOOST_LAYOUT = [sampled(0, 'uint'), store(1, FAR_FORMATS.field)];
+export const farBoostFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
-#define E_EMPTY ${E.EMPTY}
-uniform sampler2D tFar;
-out vec4 oC;
+@group(2) @binding(0) var tFar: texture_3d<u32>;
+@group(2) @binding(1) var farField: texture_storage_3d<rgba8unorm, write>;
 // a brick's shares (farUnpack)
-vec2 farShares(FarTexel f) { return vec2(f.s, f.l) / FAR_LEVELS; }
-void main() {
-  ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
-  FarTexel f = farUnpack(texelFetch(tFar, farTexel(b), 0));
-  vec2 raw = farShares(f);
-  bool ownS = f.id != E_EMPTY, ownL = f.liquid != E_EMPTY;
-  float ns = raw.r, nm = raw.r + raw.g;   // the most opaque, and most matter, here and next to it
-  if (b.y == 0) ns = nm = 1.0;
-  for (int dz = -1; dz <= 1; dz++)
-  for (int dy = -1; dy <= 1; dy++)
-  for (int dx = -1; dx <= 1; dx++) {
-    ivec3 q = b + ivec3(dx, dy, dz);
-    if (any(lessThan(q, ivec3(0))) || any(greaterThanEqual(q, WB))) continue;
-    vec2 v = farShares(farUnpack(texelFetch(tFar, farTexel(q), 0)));
-    ns = max(ns, v.r);
-    nm = max(nm, v.r + v.g);
+fn farShares(f: FarTexel) -> vec2f { return vec2f(f32(f.s), f32(f.l)) / FAR_LEVELS; }
+${regionMain(/* wgsl */ `
+  let f = farUnpack(textureLoad(tFar, b, 0));
+  let raw = farShares(f);
+  let ownS = f.id != E_EMPTY;
+  let ownL = f.liquid != E_EMPTY;
+  var ns = raw.r;            // the most opaque, and most matter, here and next to it
+  var nm = raw.r + raw.g;
+  if (b.y == 0) { ns = 1.0; nm = 1.0; }
+  for (var dz = -1; dz <= 1; dz++) {
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        let q = b + vec3i(dx, dy, dz);
+        if (any(q < vec3i(0)) || any(q >= WB)) { continue; }
+        let v = farShares(farUnpack(textureLoad(tFar, q, 0)));
+        ns = max(ns, v.r);
+        nm = max(nm, v.r + v.g);
+      }
+    }
   }
-  oC = vec4(ns >= FAR_ISO || raw.r < FAR_THIN_MIN || !ownS ? raw.r : FAR_THIN_V,
-            nm >= FAR_ISO || raw.g < FAR_THIN_MIN || !ownL ? raw.g : FAR_THIN_V,
-            nm >= FAR_THIN_MIN ? 1.0 : 0.0, 1.0);
-}
+  textureStore(farField, b, vec4f(select(FAR_THIN_V, raw.r, ns >= FAR_ISO || raw.r < FAR_THIN_MIN || !ownS),
+                                  select(FAR_THIN_V, raw.g, nm >= FAR_ISO || raw.g < FAR_THIN_MIN || !ownL),
+                                  select(0.0, 1.0, nm >= FAR_THIN_MIN), 1.0));`)}
 `;
 
-// L1 occupancy: is FAR.ISO reached by a brick in the node or next to it?
-export const farMip1Frag = (L) => /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
+// A fresh build starts from an empty grid and field (the world before it was
+// built: what the view draws there is the plain or sea beyond).
+// Group 2: the grid and the field, written.
+export const FAR_CLEAR_LAYOUT = [store(0, FAR_FORMATS.grid), store(1, FAR_FORMATS.field)];
+export const farClearFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
-uniform sampler2D tFar;
-out vec4 oC;
-void main() {
-  ivec3 n = far1FromFrag(ivec2(gl_FragCoord.xy));
-  oC = vec4(0.0);
-  if (n.y >= F1Y) return;
-  ivec3 lo = max(n * FAR_NODE - 1, ivec3(0)), hi = min(n * FAR_NODE + FAR_NODE + 1, WB);
-  for (int z = lo.z; z < hi.z; z++)
-  for (int y = lo.y; y < hi.y; y++)
-  for (int x = lo.x; x < hi.x; x++) {
-    vec4 v = texelFetch(tFar, farTexel(ivec3(x, y, z)), 0);
-    if (v.r + v.g >= FAR_ISO) { oC = vec4(1.0); return; }
+@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
+@group(2) @binding(1) var farField: texture_storage_3d<rgba8unorm, write>;
+${regionMain(`  textureStore(farOut, b, vec4u(0u));
+  textureStore(farField, b, vec4f(0.0));`)}
+`;
+
+// A node kernel's thread per node of an occupancy level (n nodes per axis).
+const nodeMain = (n, body) => /* wgsl */ `
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldId(wg, nwg) * 64u + li;
+  if (i >= ${n[0] * n[1] * n[2]}u) { return; }
+  let n = vec3i(vec3u(i % ${n[0]}u, (i / ${n[0]}u) % ${n[1]}u, i / ${n[0] * n[1]}u));
+${body}
+}`;
+/** An occupancy level's dispatch (level: L.l1 or L.l2). */
+export const nodeDispatch = (level) => fold(Math.ceil(level.n[0] * level.n[1] * level.n[2] / 64));
+// The occupancy levels live in one buffer, a word a node (1: set), L1's
+// nodes then L2's, each x fastest, then y, then z (a buffer: the view's
+// fragment stage has no sampled texture left for them, W14's 16).
+/** Words of the occupancy buffer for layout L (the levels, then the detail mask: detailMaskAt). */
+export const occupancyWords = (L) => detailMaskAt(L) + detailChunks(L)[0] * detailChunks(L)[1];
+// The detail meshes' chunks (world/detail.js): DETAIL_CHUNK² world columns,
+// every height, a word of the occupancy buffer each after the levels: 0 none,
+// 1 a dry mesh drawn there, 2 one with liquids. The view leaves a meshed
+// chunk's opaque field to its mesh (and crosses a dry one whole).
+export const DETAIL_CHUNK = 32;
+export const DETAIL_PAD = 4;   // cells of the chunk's neighbours its cells take in (the mesh's normals and seams)
+export const detailChunks = (L) => [Math.ceil(L.size[0] / DETAIL_CHUNK), Math.ceil(L.size[2] / DETAIL_CHUNK)];
+/** The detail mask's first word in the occupancy buffer. */
+export const detailMaskAt = (L) => L.l1.n[0] * L.l1.n[1] * L.l1.n[2] + L.l2.n[0] * L.l2.n[1] * L.l2.n[2];
+const occupancyGLSL = (access) => /* wgsl */ `
+@group(${access === 'read' ? 0 : 2}) @binding(${access === 'read' ? 3 : 1}) var<storage, ${access}> farOcc: array<u32>;
+const FAR_OCC2_AT: i32 = F1X * F1Y * F1Z;   // L2's first word
+const FAR_DETAIL_AT: i32 = FAR_OCC2_AT + F2X * F2Y * F2Z;   // the detail mask's
+const DETAIL_CHUNK: i32 = ${DETAIL_CHUNK};
+const DETAIL_NX: i32 = (WORLD_X + DETAIL_CHUNK - 1) / DETAIL_CHUNK;
+fn farOcc1At(n: vec3i) -> i32 { return n.x + F1X * (n.y + F1Y * n.z); }
+fn farOcc2At(n: vec3i) -> i32 { return FAR_OCC2_AT + n.x + F2X * (n.y + F2Y * n.z); }`;
+
+// L1 occupancy: is FAR.ISO reached by a brick in the node or next to it?
+// Group 2: the field (read), the occupancy buffer (written).
+export const FAR_MIP1_LAYOUT = [sampled(0, 'float'), buf(1, 'storage')];
+export const farMip1Frag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
+${farLayoutGLSL(L)}
+@group(2) @binding(0) var tFar: texture_3d<f32>;
+${occupancyGLSL('read_write')}
+fn occupied(n: vec3i) -> bool {
+  let lo = max(n * FAR_NODE - 1, vec3i(0));
+  let hi = min(n * FAR_NODE + FAR_NODE + 1, WB);
+  for (var z = lo.z; z < hi.z; z++) {
+    for (var y = lo.y; y < hi.y; y++) {
+      for (var x = lo.x; x < hi.x; x++) {
+        let v = textureLoad(tFar, vec3i(x, y, z), 0);
+        if (v.r + v.g >= FAR_ISO) { return true; }
+      }
+    }
   }
+  return false;
 }
+${nodeMain(L.l1.n, '  farOcc[farOcc1At(n)] = select(0u, 1u, occupied(n));')}
 `;
 
 // L2 occupancy: is any of its L1 nodes set? (They carry the dilation.)
-export const farMip2Frag = (L) => /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
+// Group 2: the occupancy buffer (L1 read, L2 written).
+export const FAR_MIP2_LAYOUT = [buf(1, 'storage')];
+export const farMip2Frag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
-uniform sampler2D tFar1;
-out vec4 oC;
-void main() {
-  ivec3 n = far2FromFrag(ivec2(gl_FragCoord.xy));
-  oC = vec4(0.0);
-  if (n.y >= F2Y) return;
-  for (int z = 0; z < FAR_NODE; z++)
-  for (int y = 0; y < FAR_NODE; y++)
-  for (int x = 0; x < FAR_NODE; x++) {
-    ivec3 m = n * FAR_NODE + ivec3(x, y, z);
-    if (all(lessThan(m, ivec3(F1X, F1Y, F1Z))) && texelFetch(tFar1, far1Texel(m), 0).r > 0.5) { oC = vec4(1.0); return; }
+${occupancyGLSL('read_write')}
+fn occupied(n: vec3i) -> bool {
+  for (var z = 0; z < FAR_NODE; z++) {
+    for (var y = 0; y < FAR_NODE; y++) {
+      for (var x = 0; x < FAR_NODE; x++) {
+        let m = n * FAR_NODE + vec3i(x, y, z);
+        if (all(m < vec3i(F1X, F1Y, F1Z)) && farOcc[farOcc1At(m)] != 0u) { return true; }
+      }
+    }
   }
+  return false;
 }
-`;
-
-// The sky over the far field, as Minecraft's sky light (sun and sky are one
-// light, whole over a column's ground and gone under it): the ground's surface
-// seen from above (farTopFrag's y), and how far under it the sky still reaches.
-// Ground is matter wide enough to be the land: at FAR.ISO and REACH bricks out
-// each way too (7 bricks, 28 cells: wider than any crown, ~24 cells for an oak's
-// cluster, constructions/builtins.js TREES). A crown, a trunk, a wall, a bridge
-// or a house's roof is narrower and leaves the sky over what is under it (and
-// casts no pillar into the shadow heights); the rock over a cave or a tunnel
-// doesn't. Narrowing the land by REACH errs open: on a slope the surface reads
-// as low as the lowest ground within REACH, so only what lies deeper loses it.
-export const FAR_SKY = {
-  REACH: 3,       // bricks: matter counts as ground when it reaches this far along ±x and ±z
-  OPEN: 1,        // bricks under the ground's surface the sky starts fading...
-  SHUT: 2,        // ...and is gone (a Descent tunnel's ceiling is 2 or more under it)
-  LIFT: 1,        // bricks out along its normal a far surface reads its sky (past its own brick's matter)
-};
-export const farSkyGLSL = /* glsl */ `
-uniform sampler2D tFarTop;   // per brick column: x the ground's top seen from below, y its surface seen from above (farTopFrag)
-#define FAR_SKY_OPEN ${glf(FAR_SKY.OPEN * BRICK)}
-#define FAR_SKY_SHUT ${glf(FAR_SKY.SHUT * BRICK)}
-#define FAR_SKY_LIFT ${glf(FAR_SKY.LIFT * BRICK)}
-// Share of the sky reaching world point p (cells): 1 over the ground, 0 under it.
-// Its own column's (not filtered: a cliff's top would bury its foot).
-float farSkyOpen(vec3 p) {
-  if (any(lessThan(p.xz, vec2(0.0))) || any(greaterThanEqual(p.xz, vec2(WORLD.xz)))) return 1.0;
-  float hs = texelFetch(tFarTop, ivec2(p.xz) / FAR_BRICK, 0).y;
-  return smoothstep(hs - FAR_SKY_SHUT, hs - FAR_SKY_OPEN, p.y);
-}
+${nodeMain(L.l2.n, '  farOcc[farOcc2At(n)] = select(0u, 1u, occupied(n));')}
 `;
 
 // Brick-column tops: the height (cells) of each column's ground, seen from
@@ -810,253 +776,104 @@ float farSkyOpen(vec3 p) {
 // it from every side, as a pillar. y: the ground's surface seen from above
 // (FAR_SKY): the top of the highest brick at FAR.ISO whose neighbours REACH
 // bricks out along ±x and ±z are too, crossed the same way.
-export const farTopFrag = (L) => /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
+// Group 2: the field (read), the tops (written).
+export const FAR_TOP_LAYOUT = [sampled(0, 'float'), store(1, FAR_FORMATS.top, '2d')];
+export const farTopFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
-uniform sampler2D tFar;
-out vec4 oC;
-#define FAR_TOP_EPS 1e-3   // value steps below this count as none
-#define FAR_SKY_REACH ${FAR_SKY.REACH}
-float farTopAt(ivec3 b) { return texelFetch(tFar, farTexel(clamp(b, ivec3(0), WB - 1)), 0).r; }
+@group(2) @binding(0) var tFar: texture_3d<f32>;
+@group(2) @binding(1) var farTopOut: texture_storage_2d<rgba16float, write>;
+const FAR_TOP_EPS: f32 = 1e-3;   // value steps below this count as none
+const FAR_SKY_REACH: i32 = ${FAR_SKY.REACH};
+fn farTopAt(b: vec3i) -> f32 { return textureLoad(tFar, clamp(b, vec3i(0), WB - 1), 0).r; }
 // ground: at FAR_ISO, and so are its neighbours FAR_SKY_REACH bricks out each way
-bool farGroundAt(ivec3 b) {
-  if (farTopAt(b) < FAR_ISO) return false;
-  for (int k = 1; k <= FAR_SKY_REACH; k++)
-    if (min(min(farTopAt(b + ivec3(k, 0, 0)), farTopAt(b - ivec3(k, 0, 0))),
-            min(farTopAt(b + ivec3(0, 0, k)), farTopAt(b - ivec3(0, 0, k)))) < FAR_ISO) return false;
+fn farGroundAt(b: vec3i) -> bool {
+  if (farTopAt(b) < FAR_ISO) { return false; }
+  for (var k = 1; k <= FAR_SKY_REACH; k++) {
+    if (min(min(farTopAt(b + vec3i(k, 0, 0)), farTopAt(b - vec3i(k, 0, 0))),
+            min(farTopAt(b + vec3i(0, 0, k)), farTopAt(b - vec3i(0, 0, k)))) < FAR_ISO) { return false; }
+  }
   return true;
 }
-void main() {
-  ivec2 c = ivec2(gl_FragCoord.xy);
-  float below = texelFetch(tFar, farTexel(ivec3(c.x, 0, c.y)), 0).r;
-  float h = below >= FAR_ISO ? float(WBY * FAR_BRICK) : 0.0;
-  if (below >= FAR_ISO)
-    for (int y = 1; y < WBY; y++) {
-      float v = texelFetch(tFar, farTexel(ivec3(c.x, y, c.y)), 0).r;
+${columnMain(/* wgsl */ `
+  var below = farTopAt(vec3i(bc.x, 0, bc.y));
+  var h = 0.0;
+  if (below >= FAR_ISO) {
+    h = f32(WBY * FAR_BRICK);
+    for (var y = 1; y < WBY; y++) {
+      let v = farTopAt(vec3i(bc.x, y, bc.y));
       if (v < FAR_ISO) {
-        h = (float(y) - 0.5 + (below - FAR_ISO) / max(below - v, FAR_TOP_EPS)) * float(FAR_BRICK);
+        h = (f32(y) - 0.5 + (below - FAR_ISO) / max(below - v, FAR_TOP_EPS)) * f32(FAR_BRICK);
         break;
       }
       below = v;
     }
-  float hs = 0.0;
-  for (int y = WBY - 1; y >= 0; y--) {
-    ivec3 b = ivec3(c.x, y, c.y);
-    if (!farGroundAt(b)) continue;
-    float v = farTopAt(b), a = y + 1 < WBY ? farTopAt(b + ivec3(0, 1, 0)) : 0.0;
-    hs = (float(y) + 0.5 + clamp((v - FAR_ISO) / max(v - a, FAR_TOP_EPS), 0.0, 1.0)) * float(FAR_BRICK);
+  }
+  var hs = 0.0;
+  for (var y = WBY - 1; y >= 0; y--) {
+    let b = vec3i(bc.x, y, bc.y);
+    if (!farGroundAt(b)) { continue; }
+    let v = farTopAt(b);
+    let a = select(0.0, farTopAt(b + vec3i(0, 1, 0)), y + 1 < WBY);
+    hs = (f32(y) + 0.5 + clamp((v - FAR_ISO) / max(v - a, FAR_TOP_EPS), 0.0, 1.0)) * f32(FAR_BRICK);
     break;
   }
-  oC = vec4(h, hs, 0.0, 1.0);
-}
+  textureStore(farTopOut, bc, vec4f(h, hs, 0.0, 1.0));`)}
 `;
 
 // Shadow heights, per brick column: below this height (cells) the sun is
 // blocked, by the columns toward it: max over them of their top less the sun
 // ray's drop from there, the tops read bilinearly along the sun's ray (read
 // per column they alias into streaks). x: every column; y: columns outside the
-// window only (uWinCols: its brick columns [x0, z0) .. [x1, z1)), which the
-// window's shadow map adds to its own (FAR_CASTERS). Starts a column away (a
+// window only (winCols: its brick columns [x0, z0) .. [x1, z1)), which the
+// window's shadow map adds to its own (farCastersGLSL). Starts a column away (a
 // column's own top is its surface). A column's top is the higher of its ground
 // seen from below and from above (FAR_SKY): the rock over a cave casts, so the
 // sun doesn't shine down the caves and tunnels under it.
 export const FAR_SHADOW_STEPS = 512;     // most columns marched toward the sun
 export const FAR_SHADOW_NONE = -1e4;     // cells: a height no point is below (nothing blocks the sun)
-export const farShadowFrag = (L) => /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
+export const ShadowParams = uniformStruct('FarShadowParams', { sun: 'vec3f', winCols: 'vec4i' });
+// Group 2: the tops (read, filtered), a linear clamp sampler, the shadow heights (written).
+export const FAR_SHADOW_LAYOUT = [sampled(0, 'float', '2d'), { binding: 1, visibility: C, sampler: { type: 'filtering' } }, store(2, FAR_FORMATS.shadow, '2d')];
+export const farShadowFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${farLayoutGLSL(L)}
-uniform sampler2D tTop;
-uniform vec3 uSun;
-uniform ivec4 uWinCols;
-out vec4 oC;
-#define FAR_SHADOW_STEPS ${FAR_SHADOW_STEPS}
-#define FAR_SHADOW_NONE ${glf(FAR_SHADOW_NONE)}
-#define FAR_SUN_FLAT 1e-4   // the sun's horizontal share below which it counts as overhead (no cast shadows)
-void main() {
-  ivec2 c = ivec2(gl_FragCoord.xy);
-  float lh = length(uSun.xz);
-  oC = vec4(FAR_SHADOW_NONE, FAR_SHADOW_NONE, 0.0, 1.0);
-  if (lh < FAR_SUN_FLAT) return;
-  vec2 u = uSun.xz / lh;                       // toward the sun, horizontally
-  float drop = float(FAR_BRICK) * uSun.y / lh;   // cells the sun ray falls per brick column
-  vec2 p = vec2(c) + 0.5;
-  float sAll = FAR_SHADOW_NONE, sOut = FAR_SHADOW_NONE;
-  for (int i = 1; i < FAR_SHADOW_STEPS; i++) {
-    float d = float(i);
-    vec2 q = p + u * d;
-    if (any(lessThan(q, vec2(0.0))) || any(greaterThanEqual(q, vec2(WB.xz)))) break;
-    float fall = d * drop;
-    if (float(WORLD_Y) - fall <= max(sOut, 0.0)) break;   // nothing farther can rise above what is found (or the floor)
-    vec2 t = texture(tTop, q / vec2(WB.xz)).xy;
-    float h = max(t.x, t.y) - fall;
+@group(2) @binding(0) var tTop: texture_2d<f32>;
+@group(2) @binding(1) var topSampler: sampler;
+@group(2) @binding(2) var farShadowOut: texture_storage_2d<rgba16float, write>;
+${ShadowParams.wgsl}
+@group(3) @binding(1) var<uniform> P: FarShadowParams;
+const FAR_SHADOW_STEPS: i32 = ${FAR_SHADOW_STEPS};
+const FAR_SHADOW_NONE: f32 = ${glf(FAR_SHADOW_NONE)};
+const FAR_SUN_FLAT: f32 = 1e-4;   // the sun's horizontal share below which it counts as overhead (no cast shadows)
+fn heights(bc: vec2i) -> vec2f {
+  let lh = length(P.sun.xz);
+  if (lh < FAR_SUN_FLAT) { return vec2f(FAR_SHADOW_NONE); }
+  let u = P.sun.xz / lh;                           // toward the sun, horizontally
+  let drop = f32(FAR_BRICK) * P.sun.y / lh;        // cells the sun ray falls per brick column
+  let p = vec2f(bc) + 0.5;
+  var sAll = FAR_SHADOW_NONE;
+  var sOut = FAR_SHADOW_NONE;
+  for (var i = 1; i < FAR_SHADOW_STEPS; i++) {
+    let d = f32(i);
+    let q = p + u * d;
+    if (any(q < vec2f(0.0)) || any(q >= vec2f(WB.xz))) { break; }
+    let fall = d * drop;
+    if (f32(WORLD_Y) - fall <= max(sOut, 0.0)) { break; }   // nothing farther can rise above what is found (or the floor)
+    let t = textureSampleLevel(tTop, topSampler, q / vec2f(WB.xz), 0.0).xy;
+    let h = max(t.x, t.y) - fall;
     sAll = max(sAll, h);
-    ivec2 qc = ivec2(floor(q));
-    bool inWin = all(greaterThanEqual(qc, uWinCols.xy)) && all(lessThan(qc, uWinCols.zw));
-    if (!inWin) sOut = max(sOut, h);
+    let qc = vec2i(floor(q));
+    let inWin = all(qc >= P.winCols.xy) && all(qc < P.winCols.zw);
+    if (!inWin) { sOut = max(sOut, h); }
   }
-  oC = vec4(sAll, sOut, 0.0, 1.0);
+  return vec2f(sAll, sOut);
 }
+${columnMain('  textureStore(farShadowOut, bc, vec4f(heights(bc), 0.0, 1.0));')}
 `;
 
 // ---------------------------------------------------------------- the view
-// Sampling the far grid and its shadow heights (the view, and the window's
-// passes that look outside it).
-export const FAR_SHADOW_SOFT = 1.5;    // cells: half the width of a far shadow's edge
-export const FAR_SHADOW_BIAS = 1.0;    // cells a point is lifted before its shadow-height test (column tops are coarse)
-const farSampleGLSL = /* glsl */ `
-uniform sampler2D tFar;        // ids and glow (texelFetch)
-uniform sampler2D tFarField;   // the field: opaque, liquid (filtered), near (texelFetch)
-uniform sampler2D tFar1;
-uniform sampler2D tFar2;
-uniform sampler2D tFarShadow;
-#define FAR_SHADOW_SOFT ${glf(FAR_SHADOW_SOFT)}
-#define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
-// The far field at world point p (cells), trilinear: r opaque, g liquid.
-vec4 farSample(vec3 p) {
-  vec3 q = clamp(p * (1.0 / float(BS)), vec3(0.5), vec3(WB) - 0.5);   // bricks, held to the edge bricks' centres
-  float fy = q.y - 0.5;
-  int y0 = int(fy);
-  int y1 = min(y0 + 1, WBY - 1);
-  vec2 inv = 1.0 / vec2(FAR_W, FAR_H);
-  vec2 o0 = vec2(float((y0 % FAR_COLS) * WBX), float((y0 / FAR_COLS) * WBZ));
-  vec2 o1 = vec2(float((y1 % FAR_COLS) * WBX), float((y1 / FAR_COLS) * WBZ));
-  return mix(texture(tFarField, (o0 + q.xz) * inv), texture(tFarField, (o1 + q.xz) * inv), fy - float(y0));
-}
-// everything a ray stops at or enters (opaque + liquid)
-float farMatter(vec3 p) { vec4 v = farSample(p); return v.r + v.g; }
-// the ids of the brick holding p: x = dominant opaque element, y = dominant
-// liquid (E_EMPTY: none), z = 1 if it holds opaque cells open above
-ivec3 farIds(vec3 p) {
-  ivec3 b = clamp(ivec3(floor(p * (1.0 / float(BS)))), ivec3(0), WB - 1);
-  FarTexel f = farUnpack(texelFetch(tFar, farTexel(b), 0));
-  return ivec3(f.id, f.liquid, f.open ? 1 : 0);
-}
-// the liquid a far liquid surface is drawn as: the brick's own, else (only
-// its neighbours' reaches into its cube) water
-int farLiquidOf(int liquid) { return liquid == E_EMPTY ? E_WATER : liquid; }
-float farGlow(vec3 p) {
-  ivec3 b = clamp(ivec3(floor(p * (1.0 / float(BS)))), ivec3(0), WB - 1);
-  return float(farUnpack(texelFetch(tFar, farTexel(b), 0)).glow) / FAR_LEVELS;
-}
-bool farNear(ivec3 b) { return texelFetch(tFarField, farTexel(b), 0).b > 0.5; }
-bool farOcc1(ivec3 n) { return texelFetch(tFar1, far1Texel(n), 0).r > 0.5; }
-bool farOcc2(ivec3 n) { return texelFetch(tFar2, far2Texel(n), 0).r > 0.5; }
-// Sun visibility at world point p from the shadow heights: ch 0 every caster, 1 those outside the window.
-// Past the world's edge it's lit: the heights hold only the world's columns, and
-// reading them clamped to the edge stretched an edge wall's shadow to the horizon.
-bool farInWorld(vec2 xz) { return all(greaterThanEqual(xz, vec2(0.0))) && all(lessThan(xz, vec2(WORLD.xz))); }
-float farSunVis(vec3 p, int ch) {
-  if (!farInWorld(p.xz)) return 1.0;
-  float s = texture(tFarShadow, p.xz / vec2(WORLD.xz))[ch];
-  return smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, p.y + FAR_SHADOW_BIAS - s);
-}
-`;
-
-// Far casters in the window's sun shadow map (render.js shadowFrag): where
-// along a texel's ray (grid cells, [t0, t1]: its stretch through the box) it
-// first goes under the shadow height of the columns outside the window. Along
-// a sun ray the height above it can only fall (see the top), so one read at
-// the ray's end says whether it ever does, and bisection finds where.
-export const FAR_CASTER_STEPS = 10;   // bisection steps (a box diagonal of ~220 cells to ~0.2 cells)
-export const farCastersGLSL = (L) => /* glsl */ `
-${farLayoutGLSL(L)}
-uniform sampler2D tFarShadow;
-#define FAR_CASTER_STEPS ${FAR_CASTER_STEPS}
-#define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
-bool farUnder(vec3 p) {
-  vec3 w = p + vec3(uOrigin);
-  // past the world's edge nothing casts (the heights hold only its columns: clamped, an edge wall's shade ran on forever)
-  if (any(lessThan(w.xz, vec2(0.0))) || any(greaterThanEqual(w.xz, vec2(WORLD.xz)))) return false;
-  return w.y + FAR_SHADOW_BIAS < texture(tFarShadow, w.xz / vec2(WORLD.xz)).y;
-}
-float farCasterDepth(vec3 ro, vec3 rd, float t0, float t1) {
-  if (!farUnder(ro + rd * t1)) return NO_HIT;
-  if (farUnder(ro + rd * t0)) return t0;
-  float a = t0, b = t1;
-  for (int i = 0; i < FAR_CASTER_STEPS; i++) {
-    float m = 0.5 * (a + b);
-    if (farUnder(ro + rd * m)) b = m; else a = m;
-  }
-  return b;
-}
-`;
-
-// The far field in the window's GI (gi.js giGatherFrag's far): a probe's ray
-// that has marched its bricks without being stopped reads the far field past
-// where it ended, at doubling distances: the brick-column tops (the window's
-// own region included, from its summary), so distant hills block the low sky
-// and send back the light of their ground (its element's albedo, the sun
-// through the shadow heights, the sky over it); a ray going down past the
-// coast meets the sea (the sky in it by Fresnel, and its body); else the sky.
-// A ray that leaves the window under the ground (a tunnel or cave its side
-// cuts) gets what the sky leaves there (FAR_SKY): none deep under it.
-export const FAR_GI_STEPS = 6;       // reads along the ray past its end...
-export const FAR_GI_STEP0 = 8;       // ...the first this many cells out, each next twice as far (~500 cells in all)
-export const farGIGLSL = (L) => /* glsl */ `
-${farLayoutGLSL(L)}
-${farSkyGLSL}
-uniform sampler2D tFar;
-uniform sampler2D tFarShadow;
-uniform float uSea;
-#define FAR_GI_STEPS ${FAR_GI_STEPS}
-#define FAR_GI_STEP0 ${glf(FAR_GI_STEP0)}
-#define FAR_SHADOW_SOFT ${glf(FAR_SHADOW_SOFT)}
-#define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
-#define FAR_SEA_F0 0.02   // water's reflectance face on ((1.333 - 1) / (1.333 + 1))²
-vec3 farGround(vec3 r, float top) {
-  ivec3 b = clamp(ivec3(floor(vec3(r.x, top - 1.0, r.z) / float(FAR_BRICK))), ivec3(0), WB - 1);   // the brick under the top
-  int id = farUnpack(texelFetch(tFar, farTexel(b), 0)).id;
-  float s = texture(tFarShadow, r.xz / vec2(WORLD.xz)).x;
-  float sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s) * cloudShadow(vec3(r.x, top, r.z));
-  return ALBEDO[id == E_EMPTY ? E_ROCK : id] * (SUN_COL * max(uSun.y, 0.0) * sun + uSkyUp);
-}
-vec3 farSea(vec3 d) {
-  float F = FAR_SEA_F0 + (1.0 - FAR_SEA_F0) * pow(1.0 - clamp(-d.y, 0.0, 1.0), 5.0);
-  return F * skyColor(reflect(d, vec3(0.0, 1.0, 0.0))) + (1.0 - F) * SCATALB[E_WATER] * uSkyUp;
-}
-// a world without a sea (uSea 0: world/scenes) has a rock plain past its edge (the far view's)
-vec3 farPlain() { return ALBEDO[E_ROCK] * (SUN_COL * max(uSun.y, 0.0) + uSkyUp); }
-vec3 farBeyondOpen(vec3 w, vec3 d, inout float open) {
-  float s = FAR_GI_STEP0;
-  for (int i = 0; i < FAR_GI_STEPS; i++) {
-    vec3 r = w + d * s;
-    if (any(lessThan(r.xz, vec2(0.0))) || any(greaterThanEqual(r.xz, vec2(WORLD.xz)))) break;
-    vec2 t = texture(tFarTop, r.xz / vec2(WORLD.xz)).xy;
-    float top = max(t.x, t.y);   // the ground seen from below or above (the rock over a cave)
-    if (r.y < max(top, uSea)) {
-      open = 0.0;
-      return top >= uSea ? farGround(r, top) : farSea(d);
-    }
-    s *= 2.0;
-  }
-  return d.y >= 0.0 ? skyColor(d) : (uSea > 0.0 ? farSea(d) : farPlain());
-}
-vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
-  vec3 w = Q + vec3(uOrigin);
-  float sky = farSkyOpen(w);
-  open *= sky;
-  return sky > 0.0 ? sky * farBeyondOpen(w, d, open) : vec3(0.0);
-}
-`;
-
-// The full-screen pass: a triangle covering the screen, each pixel's ray as
-// the homogeneous world point it meets on the far plane.
-export const farVert = /* glsl */ `
-uniform mat4 uWorldToScene;   // world cells → scene units
-out vec4 vFar;
-void main() {
-  vFar = inverse(projectionMatrix * viewMatrix * uWorldToScene) * vec4(position.xy, 1.0, 1.0);
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}
-`;
-
 // Constants of the view (cells unless said otherwise).
-const FAR_HAZE_VISIBILITY_M = 12000;   // m: meteorological range of the air (a clear day with some haze)
-const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold of the visibility definition
 export const FAR_VIEW = {
   NUDGE: 0.01,             // a ray restarts this far past a node's exit
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
@@ -1082,157 +899,191 @@ export const FAR_VIEW = {
   CLUMP_OCT: 2,            // fBm octaves of the clumps
   SUN_DISC: 40.0,          // the sun's disc radiance, × the sunlight at the ground (the real ratio blooms the whole sky)
   SUN_DISC_EDGE: 0.15,     // its soft edge, share of its radius
-  HAZE: KOSCHMIEDER / (FAR_HAZE_VISIBILITY_M / CELL_M),   // extinction per cell of the air, green (blue and red follow the sky's)
+  HAZE: FAR_HAZE,          // extinction per cell of the air, green (farShared.js)
   OCEAN_ROCK: 'ROCK',      // the open sea's bed beyond the world (the generator's floor)
 };
 
-// Aerial perspective, for the far field and (world mode) the window's volume:
-// over d cells along rd, the air's extinction (the sky's spectral shape, scaled
-// to the haze's visibility) and its in-scatter, the sky's own radiance toward
-// rd, held at the horizon for rays going down, so distance fades into the sky.
-// The in-scatter is the sky's light on the air, so it takes the share of the
-// open sky the air on the way sees (the GI probes': farAirLit): a cave's air,
-// which no sky reaches, adds none, and the eyes adjusting to the dark don't
-// raise it into a blue fog.
-export const farHazeGLSL = /* glsl */ `
-#define FAR_HAZE ${FAR_VIEW.HAZE.toExponential(4)}
-const vec3 FAR_HAZE_RGB = FAR_HAZE * TAU_AIR / TAU_AIR.g;
-vec3 farAir(vec3 rd) {
-  vec3 h = vec3(rd.x, 0.0, rd.z);
-  h = dot(h, h) > 1e-8 ? normalize(h) : vec3(1.0, 0.0, 0.0);
-  return skyRadiance(rd.y > 0.0 ? rd : h);
+// Sampling the far grid and its shadow heights. The grid, tops and shadow
+// heights are the lighting group's (shaders/bindings.js 11-13: tFarGrid,
+// tFarTop, tFarShadow); the field and the occupancy buffer the view's own
+// (its group 0, after FrameUniforms: FAR_VIEW_LAYOUTS).
+const farSampleGLSL = /* wgsl */ `
+@group(0) @binding(2) var tFarField: texture_3d<f32>;   // the field: opaque, liquid (filtered), near
+// The far field at world point p (cells), trilinear: r opaque, g liquid.
+fn farSample(p: vec3f) -> vec4f {
+  let q = clamp(p * (1.0 / f32(BS)), vec3f(0.5), vec3f(WB) - 0.5);   // bricks, held to the edge bricks' centres
+  return textureSampleLevel(tFarField, linearClamp, q / vec3f(WB), 0.0);
 }
-// Share of the open sky's light on the air from a to b (window cells): the
-// probes' sky visibility at its ends and middle, by Simpson's rule, the far end
-// GI_OFFSET back out of the matter it lies on (whose brick's probe is buried).
-// FAR_AIR_SKY reads it at a window point: the probes, or in the far view past
-// the window the far field's sky (farAirSky).
-#ifndef FAR_AIR_SKY
-#define FAR_AIR_SKY giAirSkyVis
-#endif
-float farAirLit(vec3 a, vec3 b) {
-  vec3 v = b - a;
-  float d = length(v);
-  vec3 bo = b - v * (min(GI_OFFSET, d) / max(d, 1e-6));
-  return (FAR_AIR_SKY(a) + 4.0 * FAR_AIR_SKY(0.5 * (a + bo)) + FAR_AIR_SKY(bo)) / 6.0;
+// everything a ray stops at or enters (opaque + liquid)
+fn farMatter(p: vec3f) -> f32 { let v = farSample(p); return v.r + v.g; }
+fn farBrickOf(p: vec3f) -> vec3i { return clamp(vec3i(floor(p * (1.0 / f32(BS)))), vec3i(0), WB - 1); }
+// the ids of the brick holding p: x = dominant opaque element, y = dominant
+// liquid (E_EMPTY: none), z = 1 if it holds opaque cells open above
+fn farIds(p: vec3f) -> vec3i {
+  let f = farUnpack(textureLoad(tFarGrid, farBrickOf(p), 0));
+  return vec3i(f.id, f.liquid, select(0, 1, f.open));
 }
-vec3 farHaze(vec3 col, vec3 rd, float d, float lit) {
-  vec3 T = exp(-FAR_HAZE_RGB * d);
-  return col * T + lit * farAir(rd) * (1.0 - T);
-}
-// premultiplied colour (the volume's): the share alpha it covers takes the air's light
-vec3 farHazePremul(vec3 col, float alpha, vec3 eye, vec3 p) {
-  vec3 v = p - eye;
-  float d = length(v);
-  vec3 T = exp(-FAR_HAZE_RGB * d);
-  return col * T + alpha * farAirLit(eye, p) * farAir(v / max(d, 1e-6)) * (1.0 - T);
+// the liquid a far liquid surface is drawn as: the brick's own, else (only
+// its neighbours' reaches into its cube) water
+fn farLiquidOf(liquid: i32) -> i32 { return select(liquid, E_WATER, liquid == E_EMPTY); }
+fn farGlow(p: vec3f) -> f32 { return f32(farUnpack(textureLoad(tFarGrid, farBrickOf(p), 0)).glow) / FAR_LEVELS; }
+fn farNear(b: vec3i) -> bool { return textureLoad(tFarField, b, 0).b > 0.5; }
+fn farOcc1(n: vec3i) -> bool { return farOcc[farOcc1At(n)] != 0u; }
+fn farOcc2(n: vec3i) -> bool { return farOcc[farOcc2At(n)] != 0u; }
+// Sun visibility at world point p from the shadow heights: ch 0 every caster, 1 those outside the window.
+// Past the world's edge it's lit: the heights hold only the world's columns, and
+// reading them clamped to the edge stretched an edge wall's shadow to the horizon.
+fn farInWorld(xz: vec2f) -> bool { return all(xz >= vec2f(0.0)) && all(xz < vec2f(WORLD.xz)); }
+fn farSunVis(p: vec3f, ch: i32) -> f32 {
+  if (!farInWorld(p.xz)) { return 1.0; }
+  let s = textureSampleLevel(tFarShadow, linearClamp, p.xz / vec2f(WORLD.xz), 0.0)[ch];
+  return smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, p.y + FAR_SHADOW_BIAS - s);
 }
 `;
 
-export const farFrag = (g, L, mesh = false) => /* glsl */ `
-${lib(g)}
-${presentationGLSL}
-uniform mat4 uWarpClipToWorld;
-WarpRay gFarRay;
-vec4 gFarWindow, gFarWorld;
-vec3 farPath(vec3 ro, vec3 rd, float t) { return uWarpK == 0.0 ? ro + rd*t : warpAt(gFarRay,t); }
-vec3 farDirection(vec3 rd, float t) { return uWarpK == 0.0 ? rd : normalize(warpSlope(gFarRay,t)); }
-float farPlaneHit(WarpRay r, float level) {
-  vec2 roots = warpPlane(r,1,level);
-  for (int i=0; i<2; i++) if (roots[i] >= 0.0 && roots[i] < WARP_INF && warpSlope(r,roots[i]).y < 0.0) return roots[i];
+// The view's params: the ray's world frame and the world beyond.
+export const FarViewParams = uniformStruct('FarViewParams', {
+  clipToWorld: 'mat4x4f',   // clip → world cells (the jittered camera's, FrameUniforms.viewProj's inverse through the window)
+  worldToClip: 'mat4x4f',   // world cells → clip: the depth written
+  eye: 'vec3f',             // the camera in world cells
+  sea: 'f32',               // sea level (cells): the open sea beyond the world (0: none, a plain instead)
+  winLo: 'vec3i',           // the window's low corner (world cells): the volume draws [winLo, winLo + GRID)
+  floor: 'f32',             // the sea floor beyond the world, or the plain (cells)
+  detailDepth: 'u32',       // 1: the detail meshes' depth (tDetailDepth) was drawn for this frame and target
+  // the rolling log (gfx/presentation.js parameters: world cells; k 0: flat): the view's curved variant and the meshes read it
+  warpK: 'f32',
+  warpAnchor: 'vec2f',
+  warpDir: 'vec2f',
+});
+
+// The view (docs/webgpu.md G1): a full-screen triangle in our scene pass,
+// drawn before the volume (its wire's order), depth test less-equal against
+// the opaque meshes three drew first (Sync log S1), frag_depth written, so the
+// window's volume and the meshes composite with it. Sky, the open sea beyond
+// the world and the far grid, marched past the window's box, which the volume
+// draws. Everything here is in world cells: its header's origin is 0, so the
+// looks' worldPos() is the identity, and what reads the window (the GI probes'
+// sky share and light) takes p - winLo.
+//
+// The rolling log (gfx/presentation.js): curved, the view is a variant of its
+// own (a template switch, as the volume's: docs/webgpu.md F2), whose rays are
+// the displayed rays' parabolas in the flat world (gFarRay) and whose window
+// and world are their spans (gFarWindow, gFarWorld); x and z stay linear
+// along them, so the chunk and slab crossings of x and z are the flat ones.
+// The detail meshes bend in their vertex stage and shade along the displayed
+// ray, switched by P.warpK (a few lines, both variants of the mesh pass).
+export const farFrag = (g, L, mesh = false, { curved = false } = {}) => {
+  return /* wgsl */ `
+// far view${curved ? ', curved' : ''}
+${lib(g, { variant: 'LIGHTING', far: true, aeration: false })}
+${presentationWGSL}${curved ? `
+var<private> gFarRay: WarpRay;
+var<private> gFarWindow: vec4f;
+var<private> gFarWorld: vec4f;
+// The first downward crossing of height level along r, or WARP_INF.
+fn farPlaneHit(r: WarpRay, level: f32) -> f32 {
+  let roots = warpPlane(r, 1, level);
+  for (var i = 0; i < 2; i++) {
+    if (roots[i] >= 0.0 && roots[i] < WARP_INF && warpSlope(r, roots[i]).y < 0.0) { return roots[i]; }
+  }
   return WARP_INF;
-}
-#define LOOK_NO_STATE   // no window state here (tA is the volume's): looks skip their neighbour lookups
-${surfaceGLSL}
+}` : ''}
+// The march's point at t (curved: on the displayed ray's parabola) and its direction there.
+fn farPath(ro: vec3f, rd: vec3f, t: f32) -> vec3f { return ${curved ? 'warpAt(gFarRay, t)' : 'ro + rd * t'}; }
+fn farDirection(rd: vec3f, t: f32) -> vec3f { return ${curved ? 'normalize(warpSlope(gFarRay, t))' : 'rd'}; }
+${FAR_STANDINS}
+${surfaceGLSL({})}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
+${occupancyGLSL('read')}
 ${farSkyGLSL}
-uniform ivec3 uWinLo;         // the window's low corner (world cells): the volume draws [uWinLo, uWinLo + GRID)
+${FarViewParams.wgsl}
+@group(3) @binding(1) var<uniform> P: FarViewParams;
+${mesh ? '' : `// the detail meshes' rasterized depth at each pixel (0: none), drawn before the scene pass (farDetailDepthFrag)
+@group(0) @binding(4) var tDetailDepth: texture_2d<f32>;`}
 // the air's sky share at window point q: the probes in the window, the far field's sky past it
-float farAirSky(vec3 q) {
-  return all(greaterThanEqual(q, vec3(0.0))) && all(lessThan(q, vec3(GRID))) ? giAirSkyVis(q) : farSkyOpen(q + vec3(uWinLo));
+fn farAirSky(q: vec3f) -> f32 {
+  if (all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
+  return farSkyOpen(q + vec3f(P.winLo));
 }
-#define FAR_AIR_SKY farAirSky
-${farHazeGLSL}
-uniform mat4 projectionMatrix;
-uniform mat4 uWorldToScene;   // world cells → scene units
-uniform mat4 uSceneToWorld;
-uniform float uSea;           // sea level (cells): the open sea beyond the world (0: none, a plain instead)
-uniform float uFloor;         // the sea floor beyond the world, or the plain (cells)
-in vec4 vFar;
-uniform sampler2D tDetailMask;
-uniform sampler2D tDetailDepth;
-uniform bool uDetailHasDepth;
-// Render chunks are independent of simulation bricks: 1 dry, 2 with liquids.
-#define DETAIL_CHUNK 32
-int detailAt(vec3 p) {
-  if (any(lessThan(p.xz, vec2(0.0))) || any(greaterThanEqual(p.xz, vec2(WORLD.xz)))) return 0;
-  return int(texelFetch(tDetailMask, ivec2(p.xz) / DETAIL_CHUNK, 0).r * 255.0 + 0.5);
-}
-float farTraceMatter(vec3 p) {
-  vec4 v = farSample(p);
-  // Keep the existing combined-field liquid surface, including shallow
-  // water (e.g. opaque .3 + liquid .4). Only its opaque hits are replaced.
-  return detailAt(p) > 0 && v.r >= v.g ? 0.0 : v.r + v.g;
-}
-${mesh ? 'in vec3 vWorld, vNormal;\nflat in float vElement;' : ''}
+${farHazeFor('farAirSky')}
 ${cloudsGLSL}
+// the detail mesh state of the chunk holding world point p (0: none, 1: dry, 2: with liquids)
+fn detailAt(p: vec3f) -> u32 {
+  if (any(p.xz < vec2f(0.0)) || any(p.xz >= vec2f(WORLD.xz))) { return 0u; }
+  let c = vec2i(p.xz) / DETAIL_CHUNK;
+  return farOcc[FAR_DETAIL_AT + c.x + DETAIL_NX * c.y];
+}
+// The field a ray stops at: a meshed chunk's opaque matter is its mesh's
+// (drawn first, in front); its liquid surface, shallow water included
+// (opaque .3 + liquid .4), stays the field's.
+fn farTraceMatter(p: vec3f) -> f32 {
+  let v = farSample(p);
+  if (detailAt(p) > 0u && v.r >= v.g) { return 0.0; }
+  return v.r + v.g;
+}
 
-#define FAR_MAX_STEPS ${L.size.reduce((n, side) => n + side / BRICK, 16)}
-#define FAR_NUDGE ${glf(FAR_VIEW.NUDGE)}
-#define FAR_NEAR ${glf(FAR_VIEW.NEAR)}
-#define FAR_ROOT_STEPS ${FAR_VIEW.ROOT_STEPS}
-#define FAR_NORMAL_STEP ${glf(FAR_VIEW.NORMAL_STEP)}
-#define FAR_ID_INSET ${glf(FAR_VIEW.ID_INSET)}
-#define FAR_ID_JITTER ${glf(FAR_VIEW.ID_JITTER)}
-#define FAR_ID_JITTER_F ${glf(FAR_VIEW.ID_JITTER_F)}
-#define FAR_ID_DITHER ${glf(FAR_VIEW.ID_DITHER)}
-#define FAR_ID_DEEPER ${glf(FAR_VIEW.ID_DEEPER)}
-#define FAR_SUN_RAY_N ${FAR_VIEW.SUN_RAY.length}
-const float FAR_SUN_RAY[FAR_SUN_RAY_N] = float[FAR_SUN_RAY_N](${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
-#define FAR_SUN_RAY_LIFT ${glf(FAR_VIEW.SUN_RAY_LIFT)}
-#define FAR_SUN_RAY_LO ${glf(FAR_VIEW.SUN_RAY_EDGE[0])}
-#define FAR_SUN_RAY_HI ${glf(FAR_VIEW.SUN_RAY_EDGE[1])}
-#define FAR_CLUMP_F ${glf(+(CELL_M / FAR_VIEW.CLUMP_M).toFixed(4))}   // per cell
-#define FAR_CLUMP_H ${glf(+(FAR_VIEW.CLUMP_H_M / CELL_M).toFixed(4))}   // cells
-#define FAR_CLUMP_CAV ${glf(FAR_VIEW.CLUMP_CAV)}
-#define FAR_CLUMP_OCT ${FAR_VIEW.CLUMP_OCT}
-#define FAR_AO_D1 ${glf(FAR_VIEW.AO_D1)}
-#define FAR_AO_D2 ${glf(FAR_VIEW.AO_D2)}
-#define FAR_AO_K ${glf(FAR_VIEW.AO_K)}
-#define FAR_AO_MIN ${glf(FAR_VIEW.AO_MIN)}
-#define FAR_WATER_STEP ${glf(FAR_VIEW.WATER_STEP)}
-#define FAR_WATER_STEPS ${FAR_VIEW.WATER_STEPS}
-#define FAR_SUN_DISC ${glf(FAR_VIEW.SUN_DISC)}
-#define FAR_SUN_DISC_EDGE ${glf(FAR_VIEW.SUN_DISC_EDGE)}
-#define FAR_OCEAN_BED E_${FAR_VIEW.OCEAN_ROCK}
-#define FAR_ROOT_SPLIT_LO 0.15   // regula falsi splits kept off the bracket's ends (as SURF_ROOT_SPLIT_*)
-#define FAR_ROOT_SPLIT_HI 0.85
-#define FAR_FLAT_EPS 1e-5        // field differences below this count as flat
-#define FAR_SUN_Y_MIN 0.2        // sun elevation sine floor for light fading down through liquid (LIQ_SUN_Y_MIN in render.js)
+const FAR_MAX_STEPS: i32 = ${L.size.reduce((n, side) => n + side / BRICK, 16)};
+const FAR_NUDGE: f32 = ${glf(FAR_VIEW.NUDGE)};
+const FAR_NEAR: f32 = ${glf(FAR_VIEW.NEAR)};
+const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
+const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
+const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
+const FAR_ID_JITTER: f32 = ${glf(FAR_VIEW.ID_JITTER)};
+const FAR_ID_JITTER_F: f32 = ${glf(FAR_VIEW.ID_JITTER_F)};
+const FAR_ID_DITHER: f32 = ${glf(FAR_VIEW.ID_DITHER)};
+const FAR_ID_DEEPER: f32 = ${glf(FAR_VIEW.ID_DEEPER)};
+const FAR_SUN_RAY_N: i32 = ${FAR_VIEW.SUN_RAY.length};
+var<private> FAR_SUN_RAY: array<f32, ${FAR_VIEW.SUN_RAY.length}> = array<f32, ${FAR_VIEW.SUN_RAY.length}>(${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
+const FAR_SUN_RAY_LIFT: f32 = ${glf(FAR_VIEW.SUN_RAY_LIFT)};
+const FAR_SUN_RAY_LO: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[0])};
+const FAR_SUN_RAY_HI: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[1])};
+const FAR_CLUMP_F: f32 = ${glf(+(CELL_M / FAR_VIEW.CLUMP_M).toFixed(4))};   // per cell
+const FAR_CLUMP_H: f32 = ${glf(+(FAR_VIEW.CLUMP_H_M / CELL_M).toFixed(4))};   // cells
+const FAR_CLUMP_CAV: f32 = ${glf(FAR_VIEW.CLUMP_CAV)};
+const FAR_CLUMP_OCT: i32 = ${FAR_VIEW.CLUMP_OCT};
+const FAR_AO_D1: f32 = ${glf(FAR_VIEW.AO_D1)};
+const FAR_AO_D2: f32 = ${glf(FAR_VIEW.AO_D2)};
+const FAR_AO_K: f32 = ${glf(FAR_VIEW.AO_K)};
+const FAR_AO_MIN: f32 = ${glf(FAR_VIEW.AO_MIN)};
+const FAR_WATER_STEP: f32 = ${glf(FAR_VIEW.WATER_STEP)};
+const FAR_WATER_STEPS: i32 = ${FAR_VIEW.WATER_STEPS};
+const FAR_SUN_DISC: f32 = ${glf(FAR_VIEW.SUN_DISC)};
+const FAR_SUN_DISC_EDGE: f32 = ${glf(FAR_VIEW.SUN_DISC_EDGE)};
+const FAR_OCEAN_BED: i32 = E_${FAR_VIEW.OCEAN_ROCK};
+const FAR_ROOT_SPLIT_LO: f32 = 0.15;   // regula falsi splits kept off the bracket's ends (as SURF_ROOT_SPLIT_*)
+const FAR_ROOT_SPLIT_HI: f32 = 0.85;
+const FAR_FLAT_EPS: f32 = 1e-5;        // field differences below this count as flat
+const FAR_SUN_Y_MIN: f32 = 0.2;        // sun elevation sine floor for light fading down through liquid (LIQ_SUN_Y_MIN in render.js)
 
 // Sunlight at world point p: the shadow heights (ch: farSunVis), under the clouds.
-float farSunLit(vec3 p, int ch) { return farSunVis(p, ch) * cloudShadow(p); }
+fn farSunLit(p: vec3f, ch: i32) -> f32 { return farSunVis(p, ch) * cloudShadow(p); }
 
 // (tNear, tFar) of the ray through the box [lo, hi); tNear > tFar: a miss
-vec2 farSlab(vec3 ro, vec3 inv, vec3 lo, vec3 hi) {
-  vec3 t0 = (lo - ro) * inv, t1 = (hi - ro) * inv;
-  vec3 tn = min(t0, t1), tf = max(t0, t1);
-  return vec2(max(max(tn.x, tn.y), tn.z), min(min(tf.x, tf.y), tf.z));
+fn farSlab(ro: vec3f, inv: vec3f, lo: vec3f, hi: vec3f) -> vec2f {
+  let t0 = (lo - ro) * inv;
+  let t1 = (hi - ro) * inv;
+  let tn = min(t0, t1);
+  let tf = max(t0, t1);
+  return vec2f(max(max(tn.x, tn.y), tn.z), min(min(tf.x, tf.y), tf.z));
 }
-// t at which the ray leaves the cube [lo, lo + size)
-float farExit(vec3 ro, vec3 inv, vec3 lo, float size, float t) {
-  if (uWarpK != 0.0) return warpExit(gFarRay, lo, lo+size, t).x;
-  vec3 tf = (lo + step(0.0, inv) * size - ro) * inv;
-  return min(tf.x, min(tf.y, tf.z));
+// t at which the ray leaves the cube [lo, lo + size) (curved: the parabola, from t on)
+fn farExit(ro: vec3f, inv: vec3f, lo: vec3f, size: f32, t: f32) -> f32 {${curved ? `
+  return warpExit(gFarRay, lo, lo + size, t).x;` : `
+  let tf = (lo + step(vec3f(0.0), inv) * size - ro) * inv;
+  return min(tf.x, min(tf.y, tf.z));`}
 }
 
 // Root of the matter field crossing FAR_ISO in [ta, tb] (fa below it, fb at or above).
-float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
-  for (int k = 0; k < FAR_ROOT_STEPS; k++) {
-    float tm = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), FAR_ROOT_SPLIT_LO, FAR_ROOT_SPLIT_HI));
-    float fm = farTraceMatter(farPath(ro, rd, tm));
+fn farRoot(ro: vec3f, rd: vec3f, ta0: f32, tb0: f32, fa0: f32, fb0: f32) -> f32 {
+  var ta = ta0;
+  var tb = tb0;
+  var fa = fa0;
+  var fb = fb0;
+  for (var k = 0; k < FAR_ROOT_STEPS; k++) {
+    let tm = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), FAR_ROOT_SPLIT_LO, FAR_ROOT_SPLIT_HI));
+    let fm = farTraceMatter(farPath(ro, rd, tm));
     if (fm < FAR_ISO) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
   return mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
@@ -1241,62 +1092,63 @@ float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
 // The first point along ro + rd t, t in [t0, t1], where the matter field
 // reaches FAR_ISO, the window's stretch (w0, w1) left out; NO_HIT if none.
 // Unset L2 and L1 nodes are crossed whole; a set one is walked brick by brick
-// with the field sampled at each segment's ends
-// (and its middle when either end is near the level); a brick with no matter
-// around it (farNear) is crossed in one step. cut: the ray was already inside matter where it
-// came out of the window (it went through the window's ground, which the
-// volume draws in front: the far field only fills in behind it).
-float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out bool cut) {
-  cut = false;
-  vec3 inv = 1.0 / rd;
-  float t = t0, f = -1.0;   // f: the field at t (-1: not read since the last jump)
-  ivec3 n2Last = ivec3(-1), n1Last = ivec3(-1);
-  bool o2 = false, o1 = false;
-  int lastDetail = -1;
-  for (int i = 0; i < FAR_MAX_STEPS; i++) {
-    if (uWarpK != 0.0) {
-      float next = warpResume(t, gFarWorld);
-      if (next != t) f = -1.0;
-      t = next;
-      if (t >= gFarWindow.z && t < gFarWindow.w) { t = gFarWindow.w + FAR_NUDGE; f = -1.0; continue; }
-    }
-    if (t >= t1) break;
+// with the field sampled at each segment's ends (and its middle when either
+// end is near the level); a brick with no matter around it (farNear) is
+// crossed in one step. cut: the ray was already inside matter where it came
+// out of the window (it went through the window's ground, which the volume
+// draws in front: the far field only fills in behind it).
+fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<function, bool>) -> f32 {
+  *cut = false;
+  let inv = 1.0 / rd;
+  var t = t0;
+  var f = -1.0;   // the field at t (-1: not read since the last jump)
+  var n2Last = vec3i(-1);
+  var n1Last = vec3i(-1);
+  var o2 = false;
+  var o1 = false;
+  var lastDetail = 0xffffffffu;
+  for (var i = 0; i < FAR_MAX_STEPS; i++) {${curved ? `
+    // past the world's first span, its second (the parabola can come back down
+    // into it); the window's second span is the volume's, as its first is
+    let next = warpResume(t, gFarWorld);
+    if (next != t) { f = -1.0; }
+    t = next;
+    if (t >= gFarWindow.z && t < gFarWindow.w) { t = gFarWindow.w + FAR_NUDGE; f = -1.0; continue; }` : ''}
+    if (t >= t1) { break; }
     if (t >= w0 && t < w1) { t = w1 + FAR_NUDGE; f = -1.0; continue; }
-    vec3 p = farPath(ro, rd, t);
-    int detail = detailAt(p);
+    let p = farPath(ro, rd, t);
+    // a dry meshed chunk is the mesh's: crossed whole
+    let detail = detailAt(p);
     if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
-    if (detail == 1) {
-      vec2 lo = floor(p.xz / float(DETAIL_CHUNK)) * float(DETAIL_CHUNK);
-      vec2 tf = (lo + step(0.0, inv.xz) * float(DETAIL_CHUNK) - ro.xz) * inv.xz;
+    if (detail == 1u) {
+      let lo = floor(p.xz / f32(DETAIL_CHUNK)) * f32(DETAIL_CHUNK);
+      let tf = (lo + step(vec2f(0.0), inv.xz) * f32(DETAIL_CHUNK) - ro.xz) * inv.xz;
       t = min(tf.x, tf.y) + FAR_NUDGE;
       f = -1.0;
       continue;
     }
-    ivec3 c = clamp(ivec3(floor(p)), ivec3(0), WORLD - 1);
-    ivec3 n2 = c / FAR_L2_CELLS;
-    if (n2 != n2Last) { n2Last = n2; o2 = farOcc2(n2); }
-    if (!o2) { t = farExit(ro, inv, vec3(n2 * FAR_L2_CELLS), float(FAR_L2_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
-    ivec3 n1 = c / FAR_L1_CELLS;
-    if (n1 != n1Last) { n1Last = n1; o1 = farOcc1(n1); }
-    if (!o1) { t = farExit(ro, inv, vec3(n1 * FAR_L1_CELLS), float(FAR_L1_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
-    if (!farNear(c / BS)) { t = farExit(ro, inv, vec3(c / BS * BS), float(BS), t) + FAR_NUDGE; f = -1.0; continue; }
-    int seg = BS;   // Distance alone must not erase surviving thin matter.
-    float te = min(farExit(ro, inv, vec3(c / seg * seg), float(seg), t), t1);
-    if (uWarpK != 0.0) {
-      if (t < gFarWindow.z) te = min(te,gFarWindow.z);
-      if (t < gFarWorld.y) te = min(te,gFarWorld.y);
-    }
-    if (t < w0 && te > w0) te = w0;   // the window starts inside this brick
+    let c = clamp(vec3i(floor(p)), vec3i(0), WORLD - 1);
+    let n2 = c / FAR_L2_CELLS;
+    if (any(n2 != n2Last)) { n2Last = n2; o2 = farOcc2(n2); }
+    if (!o2) { t = farExit(ro, inv, vec3f(n2 * FAR_L2_CELLS), f32(FAR_L2_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
+    let n1 = c / FAR_L1_CELLS;
+    if (any(n1 != n1Last)) { n1Last = n1; o1 = farOcc1(n1); }
+    if (!o1) { t = farExit(ro, inv, vec3f(n1 * FAR_L1_CELLS), f32(FAR_L1_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
+    if (!farNear(c / BS)) { t = farExit(ro, inv, vec3f(c / BS * BS), f32(BS), t) + FAR_NUDGE; f = -1.0; continue; }
+    var te = min(farExit(ro, inv, vec3f(c / BS * BS), f32(BS), t), t1);${curved ? `
+    if (t < gFarWindow.z) { te = min(te, gFarWindow.z); }
+    if (t < gFarWorld.y) { te = min(te, gFarWorld.y); }` : ''}
+    if (t < w0 && te > w0) { te = w0; }   // the window starts inside this brick
     if (f < 0.0) {
       f = farTraceMatter(p);
-      if (f >= FAR_ISO) { cut = true; return t; }   // (started inside matter: past the window, or at the camera)
+      if (f >= FAR_ISO) { *cut = true; return t; }   // (started inside matter: past the window, or at the camera)
     }
-    float fe = farTraceMatter(farPath(ro, rd, max(t, te - FAR_NUDGE)));
+    let fe = farTraceMatter(farPath(ro, rd, max(t, te - FAR_NUDGE)));
     if (max(f, fe) > FAR_NEAR) {
-      float tm = 0.5 * (t + te);
-      float fm = farTraceMatter(farPath(ro, rd, tm));
-      if (fm >= FAR_ISO) return farRoot(ro, rd, t, tm, f, fm);
-      if (fe >= FAR_ISO) return farRoot(ro, rd, tm, te, fm, fe);
+      let tm = 0.5 * (t + te);
+      let fm = farTraceMatter(farPath(ro, rd, tm));
+      if (fm >= FAR_ISO) { return farRoot(ro, rd, t, tm, f, fm); }
+      if (fe >= FAR_ISO) { return farRoot(ro, rd, tm, te, fm, fe); }
     }
     f = fe;
     t = te + FAR_NUDGE;
@@ -1305,29 +1157,31 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out boo
 }
 
 // Outward normal of the opaque (ch 0) or matter (ch 1) field: tetrahedral differences.
-float farChannel(vec3 p, int ch) { vec4 v = farSample(p); return ch == 0 ? v.r : v.r + v.g; }
-vec3 farNormal(vec3 p, int ch) {
-  const vec2 k = vec2(1.0, -1.0);
-  float h = FAR_NORMAL_STEP;
-  vec3 gr = k.xyy * farChannel(p + k.xyy * h, ch) + k.yyx * farChannel(p + k.yyx * h, ch)
-          + k.yxy * farChannel(p + k.yxy * h, ch) + k.xxx * farChannel(p + k.xxx * h, ch);
-  float l = length(gr);
-  return l > FAR_FLAT_EPS ? -gr / l : vec3(0.0, 1.0, 0.0);
+fn farChannel(p: vec3f, ch: i32) -> f32 { let v = farSample(p); return select(v.r + v.g, v.r, ch == 0); }
+fn farNormal(p: vec3f, ch: i32) -> vec3f {
+  let k = vec2f(1.0, -1.0);
+  let h = FAR_NORMAL_STEP;
+  let gr = k.xyy * farChannel(p + k.xyy * h, ch) + k.yyx * farChannel(p + k.yyx * h, ch)
+         + k.yxy * farChannel(p + k.yxy * h, ch) + k.xxx * farChannel(p + k.xxx * h, ch);
+  let l = length(gr);
+  return select(vec3f(0.0, 1.0, 0.0), -gr / max(l, FAR_FLAT_EPS), l > FAR_FLAT_EPS);
 }
 
 // Sunlight past what's near (crowns, the ground's bumps): a short coarse ray
 // toward the sun through the field, which the height field's shadows (the
 // ground, from far) multiply.
-float farSunRay(vec3 p, vec3 n) {
-  vec3 o = p + n * FAR_SUN_RAY_LIFT;
-  float vis = 1.0;
-  for (int i = 0; i < FAR_SUN_RAY_N; i++) vis *= 1.0 - smoothstep(FAR_SUN_RAY_LO, FAR_SUN_RAY_HI, farMatter(o + uSun * FAR_SUN_RAY[i]));
+fn farSunRay(p: vec3f, n: vec3f) -> f32 {
+  let o = p + n * FAR_SUN_RAY_LIFT;
+  var vis = 1.0;
+  for (var i = 0; i < FAR_SUN_RAY_N; i++) {
+    vis *= 1.0 - smoothstep(FAR_SUN_RAY_LO, FAR_SUN_RAY_HI, farMatter(o + FU.sun * FAR_SUN_RAY[i]));
+  }
   return vis;
 }
 
 // Open sky around the surface: two field samples out along the normal.
-float farAO(vec3 p, vec3 n) {
-  float o = farSample(p + n * FAR_AO_D1).r + farSample(p + n * FAR_AO_D2).r;
+fn farAO(p: vec3f, n: vec3f) -> f32 {
+  let o = farSample(p + n * FAR_AO_D1).r + farSample(p + n * FAR_AO_D2).r;
   return clamp(1.0 - FAR_AO_K * o, FAR_AO_MIN, 1.0);
 }
 
@@ -1338,253 +1192,457 @@ float farAO(vec3 p, vec3 n) {
 // that top can be in the brick above or below: the first of the brick just
 // inside, the one outside and the one deeper that holds open cells (its
 // element is the surface's, not what lies buried under it).
-#define FAR_ID_SALT_Y 17.0   // decorrelate the jitter noise's axes
-#define FAR_ID_SALT_Z 31.0
-int farElement(vec3 p, vec3 n) {
-  vec3 j = (vec3(vnoise(p * FAR_ID_JITTER_F), vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Y),
+const FAR_ID_SALT_Y: f32 = 17.0;   // decorrelate the jitter noise's axes
+const FAR_ID_SALT_Z: f32 = 31.0;
+fn farElement(p: vec3f, n: vec3f) -> i32 {
+  let j = (vec3f(vnoise(p * FAR_ID_JITTER_F), vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Y),
                  vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Z)) - 0.5) * FAR_ID_JITTER
-         + (hash33(vec3(gl_FragCoord.xy, float(uFrame))) - 0.5) * FAR_ID_DITHER;
-  vec3 q = p + j - n * dot(n, j);
-  ivec3 a = farIds(q - n * FAR_ID_INSET);
+        + (hash33(vec3f(gFragCoord, f32(FU.frame))) - 0.5) * FAR_ID_DITHER;
+  let q = p + j - n * dot(n, j);
+  var a = farIds(q - n * FAR_ID_INSET);
   if (a.z == 0) {
-    ivec3 b = farIds(q + n * FAR_ID_INSET);
-    if (b.z == 1 && b.x != E_EMPTY) return b.x;
-    ivec3 c = farIds(q - n * FAR_ID_DEEPER);
-    if (c.z == 1 || a.x == E_EMPTY) a = c;
+    let b = farIds(q + n * FAR_ID_INSET);
+    if (b.z == 1 && b.x != E_EMPTY) { return b.x; }
+    let c = farIds(q - n * FAR_ID_DEEPER);
+    if (c.z == 1 || a.x == E_EMPTY) { a = c; }
   }
-  return a.x == E_EMPTY ? E_ROCK : a.x;
+  return select(a.x, E_ROCK, a.x == E_EMPTY);
 }
-float farGlowT(vec3 p, vec3 n) {
-  float a = farGlow(p - n * FAR_ID_INSET);
-  return a > 0.0 ? INCAND_T0 + a * FAR_GLOW_SPAN : AMBIENT;
+fn farGlowT(p: vec3f, n: vec3f) -> f32 {
+  let a = farGlow(p - n * FAR_ID_INSET);
+  return select(AMBIENT, INCAND_T0 + a * FAR_GLOW_SPAN, a > 0.0);
 }
 
 // A lit opaque far surface: its material (matOf, at the pixel's footprint, so
 // texture fades to its far look), the sun through the shadow heights, the sky
 // over its open share (none under the ground: FAR_SKY), its own glow.
-vec3 farShadeMaterial(vec3 p, vec3 n, vec3 rd, float sunVis, int id) {
-  float fp = footprint(p);
-  Mat m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);
-  if (id == E_PLANT ${mesh ? '&& false' : ''}) {
+fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3f {
+  let fp = footprint(p);
+  var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);
+  if (id == E_PLANT${mesh ? ' && false' : ''}) {
     // foliage: its leaves have faded into the far look; clumps of them still show (fading in turn)
-    vec4 cl = mFbmD(p, FAR_CLUMP_F, FAR_CLUMP_OCT, fp);
+    let cl = mFbmD(p, FAR_CLUMP_F, FAR_CLUMP_OCT, fp);
     m.g += FAR_CLUMP_H * cl.yzw;
     m.cav *= 1.0 + FAR_CLUMP_CAV * cl.x;
   }
   // the material's bump tilts the normal (applyMat)
-  vec3 gt = m.g - n * dot(n, m.g);
-  float gl = length(gt);
-  if (gl > BUMP_MAX_SLOPE) gt *= BUMP_MAX_SLOPE / gl;
-  vec3 ns = normalize(n - gt);
-  vec3 v = -rd;
-  if (dot(ns, v) < SHADE_NV_MIN) ns = normalize(ns + v * (SHADE_NV_MIN - dot(ns, v)));
-  float nv = clamp(dot(ns, v), 1e-4, 1.0), nl = dot(ns, uSun);
-  float rough = clamp(m.rough, MAT_ROUGH_MIN, 1.0);
-  vec3 F0 = mix(vec3(m.f0), m.alb, m.metal);
-  vec3 kD = m.alb * (1.0 - m.metal);
-  float wrap = max(nl + m.sss, 0.0) / ((1.0 + m.sss) * (1.0 + m.sss));
-  float lam = orenNayar(nl, nv, dot(uSun, v), max(rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE);
-  vec3 dSun = kD * mix(vec3(lam), wrap * m.sssCol, m.sss);
-  float cav = clamp(m.cav, 0.0, 1.0);
-  vec3 c = SUN_COL * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * ggxSpec(ns, v, uSun, rough, F0));
-  vec3 ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
+  var gt = m.g - n * dot(n, m.g);
+  let gl = length(gt);
+  if (gl > BUMP_MAX_SLOPE) { gt *= BUMP_MAX_SLOPE / gl; }
+  var ns = normalize(n - gt);
+  let v = -rd;
+  if (dot(ns, v) < SHADE_NV_MIN) { ns = normalize(ns + v * (SHADE_NV_MIN - dot(ns, v))); }
+  let nv = clamp(dot(ns, v), 1e-4, 1.0);
+  let nl = dot(ns, FU.sun);
+  let rough = clamp(m.rough, MAT_ROUGH_MIN, 1.0);
+  let F0 = mix(vec3f(m.f0), m.alb, m.metal);
+  let kD = m.alb * (1.0 - m.metal);
+  let wrap = max(nl + m.sss, 0.0) / ((1.0 + m.sss) * (1.0 + m.sss));
+  let lam = orenNayar(nl, nv, dot(FU.sun, v), max(rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE);
+  let dSun = kD * mix(vec3f(lam), wrap * m.sssCol, m.sss);
+  let cav = clamp(m.cav, 0.0, 1.0);
+  let c = FU.sunCol * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * ggxSpec(ns, v, FU.sun, rough, F0));
+  let ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
   return c + kD * ambient + m.emit;
 }
 
 // Light scattered toward the eye inside liquid lid, per unit (1 - transmittance) (interiorScatter, without the glow volume);
 // sky: the share of the sky over it (farSkyOpen).
-vec3 farInScatter(int lid, float sunVis, float sky) {
-  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * sky * mix(SKY_IN_FLOOR, 1.0, sunVis)
-         + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN;
-  return SCATALB[lid] * L;
+fn farInScatter(lid: i32, sunVis: f32, sky: f32) -> vec3f {
+  let L = skyAmbient(vec3f(0.0, 1.0, 0.0)) * sky * mix(SKY_IN_FLOOR, 1.0, sunVis)
+        + FU.sunCol * sunVis * max(FU.sun.y, 0.0) * SUN_IN_GAIN;
+  return SCATALB(lid) * L;
 }
 // The bed under liquid lid at p (normal n, depth below the surface): lit by
 // sun and sky through the liquid above.
-vec3 farShadeBed(int id, vec3 p, vec3 n, float depth, int lid, float sunVis, float sky) {
-  vec3 alb = matOf(id, p, n, AMBIENT, 0.0, footprint(p)).alb;
-  vec3 down = exp(-SIGMA[lid] * depth / max(uSun.y, FAR_SUN_Y_MIN));
-  return alb * (SUN_COL * sunVis * max(dot(n, uSun), 0.0) * down + skyAmbient(n) * sky * exp(-SIGMA[lid] * depth));
+fn farShadeBed(id: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, sky: f32) -> vec3f {
+  let alb = matOf(id, p, n, AMBIENT, 0.0, footprint(p)).alb;
+  let down = exp(-SIGMA(lid) * depth / max(FU.sun.y, FAR_SUN_Y_MIN));
+  return alb * (FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0) * down + skyAmbient(n) * sky * exp(-SIGMA(lid) * depth));
 }
 // A liquid surface at p (liquid lid, an element) seen along rd: the sky and
 // the sun's glint off it (Fresnel), and through it the liquid's body down to
 // the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
 // Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
-vec3 farLiquid(vec3 p, vec3 rd, int lid, float sunVis, float bedY) {
-  float sky = farSkyOpen(p + vec3(0.0, FAR_SKY_LIFT, 0.0));
+fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
+  let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
-  vec3 n = liquidRipple(p, vec3(0.0, 1.0, 0.0));
-  float F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR[lid]);
-  vec3 r = reflect(rd, n);
+  let n = liquidRipple(p, vec3f(0.0, 1.0, 0.0));
+  let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
+  var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  vec3 refl = envReflect(p, r, vec3(sunVis)) * sky;
-  vec3 rt = refract(rd, n, 1.0 / IOR[lid]);
-  if (dot(rt, rt) < 1e-6) rt = vec3(0.0, -1.0, 0.0);
-  WarpRay transmitted = warpRay(warpPoint(p), normalize(warpVector(p,rt)));
-  float s = -1.0;
-  vec3 bed = vec3(0.0);
+  let refl = envReflect(p, r, vec3f(sunVis)) * sky;
+  var rt = refract(rd, n, 1.0 / IOR(lid));
+  if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }${curved ? `
+  // the refracted ray, displayed straight: a parabola under the surface too
+  let transmitted = warpRay(warpPoint(p), normalize(warpVector(p, rt)));` : ''}
+  var s = -1.0;
+  var bed = vec3f(0.0);
   if (bedY >= 0.0) {
-    s = uWarpK == 0.0 ? (p.y - bedY) / max(-rt.y, FAR_FLAT_EPS) : farPlaneHit(transmitted,bedY);
-    vec3 q = uWarpK == 0.0 ? p + rt*s : warpAt(transmitted,s);
-    bed = farShadeBed(FAR_OCEAN_BED, q, vec3(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis, sky);
+    s = ${curved ? 'farPlaneHit(transmitted, bedY)' : '(p.y - bedY) / max(-rt.y, FAR_FLAT_EPS)'};
+    let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
+    bed = farShadeBed(FAR_OCEAN_BED, q, vec3f(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis, sky);
   } else {
-    float ta = 0.0, fa = farSample(p).r;
-    for (int i = 1; i <= FAR_WATER_STEPS; i++) {
-      float tb = float(i) * FAR_WATER_STEP;
-      float fb = farSample(uWarpK == 0.0 ? p + rt*tb : warpAt(transmitted,tb)).r;
+    var ta = 0.0;
+    var fa = farSample(p).r;
+    for (var i = 1; i <= FAR_WATER_STEPS; i++) {
+      let tb = f32(i) * FAR_WATER_STEP;
+      let fb = farSample(${curved ? 'warpAt(transmitted, tb)' : 'p + rt * tb'}).r;
       if (fb >= FAR_ISO) {
         s = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
-        vec3 q = uWarpK == 0.0 ? p + rt*s : warpAt(transmitted,s);
-        vec3 nq = farNormal(q, 0);
+        let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
+        let nq = farNormal(q, 0);
         bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0), sky);
         break;
       }
-      ta = tb; fa = fb;
+      ta = tb;
+      fa = fb;
     }
   }
-  // Optical distance is in flat material space, not display-ray t.
-  if (uWarpK != 0.0 && s >= 0.0 && s < WARP_INF) s = warpArc(transmitted,0.0,s);
-  vec3 att = s >= 0.0 ? exp(-SIGMA[lid] * s) : vec3(0.0);
-  vec3 body = bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
+${curved ? `  // optical distance is in flat material space, not display-ray t
+  if (s >= 0.0 && s < WARP_INF) { s = warpArc(transmitted, 0.0, s); }
+` : ''}  let att = select(vec3f(0.0), exp(-SIGMA(lid) * s), s >= 0.0);
+  let body = bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
   return F * refl + (1.0 - F) * body;
 }
 
 // The sky toward rd from ro, with the key light's disc (sun, or the moon at
-// night: SUN_COL carries its colour), behind the cumulus deck (gfx/clouds.js).
-vec3 farSky(vec3 ro, vec3 rd) {
-  vec3 c = skyRadiance(normalize(vec3(rd.x, max(rd.y, 0.0), rd.z)));
-  float r = SUN_TAN_RADIUS;
-  float mu = dot(rd, uSun);
-  float disc = smoothstep(cos(r * (1.0 + FAR_SUN_DISC_EDGE)), cos(r * (1.0 - FAR_SUN_DISC_EDGE)), mu);
-  vec4 cl = cloudLayer(ro, rd);
-  return (c + disc * SUN_COL * FAR_SUN_DISC) * cl.a + cl.rgb;
+// night: FU.sunCol carries its colour), behind the cumulus deck (gfx/clouds.js).
+fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
+  let c = skyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z)));
+  let r = SUN_TAN_RADIUS;
+  let mu = dot(rd, FU.sun);
+  let disc = smoothstep(cos(r * (1.0 + FAR_SUN_DISC_EDGE)), cos(r * (1.0 - FAR_SUN_DISC_EDGE)), mu);
+  let cl = cloudLayer(ro, rd);
+  return (c + disc * FU.sunCol * FAR_SUN_DISC) * cl.a + cl.rgb;
 }
 
-float farDepth(vec3 p) {
-  vec4 clip = projectionMatrix * viewMatrix * uWorldToScene * vec4(warpPoint(p), 1.0);
-  return clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+fn farDepth(p: vec3f) -> f32 {
+  let clip = P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0);   // (curved: where it is displayed)
+  return clamp(clip.z / clip.w, 0.0, 1.0);
 }
 
-${mesh ? `
-void main() {
-  vec3 p = vWorld;
-  vec3 ro = (uSceneToWorld * vec4(cameraPosition, 1.0)).xyz;
-  vec3 rd = normalize(p - ro);
-  vec3 displayRd = rd;
-  float displayDist = length(p-ro);
-  if (uWarpK != 0.0) {
-    vec3 displayed = warpPoint(p);
-    displayDist = length(displayed-ro);
-    displayRd = (displayed-ro)/max(displayDist,1e-8);
-    WarpRay ray = warpRay(ro,displayRd);
-    rd = normalize(warpSlope(ray,displayDist));
-  }
-  surfView(ro, displayRd);
-  if (all(greaterThanEqual(p.xz, vec2(uWinLo.xz))) && all(lessThan(p.xz, vec2((uWinLo + GRID).xz)))) discard;
-  vec3 n = normalize(vNormal);
-  float sunVis = farSunLit(p, 0);
-  // The coarse crown's density is not this leaf's shadow: sampling it here
-  // would turn detailed branches black inside the old, inflated silhouette.
-  vec3 col = farShadeMaterial(p, n, rd, sunVis, int(vElement + 0.5));
-  gl_FragColor = vec4(farHaze(col, displayRd, displayDist, farAirLit(ro - vec3(uWinLo), p - vec3(uWinLo))), 1.0);
+${mesh ? FAR_MESH_ENTRY : `struct FarVarying {
+  @builtin(position) position: vec4f,
+  @location(0) ndc: vec2f,
 }
-` : `
-void main() {
-  vec3 ro = (uSceneToWorld * vec4(cameraPosition, 1.0)).xyz;
-  vec3 rd = safeDir(normalize(vFar.xyz / vFar.w - ro));
-  surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)
-  if (uWarpK != 0.0) {
-    gFarRay = warpRay(ro,rd);
-    gFarWindow = warpSpans(gFarRay,vec3(uWinLo),vec3(uWinLo+GRID),0.0,WARP_INF);
-    gFarWorld = warpSpans(gFarRay,vec3(0.0),vec3(WORLD),0.0,WARP_INF);
-  }
-  vec3 inv = 1.0 / rd;
-  vec2 tw = farSlab(ro, inv, vec3(uWinLo), vec3(uWinLo + GRID));
-  if (tw.x > tw.y || tw.y < 0.0) tw = vec2(NO_HIT);
-  vec2 tb = farSlab(ro, inv, vec3(0.0), vec3(WORLD));
-  float t0 = max(tb.x, 0.0), t1 = tb.y;
-  if (uWarpK != 0.0) { tw = gFarWindow.xy; t0 = gFarWorld.x; t1 = gFarWorld.z < WARP_INF ? gFarWorld.w : gFarWorld.y; }
-  float cached = 0.0;
-  if (uDetailHasDepth) {
-    cached = texelFetch(tDetailDepth, ivec2(gl_FragCoord.xy), 0).r;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> FarVarying {
+  // (-1, -1), (3, -1), (-1, 3): one triangle covering the screen
+  let ndc = vec2f(f32(i32(i & 1u) * 4 - 1), f32(i32(i >> 1u) * 4 - 1));
+  var o: FarVarying;
+  o.position = vec4f(ndc, 0.0, 1.0);
+  o.ndc = ndc;
+  return o;
+}
+struct FarOut {
+  @location(0) color: vec4f,
+  @builtin(frag_depth) depth: f32,
+}
+@fragment fn fs(v: FarVarying) -> FarOut {
+  gFragCoord = v.position.xy;
+  let far = P.clipToWorld * vec4f(v.ndc, 1.0, 1.0);   // the pixel's ray as the world point it meets on the far plane
+  let ro = P.eye;
+  let rd = safeDir(normalize(far.xyz / far.w - ro));
+  surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)${curved ? `
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
+  gFarRay = warpRay(ro, rd);` : ''}
+  let inv = 1.0 / rd;
+  let winLo = vec3f(P.winLo);
+  var tw = farSlab(ro, inv, winLo, winLo + vec3f(GRID));
+  if (tw.x > tw.y || tw.y < 0.0) { tw = vec2f(NO_HIT); }
+  let tb = farSlab(ro, inv, vec3f(0.0), vec3f(WORLD));
+  var t0 = max(tb.x, 0.0);
+  var t1 = tb.y;${curved ? `
+  // the parabola's spans in the window (the volume's) and in the world (up to two each)
+  gFarWindow = warpSpans(gFarRay, winLo, winLo + vec3f(GRID), 0.0, WARP_INF);
+  gFarWorld = warpSpans(gFarRay, vec3f(0.0), vec3f(WORLD), 0.0, WARP_INF);
+  tw = gFarWindow.xy;
+  t0 = gFarWorld.x;
+  t1 = select(gFarWorld.y, gFarWorld.w, gFarWorld.z < WARP_INF);` : ''}
+  // the detail meshes in front (world/detail.js): the march stops at them, so
+  // the coarse field (and the sea below) doesn't show through a meshed chunk.
+  // Their depth is the rasterized one (bent with the view when it is): its
+  // point through the inverse projection, at its distance along this ray.
+  var cached = 0.0;
+  if (P.detailDepth != 0u) {
+    cached = textureLoad(tDetailDepth, vec2i(v.position.xy), 0).r;
     if (cached > 0.0) {
-      vec2 uv = gl_FragCoord.xy / vec2(textureSize(tDetailDepth,0));
-      vec4 p = uWarpClipToWorld * vec4(uv*2.0-1.0,cached*2.0-1.0,1.0);
-      cached = length(p.xyz/p.w - ro);
+      let uv = v.position.xy / vec2f(textureDimensions(tDetailDepth));
+      let q = P.clipToWorld * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, cached, 1.0);
+      cached = length(q.xyz / q.w - ro);
       t1 = min(t1, cached);
     }
   }
-  bool cut = false;
-  float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y, cut) : NO_HIT;
+  var cut = false;
+  var tHit = NO_HIT;
+  if (t0 < t1) { tHit = farMarch(ro, rd, t0, t1, tw.x, tw.y, &cut); }
   // the open sea beyond the world (and a march that ran out of steps over it).
-  // A world without one (uSea 0: world/scenes) has an open plain beyond it at
-  // uFloor, and inside it a ray that met nothing reaches the world's bottom
+  // A world without one (sea 0: world/scenes) has an open plain beyond it at
+  // floor, and inside it a ray that met nothing reaches the world's bottom
   // (rock below it: the summaries' floor), not a sea.
-  bool plain = uSea <= 0.0;
-  float level = plain ? uFloor : uSea;
-  float tSea = rd.y < 0.0 && ro.y > level ? (level - ro.y) / rd.y : NO_HIT;
-  if (uWarpK != 0.0) tSea = farPlaneHit(gFarRay,level);
-  vec3 ps = farPath(ro, rd, tSea);
-  bool seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
+  let plain = P.sea <= 0.0;
+  let level = select(P.sea, P.floor, plain);
+  var tSea = NO_HIT;${curved ? `
+  tSea = farPlaneHit(gFarRay, level);` : `
+  if (rd.y < 0.0 && ro.y > level) { tSea = (level - ro.y) / rd.y; }`}
+  var ps = farPath(ro, rd, tSea);
+  var seaOut = any(ps.xz < vec2f(0.0)) || any(ps.xz > vec2f(WORLD.xz));
   if (plain && !seaOut) {
-    tSea = rd.y < 0.0 && ro.y > 0.0 ? -ro.y / rd.y : NO_HIT;
-    if (uWarpK != 0.0) tSea = farPlaneHit(gFarRay,0.0);
+    tSea = NO_HIT;${curved ? `
+    tSea = farPlaneHit(gFarRay, 0.0);` : `
+    if (rd.y < 0.0 && ro.y > 0.0) { tSea = -ro.y / rd.y; }`}
     ps = farPath(ro, rd, tSea);
-    seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
+    seaOut = any(ps.xz < vec2f(0.0)) || any(ps.xz > vec2f(WORLD.xz));
   }
-  bool seaWin = uWarpK == 0.0 ? tSea >= tw.x && tSea <= tw.y : warpInside(tSea,gFarWindow);
-  bool ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
+  let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
+  let ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
     && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));
-  // A nearer exterior ocean/plain still occludes the cached mesh. Inside
-  // cached chunks, do not refill dry edits with the coarse sea fallback.
-  if (cached > 0.0 && tHit == NO_HIT && !ocean) discard;
+  // A nearer exterior ocean or plain still hides a meshed chunk; inside one, a
+  // dry pit below sea level isn't flooded by the coarse sea: the mesh shows.
+  if (cached > 0.0 && tHit == NO_HIT && !ocean) { discard; }
 
-  vec3 col;
-  float depth = 1.0;
+  var col: vec3f;
+  var o: FarOut;
+  o.depth = 1.0;
   if (ocean) {
-    col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0), 1.0)
-                : farLiquid(ps, farDirection(rd,tSea), E_WATER, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
-    col = farHaze(col, rd, tSea, farAirLit(ro - vec3(uWinLo), ps - vec3(uWinLo)));
-    depth = farDepth(ps);
+    if (plain) { col = farShadeBed(FAR_OCEAN_BED, ps, vec3f(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0), 1.0); }
+    else { col = farLiquid(ps, farDirection(rd, tSea), E_WATER, farSunLit(ps, 0), select(-1.0, P.floor, seaOut)); }
+    col = farHaze(col, rd, tSea, farAirLit(ro - winLo, ps - winLo));
+    o.depth = farDepth(ps);
   } else if (tHit < NO_HIT) {
-    vec3 p = farPath(ro, rd, tHit);
-    vec3 localRd = farDirection(rd,tHit);
+    let p = farPath(ro, rd, tHit);
+    let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
+    let v = farSample(p);
     if (cut) {
       // came out of the window inside matter. Behind the window's ground: hidden
       // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
       // the sun, in the probes' light just inside the window (none in a cave).
       // In its water, which the volume draws see-through: the water body's own
       // light, as deep water shows, so the window's water carries on past its side.
-      vec4 v = farSample(p);
-      col = v.r >= v.g ? ALBEDO[farIds(p).x] * giIrradiance(probeAt(p - vec3(uWinLo) - rd * GI_OFFSET), -rd)
-                       : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p));
+      if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
+      else { col = farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p)); }
     } else {
-      vec4 v = farSample(p);
-      float sunVis = farSunLit(p, 0);
-      if (v.g > v.r) col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
+      let sunVis = farSunLit(p, 0);
+      if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
       else {
-      vec3 n = farNormal(p, 0);
-      col = farShadeMaterial(p, n, localRd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), farElement(p, n));
+        let n = farNormal(p, 0);
+        var sv = sunVis;
+        if (sunVis > 0.0 && dot(n, FU.sun) > 0.0) { sv *= farSunRay(p, n); }
+        col = farShadeMaterial(p, n, localRd, sv, farElement(p, n));
+      }
     }
-    }
-    col = farHaze(col, rd, tHit, farAirLit(ro - vec3(uWinLo), p - vec3(uWinLo)));
-    depth = farDepth(p);
+    col = farHaze(col, rd, tHit, farAirLit(ro - winLo, p - winLo));
+    o.depth = farDepth(p);
   } else {
     col = farSky(ro, rd);
   }
-  gl_FragColor = vec4(col, 1.0);
-  gl_FragDepth = depth;
+  o.color = vec4f(col, 1.0);
+  return o;
+}`}
+`;
+};
+
+// The detail meshes (world/detail.js): a chunk's surface, world cells, shaded
+// as the far view shades its surfaces (no field AO, no foliage clumps: the
+// mesh has the real cells), hazed, its depth the rasterized one. Inside the
+// window's columns the volume draws instead.
+const FAR_MESH_ENTRY = /* wgsl */ `
+struct MeshVarying {
+  @builtin(position) position: vec4f,
+  @location(0) world: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) @interpolate(flat) element: u32,
 }
-`}
+@vertex fn vs(@location(0) pos: vec3f, @location(1) nor: vec3f, @location(2) element: u32) -> MeshVarying {
+  var o: MeshVarying;
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
+  o.position = P.worldToClip * vec4f(warpPoint(pos), 1.0);   // (bent with the view: the rolling log; k 0, flat)
+  o.world = pos;
+  o.normal = nor;
+  o.element = element;
+  return o;
+}
+@fragment fn fs(v: MeshVarying) -> @location(0) vec4f {
+  gFragCoord = v.position.xy;
+  let p = v.world;
+  let ro = P.eye;
+  var rd = safeDir(normalize(p - ro));
+  // bent (the rolling log): the eye sees p along the displayed ray, which
+  // arrives along its parabola's direction there
+  var displayRd = rd;
+  var displayDist = length(p - ro);
+  if (P.warpK != 0.0) {
+    warpUse(P.warpK, P.warpAnchor, P.warpDir);
+    let shown = warpPoint(p);
+    displayDist = length(shown - ro);
+    displayRd = (shown - ro) / max(displayDist, 1e-8);
+    rd = normalize(warpSlope(warpRay(ro, displayRd), displayDist));
+  }
+  surfView(ro, displayRd);   // pixel footprint for material LOD (uniform control flow)
+  let winLo = vec3f(P.winLo);
+  if (all(p.xz >= winLo.xz) && all(p.xz < winLo.xz + vec2f(GRID.xz))) { discard; }
+  let n = normalize(v.normal);
+  // the coarse crown's density is not this leaf's shadow: sampling it here
+  // would turn detailed branches black inside the old, inflated silhouette
+  let col = farShadeMaterial(p, n, rd, farSunLit(p, 0), i32(v.element));
+  return vec4f(farHaze(col, displayRd, displayDist, farAirLit(ro - winLo, p - winLo)), 1.0);
+}`;
+
+// What the view's materials need of the tracer's (shaders/render.js), which
+// the far view doesn't paste: none of it runs here (no grid state is read).
+const FAR_STANDINS = /* wgsl */ `
+const EV_NONE: i32 = 0;
+const EV_OPAQUE: i32 = 1;
+const EV_ENTER: i32 = 2;
+const EV_EXIT: i32 = 3;
 `;
 
-export const farMeshVert = /* glsl */ `
-attribute float element;
-varying vec3 vWorld, vNormal;
-flat out float vElement;
-void main() {
-  vWorld = position;
-  vNormal = normal;
-  vElement = element;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+// The view's bind group layouts, groups 0-3: the render library's, group 0
+// with the far field's own textures (its field and occupancy levels).
+export const FAR_VIEW_FRAME = [
+  ...RENDER_LAYOUT.FRAME,
+  { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
+  { binding: 3, visibility: STAGE.FRAGMENT, buffer: { type: 'read-only-storage' } },
+  // the detail meshes' depth (r32float: textureLoad only); the view's 16th sampled texture, the stage's limit (B2)
+  { binding: 4, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
+];
+export const FAR_VIEW_LAYOUTS = () => {
+  const [, state, lighting, params] = libLayouts('LIGHTING');
+  return [FAR_VIEW_FRAME, state, lighting, params];
+};
+/** The view's render pipeline description: the scene target's formats, depth less-equal, frag_depth written, opaque. */
+export const farViewPipeline = () => ({
+  vertex: { entry: 'vs' },
+  fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
+  primitive: { topology: 'triangle-list' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+});
+
+/** The detail meshes' pipeline (farFrag's mesh variant): positions, normals (float32x3) and element (uint32) buffers. */
+export const farMeshPipeline = () => ({
+  vertex: {
+    entry: 'vs',
+    buffers: [
+      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+      { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
+      { arrayStride: 4, attributes: [{ shaderLocation: 2, offset: 0, format: 'uint32' }] },
+    ],
+  },
+  fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
+  primitive: { topology: 'triangle-list', cullMode: 'none' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+});
+
+// The detail meshes' depth (docs/webgpu.md G1: their depth prepass, our
+// own depth-only pass, as the WebGL build's nested render was): each mesh's
+// rasterized depth, bent with the view as the meshes are (the rolling log),
+// into an r32float target the size of the scene target, the nearest kept by a
+// depth test, 0 where there is none, the window's columns left out (the
+// volume draws there). The view reconstructs its point through the inverse
+// projection, and its march stops there (farFrag: tDetailDepth). Its own
+// small module: positions only, no lighting, so it builds in a moment beside
+// the meshes' pipeline.
+export const FAR_DETAIL_DEPTH_FORMAT = 'r32float';
+export const farDetailDepthFrag = (g) => /* wgsl */ `
+// far detail depth
+${FarViewParams.wgsl}
+@group(3) @binding(1) var<uniform> P: FarViewParams;
+${presentationWGSL}
+const GRID_XZ: vec2f = vec2f(${glf(g.nx)}, ${glf(g.nz)});
+struct DepthVarying {
+  @builtin(position) position: vec4f,
+  @location(0) world: vec3f,
 }
-`;
+@vertex fn vs(@location(0) pos: vec3f) -> DepthVarying {
+  var o: DepthVarying;
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
+  o.position = P.worldToClip * vec4f(warpPoint(pos), 1.0);
+  o.world = pos;
+  return o;
+}
+@fragment fn fs(v: DepthVarying) -> @location(0) vec4f {
+  let winLo = vec3f(P.winLo);
+  if (all(v.world.xz >= winLo.xz) && all(v.world.xz < winLo.xz + GRID_XZ)) { discard; }
+  return vec4f(v.position.z, 0.0, 0.0, 1.0);
+}`;
+/** The detail depth pass's pipeline: the meshes' positions (float32x3), r32float out, its own depth32float (less, written). */
+export const farDetailDepthPipeline = () => ({
+  vertex: { entry: 'vs', buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }] },
+  fragment: { entry: 'fs', targets: [{ format: FAR_DETAIL_DEPTH_FORMAT }] },
+  primitive: { topology: 'triangle-list', cullMode: 'none' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
+});
+
+// WEBGPU-STUB (docs/webgpu.md J3): the WebGL region quads, full-screen pass
+// and the meshes' vertex stage; the far passes are compute kernels now, and
+// the view's and meshes' vertex stages are in farFrag's module
+export const farRegionVert = null;
+export const farVert = null;
+export const farMeshVert = null;
+
+// ---------------------------------------------------------------- check-wgsl
+// Every far pass for the one world size (WORLD_SIZE), the scene cells and
+// trees for each scene, the view: on entering a world (its first build), so
+// the menu's warm-up leaves them out (warm: false). The view is the size of
+// the volume's realistic pipeline (B5: built in the background; the far
+// field shows once it is ready).
+const Lw = farLayout(WORLD_SIZE);
+const DETAIL_S = (L) => farSceneLayout(L, DETAIL_CHUNK + 2 * DETAIL_PAD);
+const CHECK_LAYOUTS = (g2, state = 'EMPTY') => () => [LAYOUT.TABLES, state === 'EMPTY' ? 'EMPTY' : LAYOUT[state], g2];
+const SCENE_CELLS_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(SCENE_CELLS_BINDING, 'storage')];
+export const SCENE_CELLS_LAYOUT_OF = SCENE_CELLS_LAYOUT;
+export const TREE_CAND_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(TREE_CAND_BINDING, 'storage')];
+export const TREE_THIN_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(TREE_CAND_BINDING), buf(TREE_CAND_BINDING + 1, 'storage')];
+export const WGSL_CHECK = () => [
+  {
+    name: 'farWin', kind: 'compute', grids: ['64', '128'], warm: false, code: (g) => farWinFrag(g, Lw),
+    layouts: CHECK_LAYOUTS(FAR_WIN_LAYOUT, 'STATE_RO'), params: RegionParams, dispatch: () => regionDispatch([4, Lw.bricks.n[1], 32]),
+  },
+  ...[false, true].map((trees) => ({
+    name: `farScene${trees ? ' trees' : ''}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => farSceneFrag(g, Lw, trees),
+    layouts: CHECK_LAYOUTS(FAR_SCENE_LAYOUT(trees)), params: RegionParams, dispatch: () => regionDispatch([16, Lw.bricks.n[1], 16]),
+  })),
+  { name: 'farClear', kind: 'compute', grids: ['128'], warm: false, code: (g) => farClearFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_CLEAR_LAYOUT), params: RegionParams, dispatch: () => regionDispatch(Lw.bricks.n) },
+  { name: 'farBoost', kind: 'compute', grids: ['128'], warm: false, code: (g) => farBoostFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_BOOST_LAYOUT), params: RegionParams, dispatch: () => regionDispatch([18, Lw.bricks.n[1], 18]) },
+  { name: 'farMip1', kind: 'compute', grids: ['128'], warm: false, code: (g) => farMip1Frag(g, Lw), layouts: CHECK_LAYOUTS(FAR_MIP1_LAYOUT), dispatch: () => nodeDispatch(Lw.l1) },
+  { name: 'farMip2', kind: 'compute', grids: ['128'], warm: false, code: (g) => farMip2Frag(g, Lw), layouts: CHECK_LAYOUTS(FAR_MIP2_LAYOUT), dispatch: () => nodeDispatch(Lw.l2) },
+  { name: 'farTop', kind: 'compute', grids: ['128'], warm: false, code: (g) => farTopFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_TOP_LAYOUT), dispatch: () => columnDispatch(Lw) },
+  { name: 'farShadow', kind: 'compute', grids: ['128'], warm: false, code: (g) => farShadowFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_SHADOW_LAYOUT), params: ShadowParams, dispatch: () => columnDispatch(Lw) },
+  { name: 'farTreeBand', kind: 'compute', grids: ['128'], warm: false, code: (g) => farTreeBandFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_TREE_BAND_LAYOUT), dispatch: () => columnDispatch(Lw) },
+  ...WORLD_SCENES.flatMap((s) => {
+    const L = farLayout(s.key === 'giantVolcano' ? [WORLD_SIZE[0], 384, WORLD_SIZE[2]] : WORLD_SIZE), S = farSceneLayout(L);
+    const grids = s.key === 'giantVolcano' ? ['giant'] : ['128'];
+    return [
+      {
+        name: `${s.key} farSceneCells`, kind: 'compute', grids, warm: false, code: (g) => farSceneCellsFrag(g, L, s.glsl(g), S),
+        layouts: CHECK_LAYOUTS(SCENE_CELLS_LAYOUT(s)), params: SceneCellsParams, dispatch: () => sceneCellsDispatch(S),
+      },
+      {
+        // the detail meshes' cells (world/detail.js): the live window's state where it is
+        name: `${s.key} detailCells`, kind: 'compute', grids, warm: false, code: (g) => farSceneCellsFrag(g, L, s.glsl(g), DETAIL_S(L), true),
+        layouts: CHECK_LAYOUTS(SCENE_CELLS_LAYOUT(s), 'STATE_RO'), params: SceneCellsParams, dispatch: () => sceneCellsDispatch(DETAIL_S(L)),
+      },
+      ...(s.trees ? [
+        { name: `${s.key} farTreeCand`, kind: 'compute', grids, warm: false, code: (g) => farTreeCandFrag(g, L, null, s.trees.glsl()), layouts: CHECK_LAYOUTS(TREE_CAND_LAYOUT(s)), dispatch: () => columnDispatch(L) },
+        { name: `${s.key} farTreeThin`, kind: 'compute', grids, warm: false, code: (g) => farTreeThinFrag(g, L, null, s.trees.glsl()), layouts: CHECK_LAYOUTS(TREE_THIN_LAYOUT(s)), dispatch: () => columnDispatch(L) },
+      ] : []),
+    ];
+  }),
+  {
+    name: 'far view', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw),
+    layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farViewPipeline(),
+  },
+  {
+    // the rolling log's (gfx/presentation.js): built when a gamemode's effect bends a world's view
+    name: 'far view curved', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw, false, { curved: true }),
+    layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farViewPipeline(),
+  },
+  {
+    name: 'far detail', kind: 'render', grids: ['64'], warm: false, code: (g) => farFrag(g, Lw, true),
+    layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farMeshPipeline(),
+  },
+  {
+    name: 'far detail depth', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farDetailDepthFrag(g),
+    layouts: () => [], params: FarViewParams, ...farDetailDepthPipeline(),
+  },
+];

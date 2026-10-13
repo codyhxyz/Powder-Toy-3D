@@ -33,8 +33,11 @@ try {
   await ready(page);
   const got = await page.evaluate(async ({ ids, rates, box, wet, PROP }) => {
     const a = window.__app, sim = a.sim, V = a.THREE.Vector3;
-    const idAt = (x, y, z) => Math.round(sim.readCell(x, y, z)[0][0]);
-    const count = (id) => sim.census()[id]?.n ?? 0;
+    a.test.park();
+    await a.test.ready();   // (the brush needs the grid's pipelines)
+    // reads of the state as it is after the paints so far (docs/webgpu.md W6)
+    const idAt = async (x, y, z) => Math.round((await sim.readCell(x, y, z))[0][0]);
+    const count = async (id) => (await sim.census())[id]?.n ?? 0;
     const out = {};
     sim.paint({ center: new V(0, 0, 0), radius: 64, shape: 1, tool: ids.ERASE, rate: 1, replace: true });   // a clean box
     // a line: the sphere brush swept from one end to the other
@@ -47,29 +50,29 @@ try {
       const t = Math.min(Math.max(p.dot(s) / ss, 0), 1);
       if (p.sub(s.clone().multiplyScalar(t)).length() <= R) want++;
     }
-    out.line = [count(ids.SAND), want, idAt(32, 40, 36)];
+    out.line = [await count(ids.SAND), want, await idAt(32, 40, 36)];
     // a box of wall, exactly its cells
     sim.paint({ center: new V(box.center.x, box.center.y, box.center.z), grow: box.grow, radius: 3, shape: 1, tool: ids.WALL, rate: rates.WALL, replace: false });
     const vol = (b) => b.hi.map((h, k) => h - b.lo[k]).reduce((m, v) => m * v, 1);
-    out.box = [count(ids.WALL), vol(box), idAt(box.lo[0], box.lo[1], box.lo[2]), idAt(box.hi[0], box.lo[1], box.lo[2])];
+    out.box = [await count(ids.WALL), vol(box), await idAt(box.lo[0], box.lo[1], box.lo[2]), await idAt(box.hi[0], box.lo[1], box.lo[2])];
     // replace mode with a target: water only where wall was
     sim.paint({ center: new V(wet.center.x, wet.center.y, wet.center.z), grow: wet.grow, radius: 3, shape: 1, tool: ids.WATER, rate: rates.WATER, replace: true, filter: ids.WALL });
     const overlap = [0, 1, 2].map((k) => Math.max(0, Math.min(box.hi[k], wet.hi[k]) - Math.max(box.lo[k], wet.lo[k]))).reduce((m, v) => m * v, 1);
-    out.replace = [count(ids.WATER), overlap, count(ids.WALL), vol(box) - overlap];
+    out.replace = [await count(ids.WATER), overlap, await count(ids.WALL), vol(box) - overlap];
     // the Property tool: 500 °C on matter only, then pressure on the air too
     sim.paint({ center: new V(box.center.x, box.center.y, box.center.z), grow: box.grow, radius: 3, shape: 1, tool: ids.PROP, rate: 1, replace: false, prop: { field: PROP.TEMP, value: 500 } });
-    const [wallA] = sim.readCell(box.lo[0], box.lo[1], box.lo[2]), [airA] = sim.readCell(box.lo[0], box.hi[1] + 1, box.lo[2]);
+    const [[wallA], [airA]] = await Promise.all([sim.readCell(box.lo[0], box.lo[1], box.lo[2]), sim.readCell(box.lo[0], box.hi[1] + 1, box.lo[2])]);
     sim.paint({ center: new V(10.5, 20.5, 10.5), radius: 2, shape: 1, tool: ids.PROP, rate: 1, replace: false, prop: { field: PROP.PRESSURE, value: 42 } });
-    out.prop = [wallA[1], airA[1], sim.readCell(10, 20, 10)[1][3]];
+    out.prop = [wallA[1], airA[1], (await sim.readCell(10, 20, 10))[1][3]];
     // specific delete, filtered to water: the water goes, the wall stays
     sim.paint({ center: new V(wet.center.x, wet.center.y, wet.center.z), grow: wet.grow, radius: 3, shape: 1, tool: ids.SAND, rate: 1, replace: false, erase: true, filter: ids.WATER });
-    out.del = [count(ids.WATER), count(ids.WALL)];
+    out.del = [await count(ids.WATER), await count(ids.WALL)];
     // a flood fill: a 10×10 wall bowl 5 deep, filled with water up to y = 3
     sim.paint({ center: new V(0, 0, 0), radius: 64, shape: 1, tool: ids.ERASE, rate: 1, replace: true });
     sim.paint({ center: new V(15, 3, 15), grow: [2, 0, 2], radius: 3, shape: 1, tool: ids.WALL, rate: rates.WALL, replace: false });   // x, z 10..19, y 0..5
     sim.paint({ center: new V(15, 5, 15), grow: [1, 1, 1], radius: 3, shape: 1, tool: ids.ERASE, rate: 1, replace: true });   // hollow it: 11..18, y 1..8
     const r = await a.fill({ cell: [14, 1, 14], id: ids.EMPTY, maxY: 3, stroke: { radius: 3, shape: 0, tool: ids.WATER, rate: rates.WATER, replace: false, erase: false, prop: null } });
-    out.fill = [r.count, count(ids.WATER), 8 * 8 * 3];
+    out.fill = [r.count, await count(ids.WATER), 8 * 8 * 3];
     return out;
   }, { ids, rates: { SAND: full(E.SAND), WALL: full(E.WALL), WATER: full(E.WATER) }, box, wet, PROP });
   console.log(got);
@@ -95,7 +98,7 @@ try {
   await ready(ui);
   await ui.evaluate((id) => { window.__app.selectTool(id); }, E.SAND);
   const frames = (n) => ui.evaluate((n) => new Promise((done) => { let k = 0; const f = () => (++k >= n ? done() : requestAnimationFrame(f)); requestAnimationFrame(f); }), n);
-  const state = () => ui.evaluate((sand) => ({ sand: window.__app.sim.census()[sand]?.n ?? 0, undo: window.__app.sim.history?.length ?? 0 }), E.SAND);
+  const state = () => ui.evaluate(async (sand) => ({ sand: (await window.__app.sim.census())[sand]?.n ?? 0, undo: window.__app.sim.history?.length ?? 0 }), E.SAND);
   const drag = async (mods, from, to) => {
     await ui.mouse.move(...from);
     await frames(6);   // the hover pick

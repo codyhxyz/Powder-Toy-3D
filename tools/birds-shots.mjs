@@ -1,13 +1,18 @@
 // Birds on the GPU (src/birds): World's ambient flocks by day, at dusk and at
 // midnight (screenshots), perching on the island's trees, a shot bird
 // falling, a blast and fire, a Bird flock spawner in a box, and what they cost
-// (CPU per frame, the probe pass and the bird draw on the GPU).
-// usage: node tools/birds-shots.mjs [--port 5435] [--shots dir]   (needs a dev server; AC power)
-import { chromium } from 'playwright';
+// (CPU per frame, the bird draw on the GPU). On WebGPU (U13) the flock is a
+// TSL material on an instanced geometry and the motes a billboard pool
+// (gfx/billboards.js); it needs the World's and the birds' wiring (U10, U12).
+// The probe pass's cost is the probe's own (birds/probe.js, U12): reported
+// when it exposes one (B.probe.costMs).
+// usage: node tools/birds-shots.mjs [--port 5435] [--shots dir]   (runs its own Vite on --port; AC power)
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5435');
+const port = Number(opt('port', '5435'));
 const shots = opt('shots', null);
 const W = 960, H = 600;
 const DUSK_EL = -2;          // degrees: dusk, birds glowing and still up
@@ -16,8 +21,9 @@ const PROBE_MS_MAX = 2;      // ms a probe pass may take (timed under other sess
 const DRAW_MS_MAX = 0.5;     // ms the birds' draw may take
 const FRAME_FROM = [2.2, 1.0, 2.6];   // scene units from a flock to the camera, for its close-up
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const vite = await startVite({ port });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } });   // stills and draw timings: full presentation
 const errs = [];
 // (a dev server has no multiplayer relay or account API: their refused connections aren't the birds')
 p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });
@@ -28,12 +34,12 @@ const ev = (fn, arg) => p.evaluate(fn, arg);
 const wait = (ms) => p.waitForTimeout(ms);
 const shot = async (name) => {
   if (!shots) return;
-  await p.addStyleTag({ content: 'body *{visibility:hidden} canvas[data-engine]{visibility:visible}' }).catch(() => {});
+  await p.addStyleTag({ content: 'body *{visibility:hidden} #app, #app canvas{visibility:visible}' }).catch(() => {});
   await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 72 });
 };
 
 try {
-  await p.goto(`http://localhost:${port}/?size=world`, { timeout: 120000 });
+  await p.goto(vite.url('/?size=world'), { timeout: 120000 });
   await p.waitForFunction(() => window.__app?.win?.loaded && window.__app.birds?.count > 0, null, { timeout: 90000 });
   await wait(3000);
   const st = () => ev(() => {
@@ -76,37 +82,36 @@ try {
   await frame(FRAME_FROM); await wait(1200); await shot('birds-day');
   await resume();
 
-  // ---- costs: CPU per frame (running average), the probe's GPU pass, the bird draw
+  // ---- costs: CPU per frame (running average), the probe's GPU pass (its own figure), the bird draw
   const cost = await ev(async ([N]) => {
-    const a = window.__app, B = a.birds, r = a.renderer, T = a.THREE;
-    const one = new Float32Array(4), px = new Uint8Array(4);
-    const { mat, target } = B.probe.pass;
-    mat.uniforms.tA.value = a.sim.stateA;
-    a.sim.run(mat, target); r.readRenderTargetPixels(target, 0, 0, 1, 1, one);
-    let t0 = performance.now();
-    for (let i = 0; i < N; i++) { a.sim.run(mat, target); r.readRenderTargetPixels(target, 0, 0, 1, 1, one); }
-    const probe = (performance.now() - t0) / N;
-    // the empty-target baseline: a sync alone
-    t0 = performance.now();
-    for (let i = 0; i < N; i++) r.readRenderTargetPixels(target, 0, 0, 1, 1, one);
-    const sync = (performance.now() - t0) / N;
-    // the birds alone into a target the canvas's size: the InstancedMesh, its material, its instances
-    const rt = new T.WebGLRenderTarget(r.domElement.width, r.domElement.height, { type: T.HalfFloatType });
-    const solo = new T.Scene(), m = B.view.mesh, copy = new T.InstancedMesh(m.geometry, m.material, m.count);
-    copy.instanceMatrix = m.instanceMatrix; copy.count = m.count; copy.frustumCulled = false;
+    const a = window.__app, B = a.birds, three = a.renderer, T = a.THREE, gpu = a.gpu;
+    // the birds alone into a target the canvas's size: their mesh, its material, its instances,
+    // N draws timed to the queue's end (gpu.fence) against N of an empty scene
+    const rt = new T.RenderTarget(three.domElement.width, three.domElement.height, { type: T.HalfFloatType });
+    const solo = new T.Scene(), m = B.view.mesh, copy = new T.Mesh(m.geometry, m.material);
+    copy.frustumCulled = false;
     solo.add(copy);
-    const draw = (sc) => { r.setRenderTarget(rt); r.clear(); r.render(sc, a.camera); r.readRenderTargetPixels(rt, 0, 0, 1, 1, px); };
-    draw(solo);
-    t0 = performance.now(); for (let i = 0; i < N; i++) draw(solo); const withBirds = (performance.now() - t0) / N;
     const empty = new T.Scene();
-    t0 = performance.now(); for (let i = 0; i < N; i++) draw(empty); const none = (performance.now() - t0) / N;
-    r.setRenderTarget(null);
+    const draw = (sc) => {
+      three.setRenderTarget(rt);
+      three.autoClear = true;
+      three.render(sc, a.camera);
+      three.autoClear = false;
+      three.setRenderTarget(null);
+    };
+    three.setRenderTarget(rt);
+    await three.compileAsync(solo, a.camera);
+    three.setRenderTarget(null);
+    draw(solo); draw(empty);
+    await gpu.fence();
+    const timed = async (sc) => { const t0 = performance.now(); for (let i = 0; i < N; i++) draw(sc); await gpu.fence(); return (performance.now() - t0) / N; };
+    const withBirds = await timed(solo), none = await timed(empty);
     rt.dispose();
-    return { cpu: B.costMs, probe: probe - sync, draw: withBirds - none, birds: m.count };
+    return { cpu: B.costMs, probe: B.probe.costMs ?? null, draw: withBirds - none, birds: m.count };
   }, [TIMED]);
-  console.log(`     cost: CPU ${cost.cpu.toFixed(3)} ms/frame (running average, ${cost.birds} birds); GPU probe ${cost.probe.toFixed(3)} ms per pass (2 a second); bird draw ${cost.draw.toFixed(3)} ms`);
+  console.log(`     cost: CPU ${cost.cpu.toFixed(3)} ms/frame (running average, ${cost.birds} birds); GPU probe ${cost.probe == null ? 'n/a (birds/probe.js reports none)' : `${cost.probe.toFixed(3)} ms per pass (2 a second)`}; bird draw ${cost.draw.toFixed(3)} ms`);
   check('CPU cost is negligible', cost.cpu < 0.5, `${cost.cpu.toFixed(3)} ms`);
-  check('GPU cost is negligible (a probe pass twice a second, the birds one draw)', cost.probe < PROBE_MS_MAX && cost.draw < DRAW_MS_MAX);
+  check('GPU cost is negligible (a probe pass twice a second, the birds one draw)', (cost.probe == null || cost.probe < PROBE_MS_MAX) && cost.draw < DRAW_MS_MAX);
 
   // ---- perching on the island's trees
   const landed = await ev(async () => {
@@ -252,6 +257,7 @@ try {
   if (errs.length) console.log(errs.slice(0, 5).join('\n'));
 } finally {
   await b.close();
+  await vite.close();
 }
 console.log(fails ? `\n${fails} check(s) failed` : '\nall birds GPU checks passed');
-process.exit(fails ? 1 : 0);
+process.exitCode = fails ? 1 : 0;

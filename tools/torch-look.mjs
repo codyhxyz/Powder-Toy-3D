@@ -1,11 +1,19 @@
 // Torch look stills: the held torch and a thrown one at night (and one by day),
 // with rock pillars ahead at 2, 4, 6 and 8 m, for judging the torch's model,
-// flame and reach by eye. Writes <tag>-*.png to --shots.
-// usage: node tools/torch-look.mjs --port 5417 --shots dir [--tag after]   (needs a dev server)
-import { chromium } from 'playwright';
+// flame and reach by eye. Writes <tag>-*.png to --shots, and the torch's baked
+// hotbar icon (public/icons, tools/bake-icons.mjs). On WebGPU (U13) the held
+// torch is the viewmodel pass's, its flame the glow layer post adds; it needs
+// first person's wiring (src/wire/pov.js, U11) to be ready.
+// usage: node tools/torch-look.mjs --port 5417 --shots dir [--tag after]   (runs its own Vite on --port)
+import { copyFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5417');
+const port = Number(opt('port', '5417'));
 const shots = opt('shots', '.');
 const tag = opt('tag', 'shot');
 const W = 1280, H = 800;
@@ -14,18 +22,19 @@ const SPAWN = [20, 0, 64.5];
 const PILLARS_M = [2, 4, 6, 8]; // metres ahead (−x) of the eye
 const CELL_M = 0.3;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const vite = await startVite({ port });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } });   // stills of the look: full presentation
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=empty`, { timeout: 120000 });   // patient: the GPU is shared (keys-check)
+await p.goto(vite.url('/?preset=empty'), { timeout: 120000 });   // patient: the GPU is shared (keys-check)
 await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
 await p.waitForTimeout(1500);
 const ev = (fn, arg) => p.evaluate(fn, arg);
 const wait = (ms) => p.waitForTimeout(ms);
 const shot = (name, clip) => p.screenshot({ path: `${shots}/${tag}-${name}.png`, clip });
-await p.addStyleTag({ content: 'body *{visibility:hidden !important} canvas[data-engine]{visibility:visible !important}' });
+await p.addStyleTag({ content: 'body *{visibility:hidden !important} #app, #app canvas{visibility:visible !important}' });
 
 await ev(async ([steps, spawn, pillars, cellM]) => {
   const a = window.__app, { E } = await import('/src/elements.js'), V = a.camera.position.constructor;
@@ -71,10 +80,9 @@ const counts = await ev(() => window.__app.pov.vfx?.counts?.() ?? null);
 await ev(() => { window.__app.day.clock = 0; window.__app.pov.toolbelt.select('TORCH'); window.__app.pov.setLook(-Math.PI / 2, -0.12); });
 await wait(1500);
 await shot('day-held');
-// the hotbar icon (models.js modelIcon), at 4× for a look
-const icon = await ev(async () => (await import('/src/pov/models.js')).modelIcon('torch'));
-const { writeFileSync } = await import('node:fs');
-writeFileSync(`${shots}/${tag}-icon.png`, Buffer.from(icon.split(',')[1], 'base64'));
+// the hotbar icon: baked (tools/bake-icons.mjs), the file models.js modelIcon points at
+copyFileSync(join(ROOT, 'public/icons/torch.png'), `${shots}/${tag}-icon.png`);
 console.log('vfx', JSON.stringify(counts));
 console.log(errs.length ? errs.slice(0, 8).join('\n') : 'no errors');
 await b.close();
+await vite.close();

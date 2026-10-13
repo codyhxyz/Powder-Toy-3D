@@ -71,17 +71,20 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 //   setGrid([nx, ny, nz])   rebuild the world at the host's grid size (a box, never World); returns false if unsupported
 //   inWorld()               the grid is World's window (docs/scaling.md D11): no hosting, and a guest leaves it
 //   score()                 your [kills, deaths] on the scoreboard (the host sends its own to the guests)
-export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null }) {
+// gpu: the device (src/gpu), for the remote cursors' brushes (a pipeline of
+// ours, brush.js); the stream's kernels use each simulation's own.
+export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null }) {
   let role = 'solo';
   let socket = null, room = null, me = null;
   let joiningAs = null; // the role we asked the relay for, until it welcomes us
   const peers = new Map();
   const pings = new Map();   // id → round trip (ms): the host's measures, a guest's copy of the host's table
   let hostScore = null, lastPing = 0;
-  const cursors = createRemoteCursors({ scene, camera, getVolume });
+  const cursors = createRemoteCursors({ gpu, scene, camera, getVolume });
 
-  // host state
-  const packer = createPacker(renderer);
+  // host state (the codec's kernels: a capture is recorded into the frame and
+  // read back a few frames later, never a stall; docs/webgpu.md G4)
+  const packer = createPacker();
   let sent = null, sentDims = '', scratch = null, seq = 0, wantKey = false, lastStream = 0;
   let sending = Promise.resolve(); // captures are encoded and sent strictly in order
   const strokes = [];
@@ -90,7 +93,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
 
   // guest state
   const unpacker = createUnpacker();
-  let world = null, worldSeq = 0, worldDirty = false, lastKeyRequest = 0;
+  let world = null, worldDims = null, worldSeq = 0, worldDirty = false, lastKeyRequest = 0;
   let frames = Promise.resolve();
 
   let lastPresence = 0, lastPresenceJSON = '';
@@ -289,6 +292,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
       // (World's window can be the host's size: a guest still leaves World for the host's box)
       if ((inWorld() || !sameDims(getSim().g, dims)) && !setGrid(dims)) { socket?.close(); end('The host is using a grid size this version does not know'); return; }
       world = body;
+      worldDims = dims;
     } else if (kind === FRAME_DELTA && world && n === worldSeq + 1 && body.length === world.length) {
       xorInto(world, world, body);
     } else {
@@ -462,8 +466,9 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         }
       }
 
-      if (role === 'guest' && worldDirty) {
-        unpacker.unpack(sim, world);
+      // (a keyframe at another size rebuilt the grid first: applyFrame's setGrid)
+      if (role === 'guest' && worldDirty && sameDims(sim.g, worldDims)) {
+        unpacker.unpack(sim, world).catch((err) => console.error('multiplayer: could not unpack the world', err));
         worldDirty = false;
       }
 

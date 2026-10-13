@@ -33,6 +33,7 @@ import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
 import { createDescent } from './descent/index.js';
+import { preparePov, volumeLight } from './gpu.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -161,7 +162,7 @@ export function createPov(app) {
   });
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
-  viewmodel.userData.presentationOverlay = true;
+  viewmodel.userData.presentationOverlay = true;   // drawn over the frame: a presentation effect (gfx/presentation.js) doesn't bend it
   camera.add(viewmodel);
   viewmodel.visible = false;
   // Halo's grenades (G), red reticle and hitmarker in a Halo match (combat.js; the melee is kick.js)
@@ -370,8 +371,22 @@ export function createPov(app) {
       figure = createBody({ choice: () => app.settings.character });   // realistic or stickman, live
       scene.add(figure.root);
     }
-    figure.bind(app.getVolume(), app.getSim().g);
+    figure.bind(volumeLight(app.getVolume()), app.getSim().g);
     return figure.compile(renderer, camera, scene);
+  }
+  // The body's and the tools' kernels (pov/gpu.js), built for each grid the
+  // body is in, on entering POV (docs/webgpu.md B5, W18): a session that
+  // never drops in builds none of them. Until they are built, its edits and
+  // probes are skipped, so the drop-in waits for them as it does for the figure.
+  let kernelsFor = null, kernelsBuilt = null;
+  function ensureKernels() {
+    const sim = app.getSim();
+    if (sim !== kernelsFor) {
+      kernelsFor = sim;
+      kernelsBuilt = preparePov(sim);
+      kernelsBuilt.catch((err) => console.error('POV kernels failed to build', err));
+    }
+    return kernelsBuilt;
   }
   // compile the figure's shader once the page has settled, not on the first F
   if (createPlayer) {
@@ -409,6 +424,7 @@ export function createPov(app) {
           isActive: () => live() && !editing,
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
           requestRender: app.requestRender,
+          getPost: () => app.post,   // its settings: the wand's halo tone maps itself by them (tools/index.js)
           releaseInput,
           onEditorOpenChange(open) { editing = open; releaseInput(); sprintOn = false; app.requestRender(); },
         });
@@ -474,7 +490,8 @@ export function createPov(app) {
     const fromSim = app.getSim();
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
     try {
-      await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
+      await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure(), ensureKernels()]);
+      // a new grid meanwhile (another map), or the caller's own reason to give up (opts.valid)
       if (fromSim !== app.getSim() || opts.valid?.() === false) {
         starting = false;
         if (document.pointerLockElement === canvas) document.exitPointerLock();
@@ -635,6 +652,7 @@ export function createPov(app) {
     if (!active()) return;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     const g = sim.g;
+    ensureKernels();   // (a new grid: its kernels)
     vol.updateMatrixWorld();
     worldToGrid.copy(vol.matrixWorld).invert();
     box.min.copy(vol.position);
@@ -694,7 +712,7 @@ export function createPov(app) {
           : npcMod.createNpc({ ...spec, style: s.kind === SPAWNER.GUNNER ? 'gunner' : 'axeman' });
         scene.add(n.root);
         n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
-        n.bind(app.getVolume(), g);
+        n.bind(volumeLight(app.getVolume()), g);
         n.compile(renderer, camera, scene);
         npcs.set(s.id, n);
       }
@@ -705,7 +723,7 @@ export function createPov(app) {
       }
       if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
       if (npcsWanted && npcs.size) {
-        for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, npcFrame); }
+        for (const n of npcs.values()) { n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame); }
       } else for (const n of npcs.values()) n.reset();
     }
     game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
@@ -764,7 +782,7 @@ export function createPov(app) {
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose, crouch: player.crouch,
       look: { pitch: povCam.look.pitch, spine: holding.spine }, lift: holding.lift, ride: holding.ride,
     });
-    held.bind(vol, g);
+    held.bind(volumeLight(vol), g);
     held.frame({ figure, yaw: povCam.look.yaw, pitch: povCam.look.pitch, scale: scale * player.size, feet: vFeet, worldToGrid, camera, viewmodel });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
@@ -903,8 +921,9 @@ export function createPov(app) {
     if (mode === 'on' && !deadSeen) povCam.dir(rd);
     else camera.getWorldDirection(rd);
     const eye = vA.copy(player.pos).setY(player.pos.y + player.eyeHeight);
-    // Visible targeting advances on the displayed ray to the displayed eye.
-    // Collision, camera-arm and ballistic queries keep the default flat path.
+    // Visible targeting advances on the displayed ray to the displayed eye
+    // (a presentation effect: app.presentationPoint). Collision, camera-arm
+    // and ballistic queries keep the default flat path.
     if (presentation) app.presentationPoint(eye, eye);
     const skip = Math.max(0, vB.subVectors(eye, ro).dot(rd));
     ro.addScaledVector(rd, skip);
