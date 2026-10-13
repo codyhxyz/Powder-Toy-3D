@@ -19,7 +19,7 @@ import { grant, PERK } from './perks.js';
 import { createInteract } from './interact.js';
 import { ORB_LIFT } from '../perkOrbs.js';
 import { CLASSES_ENABLED } from './classes.js';
-import { createClassPicker } from './classPicker.js';
+import { createClassPicker, applyClassTo } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
 import { createNightVision } from './nightVision.js';
 import { KICK_KEY, createKickLeg } from './kick.js';
@@ -89,8 +89,8 @@ const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little
 const CHASE_IDLE_S = 1.2;               // s without mouse look before it swings back behind
 const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
-// With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
-const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
+// In a TF2-style match (Siege) comma is the class key instead (classPicker.js, classesOn below).
+const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
@@ -305,7 +305,7 @@ export function createPov(app) {
       if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
     }
     // settings and help need the mouse
-    if (((e.key === ',' && !classes) || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
+    if (((e.key === ',' && !classesOn()) || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
@@ -316,7 +316,9 @@ export function createPov(app) {
   }
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
-  // now, so its keys are heard before the toolbelt's digits.
+  // now, so its keys are heard before the toolbelt's digits. Classes are TF2's, so
+  // they exist only in a TF2-style match (Siege): no picker, tip or class elsewhere.
+  const classesOn = () => !!classes && game.running && game.style === 'tf2';
   const classes = CLASSES_ENABLED ? createClassPicker({
     isActive: () => active() && mode !== 'exiting',
     getBody: () => player,
@@ -325,7 +327,7 @@ export function createPov(app) {
     unlock: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
     isLocked: () => locked,
     toast: (text, opts) => hud.toast(text, opts),
-    allowed: () => !(game.running && game.style === 'halo'),   // a Halo match: no classes (docs/halo-contract.md)
+    allowed: () => classesOn(),
     inRoom: () => game.inSpawnRoom(),                         // Siege: the side's respawn room, or setup (TF2)
   }) : null;
 
@@ -957,9 +959,15 @@ export function createPov(app) {
   const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
   povEvents.on('game:start', () => { if (game.style === 'halo') classes?.close({ relock: false }); else joinedTf2(); });
   povEvents.on('game:team', ({ id }) => { if (id === PLAYER && game.running) joinedTf2(); });
+  // the match over, the class comes off with it (its perks and scales), and the picker shuts
+  povEvents.on('game:stop', ({ style }) => {
+    if (style !== 'tf2') return;
+    classes?.close({ relock: false });
+    if (player?.cls) applyClassTo(player, null);
+  });
 
   // god-mode keys POV takes over (app.js skips them while active)
-  const blocksKey = (e) => editing || (active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey));
+  const blocksKey = (e) => editing || (active() && !(PASS_KEYS.has(e.key) && !(e.key === ',' && classesOn())) && !(e.metaKey || e.ctrlKey));
 
   return {
     get active() { return active(); },

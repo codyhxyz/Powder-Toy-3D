@@ -6,8 +6,8 @@ takes effect at your next spawn, or at once if you spawned less than `RESPAWN_RO
 
 The whole layer sits behind one constant, `CLASSES_ENABLED` in `src/pov/classes.js`. It is not a user setting.
 
-Classes belong to Siege (TF2's mode) and the sandbox. The Halo modes (Slayer, CTF, King of the Hill, Infection) are
-Halo 3's equal start and have none: see "In matches" below.
+Classes belong to Siege (TF2's mode) only (user, 2026-10-13). The sandbox has none, and the Halo modes (Slayer,
+CTF, King of the Hill, Infection) are Halo 3's equal start and have none either: see "In matches" below.
 
 ## The classes
 
@@ -72,8 +72,9 @@ choose a class".
 
 ## In matches (2026-10-11, `docs/halo-contract.md`)
 
-The picker asks the shell two things (`pov/index.js` passes them to `createClassPicker`): `allowed()`, false while
-a Halo match runs (`game.style === 'halo'`), and `inRoom()`, the game's respawn room (`game.inSpawnRoom()`).
+The picker asks the shell two things (`pov/index.js` passes them to `createClassPicker`): `allowed()`, true only
+while a TF2-style match runs (`game.running && game.style === 'tf2'`, `classesOn()`), and `inRoom()`, the game's
+respawn room (`game.inSpawnRoom()`).
 
 - **Siege** (`style: 'tf2'`): the picker opens when the match starts and when you switch team (`.`), as TF2's class
   menu does on joining a team (`classes.open({ joined: true })`, on `game:start` and the player's `game:team`).
@@ -84,10 +85,10 @@ a Halo match runs (`game.style === 'halo'`), and `inRoom()`, the game's respawn 
   side's respawn room (within `ROOM_R`, 8 cells, of one of its current spawn points: TF2 swaps you on the spot
   there), as well as in the 6 s after a spawn; else it waits for the next spawn. Dead, `,` opens it and the pick
   comes with the respawn.
-- **Halo matches**: `,` does nothing (it's swallowed, not passed to Settings), the picker can't open (it shuts if
-  it was open when the match starts), and every spawn takes the class off (`applyClassTo(body, null)`: its perks,
-  the speed and health scales). Bots in a Halo match have none.
-- **Sandbox** (no match): as before; the class goes back on at your next spawn after a Halo match.
+- **Everywhere else** (a Halo match, the sandbox, Animal Crossing): `,` opens Settings as in the god view, the
+  picker can't open (it shuts if it was open when a Halo match starts), there's no "Press , to choose a class" tip,
+  and every spawn takes the class off (`applyClassTo(body, null)`: its perks, the speed and health scales). Bots in
+  a Halo match have none. A Siege match's `game:stop` takes the player's class off at once and shuts the picker.
 - Every spawn the game makes (the start, a team switch, a respawn) puts the class on before `game:spawn` fires, so
   the mode's own setup (a Halo loadout, a shield) comes after it.
 
@@ -110,13 +111,13 @@ loadout and its bars. Below the row are the focused class's role and the spawn l
 are playing Pyro" / "You just spawned: pick, and you change at once"). A `body.team` (`'red' | 'blue' |
 'infected'`, from the game modes) adds a team chip and lights the floor in the team's colour.
 
-- **Keys**: `,` opens and closes it (first person only; not in a Halo match); `1`–`7` pick and close; `←` `→` (and Tab) move the focus;
+- **Keys**: `,` opens and closes it (first person in a Siege match only); `1`–`7` pick and close; `←` `→` (and Tab) move the focus;
   `Enter` or `Space` pick the focused class; `Esc` closes. The picker listens in the capture phase and is created
   before the toolbelt, so while it's open the digits pick classes, not hotbar slots, and WASD, Space and Shift don't
   move the body. F, P, T and ? work as usual.
-- **Comma isn't free**: in the god view it opens Settings (`app.js`). With classes on, comma in first person is the
-  class key: `pov/index.js` drops it from `PASS_KEYS`. Settings stays on comma in the god view and on the topbar's
-  gear in first person. The help list (`ui/hud.js`) says both.
+- **Comma isn't free**: it opens Settings (`app.js`). In a Siege match, comma in first person is the class key:
+  `pov/index.js` `blocksKey` holds it back from `PASS_KEYS` while `classesOn()`. Settings stays on comma in the god
+  view and everywhere outside Siege, and on the topbar's gear in Siege. The help list (`ui/hud.js`) says both.
 - **Pointer lock**: opening releases the pointer. Closing with a key or a click takes it back, because those count as
   a gesture. Closing with Esc leaves the "Click to look around" prompt, since the browser won't relock on Esc.
 - **Mouse**: the focus follows the mouse only when it moves, so the cursor resting mid-screen as the pointer unlocks
@@ -132,7 +133,9 @@ are playing Pyro" / "You just spawned: pick, and you change at once"). A `body.t
 
 ## Check
 
-`node tools/classes-check.mjs [--port 5403] [--shot file.jpg]` needs a dev server and AC power. It checks that comma
+`node tools/siege-check.mjs` checks the gating: the picker in Siege, none in Slayer or the sandbox (comma opens
+Settings there) and no class left on the body after the match. `node tools/classes-check.mjs [--port 5403] [--shot file.jpg]`
+predates the Siege-only rule: it drops in on the sandbox, so its picker steps need a Siege match now. It checks that comma
 opens the picker and not Settings, with 7 cards, 28 bars, sprites, the coming-soon items and all 7 portraits. It
 checks that the arrows move the focus and Esc changes nothing. A pick out of the respawn room waits for the respawn,
 and Pyro comes back with Fire Immunity and the blowtorch in hand. A pick in the respawn room applies at once and takes
