@@ -50,8 +50,6 @@ export const GEAR = [
     desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. Right-click empty-handed to blast.' },
   { key: 'BLOWTORCH', slot: 4, name: 'Flamethrower', model: 'flamer', abbr: 'FLMR', color: '#b8322a', touch: ['Burn'],
     desc: 'Hold for a continuous jet of fire, 6 m long: lights wood, sets off gunpowder, melts ice and, slowly, metal.' },
-  { key: 'SCANNER', slot: 4, name: 'Scanner', model: 'scanner', abbr: 'SCAN', color: '#7dff9a', touch: [],
-    desc: 'Reads the material, temperature and pressure of whatever you point it at.' },
   { key: 'POGO', slot: 4, name: 'Pogo stick', model: 'pogo', abbr: 'POGO', color: '#d0453a', touch: [],
     desc: 'Hold it to bounce. Press jump just as you land to bounce higher, three times in a row to the top. Hold jump to fly.' },
   { key: 'TORCH', slot: 5, name: 'Torch', model: 'torch', abbr: 'TRCH', color: '#e07b2a', touch: ['Touch', 'Throw'],

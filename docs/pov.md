@@ -53,8 +53,6 @@
      stuff flies farther). It can't lift or knock over solids (no rigid bodies).
   6. **Trowel**: builds Minecraft-style 1 m blocks (3³ cells on a fixed lattice) from the pack against the
      face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
-  7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
-     pressure, distance.
   8. **Flamethrower** (was the blowtorch): see "Light and fire" below.
   9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
      charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
@@ -78,7 +76,7 @@ first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera ch
 
 - **Left thumb**: a move stick, analog; pushed to its rim it sprints. Driving, it throttles and steers.
 - **Right thumb**: the held tool's two buttons, named by its catalog entry (`catalog.js` `touch`: [left-click,
-  right-click]; a tool with none, like the scanner, shows none), Nearer / Farther while the tool takes the
+  right-click]; a tool with none, like the pogo stick, shows none), Nearer / Farther while the tool takes the
   wheel (the physgun holding), Kick, Vehicle (when there are any: get in or out), Crouch (Dive in liquid) and
   Jump (hold to fly; Brake when driving). Tools are picked by tapping the hotbar.
 - **Look**: a one-finger drag anywhere else on the scene, as mouse movement (the Sensitivity setting applies).
@@ -456,7 +454,8 @@ export default {
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
 - `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
   `tool:action 'refuse'`.
-- `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the scanner, the trowel's material).
+- `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the trowel's material). Without one, the crosshair shows what it's on,
+  as the god view's hover does (no scanner tool: hovering is enough).
 - `env.ballistics`: the shared projectiles; `fire(origin, dir, gravityScale(sim), { speed, carry, kind,
   onStrike })` flies anything ballistic (the gun's rounds, the bomb) and the toolbelt keeps it flying.
 - `transfer.js` `muzzleCell()`: where something leaves the hand (the first cell clear of the body).
@@ -608,8 +607,7 @@ powder, axe through wood/glass/plants/ice, pickaxe through rock, bomb what's lef
 to your column, pillar up by jumping and setting a trowel block under its feet), **Cover** (hurt and under
 fire: two trowel blocks between you), **Extinguish** (on fire: run to water), **Gather** (idle: dig sand for
 building), **Wander**. A strategy that fails is put on a 4 s cooldown. Reflexes in `npc.js`: jump when blocked,
-swim up to breathe, dive after a player below, jet out of water at a wall. The scanner is the one tool it never
-uses: it only reads out a cell, and the world model already knows.
+swim up to breathe, dive after a player below, jet out of water at a wall.
 
 Yuka gotcha: a `CompositeGoal` runs its subgoals in the order they were **added** (Yuka's `addSubgoal`
 unshifts and `currentSubgoal()` takes the last), the reverse of Buckland's C++.

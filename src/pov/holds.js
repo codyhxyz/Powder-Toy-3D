@@ -66,7 +66,6 @@ export const HELD = {
   hook: { hold: 'shotgun', left: UNDER([0, 0.06, -0.45]) },
   physgun: { hold: 'physgun', left: UNDER([0, 0.09, -0.32]) },
   toolgun: { hold: 'pistol', scale: 1.1 },
-  scanner: { hold: 'slam', scale: 1 },
   axe: { hold: 'melee' },
   pickaxe: { hold: 'melee2', scale: 1.5, left: { at: [0, 0.55, 0], fingers: [0, 0, -1], palm: [1, 0, 0] } },
   // the shovel's handle runs along its length (z), the blade ahead: held down and across, ready to dig

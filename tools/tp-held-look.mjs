@@ -13,7 +13,7 @@ const W = 1100, H = 700;
 const SPAWN = [64, 0, 64.5];
 const YAW = -Math.PI / 2;                 // look along +x
 const ALL = ['SHOVEL', 'PICKAXE', 'AXE', 'KNIFE', 'TROWEL', 'BUCKET', 'FLASK', 'GUN', 'SMG', 'SNIPER', 'LASER', 'BOMB', 'ROCKET',
-  'BURROWER', 'PHYSGUN', 'BLOWTORCH', 'SCANNER', 'POGO', 'TORCH', 'LANTERN', 'HOOK', 'TOOLGUN'];
+  'BURROWER', 'PHYSGUN', 'BLOWTORCH', 'POGO', 'TORCH', 'LANTERN', 'HOOK', 'TOOLGUN'];
 const tools = opt('tools', ALL.join(',')).split(',');
 // the outside views: [name, metres in front of the body, metres to its right, metres up from the feet]
 const VIEWS = [['front', 1.9, -1.1, 1.25], ['side', 0.25, 2.3, 1.15]];

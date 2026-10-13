@@ -2187,7 +2187,7 @@ function tick(now, renderOnly = false) {
   }
   if (renderOnly) { prof.endFrame(0); return true; }
 
-  const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
+  const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the trowel's), else what the crosshair is on
   if (povReadout) {
     const r = canvas.getBoundingClientRect();
     hud.showReadout(r.left + r.width / 2, r.top + r.height / 2, povReadout);

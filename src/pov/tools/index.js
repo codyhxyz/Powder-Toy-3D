@@ -53,6 +53,14 @@ export { emptyLoads };
 //                    shake()             a shake of the tool's slot
 //                    refuse(text, extra) an error notice, a shake and tool:action 'refuse' (extra: { id, point })
 
+// What the crosshair is on, the god view's hover chip (app.js): the material,
+// its temperature and pressure. Nothing for the sky or the floor.
+const lookReadout = (a) => {
+  if (!a?.valid || a.id < 0) return null;
+  const el = ELEMENTS[a.id];
+  return { name: el.name, color: el.color, T: a.T, P: a.P };
+};
+
 const modules = import.meta.glob('./*.tool.js', { eager: true });
 // every tool's definition, with where it came from, in catalog order
 const toolDefs = () => Object.entries(modules).map(([path, mod]) => ({ path, def: mod.default }))
@@ -539,7 +547,9 @@ export function createToolbelt(env) {
       }
       syncPotion();
       tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
-      readout = wandSelected ? null : held()?.readout?.(ctx) ?? null;   // a wand shows no name tag: Noita's HUD names the wand only in the inventory
+      // the held tool's own readout (a wand has none: Noita's HUD names the wand
+      // only in the inventory), else what the crosshair is on, as the god view's hover
+      readout = (wandSelected ? null : held()?.readout?.(ctx)) ?? lookReadout(ctx.aim);
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
       for (let i = 0; i < HOTBAR_SLOTS; i++) {
