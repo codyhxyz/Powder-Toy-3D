@@ -1,4 +1,4 @@
-// The blocks renderer (?blocks, __app.setBlocks): the world drawn as the
+// The blocks renderer (the Plain view, src/views.js): the world drawn as the
 // visible faces of its cells, Minecraft's way, instead of the volume's march
 // (gfx/volume.js). The WGSL and what it does are shaders/blocks.js's; this
 // module owns the face buffer, the counters and drawIndirect's args, makes the
@@ -6,8 +6,8 @@
 //
 //   const blocks = createBlocks(gpu, sim, { world });   // world: a world's window (no faces past its sides)
 //   await blocks.ready;
-//   compute hook:  blocks.update();                   // re-meshes only when the state or the window moved
-//   scene pass:    blocks.drawOpaque(rp, { view, marchNear, floor }); …; blocks.drawTranslucent(rp, { view, marchNear });
+//   compute hook:  blocks.update({ sun });            // re-meshes only when the state or the window moved; the sun's map after a mesh or a sun that moved
+//   scene pass:    blocks.drawOpaque(rp, { marchNear, floor }); …; blocks.drawTranslucent(rp, { marchNear });
 //
 // A still scene records nothing: update() keys the mesh on the simulation's
 // version, its current copy and the window's origin, so deep idle holds (no
@@ -17,13 +17,14 @@
 import { frameUniformsOf } from './uniforms.js';
 import { fold } from '../gpu/kernels.js';
 import {
-  meshWGSL, drawWGSL, MeshParams, BlockDrawParams, MESH_LAYOUTS, DRAW_LAYOUTS, LAYOUT_NAMES, FACE_BYTES,
-  MESH_WORKGROUP, MESH_RESULT_BYTES, faceCapacity, blockPipelines,
+  meshWGSL, drawWGSL, sunWGSL, MeshParams, BlockDrawParams, MESH_LAYOUTS, DRAW_LAYOUTS, SUN_LAYOUTS, LAYOUT_NAMES, FACE_BYTES,
+  MESH_WORKGROUP, MESH_RESULT_BYTES, faceCapacity, blockPipelines, sunMapRes, sunMatrix, SUN_MAP_FORMAT,
 } from '../shaders/blocks.js';
 
 // slots of the counts' readback ring (a mesh a frame, read 1-3 frames later)
 const RING_SLOTS = 16;
 const BUF = { INDIRECT: 0x100, STORAGE: 0x80, COPY_DST: 0x08 };   // (GPUBufferUsage's bits)
+const TEX = { TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };     // (GPUTextureUsage's bits)
 
 /**
  * @param {object} gpu
@@ -38,6 +39,13 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
   for (const [names, groups] of [[LAYOUT_NAMES.mesh, MESH_LAYOUTS()], [LAYOUT_NAMES.draw, DRAW_LAYOUTS()]]) {
     names.forEach((name, i) => { L[name] = gpu.layout(name, groups[i]); });
   }
+  // the sun's shadow map (shaders/blocks.js sunMatrix), drawn by update()
+  const sunRes = sunMapRes(g);
+  const sunMap = gpu.createTexture({ label: label('sun map'), size: [sunRes, sunRes], format: SUN_MAP_FORMAT, usage: TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING });
+  const sunView = sunMap.createView({ label: label('sun map') });
+  const sunSampler = gpu._blocksSunSampler ??= gpu.device.createSampler({
+    label: 'blocks sun map', compare: 'less-equal', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
+  });
   const cap = faceCapacity(g, gpu.device.limits.maxStorageBufferBindingSize);
   const faces = gpu.createBuffer({ label: label('faces'), size: (cap.o + cap.t) * FACE_BYTES, usage: BUF.STORAGE });
   const counts = gpu.createBuffer({ label: label('counts'), size: 16, usage: BUF.STORAGE });
@@ -48,6 +56,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
     { binding: 2, resource: { buffer: args } }, { binding: 3, resource: { buffer: ring.buffer } },
   ], label('mesh'));
   const facesGroup = gpu.bindGroup(L.BLOCK_FACES, [{ binding: 0, resource: { buffer: faces } }], label('faces'));
+  const sunGroup = gpu.bindGroup(L.BLOCK_SUN_MAP, [{ binding: 0, resource: sunView }, { binding: 1, resource: sunSampler }], label('sun map'));
 
   const meshCode = meshWGSL(g);
   const mesh = gpu.kernel({
@@ -58,17 +67,23 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
   });
   const drawCode = drawWGSL(g);
   const p = blockPipelines();
-  const pipe = (name, desc) => gpu.renderPipeline({ name, code: drawCode, layouts: [fu.layout, L.BLOCK_FACES], params: BlockDrawParams, ...desc });
+  const pipe = (name, desc) => gpu.renderPipeline({ name, code: drawCode, layouts: [fu.layout, L.BLOCK_FACES, L.BLOCK_SUN_MAP], params: BlockDrawParams, ...desc });
   const opaque = pipe('blocks.opaque', p.opaque);
-  const translucent = pipe('blocks.translucent', p.translucent);
+  const absorb = pipe('blocks.absorb', p.absorb);
+  const scatter = pipe('blocks.scatter', p.scatter);
   const floor = pipe('blocks.floor', p.floor);
-  const all = [mesh, finish, opaque, translucent, floor];
+  const sunPipe = gpu.renderPipeline({ name: 'blocks.sun', code: sunWGSL(), layouts: [undefined, L.BLOCK_FACES], params: BlockDrawParams, ...p.sun });
+  const all = [mesh, finish, opaque, absorb, scatter, floor, sunPipe];
+  const n = [g.nx, g.ny, g.nz];
+  let sun = sunMatrix({ x: 0, y: 1, z: 0 }, n, sunRes);
+  let sunKey = null;      // the sun the map was drawn from
+  let sunDrawn = false;   // the map holds the current mesh
 
   let lastKey = null;
   let warned = false;
   let disposed = false;
   const stats = { meshes: 0, opaque: 0, translucent: 0, capO: cap.o, capT: cap.t, overflow: false };
-  const modeOf = (view) => (view === 'heat' ? 1 : 0);
+  const drawParams = (base, marchNear) => ({ sunVP: sun.m, base, marchNear, shadow: sunDrawn ? 1 : 0, shadowTexel: sun.texel });
 
   const blocks = {
     sim,
@@ -84,11 +99,12 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
      * the last mesh (and the kernels are built). True when it recorded one.
      * @param {{ force?: boolean }} [opts]
      */
-    update({ force = false } = {}) {
+    update({ force = false, sun: light = null } = {}) {
       if (disposed || mesh.state !== 'ready' || finish.state !== 'ready') return false;
       const key = `${sim.version}|${sim.cur}|${sim.origin.x},${sim.origin.y},${sim.origin.z}`;
-      if (key === lastKey && !force) return false;
+      if (key === lastKey && !force) { if (light) drawSun(light); return false; }
       lastKey = key;
+      sunDrawn = false;
       const f = gpu.frame;
       const bind = [sim.tables, sim.bindRO, meshGroup], header = sim.header();
       const params = { capO: cap.o, capT: cap.t, edge: world ? 1 : 0, slot: 0 };
@@ -107,27 +123,28 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
           console.warn(`blocks: ${o} opaque and ${t} translucent faces, over the buffer's ${cap.o} and ${cap.t}: the rest aren't drawn`);
         }
       }, () => {});
+      if (light) drawSun(light);
       return true;
     },
 
     /**
      * The opaque faces (and a box's floor) into the scene pass. False while the pipelines build.
      * @param {GPURenderPassEncoder} rp
-     * @param {{ view?: string, marchNear?: number, floor?: boolean }} [opts]
+     * @param {{ marchNear?: number, floor?: boolean }} [opts]
      */
-    drawOpaque(rp, { view = 'realistic', marchNear = 0, floor: withFloor = false } = {}) {
+    drawOpaque(rp, { marchNear = 0, floor: withFloor = false } = {}) {
       if (!blocks.isReady) return false;
-      const params = { base: 0, mode: modeOf(view), marchNear };
-      opaque.draw(rp, { bind: [fu.group, facesGroup], params, indirect: { buffer: args, offset: 0 } });
-      if (withFloor) floor.draw(rp, { bind: [fu.group, facesGroup], params, count: 6 });
+      const params = drawParams(0, marchNear);
+      opaque.draw(rp, { bind: [fu.group, facesGroup, sunGroup], params, indirect: { buffer: args, offset: 0 } });
+      if (withFloor) floor.draw(rp, { bind: [fu.group, facesGroup, sunGroup], params, count: 6 });
       return true;
     },
     /** The translucent faces (liquids, glass, gases, flames), after everything opaque. */
-    drawTranslucent(rp, { view = 'realistic', marchNear = 0 } = {}) {
+    drawTranslucent(rp, { marchNear = 0 } = {}) {
       if (!blocks.isReady) return false;
-      translucent.draw(rp, {
-        bind: [fu.group, facesGroup], params: { base: cap.o, mode: modeOf(view), marchNear }, indirect: { buffer: args, offset: 16 },
-      });
+      const opts = { bind: [fu.group, facesGroup, sunGroup], params: drawParams(cap.o, marchNear), indirect: { buffer: args, offset: 16 } };
+      absorb.draw(rp, opts);
+      scatter.draw(rp, opts);
       return true;
     },
     /** The next update() re-meshes whatever the key says. */
@@ -141,9 +158,28 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
       gpu.flush('blocks dispose');
       ring.close();
       faces.destroy();
+      sunMap.destroy();
       counts.destroy();
       args.destroy();
     },
   };
+  // The sun's shadow map from `light` (unit, toward it): drawn after a new
+  // mesh, or when the sun moved; nothing on a still scene.
+  function drawSun(light) {
+    const k = `${light.x},${light.y},${light.z}`;
+    if ((sunDrawn && k === sunKey) || sunPipe.state !== 'ready' || lastKey === null) return;
+    if (k !== sunKey) sun = sunMatrix(light, n, sunRes);
+    sunKey = k;
+    const rp = gpu.frame.render({
+      colorAttachments: [],
+      depthStencilAttachment: { view: sunView, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+    }, 'blocks sun');
+    try {
+      sunPipe.draw(rp, { bind: [undefined, facesGroup], params: drawParams(0, 0), indirect: { buffer: args, offset: 0 } });
+    } finally {
+      rp.end();
+    }
+    sunDrawn = true;
+  }
   return blocks;
 }

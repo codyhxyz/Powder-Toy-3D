@@ -134,7 +134,7 @@ async function session(stages) {
       lap('inside');
       // off the brick planes (asserted), and on two of them (x = z = 32: reported)
       const OFF = [SIZE / 2 + 0.3, SIZE * 0.6, SIZE / 2 + 0.7], ON = [SIZE / 2, SIZE * 0.6, SIZE / 2];
-      const r = await run('inside', { views: ['plain', 'heat'], eyes: [OFF, ON] });
+      const r = await run('inside', { views: ['xray', 'heat'], eyes: [OFF, ON] });
       for (const o of r.out) {
         const what = `${o.view}, ${o.missing} of ${o.pixels} px empty${o.box ? ` in [${o.box}]` : ''}`;
         if (o.eye.every((c, i) => c === OFF[i])) {

@@ -22,10 +22,11 @@ const gpu = h.gpu;
 const canvas = document.getElementById('view');
 const W = canvas.width, H = canvas.height;
 const presenter = createPresenter(gpu, canvas);
-// ?three=1: three's renderer exists before post, so post's scene target is three's
-// RenderTarget (F3) and three's meshes render into it between our scene pass and post
-const three = new URLSearchParams(location.search).has('three') ? await createThreeRenderer(gpu, canvas) : null;
-if (three) { three.setPixelRatio(1); three.setSize(W, H, false); }
+// three's renderer exists before post, as in the app: post's scene target is three's
+// RenderTarget (F3) and post's TAA is three's TAAU (gpu/three.js createTemporalUpscaler);
+// ?three=1: three also draws meshes into it between our scene pass and post
+const three = await createThreeRenderer(gpu, canvas);
+three.setPixelRatio(1); three.setSize(W, H, false);
 const post = createPost(gpu, { presenter, readable: true });
 h.post = post;
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -125,8 +126,9 @@ function sceneHooks({ mode = 'plane', fill = [0, 0, 0, 0], drawCamera = null, ji
       if (drawCamera) {
         drawCamera.updateMatrixWorld();
         jp.copy(drawCamera.projectionMatrix);
+        // (three's view offset: texel m samples m + ½ + jitter, so NDC moves by −2·jx/w and +2·jy/h)
         const e = jp.elements, [jx, jy] = p.jitter.map((j) => j * jitterSign), [iw, ih] = p.inSize;
-        for (let c = 0; c < 4; c++) { e[c * 4] += (2 * jx / iw) * e[c * 4 + 3]; e[c * 4 + 1] += (-2 * jy / ih) * e[c * 4 + 3]; }
+        for (let c = 0; c < 4; c++) { e[c * 4] += (-2 * jx / iw) * e[c * 4 + 3]; e[c * 4 + 1] += (2 * jy / ih) * e[c * 4 + 3]; }
         vp.multiplyMatrices(jp, drawCamera.matrixWorldInverse);
       } else vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     },
@@ -193,7 +195,7 @@ test('taa', async ({ upscale = 1, frames = 128, every = 16, jitterSign = 1 } = {
   const reads = [];
   for (let k = 1; k <= frames; k++) {
     post.render(hooks, camera);
-    if (k % every === 0) reads.push({ k, image: readHalf(post.targets.history) });
+    if (k % every === 0) reads.push({ k, image: readHalf(post.targets.resolved) });
     gpu.endFrame();
     if (k % 8 === 0) { await gpu.fence(); await tick(); }
   }
@@ -218,7 +220,7 @@ test('motion', async ({ kind = 'pan', control = false, settle = 64, moving = 64,
   home(camera); home(mover);
   const hooks = sceneHooks({ drawCamera: control ? mover : null });
   for (let k = 0; k < settle; k++) { frame(hooks); if (k % 8 === 7) { await gpu.fence(); await tick(); } }
-  const settledImg = readHalf(post.targets.history);
+  const settledImg = readHalf(post.targets.resolved);
   gpu.flush('read');
   const right = new Vector3(), up = new Vector3(), fwd = new Vector3();
   for (let k = 0; k < moving; k++) {
@@ -229,7 +231,7 @@ test('motion', async ({ kind = 'pan', control = false, settle = 64, moving = 64,
     frame(hooks);
     if (k % 8 === 7) { await gpu.fence(); await tick(); }
   }
-  const movedImg = readHalf(post.targets.history);
+  const movedImg = readHalf(post.targets.resolved);
   gpu.flush('read');
   const movedRef = await reference(mover);
   const still = makeCamera();
@@ -342,7 +344,7 @@ test('chain', async ({ settings = {}, frames = 8 } = {}) => {
   const cap = post.capture();
   const t = post.targets;
   const level = async (x) => ({ w: x.width, h: x.height, bits: b64(bytesOf(await gpu.readback.texture(x))) });
-  const reads = { history: level(t.history), down: t.down.map(level), up: t.up.map(level) };
+  const reads = { history: level(t.resolved), down: t.down.map(level), up: t.up.map(level) };
   gpu.endFrame();
   const { width, height, data } = await cap;
   return {
@@ -383,7 +385,7 @@ test('still', async () => {
   setPost({});
   home(camera);
   for (let k = 0; k < 4; k++) frame(sceneHooks());
-  const before = await readHalf(post.targets.history);
+  const before = await readHalf(post.targets.resolved);
   const target = gpu.createTexture({ label: 'thumb', size: [320, 200], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
   const thumbCam = makeCamera();
   thumbCam.aspect = 320 / 200;
@@ -395,7 +397,7 @@ test('still', async () => {
     gpu.flush('still');
   });
   const px = await gpu.readback.texture(target);
-  const after = await readHalf(post.targets.history);
+  const after = await readHalf(post.targets.resolved);
   target.destroy();
   let covered = 0, clear = 0, partial = 0, colourInClear = 0;
   for (let i = 0; i < px.length; i += 4) {

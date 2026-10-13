@@ -299,10 +299,9 @@ document.getElementById('app').appendChild(canvas);
 const presenter = createPresenter(gpu, canvas);
 const renderer = await createThreeRenderer(gpu, canvas, { hdr: presenter.hdr });
 // The canvas matches the screen's pixels (up to RETINA_MAX), so the browser no
-// longer stretches a CSS-sized picture 2× on a Retina display. The scene keeps
-// its CSS-sized pixel budget (the upscale preset is divided by this ratio): TAAU
-// fills the extra output pixels from its jittered history, so a still view
-// converges to full screen resolution at no extra scene cost. Phones stay at 1
+// longer stretches a CSS-sized picture 2× on a Retina display. The Upscaling
+// presets are shares of these real pixels, as AMD FSR 2 defines its modes
+// (gfx/post.js UPSCALE): Off renders every one of them. Phones stay at 1
 // (their GPUs pay for every output pixel of post).
 const RETINA_MAX = 2;
 const pixelRatio = MOBILE ? 1 : Math.min(devicePixelRatio, RETINA_MAX);
@@ -311,11 +310,12 @@ renderer.setSize(innerWidth, innerHeight);
 
 // the grid: the simulation, its derived passes and its volume (made per grid: build)
 let sim, derived, vol, scale;
-// The blocks renderer (gfx/blocks.js): ?blocks, or __app.setBlocks(on); not
-// remembered. On, the world is drawn as its cells' visible faces and nothing
-// that only feeds the volume's march runs (the derived passes, GI, the shadow
-// map); off (the default), nothing about the game changes.
-let blocksOn = params.has('blocks') && params.get('blocks') !== '0';
+// The blocks renderer (gfx/blocks.js) draws the Plain view (src/views.js):
+// the world as its cells' visible faces, Minecraft's way, and nothing that
+// only feeds the volume's march runs (the derived passes, GI, the volume's
+// shadow map). Every other view is the volume's.
+const plainView = (id = settings.view) => viewKeyOf(id) === 'plain';
+let blocksOn = plainView();
 let blocks = null;   // the grid's (made by build() while blocksOn, or by setBlocks)
 // world mode (a WORLDS size): the world, the window over it (src/wire/world.js)
 let worldMode = null, win = null;
@@ -481,6 +481,7 @@ function build() {
   win = null;
   sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   derived = new Derived(sim);
+  blocksOn = plainView();
   vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)) });
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: !!worldMode });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
@@ -1382,6 +1383,7 @@ function setView(id) {
   if (settings.view !== id) post.reset();
   settings.view = id;
   detailGate.setView(id);
+  setBlocks(plainView(id));
   prepareGI();
   const key = viewKeyOf(id);
   if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
@@ -1390,8 +1392,8 @@ function setView(id) {
   save();
 }
 
-// The blocks renderer on or off (?blocks at boot; __app.setBlocks for tools),
-// not remembered. Off again, the derived passes it skipped rebuild every brick.
+// The blocks renderer on or off (setView: on in the Plain view). Off again,
+// the derived passes it skipped rebuild every brick.
 function setBlocks(on) {
   on = !!on;
   if (on === blocksOn || graphicsFailure) return;
@@ -1403,9 +1405,6 @@ function setBlocks(on) {
     blocks?.dispose();
     blocks = null;
     sim.changedAll = true;
-    prepareGI();
-    const key = viewKeyOf(settings.view);
-    if (viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   }
   post.reset();
   pacer.wake();
@@ -1458,9 +1457,12 @@ let thumbTarget = null;
 async function renderThumb(viewId, out) {
   if (graphicsFailure || !coreReady) return false;
   const view = viewKeyOf(viewId), detail = view === 'realistic' ? gateVariants(settings).base : {};
-  const v = vol, b = blocks;
+  // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
+  // blank; the volume's views from Plain draw the bricks as they were when Plain began)
+  const v = vol, b = view === 'plain' ? blocks : null;
+  if (view === 'plain' && !b) return false;
   await (b ? b.ready : Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
-  if (graphicsFailure || v !== vol || b !== blocks) return false;
+  if (graphicsFailure || v !== vol || (b && b !== blocks)) return false;
   thumbTarget ??= gpu.createTexture({
     label: 'view thumbnail', size: THUMB_SIZE, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
@@ -1468,18 +1470,18 @@ async function renderThumb(viewId, out) {
   thumbCam.aspect = THUMB_SIZE[0] / THUMB_SIZE[1];
   useWebGPUCamera(thumbCam);
   const rawWas = post.settings.raw;
-  post.settings.raw = b ? view === 'heat' : viewId !== 0;
+  post.settings.raw = view === 'plain' ? false : viewId !== 0;
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     presentation.neutral(() => post.renderStill({
       prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
-      opaque: (p) => (threeMeshes(p, false, thumbCam) ? cut.capture(p.sceneTarget.depth) : false),
+      opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
       draw(rp) {
         if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1 });
         if (b) {
-          b.drawOpaque(rp, { view, marchNear: pov?.marchNear ?? 0, floor: !win });
-          b.drawTranslucent(rp, { view, marchNear: pov?.marchNear ?? 0 });
+          b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: !win });
+          b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
         } else vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
         if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], opacity: EDGE_OPACITY });
       },
@@ -1935,10 +1937,10 @@ function drawScene(rp) {
     // the blocks renderer (gfx/blocks.js): the opaque faces and a box's floor,
     // what draws above the volume, then the translucent faces
     const marchNear = pov?.marchNear ?? 0;
-    volumeDrawn = !testNoVolume && blocks.drawOpaque(rp, { view, marchNear, floor: !win });
+    volumeDrawn = !testNoVolume && blocks.drawOpaque(rp, { marchNear, floor: !win });
     if (!volumeDrawn && !testNoVolume) wakeWhen(blocks.ready);
     for (const w of after) w.scene(ctx, rp);
-    if (volumeDrawn) blocks.drawTranslucent(rp, { view, marchNear });
+    if (volumeDrawn) blocks.drawTranslucent(rp, { marchNear });
     if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY * post.renderScale });
     brush.draw(rp);
     return;
@@ -1974,7 +1976,7 @@ const frameHooks = {
     if (blocks) {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
-      blocks.update();
+      blocks.update({ sun: SUN });
     } else if (frameDerived) {
       prof.phase('derived');
       sim.updateBricks();
@@ -2128,9 +2130,9 @@ function tick(now, renderOnly = false) {
     volume.updateMatrixWorld();
     camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
-    // (the blocks' faces are the realistic view's radiance in every view but heat, which is a finished colour)
-    post.settings.raw = blocks ? viewKeyOf(settings.view) === 'heat' : settings.view !== 0;
-    post.settings.upscale = (UPSCALE[settings.upscale] ?? UPSCALE.native) / pixelRatio;   // scene pixels stay CSS-sized (pixelRatio)
+    // (the blocks' faces are radiance, as the realistic view's; the data views are finished colours)
+    post.settings.raw = blocks ? false : settings.view !== 0;
+    post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;   // a share of the canvas's (device) pixels, FSR 2's
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
@@ -2311,8 +2313,8 @@ try {
     get sim() { return sim; }, get derived() { return derived; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     // the grid's box (grid cells → scene: a three Object3D, its transform only) and its GPU volume (gfx/volume.js: pick, shadowTextures, pipelines)
     volume, get vol() { return vol; }, get shadowMap() { return vol.shadowTextures; },
-    // the blocks renderer (gfx/blocks.js: stats, pipelines), null while it is off; setBlocks(on) switches it
-    get blocks() { return blocks; }, setBlocks,
+    // the blocks renderer (gfx/blocks.js: stats, pipelines), the Plain view's; null in the others
+    get blocks() { return blocks; },
     get pov() { return pov; },
     get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },

@@ -13,7 +13,7 @@
 //   invariants  paint on, strokes between steps: sleeping = every brick dispatched, lists and blocks
 //               permuted, in place = out of place, all with the plane identical; and paint on =
 //               paint off for the state (the decoration never changes the simulation)
-//   view        the plain and realistic views draw the tint; display off (Ctrl+B) draws exactly what
+//   view        the realistic view draws the tint (the Plain view's blocks don't yet); display off (Ctrl+B) draws exactly what
 //               the scene drew before it was painted; the view follows the plane to a new buffer
 
 import { boot, ready, test, log, measure } from './harness.js';
@@ -508,7 +508,7 @@ test('budget:deco', async () => {
 // The volume on its own (as tools/harness/volume.js sets it up): a wall
 // block and a pool in a glass tank, painted red and green; scene-target
 // colours compared before the paint, with it, and with display off.
-test('stage:view', async ({ size = 32, views = ['plain', 'realistic'] } = {}) => {
+test('stage:view', async ({ size = 32, views = ['realistic'] } = {}) => {
   const out = { checks: [], ms: {} };
   const { createPresenter } = await import('/src/gpu/index.js');
   const { halfsToFloats } = await import('/src/gpu/readback.js');
