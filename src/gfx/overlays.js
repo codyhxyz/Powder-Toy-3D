@@ -34,6 +34,12 @@ export const FLOOR_COLOR_LINE = 0x1b2029;
 // The box's edges.
 export const EDGE_COLOR = 0x56607a;
 export const EDGE_OPACITY = 0.55;
+// Under the daylight sky (drawSky) a pale line vanishes against the sunlit
+// ground, so the edges are dark ink there, as Minecraft draws its block outline
+// (black, 0.4 alpha). Heavier than its 0.4: ours are one scene pixel wide and
+// fade with the render scale, Minecraft's are 2 screen pixels.
+export const EDGE_LIT_COLOR = 0x000000;
+export const EDGE_LIT_OPACITY = 0.7;
 
 const linear = (hex) => new Color(hex).toArray();   // three's colour management: sRGB hex → linear
 
@@ -171,7 +177,7 @@ export function createOverlays(gpu) {
     vertex: e.vertex, fragment: e.fragment, primitive: e.primitive, depthStencil: e.depthStencil,
   });
   const [grid, edges, sky] = WGSL_CHECK.map(pipe);
-  const center = linear(FLOOR_COLOR_CENTER), line = linear(FLOOR_COLOR_LINE), edge = linear(EDGE_COLOR);
+  const center = linear(FLOOR_COLOR_CENTER), line = linear(FLOOR_COLOR_LINE), edge = linear(EDGE_COLOR), edgeLit = linear(EDGE_LIT_COLOR);
   return {
     ready: Promise.all([grid.ready, edges.ready, sky.ready]),
     /** The box's backdrop (first, realistic view): the sky that lights it. */
@@ -196,11 +202,13 @@ export function createOverlays(gpu) {
     },
     /**
      * The box's edges (after the volume): the grid's box [0, size] in cells,
-     * placed by FrameUniforms.model. opacity: EDGE_OPACITY × the render scale.
+     * placed by FrameUniforms.model. scale: the render scale (lines are one
+     * rendered pixel wide); lit: under the sky (drawSky), dark ink instead.
      */
-    drawEdges(rp, { size, opacity = EDGE_OPACITY }) {
+    drawEdges(rp, { size, scale = 1, lit = false }) {
       if (edges.state !== 'ready') return false;
-      edges.draw(rp, { bind: [fu.group], count: EDGE_VERTICES, params: { color: [...edge, opacity], size } });
+      const color = lit ? [...edgeLit, EDGE_LIT_OPACITY * scale] : [...edge, EDGE_OPACITY * scale];
+      edges.draw(rp, { bind: [fu.group], count: EDGE_VERTICES, params: { color, size } });
       return true;
     },
   };

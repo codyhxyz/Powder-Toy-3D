@@ -36,7 +36,7 @@ import { E, K, ELEMENTS } from '/src/elements.js';
 import { SEED_MAX } from '/src/shaders/common.js';
 import { createPost, POST_DEFAULTS } from '/src/gfx/post.js';
 import { createVolume } from '/src/gfx/volume.js';
-import { createOverlays, FLOOR_Y, EDGE_OPACITY } from '/src/gfx/overlays.js';
+import { createOverlays, FLOOR_Y } from '/src/gfx/overlays.js';
 import { createBrushCursor } from '/src/brush.js';
 import { createMeshCut } from '/src/gfx/meshCut.js';
 import { createDetailGate, gateVariants, PREWARM_DELAY_MS } from '/src/gfx/detailGate.js';
@@ -195,7 +195,7 @@ function hooks({ view = 'heat', detail = {}, meshes = null, useCut = true, grid 
     draw(rp) {
       if (grid) overlays.drawGrid(rp, { model: gridModel, opacity: 1 });
       if (volumeOn) volume.draw(rp, { view, detail, meshDepth: cut.take() });
-      if (edges) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY });
+      if (edges) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz] });
       if (withBrush) brush.draw(rp);
     },
   };

@@ -30,7 +30,7 @@ import { Derived } from './derived.js';
 import { createVolume } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
-import { createOverlays, FLOOR_SPAN, FLOOR_Y, EDGE_OPACITY } from './gfx/overlays.js';
+import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
@@ -1517,7 +1517,7 @@ async function renderThumb(viewId, out) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: !win });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
         } else vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
-        if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], opacity: EDGE_OPACITY });
+        if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
     }, thumbCam, thumbTarget));
@@ -1979,7 +1979,7 @@ function drawScene(rp) {
     if (!volumeDrawn && !testNoVolume) wakeWhen(blocks.ready);
     for (const w of after) w.scene(ctx, rp);
     if (volumeDrawn) blocks.drawTranslucent(rp, { marchNear });
-    if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY * post.renderScale });
+    if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
     brush.draw(rp);
     return;
   }
@@ -2000,7 +2000,7 @@ function drawScene(rp) {
     wakeWhen(pipe.ready);
   }
   for (const w of after) w.scene(ctx, rp);
-  if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY * post.renderScale });
+  if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
   brush.draw(rp);
 }
 
