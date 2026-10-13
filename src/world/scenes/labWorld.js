@@ -1,4 +1,4 @@
-import { helpersGLSL, definesGLSL, definesTypes, jsConstants, pickGLSL, compileShared, groundScan } from './themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, pickGLSL, compileShared, groundScan, memoTwin } from './themedShared.js';
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 
@@ -356,14 +356,9 @@ const START_SEARCH = 3;
 // far.js's one a frame, which left the rooms filling in for 256 frames.
 const FAR_CHUNKS_PER_FRAME = 64;
 
-const twins = new Map();   // the JS twin per world (seed and size)
-function twin(P) {
-  const k = `${P.seed}:${P.size}`;
-  if (!twins.has(k)) {
-    twins.set(k, compileShared(SRC, P.seed, { ...jsConstants(P_, L), uLabWorldX: P.size[0], uLabWorldZ: P.size[2] }));
-  }
-  return twins.get(k);
-}
+// the JS twin per world (seed and size)
+const twin = memoTwin((P) => `${P.seed}:${P.size}`,
+  (P) => compileShared(SRC, P.seed, { ...jsConstants(P_, L), uLabWorldX: P.size[0], uLabWorldZ: P.size[2] }));
 
 // The scene's WGSL (scenes/sceneGpu.js): its uniforms (uLabWorldX, uLabWorldZ:
 // the world's size along x and z, cells), constants, the helpers, the

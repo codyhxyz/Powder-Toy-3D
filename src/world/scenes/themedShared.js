@@ -299,6 +299,18 @@ export function compileShared(src, seed, consts) {
   return make(...names.map((n) => scope[n]));
 }
 
+// A scene's JS twin, built once per key: memoTwin(keyFn, build) is a function
+// of P (a scene's params, a level...) giving build(P), cached under keyFn(P)
+// (the world seed, and its size where the geometry depends on it).
+export function memoTwin(keyFn, build) {
+  const twins = new Map();
+  return (P) => {
+    const k = keyFn(P);
+    if (!twins.has(k)) twins.set(k, build(P));
+    return twins.get(k);
+  };
+}
+
 // The top of the topmost matter in world column (x, z), scanning a cell
 // function cell(x, y, z) → element id down from y = top - 1 (air above top).
 export function groundScan(cell, x, z, top) {
