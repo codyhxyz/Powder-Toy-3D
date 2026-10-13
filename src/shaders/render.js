@@ -78,7 +78,7 @@ const vec3 = (v) => `vec3f(${v.map(glf).join(', ')})`;
 // position (0..1), <name>Srgb(p) maps a position to its colour (interpolated
 // in sRGB like the CSS legend), <name>Color(x) gives linear RGB. The knots'
 // colours are picked by a switch, not a runtime-indexed const array (docs/webgpu.md C6).
-function colormapWGSL(name, cm) {
+export function colormapWGSL(name, cm) {
   const k = cm.knots, n = k.length;
   let pos = `fn ${name}Pos(x: f32) -> f32 {\n  if (x <= ${glf(k[0][0])}) { return 0.0; }\n`;
   for (let i = 1; i < n; i++) {
