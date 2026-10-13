@@ -53,6 +53,19 @@ import { SKY, ADAPT, POST_DEFAULTS, NV_PHOSPHOR, MIPS } from '../src/gfx/post.js
 import { halfToFloat } from '../src/gpu/readback.js';
 
 const argv = process.argv.slice(2);
+// three's TAAU (gfx/post.js, gpu/three.js): a frame's submits with it, ours before it (the scene and the
+// motion pass), its resolve and its two copies (the history, the previous depth), ours after…
+const TAAU_SUBMITS = 5;
+const TAAU_CYCLE = 32;   // …and its jitter's cycle, frames (TAAUNode's 32 Halton offsets)
+// frames a still view gets to settle: TAAUNode's current-frame weight (0.025) takes ~3× the
+// frames of the old resolve's 0.07
+const TAAU_SETTLE_FRAMES = 256;
+// The frame after a jump, against the still view's error: three's TAAU samples its history
+// bilinearly (the old resolve used Catmull-Rom), so a jump softens the next frame
+const MOVED_SOFTER = 1.5;
+// The meter reads TAAU's resolve: its half-float history stalls within an f16 step over the
+// current-frame weight of the scene's value (2⁻¹¹ / 0.025 ≈ 2e-2 of an ulp's share: under 1e-3)
+const METER_TOLERANCE = 1e-3;
 const ONLY = argv.includes('--only') ? argv[argv.indexOf('--only') + 1].split(',') : null;
 let failures = 0;
 const check = (ok, line) => { if (!ok) failures++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${line}`); };
@@ -234,20 +247,20 @@ try {
   if (want('passes')) {
     console.log('\npasses');
     const { stats } = await run('budget:frame');
-    check(stats.renderPasses === 5 && stats.computePasses === 1 && stats.submits === 1,
+    check(stats.renderPasses === 5 && stats.computePasses === 1 && stats.submits === TAAU_SUBMITS,
       `a presented frame: ${stats.renderPasses} render passes (scene + taa, prefilter, bloom up0 + canvas), ${stats.computePasses} compute pass, ${stats.submits} submit`);
     check(stats.dispatches === 10 && stats.draws === 5, `${stats.dispatches} dispatches (bloom down 5, up 4, reduce 1), ${stats.draws} draws (scene 1 + post 4)`);
     check(stats.bytesAllocated === 0 && stats.pipelinesCreated === 0, `nothing allocated or built per frame (${stats.bytesAllocated} B, ${stats.pipelinesCreated} pipelines)`);
     for (const upscale of [1, 1 / 1.5]) {
       const r = await run('frameUniforms', { route: 'hooks', upscale });
       const [jx, jy, pix, p20] = r.seen;
-      const want = [r.jitter[0], r.jitter[1], r.inSize[0] / r.size[0], -2 * r.jitter[0] / r.inSize[0]];
+      const want = [r.jitter[0], r.jitter[1], r.inSize[0] / r.size[0], 2 * r.jitter[0] / r.inSize[0]];   // (three's view offset: +2·jx/w in column 2)
       const same = r.seen.every((x, i) => Math.abs(x - want[i]) < 1e-6);
-      check(same && r.stats.submits === 1 && r.stats.writeFlushes === 0 && r.jitter.some((j) => j !== 0),
+      check(same && r.stats.submits === TAAU_SUBMITS && r.stats.writeFlushes === 0 && r.jitter.some((j) => j !== 0),
         `E1's FrameUniforms reader in compute() after prepare()'s write (upscale ${r5(upscale)}): it saw this frame's jitter ${[jx, jy].map(r5)} (${r.jitter.map(r5)}), pixScale ${r5(pix)}, the jittered projection [2][0] ${r5(p20)} (${r5(want[3])}); ${r.stats.submits} submit, ${r.stats.writeFlushes} write flushes`);
     }
     const c = await run('frameUniforms', { route: 'before' });
-    check(c.stats.writeFlushes === 1 && c.stats.submits === 2 && Math.abs(c.seen[0] - c.jitter[0]) > 1e-3,
+    check(c.stats.writeFlushes === 1 && c.stats.submits === TAAU_SUBMITS + 1 && Math.abs(c.seen[0] - c.jitter[0]) > 1e-3,
       `control, the reader recorded before render(): the write flushes (${c.stats.writeFlushes}), ${c.stats.submits} submits, and it saw the frame before's jitter ${r5(c.seen[0])} (this frame's ${r5(c.jitter[0])})`);
   }
 
@@ -261,9 +274,9 @@ try {
 
   if (want('taa')) {
     console.log('\ntaa (still camera; error: mean |Δ| of c/(1+luma) against the 8×8-supersampled reference)');
-    const r = await run('taa', { frames: 128, every: 16 });
+    const r = await run('taa', { frames: TAAU_SETTLE_FRAMES, every: TAAU_CYCLE });
     const last = r.curve.at(-1), first = r.curve[1];
-    console.log(`     aliased frame ${r5(r.alias.rgb)}; TAA by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ16 ${r5(c.delta)})`}`).join(', ')}`);
+    console.log(`     aliased frame ${r5(r.alias.rgb)}; TAA by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ${TAAU_CYCLE} ${r5(c.delta)})`}`).join(', ')}`);
     check(last.rgb < 0.8 * r.alias.rgb, `TAA converges nearer the reference than the aliased frame: ${r5(last.rgb)} < 0.8 × ${r5(r.alias.rgb)} (alpha ${r5(last.alpha)} vs ${r5(r.alias.alpha)})`);
     check(last.delta < 3e-4 && last.delta < first.delta / 4, `and settles: the change over a jitter cycle falls from ${r5(first.delta)} to ${r5(last.delta)}`);
     const none = (await run('taa', { frames: 96, jitterSign: 0 })).curve.at(-1);
@@ -277,7 +290,7 @@ try {
     for (const [label, arg] of [['3 px diagonal jump', { kind: 'pan', moving: 1, step: 0.06, axes: [1, 0.7] }], ['dolly jump (2.4% closer)', { kind: 'dolly', moving: 1, step: 0.1 }]]) {
       const ok = await run('motion', arg);
       const ctrl = await run('motion', { ...arg, control: true });
-      check(ok.moved.rgb < 1.25 * ok.static.rgb && ctrl.moved.rgb > 1.8 * ok.moved.rgb,
+      check(ok.moved.rgb < MOVED_SOFTER * ok.static.rgb && ctrl.moved.rgb > 1.8 * ok.moved.rgb,
         `${label}: ${r5(ok.moved.rgb)} after (still ${r5(ok.static.rgb)}); unaware of the motion ${r5(ctrl.moved.rgb)}`);
     }
     const pan = await run('motion', { kind: 'pan', moving: 64 });
@@ -287,9 +300,9 @@ try {
 
   if (want('taau')) {
     console.log('\ntaau (upscale 1/1.5)');
-    const r = await run('taa', { upscale: 1 / 1.5, frames: 192, every: 48 });
+    const r = await run('taa', { upscale: 1 / 1.5, frames: TAAU_SETTLE_FRAMES, every: 2 * TAAU_CYCLE });
     const last = r.curve.at(-1);
-    console.log(`     scene ${r.inSize.join('×')} → ${r.size.join('×')}; by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ48 ${r5(c.delta)})`}`).join(', ')}`);
+    console.log(`     scene ${r.inSize.join('×')} → ${r.size.join('×')}; by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ${2 * TAAU_CYCLE} ${r5(c.delta)})`}`).join(', ')}`);
     check(last.delta < 5e-4 && r.inSize[0] === 267 && r.inSize[1] === 167, `TAAU settles from ${r.inSize.join('×')} samples: change over a cycle ${r5(last.delta)}; error ${r5(last.rgb)} (native aliased ${r5(r.alias.rgb)})`);
   }
 
@@ -320,7 +333,7 @@ try {
     console.log('\nmeter');
     const L = 0.04;
     const m = await run('meter', { L });
-    check(m.luma != null && Math.abs(m.luma / f16(L) - 1) < 1e-4, `post.sceneLuma of a uniform ${L}: ${m.luma} (its half float ${f16(L)})`);
+    check(m.luma != null && Math.abs(m.luma / f16(L) - 1) < METER_TOLERANCE, `post.sceneLuma of a uniform ${L}: ${m.luma} (its half float ${f16(L)})`);
     const u = await run('meter', { L, a: 0.3 });
     check(u.luma === null, `under the coverage threshold: ${u.luma}`);
   }
@@ -462,7 +475,7 @@ try {
     const [frontWithout, behindWithout] = r.without, [front, behind] = r.with;
     check(front[0] > 200 && front[0] > 2 * front[1] && front[0] > 2 * front[2], `the box in front of the plane shows: ${front.slice(0, 3)} (the plane there: ${frontWithout.slice(0, 3)})`);
     check(behind.slice(0, 3).join() === behindWithout.slice(0, 3).join(), `the box behind it doesn't: ${behind.slice(0, 3)} (the plane: ${behindWithout.slice(0, 3)})`);
-    check(r.stats.submits === 3 && r.taaStats.submits === 3, `ours before three, three's own, ours after: ${r.stats.submits} submits (TAA, bloom, adaptation on: ${r.taaStats.submits}, ${r.taaStats.renderPasses} render passes of ours)`);
+    check(r.stats.submits === 3 && r.taaStats.submits === 3 + TAAU_SUBMITS - 1, `ours before three, three's own, ours after: ${r.stats.submits} submits (TAA, bloom, adaptation on: ${r.taaStats.submits}, ${r.taaStats.renderPasses} render passes of ours)`);
     check(r.taa[0][0] > 200, `with TAA the box still shows: ${r.taa[0].slice(0, 3)}`);
     const f3 = await p3.evaluate(() => window.__harness.failures);
     check(!f3.length && !errs.length, `no GPU failures or page errors${f3.length || errs.length ? `: ${[...f3, ...errs].join(' | ')}` : ''}`);

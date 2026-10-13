@@ -11,8 +11,8 @@
 // meshes left alone, neutral, select/dispose restoring), and, statically,
 // that the WGSL passes carry the bend: the volume's curved variants walk the
 // displayed rays (shaders/gfx/presentation.js), its flat ones don't, the far
-// view's curved variant marches the parabola, the pick and TAA's reprojection
-// take it, and no GLSL is left in the presentation's modules.
+// view's curved variant marches the parabola, the pick and the motion pass's
+// reprojection (three's TAAU's velocity) take it, and no GLSL is left in the presentation's modules.
 // tools/presentation-check.mjs runs the GPU side.
 import assert from 'node:assert/strict';
 import * as THREE from 'three/webgpu';
@@ -23,7 +23,7 @@ import { MESH_EDGE_CELLS, subdividePresentation } from '../src/gfx/presentationG
 import { presentationNearWGSL, presentationNearGLSL } from '../src/shaders/gfx/presentation.js';
 import { volumeFrag, pickFrag, VOLUME_VIEWS, warmChecks } from '../src/shaders/render.js';
 import { farFrag, farDetailDepthFrag, farLayout, WORLD_SIZE } from '../src/shaders/far.js';
-import { taaWGSL, WGSL_CHECK as postChecks } from '../src/gfx/post.js';
+import { motionWGSL, WGSL_CHECK as postChecks } from '../src/gfx/post.js';
 import { gridLayout } from '../src/sim.js';
 import { mapByKey, mapsFor, resolveMode, modeByKey } from '../src/maps.js';
 const close = (a,b,eps=1e-8) => {
@@ -185,8 +185,8 @@ assert.deepEqual(p.takeChanged(),[mesh]);   // (restored: flat again, another pr
 p.select('rollingLog'); p.prepare(scene,camera); mesh.removeFromParent(); assert.equal(mesh.frustumCulled,true);
 p.dispose(); assert(!p.active); assert.equal(mat.vertexNode,own);
 
-// ---- TAA's reprojection through the bend (gfx/post.js presentationReproject and the
-// matrices createPost builds for it): a flat point displayed this frame comes back to
+// ---- the motion pass's reprojection through the bend (gfx/post.js presentationReproject,
+// the velocity three's TAAU reads, and the matrices createPost builds for it): a flat point displayed this frame comes back to
 // where the last frame displayed it, the camera and the bend's anchor both moved ----
 {
   const q=createPresentation(), T=new THREE.Matrix4().makeScale(1/0.1,1/0.1,1/0.1).setPosition(300,0,200);
@@ -209,7 +209,7 @@ p.dispose(); assert(!p.active); assert.equal(mat.vertexNode,own);
     const want=clipOf(prevWorldToClip,warp(P,prevWarp));
     worst=Math.max(worst,Math.abs(back.x/back.w-want.x/want.w),Math.abs(back.y/back.w-want.y/want.w));
   }
-  assert(worst<1e-6, `TAA's reprojection through the bend: ${worst}`);
+  assert(worst<1e-6, `the motion pass's reprojection through the bend: ${worst}`);
   assert(Math.abs(prevWarp.anchor[0]-cur.anchor[0])>1, 'the case moves the bend\'s anchor');
   // the sky (depth 1) goes by the cameras: bent, post packs the two halves only, and
   // their product is the camera-only reprojection while the scene → world transform holds
@@ -219,10 +219,10 @@ p.dispose(); assert(!p.active); assert.equal(mat.vertexNode,own);
     const a=new THREE.Vector4(x,y,1,1).applyMatrix4(halves), b=new THREE.Vector4(x,y,1,1).applyMatrix4(cameras);
     sky=Math.max(sky,Math.abs(a.x/a.w-b.x/b.w),Math.abs(a.y/a.w-b.y/b.w));
   }
-  assert(sky<1e-9, `TAA: the sky's reprojection, bent, is the cameras': ${sky}`);
+  assert(sky<1e-9, `motion: the sky's reprojection, bent, is the cameras': ${sky}`);
 }
-// TaaParams fits one 256-byte slot of the param ring (docs/webgpu.md B4; tools/budgets/post.mjs's upload)
-assert(postChecks.find((x) => x.name==='taa').params.size<=256, `TaaParams: ${postChecks.find((x) => x.name==='taa').params.size} bytes`);
+// MotionParams fits one 256-byte slot of the param ring (docs/webgpu.md B4; tools/budgets/post.mjs's upload)
+assert(postChecks.find((x) => x.name==='motion').params.size<=256, `MotionParams: ${postChecks.find((x) => x.name==='motion').params.size} bytes`);
 
 const large=new THREE.Mesh(new THREE.PlaneGeometry(128,128));
 const split=subdividePresentation(large,MESH_EDGE_CELLS);
@@ -246,7 +246,7 @@ assert(!fns(presentationNearWGSL({ skip: false })).has('warpSkip'), 'the pick\'s
 const GLSL = /\buniform\s+(float|vec[234]|mat4|bool|int)\b|#define|gl_(FragColor|Position|FragDepth|FragCoord)|\bivec[234]\(|\bvec[234]\(|onBeforeCompile|texelFetch\(/;
 const g=gridLayout(64,64,64), Lw=farLayout(WORLD_SIZE);
 const modules = {
-  presentationWGSL, presentationNearGLSL, pick: pickFrag(g), taa: taaWGSL(), farDetailDepth: farDetailDepthFrag(g),
+  presentationWGSL, presentationNearGLSL, pick: pickFrag(g), motion: motionWGSL(), farDetailDepth: farDetailDepthFrag(g),
   ...Object.fromEntries(VOLUME_VIEWS.flatMap((v) => [[`volume.${v}`, volumeFrag(g, { view: v })], [`volume.${v}.curved`, volumeFrag(g, { view: v, curved: true })]])),
 };
 for (const [name, code] of Object.entries(modules)) assert(!GLSL.test(code.replace(/\/\/[^\n]*/g, '')), `${name}: GLSL left`);
@@ -268,10 +268,10 @@ for (const v of ['realistic','plain']) {
   assert(vols(true).length && vols(true).every((x) => x.curved && /warpWalk/.test(x.code(g))), `warmChecks ${v}, curved: the curved variants`);
   assert(vols(false).every((x) => !x.curved && !/warpWalk/.test(x.code(g))), `warmChecks ${v}: the flat ones`);
 }
-assert(modules.taa.includes('fn presentationReproject') && modules.taa.includes('warpPointWith(flatWorld, P.prevK'), 'TAA: reprojection through the bend');
+assert(modules.motion.includes('fn presentationReproject') && modules.motion.includes('warpPointWith(flatWorld, P.prevK'), 'motion pass: reprojection through the bend');
 const farCurved=farFrag(g,Lw,false,{curved:true}), farFlat=farFrag(g,Lw), farMesh=farFrag(g,Lw,true);
 for (const call of ['gFarRay = warpRay(ro, rd)','warpSpans(gFarRay','farPlaneHit(gFarRay','warpResume(t, gFarWorld)','warpArc(transmitted','warpPoint(p)']) assert(farCurved.includes(call), `far view curved: ${call}`);
 assert(!farFlat.includes('gFarRay'), 'far view: the flat variant has no parabola');
 assert(farMesh.includes('warpPoint(pos)') && modules.farDetailDepth.includes('warpPoint(pos)'), 'the detail meshes bend in their vertex stage, and their depth prepass with them');
 assert(modules.farDetailDepth.includes('v.position.z'), 'the depth prepass writes the rasterized depth');
-console.log('presentation: mapping, inverse, roots, turn/reentry, tangency, chord bound, TSL vertex bend (chained, idempotent, restored), lifecycle (opt-outs, overlays, layers, the guard\'s parked meshes, changed programs, neutral), mode resolution, TAA reprojection algebra, mesh edge bound, WGSL twins (curved variants only, pick, TAA, far view and meshes, no GLSL) OK');
+console.log('presentation: mapping, inverse, roots, turn/reentry, tangency, chord bound, TSL vertex bend (chained, idempotent, restored), lifecycle (opt-outs, overlays, layers, the guard\'s parked meshes, changed programs, neutral), mode resolution, motion reprojection algebra, mesh edge bound, WGSL twins (curved variants only, pick, motion pass, far view and meshes, no GLSL) OK');

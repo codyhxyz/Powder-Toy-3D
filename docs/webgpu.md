@@ -139,8 +139,9 @@ exact, rasterizes only the pixels the box covers with no classification pass, an
 compressed attachments on M1–M4. Compute raymarching is Phase 2.
 
 **W16. Post keeps the full- and half-resolution image passes as fragment passes and runs the small mips and the
-reductions in one compute pass.** TAA/TAAU, the bloom prefilter into `down[0]`, the final `up[0]` and the canvas
-composite are fragment passes into compressed attachments. Bloom levels 1–5 down and 4–1 up, the histogram,
+reductions in one compute pass.** The motion pass (three's TAAU's inputs), the bloom prefilter into `down[0]`, the
+final `up[0]` and the canvas composite are fragment passes into compressed attachments; three's TAAUNode resolves
+between the motion pass and the prefilter, in its own submits (`gfx/post.js`, `gpu/three.js createTemporalUpscaler`). Bloom levels 1–5 down and 4–1 up, the histogram,
 adaptation and meter run in a single compute pass between them: mips at 1/8 to 1/64 resolution gain nothing from
 compression, and each render pass is a full Metal render encoder (F7).
 
@@ -259,7 +260,9 @@ E1 (ours)   compute: POV edits, paint, N × step, lightning, window move, rays,
             ── only if three has something visible: flush; three.render(scene) into the scene target (its own
                submit); in POV three.render(viewmodels) into their MSAA target (its own submit) ──
 E2 (ours)   render:  rays overlay (only while rays are active; depthReadOnly)
-            render:  TAA/TAAU → history[next]; render: bloom prefilter → down[0]
+            render:  motion pass → TAAU's velocity and colour (the scene's size)
+            ── flush; three's TAAUNode: resolve → output size, history and previous-depth copies (its own submits) ──
+            render:  bloom prefilter → down[0]
             compute: bloom down 1–5, up 4–1; luminance grid, histogram, adaptation, meter
             render:  bloom up[0]
             render:  canvas pass (composite over the sky gradient, viewmodel composite, glow)
@@ -1008,8 +1011,8 @@ brick 1), counted twice each (B3).
   brush after it), because they are ours (`src/gfx/overlays.js`, `src/brush.js`). In box mode three has nothing
   visible, so the frame is one scene pass and one command buffer.
 - The rays overlay now draws after three's transparents (the constructions ghost): additive sprites over it. Accepted.
-- Render passes per presented frame: 1 (scene) + three's (0 in box mode) + 0–1 (overlay) + 3 post (TAA, prefilter,
-  `up[0]`) + 1 (canvas); compute passes: E1's + 1 (post).
+- Render passes per presented frame: 1 (scene) + three's (0 in box mode) + 0–1 (overlay) + 3 post (motion, prefilter,
+  `up[0]`) + three's TAAU (its resolve, in its own submits) + 1 (canvas); compute passes: E1's + 1 (post).
 
 ### F2. The volume pass
 
@@ -1055,10 +1058,11 @@ brick 1), counted twice each (B3).
 - **Y down.** Framebuffer and texture coordinates are top-left in WebGPU. Image passes use
   `uv = (pixel + 0.5) / size` with `uv.y = 0.5 − 0.5·ndc.y`. Per-pixel noise hashed from `position.xy` flips vertically
   against WebGL: accepted, not emulated. `renderThumb`'s CPU row flip (`app.js:1057-1060`) goes.
-- **Jitter.** Post keeps mutating `camera.projectionMatrix` in place (`post.js:884-900`): row 0 += `jx_ndc`·row 3,
-  row 1 += `jy_ndc`·row 3, with `jx_ndc = 2·jx/w` and `jy_ndc = −2·jy/h` for a pixel offset `(jx, jy)` measured with y
-  down. TAA's `uJitter` is that pixel offset. three reads the matrix at render time, so the meshes jitter with the
-  volume.
+- **Jitter.** The one jitter is three's TAAUNode's own (its Halton(2, 3) offsets): `post.beginScene` sets it as a
+  view offset on the camera (`Camera.setViewOffset`, through `gpu/three.js`; the camera keeps its own aspect) and
+  `endScene` clears it. Projection column 2 moves by `2·jx/w` and `−2·jy/h` for a pixel offset `(jx, jy)` measured
+  with y down: scene texel `m` sampled the view at `m + ½ + jitter`. `post.jitter` (`FrameUniforms.jitter`) is that
+  offset. three reads the matrix at render time, so the meshes jitter with the volume.
 
 ### F5. Shadow map, pick, thumbnails, screenshots
 
@@ -1128,11 +1132,12 @@ by the volume, shadow (writer variant), GI gather (writer variant), GI source, s
 ### F7. Post, pacing and the canvas
 
 - **Fragment passes** on a full-screen triangle, `loadOp: 'clear'` (they overwrite every pixel), into textures with
-  `RENDER_ATTACHMENT | TEXTURE_BINDING` only: TAA/TAAU → `history[next]`; the bloom prefilter → `down[0]` (half
-  resolution); after the compute pass, `up[0]` (half resolution, reading `up[1]` and `down[0]`).
+  `RENDER_ATTACHMENT | TEXTURE_BINDING` only: the motion pass → TAAU's velocity and colour (three's render targets);
+  the bloom prefilter → `down[0]` (half resolution); after the compute pass, `up[0]` (half resolution, reading `up[1]`
+  and `down[0]`). three's TAAUNode keeps its own history and resolve targets.
 - **One compute pass**: bloom down 1–5 and up 4–1 (each a dispatch reading the previous level with the same taps
   and weights as today's fragment filters, writing its own `rgba16float` storage texture; those levels are separate
-  textures, so adding `STORAGE_BINDING` never touches `history`, `down[0]` or `up[0]`, which keeps them compressible),
+  textures, so adding `STORAGE_BINDING` never touches `down[0]` or `up[0]`, which keeps them compressible),
   then, in one workgroup, the luminance grid, the 64-bin histogram (fixed-point `atomicAdd` in workgroup memory,
   weight·2²⁰, replacing f16 additive points), the adaptation update in place in a 16-byte storage buffer (no 1×1
   ping-pong), and the meter (16×16 tile sums reduced on the GPU). `post.adapting`, `post.adaptation` and
@@ -1797,8 +1802,8 @@ parallel.
   Crossing's rolling log bends the shown world, physics stays flat). `main` patched three's materials with
   `onBeforeCompile`, which WebGPURenderer never runs. The port bends meshes through TSL instead: a bend chained onto each
   node material's clip position. The volume, the pick, the far view and the plain view get curved variants (the
-  displayed ray walked as chords of its parabola), and TAA reprojects through unwarp and the last frame's warp, within
-  `TaaParams`' 256 B. The mesh cut is off while curved, as in `main`. Boot, `openMap` and the menu warm-up select the
+  displayed ray walked as chords of its parabola), and the motion pass (three's TAAU's velocity) reprojects through
+  unwarp and the last frame's warp, within `MotionParams`' 256 B. The mesh cut is off while curved, as in `main`. Boot, `openMap` and the menu warm-up select the
   mode's effect before the grid is built, so the curved variants compile behind the loading screen. Still unbent:
   remote cursors, the rays' sprites, the floor grid, the box edges and the brush shapes (a box only shows the last three
   when the effect is forced on it).

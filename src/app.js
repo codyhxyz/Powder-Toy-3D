@@ -298,10 +298,9 @@ document.getElementById('app').appendChild(canvas);
 const presenter = createPresenter(gpu, canvas);
 const renderer = await createThreeRenderer(gpu, canvas, { hdr: presenter.hdr });
 // The canvas matches the screen's pixels (up to RETINA_MAX), so the browser no
-// longer stretches a CSS-sized picture 2× on a Retina display. The scene keeps
-// its CSS-sized pixel budget (the upscale preset is divided by this ratio): TAAU
-// fills the extra output pixels from its jittered history, so a still view
-// converges to full screen resolution at no extra scene cost. Phones stay at 1
+// longer stretches a CSS-sized picture 2× on a Retina display. The Upscaling
+// presets are shares of these real pixels, as AMD FSR 2 defines its modes
+// (gfx/post.js UPSCALE): Off renders every one of them. Phones stay at 1
 // (their GPUs pay for every output pixel of post).
 const RETINA_MAX = 2;
 const pixelRatio = MOBILE ? 1 : Math.min(devicePixelRatio, RETINA_MAX);
@@ -2078,7 +2077,7 @@ function tick(now, renderOnly = false) {
     camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     post.settings.raw = settings.view !== 0;
-    post.settings.upscale = (UPSCALE[settings.upscale] ?? UPSCALE.native) / pixelRatio;   // scene pixels stay CSS-sized (pixelRatio)
+    post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;   // a share of the canvas's (device) pixels, FSR 2's
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
