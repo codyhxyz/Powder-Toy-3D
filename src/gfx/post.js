@@ -261,22 +261,24 @@ const vec2 = ([x, y]) => `vec2f(${f(x)}, ${f(y)})`;
 // ---------------------------------------------------------------- params
 
 const TaaParams = uniformStruct('TaaParams', {
-  reproj: 'mat4x4f',     // prevViewProj · inverse(curViewProj), both unjittered
+  // prevViewProj · inverse(curViewProj), both unjittered; while the rolling log
+  // bends this frame or bent the last (warpK or prevK not 0), this frame's clip →
+  // displayed world cells (unjittered) instead, the first half of the reprojection
+  reproj: 'mat4x4f',
   jitter: 'vec2f',       // where this frame sampled, in pixels from the pixel centre (y down)
   size: 'vec2f',         // output (and history) size
   inSize: 'vec2f',       // the scene's size (TAAU)
   weight: 'vec2f',       // current-frame weight (stable, changing)
   historyValid: 'bool',
   meanConf: 'f32',       // TAAU: mean over the jitter cycle of conf
-  // the rolling log (gfx/presentation.js): this frame's and the last frame's parameters (k 0: flat),
-  // this frame's clip → displayed world cells (unjittered) and the last frame's world cells → clip
+  // the rolling log (gfx/presentation.js): this frame's and the last frame's parameters (k 0: flat)
   warpK: 'f32',
   prevK: 'f32',
   warpAnchor: 'vec2f',
   warpDir: 'vec2f',
   prevAnchor: 'vec2f',
   prevDir: 'vec2f',
-  temporalToWorld: 'mat4x4f',
+  // ...and, bent, the last frame's world cells → clip: the second half (208 bytes in all: one ring slot)
   prevWorldToClip: 'mat4x4f',
 });
 const PrefilterParams = uniformStruct('PrefilterParams', { thresh: 'vec2f' });
@@ -435,11 +437,15 @@ fn blendHistory(cur: vec4f, m1: vec4f, m2: vec4f, mn: vec4f, mx: vec4f, prevUV: 
 ${presentationWGSL}
 // Last frame's clip position of this frame's clip position: by the cameras
 // alone, or while the rolling log bends this frame or bent the last, through
-// the flat world under the displayed point (the background, at depth 1, by
-// the cameras: it is the sky).
+// the flat world under the displayed point (P.reproj then takes the clip
+// position to the displayed world cells). The background, at depth 1, goes
+// by the cameras: it is the sky, and the halves' product is the cameras'
+// reprojection while the scene → world cells transform holds (it changes
+// only with the grid, app.js build(), which resets the history).
 fn presentationReproject(clip: vec4f) -> vec4f {
-  if (clip.z >= clip.w || (P.warpK == 0.0 && P.prevK == 0.0)) { return P.reproj * clip; }
-  let displayWorld = P.temporalToWorld * clip;
+  if (P.warpK == 0.0 && P.prevK == 0.0) { return P.reproj * clip; }
+  let displayWorld = P.reproj * clip;
+  if (clip.z >= clip.w) { return P.prevWorldToClip * displayWorld; }
   let flatWorld = unwarpPoint(displayWorld.xyz / displayWorld.w);
   return P.prevWorldToClip * vec4f(warpPointWith(flatWorld, P.prevK, P.prevAnchor, P.prevDir), 1.0);
 }
@@ -1197,8 +1203,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
   let jitter = [0, 0];
   const prevVP = new Matrix4(), curVP = new Matrix4(), invVP = new Matrix4(), reproj = new Matrix4();
-  // the rolling log's (gfx/presentation.js) for TAA: this frame's clip → displayed world, and the last frame's parameters and world → clip
-  const temporalToWorld = new Matrix4(), prevWorldToClip = new Matrix4();
+  // the rolling log's (gfx/presentation.js) for TAA: the last frame's parameters and world cells → clip
+  const prevWorldToClip = new Matrix4();
   let prevWarp = IDENTITY;
   const prevPos = new Vector3(), prevQuat = new Quaternion();
   // the jittered camera's own projection and the jittered one (withoutJitter swaps them)
@@ -1444,17 +1450,18 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         const scale = inSize[0] / size[0];
         if (upscale && confScale !== scale) { meanConf = meanConfidence(scale); confScale = scale; }
         invVP.copy(curVP).invert();
-        reproj.multiplyMatrices(prevVP, invVP);
+        const warp = presentation?.active ? presentation.parameters : IDENTITY;
+        // (bent, this frame or the last: this frame's clip → displayed world cells, prevWorldToClip the rest)
+        if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(presentation.sceneToWorld, invVP);
+        else reproj.multiplyMatrices(prevVP, invVP);
         const src = history[cur];
         cur = 1 - cur;
         const bind = group(L.TAA, [scene, depth, src], () => [texEntry(0, scene), texEntry(1, depth), texEntry(2, src), samplerEntry(3)]);
-        const warp = presentation?.active ? presentation.parameters : IDENTITY;
-        if (presentation) temporalToWorld.multiplyMatrices(presentation.sceneToWorld, invVP);
         drawPass(upscale ? pipes.taau : pipes.taa, viewOf(history[cur]), 'taa', bind, {
           reproj, jitter, size, inSize, historyValid,
           weight: [upscale ? TAAU_WEIGHT_STABLE : TAA_WEIGHT_STABLE, TAA_WEIGHT_CHANGING], meanConf,
           warpK: warp.k, warpAnchor: warp.anchor, warpDir: warp.dir,
-          prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, temporalToWorld, prevWorldToClip,
+          prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, prevWorldToClip,
         });
         post.onPass?.('taa', { kind: 'render' });
         color = history[cur];
