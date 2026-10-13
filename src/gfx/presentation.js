@@ -62,7 +62,7 @@ export function createPresentation(onChange = () => {}) {
   const materials = new Map(), objects = new Map(), geometries = new Map();
   const changed = new Set();   // meshes whose program the bend changed (takeChanged)
   const objectToWorld = new THREE.Matrix4();
-  let drawSerial = 0;
+  let drawSerial = 0, updates = 0, installedAt = -1;
   const geometryVersion = g => Object.values(g.attributes).map(a=>a.version).join(',');
   function restoreGeometry(o) {
     const record = geometries.get(o);
@@ -94,7 +94,7 @@ export function createPresentation(onChange = () => {}) {
     select(effect = null) {
       if (effect != null && !EFFECTS[effect]) throw new Error(`Unknown presentation effect: ${effect}`);
       if (effect === selected) return;
-      restore(); selected = effect; revision++;
+      restore(); selected = effect; revision++; installedAt = -1;   // (the next install is a full one)
       uniforms.uWarpK.value = effect ? EFFECTS[effect].k : 0;
       params = effectParameters(uniforms.uWarpK.value, uniforms.uWarpAnchor.value.toArray(), uniforms.uWarpDir.value.toArray());
       onChange();
@@ -111,6 +111,7 @@ export function createPresentation(onChange = () => {}) {
       uniforms.uWarpAnchor.value.set(eye.x, eye.z);
       uniforms.uWarpK.value = api.active ? EFFECTS[selected].k : 0;
       params = effectParameters(uniforms.uWarpK.value, [eye.x, eye.z], uniforms.uWarpDir.value.toArray());
+      updates++;   // (a frame: the next install is a full one)
     },
     // The bend into the meshes `camera` draws (their records, geometry and
     // node materials), not yet the frame's clip matrices: src/wire/mesh.js
@@ -118,50 +119,69 @@ export function createPresentation(onChange = () => {}) {
     // mesh whose program it changes compiles before it draws (takeChanged).
     // A mesh the guard has parked (on its layer, which no camera draws) is
     // left until it is back: its next install compiles the bent program.
+    // In full once a frame (the first call after update(): the scene's
+    // matrices, each mesh's geometry and subdivision); a later call in the
+    // same frame (prepare's, before three draws) only meets what that one
+    // didn't (a mesh added since), which draws now whatever it is compiled
+    // with, so it isn't reported.
     install(scene, camera) {
       if (!api.active) return;
-      scene.updateMatrixWorld();
-      const serial = ++drawSerial, fresh = new Set(), seen = [];
+      const full = installedAt !== updates;
+      if (full) { installedAt = updates; scene.updateMatrixWorld(); }
+      const serial = ++drawSerial, seen = [];
       scene.traverse(o => {
-        if (!o.material || o.userData.presentation === false || !o.layers.test(camera.layers)) return;
+        if (!o.material) return;
+        let record = objects.get(o);
+        if (record) record.serial = serial;   // (still in the scene: kept while the guard parks it, its program with it)
+        if (o.userData.presentation === false || !o.layers.test(camera.layers)) return;
         for (let parent=o.parent; parent; parent=parent.parent) if (parent.userData.presentationOverlay) return;
-        if (!objects.has(o)) {
-          const record = { culled: o.frustumCulled, removed: () => removeObject(o) };
+        if (!record) {
+          record = { culled: o.frustumCulled, removed: () => removeObject(o), frame: -1, program: null };
           objects.set(o,record); o.addEventListener('removed',record.removed);
         }
-        Object.assign(objects.get(o), { scene, serial });
+        record.scene = scene; record.serial = serial;
+        if (record.frame === updates && !full) return;   // (met this frame)
+        record.frame = updates;
+        if (!full) o.updateWorldMatrix(true, false);
         o.frustumCulled = false;
         if (o.geometry) {
           objectToWorld.multiplyMatrices(sceneToWorld,o.matrixWorld);
           const maxLength = MESH_EDGE_CELLS / Math.max(objectToWorld.getMaxScaleOnAxis(),1e-8);
-          let record = geometries.get(o);
-          if (!record || maxLength < record.maxLength || geometryVersion(record.original) !== record.version || (o.geometry !== record.owned && o.geometry !== record.original)) {
-            if (record) restoreGeometry(o);
+          let geo = geometries.get(o);
+          if (!geo || maxLength < geo.maxLength || geometryVersion(geo.original) !== geo.version || (o.geometry !== geo.owned && o.geometry !== geo.original)) {
+            if (geo) restoreGeometry(o);
             const original = o.geometry, owned = subdividePresentation(o,maxLength);
-            record = { original, owned, maxLength, version:geometryVersion(original), lineSegments:o.isLineSegments, disposed:() => removeObject(o) };
-            original.addEventListener('dispose',record.disposed); geometries.set(o,record);
-            if (owned) { o.geometry=owned; if (o.isLine && !o.isLineSegments) { o.isLineSegments=true; changed.add(o); } }   // (a strip drawn as a list: another pipeline)
+            geo = { original, owned, maxLength, version:geometryVersion(original), lineSegments:o.isLineSegments, disposed:() => removeObject(o) };
+            original.addEventListener('dispose',geo.disposed); geometries.set(o,geo);
+            if (owned) { o.geometry=owned; if (o.isLine && !o.isLineSegments) o.isLineSegments=true; }   // (a strip drawn as a list)
           }
         }
         const list = Array.isArray(o.material) ? o.material : [o.material];
-        seen.push([o, list]);
+        seen.push([o, list, record, full]);
         for (const m of list) {
           if (m.userData.presentation === false || materials.has(m)) continue;
           const undo = installPresentation(m, uniforms);
           const disposed = () => { undo(); materials.delete(m); m.removeEventListener('dispose',disposed); };
           m.addEventListener('dispose',disposed);
           materials.set(m,() => { undo(); m.removeEventListener('dispose',disposed); });
-          fresh.add(m);
         }
       });
-      // every mesh drawing with a material bent just now (one shared by several: all of them)
-      if (fresh.size) for (const [o, list] of seen) if (list.some(m => fresh.has(m))) changed.add(o);
+      // A mesh draws another program than install last saw it draw (or one it
+      // hasn't seen) when its geometry (subdivided: another vertex layout; a
+      // strip as a list) or a material's vertex stage changed: one bent just
+      // now changes every mesh sharing it, whichever came first.
+      for (const [o, list, record, report] of seen) {
+        const program = [o.geometry, o.isLineSegments, ...list.map((m) => m.vertexNode)];
+        const was = record.program;
+        if (report && (!was || was.length !== program.length || program.some((x, i) => x !== was[i]))) changed.add(o);
+        record.program = program;
+      }
       // Removing a group does not emit 'removed' on its descendants.
       for (const [o,record] of objects) if (record.scene === scene && record.serial !== serial) removeObject(o);
     },
     // Called after post's jitter (the camera's projection is this frame's), right
     // before three renders `scene` with `camera` (app.js threeMeshes). Installs
-    // what install() hasn't met yet (a mesh added since).
+    // what the frame's install() hasn't met yet (a mesh added since).
     prepare(scene, camera) {
       camera.updateMatrixWorld();
       uniforms.uWarpWorldToClip.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(worldToScene);

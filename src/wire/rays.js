@@ -24,6 +24,10 @@ const rays = {
     app.volume.updateMatrixWorld();
     app.sim.rays.updateView?.(app.camera, app.post.sceneTarget.height || app.canvas.height * app.post.renderScale, app.volume.matrixWorld);
   },
+  // (Not bent by a presentation effect yet, as main's Points were: the
+  // sprites' vertex stage, shaders/rays.js, would warp each particle's world
+  // cell with presentationWGSL's warpPoint before projecting it, from the
+  // parameters app.presentation holds while active: U12's.)
   scene(app, rp) {
     const t = app.post.sceneTarget;
     app.sim.rays.draw?.(rp, { width: t.width, height: t.height });

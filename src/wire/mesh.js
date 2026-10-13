@@ -29,16 +29,27 @@ const ownPass = (o) => o.name === 'pov-viewmodel';
 // The meshes the bend just changed (installed, or restored): each compiles its
 // new program with its layers parked on the guard's, as guardMeshes does (three
 // reads the layers before its first await), and comes back when it's built.
-// One the guard has parked already is its: it comes back with its old
-// program, and the bend's next install changes it again.
-const parked = new WeakMap();   // mesh → the layers it goes back to
+// One parked here whose program changes again (the bend dropped before its
+// compile ended) compiles again, and comes back after the last one. One the
+// guard has parked is the guard's, with the program it was asked for: it is
+// looked at again once the guard lets it go.
+const parked = new WeakMap();   // mesh → { mask: the layers it goes back to, serial: its latest compile }
+const guards = new Set();       // changed meshes the guard had parked, waiting for it
 function compileChanged(app) {
   app.presentation.install(app.scene, app.camera);
-  for (const o of app.presentation.takeChanged()) {
-    if (o.layers.mask === PENDING_MASK || !o.parent) continue;
-    if (!parked.has(o)) parked.set(o, o.layers.mask);
+  const changed = new Set([...guards, ...app.presentation.takeChanged()]);
+  guards.clear();
+  for (const o of changed) {
+    if (!o.parent) continue;
+    let rec = parked.get(o);
+    if (!rec && o.layers.mask === PENDING_MASK) { guards.add(o); continue; }
+    if (!rec) parked.set(o, rec = { mask: o.layers.mask, serial: 0 });
+    else if (o.layers.mask === PENDING_MASK) o.layers.mask = rec.mask;   // (back on its layers while three reads them)
+    else rec.mask = o.layers.mask;   // (a module moved it meanwhile: its layers now)
+    const serial = ++rec.serial;
     prepareMesh(o, { camera: app.camera, alone: true }).then(() => {
-      if (o.layers.mask === PENDING_MASK && parked.has(o)) o.layers.mask = parked.get(o);
+      if (parked.get(o) !== rec || rec.serial !== serial) return;   // (a later compile brings it back)
+      if (o.layers.mask === PENDING_MASK) o.layers.mask = rec.mask;
       parked.delete(o);
       app.requestRender();
     });
@@ -88,6 +99,9 @@ const mesh = {
     compileChanged(app);
     guardMeshes(app.scene, app.camera, { skip: ownPass, onReady: () => app.requestRender() });
   },
+  // (Not bent by a presentation effect yet, as main's were: net/cursors.js
+  // would place each brush at app.presentationPoint(its grid point) instead of
+  // through the volume's matrix: U13's, with net/multiplayer.js passing it.)
   scene(app, rp) { drawRemoteCursors(rp); },
 };
 
