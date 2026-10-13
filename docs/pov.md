@@ -37,8 +37,11 @@
   1. **Shovel**: digs like Minecraft's (`tools/dig.js`): each click (or every 0.15 s held) takes the
      outlined bite, 3 cells deep behind the face you aim at and the trowel's 3×3 lattice square across it,
      into the **pack** (the inventory, `transfer.js` `pack()`, Minecraft's 36 × 64 blocks). Powder comes up in
-     one dig; a breakable solid takes ceil(hard / 6) digs, cracking as they land, up to rock (five); WALL and
-     metal refuse. Right-click throws a block's worth from it where you aim; hold to keep throwing.
+     one dig, and so does soil (grass and plants, moss, fungus); wood is the axe's and rock the pickaxe's (`dig.js` `material`,
+     Minecraft's best tool per block): they refuse with a toast naming the tool. Right-click throws a block's
+     worth from it where you aim; hold to keep throwing. Third person plays its dig and toss (`holds.js` GESTURES).
+     The aimed bite's outline and cracks are drawn on the surface itself (`surface.js` `digMark`, FrameUniforms
+     `digMin`/`digMax`), so they follow a trunk or a slope.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.
   3. **Axe**: a short-range swing that breaks breakable solids in a wide, shallow patch into debris. It's
      weaker and less focused than the gun, and chops trees and smashes windows.
@@ -58,8 +61,10 @@
      and the blasts stack; the blast is the engine's.
   10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js `dig`), at the HL2
       crowbar's 0.4 s. Each blow digs the outlined bite (`tools/dig.js`, the shovel's) whole: rock and
-      anything softer in one blow, as its debris (ROCK → STONE) into the pack. Nothing harder than its
-      blow's energy (`PICK.ENERGY` 52): metal still turns it away.
+      anything softer in one blow, as its debris (ROCK → STONE) into the pack. Wood it leaves to the axe;
+      nothing harder than its blow's energy (`PICK.ENERGY` 52): metal still turns it away.
+      Digging sounds are recorded (`public/sfx/dig`, Kenney's Impact Sounds, CC0): the blade's bite over its
+      material's texture (sand, gravel, soil), strikes by material (rock, glass, metal, wood), a load's thud.
 - Mouse look with pointer lock. `F5` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.

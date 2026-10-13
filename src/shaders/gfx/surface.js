@@ -164,6 +164,47 @@ fn mFbmD(p: vec3f, f0: f32, oct: i32, fp: f32) -> vec4f {
   return s;
 }
 
+// ---- specular anti-aliasing (Toksvig 2005; Kaplanyan & Hill 2016, "Stable
+// Geometric Specular Antialiasing with Projected-Space NDF Filtering"; LEAN
+// mapping's limit, Olano & Baker 2010) ----
+// Bump detail near or below a pixel still tilts the normals that pixel
+// covers. Drawn as the one normal the pixel happens to sample, a highlight
+// flickers through it (a leaf mirroring the sun for a frame); that slope
+// variance belongs in the highlight's width instead: GGX α² += 2σ², capped.
+// A bump octave of lattice frequency f, drawn at weight lw (lodFade), leaves
+// unresolved what lodFade took away (1 − lw²) plus, of what it drew, the
+// share inside one pixel: for Gaussian correlation of length 1/f under a
+// Gaussian pixel filter of σ = SAA_PIXEL_SIGMA · fp, 1 − ℓ²/(ℓ² + 2σ²) =
+// q / (1 + q), q = 2 (f σ)². Detail many pixels wide adds nothing; detail
+// lodFade has removed adds all of its variance.
+const SAA_PIXEL_SIGMA: f32 = 0.47;   // px: σ of exp(-2.29 d²), the Blackman-Harris fit three's TAAU reconstructs with
+const SAA_KAPPA: f32 = 0.18;         // most α² the filter may add (Kaplanyan & Hill 2016's κ)
+// per-axis variance of mNoiseD's gradient per lattice unit: 0.2 along a
+// smoothstep edge × 0.55 from the trilinear blend (0.1108 by sampling)
+const VNOISE_SLOPE_VAR: f32 = 0.11;
+fn unresolvedShare(f: f32, lw: f32, fp: f32) -> f32 {
+  let s = f * fp * SAA_PIXEL_SIGMA;
+  let q = 2.0 * s * s;
+  return 1.0 - lw * lw / (1.0 + q);
+}
+// The unresolved slope variance of h · mFbmD(p, f0, oct, fp) used as a bump, per axis.
+fn fbmSlopeVar(h: f32, f0: f32, oct: i32, fp: f32) -> f32 {
+  var v = 0.0;
+  var a = MFBM_AMP0;
+  var f = f0;
+  for (var i = 0; i < MFBM_MAX_OCT; i++) {
+    if (i >= oct) { break; }
+    v += (h * a * f) * (h * a * f) * unresolvedShare(f, lodFade(f, fp), fp);
+    a *= MFBM_GAIN;
+    f *= MFBM_LACUNARITY;
+  }
+  return v * VNOISE_SLOPE_VAR;
+}
+// GGX roughness (perceptual: α = rough²) widened by a material's unresolved slope variance.
+fn aaRough(rough: f32, slopeVar: f32) -> f32 {
+  return sqrt(sqrt(rough * rough * rough * rough + min(2.0 * slopeVar, SAA_KAPPA)));
+}
+
 // Cellular (Worley) noise: (F1, distance to the border with the second
 // nearest cell, two hashes of the nearest cell). *ge = gradient of that border
 // distance, *r1 = vector to the nearest seed.
@@ -250,6 +291,7 @@ struct Mat {
   tang: vec3f,
   sssCol: vec3f,
   rough: f32, metal: f32, f0: f32, sss: f32, glint: f32, glintDens: f32, cav: f32, aniso: f32, trans: f32,
+  slopeVar: f32,  // the bump's slope variance a pixel covers but can't show, per axis (specular AA: aaRough)
 }
 
 fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
@@ -259,6 +301,7 @@ fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
   a.rough = mix(a.rough, b.rough, k); a.metal = mix(a.metal, b.metal, k); a.f0 = mix(a.f0, b.f0, k);
   a.sss = mix(a.sss, b.sss, k); a.glint = mix(a.glint, b.glint, k); a.glintDens = mix(a.glintDens, b.glintDens, k);
   a.cav = mix(a.cav, b.cav, k); a.aniso = mix(a.aniso, b.aniso, k); a.trans = mix(a.trans, b.trans, k);
+  a.slopeVar = mix(a.slopeVar, b.slopeVar, k);
   return a;
 }
 
@@ -976,6 +1019,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const WAX_VAR: f32 = 0.25;                // leaf-to-leaf roughness spread
     const DEEP_TINT: vec3f = vec3f(0.85, 1.15, 0.55);   // light that scattered through leaves
     const LEAF_LOD: f32 = 1.5;                // fade leaves at this multiple of LEAF_F
+    // per-axis slope variance of the leaves: tilt and cupping, each about uniform over ±½ of its swing
+    const LEAF_SLOPE_VAR: f32 = (LEAF_TILT * LEAF_TILT + LEAF_CURL * LEAF_F * LEAF_CURL * LEAF_F) / 12.0;
     const TILT_SALT: f32 = 0.37;              // hash input for a leaf's tilt
     const TILT_HASH_SCALE: f32 = 157.0;
     let lw = lodFade(LEAF_F * LEAF_LOD, fp);
@@ -1007,6 +1052,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     let cl = leafClumps(p, fp);
     m.g += LEAF_CLUMP_H * cl.yzw;
     m.cav *= 1.0 + LEAF_CLUMP_CAV * cl.x;
+    // (specular AA: the leaves' and clumps' tilt a pixel covers widens the highlight instead of glittering)
+    m.slopeVar = LEAF_SLOPE_VAR * unresolvedShare(LEAF_F, lw, fp) + fbmSlopeVar(LEAF_CLUMP_H, LEAF_CLUMP_F, LEAF_CLUMP_OCT, fp);
     m.sssCol = DEEP_TINT;
     m.trans = 1.0;
   } else if (id == E_METAL) {
@@ -1240,7 +1287,7 @@ fn albedoOf(id: i32, p: vec3f, seed: f32) -> vec3f {
 const MAT_ROUGH_MIN: f32 = 0.04;   // smoothest a textured surface may get (GGX roughness)
 const BUMP_MAX_SLOPE: f32 = 1.5;   // cap on the bump's tangential height gradient
 fn applyMat(s: ptr<function, Surf>, m: Mat) {
-  (*s).albedo = max(m.alb, vec3f(0.0)); (*s).rough = clamp(m.rough, MAT_ROUGH_MIN, 1.0); (*s).metal = m.metal; (*s).f0 = m.f0;
+  (*s).albedo = max(m.alb, vec3f(0.0)); (*s).rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0); (*s).metal = m.metal; (*s).f0 = m.f0;
   (*s).sss = m.sss; (*s).sssCol = m.sssCol; (*s).glint = m.glint; (*s).glintDens = m.glintDens;
   (*s).cav = clamp(m.cav, 0.0, 1.0); (*s).aniso = m.aniso; (*s).tang = m.tang; (*s).trans = m.trans; (*s).emit = m.emit;
   // bump: tilt the normal by the tangential part of the height gradient
@@ -1657,8 +1704,57 @@ const LEAF_SHADOW_D: f32 = 3.0;       // cells toward the sun where the light th
 const LEAF_TRANS_GAIN: f32 = 1.6;     // brightness of the light through
 const LEAF_EXT: f32 = 2.5;            // its extinction per cell of clump
 const ANISO_BEND_RATE: f32 = 5.0;     // anisotropic lookup bend reaches full strength by roughness 1/this
+// The dig tools' mark (src/pov/tools/dig.js) on the surface inside the aimed bite: Minecraft's block
+// outline, black at 40 % (LevelRenderer.renderHitOutline), where the bite's side walls cut the
+// surface, so it follows the ground, a trunk or a slope instead of hanging in the air; and its
+// cracks (Minecraft's 10 destroy stages), the edges of a 3D cell pattern that open as the blows land.
+const DIG_LINE_PX: f32 = 1.5;      // px: the outline's width on screen
+const DIG_LINE_DARK: f32 = 0.4;    // Minecraft's outline: black at 40 %
+const DIG_CRACK_F: f32 = 1.4;      // crack cells per grid cell
+const DIG_CRACK_PX: f32 = 1.3;     // px: a crack's width on screen
+const DIG_CRACK_CELLS: f32 = 0.03; // cells: ...and at least this wide up close
+const DIG_CRACK_DARK: f32 = 0.75;  // how dark a crack is
+// half the distance between q's two nearest sites (≈ distance to the edge between them), in
+// pattern units, when that edge has opened (either site's random under k), else a large number
+fn digCrack(q: vec3f, k: f32) -> f32 {
+  let c = floor(q);
+  var f1 = 1e9;
+  var f2 = 1e9;
+  var r1 = 1.0;
+  var r2 = 1.0;
+  for (var z = -1; z <= 1; z++) { for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let g = c + vec3f(f32(x), f32(y), f32(z));
+    let h = hash33(g);
+    let d = distance(q, g + h);
+    if (d < f1) { f2 = f1; r2 = r1; f1 = d; r1 = h.x; } else if (d < f2) { f2 = d; r2 = h.x; }
+  } } }
+  return select(1e9, (f2 - f1) * 0.5, min(r1, r2) < k);
+}
+fn digMark(s: ptr<function, Surf>) {
+  if (FU.digMax.w <= 0.0) { return; }
+  let p = (*s).p;
+  let lo = FU.digMin.xyz;
+  let hi = FU.digMax.xyz;
+  if (any(p < lo) || any(p > hi)) { return; }
+  let px = footprint(p);
+  // the outline: near a side wall (the aimed axis's two faces are the surface and behind it: not lines)
+  let axis = i32(FU.digMax.w) - 1;
+  var wall = min(p - lo, hi - p);
+  wall[axis] = 1e9;
+  let edge = min(min(wall.x, wall.y), wall.z);
+  var dark = DIG_LINE_DARK * (1.0 - smoothstep(0.5, 1.0, edge / (px * DIG_LINE_PX)));
+  let k = FU.digMin.w;
+  if (k > 0.0) {
+    let e = digCrack(p * DIG_CRACK_F, k) / DIG_CRACK_F;
+    let w = max(px * DIG_CRACK_PX, DIG_CRACK_CELLS);
+    dark = max(dark, DIG_CRACK_DARK * (1.0 - smoothstep(0.5 * w, w, e)));
+  }
+  (*s).albedo *= 1.0 - dark;
+}
+
 fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
+  digMark(&s);
   let v = -rd;
   let ng = s.ng;
   var ao: f32;

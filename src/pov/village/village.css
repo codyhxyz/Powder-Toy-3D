@@ -1,0 +1,197 @@
+@font-face {
+  font-family: 'Village Nunito'; font-style: normal; font-weight: 500 900; font-display: swap;
+  src: url('/fonts/nunito-latin-variable.woff2') format('woff2');
+}
+/* Original island stationery: soft pocket silhouettes, turquoise name bubbles,
+   butter-yellow choices, and rounded lettering inspired by Animal Crossing. */
+body.village-on, .village-panel, .village-hud {
+  --v-ink: #625440; --v-muted: #776851; --v-green: #26786b; --v-mint: #8bd6bf;
+  --v-cream: #fff9e6; --v-paper: #fffdf0; --v-yellow: #ffe99a; --v-font: 'Village Nunito', sans-serif;
+}
+.village-panel, .village-hud { color: var(--v-ink); font: 700 16px/1.5 var(--v-font); }
+.village-panel {
+  position: fixed; inset: 0; width: min(860px, calc(100vw - 56px)); max-height: calc(100dvh - 100px);
+  margin: clamp(28px, 9vh, 84px) auto auto; padding: 30px 52px 24px; border: 0; overflow: visible;
+  background: var(--v-cream); border-radius: 24% 22% 19% 18% / 13% 16% 14% 18%;
+  box-shadow: 0 16px 44px #283d3033; scrollbar-color: #acb999 var(--v-cream);
+}
+.village-panel[open] { animation: village-pocket-open 260ms cubic-bezier(.16, 1, .3, 1) both; }
+.village-panel::backdrop { background: #20382b24; }
+.village-panel::selection, .village-panel ::selection { background: var(--v-mint); color: #234c41; }
+.village-panel-head { display: flex; align-items: center; gap: 13px; }
+.village-panel h2 { margin: 0; font-size: 29px; font-weight: 900; line-height: 1.12; text-wrap: balance; }
+.village-emblem { display: grid; place-items: center; width: 49px; height: 49px; border-radius: 46% 54% 48% 52%; background: var(--v-mint); color: #235c4d; transform: rotate(-7deg); }
+.village-subtitle { margin: 7px 0 18px 62px; color: var(--v-muted); font-size: 14px; }
+.village-icon { display: inline-flex; width: 36px; height: 36px; flex-shrink: 0; vertical-align: middle; }
+.village-icon svg { width: 100%; height: 100%; overflow: visible; }
+.village-panel button, .village-hud button {
+  min-height: 46px; padding: 9px 20px; border: 0; border-radius: 24px;
+  background: var(--v-mint); color: #234c41; font: 800 16px/1.3 var(--v-font); cursor: pointer;
+  transition: background 120ms, transform 120ms, box-shadow 120ms; touch-action: manipulation;
+}
+.village-panel button:hover:not(:disabled), .village-hud button:hover:not(:disabled) { background: #b6e6cf; transform: translateY(-2px); }
+.village-panel button:active:not(:disabled), .village-hud button:active:not(:disabled) { transform: translateY(1px) scale(.97); }
+.village-panel button:focus-visible, .village-hud button:focus-visible { outline: 3px solid var(--v-green); outline-offset: 4px; }
+.village-panel button:disabled { color: #8e8571; background: #eee8ce; cursor: not-allowed; }
+.village-panel .village-close { display: flex; align-items: center; gap: 3px; margin-left: auto; padding: 6px 14px 6px 6px; background: #eae4cb; color: var(--v-ink); font-size: 14px; }
+.village-close .village-icon { width: 28px; height: 28px; border-radius: 50%; background: var(--v-paper); }
+.village-tabs { display: flex; justify-content: center; gap: 12px; margin: 12px 0 20px; }
+.village-tabs button { display: flex; align-items: center; gap: 7px; background: transparent; padding: 7px 16px; color: var(--v-muted); font-size: 14px; }
+.village-tabs .village-icon { width: 25px; height: 25px; }
+.village-tabs button[aria-current] { color: #234c41; background: #bce6d2; box-shadow: 0 3px 8px #547b5120; }
+.village-tabs button:disabled { background: transparent; color: #a59d88; }
+.village-content { position: relative; }
+.village-pockets { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 18px 6px; align-items: center; padding: 12px 2px 20px; }
+.village-pockets .village-slot {
+  position: relative; display: grid; place-items: center; width: 100%; min-height: 58px; aspect-ratio: 1;
+  padding: 6px; background: transparent; color: #695640; border-radius: 50%; isolation: isolate;
+}
+.village-slot > .village-icon:first-child { width: 46px; height: 46px; filter: drop-shadow(0 3px 1px #6a5a3a26); transition: transform 160ms; }
+.village-slot > .village-icon:last-child { position: absolute; right: -13px; bottom: -15px; width: 27px; height: 32px; transform: rotate(-24deg); opacity: 0; color: #665d4b; }
+.village-slot .village-item-label {
+  position: absolute; left: 50%; bottom: calc(100% + 7px); transform: translateX(-50%);
+  width: max-content; max-width: 180px; padding: 6px 12px; color: #fffdf0; background: var(--v-green);
+  border-radius: 43% 40% 37% 35% / 45% 48% 47% 46%; font-size: 14px; pointer-events: none; opacity: 0; z-index: 5;
+}
+.village-item-label::after { content: ''; position: absolute; top: calc(100% - 1px); left: calc(50% - 5px); border: 5px solid transparent; border-top-color: var(--v-green); }
+.village-pockets .village-slot[aria-pressed=true], .village-pockets .village-slot:hover:not(:disabled), .village-pockets .village-slot:focus-visible { background: #9cddc5; transform: none; }
+.village-slot[aria-pressed=true] > .village-icon:first-child { transform: rotate(-8deg) scale(1.13); }
+.village-slot[aria-pressed=true] > .village-icon:last-child,
+.village-slot[aria-pressed=true] .village-item-label, .village-slot:hover .village-item-label, .village-slot:focus-visible .village-item-label { opacity: 1; }
+.village-empty { display: grid; place-items: center; min-height: 58px; aspect-ratio: 1; }
+.village-empty::after { content: ''; width: 19px; height: 21px; background: #e9e1c8; border-radius: 46% 54% 50% 45%; transform: rotate(-12deg); }
+.village-collection-hint { margin: 4px 0 6px; text-align: center; font-size: 14px; color: var(--v-muted); }
+.village-item-menu {
+  position: absolute; right: -26px; top: calc(100% + 62px); width: 244px; z-index: 6;
+  display: flex; flex-direction: column; gap: 2px; padding: 18px 22px;
+  border-radius: 27% 24% 23% 30% / 19% 27% 22% 25%; background: var(--v-yellow); box-shadow: 0 9px 20px #493e2026;
+  animation: village-choice-in 160ms ease-out both;
+}
+.village-item-menu strong { font-size: 14px; margin: 0 8px 6px; color: #75602f; }
+.village-item-menu button, .village-choices button {
+  position: relative; padding: 9px 12px; color: #62502c; background: transparent; text-align: left; border-radius: 14px;
+}
+.village-item-menu button:hover:not(:disabled), .village-choices button:hover:not(:disabled) { background: #f6d76e; transform: none; }
+.village-item-menu button:disabled { background: transparent; color: #8d7e58; }
+.village-item-menu button::before, .village-choices button::before { content: ''; position: absolute; left: -5px; top: calc(50% - 5px); border: 5px solid transparent; border-left-color: #695527; opacity: 0; }
+.village-item-menu button:hover:not(:disabled)::before, .village-item-menu button:focus-visible::before,
+.village-choices button:hover::before, .village-choices button:focus-visible::before { opacity: 1; }
+.village-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 13px; margin-top: 6px; font-size: 14px; }
+.village-count, .village-footer-hint, .village-chat-hint { display: inline-flex; align-items: center; gap: 8px; }
+.village-count { padding: 5px 13px 5px 7px; background: #eee5b8; border-radius: 26px; color: #6e5b2e; }
+.village-count .village-icon { width: 28px; height: 28px; }
+.village-keycap { display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border: 0; border-radius: 50%; color: #fffdf1; background: #796d55; font: 900 13px var(--v-font); }
+.village-status { margin: 14px 0 0; color: #755128; background: #f3e4b7; border-radius: 15px; padding: 8px 14px; font-size: 14px; }
+.village-panel[data-result=error] .village-status { color: #843c30; background: #f6ddd0; }
+.village-status[hidden] { display: none; }
+.village-tip { max-width: 60ch; margin: 10px auto 0; color: var(--v-muted); text-align: center; font-size: 13px; }
+.village-panel[data-surface=storage] { background: #ecf5dc; border-radius: 12% 15% 12% 14% / 14% 12% 15% 12%; }
+.village-panel[data-surface=storage] .village-pockets { padding: 23px 16px; border-radius: 22px; background: #dfe9ce; }
+/* Conversations live at the bottom, leaving the neighbor in the scene. */
+.village-panel[data-surface=dialogue] { inset: auto 0 max(36px, env(safe-area-inset-bottom)); margin: 0 auto; width: min(880px, calc(100vw - 72px)); padding: 33px 48px 19px; border-radius: 11% 14% 12% 9% / 28% 30% 26% 28%; }
+.village-panel[data-surface=dialogue]::backdrop { background: #2135290c; }
+[data-surface=dialogue] .village-panel-head { position: absolute; top: -27px; left: 30px; right: 25px; }
+[data-surface=dialogue] h2 { padding: 8px 24px; border-radius: 42% 37% 40% 35% / 45% 50% 42% 46%; background: color-mix(in srgb, var(--speaker-color) 50%, #fff3d1); color: #594533; font-size: 22px; transform: rotate(-4deg); }
+[data-surface=dialogue] .village-emblem, [data-surface=dialogue] .village-subtitle { display: none; }
+[data-surface=dialogue] .village-close { width: 36px; min-height: 36px; padding: 4px; background: var(--v-cream); }
+[data-surface=dialogue] .village-close > span:last-child { display: none; }
+.village-dialogue { min-height: 100px; margin: 8px 0 6px; font-size: 24px; font-weight: 800; line-height: 1.6; letter-spacing: .005em; }
+.village-choices { position: absolute; right: -22px; bottom: calc(100% + 24px); display: flex; flex-direction: column; gap: 2px; width: 235px; padding: 15px 20px; border-radius: 25% 23% 26% 29% / 25% 32% 26% 31%; background: var(--v-yellow); box-shadow: 0 9px 20px #493e2022; }
+.village-choices .village-next { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.village-next .village-icon { width: 20px; height: 20px; }
+.village-chat-hint { font-size: 13px; color: var(--v-muted); }
+.village-sound { display: inline-flex; align-items: center; gap: 6px; }
+.village-panel .village-sound { background: transparent; color: var(--v-muted); font-size: 13px; padding: 6px 10px; min-height: 44px; }
+.village-sound .village-icon { width: 22px; height: 22px; }
+/* HUD: small stationery labels and controller-style prompts, not app chrome. */
+.village-hud { position: fixed; inset: auto 24px 25px; z-index: 7; display: flex; align-items: end; justify-content: space-between; gap: 14px; pointer-events: none; }
+.village-hud[hidden] { display: none; }
+.village-place { display: flex; align-items: center; gap: 10px; padding: 12px 22px 13px 16px; background: #fff9e6ed; border-radius: 39% 29% 34% 24% / 45% 49% 38% 48%; box-shadow: 0 5px 18px #3345261c; }
+.village-place > .village-icon { color: var(--v-green); width: 28px; height: 28px; transform: rotate(-14deg); }
+.village-location { font-size: 19px; font-weight: 900; }
+.village-place small { display: block; margin-top: 1px; font-size: 11px; color: var(--v-muted); }
+.village-place .village-touchhelp { display: none; }
+.village-controls { display: flex; flex-direction: column; align-items: end; gap: 8px; max-width: 65%; pointer-events: auto; }
+.village-controls .action-buttons { justify-content: end; gap: 12px; }
+.village-controls .action-button { flex-direction: row-reverse; gap: 9px; color: var(--v-ink); background: var(--v-cream); border-radius: 30px 26px 29px 24px; box-shadow: 0 4px 12px #243f2f24; }
+.village-controls .action-key { display: grid; place-items: center; width: 28px; height: 28px; border: 0; padding: 0; border-radius: 50%; background: var(--v-green); color: var(--v-paper); font: 900 15px var(--v-font); }
+.village-controls [data-action=interact], .village-controls [data-action=drop] { background: var(--v-mint); color: #234c41; }
+.village-controls .action-button:disabled { background: #e5d5ba; color: #7d6551; cursor: not-allowed; box-shadow: none; }
+.village-controls .action-button:disabled .action-key { background: #8b7462; }
+.village-action-hint { max-width: 29ch; padding: 6px 13px; border-radius: 18px; background: var(--v-cream); font-size: 12px; }
+.village-action-hint[hidden] { display: none; }
+body.village-on .game-hud, body.village-on .hotbar, body.village-on .hb-held, body.village-on .pov-cross, body.village-on .pov-vitals, body.village-on .pov-hint, body.village-on .pov-lock, body.village-on .pov-use, body.village-on .touch-tool-name, body.village-on .touch-actions .touch-row:not(:last-child) { display: none !important; }
+body.village-menu-open .village-hud, body.village-menu-open .pov-touch, body.village-menu-open .toolbar, body.village-menu-open .brand, body.village-menu-open .stats { visibility: hidden; }
+body.village-on .toolbar, body.village-on .toolbar .cam-seg { background: #fff9e6ed; color: var(--v-ink); border-color: transparent; box-shadow: 0 4px 15px #33452620; border-radius: 19px; font-family: var(--v-font); }
+body.village-on .toolbar .icon-btn, body.village-on .toolbar .view-btn, body.village-on .cam-seg > button { color: #6a6550; }
+body.village-on .toolbar .icon-btn:hover:not(:disabled), body.village-on .cam-seg > button.on { background: #c7e5ca; color: #285d4a; }
+body.village-on .toolbar .pause-btn.on { background: #f5d981; color: #665124; border-radius: 13px; }
+body.village-on .pov-touch button, body.village-on .touch-stick { color: var(--v-ink); background: #fff9e6e8; border: 0; font-family: var(--v-font); font-weight: 800; box-shadow: 0 4px 15px #33452625; }
+body.village-on .pov-touch button { border-radius: 24px; }
+body.village-on .touch-knob { background: #9dceb0; border: 0; }
+body.village-on .touch-move-label { color: var(--v-ink); }
+@keyframes village-pocket-open { from { opacity: .6; transform: translateY(14px) scale(.94); } to { opacity: 1; transform: none; } }
+@keyframes village-choice-in { from { opacity: .5; transform: translateY(-6px) scale(.96); } to { opacity: 1; transform: none; } }
+@media (max-width: 600px) {
+  .village-panel { width: calc(100vw - 24px); max-height: calc(100dvh - 40px); margin-top: 24px; padding: 22px 21px 20px; border-radius: 13% 16% 12% 15% / 6% 8% 7% 9%; }
+  .village-panel h2 { font-size: 24px; }
+  .village-panel-head { gap: 9px; }
+  .village-emblem { width: 38px; height: 38px; }
+  .village-emblem .village-icon { width: 27px; height: 27px; }
+  .village-panel .village-close { width: 44px; height: 44px; padding: 8px; flex-shrink: 0; }
+  .village-close > span:last-child { display: none; }
+  .village-subtitle { margin: 12px 0 14px; font-size: 13px; }
+  .village-tabs { gap: 12px; margin: 8px 0 18px; }
+  .village-tabs button { padding: 6px 8px; gap: 4px; font-size: 12px; }
+  .village-tabs .village-icon { width: 20px; height: 20px; }
+  .village-pockets { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px 3px; padding-top: 10px; }
+  .village-pockets .village-slot, .village-empty { min-height: 48px; }
+  .village-slot > .village-icon:first-child { width: 38px; height: 38px; }
+  .village-slot .village-item-label { font-size: 12px; padding: 5px 9px; max-width: 132px; }
+  .village-slot:nth-child(5n + 1) .village-item-label { left: 0; transform: none; }
+  .village-slot:nth-child(5n) .village-item-label { left: auto; right: 0; transform: none; }
+  .village-slot > .village-icon:last-child { right: -8px; bottom: -11px; width: 24px; height: 28px; }
+  .village-empty::after { width: 14px; height: 15px; }
+  .village-collection-hint { font-size: 13px; }
+  .village-item-menu { right: -5px; top: calc(100% + 68px); width: 220px; padding: 15px 19px; }
+  .village-footer { font-size: 12px; gap: 8px; padding-top: 10px; }
+  .village-count { padding: 4px 9px 4px 5px; }
+  .village-count .village-icon { width: 23px; height: 23px; }
+  .village-panel[data-surface=dialogue] { bottom: max(18px, env(safe-area-inset-bottom)); width: calc(100vw - 28px); padding: 30px 24px 12px; border-radius: 13% 16% 12% 10% / 13% 14% 12% 16%; }
+  [data-surface=dialogue] .village-panel-head { left: 15px; right: 15px; top: -22px; }
+  [data-surface=dialogue] h2 { font-size: 19px; padding: 7px 20px; }
+  .village-dialogue { min-height: 138px; font-size: 19px; line-height: 1.65; }
+  .village-choices { right: -6px; bottom: calc(100% + 39px); width: 206px; padding: 13px 17px; }
+  .village-choices button { font-size: 15px; }
+  .village-chat-hint { font-size: 12px; }
+  .village-panel .village-sound { font-size: 12px; padding: 5px; }
+  .village-hud { inset: var(--bar-bottom) 12px auto; align-items: start; }
+  .village-place { padding: 9px 16px 10px 11px; gap: 7px; }
+  .village-location { font-size: 16px; }
+  .village-place > .village-icon { width: 24px; height: 24px; }
+  .village-place small { font-size: 10px; }
+}
+@media (hover: none) and (pointer: coarse) {
+  .village-place .village-keyhelp { display: none; }
+  .village-place .village-touchhelp { display: block; }
+  .village-hud { inset: var(--bar-bottom) max(12px, env(safe-area-inset-right)) auto max(12px, env(safe-area-inset-left)); }
+  .village-controls { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(max(14px, env(safe-area-inset-bottom)) + 64px); max-width: min(240px, calc(100vw - 156px)); }
+  .village-controls .action-buttons { flex-direction: column; align-items: stretch; width: 100%; gap: 8px; }
+  .village-controls .action-button { min-height: 48px; font-size: 15px; padding: 10px 18px; }
+  .village-controls .action-key, .village-keycap, .village-footer-hint { display: none; }
+  .village-chat-hint span::before { content: 'Tap a choice '; }
+  .village-chat-hint span { font-size: 0; }
+  .village-chat-hint span::before { font-size: 12px; }
+}
+@media (max-height: 760px) {
+  .village-panel { margin-top: 16px; max-height: calc(100dvh - 32px); overflow: auto; }
+  .village-item-menu { position: static; margin: 8px 0 0 auto; }
+  .village-panel[data-surface=dialogue] { bottom: 16px; padding-top: 15px; }
+  [data-surface=dialogue] .village-panel-head { position: static; margin-bottom: 8px; }
+  .village-dialogue { min-height: 0; font-size: 18px; }
+  .village-choices { position: static; margin: 12px 0 0 auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .village-panel[open], .village-item-menu { animation: none; }
+  .village-panel button, .village-hud button, .village-slot > .village-icon { transition: none; }
+}

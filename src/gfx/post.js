@@ -33,12 +33,27 @@
 //   three's TAAU         resolve → output size, history and depth copies (three's submits, gpu/three.js)
 //   prefilter pass       → down[0], half resolution                       (fragment)
 //   compute pass 'post'  bloom down 1–5, up 4–1; luminance grid, histogram, adaptation, meter (one workgroup)
-//   bloom up0 pass       → up[0]                                          (fragment)
-//   canvas pass          sky, composite, viewmodel composite, glow       (fragment, presenter's texture)
-// so post is 3 render passes of ours and 1 compute pass besides the scene and
+//   bloom up0 pass       → up[0], half the output's size                 (fragment)
+//   bloom pass           → the bloom image: up[0]'s 3×3 tent, its size    (fragment)
+//   canvas pass          sharpen, bloom, AgX, sky, viewmodel, glow       (fragment, presenter's texture)
+// so post is 4 render passes of ours and 1 compute pass besides the scene and
 // canvas passes, and three's TAAU (the WebGL2 build made about 17). The split methods (beginScene,
 // endScene, finish) are there for callers that need the parts apart; tools
 // count view frames by wrapping render(), so the app's frames go through it.
+//
+// Retina (a device pixel ratio of 2: 4× the pixels of the CSS size) made the
+// output-size work the expensive part. Ours is the canvas pass (one fragment
+// a pixel) and the prefilter's read of the resolved frame; the rest is at half
+// size or smaller. So the canvas pass takes bloom in one bilinear tap of a
+// half-size image the bloom pass pre-filters with the 3×3 tent the composite
+// used to apply in nine taps (bilinear interpolation commutes with the tent
+// on the texel grid: the same values inside the frame), and per pixel it
+// skips what it can show changes nothing (the sky under full coverage, the HDR
+// gain below SDR's shoulder, the white point, which is per frame). The bright
+// pass stays on the resolved frame: the aliased scene has about twice its
+// above-threshold light along thin bright lines (lamp tubes, sparks), so a
+// halo made from it would outshine what the composite takes away. The
+// histogram's grid is sparse (2304 patches), the same cost from any image.
 //
 // The scene is rendered as linear, premultiplied HDR radiance. Tone mapping is
 // applied to the premultiplied colour ("over black"), so opaque pixels are
@@ -313,11 +328,12 @@ const MipParams = uniformStruct('MipParams', {
 });
 const ReduceParams = uniformStruct('ReduceParams', { dt: 'f32', adapt: 'bool', meter: 'bool', slot: 'u32' });
 const CompositeParams = uniformStruct('CompositeParams', {
-  size: 'vec2f', bloomTexel: 'vec2f', thresh: 'vec2f', hot: 'vec2f',
+  size: 'vec2f', thresh: 'vec2f', hot: 'vec2f',
   bloom: 'f32', exposure: 'f32', sharpen: 'f32', look: 'f32',
   raw: 'bool', adapt: 'bool', night: 'f32', nightGain: 'f32',
   nightSeed: 'u32', opaque: 'bool', viewmodel: 'bool', glow: 'bool',
   vmNight: 'f32', peak: 'f32',
+  white: 'f32',   // the brightest value sent: srgbEncode(max(peak, 1)), once a frame rather than per pixel
   skyTop: 'vec3f', skyMid: 'vec3f', skyLow: 'vec3f', skyGlow: 'vec4f',
 });
 
@@ -329,13 +345,13 @@ const linear = (binding, visibility) => ({ binding, visibility, sampler: { type:
 export const POST_LAYOUTS = {
   // the scene's colour and its depth (texelFetch)
   MOTION: [tex(0, F), tex(1, F, 'depth')],
-  // two images and a sampler: the prefilter (one source) and bloom's up[0] (low, high)
+  // two images and a sampler: the prefilter and the bloom pass (one source each)
   PAIR: [tex(0, F), tex(1, F), linear(2, F)],
   // a bloom level: source (or low), high, sampler, the level written
   MIP: [tex(0, C), tex(1, C), linear(2, C), { binding: 3, visibility: C, storageTexture: { access: 'write-only', format: HDR } }],
   // the resolved frame, sampler, the adaptation state (in place), the result ring
   REDUCE: [tex(0, C), linear(1, C), { binding: 2, visibility: C, buffer: { type: 'storage' } }, { binding: 3, visibility: C, buffer: { type: 'storage' } }],
-  // the resolved frame, bloom up[0], sampler, the adaptation state, the viewmodel and glow targets (F3)
+  // the resolved frame, the bloom image, sampler, the adaptation state, the viewmodel and glow targets (F3)
   COMPOSITE: [tex(0, F), tex(1, F), linear(2, F), { binding: 3, visibility: F, buffer: { type: 'read-only-storage' } }, tex(4, F), tex(5, F)],
 };
 
@@ -358,6 +374,18 @@ fn sanitize(c0: vec4f) -> vec4f {
   c.a = min(c.a, 1.0);
   return c;
 }
+
+// The temporal resolve's range (Karis 2014, "High Quality Temporal
+// Supersampling": tonemap before the resolve, invert after). three's TAAU
+// averages what it is given, so one sample many times brighter than its
+// neighbours (a leaf mirroring the sun) would show as a blip for a frame
+// before its variance clip takes it out; given c / (1 + max(c)), that sample
+// counts for at most 1 and averages in. Max channel, as three's own
+// flickerReduction compresses: the scale keeps the hue, so expand inverts it
+// exactly, up to sanitize's cap.
+const TAA_EXPAND_MIN: f32 = 1.0 / (1.0 + MAX_RADIANCE);   // 1 - max of a compressed MAX_RADIANCE
+fn taaCompress(c: vec4f) -> vec4f { return vec4f(c.rgb / (1.0 + max(c.r, max(c.g, c.b))), c.a); }
+fn taaExpand(c: vec4f) -> vec4f { return vec4f(c.rgb / max(1.0 - max(c.r, max(c.g, c.b)), TAA_EXPAND_MIN), c.a); }
 
 // Soft-knee bright pass on the max channel: the share of the light that blooms (th: threshold, knee).
 fn bright(c: vec3f, th: vec2f) -> vec3f {
@@ -384,7 +412,8 @@ fn tent9(t: texture_2d<f32>, s: sampler, uv: vec2f, texel: vec2f) -> vec3f {
  * createTemporalUpscaler), the scene's velocity (location 0: this frame's
  * unjittered NDC minus the last frame's, three's VelocityNode's convention,
  * from depth and the cameras, through the rolling log's bend) and its colour,
- * sanitized (location 1: a NaN or Inf would live on in the node's history).
+ * sanitized (location 1: a NaN or Inf would live on in the node's history)
+ * and compressed into the resolve's range (taaCompress; expandWGSL undoes it).
  */
 export const motionWGSL = () => /* wgsl */ `
 ${fullscreenVert('vs')}
@@ -419,7 +448,7 @@ struct Motion {
   warpUse(P.warpK, P.warpAnchor, P.warpDir);
   let p = vec2i(in.position.xy);
   var o: Motion;
-  o.color = sanitize(textureLoad(tColor, p, 0));
+  o.color = taaCompress(sanitize(textureLoad(tColor, p, 0)));
   o.velocity = vec2f(HISTORY_GONE);
   if (P.historyValid == 0u) { return o; }
   let uv = in.position.xy / P.size;
@@ -428,6 +457,16 @@ struct Motion {
   if (prev.w <= 0.0) { return o; }   // (behind last frame's camera: no history)
   o.velocity = ndc + P.jitterNdc - prev.xy / prev.w;
   return o;
+}
+`;
+
+/** TAAU's resolve back to radiance (taaExpand), at output size: what bloom, adaptation and the composite read. */
+export const expandWGSL = () => /* wgsl */ `
+${fullscreenVert('vs')}
+${COMMON}
+@group(2) @binding(0) var tSrc: texture_2d<f32>;   // three's TAAU's resolve, in taaCompress's range
+@fragment fn fs(in: FullScreen) -> @location(0) vec4f {
+  return taaExpand(textureLoad(tSrc, vec2i(in.position.xy), 0));
 }
 `;
 
@@ -497,6 +536,30 @@ ${MipParams.wgsl}
   let hiC = textureLoad(tHigh, vec2i(in.position.xy), 0).rgb;
   let loC = tent9(tLow, smp, in.position.xy / vec2f(P.dst), P.texel);
   return vec4f(mix(hiC, loC, P.scatter), 1.0);
+}
+`;
+
+/**
+ * The bloom pass: up[0] filtered with the 3×3 tent (1-2-1 ⊗ 1-2-1) on its own
+ * texel grid, at its size, a render pass (a compressed attachment, W16). The
+ * composite samples it once, bilinearly: that equals the tent of bilinear taps
+ * it took before (tent9 at ±1 texel), at a ninth of the taps, everywhere but
+ * the frame's outermost output pixels (where the clamp to the edge falls
+ * differently).
+ */
+export const bloomTentWGSL = () => /* wgsl */ `
+${fullscreenVert('vs')}
+@group(2) @binding(0) var tSrc: texture_2d<f32>;    // up[0]
+@fragment fn fs(in: FullScreen) -> @location(0) vec4f {
+  let p = vec2i(in.position.xy);
+  let hi = vec2i(textureDimensions(tSrc)) - 1;
+  var acc = vec3f(0.0);
+  for (var j = -1; j <= 1; j++) {
+    for (var i = -1; i <= 1; i++) {
+      acc += f32((2 - abs(i)) * (2 - abs(j))) * textureLoad(tSrc, clamp(p + vec2i(i, j), vec2i(0), hi), 0).rgb;
+    }
+  }
+  return vec4f(acc * (1.0 / 16.0), 1.0);
 }
 `;
 
@@ -710,14 +773,14 @@ fn agx(c0: vec3f) -> vec3f {
 // the per-channel curve does, but violet toward blue, where that curve would turn
 // it magenta. So only warm light (red over blue) takes it; the rest stays plain
 // AgX, whose path to white keeps violet violet. (P.hot: blend start, full.)
-const HOT_SAT_POW: f32 = 2.0;   // weight ∝ saturation^this: only clearly coloured light
+// (The weight goes with saturation squared: only clearly coloured light.)
 const HOT_WARM_EDGE: f32 = 0.2; // (red - blue) / max channel over which the weight fades in
 fn tonemap(c: vec3f) -> vec3f {
   let a = agx(c);
   let mx = max(c.r, max(c.g, c.b));
   let sat = 1.0 - min(c.r, min(c.g, c.b)) / max(mx, 1e-6);
   let warm = smoothstep(-HOT_WARM_EDGE, HOT_WARM_EDGE, (c.r - c.b) / max(mx, 1e-6));
-  let w = smoothstep(P.hot.x, P.hot.y, mx) * pow(sat, HOT_SAT_POW) * warm;
+  let w = smoothstep(P.hot.x, P.hot.y, mx) * (sat * sat) * warm;
   if (w <= 0.0) { return a; }
   let pc = pow(max(agxCurve(SRGB_TO_REC2020 * c), vec3f(0.0)), vec3f(AGX_GAMMA));
   return mix(a, clamp(REC2020_TO_SRGB * pc, vec3f(0.0), vec3f(1.0)), w);
@@ -746,15 +809,25 @@ fn gtCurve(x: f32, p: f32) -> f32 {
   let shoulder = p - (p - s1) * exp(cp * (x - s0));
   return toe * w0 + lin * (1.0 - w0 - w2) + shoulder * w2;
 }
+// Where SDR's curve (p = 1) reaches its shoulder: below it both curves are the same toe and linear
+// section (neither depends on p), so the gain is exactly 1 and most pixels skip the two curves.
+const GT_SHOULDER_SDR: f32 = ${f(HDR_OUT.LINEAR_START + ((1 - HDR_OUT.LINEAR_START) * HDR_OUT.LINEAR_LENGTH) / HDR_OUT.CONTRAST)};
 // × on the tone-mapped (linear display) colour of exposed radiance c: 1 in SDR and below the shoulder
 fn hdrGain(c: vec3f) -> f32 {
   if (P.peak <= 1.0) { return 1.0; }
   let x = luma(c) / HDR_PAPER;
+  if (x < GT_SHOULDER_SDR) { return 1.0; }
   return gtCurve(x, P.peak) / max(gtCurve(x, 1.0), 1e-6);
 }
 fn display(c: vec3f) -> vec3f { return tonemap(c) * hdrGain(c); }
 
-fn tm(c: vec3f) -> vec3f { return c / (1.0 + luma(c)); }
+// The reversible tone map CAS works in, t = c / (1 + luma(c)): t, and its luma in w
+// (luma(c) / (1 + luma(c)): one luma and one reciprocal a tap)
+fn tmL(c: vec3f) -> vec4f {
+  let l = luma(c);
+  let r = 1.0 / (1.0 + l);
+  return vec4f(c * r, l * r);
+}
 fn itm(c: vec3f) -> vec3f { return c / max(1.0 - luma(c), 1e-3); }
 
 // AMD CAS: the cross taps get the negative lobe -amp / mix(SOFT, HARD, sharpen).
@@ -811,25 +884,21 @@ fn sky(uv: vec2f) -> vec3f {
 
   if (P.sharpen > 0.0) {
     // contrast-adaptive sharpening (AMD CAS, cross taps, luma-driven) in tone-mapped space
-    let e = tm(c.rgb);
-    let n = tm(sanitize(textureLoad(tColor, clamp(p + vec2i(0, 1), vec2i(0), hi), 0)).rgb);
-    let s = tm(sanitize(textureLoad(tColor, clamp(p - vec2i(0, 1), vec2i(0), hi), 0)).rgb);
-    let w = tm(sanitize(textureLoad(tColor, clamp(p - vec2i(1, 0), vec2i(0), hi), 0)).rgb);
-    let r = tm(sanitize(textureLoad(tColor, clamp(p + vec2i(1, 0), vec2i(0), hi), 0)).rgb);
-    let le = luma(e);
-    let ln = luma(n);
-    let ls = luma(s);
-    let lw = luma(w);
-    let lr = luma(r);
-    let mnL = min(le, min(min(ln, ls), min(lw, lr)));
-    let mxL = max(le, max(max(ln, ls), max(lw, lr)));
+    let e = tmL(c.rgb);
+    let n = tmL(sanitize(textureLoad(tColor, clamp(p + vec2i(0, 1), vec2i(0), hi), 0)).rgb);
+    let s = tmL(sanitize(textureLoad(tColor, clamp(p - vec2i(0, 1), vec2i(0), hi), 0)).rgb);
+    let w = tmL(sanitize(textureLoad(tColor, clamp(p - vec2i(1, 0), vec2i(0), hi), 0)).rgb);
+    let r = tmL(sanitize(textureLoad(tColor, clamp(p + vec2i(1, 0), vec2i(0), hi), 0)).rgb);
+    let mnL = min(e.w, min(min(n.w, s.w), min(w.w, r.w)));
+    let mxL = max(e.w, max(max(n.w, s.w), max(w.w, r.w)));
     let amp = sqrt(clamp(min(mnL, 1.0 - mxL) / max(mxL, 1e-4), 0.0, 1.0));
     let k = -amp / mix(CAS_LOBE_SOFT, CAS_LOBE_HARD, P.sharpen);
-    rad = itm(max((e + k * (n + s + w + r)) / (1.0 + 4.0 * k), vec3f(0.0)));
+    rad = itm(max((e.rgb + k * (n.rgb + s.rgb + w.rgb + r.rgb)) / (1.0 + 4.0 * k), vec3f(0.0)));
   }
 
   if (P.bloom > 0.0) {
-    let b = tent9(tBloom, smp, uv, P.bloomTexel);
+    // the bloom image is up[0] already tent-filtered (the bloom pass): one bilinear tap
+    let b = textureSampleLevel(tBloom, smp, uv, 0.0).rgb;
     rad += P.bloom * (b - bright(c.rgb, P.thresh));
   }
 
@@ -843,13 +912,13 @@ fn sky(uv: vec2f) -> vec3f {
   // premultiplied over, as the compositor blended the old transparent canvas over the page
   var a = c.a;
   if (P.opaque != 0u) {
-    o += (1.0 - a) * sky(uv);
+    if (a < 1.0) { o += (1.0 - a) * sky(uv); }   // (covered pixels skip the gradient: it adds 0 there)
     a = 1.0;
   }
   // ±½ LSB dither against 8-bit banding; keep exact zeros exact
   let ign = fract(IGN.z * fract(dot(vec2f(p), IGN.xy)));
   o += (ign - 0.5) / DITHER_LEVELS * step(DITHER_BLACK, max(o.r, max(o.g, o.b)));
-  let white = srgbEncode(vec3f(max(P.peak, 1.0)));   // SDR white, or the HDR peak
+  let white = vec3f(P.white);   // SDR white, or the HDR peak
   o = clamp(o, vec3f(0.0), white);
 
   // The held tool (pov/viewmodel.js): straight colour → the same tone map at the
@@ -900,8 +969,10 @@ const compositeEntry = (format) => renderEntry(`composite ${format}`, compositeW
 /** The pipelines post builds (docs/webgpu.md I1, B5: the start menu warms the same list). */
 export const WGSL_CHECK = [
   renderEntry('motion', motionWGSL, 'MOTION', MotionParams, 'fs', HDR, MOTION_FORMATS),
+  renderEntry('taaExpand', expandWGSL, 'PAIR'),
   renderEntry('prefilter', prefilterWGSL, 'PAIR', PrefilterParams),
   renderEntry('bloomUp0', bloomUp0WGSL, 'PAIR', MipParams),
+  renderEntry('bloomTent', bloomTentWGSL, 'PAIR', null),
   computeEntry('bloomDown', bloomWGSL, 'MIP', MipParams, { entry: 'down', workgroupSize: [BLOOM_TILE, BLOOM_TILE, 1] }),
   computeEntry('bloomUp', bloomWGSL, 'MIP', MipParams, { entry: 'up', workgroupSize: [BLOOM_TILE, BLOOM_TILE, 1] }),
   computeEntry('postReduce', reduceWGSL, 'REDUCE', ReduceParams, { workgroupSize: [REDUCE_THREADS, 1, 1], dispatch: () => [1, 1, 1] }),
@@ -936,6 +1007,9 @@ export function postSizes(w, h, scale = 1) {
   const mips = Array.from({ length: MIPS }, (_, i) => [Math.max(1, w >> (i + 1)), Math.max(1, h >> (i + 1))]);
   return { size: [w, h], inSize: [iw, ih], mips };
 }
+
+// The composite's srgbEncode, for a value it would compute the same way in every pixel.
+const srgbEncode = (x) => (x <= 0.0031308 ? x * 12.92 : 1.055 * x ** (1 / 2.4) - 0.055);
 
 // A CSS colour ('#rgb', '#rrggbb', 'rgb(r, g, b)') as sRGB-encoded 0..1, or null.
 function cssColour(text) {
@@ -1049,8 +1123,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const L = Object.fromEntries(Object.entries(POST_LAYOUTS).map(([k, entries]) => [k, gpu.layout(`POST_${k}`, entries)]));
   const pipes = {
     motion: postPipe(gpu, PIPES.motion),
+    expand: postPipe(gpu, PIPES.taaExpand),
     prefilter: postPipe(gpu, PIPES.prefilter),
     up0: postPipe(gpu, PIPES.bloomUp0),
+    tent: postPipe(gpu, PIPES.bloomTent),
     down: postPipe(gpu, PIPES.bloomDown),
     up: postPipe(gpu, PIPES.bloomUp),
     reduce: postPipe(gpu, PIPES.postReduce),
@@ -1076,7 +1152,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const still = createSceneTarget(gpu, 'still');
   let active = main;
   let size = [0, 0], inSize = [0, 0];
-  let down = [], up = [], resolved = null;
+  let down = [], up = [], bloomImage = null, resolved = null;
+  let expanded = null;   // TAAU's resolve, expanded (expandWGSL), at output size
   let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
   let jitter = [0, 0], taaNow = false;
   // the cameras' view-projections: last frame's and this frame's unjittered, this frame's jittered (as the scene drew)
@@ -1157,7 +1234,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      */
     get unjittered() { return jittered ? { projectionMatrix: savedProj, projectionMatrixInverse: savedProjInv } : null; },
     /** Every texture post holds, for memory estimates (gpu.memory() counts ours; threeBytes is three's share). */
-    get allTargets() { return [main.color, main.depth, still.color, still.depth, ...down, ...up].filter(Boolean); },
+    get allTargets() { return [main.color, main.depth, still.color, still.depth, ...down, ...up, bloomImage].filter(Boolean); },
     /** Bytes of the scene targets three holds (not in gpu.memory()). */
     get threeBytes() { return main.threeBytes + still.threeBytes; },
     /** Eyes still adjusting (the view should keep rendering until they settle). */
@@ -1178,8 +1255,11 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       if (!s.taa || !temporalOf() || s.upscale >= 1) return 1;
       return Math.max(UPSCALE_FLOOR, s.upscale * Math.min(1, Math.max(AUTO_RES.MIN, s.resolutionScale)));
     },
-    /** GPUTextures: { scene, depth, resolved (TAA's output, or the scene without TAA), bloom, down, up } (width and height on each). */
-    get targets() { return { scene: main.color, depth: main.depth, resolved: resolved ?? main.color, bloom: up[0] ?? down[0], down, up }; },
+    /**
+     * GPUTextures: { scene, depth, resolved (TAA's output, or the scene without TAA), bloom (the
+     * composite's: up[0] tent-filtered), down, up } (width and height on each).
+     */
+    get targets() { return { scene: main.color, depth: main.depth, resolved: resolved ?? main.color, bloom: bloomImage, down, up }; },
 
     /**
      * Output size in pixels (defaults to the presenter's canvas); the scene
@@ -1198,9 +1278,12 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       main.resize(inSize[0], inSize[1]);
       if (outChanged) {
         if (down.length) gpu.flush('post resize');   // (as the scene target's resize)
-        [...down, ...up].forEach((t) => t.destroy());
+        [...down, ...up, bloomImage].forEach((t) => t?.destroy());
+        expanded?.destroy();
+        expanded = make('post taa', size, ATTACH);
         down = z.mips.map((m, i) => make(`post down ${i}`, m, i === 0 ? ATTACH : STORE));
         up = z.mips.slice(0, MIPS - 1).map((m, i) => make(`post up ${i}`, m, i === 0 ? ATTACH : STORE));
+        bloomImage = make('post bloom', z.mips[0], ATTACH);
         // (TAAU restarts its history at a new output size itself; a new scene size keeps it:
         // the history is at output size, so automatic resolution's steps don't flash)
         post.reset();
@@ -1353,7 +1436,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           },
         });
         rp.end();
-        color = resolved = temporal.resolve(prevCamera, main.rt?.depthTexture, size);
+        const taau = temporal.resolve(prevCamera, main.rt?.depthTexture, size);
+        drawPass(pipes.expand, viewOf(expanded), 'taa expand', group(L.PAIR, [taau, taau], () => [texEntry(0, taau), texEntry(1, taau), samplerEntry(2)]));
+        color = resolved = expanded;
         post.onPass?.('taa', { kind: 'render' });
         historyValid = true;
       }
@@ -1397,10 +1482,12 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         }
       }
 
-      // bloom's last upsample, at half resolution
+      // bloom's last upsample into up[0], then the bloom image: up[0] tent-filtered at its
+      // size, so the composite takes one tap of it, not nine (both half the output's size)
       if (bloomOn) {
         drawPass(pipes.up0, viewOf(up[0]), 'bloomUp0', group(L.PAIR, [up[1], down[0]], () => [texEntry(0, up[1]), texEntry(1, down[0]), samplerEntry(2)]),
           { texel: texel(up[1]), dst: sizeOf(up[0]), scatter: s.bloomScatter });
+        drawPass(pipes.tent, viewOf(bloomImage), 'bloom', group(L.PAIR, [up[0], up[0]], () => [texEntry(0, up[0]), texEntry(1, up[0]), samplerEntry(2)]));
         post.onPass?.('bloom', { kind: 'render' });
       }
 
@@ -1408,7 +1495,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const out = outputOf(target);
       const pipe = compositeFor(out.format);
       if (pipe.state !== 'ready') throw new Error(`post: the composite for ${out.format} isn't built yet (await post.ready, or render to it once and wait)`);
-      const bloomTex = bloomOn ? up[0] : blank;
+      const bloomTex = bloomOn ? bloomImage : blank;
       const vm = out.canvas && viewmodel ? viewmodel : blank, gl = out.canvas && glow ? glow : blank;
       const bind = group(L.COMPOSITE, [color, bloomTex, vm, gl], () => [
         texEntry(0, color), texEntry(1, bloomTex), samplerEntry(2), { binding: 3, resource: { buffer: adaptState } }, texEntry(4, vm), texEntry(5, gl),
@@ -1417,7 +1504,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       pipe.draw(rp, {
         bind: [, , bind],
         params: compositeParams(s, size, {
-          bloomTexel: texel(bloomTex), bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? s.sharpen : 0,
+          bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? s.sharpen : 0,
           adapt: adaptOn, night: s.raw ? 0 : s.night, nightSeed: frame, opaque: out.canvas,
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
           peak: out.canvas && presenter?.hdrActive && !s.raw ? HDR_OUT.PEAK : 1,
@@ -1493,7 +1580,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const rp = gpu.frame.render({ colorAttachments: [out.attachment] }, 'still');
       pipe.draw(rp, {
         bind: [, , bind],
-        params: compositeParams(s, [out.width, out.height], { bloomTexel: [1, 1], bloom: 0, sharpen: 0, adapt, night: 0, nightSeed: 0, opaque: false, viewmodel: false, glow: false, vmNight: 0, peak: 1 }),
+        params: compositeParams(s, [out.width, out.height], { bloom: 0, sharpen: 0, adapt, night: 0, nightSeed: 0, opaque: false, viewmodel: false, glow: false, vmNight: 0, peak: 1 }),
       });
       rp.end();
       return true;
@@ -1516,8 +1603,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       gpu.flush('post dispose');
       presentation?.dispose();
       temporal?.dispose();
-      [...down, ...up, blank].forEach((t) => t.destroy());
-      down = []; up = []; resolved = null;
+      [...down, ...up, bloomImage, blank].forEach((t) => t?.destroy());
+      expanded?.destroy();
+      down = []; up = []; bloomImage = null; resolved = null; expanded = null;
       main.destroy();
       still.destroy();
       adaptState.destroy();
@@ -1570,10 +1658,11 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
   function compositeParams(s, outSize, o) {
     return {
-      size: outSize, bloomTexel: o.bloomTexel, thresh: [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)], hot: [s.hotStart, s.hotFull],
+      size: outSize, thresh: [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)], hot: [s.hotStart, s.hotFull],
       bloom: o.bloom, exposure: 2 ** s.exposure, sharpen: o.sharpen, look: s.look,
       raw: s.raw, adapt: o.adapt, night: o.night, nightGain: s.nightGain,
       nightSeed: o.nightSeed >>> 0, opaque: o.opaque, viewmodel: o.viewmodel, glow: o.glow, vmNight: o.vmNight, peak: o.peak,
+      white: srgbEncode(Math.max(o.peak, 1)),
       skyTop: sky.top, skyMid: sky.mid, skyLow: sky.low, skyGlow: sky.glow,
     };
   }

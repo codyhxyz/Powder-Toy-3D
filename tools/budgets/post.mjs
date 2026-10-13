@@ -4,26 +4,28 @@
 // moves one of these numbers says why.
 //
 // Every frame here is the harness's scene pass (one draw), then post. W16's
-// shape: 3 render passes of post's (the motion pass, the bloom prefilter,
-// bloom's up[0]) and 1 compute pass (bloom down 1–5 and up 4–1, then the
+// shape: 4 render passes of post's (the motion pass, the bloom prefilter,
+// bloom's up[0], the bloom image: up[0]'s tent, which the canvas pass reads in
+// one tap) and 1 compute pass (bloom down 1–5 and up 4–1, then the
 // one-workgroup reduction: luminance grid, histogram, adaptation, meter),
 // besides the scene and canvas passes. With TAA, three's TAAU runs between
 // the motion pass and the prefilter in submits of its own (its resolve, its
 // history and previous-depth copies): ours before it, its 3, ours after = 5;
 // one submit without TAA when three has nothing to draw (B3).
 const TAAU_SUBMITS = 5;
-const frame = { submits: TAAU_SUBMITS, renderPasses: 5, computePasses: 1, dispatches: 10, draws: 5, bytesAllocated: 0, pipelinesCreated: 0 };
+const frame = { submits: TAAU_SUBMITS, renderPasses: 6, computePasses: 1, dispatches: 10, draws: 6, bytesAllocated: 0, pipelinesCreated: 0 };
 export default {
   unit: 'post',
   page: '/tools/harness/post.html',
   harness: true,
   scenarios: [
     {
-      name: 'a presented frame (TAA, bloom, adaptation): scene + 3 render passes + canvas, 1 compute pass, three\'s TAAU',
+      name: 'a presented frame (TAA, bloom, adaptation): scene + 4 render passes + canvas, 1 compute pass, three\'s TAAU',
       run: (page) => page.evaluate(() => window.__harness.run('budget:frame')),
-      // param slots: the scene's draw, the motion pass, prefilter, 9 bloom mips, the reduction, up[0], the composite,
-      // and a header for each of our two submits (before three's TAAU and after it)
-      expect: { ...frame, bytesUploaded: { max: 17 * 256 } },
+      // param slots: the scene's draw, the motion pass, prefilter, 9 bloom mips, the reduction, up[0], the bloom
+      // image (no params: the shared zero slot), the composite, and a header for each of our two submits (before
+      // three's TAAU and after it)
+      expect: { ...frame, bytesUploaded: { max: 18 * 256 } },
     },
     {
       name: 'TAAU (upscale 1/1.5): the same passes',
@@ -44,9 +46,9 @@ export default {
       expect: { ...frame, metered: 2, unmeteredDispatches: 9, sceneLuma: { min: 1e-3 } },
     },
     {
-      name: 'TAA off: no motion pass, no TAAU (scene, prefilter, up[0], canvas)',
+      name: 'TAA off: no motion pass, no TAAU (scene, prefilter, up[0], the bloom image, canvas)',
       run: (page) => page.evaluate(() => window.__harness.run('budget:noTaa')),
-      expect: { submits: 1, renderPasses: 4, computePasses: 1, dispatches: 10, draws: 4, bytesAllocated: 0 },
+      expect: { submits: 1, renderPasses: 5, computePasses: 1, dispatches: 10, draws: 5, bytesAllocated: 0 },
     },
     {
       name: 'a data view (raw): no bloom, no adaptation, no compute pass (scene, motion, TAAU, canvas)',
@@ -59,10 +61,11 @@ export default {
       expect: { submits: 1, renderPasses: 2, computePasses: 0, draws: 2, bytesAllocated: 0 },
     },
     {
-      name: 'what post holds at 400×250 (11 bloom levels, state; the scene target and TAAU\'s are three\'s)',
+      name: 'what post holds at 400×250 (11 bloom levels, the bloom image, state; the scene target and TAAU\'s are three\'s)',
       run: (page) => page.evaluate(() => window.__harness.run('budget:memory')),
-      // 531 KB bloom + the state and result ring (three's renderer is on this page, as in the app)
-      expect: { bytes: { max: 6e5 } },
+      // 531 KB bloom levels + the 200 KB bloom image (half size) + the state and result ring (three's renderer is on
+      // this page, as in the app)
+      expect: { bytes: { max: 8e5 } },
     },
   ],
 };

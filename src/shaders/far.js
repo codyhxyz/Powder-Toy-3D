@@ -1220,7 +1220,7 @@ fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3
   if (dot(ns, v) < SHADE_NV_MIN) { ns = normalize(ns + v * (SHADE_NV_MIN - dot(ns, v))); }
   let nv = clamp(dot(ns, v), 1e-4, 1.0);
   let nl = dot(ns, FU.sun);
-  let rough = clamp(m.rough, MAT_ROUGH_MIN, 1.0);
+  let rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0);   // (specular AA)
   let F0 = mix(vec3f(m.f0), m.alb, m.metal);
   let kD = m.alb * (1.0 - m.metal);
   let wrap = max(nl + m.sss, 0.0) / ((1.0 + m.sss) * (1.0 + m.sss));

@@ -12,11 +12,11 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 import { gear } from './catalog.js';
 
 // Shovel. Digs like Minecraft's shovel (dig.js): click, or hold, and the
-// outlined 0.9 m block you aim at comes up whole into the pack, powder as it is
-// and breakable solids as their debris (ROCK → STONE, WOOD → SAWDUST). Loose
-// powder comes up in one dig, at Minecraft's iron-shovel-on-dirt pace; a solid
-// takes ceil(hard / POWER) digs, cracking as they land; rock is as hard as it
-// goes (the pickaxe is the tool for it). Liquids run off the blade. Right-click
+// outlined bite you aim at comes up whole into the pack, at Minecraft's
+// iron-shovel-on-dirt pace. Loose ground only: powder, and soil (grass and
+// plants, moss and fungus, as their debris). Wood is the axe's and rock the pickaxe's: they ring
+// off the blade, and a toast names the tool (Minecraft's shovel blocks).
+// Liquids run off the blade. Right-click
 // throws a block's worth (the newest BLADE_LOAD cells) where you aim, or in
 // front of you; hold to keep throwing. The pack (transfer.js) is the inventory
 // the trowel builds from.
@@ -27,8 +27,8 @@ import { gear } from './catalog.js';
 
 const REFIRE = 0.15;                 // s between digs while held: Minecraft's iron shovel on dirt (minecraft.wiki/w/Shovel)
 const THROW_REFIRE = 0.2;            // s between throws while held: Minecraft's 4-tick use delay (the trowel's)
-const POWER = 6;                     // hardness one dig beats: powder, moss and ice in one, sandstone (15) in three
-const LIMIT = 30;                    // the hardest solid a shovel digs: ROCK, in five; never metal
+const POWER = 6;                     // hardness one dig beats: soil (moss, fungus: 6) in one
+const DIGS = ['loose', 'soil'];      // dig.js materials: Minecraft's shovel blocks (dirt, sand, gravel, snow, grass) and plants; wood is the axe's, rock the pickaxe's
 const BLADE_LOAD = BLOCK ** 3;       // cells one throw takes from the pack: one dug block
 const THROW_SPEED = 8;               // cells/s along the aim, on top of the body's velocity
 const DUMP_REACH = 2.5;              // cells from the eye where a load lands when nothing is aimed at
@@ -67,7 +67,7 @@ export default {
     const transfer = env.transfer;
     const digs = trigger(REFIRE);
     const throws = trigger(THROW_REFIRE, { button: 'secondary' });
-    const dig = digger(env, { power: POWER, limit: LIMIT, reach: HAND_REACH });
+    const dig = digger(env, { power: POWER, digs: DIGS, reach: HAND_REACH });
     const tilt = swing({ rest: 0, hit: -JAB_PITCH, miss: -JAB_PITCH * JAB_MISS, strike: JAB_STRIKE, settle: REFIRE });
     const thrust = swing({ rest: 0, hit: JAB_THRUST, miss: JAB_THRUST * JAB_MISS, strike: JAB_STRIKE, settle: REFIRE });
     const flick = swing({ rest: 0, hit: FLICK_PITCH, miss: FLICK_PITCH, strike: FLICK_STRIKE, settle: THROW_REFIRE });
@@ -75,6 +75,9 @@ export default {
     // held item: the shovel on a hand of the viewmodel rig, the load heaped on its blade
     const rig = viewmodelRig(env);
     const hand = rig.hand(HELD_POS);
+    // the dig and the throw seen from outside (held.js: holds.js GESTURES on the body, the arms with them)
+    hand.userData.gesture = { name: 'dig', since: Infinity, span: REFIRE };
+    const gesture = (name, span) => Object.assign(hand.userData.gesture, { name, since: 0, span });
     const held = new THREE.Group();
     held.rotation.set(HELD_PITCH, HELD_YAW, 0);
     hand.add(held);
@@ -113,10 +116,10 @@ export default {
       const point = t.aim.cell.clone().addScalar(0.5);
       const r = dig.blow(ctx, t, load, transfer);
       if (!r) {
-        // liquids run off the blade; a solid that won't break, or is harder than rock, rings off it
-        const el = ELEMENTS[t.id];
-        if (el?.kind !== K.SOLID) return false;
-        refuse(el.breakInto ? `${el.name} is too hard for a shovel: use the pickaxe` : `${el.name} won't break`, t.id);
+        // liquids run off the blade; wood, rock and the like ring off it, and say which tool they want
+        const why = dig.refusal(t.id, 'shovel');
+        if (!why) return false;
+        refuse(why, t.id);
         return true;
       }
       rig.hit(HIT.SHOVEL);
@@ -161,6 +164,7 @@ export default {
         hand.visible = true;
         rig.update(ctx);
         const dt = toolDt(ctx);
+        hand.userData.gesture.since += dt;
         if (load.version !== heapVersion) {
           heapVersion = load.version;
           heap.visible = load.cells.length > 0;
@@ -171,12 +175,14 @@ export default {
         if (digs.ready(ctx)) {
           digs.fire();
           const bit = strike(ctx, t);
+          gesture('dig', REFIRE);
           tilt.start(bit);
           thrust.start(bit);
         }
         if (throws.ready(ctx) && dump(ctx, t?.aim ?? null)) {
           throws.fire();
           flick.start(true);
+          gesture('toss', THROW_REFIRE);
           rig.hit(HIT.THROW);
         }
         held.rotation.x = HELD_PITCH + tilt.angle(dt) + flick.angle(dt);

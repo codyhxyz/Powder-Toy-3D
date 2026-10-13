@@ -3,6 +3,7 @@ import { ELEMENTS, E, K } from '../../elements.js';
 import { CELL_M } from '../../scale.js';
 import { SEED_MAX } from '../../shaders/common.js';
 import { BODY_HEIGHT, BODY_WIDTH } from '../constants.js';
+import { buildSpartan } from '../figureSpartan.js';
 import { povEvents } from '../events.js';
 import { addTarget, targetsInBox, PLAYER } from '../targets.js';
 import { createWorldModel } from '../ai/world.js';
@@ -79,7 +80,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 let nextId = 1;
 
-// env = { renderer, scene, hud, getSim, getVolume, getScale, getSpawners, requestRender }
+// env = { renderer, scene, hud, getSim, getVolume, getScale, getSpawners, requestRender, getCharacter }
 export function createVehicles(env) {
   const homes = new Map();               // key → { key, kind, team, at (grid feet), yaw, vehicle, wait }
   const vehicles = [];                   // live vehicles and wrecks
@@ -133,9 +134,26 @@ export function createVehicles(env) {
     const at = home.at.clone().multiplyScalar(CELL_M);
     const id = `vehicle:${nextId++}`;
     const impl = k.build(R, phys, look, { at, yaw: home.yaw, team: home.team, key: id });
+    const wizard = new THREE.Group();
+    wizard.add(...impl.driver.children);
+    const rig = buildSpartan(), spartan = rig.body;
+    // Same armor in the seat, converted from cells/-z to the vehicle's metres/+z.
+    spartan.scale.setScalar(CELL_M);
+    spartan.rotation.y = Math.PI;
+    for (const hip of [rig.hipL, rig.hipR]) hip.rotation.x = Math.PI / 2;
+    for (const knee of [rig.knL, rig.knR]) knee.rotation.x = -Math.PI / 2;
+    for (const shoulder of [rig.shL, rig.shR]) shoulder.rotation.x = 0.65;
+    for (const elbow of [rig.elL, rig.elR]) elbow.rotation.x = 0.8;
+    const armor = [];
+    spartan.traverse((o) => { if (o.isMesh) armor.push(o); });
+    for (const m of armor) {
+      look.part(m.parent, m.geometry, new THREE.Color(...m.userData.albedo), { edge: false }).name = m.name;
+      m.removeFromParent();
+    }
+    impl.driver.add(wizard, spartan);
     const v = {
       id, kind: home.kind, spec: k.spec, team: home.team, home: home.key,
-      impl, look, health: k.spec.HEALTH, alive: true, driver: null, wreckT: 0, fireWait: 0,
+      impl, look, wizard, spartan, health: k.spec.HEALTH, alive: true, driver: null, wreckT: 0, fireWait: 0,
       lastHit: new Map(), removeTarget: null,
     };
     v.removeTarget = addTarget({
@@ -155,6 +173,7 @@ export function createVehicles(env) {
     v.removeTarget?.();
     v.impl.dispose();
     v.look.dispose();
+    v.spartan.traverse((o) => o.geometry?.dispose());
     v.impl.root.removeFromParent();
     vehicles.splice(vehicles.indexOf(v), 1);
     for (const h of homes.values()) if (h.vehicle === v) h.vehicle = null;
@@ -464,6 +483,8 @@ export function createVehicles(env) {
       r.scale.setScalar(scale / CELL_M);
       v.look.bind(volumeLight(vol), g);
       v.look.update(f.worldToGrid);
+      v.spartan.visible = env.getCharacter?.() === 'spartan';
+      v.wizard.visible = !v.spartan.visible;
       v.impl.pose(dt);
     }
     root.visible = true;
