@@ -832,7 +832,7 @@ const LAMP_PAD: f32 = 0.3;         // cells short of the lamp the shadow ray sto
 const LAMP_FIXED_PAD: f32 = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
 const LAMP_FIXED_SELF: f32 = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
 const LAMP_RADIUS: f32 = 1.0;      // cells: half the side of the box a shadow ray aims into (a flame with its glow, ~30 cm)
-const LAMP_FILL: f32 = 0.12;       // share of a lamp's light the room bounces back, when nearField is off
+const LAMP_FILL: f32 = 0.3;        // share of a lamp's light the room bounces back, when nearField is off: about what its bounce gives in a cave (most rays hit a wall lit about half as well, albedo ~0.6)
 const LAMP_RAND: f32 = 0.37;       // keeps the lamps' random stream off the near rays' and the glow's
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f {
   var sum = vec3f(0.0);
