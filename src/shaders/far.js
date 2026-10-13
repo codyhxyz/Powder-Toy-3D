@@ -1190,7 +1190,7 @@ const FAR_ID_SALT_Z: f32 = 31.0;
 fn farElement(p: vec3f, n: vec3f) -> i32 {
   let j = (vec3f(vnoise(p * FAR_ID_JITTER_F), vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Y),
                  vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Z)) - 0.5) * FAR_ID_JITTER
-        + (hash33(vec3f(gFragCoord, f32(FU.frame))) - 0.5) * FAR_ID_DITHER;
+        + (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * FAR_ID_DITHER;   // spatiotemporal dither (noise.js stbn3)
   let q = p + j - n * dot(n, j);
   var a = farIds(q - n * FAR_ID_INSET);
   if (a.z == 0) {

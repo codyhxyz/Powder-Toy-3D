@@ -177,7 +177,7 @@ fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
   if (t0 > CLOUD_MAX_DIST) { return vec4f(0.0, 0.0, 0.0, 1.0); }
   let t1 = min((hi - ro.y) / rd.y, t0 + CLOUD_MAX_SPAN);
   let dt = (t1 - t0) / f32(CLOUD_STEPS);
-  var t = t0 + dt * hash33(vec3f(gFragCoord, f32(FU.frame))).x;   // jittered: TAA blends the banding away
+  var t = t0 + dt * stbn1(gFragCoord, f32(FU.frame), 0.0);   // jittered (noise.js stbn1: stratified, R1 over frames): TAA blends the banding away
   let mu = dot(rd, FU.sun);
   let detail = 1.0 - smoothstep(CLOUD_DETAIL_NEAR, CLOUD_DETAIL_FAR, t0);
   var S = vec3f(0.0);

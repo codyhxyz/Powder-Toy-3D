@@ -786,7 +786,7 @@ const HIT_GRAIN: i32 = 3;    // grain geometry (gfx/grains.js: gHitA, gHitK)
 
 fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ro = ro0;
-  let jit = ign(gFragCoord, f32(FU.frame));
+  let jit = stbn1(gFragCoord, f32(FU.frame), 0.0);   // the media march's start: stratified per 3x3 window, R1 over frames (noise.js)
   var mNext = jit * MEDIA_STEP;   // next media sample along the ray (gfx/media.js)
   var mOp = 0.0;                  // opacity of the media so far
   var rd = safeDir(rd0);${curved ? `
@@ -815,7 +815,7 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   // got in), then faded with depth below it
   var lightRef = vec3f(1.0);
   var lightY = 0.0;
-  let liqDither = (hash33(vec3f(gFragCoord, f32(FU.frame))) - 0.5) * LIQ_ID_DITHER;
+  let liqDither = (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * LIQ_ID_DITHER;   // spatiotemporal, not white: no speckle on mixed liquids (noise.js)
   var bends = 0;
   var stop = false;
   // the nearest opaque mesh (gfx/meshCut.js), counted along the ray's path:
