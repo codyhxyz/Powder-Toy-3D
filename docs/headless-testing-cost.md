@@ -57,7 +57,7 @@ It does not wait for unrelated model, world-generation, or audio loading.
 Changing presentation cadence still changes temporal history. Use visual mode for pixel-regression baselines.
 
 The helper closes its browsers on uncaught exceptions, rejected promises, and termination signals.
-Each browser has a ten-minute lifetime by default. `TPT_TEST_TIMEOUT_MS` can raise that limit.
+Each browser has a three-minute lifetime by default, capped by the session budget: one headless browser machine-wide (a lock in `~/.cache/tpt-headless/slot`) and 5 minutes per Claude session per hour (`TPT_HEADLESS_BUDGET_MS`, raise only on the user's say-so).
 Explicit `finally` cleanup is still preferred.
 The NPC suite sets a lifetime that covers its requested match count.
 
