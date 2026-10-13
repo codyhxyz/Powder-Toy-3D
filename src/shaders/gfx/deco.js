@@ -48,8 +48,8 @@ export const DECO_PACK_LEVELS = null;
 // WEBGPU-STUB (docs/webgpu.md J3)
 export const decoPackGLSL = '';
 
-// The binding, the lookups and the albedo tint (plain.js and the realistic
-// tracer call them). Needs the render library (slotOf, outside) and the
+// The binding, the lookups and the albedo tint (the realistic
+// tracer calls them). Needs the render library (slotOf, outside) and the
 // volume's params P (shaders/render.js VolumeParams: deco).
 export const decoViewGLSL = /* wgsl */ `
 @group(0) @binding(${DECO_PLANE_BINDING}) var<storage, read> decoPlane: array<u32>;   // RGBA8 per slot (src/deco.js)

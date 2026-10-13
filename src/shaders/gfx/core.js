@@ -280,7 +280,7 @@ fn surfNormal(p: vec3f, ch: i32, fallback: vec3f) -> vec3f {
 // the volume's own (jittered) matrices; res the target's size in pixels.
 // Returns the distance along the unit eye ray rd (grid cells, from FU.cam) to
 // that mesh point, MESH_CUT_NONE where there is none. Reading the depth and
-// those values is the volume's (shaders/render.js, gfx/plain.js meshCutT).
+// those values is the volume's (shaders/render.js).
 const MESH_CUT_NONE: f32 = 1e30;
 fn meshCutAt(d: f32, clipToGrid: mat4x4f, res: vec2f, rd: vec3f) -> f32 {
   if (d >= 1.0) { return MESH_CUT_NONE; }

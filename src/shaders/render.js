@@ -9,7 +9,6 @@ import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { liquidDetailGLSL, LIQ_DETAIL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
-import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
@@ -31,8 +30,8 @@ import { gateVariants } from '../gfx/detailGate.js';
 // - liquids refract (real bent rays), absorb (Beer–Lambert) and reflect;
 // - smoke, steam and fire are density volumes.
 // Views 1-4 (heat, pressure, flow, X-ray) are false-colour data views with
-// their own marches (below); view 0 is the realistic render, view 5 the plain
-// one (gfx/plain.js).
+// their own marches (below); view 0 is the realistic render. The plain view
+// (5) isn't the volume's: the blocks renderer draws it (gfx/blocks.js).
 //
 // WGSL (docs/webgpu.md F2; the names are the GLSL version's, W2). Each view is
 // a module of its own, a vertex and a fragment entry (volumeFrag(g, { view,
@@ -127,13 +126,13 @@ const xrayMu = () => {
 // restarts the ray, so its path can be longer than one crossing of the box.
 const BEND_EXTRA_STEPS = 128;
 
-// The view modules: keys of src/views.js VIEWS.
-export const VOLUME_VIEWS = VIEWS.map((v) => v.key);
+// The view modules: keys of src/views.js VIEWS (but plain: gfx/blocks.js draws it).
+export const VOLUME_VIEWS = VIEWS.map((v) => v.key).filter((k) => k !== 'plain');
 const DATA_VIEWS = ['heat', 'pressure', 'flow', 'xray'];
 
 // The decoration layer (TPT's deco colour, src/deco.js) in the view: every
 // view pastes shaders/gfx/deco.js, its lookups (decoAt, decoLinear, decoTint
-// and their constants: plain.js calls them) and its hooks (decoSurf,
+// and their constants) and its hooks (decoSurf,
 // absorbDeco: the realistic tracer calls them), reading the plane at group 0
 // binding 3. VolumeParams.deco switches the lookups off (Ctrl+B, or nothing
 // decorated: decoAt reads no paint, so decoTint keeps the albedo), so drawing
@@ -181,15 +180,6 @@ fn softBlob(cell: vec3i, ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> f32 {
   return smoothstep(BLOB_R_OUT, BLOB_R_IN, length(ro + rd * tm - cc)) * BLOB_PEAK;
 }
 
-// ACES filmic curve, Narkowicz's fit: (x(Ax + B)) / (x(Cx + D) + E).
-const ACES_A: f32 = 2.51;
-const ACES_B: f32 = 0.03;
-const ACES_C: f32 = 2.43;
-const ACES_D: f32 = 0.59;
-const ACES_E: f32 = 0.14;
-fn aces(x: vec3f) -> vec3f {
-  return clamp((x * (ACES_A * x + ACES_B)) / (x * (ACES_C * x + ACES_D) + ACES_E), vec3f(0.0), vec3f(1.0));
-}
 
 // What a view's trace drew: premultiplied colour, frag_depth, and whether
 // anything was hit (else the entry discards).
@@ -752,13 +742,6 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   return o;
 }`;
 
-// The plain view (gfx/plain.js): its own march, a finished colour.
-const plainView = () => /* wgsl */ `
-fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
-  let po = plainView(ro, rd, t0, bh);
-  return VolumeHit(po.color, po.depth, po.hit);
-}`;
-
 // =====================================================================
 // The realistic view (0).
 // =====================================================================
@@ -1242,7 +1225,7 @@ export const VOLUME_SCREEN_VERTICES = 3;
 // The fragment entry `fs`: the pixel's ray, its footprint (derivatives, at
 // the top in uniform control flow), the box, the view's trace; nothing is
 // written where it hit nothing. cut: the view stops at the meshes (the
-// realistic march; plain's once gfx/plain.js marches to meshCutT), so its
+// realistic march), so its
 // depth is the nearer of its hit and the mesh's. Curved, the ray's spans in
 // the box are its parabola's (warpWalk), the march has no mesh cut (it
 // measures a straight ray), and t is the displayed ray's throughout.
@@ -1279,7 +1262,7 @@ struct VolumeFrag {
 /**
  * The volume's WGSL module for grid g: a vertex entry `vs` and a fragment
  * entry `fs` drawing `view` (a key of src/views.js VIEWS: 'realistic',
- * 'heat', 'pressure', 'flow', 'xray', 'plain'). detail: the close-up detail's
+ * 'heat', 'pressure', 'flow', 'xray'). detail: the close-up detail's
  * defines (gfx/detail.js detailDefines), which only the realistic view reads.
  * curved: the rolling log's variant (docs/webgpu.md F2: a block this size and
  * its globals are a template switch, so the flat views carry none of it);
@@ -1291,7 +1274,6 @@ struct VolumeFrag {
 export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false } = {}) => {
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const d = view === 'realistic' ? detail : {};
-  const plainCut = view === 'plain' && /\bmeshCutT\s*\(/.test(plainGLSL(g));
   const parts = [
     `// volume: ${view}${view === 'realistic' ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
     lib(g, { variant: 'LIGHTING', far: false, aeration: true, debug, detail: d }),
@@ -1306,9 +1288,8 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     grainsGLSL(d),
   ];
   if (view === 'realistic') parts.push(farHazeGLSL, realistic(d, curved));
-  else if (view === 'plain') parts.push(plainGLSL(g, { curved }), plainView());
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
-  parts.push(volumeVertOf(curved), volumeEntry(view, view === 'realistic' || plainCut, curved));
+  parts.push(volumeVertOf(curved), volumeEntry(view, view === 'realistic', curved));
   return parts.join('\n');
 };
 
@@ -1704,7 +1685,7 @@ export function warmChecks(view, settings, { fallback = false, curved = false } 
     const { base, near } = gateDetails(settings, fallback);
     out.push(volumeCheck(`volume.realistic(${keyOf(base) || 'off'})${tag}`, 'realistic', base, undefined, curved));
     if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.realistic(${keyOf(near)})${tag}`, 'realistic', near, undefined, curved), idle: true });
-  } else out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));
+  } else if (VOLUME_VIEWS.includes(view)) out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));   // (plain: the blocks renderer's)
   if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
   out.push(PICK_CHECK);
   return out;
