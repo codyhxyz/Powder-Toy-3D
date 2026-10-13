@@ -52,6 +52,7 @@ const DT = 1 / 60;        // s a frame (the app's tick at 60 Hz)
 // agents is slow (docs/webgpu.md I1).
 const TOOL_STEPS = 2;
 const TOOL_DT = 1 / 30;
+const NOTICE_WAIT_MS = 1600;   // ms: past a tool's notice interval (tools/index.js NOTICE_INTERVAL)
 const THROW_FRAMES = 8;   // frames a click's button is held (past the tools' refires: the shovel's 0.2 s throw)
 const STRESS_FRAMES = 150;   // frames of four overlapping transfers each: 600 transfers, the old pov-tools-a's
 
@@ -194,26 +195,39 @@ test('stage:toolbelt', async ({ parts = ['shovel', 'bucket'] } = {}) => {
       const t2 = await totals(sim, [pack]);
       check(out, 'shovel: throws the load back into the world, nothing lost', pack.count === 0 && zero(diff(t0, t2)), { left: pack.count, diff: diff(t0, t2) });
 
-      // ---- shovel on rock: it breaks into stone, cell for cell
+      // ---- shovel on rock: rock is the pickaxe's (dig.js materials): it refuses, naming the tool, and takes nothing
       const r0 = await totals(sim, [pack]);
-      for (let i = 0; i < 45; i++) {
-        if (i % 8 === 0) S = await snap(sim);
+      S = await snap(sim);
+      toasts.length = 0;
+      for (let f = 0; f < THROW_FRAMES; f++) {
         const y = S.top(8, 23);
-        await frame(sim, () => belt.update(ctx(V(8, y, 23), S.id(8, y, 23), { primary: true })));
+        await frame(sim, () => belt.update(ctx(V(8, y, 23), S.id(8, y, 23), { primary: true, primaryPressed: f === 0 })));
       }
       await settle();
-      const r1 = await totals(sim, [pack]), dr = diff(r0, r1);
-      out.numbers.shovelRock = { load: pack.status(), diff: dr };
-      check(out, 'shovel: digs rock into stone (ROCK → STONE, cell for cell)', (pack.totals()[E.STONE] ?? 0) > 0
-        && Object.keys(dr).every((k) => k === 'ROCK' || k === 'STONE') && (dr.ROCK ?? 0) + (dr.STONE ?? 0) === 0, out.numbers.shovelRock);
-      // WALL refuses (the basin's rim), on a click held past the last dig's refire
+      const dr = diff(r0, await totals(sim, [pack]));
+      out.numbers.shovelRock = { toasts: toasts.slice(), diff: dr };
+      check(out, 'shovel: rock refuses, naming the pickaxe, and nothing moves', zero(dr) && toasts.some((t) => /pickaxe/i.test(String(t?.text ?? t))), out.numbers.shovelRock);
+      // WALL refuses (the basin's rim), on a click held past the last dig's refire (and past the
+      // rock's notice: a tool's notices come at most once per NOTICE_INTERVAL, tools/index.js)
+      await new Promise((r) => setTimeout(r, NOTICE_WAIT_MS));
       toasts.length = 0;
       for (let f = 0; f < THROW_FRAMES; f++) belt.update(ctx(V(18, 7, 23), E.WALL, { primary: true, primaryPressed: f === 0 }));
       check(out, 'shovel: WALL refuses, with a toast', toasts.length > 0, toasts);
+      // a bite of sand with wood in it: the sand comes up, the wood (the axe's) stays put
+      paint(sim, [25, 4, 7], 3, E.SAND);
+      for (let i = 0; i < 6; i++) await frame(sim);
+      const woodAt = [V(25, 4, 7), V(24, 3, 7)];
+      for (const w of woodAt) paint(sim, [w.x + 0.5, w.y + 0.5, w.z + 0.5], 0.5, E.WOOD);
+      await frame(sim);
+      const m0 = await totals(sim, [pack]);
+      const W0 = await snap(sim), woodBefore = woodAt.filter((w) => W0.id(w.x, w.y, w.z) === E.WOOD).length;
+      await frame(sim, () => belt.update(ctx(V(25, 5, 7), E.SAND, { primary: true, primaryPressed: true })));
+      await settle();
+      const W1 = await snap(sim), woodAfter = woodAt.filter((w) => W1.id(w.x, w.y, w.z) === E.WOOD).length, dm = diff(m0, await totals(sim, [pack]));
+      out.numbers.shovelMixed = { woodBefore, woodAfter, diff: dm, sand: pack.totals()[E.SAND] ?? 0 };
+      check(out, 'shovel: a bite takes the sand around wood and leaves the wood', woodBefore > 0 && woodAfter === woodBefore && zero(dm) && !pack.totals()[E.WOOD] && !pack.totals()[E.SAWDUST], out.numbers.shovelMixed);
       for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 6 + (i % 3));
       for (let i = 0; i < 10; i++) await frame(sim);
-      const r2 = await totals(sim, [pack]), dr2 = diff(r0, r2);
-      check(out, 'shovel: the stone thrown back out, still cell for cell', pack.count === 0 && Object.keys(dr2).every((k) => k === 'ROCK' || k === 'STONE') && (dr2.ROCK ?? 0) + (dr2.STONE ?? 0) === 0, { left: pack.count, diff: dr2 });
 
       // ---- pickaxe: one blow brings the whole outlined lattice block of rock up as stone (dig.js)
       paint(sim, [15, 5, 15], 5, E.ROCK);

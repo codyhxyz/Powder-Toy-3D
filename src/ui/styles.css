@@ -747,5 +747,7 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
    the bottom, where GMod keeps its notifications and net_graph. */
 @media (min-width: 761px) and (hover: hover) {
   .toasts { top: auto; bottom: 64px; flex-direction: column-reverse; }
-  .stats { top: auto; bottom: 14px; }
+  .stats { top: auto; bottom: 14px; transition: right 260ms var(--ease); }
+  /* the open settings drawer covers the bottom right: stats step left of it */
+  body:has(.drawer.open) .stats { right: calc(14px + 320px + 10px); }
 }

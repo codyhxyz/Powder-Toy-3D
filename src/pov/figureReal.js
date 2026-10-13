@@ -5,6 +5,7 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT, EYE_HEIGHT } from './constants.js';
 import { BODY_MODEL_URL } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
+import { buildSpartan } from './figureSpartan.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureMaterial, figureUniforms, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
   CROUCH_POSE, HEAD_LOOK, HEAD_LOOK_MAX, ELBOW_POLE, KNEE_POLE,
@@ -22,7 +23,7 @@ import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limb
 //
 // createBody({ choice }) returns the stickman's interface (root, bind,
 // compile, update, setVisible, dispose), so the shell swaps them freely.
-// choice() is read every frame: 'stick' or 'real'.
+// choice() is read every frame: 'stick', 'real', or the Halo-only 'spartan'.
 //
 // Lighting: his meshes use figure.js's figureMaterial, the world's own lighting
 // (sun and its shadow map, GI probes, glow from hot matter; gfx/meshLight.js),
@@ -371,12 +372,13 @@ function createRealFigure(gltf) {
   };
 }
 
-// The body the shell shows, by choice(): 'real' (the superhero wizard) or
-// 'stick', with the stickman standing in until the model is loaded and
-// compiled. (The Castle Crashers wizard, figureCrasher.js, now only draws NPCs.)
+// The shell chooses 'spartan' in Halo, otherwise the saved 'real' or 'stick'.
+// The stickman stands in while the realistic wizard loads and compiles.
+// The Castle Crashers wizard (figureCrasher.js) only draws NPCs.
 export function createBody({ choice }) {
   const stick = createFigure();
-  const light = [stick];   // the procedural body: cheap, always built
+  const spartan = createFigure(buildSpartan);
+  const light = [stick, spartan];   // procedural bodies, no model download
   let real = null, failed = false, loading = false;
   let bound = null;
   const root = new THREE.Group();
@@ -398,7 +400,7 @@ export function createBody({ choice }) {
       .catch((err) => { failed = true; console.error('Realistic body failed to load; using the stickman', err); })
       .finally(() => { loading = false; });
   }
-  const active = () => (wantsReal() ? real ?? stick : stick);
+  const active = () => choice() === 'spartan' ? spartan : (wantsReal() ? real ?? stick : stick);
 
   return {
     root,
@@ -423,12 +425,13 @@ export function createBody({ choice }) {
     // the showing body's eye and reach (held.js), after update()
     anchor(out) { return active().anchor(out); },
     reach(r) { active().reach(r); },
-    // which body is showing: 'stick' or 'real' (tests)
-    get showing() { return active() === real ? 'real' : 'stick'; },
+    // which body is showing (tests)
+    get showing() { return active() === spartan ? 'spartan' : active() === real ? 'real' : 'stick'; },
     // where the showing body's jetpack exhaust leaves (vfx.js)
     get nozzles() { return active().nozzles ?? JET_NOZZLES; },
     get loaded() { return !!real; },
     get real() { return real; },
+    get model() { return active().model ?? active().root; },
     dispose() {
       for (const f of light) f.dispose();
       real?.dispose();
