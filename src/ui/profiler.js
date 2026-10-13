@@ -106,7 +106,7 @@ export function createProfilerPanel() {
   const canvas = h('canvas', { style: { height: `${GRAPH_H}px` } });
   const ctx = canvas.getContext('2d');
   const gline = h('div.gline');
-  const rates = h('div.line'), state = h('div.line.faint');
+  const rates = h('div.line'), state = h('div.line.faint'), size = h('div.line.faint');
   const rows = PHASES.map((p) => {
     const cpu = h('span.num'), gpu = h('span.num'), track = h('span.track');
     const detail = h('div.detail', { style: { '--c': `var(--prof-${p.id})` } });
@@ -128,7 +128,7 @@ export function createProfilerPanel() {
     h('div.section', {}, h('span', { text: 'Frame time' }), h('span.hint', { text: 'hover a bar to hold' })),
     h('div.graph', {}, canvas),
     gline,
-    rates, state,
+    rates, state, size,
     h('div.section', {}, h('span', { text: 'GPU passes' }), h('span.hint', { text: 'one sampled frame · click a phase' })),
     h('div.row.head', {}, h('span.name', { text: 'phase' }), h('span.num', { text: 'cpu' }), h('span.num', { text: 'gpu' }),
       h('span', { text: 'timeline (ms)' })),
@@ -248,7 +248,7 @@ export function createProfilerPanel() {
       el.classList.toggle('show', v);
       if (v && !last) {
         status.textContent = 'waiting for a frame';
-        rates.textContent = state.textContent = '';
+        rates.textContent = state.textContent = size.textContent = '';
         tCpu.v.textContent = tGpu.v.textContent = '–';
       }
       if (v) { colors = null; draw(); }
@@ -273,8 +273,9 @@ export function createProfilerPanel() {
       tGpu.el.classList.toggle('warn', s.gpu != null && s.gpu > BUDGET_MS);
       lastRates = rateText(s);
       rates.textContent = lastRates;
-      state.textContent = `awake ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)} · ${s.canvas.join('×')}`
-        + (s.renderScale < 1 ? ` → ${sceneSize(s)}` : '');
+      state.textContent = `awake ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)}`;
+      // (its own line: a Retina canvas and its scene size no longer fit beside the rest)
+      size.textContent = `canvas ${s.canvas.join('×')}${s.renderScale < 1 ? ` → scene ${sceneSize(s)}` : ''}`;
       const span = Math.max(s.gpu ?? 0, BUDGET_MS);
       rows.forEach((r, i) => {
         const p = s.phases[i];

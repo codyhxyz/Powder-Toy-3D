@@ -1,11 +1,14 @@
 // Deterministic, no browser/GPU: node tools/resolution-check.mjs
 //
-// post.js's sizing (the scene at the render scale, output-sized history, bloom
-// at half), its pass order and its jitter, recorded through a gpu that only
-// records (no WebGPU in Node); then auto resolution and the pacer, as before.
+// post.js's sizing (the scene at the render scale, output-sized TAA output,
+// bloom at half), its pass order and its jitter, recorded through a gpu that
+// only records (no WebGPU in Node), with three's TAAUNode jittering the camera
+// and a stand-in for its GPU work; then auto resolution and the pacer, as before.
 import assert from 'node:assert/strict';
 import * as THREE from 'three/webgpu';
-import { createAutoResolution, createPost, UPSCALE } from '../src/gfx/post.js';
+import { computeHaltonOffsets } from 'three/addons/tsl/utils/TAAUtils.js';
+import { createAutoResolution, createPost, UPSCALE, UPSCALE_FLOOR, AUTO_RES } from '../src/gfx/post.js';
+import { createTemporalUpscaler } from '../src/gpu/three.js';
 import { createPacer, settleFrames } from '../src/gfx/pacing.js';
 
 // A gpu that records what post asks of it: textures (sizes), passes and
@@ -56,27 +59,42 @@ const scene = {
   prepare(p) { projected = camera.projectionMatrix.clone(); },
   draw(rp, p) { sceneFootprint = pixScale.value / p.sceneTarget.width; },
 };
-const post = createPost(gpu, { presenter, pixScale });
+// three's TAAU (gpu/three.js): its node's own jitter on the camera; its GPU work
+// (inputs, resolve) recorded instead, the resolve an output-sized texture
+const temporal = Object.assign(createTemporalUpscaler({ three: { renderer: null } }), {
+  inputs: (w, h) => ({ velocity: gpu.createTexture({ label: 'taau velocity', size: [w, h] }), color: gpu.createTexture({ label: 'taau colour', size: [w, h] }) }),
+  resolve(cam, depth, [w, h]) {
+    gpu.log.push({ kind: 'pass', name: 'taau' });
+    return gpu.createTexture({ label: 'taau resolve', size: [w, h] });
+  },
+});
+const post = createPost(gpu, { presenter, pixScale, temporal });
 await post.ready;
 post.settings.adapt = false; // exposure readback is unrelated to resolution
 const render = () => { canvas.width = width; canvas.height = height; post.render(scene, camera); };
 for (const ceiling of Object.values(UPSCALE)) {
   post.settings.upscale = ceiling;
-  for (const multiplier of [1, 0.85, 0.6, 1.2]) {
+  for (const multiplier of [1, 0.85, 0.6, 0.4, 1.2]) {
     post.settings.resolutionScale = multiplier;
     render();
-    const scale = ceiling * Math.min(1, multiplier);
+    // native stays native; an upscaling preset × automatic resolution, not below FSR 2's Ultra Performance
+    const scale = ceiling >= 1 ? 1 : Math.max(UPSCALE_FLOOR, ceiling * Math.min(1, Math.max(AUTO_RES.MIN, multiplier)));
     assert.equal(post.renderScale, scale);
+    assert.ok(post.renderScale >= UPSCALE_FLOOR);
     assert.deepEqual(post.size, [width, height]);
     assert.equal(post.targets.scene.width, Math.round(width * scale));
     assert.equal(post.targets.scene.height, Math.round(height * scale));
     assert.deepEqual(post.inSize, [post.targets.scene.width, post.targets.scene.height]);
-    assert.equal(post.targets.history.width, width);
-    assert.equal(post.targets.history.height, height);
+    assert.equal(post.targets.resolved.width, width);
+    assert.equal(post.targets.resolved.height, height);
     assert.equal(post.targets.bloom.width, width / 2);
     assert.ok(Math.abs(sceneFootprint - 1 / width) < 1e-12, 'material LOD footprint stays output-based');
   }
 }
+post.settings.upscale = UPSCALE.native;
+post.settings.resolutionScale = AUTO_RES.MIN;
+render();
+assert.equal(post.targets.scene.width, width, 'Upscaling Off renders every output pixel, whatever automatic resolution asks');
 post.settings.taa = false;
 render();
 assert.equal(post.renderScale, 1);
@@ -87,58 +105,63 @@ width = 901; height = 603;
 render();
 assert.deepEqual(post.size, [901, 603]);
 assert.equal(post.targets.scene.width, Math.round(901 * post.renderScale));
-assert.equal(post.targets.history.width, 901);
+assert.equal(post.targets.resolved.width, 901);
 assert.equal(post.targets.bloom.width, 450);
 assert.ok(Math.abs(sceneFootprint - 1 / 901) < 1e-12);
 const live = gpu.textures.filter((t) => !t.destroyed);
 assert.ok(live.every((t) => t.width >= 1 && t.height >= 1), 'no empty texture');
-console.log('PASS: internal sizes, native output/history/bloom, quality ceiling, LOD footprint, TAA off, resize');
+console.log('PASS: internal sizes (FSR 2 presets of the output, native never lowered, Ultra Performance floor), output-sized TAA output and bloom, LOD footprint, TAA off, resize');
 
-// The frame's passes in order (W16, F7): scene, TAA, prefilter, one compute pass
-// (bloom down 1-5, up 4-1, the reduction), bloom's up[0], the canvas.
+// The frame's passes in order (W16, F7): scene, the motion pass, three's TAAU,
+// prefilter, one compute pass (bloom down 1-5, up 4-1, the reduction), bloom's up[0], the canvas.
 post.settings.upscale = 1; post.settings.resolutionScale = 1; post.settings.adapt = true;
 gpu.log.length = 0;
 render();
 const order = gpu.log.filter((e) => e.kind !== 'flush' && e.kind !== 'destroy').map((e) => (e.kind === 'pass' ? `[${e.name}]` : e.name));
-assert.deepEqual(order, ['[scene]', '[taa]', 'taa', '[prefilter]', 'prefilter', '[post]', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown',
+assert.deepEqual(order, ['[scene]', '[motion]', 'motion', '[taau]', '[prefilter]', 'prefilter', '[post]', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown',
   'bloomUp', 'bloomUp', 'bloomUp', 'bloomUp', 'postReduce', '[bloomUp0]', 'bloomUp0', '[canvas]', 'composite bgra8unorm'], order.join(' '));
 const ups = gpu.log.filter((e) => e.kind !== 'pass' && (e.name === 'bloomUp' || e.name === 'bloomUp0')).map((e) => e.params.dst.join('×'));
 assert.deepEqual(ups, ['28×18', '56×37', '112×75', '225×150', '450×301'], 'bloom up from 1/32 to 1/2 of 901×603');
 post.settings.raw = true;
 gpu.log.length = 0;
 render();
-assert.deepEqual(gpu.log.filter((e) => e.kind === 'pass').map((e) => e.name), ['scene', 'taa', 'canvas'], 'a data view: no bloom, no adaptation');
+assert.deepEqual(gpu.log.filter((e) => e.kind === 'pass').map((e) => e.name), ['scene', 'motion', 'taau', 'canvas'], 'a data view: no bloom, no adaptation');
 post.settings.raw = false;
-console.log('PASS: pass order (scene, TAA, prefilter, one compute pass, up[0], canvas), bloom sizes, raw view');
+console.log('PASS: pass order (scene, motion, TAAU, prefilter, one compute pass, up[0], canvas), bloom sizes, raw view');
 
-// The jitter (F4): Halton(2, 3) − ½ pixels with y down, in camera.projectionMatrix
-// only between beginScene and endScene: row 0 moved by 2·jx/w, row 1 by −2·jy/h.
-const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
+// The jitter (F4): three's TAAUNode's, the only one: Halton(2, 3) − ½ scene pixels
+// with y down over its 32 offsets, a view offset on the camera only between
+// beginScene and endScene: projection column 2 moved by 2·jx/w and −2·jy/h, the
+// rest (the camera's own aspect included) unchanged.
+const offsets = computeHaltonOffsets(32);
 const before = camera.projectionMatrix.clone();
+const near12 = (a, b) => Math.abs(a - b) < 1e-12;
 const seen = [];
-for (let k = 0; k < 20; k++) {
+for (let k = 0; k < 40; k++) {
   render();
   const [jx, jy] = post.jitter;
   seen.push([jx, jy]);
   const e = projected.elements, b = before.elements, [w, h] = post.inSize;
-  for (let c = 0; c < 4; c++) {
-    assert.ok(Math.abs(e[c * 4] - (b[c * 4] + (2 * jx / w) * b[c * 4 + 3])) < 1e-12, 'row 0 += 2·jx/w · row 3');
-    assert.ok(Math.abs(e[c * 4 + 1] - (b[c * 4 + 1] - (2 * jy / h) * b[c * 4 + 3])) < 1e-12, 'row 1 −= 2·jy/h · row 3 (y down)');
-  }
+  assert.ok(near12(e[8], b[8] + 2 * jx / w), 'column 2, x: + 2·jx/w');
+  assert.ok(near12(e[9], b[9] - 2 * jy / h), 'column 2, y: − 2·jy/h (y down)');
+  e.forEach((x, i) => { if (i !== 8 && i !== 9) assert.ok(near12(x, b[i]), `projection element ${i} unchanged`); });
   assert.deepEqual(camera.projectionMatrix.elements, before.elements, 'the projection comes back unjittered');
+  assert.equal(camera.aspect, 1.5, 'the camera keeps its own aspect');
 }
-for (let k = 0; k < 4; k++) assert.deepEqual(seen[k], seen[k + 16], 'the cycle is 16 frames');
+const start = offsets.findIndex(([x, y]) => near12(x - 0.5, seen[0][0]) && near12(y - 0.5, seen[0][1]));
+assert.ok(start >= 0, 'the jitter is one of TAAUNode\'s offsets');
+seen.forEach(([x, y], k) => {
+  const [hx, hy] = offsets[(start + k) % offsets.length];
+  assert.ok(near12(x, hx - 0.5) && near12(y, hy - 0.5), `frame ${k}: TAAUNode's next offset`);
+});
 assert.ok(seen.every(([x, y]) => Math.abs(x) <= 0.5 && Math.abs(y) <= 0.5));
-const sorted = (a) => [...a].sort((p, q) => p - q);
-const cycle = Array.from({ length: 16 }, (_, k) => k + 1);
-assert.deepEqual(sorted(seen.slice(0, 16).map(([x]) => x)), sorted(cycle.map((k) => halton(k, 2) - 0.5)), 'Halton(2) − ½ in x');
-assert.deepEqual(sorted(seen.slice(0, 16).map(([, y]) => y)), sorted(cycle.map((k) => halton(k, 3) - 0.5)), 'Halton(3) − ½ in y');
 post.settings.taa = false;
 render();
 assert.deepEqual(post.jitter, [0, 0], 'no jitter without TAA');
 assert.deepEqual(projected.elements, before.elements);
 post.settings.taa = true;
-console.log('PASS: jitter: Halton(2, 3) over 16 frames, y down, only inside the scene, none without TAA');
+assert.equal(post.settleWeight, temporal.node.currentFrameWeight, 'the pacer settles with TAAUNode\'s current-frame weight');
+console.log('PASS: jitter: TAAUNode\'s Halton(2, 3) over its 32 offsets, y down, only inside the scene, none without TAA; settleWeight is its weight');
 
 // The frame's parts in B3's order: prepare (the tick's one FrameUniforms write)
 // and compute (E1's FrameUniforms readers) with the camera already jittered,
@@ -167,7 +190,7 @@ console.log('PASS: jitter: Halton(2, 3) over 16 frames, y down, only inside the 
   post.onPass = (name) => note('onPass', name);
   gpu.log.length = 0;
   post.render(parts, camera);
-  assert.deepEqual(events().slice(0, 10), ['prepare', 'compute', '[scene]', 'draw', 'meshes', '[overlay]', 'overlay', 'onPass scene', '[taa]', 'onPass taa'], events().join(' '));
+  assert.deepEqual(events().slice(0, 11), ['prepare', 'compute', '[scene]', 'draw', 'meshes', '[overlay]', 'overlay', 'onPass scene', '[motion]', '[taau]', 'onPass taa'], events().join(' '));
   assert.equal(inside, 'jittered', 'prepare sees the jittered camera (FrameUniforms.viewProj, F6)');
   assert.ok(near(rayProj, before), 'withoutJitter runs fn with the camera\'s own projection');
   assert.ok(near(after, inPrepare), '…and jitters it again after');
@@ -201,7 +224,7 @@ console.log('PASS: frame parts: prepare and compute with the camera jittered, th
   post.renderStill(scene, camera, thumb(160, 100));
   const log = gpu.log.map((e) => `${e.kind}:${e.name}`);
   const destroyed = log.filter((x) => x.startsWith('destroy:'));
-  for (const name of ['scene colour', 'scene depth', 'post history 0', 'post down 5', 'post up 4', 'still colour', 'still depth']) {
+  for (const name of ['scene colour', 'scene depth', 'post down 5', 'post up 4', 'still colour', 'still depth']) {
     assert.ok(destroyed.includes(`destroy:${name}`), `a resize destroys ${name}: ${destroyed.join(' ')}`);
   }
   log.forEach((x, i) => {
