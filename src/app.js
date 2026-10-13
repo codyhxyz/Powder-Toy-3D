@@ -297,8 +297,14 @@ const canvas = document.createElement('canvas');
 document.getElementById('app').appendChild(canvas);
 const presenter = createPresenter(gpu, canvas);
 const renderer = await createThreeRenderer(gpu, canvas, { hdr: presenter.hdr });
-// Keep the existing CSS-native output; adaptation only changes scene pixels.
-const pixelRatio = Math.min(devicePixelRatio, 1);
+// The canvas matches the screen's pixels (up to RETINA_MAX), so the browser no
+// longer stretches a CSS-sized picture 2× on a Retina display. The scene keeps
+// its CSS-sized pixel budget (the upscale preset is divided by this ratio): TAAU
+// fills the extra output pixels from its jittered history, so a still view
+// converges to full screen resolution at no extra scene cost. Phones stay at 1
+// (their GPUs pay for every output pixel of post).
+const RETINA_MAX = 2;
+const pixelRatio = MOBILE ? 1 : Math.min(devicePixelRatio, RETINA_MAX);
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 
@@ -1888,7 +1894,7 @@ let volumeDrawn = false;   // the last presented frame drew the volume (__app.vi
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(settings.view);
-  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: post.renderScale });
+  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio) });   // one scene pixel wide: fade as it widens past a CSS pixel
   for (const w of before) w.scene(ctx, rp);
   const meshDepth = cut.take();
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
@@ -2071,7 +2077,7 @@ function tick(now, renderOnly = false) {
     camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     post.settings.raw = settings.view !== 0;
-    post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
+    post.settings.upscale = (UPSCALE[settings.upscale] ?? UPSCALE.native) / pixelRatio;   // scene pixels stay CSS-sized (pixelRatio)
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
