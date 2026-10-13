@@ -193,6 +193,9 @@ try {
   for (const change of DEFAULT_CHANGES.slice(rev)) Object.assign(settings, change);
 } catch { /* storage unavailable */ }
 const params = new URLSearchParams(location.search);
+// ?shot=<name>: a shot of the side-by-side sheet (src/shot.js), its scene's parameters set here, played once booted
+const shotLink = params.has('shot') ? await import('./shot.js') : null;
+const linkShot = shotLink?.shotParams(params) ?? null;
 // Explicit opt-in only: visual tests also use automation, so never infer this
 // from navigator.webdriver. tools/browser.mjs supplies the same flag before boot.
 const testMode = params.get('test') ?? window.__TPT_TEST_MODE__;
@@ -2267,6 +2270,7 @@ try {
   loop = createFrameLoop(frame);
   loop.start();
   bootReady(launch.save ? openSave(launch.save) : null);   // a save picked on the menu's Saves before the game had loaded
+  if (linkShot) shotLink.playShot(window.__app, linkShot, { setPaused });
 } catch (err) {
   // A stop of graphics is stopGraphics's to explain, with the first failure,
   // which is the cause: a lost device rejects every pipeline still building,
