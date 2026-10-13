@@ -172,8 +172,10 @@ const NL: u32 = 64u;
   if (i < NP) {
     let q = io[i];
     let m = matOf(E_PLANT, q.xyz, normalize(vec3f(0.3, 1.0, 0.2)), AMBIENT, 0.0, q.w);
-    io[NP + 4u * i] = vec4f(m.alb, m.cav);
-    io[NP + 4u * i + 1u] = vec4f(m.g, m.rough);
+    // the leaves alone: the clumps (leafClumps) taken back out of the bump and cavity
+    let cl = leafClumps(q.xyz, q.w);
+    io[NP + 4u * i] = vec4f(m.alb, m.cav / (1.0 + LEAF_CLUMP_CAV * cl.x));
+    io[NP + 4u * i + 1u] = vec4f(m.g - LEAF_CLUMP_H * cl.yzw, m.rough);
     io[NP + 4u * i + 2u] = vec4f(m.sssCol, m.trans);
     io[NP + 4u * i + 3u] = vec4f(m.metal, m.f0, m.sss, m.glint);
   } else if (i < NP + NL) {
@@ -200,7 +202,9 @@ const NL: u32 = 64u;
           const alb = out.subarray(o, o + 3), cav = out[o + 3], gv = out.subarray(o + 4, o + 7), rgh = out[o + 7];
           const sss = out.subarray(o + 8, o + 11), trans = out[o + 11];
           if (pt.faded) {
-            const ok = alb.every((v, k) => v === albFaded[k]) && cav === mean && gv.every((v) => v === 0) && rgh === rough
+            // cavity and bump to f32 rounding: the clumps were divided and subtracted back out
+            const ok = alb.every((v, k) => v === albFaded[k]) && Math.abs(cav - mean) <= 2 * ulp(mean)
+              && gv.every((v) => Math.abs(v) <= 1e-6) && rgh === rough
               && sss.every((v, k) => v === tint[k]) && trans === 1;
             if (!ok) { exactBad++; if (firstBad.length < 3) firstBad.push(`p ${pt.p.map((v) => v.toFixed(1))} fp ${pt.fp}: alb ${Array.from(alb)} cav ${cav} g ${Array.from(gv)} rough ${rgh}`); }
           } else {
@@ -214,7 +218,7 @@ const NL: u32 = 64u;
             worstRel = Math.max(worstRel, pt.lw);
           }
         });
-        check(`faded foliage: ${N} points, matOf gives exactly ALBEDO·MEAN, cavity MEAN, no bump, its roughness, tint and translucency`,
+        check(`faded foliage: ${N} points, matOf's leaves give exactly ALBEDO·MEAN, cavity MEAN (to rounding), no bump, its roughness, tint and translucency`,
           exactBad === 0, firstBad.join('; '));
         // just inside the fade the slow path differs from the faded result by
         // at most its weight times the swing of each term (gfx/surface.js: the

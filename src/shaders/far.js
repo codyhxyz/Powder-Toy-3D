@@ -893,10 +893,6 @@ export const FAR_VIEW = {
   AO_MIN: 0.35,            // ...down to this
   WATER_STEP: 4.0,         // the refracted ray's steps under water, looking for the bed...
   WATER_STEPS: 8,          // ...this many at most (deeper reads as open water)
-  CLUMP_M: 0.6,            // m: clumps of foliage on a far crown (its leaves are below a pixel there)...
-  CLUMP_H_M: 0.15,         // ...their relief (m), a bump...
-  CLUMP_CAV: 0.9,          // ...and the shade in their hollows (cavity swing per unit of the clump noise)
-  CLUMP_OCT: 2,            // fBm octaves of the clumps
   SUN_DISC: 40.0,          // the sun's disc radiance, × the sunlight at the ground (the real ratio blooms the whole sky)
   SUN_DISC_EDGE: 0.15,     // its soft edge, share of its radius
   HAZE: FAR_HAZE,          // extinction per cell of the air, green (farShared.js)
@@ -1039,10 +1035,6 @@ var<private> FAR_SUN_RAY: array<f32, ${FAR_VIEW.SUN_RAY.length}> = array<f32, ${
 const FAR_SUN_RAY_LIFT: f32 = ${glf(FAR_VIEW.SUN_RAY_LIFT)};
 const FAR_SUN_RAY_LO: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[0])};
 const FAR_SUN_RAY_HI: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[1])};
-const FAR_CLUMP_F: f32 = ${glf(+(CELL_M / FAR_VIEW.CLUMP_M).toFixed(4))};   // per cell
-const FAR_CLUMP_H: f32 = ${glf(+(FAR_VIEW.CLUMP_H_M / CELL_M).toFixed(4))};   // cells
-const FAR_CLUMP_CAV: f32 = ${glf(FAR_VIEW.CLUMP_CAV)};
-const FAR_CLUMP_OCT: i32 = ${FAR_VIEW.CLUMP_OCT};
 const FAR_AO_D1: f32 = ${glf(FAR_VIEW.AO_D1)};
 const FAR_AO_D2: f32 = ${glf(FAR_VIEW.AO_D2)};
 const FAR_AO_K: f32 = ${glf(FAR_VIEW.AO_K)};
@@ -1218,13 +1210,7 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
 // over its open share (none under the ground: FAR_SKY), its own glow.
 fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3f {
   let fp = footprint(p);
-  var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);
-  if (id == E_PLANT${mesh ? ' && false' : ''}) {
-    // foliage: its leaves have faded into the far look; clumps of them still show (fading in turn)
-    let cl = mFbmD(p, FAR_CLUMP_F, FAR_CLUMP_OCT, fp);
-    m.g += FAR_CLUMP_H * cl.yzw;
-    m.cav *= 1.0 + FAR_CLUMP_CAV * cl.x;
-  }
+  var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);   // (foliage keeps its clumps: matOf's leafClumps)
   // the material's bump tilts the normal (applyMat)
   var gt = m.g - n * dot(n, m.g);
   let gl = length(gt);

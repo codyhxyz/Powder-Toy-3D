@@ -365,6 +365,16 @@ const SNOW_CLUMP_F: f32 = CELL_M / SNOW_CLUMP_M;
 const SNOW_CLUMP_H: f32 = 0.008 / CELL_M;
 const SNOW_CLUMP_OCT: i32 = 2;
 fn snowClumps(p: vec3f, fp: f32) -> vec4f { return mFbmD(p, SNOW_CLUMP_F, SNOW_CLUMP_OCT, fp); }
+// Foliage: leaves grow in sprays and the sprays in clumps, so a crown is lumps
+// of foliage with shaded hollows between them at every distance, not one
+// smooth green surface once its 3.5 cm leaves are below a pixel. Octaves of
+// 60, 30 and 15 cm, each fading in turn (mFbmD), carry it out to the horizon.
+const LEAF_CLUMP_M: f32 = 0.6;               // m, the largest clumps' wavelength
+const LEAF_CLUMP_F: f32 = CELL_M / LEAF_CLUMP_M;
+const LEAF_CLUMP_H: f32 = 0.15 / CELL_M;     // relief per unit of noise, cells
+const LEAF_CLUMP_CAV: f32 = 0.9;             // cavity swing per unit of noise: the hollows' shade
+const LEAF_CLUMP_OCT: i32 = 3;
+fn leafClumps(p: vec3f, fp: f32) -> vec4f { return mFbmD(p, LEAF_CLUMP_F, LEAF_CLUMP_OCT, fp); }
 // Gunpowder: lumps of granules.
 const POWDER_LUMP_M: f32 = 0.13;             // m, wavelength
 const POWDER_LUMP_F: f32 = CELL_M / POWDER_LUMP_M;
@@ -995,6 +1005,9 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.alb *= mix(vec3f(MEAN), mix(DEPTH_ALB * hue, leaf, pm), lw);
     m.rough += WAX_VAR * (c.z - 0.5) * lw;     // some leaves waxier than others
     }
+    let cl = leafClumps(p, fp);
+    m.g += LEAF_CLUMP_H * cl.yzw;
+    m.cav *= 1.0 + LEAF_CLUMP_CAV * cl.x;
     m.sssCol = DEEP_TINT;
     m.trans = 1.0;
   } else if (id == E_METAL) {
