@@ -125,7 +125,9 @@ The tools are physical and finite. Infinite painting stays in the god view.
 Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
 
 Everything you do makes a sound (synthesised with [ZzFX](https://github.com/KilledByAPixel/ZzFX) and placed in 3D):
-impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Shots
+impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Digging
+(the shovel, the pickaxe, the axe, a load set down) plays recordings instead: [Kenney](https://kenney.nl)'s CC0 Impact
+Sounds, level-matched, the blade's bite over its material's texture, five takes a sound (`public/sfx/dig`). Shots
 kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
 draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly and flat-shaded in the RuneScape style, and
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
