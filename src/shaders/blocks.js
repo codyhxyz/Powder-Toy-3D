@@ -495,7 +495,7 @@ fn look(v: VOut, back: bool) -> Look {
   var emit = vec3f(0.0);
   if (id == E_LAVA) { alb = BK_LAVA_ALB; }
   else { alb *= mix(1.0, BK_HOT_ALBEDO, smoothstep(BK_HOT_FROM, BK_HOT_TO, T)); }
-  if (cls == CL_OPAQUE) { emit = cellEmission(id, T); }
+  if (cls == CL_OPAQUE) { emit = cellEmission(id, T, 0.0); }   // (no ctype here: lava sets as stone would)
   let glow = info >> 27u;
   if (glow == 1u) { emit += SPARK_GLOW; }
   if (glow == 2u) { emit += LAMP_GLOW; }

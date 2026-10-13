@@ -620,7 +620,7 @@ ${listMainWGSL('LIST_FIELDS')}
   else if (id != E_EMPTY && KIND(id) != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)) || lampLit(id, floor(a.w)))) {
     // small sources shed more (gfx/materials.js SHED); a live conductor or a
     // lit lamp too (LAMP_ROOM_GAIN) (src/electricity.js)
-    let ce = cellEmission(id, a.y) * SHED(id) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
+    let ce = cellEmission(id, a.y, floor(a.w)) * SHED(id) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
     if (dot(ce, ce) > 0.0) {
       var f = 1.0;
       if (RCLASS(id) == R_OPAQUE) { f = openFaces(p) * GLOW_FACE_GAIN; }

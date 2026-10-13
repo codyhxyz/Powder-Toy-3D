@@ -186,7 +186,16 @@ export const MEDIA_NOISE_CELLS = 64;
 //          parameters per element: 'CRAG' = natural rock (shaders/gfx/surface.js
 //          rockCrags and its matOf branch): lumps, crags and creases, carved as
 //          relief up close, with grit, stains, banding and pits; crag holds
-//          its parameters (CRAG_PARAMS), each a multiple of ROCK's basalt
+//          its parameters (CRAG_PARAMS), each a multiple of ROCK's basalt;
+//          'BRUSHED' = worked metal (brushed streaks, smudges, anisotropic
+//          highlight, mill scale when hot), with brushed (BRUSHED_PARAMS);
+//          'POLISHED' = polished soft metal (waviness, haze), with polished
+//          (POLISHED_PARAMS)
+//   macro  the shared play-distance variation every opaque material gets
+//          (shaders/gfx/surface.js matMacro): { tone, hue, rough, size }:
+//          albedo swing, warm/cool hue swing, roughness swing (each per unit
+//          of a centred noise, p5..p95 about ±0.8) and the size of its patches as a
+//          multiple of MACRO_M there. Defaults by kind: MACRO_DEFAULT
 // Albedo sources (approximate, visible band): dry quartz sand 0.35-0.55, fresh
 // snow 0.85-0.95, concrete 0.25-0.4, wood ash 0.3-0.4, black powder ~0.04,
 // bark 0.05-0.15, leaves ~0.05/0.15/0.03, basalt 0.08-0.15, tan sandstone
@@ -194,11 +203,30 @@ export const MEDIA_NOISE_CELLS = 64;
 // (USGS spectral library, Clark et al. 2007). Metal F0 from measured complex
 // IORs (iron/steel 0.56-0.58, gold 1.0/0.77/0.34).
 const STEEL_F0 = [0.56, 0.57, 0.58];
+// Play-distance variation (macro, above). Nothing was authored at the 0.3-4 m
+// the player looks at, so past a few metres every opaque material read as one
+// flat albedo (docs/v2/evidence/audit-render.md 2.1-2.3). The rule is
+// Noita's: every material carries a world-space texture, so a wall of it is
+// never one flat colour; and Teardown's: each voxel's colour comes from its
+// material's palette with a little spread (TPT's per-particle jitter, COLORVAR,
+// does the voxel scale: surface.js matMacro). Amplitudes are eyeballed against
+// the touchstones: natural ground drifts ~±15-30% in tone over a few metres
+// (sun-bleached, damp, shaded, sorted), worked metal mostly in gloss (smudges,
+// wear) and little in colour.
+const MACRO_DEFAULT = {
+  [K.SOLID]: { tone: 0.12, hue: 0.04, rough: 0.08, size: 1 },
+  [K.POWDER]: { tone: 0.15, hue: 0.06, rough: 0.06, size: 1 },
+  [K.LIQUID]: { tone: 0.05, hue: 0.02, rough: 0.04, size: 1 },   // the opaque melts (mud, mercury) that matOf shades
+};
+const MACRO_METAL = { tone: 0.05, hue: 0, rough: 0.12, size: 0.35 };   // smudges and wear: gloss, not colour, at hand scale
+const MACRO_ROCK = { tone: 0.12, hue: 0.06, rough: 0.06, size: 1.5 };  // the CRAG rocks carry their own stains: broad patches only
+const MACRO_NONE = { tone: 0, hue: 0, rough: 0, size: 1 };            // lava, crystal, void: their look is their own
+const MACRO_PARAMS = ['tone', 'hue', 'rough', 'size'];
 const LOOKS = {
   WALL: { rough: 0.85, alb: '#8f8c87' },
-  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55 },
-  STONE: { rough: 0.75, alb: '#7f7c77' },
-  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8 },
+  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 } },
+  STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 } },
+  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 } },   // wind crust and drifts: gloss varies more than colour
   GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
   ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3 },
   // Liquids. Clean water absorbs red most (real ratios ~1 : 0.2 : 0.1 with a
@@ -212,12 +240,12 @@ const LOOKS = {
   WATER: { ior: 1.333, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
   OIL: { ior: 1.47, rough: 0.03, scatter: [0.012, 0.008, 0.003] },
   ACID: { ior: 1.36, rough: 0.1, scatter: [0.09, 0.47, 0.02], emit: tintGlow(ACID_GLOW_TINT, ACID_GLOW_LUM) },
-  LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522' },
+  LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522', macro: MACRO_NONE },   // its crust and glow are its own
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
-  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637' },
-  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25 },
-  METAL: { rough: 0.32, metal: 1, alb: STEEL_F0 },
+  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 } },
+  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 } },   // lush .. sun-dried patches
+  METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED' },
   GLASS: { ior: 1.5, rough: 0.02, scatter: [0.005, 0.003, 0.004] },
   // Debris (elements.js breakInto): heaps of fragments, powders as TPT's BGLA,
   // SAWD and BRMT are. Crushed glass is near-white, as crushed ice is snow and
@@ -229,14 +257,15 @@ const LOOKS = {
   // Scrap is the same steel, torn and scuffed, glinting off its torn edges.
   SHARDS: { rough: 0.4, ior: 1.5, alb: '#dce8e6', sss: 0.45, glint: 0.9 },
   SAWDUST: { rough: 0.95, sss: 0.25 },
-  SCRAP: { rough: 0.5, metal: 1, alb: STEEL_F0, glint: 0.6 },
+  SCRAP: { rough: 0.5, metal: 1, alb: STEEL_F0, glint: 0.6, surf: 'BRUSHED',
+    brushed: { aniso: 0.35, scale: 1, wear: 2.5 }, macro: { tone: 0.12, hue: 0.03, rough: 0.2, size: 0.25 } },   // torn and scuffed: the brushing broken up, dull patches
   // Ice shares the liquid surface: a clear surface between ice and water is
   // nearly invisible in real life too (n = 1.31 vs 1.33). Frozen ice is
   // cloudy (trapped air), so it scatters white and stays visible.
   ICE: { ch: 'LIQUID', ior: 1.31, rough: 0.06, scatter: [0.025, 0.025, 0.025] },
-  CLONE: { rough: 0.25, metal: 1, alb: [1.0, 0.766, 0.336] },   // polished gold
+  CLONE: { rough: 0.25, metal: 1, alb: [1.0, 0.766, 0.336], surf: 'POLISHED' },   // polished gold
   // natural rock (terrain): weathered basalt, part of the natural-solids surface
-  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48', surf: 'CRAG' },
+  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48', surf: 'CRAG', macro: MACRO_ROCK },
   // The other rocks share it (and its texture: surf CRAG, crag below).
   // Sandstone: quartz grains (n = 1.54, they glint like sand's) in a tan,
   // iron-stained cement, linear albedo ~0.45/0.33/0.2. Limestone: calcite
@@ -246,16 +275,16 @@ const LOOKS = {
   // rock's (n 1.5, the default): its sheen is a smoother face than rock's.
   // (Glossier, it outshone the basalt beside it under a low sun.) Broken coal
   // shows the same faces fresh, glinting where they catch the sun.
-  SANDSTONE: { ch: 'ORGANIC', rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
+  SANDSTONE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
     crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 } },   // rounded by weathering, bedded, iron-stained
   // Basalt: fresh lava rock, darker than ROCK's weathered face, its gas
   // bubbles frozen in as pits (vesicles), clinkery and unbedded (fresh flows
   // ~0.03-0.05 albedo, below the weathered 0.08-0.15).
-  BASALT: { ch: 'ORGANIC', rough: 0.9, alb: '#353331', surf: 'CRAG',
+  BASALT: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.9, alb: '#353331', surf: 'CRAG',
     crag: { relief: 1, pits: 1, bands: 0, stain: 0.2 } },
-  LIMESTONE: { ch: 'ORGANIC', rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
+  LIMESTONE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
     crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
-  COAL: { ch: 'ORGANIC', rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
+  COAL: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
     crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
   BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
@@ -265,7 +294,7 @@ const LOOKS = {
   // (crystalLook); alb is the mean. Its
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
-  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED },
+  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED, macro: MACRO_NONE },
   WALL_TORCH: { rough: 0.9, alb: '#d0702a', emit: TORCH_GLOW, shed: TORCH_SHED },   // a burning pitch head: deep orange, not a pale box once the eyes adjust
   EMBER: { rough: 0.8, alb: '#3a1c12', glint: 0.3, emit: EMBER_GLOW, shed: EMBER_SHED },
   CRYSTAL_DUST: { rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED },
@@ -280,7 +309,7 @@ const LOOKS = {
   INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
   TSNS: { rough: 0.5, alb: '#c21aa6' },
   LAMP: { rough: 0.5, ior: 1.5, alb: '#f4e6c4', sss: 0.5 },   // frosted bulb glass: its light is sparkEmit's (lampLit)
-  PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14] },   // Clone's gold, tarnished: TPT draws it dark olive
+  PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14], surf: 'POLISHED', polished: { wave: 1, haze: 2 } },   // Clone's gold, tarnished: TPT draws it dark olive
   // Radioactive metals as powders: a metal powder is dark, since light is
   // trapped between the grains, with bright glints off the facets. Uranium
   // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
@@ -288,23 +317,28 @@ const LOOKS = {
   URANIUM: { rough: 0.55, alb: '#3f413b', glint: 0.5 },
   PLUTONIUM: { rough: 0.6, alb: '#45493a', glint: 0.4 },
   // Batch 3 (elements.js, el-mat). Void: matte black, a hole in the world.
-  VOID: { rough: 1, alb: '#0d0809' },
+  VOID: { rough: 1, alb: '#0d0809', macro: MACRO_NONE },
   // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
   // blue (USGS spectral library, fired clay); built, so crisp like Wall.
   // Crushed, it is paler: the broken faces scatter more.
-  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06] },
+  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06], macro: { tone: 0.18, hue: 0.1, rough: 0.06, size: 1 } },   // weathered, sooted walls
   RUBBLE: { rough: 0.95, alb: [0.3, 0.14, 0.09] },
   // Metals: F0 from measured complex indices (n, k at 450/550/650 nm;
   // refractiveindex.info): titanium (0.54, 0.50, 0.45), tungsten ~0.5 grey,
   // gold as Clone's, mercury ~0.75 flat (a liquid mirror).
-  TITANIUM: { rough: 0.35, metal: 1, alb: [0.542, 0.497, 0.449] },
-  TUNGSTEN: { rough: 0.3, metal: 1, alb: [0.5, 0.49, 0.46] },
-  GOLD: { rough: 0.3, metal: 1, alb: [1.0, 0.766, 0.336] },
-  NUGGETS: { rough: 0.45, metal: 1, alb: [1.0, 0.766, 0.336], glint: 0.6 },
+  // Worked metals are brushed like Metal's steel (surf BRUSHED; only steel
+  // grows black mill scale when hot: titanium's and tungsten's oxides are
+  // thin films); gold has Clone's polish (surf POLISHED). Untextured, they
+  // read as plastic beside Metal and Clone (audit-render.md B10). Nuggets are
+  // water-worn lumps: a coarse, hammered waviness and a hazier gloss.
+  TITANIUM: { rough: 0.35, metal: 1, alb: [0.542, 0.497, 0.449], surf: 'BRUSHED', brushed: { aniso: 1, scale: 0, wear: 1 } },
+  TUNGSTEN: { rough: 0.3, metal: 1, alb: [0.5, 0.49, 0.46], surf: 'BRUSHED', brushed: { aniso: 1, scale: 0, wear: 1 } },
+  GOLD: { rough: 0.3, metal: 1, alb: [1.0, 0.766, 0.336], surf: 'POLISHED' },
+  NUGGETS: { rough: 0.45, metal: 1, alb: [1.0, 0.766, 0.336], glint: 0.6, surf: 'POLISHED', polished: { wave: 6, haze: 2 } },
   // Liquid metal: an opaque mirror, smoothed like a melt (it shares lava's
   // channel; the two never meet, since mercury boils at 357 °C)
   MERCURY: { ch: 'MOLTEN', rough: 0.04, metal: 1, alb: [0.75, 0.75, 0.74] },
-  SOLID_MERCURY: { rough: 0.35, metal: 1, alb: [0.75, 0.75, 0.74] },
+  SOLID_MERCURY: { rough: 0.35, metal: 1, alb: [0.75, 0.75, 0.74], surf: 'POLISHED' },
   // Plasma draws as flame (its light, by the flame's temperature channel)
   PLASMA: { media: 'FIRE' },
   // Diamond: n = 2.417, so it sparkles far more than glass (n 1.5); a
@@ -322,7 +356,7 @@ const LOOKS = {
   DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5 },
   // Lithium is silvery cut, but dulls in air within minutes (nitride, hydroxide):
   // a grey, rough metal.
-  LITHIUM: { rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56] },
+  LITHIUM: { rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56], surf: 'BRUSHED', brushed: { aniso: 0.3, scale: 0, wear: 2 } },
   // Clear gases (CO₂, hydrogen, oxygen) are invisible: a faint haze shows where
   // they are. Hydrogen chloride fumes in moist air, pulling the water vapour
   // out as a mist of acid droplets (real), so it shows more.
@@ -338,11 +372,11 @@ const LOOKS = {
   // Antimatter is a game substance: a pale lilac powder with a sheen, so it
   // reads apart from the other powders. The singularity reflects nothing.
   DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
-  CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2 },
-  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a' },
+  CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2, macro: { tone: 0.12, hue: 0.1, rough: 0.06, size: 1 } },
+  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a', macro: { tone: 0.15, hue: 0.08, rough: 0.2, size: 0.6 } },   // wetter: darker and glossier patches
   CERAMIC: { rough: 0.6, alb: '#efeae0' },
   ANTIMATTER: { rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
-  SINGULARITY: { rough: 1, alb: '#000000' },
+  SINGULARITY: { rough: 1, alb: '#000000', macro: MACRO_NONE },
   // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
   // little waxy (light wraps into its edges). Nitroglycerin is a clear, pale
   // yellow oil, n = 1.479. Cast TNT is pale yellow-brown, dull and crystalline.
@@ -374,8 +408,8 @@ const LOOKS = {
   // Moss: a dark, matte green mat (moss reflects ~0.05-0.1 in the visible,
   // greenest near 550 nm); light wraps into its leaves. Fungus: pale buff
   // mycelium over the wood, glowing green (foxfire).
-  MOSS: { ch: 'ORGANIC', rough: 0.95, alb: '#3e5a24', sss: 0.3 },
-  FUNGUS: { ch: 'ORGANIC', rough: 0.75, alb: '#c9c3a0', sss: 0.35, emit: FOXFIRE_GLOW },
+  MOSS: { ch: 'ORGANIC', rough: 0.95, alb: '#3e5a24', sss: 0.3, macro: { tone: 0.3, hue: 0.35, rough: 0.05, size: 0.5 } },
+  FUNGUS: { ch: 'ORGANIC', rough: 0.75, alb: '#c9c3a0', sss: 0.35, emit: FOXFIRE_GLOW, macro: { tone: 0.2, hue: 0.15, rough: 0.08, size: 0.4 } },
   // Meat (elements.js MEAT, COOKED_MEAT): raw lean muscle is wet (a glossy
   // surface, water's n = 1.33) and translucent, red with myoglobin (light
   // wraps into it as into skin); cooking browns and dries it (the Maillard
@@ -386,7 +420,7 @@ const LOOKS = {
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
-export const SURFS = ['NONE', 'CRAG'];
+export const SURFS = ['NONE', 'CRAG', 'BRUSHED', 'POLISHED'];
 // CRAG parameters, as multiples of ROCK's weathered basalt (the defaults):
 //   relief  height of the crags and creases (and of their carving up close)
 //   pits    gas vesicles in basalt; small solution pits in limestone
@@ -394,6 +428,33 @@ export const SURFS = ['NONE', 'CRAG'];
 //   stain   rusty iron-oxide patches
 const CRAG_PARAMS = ['relief', 'pits', 'bands', 'stain'];
 const CRAG_DEFAULT = { relief: 1, pits: 1, bands: 1, stain: 1 };
+// BRUSHED parameters, as multiples of Metal's steel (the defaults):
+//   aniso  the brushed highlight's anisotropy (torn scrap: little)
+//   scale  black mill scale when hot (steel's; 0 where the oxide is a thin film)
+//   wear   smudges and scuffs (their albedo and roughness swing)
+const BRUSHED_PARAMS = ['aniso', 'scale', 'wear'];
+const BRUSHED_DEFAULT = { aniso: 1, scale: 1, wear: 1 };
+// POLISHED parameters, as multiples of Clone's polished gold:
+//   wave   height of the polishing waviness (water-worn nuggets: hammered lumps)
+//   haze   the haze in the gloss
+const POLISHED_PARAMS = ['wave', 'haze'];
+const POLISHED_DEFAULT = { wave: 1, haze: 1 };
+// A family's parameters, packed into the material's surfP (a vec4, zero-padded)
+const FAMILY_PARAMS = {
+  CRAG: { key: 'crag', names: CRAG_PARAMS, def: CRAG_DEFAULT },
+  BRUSHED: { key: 'brushed', names: BRUSHED_PARAMS, def: BRUSHED_DEFAULT },
+  POLISHED: { key: 'polished', names: POLISHED_PARAMS, def: POLISHED_DEFAULT },
+};
+const SURF_P_LEN = 4;
+const familyParams = (l) => {
+  const f = FAMILY_PARAMS[l.surf];
+  const v = f ? f.names.map((k) => (l[f.key] ?? f.def)[k] ?? f.def[k]) : [];
+  return [...v, ...Array(SURF_P_LEN - v.length).fill(0)];
+};
+const macroOf = (e, l) => {
+  const m = l.macro ?? (l.metal ? MACRO_METAL : MACRO_DEFAULT[e.kind] ?? MACRO_NONE);
+  return MACRO_PARAMS.map((k) => m[k] ?? MACRO_NONE[k]);
+};
 
 // The surface an element's kind gets where LOOKS gives it none: a powder is a
 // granular heap, a liquid the liquid surface, a gas steam's mist (steam and
@@ -420,7 +481,8 @@ export const LOOK = ELEMENTS.map((e) => {
     emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(ROUND_DIGITS)),
     shed: l.shed ?? 1,
     surf: SURFS.indexOf(l.surf ?? 'NONE'),
-    crag: l.surf === 'CRAG' ? CRAG_PARAMS.map((k) => (l.crag ?? CRAG_DEFAULT)[k] ?? CRAG_DEFAULT[k]) : CRAG_PARAMS.map(() => 0),
+    surfP: familyParams(l),
+    macro: macroOf(e, l),
     // single-scattering albedo: the scattered share of the extinction
     scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(ROUND_DIGITS)),
   };
@@ -501,7 +563,8 @@ const look = (e) => {
   return LOOK[e.id];
 };
 export const MATERIAL_FIELDS = [
-  { name: 'crag', type: 'vec4f', fn: 'CRAG', get: (e) => look(e).crag },
+  { name: 'surfP', type: 'vec4f', fn: 'SURFP', get: (e) => look(e).surfP },   // the texture family's parameters (FAMILY_PARAMS)
+  { name: 'macroVar', type: 'vec4f', fn: 'MACRO', get: (e) => look(e).macro },   // play-distance variation (tone, hue, rough, size)
   { name: 'albedo', type: 'vec3f', fn: 'ALBEDO', get: (e) => look(e).alb },
   { name: 'surfCh', type: 'i32', fn: 'SURFCH', get: (e) => look(e).ch },
   { name: 'scatAlb', type: 'vec3f', fn: 'SCATALB', get: (e) => look(e).scatAlb },
@@ -534,11 +597,86 @@ const vec3 = (a) => `vec3f(${a.map(f).join(', ')})`;
 const LUMINOUS = ELEMENTS.filter((e) => LOOK[e.id].emit.some((v) => v > 0));
 const EMISSION_GLSL = /* wgsl */ `
 fn emissionWith(id: i32, Ts: f32, emissivity: f32) -> vec3f { return emissivity * incandescence(Ts) + EMIT(id); }
+// A body's own glow, emissivity 1: what a participating medium (a liquid's or
+// glass's interior, paint in it) gives off per unit of (1 - transmittance), its
+// absorptivity being its emissivity (Kirchhoff's law for a volume).
 fn emission(id: i32, Ts: f32) -> vec3f { return emissionWith(id, Ts, 1.0); }
+
+// ---- the glow of an opaque surface: ONE model, everywhere it is seen ----
+// The view (gfx/surface.js matOf: hotEmit, lava, steel) and everything that sees
+// a surface second-hand (reflections, liquid.js reflShade; the near-field
+// bounce, lighting.js nearField; the GI's sources, gi.js; the glow volume,
+// passes.js) use the same skin temperature and the same emissivity, so hot
+// matter glows as brightly in a pool as it does in direct view.
+// Kirchhoff (1860): a surface emits what it doesn't reflect, emissivity =
+// 1 - its reflectance (luminance-weighted, ITU-R BT.709): pale rock glows less
+// than black crust, polished gold hardly at all.
+const EMIT_LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
+fn kirchhoff(alb: vec3f, f0: f32, metal: f32) -> f32 {
+  let refl = mix(f0 + (1.0 - f0) * alb, alb, metal);
+  return 1.0 - clamp(dot(refl, EMIT_LUMA), 0.0, 1.0);
+}
+// Hot steel's mill scale (E_METAL; surface.js draws its patches): above ~570 °C
+// wüstite (FeO, stable above 570 °C in the Fe–O diagram) forms: a black, porous dielectric
+const OXIDE_T0: f32 = 400.0;     // °C: scale starts to darken the steel…
+const OXIDE_T1: f32 = 650.0;     // …and covers it
+const OXIDE_ALB: vec3f = vec3f(0.03, 0.027, 0.025);   // black, a touch of rust brown
+const OXIDE_F0: f32 = 0.05;      // porous, dull: little sky in it, even at grazing angles
+fn oxideCover(T: f32) -> f32 { return smoothstep(OXIDE_T0, OXIDE_T1, T); }
+// Element id's emissivity at T (°C) from its table look (ALBEDO, IOR, METAL;
+// steel under its scale): the texture-free mean of what matOf's glowAt finds.
+fn emissivityOf(id: i32, T: f32) -> f32 {
+  var f0 = (IOR(id) - 1.0) / (IOR(id) + 1.0);
+  f0 *= f0;
+  var alb = ALBEDO(id);
+  var metal = METAL(id);
+  if (id == E_METAL) {
+    let ox = oxideCover(T);
+    alb = mix(alb, OXIDE_ALB, ox);
+    metal *= 1.0 - ox;
+    f0 = mix(f0, OXIDE_F0, ox);
+  }
+  return kirchhoff(alb, f0, metal);
+}
 // The open skin of hot matter runs INCAND_SKIN_DROP below its bulk T (metals,
 // conducting well, keep none): what an exposed cell of it gives off.
 fn skinT(id: i32, T: f32) -> f32 { return T - select(INCAND_SKIN_DROP, 0.0, id == E_METAL); }
-fn cellEmission(id: i32, T: f32) -> vec3f { return emission(id, skinT(id, T)); }
+// Lava (surface.js matOf draws its plates and cracks): molten well above the
+// solidus; nearer it a crust skins over, radiating far below the bulk T, and
+// breaks into plates with the melt showing in the cracks between them.
+// Lava freezes back into its ctype at MELT - LAVA_FREEZE_BELOW (src/physics.js).
+const LAVA_MELT_RANGE: f32 = 450.0;  // °C above the solidus where it is fully molten
+const LAVA_CRUST_X0: f32 = 0.2;      // crust starts to break up (fraction of that range)…
+const LAVA_CRUST_X1: f32 = 0.8;      // …and is gone
+const LAVA_CRACK_OPEN: f32 = 1.0;    // crack half-width once the crust has broken up (no plates left)…
+const LAVA_CRACK_SHUT: f32 = 0.04;   // …and once it has set (cellular-noise units)
+const LAVA_CRACK_AREA: f32 = 1.6;    // area share of cracks per unit half-width (past the cracks' LOD)
+const LAVA_CRUST_T: f32 = 450.0;     // °C: top of a crust right at the solidus…
+const LAVA_CRUST_K: f32 = 0.8;       // …rising this much per °C of melt above it
+fn solidusOf(ctype: f32) -> f32 {
+  var ct = i32(ctype);
+  if (ct <= 0 || ct >= NE || MELT(ct) <= 0.0) { ct = E_STONE; }
+  return MELT(ct) - LAVA_FREEZE_BELOW;
+}
+// crust cover at x (0 = at the solidus, 1 = fully molten)
+fn lavaCrust(x: f32) -> f32 { return 1.0 - smoothstep(LAVA_CRUST_X0, LAVA_CRUST_X1, x); }
+// the cracks' half-width: hairlines once the crust has set, wide enough to swallow the plates once it has broken up
+fn lavaCrackW(crust: f32) -> f32 { return mix(LAVA_CRACK_SHUT, LAVA_CRACK_OPEN, (1.0 - crust) * (1.0 - crust)); }
+// the crust's top: young crust is thin and still glows; old crust is cold on top
+fn lavaCrustT(T: f32, Ts: f32, crust: f32) -> f32 { return mix(T, min(T, LAVA_CRUST_T + LAVA_CRUST_K * (T - Ts)), crust); }
+// What an exposed cell of element id at bulk T (°C) gives off (ctype: lava's
+// rock, the floor of state A's w): its skin's glow at its emissivity; lava's
+// averaged over its plates and cracks, as matOf draws it past the cracks' LOD.
+fn cellEmission(id: i32, T: f32, ctype: f32) -> vec3f {
+  let e = emissivityOf(id, T);
+  if (id == E_LAVA) {
+    let Ts = solidusOf(ctype);
+    let crust = lavaCrust((T - Ts) / LAVA_MELT_RANGE);
+    let crk = min(LAVA_CRACK_AREA * lavaCrackW(crust), 1.0);
+    return mix(emissionWith(id, lavaCrustT(T, Ts, crust), e), emissionWith(id, T, e), crk);
+  }
+  return emissionWith(id, skinT(id, T), e);
+}
 // a lit lamp (src/electricity.js LAMP_HOLD: its spark level holds while it is lit)
 fn lampLit(id: i32, ctype: f32) -> bool { return id == E_LAMP && sparkLevel(ctype) > 0; }
 // a live conductor's spark (ctype: the cell's, floor of state A's w), or a lit lamp's light

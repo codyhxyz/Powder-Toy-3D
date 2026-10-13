@@ -30,7 +30,7 @@ import { Derived } from './derived.js';
 import { createVolume } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
-import { createOverlays, FLOOR_SPAN, FLOOR_Y, EDGE_OPACITY } from './gfx/overlays.js';
+import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
@@ -1510,12 +1510,14 @@ async function renderThumb(viewId, out) {
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
       draw(rp) {
-        if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1 });
+        const lit = !win && view === 'realistic';   // under the sky that lights it (gfx/overlays.js drawSky)
+        if (lit) overlays.drawSky(rp);
+        if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit });
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: !win });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
         } else vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
-        if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], opacity: EDGE_OPACITY });
+        if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
     }, thumbCam, thumbTarget));
@@ -1963,7 +1965,11 @@ let volumeDrawn = false;   // the last presented frame drew the volume (__app.vi
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(settings.view);
-  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio) });   // one scene pixel wide: fade as it widens past a CSS pixel
+  // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
+  // daylit scene disagreed with what its water and metal mirrored); the data views keep the page's sky
+  const lit = !win && view === 'realistic';
+  if (lit) overlays.drawSky(rp);
+  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit });   // one scene pixel wide: fade as it widens past a CSS pixel
   for (const w of before) w.scene(ctx, rp);
   if (blocks) {
     // the blocks renderer (gfx/blocks.js): the opaque faces and a box's floor,
@@ -1973,7 +1979,7 @@ function drawScene(rp) {
     if (!volumeDrawn && !testNoVolume) wakeWhen(blocks.ready);
     for (const w of after) w.scene(ctx, rp);
     if (volumeDrawn) blocks.drawTranslucent(rp, { marchNear });
-    if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY * post.renderScale });
+    if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
     brush.draw(rp);
     return;
   }
@@ -1994,7 +2000,7 @@ function drawScene(rp) {
     wakeWhen(pipe.ready);
   }
   for (const w of after) w.scene(ctx, rp);
-  if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY * post.renderScale });
+  if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
   brush.draw(rp);
 }
 
