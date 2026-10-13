@@ -10,6 +10,7 @@ import { libChecks } from './lib.js';
 //   fbm3(p) -> f32         three octaves of it, in [0, 1]
 //   ign(px, frame) -> f32  interleaved gradient noise in [0, 1) for pixel centre px
 //                          (a fragment's @builtin(position).xy: gFragCoord) and frame
+//   stbn1 / stbn2 / stbn3  spatiotemporal low-discrepancy samples for TAAU (below)
 export const noiseGLSL = /* wgsl */ `
 // Hash without sine (Dave Hoskins): an input scale that scrambles the
 // fraction bits and an offset for the self-dot that mixes the components.
@@ -60,6 +61,49 @@ const IGN_FRAME_PERIOD: f32 = 64.0;     // frames before the offset sequence rep
 fn ign(px0: vec2f, frame: f32) -> f32 {
   let px = px0 + IGN_FRAME_SHIFT * glslMod(frame, IGN_FRAME_PERIOD);
   return fract(IGN_SCALE * fract(IGN_X * px.x + IGN_Y * px.y));
+}
+
+// Spatiotemporal samples for the stochastic lighting estimators (near field,
+// glow lights, lamp shadows, liquid dither): what NVIDIA's spatiotemporal
+// blue noise is for (Wolfe et al. 2022, "Spatiotemporal Blue Noise Masks"),
+// built procedurally so no texture binding is needed. Spatially each dimension
+// is IGN, whose every 3x3 pixel window holds nearly all of [0, 1) (Jimenez
+// 2014): that is exactly the window TAAU reconstructs and variance-clips the
+// history against (three's TAAUNode: 9 taps, mean ± σ), so the window's mean,
+// and with it the clip box, barely moves from frame to frame. White noise
+// moves it by σ/3 every frame, which is the shimmer. Temporally each pixel
+// walks a Roberts (2018) R-sequence ("The Unreasonable Effectiveness of
+// Quasirandom Sequences"), the golden-ratio animation Wolfe recommends for
+// blue noise over time, so a pixel's samples are low-discrepancy across
+// frames too. Independent dimensions take IGN on differently oriented pixel
+// lattices (as is, transposed, rotated a quarter turn): shifting IGN's pixel
+// only offsets its value, so offsets alone would correlate the dimensions.
+//   stbn1(px, frame, k) -> f32     one dimension; k: a stream index (rays of one pixel)
+//   stbn2(px, frame, k) -> vec2f   two, stratified over STBN_STRATA² cells across a 3x3 window
+//   stbn3(px, frame) -> vec3f      three independent dimensions
+const R1_G: f32 = 0.6180339887;                             // 1/φ: R1
+const R2_G: vec2f = vec2f(0.7548776662, 0.5698402910);      // 1/g, 1/g², g = 1.3247179572 (plastic number): R2
+const R3_G: vec3f = vec3f(0.8191725134, 0.6710436067, 0.5497004779);   // 1/h, 1/h², 1/h³, h = 1.2207440846: R3
+const STBN_PERIOD: f32 = 4096.0;   // frames before the temporal offsets wrap (keeps frame · g exact in f32)
+const STBN_STRATA: f32 = 3.0;      // 2D strata per axis: a 3x3 pixel window holds about one sample in each
+fn ignT(px: vec2f) -> f32 { return ign(px.yx, 0.0); }                // IGN on the transposed lattice
+fn ignR(px: vec2f) -> f32 { return ign(vec2f(-px.y, px.x), 0.0); }   // ... and a quarter turn
+fn ignF(px: vec2f) -> f32 { return ign(vec2f(px.x, -px.y), 0.0); }    // ... and mirrored
+fn stbnT(frame: f32, k: f32) -> f32 { return glslMod(frame, STBN_PERIOD) + k; }
+fn stbn1(px: vec2f, frame: f32, k: f32) -> f32 { return fract(ign(px, 0.0) + R1_G * stbnT(frame, k)); }
+// The 1D sample picks one of the STBN_STRATA² cells (a window's nine pixels
+// land in nearly all of them) and, scaled up, places the point across it; the
+// transposed lattice places it down the cell. Uniform over the square.
+fn stbn2(px: vec2f, frame: f32, k: f32) -> vec2f {
+  let t = stbnT(frame, k);
+  let v = fract(ign(px, 0.0) + R1_G * t) * STBN_STRATA * STBN_STRATA;
+  let s = floor(v);
+  let w = fract(ignT(px) + R2_G.y * t);
+  return vec2f(glslMod(s, STBN_STRATA) + fract(v), floor(s / STBN_STRATA) + w) / STBN_STRATA;
+}
+fn stbn3(px: vec2f, frame: f32) -> vec3f {
+  let t = stbnT(frame, 0.0);
+  return fract(vec3f(ign(px, 0.0), ignT(px), ignR(px)) + R3_G * t);
 }
 `;
 
