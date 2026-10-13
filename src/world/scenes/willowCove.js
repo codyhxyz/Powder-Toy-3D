@@ -1,4 +1,6 @@
-import { helpersGLSL, definesGLSL, jsConstants, compileShared, groundScan } from './themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan } from './themedShared.js';
+import { toWgsl } from './subsetWgsl.js';
+import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 
 // Animal Crossing's compact village/terraces, with Minecraft's one-cell stairs.
 // Fixed topology; the seed changes only material grain. All scenery is matter,
@@ -199,30 +201,30 @@ export function willowCoveTwin(P) {
   return cachedTwin;
 }
 
+// The scene's WGSL (scenes/sceneGpu.js): its uniforms (the world's size,
+// cells), constants, the helpers, the geometry (from the subset:
+// scenes/subsetWgsl.js) and sceneCell.
+const WC_U = sceneStruct({ uWillowWorldX: 'i32', uWillowWorldY: 'i32', uWillowWorldZ: 'i32' });
+let srcWgsl = null;
+const willowWgsl = () => /* wgsl */ `
+${sceneHeadWGSL(WC_U)}
+${definesGLSL('WC', L)}
+${helpersGLSL}
+${srcWgsl ??= toWgsl(SRC, { consts: definesTypes('WC', L), uniforms: WC_U.sceneTypes })}
+fn sceneCell(w: vec3i) -> SceneCell {
+  let id = wcCell(w.x, w.y, w.z);
+  let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, WC_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
+  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), seed), vec4f(0.0));
+}
+`;
+
 export const willowCove = {
   key: 'willowCove', label: 'Willow Cove', shrine: false,
   view: { dir: [0.65, 1.15, 1.4], dist: 240, lift: 12 },
   params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: L.ints.SEA, floor: L.ints.FLOOR }),
-  glsl: () => /* glsl */ `
-${definesGLSL('WC', L)}
-${helpersGLSL}
-uniform int uWillowWorldX;
-uniform int uWillowWorldY;
-uniform int uWillowWorldZ;
-${SRC}
-void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
-  int id = wcCell(w.x, w.y, w.z);
-  float seed = float(seedWorld(w, uSceneSeed, WC_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  A = vec4(float(id), SPAWNT[id], SPAWNLIFE[id], seed);
-  B = vec4(0.0);
-}
-`,
-  uniforms: (P) => ({
-    uSceneSeed: { value: P.seed },
-    uWillowWorldX: { value: P.size[0] },
-    uWillowWorldY: { value: P.size[1] },
-    uWillowWorldZ: { value: P.size[2] },
-  }),
+  glsl: () => willowWgsl(),
+  uniformStruct: WC_U,
+  uniforms: (P) => ({ uSceneSeed: P.seed, uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2] }),
   start: (P) => [Math.floor(P.size[0] / 2) + L.ints.PLAZA_X, Math.floor(P.size[2] / 2) + L.ints.PLAZA_Z],
   ground: (x, z, P) => groundScan(willowCoveTwin(P).wcCell, x, z, Math.min(P.size[1], L.ints.SKY)),
 };
