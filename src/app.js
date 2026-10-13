@@ -28,6 +28,7 @@ import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/thr
 import { Simulation, GI_BLEND } from './sim.js';
 import { Derived } from './derived.js';
 import { createVolume } from './gfx/volume.js';
+import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y, EDGE_OPACITY } from './gfx/overlays.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
@@ -304,6 +305,12 @@ renderer.setSize(innerWidth, innerHeight);
 
 // the grid: the simulation, its derived passes and its volume (made per grid: build)
 let sim, derived, vol, scale;
+// The blocks renderer (gfx/blocks.js): ?blocks, or __app.setBlocks(on); not
+// remembered. On, the world is drawn as its cells' visible faces and nothing
+// that only feeds the volume's march runs (the derived passes, GI, the shadow
+// map); off (the default), nothing about the game changes.
+let blocksOn = params.has('blocks') && params.get('blocks') !== '0';
+let blocks = null;   // the grid's (made by build() while blocksOn, or by setBlocks)
 // world mode (a WORLDS size): the world, the window over it (src/wire/world.js)
 let worldMode = null, win = null;
 let wired = false;   // the wires have booted (their invalidate hooks can run)
@@ -445,6 +452,8 @@ function build() {
     for (const w of live) w.detach?.(ctx);
     // (what is recorded on the old grid goes out first: each dispose flushes)
     vol.dispose();
+    blocks?.dispose();
+    blocks = null;
     derived.dispose?.();
     sim.dispose();
   }
@@ -466,7 +475,8 @@ function build() {
   win = null;
   sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   derived = new Derived(sim);
-  vol = createVolume(gpu, sim, { shadows: viewShadows(viewKeyOf(settings.view)) });
+  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)) });
+  if (blocksOn) blocks = createBlocks(gpu, sim, { world: !!worldMode });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
   s.wake = () => { simWake(); wakeLoop(); };
@@ -479,7 +489,7 @@ function build() {
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
   const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
-    vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
+    blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
   core.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
@@ -526,7 +536,7 @@ const baseDetail = () => (viewKeyOf(settings.view) === 'realistic' ? gateVariant
 let giWait = Promise.resolve(), giBuilt = 0;
 function prepareGI() {
   const d = derived;
-  if (viewKeyOf(settings.view) !== 'realistic' || !d?.prepareGI) return;
+  if (blocksOn || viewKeyOf(settings.view) !== 'realistic' || !d?.prepareGI) return;
   const p = giWait = Promise.resolve(d.prepareGI()).then(() => { if (d === derived) { giBuilt++; wakeLoop(); } });
   p.catch(() => {});   // (a kernel that fails stops graphics: stopGraphics says why)
 }
@@ -1368,10 +1378,31 @@ function setView(id) {
   detailGate.setView(id);
   prepareGI();
   const key = viewKeyOf(id);
-  if (viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
+  if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   toolbar.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
   save();
+}
+
+// The blocks renderer on or off (?blocks at boot; __app.setBlocks for tools),
+// not remembered. Off again, the derived passes it skipped rebuild every brick.
+function setBlocks(on) {
+  on = !!on;
+  if (on === blocksOn || graphicsFailure) return;
+  blocksOn = on;
+  if (on) {
+    blocks = createBlocks(gpu, sim, { world: !!worldMode });
+    blocks.ready.then(() => pacer.wake(), () => {});
+  } else {
+    blocks?.dispose();
+    blocks = null;
+    sim.changedAll = true;
+    prepareGI();
+    const key = viewKeyOf(settings.view);
+    if (viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
+  }
+  post.reset();
+  pacer.wake();
 }
 
 function undo() {
@@ -1421,9 +1452,9 @@ let thumbTarget = null;
 async function renderThumb(viewId, out) {
   if (graphicsFailure || !coreReady) return false;
   const view = viewKeyOf(viewId), detail = view === 'realistic' ? gateVariants(settings).base : {};
-  const v = vol;
-  await Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]);
-  if (graphicsFailure || v !== vol) return false;
+  const v = vol, b = blocks;
+  await (b ? b.ready : Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
+  if (graphicsFailure || v !== vol || b !== blocks) return false;
   thumbTarget ??= gpu.createTexture({
     label: 'view thumbnail', size: THUMB_SIZE, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
@@ -1431,7 +1462,7 @@ async function renderThumb(viewId, out) {
   thumbCam.aspect = THUMB_SIZE[0] / THUMB_SIZE[1];
   useWebGPUCamera(thumbCam);
   const rawWas = post.settings.raw;
-  post.settings.raw = viewId !== 0;
+  post.settings.raw = b ? view === 'heat' : viewId !== 0;
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     presentation.neutral(() => post.renderStill({
@@ -1440,7 +1471,10 @@ async function renderThumb(viewId, out) {
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? cut.capture(p.sceneTarget.depth) : false),
       draw(rp) {
         if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1 });
-        vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
+        if (b) {
+          b.drawOpaque(rp, { view, marchNear: pov?.marchNear ?? 0, floor: !win });
+          b.drawTranslucent(rp, { view, marchNear: pov?.marchNear ?? 0 });
+        } else vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
         if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], opacity: EDGE_OPACITY });
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
@@ -1890,6 +1924,18 @@ function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(settings.view);
   if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: post.renderScale });
   for (const w of before) w.scene(ctx, rp);
+  if (blocks) {
+    // the blocks renderer (gfx/blocks.js): the opaque faces and a box's floor,
+    // what draws above the volume, then the translucent faces
+    const marchNear = pov?.marchNear ?? 0;
+    volumeDrawn = !testNoVolume && blocks.drawOpaque(rp, { view, marchNear, floor: !win });
+    if (!volumeDrawn && !testNoVolume) wakeWhen(blocks.ready);
+    for (const w of after) w.scene(ctx, rp);
+    if (volumeDrawn) blocks.drawTranslucent(rp, { view, marchNear });
+    if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY * post.renderScale });
+    brush.draw(rp);
+    return;
+  }
   const meshDepth = cut.take();
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
   // Bent (the rolling log) the view draws its curved variant (gfx/volume.js),
@@ -1918,7 +1964,11 @@ const frameHooks = {
   // passes, the shadow map (views that read it), GI (the realistic view), the
   // wires' upkeep, the picks asked for this tick
   compute: () => {
-    if (frameDerived) {
+    if (blocks) {
+      // nothing that only feeds the march: the faces again if the state or the window moved
+      prof.phase('blocks');
+      blocks.update();
+    } else if (frameDerived) {
       prof.phase('derived');
       sim.updateBricks();
       if (viewShadows(viewKeyOf(settings.view))) {
@@ -1934,7 +1984,8 @@ const frameHooks = {
     for (const w of live) w.compute?.(ctx);
     vol.recordPicks();
   },
-  opaque: (p) => (threeMeshes(p, false) ? cut.capture(p.sceneTarget.depth) : false),
+  // (the blocks' faces are depth-tested against the meshes: no copy of their depth for the volume's cut)
+  opaque: (p) => (threeMeshes(p, false) ? (blocks ? true : cut.capture(p.sceneTarget.depth)) : false),
   draw: drawScene,
   meshes: (p) => { threeMeshes(p, true); },
   overlay: overlayWires.length ? (rp) => { for (const w of overlayWires) w.overlay(ctx, rp); } : undefined,
@@ -2035,7 +2086,7 @@ function tick(now, renderOnly = false) {
   if (renderOnly) updatePresentation();
   const present = renderOnly || pacer.present(now, wantFrame());
   const runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   let runView = present && pacer.view(
     viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
       `${win?.far?.chunksDrawn}|${brushKey()}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
@@ -2070,7 +2121,8 @@ function tick(now, renderOnly = false) {
     volume.updateMatrixWorld();
     camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
-    post.settings.raw = settings.view !== 0;
+    // (the blocks' faces are the realistic view's radiance in every view but heat, which is a finished colour)
+    post.settings.raw = blocks ? viewKeyOf(settings.view) === 'heat' : settings.view !== 0;
     post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
@@ -2210,6 +2262,13 @@ async function allReady() {
     const s = sim, v = vol;
     await coreWait;
     const view = viewKeyOf(settings.view);
+    if (blocksOn) {
+      if (blocks) await blocks.ready;
+      await gpu.settled();
+      if (graphicsFailure) throw graphicsFailure;
+      if (s === sim && v === vol && coreReady && blocksOn) return;
+      continue;
+    }
     // (bent by a presentation effect: the view's curved variant, and a world's curved far view)
     const curved = !!warpNow(), far = win?.far;
     await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
@@ -2245,6 +2304,8 @@ try {
     get sim() { return sim; }, get derived() { return derived; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     // the grid's box (grid cells → scene: a three Object3D, its transform only) and its GPU volume (gfx/volume.js: pick, shadowTextures, pipelines)
     volume, get vol() { return vol; }, get shadowMap() { return vol.shadowTextures; },
+    // the blocks renderer (gfx/blocks.js: stats, pipelines), null while it is off; setBlocks(on) switches it
+    get blocks() { return blocks; }, setBlocks,
     get pov() { return pov; },
     get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },
