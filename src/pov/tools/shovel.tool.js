@@ -2,32 +2,34 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import {
-  pack, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor, pinned,
+  pack, cellsNear, outsideBody, bodyExit, toStepVelocity, faceNormal, ballRadius, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
-import { trigger, toolDt } from './action.js';
+import { trigger, swing, toolDt } from './action.js';
+import { digger, BLOCK } from './dig.js';
 import { attachModel, MODELS } from '../models.js';
-import { viewmodelRig, heldMaterial } from '../viewmodel.js';
+import { viewmodelRig, HIT } from '../viewmodel.js';
 import { gear } from './catalog.js';
 
-// Shovel. Hold left-click on a powder to scoop it up, a small blob at a
-// time; on a breakable solid, the dig energy builds up until it beats the
-// cell's hardness and the cell comes up as its debris (ROCK → STONE, WOOD →
-// SAWDUST). WALL and CLONE don't break, and liquids run off the blade.
-// What comes up goes into the pack (transfer.js), the inventory the trowel
-// builds from. Right-click throws a bladeful (the newest BLADE_LOAD cells) where
-// you aim, or in front of you.
+// Shovel. Digs like Minecraft's shovel (dig.js): click, or hold, and the
+// outlined 0.9 m block you aim at comes up whole into the pack, powder as it is
+// and breakable solids as their debris (ROCK → STONE, WOOD → SAWDUST). Loose
+// powder comes up in one dig, at Minecraft's iron-shovel-on-dirt pace; a solid
+// takes ceil(hard / POWER) digs, cracking as they land; rock is as hard as it
+// goes (the pickaxe is the tool for it). Liquids run off the blade. Right-click
+// throws a block's worth (the newest BLADE_LOAD cells) where you aim, or in
+// front of you; hold to keep throwing. The pack (transfer.js) is the inventory
+// the trowel builds from.
 //
-// Events: tool:action 'dig' (cells came up), 'dump' (cells landed) and 'refuse'
-// (won't break, or full), with the element, the point and the cell count.
+// Events: tool:action 'dig' (cells came up), 'chip' (a dig cracked a solid),
+// 'dump' (cells landed) and 'refuse' (won't break, or full), with the element,
+// the point and the cell count.
 
-const BLADE_LOAD = 30;               // cells one throw takes from the pack (a bladeful)
-const SCOOP_RADIUS = 1.8;            // cells: a scoop of powder comes from this close to the aim cell
-const SCOOP_SINK = 1;                // cells: the blade bites this far under the surface it hits
-const SCOOP_INTERVAL = 0.25;         // s between scoops while the button is held
-const DIG_POWER = 60;                // hardness units per second of digging (ROCK, 30: two cells a second)
-const BREAK_RADIUS = 1.5;            // cells: a break chips the aim cell, then its nearest like neighbours
-const BREAK_MAX = 4;                 // cells one break may chip (the stored dig energy is capped at this many)
+const REFIRE = 0.15;                 // s between digs while held: Minecraft's iron shovel on dirt (minecraft.wiki/w/Shovel)
+const THROW_REFIRE = 0.2;            // s between throws while held: Minecraft's 4-tick use delay (the trowel's)
+const POWER = 6;                     // hardness one dig beats: powder, moss and ice in one, sandstone (15) in three
+const LIMIT = 30;                    // the hardest solid a shovel digs: ROCK, in five; never metal
+const BLADE_LOAD = BLOCK ** 3;       // cells one throw takes from the pack: one dug block
 const THROW_SPEED = 8;               // cells/s along the aim, on top of the body's velocity
 const DUMP_REACH = 2.5;              // cells from the eye where a load lands when nothing is aimed at
 const DUMP_SLACK = 2.5;              // candidate cells per cell dumped (some are full or behind the surface)
@@ -38,18 +40,37 @@ const BODY_CLEARANCE = 0.3;          // cells kept clear around the body when du
 // the end of the handle, in the hand.
 const HELD_POS = [0.85, -1.15, -0.75]; // right, down, ahead of the eye
 const HELD_PITCH = 0.12, HELD_YAW = 0.3;   // radians: the blade reaches up and in toward the crosshair
+
+// the dig: a jab, the blade driven forward and down into the ground and back
+// (Lethal Company's shovel reaches contact in 0.13 s of its 0.78 s; ours has
+// to fit Minecraft's 0.15 s refire, so the contact comes in a third of it)
+const JAB_STRIKE = 0.05;             // s for the blade to bite
+const JAB_PITCH = 0.35;              // rad the blade dips as it bites
+const JAB_THRUST = 0.5;              // cells the blade drives forward
+const JAB_MISS = 1.5;                // a jab into air follows through this much further
+// the throw: the blade flicks up
+const FLICK_STRIKE = 0.06;           // s
+const FLICK_PITCH = 0.5;             // rad up
+
+// the load on the blade: a smooth heap in the colours of what's on it
 const HEAP_R = 0.25;                 // cells: radius of a full load's heap on the blade
 const HEAP_MIN = 0.3;                // a nearly empty load still shows this share of it
 const HEAP_ALONG = 0.18;             // the heap's centre, as a share of the model's length behind its tip (mid-blade)
-const HEAP_SEGMENTS = [6, 3];        // around, down the dome (low-poly, like the models)
+const HEAP_SEGMENTS = [16, 8];       // around, down the dome: smooth
+const HEAP_SHADE = 0.12;             // ± brightness between neighbouring grains, at an element's `var` of 1
+const GRAIN_HASH = 2654435761;       // Knuth's multiplicative hash: which carried cell colours each vertex
 
 export default {
   ...gear('SHOVEL'),
   create(env) {
     const load = pack(env.owner);
     const transfer = env.transfer;
-    const scoop = trigger(SCOOP_INTERVAL);   // powder scoops, hold to repeat
-    let energy = 0, energyKey = '';
+    const digs = trigger(REFIRE);
+    const throws = trigger(THROW_REFIRE, { button: 'secondary' });
+    const dig = digger(env, { power: POWER, limit: LIMIT, reach: HAND_REACH });
+    const tilt = swing({ rest: 0, hit: -JAB_PITCH, miss: -JAB_PITCH * JAB_MISS, strike: JAB_STRIKE, settle: REFIRE });
+    const thrust = swing({ rest: 0, hit: JAB_THRUST, miss: JAB_THRUST * JAB_MISS, strike: JAB_STRIKE, settle: REFIRE });
+    const flick = swing({ rest: 0, hit: FLICK_PITCH, miss: FLICK_PITCH, strike: FLICK_STRIKE, settle: THROW_REFIRE });
 
     // held item: the shovel on a hand of the viewmodel rig, the load heaped on its blade
     const rig = viewmodelRig(env);
@@ -57,8 +78,9 @@ export default {
     const held = new THREE.Group();
     held.rotation.set(HELD_PITCH, HELD_YAW, 0);
     hand.add(held);
-    const heap = new THREE.Mesh(
-      new THREE.SphereGeometry(HEAP_R, ...HEAP_SEGMENTS, 0, Math.PI * 2, 0, Math.PI / 2), heldMaterial('#ffffff'));
+    const heapGeo = new THREE.SphereGeometry(HEAP_R, ...HEAP_SEGMENTS, 0, Math.PI * 2, 0, Math.PI / 2);
+    heapGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(heapGeo.attributes.position.count * 3), 3));
+    const heap = new THREE.Mesh(heapGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
     heap.visible = false;
     const mesh = attachModel(held, 'shovel', (obj, { size }) => {
       // on the blade's top face: the blade is the model's thickest part, so its top is the box's
@@ -67,48 +89,49 @@ export default {
     });
     let heapVersion = -1;
     const act = (action, extra) => povEvents.emit('tool:action', { tool: 'shovel', action, ...extra });
-
     const refuse = (text, id) => env.feedback?.refuse(text, { id });
+    const full = (id) => { if (!load.busy) refuse('Your pack is full: build with the trowel or right-click to throw', id); };
 
-    function dig(ctx, aim, go) {
-      if (!aim || aim.id < 0) { energy = 0; return; }   // nothing, or the floor
-      const el = ELEMENTS[aim.id];
-      const g = ctx.sim.g;
-      const center = aim.cell.clone().addScalar(0.5);
-      if (el.kind === K.POWDER) {
-        center.addScaledVector(faceNormal(aim.face), -SCOOP_SINK);
-        energy = 0;
-        if (!go) return;
-        if (load.free <= 0) { if (!load.busy) refuse('Your pack is full: build with the trowel or right-click to throw', aim.id); return; }
-        const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, g), kinds: [K.POWDER] });
-        if (p) {
-          scoop.fire();
-          const at = pinned(center, ctx.sim), id = aim.id;
-          p.then((got) => { if (got.length) act('dig', { id, point: at(), amount: got.length }); });
-        }
-      } else if (el.kind === K.SOLID) {
-        if (!el.breakInto) { energy = 0; refuse(`${el.name} won't break`, aim.id); return; }
-        const key = `${aim.id}`;
-        if (key !== energyKey) { energy = 0; energyKey = key; }
-        energy = Math.min(energy + DIG_POWER * toolDt(ctx), el.hard * BREAK_MAX);
-        const n = Math.min(Math.floor(energy / el.hard), load.free);
-        if (n < 1) { if (load.free <= 0 && !load.busy) refuse('Your pack is full: build with the trowel or right-click to throw', aim.id); return; }
-        const p = transfer.take(load, {
-          cells: cellsNear(center, BREAK_RADIUS, g), kinds: [K.SOLID], want: aim.id, breakDebris: true, limit: n,
-        });
-        if (p) {
-          energy -= n * el.hard;
-          const at = pinned(center, ctx.sim), id = aim.id;
-          p.then((got) => { if (got.length) act('dig', { id, point: at(), amount: got.length }); });
-        }
-      } else {
-        energy = 0;   // liquids run off the blade
+    // the heap in the colours of the top of the load (what a throw takes next), grain by grain
+    const tint = new THREE.Color();
+    function paintHeap() {
+      const top = load.cells.slice(-BLADE_LOAD);
+      const colors = heapGeo.attributes.color;
+      for (let v = 0; v < colors.count; v++) {
+        const h = Math.imul(v + 1, GRAIN_HASH) >>> 0;
+        const el = ELEMENTS[top[h % top.length][0]];
+        const shade = 1 + ((h >>> 16) / 0xffff - 0.5) * 2 * HEAP_SHADE * (el.var ?? 1);
+        tint.set(el.color).multiplyScalar(shade);
+        colors.setXYZ(v, tint.r, tint.g, tint.b);
       }
+      colors.needsUpdate = true;
+    }
+
+    // One dig on the aimed block t; true if the blade bit into something.
+    function strike(ctx, t) {
+      if (!t) return false;
+      const point = t.aim.cell.clone().addScalar(0.5);
+      const r = dig.blow(ctx, t, load, transfer);
+      if (!r) {
+        // liquids run off the blade; a solid that won't break, or is harder than rock, rings off it
+        const el = ELEMENTS[t.id];
+        if (el?.kind !== K.SOLID) return false;
+        refuse(el.breakInto ? `${el.name} is too hard for a shovel: use the pickaxe` : `${el.name} won't break`, t.id);
+        return true;
+      }
+      rig.hit(HIT.SHOVEL);
+      if (r.taken) {
+        const at = pinned(point, ctx.sim), id = t.id;
+        r.taken.then((got) => { if (got.length) act('dig', { id, point: at(), amount: got.length }); });
+      } else if (r.hits < r.need) {
+        act('chip', { id: t.id, point });
+      } else if (load.free <= 0) full(t.id);
+      return true;
     }
 
     function dump(ctx, aim) {
       const n = Math.min(load.cells.length, BLADE_LOAD);
-      if (!n) return;
+      if (!n) return false;
       const feet = ctx.player?.pos;
       const clear = feet ? outsideBody(feet, BODY_CLEARANCE) : null;
       const r = ballRadius(n);
@@ -127,8 +150,9 @@ export default {
       const v = ctx.dir.clone().multiplyScalar(THROW_SPEED);
       if (ctx.player?.vel) v.add(ctx.player.vel);
       const id = load.cells.at(-1)[0], at = pinned(center, ctx.sim);   // the dump's sound stays where it happened (D11)
-      transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) })
-        ?.then((landed) => { if (landed) act('dump', { id, point: at(), amount: landed }); });
+      const p = transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) });
+      p?.then((landed) => { if (landed) act('dump', { id, point: at(), amount: landed }); });
+      return !!p;
     }
 
     return {
@@ -136,24 +160,41 @@ export default {
       update(ctx) {
         hand.visible = true;
         rig.update(ctx);
+        const dt = toolDt(ctx);
         if (load.version !== heapVersion) {
           heapVersion = load.version;
           heap.visible = load.cells.length > 0;
-          if (heap.visible) recolor(heap, ELEMENTS[load.cells.at(-1)[0]].color);   // the newest, which a throw takes first
+          if (heap.visible) paintHeap();
           heap.scale.setScalar(Math.max(HEAP_MIN, Math.min(1, load.cells.length / BLADE_LOAD)));
         }
-        const aim = aimInReach(ctx, HAND_REACH);
-        const go = scoop.ready(ctx);
-        if (ctx.primary) dig(ctx, aim, go);
-        else energy = 0;
-        if (ctx.secondaryPressed) dump(ctx, aim);
+        const t = dig.target(ctx);
+        if (digs.ready(ctx)) {
+          digs.fire();
+          const bit = strike(ctx, t);
+          tilt.start(bit);
+          thrust.start(bit);
+        }
+        if (throws.ready(ctx) && dump(ctx, t?.aim ?? null)) {
+          throws.fire();
+          flick.start(true);
+          rig.hit(HIT.THROW);
+        }
+        held.rotation.x = HELD_PITCH + tilt.angle(dt) + flick.angle(dt);
+        held.position.z = -thrust.angle(dt);
       },
-      deselect() { hand.visible = false; energy = 0; },
+      deselect() {
+        hand.visible = false;
+        dig.hide();
+        digs.reset(); throws.reset();
+        tilt.stop(); thrust.stop(); flick.stop();
+      },
       status: () => load.status(),
+      get lastBlow() { return dig.lastBlow; },   // for checks
       dispose() {
+        dig.dispose();
         mesh.dispose();
         hand.removeFromParent();
-        heap.geometry.dispose();
+        heapGeo.dispose();
         heap.material.dispose();
       },
     };

@@ -52,6 +52,7 @@ const DT = 1 / 60;        // s a frame (the app's tick at 60 Hz)
 // agents is slow (docs/webgpu.md I1).
 const TOOL_STEPS = 2;
 const TOOL_DT = 1 / 30;
+const THROW_FRAMES = 8;   // frames a click's button is held (past the tools' refires: the shovel's 0.2 s throw)
 const STRESS_FRAMES = 150;   // frames of four overlapping transfers each: 600 transfers, the old pov-tools-a's
 
 // A simulation at n³ with its POV kernels built.
@@ -181,8 +182,13 @@ test('stage:toolbelt', async ({ parts = ['shovel', 'bucket'] } = {}) => {
       const t1 = await totals(sim, [pack]);
       out.numbers.shovelScoop = { load: pack.status(), diff: diff(t0, t1) };
       check(out, 'shovel: scoops sand into the pack, grid + pack conserved exactly', pack.totals()[E.SAND] >= 30 && zero(diff(t0, t1)), out.numbers.shovelScoop);
-      // right-click throws a bladeful at the floor ahead (aimed at the top of what's there by then)
-      const throwAt = async (x, z) => { const T = await snap(sim), y = T.top(x, z); await frame(sim, () => belt.update(ctx(V(x, y, z), T.id(x, y, z), { secondaryPressed: true }))); await settle(); };
+      // right-click throws a block's worth at the floor ahead (aimed at the top of what's there by then),
+      // the button held for THROW_FRAMES frames as a player's click is (throws have a refire)
+      const throwAt = async (x, z) => {
+        const T = await snap(sim), y = T.top(x, z);
+        for (let f = 0; f < THROW_FRAMES; f++) await frame(sim, () => belt.update(ctx(V(x, y, z), T.id(x, y, z), { secondary: true, secondaryPressed: f === 0 })));
+        await settle();
+      };
       for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 12 + (i % 3));
       for (let i = 0; i < 10; i++) await frame(sim);
       const t2 = await totals(sim, [pack]);
@@ -200,14 +206,30 @@ test('stage:toolbelt', async ({ parts = ['shovel', 'bucket'] } = {}) => {
       out.numbers.shovelRock = { load: pack.status(), diff: dr };
       check(out, 'shovel: digs rock into stone (ROCK → STONE, cell for cell)', (pack.totals()[E.STONE] ?? 0) > 0
         && Object.keys(dr).every((k) => k === 'ROCK' || k === 'STONE') && (dr.ROCK ?? 0) + (dr.STONE ?? 0) === 0, out.numbers.shovelRock);
-      // WALL refuses (the basin's rim)
+      // WALL refuses (the basin's rim), on a click held past the last dig's refire
       toasts.length = 0;
-      belt.update(ctx(V(18, 7, 23), E.WALL, { primary: true }));
+      for (let f = 0; f < THROW_FRAMES; f++) belt.update(ctx(V(18, 7, 23), E.WALL, { primary: true, primaryPressed: f === 0 }));
       check(out, 'shovel: WALL refuses, with a toast', toasts.length > 0, toasts);
       for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 6 + (i % 3));
       for (let i = 0; i < 10; i++) await frame(sim);
       const r2 = await totals(sim, [pack]), dr2 = diff(r0, r2);
       check(out, 'shovel: the stone thrown back out, still cell for cell', pack.count === 0 && Object.keys(dr2).every((k) => k === 'ROCK' || k === 'STONE') && (dr2.ROCK ?? 0) + (dr2.STONE ?? 0) === 0, { left: pack.count, diff: dr2 });
+
+      // ---- pickaxe: one blow brings the whole outlined lattice block of rock up as stone (dig.js)
+      paint(sim, [15, 5, 15], 5, E.ROCK);
+      for (let i = 0; i < 4; i++) await frame(sim);
+      belt.select('PICKAXE');
+      const k0 = await totals(sim, [pack]);
+      await frame(sim, () => belt.update(ctx(V(13, 5, 13), E.ROCK, { primary: true, primaryPressed: true })));
+      await settle();
+      const k1 = await totals(sim, [pack]), dk = diff(k0, k1), B = await snap(sim);
+      let left = 0;
+      for (let x = 12; x < 15; x++) for (let y = 3; y < 6; y++) for (let z = 12; z < 15; z++) if (B.id(x, y, z) !== E.EMPTY) left++;
+      out.numbers.pickBlock = { diff: dk, left };
+      check(out, 'pickaxe: one blow digs the 3³ block of rock, all of it into the pack as stone', dk.ROCK === -27 && dk.STONE === 27 && Object.keys(dk).length === 2 && left === 0, out.numbers.pickBlock);
+      belt.select('SHOVEL');
+      for (let i = 0; i < 8 && pack.count; i++) await throwAt(16, 6 + (i % 3));
+      for (let i = 0; i < 10; i++) await frame(sim);
     }
 
     if (parts.includes('bucket')) {

@@ -74,6 +74,7 @@ export const HIT = {
   AXE: { kick: 0.5, punch: { pitch: [-2 * DEG, -1 * DEG], yaw: [-2 * DEG, -1 * DEG] } },   // a blow landing
   PICK: { kick: 0.7, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1.5 * DEG, -0.5 * DEG] } },   // a pickaxe blow: heavier, straight down
   FLING: { kick: 0.6 },                                                                // a physgun fling
+  SHOVEL: { kick: 0.25, punch: { pitch: [-0.75 * DEG, -0.25 * DEG] } },               // a dig: half the knife's nod, as it comes every 0.15 s (the crowbar's 1–2° at that rate would shake the view)
   PLACE: { kick: 0.3 },                                                                // a trowel block set down
   THROW: { kick: 0.4 },                                                                // a bomb thrown
   DRINK: { kick: 0.15, punch: { pitch: [1 * DEG, 1.5 * DEG] } },                     // a gulp from the flask: the head tips back

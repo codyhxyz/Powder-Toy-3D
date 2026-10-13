@@ -581,6 +581,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         play('shovelScrape', { at, gain, rate });
         if (family && ELEMENTS[id].kind === K.SOLID) play(family, { at, gain: TOOL_HIT_GAIN, rate });
         break;
+      case 'shovel:chip':   // a dig that only cracked a solid: the blade's knock on it
+        if (family) play(family, { at, gain: TOOL_HIT_GAIN, rate });
+        break;
       case 'shovel:dump':
         // the load's own pitch stays put: shifting a thump by material made it sound wrong
         play('shovelDump', { at, gain });
