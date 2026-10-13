@@ -2,7 +2,7 @@ import { fold } from '../gpu/kernels.js';
 import { cellSlot } from '../shaders/common.js';
 import {
   V2_KERNELS, V2Params, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
-  TICK_HZ, FULL, SUB, V2,
+  TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
 
 // Physics v2, the fast version (?physics=v2; docs/v2.md 5): the driver of
@@ -75,6 +75,9 @@ export class PhysicsV2 {
     this.cells = buf('cells', g.slots * 16);
     this.act = buf('activity', this.layout.words * 4);
     this.args = buf('args', ARGS2.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
+    // every brick starts asleep (its quiet run full): only what the first import changes wakes, so a
+    // settled box certifies idle after one tick instead of a whole offset cycle of every brick awake
+    gpu.queue.writeBuffer(this.act, this.layout.quiet * 4, new Uint32Array(g.nbricks).fill(QUIET_TICKS));
     const L = {
       V2: gpu.layout('V2', V2_LAYOUT), ARGS: gpu.layout('V2_ARGS', V2_ARGS_LAYOUT), STATE: gpu.layout('V2_STATE', V2_STATE_LAYOUT),
     };

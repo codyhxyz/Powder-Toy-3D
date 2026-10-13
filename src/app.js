@@ -263,6 +263,13 @@ if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
 if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
+// ?physics=v2: the new physics' fast version (src/v2/physics.js, docs/v2.md 5) in box mode, loaded only
+// then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
+// switches back to it while the body is out, and to v2 again after). __app.setPhysics('v2' | 'v1') for tools.
+let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
+let physicsV2 = null;    // the box's PhysicsV2 while the mode is v2
+let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
 
 let saveTimer = 0;
 function save() {
@@ -449,6 +456,9 @@ function build() {
     // (what is recorded on the old grid goes out first: each dispose flushes)
     vol.dispose();
     derived.dispose?.();
+    physicsV2?.dispose();
+    physicsV2 = null;
+    v2Running = false;
     sim.dispose();
   }
   worldMode = settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
@@ -468,6 +478,13 @@ function build() {
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win = null;
   sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
+  if (physicsMode === 'v2') {
+    if (worldMode) hud.toast('The new physics (?physics=v2) runs in boxes: this world keeps today\'s', { kind: 'hint' });
+    else {
+      physicsV2 = new V2mod.PhysicsV2(sim);
+      physicsV2.ready.then(() => wakeLoop(), () => {});   // (the loop may have slept meanwhile)
+    }
+  }
   derived = new Derived(sim);
   vol = createVolume(gpu, sim, { shadows: viewShadows(viewKeyOf(settings.view)) });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
@@ -1943,9 +1960,14 @@ const frameHooks = {
   overlay: overlayWires.length ? (rp) => { for (const w of overlayWires) w.overlay(ctx, rp); } : undefined,
 };
 
-// The simulation records nothing per step (certified idle: sim.js step()), so ticking it is pointless.
-const simAsleep = () => sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
-  && sim.quietOk && sim.skipSleeping && !sim.rays.active;
+// The new physics owns this box's steps (?physics=v2): no world, body or guest. Today's step never runs
+// meanwhile, not even while v2's pipelines build (then nothing steps); v2Active: they're built.
+const v2Box = () => !!physicsV2 && !win && !pov?.active && !mp.isGuest;
+const v2Active = () => v2Box() && physicsV2.isReady;
+// The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
+const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
+  : sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
+    && sim.quietOk && sim.skipSleeping && !sim.rays.active);
 
 // the camera the toolbar shows: god view, or the body's first / third person
 const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
@@ -2016,7 +2038,20 @@ function tick(now, renderOnly = false) {
   const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
   ctx.stepping = stepping;
   if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
-  if (stepping) {
+  let stepped = settings.steps;
+  if (stepping && v2Box()) {
+    // v2: a fixed 60 Hz tick on game time, Speed scaling it (4 steps a frame is 1×); none while it rests
+    stepped = 0;
+    if (v2Active()) {
+      if (!v2Running) { physicsV2.resync(); v2Running = true; }
+      stepped = physicsV2.frame(dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused, each: () => scripts?.beforeStep() });
+      for (let i = 0; i < stepped; i++) scripts?.afterStep();
+    }
+    if (DAY.running) day.clock += settings.steps;
+    animTime += dt;
+    stepOnce = false;
+  } else if (stepping) {
+    if (v2Running) { v2Running = false; sim.noteWrite(); }   // (today's activity map: every brick, as after a load)
     for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
@@ -2058,7 +2093,7 @@ function tick(now, renderOnly = false) {
     }
     if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
     stepTime += dt;
-    if (stepping) stepCount += settings.steps;
+    if (stepping) stepCount += stepped;
     if (stepTime > FPS_WINDOW) { stepRate = stepCount / stepTime; stepTime = stepCount = 0; }
     idleTime = runView ? 0 : idleTime + dt;
     renderedLast = runView;
@@ -2216,6 +2251,7 @@ async function allReady() {
     // (bent by a presentation effect: the view's curved variant, and a world's curved far view)
     const curved = !!warpNow(), far = win?.far;
     await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
+      ...(physicsV2 ? [physicsV2.ready] : []),
       ...(far && curved && view === 'realistic' ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
@@ -2278,6 +2314,25 @@ try {
     openSave,        // a local save's id, or a .tpt3d file's bytes: resolves to whether it loaded
     setSimMode,      // (key, value): as the drawer's Simulation switches do (simModes.js SIM_MODE_KEYS)
     setSimModes,     // ({ gravityMode, airMode, ambientHeat, edgeMode }): a world's, at once (a save's)
+    // the physics a box runs: 'v1' (today's) or 'v2' (the new physics' fast version, as ?physics=v2);
+    // resolves once v2's pipelines are built. Not persisted. physics: { mode, active, v2 (its PhysicsV2) }
+    async setPhysics(mode) {
+      if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
+      if (mode === 'v2') V2mod ??= await import('./v2/physics.js');
+      physicsMode = mode;
+      if (mode === 'v2' && worldMode) hud.toast('The new physics (?physics=v2) runs in boxes: this world keeps today\'s', { kind: 'hint' });
+      if (mode === 'v2' && !physicsV2 && !worldMode) physicsV2 = new V2mod.PhysicsV2(sim);
+      if (mode === 'v1' && physicsV2) {
+        physicsV2.dispose();
+        physicsV2 = null;
+        if (v2Running) { v2Running = false; sim.noteWrite(); }
+      }
+      await physicsV2?.ready;
+      pacer.wake();
+      wakeLoop();
+      return physicsMode;
+    },
+    get physics() { return { mode: physicsMode, active: v2Active(), v2: physicsV2 }; },
     fill: (req) => runFill(sim, req, { openSides: !!win }),   // a flood fill on the current grid (editing.js runFill), for tools
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
@@ -2303,7 +2358,11 @@ try {
         if (!testParked || mp.isGuest) throw new Error('Park a local test page before stepping');
         if (!Number.isSafeInteger(count) || count < 0 || count > 10000) throw new RangeError('steps must be an integer from 0 to 10000');
         if (!readySims.has(sim)) throw new Error('The grid is still building its pipelines: await __app.test.ready() first');
-        for (let i = 0; i < count; i++) sim.step();
+        if (v2Box()) {
+          if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
+          if (!v2Running) { physicsV2.resync(); v2Running = true; }
+          physicsV2.ticks(count);
+        } else for (let i = 0; i < count; i++) sim.step();
         if (DAY.running) day.clock += count;
       },
       // Every pipeline the current settings need is built, ours and three's (B5).

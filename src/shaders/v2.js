@@ -281,8 +281,11 @@ fn importA(a: vec4f) -> vec4u {
 
 const MAIN = '@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32)';
 
-// ---- import: the bricks today's writers marked (or all, P.full), cell by cell where today's state A
-// isn't what the bridge last wrote there; the bricks it changed are busy for the activity pass
+// ---- import: the bricks today's writers marked, cell by cell where today's state A isn't what the
+// bridge last wrote there; or after a whole write (a load, an undo, the flag turned on: P.full), every
+// cell, since A is then the truth: a part-filled liquid cell the bridge shows as air would otherwise
+// match an air cell written there and outlive the write. The bricks where it changed something other
+// than air's temperature or seed are busy for the activity pass
 export const v2ImportWGSL = (g) => /* wgsl */ `
 ${v2Head(g, V2_STATE_OPTS)}
 ${bridgeWGSL}
@@ -299,9 +302,15 @@ ${MAIN} {
   let s = b * 64u + li;
   let p = cellOf(s);
   let a = fetchAs(s);
-  if (any(a != bridgeA(p, cells[s]))) {
-    cells[s] = importA(a);
-    atomicOr(&wgChanged, 1u);
+  let c = cells[s];
+  if (P.full != 0u || any(a != bridgeA(p, c))) {
+    let n = importA(a);
+    if (any(n != c)) {
+      cells[s] = n;
+      // (air that stays air, at another temperature or seed, makes no rule possible: a load of an
+      // empty box wakes nothing)
+      if (clsOf(n) != C_AIR || clsOf(c) != C_AIR) { atomicOr(&wgChanged, 1u); }
+    }
   }
   workgroupBarrier();
   if (li == 0u) {
