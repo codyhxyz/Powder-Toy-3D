@@ -602,6 +602,12 @@ function openMap(key, mode = 'sandbox') {
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
   modeEpoch++;
   pov?.game?.end();   // cancel pending team loads before replacing their world
+  // the gamemode, and its presentation effect, before the grid: the build then
+  // waits on the view's pipelines as they will draw (B5: the rolling log's
+  // curved variants, behind the loading screen); startMode below finds them chosen
+  const chosen = resolveMode(m, mode);
+  selectedMode = chosen.key;
+  presentation.select(chosen.effect ?? null);
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
   else { useMap(m); setSize(m.size); }
   hud.toast(`Loaded ${m.name}`);
@@ -2219,6 +2225,10 @@ try {
   wired = true;
   // a guest gets the host's box (multiplayer.js): opening an invite in World starts in a box, not the world
   if (mp.joining && settings.size in WORLDS) settings.size = boxSize;
+  // the boot map's gamemode's presentation effect before the grid is built, so
+  // the build and the loading screen wait on the curved variants it draws (B5),
+  // not on flat ones it won't (bootReady's startMode then selects the same)
+  if (bootMap) presentation.select(resolveMode(mapOf(settings), selectedMode).effect ?? null);
   build();
   rig.setSpeed(settings.camSpeed);
   selectTool(settings.tool);

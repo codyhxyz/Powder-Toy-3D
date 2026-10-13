@@ -1691,16 +1691,20 @@ export const WGSL_CHECK = () => [
  * check-wgsl does; their sources are the ones gfx/volume.js then builds.
  * @param {string} view a VOLUME_VIEWS key
  * @param {object} settings the app's settings (detail_* switches)
- * @param {{ fallback?: boolean }} [opts] fallback: the device is a software adapter
+ * @param {{ fallback?: boolean, curved?: boolean }} [opts] fallback: the device
+ *   is a software adapter; curved: the session's gamemode bends the view (its
+ *   effect, maps.js GAMEMODES: the rolling log), so its modules are the curved
+ *   variants, the only ones it draws
  * @returns {object[]}
  */
-export function warmChecks(view, settings, { fallback = false } = {}) {
+export function warmChecks(view, settings, { fallback = false, curved = false } = {}) {
   const out = [];
+  const tag = curved ? '.curved' : '';
   if (view === 'realistic') {
     const { base, near } = gateDetails(settings, fallback);
-    out.push(volumeCheck(`volume.realistic(${keyOf(base) || 'off'})`, 'realistic', base));
-    if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.realistic(${keyOf(near)})`, 'realistic', near), idle: true });
-  } else out.push(volumeCheck(`volume.${view}`, view));
+    out.push(volumeCheck(`volume.realistic(${keyOf(base) || 'off'})${tag}`, 'realistic', base, undefined, curved));
+    if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.realistic(${keyOf(near)})${tag}`, 'realistic', near, undefined, curved), idle: true });
+  } else out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));
   if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
   out.push(PICK_CHECK);
   return out;
@@ -1709,6 +1713,8 @@ export function warmChecks(view, settings, { fallback = false } = {}) {
 // check-wgsl (b)'s exceptions on SwiftShader (W23), each with why. These are
 // validated by (a); the container's tests draw every other volume entry.
 const UNDRAWABLE = 'builds in 9-13 s, but SwiftShader\'s GPU process crashes (SIGSEGV) compiling it at its first draw (gfx/detail.js SOFTWARE_UNDRAWABLE): validated by (a), drawn on a real GPU';
+// (the curved twins weren't measured: listed with their flat modules, which carry the same detail and a bigger march)
+const UNDRAWABLE_CURVED = 'the rolling log\'s twin of a module SwiftShader can\'t draw (the same SOFTWARE_UNDRAWABLE detail, gfx/detail.js), listed by analogy and not measured: validated by (a), drawn on a real GPU';
 export const WGSL_MAC_ONLY = Object.fromEntries(Object.entries(REALISTIC_LEVELS)
   .filter(([, d]) => Object.keys(d()).some((k) => SOFTWARE_UNDRAWABLE.includes(k)))
-  .flatMap(([k]) => [[`volume.realistic.${k}`, UNDRAWABLE], [`volume.realistic.${k}.curved`, UNDRAWABLE]]));
+  .flatMap(([k]) => [[`volume.realistic.${k}`, UNDRAWABLE], [`volume.realistic.${k}.curved`, UNDRAWABLE_CURVED]]));
