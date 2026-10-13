@@ -37,9 +37,11 @@
   1. **Shovel**: digs like Minecraft's (`tools/dig.js`): each click (or every 0.15 s held) takes the
      outlined bite, 3 cells deep behind the face you aim at and the trowel's 3×3 lattice square across it,
      into the **pack** (the inventory, `transfer.js` `pack()`, Minecraft's 36 × 64 blocks). Powder comes up in
-     one dig, and so does soil (moss, fungus); wood is the axe's and rock the pickaxe's (`dig.js` `material`,
+     one dig, and so does soil (grass and plants, moss, fungus); wood is the axe's and rock the pickaxe's (`dig.js` `material`,
      Minecraft's best tool per block): they refuse with a toast naming the tool. Right-click throws a block's
      worth from it where you aim; hold to keep throwing. Third person plays its dig and toss (`holds.js` GESTURES).
+     The aimed bite's outline and cracks are drawn on the surface itself (`surface.js` `digMark`, FrameUniforms
+     `digMin`/`digMax`), so they follow a trunk or a slope.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.
   3. **Axe**: a short-range swing that breaks breakable solids in a wide, shallow patch into debris. It's
      weaker and less focused than the gun, and chops trees and smashes windows.

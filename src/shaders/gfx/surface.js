@@ -1704,8 +1704,57 @@ const LEAF_SHADOW_D: f32 = 3.0;       // cells toward the sun where the light th
 const LEAF_TRANS_GAIN: f32 = 1.6;     // brightness of the light through
 const LEAF_EXT: f32 = 2.5;            // its extinction per cell of clump
 const ANISO_BEND_RATE: f32 = 5.0;     // anisotropic lookup bend reaches full strength by roughness 1/this
+// The dig tools' mark (src/pov/tools/dig.js) on the surface inside the aimed bite: Minecraft's block
+// outline, black at 40 % (LevelRenderer.renderHitOutline), where the bite's side walls cut the
+// surface, so it follows the ground, a trunk or a slope instead of hanging in the air; and its
+// cracks (Minecraft's 10 destroy stages), the edges of a 3D cell pattern that open as the blows land.
+const DIG_LINE_PX: f32 = 1.5;      // px: the outline's width on screen
+const DIG_LINE_DARK: f32 = 0.4;    // Minecraft's outline: black at 40 %
+const DIG_CRACK_F: f32 = 1.4;      // crack cells per grid cell
+const DIG_CRACK_PX: f32 = 1.3;     // px: a crack's width on screen
+const DIG_CRACK_CELLS: f32 = 0.03; // cells: ...and at least this wide up close
+const DIG_CRACK_DARK: f32 = 0.75;  // how dark a crack is
+// half the distance between q's two nearest sites (≈ distance to the edge between them), in
+// pattern units, when that edge has opened (either site's random under k), else a large number
+fn digCrack(q: vec3f, k: f32) -> f32 {
+  let c = floor(q);
+  var f1 = 1e9;
+  var f2 = 1e9;
+  var r1 = 1.0;
+  var r2 = 1.0;
+  for (var z = -1; z <= 1; z++) { for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let g = c + vec3f(f32(x), f32(y), f32(z));
+    let h = hash33(g);
+    let d = distance(q, g + h);
+    if (d < f1) { f2 = f1; r2 = r1; f1 = d; r1 = h.x; } else if (d < f2) { f2 = d; r2 = h.x; }
+  } } }
+  return select(1e9, (f2 - f1) * 0.5, min(r1, r2) < k);
+}
+fn digMark(s: ptr<function, Surf>) {
+  if (FU.digMax.w <= 0.0) { return; }
+  let p = (*s).p;
+  let lo = FU.digMin.xyz;
+  let hi = FU.digMax.xyz;
+  if (any(p < lo) || any(p > hi)) { return; }
+  let px = footprint(p);
+  // the outline: near a side wall (the aimed axis's two faces are the surface and behind it: not lines)
+  let axis = i32(FU.digMax.w) - 1;
+  var wall = min(p - lo, hi - p);
+  wall[axis] = 1e9;
+  let edge = min(min(wall.x, wall.y), wall.z);
+  var dark = DIG_LINE_DARK * (1.0 - smoothstep(0.5, 1.0, edge / (px * DIG_LINE_PX)));
+  let k = FU.digMin.w;
+  if (k > 0.0) {
+    let e = digCrack(p * DIG_CRACK_F, k) / DIG_CRACK_F;
+    let w = max(px * DIG_CRACK_PX, DIG_CRACK_CELLS);
+    dark = max(dark, DIG_CRACK_DARK * (1.0 - smoothstep(0.5 * w, w, e)));
+  }
+  (*s).albedo *= 1.0 - dark;
+}
+
 fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
+  digMark(&s);
   let v = -rd;
   let ng = s.ng;
   var ao: f32;

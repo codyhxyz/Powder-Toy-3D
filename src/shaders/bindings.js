@@ -68,6 +68,9 @@ export const FRAME_UNIFORMS = [
   ['far', 'u32', 'uFar (bool): a world\'s far field is drawn (box and world share pipelines, E)'],
   // appended (F6) at Sync 3: a world scene's ambient floor (Descent's caves), in giIrradiance and giRadiance
   ['caveAmbient', 'vec3f', 'uCaveAmbient'],
+  // the dig tools' aimed bite (pov/tools/dig.js), drawn on the surface itself (surface.js digMark)
+  ['digMin', 'vec4f', 'uDigMin: its min corner, grid cells; w: share of the blows it needs that have landed (cracks)'],
+  ['digMax', 'vec4f', 'uDigMax: its max corner; w: 1 + the aimed face\'s axis, 0: none shown'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));

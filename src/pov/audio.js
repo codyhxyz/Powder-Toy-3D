@@ -282,7 +282,7 @@ const SAMPLE_BASE = `${import.meta.env?.BASE_URL ?? '/'}sfx/dig/`;
 const sampleUrl = (group, take) => `${SAMPLE_BASE}${group}-${take}.mp3`;
 // loose matter that sounds like gravel (stony grains) or soil (soft, organic); other powder is sand
 const GRAVELLY = new Set([E.STONE, E.RUBBLE, E.BROKENCOAL, E.NUGGETS, E.SCRAP, E.SHARDS, E.CRYSTAL_DUST]);
-const SOILY = new Set([E.SAWDUST, E.MOSS, E.FUNGUS, E.CLAY, E.ASH]);
+const SOILY = new Set([E.SAWDUST, E.PLANT, E.MOSS, E.FUNGUS, E.CLAY, E.ASH]);
 const SAMPLE_BY_FAMILY = { shatter: 'glass', ping: 'metal', thunk: 'wood', crack: 'rock' };
 const BRITTLE = new Set([E.ICE, E.DRY_ICE]);   // ices ring like glass, not like rock
 const DIG_SOURCES = new Set(['axe', 'pickaxe']);   // the swung tools whose blows on cells play the dig samples

@@ -19,7 +19,7 @@ export const SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light'];
 
 export const GEAR = [
   { key: 'SHOVEL', slot: 0, name: 'Shovel', model: 'shovel', abbr: 'SHVL', color: '#8a7a5c', touch: ['Dig', 'Throw'],
-    desc: 'Digs loose ground (sand, snow, gravel, moss) into your pack, a bite at a time. Right-click throws a block of it.' },
+    desc: 'Digs loose ground (sand, snow, gravel, grass, moss) into your pack, a bite at a time. Right-click throws a block of it.' },
   { key: 'PICKAXE', slot: 0, name: 'Pickaxe', model: 'pickaxe', abbr: 'PICK', color: '#8f969c', touch: ['Mine'],
     desc: 'Mines the outlined block, rock and all, into your pack in one blow. Leaves wood to the axe; too weak for metal.' },
   { key: 'AXE', slot: 0, name: 'Axe', model: 'axe', abbr: 'AXE', color: '#9a6a3c', touch: ['Chop'],
