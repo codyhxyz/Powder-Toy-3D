@@ -190,7 +190,7 @@ export class Derived {
       fieldFinal: kernel('fieldFinal', fieldBlurFrag(g, true), E, L.FIELD, FieldBlurParams),
       fieldBoost0: kernel('fieldBoost0', fieldBoostFrag(g, 0), SL.STATE_RO, L.JET, BoostParams),
       fieldBoost: kernel('fieldBoost', fieldBoostFrag(g, 1), E, L.FIELD, BoostParams),
-      fieldPeak: kernel('fieldPeak', fieldPeakFrag(g), E, L.PEAK, PeakParams),
+      fieldPeak: kernel('fieldPeak', fieldPeakFrag(g), SL.STATE_RO, L.PEAK, PeakParams),
       brick: kernel('brick', brickFrag(g), SL.STATE_RO, L.BRICK),
       brickDist: kernel('brickDist', brickDistFrag(g), E, L.PAIR, BrickDistParams),
       blur: kernel('blur', blurFrag(g), E, L.PAIR, BlurParams),
@@ -329,7 +329,7 @@ export class Derived {
       const bind = axis ? [tables, empty, gr.boost[axis]] : [tables, sim.bindRO, gr.boost[0]];
       this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis, aer } });
     }
-    this._dispatch(k.fieldPeak, this._over(DIRTY.FIELDS), { bind: [tables, empty, gr.peak], params: { bulk, reach: [1, 1, 1], aer } });
+    this._dispatch(k.fieldPeak, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.peak], header: sim.header(), params: { bulk, reach: [1, 1, 1], aer } });
   }
 
   /**
