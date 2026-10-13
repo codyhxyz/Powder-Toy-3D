@@ -53,22 +53,22 @@
 .prof .line { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .prof .line.faint { color: var(--muted); }
 
-/* live numbers */
-.prof .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
-.prof .tile {
+/* live numbers. prof-tile and prof-hint, never bare .tile/.hint: those are the dock's element tiles and the fixed hint pill (ui/styles.css) */
+.prof .prof-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.prof .prof-tile {
   display: flex; flex-direction: column; gap: 3px; padding: 6px 7px 5px;
   border-radius: var(--r-tile); background: var(--prof-well);
 }
-.prof .tile b { color: var(--text); font-size: 17px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
-.prof .tile span { color: var(--faint); font: 500 9px/1 var(--ui); text-transform: uppercase; letter-spacing: 0.06em; }
-.prof .tile.warn b { color: var(--prof-slow); }
+.prof .prof-tile b { color: var(--text); font-size: 17px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
+.prof .prof-tile span { color: var(--faint); font: 500 9px/1 var(--ui); text-transform: uppercase; letter-spacing: 0.06em; }
+.prof .prof-tile.warn b { color: var(--prof-slow); }
 
 /* section headings */
 .prof .section {
   display: flex; align-items: baseline; justify-content: space-between; margin: 10px 0 4px;
   color: var(--muted); font: 600 9.5px/1 var(--ui); text-transform: uppercase; letter-spacing: 0.07em;
 }
-.prof .section .hint { color: var(--faint); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.prof .section .prof-hint { color: var(--faint); font-weight: 400; text-transform: none; letter-spacing: 0; }
 
 /* the frame-time graph: bars drawn on the canvas (ui/profiler.js draw()) */
 .prof .graph { border-radius: var(--r-tile); background: var(--prof-well); overflow: hidden; }
@@ -116,4 +116,4 @@
 .prof .spark::after {
   content: ''; position: absolute; left: 0; right: 0; bottom: var(--spark-budget); height: 1px; background: var(--prof-tick);
 }
-.prof.idle .row, .prof.idle .spark, .prof.idle .tiles { opacity: 0.45; }
+.prof.idle .row, .prof.idle .spark, .prof.idle .prof-tiles { opacity: 0.45; }
