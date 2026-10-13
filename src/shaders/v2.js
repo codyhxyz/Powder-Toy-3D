@@ -16,13 +16,14 @@ import { CELL_M } from '../scale.js';
 // cells[slot] twin where a workgroup walks a brick's own run of 64 slots):
 //
 //   word0  id u8 · T u16 (¼ K steps from -273.25 °C, so whole °C are exact) · age u8
-//          (age: a falling powder's ticks of fall; a gas's ticks since it moved)
+//          (age: a falling powder's ticks of fall; a gas's ticks since it moved; a liquid, while the
+//          flux runs: which face carries its remainder, and how much, when its outflow is limited)
 //   word1  liquid: fill u24 (1.0 = 2¹⁶, above it compressed) · ctype u8
 //          air:    the claim, while the flux runs: the liquid id (u8) and T (u16) it would take
 //          others: life f16 · ctype u8 · spare u8
 //   word2  liquid and air: the flux on the +x and +y faces (2 × f16, fill units a substep)
 //          powder: the sub-cell fall fraction (f32)
-//   word3  liquid and air: the flux on the +z face (f16) · liquid: its outflow limit K (unorm16)
+//   word3  liquid and air: the flux on the +z face (f16) · liquid: its outflow limit K (u16, of 65,535)
 //          others: spare u16 · seed u16 (the colour variation today's renderer reads)
 //
 // The tick (5.4, minus the passes this version leaves out):
@@ -53,7 +54,9 @@ const COMP = 4 * G_CELLS * DT_SUB * DT_SUB;
 const QMIN = 0.5;                                  // a face flux under this snaps to 0
 export const FILM = FULL >> 3;                     // no sideways spill onto dry ground under ⅛ full (4.1)
 const DEADQ = 2;                                   // dead band, in fill quanta of the stiffer side
-const Q_MAX = 60000;                               // under f16's largest finite value
+// a face's flux at most (under f16's 65,504): its integer share times the 16-bit K stays under 2³², and a
+// cell's six faces under 2¹⁸ (118 cells/s through a face, 35 m/s)
+const Q_MAX = 43000;
 // rest: a brick sleeps once neither it nor any of its 26 neighbours was busy for one offset cycle (5.6)
 export const QUIET_TICKS = 8;
 // gases diffuse by random swaps only this long after they last moved (R4: diffusionAge, so a still pool rests)
@@ -204,7 +207,6 @@ fn cAge(c: vec4u) -> u32 { return c.x >> 24u; }
 fn withAge(c: vec4u, age: u32) -> vec4u { var o = c; o.x = (c.x & 0x00ffffffu) | (min(age, 255u) << 24u); return o; }
 fn cFill(c: vec4u) -> u32 { return c.y & 0xffffffu; }
 fn qOf(c: vec4u) -> vec3f { return vec3f(unpack2x16float(c.z), unpack2x16float(c.w & 0xffffu).x); }
-fn kOf(c: vec4u) -> f32 { return f32(c.w >> 16u) / 65535.0; }
 // a moved air or liquid cell's face fluxes belong to where it was
 fn zeroQ(c: vec4u) -> vec4u {
   let k = clsOf(c);
@@ -709,7 +711,11 @@ ${brickCell}
 }
 `;
 
-// pass 2: a liquid's outflow limit K (never send more than it holds), rounded down; an air cell's claim
+// pass 2: a liquid's outflow limit (never send more than it holds). Each face out of it carries the
+// integer share a·K / 65535 of its integer flux a, K rounded down, so the shares never add up to more than
+// its fill; when it is limited, the remainder (< 32 quanta) goes out through its largest outflow face, so
+// it drains to exactly 0 (lean-sim's exact f64 K does the same; a 16-bit K alone strands the last quanta).
+// The face and the remainder go in its age byte. An air cell gets its claim.
 export const v2LimitWGSL = (g) => /* wgsl */ `
 ${v2Head(g)}
 ${fluxWGSL}
@@ -719,17 +725,33 @@ ${brickCell}
   let kc = clsOf(c);
   if (kc == C_LIQUID) {
     let q = qOf(c);
-    var out = max(q.x, 0.0) + max(q.y, 0.0) + max(q.z, 0.0);
+    var a6 = array<u32, 6>(0u, 0u, 0u, 0u, 0u, 0u);   // its integer outflow through each face, in face6 order
+    var out = 0u;
     for (var a = 0; a < 3; a++) {
+      if (q[a] > 0.0) { a6[2 * a] = u32(trunc(q[a])); }
       let ph = p - axisV(a);
-      if (!inGrid(ph)) { continue; }
-      let ch = loadCell(ph);
-      if (isOpenC(ch)) { out += max(-qOf(ch)[a], 0.0); }
+      if (inGrid(ph)) {
+        let ch = loadCell(ph);
+        if (isOpenC(ch)) { let qh = qOf(ch)[a]; if (qh < 0.0) { a6[2 * a + 1] = u32(trunc(-qh)); } }
+      }
+      out += a6[2 * a] + a6[2 * a + 1];
     }
-    let fl = f32(cFill(c));
+    let fl = cFill(c);
     var kq = 65535u;
-    if (out > fl) { kq = u32(max(floor(fl / out * 65535.0) - 1.0, 0.0)); }
+    var tag = 0u;
+    if (out > fl) {
+      kq = u32(max(floor(f32(fl) / f32(out) * 65535.0), 1.0)) - 1u;
+      var sum = 0u;
+      var best = 0u;
+      var mx = 0u;
+      for (var i = 0u; i < 6u; i++) {
+        sum += (a6[i] * kq) / 65535u;
+        if (a6[i] > best) { best = a6[i]; mx = i; }
+      }
+      tag = mx | (min(fl - sum, 31u) << 3u);
+    }
     cells[s].w = (c.w & 0xffffu) | (kq << 16u);
+    cells[s].x = (c.x & 0x00ffffffu) | (tag << 24u);
   } else if (kc == C_AIR) {
     let cl = claimOf(p);
     cells[s].y = cl.x | (cl.y << 8u);
@@ -737,22 +759,32 @@ ${brickCell}
 }
 `;
 
-// pass 3: integer transfers, each face's computed alike by its two cells, so mass is exact
+// pass 3: integer transfers, each face's computed alike by its two cells from the source's limit, so mass
+// is exact. A cell writes only its own id, temperature and fill here (a drying cell keeps its age byte:
+// its receivers read its remainder there)
 export const v2GatherWGSL = (g) => /* wgsl */ `
 ${v2Head(g)}
+// what a face carries out of src (|v| its flux; face its index in src's face6 order)
+fn sendOf(v: f32, src: vec4u, face: u32) -> i32 {
+  let kq = src.w >> 16u;
+  var t = (u32(trunc(abs(v))) * kq) / 65535u;
+  let tag = cAge(src);
+  if (kq < 65535u && (tag & 7u) == face) { t += tag >> 3u; }
+  return i32(t);
+}
 ${MAIN} {
 ${brickCell}
   let c = cells[s];
   if (!isOpenC(c)) { return; }
-  let myK = kOf(c);
   let q = qOf(c);
   var dF = 0;
   var poss = false;
   for (var a = 0; a < 3; a++) {
     let v = q[a];
+    let fa = u32(2 * a);
     if (v != 0.0) {
       poss = true;
-      if (v > 0.0) { dF -= i32(trunc(v * myK)); } else { dF += i32(trunc(-v * kOf(loadCell(p + axisV(a))))); }
+      if (v > 0.0) { dF -= sendOf(v, c, fa); } else { dF += sendOf(v, loadCell(p + axisV(a)), fa + 1u); }
     }
     let ph = p - axisV(a);
     if (!inGrid(ph)) { continue; }
@@ -761,7 +793,7 @@ ${brickCell}
     let vh = qOf(ch)[a];
     if (vh != 0.0) {
       poss = true;
-      if (vh > 0.0) { dF += i32(trunc(vh * kOf(ch))); } else { dF -= i32(trunc(-vh * myK)); }
+      if (vh > 0.0) { dF += sendOf(vh, ch, fa); } else { dF -= sendOf(vh, c, fa + 1u); }
     }
   }
   if (poss) { markBusy(p); }
@@ -771,7 +803,7 @@ ${brickCell}
       if (fl > 0) {
         cells[s].y = (c.y & 0xff000000u) | u32(fl);
       } else {
-        cells[s].x = c.x & 0x00ffff00u;   // dry: air, at its temperature
+        cells[s].x = c.x & 0xffffff00u;   // dry: air, at its temperature (its age byte stays: see above)
         cells[s].y = 0u;
       }
     }
