@@ -11,6 +11,7 @@ import { rayTarget, PLAYER } from '../targets.js';
 import { BODY_MASS_KG, cellKg, split } from '../tug.js';
 import { gear } from './catalog.js';
 import { faceNormal, cellsNear, outsideBody, persistentLoad, ownedKey, toStepVelocity, heldMesh, recolor } from './transfer.js';
+import { isLoose } from '../grid.js';
 
 // The hook: Cruelty Squad's grappling hook, one rope where mass decides which
 // way things move (pov/tug.js). Left-click fires the claw along the crosshair;
@@ -62,7 +63,6 @@ const CLAW_COLOR = '#9aa0a6';
 const BITE_SIZE = 1;                  // cells: a carried bite is drawn as the cell it is
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const isLoose = (id) => id >= 0 && (ELEMENTS[id].kind === K.POWDER || ELEMENTS[id].kind === K.LIQUID);
 const isAnchor = (id) => id < 0 || ELEMENTS[id]?.kind === K.SOLID;   // id −1: the box's floor
 
 function buildModel(env) {

@@ -13,6 +13,7 @@ import { viewmodelRig, heldMaterial } from './viewmodel.js';
 import { swing } from './tools/action.js';
 import { sharedTransfer, cellsNear, outsideBody, persistentLoad, ownedKey } from './tools/transfer.js';
 import { behind } from './tools/knife.tool.js';
+import { voxelWalk, isLoose } from './grid.js';
 import { haloMatch, points, wu, CAUSE } from './halo.js';
 
 // The kick: Cruelty Squad's, always on its own key, no hotbar slot. A body
@@ -104,7 +105,6 @@ const BOOT_GAP = 0.05;                      // cells short of the struck face: w
 const GRAIN_KIND = 'grain';                 // ballistics.js kind of a kicked clump (vfx.js draws its dust off kick:grain)
 const EPS = 1e-6;
 
-const isLoose = (id) => id >= 0 && (ELEMENTS[id].kind === K.POWDER || ELEMENTS[id].kind === K.LIQUID);
 const isSolid = (id) => id === PROBE_OUTSIDE || (id >= 0 && ELEMENTS[id].kind === K.SOLID);
 const breaksAt = (id, w) => id >= 0 && ELEMENTS[id].kind === K.SOLID && !!ELEMENTS[id].breakInto && KICK.ENERGY * w >= ELEMENTS[id].hard;
 const debrisOf = (id) => E[ELEMENTS[id].breakInto];
@@ -139,28 +139,17 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
   // The first cell along hip + t·dir that isn't air or gas, within reach
   // (Amanatides & Woo's voxel walk): { cell, t, id, normal }, or null.
   function march() {
-    const o = [hip.x, hip.y, hip.z], d = [dir.x, dir.y, dir.z];
-    const c = o.map(Math.floor);
-    const step = d.map(Math.sign);
-    const tDelta = d.map((v) => (v === 0 ? Infinity : Math.abs(1 / v)));
-    const tMax = d.map((v, k) => (v === 0 ? Infinity : ((v > 0 ? c[k] + 1 : c[k]) - o[k]) / v));
-    let t = 0, axis = -1;
     walked.length = 0;
-    for (let i = 0; i < MARCH_MAX && t <= KICK_REACH; i++) {
-      const id = cellAt(c[0], c[1], c[2]);
-      walked.push([...c, id]);
+    return voxelWalk(hip, dir, KICK_REACH, (x, y, z, t, axis, step) => {
+      const id = cellAt(x, y, z);
+      walked.push([x, y, z, id]);
       if (id === unknown) return null;
       if (axis >= 0 && (isSolid(id) || isLoose(id))) {
         const normal = new THREE.Vector3();
-        normal.setComponent(axis, -step[axis]);
-        return { cell: new THREE.Vector3(...c), t, id, normal };
+        normal.setComponent(axis, -step);
+        return { cell: new THREE.Vector3(x, y, z), t, id, normal };
       }
-      axis = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
-      t = tMax[axis];
-      c[axis] += step[axis];
-      tMax[axis] += tDelta[axis];
-    }
-    return null;
+    }, MARCH_MAX) ?? null;
   }
 
   // The struck lump around a cell: its mass (kg, Infinity when anchored) and

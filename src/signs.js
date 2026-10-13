@@ -24,13 +24,6 @@ const SCALE_MIN = 0.85, SCALE_MAX = 1.3;
 const OCCLUDED_BELOW = 0.5;   // transmittance under which a sign counts as hidden
 const PLACEHOLDER = /\{([tpe])\}/gi;
 
-// Pick result face (axis * 2 + (normal negative ? 1 : 0)) -> integer normal.
-export function faceNormal(face, out = new THREE.Vector3()) {
-  const axis = Math.floor(face / 2);
-  out.set(0, 0, 0).setComponent(axis, face % 2 === 0 ? 1 : -1);
-  return out;
-}
-
 const fmt = {
   t: (d) => `${d.T.toFixed(1)}°C`,
   p: (d) => (Math.abs(d.P) < 0.005 ? 0 : d.P).toFixed(2),

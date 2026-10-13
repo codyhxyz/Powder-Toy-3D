@@ -4,6 +4,7 @@ import { povGpu } from '../gpu.js';
 import { ELEMENTS } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
+import { voxelWalk } from '../grid.js';
 
 // Exact cell transfer: the shared machinery the hand tools use to take cells out
 // of the grid and put them back, conserving matter exactly although readbacks
@@ -301,13 +302,8 @@ export function pinned(point, sim) {
   return () => p.clone().sub(sim.origin);
 }
 
-// The outward normal of a pick face (shaders/render.js pickFrag: axis * 2, +1
-// when the ray stepped +axis, so even faces face +axis).
-export function faceNormal(face, out = new THREE.Vector3()) {
-  out.set(0, 0, 0);
-  out.setComponent(Math.floor(face / 2), face % 2 === 0 ? 1 : -1);
-  return out;
-}
+// The outward normal of a pick face (../grid.js; the tools import it from here)
+export { faceNormal } from '../grid.js';
 
 const MUZZLE_SEARCH = 16;           // cells walked along the ray by muzzleCell
 
@@ -320,26 +316,14 @@ const MUZZLE_SEARCH = 16;           // cells walked along the ray by muzzleCell
 export function muzzleCell(eye, dir, pos, g) {
   const half = BODY_WIDTH / 2;
   const lo = [pos.x - half, pos.y, pos.z - half], hi = [pos.x + half, pos.y + BODY_HEIGHT, pos.z + half];
-  const o = [eye.x, eye.y, eye.z], d = [dir.x, dir.y, dir.z];
-  const c = o.map(Math.floor);
-  const step = d.map(Math.sign);
-  const tDelta = d.map((v) => (v === 0 ? Infinity : Math.abs(1 / v)));
-  const tMax = d.map((v, k) => (v === 0 ? Infinity : ((v > 0 ? c[k] + 1 : c[k]) - o[k]) / v));
-  const overlaps = () => c.every((v, k) => v < hi[k] && v + 1 > lo[k]);
   const path = [];
-  let t = 0;
-  for (let i = 0; i < MUZZLE_SEARCH; i++) {
-    path.push(new THREE.Vector3(...c));
-    if (!overlaps()) {
-      const inGrid = c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < g.nx && c[1] < g.ny && c[2] < g.nz;
-      return inGrid ? { cell: new THREE.Vector3(...c), t, path } : null;
-    }
-    const k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
-    t = tMax[k];
-    c[k] += step[k];
-    tMax[k] += tDelta[k];
-  }
-  return null;
+  return voxelWalk(eye, dir, Infinity, (x, y, z, t) => {
+    path.push(new THREE.Vector3(x, y, z));
+    const c = [x, y, z];
+    if (c.every((v, k) => v < hi[k] && v + 1 > lo[k])) return undefined;   // still inside the body
+    const inGrid = x >= 0 && y >= 0 && z >= 0 && x < g.nx && y < g.ny && z < g.nz;
+    return inGrid ? { cell: new THREE.Vector3(x, y, z), t, path } : null;
+  }, MUZZLE_SEARCH) ?? null;
 }
 
 // Radius of a ball of n cells.
