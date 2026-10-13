@@ -97,7 +97,7 @@ export function createProfilerPanel() {
   const copy = h('button.copy', { type: 'button', text: 'Copy', title: 'Copy a plain-text report' });
   const tile = (key, title) => {
     const v = h('b', { text: '–' });
-    return { v, el: h('div.tile', { title }, v, h('span', { text: key })) };
+    return { v, el: h('div.prof-tile', { title }, v, h('span', { text: key })) };
   };
   const tFps = tile('fps', 'Frames per second over the graph\'s window');
   const tFrame = tile('ms / frame', `Mean frame time over the graph's window (${BUDGET_MS.toFixed(1)} ms at ${MAX_FPS} fps)`);
@@ -124,12 +124,12 @@ export function createProfilerPanel() {
   const spark = [...Array(HISTORY)].map(() => h('i'));
   const el = h('div.prof', { role: 'region', 'aria-label': 'Profiler' },
     h('header', {}, h('b', { text: 'Profiler' }), status, copy),
-    h('div.tiles', {}, tFps.el, tFrame.el, tCpu.el, tGpu.el),
-    h('div.section', {}, h('span', { text: 'Frame time' }), h('span.hint', { text: 'hover a bar to hold' })),
+    h('div.prof-tiles', {}, tFps.el, tFrame.el, tCpu.el, tGpu.el),
+    h('div.section', {}, h('span', { text: 'Frame time' }), h('span.prof-hint', { text: 'hover a bar to hold' })),
     h('div.graph', {}, canvas),
     gline,
     rates, state, size,
-    h('div.section', {}, h('span', { text: 'GPU passes' }), h('span.hint', { text: 'one sampled frame · click a phase' })),
+    h('div.section', {}, h('span', { text: 'GPU passes' }), h('span.prof-hint', { text: 'one sampled frame · click a phase' })),
     h('div.row.head', {}, h('span.name', { text: 'phase' }), h('span.num', { text: 'cpu' }), h('span.num', { text: 'gpu' }),
       h('span', { text: 'timeline (ms)' })),
     rows.flatMap((r) => [r.row, r.detail]),
