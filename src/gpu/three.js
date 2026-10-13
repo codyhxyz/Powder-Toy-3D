@@ -31,12 +31,13 @@ import { GraphicsFailure, deviceLostMessage, gpuErrorMessage } from './errors.js
  * Sets gpu.three = { renderer, prepare }.
  * @param {object} gpu
  * @param {HTMLCanvasElement} canvas
- * @param {{ assertTarget?: boolean }} [opts]
+ * @param {{ assertTarget?: boolean, hdr?: boolean }} [opts] hdr: the presenter's (`presenter.hdr`), so a
+ *   lazy configure of the canvas by three asks for the same HDR canvas (rgba16float, 'extended')
  * @returns {Promise<WebGPURenderer>}
  */
-export async function createThreeRenderer(gpu, canvas, { assertTarget } = {}) {
+export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = false } = {}) {
   shimViewSwizzle(gpu.device);
-  const renderer = new WebGPURenderer({ device: gpu.device, canvas, antialias: false, alpha: false });
+  const renderer = new WebGPURenderer({ device: gpu.device, canvas, antialias: false, alpha: false, ...(hdr && { outputType: HalfFloatType }) });
   renderer._getFallback = null;
   await renderer.init();
   renderer.autoClear = false;

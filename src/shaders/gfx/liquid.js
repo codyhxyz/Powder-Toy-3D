@@ -107,11 +107,9 @@ const RIPPLE_SLOPE: f32 = 0.035;     // height-field slope per unit noise gradie
 const RIPPLE_UP_LO: f32 = 0.6;       // n.y where ripples start ...
 const RIPPLE_UP_HI: f32 = 0.9;       // ... and reach full strength
 const RIPPLE_EPS: f32 = 0.1;         // finite-difference step, noise space
-const RIPPLE_LOD_LO: f32 = 0.25;     // finer octave's cycles per pixel where ripples start to fade ...
-const RIPPLE_LOD_HI: f32 = 0.6;      // ... and where they're gone
 fn liquidRipple(p: vec3f, n: vec3f) -> vec3f {
-  let k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y)
-        * (1.0 - smoothstep(RIPPLE_LOD_LO, RIPPLE_LOD_HI, footprint(p) * RIPPLE_FREQ * RIPPLE_OCT2));
+  // fades out with the finer octave, by the material LOD (lodFade)
+  let k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y) * lodFade(RIPPLE_FREQ * RIPPLE_OCT2, footprint(p));
   if (k <= 0.0) { return n; }
   let q = worldPos(p).xz * RIPPLE_FREQ;   // anchored in the world
   let t = FU.time * RIPPLE_DRIFT;

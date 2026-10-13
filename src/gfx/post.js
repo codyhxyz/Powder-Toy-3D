@@ -120,6 +120,24 @@ export const POST_DEFAULTS = {
   meter: false, // measure post.sceneLuma
 };
 
+// HDR output (EDR on a Mac; src/gpu/present.js makes the canvas). The SDR picture
+// stays AgX exactly; each pixel is then scaled by how much further Gran
+// Turismo's tone curve reaches with the display's peak than with SDR white
+// (Uchimura 2017, "HDR theory and practice", CEDEC: the curve GT Sport ships, P
+// = the peak). Its toe and linear section don't depend on P, so the darks and
+// mid-tones keep the SDR picture and only highlights (lava, the sun, flames,
+// lamps, crystals) climb above white.
+export const HDR_OUT = {
+  // Brightest value sent, × SDR white: a MacBook Pro's XDR panel peaks at 1600 nits over its
+  // 500-nit SDR white (3.2×); brighter values only clip, on that panel or a dimmer HDR one.
+  PEAK: 3.2,
+  // Exposed luminance the curve treats as 1 (white): sunlit white (≈ 1.2, gfx/incandescence.js)
+  // at the default exposure (+0.7 EV) is ≈ 1.95, so diffuse white sits at the shoulder's foot.
+  PAPER: 2.0,
+  // Uchimura's defaults: contrast a, linear section start m and length l, black tightness c
+  CONTRAST: 1.0, LINEAR_START: 0.22, LINEAR_LENGTH: 0.4, BLACK: 1.33,
+};
+
 // Eye adaptation (see the header). Luminances are log2 of scene radiance, where
 // sunlit white is ≈ 1.2 (gfx/incandescence.js): daylit views sit around -2..0,
 // the moonlit night a few stops under, a cave lit by crystals ~10 under.
@@ -141,8 +159,18 @@ export const ADAPT = {
 
 // Frame-time trials, not a refresh-rate target alone: a capped 30 Hz page can
 // regain detail too. Failed trials back off so CPU-bound scenes don't keep cycling.
+export const AUTO_RES = {
+  WINDOW: 1.2,        // s of frames averaged per measurement
+  BUDGET: 1 / 50,     // s: a slower average frame tries a lower scale
+  DOWN: 0.85,         // scale × this per step down…
+  UP: 1.08,           // …and × this per step back up
+  KEEP: 0.93,         // a step is kept only if the frame time moves by this ratio
+  MIN: 0.6,           // lowest multiple of the selected render scale
+  HOLD: 15,           // s between trials…
+  MAX_HOLD: 120,      // …doubling after each failed one, up to this
+};
 export function createAutoResolution() {
-  const WINDOW = 1.2, MIN = 0.6, HOLD = 15, MAX_HOLD = 120;
+  const { WINDOW, BUDGET, DOWN, UP, KEEP, MIN, HOLD, MAX_HOLD } = AUTO_RES;
   let time = 0, frames = 0, trial = null, resting = false;
   let downAt = 0, upAt = HOLD, downHold = HOLD, upHold = HOLD;
   const auto = {
@@ -168,7 +196,7 @@ export function createAutoResolution() {
       time = frames = 0;
       if (trial) {
         const { scale, baseline, up } = trial;
-        const accepted = up ? avg <= baseline / 0.93 : avg <= baseline * 0.93;
+        const accepted = up ? avg <= baseline / KEEP : avg <= baseline * KEEP;
         if (!accepted) auto.scale = scale;
         if (up) {
           upAt = now + (accepted ? WINDOW : upHold);
@@ -184,9 +212,9 @@ export function createAutoResolution() {
         return;
       }
       const up = auto.scale < 1 && now >= upAt;
-      if (up || (avg > 1 / 50 && auto.scale > MIN && now >= downAt)) {
+      if (up || (avg > BUDGET && auto.scale > MIN && now >= downAt)) {
         trial = { scale: auto.scale, baseline: avg, up };
-        auto.scale = up ? Math.min(1, auto.scale * 1.08) : Math.max(MIN, auto.scale * 0.85);
+        auto.scale = up ? Math.min(1, auto.scale * UP) : Math.max(MIN, auto.scale * DOWN);
       }
     },
   };
@@ -293,7 +321,7 @@ const CompositeParams = uniformStruct('CompositeParams', {
   bloom: 'f32', exposure: 'f32', sharpen: 'f32', look: 'f32',
   raw: 'bool', adapt: 'bool', night: 'f32', nightGain: 'f32',
   nightSeed: 'u32', opaque: 'bool', viewmodel: 'bool', glow: 'bool',
-  vmNight: 'f32',
+  vmNight: 'f32', peak: 'f32',
   skyTop: 'vec3f', skyMid: 'vec3f', skyLow: 'vec3f', skyGlow: 'vec4f',
 });
 
@@ -857,10 +885,36 @@ fn tonemap(c: vec3f) -> vec3f {
   return mix(a, clamp(REC2020_TO_SRGB * pc, vec3f(0.0), vec3f(1.0)), w);
 }
 
-// sRGB transfer function (IEC 61966-2-1).
+// sRGB transfer function (IEC 61966-2-1); above 1 it continues the curve (the HDR canvas's extended sRGB).
 fn srgbEncode(c: vec3f) -> vec3f {
   return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3f(0.0031308));
 }
+
+// HDR (HDR_OUT in gfx/post.js): Gran Turismo's tone curve (Uchimura 2017) with peak p.
+const GT_A: f32 = ${f(HDR_OUT.CONTRAST)};
+const GT_M: f32 = ${f(HDR_OUT.LINEAR_START)};
+const GT_L: f32 = ${f(HDR_OUT.LINEAR_LENGTH)};
+const GT_C: f32 = ${f(HDR_OUT.BLACK)};
+const HDR_PAPER: f32 = ${f(HDR_OUT.PAPER)};
+fn gtCurve(x: f32, p: f32) -> f32 {
+  let l0 = (p - GT_M) * GT_L / GT_A;
+  let s0 = GT_M + l0;
+  let s1 = GT_M + GT_A * l0;
+  let cp = -GT_A * p / (p - s1) / p;
+  let w0 = 1.0 - smoothstep(0.0, GT_M, x);
+  let w2 = step(s0, x);
+  let toe = GT_M * pow(max(x, 0.0) / GT_M, GT_C);
+  let lin = GT_M + GT_A * (x - GT_M);
+  let shoulder = p - (p - s1) * exp(cp * (x - s0));
+  return toe * w0 + lin * (1.0 - w0 - w2) + shoulder * w2;
+}
+// × on the tone-mapped (linear display) colour of exposed radiance c: 1 in SDR and below the shoulder
+fn hdrGain(c: vec3f) -> f32 {
+  if (P.peak <= 1.0) { return 1.0; }
+  let x = luma(c) / HDR_PAPER;
+  return gtCurve(x, P.peak) / max(gtCurve(x, 1.0), 1e-6);
+}
+fn display(c: vec3f) -> vec3f { return tonemap(c) * hdrGain(c); }
 
 fn tm(c: vec3f) -> vec3f { return c / (1.0 + luma(c)); }
 fn itm(c: vec3f) -> vec3f { return c / max(1.0 - luma(c), 1e-3); }
@@ -945,7 +999,7 @@ fn sky(uv: vec2f) -> vec3f {
   if (P.adapt != 0u && adaptation.gain > 0.0) { gain = adaptation.gain; }
   var o: vec3f;
   if (P.raw != 0u) { o = srgbEncode(clamp(rad, vec3f(0.0), vec3f(1.0))); }
-  else { o = srgbEncode(tonemap(max(rad, vec3f(0.0)) * (P.exposure * gain))); }
+  else { o = srgbEncode(display(max(rad, vec3f(0.0)) * (P.exposure * gain))); }
   if (P.night > 0.0 && P.raw == 0u) { o = mix(o, srgbEncode(nightVision(max(rad, vec3f(0.0)), p)), P.night); }
   // the canvas is opaque: the sky shows through where the scene's coverage is below 1,
   // premultiplied over, as the compositor blended the old transparent canvas over the page
@@ -957,7 +1011,8 @@ fn sky(uv: vec2f) -> vec3f {
   // ±½ LSB dither against 8-bit banding; keep exact zeros exact
   let ign = fract(IGN.z * fract(dot(vec2f(p), IGN.xy)));
   o += (ign - 0.5) / DITHER_LEVELS * step(DITHER_BLACK, max(o.r, max(o.g, o.b)));
-  o = clamp(o, vec3f(0.0), vec3f(1.0));
+  let white = srgbEncode(vec3f(max(P.peak, 1.0)));   // SDR white, or the HDR peak
+  o = clamp(o, vec3f(0.0), white);
 
   // The held tool (pov/viewmodel.js): straight colour → the same tone map at the
   // exposure, without the adaptation gain → sRGB, premultiplied over. Tone mapping is
@@ -971,12 +1026,12 @@ fn sky(uv: vec2f) -> vec3f {
       sc = mix(sc, NV_PHOSPHOR * luma(sc), P.vmNight);   // the tool seen through the goggles too
       var e2: vec3f;
       if (P.raw != 0u) { e2 = srgbEncode(clamp(sc, vec3f(0.0), vec3f(1.0))); }
-      else { e2 = srgbEncode(tonemap(max(sc, vec3f(0.0)) * P.exposure)); }
+      else { e2 = srgbEncode(display(max(sc, vec3f(0.0)) * P.exposure)); }
       o = e2 * va + o * (1.0 - va);
     }
   }
   // the hands' light, added over it all (its materials tone map themselves)
-  if (P.glow != 0u) { o = clamp(o + textureSampleLevel(tGlow, smp, uv, 0.0).rgb, vec3f(0.0), vec3f(1.0)); }
+  if (P.glow != 0u) { o = clamp(o + textureSampleLevel(tGlow, smp, uv, 0.0).rgb, vec3f(0.0), white); }
   return vec4f(o, a);
 }
 `;
@@ -1013,6 +1068,7 @@ export const WGSL_CHECK = [
   computeEntry('postReduce', reduceWGSL, 'REDUCE', ReduceParams, { workgroupSize: [REDUCE_THREADS, 1, 1], dispatch: () => [1, 1, 1] }),
   compositeEntry('bgra8unorm'),
   compositeEntry('rgba8unorm'),
+  compositeEntry('rgba16float'),   // the HDR canvas (gpu/present.js)
 ];
 const PIPES = Object.fromEntries(WGSL_CHECK.map((e) => [e.name, e]));
 
@@ -1288,7 +1344,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     /** Render scale per axis the next render uses (upscaling is TAA's job). */
     get renderScale() {
       const s = settingsOf();
-      return s.taa ? s.upscale * Math.min(1, Math.max(0.6, s.resolutionScale)) : 1;
+      return s.taa ? s.upscale * Math.min(1, Math.max(AUTO_RES.MIN, s.resolutionScale)) : 1;
     },
     /** GPUTextures: { scene, depth, history, bloom, down, up } (width and height on each). */
     get targets() { return { scene: main.color, depth: main.depth, history: history[cur], bloom: up[0] ?? down[0], down, up }; },
@@ -1530,6 +1586,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           bloomTexel: texel(bloomTex), bloom: bloomOn ? s.bloom : 0, sharpen: s.taa && !s.raw ? s.sharpen : 0,
           adapt: adaptOn, night: s.raw ? 0 : s.night, nightSeed: frame, opaque: out.canvas,
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
+          peak: out.canvas && presenter?.hdrActive && !s.raw ? HDR_OUT.PEAK : 1,
         }),
       });
       rp.end();
@@ -1602,7 +1659,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const rp = gpu.frame.render({ colorAttachments: [out.attachment] }, 'still');
       pipe.draw(rp, {
         bind: [, , bind],
-        params: compositeParams(s, [out.width, out.height], { bloomTexel: [1, 1], bloom: 0, sharpen: 0, adapt, night: 0, nightSeed: 0, opaque: false, viewmodel: false, glow: false, vmNight: 0 }),
+        params: compositeParams(s, [out.width, out.height], { bloomTexel: [1, 1], bloom: 0, sharpen: 0, adapt, night: 0, nightSeed: 0, opaque: false, viewmodel: false, glow: false, vmNight: 0, peak: 1 }),
       });
       rp.end();
       return true;
@@ -1680,7 +1737,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       size: outSize, bloomTexel: o.bloomTexel, thresh: [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)], hot: [s.hotStart, s.hotFull],
       bloom: o.bloom, exposure: 2 ** s.exposure, sharpen: o.sharpen, look: s.look,
       raw: s.raw, adapt: o.adapt, night: o.night, nightGain: s.nightGain,
-      nightSeed: o.nightSeed >>> 0, opaque: o.opaque, viewmodel: o.viewmodel, glow: o.glow, vmNight: o.vmNight,
+      nightSeed: o.nightSeed >>> 0, opaque: o.opaque, viewmodel: o.viewmodel, glow: o.glow, vmNight: o.vmNight, peak: o.peak,
       skyTop: sky.top, skyMid: sky.mid, skyLow: sky.low, skyGlow: sky.glow,
     };
   }

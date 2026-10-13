@@ -9,9 +9,26 @@
 //
 // getCurrentTexture() is called only on presented frames; otherwise the
 // canvas keeps its last image (render on demand).
+//
+// HDR (EDR on a Mac): on a display that reports a high dynamic range the canvas
+// is rgba16float with 'extended' tone mapping, the browser's HDR canvas (Chrome
+// 129+, Safari 26), so values above 1 (SDR white) show brighter, up to the
+// display's headroom. three.js's own switch for it (outputType HalfFloatType,
+// WebGPUBackend.js's context getter) asks for the same configuration, so the
+// rule above still holds; three is told through `presenter.hdr`. The composite
+// spends the headroom (gfx/post.js, HDR_PEAK).
 
 import { fullscreenVert } from './wgsl.js';
 import { STAGE } from './kernels.js';
+import { halfToFloat } from './readback.js';
+
+const HDR_FORMAT = 'rgba16float';
+const HDR_QUERY = '(dynamic-range: high)';
+
+/** True on a display that can show HDR (the CSS media query the browser answers per screen). */
+export function hdrDisplay() {
+  return typeof matchMedia === 'function' && matchMedia(HDR_QUERY).matches;
+}
 
 /**
  * Configures `canvas` for WebGPU and returns the presenter.
@@ -19,24 +36,38 @@ import { STAGE } from './kernels.js';
  * @param {HTMLCanvasElement} canvas
  * @param {{ alpha?: boolean }} [opts] alpha: three's `alpha` parameter (false: an opaque canvas, F7)
  */
-export function createPresenter(gpu, canvas, { alpha = false } = {}) {
+export function createPresenter(gpu, canvas, { alpha = false, hdr = hdrDisplay() } = {}) {
   const context = canvas.getContext('webgpu');
   if (!context) throw new Error('The canvas has no WebGPU context (another kind of context already owns it)');
-  const format = navigator.gpu.getPreferredCanvasFormat();
-  const config = {
+  const sdr = {
     device: gpu.device,
-    format,
+    format: navigator.gpu.getPreferredCanvasFormat(),
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     alphaMode: alpha ? 'premultiplied' : 'opaque',
     toneMapping: { mode: 'standard' },
   };
+  let config = sdr;
+  if (hdr) {
+    config = { ...sdr, format: HDR_FORMAT, toneMapping: { mode: 'extended' } };
+    context.configure(config);
+    // a browser without HDR canvases ignores toneMapping (and reports 'standard', or no getConfiguration)
+    if (context.getConfiguration?.()?.toneMapping?.mode !== 'extended') config = sdr;
+  }
   context.configure(config);
+  const format = config.format;
+  // the picture may move to an SDR screen (or the display's HDR be switched off): the composite then stops spending headroom
+  let hdrNow = config !== sdr && hdrDisplay();
+  if (config !== sdr) matchMedia(HDR_QUERY).addEventListener('change', (e) => { hdrNow = e.matches; });
   let current = null, view = null;
   return {
     canvas,
     context,
-    /** the canvas texture format (bgra8unorm or rgba8unorm) */
+    /** the canvas texture format (bgra8unorm or rgba8unorm; rgba16float when HDR) */
     format,
+    /** true when the canvas is an HDR canvas (rgba16float, extended tone mapping) */
+    hdr: config !== sdr,
+    /** true while the canvas is HDR and its screen shows HDR: values above 1 are brighter than white */
+    get hdrActive() { return hdrNow; },
     alphaMode: config.alphaMode,
     /** Configures the context again (after a device change; never needed for a resize). */
     configure() { context.configure(config); },
@@ -67,7 +98,14 @@ export function createPresenter(gpu, canvas, { alpha = false } = {}) {
      */
     async capture() {
       const t = this.texture();
-      const data = await gpu.readback.texture(t, { format });
+      const raw = await gpu.readback.texture(t, { format });
+      if (format === HDR_FORMAT) {
+        // sRGB-encoded halfs, SDR white at 1: clip to the SDR range for an 8-bit still
+        const data = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) data[i] = Math.round(Math.min(Math.max(halfToFloat(raw[i]), 0), 1) * 255);
+        return { width: t.width, height: t.height, data };
+      }
+      const data = raw;
       if (format.startsWith('bgra')) {
         for (let i = 0; i < data.length; i += 4) { const b = data[i]; data[i] = data[i + 2]; data[i + 2] = b; }
       }
