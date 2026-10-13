@@ -3,6 +3,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { STRIKE } from './povTrace.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
+import { ddaWalkWGSL } from './dda.js';
 
 // GPU work for the two boring weapons: the burrower's drill and the laser
 // cannon (src/pov/tools/burrower.tool.js, laser.tool.js), on WebGPU
@@ -299,6 +300,7 @@ export const LASER_REACH_BYTES = 16;  // the ring's answer: (reach, stopId, 0, 1
 // later (the damage, the beam's look, lastShot), so nothing waits for it.
 export const laserReachFrag = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
+${ddaWalkWGSL}
 ${laserWGSL}
 @group(2) @binding(0) var<storage, read_write> beam: LaserBeam;
 @group(2) @binding(1) var<storage, read_write> beamArgs: array<u32, 3>;
@@ -307,11 +309,12 @@ ${laserWGSL}
 // How far along the axis the beam gets (cells from the muzzle), and what stopped it.
 fn laserReach(stopId: ptr<function, i32>) -> f32 {
   *stopId = -1;
-  let rd = select(P.dir, vec3f(1e-6), abs(P.dir) < vec3f(1e-6));
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
+  let rd = safeDir(P.dir);
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
   var c = vec3i(floor(P.muzzle));
-  var tMax = (vec3f(c) + step(vec3f(0.0), rd) - P.muzzle) / rd;
+  ddaInit(P.muzzle, rd, c, &istp, &tDelta, &tMax);
   var E = LASER_ENERGY;
   var tEnter = 0.0;
   var entered = false;
@@ -331,11 +334,8 @@ fn laserReach(stopId: ptr<function, i32>) -> f32 {
         E -= cost;
       }
     }
-    var ax = 2;
-    if (tMax.x <= tMax.y && tMax.x <= tMax.z) { ax = 0; } else if (tMax.y <= tMax.z) { ax = 1; }
-    tEnter = tMax[ax];
-    c[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    tEnter = min(tMax.x, min(tMax.y, tMax.z));
+    ddaStep(istp, tDelta, &c, &tMax);
   }
   return min(tEnter, LASER_LENGTH);
 }

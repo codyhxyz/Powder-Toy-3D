@@ -143,7 +143,6 @@ const VOLUME_SHADOW_BIAS: f32 = ${VOLUME_SHADOW_BIAS.toFixed(1)};       // depth
 const SUN_RAY_SMOOTH_SKIP: f32 = 0.5;
 const SUN_RAY_ISO_MARGIN: f32 = 0.02;
 const SUN_RAY_REACH_PAD: f32 = 1.5;
-const SUN_RAY_NUDGE: f32 = 1e-4;           // voxels past the box entry at which the start cell is looked up
 
 // Soft shadows (PCSS): the sun is a disc, so a shadow's edge blurs with the
 // distance from its caster. tan of the sun's apparent radius: the real sun is
@@ -242,10 +241,11 @@ fn sunRayClear(ro: vec3f, tLim: f32) -> f32 {
   let bh = boxHit(ro, rd);
   let t = max(bh.x, 0.0);
   if (bh.y <= t) { return 1.0; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t + SUN_RAY_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t, &istp, &tDelta, &cell, &tMax);
   var tEnter = t;
   let tSkip = t + SUN_RAY_SMOOTH_SKIP;
   var lastB = vec3i(-1);
@@ -521,7 +521,7 @@ fn occluder(c: vec3i) -> bool {
   if (c.y < 0) { return true; }
   if (outside(c)) { return false; }
   let id = eid(fetchA(c));
-  return id != E_EMPTY && KIND(id) != K_GAS;
+  return !isGasLike(id);
 }
 
 // Smooth per-corner AO on a crisp voxel face (Minecraft style): cell's face
@@ -594,13 +594,14 @@ fn nearSmoothIn(p: vec3f, opaqueOnly: bool) -> bool {
 fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
              hc: ptr<function, vec3i>, hn: ptr<function, vec3f>) -> f32 {
   let rd = safeDir(rd0);
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
   var cell = vec3i(floor(ro));
   *hc = cell;
   *hn = vec3f(0.0);
   if (cell.y < 0 || outside(cell)) { return -1.0; }
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
   var tEnter = 0.0;
   var ax = 1;
   var lastB = vec3i(-1);
@@ -614,7 +615,7 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
     if (!brickMatter(occ)) { ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
     let id = eid(fetchA(cell));
     let axOut = argmin3(tMax);
-    if (id != E_EMPTY && KIND(id) != K_GAS && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
+    if (!isGasLike(id) && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
         && (isCrisp(id) || (tEnter > selfSkip && nearSmoothIn(ro + rd * tClosest(cell, ro, rd, tEnter, tMax[axOut]), opaqueOnly)))) {
       *hc = cell;
       var h = vec3f(0.0);

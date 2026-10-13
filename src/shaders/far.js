@@ -113,7 +113,7 @@ export const regionDispatch = (size) => fold(Math.ceil(size[0] * size[1] * size[
 // Counting a brick's cells into its texel (both summaries: the generator's and the window's).
 const countGLSL = /* wgsl */ `
 // what stops light in the far field, and what is a transparent liquid
-fn farOpaque(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS && RCLASS(id) != R_LIQUID; }
+fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID; }
 fn farLiquid(id: i32) -> bool { return RCLASS(id) == R_LIQUID; }
 struct FarCount {
   w: array<f32, NE>,   // weights of the brick's own cells by element: opaque (their dominant one) and liquid
