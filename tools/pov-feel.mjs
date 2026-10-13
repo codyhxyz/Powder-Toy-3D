@@ -118,12 +118,11 @@ check('aim ignores the shake', await ev(() => {
   return rd.distanceTo(a.pov.ctx.dir) < 1e-6;
 }));
 
-// blast: a big sudden velocity change
+// blast: a big sudden push from outside (the player's knock: pressure and impulses)
 await settle(1300);
-// (bumped directly: an impulse this big outruns the body's probe at headless frame rates)
 const blast = await ev(() => new Promise((done) => {
   const a = window.__app, out = [];
-  a.pov.player.vel.x += 45;
+  a.pov.player.applyImpulse({ x: 45, y: 0, z: 0 });
   const tick = () => {
     out.push({ t: a.pov.feel.time, vx: a.pov.player.vel.x, ground: a.pov.player.onGround, trauma: a.pov.feel.trauma });
     if (out.length < 4) requestAnimationFrame(tick); else done(out);
@@ -132,6 +131,31 @@ const blast = await ev(() => new Promise((done) => {
 }));
 const blastT = Math.max(...blast.map((x) => x.trauma));
 check('blast (velocity change) adds trauma', blastT > 0.2, `peak trauma ${blastT.toFixed(2)}; ${blast.map((x) => `vx ${x.vx.toFixed(1)} ${x.ground ? 'g' : 'a'} ${x.trauma.toFixed(2)}`).join(', ')}`);
+await settle(2500);
+
+// the jetpack catching a fall: it spools in and out, never shakes the view, and still climbs
+await ev(() => {
+  const a = window.__app;
+  a.pov.player.spawn(a.pov.player.pos.clone().set(30, Math.round(a.sim.g.ny * 0.5), 64));
+  a.pov.feel.reset();
+});
+await settle(350);   // falling
+await ev(() => { window.__jetTrace = []; const a = window.__app, t0 = a.pov.feel.time;
+  const tick = () => { if (!window.__jetTrace) return; const pl = a.pov.player; window.__jetTrace.push({ t: a.pov.feel.time - t0, vy: pl.vel.y, trauma: a.pov.feel.trauma, jet: pl.jetting, ground: pl.onGround });
+    requestAnimationFrame(tick); };
+  requestAnimationFrame(tick); });
+await p.keyboard.down('Space');
+await settle(1000);
+await p.keyboard.up('Space');
+await settle(500);
+const jt = await ev(() => { const t = window.__jetTrace; window.__jetTrace = null; return t; });
+let maxA = 0;
+for (let i = 1; i < jt.length; i++) { const dt = jt[i].t - jt[i - 1].t; if (dt > 0 && !jt[i].ground) maxA = Math.max(maxA, Math.abs(jt[i].vy - jt[i - 1].vy) / dt); }
+const jetTrauma = Math.max(...jt.map((x) => x.trauma)), jetTop = Math.max(...jt.map((x) => x.vy));
+check('jetpack does not shake the view', jetTrauma === 0, `peak trauma ${jetTrauma.toFixed(3)}`);
+check('jetpack ramps (no jolt)', maxA < 400, `peak |Δv/Δt| ${maxA.toFixed(0)} cells/s² (was ~900–1900 catching a fall)`);
+check('jetpack still climbs', jetTop > 40, `top climb ${jetTop.toFixed(1)} cells/s, from ${jt[0]?.vy.toFixed(1)}`);
+if (process.env.FEEL_DEBUG) console.log(jt.map((x) => `${x.t.toFixed(2)}:${x.vy.toFixed(0)}${x.jet ? 'J' : ''}`).join(' '));
 await settle(2500);
 
 // impact distance: close impacts shake, far ones barely
