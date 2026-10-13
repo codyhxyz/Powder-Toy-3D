@@ -5,7 +5,7 @@ import { wormFrag, wormGiantFrag, WORM_BITE, WORM_GIANT_BITE } from '../shaders/
 import { toolPass } from './gpu.js';
 import { figureFrag } from './figure.js';
 import { addTarget, allTargets, PLAYER } from './targets.js';
-import { povEvents } from './events.js';
+import { povEvents, createEmitter } from './events.js';
 import { OUTSIDE } from './ai/world.js';
 import { ROUND_GRAVITY, gravityScale } from './ballistics.js';
 import { BODY_HEIGHT } from './constants.js';
@@ -207,8 +207,8 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
   let roamTo = null, noise = null, noiseT = 0, quarry = null;
   let phase = 'stalk', phaseT = 0, flew = false, committed = false, diveTo = null;
   const lungeDir = new YVector3();
-  const listeners = new Map();
-  const emit = (name, payload) => { for (const fn of listeners.get(name) ?? []) fn(payload); };
+  const events = createEmitter('worm');
+  const emit = events.emit;
   const headV = new THREE.Vector3(), tmp = new THREE.Vector3(), lo = new THREE.Vector3(), hi = new THREE.Vector3();
   const actor = { id, at: headV };
   const stats = { bites: 0, digs: 0, breaches: 0, blocked: 0 };
@@ -526,7 +526,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
       get health() { return Math.max(0, health) / size.hp; },
       get cause() { return cause; },
       perks: null,
-      on(name, fn) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(fn); return () => listeners.get(name).delete(fn); },
+      on: events.on,
     },
     get debug() {
       return {

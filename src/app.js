@@ -36,6 +36,7 @@ import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
 import { SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
+import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
@@ -849,11 +850,6 @@ function pickRay(ro, rd, visible = false) {
 }
 
 const isTool = () => settings.tool < 0;
-const faceNormal = (face) => {
-  const n = new THREE.Vector3();
-  n.setComponent(Math.floor(face / 2), face % 2 === 0 ? 1 : -1);
-  return n;
-};
 
 // an element's brush sits on the hovered face; a brush tool's (erase, heat) is centred in the hovered cell
 function hoverBrushCenter(out, tool = settings.tool) {
