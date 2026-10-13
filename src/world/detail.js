@@ -22,10 +22,14 @@ export { DETAIL_CHUNK };
 // mesh (the detail mask, after the occupancy levels in the far field's
 // occupancy buffer: 1 a dry chunk, which it crosses whole; 2 one with
 // liquids, whose surface stays the field's) and depth-tests against it.
-// Before the scene pass the meshes' distances from the eye go into a target
-// of their own (depth: our depth-only pass, docs/webgpu.md G1), where the far
+// Before the scene pass the meshes' rasterized depth goes into a target of
+// its own (depth: our depth-only pass, docs/webgpu.md G1), where the far
 // view's march stops, so a dry pit dug below sea level in a meshed chunk
 // isn't flooded by the coarse sea beyond (shaders/far.js farFrag: cached).
+// While the rolling log bends the view (gfx/presentation.js) the meshes bend
+// in their vertex stage, the prepass's too (the view's params carry the
+// effect), the chunks wanted change with it (the view key), and none is
+// culled by the flat frustum: bent down, a chunk outside it can show.
 // Chunks are wanted where a cell would span more than CELL_PIXELS of the
 // screen, nearest first, one in flight at a time, at most MAX_CHUNKS of them
 // and MAX_BYTES of geometry; a chunk the window covers isn't kept. The cells
@@ -160,7 +164,8 @@ export class WorldDetail {
     const eye = m.eye.copy(camera.position).applyMatrix4(m.sceneToWorld);
     const height = Math.max(1, Math.round((globalThis.innerHeight ?? 720) * (globalThis.devicePixelRatio ?? 1)));
     const o = this.sim.origin;
-    const viewKey = `${camera.matrixWorld.elements}|${camera.fov}|${camera.aspect}|${height}|${o.x},${o.y},${o.z}`;
+    const bent = !!far.presentation?.active;
+    const viewKey = `${camera.matrixWorld.elements}|${camera.fov}|${camera.aspect}|${height}|${o.x},${o.y},${o.z}|${far.presentation?.key}`;
     if (viewKey === this.viewKey) return;
     this.viewKey = viewKey;
     this.blocked.clear();
@@ -173,7 +178,7 @@ export class WorldDetail {
       if (lo[0] >= o.x && hi[0] <= o.x + g.nx && lo[2] >= o.z && hi[2] <= o.z + g.nz) continue;
       const box = m.box.set(new Vector3(...lo), new Vector3(...hi));
       const distance = Math.max(1, box.distanceToPoint(eye));
-      if (pixels * 4 / distance < CELL_PIXELS || !m.frustum.intersectsBox(box.applyMatrix4(m.worldToScene))) continue;
+      if (pixels * 4 / distance < CELL_PIXELS || (!bent && !m.frustum.intersectsBox(box.applyMatrix4(m.worldToScene)))) continue;
       // Two geometric levels: real cells where coarse cells span >3 pixels,
       // the existing coarse field otherwise. Adjacent cached chunks share a
       // lattice; independent step sizes would open cracks between them.
@@ -321,7 +326,7 @@ export class WorldDetail {
   }
 
   /**
-   * The meshes' distances from the eye (cells; 0 where none) into the depth
+   * The meshes' rasterized depth (0 where none) into the depth
    * target, at the scene target's size, in a render pass of its own recorded
    * now: before the scene pass, after FrameUniforms is written (the far
    * field's prepass). Returns whether it drew (nothing to draw, or its
