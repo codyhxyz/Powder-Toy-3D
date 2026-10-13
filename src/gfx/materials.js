@@ -32,7 +32,7 @@
 //          wherever matter's light is used (emission(), below).
 
 import { ELEMENTS, K } from '../elements.js';
-import { bandGlow } from './incandescence.js';
+import { bandGlow, LUMA_709 } from './incandescence.js';
 import { FLAME_COLOR } from './lamps.js';
 import { accessorsWGSL } from '../shaders/hostStruct.js';
 
@@ -97,10 +97,9 @@ const ACID_GLOW_LUM = 0.015;
 const ACID_GLOW_TINT = '#55ff00';     // Noita's acid green (elements.js ACID colour)
 // Sludge's glow is murkier, a yellow-olive, so it never reads as acid.
 const TOXIC_GLOW_TINT = '#8fa832';
-const REC709_LUMA = [0.2126, 0.7152, 0.0722];   // luminance weights of linear sRGB
 // A glow with the chromaticity of colour hex at luminance lum.
 const tintGlow = (hex, lum) => {
-  const c = linearOf(hex), y = c.reduce((t, v, i) => t + v * REC709_LUMA[i], 0);
+  const c = linearOf(hex), y = c.reduce((t, v, i) => t + v * LUMA_709[i], 0);
   return c.map((v) => (v / y) * lum);
 };
 export const LAMP_GLOW = tintGlow(LAMP_TINT, LAMP_LUM);

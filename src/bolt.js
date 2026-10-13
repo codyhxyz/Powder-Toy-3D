@@ -50,7 +50,6 @@ export const BOLT = {
   STRIKE_R_SHARE: 0.35,    // the tool's strike radius: this share of the brush radius...
   STRIKE_R_MIN: 1,         // ...clamped to these, cells
   STRIKE_R_MAX: 4,
-  RNG_SALT: 0x11e7,        // the bolt pass's own random stream (seed3)
 };
 
 // Storms (react.js charges cloud: physics.js CHARGE_*). A cloud cell at
@@ -185,6 +184,5 @@ export const boltGLSL = () => [
   `const STRIKE_CORE: f32 = ${BOLT.STRIKE_CORE};`,
   `const STRIKE_P: f32 = ${BOLT.STRIKE_P.toFixed(1)};`,
   `const STRIKE_P_REACH: f32 = ${BOLT.STRIKE_P_REACH.toFixed(1)};`,
-  `const BOLT_RNG_SALT: u32 = ${BOLT.RNG_SALT}u;`,
   `const STORM_CANDIDATES: i32 = ${STORM.CANDIDATES};`,
 ].join('\n');

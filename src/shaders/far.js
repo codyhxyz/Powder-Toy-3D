@@ -1305,8 +1305,7 @@ fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
 }
 
 fn farDepth(p: vec3f) -> f32 {
-  let clip = P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0);   // (curved: where it is displayed)
-  return clamp(clip.z / clip.w, 0.0, 1.0);
+  return clipDepth(P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0));   // (curved: where it is displayed)
 }
 
 ${mesh ? FAR_MESH_ENTRY : `struct FarVarying {

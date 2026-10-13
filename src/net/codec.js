@@ -39,7 +39,6 @@ const TEMP_LINEAR_CODES = (TEMP.LOG_START - TEMP.MIN) / TEMP.LINEAR_STEP;
 const TEMP_LOG_CODES = BYTE_MAX - TEMP_LINEAR_CODES;
 
 // The guest's per-cell colour seed: same range the app uses for fresh cells.
-const SEED_SALT = 0x5eed;
 const SEED_SPAN = 0.999;
 
 const f = (x) => x.toFixed(4); // a JS number as a WGSL f32 literal
@@ -52,7 +51,6 @@ const TEMP_LOG_START: f32 = ${f(TEMP.LOG_START)};
 const TEMP_MAX: f32 = ${f(TEMP.MAX)};
 const TEMP_LINEAR_CODES: f32 = ${f(TEMP_LINEAR_CODES)};
 const TEMP_LOG_CODES: f32 = ${f(TEMP_LOG_CODES)};
-const SEED_SALT: u32 = ${SEED_SALT}u;
 const SEED_SPAN: f32 = ${f(SEED_SPAN)};
 
 fn encodeTemp(T: f32) -> f32 {
@@ -127,7 +125,7 @@ ${slotMain}
   let p = cellOf(s);
   let w = packed[atlasIndex(p)];
   let q = vec4f(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u), f32(w >> 24u));
-  var rs = seed3(p, 0u, SEED_SALT);
+  var rs = seed3(p, 0u, SALT_CODEC);
   let a = vec4f(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(&rs) * SEED_SPAN);
   let b = vec4f(0.0);
   writeStateS(s, a, b, freshFlags(a, b));

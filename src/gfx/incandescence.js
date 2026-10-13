@@ -32,7 +32,7 @@ export const INCAND = {
   SKIN_DROP: 200,
 };
 
-const LUMA = [0.2126, 0.7152, 0.0722];   // Rec.709 luminance weights (linear sRGB)
+export const LUMA_709 = [0.2126, 0.7152, 0.0722];   // Rec.709 luminance weights (linear sRGB; WGSL: LUMA_709 in shaders/common.js)
 const LAMBDA = [360, 830, 1];            // nm: integration range and step
 export const KELVIN = 273.15;            // °C to K (WGSL: C_TO_K in shaders/common.js)
 // physical constants (SI) and the luminous efficacy of 555 nm light
@@ -73,7 +73,7 @@ function colourOf(spd) {
     cmf(l).forEach((v, k) => { xyz[k] += KM * p * v; });
   }
   const rgb = XYZ_TO_SRGB.map((row) => Math.max(0, row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]));
-  const y = rgb.reduce((s, v, k) => s + v * LUMA[k], 0);
+  const y = rgb.reduce((s, v, k) => s + v * LUMA_709[k], 0);
   return { chroma: rgb.map((v) => v / y), lum: xyz[1] };
 }
 // blackbody at tC (°C)

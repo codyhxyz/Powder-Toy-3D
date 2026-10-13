@@ -804,11 +804,10 @@ const GLOW_START: f32 = 0.55;        // cells off the surface a shadow ray start
 const GLOW_SELF_SKIP: f32 = 1.0;     // smooth-surface cells ignored this close to its start
 const GLOW_ENTRY_PAD: f32 = 0.05;    // cells short of the emitter's brick the ray stops
 const GLOW_XI_EPS: f32 = 1e-6;       // floor of 1 - q when the reservoir renormalises its uniform
-const LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
 // Worth tracing only where the glow is at least this share of the light already there.
 const GLOW_REL_MIN: f32 = 0.05;
 fn glowWorthIt(local: vec3f, irr: vec3f) -> bool {
-  return FU.glowLights != 0u && dot(local, LUMA) > GLOW_REL_MIN * dot(irr, LUMA);
+  return FU.glowLights != 0u && dot(local, LUMA_709) > GLOW_REL_MIN * dot(irr, LUMA_709);
 }
 // The glow's scale at surface point p (geometric normal ng, shading normal n).
 fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
@@ -830,7 +829,7 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
     var u = pixRand3(NEAR_RAYS + i);
     u.x = (f32(i) + u.x) / f32(GLOW_CANDIDATES);
     let bc = min(lo + vec3i(u * span), hi);
-    let e = dot(brickAt(bc).emit, LUMA);
+    let e = dot(brickAt(bc).emit, LUMA_709);
     if (e < GLOW_EMIT_MIN) { continue; }
     let dv = (vec3f(bc) + 0.5) * f32(BS) - p;
     let wt = e / max(dot(dv, dv), GLOW_MIN_D2);

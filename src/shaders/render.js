@@ -189,10 +189,7 @@ struct VolumeHit {
   hit: bool,
 }
 // The clip depth of grid point p through the jittered camera, WebGPU's [0, 1] (docs/webgpu.md F4).
-fn volumeDepth(p: vec3f) -> f32 {
-  let clip = FU.viewProj * FU.model * vec4f(p, 1.0);
-  return clamp(clip.z / clip.w, 0.0, 1.0);
-}
+fn volumeDepth(p: vec3f) -> f32 { return clipDepth(FU.viewProj * FU.model * vec4f(p, 1.0)); }
 ${meshCutGLSL}`;
 
 // =====================================================================
@@ -336,7 +333,7 @@ const DATA_MIN_ALPHA: f32 = 0.002;   // pixels covered less than this are left e
 const DATA_GAMMA: f32 = 2.2;
 fn toLinear(c: vec3f) -> vec3f { return pow(c, vec3f(DATA_GAMMA)); }
 fn toSrgb(c: vec3f) -> vec3f { return pow(c, vec3f(1.0 / DATA_GAMMA)); }
-fn luma(c: vec3f) -> f32 { return dot(c, LUMA_W); }   // Rec. 709 weights (gfx/surface.js)
+fn luma(c: vec3f) -> f32 { return dot(c, LUMA_709); }   // Rec. 709 weights (shaders/common.js)
 
 ${colormapWGSL('heat', COLORMAPS.heat)}
 ${colormapWGSL('pressure', COLORMAPS.pressure)}
