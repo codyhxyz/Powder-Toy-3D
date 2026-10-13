@@ -1,4 +1,7 @@
-// CPU-only scene geometry and Sandbox registration checks; no GPU.
+// CPU-only scene geometry and Sandbox registration checks; no GPU. The
+// scene's WGSL itself is checked by tools/check-wgsl.mjs (world/gpu.js and
+// shaders/far.js WGSL_CHECK), its cells against this twin by
+// tools/willow-cove-check.mjs.
 // Run: node tools/check-willow-cove.mjs
 import assert from 'node:assert/strict';
 import { E, ELEMENTS, K } from '../src/elements.js';
@@ -28,9 +31,17 @@ assert.equal(MOBILE_MAP, 'lab');
 assert.deepEqual(P, { size, seed: 20261008, sea: C.SEA, floor: C.FLOOR });
 assert.deepEqual(scene.start(P), world(...M.plaza));
 assert(scene.view.dir[1] > 0 && scene.view.dist > 0);
-assert.match(scene.glsl(), /SPAWNT\[id\], SPAWNLIFE\[id\], seed/);
-assert.match(scene.glsl(), /B = vec4\(0\.0\)/);
-assert.match(scene.glsl(), /seedWorld\(w, uSceneSeed, WC_SALT_CELL\)/);
+// the scene's WGSL (docs/webgpu.md G1): the subset through toWgsl, then a sceneCell at
+// spawn temperature and life, at rest, its seed correctly rounded (H1.28)
+const wgsl = scene.glsl();
+assert.match(wgsl, /fn sceneCell\(w: vec3i\) -> SceneCell \{/);
+assert.match(wgsl, /SceneCell\(vec4f\(f32\(id\), SPAWNT\(id\), SPAWNLIFE\(id\), seed\), vec4f\(0\.0\)\)/);
+assert.match(wgsl, /u32ToF32\(seedWorld\(w, SU\.uSceneSeed, WC_SALT_CELL\)\)/);
+assert.match(wgsl, /fn wcCell\(wx: i32, y: i32, wz: i32\) -> i32 \{/);
+assert.match(wgsl, /wx >= SU\.uWillowWorldX/);
+assert.doesNotMatch(wgsl, /\b(?:void|ivec[234]|vec[234]\(|uniform\s+int|out\s+vec4)\b|#define/, 'no GLSL left in the scene\'s WGSL');
+assert.deepEqual(Object.keys(scene.uniforms(P)), ['uSceneSeed', 'uWillowWorldX', 'uWillowWorldY', 'uWillowWorldZ']);
+assert.deepEqual(Object.keys(scene.uniformStruct.sceneTypes), Object.keys(scene.uniforms(P)), 'every uniform in the struct');
 
 // Cache the entire authored island (including its submerged edge and dock).
 // This also checks every authored cell's element ID, not just landmarks.
