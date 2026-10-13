@@ -323,6 +323,8 @@ export function createGame(shell) {
       mark('match');
       return true;
     })();
+    // (b72b890 dropped this: `starting` then never cleared, so every later start returned the first match's promise)
+    try { return await starting; } finally { starting = null; }
   }
 
   function pick(list, k) {

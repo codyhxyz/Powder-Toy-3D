@@ -72,11 +72,11 @@ const VIEWPORT = { width: 400, height: 250 };
 const BOXES = ['empty', 'lab', 'volcano', 'island'];   // (Empty first: the others are measured against it)
 // the World maps and Descent's levels: [name, link, how the map menu loads it in a running page]
 const WORLD_MAPS = [
-  ...['island', 'volcanoWorld', 'labWorld', 'giantVolcano', 'descent'].map((m) => [m, `?map=${m}`, new Function(`__app.openMap('${m}')`)]),
+  ...['island', 'volcanoWorld', 'labWorld', 'giantVolcano', 'descent', 'willowCove'].map((m) => [m, `?map=${m}`, new Function(`__app.openMap('${m}')`)]),
   ...['descentCoal', 'descentSnow'].map((k) => [k, `?size=world&scene=${k}`, new Function(`__app.settings.scene = '${k}'; __app.setSize('world')`)]),
 ];
 // the scene each loads (maps.js)
-const sceneOf = { island: 'island', volcanoWorld: 'volcanoWorld', labWorld: 'labWorld', giantVolcano: 'giantVolcano', descent: 'descentMines', descentCoal: 'descentCoal', descentSnow: 'descentSnow' };
+const sceneOf = { island: 'island', volcanoWorld: 'volcanoWorld', labWorld: 'labWorld', giantVolcano: 'giantVolcano', descent: 'descentMines', descentCoal: 'descentCoal', descentSnow: 'descentSnow', willowCove: 'willowCove' };
 const WORLD_VIEW = [[11, 9.5, 13], 21];   // the god view's home over a world: wire/world.js WORLD_VIEW_DIR and _DIST (scene units)
 const WORLD_TIMEOUT = 300000;   // ms a world may take to boot or load (minutes here when the container is busy)
 const BOX_DIMS = '128,128,128';   // the menu's box maps' grid; a box map on another is an arena (app.js ARENA_GRID)

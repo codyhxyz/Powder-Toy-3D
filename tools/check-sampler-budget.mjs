@@ -314,6 +314,8 @@ async function main() {
     const w = worst[what];
     if (w) console.log(`most ${WORDS[what]}: ${w.n}/${LIMITS[what]} ${w.where}${verbose ? `: ${w.list.join(', ')}` : ''}`);
   }
+  // nothing found is a broken discovery (or an --only that names nothing), not a pass
+  if (!pipelines) { console.log('FAIL no pipeline checked: no WGSL_CHECK module found, or --only matched none'); failures++; }
   console.log(failures ? `${failures} pipeline variant(s) or check(s) over the binding budget or failing` : 'every pipeline within the binding budget');
   process.exit(failures ? 1 : 0);
 }

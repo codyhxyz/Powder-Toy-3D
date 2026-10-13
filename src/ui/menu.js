@@ -137,7 +137,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
 
   function renderModes() {
     nav.replaceChildren(h('div.mm-label', { text: 'Gamemode' }), ...modes.map((m) => h('button.mm-mode', {
-      type: 'button', 'aria-pressed': String(view === 'maps' && m.key === modeKey),
+      type: 'button', 'data-mode': m.key, 'aria-pressed': String(view === 'maps' && m.key === modeKey),
       on: { click: () => setMode(m.key) },
     }, iconEl('span.mm-mode-ico', m.key, 'mm-ico'), h('span.mm-mode-name', { text: m.name }), h('small', { text: String(mapsFor(m.key).length) }))),
     h('div.mm-label.mm-label-gap', { text: 'Your games' }),
