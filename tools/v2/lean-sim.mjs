@@ -14,8 +14,12 @@
 //                    idle = no busy brick for 8 consecutive ticks (one full offset cycle)
 //
 // usage: node lean-sim.mjs [test ...]   tests: slab heap heapFlour utube puddle partial pipe hole throw
+// Imported (not run), it runs nothing: tools/outcomes/engine-lean.js drives its World through the outcome
+// bench's tests (tools/outcomes.mjs --engine lean), so the bench's thresholds are the prototype's too.
+import { fileURLToPath } from 'node:url';
+const MAIN = process.argv[1] === fileURLToPath(import.meta.url);
 const ALL = ['slab', 'heap', 'heapFlour', 'utube', 'puddle', 'partial', 'pipe', 'hole', 'throw'];
-const tests = process.argv.slice(2).length ? process.argv.slice(2) : ALL;
+const tests = !MAIN ? [] : process.argv.slice(2).length ? process.argv.slice(2) : ALL;
 
 const AIR = 0, WALL = 1, SAND = 2, FLOUR = 3, WATER = 4;
 const DROP = { [SAND]: 1, [FLOUR]: 2 };          // repose: topple needs this many empty cells below the target
@@ -286,7 +290,7 @@ class World {
 }
 
 const out = { params: { TICK_HZ, CELL_M, G_MS2, SUB, FULL, ACC: +ACC.toFixed(2), COMP: +COMP.toFixed(4), DAMP, DEADQ, FILM_FRACTION: FILM / FULL } };
-console.log('params', JSON.stringify(out.params));
+if (MAIN) console.log('params', JSON.stringify(out.params));
 const log = (...a) => console.log(...a);
 const sec = (t) => (t / TICK_HZ).toFixed(2) + ' s';
 
@@ -404,5 +408,7 @@ if (tests.includes('throw')) {
 }
 
 import { writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-writeFileSync(fileURLToPath(new URL(`./lean-sim.out${tests.length === ALL.length ? '' : '-' + tests.join('-')}.json`, import.meta.url)), JSON.stringify(out, null, 1));
+if (MAIN) writeFileSync(fileURLToPath(new URL(`./lean-sim.out${tests.length === ALL.length ? '' : '-' + tests.join('-')}.json`, import.meta.url)), JSON.stringify(out, null, 1));
+
+// The prototype's World and constants, for tools/outcomes/engine-lean.js.
+export { World, AIR, WALL, SAND, FLOUR, WATER, FULL, TICK_HZ, CELL_M, G_MS2, G, G_CELLS, VT_SAND, SUB, FILM, DEADQ };
