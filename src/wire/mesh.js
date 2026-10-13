@@ -10,18 +10,41 @@
 // (prepareMesh, gpu.three.prepare). One that doesn't, or swaps a material,
 // still never costs a synchronous pipeline build at a draw: beforeView parks
 // any mesh three hasn't compiled on a layer no camera sees until it has
-// (guardMeshes), and wakes the frame loop when it shows.
+// (guardMeshes), and wakes the frame loop when it shows. A presentation
+// effect (gfx/presentation.js) changes the programs of the meshes it bends,
+// and back when it is dropped: those compile the same way, parked, before the
+// guard runs (compileChanged).
 import { Spawners } from '../spawners.js';
 import { PerkOrbs } from '../perkOrbs.js';
 import { ArenaMarkers } from '../arenas/markers.js';
 import { Constructions } from '../constructions.js';
-import { setMeshGpu, getMeshGpu, updateMeshLight, guardMeshes } from '../gfx/meshLight.js';
+import { setMeshGpu, getMeshGpu, updateMeshLight, guardMeshes, prepareMesh, PENDING_LAYER, PENDING_MASK } from '../gfx/meshLight.js';
 import { renderViewmodels } from '../pov/viewmodel.js';
 import { drawRemoteCursors } from '../net/cursors.js';
 import { muzzleLight } from '../pov/vfx.js';
 
 // the held tool's subtree has its own targets and camera (pov/viewmodel.js guards it)
 const ownPass = (o) => o.name === 'pov-viewmodel';
+
+// The meshes the bend just changed (installed, or restored): each compiles its
+// new program with its layers parked on the guard's, as guardMeshes does (three
+// reads the layers before its first await), and comes back when it's built.
+// One the guard has parked already is its: it comes back with its old
+// program, and the bend's next install changes it again.
+const parked = new WeakMap();   // mesh → the layers it goes back to
+function compileChanged(app) {
+  app.presentation.install(app.scene, app.camera);
+  for (const o of app.presentation.takeChanged()) {
+    if (o.layers.mask === PENDING_MASK || !o.parent) continue;
+    if (!parked.has(o)) parked.set(o, o.layers.mask);
+    prepareMesh(o, { camera: app.camera, alone: true }).then(() => {
+      if (o.layers.mask === PENDING_MASK && parked.has(o)) o.layers.mask = parked.get(o);
+      parked.delete(o);
+      app.requestRender();
+    });
+    o.layers.set(PENDING_LAYER);
+  }
+}
 
 const mesh = {
   name: 'mesh',
@@ -57,10 +80,12 @@ const mesh = {
   beforeView(app) {
     if (getMeshGpu() !== app.gpu) setMeshGpu(app.gpu);   // (a device replaced at Start)
     updateMeshLight(app);
-    // the held tool's pass (once a frame: src/wire/pov.js may have run it already), to post
-    const vm = renderViewmodels(app.renderer, app.scene, app.camera, app.post);
+    // the held tool's pass (once a frame: src/wire/pov.js may have run it already), to post: an
+    // overlay drawn over the frame, which a presentation effect doesn't bend (gfx/presentation.js neutral)
+    const vm = app.presentation.neutral(() => renderViewmodels(app.renderer, app.scene, app.camera, app.post));
     app.viewmodel = vm?.viewmodel ?? null;
     app.glow = vm?.glow ?? null;
+    compileChanged(app);
     guardMeshes(app.scene, app.camera, { skip: ownPass, onReady: () => app.requestRender() });
   },
   scene(app, rp) { drawRemoteCursors(rp); },

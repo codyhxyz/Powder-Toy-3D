@@ -51,13 +51,14 @@ const world = {
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
     win.far = new FarField(app.renderer, win, { sun: app.sun });
+    win.far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
     win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window
     // its view builds with the view that draws it (B5: at boot in the realistic view, else on switching to it),
     // and the frame that follows its build draws it
     if (app.settings.view === 0) world.buildFarView(app, win.far);
   },
   buildFarView(app, far) {
-    if (far.viewPipe.state !== 'idle') return;
+    if (far.viewPipeline.state !== 'idle') return;
     far.buildView().then(() => app.pacer?.wake(), () => {});
   },
   detach(app) {

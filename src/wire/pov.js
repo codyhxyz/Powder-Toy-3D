@@ -21,6 +21,7 @@ const pov = {
       settings: app.settings, mp: app.mp, isTyping: app.isTyping, post: app.post,
       getSim: () => app.sim, getVolume: () => app.volume, getScale: () => app.scale,
       hover: app.hover, pointerHover: () => app.pointerInside && !app.uiHover, pickRay: app.pickRay,
+      presentationPoint: app.presentationPoint,   // a grid point where a presentation effect shows it (the aim's displayed eye)
       getSpawners: () => app.spawners,
       getPerkOrbs: () => app.perkOrbs,
       loadPreset: (name) => app.loadPreset(name, false),   // a team game's new round (src/game)

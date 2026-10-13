@@ -55,6 +55,9 @@ import { createDetailGate, gateVariants } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
+import { createPresentation } from './gfx/presentation.js';
+import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
+import { povEvents } from './pov/events.js';
 import { createPacer, settleFrames, createViewKey, createFrameLoop, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
@@ -67,7 +70,7 @@ import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
-import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
+import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
 import { VIEWS, viewKey as viewKeyOf } from './views.js';
@@ -247,8 +250,10 @@ if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = A
 // a map (maps.js): the start menu's pick (src/main.js), or ?map= — its scene at its own size
 const bootMap = mapByKey(params.get('map') ?? launch.map);
 if (bootMap) useMap(bootMap);
-// the gamemode playing (maps.js GAMEMODES): the start menu's pick, or ?mode= with ?map=; Sandbox otherwise
-let gamemode = (bootMap && (launch.mode ?? params.get('mode'))) || 'sandbox';
+// the gamemode playing (maps.js GAMEMODES): the start menu's pick, or ?mode= with ?map=; Sandbox otherwise.
+// Set from the first frame: Noita's wands-only toolbelt reads it (pov gamemode). modeEpoch: a later
+// map or mode takes over a mode still starting (startMode)
+let selectedMode = bootMap ? resolveMode(bootMap, launch.mode ?? params.get('mode') ?? 'sandbox').key : 'sandbox', modeEpoch = 0;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
@@ -325,10 +330,18 @@ function stopGraphics(error) {
   return graphicsFailure;
 }
 gpu.onFailure(stopGraphics);
+// A gamemode's presentation effect (gfx/presentation.js; maps.js GAMEMODES.effect:
+// Animal Crossing's rolling log): the displayed world bends, physics stays flat.
+// Selecting one drops TAA's history, ends a stroke and wakes the view.
+const presentation = createPresentation(() => {
+  post.reset(); pacer.wake();
+  hover.valid = false; painting = false;
+});
 // HDR post: TAA, bloom, AgX tone mapping, the canvas (src/gfx/post.js); made
 // after three's renderer, so its scene target is three's (docs/webgpu.md F3).
-// A change to its settings wakes the frame loop, as the app's do.
-const post = createPost(gpu, { presenter, pixScale: gfxUniforms.uPixScale });
+// A change to its settings wakes the frame loop, as the app's do. Its TAA
+// reprojects through the presentation's bend.
+const post = createPost(gpu, { presenter, pixScale: gfxUniforms.uPixScale, presentation });
 post.settings = new Proxy(post.settings, {
   set(t, k, v) {
     const changed = t[k] !== v;
@@ -407,6 +420,18 @@ function invalidateGpuWork() {
 }
 const anchor = new THREE.Vector2();
 let pickPending = false;
+// The presentation's frame: scene units → world cells (the grid's box sits at its world
+// origin less the anchor, × scale), and the camera that anchors the bend (beneath the eye)
+const presentationTransform = new THREE.Matrix4();
+function updatePresentation() {
+  presentationTransform.makeScale(1 / scale, 1 / scale, 1 / scale).setPosition(anchor.x, 0, anchor.y);
+  presentation.update(camera, presentationTransform);
+}
+// A team match takes over the gamemode (its own effect: none); one that ends gives the map back to Sandbox
+povEvents.on('game:start', ({ mode }) => { selectedMode = mode; presentation.select(null); pacer.wake(); });
+povEvents.on('game:end', () => {
+  if (modeByKey(selectedMode)?.team) { selectedMode = 'sandbox'; presentation.select(null); pacer.wake(); }
+});
 // the grid's pipelines (B5): coreReady once the ones a frame draws with are built
 let coreReady = false, coreWait = Promise.resolve();
 const readySims = new WeakSet();   // simulations whose own pipelines are ready (a load can be recorded)
@@ -454,7 +479,7 @@ function build() {
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
   const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
-    vol.viewReady(viewKeyOf(settings.view), baseDetail())]).then(() => {
+    vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
   core.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
@@ -552,6 +577,9 @@ function setSize(size) {
   if (graphicsFailure) throw graphicsFailure;
   if (!gridFits(dimsOf(size))) return false;
   settings.size = size;
+  // a grid that is no longer the gamemode's map (or a mode the map doesn't have): Sandbox
+  const resolved = resolveMode(mapOf(settings), selectedMode);
+  if (resolved.key !== selectedMode || mapOf(settings)?.size !== size) startMode('sandbox');
   if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
   build();
   save();
@@ -572,6 +600,8 @@ function openMap(key, mode = 'sandbox') {
   if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
   if (isWorld(m) && !wire('world')) { hud.toast(notYet(`${m.name} (World maps)`), { kind: 'error' }); return false; }
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
+  modeEpoch++;
+  pov?.game?.end();   // cancel pending team loads before replacing their world
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
   else { useMap(m); setSize(m.size); }
   hud.toast(`Loaded ${m.name}`);
@@ -581,20 +611,25 @@ function openMap(key, mode = 'sandbox') {
 }
 // the map and gamemode playing now, for the menu to open on
 function currentMap() {
-  const m = mapOf(settings);
-  return { map: m?.key ?? null, mode: pov?.game?.running ? pov.game.mode : gamemode === 'noita' && m?.modes?.includes('noita') ? 'noita' : 'sandbox' };
+  return { map: mapOf(settings)?.key ?? null, mode: pov?.game?.running ? pov.game.mode : selectedMode };
 }
-// A team gamemode (src/game, where the build has it): in the body, a match of
-// it on the map just loaded. Sandbox ends any match running. The match waits
-// for the body to drop in (game.start needs the player: the first drop-in
-// builds it), while the bots' module loads beside it; a map loaded just now
-// (fresh) isn't loaded again for the match. Resolves true once it runs.
+// The gamemode (maps.js GAMEMODES) on the map just loaded: its presentation effect (Animal Crossing's
+// rolling log), and a team gamemode's match (src/game, where the build has it) in the body. Sandbox
+// ends any match running. The match waits for the body to drop in (game.start needs the player: the
+// first drop-in builds it), while the bots' module loads beside it; a map loaded just now (fresh)
+// isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
-  gamemode = mode;
-  if (mode === 'noita') { if (pov?.game?.running) pov.game.end(); if (pov && !pov.active) pov.enter(); return false; }   // its rules are the map's (Descent)
+  const epoch = ++modeEpoch;
+  const chosen = resolveMode(mapOf(settings), mode);
   const game = pov?.game;
-  if (!game) return false;
-  if (mode === 'sandbox') { if (game.running) game.end(); return false; }
+  selectedMode = chosen.key;
+  presentation.select(chosen.effect ?? null);
+  pacer.wake();
+  if (!chosen.team || !game) {
+    game?.end();   // (end() also cancels a match still starting)
+    if (chosen.key === 'noita' && pov && !pov.active) pov.enter();   // its rules are the map's (Descent)
+    return false;
+  }
   game.prepare();
   // the start menu's Play over a game is a click: the mouse is taken now, while it counts as a
   // gesture (a drop-in from the god view asks for it itself)
@@ -602,8 +637,8 @@ async function startMode(mode, { fresh = false } = {}) {
   // Halo puts you in your eyes at a spawn: no swoop down from the god view, no sandbox key hint
   await pov.enter({ swoop: 0, hint: false });
   mark('entered');
-  if (!pov.player) return false;   // (it couldn't drop in: pov.enter said why)
-  return game.start(mode, { fresh });
+  if (epoch !== modeEpoch || !pov.player) return false;   // (a later map/mode took over, or it couldn't drop in: pov.enter said why)
+  return game.start(chosen.key, { fresh });
 }
 // maps.js is plain data the menu loads on its own: it must agree with the tables here
 for (const m of MAPS) {
@@ -629,6 +664,7 @@ function loadPreset(name, undoable = true) {
   }
   if (undoable && !win) sim.snapshot(sceneLabel(name));
   settings.preset = name;
+  if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
   whenSimReady(() => {
     if (win) wire('world').loadScene(ctx);
@@ -700,15 +736,38 @@ function gridRay() {
 // with the next frame (post's compute hook) or on its own, and its result lands
 // 1-3 frames later; a pick asked for on an old grid is dropped.
 const povRay = new THREE.Ray();
+// The bend's parameters while a presentation effect bends the view (the pick
+// walks the displayed ray then), else null.
+const warpNow = () => (presentation.active ? presentation.parameters : null);
+// the crosshair's ray, on screen: in first person from the displayed eye
+const aimScreenRay = () => pov?.aimRay(povRay.origin, povRay.direction, presentation.active);
+// Grid point p where the presentation shows it (out; p itself when flat).
+function presentationPoint(p, out = new THREE.Vector3()) {
+  return out.fromArray(warp(p.clone().add(sim.origin).toArray(), presentation.parameters)).sub(sim.origin);
+}
+// A grid ray as the screen shows it: the displayed straight ray's parabola in
+// grid cells (presentationMath.js inverseRay), t along the displayed ray.
+function screenCurve(ray) {
+  const r = inverseRay(ray.origin.clone().add(sim.origin).toArray(), ray.direction.toArray(), presentation.parameters);
+  r.C = r.C.map((v, i) => v - sim.origin.getComponent(i));
+  return r;
+}
+function screenAt(ray, t, out) { return out.fromArray(rayPoint(screenCurve(ray), t)); }
+// Where the screen's ray meets height `height` (grid cells), or null.
+function screenPlane(ray, height, out) {
+  if (!presentation.active) return ray.intersectPlane(plane.set(plane.normal, -height), out);
+  const r = screenCurve(ray), t = planeRoots(r, 1, height).find((x) => x >= 0);
+  return t == null ? null : out.fromArray(rayPoint(r, t));
+}
 function requestPick() {
-  const fromPov = !!pov?.aimRay(povRay.origin, povRay.direction);
+  const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
   const ray = fromPov ? povRay : gridRay();
   pickPending = true;
-  const from = sim, o = sim.origin.clone();
-  vol.pick(ray.origin, ray.direction).then((hit) => {
+  const from = sim, o = sim.origin.clone(), revision = presentation.revision;
+  vol.pick(ray.origin, ray.direction, warpNow()).then((hit) => {
     pickPending = false;
-    if (from !== sim) return;   // a new grid since
+    if (from !== sim || revision !== presentation.revision) return;   // a new grid or effect since
     hover.valid = hit.valid;
     if (hover.valid) {
       pickedNow(hover.cell.fromArray(hit.cell), o);
@@ -723,12 +782,14 @@ function requestPick() {
 }
 
 // One-off pick along a grid-space ray (ro, rd), e.g. to find the ground: resolves to
-// { valid, cell, face, id, T, P } like `hover`.
-function pickRay(ro, rd) {
-  const o = sim.origin.clone();
-  return vol.pick(ro, rd).then((hit) => {
+// { valid, cell, face, id, T, P } like `hover`. visible: the ray is one on screen
+// (from the eye through a pixel), which a presentation effect bends: it walks the
+// displayed ray then. Physics' rays (the ground, the body) keep the flat path.
+function pickRay(ro, rd, visible = false) {
+  const o = sim.origin.clone(), from = sim, revision = presentation.revision;
+  return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
-    return { valid: hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
+    return { valid: from === sim && (!visible || revision === presentation.revision) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
   });
 }
 
@@ -770,7 +831,7 @@ function updateBrush() {
   }
   brush.set({
     visible: brushValid && pointerInside && !uiHover && !eyedropper,
-    position: tmpV.copy(brushCenter).multiplyScalar(scale).add(volume.position),
+    position: presentationPoint(brushCenter, tmpV).multiplyScalar(scale).add(volume.position),   // (where the view shows it: a presentation effect bends it)
     radius: settings.radius * scale,
     shape: settings.shape,
     color: toolById(settings.tool).color,
@@ -791,8 +852,7 @@ function brushKey() {
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
 // Where the pointer's ray meets the paint plane (the height a press started at), if in the grid's window.
 function planePoint(out) {
-  plane.constant = -dragY;
-  return !!gridRay().intersectPlane(plane, out) && (!win || inWindow(out));
+  return !!screenPlane(gridRay(), dragY, out) && (!win || inWindow(out));   // (bent with the view: Animal Crossing's rolling log)
 }
 
 // ---------------------------------------------------------------- TPT's editing tools (src/editing.js)
@@ -819,7 +879,7 @@ function startShape(kind) {
 }
 // the line or box ghost while dragging (TPT's RenderLine and RenderRect previews)
 const ghostA = new THREE.Vector3(), ghostB = new THREE.Vector3(), ghostHalf = new THREE.Vector3();
-const toScene = (out, v) => out.copy(v).multiplyScalar(scale).add(volume.position);
+const toScene = (out, v) => presentationPoint(v, out).multiplyScalar(scale).add(volume.position);   // (as the view shows it)
 function showShapeDrag() {
   const { kind, start, end } = shapeDrag, color = toolById(settings.tool).color;
   if (kind === 'line') {
@@ -960,8 +1020,8 @@ function updateGunBrush() {
   const tool = painting ? strokeTool : settings.tool;
   if (out && isBrush(tool)) {
     if (painting && tool >= 0) {
-      if (pov.aimRay(povRay.origin, povRay.direction)) {
-        brushCenter.copy(povRay.origin).addScaledVector(povRay.direction, strokeDist);
+      if (aimScreenRay()) {
+        screenAt(povRay, strokeDist, brushCenter);   // (along the displayed aim: the rolling log bends it)
         brushValid = !win || inWindow(brushCenter);
       }
     } else if (hover.valid) {
@@ -976,7 +1036,7 @@ function updateGunBrush() {
   }
   brush.set({
     visible: brushValid,
-    position: tmpV.copy(brushCenter).multiplyScalar(scale).add(volume.position),
+    position: presentationPoint(brushCenter, tmpV).multiplyScalar(scale).add(volume.position),   // (where the view shows it: a presentation effect bends it)
     radius: settings.radius * scale,
     shape: settings.shape,
     color: toolById(tool).color,
@@ -1367,7 +1427,8 @@ async function renderThumb(viewId, out) {
   const rawWas = post.settings.raw;
   post.settings.raw = viewId !== 0;
   try {
-    post.renderStill({
+    // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
+    presentation.neutral(() => post.renderStill({
       prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? cut.capture(p.sceneTarget.depth) : false),
@@ -1377,7 +1438,7 @@ async function renderThumb(viewId, out) {
         if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], opacity: EDGE_OPACITY });
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
-    }, thumbCam, thumbTarget);
+    }, thumbCam, thumbTarget));
   } finally {
     post.settings.raw = rawWas;
   }
@@ -1526,8 +1587,8 @@ const toolGun = {
     }
     const tool = erase ? ERASE_TOOL : settings.tool;
     if (tool >= 0) {
-      if (!pov.aimRay(povRay.origin, povRay.direction)) return null;
-      strokeDist = hover.valid ? hoverBrushCenter(tmpV, tool).distanceTo(povRay.origin) : GUN_AIR_DIST;
+      if (!aimScreenRay()) return null;
+      strokeDist = hover.valid ? presentationPoint(hoverBrushCenter(tmpV, tool), tmpV).distanceTo(povRay.origin) : GUN_AIR_DIST;
     }
     startStroke(tool);
     return 'stroke';
@@ -1558,7 +1619,7 @@ function touchDown(e) {
   pointerInside = true;
   uiHover = false;
   const id = ++touchPress, ray = gridRay();
-  Promise.all([pickRay(ray.origin, ray.direction), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
+  Promise.all([pickRay(ray.origin, ray.direction, true), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
     if (touchPress !== id) return;
     touchPress = 0;
     Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P });
@@ -1803,6 +1864,7 @@ function threeMeshes(p, transparent, cam = camera) {
   try {
     renderer.setRenderTarget(p.sceneTarget.rt);
     if (!transparent) { renderer.setClearColor(0x000000, 0); renderer.autoClear = true; }
+    presentation.prepare(scene, cam);   // (the jittered projection: the bend's clip ↔ world for this render)
     renderer.render(scene, cam);
   } finally {
     renderer.autoClear = false;
@@ -1823,12 +1885,18 @@ function drawScene(rp) {
   if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: post.renderScale });
   for (const w of before) w.scene(ctx, rp);
   const meshDepth = cut.take();
+  const warp = warpNow(), curved = !!warp && warp.k !== 0;
+  // Bent (the rolling log) the view draws its curved variant (gfx/volume.js),
+  // which builds on first use: the detail gate's choice when that one is built,
+  // else its base variant (building now) while the other builds at idle time.
+  let detail = frameDetail;
+  if (curved && view === 'realistic' && vol.pipeline(view, detail, 'idle', true).state !== 'ready') detail = baseDetail();
   const drew = volumeDrawn = !testNoVolume && vol.draw(rp, {
-    view, detail: frameDetail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0,
+    view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
   });
   if (!drew && !testNoVolume) {
     // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
-    const pipe = vol.pipeline(view, frameDetail);
+    const pipe = vol.pipeline(view, detail, 'now', curved);
     coldShader.watch(pipe);
     wakeWhen(pipe.ready);
   }
@@ -1921,6 +1989,7 @@ function tick(now, renderOnly = false) {
       controls.update();
     }
     for (const w of live) w.follow?.(ctx, dt);   // the world's window following the focus
+    updatePresentation();   // (after the camera and the window: the bend is anchored beneath the eye)
     updateBrush();
 
     prof.phase('paint');
@@ -1957,12 +2026,13 @@ function tick(now, renderOnly = false) {
   lastVersion = sim.version;
   // Keep animation time tied to simulation, not the test preview's draw rate.
   if (worldChanged) viewTime += dt;
+  if (renderOnly) updatePresentation();
   const present = renderOnly || pacer.present(now, wantFrame());
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}`);
   let runView = present && pacer.view(
     viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-      `${win?.far?.chunksDrawn}|${brushKey()}`,   // a world scene's far field filling in (world/far.js); the brush (ours)
+      `${win?.far?.chunksDrawn}|${brushKey()}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
       settings, gfx, post.settings),
     runDerived || wantFrame() || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
   if (present && !runView && autoRes.recover(clock.getElapsed())) {
@@ -2073,7 +2143,7 @@ const ctx = {
   get painting() { return painting; }, set painting(v) { painting = v; },
   get pointerInside() { return pointerInside; }, get uiHover() { return uiHover; },
   get brushValid() { return brushValid; }, get brushCenter() { return brushCenter; },
-  get menuPick() { return menuPick; }, get gamemode() { return gamemode; },
+  get menuPick() { return menuPick; }, get gamemode() { return selectedMode; },
   get animTime() { return animTime; }, get graphicsFailure() { return graphicsFailure; },
   // the animation clock as the far field's uniform-like reader takes it ({ value })
   viewTimeUniform: { get value() { return viewTime; } },
@@ -2086,6 +2156,8 @@ const ctx = {
   get scoreboard() { return scoreboard; }, get prof() { return prof; }, actions,
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
+  // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
+  presentation, presentationPoint,
   isTyping, selectTool, leaveBuild, setPaused, setRadius, setSimMode, setSimModes, resetSimModes, simModeLock,
   updateSun, save, camState, onNextFrame,
   requestRender: () => pacer.wake(),
@@ -2116,7 +2188,7 @@ function bootReady(pending = null) {
       launch.status?.(launch.mode === 'noita' ? 'Dropping in' : 'Picking the teams');
       const match = startMode(launch.mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
       await Promise.race([match, new Promise((r) => setTimeout(r, MATCH_WAIT_MS))]);
-    }
+    } else if (bootMap) startMode(params.get('mode') ?? launch.mode ?? 'sandbox');   // ?mode=, or Sandbox: its effect (Sandbox's none)
     mark('ready');
     launch.ready?.();
   };
@@ -2132,7 +2204,10 @@ async function allReady() {
     const s = sim, v = vol;
     await coreWait;
     const view = viewKeyOf(settings.view);
-    await Promise.all([v.viewReady(view, baseDetail()), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait]);
+    // (bent by a presentation effect: the view's curved variant, and a world's curved far view)
+    const curved = !!warpNow(), far = win?.far;
+    await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
+      ...(far && curved && view === 'realistic' ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
     if (s === sim && v === vol && coreReady) return;   // (rebuilt meanwhile: wait for the new grid)
@@ -2180,6 +2255,9 @@ try {
     },
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
+    current: currentMap,   // { map, mode } playing now
+    presentation, setMode: startMode, // the gamemode's render-only effect (gfx/presentation.js): no map reload or simulation mutation
+    pickRay, pickScreenRay: (ro, rd) => pickRay(ro, rd, true),   // a pick along a grid ray (pickScreenRay: as the screen shows it)
     undo,            // as ⌘Z does
     hud,             // toast(text, { kind }): GMod's notices (ui/notices.js)
     scoreboard,      // GMod's, on Tab (ui/scoreboard.js): show(v), shown, mine
