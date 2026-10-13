@@ -72,6 +72,12 @@
 .hb-held-status:empty { display: none; }
 .hb-held:has(.hb-name:empty) { display: none; }
 
+/* Desktop: the frame stats sit on the bottom strip (ui/styles.css .stats, as
+   GMod's net_graph). Keep the HL2 ammo-corner readout above them, not on top. */
+@media (min-width: 761px) and (hover: hover) {
+  .hb-held { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 32px); }
+}
+
 .hb-slot.shake { animation: hb-shake 360ms var(--ease); background: color-mix(in srgb, var(--hb-box) 55%, var(--danger)); }
 @keyframes hb-shake {
   0%, 100% { transform: none; }
