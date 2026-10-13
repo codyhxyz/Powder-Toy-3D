@@ -617,10 +617,11 @@ export function glowTexture() {
   return t;
 }
 
-// Free a viewmodel subtree's geometry, materials and textures.
+// Free a viewmodel subtree's geometry, materials and textures. A sprite's
+// geometry is three's one quad, every Sprite's: it stays (perkOrbs.js remove).
 export function disposeTree(root) {
   root.traverse((o) => {
-    o.geometry?.dispose();
+    if (!o.isSprite) o.geometry?.dispose();
     const ms = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
     ms.forEach((m) => { m.map?.dispose(); m.dispose(); });
   });
