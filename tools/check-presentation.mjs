@@ -263,7 +263,7 @@ assert(!/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: no mesh cut (
 assert(/meshCutDepth\(h\.depth\)/.test(modules['volume.realistic']), 'flat: the mesh cut');
 assert(modules.pick.includes('fn pickCurved') && modules.pick.includes('warpUse(P.ro[i].w'), 'pick: the displayed ray for a curved pick');
 // the menu's warm-up (src/preload.js) for a gamemode that bends the view: its curved variants, the ones it draws
-for (const v of ['realistic','plain']) {
+for (const v of ['realistic','heat']) {
   const vols=(curved) => warmChecks(v,{},{curved}).filter((x) => x.kind==='render');
   assert(vols(true).length && vols(true).every((x) => x.curved && /warpWalk/.test(x.code(g))), `warmChecks ${v}, curved: the curved variants`);
   assert(vols(false).every((x) => !x.curved && !/warpWalk/.test(x.code(g))), `warmChecks ${v}: the flat ones`);
