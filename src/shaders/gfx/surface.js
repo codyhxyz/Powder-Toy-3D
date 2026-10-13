@@ -414,7 +414,7 @@ fn ashLumps(p: vec3f, fp: f32) -> vec4f { return mFbmD(p, ASH_LUMP_F, ASH_LUMP_O
 // Rock (the CRAG texture family, gfx/materials.js surf: ROCK, sandstone,
 // limestone, coal): big lumps (bump only: they are the size of the smooth
 // surface's own shape), which warp the crags: octaves of crease noise. Each
-// element scales the crags' height by its CRAG(id).x (relief).
+// element scales the crags' height by its SURFP(id).x (relief).
 const ROCK_LUMP_M: f32 = 0.5;                // m, wavelength
 const ROCK_LUMP_F: f32 = CELL_M / ROCK_LUMP_M;
 const ROCK_LUMP_H: f32 = 0.072 / CELL_M;
@@ -536,7 +536,7 @@ fn reliefHeight(id: i32, p: vec3f, n: vec3f, fp: f32) -> vec4f {
   if (id == E_SNOW) { return SNOW_DRIFT_H * snowDrifts(p, fp) + SNOW_CLUMP_H * snowClumps(p, fp); }
   if (id == E_GUNPOWDER) { return POWDER_LUMP_H * powderLumps(p, fp); }
   if (id == E_ASH) { return ASH_LUMP_H * ashLumps(p, fp); }
-  if (SURF(id) == SURF_CRAG) { var ws: f32; return CRAG(id).x * ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, &ws); }
+  if (SURF(id) == SURF_CRAG) { var ws: f32; return SURFP(id).x * ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, &ws); }
   if (id == E_WOOD) { var mv: vec4f; var c: vec4f; var fr: f32; return woodPlates(p, fp, &mv, &c, &fr) * (1.0 - woodEndGrain(n)); }
   return vec4f(0.0);
 }
@@ -688,6 +688,75 @@ fn crystalLook(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, T: f32, fp: f
   glow *= mix(CRYS_ROOT_GLOW, 1.0, coloured);
   glow *= (1.0 + CRYS_ZONE_GLOW * (2.0 * band - 1.0) * lz) * (1.0 + CRYS_SEED_GLOW * (2.0 * fract(s.seed * CRYS_SALT2) - 1.0));
   return hotEmit(*m, id, T) * glow;
+}
+
+// ---- play-distance variation, shared by every opaque material ----
+// Each material's own texture is sized in millimetres to centimetres and
+// fades (lodFade) within a few metres, so past that every material read as
+// one flat albedo, and ~70 of them had no texture at all (audit-render.md
+// 2.1-2.3). Two layers fill the 0.3-4 m scale the player looks at, both world
+// space (worldPos: nothing swims when the window moves) and both faded by the
+// footprint like any detail:
+//  - macro patches: three octaves of value noise, MACRO_M down to ~0.6 m,
+//    swinging albedo, warm/cool hue and roughness by the element's MACRO(id)
+//    (gfx/materials.js macro: tone, hue, rough, size). Noita's rule: every
+//    material is a world-space texture, never a flat fill.
+//  - per-cell tone: TPT's own per-particle colour jitter (COLORVAR, the
+//    elements' var, which the blocks view draws too), at the voxel's scale:
+//    flat per cell on crisp voxels (Teardown's per-voxel palette spread,
+//    Minecraft's block-scale texture language); on the smoothed surfaces,
+//    whose cells are hidden, as smooth noise of the same size and amplitude.
+const MACRO_M: f32 = 3.2;                 // m: the coarsest patches (size 1)
+const MACRO_F: f32 = CELL_M / MACRO_M;    // their frequency, per cell
+const MACRO_LAC: f32 = 2.37;              // frequency ratio between octaves (3.2, 1.35, 0.57 m; not 2, so lattices don't line up)
+const MACRO_W: vec3f = vec3f(0.5, 0.3, 0.2);   // octave weights (sum 1: as fbm3's)
+const MACRO_OCT_SHIFT: f32 = 11.3;        // lattice offset per octave (decorrelates them)
+// Value noise in [0, 1] → centred, p5..p95 about ±0.8 (std ~0.46). Three
+// blended octaves of value noise have a std of only 0.115 about their mean
+// (measured on a CPU port of this function), so 2x left 90% of the ground
+// within ±12% at PLANT's amplitude: still flat. 4x makes a material's
+// macro.tone its typical swing.
+const MACRO_SPAN: f32 = 4.0;
+// Warm ↔ cool: sun-bleached, dry, iron-stained ↔ shaded, damp, lichen-grey;
+// on foliage lush blue-green ↔ sun-dried yellow-green (+red, -blue). Its
+// luma is ~+0.04 per unit, so a hue swing barely shifts the brightness.
+const MACRO_HUE_AXIS: vec3f = vec3f(0.45, 0.05, -0.6);
+const CELL_VAR_F: f32 = 0.5;              // a cell lattice's fundamental (cycles per cell): its lodFade frequency
+const CELL_VAR_SALT: f32 = 37.1;          // decorrelates the cell hash from the other lattices
+const CELL_VAR_SMOOTH_SALT: f32 = 5.9;    // noise offset of the smooth surfaces' cell-sized tone
+// Value noise with three decorrelated channels (hash33 at the corners): one
+// lattice walk for tone, hue and roughness.
+fn vnoise3(p: vec3f) -> vec3f {
+  let i = floor(p);
+  let f = p - i;
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(hash33(i), hash33(i + vec3f(1.0, 0.0, 0.0)), u.x),
+                 mix(hash33(i + vec3f(0.0, 1.0, 0.0)), hash33(i + vec3f(1.0, 1.0, 0.0)), u.x), u.y),
+             mix(mix(hash33(i + vec3f(0.0, 0.0, 1.0)), hash33(i + vec3f(1.0, 0.0, 1.0)), u.x),
+                 mix(hash33(i + vec3f(0.0, 1.0, 1.0)), hash33(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+}
+fn matMacro(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32) {
+  let mv = MACRO(id);   // (tone, hue, rough, size)
+  let cv = COLORVAR(id);
+  if (mv.x == 0.0 && mv.y == 0.0 && mv.z == 0.0 && cv == 0.0) { return; }
+  // macro patches: (tone, hue, rough) noise, centred, about ±1
+  var s = vec3f(0.0);
+  var f = MACRO_F / max(mv.w, 1e-3);
+  var q = M_ROT * p * f;
+  for (var k = 0; k < 3; k++) {
+    let lw = lodFade(f, fp);
+    if (lw <= 0.0) { break; }
+    s += MACRO_W[k] * lw * MACRO_SPAN * (vnoise3(q + f32(k) * MACRO_OCT_SHIFT) - 0.5);
+    q = M_ROT * q * MACRO_LAC;
+    f *= MACRO_LAC;
+  }
+  // per-cell tone: flat on a crisp voxel (the cell behind the face), smooth elsewhere
+  var c: f32;
+  if (SURFCH(id) < 0) { c = 2.0 * hash13(floor(p - 0.5 * n) + CELL_VAR_SALT) - 1.0; }
+  else { c = 2.0 * vnoise(M_ROT * p + CELL_VAR_SMOOTH_SALT) - 1.0; }
+  c *= cv * lodFade(CELL_VAR_F, fp);
+  (*m).alb *= max((1.0 + mv.x * s.x + c) * (1.0 + mv.y * s.y * MACRO_HUE_AXIS), vec3f(0.0));
+  (*m).rough += mv.z * s.z;
 }
 
 // The look of element id at world point p (grid units) on a surface with
@@ -1004,11 +1073,16 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const LEAF_SLOPE_VAR: f32 = (LEAF_TILT * LEAF_TILT + LEAF_CURL * LEAF_F * LEAF_CURL * LEAF_F) / 12.0;
     const TILT_SALT: f32 = 0.37;              // hash input for a leaf's tilt
     const TILT_HASH_SCALE: f32 = 157.0;
+    // The far look is the leaves' area average: MEAN in shade and the mean of
+    // their hues (c.z is uniform), not a grey MEAN alone. That one was 1.7x
+    // bluer than the leaves it stood for, so distant foliage went grey-blue
+    // plastic (audit-render.md 2.1 "far MEAN"); its patches are matMacro's.
+    let farLeaf = MEAN * 0.5 * (HUE_BLUE + HUE_YELLOW);
     let lw = lodFade(LEAF_F * LEAF_LOD, fp);
     if (lw <= 0.0) {
       // Exactly the averaged result below. Do not search 27 cellular
       // neighbours for leaves that are already smaller than a pixel.
-      m.alb *= MEAN;
+      m.alb *= farLeaf;
       m.cav = MEAN;
     } else {
     var ge: vec3f;
@@ -1027,7 +1101,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     let leaf = hue * (SHADE_MIN + SHADE_RANGE * c.w) * mix(1.0, RIB_ALB, rib);
     m.g = lw * pm * (LEAF_TILT * tilt + LEAF_CURL * rt * LEAF_F);
     m.cav = mix(MEAN, mix(DEPTH_CAV, 1.0, pm), lw);
-    m.alb *= mix(vec3f(MEAN), mix(DEPTH_ALB * hue, leaf, pm), lw);
+    m.alb *= mix(farLeaf, mix(DEPTH_ALB * hue, leaf, pm), lw);
     m.rough += WAX_VAR * (c.z - 0.5) * lw;     // some leaves waxier than others
     }
     let cl = leafClumps(p, fp);
@@ -1037,8 +1111,12 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.slopeVar = LEAF_SLOPE_VAR * unresolvedShare(LEAF_F, lw, fp) + fbmSlopeVar(LEAF_CLUMP_H, LEAF_CLUMP_F, LEAF_CLUMP_OCT, fp);
     m.sssCol = DEEP_TINT;
     m.trans = 1.0;
-  } else if (id == E_METAL) {
-    // brushed steel: fine grooves along a fixed world direction, anisotropic highlight
+  } else if (SURF(id) == SURF_BRUSHED) {
+    // Brushed steel (and the worked metals that share it, gfx/materials.js
+    // surf BRUSHED: titanium, tungsten, scrap, lithium): fine grooves along a
+    // fixed world direction, anisotropic highlight. SURFP(id) scales it as a
+    // multiple of steel's: (anisotropy, mill scale when hot, wear).
+    let bp = SURFP(id);
     const BD: vec3f = vec3f(1.0, 0.1, 0.35);
     let t = normalize(BD - n * dot(n, BD) + 1e-5);
     let b = cross(n, t);
@@ -1069,14 +1147,14 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     let l2 = lodFade(GROOVE_F, fp);
     let lo = mFbmD(p, SMUDGE_F, SMUDGE_OCT, fp);
     let br = l1 * (s1 - 0.5) + GROOVE_W * l2 * (s2 - 0.5);
-    m.rough = ROUGH(id) + SMUDGE_ROUGH * lo.x + BRUSH_ROUGH * br;
-    m.alb *= 1.0 + SMUDGE_ALB * lo.x + BRUSH_ALB * br;
-    m.tang = t; m.aniso = BRUSH_ANISO;
+    m.rough = ROUGH(id) + bp.z * SMUDGE_ROUGH * lo.x + BRUSH_ROUGH * br;
+    m.alb *= 1.0 + bp.z * SMUDGE_ALB * lo.x + BRUSH_ALB * br;
+    m.tang = t; m.aniso = bp.x * BRUSH_ANISO;
     // Hot steel grows black mill scale (magnetite): a rough dielectric, no
     // longer a metal mirroring the sky. It is patchy; where it is thick it
     // blisters off the steel and runs cooler, so the glow is mottled with dark
     // patches (a look only: the oxide isn't simulated and fades as it cools).
-    let ox = smoothstep(OXIDE_T0, OXIDE_T1, T);
+    let ox = bp.y * smoothstep(OXIDE_T0, OXIDE_T1, T);
     var flakeT = T;   // temperature of the visible surface
     if (ox > 0.0) {
       let th = mFbmD(p, SCALE_FREQ, SCALE_OCT, fp);   // scale thickness, centred on 0
@@ -1088,14 +1166,18 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
       m.g = mix(m.g, SCALE_BUMP * th.yzw, ox);
       flakeT = T - ox * SCALE_DROP * smoothstep(-SCALE_SPLIT, SCALE_SPLIT, th.x + SCALE_COVER);
     }
-    // steel conducts: no skin of its own, only the insulating flakes run cooler
-    m.emit = glowAt(m, id, flakeT);
+    // steel conducts: no skin of its own, only the insulating flakes run
+    // cooler (the other metals keep the skin drop cellEmission gives them: skinT)
+    m.emit = select(hotEmit(m, id, flakeT), glowAt(m, id, flakeT), id == E_METAL);
   } else if (id == E_CRYSTAL) {
     let e = crystalLook(&m, id, p, n, T, fp);
     m.emit = e;
-  } else if (id == E_CLONE) {
-    // Polished gold: a faint waviness left by the polishing and a fine haze
-    // in the gloss. No blotches: gold doesn't tarnish.
+  } else if (SURF(id) == SURF_POLISHED) {
+    // Polished gold (Clone, gold, nuggets, PCLN, frozen mercury: surf
+    // POLISHED): a faint waviness left by the polishing and a fine haze in
+    // the gloss. No blotches: gold doesn't tarnish. SURFP(id) scales the two
+    // as multiples of Clone's (wave, haze).
+    let pp = SURFP(id);
     const WAVE_M: f32 = 0.16;                 // m, wavelengths of the waviness ...
     const HAZE_M: f32 = 0.013;                // ... and the haze
     const WAVE_F: f32 = CELL_M / WAVE_M;      // per cell
@@ -1107,8 +1189,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const HAZE_ROUGH: f32 = 0.03;
     let lo = mFbmD(p, WAVE_F, WAVE_OCT, fp);
     let hz = mFbmD(p, HAZE_F, HAZE_OCT, fp);
-    m.g = WAVE_H * lo.yzw;
-    m.rough += WAVE_ROUGH * lo.x + HAZE_ROUGH * hz.x;
+    m.g = pp.x * WAVE_H * lo.yzw;
+    m.rough += WAVE_ROUGH * lo.x + pp.y * HAZE_ROUGH * hz.x;
   } else if (id == E_WALL) {
     // Cast concrete: cloudy mottling from the pour, fine sand-and-cement
     // grit, scattered round air-bubble pits ("bug holes", up to ~1 cm) and
@@ -1157,7 +1239,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     // drawing a network), dark in its hollows; rusty oxidised and pale
     // weathered patches, faint flow banding and, up close, clusters of gas
     // vesicles. No cell lattice: that read as paving. Each element scales
-    // these by its CRAG(id) (gfx/materials.js crag): the relief, the pits
+    // these by its SURFP(id) (gfx/materials.js crag): the relief, the pits
     // (vesicles; a limestone's solution pits), the banding (a sedimentary
     // rock's bedding) and the rust stains.
     // (lumps and crags: rockLumps, rockCrags)
@@ -1197,7 +1279,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const VES_CAV: f32 = 0.6;
     const GRAIN_CAV: f32 = 0.6;
     const GRAIN_ROUGH: f32 = 0.1;             // roughness swing with the grit
-    let cp = CRAG(id);                        // (relief, pits, bands, stain), ROCK's = 1
+    let cp = SURFP(id);                        // (relief, pits, bands, stain), ROCK's = 1
     let lo = rockLumps(p, fp);
     var ws: f32;
     let cg = rockCrags(p, lo, fp, &ws);
@@ -1256,7 +1338,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
         + (1.0 - solid) * LAVA_SKIN_BUMP * sk.yzw;
     m.cav = mix(1.0, mix(LAVA_CRACK_CAV, 1.0, smoothstep(0.0, LAVA_PLATE_EDGE, c.y)), solid * lwc);
   }
-  if (id != E_LAVA && id != E_METAL && id != E_CRYSTAL) { m.emit = hotEmit(m, id, T); }
+  matMacro(&m, id, p, n, fp);   // play-distance variation (every material; its amplitudes are data)
+  if (id != E_LAVA && SURF(id) != SURF_BRUSHED && id != E_CRYSTAL) { m.emit = hotEmit(m, id, T); }
   m.emit += sparkEmit(id, ctype);   // a live conductor (src/electricity.js)
   return m;
 }
