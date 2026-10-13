@@ -13,8 +13,8 @@ import { gear } from './catalog.js';
 
 // Shovel. Digs like Minecraft's shovel (dig.js): click, or hold, and the
 // outlined bite you aim at comes up whole into the pack, at Minecraft's
-// iron-shovel-on-dirt pace. Loose ground only: powder, and soil (moss and
-// fungus, as their debris). Wood is the axe's and rock the pickaxe's: they ring
+// iron-shovel-on-dirt pace. Loose ground only: powder, and soil (grass and
+// plants, moss and fungus, as their debris). Wood is the axe's and rock the pickaxe's: they ring
 // off the blade, and a toast names the tool (Minecraft's shovel blocks).
 // Liquids run off the blade. Right-click
 // throws a block's worth (the newest BLADE_LOAD cells) where you aim, or in
@@ -28,7 +28,7 @@ import { gear } from './catalog.js';
 const REFIRE = 0.15;                 // s between digs while held: Minecraft's iron shovel on dirt (minecraft.wiki/w/Shovel)
 const THROW_REFIRE = 0.2;            // s between throws while held: Minecraft's 4-tick use delay (the trowel's)
 const POWER = 6;                     // hardness one dig beats: soil (moss, fungus: 6) in one
-const DIGS = ['loose', 'soil'];      // dig.js materials: Minecraft's shovel blocks (dirt, sand, gravel, snow, grass); wood is the axe's, rock the pickaxe's
+const DIGS = ['loose', 'soil'];      // dig.js materials: Minecraft's shovel blocks (dirt, sand, gravel, snow, grass) and plants; wood is the axe's, rock the pickaxe's
 const BLADE_LOAD = BLOCK ** 3;       // cells one throw takes from the pack: one dug block
 const THROW_SPEED = 8;               // cells/s along the aim, on top of the body's velocity
 const DUMP_REACH = 2.5;              // cells from the eye where a load lands when nothing is aimed at

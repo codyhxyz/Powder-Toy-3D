@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { aimInReach } from './transfer.js';
+import { gfxUniforms } from '../../gfx/uniforms.js';
 
 // Digging, for every tool that digs (the shovel, the pickaxe): Minecraft's block
 // breaking (minecraft.wiki/w/Breaking) on the trowel's lattice.
@@ -25,40 +26,27 @@ import { aimInReach } from './transfer.js';
 //     the block you aim at; aim at another and it starts over (Minecraft).
 //   - What you'd dig is outlined before you swing (Minecraft's block outline), and
 //     a block that takes more than one blow cracks as they land (Minecraft's 10
-//     destroy stages).
+//     destroy stages), both drawn on the surface itself by the renderer
+//     (FrameUniforms digMin/digMax, shaders/gfx/surface.js digMark), so they
+//     follow a trunk or a slope; a box drawn around the bite hung in the air
+//     wherever the bite wasn't full.
 //   - What comes up is the cells themselves (solids as their debris: ROCK →
 //     STONE), into the pack, so matter is conserved. A blow takes only the solids
 //     it has beaten (transfer.js maxHard): rock in a sand block stays put.
 //
 //   const d = digger(env, { power, limit, digs, reach });   // digs: the MATERIAL classes it takes
-//   const t = d.target(ctx);           // once a frame: the aimed block (and its outline), or null
+//   const t = d.target(ctx);           // once a frame: the aimed bite (and its mark on the surface), or null
 //   const r = d.blow(ctx, t, load);    // a blow landed: { id, need, hits, taken: promise | null } or null
 
 export const BLOCK = 3;              // cells a side (0.9 m at 30 cm cells: Minecraft's 1 m block); the trowel's lattice
-export const CRACK_STAGES = 10;      // Minecraft's destroy_stage_0..9
 
 // the kinds a dig takes: powder as it is, breakable solids as their debris
 const DIG_KINDS = [K.POWDER, K.SOLID];
 const STALE_S = 0.25;                // s a bite dug is taken as gone while the aim (a GPU pick) catches up
 
-// Outline and cracks (world space)
-// The outline and the cracks stand this far out from the bite's faces: past the tallest
-// surface relief up close (gfx/detail.js: rock crags 7 cm ≈ 0.23 cells), which hid them on rock.
+// The bite drawn on the surface stands out this far toward you along the aimed axis: past the
+// tallest surface relief up close (gfx/detail.js: rock crags 7 cm ≈ 0.23 cells), which it must cover.
 const RELIEF_CLEAR = 0.25;           // cells
-const SHELL_GROW = (BLOCK + 2 * RELIEF_CLEAR) / BLOCK;
-const OUTLINE_COLOR = 0x000000;      // Minecraft's block outline: black at 40 % (LevelRenderer.renderHitOutline)
-const OUTLINE_OPACITY = 0.4;
-const CRACK_INSET = 0.998;           // the crack shell, just inside the outline
-const CRACK_SIZE = 128;              // px, one face's crack texture
-const CRACK_SEED = 0x9e3779b9;       // the crack pattern's seed (the same cracks every time, as Minecraft's)
-const CRACK_BRANCHES = 7;            // crack lines from the face's middle
-const CRACK_STEPS = 9;               // segments per crack line
-const CRACK_STEP_PX = 9;             // px per segment
-const CRACK_TURN = 0.9;              // rad: how far a crack wanders per segment
-const CRACK_WIDTH = 2.5;             // px
-const CRACK_COLOR = 'rgba(20, 14, 10, 0.85)';
-const CRACK_EDGE = 'rgba(255, 245, 225, 0.45)';   // a lit lip beside each crack, so it reads on dark rock as on pale sand
-const CRACK_EDGE_PX = 1.5;           // px the lip sits off the crack
 
 // The lattice block holding `cell`: its minimum corner.
 export const blockMin = (cell, out = new THREE.Vector3()) => out.copy(cell).divideScalar(BLOCK).floor().multiplyScalar(BLOCK);
@@ -85,10 +73,12 @@ export function blockCells(min, g, from) {
   return cells.sort((a, b) => d2(a) - d2(b));
 }
 
-// What an element is, to a digging tool: 'loose' (powder), 'soil' (moss, fungus),
-// 'wood' (what breaks into sawdust: wood, plants, fuses, torches), 'mineral' (any
-// other breakable solid), or null (liquids, gases, solids that won't break).
-const SOIL = new Set(['MOSS', 'FUNGUS']);   // Minecraft's grass block and mycelium: shovel blocks
+// What an element is, to a digging tool: 'loose' (powder), 'soil' (grass and the
+// like: plants, moss, fungus), 'wood' (the rest of what breaks into sawdust: wood,
+// fuses, torches), 'mineral' (any other breakable solid), or null (liquids, gases,
+// solids that won't break). An axe is for wood, not leaves and grass: the shovel
+// takes those (Minecraft's grass block, mycelium and leaves aren't axe blocks).
+const SOIL = new Set(['PLANT', 'MOSS', 'FUNGUS']);
 export function material(el) {
   if (!el) return null;
   if (el.kind === K.POWDER) return 'loose';
@@ -108,46 +98,6 @@ export function blowsFor(id, power, limit = Infinity, digs = ['loose', 'soil', '
   return Math.max(1, Math.ceil((el.hard ?? 0) / power));
 }
 
-// The crack textures, one per stage, each with more of the same cracks drawn (made once, shared).
-let crackTextures = null;
-function cracks() {
-  if (crackTextures || typeof document === 'undefined') return crackTextures;
-  let seed = CRACK_SEED;
-  const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 2 ** 32; };   // an LCG: the same pattern every run
-  // every crack line's segments, in the order they appear
-  const segs = [];
-  for (let b = 0; b < CRACK_BRANCHES; b++) {
-    let x = CRACK_SIZE / 2 + (rand() - 0.5) * CRACK_SIZE * 0.3, y = CRACK_SIZE / 2 + (rand() - 0.5) * CRACK_SIZE * 0.3;
-    let a = (b / CRACK_BRANCHES) * Math.PI * 2 + rand();
-    for (let s = 0; s < CRACK_STEPS; s++) {
-      a += (rand() - 0.5) * CRACK_TURN * 2;
-      const nx = x + Math.cos(a) * CRACK_STEP_PX, ny = y + Math.sin(a) * CRACK_STEP_PX;
-      segs.push({ x, y, nx, ny, order: s + rand() });   // inner segments first, branch by branch interleaved
-      x = nx; y = ny;
-    }
-  }
-  segs.sort((p, q) => p.order - q.order);
-  crackTextures = [];
-  for (let stage = 0; stage < CRACK_STAGES; stage++) {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = CRACK_SIZE;
-    const g = canvas.getContext('2d');
-    g.lineWidth = CRACK_WIDTH;
-    g.lineCap = 'round';
-    const n = Math.ceil(segs.length * (stage + 1) / CRACK_STAGES);
-    for (const [style, off] of [[CRACK_EDGE, CRACK_EDGE_PX], [CRACK_COLOR, 0]]) {
-      g.strokeStyle = style;
-      g.beginPath();
-      for (const s of segs.slice(0, n)) { g.moveTo(s.x + off, s.y + off); g.lineTo(s.nx + off, s.ny + off); }
-      g.stroke();
-    }
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    crackTextures.push(tex);
-  }
-  return crackTextures;
-}
-
 export function digger(env, { power, limit = Infinity, digs, reach }) {
   let hits = 0, hitKey = '';
   // the elements a bite may take: its classes (and its limit, through the take's maxHard)
@@ -156,38 +106,24 @@ export function digger(env, { power, limit = Infinity, digs, reach }) {
   const dug = new Map();   // bites dug lately, 'x,y,z' of their corner → when (s, performance.now)
   const cornerKey = (m) => `${m.x},${m.y},${m.z}`;
 
-  // the outline and the crack shell, in the world (an NPC's toolbelt has no scene: no visuals)
-  const scene = env.scene;
-  const world = scene ? new THREE.Group() : null;
-  let outline = null, crack = null;
-  if (world) {
-    world.name = 'pov-dig';
-    world.visible = false;
-    const box = new THREE.BoxGeometry(1, 1, 1);
-    outline = new THREE.LineSegments(new THREE.EdgesGeometry(box),
-      new THREE.LineBasicMaterial({ color: OUTLINE_COLOR, transparent: true, opacity: OUTLINE_OPACITY, depthWrite: false }));
-    outline.scale.setScalar(SHELL_GROW);
-    crack = new THREE.Mesh(box, new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
-    crack.scale.setScalar(SHELL_GROW * CRACK_INSET);
-    crack.visible = false;
-    world.add(outline, crack);
-    scene.add(world);
-  }
-
+  // the mark on the surface (FrameUniforms digMin/digMax): the player's tools only (an NPC's are its own, unseen)
+  const mine = env.owner == null;
+  let shown = false;
   function show(t) {
-    if (!world) return;
-    const was = world.visible;
-    world.visible = !!t;
-    if (t) {
-      const s = env.getScale();
-      world.scale.setScalar(s * BLOCK);
-      world.position.copy(t.min).addScalar(BLOCK / 2).multiplyScalar(s).add(env.getVolume().position);
-      const stage = t.need > 1 && t.key === hitKey && hits > 0 ? Math.min(CRACK_STAGES - 1, Math.floor((hits / t.need) * CRACK_STAGES)) : -1;
-      const tex = stage >= 0 ? cracks()?.[stage] : null;
-      crack.visible = !!tex;
-      if (tex && crack.material.map !== tex) { crack.material.map = tex; crack.material.needsUpdate = true; }
+    if (!mine) return;
+    const u = gfxUniforms;
+    if (!t) {
+      if (shown) { u.uDigMax.value[3] = 0; shown = false; globalThis.__app?.requestRender?.(); }
+      return;
     }
-    if (was !== world.visible || t) globalThis.__app?.requestRender?.();
+    const axis = t.aim.face >> 1, out = t.aim.face % 2 === 0 ? 1 : -1;   // the aimed face's axis, and outward along it
+    const lo = t.min.toArray(), hi = lo.map((v) => v + BLOCK);
+    if (out > 0) hi[axis] += RELIEF_CLEAR; else lo[axis] -= RELIEF_CLEAR;
+    const cracked = t.need > 1 && t.key === hitKey ? hits / t.need : 0;
+    u.uDigMin.value = [...lo, cracked];
+    u.uDigMax.value = [...hi, 1 + axis];
+    shown = true;
+    globalThis.__app?.requestRender?.();
   }
 
   return {
@@ -239,11 +175,6 @@ export function digger(env, { power, limit = Infinity, digs, reach }) {
 
     hide() { show(null); hits = 0; hitKey = ''; },
     get lastBlow() { return lastBlow; },
-    dispose() {
-      if (!world) return;
-      world.removeFromParent();
-      outline.geometry.dispose(); outline.material.dispose();
-      crack.geometry.dispose(); crack.material.dispose();
-    },
+    dispose() { show(null); },
   };
 }
