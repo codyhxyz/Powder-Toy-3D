@@ -41,23 +41,24 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //             thrust?: [hit, miss],                 // cells it drives forward on a blow: a stab, not a chop
 //             ready?, readyPos?: [x, y, z],         // rad and cells offset while tell() holds
 //             lethal?: { hit, miss, thrust } },     // a lethal blow's own motion (the backstab's plunge)
-//     collect,                 // true: the debris in the patch goes into the pack
 //     dig });                  // { power, digs }: the blow digs a whole lattice block instead (dig.js, the pickaxe):
 //                              //   outlined, cracking over ceil(hard / power) blows, all of it into the pack;
 //                              //   never a solid harder than blow.ENERGY
 //
-// collect: a mine's rubble stays where the rock was, so the next swing lands on
-// loose debris instead of the face behind it. A collecting tool takes the struck
-// element's debris (and any of it already lying in the patch) into the pack
-// (transfer.js) right after the blow, exactly as the shovel would, so the
-// matter is conserved and the hole stays open. With the pack full it stays put.
+// What a blow breaks is the breaker's: every melee tool takes the debris in its
+// patch (whatever broke there, and any debris already lying in it) into its own
+// pack (transfer.js) right after the blow, exactly as the shovel would
+// (Minecraft: a block you break is yours, picked up where you stand). Left lying,
+// chopped leaves hung in the canopy as specks of sawdust and a mine's rubble
+// stopped the next swing short of the face behind it; taken, the matter is
+// conserved and the hole stays open. With the pack full it stays put.
 
 // debris elements: what some breakable solid breaks into
-const DEBRIS = new Set(ELEMENTS.filter((e) => e.breakInto).map((e) => ELEMENTS.findIndex((d) => d.key === e.breakInto)));
+const DEBRIS = [...new Set(ELEMENTS.filter((e) => e.breakInto).map((e) => ELEMENTS.findIndex((d) => d.key === e.breakInto)))];
 
 const TELL_RATE = 12;   // 1/s: the tell (pose.ready) eases in and out this fast, about 0.1 s (by eye, TF2's knife raise is a few frames)
 
-export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE, collect = false, dig = null }) {
+export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE, dig = null }) {
   const source = key.toLowerCase();
 
   // The held tool: the model (models.js) on a hand of the viewmodel rig, turned about the hand by the swing.
@@ -84,7 +85,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
       const thrust = (m) => swing({ rest: 0, hit: m?.thrust?.[0] ?? 0, miss: m?.thrust?.[1] ?? 0, strike: POSE.strike, settle: refire });
       const push = thrust({ thrust: POSE.thrust }), lethalPush = thrust({ thrust: POSE.lethal?.thrust });
       let turning = pose, driving = push, tellK = 0, telling = false;
-      const load = collect || dig ? pack(env.owner) : null;
+      const load = pack(env.owner);
       const digs = dig ? digger(env, { power: dig.power, limit: blow.ENERGY, digs: dig.digs, reach }) : null;   // no harder than the blow's energy (melee.js's rule)
       let lastHit = null, aimed = null;
       const full = (id) => { if (!load.busy) env.feedback?.refuse('Your pack is full: build with the trowel or throw some with the shovel', { id }); };
@@ -107,9 +108,10 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         return { landed: true };
       }
 
-      // Take the debris `id` inside the blow's patch (the same ellipsoid as blowFrag) into the pack.
-      function gather(sim, center, dir, id) {
-        if (!(load.free > 0)) { full(id); return; }
+      // Take the debris inside the blow's patch (the same ellipsoid as blowFrag) into the pack;
+      // with it full, say so if the struck cell `id` broke (`broke`).
+      function gather(sim, center, dir, id, broke) {
+        if (!(load.free > 0)) { if (broke) full(id); return; }
         const d = new THREE.Vector3();
         const inPatch = (x, y, z) => {
           d.set(x + 0.5, y + 0.5, z + 0.5).sub(center);
@@ -117,7 +119,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           const across2 = d.lengthSq() - along * along;
           return across2 / (blow.RADIUS * blow.RADIUS) + (along * along) / (blow.DEPTH * blow.DEPTH) < 1;
         };
-        env.transfer?.take(load, { cells: cellsNear(center, Math.max(blow.RADIUS, blow.DEPTH), sim.g, inPatch), kinds: [K.POWDER], want: id });
+        env.transfer?.take(load, { cells: cellsNear(center, Math.max(blow.RADIUS, blow.DEPTH), sim.g, inPatch), kinds: [K.POWDER], ids: DEBRIS });
       }
 
       // the body (an NPC) in reach and nearer than the struck cell, or null
@@ -148,10 +150,8 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         const solid = el?.kind === K.SOLID;
         const broke = solid ? Boolean(el.breakInto) && blow.ENERGY >= el.hard : null;
         const point = aim.cell.clone().addScalar(0.5);
-        if (load) {
-          const debris = broke ? ELEMENTS.findIndex((d) => d.key === el.breakInto) : DEBRIS.has(aim.id) ? aim.id : -1;
-          if (debris >= 0) gather(sim, point, swingDir, debris);
-        }
+        // (every landed blow: the patch breaks more than the struck cell, the axe's leaves around the wood)
+        gather(sim, point, swingDir, aim.id, broke);
         povEvents.emit('impact', { source, point, normal: faceNormal(aim.face), id: aim.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);
         if (broke === false) povEvents.emit('tool:action', { tool: source, action: 'refuse', id: aim.id, point });
