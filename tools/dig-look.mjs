@@ -3,22 +3,24 @@
 // holes, the load heaped on the blade), the shovel cracking rock, and one
 // pickaxe blow taking a block of it. Writes stills to <outDir> and prints the
 // pack and the last blows.
-// usage: node tools/dig-look.mjs <outDir> [--port 5519]   (runs its own Vite on --port)
+// usage: node tools/dig-look.mjs <outDir> [--port 5519] [--url https://tpt3d.codyh.xyz]   (its own Vite on --port, or the site at --url)
 import { mkdirSync } from 'fs';
 import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
+import { E } from '../src/elements.js';   // ids resolved here: a deployed build serves no /src modules
 
 const args = process.argv.slice(2);
 const out = args[0] ?? 'dig-look';
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = Number(opt('port', '5519'));
+const site = opt('url', null);   // a deployed site instead of a dev server
 mkdirSync(out, { recursive: true });
 const W = 960, H = 600;
 const HOLD_MS = 1200;        // a held dig into the sand: about eight digs at the shovel's 0.15 s
 const LOOK_HEAP = -0.2;      // rad: at the heap's flank
 const LOOK_ROCK = -0.1;      // rad: at the boulder's face, from a step back
 
-const vite = await startVite({ port });
+const vite = site ? { url: (path) => new URL(path, site).href, close: async () => {} } : await startVite({ port });
 const b = await launchBrowser();
 try {
   const p = await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } });
@@ -31,11 +33,10 @@ try {
   const ev = (fn, arg) => p.evaluate(fn, arg);
   const settle = (ms) => p.waitForTimeout(ms);
   const shot = (name) => p.screenshot({ path: `${out}/${name}.png` });
-  const paint = (tool, c, r) => ev(async ([tool, c, r]) => {
-    const { E } = await import('/src/elements.js');
+  const paint = (tool, c, r) => ev(([id, c, r]) => {
     const a = window.__app;
-    a.sim.paint({ center: new a.camera.position.constructor(...c), radius: r, shape: 1, tool: E[tool], rate: 1, replace: true });
-  }, [tool, c, r]);
+    a.sim.paint({ center: new a.camera.position.constructor(...c), radius: r, shape: 1, tool: id, rate: 1, replace: true });
+  }, [E[tool], c, r]);
   const stand = (x, z, yaw, pitch) => ev(([x, z, yaw, pitch]) => {
     const a = window.__app;
     a.pov.player.spawn(a.pov.player.pos.clone().set(x, 0, z));
@@ -64,9 +65,11 @@ try {
 
   // every dig's cells, and every blow (a dig that took nothing hit an empty block: the aim was stale)
   await ev(async () => {
-    const { povEvents } = await import('/src/pov/events.js');
     window.__digs = [];
-    povEvents.on('tool:action', (e) => { if (e.action === 'dig') window.__digs.push(e.amount); });
+    try {   // (a dev server only: a deployed build serves no /src modules)
+      const { povEvents } = await import('/src/pov/events.js');
+      povEvents.on('tool:action', (e) => { if (e.action === 'dig') window.__digs.push(e.amount); });
+    } catch { /* no event log */ }
     // every take the tools ask for: issued or not, and how many were in flight
     const tr = window.__app.pov.toolbelt.transfer, take = tr.take.bind(tr);
     window.__takes = [];
