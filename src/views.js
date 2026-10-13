@@ -3,7 +3,8 @@
 // This file is the single source of truth for each view's name, hotkey,
 // description and colour legend. The colormaps below are baked into the WGSL
 // by src/shaders/render.js, so the legend the UI draws always matches what the
-// shader shows. Each view is a shader module of its own there, named by its key.
+// shader shows. Each view is a shader module of its own there, named by its
+// key, except Plain, which the blocks renderer draws (src/gfx/blocks.js).
 //
 // Colormap format: knots [[value, '#rrggbb'], ...]. Knots sit evenly spaced
 // along the legend bar, so the value axis is piecewise (roughly logarithmic).
@@ -106,7 +107,7 @@ xrayLegend.css = legendCSS(xrayLegend);
 
 // ---------- the views ----------
 // `legend` is null or { title, stops: [[pos 0..1, '#hex'], ...], labels: [[text, pos], ...], css }.
-// `shadows`: the view reads the sun shadow map, so the app renders it.
+// `shadows`: the view reads the volume's sun shadow map, so the app renders it.
 // Labels are always evenly spaced (so a flex row with space-between lines up
 // with the bar). Flow also has `legend2`: brightness = speed.
 export const VIEWS = [
@@ -140,8 +141,8 @@ export const VIEWS = [
   },
   {
     id: 5, key: 'plain', hotkey: '0', name: 'Plain',
-    desc: 'The original look from before the smooth renderer: flat-coloured blocks with sunlight, shadows and glow.',
-    legend: null, shadows: true,
+    desc: 'Flat-coloured blocks, Minecraft style, with sunlight, shadows and glow.',
+    legend: null,   // (drawn by the blocks renderer, gfx/blocks.js, with its own sun shadows: not the volume's map)
   },
 ];
 

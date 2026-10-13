@@ -3,7 +3,6 @@ import { liquidGLSL } from './liquid.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
 import { grainsGLSL, GRAINS_ANY } from './grains.js';
-import { plainGLSL } from './plain.js';
 import { lib, libLayouts } from './lib.js';
 import { fullscreenVert } from '../../gpu/wgsl.js';
 import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.js';
@@ -1898,9 +1897,8 @@ fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
 // is shaded once, whichever kind it is.
 //
 // The library at a detail level, in the order the tracer pastes it after
-// lib(g): surface (relief inside), liquid, liquid detail, media, grains. The
-// plain view adds plainGLSL. render.js defines what the material code calls
-// back (the march's event codes, softBlob, aces, meshCutT) and pastes the
+// lib(g): surface (relief inside), liquid, liquid detail, media, grains. render.js defines what the material code calls
+// back (the march's event codes, softBlob, meshCutT) and pastes the
 // decoration's lookups (shaders/gfx/deco.js); a probe brings stand-ins with
 // the GLSL's definitions (the mesh cut and the paint read from the frame).
 const materialLib = (detail) =>
@@ -1919,19 +1917,11 @@ fn softBlob(cell: vec3i, ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> f32 {
   let tm = clamp(dot(cc - ro, rd), t0, t1);
   return smoothstep(BLOB_R_OUT, BLOB_R_IN, length(ro + rd * tm - cc)) * BLOB_PEAK;
 }
-const ACES_A: f32 = 2.51;
-const ACES_B: f32 = 0.03;
-const ACES_C: f32 = 2.43;
-const ACES_D: f32 = 0.59;
-const ACES_E: f32 = 0.14;
-fn aces(x: vec3f) -> vec3f {
-  return clamp((x * (ACES_A * x + ACES_B)) / (x * (ACES_C * x + ACES_D) + ACES_E), vec3f(0.0), vec3f(1.0));
-}
 // the opaque meshes' cut (gfx/meshCut.js; the tracer reads the scene target's
 // depth): a value from the frame, through the library's meshCutAt
 fn meshCutT(rd: vec3f) -> f32 { return meshCutAt(fract(FU.time), FU.invViewProj, vec2f(f32(FU.shadowRes)), rd); }
 // ---- stand-ins for the decoration's lookups (shaders/gfx/deco.js decoViewGLSL,
-// pasted by the view before the materials; plain.js reads them) ----
+// pasted by the view before the materials) ----
 const DECO_SIGMA: f32 = 2.0;
 const DECO_DETAIL_MAX: f32 = 2.0;
 const DECO_LUM_MIN: f32 = 1e-3;
@@ -2005,9 +1995,6 @@ const realisticBody = (d) => /* wgsl */ `
   let mrd = safeDir(hazeBend(ro, rd, s, s + 4.0));
   let al = mediaSegment(ro, mrd, s, s + 4.0, &next, &mcol, &mtrans);
   acc += vec4f(mcol + mtrans, al + next);`;
-const plainBody = () => /* wgsl */ `
-  let po = plainView(ro, rd, s, boxHit(ro, rd));
-  if (po.hit) { acc += po.color + vec4f(po.depth); }`;
 
 // The probe's fragment entry: gFragCoord and the aeration copy set first, then
 // surfView at the top in uniform control flow, as the tracer must; inputs from
@@ -2034,8 +2021,8 @@ ${body}
 /**
  * The material library's module text for grid g at detail (a defines
  * object), without an entry point: the render library (lib.js, its LIGHTING
- * variant, aeration declared), the tracer's stand-ins, the material library
- * and plainGLSL. Tools append their own entry (tools/material-lod-check.mjs).
+ * variant, aeration declared), the tracer's stand-ins and the material
+ * library. Tools append their own entry (tools/material-lod-check.mjs).
  * @param {object} g
  * @param {object} detail
  */
@@ -2043,20 +2030,18 @@ export const materialModule = (g, detail) => [
   lib(g, { variant: 'LIGHTING', far: false, aeration: true }),
   TRACER_STANDINS,
   materialLib(detail),
-  plainGLSL(g),
 ].join('\n');
 
 /**
  * A probe's WGSL for grid g: materialModule and a fragment entry running
- * `view` ('realistic' or 'plain').
+ * the realistic path.
  * @param {object} g
  * @param {object} detail
- * @param {'realistic' | 'plain'} [view]
  */
-export const materialProbe = (g, detail, view = 'realistic') => [
-  `// material probe: ${view}, detail ${Object.keys(detail).join(' ') || 'off'}`,
+export const materialProbe = (g, detail) => [
+  `// material probe: realistic, detail ${Object.keys(detail).join(' ') || 'off'}`,
   materialModule(g, detail),
-  probeEntry(view === 'plain' ? plainBody() : realisticBody(detail)),
+  probeEntry(realisticBody(detail)),
 ].join('\n');
 // its groups: the render library's (group 0 FRAME, 1 STATE_RO, 2 LIGHTING, 3 PARAMS)
 export const materialProbeLayouts = () => libLayouts('LIGHTING');
@@ -2072,29 +2057,28 @@ export const DETAIL_COMBINATIONS = 1 << DETAIL.length;
  * warm: false: a test kernel no game path builds, so preload's warm-on-menu
  * set leaves it out (B5).
  */
-export const probeCheck = (name, detail, view = 'realistic', grids = true) => ({
+export const probeCheck = (name, detail, grids = true) => ({
   name,
   warm: false,
   kind: 'render',
   grids,
-  code: (g) => materialProbe(g, detail, view),
+  code: (g) => materialProbe(g, detail),
   layouts: () => materialProbeLayouts(),
   vertex: { entry: 'vs' },
   fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
 });
 // What check-wgsl validates (every grid) and builds (at the smallest): the
-// realistic path at the three detail levels, and the plain view. Every
+// realistic path at the three detail levels. Every
 // switch's code is in mat.full, every switch-off alternative in mat.off.
 // Each switch alone and all 1024 combinations are validated, and each switch
 // alone built, by tools/material-lod-check.mjs (--only combos): built here
 // they would add about a minute of SwiftShader to every check-wgsl run.
 const CHECKS = {
-  surface: () => Object.entries(DETAIL_LEVELS_WGSL).map(([k, d]) => probeCheck(`mat.${k}`, d(), 'realistic')),
-  plain: () => [probeCheck('mat.plain', {}, 'plain')],
+  surface: () => Object.entries(DETAIL_LEVELS_WGSL).map(([k, d]) => probeCheck(`mat.${k}`, d())),
 };
 /**
- * The WGSL_CHECK entries of surface.js ('surface') or plain.js ('plain'). A
- * function, not an array: the material modules import each other.
+ * The WGSL_CHECK entries of surface.js ('surface'). A function, not an
+ * array: the material modules import each other.
  * @param {string} module
  */
 export const materialChecks = (module) => CHECKS[module]();
