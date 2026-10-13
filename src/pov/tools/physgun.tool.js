@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { PHYS as ENGINE } from '../../physics.js';
 import { PHYS, PHYS_MODE, BLAST, glowTexture, disposeTree } from '../../shaders/povTools.js';
 import { povGpu } from '../gpu.js';
-import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { toolDt } from './action.js';
@@ -193,13 +192,13 @@ export default {
         pulse: ctx.eye.clone().addScaledVector(dir, pulse ? face + BLAST.PULSE_DEPTH : 0), pulseP: pulse ? BLAST.PULSE_P : 0,
       });
       model.rig.hit(HIT.FLING);
-      povEvents.emit('tool:action', { tool: 'physgun', action: 'blast', point: hold.clone() });
+      env.feedback?.act('blast', { point: hold.clone() });
       blastWait = BLAST.COOLDOWN;
       flash = BLAST_FLASH_S;
     }
 
     const release = () => {
-      if (holding) povEvents.emit('tool:action', { tool: 'physgun', action: 'release', point: hold.clone() });
+      if (holding) env.feedback?.act('release', { point: hold.clone() });
       holding = false;
     };
 
@@ -233,7 +232,7 @@ export default {
           const point = hold.copy(ctx.eye).addScaledVector(ctx.dir, dist).clone();
           aimPt.copy(hold);
           prevEye.copy(ctx.eye);
-          povEvents.emit('tool:action', { tool: 'physgun', action: 'grab', point, id: ctx.aim?.valid ? ctx.aim.id : undefined });
+          env.feedback?.act('grab', { point, id: ctx.aim?.valid ? ctx.aim.id : undefined });
         }
         if (holding && !ctx.primary) release();
         if (holding && ctx.wheel) {
@@ -251,7 +250,7 @@ export default {
           if (ctx.secondaryPressed) {
             run(ctx, PHYS_MODE.FLING);
             model.rig.hit(HIT.FLING);
-            povEvents.emit('tool:action', { tool: 'physgun', action: 'fling', point: hold.clone() });
+            env.feedback?.act('fling', { point: hold.clone() });
             holding = false;
           } else if (ctx.stepsPerFrame > 0) run(ctx, PHYS_MODE.HOLD);
         } else if (ctx.secondaryPressed && blastWait === 0) blast(ctx);

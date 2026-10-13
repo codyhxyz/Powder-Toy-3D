@@ -7,6 +7,7 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 import { h } from '../../ui/dom.js';
 import { trigger, toolDt } from './action.js';
 import { muzzleCell } from './transfer.js';
+import { gridSpace } from '../space.js';
 import './firearm.css';
 
 // A gun (the pistol, the SMG, the sniper rifle): fires rounds that fly with
@@ -108,6 +109,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
     key, name, model: modelKey, desc,
     create(env) {
       const model = buildModel(env);
+      const { toWorld } = gridSpace(env);
       const ballistics = env.ballistics;   // the toolbelt's: it keeps rounds flying after the gun is put away
       const button = trigger(refire, { hold });
       // the scope's view (only the player's: an NPC's toolbelt has no hud)
@@ -130,8 +132,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
       // the muzzle in world space: the viewmodel's muzzle while it's shown, else the eye
       function muzzleWorld(eye) {
         if (model.hand.visible) return model.muzzleWorld();
-        const vol = env.getVolume();
-        return eye.clone().multiplyScalar(env.getScale()).add(vol.position);
+        return toWorld(eye);
       }
 
       function fire(ctx) {
