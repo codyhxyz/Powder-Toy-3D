@@ -33,6 +33,7 @@
 
 import { ELEMENTS, K } from '../elements.js';
 import { bandGlow } from './incandescence.js';
+import { FLAME_COLOR } from './lamps.js';
 import { accessorsWGSL } from '../shaders/hostStruct.js';
 
 // sRGB decoding (IEC 61966-2-1)
@@ -107,9 +108,8 @@ export const LAMP_GLOW = tintGlow(LAMP_TINT, LAMP_LUM);
 // hand torch's colour, pov/tools/torch.tool.js), its glow lighting the gallery
 // round it through the glow volume. Noita's torches light a warm pool a few
 // metres round them and leave the rest of the cave dark.
-const TORCH_TINT = '#ff8a3c';
 const TORCH_LUM = 0.06;   // a body of flame seen in the dark: orange once the eyes adjust, not a white box
-const TORCH_GLOW = tintGlow(TORCH_TINT, TORCH_LUM);
+const TORCH_GLOW = FLAME_COLOR.map((c) => c * TORCH_LUM);   // its blackbody colour (gfx/lamps.js)
 // Embers (elements.js EMBER): coal glowing at ~800-900 °C, a dull orange
 // (Charity's blackbody table, ≈ #ff7a30 at 900 °C: the deeper red of 800 °C
 // washed the Coal Pits murky red). A clump of them lights the rock round it.
