@@ -1,4 +1,5 @@
 import { E } from '../../elements.js';
+import { pcg } from '../../rng.js';
 
 // Shared machinery of the world scenes written once for GPU and CPU: the
 // themed ones (labWorld.js, volcanoWorld.js) and the island's generator
@@ -47,12 +48,8 @@ const TAU = Math.PI * 2;
 // 2D gradient noise peaks near ±1/√2: this scales it to about ±1
 const NOISE_NORM = 1.4142;
 
-// PCG hash, as common.js's pcg (uint32 arithmetic)
-export function pcg(v) {
-  const s = (Math.imul(v, 747796405) + 2891336453) >>> 0;
-  const w = Math.imul((s >>> ((s >>> 28) + 4)) ^ s, 277803737) >>> 0;
-  return ((w >>> 22) ^ w) >>> 0;
-}
+// PCG hash, as common.js's pcg (uint32 arithmetic): src/rng.js's, re-exported for the scenes
+export { pcg };
 
 // The GPU halves (WGSL; the name is the GLSL version's, docs/webgpu.md W2),
 // after the prelude (pcg, u32ToF32, UINT_TO_UNIT) and the scene's uniform

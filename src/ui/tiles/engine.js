@@ -11,6 +11,7 @@
 // flags any that are missing.
 import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH } from '../../elements.js';
 import { PHYS } from '../../physics.js';
+import { pcg } from '../../rng.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 import { GRAV as GRAV_MODE } from '../../simModes.js';
 import { PACE } from '../../shaders/move.js';
@@ -103,11 +104,6 @@ const rnd = Math.random;
 // A pair's shared random stream (react.js seeds it with seed3 at the pair's
 // base cell): the PCG hash (shaders/common.js pcg), so both cells of a pair
 // draw the same numbers.
-const pcg = (v) => {
-  const s = (Math.imul(v >>> 0, 747796405) + 2891336453) >>> 0;
-  const w = Math.imul(((s >>> ((s >>> 28) + 4)) ^ s) >>> 0, 277803737) >>> 0;
-  return ((w >>> 22) ^ w) >>> 0;
-};
 const LCG_MUL = 1664525;   // (shaders/common.js)
 const UINT_TO_UNIT = 1 / 4294967296;
 const pairStream = { s: 0 };
