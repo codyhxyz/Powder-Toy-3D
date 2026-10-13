@@ -25,7 +25,8 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //
 // Events (tool = the key in lower case): tool:action 'swing' on every swing;
 // when the head lands on something, impact (source = tool) and the rig's kick,
-// plus tool:action 'refuse' if the struck cell is a solid the blow can't break.
+// plus tool:action 'refuse' if the struck cell is a solid the blow can't break
+// (feedback.refuse, silent: the slot shakes, no toast).
 //
 //   export default meleeTool({ ...gear(KEY),   // the tool definition (catalog.js, docs/pov.md)
 //     blow, frag,              // the blow's tuning (ENERGY ...) and its pass
@@ -101,7 +102,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         povEvents.emit('impact', { source, point, normal, id: t.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);
         if (broke === false && ELEMENTS[t.id]?.kind === K.SOLID) {
-          povEvents.emit('tool:action', { tool: source, action: 'refuse', id: t.id, point });
+          env.feedback?.refuse(null, { id: t.id, point }, { silent: true });
           const why = digs.refusal(t.id, name.toLowerCase());
           if (why) env.feedback?.refuse(why, { id: t.id });
         }
@@ -154,7 +155,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         gather(sim, point, swingDir, aim.id, broke);
         povEvents.emit('impact', { source, point, normal: faceNormal(aim.face), id: aim.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);
-        if (broke === false) povEvents.emit('tool:action', { tool: source, action: 'refuse', id: aim.id, point });
+        if (broke === false) env.feedback?.refuse(null, { id: aim.id, point }, { silent: true });
         return { landed: true };
       }
 
@@ -171,7 +172,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           if (button.ready(ctx)) {
             button.fire();
             model.hand.userData.gesture.since = 0;
-            povEvents.emit('tool:action', { tool: source, action: 'swing' });
+            env.feedback?.act('swing');
             const r = strike(ctx);
             turning = r.lethal ? lethalPose : pose;
             driving = r.lethal ? lethalPush : push;

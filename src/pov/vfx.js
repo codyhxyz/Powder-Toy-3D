@@ -8,6 +8,7 @@ import { JET_NOZZLES } from './figure.js';
 import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
+import { gridSpace } from './space.js';
 
 // POV effects: muzzle flash (and a short light), sparks, dust and chips,
 // splash mist and tracers. Cosmetic only: the real debris, splashes and heat
@@ -354,7 +355,7 @@ export function createVfx(env) {
     });
   }
 
-  const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
+  const { toWorld } = gridSpace(env);
   const vP = new THREE.Vector3(), vD = new THREE.Vector3(), vV = new THREE.Vector3(), vT = new THREE.Vector3();
   const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
   const tmpColor = new THREE.Color();

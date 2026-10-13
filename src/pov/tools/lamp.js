@@ -2,15 +2,15 @@ import * as THREE from 'three';
 import { HAND_REACH } from '../constants.js';
 import { torchFireFrag, flameBox, TORCH_FIRE } from '../../shaders/povTools.js';
 import { toolPass } from '../gpu.js';
-import { gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from './bomb.tool.js';
 import { lamps } from '../lamps.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { createFlame } from '../flame.js';
 import { viewmodelRig, HIT, VIEWMODEL_GLOW_LAYER } from '../viewmodel.js';
-import { trigger, toolDt } from './action.js';
-import { faceNormal, muzzleCell } from './transfer.js';
+import { trigger, toolDt, launcher } from './action.js';
+import { faceNormal } from './transfer.js';
+import { gridSpace } from '../space.js';
 
 // A lamp you carry (the torch, the lantern): it lights the world around you
 // (a point light with traced shadows, pov/lamps.js → shaders/gfx/lighting.js
@@ -52,7 +52,6 @@ const LIGHT_LIFT = 0.6;        // cells above a landed lamp its light hangs (its
 // Within BODY_WIDTH / 2 (0.8) of the eye sideways, so it's inside the body's box.
 const HELD_LIGHT = [0.55, 0.25, 0.45];
 const FIRE_INTERVAL = 0.15;    // s between a lying torch's flame passes
-const TUMBLE = 0.4;            // rad a thrown lamp turns per frame it's drawn
 const MS_PER_S = 1000;
 const UP = new THREE.Vector3(0, 1, 0);
 // the live flame on the torch's head, in model units (models.js: the head is about 0.2 across)
@@ -168,40 +167,22 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
       };
 
       // ---- in flight: drawn and lit where the shared projectiles say
-      const world = new THREE.Group();
-      world.name = `pov-${tool}s`;
-      env.scene.add(world);
-      const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
-      const flying = new Map();   // round id → { model, flame }
+      const { toWorld } = gridSpace(env);
       const props = [];           // lying lamps: { id, pos, normal, model, flame, until, timer }
       let lastFlight = performance.now();
-      const offs = [
-        povEvents.on('round:move', ({ id, kind, to }) => {
-          if (kind !== tool || !flying.has(id)) return;
-          let m = flying.get(id);
-          if (!m) {
-            const model = attachModel(world, modelKey, null, { arm: false });
-            m = { model, flame: drawn ? lightModel(model, 'world') : null };
-            flying.set(id, m);
-          }
-          m.model.obj.scale.setScalar(env.getScale());
-          toWorld(to, m.model.obj.position);
-          m.model.obj.rotation.x += TUMBLE;
+      const launch = launcher(env, {
+        kind: tool, model: modelKey, rig, hit: HIT.THROW, action: 'throw', hand, button: thrower,
+        onMove(m, { id, to }) {   // m: { model, flame }
+          if (drawn && !m.flame) m.flame = lightModel(m.model, 'world');
           const now = performance.now();
           const f = flickerNow(id);
           burnFlame(m.flame, (now - lastFlight) / MS_PER_S, f);
           lastFlight = now;
           if (on) shine(`${tag}:fly:${id}`, to, f);
-        }),
-        povEvents.on('round:end', ({ id, kind }) => {
-          if (kind !== tool || !flying.has(id)) return;
-          const m = flying.get(id);
-          m?.flame?.dispose();
-          m?.model.dispose();
-          flying.delete(id);
-          lamps.remove(`${tag}:fly:${id}`);
-        }),
-      ];
+        },
+        onEnd(m, id) { m.flame?.dispose(); lamps.remove(`${tag}:fly:${id}`); },
+      });
+      const world = launch.world;   // lying lamps are drawn with the flying ones
 
       // ---- lying where it landed
       function removeProp(p) {
@@ -232,7 +213,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
         props.push(p);
         placeProp(p);
         while (props.length > PROPS_MAX) removeProp(props[0]);
-        povEvents.emit('tool:action', { tool, action: 'land', point: p.pos.clone() });
+        env.feedback?.act('land', { point: p.pos.clone() });
       }
 
       // a flame edit: from `at` along `dir`, `reach` cells (the torch's head, lying or touched to something)
@@ -240,19 +221,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
         fire(sim, { nozzle: at, dir, reach, dt, frame: ++frame }, sim.touchCentres(...flameBox(TORCH_FIRE, at, dir, reach)));
       }
 
-      function throwIt(ctx) {
-        const sim = ctx.sim ?? env.getSim();
-        const dir = ctx.dir.clone().normalize();
-        const m = muzzleCell(ctx.eye, dir, ctx.player.pos, sim.g);
-        if (!m) { env.feedback?.refuse('No room to throw'); return false; }
-        const origin = ctx.eye.clone().addScaledVector(dir, m.t);
-        const id = env.ballistics.fire(origin, dir, gravityScale(sim), { speed: THROW_SPEED, carry: ctx.player.vel, kind: tool, onStrike: land });
-        if (!id) return false;
-        flying.set(id, null);
-        rig.hit(HIT.THROW);
-        povEvents.emit('tool:action', { tool, action: 'throw' });
-        return true;
-      }
+      const throwIt = (ctx) => !!launch.fire(ctx, { gravity: true, speed: THROW_SPEED, carry: ctx.player.vel, onStrike: land }, { flame: null });
 
       // the held lamp's light: at your side (HELD_LIGHT), turned with the look but level
       const heldLightPos = (ctx) => {
@@ -265,12 +234,10 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
 
       return {
         update(ctx) {
-          hand.visible = true;
-          rig.update(ctx);
-          if (thrower.ready(ctx) && throwIt(ctx)) thrower.fire();
+          launch.update(ctx, throwIt);
           const inHand = thrower.waiting <= 0;   // a fresh one once you can throw again
           heldMesh.obj.visible = inHand;
-          if (!burn && ctx.primaryPressed) { on = !on; povEvents.emit('tool:action', { tool, action: 'toggle' }); }
+          if (!burn && ctx.primaryPressed) { on = !on; env.feedback?.act('toggle'); }
           const f = flickerNow();
           if (inHand && on) shine(heldKey, heldLightPos(ctx), f, true);
           else lamps.remove(heldKey);
@@ -308,7 +275,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
           // from inside what it's stuck in, so the flame heats that as well as licking out of it
           for (const p of props) flame(sim, scratch.copy(p.pos).addScaledVector(p.normal, -PROP_EMBED), p.normal, TORCH_FIRE.LENGTH + PROP_EMBED, FIRE_INTERVAL);
         },
-        deselect() { hand.visible = false; thrower.reset(); lamps.remove(heldKey); if (heldFlame) heldFlame.fresh = true; },
+        deselect() { launch.deselect(); lamps.remove(heldKey); if (heldFlame) heldFlame.fresh = true; },
         status: () => null,
         // (docs/scaling.md D11) lying lamps stay put in the world
         windowShifted(dx, dz) { for (const p of props) { p.pos.x -= dx; p.pos.z -= dz; placeProp(p); } },
@@ -317,11 +284,9 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
         get props() { return props; },   // for checks
         get on() { return on; },
         dispose() {
-          offs.forEach((off) => off());
           while (props.length) removeProp(props[0]);
-          flying.forEach((m, id) => { m?.flame?.dispose(); m?.model.dispose(); lamps.remove(`${tag}:fly:${id}`); });
+          launch.dispose();
           lamps.remove(heldKey);
-          world.removeFromParent();
           fire?.dispose();
           heldFlame?.dispose();
           heldMesh.dispose();

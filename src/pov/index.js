@@ -35,6 +35,7 @@ import { createTouchControls } from './touch.js';
 import { createDescent } from './descent/index.js';
 import { preparePov, volumeLight } from './gpu.js';
 import { createVillage } from './village/index.js';
+import { gridSpace } from './space.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -238,7 +239,7 @@ export function createPov(app) {
   announceMatches();            // ...and calls the matches' moments
 
   // ---- grid ↔ world
-  const toWorld = (g, out) => out.copy(g).multiplyScalar(app.getScale()).add(app.getVolume().position);
+  const { toWorld, toGrid } = gridSpace(app);
   const worldToGrid = new THREE.Matrix4();
   const box = { min: new THREE.Vector3(), max: new THREE.Vector3(), margin: 0 };
 
@@ -932,8 +933,7 @@ export function createPov(app) {
   // camera and the body gets picked.
   function aimRay(ro, rd, presentation = false) {
     if (!active() || !player) return false;
-    const scale = app.getScale();
-    ro.copy(camera.position).sub(app.getVolume().position).divideScalar(scale);
+    toGrid(camera.position, ro);
     // the aim, not the shaken view: kick and shake are only felt
     if (mode === 'on' && !deadSeen) povCam.dir(rd);
     else camera.getWorldDirection(rd);

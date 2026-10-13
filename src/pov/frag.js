@@ -7,6 +7,7 @@ import { areaTargets, dealtScale, PLAYER } from './targets.js';
 import { muzzleCell } from './tools/transfer.js';
 import { heldMaterial } from './viewmodel.js';
 import { wu, points, CAUSE } from './halo.js';
+import { gridSpace } from './space.js';
 
 // The frag grenade: Halo 3's M9 (Halopedia, "H3:Frag Grenade"), thrown on G in
 // a Halo match (combat.js for the player; ai/brain.js FRAG for the bots, through
@@ -96,7 +97,7 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
   const bodyGeo = new THREE.IcosahedronGeometry(DRAWN_SIZE / 2, 0).scale(1, 1.2, 1);
   const capGeo = new THREE.CylinderGeometry(DRAWN_SIZE * CAP[0], DRAWN_SIZE * CAP[0], DRAWN_SIZE * CAP[1], 6).translate(0, DRAWN_SIZE * 0.6, 0);
   const bodyMat = heldMaterial(BODY_COLOR), capMat = heldMaterial(CAP_COLOR);
-  const toWorld = (g, out) => out.copy(g).multiplyScalar(getScale()).add(getVolume().position);
+  const { toWorld } = gridSpace({ getScale, getVolume });
 
   const live = new Set();       // every grenade: in flight, lying armed, or dropped
   const byRound = new Map();    // ballistics round id → its grenade

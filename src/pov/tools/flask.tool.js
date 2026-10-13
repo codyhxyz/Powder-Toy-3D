@@ -3,17 +3,16 @@ import { ELEMENTS, E, K } from '../../elements.js';
 import { SEED_MAX } from '../../shaders/common.js';
 import { HAND_REACH } from '../constants.js';
 import { PX as NOITA_PX } from '../player.js';
-import { gravityScale } from '../ballistics.js';
 import { povEvents } from '../events.js';
 import { ingest } from '../ingest.js';
 import { attachModel, FLASK_BULB } from '../models.js';
 import { viewmodelRig, heldMaterial, HIT } from '../viewmodel.js';
-import { trigger, toolDt } from './action.js';
+import { trigger, toolDt, launcher } from './action.js';
 import { THROW_SPEED } from './bomb.tool.js';
 import { inventory } from './inventory.js';
 import {
   Load, persistentLoad, ownedKey, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, pinned,
-  ballRadius, muzzleCell,
+  ballRadius,
 } from './transfer.js';
 import { gear } from './catalog.js';
 
@@ -139,7 +138,6 @@ export default {
     const dip = trigger(SCOOP_INTERVAL);
     const toss = trigger(THROW_REFIRE, { button: 'secondary', hold: false });
     const gulp = trigger(DRINK_INTERVAL, { button: 'drink' });
-    const act = (action, extra) => povEvents.emit('tool:action', { tool: 'flask', action, ...extra });
     const refuse = (text, id) => env.feedback?.refuse(text, { id });
     let mode = null;          // this press of the left button: 'scoop' or 'pour'
     let pour = 0, selected = false, tipT = 0;
@@ -183,29 +181,11 @@ export default {
     }
 
     // ---- flasks in flight, drawn where the shared projectiles say they are
-    const flying = new Map();   // round id → { model, load }
-    const world = new THREE.Group();
-    world.name = 'pov-flasks';
-    env.scene.add(world);
-    const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
-    const offs = [
-      povEvents.on('round:move', ({ id, kind, to }) => {
-        const f = kind === KIND && flying.get(id);
-        if (!f) return;
-        f.model ??= attachModel(world, 'flask', null, { arm: false });
-        f.model.obj.scale.setScalar(env.getScale());
-        toWorld(to, f.model.obj.position);
-        f.model.obj.rotation.x += TUMBLE;
-        globalThis.__app?.requestRender?.();
-      }),
-      povEvents.on('round:end', ({ id, kind }) => {
-        const f = kind === KIND && flying.get(id);
-        if (!f) return;
-        f.model?.dispose();
-        flying.delete(id);
-        lost += f.load.cells.length;   // it never struck: out of the box, with what it held
-      }),
-    ];
+    const launch = launcher(env, {
+      kind: KIND, model: 'flask', rig, hit: HIT.THROW, tumble: TUMBLE,
+      onEnd(f) { lost += f.load.cells.length; },   // it never struck: out of the box, with what it held
+    });
+    const flying = launch.flying;   // round id → { model, load }
     // a given flask (the palette, Q): one in hand if the last was thrown
     const offGive = env.owner ? () => {} : inventory.on((key) => {
       if (key !== 'FLASK') return;
@@ -239,7 +219,7 @@ export default {
       if (!p) return;
       dip.fire();
       const id = aim.id, at = pinned(center, ctx.sim);
-      p.then((got) => { if (got.length) act('scoop', { id, point: at(), amount: got.length }); });
+      p.then((got) => { if (got.length) env.feedback?.act('scoop', { id, point: at(), amount: got.length }); });
     }
 
     function pourOut(ctx) {
@@ -258,7 +238,7 @@ export default {
       if (!p) return;
       pour -= n;
       const at = pinned(spout, ctx.sim);
-      p.then((landed) => { if (landed) act('pour', { id, point: at(), amount: landed }); });
+      p.then((landed) => { if (landed) env.feedback?.act('pour', { id, point: at(), amount: landed }); });
     }
 
     // ---- throwing and shattering
@@ -278,10 +258,8 @@ export default {
     }
 
     function shatter(roundId, { sim, hit, normal }) {
-      const f = flying.get(roundId);
+      const f = launch.take(roundId);   // struck: round:end isn't a loss
       if (!f) return;
-      flying.delete(roundId);   // struck: round:end isn't a loss
-      f.model?.dispose();
       const spilt = f.load;
       const mainId = spilt.mainId;
       const held = spilt.cells.length;
@@ -291,30 +269,22 @@ export default {
       lastShatter = { point: hit.point.clone(), center: center.clone(), held, glass: FLASK_GLASS, id: mainId, body: hit.body?.id ?? null, load: spilt };
       povEvents.emit('impact', { source: 'flask', point: hit.point.clone(), normal: normal.clone(), id: E.GLASS, energy: SHATTER_ENERGY, broke: true });
       if (mainId >= 0) povEvents.emit('impact', { source: 'flask', point: hit.point.clone(), normal: normal.clone(), id: mainId, energy: SHATTER_ENERGY, broke: null });
-      act('shatter', { id: mainId, point: hit.point.clone(), amount: held });
+      env.feedback?.act('shatter', { id: mainId, point: hit.point.clone(), amount: held });
     }
 
     function throwFlask(ctx) {
       if (!flask.inHand) { refuse('No flask: Q gives another'); return false; }
       if (load.busy) return false;   // a pour or a dip still in flight: its cells come back first
-      const sim = ctx.sim ?? env.getSim();
-      const dir = ctx.dir.clone().normalize();
-      const m = ctx.player?.pos ? muzzleCell(ctx.eye, dir, ctx.player.pos, sim.g) : { t: 0 };
-      if (!m) { refuse('No room to throw'); return false; }
-      const origin = ctx.eye.clone().addScaledVector(dir, m.t);
       const carried = new Load(FLASK_CAP + FLASK_GLASS);
-      let id = 0;
-      id = env.ballistics.fire(origin, dir, gravityScale(sim), {
-        speed: THROW_SPEED, carry: ctx.player?.vel ?? null, kind: KIND, bodies: true,
-        onStrike: (s) => shatter(id, s),
-      });
-      if (!id) return false;
+      const shot = launch.fire(ctx, {
+        gravity: true, speed: THROW_SPEED, carry: ctx.player?.vel ?? null, bodies: true,
+        onStrike: (s, id) => shatter(id, s),
+      }, { load: carried });
+      if (!shot) return false;
       carried.cells = load.cells.splice(0);
       load.version++;
-      flying.set(id, { model: null, load: carried });
       flask.inHand = false;
-      rig.hit(HIT.THROW);
-      act('throw', { id: carried.mainId, amount: carried.cells.length });
+      env.feedback?.act('throw', { id: carried.mainId, amount: carried.cells.length });
       return true;
     }
 
@@ -329,7 +299,7 @@ export default {
       lastDrink = { doses: drunk, body: !!body };
       tipT = DRINK_TIP_S;
       rig.hit(HIT.DRINK);
-      act('drink', { id, amount: doses.reduce((s, d) => s + d.n, 0) });
+      env.feedback?.act('drink', { id, amount: doses.reduce((s, d) => s + d.n, 0) });
       return true;
     }
 
@@ -395,11 +365,9 @@ export default {
       get flying() { return flying.size; },
       get lost() { return lost; },
       dispose() {
-        offs.forEach((off) => off());
         offGive();
         if (!env.owner) { removeEventListener('keydown', onDown); removeEventListener('keyup', onUp); }
-        flying.forEach((f) => f.model?.dispose());
-        world.removeFromParent();
+        launch.dispose();
         model.dispose();
         hand.removeFromParent();
         cap.geometry.dispose(); top.geometry.dispose(); fillMat.dispose();

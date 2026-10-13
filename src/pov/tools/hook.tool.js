@@ -107,14 +107,13 @@ export default {
     const hand = new THREE.Vector3(), tmp = new THREE.Vector3(), tmpB = new THREE.Vector3();
 
     const bodyOf = (ctx) => ctx.player?.body ?? ctx.player;
-    const emit = (action, extra) => povEvents.emit('tool:action', { tool: 'hook', action, ...extra });
 
     function letGo(action = 'release') {
       myBody?.tether?.(null);
       theirBody?.tether?.(null);
       rope = theirRope = theirBody = null;
       generation++;
-      if (state === 'anchor' || state === 'body') emit(action, { point: claw.clone() });
+      if (state === 'anchor' || state === 'body') env.feedback?.act(action, { point: claw.clone() });
       state = load.count > 0 ? 'carry' : 'back';
       wait = REFIRE;
     }
@@ -141,7 +140,7 @@ export default {
       claw.copy(origin);
       state = 'out';
       model.rig.hit(HIT.HOOK);
-      emit('fire', { point: origin.clone() });
+      env.feedback?.act('fire', { point: origin.clone() });
       return true;
     }
 
@@ -149,13 +148,13 @@ export default {
     function arrive(ctx) {
       const body = myBody;
       body.ropeHand(hand);
-      if (!caught) { emit('miss', { point: claw.clone() }); state = 'back'; return; }
+      if (!caught) { env.feedback?.act('miss', { point: claw.clone() }); state = 'back'; return; }
       if (caught.kind === 'anchor') {
         anchorCell.copy(caught.cell);
         rope = { anchor: claw.clone(), length: hand.distanceTo(claw), reel: 0, hard: true, brace: false };
         body.tether(rope);
         state = 'anchor';
-        emit('catch', { id: caught.id, point: claw.clone() });
+        env.feedback?.act('catch', { id: caught.id, point: claw.clone() });
       } else if (caught.kind === 'body') {
         theirBody = caught.target.body ?? null;
         if (!theirBody?.tether || theirBody.dead) { state = 'back'; return; }
@@ -165,7 +164,7 @@ export default {
         body.tether(rope);
         theirBody.tether(theirRope);
         state = 'body';
-        emit('catch', { id: -1, point: claw.clone() });
+        env.feedback?.act('catch', { id: -1, point: claw.clone() });
       } else {
         // loose matter: the claw bites into it and it tears out with the claw
         const sim = ctx.sim ?? env.getSim();
@@ -184,7 +183,7 @@ export default {
           myBody.tether(rope);
           state = 'carry';
           recolor(model.bite, ELEMENTS[got[0][0]]?.color ?? '#ffffff');
-          emit('catch', { id: got[0][0], point: claw.clone(), amount: got.length });
+          env.feedback?.act('catch', { id: got[0][0], point: claw.clone(), amount: got.length });
         });
       }
     }
@@ -196,7 +195,7 @@ export default {
         cells: cellsNear(at, PUT_RADIUS, sim.g, outsideBody(myBody?.pos ?? at)),
         vel: toStepVelocity(clawVel, ctx),
       });
-      if (p) emit('dump', { point: at.clone(), id: load.cells[0]?.[0], amount: load.count });
+      if (p) env.feedback?.act('dump', { point: at.clone(), id: load.cells[0]?.[0], amount: load.count });
       return !!p;
     }
 
