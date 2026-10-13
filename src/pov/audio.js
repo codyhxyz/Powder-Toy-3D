@@ -269,6 +269,40 @@ const FAMILY_REF = {
   splash: { dens: E.WATER },
   sizzle: { dens: E.LAVA },
 };
+// ---- recorded samples (public/sfx/dig): Kenney's Impact Sounds (CC0, kenney.nl), one studio's
+// session, level-matched to one loudness (-20 dB RMS, peaks under -1 dB) and mono. A sound is
+// SAMPLE_TAKES takes, one picked at random but never the last one again (Minecraft keeps 4-6 takes
+// a block sound, sounds.json). A dig layers the blade's bite over its material's texture (a
+// transient over a texture, the usual layering); a material sounds as Minecraft's sound groups
+// and Noita's per-material audio do: sand, gravel, soil; rock, glass, metal, wood.
+const SAMPLE_TAKES = 5;
+const SAMPLE_GROUPS = ['bite', 'sand', 'gravel', 'soil', 'rock', 'glass', 'metal', 'wood', 'dump'];
+const SAMPLE_NAMES = new Set(SAMPLE_GROUPS.map((g) => `dig:${g}`));
+const SAMPLE_BASE = `${import.meta.env?.BASE_URL ?? '/'}sfx/dig/`;
+const sampleUrl = (group, take) => `${SAMPLE_BASE}${group}-${take}.mp3`;
+// loose matter that sounds like gravel (stony grains) or soil (soft, organic); other powder is sand
+const GRAVELLY = new Set([E.STONE, E.RUBBLE, E.BROKENCOAL, E.NUGGETS, E.SCRAP, E.SHARDS, E.CRYSTAL_DUST]);
+const SOILY = new Set([E.SAWDUST, E.MOSS, E.FUNGUS, E.CLAY, E.ASH]);
+const SAMPLE_BY_FAMILY = { shatter: 'glass', ping: 'metal', thunk: 'wood', crack: 'rock' };
+const BRITTLE = new Set([E.ICE, E.DRY_ICE]);   // ices ring like glass, not like rock
+const DIG_SOURCES = new Set(['axe', 'pickaxe']);   // the swung tools whose blows on cells play the dig samples
+const DIG_TEXTURE_GAIN = 0.8;           // the material's texture under the blade's bite
+const DUMP_TEXTURE_GAIN = 0.5;          // the grains' texture under a load's thud
+const CHIP_GAIN = 0.5;                  // a blow that only cracked: its material at half (Minecraft's hit is a quieter break)
+const BREAK_TEXTURE_GAIN = 0.6;         // a blow that broke a solid: the debris' texture under its strike
+
+// The dig sample group for element id: loose matter by its grains, solids by their family; null for
+// liquids and gases (they have their own sounds).
+export function digSampleOf(id) {
+  const el = ELEMENTS[id];
+  if (!el) return null;
+  if (el.kind === K.POWDER) return GRAVELLY.has(id) ? 'gravel' : SOILY.has(id) ? 'soil' : 'sand';
+  if (el.kind !== K.SOLID) return null;
+  if (SOILY.has(id)) return 'soil';
+  if (BRITTLE.has(id)) return 'glass';
+  return SAMPLE_BY_FAMILY[familyOf(id)] ?? 'rock';
+}
+
 // the shovel's dump of a load adds the pieces' own sound (glass tinkles, scrap clanks)
 const DUMP_RINGS = new Set(['shatter', 'ping']);
 // hurt sound by cause text (vitals.js causes); anything else is a thud
@@ -315,7 +349,8 @@ function makeLoopable(s, sampleRate) {
 // ---- module state (one POV, one sound system), read by stats()
 const S = {
   started: false, ctx: null, listener: null, lowpass: null,
-  buffers: new Map(),            // preset → AudioBuffer[]
+  buffers: new Map(),            // preset or sample name → AudioBuffer[] (a sample's once its takes have loaded)
+  lastTake: new Map(),           // sample name → the take played last (never twice running)
   positional: [], flat: [],      // voice pools: { audio, at: Vector3|null, name, t }
   loops: {},                     // name → { audio, on }
   stolen: 0, played: 0, seq: 0, log: [],   // log: recent plays, each with a running seq
@@ -373,10 +408,21 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       if (ctx.state !== 'running') ctx.resume().catch(() => {});
       S.started = true;
       warmUp();
+      loadSamples();
     } catch (err) {
       console.error('POV audio failed to start', err);
     } finally {
       starting = false;
+    }
+  }
+
+  // fetch and decode the recorded samples in the background; a sound plays once all its takes are in
+  function loadSamples() {
+    for (const g of SAMPLE_GROUPS) {
+      const takes = [...Array(SAMPLE_TAKES).keys()].map((i) => fetch(sampleUrl(g, i))
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`${r.status} ${r.url}`))))
+        .then((b) => S.ctx.decodeAudioData(b)));
+      Promise.all(takes).then((bufs) => S.buffers.set(`dig:${g}`, bufs), (err) => console.warn('POV audio: dig samples', g, err));
     }
   }
 
@@ -419,17 +465,22 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
 
   // at: grid position (Vector3) for a sound in the world, or null for one of your own
   function play(name, { at = null, gain = 1, rate = 1, delay = 0 } = {}) {
-    if (!S.started || !PRESETS[name]) return null;
+    const sample = SAMPLE_NAMES.has(name);
+    if (!S.started || !(PRESETS[name] || sample)) return null;
+    const list = sample ? S.buffers.get(name) : buffersFor(name);
+    if (!list?.length) return null;   // (a sample still loading)
     const t = now(), wall = clock();
     const prev = lastStart.get(name);
     if (prev && wall - prev.t < SAME_SOUND_GAP_S
       && (at && prev.at ? at.distanceTo(prev.at) < SAME_SOUND_CELLS : !at && !prev.at)) return null;
     lastStart.set(name, { t: wall, at: at?.clone() ?? null });
 
-    const list = buffersFor(name);
     const v = grabVoice(at ? S.positional : S.flat);
     const audio = v.audio;
-    audio.setBuffer(list[Math.floor(Math.random() * list.length)]);
+    let take = Math.floor(Math.random() * list.length);
+    if (sample && list.length > 1 && take === S.lastTake.get(name)) take = (take + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
+    S.lastTake.set(name, take);
+    audio.setBuffer(list[take]);
     if (at) {
       const scale = getScale(), p = audio.panner;
       toWorld(at, vWorld);
@@ -549,6 +600,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     const family = familyOf(id);
     if (!family) return;
     const gain = energyGain(energy), rate = materialRate(id, family), at = point ?? null;
+    // the pickaxe and the axe on a cell: the recorded strike of its material (a crack: quieter), and
+    // the debris' texture when it broke
+    const tex = DIG_SOURCES.has(source) && !body ? digSampleOf(id) : null;
+    if (tex && play(`dig:${tex}`, { at, gain: broke === null ? gain * CHIP_GAIN : gain, rate })) {
+      const debris = broke === true ? digSampleOf(ELEMENTS.findIndex((d) => d.key === ELEMENTS[id].breakInto)) : null;
+      if (debris) play(`dig:${debris}`, { at, gain: gain * BREAK_TEXTURE_GAIN });
+      return;
+    }
     let name = family;
     if (family === 'splash' && energy != null && energy < SPLASH_ENERGY) name = 'plop';
     play(name, { at, gain, rate });
@@ -577,23 +636,25 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     const rate = family ? materialRate(id, family) : 1, gain = loadGain(amount);
     if (action === 'refuse') { play('refuse', { at }); return; }
     switch (`${tool}:${action}`) {
-      case 'shovel:dig':
-        play('shovelScrape', { at, gain, rate });
-        if (family && ELEMENTS[id].kind === K.SOLID) play(family, { at, gain: TOOL_HIT_GAIN, rate });
+      case 'shovel:dig': {   // the blade's bite, and the material's texture (the synth scrape until the samples load)
+        const tex = digSampleOf(id);
+        if (!play('dig:bite', { at, gain })) play('shovelScrape', { at, gain, rate });
+        if (tex) play(`dig:${tex}`, { at, gain: gain * DIG_TEXTURE_GAIN, rate });
         break;
-      case 'shovel:chip':   // a dig that only cracked a solid: the blade's knock on it
-        if (family) play(family, { at, gain: TOOL_HIT_GAIN, rate });
+      }
+      case 'shovel:chip': {   // a dig that only cracked a solid: its material, quieter
+        const tex = digSampleOf(id);
+        if (!(tex && play(`dig:${tex}`, { at, gain: CHIP_GAIN, rate })) && family) play(family, { at, gain: TOOL_HIT_GAIN, rate });
         break;
-      case 'shovel:dump':
+      }
+      case 'shovel:dump': case 'trowel:place': {   // a load landing (a block set down): a heavy soft thud, and its grains
         // the load's own pitch stays put: shifting a thump by material made it sound wrong
-        play('shovelDump', { at, gain });
-        play('shovelPatter', { at, gain });
-        if (DUMP_RINGS.has(family)) play(family, { at, gain: TOOL_HIT_GAIN, rate });
+        const tex = digSampleOf(id);
+        if (!play('dig:dump', { at, gain })) { play('shovelDump', { at, gain }); if (tool === 'shovel') play('shovelPatter', { at, gain }); }
+        if (tex) play(`dig:${tex}`, { at, gain: gain * DUMP_TEXTURE_GAIN, rate });
+        else if (DUMP_RINGS.has(family)) play(family, { at, gain: TOOL_HIT_GAIN, rate });
         break;
-      case 'trowel:place':   // a block set down: the shovel's thud, with a knock if it's a solid
-        play('shovelDump', { at, gain });
-        if (family && ELEMENTS[id].kind === K.SOLID) play(family, { at, gain: TOOL_HIT_GAIN, rate });
-        break;
+      }
       case 'bucket:scoop': case 'flask:scoop':
         play('bucketScoop', { at, gain, rate });
         if (id === E.LAVA) play('sizzle', { at, gain: TOOL_HIT_GAIN });

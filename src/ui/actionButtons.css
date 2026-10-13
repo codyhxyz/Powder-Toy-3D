@@ -1,0 +1,8 @@
+.action-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; pointer-events: auto; }
+.action-buttons[hidden], .action-key[hidden] { display: none !important; }
+.action-buttons .action-button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 44px; touch-action: manipulation; }
+.action-buttons .action-key { color: inherit; font: inherit; font-size: 0.8em; padding: 1px 6px; border: 1px solid currentColor; border-radius: 5px; background: transparent; }
+@media (hover: none) and (pointer: coarse) {
+  .action-buttons .action-key { display: none; }
+  .action-buttons .action-button { min-height: 48px; }
+}

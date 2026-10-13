@@ -59,18 +59,31 @@
 /* the tool in hand: bottom right, where HL2 shows ammo */
 .hb-held {
   position: fixed; z-index: 12;
-  right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom));
-  display: none; align-items: baseline; gap: 10px;
-  padding: 6px 12px; border-radius: 6px;
-  background: rgba(0, 0, 0, 0.45); color: rgb(255, 220, 0);
+  right: max(18px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom));
+  display: none; flex-direction: column; align-items: flex-end; gap: 6px;
+  max-width: calc(100vw - 32px); overflow-wrap: anywhere;
+  padding: 10px 12px; border-radius: 4px;
+  background: rgba(18, 17, 10, 0.88); color: rgb(255, 220, 0);
+  border: 1px solid rgba(255, 220, 0, 0.24);
+  text-align: right; font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 .hb-held.show { display: flex; }
-.hb-held .hb-name { font-size: 13px; font-weight: 650; }
+.hb-held .hb-name { color: #f4edcc; font-size: 13px; font-weight: 650; }
 .hb-held .hb-name:empty { display: none; }
 .hb-held-status { font: 400 11px/1 var(--pixel); }
 .hb-held-status:empty { display: none; }
 .hb-held:has(.hb-name:empty) { display: none; }
+
+/* Desktop stats occupy the bottom 34px (ui/styles.css). Keep the ammo-style
+   readout above that strip, rather than letting both HUDs claim the corner. */
+@media (min-width: 761px) and (hover: hover) {
+  .hb-held { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 32px); }
+}
+@media (max-width: 560px) {
+  /* Leave the bottom-left vitals their 160px plus insets and a gap. */
+  .hb-held { max-width: calc(100vw - 200px); }
+}
 
 .hb-slot.shake { animation: hb-shake 360ms var(--ease); background: color-mix(in srgb, var(--hb-box) 55%, var(--danger)); }
 @keyframes hb-shake {

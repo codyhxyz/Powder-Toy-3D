@@ -71,6 +71,7 @@ import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
+import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z } from './pov/village/state.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
@@ -557,7 +558,7 @@ function placeVolume() {
   volume.position.set((sim.origin.x - anchor.x) * scale, 0, (sim.origin.z - anchor.y) * scale);
   volume.updateMatrixWorld();
 }
-let worldFocus = null;
+let worldFocus = null, villageFocus = null;
 
 // Is grid point p inside the window's columns (x and z)? Painting and tools
 // act only there: beyond it, in a world, is ground the window doesn't hold.
@@ -632,6 +633,11 @@ function openMap(key, mode = 'sandbox') {
   startMode(mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
   return true;
 }
+// Animal Crossing on Willow Cove: the drop point in front of your cottage (grid cells), else null
+function villageSpawn() {
+  if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
+  return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);
+}
 // the map and gamemode playing now, for the menu to open on
 function currentMap() {
   return { map: mapOf(settings)?.key ?? null, mode: pov?.game?.running ? pov.game.mode : selectedMode };
@@ -643,11 +649,37 @@ function currentMap() {
 // isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
   const epoch = ++modeEpoch;
+  villageFocus = null;
   const chosen = resolveMode(mapOf(settings), mode);
   const game = pov?.game;
   selectedMode = chosen.key;
   presentation.select(chosen.effect ?? null);
   pacer.wake();
+  if (chosen.key !== 'animalCrossing') pov?.village.setEnabled(false);
+  if (chosen.key === 'animalCrossing' && pov && win?.scene.key === 'willowCove') {
+    game?.end();
+    const world = win;
+    pov.exit(true);
+    try {
+      await world.whenReady();
+      if (epoch !== modeEpoch || win !== world) return false;
+      // Stream toward the cottage rather than reloading the world: existing voxel edits survive.
+      // A cancelled entry cannot restore another entry's temporary focus; a tool's worldFocus stays its own.
+      const homeFocus = [world.P.size[0] / 2 + VILLAGE_HOMES[0], world.P.size[2] / 2 + VILLAGE_Z];
+      villageFocus = homeFocus;
+      try {
+        await world.pending;
+        while (epoch === modeEpoch && win === world && wire('world')?.moveWindow(ctx)) await world.pending;
+        if (epoch !== modeEpoch || win !== world) return false;
+        pov.village.setEnabled(true, world.P);
+        if (!pov.active) await pov.enter({ valid: () => epoch === modeEpoch });
+      } finally { if (villageFocus === homeFocus) villageFocus = null; }
+    } catch (error) {
+      if (epoch === modeEpoch) { pov.village.setEnabled(false); hud.toast('Could not enter your home. Try starting Animal Crossing again.', { kind: 'error' }); }
+      console.error('Village failed to start', error);
+    }
+    return false;
+  }
   if (!chosen.team || !game) {
     game?.end();   // (end() also cancels a match still starting)
     if (chosen.key === 'noita' && pov && !pov.active) pov.enter();   // its rules are the map's (Descent)
@@ -2200,6 +2232,8 @@ const ctx = {
   get win() { return win; }, set win(v) { win = v; },
   get worldSeed() { return worldSeed; }, set worldSeed(v) { worldSeed = v; },
   get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
+  get villageFocus() { return villageFocus; },
+  villageSpawn,
   get pov() { return pov; }, set pov(v) { pov = v; },
   get mp() { return mp; }, set mp(v) { mp = v ?? OFFLINE; },
   get signs() { return signs; }, set signs(v) { signs = v; },

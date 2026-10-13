@@ -14,6 +14,10 @@ import { aimInReach } from './transfer.js';
 //     a bite just dug: a bite dug in the last STALE_S is taken as gone, and the
 //     aim goes on to the bite behind it (Minecraft breaks a block on the client
 //     at once, without waiting for the server), so a held dig keeps biting.
+//   - Each tool digs its own materials (Minecraft's best tool per block,
+//     minecraft.wiki/w/Breaking): the shovel loose ground and soil, the pickaxe
+//     stone and the like, never wood (the axe's). A bite takes only its tool's
+//     materials (transfer.js ids), so a shovel bite leaves the rock and roots in it.
 //   - Hardness is hits, never a trickle (Deep Rock Galactic's terrain, Minecraft's
 //     break time ∝ hardness / tool speed): a tool of `power` breaks an element in
 //     ceil(hard / power) blows, and loose powder always in one; nothing harder
@@ -26,7 +30,7 @@ import { aimInReach } from './transfer.js';
 //     STONE), into the pack, so matter is conserved. A blow takes only the solids
 //     it has beaten (transfer.js maxHard): rock in a sand block stays put.
 //
-//   const d = digger(env, { power, limit, reach });
+//   const d = digger(env, { power, limit, digs, reach });   // digs: the MATERIAL classes it takes
 //   const t = d.target(ctx);           // once a frame: the aimed block (and its outline), or null
 //   const r = d.blow(ctx, t, load);    // a blow landed: { id, need, hits, taken: promise | null } or null
 
@@ -81,15 +85,27 @@ export function blockCells(min, g, from) {
   return cells.sort((a, b) => d2(a) - d2(b));
 }
 
-// Blows a tool of `power` needs to dig element `id`: powder 1, a breakable solid
-// no harder than `limit` ceil(hard / power), anything else (liquid, gas, a solid
-// that won't break or is too hard) never.
-export function blowsFor(id, power, limit = Infinity) {
-  const el = ELEMENTS[id];
-  if (!el) return Infinity;
-  if (el.kind === K.POWDER) return 1;
-  if (el.kind === K.SOLID && el.breakInto && (el.hard ?? 0) <= limit) return Math.max(1, Math.ceil((el.hard ?? 0) / power));
-  return Infinity;
+// What an element is, to a digging tool: 'loose' (powder), 'soil' (moss, fungus),
+// 'wood' (what breaks into sawdust: wood, plants, fuses, torches), 'mineral' (any
+// other breakable solid), or null (liquids, gases, solids that won't break).
+const SOIL = new Set(['MOSS', 'FUNGUS']);   // Minecraft's grass block and mycelium: shovel blocks
+export function material(el) {
+  if (!el) return null;
+  if (el.kind === K.POWDER) return 'loose';
+  if (el.kind !== K.SOLID || !el.breakInto) return null;
+  if (SOIL.has(el.key)) return 'soil';
+  return el.breakInto === 'SAWDUST' ? 'wood' : 'mineral';
+}
+export const TOOL_FOR = { loose: 'shovel', soil: 'shovel', wood: 'axe', mineral: 'pickaxe' };
+
+// Blows a tool of `power` that digs the `digs` classes needs for element `id`: powder 1,
+// a solid of its classes no harder than `limit` ceil(hard / power), anything else never.
+export function blowsFor(id, power, limit = Infinity, digs = ['loose', 'soil', 'mineral']) {
+  const el = ELEMENTS[id], m = material(el);
+  if (!m || !digs.includes(m)) return Infinity;
+  if (m === 'loose') return 1;
+  if ((el.hard ?? 0) > limit) return Infinity;
+  return Math.max(1, Math.ceil((el.hard ?? 0) / power));
 }
 
 // The crack textures, one per stage, each with more of the same cracks drawn (made once, shared).
@@ -132,8 +148,10 @@ function cracks() {
   return crackTextures;
 }
 
-export function digger(env, { power, limit = Infinity, reach }) {
+export function digger(env, { power, limit = Infinity, digs, reach }) {
   let hits = 0, hitKey = '';
+  // the elements a bite may take: its classes (and its limit, through the take's maxHard)
+  const ids = ELEMENTS.flatMap((el, id) => (digs.includes(material(el)) ? [id] : []));
   let lastBlow = null;   // for checks: { min, id, need, hits, taken }
   const dug = new Map();   // bites dug lately, 'x,y,z' of their corner → when (s, performance.now)
   const cornerKey = (m) => `${m.x},${m.y},${m.z}`;
@@ -183,7 +201,7 @@ export function digger(env, { power, limit = Infinity, reach }) {
       const min = biteMin(aim.cell, aim.face);
       const inward = (aim.face % 2 === 0 ? -1 : 1) * BLOCK, axis = aim.face >> 1;
       while (dug.has(cornerKey(min))) min.setComponent(axis, min.getComponent(axis) + inward);
-      const need = blowsFor(aim.id, power, limit);
+      const need = blowsFor(aim.id, power, limit, digs);
       const t = { aim, min, id: aim.id, need, key: `${min.x},${min.y},${min.z}:${aim.id}` };
       if (t.key !== hitKey) { hits = 0; hitKey = t.key; }
       show(Number.isFinite(need) ? t : null);
@@ -201,13 +219,22 @@ export function digger(env, { power, limit = Infinity, reach }) {
         const cells = blockCells(t.min, ctx.sim.g, t.aim.cell.clone().addScalar(0.5));
         // (limit: the take reserves room for that many in the pack, so the next bite isn't refused while this one's in flight)
         taken = transfer?.take(load, {
-          cells, kinds: DIG_KINDS, breakDebris: true, maxHard: Math.min(t.need * power, limit), limit: cells.length,
+          cells, kinds: DIG_KINDS, breakDebris: true, maxHard: Math.min(t.need * power, limit), ids, limit: cells.length,
         }) ?? null;
         if (taken) { hits = 0; hitKey = ''; dug.set(cornerKey(t.min), performance.now() / 1000); }   // the next blow starts on the bite behind
       }
       lastBlow = { min: t.min.clone(), id: t.id, need: t.need, hits, taken };
       show(t);
       return { id: t.id, need: t.need, hits, taken };
+    },
+
+    // Why this tool won't dig element id (a toast), or null: nothing to say (a liquid runs off it).
+    refusal(id, toolName) {
+      const el = ELEMENTS[id], m = material(el);
+      if (!el || el.kind !== K.SOLID) return null;
+      if (!m) return `${el.name} won't break`;
+      if (!digs.includes(m)) return `${el.name}: use the ${TOOL_FOR[m]}`;
+      return `${el.name} is too hard for the ${toolName}`;
     },
 
     hide() { show(null); hits = 0; hitKey = ''; },
