@@ -93,7 +93,7 @@ fn reliefTop(id: i32) -> f32 {
   if (id == E_SNOW) { return (SNOW_DRIFT_H + SNOW_CLUMP_H) * RELIEF_FBM_TOP; }
   if (id == E_GUNPOWDER) { return POWDER_LUMP_H * RELIEF_FBM_TOP; }
   if (id == E_ASH) { return ASH_LUMP_H * RELIEF_FBM_TOP; }
-  if (SURF(id) == SURF_CRAG) { return CRAG(id).x * ROCK_CRAG_H * RELIEF_CRAG_TOP; }
+  if (SURF(id) == SURF_CRAG) { return SURFP(id).x * ROCK_CRAG_H * RELIEF_CRAG_TOP; }
   if (id == E_WOOD) { return WOOD_FUR_DEPTH; }   // the plates' surface (furrows and domes go down from it)
   return 0.0;
 }
