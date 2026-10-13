@@ -486,7 +486,7 @@ fn aerPrev(c: vec3i) -> vec4f {
   let w = aer[P.cur * SLOTS + slotOf(c)];
   return vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
 }
-fn supports(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS; }
+fn supports(id: i32) -> bool { return !isGasLike(id); }
 // ${AER_FOAMS_NOTE}
 fn foams(id: i32) -> bool { return FOAMS(id); }
 // Air (or gas) at p, its content now from q: a wake if liquid off the ground

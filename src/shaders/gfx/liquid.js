@@ -163,10 +163,11 @@ fn reflShade(a: vec4f, hp: vec3f, n: vec3f) -> vec3f {
 // env: what the ray sees if it meets nothing (envReflectGI at the interface).
 fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   let rd = safeDir(rd0);
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
   var cell = vec3i(floor(ro));
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
   var tEnter = 0.0;
   var ax = 1;   // entry face axis: unknown in the start cell
   var lastB = vec3i(-1);
@@ -222,10 +223,8 @@ fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     } else {
       stale = true;
     }
-    ax = argmin3(tMax);
     tEnter = tExit;
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    ax = ddaStep(istp, tDelta, &cell, &tMax);
   }
   if (cell.y < 0 && rd.y < 0.0) {
     // the floor, its grid lines as wide as the whole path from the eye makes

@@ -182,7 +182,7 @@ fn grainCellOk(c: vec3i, id: i32) -> bool { return isPebbles(id) || loneCell(c);
 fn grainResting(c: vec3i) -> bool {
   if (c.y == 0) { return true; }
   let b = eid(fetchA(c - vec3i(0, 1, 0)));
-  return b != E_EMPTY && KIND(b) != K_GAS;
+  return !isGasLike(b);
 }
 
 // Weight of the geometry (vs the texture) at footprint fp.
@@ -324,9 +324,10 @@ fn pebblesHit(cell: vec3i, a: vec4f, lone: bool, fill: i32, ro: vec3f, rd: vec3f
   let o2 = ro * N - 0.5;   // dual cell k spans sites k .. k + 1
   let d2 = rd * N;
   var dc = vec3i(floor(o2 + d2 * t0 + sign(d2) * DUAL_NUDGE));
-  let istp = vec3i(sign(d2));
-  let tDelta = abs(1.0 / d2);
-  var tMax = (vec3f(dc) + step(vec3f(0.0), d2) - o2) / d2;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
+  ddaInit(o2, d2, dc, &istp, &tDelta, &tMax);
   var best = NO_HIT;
   for (var i = 0; i < PEB_MAX_STEPS; i++) {
     if (*steps >= PEB_MAX_STEPS) { break; }
@@ -363,9 +364,7 @@ fn pebblesHit(cell: vec3i, a: vec4f, lone: bool, fill: i32, ro: vec3f, rd: vec3f
     }
     if (best <= tb || tb >= t1) { break; }   // nothing nearer can come later
     *tStop = tb;
-    let ax = argmin3(tMax);
-    dc[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    ddaStep(istp, tDelta, &dc, &tMax);
   }
   return select(NO_HIT, best, best <= t1 + PEB_Q);   // (a pebble straddling the exit face counts)
 }
@@ -615,9 +614,10 @@ fn pebbleSunVis(sSelf: vec3i, p: vec3f) -> f32 {
   let o2 = p * N - 0.5;
   let d2 = rd * N;
   var dc = vec3i(floor(o2));
-  let istp = vec3i(sign(d2));
-  let tDelta = abs(1.0 / d2);
-  var tMax = (vec3f(dc) + step(vec3f(0.0), d2) - o2) / d2;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
+  ddaInit(o2, d2, dc, &istp, &tDelta, &tMax);
   for (var i = 0; i < PEB_SUN_STEPS; i++) {
     for (var k = 0; k < 8; k++) {
       let s = dc + vec3i(k & 1, (k >> 1u) & 1, k >> 2u);
@@ -635,9 +635,7 @@ fn pebbleSunVis(sSelf: vec3i, p: vec3f) -> f32 {
       let t = chipHit(p, rd, c, sa, R);
       if (t >= 0.0 && t < NO_HIT) { return 0.0; }
     }
-    let ax = argmin3(tMax);
-    dc[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    ddaStep(istp, tDelta, &dc, &tMax);
   }
   return 1.0;
 }
