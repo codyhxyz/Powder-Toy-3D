@@ -1326,8 +1326,12 @@ export const isBuild = (id) => id <= -100 && id > GEAR_ID0;
 // a click puts it in hand; nothing is painted. The tile's desc puts the name
 // first, as every desc does (the header's checklist); the catalog's own desc
 // goes without it, as the hotbar shows the name beside it.
+// Retired tools keep their ids, so the ones after them keep theirs: the
+// scanner's (16) went when hovering in first person read out the aim itself.
+const GEAR_RETIRED = [16];
+const gearSlot = (i) => GEAR_RETIRED.reduce((k, r) => (k >= r ? k + 1 : k), i);
 export const GEAR_ITEMS = GEAR.map((g, i) => ({
-  id: GEAR_ID0 - i, key: `GEAR_${g.key}`, abbr: g.abbr, name: g.name, color: g.color, gear: g.key, model: g.model,
+  id: GEAR_ID0 - gearSlot(i), key: `GEAR_${g.key}`, abbr: g.abbr, name: g.name, color: g.color, gear: g.key, model: g.model,
   desc: `${g.name}. ${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).`,
 }));
 export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;

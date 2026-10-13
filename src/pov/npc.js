@@ -74,7 +74,7 @@ const LOOK = { axeman: { palette: PALETTE, eyeGlow: EYE_GLOW }, gunner: { palett
 const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
 const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
 // the tool's model for each tool the brain uses (models.js, by the catalog)
-const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'SMG', 'SNIPER', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE',
+const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'SMG', 'SNIPER', 'PHYSGUN', 'TROWEL', 'BLOWTORCH', 'BOMB', 'PICKAXE',
   'ROCKET', 'LASER'].map((k) => [k, gearByKey(k).model]));   // (the rocket launcher and laser: a Halo match's power weapons, game/arsenal.js)
 
 const AIM_REACH = 256;            // cells the tools' pick looks along

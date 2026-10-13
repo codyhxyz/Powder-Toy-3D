@@ -41,7 +41,6 @@ export const MODELS = {
   bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.4, roll: 0 } },                    // upright, held by the bail
   flask: { fit: 'y', size: 0.75, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.3, roll: -Q / 2 } },             // Noita's potion: a round glass bulb, held by the neck, corked
   trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },             // blade flat and forward, held at the end of the handle
-  scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.7, roll: 0.25 } },    // a handheld box, screen up toward the eye
   flamer: { fit: 'z', size: 1.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // a flamethrower: wand, fuel tank under it, pilot light at the nozzle
   torch: { fit: 'y', size: 1.45, anchor: [0.5, 0.115, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.2, roll: -Q } },                 // a burning torch, held by its grip
   lantern: { fit: 'y', size: 0.85, anchor: [0.5, 1, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.3, roll: 0 } },                    // a lantern hanging from its bail
@@ -177,14 +176,6 @@ const PARTS = {
     { geo: 'cyl', r: 0.11, h: 0.06, p: [0, 0, -0.24], rot: [H, 0, 0], m: 'metalDark' },
     { geo: 'cyl', r: 0.012, h: 0.12, p: [0, 0.1, -0.24], rot: [0.4, 0, 0], m: 'grip' },
     { geo: 'sphere', r: 0.035, p: [0, 0.16, -0.27], m: 'spark', name: 'spark' },
-  ],
-  scanner: [
-    { geo: 'box', s: [0.3, 0.16, 0.48], p: [0, 0.2, -0.12], m: 'metal' },
-    { geo: 'box', s: [0.22, 0.02, 0.26], p: [0, 0.285, -0.04], m: 'screen' },
-    { geo: 'box', s: [0.31, 0.05, 0.08], p: [0, 0.2, -0.38], m: 'orange' },
-    { geo: 'cyl', r: 0.015, h: 0.3, p: [0.1, 0.38, -0.3], rot: [-0.4, 0, 0], m: 'metalDark' },
-    { geo: 'sphere', r: 0.035, p: [0.1, 0.52, -0.36], m: 'glow' },
-    STOCK_GRIP,
   ],
   axe: [
     { geo: 'cyl', r: 0.045, h: 1.25, p: [0, 0.5, 0], m: 'wood' },
