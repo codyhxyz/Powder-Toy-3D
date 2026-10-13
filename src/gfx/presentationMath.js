@@ -90,111 +90,139 @@ export function nextExit(r, lo, hi, t) {
 }
 export const chordLimit = r => r.A[1] ? 2 * Math.sqrt(ROLLING_LOG.chordError / Math.abs(r.A[1])) : Infinity;
 
-// Shared only by presentation passes; never injected into render.lib (shadows,
-// probes, physics and navigation also import it). A is vertical by construction.
-export const presentationGLSL = /* glsl */ `
-uniform float uWarpK;
-uniform vec2 uWarpAnchor, uWarpDir;
-#define WARP_INF 1e9
-#define WARP_EPS 1e-5
-#define WARP_CHORD_ERROR ${ROLLING_LOG.chordError.toFixed(10)}
-vec3 warpPointWith(vec3 p, float k, vec2 anchor, vec2 dir) {
-  float s = dot(p.xz - anchor, dir); p.y -= k * s * s; return p;
+
+// The WGSL twin of the mapping above, for the passes that draw the world
+// bent (the volume's chord march, the far view, the pick, TAA's
+// reprojection; shaders/gfx/presentation.js walks the grid with it). Never
+// pasted into the render library: shadows, probes, physics and navigation
+// stay flat. A is vertical by construction. Every entry point that pastes it
+// calls warpUse(k, anchor, dir) first with the effect's parameters from its
+// own params (they are the GLSL's uWarpK, uWarpAnchor, uWarpDir uniforms).
+// Same function names as the GLSL had (docs/webgpu.md W2); the name of the
+// export too until the *GLSL → *WGSL rename (U16).
+export const presentationWGSL = /* wgsl */ `
+var<private> gWarpK: f32;
+var<private> gWarpAnchor: vec2f;
+var<private> gWarpDir = vec2f(0.0, 1.0);
+fn warpUse(k: f32, anchor: vec2f, dir: vec2f) { gWarpK = k; gWarpAnchor = anchor; gWarpDir = dir; }
+const WARP_INF: f32 = 1e9;
+const WARP_EPS: f32 = 1e-5;
+const WARP_CHORD_ERROR: f32 = ${ROLLING_LOG.chordError.toFixed(10)};
+fn warpPointWith(p: vec3f, k: f32, anchor: vec2f, dir: vec2f) -> vec3f {
+  let s = dot(p.xz - anchor, dir);
+  return vec3f(p.x, p.y - k * s * s, p.z);
 }
-vec3 warpPoint(vec3 p) { return warpPointWith(p, uWarpK, uWarpAnchor, uWarpDir); }
-vec3 unwarpPoint(vec3 p) { return warpPointWith(p, -uWarpK, uWarpAnchor, uWarpDir); }
-vec3 warpVector(vec3 p, vec3 d) {
-  d.y -= 2.0 * uWarpK * dot(p.xz - uWarpAnchor, uWarpDir) * dot(d.xz, uWarpDir); return d;
+fn warpPoint(p: vec3f) -> vec3f { return warpPointWith(p, gWarpK, gWarpAnchor, gWarpDir); }
+fn unwarpPoint(p: vec3f) -> vec3f { return warpPointWith(p, -gWarpK, gWarpAnchor, gWarpDir); }
+fn warpVector(p: vec3f, d: vec3f) -> vec3f {
+  return vec3f(d.x, d.y - 2.0 * gWarpK * dot(p.xz - gWarpAnchor, gWarpDir) * dot(d.xz, gWarpDir), d.z);
 }
-struct WarpRay { vec3 C; vec3 B; vec3 A; };
-WarpRay warpRay(vec3 o, vec3 d) {
-  float s = dot(o.xz - uWarpAnchor, uWarpDir), v = dot(d.xz, uWarpDir);
-  return WarpRay(unwarpPoint(o), d + vec3(0.0, 2.0 * uWarpK * s * v, 0.0), vec3(0.0, uWarpK * v * v, 0.0));
+struct WarpRay { C: vec3f, B: vec3f, A: vec3f }
+fn warpRay(o: vec3f, d: vec3f) -> WarpRay {
+  let s = dot(o.xz - gWarpAnchor, gWarpDir);
+  let v = dot(d.xz, gWarpDir);
+  return WarpRay(unwarpPoint(o), d + vec3f(0.0, 2.0 * gWarpK * s * v, 0.0), vec3f(0.0, gWarpK * v * v, 0.0));
 }
-vec3 warpAt(WarpRay r, float t) { return r.C + (r.B + r.A * t) * t; }
-vec3 warpSlope(WarpRay r, float t) { return r.B + 2.0 * r.A * t; }
-vec2 warpRoots(float a, float b, float c) {
-  if (a == 0.0) return b == 0.0 ? vec2(WARP_INF) : vec2(-c / b, WARP_INF);
-  float disc = b * b - 4.0 * a * c;
-  if (disc < 0.0) return vec2(WARP_INF);
-  if (disc == 0.0) return vec2(-b / (2.0 * a), WARP_INF);
-  float q = -0.5 * (b + (b < 0.0 ? -1.0 : 1.0) * sqrt(disc));
-  return vec2(min(q / a, c / q), max(q / a, c / q));
+fn warpAt(r: WarpRay, t: f32) -> vec3f { return r.C + (r.B + r.A * t) * t; }
+fn warpSlope(r: WarpRay, t: f32) -> vec3f { return r.B + 2.0 * r.A * t; }
+fn warpRoots(a: f32, b: f32, c: f32) -> vec2f {
+  if (a == 0.0) {
+    if (b == 0.0) { return vec2f(WARP_INF); }
+    return vec2f(-c / b, WARP_INF);
+  }
+  let disc = b * b - 4.0 * a * c;
+  if (disc < 0.0) { return vec2f(WARP_INF); }
+  if (disc == 0.0) { return vec2f(-b / (2.0 * a), WARP_INF); }
+  let q = -0.5 * (b + select(1.0, -1.0, b < 0.0) * sqrt(disc));
+  return vec2f(min(q / a, c / q), max(q / a, c / q));
 }
-vec2 warpPlane(WarpRay r, int axis, float level) { return warpRoots(r.A[axis], r.B[axis], r.C[axis] - level); }
+fn warpPlane(r: WarpRay, axis: i32, level: f32) -> vec2f { return warpRoots(r.A[axis], r.B[axis], r.C[axis] - level); }
 // x/z are linear, so first clip those slabs. Only y can split the interval.
-vec4 warpSpans(WarpRay r, vec3 lo, vec3 hi, float start, float end) {
-  for (int j = 0; j < 2; j++) {
-    int i = j * 2;
-    if (r.B[i] == 0.0) { if (r.C[i] < lo[i] || r.C[i] >= hi[i]) return vec4(WARP_INF); }
-    else {
-      float a = (lo[i] - r.C[i]) / r.B[i], b = (hi[i] - r.C[i]) / r.B[i];
-      start = max(start, min(a,b)); end = min(end, max(a,b));
+fn warpSpans(r: WarpRay, lo: vec3f, hi: vec3f, start0: f32, end0: f32) -> vec4f {
+  var start = start0;
+  var end = end0;
+  for (var j = 0; j < 2; j++) {
+    let i = j * 2;
+    if (r.B[i] == 0.0) {
+      if (r.C[i] < lo[i] || r.C[i] >= hi[i]) { return vec4f(WARP_INF); }
+    } else {
+      let a = (lo[i] - r.C[i]) / r.B[i];
+      let b = (hi[i] - r.C[i]) / r.B[i];
+      start = max(start, min(a, b));
+      end = min(end, max(a, b));
     }
   }
-  if (end <= start) return vec4(WARP_INF);
-  vec2 a = warpPlane(r, 1, lo.y), b = warpPlane(r, 1, hi.y);
-  float cuts[6]; cuts[0] = start; cuts[1] = end;
-  cuts[2] = clamp(a.x,start,end); cuts[3] = clamp(a.y,start,end);
-  cuts[4] = clamp(b.x,start,end); cuts[5] = clamp(b.y,start,end);
-  for (int i = 1; i < 6; i++) for (int j = 0; j < 5; j++) {
-    if (j < 6-i && cuts[j] > cuts[j+1]) { float v = cuts[j]; cuts[j] = cuts[j+1]; cuts[j+1] = v; }
+  if (end <= start) { return vec4f(WARP_INF); }
+  let a = warpPlane(r, 1, lo.y);
+  let b = warpPlane(r, 1, hi.y);
+  var cuts = array<f32, 6>(start, end, clamp(a.x, start, end), clamp(a.y, start, end), clamp(b.x, start, end), clamp(b.y, start, end));
+  for (var i = 1; i < 6; i++) {
+    for (var j = 0; j < 5; j++) {
+      if (j < 6 - i && cuts[j] > cuts[j + 1]) { let v = cuts[j]; cuts[j] = cuts[j + 1]; cuts[j + 1] = v; }
+    }
   }
-  vec4 spans = vec4(WARP_INF); int n = 0;
-  for (int i = 0; i < 5; i++) {
-    float y = warpAt(r, 0.5 * (cuts[i] + cuts[i+1])).y;
-    if (cuts[i+1] <= cuts[i] || y < lo.y || y >= hi.y) continue;
-    if (n > 0 && spans[n*2-1] == cuts[i]) spans[n*2-1] = cuts[i+1];
-    else if (n < 2) { spans[n*2] = cuts[i]; spans[n*2+1] = cuts[i+1]; n++; }
+  var spans = vec4f(WARP_INF);
+  var n = 0;
+  for (var i = 0; i < 5; i++) {
+    let y = warpAt(r, 0.5 * (cuts[i] + cuts[i + 1])).y;
+    if (cuts[i + 1] <= cuts[i] || y < lo.y || y >= hi.y) { continue; }
+    if (n > 0 && spans[n * 2 - 1] == cuts[i]) { spans[n * 2 - 1] = cuts[i + 1]; }
+    else if (n < 2) { spans[n * 2] = cuts[i]; spans[n * 2 + 1] = cuts[i + 1]; n++; }
   }
   return spans;
 }
-bool warpInside(float t, vec4 spans) { return (t >= spans.x && t < spans.y) || (t >= spans.z && t < spans.w); }
-float warpResume(float t, vec4 spans) {
-  if (t < spans.x) return spans.x;
-  if (t < spans.y) return t;
-  if (t < spans.z) return spans.z;
-  return t < spans.w ? t : WARP_INF;
+fn warpInside(t: f32, spans: vec4f) -> bool { return (t >= spans.x && t < spans.y) || (t >= spans.z && t < spans.w); }
+fn warpResume(t: f32, spans: vec4f) -> f32 {
+  if (t < spans.x) { return spans.x; }
+  if (t < spans.y) { return t; }
+  if (t < spans.z) { return spans.z; }
+  return select(WARP_INF, t, t < spans.w);
 }
-// Exact exits preserve brick/hierarchy skipping and both sides of a turn.
-vec2 warpExit(WarpRay r, vec3 lo, vec3 hi, float t) {
-  vec2 outp = vec2(WARP_INF, 0.0);
-  for (int axis = 0; axis < 3; axis++) for (int side = 0; side < 2; side++) {
-    vec2 roots = warpPlane(r, axis, side == 0 ? lo[axis] : hi[axis]);
-    for (int j = 0; j < 2; j++) {
-      float x = roots[j], v = warpSlope(r, x)[axis];
-      if (x >= t - WARP_EPS && x < outp.x && (side == 0 ? v < 0.0 : v > 0.0)) outp = vec2(x, float(axis));
+// Exact exits preserve brick/hierarchy skipping and both sides of a turn: (t, axis).
+fn warpExit(r: WarpRay, lo: vec3f, hi: vec3f, t: f32) -> vec2f {
+  var outp = vec2f(WARP_INF, 0.0);
+  for (var axis = 0; axis < 3; axis++) {
+    for (var side = 0; side < 2; side++) {
+      let roots = warpPlane(r, axis, select(hi[axis], lo[axis], side == 0));
+      for (var j = 0; j < 2; j++) {
+        let x = roots[j];
+        let v = warpSlope(r, x)[axis];
+        if (x >= t - WARP_EPS && x < outp.x && select(v > 0.0, v < 0.0, side == 0)) { outp = vec2f(x, f32(axis)); }
+      }
     }
   }
   return outp;
 }
-float warpChordLimit(WarpRay r) { return r.A.y > 0.0 ? 2.0 * sqrt(WARP_CHORD_ERROR / r.A.y) : WARP_INF; }
-float warpArcPrimitive(float y, float h2) {
-  float h = sqrt(h2), len = sqrt(h2+y*y);
-  return 0.5*(y*len + h2*sign(y)*log((abs(y)+len)/h));
+fn warpChordLimit(r: WarpRay) -> f32 { return select(WARP_INF, 2.0 * sqrt(WARP_CHORD_ERROR / r.A.y), r.A.y > 0.0); }
+fn warpArcPrimitive(y: f32, h2: f32) -> f32 {
+  let h = sqrt(h2);
+  let len = sqrt(h2 + y * y);
+  return 0.5 * (y * len + h2 * sign(y) * log((abs(y) + len) / h));
 }
-float warpArc(WarpRay r, float a, float b) {
-  if (r.A.y == 0.0) return length(r.B)*(b-a);
+fn warpArc(r: WarpRay, a: f32, b: f32) -> f32 {
+  if (r.A.y == 0.0) { return length(r.B) * (b - a); }
   // Nearly linear (including float32-equal primitive arguments): integrate
   // speed locally, rather than subtracting huge almost-equal primitives.
-  float mid = 0.5*(a+b);
-  if (abs(2.0*r.A.y*(b-a)) < 0.01*max(length(warpSlope(r,mid)),1e-8))
-    return (b-a)*(length(warpSlope(r,a))+4.0*length(warpSlope(r,mid))+length(warpSlope(r,b)))/6.0;
-  float h2 = max(dot(r.B.xz,r.B.xz),1e-12);
-  return (warpArcPrimitive(r.B.y+2.0*r.A.y*b,h2)-warpArcPrimitive(r.B.y+2.0*r.A.y*a,h2))/(2.0*r.A.y);
+  let mid = 0.5 * (a + b);
+  if (abs(2.0 * r.A.y * (b - a)) < 0.01 * max(length(warpSlope(r, mid)), 1e-8)) {
+    return (b - a) * (length(warpSlope(r, a)) + 4.0 * length(warpSlope(r, mid)) + length(warpSlope(r, b))) / 6.0;
+  }
+  let h2 = max(dot(r.B.xz, r.B.xz), 1e-12);
+  return (warpArcPrimitive(r.B.y + 2.0 * r.A.y * b, h2) - warpArcPrimitive(r.B.y + 2.0 * r.A.y * a, h2)) / (2.0 * r.A.y);
 }
 // Outgoing ownership applies ONLY at an established plane root, never to an
 // arbitrary point close to a boundary. Re-solving the nearest plane recognizes
 // computed crossings despite roundoff in warpAt, including simultaneous exits.
-ivec3 warpCell(WarpRay r, float t) {
-  vec3 p = warpAt(r, t), d = warpSlope(r,t);
-  ivec3 c = ivec3(floor(p));
-  for (int i=0; i<3; i++) {
-    float plane = round(p[i]);
-    vec2 roots = warpPlane(r,i,plane);
-    if (t != roots.x && t != roots.y) continue;
-    c[i] = int(plane);
-    if (d[i] < 0.0 || (d[i] == 0.0 && r.A[i] < 0.0)) c[i]--;
+fn warpCell(r: WarpRay, t: f32) -> vec3i {
+  let p = warpAt(r, t);
+  let d = warpSlope(r, t);
+  var c = vec3i(floor(p));
+  for (var i = 0; i < 3; i++) {
+    let plane = round(p[i]);
+    let roots = warpPlane(r, i, plane);
+    if (t != roots.x && t != roots.y) { continue; }
+    c[i] = i32(plane);
+    if (d[i] < 0.0 || (d[i] == 0.0 && r.A[i] < 0.0)) { c[i] -= 1; }
   }
   return c;
 }
@@ -202,24 +230,29 @@ ivec3 warpCell(WarpRay r, float t) {
 // re-solving the same quadratic in another inlined function can differ by an
 // ULP, leaving the ray in its old cell forever. Only established exits use this
 // ownership rule; an arbitrary near-face starting point is never snapped.
-ivec3 warpCellAfter(WarpRay r, float t, int crossedAxis) {
-  vec3 p = warpAt(r,t), d = warpSlope(r,t);
-  ivec3 c = warpCell(r,t);
-  float tolerance = 4.0 * 1.1920929e-7 * max(abs(t),1.0);
-  for (int i=0; i<3; i++) {
-    if (d[i] == 0.0) continue;
-    float plane = round(p[i]);
-    vec2 roots = warpPlane(r,i,plane);
+fn warpCellAfter(r: WarpRay, t: f32, crossedAxis: i32) -> vec3i {
+  let p = warpAt(r, t);
+  let d = warpSlope(r, t);
+  var c = warpCell(r, t);
+  let tolerance = 4.0 * 1.1920929e-7 * max(abs(t), 1.0);
+  for (var i = 0; i < 3; i++) {
+    if (d[i] == 0.0) { continue; }
+    let plane = round(p[i]);
+    let roots = warpPlane(r, i, plane);
     // Simultaneous faces may have independently rounded roots.
-    if (i != crossedAxis && min(abs(roots.x-t),abs(roots.y-t)) > tolerance) continue;
-    c[i] = int(plane) - (d[i] < 0.0 ? 1 : 0);
+    if (i != crossedAxis && min(abs(roots.x - t), abs(roots.y - t)) > tolerance) { continue; }
+    c[i] = i32(plane) - select(0, 1, d[i] < 0.0);
   }
   return c;
 }
-int warpEntryAxis(WarpRay r, float t) {
-  vec3 p = warpAt(r,t), d = warpSlope(r,t);
-  vec3 dist = abs(p-round(p)) / max(abs(d),vec3(WARP_EPS));
-  for (int i=0; i<3; i++) if (d[i] == 0.0) dist[i] = WARP_INF;
-  return dist.x <= dist.y && dist.x <= dist.z ? 0 : (dist.y <= dist.z ? 1 : 2);
+fn warpEntryAxis(r: WarpRay, t: f32) -> i32 {
+  let p = warpAt(r, t);
+  let d = warpSlope(r, t);
+  var dist = abs(p - round(p)) / max(abs(d), vec3f(WARP_EPS));
+  for (var i = 0; i < 3; i++) { if (d[i] == 0.0) { dist[i] = WARP_INF; } }
+  if (dist.x <= dist.y && dist.x <= dist.z) { return 0; }
+  return select(2, 1, dist.y <= dist.z);
 }
 `;
+// its GLSL-era name (docs/webgpu.md W2): the same WGSL until U16's *GLSL → *WGSL rename
+export const presentationGLSL = presentationWGSL;

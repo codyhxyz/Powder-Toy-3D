@@ -11,6 +11,7 @@ import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
 import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
 import { WORLD_SCENES } from '../world/scenes/index.js';
+import { presentationWGSL } from '../gfx/presentationMath.js';
 // The parts the window's own pipelines read (the layout, haze, casters and GI)
 // live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
 import {
@@ -948,7 +949,11 @@ export const FarViewParams = uniformStruct('FarViewParams', {
   sea: 'f32',               // sea level (cells): the open sea beyond the world (0: none, a plain instead)
   winLo: 'vec3i',           // the window's low corner (world cells): the volume draws [winLo, winLo + GRID)
   floor: 'f32',             // the sea floor beyond the world, or the plain (cells)
-  detailDepth: 'u32',       // 1: the detail meshes' distances (tDetailDepth) were drawn for this frame and target
+  detailDepth: 'u32',       // 1: the detail meshes' depth (tDetailDepth) was drawn for this frame and target
+  // the rolling log (gfx/presentation.js parameters: world cells; k 0: flat): the view's curved variant and the meshes read it
+  warpK: 'f32',
+  warpAnchor: 'vec2f',
+  warpDir: 'vec2f',
 });
 
 // The view (docs/webgpu.md G1): a full-screen triangle in our scene pass,
@@ -959,10 +964,33 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 // draws. Everything here is in world cells: its header's origin is 0, so the
 // looks' worldPos() is the identity, and what reads the window (the GI probes'
 // sky share and light) takes p - winLo.
-export const farFrag = (g, L, mesh = false) => {
+//
+// The rolling log (gfx/presentation.js): curved, the view is a variant of its
+// own (a template switch, as the volume's: docs/webgpu.md F2), whose rays are
+// the displayed rays' parabolas in the flat world (gFarRay) and whose window
+// and world are their spans (gFarWindow, gFarWorld); x and z stay linear
+// along them, so the chunk and slab crossings of x and z are the flat ones.
+// The detail meshes bend in their vertex stage and shade along the displayed
+// ray, switched by P.warpK (a few lines, both variants of the mesh pass).
+export const farFrag = (g, L, mesh = false, { curved = false } = {}) => {
   return /* wgsl */ `
-// far view
+// far view${curved ? ', curved' : ''}
 ${lib(g, { variant: 'LIGHTING', far: true, aeration: false })}
+${presentationWGSL}${curved ? `
+var<private> gFarRay: WarpRay;
+var<private> gFarWindow: vec4f;
+var<private> gFarWorld: vec4f;
+// The first downward crossing of height level along r, or WARP_INF.
+fn farPlaneHit(r: WarpRay, level: f32) -> f32 {
+  let roots = warpPlane(r, 1, level);
+  for (var i = 0; i < 2; i++) {
+    if (roots[i] >= 0.0 && roots[i] < WARP_INF && warpSlope(r, roots[i]).y < 0.0) { return roots[i]; }
+  }
+  return WARP_INF;
+}` : ''}
+// The march's point at t (curved: on the displayed ray's parabola) and its direction there.
+fn farPath(ro: vec3f, rd: vec3f, t: f32) -> vec3f { return ${curved ? 'warpAt(gFarRay, t)' : 'ro + rd * t'}; }
+fn farDirection(rd: vec3f, t: f32) -> vec3f { return ${curved ? 'normalize(warpSlope(gFarRay, t))' : 'rd'}; }
 ${FAR_STANDINS}
 ${surfaceGLSL({})}
 ${liquidGLSL}
@@ -972,7 +1000,7 @@ ${occupancyGLSL('read')}
 ${farSkyGLSL}
 ${FarViewParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;
-${mesh ? '' : `// the detail meshes' distance from the eye at each pixel (cells; 0: none), drawn before the scene pass (farDetailDepthFrag)
+${mesh ? '' : `// the detail meshes' rasterized depth at each pixel (0: none), drawn before the scene pass (farDetailDepthFrag)
 @group(0) @binding(4) var tDetailDepth: texture_2d<f32>;`}
 // the air's sky share at window point q: the probes in the window, the far field's sky past it
 fn farAirSky(q: vec3f) -> f32 {
@@ -1040,10 +1068,11 @@ fn farSlab(ro: vec3f, inv: vec3f, lo: vec3f, hi: vec3f) -> vec2f {
   let tf = max(t0, t1);
   return vec2f(max(max(tn.x, tn.y), tn.z), min(min(tf.x, tf.y), tf.z));
 }
-// t at which the ray leaves the cube [lo, lo + size)
-fn farExit(ro: vec3f, inv: vec3f, lo: vec3f, size: f32) -> f32 {
+// t at which the ray leaves the cube [lo, lo + size) (curved: the parabola, from t on)
+fn farExit(ro: vec3f, inv: vec3f, lo: vec3f, size: f32, t: f32) -> f32 {${curved ? `
+  return warpExit(gFarRay, lo, lo + size, t).x;` : `
   let tf = (lo + step(vec3f(0.0), inv) * size - ro) * inv;
-  return min(tf.x, min(tf.y, tf.z));
+  return min(tf.x, min(tf.y, tf.z));`}
 }
 
 // Root of the matter field crossing FAR_ISO in [ta, tb] (fa below it, fb at or above).
@@ -1054,7 +1083,7 @@ fn farRoot(ro: vec3f, rd: vec3f, ta0: f32, tb0: f32, fa0: f32, fb0: f32) -> f32 
   var fb = fb0;
   for (var k = 0; k < FAR_ROOT_STEPS; k++) {
     let tm = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), FAR_ROOT_SPLIT_LO, FAR_ROOT_SPLIT_HI));
-    let fm = farTraceMatter(ro + rd * tm);
+    let fm = farTraceMatter(farPath(ro, rd, tm));
     if (fm < FAR_ISO) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
   return mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
@@ -1078,10 +1107,16 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
   var o2 = false;
   var o1 = false;
   var lastDetail = 0xffffffffu;
-  for (var i = 0; i < FAR_MAX_STEPS; i++) {
+  for (var i = 0; i < FAR_MAX_STEPS; i++) {${curved ? `
+    // past the world's first span, its second (the parabola can come back down
+    // into it); the window's second span is the volume's, as its first is
+    let next = warpResume(t, gFarWorld);
+    if (next != t) { f = -1.0; }
+    t = next;
+    if (t >= gFarWindow.z && t < gFarWindow.w) { t = gFarWindow.w + FAR_NUDGE; f = -1.0; continue; }` : ''}
     if (t >= t1) { break; }
     if (t >= w0 && t < w1) { t = w1 + FAR_NUDGE; f = -1.0; continue; }
-    let p = ro + rd * t;
+    let p = farPath(ro, rd, t);
     // a dry meshed chunk is the mesh's: crossed whole
     let detail = detailAt(p);
     if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
@@ -1095,21 +1130,23 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
     let c = clamp(vec3i(floor(p)), vec3i(0), WORLD - 1);
     let n2 = c / FAR_L2_CELLS;
     if (any(n2 != n2Last)) { n2Last = n2; o2 = farOcc2(n2); }
-    if (!o2) { t = farExit(ro, inv, vec3f(n2 * FAR_L2_CELLS), f32(FAR_L2_CELLS)) + FAR_NUDGE; f = -1.0; continue; }
+    if (!o2) { t = farExit(ro, inv, vec3f(n2 * FAR_L2_CELLS), f32(FAR_L2_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
     let n1 = c / FAR_L1_CELLS;
     if (any(n1 != n1Last)) { n1Last = n1; o1 = farOcc1(n1); }
-    if (!o1) { t = farExit(ro, inv, vec3f(n1 * FAR_L1_CELLS), f32(FAR_L1_CELLS)) + FAR_NUDGE; f = -1.0; continue; }
-    if (!farNear(c / BS)) { t = farExit(ro, inv, vec3f(c / BS * BS), f32(BS)) + FAR_NUDGE; f = -1.0; continue; }
-    var te = min(farExit(ro, inv, vec3f(c / BS * BS), f32(BS)), t1);
+    if (!o1) { t = farExit(ro, inv, vec3f(n1 * FAR_L1_CELLS), f32(FAR_L1_CELLS), t) + FAR_NUDGE; f = -1.0; continue; }
+    if (!farNear(c / BS)) { t = farExit(ro, inv, vec3f(c / BS * BS), f32(BS), t) + FAR_NUDGE; f = -1.0; continue; }
+    var te = min(farExit(ro, inv, vec3f(c / BS * BS), f32(BS), t), t1);${curved ? `
+    if (t < gFarWindow.z) { te = min(te, gFarWindow.z); }
+    if (t < gFarWorld.y) { te = min(te, gFarWorld.y); }` : ''}
     if (t < w0 && te > w0) { te = w0; }   // the window starts inside this brick
     if (f < 0.0) {
       f = farTraceMatter(p);
       if (f >= FAR_ISO) { *cut = true; return t; }   // (started inside matter: past the window, or at the camera)
     }
-    let fe = farTraceMatter(ro + rd * max(t, te - FAR_NUDGE));
+    let fe = farTraceMatter(farPath(ro, rd, max(t, te - FAR_NUDGE)));
     if (max(f, fe) > FAR_NEAR) {
       let tm = 0.5 * (t + te);
-      let fm = farTraceMatter(ro + rd * tm);
+      let fm = farTraceMatter(farPath(ro, rd, tm));
       if (fm >= FAR_ISO) { return farRoot(ro, rd, t, tm, f, fm); }
       if (fe >= FAR_ISO) { return farRoot(ro, rd, tm, te, fm, fe); }
     }
@@ -1236,22 +1273,24 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
   let refl = envReflect(p, r, vec3f(sunVis)) * sky;
   var rt = refract(rd, n, 1.0 / IOR(lid));
-  if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
+  if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }${curved ? `
+  // the refracted ray, displayed straight: a parabola under the surface too
+  let transmitted = warpRay(warpPoint(p), normalize(warpVector(p, rt)));` : ''}
   var s = -1.0;
   var bed = vec3f(0.0);
   if (bedY >= 0.0) {
-    s = (p.y - bedY) / max(-rt.y, FAR_FLAT_EPS);
-    let q = p + rt * s;
+    s = ${curved ? 'farPlaneHit(transmitted, bedY)' : '(p.y - bedY) / max(-rt.y, FAR_FLAT_EPS)'};
+    let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
     bed = farShadeBed(FAR_OCEAN_BED, q, vec3f(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis, sky);
   } else {
     var ta = 0.0;
     var fa = farSample(p).r;
     for (var i = 1; i <= FAR_WATER_STEPS; i++) {
       let tb = f32(i) * FAR_WATER_STEP;
-      let fb = farSample(p + rt * tb).r;
+      let fb = farSample(${curved ? 'warpAt(transmitted, tb)' : 'p + rt * tb'}).r;
       if (fb >= FAR_ISO) {
         s = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
-        let q = p + rt * s;
+        let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
         let nq = farNormal(q, 0);
         bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0), sky);
         break;
@@ -1260,7 +1299,9 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
       fa = fb;
     }
   }
-  let att = select(vec3f(0.0), exp(-SIGMA(lid) * s), s >= 0.0);
+${curved ? `  // optical distance is in flat material space, not display-ray t
+  if (s >= 0.0 && s < WARP_INF) { s = warpArc(transmitted, 0.0, s); }
+` : ''}  let att = select(vec3f(0.0), exp(-SIGMA(lid) * s), s >= 0.0);
   let body = bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
   return F * refl + (1.0 - F) * body;
 }
@@ -1277,7 +1318,7 @@ fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
 }
 
 fn farDepth(p: vec3f) -> f32 {
-  let clip = P.worldToClip * vec4f(p, 1.0);
+  let clip = P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0);   // (curved: where it is displayed)
   return clamp(clip.z / clip.w, 0.0, 1.0);
 }
 
@@ -1302,20 +1343,35 @@ struct FarOut {
   let far = P.clipToWorld * vec4f(v.ndc, 1.0, 1.0);   // the pixel's ray as the world point it meets on the far plane
   let ro = P.eye;
   let rd = safeDir(normalize(far.xyz / far.w - ro));
-  surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)
+  surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)${curved ? `
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
+  gFarRay = warpRay(ro, rd);` : ''}
   let inv = 1.0 / rd;
   let winLo = vec3f(P.winLo);
   var tw = farSlab(ro, inv, winLo, winLo + vec3f(GRID));
   if (tw.x > tw.y || tw.y < 0.0) { tw = vec2f(NO_HIT); }
   let tb = farSlab(ro, inv, vec3f(0.0), vec3f(WORLD));
-  let t0 = max(tb.x, 0.0);
-  var t1 = tb.y;
+  var t0 = max(tb.x, 0.0);
+  var t1 = tb.y;${curved ? `
+  // the parabola's spans in the window (the volume's) and in the world (up to two each)
+  gFarWindow = warpSpans(gFarRay, winLo, winLo + vec3f(GRID), 0.0, WARP_INF);
+  gFarWorld = warpSpans(gFarRay, vec3f(0.0), vec3f(WORLD), 0.0, WARP_INF);
+  tw = gFarWindow.xy;
+  t0 = gFarWorld.x;
+  t1 = select(gFarWorld.y, gFarWorld.w, gFarWorld.z < WARP_INF);` : ''}
   // the detail meshes in front (world/detail.js): the march stops at them, so
-  // the coarse field (and the sea below) doesn't show through a meshed chunk
+  // the coarse field (and the sea below) doesn't show through a meshed chunk.
+  // Their depth is the rasterized one (bent with the view when it is): its
+  // point through the inverse projection, at its distance along this ray.
   var cached = 0.0;
   if (P.detailDepth != 0u) {
     cached = textureLoad(tDetailDepth, vec2i(v.position.xy), 0).r;
-    if (cached > 0.0) { t1 = min(t1, cached); }
+    if (cached > 0.0) {
+      let uv = v.position.xy / vec2f(textureDimensions(tDetailDepth));
+      let q = P.clipToWorld * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, cached, 1.0);
+      cached = length(q.xyz / q.w - ro);
+      t1 = min(t1, cached);
+    }
   }
   var cut = false;
   var tHit = NO_HIT;
@@ -1326,17 +1382,19 @@ struct FarOut {
   // (rock below it: the summaries' floor), not a sea.
   let plain = P.sea <= 0.0;
   let level = select(P.sea, P.floor, plain);
-  var tSea = NO_HIT;
-  if (rd.y < 0.0 && ro.y > level) { tSea = (level - ro.y) / rd.y; }
-  var ps = ro + rd * tSea;
+  var tSea = NO_HIT;${curved ? `
+  tSea = farPlaneHit(gFarRay, level);` : `
+  if (rd.y < 0.0 && ro.y > level) { tSea = (level - ro.y) / rd.y; }`}
+  var ps = farPath(ro, rd, tSea);
   var seaOut = any(ps.xz < vec2f(0.0)) || any(ps.xz > vec2f(WORLD.xz));
   if (plain && !seaOut) {
-    tSea = NO_HIT;
-    if (rd.y < 0.0 && ro.y > 0.0) { tSea = -ro.y / rd.y; }
-    ps = ro + rd * tSea;
+    tSea = NO_HIT;${curved ? `
+    tSea = farPlaneHit(gFarRay, 0.0);` : `
+    if (rd.y < 0.0 && ro.y > 0.0) { tSea = -ro.y / rd.y; }`}
+    ps = farPath(ro, rd, tSea);
     seaOut = any(ps.xz < vec2f(0.0)) || any(ps.xz > vec2f(WORLD.xz));
   }
-  let seaWin = tSea >= tw.x && tSea <= tw.y;
+  let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
   let ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
     && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));
   // A nearer exterior ocean or plain still hides a meshed chunk; inside one, a
@@ -1348,11 +1406,12 @@ struct FarOut {
   o.depth = 1.0;
   if (ocean) {
     if (plain) { col = farShadeBed(FAR_OCEAN_BED, ps, vec3f(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0), 1.0); }
-    else { col = farLiquid(ps, rd, E_WATER, farSunLit(ps, 0), select(-1.0, P.floor, seaOut)); }
+    else { col = farLiquid(ps, farDirection(rd, tSea), E_WATER, farSunLit(ps, 0), select(-1.0, P.floor, seaOut)); }
     col = farHaze(col, rd, tSea, farAirLit(ro - winLo, ps - winLo));
     o.depth = farDepth(ps);
   } else if (tHit < NO_HIT) {
-    let p = ro + rd * tHit;
+    let p = farPath(ro, rd, tHit);
+    let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
     let v = farSample(p);
     if (cut) {
       // came out of the window inside matter. Behind the window's ground: hidden
@@ -1364,12 +1423,12 @@ struct FarOut {
       else { col = farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p)); }
     } else {
       let sunVis = farSunLit(p, 0);
-      if (v.g > v.r) { col = farLiquid(p, rd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
+      if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
       else {
         let n = farNormal(p, 0);
         var sv = sunVis;
         if (sunVis > 0.0 && dot(n, FU.sun) > 0.0) { sv *= farSunRay(p, n); }
-        col = farShadeMaterial(p, n, rd, sv, farElement(p, n));
+        col = farShadeMaterial(p, n, localRd, sv, farElement(p, n));
       }
     }
     col = farHaze(col, rd, tHit, farAirLit(ro - winLo, p - winLo));
@@ -1396,7 +1455,8 @@ struct MeshVarying {
 }
 @vertex fn vs(@location(0) pos: vec3f, @location(1) nor: vec3f, @location(2) element: u32) -> MeshVarying {
   var o: MeshVarying;
-  o.position = P.worldToClip * vec4f(pos, 1.0);
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
+  o.position = P.worldToClip * vec4f(warpPoint(pos), 1.0);   // (bent with the view: the rolling log; k 0, flat)
   o.world = pos;
   o.normal = nor;
   o.element = element;
@@ -1406,15 +1466,26 @@ struct MeshVarying {
   gFragCoord = v.position.xy;
   let p = v.world;
   let ro = P.eye;
-  let rd = safeDir(normalize(p - ro));
-  surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)
+  var rd = safeDir(normalize(p - ro));
+  // bent (the rolling log): the eye sees p along the displayed ray, which
+  // arrives along its parabola's direction there
+  var displayRd = rd;
+  var displayDist = length(p - ro);
+  if (P.warpK != 0.0) {
+    warpUse(P.warpK, P.warpAnchor, P.warpDir);
+    let shown = warpPoint(p);
+    displayDist = length(shown - ro);
+    displayRd = (shown - ro) / max(displayDist, 1e-8);
+    rd = normalize(warpSlope(warpRay(ro, displayRd), displayDist));
+  }
+  surfView(ro, displayRd);   // pixel footprint for material LOD (uniform control flow)
   let winLo = vec3f(P.winLo);
   if (all(p.xz >= winLo.xz) && all(p.xz < winLo.xz + vec2f(GRID.xz))) { discard; }
   let n = normalize(v.normal);
   // the coarse crown's density is not this leaf's shadow: sampling it here
   // would turn detailed branches black inside the old, inflated silhouette
   let col = farShadeMaterial(p, n, rd, farSunLit(p, 0), i32(v.element));
-  return vec4f(farHaze(col, rd, length(p - ro), farAirLit(ro - winLo, p - winLo)), 1.0);
+  return vec4f(farHaze(col, displayRd, displayDist, farAirLit(ro - winLo, p - winLo)), 1.0);
 }`;
 
 // What the view's materials need of the tracer's (shaders/render.js), which
@@ -1432,7 +1503,7 @@ export const FAR_VIEW_FRAME = [
   ...RENDER_LAYOUT.FRAME,
   { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
   { binding: 3, visibility: STAGE.FRAGMENT, buffer: { type: 'read-only-storage' } },
-  // the detail meshes' distances (r32float: textureLoad only); the view's 16th sampled texture, the stage's limit (B2)
+  // the detail meshes' depth (r32float: textureLoad only); the view's 16th sampled texture, the stage's limit (B2)
   { binding: 4, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
 ];
 export const FAR_VIEW_LAYOUTS = () => {
@@ -1462,18 +1533,21 @@ export const farMeshPipeline = () => ({
   depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
 });
 
-// The detail meshes' distances (docs/webgpu.md G1: their depth prepass, our
+// The detail meshes' depth (docs/webgpu.md G1: their depth prepass, our
 // own depth-only pass, as the WebGL build's nested render was): each mesh's
-// eye distance (world cells) into an r32float target the size of the scene
-// target, the nearest kept by a depth test, 0 where there is none, the
-// window's columns left out (the volume draws there). The view's march stops
-// at it (farFrag: tDetailDepth). Its own small module: positions only, no
-// lighting, so it builds in a moment beside the meshes' pipeline.
+// rasterized depth, bent with the view as the meshes are (the rolling log),
+// into an r32float target the size of the scene target, the nearest kept by a
+// depth test, 0 where there is none, the window's columns left out (the
+// volume draws there). The view reconstructs its point through the inverse
+// projection, and its march stops there (farFrag: tDetailDepth). Its own
+// small module: positions only, no lighting, so it builds in a moment beside
+// the meshes' pipeline.
 export const FAR_DETAIL_DEPTH_FORMAT = 'r32float';
 export const farDetailDepthFrag = (g) => /* wgsl */ `
 // far detail depth
 ${FarViewParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;
+${presentationWGSL}
 const GRID_XZ: vec2f = vec2f(${glf(g.nx)}, ${glf(g.nz)});
 struct DepthVarying {
   @builtin(position) position: vec4f,
@@ -1481,14 +1555,15 @@ struct DepthVarying {
 }
 @vertex fn vs(@location(0) pos: vec3f) -> DepthVarying {
   var o: DepthVarying;
-  o.position = P.worldToClip * vec4f(pos, 1.0);
+  warpUse(P.warpK, P.warpAnchor, P.warpDir);
+  o.position = P.worldToClip * vec4f(warpPoint(pos), 1.0);
   o.world = pos;
   return o;
 }
 @fragment fn fs(v: DepthVarying) -> @location(0) vec4f {
   let winLo = vec3f(P.winLo);
   if (all(v.world.xz >= winLo.xz) && all(v.world.xz < winLo.xz + GRID_XZ)) { discard; }
-  return vec4f(length(v.world - P.eye), 0.0, 0.0, 1.0);
+  return vec4f(v.position.z, 0.0, 0.0, 1.0);
 }`;
 /** The detail depth pass's pipeline: the meshes' positions (float32x3), r32float out, its own depth32float (less, written). */
 export const farDetailDepthPipeline = () => ({
@@ -1555,6 +1630,11 @@ export const WGSL_CHECK = () => [
   }),
   {
     name: 'far view', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw),
+    layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farViewPipeline(),
+  },
+  {
+    // the rolling log's (gfx/presentation.js): built when a gamemode's effect bends a world's view
+    name: 'far view curved', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw, false, { curved: true }),
     layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farViewPipeline(),
   },
   {

@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { ROLLING_LOG } from './presentationMath.js';
 
 // Linear raster edges approximate the parabola with error k*L²/4. At 16
