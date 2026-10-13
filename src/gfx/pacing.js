@@ -12,7 +12,8 @@
 //            (field EMA, GI blend) converge.
 //   view     the raymarch and post. It reruns when its key changes (camera,
 //            canvas, scene objects, settings), when the derived passes ran, or
-//            on input, then for viewSettle more frames while TAA converges.
+//            on input, then for viewSettle more frames while TAA converges
+//            (at most TAA_SETTLE_FRAMES).
 // With nothing changing a frame costs a few comparisons and no GPU work; the
 // canvas keeps showing its last image.
 
@@ -64,10 +65,23 @@ export function blendFixedFrames(w) {
   return frames;
 }
 
-// viewSettle: a frame count, or a function returning one (it may change at run time).
+// The view's settle is TAA's, and it ends here: at most this many frames after
+// the view's last change. Three's TAAU (gfx/post.js) blends 0.025 of each frame
+// into its history, so coming within one 8-bit step of a still view's converged
+// picture would take settleFrames(0.025) = 219 frames, 3.6 s of full-rate GPU
+// work after every touch of the camera. Its picture in motion is already
+// anti-aliased, if a little softer than a long-still one; these frames add
+// eight of the jitter's sub-pixel offsets to a view that has just stopped,
+// then the GPU rests. (A view whose history was just dropped, a jump or a
+// reset, stays rougher until it changes again.)
+export const TAA_SETTLE_FRAMES = 8;
+
+// viewSettle: a frame count, or a function returning one (it may change at run time),
+// at most TAA_SETTLE_FRAMES.
 // onWake: called by wake(), so a loop that stopped (createFrameLoop) starts again.
 export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, onWake = null }) {
-  const viewFrames = typeof viewSettle === 'function' ? viewSettle : () => viewSettle;
+  const viewFramesOf = typeof viewSettle === 'function' ? viewSettle : () => viewSettle;
+  const viewFrames = () => Math.min(TAA_SETTLE_FRAMES, viewFramesOf());
   let last = -Infinity, lastPresent = -Infinity;
   let derivedKey = null, viewKey = null;
   let derivedLeft = 0, viewLeft = 0;
