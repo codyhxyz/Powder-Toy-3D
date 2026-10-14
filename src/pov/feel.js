@@ -17,6 +17,14 @@ const PUNCH_SPRING = 65;                // 1/s²: torsional spring back to zero 
 const PUNCH_SPRING_STEP_MAX = 2;        // the spring's per-frame factor is clamped to this (Source's clamp)
 const PUNCH_EPS = 0.001 * DEG * DEG;    // rad²: below this angle² and rate² the punch snaps to rest (Source's 0.001 deg²)
 
+// Minecraft-style steady mining: the hands carry the swing, the view gets one small contact nod.
+// Peak angles (rad), time to peak and total duration (s); no noise, roll or spring overshoot.
+const TOOL_CONTACT = {
+  pickaxe: { pitch: -0.6 * DEG, yaw: 0, attack: 0.04, duration: 0.26 },
+  axe: { pitch: -0.35 * DEG, yaw: -0.15 * DEG, attack: 0.045, duration: 0.24 },
+  shovel: { pitch: -0.18 * DEG, yaw: 0, attack: 0.035, duration: 0.14 },
+};
+
 // ---- trauma shake
 export const SHAKE_SCALE = 1;           // global multiplier on the shake (0 turns it off)
 const REDUCED_MOTION_SHAKE = 0.15;      // share of the shake (and kick) kept under prefers-reduced-motion
@@ -100,6 +108,7 @@ export function createFeel({ hud }) {
 
   let trauma = 0, rumble = 0, time = 0;
   const punch = { pitch: 0, yaw: 0, vp: 0, vy: 0 };   // rad and rad/s
+  let contact = null, contactTime = 0;
   let bloom = 0, hitT = 0, hitBroke = false;
   let drunk = 0, drunkSway = 0, drunkTime = 0;   // s of Drunkenness left; the sway's size (0..1); its clock
   let player = null, unbindPlayer = [];
@@ -109,6 +118,13 @@ export function createFeel({ hud }) {
 
   const addTrauma = (x) => { if (x > 0) trauma = Math.min(1, trauma + x); };
   const addRumble = (x) => { if (x > 0) rumble = Math.min(1, rumble + x); };
+  const toolContact = (profile) => {
+    // Fast shovel transfers share one nod instead of stacking or restarting it mid-motion.
+    if (contact) return;
+    contact = profile;
+    contactTime = 0;
+    globalThis.__app?.requestRender?.();
+  };
 
   const offs = [
     povEvents.on('gun:fire', ({ by }) => {
@@ -118,13 +134,18 @@ export function createFeel({ hud }) {
     }),
     povEvents.on('impact', (e) => {
       if (!live) return;
-      if (e.point) {
+      const tool = !e.by && TOOL_CONTACT[e.source];
+      if (tool) toolContact(tool);
+      else if (e.point) {
         const d = Math.hypot(e.point.x - eye.x, e.point.y - eye.y, e.point.z - eye.z);
         const near = 1 - smooth01((d - IMPACT_NEAR) / (IMPACT_FAR - IMPACT_NEAR));
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
       // the hitmarker is the player's shots into a body only (TF2's hit sound: blocks and terrain don't ding)
       if (HITMARKER_SOURCES.has(e.source) && e.body && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }
+    }),
+    povEvents.on('tool:action', ({ tool, action, amount = 0, by }) => {
+      if (live && !by && tool === 'shovel' && (action === 'chip' || (action === 'dig' && amount > 0))) toolContact(TOOL_CONTACT.shovel);
     }),
     povEvents.on('blast', ({ point }) => {
       if (!live || !point) return;
@@ -182,6 +203,7 @@ export function createFeel({ hud }) {
       trauma = rumble = bloom = hitT = 0;
       drunk = drunkSway = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
+      contact = null; contactTime = 0;
       offsets.pitch = offsets.yaw = offsets.roll = offsets.punchPitch = offsets.punchYaw = 0;
     },
     // Every POV frame. s = { dt, live (in the eyes and alive), eye (grid) }.
@@ -218,6 +240,21 @@ export function createFeel({ hud }) {
       offsets.pitch = offsets.punchPitch + shake * noise(t, SEED_PITCH);
       offsets.yaw = offsets.punchYaw + shake * noise(t, SEED_YAW);
       offsets.roll = (shake * SHAKE_ROLL + rumble * rumble * SHAKE_ANGLE * RUMBLE_ROLL * m) * noise(t, SEED_ROLL);
+
+      if (contact) {
+        contactTime += dt;
+        const { pitch, yaw, attack, duration } = contact;
+        const weight = contactTime < attack
+          ? smooth01(contactTime / attack)
+          : 1 - smooth01((contactTime - attack) / (duration - attack));
+        offsets.pitch += pitch * weight * m;
+        offsets.yaw += yaw * weight * m;
+        // Like other view punches, the contact nod belongs to the eyes, not the third-person camera.
+        offsets.punchPitch += pitch * weight * m;
+        offsets.punchYaw += yaw * weight * m;
+        if (contactTime >= duration) contact = null;
+        globalThis.__app?.requestRender?.();
+      }
 
       drunk = Math.max(0, drunk - dt);
       drunkSway += (clamp01(drunk / DRUNK_WASTED_S) - drunkSway) * (1 - Math.exp(-DRUNK_EASE * dt));
