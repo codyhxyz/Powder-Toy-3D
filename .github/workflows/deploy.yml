@@ -42,6 +42,7 @@ jobs:
       - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs
+      - run: node tools/wood-endgrain-cpu-check.mjs
       - run: node tools/check-cozy-materials.mjs   # CPU artwork execution, material-style plumbing and water scope
       - run: node tools/check-crystal-material.mjs
       - run: node tools/check-crystal-transmission.mjs
