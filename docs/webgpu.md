@@ -1164,7 +1164,8 @@ by the volume, shadow (writer variant), GI gather (writer variant), GI source, s
   multiplayer, rays), app.js stops scheduling `requestAnimationFrame`. `pacer.wake()`, every input listener, resize,
   `requestRender`, `sim.wake()`/`sim.edit`, a settings change and a resolving readback or pipeline restart it. A
   settled box scene then costs no CPU at all. The default World scene never settles: its birds wake the view every
-  tick and the full march re-runs at 60 Hz for a few small bird meshes. That is its dominant idle cost, left for K3.
+  tick and the full march re-runs at 60 Hz for a few small bird meshes. That is its dominant idle cost, left for K3
+  (now K3's mesh-only frames: the march's scene is kept while only the birds move).
 
 ### F8. Mesh materials (three, TSL)
 
@@ -1733,7 +1734,10 @@ a second code path (subgroups, `shader-f16`) has to be a clear win to earn its t
   bricks on the GPU and read back only changed ones. No zero-copy access is needed for this (W6 stands).
 - **Mesh-only frames.** When only three's meshes move (the default World scene's birds, with camera and sim still),
   keep the converged pre-mesh scene (colour and depth) and re-run only the mesh layer and post instead of the volume
-  and far march at 60 Hz: the dominant power cost of the default scene. Render-only.
+  and far march at 60 Hz: the dominant power cost of the default scene. Render-only. Landed (`src/gfx/meshFrames.js`):
+  a capture of the TAA settle count accumulates the uncut scene at output size, as TAAU reconstructs it, and later
+  frames restore it at their jitter, three's meshes depth-tested over it (behind translucent water they are hidden
+  rather than tinted: S1's cut only on full frames); the sim clock's animation holds meanwhile, as in deep idle.
 - **Toroidal world windows** (x and z ring addressing in supertile units): a move rewrites only the entering slab,
   with no shift and no full derived rebuild. W10's index rule keeps it to `brickId`/`brickCoord`, `world/window.js` and
   the 3D-texture samplers (clamp the logical coordinate, then wrap with `repeat`). Not waking the whole grid after a
