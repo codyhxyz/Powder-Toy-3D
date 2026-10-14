@@ -174,7 +174,7 @@ assert.match(cozySurfaceWGSL, /m\.emit = cellEmission\(id, T, ctype\) \+ sparkEm
 assert.match(cozySurfaceWGSL, /let wp = p \* CELL_M/);
 assert.match(cozySurfaceWGSL, /cozyFade/);
 assert.match(cozySurfaceWGSL, /RCLASS\(id\) == R_OPAQUE/);
-for (const family of ['cozyWood', 'cozyRings', 'cozyPlant', 'cozyRock', 'cozyDots', 'cozyMasonry']) assert.ok(cozySurfaceWGSL.includes(`fn ${family}(`));
+for (const family of ['cozyWood', 'cozyRings', 'cozyLeaf', 'cozyPlant', 'cozyRock', 'cozyDots', 'cozySoil', 'cozySnow', 'cozyMasonry']) assert.ok(cozySurfaceWGSL.includes(`fn ${family}(`));
 assert.match(cozyWaterWGSL, /return id == E_WATER \|\| id == E_SALTWATER/);
 assert.match(cozyWaterWGSL, /let foam = shore \*/);
 assert.match(cozyWaterWGSL, /let t = FU\.time/);
@@ -184,12 +184,19 @@ assert.match(liquid, /cozyWater\(id\) && geometric\.y > 0\.55/);
 assert.match(liquid, /if \(mirror && !cartoon\)/);
 assert.match(liquid, /isCrisp\(id\) && RCLASS\(id\) == R_OPAQUE/);
 assert.ok(!liquid.slice(liquid.indexOf('// Leaving,')).includes('cartoon'), 'exit/TIR behavior stays untouched');
+assert.match(liquid, /cozyWaterNormal\(worldPos\(hp\), geometric, footprint\(hp\)\)/);
+assert.match(source('src/shaders/far.js'), /cozyWaterNormal\(p, geometric, footprint\(p\)\)/, 'far uses the same world-space optical waves');
+for (const file of ['src/shaders/gfx/liquid.js', 'src/shaders/far.js']) {
+  assert.match(source(file), /COZY_WATER_ROUGH/);
+  assert.match(source(file), /COZY_WATER_REFLECT/);
+}
 assert.match(source('src/shaders/gfx/grains.js'), /k == GK_PEBBLE && FU\.matDetail > 0\.5 && FU\.materialStyle > 0\.5/);
 assert.match(source('src/shaders/gfx/grains.js'), /m\.cav \*= contact/, 'painted pebbles retain neighbor occlusion');
 assert.match(source('src/shaders/far.js'), /RCLASS\(farIds\(q\)\.x\) == R_GLASS/, 'far glass cannot become a foam shoreline');
 
 // Execute the real artwork, with host material tables and explicit light
 // inputs. The fixture does not reimplement grain, masks, projection, or LOD.
+const materialCount = SWATCHES.length - 1, stride = materialCount + 4;
 const numerical = `${cozyFixture}
 @group(0) @binding(0) var<storage, read_write> values: array<vec4f>;
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -200,28 +207,30 @@ const numerical = `${cozyFixture}
   fixtureSpark = vec3f(0.03, 0.02, 0.01);
 ${SWATCHES.slice(0, -1).map(([, id, n], i) => `
   let m${i} = cozyMat(${id}, p, vec3f(${n.join(',')}), 900.0, 1.0, 0.01);
-  values[j * 11u + ${i}u] = vec4f(m${i}.alb, m${i}.rough);`).join('\n')}
-  values[j * 11u + 7u] = cozyWaterPaint(p, 0.01, f32(j % 5u) / 4.0);
+  values[j * ${stride}u + ${i}u] = vec4f(m${i}.alb, m${i}.rough);`).join('\n')}
+  values[j * ${stride}u + ${materialCount}u] = cozyWaterPaint(p, 0.01, f32(j % 5u) / 4.0);
   let cold = cozyMat(E_WOOD, p, vec3f(0, 0, 1), 900.0, 1.0, 0.01);
-  values[j * 11u + 8u] = vec4f(cold.emit, 1.0);
-  values[j * 11u + 9u] = vec4f(cozyPlant(p.xy, 100.0, true), cozyFade(0.5, 100.0));
-  values[j * 11u + 10u] = vec4f(select(0.0, 1.0, cozyWater(${E.WATER})),
+  values[j * ${stride}u + ${materialCount + 1}u] = vec4f(cold.emit, 1.0);
+  values[j * ${stride}u + ${materialCount + 2}u] = vec4f(cozyPlant(p.xy, 100.0, true), cozyFade(0.5, 100.0));
+  values[j * ${stride}u + ${materialCount + 3}u] = vec4f(select(0.0, 1.0, cozyWater(${E.WATER})),
       select(0.0, 1.0, cozyWater(${E.SALTWATER})), select(0.0, 1.0, cozyWater(${E.GLASS})), select(0.0, 1.0, cozyWater(${E.ACID})));
 }`;
 const count = 32;
-const values = new Float32Array(count * 11 * 4);
+const values = new Float32Array(count * stride * 4);
 new WgslExec(new WgslParser().parse(numerical)).dispatchWorkgroups('main', count, { 0: { 0: values } });
 assert([...values].every(Number.isFinite), 'artwork has no NaNs at negative coordinates or cell boundaries');
 for (let j = 0; j < count; j++) {
-  const row = field => [...values.slice((j * 11 + field) * 4, (j * 11 + field + 1) * 4)];
-  for (let i = 0; i < 7; i++) assert(row(i).slice(0, 3).every(x => x > 0 && x < 1.6), `material ${i} remains bounded`);
-  assert(row(7).every(x => x >= 0 && x <= 1), 'water paint/transmission is bounded');
-  row(8).slice(0, 3).forEach((x, i) => assert(Math.abs(x - [0.16, 0.26, 0.36][i]) < 1e-6, 'heat and spark survive artwork'));
-  assert.deepEqual(row(9), [1, 1, 1, 0], 'distant plant artwork fades without residual aliasing');
-  assert.deepEqual(row(10), [1, 1, 0, 0], 'only fresh/salt water receive cartoon paint');
+  const row = field => [...values.slice((j * stride + field) * 4, (j * stride + field + 1) * 4)];
+  for (let i = 0; i < materialCount; i++) assert(row(i).slice(0, 3).every(x => x > 0 && x < 1.6), `material ${i} remains bounded`);
+  assert(row(materialCount).every(x => x >= 0 && x <= 1), 'water paint/transmission is bounded');
+  assert(row(materialCount)[3] <= 0.782, 'even foam retains at least 21.8% transmission before Fresnel');
+  row(materialCount + 1).slice(0, 3).forEach((x, i) => assert(Math.abs(x - [0.16, 0.26, 0.36][i]) < 1e-6, 'heat and spark survive artwork'));
+  assert.deepEqual(row(materialCount + 2), [1, 1, 1, 0], 'distant plant artwork fades without residual aliasing');
+  assert.deepEqual(row(materialCount + 3), [1, 1, 0, 0], 'only fresh/salt water receive cartoon paint');
 }
-for (let i = 0; i < 8; i++) {
-  const red = Array.from({ length: count }, (_, j) => values[(j * 11 + i) * 4]);
+for (let i = 0; i <= materialCount; i++) {
+  if (SWATCHES[i][0] === 'Metal') continue;   // clean metal's detail is its BRDF, not albedo noise
+  const red = Array.from({ length: count }, (_, j) => values[(j * stride + i) * 4]);
   assert(Math.max(...red) - Math.min(...red) > 0.0003, `material ${i} has actual pattern variation`);
 }
 const foamCode = `${cozyFixture}
@@ -234,20 +243,89 @@ const foamCode = `${cozyFixture}
 const foam = new Float32Array(16 * 2 * 4);
 new WgslExec(new WgslParser().parse(foamCode)).dispatchWorkgroups('main', 16, { 0: { 0: foam } });
 for (let j = 0; j < 16; j++) {
-  assert(Math.abs(foam[j * 8 + 3] - 0.14) < 1e-6, 'open water has no shoreline foam');
+  assert(foam[j * 8 + 3] >= 0.139 && foam[j * 8 + 3] <= 0.679, 'open-water wave highlights cannot become a saturated shoreline');
   assert(foam[j * 8 + 7] > 0.7, 'saturated crisp/floor shoreline retains foam at every wave phase');
+}
+
+// Run the actual optical guard, not a JS reimplementation of its ray math.
+const opticalNormal = liquid.slice(liquid.indexOf('fn liquidOpticalNormal('), liquid.indexOf("// The sun's highlight"));
+assert(opticalNormal.startsWith('fn liquidOpticalNormal('));
+const opticsCode = `${cozyFixture}
+${opticalNormal}
+@group(0) @binding(0) var<storage, read_write> optics: array<vec4f>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let j = gid.x;
+  let p = vec3f(f32(j) * 7.31 - 32.2, 0.0, f32(j % 8u) * 13.5 - 54.0);
+  let geometric = normalize(vec3f(f32(j % 3u) * 0.2, 0.85, 0.15));
+  let tangent = normalize(vec3f(geometric.y, -geometric.x, 0.0));
+  let c = 0.0001 + f32(j % 8u) / 8.0;
+  let rd = normalize(tangent * sqrt(1.0 - c * c) - geometric * c);
+  FU.time = f32(j) * 0.7;
+  let n = cozyWaterNormal(p, geometric, 0.06);
+  let guarded = liquidOpticalNormal(rd, n, geometric, true, 1.333);
+  optics[j * 4u] = vec4f(n, length(n));
+  optics[j * 4u + 1u] = vec4f(dot(refract(rd, guarded, 1.0 / 1.333), geometric),
+      dot(reflect(rd, guarded), geometric), dot(rd, guarded), distance(cozyWaterNormal(p, geometric, 100.0), geometric));
+  let now = cozyWaterPaint(p, 0.06, 0.4);
+  let frozen = cozyWaterPaint(p, 0.06, 0.4);
+  FU.time += 2.0;
+  optics[j * 4u + 2u] = abs(cozyWaterPaint(p, 0.06, 0.4) - now);
+  optics[j * 4u + 3u] = abs(frozen - now);
+}`;
+const optics = new Float32Array(64 * 4 * 4);
+new WgslExec(new WgslParser().parse(opticsCode)).dispatchWorkgroups('main', 64, { 0: { 0: optics } });
+assert([...optics].every(Number.isFinite));
+let motion = 0;
+for (let j = 0; j < 64; j++) {
+  const at = j * 16;
+  assert(Math.abs(optics[at + 3] - 1) < 1e-5, 'water normal remains unit length');
+  assert(optics[at + 4] < 0, 'guarded refraction enters the actual water surface even at grazing angles');
+  assert(optics[at + 5] >= -1e-5, 'reflection stays above the actual surface');
+  assert(optics[at + 6] < 0, 'guarded normal faces the incoming ray');
+  assert(optics[at + 7] < 1e-5, 'distant waves converge to the geometric normal');
+  motion += [...optics.slice(at + 8, at + 12)].reduce((a, b) => a + b, 0);
+  assert.deepEqual([...optics.slice(at + 12, at + 16)], [0, 0, 0, 0], 'same paused clock produces identical water');
+}
+assert(motion > 0.1, 'painted water visibly moves rather than only changing its lighting');
+const seamCode = `${cozyFixture}
+@group(0) @binding(0) var<storage, read_write> seams: array<vec4f>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let j = gid.x;
+  let alongY = j % 2u == 1u;
+  let uv = select(vec2f(f32(j) - 8.0, 0.37), vec2f(0.37, f32(j) - 8.0), alongY);
+  let dx = select(vec2f(0.00001, 0.0), vec2f(0.0, 0.00001), alongY);
+  let fp = select(0.001, 0.06, j % 4u >= 2u);
+  seams[j * 5u] = vec4f(abs(cozyWood(uv * vec2f(1.45, 2.3) + dx, fp) - cozyWood(uv * vec2f(1.45, 2.3) - dx, fp)), 1.0);
+  seams[j * 5u + 1u] = vec4f(abs(cozyPlant(uv * 0.84 + dx, fp, false) - cozyPlant(uv * 0.84 - dx, fp, false)), 1.0);
+  seams[j * 5u + 2u] = vec4f(abs(cozyMasonry(uv * vec2f(0.72, 0.32) + dx, fp, false) - cozyMasonry(uv * vec2f(0.72, 0.32) - dx, fp, false)), 1.0);
+  seams[j * 5u + 3u] = vec4f(abs(cozyRings(uv * 1.65 + dx, fp) - cozyRings(uv * 1.65 - dx, fp)), 1.0);
+  seams[j * 5u + 4u] = vec4f(abs(cozyPlant(uv * 0.68 + dx, fp, true) - cozyPlant(uv * 0.68 - dx, fp, true)), 1.0);
+}`;
+const seams = new Float32Array(16 * 5 * 4);
+new WgslExec(new WgslParser().parse(seamCode)).dispatchWorkgroups('main', 16, { 0: { 0: seams } });
+for (let i = 0; i < seams.length; i++) if (i % 4 !== 3) {
+  assert(seams[i] < 0.003, `no cell-grid seams: sample ${Math.floor(i / 20)}, family ${Math.floor(i / 4) % 5}, delta ${seams[i]}`);
 }
 
 const g = gridLayout(32, 32, 32);
 const modules = WGSL_CHECK().map((entry) => [entry.name, entry.code(g)]);
+modules.push(['optics.cozy', opticsCode], ['seams.cozy', seamCode]);
 for (const entry of renderChecks().filter(e => e.view === 'cozy')) modules.push([entry.name, entry.code(g)]);
+for (const entry of renderChecks().filter(e => e.view === 'realistic')) {
+  const code = entry.code(g);
+  assert(!code.includes('FU.materialStyle'), 'Realistic has no runtime artwork branch');
+  assert.match(code, /if \(0\.0 > 0\.5 && cozySupported\(id\)\)/);
+}
 for (const mesh of [false, true]) for (const curved of [false, true]) {
   modules.push([`far.${mesh ? 'mesh' : 'view'}.${curved ? 'curved' : 'flat'}`, farFrag(g, farLayout(WORLD_SIZE), mesh, { curved })]);
 }
 for (const [name, code] of modules) {
   for (const fn of ['cozyMat', 'cozyWaterPaint']) assert.equal((code.match(new RegExp(`fn ${fn}\\(`, 'g')) || []).length, 1, `${name}: helper defined once`);
-  assert.match(code, /if \(FU\.materialStyle > 0\.5 && cozySupported\(id\)\)/);
-  assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf('if (FU.materialStyle > 0.5 && cozySupported(id))'), 'flat-texture mode still takes precedence');
+  if (!name.startsWith('optics.') && !name.startsWith('seams.')) {
+    const selector = name.startsWith('volume.cozy.') ? '1.0' : 'FU.materialStyle';
+    assert.ok(code.includes(`if (${selector} > 0.5 && cozySupported(id))`));
+    assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf(`if (${selector} > 0.5 && cozySupported(id))`), 'flat-texture mode still takes precedence');
+  }
   if (name.startsWith('far.')) assert.match(code, /cozyWaterPaint\(p, footprint\(p\), cozyFarShore\(p\)\)/);
   if (process.argv.includes('--validate-wgsl')) {
     const result = spawnSync('naga', ['--stdin-file-path', `${name}.wgsl`], { input: code, encoding: 'utf8' });

@@ -35,6 +35,8 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
+      - run: node --test tools/check-mode-icons.mjs   # CPU-only: every gamemode has a valid credited menu emblem
+      - run: node tools/check-map-previews.mjs   # every menu map, including source imports, has a square preview
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
       - run: node tools/check-gpu-deadline.mjs   # CPU-only: enforce total slot budget and cleanup ownership
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
@@ -51,10 +53,11 @@ jobs:
       - run: node tools/check-crystal-transmission.mjs
       - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
-      - run: node tools/check-strikes.mjs   # CPU quaternion kicks/punches, bone frames, visibility and repeat recovery
+      - run: node tools/check-strikes.mjs   # CPU quaternion strikes/wingbeats, bone frames, grips and repeat recovery
       - run: node tools/check-willow-cove.mjs   # CPU terrain: body-clear running circuit and village routes
       - run: node --test tools/check-city-folk.mjs   # composed world, exact legacy geometry, city bus/edit lifecycle
       - run: node tools/check-city-folk-terrain.mjs && node tools/check-city-folk-town.mjs && node tools/check-city-folk-nature.mjs && node tools/check-city-folk-bus.mjs
+      - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
       - run: node tools/mission-node-check.mjs && node --test tools/import-cruelty-map-check.mjs
       - run: node --test tools/imported-interactions-check.mjs && node tools/imported-door-passage-check.mjs

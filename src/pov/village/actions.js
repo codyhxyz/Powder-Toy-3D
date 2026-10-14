@@ -1,5 +1,5 @@
 // Minecraft's short, directional melee reach, but toy knockback only: no health or damage.
-export const PUNCH_REACH = 4.5, PUNCH_COOLDOWN = 0.2, PUNCH_DURATION = 0.2;
+export const PUNCH_REACH = 4.5, PUNCH_COOLDOWN = 0.5, PUNCH_DURATION = 0.5;
 export const PUNCH_CONTACT = PUNCH_DURATION * 0.4;
 export const VILLAGE_TOOLS = [
   { key: null, name: 'Hands', hint: 'Left-click to punch · F to kick · harmless bonks, never damage.' },

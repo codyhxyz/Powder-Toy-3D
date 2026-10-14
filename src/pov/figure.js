@@ -6,6 +6,7 @@ import { litColor, gridPosition, figNormalMappedFn, prepareMesh, getMeshGpu, unl
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 import { limb as ikLimb, solveLimb } from './limbs.js';
 import { strikePose, sampleKickPose, kickBlend } from './strikePose.js';
+import { createFlapAnimation } from './flapPose.js';
 
 // The body you see in third person and when you die, built from three.js
 // primitives in grid cells and scaled into the world. createFigure(build)
@@ -286,6 +287,7 @@ export function buildStick() {
 
 export function createFigure(build = buildStick) {
   const kickPose = strikePose();
+  const wingAnimation = createFlapAnimation();
   const u = figureUniforms();
   const tint = [0, 0, 0, 0];
   const root = new THREE.Group();      // at the feet, turned to face the look direction
@@ -471,13 +473,13 @@ export function createFigure(build = buildStick) {
       shR.rotation.set(J.shR, 0, J.armOut);
       elL.rotation.x = J.elL;
       elR.rotation.x = J.elR;
-      // A chicken wingbeat: both arms throw up and out, then the pose falls back. Not smoothed,
-      // or the beat would still be rising when the wings had already given up.
-      if (!s.dead && s.flap > 0) {
-        const w = s.flap;
-        shL.rotation.x -= 2.4 * w; shR.rotation.x -= 2.4 * w;
-        shL.rotation.z -= 1.3 * w; shR.rotation.z += 1.3 * w;
-        elL.rotation.x *= 1 - 0.6 * w; elR.rotation.x *= 1 - 0.6 * w;
+      if (s.dead) wingAnimation.reset();
+      const wingPose = wingAnimation.update(dt, s.dead ? 0 : s.flap ?? 0);
+      if (wingPose.weight > 0) {
+        shL.quaternion.slerp(wingPose.left, wingPose.weight);
+        shR.quaternion.slerp(wingPose.right, wingPose.weight);
+        elL.quaternion.slerp(wingPose.elbow, wingPose.weight);
+        elR.quaternion.slerp(wingPose.elbow, wingPose.weight);
       }
       const look = !s.dead && s.look ? s.look : null;
       const aimLean = look ? look.pitch * look.spine : 0;

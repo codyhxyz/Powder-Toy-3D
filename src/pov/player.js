@@ -14,6 +14,7 @@ import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
 import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
 import { ladderVelocity } from './ladder.js';
+import { FLAP_SIGNAL_S } from './flapPose.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -99,14 +100,12 @@ const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the je
 // out (smoothstep: no jolt at either end) and changes the climb no faster than JET_RAMP_S allows.
 // The climb, tank and flight speed are Noita's still.
 const JET_SPOOL_UP_S = 0.2;            // s for the push to come on fully after a press
-// A chicken, not a bird. Minecraft's chicken flaps as it falls and cannot climb
-// (Chicken.travel: falling motionY *= 0.6). A tap is one wingbeat: a little upward
-// speed, never past a hover, and only as fast as the wings can beat. Hold to jet.
-const FLAP_LIFT = 22;                  // cells/s per tap (~6.6 m/s): about 0.13 s of hang, before the cap
-const FLAP_CEILING = 4;                // cells/s: a flap cannot climb
+// Minecraft-inspired chicken wingbeats, buffed to twice the lift and upward
+// speed limit. Taps help flight; holding the press still runs the jet.
+const FLAP_LIFT = 44;                  // cells/s per tap: twice the previous 22
+const FLAP_CEILING = 8;                // cells/s: twice the previous 4; no unbounded ascent
 const FLAP_GAP_S = 0.2;                // s between beats
 const FLAP_HOLD_S = 0.18;              // s an air press must be held before it is the jet, not a flap
-const FLAP_ANIM_S = 0.45;              // s the arms stay in the beat: long enough to see the wings come back down
 const JET_SPOOL_DOWN_S = 0.3;          // s for it to die away after a release: the climb crests instead of dropping
 const JET_RAMP_S = 0.15;               // s from a hover to the full climb at the jet's hardest push (caps it at climb / this)
 
@@ -331,8 +330,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     },
     // 1 on the tap, back to 0 as the wings settle. The viewmodel and the body read it.
     get flap() {
-      if (vitals.dead || sinceFlap >= FLAP_ANIM_S) return 0;
-      return Math.cos(Math.min(1, sinceFlap / FLAP_ANIM_S) * Math.PI * 0.5);
+    if (vitals.dead || sinceFlap >= FLAP_SIGNAL_S) return 0;
+    return 1 - Math.min(1, sinceFlap / FLAP_SIGNAL_S);
     },
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame

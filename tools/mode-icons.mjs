@@ -11,7 +11,10 @@ import { bakeIcons } from './game-icons.mjs';
 const MODE_ICONS = {
   // the gamemodes (maps.js GAMEMODES keys)
   sandbox: 'delapouite/sand-castle',
+  factory: 'delapouite/factory',       // the quarry's sorting and smelting production line
+  crueltySquad: 'lorc/on-target',      // Cruelty Squad's designated assassination targets
   noita: 'lorc/fairy-wand',            // the killfeed's wand (tools/killicons.mjs WAND)
+  animalCrossing: 'lorc/three-leaves',  // Animal Crossing's leaf motif for village life
   slayer: 'lorc/crossed-swords',
   ctf: 'lorc/flying-flag',
   koth: 'lorc/crown',                  // Halo's King of the Hill is a crown too
