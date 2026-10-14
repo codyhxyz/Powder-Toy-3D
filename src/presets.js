@@ -1,6 +1,7 @@
 import { E, ELEMENTS } from './elements.js';
 import { SEED_MAX } from './shaders/common.js';
 import { ARENA_SIZE, buildDamValley } from './arenas/damValley.js';
+import { buildQuarry } from './industry/quarry.js';
 
 // Arena presets (src/arenas): handmade maps for team games, each built for one
 // grid size (app.js switches to it). Their layouts (spawns, flags, zones...)
@@ -33,7 +34,9 @@ export function buildPreset(name, sim) {
   const s = nx / 128;
   let layout = null;
 
-  if (name in ARENA_PRESETS) {
+  if (name === 'quarry') {
+    buildQuarry({ g, set, box });
+  } else if (name in ARENA_PRESETS) {
     // an arena builds into an id grid of its own size; it lands in the grid's low corner
     const arena = ARENA_PRESETS[name];
     const [ax, ay, az] = arena.size;

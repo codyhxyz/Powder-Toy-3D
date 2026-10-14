@@ -40,6 +40,8 @@ export const MAPS = [
     desc: 'Down through the Mines, the Coal Pits and the Snowy Depths, with a Holy Mountain at the bottom of each. Find wands on the way.' },
   { key: 'damValley', name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
+  { key: 'quarry', name: 'Open-Cut Quarry', size: '128', preset: 'quarry', dims: [128, 128, 128], modes: ['factory'],
+    desc: 'Sort gold-bearing sand, automate exposed ore faces, pump a finite reservoir and smelt metal. Physical grains, real spills.' },
   { key: 'lab', name: 'Lab', size: '128', preset: 'lab', dims: [128, 128, 128], modes: TEAM_MODES,
     desc: 'A water tank with an oil slick, a lava pit, a gunpowder tower and a sand pile about to fall.' },
   { key: 'volcano', name: 'Volcano', size: '128', preset: 'volcano', dims: [128, 128, 128],
@@ -54,6 +56,7 @@ export const MAPS = [
 // the menu shows them only in builds that have src/game.
 export const GAMEMODES = [
   { key: 'sandbox', name: 'Sandbox', desc: 'Pour, build, burn and blow it up. Every map.' },
+  { key: 'factory', name: 'Factory', desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
   { key: 'noita', name: 'Noita', desc: 'Wands only. Go down through the Mines and the Holy Mountains, finding wands and spells on the way.' },
   { key: 'animalCrossing', name: 'Animal Crossing', effect: 'rollingLog', desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Willow Cove.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
