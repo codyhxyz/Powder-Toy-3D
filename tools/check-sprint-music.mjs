@@ -11,14 +11,16 @@ assert.ok(asset.includes(Buffer.from(SPRINT_MUSIC.artist)));
 assert.equal(SPRINT_MUSIC.bpm, 172);
 
 let previous = sprintMusicProfile(0);
-assert.deepEqual(previous, { cutoffHz: 80, gain: 0 });
-for (const [rush, min, max] of [[0.2, 120, 130], [0.5, 430, 460], [0.75, 1800, 1900], [0.9, 4900, 5000]]) {
+assert.deepEqual(previous, { cutoffHz: 125, gain: 0 });
+for (const [rush, min, max] of [[0.2, 120, 130], [0.5, 3800, 3850], [0.75, 6900, 6950], [0.9, 8750, 8800]]) {
   const { cutoffHz } = sprintMusicProfile(rush);
-  assert.ok(cutoffHz > min && cutoffHz < max, `late-opening cutoff at ${rush}: ${cutoffHz}`);
+  assert.ok(cutoffHz > min && cutoffHz < max, `linear-opening cutoff at ${rush}: ${cutoffHz}`);
 }
 for (let i = 1; i <= 1000; i++) {
   const profile = sprintMusicProfile(i / 1000);
-  assert.ok(profile.cutoffHz > previous.cutoffHz && profile.gain > previous.gain);
+  assert.ok(profile.cutoffHz >= previous.cutoffHz && profile.gain > previous.gain);
+  if (i > 200) assert.ok(Math.abs(profile.cutoffHz - previous.cutoffHz - 9875 / 800) < 1e-8, 'equal speed increments open equal Hz');
+  else assert.equal(profile.cutoffHz, 125, 'retain the muffled launch');
   assert.ok(profile.gain - previous.gain < 0.003, 'no gain threshold/pop near rest');
   previous = profile;
 }
@@ -63,7 +65,7 @@ try {
   };
   const { ctx, input, filter, gain, sources } = fixture();
   const music = createSprintMusic(ctx, input);
-  assert.equal(filter.frequency.value, 80, 'initial filter matches the closed end of the ramp');
+  assert.equal(filter.frequency.value, 125, 'initial filter matches the closed end of the ramp');
   assert.equal(music.stats().ready, false);
   music.update(1);
   assert.equal(sources.length, 0, 'effects startup does not wait for the music download');

@@ -208,7 +208,9 @@ export default {
       rig.hit(HIT.BURROWER);
       muzzle.updateWorldMatrix(true, false);
       env.feedback?.act('fire');
-      povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld: muzzle.getWorldPosition(new THREE.Vector3()), gun: 'BURROWER', sound: { voice: 'swoosh', rate: 0.8, gain: 1.4, thump: 1.2 } });
+      const muzzleWorld = env.getMuzzleWorld?.('BURROWER')
+        ?? (povEvents.actor ? null : muzzle.getWorldPosition(new THREE.Vector3()));
+      povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld, gun: 'BURROWER', sound: { voice: 'swoosh', rate: 0.8, gain: 1.4, thump: 1.2 } });
       return true;
     }
 
