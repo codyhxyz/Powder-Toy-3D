@@ -45,8 +45,8 @@ await test('rotated ports, bounds and finite drilling footprint', () => {
     const m = d('miner', { rotation });
     assert.deepEqual(controlCell(m), deviceCell(m, -1, 0, 1));
     const b = machineBox(m);
-    assert.equal(b.hi[0] - b.lo[0] + 1, 4);
-    assert.equal(b.hi[2] - b.lo[2] + 1, 4);
+    assert.equal(b.hi[0] - b.lo[0] + 1, rotation % 2 ? 8 : 4);
+    assert.equal(b.hi[2] - b.lo[2] + 1, rotation % 2 ? 4 : 8);
     assert.equal(b.hi[1] - b.lo[1] + 1, 3);
     assert.equal(machinePorts(m).inlet.length, 8);
     assert.equal(new Set(machinePorts(m).mouth.map(String)).size, 16);

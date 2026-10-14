@@ -18,8 +18,8 @@ export const machinePorts = d => ({
   mouth: region(d, 0, 3, 1, 1, 0, 3),
 });
 export function machineBox(d) {
-  const ends = d.type === 'miner' ? [deviceCell(d, 0, 1, 4), deviceCell(d, 3, 3, 7)]
-    : [deviceCell(d, 0, 1, 0), deviceCell(d, 3, d.type === 'heater' ? 3 : 1, 3)];
+  const ends = d.type === 'miner' ? [deviceCell(d, 0, 1, 0), deviceCell(d, 3, 3, 7)]
+    : [deviceCell(d, 0, d.type === 'heater' ? 0 : 1, 0), deviceCell(d, 3, d.type === 'heater' ? 3 : 1, 3)];
   return { lo: ends[0].map((n, i) => Math.min(n, ends[1][i])), hi: ends[0].map((n, i) => Math.max(n, ends[1][i])) };
 }
 const signature = d => [d.id, d.type, d.x, d.y, d.z, d.rotation].join(':');
@@ -203,7 +203,6 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
       if (!present) continue;
       const guard = machineGuard(d), forward = deviceDirection(d), right = [forward[2], 0, -forward[0]];
       const drill = s.drillClock >= 0.35;
-      if (d.type === 'miner' && !drill) continue;
       sim.edit(kernel, machineBox(d), {
         guardBase: guard.base, guardMaterial: guard.material, guardPort: guard.port, guardPowered: +guard.powered,
         corner: deviceCell(d, 0, 0, 0), forward, right, kind: INDUSTRY_KIND[d.type],

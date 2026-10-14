@@ -42,6 +42,12 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let z = dot(vec3f(rel), vec3f(P.forward));
   let y = rel.y;
   if (P.kind == 3u) {
+    // Sandustry's excavator discharges onto the line behind it. Its own deck
+    // carries debris back; otherwise the first cut merely piles up on the robot.
+    if (x >= 0.0 && x <= 3.0 && z >= 0.0 && z <= 3.0 && y == 1 && KIND(id) == K_POWDER) {
+      *oB = vec4f(-vec3f(P.forward) * 0.6 + vec3f(0.0, max(b.y, 0.0), 0.0), b.w);
+      return;
+    }
     // A finite four-cell reach, one face layer per pulse. Intervening solids
     // occlude the drill; debris is left at the struck cell (Noita excavation).
     if (P.drill == 0u || x < 0.0 || x > 3.0 || y < 1 || y > 3 || z < 4.0 || z > 7.0) { return; }
@@ -59,9 +65,11 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   }
   if (x < 0.0 || x > 3.0 || z < 0.0 || z > 3.0) { return; }
   if (P.kind == 4u) {
-    // TPT heat tool, capped below tungsten's melt point. Ordinary latent heat,
-    // phase changes and conduction still run in the native simulation.
-    if (y >= 1 && y <= 3 && a.y < 2200.0) { (*oA).y = min(2200.0, a.y + 1800.0 * P.dt); }
+    // TPT heat tool, including the refractory hearth. Heating only the charge
+    // leaves a cold deck that sinks heat faster than it arrives at normal speed.
+    // The 2200 C cap stays below tungsten's melting point; native conduction,
+    // latent heat and phase changes still handle the material.
+    if (y >= 0 && y <= 3 && a.y < 2200.0) { (*oA).y = min(2200.0, a.y + 7200.0 * P.dt); }
     return;
   }
   // Only grains actually touching the intact deck. No remote force on a
