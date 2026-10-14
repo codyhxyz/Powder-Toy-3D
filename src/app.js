@@ -841,6 +841,7 @@ const povRay = new THREE.Ray();
 const warpNow = () => (presentation.active ? presentation.parameters : null);
 // the crosshair's ray, on screen: in first person from the displayed eye
 const aimScreenRay = () => pov?.aimRay(povRay.origin, povRay.direction, presentation.active);
+const skipPickLiquids = () => !!pov?.active && !gearByKey(pov.toolbelt?.selectedKey)?.pickLiquids;
 // Grid point p where the presentation shows it (out; p itself when flat).
 function presentationPoint(p, out = new THREE.Vector3()) {
   return out.fromArray(warp(p.clone().add(sim.origin).toArray(), presentation.parameters)).sub(sim.origin);
@@ -863,11 +864,12 @@ function requestPick() {
   const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
   const ray = fromPov ? povRay : gridRay();
+  const skipLiquids = fromPov && skipPickLiquids();
   pickPending = true;
   const from = sim, o = sim.origin.clone(), revision = presentation.revision;
-  vol.pick(ray.origin, ray.direction, warpNow()).then((hit) => {
+  vol.pick(ray.origin, ray.direction, warpNow(), skipLiquids).then((hit) => {
     pickPending = false;
-    if (from !== sim || revision !== presentation.revision) return;   // a new grid or effect since
+    if (from !== sim || revision !== presentation.revision || skipLiquids !== skipPickLiquids()) return;   // a new grid/effect/tool since
     hover.valid = hit.valid;
     if (hover.valid) {
       pickedNow(hover.cell.fromArray(hit.cell), o);

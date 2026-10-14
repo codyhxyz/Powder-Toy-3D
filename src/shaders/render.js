@@ -1356,7 +1356,7 @@ export const PICK_BATCH = 8;
 export const PICK_RESULT_BYTES = 32;
 export const PickParams = uniformStruct('PickParams', {
   ro: `array<vec4f, ${PICK_BATCH}>`,     // ray origins, grid cells; w: the rolling log's k (0: a flat ray)
-  rd: `array<vec4f, ${PICK_BATCH}>`,     // directions (normalised here)
+  rd: `array<vec4f, ${PICK_BATCH}>`,     // directions (normalised here); w: skip liquids
   warp: `array<vec4f, ${PICK_BATCH}>`,   // the rolling log's anchor (xy) and direction (zw), world cells
   slot: `array<vec4u, ${PICK_BATCH / 4}>`,   // each ray's ring slot, four to a vec4u
   n: 'u32',                              // rays queued
@@ -1378,7 +1378,10 @@ struct Pick {
   at: vec4f,     // (cell xyz, face); w = -1: a miss
   what: vec4f,   // (id, T, P, life)
 }
-fn pickRay(ro: vec3f, rd0: vec3f) -> Pick {
+fn pickStops(id: i32, skipLiquids: bool) -> bool {
+  return !isGasLike(id) && (!skipLiquids || KIND(id) != K_LIQUID);
+}
+fn pickRay(ro: vec3f, rd0: vec3f, skipLiquids: bool) -> Pick {
   let rd = safeDir(normalize(rd0));
   let miss = Pick(vec4f(0.0, 0.0, 0.0, -1.0), vec4f(0.0, 0.0, 0.0, -1.0));
   let bh = boxHit(ro, rd);
@@ -1396,7 +1399,7 @@ fn pickRay(ro: vec3f, rd0: vec3f) -> Pick {
     if (outside(cell)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
-    if (!isGasLike(id)) {
+    if (pickStops(id, skipLiquids)) {
       let face = ax * 2 + select(0, 1, istp[ax] > 0);   // normal = -step
       return Pick(vec4f(vec3f(cell), f32(face)), vec4f(f32(id), a.y, fetchB(cell).w, a.z));
     }
@@ -1410,14 +1413,14 @@ fn pickRay(ro: vec3f, rd0: vec3f) -> Pick {
 }
 // The displayed ray's parabola (shaders/gfx/presentation.js), cell by cell:
 // exact exits, no brick skipping, the first non-gas voxel, or the floor.
-fn pickCurved(ro: vec3f, rd: vec3f) -> Pick {
+fn pickCurved(ro: vec3f, rd: vec3f, skipLiquids: bool) -> Pick {
   var walk = warpWalk(ro, normalize(rd), 0.0);
   for (var i = 0; i < 2 * MAX_STEPS; i++) {
     var cell: vec3i;
     if (!warpLocate(&walk, &cell)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
-    if (!isGasLike(id)) {
+    if (pickStops(id, skipLiquids)) {
       let axis = warpEntryAxis(walk.ray, walk.t);
       let face = 2 * axis + select(0, 1, warpSlope(walk.ray, walk.t)[axis] > 0.0);
       return Pick(vec4f(vec3f(cell), f32(face)), vec4f(f32(id), a.y, fetchB(cell).w, a.z));
@@ -1440,8 +1443,8 @@ fn pickCurved(ro: vec3f, rd: vec3f) -> Pick {
   var r: Pick;
   if (P.ro[i].w != 0.0) {
     warpUse(P.ro[i].w, P.warp[i].xy, P.warp[i].zw);
-    r = pickCurved(P.ro[i].xyz, P.rd[i].xyz);
-  } else { r = pickRay(P.ro[i].xyz, P.rd[i].xyz); }
+    r = pickCurved(P.ro[i].xyz, P.rd[i].xyz, P.rd[i].w != 0.0);
+  } else { r = pickRay(P.ro[i].xyz, P.rd[i].xyz, P.rd[i].w != 0.0); }
   let s = P.slot[i / 4u][i % 4u] * 2u;
   picks[s] = r.at;
   picks[s + 1u] = r.what;

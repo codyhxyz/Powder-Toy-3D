@@ -14,6 +14,8 @@
 //
 // `touch` names the tool's two buttons on a phone (pov/touch.js): [left-click,
 // right-click], an empty slot (or none) for a button the tool doesn't use.
+// `pickLiquids` keeps liquids targetable for tools that handle them; other
+// tools aim through them, like Minecraft's mining versus bucket targeting.
 
 export const SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light'];
 
@@ -28,9 +30,9 @@ export const GEAR = [
     desc: 'Stab a body from behind to kill it in one blow, shield or not; from the front it is a weak stab. Useless on rock.' },
   { key: 'TROWEL', slot: 1, name: 'Trowel', model: 'trowel', abbr: 'TRWL', color: '#a4a8ad', touch: ['Build', 'Material'],
     desc: 'Builds 1 m blocks out of what the shovel dug up. Right-click picks the material.' },
-  { key: 'BUCKET', slot: 1, name: 'Bucket', model: 'bucket', abbr: 'BCKT', color: '#7f8b95', touch: ['Scoop', 'Pour'],
+  { key: 'BUCKET', pickLiquids: true, slot: 1, name: 'Bucket', model: 'bucket', abbr: 'BCKT', color: '#7f8b95', touch: ['Scoop', 'Pour'],
     desc: 'Left-click scoops up liquid, hold right-click to pour it out forever: it never runs dry. Lava is fine.' },
-  { key: 'FLASK', slot: 1, name: 'Flask', model: 'flask', abbr: 'FLSK', color: '#9fd6e8', touch: ['Scoop / pour', 'Throw'],
+  { key: 'FLASK', pickLiquids: true, slot: 1, name: 'Flask', model: 'flask', abbr: 'FLSK', color: '#9fd6e8', touch: ['Scoop / pour', 'Throw'],
     desc: 'Noita\'s potion flask, full of water. Left-click scoops up the liquid or powder you point at, or pours. Right-click throws it to shatter; H drinks.' },
   { key: 'GUN', slot: 2, name: 'Pistol', model: 'pistol', abbr: 'PSTL', color: '#5d6168', touch: ['Fire'],
     desc: 'Fires as fast as you click; holding fires slower. Each round breaks what it hits and adds nothing to the world.' },
@@ -46,7 +48,7 @@ export const GEAR = [
     desc: 'Fires a rocket that flies straight and blows a crater where it hits, with a blast of air that throws anything near it, you included.' },
   { key: 'BURROWER', slot: 3, name: 'Burrower', model: 'burrower', abbr: 'BRRW', color: '#c98a2e', touch: ['Fire'],
     desc: 'Fires a drill that homes on the nearest body and bores a real tunnel through the ground to reach it: quick through sand, slow through rock, slower still through metal.' },
-  { key: 'PHYSGUN', slot: 4, name: 'Physgun', model: 'physgun', abbr: 'PHYS', color: '#5ff0ff', touch: ['Grab', 'Fling'],
+  { key: 'PHYSGUN', pickLiquids: true, slot: 4, name: 'Physgun', model: 'physgun', abbr: 'PHYS', color: '#5ff0ff', touch: ['Grab', 'Fling'],
     desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. Right-click empty-handed to blast.' },
   { key: 'BLOWTORCH', slot: 4, name: 'Flamethrower', model: 'flamer', abbr: 'FLMR', color: '#b8322a', touch: ['Burn'],
     desc: 'Hold for a continuous jet of fire, 6 m long: lights wood, sets off gunpowder, melts ice and, slowly, metal.' },
@@ -56,10 +58,10 @@ export const GEAR = [
     desc: 'A warm, flickering light. Right-click throws it, and it burns where it lands for two minutes. Its flame sets nothing alight.' },
   { key: 'LANTERN', slot: 5, name: 'Lantern', model: 'lantern', abbr: 'LNTN', color: '#e8f0ff', touch: ['Switch', 'Throw'],
     desc: 'A steady, warm light. Left-click switches it off and on; right-click throws it, and it lands unbroken and keeps shining.' },
-  { key: 'HOOK', slot: 4, name: 'Hook', model: 'hook', abbr: 'HOOK', color: '#b0884a', touch: ['Fire / reel', 'Let go'],
+  { key: 'HOOK', pickLiquids: true, slot: 4, name: 'Hook', model: 'hook', abbr: 'HOOK', color: '#b0884a', touch: ['Fire / reel', 'Let go'],
     desc: 'Fires a grappling hook up to 30 m. Hold left-click to reel in: a wall pulls you to it, loose matter comes to you, an enemy and you meet in the middle. Let go to hang and swing; right-click lets go.' },
   // (last, so the palette ids of the tools before it, elements.js GEAR_ITEMS, stay put)
-  { key: 'TOOLGUN', slot: 1, name: 'Tool gun', model: 'toolgun', abbr: 'TOOL', color: '#c9ced6', touch: ['Spawn', 'Erase'],
+  { key: 'TOOLGUN', pickLiquids: true, slot: 1, name: 'Tool gun', model: 'toolgun', abbr: 'TOOL', color: '#c9ced6', touch: ['Spawn', 'Erase'],
     desc: 'Garry\'s Mod\'s tool gun: it spawns whatever you last picked in the spawn menu (Q) where you aim. Hold left-click to pour an element; click to set a construction or a spawner. Hold right-click to erase; middle-click picks up what you aim at.' },
 ];
 
