@@ -72,6 +72,11 @@ try {
   const camera = await page.evaluate(() => window.__app.camera.position.toArray());
   assert.ok(camera.every(Number.isFinite));
   if (opt('shot', null)) {
+    await page.evaluate(() => {
+      const p = window.__app.pov;
+      p.setLook(p.vehicles.headingYaw() + 0.6, -0.6);
+    });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await render(page);
     await page.screenshot({ path: opt('shot'), fullPage: true });
     await page.evaluate(() => window.__app.test.resume());
