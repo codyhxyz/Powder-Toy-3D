@@ -149,7 +149,7 @@ export function blastsWGSL(g,nativeHead,stage) {
         var exposed = false; for (var a=0u;a<3u;a++) { exposed = exposed || dOpen(p+dAxis(a)) || dOpen(p-dAxis(a)); }
         if (exposed && length(wind)>dLift(id)) { plan.flags=1u; plan.velocity=wind; }
         // §4.2: flux over an unsupported lip faster than 1m/s becomes a droplet.
-        if (k==3u && dOpen(p+vec3i(0,-1,0))) {
+        if (P.nativeJets==0u && k==3u && dOpen(p+vec3i(0,-1,0))) {
           let q=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x);
           let velocity=q * ${f(180*CELL_M/65536)};
           if (length(velocity.xz)>1.0) {

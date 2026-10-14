@@ -7,7 +7,7 @@ import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
-  tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
+  nativeJets: 'u32', tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
   center: 'vec3f', radius: 'f32', vector: 'vec3f', strength: 'f32', shift: 'vec3i', substep: 'u32', ...MODE_FIELDS,
 });
 export const storageLayout = (count, readonly = []) => Array.from({ length: count }, (_, binding) =>

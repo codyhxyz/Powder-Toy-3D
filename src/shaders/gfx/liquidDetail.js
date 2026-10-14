@@ -222,6 +222,11 @@ const AER_PROBE: f32 = 0.25;         // cells into the liquid (against n) where 
 const AER_LIQ_MIN: f32 = 0.02;       // liquid weight below which the read is no liquid's
 fn aerTap(c: vec3i) -> vec3f {
   if (outside(c)) { return vec3f(0.0); }
+  if (H.format == 2u || H.format == 3u) {
+    let core = A[slotOf(c)];
+    if (KIND(i32(core.x & 255u)) != K_LIQUID || (core.y & 0xffffffu) == 0u) { return vec3f(0.0); }
+    return vec3f(f32(core.x >> 24u) / 255.0, 1.0, 1.0);
+  }
   let w = aeration[gAerCopy * SLOTS + slotOf(c)];
   let f = vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
   return select(vec3f(0.0), vec3f(f.x, 1.0, f.w), f.y > 0.5);

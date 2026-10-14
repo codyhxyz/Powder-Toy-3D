@@ -1,3 +1,4 @@
+import { FOAM_ROWS } from '../v2/foam.js';
 import { nativeStateWGSL, materialStorageWGSL } from './v2/state.js';
 import { compactDecodeWGSL } from './compact.js';
 import { prelude, gridDims, LAYOUT, stateLayout, SEED_MAX, STAGE } from './common.js';
@@ -141,7 +142,7 @@ const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { 
 export const V2_LAYOUT = [buf(0, 'storage'), buf(1, 'storage'), buf(2, 'read-only-storage')];
 export const V2_ARGS_LAYOUT = [...V2_LAYOUT, buf(3, 'storage')];
 export const V2_MATERIAL_LAYOUT = [...V2_LAYOUT, buf(4, 'storage')];
-export const V2_LIQUID_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage'), buf(6, 'storage')];
+export const V2_LIQUID_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage'), buf(6, 'storage'), buf(7, 'storage')];
 export const V2_CONTACT_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(6, 'storage')];
 // group 1 of the import and the bridge: today's state, its flags and marks (no activity arrays)
 export const V2_STATE_OPTS = { state: 'read_write', flags: true, marks: true };
@@ -159,7 +160,7 @@ ${prelude(g, opts).replace(/\bMaterial\b/g, 'LegacyMaterial')}
 ${opts.state === 'read' ? '' : compactDecodeWGSL}
 ${nativeStateWGSL}
 ${family !== 'base' ? materialStorageWGSL : ''}
-${family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>;' : ''}
+${family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>; @group(2) @binding(7) var<storage, read_write> jetMask: array<atomic<u32>>;' : ''}
 ${family === 'contact' || family === 'liquid' ? '@group(2) @binding(6) var<storage, read_write> events: array<u32>;' : ''}
 ${V2Params.wgsl}
 @group(3) @binding(1) var<uniform> P: V2Params;
@@ -187,6 +188,7 @@ const CNT_BUSY: u32 = ${CNT.BUSY}u;
 const CNT_USE_AWAKE: u32 = ${CNT.USE_AWAKE}u;
 const CNT_USE_COLS: u32 = ${CNT.USE_COLS}u;
 const QUIET_TICKS: u32 = ${QUIET_TICKS}u;
+const FOAM_GAIN = array<f32, ${FOAM_ROWS.length}>(${FOAM_ROWS.map(r => `${r.gain}.0`).join(',')});
 const DIFFUSE_AGE: u32 = ${DIFFUSE_AGE}u;
 const G_TICK: f32 = ${G_TICK};
 const FULLU: u32 = ${FULL}u;
@@ -213,7 +215,7 @@ fn loadCell(p: vec3i) -> vec4u { return loadCore(slotOf(p)); }
 // Keep redraws separate from activity: fall fractions, gas ages and sub-threshold
 // liquid flux can keep a rule busy without changing a pixel or the legacy cache.
 fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
-  if (all(compactA(p, before) == compactA(p, after))) { return; }
+  if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) { return; }
   let b = brickOfCell(p);
   atomicStore(&act2[V2_VISIBLE + b], 1u);
   atomicStore(&act2[V2_LEGACY + b], 1u);
@@ -885,6 +887,7 @@ ${fluxWGSL}
 ${MAIN} {
 ${brickCell}
   let c = cells[s];
+  atomicStore(&jetMask[s], c.x & 0xff000000u);
   let kc = clsOf(c);
   if (kc == C_LIQUID) {
     let q = qOf(c);
@@ -914,7 +917,7 @@ ${brickCell}
       tag = mx | (min(fl - sum, 31u) << 3u);
     }
     let payload = payloadOf(c);
-    liquidScratch[s] = vec4u(kq | (tag << 16u) | (ctypeOf(c) << 24u),
+    liquidScratch[s] = vec4u(kq | (tag << 16u) | (c.y & 0xff000000u),
       (c.x & 0xffffffu) | ((payload & 255u) << 24u), cFill(c) | ((payload >> 8u) << 24u), bitcast<u32>(banks[s]));
   } else {
     liquidScratch[s] = vec4u(65535u, c.x & 0xffffffu, 0u, bitcast<u32>(banks[s]));
@@ -931,12 +934,12 @@ function gatherHead(g) {
     .replace('fn loadCore(s: u32) -> vec4u { return cells[s]; }', 'fn loadCore(s: u32) -> vec4u { return vec4u(cells[s].x, cells[s].y, cells[s].z, atomicLoad(&cells[s].w)); }')
     .replace('fn storeCore(s: u32, c: vec4u) { cells[s] = c; }', 'fn storeCore(s: u32, c: vec4u) { cells[s].x = c.x; cells[s].y = c.y; cells[s].z = c.z; atomicStore(&cells[s].w, c.w); }');
 }
-export const v2GatherWGSL = (g) => /* wgsl */ `
-${gatherHead(g)}
+// One canonical accepted-face packet contract shared with native jets.
+export const liquidTransportWGSL = /* wgsl */ `
 fn snapshot(s: u32) -> Material {
   let a = liquidScratch[s];
   let payload = (a.y >> 24u) | ((a.z >> 24u) << 8u);
-  var c = vec4u(a.y & 0xffffffu, (a.z & 0xffffffu) | (a.x & 0xff000000u), 0u, payload << 16u);
+  var c = vec4u((a.y & 0xffffffu) | (atomicLoad(&jetMask[s]) & 0xff000000u), (a.z & 0xffffffu) | (a.x & 0xff000000u), 0u, payload << 16u);
   if (cid(c) == 0u) { c.y = 0u; }
   return Material(c, bitcast<i32>(a.w));
 }
@@ -946,9 +949,7 @@ fn faceQ(p: vec3i, face: u32) -> f32 {
   if (!inGrid(owner) || !inGrid(mEdge(p + face6(i32(face))))) { return 0.0; }
   if (!awakeCell(p) || !awakeCell(mEdge(p + face6(i32(face))))) { return 0.0; }
   if (!isOpenC(snapshot(slotOf(p)).core) || !isOpenC(snapshot(slotOf(mEdge(p + face6(i32(face))))).core)) { return 0.0; }
-  let s = slotOf(owner); var q = 0.0;
-  if (axis == 2) { q = unpack2x16float(atomicLoad(&cells[s].w) & 65535u).x; }
-  else { q = unpack2x16float(cells[s].z)[axis]; }
+  let s = slotOf(owner); let q = liquidFlux(s)[axis];
   return select(q, -q, (face & 1u) != 0u);
 }
 fn rawSendOf(p: vec3i, face: u32) -> u32 {
@@ -994,6 +995,11 @@ fn sendOf(p: vec3i, face: u32) -> TransportPacket {
   }
   return TransportPacket(n, heat, fuel);
 }
+`;
+export const v2GatherWGSL = (g) => /* wgsl */ `
+${gatherHead(g)}
+fn liquidFlux(s: u32) -> vec3f { return vec3f(unpack2x16float(cells[s].z), unpack2x16float(atomicLoad(&cells[s].w) & 65535u).x); }
+${liquidTransportWGSL}
 
 ${MAIN} {
 ${brickCell}
@@ -1002,29 +1008,42 @@ ${brickCell}
   var fill = i32(cFill(src.core)); var energy = energyOf(src);
   var payload = i32(payloadOf(src.core)); var id = cid(src.core); var ct = ctypeOf(src.core);
   var strongest = 0u; var code = payloadOf(src.core);
+  var sent = 0u; var burning = 0u;
+  var foamMass = energyMul(cAge(src.core), cFill(src.core));
+  var agitation = 0.0;
   for (var face = 0u; face < 6u; face++) {
     let q = mEdge(p + face6(i32(face))); if (!inGrid(q) || !awakeCell(q)) { continue; }
     let out = sendOf(p, face);
-    let incoming = sendOf(q, face ^ 1u);
+    var incoming = TransportPacket(0u, vec2u(0u), 0u);
+    if ((atomicLoad(&jetMask[slotOf(q)]) & (1u << (face ^ 1u))) == 0u) { incoming = sendOf(q, face ^ 1u); }
     if (out.amount != 0u) {
+      sent += out.amount;
+      foamMass = energySub(foamMass, energyMul(cAge(src.core), out.amount));
       fill -= i32(out.amount); energy = energySub(energy, out.heat);
       if (!conductsNative(cid(src.core))) { payload -= i32(out.fuel); }
     }
     if (incoming.amount != 0u) {
       let other = snapshot(slotOf(q));
+      foamMass = energyAdd(foamMass, energyMul(cAge(other.core), incoming.amount));
+      if (MATERIAL_BURNS[cid(other.core)]) { burning |= other.core.y & 0x80000000u; }
       fill += i32(incoming.amount); energy = energyAdd(energy, incoming.heat);
       if (id == 0u) { id = cid(other.core); }
       if (incoming.amount > strongest && cid(src.core) == 0u) { ct = ctypeOf(other.core); strongest = incoming.amount; }
       if (!conductsNative(id)) { payload += i32(incoming.fuel); }
       else { code = max(code, payloadOf(other.core)); }
     }
+    agitation += abs(faceQ(p, face) + faceQ(p, face ^ 1u));
     if (out.amount != 0u || incoming.amount != 0u || faceQ(p, face) != 0.0) { markBusy(p); }
   }
   var next = before;
-  if (fill == 0) { next.x &= 0xffffff00u; next.y = 0u; next.w &= 65535u; }
+  if (fill == 0) { next.x &= 0x00ffff00u; next.y = 0u; next.w &= 65535u; }
   else {
     next.x = (next.x & 0xffffff00u) | id;
-    next.y = u32(fill) | (ct << 24u);
+    if (cFill(src.core) > sent && MATERIAL_BURNS[cid(src.core)]) { burning |= src.core.y & 0x80000000u; }
+    next.y = u32(fill) | (ct << 24u) | burning;
+    // TPT-style local agitation; §4.3 shear/divergence generation, every liquid.
+    let generated = u32(clamp(agitation / FULLF * 16.0 * FOAM_GAIN[id], 0.0, 32.0));
+    next = withAge(next, min(255u, energyDiv(foamMass, u32(fill)).x + generated));
     next.w = (next.w & 65535u) | (select(u32(payload), code, conductsNative(id)) << 16u);
   }
   let after = withEnergy(Material(next, src.bank), energy);
@@ -1033,6 +1052,21 @@ ${brickCell}
   atomicStore(&cells[s].w, after.core.w); banks[s] = after.bank;
   noteVisible(p, before, after.core);
   if (any(before != after.core) || src.bank != after.bank) { noteState(s); }
+}
+`;
+
+// Monahan lifetime, byte-quantized deterministic decay at native60Hz, not frame rate.
+export const v2FoamWGSL = g => `${v2Head(g, { state: false }, 'liquid')}
+${MAIN} {
+${brickCell}
+  let before = loadCore(s); if (!isLiq(before)) { return; }
+  let foam = cAge(before); if (foam == 0u) { return; }
+  let period = select(152u, 231u, cid(before) == ${E.SALTWATER}u);
+  let phase = (P.tick + s) % period;
+  let loss = ((phase + 1u) * foam) / period - (phase * foam) / period;
+  let after = withAge(before, foam - loss);
+  storeCell(p, after);
+  if (cAge(after) != 0u) { markBusy(p); }
 }
 `;
 
@@ -1091,6 +1125,7 @@ export const V2_KERNELS = [
   { name: 'v2flux', code: v2FluxWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2limit', code: v2LimitWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2gather', code: v2GatherWGSL, layouts: liquid, dispatch: perBrick },
+  { name: 'v2foam', code: v2FoamWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2invalidate', code: v2InvalidateWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_LAYOUT], dispatch: perBrick },
   { name: 'v2bridge', code: v2BridgeWGSL, layouts: withState, dispatch: perBrick },
 ];
@@ -1108,7 +1143,7 @@ export function nativeDynamicsHead(g) {
   const layout = common.slice(common.indexOf('// ---- the header and the state'), common.indexOf('// ---- the state\'s accessors'));
   const random = common.slice(common.indexOf('// ---- random streams'), common.indexOf('// ---- the shared physics tests'));
   let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
-  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)))', 'if (all(before == after))')
+  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))')
     .replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
   const rows = Array.from(v2Table());
   const ev = Array.from({ length: rows.length / 4 }, (_, i) => `vec4f(${rows.slice(i * 4, i * 4 + 4).map(f).join(',')})`);
