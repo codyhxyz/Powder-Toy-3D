@@ -104,15 +104,21 @@ body.village-on, .village-panel, .village-hud {
 .village-panel .village-sound { background: transparent; color: var(--v-muted); font-size: 13px; padding: 6px 10px; min-height: 44px; }
 .village-sound .village-icon { width: 22px; height: 22px; }
 /* HUD: small stationery labels and controller-style prompts, not app chrome. */
-.village-hud { position: fixed; inset: auto 24px 25px; z-index: 7; display: flex; align-items: end; justify-content: space-between; gap: 14px; pointer-events: none; }
+.village-hud { position: fixed; inset: auto 24px 25px; z-index: 7; display: flex; align-items: end; justify-content: space-between; gap: 14px; flex-wrap: wrap; pointer-events: none; }
 .village-hud[hidden] { display: none; }
+.village-kit { display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 100%); }
+.village-tools { display: flex; flex-wrap: wrap; gap: 5px; pointer-events: auto; }
+.village-tools[hidden], .village-tool-help[hidden] { display: none; }
+.village-tools button { display: flex; align-items: center; gap: 5px; min-height: 48px; padding: 8px 12px; font-size: 13px; background: var(--v-cream); }
+.village-tools button[aria-pressed=true] { background: var(--v-mint); box-shadow: inset 0 0 0 2px var(--v-green); }
+.village-tool-help { padding: 7px 12px; border-radius: 14px; background: var(--v-cream); font-size: 11px; }
 .village-place { display: flex; align-items: center; gap: 10px; padding: 12px 22px 13px 16px; background: #fff9e6ed; border-radius: 39% 29% 34% 24% / 45% 49% 38% 48%; box-shadow: 0 5px 18px #3345261c; }
 .village-place > .village-icon { color: var(--v-green); width: 28px; height: 28px; transform: rotate(-14deg); }
 .village-location { font-size: 19px; font-weight: 900; }
 .village-place small { display: block; margin-top: 1px; font-size: 11px; color: var(--v-muted); }
 .village-place .village-touchhelp { display: none; }
 .village-controls { display: flex; flex-direction: column; align-items: end; gap: 8px; max-width: 65%; pointer-events: auto; }
-.village-controls .action-buttons { justify-content: end; gap: 12px; }
+.village-controls .action-buttons { justify-content: end; gap: 8px; flex-wrap: wrap; }
 .village-controls .action-button { flex-direction: row-reverse; gap: 9px; color: var(--v-ink); background: var(--v-cream); border-radius: 30px 26px 29px 24px; box-shadow: 0 4px 12px #243f2f24; }
 .village-controls .action-key { display: grid; place-items: center; width: 28px; height: 28px; border: 0; padding: 0; border-radius: 50%; background: var(--v-green); color: var(--v-paper); font: 900 15px var(--v-font); }
 .village-controls [data-action=interact], .village-controls [data-action=drop] { background: var(--v-mint); color: #234c41; }
@@ -120,7 +126,7 @@ body.village-on, .village-panel, .village-hud {
 .village-controls .action-button:disabled .action-key { background: #8b7462; }
 .village-action-hint { max-width: 29ch; padding: 6px 13px; border-radius: 18px; background: var(--v-cream); font-size: 12px; }
 .village-action-hint[hidden] { display: none; }
-body.village-on .game-hud, body.village-on .hotbar, body.village-on .hb-held, body.village-on .pov-cross, body.village-on .pov-vitals, body.village-on .pov-hint, body.village-on .pov-lock, body.village-on .pov-use, body.village-on .touch-tool-name, body.village-on .touch-actions .touch-row:not(:last-child) { display: none !important; }
+body.village-on .game-hud, body.village-on .hotbar, body.village-on .hb-held, body.village-on .pov-vitals, body.village-on .pov-hint, body.village-on .pov-lock, body.village-on .pov-use, body.village-on .touch-tool-name, body.village-on .touch-actions .touch-row:not(:last-child) { display: none !important; }
 body.village-menu-open .village-hud, body.village-menu-open .pov-touch, body.village-menu-open .toolbar, body.village-menu-open .brand, body.village-menu-open .stats { visibility: hidden; }
 body.village-on .toolbar { background: #fff9e6ed; color: var(--v-ink); border-color: transparent; box-shadow: 0 4px 15px #33452620; border-radius: 19px; font-family: var(--v-font); }
 body.village-on .toolbar .icon-btn, body.village-on .camera-select { color: #6a6550; }
@@ -178,6 +184,9 @@ body.village-on .touch-move-label { color: var(--v-ink); }
   .village-controls { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(max(14px, env(safe-area-inset-bottom)) + 114px); max-width: min(240px, calc(100vw - 156px)); }
   .village-controls .action-buttons { flex-direction: column; align-items: stretch; width: 100%; gap: 8px; }
   .village-controls .action-button { min-height: 48px; font-size: 15px; padding: 10px 18px; }
+  .village-tools { gap: 4px; }
+  .village-tools button { flex: 1; justify-content: center; padding: 8px 10px; }
+  .village-kit { max-width: min(350px, 100%); }
   .village-controls .action-key, .village-keycap, .village-footer-hint { display: none; }
   .village-chat-hint span::before { content: 'Tap a choice '; }
   .village-chat-hint span { font-size: 0; }

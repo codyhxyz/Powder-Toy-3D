@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { h } from '../ui/dom.js';
 import { createActionButtons } from '../ui/actionButtons.js';
 import { HAND_REACH } from './constants.js';
+import { CELL_M } from '../scale.js';
 
 // Look at a thing and press E: Noita's pick-up rule (wands, potions, a Holy
 // Mountain's perks and shop) and Garry's Mod's +use key. Whatever is under the
@@ -15,6 +16,7 @@ import { HAND_REACH } from './constants.js';
 // refuses (too poor, full hands): the prompt stays up.
 
 const REACH = HAND_REACH * 1.5;   // cells from the eye: a bit past the hands (Noita picks up from a step away)
+const SHRINE_REACH = 1.2 / CELL_M; // Noita's altar choice: stand at the plinth, not within mining reach.
 const MIN_RADIUS = 0.75;          // cells: the smallest target the crosshair has to land on
 
 export function createInteract() {
@@ -22,7 +24,7 @@ export function createInteract() {
   const title = h('b.pov-use-title');
   const lines = h('span.pov-use-lines');
   const actions = createActionButtons('Interaction');
-  const prompt = h('div.pov-use.panel', { role: 'status', 'aria-live': 'polite' }, title, lines, actions.root);
+  const prompt = h('div.pov-use', { role: 'status', 'aria-live': 'polite' }, title, lines, actions.root);
   document.body.append(prompt);
   const to = new THREE.Vector3();
   let focus = null, shownKey = '';
@@ -59,7 +61,7 @@ export function createInteract() {
           // Noita's shrine choice: stand by the desired perk, no precise aiming.
           if (t.proximity) {
             const distance = to.length();
-            if (distance <= REACH && distance < best) { best = distance; focus = t; }
+            if (distance <= SHRINE_REACH && distance < best) { best = distance; focus = t; }
             continue;
           }
           const along = to.dot(dir);
