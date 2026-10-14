@@ -38,6 +38,21 @@ The run reported no ownership-inspection failure and released its slot after
 8633 ms. Trace: `/tmp/v2-native-boot-profile-ac2f993.jsonl`; lease:
 `~/.cache/tpt-headless/runs/29072-29094.json`.
 
+Subsequent full-engine diagnostics also returned no outcome assertions:
+
+| Lease | Measured slot occupancy | Result |
+| --- | ---: | --- |
+| `55232-55259` | 8684 ms | Watchdog cleanup |
+| `73121-73143` | 8706 ms | Contact pipeline remained pending |
+| `90381-90407` | 3531 ms | Ownership query timed out |
+| `98284-98520` | 8714 ms | Bounded compile queue did not finish startup |
+| `7558-7580` | 8638 ms | Runtime-backed contact loops did not finish startup |
+
+All five lease reports confirm release. None counts as a physics pass.
+At `8c1c1aa`, all 33 v2 CPU suites and the production build passed.
+Read-only contact-table buffer work remains under implementation; its GPU
+compile cost has not been measured.
+
 ## What exists
 
 `src/v2/physics.js` drives `src/shaders/v2.js` behind `?physics=v2`.

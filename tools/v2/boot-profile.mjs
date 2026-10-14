@@ -26,6 +26,10 @@ try {
     gpu.kernel=desc=>{
       note({stage:desc.build==='manual'?'deferred':'queued',name:desc.name});
       const k=original(desc);
+      if(desc.build==='idle' || desc.build==='manual') {
+        const build=k.build.bind(k);
+        k.build=()=>{if(k.state==='idle')note({stage:'building',name:desc.name});return build();};
+      } else note({stage:'building',name:desc.name});
       k.ready.then(()=>note({stage:'ready',name:desc.name}),e=>note({stage:'failed',name:desc.name,error:String(e)}));
       return k;
     };
