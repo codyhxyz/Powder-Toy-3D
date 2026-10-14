@@ -1,15 +1,51 @@
-/* vehicles (src/pov/vehicles/index.js): the E prompt, and health and speed while driving */
-.veh-hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; font: 600 13px/1.2 system-ui, sans-serif; color: #f3efe6; }
+/* Driving keeps health left, hull right and the scene clear. No boarding toast. */
+.veh-hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; font: 600 13px/1.3 var(--ui, system-ui); color: #f3efe6; }
 .veh-hud.on { display: block; }
 body.pov-nohud .veh-hud { display: none; }
-.veh-prompt { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); display: none; padding: 6px 10px; border-radius: 8px; background: rgba(12, 12, 16, 0.55); text-shadow: 0 1px 2px #000; }
+.veh-hud [hidden] { display: none !important; }
+.veh-hud kbd { display: inline-block; min-width: 18px; padding: 1px 4px; border-radius: 4px; background: #f3efe6; color: #15151a; text-align: center; font: 700 11px/16px var(--ui, system-ui); }
+.veh-prompt { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); display: none; padding: 6px 10px; border-radius: 6px; background: rgba(12, 12, 16, 0.72); }
 .veh-prompt.on { display: block; }
-.veh-prompt kbd { display: inline-block; min-width: 18px; padding: 1px 5px; border-radius: 4px; background: #f3efe6; color: #15151a; text-align: center; font: 700 12px/16px system-ui, sans-serif; }
-.veh-panel { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%); display: none; width: 240px; padding: 8px 10px; border-radius: 10px; background: rgba(12, 12, 16, 0.55); }
-.veh-panel.on { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center; }
-.veh-panel b { font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px; opacity: 0.85; }
-.veh-panel em { font-style: normal; font-variant-numeric: tabular-nums; text-align: right; }
-.veh-panel i, .veh-panel u { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
-.veh-panel i s, .veh-panel u s { display: block; height: 100%; background: #7fd36a; text-decoration: none; transition: width 120ms linear; }
-.veh-panel i s.low { background: #e5533d; }
-.veh-panel u s { background: #5ff0ff; }
+.veh-panel { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); display: none; box-sizing: border-box; width: 192px; padding: 8px 10px; border-radius: 6px; background: rgba(12, 12, 16, 0.72); }
+.veh-panel.on { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: center; }
+.veh-name { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.veh-speed { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.veh-meter { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; font-size: 11px; }
+.veh-meter i { flex: 1; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.18); overflow: hidden; }
+.veh-meter s { display: block; height: 100%; background: #7fd36a; text-decoration: none; transform-origin: left; transition: transform 120ms linear; }
+.veh-meter s.low { background: #e5533d; }
+.veh-boost s { background: #5ff0ff; }
+.veh-health { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
+.veh-exit { grid-column: 1 / -1; text-align: right; font-size: 11px; }
+.veh-warning { grid-column: 1 / -1; color: #f3ce85; font-size: 11px; }
+.veh-help { position: absolute; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: calc(100% - 496px); width: max-content; box-sizing: border-box; padding: 6px 10px; border-radius: 6px; background: rgba(12, 12, 16, 0.72); font-size: 12px; text-align: center; opacity: 0; transition: opacity 350ms ease-out; }
+.veh-help.on { opacity: 1; }
+.veh-touch-help { display: none; }
+
+/* Presentation only: leave the underlying on-foot visibility/state untouched. */
+body.pov-driving :is(.industry, .pov-hint, .hotbar, .hb-held, .pov-use, .pov-cross, .pov-nades, .readout) { display: none !important; }
+body.pov-nohud .industry { display: none !important; }
+/* The developer overlay gets the space above the driving HUD, not the vitals. */
+body.pov-driving .prof { top: 80px; bottom: auto; max-width: calc(100vw - 28px); max-height: max(24px, calc(100dvh - 280px)); box-sizing: border-box; }
+@media (max-width: 760px) {
+  .veh-panel { right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); width: 176px; }
+  .veh-help { bottom: max(132px, calc(env(safe-area-inset-bottom) + 120px)); max-width: calc(100% - 24px); }
+}
+@media (max-width: 400px) {
+  .veh-panel { width: calc(50% - 20px); padding: 7px 8px; gap: 5px; }
+  .veh-name { font-size: 10px; letter-spacing: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .veh-speed { font-size: 12px; }
+  body.pov-driving .pov-vitals { box-sizing: border-box; width: calc(50% - 20px); padding: 8px; }
+}
+@media (hover: none) and (pointer: coarse) {
+  /* Touch buttons/stick retain the bottom 128px. Both health readouts sit above. */
+  .veh-panel { bottom: calc(max(14px, env(safe-area-inset-bottom)) + 128px); }
+  body.pov-driving .pov-vitals { bottom: calc(max(14px, env(safe-area-inset-bottom)) + 128px); }
+  .veh-help { bottom: calc(max(14px, env(safe-area-inset-bottom)) + 238px); max-width: calc(100% - 24px); }
+  .veh-keys, .veh-exit { display: none; }
+  .veh-touch-help { display: inline; }
+  body.pov-driving .prof { max-height: max(24px, calc(100dvh - 370px)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .veh-help, .veh-meter s { transition: none; }
+}

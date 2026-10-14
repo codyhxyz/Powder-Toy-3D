@@ -14,6 +14,7 @@ import { createLook } from './look.js';
 import { JEEP, buildJeep } from './jeep.js';
 import { HOVERBIKE, buildHoverbike } from './hoverbike.js';
 import { BOAT, buildBoat } from './boat.js';
+import { createVehicleHud } from './hud.js';
 import './vehicles.css';
 
 // Vehicles for first person (docs/vehicles.md): a Warthog-style jeep and a
@@ -90,7 +91,7 @@ export function createVehicles(env) {
   const root = new THREE.Group();
   root.name = 'vehicles';
   env.scene.add(root);
-  const hud = createHud();
+  const hud = createVehicleHud();
   let frameInfo = null;
 
   // ---- grid ↔ metres
@@ -184,7 +185,7 @@ export function createVehicles(env) {
     return v;
   }
   function remove(v) {
-    if (seated === v) seated = null;
+    if (seated === v) dismount(frameInfo?.player);
     const placement = homes.get(v.home)?.placement;
     if (placement?.oneShot && placement.snapshot) {
       if (v.alive) {
@@ -380,9 +381,7 @@ export function createVehicles(env) {
     v.driver = PLAYER;
     v.impl.driver.visible = true;
     player.vel.set(0, 0, 0);
-    env.hud?.toast?.(v.kind === 'boat'
-      ? 'Boat: W/S forward/reverse · A/D steer · motor needs water · E get out'
-      : `${v.spec.name}: W/S drive · A/D steer · Space ${v.kind === 'jeep' ? 'handbrake' : 'hop'} · Shift boost · E get out`);
+    hud.board(v.kind);
     povEvents.emit('vehicle:enter', { id: v.id, kind: v.kind });
   }
   // Out beside the driver's door, else the other side, behind, in front, on top: the first spot with room for the body.
@@ -390,6 +389,7 @@ export function createVehicles(env) {
     const v = seated;
     if (!v) return;
     seated = null;
+    hud.leave();
     v.driver = null;
     v.impl.driver.visible = false;
     povEvents.emit('vehicle:exit', { id: v.id, kind: v.kind });
@@ -521,7 +521,12 @@ export function createVehicles(env) {
     root.visible = true;
     if (dt > 0 && (moving || vehicles.length)) env.requestRender?.();
     // the HUD: what you drive, or what E would do
-    if (seated) hud.show({ seated: seated.spec.name, health: Math.max(0, seated.health / seated.spec.HEALTH), kmh: Math.abs(seated.impl.speed) * MS, boost: seated.impl.state.boost });
+    if (seated) hud.show({
+      seated: seated.spec.name, health: seated.health / seated.spec.HEALTH,
+      kmh: Math.abs(seated.impl.speed) * MS, boost: seated.impl.state.boost,
+      needsWater: seated.kind === 'boat' && !seated.impl.state.motorWet
+        && (Math.abs(drive.throttle) > 0.05 || Math.abs(seated.impl.speed) < 0.5),
+    });
     else if (f.live && f.player) {
       const v = nearest(f.player);
       hud.show(v ? { prompt: !v.alive ? null : upness(v) < OVERTURNED_UP ? `Flip the ${v.spec.name.toLowerCase()}` : v.kind === 'hoverbike' ? 'Ride the hoverbike' : `Drive the ${v.spec.name.toLowerCase()}` } : null);
@@ -605,7 +610,7 @@ export function createVehicles(env) {
     // leaving POV (or a new scene): nobody drives, and the HUD goes
     reset(player) {
       if (seated) dismount(player);
-      hud.show(null);
+      hud.leave();
       root.visible = true;   // switching camera never resets an entity
     },
     worldReplaced() {
@@ -625,35 +630,3 @@ export function createVehicles(env) {
   };
 }
 const CHASE_WALL_GAP = 0.4;              // m the chase camera keeps off a wall behind it
-
-// ---- the HUD: a prompt near a vehicle, the vehicle's health and speed while driving
-function createHud() {
-  const el = document.createElement('div');
-  el.className = 'veh-hud';
-  el.innerHTML = '<div class="veh-prompt"><kbd>E</kbd> <span></span></div><div class="veh-panel"><b></b><i><s></s></i><em></em><u><s></s></u></div>';
-  document.body.append(el);
-  const prompt = el.querySelector('.veh-prompt'), promptText = prompt.querySelector('span');
-  const panel = el.querySelector('.veh-panel'), name = panel.querySelector('b'), bar = panel.querySelector('i s'), speed = panel.querySelector('em');
-  const boostBar = panel.querySelector('u'), boostFill = boostBar.querySelector('s');
-  let last = '';
-  return {
-    show(s) {
-      const key = s ? JSON.stringify(s, (k, v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v)) : '';
-      if (key === last) return;
-      last = key;
-      el.classList.toggle('on', !!s);
-      prompt.classList.toggle('on', !!s?.prompt);
-      panel.classList.toggle('on', !!s?.seated);
-      if (s?.prompt) promptText.textContent = s.prompt;
-      if (s?.seated) {
-        name.textContent = s.seated;
-        bar.style.width = `${s.health * 100}%`;
-        bar.classList.toggle('low', s.health < 0.3);
-        speed.textContent = `${Math.round(s.kmh)} km/h`;
-        boostBar.style.display = s.boost === undefined ? 'none' : '';
-        boostFill.style.width = `${(s.boost ?? 0) * 100}%`;
-      }
-    },
-    dispose() { el.remove(); },
-  };
-}

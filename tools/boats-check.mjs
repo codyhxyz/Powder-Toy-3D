@@ -58,9 +58,9 @@ try {
   });
   await page.keyboard.press('e');
   await page.waitForFunction(() => window.__app.pov.vehicles.seated?.kind === 'boat');
-  await page.waitForFunction(() => document.querySelector('.veh-panel b')?.textContent === 'Boat');
-  assert.equal(await page.locator('.veh-panel b').textContent(), 'Boat');
-  assert.equal(await page.locator('.veh-panel u').isVisible(), false, 'boat has no boost meter');
+  await page.waitForFunction(() => document.querySelector('.veh-name')?.textContent === 'Boat');
+  assert.equal(await page.locator('.veh-name').textContent(), 'Boat');
+  assert.equal(await page.locator('.veh-boost').isVisible(), false, 'boat has no boost meter');
   await page.keyboard.down('w');
   await page.waitForFunction(() => window.__app.pov.vehicles.seated.impl.speed > 2);
   await page.keyboard.down('a');

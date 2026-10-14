@@ -33,6 +33,10 @@ export function createIndustry(app) {
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode;
   // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
   const active = () => !app.win && ['sandbox','factory'].includes(app.gamemode);
+  // Keep machines running and preserve the build selection, but driving has no
+  // construction input or placement ghost. Exit restores the previous console.
+  const driving = () => !!app.pov?.vehicles?.seated;
+  const isBuilding = () => building && active() && !driving();
   const factory = () => app.gamemode === 'factory' && app.settings.preset === 'quarry';
   const construction = createConstruction(app);
   const physics = createIndustryPhysics({ getSim: () => app.sim,
@@ -54,10 +58,10 @@ export function createIndustry(app) {
     : pending ? fail('Construction is finishing') : devices.length >= INDUSTRY_LIMIT ? fail('128 machines is the limit')
     : factory() ? progression?.canBuild(type) ?? fail('The Quarry is still loading') : { ok: true };
   const state = () => ({ devices: devices.map(d => ({...d})), progression: factory() ? progression?.snapshot() ?? null : null,
-    active: active(), factory: factory(), selected, building: building && active(), rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
+    active: active(), factory: factory(), selected, building: isBuilding(), rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
   const report = result => { if (!result.ok) app.hud.toast(result.reason); app.requestRender(); return result; };
   const toggle = value => {
-    if (!active()) return;
+    if (!active() || driving()) return;
     building = value ?? !building; app.painting = false;
     if (building) { app.leaveBuild(); app.dock.setCollapsed(true); }
     app.requestRender();
@@ -121,7 +125,7 @@ export function createIndustry(app) {
     filter: value => { filter = value; }, power: value => { powered = factory() ? false : value; },
   });
   const key = e => {
-    if (!active() || app.isTyping() || (e.target?.tagName === 'SELECT' && e.code !== 'Escape') || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!active() || driving() || app.isTyping() || (e.target?.tagName === 'SELECT' && e.code !== 'Escape') || e.ctrlKey || e.metaKey || e.altKey) return;
     const buildKey = e.code === 'KeyB' && (building || app.gamemode === 'factory' || e.shiftKey);
     if (buildKey || (building && ['KeyR','Escape'].includes(e.code))) {
       e.preventDefault(); e.stopImmediatePropagation();
@@ -129,7 +133,7 @@ export function createIndustry(app) {
     }
   };
   const pointer = e => {
-    if (!building || !active() || e.target !== app.canvas || e.altKey || ![0,2].includes(e.button)) return;
+    if (!isBuilding() || e.target !== app.canvas || e.altKey || ![0,2].includes(e.button)) return;
     if (app.pov?.active && !app.pov.locked) return; // first click captures the mouse
     e.preventDefault(); e.stopImmediatePropagation();
     if (e.type === 'pointerdown') { if (e.button === 2) removeAimed(); else placeAimed(); }
@@ -150,7 +154,7 @@ export function createIndustry(app) {
     // Physics runs on actual steps, never on paused UI/ghost frames.
     if (stepping && active() && !pending) { physics.step(Math.min(Math.max(dt,0),.05), devices); animation += Math.min(dt,.05); }
     candidate = null;
-    if (building && app.hover.valid) {
+    if (isBuilding() && app.hover.valid) {
       const h = app.hover, xyz = [h.cell.x,h.cell.y,h.cell.z].map(Math.floor);
       const axis = Math.floor(h.face/2), sign = h.face % 2 === 0 ? 1 : -1;
       if (h.id >= 0) xyz[axis] += sign > 0 ? 1 : -(axis === 1 ? deviceHeight({type:selected}) : 4);
@@ -177,7 +181,7 @@ export function createIndustry(app) {
   }
   let lastProbe = fail('Checking clearance…');
   const api = {
-    update, place, remove, modeChanged, get state() { return state(); }, get building() { return building && active(); },
+    update, place, remove, modeChanged, get state() { return state(); }, get building() { return isBuilding(); },
     get pending() { return pending || !!physics.pending; },
     reset({ starters = false } = {}) {
       if (factory()) app.hud.dismissHint?.(); // The Sandbox pouring hint is false on the initial Factory boot too.
