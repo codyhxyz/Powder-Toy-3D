@@ -31,7 +31,7 @@ try {
   await page.locator('#view').click();
   await page.waitForFunction(() => audioCheck.stats().sprintMusic?.playing);
   const low = await page.evaluate(() => audioCheck.stats().sprintMusic);
-  assert.ok(low.cutoffHz > 500 && low.cutoffHz < 600);
+  assert.ok(low.cutoffHz > 120 && low.cutoffHz < 130);
   await page.evaluate(() => { audioCheck.state.player.sprintRush = 1; });
   await page.waitForFunction(() => audioCheck.stats().sprintMusic?.cutoffNowHz > 8000);
   const high = await page.evaluate(() => audioCheck.stats().sprintMusic);

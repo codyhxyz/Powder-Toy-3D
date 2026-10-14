@@ -145,7 +145,7 @@ export function createHelp(onClose) {
         row('Show or hide elements', 'T'),
         row('Chat, when playing together', 'T'),
         row(CLASSES_ENABLED ? 'Settings (in Siege, the gear)' : 'Settings', ','),
-        row('Screenshot', 'P'),
+        row('Screenshot', 'F2'),
         row('Scoreboard (hold)', 'Tab'),
         row('Save the game (in the body, ⌘ only)', '⌘', 'S'),
         row('Saves: load one, export it, open a file', '⌘', 'O'),

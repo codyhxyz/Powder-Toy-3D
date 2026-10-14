@@ -6,8 +6,8 @@ export const SPRINT_MUSIC = Object.freeze({
 export function sprintMusicProfile(rush, enabled = true) {
   const r = Number.isFinite(rush) ? Math.max(0, Math.min(1, rush)) : 0;
   return {
-    // Exponential frequency travel sounds even; the gain is continuous at rest.
-    cutoffHz: 250 * 40 ** r,
+    // Keep the launch bass-only, then open linearly with speed: no second ease-in on top of sprint's.
+    cutoffHz: 125 + 9875 * Math.max(0, (r - 0.2) / 0.8),
     gain: enabled ? (0.22 + 0.24 * r) * r / (r + 0.08) : 0,
   };
 }
@@ -18,7 +18,7 @@ export function createSprintMusic(ctx, input) {
   const filter = ctx.createBiquadFilter(), gain = ctx.createGain();
   filter.type = 'lowpass';
   filter.Q.value = 0.5;
-  filter.frequency.value = 250;
+  filter.frequency.value = sprintMusicProfile(0).cutoffHz;
   gain.gain.value = 0;
   filter.connect(gain).connect(input);
   let buffer = null, error = null, epoch = ctx.currentTime;

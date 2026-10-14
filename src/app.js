@@ -1928,7 +1928,8 @@ addEventListener('keydown', (e) => {
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
   else if (k === ',') actions.toggleSettings();
   else if (k === '?') actions.toggleHelp();
-  else if (k === 'p' || k === 'P') actions.screenshot();
+  // Minecraft Java's screenshot key; holding it must not download a stream of images.
+  else if (k === 'F2') { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
   else if (k === 'Escape') {
     const overlay = eyedropper || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
     shapeDrag = null;   // a line or box being dragged is dropped

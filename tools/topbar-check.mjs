@@ -9,7 +9,7 @@ assert.match(app, /text: 'Save game'/);
 assert.match(app, /text: 'Keyboard shortcuts'/);
 assert.match(app, /type: 'views', key: 'view', label: 'Shader', options: VIEWS, renderThumb/);
 assert.match(app, /openShaders:.*setSettingsOpen\(true\); settingsPanel.focusViews\(\)/);
-assert.match(app, /k === 'p' \|\| k === 'P'\) actions.screenshot\(\)/);
+assert.match(app, /k === 'F2'\) \{ e.preventDefault\(\); if \(!e.repeat\) actions.screenshot\(\); \}/);
 assert.doesNotMatch(app, /toolbar\.(sync|close|isOpen)/);
 
 const url = process.argv[2] ?? 'http://127.0.0.1:54339';

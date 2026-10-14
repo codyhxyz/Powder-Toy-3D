@@ -37,7 +37,7 @@ const basin = (liquid, surface, wall = E.GLASS, top = 22, inset = 1) => (x, y, z
 // each element's own (ambient air) unless temp(id, t) says, pressure from P(x, y, z, t) (t: the
 // body's seconds), its edits taken, its transfers not issued (a wound's bleed isn't spilled: as
 // while the transfer's kernel builds)
-function makeBody(cell, { temp = null, P = null } = {}, n = [64, 64, 64]) {
+function makeBody(cell, { temp = null, P = null, dt = DT } = {}, n = [64, 64, 64]) {
   let body = null;
   const sim = { g: { nx: n[0], ny: n[1], nz: n[2] }, frame: 0, gravity: 0.025, touchCentres(lo, hi) { return { lo, hi }; }, paint() {} };
   setPovGpu(sim, {
@@ -62,10 +62,10 @@ function makeBody(cell, { temp = null, P = null } = {}, n = [64, 64, 64]) {
   for (const k of ['hurt', 'death']) body.on(k, (d) => body.events.push([k, d?.cause ?? '']));
   body.t = 0;
   const run = async (secs, input = {}, each = null) => {
-    for (let t = 0; t < secs; t += DT) {
+    for (let t = 0; t < secs; t += dt) {
       sim.frame += STEPS;
-      body.update(DT, input);
-      body.t += DT;
+      body.update(dt, input);
+      body.t += dt;
       each?.(body);
       await new Promise((r) => setImmediate(r));
     }
@@ -89,10 +89,31 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
   const float = { meanFeetY: +mean.toFixed(2), headTopMinusSurface: +(mean + BODY_HEIGHT - SURFACE).toFixed(2), range: +(Math.max(...tail) - Math.min(...tail)).toFixed(2) };
   // (the body, 9.8 against water's 10, floats with about 2% of it out: its head at the surface)
   check('water: left alone it floats, the head at the surface, settled', Math.abs(float.headTopMinusSurface) < 1.5 && float.range < 1 && body.inLiquid, float);
-  let out = null;
+  let out = null, flewOut = false, underwaterJet = false;
   const t0 = body.t;
-  await run(3, { jump: true }, (b) => { if (out === null && !b.headInLiquid) out = { after: +(b.t - t0).toFixed(2), feetY: +b.pos.y.toFixed(2) }; });   // (held on, the jetpack takes over: the flight after is not what's checked)
+  await run(3, { jump: true }, (b) => {
+    if (out === null && !b.headInLiquid) out = { after: +(b.t - t0).toFixed(2), feetY: +b.pos.y.toFixed(2) };
+    if (b.jetting && b.pos.y > SURFACE) flewOut = true;
+    if (b.jetting && b.headInLiquid) underwaterJet = true;
+  });
   check('water: swimming up puts the head out', out !== null, out ?? {});
+  check('water: holding jump hands off to the jetpack and clears the pool', flewOut, { feetY: +body.pos.y.toFixed(2) });
+  check('water: the jetpack does not fire with the head submerged', !underwaterJet);
+}
+
+// At normal frame rates, swimming can settle with the head dry but the waist still submerged.
+for (const fps of [60, 120]) {
+  const SURFACE = 16, { body, run } = makeBody(basin(E.WATER, SURFACE), { dt: 1 / fps });
+  body.spawn(V(32, 12, 32));
+  let surfacedJet = false, flewOut = false, underwaterJet = false;
+  await run(3, { jump: true }, (b) => {
+    if (b.jetting && !b.headInLiquid && b.submerged >= 0.5) surfacedJet = true;
+    if (b.jetting && b.pos.y > SURFACE) flewOut = true;
+    if (b.jetting && b.headInLiquid) underwaterJet = true;
+  });
+  check(`water ${fps}fps: jetpack starts as the head clears the surface`, surfacedJet);
+  check(`water ${fps}fps: holding jump escapes without releasing the button`, flewOut, { feetY: +body.pos.y.toFixed(2) });
+  check(`water ${fps}fps: no jetpack underwater`, !underwaterJet);
 }
 
 // ---- oil: lighter than the body (8 against 9.8), so it sinks to the floor

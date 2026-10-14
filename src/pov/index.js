@@ -93,7 +93,7 @@ const CHASE_IDLE_S = 1.2;               // s without mouse look before it swings
 const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
 // In a TF2-style match (Siege) comma is the class key instead (classPicker.js, classesOn below).
-const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
+const PASS_KEYS = new Set(['Escape', '?', ',', 'F2']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
