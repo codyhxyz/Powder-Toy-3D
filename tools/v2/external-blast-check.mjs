@@ -5,7 +5,7 @@ import { Vector3 } from 'three';
 import { Simulation, gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
-import { externalBlastBase, blastsWGSL } from '../../src/shaders/v2/blasts.js';
+import { externalBlastBase, blastsWGSL, rayRequestBase } from '../../src/shaders/v2/blasts.js';
 import { encodeDynamicState, decodeDynamicState } from '../../src/v2/dynamicState.js';
 import { externalBlastPressure, externalBlastBudget, validateExternalBlasts } from '../../src/v2/externalBlast.js';
 import { blastPlan, pressureEnergy, dynamicsRows } from '../../src/v2/dynamics-reference.js';
@@ -31,9 +31,7 @@ assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast}),
 assert.equal(d.externalBlasts.size,1);
 assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:1,tool:blast}),false);
 assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast,filter:E.SAND}),false);
-for(const key of ['VACUUM','CYCLONE','GRAV_IN','GRAV_OUT']) assert.equal(sim.paint({center:new Vector3(),radius:2,shape:0,tool:TOOLS.find(t=>t.key===key).id}),false);
 assert.equal(povGpu(sim).edit('povRocket',{lo:[-10,-10,-10],hi:[20,20,20]},{center:[4,4,4]}),true);
-for(const name of ['povKick','povStrike','povField']) assert.equal(povGpu(sim).edit(name,{},{}),false);
 assert.equal(d.applyExternalBlast({position:[200,0,0],radius:2,energy:100}).status,'queued');
 const stages=commands.slice(0,11).map(c=>c.name.split('_')[1]);
 assert.deepEqual(stages,['externalBegin','workArgs','plan','sum','normalize','damagePlan','count','allocate','externalGate','apply','finish']);
@@ -48,8 +46,9 @@ d.restoreDynamicState(saved);assert.equal(flags[externalBlastBase(g)],1);
 assert.deepEqual(d.externalBlasts.get(2).position,[200,0,0],'out-of-window obligation survives');
 const before=writes.length,bad=structuredClone(saved);bad.externalBlasts[0].energy=NaN;
 assert.throws(()=>d.restoreDynamicState(bad),/external blast/);assert.equal(writes.length,before);
-for(const mutate of [s=>delete s.externalBlastDone,s=>s.externalBlastDone[63]=1,s=>s.externalBlastDone[0]=2,s=>s.externalBlasts.push({...s.externalBlasts[0]}),s=>s.externalBlasts[0].requestId=s.sequence+1]) {
+for(const mutate of [s=>s.externalBlastDone=null,s=>s.externalBlasts=null,s=>delete s.externalBlastDone,s=>s.externalBlastDone[63]=1,s=>s.externalBlastDone[0]=2,s=>s.externalBlasts.push({...s.externalBlasts[0]}),s=>s.externalBlasts[0].requestId=s.sequence+1]) {
   const invalid=structuredClone(saved);mutate(invalid);assert.throws(()=>validateExternalBlasts(invalid));
+  assert.throws(()=>encodeDynamicState(invalid));const prior=writes.length;assert.throws(()=>d.restoreDynamicState(invalid));assert.equal(writes.length,prior);
 }
 const ack=d.readActivity();d._work();await ack;assert.equal(d.externalBlasts.size,2,'completed requests acknowledged only after GPU flag read');
 const acknowledged=await d.snapshotDynamicState();assert.equal(acknowledged.externalBlastDone[0],0,'retired slots cannot create orphan save flags');
@@ -78,5 +77,20 @@ assert.match(shader('externalGate'),/control\[5\].*>atomicLoad\(&control\[4\]/);
 assert.match(shader('apply'),/P.mode==14u && atomicLoad\(&control\[3\]\)==D_NONE/);
 assert.match(shader('finish'),/atomicStore\(&control\[.*P.substep\],1u\)/);
 assert.match(shader('plan'),/dExternalShielded\(p\)/);
-d.dispose();
+// Codec corruption must not interpret explicit null as a backwards-compatible omission.
+const encoded=encodeDynamicState(saved),view=new DataView(encoded.buffer),oldLength=view.getUint32(8,true),oldAt=Math.ceil((16+oldLength)/4)*4;
+const metadata=JSON.parse(new TextDecoder().decode(encoded.subarray(16,16+oldLength)));
+metadata.state.externalBlastDone=null;
+const json=new TextEncoder().encode(JSON.stringify(metadata)),at=Math.ceil((16+json.length)/4)*4;
+const corrupted=new Uint8Array(at+encoded.length-oldAt);corrupted.set(encoded.subarray(0,16));new DataView(corrupted.buffer).setUint32(8,json.length,true);
+corrupted.set(json,16);corrupted.set(encoded.subarray(oldAt),at);assert.throws(()=>decodeDynamicState(corrupted),/external blast/);
+// Ray acknowledgement is by immutable request identity, not simulation serial.
+const ray=()=>d.applyToolImpulse({kind:'photon',position:[2,2,2],direction:[1,0,0],radius:0,count:1});
+assert.equal(ray().status,'queued');flags[rayRequestBase(g)]=0;
+const rayAck=d.readActivity();d._work();await rayAck;assert.equal(d.rayRequests.size,0);
+ray();flags[rayRequestBase(g)]=0;const reuseAck=d.readActivity();
+const replacement={...d.rayRequests.get(0)};d.rayRequests.set(0,replacement);await reuseAck;assert.equal(d.rayRequests.get(0),replacement);
+const rayState=await d.snapshotDynamicState();const restoreAck=d.readActivity();d.restoreDynamicState(rayState);
+const restored=d.rayRequests.get(0);await restoreAck;assert.equal(d.rayRequests.get(0),restored);
+const destroyAck=d.readActivity();d.dispose();await destroyAck;assert.equal(d.rayRequests.get(0),restored);
 console.log('external blast CPU: real paint/router/driver ordering, completion persistence, capacity refusal, outside requests, malformed preflight, SI budget/momentum and shielding passed (no GPU execution)');

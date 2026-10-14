@@ -9,7 +9,7 @@ export function validExternalBlast(r) {
 }
 export function validateExternalBlasts(s) {
   if (Object.hasOwn(s, 'externalBlasts') !== Object.hasOwn(s, 'externalBlastDone')) throw new Error('Incomplete external blast queue');
-  const requests = s.externalBlasts ?? [], done = s.externalBlastDone ?? new Uint32Array(EXTERNAL_BLAST_CAP);
+  const requests = Object.hasOwn(s, 'externalBlasts') ? s.externalBlasts : [], done = Object.hasOwn(s, 'externalBlastDone') ? s.externalBlastDone : new Uint32Array(EXTERNAL_BLAST_CAP);
   if (!Array.isArray(requests) || !(done instanceof Uint32Array) || done.length !== EXTERNAL_BLAST_CAP) throw new Error('Invalid external blast queue');
   const slots = new Set(), ids = new Set();
   for (const r of requests) {

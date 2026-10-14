@@ -1,4 +1,4 @@
-import { routeNativePOV } from '../v2/interactions.js';
+import { routeNativePOV, prepareNativePOVForces, nativePOVForcesReady } from '../v2/interactions.js';
 import { NativeTransfer } from '../v2/transfer.js';
 import { coupleNativeBody } from '../v2/body.js';
 // The first person's GPU work on WebGPU (docs/webgpu.md G2): every write to
@@ -297,6 +297,7 @@ class PovGpu {
   prepare() {
     if (!this.prepared) {
       this.prepared = Promise.all([
+        ...(this.sim.compact ? [prepareNativePOVForces(this.sim)] : []),
         ...Object.keys(POV_EDITS).map((n) => this.editKernel(n).ready),
         ...Object.keys(PROBES).map((n) => this._probeKernel(n).ready),
         ...[this._comKernel(), this._transferKernel(), ...this._laserKernels()].map((k) => k.ready),
@@ -313,6 +314,7 @@ class PovGpu {
    * has (prepare(): an NPC's tool, a check's toolbelt).
    */
   get ready() {
+    if (this.sim.compact && !nativePOVForcesReady(this.sim)) { prepareNativePOVForces(this.sim).catch(()=>{}); return false; }
     if (!this.built) this.prepare();
     return this.built === true;
   }

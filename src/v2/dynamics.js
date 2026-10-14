@@ -318,6 +318,7 @@ export class NativeDynamics {
     const first=this.gpu.readback.buffer(this.control,0,80);
     const externalEntries=[...this.externalBlasts];
     const externalPending=this.gpu.readback.buffer(this.control,externalBlastBase(this.g)*4,EXTERNAL_BLAST_CAP*4);
+    const rayEntries=[...this.rayRequests];
     const pending=this.gpu.readback.buffer(this.control,rayRequestBase(this.g)*4,RAY_REQUEST_CAP*4);
     const [raw,requests,externalRaw]=await Promise.all([first,pending,externalPending]);
     const done=new Uint32Array(externalRaw);
@@ -327,7 +328,7 @@ export class NativeDynamics {
     if(!this.disposed) for(const [slot,request] of externalEntries)
       if(done[slot] && this.externalBlasts.get(slot)===request) this.externalBlasts.delete(slot);
     const c=new Uint32Array(raw),r=new Uint32Array(requests);
-    let queued=0; for (const [slot] of this.rayRequests) { queued+=r[slot]; if(r[slot]===0 && serial===this.serial) this.rayRequests.delete(slot); }
+    let queued=0; for (const [slot,request] of rayEntries) { queued+=r[slot]; if(!this.disposed && r[slot]===0 && this.rayRequests.get(slot)===request) this.rayRequests.delete(slot); }
     const stats={particles:c[0],air:c[1],events:c[2],queued,capacityFallbacks:c[7],
       externalBlasts:this.externalBlasts.size,outsideObligations:this.pendingOutside.size,blastBatch:this.blastBatch,outflowPackets:c[16],sweepRetries:c[19]};
     if (!this.disposed && serial===this.serial && epoch===this.owner.epoch) {

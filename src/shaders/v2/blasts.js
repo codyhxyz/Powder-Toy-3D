@@ -292,6 +292,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
   if (stage === 'apply') return h + main64(/* wgsl */ `
     if(P.mode==14u && atomicLoad(&control[3])==D_NONE) { return; }
     if (t >= D_SLOTS) { return; } let plan=plans[t]; if (plan.flags==0u) { return; }
+    if(P.mode==15u && (events[t]&1u)!=0u) { atomicAdd(&control[7],1u); dWake(cellOf(t)); return; }
     let before=loadMaterial(t); var after=before;
     if ((plan.flags&2u)!=0u) {
       after.core.x=(after.core.x&0xffffff00u)|((plan.flags>>8u)&255u);
@@ -325,7 +326,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
           }
         }
         if (dSpawn(t,rank,packet,plan.velocity,P.sequence ^ 0x53504157u)) { after=remainder; }
-        else { atomicAdd(&control[7],1u); } // authoritative grid fallback, never erase a failed launch
+        else { atomicAdd(&control[7],1u); if(P.mode==15u) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }
     }
     storeMaterial(t,before,after); dWake(cellOf(t));
