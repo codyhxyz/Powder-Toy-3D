@@ -96,5 +96,20 @@ The outcome suite alone is not complete coverage of the table above.
 ## Validation status
 
 The initial app check could not acquire the GPU. The player-activity guard measured 100% utilization.
-No Mac speedup measurement exists for this work yet.
+A later guarded run used the Apple M5 successfully.
+
+Pre-integration sand baseline: 128³ cells, 1280×720 viewport, Quality rendering at 2/3 scale, and automatic resolution disabled.
+Each engine ran eight warmup frames and 24 measured frames from the same seeded fixture.
+
+| Engine | Full-frame wall p50 | Full-frame wall p95 |
+| --- | ---: | ---: |
+| v1 | 31.2 ms | 38.7 ms |
+| Existing bridged v2 | 11.0 ms | 15.9 ms |
+
+Raw report: `/tmp/tpt-v2-bridge-sand.json`.
+These are serialized frame latencies, not live gameplay FPS.
+This baseline does not measure the direct-read change or equivalent complete physics.
+GPU pass durations overlapped, so their sum is not elapsed frame time.
+
+CPU adapter checks, benchmark self-checks, the production build and browser-launch policy checks passed before renderer integration.
 No feature-completeness claim or default-engine change is justified.

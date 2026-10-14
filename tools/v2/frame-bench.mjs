@@ -2,7 +2,8 @@
 // node tools/v2/frame-bench.mjs --frames 60 --warmup 12 --out /tmp/frame-bench.json
 // node tools/v2/frame-bench.mjs --self-check   # CPU only; no server/browser
 // --split adds a SEPARATE diagnostic replay; headline samples always keep passes unsplit.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -127,14 +128,18 @@ async function selfCheck() {
 async function run(o) {
   const { launchBrowser, newTestPage, ready, gpuInfo } = await import('../browser.mjs');
   const { startVite } = await import('../vite-server.mjs');
-  let commit = null;
-  try { commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { /* URL-only runs need not have Git */ }
-  const report = { schema: 1, createdAt: new Date().toISOString(), toolCommit: commit, options: o,
+  let commit = null, gitStatus = null;
+  try {
+    commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    gitStatus = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
+  } catch { /* URL-only runs need not have Git */ }
+  const toolHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
+  const report = { schema: 1, createdAt: new Date().toISOString(), toolCommit: commit, gitStatus, toolHash, options: o,
     parity: 'NON-PARITY: v2 is missing physics. Comparison with v1 is not equivalent work until the full physics suite passes.',
     methodology: [
       'Serialized frame latency, not live-loop FPS: parked app; v1 step(4) or v2 step(1), renderOnce(), gpu.fence().',
       'Wall clock covers CPU recording, submissions, physics, bridge, renderer derived/shadows/GI/volume/meshes/post, and GPU completion; no bandwidth estimate.',
-      'Unsplit timestamp instrumentation is enabled for headline samples. GPU sums cover available pass durations, not inter-pass gaps/copies; retain coverage and raw passes.',
+      'Unsplit timestamp instrumentation is enabled for headline samples. GPU pass sums are NOT elapsed GPU frame time: intervals can overlap. Copies/gaps are excluded. Wall time is the headline metric.',
       'Timing readback settling and explicit awake-count readbacks are outside wall samples. Native asynchronous simulation bookkeeping remains inside.',
       'Warmup advances the fixture. Each engine/scene/diagnostic starts in a fresh page from identical CPU arrays and seed; evolved states are NOT identical.',
       'Fixed camera and frozen render-only animation clocks; forced draws even when idle. Settled geometry is not a live idle-loop/power benchmark.',
@@ -150,11 +155,18 @@ async function run(o) {
     const engines = o.engine === 'both' ? ['v1', 'v2'] : [o.engine];
     const scenes = o.scene === 'all' ? ['sand', 'water', 'settled'] : [o.scene];
     for (const split of o.split ? [false, true] : [false]) for (const scene of scenes) for (const engine of engines) {
-      const result = { engine, scene, diagnosticSplit: split, errors: [], samples: [] };
+      const result = { engine, scene, diagnosticSplit: split, errors: [], warnings: [], samples: [] };
       report.results.push(result);
       const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
       page.on('pageerror', e => result.errors.push(`pageerror: ${e.message}`));
-      page.on('console', m => { if (m.type() === 'error') result.errors.push(`console: ${m.text()}`); });
+      page.on('console', m => {
+        if (m.type() !== 'error') return;
+        const url = m.location().url;
+        // The optional local account/AI relay is not part of the simulation benchmark.
+        const optionalRelay = /^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(url ?? '');
+        (optionalRelay && /ERR_CONNECTION_REFUSED/.test(m.text()) ? result.warnings : result.errors)
+          .push(`console: ${m.text()} (${url ?? ''})`);
+      });
       try {
         const url = new URL(o.url ?? vite.url('/'));
         // Ignore unrelated URL switches (world/save/shot/etc could change the fixture).
@@ -219,7 +231,7 @@ async function run(o) {
               await timing.settled(); // do not charge timestamp readback drainage to frame latency
               const current = timing.enabled && timing.lastFrame === gpu.frameNo;
               const sample = { index: i, wallMs, start, end: snapshot(), frame: gpu.frameNo,
-                gpuMs: current ? timing.frameMs : null, gpuPasses: current ? structuredClone(timing.lastPasses) : [],
+                gpuPassSumMs: current ? timing.frameMs : null, gpuPasses: current ? structuredClone(timing.lastPasses) : [],
                 gpuCoverage: current ? structuredClone(timing.lastCoverage) : null,
                 renderScale: a.post.renderScale, volumeDrawn: a.view.volumeDrawn };
               sample.awake = await awake(); // diagnostic readback, outside wall/timestamp samples
@@ -235,8 +247,8 @@ async function run(o) {
         delete result.run.samples;
         const passNames = [...new Set(result.samples.flatMap(s => s.gpuPasses.map(p => p.name)))].sort();
         result.summary = { wallMs: stats(result.samples.map(s => s.wallMs)),
-          gpuMs: stats(result.samples.map(s => s.gpuMs).filter(v => v !== null)),
-          missingGpuSamples: result.samples.filter(s => s.gpuMs === null).length,
+          gpuPassSumMs: stats(result.samples.map(s => s.gpuPassSumMs).filter(v => v !== null)),
+          missingGpuSamples: result.samples.filter(s => s.gpuPassSumMs === null).length,
           // n is the number of frames observing this name, not an invented zero
           // for frames where it did not run or had incomplete timing coverage.
           gpuPassMs: Object.fromEntries(passNames.map(name => [name, stats(result.samples.flatMap(s => {
