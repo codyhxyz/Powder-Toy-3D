@@ -1,6 +1,15 @@
 import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetPerQuantum } from '../../v2/phase.js';
 import { ELEMENTS } from '../../elements.js';
-const field = (name, get) => `fn ${name}(id:u32)->i32 { switch id { ${PHASE_ROWS.map((r, i) => `case ${i}u: { return ${get(r, i)}; }`).join('\n')} default: { return 0; } } }`;
+const field = (name, get) => {
+  const groups = new Map();
+  PHASE_ROWS.forEach((r, i) => {
+    const value = get(r, i);
+    if (value === 0) return; // Same as the default, including invalid IDs.
+    if (!groups.has(value)) groups.set(value, []);
+    groups.get(value).push(`${i}u`);
+  });
+  return `fn ${name}(id:u32)->i32 { switch id { ${[...groups].map(([value, ids]) => `case ${ids.join(', ')}: { return ${value}; }`).join('\n')} default: { return 0; } } }`;
+};
 // Requires foundation energyAdd/Sub/Signed/Mul; no bindings. vec2u is low,high.
 export const phaseWGSL = /* wgsl */ `
 const PHASE_HOT_BASE:u32=${PHASE_HOT_BASE}u;
