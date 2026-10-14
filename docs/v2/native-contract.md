@@ -220,3 +220,9 @@ retains the full import/reset semantics. Momentum/air forcing is a separate API.
 `node tools/v2/edit-intent-check.mjs` executes production brush/stamp/partial-import
 branch bodies with CPU adapters and spies on the real export cache protocol.
 It is CPU evidence, not WebGPU execution evidence.
+
+Flood fill opts into `readStateAAsync({physical:true})` (also supported by
+`readState`/`readCell`); default readback stays visual. Physical probe bindings
+and `readHeader({physical:true})` ignore renderer-only `forceCompatibility`,
+retaining canonical core and current native air. CPU regressions cover hidden
+WATER seed/connected-region classification and both cache/probe modes.

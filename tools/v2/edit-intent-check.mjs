@@ -7,8 +7,9 @@ import { prelude, STATE_OPTS } from '../../src/shaders/common.js';
 import { v2ImportWGSL, v2BridgeWGSL } from '../../src/shaders/v2.js';
 import { Simulation, gridLayout } from '../../src/sim.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
-import { E, ELEMENTS, TOOLS } from '../../src/elements.js';
-import { PROP } from '../../src/editing.js';
+import { E, K, ELEMENTS, TOOLS } from '../../src/elements.js';
+import { PROP, runFill } from '../../src/editing.js';
+import { compactDecodeWGSL } from '../../src/shaders/compact.js';
 import { PHYS } from '../../src/physics.js';
 import * as L from '../../src/v2/layout.js';
 const g = gridLayout(32,32,32);
@@ -19,7 +20,7 @@ function body(code, name) {
   return code.slice(start + 1, end - 1);
 }
 function scalar(s) {
-  return s.replace(/\b(\d+)u\b/g,'$1').replace(/\bvar\b/g,'let')
+  return s.replace(/\b(0x[\da-f]+|\d+)u\b/g,'$1').replace(/\bvar\b/g,'let')
     .replace(/\(\*o([AB])\)/g,'o$1').replace(/\*o([AB])/g,'o$1').replace(/&rs/g,'rs');
 }
 const vec = (x=0,y=x,z=x,w=x) => ({x,y,z,w});
@@ -107,4 +108,55 @@ const projection=body(v2BridgeWGSL(g),'main');
 assert.match(projection,/select\(compactA\(p, cells\[s\]\), compactProbeA\(p, cells\[s\]\), H.format == 3u\)/,'visual compatibility uses exactly renderer compactA, including partial-fill dither');
 const simSpy=Object.assign(Object.create(Simulation.prototype),{compact:{isReady:true,forceCompatibility:true,groups:{read:{}},sync(){},exportLegacy(native){calls.push(['mode',native]);}},gpu:{testMode:true},_bindRW:{},_bindRO:{}});
 void simSpy.bindRW;void simSpy.bindRO;simSpy.legacyState();assert.deepEqual(calls.filter(c=>c[0]==='mode').map(c=>c[1]),[true,false,false]);
+// Real importer dispatch protocol: only the actual dense editing cache enables
+// partial-property merging; legacy A still uses format0 (never decode as core).
+const imports=[];engine.kernels.v2externalEvents={dispatch(_f,_n,o){imports.push(['events',o]);}};
+engine.kernels.v2import={dispatch(_f,_n,o){imports.push(['import',o]);}};
+engine.groups.import={};engine.groups.material={};engine.groups.invalidate={};engine.groups.contact={};
+sim.header=()=>({capture:2,format:0});engine.importMarked=true;engine.legacyNative=true;
+engine._import({full:0});engine.importMarked=true;engine.legacyNative=false;engine._import({full:0});
+assert.deepEqual(imports.map(([name,o])=>[name,o.header.capture,o.header.format]),[['events',0,0],['import',2,0],['events',0,0],['import',0,0]]);
+// Execute both real compact projection branches with a deterministic high
+// threshold: one-quantum WATER is invisible visually, but still physical WATER.
+const decodeCtx={...base,KIND:id=>ELEMENTS[id].kind,K_LIQUID:K.LIQUID,K_EMPTY:K.EMPTY,
+ compactTq:L.cTq,seed3:()=>0xffff0000,vec4u:(...v)=>new Uint32Array(v),
+ COMPACT_CONDUCTS:ELEMENTS.map(e=>e.elec>0),COMPACT_LIFE_SCALE:ELEMENTS.map(e=>L.lifeScale(e.id)),
+ COMPACT_CTYPE_MASK:ELEMENTS.map(e=>e.burnRate>0?127:255)};
+const decodeBody=name=>scalar(body(compactDecodeWGSL,name)).replace(/c\.([xyzw])/g,(_s,c)=>`c[${'xyzw'.indexOf(c)}]`).replace(/ >> /g,' >>> ');
+const decode=new Function('ctx','p','c',`with(ctx) { ${decodeBody('compactA')} }`);
+decodeCtx.compactA=(p,c)=>decode(decodeCtx,p,c);
+const probe=new Function('ctx','p','c',`with(ctx) { ${decodeBody('compactProbeA')} }`);
+const hidden=L.makeMaterial(E.WATER,100,1);hidden.bank=-73;const hiddenBefore=structuredClone(hidden);
+assert.equal(decode(decodeCtx,vec(),hidden.core).x,E.EMPTY);
+assert.equal(probe(decodeCtx,vec(),hidden.core).x,E.WATER);
+assert.deepEqual(hidden,hiddenBefore,'projection mode switches do not mutate material/bank');
+// Tagged phase heat stays exact, including the latent residual, not rawTq overwrite.
+const plateau=L.withEnergy(L.makeMaterial(E.WATER,100,12345),L.energyOf(L.makeMaterial(E.WATER,100,12345))+100000000n);
+assert(L.cRawTq(plateau.core)>41093);
+const warmed=partial(mergeCtx,vec(),plateau,{...project(plateau.core),y:101});
+assert.equal(L.energyOf(warmed)-L.energyOf(plateau),BigInt(L.capacityQ(plateau.core))*4n);
+assert.equal(L.cFill(warmed.core),12345);
+// Real flood-fill orchestrator requests the physical atlas and keeps the
+// hidden seed plus its hidden connected neighbour, not the surrounding AIR.
+const atlas=new Float32Array(g.width*g.height*4), texel=Simulation.prototype.cellTexel;
+const fillSim={g,origin:{x:0,z:0,clone(){return {...this};}},cellTexel:texel,
+ async readStateAAsync(options){assert.deepEqual(options,{physical:true});return atlas;},paint(stroke){this.stroke=stroke;}};
+for(const x of [5,6]) atlas[fillSim.cellTexel(x,5,5)*4]=probe(decodeCtx,vec(x,5,5),hidden.core).x;
+assert.deepEqual(await runFill(fillSim,{cell:[5,5,5],id:E.WATER,stroke:{tool:tools.ERASE}}),{count:2});
+assert.equal(fillSim.stroke.filter,E.WATER);assert.equal(fillSim.stroke.mask.data[fillSim.cellTexel(6,5,5)],255);
+// The renderer-only comparison switch cannot select visual geometry or zero
+// legacy velocity/pressure for a physical reader.
+let exports=0;const core={},air=[{},{}];
+const physicalSim=Object.assign(Object.create(Simulation.prototype),{origin:{x:0,y:0,z:0},cur:0,
+ compact:{isReady:true,forceCompatibility:true,cells:core,dynamics:{isReady:true,air,airIndex:1},sync(){},exportLegacy(){exports++;}},
+ gpu:{testMode:true,bindGroup:(_l,entries)=>entries},L:{STATE_RO:{}},_bindRO:{}});
+physicalSim.compactOwner=physicalSim.compact;
+const physicalGroup=physicalSim.bindPhysicalRO;
+assert.equal(physicalGroup[0].resource.buffer,core);assert.equal(physicalGroup[1].resource.buffer,air[1]);
+assert.equal(physicalSim.readHeader({physical:true}).format,3);assert.equal(physicalSim.readHeader().format,0);assert.equal(exports,0);
+physicalSim.compact.dynamics.airIndex=0;assert.equal(physicalSim.bindPhysicalRO[1].resource.buffer,air[0]);
+// Readback opt-in does not alter the default visual save/read ABI.
+const modes=[];const atlasSim=Object.assign(Object.create(Simulation.prototype),{g,cur:0,tables:{},_bindFlagsRO:{},_convertGroup:{},
+ legacyState:physical=>modes.push(physical),_atlasScratch(){},passOf(){return {};},header(){return {};},_dispatch(){}});
+atlasSim._toAtlas(0,false);atlasSim._toAtlas(0,false,true);assert.deepEqual(modes,[false,true]);
 console.log('native edit intent: real brush/stamp/import branches, partial/compressed signed banks, sensible heat, physical filters and visual/edit cache protocol passed');

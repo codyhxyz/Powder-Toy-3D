@@ -230,7 +230,8 @@ export function regionMask(g, texel, cells, [dx, dz] = [0, 0]) {
 // the simulation was replaced meanwhile).
 export async function runFill(sim, req, { openSides = false, before } = {}) {
   const o = sim.origin.clone();
-  const a = await sim.readStateAAsync();
+  // Edit predicates must include hidden fractional liquids, not visual dither.
+  const a = await sim.readStateAAsync({ physical: true });
   if (sim.disposed) return { error: 'gone' };
   const texel = (x, y, z) => sim.cellTexel(x, y, z);
   const r = floodRegion(a, sim.g, texel, req.cell, { id: req.id, maxY: req.maxY, openSides });

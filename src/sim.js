@@ -502,9 +502,12 @@ export class Simulation {
   // Physical readers share the compact core but read current native coarse
   // air in B. Renderer format2 keeps its existing projection-only read group.
   get bindPhysicalRO() {
-    const base = this.bindRO;
-    if (!this.compact || base !== this.compact.groups.read) return base;
-    const d = this.compact.dynamics;
+    const v2 = this.compact;
+    if (!v2?.isReady) return this._bindRO;
+    // forceCompatibility is renderer-only: physical probes always read the
+    // canonical core and current coarse air, never the visual projection.
+    v2.sync();
+    const d = v2.dynamics;
     if (!d?.isReady) return null;
     if (this._physicalOwner !== this.compact) {
       this._physicalOwner = this.compact;
@@ -538,7 +541,7 @@ export class Simulation {
   readHeader({ physical = false } = {}) {
     this.compact?.sync();
     const v2 = this.compact;
-    return { ...this.header(), format: v2?.isReady && !(v2.forceCompatibility && this.gpu.testMode) ? (physical ? 3 : 2) : 0 };
+    return { ...this.header(), format: v2?.isReady && (physical || !(v2.forceCompatibility && this.gpu.testMode)) ? (physical ? 3 : 2) : 0 };
   }
 
   // Records a dispatch into the frame's compute pass and tells the profiler.
@@ -1212,10 +1215,11 @@ export class Simulation {
   texelCell(i) { return texelCell(this.g, i); }
 
   // Records the conversion of copy `c` (A and B, or with flags its F) into the scratch.
-  _toAtlas(c, flags) {
+  _toAtlas(c, flags, physical = false) {
+    this.legacyState(physical);
     this._atlasScratch();
     this._dispatch(this.passOf('toAtlas'), fold(Math.ceil(this.g.slots / 64)), {
-      bind: [this.tables, this.bindFlagsRO, this._convertGroup], header: this.header(c), params: { flags },
+      bind: [this.tables, this._bindFlagsRO, this._convertGroup], header: this.header(c), params: { flags },
     });
   }
 
@@ -1226,10 +1230,10 @@ export class Simulation {
    * test mode; elsewhere the first read waits for it, and reads the state then.)
    * @returns {Promise<[Float32Array, Float32Array]>}
    */
-  async readState() {
+  async readState({ physical = false } = {}) {
     const texels = this.g.width * this.g.height, wait = this._readyFor('toAtlas');
     if (wait) await wait;   // (not await null: that records after the caller's next writes)
-    this._toAtlas(this.cur, false);
+    this._toAtlas(this.cur, false, physical);
     const read = this.gpu.readback.buffer(this.atlasScratch, 0, texels * 32);
     this._dropAtlasScratch();
     const bytes = await read;
@@ -1241,7 +1245,7 @@ export class Simulation {
    * its pmap: editing.js runFill).
    * @returns {Promise<Float32Array>}
    */
-  readStateAAsync() { return this.readState().then(([a]) => a); }
+  readStateAAsync(options) { return this.readState(options).then(([a]) => a); }
 
   /**
    * A w × h rectangle of the state atlas at texel (x, y), as it is at this
@@ -1319,8 +1323,8 @@ export class Simulation {
    * fetchA/fetchB layout. For tests and tools.
    * @returns {Promise<[Float32Array, Float32Array]>}
    */
-  async readCell(x, y, z) {
-    this.legacyState();
+  async readCell(x, y, z, { physical = false } = {}) {
+    this.legacyState(physical);
     const s = cellSlot(this.g, x, y, z), at = (this.cur * this.g.slots + s) * 16, rb = this.gpu.readback;
     const [a, b] = await Promise.all([rb.buffer(this.state.A, at, 16), rb.buffer(this.state.B, at, 16)]);
     return [new Float32Array(a), new Float32Array(b)];
