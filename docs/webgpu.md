@@ -256,7 +256,10 @@ A presented tick is:
 ```
 E1 (ours)   compute: POV edits, paint, N × step, lightning, window move, rays,
                      derived passes, shadow, GI, far-field upkeep, pick
-            render:  scene pass: far field | floor grid, detail meshes, volume, box edges, brush cursor
+            render:  a world's volume first (its own colour + depth, after three's opaque meshes), the far
+                     occluder (its opaque hits ∪ the detail meshes' depth: the far view stops there);
+                     scene pass: detail meshes, far field (skips what the volume covers opaquely), the
+                     volume composited over it | box: floor grid, volume; then box edges, brush cursor
             ── only if three has something visible: flush; three.render(scene) into the scene target (its own
                submit); in POV three.render(viewmodels) into their MSAA target (its own submit) ──
 E2 (ours)   render:  rays overlay (only while rays are active; depthReadOnly)
@@ -1164,7 +1167,8 @@ by the volume, shadow (writer variant), GI gather (writer variant), GI source, s
   multiplayer, rays), app.js stops scheduling `requestAnimationFrame`. `pacer.wake()`, every input listener, resize,
   `requestRender`, `sim.wake()`/`sim.edit`, a settings change and a resolving readback or pipeline restart it. A
   settled box scene then costs no CPU at all. The default World scene never settles: its birds wake the view every
-  tick and the full march re-runs at 60 Hz for a few small bird meshes. That is its dominant idle cost, left for K3.
+  tick and the full march re-runs at 60 Hz for a few small bird meshes. That is its dominant idle cost, left for K3
+  (now K3's mesh-only frames: the march's scene is kept while only the birds move).
 
 ### F8. Mesh materials (three, TSL)
 
@@ -1733,14 +1737,20 @@ a second code path (subgroups, `shader-f16`) has to be a clear win to earn its t
   bricks on the GPU and read back only changed ones. No zero-copy access is needed for this (W6 stands).
 - **Mesh-only frames.** When only three's meshes move (the default World scene's birds, with camera and sim still),
   keep the converged pre-mesh scene (colour and depth) and re-run only the mesh layer and post instead of the volume
-  and far march at 60 Hz: the dominant power cost of the default scene. Render-only.
+  and far march at 60 Hz: the dominant power cost of the default scene. Render-only. Landed (`src/gfx/meshFrames.js`):
+  a capture of the TAA settle count accumulates the uncut scene at output size, as TAAU reconstructs it, and later
+  frames restore it at their jitter, three's meshes depth-tested over it (behind translucent water they are hidden
+  rather than tinted: S1's cut only on full frames); the sim clock's animation holds meanwhile, as in deep idle.
 - **Toroidal world windows** (x and z ring addressing in supertile units): a move rewrites only the entering slab,
   with no shift and no full derived rebuild. W10's index rule keeps it to `brickId`/`brickCoord`, `world/window.js` and
   the 3D-texture samplers (clamp the logical coordinate, then wrap with `repeat`). Not waking the whole grid after a
   move changes quiet-skip drift: decide then.
 - **Compact id volume for the march**: ids packed 4 per `u32` in brick order, written where the derived pass knows
   bricks changed; the DDA's hot fetch drops from 16 B and ~15 integer operations to 1 B. Same for pick, shadow and the
-  sign probe. Render-only.
+  sign probe. Render-only. *Done for the realistic view's march and the shadow map* (`shaders/occupancy.js`: a 64-bit
+  occupancy mask and 64 id bytes per brick, in the brickDist buffer, rebuilt with the brick map; empty cells of crisp-only
+  bricks are passed without the cell body). Pick stays exact cell by cell on the state (it must not wait for the brick
+  map); the data views, the GI gather, the POV trace, the sign probe and the shading's secondary walks still read A.
 - D7 packed state and packed flags; with it, `moveSrc`'s 3 bits move into the flow word's unused f16 lane (one buffer,
   one binding and 4 B per cell per step less on the Whitewater path).
 - `shader-f16` paths for fields, light, GI, post and the volume's shading; subgroup reductions and ballot compaction.

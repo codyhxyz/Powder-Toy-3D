@@ -65,10 +65,21 @@ import { JOIN_REACH } from './gfx/liquidDetail.js';
 //   EMA     the EMA may still change: the brick changed within the last
 //           FIELD_EMA_SETTLE derived frames
 //   FIELDS  the final fields and the brick map may change: an EMA brick
-//           within FIELDS_DILATE bricks (FIELD_REACH)
-//   WORK    the passes in between must run: an EMA brick within WORK_DILATE
+//           within FIELDS_DILATE bricks (FIELD_REACH); the blur runs here too
+//   WORK    the boost's smoothing must run: an EMA brick within WORK_DILATE
 //           (their scratch's reach on top)
 // Each list is one run of brick numbers in the lists buffer (dirtyLists).
+//
+// Within a listed brick a pass computes only the cells a later pass reads
+// (COVER below), so a WORK brick at the list's outer ring computes a shell a
+// cell or two deep, not its 64 cells, and the blur runs over the 27 FIELDS
+// bricks of a changed brick, not the 125 WORK ones. Every reach is at most a
+// brick, so a brick's 3³ neighbourhood decides which of its cells a pass
+// needs: the dirty pass leaves each brick two 27-bit masks, of its neighbours
+// that are EMA bricks and of those that are FIELDS bricks (dirtyLists emask,
+// fmask). Exact: every cell a pass reads was written this frame, or is a
+// persistent buffer's (the EMA, the normalised blur) that holds what the pass
+// before would write there again.
 export const DIRTY = { EMA: 0, FIELDS: 1, WORK: 2 };
 // Frames a cell's EMA keeps changing after its state last did: the slowest
 // channel's blend reaches its 8-bit fixed point by then (gfx/pacing.js
@@ -115,11 +126,51 @@ export const AGE = { MAX: 255, MASK: 255, FRESH: 256, SHIFTED: 512, CHANGED: 102
 // NBRICKS brick numbers each, in DIRTY order), their append counters, their
 // lengths as the last dirty pass left them (what a kernel dispatched over a
 // list reads), and each list's indirect dispatch arguments [x, y, z, pad]
-// (fold()ed: a workgroup per entry).
+// (fold()ed: a workgroup per entry), then the FIELDS list's again with a
+// thread per entry (threads: the shadow map's tile marks, src/derived.js
+// shadowTiles), then the GI's sources' and probes' (gi: shaders/gi.js giArgs
+// writes them here, as their kernels write giSrc, which holds their lists:
+// WebGPU won't take a buffer as a dispatch's arguments and its writable
+// storage at once). Then a word per brick (brick number order): the mask of its
+// 3³ neighbours that are EMA bricks (bit (x+1) + 3(y+1) + 9(z+1) for the
+// neighbour at offset x, y, z) with GI_NEAR in bit GI_NEAR_BIT; and a word
+// per brick, the mask of its neighbours that are FIELDS bricks.
 export function dirtyLists(g) {
   const { nbricks } = gridDims(g), n = 3 * nbricks;
-  return { list: (l) => l * nbricks, count: n, last: n + 4, args: n + 8, words: n + 20 };
+  return {
+    list: (l) => l * nbricks, count: n, last: n + 4, args: n + 8, threads: n + 20, gi: n + 24,
+    emask: n + 32, fmask: n + 32 + nbricks, words: n + 32 + 2 * nbricks,
+  };
 }
+// The GI's view of recent change (shaders/gi.js giSelect): GI_NEAR marks a
+// brick within GI_NEAR_DILATE bricks (at most WORK_DILATE: the dirty pass's
+// own neighbourhood) of one that changed within GI_RECENT derived frames. Its
+// probes are traced at the full rate and its sources every frame; the rest at
+// a background rate. GI_RECENT is the derived passes' settle for the GI
+// (app.js: settleFrames(GI_BLEND, 2)), so a probe near a change converges as
+// it did when every probe was traced every other frame.
+export const GI_NEAR_BIT = 31;
+export const GI_NEAR_DILATE = 2;
+export const GI_RECENT = 22;
+
+// The cells each pass between the EMA and the peak computes, as reaches (per
+// axis, in cells) from the bricks a mask holds: the final fields are written
+// over the FIELDS bricks, so the boost's last stage covers them and a cell
+// around (the peak's 3³ maximum), each earlier stage that and its
+// successor's reach along its axis; the blur's last axis covers the cells
+// whose normalised blur may change (within BLUR_REACH of an EMA brick: the
+// blurred planes keep their values elsewhere), each earlier axis that and its
+// successor's reach. The blur tests DL_EMASK, the boost DL_FMASK.
+export const COVER = {
+  blur: [[BLUR_REACH, 2 * BLUR_REACH, 2 * BLUR_REACH], [BLUR_REACH, BLUR_REACH, 2 * BLUR_REACH], [BLUR_REACH, BLUR_REACH, BLUR_REACH]],
+  boost: [[1, 2, 2], [1, 1, 2], [1, 1, 1]],
+};
+if (Math.max(...COVER.blur.flat(), ...COVER.boost.flat()) > BRICK) throw new Error('shaders/fields.js COVER: a reach past a brick needs more than the 3³ masks');
+// The early return of a pass over a list for the cells it needn't compute
+// (pass: 'blur' or 'boost'; its stage is P.axis). After listMainWGSL.
+const coverWGSL = (pass) => /* wgsl */ `
+  var cover = array<vec3i, 3>(${COVER[pass].map((r) => `vec3i(${r.join(', ')})`).join(', ')});
+  if (!reaches(dlist[${pass === 'blur' ? 'DL_EMASK' : 'DL_FMASK'} + b], p & vec3i(3), cover[P.axis])) { return; }`;
 
 // The lists' WGSL: their offsets, the age bits and the dilations. Each kernel
 // declares the buffer itself: read_write atomics where it appends, read-only
@@ -134,6 +185,13 @@ const LIST_WORK: u32 = ${DIRTY.WORK}u;
 const DL_COUNT: u32 = ${d.count}u;   // words: the append counters, one per list
 const DL_LAST: u32 = ${d.last}u;     // the lists' lengths
 const DL_ARGS: u32 = ${d.args}u;     // the indirect arguments, four words per list
+const DL_THREADS: u32 = ${d.threads}u;   // FIELDS's again, a thread per entry
+const DL_GI: u32 = ${d.gi}u;         // the GI's sources' arguments, then its probes'
+const DL_EMASK: u32 = ${d.emask}u;   // per brick: its neighbours that are EMA bricks, and GI_NEAR
+const DL_FMASK: u32 = ${d.fmask}u;   // per brick: its neighbours that are FIELDS bricks
+const GI_NEAR: u32 = ${(1 << GI_NEAR_BIT) >>> 0}u;
+const GI_NEAR_DILATE: i32 = ${GI_NEAR_DILATE};
+const GI_RECENT: u32 = ${GI_RECENT}u;
 const AGE_MAX: u32 = ${AGE.MAX}u;
 const AGE_MASK: u32 = ${AGE.MASK}u;
 const AGE_FRESH: u32 = ${AGE.FRESH}u;
@@ -142,7 +200,22 @@ const AGE_CHANGED: u32 = ${AGE.CHANGED}u;
 const EMA_SETTLE: u32 = ${FIELD_EMA_SETTLE}u;   // frames
 const FIELDS_DILATE: i32 = ${FIELDS_DILATE};    // bricks
 const WORK_DILATE: i32 = ${WORK_DILATE};
-fn brickInGrid(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(BX, BY, BZ)); }`;
+fn brickInGrid(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(BX, BY, BZ)); }
+// Does the box of cells within r (per axis, at most BS) of local cell l (its
+// place in its brick) meet a brick that mask m holds (a brick's 3³
+// neighbours, DL_EMASK or DL_FMASK)? It reaches the neighbours at offsets
+// floor((l - r) / BS) to floor((l + r) / BS) along each axis.
+fn reaches(m: u32, l: vec3i, r: vec3i) -> bool {
+  let lo = (l - r) >> vec3u(2u);
+  let hi = (l + r) >> vec3u(2u);
+  let row = ((2u << u32(hi.x - lo.x)) - 1u) << u32(lo.x + 1);   // those along x, in a row of the mask's 3 bits
+  for (var z = lo.z; z <= hi.z; z++) {
+    for (var y = lo.y; y <= hi.y; y++) {
+      if (((m >> u32(3 * (y + 1) + 9 * (z + 1))) & row) != 0u) { return true; }
+    }
+  }
+  return false;
+}`;
 };
 
 // main() of a kernel dispatched over one of the lists: a workgroup per entry
@@ -169,7 +242,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 //          stopped carrying falling water when main's pours replaced it: Sync
 //          3). It stays in the layout so src/derived.js's peak group, which
 //          binds it, still matches.
-//   PAIR   a source and a destination (the window shift of the EMA)
+//   PAIR   a source and a destination
+//   SHIFT  two of them (the window shift of the EMA and the normalised blur)
 const ro = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } });
 const rw = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } });
 const out3d = (binding) => ({ binding, visibility: STAGE.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '3d' } });
@@ -183,6 +257,7 @@ export const FIELD_LAYOUT = {
   JET: [ro(0), ro(1), rw(2), ro(JET_BINDING.JET)],
   PEAK: [ro(0), ro(1), ro(2), out3d(3), out3d(4), out3d(5), ro(JET_BINDING.PEAK)],
   PAIR: [ro(0), rw(1)],
+  SHIFT: [ro(0), rw(1), ro(2), rw(3)],
 };
 // The format of the final fields (src/derived.js allocates them).
 export const FIELD_FORMAT = 'rgba16float';
@@ -293,7 +368,7 @@ ${FieldBlurParams.wgsl}
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
 @group(2) @binding(1) var<storage, read> src: array<u32>;
 @group(2) @binding(2) var<storage, read_write> dst: array<u32>;
-${listMainWGSL('LIST_WORK')}
+${listMainWGSL('LIST_FIELDS')}${coverWGSL('blur')}
   var dir = vec3i(0);
   dir[P.axis] = 1;
   var sv = vec4f(0.0);
@@ -340,7 +415,7 @@ ${BoostParams.wgsl}
 @group(2) @binding(1) var<storage, read> src: array<u32>;
 @group(2) @binding(2) var<storage, read_write> dst: array<u32>;
 ${stage === 0 ? jetWGSL(JET_BINDING.JET) : ''}
-${listMainWGSL('LIST_WORK')}
+${listMainWGSL('LIST_WORK')}${coverWGSL('boost')}
   var dir = vec3i(0);
   dir[P.axis] = 1;
   var acc = vec4f(0.0);
@@ -372,80 +447,11 @@ ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(s
 // own x and y passes, fieldMaxFrag).
 // aer: unread since Sync 3 (the layout's binding 6 above); src/derived.js still passes it.
 export const PeakParams = uniformStruct('PeakParams', { bulk: 'vec4f', reach: 'vec3i', aer: 'u32' });
-// Foliage clumps, baked into the organic field here (after the boost, which
-// would scale them away). A crown drawn as the smooth isosurface of its cells
-// is one green blob, melted plastic; a real crown is lobes of foliage with
-// shaded hollows between them, 0.5-1.5 m across on a broadleaf (the clumped
-// crowns of Sinoquet et al. 2005, "Foliage randomness and light interception
-// in 3D digitised trees", Ann. Bot. 95; the billowed crowns painters and
-// stylised games draw, e.g. Zelda: Breath of the Wild's trees). Each plant
-// cell's φ is scaled by a clump weight: 1 at a clump's centre, falling with
-// the square of the distance to it (a cap of a sphere) to 1 - FOLIAGE_LUMP at
-// its rim, where two clumps meet in a hollow. The clumps are a Worley F1
-// lattice (Worley 1996, "A Cellular Texture Basis Function") in world cells,
-// so they stay put as the window moves and grow with the plant. Since this is
-// the field, the sun's shadow map, the GI and the eye's march all see the
-// same lobes. The lattice is sampled at cell centres and read trilinearly, so
-// a clump spans FOLIAGE_CLUMP_CELLS >= 3 cells: anything finer would come out
-// as single-cell facets (the gem artifact of trilinear isosurfaces).
-// Thin foliage (a one-cell frond, boosted ~1.8x) keeps its tube: the weight
-// fades out between boost factors FOLIAGE_THIN_LO and _HI, so only bulk
-// crowns are lobed and a frond never breaks into beads.
-// Ground cover (the generators' one-cell layer of PLANT on the soil:
-// world/generator.js COVER_PLANT) is left smooth: a meadow is not a crown,
-// and a hollow carved through it would show the soil under it. A plant cell
-// resting on other matter that isn't foliage or wood is ground cover.
-// FOLIAGE_LUMP: most a cell's φ is scaled down, at a clump's rim. With 0.45 a
-// flat crown face's inside cell (σ 0.6: φ 0.83) falls to 0.46, under ISO, so
-// hollows sink most of a cell (~20 cm) between lobes, while deep inside a
-// crown φ stays above ISO (no holes): the bound of rubble's RUBBLE_LUMP (0.45,
-// fieldEmaFrag). Set by eye on a CPU port of these passes (0.4 read as dents
-// in a blob, 0.5 sits on ISO deep inside; 4-cell clumps read as dents too).
-export const FOLIAGE_LUMP = 0.45;
-export const FOLIAGE_CLUMP_CELLS = 3;     // cells between clump centres (0.9 m: a broadleaf's clumps)
-export const FOLIAGE_CLUMP_R = 0.8;       // F1 (lattice units) at which a clump's rim is reached (F1 of a jittered lattice is mostly below it)
-export const FOLIAGE_THIN_LO = 1.1;       // boost factors: a two-cell bough ~1.16, a one-cell sheet ~1.2, ...
-export const FOLIAGE_THIN_HI = 1.5;       // ... a one-cell frond ~1.8 (σ 0.6, bulk peak 0.8)
-const FOLIAGE_SALT = 0x6c656166;          // the clump lattice's own random stream ('leaf')
 export const fieldPeakFrag = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${dirtyListsWGSL(g)}
 ${PeakParams.wgsl}
-const FOLIAGE_LUMP: f32 = ${FOLIAGE_LUMP};
-const FOLIAGE_CLUMP_CELLS: f32 = ${FOLIAGE_CLUMP_CELLS.toFixed(1)};
-const FOLIAGE_CLUMP_R: f32 = ${FOLIAGE_CLUMP_R};
-const FOLIAGE_THIN_LO: f32 = ${FOLIAGE_THIN_LO};
-const FOLIAGE_THIN_HI: f32 = ${FOLIAGE_THIN_HI};
-const FOLIAGE_SALT: u32 = ${FOLIAGE_SALT}u;
-// a uniform in [0, 1) from a hash (its top 24 bits: exact in f32)
-fn unit24(h: u32) -> f32 { return f32(h >> 8u) / 16777216.0; }
-// whether plant cell p is ground cover: it rests on matter that isn't
-// foliage, wood or gas (or on the grid's floor)
-fn groundCover(p: vec3i) -> bool {
-  let q = p - vec3i(0, 1, 0);
-  if (!inGrid(q)) { return true; }
-  let u = eid(fetchAs(slotOf(q)));
-  return u != E_EMPTY && u != E_PLANT && u != E_WOOD && MEDIACH(u) < 0;
-}
-// the clump weight of world cell w (see FOLIAGE_LUMP)
-fn foliageClump(w: vec3i) -> f32 {
-  let q = (vec3f(w) + 0.5) / FOLIAGE_CLUMP_CELLS;
-  let i = vec3i(floor(q));
-  var d2 = 1e9;
-  for (var z = -1; z <= 1; z++) {
-    for (var y = -1; y <= 1; y++) {
-      for (var x = -1; x <= 1; x++) {
-        let c = i + vec3i(x, y, z);
-        let j = vec3f(unit24(seedWorld(c, 0u, FOLIAGE_SALT)), unit24(seedWorld(c, 1u, FOLIAGE_SALT)), unit24(seedWorld(c, 2u, FOLIAGE_SALT)));
-        let d = q - (vec3f(c) + j);
-        d2 = min(d2, dot(d, d));
-      }
-    }
-  }
-  let r = clamp(sqrt(d2) / FOLIAGE_CLUMP_R, 0.0, 1.0);
-  return 1.0 - FOLIAGE_LUMP * r * r;
-}
 @group(3) @binding(1) var<uniform> P: PeakParams;   // bulk: each channel's bulk peak
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
 @group(2) @binding(1) var<storage, read> src: array<u32>;       // stage 2: smoothed φ, occupancy
@@ -469,10 +475,6 @@ ${listMainWGSL('LIST_FIELDS')}
   let phi = vec4f(unpack2x16float(blurred[s]), unpack2x16float(blurred[SLOTS + s]));
   let med = vec4f(unpack2x16float(blurred[2u * SLOTS + s]), unpack2x16float(blurred[3u * SLOTS + s]));
   var surf = phi * mix(vec4f(1.0), k, boosted);
-  if (eid(fetchAs(s)) == E_PLANT && !groundCover(p)) {
-    let bulkOnly = 1.0 - smoothstep(FOLIAGE_THIN_LO, FOLIAGE_THIN_HI, k[CH_ORGANIC]);
-    surf[CH_ORGANIC] *= mix(1.0, foliageClump(p + H.origin), bulkOnly);
-  }
   textureStore(fieldSurf, p, surf);
   textureStore(fieldMedia, p, med);
   textureStore(fieldThin, p, boosted * smoothstep(vec4f(THIN_MASK_LO), vec4f(THIN_MASK_HI), k));
@@ -509,13 +511,19 @@ ${listMainWGSL('LIST_WORK')}
 // The EMA follows its cells: cell p takes the history of p + shift, out of
 // place (into a scratch that src/derived.js copies back). Cells shifted in
 // from outside get none (their bricks are SHIFTED: the EMA starts them over).
+// The normalised blur follows them in the same pass, into a scratch of its
+// own (the blur reads it where it doesn't recompute it: COVER); the bricks
+// shifted in and the faces' re-age, so its cells whose taps now reach past
+// the grid's edge, or have no history, are recomputed.
 export const FieldShiftParams = uniformStruct('FieldShiftParams', { shift: 'vec3i' });
 export const fieldShiftFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${FieldShiftParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FieldShiftParams;
-@group(2) @binding(0) var<storage, read> src: array<u32>;
+@group(2) @binding(0) var<storage, read> src: array<u32>;   // the EMA (3 planes)
 @group(2) @binding(1) var<storage, read_write> dst: array<u32>;
+@group(2) @binding(2) var<storage, read> blurSrc: array<u32>;   // the normalised blur (4 planes)
+@group(2) @binding(3) var<storage, read_write> blurDst: array<u32>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let s = foldThread(wg, nwg, li);
@@ -528,6 +536,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var w = 0u;
     if (inside) { w = src[k * SLOTS + t]; }
     dst[k * SLOTS + s] = w;
+  }
+  for (var k = 0u; k < 4u; k++) {
+    var w = 0u;
+    if (inside) { w = blurSrc[k * SLOTS + t]; }
+    blurDst[k * SLOTS + s] = w;
   }
 }
 `;
@@ -560,7 +573,7 @@ export const WGSL_CHECK = [
   { name: 'fieldBoost0', kind: 'compute', code: (g) => fieldBoostFrag(g, 0), layouts: fieldLayouts(true, FIELD_LAYOUT.JET), dispatch: perList },
   { name: 'fieldBoost', kind: 'compute', code: (g) => fieldBoostFrag(g, 1), layouts: fieldLayouts(false), dispatch: perList },
   { name: 'fieldPeak', kind: 'compute', code: fieldPeakFrag, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, FIELD_LAYOUT.PEAK], dispatch: perList },
-  { name: 'fieldShift', kind: 'compute', code: fieldShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.PAIR],
-    dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)), windowed: true },
+  { name: 'fieldShift', kind: 'compute', code: fieldShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.SHIFT],
+    layoutNames: [null, null, 'DERIVED_SHIFT'], dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)), windowed: true },
   { name: 'fieldMax', kind: 'compute', code: fieldMaxFrag, layouts: fieldLayouts(false), dispatch: perList, tool: true },
 ];

@@ -35,7 +35,7 @@ import { Matrix4 } from 'three/webgpu';
 import { WORLD_SIZE } from '../shaders/farShared.js';
 import {
   volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES, VOLUME_VIEWS,
-  shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, shadowDispatch, SHADOW_WORKGROUP,
+  shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, SHADOW_WORKGROUP,
   pickFrag, PICK_LAYOUTS, PickParams, PICK_BATCH, PICK_RESULT_BYTES, LAYOUT_NAMES,
 } from '../shaders/render.js';
 import { frameUniformsOf } from './uniforms.js';
@@ -263,7 +263,10 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      */
     recordShadow() {
       if (shadowKernel.state !== 'ready') { shadowKernel.build(); return false; }
-      shadowKernel.dispatch(gpu.frame, shadowDispatch(res), { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.header() });
+      // the tiles to re-trace: those a change crossed, or all (src/derived.js shadowTiles)
+      const tiles = derived.shadowTiles(res, shadowMap);
+      if (!tiles) return false;
+      shadowKernel.dispatch(gpu.frame, tiles, { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.header() });
       return true;
     },
 
@@ -281,12 +284,13 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      * @param {number[] | { x: number, y: number, z: number }} ro
      * @param {number[] | { x: number, y: number, z: number }} rd
      * @param {{ k: number, anchor: number[], dir: number[] } | null} [warp]
+     * @param {boolean} [skipLiquids] Aim through liquids for non-liquid hand tools.
      * @returns {Promise<{ valid: boolean, cell: number[], face: number, id: number, T: number, P: number, life: number, raw: Float32Array }>}
      */
-    pick(ro, rd, warp = null) {
+    pick(ro, rd, warp = null, skipLiquids = false) {
       const v3 = (v) => (Array.isArray(v) ? [...v] : [v.x, v.y, v.z]);
       const w = isCurved(warp) ? { k: warp.k, anchor: [...warp.anchor], dir: [...warp.dir] } : null;   // (as asked: the parameters move with the camera)
-      const p = new Promise((resolve, reject) => pickQueue.push({ ro: v3(ro), rd: v3(rd), warp: w, resolve, reject }));
+      const p = new Promise((resolve, reject) => pickQueue.push({ ro: v3(ro), rd: v3(rd), warp: w, skipLiquids, resolve, reject }));
       if (!pickScheduled) {
         pickScheduled = true;
         queueMicrotask(() => { pickScheduled = false; if (!disposed && pickQueue.length) recordPicksQuietly(); });
@@ -312,7 +316,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
             bind: [sim.tables, sim.bindRO, pickGroup], header: sim.header(),
             params: {
-              ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, 0]),
+              ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
               warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])),
               slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
             },

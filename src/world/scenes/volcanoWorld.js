@@ -1,4 +1,4 @@
-import { helpersGLSL, definesGLSL, definesTypes, jsConstants, pickGLSL, compileShared } from './themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, pickGLSL, compileShared, memoTwin } from './themedShared.js';
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 import { ISLAND_VIEW_XZ } from './island.js';
@@ -424,11 +424,7 @@ const START_WIN = 0.3;
 // the island's 64 do (island.js FAR_CHUNKS_PER_FRAME).
 const FAR_CHUNKS_PER_FRAME = 40;
 
-const twins = new Map();   // the JS twin per world seed
-function twin(P) {
-  if (!twins.has(P.seed)) twins.set(P.seed, compileShared(SRC, P.seed, jsConstants(P_, V)));
-  return twins.get(P.seed);
-}
+const twin = memoTwin((P) => P.seed, (P) => compileShared(SRC, P.seed, jsConstants(P_, V)));   // the JS twin per world seed
 
 // The scene's WGSL (scenes/sceneGpu.js): constants, the helpers, the geometry
 // (from the subset: scenes/subsetWgsl.js) and sceneCell.

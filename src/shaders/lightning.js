@@ -38,7 +38,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let c = vec3f(p) + 0.5;
   if (any(c < P.lo) || any(c > P.hi)) { return; }
   let id = eid(a);
-  let open = id == E_EMPTY || KIND(id) == K_GAS;
+  let open = isGasLike(id);
   var channel = false;
   for (var i = 0; i < BOLT_MAX_SEGS; i++) {
     if (i >= P.segs) { break; }
@@ -46,7 +46,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   }
   if (channel) {
     if (open) {
-      var rs = seed3(p, P.frame, BOLT_RNG_SALT);
+      var rs = seed3(p, P.frame, SALT_BOLT);
       *oA = vec4f(f32(E_PLASMA), SPAWNT(E_PLASMA), SPAWNLIFE(E_PLASMA), rnd(&rs) * SEED_MAX);
       *oB = vec4f(0.0, 0.0, 0.0, min(b.w + BOLT_P, P_MAX));
     } else {
@@ -132,7 +132,7 @@ fn main(@builtin(local_invocation_index) k: u32) {
     o = vec4f(-1.0, -1.0, 1.0, 0.0);
     for (var y = min(i32(P.fromY) - 1, NY - 1); y >= 0; y--) {
       let id = eid(fetchA(vec3i(xz.x, y, xz.y)));
-      if (id != E_EMPTY && KIND(id) != K_GAS) { o = vec4f(f32(y), f32(id), 1.0, 0.0); break; }
+      if (!isGasLike(id)) { o = vec4f(f32(y), f32(id), 1.0, 0.0); break; }
     }
   }
   result[P.slot * u32(STORM_CANDIDATES) + k] = o;

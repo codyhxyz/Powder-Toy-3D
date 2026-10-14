@@ -6,9 +6,9 @@ import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { nearestTarget, PLAYER } from '../targets.js';
-import { trigger } from './action.js';
+import { trigger, launchFrom } from './action.js';
 import { gear } from './catalog.js';
-import { muzzleCell } from './transfer.js';
+import { gridSpace } from '../space.js';
 
 // Burrower: Cruelty Squad's Cerebral Bore, without the health cost. It fires a
 // drill that homes on the nearest live body (targets.js: an NPC, another
@@ -87,7 +87,7 @@ export default {
     const world = new THREE.Group();
     world.name = 'pov-drills';
     env.scene.add(world);
-    const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
+    const { toWorld } = gridSpace(env);
 
     // ask the GPU what lies ahead of drill d (an answer lands a frame or two later)
     function probe(sim, d) {
@@ -199,7 +199,7 @@ export default {
       if (cutting) {
         povEvents.emit('drill', { point: d.pos.clone(), dir: d.dir.clone(), id: a.id, dt });
         d.grind -= dt;
-        if (d.grind <= 0) { d.grind = GRIND_S; povEvents.emit('tool:action', { tool: 'burrower', action: 'grind', point: d.pos.clone(), id: a.id }); }
+        if (d.grind <= 0) { d.grind = GRIND_S; env.feedback?.act('grind', { point: d.pos.clone(), id: a.id }); }
       }
       // the body it reaches
       const near = nearestTarget(d.pos, HIT_REACH, d.exclude);
@@ -230,12 +230,10 @@ export default {
     }
 
     function fire(ctx) {
-      const sim = ctx.sim ?? env.getSim();
       if (drills.filter((d) => d.state === 'flying').length >= MAX_DRILLS) return false;
-      const dir = ctx.dir.clone().normalize();
-      const m = muzzleCell(ctx.eye, dir, ctx.player.pos, sim.g);
-      if (!m) { env.feedback?.refuse('No room to fire'); return false; }
-      const origin = ctx.eye.clone().addScaledVector(dir, m.t);
+      const at = launchFrom(env, ctx, 'No room to fire');
+      if (!at) return false;
+      const { origin, dir } = at;
       const d = {
         id: nextId++, alive: true, state: 'flying', pos: origin.clone(), dir: dir.clone(), speed: FLIGHT_SPEED,
         age: 0, stall: 0, grind: 0, spin: 0, convey: 0, why: null, path: [], probe: null,
@@ -250,7 +248,7 @@ export default {
       lastLaunch = { id: d.id, origin: origin.clone(), dir: dir.clone() };
       rig.hit(HIT.BURROWER);
       muzzle.updateWorldMatrix(true, false);
-      povEvents.emit('tool:action', { tool: 'burrower', action: 'fire' });
+      env.feedback?.act('fire');
       povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld: muzzle.getWorldPosition(new THREE.Vector3()), gun: 'BURROWER', sound: { voice: 'swoosh', rate: 0.8, gain: 1.4, thump: 1.2 } });
       return true;
     }

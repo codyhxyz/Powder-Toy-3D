@@ -1,6 +1,8 @@
 import { prelude, STATE_OPTS, LAYOUT, STAGE, sleepUnitOf, gridDims, actLayout, ACT_COUNTS, ACT_MAP } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold, MAX_WORKGROUPS } from '../gpu/kernels.js';
+import { keysWith } from '../elements.js';
+import { idIs } from '../glsl.js';
 
 // Activity map: which 4×4×4 bricks the simulation may skip.
 //
@@ -84,8 +86,8 @@ fn rxGate(r: i32, Ta: f32, Tb: f32) -> bool {
 // Growers (react.js; physics.js DAMP_REACH): moss and fungus keep their damp
 // in their ctype. A grower's damp, given its temperature and face neighbours.
 fn grower(j: i32) -> bool { return j == E_MOSS || j == E_FUNGUS; }
-fn mossBed(j: i32) -> bool { return j == E_ROCK || j == E_BASALT || j == E_STONE || j == E_LIMESTONE || j == E_SANDSTONE; }   // the rock moss creeps over
-fn fungusFood(j: i32) -> bool { return j == E_WOOD || j == E_SAWDUST || j == E_PLANT; }                     // what fungus rots
+fn mossBed(j: i32) -> bool { return ${idIs('j', keysWith('mossBed'))}; }   // the rock moss creeps over (elements.js mossBed)
+fn fungusFood(j: i32) -> bool { return ${idIs('j', keysWith('rots'))}; }   // what fungus rots (elements.js fungusFood)
 fn dampOf(T: f32, nA: ptr<function, array<vec4f, 6>>) -> f32 {
   if (T >= DAMP_DRY_T) { return 0.0; }
   var h = 0.0;

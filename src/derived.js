@@ -5,19 +5,24 @@ import {
   FIELD_LAYOUT, FIELD_FORMAT, DIRTY, dirtyLists, BLUR_TAPS,
 } from './shaders/fields.js';
 import {
-  ageFrag, dirtyFrag, dirtyArgsFrag, brickFrag, brickDistFrag, blurFrag, brickShiftFrag, giShiftFrag, brickBitsFrag,
-  AgeParams, BrickDistParams, BlurParams, BrickShiftParams, GiShiftParams, DERIVED_LAYOUT, LIGHT_BLUR_PASSES,
+  ageFrag, dirtyFrag, dirtyArgsFrag, brickFrag, brickDistFrag, blurFrag, brickShiftFrag, giShiftFrag, brickBitsFrag, boxArgsFrag,
+  shadowMarkFrag, shadowListFrag, shadowArgsFrag,
+  AgeParams, BrickDistParams, BlurParams, BrickShiftParams, GiShiftParams, BoxParams, ShadowTileParams, DERIVED_LAYOUT,
+  LIGHT_BLUR_PASSES, DIST_PASSES, REGIONS, BOXES, SHADOW_TILE, SHADOW_SLICE, shadowTileWords,
 } from './shaders/passes.js';
+import { RENDER_LAYOUT } from './shaders/bindings.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { fold } from './gpu/kernels.js';
 import { halfsToFloats } from './gpu/readback.js';
 import {
-  giSourceFrag, giGatherFrag, GiParams, giProbeCount, giSourceDispatch, giGatherDispatch, GI_LAYOUT_NAMES,
+  giSourceFrag, giGatherFrag, giKeyFrag, giSelectFrag, giArgsFrag, GiParams, GiSelectParams, GI_LAYOUT_NAMES,
+  giLists, giBgBlend, GI_BG_EVERY, GI_SRC_EVERY,
 } from './shaders/gi.js';
 import { libLayouts } from './shaders/gfx/lib.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
 import { createMediaNoise } from './gfx/mediaNoise.js';
 import { GI_BLEND } from './sim.js';
+import { Occupancy } from './shaders/occupancy.js';
 
 // The derived passes (docs/webgpu.md E): what the renderer reads of the
 // simulation, rebuilt from its state once per derived frame, in the open
@@ -36,9 +41,19 @@ import { GI_BLEND } from './sim.js';
 // Incremental, exactly (docs/scaling.md D9): each brick's age counts derived
 // frames since it last changed, and the passes run over GPU-built lists of
 // the bricks whose results may have changed, dispatched indirectly
-// (shaders/passes.js dirtyFrag). Everything else holds what the passes would
-// write there again. sim.incremental = false feeds the same kernels lists of
-// every brick, which tools/derived-check.mjs compares with bit for bit.
+// (shaders/passes.js dirtyFrag), and within a brick over the cells a later
+// pass reads (shaders/fields.js COVER); brickDist and the glow volume over
+// the box a change in the brick map can reach (shaders/passes.js REGIONS).
+// Everything else holds what the passes would write there again.
+// sim.incremental = false feeds the same kernels lists of every brick and
+// the whole grid's regions, which tools/derived-check.mjs compares with bit
+// for bit.
+//
+// Visually equivalent, not exact: the sun's shadow map (gfx/volume.js
+// recordShadow) re-traces only the tiles the FIELDS bricks project onto
+// (shadowTiles; shaders/passes.js shadowMark), and the GI updates the bricks
+// and probes near a change at the full rate and the rest at a background
+// rate (updateGI; shaders/gi.js giSelect), everything after a global change.
 //
 // A window move (sim.shift, docs/scaling.md D11) moves the derived history
 // with the cells instead of starting it over: the EMA, the ages, the brick
@@ -53,18 +68,26 @@ import { GI_BLEND } from './sim.js';
 //   dlist      the dirty sets' lists, their lengths and indirect arguments (dirtyLists)  384 KB
 //   ema        the EMA, 3 planes of pack4x8unorm words                                     25 MB
 //   tmpA, tmpB the blur's and the boost's scratch, 3 planes each (scratch: outside this
-//              frame's WORK bricks it holds stale values no listed brick reads)        2 × 25 MB
+//              frame's WORK bricks it holds stale values no listed brick reads); tmpB
+//              has a fourth, for the normalised blur's shift                   25 + 34 MB
 //   blurred    the normalised blur, 4 planes of pack2x16float (φ.xy, φ.zw, media)          34 MB
 //   fieldSurf, fieldMedia, fieldThin   the final fields, rgba16float 3D textures       3 × 17 MB
 //   brick      BrickInfo per brick (shaders/bindings.js)                                  512 KB
 //   brickDist  u32 per brick: empty-space distance (bindings.js brickDistAt)              128 KB
-//   scratchB   4 words per brick: brickDist's middle axis, the per-brick shifts          512 KB
+//              then the march's occupancy, 18 words a brick (shaders/occupancy.js)     2.3 MB
+//              then the shadow map's tiles (shaders/passes.js shadowTileWords: their
+//              bits, the list the shadow kernel reads through this binding, its
+//              arguments)                                                              66 KB
+//   distX, distY  brickDist's first two axes, u32 per brick (kept: REGIONS)          2 × 128 KB
+//   boxes      the brick-resolution passes' change boxes, regions and arguments (BOXES)
+//   scratchB   4 words per brick: the per-brick shifts                                   512 KB
 //   lightA, lightB   the light blur's ping-pong, vec4f per brick                     2 × 512 KB
 //   light      the glow volume, rgba16float BX×BY×BZ                                      256 KB
 //   giHist     the GI probes' history: 4 bands of rgba as two pack2x16float words,
 //              band k of brick id at k·NBRICKS + id (shaders/gi.js blends into it)          1 MB
 //   gi0..gi3   the GI bands, rgba16float BX×BY×BZ (the volume and figures sample them)  4 × 256 KB
-//   giSrc      vec4u per brick: GI sources (shaders/gi.js giSource writes them)            512 KB
+//   giSrc      vec4u per brick: GI sources (shaders/gi.js giSource writes them), then the
+//              GI's lists of bricks and probes (shaders/gi.js giLists)                    770 KB
 //   fieldsTmp  a copy of a final field, for its shift (made on a grid's first shift)      17 MB
 //   noAer      16 bytes: the aeration's stand-in while the whitewater doesn't run
 //
@@ -82,8 +105,10 @@ function derivedLayouts(gpu) {
   const L = {};
   for (const [name, entries] of Object.entries({
     BOOK: DERIVED_LAYOUT.BOOK, FIELD: FIELD_LAYOUT.FIELD, JET: FIELD_LAYOUT.JET, PEAK: FIELD_LAYOUT.PEAK, BRICK: DERIVED_LAYOUT.BRICK,
-    PAIR: DERIVED_LAYOUT.PAIR, LIGHT: DERIVED_LAYOUT.LIGHT, GI_SHIFT: DERIVED_LAYOUT.GI_SHIFT,
+    PAIR: DERIVED_LAYOUT.PAIR, SHIFT: FIELD_LAYOUT.SHIFT, DIST: DERIVED_LAYOUT.DIST, LIGHT: DERIVED_LAYOUT.LIGHT, BOXES: DERIVED_LAYOUT.BOXES,
+    GI_SHIFT: DERIVED_LAYOUT.GI_SHIFT, GI_SELECT: DERIVED_LAYOUT.GI_SELECT,
   })) L[name] = gpu.layout(`DERIVED_${name}`, entries);
+  L.FRAME = gpu.layout('FRAME', RENDER_LAYOUT.FRAME);   // (gfx/uniforms.js frameUniformsOf's: FrameUniforms, for the shadow's tiles and the GI's lists)
   return L;
 }
 
@@ -117,8 +142,19 @@ export class Derived {
     this.test = { dropFold: false, dropJetToggle: false };
     this.lastSmoothing = null;
     this.lastJet = false;         // the aeration was read at the last derived frame (_jet)
+    this.frameNo = 0;             // derived frames (updateDirty)
+    this.boxFull = true;          // the next derived frame's brickDist and glow volume over every brick (a new grid, a shift)
+    this.shadowFull = true;       // the next shadow map traces every tile (shadowTiles)
+    this.giFull = true;           // the next GI frame runs at the full rate (updateGI)
+    this.giSrcAll = false;        // the next GI frame sources every brick (a shift moved the probes, not giSrc)
+    this._shadowAt = -Infinity;   // the derived frame the shadow map's tiles were last listed
+    this._shadowMap = null;       // ...for this map
+    this._giAt = -Infinity;       // ...and the GI's lists
+    this._shadowFrames = 0;       // shadow lists made (the far field's band of rows)
     const g = this.g, n = g.nbricks, slots = g.slots;
     this.lists = dirtyLists(g);
+    this.shadowWords = shadowTileWords(g);
+    this.giWords = giLists(g);
 
     // ---- buffers and textures (made once per grid, B6) ----
     const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
@@ -128,15 +164,19 @@ export class Derived {
     this.dlist = buf('dirty lists', this.lists.words * 4, S | CS | GPUBufferUsage.INDIRECT);
     this.ema = buf('field EMA', EMA_PLANES * slots * 4);
     this.tmpA = buf('field scratch A', TMP_PLANES * slots * 4, S | CS);
-    this.tmpB = buf('field scratch B', TMP_PLANES * slots * 4, S | CS | CD);   // (resetGI clears a run of it)
-    this.blurred = buf('fields blurred', BLURRED_PLANES * slots * 4, S);
+    this.tmpB = buf('field scratch B', BLURRED_PLANES * slots * 4, S | CS | CD);   // (resetGI clears a run of it; the blur's shift: 4 planes)
+    this.blurred = buf('fields blurred', BLURRED_PLANES * slots * 4, S | CD);   // (a shift copies it back)
     this.brick = buf('brick', n * 16);
-    this.brickDist = buf('brickDist', n * 4);
+    // (after the distances, the march's occupancy, shaders/occupancy.js; after that, the shadow map's tiles)
+    this.brickDist = buf('brickDist', this.shadowWords.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
+    this.distX = buf('brickDist x', n * 4, S);
+    this.distY = buf('brickDist y', n * 4, S);
+    this.boxes = buf('brick regions', BOXES.words * 4, S | CS | GPUBufferUsage.INDIRECT);   // (copyable: gpu.indirectWorkgroups reads its arguments)
     this.scratchB = buf('brick scratch', n * 16, S | CS);
     this.lightA = buf('light blur A', n * 16, S);
     this.lightB = buf('light blur B', n * 16, S);
     this.giHist = buf('GI history', GI_BANDS * n * 8);
-    this.giSrc = buf('GI sources', n * 16);   // (copyable: tools/gi-check.mjs seeds and reads it)
+    this.giSrc = buf('GI sources', this.giWords.words * 4);   // (copyable: tools/gi-check.mjs seeds and reads it)
     this.noAer = buf('no aeration', 16, S);
     const TB = GPUTextureUsage.TEXTURE_BINDING, SB = GPUTextureUsage.STORAGE_BINDING, TS = GPUTextureUsage.COPY_SRC, TD = GPUTextureUsage.COPY_DST;
     const tex = (name, size, usage = TB | SB | TS | TD) => gpu.createTexture({ label: label(name), size, dimension: '3d', format: FIELD_FORMAT, usage });
@@ -158,7 +198,7 @@ export class Derived {
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
     const t = (binding, v) => ({ binding, resource: v });
     const field = (name, src, dst) => gpu.bindGroup(L.FIELD, [b(0, this.dlist), b(1, src), b(2, dst)], name);
-    const pair = (name, src, dst) => gpu.bindGroup(L.PAIR, [b(0, src), b(1, dst)], name);
+    const dist = (name, src, dst) => gpu.bindGroup(L.DIST, [b(0, src), b(1, dst), b(2, this.boxes)], name);
     const v = this.views;
     this.groups = {
       book: gpu.bindGroup(L.BOOK, [b(0, this.age), b(1, this.dlist)], 'derived book'),
@@ -166,14 +206,19 @@ export class Derived {
       blur: [field('blur x', this.ema, this.tmpA), field('blur y', this.tmpA, this.tmpB), field('blur z', this.tmpB, this.blurred)],
       // the boost's smoothing: x from the blur (with the EMA and the peak, _jetGroups), then y and z
       boost: [null, field('boost y', this.tmpA, this.tmpB), field('boost z', this.tmpB, this.tmpA)],
-      brick: gpu.bindGroup(L.BRICK, [b(0, this.dlist), t(1, v.fieldSurf), t(2, v.fieldMedia), t(3, v.fieldThin), b(4, this.brick)], 'brick'),
-      // empty-space distance: x from the brick map, y, z (ends in brickDist)
-      dist: [pair('brickDist x', this.brick, this.brickDist), pair('brickDist y', this.brickDist, this.scratchB),
-        pair('brickDist z', this.scratchB, this.brickDist)],
+      brick: gpu.bindGroup(L.BRICK, [b(0, this.dlist), t(1, v.fieldSurf), t(2, v.fieldMedia), t(3, v.fieldThin), b(4, this.brick),
+        b(5, this.boxes)], 'brick'),
+      boxes: gpu.bindGroup(L.BOXES, [b(0, this.boxes)], 'brick regions'),
+      // empty-space distance: x from the brick map, y, z, each into a buffer of its own (REGIONS)
+      dist: [dist('brickDist x', this.brick, this.distX), dist('brickDist y', this.distX, this.distY), dist('brickDist z', this.distY, this.brickDist)],
       // the light blur (docs/webgpu.md H2): brick → A, A → B, B → A, …, A → the light volume
-      light: { fromBrick: pair('light from brick', this.brick, this.lightA), aToB: pair('light A→B', this.lightA, this.lightB),
-        bToA: pair('light B→A', this.lightB, this.lightA),
-        aToLight: gpu.bindGroup(L.LIGHT, [b(0, this.lightA), t(1, v.light)], 'light A→volume') },
+      light: { fromBrick: dist('light from brick', this.brick, this.lightA), aToB: dist('light A→B', this.lightA, this.lightB),
+        bToA: dist('light B→A', this.lightB, this.lightA),
+        aToLight: gpu.bindGroup(L.LIGHT, [b(0, this.lightA), t(1, v.light), b(2, this.boxes)], 'light A→volume') },
+      // the shadow map's tiles: the lists (FIELDS), brickDist's buffer (shadowTiles)
+      shadow: gpu.bindGroup(L.PAIR, [b(0, this.dlist), b(1, this.brickDist)], 'shadow tiles'),
+      // the GI's lists: the ages, the brick map, giSrc's buffer, the lists buffer (GI_NEAR)
+      giSelect: gpu.bindGroup(L.GI_SELECT, [b(0, this.age), b(1, this.brick), b(2, this.giSrc), b(3, this.dlist)], 'GI lists'),
     };
     this._jetBuffer = null;
     this._jetGroups(this.noAer);
@@ -192,13 +237,19 @@ export class Derived {
       fieldBoost: kernel('fieldBoost', fieldBoostFrag(g, 1), E, L.FIELD, BoostParams),
       fieldPeak: kernel('fieldPeak', fieldPeakFrag(g), SL.STATE_RO, L.PEAK, PeakParams),
       brick: kernel('brick', brickFrag(g), SL.STATE_RO, L.BRICK),
-      brickDist: kernel('brickDist', brickDistFrag(g), E, L.PAIR, BrickDistParams),
-      blur: kernel('blur', blurFrag(g), E, L.PAIR, BlurParams),
+      boxArgs: kernel('boxArgs', boxArgsFrag(g), E, L.BOXES, BoxParams),
+      brickDist: kernel('brickDist', brickDistFrag(g), E, L.DIST, BrickDistParams),
+      blur: kernel('blur', blurFrag(g), E, L.DIST, BlurParams),
       blurLast: kernel('blurLast', blurFrag(g, { last: true }), E, L.LIGHT, BlurParams),
+      // (group 0: FrameUniforms; the volume's views with shadows)
+      shadowMark: gpu.kernel({ name: 'shadowMark', code: shadowMarkFrag(g), layouts: [L.FRAME, E, L.PAIR], params: ShadowTileParams, workgroupSize: [64, 1, 1] }),
+      shadowList: gpu.kernel({ name: 'shadowList', code: shadowListFrag(g), layouts: [L.FRAME, E, L.PAIR], params: ShadowTileParams, workgroupSize: [64, 1, 1] }),
+      shadowArgs: gpu.kernel({ name: 'shadowArgs', code: shadowArgsFrag(g), layouts: [L.FRAME, E, L.PAIR], params: ShadowTileParams, workgroupSize: [1, 1, 1] }),
     };
+    this.occupancy = new Occupancy(this);   // (its kernel joins this.kernels)
     this.passes = {};
     this._lazy = {
-      fieldShift: () => kernel('fieldShift', fieldShiftFrag(g), E, L.PAIR, FieldShiftParams),
+      fieldShift: () => kernel('fieldShift', fieldShiftFrag(g), E, L.SHIFT, FieldShiftParams),
       brickShift: () => kernel('brickShift', brickShiftFrag(g), E, L.PAIR, BrickShiftParams),
       giShift: () => kernel('giShift', giShiftFrag(g), E, L.GI_SHIFT, GiShiftParams),
       fieldMax: () => kernel('fieldMax', fieldMaxFrag(g), E, L.FIELD, MaxParams),
@@ -275,6 +326,7 @@ export class Derived {
    */
   updateDirty() {
     const sim = this.sim;
+    this.frameNo++;
     this._carry();
     // a new kernel or a reset changes the fields everywhere, and so does the
     // aeration starting or stopping: falling water's input is read everywhere
@@ -307,9 +359,10 @@ export class Derived {
 
   /**
    * The render fields over the dirty sets (shaders/fields.js): the EMA over
-   * EMA, the blur and the boost's smoothing over WORK, the peak and the final
-   * fields over FIELDS. The rest of every buffer and texture keeps what it
-   * holds, which is what these passes would write there again.
+   * EMA, the blur over FIELDS and the boost's smoothing over WORK (each over
+   * the cells a later pass reads: COVER), the peak and the final fields over
+   * FIELDS. The rest of every buffer and texture keeps what it holds, which
+   * is what these passes would write there again.
    */
   updateFields() {
     const sim = this.sim, k = this.kernels, gr = this.groups, tables = sim.tables, empty = this.gpu.emptyGroup;
@@ -321,48 +374,90 @@ export class Derived {
       bind: [tables, sim.bindRO, gr.ema], header: sim.header(),
       params: { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset, aer },
     });
-    const work = this._over(DIRTY.WORK);
+    const work = this._over(DIRTY.WORK), fields = this._over(DIRTY.FIELDS);
     for (let axis = 0; axis < 3; axis++) {
-      this._dispatch(axis === 2 ? k.fieldFinal : k.fieldBlur, work, { bind: [tables, empty, gr.blur[axis]], params: { w, axis } });
+      this._dispatch(axis === 2 ? k.fieldFinal : k.fieldBlur, fields, { bind: [tables, empty, gr.blur[axis]], params: { w, axis } });
     }
     for (let axis = 0; axis < 3; axis++) {
       const bind = axis ? [tables, empty, gr.boost[axis]] : [tables, sim.bindRO, gr.boost[0]];
       this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis, aer } });
     }
-    this._dispatch(k.fieldPeak, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.peak], header: sim.header(), params: { bulk, reach: [1, 1, 1], aer } });
+    this._dispatch(k.fieldPeak, fields, { bind: [tables, sim.bindRO, gr.peak], header: sim.header(), params: { bulk, reach: [1, 1, 1], aer } });
   }
 
   /**
    * The derived frame (docs/webgpu.md E): the dirty sets, the render fields,
-   * the brick map over FIELDS, then over every brick the empty-space distance
-   * and the glow volume.
+   * the brick map over FIELDS, then the empty-space distance and the glow
+   * volume over the regions its changes reach (shaders/passes.js REGIONS:
+   * every brick after a new grid, a shift, or with sim.incremental off).
    */
   updateBricks() {
     const sim = this.sim, k = this.kernels, gr = this.groups, tables = sim.tables, empty = this.gpu.emptyGroup;
     this.updateDirty();
     this.updateFields();
     this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.brick], header: sim.header() });
-    const per = this._perBrick;
-    for (let axis = 0; axis < 3; axis++) this._dispatch(k.brickDist, per, { bind: [tables, empty, gr.dist[axis]], params: { axis } });
+    this.occupancy.update();   // over the brick map's list (every brick at a shift: its own onShift)
+    this._dispatch(k.boxArgs, [1, 1, 1], { bind: [tables, empty, gr.boxes], params: { full: this.boxFull || !sim.incremental } });
+    this.boxFull = false;
+    for (let axis = 0; axis < DIST_PASSES; axis++) {
+      this._dispatch(k.brickDist, this._region(REGIONS.DIST + axis), { bind: [tables, empty, gr.dist[axis]], params: { axis, region: REGIONS.DIST + axis } });
+    }
     const { fromBrick, aToB, bToA, aToLight } = gr.light;
     for (let i = 0; i < LIGHT_BLUR_PASSES; i++) {
       const last = i === LIGHT_BLUR_PASSES - 1;
       const group = last ? aToLight : i === 0 ? fromBrick : i & 1 ? aToB : bToA;
-      this._dispatch(last ? k.blurLast : k.blur, per, { bind: [tables, empty, group], params: { axis: i % 3 } });
+      this._dispatch(last ? k.blurLast : k.blur, this._region(REGIONS.LIGHT + i), { bind: [tables, empty, group], params: { axis: i % 3, region: REGIONS.LIGHT + i } });
     }
+  }
+
+  // a region's indirect arguments (boxArgs: a thread per brick of it)
+  _region(r) { return { indirect: this.boxes, offset: (BOXES.ARGS + 4 * r) * 4 }; }
+
+  /**
+   * The tiles of the sun's shadow map to trace this frame (gfx/volume.js
+   * recordShadow dispatches the shadow kernel over them; shaders/passes.js
+   * shadowMark): those the FIELDS bricks of the last derived frame project
+   * onto, or every tile when this is the first map since a derived frame
+   * went without one, or the first into this map (a volume's own), a far
+   * field was attached, or sim.incremental is off (and on the GPU when the
+   * sun, the map's size, the window's origin or the far field's switch
+   * moved). After updateBricks, with FrameUniforms written on this tick (B3:
+   * the sun and the map's size).
+   * @param {number} res the map's texels a side (FrameUniforms.shadowRes)
+   * @param {object} [map] the map traced (its identity: a second volume of the grid has its own)
+   * @returns {{ indirect: GPUBuffer, offset: number } | null} the shadow kernel's
+   *   indirect arguments (a workgroup per tile), or null while the kernels build
+   */
+  shadowTiles(res, map = null) {
+    const k = this.kernels, frame = this.gpu._frameUniforms?.group, sim = this.sim;
+    if (!frame || ![k.shadowMark, k.shadowList, k.shadowArgs].every((x) => x.state === 'ready')) return null;
+    const full = this.shadowFull || !sim.incremental || this._shadowAt < this.frameNo - 1 || map !== this._shadowMap;
+    this.shadowFull = false;
+    this._shadowAt = this.frameNo;
+    this._shadowMap = map;
+    const params = { res, full, phase: this._shadowFrames++ % SHADOW_SLICE };
+    const opts = { bind: [frame, this.gpu.emptyGroup, this.groups.shadow], header: sim.header(), params };
+    if (!full) this._dispatch(k.shadowMark, { indirect: this.dlist, offset: this.lists.threads * 4 }, opts);
+    this._dispatch(k.shadowList, fold(Math.ceil((res / SHADOW_TILE) ** 2 / 64)), opts);
+    this._dispatch(k.shadowArgs, [1, 1, 1], opts);
+    return { indirect: this.brickDist, offset: this.shadowWords.args * 4 };
   }
 
   // ---- the GI probes (shaders/gi.js; docs/webgpu.md E) ----
 
   /**
    * The GI probes (the realistic view; after the shadow map, which it reads
-   * for sunlight): giSource over every brick, then giGather over half the
-   * probes, alternating (all of them, replacing, after a reset: sim.giReset),
+   * for sunlight): giSource over the bricks giSelect lists, then giGather over
+   * the probes it lists (shaders/gi.js: near a change, half of them,
+   * alternating; elsewhere a slice at a background rate; all of them,
+   * replacing, after a reset: sim.giReset; half of them for GI_SETTLE frames
+   * after a global change, or one the GI missed: updateGI not called on the
+   * last derived frame, resetGI, a far field attached, sim.incremental off),
    * blended into the history and the four band textures. FrameUniforms must
    * have been written on this tick (B3): the sun, the sky, the shadow map's
-   * size, the far field's switch. The kernels build on the first call, or on
-   * prepareGI() (B5: no other view has GI); until they are ready this records
-   * nothing and the probes stay as they are.
+   * size, the far field's switch, the lamps. The kernels build on the first
+   * call, or on prepareGI() (B5: no other view has GI); until they are ready
+   * this records nothing and the probes stay as they are.
    *
    * Two call shapes. The WebGL build's, which callers keep (docs/webgpu.md E):
    * updateGI(sun, shadow, shadowRes, shadows), where the sun and shadowRes
@@ -386,43 +481,63 @@ export class Derived {
     } = positional ? { shadow: args[1] ?? null, shadows: args[3] ?? true } : (a ?? {});
     if (!frame) throw new Error('derived.updateGI: no frame group (gfx/uniforms.js frameUniformsOf(gpu).group, written this tick)');
     const k = this.giKernels();
-    if (k.giSource.state !== 'ready' || k.giGather.state !== 'ready') {
+    if (!Object.values(k).every((x) => x.state === 'ready')) {
       this.prepareGI().catch(() => {});   // (a kernel that fails stops graphics through gpu.fail)
       return false;
     }
-    const sim = this.sim, g = this.g, header = sim.header();
+    const sim = this.sim, header = sim.header(), empty = this.gpu.emptyGroup;
     const sun = Boolean(shadows && shadow?.map);
-    this._dispatch(k.giSource, giSourceDispatch(g), {
-      bind: [frame, sim.bindRO, this._giGroup('LIGHTING_GISRC', shadow)], header, params: { shadows: sun },
-    });
-    // after a reset trace every probe and replace; else half of them, blended in
+    // the lists (shaders/gi.js giSelect): a reset traces every probe and
+    // replaces it; a GI frame that may have missed changes runs at the full rate
     sim.giFrame = (sim.giFrame ?? 0) + 1;
-    const parity = sim.giReset ? -1 : sim.giFrame & 1;
-    const blend = sim.giReset ? 1 : GI_BLEND;
+    const reset = sim.giReset;
+    const global = this.giFull || !sim.incremental || this._giAt < this.frameNo - 1;
     sim.giReset = false;
-    this._dispatch(k.giGather, giGatherDispatch(g, parity), {
+    this.giFull = false;
+    this._giAt = this.frameNo;
+    const f = sim.giFrame;
+    const select = {
+      bind: [frame, empty, this.groups.giSelect], header,
+      params: { mode: reset ? 2 : global ? 1 : 0, parity: f & 1, phase: f % GI_BG_EVERY, srcPhase: f % GI_SRC_EVERY, shadows: sun, allSrc: this.giSrcAll },
+    };
+    this.giSrcAll = false;
+    this._dispatch(k.giKey, [1, 1, 1], select);
+    this._dispatch(k.giSelect, this._perBrick, select);
+    this._dispatch(k.giArgs, [1, 1, 1], select);
+    const at = (w) => ({ indirect: this.dlist, offset: w * 4 });   // (giArgs's: shaders/fields.js dirtyLists gi)
+    this._dispatch(k.giSource, at(this.lists.gi), {
+      bind: [frame, sim.bindRO, this._giGroup('LIGHTING_GISRC', shadow)], header, params: { shadows: sun, list: true },
+    });
+    const blend = reset ? 1 : GI_BLEND;
+    this._dispatch(k.giGather, at(this.lists.gi + 4), {
       bind: [frame, sim.bindRO, this._giGroup('LIGHTING_GI', shadow)], header,
-      params: { parity, count: giProbeCount(g, parity), blend, shadows: sun },
+      params: { parity: 0, count: 0, blend, shadows: sun, list: true, blendBg: giBgBlend(blend) },
     });
     return true;
   }
 
   /**
-   * The GI's kernels, { giSource, giGather } (gpu.kernels, made on first use
-   * and built by prepareGI or updateGI). The gather holds the far layout of
-   * the world this grid is a window of (a box: WORLD_SIZE's, off), as the
-   * shadow kernel does.
+   * The GI's kernels, { giSource, giGather, giKey, giSelect, giArgs }
+   * (gpu.kernels, made on first use and built by prepareGI or updateGI). The
+   * gather holds the far layout of the world this grid is a window of (a box:
+   * WORLD_SIZE's, off), as the shadow kernel does.
    */
   giKernels() {
     if (!this._giKernels) {
-      const gpu = this.gpu, g = this.g;
+      const gpu = this.gpu, g = this.g, L = this.L;
       const kernel = (name, code, variant) => gpu.kernel({
         name, code, params: GiParams, workgroupSize: [64, 1, 1], build: 'manual',
         layouts: GI_LAYOUT_NAMES[name].map((n, i) => gpu.layout(n, libLayouts(variant)[i])),
       });
+      const list = (name, code, size) => gpu.kernel({
+        name, code, params: GiSelectParams, workgroupSize: [size, 1, 1], build: 'manual', layouts: [L.FRAME, gpu.L.EMPTY, L.GI_SELECT],
+      });
       this._giKernels = {
         giSource: kernel('giSource', giSourceFrag(g), 'LIGHTING_GISRC'),
         giGather: kernel('giGather', giGatherFrag(g, { world: this.world ?? WORLD_SIZE }), 'LIGHTING_GI'),
+        giKey: list('giKey', giKeyFrag(g), 1),
+        giSelect: list('giSelect', giSelectFrag(g), 64),
+        giArgs: list('giArgs', giArgsFrag(g), 1),
       };
     }
     return this._giKernels;
@@ -430,8 +545,7 @@ export class Derived {
 
   /** Builds the GI's kernels (booting in the realistic view, or switching to it); resolves when they're ready. */
   prepareGI() {
-    const k = this.giKernels();
-    return Promise.all([k.giSource.build(), k.giGather.build()]);
+    return Promise.all(Object.values(this.giKernels()).map((x) => x.build()));
   }
 
   // Group 2 of a GI kernel (shaders/bindings.js L.LIGHTING_GISRC or
@@ -510,9 +624,10 @@ export class Derived {
     return out;
   }
 
-  /** Starts the GI probes over: their history and their four textures to zeros. */
+  /** Starts the GI probes over: their history and their four textures to zeros (and GI_SETTLE frames at the full rate). */
   resetGI() {
     this.sim.giFrame = 0;   // (and the checkerboard from its start, as a new Derived)
+    this.giFull = true;
     const f = this.gpu.frame, g = this.g;
     f.clear(this.giHist);
     // the textures from a zeroed run of the scratch (rows padded to 256 bytes, as copies want)
@@ -529,7 +644,10 @@ export class Derived {
    * src/wire/world.js calls it): shaders/gi.js binds them.
    * @param {object | null} far
    */
-  attachFar(far) { this.far = far ?? null; }
+  attachFar(far) {
+    this.far = far ?? null;
+    this.shadowFull = this.giFull = true;   // (its casters and its sky reach every texel and every probe)
+  }
 
   /**
    * The resources of shaders/bindings.js L.LIGHTING this module owns, as bind
@@ -587,7 +705,7 @@ export class Derived {
       age: gpu.bindGroup(L.PAIR, [b(0, this.age), b(1, this.scratchB)], 'age shift'),
       brick: gpu.bindGroup(L.PAIR, [b(0, this.brick), b(1, this.scratchB)], 'brick shift'),
       brickDist: gpu.bindGroup(L.PAIR, [b(0, this.brickDist), b(1, this.scratchB)], 'brickDist shift'),
-      ema: gpu.bindGroup(L.PAIR, [b(0, this.ema), b(1, this.tmpA)], 'EMA shift'),
+      ema: gpu.bindGroup(L.SHIFT, [b(0, this.ema), b(1, this.tmpA), b(2, this.blurred), b(3, this.tmpB)], 'EMA and blur shift'),
       gi: gpu.bindGroup(L.GI_SHIFT, [b(0, this.giHist), b(1, this.tmpB),
         ...this.views.gi.map((resource, i) => ({ binding: 2 + i, resource }))], 'GI shift'),
     };
@@ -597,9 +715,14 @@ export class Derived {
       this._dispatch(p.brickShift, this._perBrick, { bind: [tables, empty, group], params: { shift: sb, words, age } });
       f.copy(this.scratchB, 0, buffer, 0, n * words * 4);
     }
-    // the EMA, cell by cell
+    // (brickDist's axes and the glow volume's scratch didn't move: the next frame rebuilds them over every brick;
+    // nor did giSrc: the next GI frame sources every brick)
+    this.boxFull = true;
+    this.giSrcAll = true;
+    // the EMA and the normalised blur (the blur reads it where it doesn't recompute it: shaders/fields.js COVER), cell by cell
     this._dispatch(p.fieldShift, fold(Math.ceil(g.slots / 64)), { bind: [tables, empty, sg.ema], params: { shift: [dx, 0, dz] } });
     f.copy(this.tmpA, 0, this.ema, 0, EMA_PLANES * g.slots * 4);
+    f.copy(this.tmpB, 0, this.blurred, 0, BLURRED_PLANES * g.slots * 4);
     // the final fields: the region that stays in the window, moved
     const w = g.nx - Math.abs(dx), d = g.nz - Math.abs(dz);
     if (w > 0 && d > 0) {
@@ -660,10 +783,11 @@ export class Derived {
 
   dispose() {
     this._offShift?.();
+    this.occupancy.dispose();
     if (this.sim.derived === this) this.sim.attachDerived(null);
     if (!this.gpu.failure) this.gpu.flush('derived dispose');
-    for (const x of [this.age, this.dlist, this.ema, this.tmpA, this.tmpB, this.blurred, this.brick, this.brickDist, this.scratchB,
-      this.lightA, this.lightB, this.giHist, this.giSrc, this.noAer, this.fieldSurf, this.fieldMedia, this.fieldThin, this.light,
+    for (const x of [this.age, this.dlist, this.ema, this.tmpA, this.tmpB, this.blurred, this.brick, this.brickDist, this.distX, this.distY,
+      this.boxes, this.scratchB, this.lightA, this.lightB, this.giHist, this.giSrc, this.noAer, this.fieldSurf, this.fieldMedia, this.fieldThin, this.light,
       ...this.giTextures, this.fieldsTmp]) x?.destroy();
   }
 }

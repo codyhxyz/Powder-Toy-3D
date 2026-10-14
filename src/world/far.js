@@ -8,6 +8,7 @@ import {
   FAR_WIN_LAYOUT, FAR_SCENE_LAYOUT, FAR_CLEAR_LAYOUT, FAR_BOOST_LAYOUT, FAR_MIP1_LAYOUT, FAR_MIP2_LAYOUT, FAR_TOP_LAYOUT,
   FAR_SHADOW_LAYOUT, FAR_TREE_BAND_LAYOUT, SCENE_CELLS_LAYOUT_OF, SCENE_CELLS_BINDING, TREE_CAND_LAYOUT, TREE_THIN_LAYOUT,
   TREE_CAND_BINDING, FAR_VIEW_FRAME, FarViewParams, farViewPipeline,
+  farOccluderFrag, farOccluderPipeline, farUnderFrag, farUnderPipeline, FAR_OCCLUDER_LAYOUT, FAR_UNDER_LAYOUT, VOL_FORMATS, FAR_DETAIL_DEPTH_FORMAT,
 } from '../shaders/far.js';
 import { gfxUniforms, frameUniformsOf } from '../gfx/uniforms.js';
 import { WorldDetail } from './detail.js';
@@ -56,7 +57,9 @@ import { WorldDetail } from './detail.js';
 // turns their branches on.
 //
 // The view is one full-screen pass drawn in our scene pass before the volume
-// (src/wire/world.js: draw), in the realistic view only: sky, the open sea
+// (src/wire/world.js: draw; the volume itself draws first, into its own
+// targets, and composites over the view: volumePass, so the view stops at
+// its opaque hits and skips them), in the realistic view only: sky, the open sea
 // beyond the world and the far grid, with depth, so the window's volume
 // composites over it, depth-tested against the meshes three drew first. It
 // marches the far grid past the window's box, which the volume draws. Its
@@ -85,7 +88,7 @@ const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the leve
 const SOFTWARE_CHUNKS_PER_FRAME = 1;   // on a software adapter (SwiftShader: the container, ?software=1) a chunk is
                                        // seconds of CPU: one a frame, whatever the scene says
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
-const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
+const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits)
 const NO_DETAIL_DEPTH = new WeakMap();   // per device: a 1×1 r32float the view binds while there is no meshes' depth
 const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };                                // (GPUBufferUsage's bits)
 
@@ -207,6 +210,11 @@ export class FarField {
     this.viewFrameGroup = null;   // (_frameGroup: it holds the detail meshes' depth)
     this.viewFrameDepth = null;
     this.depthFor = null;         // the scene target the meshes' depth was drawn for this frame (prepass), else null
+    // the volume first (volumePass): its own colour and depth, the occluder the view stops at, at the scene target's size
+    this.under = { pipe: gpu.renderPipeline({ name: 'far under', code: farUnderFrag(), layouts: [layout('FAR_UNDER', FAR_UNDER_LAYOUT)], ...farUnderPipeline(), build: 'idle' }) };
+    this.under.occPipe = gpu.renderPipeline({ name: 'far occluder', code: farOccluderFrag(), layouts: [layout('FAR_OCCLUDER', FAR_OCCLUDER_LAYOUT)], ...farOccluderPipeline(), build: 'idle' });
+    this.frameFor = null;         // the scene target this frame's prepass ran for (the view draws into it), else null
+    this.occFor = false;          // this frame's view stops at the occluder (the volume drew first)
     this.viewParams = {
       clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor, detailDepth: 0,
       warpK: 0, warpAnchor: [0, 0], warpDir: [0, 1],
@@ -242,9 +250,9 @@ export class FarField {
   }
 
   // The view's group 0 (FrameUniforms, the field, the occupancy, the detail
-  // meshes' depth), made again when the depth's texture is.
-  _frameGroup() {
-    const depth = this.detail.depthView ?? NO_DETAIL_DEPTH.get(this.gpu);
+  // meshes' depth or the occluder: `view`), made again when that texture is.
+  _frameGroup(view = null) {
+    const depth = view ?? this.detail.depthView ?? NO_DETAIL_DEPTH.get(this.gpu);
     if (this.viewFrameGroup && this.viewFrameDepth === depth) return this.viewFrameGroup;
     this.viewFrameDepth = depth;
     return (this.viewFrameGroup = this.gpu.bindGroup(this.viewFrameLayout, [
@@ -522,8 +530,9 @@ export class FarField {
    * its march at them; a still (renderStill: no compute hook) goes without.
    */
   prepass(target) {
-    this.depthFor = null;
+    this.depthFor = this.frameFor = null;
     if (!this.visible || !this.viewReady || !this.vol || !target) return;
+    this.frameFor = { target, width: target.width, height: target.height };
     if (this.detail.depth(target, { ...this._params(), detailDepth: 0 })) this.depthFor = { target, width: target.width, height: target.height };
   }
 
@@ -537,12 +546,13 @@ export class FarField {
    * @returns {boolean} whether it drew
    */
   draw(rp, target = null) {
-    const d = this.depthFor;
-    this.depthFor = null;   // (this frame's only)
+    const d = this.depthFor, occ = this.occFor;
+    this.depthFor = this.frameFor = null;   // (this frame's only)
+    this.occFor = false;
     if (!this.visible || !this.viewReady || !this.vol) return false;
     const sim = this.sim, p = this._params();
-    p.detailDepth = d && d.target === target && d.width === target.width && d.height === target.height ? 1 : 0;
-    const bind = [this._frameGroup(), sim.bindRO, this.vol.lightingGroup];
+    p.detailDepth = occ || (d && d.target === target && d.width === target.width && d.height === target.height) ? 1 : 0;
+    const bind = [this._frameGroup(occ ? this.under.occView : null), sim.bindRO, this.vol.lightingGroup];
     this.detail.draw(rp, p, bind);   // (first: the view depth-tests against the meshes)
     this.viewPipeline.draw(rp, {
       bind, header: { origin: [0, 0, 0], src: sim.cur, dst: sim.cur },   // (world cells throughout: worldPos() is the identity)
@@ -551,8 +561,98 @@ export class FarField {
     return true;
   }
 
+  /**
+   * The volume first (docs/webgpu.md F1, shaders/far.js farOccluderFrag):
+   * whether this frame draws the window's volume before the scene pass, into
+   * `target` (post.sceneTarget): the view draws this frame and the prepass ran
+   * for that target (a still goes without: the volume draws in the scene pass).
+   * @param {{ width: number, height: number }} target
+   */
+  volumeFirst(target) {
+    const f = this.frameFor, u = this.under;
+    return !!f && !!target && this.visible && this.viewReady && !!this.vol && f.target === target && f.width === target.width && f.height === target.height
+      && u.pipe.state === 'ready' && u.occPipe.state === 'ready';
+  }
+
+  /**
+   * The volume's own pass at `target`'s size (its colour cleared to 0, its
+   * depth to 1: the volume's pipelines draw into it as into the scene pass),
+   * after three's opaque meshes (the volume marches to their depth). The
+   * caller draws the volume, ends it, then calls occlude.
+   * @param {{ width: number, height: number }} target
+   * @returns {GPURenderPassEncoder}
+   */
+  volumePass(target) {
+    const u = this.under, gpu = this.gpu, w = target.width, h = target.height;
+    if (!u.color || u.color.width !== w || u.color.height !== h) {
+      this._dropUnder();
+      const usage = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING;
+      u.color = gpu.createTexture({ label: 'volume first colour', size: [w, h], format: VOL_FORMATS.color, usage });
+      u.depth = gpu.createTexture({ label: 'volume first depth', size: [w, h], format: VOL_FORMATS.depth, usage });
+      u.occ = gpu.createTexture({ label: 'far occluder', size: [w, h], format: FAR_DETAIL_DEPTH_FORMAT, usage });
+      u.colorView = u.color.createView();
+      u.depthView = u.depth.createView();
+      u.occView = u.occ.createView();
+      u.group = gpu.bindGroup(gpu.layout('FAR_UNDER', FAR_UNDER_LAYOUT), [{ binding: 0, resource: u.colorView }, { binding: 1, resource: u.depthView }], 'far under');
+      u.occGroups = new Map();   // (per detail depth view)
+    }
+    u.drew = false;
+    return gpu.frame.render({
+      colorAttachments: [{ view: u.colorView, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
+      depthStencilAttachment: { view: u.depthView, depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store' },
+    }, 'volume first');
+  }
+
+  /**
+   * After the volume's pass: the occluder (the nearer of the detail meshes'
+   * depth and the volume's opaque hits) in a pass of its own, which this
+   * frame's view stops at; drew: whether the volume drew (its pipeline
+   * building: the view draws as it did, and nothing composites).
+   * @param {{ width: number, height: number }} target
+   * @param {boolean} drew
+   */
+  occlude(target, drew) {
+    const u = this.under, d = this.depthFor;
+    u.drew = drew;
+    if (!drew) return;
+    const detail = (d && d.target === target && d.width === target.width && d.height === target.height && this.detail.depthView) || NO_DETAIL_DEPTH.get(this.gpu);
+    let group = u.occGroups.get(detail);
+    if (!group) {
+      group = this.gpu.bindGroup(this.gpu.layout('FAR_OCCLUDER', FAR_OCCLUDER_LAYOUT), [
+        { binding: 0, resource: u.colorView }, { binding: 1, resource: u.depthView }, { binding: 2, resource: detail },
+      ], 'far occluder');
+      u.occGroups.clear();   // (one detail depth at a time)
+      u.occGroups.set(detail, group);
+    }
+    const rp = this.gpu.frame.render({ colorAttachments: [{ view: u.occView, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] }, 'far occluder');
+    try { u.occPipe.draw(rp, { bind: [group], count: 3 }); } finally { rp.end(); }
+    this.occFor = true;
+  }
+
+  /**
+   * The volume drawn first, composited into the scene pass where the volume
+   * used to draw (after the view): its blend and its depth test. Returns
+   * whether it drew this frame.
+   * @param {GPURenderPassEncoder} rp
+   */
+  drawVolume(rp) {
+    const u = this.under;
+    if (!u.drew) return false;
+    u.drew = false;
+    u.pipe.draw(rp, { bind: [u.group], count: 3 });
+    return true;
+  }
+
+  _dropUnder() {
+    const u = this.under;
+    for (const t of [u.color, u.depth, u.occ]) if (t) this.sim._retire(t);
+    u.color = u.depth = u.occ = u.colorView = u.depthView = u.occView = u.group = null;
+    u.drew = false;
+  }
+
   dispose() {
     this.disposed = true;
+    this._dropUnder();
     this.detail.dispose();
     this.queue = [];
     this.vol?.attachFar(null);

@@ -4,6 +4,7 @@ import { cellTexel } from '../../sim.js';
 import { BRICK } from '../../shaders/common.js';
 import { BODY_HEIGHT } from '../constants.js';
 import { deswizzle, columnTops, ID_BITS } from './deswizzle.js';
+import { voxelWalk } from '../grid.js';
 
 // The NPCs' picture of the world (and the vehicles' terrain, and Teleportitis's
 // safe spots): the sim's cells read back to the CPU a few times a second (the
@@ -30,7 +31,7 @@ import { deswizzle, columnTops, ID_BITS } from './deswizzle.js';
 //
 // raycast() is Amanatides & Woo's voxel traversal ("A Fast Voxel Traversal
 // Algorithm for Ray Tracing", 1987), stepping cell by cell along the ray
-// (voxelRay, which walks any grid).
+// (voxelRay, which walks any grid: ../grid.js voxelWalk).
 
 const REFRESH_S = 0.5;                 // s between readbacks
 export const OUTSIDE = -1;             // id of the box walls and floor
@@ -97,27 +98,17 @@ function atlasRows(g) {
 // id, dist, point }, face as raycast() numbers it. (The world model's raycast;
 // the camera's arm walks the player's probe with it, cameraArm.js.)
 export function voxelRay(idAt, top, origin, dir, maxDist, stops, out = {}) {
-  let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
-  const sx = Math.sign(dir.x), sy = Math.sign(dir.y), sz = Math.sign(dir.z);
-  const tdx = sx ? Math.abs(1 / dir.x) : Infinity, tdy = sy ? Math.abs(1 / dir.y) : Infinity, tdz = sz ? Math.abs(1 / dir.z) : Infinity;
-  let tx = sx ? ((sx > 0 ? x + 1 - origin.x : origin.x - x) * tdx) : Infinity;
-  let ty = sy ? ((sy > 0 ? y + 1 - origin.y : origin.y - y) * tdy) : Infinity;
-  let tz = sz ? ((sz > 0 ? z + 1 - origin.z : origin.z - z) * tdz) : Infinity;
-  let t = 0, face = -1;
   out.valid = false;
-  for (let guard = 0; guard < 4096 && t <= maxDist; guard++) {
+  voxelWalk(origin, dir, maxDist, (x, y, z, t, axis, step) => {
     const i = y >= top ? E.EMPTY : idAt(x, y, z);
-    if (face >= 0 && stops(i)) {
-      out.valid = true; out.id = i; out.face = face; out.dist = t;
+    if (axis >= 0 && stops(i)) {
+      out.valid = true; out.id = i; out.face = axis * 2 + (step > 0 ? 1 : 0); out.dist = t;
       out.cell = { x, y: Math.max(y, -1), z };
       out.point = { x: origin.x + dir.x * t, y: origin.y + dir.y * t, z: origin.z + dir.z * t };
       return out;
     }
-    if (y >= top + BODY_HEIGHT && sy >= 0) break;   // gone out the open top
-    if (tx < ty && tx < tz) { x += sx; t = tx; tx += tdx; face = sx > 0 ? 1 : 0; }
-    else if (ty < tz) { y += sy; t = ty; ty += tdy; face = sy > 0 ? 3 : 2; }
-    else { z += sz; t = tz; tz += tdz; face = sz > 0 ? 5 : 4; }
-  }
+    if (y >= top + BODY_HEIGHT && dir.y >= 0) return out;   // gone out the open top
+  });
   return out;
 }
 

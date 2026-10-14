@@ -142,8 +142,7 @@ export function createHotbar(onSelect, onSelectTool) {
       el.classList.remove('shake');
       void el.offsetWidth;   // restart the animation
       el.classList.add('shake');
-      setTimeout(() => el.classList.remove('shake'), SHAKE_MS);
-      open();
+      setTimeout(() => el.classList.remove('shake'), SHAKE_MS);   // a refusal never opens the selector: the player opens it
     },
     setVisible(v) {
       shown = !!v;

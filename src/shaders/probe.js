@@ -39,23 +39,6 @@ const MAX_SIGNS: u32 = ${MAX_SIGNS}u;
 @group(2) @binding(1) var<storage, read> signData: array<vec4f>;
 @group(2) @binding(2) var<storage, read_write> result: array<vec4f>;
 
-// Jump the DDA to the exit of brick bc, which holds no matter: as one step
-// would, updates *cell, *tMax and *tEnter (shaders/gfx/core.js skipBrick,
-// which needs the lighting group's declarations this walk goes without).
-fn skipBrickSign(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
-                 cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>, tEnter: ptr<function, f32>) {
-  let bmin = vec3f(bc * BS);
-  let bmax = bmin + f32(BS);
-  let tb = (mix(bmin, bmax, step(vec3f(0.0), rd)) - ro) / rd;
-  let ax = argmin3(tb);
-  let tx = tb[ax];
-  var c = vec3i(floor(ro + rd * tx));
-  c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
-  *cell = c;
-  *tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
-  *tEnter = tx;
-}
-
 fn sightLine(ro: vec3f, toward: vec3f) -> f32 {
   let dv = toward - ro;
   let tEnd = length(dv);
@@ -67,10 +50,11 @@ fn sightLine(ro: vec3f, toward: vec3f) -> f32 {
   // counts when the ray actually passes through it (camera behind the face)
   let t1 = min(bh.y, tEnd - 0.02);
   if (t1 <= t0) { return 1.0; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + 1e-4))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
   var lastB = vec3i(-1);
   var occ = false;
@@ -79,7 +63,7 @@ fn sightLine(ro: vec3f, toward: vec3f) -> f32 {
     if (outside(cell) || tEnter >= t1) { break; }
     let bc = cell / BS;
     if (any(bc != lastB)) { lastB = bc; occ = brickMatter(brick[brickId(bc)].info); }
-    if (!occ) { skipBrickSign(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
+    if (!occ) { skipBrick(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
     let ax = argmin3(tMax);
     let seg = min(tMax[ax], t1) - tEnter;
     let id = eid(fetchA(cell));

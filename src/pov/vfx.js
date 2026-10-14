@@ -8,6 +8,7 @@ import { JET_NOZZLES } from './figure.js';
 import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
+import { gridSpace } from './space.js';
 
 // POV effects: muzzle flash (and a short light), sparks, dust and chips,
 // splash mist and tracers. Cosmetic only: the real debris, splashes and heat
@@ -67,10 +68,8 @@ const SPARK_SPREAD = 0.8;               // how far from the normal the sparks sc
 
 // ---- dust and chips (powders, broken solids), tinted by the element hit
 const DUST_GUN = 5;
-const DUST_AXE = 3;
 const DUST_GRAIN = 2;   // dust puffs a kicked clump of sand trails per frame of flight (kick:grain)
 const CHIPS_GUN = 6;                    // only when a solid broke
-const CHIPS_AXE = 4;
 const DUST_SIZE = [0.5, 0.9];           // cells across at birth...
 const DUST_GROW = 2.2;                  // ...growing to this many times that
 const DUST_LIFE = [0.35, 0.6];          // s
@@ -354,7 +353,7 @@ export function createVfx(env) {
     });
   }
 
-  const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
+  const { toWorld } = gridSpace(env);
   const vP = new THREE.Vector3(), vD = new THREE.Vector3(), vV = new THREE.Vector3(), vT = new THREE.Vector3();
   const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
   const tmpColor = new THREE.Color();
@@ -906,10 +905,11 @@ export function createVfx(env) {
       const metal = e.id === E.METAL || e.id === E.SCRAP;
       const solid = el.kind === K.SOLID;
       if (metal || (solid && e.broke === false)) sparks(at, gun ? SPARKS_GUN : SPARKS_AXE, n);
-      if (el.kind === K.POWDER && !metal) dust(at, gun ? DUST_GUN : DUST_AXE, n, e.id);
+      if (!gun) return; // Mining already produces real debris; don't overlay cosmetic dust or chips.
+      if (el.kind === K.POWDER && !metal) dust(at, DUST_GUN, n, e.id);
       if (solid && e.broke === true) {
-        dust(at, gun ? DUST_GUN : DUST_AXE, n, e.id);
-        chips(at, gun ? CHIPS_GUN : CHIPS_AXE, n, e.id);
+        dust(at, DUST_GUN, n, e.id);
+        chips(at, CHIPS_GUN, n, e.id);
       }
     }),
     povEvents.on('round:move', (e) => {

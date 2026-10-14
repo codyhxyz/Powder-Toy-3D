@@ -23,7 +23,7 @@ const TEAM_MODES = ['slayer', 'ctf', 'koth', 'infection', 'siege'];
 export const MAPS = [
   { key: 'island', name: 'Island', size: 'world', scene: 'island', dims: WORLD_DIMS,
     desc: 'Beaches, forest, cliffs and caves, a lighthouse and old mines. The world loads around you as you go.' },
-  { key: 'willowCove', name: 'Willow Cove', size: 'world', scene: 'willowCove', dims: WORLD_DIMS, modes: ['animalCrossing'],
+  { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: WORLD_DIMS, modes: ['animalCrossing'],
     desc: 'A quiet island village with cottages, an orchard, river bridges and a seaside dock. A Sandbox world inspired by Animal Crossing.' },
   { key: 'volcanoWorld', name: 'Volcano Isles', size: 'world', scene: 'volcanoWorld', dims: WORLD_DIMS,
     desc: 'An archipelago of live volcanoes in open sea, lava pouring down to the water.' },
@@ -58,7 +58,7 @@ export const GAMEMODES = [
   { key: 'sandbox', name: 'Sandbox', desc: 'Pour, build, burn and blow it up. Every map.' },
   { key: 'factory', name: 'Factory', desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
   { key: 'noita', name: 'Noita', desc: 'Wands only. Go down through the Mines and the Holy Mountains, finding wands and spells on the way.' },
-  { key: 'animalCrossing', name: 'Animal Crossing', effect: 'rollingLog', desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Willow Cove.' },
+  { key: 'animalCrossing', name: 'Animal Crossing', effect: 'rollingLog', desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Tinker Creek.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },
   { key: 'koth', name: 'King of the Hill', team: true, desc: 'Hold the hill alone to score. It moves every minute.' },
@@ -66,7 +66,8 @@ export const GAMEMODES = [
   { key: 'siege', name: 'Siege', team: true, desc: 'TF2 attack/defend: take the control points in turn before time runs out, or hold them.' },
 ];
 
-export const mapByKey = (key) => MAPS.find((m) => m.key === key) ?? null;
+// (aliases: a renamed map's new name also opens it; the key stays for saves and old links)
+export const mapByKey = (key) => MAPS.find((m) => m.key === key || m.aliases?.includes(key)) ?? null;
 export const modeByKey = (key) => GAMEMODES.find((m) => m.key === key) ?? null;
 // Public openMap, URL launch and the menu use the same eligibility rules.
 export function resolveMode(map, mode = 'sandbox') {

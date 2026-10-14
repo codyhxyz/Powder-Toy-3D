@@ -452,13 +452,18 @@ export default {
   (a stab drives forward instead of only turning) and `pose.lethal` (a lethal blow's own motion).
 - `viewmodel.js` `HIT` and `rig.hit(HIT.X)`: a tool's shot, blow or fling, as the hand's spring kick plus
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
-- `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
-  `tool:action 'refuse'`.
+- `env.feedback.notice(text)` / `refuse(text, { id, point }, { silent })`: the throttled "can't" toast, slot shake and
+  `tool:action 'refuse'` (silent: no toast, a blow that bounces off). `env.feedback.act(action, extra)`: every other
+  `tool:action`, with `tool` the key in lower case.
 - `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the trowel's material). Without one, the crosshair shows what it's on,
   as the god view's hover does (no scanner tool: hovering is enough).
 - `env.ballistics`: the shared projectiles; `fire(origin, dir, gravityScale(sim), { speed, carry, kind,
   onStrike })` flies anything ballistic (the gun's rounds, the bomb) and the toolbelt keeps it flying.
 - `transfer.js` `muzzleCell()`: where something leaves the hand (the first cell clear of the body).
+- `action.js` `launcher(env, { kind, model, ... })`: a thrown or fired thing (the bomb, the rocket, the lamps, the flask):
+  `fire(ctx, opts)` finds the muzzle cell or refuses, fires on `env.ballistics`, kicks the rig and emits the action,
+  and draws each round in flight; `launchFrom(env, ctx, refuse)` is just the muzzle part (the burrower).
+- `pov/space.js` `gridSpace(env)`: `toWorld(g, out)` / `toGrid(w, out)` between grid cells and the scene.
 - `transfer.js` `pack()`: the shared inventory of loose matter; `put(load, { id })` places one element of it.
 
 `ctx` is built by the body module every frame in POV:

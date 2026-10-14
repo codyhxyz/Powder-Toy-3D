@@ -88,7 +88,6 @@ export const CoupleParams = uniformStruct('CoupleParams', {
 });
 
 export const povCouplingWGSL = /* wgsl */ `
-const POV_RNG_SALT: u32 = 0x9du;   // the coupling's own random stream (seed3)
 const AXIS_EPS: f32 = ${AXIS_EPS};
 
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
@@ -103,9 +102,8 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   if (length(r) > AXIS_EPS) {
     out2 = normalize(r);
   } else {
-    var rs = seed3(p, P.frame, POV_RNG_SALT);
-    let ang = rnd(&rs) * 6.2831853;
-    out2 = vec2f(cos(ang), sin(ang));
+    var rs = seed3(p, P.frame, SALT_POV);
+    out2 = randDir2(&rs);
   }
   var push = P.pushFluid;
   if (KIND(id) == K_POWDER) { push = P.pushPowder; }

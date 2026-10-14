@@ -11,6 +11,7 @@
 // SwiftShader by accident.
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,48 +19,76 @@ import path from 'node:path';
 const browsers = new Set();
 const MODES = ['manual', 'preview', 'ui', 'visual'];
 const DEFAULT_TIMEOUT_MS = 3 * 60 * 1000;
-// Headless GPU budget. The user plays on this same GPU while agents test, so
-// headless time is rationed: one browser machine-wide at a time, and each
-// Claude session (subagents share its id) gets a small rolling allowance.
+// Headless GPU budget. The user plays on this same GPU while agents test, so a
+// headless browser (1) never runs beside another one: one machine-wide at a
+// time, the rest queue on a lock file; and (2) yields to the player: it waits
+// while the GPU is already busy with something that isn't a test. That second
+// rule is the one the player feels, so it measures the GPU instead of
+// rationing time: an idle Mac runs tests freely, a played game holds every
+// session's tests back. macOS reports the accelerator's utilization in the IO
+// Registry ("Device Utilization %", no permissions needed); its median over
+// BUSY_WINDOW_MS discounts the desktop's own spikes (a window drag, a video).
+// Off macOS (CI, the Linux container) there is no player and no reading.
 const BUDGET_DIR = path.join(os.homedir(), '.cache', 'tpt-headless');
 const SLOT_FILE = path.join(BUDGET_DIR, 'slot');
-const SESSION_BUDGET_MS = Number(process.env.TPT_HEADLESS_BUDGET_MS ?? 5 * 60 * 1000);
-const BUDGET_WINDOW_MS = 60 * 60 * 1000;
-const SLOT_WAIT_MS = 5 * 60 * 1000;
+const SLOT_WAIT_MS = Number(process.env.TPT_GPU_WAIT_MS ?? 10 * 60 * 1000);   // queue and yield, then give up
 const SLOT_POLL_MS = 2000;
-const session = process.env.CLAUDE_CODE_SESSION_ID;
-const ledgerFile = session && path.join(BUDGET_DIR, `${session}.json`);
+// A raymarched frame at 30-60 fps keeps the M-series GPU above ~80 %; the
+// desktop alone reads 0-25 % with spikes past 50 % (sampled 2026-10-13).
+const BUSY_PCT = 50;
+const BUSY_SAMPLES = 9;           // readings per check (odd: a true median)
+const BUSY_WINDOW_MS = 1800;      // spread over this long
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const readJSON = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
-function spentMs(now = Date.now()) {
-  if (!ledgerFile) return 0;
-  return readJSON(ledgerFile, []).filter(r => r.end > now - BUDGET_WINDOW_MS).reduce((t, r) => t + (r.end - r.start), 0);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function gpuUtilization() {
+  try {
+    const out = execFileSync('/usr/sbin/ioreg', ['-r', '-d', '1', '-c', 'IOAccelerator'], { encoding: 'utf8' });
+    const m = /"Device Utilization %"=(\d+)/.exec(out);
+    return m ? Number(m[1]) : 0;
+  } catch { return 0; }
 }
-function record(start) {
-  if (!ledgerFile) return;
-  const now = Date.now();
-  const runs = readJSON(ledgerFile, []).filter(r => r.end > now - BUDGET_WINDOW_MS);
-  runs.push({ start, end: now });
-  fs.writeFileSync(ledgerFile, JSON.stringify(runs));
+/** The GPU's median utilization (%) over BUSY_WINDOW_MS; 0 where it can't be read. */
+export async function gpuBusyPct() {
+  if (process.platform !== 'darwin' || process.env.TPT_IGNORE_PLAYER) return 0;
+  const v = [];
+  for (let i = 0; i < BUSY_SAMPLES; i++) {
+    v.push(gpuUtilization());
+    if (i < BUSY_SAMPLES - 1) await sleep(BUSY_WINDOW_MS / (BUSY_SAMPLES - 1));
+  }
+  return v.sort((a, b) => a - b)[BUSY_SAMPLES >> 1];
 }
 let slotHeld = false;
 async function takeSlot() {
   fs.mkdirSync(BUDGET_DIR, { recursive: true });
   const until = Date.now() + SLOT_WAIT_MS;
   for (;;) {
-    try {
-      fs.writeFileSync(SLOT_FILE, String(process.pid), { flag: 'wx' });
-      slotHeld = true;
-      return;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
+    if (!slotHeld) {
+      try {
+        fs.writeFileSync(SLOT_FILE, String(process.pid), { flag: 'wx' });
+        slotHeld = true;
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        const holder = Number(readJSON(SLOT_FILE, 0));
+        if (holder === process.pid) slotHeld = true;
+        else if (!holder || !alive(holder)) { fs.rmSync(SLOT_FILE, { force: true }); continue; }
+        else {
+          if (Date.now() > until) throw new Error(`Headless GPU slot still held by pid ${holder}; giving up. Do a CPU check instead.`);
+          console.error(`[browser] waiting for the headless GPU slot (held by pid ${holder})`);
+          await sleep(SLOT_POLL_MS);
+          continue;
+        }
+      }
     }
-    const holder = Number(readJSON(SLOT_FILE, 0));
-    if (holder === process.pid) { slotHeld = true; return; }
-    if (!holder || !alive(holder)) { fs.rmSync(SLOT_FILE, { force: true }); continue; }
-    if (Date.now() > until) throw new Error(`Headless GPU slot still held by pid ${holder}; giving up. Do a CPU check instead.`);
-    console.error(`[browser] waiting for the headless GPU slot (held by pid ${holder})`);
-    await new Promise(r => setTimeout(r, SLOT_POLL_MS));
+    // the slot is ours, so no other test is on the GPU: whatever is busy is the player
+    const busy = await gpuBusyPct();
+    if (busy < BUSY_PCT) return;
+    if (Date.now() > until) {
+      releaseSlot();
+      throw new Error(`The GPU is busy (${busy} % used, not by a test): the user is likely playing. Do a CPU check instead, or try again later.`);
+    }
+    console.error(`[browser] the GPU is busy (${busy} % used, not by a test): waiting for the player`);
+    await sleep(SLOT_POLL_MS);
   }
 }
 function releaseSlot() {
@@ -178,10 +207,7 @@ export async function launchBrowser(options = {}) {
   const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, ...launch } = options;
   if (!Number.isFinite(lifetimeMs) || lifetimeMs <= 0) throw new RangeError('Test lifetime must be positive milliseconds');
   const logArgs = browserLog && hookBrowserLog(browserLog) ? ['--enable-logging=stderr', '--v=0'] : [];
-  const left = SESSION_BUDGET_MS - spentMs();
-  if (left <= 0) throw new Error(`Headless GPU budget spent (${SESSION_BUDGET_MS / 60000} min per hour per session). The user plays on this GPU: check on the CPU, or ship and verify on prod.`);
   if (!browsers.size) await takeSlot();
-  const started = Date.now();
   let browser;
   try {
     browser = await chromium.launch({
@@ -195,13 +221,12 @@ export async function launchBrowser(options = {}) {
   }
   if (!browsers.size) for (const [event, fn] of Object.entries(handlers)) process.on(event, fn);
   browsers.add(browser);
-  const limit = Math.min(lifetimeMs, left);
-  const timer = setTimeout(() => stop(1, new Error(`GPU test exceeded ${limit} ms (lifetime or session budget)`)), limit);
+  const limit = lifetimeMs;
+  const timer = setTimeout(() => stop(1, new Error(`GPU test exceeded ${limit} ms (the run's lifetime, TPT_TEST_TIMEOUT_MS)`)), limit);
   timer.unref();
   browser.once('disconnected', () => {
     clearTimeout(timer);
     browsers.delete(browser);
-    record(started);
     if (!browsers.size) releaseSlot();
     if (!browsers.size) for (const [event, fn] of Object.entries(handlers)) process.off(event, fn);
   });
