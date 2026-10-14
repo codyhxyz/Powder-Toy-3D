@@ -63,7 +63,8 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
       if (KIND(eid(fetchA(q))) == K_SOLID) { return; }
     }
     (*oA).x = f32(BREAKINTO(id));
-    (*oA).z = 0.0;
+    // TPT fracture retains coal's remaining fuel; mining must not exhaust or refill it.
+    (*oA).z = select(0.0, max(a.z, 0.0), id == E_COAL);
     (*oA).w = fract(a.w);
     *oB = vec4f(-vec3f(P.forward) * 0.35 + vec3f(0.0, 0.1, 0.0), b.w);
     return;

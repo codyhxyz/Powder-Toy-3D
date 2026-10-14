@@ -4,6 +4,7 @@ import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { createTransfer, Load } from '../pov/tools/transfer.js';
 import { povGpu } from '../pov/gpu.js';
 import { deviceHeight } from './validation.js';
+import { NOMINAL_STEP_RATE } from '../physics.js';
 
 // Ports are integer local cells, rotated exactly like construction geometry.
 export const controlCell = d => deviceCell(d, -1, 0, 1);
@@ -96,11 +97,13 @@ const machineState = device => ({ device: { ...device }, load: new Load(16), clo
 export function createIndustryPhysics({ getSim, onShip = () => {}, onError = console.error }) {
   let sim = null, kernel = null, transfer = null, epoch = 0, disposed = false;
   let ready = Promise.resolve(), built = false, cursor = 0;
+  let nativeFrame = null;
   const states = new Map();
   function reset() {
     epoch++;
     states.clear(); // detached Load objects may finish; no stale callback earns credit
     sim = null; kernel = null; transfer = null; built = false;
+    nativeFrame = null;
     ready = Promise.resolve();
   }
   function bind() {
@@ -110,6 +113,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
     reset();
     if (!next) return;
     sim = next;
+    nativeFrame = Number.isFinite(sim.frame) ? sim.frame : null;
     const generation = epoch;
     try {
       kernel = sim.editKernel('industry', INDUSTRY_EDIT);
@@ -171,6 +175,9 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
   function step(dt, devices) {
     if (disposed || !Number.isFinite(dt) || dt <= 0) return;
     bind();
+    const frame = sim && Number.isFinite(sim.frame) ? sim.frame : null;
+    const nativeTicks = frame !== null && nativeFrame !== null ? Math.max(0, frame - nativeFrame) : 0;
+    nativeFrame = frame;
     if (!sim || !built) return;
     dt = Math.min(dt, 0.1);
     const seen = new Set(), active = [];
@@ -206,12 +213,14 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
         continue;
       }
       if (!present) continue;
+      if (d.type === 'hearth' && nativeTicks <= 0) continue;
       const guard = machineGuard(d), forward = deviceDirection(d), right = [forward[2], 0, -forward[0]];
       const drill = s.drillClock >= 0.35;
       sim.edit(kernel, machineBox(d), {
         guardBase: guard.base, guardMaterial: guard.material, guardPort: guard.port, guardPowered: +guard.powered,
         corner: deviceCell(d, 0, 0, 0), forward, right, kind: INDUSTRY_KIND[d.type],
-        selectedId: FILTER_IDS.includes(d.filter) ? d.filter : E.NUGGETS, dt, drill: +drill,
+        selectedId: FILTER_IDS.includes(d.filter) ? d.filter : E.NUGGETS,
+        dt: d.type === 'hearth' ? nativeTicks / NOMINAL_STEP_RATE : dt, drill: +drill,
       });
       if (drill) s.drillClock = 0;
     }
