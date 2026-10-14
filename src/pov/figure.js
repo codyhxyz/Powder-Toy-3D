@@ -217,12 +217,23 @@ export function limb(parent, albedo, x, y, len, r) {
 
 // The wizard's brass barrel pack (Noita's jetpack Hiisi), fitted to each torso.
 // Nozzle transforms are shared by the attached flames and the exhaust particles.
+// Straps run from the barrels into the back: a pack with a gap reads as floating.
+const STRAP = [0.09, 0.05, 0.035];   // dark leather, linear
 export function buildJetpack(parent, { up, back, color = [0.75, 0.42, 0.12], nozzleColor = [0.1, 0.1, 0.11] }) {
   const root = new THREE.Group();
   root.name = 'jetpack';
   root.position.set(0, up, back);
   parent.add(root);
   part(root, new THREE.CapsuleGeometry(0.32, 0.36, 4, 16).rotateZ(Math.PI / 2), color);
+  for (const side of [-1, 1]) {
+    const strap = new THREE.BoxGeometry(0.05, 0.035, 0.52);
+    strap.rotateX(-0.55);
+    strap.translate(side * 0.16, 0.2, -0.14);
+    part(root, strap, STRAP).name = 'jet-strap';
+  }
+  const belt = new THREE.BoxGeometry(0.52, 0.04, 0.035);
+  belt.translate(0, -0.02, -0.18);
+  part(root, belt, STRAP).name = 'jet-strap';
   const material = unlitMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   material.color.setRGB(6, 2.6, 0.7);
   const nozzles = [], flames = [];
