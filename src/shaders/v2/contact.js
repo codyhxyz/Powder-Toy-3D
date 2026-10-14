@@ -3,19 +3,19 @@ import { CELL_M } from '../../scale.js';
 import { PHYS } from '../../physics.js';
 import { contactKernelWGSL } from './contact-kernel.js';
 import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, DUST_MIN_FALL_SPEED, CONTACT_G_TICK, CONTACT_HZ, CONTACT_ELEMENT_COUNT } from '../../v2/contact.js';
+import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout } from '../../v2/contactTable.js';
 
-const integerRowFields = new Set(['kind','capacity','offset','spawnQ','spawnLife','hotQ','hotOut','hotL','hotGas','hotOf','coldQ','coldOut','coldL','coldOf','meltQ','meltInto','igniteQ','flashQ','burn','heat','flameQ','ash','blast','blastAir','acid','edible','fizz','bed','rots','singFood','conductor','wire']);
-const rowFields = Object.keys(CONTACT_ROWS[0]);
-const rxFields = Object.keys(CONTACT_REACTIONS[0]);
 const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
-// Keep one constant copy of each rule instead of repeating struct-valued
-// switch branches at every inlined lookup. The signed guard preserves defaults.
-const table = (name, struct, rows, fields, integer) => `const ${name}Table:array<${struct},${rows.length}> = array<${struct},${rows.length}>(
-${rows.map(r => `${struct}(${fields.map(k => integer(k) ? r[k] : float(r[k])).join(',')})`).join(',\n')}
-);
-fn ${name}(id:i32)->${struct} {
- if(id<0 || id>=${rows.length}){return ${struct}(${fields.map(k => integer(k) ? 0 : '0.0').join(',')});}
- return ${name}Table[id];
+const layout = contactTableLayout(CONTACT_ROWS.length, CONTACT_REACTIONS.length);
+// Read the immutable tail of the existing EV buffer. No constant struct arrays
+// for the backend to inline; signed bounds/defaults and field precision persist.
+const table = (name, struct, count, schema, offset, stride) => `fn ${name}(id:i32)->${struct} {
+ if(id<0 || id>=${count}){return ${struct}(${schema.map(([, type]) => type === 'i32' ? '0' : '0.0').join(',')});}
+ let base=${offset / 4}u+u32(id)*${stride / 4}u;
+ return ${struct}(${schema.map(([, type], i) => {
+   const load = `EV[base+${Math.floor(i / 4)}u].${'xyzw'[i % 4]}`;
+   return `bitcast<${type}>(${load})`;
+ }).join(',')});
 }`;
 
 // These functions use an intentionally restricted source subset: no JS object
@@ -96,10 +96,10 @@ const CONTACT_G_TICK:f32=${CONTACT_G_TICK};
 const CONTACT_ELEMENT_COUNT:i32=${CONTACT_ELEMENT_COUNT};
 struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,fallSpeed:f32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
 struct CTPair { a:CTCell,b:CTCell,changed:i32 }
-struct CTRow { ${rowFields.map(k => `${k}:${integerRowFields.has(k) ? 'i32' : 'f32'}`).join(',')} }
-struct CTRx { ${rxFields.map(k => `${k}:${k === 'chance' ? 'f32' : 'i32'}`).join(',')} }
-${table('ctRow', 'CTRow', CONTACT_ROWS, rowFields, k => integerRowFields.has(k))}
-${table('ctRx', 'CTRx', CONTACT_REACTIONS, rxFields, k => k !== 'chance')}
+struct CTRow { ${CONTACT_ROW_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
+struct CTRx { ${CONTACT_RX_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
+${table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA, layout.rowOffset, layout.rowStride)}
+${table('ctRx', 'CTRx', CONTACT_REACTIONS.length, CONTACT_RX_SCHEMA, layout.rxOffset, layout.rxStride)}
 fn ctRxAt(a:i32,b:i32)->i32 {
  switch a*${ELEMENTS.length}+b {
  ${Array.from(CONTACT_RX_INDEX).flatMap((v, i) => v ? [`case ${i}: { return ${v}; }`] : []).join('\n')}

@@ -10,6 +10,8 @@ import { E, ELEMENTS, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
+import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
+import { appendContactTable } from '../v2/contactTable.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -106,11 +108,11 @@ export function v2Rows() {
   });
 }
 
-/** The rows as the EV buffer holds them: two vec4f per element. */
+/** EV: unchanged two-vec4f element prefix, then immutable contact metadata. */
 export function v2Table() {
   const rows = v2Rows(), out = new Float32Array(rows.length * 8);
   rows.forEach((r, i) => out.set([r.cls, r.drop, r.vt, r.dens, r.yieldHead, r.damp, r.fade, 0], i * 8));
-  return out;
+  return appendContactTable(out, CONTACT_ROWS, CONTACT_REACTIONS);
 }
 
 /** cells fallen from rest in `ticks` ticks by an element's column-fall law (the column pass's, in f64). */
@@ -166,7 +168,7 @@ ${V2Params.wgsl}
 @group(3) @binding(1) var<uniform> P: V2Params;
 @group(2) @binding(0) var<storage, read_write> cells: array<vec4u>;
 @group(2) @binding(1) var<storage, read_write> act2: array<atomic<u32>>;
-@group(2) @binding(2) var<storage, read> EV: array<vec4f>;
+@group(2) @binding(2) var<storage, read> EV: array<vec4u>;
 
 const V2_BUSY0: u32 = ${a.busy0}u;
 ${modeWGSL}
@@ -266,14 +268,16 @@ fn zeroQ(c: vec4u) -> vec4u {
 ${fallWGSL}
 fn resetMotionAge(c: vec4u) -> vec4u { if (isLiq(c)) { return c; } if (clsOf(c) == C_POWDER) { return setFall(c, 0.0, 0.0); } return withAge(c, 0u); }
 // ---- the element rows (EV: shaders/v2.js v2Table) ----
-fn cls(id: u32) -> u32 { return u32(EV[2u * id].x); }
+fn e0(id: u32) -> vec4f { return bitcast<vec4f>(EV[2u * id]); }
+fn e1(id: u32) -> vec4f { return bitcast<vec4f>(EV[2u * id + 1u]); }
+fn cls(id: u32) -> u32 { return u32(e0(id).x); }
 fn clsOf(c: vec4u) -> u32 { return cls(cid(c)); }
-fn dropOfE(id: u32) -> u32 { return u32(EV[2u * id].y); }
-fn vtOf(id: u32) -> f32 { return EV[2u * id].z; }
-fn densOfE(id: u32) -> f32 { return EV[2u * id].w; }
-fn yieldOf(id: u32) -> f32 { return EV[2u * id + 1u].x; }
-fn dampOf(id: u32) -> f32 { return EV[2u * id + 1u].y; }
-fn fadeOf(id: u32) -> f32 { return EV[2u * id + 1u].z; }
+fn dropOfE(id: u32) -> u32 { return u32(e0(id).y); }
+fn vtOf(id: u32) -> f32 { return e0(id).z; }
+fn densOfE(id: u32) -> f32 { return e0(id).w; }
+fn yieldOf(id: u32) -> f32 { return e1(id).x; }
+fn dampOf(id: u32) -> f32 { return e1(id).y; }
+fn fadeOf(id: u32) -> f32 { return e1(id).z; }
 fn isLiq(c: vec4u) -> bool { return clsOf(c) == C_LIQUID; }
 fn isOpenC(c: vec4u) -> bool { let k = clsOf(c); return k == C_AIR || k == C_LIQUID; }
 fn fluidC(c: vec4u) -> bool { let k = clsOf(c); return k == C_AIR || k == C_GAS || k == C_LIQUID; }
@@ -1168,12 +1172,13 @@ export function nativeDynamicsHead(g) {
   let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
   shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))')
     .replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
-  const rows = Array.from(v2Table());
-  const ev = Array.from({ length: rows.length / 4 }, (_, i) => `vec4f(${rows.slice(i * 4, i * 4 + 4).map(f).join(',')})`);
+  // Dynamics needs only the original finite-f32 prefix, never the contact tail.
+  const rows = new Uint32Array(v2Table().buffer, 0, ELEMENTS.length * 8);
+  const ev = Array.from({ length: rows.length / 4 }, (_, i) => `vec4u(${Array.from(rows.subarray(i * 4, i * 4 + 4), word => `${word}u`).join(',')})`);
   return `${grid}\n${layout}\n${random}
 @group(0) @binding(0) var<storage, read_write> cells: array<vec4u>;
 @group(0) @binding(2) var<storage, read_write> act2: array<atomic<u32>>;
-const EV = array<vec4f, ${ev.length}>(${ev.join(',')});
+const EV = array<vec4u, ${ev.length}>(${ev.join(',')});
 ${shared}
 ${nativeStateWGSL}
 ${materialStorageWGSL.replace('@group(2) @binding(4)', '@group(0) @binding(1)')}`;

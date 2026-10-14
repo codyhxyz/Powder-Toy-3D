@@ -11,6 +11,7 @@ struct Material {core:vec4u,bank:i32}
 struct Params {tick:u32}
 @group(0) @binding(0) var<uniform> P:Params;
 @group(0) @binding(1) var<storage,read_write> result:array<vec4u>;
+@group(2) @binding(2) var<storage,read> EV:array<vec4u>;
 @group(2) @binding(6) var<storage,read_write> events:array<u32>;
 fn inGrid(p:vec3i)->bool{return all(p>=vec3i(0))&&all(p<vec3i(32));}
 fn markBusy(p:vec3i){}
