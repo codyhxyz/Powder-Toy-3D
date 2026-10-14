@@ -18,6 +18,7 @@ import './potions.js';   // Noita's potion statuses: stains and drinks (register
 import { addTarget, bodyTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { createInteract } from './interact.js';
+import { overlapsLadder } from './ladder.js';
 import { ORB_LIFT } from '../perkOrbs.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker, applyClassTo } from './classPicker.js';
@@ -670,7 +671,8 @@ export function createPov(app) {
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
     player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), teleport: (feet) => player?.teleport(feet), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
-  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false, crouch: false };
+  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false, crouch: false, ladder: false, climb: new THREE.Vector3() };
+  const ladderFeet = new THREE.Vector3();
   let sprintOn = false;     // Sprint: Toggle's state
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
@@ -680,6 +682,8 @@ export function createPov(app) {
   function readInput() {
     input.move.x = input.move.z = 0;
     input.jump = input.sprint = input.down = input.crouch = false;
+    input.ladder = false;
+    input.climb.set(0, 0, 0);
     input.chargeJump = village.enabled;
     input.jumpYaw = povCam.look.yaw;
     input.cancelJump = true;
@@ -708,6 +712,12 @@ export function createPov(app) {
     input.jump = keys.has('Space') || t.jump;
     input.sprint = t.sprint || (app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight'));
     input.crouch = input.down = keys.has(CROUCH_KEY) || t.down;   // crouched on land, swimming down in liquid
+    const ladders = app.getWorld()?.scene.importManifest?.interactions?.ladders;
+    if (ladders?.length) {
+      ladderFeet.copy(player.pos).add(app.getSim().origin);
+      input.ladder = overlapsLadder(ladders, ladderFeet, player.width, player.height);
+      if (input.ladder) povCam.dir(input.climb).multiplyScalar(f);
+    }
   }
 
   // The same entities belong to the scene, not to its current camera mode.
