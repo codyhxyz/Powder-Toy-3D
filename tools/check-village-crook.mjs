@@ -104,7 +104,14 @@ function reset(name, x = 0, z = -7, y = 0, home = 0) {
   village.setEnabled(false); seed = name; player.onGround = true; player.leaping = false;
   position(x, z, y, home); village.setEnabled(true, { size, seed });
 }
-function exit() { for (let i = 0; i < 14; i++) tick(-.5); }
+function openDoor() {
+  if (uiOptions.primary()?.title.startsWith('Open ')) village.act({ type: 'interact' });
+  for (let i = 0; i < 10; i++) tick();
+}
+function exit() {
+  openDoor(); // Open the new front door before leaving.
+  for (let i = 0; i < 14; i++) tick(-.5);
+}
 function approach() { for (let i = 0; i < 80 && village.crook.phase !== 'talking'; i++) tick(); }
 reset('first');
 exit();
@@ -154,6 +161,7 @@ assert.equal(lastDebtBadge.updates.at(-1).balance, -56000);
 assert.ok(lastDebtBadge.updates.every(u => !u.reveal), 'reload restores a docked balance, not the reveal');
 assert.equal(village.root.getObjectByName('village-tanuki').visible, false);
 reset('foyer', HOME_ENTRY.x, HOME_ENTRY.z);
+openDoor();
 for (let i = 0; i < 10; i++) tick(-.5);
 assert.equal(village.crook.state.started, true, 'walking straight out of the real entry spawn triggers Tim');
 reset('second'); assert.equal(village.crook.state.started, false);
@@ -169,6 +177,7 @@ assert.equal(village.enabled, false); assert.equal(village.blocked, false); mode
 reset('teleport'); position(0, -14); tick();
 assert.equal(village.crook.state.started, false);
 reset('small-teleport');
+openDoor();
 for (let i = 0; i < 11; i++) tick(-.5);
 position(0, -13.2); tick();
 assert.equal(village.crook.state.started, false);

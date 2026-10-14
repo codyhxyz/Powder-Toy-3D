@@ -3,7 +3,7 @@ export { furniture } from './furnitureModels.js';
 import { createLeapAnimation } from './leap.js';
 import { loft, hairGeometry, faceEllipse, faceStroke, eyeSurface, eyeTexture, noseGeometry, clothTexture } from './characterShapes.js';
 import { strikePose, sampleKickPose, kickBlend } from '../strikePose.js';
-import { flapPose, sampleFlap } from '../flapPose.js';
+import { createFlapAnimation } from '../flapPose.js';
 
 // Wild World / City Folk silhouettes; baked shading and painted details work
 // in the voxel renderer's unlit scene and shared rolling-log mesh transform.
@@ -142,13 +142,14 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
   const leap = createLeapAnimation(body, limbs);
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   const kickPose = strikePose(), punchPose = new THREE.Quaternion();
-  const wingPose = flapPose();
-  const punchGuard = new THREE.Quaternion().setFromEuler(new THREE.Euler(2.2, 0, 0.6));
-  const punchHit = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.8, 0, 0.6));
+  const wingAnimation = createFlapAnimation();
+  const punchGuard = new THREE.Quaternion().setFromEuler(new THREE.Euler(2.2, 0, 0.7));
+  const punchHit = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.8, 0, 0.8));
   let lastTime = 0, phase = 0, lean = 0, toolTime = Infinity, wasUsing = false;
   return { root, hand: limbs[3], reset: () => leap.reset(),
     animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, motion = null, kick = 0, pose = null) {
     const dt = Math.max(0, Math.min(0.1, time - lastTime)); lastTime = time;
+    head.rotation.y = 0;
     body.position.z = body.rotation.y = 0;
     limbs.forEach(l => { l.rotation.y = l.rotation.z = l.position.z = 0; });
     elbows.forEach(e => { e.rotation.x = 0; e.parent.position.y = 2.7; });
@@ -181,28 +182,31 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
       body.rotation.x += -0.2 * chop * (1 - recover) * weight;
     }
     if (punch > 0 && !carrying) {
-      // Halo-like quick melee; readable guard/contact/recovery poses (jasondeheras.com/gamedesign/powerfulcombo).
-      const t = 1 - punch, guard = ease(t / 0.18) * (1 - ease((t - 0.88) / 0.12));
-      const jab = ease((t - 0.3) / 0.1) * (1 - ease((t - 0.62) / 0.16));
-      const follow = ease((t - 0.4) / 0.12) * (1 - ease((t - 0.68) / 0.2));
+      // Halo-like weight transfer: coil, drive the shoulder through contact,
+      // hold briefly, then return to guard. The shoulder stays attached to the chest.
+      const t = 1 - punch, guard = ease(t / 0.16) * (1 - ease((t - 0.84) / 0.16));
+      const jab = ease((t - 0.28) / 0.12) * (1 - ease((t - 0.54) / 0.24));
+      const windup = ease(t / 0.18) * (1 - ease((t - 0.28) / 0.12));
+      const follow = ease((t - 0.3) / 0.1) * (1 - ease((t - 0.56) / 0.28));
       const weight = reducedMotion?.matches ? 0.25 : 1;
       punchPose.copy(punchGuard).slerp(punchHit, jab);
       limbs[3].quaternion.slerp(punchPose, guard);
-      elbows[1].rotation.x = 0.7 * guard * (1 - jab);
-      limbs[3].position.y += (0.3 + 0.3 * jab) * guard;
-      limbs[3].position.z = (-0.7 - 1.45 * jab) * guard;
+      elbows[1].rotation.x = (0.95 - 0.89 * jab) * guard;
+      limbs[3].position.y += (0.35 + 0.4 * jab) * guard;
+      limbs[3].position.z = (-0.45 - 0.3 * jab + 0.15 * windup) * guard;
       limbs[1].rotation.x += (2.1 - limbs[1].rotation.x) * guard;
       limbs[1].rotation.z = -0.6 * guard;
       elbows[0].rotation.x = 0.85 * guard;
       limbs[1].position.y += 0.3 * guard;
       limbs[1].position.z = -0.7 * guard;
-      body.rotation.y = 0.18 * follow * weight;
+      body.rotation.y = (-0.22 * windup + 0.16 * follow) * weight;
+      head.rotation.y = -body.rotation.y; // keep eyes on the target as the chest turns
       if (!posing) {
-        // The fist leads; suppress sprint's forward lean rather than bowing into the punch.
-        body.rotation.x *= 1 - guard;
-        body.position.z = -0.1 * follow * weight;
-        limbs[0].rotation.x += 0.18 * follow * weight;
-        limbs[2].rotation.x -= 0.12 * follow * weight;
+        body.rotation.x = body.rotation.x * (1 - guard) - 0.1 * follow * weight;
+        body.rotation.z = (-0.04 * windup + 0.05 * follow) * weight;
+        body.position.z = -0.18 * follow * weight;
+        limbs[0].rotation.x += 0.16 * follow * weight;
+        limbs[2].rotation.x -= 0.13 * follow * weight;
       }
     }
     if (carrying) limbs.forEach((l, i) => { if (i % 2) l.rotation.x = 1.3; });
@@ -229,9 +233,10 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
       body.rotation.x = dresser ? -0.1 * reach : (-0.18 + (pose.pulling ? 0.3 : -0.12) * strain) * reach;
       if (gripping) body.position.y = pose.low ? -0.2 * reach : 0;
     }
-    const flap = pose ? 0 : motion?.flap ?? 0;
-    if (flap > 0 && !carrying && !(punch > 0)) {
-      sampleFlap(flap, wingPose);
+    const blockWing = pose || carrying || punch > 0 || motion?.dead || motion?.onGround || motion?.inLiquid;
+    if (blockWing) wingAnimation.reset();
+    const wingPose = wingAnimation.update(dt, blockWing ? 0 : motion?.flap ?? 0);
+    if (wingPose.weight > 0) {
       if (reducedMotion?.matches) wingPose.weight *= 0.35;
       limbs[1].quaternion.slerp(wingPose.left, wingPose.weight);
       elbows[0].quaternion.slerp(wingPose.elbow, wingPose.weight);

@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module';
 import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
 import { HOMES, FLOOR, HOME_Z, initialState } from '../src/pov/village/state.js';
-import { VILLAGE_TOOLS, punchTarget, punchOccluded, stepResident } from '../src/pov/village/actions.js';
+import { VILLAGE_TOOLS, PUNCH_CONTACT, PUNCH_COOLDOWN, punchTarget, punchOccluded, stepResident } from '../src/pov/village/actions.js';
 
 const hooks = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.endsWith('/village/index.js') && specifier === './debtBadge.js')
@@ -51,7 +51,7 @@ assert.equal(__villageSpeech.swings, 1, 'accepted punch always has a swing sound
 const before = village.residents[0].z;
 village.update(0.04, true);
 assert.equal(__villageSpeech.bonks, 0, 'raising the fist does not hit yet');
-village.update(0.041, true);
+village.update(PUNCH_CONTACT - 0.04 + 0.001, true);
 assert.equal(__villageSpeech.bonks, 1, 'nearby forward neighbor gets a bonk');
 assert.equal(__villageSpeech.stats.played, 1, 'brief animalese reaction');
 village.update(0.019, true); assert.ok(village.residents[0].z < before, 'neighbor recoils away, not damaged');
@@ -84,6 +84,14 @@ village.update(0.5); atMaple();
 let resolve; pending = new Promise(r => { resolve = r; }); const strike = village.punch();
 village.open(); village.close(); resolve({ valid: false }); await strike;
 assert.equal(__villageSpeech.bonks, 1, 'opening then closing a modal still cancels an in-flight punch'); pending = null;
+village.update(PUNCH_COOLDOWN);
+atMaple();
+let lateResolve; pending = new Promise(r => { lateResolve = r; });
+const lateStrike = village.punch(), beforeLate = __villageSpeech.bonks;
+village.update(PUNCH_COOLDOWN * 0.9, true);
+lateResolve({ valid: false }); await lateStrike; pending = null;
+assert.equal(__villageSpeech.bonks, beforeLate, 'a delayed ray must not land a hit at 90% recovery');
+village.update(PUNCH_COOLDOWN);
 
 const releasesBeforeTools = inputReleases, actionsBeforeTools = actionReleases;
 for (const entry of VILLAGE_TOOLS) {
@@ -128,7 +136,7 @@ for (const cancel of [
 ]) {
   atMaple(); village.setEnabled(true, world.P);
   const count = __villageSpeech.bonks;
-  await village.punch(); cancel(); village.update(0.081);
+  await village.punch(); cancel(); village.update(PUNCH_CONTACT + 0.001);
   assert.equal(__villageSpeech.bonks, count, 'contact rechecks menu, aim, movement and equipment after anticipation');
   village.setEnabled(false);
 }
@@ -136,22 +144,23 @@ for (const cancel of [
 atMaple(); village.setEnabled(true, world.P);
 const beforeRapid = __villageSpeech.bonks;
 await village.punch();
-village.update(0.199);
+village.update(PUNCH_CONTACT + 0.001);
+village.update(PUNCH_COOLDOWN - PUNCH_CONTACT - 0.002);
 await village.punch();
-assert.equal(__villageSpeech.bonks, beforeRapid + 1, 'cannot repeat before 200 ms');
+assert.equal(__villageSpeech.bonks, beforeRapid + 1, 'cannot repeat before the half-second recovery');
 village.update(0.002);
 const rapidTarget = village.residents[0];
 player.pos.set(size[0] / 2 + HOMES[1] + rapidTarget.x, FLOOR, size[2] / 2 + HOME_Z + rapidTarget.z + 3);
 await village.punch();
-village.update(0.081);
-assert.equal(__villageSpeech.bonks, beforeRapid + 2, 'can bonk again after 200 ms, without the old dead time');
+village.update(PUNCH_CONTACT + 0.001);
+assert.equal(__villageSpeech.bonks, beforeRapid + 2, 'next punch connects after its own windup');
 village.setEnabled(false);
 
 atMaple(); village.setEnabled(true, world.P);
 const beforeKick = __villageSpeech.bonks;
 await village.kick();
 assert.equal(__villageSpeech.bonks, beforeKick, 'kick also waits for contact');
-village.update(0.1, true);
+village.update(PUNCH_CONTACT + 0.001, true);
 assert.equal(__villageSpeech.bonks, beforeKick + 1, 'kick also gives harmless knockback and a bonk');
 assert.ok(village.avatar.children[0].children[2].rotation.x > 1, 'kick extends the leg');
 assert.ok(Math.abs(village.avatar.children[0].children[3].rotation.x) < 1e-8, 'kick does not punch with the arm');
@@ -164,7 +173,7 @@ assert.equal(__villageSpeech.bonks, beforeKick + 1, 'punch needs empty hands, pr
 const maple = village.residents[0];
 player.pos.set(size[0] / 2 + HOMES[1] + maple.x, FLOOR, size[2] / 2 + HOME_Z + maple.z + 3);
 await village.kick();
-village.update(0.081, true);
+village.update(PUNCH_CONTACT + 0.001, true);
 assert.equal(__villageSpeech.bonks, beforeKick + 2, 'F can kick with a tool equipped');
 village.update(0.5); village.open();
 await village.kick();

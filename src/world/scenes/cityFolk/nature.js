@@ -3,7 +3,21 @@
 // Island-local coordinates. Compose only in expanded worlds, before town.
 // Requires cfHeight, cfTerrainCell (bare terrain, NOT the composed scene),
 // cfPath and cfTownReserved. No seed-dependent landmark positions.
+const neighborhood = Object.freeze({
+  trees: [
+    { at: [-640, -112], floor: 48, kind: 'cedar', radius: 7 },
+    ...[[-584, 70], [-720, 70], [-360, 72], [-460, -12], [-216, 72], [216, 12]]
+      .map(at => ({ at, floor: 24, kind: 'hardwood', radius: 9 })),
+  ],
+  rocks: [
+    ...[[-440, 88], [-630, 90], [-350, -14], [-222, 52], [256, 56]]
+      .map(at => ({ at, floor: 24, kind: 'rock', radius: 3 })),
+    { at: [-610, -62], floor: 36, kind: 'rock', radius: 3 },
+  ],
+});
+
 export const CITY_FOLK_NATURE = Object.freeze({
+  neighborhood,
   ints: {
     PITCH: 32, OFFSET: 16, TOP: 30,
     CEDAR_WEST: -800, CEDAR_EAST: 800, CEDAR_NORTH: -136, CEDAR_SOUTH: -60,
@@ -85,6 +99,9 @@ int cfNatureTree(int x, int y, int z, int h) {
     az = 152;
     kind = 4;
   }
+  // Sparse authored shade beside inhabited lots, reusing the supported
+  // Minecraft silhouettes. No lattice across the open meadows/core.
+${neighborhood.trees.map(({ at: [x, z], radius, kind }) => `  if (abs(x - (${x})) <= ${radius} && abs(z - (${z})) <= ${radius}) { ax = ${x}; az = ${z}; kind = ${kind === 'cedar' ? 1 : 2}; }`).join('\n')}
   if (kind == 0) return E_EMPTY;
   int dx = x - ax, dz = z - az;
   int radius = kind == 4 ? 10 : kind == 1 ? 7 : 9;
@@ -130,6 +147,12 @@ int cfNatureCell(int x, int y, int z, int h, int id) {
   bool grass = ground == E_PLANT && cfTerrainCell(x, h, z) == E_EMPTY;
   bool sand = ground == E_SAND && cfTerrainCell(x, h, z) == E_EMPTY;
   if (!grass && !sand) return id;
+  // Low stones occupy only validated dry grass pads; never add an unstable
+  // overhang beside water or a partial stone across a reserved walkway.
+${neighborhood.rocks.map(({ at: [x, z], radius }) => `  if (grass && y >= h && y <= h + 2 && abs(x - (${x})) <= ${radius} && abs(z - (${z})) <= ${radius}) {
+    int dx = x - (${x}), dz = z - (${z}), dy = y - h;
+    if (dx * dx + dz * dz + 2 * dy * dy <= 10 && cfNatureRoot(${x}, ${z}, h, ${radius}, false)) return E_ROCK;
+  }`).join('\n')}
   // Static dirt shoulders beside the two busy sprint routes; never the lane.
   if (grass && y == h - 1 && abs(x) <= 896 && (abs(z - 36) <= 10 || abs(z + 28) <= 10)) {
     int wear = thShare(thHash2(thDiv(x, 4), thDiv(z, 2), NATURE_SALT_PATCH));
