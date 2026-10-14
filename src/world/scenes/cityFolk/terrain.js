@@ -27,6 +27,26 @@ const approaches = CITY_FOLK_TOWN.landmarks.approaches.map(points => ({
 }));
 const segment = ([[ax, az], [bx, bz]], half = 5) => `x >= ${Math.min(ax, bx) - half} && x <= ${Math.max(ax, bx) + half} && z >= ${Math.min(az, bz) - half} && z <= ${Math.max(az, bz) + half}`;
 
+// Minecraft-style real basins, not water-coloured decoration. Keep their
+// complete rocky rims off shells, approaches and the original village core.
+const neighborhoodPonds = [
+  { name: 'shops', at: [-464, 8], radius: 7, floor: 24, access: [-464, 36] },
+  { name: 'lower-west', at: [-450, 70], radius: 7, floor: 24, access: [-450, 100] },
+  { name: 'lower-east', at: [-630, 70], radius: 7, floor: 24, access: [-630, 100] },
+  { name: 'original-home-edge', at: [216, 60], radius: 6, floor: 24, access: [216, 36] },
+].map(p => ({ ...p, bankRadius: p.radius + 3, water: p.floor - 4, bed: p.floor - 9,
+  banks: [[p.at[0] - p.radius - 7, p.at[1]], [p.at[0] + p.radius + 7, p.at[1]],
+    [p.at[0], p.at[1] - p.radius - 7], [p.at[0], p.at[1] + p.radius + 7]] }));
+const ponds = [
+  { at: [-600, -4], radius: 12, bankRadius: 16 },
+  { at: [400, 72], radius: 11, bankRadius: 15 },
+  ...neighborhoodPonds,
+];
+const pondMask = (p, bank = false) => {
+  const [x, z] = p.at, r = bank ? p.bankRadius : p.radius;
+  return `abs(x - (${x})) <= ${r} && abs(z - (${z})) <= ${r} && (x - (${x})) * (x - (${x})) + (z - (${z})) * (z - (${z})) ${bank ? '<=' : '<'} ${r * r}`;
+};
+
 const shapeSrc = /* glsl */ `
 int cfWave(int a) {
   return thDiv(abs(thMod(a, 256) - 128), 8) - 8;
@@ -129,14 +149,11 @@ bool cfRiver(int x, int z) {
   return x > 0 && z >= 60 && abs(x - cfForkX(z)) < 8;
 }
 bool cfPond(int x, int z) {
-  int a = x + 600, b = z + 4;
-  int c = x - 400, d = z - 72;
-  return a * a + b * b < 12 * 12 || c * c + d * d < 11 * 11;
+${ponds.map(p => `  if (${pondMask(p)}) return true;`).join('\n')}
+  return false;
 }
 bool cfBank(int x, int z) {
-  int a = x + 600, b = z + 4;
-  int c = x - 400, d = z - 72;
-  if (a * a + b * b <= 16 * 16 || c * c + d * d <= 15 * 15) return true;
+${ponds.map(p => `  if (${pondMask(p, true)}) return true;`).join('\n')}
   if (z < -136 || z > 180) return false;
   return abs(abs(x) - cfRiverX(z)) <= 12 || (x > 0 && z >= 56 && abs(x - cfForkX(z)) <= 12);
 }
@@ -232,7 +249,7 @@ for (let z = -130; z < 160; z++) {
   if (z === -100 + Math.floor(wave(x + 64) / 2) || z === -52 + wave(x) || z === 142) waterfalls.push([x, z]);
 }
 export const CITY_FOLK_TERRAIN = Object.freeze({
-  ints: {}, salts: {}, shapeSrc, src, sites, routes,
+  ints: {}, salts: {}, shapeSrc, src, sites, routes, neighborhoodPonds,
   landmarks: {
     cliffs: [-840, -860, 840],
     dirtPaths: [[-760, 64], [760, 64]],
