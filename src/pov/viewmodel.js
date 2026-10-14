@@ -219,10 +219,17 @@ function createRig(env) {
       sp.yaw - sway.x * SWAY_ROT,
       sp.roll + sway.x * SWAY_ROLL + BOB_ROLL * bobAmp * Math.sin(bobPhase),
     );
+    const wing = p.body?.flap ?? 0;
     for (const h of hands) {
+      const side = Math.sign(h.userData.rest.x) || 1;
       h.position.copy(h.userData.rest).add(pos);
+      h.position.y += wing * 0.42;
+      h.position.x += side * wing * 0.12;
       h.rotation.copy(rot);
+      h.rotation.x -= wing * 1.05;
+      h.rotation.z += side * wing * 0.55;
     }
+    if (wing > 0) globalThis.__app?.requestRender?.();
     updateViewmodelArms(root, env.getCharacter?.() ?? 'stick');
     setLayers(env.viewmodel);
     if (!settled()) globalThis.__app?.requestRender?.();

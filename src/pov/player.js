@@ -98,6 +98,14 @@ const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the je
 // out (smoothstep: no jolt at either end) and changes the climb no faster than JET_RAMP_S allows.
 // The climb, tank and flight speed are Noita's still.
 const JET_SPOOL_UP_S = 0.2;            // s for the push to come on fully after a press
+// A chicken, not a bird. Minecraft's chicken flaps as it falls and cannot climb
+// (Chicken.travel: falling motionY *= 0.6). A tap is one wingbeat: a little upward
+// speed, never past a hover, and only as fast as the wings can beat. Hold to jet.
+const FLAP_LIFT = 22;                  // cells/s per tap (~6.6 m/s): about 0.13 s of hang, before the cap
+const FLAP_CEILING = 4;                // cells/s: a flap cannot climb
+const FLAP_GAP_S = 0.2;                // s between beats
+const FLAP_HOLD_S = 0.18;              // s an air press must be held before it is the jet, not a flap
+const FLAP_ANIM_S = 0.22;              // s the arms stay in the beat
 const JET_SPOOL_DOWN_S = 0.3;          // s for it to die away after a release: the climb crests instead of dropping
 const JET_RAMP_S = 0.15;               // s from a hover to the full climb at the jet's hardest push (caps it at climb / this)
 
@@ -251,7 +259,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let revengeWait = 0, revengeDue = false;
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
-  let prevJump = false, sinceJumpPress = Infinity, sinceBounce = Infinity;
+  let prevJump = false, sinceJumpPress = Infinity, sinceBounce = Infinity, sinceFlap = Infinity, airFlapHold = false;
   let jumpCharge = null;
   let gibDue = false;   // vitals.js GIB_HEALTH: the body bursts into meat at the next update (it needs the sim)
   const meat = createMeat({ renderer, getSim });
@@ -319,6 +327,11 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const speed = Math.hypot(p.vel.x, p.vel.z);
       return speed <= sprintWalk ? 0
         : Math.min(1, (speed - sprintWalk) / Math.max(EPS, sprintCeiling - sprintWalk));
+    },
+    // 1 on the tap, back to 0 as the wings settle. The viewmodel and the body read it.
+    get flap() {
+      if (vitals.dead || sinceFlap >= FLAP_ANIM_S) return 0;
+      return Math.cos(Math.min(1, sinceFlap / FLAP_ANIM_S) * Math.PI * 0.5);
     },
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame
@@ -734,7 +747,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       meat.gib(p.pos, p.vel, stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
     }
     if (!readOnly()) meat.update();
-    if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; sprintCarry = false; }
+    if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; sprintCarry = false; sinceFlap = Infinity; airFlapHold = false; }
     if (!input.chargeJump || input.cancelJump || vitals.dead) cancelJump();
     if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
@@ -880,7 +893,18 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jetWants = alive && !!input.jump && !pogoing && !input.chargeJump && !cruelty;
     // Swimming can settle waist-deep: hand off at the surface, not only below SWIM_SHARE.
     const clings = jetWants && !p.onGround && !p.headInLiquid && ((perks.has('LUKKI') && clinging()) || levitating);
-    const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings);
+    if (pressed && alive) airFlapHold = !p.onGround && !jumpedNow && !swimming && !pogoing && !p.headInLiquid && !rope?.hard;
+    if (!jumpDown) airFlapHold = false;
+    sinceFlap += dt;
+    // A tap in the air is a wingbeat. Holding that press past FLAP_HOLD_S is the jet, as before.
+    if (pressed && airFlapHold && sinceFlap >= FLAP_GAP_S) {
+      sinceFlap = 0;
+      const lift = FLAP_LIFT * gait, ceiling = FLAP_CEILING * gait;
+      if (v.y < ceiling) v.y = Math.min(ceiling, v.y + lift);
+      if (!quiet) povEvents.emit('player:flap');
+    }
+    const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings)
+      && (!airFlapHold || sinceJumpPress >= FLAP_HOLD_S);
     p.jetSpool = jet ? Math.min(1, p.jetSpool + dt / JET_SPOOL_UP_S) : Math.max(0, p.jetSpool - dt / JET_SPOOL_DOWN_S);
     const thrust = smooth01(p.jetSpool);
     // Noita's ease toward the climb, at most the ramp's push, as far as the jet has spooled
@@ -1052,6 +1076,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; sinceJumpPress = Infinity; sinceBounce = Infinity;
+    sinceFlap = Infinity; airFlapHold = false;
     cancelJump();
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     p.jetSpool = 0; p.knock = 0; p.sprintBuild = 0; sprintingNow = false; sprintCarry = false;

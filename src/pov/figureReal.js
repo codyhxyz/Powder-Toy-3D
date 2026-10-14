@@ -93,7 +93,7 @@ function seatPack(pack, model) {
   let gap = Infinity;
   const v = new THREE.Vector3();
   model.traverse((o) => {
-    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'sleeves') return;
+    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'sleeves' || o.name === 'bung') return;
     // She wears a barrel: the pack straps to that, not to the body inside it.
     if (model.getObjectByName('robe') && o.name !== 'robe' && o.name !== 'hoops') return;
     if (!model.getObjectByName('robe') && (o.name === 'robe' || o.name === 'hoops')) return;
@@ -249,6 +249,16 @@ export function createRealFigure(gltf) {
     qb.setFromAxisAngle(right, angle);
     bone.quaternion.premultiply(qa.clone().invert().multiply(qb).multiply(qa));
   }
+  let wing = 0;
+  function flapArms(amount) {
+    if (!(amount > 0)) return;
+    root.updateWorldMatrix(true, true);
+    right.set(1, 0, 0).applyQuaternion(root.getWorldQuaternion(qa));
+    for (const a of Object.values(arms)) {
+      turn(a.L.upper, -1.3 * amount);
+      turn(a.L.lower, 0.6 * amount);
+    }
+  }
   const length = (a, b) => a.getWorldPosition(va).distanceTo(b.getWorldPosition(vb));
   function crouchBend(c) {
     // the clip pose back first: a bone without a track would keep last frame's bend
@@ -361,6 +371,8 @@ export function createRealFigure(gltf) {
         for (const b of spine) { turn(b, (lean - rushLean) / spine.length); b.updateWorldMatrix(false, false); }
         for (const b of head) { turn(b, nod / head.length); b.updateWorldMatrix(false, false); }
       }
+      wing = s.dead ? 0 : s.flap ?? 0;
+      flapArms(wing);   // empty hands; a held tool's reach() poses the arms again, higher
       contact.visible = s.onGround && !s.dead && !riding;
       updateJetFlames(jetpack.flames, s);
     },
@@ -391,6 +403,10 @@ export function createRealFigure(gltf) {
         const ws = a.hand.getWorldScale(vScale).x;
         const wrist = vAt.copy(a.frame.fingers).multiplyScalar(GRIP_ALONG * a.frame.reach).addScaledVector(a.frame.palm, GRIP_PALM)
           .applyQuaternion(qHand).multiplyScalar(-ws).add(g.pos);
+        if (wing > 0) {
+          wrist.y += 0.9 * wing * s;
+          wrist.addScaledVector(vAt.set(a.side, 0, 0).applyQuaternion(qRoot), 0.35 * wing * s);
+        }
         const target = wrist.clone();
         solveLimb(a.L, target, pole(a.L, a.side, ELBOW_POLE));
         setWorldQuaternion(a.hand, qHand);

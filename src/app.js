@@ -84,7 +84,7 @@ import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HO
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
-import { VIEWS, viewKey as viewKeyOf } from './views.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView } from './views.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
 import weatherWire, { weather } from './wire/weather.js';
@@ -151,7 +151,6 @@ const DEFAULTS = {
   character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
-  materialStyle: 0,
   ...detailDefaults(),
   profiler: false,
 };
@@ -179,7 +178,7 @@ const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
-  'nearGI', 'glowLights', 'caustics', 'materialStyle', ...DETAIL.map(settingKey), 'profiler'];
+  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -276,7 +275,6 @@ if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
 if (!['real', 'woman', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharacter = DEFAULTS.villageCharacter;
-if (![0, 1].includes(settings.materialStyle)) settings.materialStyle = DEFAULTS.materialStyle;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
 // ?physics=v2: the new physics' fast version (src/v2/physics.js, docs/v2.md 5) in box mode, loaded only
 // then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
@@ -591,18 +589,18 @@ function whenSimReady(fn) {
   s.ready.then(() => { if (s === sim && !graphicsFailure) fn(); }, () => {});
 }
 
-// The realistic view's detail the volume draws first (the gate's base variant, gfx/detailGate.js); other views have none.
-const baseDetail = () => (viewKeyOf(settings.view) === 'realistic' ? gateVariants(settings).base : {});
+// Lit material views draw the gate's base variant first (gfx/detailGate.js).
+const baseDetail = () => (isMaterialView(settings.view) ? gateVariants(settings).base : {});
 
-// The GI's kernels (derived.prepareGI, U9) build with the realistic view, the
-// only one that has GI (B5: at boot in it, or on switching to it). Until they
+// The GI's kernels (derived.prepareGI, U9) build with lit material views
+// (B5: at boot in one, or on switching to it). Until they
 // are built updateGI records nothing and the probes stay dark; their ready
 // re-keys the derived passes (giBuilt), so the next frame traces them, and
 // test.ready() waits for them (giWait).
 let giWait = Promise.resolve(), giBuilt = 0;
 function prepareGI() {
   const d = derived;
-  if (blocksOn || viewKeyOf(settings.view) !== 'realistic' || !d?.prepareGI) return;
+  if (blocksOn || !isMaterialView(settings.view) || !d?.prepareGI) return;
   const p = giWait = Promise.resolve(d.prepareGI()).then(() => { if (d === derived) { giBuilt++; wakeLoop(); } });
   p.catch(() => {});   // (a kernel that fails stops graphics: stopGraphics says why)
 }
@@ -1458,12 +1456,6 @@ const settingsPanel = createSettings({
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
     weatherSection(weather, { enabled: () => !!win?.loaded && !mp.isGuest }),
-    { title: 'Material style', rows: [
-      { type: 'seg', key: 'materialStyle', options: [[0, 'Realistic'], [1, 'Cozy']],
-        disabled: () => settings.view !== 0 && 'Switch to Realistic view to see material artwork.',
-        onChange: (v) => { settings.materialStyle = v; save(); } },
-      { type: 'custom', el: h('p.row-note', { text: 'Cozy: drawn wood grain, patterned terrain and cartoon water.' }) },
-    ] },
     { title: 'Lighting', rows: [
       // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
@@ -1601,7 +1593,11 @@ function setPaused(p) {
 // meanwhile (B5); the shadow map's kernel builds with the first view that reads it.
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
-  if (settings.view !== id) post.reset();
+  if (settings.view !== id) {
+    post.reset();
+    meshFrames.drop();
+    sim.resetGI();
+  }
   settings.view = id;
   detailGate.setView(id);
   setBlocks(plainView(id));
@@ -1686,7 +1682,7 @@ const thumbCam = useWebGPUCamera(new THREE.PerspectiveCamera());
 let thumbTarget = null;
 async function renderThumb(viewId, out) {
   if (graphicsFailure || !coreReady) return false;
-  const view = viewKeyOf(viewId), detail = view === 'realistic' ? gateVariants(settings).base : {};
+  const view = viewKeyOf(viewId), detail = isMaterialView(view) ? gateVariants(settings).base : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
   // blank; the volume's views from Plain draw the bricks as they were when Plain began)
   const v = vol, b = view === 'plain' ? blocks : null;
@@ -1700,7 +1696,7 @@ async function renderThumb(viewId, out) {
   thumbCam.aspect = THUMB_SIZE[0] / THUMB_SIZE[1];
   useWebGPUCamera(thumbCam);
   const rawWas = post.settings.raw;
-  post.settings.raw = view === 'plain' ? false : viewId !== 0;
+  post.settings.raw = view === 'plain' ? false : !isMaterialView(view);
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     presentation.neutral(() => post.renderStill({
@@ -1708,7 +1704,7 @@ async function renderThumb(viewId, out) {
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
       draw(rp) {
-        const lit = !win && view === 'realistic';   // under the sky that lights it (gfx/overlays.js drawSky)
+        const lit = !win && isMaterialView(view);   // under the sky that lights it (gfx/overlays.js drawSky)
         if (lit) overlays.drawSky(rp);
         if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit });
         if (b) {
@@ -2202,7 +2198,7 @@ function drawVolume(rp) {
   // which builds on first use: the detail gate's choice when that one is built,
   // else its base variant (building now) while the other builds at idle time.
   let detail = frameDetail;
-  if (curved && view === 'realistic' && vol.pipeline(view, detail, 'idle', true).state !== 'ready') detail = baseDetail();
+  if (curved && isMaterialView(view) && vol.pipeline(view, detail, 'idle', true).state !== 'ready') detail = baseDetail();
   const drew = !testNoVolume && vol.draw(rp, {
     view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
   });
@@ -2233,7 +2229,7 @@ function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(settings.view);
   // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
   // daylit scene disagreed with what its water and metal mirrored); the data views keep the page's sky
-  const lit = !win && view === 'realistic';
+  const lit = !win && isMaterialView(view);
   if (lit) overlays.drawSky(rp);
   if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit });   // one scene pixel wide: fade as it widens past a CSS pixel
   for (const w of before) w.scene(ctx, rp);
@@ -2283,7 +2279,7 @@ const frameHooks = {
         prof.phase('shadow');
         if (!vol.recordShadow()) wakeWhen(vol.shadowReady());   // (its kernel builds: the derived key moves when it is ready)
       }
-      if (settings.view === 0) {
+      if (isMaterialView(settings.view)) {
         prof.phase('gi');
         sim.updateGI(SUN, vol.shadowTextures, vol.shadowRes);
       }
@@ -2367,7 +2363,6 @@ let camShown = '';
 let loopCallbacks = 0;   // frames the loop has run (tools/idle-check.mjs: none while asleep)
 let captureNext = null;  // test.renderOnce({ capture }): takes the next presented frame's canvas
 let settledSleep = false;   // the last tick stopped the loop because the page had settled (deep idle)
-let materialStyleSeen = gfx.materialStyle;
 // The animation frame: false stops the loop (deep idle, or graphics stopped, or a parked test page).
 function frame(now) {
   loopCallbacks++;
@@ -2393,13 +2388,6 @@ function tick(now, renderOnly = false) {
   lastIdle = false;
   // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
   if (!renderOnly && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
-  if (materialStyleSeen !== settings.materialStyle) {
-    materialStyleSeen = gfx.materialStyle = settings.materialStyle;
-    post.reset();
-    meshFrames.drop();
-    sim.resetGI();
-    pacer.wake();
-  }
   if (prof.on !== settings.profiler) applyProfiler();
   applyOutputRatio();
   prof.beginFrame(now);
@@ -2476,7 +2464,7 @@ function tick(now, renderOnly = false) {
   if (renderOnly) updatePresentation();
   const present = renderOnly || pacer.present(now, wantFrame());
   const runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${gfx.materialStyle}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
@@ -2534,7 +2522,7 @@ function tick(now, renderOnly = false) {
     camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     // (the blocks' faces are radiance, as the realistic view's; the data views are finished colours)
-    post.settings.raw = blocks ? false : settings.view !== 0;
+    post.settings.raw = blocks ? false : !isMaterialView(settings.view);
     const blurAllowed = settings.sprintBlur && !REDUCED_MOTION.matches && pov?.mode === 'on'
       && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
     post.settings.sprintBlur = blurAllowed
@@ -2710,7 +2698,7 @@ async function allReady() {
     const curved = !!warpNow(), far = win?.far;
     await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
       ...(physicsV2 ? [physicsV2.ready] : []),
-      ...(far && curved && view === 'realistic' ? [far.buildView()] : [])]);
+      ...(far && curved && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
     if (s === sim && v === vol && coreReady) return;   // (rebuilt meanwhile: wait for the new grid)

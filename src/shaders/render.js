@@ -1,7 +1,7 @@
 import { STATE_OPTS, LAYOUT, prelude } from './common.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { ELEMENTS } from '../elements.js';
-import { COLORMAPS, VIEWS, xrayDensity } from '../views.js';
+import { COLORMAPS, VIEWS, xrayDensity, isMaterialView } from '../views.js';
 import { materialsGLSL } from '../gfx/materials.js';
 import { lib, libLayouts } from './gfx/lib.js';
 import { ddaGLSL } from './gfx/core.js';
@@ -1347,10 +1347,10 @@ struct VolumeFrag {
  */
 export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false } = {}) => {
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
-  const d = view === 'realistic' ? detail : {};
+  const lit = isMaterialView(view), d = lit ? detail : {};
   const parts = [
-    `// volume: ${view}${view === 'realistic' ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
-    lib(g, { variant: 'LIGHTING', far: view === 'realistic', aeration: true, debug, detail: d }),
+    `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
+    lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d }),
     TRACER_WGSL,
     curved ? presentationNearWGSL() : '',
     surfaceGLSL(d),
@@ -1361,9 +1361,9 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     mediaGLSL(d),
     grainsGLSL(d),
   ];
-  if (view === 'realistic') parts.push(farHazeGLSL, realistic(d, curved));
+  if (lit) parts.push(farHazeGLSL, realistic(d, curved));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
-  parts.push(volumeVertOf(curved), volumeEntry(view, view === 'realistic', curved));
+  parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
   return parts.join('\n');
 };
 
@@ -1725,8 +1725,8 @@ const volumeCheck = (name, view, detail = {}, warm = (s) => s.view === view, cur
   ...volumePipeline(),
 });
 // a realistic level's entry is used when it is the settings' base or near variant
-const realisticWarm = (detail) => ({ view, settings, fallback = false }) => {
-  if (view !== 'realistic' || !settings) return false;
+const materialWarm = (shader, detail) => ({ view, settings, fallback = false }) => {
+  if (view !== shader || !settings) return false;
   const { base, near } = gateDetails(settings, fallback);
   return keyOf(detail) === keyOf(base) || keyOf(detail) === keyOf(near);
 };
@@ -1748,14 +1748,14 @@ const PICK_CHECK = {
  * warm-up's list, including detail settings no entry here matches.
  */
 export const WGSL_CHECK = () => [
-  ...VOLUME_VIEWS.filter((v) => v !== 'realistic').flatMap((v) => [
+  ...VOLUME_VIEWS.filter((v) => !isMaterialView(v)).flatMap((v) => [
     volumeCheck(`volume.${v}`, v),
     volumeCheck(`volume.${v}.curved`, v, {}, undefined, true),
   ]),
-  ...Object.entries(REALISTIC_LEVELS).flatMap(([k, d]) => [
-    volumeCheck(`volume.realistic.${k}`, 'realistic', d(), realisticWarm(d())),
-    volumeCheck(`volume.realistic.${k}.curved`, 'realistic', d(), undefined, true),
-  ]),
+  ...VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS).flatMap(([k, d]) => [
+    volumeCheck(`volume.${view}.${k}`, view, d(), materialWarm(view, d())),
+    volumeCheck(`volume.${view}.${k}.curved`, view, d(), undefined, true),
+  ])),
   SHADOW_CHECK,
   PICK_CHECK,
 ];
@@ -1778,10 +1778,10 @@ export const WGSL_CHECK = () => [
 export function warmChecks(view, settings, { fallback = false, curved = false } = {}) {
   const out = [];
   const tag = curved ? '.curved' : '';
-  if (view === 'realistic') {
+  if (isMaterialView(view)) {
     const { base, near } = gateDetails(settings, fallback);
-    out.push(volumeCheck(`volume.realistic(${keyOf(base) || 'off'})${tag}`, 'realistic', base, undefined, curved));
-    if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.realistic(${keyOf(near)})${tag}`, 'realistic', near, undefined, curved), idle: true });
+    out.push(volumeCheck(`volume.${view}(${keyOf(base) || 'off'})${tag}`, view, base, undefined, curved));
+    if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.${view}(${keyOf(near)})${tag}`, view, near, undefined, curved), idle: true });
   } else if (VOLUME_VIEWS.includes(view)) out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));   // (plain: the blocks renderer's)
   if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
   out.push(PICK_CHECK);
@@ -1793,6 +1793,6 @@ export function warmChecks(view, settings, { fallback = false, curved = false } 
 const UNDRAWABLE = 'builds in 9-13 s, but SwiftShader\'s GPU process crashes (SIGSEGV) compiling it at its first draw (gfx/detail.js SOFTWARE_UNDRAWABLE): validated by (a), drawn on a real GPU';
 // (the curved twins weren't measured: listed with their flat modules, which carry the same detail and a bigger march)
 const UNDRAWABLE_CURVED = 'the rolling log\'s twin of a module SwiftShader can\'t draw (the same SOFTWARE_UNDRAWABLE detail, gfx/detail.js), listed by analogy and not measured: validated by (a), drawn on a real GPU';
-export const WGSL_MAC_ONLY = Object.fromEntries(Object.entries(REALISTIC_LEVELS)
+export const WGSL_MAC_ONLY = Object.fromEntries(VOLUME_VIEWS.filter(isMaterialView).flatMap((view) => Object.entries(REALISTIC_LEVELS)
   .filter(([, d]) => Object.keys(d()).some((k) => SOFTWARE_UNDRAWABLE.includes(k)))
-  .flatMap(([k]) => [[`volume.realistic.${k}`, UNDRAWABLE], [`volume.realistic.${k}.curved`, UNDRAWABLE_CURVED]]));
+  .flatMap(([k]) => [[`volume.${view}.${k}`, UNDRAWABLE], [`volume.${view}.${k}.curved`, UNDRAWABLE_CURVED]])));

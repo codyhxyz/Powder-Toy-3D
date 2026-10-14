@@ -116,7 +116,7 @@ for (let i = 0; i < profiles[0].length; i++) {
     await run(0.2, sprint);
     near(body.sprintBuild, charge, 1e-8);
     assert.ok(body.sprintRush > 0.2, 'a hop keeps the music');
-    await run(0.1, { ...sprint, jump: true });
+    await run(0.25, { ...sprint, jump: true });
     assert.equal(body.sprintBuild, 0, 'jet flight is not a sprint');
     assert.ok(body.jetting);
     near(body.sprintRush, rushOf(speedH(body)), 0.02);
@@ -162,6 +162,51 @@ for (const [id, move, expected, perk] of [
     if (perk) body.perks.add(perk);
     await run(8, { ...sprint, move });
     near(Math.hypot(body.vel.x, body.vel.z), expected);
+  } finally { body.dispose(); }
+}
+
+{
+  const { body, run } = await fixture();
+  try {
+    const drop = async (flap) => {
+      body.spawn(new THREE.Vector3(512, 40, 512));
+      let t = 0, since = 1, top = body.pos.y;
+      while (body.pos.y > 1.2 && t < 3) {
+        const jump = flap && since >= 0.2 && !body.onGround;
+        await run(1 / 60, jump ? { jump: true } : {});
+        since = jump ? 0 : since + 1 / 60;
+        t += 1 / 60;
+        top = Math.max(top, body.pos.y);
+      }
+      return { t, top };
+    };
+    const plain = await drop(false);
+    const flapped = await drop(true);
+    console.log(`chicken flap: ${plain.t.toFixed(3)}s fall -> ${flapped.t.toFixed(3)}s mashed`);
+    assert.ok(flapped.t > plain.t + 0.14, `flapping should stretch the fall (${plain.t.toFixed(3)} -> ${flapped.t.toFixed(3)})`);
+    assert.ok(flapped.t < plain.t + 0.4, `a chicken does not fly (${plain.t.toFixed(3)} -> ${flapped.t.toFixed(3)})`);
+    assert.ok(flapped.top < 41, 'a flap cannot climb');
+
+    body.spawn(new THREE.Vector3(512, 8, 512));
+    await run(0.12);
+    const before = body.vel.y;
+    await run(1 / 60, { jump: true });
+    assert.ok(!body.jetting, 'a tap is not the jet');
+    assert.ok(body.flap > 0.8, 'the arms are up on the tap');
+    assert.ok(body.vel.y <= 4.01);
+    assert.ok(body.vel.y > before, 'a flap shaves the fall');
+    const after = body.vel.y;
+    await run(1 / 60);
+    await run(1 / 60, { jump: true });
+    assert.ok(body.vel.y < after, 'the next tap inside the wingbeat adds no lift');
+    let jetted = false;
+    await run(0.25, { jump: true }, (b) => { if (b.jetting) jetted = true; });
+    assert.ok(jetted, 'holding the air press still jets');
+    body.spawn(new THREE.Vector3(512, 1, 512));
+    await run(0.15);
+    assert.ok(body.onGround);
+    await run(3 / 60, { jump: true });
+    assert.ok(body.jetting, 'a jump you keep holding still jets');
   } finally { body.dispose(); }
 }
 
