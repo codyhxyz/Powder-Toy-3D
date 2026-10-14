@@ -4,7 +4,7 @@ import { HOMES, FLOOR, HOME_Z, ITEMS, RESIDENTS, DRESSER, initialState, loadStat
 import { residentFurniture, createConversation, advanceConversation, hydrateMemory } from './residents.js';
 import { resolveCharacterMotion } from './characterCollision.js';
 import { povEvents } from '../events.js';
-import { character, furniture, nameplate, dispose } from './models.js';
+import { character, furniture, nameplate, speechBubble, dispose } from './models.js';
 import { createSpeech } from './speech.js';
 import { createVillageUi } from './ui.js';
 import { attachModel } from '../models.js';
@@ -12,7 +12,9 @@ import { VILLAGE_TOOLS, PUNCH_COOLDOWN, PUNCH_DURATION, punchTarget, punchOcclud
 
 export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
   const root = new THREE.Group(); root.name = 'willow-village'; root.visible = false; app.scene.add(root);
-  const avatar = character(), speech = createSpeech(); app.scene.add(avatar.root); avatar.root.visible = false;
+  const persona = () => app.settings?.villageCharacter === 'girl' ? 'girl' : 'boy';
+  let avatar = character({ persona: persona() });
+  const speech = createSpeech(); app.scene.add(avatar.root); avatar.root.visible = false;
   let enabled = false, size = null, state = initialState(), writable = true, warning = '', saveKey = '';
   let residents = [], furnishings = null, time = 0, speaking = null, oldThird = false;
   let interaction = null, feedback = '', lastBlocked = -Infinity;
@@ -52,7 +54,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
         || room() !== home || getPlayer().pos.distanceTo(start.clone().setY(start.y - 3)) > 1) return;
       const now = local(), still = punchTarget({ x: now.x - HOMES[home], y: now.y, z: now.z }, camera.look.yaw, residents, home);
       if (time - punchAt > PUNCH_COOLDOWN || still?.resident !== r || punchOccluded(hit, start, distance)) return;
-      r.vx = dir.x * 15; r.vz = dir.z * 15; r.bonk = 0.8;
+      r.vx = dir.x * 44; r.vz = dir.z * 44; r.vy = 8; r.bonk = 0.9;
+      r.replyUntil = time + 2;
       reaction = `${r.spec.name}: Hey! Boing!`; reactionUntil = time + 2;
       speech.speak('Hey! Boing!', r.spec.pitch); speech.bonk(); app.requestRender();
     } catch { /* A failed world probe must never punch through terrain. */ }
@@ -452,7 +455,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const model = character(spec);
       const height = new THREE.Box3().setFromObject(model.root).max.y;
       root.add(model.root);
-      return { spec, model, height, x: 0, z: 0, vx: 0, vz: 0, bonk: 0 };
+      const bubble = speechBubble(spec.name, 'Hey! Boing!'); model.root.add(bubble);
+      return { spec, model, height, bubble, replyUntil: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, bonk: 0 };
     });
     for (let home = 0; home < 4; home++) {
       const sign = nameplate(home ? `${RESIDENTS[home - 1].name}’s home` : 'Your home');
@@ -533,6 +537,13 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!enabled && live() && app.getMode() === 'animalCrossing' && app.getWorld()?.scene.key === 'willowCove') setEnabled(true, app.getWorld().P);
     if (!enabled) return;
     if (app.getMode() !== 'animalCrossing' || app.getWorld()?.scene.key !== 'willowCove') { setEnabled(false); return; }
+    if (avatar.root.userData.persona !== persona()) {
+      if (interaction) { ui.close(); endInteraction(true, true); }
+      // Keep the physical player, furniture and current tool; only replace the look.
+      const old = avatar;
+      avatar = character({ persona: persona() }); app.scene.add(avatar.root);
+      equip(tool); dispose(old.root);
+    }
     time += dt;
     checkInteraction();
     const scale = app.getScale(), vol = app.getVolume(), origin = app.getSim().origin;
@@ -559,6 +570,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
         usingTool && !interaction, interaction ? null : p, kicking ? punching : 0, pose);
       if (toolModel) toolModel.obj.visible = !held && (kicking || !punching) && !interaction;
     }
+    const active = context().active;
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.
       const from = { x: r.x, z: r.z };
@@ -573,13 +585,24 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const clear = playerPathClear(layout, from, motion, 1.4);
       r.x = clear ? motion.x : from.x; r.z = clear ? motion.z : from.z;
       if (motion.blocked || !clear) r.vx = r.vz = 0;
-      if (speaking !== r && !ui.opened) {
-        r.model.root.rotation.y = Math.cos(time * 0.42 + r.spec.home) > 0 ? Math.PI : 0;
+      let facing = r.model.root.rotation.y;
+      if (speaking !== r && !ui.opened && r.bonk <= 0) {
+        if (Math.hypot(r.vx, r.vz) > 0.1) facing = Math.atan2(-r.vx, -r.vz);
       } else if (p) {
-        const l = local(); r.model.root.rotation.y = Math.atan2(HOMES[r.spec.home] + r.x - l.x, r.z - l.z);
+        const l = local(); facing = Math.atan2(HOMES[r.spec.home] + r.x - l.x, r.z - l.z);
       }
-      r.model.root.position.set(size[0] / 2 + HOMES[r.spec.home] + r.x, FLOOR + (r.bonk > 0 ? Math.sin(r.bonk / 0.8 * Math.PI) * 0.65 : 0), size[2] / 2 + HOME_Z + r.z);
+      const turn = facing - r.model.root.rotation.y;
+      r.model.root.rotation.y += Math.atan2(Math.sin(turn), Math.cos(turn)) * (1 - Math.exp(-8 * dt));
+      r.model.root.position.set(size[0] / 2 + HOMES[r.spec.home] + r.x, FLOOR + r.y, size[2] / 2 + HOME_Z + r.z);
+      r.model.root.rotation.x = 0.3 * r.bonk / 0.9;
       r.model.animate(time, speaking === r || r.bonk > 0 ? 0 : 1.5, (speaking === r || r.bonk > 0) && speech.stats.queued > 0);
+      r.bubble.visible = active && !ui.opened && time < r.replyUntil;
+      if (r.bubble.visible && app.camera) {
+        // Billboard in the same world space as the head; presentation bends both together.
+        r.model.root.getWorldQuaternion(r.bubble.quaternion).invert();
+        r.bubble.position.set(0, 2.6, 0).applyQuaternion(r.bubble.quaternion); r.bubble.position.y += 5.5;
+        r.bubble.quaternion.multiply(app.camera.quaternion);
+      }
     }
     if (held && (!context().active || room() !== 0)) { releaseHeld(); rebuildFurniture(); }
     updateHeld();

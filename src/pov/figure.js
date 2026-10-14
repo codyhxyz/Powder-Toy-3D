@@ -40,9 +40,6 @@ export const STICK_HAND = 'stick-hand_r';   // the stickman's right-hand point, 
 // Material: a light, slightly warm matte (albedo, linear).
 const ALBEDO = [0.72, 0.7, 0.66];
 
-// Where the jetpack's exhaust leaves (vfx.js): cells behind the feet, up from
-// them and to each side. The small of the realistic body's back.
-export const JET_NOZZLES = { back: 0.6, up: 3.2, side: 0.3 };
 const FLAME_FLICKER = 0.35;               // ± share of a jet flame's length, frame to frame
 const TOON_EDGE = 0.08;                  // n·l over which a cel-shaded look goes from shade to lit
 const HEAT_GLOW = [2.4, 0.9, 0.25];      // radiance added at full heat (feel.heat = 1): a burning body glows
@@ -218,11 +215,45 @@ export function limb(parent, albedo, x, y, len, r) {
   return joint;
 }
 
+// The wizard's brass barrel pack (Noita's jetpack Hiisi), fitted to each torso.
+// Nozzle transforms are shared by the attached flames and the exhaust particles.
+export function buildJetpack(parent, { up, back, color = [0.75, 0.42, 0.12], nozzleColor = [0.1, 0.1, 0.11] }) {
+  const root = new THREE.Group();
+  root.name = 'jetpack';
+  root.position.set(0, up, back);
+  parent.add(root);
+  part(root, new THREE.CapsuleGeometry(0.32, 0.36, 4, 16).rotateZ(Math.PI / 2), color);
+  const material = unlitMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  material.color.setRGB(6, 2.6, 0.7);
+  const nozzles = [], flames = [];
+  for (const side of [-1, 1]) {
+    const nozzle = new THREE.Group();
+    nozzle.name = `jet-nozzle-${side < 0 ? 'left' : 'right'}`;
+    nozzle.position.set(side * 0.3, -0.32 * 0.8 - 0.22, 0);
+    root.add(nozzle);
+    part(nozzle, new THREE.ConeGeometry(0.17, 0.22, 12, 1, true).translate(0, 0.11, 0), nozzleColor);
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.9, 12).rotateX(Math.PI).translate(0, -0.45, 0), material);
+    flame.name = 'jet-flame';
+    flame.renderOrder = 1;
+    flame.visible = false;
+    nozzle.add(flame);
+    nozzles.push(nozzle);
+    flames.push(flame);
+  }
+  return { root, nozzles, flames };
+}
+
+export function updateJetFlames(flames, state) {
+  for (const flame of flames) {
+    flame.visible = !!state.jetting && !state.dead;
+    flame.scale.set(1, 1 + (Math.random() * 2 - 1) * FLAME_FLICKER, 1);
+  }
+}
+
 // A look's build() returns the rig: body (at the hips) > torso > neck, the
 // shoulders, elbows, hips and knees, all joints rotating about x, plus
 //   hipY (cells), lieLift (cells the body lifts lying dead on its back),
-//   and optionally outline (cells wide), toon (cel shading), flames (meshes
-//   shown, flickering, while the jetpack fires) and nozzles (JET_NOZZLES' shape).
+//   and optionally outline (cells wide), toon (cel shading), jetpack (buildJetpack).
 export function buildStick() {
   const body = new THREE.Group(), torso = new THREE.Group(), neck = new THREE.Group();
   body.add(torso);
@@ -243,6 +274,7 @@ export function buildStick() {
   elR.add(hand);
   return {
     hipY: HIP_Y, lieLift: LIMB_R, body, torso, neck, shL, shR, hipL, hipR, elR,
+    jetpack: buildJetpack(torso, { up: 1.05, back: 0.55 }),
     elL: limb(shL, ALBEDO, 0, -UPPER_ARM, FOREARM, LIMB_R),
     knL: limb(hipL, ALBEDO, 0, -THIGH, SHIN, LIMB_R),
     knR: limb(hipR, ALBEDO, 0, -THIGH, SHIN, LIMB_R),
@@ -256,7 +288,8 @@ export function createFigure(build = buildStick) {
   root.visible = false;
   const rig = build();
   const { body, torso, neck, shL, shR, elL, elR, hipL, hipR, knL, knR } = rig;
-  const flames = rig.flames ?? [];
+  const flames = rig.jetpack?.flames ?? [];
+  const nozzles = rig.jetpack?.nozzles ?? [];
   const HIP = rig.hipY;
   body.position.y = HIP;
   root.add(body);
@@ -301,6 +334,7 @@ export function createFigure(build = buildStick) {
 
   return {
     root,
+    nozzles,
     // The light is the volume's whatever the grid (gfx/meshLight.js): nothing
     // to rebuild for a new one. Kept for the shell's calls.
     bind() {},
@@ -467,10 +501,7 @@ export function createFigure(build = buildStick) {
         torso.rotation.x = -J.lean - KICK_LEAN * (chamber - back);
       }
       contact.visible = s.onGround && !s.dead && !riding;
-      for (const f of flames) {
-        f.visible = !!s.jetting && !s.dead;
-        f.scale.set(1, 1 + (Math.random() * 2 - 1) * FLAME_FLICKER, 1);
-      }
+      updateJetFlames(flames, s);
     },
     setVisible(v) { root.visible = v; },
     // the eye (world), riding the torso: a held tool's aim frame hangs from it (held.js)

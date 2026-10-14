@@ -4,19 +4,20 @@ import { runInNewContext } from 'node:vm';
 import { characterForMode } from '../src/pov/character.js';
 
 for (const mode of ['slayer', 'ctf', 'koth', 'infection']) {
-  for (const choice of [undefined, 'real', 'stick', 'invalid']) {
+  for (const choice of [undefined, 'real', 'woman', 'stick', 'invalid']) {
     assert.equal(characterForMode(mode, choice), 'spartan', `${mode}/${choice}`);
   }
 }
 for (const mode of ['sandbox', 'siege', undefined]) {
   assert.equal(characterForMode(mode, 'stick'), 'stick');
+  assert.equal(characterForMode(mode, 'woman'), 'woman');
   for (const choice of [undefined, 'real', 'invalid', null]) {
     assert.equal(characterForMode(mode, choice), 'real');
   }
 }
 console.log('PASS loading/gameplay character selection: Halo armor, saved preference, invalid preference');
 
-for (const name of ['you', 'you-stick', 'you-spartan']) {
+for (const name of ['you', 'you-woman', 'you-stick', 'you-spartan']) {
   const bytes = readFileSync(new URL(`../public/${name}.webp`, import.meta.url));
   assert.equal(bytes.toString('ascii', 0, 4), 'RIFF');
   assert.equal(bytes.toString('ascii', 8, 12), 'WEBP');
@@ -65,6 +66,10 @@ assert.ok(!classes.has('live'));
 workers.at(-1).onmessage({ data: { failed: 'test failure' } });
 assert.ok(still.isConnected);
 assert.equal(still.src, '/you-spartan.webp');
+preview.stop();
+preview.start('woman');
+assert.equal(still.src, '/you-woman.webp');
+assert.equal(workers.at(-1).character, 'woman');
 preview.stop();
 context.OffscreenCanvas = undefined;
 preview.start('real');

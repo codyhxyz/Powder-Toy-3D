@@ -52,6 +52,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   const location = h('span.village-location');
   const actions = createActionButtons('Village actions');
   const hint = h('small.village-action-hint', { role: 'status', 'aria-live': 'polite' });
+  const reply = h('span.sr-only', { role: 'status', 'aria-live': 'polite' });
   const tools = h('div.village-tools', { role: 'group', 'aria-label': 'World tools' }, ...VILLAGE_TOOLS.map((t, i) =>
     button([keycap(String(i + 1)), h('span', { text: t.name })], () => { act({ type: 'tool', key: t.key }); syncActions(); },
       { 'aria-pressed': 'false', title: t.hint })));
@@ -59,7 +60,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   const hud = h('div.village-hud', { hidden: true }, h('div.village-kit', {}, h('div.village-place', {}, icon('leaf'),
     h('div', {}, location, h('small.village-keyhelp', { text: 'WASD to walk · hold Space, release to leap' }),
       h('small.village-touchhelp', { text: 'Left stick to walk · hold Jump, release to leap' }))), tools, toolHelp),
-    h('div.village-controls', {}, hint, actions.root));
+    h('div.village-controls', {}, hint, actions.root), reply);
   document.body.append(hud, dialog);
 
   function syncActions() {
@@ -70,7 +71,8 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     const readout = c.tool && c.readout ? `${c.readout.name}${c.readout.note ? ` · ${c.readout.note}` : ''}` : '';
     const toolText = readout ? `${equipped.hint} ${readout}` : equipped.hint;
     if (toolHelp.textContent !== toolText) toolHelp.textContent = toolText;
-    const help = c.feedback || c.warning || c.reaction || (c.grip ? `${c.grip.name} · Move the stick or use WASD to push/pull one square.`
+    if (reply.textContent !== c.reaction) reply.textContent = c.reaction;
+    const help = c.feedback || c.warning || (c.grip ? `${c.grip.name} · Move the stick or use WASD to push/pull one square.`
       : c.rest ? c.rest === 'sleep' ? 'Sleeping peacefully.' : 'Taking a little rest.'
       : c.busy ? 'Opening or closing the dresser…'
       : c.carry ? `${c.carry.name} · ${c.carry.error || 'Pocket placement preview. Green means you can set it down.'}`

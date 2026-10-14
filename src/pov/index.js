@@ -173,7 +173,7 @@ export function createPov(app) {
   // the shown figure's right hand (a bone), or null
   function rightHand() {
     const body = figure?.model;
-    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(figure.showing === 'real' ? REAL_HAND : STICK_HAND));
+    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(['real', 'woman'].includes(figure.showing) ? REAL_HAND : STICK_HAND));
     return (body && hands.get(body)) ?? null;
   }
   // the right hand in the world while the figure is drawn, else null: a wand's casts are drawn from it in third person (tools/index.js)
@@ -846,7 +846,7 @@ export function createPov(app) {
     held.bind(volumeLight(vol), g);
     held.frame({ figure, yaw: povCam.look.yaw, pitch: povCam.look.pitch, scale: scale * player.size, feet: vFeet, worldToGrid, camera, viewmodel });
     village.update(dt, figureShown, povCam.look.yaw);
-    if (player.jetting && mode === 'on' && !village.enabled) vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
+    if (player.jetting && mode === 'on' && !village.enabled) vfx?.jet(figure.nozzles, dt);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
     if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
     for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);

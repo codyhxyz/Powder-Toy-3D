@@ -1,13 +1,19 @@
-# body.glb
+# body.glb and woman.glb
 
 **Superhero Male** from **Universal Base Characters** (Standard, free tier) by **Quaternius**:
 his mesh, 65-bone humanoid rig, and his skin, eye and eyebrow textures. Played by 8 clips from
 Quaternius's **Universal Animation Library** (Standard, free tier), retargeted onto his skeleton.
 
+**woman.glb** uses **Superhero Female** from the same CC0 pack, with her mesh,
+65-bone rig, skin, eyes and eyebrows. The same eight animation clips are retargeted
+to her rest pose. Her clothing is dyed purple to match the shared wizard hat.
+
 - Universal Base Characters: https://quaternius.com/packs/universalbasecharacters.html
   (download: https://quaternius.itch.io/universal-base-characters,
   `Universal Base Characters[Standard].zip`, `Base Characters/Godot - UE/Superhero_Male_FullBody.gltf`
   with its .bin and textures, and `Base Characters/Textures/T_Superhero_Male_Ligh.png`)
+  For `woman.glb`: `Base Characters/Godot - UE/Superhero_Female_FullBody.gltf`
+  with its .bin and textures, and `Base Characters/Textures/T_Superhero_Female_Light_BaseColor.png`.
 - Universal Animation Library: https://quaternius.com/packs/universalanimationlibrary.html
   (download: https://quaternius.itch.io/universal-animation-library,
   `Universal Animation Library[Standard].zip`, `Unreal-Godot/UAL1_Standard.glb` and `UAL1_Standard_RM.glb`)
@@ -39,3 +45,7 @@ boxers are dyed purple: where the pack's black-boxers and white-boxers skins dif
 cloth's shading times the hat's purple. Dropped: the roughness map, the eyes' and eyebrows' normal
 maps, the other UV sets and the vertex colours. The file is compressed with
 `EXT_meshopt_compression` by `tools/character-compress.mjs`.
+
+Pass the female glTF and `public/models/character/woman.glb` as the output to
+`tools/character-pack.mjs` to rebuild the female model. The pointed hat is fitted
+to each body's head at runtime by `src/pov/garb.js`.

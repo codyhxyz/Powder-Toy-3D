@@ -33,7 +33,7 @@ globalThis.addEventListener = () => {};
 const listeners = {};
 globalThis.document = { hidden: false, body: { classList: { toggle() {} } }, querySelector: () => null,
   addEventListener(k, fn) { listeners[k] = fn; },
-  createElement: () => ({ getContext: () => ({ beginPath() {}, roundRect() {}, fill() {}, fillText() {} }) }) };
+  createElement: () => ({ getContext: () => ({ beginPath() {}, roundRect() {}, moveTo() {}, lineTo() {}, fill() {}, fillText() {} }) }) };
 const saves = new Map();
 globalThis.localStorage = { getItem: k => saves.get(k) ?? null, setItem: (k, v) => saves.set(k, v) };
 const { createVillage } = await import('../src/pov/village/index.js');
