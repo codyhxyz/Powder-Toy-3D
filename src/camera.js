@@ -3,7 +3,7 @@ import * as THREE from 'three';
 const TURN_RATE = THREE.MathUtils.degToRad(90); // Q/E turn speed, rad/s
 
 // WASD fly movement layered on top of OrbitControls (camera and orbit target
-// move together), Q/E turning around the orbit target, plus an animated reset
+// move together), Q/E turning in place, plus an animated reset
 // to the home view.
 export function createCameraRig(camera, controls, isTyping) {
   const keys = new Set();
@@ -49,9 +49,10 @@ export function createCameraRig(camera, controls, isTyping) {
       const fast = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 2.5 : 1;
       const turn = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
       if (turn) {
-        // swing the camera around the orbit target: E turns the view left, Q right
-        offset.subVectors(camera.position, controls.target).applyAxisAngle(UP, turn * TURN_RATE * fast * dt);
-        camera.position.addVectors(controls.target, offset);
+        // Move the look target around the eye, not the eye around the target.
+        offset.subVectors(controls.target, camera.position).applyAxisAngle(UP, turn * TURN_RATE * fast * dt);
+        controls.target.addVectors(camera.position, offset);
+        camera.lookAt(controls.target);
         anim = null;
       }
       camera.getWorldDirection(fwd);
