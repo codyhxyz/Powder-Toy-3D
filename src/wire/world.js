@@ -10,6 +10,7 @@ import { bakedAir } from '../constructions/runtime.js';
 import { FarField } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
+import { isMaterialView } from '../views.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 
 const torchLights = createTorchLights();
@@ -55,7 +56,7 @@ const world = {
     win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window
     // its view builds with the view that draws it (B5: at boot in the realistic view, else on switching to it),
     // and the frame that follows its build draws it
-    if (app.settings.view === 0) world.buildFarView(app, win.far);
+    if (isMaterialView(app.settings.view)) world.buildFarView(app, win.far);
   },
   buildFarView(app, far) {
     if (far.viewPipeline.state !== 'idle') return;
@@ -71,8 +72,8 @@ const world = {
     const { win } = app;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
     torchLights.update(win?.scene ?? null, app.camGrid, app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
-    if (win?.far && app.settings.view === 0) world.buildFarView(app, win.far);
-    win?.far?.view(app.volume, app.settings.view === 0, app.camera);
+    if (win?.far && isMaterialView(app.settings.view)) world.buildFarView(app, win.far);
+    win?.far?.view(app.volume, isMaterialView(app.settings.view), app.camera);
   },
   // the detail meshes' distances, before the scene pass (world/far.js prepass: their own render pass)
   compute(app) { app.win?.far?.prepass(app.post?.sceneTarget); },

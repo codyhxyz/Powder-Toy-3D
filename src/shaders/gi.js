@@ -7,6 +7,7 @@ import { prelude, gridDims } from './common.js';
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT, LAMP_MAX } from './bindings.js';
 import { dirtyListsWGSL } from './fields.js';
 import { DERIVED_LAYOUT, appendWGSL, foldArgsWGSL } from './passes.js';
+import { isMaterialView } from '../views.js';
 
 // Coarse global illumination for the realistic view: one light probe per
 // 4×4×4 brick, rebuilt every frame in two small compute passes at brick
@@ -710,17 +711,17 @@ export const WGSL_CHECK = () => [
   {
     name: 'giSource', kind: 'compute', code: (g) => giSourceFrag(g), layouts: () => libLayouts('LIGHTING_GISRC'),
     layoutNames: GI_LAYOUT_NAMES.giSource, params: GiParams, workgroupSize: [64, 1, 1],
-    dispatch: (g) => giSourceDispatch(g), warm: ({ view }) => view === 'realistic',
+    dispatch: (g) => giSourceDispatch(g), warm: ({ view }) => isMaterialView(view),
   },
   {
     name: 'giGather', kind: 'compute', code: (g, { world } = {}) => giGatherFrag(g, { world }), layouts: () => libLayouts('LIGHTING_GI'),
     layoutNames: GI_LAYOUT_NAMES.giGather, params: GiParams, workgroupSize: [64, 1, 1],
-    dispatch: (g) => [giGatherDispatch(g, -1), giGatherDispatch(g, 0)], warm: ({ view }) => view === 'realistic',
+    dispatch: (g) => [giGatherDispatch(g, -1), giGatherDispatch(g, 0)], warm: ({ view }) => isMaterialView(view),
   },
   ...[['giKey', giKeyFrag, [1, 1, 1], 1], ['giSelect', giSelectFrag, (g) => fold(Math.ceil(gridDims(g).nbricks / 64)), 64],
     ['giArgs', giArgsFrag, [1, 1, 1], 1]].map(([name, code, dispatch, size]) => ({
     name, kind: 'compute', code, layouts: () => [RENDER_LAYOUT.FRAME, 'EMPTY', DERIVED_LAYOUT.GI_SELECT],
     layoutNames: GI_LAYOUT_NAMES[name], params: GiSelectParams, workgroupSize: [size, 1, 1],
-    dispatch: typeof dispatch === 'function' ? dispatch : () => dispatch, warm: ({ view }) => view === 'realistic',
+    dispatch: typeof dispatch === 'function' ? dispatch : () => dispatch, warm: ({ view }) => isMaterialView(view),
   })),
 ];

@@ -6,6 +6,7 @@ import { createLighthouse } from '../gfx/lighthouse.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { dayPhase } from '../gfx/daylight.js';
 import { CELL_M } from '../scale.js';
+import { isMaterialView } from '../views.js';
 
 export const weather = createWeather();
 const eye = new THREE.Vector3();
@@ -94,7 +95,7 @@ const wire = {
     weather.setOceanEligible(enabled(app) && app.win.P.sea > 0);
     app.lighthouse.update({ time: clock }, {
       world: app.win, sim: app.sim, dayPhase: dayPhase(app.day.clock),
-      enabled: enabled(app) && app.settings.view === 0,
+      enabled: enabled(app) && isMaterialView(app.settings.view),
     });
     // Sound follows actual committed bolts, never an independent flash timer.
     const bolt = app.lightning?.lastBolt;

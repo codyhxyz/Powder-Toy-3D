@@ -108,13 +108,20 @@ xrayLegend.css = legendCSS(xrayLegend);
 // ---------- the views ----------
 // `legend` is null or { title, stops: [[pos 0..1, '#hex'], ...], labels: [[text, pos], ...], css }.
 // `shadows`: the view reads the volume's sun shadow map, so the app renders it.
+// `materialStyle`: lit material views share the tracer; their artwork is selected
+// per draw, including picker thumbnails (0: Realistic, 1: Cozy).
 // Labels are always evenly spaced (so a flex row with space-between lines up
 // with the bar). Flow also has `legend2`: brightness = speed.
 export const VIEWS = [
   {
     id: 0, key: 'realistic', hotkey: '1', name: 'Realistic',
     desc: 'Lit and shaded the way it would look, with shadows, see-through water and glowing hot things.',
-    legend: null, shadows: true,
+    legend: null, shadows: true, materialStyle: 0,
+  },
+  {
+    id: 6, key: 'cozy', hotkey: '6', name: 'Cozy',
+    desc: 'Animal Crossing-inspired wood grain, patterned terrain and cartoon water, with shadows and glowing hot materials.',
+    legend: null, shadows: true, materialStyle: 1,
   },
   {
     id: 1, key: 'heat', hotkey: '2', name: 'Heat',
@@ -148,3 +155,7 @@ export const VIEWS = [
 
 /** A view's key (its shader module in src/shaders/render.js) from its id; unknown ids are the realistic view. */
 export const viewKey = (id) => VIEWS.find((v) => v.id === id)?.key ?? 'realistic';
+
+/** Material artwork for a view key or id; data and Plain views have none. */
+export const materialStyleForView = (view) => VIEWS.find((v) => v.id === view || v.key === view)?.materialStyle;
+export const isMaterialView = (view) => materialStyleForView(view) !== undefined;

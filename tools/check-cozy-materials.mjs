@@ -16,10 +16,23 @@ import { farLayout, WORLD_SIZE } from '../src/shaders/farShared.js';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { cozyFixture, SWATCHES } from './cozy-fixture.mjs';
 import { E } from '../src/elements.js';
+import { VIEWS, viewKey, isMaterialView, materialStyleForView } from '../src/views.js';
+import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
+import { detailDefaults } from '../src/gfx/detail.js';
+import { VOLUME_VIEWS, viewShadows, warmChecks, WGSL_CHECK as renderChecks } from '../src/shaders/render.js';
+import { WGSL_CHECK as giChecks } from '../src/shaders/gi.js';
 
 const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-assert.equal(gfx.materialStyle, 0, 'existing look remains the default');
-assert.equal(gfxUniforms.uMaterialStyle.value, 0);
+assert.equal(gfx.materialStyle, undefined, 'artwork is not a second renderer setting');
+assert.equal(gfxUniforms.uMaterialStyle, undefined);
+const cozy = VIEWS.find(v => v.key === 'cozy');
+assert.equal(cozy.id, 6);
+assert.equal(cozy.hotkey, '6');
+assert.equal(VIEWS[1], cozy, 'Cozy appears beside Realistic in the existing picker');
+for (const key of ['id', 'key', 'hotkey']) assert.equal(new Set(VIEWS.map(v => v[key])).size, VIEWS.length, `unique ${key}`);
+assert(VOLUME_VIEWS.includes('cozy'));
+assert.equal(viewKey(cozy.id), 'cozy');
+assert(viewShadows('cozy'));
 const oldFields = Object.fromEntries(Object.entries(FRAME_UNIFORM_FIELDS).filter(([key]) => key !== 'materialStyle'));
 const oldStruct = uniformStruct('OldFrameUniforms', oldFields);
 for (const [key, offset] of Object.entries(oldStruct.offsets)) assert.equal(FrameUniformsStruct.offsets[key], offset, `existing offset ${key}`);
@@ -31,31 +44,68 @@ const gpu = { _frameUniforms: {
   uniforms: { write: (values) => { written = values; } },
   last: { viewProj: new Matrix4(), invViewProj: new Matrix4(), model: new Matrix4(), eye: new Vector3(), written: false },
 } };
-for (const style of [0, 1]) {
-  gfx.materialStyle = style;
+// Different-view thumbnails must not inherit the currently selected artwork.
+for (const id of [0, cozy.id, 0, cozy.id, 1, cozy.id, 5, ...VIEWS.map(v => v.id)]) {
+  const style = materialStyleForView(id) ?? 0;
   updateGfxUniforms({ frame: 0 }, new Vector3(0, 1, 0), [1, 1, 1]);
-  writeFrameUniforms(gpu, { camera, model: new Matrix4(), sun: new Vector3(0, 1, 0) });
-  assert.equal(written.materialStyle, style, 'style reaches actual frame writer');
+  writeFrameUniforms(gpu, { camera, model: new Matrix4(), sun: new Vector3(0, 1, 0), view: id });
+  assert.equal(written.view, id);
+  assert.equal(written.materialStyle, style, 'actual frame writer derives artwork from each drawn view');
   const bytes = FrameUniformsStruct.pack(written);
   assert.equal(new DataView(bytes).getFloat32(FrameUniformsStruct.offsets.materialStyle, true), style);
 }
-gfx.materialStyle = 0;
-gfxUniforms.uMaterialStyle.value = 0;
-const settings = { materialStyle: 0 };
+const settings = { view: 0 };
 const view = createViewSettings(settings);
 const before = JSON.stringify(view);
-settings.materialStyle = 1;
-assert.notEqual(JSON.stringify(view), before, 'style participates in view-cache invalidation');
+settings.view = cozy.id;
+assert.notEqual(JSON.stringify(view), before, 'Cozy uses existing view-cache invalidation');
+assert(!('materialStyle' in view));
 
 const app = source('src/app.js');
-assert.match(app, /materialStyle: 0/);
-assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'materialStyle'/);
-assert.match(app, /if \(!\[0, 1\]\.includes\(settings\.materialStyle\)\)/, 'stored values are sanitized');
-assert.match(app, /key: 'materialStyle', options: \[\[0, 'Realistic'\], \[1, 'Cozy'\]\]/);
-assert.match(app, /Object\.assign\(settings, DEFAULTS, keep\)/, 'reset restores style default');
-const runtime = app.slice(app.indexOf('if (materialStyleSeen !== settings.materialStyle)'), app.indexOf('if (prof.on !== settings.profiler)'));
-for (const text of ['gfx.materialStyle = settings.materialStyle', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'pacer.wake()']) assert.ok(runtime.includes(text), text);
-assert.match(app, /\$\{gfx\.smoothing\}\|\$\{gfx\.materialStyle\}/, 'derived key observes the style');
+assert.doesNotMatch(app, /materialStyle|Material style/, 'separate preference and drawer control removed');
+assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'view'/);
+assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
+const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
+for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
+assert.match(app, /post\.settings\.raw = blocks \? false : !isMaterialView\(settings\.view\)/);
+assert.match(app, /post\.settings\.raw = view === 'plain' \? false : !isMaterialView\(view\)/, 'Cozy thumbnails retain tone mapping');
+for (const file of ['src/app.js', 'src/wire/world.js', 'src/wire/weather.js']) {
+  assert.doesNotMatch(source(file), /settings\.view [!=]== 0/, `${file}: lit rendering includes Cozy`);
+}
+
+const detail = detailDefaults();
+for (const shader of ['realistic', 'cozy']) {
+  assert(isMaterialView(shader));
+  const warm = warmChecks(shader, detail);
+  assert.deepEqual(warm[0].detail, gateVariants(detail).base);
+  assert(warm.some(e => e.name === 'shadow'));
+  assert(giChecks().every(e => e.warm({ view: shader })), 'both material views preload GI');
+  assert(warmChecks(shader, detail, { curved: true })[0].curved);
+}
+assert(!isMaterialView('plain'));
+assert(giChecks().every(e => !e.warm({ view: 'heat' })));
+const requests = [];
+const volume = { pipeline(shader, defines) {
+  requests.push({ shader, defines });
+  return { state: 'ready', ready: Promise.resolve(), build() {} };
+} };
+const gate = createDetailGate(null);
+try {
+  gate.configure(volume, detail, 0);
+  gate.update(camera, [0, 0, 0], [32, 32, 32], 640);
+  assert(requests.every(r => r.shader === 'realistic'));
+  requests.length = 0;
+  gate.setView(cozy.id);
+  gate.update(camera, [0, 0, 0], [32, 32, 32], 640);
+  assert.equal(gate.view, 'cozy');
+  assert(requests.length >= 2, 'Cozy builds its own base and near variants');
+  assert(requests.every(r => r.shader === 'cozy'), 'cannot reuse a Realistic near pipeline');
+  requests.length = 0;
+  gate.setView(1);
+  gate.update(camera, [0, 0, 0], [32, 32, 32], 640);
+  assert.equal(requests.length, 0, 'data views do not compile material detail');
+  assert.equal(gate.pending, 0);
+} finally { gate.dispose(); }
 
 assert.match(cozySurfaceWGSL, /m\.emit = cellEmission\(id, T, ctype\) \+ sparkEmit\(id, ctype\)/);
 assert.match(cozySurfaceWGSL, /let wp = p \* CELL_M/);
@@ -127,6 +177,7 @@ for (let j = 0; j < 16; j++) {
 
 const g = gridLayout(32, 32, 32);
 const modules = WGSL_CHECK().map((entry) => [entry.name, entry.code(g)]);
+for (const entry of renderChecks().filter(e => e.view === 'cozy')) modules.push([entry.name, entry.code(g)]);
 for (const mesh of [false, true]) for (const curved of [false, true]) {
   modules.push([`far.${mesh ? 'mesh' : 'view'}.${curved ? 'curved' : 'flat'}`, farFrag(g, farLayout(WORLD_SIZE), mesh, { curved })]);
 }
@@ -142,4 +193,4 @@ for (const [name, code] of modules) {
     console.log(`${name}: Naga CPU validation passed`);
   }
 }
-console.log('Cozy materials: packing, persistence/reset, cache keys, near/far/detail artwork and optical scopes passed.');
+console.log('Cozy view: picker catalog, per-draw artwork, view persistence/reset, GI/detail variants, near/far artwork and optical scopes passed.');
