@@ -507,20 +507,31 @@ fn woodPlates(p: vec3f, fp: f32, mv: ptr<function, vec4f>, c: ptr<function, vec4
   let J = TURN_Y30 * mat3x3f(WOOD_PLATE_FH, 0.0, 0.0, 0.0, WOOD_PLATE_FV, 0.0, 0.0, 0.0, WOOD_PLATE_FH);
   let m = mFbmD(p, WOOD_MEANDER_F, WOOD_MEANDER_OCT, fp);
   *mv = m;
+  // Each layer is drawn only while its LOD weight is above 0: past its fade it
+  // is multiplied away, so its cellular search and noise were wasted work (a
+  // trunk across the view paid for the 27-cell search at any distance). The
+  // results are unchanged: the callers mix c and fr by these same weights.
+  let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
+  let lwR = lodFade(WOOD_RIDGE_FH * WOOD_FURROW_LOD, fp);
+  *c = vec4f(0.0);
+  *fr = WOOD_FISSURE_MEAN;
+  if (lwF <= 0.0 && lwR <= 0.0) { return vec4f(0.0); }
   let wv = mFbmD(p, WOOD_WAVE_F, WOOD_WAVE_OCT, fp);
   let pw = p + WOOD_MEANDER * m.x * vec3f(1.0, 0.0, 1.0) + WOOD_WAVE * wv.yzw;
-  var ge: vec3f;
-  var r1: vec3f;
-  let cc = mCell(J * pw, &ge, &r1);
-  *c = cc;
-  let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
-  // furrow: up from its floor to the plate; dome: down from the plate's seed
-  let h = WOOD_FUR_DEPTH * smoothstep(0.0, WOOD_FUR_W, cc.y) - 0.5 * WOOD_PLATE_DOME * dot(r1, r1);
-  let pl = lwF * vec4f(h, transpose(J) * (WOOD_FUR_DEPTH * dSmooth(0.0, WOOD_FUR_W, cc.y) * ge + WOOD_PLATE_DOME * r1));
+  var pl = vec4f(0.0);
+  if (lwF > 0.0) {
+    var ge: vec3f;
+    var r1: vec3f;
+    let cc = mCell(J * pw, &ge, &r1);
+    *c = cc;
+    // furrow: up from its floor to the plate; dome: down from the plate's seed
+    let h = WOOD_FUR_DEPTH * smoothstep(0.0, WOOD_FUR_W, cc.y) - 0.5 * WOOD_PLATE_DOME * dot(r1, r1);
+    pl = lwF * vec4f(h, transpose(J) * (WOOD_FUR_DEPTH * dSmooth(0.0, WOOD_FUR_W, cc.y) * ge + WOOD_PLATE_DOME * r1));
+  }
+  if (lwR <= 0.0) { return pl; }
   // fissures: down from the plates' level (the relief's top stays the plates')
   let JR = TURN_Y30 * mat3x3f(WOOD_RIDGE_FH, 0.0, 0.0, 0.0, WOOD_RIDGE_FV, 0.0, 0.0, 0.0, WOOD_RIDGE_FH);
   let cr = mCreaseJ(pw, JR, WOOD_FISSURE_SALT);
-  let lwR = lodFade(WOOD_RIDGE_FH * WOOD_FURROW_LOD, fp);
   let ridge = smoothstep(0.0, WOOD_FISSURE_W, cr.x);
   *fr = mix(WOOD_FISSURE_MEAN, ridge, lwR);
   return pl + lwR * WOOD_FISSURE_DEPTH * vec4f(ridge - 1.0, dSmooth(0.0, WOOD_FISSURE_W, cr.x) * cr.yzw);
@@ -990,12 +1001,15 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     var c: vec4f;
     var fr: f32;   // 0 down a fissure .. 1 on a ridge
     let pl = woodPlates(p, fp, &mv, &c, &fr);
-    let fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT);
-    let fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT);
     // narrow furrows alias sooner than the plate frequency says
     let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
     let lwL = lodFade(FLAKE_FV, fp);
     let lwB = lodFade(FIB_FH, fp);
+    // flakes and fibres only while drawn (each term below is × its weight)
+    var fl = vec4f(0.0);
+    var fb = vec4f(0.0);
+    if (lwL > 0.0) { fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT); }
+    if (lwB > 0.0) { fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT); }
     let ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
     let rl = mix(RIDGE_MEAN, ridge, lwF);
     let plate = mix(vec3f(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3f(1.0), GREY, c.w), lwF);
