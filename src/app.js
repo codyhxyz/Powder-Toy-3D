@@ -51,6 +51,7 @@ import { createBrand, createToolbar } from './ui/topbar.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
+import { createShaderPicker } from './ui/shaders.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
@@ -1305,7 +1306,7 @@ const actions = {
     if (camState() === 'god') { painting = false; pov.enter(); }
   },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
-  openShaders: () => { setSettingsOpen(true); settingsPanel.focusViews(); },
+  openShaders: () => setShadersOpen(!shaderPanel.isOpen),
   toggleHelp: () => help.setOpen(!help.isOpen),
   // the start menu over the game (src/main.js), the way Garry's Mod's Esc brings up its menu
   openMenu: () => { painting = false; launch.openMenu?.(); },
@@ -1370,6 +1371,10 @@ function waveDemoRow() {
   };
   return { type: 'custom', el: h('div', {}, h('div.seg', { role: 'group', 'aria-label': 'Create a physical wave' }, buttons), note), sync };
 }
+const shaderPanel = createShaderPicker({
+  settings, views: VIEWS, renderThumb, onChange: setView,
+  onClose: () => setShadersOpen(false), trigger: toolbar.shaderButton,
+});
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -1381,9 +1386,6 @@ const settingsPanel = createSettings({
           disabled: !wire('saves'), on: { click: actions.saveGame } }),
         h('button.btn', { type: 'button', text: 'Keyboard shortcuts', title: 'Keyboard shortcuts (?)',
           on: { click: actions.toggleHelp } })) },
-    ] },
-    { title: 'Shader', rows: [
-      { type: 'views', key: 'view', label: 'Shader', options: VIEWS, renderThumb, onChange: setView },
     ] },
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
@@ -1479,6 +1481,7 @@ function resetSettings() {
   dock.sync();
   hud.setPaused(settings.paused);
   settingsPanel.sync();
+  shaderPanel.sync();
   hud.setEditMode(editModeText());
   save();
   hud.toast('Settings reset', { kind: 'cleanup' });
@@ -1508,8 +1511,14 @@ function setSimModes(modes) {
 function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }); }
 
 function setSettingsOpen(v) {
+  if (v) shaderPanel.setOpen(false);
   settingsPanel.setOpen(v);
   toolbar.setSettingsOpen(v);
+}
+
+function setShadersOpen(v) {
+  if (v) setSettingsOpen(false);
+  shaderPanel.setOpen(v);
 }
 
 function setPaused(p) {
@@ -1531,6 +1540,7 @@ function setView(id) {
   const key = viewKeyOf(id);
   if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   settingsPanel.sync();
+  shaderPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
   save();
 }
@@ -1931,9 +1941,9 @@ addEventListener('keydown', (e) => {
   // Minecraft Java's screenshot key; holding it must not download a stream of images.
   else if (k === 'F2') { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
   else if (k === 'Escape') {
-    const overlay = eyedropper || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
+    const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
     shapeDrag = null;   // a line or box being dragged is dropped
-    setEyedropper(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
+    setEyedropper(false); setShadersOpen(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
     if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
   }

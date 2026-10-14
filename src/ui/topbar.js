@@ -24,7 +24,9 @@ export function createToolbar({ actions, available = {} }) {
   const undo = btn('undo', 'Undo (⌘Z)', actions.undo);
   const shader = btn('shader', 'Change shader', () => actions.openShaders?.());
   shader.setAttribute('aria-haspopup', 'dialog');
-  shader.addEventListener('keydown', e => e.stopPropagation());
+  shader.setAttribute('aria-controls', 'shader-picker');
+  shader.setAttribute('aria-expanded', 'false');
+  shader.addEventListener('keydown', e => { if (e.code === 'Space' || e.code === 'Enter') e.stopPropagation(); });
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const bar = h('div.toolbar.panel', { role: 'group', 'aria-label': 'Simulation controls' },
     camera, build, undo, shader, gear);
@@ -32,6 +34,7 @@ export function createToolbar({ actions, available = {} }) {
 
   let industryVisible = false, industryOpen = false;
   return {
+    shaderButton: shader,
     setCamera(id) { camera.value = cameraId = id; },
     setIndustry(visible, open) {
       if (industryVisible === visible && industryOpen === open) return;
