@@ -430,6 +430,7 @@ export function createPov(app) {
           requestRender: app.requestRender,
           getPost: () => app.post,   // its settings: the wand's halo tone maps itself by them (tools/index.js)
           releaseInput,
+          requestLock,
           onEditorOpenChange(open) { editing = open; releaseInput(); sprintOn = false; app.requestRender(); },
         });
       } catch (err) { console.error('POV toolbelt failed to start', err); }
