@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { createMissionAttempt, validMission } from './missionRules.js';
 import { PLAYER } from '../pov/targets.js';
 import { povEvents } from '../pov/events.js';
+import { crueltyProfile } from './crueltyProfiles.js';
 
 // Narrow adapter: existing NPC bodies/tools/combat, an authored mission, one attempt.
 // No random spawns, match respawn, automatic next round, or fabricated level geometry.
@@ -47,16 +48,17 @@ export function createMission(shell) {
         shell.toolbelt.select('GUN');
       }
       for (const [spec, target] of [...manifest.targets.map((s) => [s, true]), ...manifest.guards.map((s) => [s, false])]) {
-        const passive = spec.passive ?? target;
-        const n = mod.createNpc({ env: shell.env(), ai, oneShot: true, name: spec.name,
-          style: spec.style ?? 'axeman', home: () => local(spec.at),
-          opponents: () => passive ? [] : [{ id: PLAYER, pos: shell.player.pos, vel: shell.player.vel,
-            alive: !shell.player.dead && attempt?.state.phase === 'active', holding: shell.toolbelt?.selectedKey }],
+        const combatProfile = crueltyProfile(spec, { target, cellMeters: map.cellMeters });
+        const playerThreat = () => ({ id: PLAYER, pos: shell.player.pos, vel: shell.player.vel,
+          alive: !shell.player.dead && attempt?.state.phase === 'active', holding: shell.toolbelt?.selectedKey });
+        const n = mod.createNpc({ env: shell.env(), ai, oneShot: true, name: spec.name, combatProfile,
+          style: spec.style ?? 'axeman', home: () => local(spec.at), threat: playerThreat,
+          opponents: () => combatProfile.civilian ? [] : [playerThreat()],
         });
         // Far authored actors may be outside a streamed window at entry. Keep their
         // actual world position until that window covers them; don't simulate unloaded air.
         n.body.pos.copy(local(spec.at));
-        n.agent.weapons = new Set(spec.weapons ?? (passive ? [] : ['GUN']));
+        n.agent.weapons = new Set(combatProfile.weapons);
         n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
         n.body.on('death', () => { if (target && token === epoch) attempt?.eliminate(spec.id); });
         n.missionTarget = target;

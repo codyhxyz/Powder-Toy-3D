@@ -18,6 +18,8 @@ import './potions.js';   // Noita's potion statuses: stains and drinks (register
 import { addTarget, bodyTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { createInteract } from './interact.js';
+import { overlapsLadder } from './ladder.js';
+import { createImportedInteractions } from './importedInteractions.js';
 import { ORB_LIFT } from '../perkOrbs.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker, applyClassTo } from './classPicker.js';
@@ -460,7 +462,7 @@ export function createPov(app) {
       try {
         toolbelt = createToolbelt({
           renderer, scene,
-          getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
+          getSim: app.getSim, getWorld: app.getWorld, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
           getAimCamera: () => povCam.pose.eyeDist <= FIGURE_HIDE_DIST ? camera : null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
@@ -671,7 +673,8 @@ export function createPov(app) {
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
     player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), teleport: (feet) => player?.teleport(feet), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
-  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false, crouch: false };
+  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false, crouch: false, ladder: false, climb: new THREE.Vector3() };
+  const ladderFeet = new THREE.Vector3();
   let sprintOn = false;     // Sprint: Toggle's state
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
@@ -681,6 +684,8 @@ export function createPov(app) {
   function readInput() {
     input.move.x = input.move.z = 0;
     input.jump = input.sprint = input.down = input.crouch = false;
+    input.ladder = false;
+    input.climb.set(0, 0, 0);
     input.chargeJump = village.enabled;
     input.jumpYaw = povCam.look.yaw;
     input.cancelJump = true;
@@ -709,6 +714,12 @@ export function createPov(app) {
     input.jump = keys.has('Space') || t.jump;
     input.sprint = t.sprint || (app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight'));
     input.crouch = input.down = keys.has(CROUCH_KEY) || t.down;   // crouched on land, swimming down in liquid
+    const ladders = app.getWorld()?.scene.importManifest?.interactions?.ladders;
+    if (ladders?.length) {
+      ladderFeet.copy(player.pos).add(app.getSim().origin);
+      input.ladder = overlapsLadder(ladders, ladderFeet, player.width, player.height);
+      if (input.ladder) povCam.dir(input.climb).multiplyScalar(f);
+    }
   }
 
   // The same entities belong to the scene, not to its current camera mode.
@@ -716,6 +727,7 @@ export function createPov(app) {
     if (coop()) return null;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     if (!sim || !vol) return null;
+    importedInteractions.update(dt);
     const g = sim.g;
     vol.updateMatrixWorld();
     worldToGrid.copy(vol.matrixWorld).invert();
@@ -1125,6 +1137,11 @@ export function createPov(app) {
     hud: createMissionHud({ retry: () => mission.retry(), leave: () => exit(true) }),
   });
 
+  const importedInteractions = createImportedInteractions({ app, interact,
+    getBodies: () => [player, ...npcs.values()].map(n => n?.body ?? n).concat(mission.actors.map(n => n.body), game.bots.map(n => n.body)),
+    toast: text => hud.toast?.(text),
+  });
+
   // TF2's class menu opens when you join a team: a Siege match's start and a team switch
   // ('.'). A Halo match has no classes: the picker shuts (docs/halo-contract.md).
   const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
@@ -1154,6 +1171,7 @@ export function createPov(app) {
     village,                     // Tinker Creek's homes, pockets and peaceful neighbors
     descent,                     // the Descent map's gold, shop, altar, pool and refresher (descent/index.js)
     interact,                    // look + E (interact.js): focus, use()
+    importedInteractions,        // source-map doors (exclusive voxel cells, not AABB carves)
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
     get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
     get editingWand() { return editing; },

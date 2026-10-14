@@ -3,11 +3,12 @@ import { resolve, dirname, basename, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
-import { parseGodot3Scene, embeddedMeshes, reference, transformPoint } from '../src/world/import/godot3.js';
+import { parseGodot3Scene, embeddedMeshes, reference, transformPoint, sourceActorMetadata } from '../src/world/import/godot3.js';
 import { importedCell, voxelizeMeshes } from '../src/world/import/voxelize.js';
 import { CRUELTY_MATERIALS, MATERIAL_LOSSES } from '../src/world/import/crueltyMaterials.js';
 import { crueltyExcludeNode, crueltyMission, hiddenActorHelper, actorVisualAncestor } from '../src/world/import/crueltyMission.js';
 import { CRUELTY_PROFILES, crueltyProfile } from '../src/world/import/crueltyProfiles.js';
+import { crueltyInteractions, doorAncestor } from '../src/world/import/crueltyInteractions.js';
 import { CELL_M } from '../src/scale.js';
 import { E } from '../src/elements.js';
 import { ELEMENTS, K } from '../src/elements.js';
@@ -36,8 +37,10 @@ export function convertCrueltyMap(text, profile) {
   if (profile.blocked) throw new Error(`${profile.name} not imported: ${profile.blocked}`);
   const scene = parseGodot3Scene(text);
   const meshes = embeddedMeshes(scene, { excludeNode: crueltyExcludeNode });
-  const voxel = voxelizeMeshes(meshes, CRUELTY_MATERIALS, { cellMeters: CELL_M });
-  const { words, ...manifest } = voxel;
+  // Horizontal world streaming advances in 16-cell steps; the vertical grid
+  // and packed bricks need only 8. Add air padding, never alter source geometry.
+  const voxel = voxelizeMeshes(meshes, CRUELTY_MATERIALS, { cellMeters: CELL_M, alignment: [16, 8, 16], ownerForMesh: m => doorAncestor(m, scene) });
+  const { words, ownedCells, ...manifest } = voxel;
   const elementNames = Object.fromEntries(Object.entries(E).map(([name, id]) => [id, name]));
   const usage = {};
   for (const mesh of meshes) for (const s of mesh.surfaces) {
@@ -46,11 +49,12 @@ export function convertCrueltyMap(text, profile) {
     entry.surfaces++; entry.triangles += s.indices.length / 3;
   }
   const actorResource = (n) => n.instance ? scene.external.get(reference(n.instance).id)?.path : n.props.script ? scene.external.get(reference(n.props.script).id)?.path : null;
-  const actors = [...scene.nodes.values()].filter((n) => actorResource(n)?.includes('/Enemies/') || actorResource(n) === 'res://Scripts/EnemyHandler.gd').map((n) => ({ path: n.path, sourcePath: n.path, resource: actorResource(n), sourceAt: transformPoint(n.worldTransform, [0, 0, 0]), sourceFlags: Object.fromEntries(Object.entries(n.props).filter(([key]) => /hell|chaos|objective|disabled|visible/.test(key))) }));
+  const actors = [...scene.nodes.values()].filter((n) => actorResource(n)?.includes('/Enemies/') || actorResource(n) === 'res://Scripts/EnemyHandler.gd').map((n) => ({ path: n.path, sourcePath: n.path, ...sourceActorMetadata(n, scene), resource: actorResource(n), sourceAt: transformPoint(n.worldTransform, [0, 0, 0]), sourceFlags: Object.fromEntries(Object.entries(n.props).filter(([key]) => /hell|chaos|objective|disabled|visible/.test(key))) }));
   Object.assign(manifest, {
     id: profile.id, name: profile.name,
     plainHeight: plainHeight(voxel, words),
     mission: crueltyMission(scene, voxel, words, profile),
+    interactions: crueltyInteractions(scene, meshes, voxel, ownedCells),
     preview: true,
     provenance: { sourceFile: `Levels/Level${profile.level}.tscn`, sha256: createHash('sha256').update(text).digest('hex'), originalFormat: 'Godot 3 text scene format=2', distribution: 'Local conversion only; game asset redistribution permission not established', coordinateRule: 'Godot Y-up, identity axes; meters / CELL_M, then integer bounds translation; Qodot scale already applied in .tscn' },
     materialMapping: Object.fromEntries(Object.entries(usage).sort(([a], [b]) => a.localeCompare(b)).map(([path, u]) => [path, u.element])),
@@ -62,7 +66,7 @@ export function convertCrueltyMap(text, profile) {
     excludedActorVisuals: [...scene.nodes.values()].filter(n => n.props.mesh && actorVisualAncestor(n, scene)).map(n => ({ path: n.path, visible: n.props.visible ?? 'inherited', reason: 'Animated actor represented by destination NPC, not terrain' })),
     collision: { method: 'Conservative triangle/cell intersection; generated elements use existing voxel collision and destruction', originalShapes: [...scene.resources.values()].reduce((counts, r) => { if (/Shape$/.test(r.type)) counts[r.type] = (counts[r.type] ?? 0) + 1; return counts; }, {}) },
     unresolvedPackedScenes: [...scene.external.values()].filter((r) => r.type === 'PackedScene').map((r) => r.path).sort(),
-    limitations: ['Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.', 'Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.', 'Doors and elevators are imported at authored rest transforms, not animated.', 'Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.', 'All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.', 'NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.', 'Source texture names translate to audited physical materials; original texture pixels and shader effects are not copied.'],
+    limitations: ['Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.', 'Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.', 'Ordinary and elevator doors use exclusive-cell voxel retraction, not animated swing/slide; elevator doors close after 5 seconds when safely resident. Special gates retain unsupported progression requirements. Elevator platforms and other scripted movers remain at rest; see interactions.inventory.', 'Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.', 'All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.', 'NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.', 'Source texture names translate to audited physical materials; original texture pixels and shader effects are not copied.'],
   });
   return { manifest, words };
 }

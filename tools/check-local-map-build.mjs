@@ -28,6 +28,7 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
     const words = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
     // Validates the manifest, every brick pointer and every packed element id.
     const scene = createImportedMapScene(map, words);
+    assert.ok(map.size[0] % 16 === 0 && map.size[2] % 16 === 0, `${map.id}: horizontal bounds fit world streaming`);
     assert.deepEqual(scene.size, map.size);
     assert.ok(scene.mission.spawn || scene.mission.available === false, `${map.id} has a start`);
     // Every actor the mission will actually place stands clear in the shipped bytes.

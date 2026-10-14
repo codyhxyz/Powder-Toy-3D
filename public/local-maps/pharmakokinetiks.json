@@ -8,21 +8,21 @@
     -290
   ],
   "size": [
-    440,
+    448,
     384,
     816
   ],
   "brickDims": [
-    55,
+    56,
     48,
     102
   ],
   "stats": {
     "triangles": 12903,
     "candidates": 6919848,
-    "cells": 2501102,
-    "bricks": 24120,
-    "bytes": 13426560
+    "cells": 2029628,
+    "bricks": 23986,
+    "bytes": 13377536
   },
   "id": "pharmakokinetiks",
   "name": "Pharmakokinetiks",
@@ -30,7 +30,7 @@
   "mission": {
     "id": "pharmakokinetiks",
     "name": "Pharmakokinetiks",
-    "available": false,
+    "available": true,
     "spawn": [
       178,
       49,
@@ -72,6 +72,31 @@
           48.5
         ],
         "sourcePath": "QodotMap/entity_45_Obj_Executive1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian3.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_47_Obj_Pinky",
+        "name": "Pharmakokinetiks target (entity_47_Obj_Pinky)",
+        "at": [
+          344.6666666666667,
+          89,
+          381.6666666666667
+        ],
+        "sourceAt": [
+          33.5,
+          14.5,
+          27.5
+        ],
+        "sourcePath": "QodotMap/entity_47_Obj_Pinky",
+        "sourceResource": "res://Entities/Enemies/Obj_Pinky.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -93,6 +118,9 @@
           21.5
         ],
         "sourcePath": "QodotMap/entity_17_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -112,6 +140,9 @@
           7.5
         ],
         "sourcePath": "QodotMap/entity_18_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -131,6 +162,9 @@
           14.5
         ],
         "sourcePath": "QodotMap/entity_19_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -150,6 +184,9 @@
           16.5
         ],
         "sourcePath": "QodotMap/entity_20_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -169,6 +206,9 @@
           38.5
         ],
         "sourcePath": "QodotMap/entity_21_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -188,6 +228,9 @@
           58.5
         ],
         "sourcePath": "QodotMap/entity_22_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -207,6 +250,9 @@
           12.5
         ],
         "sourcePath": "QodotMap/entity_26_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -226,6 +272,9 @@
           17.5
         ],
         "sourcePath": "QodotMap/entity_27_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -245,6 +294,9 @@
           20.5
         ],
         "sourcePath": "QodotMap/entity_28_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -264,6 +316,9 @@
           17
         ],
         "sourcePath": "QodotMap/entity_29_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -283,6 +338,9 @@
           23.5
         ],
         "sourcePath": "QodotMap/entity_30_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -302,6 +360,9 @@
           9.5
         ],
         "sourcePath": "QodotMap/entity_31_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -321,6 +382,9 @@
           24.5
         ],
         "sourcePath": "QodotMap/entity_38_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -340,6 +404,9 @@
           48.5
         ],
         "sourcePath": "QodotMap/entity_55_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -359,6 +426,9 @@
           5.5
         ],
         "sourcePath": "QodotMap/entity_65_E_Elite",
+        "sourceResource": "res://Entities/Enemies/E_Elite.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -378,6 +448,9 @@
           56.5
         ],
         "sourcePath": "QodotMap/entity_66_E_Security",
+        "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -397,6 +470,9 @@
           33
         ],
         "sourcePath": "QodotMap/entity_94_E_Security",
+        "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -416,6 +492,9 @@
           24.5
         ],
         "sourcePath": "QodotMap/entity_96_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -435,6 +514,9 @@
           36.625
         ],
         "sourcePath": "QodotMap/entity_106_E_Mutant",
+        "sourceResource": "res://Entities/Enemies/E_Knifelord.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "axeman"
       },
       {
@@ -451,6 +533,9 @@
           60.5
         ],
         "sourcePath": "QodotMap/entity_151_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -470,6 +555,9 @@
           58.5
         ],
         "sourcePath": "QodotMap/entity_152_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -491,6 +579,9 @@
           48.5
         ],
         "sourcePath": "QodotMap/entity_45_Obj_Executive1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian3.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -499,13 +590,20 @@
       {
         "id": "QodotMap/entity_47_Obj_Pinky",
         "name": "Pharmakokinetiks target (entity_47_Obj_Pinky)",
-        "at": null,
+        "at": [
+          344.6666666666667,
+          89,
+          381.6666666666667
+        ],
         "sourceAt": [
           33.5,
           14.5,
           27.5
         ],
         "sourcePath": "QodotMap/entity_47_Obj_Pinky",
+        "sourceResource": "res://Entities/Enemies/Obj_Pinky.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -527,6 +625,9 @@
           21.5
         ],
         "sourcePath": "QodotMap/entity_17_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -546,6 +647,9 @@
           7.5
         ],
         "sourcePath": "QodotMap/entity_18_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -565,6 +669,9 @@
           14.5
         ],
         "sourcePath": "QodotMap/entity_19_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -584,6 +691,9 @@
           16.5
         ],
         "sourcePath": "QodotMap/entity_20_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -603,6 +713,9 @@
           38.5
         ],
         "sourcePath": "QodotMap/entity_21_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -622,6 +735,9 @@
           58.5
         ],
         "sourcePath": "QodotMap/entity_22_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -641,6 +757,9 @@
           12.5
         ],
         "sourcePath": "QodotMap/entity_26_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -660,6 +779,9 @@
           17.5
         ],
         "sourcePath": "QodotMap/entity_27_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -679,6 +801,9 @@
           20.5
         ],
         "sourcePath": "QodotMap/entity_28_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -698,6 +823,9 @@
           17
         ],
         "sourcePath": "QodotMap/entity_29_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -717,6 +845,9 @@
           23.5
         ],
         "sourcePath": "QodotMap/entity_30_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -736,6 +867,9 @@
           9.5
         ],
         "sourcePath": "QodotMap/entity_31_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -755,6 +889,9 @@
           24.5
         ],
         "sourcePath": "QodotMap/entity_38_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -774,6 +911,9 @@
           48.5
         ],
         "sourcePath": "QodotMap/entity_55_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -793,6 +933,9 @@
           5.5
         ],
         "sourcePath": "QodotMap/entity_65_E_Elite",
+        "sourceResource": "res://Entities/Enemies/E_Elite.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -812,6 +955,9 @@
           56.5
         ],
         "sourcePath": "QodotMap/entity_66_E_Security",
+        "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -831,6 +977,9 @@
           33
         ],
         "sourcePath": "QodotMap/entity_94_E_Security",
+        "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -850,6 +999,9 @@
           24.5
         ],
         "sourcePath": "QodotMap/entity_96_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -869,6 +1021,9 @@
           36.625
         ],
         "sourcePath": "QodotMap/entity_106_E_Mutant",
+        "sourceResource": "res://Entities/Enemies/E_Knifelord.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "axeman"
       },
       {
@@ -885,6 +1040,9 @@
           60.5
         ],
         "sourcePath": "QodotMap/entity_151_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
@@ -904,29 +1062,16 @@
           58.5
         ],
         "sourcePath": "QodotMap/entity_152_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
         "style": "gunner",
         "weapons": [
           "GUN"
         ]
       }
     ],
-    "placementFailures": [
-      {
-        "sourcePath": "QodotMap/entity_47_Obj_Pinky",
-        "sourceAt": [
-          33.5,
-          14.5,
-          27.5
-        ],
-        "role": "target",
-        "bodyDimensions": [
-          1.6,
-          5.5,
-          1.6
-        ],
-        "reason": "No SOLID support with full ordinary body clearance at authored X/Z within 3 meters below pivot"
-      }
-    ],
+    "placementFailures": [],
     "extraction": {
       "at": [
         79.66666666666666,
@@ -1317,6 +1462,5361 @@
         ]
       }
     ]
+  },
+  "interactions": {
+    "version": 1,
+    "doors": [
+      {
+        "sourcePath": "QodotMap/entity_5_Elevator_Door",
+        "sourceResource": "res://Scripts/Elevator_Door.gd",
+        "bounds": {
+          "min": [
+            246,
+            58,
+            424
+          ],
+          "max": [
+            260,
+            72,
+            427
+          ]
+        },
+        "cells": [
+          73140279,
+          20,
+          73140727,
+          20,
+          73141175,
+          20,
+          73141623,
+          20,
+          73142071,
+          20,
+          73312311,
+          20,
+          73312759,
+          20,
+          73313207,
+          20,
+          73313655,
+          20,
+          73314103,
+          20,
+          73142519,
+          20,
+          73142967,
+          20,
+          73143415,
+          20,
+          73143863,
+          20,
+          73144311,
+          20,
+          73144759,
+          20,
+          73145207,
+          20,
+          73314551,
+          20,
+          73314999,
+          20,
+          73315447,
+          20,
+          73315895,
+          20,
+          73316343,
+          20,
+          73316791,
+          20,
+          73317239,
+          20,
+          73140280,
+          20,
+          73140281,
+          20,
+          73140282,
+          20,
+          73140283,
+          20,
+          73140284,
+          20,
+          73140285,
+          20,
+          73140286,
+          20,
+          73140287,
+          20,
+          73140728,
+          20,
+          73140729,
+          20,
+          73140730,
+          20,
+          73140731,
+          20,
+          73140732,
+          20,
+          73140733,
+          20,
+          73140734,
+          20,
+          73140735,
+          20,
+          73141176,
+          20,
+          73141177,
+          20,
+          73141178,
+          20,
+          73141179,
+          20,
+          73141180,
+          20,
+          73141181,
+          20,
+          73141182,
+          20,
+          73141183,
+          20,
+          73141624,
+          20,
+          73141625,
+          20,
+          73141626,
+          20,
+          73141627,
+          20,
+          73141628,
+          20,
+          73141629,
+          20,
+          73141630,
+          20,
+          73141631,
+          20,
+          73142072,
+          20,
+          73142073,
+          20,
+          73142074,
+          20,
+          73142075,
+          20,
+          73142076,
+          20,
+          73142077,
+          20,
+          73142078,
+          20,
+          73142079,
+          20,
+          73312312,
+          20,
+          73312313,
+          20,
+          73312314,
+          20,
+          73312315,
+          20,
+          73312316,
+          20,
+          73312317,
+          20,
+          73312318,
+          20,
+          73312319,
+          20,
+          73312760,
+          20,
+          73312761,
+          20,
+          73312762,
+          20,
+          73312763,
+          20,
+          73312764,
+          20,
+          73312765,
+          20,
+          73312766,
+          20,
+          73312767,
+          20,
+          73313208,
+          20,
+          73313209,
+          20,
+          73313210,
+          20,
+          73313211,
+          20,
+          73313212,
+          20,
+          73313213,
+          20,
+          73313214,
+          20,
+          73313215,
+          20,
+          73313656,
+          20,
+          73313657,
+          20,
+          73313658,
+          20,
+          73313659,
+          20,
+          73313660,
+          20,
+          73313661,
+          20,
+          73313662,
+          20,
+          73313663,
+          20,
+          73314104,
+          20,
+          73314105,
+          20,
+          73314106,
+          20,
+          73314107,
+          20,
+          73314108,
+          20,
+          73314109,
+          20,
+          73314110,
+          20,
+          73314111,
+          20,
+          73140288,
+          20,
+          73140289,
+          20,
+          73140290,
+          20,
+          73140736,
+          20,
+          73140737,
+          20,
+          73140738,
+          20,
+          73141184,
+          20,
+          73141185,
+          20,
+          73141186,
+          20,
+          73141632,
+          20,
+          73141633,
+          20,
+          73141634,
+          20,
+          73142080,
+          20,
+          73142081,
+          20,
+          73142082,
+          20,
+          73312320,
+          20,
+          73312321,
+          20,
+          73312322,
+          20,
+          73312768,
+          20,
+          73312769,
+          20,
+          73312770,
+          20,
+          73313216,
+          20,
+          73313217,
+          20,
+          73313218,
+          20,
+          73313664,
+          20,
+          73313665,
+          20,
+          73313666,
+          20,
+          73314112,
+          20,
+          73314113,
+          20,
+          73314114,
+          20,
+          73142528,
+          20,
+          73142529,
+          20,
+          73142530,
+          20,
+          73142976,
+          20,
+          73142977,
+          20,
+          73142978,
+          20,
+          73143424,
+          20,
+          73143425,
+          20,
+          73143426,
+          20,
+          73143872,
+          20,
+          73143873,
+          20,
+          73143874,
+          20,
+          73144320,
+          20,
+          73144321,
+          20,
+          73144322,
+          20,
+          73144768,
+          20,
+          73144769,
+          20,
+          73144770,
+          20,
+          73145216,
+          20,
+          73145217,
+          20,
+          73145218,
+          20,
+          73314560,
+          20,
+          73314561,
+          20,
+          73314562,
+          20,
+          73315008,
+          20,
+          73315009,
+          20,
+          73315010,
+          20,
+          73315456,
+          20,
+          73315457,
+          20,
+          73315458,
+          20,
+          73315904,
+          20,
+          73315905,
+          20,
+          73315906,
+          20,
+          73316352,
+          20,
+          73316353,
+          20,
+          73316354,
+          20,
+          73316800,
+          20,
+          73316801,
+          20,
+          73316802,
+          20,
+          73317248,
+          20,
+          73317249,
+          20,
+          73317250,
+          20,
+          73142520,
+          20,
+          73142521,
+          20,
+          73142522,
+          20,
+          73142523,
+          20,
+          73142524,
+          20,
+          73142525,
+          20,
+          73142526,
+          20,
+          73142527,
+          20,
+          73142968,
+          20,
+          73142969,
+          20,
+          73142970,
+          20,
+          73142971,
+          20,
+          73142972,
+          20,
+          73142973,
+          20,
+          73142974,
+          20,
+          73142975,
+          20,
+          73143416,
+          20,
+          73143417,
+          20,
+          73143418,
+          20,
+          73143419,
+          20,
+          73143420,
+          20,
+          73143421,
+          20,
+          73143422,
+          20,
+          73143423,
+          20,
+          73143864,
+          20,
+          73143865,
+          20,
+          73143866,
+          20,
+          73143867,
+          20,
+          73143868,
+          20,
+          73143869,
+          20,
+          73143870,
+          20,
+          73143871,
+          20,
+          73144312,
+          20,
+          73144313,
+          20,
+          73144314,
+          20,
+          73144315,
+          20,
+          73144316,
+          20,
+          73144317,
+          20,
+          73144318,
+          20,
+          73144319,
+          20,
+          73144760,
+          20,
+          73144761,
+          20,
+          73144762,
+          20,
+          73144763,
+          20,
+          73144764,
+          20,
+          73144765,
+          20,
+          73144766,
+          20,
+          73144767,
+          20,
+          73145208,
+          20,
+          73145209,
+          20,
+          73145210,
+          20,
+          73145211,
+          20,
+          73145212,
+          20,
+          73145213,
+          20,
+          73145214,
+          20,
+          73145215,
+          20,
+          73314552,
+          20,
+          73314553,
+          20,
+          73314554,
+          20,
+          73314555,
+          20,
+          73314556,
+          20,
+          73314557,
+          20,
+          73314558,
+          20,
+          73314559,
+          20,
+          73315000,
+          20,
+          73315001,
+          20,
+          73315002,
+          20,
+          73315003,
+          20,
+          73315004,
+          20,
+          73315005,
+          20,
+          73315006,
+          20,
+          73315007,
+          20,
+          73315448,
+          20,
+          73315449,
+          20,
+          73315450,
+          20,
+          73315451,
+          20,
+          73315452,
+          20,
+          73315453,
+          20,
+          73315454,
+          20,
+          73315455,
+          20,
+          73315896,
+          20,
+          73315897,
+          20,
+          73315898,
+          20,
+          73315899,
+          20,
+          73315900,
+          20,
+          73315901,
+          20,
+          73315902,
+          20,
+          73315903,
+          20,
+          73316344,
+          20,
+          73316345,
+          20,
+          73316346,
+          20,
+          73316347,
+          20,
+          73316348,
+          20,
+          73316349,
+          20,
+          73316350,
+          20,
+          73316351,
+          20,
+          73316792,
+          20,
+          73316793,
+          20,
+          73316794,
+          20,
+          73316795,
+          20,
+          73316796,
+          20,
+          73316797,
+          20,
+          73316798,
+          20,
+          73316799,
+          20,
+          73317240,
+          20,
+          73317241,
+          20,
+          73317242,
+          20,
+          73317243,
+          20,
+          73317244,
+          20,
+          73317245,
+          20,
+          73317246,
+          20,
+          73317247,
+          20
+        ],
+        "kind": "sliding",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": 5,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_6_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            244,
+            58,
+            463
+          ],
+          "max": [
+            246,
+            66,
+            467
+          ]
+        },
+        "cells": [
+          79851764,
+          14,
+          79851765,
+          14,
+          80023796,
+          14,
+          80023797,
+          14,
+          79849524,
+          14,
+          79849525,
+          14,
+          79849972,
+          14,
+          79849973,
+          14,
+          79850420,
+          14,
+          79850421,
+          14,
+          79850868,
+          14,
+          79850869,
+          14,
+          79851316,
+          14,
+          79851317,
+          14,
+          80021556,
+          14,
+          80021557,
+          14,
+          80022004,
+          14,
+          80022005,
+          14,
+          80022452,
+          14,
+          80022453,
+          14,
+          80022900,
+          14,
+          80022901,
+          14,
+          80023348,
+          14,
+          80023349,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_7_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            244,
+            58,
+            449
+          ],
+          "max": [
+            246,
+            66,
+            454
+          ]
+        },
+        "cells": [
+          77443316,
+          14,
+          77443317,
+          14,
+          77615348,
+          14,
+          77615349,
+          14,
+          77787380,
+          14,
+          77787381,
+          14,
+          77441076,
+          14,
+          77441077,
+          14,
+          77441524,
+          14,
+          77441525,
+          14,
+          77441972,
+          14,
+          77441973,
+          14,
+          77442420,
+          14,
+          77442421,
+          14,
+          77442868,
+          14,
+          77442869,
+          14,
+          77613108,
+          14,
+          77613109,
+          14,
+          77613556,
+          14,
+          77613557,
+          14,
+          77614004,
+          14,
+          77614005,
+          14,
+          77614452,
+          14,
+          77614453,
+          14,
+          77614900,
+          14,
+          77614901,
+          14,
+          77785140,
+          14,
+          77785141,
+          14,
+          77785588,
+          14,
+          77785589,
+          14,
+          77786036,
+          14,
+          77786037,
+          14,
+          77786484,
+          14,
+          77786485,
+          14,
+          77786932,
+          14,
+          77786933,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_8_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            324,
+            88,
+            386
+          ],
+          "max": [
+            326,
+            96,
+            391
+          ]
+        },
+        "cells": [
+          66616580,
+          14,
+          66616581,
+          14,
+          66617028,
+          14,
+          66617029,
+          14,
+          66617476,
+          14,
+          66617477,
+          14,
+          66617924,
+          14,
+          66617925,
+          14,
+          66618372,
+          14,
+          66618373,
+          14,
+          66618820,
+          14,
+          66618821,
+          14,
+          66788612,
+          14,
+          66788613,
+          14,
+          66789060,
+          14,
+          66789061,
+          14,
+          66789508,
+          14,
+          66789509,
+          14,
+          66789956,
+          14,
+          66789957,
+          14,
+          66790404,
+          14,
+          66790405,
+          14,
+          66790852,
+          14,
+          66790853,
+          14,
+          66960644,
+          14,
+          66960645,
+          14,
+          66961092,
+          14,
+          66961093,
+          14,
+          66961540,
+          14,
+          66961541,
+          14,
+          66961988,
+          14,
+          66961989,
+          14,
+          66962436,
+          14,
+          66962437,
+          14,
+          66962884,
+          14,
+          66962885,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_9_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            324,
+            88,
+            356
+          ],
+          "max": [
+            326,
+            96,
+            361
+          ]
+        },
+        "cells": [
+          61455620,
+          14,
+          61455621,
+          14,
+          61456068,
+          14,
+          61456069,
+          14,
+          61456516,
+          14,
+          61456517,
+          14,
+          61456964,
+          14,
+          61456965,
+          14,
+          61457412,
+          14,
+          61457413,
+          14,
+          61457860,
+          14,
+          61457861,
+          14,
+          61627652,
+          14,
+          61627653,
+          14,
+          61628100,
+          14,
+          61628101,
+          14,
+          61628548,
+          14,
+          61628549,
+          14,
+          61628996,
+          14,
+          61628997,
+          14,
+          61629444,
+          14,
+          61629445,
+          14,
+          61629892,
+          14,
+          61629893,
+          14,
+          61799684,
+          14,
+          61799685,
+          14,
+          61800132,
+          14,
+          61800133,
+          14,
+          61800580,
+          14,
+          61800581,
+          14,
+          61801028,
+          14,
+          61801029,
+          14,
+          61801476,
+          14,
+          61801477,
+          14,
+          61801924,
+          14,
+          61801925,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_10_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            302,
+            88,
+            394
+          ],
+          "max": [
+            307,
+            96,
+            396
+          ]
+        },
+        "cells": [
+          67992815,
+          14,
+          67993263,
+          14,
+          67993711,
+          14,
+          67994159,
+          14,
+          67994607,
+          14,
+          67995055,
+          14,
+          67992816,
+          14,
+          67992817,
+          14,
+          67993264,
+          14,
+          67993265,
+          14,
+          67993712,
+          14,
+          67993713,
+          14,
+          67994160,
+          14,
+          67994161,
+          14,
+          67994608,
+          14,
+          67994609,
+          14,
+          67995056,
+          14,
+          67995057,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_11_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            276,
+            88,
+            394
+          ],
+          "max": [
+            280,
+            96,
+            396
+          ]
+        },
+        "cells": [
+          67992789,
+          14,
+          67992790,
+          14,
+          67993237,
+          14,
+          67993238,
+          14,
+          67993685,
+          14,
+          67993686,
+          14,
+          67994133,
+          14,
+          67994134,
+          14,
+          67994581,
+          14,
+          67994582,
+          14,
+          67995029,
+          14,
+          67995030,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_12_Elevator_Door",
+        "sourceResource": "res://Scripts/Elevator_Door.gd",
+        "bounds": {
+          "min": [
+            219,
+            48,
+            299
+          ],
+          "max": [
+            234,
+            62,
+            302
+          ]
+        },
+        "cells": [
+          51631784,
+          66,
+          51632232,
+          66,
+          51632680,
+          66,
+          51633128,
+          66,
+          51633576,
+          66,
+          51634024,
+          66,
+          51634472,
+          66,
+          51803816,
+          66,
+          51804264,
+          66,
+          51804712,
+          66,
+          51805160,
+          66,
+          51805608,
+          66,
+          51806056,
+          66,
+          51806504,
+          66,
+          51634920,
+          66,
+          51635368,
+          66,
+          51635816,
+          66,
+          51636264,
+          66,
+          51636712,
+          66,
+          51806952,
+          66,
+          51807400,
+          66,
+          51807848,
+          66,
+          51808296,
+          66,
+          51808744,
+          66,
+          51631772,
+          66,
+          51631773,
+          66,
+          51631774,
+          66,
+          51631775,
+          66,
+          51632220,
+          66,
+          51632221,
+          66,
+          51632222,
+          66,
+          51632223,
+          66,
+          51632668,
+          66,
+          51632669,
+          66,
+          51632670,
+          66,
+          51632671,
+          66,
+          51633116,
+          66,
+          51633117,
+          66,
+          51633118,
+          66,
+          51633119,
+          66,
+          51633564,
+          66,
+          51633565,
+          66,
+          51633566,
+          66,
+          51633567,
+          66,
+          51634012,
+          66,
+          51634013,
+          66,
+          51634014,
+          66,
+          51634015,
+          66,
+          51634460,
+          66,
+          51634461,
+          66,
+          51634462,
+          66,
+          51634463,
+          66,
+          51803804,
+          66,
+          51803805,
+          66,
+          51803806,
+          66,
+          51803807,
+          66,
+          51804252,
+          66,
+          51804253,
+          66,
+          51804254,
+          66,
+          51804255,
+          66,
+          51804700,
+          66,
+          51804701,
+          66,
+          51804702,
+          66,
+          51804703,
+          66,
+          51805148,
+          66,
+          51805149,
+          66,
+          51805150,
+          66,
+          51805151,
+          66,
+          51805596,
+          66,
+          51805597,
+          66,
+          51805598,
+          66,
+          51805599,
+          66,
+          51806044,
+          66,
+          51806045,
+          66,
+          51806046,
+          66,
+          51806047,
+          66,
+          51806492,
+          66,
+          51806493,
+          66,
+          51806494,
+          66,
+          51806495,
+          66,
+          51631776,
+          66,
+          51631777,
+          66,
+          51631778,
+          66,
+          51631779,
+          66,
+          51631780,
+          66,
+          51631781,
+          66,
+          51631782,
+          66,
+          51631783,
+          66,
+          51632224,
+          66,
+          51632225,
+          66,
+          51632226,
+          66,
+          51632227,
+          66,
+          51632228,
+          66,
+          51632229,
+          66,
+          51632230,
+          66,
+          51632231,
+          66,
+          51632672,
+          66,
+          51632673,
+          66,
+          51632674,
+          66,
+          51632675,
+          66,
+          51632676,
+          66,
+          51632677,
+          66,
+          51632678,
+          66,
+          51632679,
+          66,
+          51633120,
+          66,
+          51633121,
+          66,
+          51633122,
+          66,
+          51633123,
+          66,
+          51633124,
+          66,
+          51633125,
+          66,
+          51633126,
+          66,
+          51633127,
+          66,
+          51633568,
+          66,
+          51633569,
+          66,
+          51633570,
+          66,
+          51633571,
+          66,
+          51633572,
+          66,
+          51633573,
+          66,
+          51633574,
+          66,
+          51633575,
+          66,
+          51634016,
+          66,
+          51634017,
+          66,
+          51634018,
+          66,
+          51634019,
+          66,
+          51634020,
+          66,
+          51634021,
+          66,
+          51634022,
+          66,
+          51634023,
+          66,
+          51634464,
+          66,
+          51634465,
+          66,
+          51634466,
+          66,
+          51634467,
+          66,
+          51634468,
+          66,
+          51634469,
+          66,
+          51634470,
+          66,
+          51634471,
+          66,
+          51803808,
+          66,
+          51803809,
+          66,
+          51803810,
+          66,
+          51803811,
+          66,
+          51803812,
+          66,
+          51803813,
+          66,
+          51803814,
+          66,
+          51803815,
+          66,
+          51804256,
+          66,
+          51804257,
+          66,
+          51804258,
+          66,
+          51804259,
+          66,
+          51804260,
+          66,
+          51804261,
+          66,
+          51804262,
+          66,
+          51804263,
+          66,
+          51804704,
+          66,
+          51804705,
+          66,
+          51804706,
+          66,
+          51804707,
+          66,
+          51804708,
+          66,
+          51804709,
+          66,
+          51804710,
+          66,
+          51804711,
+          66,
+          51805152,
+          66,
+          51805153,
+          66,
+          51805154,
+          66,
+          51805155,
+          66,
+          51805156,
+          66,
+          51805157,
+          66,
+          51805158,
+          66,
+          51805159,
+          66,
+          51805600,
+          66,
+          51805601,
+          66,
+          51805602,
+          66,
+          51805603,
+          66,
+          51805604,
+          66,
+          51805605,
+          66,
+          51805606,
+          66,
+          51805607,
+          66,
+          51806048,
+          66,
+          51806049,
+          66,
+          51806050,
+          66,
+          51806051,
+          66,
+          51806052,
+          66,
+          51806053,
+          66,
+          51806054,
+          66,
+          51806055,
+          66,
+          51806496,
+          66,
+          51806497,
+          66,
+          51806498,
+          66,
+          51806499,
+          66,
+          51806500,
+          66,
+          51806501,
+          66,
+          51806502,
+          66,
+          51806503,
+          66,
+          51634908,
+          66,
+          51634909,
+          66,
+          51634910,
+          66,
+          51634911,
+          66,
+          51635356,
+          66,
+          51635357,
+          66,
+          51635358,
+          66,
+          51635359,
+          66,
+          51635804,
+          66,
+          51635805,
+          66,
+          51635806,
+          66,
+          51635807,
+          66,
+          51636252,
+          66,
+          51636253,
+          66,
+          51636254,
+          66,
+          51636255,
+          66,
+          51636700,
+          66,
+          51636701,
+          66,
+          51636702,
+          66,
+          51636703,
+          66,
+          51806940,
+          66,
+          51806941,
+          66,
+          51806942,
+          66,
+          51806943,
+          66,
+          51807388,
+          66,
+          51807389,
+          66,
+          51807390,
+          66,
+          51807391,
+          66,
+          51807836,
+          66,
+          51807837,
+          66,
+          51807838,
+          66,
+          51807839,
+          66,
+          51808284,
+          66,
+          51808285,
+          66,
+          51808286,
+          66,
+          51808287,
+          66,
+          51808732,
+          66,
+          51808733,
+          66,
+          51808734,
+          66,
+          51808735,
+          66,
+          51634912,
+          66,
+          51634913,
+          66,
+          51634914,
+          66,
+          51634915,
+          66,
+          51634916,
+          66,
+          51634917,
+          66,
+          51634918,
+          66,
+          51634919,
+          66,
+          51635360,
+          66,
+          51635361,
+          66,
+          51635362,
+          66,
+          51635363,
+          66,
+          51635364,
+          66,
+          51635365,
+          66,
+          51635366,
+          66,
+          51635367,
+          66,
+          51635808,
+          66,
+          51635809,
+          66,
+          51635810,
+          66,
+          51635811,
+          66,
+          51635812,
+          66,
+          51635813,
+          66,
+          51635814,
+          66,
+          51635815,
+          66,
+          51636256,
+          66,
+          51636257,
+          66,
+          51636258,
+          66,
+          51636259,
+          66,
+          51636260,
+          66,
+          51636261,
+          66,
+          51636262,
+          66,
+          51636263,
+          66,
+          51636704,
+          66,
+          51636705,
+          66,
+          51636706,
+          66,
+          51636707,
+          66,
+          51636708,
+          66,
+          51636709,
+          66,
+          51636710,
+          66,
+          51636711,
+          66,
+          51806944,
+          66,
+          51806945,
+          66,
+          51806946,
+          66,
+          51806947,
+          66,
+          51806948,
+          66,
+          51806949,
+          66,
+          51806950,
+          66,
+          51806951,
+          66,
+          51807392,
+          66,
+          51807393,
+          66,
+          51807394,
+          66,
+          51807395,
+          66,
+          51807396,
+          66,
+          51807397,
+          66,
+          51807398,
+          66,
+          51807399,
+          66,
+          51807840,
+          66,
+          51807841,
+          66,
+          51807842,
+          66,
+          51807843,
+          66,
+          51807844,
+          66,
+          51807845,
+          66,
+          51807846,
+          66,
+          51807847,
+          66,
+          51808288,
+          66,
+          51808289,
+          66,
+          51808290,
+          66,
+          51808291,
+          66,
+          51808292,
+          66,
+          51808293,
+          66,
+          51808294,
+          66,
+          51808295,
+          66,
+          51808736,
+          66,
+          51808737,
+          66,
+          51808738,
+          66,
+          51808739,
+          66,
+          51808740,
+          66,
+          51808741,
+          66,
+          51808742,
+          66,
+          51808743,
+          66
+        ],
+        "kind": "sliding",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": 5,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_13_Elevator_Door",
+        "sourceResource": "res://Scripts/Elevator_Door.gd",
+        "bounds": {
+          "min": [
+            189,
+            48,
+            394
+          ],
+          "max": [
+            197,
+            59,
+            396
+          ]
+        },
+        "cells": [
+          67805886,
+          20,
+          67805887,
+          20,
+          67806334,
+          20,
+          67806335,
+          20,
+          67977918,
+          20,
+          67977919,
+          20,
+          67978366,
+          20,
+          67978367,
+          20,
+          67805888,
+          20,
+          67805889,
+          20,
+          67805890,
+          20,
+          67805891,
+          20,
+          67806336,
+          20,
+          67806337,
+          20,
+          67806338,
+          20,
+          67806339,
+          20,
+          67977920,
+          20,
+          67977921,
+          20,
+          67977922,
+          20,
+          67977923,
+          20,
+          67978368,
+          20,
+          67978369,
+          20,
+          67978370,
+          20,
+          67978371,
+          20,
+          67802752,
+          20,
+          67802753,
+          20,
+          67802754,
+          20,
+          67802755,
+          20,
+          67803200,
+          20,
+          67803201,
+          20,
+          67803202,
+          20,
+          67803203,
+          20,
+          67803648,
+          20,
+          67803649,
+          20,
+          67803650,
+          20,
+          67803651,
+          20,
+          67804096,
+          20,
+          67804097,
+          20,
+          67804098,
+          20,
+          67804099,
+          20,
+          67804544,
+          20,
+          67804545,
+          20,
+          67804546,
+          20,
+          67804547,
+          20,
+          67804992,
+          20,
+          67804993,
+          20,
+          67804994,
+          20,
+          67804995,
+          20,
+          67805440,
+          20,
+          67805441,
+          20,
+          67805442,
+          20,
+          67805443,
+          20,
+          67974784,
+          20,
+          67974785,
+          20,
+          67974786,
+          20,
+          67974787,
+          20,
+          67975232,
+          20,
+          67975233,
+          20,
+          67975234,
+          20,
+          67975235,
+          20,
+          67975680,
+          20,
+          67975681,
+          20,
+          67975682,
+          20,
+          67975683,
+          20,
+          67976128,
+          20,
+          67976129,
+          20,
+          67976130,
+          20,
+          67976131,
+          20,
+          67976576,
+          20,
+          67976577,
+          20,
+          67976578,
+          20,
+          67976579,
+          20,
+          67977024,
+          20,
+          67977025,
+          20,
+          67977026,
+          20,
+          67977027,
+          20,
+          67977472,
+          20,
+          67977473,
+          20,
+          67977474,
+          20,
+          67977475,
+          20,
+          67802750,
+          20,
+          67802751,
+          20,
+          67803198,
+          20,
+          67803199,
+          20,
+          67803646,
+          20,
+          67803647,
+          20,
+          67804094,
+          20,
+          67804095,
+          20,
+          67804542,
+          20,
+          67804543,
+          20,
+          67804990,
+          20,
+          67804991,
+          20,
+          67805438,
+          20,
+          67805439,
+          20,
+          67974782,
+          20,
+          67974783,
+          20,
+          67975230,
+          20,
+          67975231,
+          20,
+          67975678,
+          20,
+          67975679,
+          20,
+          67976126,
+          20,
+          67976127,
+          20,
+          67976574,
+          20,
+          67976575,
+          20,
+          67977022,
+          20,
+          67977023,
+          20,
+          67977470,
+          20,
+          67977471,
+          20
+        ],
+        "kind": "sliding",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": 5,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_56_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            250,
+            59,
+            506
+          ],
+          "max": [
+            251,
+            66,
+            511
+          ]
+        },
+        "cells": [
+          87246906,
+          20,
+          87247354,
+          20,
+          87247802,
+          20,
+          87248250,
+          20,
+          87248698,
+          20,
+          87418938,
+          20,
+          87419386,
+          20,
+          87419834,
+          20,
+          87420282,
+          20,
+          87420730,
+          20,
+          87590970,
+          20,
+          87591418,
+          20,
+          87591866,
+          20,
+          87592314,
+          20,
+          87592762,
+          20,
+          87249146,
+          20,
+          87421178,
+          20,
+          87593210,
+          20
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_57_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            250,
+            59,
+            493
+          ],
+          "max": [
+            251,
+            66,
+            497
+          ]
+        },
+        "cells": [
+          85010490,
+          20,
+          85010938,
+          20,
+          85011386,
+          20,
+          85011834,
+          20,
+          85012282,
+          20,
+          85182522,
+          20,
+          85182970,
+          20,
+          85183418,
+          20,
+          85183866,
+          20,
+          85184314,
+          20,
+          85012730,
+          20,
+          85184762,
+          20
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_63_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            203,
+            48,
+            336
+          ],
+          "max": [
+            205,
+            56,
+            341
+          ]
+        },
+        "cells": [
+          57996939,
+          16,
+          57996940,
+          16,
+          57997387,
+          16,
+          57997388,
+          16,
+          57997835,
+          16,
+          57997836,
+          16,
+          57998283,
+          16,
+          57998284,
+          16,
+          57998731,
+          16,
+          57998732,
+          16,
+          57999179,
+          16,
+          57999180,
+          16,
+          58168971,
+          16,
+          58168972,
+          16,
+          58169419,
+          16,
+          58169420,
+          16,
+          58169867,
+          16,
+          58169868,
+          16,
+          58170315,
+          16,
+          58170316,
+          16,
+          58170763,
+          16,
+          58170764,
+          16,
+          58171211,
+          16,
+          58171212,
+          16,
+          58341003,
+          16,
+          58341004,
+          16,
+          58341451,
+          16,
+          58341452,
+          16,
+          58341899,
+          16,
+          58341900,
+          16,
+          58342347,
+          16,
+          58342348,
+          16,
+          58342795,
+          16,
+          58342796,
+          16,
+          58343243,
+          16,
+          58343244,
+          16
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_64_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            324,
+            88,
+            319
+          ],
+          "max": [
+            326,
+            96,
+            324
+          ]
+        },
+        "cells": [
+          55090436,
+          14,
+          55090437,
+          14,
+          55090884,
+          14,
+          55090885,
+          14,
+          55091332,
+          14,
+          55091333,
+          14,
+          55091780,
+          14,
+          55091781,
+          14,
+          55092228,
+          14,
+          55092229,
+          14,
+          55092676,
+          14,
+          55092677,
+          14,
+          55262468,
+          14,
+          55262469,
+          14,
+          55262916,
+          14,
+          55262917,
+          14,
+          55263364,
+          14,
+          55263365,
+          14,
+          55263812,
+          14,
+          55263813,
+          14,
+          55264260,
+          14,
+          55264261,
+          14,
+          55264708,
+          14,
+          55264709,
+          14,
+          55434500,
+          14,
+          55434501,
+          14,
+          55434948,
+          14,
+          55434949,
+          14,
+          55435396,
+          14,
+          55435397,
+          14,
+          55435844,
+          14,
+          55435845,
+          14,
+          55436292,
+          14,
+          55436293,
+          14,
+          55436740,
+          14,
+          55436741,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_71_DivineDoor",
+        "sourceResource": "res://Scripts/Divine_Door.gd",
+        "bounds": {
+          "min": [
+            309,
+            88,
+            423
+          ],
+          "max": [
+            314,
+            96,
+            424
+          ]
+        },
+        "cells": [
+          72809720,
+          16,
+          72810168,
+          16,
+          72810616,
+          16,
+          72811064,
+          16,
+          72811512,
+          16,
+          72811960,
+          16,
+          72809718,
+          16,
+          72809719,
+          16,
+          72810166,
+          16,
+          72810167,
+          16,
+          72810614,
+          16,
+          72810615,
+          16,
+          72811062,
+          16,
+          72811063,
+          16,
+          72811510,
+          16,
+          72811511,
+          16,
+          72811958,
+          16,
+          72811959,
+          16
+        ],
+        "kind": "gate",
+        "supported": false,
+        "requirement": "Requires intact soul (unsupported)",
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Closed; original progression is not implemented"
+      },
+      {
+        "sourcePath": "QodotMap/entity_83_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            234,
+            88,
+            323
+          ],
+          "max": [
+            235,
+            96,
+            327
+          ]
+        },
+        "cells": [
+          55778474,
+          14,
+          55778922,
+          14,
+          55779370,
+          14,
+          55779818,
+          14,
+          55780266,
+          14,
+          55780714,
+          14,
+          55950506,
+          14,
+          55950954,
+          14,
+          55951402,
+          14,
+          55951850,
+          14,
+          55952298,
+          14,
+          55952746,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_85_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            234,
+            88,
+            381
+          ],
+          "max": [
+            235,
+            96,
+            386
+          ]
+        },
+        "cells": [
+          65756330,
+          14,
+          65756778,
+          14,
+          65757226,
+          14,
+          65757674,
+          14,
+          65758122,
+          14,
+          65758570,
+          14,
+          65928362,
+          14,
+          65928810,
+          14,
+          65929258,
+          14,
+          65929706,
+          14,
+          65930154,
+          14,
+          65930602,
+          14,
+          66100394,
+          14,
+          66100842,
+          14,
+          66101290,
+          14,
+          66101738,
+          14,
+          66102186,
+          14,
+          66102634,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_91_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            127,
+            48,
+            366
+          ],
+          "max": [
+            129,
+            56,
+            371
+          ]
+        },
+        "cells": [
+          63157823,
+          16,
+          63158271,
+          16,
+          63158719,
+          16,
+          63159167,
+          16,
+          63159615,
+          16,
+          63160063,
+          16,
+          63329855,
+          16,
+          63330303,
+          16,
+          63330751,
+          16,
+          63331199,
+          16,
+          63331647,
+          16,
+          63332095,
+          16,
+          63501887,
+          16,
+          63502335,
+          16,
+          63502783,
+          16,
+          63503231,
+          16,
+          63503679,
+          16,
+          63504127,
+          16
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_92_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            176,
+            48,
+            359
+          ],
+          "max": [
+            178,
+            56,
+            364
+          ]
+        },
+        "cells": [
+          61953648,
+          16,
+          61953649,
+          16,
+          61954096,
+          16,
+          61954097,
+          16,
+          61954544,
+          16,
+          61954545,
+          16,
+          61954992,
+          16,
+          61954993,
+          16,
+          61955440,
+          16,
+          61955441,
+          16,
+          61955888,
+          16,
+          61955889,
+          16,
+          62125680,
+          16,
+          62125681,
+          16,
+          62126128,
+          16,
+          62126129,
+          16,
+          62126576,
+          16,
+          62126577,
+          16,
+          62127024,
+          16,
+          62127025,
+          16,
+          62127472,
+          16,
+          62127473,
+          16,
+          62127920,
+          16,
+          62127921,
+          16,
+          62297712,
+          16,
+          62297713,
+          16,
+          62298160,
+          16,
+          62298161,
+          16,
+          62298608,
+          16,
+          62298609,
+          16,
+          62299056,
+          16,
+          62299057,
+          16,
+          62299504,
+          16,
+          62299505,
+          16,
+          62299952,
+          16,
+          62299953,
+          16
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_93_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            146,
+            48,
+            380
+          ],
+          "max": [
+            150,
+            56,
+            381
+          ]
+        },
+        "cells": [
+          65394259,
+          14,
+          65394260,
+          14,
+          65394707,
+          14,
+          65394708,
+          14,
+          65395155,
+          14,
+          65395156,
+          14,
+          65395603,
+          14,
+          65395604,
+          14,
+          65396051,
+          14,
+          65396052,
+          14,
+          65396499,
+          14,
+          65396500,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_95_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            132,
+            48,
+            427
+          ],
+          "max": [
+            137,
+            56,
+            428
+          ]
+        },
+        "cells": [
+          73479749,
+          14,
+          73479750,
+          14,
+          73479751,
+          14,
+          73480197,
+          14,
+          73480198,
+          14,
+          73480199,
+          14,
+          73480645,
+          14,
+          73480646,
+          14,
+          73480647,
+          14,
+          73481093,
+          14,
+          73481094,
+          14,
+          73481095,
+          14,
+          73481541,
+          14,
+          73481542,
+          14,
+          73481543,
+          14,
+          73481989,
+          14,
+          73481990,
+          14,
+          73481991,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_99_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            205,
+            91,
+            463
+          ],
+          "max": [
+            207,
+            99,
+            467
+          ]
+        },
+        "cells": [
+          79864269,
+          14,
+          79864270,
+          14,
+          79864717,
+          14,
+          79864718,
+          14,
+          79865165,
+          14,
+          79865166,
+          14,
+          79865613,
+          14,
+          79865614,
+          14,
+          80036301,
+          14,
+          80036302,
+          14,
+          80036749,
+          14,
+          80036750,
+          14,
+          80037197,
+          14,
+          80037198,
+          14,
+          80037645,
+          14,
+          80037646,
+          14,
+          79866061,
+          14,
+          79866062,
+          14,
+          79866509,
+          14,
+          79866510,
+          14,
+          80038093,
+          14,
+          80038094,
+          14,
+          80038541,
+          14,
+          80038542,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_100_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            149,
+            48,
+            443
+          ],
+          "max": [
+            154,
+            56,
+            444
+          ]
+        },
+        "cells": [
+          76232280,
+          14,
+          76232728,
+          14,
+          76233176,
+          14,
+          76233624,
+          14,
+          76234072,
+          14,
+          76234520,
+          14,
+          76232278,
+          14,
+          76232279,
+          14,
+          76232726,
+          14,
+          76232727,
+          14,
+          76233174,
+          14,
+          76233175,
+          14,
+          76233622,
+          14,
+          76233623,
+          14,
+          76234070,
+          14,
+          76234071,
+          14,
+          76234518,
+          14,
+          76234519,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_150_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            146,
+            91,
+            482
+          ],
+          "max": [
+            150,
+            99,
+            484
+          ]
+        },
+        "cells": [
+          82960787,
+          14,
+          82960788,
+          14,
+          82961235,
+          14,
+          82961236,
+          14,
+          82961683,
+          14,
+          82961684,
+          14,
+          82962131,
+          14,
+          82962132,
+          14,
+          83132819,
+          14,
+          83132820,
+          14,
+          83133267,
+          14,
+          83133268,
+          14,
+          83133715,
+          14,
+          83133716,
+          14,
+          83134163,
+          14,
+          83134164,
+          14,
+          82962579,
+          14,
+          82962580,
+          14,
+          82963027,
+          14,
+          82963028,
+          14,
+          83134611,
+          14,
+          83134612,
+          14,
+          83135059,
+          14,
+          83135060,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_153_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            175,
+            91,
+            443
+          ],
+          "max": [
+            177,
+            99,
+            447
+          ]
+        },
+        "cells": [
+          76423600,
+          14,
+          76424048,
+          14,
+          76424496,
+          14,
+          76424944,
+          14,
+          76595632,
+          14,
+          76596080,
+          14,
+          76596528,
+          14,
+          76596976,
+          14,
+          76423599,
+          14,
+          76424047,
+          14,
+          76424495,
+          14,
+          76424943,
+          14,
+          76595631,
+          14,
+          76596079,
+          14,
+          76596527,
+          14,
+          76596975,
+          14,
+          76425391,
+          14,
+          76425839,
+          14,
+          76597423,
+          14,
+          76597871,
+          14,
+          76425392,
+          14,
+          76425840,
+          14,
+          76597424,
+          14,
+          76597872,
+          14
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_154_ProfaneDoor",
+        "sourceResource": "res://Scripts/Profane_Door.gd",
+        "bounds": {
+          "min": [
+            112,
+            48,
+            238
+          ],
+          "max": [
+            117,
+            56,
+            240
+          ]
+        },
+        "cells": [
+          40965681,
+          16,
+          40965682,
+          16,
+          40965683,
+          16,
+          40966129,
+          16,
+          40966130,
+          16,
+          40966131,
+          16,
+          40966577,
+          16,
+          40966578,
+          16,
+          40966579,
+          16,
+          40967025,
+          16,
+          40967026,
+          16,
+          40967027,
+          16,
+          40967473,
+          16,
+          40967474,
+          16,
+          40967475,
+          16,
+          40967921,
+          16,
+          40967922,
+          16,
+          40967923,
+          16,
+          41137713,
+          16,
+          41137714,
+          16,
+          41137715,
+          16,
+          41138161,
+          16,
+          41138162,
+          16,
+          41138163,
+          16,
+          41138609,
+          16,
+          41138610,
+          16,
+          41138611,
+          16,
+          41139057,
+          16,
+          41139058,
+          16,
+          41139059,
+          16,
+          41139505,
+          16,
+          41139506,
+          16,
+          41139507,
+          16,
+          41139953,
+          16,
+          41139954,
+          16,
+          41139955,
+          16
+        ],
+        "kind": "gate",
+        "supported": false,
+        "requirement": "Requires husk mode (unsupported)",
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Closed; original progression is not implemented"
+      },
+      {
+        "sourcePath": "QodotMap/entity_159_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            119,
+            48,
+            496
+          ],
+          "max": [
+            124,
+            56,
+            497
+          ]
+        },
+        "cells": [
+          85349944,
+          16,
+          85349945,
+          16,
+          85349946,
+          16,
+          85350392,
+          16,
+          85350393,
+          16,
+          85350394,
+          16,
+          85350840,
+          16,
+          85350841,
+          16,
+          85350842,
+          16,
+          85351288,
+          16,
+          85351289,
+          16,
+          85351290,
+          16,
+          85351736,
+          16,
+          85351737,
+          16,
+          85351738,
+          16,
+          85352184,
+          16,
+          85352185,
+          16,
+          85352186,
+          16
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_160_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "bounds": {
+          "min": [
+            214,
+            48,
+            238
+          ],
+          "max": [
+            219,
+            56,
+            240
+          ]
+        },
+        "cells": [
+          40965783,
+          17,
+          40966231,
+          17,
+          40966679,
+          17,
+          40967127,
+          17,
+          40967575,
+          17,
+          40968023,
+          20,
+          41137815,
+          20,
+          41138263,
+          20,
+          41138711,
+          20,
+          41139159,
+          20,
+          41139607,
+          20,
+          41140055,
+          20,
+          40965784,
+          17,
+          40965785,
+          20,
+          40966232,
+          17,
+          40966233,
+          20,
+          40966680,
+          17,
+          40966681,
+          20,
+          40967128,
+          17,
+          40967129,
+          20,
+          40967576,
+          17,
+          40967577,
+          20,
+          40968024,
+          20,
+          40968025,
+          20,
+          41137816,
+          20,
+          41137817,
+          20,
+          41138264,
+          20,
+          41138265,
+          20,
+          41138712,
+          20,
+          41138713,
+          20,
+          41139160,
+          20,
+          41139161,
+          20,
+          41139608,
+          20,
+          41139609,
+          20,
+          41140056,
+          20,
+          41140057,
+          20
+        ],
+        "kind": "swing",
+        "supported": true,
+        "requirement": null,
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+      },
+      {
+        "sourcePath": "QodotMap/entity_161_Terror_Door",
+        "sourceResource": "res://Terror_Door.gd",
+        "bounds": {
+          "min": [
+            232,
+            48,
+            174
+          ],
+          "max": [
+            244,
+            59,
+            179
+          ]
+        },
+        "cells": [
+          30130921,
+          16,
+          30130922,
+          16,
+          30130923,
+          16,
+          30130924,
+          16,
+          30130925,
+          16,
+          30130926,
+          16,
+          30130927,
+          16,
+          30131369,
+          16,
+          30131370,
+          16,
+          30131371,
+          16,
+          30131372,
+          16,
+          30131373,
+          16,
+          30131374,
+          16,
+          30131375,
+          16,
+          30302953,
+          16,
+          30303401,
+          16,
+          30474985,
+          16,
+          30475433,
+          16,
+          30647017,
+          16,
+          30647018,
+          16,
+          30647019,
+          16,
+          30647020,
+          16,
+          30647021,
+          16,
+          30647022,
+          16,
+          30647023,
+          16,
+          30647465,
+          16,
+          30647466,
+          16,
+          30647467,
+          16,
+          30647468,
+          16,
+          30647469,
+          16,
+          30647470,
+          16,
+          30647471,
+          16,
+          30130928,
+          16,
+          30130929,
+          16,
+          30130930,
+          16,
+          30131376,
+          16,
+          30131377,
+          16,
+          30131378,
+          16,
+          30302962,
+          16,
+          30303410,
+          16,
+          30474994,
+          16,
+          30475442,
+          16,
+          30647024,
+          16,
+          30647025,
+          16,
+          30647026,
+          16,
+          30647472,
+          16,
+          30647473,
+          16,
+          30647474,
+          16,
+          30299826,
+          16,
+          30300274,
+          16,
+          30300722,
+          16,
+          30301170,
+          16,
+          30301618,
+          16,
+          30302066,
+          16,
+          30302514,
+          16,
+          30471858,
+          16,
+          30472306,
+          16,
+          30472754,
+          16,
+          30473202,
+          16,
+          30473650,
+          16,
+          30474098,
+          16,
+          30474546,
+          16,
+          30643888,
+          16,
+          30643889,
+          16,
+          30643890,
+          16,
+          30644336,
+          16,
+          30644337,
+          16,
+          30644338,
+          16,
+          30644784,
+          16,
+          30644785,
+          16,
+          30644786,
+          16,
+          30645232,
+          16,
+          30645233,
+          16,
+          30645234,
+          16,
+          30645680,
+          16,
+          30645681,
+          16,
+          30645682,
+          16,
+          30646128,
+          16,
+          30646129,
+          16,
+          30646130,
+          16,
+          30646576,
+          16,
+          30646577,
+          16,
+          30646578,
+          16,
+          30299817,
+          16,
+          30300265,
+          16,
+          30300713,
+          16,
+          30301161,
+          16,
+          30301609,
+          16,
+          30302057,
+          16,
+          30302505,
+          16,
+          30471849,
+          16,
+          30472297,
+          16,
+          30472745,
+          16,
+          30473193,
+          16,
+          30473641,
+          16,
+          30474089,
+          16,
+          30474537,
+          16,
+          30643881,
+          16,
+          30643882,
+          16,
+          30643883,
+          16,
+          30643884,
+          16,
+          30643885,
+          16,
+          30643886,
+          16,
+          30643887,
+          16,
+          30644329,
+          16,
+          30644330,
+          16,
+          30644331,
+          16,
+          30644332,
+          16,
+          30644333,
+          16,
+          30644334,
+          16,
+          30644335,
+          16,
+          30644777,
+          16,
+          30644778,
+          16,
+          30644779,
+          16,
+          30644780,
+          16,
+          30644781,
+          16,
+          30644782,
+          16,
+          30644783,
+          16,
+          30645225,
+          16,
+          30645226,
+          16,
+          30645227,
+          16,
+          30645228,
+          16,
+          30645229,
+          16,
+          30645230,
+          16,
+          30645231,
+          16,
+          30645673,
+          16,
+          30645674,
+          16,
+          30645675,
+          16,
+          30645676,
+          16,
+          30645677,
+          16,
+          30645678,
+          16,
+          30645679,
+          16,
+          30646121,
+          16,
+          30646122,
+          16,
+          30646123,
+          16,
+          30646124,
+          16,
+          30646125,
+          16,
+          30646126,
+          16,
+          30646127,
+          16,
+          30646569,
+          16,
+          30646570,
+          16,
+          30646571,
+          16,
+          30646572,
+          16,
+          30646573,
+          16,
+          30646574,
+          16,
+          30646575,
+          16,
+          30127785,
+          16,
+          30127786,
+          16,
+          30127787,
+          16,
+          30127788,
+          16,
+          30127789,
+          16,
+          30127790,
+          16,
+          30127791,
+          16,
+          30128233,
+          16,
+          30128234,
+          16,
+          30128235,
+          16,
+          30128236,
+          16,
+          30128237,
+          16,
+          30128238,
+          16,
+          30128239,
+          16,
+          30128681,
+          16,
+          30128682,
+          16,
+          30128683,
+          16,
+          30128684,
+          16,
+          30128685,
+          16,
+          30128686,
+          16,
+          30128687,
+          16,
+          30129129,
+          16,
+          30129130,
+          16,
+          30129131,
+          16,
+          30129132,
+          16,
+          30129133,
+          16,
+          30129134,
+          16,
+          30129135,
+          16,
+          30129577,
+          16,
+          30129578,
+          16,
+          30129579,
+          16,
+          30129580,
+          16,
+          30129581,
+          16,
+          30129582,
+          16,
+          30129583,
+          16,
+          30130025,
+          16,
+          30130026,
+          16,
+          30130027,
+          16,
+          30130028,
+          16,
+          30130029,
+          16,
+          30130030,
+          16,
+          30130031,
+          16,
+          30130473,
+          16,
+          30130474,
+          16,
+          30130475,
+          16,
+          30130476,
+          16,
+          30130477,
+          16,
+          30130478,
+          16,
+          30130479,
+          16,
+          30127792,
+          16,
+          30127793,
+          16,
+          30127794,
+          16,
+          30128240,
+          16,
+          30128241,
+          16,
+          30128242,
+          16,
+          30128688,
+          16,
+          30128689,
+          16,
+          30128690,
+          16,
+          30129136,
+          16,
+          30129137,
+          16,
+          30129138,
+          16,
+          30129584,
+          16,
+          30129585,
+          16,
+          30129586,
+          16,
+          30130032,
+          16,
+          30130033,
+          16,
+          30130034,
+          16,
+          30130480,
+          16,
+          30130481,
+          16,
+          30130482,
+          16
+        ],
+        "kind": "gate",
+        "supported": false,
+        "requirement": "Requires hope discarded (unsupported)",
+        "sourceProperties": {},
+        "autoCloseSeconds": null,
+        "ownershipWarning": null,
+        "adaptation": "Closed; original progression is not implemented"
+      }
+    ],
+    "ladders": [
+      {
+        "sourcePath": "QodotMap/entity_68_Ladder",
+        "sourceResource": "res://Scripts/Ladder.gd",
+        "bounds": {
+          "min": [
+            266.3333333333333,
+            56.66666666666667,
+            177.5
+          ],
+          "max": [
+            269.6666666666667,
+            101.66666666666667,
+            178.33333333333331
+          ]
+        },
+        "points": [
+          [
+            266.3333333333333,
+            101.66666666666667,
+            177.5
+          ],
+          [
+            266.3333333333333,
+            56.66666666666667,
+            177.5
+          ],
+          [
+            269.6666666666667,
+            56.66666666666667,
+            177.5
+          ],
+          [
+            269.6666666666667,
+            101.66666666666667,
+            177.5
+          ],
+          [
+            266.3333333333333,
+            101.66666666666667,
+            178.33333333333331
+          ],
+          [
+            266.3333333333333,
+            56.66666666666667,
+            178.33333333333331
+          ],
+          [
+            269.6666666666667,
+            56.66666666666667,
+            178.33333333333331
+          ],
+          [
+            269.6666666666667,
+            101.66666666666667,
+            178.33333333333331
+          ]
+        ],
+        "axes": [
+          {
+            "normal": [
+              1,
+              0,
+              0
+            ],
+            "min": 266.3333333333333,
+            "max": 269.6666666666667
+          },
+          {
+            "normal": [
+              0,
+              1,
+              0
+            ],
+            "min": 56.66666666666667,
+            "max": 101.66666666666667
+          },
+          {
+            "normal": [
+              0,
+              0,
+              1
+            ],
+            "min": 177.5,
+            "max": 178.33333333333331
+          },
+          {
+            "normal": [
+              0.9972677544567091,
+              0.07387168551531262,
+              0
+            ],
+            "min": 269.79170744950454,
+            "max": 276.4401591458827
+          },
+          {
+            "normal": [
+              0,
+              0.01851534400602053,
+              0.9998285763251313
+            ],
+            "min": 178.51877512471864,
+            "max": 180.1851560852605
+          },
+          {
+            "normal": [
+              0.24253562503632517,
+              0,
+              -0.9701425001453338
+            ],
+            "min": -108.41342439124324,
+            "max": -106.79652022433439
+          },
+          {
+            "normal": [
+              0.9972677544567091,
+              -0.07387168551531262,
+              0
+            ],
+            "min": 258.0953572429134,
+            "max": 264.74380893929157
+          },
+          {
+            "normal": [
+              0,
+              0.01851534400602053,
+              -0.9998285763251313
+            ],
+            "min": -177.2535599509739,
+            "max": -175.58717899043205
+          },
+          {
+            "normal": [
+              0.24253562503632517,
+              0,
+              0.9701425001453338
+            ],
+            "min": 236.7956152438047,
+            "max": 238.41251941071354
+          }
+        ]
+      }
+    ],
+    "inventory": [
+      {
+        "sourcePath": "Global_Light",
+        "sourceResource": "res://Scripts/Night_Cycle.gd",
+        "sourceProperties": {
+          "light_energy": 1.72,
+          "light_bake_mode": 0
+        },
+        "sourceYaw": -2.364580237217556,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "Navigation",
+        "sourceResource": "res://Scripts/Navigation.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap",
+        "sourceResource": "res://addons/qodot/src/nodes/qodot_map.gd",
+        "sourceProperties": {
+          "map_file": "C:/Users/Ville/Documents/gamedev/csquad/Maps/Level1.map",
+          "inverse_scale_factor": 16,
+          "base_texture_dir": "res://Maps/textures",
+          "brush_clip_texture": "special/clip",
+          "face_skip_texture": "special/skip",
+          "material_file_extension": ".tres",
+          "uv_unwrap_texel_size": 20,
+          "print_profiling_data": false,
+          "use_trenchbroom_group_hierarchy": false,
+          "tree_attach_batch_size": 16,
+          "set_owner_batch_size": 16
+        },
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_1_Player",
+        "sourceResource": "res://Player_Test.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_2_Water",
+        "sourceResource": "res://Scripts/Water.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_3_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_4_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_5_Elevator_Door",
+        "sourceResource": "res://Scripts/Elevator_Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_6_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_7_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_8_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_9_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_10_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_11_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_12_Elevator_Door",
+        "sourceResource": "res://Scripts/Elevator_Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_13_Elevator_Door",
+        "sourceResource": "res://Scripts/Elevator_Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_14_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_15_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_16_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_17_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_18_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_19_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_20_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_21_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_22_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_23_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_24_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_25_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_26_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_27_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_28_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_29_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_30_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_31_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_32_E_Dog",
+        "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_33_E_Dog",
+        "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_34_E_Dog",
+        "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_35_E_Dog",
+        "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_36_E_Dog",
+        "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_37_E_Dog",
+        "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_38_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_39_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_40_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_41_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_42_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_43_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_44_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_45_Obj_Executive1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian3.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_46_Exit",
+        "sourceResource": "res://Scripts/Exit.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "normal-mission-extraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_47_Obj_Pinky",
+        "sourceResource": "res://Entities/Enemies/Obj_Pinky.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_48_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_49_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_50_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_51_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_52_E_Civilian1",
+        "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_53_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_54_E_Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_55_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_56_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_57_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_58_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_59_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_60_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_61_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_62_Shotgun_Ammo",
+        "sourceResource": "res://Entities/Objects/Shotgun_Ammo_M.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_63_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_64_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_65_E_Elite",
+        "sourceResource": "res://Entities/Enemies/E_Elite.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_66_E_Security",
+        "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_68_Ladder",
+        "sourceResource": "res://Scripts/Ladder.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "authored-volume-exported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_69_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_70_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_71_DivineDoor",
+        "sourceResource": "res://Scripts/Divine_Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "closed-unsupported-progression"
+      },
+      {
+        "sourcePath": "QodotMap/entity_72_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_73_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_74_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_75_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_76_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_77_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_78_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_79_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_80_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_81_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_82_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_83_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_84_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_85_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_86_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_87_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_88_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_89_Destructible_Armored",
+        "sourceResource": "res://Scripts/Destructible_Armored.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_90_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_91_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_92_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_93_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_94_E_Security",
+        "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_95_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_96_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_97_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_98_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_99_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_100_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_101_random_food",
+        "sourceResource": "res://Entities/Physics_Objects/random_food.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "QodotMap/entity_102_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_103_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_104_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_105_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_106_E_Mutant",
+        "sourceResource": "res://Entities/Enemies/E_Knifelord.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_108_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_109_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_110_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_111_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_112_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_114_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_115_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_116_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_117_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_118_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_120_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_121_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_122_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_123_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_124_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_126_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_127_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_128_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_129_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_130_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_132_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_133_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_134_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_135_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_136_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_138_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_139_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_140_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_141_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_142_Destructible",
+        "sourceResource": "res://Scripts/Destructible.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_143_E_Fleshrat",
+        "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_144_E_Fleshrat",
+        "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_145_E_Fleshrat",
+        "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_146_E_Fleshrat",
+        "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_147_E_Fleshrat",
+        "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_148_E_Fleshrat",
+        "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_149_Destroyer",
+        "sourceResource": "res://Scripts/remote_destroyer.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_150_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_151_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_152_E_Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "QodotMap/entity_153_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_154_ProfaneDoor",
+        "sourceResource": "res://Scripts/Profane_Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "closed-unsupported-progression"
+      },
+      {
+        "sourcePath": "QodotMap/entity_159_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_160_Door",
+        "sourceResource": "res://Scripts/Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "exclusive-cell-voxel-retraction"
+      },
+      {
+        "sourcePath": "QodotMap/entity_161_Terror_Door",
+        "sourceResource": "res://Terror_Door.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "closed-unsupported-progression"
+      },
+      {
+        "sourcePath": "QodotMap/entity_162_env_crusher",
+        "sourceResource": "res://Scripts/crusher.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_163_Water",
+        "sourceResource": "res://Scripts/Water.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "QodotMap/entity_164_Water",
+        "sourceResource": "res://Scripts/Water.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "WorldEnvironment",
+        "sourceResource": "res://Levels/sky_rotator.gd",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "Message_Area",
+        "sourceResource": "res://Scripts/Message_Area.gd",
+        "sourceProperties": {
+          "collision_layer": 0,
+          "collision_mask": 2,
+          "message": "Since it's your first day I dosed a special combat cocktail for you. Don't worry if you feel a little off. Well haha good luck.",
+          "tutorial": true
+        },
+        "sourceYaw": 0,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "Props/vendingmachine",
+        "sourceResource": "res://Entities/vendingmachine.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 1.5591200634301217,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Computer",
+        "sourceResource": "res://Entities/Props/Computer.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0.5173851912815878,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Monitor",
+        "sourceResource": "res://Entities/Props/Monitor.tscn",
+        "sourceProperties": {},
+        "sourceYaw": -1.2935157464253124,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Plant_1",
+        "sourceResource": "res://Entities/Props/Plant_1.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Plant_2",
+        "sourceResource": "res://Entities/Props/Plant_2.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Plant_3",
+        "sourceResource": "res://Entities/Props/Plant_1.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Toilet",
+        "sourceResource": "res://Entities/Props/Toilet.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 1.5592071691555278,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Toilet2",
+        "sourceResource": "res://Entities/Props/Toilet.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 1.5592071691555278,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Toilet3",
+        "sourceResource": "res://Entities/Props/Toilet.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 3.1396379121700075,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Toilet4",
+        "sourceResource": "res://Entities/Props/Toilet.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 3.1396379121700075,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Trashcan",
+        "sourceResource": "res://Entities/Props/Trashcan.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/Trashcan2",
+        "sourceResource": "res://Entities/Props/Trashcan.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Props/vendingmachine2",
+        "sourceResource": "res://Entities/vendingmachine.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 3.112707241382473,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Plant_1",
+        "sourceResource": "res://Entities/Props/Plant_1.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Shotgun_Pickup",
+        "sourceResource": "res://Entities/Objects/Gun_Pickup.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "rl",
+        "sourceResource": "res://Entities/Objects/Gun_Pickup.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Civilian2",
+        "sourceResource": "res://Entities/Enemies/E_Civilian2.tscn",
+        "sourceProperties": {
+          "notarget": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Orbot",
+        "sourceResource": "res://Entities/Enemies/E_Orbot.tscn",
+        "sourceProperties": {
+          "random_spawn": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Psycho",
+        "sourceResource": "res://Entities/Enemies/E_Psycho.tscn",
+        "sourceProperties": {
+          "random_spawn": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Fish",
+        "sourceResource": "res://Entities/Creatures/Fish.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Fish2",
+        "sourceResource": "res://Entities/Creatures/Fish.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Fish3",
+        "sourceResource": "res://Entities/Creatures/Fish.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Grunt",
+        "sourceResource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+        "sourceProperties": {
+          "random_spawn": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Fleshman",
+        "sourceResource": "res://Entities/Enemies/E_Fleshman.tscn",
+        "sourceProperties": {
+          "random_spawn": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Grunt2",
+        "sourceResource": "res://Entities/Enemies/E_Rocket_Creeper.tscn",
+        "sourceProperties": {
+          "random_spawn": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Civilian3",
+        "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+        "sourceProperties": {
+          "hell_objective": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Fleshman2",
+        "sourceResource": "res://Entities/Enemies/E_Fleshman.tscn",
+        "sourceProperties": {
+          "random_spawn": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Money",
+        "sourceResource": "res://Entities/Physics_Objects/Money500.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Money2",
+        "sourceResource": "res://Entities/Physics_Objects/Money.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Money3",
+        "sourceResource": "res://Entities/Physics_Objects/Money500.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Money4",
+        "sourceResource": "res://Entities/Physics_Objects/Money500.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Civilian4",
+        "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Spatial",
+        "sourceResource": "res://Entities/Objects/Gun_Pickup.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "Area",
+        "sourceResource": "res://Scripts/deathmodesetter.gd",
+        "sourceProperties": {
+          "collision_layer": 2147483904,
+          "collision_mask": 0
+        },
+        "sourceYaw": -1.570796435765352,
+        "treatment": "script-not-ported"
+      },
+      {
+        "sourcePath": "Civilian5",
+        "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+        "sourceProperties": {
+          "random_spawn": true
+        },
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective2",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective3",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective4",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective5",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective6",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective7",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective8",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective9",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective10",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective11",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective12",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective13",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "Chaos_Objective14",
+        "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "destination-actor-see-mission-inventory"
+      },
+      {
+        "sourcePath": "pills2",
+        "sourceResource": "res://Entities/Physics_Objects/pills.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      },
+      {
+        "sourcePath": "pills",
+        "sourceResource": "res://Entities/Physics_Objects/pills.tscn",
+        "sourceProperties": {},
+        "sourceYaw": 0,
+        "treatment": "external-scene-not-expanded"
+      }
+    ],
+    "cellEncoding": "Flat [world-linear-cell-index, original-element-id] pairs; X fastest, then Y, Z. Exclusive moving-surface ownership only."
   },
   "preview": true,
   "provenance": {
@@ -2142,6 +7642,9 @@
     {
       "path": "QodotMap/entity_4_E_Civilian1",
       "sourcePath": "QodotMap/entity_4_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -1.5,
@@ -2153,6 +7656,9 @@
     {
       "path": "QodotMap/entity_14_E_Civilian1",
       "sourcePath": "QodotMap/entity_14_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -1.5,
@@ -2164,6 +7670,9 @@
     {
       "path": "QodotMap/entity_15_E_Civilian1",
       "sourcePath": "QodotMap/entity_15_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -2.5,
@@ -2175,6 +7684,9 @@
     {
       "path": "QodotMap/entity_16_E_Civilian1",
       "sourcePath": "QodotMap/entity_16_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -7.5,
@@ -2186,6 +7698,9 @@
     {
       "path": "QodotMap/entity_17_E_Grunt",
       "sourcePath": "QodotMap/entity_17_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -2.5,
@@ -2197,6 +7712,9 @@
     {
       "path": "QodotMap/entity_18_E_Grunt",
       "sourcePath": "QodotMap/entity_18_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -15.5,
@@ -2208,6 +7726,9 @@
     {
       "path": "QodotMap/entity_19_E_Grunt",
       "sourcePath": "QodotMap/entity_19_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -18.5,
@@ -2219,6 +7740,9 @@
     {
       "path": "QodotMap/entity_20_E_Grunt",
       "sourcePath": "QodotMap/entity_20_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         7.5,
@@ -2230,6 +7754,9 @@
     {
       "path": "QodotMap/entity_21_E_Grunt",
       "sourcePath": "QodotMap/entity_21_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         12.5,
@@ -2241,6 +7768,9 @@
     {
       "path": "QodotMap/entity_22_E_Grunt",
       "sourcePath": "QodotMap/entity_22_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         5.5,
@@ -2252,6 +7782,9 @@
     {
       "path": "QodotMap/entity_23_E_Civilian1",
       "sourcePath": "QodotMap/entity_23_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         6.5,
@@ -2263,6 +7796,9 @@
     {
       "path": "QodotMap/entity_24_E_Civilian1",
       "sourcePath": "QodotMap/entity_24_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         6.5,
@@ -2274,6 +7810,9 @@
     {
       "path": "QodotMap/entity_25_E_Civilian1",
       "sourcePath": "QodotMap/entity_25_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         6.5,
@@ -2285,6 +7824,9 @@
     {
       "path": "QodotMap/entity_26_E_Grunt",
       "sourcePath": "QodotMap/entity_26_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -23.5,
@@ -2296,6 +7838,9 @@
     {
       "path": "QodotMap/entity_27_E_Grunt",
       "sourcePath": "QodotMap/entity_27_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -8.5,
@@ -2307,6 +7852,9 @@
     {
       "path": "QodotMap/entity_28_E_Grunt",
       "sourcePath": "QodotMap/entity_28_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -8.5,
@@ -2318,6 +7866,9 @@
     {
       "path": "QodotMap/entity_29_E_Grunt",
       "sourcePath": "QodotMap/entity_29_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         21.25,
@@ -2329,6 +7880,9 @@
     {
       "path": "QodotMap/entity_30_E_Grunt",
       "sourcePath": "QodotMap/entity_30_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         21.5,
@@ -2340,6 +7894,9 @@
     {
       "path": "QodotMap/entity_31_E_Grunt",
       "sourcePath": "QodotMap/entity_31_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -9.5,
@@ -2351,6 +7908,9 @@
     {
       "path": "QodotMap/entity_32_E_Dog",
       "sourcePath": "QodotMap/entity_32_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -10.5,
@@ -2362,6 +7922,9 @@
     {
       "path": "QodotMap/entity_33_E_Dog",
       "sourcePath": "QodotMap/entity_33_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         7.5,
@@ -2373,6 +7936,9 @@
     {
       "path": "QodotMap/entity_34_E_Dog",
       "sourcePath": "QodotMap/entity_34_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -2.5,
@@ -2384,6 +7950,9 @@
     {
       "path": "QodotMap/entity_35_E_Dog",
       "sourcePath": "QodotMap/entity_35_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -14.5,
@@ -2395,6 +7964,9 @@
     {
       "path": "QodotMap/entity_36_E_Dog",
       "sourcePath": "QodotMap/entity_36_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -13.5,
@@ -2406,6 +7978,9 @@
     {
       "path": "QodotMap/entity_37_E_Dog",
       "sourcePath": "QodotMap/entity_37_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         3.5,
@@ -2417,6 +7992,9 @@
     {
       "path": "QodotMap/entity_38_E_Grunt",
       "sourcePath": "QodotMap/entity_38_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -11.5,
@@ -2428,6 +8006,9 @@
     {
       "path": "QodotMap/entity_39_E_Civilian2",
       "sourcePath": "QodotMap/entity_39_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -4.5,
@@ -2439,6 +8020,9 @@
     {
       "path": "QodotMap/entity_40_E_Civilian2",
       "sourcePath": "QodotMap/entity_40_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -4.5,
@@ -2450,6 +8034,9 @@
     {
       "path": "QodotMap/entity_41_E_Civilian2",
       "sourcePath": "QodotMap/entity_41_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -4.5,
@@ -2461,6 +8048,9 @@
     {
       "path": "QodotMap/entity_42_E_Civilian2",
       "sourcePath": "QodotMap/entity_42_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -2472,6 +8062,9 @@
     {
       "path": "QodotMap/entity_43_E_Civilian2",
       "sourcePath": "QodotMap/entity_43_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -2483,6 +8076,9 @@
     {
       "path": "QodotMap/entity_44_E_Civilian2",
       "sourcePath": "QodotMap/entity_44_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -2494,6 +8090,9 @@
     {
       "path": "QodotMap/entity_45_Obj_Executive1",
       "sourcePath": "QodotMap/entity_45_Obj_Executive1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian3.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian3.tscn",
       "sourceAt": [
         -4.5,
@@ -2505,6 +8104,9 @@
     {
       "path": "QodotMap/entity_47_Obj_Pinky",
       "sourcePath": "QodotMap/entity_47_Obj_Pinky",
+      "sourceResource": "res://Entities/Enemies/Obj_Pinky.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Obj_Pinky.tscn",
       "sourceAt": [
         33.5,
@@ -2516,6 +8118,9 @@
     {
       "path": "QodotMap/entity_48_E_Civilian2",
       "sourcePath": "QodotMap/entity_48_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -0.5,
@@ -2527,6 +8132,9 @@
     {
       "path": "QodotMap/entity_49_E_Civilian2",
       "sourcePath": "QodotMap/entity_49_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         3.5,
@@ -2538,6 +8146,9 @@
     {
       "path": "QodotMap/entity_50_E_Civilian2",
       "sourcePath": "QodotMap/entity_50_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -2549,6 +8160,9 @@
     {
       "path": "QodotMap/entity_51_E_Civilian2",
       "sourcePath": "QodotMap/entity_51_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         16.5,
@@ -2560,6 +8174,9 @@
     {
       "path": "QodotMap/entity_52_E_Civilian1",
       "sourcePath": "QodotMap/entity_52_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         14.5,
@@ -2571,6 +8188,9 @@
     {
       "path": "QodotMap/entity_53_E_Civilian2",
       "sourcePath": "QodotMap/entity_53_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         22.5,
@@ -2582,6 +8202,9 @@
     {
       "path": "QodotMap/entity_54_E_Civilian2",
       "sourcePath": "QodotMap/entity_54_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         32.5,
@@ -2593,6 +8216,9 @@
     {
       "path": "QodotMap/entity_55_E_Grunt",
       "sourcePath": "QodotMap/entity_55_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         5.5,
@@ -2604,6 +8230,9 @@
     {
       "path": "QodotMap/entity_65_E_Elite",
       "sourcePath": "QodotMap/entity_65_E_Elite",
+      "sourceResource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Elite.tscn",
       "sourceAt": [
         31.5,
@@ -2615,6 +8244,9 @@
     {
       "path": "QodotMap/entity_66_E_Security",
       "sourcePath": "QodotMap/entity_66_E_Security",
+      "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Security.tscn",
       "sourceAt": [
         -1.5,
@@ -2626,6 +8258,9 @@
     {
       "path": "QodotMap/entity_94_E_Security",
       "sourcePath": "QodotMap/entity_94_E_Security",
+      "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Security.tscn",
       "sourceAt": [
         -26.375,
@@ -2637,6 +8272,9 @@
     {
       "path": "QodotMap/entity_96_E_Grunt",
       "sourcePath": "QodotMap/entity_96_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -19.5,
@@ -2648,6 +8286,9 @@
     {
       "path": "QodotMap/entity_106_E_Mutant",
       "sourcePath": "QodotMap/entity_106_E_Mutant",
+      "sourceResource": "res://Entities/Enemies/E_Knifelord.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Knifelord.tscn",
       "sourceAt": [
         -22.375,
@@ -2659,6 +8300,9 @@
     {
       "path": "QodotMap/entity_143_E_Fleshrat",
       "sourcePath": "QodotMap/entity_143_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -23.25,
@@ -2670,6 +8314,9 @@
     {
       "path": "QodotMap/entity_144_E_Fleshrat",
       "sourcePath": "QodotMap/entity_144_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -23.25,
@@ -2681,6 +8328,9 @@
     {
       "path": "QodotMap/entity_145_E_Fleshrat",
       "sourcePath": "QodotMap/entity_145_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -23.25,
@@ -2692,6 +8342,9 @@
     {
       "path": "QodotMap/entity_146_E_Fleshrat",
       "sourcePath": "QodotMap/entity_146_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -20.25,
@@ -2703,6 +8356,9 @@
     {
       "path": "QodotMap/entity_147_E_Fleshrat",
       "sourcePath": "QodotMap/entity_147_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -20.25,
@@ -2714,6 +8370,9 @@
     {
       "path": "QodotMap/entity_148_E_Fleshrat",
       "sourcePath": "QodotMap/entity_148_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -20.25,
@@ -2725,6 +8384,9 @@
     {
       "path": "QodotMap/entity_151_E_Grunt",
       "sourcePath": "QodotMap/entity_151_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -15.5,
@@ -2736,6 +8398,9 @@
     {
       "path": "QodotMap/entity_152_E_Grunt",
       "sourcePath": "QodotMap/entity_152_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -13.5,
@@ -2747,6 +8412,11 @@
     {
       "path": "Civilian2",
       "sourcePath": "Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian2.tscn",
+      "sourceProperties": {
+        "notarget": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian2.tscn",
       "sourceAt": [
         -35.3551,
@@ -2758,6 +8428,11 @@
     {
       "path": "Orbot",
       "sourcePath": "Orbot",
+      "sourceResource": "res://Entities/Enemies/E_Orbot.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Orbot.tscn",
       "sourceAt": [
         -36.8118,
@@ -2769,6 +8444,11 @@
     {
       "path": "Psycho",
       "sourcePath": "Psycho",
+      "sourceResource": "res://Entities/Enemies/E_Psycho.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Psycho.tscn",
       "sourceAt": [
         -22.2082,
@@ -2780,6 +8460,11 @@
     {
       "path": "Grunt",
       "sourcePath": "Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
       "sourceAt": [
         8.08391,
@@ -2791,6 +8476,11 @@
     {
       "path": "Fleshman",
       "sourcePath": "Fleshman",
+      "sourceResource": "res://Entities/Enemies/E_Fleshman.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshman.tscn",
       "sourceAt": [
         29.8907,
@@ -2802,6 +8492,11 @@
     {
       "path": "Grunt2",
       "sourcePath": "Grunt2",
+      "sourceResource": "res://Entities/Enemies/E_Rocket_Creeper.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Rocket_Creeper.tscn",
       "sourceAt": [
         -1.10739,
@@ -2813,6 +8508,11 @@
     {
       "path": "Civilian3",
       "sourcePath": "Civilian3",
+      "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceProperties": {
+        "hell_objective": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian4.tscn",
       "sourceAt": [
         -21.6897,
@@ -2826,6 +8526,11 @@
     {
       "path": "Fleshman2",
       "sourcePath": "Fleshman2",
+      "sourceResource": "res://Entities/Enemies/E_Fleshman.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshman.tscn",
       "sourceAt": [
         -21.0187,
@@ -2837,6 +8542,9 @@
     {
       "path": "Civilian4",
       "sourcePath": "Civilian4",
+      "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian4.tscn",
       "sourceAt": [
         -33.669,
@@ -2848,6 +8556,11 @@
     {
       "path": "Civilian5",
       "sourcePath": "Civilian5",
+      "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian4.tscn",
       "sourceAt": [
         -3.87884,
@@ -2859,6 +8572,9 @@
     {
       "path": "Chaos_Objective",
       "sourcePath": "Chaos_Objective",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         38.9064,
@@ -2870,6 +8586,9 @@
     {
       "path": "Chaos_Objective2",
       "sourcePath": "Chaos_Objective2",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         2.82517,
@@ -2881,6 +8600,9 @@
     {
       "path": "Chaos_Objective3",
       "sourcePath": "Chaos_Objective3",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         31.7331,
@@ -2892,6 +8614,9 @@
     {
       "path": "Chaos_Objective4",
       "sourcePath": "Chaos_Objective4",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         30.9026,
@@ -2903,6 +8628,9 @@
     {
       "path": "Chaos_Objective5",
       "sourcePath": "Chaos_Objective5",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         22.659,
@@ -2914,6 +8642,9 @@
     {
       "path": "Chaos_Objective6",
       "sourcePath": "Chaos_Objective6",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         17.3378,
@@ -2925,6 +8656,9 @@
     {
       "path": "Chaos_Objective7",
       "sourcePath": "Chaos_Objective7",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -10.4044,
@@ -2936,6 +8670,9 @@
     {
       "path": "Chaos_Objective8",
       "sourcePath": "Chaos_Objective8",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         6.73948,
@@ -2947,6 +8684,9 @@
     {
       "path": "Chaos_Objective9",
       "sourcePath": "Chaos_Objective9",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -38.6837,
@@ -2958,6 +8698,9 @@
     {
       "path": "Chaos_Objective10",
       "sourcePath": "Chaos_Objective10",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -24.5505,
@@ -2969,6 +8712,9 @@
     {
       "path": "Chaos_Objective11",
       "sourcePath": "Chaos_Objective11",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -25.3439,
@@ -2980,6 +8726,9 @@
     {
       "path": "Chaos_Objective12",
       "sourcePath": "Chaos_Objective12",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -25.541,
@@ -2991,6 +8740,9 @@
     {
       "path": "Chaos_Objective13",
       "sourcePath": "Chaos_Objective13",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -3.41531,
@@ -3002,6 +8754,9 @@
     {
       "path": "Chaos_Objective14",
       "sourcePath": "Chaos_Objective14",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -26.2329,
@@ -3015,6 +8770,9 @@
     {
       "path": "QodotMap/entity_4_E_Civilian1",
       "sourcePath": "QodotMap/entity_4_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -1.5,
@@ -3026,6 +8784,9 @@
     {
       "path": "QodotMap/entity_14_E_Civilian1",
       "sourcePath": "QodotMap/entity_14_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -1.5,
@@ -3037,6 +8798,9 @@
     {
       "path": "QodotMap/entity_15_E_Civilian1",
       "sourcePath": "QodotMap/entity_15_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -2.5,
@@ -3048,6 +8812,9 @@
     {
       "path": "QodotMap/entity_16_E_Civilian1",
       "sourcePath": "QodotMap/entity_16_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         -7.5,
@@ -3059,6 +8826,9 @@
     {
       "path": "QodotMap/entity_17_E_Grunt",
       "sourcePath": "QodotMap/entity_17_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -2.5,
@@ -3070,6 +8840,9 @@
     {
       "path": "QodotMap/entity_18_E_Grunt",
       "sourcePath": "QodotMap/entity_18_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -15.5,
@@ -3081,6 +8854,9 @@
     {
       "path": "QodotMap/entity_19_E_Grunt",
       "sourcePath": "QodotMap/entity_19_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -18.5,
@@ -3092,6 +8868,9 @@
     {
       "path": "QodotMap/entity_20_E_Grunt",
       "sourcePath": "QodotMap/entity_20_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         7.5,
@@ -3103,6 +8882,9 @@
     {
       "path": "QodotMap/entity_21_E_Grunt",
       "sourcePath": "QodotMap/entity_21_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         12.5,
@@ -3114,6 +8896,9 @@
     {
       "path": "QodotMap/entity_22_E_Grunt",
       "sourcePath": "QodotMap/entity_22_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         5.5,
@@ -3125,6 +8910,9 @@
     {
       "path": "QodotMap/entity_23_E_Civilian1",
       "sourcePath": "QodotMap/entity_23_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         6.5,
@@ -3136,6 +8924,9 @@
     {
       "path": "QodotMap/entity_24_E_Civilian1",
       "sourcePath": "QodotMap/entity_24_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         6.5,
@@ -3147,6 +8938,9 @@
     {
       "path": "QodotMap/entity_25_E_Civilian1",
       "sourcePath": "QodotMap/entity_25_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         6.5,
@@ -3158,6 +8952,9 @@
     {
       "path": "QodotMap/entity_26_E_Grunt",
       "sourcePath": "QodotMap/entity_26_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -23.5,
@@ -3169,6 +8966,9 @@
     {
       "path": "QodotMap/entity_27_E_Grunt",
       "sourcePath": "QodotMap/entity_27_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -8.5,
@@ -3180,6 +8980,9 @@
     {
       "path": "QodotMap/entity_28_E_Grunt",
       "sourcePath": "QodotMap/entity_28_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -8.5,
@@ -3191,6 +8994,9 @@
     {
       "path": "QodotMap/entity_29_E_Grunt",
       "sourcePath": "QodotMap/entity_29_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         21.25,
@@ -3202,6 +9008,9 @@
     {
       "path": "QodotMap/entity_30_E_Grunt",
       "sourcePath": "QodotMap/entity_30_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         21.5,
@@ -3213,6 +9022,9 @@
     {
       "path": "QodotMap/entity_31_E_Grunt",
       "sourcePath": "QodotMap/entity_31_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -9.5,
@@ -3224,6 +9036,9 @@
     {
       "path": "QodotMap/entity_32_E_Dog",
       "sourcePath": "QodotMap/entity_32_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -10.5,
@@ -3235,6 +9050,9 @@
     {
       "path": "QodotMap/entity_33_E_Dog",
       "sourcePath": "QodotMap/entity_33_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         7.5,
@@ -3246,6 +9064,9 @@
     {
       "path": "QodotMap/entity_34_E_Dog",
       "sourcePath": "QodotMap/entity_34_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -2.5,
@@ -3257,6 +9078,9 @@
     {
       "path": "QodotMap/entity_35_E_Dog",
       "sourcePath": "QodotMap/entity_35_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -14.5,
@@ -3268,6 +9092,9 @@
     {
       "path": "QodotMap/entity_36_E_Dog",
       "sourcePath": "QodotMap/entity_36_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         -13.5,
@@ -3279,6 +9106,9 @@
     {
       "path": "QodotMap/entity_37_E_Dog",
       "sourcePath": "QodotMap/entity_37_E_Dog",
+      "sourceResource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Dog.tscn",
       "sourceAt": [
         3.5,
@@ -3290,6 +9120,9 @@
     {
       "path": "QodotMap/entity_38_E_Grunt",
       "sourcePath": "QodotMap/entity_38_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -11.5,
@@ -3301,6 +9134,9 @@
     {
       "path": "QodotMap/entity_39_E_Civilian2",
       "sourcePath": "QodotMap/entity_39_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -4.5,
@@ -3312,6 +9148,9 @@
     {
       "path": "QodotMap/entity_40_E_Civilian2",
       "sourcePath": "QodotMap/entity_40_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -4.5,
@@ -3323,6 +9162,9 @@
     {
       "path": "QodotMap/entity_41_E_Civilian2",
       "sourcePath": "QodotMap/entity_41_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -4.5,
@@ -3334,6 +9176,9 @@
     {
       "path": "QodotMap/entity_42_E_Civilian2",
       "sourcePath": "QodotMap/entity_42_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -3345,6 +9190,9 @@
     {
       "path": "QodotMap/entity_43_E_Civilian2",
       "sourcePath": "QodotMap/entity_43_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -3356,6 +9204,9 @@
     {
       "path": "QodotMap/entity_44_E_Civilian2",
       "sourcePath": "QodotMap/entity_44_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -3367,6 +9218,9 @@
     {
       "path": "QodotMap/entity_45_Obj_Executive1",
       "sourcePath": "QodotMap/entity_45_Obj_Executive1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian3.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian3.tscn",
       "sourceAt": [
         -4.5,
@@ -3378,6 +9232,9 @@
     {
       "path": "QodotMap/entity_47_Obj_Pinky",
       "sourcePath": "QodotMap/entity_47_Obj_Pinky",
+      "sourceResource": "res://Entities/Enemies/Obj_Pinky.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Obj_Pinky.tscn",
       "sourceAt": [
         33.5,
@@ -3389,6 +9246,9 @@
     {
       "path": "QodotMap/entity_48_E_Civilian2",
       "sourcePath": "QodotMap/entity_48_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         -0.5,
@@ -3400,6 +9260,9 @@
     {
       "path": "QodotMap/entity_49_E_Civilian2",
       "sourcePath": "QodotMap/entity_49_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         3.5,
@@ -3411,6 +9274,9 @@
     {
       "path": "QodotMap/entity_50_E_Civilian2",
       "sourcePath": "QodotMap/entity_50_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         1.5,
@@ -3422,6 +9288,9 @@
     {
       "path": "QodotMap/entity_51_E_Civilian2",
       "sourcePath": "QodotMap/entity_51_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         16.5,
@@ -3433,6 +9302,9 @@
     {
       "path": "QodotMap/entity_52_E_Civilian1",
       "sourcePath": "QodotMap/entity_52_E_Civilian1",
+      "sourceResource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
       "sourceAt": [
         14.5,
@@ -3444,6 +9316,9 @@
     {
       "path": "QodotMap/entity_53_E_Civilian2",
       "sourcePath": "QodotMap/entity_53_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         22.5,
@@ -3455,6 +9330,9 @@
     {
       "path": "QodotMap/entity_54_E_Civilian2",
       "sourcePath": "QodotMap/entity_54_E_Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian.tscn",
       "sourceAt": [
         32.5,
@@ -3466,6 +9344,9 @@
     {
       "path": "QodotMap/entity_55_E_Grunt",
       "sourcePath": "QodotMap/entity_55_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         5.5,
@@ -3477,6 +9358,9 @@
     {
       "path": "QodotMap/entity_65_E_Elite",
       "sourcePath": "QodotMap/entity_65_E_Elite",
+      "sourceResource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Elite.tscn",
       "sourceAt": [
         31.5,
@@ -3488,6 +9372,9 @@
     {
       "path": "QodotMap/entity_66_E_Security",
       "sourcePath": "QodotMap/entity_66_E_Security",
+      "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Security.tscn",
       "sourceAt": [
         -1.5,
@@ -3499,6 +9386,9 @@
     {
       "path": "QodotMap/entity_94_E_Security",
       "sourcePath": "QodotMap/entity_94_E_Security",
+      "sourceResource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Security.tscn",
       "sourceAt": [
         -26.375,
@@ -3510,6 +9400,9 @@
     {
       "path": "QodotMap/entity_96_E_Grunt",
       "sourcePath": "QodotMap/entity_96_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -19.5,
@@ -3521,6 +9414,9 @@
     {
       "path": "QodotMap/entity_106_E_Mutant",
       "sourcePath": "QodotMap/entity_106_E_Mutant",
+      "sourceResource": "res://Entities/Enemies/E_Knifelord.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Knifelord.tscn",
       "sourceAt": [
         -22.375,
@@ -3532,6 +9428,9 @@
     {
       "path": "QodotMap/entity_143_E_Fleshrat",
       "sourcePath": "QodotMap/entity_143_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -23.25,
@@ -3543,6 +9442,9 @@
     {
       "path": "QodotMap/entity_144_E_Fleshrat",
       "sourcePath": "QodotMap/entity_144_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -23.25,
@@ -3554,6 +9456,9 @@
     {
       "path": "QodotMap/entity_145_E_Fleshrat",
       "sourcePath": "QodotMap/entity_145_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -23.25,
@@ -3565,6 +9470,9 @@
     {
       "path": "QodotMap/entity_146_E_Fleshrat",
       "sourcePath": "QodotMap/entity_146_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -20.25,
@@ -3576,6 +9484,9 @@
     {
       "path": "QodotMap/entity_147_E_Fleshrat",
       "sourcePath": "QodotMap/entity_147_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -20.25,
@@ -3587,6 +9498,9 @@
     {
       "path": "QodotMap/entity_148_E_Fleshrat",
       "sourcePath": "QodotMap/entity_148_E_Fleshrat",
+      "sourceResource": "res://Entities/Enemies/E_Fleshrat.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshrat.tscn",
       "sourceAt": [
         -20.25,
@@ -3598,6 +9512,9 @@
     {
       "path": "QodotMap/entity_151_E_Grunt",
       "sourcePath": "QodotMap/entity_151_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -15.5,
@@ -3609,6 +9526,9 @@
     {
       "path": "QodotMap/entity_152_E_Grunt",
       "sourcePath": "QodotMap/entity_152_E_Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt.tscn",
       "sourceAt": [
         -13.5,
@@ -3620,6 +9540,11 @@
     {
       "path": "Civilian2",
       "sourcePath": "Civilian2",
+      "sourceResource": "res://Entities/Enemies/E_Civilian2.tscn",
+      "sourceProperties": {
+        "notarget": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian2.tscn",
       "sourceAt": [
         -35.3551,
@@ -3631,6 +9556,11 @@
     {
       "path": "Orbot",
       "sourcePath": "Orbot",
+      "sourceResource": "res://Entities/Enemies/E_Orbot.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Orbot.tscn",
       "sourceAt": [
         -36.8118,
@@ -3642,6 +9572,11 @@
     {
       "path": "Psycho",
       "sourcePath": "Psycho",
+      "sourceResource": "res://Entities/Enemies/E_Psycho.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Psycho.tscn",
       "sourceAt": [
         -22.2082,
@@ -3653,6 +9588,11 @@
     {
       "path": "Grunt",
       "sourcePath": "Grunt",
+      "sourceResource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
       "sourceAt": [
         8.08391,
@@ -3664,6 +9604,11 @@
     {
       "path": "Fleshman",
       "sourcePath": "Fleshman",
+      "sourceResource": "res://Entities/Enemies/E_Fleshman.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshman.tscn",
       "sourceAt": [
         29.8907,
@@ -3675,6 +9620,11 @@
     {
       "path": "Grunt2",
       "sourcePath": "Grunt2",
+      "sourceResource": "res://Entities/Enemies/E_Rocket_Creeper.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Rocket_Creeper.tscn",
       "sourceAt": [
         -1.10739,
@@ -3686,6 +9636,11 @@
     {
       "path": "Civilian3",
       "sourcePath": "Civilian3",
+      "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceProperties": {
+        "hell_objective": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian4.tscn",
       "sourceAt": [
         -21.6897,
@@ -3699,6 +9654,11 @@
     {
       "path": "Fleshman2",
       "sourcePath": "Fleshman2",
+      "sourceResource": "res://Entities/Enemies/E_Fleshman.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Fleshman.tscn",
       "sourceAt": [
         -21.0187,
@@ -3710,6 +9670,9 @@
     {
       "path": "Civilian4",
       "sourcePath": "Civilian4",
+      "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian4.tscn",
       "sourceAt": [
         -33.669,
@@ -3721,6 +9684,11 @@
     {
       "path": "Civilian5",
       "sourcePath": "Civilian5",
+      "sourceResource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceProperties": {
+        "random_spawn": true
+      },
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/E_Civilian4.tscn",
       "sourceAt": [
         -3.87884,
@@ -3732,6 +9700,9 @@
     {
       "path": "Chaos_Objective",
       "sourcePath": "Chaos_Objective",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         38.9064,
@@ -3743,6 +9714,9 @@
     {
       "path": "Chaos_Objective2",
       "sourcePath": "Chaos_Objective2",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         2.82517,
@@ -3754,6 +9728,9 @@
     {
       "path": "Chaos_Objective3",
       "sourcePath": "Chaos_Objective3",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         31.7331,
@@ -3765,6 +9742,9 @@
     {
       "path": "Chaos_Objective4",
       "sourcePath": "Chaos_Objective4",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         30.9026,
@@ -3776,6 +9756,9 @@
     {
       "path": "Chaos_Objective5",
       "sourcePath": "Chaos_Objective5",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         22.659,
@@ -3787,6 +9770,9 @@
     {
       "path": "Chaos_Objective6",
       "sourcePath": "Chaos_Objective6",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         17.3378,
@@ -3798,6 +9784,9 @@
     {
       "path": "Chaos_Objective7",
       "sourcePath": "Chaos_Objective7",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -10.4044,
@@ -3809,6 +9798,9 @@
     {
       "path": "Chaos_Objective8",
       "sourcePath": "Chaos_Objective8",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         6.73948,
@@ -3820,6 +9812,9 @@
     {
       "path": "Chaos_Objective9",
       "sourcePath": "Chaos_Objective9",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -38.6837,
@@ -3831,6 +9826,9 @@
     {
       "path": "Chaos_Objective10",
       "sourcePath": "Chaos_Objective10",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -24.5505,
@@ -3842,6 +9840,9 @@
     {
       "path": "Chaos_Objective11",
       "sourcePath": "Chaos_Objective11",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -25.3439,
@@ -3853,6 +9854,9 @@
     {
       "path": "Chaos_Objective12",
       "sourcePath": "Chaos_Objective12",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -25.541,
@@ -3864,6 +9868,9 @@
     {
       "path": "Chaos_Objective13",
       "sourcePath": "Chaos_Objective13",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -3.41531,
@@ -3875,6 +9882,9 @@
     {
       "path": "Chaos_Objective14",
       "sourcePath": "Chaos_Objective14",
+      "sourceResource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceProperties": {},
+      "sourceYaw": 0,
       "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
       "sourceAt": [
         -26.2329,
@@ -3933,7 +9943,7 @@
   "limitations": [
     "Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.",
     "Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.",
-    "Doors and elevators are imported at authored rest transforms, not animated.",
+    "Ordinary and elevator doors use exclusive-cell voxel retraction, not animated swing/slide; elevator doors close after 5 seconds when safely resident. Special gates retain unsupported progression requirements. Elevator platforms and other scripted movers remain at rest; see interactions.inventory.",
     "Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.",
     "All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.",
     "NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.",

@@ -13,6 +13,7 @@ import { wound, createBodyWorld } from './stains.js';
 import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
 import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
+import { ladderVelocity } from './ladder.js';
 import { FLAP_SIGNAL_S } from './flapPose.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
@@ -310,7 +311,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
   const p = {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(),
-    onGround: false, inLiquid: false, headInLiquid: false, liquidId: -1,
+    onGround: false, inLiquid: false, headInLiquid: false, liquidId: -1, climbing: false,
     submerged: 0,                 // share of the body under liquid, 0..1
     jetFuel: 1,                   // jetpack tank, 0..1
     jetting: false,               // the jetpack is firing this frame
@@ -719,6 +720,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   // ---------------------------------------------------------------- update
   const wish = new THREE.Vector2();
   function update(dtIn, input = {}) {
+    p.climbing = false;
     const sim = getSim();
     if (!sim) return;
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
@@ -764,17 +766,19 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const v0 = v.clone();   // an axis that runs into unprobed cells keeps this (its time didn't pass)
     const stalled = [false, false, false];
     const swimming = sub >= SWIM_SHARE;
-    const cruelty = !swimming && (!!input.cruelty || !!rope?.grappendix || crueltyFlight);
+    const climbing = alive && !swimming && !rope && !!input.ladder;
+    p.climbing = climbing;
+    const cruelty = !swimming && !climbing && (!!input.cruelty || !!rope?.grappendix || crueltyFlight);
     const grav = (cruelty ? CRUELTY_GRAVITY : GRAVITY) * sim.gravity / SIM_GRAVITY_REF;
     if (rope?.grappendix && alive) pullGrappendix(v, vB.copy(p.pos).setY(p.pos.y + H / 2), rope.anchor, grav, dt);
 
     // the jump button's timing (the pogo's timed presses)
-    const jumpDown = alive && !!input.jump;
+    const jumpDown = alive && !climbing && !!input.jump;
     const pressed = jumpDown && !prevJump;
     prevJump = jumpDown;
     sinceJumpPress = pressed ? 0 : sinceJumpPress + dt;
     sinceBounce += dt;
-    const pogoing = alive && pogoHold && !swimming && !input.chargeJump && !cruelty;   // village Space belongs to the leap
+    const pogoing = alive && pogoHold && !swimming && !climbing && !input.chargeJump && !cruelty;   // village Space belongs to the leap
     pogoHold = false;
     p.pogoing = pogoing;
     if (!pogoing) pogoStep = 0;
@@ -889,7 +893,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Levitating (Levitatium, potions.js): Noita's Faster Levitation, 75% faster, and here the tank holds
     const levitating = p.status.has('LEVITATING');
     const jetRise = Math.min(JET_RISE * gait * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE * gait, PERK_SPEED_V));
-    const jetWants = alive && !!input.jump && !pogoing && !input.chargeJump && !cruelty;
+    const jetWants = alive && !climbing && !!input.jump && !pogoing && !input.chargeJump && !cruelty;
     // Swimming can settle waist-deep: hand off at the surface, not only below SWIM_SHARE.
     const clings = jetWants && !p.onGround && !p.headInLiquid && ((perks.has('LUKKI') && clinging()) || levitating);
     if (pressed && alive) airFlapHold = !p.onGround && !jumpedNow && !swimming && !pogoing && !p.headInLiquid && !rope?.hard;
@@ -933,6 +937,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const k = (VISCOUS_DRAG * env2.dragL / (size * size) + FORM_DRAG * env2.densL / BODY_DENS * v.length() / size) * sub;   // (Shrink: Stokes 1/s², form 1/s)
       v.multiplyScalar(Math.exp(-k * dt));
     }
+    if (climbing) ladderVelocity(v, input.climb);
 
     // pressure: a = −∇P·P_ACCEL/ρ per step², for each step the sim took
     vK.copy(v);   // (what pressure and impulses change from here is the knock)
@@ -998,7 +1003,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     else if (sprintingNow) sprintCarry = true;
     else if (Math.hypot(v.x, v.z) <= sprintWalk) sprintCarry = false;
     // follow the ground down small ledges
-    if (!p.onGround && wasGround && !jumped && !swimming) {
+    if (!p.onGround && wasGround && !jumped && !swimming && !climbing) {
       const r = sweep(1, -STEP_DOWN);
       if (r.id !== null && r.id !== UNKNOWN) { p.pos.y += r.d; p.onGround = true; v.y = Math.min(v.y, 0); }
     }
