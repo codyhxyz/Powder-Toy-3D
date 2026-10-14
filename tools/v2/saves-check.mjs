@@ -147,7 +147,7 @@ const world = Object.assign(Object.create(WorldWindow.prototype), {
   sim, loaded: true, pending: null, size: [64, 32, 64], epoch: 0,
   store: new BrickStore([16, 8, 16]), nativeStore: new NativeBrickStore([16, 8, 16]), planted: new Uint8Array(16 * 16),
 });
-const nativeBrick = encodeNativeBrick(new Uint32Array(256).fill(0xffa01234), new Int32Array(64).fill(-321));
+const nativeBrick = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 0x12345, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-321));
 world.nativeStore.put(7, nativeBrick); world.planted[4] = 1;
 const worlds = createSaves({
   settings: app.settings, getSim: () => sim, getWin: () => world,

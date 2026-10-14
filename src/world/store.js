@@ -71,10 +71,12 @@ export function decodeBrick(bytes, A, aOff, B, bOff) {
   while (n < bytes.length) {
     const h = bytes[n++];
     if (h <= HEADER_LITERAL_MAX) {
+      if (n + h + 1 > bytes.length || i + h + 1 > RAW_BYTES) throw new Error('stored brick: invalid literal');
       planes.set(bytes.subarray(n, n + h + 1), i);
       n += h + 1;
       i += h + 1;
     } else {
+      if (h === 128 || n >= bytes.length || i + HEADER_RUN - h > RAW_BYTES) throw new Error('stored brick: invalid run');
       planes.fill(bytes[n++], i, i + HEADER_RUN - h);
       i += HEADER_RUN - h;
     }
@@ -138,16 +140,23 @@ export class BrickStore {
 
   // toBytes back: the store holds exactly those bricks.
   fromBytes(bytes) {
-    this.clear();
+    if (!(bytes instanceof Uint8Array) || bytes.length < U32) throw new Error('Invalid legacy world store');
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const n = view.getUint32(0, true);
-    let at = U32;
+    const n = view.getUint32(0, true), max = this.bricks.reduce((a, b) => a * b, 1);
+    if (n > max || n > Math.floor((bytes.length - U32) / (2 * U32 + 1))) throw new Error('Invalid legacy world count');
+    const next = new Map(), A = new Float32Array(BRICK_FLOATS), B = new Float32Array(BRICK_FLOATS);
+    let at = U32, total = 0;
     for (let i = 0; i < n; i++) {
+      if (at + 2 * U32 > bytes.length) throw new Error('stored bricks: cut short');
       const key = view.getUint32(at, true), len = view.getUint32(at + U32, true);
-      if (at + 2 * U32 + len > bytes.length) throw new Error('stored bricks: cut short');
-      this.put(key, bytes.slice(at + 2 * U32, at + 2 * U32 + len));
+      if (key >= max || next.has(key) || !len || at + 2 * U32 + len > bytes.length) throw new Error('Invalid legacy world entry');
+      const brick = bytes.slice(at + 2 * U32, at + 2 * U32 + len);
+      decodeBrick(brick, A, 0, B, 0);
+      next.set(key, brick); total += len;
       at += 2 * U32 + len;
     }
+    if (at !== bytes.length) throw new Error('Legacy world store has trailing bytes');
+    this.map = next; this.bytes = total;
   }
 }
 const U32 = 4;   // bytes of a key or a length in toBytes

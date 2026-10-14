@@ -1,7 +1,7 @@
 // The v2 save section owns the compact engine, not the legacy projection.
 // Version 2 replaces prototype limiter/half-life packing with persistent payloads.
 // Arrays are little-endian raw u32 words; no float conversion may touch them.
-import { validatePhaseCore } from './phase.js';
+import { validateMaterialCore } from './materialValidation.js';
 import { ELEMENTS } from '../elements.js';
 import { MATERIAL_VERSION, FULL, MAX_FILL, FUEL_Q, lifeScale, isLiquid, isConductor } from './layout.js';
 import { gridDims } from '../shaders/common.js';
@@ -41,6 +41,7 @@ export function encodeV2State(state) {
   const lengths = validateMeta(meta);
   const arrays = { cells, activity, args, aux };
   for (const [key, length] of Object.entries(lengths)) if (!(arrays[key] instanceof Uint32Array) || arrays[key].length !== length) fail(`invalid ${key} length/type`);
+  for (let i = 0; i < cells.length; i += 4) validateMaterialCore(cells.subarray(i, i + 4));
   const json = new TextEncoder().encode(JSON.stringify(meta));
   if (json.length > MAX_META) fail('metadata too large');
   const out = new Uint8Array(PREFIX + json.length + Object.values(lengths).reduce((n, x) => n + x * 4, 0));
@@ -84,9 +85,8 @@ export function decodeV2State(bytes, dims) {
   }
   state.energyLedger = true;
   for (let i = 0; i < state.cells.length; i += 4) {
-    try { validatePhaseCore(state.cells.subarray(i, i + 4)); }
+    try { validateMaterialCore(state.cells.subarray(i, i + 4)); }
     catch (error) { fail(error.message); }
-    if (isLiquid(state.cells[i] & 255) && (state.cells[i + 1] & 0xffffff) > MAX_FILL) fail('native fill exceeds compression limit');
   }
   return state;
 }

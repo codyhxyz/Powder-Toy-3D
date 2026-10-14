@@ -121,7 +121,7 @@ assert.equal(sim.readHeader().format, 2, 'renderer and codec keep presentation s
 owner.sync();
 const core = words(owner.cells), bank = words(owner.aux);
 for (let s = 0; s < g.slots; s++) {
-  core.set([E.WATER | (1173 << 8), (s % 3 === 0 ? 1 : 0x12345) | ((s & 255) << 24), (0xff800001 ^ s) >>> 0, (0x80000000 | s) >>> 0], s * 4);
+  core.set([E.WATER | (1173 << 8), (s % 3 === 0 ? 1 : 0x12345) | ((s & 255) << 24), (0xbc003c00 ^ (s & 1023)) >>> 0, (0x80000000 | (s & 0x7bff)) >>> 0], s * 4);
   bank[s] = (0x80000000 + s * 997) >>> 0;
 }
 const originalCore = core.slice(), originalBank = bank.slice();
@@ -189,11 +189,11 @@ assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 
 // Sparse restoration touches only selected bricks (raw slab order differs
 // from the compact brick's internal y/z bit order).
-const sparse = encodeNativeBrick(new Uint32Array(256).fill(0xdeadbeef), new Int32Array(64).fill(-123));
+const sparse = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 123, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-123));
 sim.nativeIntegration.restoreBricks([0, 0, 0], [2, 2, 2], [{ index: 5, bytes: sparse }]);
 for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
   const s = cellSlot(g, x, y, z), changed = x >= 4 && y < 4 && z >= 4;
-  assert.equal(core[s * 4], changed ? 0xdeadbeef : originalCore[s * 4]);
+  assert.equal(core[s * 4], changed ? (E.WATER | (1173 << 8)) : originalCore[s * 4]);
   assert.equal(bank[s], changed ? (-123 >>> 0) : originalBank[s]);
 }
 assert.deepEqual(decodeNativeBrick(sparse).bank, new Int32Array(64).fill(-123));

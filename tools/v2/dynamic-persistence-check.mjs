@@ -1,3 +1,4 @@
+import decoWire from '../../src/wire/deco.js';
 import { coupleNativeBody, bodyEditStepRate, nativeBodyPressureFactor } from '../../src/v2/body.js';
 import { LEGACY_PRESSURE_PA, CELL_M } from '../../src/v2/dynamics-reference.js';
 import { povGpu } from '../../src/pov/gpu.js';
@@ -14,9 +15,12 @@ import { marksLayout } from '../../src/shaders/common.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { NativeDynamics, validateDynamicState } from '../../src/v2/dynamics.js';
-import { makeMaterial } from '../../src/v2/layout.js';
+import { makeMaterial, MAX_FILL } from '../../src/v2/layout.js';
 import { packParticle } from '../../src/v2/dynamics-reference.js';
-import { E } from '../../src/elements.js';
+import { E, ELEMENTS } from '../../src/elements.js';
+import { RAYS } from '../../src/rays.js';
+import { PHASE_HOT_BASE } from '../../src/v2/phase.js';
+import { registerSaveSection, unregisterSaveSection } from '../../src/saves/sections.js';
 import { captureNativeSnapshot, restoreNativeSnapshot, encodeDynamicState, decodeDynamicState } from '../../src/v2/dynamicState.js';
 import { decodeV2State } from '../../src/v2/state.js';
 import savesWire from '../../src/wire/saves.js';
@@ -58,7 +62,7 @@ const fbits = n => new Uint32Array(new Float32Array([n]).buffer)[0];
 words(d.particles).set(new Uint32Array(packParticle({ position: [300, 3, 4], velocity: [5, 0, 7], id: 102,
   core: [254, fbits(1), fbits(2), fbits(3)], bank: 0 })), 12);
 words(d.particles).set(new Uint32Array(packParticle({ position: [-20, 3, 4], velocity: [0, 8, 0], id: 103,
-  core: [255, fbits(1), fbits(2), 0], bank: 0 })), 24);
+  core: [255, RAYS.NEUT_LIFE, fbits(2), 0], bank: 0 })), 24);
 new Float32Array(d.air[d.airIndex].bytes).set([1, -2, 3, 4, 0.25, 15, 0, 0]);
 d.airArchive.set('128,0,0', new Uint32Array(new Float32Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer));
 d.pendingOutside.set('129,2,3', 5); words(owner.events)[3] = 7;
@@ -123,7 +127,7 @@ const world = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu, si
 });
 sim.worldWindow = world;
 sim.onWorldHistoryRestore = (...delta) => notified.push(delta);
-const rawBrick = encodeNativeBrick(new Uint32Array(256).fill(123), new Int32Array(64).fill(-456));
+const rawBrick = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => m.core[i % 4]), new Int32Array(64).fill(-456));
 const legacyBrick = encodeBrick(new Float32Array(BRICK_FLOATS), 0, new Float32Array(BRICK_FLOATS), 0);
 world.nativeStore.put(12, rawBrick); world.store.put(12, legacyBrick); world.planted[4] = 1;
 sim.snapshot('whole world'); while (pending.length) pending.shift()(); await sim.history.at(-1).nativePending;
@@ -216,4 +220,129 @@ d.applyBodyCoupling = undefined;
 assert.equal(coupleNativeBody(sim, body), false, 'missing actual coupling capability stays explicitly gated');
 d.applyBodyCoupling = originalCouple; delete sim.editKernel;
 
+// Adversarial production-codec checks. No validators are replaced/injected.
+// Start an actual WorldWindow.readBack before capture; it must finish despite
+// the read lock. A new production shift during deferred preparation must fail.
+app.win = world; sim.worldWindow = world;
+sim.deco = { store: new Map([[23, new Uint8Array(256).fill(7)]]), pending: null, active: false };
+decoWire.boot(app);
+world.leave = { head: buffer({ size: 128, label: 'save leaving head' }), cells: buffer({ size: 2048, label: 'save leaving cells' }) };
+world.lastKept = 0;
+words(world.leave.head).set([1, 17]);
+delayed = true;
+world.readBack([17, 0, 0], [1, 1, 1], Promise.resolve([rawBrick]));
+let prepareDone, prepareEntered, thumbnailDone, thumbnailEntered, prepareCalls = 0;
+const entering = new Promise(resolve => { prepareEntered = resolve; });
+const thumbnailStarted = new Promise(resolve => { thumbnailEntered = resolve; });
+sim.prepare = () => { prepareEntered(); return new Promise(resolve => { prepareDone = resolve; }); };
+const worldSaves = createSaves({ settings: app.settings, getSim: () => sim, getWin: () => world,
+  header: () => ({ world: { scene: 'test', seed: 9 }, nativeDynamicsVersion: 1 }), prepareCapture: () => owner.ready,
+  thumbnail: () => { thumbnailEntered(); return new Promise(resolve => { thumbnailDone = resolve; }); },
+  prepare() { prepareCalls++; return false; }, finish() {}, onSettings() {} });
+const coherentSave = worldSaves.capture('locked actual world');
+assert.equal(world.historyReaders, 1, 'lock acquired before the first await');
+while (pending.length) pending.shift()();
+await entering;
+assert(world.nativeStore.has(17), 'already-recorded leaving readback lands without deadlock');
+const beforeShiftReads = reads.length;
+assert.throws(() => world.shift(16, 0), /history capture/, 'new leaving readback cannot begin during prepare');
+assert.equal(reads.length, beforeShiftReads);
+delayed = false; prepareDone();
+await thumbnailStarted;
+assert.equal(world.historyReaders, 1, 'lock covers asynchronous section capture and thumbnail');
+assert.throws(() => world.shift(16, 0), /history capture/);
+thumbnailDone(null);
+const coherentBytes = await coherentSave;
+assert.equal(world.historyReaders, 0);
+const coherent = await decodeSave(coherentBytes);
+const capturedStore = new NativeBrickStore(wb); capturedStore.fromBytes(coherent.sections.get('worldNativeStore'));
+assert.deepEqual(capturedStore.map.get(17), rawBrick, 'retained bytes cannot be omitted by preparation interleaving');
+assert.equal(await worldSaves.apply(coherentBytes), null); assert.equal(prepareCalls, 1, 'valid baseline reaches prepare');
+prepareCalls = 0;
+sim.prepare = async () => { throw new Error('prepare failure'); };
+await assert.rejects(worldSaves.capture('prepare failed'), /prepare failure/);
+assert.equal(world.historyReaders, 0, 'prepare failure releases lock');
+sim.prepare = async () => {};
+registerSaveSection('strictFailureTest', { strict: true, save: () => { throw new Error('section failure'); }, load() {} });
+const failedSectionSave = worldSaves.capture('section failed');
+await assert.rejects(failedSectionSave, /section failure/);
+unregisterSaveSection('strictFailureTest');
+assert.equal(world.historyReaders, 0, 'strict-section failure releases lock');
+
+const stateBefore = { epoch: world.epoch, identity: world.historyIdentity, origin: sim.origin.toArray(),
+  legacy: world.store.map, native: world.nativeStore.map, deco: sim.deco.store,
+  decoBytes: [...sim.deco.store].map(([key, bytes]) => [key, bytes.slice()]),
+  legacyBytes: world.store.toBytes(), nativeBytes: world.nativeStore.toBytes(), planted: world.planted.slice(),
+  core: words(owner.cells).slice(), bank: words(owner.aux).slice(), writes: writes.length };
+function unchanged() {
+  assert.equal(prepareCalls, 0, 'all rejection must precede app.prepare');
+  assert.equal(world.epoch, stateBefore.epoch); assert.equal(world.historyIdentity, stateBefore.identity);
+  assert.deepEqual(sim.origin.toArray(), stateBefore.origin);
+  assert.equal(world.store.map, stateBefore.legacy); assert.equal(world.nativeStore.map, stateBefore.native);
+  assert.equal(sim.deco.store, stateBefore.deco); assert.deepEqual([...sim.deco.store], stateBefore.decoBytes);
+  assert.deepEqual(world.store.toBytes(), stateBefore.legacyBytes); assert.deepEqual(world.nativeStore.toBytes(), stateBefore.nativeBytes);
+  assert.deepEqual(world.planted, stateBefore.planted); assert.deepEqual(words(owner.cells), stateBefore.core);
+  assert.deepEqual(words(owner.aux), stateBefore.bank); assert.equal(writes.length, stateBefore.writes);
+}
+async function corruptSection(key, bytes) {
+  const sections = new Map(coherent.sections); sections.set(key, bytes);
+  await assert.rejects(worldSaves.apply(await encodeSave(coherent.header, [...sections].map(([key, data]) => ({ key, data })))));
+  unchanged();
+}
+const malformedLegacy = new Uint8Array(4); new DataView(malformedLegacy.buffer).setUint32(0, 1, true);
+await corruptSection('worldStore', malformedLegacy);
+const malformedRun = new Uint8Array(15), runView = new DataView(malformedRun.buffer);
+runView.setUint32(0, 1, true); runView.setUint32(4, 17, true); runView.setUint32(8, 3, true); malformedRun.set([127, 0, 0], 12);
+await corruptSection('worldStore', malformedRun);
+const trailingLegacy = new Uint8Array(stateBefore.legacyBytes.length + 1); trailingLegacy.set(stateBefore.legacyBytes);
+await corruptSection('worldStore', trailingLegacy);
+await corruptSection('worldPlanted', new Uint8Array(1));
+await corruptSection('deco', new Uint8Array(1));
+await corruptSection('decoStore', new Uint8Array(261));
+await corruptSection('decoStore', new Uint8Array(520)); // duplicate key0
+const badOrigin = { ...coherent.header, world: { ...coherent.header.world, origin: [1, 0, 0] } };
+await assert.rejects(worldSaves.apply(await encodeSave(badOrigin, [...coherent.sections].map(([key, data]) => ({ key, data }))))); unchanged();
+// Direct loadSaved must also preflight, not just the outer save controller.
+for (const bad of [malformedLegacy, malformedRun, trailingLegacy]) {
+  assert.throws(() => world.store.fromBytes(bad)); unchanged();
+  assert.throws(() => world.loadSaved([16, 0, 0], () => { throw new Error('fill must not run'); }, bad, world.planted, stateBefore.nativeBytes));
+  unchanged();
+}
+const mutations = [[0, ELEMENTS.length | (1173 << 8)], [0, E.WOOD | (PHASE_HOT_BASE << 8)], [1, MAX_FILL + 1], [2, 0x7c003c00]];
+for (const [word, value] of mutations) {
+  const bad = coherent.sections.get('worldNativeStore').slice();
+  new DataView(bad.buffer).setUint32(12 + word * 4, value, true);
+  await corruptSection('worldNativeStore', bad);
+  assert.throws(() => world.nativeStore.fromBytes(bad)); unchanged();
+  assert.throws(() => world.loadSaved([16, 0, 0], () => { throw new Error('fill must not run'); }, stateBefore.legacyBytes, world.planted, bad));
+  unchanged();
+}
+// Forge raw dynamic payload bytes after valid encoding, so the real decoder
+// (not just the encoder or a mocked validation callback) sees the corruption.
+const dynamicBytes = coherent.sections.get('physicsV2Dynamics');
+const dynamicView = new DataView(dynamicBytes.buffer, dynamicBytes.byteOffset, dynamicBytes.byteLength);
+const metaLength = dynamicView.getUint32(8, true);
+const metadata = JSON.parse(new TextDecoder().decode(dynamicBytes.subarray(16, 16 + metaLength)));
+const arrayIndex = metadata.state.particles.$nativeWords;
+const particleAt = Math.ceil((16 + metaLength) / 4) * 4 + metadata.lengths.slice(0, arrayIndex).reduce((a, n) => a + n * 4, 0);
+for (const [word, value] of [...mutations.map(([word, value]) => [word + 7, value]), [4, 0x7fc00000],
+  [19, 254 | ((RAYS.PHOTON_LIFE + 1) << 8)], [19, 254 | (ELEMENTS.length << 24)], [32, RAYS.NEUT_LIFE + 1]]) {
+  const bad = dynamicBytes.slice(); new DataView(bad.buffer).setUint32(particleAt + word * 4, value, true);
+  assert.throws(() => decodeDynamicState(bad));
+  await corruptSection('physicsV2Dynamics', bad);
+}
+const badCore = coherent.sections.get('physicsV2').slice();
+const coreView = new DataView(badCore.buffer), coreAt = 12 + coreView.getUint32(8, true);
+coreView.setUint32(coreAt, E.WOOD | (PHASE_HOT_BASE << 8), true);
+await corruptSection('physicsV2', badCore);
+// Valid ABI boundaries stay exact, including maximum16-bit fuel and banks
+// whose integer bits would be NaN if somebody treated them as float data.
+const boundary = makeMaterial(E.WATER, 22, MAX_FILL);
+boundary.core[3] = 0xffff3800;
+const exact = Uint32Array.from({ length: 256 }, (_, i) => boundary.core[i % 4]);
+const boundaryBytes = encodeNativeBrick(exact, new Int32Array(64).fill(0x7fc00001));
+const boundaryStore = new NativeBrickStore(wb); boundaryStore.put(0, boundaryBytes);
+const boundaryRestored = new NativeBrickStore(wb); boundaryRestored.fromBytes(boundaryStore.toBytes());
+assert.deepEqual(boundaryRestored.map.get(0), boundaryBytes);
+console.log('adversarial persistence: coherent lock before await through sections; prior real readBack completes; new shifts blocked; transactional legacy/native/deco/core/dynamic/origin rejection before prepare, epoch, stores or GPU writes');
 console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save/undo restoration; pre-mutation corruption/origin rejection; full shifted COW world history; physgun held/shock/controller fields; actual-air probe/body SI boundaries and lossless refusal passed');

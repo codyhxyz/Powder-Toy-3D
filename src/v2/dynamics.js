@@ -1,3 +1,5 @@
+import { RAYS } from '../rays.js';
+import { validateMaterialCore } from './materialValidation.js';
 import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
@@ -44,7 +46,10 @@ export function validateDynamicState(snapshot,g) {
     if([0,1,2,4,5,6].some(k=>!safeDynamicNumber(particleFloats[i*12+k]))) throw new Error('Invalid native particle coordinates/velocity');
     const tag=s.particles[i*12+7]&255;
     if(tag===0 || (tag<ELEMENTS.length && ELEMENTS[tag].kind===K.LIQUID && (s.particles[i*12+8]&0xffffff)===0) || (tag>=ELEMENTS.length && tag<254)) throw new Error('Invalid native particle material');
+    if(tag<254) validateMaterialCore(s.particles.subarray(i*12+7,i*12+11));
     if(s.held[i] && tag>=254) throw new Error('A ray cannot be a held native material');
+    if(tag===254 && (((s.particles[i*12+7]>>>8)&65535)>RAYS.PHOTON_LIFE || (s.particles[i*12+7]>>>24)>=ELEMENTS.length || s.particles[i*12+11]>2)) throw new Error('Invalid native photon lifetime/medium/face');
+    if(tag===255 && (s.particles[i*12+8]>RAYS.NEUT_LIFE || ![0,3,4].includes(s.particles[i*12+7]>>>8))) throw new Error('Invalid native neutron lifetime/event');
     if(tag===254 && [8,9,10].some(k=>!safeDynamicNumber(particleFloats[i*12+k]) || particleFloats[i*12+k]<0)) throw new Error('Invalid native photon energy');
     if(tag===255 && (!safeDynamicNumber(particleFloats[i*12+9]) || particleFloats[i*12+9]<0 || s.particles[i*12+10]>2)) throw new Error('Invalid native neutron payload');
   }

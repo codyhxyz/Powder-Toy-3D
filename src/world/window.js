@@ -1,3 +1,4 @@
+import { decodeWorldState } from './persistence.js';
 import { NativeBrickStore } from './nativeStore.js';
 import { BRICK } from '../shaders/common.js';
 import { restoreEdit, BRICK_CELLS } from '../shaders/window.js';
@@ -162,20 +163,29 @@ export class WorldWindow {
   // passed over them.
   loadSaved(origin, fillState, storeBytes, planted, nativeBytes = null) {
     const sim = this.sim;
-    if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
+    const next = decodeWorldState({ size: this.size, origin }, [sim.g.nx, sim.g.ny, sim.g.nz], storeBytes, planted, nativeBytes);
+    if (sim.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
     this.historyIdentity = {};
     this.epoch++;
     this.persistenceError = null;
-    this.store.fromBytes(storeBytes);
-    this.nativeStore.clear();
-    if (nativeBytes) this.nativeStore.fromBytes(nativeBytes);
-    this.planted.set(planted);
+    this.store.map = next.store.map; this.store.bytes = next.store.bytes;
+    this.nativeStore.map = next.nativeStore.map; this.nativeStore.bytes = next.nativeStore.bytes;
+    this.planted.set(next.planted);
     sim.origin.set(origin[0], 0, origin[2]);
     fillState();
     this.far?.build();
     sim.dropHistory();
     sim.fieldReset = sim.giReset = true;
     this.loaded = true;
+  }
+
+  // Acquire synchronously before save preparation can yield. Existing shifts
+  // may finish their already-recorded transition/readback; only NEW shifts are
+  // excluded, so waiting for this.pending while holding the lock cannot deadlock.
+  acquireReadLock() {
+    this.historyReaders = (this.historyReaders ?? 0) + 1;
+    let released = false;
+    return () => { if (!released) { released = true; this.historyReaders--; } };
   }
 
   // COW history: stored byte strings are immutable after put(); snapshots copy
@@ -353,7 +363,7 @@ export class WorldWindow {
       const L = last();
       if (L && epoch === this.epoch) Object.assign(L, { flagsMs: t1 - t0, readbackMs: t1 - t0, keepMs: performance.now() - t1, kept, landedAt: performance.now() });
     }).catch((err) => {
-      if (nativeRead && epoch === this.epoch) this.persistenceError = err;
+      if (epoch === this.epoch) this.persistenceError = err;
       if (!this.gpu.failure) console.error('world window: leaving slab readback failed; native streaming/saving is blocked', err);
     }).finally(() => { this.pending = null; });
   }
