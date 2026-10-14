@@ -94,7 +94,7 @@ export function createPovHud() {
       ? [h('span.pov-dot', { text: '·' }), 'God to leave']
       : [h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'])));
 
-  const grappleHint = h('span', {}, key('E'), ' grapple / release · jump to pull');
+  const grappleHint = h('span', {}, key('E'), ' grappendix / release · jump to launch');
   const hint = h('div.pov-hint.panel', {},
     h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
     h('span', {}, key('Space'), ' jump, hold to fly'),

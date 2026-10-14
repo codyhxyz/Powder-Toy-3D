@@ -221,7 +221,7 @@ export function createPov(app) {
   });
   const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
   const canGrapple = () => live() && !editing && canUse() && !vehicles.seated
-    && !game.running && (app.gamemode?.() ?? 'sandbox') === 'sandbox' && !app.industryBuilding?.();
+    && !game.running && ['sandbox', 'crueltySquad'].includes(app.gamemode?.() ?? 'sandbox') && !app.industryBuilding?.();
   const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
     onEnabled: on => { syncVillageTools(on); toolbelt?.setVisible(mode === 'on'); if (on) setMenu(false); },
     onTool: key => { toolbelt?.restrict(key ? [key] : [], key); },
@@ -272,7 +272,7 @@ export function createPov(app) {
   function releaseActions() {
     buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = grappleQueued = false;
-    toolbelt?.tool('HOOK')?.cancelGrapple();
+    toolbelt?.grapple?.release();
     // A buffered dig must not finish after pockets open or furniture takes the hands.
     if (village.enabled) toolbelt?.tool(toolbelt.selectedKey)?.deselect?.();
   }
@@ -760,7 +760,8 @@ export function createPov(app) {
 
     // the body
     readInput();
-    if (!canGrapple()) toolbelt?.tool('HOOK')?.cancelGrapple();
+    input.cruelty = app.gamemode?.() === 'crueltySquad';
+    if (!canGrapple()) toolbelt?.grapple?.release();
     vehicles.beforeBody(player);
     village.beforeBody(input, dt);
     player.update(dt, input);
@@ -898,7 +899,6 @@ export function createPov(app) {
       ctx.secondaryPressed = use && buttons.secondaryPressed;
       ctx.grappleEnabled = canGrapple() && use;
       ctx.grapplePressed = ctx.grappleEnabled && grappleQueued;
-      ctx.grappleJump = ctx.grappleEnabled && input.jump;
       ctx.wheel = wheelNotches;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;

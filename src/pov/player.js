@@ -12,6 +12,7 @@ import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
 import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
+import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -245,6 +246,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const events = createEmitter('body');
   let kicker = null;   // the kick (kick.js), made once the body is
   let rope = null;     // { anchor (Vector3, grid; the setter keeps it current), length, reel (cells/s, 0 holds), hard, brace }
+  let crueltyFlight = false;   // retain the source game's air physics through release, until landing
   let revengeWait = 0, revengeDue = false;
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
@@ -743,8 +745,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const v = p.vel;
     const v0 = v.clone();   // an axis that runs into unprobed cells keeps this (its time didn't pass)
     const stalled = [false, false, false];
-    const grav = GRAVITY * sim.gravity / SIM_GRAVITY_REF;
     const swimming = sub >= SWIM_SHARE;
+    const cruelty = !swimming && (!!input.cruelty || !!rope?.grappendix || crueltyFlight);
+    const grav = (cruelty ? CRUELTY_GRAVITY : GRAVITY) * sim.gravity / SIM_GRAVITY_REF;
+    if (rope?.grappendix && alive) pullGrappendix(v, vB.copy(p.pos).setY(p.pos.y + H / 2), rope.anchor, grav, dt);
 
     // the jump button's timing (the pogo's timed presses)
     const jumpDown = alive && !!input.jump;
@@ -752,7 +756,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     prevJump = jumpDown;
     sinceJumpPress = pressed ? 0 : sinceJumpPress + dt;
     sinceBounce += dt;
-    const pogoing = alive && pogoHold && !swimming && !input.chargeJump;   // village Space belongs to the leap
+    const pogoing = alive && pogoHold && !swimming && !input.chargeJump && !cruelty;   // village Space belongs to the leap
     pogoHold = false;
     p.pogoing = pogoing;
     if (!pogoing) pogoStep = 0;
@@ -779,7 +783,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const sprinting = alive && input.sprint && crouch === 0;
     const footScale = p.speedScale * p.aimScale * p.status.moveScale * gait
       * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
-    const running = sprinting && wish.lengthSq() > 0 && !swimming && !p.jetting && !rope?.hard;
+    const running = sprinting && wish.lengthSq() > 0 && !swimming && !p.jetting && !rope?.hard && !cruelty;
     const along = vh.dot(wish);
     // No charge at rest, into a wall, or through a reversal; a hop keeps its run-up.
     if (!running || along < 0 || (p.onGround && along < WALK_SPEED * footScale * 0.5)) p.sprintBuild = 0;
@@ -794,7 +798,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jetRun = Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H));
     const runSpeed = footRun + (jetRun - footRun) * smooth01(p.jetSpool);   // the flight speed spools with the jet
     const swingingOnRope = !!rope?.hard && !p.onGround && !swimming;
-    if (swingingOnRope || p.leaping) {
+    if (cruelty) {
+      const sourceVelocity = vC.set(vh.x, v.y, vh.y);
+      jumpedNow = crueltyMove(sourceVelocity, wish, {
+        grounded: p.onGround, jumpPressed: pressed, yaw: input.jumpYaw ?? 0,
+        speedScale: p.speedScale * p.aimScale * p.status.moveScale * gait * crouchShare(crouch, 2 / 3),
+        jumpScale: gait,
+      }, dt);
+      vh.set(sourceVelocity.x, sourceVelocity.z); v.y = sourceVelocity.y;
+      if (jumpedNow) p.onGround = false;
+    } else if (swingingOnRope || p.leaping) {
       // on a rope in the air: Noita's ease only ever adds speed toward the wished
       // direction (it never brakes), so a swing keeps its momentum and can be pumped
       if (wish.lengthSq() > 0) {
@@ -858,7 +871,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Levitating (Levitatium, potions.js): Noita's Faster Levitation, 75% faster, and here the tank holds
     const levitating = p.status.has('LEVITATING');
     const jetRise = Math.min(JET_RISE * gait * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE * gait, PERK_SPEED_V));
-    const jetWants = alive && !!input.jump && !pogoing && !input.chargeJump;
+    const jetWants = alive && !!input.jump && !pogoing && !input.chargeJump && !cruelty;
     // Swimming can settle waist-deep: hand off at the surface, not only below SWIM_SHARE.
     const clings = jetWants && !p.onGround && !p.headInLiquid && ((perks.has('LUKKI') && clinging()) || levitating);
     const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings);
@@ -912,7 +925,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     } else v.add(impulse);
     impulse.set(0, 0, 0);
     p.knock = vK.sub(v).length();
-    if (rope && alive) pullRope(v, dt);
+    if (rope && !rope.grappendix && alive) pullRope(v, dt);
     if (v.length() > MAX_SPEED) v.setLength(MAX_SPEED);
 
     // move, with collisions
@@ -959,7 +972,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_GROUND / tankS);
     else if (p.jetIdleS > JET_AIR_WAIT_S) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_AIR / tankS);
-    if (p.onGround) p.leaping = false;
+    if (p.onGround) { p.leaping = false; if (!rope?.grappendix) crueltyFlight = false; }
 
     // landing and impacts. Landings never hurt, as in Noita (no fall damage);
     // being thrown into a wall or ceiling (a blast) still does. On a pogo the
@@ -990,7 +1003,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const closing = v.dot(ropeDir);
       // across the rope: damped toward still; along it: eased toward the reel speed
       const across = ropeCross.copy(v).addScaledVector(ropeDir, -closing);
-      if (!rope.swing) v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
+      v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
       if (closing < rope.reel) v.addScaledVector(ropeDir, (rope.reel - closing) * ease(ROPE_EASE, dt));
     }
     if (!rope.hard) return;
@@ -1022,6 +1035,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (![feet?.x, feet?.y, feet?.z].every(Number.isFinite)) return false;
     rope = null;   // a hook rope would yank the body back across the jump
     p.pos.copy(feet);
+    crueltyFlight = false;
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
@@ -1087,11 +1101,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get kicker() { return kicker; },   // for checks (kicker.walked: the cells the last kick's ray crossed)
     // Hang on a rope (see ROPE_*): { anchor, length, reel, hard, brace }, kept by reference (the setter
     // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
-    tether(r) {
-      // Keep air steering additive after releasing a sandbox swing (Noita's momentum-preserving leap).
-      if (!r && rope?.swing && !p.onGround) p.leaping = true;
-      rope = r;
-    },
+    tether(r) { rope = r; if (r?.grappendix) crueltyFlight = true; },
     ropeHand(out = new THREE.Vector3()) { return out.set(p.pos.x, p.pos.y + ropeHandY(), p.pos.z); },
     on: events.on,
   });

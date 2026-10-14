@@ -18,6 +18,7 @@ import { potionColor } from '../descent/flasks.js';
 import { ELEMENTS } from '../../elements.js';
 import { povGpu } from '../gpu.js';
 import { gridSpace } from '../space.js';
+import { createGrappendix } from '../grappendix.js';
 
 export { emptyLoads };
 
@@ -206,6 +207,7 @@ export function createToolbelt(env) {
     if (ballistics.count || wandRuntime.active) raf = requestAnimationFrame(drive);
   }
   const tools = new Map();   // key → { def, inst, slot }, every tool (carried or not), in catalog order
+  const grapple = createGrappendix(env);
 
   for (const { path, def } of toolDefs()) {
     const slot = gearByKey(def.key).slot;
@@ -511,6 +513,7 @@ export function createToolbelt(env) {
     get wantsWheel() { return !!held()?.wantsWheel?.(); },
     get zoom() { return held()?.zoom?.() ?? 1; },   // the held tool's view zoom (the sniper's scope): FOV ÷ this
     get transfer() { return transfer; },
+    get grapple() { return grapple; },
     get ballistics() { return ballistics; },
     get readout() { return readout; },
     get mana() { return wandSelected ? wandRuntime.mana : null; },   // the held wand's { mana, manaMax } (the HUD's bar), else null
@@ -536,9 +539,8 @@ export function createToolbelt(env) {
       // a status that leaves no hands (Polymorph, potions.js): the tool in hand is put away while it lasts,
       // and a wand is drawn again when it ends (putting it away stopped its casting)
       const helpless = noHands(ctx);
-      const hook = tools.get('HOOK')?.inst;
-      if (!ctx.grappleEnabled || helpless || editor.open) hook?.cancelGrapple();
-      else if (ctx.grapplePressed) hook?.grapple(ctx);
+      if (!ctx.grappleEnabled || helpless || editor.open) grapple.release();
+      else if (ctx.grapplePressed) grapple.toggle(ctx);
       if (helpless && !wasHelpless) putAway();
       else if (!helpless && wasHelpless && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
       wasHelpless = helpless;
@@ -557,6 +559,7 @@ export function createToolbelt(env) {
       }
       syncPotion();
       tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
+      grapple.update(ctx);
       // the held tool's own readout (a wand has none: Noita's HUD names the wand
       // only in the inventory), else what the crosshair is on, as the god view's hover
       readout = (wandSelected ? null : held()?.readout?.(ctx)) ?? lookReadout(ctx.aim);
@@ -576,17 +579,19 @@ export function createToolbelt(env) {
       if (v && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
       if (v && raf) { cancelAnimationFrame(raf); raf = 0; }
       if (!v && (ballistics.count || wandRuntime.active) && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
-      if (!v) { tools.get('HOOK')?.inst.cancelGrapple(); editor.close(); putAway(); readout = null; }
+      if (!v) { grapple.release(); editor.close(); putAway(); readout = null; }
     },
     // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
     // D11): every tool, selected or not, moves the grid positions it keeps.
     windowShifted(dx, dz) {
       ballistics.windowShifted(dx, dz);
       tools.forEach((t) => t.inst.windowShifted?.(dx, dz));
+      grapple.windowShifted(dx, dz);
       wandRuntime.windowShifted(dx, dz);
     },
     // the world was replaced (a scene load, undo, a new grid): what tools left in it is gone
     worldReplaced() {
+      grapple.release();
       tools.forEach((t) => t.inst.worldReplaced?.()); wandRuntime.resetWorld();
       // Descent's level switch replaced the world, and emptyLoads() emptied the flask in hand: it's the run's,
       // so it comes back full of what it held (Noita's flasks go down with you)
@@ -603,6 +608,7 @@ export function createToolbelt(env) {
       wandHand.removeFromParent();
       for (const mesh of [...wandParts, gem, halo]) { mesh.geometry.dispose(); mesh.material.dispose(); }
       tools.forEach((t) => { t.inst.deselect?.(); t.inst.dispose?.(); });
+      grapple.dispose();
       hotbar.dispose();
     },
   };
@@ -613,7 +619,7 @@ export function createToolbelt(env) {
 // without its buttons, so tools keep their animations and timers but nothing
 // fires, swings, pours or grabs, and none of a use's events go out without
 // its edit.
-const IDLE_INPUT = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, drink: false, drinkPressed: false, grapplePressed: false, grappleJump: false };
+const IDLE_INPUT = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, drink: false, drinkPressed: false, grapplePressed: false };
 function waitForKernels(ctx, env) {
   const sim = ctx.sim ?? env.getSim?.();
   return !sim || povGpu(sim).ready ? ctx : { ...ctx, ...IDLE_INPUT };
