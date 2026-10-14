@@ -35,6 +35,8 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
+      - run: node --test tools/check-mode-icons.mjs   # CPU-only: every gamemode has a valid credited menu emblem
+      - run: node tools/check-map-previews.mjs   # every built-in map has a square preview; CPU Descent geometry
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
       - run: node tools/check-gpu-deadline.mjs   # CPU-only: enforce total slot budget and cleanup ownership
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
