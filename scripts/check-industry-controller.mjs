@@ -32,8 +32,8 @@ globalThis.addEventListener = (key,fn) => listeners.set(key,fn);
 globalThis.removeEventListener = (key,fn) => { if (listeners.get(key) === fn) listeners.delete(key); };
 const settle = async () => { for (let i=0;i<12;i++) await Promise.resolve(); };
 const search = (node, predicate) => predicate(node) ? node : node.children?.map(child => search(child,predicate)).find(Boolean);
-const key = (code,shiftKey=false) => {
-  const e = {code,shiftKey,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;}};
+const key = (code,shiftKey=false,target) => {
+  const e = {code,shiftKey,target,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;}};
   listeners.get('keydown')?.(e); return e;
 };
 function fixture() {
@@ -87,6 +87,9 @@ await test('Sandbox B falls through; Shift+B opens, B closes; Factory B and nati
   assert(!industry.state.powered);assert(power.disabled);
   assert(search(panel,e=>e.title?.startsWith('Spark a conductor')).hidden);
   assert(key('KeyB').prevented);assert(industry.building);
+  assert(!key('KeyB',false,{tagName:'SELECT'}).prevented);assert(industry.building);
+  assert(key('Escape',false,{tagName:'SELECT'}).prevented);assert(!industry.building);
+  key('KeyB');assert(industry.building);
   const rejected=await industry.place(spec('belt',{powered:true}));
   assert(!rejected.ok);assert.match(rejected.reason,/built-in drive/);
   assert((await industry.place(spec('foundation'))).ok);assert.equal(industry.state.progression.credits,23);

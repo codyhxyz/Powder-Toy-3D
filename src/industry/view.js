@@ -118,8 +118,11 @@ export function createIndustryView(app, actions) {
   const types = node('div', 'industry-types', scroll);
   types.setAttribute('role', 'group'); types.setAttribute('aria-label', 'Choose a machine');
   const typeButtons = Object.fromEntries(Object.entries(DEVICE_TYPES).map(([key, d]) => {
-    const b = button('', () => {
-      if (actions.canBuild(key).ok) { actions.select(key); scroll.scrollTop = 0; }
+    const b = button('', event => {
+      if (actions.canBuild(key).ok) {
+        actions.select(key);
+        if (event?.detail !== 0) scroll.scrollTop = 0;
+      }
     }, types, 'industry-machine');
     b.setAttribute('data-machine', key); b.style.setProperty('--machine-color', d.color);
     b.append(machineIcon(key));
@@ -132,6 +135,11 @@ export function createIndustryView(app, actions) {
   selected.setAttribute('aria-label', 'Selected machine instructions');
   const selectedTop = node('div', 'industry-row', selected);
   const selectedName = node('h3', '', selectedTop);
+  button('Choose machine', () => {
+    const target = Object.values(typeButtons).find(({ b }) => b.getAttribute('aria-pressed') === 'true')?.b;
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, selectedTop, 'industry-choose');
   const facing = node('span', 'industry-facing', selectedTop);
   const flowInfo = node('div', 'industry-flow', selected);
   const input = node('div', '', flowInfo); node('span', 'industry-eyebrow', input, 'Input');
@@ -169,6 +177,12 @@ export function createIndustryView(app, actions) {
   const close = button('Esc close', actions.cancel, help); close.setAttribute('aria-label', 'Close construction · Escape');
   const cameraHelp = node('span', 'industry-camera-help', help, 'V walk / orbit');
   panel.addEventListener('pointerdown', e => e.stopPropagation());
+  panel.addEventListener('keydown', e => {
+    // Keep native activation/selection keys out of the global game shortcuts.
+    // Do not preventDefault: Space still clicks a button or checks Spark drive.
+    if (e.target.tagName === 'SELECT'
+      || ['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.code)) e.stopPropagation();
+  });
   document.body.append(panel);
   let wasBuilding = false;
   return {

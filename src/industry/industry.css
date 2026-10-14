@@ -76,6 +76,7 @@
 .industry-machine[data-availability="unavailable"] .industry-machine-state { color: var(--industry-bad); }
 .industry-selected { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line-hi); }
 .industry-selected h3 { font-size: 15px; font-weight: 650; }
+.industry .industry-choose { display: none; }
 .industry-facing { margin-left: auto; font-size: 10px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .industry-flow { display: grid; grid-template-columns: 1fr 1.2fr; gap: 10px; margin: 8px 0 6px; }
 .industry-flow > div { border-left: 2px solid #7cbdd1; padding-left: 7px; }
@@ -91,7 +92,7 @@
 .industry summary { cursor: pointer; border-radius: 3px; padding: 6px 0; color: var(--accent); }
 .industry-help { color: var(--muted); padding: 4px 0; }
 .industry-footer { flex-shrink: 0; padding: 10px 12px; border-top: 1px solid var(--line-hi); background: var(--panel-solid); }
-.industry-placement { border-left: 3px solid var(--muted); padding-left: 8px; margin-bottom: 8px; }
+.industry-placement { border-left: 1px solid var(--muted); padding-left: 8px; margin-bottom: 8px; }
 .industry-status-title { display: block; font-size: 12px; }
 .industry-status-title::before { content: '· '; }
 .industry-status { font-size: 11px; color: var(--muted); line-height: 1.35; }
@@ -112,15 +113,16 @@
 .industry-shortcuts button { min-height: 24px; padding: 1px 5px; margin-left: auto; font-size: 10px; background: transparent; }
 .industry-camera-help { flex-basis: 100%; }
 /* Short/compact screens retain a narrow rail and a fixed placement footer. */
-@media (min-width: 601px) and (max-width: 900px) {
-  .industry { left: 10px; width: min(320px, 44vw); }
-  .industry-hud, .industry-scroll, .industry-footer { padding-left: 10px; padding-right: 10px; }
-  .industry-eyebrow { font-size: 9px; }
-  .industry-caption { max-width: 115px; text-align: right; }
-}
 @media (max-height: 850px) and (min-width: 601px) {
   .industry[data-building="true"] { bottom: 14px; max-height: calc(100dvh - 118px); }
   .industry .industry-machine { min-height: 72px; padding: 5px 6px; }
+}
+@media (min-width: 601px) and (max-width: 900px) {
+  .industry { left: 10px; width: min(320px, 44vw); }
+  .industry[data-building="true"] { bottom: 14px; max-height: calc(100dvh - 184px); }
+  .industry-hud, .industry-scroll, .industry-footer { padding-left: 10px; padding-right: 10px; }
+  .industry-eyebrow { font-size: 9px; }
+  .industry-caption { max-width: 115px; text-align: right; }
 }
 /* Phone: a bottom sheet stays below the aiming point, not a full-screen modal. */
 @media (max-width: 600px) {
@@ -139,6 +141,7 @@
   .industry-shortcuts > span:first-child { display: none; }
   .industry-camera-help { flex-basis: auto; order: -1; }
   .industry .industry-toggle { min-height: 36px; }
+  .industry .industry-choose { display: inline-flex; align-items: center; min-height: 32px; padding: 4px 7px; font-size: 11px; color: var(--accent); }
 }
 @media (prefers-reduced-motion: reduce) {
   .industry *, .industry *::before, .industry *::after { transition: none !important; animation: none !important; }
