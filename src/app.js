@@ -1477,10 +1477,10 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
-    // The body you see in third person and when you die. Both Quaternius bodies
-    // wear a wizard's hat and purple clothing; Stickman is the TPT homage.
+    // The body you see in third person and when you die. The wizards wear a hat;
+    // the third body is the same guy with a marker-drawn paper bag over his head.
     { title: 'Character body', rows: [
-      { type: 'seg', key: 'character', options: [['real', 'Male wizard'], ['woman', 'Female wizard'], ['stick', 'Stickman']],
+      { type: 'seg', key: 'character', options: [['real', 'Male wizard'], ['woman', 'Female wizard'], ['stick', 'Paper bag']],
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
       { type: 'seg', key: 'villageCharacter', options: [['boy', 'Animal Crossing: Boy'], ['girl', 'Girl']],
         onChange: (v) => { settings.villageCharacter = v; save(); pacer.wake(); } },
