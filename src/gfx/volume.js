@@ -246,7 +246,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
       pipe.draw(rp, {
         bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header: sim.header(),
         params: {
-          meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth && !curved ? 1 : 0, marchNear, aerCopy,
+          meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
           deco: decoShown(sim) && sim.decoPlane ? 1 : 0,
           warpK: curved ? warp.k : 0, warpAnchor: curved ? warp.anchor : [0, 0], warpDir: curved ? warp.dir : [0, 1],
         },

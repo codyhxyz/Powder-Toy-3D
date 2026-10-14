@@ -255,8 +255,32 @@ for (const v of VOLUME_VIEWS) {
 }
 const realisticCurved=modules['volume.realistic.curved'];
 for (const call of ['warpSkip(&walk, bc, true)','warpRestart(&walk, ro, rd)','warpGridPoint(hitPos)','MESH_CUT_NONE']) assert(realisticCurved.includes(call), `volume.realistic.curved: ${call}`);
-assert(!/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: no mesh cut (its straight-ray distance isn\'t the chord march\'s)');
+assert(/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: preserve the opaque mesh depth');
+for (const call of ['var tCut = meshCutT(rd)', 'meshBudget = warpArc(walk.ray, 0.0, max(tCut, 0.0))',
+  'meshBudget - warpArc(walk.ray, 0.0, walk.t)', 'meshBudget = tCut;',
+  'warpArc(walk.ray, 0.0, floorT) < meshBudget', 'if (!cut && tCut >= MESH_CUT_NONE && FU.far'])
+  assert(realisticCurved.includes(call), `curved mesh cut: ${call}`);
 assert(/meshCutDepth\(h\.depth\)/.test(modules['volume.realistic']), 'flat: the mesh cut');
+// A mesh depth is distance on the DISPLAYED ray, not on each cell's chord.
+// Arc budgets survive arbitrary chord starts/skips and a refracted restart.
+for (const direction of [[0, -0.2, -1], [1, 0, 0], [0, -1, 0]]) {
+  const d = new THREE.Vector3(...direction).normalize().toArray();
+  const bend = effectParameters(ROLLING_LOG.k, [64, 80]);
+  const ray = inverseRay([64, 40, 100], d, bend);
+  const meshT = 60, budget = arcLength(ray, 0, meshT);
+  close(warp(rayPoint(ray, meshT), bend),
+    [64, 40, 100].map((v, i) => v + d[i] * meshT));
+  for (const start of [0, 1, 16, 32, 59.9, 60, 70]) {
+    const remaining = Math.max(0, budget - arcLength(ray, 0, start));
+    close([remaining], [start < meshT ? arcLength(ray, start, meshT) : 0], 1e-6);
+  }
+  const bendT = 20, left = budget - arcLength(ray, 0, bendT);
+  const at = rayPoint(ray, bendT), outgoing = new THREE.Vector3(0.2, -0.6, -1).normalize().toArray();
+  const shownDirection = new THREE.Vector3(...warpTangent(at, outgoing, bend)).normalize().toArray();
+  const restarted = inverseRay(warp(at, bend), shownDirection, bend);
+  const used = arcLength(restarted, 0, 3);
+  assert(left - used > 0 && left - used < left, 'refraction consumes, rather than resets, the mesh budget');
+}
 assert(modules.pick.includes('fn pickCurved') && modules.pick.includes('warpUse(P.ro[i].w'), 'pick: the displayed ray for a curved pick');
 // the menu's warm-up (src/preload.js) for a gamemode that bends the view: its curved variants, the ones it draws
 for (const v of ['realistic','heat']) {
