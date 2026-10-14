@@ -206,12 +206,20 @@ async function suite(useWorker) {
     !npc.hasIdChanges(boxAt(0), npc.idVersion) && !npc.hasIdChanges({ x0: -8, x1: -1, y0: 0, y1: 8, z0: 0, z1: 8 }, since));
   // Origin/sim replacement with identical dimensions and bytes must invalidate
   // every region, including ones with only empty cells or outside walls.
+  const emptyBrick = { x0: 0, x1: 3, y0: 0, y1: 3, z0: 0, z1: 3 };
+  const outside = { x0: -8, x1: -1, y0: 0, y1: 8, z0: 0, z1: 8 };
+  for (let y = 0; y < 4; y++) for (let z = 0; z < 4; z++) for (let x = 0; x < 4; x++)
+    sim.ids[(y * sim.g.nz + z) * sim.g.nx + x] = E.EMPTY;
+  sim.write();
+  await frame(60);
   for (const changeIdentity of [() => { sim.id++; }, () => { sim.origin = { toArray: () => [16, 0, 0] }; }]) {
     const before = npc.idVersion;
     changeIdentity();
     await frame(60);
     check(`${how}: same-size identity/origin reset invalidates material locality`,
       npc.idVersion > before && npc.hasIdChanges(boxAt(777), before));
+    check(`${how}: reset invalidates all-air and outside-only regions`,
+      npc.hasIdChanges(emptyBrick, before) && npc.hasIdChanges(outside, before));
   }
 
   if (useWorker) {
