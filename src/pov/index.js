@@ -894,6 +894,7 @@ export function createPov(app) {
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, mana: toolbelt?.mana ?? null, perks: player.perks, status: player.status,
       gold: descent.goldShown,
+      pogo: toolbelt?.selectedKey === 'POGO' ? player.pogoCharge : null,
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
