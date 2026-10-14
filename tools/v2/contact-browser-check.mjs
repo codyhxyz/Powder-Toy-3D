@@ -14,6 +14,7 @@ try {
   browser=await launchBrowser();
   const errors=[];
   const page=await openHarness(browser,vite,'/tools/harness/outcomes.html?engine=v2',{errors});
+  page.on('console',m=>{if(m.text().startsWith('[contact-trace]'))console.log(m.text());});
   const result=await page.evaluate(async()=>{
     const {gridLayout}=await import('/src/sim.js');
     const {E}=await import('/src/elements.js');
@@ -22,6 +23,21 @@ try {
     const {contactWGSL}=await import('/src/shaders/v2/contact.js');
     const {makeMaterial,energyOf}=await import('/src/v2/layout.js');
     const gpu=window.__harness.gpu,g=gridLayout(32,32,32),a=v2ActLayout(g),buffers=[];
+    const traceStart=performance.now();
+    const trace=(stage,extra={})=>console.log('[contact-trace] '+JSON.stringify({ms:performance.now()-traceStart,stage,...extra}));
+    for(const key of ['createShaderModule','createPipelineLayout','popErrorScope','createComputePipelineAsync']) {
+      const original=gpu.device[key].bind(gpu.device);
+      gpu.device[key]=(...args)=>{
+        trace(key+':start');
+        const result=original(...args);
+        if(result?.then)result.then(()=>trace(key+':ready'),e=>trace(key+':failed',{error:String(e)}));
+        else trace(key+':returned');
+        if(key==='createShaderModule')result.getCompilationInfo().then(
+          info=>trace('shader-info',{messages:info.messages.map(m=>m.message)}),
+          e=>trace('shader-info:failed',{error:String(e)}));
+        return result;
+      };
+    }
     const buffer=(name,size,data)=>{
       const b=gpu.createBuffer({label:name,size:Math.max(16,size),usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
       buffers.push(b);if(data)gpu.queue.writeBuffer(b,0,data);return b;
