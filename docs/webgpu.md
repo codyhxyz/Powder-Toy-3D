@@ -256,7 +256,10 @@ A presented tick is:
 ```
 E1 (ours)   compute: POV edits, paint, N × step, lightning, window move, rays,
                      derived passes, shadow, GI, far-field upkeep, pick
-            render:  scene pass: far field | floor grid, detail meshes, volume, box edges, brush cursor
+            render:  a world's volume first (its own colour + depth, after three's opaque meshes), the far
+                     occluder (its opaque hits ∪ the detail meshes' depth: the far view stops there);
+                     scene pass: detail meshes, far field (skips what the volume covers opaquely), the
+                     volume composited over it | box: floor grid, volume; then box edges, brush cursor
             ── only if three has something visible: flush; three.render(scene) into the scene target (its own
                submit); in POV three.render(viewmodels) into their MSAA target (its own submit) ──
 E2 (ours)   render:  rays overlay (only while rays are active; depthReadOnly)

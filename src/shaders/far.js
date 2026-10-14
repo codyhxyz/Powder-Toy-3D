@@ -1532,6 +1532,85 @@ export const farMeshPipeline = () => ({
 // small module: positions only, no lighting, so it builds in a moment beside
 // the meshes' pipeline.
 export const FAR_DETAIL_DEPTH_FORMAT = 'r32float';
+
+// The volume first (world/far.js volumePass; docs/webgpu.md F1): in a world
+// the window's volume draws before the scene pass into a colour and a depth of
+// its own (cleared to 0 and 1), so the view can skip what the volume covers.
+// farOccluderFrag folds the volume's opaque hits into the detail meshes'
+// depth: per pixel the nearer of the two (0: none), which the view already
+// treats as where its march stops (tDetailDepth: past it, nothing of its own
+// shows, so it discards). There the view does no march and no sky (the
+// clouds' ~300 taps under the canopy), and where the volume is translucent or
+// missed it draws as it did. farUnderFrag then composites the volume's colour
+// over the view where the volume used to draw (premultiplied over, its
+// frag_depth, depth-tested against the view, the detail meshes and three's
+// meshes), the same blend and the same test as the volume's own draw: the
+// picture and the depth are what they were.
+const VOL_OPAQUE = 1.0;        // the volume's stored alpha (rgba16float) at which the over blend leaves nothing of what is under it (a ≥ 1 − 2⁻¹² rounds to 1)
+const VOL_CLEAR_DEPTH = 1.0;   // the volume depth's clear: the volume drew nothing at a pixel still holding it
+export const VOL_FORMATS = { color: 'rgba16float', depth: 'depth32float' };   // the volume's own targets: the scene target's formats (its pipelines draw into them as they are)
+const FULL_SCREEN_VS = /* wgsl */ `
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  // (-1, -1), (3, -1), (-1, 3): one triangle covering the screen
+  return vec4f(f32(i32(i & 1u) * 4 - 1), f32(i32(i >> 1u) * 4 - 1), 0.0, 1.0);
+}`;
+const VOL_TEXTURES = /* wgsl */ `
+@group(0) @binding(0) var tVolColor: texture_2d<f32>;   // the volume's premultiplied colour
+@group(0) @binding(1) var tVolDepth: texture_depth_2d;  // its frag_depth (VOL_CLEAR_DEPTH where it drew nothing)
+const VOL_OPAQUE: f32 = ${VOL_OPAQUE.toFixed(1)};
+const VOL_CLEAR_DEPTH: f32 = ${VOL_CLEAR_DEPTH.toFixed(1)};`;
+export const farOccluderFrag = () => /* wgsl */ `
+// far occluder
+${VOL_TEXTURES}
+@group(0) @binding(2) var tDetailDepth: texture_2d<f32>;   // the detail meshes' depth this frame, or a 1×1 0 (none)
+${FULL_SCREEN_VS}
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let px = vec2i(pos.xy);
+  var occ = textureLoad(tDetailDepth, min(px, vec2i(textureDimensions(tDetailDepth)) - 1), 0).r;
+  if (textureLoad(tVolColor, px, 0).a >= VOL_OPAQUE) {
+    let d = textureLoad(tVolDepth, px, 0);
+    if (occ <= 0.0 || d < occ) { occ = d; }
+  }
+  return vec4f(occ, 0.0, 0.0, 1.0);
+}`;
+export const farUnderFrag = () => /* wgsl */ `
+// far under: the volume over the view
+${VOL_TEXTURES}
+${FULL_SCREEN_VS}
+struct UnderOut {
+  @location(0) color: vec4f,
+  @builtin(frag_depth) depth: f32,
+}
+@fragment fn fs(@builtin(position) pos: vec4f) -> UnderOut {
+  let px = vec2i(pos.xy);
+  let depth = textureLoad(tVolDepth, px, 0);
+  if (depth >= VOL_CLEAR_DEPTH) { discard; }
+  var o: UnderOut;
+  o.color = textureLoad(tVolColor, px, 0);
+  o.depth = depth;
+  return o;
+}`;
+const VOL_ENTRIES = [
+  { binding: 0, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
+  { binding: 1, visibility: STAGE.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
+];
+export const FAR_UNDER_LAYOUT = VOL_ENTRIES;
+export const FAR_OCCLUDER_LAYOUT = [...VOL_ENTRIES, { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } }];
+/** The occluder pass's pipeline: full screen, r32float out (the view's tDetailDepth), no depth. */
+export const farOccluderPipeline = () => ({
+  vertex: { entry: 'vs' },
+  fragment: { entry: 'fs', targets: [{ format: FAR_DETAIL_DEPTH_FORMAT }] },
+  primitive: { topology: 'triangle-list' },
+});
+// premultiplied colour over what is there (the volume's own blend: shaders/render.js OVER)
+const VOL_OVER = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } };
+/** The volume's composite into the scene pass: the volume pipeline's blend and depth state, full screen. */
+export const farUnderPipeline = () => ({
+  vertex: { entry: 'vs' },
+  fragment: { entry: 'fs', targets: [{ format: VOL_FORMATS.color, blend: VOL_OVER }] },
+  primitive: { topology: 'triangle-list' },
+  depthStencil: { format: VOL_FORMATS.depth, depthWriteEnabled: true, depthCompare: 'less-equal' },
+});
 export const farDetailDepthFrag = (g) => /* wgsl */ `
 // far detail depth
 ${FarViewParams.wgsl}
@@ -1634,4 +1713,7 @@ export const WGSL_CHECK = () => [
     name: 'far detail depth', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farDetailDepthFrag(g),
     layouts: () => [], params: FarViewParams, ...farDetailDepthPipeline(),
   },
+  // the volume first (world/far.js volumePass): the occluder fold and the volume's composite
+  { name: 'far occluder', kind: 'render', grids: ['64'], warm: false, code: () => farOccluderFrag(), layouts: () => [FAR_OCCLUDER_LAYOUT], ...farOccluderPipeline() },
+  { name: 'far under', kind: 'render', grids: ['64'], warm: false, code: () => farUnderFrag(), layouts: () => [FAR_UNDER_LAYOUT], ...farUnderPipeline() },
 ];
