@@ -7,6 +7,15 @@ import { launchBrowser, newTestPage, ready, render } from './browser.mjs';
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(`--${name}`); return i < 0 ? fallback : args[i + 1]; };
 const out = option('out', '/tmp/village-check'); mkdirSync(out, { recursive: true });
+async function advanceVillage(page, move = { x: 0, z: 0 }, count = 7) {
+  await page.evaluate(({ move, count }) => {
+    const a = __app; a.test.park();
+    for (let i = 0; i < count; i++) {
+      a.pov.village.beforeBody({ move: { ...move }, jump: false }, 0.05);
+      a.pov.village.afterBody(); a.pov.village.update(0.05, true, a.pov.camera.look.yaw);
+    }
+  }, { move, count });
+}
 async function homePose(page, x, z, yaw = -Math.PI / 2) {
   await page.evaluate(({ x, z, yaw }) => {
     const a = __app;
@@ -92,28 +101,33 @@ try {
   assert.equal(await page.evaluate(() => __app.pov.camera.third), true, 'drop restores the previous perspective');
   assert.equal(await controls.locator('[data-action="interact"] .action-key').textContent(), 'E');
   await page.keyboard.down('e'); await page.keyboard.down('e'); await page.keyboard.up('e');
-  assert.ok(await page.evaluate(() => __app.pov.village.carrying), 'holding E grabs once, never immediately drops again');
+  assert.equal(await page.evaluate(() => __app.pov.village.interaction?.kind), 'grip', 'holding E grips once');
   assert.equal(await panel.isVisible(), false, 'grabbing placed furniture never opens a menu');
-  await page.keyboard.press('r');
-  await homePose(page, 3.5, -2);
-  assert.equal(await page.evaluate(() => __app.pov.village.carrying.z), -2, 'carried furniture follows the player');
+  await advanceVillage(page, { x: 0, z: -1 });
+  await advanceVillage(page, { x: 0, z: -1 });
+  assert.equal(await page.evaluate(() => __app.pov.village.state.placed.find(i => i.id === 'plant').z), -2, 'grounded furniture moves one cell at a time');
   await page.keyboard.press('e');
-  assert.equal(await page.evaluate(() => __app.pov.village.state.placed.find(i => i.id === 'plant')?.rotation), 1);
+  assert.equal(await page.evaluate(() => __app.pov.village.state.placed.find(i => i.id === 'plant')?.rotation), 0);
   assert.equal(await page.evaluate(() => __app.pov.village.state.placed.find(i => i.id === 'plant')?.z), -2);
   await page.keyboard.press('e'); await page.keyboard.press('i');
   assert.ok(await page.evaluate(() => __app.pov.village.state.pockets.some(i => i.id === 'plant')));
   await homePose(page, -2.5, 5, Math.PI / 2);
   await page.keyboard.press('e');
-  assert.equal(await page.evaluate(() => __app.pov.village.carrying.id), 'bed');
+  assert.equal(await page.evaluate(() => __app.pov.village.interaction?.kind), 'sleep');
+  await page.keyboard.press('e');
+  assert.equal(await page.evaluate(() => __app.pov.village.context.player.x), -2.5, 'wake restores safe entry');
+  await page.keyboard.press('g');
+  const gripX = await page.evaluate(() => __app.pov.village.context.player.x);
+  assert.equal(await page.evaluate(() => __app.pov.village.interaction?.id), 'bed');
   const throughOldFootprint = await page.evaluate(() => {
     const a = __app, v = a.pov.village;
     v.beforeBody(); a.pov.player.pos.x -= 3.5; v.afterBody();
     return v.context.player.x;
   });
-  assert.equal(throughOldFootprint, -6, 'a lifted piece no longer collides at its old position');
+  assert.equal(throughOldFootprint, gripX, 'grip plants the body instead of allowing free movement');
   await page.keyboard.press('Escape');
   assert.equal(await page.evaluate(() => __app.pov.village.carrying), null);
-  assert.equal(await page.evaluate(() => __app.pov.village.context.player.x), -2.5, 'cancel cannot trap the player in the restored piece');
+  assert.equal(await page.evaluate(() => __app.pov.village.context.player.x), gripX, 'release stays beside the piece');
   assert.deepEqual(await page.evaluate(() => __app.pov.village.state.placed.find(i => i.id === 'bed')), first.state.placed[0], 'cancel preserves the original furniture');
   const collision = await page.evaluate(() => {
     const a = __app, p = a.pov.player;
@@ -130,6 +144,8 @@ try {
   assert.ok(collision.landed > 26.8, 'jumping onto furniture has landing support');
   await homePose(page, 3, 3, -Math.PI * 0.75);
   await page.keyboard.press('e');
+  assert.equal(await panel.isVisible(), false, 'storage waits for the reach/pull');
+  await advanceVillage(page, { x: 0, z: 0 }, 14);
   await page.screenshot({ path: join(out, 'dresser-desktop.png'), animations: 'disabled' });
   await panel.getByRole('button', { name: 'Pockets', exact: true }).click();
   await panel.getByRole('button', { name: 'Leafy plant', exact: true }).click();
@@ -178,7 +194,7 @@ try {
   await page.keyboard.press('e');
   assert.equal(await panel.locator('.village-typed').textContent(), await panel.locator('.village-dialogue .sr-only').textContent(), 'E completes the text reveal');
   const greeting = await panel.locator('.village-typed').textContent();
-  await panel.getByRole('button', { name: 'Keep chatting', exact: true }).click();
+  await panel.locator('.village-topic').first().click();
   await page.keyboard.press('e');
   assert.notEqual(await panel.locator('.village-typed').textContent(), greeting, 'continue advances the conversation');
   await panel.getByRole('button', { name: 'Mute animalese', exact: true }).click();
@@ -295,13 +311,15 @@ try {
   await touchActions.getByRole('button', { name: 'Set down', exact: true }).tap();
   assert.ok(await mobile.evaluate(() => __app.pov.village.state.placed.some(i => i.id === 'plant')));
   await touchActions.getByRole('button', { name: 'Grab leafy plant' }).tap();
-  await touchActions.getByRole('button', { name: 'Rotate · 0°' }).tap();
-  await homePose(mobile, 3.5, -2);
-  await touchActions.getByRole('button', { name: 'Set down', exact: true }).tap();
-  assert.equal(await mobile.evaluate(() => __app.pov.village.state.placed.find(i => i.id === 'plant').rotation), 1, 'touch rotates and drops physical furniture');
+  assert.equal(await mobile.evaluate(() => __app.pov.village.interaction?.kind), 'grip');
+  assert.equal(await touchActions.locator('[data-action="rotate"]').count(), 0);
+  await advanceVillage(mobile, { x: 0, z: -1 });
+  await advanceVillage(mobile, { x: 0, z: -1 });
+  await touchActions.getByRole('button', { name: 'Let go', exact: true }).tap();
+  assert.equal(await mobile.evaluate(() => __app.pov.village.state.placed.find(i => i.id === 'plant').z), -2);
   await touchActions.getByRole('button', { name: 'Grab leafy plant' }).tap();
-  await touchActions.getByRole('button', { name: 'Cancel move' }).tap();
-  assert.equal(await mobile.evaluate(() => __app.pov.village.carrying), null);
+  await touchActions.getByRole('button', { name: 'Let go' }).tap();
+  assert.equal(await mobile.evaluate(() => __app.pov.village.interaction), null);
   await mobile.evaluate(() => {
     const a = __app;
     a.pov.player.teleport(new a.THREE.Vector3(a.win.P.size[0] / 2 - 93, 24, a.win.P.size[2] / 2 + 63).sub(a.sim.origin));
@@ -311,6 +329,7 @@ try {
   await touchActions.getByRole('button', { name: 'Open dresser' }).waitFor();
   await render(mobile); await mobile.screenshot({ path: join(out, 'touch-dresser.png') });
   await touchActions.getByRole('button', { name: 'Open dresser' }).tap();
+  await advanceVillage(mobile, { x: 0, z: 0 }, 14);
   await touchPanel.getByRole('heading', { name: 'Your dresser' }).waitFor();
   await mobile.screenshot({ path: join(out, 'dresser-mobile.png'), animations: 'disabled' });
   await touchPanel.getByRole('button', { name: 'Pockets', exact: true }).tap();

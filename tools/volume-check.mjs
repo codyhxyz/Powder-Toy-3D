@@ -43,7 +43,7 @@
 //             detail; the cold pipeline toast fires for a pipeline still building,
 //             never for a ready one, and nothing holds a frame
 // --detail off|base|balanced (default off) is the realistic variant the meshes stage draws.
-// --shots DIR saves the frames as PNGs for review.
+// --shots DIR saves the frames as PNGs for review; --curved bends the meshes pool test.
 //
 // usage: node tools/volume-check.mjs [--port 5606] [--only views,shadow] [--views plain,realistic.off] [--detail off] [--shots DIR] [--size 64]
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -200,7 +200,7 @@ async function session(stages) {
 
     if (has('meshes')) {
       lap('meshes');
-      const r = await run('meshes', { detail, shots: !!SHOTS });
+      const r = await run('meshes', { detail, shots: !!SHOTS, curved: argv.includes('--curved') });
       if (r.shots) for (const [k, v] of Object.entries({ cut: r.shots.withCut, control: r.shots.control, 'surface-cut': r.shots.surfaceCut, 'surface-control': r.shots.surfaceControl })) shot(`meshes-${k}`, v);
       const { withCut: w, control: c, alone: a } = r;
       console.log(`     points ${JSON.stringify(r.points)}; box alone: above ${f3(a.above.color)} @${a.above.depth.toFixed(5)}, below @${a.below.depth.toFixed(5)}`);

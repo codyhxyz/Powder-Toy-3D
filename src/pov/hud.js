@@ -94,12 +94,14 @@ export function createPovHud() {
       ? [h('span.pov-dot', { text: '·' }), 'God to leave']
       : [h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'])));
 
+  const grappleHint = h('span', {}, key('E'), ' grapple / release · jump to pull');
   const hint = h('div.pov-hint.panel', {},
     h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
     h('span', {}, key('Space'), ' jump, hold to fly'),
     h('span', {}, key('Shift'), ' sprint'),
     h('span', {}, key('C'), ' crouch'),
     h('span', {}, key('F'), ' kick'),
+    grappleHint,
     h('span', {}, key('Z'), ' zoom'),
     h('span', {}, key('F5'), '/', key('Ctrl'), ' third person'),
     h('span', {}, key('V'), ' god view'));
@@ -191,6 +193,7 @@ export function createPovHud() {
       if (s.buried) set(fx.buried, '--c', s.buried);
       set(fx.buried, 'opacity', live && s.buried ? '1' : '0');
       set(lock, '.show', live && !s.locked);
+      grappleHint.hidden = !s.grappleEnabled;
 
       // health, with a trail that shows what the last hit took
       const hp = Math.max(0, Math.min(1, s.health));
