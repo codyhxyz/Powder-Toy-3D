@@ -6,7 +6,7 @@ import { litColor, gridPosition, figNormalMappedFn, prepareMesh, getMeshGpu, unl
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 import { limb as ikLimb, solveLimb } from './limbs.js';
 import { strikePose, sampleKickPose, kickBlend } from './strikePose.js';
-import { flapPose, sampleFlap } from './flapPose.js';
+import { createFlapAnimation } from './flapPose.js';
 
 // The body you see in third person and when you die, built from three.js
 // primitives in grid cells and scaled into the world. createFigure(build)
@@ -287,7 +287,7 @@ export function buildStick() {
 
 export function createFigure(build = buildStick) {
   const kickPose = strikePose();
-  const wingPose = flapPose();
+  const wingAnimation = createFlapAnimation();
   const u = figureUniforms();
   const tint = [0, 0, 0, 0];
   const root = new THREE.Group();      // at the feet, turned to face the look direction
@@ -473,8 +473,9 @@ export function createFigure(build = buildStick) {
       shR.rotation.set(J.shR, 0, J.armOut);
       elL.rotation.x = J.elL;
       elR.rotation.x = J.elR;
-      if (!s.dead && s.flap > 0) {
-        sampleFlap(s.flap, wingPose);
+      if (s.dead) wingAnimation.reset();
+      const wingPose = wingAnimation.update(dt, s.dead ? 0 : s.flap ?? 0);
+      if (wingPose.weight > 0) {
         shL.quaternion.slerp(wingPose.left, wingPose.weight);
         shR.quaternion.slerp(wingPose.right, wingPose.weight);
         elL.quaternion.slerp(wingPose.elbow, wingPose.weight);

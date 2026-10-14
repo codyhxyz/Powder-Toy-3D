@@ -77,15 +77,16 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function landPunch() {
     if (!pendingPunch || time - punchAt < PUNCH_CONTACT) return;
     const { token, sim, home, r, origin, start, dir } = pendingPunch; pendingPunch = null;
-    if (token !== punchSerial || time - punchAt > PUNCH_COOLDOWN || !context().active || ui.opened || held || interaction
+    // A late asynchronous ray result must not hit during the visible recovery.
+    if (token !== punchSerial || time - punchAt > PUNCH_CONTACT + 0.05 || !context().active || ui.opened || held || interaction
       || app.getSim() !== sim || !sim.origin.equals(origin) || room() !== home
       || getPlayer().pos.distanceTo(start.clone().setY(start.y - 3)) > 1) return;
     const now = local(), still = punchTarget({ x: now.x - HOMES[home], y: now.y, z: now.z }, camera.look.yaw, residents, home);
     if (still?.resident !== r) return;
     r.vx = dir.x * 44; r.vz = dir.z * 44; r.vy = 8; r.bonk = 0.9;
     r.replyUntil = time + 2;
-    reaction = `${r.spec.name}: Hey! Boing!`; reactionUntil = time + 2;
-    speech.speak('Hey! Boing!', r.spec.pitch); speech.bonk(); app.requestRender();
+    reaction = `${r.spec.name}: Hey!`; reactionUntil = time + 2;
+    speech.bonk(); speech.speak('Hey!', r.spec.pitch, 0.24); app.requestRender();
   }
   const previous = new THREE.Vector3();
   const local = () => {
@@ -521,7 +522,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const model = character(spec);
       const height = new THREE.Box3().setFromObject(model.root).max.y;
       root.add(model.root);
-      const bubble = speechBubble(spec.name, 'Hey! Boing!'); model.root.add(bubble);
+      const bubble = speechBubble(spec.name, 'Hey!'); model.root.add(bubble);
       return { spec, model, height, bubble, replyUntil: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, bonk: 0 };
     });
     for (let home = 0; home < 4; home++) {
