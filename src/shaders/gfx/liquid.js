@@ -181,6 +181,22 @@ fn reflShade(a: vec4f, hp: vec3f, n: vec3f) -> vec3f {
   let ct = floor(a.w);
   return hitLight(hp + n * IFACE_PROBE, n, ALBEDO(id), cellEmission(id, a.y, ct) + sparkEmit(id, ct));
 }
+// Reflections bracket and shade the trilinear field, so refine that same
+// field here, not surfRoot's cubic/near-detail surface. Entering crossings only.
+fn reflCross(ro: vec3f, rd: vec3f, ch: i32, ta0: f32, tb0: f32, phiA: f32, phiB: f32) -> f32 {
+  var fa = phiA - SURF_ISO;
+  var fb = phiB - SURF_ISO;
+  if (!(fa < 0.0 && fb >= 0.0)) { return NO_HIT; }
+  var ta = ta0;
+  var tb = tb0;
+  for (var k = 0; k < SURF_ROOT_STEPS; k++) {
+    let tm = mix(ta, tb, clamp(fa / (fa - fb), SURF_ROOT_SPLIT_LO, SURF_ROOT_SPLIT_HI));
+    let fm = surfField(ro + rd * tm)[ch] - SURF_ISO;
+    if ((fm < 0.0) == (fa < 0.0)) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
+  }
+  return mix(ta, tb, clamp(fa / (fa - fb), 0.0, 1.0));
+}
+
 // env: what the ray sees if it meets nothing (envReflectGI at the interface).
 // The pixel's first traced reflection (gReflTraced); later ones, and those far
 // from the eye, return env.
@@ -248,7 +264,7 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
       var tOp = NO_HIT;
       var ch = -1;
       for (var c = 1; c < 4; c++) {
-        let t = surfCross(ro, rd, c, true, tEnter, tExit, tExit, phiA[c], phiB[c], phiB[c]);
+        let t = reflCross(ro, rd, c, tEnter, tExit, phiA[c], phiB[c]);
         if (t < tOp) { tOp = t; ch = c; }
       }
       if (ch > 0) {

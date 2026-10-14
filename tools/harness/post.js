@@ -12,7 +12,7 @@
 import { createPresenter, uniformStruct, fullscreenVert, halfsToFloats, STAGE } from '/src/gpu/index.js';
 import { useWebGPUCamera, createThreeRenderer, threeHasVisible } from '/src/gpu/three.js';
 import { PerspectiveCamera, Matrix4, Vector3, Scene, Mesh, BoxGeometry, MeshBasicNodeMaterial } from 'three/webgpu';
-import { createPost, POST_DEFAULTS, WGSL_CHECK } from '/src/gfx/post.js';
+import { createPost, POST_DEFAULTS, WGSL_CHECK, compositeWGSL } from '/src/gfx/post.js';
 import { createProfiler } from '/src/gfx/profiler.js';
 import { createProfilerPanel } from '/src/ui/profiler.js';
 import { boot, ready, test, log, measure } from './harness.js';
@@ -655,6 +655,67 @@ test('meshes', async () => {
     points, visible: threeHasVisible(meshScene, camera), rtIsThree: Boolean(post.sceneTarget.rt),
     without: without.values, with: withMeshes.values, taa: taa.values, stats: withMeshes.stats, taaStats: taa.stats,
   };
+});
+
+// Three frames on the existing pattern: disabled, launch, full speed. No world simulation.
+test('sprintBlurPacked', async () => {
+  const d = gpu.device, shader = compositeWGSL();
+  // Exercise the production radiance helper, not a second implementation.
+  const common = shader.slice(shader.indexOf('const MAX_RADIANCE:'), shader.indexOf('// Soft-knee bright pass'));
+  const module = d.createShaderModule({ code: `${common}
+    @group(0) @binding(0) var src: texture_2d<f32>;
+    @group(0) @binding(1) var smp: sampler;
+    @group(0) @binding(2) var<storage, read_write> result: vec4f;
+    @compute @workgroup_size(1) fn main() { result = tapRadiance(src, smp, vec2f(0.5), 1u); }` });
+  const pipe = await d.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+  const tex = d.createTexture({ size: [2, 1], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  const out = d.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const read = d.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  try {
+    d.queue.writeTexture({ texture: tex }, new Uint16Array([100 / 101, 0, 0, 1, 0, 0, 0, 1].map(toHalf)), { bytesPerRow: 16 }, [2, 1]);
+    const group = d.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: tex.createView() }, { binding: 1, resource: d.createSampler({ minFilter: 'linear', magFilter: 'linear' }) },
+      { binding: 2, resource: { buffer: out } },
+    ] });
+    const enc = d.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(pipe); pass.setBindGroup(0, group); pass.dispatchWorkgroups(1); pass.end();
+    enc.copyBufferToBuffer(out, 0, read, 0, 16); d.queue.submit([enc.finish()]);
+    await read.mapAsync(GPUMapMode.READ);
+    const value = Array.from(new Float32Array(read.getMappedRange()));
+    read.unmap();
+    return value; // half-way between radiance 100 and 0 is ~50, not ~1
+  } finally { tex.destroy(); out.destroy(); read.destroy(); }
+});
+
+test('sprintBlur', async () => {
+  home(camera);
+  setPost({ taa: false, bloom: 0, adapt: false, sharpen: 0 });
+  const capture = async (amount, viewmodel = null, mode = 'plane') => {
+    post.settings.sprintBlur = amount;
+    post.render(sceneHooks({ mode, fill: [0.3, 0.2, 0.1, 1] }), camera, null, 1 / 60, { viewmodel });
+    const cap = post.capture();
+    gpu.endFrame();
+    return (await cap).data;
+  };
+  const off = await capture(0), low = await capture(0.04), full = await capture(1);
+  const compare = (a, b) => {
+    let center = 0, edge = 0, n = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const radius = Math.hypot(x + 0.5 - W / 2, y + 0.5 - H / 2) / Math.min(W, H);
+      const i = (y * W + x) * 4;
+      const delta = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+      if (radius < 0.15) center = Math.max(center, delta);
+      if (radius > 0.3) { edge += delta; n++; }
+    }
+    return { center, edge: edge / n };
+  };
+  const flat = compare(await capture(0, null, 'fill'), await capture(1, null, 'fill'));
+  const vm = solid([0.2, 0.1, 0.05, 1]);
+  let hands;
+  try { hands = compare(await capture(0, vm), await capture(1, vm)); }
+  finally { vm.destroy(); }
+  await capture(1);   // leave the streaked pattern on screen for the visual checkpoint
+  return { low: compare(off, low), full: compare(off, full), flat, hands };
 });
 
 ready();

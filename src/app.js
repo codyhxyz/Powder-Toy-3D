@@ -63,6 +63,7 @@ import { createDetailGate, gateVariants } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE, UPSCALE_FLOOR } from './gfx/post.js';
+import { sprintBlurStep } from './gfx/sprintBlur.js';
 import { createPresentation } from './gfx/presentation.js';
 import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
 import { povEvents } from './pov/events.js';
@@ -148,6 +149,7 @@ const DEFAULTS = {
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
   character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
   profiler: false,
@@ -157,6 +159,8 @@ const DEFAULTS = {
 // cheapest upscaling. Only the defaults change; anything the player picks in
 // Settings still sticks.
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
+REDUCED_MOTION.addEventListener('change', () => wakeLoop());
 const MOBILE_DEFAULTS = {
   size: BOX_DEFAULT, preset: 'lab',
   nearGI: false, glowLights: false, caustics: false, upscale: 'performance',
@@ -173,7 +177,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
+  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -1181,7 +1185,8 @@ let uiHover = false;
 let eyedropper = false; // armed by the dock's Eyedropper or by I away from any element
 createBrand();
 const card = createCard();
-const hud = createHud();
+const hud = createHud({ onTogglePause: () => setPaused(!settings.paused) });
+hud.setPaused(settings.paused);
 const help = createHelp(() => help.setOpen(false));
 
 function accentFor(hex) {
@@ -1326,6 +1331,7 @@ const actions = {
     if (camState() === 'god') { painting = false; pov.enter(); }
   },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
+  openShaders: () => { setSettingsOpen(true); settingsPanel.focusViews(); },
   toggleHelp: () => help.setOpen(!help.isOpen),
   // the start menu over the game (src/main.js), the way Garry's Mod's Esc brings up its menu
   openMenu: () => { painting = false; launch.openMenu?.(); },
@@ -1333,7 +1339,7 @@ const actions = {
   renderThumb,
 };
 // (greyed out until their subsystems are ported: src/wire)
-const toolbar = createToolbar({ views: VIEWS, settings, actions, available: { camera: !!wire('pov'), saves: !!wire('saves') } });
+const toolbar = createToolbar({ actions, available: { camera: !!wire('pov') } });
 // Tab held: Garry's Mod's scoreboard (ui/scoreboard.js), in the body and in the god view, while
 // you're on the world: with the mouse held by the body, or nothing focused (a click on the world
 // lets go of the controls: press). With a control or a dialog focused, Tab moves through them.
@@ -1395,6 +1401,16 @@ const settingsPanel = createSettings({
   onClose: () => setSettingsOpen(false),
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
+    { title: 'Game', rows: [
+      { type: 'custom', el: h('div.settings-actions', {},
+        h('button.btn', { type: 'button', text: 'Save game', title: 'Save game (⌘S)',
+          disabled: !wire('saves'), on: { click: actions.saveGame } }),
+        h('button.btn', { type: 'button', text: 'Keyboard shortcuts', title: 'Keyboard shortcuts (?)',
+          on: { click: actions.toggleHelp } })) },
+    ] },
+    { title: 'Shader', rows: [
+      { type: 'views', key: 'view', label: 'Shader', options: VIEWS, renderThumb, onChange: setView },
+    ] },
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
@@ -1443,6 +1459,10 @@ const settingsPanel = createSettings({
         onChange: (v) => { settings.viewBobbing = v; save(); } },
       { type: 'seg', key: 'sprintMode', options: [['hold', 'Sprint: Hold'], ['toggle', 'Toggle']],
         onChange: (v) => { settings.sprintMode = v; save(); } },
+      { type: 'seg', key: 'sprintBlur', options: [[true, 'Sprint Blur: On'], [false, 'Off']],
+        onChange: (v) => { settings.sprintBlur = v; save(); } },
+      { type: 'seg', key: 'sprintMusic', options: [[true, 'Sprint Music: On'], [false, 'Off']],
+        onChange: (v) => { settings.sprintMusic = v; save(); } },
     ] },
     ...(accountsEnabled ? [accountSection({ toast: (text, opts) => hud.toast(text, opts) })] : []),
     // for working on the app itself (the frame loop applies it)
@@ -1483,7 +1503,8 @@ function resetSettings() {
   rig.setSpeed(settings.camSpeed);
   applyDetail();
   dock.sync();
-  toolbar.sync();
+  hud.setPaused(settings.paused);
+  settingsPanel.sync();
   hud.setEditMode(editModeText());
   save();
   hud.toast('Settings reset', { kind: 'cleanup' });
@@ -1515,13 +1536,12 @@ function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings
 function setSettingsOpen(v) {
   settingsPanel.setOpen(v);
   toolbar.setSettingsOpen(v);
-  if (v) toolbar.close();
 }
 
 function setPaused(p) {
   if (mp.guard()) return;
   settings.paused = p;
-  toolbar.sync();
+  hud.setPaused(settings.paused);
 }
 
 // A view (src/views.js) is a pipeline of its own (shaders/render.js): one not
@@ -1536,7 +1556,7 @@ function setView(id) {
   prepareGI();
   const key = viewKeyOf(id);
   if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
-  toolbar.sync();
+  settingsPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
   save();
 }
@@ -1665,7 +1685,6 @@ async function renderThumb(viewId, out) {
   }
   ctx2d.putImageData(img, 0, 0);
   out.dataset.rendered = '1';
-  if (viewId === settings.view) toolbar.sync();
   return true;
 }
 
@@ -1699,7 +1718,6 @@ canvasEl.addEventListener('pointermove', (e) => {
 });
 canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
-  toolbar.close();
   if (pov?.active) {   // POV handles its own mouse buttons, but for the tool gun's middle one:
     // pick up what it aims at, Minecraft creative's pick block (TPT's middle click samples too)
     if (e.button === 1 && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN') {
@@ -1907,7 +1925,7 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   // ⌘S saves, ⌘O opens the Saves list: every program's keys (TPT has none: its Save
   // and Open buttons go local with Ctrl held, GameView.cpp saveSimulationButton, searchButton)
-  // (in the body Ctrl is the camera key and S walks back: there only ⌘ saves; the toolbar's Save always does)
+  // (in the body Ctrl is the camera key and S walks back: there only ⌘ saves; Settings' Save always does)
   const fileMod = e.metaKey || (e.ctrlKey && !pov?.active);
   if (fileMod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!e.repeat) actions.saveGame(); return; }
   if (fileMod && e.key.toLowerCase() === 'o') { e.preventDefault(); if (!e.repeat) actions.openSaves(); return; }
@@ -1938,11 +1956,12 @@ addEventListener('keydown', (e) => {
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
   else if (k === ',') actions.toggleSettings();
   else if (k === '?') actions.toggleHelp();
-  else if (k === 'p' || k === 'P') actions.screenshot();
+  // Minecraft Java's screenshot key; holding it must not download a stream of images.
+  else if (k === 'F2') { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
   else if (k === 'Escape') {
-    const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
+    const overlay = eyedropper || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
     shapeDrag = null;   // a line or box being dragged is dropped
-    setEyedropper(false); toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
+    setEyedropper(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
     if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
   }
@@ -1985,6 +2004,7 @@ function applyProfiler() {
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
+clock.connect(document);   // hidden-tab time is not rendering cost
 let animTime = 0;   // s the simulation has run: the scene's own animations (perk orbs, arena banners)
 // The fps readout is the rate frames are drawn while drawing: a paused, still
 // scene draws nothing (render on demand) and reads as idle, not as a low rate.
@@ -2325,9 +2345,10 @@ function tick(now, renderOnly = false) {
   applyOutputRatio();
   prof.beginFrame(now);
   if (!renderOnly) clock.update(now);
-  const dt = renderOnly ? 0 : Math.min(clock.getDelta(), DT_MAX);
-  // only frames that rendered measure how expensive rendering is
-  if (!renderOnly && renderedLast && post.settings.taa) autoRes.update(dt, clock.getElapsed());
+  const frameDt = renderOnly ? 0 : clock.getDelta();
+  const dt = Math.min(frameDt, DT_MAX);
+  // Measure real rendering time: the animation cap hides improvements below 10 fps.
+  if (!renderOnly && renderedLast && post.settings.taa && frameDt > 0) autoRes.update(frameDt, clock.getElapsed());
   // Set before pacing's view key so a scale change always schedules a render.
   post.settings.resolutionScale = autoRes.scale;
   ctx.renderOnly = renderOnly;
@@ -2451,6 +2472,10 @@ function tick(now, renderOnly = false) {
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     // (the blocks' faces are radiance, as the realistic view's; the data views are finished colours)
     post.settings.raw = blocks ? false : settings.view !== 0;
+    const blurAllowed = settings.sprintBlur && !REDUCED_MOTION.matches && pov?.mode === 'on'
+      && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
+    post.settings.sprintBlur = blurAllowed
+      ? sprintBlurStep(post.settings.sprintBlur, pov.player?.sprintRush ?? 0, dt) : 0;
     // The preset is a share of the screen's (device) pixels, FSR 2's; post takes shares of the canvas's.
     post.settings.upscale = presetOf() * DEVICE_RATIO / pixelRatio;
     post.settings.adaptive = presetOf() < 1;

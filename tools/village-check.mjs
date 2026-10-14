@@ -256,7 +256,7 @@ try {
     const stick = document.querySelector('.touch-stick').getBoundingClientRect();
     const jump = document.querySelector('.touch-actions .touch-row:last-child').getBoundingClientRect();
     const place = document.querySelector('.village-place').getBoundingClientRect();
-    const camera = document.querySelector('.cam-seg').getBoundingClientRect();
+    const camera = document.querySelector('.camera-select').getBoundingClientRect();
     const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
     return !overlaps(place, camera) && actions.every(a => a.width >= 48 && a.height >= 48 && a.left >= 0 && a.right <= innerWidth
       && !overlaps(a, stick) && !overlaps(a, jump));

@@ -37,7 +37,7 @@ const EMBER_MAX = 90;             // a torch's embers (held and lying)
 const MOTE_MAX = 220;             // the laser's motes: drawn in while it charges, shed off the beam
 
 // ---- muzzle flash
-const FLASH_LIFE = 0.055;               // s
+const FLASH_LIFE = 0.025;               // s: a brief Halo-style muzzle pop, not a sustained flame
 const FLASH_SIZE = 0.55;                // cells across, the main bloom
 const FLASH_CORE_SIZE = 0.3;             // cells across, the hot core
 const FLASH_FORWARD = 0.2;              // cells ahead of the muzzle the main bloom sits
@@ -47,7 +47,7 @@ const FLASH_EMBERS = 5;                 // sparks thrown out of the muzzle
 const FLASH_EMBER_SPEED = [18, 34];     // cells/s along the aim
 const FLASH_EMBER_SPREAD = 0.35;        // share of the speed thrown sideways at most
 const FLASH_LIGHT_COLOR = 0xffb35a;
-const FLASH_LIGHT_TIME = 0.06;          // s, fading linearly
+const FLASH_LIGHT_TIME = 0.025;         // s, fading with the flash
 const FLASH_LIGHT_GAIN = 6;             // illuminance at one cell from the muzzle (scale-free)
 const FLASH_LIGHT_RANGE = 14;           // cells: no light beyond this
 
@@ -322,6 +322,7 @@ export function createVfx(env) {
     });
     material.color.setRGB(...TRACER_COLOR);
     const mesh = new THREE.Mesh(tracerGeo, material);
+    mesh.name = 'pov-tracer';
     mesh.visible = false;
     batch.add(mesh);
     return { mesh, left: 0, fresh: false };
@@ -380,7 +381,8 @@ export function createVfx(env) {
     });
   }
 
-  const { toWorld } = gridSpace(env);
+  const { toWorld, toGrid } = gridSpace(env);
+  const tracerStarts = new Map(); // cosmetic barrel offsets, never used by collision/damage
   const vP = new THREE.Vector3(), vD = new THREE.Vector3(), vV = new THREE.Vector3(), vT = new THREE.Vector3();
   const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
   const tmpColor = new THREE.Color();
@@ -440,7 +442,7 @@ export function createVfx(env) {
     });
   }
 
-  // Draw the actual segment, including its muzzle end in first person.
+  // After the first cosmetic muzzle segment, draw the actual flight path.
   function tracer(a, b) {
     const len = vD.subVectors(b, a).length();
     if (!(len > 1e-6)) return;
@@ -876,6 +878,7 @@ export function createVfx(env) {
     povEvents.on('gun:fire', (e) => {
       if (!live()) return;
       const at = e.muzzleWorld && !e.by ? vA.copy(e.muzzleWorld) : toWorld(e.origin, vA);   // an NPC's viewmodel isn't drawn: flash at the muzzle cell
+      if (e.id != null) tracerStarts.set(e.id, toGrid(at).sub(e.origin));
       muzzleFlash(at, vB.copy(e.dir).normalize(), e.by ? null : e.muzzleAnchor);
     }),
     povEvents.on('impact', (e) => {
@@ -893,9 +896,20 @@ export function createVfx(env) {
     povEvents.on('round:move', (e) => {
       if (!live() || !e.from || !e.to) return;
       // bullets streak, rockets smoke; a thrown bomb (and a rocket's body) is drawn by its tool
-      if (e.kind === 'round') tracer(toWorld(e.from, vA), toWorld(e.to, vB));
+      if (e.kind === 'round') {
+        const offset = tracerStarts.get(e.id);
+        vD.subVectors(e.to, e.from);
+        if (vD.lengthSq() <= 1e-12) return; // GPU trace pending: keep the muzzle for the first real segment
+        toWorld(e.from, vA); toWorld(e.to, vB);
+        // Source-style cosmetic tracer from the barrel to the real ray. A hit
+        // nearer than the barrel must not draw a backwards streak through cover.
+        if (offset && offset.dot(vD) < vD.lengthSq()) vA.addScaledVector(offset, env.getScale());
+        tracerStarts.delete(e.id);
+        tracer(vA, vB);
+      }
       else if (e.kind === 'rocket') rocketTrail(toWorld(e.from, vA), toWorld(e.to, vB));
     }),
+    povEvents.on('round:end', (e) => tracerStarts.delete(e.id)),
     povEvents.on('blast', (e) => {
       if (live() && e.point) blast(toWorld(e.point, vA));
     }),
@@ -990,6 +1004,7 @@ export function createVfx(env) {
     setVisible(v) { batch.visible = v; },
     // drop everything in flight (leaving POV)
     clear() {
+      tracerStarts.clear();
       fadeShots(Infinity);
       for (const pl of Object.values(pools)) pl.clear();
       fadeBeams(Infinity);
@@ -998,6 +1013,7 @@ export function createVfx(env) {
     },
     dispose() {
       disposed = true;
+      tracerStarts.clear();
       offs.forEach((f) => f());
       for (const f of [...tracers, ...flashes]) { f.mesh.removeFromParent(); f.mesh.material.dispose(); }
       tracerGeo.dispose();

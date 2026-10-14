@@ -147,6 +147,14 @@ specs of it. Rounds fly on the shared projectiles (`ballistics.js`) and where th
 projectile rule (each solid broken costs its hardness; powder and liquid cost DENS · DRAG; a solid it can't
 break stops it). Nothing is added: struck cells become their own debris or are shoved.
 
+First-person bullets start at the rendered eye, along the camera direction, including recoil and head bob.
+This follows Source's eye-origin rule (`CBasePlayer::Weapon_ShootPosition` in Valve's `baseplayer_shared.cpp`).
+Spread surrounds that direction. Barrel animation and delayed hover results cannot steer the shot.
+The flash stays on the barrel. The first tracer segment connects the barrel to the bullet's real path.
+At point-blank range, the tracer starts at the eye instead of behind the hit.
+NPCs and the third-person fallback use their own body-eye aim.
+`node tools/firearm-aim-check.mjs` checks alignment without a GPU.
+
 | Gun | Fire | Round energy (sim KE) | Borrowed from |
 |---|---|---|---|
 | Pistol | every click, up to 10/s; 0.5 s held; spread 1°→6° as you spam | 39: glass, wood, rock's face | HL2/GMod pistol (`weapon_pistol.cpp`) |
@@ -567,8 +575,8 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `frag` | frag.js | `{ action: 'throw'\|'bounce'\|'pickup', point, speed? }`. A frag grenade left a hand, bounced (speed in cells/s) or was picked up off the ground. Its flight is `round:move` / `round:end` with kind `'frag'`. |
 | `body:shield` | player.js (any body) | `{ id, state: 'hit'\|'break'\|'recharge'\|'full', amount?, point, height }`. A body's Energy Shield event (vitals.js), on the bus: point its feet (grid), height its own (vfx.js's shimmer and pop, audio.js). |
 | `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
-| `gun:fire` | pistol, SMG, sniper, rocket | `{ origin, dir, muzzleWorld, gun, sound }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash; gun the tool key; sound `{ rate, gain, thump, voice }` scales the pistol's shot). |
-| `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
+| `gun:fire` | pistol, SMG, sniper, rocket | `{ id?, origin, dir, muzzleWorld, gun, sound }`. A shot fired. `origin` is the physical start in grid cells; `dir` is unit length. Firearms include the ballistic `id` for their cosmetic tracer. `muzzleWorld` positions the flash in world space. `gun` identifies the tool; `sound` scales the pistol's audio. |
+| `gun:dry` | legacy | `{}`. Dry-click audio hook; firearms no longer emit this. Bullets start at the eye, so close terrain stops the bullet rather than the trigger. |
 | `round:move` | guns, bomb, rocket | `{ id, kind, from, to }` (kind 'round', 'bomb' or 'rocket'). A round in flight moved this frame (grid), for tracers and the rocket's smoke. |
 | `round:end` | guns, bomb, rocket | `{ id, kind }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe, pickaxe, knife, flask | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife'\|'flask', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |

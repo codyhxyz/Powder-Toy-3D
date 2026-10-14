@@ -62,7 +62,7 @@ Press `?` in the app for the full list.
 | `1`–`5` | switch view |
 | `T` | show or hide the element dock |
 | `,` | settings |
-| `P` | save a screenshot |
+| `F2` | save a screenshot (Minecraft's key; Fn+F2 on some keyboards) |
 | ⌘S / Ctrl+S | save the game (in first person ⌘ only, Ctrl being the camera key there) |
 | ⌘O / Ctrl+O | the Saves list: load a save, export it, open a file |
 | `` ` `` | the Lua console (TPT's): run commands, or code every step |

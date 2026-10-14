@@ -6,6 +6,7 @@ import { MELEE_SOURCES } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
 import { gridSpace } from './space.js';
+import { createSprintMusic } from './sprintMusic.js';
 
 // POV sound. Every noise in first person comes from an event (docs/pov.md,
 // "Gunplay v2"): the gun, the tools and the shell announce what happened on
@@ -161,6 +162,8 @@ const PRESETS = {
   torchLoop: [.5, 0, 120, , 1, 0, 4, 1, , , , , , 16, , , , .9, , .1, 600],
   // the jetpack firing: a low, rumbling roar under the torch's hiss
   jetLoop: [.45, 0, 90, , 1, 0, 4, 1, , , , , , 20, , , , .9, , .15, 500],
+  // Air rushing past: restrained at launch, a broad roar only at the late surge.
+  sprintWind: [.4, 0, 120, , 1, 0, 4, 1, , , , , , 10, , , , .9, , .1, -3000],
   // a bomb going off: a deep noise burst sliding down, a long crushed tail
   boom: [2, .1, 70, .01, .25, 1.3, 4, 1.5, -0.3, , , , , 1.2, , .4, , .4, .15, , -700],
   // a tool that can't (WALL, a full bucket): a dull, dead clunk
@@ -251,7 +254,7 @@ const PRESETS = {
   overshield: [.6, 0, 140, .1, 2.5, .4, 0, 1, .7, , , , , , 9, , , .7, , .25],
 };
 // presets that play as seamless loops (one render each)
-const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge']);
+const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge', 'sprintWind']);
 // Minecraft's rain bed and rolling thunder, through the existing mute/limiter.
 PRESETS.weatherRain = [.18, 0, 850, .05, 1, .05, 4, 1, , , , , , 4, , , , .5, , .15, -1800];
 PRESETS.weatherThunder = [.7, .08, 55, .04, .7, 2.8, 4, 1.4, -.15, , , , .1, 2, , .1, .1, .55, , , -450];
@@ -340,7 +343,7 @@ function makeLoopable(s, sampleRate) {
 
 // ---- module state (one POV, one sound system), read by stats()
 const S = {
-  started: false, ctx: null, listener: null, lowpass: null,
+  started: false, ctx: null, listener: null, lowpass: null, sprintMusic: null,
   buffers: new Map(),            // preset or sample name → AudioBuffer[] (a sample's once its takes have loaded)
   lastTake: new Map(),           // sample name → the take played last (never twice running)
   positional: [], flat: [],      // voice pools: { audio, at: Vector3|null, name, t }
@@ -349,7 +352,7 @@ const S = {
   underwater: false, filterHz: OPEN_HZ, master: 0,
 };
 
-// (camera, grid → world) are the app's; state() → { active, player, toolbelt } is the shell's.
+// (camera, grid → world) are the app's; state() → { active, player, toolbelt, sprintMusic } is the shell's.
 export function createPovAudio({ camera, getVolume, getScale, state }) {
   let starting = false, gestured = false;
   let zz = null;
@@ -397,6 +400,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         audio.gain.gain.value = 0;
         S.loops[name] = { audio, on: false };
       }
+      S.sprintMusic = createSprintMusic(ctx, listener.getInput());
       if (ctx.state !== 'running') ctx.resume().catch(() => {});
       S.started = true;
       warmUp();
@@ -518,7 +522,10 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       a.stop(LOOP_FADE_S * LOOP_STOP_AFTER);
     }
   }
-  const stopLoops = () => { for (const name of LOOPS) loop(name, false); };
+  const stopLoops = () => {
+    for (const name of LOOPS) loop(name, false);
+    S.sprintMusic?.update(0, false);
+  };
 
   // ---- events
   const live = () => S.started && state().active;
@@ -682,7 +689,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     }
   });
 
-  povEvents.on('player:jet', ({ on }) => loop('jetLoop', !!on && live()));
+  povEvents.on('player:jet', ({ on }) => loop('jetLoop', !!on && live(), { gain: 0.5 }));
 
   // the laser's charge whine climbs as it fills (tool:action 'laser' 'charge' started the loop)
   povEvents.on('laser:charge', ({ amount = 0, by }) => {
@@ -767,8 +774,18 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       if (!s.active || s.player?.dead) stopLoops();
       if (S.loops.pourLoop.on && clock() - lastPour > Math.max(POUR_TAIL_S, POUR_TAIL_FRAMES * frameDt)) loop('pourLoop', false);
       if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
-      // Halo's alarm while the shield is down and not yet refilling
       const pl = s.player;
+      const rush = s.active && !document.hidden && pl && !pl.dead ? pl.sprintRush ?? 0 : 0;
+      S.sprintMusic.update(rush, s.sprintMusic !== false, !!(s.active && !document.hidden && pl && !pl.dead));
+      // Leave space for the break/bass; retain the original wind-only mix when disabled.
+      const windGain = (s.sprintMusic !== false ? 0.22 : 0.7) * rush * rush;
+      loop('sprintWind', windGain > 0.001, { gain: windGain });
+      if (S.loops.sprintWind.on) {
+        const a = S.loops.sprintWind.audio;
+        a.gain.gain.setTargetAtTime(windGain, now(), LOOP_FADE_S);
+        a.source.playbackRate.setTargetAtTime(0.7 + 0.5 * rush, now(), LOOP_FADE_S);
+      }
+      // Halo's alarm while the shield is down and not yet refilling
       if (s.active && pl && !pl.dead && pl.shieldMax > 0 && pl.shield <= 0 && !pl.shieldCharging && t - lastBeep >= SHIELD_BEEP_S) { lastBeep = t; play('shieldBeep'); }
     }
     if (s.active && !document.hidden) next = requestAnimationFrame(tick);
@@ -822,6 +839,7 @@ export function stats() {
     played: S.played,
     seq: S.seq,
     loops: Object.fromEntries(Object.entries(S.loops).map(([k, l]) => [k, l.on])),
+    sprintMusic: S.sprintMusic?.stats() ?? null,
     underwater: S.underwater,
     filterHz: S.filterHz,
     filterNowHz: S.lowpass ? Math.round(S.lowpass.frequency.value) : 0,

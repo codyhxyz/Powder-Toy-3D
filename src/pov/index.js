@@ -93,7 +93,7 @@ const CHASE_IDLE_S = 1.2;               // s without mouse look before it swings
 const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
 // In a TF2-style match (Siege) comma is the class key instead (classPicker.js, classesOn below).
-const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
+const PASS_KEYS = new Set(['Escape', '?', ',', 'F2']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
@@ -223,7 +223,9 @@ export function createPov(app) {
     onEnabled: on => { toolbelt?.setVisible(!on && mode === 'on'); if (on) setMenu(false); },
     freeMouse: () => { setMenu(false); if (document.pointerLockElement === canvas) document.exitPointerLock(); },
   });
-  const audio = createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
+  const audio = createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({
+    active: active(), player, toolbelt, sprintMusic: app.settings.sprintMusic,
+  }) });
   connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain...
   announceMatches();            // ...and calls the matches' moments
 
@@ -418,6 +420,7 @@ export function createPov(app) {
           renderer, scene,
           getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
+          getAimCamera: () => povCam.pose.eyeDist <= FIGURE_HIDE_DIST ? camera : null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
           getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
           getMode: () => app.gamemode?.() ?? 'sandbox',   // the gamemode playing: Noita's wands only in it
@@ -775,7 +778,7 @@ export function createPov(app) {
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
       dt, eye: vEye, feet: vFeet, scale, speedH,
-      onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint && !player.crouch,
+      onGround: player.onGround, inLiquid: player.inLiquid, sprintRush: driving ? 0 : player.sprintRush,
       dead: deadSeen, deadTime, box, shake, arm,
     });
     cameraArm.trace(sim);
@@ -811,6 +814,7 @@ export function createPov(app) {
       feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
       speedH: speedH / player.size, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose, crouch: player.crouch,
+      sprintRush: driving ? 0 : player.sprintRush,
       look: { pitch: povCam.look.pitch, spine: holding.spine }, lift: holding.lift, ride: holding.ride,
     });
     held.bind(volumeLight(vol), g);
@@ -892,6 +896,7 @@ export function createPov(app) {
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, mana: toolbelt?.mana ?? null, perks: player.perks, status: player.status,
       gold: descent.goldShown,
+      pogo: toolbelt?.selectedKey === 'POGO' ? player.pogoCharge : null,
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,

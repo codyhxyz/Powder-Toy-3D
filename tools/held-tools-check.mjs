@@ -12,6 +12,9 @@ const { default: jackhammer, REFIRE } = await import('../src/pov/tools/jackhamme
 const { default: axe } = await import('../src/pov/tools/axe.tool.js');
 const { default: sniper } = await import('../src/pov/tools/sniper.tool.js');
 const { default: pistol } = await import('../src/pov/tools/gun.tool.js');
+const { default: smg } = await import('../src/pov/tools/smg.tool.js');
+const { povEvents } = await import('../src/pov/events.js');
+const { muzzleCell } = await import('../src/pov/tools/transfer.js');
 const { default: flamer } = await import('../src/pov/tools/blowtorch.tool.js');
 const { GEAR, gearByKey } = await import('../src/pov/tools/catalog.js');
 const { GEAR_ITEMS } = await import('../src/elements.js');
@@ -128,6 +131,48 @@ for (const fps of [30, 60, 144]) {
   } finally { tool.dispose(); }
 }
 
+// All firearms fire at point-blank range and grid edges, scoped/NPC included.
+for (const def of [pistol, smg, sniper]) {
+  for (const mode of ['hip', 'ads', 'hidden', ...(def === sniper ? ['scope'] : [])]) {
+    for (const near of ['open', 'path', 'barrel', 'edge']) {
+      const e = env(), events = [], notices = [], shots = [];
+      const off = ['gun:fire', 'gun:dry'].map((name) => povEvents.on(name, () => events.push(name)));
+      e.feedback = { notice: (text) => notices.push(text) };
+      e.ballistics = { count: 0, fire: (origin, dir) => {
+        shots.push({ origin: origin.clone(), dir: dir.clone() }); return shots.length;
+      } };
+      if (mode === 'hidden') e.viewmodel.visible = false;
+      const tool = def.create(e);
+      try {
+        const eye = new THREE.Vector3(20.5, 6.5, near === 'edge' ? 0.1 : 20.5);
+        const dir = new THREE.Vector3(0, 0, -1);
+        const player = { pos: new THREE.Vector3(eye.x, 1, eye.z), onGround: true, applyImpulse() {} };
+        const sim = { g: { nx: 64, ny: 64, nz: 64 }, gravity: 0.025 };
+        // Align the real viewmodel with the eye; gridSpace is identity in this fixture.
+        e.viewmodel.position.copy(eye);
+        const c = ctx({ dt: 0.3, eye, dir, player, sim, secondary: mode === 'ads' });
+        tool.update({ ...c, secondaryPressed: mode === 'scope' });
+        const m = muzzleCell(eye, dir, player.pos, sim.g);
+        const aim = near === 'path'
+          ? { valid: true, cell: m.path[0].clone(), dist: 0.1 }
+          : near === 'barrel'
+            ? { valid: true, cell: new THREE.Vector3(0, 0, 0), dist: 0.01 }
+            : { valid: false };
+        tool.update({ ...c, aim, primary: true, primaryPressed: true });
+        const label = `${def.key}/${mode}/${near}`;
+        assert.equal(shots.length, 1, `${label}: fires`);
+        assert.deepEqual(events, ['gun:fire'], `${label}: no dry click`);
+        assert.deepEqual(notices, [], `${label}: no blocked notice`);
+        assert.ok(shots[0].dir.dot(dir) > 0, `${label}: shoots forward`);
+        assert.deepEqual(shots[0].origin.toArray(), eye.toArray(), `${label}: eye origin never skips nearby cover`);
+        e.ballistics.count = Infinity;
+        tool.update({ ...c, dt: 10, primary: true, primaryPressed: true });
+        assert.equal(shots.length, 1, `${label}: capacity limit preserved`);
+      } finally { tool.dispose(); off.forEach((unsubscribe) => unsubscribe()); }
+    }
+  }
+}
+
 // Existing buffered triggers retain their behavior.
 const t = trigger(REFIRE); t.ready(ctx({ primaryPressed: true })); t.fire();
 t.ready(ctx({ dt: 0.01, primaryPressed: true }));
@@ -138,4 +183,4 @@ assert.equal(GEAR.at(-1).key, 'JACKHAMMER');
 assert.equal(GEAR_ITEMS.at(-1).id, -322, 'appended palette ID');
 assert.equal(GEAR_ITEMS.find((g) => g.gear === 'TOOLGUN').id, -321, 'previous palette IDs preserved');
 assert.equal(gearByKey('JACKHAMMER').slot, 0); assert.deepEqual(gearByKey('JACKHAMMER').touch, ['Drill']);
-console.log('PASS: lifecycle/visibility/cleanup, NPC/no-HUD scope + ADS, getters, cadence/release/perk, axial motion, catalog IDs');
+console.log('PASS: lifecycle/visibility/cleanup, NPC/no-HUD scope + ADS, getters, cadence/release/perk, axial motion, catalog IDs, point-blank/grid-edge firearms');

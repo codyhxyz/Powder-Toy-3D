@@ -123,7 +123,7 @@ const savesWire = {
         app.birds?.worldReplaced();
         app.toolbar.setUndoEnabled(app.gamemode !== 'factory' && app.sim.canUndo);
         app.dock.sync();
-        app.toolbar.sync();
+        app.hud.setPaused(settings.paused);
         app.settingsPanel.sync();
         app.save();
         app.requestRender();

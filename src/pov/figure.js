@@ -64,6 +64,7 @@ const WALK_HIP = 0.55, RUN_HIP = 0.9;    // hip swing
 const WALK_KNEE = 0.7, RUN_KNEE = 1.5;   // knee bend on the forward swing
 const ARM_SWING = 0.75;                  // shoulder swing per unit hip swing (opposite leg)
 const RUN_LEAN = 0.22;                   // forward lean at a run
+export const SPRINT_LEAN = 0.55;         // extra rad at full rush: the user's Animal Crossing speed-cheat lean
 const STEP_BOB = 0.12;                   // cells the pelvis drops at mid-stance
 // Crouched (the body's crouch share, s.crouch: player.js): a deep squat with
 // the torso over the knees and the head up, low enough that the stickman fits
@@ -367,7 +368,7 @@ export function createFigure(build = buildStick) {
       setTarget('elL', 0.25 + 0.9 * run, w.walk);
       setTarget('elR', 0.25 + 0.9 * run, w.walk);
       setTarget('armOut', 0.08, w.walk);
-      setTarget('lean', RUN_LEAN * run, w.walk);
+      setTarget('lean', RUN_LEAN * run + SPRINT_LEAN * (s.sprintRush ?? 0) * (1 - crouched) * !riding, w.walk);
       setTarget('drop', STEP_BOB * amt * Math.abs(Math.cos(phase)), legs);
       // airborne: knees tucked, arms out, more so falling
       const falling = smooth01(-s.velY / RUN_SPEED);
