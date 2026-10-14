@@ -623,7 +623,7 @@ async function worldStage(browser, vite, secs) {
 // ---------------------------------------------------------------- boot
 // The gamemode's effect is selected before the grid is built (app.js's boot
 // and openMap), so the build, and the loading screen with it, wait on the
-// curved variant the view draws, never on a flat one it won't. Willow Cove,
+// curved variant the view draws, never on a flat one it won't. Tinker Creek,
 // the gamemode's map, gets its world WGSL from DP4-W: the Island is given
 // Animal Crossing here instead (maps.js served with it in the Island's modes).
 async function bootStage(browser, vite, secs) {

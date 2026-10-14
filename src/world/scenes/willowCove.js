@@ -211,7 +211,7 @@ fn sceneCell(w: vec3i) -> SceneCell {
 `;
 
 export const willowCove = {
-  key: 'willowCove', label: 'Willow Cove', shrine: false,
+  key: 'willowCove', label: 'Tinker Creek', shrine: false,
   view: { dir: [0.65, 1.15, 1.4], dist: 240, lift: 12 },
   params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: L.ints.SEA, floor: L.ints.FLOOR }),
   glsl: () => willowWgsl(),

@@ -160,7 +160,7 @@ async function draw(page, name, { baseline = false } = {}) {
 // world's orbs went with perkOrbs.clear(), which disposed three's one sprite
 // quad (every Sprite's) until that stopped, and the next sprite drawn then
 // submitted its destroyed vertex buffer ("[Buffer] used in submit while
-// destroyed"). A world with no orb in its window (Willow Cove has no shrine)
+// destroyed"). A world with no orb in its window (Tinker Creek has no shrine)
 // gets one set down in its middle for the check, and taken away after.
 const ORB_VIEW_DIST = 3;      // scene units from the camera to the orb's icon (the window is 10 across)
 const ORB_WAIT_MS = 60000;    // ms three may take to compile the orbs here

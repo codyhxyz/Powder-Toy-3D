@@ -634,7 +634,7 @@ function openMap(key, mode = 'sandbox') {
   startMode(mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
   return true;
 }
-// Animal Crossing on Willow Cove: the drop point in front of your cottage (grid cells), else null
+// Animal Crossing on Tinker Creek: the drop point in front of your cottage (grid cells), else null
 function villageSpawn() {
   if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
   return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);

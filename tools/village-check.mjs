@@ -335,7 +335,7 @@ try {
     a.pov.player.teleport(new a.THREE.Vector3(a.win.P.size[0] / 2 - 40, 24, a.win.P.size[2] / 2 + 36).sub(a.sim.origin));
     a.test.resume();
   });
-  await mobile.waitForFunction(() => document.querySelector('.village-location').textContent === 'Willow Cove');
+  await mobile.waitForFunction(() => document.querySelector('.village-location').textContent === 'Tinker Creek');
   assert.equal(await touchActions.getByRole('button').count(), 1, 'irrelevant interaction hides outside');
   assert.equal(await touchActions.getByRole('button', { name: 'Pockets' }).isVisible(), true);
   await render(mobile); await mobile.screenshot({ path: join(out, 'touch-outside.png') });

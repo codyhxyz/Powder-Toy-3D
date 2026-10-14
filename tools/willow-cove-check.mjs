@@ -1,4 +1,4 @@
-// Willow Cove in the app, on WebGPU. Two stages, each in a browser of its own:
+// Tinker Creek in the app, on WebGPU. Two stages, each in a browser of its own:
 //   world  booted from its link (?map=willowCove): its generated cells equal
 //          the CPU twin's (world/scenes/willowCove.js), it's a Sandbox world
 //          (no match starts), the plaza stays dry through physics, a painted
@@ -6,7 +6,7 @@
 //          (the volume changes the frame, as tools/smoke.mjs measures it); a
 //          shot of the home view
 //   menu   the start menu: it doesn't boot a world, the default map stays
-//          selected, Willow Cove's card and Start boot it as a Sandbox world,
+//          selected, Tinker Creek's card and Start boot it as a Sandbox world,
 //          and the menu then switches on to the Lab
 // Neither may log a page, shader or map error.
 // usage: node tools/willow-cove-check.mjs [--stage world,menu] [--port N] [--out dir] [--win 64 | --full]
@@ -181,7 +181,7 @@ async function menuStage(browser, vite) {
   assert.equal(booted.scene, 'willowCove');
   assert.deepEqual(booted.dims, win ? [Number(win), 128, Number(win)] : [128, 128, 128]);
   assert.equal(booted.game, false, 'no new gamemode starts');
-  console.log(`PASS menu launch: Willow Cove as a Sandbox world (${secs()})`);
+  console.log(`PASS menu launch: Tinker Creek as a Sandbox world (${secs()})`);
   await page.keyboard.press('Escape');
   await page.locator('.mm.open').waitFor();
   await page.locator('.mm-card[data-map="lab"]').click();

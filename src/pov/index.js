@@ -977,7 +977,7 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
-    village,                     // Willow Cove's homes, pockets and peaceful neighbors
+    village,                     // Tinker Creek's homes, pockets and peaceful neighbors
     descent,                     // the Descent map's gold, shop, altar, pool and refresher (descent/index.js)
     interact,                    // look + E (interact.js): focus, use()
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
