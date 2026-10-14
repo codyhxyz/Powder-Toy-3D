@@ -200,7 +200,7 @@ const heatOf = (kJmol, molcm3) => +(kJmol * 1000 * molcm3 / WATER_VOL_HEAT).toFi
 // 0.6 W/(m·K)) for liquids, from air's (EMPTY: 0.0005 at 0.026) for gases.
 // Each is held under the stability limit, 6·cond/cap < 1 (COND_STABLE of it).
 const WATER_K = 0.6, WATER_COND = 0.03, AIR_K = 0.026, AIR_COND = 0.0005, COND_STABLE = 0.95;
-const FACES = 6;
+export const FACES = 6;   // a cell's face neighbours (shaders/activity.js FACES; the react pass's P.faces)
 const stableCond = (cond, cap) => +Math.min(cond, COND_STABLE * cap / FACES).toPrecision(2);
 const condOf = (k) => +(WATER_COND * k / WATER_K).toPrecision(2);
 const gasCondOf = (k) => +(AIR_COND * k / AIR_K).toPrecision(2);
@@ -383,13 +383,13 @@ const defs = [
   { key: 'EMPTY', abbr: 'AIR', name: 'Air', kind: K.EMPTY, render: R.NONE, color: '#000000',
     dens: 1, cond: 0.0005, cap: 0.02, drag: 0.1, jitter: 0.02, desc: 'Air. Carries heat and pressure; hot air rises.' },
   { key: 'WALL', abbr: 'WALL', name: 'Wall', kind: K.SOLID, render: R.OPAQUE, color: '#59606e', var: 0.05,
-    cond: 0.001, cap: 1.0, acidProof: true, desc: 'Wall. Indestructible and insulating. Build containers and barriers with it.' },
+    cond: 0.001, cap: 1.0, acidProof: true, singProof: true, antimatterProof: true, desc: 'Wall. Indestructible and insulating. Build containers and barriers with it.' },
 
   { key: 'SAND', abbr: 'SAND', name: 'Sand', kind: K.POWDER, render: R.OPAQUE, color: '#dcbc74', var: 0.22,
     dens: 16, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.9, melt: 1700, meltInto: 'GLASS', spawn: 0.3,
     desc: 'Sand, Heavy particles. Piles into slopes and sinks in water. Melts into glass above 1700 °C.' },
   { key: 'STONE', abbr: 'STNE', name: 'Stone', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#78726c', var: 0.18,
-    dens: 26, cond: 0.03, cap: 0.5, drag: 0.04, slide: 0.55, melt: 1200, spawn: 0.3, sound: 'crack',
+    dens: 26, cond: 0.03, cap: 0.5, drag: 0.04, slide: 0.55, melt: 1200, spawn: 0.3, sound: 'crack', mossBed: true,
     desc: 'Stone. Heavy particles, sinks through anything lighter. Melts into lava at 1200 °C.' },
   { key: 'SNOW', abbr: 'SNOW', name: 'Snow', kind: K.POWDER, render: R.OPAQUE, color: '#eef4ff', var: 0.06,
     dens: 9, cond: 0.005, cap: 0.2, drag: 0.08, slide: 0.35, temp: -10, spawn: 0.3,
@@ -435,10 +435,10 @@ const defs = [
 
   { key: 'WOOD', abbr: 'WOOD', name: 'Wood', kind: K.SOLID, tool: 'axe', render: R.OPAQUE, color: '#7a4a26', var: 0.12,
     cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
-    hard: 20, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
+    hard: 20, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
   { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
-    hard: 6, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
+    hard: 6, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
   // Steel: carbon steel's resistivity ~1.43·10⁻⁷ Ω·m, σ ≈ 7·10⁶ S/m (CRC Handbook).
   { key: 'METAL', abbr: 'METL', name: 'Metal', kind: K.SOLID, render: R.OPAQUE, color: '#a9afba', var: 0.04,
     cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', conducts: true, elec: 7e6, reflect: METAL_REFLECT,
@@ -449,10 +449,10 @@ const defs = [
   { key: 'ICE', abbr: 'ICE', name: 'Ice', kind: K.SOLID, dig: 'glass', render: R.GLASS, color: '#a9d8f2',
     cond: 0.04, cap: 0.5, temp: -20, sigma: [0.055, 0.031, 0.028], hard: 6, breakInto: 'SNOW', desc: 'Ice. Frozen water. Crushes into snow under pressure. Melts at 0 °C and chills whatever it touches.' },
   { key: 'CLONE', abbr: 'CLNE', name: 'Clone', kind: K.SOLID, render: R.OPAQUE, color: '#d9b81e', var: 0.05,
-    cond: 0.001, cap: 1.0, desc: 'Clone. Duplicates the first element that touches it, forever.' },
+    cond: 0.001, cap: 1.0, antimatterProof: true, desc: 'Clone. Duplicates the first element that touches it, forever.' },
   // New elements go at the end so existing ids (saved scenes, presets) stay stable.
   { key: 'ROCK', abbr: 'ROCK', name: 'Rock', kind: K.SOLID, render: R.OPAQUE, color: '#6a6560', var: 0.12,
-    cond: 0.03, cap: 0.5, melt: 0,
+    cond: 0.03, cap: 0.5, melt: 0, mossBed: true,
     hard: 30, breakInto: 'STONE', desc: 'Rock. Natural bedrock for terrain and mountains. Never moves and never melts; conducts heat like stone.' },
   // Debris: what breakable solids turn into when they break (see hard/breakInto).
   { key: 'SHARDS', abbr: 'BGLA', name: 'Broken glass', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#b9dbe3', var: 0.15,
@@ -460,7 +460,7 @@ const defs = [
     desc: 'Broken glass, heavy particles formed when glass breaks. Acid-proof like glass; melts back into clear glass at 1400 °C.' },
   { key: 'SAWDUST', abbr: 'SAWD', name: 'Sawdust', kind: K.POWDER, dig: 'soil', render: R.OPAQUE, color: '#c99a62', var: 0.2,
     dens: 4, cond: 0.006, cap: 0.3, drag: 0.1, slide: 0.45, ignite: 250, burnRate: 0.006, burnHeat: 3, flameT: 900,
-    life: 1, spawn: 0.3, sound: 'thunk', desc: 'Sawdust. Floats on water. Chips and splinters of wood or plant; burns faster than a log.' },
+    life: 1, spawn: 0.3, sound: 'thunk', rots: true, desc: 'Sawdust. Floats on water. Chips and splinters of wood or plant; burns faster than a log.' },
   { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, dig: 'gravel', render: R.OPAQUE, color: '#8e939c', var: 0.1,
     dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping', reflect: METAL_REFLECT,
     conducts: true, elec: 7e6,   // the same steel (TPT's BRMT conducts as METL does)
@@ -506,14 +506,14 @@ const defs = [
   // Sandstone is quartz sand and a little cement: it fuses where sand does
   // (quartz, ~1700 °C, past lava's 1600) and breaks back into sand.
   { key: 'SANDSTONE', abbr: 'SDST', name: 'Sandstone', kind: K.SOLID, render: R.OPAQUE, color: '#c39a64', var: 0.12,
-    cond: 0.03, cap: 0.5, melt: 1700, meltInto: 'GLASS', hard: 15, breakInto: 'SAND',
+    cond: 0.03, cap: 0.5, melt: 1700, meltInto: 'GLASS', hard: 15, breakInto: 'SAND', mossBed: true,
     desc: 'Sandstone. Sand cemented into rock. Softer than rock: it breaks back into sand. Fuses into glass above 1700 °C.' },
   // Limestone is calcite, CaCO₃, the rock caves are dissolved out of. Acid
   // eats it with a fizz of CO₂: 2.71 g/cm³ / 100.1 g/mol = 0.027 mol per cm³,
   // ~650 cm³ of gas at 20 °C. It never melts: past ~900 °C it calcines to
   // quicklime instead (not modelled), and the lime melts only at 2570 °C.
   { key: 'LIMESTONE', abbr: 'LMST', name: 'Limestone', kind: K.SOLID, render: R.OPAQUE, color: '#c9c3b2', var: 0.08,
-    cond: 0.03, cap: 0.55, hard: 20, breakInto: 'STONE', fizz: 650,
+    cond: 0.03, cap: 0.55, hard: 20, breakInto: 'STONE', fizz: 650, mossBed: true,
     desc: 'Limestone. Pale calcite rock, the rock caves form in. Acid dissolves it in a fizz of gas. Never melts.' },
   // Coal: a bituminous seam, burning through the same fields as wood. It
   // lights at ~450 °C (bituminous coal's ignition point, 400-500 °C in fuel
@@ -619,7 +619,7 @@ const defs = [
   // Clone upstream, a stream runs forever without flooding. Insulating, like
   // Wall; acid can't eat it (TPT: VOID's Hardness 0).
   { key: 'VOID', abbr: 'VOID', name: 'Void', kind: K.SOLID, render: R.OPAQUE, color: '#790b0b', var: 0.04,
-    cond: 0.001, cap: 1.0, acidProof: true,
+    cond: 0.001, cap: 1.0, acidProof: true, singProof: true, antimatterProof: true,
     desc: 'Void. Hole, will drain away any powder, liquid or gas that touches it. Pair it with clone for waterfalls that never flood.' },
   // Brick: fired clay brick, 1.9 g/cm³ (0.84 J/g·K: cap 0.38; k ≈ 0.7 W/m·K:
   // cond 0.018). Compressive strength 20–100 MPa (ASTM C62 asks ≥ 17; a modern
@@ -842,7 +842,7 @@ const defs = [
   // full; starved, it evaporates and winks out. Denser than anything, it
   // sinks through every liquid. Nothing gets out: it conducts no heat.
   { key: 'SINGULARITY', abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
-    dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true,   // it swallows acid instead
+    dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true, singProof: true, antimatterProof: true,   // it swallows acid instead
     desc: 'Singularity. A tiny black hole: creates huge amounts of negative pressure, so air and matter rush in. Swallows what it touches and grows; full, it bursts. Starved, it evaporates.' },
   // Clay: kaolin, white china clay. Grains of kaolinite are 2.6 g/cm³; a dry
   // heap ~1.2 (dens 12, porosity 1 − 1.2/2.6 ≈ 0.54: CLAY_WATER), with
@@ -1130,7 +1130,7 @@ const defs = [
   // (hard ≈ UCS / 5 MPa, as the rocks above). Heat: ~1.7 W/m·K like ROCK's
   // basalt (Robertson 1988); 2.9 g/cm³ × 0.84 J/g·K over water's 4.18 → cap 0.58.
   { key: 'BASALT', abbr: 'BSLT', name: 'Basalt', kind: K.SOLID, render: R.OPAQUE, color: '#353331', var: 0.1,
-    cond: 0.03, cap: 0.58, melt: 1200, hard: 20, breakInto: 'STONE', sound: 'crack',
+    cond: 0.03, cap: 0.58, melt: 1200, hard: 20, breakInto: 'STONE', sound: 'crack', mossBed: true,
     desc: 'Dark lava rock, the flows a volcano leaves on its slopes. Melts back into lava at 1200 °C. Moss grows on it.' },
   // A wall torch (Descent's galleries: world/wang/kits): a pitch torch's burning
   // head in a bracket, the Mines' and Coal Pits' light, as Noita's mines are lit
@@ -1163,7 +1163,7 @@ export const elementRow = (d, id) => ({
   id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
   flash: d.ignite ?? 0, burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
   hard: 0, breakInto: null, meltInto: null, acidProof: false, acid: false, fizz: 0, ash: true, sound: null,
-  cold: null, hot: null, crush: null, blast: null, conducts: false,
+  cold: null, hot: null, crush: null, blast: null, conducts: false, mossBed: false, rots: false, singProof: false, antimatterProof: false,
   tool: toolOf(d), dig: digOf(d),
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
@@ -1172,6 +1172,14 @@ export const elementRow = (d, id) => ({
 export const ELEMENTS = defs.map(elementRow);
 
 export const E = Object.fromEntries(ELEMENTS.map((e) => [e.key, e.id]));
+// The keys of the elements whose row sets a flag, in id order: a rule over a
+// set of elements reads its rows, in JS and in the WGSL it writes.
+export const keysWith = (flag) => ELEMENTS.filter((e) => e[flag]).map((e) => e.key);
+// The rock moss creeps over and what fungus rots (shaders/activity.js, react.js)
+export const mossBed = (id) => !!ELEMENTS[id]?.mossBed;
+export const fungusFood = (id) => !!ELEMENTS[id]?.rots;
+// What a singularity swallows: any matter that isn't singProof (shaders/react.js)
+export const singEats = (j) => j !== E.EMPTY && !ELEMENTS[j]?.singProof;
 // What a broken cell becomes: the debris element's id, or -1 when it can't break.
 export const breakInto = (e) => (e.breakInto ? E[e.breakInto] : -1);
 
@@ -1186,19 +1194,19 @@ export const TOOLS = [
   { id: -5, key: 'SIGN', abbr: 'SIGN', name: 'Sign', color: '#efe7d2',
     desc: 'Sign. Displays text. Click a surface to pin one. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
-  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a',
+  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a', spawner: true,
     desc: 'Axeman spawner. Click a surface: in first person (V) an axeman with every tool appears here. Tries to kill you. Comes back after it dies. Click it again to remove it.' },
-  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a',
+  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a', spawner: true,
     desc: 'Gunner spawner. Click a surface: in first person (V) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
-  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a',
+  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a', spawner: true,
     desc: 'Worm spawner. Click a surface: in first person (V) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. Wall and metal stop it. Click it again to remove it.' },
-  { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm spawner', color: '#7a3550',
+  { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm spawner', color: '#7a3550', spawner: true,
     desc: 'Giant worm spawner. Click a surface: in first person (V) a giant worm burrows in here, Noita\'s Jättimato: twenty metres long, seven times as tough as the worm, and faster. Click it again to remove it.' },
-  { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
+  { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff', spawner: true,
     desc: 'Player spawn. Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
-  { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
+  { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a', spawner: true,
     desc: 'Jeep pad. Click open ground: in first person (V) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
-  { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0',
+  { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0', spawner: true,
     desc: 'Hoverbike pad. Click open ground: in first person (V) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
   // TPT's SPRK brush: sparks the conductors inside it (src/electricity.js
   // sparkCell). -8 is left for the Lightning tool (branch el-mat).
@@ -1234,7 +1242,7 @@ export const TOOLS = [
   { id: -57, key: 'AMB_COOL', abbr: 'AMBM', name: 'Cool air', color: '#00ddff',
     desc: 'Cool air. Decreases air temperature inside the brush, not the matter in it. Cold air sinks.' },
   // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
-  { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
+  { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff', spawner: true,
     desc: 'Bird flock. Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
   // TPT's Property tool (src/gui/game/tool/PropertyTool.cpp, its colour): sets
   // one property of the matter under the brush (src/editing.js PROP_FIELDS).
@@ -1267,7 +1275,8 @@ TOOLS.push(...DECO_TOOLS);
 export const isDecoTool = (id) => id <= DECO_ID0 && id > DECO_ID0 - DECO_TOOLS.length;
 export const LIGHTNING_TOOL = -8;
 export const PROP_TOOL = -60;   // TPT's Property tool (src/editing.js)
-export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32 || id === -33;
+// Tools that place a marker the app spawns something at (spawner: true; src/spawners.js)
+export const isSpawnerTool = (id) => toolById(id)?.spawner === true;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -1417,7 +1426,8 @@ const ANNIHILATION_CHANCE = 1;
 // drains anything that moves), itself (a '*' row never pairs an element with
 // itself) and a singularity, which swallows it. Diamond is carbon, matter
 // like any other: it annihilates (TPT's AMTR spares it).
-const ANTIMATTER_SPARES = ['WALL', 'CLONE', 'VOID', 'SINGULARITY'];
+// (Each is flagged antimatterProof on its row.)
+const ANTIMATTER_SPARES = keysWith('antimatterProof');
 
 // Real speeds go through the sim's clock (physics.js simSteps: a cell is
 // CELL_M, and the sim runs SIM_TIME_SCALE× faster than real time, as its

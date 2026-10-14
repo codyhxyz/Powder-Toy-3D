@@ -2,7 +2,9 @@ import { prelude, editKernelWGSL, EDIT_FIELDS, EDIT_SCRATCH_BINDING, LAYOUT, STA
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { ddaGLSL } from './gfx/core.js';
+import { ddaWalkWGSL } from './dda.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
+import { glf as lit } from '../glsl.js';
 
 // GPU work for the guns' ballistic rounds (src/pov/ballistics.js), on WebGPU
 // (docs/webgpu.md G2).
@@ -36,7 +38,6 @@ export const TRACE_SIGHT = 2;   // a camera's line of sight (pov/cameraArm.js): 
 export const TRACE_BYTES = TRACE.ROUNDS * TRACE.ROWS * 16;
 
 // A JS number as a WGSL f32 literal (H1.7)
-const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
 
 // The segments (grid cells; starts[i].w as above, 0 for an idle thread) and the
 // ring slot the answer goes to.
@@ -101,10 +102,11 @@ fn main(@builtin(local_invocation_index) i: u32) {
   let bh = boxHit(ro, rd);
   let t0 = max(bh.x, 0.0);
   let tEnd = min(bh.y, len);
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
   // the axis the first cell was entered across: the box face, or for a start
   // inside the box the one the path left the cell before it through
@@ -117,7 +119,7 @@ fn main(@builtin(local_invocation_index) i: u32) {
     if (t0 >= tEnd || tEnter > tEnd || outside(cell)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
-    if (id != E_EMPTY && KIND(id) != K_GAS && !(sight && KIND(id) == K_LIQUID)) {
+    if (!isGasLike(id) && !(sight && KIND(id) == K_LIQUID)) {
       // entered from outside the box, or from an unknown side: no cell before it
       let known = ax >= 0 && !(k == 0 && bh.x > 0.0);
       var axis = argmin3(-abs(rd));
@@ -132,10 +134,8 @@ fn main(@builtin(local_invocation_index) i: u32) {
       answer(i, vec4f(vec3f(cell), f32(face)), r1, vec4f(ro + rd * tEnter, tEnter / len));
       return;
     }
-    ax = argmin3(tMax);
     tEnter = min(tMax.x, min(tMax.y, tMax.z));
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    ax = ddaStep(istp, tDelta, &cell, &tMax);
   }
   if (floorHit) {
     let under = vec3f(floor(atFloor.x), -1.0, floor(atFloor.z));
@@ -175,6 +175,7 @@ export const StrikeParams = uniformStruct('StrikeParams', {
   hi: 'vec3f',
 });
 export const strikeWGSL = /* wgsl */ `
+${ddaWalkWGSL}
 const STRIKE_DEPTH_MAX: i32 = ${STRIKE.DEPTH_MAX};
 const STRIKE_CHIP_MAX: f32 = ${lit(STRIKE.CHIP_MAX)};
 const STRIKE_DRAG: f32 = ${lit(STRIKE.DRAG)};
@@ -187,12 +188,13 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let d = pc + 0.5 - P.entry;
   if (length(d - dot(d, P.dir) * P.dir) > STRIKE_NEAR) { return; }
 
-  let rd = select(P.dir, vec3f(1e-6), abs(P.dir) < vec3f(1e-6));
+  let rd = safeDir(P.dir);
   let ro = P.entry + rd * STRIKE_NUDGE;
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
   var c = vec3i(floor(ro));
-  var tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
+  ddaInit(ro, rd, c, &istp, &tDelta, &tMax);
   var E = P.energy;
   var tEnter = 0.0;
   for (var k = 0; k < STRIKE_DEPTH_MAX; k++) {
@@ -218,11 +220,8 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     } else if (kind == K_POWDER || kind == K_LIQUID) {
       E -= DENS(id) * STRIKE_DRAG;
     }
-    var ax = 2;
-    if (tMax.x <= tMax.y && tMax.x <= tMax.z) { ax = 0; } else if (tMax.y <= tMax.z) { ax = 1; }
-    tEnter = tMax[ax];
-    c[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    tEnter = min(tMax.x, min(tMax.y, tMax.z));
+    ddaStep(istp, tDelta, &c, &tMax);
   }
 }
 `;

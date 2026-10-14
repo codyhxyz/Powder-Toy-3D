@@ -640,7 +640,7 @@ export function createGame(shell) {
         score: cols.some((c) => c.key === 'score') ? Math.floor(r.score) : null, medals: r.medals ?? 0,
         ping: r.bot ? 'BOT' : 0, dead: r.dead, me: r.me, admin: false,
       })),
-      foot: me()?.team && mode !== 'infection' ? '. switch team · M match menu' : 'M match menu',
+      foot: me()?.team && mode !== 'infection' ? '. switch team' : '',
     };
   }
   const scoreLabel = () => ({ slayer: 'Kills', ctf: 'Caps', koth: 'Hill s', infection: 'Kills', siege: 'Points' }[mode] ?? 'Score');

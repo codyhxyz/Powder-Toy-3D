@@ -5,9 +5,8 @@ import { povGpu } from '../gpu.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
-import { trigger } from './action.js';
+import { trigger, launcher } from './action.js';
 import { gear } from './catalog.js';
-import { muzzleCell } from './transfer.js';
 import { haloSplash } from '../frag.js';
 import { haloMatch, wu, HALO_HEALTH, HALO_SHIELD } from '../halo.js';
 
@@ -55,31 +54,15 @@ export default {
     const button = trigger(REFIRE);
     let lastBlast = null, frame = 0;
 
-    // rockets in flight, drawn where the shared projectiles say they are (also while the launcher isn't held)
-    const flying = new Map();   // round id → model, for the rockets this one fired
-    const mine = new Set();     // their ids (another toolbelt's are its own to draw)
-    const world = new THREE.Group();
-    world.name = 'pov-rockets';
-    env.scene.add(world);
-    const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
+    // rockets in flight, drawn where the shared projectiles say they are (also while the launcher isn't held),
+    // pointed along their flight
     const fwd = new THREE.Vector3(0, 0, -1), heading = new THREE.Vector3();
-    const offs = [
-      povEvents.on('round:move', ({ id, kind, from, to }) => {
-        if (kind !== KIND || !mine.has(id)) return;
-        let m = flying.get(id);
-        if (!m) { m = attachModel(world, 'rocket', null, { arm: false }); flying.set(id, m); }
-        m.obj.scale.setScalar(env.getScale());
-        toWorld(to, m.obj.position);
-        if (heading.subVectors(to, from).lengthSq() > 0) m.obj.quaternion.setFromUnitVectors(fwd, heading.normalize());
-        globalThis.__app?.requestRender?.();
-      }),
-      povEvents.on('round:end', ({ id, kind }) => {
-        if (kind !== KIND || !mine.has(id)) return;
-        mine.delete(id);
-        flying.get(id)?.dispose();
-        flying.delete(id);
-      }),
-    ];
+    const launch = launcher(env, {
+      kind: KIND, model: 'rocket', refuse: 'No room to fire', rig, hit: HIT.ROCKET, action: 'fire', hand, button, tumble: 0,
+      onMove({ model }, { from, to }) {
+        if (heading.subVectors(to, from).lengthSq() > 0) model.obj.quaternion.setFromUnitVectors(fwd, heading.normalize());
+      },
+    });
 
     // the blast, STANDOFF cells out of the struck face (or where it met a body)
     function explode({ sim, hit, normal }) {
@@ -94,35 +77,22 @@ export default {
     }
 
     function fire(ctx) {
-      const sim = ctx.sim ?? env.getSim();
-      const dir = ctx.dir.clone().normalize();
-      const m = muzzleCell(ctx.eye, dir, ctx.player.pos, sim.g);
-      if (!m) { env.feedback?.refuse('No room to fire'); return false; }
-      const origin = ctx.eye.clone().addScaledVector(dir, m.t);
-      const id = env.ballistics.fire(origin, dir, 0, { speed: SPEED, kind: KIND, onStrike: explode, bodies: true });
-      if (!id) return false;
-      mine.add(id);
-      rig.hit(HIT.ROCKET);
+      const shot = launch.fire(ctx, { speed: SPEED, onStrike: explode, bodies: true });
+      if (!shot) return false;
+      const { origin, dir } = shot;
       muzzle.updateWorldMatrix(true, false);
-      povEvents.emit('tool:action', { tool: 'rocket', action: 'fire' });
       povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld: muzzle.getWorldPosition(new THREE.Vector3()), gun: 'ROCKET', sound: { voice: 'swoosh', rate: 0.6, gain: 1.6, thump: 1.5 } });
       return true;
     }
 
     return {
-      update(ctx) {
-        hand.visible = true;
-        rig.update(ctx);
-        if (button.ready(ctx) && fire(ctx)) button.fire();
-      },
-      deselect() { hand.visible = false; button.reset(); },
+      update: (ctx) => launch.update(ctx, fire),
+      deselect: launch.deselect,
       status: () => null,
       get lastBlast() { return lastBlast; },   // for checks
       windowShifted(dx, dz) { if (lastBlast) { lastBlast.point.x -= dx; lastBlast.point.z -= dz; } },   // (docs/scaling.md D11)
       dispose() {
-        offs.forEach((off) => off());
-        flying.forEach((m) => m.dispose());
-        world.removeFromParent();
+        launch.dispose();
         heldMesh.dispose();
         hand.removeFromParent();
       },

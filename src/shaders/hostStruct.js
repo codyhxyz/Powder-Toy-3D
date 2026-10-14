@@ -127,9 +127,3 @@ export function accessorsWGSL(path, fields, index = 'id') {
     ? `fn ${f.fn}(${index}: i32) -> bool { return ${path}[${index}].${f.name} != 0u; }`
     : `fn ${f.fn}(${index}: i32) -> ${f.type} { return ${path}[${index}].${f.name}; }`)).join('\n');
 }
-
-// A JS number as a WGSL float literal: whole numbers get a ".0" so the
-// literal is a float (as the GLSL generators printed them), the rest print as
-// JS's shortest round trip (String(x)), which an explicitly typed const turns
-// into Math.fround(x) (tools/tables-check.mjs reads every one back).
-export const wgslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));

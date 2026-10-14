@@ -36,6 +36,7 @@ import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
 import { SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
+import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
@@ -653,7 +654,7 @@ function openMap(key, mode = 'sandbox') {
   startMode(mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
   return true;
 }
-// Animal Crossing on Willow Cove: the drop point in front of your cottage (grid cells), else null
+// Animal Crossing on Tinker Creek: the drop point in front of your cottage (grid cells), else null
 function villageSpawn() {
   if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
   return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);
@@ -869,11 +870,6 @@ function pickRay(ro, rd, visible = false) {
 }
 
 const isTool = () => settings.tool < 0;
-const faceNormal = (face) => {
-  const n = new THREE.Vector3();
-  n.setComponent(Math.floor(face / 2), face % 2 === 0 ? 1 : -1);
-  return n;
-};
 
 // an element's brush sits on the hovered face; a brush tool's (erase, heat) is centred in the hovered cell
 function hoverBrushCenter(out, tool = settings.tool) {

@@ -1,5 +1,7 @@
 import { libChecks } from './lib.js';
+import { ddaWalkWGSL } from '../dda.js';
 import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
+import { glf as f } from '../../glsl.js';
 
 // Shared render core: brick and field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals), in WGSL (the
@@ -32,7 +34,6 @@ import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
 // (binding 17, brickDistAt), not one of the 16 sampled textures, and the
 // light blur copied the same integer, so skipEmpty reads it from brickDist in
 // every view.
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const coreGLSL = (g, { flow = true, detail = {} } = {}) => /* wgsl */ `
 ${ddaGLSL(g)}
 // The pixel whose noise a function draws (ign, pixRand, the glow candidates,
@@ -66,24 +67,7 @@ fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp 
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 
-// ---- brick skipping (the brick map and brickDist) ----
-// Jump the DDA to the exit of empty brick bc: updates *cell, *tMax and
-// *tEnter as one step would, returns the axis crossed.
-fn skipBrick(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
-             cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>, tEnter: ptr<function, f32>) -> i32 {
-  let bmin = vec3f(bc * BS);
-  let bmax = bmin + f32(BS);
-  let tb = (mix(bmin, bmax, step(vec3f(0.0), rd)) - ro) / rd;
-  let ax = argmin3(tb);
-  let tx = tb[ax];
-  var c = vec3i(floor(ro + rd * tx));
-  c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
-  *cell = c;
-  *tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
-  *tEnter = tx;
-  return ax;
-}
-
+// ---- brick skipping (the brick map and brickDist; skipBrick: shaders/dda.js) ----
 // Jump the DDA out of the empty region around empty brick bc: every brick
 // within (distance - 1) of it is empty (brickDistAt, built by the derived
 // passes), so the ray crosses that whole cube in one step. Same contract as
@@ -96,15 +80,7 @@ fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
   // really crosses (the floor below all, which the callers shade)
   let bmin = vec3f(max(bc - r, vec3i(0)) * BS);
   let bmax = vec3f(min(bc + r + 1, vec3i(BX, BY, BZ)) * BS);
-  let tb = (mix(bmin, bmax, step(vec3f(0.0), rd)) - ro) / rd;
-  let ax = argmin3(tb);
-  let tx = tb[ax];
-  var c = vec3i(floor(ro + rd * tx));
-  c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
-  *cell = c;
-  *tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
-  *tEnter = tx;
-  return ax;
+  return ddaJumpBox(bmin, bmax, ro, rd, istp, cell, tMax, tEnter);
 }
 
 // ---- continuous fields ----
@@ -314,13 +290,8 @@ fn worldPos(p: vec3f) -> vec3f { return p + vec3f(H.origin); }
 // Crisp elements are drawn as voxels; everything else is a field.
 fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
 
-// ---- the DDA ----
-// A ray entering the box starts its DDA in the cell this far (cells) past the
-// entry point, so the cell it starts in is the one inside.
-const DDA_START_NUDGE: f32 = 1e-4;
-
-// rd with every component at least 1e-6 away from 0 (the DDA divides by it).
-fn safeDir(rd: vec3f) -> vec3f { return select(rd, vec3f(1e-6), abs(rd) < vec3f(1e-6)); }
+// ---- the DDA (shaders/dda.js: safeDir, argmin3, the walk's steps) ----
+${ddaWalkWGSL}
 // Ray (ro, rd) against the box [0, GRID]: (tNear, tFar, entry axis 0..2). A miss has tFar <= tNear.
 fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
   let t0 = (vec3f(0.0) - ro) / rd;
@@ -331,12 +302,6 @@ fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
   var axis = 2.0;
   if (tn.x >= tn.y && tn.x >= tn.z) { axis = 0.0; } else if (tn.y >= tn.z) { axis = 1.0; }
   return vec3f(n, min(min(tf.x, tf.y), tf.z), axis);
-}
-// The axis of v's smallest component (ties: x, then y).
-fn argmin3(v: vec3f) -> i32 {
-  if (v.x <= v.y && v.x <= v.z) { return 0; }
-  if (v.y <= v.z) { return 1; }
-  return 2;
 }
 // Where in [ta, tb] the ray passes closest to the centre of cell c.
 fn tClosest(c: vec3i, ro: vec3f, rd: vec3f, ta: f32, tb: f32) -> f32 {

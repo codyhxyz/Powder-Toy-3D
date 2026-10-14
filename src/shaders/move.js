@@ -742,16 +742,14 @@ fn land(vIn: vec3f, id: i32, rs: ptr<function, u32>) -> vec3f {
     var h = v.xz;
     let f = FLOW(id);
     if (dot(h, h) < f * f * LAND_SPLASH_FLOW) {
-      let ang = rnd(rs) * 6.2831853;
-      h = vec2f(cos(ang), sin(ang)) * f;
+      h = randDir2(rs) * f;
     }
     h += normalize(h) * (-vy) * LAND_SPLASH_GAIN;
     h = clamp(h, vec2f(-V_MAX), vec2f(V_MAX));
     v = vec3f(h.x, v.y, h.y);
   } else if (KIND(id) == K_POWDER) {
     // Grains scatter a little when they land hard, then friction takes over.
-    let ang = rnd(rs) * 6.2831853;
-    let h = v.xz * LAND_POWDER_KEEP + vec2f(cos(ang), sin(ang)) * (-vy) * LAND_POWDER_SCATTER;
+    let h = v.xz * LAND_POWDER_KEEP + randDir2(rs) * (-vy) * LAND_POWDER_SCATTER;
     v = vec3f(h.x, v.y, h.y);
   }
   return v;
@@ -877,7 +875,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   }
   if (P.gravMode == GRAV_RADIAL) { GF = gravFrame(gravDir(vec3f(base) + 1.0)); }
   ${f.load}
-  var rs = seed3(base, P.frame, 0x51u);${raceProbe ? `
+  var rs = seed3(base, P.frame, SALT_MOVE);${raceProbe ? `
   // RACE PROBE (test only, docs/webgpu.md I2.10): a cell of the next block
   // along x, which its own thread may already have moved, feeds the stream
   { let r = base + vec3i(2, 0, 0); if (inGrid(r)) { rs ^= bitcast<u32>(fetchA(r).y); } }` : ''}

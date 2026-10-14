@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { ELEMENTS } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import { pack, packContents, aimInReach, faceNormal, outsideBody } from './transfer.js';
-import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
@@ -91,7 +90,7 @@ export default {
       const block = lastBlock;
       p.then((landed) => {
         block.landed = landed;
-        if (landed) povEvents.emit('tool:action', { tool: 'trowel', action: 'place', id, point, amount: landed });
+        if (landed) env.feedback?.act('place', { id, point, amount: landed });
       });
       rig.hit(HIT.PLACE);
       return true;

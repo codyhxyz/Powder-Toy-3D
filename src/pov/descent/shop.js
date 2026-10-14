@@ -8,7 +8,7 @@
 // here), a spell shop is all spells. Items are rolled from the level's tier and
 // the temple's seed, so a temple always stocks the same things in a run.
 
-import { mixSeed, rng } from './rng.js';
+import { mixSeed, rng } from '../../rng.js';
 
 export const SHOP_WAND_CHANCE = 0.5;   // a temple's shop is a wand shop (Noita's coin flip)
 export const SHOP_WANDS = 2;           // wands in a wand shop; its other pedestals hold spells

@@ -5,7 +5,7 @@ import { PROBE, PROBE_CELLS, PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { povGpu } from './gpu.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
-import { povEvents } from './events.js';
+import { povEvents, createEmitter } from './events.js';
 import { PLAYER } from './targets.js';
 import { createPerkSet } from './perks.js';
 import { createStatusSet } from './status.js';
@@ -238,7 +238,7 @@ const isLiquid = (id) => id >= 0 && KIND[id] === K.LIQUID;
 // perks: its perk set (perks.js). id: an NPC's id (npc.js), carried as `by` on
 // the povEvents its body sends (gibs, eating); the player's has none.
 export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet(), id = null }) {
-  const listeners = {};
+  const events = createEmitter('body');
   let kicker = null;   // the kick (kick.js), made once the body is
   let rope = null;     // { anchor (Vector3, grid; the setter keeps it current), length, reel (cells/s, 0 holds), hard, brace }
   let revengeWait = 0, revengeDue = false;
@@ -255,7 +255,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (name === 'gib') gibDue = true;
     // the Energy Shield's events on the bus for every body (the shimmer and the pop: vfx.js, audio.js)
     if (name === 'shield') povEvents.emit('body:shield', { ...data, id: id ?? PLAYER, point: p.pos.clone(), height: p.height });
-    (listeners[name] || []).forEach((fn) => fn(data));
+    events.emit(name, data);
   };
   const vitals = createVitals(emit, perks);
   // the body's size (Shrink): resize() sets these from perks.size every frame,
@@ -996,7 +996,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     generation++;
     bodyWorld.dispose();
     kicker.dispose();   // its povEvents listeners would keep the body alive and run every round:move
-    for (const k in listeners) delete listeners[k];
+    events.clear();
   }
 
   // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11):
@@ -1035,9 +1035,6 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
     tether(r) { rope = r; },
     ropeHand(out = new THREE.Vector3()) { return out.set(p.pos.x, p.pos.y + ropeHandY(), p.pos.z); },
-    on(name, fn) {
-      (listeners[name] ??= []).push(fn);
-      return () => { listeners[name] = listeners[name].filter((f) => f !== fn); };
-    },
+    on: events.on,
   });
 }

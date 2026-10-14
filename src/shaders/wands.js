@@ -3,6 +3,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
+import { ddaWalkWGSL } from './dda.js';
 
 export const WAND_COMMANDS = 64;
 export const WAND_RAYS = 128;
@@ -89,6 +90,7 @@ export const wandApplyFrag = (g) => editKernelWGSL(g, { update: wandApplyWGSL, p
 export const WandTraceParams = uniformStruct('WandTraceParams', { segments: `array<vec4f, ${2 * WAND_RAYS}>`, count: 'u32', slot: 'u32' });
 export const wandTraceFrag = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
+${ddaWalkWGSL}
 ${WandTraceParams.wgsl}
 @group(3) @binding(1) var<uniform> P: WandTraceParams;
 ${ringWGSL()}
@@ -152,17 +154,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   for (var k = 0; k < MAX_STEPS; k++) {
     if (!crosses || enter > leave || !inGrid(cell)) { break; }
     let id = eid(fetchA(cell));
-    if (id != E_EMPTY && KIND(id) != K_GAS) {
+    if (!isGasLike(id)) {
       var up = 0;
       if (stepDir[axis] > 0) { up = 1; }
       answer(i, vec4f(vec3f(cell), f32(axis * 2 + up)), vec4f(ro + dv * enter, enter), vec4f(0.0, 0.0, 0.0, f32(id)));
       return;
     }
-    axis = 2;
-    if (next.x <= next.y && next.x <= next.z) { axis = 0; } else if (next.y <= next.z) { axis = 1; }
-    enter = next[axis];
-    cell[axis] += stepDir[axis];
-    next[axis] += stride[axis];
+    enter = min(next.x, min(next.y, next.z));
+    axis = ddaStep(stepDir, stride, &cell, &next);
   }
   // The simulation's bottom is an indestructible floor; sides/top are open.
   if (dv.y < 0.0) {
@@ -199,7 +198,7 @@ fn fits() -> bool {
         let c = first + vec3i(x, y, z);
         if (any(c > last)) { continue; }
         let id = eid(fetchA(c));
-        if (id != E_EMPTY && KIND(id) != K_GAS) { return false; }
+        if (!isGasLike(id)) { return false; }
       }
     }
   }

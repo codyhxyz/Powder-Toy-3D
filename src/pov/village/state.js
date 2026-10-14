@@ -15,7 +15,7 @@ export const ITEMS = Object.freeze({
 });
 export const RESIDENTS = [
   { name: 'Maple', species: 'bear', home: 1, color: '#c59471', shirt: '#c87362', pitch: 0.85,
-    lines: ['Welcome to Willow Cove! I am Maple. This little cottage is my cozy corner.', 'A chair, a good book, and a friend stopping by. That is my kind of afternoon!', 'Your house is the first cottage on the lane. Try opening your pockets to make it your own.'] },
+    lines: ['Welcome to Tinker Creek! I am Maple. This little cottage is my cozy corner.', 'A chair, a good book, and a friend stopping by. That is my kind of afternoon!', 'Your house is the first cottage on the lane. Try opening your pockets to make it your own.'] },
   { name: 'Clover', species: 'rabbit', home: 2, color: '#e8d8b8', shirt: '#8da76b', pitch: 1.3,
     lines: ['Hi, neighbor! Clover here. Come in! I was just giving my plants a pep talk.', 'I keep my extra furniture in a dresser. More space for hopping around!', 'A room feels different when you turn a chair toward the window. Give it a try!'] },
   { name: 'Pippin', species: 'cat', home: 3, color: '#d9a66a', shirt: '#679fab', pitch: 1.1,

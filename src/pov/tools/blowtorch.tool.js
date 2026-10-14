@@ -50,7 +50,7 @@ export default {
       if (on === burning) return;
       burning = on;
       flame.visible = on;
-      povEvents.emit('tool:action', { tool: 'blowtorch', action: on ? 'on' : 'off' });
+      env.feedback?.act(on ? 'on' : 'off');
     }
 
     // cells from the eye to the nozzle along the aim: arm's length, and never inside the body

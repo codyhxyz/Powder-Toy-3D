@@ -2,6 +2,7 @@ import { BRICK } from './common.js';
 import { E } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { libChecks } from './gfx/lib.js';
+import { glf } from '../glsl.js';
 
 // The far field's shared parts (docs/webgpu.md G1, J3): what the window's own
 // pipelines read of a massive world's far field, moved here from shaders/far.js
@@ -83,8 +84,6 @@ export function farLayout(size) {
   };
 }
 
-const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-
 // The far shadow heights: a point's shadow test is soft over this half-width
 // (cells), after lifting the point this far (column tops are coarse).
 export const FAR_SHADOW_SOFT = 1.5;
@@ -106,6 +105,8 @@ export const unpackFarTexel = ([r, g, b, a]) => ({ s: r & 255, l: g & 255, id: b
  * world size in cells (WORLD) and bricks (WB), the occupancy levels (F1*,
  * F2*), the field's numbers (FAR_*), the far shadow heights' FAR_SHADOW_SOFT
  * and FAR_SHADOW_BIAS, and
+ *   farInWorld(xz) -> bool              world column xz is inside the world
+ *   farShadowLit(y, s) -> f32           sunlight at height y under shadow height s
  *   farUnpack(t: vec4u) -> FarTexel     a grid texel (textureLoad of tFarGrid)
  *   farPackTexel(f: FarTexel) -> vec4u  its inverse, for the passes that write the grid
  * World brick b is the grid's texel b; L1 and L2 node n covers bricks
@@ -141,6 +142,12 @@ const FAR_SHADOW_SOFT: f32 = ${glf(FAR_SHADOW_SOFT)};   // cells: half the width
 const FAR_SHADOW_BIAS: f32 = ${glf(FAR_SHADOW_BIAS)};   // cells a point is lifted before its shadow-height test
 const WORLD: vec3i = vec3i(WORLD_X, WORLD_Y, WORLD_Z);
 const WB: vec3i = vec3i(WBX, WBY, WBZ);
+// Whether world column xz (cells) is one of the world's: past its edge the far
+// textures hold nothing (read clamped, an edge wall's shadow ran to the horizon).
+fn farInWorld(xz: vec2f) -> bool { return all(xz >= vec2f(0.0)) && all(xz < vec2f(WORLD.xz)); }
+// Sunlight at height y of a column whose shadow height (tFarShadow) is s:
+// soft over FAR_SHADOW_SOFT either side, the point lifted FAR_SHADOW_BIAS.
+fn farShadowLit(y: f32, s: f32) -> f32 { return smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, y + FAR_SHADOW_BIAS - s); }
 // A far grid texel: its shares and glow (levels), its opaque and liquid
 // elements (E_EMPTY: none) and whether it holds open opaque cells.
 struct FarTexel { s: i32, l: i32, glow: i32, id: i32, liquid: i32, open: bool }
@@ -189,7 +196,7 @@ const FAR_SKY_OPEN: f32 = ${glf(FAR_SKY.OPEN * BRICK)};
 const FAR_SKY_SHUT: f32 = ${glf(FAR_SKY.SHUT * BRICK)};
 const FAR_SKY_LIFT: f32 = ${glf(FAR_SKY.LIFT * BRICK)};
 fn farSkyOpen(p: vec3f) -> f32 {
-  if (any(p.xz < vec2f(0.0)) || any(p.xz >= vec2f(WORLD.xz))) { return 1.0; }
+  if (!farInWorld(p.xz)) { return 1.0; }
   let hs = textureLoad(tFarTop, vec2i(p.xz) / FAR_BRICK, 0).y;
   return smoothstep(hs - FAR_SKY_SHUT, hs - FAR_SKY_OPEN, p.y);
 }
@@ -275,7 +282,7 @@ const FAR_CASTER_STEPS: i32 = ${FAR_CASTER_STEPS};
 fn farUnder(p: vec3f) -> bool {
   let w = p + vec3f(H.origin);
   // past the world's edge nothing casts (the heights hold only its columns: clamped, an edge wall's shade ran on forever)
-  if (any(w.xz < vec2f(0.0)) || any(w.xz >= vec2f(WORLD.xz))) { return false; }
+  if (!farInWorld(w.xz)) { return false; }
   return w.y + FAR_SHADOW_BIAS < textureSampleLevel(tFarShadow, linearClamp, w.xz / vec2f(WORLD.xz), 0.0).y;
 }
 // The first t in [t0, t1] where ray (ro, rd) is under it, or NO_HIT.
@@ -322,7 +329,7 @@ fn farGround(r: vec3f, top: f32) -> vec3f {
   let b = clamp(vec3i(floor(vec3f(r.x, top - 1.0, r.z) / f32(FAR_BRICK))), vec3i(0), WB - 1);   // the brick under the top
   let id = farUnpack(textureLoad(tFarGrid, b, 0)).id;
   let s = textureSampleLevel(tFarShadow, linearClamp, r.xz / vec2f(WORLD.xz), 0.0).x;
-  let sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s) * cloudShadow(vec3f(r.x, top, r.z));
+  let sun = farShadowLit(top, s) * cloudShadow(vec3f(r.x, top, r.z));
   return ALBEDO(select(id, E_ROCK, id == E_EMPTY)) * (FU.sunCol * max(FU.sun.y, 0.0) * sun + FU.skyUp);
 }
 // The open sea seen toward unit d (going down).
@@ -338,7 +345,7 @@ fn farBeyondOpen(w: vec3f, d: vec3f, open: ptr<function, f32>) -> vec3f {
   var s = FAR_GI_STEP0;
   for (var i = 0; i < FAR_GI_STEPS; i++) {
     let r = w + d * s;
-    if (any(r.xz < vec2f(0.0)) || any(r.xz >= vec2f(WORLD.xz))) { break; }
+    if (!farInWorld(r.xz)) { break; }
     let t = textureSampleLevel(tFarTop, linearClamp, r.xz / vec2f(WORLD.xz), 0.0).xy;
     let top = max(t.x, t.y);   // the ground seen from below or above (the rock over a cave)
     if (r.y < max(top, FU.sea)) {

@@ -4,7 +4,7 @@
 // wandPrice(wand, tier), spellPrice(id, tier). Pure: node checks import it.
 
 import { PRESETS, SPELLS, SPELL_BY_ID } from '../wands/catalog.js';
-import { rng } from './rng.js';
+import { rng } from '../../rng.js';
 
 // Noita's shop price (data/scripts/items/generate_shop_item.lua): an item's own cost
 // scaled down, plus a step per Holy Mountain, rounded to tens:

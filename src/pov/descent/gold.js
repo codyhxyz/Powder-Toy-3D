@@ -8,7 +8,7 @@
 // A death ends a Noita run and its gold with it; here, for now, you come back at
 // the drop point and keep your gold (createDescent notes it).
 
-import { rng } from './rng.js';
+import { rng } from '../../rng.js';
 
 export const NUGGET = Object.freeze({ SMALL: 10, BIG: 50, HUGE: 200 });   // Noita's gold_nugget, gold_nugget_50, gold_nugget_200
 const DENOMINATIONS = [NUGGET.HUGE, NUGGET.BIG, NUGGET.SMALL];          // largest first: a drop is split into these

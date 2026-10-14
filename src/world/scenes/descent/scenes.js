@@ -1,4 +1,4 @@
-import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan } from '../themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan, memoTwin } from '../themedShared.js';
 import { toWgsl } from '../subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from '../sceneGpu.js';
 import { WANG_FIELDS } from '../../wang/glsl.js';
@@ -595,14 +595,8 @@ fn dsWang(x: i32, y: i32, z: i32) -> i32 { return -1; }
 fn dsWangT(w: vec3i, id: i32, T: f32) -> f32 { return T; }`);
 
 // ---- the JS twins, one per level
-const twins = new Map();
-export function descentTwin(level) {
-  if (!twins.has(level)) {
-    const t = compileShared(SRC, DS_SEED, { ...jsConstants(PREFIX, tables(level)), dsWang: dsWangJS(descentWang(level)) });
-    twins.set(level, t);
-  }
-  return twins.get(level);
-}
+export const descentTwin = memoTwin((level) => level,
+  (level) => compileShared(SRC, DS_SEED, { ...jsConstants(PREFIX, tables(level)), dsWang: dsWangJS(descentWang(level)) }));
 // a level's constants, by name without the prefix (scripts/check-descent-levels.mjs, levels.js's sites)
 export function descentConstants(level) {
   const t = tables(level);

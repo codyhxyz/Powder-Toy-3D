@@ -18,6 +18,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
 import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
 import { gateVariants } from '../gfx/detailGate.js';
+import { glf } from '../glsl.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -65,11 +66,6 @@ import { gateVariants } from '../gfx/detailGate.js';
 
 // ---- data views: WGSL generated from the colormaps in src/views.js ----
 
-const WGSL_DIGITS = 7;   // significant digits of generated float literals (float32 holds ~7)
-const glf = (x) => {
-  const s = String(+(+x).toPrecision(WGSL_DIGITS));
-  return /[.e]/.test(s) ? s : s + '.0';
-};
 const srgbOf = (hex) => [0, 2, 4].map((o) => parseInt(hex.slice(1 + o, 3 + o), 16) / 255);
 const vec3 = (v) => `vec3f(${v.map(glf).join(', ')})`;
 
@@ -189,10 +185,7 @@ struct VolumeHit {
   hit: bool,
 }
 // The clip depth of grid point p through the jittered camera, WebGPU's [0, 1] (docs/webgpu.md F4).
-fn volumeDepth(p: vec3f) -> f32 {
-  let clip = FU.viewProj * FU.model * vec4f(p, 1.0);
-  return clamp(clip.z / clip.w, 0.0, 1.0);
-}
+fn volumeDepth(p: vec3f) -> f32 { return clipDepth(FU.viewProj * FU.model * vec4f(p, 1.0)); }
 ${meshCutGLSL}`;
 
 // =====================================================================
@@ -230,10 +223,11 @@ fn ${name}(ro0: vec3f, rd0: vec3f, t0: f32, ax0: i32) -> DataMarch {
   var trans = 1.0;
   var tHit = -1.0;
   var ax = ax0;
-  var istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
   var prevId = E_EMPTY;
   var lastB = vec3i(-1);
@@ -292,10 +286,8 @@ ${body}
     prevId = id;${curved ? `
     warpAdvance(&walk);
     if (warpCell(walk.ray, walk.t).y < 0) { break; }` : `
-    ax = argmin3(tMax);
     tEnter = tExit;
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];`}
+    ax = ddaStep(istp, tDelta, &cell, &tMax);`}
   }
 ${flush}${curved ? `
   var floorP: vec3f;
@@ -337,7 +329,7 @@ const DATA_MIN_ALPHA: f32 = 0.002;   // pixels covered less than this are left e
 const DATA_GAMMA: f32 = 2.2;
 fn toLinear(c: vec3f) -> vec3f { return pow(c, vec3f(DATA_GAMMA)); }
 fn toSrgb(c: vec3f) -> vec3f { return pow(c, vec3f(1.0 / DATA_GAMMA)); }
-fn luma(c: vec3f) -> f32 { return dot(c, LUMA_W); }   // Rec. 709 weights (gfx/surface.js)
+fn luma(c: vec3f) -> f32 { return dot(c, LUMA_709); }   // Rec. 709 weights (shaders/common.js)
 
 ${colormapWGSL('heat', COLORMAPS.heat)}
 ${colormapWGSL('pressure', COLORMAPS.pressure)}
@@ -794,10 +786,11 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var walk = warpWalk(ro, rd, P.marchNear);` : ''}
 
   // ray (ro, rd) and its DDA state; refraction restarts both
-  var istp = vec3i(sign(rd));
-  var tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
   var ax = i32(bh.z);
 
@@ -865,8 +858,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         if (FU.shadows != 0u) { lightRef = sunShadowAt(hp - n0 * IFACE_PROBE); }   // inside: the map carries the liquid above
         lightY = hp.y;
         tCut -= tEnter;
-        rd = safeDir(rd); istp = vec3i(sign(rd)); tDelta = abs(1.0 / rd);
-        cell = vec3i(floor(ro)); tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+        rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
         tEnter = 0.0; phiA = surfSample(ro);
       }
     }
@@ -1058,7 +1050,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // ray passes through a groove: its march restarts where it leaves
       if (ev == EV_OPAQUE && dot(evN, evN) == 0.0 && !reliefHit(ro, rd, evCh, &tEv)) {
         ro += rd * tEv; mNext -= tEv; tCut -= tEv;
-        cell = vec3i(floor(ro)); tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+        cell = vec3i(floor(ro)); tMax = ddaNext(ro, rd, cell);
         tEnter = 0.0; lastB = vec3i(-1); ax = argmin3(tMax);
         phiA = surfSample(ro); phiStale = false;${curved ? `
         warpRestart(&walk, ro, rd);` : ''}
@@ -1086,8 +1078,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             tCut -= tEv;
             liq = select(E_EMPTY, lid, inside);
             if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
-            rd = safeDir(rd); istp = vec3i(sign(rd)); tDelta = abs(1.0 / rd);
-            cell = vec3i(floor(ro)); tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+            rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
             tEnter = 0.0; lastB = vec3i(-1); ax = 1;
             gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
             phiA = surfSample(ro); phiStale = false;${curved ? `
@@ -1119,10 +1110,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     warpAdvance(&walk);
     if (walk.boundary) { cell = warpCellAfter(walk.ray, walk.t, walk.axis); } else { cell = warpCell(walk.ray, walk.t); }
     if (cell.y < 0) { break; }   // opaque physical floor; do not draw the second span through it` : `
-    ax = argmin3(tMax);
     tEnter = tExit;
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];`}
+    ax = ddaStep(istp, tDelta, &cell, &tMax);`}
   }
 
   // ---- shading, one call site for every kind of hit ----
@@ -1360,10 +1349,11 @@ fn pickRay(ro: vec3f, rd0: vec3f) -> Pick {
   let bh = boxHit(ro, rd);
   let t0 = max(bh.x, 0.0);
   if (bh.y <= t0) { return miss; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var ax = i32(bh.z);
   // Exact cell traversal: one ray is cheap, and it must not depend on the
   // presentation's brick map (a preview or a one-off pick can precede its rebuild).
@@ -1371,13 +1361,11 @@ fn pickRay(ro: vec3f, rd0: vec3f) -> Pick {
     if (outside(cell)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
-    if (id != E_EMPTY && KIND(id) != K_GAS) {
+    if (!isGasLike(id)) {
       let face = ax * 2 + select(0, 1, istp[ax] > 0);   // normal = -step
       return Pick(vec4f(vec3f(cell), f32(face)), vec4f(f32(id), a.y, fetchB(cell).w, a.z));
     }
-    ax = argmin3(tMax);
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    ax = ddaStep(istp, tDelta, &cell, &tMax);
   }
   if (cell.y < 0 && rd.y < 0.0) {
     // floor hit
@@ -1394,7 +1382,7 @@ fn pickCurved(ro: vec3f, rd: vec3f) -> Pick {
     if (!warpLocate(&walk, &cell)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
-    if (id != E_EMPTY && KIND(id) != K_GAS) {
+    if (!isGasLike(id)) {
       let axis = warpEntryAxis(walk.ray, walk.t);
       let face = 2 * axis + select(0, 1, warpSlope(walk.ray, walk.t)[axis] > 0.0);
       return Pick(vec4f(vec3f(cell), f32(face)), vec4f(f32(id), a.y, fetchB(cell).w, a.z));
@@ -1464,10 +1452,11 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   let bh = boxHit(ro, rd);
   let t = max(bh.x, 0.0);
   if (bh.y <= t) { return oC; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t, &istp, &tDelta, &cell, &tMax);
   var tEnter = t;
   var lastB = vec3i(-1);
   var flags = 0u;
@@ -1495,7 +1484,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     } else if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) { oC.x = tEnter; hit = true; break; }
       if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = id; }
-      tau += dot(SIGMA(id), vec3f(1.0 / 3.0)) * (tExit - tEnter);
+      tau += meanSigma(id) * (tExit - tEnter);
       oC.z = tExit;
       phiStale = true;
     } else if (brickSurf(flags) || brickMedia(flags)) {
@@ -1515,7 +1504,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
       if (lenL > 0.0) {
         if (SURFCH(id) == CH_LIQUID) { lid = id; }
         if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = lid; }
-        tau += dot(SIGMA(lid), vec3f(1.0 / 3.0)) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
+        tau += meanSigma(lid) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
         oC.z = tEnd;
       }
       if (brickMedia(flags)) {

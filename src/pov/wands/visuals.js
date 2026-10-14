@@ -91,7 +91,7 @@ const BEAM_SCROLL = 18;                 // cells/s its texture runs away from th
 const BEAM_TEXTURE = 0.5;               // texture cells per cell of beam
 const BEAM_TEXTURE_DEPTH = 0.45;        // share of brightness the texture takes and gives
 
-const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const { clamp } = THREE.MathUtils;
 const f = (x) => x.toFixed(4);          // a number as a WGSL float
 
 // The three draws' materials are TSL node materials (docs/webgpu.md F8): each

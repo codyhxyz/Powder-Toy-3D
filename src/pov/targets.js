@@ -37,6 +37,46 @@ let rules = null;
 
 export function setHitRules(r) { rules = r; }
 
+// A first-person body (player.js: the player's, an NPC's) as a target: a box its own
+// size (Shrink), facing(out) where it looks, hurt by `damageScale` of a weapon's
+// damage (Halo's exact numbers as given) and thrown `knockback` cells/s along the
+// blow, tipped up by `knockUp`; onHurt(amount, cause, dir, opts) hears each blow
+// first. body: the body, or a function returning it (the player's is replaced).
+//   const remove = addTarget(bodyTarget(id, body, { alive: () => ..., facing, damageScale, knockback, knockUp, onHurt }));
+export function bodyTarget(id, body, { alive, facing, damageScale, knockback, knockUp, onHurt = null }) {
+  const get = typeof body === 'function' ? body : () => body;
+  const push = new THREE.Vector3();
+  return {
+    id,
+    get alive() { return alive(); },
+    box(min, max) {
+      const b = get(), hw = b.width / 2;   // (its own size: Shrink)
+      min.set(b.pos.x - hw, b.pos.y, b.pos.z - hw);
+      max.set(b.pos.x + hw, b.pos.y + b.height, b.pos.z + hw);
+    },
+    facing,                              // the knife's backstab test
+    get body() { return get(); },        // its statuses scale its weapons (dealtScale); the hook pulls on it (player.js tether)
+    hurt(amount, cause, d, opts) {
+      onHurt?.(amount, cause, d, opts);
+      const b = get();
+      b.hurt(amount * (opts?.exact ? 1 : damageScale), cause, opts);   // exact: Halo's numbers (halo.js)
+      // d null: the weapon shoves by momentum itself (the kick: shove below)
+      if (d) b.applyImpulse(push.set(d.x, Math.max(d.y, 0) + knockUp, d.z).normalize().multiplyScalar(knockback));
+    },
+    shove(dv) { get().applyImpulse(dv); },   // a momentum shove (the kick, cells/s)
+  };
+}
+
+// A spot `dist` from c on a random bearing, kept `margin` inside grid g's walls:
+// where a creature comes in (npc.js drops from above, worm.js comes up from below).
+export function spotAround(c, dist, margin, g) {
+  const a = Math.random() * 2 * Math.PI;
+  return {
+    x: THREE.MathUtils.clamp(c.x + Math.cos(a) * dist, margin, g.nx - margin),
+    z: THREE.MathUtils.clamp(c.z + Math.sin(a) * dist, margin, g.nz - margin),
+  };
+}
+
 export function addTarget(t) {
   const hurt = t.hurt;
   t.hurt = function (amount, cause, dir, opts) {

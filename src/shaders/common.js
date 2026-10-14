@@ -1,6 +1,6 @@
 import { elementsGLSL, ELEMENTS, ELEMENT_FIELDS, RXDEF_FIELDS, K, REACTIONS, mechanismTables } from '../elements.js';
 import { electricityGLSL, ELEC_FIELDS } from '../electricity.js';
-import { incandescenceGLSL, INCAND, INCAND_KNOTS } from '../gfx/incandescence.js';
+import { incandescenceGLSL, INCAND, INCAND_KNOTS, LUMA_709 } from '../gfx/incandescence.js';
 import { MATERIAL_FIELDS, FOAMS_FIELD, materialAccessorsWGSL } from '../gfx/materials.js';
 import { physicsGLSL, PHYS } from '../physics.js';
 import { CELL_M } from '../scale.js';
@@ -49,6 +49,36 @@ export const SLEEP_UNIT = { x: 1, y: 1, z: 1 };
 // A cell's random seed is the fraction of state A's w, kept below 1 so it
 // never carries into the integer ctype.
 export const SEED_MAX = 0.999;
+
+// The salts of the simulation kernels' random streams (seed3, seedWorld,
+// seedSlot below), all in one place so no two streams share one; the prelude
+// has each as SALT_<name>. Changing a value changes that stream's draws.
+export const SALT = {
+  MOVE: 0x51,              // the move pass's blocks (move.js)
+  REACT: 0x7a,             // the react pass's cells (react.js)
+  RX: 0x52,                // a reacting pair, apart from the cells' own (react.js; ui/tiles/engine.js twins it)
+  SING: 0x5a,              // a singularity and its partner (react.js)
+  MIX: 0x4d,               // the Mix tool's block offset and blocks (passes.js)
+  MIX_PAIR: 0x4e,          // ...and its pairs
+  PAINT: 0xb7,             // the brush (passes.js)
+  POV: 0x9d,               // the POV body's coupling (povBody.js)
+  FLAME: 0x70,             // the flamethrower (povTools.js)
+  ROCKET: 0x72,            // the rocket's blast (povTools.js)
+  RAY: 0x5a7,              // the particle kernels (rays.js): a particle's flight...
+  RAY_SPAWN: 0x5b1,        // ...its birth...
+  RAY_PAINT: 0x5c3,        // ...and what it leaves in the cells
+  STAMP: 0x57a3,           // a stamped cell's colour seed (stamp.js, construction.js)
+  BOLT: 0x11e7,            // the lightning bolt's edit (lightning.js)
+  FOLIAGE: 0x6c656166,     // the foliage clump lattice ('leaf', fields.js)
+  CODEC: 0x5eed,           // a decoded snapshot's cell seeds (net/codec.js)
+};
+{
+  const seen = new Map();
+  for (const [k, v] of Object.entries(SALT)) {
+    if (seen.has(v)) throw new Error(`SALT.${k} and SALT.${seen.get(v)} share the salt 0x${v.toString(16)}: their random streams would be one`);
+    seen.set(v, k);
+  }
+}
 
 // Activity flags (docs/scaling.md D8): bits of the word each state writer
 // leaves beside a cell, so the activity map (shaders/activity.js) can tell
@@ -407,6 +437,7 @@ fn writeCell(p: vec3i, a: vec4f, b: vec4f, f: u32, oA: vec4f, oB: vec4f) -> bool
   return out.join('\n');
 }
 
+const saltConsts = () => Object.entries(SALT).map(([k, v]) => `const SALT_${k}: u32 = 0x${v.toString(16)}u;`).join('\n');
 const flagConsts = () => Object.entries(FLAG).map(([k, v]) => `const FLAG_${k}: u32 = ${v}u;`).join('\n');
 
 // prelude(g, opts): WGSL that every kernel of ours starts with
@@ -444,6 +475,11 @@ const MARK_WORDS: u32 = ${m.words}u;
 ${physicsGLSL()}
 const SEED_MAX: f32 = ${SEED_MAX};   // a cell's random seed (the fraction in state A's w) stays below this
 ${flagConsts()}
+const PI: f32 = 3.14159265;
+const TWO_PI: f32 = 6.2831853;
+const LUMA_709: vec3f = vec3f(${LUMA_709.join(', ')});   // Rec. 709 luminance weights, linear sRGB (gfx/incandescence.js)
+// A clip-space position's depth, WebGPU's [0, 1] (docs/webgpu.md F4): what a fragment writes as frag_depth.
+fn clipDepth(clip: vec4f) -> f32 { return clamp(clip.z / clip.w, 0.0, 1.0); }
 const AIR_T_IN_NEAR: bool = ${AIR_T_IN_NEAR};   // an air cell's temperature can decide a neighbour test (see AIR_T_IN_NEAR)
 
 // ---- the element tables (docs/webgpu.md C6) ----
@@ -527,6 +563,10 @@ fn seedWorld(w: vec3i, frame: u32, salt: u32) -> u32 {
 }
 // ...for grid cell p: hashed at its world cell, so results don't depend on where the window is
 fn seed3(p: vec3i, frame: u32, salt: u32) -> u32 { return seedWorld(p + H.origin, frame, salt); }
+// ...for slot j of a list that isn't the grid (the rays' particles)
+fn seedSlot(j: u32, frame: u32, salt: u32) -> u32 { return pcg(j + pcg(frame * LCG_MUL + salt)); }
+// the random streams' salts (SALT)
+${saltConsts()}
 // Correctly rounded u32 → f32 on every device. WGSL lets f32(u) round either way when u isn't representable
 // (SwiftShader doesn't round to nearest even; Metal does): both terms here are exact, so the one add rounds.
 fn u32ToF32(s: u32) -> f32 { return f32(s >> 8u) * 256.0 + f32(s & 255u); }
@@ -538,6 +578,11 @@ const UINT_TO_UNIT: f32 = 1.0 / 4294967296.0;   // 2^-32: a 32-bit hash to [0, 1
 fn rnd(rs: ptr<function, u32>) -> f32 {
   *rs = pcg(*rs);
   return u32ToF32(*rs) * UINT_TO_UNIT;
+}
+// A unit vector in a random direction in the plane, from one draw of stream rs.
+fn randDir2(rs: ptr<function, u32>) -> vec2f {
+  let ang = rnd(rs) * TWO_PI;
+  return vec2f(cos(ang), sin(ang));
 }
 
 // ---- the shared physics tests ----
@@ -552,6 +597,10 @@ fn densityOf(id: i32, T: f32) -> f32 {
 fn isGasLike(id: i32) -> bool { return KIND(id) == K_GAS || id == E_EMPTY; }
 fn isFluid(id: i32) -> bool { return KIND(id) == K_LIQUID || isGasLike(id); }
 fn movable(id: i32) -> bool { return KIND(id) != K_SOLID; }
+// loose matter: powder or liquid (what falls, piles and pours)
+fn isLoose(id: i32) -> bool { let k = KIND(id); return k == K_POWDER || k == K_LIQUID; }
+// loose matter or a gas: what the Mix tool stirs and the physics gun holds (TPT MIX.cpp: TYPE_PART | TYPE_LIQUID | TYPE_GAS)
+fn isLooseOrGas(id: i32) -> bool { let k = KIND(id); return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
 // The kinetic energy a hit between two cells closing at speed u dissipates:
 // ½·μ·u², μ their reduced mass; against a solid (jSolid), the mover's mass.
 fn hitKE(mi: f32, mj: f32, jSolid: bool, u: f32) -> f32 {
