@@ -1,6 +1,29 @@
 import { APPEARANCE_TRIANGLE_WORDS, APPEARANCE_MATERIAL_WORDS, APPEARANCE_LIGHT_WORDS,
   APPEARANCE_FLAGS as F, APPEARANCE_MODES as M, APPEARANCE_HEADER as H, APPEARANCE_ENVIRONMENT as E } from '../../world/import/appearanceFormat.js';
 
+// Compile-time fallback, not a uniform branch around the expensive shader.
+// No source-data reads, triangle searches, texture sampling or light loops
+// reach the native compiler. Ordinary element materials remain authoritative.
+export const sourceAppearanceFallbackWGSL = /* wgsl */ `
+fn sourceEnabled() -> bool { return false; }
+struct SourceMaterial {
+  albedo: vec3f, alpha: f32, normal: vec3f, kind: u32,
+  emission: vec3f, roughness: f32, metallic: f32, f0: f32, flags: u32,
+}
+fn sourceMaterial(id: i32, p: vec3f, n: vec3f) -> SourceMaterial {
+  var result: SourceMaterial;
+  return result;
+}
+fn sourceBlend(rgb: vec3f, alpha: f32, flags: u32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) {}
+fn sourceFog(col: vec3f, distance: f32) -> vec3f { return col; }
+fn sourceSky(d: vec3f) -> vec3f { return vec3f(0.0); }
+`;
+export const sourceShadeFallbackWGSL = /* wgsl */ `
+fn sourceShade(p: vec3f, n: vec3f, rd: vec3f, alb: vec3f, rough: f32, metal: f32, f0: f32, kind: u32, flags: u32) -> vec3f {
+  return vec3f(0.0);
+}
+`;
+
 // Renderer adapter for the versioned importer ABI, shared by the live volume
 // and distant cell meshes. No appearance is inferred from an element name.
 export const sourceAppearanceWGSL = (far = true) => /* wgsl */ `

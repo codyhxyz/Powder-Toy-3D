@@ -3,7 +3,10 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { appearanceRegion, packAppearancePlanes, uploadAppearance } from '../src/gfx/sourceAppearance.js';
+import { appearanceRegion, packAppearancePlanes, uploadAppearance, SOURCE_APPEARANCE_ENABLED } from '../src/gfx/sourceAppearance.js';
+import { volumeFrag } from '../src/shaders/render.js';
+import { WGSL_CHECK as farChecks } from '../src/shaders/far.js';
+import { gridLayout } from '../src/sim.js';
 import { validateAppearance } from '../src/world/import/appearance.js';
 import { APPEARANCE_HEADER as H } from '../src/world/import/appearanceFormat.js';
 import { appearanceFixture } from './appearance-fixture.mjs';
@@ -72,7 +75,7 @@ test('all published source payloads validate and contain their declared exact pi
   }
 });
 
-test('appearance loading is coalesced with geometry and retained across repeated prepare', async () => {
+test('disabled appearance does not fetch source artwork; concurrent geometry prepare still coalesces', async () => {
   const root = new URL('../public/local-maps/', import.meta.url);
   const map = JSON.parse(readFileSync(new URL('apartmentAtrocity.json', root)));
   const savedFetch = globalThis.fetch;
@@ -85,10 +88,23 @@ test('appearance loading is coalesced with geometry and retained across repeated
     const scene = createImportedMapScene(map, null, { dataURL: 'https://example.test/maps/apartmentAtrocity.binpack' });
     await Promise.all([scene.prepare(), scene.prepare()]);
     await scene.prepare();
-    assert.equal(urls.length, 2);
-    assert.equal(scene.appearanceWords.length, map.appearance.totalWords);
-    assert(urls.includes('https://example.test/maps/apartmentAtrocity.appearance.binpack'));
+    assert.equal(SOURCE_APPEARANCE_ENABLED, false);
+    assert.deepEqual(urls, ['https://example.test/maps/apartmentAtrocity.binpack']);
+    assert.equal(scene.appearanceWords, null);
+    assert(scene.data().words.length > 0);
+    assert(scene.interactionState, 'door state still shares the loaded geometry');
   } finally { globalThis.fetch = savedFetch; }
+});
+
+test('production near and far shaders exclude the expensive source lookup, not just its uniform', () => {
+  const g = gridLayout(128, 128, 128);
+  const shaders = ['realistic', 'cozy'].map(view => volumeFrag(g, { view }));
+  for (const check of farChecks().filter(check => check.kind === 'render')) shaders.push(check.code(g));
+  for (const code of shaders) {
+    if (code.includes('sourceMaterial(')) assert.match(code, /fn sourceEnabled\(\) -> bool \{ return false; \}/);
+    assert.doesNotMatch(code, /fn sourceWord|fn sourceTexture|fn sourceDiffuse|fn sourceEnvironment/);
+    assert.doesNotMatch(code, /sourceWord\(/, 'no dependent appearance loads reach native compilation');
+  }
 });
 
 test('source normal ignores saved night effect without changing the saved setting', () => {
@@ -97,7 +113,7 @@ test('source normal ignores saved night effect without changing the saved settin
   assert.equal(saved.night, 0.9);
 });
 
-test('source artwork uses one shared lookup for the near volume and far meshes', () => {
+test('source adapter retains shared near/far call sites behind the compile-time gate', () => {
   const surface = readFileSync(new URL('../src/shaders/gfx/surface.js', import.meta.url), 'utf8');
   const far = readFileSync(new URL('../src/shaders/far.js', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
