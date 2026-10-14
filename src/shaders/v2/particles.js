@@ -160,7 +160,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     let m = dMaterial(particle); let id = cid(m.core); let neutron = id == D_NEUTRON; let photon = id == D_PHOTON;
     var v = particle.velocity; var acceleration = mGravity(local);
     if (photon) {
-      let life = (particle.c0 >> 8u)&65535u; particle.c0 = (particle.c0&0xff0000ffu) | (max(1u,life)-1u)<<8u;
+      let life = (particle.c0 >> 8u)&65535u; particle.c0 = (particle.c0&0xff0000ffu) | ((max(1u,life)-1u)<<8u);
       acceleration = vec3f(0);
     } else if (neutron) {
       if ((particle.c0>>8u)!=0u) {

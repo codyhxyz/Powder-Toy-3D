@@ -10,13 +10,9 @@ import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js'
 import { particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT } from '../../src/shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../../src/shaders/v2/air.js';
+import { wgslGroupingErrors } from './wgsl-grouping.mjs';
 const dir=mkdtempSync(join(tmpdir(),'native-dynamics-'));
 let count=0; const failures=[];
-// Naga accepts these ungrouped products, but Chromium rejects mixed XOR/math.
-const ungroupedHashProduct=/[\w.]+\s*\*\s*[\w.]+\s*\^|\^\s*[\w.]+\s*\*/;
-assert.match('w.x * 73856093u ^ w.y',ungroupedHashProduct);
-assert.match('id ^ P.tick * 2654435761u',ungroupedHashProduct);
-assert.doesNotMatch('(w.x * 73856093u) ^ (P.tick * 2654435761u)',ungroupedHashProduct);
 try {
   for (const [name,generate,stages,layout] of [
     ['particles',particlesWGSL,PARTICLE_STAGES,PARTICLES_LAYOUT],
@@ -28,7 +24,7 @@ try {
       const g=gridLayout(...dims);
       for (const stage of stages) {
         const source=generate(g,nativeDynamicsHead,stage);
-        assert.doesNotMatch(source,ungroupedHashProduct,`${name}/${stage} hash arithmetic requires explicit grouping`);
+        assert.deepEqual(wgslGroupingErrors(source),[],`${name}/${stage} mixed operators require explicit grouping`);
         assert.equal([...source.matchAll(/var<storage,/g)].length,8,`${name}/${stage} storage count`);
         const file=join(dir,`${name}-${stage}-${dims.join('x')}.wgsl`); writeFileSync(file,source);
         const result=spawnSync('naga',[file],{encoding:'utf8'}); count++;
