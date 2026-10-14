@@ -633,7 +633,8 @@ function setGrid(dims, meta = null) {
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
   if (meta?.mode === 'world') {
     const s = sceneByKey(meta.scene), expected = s && worldOf(WORLDS.world, s);
-    if (!s || s.key !== meta.scene || !expected.size.every((n, i) => n === meta.size[i]) || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
+    const supported = expected && [expected.size, s.legacySize].some(d => d?.every((n, i) => n === meta.size[i]));
+    if (!s || s.key !== meta.scene || !supported || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
     settings.size = 'world'; settings.scene = meta.scene; worldSeed = meta.seed;
     selectedMode = 'sandbox'; presentation.select(null);
   } else {

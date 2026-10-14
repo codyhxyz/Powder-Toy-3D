@@ -5,6 +5,8 @@
 // Run: node tools/check-willow-cove.mjs
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { mapByKey, mapsFor, mapOf, GAMEMODES, DEFAULT_MAP, MOBILE_MAP } from '../src/maps.js';
 import { sceneByKey } from '../src/world/scenes/index.js';
@@ -99,6 +101,27 @@ assert.equal(createHash('sha256').update(new Uint8Array(legacyIds.buffer)).diges
   assert.deepEqual(builds, [scene.legacySize, null]);
   await assert.rejects(prepareSave(app, { size: 'world', world: { ...h.world, size: [1024, 256, 1024] } }), /different size/);
   assert.equal(builds.length, 2, 'unknown save dimensions refused before rebuilding');
+}
+// Exercise the production co-op grid acceptance function without booting a
+// renderer: guests must accept a host's restored legacy world, too.
+{
+  const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const fn = source.slice(source.indexOf('function setGrid('), source.indexOf('// The cells of size'));
+  const ctx = {
+    replicaMap: null, win: null, sim: { g: { nx: 128, ny: 128, nz: 128 } },
+    SIZES: {}, WORLDS: { world: { size: WORLD_SIZE } }, sceneByKey,
+    worldOf: (w, s) => ({ ...w, size: s.size ?? w.size }),
+    settings: {}, presentation: { select() {} }, build() {}, gridFits: () => true,
+  };
+  const setGrid = runInNewContext(`${fn}; setGrid`, ctx);
+  const meta = { id: 'legacy-tinker', mode: 'world', scene: scene.key, size: scene.legacySize, seed: P.seed };
+  assert.equal(setGrid([128, 128, 128], meta), true);
+  assert.deepEqual([...ctx.replicaMap.size], scene.legacySize);
+  assert.equal(setGrid([128, 128, 128], { ...meta, id: 'new-tinker', size }), true);
+  assert.equal(setGrid([128, 128, 128], { ...meta, id: 'invalid', size: [2048, 128, 1024] }), false);
+  assert.equal(setGrid([128, 64, 128], { ...meta, id: 'wrong-height' }), false);
+  ctx.gridFits = () => false;
+  assert.equal(setGrid([128, 128, 128], { ...meta, id: 'device-refused' }), false);
 }
 const at = (x, y, z) => x >= -extent && x <= extent && z >= -extent && z <= extent && y >= 0 && y < height
   ? ids[index(x, y, z)] : cell(x, y, z);
