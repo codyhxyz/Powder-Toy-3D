@@ -116,7 +116,7 @@ Without `--source-root`, the existing `--source`/`--source-dir` fixture and
 geometry-only behaviour is unchanged. The shared parser now also understands
 standalone `[gd_resource]` roots and multiline node-group headers.
 
-`magick` is the existing system dependency for native-size RGBA8 PNG expansion:
+ImageMagick (`magick`, or version 6's `convert`/`identify`) supplies native-size RGBA8 PNG expansion:
 no resize, atlas, palette replacement or resampling. Source import flags are
 retained (repeat/filter/mipmaps/sRGB and the complete property inventory).
 Original PNG alpha-border import fixup, GPU compression and generated mipmaps
@@ -287,8 +287,16 @@ lights. A future payload with such lights fails explicitly until supported.
 ```sh
 node --test tools/check-source-appearance.mjs tools/check-cruelty-post.mjs
 node tools/check-sampler-budget.mjs
+node tools/source-appearance-gpu-check.mjs
 node tools/cruelty-appearance-browser-check.mjs
 ```
+
+The numerical production-WGSL test passed on the Apple GPU in a 3.206-second
+total slot. It checked native pixels, projected UVs, cut/deletion fallbacks,
+subtractive blending, and the mode gate. This does not establish full-app
+visual parity. Earlier full-app cold boots exceeded the old ten-second limit;
+subsequent checks stopped on watchdog process-query timeouts or player activity.
+The shared cap is now 25 seconds, with player protection and ownership checks intact.
 
 ## How the levels load
 

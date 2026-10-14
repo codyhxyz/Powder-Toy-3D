@@ -21,9 +21,15 @@ export function vector(p, key, constructor, fallback) {
 }
 function run(tool, args, maxBuffer = 256 * 1024 * 1024) {
   const r = spawnSync(tool, args, { maxBuffer, timeout: 120000 });
+  // Ubuntu provides ImageMagick 6's separate commands; macOS uses version7's
+  // 'magick' dispatcher. Both decode the original pixels without resampling.
+  if (tool === 'magick' && r.error?.code === 'ENOENT') {
+    return run(args[0] === 'identify' ? 'identify' : 'convert', args[0] === 'identify' ? args.slice(1) : args, maxBuffer);
+  }
   if (r.error || r.status !== 0) throw new Error(`${tool} failed: ${r.error?.message ?? r.stderr?.toString().slice(-2000)}`);
   return r.stdout;
 }
+export const imageMagick = args => run('magick', args);
 // Audited EXACT source shader code hashes. Never classify art by a filename or
 // broad substring. A changed/unknown shader requires an explicit mode review.
 export const SHADER_MODES = Object.freeze({

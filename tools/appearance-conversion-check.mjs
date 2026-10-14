@@ -8,7 +8,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { parseGodot3Scene, parseGodot3Resource, decodeSurface, halfFloat, embeddedMeshes } from '../src/world/import/godot3.js';
 import { voxelizeMeshes, importedCell, triangleIntersectsCell } from '../src/world/import/voxelize.js';
 import { APPEARANCE_VERSION, APPEARANCE_HEADER as H, APPEARANCE_HEADER_WORDS, APPEARANCE_TRIANGLE_WORDS as TW, APPEARANCE_MATERIAL_WORDS as MW, APPEARANCE_LIGHT_WORDS, APPEARANCE_FLAGS as F, APPEARANCE_MODES as M } from '../src/world/import/appearanceFormat.js';
-import { AppearanceResources, sha256 } from './appearance-resources.mjs';
+import { AppearanceResources, sha256, imageMagick } from './appearance-resources.mjs';
 import { AppearanceConversion, triangleAffine, extractLighting, littleEndianWords } from './appearance-conversion.mjs';
 import { convertCrueltyMap, writeConvertedMap } from './import-cruelty-map.mjs';
 import { CRUELTY_PROFILES } from '../src/world/import/crueltyProfiles.js';
@@ -35,8 +35,7 @@ function fixture(fn) {
   try {
     const put = (name, text) => { mkdirSync(join(root, name, '..'), { recursive: true }); writeFileSync(join(root, name), text); };
     const png = (name, color = '#123456', size = '2x1') => {
-      const result = spawnSync('magick', ['-size', size, `xc:${color}`, join(root, name)]);
-      assert.equal(result.status, 0, result.stderr.toString());
+      imageMagick(['-size', size, `xc:${color}`, join(root, name)]);
       put(`${name}.import`, '[params]\nflags/repeat=true\nflags/filter=false\nflags/mipmaps=false\nflags/srgb=1\nsize_limit=0\n');
     };
     return fn({ root, put, png });
