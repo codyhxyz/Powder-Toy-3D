@@ -1740,7 +1740,10 @@ a second code path (subgroups, `shader-f16`) has to be a clear win to earn its t
   move changes quiet-skip drift: decide then.
 - **Compact id volume for the march**: ids packed 4 per `u32` in brick order, written where the derived pass knows
   bricks changed; the DDA's hot fetch drops from 16 B and ~15 integer operations to 1 B. Same for pick, shadow and the
-  sign probe. Render-only.
+  sign probe. Render-only. *Done for the realistic view's march and the shadow map* (`shaders/occupancy.js`: a 64-bit
+  occupancy mask and 64 id bytes per brick, in the brickDist buffer, rebuilt with the brick map; empty cells of crisp-only
+  bricks are passed without the cell body). Pick stays exact cell by cell on the state (it must not wait for the brick
+  map); the data views, the GI gather, the POV trace, the sign probe and the shading's secondary walks still read A.
 - D7 packed state and packed flags; with it, `moveSrc`'s 3 bits move into the flow word's unused f16 lane (one buffer,
   one binding and 4 B per cell per step less on the Whitewater path).
 - `shader-f16` paths for fields, light, GI, post and the volume's shading; subgroup reductions and ballot compaction.
