@@ -104,14 +104,14 @@ fn energyShare(e: vec2u, prefix: u32, n: u32, d: u32) -> vec2u {
 fn energyOf(m: Material) -> vec2u {
   let amount = materialAmount(m.core); let id = cid(m.core);
   let sensible = energyAdd(energyMul(capacityQ(m.core), cTq(m.core)), energySigned(m.bank));
-  return energyAdd(sensible, energyAdd(phaseOffsetEnergy(id, amount), phaseLatentEnergy(id, cRawTq(m.core), amount)));
+  return energyAdd(sensible, energyAdd(phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core)), phaseLatentEnergy(id, cRawTq(m.core), amount)));
 }
 fn withEnergy(m: Material, e: vec2u) -> Material {
   var out = m; let id = cid(m.core); let amount = materialAmount(m.core);
   let phase = phaseEncode(id, amount, e);
   var tq = phase.x; var bank = phase.y;
   if (tq == 0xffffffffu) {
-    let sensible = energySub(e, phaseOffsetEnergy(id, amount)); tq = 0u;
+    let sensible = energySub(e, phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core))); tq = 0u;
     if ((sensible.y & 0x80000000u) == 0u) { tq = min(41093u, energyDiv(sensible, capacityQ(m.core)).x); }
     bank = energySub(sensible, energyMul(capacityQ(m.core), tq)).x;
   }
@@ -127,13 +127,13 @@ struct EnergyBounds { lo: vec2u, hi: vec2u }
 // a tagged receiver to its plateau incorrectly dams hot/cold arrivals.
 fn energyBounds(c: vec4u, amount: u32) -> EnergyBounds {
   let id = cid(c); let capacity = 65536u + amount * capacityPerQuantum(id);
-  let offset = phaseOffsetEnergy(id, amount);
+  let offset = phaseMaterialOffsetEnergy(id, amount, ctypeOf(c));
   return EnergyBounds(energyAdd(offset, energySigned(-2147483648)),
     energyAdd(energyAdd(offset, energyMul(capacity, 41093u)), energySigned(2147483647)));
 }
 fn energyPacketFits(src: Material, dst: Material, packet: vec2u, n: u32) -> bool {
   var receiver = dst.core;
-  if (cid(receiver) == 0u) { receiver.x = (receiver.x & 0xffffff00u) | cid(src.core); receiver.y = 0u; }
+  if (cid(receiver) == 0u) { receiver.x = (receiver.x & 0xffffff00u) | cid(src.core); receiver.y = ctypeOf(src.core) << 24u; }
   let amount = materialAmount(dst.core);
   let b = energyBounds(receiver, amount); let next = energyBounds(receiver, amount + n);
   let dry = energyBounds(receiver, 0u); let carrier = energyMul(65536u, cTq(dst.core));

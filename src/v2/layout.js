@@ -1,5 +1,5 @@
 import { phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy, phaseAmount, PHASE_NORMAL_MAX, PHASE_COLD_BASE, PHASE_ROWS } from './phase.js';
-import { ELEMENTS, K } from '../elements.js';
+import { E, ELEMENTS, K } from '../elements.js';
 
 // Native v2 format 2. Capacity is measured in 1/(64*FULL) water-cell units;
 // one integer energy quantum is that capacity heated by one quarter kelvin.
@@ -30,11 +30,11 @@ export function capacityQ(c) {
   const id = cid(c);
   return AIR_CAPACITY_Q + (id === 0 ? 0 : isLiquid(id) ? cFill(c) : FULL) * capacityPerQuantum(id);
 }
-export const energyOf = m => BigInt(capacityQ(m.core)) * BigInt(cTq(m.core)) + phaseOffsetEnergy(cid(m.core), phaseAmount(m.core)) + phaseLatentEnergy(cid(m.core), cRawTq(m.core), phaseAmount(m.core)) + BigInt(m.bank);
+export const energyOf = m => BigInt(capacityQ(m.core)) * BigInt(cTq(m.core)) + phaseOffsetEnergy(cid(m.core), phaseAmount(m.core), ctypeOf(m.core)) + phaseLatentEnergy(cid(m.core), cRawTq(m.core), phaseAmount(m.core)) + BigInt(m.bank);
 export function withEnergy(m, energy) {
   const id = cid(m.core), amount = phaseAmount(m.core), cap = BigInt(capacityQ(m.core));
   const phase = encodePhaseEnergy(id, amount, energy);
-  const sensible = energy - phaseOffsetEnergy(id, amount);
+  const sensible = energy - phaseOffsetEnergy(id, amount, ctypeOf(m.core));
   const tq = phase?.raw ?? Number(sensible < 0n ? 0n : sensible / cap > BigInt(PHASE_NORMAL_MAX) ? BigInt(PHASE_NORMAL_MAX) : sensible / cap);
   const bank = phase?.bank ?? Number(sensible - BigInt(tq) * cap);
   if (!Number.isInteger(bank) || bank < -2147483648 || bank > 2147483647) throw new RangeError('native energy bank overflow');
@@ -60,7 +60,7 @@ export function withPayload(m, payload) {
 export const share = (total, before, amount, fill) => fill ? BigInt(total) * BigInt(before + amount) / BigInt(fill) - BigInt(total) * BigInt(before) / BigInt(fill) : 0n;
 export function energyFits(m, e) { try { return energyOf(withEnergy(m, e)) === e; } catch { return false; } }
 export function energyBounds(core, amount) {
-  const id = cid(core), cap = BigInt(AIR_CAPACITY_Q + amount * capacityPerQuantum(id)), offset = phaseOffsetEnergy(id, amount);
+  const id = cid(core), cap = BigInt(AIR_CAPACITY_Q + amount * capacityPerQuantum(id)), offset = phaseOffsetEnergy(id, amount, ctypeOf(core));
   // Every current liquid plateau lies inside this representable interval.
   // Restricting a tagged receiver to its plateau makes its drained headroom
   // zero and incorrectly dams ordinary hot/cold arrivals.
@@ -68,7 +68,7 @@ export function energyBounds(core, amount) {
 }
 export function energyPacketFits(src, dst, packet, n) {
   const receiver = new Uint32Array(dst.core);
-  if (!cid(receiver)) { receiver[0] = (receiver[0] & 0xffffff00) | cid(src.core); receiver[1] = 0; }
+  if (!cid(receiver)) { receiver[0] = (receiver[0] & 0xffffff00) | cid(src.core); receiver[1] = ctypeOf(src.core) << 24; }
   const amount = phaseAmount(dst.core), b = energyBounds(receiver, amount), next = energyBounds(receiver, amount + n), dry = energyBounds(receiver, 0);
   const e = energyOf(dst), carrier = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(dst.core));
   const min = (a, b) => a < b ? a : b;
@@ -79,7 +79,13 @@ export function energyPacketFits(src, dst, packet, n) {
 export function advectReference(materials, transfers, gated = false) {
   const energy = materials.map(energyOf), fill = materials.map(m => isLiquid(cid(m.core)) ? cFill(m.core) : 0);
   const fuel = materials.map(m => isConductor(cid(m.core)) ? 0 : payloadOf(m.core));
+  const spark = materials.map(m => isConductor(cid(m.core)) ? payloadOf(m.core) : 0);
   const prefix = materials.map(() => 0), ids = materials.map(m => cid(m.core)), ct = materials.map(m => ctypeOf(m.core));
+  const strongest = materials.map(() => 0);
+  const lavaClaim = materials.map(m => cid(m.core) === E.LAVA ? ctypeOf(m.core) : -1);
+  for (const { from, to } of transfers) {
+    if (!cid(materials[to].core) && cid(materials[from].core) === E.LAVA) lavaClaim[to] = Math.max(lavaClaim[to], ctypeOf(materials[from].core));
+  }
   for (const { from, to, amount } of transfers) {
     const src = materials[from], n = cFill(src.core), start = prefix[from];
     if (start + amount > n) throw new RangeError('source overdraft');
@@ -87,10 +93,13 @@ export function advectReference(materials, transfers, gated = false) {
     const e = share(carried, start, amount, n);
     const f = Number(share(isConductor(cid(src.core)) ? 0 : payloadOf(src.core), start, amount, n));
     prefix[from] += amount;
+    if (cid(src.core) === E.LAVA && ctypeOf(src.core) !== lavaClaim[to]) continue;
     if (gated && (!energyPacketFits(src, materials[to], e, amount) || f > Math.floor((65535 - payloadOf(materials[to].core)) / 6))) continue;
     energy[from] -= e; energy[to] += e; fill[from] -= amount; fill[to] += amount;
     fuel[from] -= f; fuel[to] += f;
-    if (!ids[to]) { ids[to] = cid(src.core); ct[to] = ctypeOf(src.core); }
+    if (amount && isConductor(cid(src.core))) spark[to] = Math.max(spark[to], payloadOf(src.core));
+    if (!ids[to]) ids[to] = cid(src.core);
+    if (!cid(materials[to].core) && amount > strongest[to]) { ct[to] = ctypeOf(src.core); strongest[to] = amount; }
   }
   return materials.map((m, i) => {
     const core = new Uint32Array(m.core), id = fill[i] ? ids[i] : 0;
@@ -98,7 +107,7 @@ export function advectReference(materials, transfers, gated = false) {
     core[1] = fill[i] ? fill[i] | ct[i] << 24 : 0;
     if (!fill[i]) core[3] &= 65535;
     let out = withEnergy({ core, bank: m.bank }, energy[i]);
-    if (fill[i]) out = withPayload(out, fuel[i]);
+    if (fill[i]) out = withPayload(out, isConductor(id) ? spark[i] : fuel[i]);
     return out;
   });
 }

@@ -3,7 +3,7 @@ import { compactDecodeWGSL } from './compact.js';
 import { prelude, gridDims, LAYOUT, stateLayout, SEED_MAX, STAGE } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
-import { ELEMENTS, K } from '../elements.js';
+import { E, ELEMENTS, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
@@ -594,6 +594,9 @@ ${MAIN} {
 export const v2BlockWGSL = (g, contactWGSL = '') => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${contactWGSL}
+fn motionDensity(c: vec4u) -> f32 {
+  return ${/\bfn\s+contactDensity\s*\(/.test(contactWGSL) ? 'contactDensity(c)' : 'densOfE(cid(c))'};
+}
 // share of positions whose grains may topple diagonally (lean-sim MOORE 0.5: an octagon, not a square or diamond)
 const MOORE_U: u32 = 0x80000000u;
 // powder sinking through a fluid: this share of (1 - ρ_fluid/ρ_powder) a tick its pair is in one block
@@ -626,13 +629,13 @@ ${MAIN} {
     let p = mEdge(c0 + mBlockOffset(off8(i),down)); positions[i] = p;
     cs[i] = cellAt(p); orig[i] = cs[i];
     if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
-    requests[i] = pending[i];
     oldBanks[i] = bs[i];
   }
   // R2 topple
   for (var c = 0u; c < 4u && gravityOn; c++) {
     let ti = 4u + c;
     let gr = cs[ti];
+    if (!inGrid(positions[ti])) { continue; }
     if (clsOf(gr) != C_POWDER) { continue; }
     let kb = clsOf(cs[c]);
     if (kb != C_SOLID && kb != C_POWDER) { continue; }   // falling or sinking belong to other rules
@@ -643,7 +646,7 @@ ${MAIN} {
     var nc = 0u;
     var wsum = 0.0;
     for (var c2 = 0u; c2 < 4u; c2++) {
-      if (c2 == c || !fluidC(cs[c2]) || !fluidC(cs[4u + c2])) { continue; }
+      if (c2 == c || !inGrid(positions[c2]) || !fluidC(cs[c2]) || !fluidC(cs[4u + c2])) { continue; }
       let diag = (c2 ^ c) == 3u;
       if (diag) {
         if (seed3(pTop, 0u, 4242u) >= MOORE_U) { continue; }
@@ -681,10 +684,10 @@ ${MAIN} {
     let hi = cs[4u + c];
     let kL = clsOf(lo);
     let kU = clsOf(hi);
-    if (kU == C_SOLID || cid(lo) == cid(hi) || !fluidC(lo)) { continue; }
+    if (!inGrid(positions[c]) || !inGrid(positions[4u + c]) || kU == C_SOLID || !fluidC(lo)) { continue; }
     if ((kU == C_POWDER || kU == C_LIQUID) && kL == C_AIR) { continue; }   // a fall: the column pass, the flux
-    let dU = densOfE(cid(hi));
-    let dL = densOfE(cid(lo));
+    let dU = motionDensity(hi);
+    let dL = motionDensity(lo);
     if (dU <= dL) { continue; }
     let pU = positions[4u + c];
     markBusy(pU);
@@ -704,6 +707,7 @@ ${MAIN} {
     var i0 = 0u;
     var i1 = 0u;
     if (m < 4u) { i0 = 2u * m; i1 = i0 + 1u; } else { i0 = (m - 4u) + ((m - 4u) & 2u); i1 = i0 + 2u; }
+    if (!inGrid(positions[i0]) || !inGrid(positions[i1])) { continue; }
     let a0 = cs[i0];
     let a1 = cs[i1];
     let k0 = clsOf(a0);
@@ -729,6 +733,9 @@ ${MAIN} {
       cs[i] = withAge(cs[i], cAge(cs[i]) + 1u); markBusy(positions[i]);
     }
   }
+  // Obligations follow the moved material, not its old position. Loading these
+  // before swaps would duplicate an event at both the old and new locations.
+  for (var i = 0u; i < 8u; i++) { requests[i] = pending[i]; }
   ${contactWGSL ? 'contactBlock(&cs, &bs, positions, &requests);' : '// Contact module not installed: no reaction capability advertised.'}
   ${contactWGSL.includes('fn contactBoundary(') ? `
   if (P.edge==1u && mAirHeat()) {
@@ -769,7 +776,8 @@ fn headOf(c: vec4u) -> f32 {
 fn stiffOf(c: vec4u) -> f32 { if (isLiq(c) && cFill(c) > FULLU) { return 1.0 / COMP; } return 1.0; }
 fn flowCell(p: vec3i) -> vec4u { let s = slotOf(p); return vec4u(cells[s].x, cells[s].y, 0u, 0u); }
 fn wetAt(p: vec3i) -> bool { return inGrid(p) && isLiq(flowCell(p)); }
-// the liquid an air cell would take this substep, and its temperature: the highest liquid id among its faces
+// Dry cells choose one material and one lava subtype for the whole substep.
+// Different formation energies cannot be merged into a single subtype tag.
 fn claimOf(p: vec3i) -> vec2u {
   var best = 0u;
   var bt = 0u;
@@ -777,7 +785,8 @@ fn claimOf(p: vec3i) -> vec2u {
     let q = mEdge(p + face6(i));
     if (!inGrid(q)) { continue; }
     let c = flowCell(q);
-    if (isLiq(c) && cid(c) > best) { best = cid(c); bt = cTq(c); }
+    let subtype = select(0u, ctypeOf(c), cid(c) == ${E.LAVA}u);
+    if (isLiq(c) && (cid(c) > best || (cid(c) == best && subtype > bt))) { best = cid(c); bt = subtype; }
   }
   return vec2u(best, bt);
 }
@@ -791,6 +800,11 @@ fn faceFlux(pi: vec3i, ci: vec4u, pj: vec3i, cj: vec4u, a: i32, qold: f32) -> f3
   var liq = cid(ci);
   if (!wi) { liq = cid(cj); }
   if (wi && wj && cid(ci) != cid(cj)) { return 0.0; }
+  if (liq == ${E.LAVA}u) {
+    if (wi && wj && ctypeOf(ci) != ctypeOf(cj)) { return 0.0; }
+    if (!wi && claimOf(pi).y != ctypeOf(cj)) { return 0.0; }
+    if (!wj && claimOf(pj).y != ctypeOf(ci)) { return 0.0; }
+  }
   if (!wi && claimOf(pi).x != liq) { return 0.0; }
   if (!wj && claimOf(pj).x != liq) { return 0.0; }
   var drive = headOf(ci) - headOf(cj);
