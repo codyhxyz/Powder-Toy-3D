@@ -168,7 +168,7 @@ export function createOperationsView(parent, actions = {}) {
       const presented = presentFactoryObservation(details.observation);
       text(observation, presented.label);
       text(freshness, presented.sampleLabel);
-      const regions = Object.entries(details.observation?.regions ?? {});
+      const regions = Object.entries(details.observation?.evidence?.regions ?? {});
       samples.hidden = !regions.length;
       text(samples, regions.map(([name, region]) => {
         const heat = Number.isFinite(region.maxTemperatureC) ? ` · peak ${Math.round(region.maxTemperatureC)}°C` : '';

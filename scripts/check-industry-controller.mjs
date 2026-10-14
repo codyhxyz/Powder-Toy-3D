@@ -114,8 +114,8 @@ await test('visible Factory controls replace build hotkeys; Sandbox UI stays hid
   assert(!key('KeyR').prevented);assert.equal(industry.state.rotation,0);
   assert(key('Escape',false,{tagName:'SELECT'}).prevented);assert(!industry.building);
   assert(!app.toolbar.open);industry.toggle();assert(industry.building);
-  const rejected=await industry.place(spec('belt',{powered:true}));
-  assert(!rejected.ok);assert.match(rejected.reason,/built-in drive/);
+  assert(industry.setDrive('starter-belt',true).ok,'Factory may opt a machine into its real native control port');
+  assert(industry.state.devices.find(d=>d.id==='starter-belt').powered);
   assert((await industry.place(spec('foundation'))).ok);assert.equal(industry.state.progression.credits,23);
   app.gamemode='survival';industry.modeChanged();assert(!key('KeyB',true).prevented);
   industry.dispose();

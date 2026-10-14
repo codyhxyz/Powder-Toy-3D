@@ -33,7 +33,7 @@ export function createIndustry(app) {
   let devices = [], progression = null, paid = new Set(), factoryRun = false, assisted = false;
   let building = false, dismantling = false, selected = 'belt', rotation = 0, filter = E.NUGGETS, powered = false;
   let part = null, partThreshold = 200, inspectMode = false, inspection = null, partCandidate = null, partCandidateResult = null;
-  let inspectionKey = '', inspectionAt = 0, inspectionFlight = false, inspectionControlAt = 0;
+  let inspectionKey = '', inspectionAt = 0, inspectionFlight = false, inspectionControlAt = 0, inspectionAnchor = null;
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode, lastSim = app.sim;
   // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
@@ -96,7 +96,7 @@ export function createIndustry(app) {
     partCandidate: partCandidate && { ...partCandidate }, partCandidateResult: partCandidateResult && { ...partCandidateResult },
     pending }); // Construction/placement only; live transport never rewrites the prompt
   const report = result => { if (!result.ok) app.hud.toast(result.reason); app.requestRender(); return result; };
-  const clearInspection = () => { inspection = null; inspectionKey = ''; inspectionAt = 0; inspectionFlight = false; inspectionControlAt = 0; };
+  const clearInspection = () => { inspection = null; inspectionKey = ''; inspectionAt = 0; inspectionFlight = false; inspectionControlAt = 0; inspectionAnchor = null; };
   const clearCompetingModes = () => { part = null; inspectMode = false; partCandidate = null; partCandidateResult = null; clearInspection(); };
   const toggle = value => {
     if (!active() || !factory() || driving()) return;
@@ -110,7 +110,7 @@ export function createIndustry(app) {
   function selectPart(key) {
     if (key !== null && (typeof key !== 'string' || !Object.hasOwn(CONTROL_PARTS, key))) return report(fail('Choose a permitted native control part'));
     if (!active() || !factory() || driving()) return report(fail('Control parts are available in the Factory'));
-    building = false; dismantling = false; inspectMode = false;
+    building = true; dismantling = false; inspectMode = false;
     part = key; partCandidate = null; partCandidateResult = null; clearInspection();
     app.painting = false; app.leaveBuild(); app.dock?.setCollapsed?.(true); syncToolbar();
     app.requestRender(); return { ok: true, reason: '' };
@@ -126,7 +126,7 @@ export function createIndustry(app) {
     if (!active() || !factory() || driving()) return report(fail('Inspection is available in the Factory'));
     if (value !== undefined && typeof value !== 'boolean') return report(fail('Inspection mode must be on or off'));
     inspectMode = value ?? !inspectMode;
-    part = null; partCandidate = null; partCandidateResult = null; building = false; dismantling = false;
+    part = null; partCandidate = null; partCandidateResult = null; building = true; dismantling = false;
     if (!inspectMode) clearInspection(); else { app.painting = false; app.leaveBuild(); }
     syncToolbar(); app.requestRender(); return { ok: true, reason: '' };
   }
@@ -263,10 +263,9 @@ export function createIndustry(app) {
     } catch (e) { return fail(e.message); }
     finally { if (token === epoch) pending = false; }
   }
-  const target = () => {
-    const h = app.hover; if (!h?.valid) return null;
-    return devices.find(d => h.cell.x >= d.x && h.cell.x < d.x+4 && h.cell.y >= d.y && h.cell.y < d.y+deviceHeight(d) && h.cell.z >= d.z && h.cell.z < d.z+4);
-  };
+  const targetAt = cell => cell && devices.find(d => cell[0] >= d.x && cell[0] < d.x+4
+    && cell[1] >= d.y && cell[1] < d.y+deviceHeight(d) && cell[2] >= d.z && cell[2] < d.z+4);
+  const target = () => app.hover?.valid ? targetAt([app.hover.cell.x, app.hover.cell.y, app.hover.cell.z]) : null;
   const hoverCell = () => {
     const h = app.hover;
     if (!h?.valid || !h.cell || ![h.cell.x, h.cell.y, h.cell.z].every(Number.isFinite)) return null;
@@ -313,10 +312,13 @@ export function createIndustry(app) {
     if (app.pov?.active && !app.pov.locked) return; // first click captures the mouse
     e.preventDefault(); e.stopImmediatePropagation();
     if (e.type === 'pointerdown') {
-      if (partMode) placePartAimed();
+      if (inspectMode) {
+        inspectionAnchor = hoverCell();
+        inspectionKey = '';
+        inspectHovered();
+        app.requestRender();
+      } else if (partMode) placePartAimed();
       else if (isBuilding()) { if (dismantling) removeAimed(); else placeAimed(); }
-      // Inspection is hover-driven; consuming this click prevents an unrelated
-      // brush or Sandbox action without adding a new key binding.
     }
   };
   addEventListener('keydown',key,true); addEventListener('pointerdown',pointer,true); addEventListener('mousedown',pointer,true);
@@ -334,7 +336,7 @@ export function createIndustry(app) {
     }
     // Inspect the actual native port signal independently of the machine's
     // optional drive setting; the backend still samples only this one cell.
-    return { regions, guard: { base: [0, 0, 0], material: -1, port: controlCell(device), powered: true } };
+    return { regions, guard: { base: [0, 0, 0], material: -1, port: cell, powered: true } };
   }
   function observedControlPart(observation, cell) {
     const regions = observation?.evidence?.regions;
@@ -350,19 +352,24 @@ export function createIndustry(app) {
   }
   function inspectHovered() {
     if (!inspectMode || !active() || !factory()) { clearInspection(); return; }
-    const cell = hoverCell();
-    const device = target() ?? controlOwnerAt(cell);
-    if (!cell || !device || device.type === 'foundation') { clearInspection(); return; }
-    const port = controlCell(device), onPort = port.every((n, i) => n === cell[i]);
+    const cell = inspectionAnchor ?? hoverCell();
+    if (!cell) { clearInspection(); return; }
+    const registered = targetAt(cell) ?? controlOwnerAt(cell);
+    const standalone = !registered || registered.type === 'foundation';
+    // An unregistered control cell uses the same bounded probe, never a fake machine registration.
+    const device = standalone ? { id: `control-${cell.join('-')}`, type: 'control-cell', rotation: 0,
+      x: Math.min(cell[0], app.sim.g.nx - 4), y: Math.min(cell[1], app.sim.g.ny - 4), z: Math.min(cell[2], app.sim.g.nz - 4) } : registered;
+    const port = controlCell(device), onPort = standalone || port.every((n, i) => n === cell[i]);
     const expectedShipId = device.type === 'ship' ? physics.expectedShipId(device.id) : undefined;
     const key = JSON.stringify([epoch, device.id, device.type, device.x, device.y, device.z, device.rotation,
       device.filter ?? null, !!device.powered, expectedShipId ?? null, onPort ? cell : null]);
     if (key !== inspectionKey) {
       inspectionKey = key; inspectionAt = -Infinity; inspectionFlight = false;
-      inspection = { device: { ...device }, observation: diagnostics.snapshot(device),
+      inspection = { device: standalone ? null : { ...device }, observation: diagnostics.snapshot(device),
         gateStatus: device.type === 'gate' ? gatePhysics.status(device.id) : null, controlPart: null };
     }
     if (!inspection) return;
+    inspection.device = standalone ? null : { ...device };
     inspection.gateStatus = device.type === 'gate' ? gatePhysics.status(device.id) : null;
     inspection.observation = diagnostics.snapshot(device);
     const now = performance.now();
@@ -421,7 +428,7 @@ export function createIndustry(app) {
     if (isBuilding() && dismantling) {
       candidate = target();
       if (candidate) candidateResult = { ok: true, reason: 'Click to dismantle' };
-    } else if (isBuilding() && app.hover.valid) {
+    } else if (isBuilding() && !part && !inspectMode && app.hover.valid) {
       const h = app.hover, xyz = [h.cell.x,h.cell.y,h.cell.z].map(Math.floor);
       const axis = Math.floor(h.face/2), sign = h.face % 2 === 0 ? 1 : -1;
       if (h.id >= 0) xyz[axis] += sign > 0 ? 1 : -(axis === 1 ? deviceHeight({type:selected}) : 4);
@@ -454,7 +461,7 @@ export function createIndustry(app) {
       partCandidateResult = { ok: checked.ok, reason: checked.reason };
     }
     inspectHovered();
-    view.update(state(),candidate,candidateResult,animation);
+    view.update(state(),candidate,part ? partCandidateResult : candidateResult,animation);
   }
   let lastProbe = fail('Checking clearance…');
   const api = {

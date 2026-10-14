@@ -96,7 +96,48 @@ function fixture(mode = 'factory') {
 }
 const partCalls = f => f.calls.filter(call => call.name === 'industryFactoryControlParts');
 const gateCalls = f => f.calls.filter(call => call.name === 'industryGate');
+const findNode = (node, predicate) => predicate(node) ? node
+  : node.children?.map(child => findNode(child, predicate)).find(Boolean);
 
+test('actual controller keeps part placement and inspection controls visible', async () => {
+  const f = fixture(); await settle();
+  const panel = document.body.children.at(-1);
+  const node = className => findNode(panel, element => element.className === className);
+  f.industry.selectPart('TSNS');
+  f.app.hover = { valid: true, cell: { x: 80, y: 40, z: 80 }, face: 2, id: -1 };
+  f.industry.update(0, false);
+  assert.equal(f.industry.state.building, true);
+  assert.equal(node('industry-builder').hidden, false, 'selecting a part must not hide the threshold and Done controls');
+  assert.equal(node('industry-threshold').hidden, false);
+  assert.equal(f.app.scene.getObjectByName('industry-part-ghost').visible, true);
+  f.industry.toggleInspect(true); f.industry.update(0, false);
+  assert.equal(node('industry-builder').hidden, false, 'inspection actions must remain accessible');
+  assert.equal(f.app.scene.getObjectByName('industry-part-ghost').visible, false);
+  f.industry.dispose();
+});
+
+test('standalone sensor inspection stays pinned when the cursor moves to the panel', async () => {
+  const f = fixture(); await settle();
+  const panel = document.body.children.at(-1);
+  const cell = { x: 127, y: 40, z: 127 };
+  f.app.hover = { valid: true, cell, face: 2, id: E.TSNS };
+  f.industry.toggleInspect(true);
+  listeners.get('pointerdown')({ target: f.app.canvas, button: 0, type: 'pointerdown',
+    preventDefault() {}, stopImmediatePropagation() {} });
+  await waitFor(() => f.pendingReads.some(read => read.name === 'industry diagnostics'));
+  const values = new Float32Array(36);
+  values.set([0, 0, 0, 1]);
+  values.set([1, 1, 200, 200], 4); // standalone controlPart0 identifies TSNS
+  f.answer('industry diagnostics', [...values]);
+  await waitFor(() => f.industry.state.inspection?.controlPart?.type === 'TSNS');
+  f.app.hover.valid = false; f.industry.update(0, false);
+  assert.equal(f.industry.state.inspection.device, null, 'an electrical cell is not a registered machine');
+  assert.equal(f.industry.state.inspection.controlPart.threshold, 200);
+  assert.equal(findNode(panel, element => element.className === 'industry-inspection').hidden, false);
+  assert.match(findNode(panel, element => element.className === 'industry-control-part-label').textContent, /threshold 200°C/);
+  assert.equal(f.industry.state.devices.length, 4, 'inspection clicks cannot construct a machine');
+  f.industry.dispose();
+});
 
 test('partsSpent migrates old saves, validates equity, and prices metal above its shipment value', () => {
   let p = createProgression();

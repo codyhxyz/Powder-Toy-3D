@@ -185,7 +185,7 @@ assert.deepEqual(calls.at(-1), ['toggleInspect']);
 const heaterInspection = {
   device: heater,
   observation: { status: 'ready', freshness: 'stale', running: 'unconfirmed',
-    regions: { fuel: { eligible: 4, sampled: 12, maxTemperatureC: 1860 } } },
+    evidence: { regions: { fuel: { eligible: 4, sampled: 12, maxTemperatureC: 1860 } } } },
   gateStatus: null,
 };
 tick({ ...state, inspectMode: true, part: null, partCandidate: null, inspection: heaterInspection });
