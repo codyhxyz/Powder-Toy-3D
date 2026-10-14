@@ -286,6 +286,7 @@ export function createPov(app) {
   // or a pick closes it.
   let menuOpen = false;
   function setMenu(v) {
+    if (v && app.gamemode?.() === 'factory') return; // Q opens Build; spawning is the Sandbox cheat
     const was = menuOpen;
     menuOpen = !!v && active();
     document.body.classList.toggle('pov-menu', menuOpen);

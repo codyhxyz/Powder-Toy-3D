@@ -231,7 +231,7 @@ function takeSaveThumbnail(app) {
 
 // Get the grid ready for a save: its map and size (a rebuild if they differ),
 // else an undo snapshot. Resolves false to refuse.
-async function prepareSave(app, h) {
+export async function prepareSave(app, h) {
   const { settings } = app;
   if (app.graphicsFailure) throw app.graphicsFailure;
   if (app.mp.guard()) return false;
@@ -242,11 +242,14 @@ async function prepareSave(app, h) {
     if (app.mp.guardWorld()) return false;
     const scene = app.sceneByKey(h.world.scene);
     if (!(h.size in app.WORLDS) || scene.key !== h.world.scene) throw new SaveRefused('That save is of a world this version doesn\'t have');
+    const legacySize = scene.legacySize?.every((n, i) => n === h.world.size?.[i]) ? scene.legacySize : null;
+    const expectedSize = legacySize ?? scene.size ?? app.WORLDS[h.size].size;
+    if (expectedSize.some((n, i) => n !== h.world.size?.[i])) throw new SaveRefused('That save\'s world is a different size');
     const seed = h.world.seed ?? undefined;
-    if (!app.win || settings.size !== h.size || settings.scene !== scene.key || app.worldSeed !== seed) {
+    if (!app.win || settings.size !== h.size || settings.scene !== scene.key || app.worldSeed !== seed || app.win.size.some((n, i) => n !== expectedSize[i])) {
       settings.scene = scene.key;
       app.worldSeed = seed;
-      app.setSize(h.size);
+      app.setSize(h.size, legacySize);
     }
     const w = app.win;
     if (w.size.some((n, i) => n !== h.world.size?.[i])) throw new SaveRefused('That save\'s world is a different size');
