@@ -20,16 +20,17 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
 } });
 const events = new Map();
 globalThis.addEventListener = (key, fn) => events.set(key, fn);
-globalThis.document = { body: { classList: { toggle() {} } }, querySelector: () => null,
-  createElement: () => ({ getContext: () => ({ beginPath() {}, roundRect() {}, fill() {}, fillText() {} }) }) };
+globalThis.document = { body: { classList: { toggle() {} } }, querySelector: () => null, addEventListener() {},
+  createElement: () => ({ getContext: () => ({ beginPath() {}, roundRect() {}, moveTo() {}, lineTo() {}, fill() {}, fillText() {} }) }) };
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 globalThis.__villageSpeech = { stats: { played: 0 }, muted: false, bonks: 0, speak() { this.stats.played++; }, bonk() { this.bonks++; }, stop() {} };
 const { createVillage } = await import('../src/pov/village/index.js');
 const size = [384, 128, 256], sim = { origin: new THREE.Vector3() }, world = { scene: { key: 'willowCove' }, P: { size, seed: 1 } };
-const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), size: 1, onGround: true, sprintRush: 0 };
-const camera = { look: { yaw: 0, pitch: 0 }, third: false };
+const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), size: 1, width: 2, height: 5, onGround: true, sprintRush: 0 };
+const camera = { look: { yaw: 0, pitch: 0 }, third: false,
+  forwardH(out) { return out.set(-Math.sin(this.look.yaw), 0, -Math.cos(this.look.yaw)); } };
 let active = true, picked = { valid: false }, pending = null, mode = 'animalCrossing', modal = false, tool = null, used = null, inputReleases = 0, actionReleases = 0;
-const app = { settings: { villageCharacter: 'boy' }, scene: new THREE.Scene(), getSim: () => sim, getMode: () => mode, getWorld: () => world,
+const app = { settings: { villageCharacter: 'boy' }, scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(), getSim: () => sim, getMode: () => mode, getWorld: () => world,
   getScale: () => 1, getVolume: () => ({ position: new THREE.Vector3() }), requestRender() {}, isTyping: () => false,
   pickRay: () => pending ?? Promise.resolve(picked) };
 document.querySelector = () => modal ? {} : null;
@@ -47,6 +48,14 @@ assert.equal(__villageSpeech.stats.played, 1, 'brief animalese reaction');
 const before = village.residents[0].z;
 village.update(0.1, true); assert.ok(village.residents[0].z < before, 'neighbor recoils away, not damaged');
 assert.ok(village.avatar.children[0].children[3].rotation.x > 1, 'the AC avatar visibly extends its punching arm');
+const bubble = village.root.getObjectByName('village-speech-bubble'), bubbleWorld = new THREE.Vector3(), headWorld = new THREE.Vector3();
+bubble.getWorldPosition(bubbleWorld);
+bubble.parent.localToWorld(headWorld.set(0, 5.5, 0));
+assert.ok(bubble.visible, 'bonked resident replies in an overhead bubble');
+assert.ok(Math.abs(bubbleWorld.x - headWorld.x) < 1e-8 && Math.abs(bubbleWorld.z - headWorld.z) < 1e-8 && bubbleWorld.y > headWorld.y,
+  'bubble is directly above the recoiling head, not in a side HUD');
+const facing = new THREE.Quaternion(); bubble.getWorldQuaternion(facing);
+assert.ok(facing.angleTo(app.camera.quaternion) < 1e-8, 'bubble faces the camera despite resident yaw and recoil tilt');
 assert.deepEqual(village.state, initialState(), 'punching leaves saved furniture untouched');
 await village.punch(); assert.equal(__villageSpeech.bonks, 1, 'cooldown blocks repeats');
 village.update(0.5); camera.look.yaw = Math.PI;
@@ -100,6 +109,19 @@ village.act({ type: 'tool', key: 'SHOVEL' }); assert.equal(tool, 'TROWEL', 'carr
 village.act({ type: 'cancel' });
 village.setEnabled(false); assert.equal(camera.third, false); assert.equal(village.tool, null);
 let models = 0; village.avatar.traverse(o => { if (o.name.startsWith('viewmodel-')) models++; }); assert.equal(models, 0, 'exit disposes held model');
+
+atMaple(); village.setEnabled(true, world.P);
+const beforeRapid = __villageSpeech.bonks;
+await village.punch();
+village.update(0.199);
+await village.punch();
+assert.equal(__villageSpeech.bonks, beforeRapid + 1, 'cannot repeat before 200 ms');
+village.update(0.002);
+const rapidTarget = village.residents[0];
+player.pos.set(size[0] / 2 + HOMES[1] + rapidTarget.x, FLOOR, size[2] / 2 + HOME_Z + rapidTarget.z + 3);
+await village.punch();
+assert.equal(__villageSpeech.bonks, beforeRapid + 2, 'can bonk again after 200 ms, without the old dead time');
+village.setEnabled(false);
 
 atMaple(); village.setEnabled(true, world.P);
 const beforeKick = __villageSpeech.bonks;

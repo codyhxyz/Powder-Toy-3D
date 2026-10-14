@@ -290,11 +290,11 @@ const LOOKS = {
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
   // growth faces (polished glass with faint growth marks). A cell
   // is drawn as a cluster of pointed prisms (shaders/gfx/crystal.js); their
-  // body colour and glow are worked out per prism in shaders/gfx/surface.js
-  // (crystalLook); alb is the mean. Its
+  // transmission and glow are worked out per prism in shaders/gfx/liquid.js
+  // (crystalInterface); alb is the fallback surface's mean. Its
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
-  CRYSTAL: { rough: 0.065, ior: 1.434, alb: '#4a3478', sss: 0.08, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED, macro: MACRO_NONE },
+  CRYSTAL: { rough: 0.065, ior: 1.434, alb: '#4a3478', scatter: [0.035, 0.018, 0.045], sss: 0.08, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED, macro: MACRO_NONE },
   WALL_TORCH: { rough: 0.9, alb: '#d0702a', emit: TORCH_GLOW, shed: TORCH_SHED },   // a burning pitch head: deep orange, not a pale box once the eyes adjust
   EMBER: { rough: 0.8, alb: '#3a1c12', glint: 0.3, emit: EMBER_GLOW, shed: EMBER_SHED },
   CRYSTAL_DUST: { rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED },

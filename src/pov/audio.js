@@ -540,6 +540,8 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     play('shotEcho', { gain: ECHO_GAIN * gain, delay: ECHO_DELAY_S, rate });
   });
   povEvents.on('gun:dry', ({ by }) => { if (live() && !by) play('dryClick'); });
+  // Blocked furniture tugs share the existing master sound/mute bus.
+  povEvents.on('village:blocked', () => { if (live()) play('dryClick', { rate: 0.65, gain: 0.6 }); });
   // a bomb's charge went off: the boom where it is, and its echo off the far walls
   povEvents.on('blast', ({ point }) => {
     if (!live()) return;
