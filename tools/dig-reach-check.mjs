@@ -54,6 +54,21 @@ for (let face = 0; face < 6; face++) {
     assert.ok(slanted.strike());
     assert.equal(slanted.strike(), null, 'reach measures along the ray, not only along the face axis');
   } finally { slanted.tool.dispose(); }
+  for (const scale of [0.2, 7]) {
+    const exact = fixture(face, 2);
+    exact.ctx.dir.multiplyScalar(scale);
+    try {
+      assert.ok(exact.strike());
+      assert.ok(exact.strike(), 'advanced face exactly at reach is accepted with a nonunit ray');
+      assert.equal(exact.strike(), null, 'nonunit ray cannot extend reach');
+    } finally { exact.tool.dispose(); }
+    const angled = fixture(face, 1.5, true);
+    angled.ctx.dir.multiplyScalar(scale);
+    try {
+      assert.ok(angled.strike());
+      assert.equal(angled.strike(), null, 'oblique nonunit ray keeps world-distance reach');
+    } finally { angled.tool.dispose(); }
+  }
 }
 const grip = holdFor('jackhammer');
 assert.equal(grip.right.palm[0], -1, 'right palm faces inward');
