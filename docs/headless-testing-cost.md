@@ -57,7 +57,7 @@ It does not wait for unrelated model, world-generation, or audio loading.
 Changing presentation cadence still changes temporal history. Use visual mode for pixel-regression baselines.
 
 The helper closes its browsers on uncaught exceptions, rejected promises, and termination signals.
-Each GPU slot lasts at most **10 seconds total**. This limit includes player detection, browser startup, compilation, warmup, assertions, and cleanup.
+Each GPU slot lasts at most **25 seconds total**. This limit includes player detection, browser startup, compilation, warmup, assertions, and cleanup.
 `TPT_TEST_TIMEOUT_MS` can shorten this limit, but cannot extend it.
 An independent watchdog requests closure before the deadline and terminates only the test's own processes if closure fails.
 Process identity checks and a unique launch marker prevent another session's processes from becoming cleanup targets.

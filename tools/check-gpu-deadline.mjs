@@ -9,10 +9,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import vm from 'node:vm';
-import { budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
+import { MAX_SLOT_MS, budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
 
-for (const n of [5000, 10000]) assert.equal(budgetMs(n), n);
-for (const n of [0, -1, NaN, Infinity, 1000, 10001, 180000]) assert.throws(() => budgetMs(n), RangeError);
+assert.equal(MAX_SLOT_MS, 25000);
+for (const n of [5000, 10000, 25000]) assert.equal(budgetMs(n), n);
+for (const n of [0, -1, NaN, Infinity, 1000, 25001, 180000]) assert.throws(() => budgetMs(n), RangeError);
 const table = [
   { pid: 100, ppid: 1, start: 'ours' }, { pid: 101, ppid: 100, start: 'driver' },
   { pid: 102, ppid: 101, start: 'browser' }, { pid: 103, ppid: 102, start: 'gpu' },
@@ -100,7 +101,7 @@ const launcher = readFileSync(new URL('./browser.mjs', import.meta.url), 'utf8')
 const takeSource = launcher.slice(launcher.indexOf('async function takeSlot()'), launcher.indexOf('function releaseSlot()'));
 let clock = 2000;
 const take = vm.runInNewContext(`(${takeSource})`, {
-  slotHeld: false, BUDGET_DIR: '/fake', SLOT_FILE: '/fake/slot', SLOT_WAIT_MS: 0, MAX_SLOT_MS: 10000,
+  slotHeld: false, BUDGET_DIR: '/fake', SLOT_FILE: '/fake/slot', SLOT_WAIT_MS: 0, MAX_SLOT_MS,
   Date: { now: () => ++clock }, process: { pid: 42 },
   fs: { mkdirSync() {}, writeFileSync() { throw Object.assign(new Error(), { code: 'EEXIST' }); },
     statSync: () => ({ ino: 7, mtimeMs: 1900 }), rmSync() { assert.fail('must not reclaim a fresh dead-owner lease'); } },
@@ -114,7 +115,7 @@ let acknowledge;
 const guardFinished = new Promise(resolve => { acknowledge = resolve; });
 const exits = [];
 const stop = vm.runInNewContext(`(${stopSource})`, {
-  stopping: false, guardFinished, slotDeadline: Date.now() + 10000, Date, Promise,
+  stopping: false, guardFinished, slotDeadline: Date.now() + MAX_SLOT_MS, Date, Promise,
   browsers: new Set(), process: { exit: code => exits.push(code) },
   setTimeout: () => 1, clearTimeout() {},
 });

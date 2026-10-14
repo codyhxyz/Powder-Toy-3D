@@ -1,4 +1,4 @@
-// One <=10s UI-mode mission slot (manual for --geometry-only) on a published level.
+// One <=25s UI-mode mission slot (manual for --geometry-only) on a published level.
 // node tools/cruelty-map-browser-check.mjs paradise [--url https://tpt3d.codyh.xyz] [--geometry-only]
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage, ready } from './browser.mjs';

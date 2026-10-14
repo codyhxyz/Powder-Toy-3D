@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const MAX_SLOT_MS = 10000;
+export const MAX_SLOT_MS = 25000;
 export const CLEANUP_MS = 1000;
 export function budgetMs(value) {
   if (!Number.isFinite(value) || value <= CLEANUP_MS || value > MAX_SLOT_MS)
@@ -148,7 +148,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       for (const p of remaining.filter(p => p.pid === owner.pid)) signal(p, 'SIGKILL');
     } catch (error) { failedOwnership(error); }
   };
-  // Kill at 9s of a 10s lease, leaving time to confirm exit and release.
+  // Reserve the last cleanup interval to confirm exit and release the slot.
   const hard = setTimeout(() => {
     forced = releasing = true;
     force();
