@@ -100,14 +100,14 @@ export class PhysicsV2 {
       v2: gpu.bindGroup(L.V2, own, 'v2'),
       material: gpu.bindGroup(L.MATERIAL, [...own, b(4, this.aux)], 'v2 material'),
       liquid: gpu.bindGroup(L.LIQUID, [...own, b(4, this.aux), b(5, this.liquidScratch), b(6, this.events), b(7, this.jetMask)], 'v2 liquid'),
-      contact: gpu.bindGroup(L.CONTACT, [...own, b(4, this.aux), b(6, this.events)], 'v2 contact'),
+      contact: gpu.bindGroup(L.CONTACT, [...own, b(4, this.aux), b(5, this.liquidScratch), b(6, this.events)], 'v2 contact'),
       import: gpu.bindGroup(L.IMPORT, [b(0, sim.state.A), b(1, sim.state.B), b(3, sim.marks)], 'v2 import'),
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
       state: gpu.bindGroup(L.STATE, [b(0, sim.state.A), b(1, sim.state.B), b(2, sim.state.F), b(3, sim.marks)], 'v2 state'),
     };
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid', v2foam: 'liquid' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid', v2foam: 'liquid' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     for (const k of V2_KERNELS) {

@@ -244,7 +244,9 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  for(var i=0u;i<count;i++){
   if(cells[i].valid==0){continue;}
   let ns=array<CTCell,3>(snapshot[i^1u],snapshot[i^2u],snapshot[i^4u]);
-  cells[i]=ctStep(cells[i],ns,ctSeed(positions[i],P.tick));
+  // Frozen pre-block atmosphere, never a global core read during R5.
+  let outside=liquidScratch[slotOf(positions[i])].x&255u;
+  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u));
  }
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){

@@ -13,6 +13,8 @@ struct Params {tick:u32}
 @group(0) @binding(1) var<storage,read_write> result:array<vec4u>;
 @group(2) @binding(2) var<storage,read> EV:array<vec4u>;
 @group(2) @binding(6) var<storage,read_write> events:array<u32>;
+@group(2) @binding(5) var<storage,read_write> liquidScratch:array<vec4u>;
+fn slotOf(p:vec3i)->u32{return u32(p.x+32*p.y+1024*p.z);}
 fn inGrid(p:vec3i)->bool{return all(p>=vec3i(0))&&all(p<vec3i(32));}
 fn markBusy(p:vec3i){}
 fn noteEnergySource(p:vec3i,energy:vec2u){}

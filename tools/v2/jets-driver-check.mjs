@@ -35,6 +35,12 @@ test('real driver shares canonical pool and records every jet stage between snap
   assert.equal(owner.dynamics.particles.size,48*65536);
   assert.equal(owner.jetMask.size,sim.g.slots*4);
   const names=commands.map(c=>c.name);
+  const support=commands.findIndex(c=>c.name==='v2support'),block=commands.findIndex(c=>c.name==='v2block');
+  assert.equal(block,support+1,'Support snapshot immediately precedes block');
+  assert.equal(commands[support].bind[2],owner.groups.contact);
+  assert.equal(commands[block].bind[2],owner.groups.contact);
+  assert.equal(owner.groups.contact.entries.find(e=>e.binding===5).resource.buffer,owner.liquidScratch);
+  assert.equal(owner.groups.liquid.entries.find(e=>e.binding===5).resource.buffer,owner.liquidScratch,'same scratch allocation reused');
   for(let substep=0;substep<SUB;substep++) {
     const candidate=commands.findIndex(c=>c.name==='v2jets_candidate'&&c.params.substep===substep);
     assert.deepEqual(names.slice(candidate-1,candidate+5),['v2limit','v2jets_candidate','v2jets_count','v2jets_allocate','v2jets_spawn','v2gather']);

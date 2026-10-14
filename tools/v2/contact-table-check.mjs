@@ -94,8 +94,8 @@ for(const [name,struct,rows,schema,offset,stride,isInteger] of [
 }
 assert.equal((contactWGSL.match(/var<storage/g)||[]).length,0,'no new storage bindings');
 assert.deepEqual(V2_CONTACT_LAYOUT.map(b=>[b.binding,b.buffer.type]),[
-  [0,'storage'],[1,'storage'],[2,'read-only-storage'],[4,'storage'],[6,'storage'],
-],'existing contact binding layout unchanged');
+  [0,'storage'],[1,'storage'],[2,'read-only-storage'],[4,'storage'],[5,'storage'],[6,'storage'],
+],'contact reuses liquid scratch binding 5 for frozen outside atmosphere');
 const foundation=v2BlockWGSL(gridLayout(32,32,32),contactWGSL);
 const entry=foundation.slice(foundation.indexOf('@compute @workgroup_size(64)'));
 assert(entry.includes('let blockCount=min(8u,arrayLength(&events));'));
@@ -104,7 +104,7 @@ assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,5);
 assert.equal((entry.match(/m\s*<\s*blockCount/g)||[]).length,1);
 assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,3);
 assert(!/for[^{]*<\s*[48]u/.test(entry),'no fixed wrapper bounds expand thermal calls');
-assert.equal((foundation.match(/var<storage,/g)||[]).length,6,'actual foundation+contact storage binding count unchanged');
+assert.equal((foundation.match(/var<storage,/g)||[]).length,7,'actual foundation+contact storage binding count');
 assert.equal((foundation.match(/@group\(2\) @binding\(2\)/g)||[]).length,1,'EV binding reused exactly once');
 assert.ok(foundation.includes('var<storage, read> EV: array<vec4u>;'),'raw-u32 EV prevents integer NaN canonicalization');
 assert.ok(foundation.includes('fn e0(id: u32) -> vec4f { return bitcast<vec4f>(EV[2u * id]); }'));

@@ -22,9 +22,10 @@ contactBoundary(material: Material, openFaces: u32, ambientQ: u32,
 
 Required foundation declarations: `Material`, `P.tick`, `inGrid`, `markBusy`,
 `energyOf`, `withEnergy`, `energyFits`, `energyAdd/Sub/Signed/Mul`,
-`lifeOf/withLife/payloadOf`, the phase helpers below, and
-`noteEnergySource/Sink(position, vec2u)`.
-There are **no new storage bindings** in contact.
+`lifeOf/withLife/payloadOf`, `slotOf`, the phase helpers below, and
+`noteEnergySource/Sink(position, vec2u)`. Contact group 2 also binds the existing
+`liquidScratch` at binding 5; no buffer is added. The largest native layout
+(`v2externalEvents`) uses eight storage buffers.
 
 - Positions are local grid positions used by `inGrid` and activity reporting.
   Topology must resolve periodic neighbors before passing their positions.
@@ -42,9 +43,29 @@ There are **no new storage bindings** in contact.
   and own gas diffusion age. Contact owns FIRE/SMOKE/PLASMA life; the old prototype
   fade for STEAM/CAUSTIC_GAS must not run.
 
-CPU `contactReference(cores, banks, tick, positions, pending, valid)` accepts
-an optional eight-entry valid mask, returns updated material, requests, busy
-indices and per-slot exact BigInt `sources`/`sinks`.
+CPU `contactReference(cores, banks, tick, positions, pending, valid, outside)`
+accepts optional eight-entry valid and outside-count arrays. Each outside entry
+is `[air, oxygen, CO2, gas]` for the three non-owned faces, frozen before **any**
+block runs; standalone patches default to closed outside (all zero). It returns
+updated material, requests, busy indices and exact BigInt `sources`/`sinks`.
+`ctStep(input, ns, seed)` retains its three-argument closed-outside behavior,
+delegating to `ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas)`.
+
+Support freezes those counters in `liquidScratch.x` low eight bits (four two-bit
+counts), preserving its upper 24 bits. Its 64 invocations cover exactly R5's
+eight shifted cubes, **including the one-cell halo outside the awake brick**,
+not simply the brick's own cells. Gravity only permutes cube corners; periodic
+wrapping preserves disjoint ownership. Core reads happen only in Support;
+R5 reads the frozen counters plus its three local partners. Full exposure,
+CO2 fraction and combustion oxygen ratio/ceiling use all six faces. Heat,
+reactions, plume, phase and sampled cloud/growth contacts still use owned faces.
+Out-of-grid faces retain `cellAt`'s WALL sentinel even at open outflow edges.
+
+The low byte is transient: no liquid consumer runs between Support and Limit.
+Limit fully rewrites each active cell's scratch for **both** liquid and nonliquid
+before jets/gather. Sleeping halo cells can retain transient low bits, but
+jets/gather reject sleeping faces before consuming limiter bits. There is no
+ACT resize, dispatch-argument change, persistent-state or save-format change.
 
 ### Dynamics-only helpers
 

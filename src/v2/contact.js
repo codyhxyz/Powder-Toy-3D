@@ -317,6 +317,12 @@ export function ctElectric(input, ns, random) {
 }
 
 export function ctStep(input, ns, seed) {
+  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0);
+}
+
+// Only atmosphere/exposure uses all six faces. Heat, reactions, phase and
+// sampled contacts retain the three owned partners and their calibration.
+export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas) {
   let c = ctCopy(input);
   if (c.done !== 0) return c;
   let air = 0;
@@ -364,8 +370,12 @@ export function ctStep(input, ns, seed) {
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
   }
-  const smothered = co2 > 0 && ctF(co2) >= 0.3 * ctF(gas);
-  const exposed = air + oxygen > 0;
+  const fullAir = air + outAir;
+  const fullOxygen = oxygen + outOxygen;
+  const fullCo2 = co2 + outCo2;
+  const fullGas = gas + outGas;
+  const smothered = fullCo2 > 0 && ctF(fullCo2) >= 0.3 * ctF(fullGas);
+  const exposed = fullAir + fullOxygen > 0;
   const random = ctRoll(seed, 1);
   c = ctElectric(c, ns, ctRoll(seed, 2));
   c = ctPhase(c, surface, ctRoll(seed, 3));
@@ -404,10 +414,10 @@ export function ctStep(input, ns, seed) {
           c.burning = 1;
           if (c.life === 0) return ctExhaust(c, random);
           let oxy = 1.0;
-          if (air + oxygen > 0) oxy = (ctF(air) + 4.77327 * ctF(oxygen)) / ctF(air + oxygen);
+          if (fullAir + fullOxygen > 0) oxy = (ctF(fullAir) + 4.77327 * ctF(fullOxygen)) / ctF(fullAir + fullOxygen);
           const spend = Math.min(c.life, Math.max(1, ctI(ctF(r.burn) * oxy * ctF(ctAmount(c)) / 65536)));
           c.life = c.life - spend;
-          const ceiling = ctI(ctF(r.flameQ) * (1 + 0.32 * ctF(oxygen) / ctF(Math.max(1, air + oxygen))));
+          const ceiling = ctI(ctF(r.flameQ) * (1 + 0.32 * ctF(fullOxygen) / ctF(Math.max(1, fullAir + fullOxygen))));
           const perFuel = ctDiv(r.heat * 65536, Math.max(1, r.burn));
           const gain = ctI(Math.min(2147483000, ctF(perFuel) * ctF(spend)));
           const beforeHeat = ctEnergy(c);
@@ -485,6 +495,7 @@ export const CONTACT_KERNEL = [
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctElectric, ['CTCell', 'array<CTCell, 3>', 'f32'], 'CTCell'],
+  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];
 
@@ -702,7 +713,9 @@ CONTACT_KERNEL.push(
 export const CONTACT_FACES = Array.from({ length: 8 }, (_, i) => [i ^ 1, i ^ 2, i ^ 4]);
 export const CONTACT_PAIRS = CONTACT_FACES.flatMap((ns, i) => ns.filter(j => j > i).map(j => [i, j]));
 export const CONTACT_POSITIONS = Array.from({ length: 8 }, (_, i) => [i & 1, (i >> 1) & 1, (i >> 2) & 1]);
-export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true)) {
+// Optional per-cell [air, oxygen, CO2, gas] counts must be frozen before any
+// block writes. The standalone eight-cell patch defaults to a closed outside.
+export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true), outside = Array.from({ length: 8 }, () => [0, 0, 0, 0])) {
   let cells = cores.map((core, i) => {
     const c = unpackContact(core, banks[i]); c.request = pending[i]; c.valid = +!!valid[i];
     if (c.request & 5) { c.done = 1; c.busy = 1; }
@@ -722,7 +735,7 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
     cells[i] = pair.a; cells[j] = pair.b;
   }
   const snapshot = cells.map(ctCopy);
-  cells = cells.map((c, i) => valid[i] ? ctStep(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i)) : c);
+  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i]) : c);
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
     let pair = ctResolvePhase(cells[i], cells[j]);

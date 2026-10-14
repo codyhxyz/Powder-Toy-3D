@@ -401,7 +401,7 @@ test('zero-fill/zero-fuel edges and invalid phase sources do not manufacture hea
 test('checked generated scalar WGSL remains identical to canonical CPU kernels',()=>{
   assert.equal(contactKernelWGSL,CONTACT_KERNEL.map(([fn,args,result])=>emitContactKernel(fn,args,result)).join('\n'));
 });
-test('generated WGSL validates on CPU Naga with explicit shared prelude; no added storage bindings',()=>{
+test('generated WGSL validates on CPU Naga with explicit shared prelude and bounded shared bindings',()=>{
   assert.equal((contactWGSL.match(/var<storage/g)||[]).length,0);
   const dir=mkdtempSync(join(tmpdir(),'native-contact-'));
   try{

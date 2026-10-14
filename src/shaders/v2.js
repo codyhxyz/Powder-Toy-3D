@@ -145,7 +145,7 @@ export const V2_LAYOUT = [buf(0, 'storage'), buf(1, 'storage'), buf(2, 'read-onl
 export const V2_ARGS_LAYOUT = [...V2_LAYOUT, buf(3, 'storage')];
 export const V2_MATERIAL_LAYOUT = [...V2_LAYOUT, buf(4, 'storage')];
 export const V2_LIQUID_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage'), buf(6, 'storage'), buf(7, 'storage')];
-export const V2_CONTACT_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(6, 'storage')];
+export const V2_CONTACT_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage'), buf(6, 'storage')];
 // group 1 of the import and the bridge: today's state, its flags and marks (no activity arrays)
 export const V2_STATE_OPTS = { state: 'read_write', flags: true, marks: true };
 export const V2_STATE_LAYOUT = stateLayout(V2_STATE_OPTS);
@@ -162,7 +162,8 @@ ${prelude(g, opts).replace(/\bMaterial\b/g, 'LegacyMaterial')}
 ${opts.state === 'read' ? '' : compactDecodeWGSL}
 ${nativeStateWGSL}
 ${family !== 'base' ? materialStorageWGSL : ''}
-${family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>; @group(2) @binding(7) var<storage, read_write> jetMask: array<atomic<u32>>;' : ''}
+${family === 'contact' || family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>;' : ''}
+${family === 'liquid' ? '@group(2) @binding(7) var<storage, read_write> jetMask: array<atomic<u32>>;' : ''}
 ${family === 'contact' || family === 'liquid' ? '@group(2) @binding(6) var<storage, read_write> events: array<u32>;' : ''}
 ${V2Params.wgsl}
 @group(3) @binding(1) var<uniform> P: V2Params;
@@ -599,7 +600,7 @@ ${MAIN} {
 // ---- support: a workgroup an awake brick; the solid-or-powder bit of each of its cells (the block
 // pass reads the cells under a block from this snapshot, never from a block another thread is moving)
 export const v2SupportWGSL = (g) => /* wgsl */ `
-${v2Head(g)}
+${v2Head(g, { state: false }, 'contact')}
 var<workgroup> wgN: u32;
 var<workgroup> occW: array<atomic<u32>, 2>;
 ${MAIN} {
@@ -611,6 +612,26 @@ ${MAIN} {
   if (kc == C_SOLID || kc == C_POWDER) { atomicOr(&occW[li >> 5u], 1u << (li & 31u)); }
   workgroupBarrier();
   if (li < 2u) { atomicStore(&act2[V2_OCC + 2u * b + li], atomicLoad(&occW[li])); }
+  // Same cube SET as R5, including its one-cell halo outside the awake brick.
+  // mBlockOffset only permutes corners, so no gravity-dependent ownership.
+  let j=li/8u; let i=li%8u;
+  let c0=brickCoord(b)*BS+P.offset+2*vec3i(i32(j&1u),i32((j>>1u)&1u),i32(j>>2u))-vec3i(1);
+  let local=vec3i(i32(i&1u),i32(i>>2u),i32((i>>1u)&1u));
+  let p=mEdge(c0+local);
+  if (!inGrid(p)) { return; }
+  var air=0u; var oxygen=0u; var co2=0u; var gas=0u;
+  for(var axis=0;axis<3;axis++) {
+    let sign=select(-1,1,local[axis]!=0);
+    let n=cellAt(mEdge(p+axisV(axis)*sign)); let id=cid(n); let kind=clsOf(n);
+    if(id==${E.EMPTY}u){air++;}
+    if(id==${E.OXYGEN}u || (id==${E.FIRE}u && ctypeOf(n)==${E.OXYGEN}u)){oxygen++;}
+    if(id==${E.CO2}u){co2++;}
+    if(kind==C_AIR || kind==C_GAS){gas++;}
+  }
+  // Transient low byte only; Limit fully overwrites active cells before jets
+  // or gather. Sleeping faces are rejected before reading limiter bits.
+  let s=slotOf(p);
+  liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u);
 }
 `;
 
@@ -1151,7 +1172,7 @@ export const V2_KERNELS = [
   { name: 'v2args', code: v2ArgsWGSL, layouts: () => [LAYOUT.TABLES, 'EMPTY', V2_ARGS_LAYOUT], dispatch: () => [1, 1, 1], workgroupSize: [1, 1, 1] },
   { name: 'v2boundary', code: v2BoundaryWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2column', code: v2ColumnWGSL, layouts: contact, dispatch: perBrick },
-  { name: 'v2support', code: v2SupportWGSL, layouts: own, dispatch: perBrick },
+  { name: 'v2support', code: v2SupportWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2block', code: v2BlockWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2flux', code: v2FluxWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2limit', code: v2LimitWGSL, layouts: liquid, dispatch: perBrick },

@@ -26,7 +26,7 @@ try {
     const {gridLayout}=await import('/src/sim.js');
     const {E}=await import('/src/elements.js');
     const {LAYOUT,tablesBuffer,cellSlot}=await import('/src/shaders/common.js');
-    const {v2BlockWGSL,V2Params,V2_CONTACT_LAYOUT,v2ActLayout,v2Table}=await import('/src/shaders/v2.js');
+    const {v2BlockWGSL,v2SupportWGSL,V2Params,V2_CONTACT_LAYOUT,v2ActLayout,v2Table}=await import('/src/shaders/v2.js');
     const {contactWGSL}=await import('/src/shaders/v2/contact.js');
     const {makeMaterial,energyOf}=await import('/src/v2/layout.js');
     const gpu=window.__harness.gpu,g=gridLayout(32,32,32),a=v2ActLayout(g),buffers=[];
@@ -77,6 +77,7 @@ try {
       const entries=[
         [0,cells],[1,buffer('contact activity',active.byteLength,active)],
         [2,buffer('contact elements',ev.byteLength,ev)],[4,banks],
+        [5,buffer('contact atmosphere / liquid scratch',g.slots*16)],
         [6,buffer('contact events',g.slots*4)],
       ].map(([binding,buffer])=>({binding,resource:{buffer}}));
       const tables=gpu.layout('contact tables',LAYOUT.TABLES),material=gpu.layout('contact material',V2_CONTACT_LAYOUT);
@@ -94,12 +95,16 @@ try {
       }
       const kernel=gpu.kernel({name:'production contact thermal check',code,params:V2Params,
         layouts:[tables,gpu.L.EMPTY,material],workgroupSize:[64,1,1]});
-      await kernel.ready;
+      const support=gpu.kernel({name:'production contact support snapshot',code:v2SupportWGSL(g),params:V2Params,
+        layouts:[tables,gpu.L.EMPTY,material],workgroupSize:[64,1,1]});
+      await Promise.all([kernel.ready,support.ready]);
       const compileMs=performance.now()-start;
-      for(let tick=1;tick<=32;tick++)kernel.dispatch(gpu.frame,[Math.ceil(g.nbricks/8),1,1],{bind,params:{
-        tick,busyIn:0,busyOut:g.nbricks,full:0,offset:[0,0,0],preserveLegacyMarks:0,
-        gravMode:1,edge:0,airMode:0,ambientHeat:0,gravity:0,ambient:20,
-      }});
+      for(let tick=1;tick<=32;tick++) {
+        const params={tick,busyIn:0,busyOut:g.nbricks,full:0,offset:[0,0,0],preserveLegacyMarks:0,
+          gravMode:1,edge:0,airMode:0,ambientHeat:0,gravity:0,ambient:20};
+        support.dispatch(gpu.frame,[g.nbricks,1,1],{bind,params});
+        kernel.dispatch(gpu.frame,[Math.ceil(g.nbricks/8),1,1],{bind,params});
+      }
       await gpu.fence();
       const [rawBytes,bankBytes]=await Promise.all([
         gpu.readback.buffer(cells,0,initial.byteLength),gpu.readback.buffer(banks,0,bankData.byteLength),
