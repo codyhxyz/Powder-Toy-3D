@@ -48,6 +48,7 @@ jobs:
       - run: node tools/torch-cpu-check.mjs   # water quenching and frame-rate-independent flame inertia
       - run: node tools/npc-held-check.mjs
       - run: node tools/shrine-interact-cpu-check.mjs
+      - run: node tools/hotbar-cpu-check.mjs
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: npm run build
