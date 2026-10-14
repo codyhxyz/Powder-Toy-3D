@@ -953,7 +953,9 @@ function brushStroke(tool) {
     prop: tool === PROP_TOOL ? propValue() : null,
   };
 }
-const paintStroke = (stroke) => (mp.isGuest ? mp.paint(stroke) : sim.paint(stroke));   // a guest's goes to the host
+const paintStroke = (stroke) => (mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
+  : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? undefined   // (v2 has no particle layer: selectTool)
+    : sim.paint(stroke));
 
 function editModeText() {
   const t = ELEMENTS[settings.replaceTarget]?.name;
@@ -1093,6 +1095,11 @@ function selectTool(id) {
   setEyedropper(false);
   // a tool whose subsystem isn't ported yet stays greyed out (src/wire)
   const needs = toolWire(id);
+  // the new physics' fast version has no particle layer: photons and neutrons wait for today's physics
+  if (needs === 'rays' && v2Box()) {
+    hud.toast(`${toolById(id)?.name ?? 'That tool'}: not in the new physics (?physics=v2) yet`, { kind: 'error' });
+    return;
+  }
   if (needs && !wire(needs)) {
     hud.toast(notYet(toolById(id)?.name ?? 'That tool'), { kind: 'error' });
     if (!toolById(settings.tool) || (toolWire(settings.tool) && !wire(toolWire(settings.tool)))) selectTool(DEFAULTS.tool);
@@ -1962,8 +1969,9 @@ const frameHooks = {
 
 // The new physics owns this box's steps (?physics=v2): no world, body or guest. Today's step never runs
 // meanwhile, not even while v2's pipelines build (then nothing steps); v2Active: they're built.
-const v2Box = () => !!physicsV2 && !win && !pov?.active && !mp.isGuest;
-const v2Active = () => v2Box() && physicsV2.isReady;
+// (declarations: the tool picker asks before this line has run)
+function v2Box() { return !!physicsV2 && !win && !pov?.active && !mp.isGuest; }
+function v2Active() { return v2Box() && physicsV2.isReady; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
 const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
   : sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
