@@ -29,6 +29,15 @@ The full water renderer check also remains unverified.
 startup. Its first attempt could not acquire the GPU slot; it launched no
 browser and produced no timing samples.
 
+The subsequent trace at `ac2f993` requested 72 pipelines. Seventy-one became
+ready; **`v2block` alone remained pending** when the watchdog closed the run.
+Elapsed readiness milestones were about 4.0 seconds for legacy `move`,
+4.5 seconds for native blast application, and 6.1 seconds for particle impacts.
+These are cold-start readiness timings, not simulation or frame timings.
+The run reported no ownership-inspection failure and released its slot after
+8633 ms. Trace: `/tmp/v2-native-boot-profile-ac2f993.jsonl`; lease:
+`~/.cache/tpt-headless/runs/29072-29094.json`.
+
 ## What exists
 
 `src/v2/physics.js` drives `src/shaders/v2.js` behind `?physics=v2`.
