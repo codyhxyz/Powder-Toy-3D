@@ -13,7 +13,7 @@ import { gear } from './catalog.js';
 // Shovel. Digs like Minecraft's shovel (dig.js): click, or hold, and the
 // outlined bite you aim at comes up whole into the pack, at Minecraft's
 // iron-shovel-on-dirt pace. Loose ground only: powder, and soil (grass and
-// plants, moss and fungus, as their debris). Wood is the axe's and rock the pickaxe's: they ring
+// plants and moss as debris, fungus intact). Wood is the axe's and rock the pickaxe's: they ring
 // off the blade, and a toast names the tool (Minecraft's shovel blocks).
 // Liquids run off the blade. Right-click
 // throws a block's worth (the newest BLADE_LOAD cells) where you aim, or in

@@ -29,7 +29,7 @@ export const GEAR = [
   { key: 'KNIFE', slot: 0, name: 'Knife', model: 'knife', abbr: 'KNIF', color: '#c9ccd1', touch: ['Stab'],
     desc: 'Stab a body from behind to kill it in one blow, shield or not; from the front it is a weak stab. Useless on rock.' },
   { key: 'TROWEL', slot: 1, name: 'Trowel', model: 'trowel', abbr: 'TRWL', color: '#a4a8ad', touch: ['Build', 'Material'],
-    desc: 'Builds 1 m blocks out of what the shovel dug up. Right-click picks the material.' },
+    desc: 'Builds blocks from your collected materials. Right-click opens your pack to choose what to build with.' },
   { key: 'BUCKET', pickLiquids: true, slot: 1, name: 'Bucket', model: 'bucket', abbr: 'BCKT', color: '#7f8b95', touch: ['Scoop', 'Pour'],
     desc: 'Left-click scoops up liquid, hold right-click to pour it out forever: it never runs dry. Lava is fine.' },
   { key: 'FLASK', pickLiquids: true, slot: 1, name: 'Flask', model: 'flask', abbr: 'FLSK', color: '#9fd6e8', touch: ['Scoop / pour', 'Throw'],
