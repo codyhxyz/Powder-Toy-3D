@@ -35,14 +35,14 @@
 //            channel, with the brick's thin bit only); controls: a cell's own
 //            temperature, and taps that take the wakes, are off
 //   combos   every combination of the close-up detail switches (gfx/detail.js
-//            DETAIL: ten since smoothClose, 2^10 = 1024 module texts of the
+//            DETAIL: nine without traced relief, 2^9 = 512 module texts of the
 //            realistic probe)
 //            validates with Tint as check-wgsl (a) does (no error, no
 //            warning), and each switch alone builds within
 //            PIPELINE_BUDGET_MS as check-wgsl (b) does, with its time
 // check-wgsl itself lists the off, balanced and full levels
-// (surface.js materialChecks); the 1024 here (about two minutes of Tint
-// on SwiftShader, the builds aside) would weigh on every check-wgsl run.
+// (surface.js materialChecks); the exhaustive matrix here would weigh on
+// every check-wgsl run.
 // It serves the harness pages from its own Vite (tools/vite-server.mjs: --port N,
 // else a free port) and launches Chromium through tools/browser.mjs.
 //   node tools/material-lod-check.mjs [--only leaf,values,floor,deltas,combos] [--port N] [--budget ms]

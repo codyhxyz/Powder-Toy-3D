@@ -44,9 +44,8 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // (put the measured ms in a comment next to it); fadeM: pixel footprint
 // (metres per pixel) above which the feature draws nothing, so the view
 // shader leaves it out (gfx/detailGate.js). Infinity = always in.
-// Relief (shaders/gfx/relief.js) starts once its tallest feature, rock crags
-// (top = ROCK_CRAG_H · RELIEF_CRAG_TOP = 7 cm · 0.5), spans RELIEF_PX_LO = 1 pixel.
-const RELIEF_FADE_M = 0.035;   // m per pixel
+// Solid surface detail uses the material's normal and cavity shading at every
+// level, not an additional displacement/self-shadow march.
 // Grains (shaders/gfx/grains.js) start where a pebble (PEBBLE_M = 5 cm) or a
 // clod's lump (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) spans 8 pixels (*_PX_NONE).
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
@@ -79,9 +78,6 @@ const MENISCUS_FADE_M = MENISCUS_PX * 0.0027;   // m per pixel
 // figures are the features' own 25-round runs. God view: ~0 for every gated
 // feature.
 export const DETAIL = [
-  // high: lab eyeWood (a wall of bark face-on) 9 → 48 ms; eyeSand +4, volcano eyeFlank +10
-  { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'high', fadeM: RELIEF_FADE_M,
-    desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines, parallax and their own shadows' },
   // high: volcano eyeSummit +17, eyeFlank +12 ms
   { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close', cost: 'high', fadeM: GRAINS_FADE_M,
     desc: 'Up close, rubble is a pile of real broken-rock chips (~5 cm): faces, edges, gaps and contact shadows instead of a texture' },
@@ -125,7 +121,7 @@ export const DETAIL = [
 // these alone does it, every other feature draws). On a fallback adapter the
 // volume leaves them out (gfx/volume.js), and shaders/render.js lists the
 // variants holding them on WGSL_MAC_ONLY; a real GPU draws them.
-export const SOFTWARE_UNDRAWABLE = ['DETAIL_RELIEF', 'DETAIL_GRAINS', 'DETAIL_GRAIN_CLUSTERS'];
+export const SOFTWARE_UNDRAWABLE = ['DETAIL_GRAINS', 'DETAIL_GRAIN_CLUSTERS'];
 /** A defines object as a device draws it: on a software adapter (fallback) without SOFTWARE_UNDRAWABLE. */
 export const drawableDetail = (detail, fallback) =>
   (fallback ? Object.fromEntries(Object.entries(detail).filter(([k]) => !SOFTWARE_UNDRAWABLE.includes(k))) : detail);

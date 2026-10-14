@@ -3,9 +3,7 @@ import { presentationWGSL } from '../../gfx/presentationMath.js';
 // Adapter between exact quadratic grid traversal and the existing unit-ray
 // material kernels. Chords stay INSIDE one cell and deviate by <=1/1024 cell.
 // Empty regions remain exact, single jumps, independent of that error bound.
-// reliefHit retains its 1.5-cell shell past a segment: extrapolation there is
-// bounded by k*1.5*(sqrt(2)+1.5) < 1/256 cell (check-presentation.mjs). Its
-// outgoing local-flat ray is explicitly restarted through warpRestart.
+// Outgoing local-flat rays restart through warpRestart.
 //
 // WGSL (docs/webgpu.md W2: the GLSL's names). In grid cells: the header's
 // origin (H.origin, the GLSL's uOrigin) takes them to the world cells the

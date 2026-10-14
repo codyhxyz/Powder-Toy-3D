@@ -744,7 +744,7 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // =====================================================================
 
 const realistic = (detail, curved = false) => {
-  const grains = GRAINS_ANY(detail), relief = !!detail.DETAIL_RELIEF;
+  const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail);
   return /* wgsl */ `
 // Inside a liquid, sunlight fades with depth: the sun's visibility is read
@@ -1093,18 +1093,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         if (!anyHit && mOp > MEDIA_DEPTH_ALPHA) { anyHit = true; }
       }
 
-      // ---- the event ----${relief ? `
-      // up close the hit moves onto the carved relief (gfx/relief.js), or the
-      // ray passes through a groove: its march restarts where it leaves
-      if (ev == EV_OPAQUE && dot(evN, evN) == 0.0 && !reliefHit(ro, rd, evCh, &tEv)) {
-        ro += rd * tEv; mNext -= tEv; tCut -= tEv;
-        cell = vec3i(floor(ro)); tMax = ddaNext(ro, rd, cell);
-        tEnter = 0.0; lastB = vec3i(-1); ax = argmin3(tMax);
-        phiA = surfSample(ro); phiStale = false;${curved ? `
-        warpRestart(&walk, ro, rd);` : ''}
-        continue;
-      }
-      if (ev != EV_NONE && tEv > tCut) { ev = EV_NONE; cut = true; }   // the carved surface lies behind the mesh` : ''}
+      // ---- the event ----
       if (cut) { break; }
       if (ev != EV_NONE) {
         let hp = ro + rd * tEv;

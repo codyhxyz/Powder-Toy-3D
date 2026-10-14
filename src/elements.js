@@ -167,8 +167,7 @@ import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
 //     (scripts/check-tile-engine.mjs lists elements the port misses) and, if
 //     it keeps a cell from resting, in shaders/activity.js inertNear.
 //   - A texture of its own, beyond its albedo and the shared surf textures, is
-//     a branch of shaders/gfx/surface.js matOf (and reliefHeight, plus
-//     gfx/relief.js, for relief up close).
+//     a branch of shaders/gfx/surface.js matOf (colour, normal gradient, and cavity shading).
 
 import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
