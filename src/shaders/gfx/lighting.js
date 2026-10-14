@@ -631,8 +631,16 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
     let bc = cell / BS;
     if (any(bc != lastB)) { lastB = bc; occ = brickOcc(bc); }
     if (!brickMatter(occ)) { ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
-    let id = eid(fetchA(cell));
+    let a = fetchA(cell);
+    let id = eid(a);
     let axOut = argmin3(tMax);
+    if (isFoliage(a)) {
+      var lt = min(tMax[axOut], tLim);
+      var ln = vec3f(0.0);
+      if (foliageHit(cell, ro, rd, max(tEnter, selfSkip), lt, &lt, &ln)) {
+        *hc = cell; *hn = ln; return lt;
+      }
+    }
     if (!isGasLike(id) && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
         && (isCrisp(id) || (tEnter > selfSkip && nearSmoothIn(ro + rd * tClosest(cell, ro, rd, tEnter, tMax[axOut]), opaqueOnly)))) {
       *hc = cell;
