@@ -16,7 +16,8 @@ import { farLayout, WORLD_SIZE } from '../src/shaders/farShared.js';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { cozyFixture, SWATCHES } from './cozy-fixture.mjs';
 import { E } from '../src/elements.js';
-import { VIEWS, viewKey, isMaterialView, materialStyleForView } from '../src/views.js';
+import { VIEWS, viewKey, viewForMode, isMaterialView, materialStyleForView } from '../src/views.js';
+import { GAMEMODES, mapByKey, mapOf, modeByKey, resolveMode } from '../src/maps.js';
 import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
 import { detailDefaults } from '../src/gfx/detail.js';
 import { VOLUME_VIEWS, viewShadows, warmChecks, WGSL_CHECK as renderChecks } from '../src/shaders/render.js';
@@ -33,6 +34,13 @@ for (const key of ['id', 'key', 'hotkey']) assert.equal(new Set(VIEWS.map(v => v
 assert(VOLUME_VIEWS.includes('cozy'));
 assert.equal(viewKey(cozy.id), 'cozy');
 assert(viewShadows('cozy'));
+const animalCrossing = modeByKey('animalCrossing');
+assert.equal(animalCrossing.defaultView, 'cozy');
+for (const mode of GAMEMODES) for (const saved of VIEWS) {
+  assert.equal(viewForMode(mode, saved.id), mode === animalCrossing ? cozy.id : saved.id,
+    'only Animal Crossing supplies a starting shader; other modes retain the selected view');
+}
+assert.equal(viewForMode(resolveMode(mapByKey('lab'), 'animalCrossing'), 0), 0, 'ineligible maps do not receive the mode default');
 const oldFields = Object.fromEntries(Object.entries(FRAME_UNIFORM_FIELDS).filter(([key]) => key !== 'materialStyle'));
 const oldStruct = uniformStruct('OldFrameUniforms', oldFields);
 for (const [key, offset] of Object.entries(oldStruct.offsets)) assert.equal(FrameUniformsStruct.offsets[key], offset, `existing offset ${key}`);
@@ -62,6 +70,61 @@ assert.notEqual(JSON.stringify(view), before, 'Cozy uses existing view-cache inv
 assert(!('materialStyle' in view));
 
 const app = source('src/app.js');
+const linkedViewCode = app.slice(app.indexOf('const viewParam ='), app.indexOf('// ?win='));
+const bootModeCode = app.slice(app.indexOf('let selectedMode ='), app.indexOf('if (!toolById'));
+const bootView = new Function('settings', 'params', 'bootMap', 'launch', 'VIEWS', 'resolveMode', 'modeByKey', 'viewForMode',
+  `${linkedViewCode}\n${bootModeCode}\nreturn settings.view;`);
+for (const [query, expected] of [
+  ['mode=animalCrossing', cozy.id], ['mode=animalCrossing&view=heat', 1],
+  ['mode=animalCrossing&view=5', 5], ['mode=animalCrossing&view=bogus', cozy.id], ['mode=sandbox', 0],
+]) {
+  assert.equal(bootView({ view: 0 }, new URLSearchParams(query), mapByKey('willowCove'), {},
+    VIEWS, resolveMode, modeByKey, viewForMode), expected, 'actual boot code applies mode defaults but honors valid explicit links');
+}
+assert.equal(bootView({ view: 5 }, new URLSearchParams(), mapByKey('willowCove'), { mode: 'animalCrossing' },
+  VIEWS, resolveMode, modeByKey, viewForMode), cozy.id, 'menu launch also overrides an old saved view');
+const modeCode = app.slice(app.indexOf('async function startMode('), app.indexOf('// maps.js is plain data'));
+const makeMode = new Function('settings', 'helpers', `
+  const { resolveMode, mapOf, viewForMode } = helpers;
+  let selectedMode = 'sandbox', modeEpoch = 0, villageFocus = null;
+  const win = null, pov = null, mp = { role: 'solo' }, ctx = {};
+  const hud = { toast() {}, dismissHint() {} }, presentation = { select() {} }, pacer = { wake() {} };
+  const applyGravity = () => {}, setView = id => { settings.view = id; };
+  ${modeCode}
+  return startMode;
+`);
+const modeSettings = { view: 0, size: 'world', scene: 'willowCove' };
+const startMode = makeMode(modeSettings, { resolveMode, mapOf, viewForMode });
+await startMode('animalCrossing');
+assert.equal(modeSettings.view, cozy.id, 'entering the running mode selects Cozy');
+modeSettings.view = 1;
+await startMode('animalCrossing');
+assert.equal(modeSettings.view, 1, 'a manual shader change is not forced back during the same mode');
+await startMode('sandbox');
+assert.equal(modeSettings.view, 1, 'other modes do not override the selected shader');
+await startMode('animalCrossing');
+assert.equal(modeSettings.view, cozy.id, 're-entering Animal Crossing applies its default again');
+const openMapCode = app.slice(app.indexOf('function openMap('), app.indexOf('// Animal Crossing on Tinker Creek'));
+assert(openMapCode.indexOf('setView(modeView)') < openMapCode.indexOf('setSize(m.size)'), 'new maps choose their shader before building pipelines');
+const preload = source('src/preload.js');
+const warmMapCode = preload.slice(preload.indexOf('export function warmMap('), preload.indexOf("// The grid a map's")).replace('export ', '');
+const makeWarmer = new Function('mapByKey', 'resolveMode', `
+  const launch = { adapter: {} }, warmed = new Set(), calls = [];
+  const gridOf = () => ({ key: '128x128x128w' });
+  const warmer = { grid: g => calls.push(g) };
+  ${warmMapCode}
+  return { warmMap, calls };
+`);
+const warmer = makeWarmer(mapByKey, resolveMode);
+warmer.warmMap('island', 'sandbox');
+warmer.warmMap('willowCove', 'animalCrossing');
+warmer.warmMap('willowCove', 'animalCrossing');
+assert.equal(warmer.calls.length, 2, 'same-grid shader variants have separate warm keys but are deduplicated');
+assert.equal(warmer.calls[1].view, 'cozy');
+assert.equal(warmer.calls[1].curved, true);
+assert.equal(warmer.calls[1].volumeOnly, true, 'mode changes reuse the grid kernels');
+assert.match(preload, /view = views\.viewKey\(settings\.view\)/);
+assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved \}\)/);
 assert.doesNotMatch(app, /materialStyle|Material style/, 'separate preference and drawer control removed');
 assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'view'/);
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
