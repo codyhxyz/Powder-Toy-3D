@@ -35,7 +35,7 @@ import { Matrix4 } from 'three/webgpu';
 import { WORLD_SIZE } from '../shaders/farShared.js';
 import {
   volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES, VOLUME_VIEWS,
-  shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, shadowDispatch, SHADOW_WORKGROUP,
+  shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, SHADOW_WORKGROUP,
   pickFrag, PICK_LAYOUTS, PickParams, PICK_BATCH, PICK_RESULT_BYTES, LAYOUT_NAMES,
 } from '../shaders/render.js';
 import { frameUniformsOf } from './uniforms.js';
@@ -263,7 +263,10 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      */
     recordShadow() {
       if (shadowKernel.state !== 'ready') { shadowKernel.build(); return false; }
-      shadowKernel.dispatch(gpu.frame, shadowDispatch(res), { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.header() });
+      // the tiles to re-trace: those a change crossed, or all (src/derived.js shadowTiles)
+      const tiles = derived.shadowTiles(res, shadowMap);
+      if (!tiles) return false;
+      shadowKernel.dispatch(gpu.frame, tiles, { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.header() });
       return true;
     },
 

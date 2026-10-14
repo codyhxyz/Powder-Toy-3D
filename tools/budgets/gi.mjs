@@ -8,21 +8,21 @@ export default {
   harness: true,
   scenarios: [
     {
-      name: 'a derived frame with the GI (32³, a cube and a slab): the derived frame\'s 30 dispatches and 2 direct ones, one pass, one submit',
+      name: 'a derived frame with the GI (32³, a cube and a slab): the derived frame\'s 40 dispatches, the GI\'s 3 direct and 2 indirect, one pass, one submit',
       run: (page) => page.evaluate(() => window.__harness.run('budget:frame')),
-      // derived (tools/budgets/derived.mjs): 9 indirect (×2) + 12 direct, 89 direct workgroups at 512 bricks;
-      // the GI: giSource a workgroup per brick (512), giGather two probes a workgroup over half of them (128)
+      // derived (tools/budgets/derived.mjs): 18 indirect (×2) + 4 direct, 18 direct workgroups at 512 bricks;
+      // the GI: giKey 1, giSelect a thread per brick (8), giArgs 1 direct; giSource and giGather over its lists
       expect: {
-        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 32, indirectDispatches: 9,
-        workgroupsDirect: 729, bytesAllocated: 0, pipelinesCreated: 0,
+        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 47, indirectDispatches: 20,
+        workgroupsDirect: 28, bytesAllocated: 0, pipelinesCreated: 0,
       },
     },
     {
-      name: 'the frame after sim.resetGI(): the gather traces every probe (256 workgroups); the clears come before the pass',
+      name: 'the frame after sim.resetGI(): the gather traces every probe (its list); the clears come before the pass',
       run: (page) => page.evaluate(() => window.__harness.run('budget:reset')),
       expect: {
-        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 32, indirectDispatches: 9,
-        workgroupsDirect: 857, bytesAllocated: 0, pipelinesCreated: 0,
+        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 47, indirectDispatches: 20,
+        workgroupsDirect: 28, bytesAllocated: 0, pipelinesCreated: 0,
       },
     },
   ],

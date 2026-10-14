@@ -4,7 +4,8 @@ import {
 import {
   AGE, FIELDS_DILATE, WORK_DILATE, FIELD_LAYOUT, LAYOUT_ENTRY, dirtyListsWGSL, listMainWGSL, FIELD_REACH, FIELD_SCRATCH_REACH,
 } from './fields.js';
-import { brickInfoWGSL } from './bindings.js';
+import { brickInfoWGSL, frameBindings, RENDER_LAYOUT } from './bindings.js';
+import { SHADOW_PAD } from './gfx/lighting.js';
 import { materialsGLSL } from '../gfx/materials.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold, MAX_WORKGROUPS } from '../gpu/kernels.js';
@@ -389,8 +390,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 //              FIELDS and WORK
 //   dirtyArgs  their lengths and indirect arguments
 // then the field passes over them (shaders/fields.js), the brick map over
-// FIELDS, and over every brick the empty-space distance and the glow volume
-// (brick-resolution passes: cheap whole).
+// FIELDS, the empty-space distance around the bricks whose matter bit flipped
+// and the glow volume around those whose light changed (REGIONS below).
 export const BRICK_DIST_MAX = 8;          // bricks; also the half-width of each pass's window
 // WEBGPU-STUB (docs/webgpu.md J3): brickDist holds the distance itself, a u32 per brick (bindings.js brickDistAt).
 export const BRICK_DIST_SCALE = null;
@@ -401,22 +402,154 @@ const E = LAYOUT_ENTRY;
 // Group 2 of the derived kernels (src/derived.js makes them; the field
 // kernels' are shaders/fields.js FIELD_LAYOUT):
 //   BOOK      the ages and the lists buffer (age, dirty, dirtyArgs)
-//   BRICK     the FIELDS list, the three final fields (sampled) and the brick map
-//   PAIR      a source and a destination: brickDist's axes, the light blur, a
-//             brick buffer's shift
-//   LIGHT     the light blur's last pass: the source and the light volume
+//   BRICK     the FIELDS list, the three final fields (sampled), the brick map
+//             and the regions' boxes (the changes it notes)
+//   PAIR      a source and a destination: a brick buffer's shift; the shadow
+//             map's tiles (the lists, brickDist's buffer)
+//   DIST      a source, a destination and the regions: brickDist's axes, the
+//             light blur
+//   LIGHT     the light blur's last pass: the source, the light volume, the regions
+//   BOXES     the regions alone (boxArgs)
 //   GI_SHIFT  the GI probes' history, its shifted copy and their four textures
+//   GI_SELECT the ages, the brick map, giSrc (its lists) and the lists buffer
+//             (GI_NEAR; the GI's indirect arguments: shaders/gi.js giSelect, giArgs)
 export const DERIVED_LAYOUT = {
   BOOK: [E.rw(0), E.rw(1)],
-  BRICK: [E.ro(0), E.tex3d(1), E.tex3d(2), E.tex3d(3), E.rw(4)],
+  BRICK: [E.ro(0), E.tex3d(1), E.tex3d(2), E.tex3d(3), E.rw(4), E.rw(5)],
   PAIR: FIELD_LAYOUT.PAIR,
-  LIGHT: [E.ro(0), E.out3d(1)],
+  DIST: [E.ro(0), E.rw(1), E.ro(2)],
+  LIGHT: [E.ro(0), E.out3d(1), E.ro(2)],
+  BOXES: [E.rw(0)],
   GI_SHIFT: [E.ro(0), E.rw(1), E.out3d(2), E.out3d(3), E.out3d(4), E.out3d(5)],
+  GI_SELECT: [E.ro(0), E.ro(1), E.rw(2), E.rw(3)],
 };
 
 const perBrick = (g) => fold(Math.ceil(gridDims(g).nbricks / 64));
 const brickMain = /* wgsl */ `@compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {`;
+
+// Appends entries to a list from a whole workgroup (docs/webgpu.md D4): the
+// workgroup counts its entries, one thread adds them to the list's counter
+// (word count of buffer buf, atomic<u32>s), then each writes its own at word
+// list + its place. Uniform control flow only (barriers). name: the function's.
+export const appendWGSL = (name, buf, count, list) => /* wgsl */ `
+var<workgroup> ${name}Count: atomic<u32>;
+var<workgroup> ${name}Base: u32;
+fn ${name}(on: bool, entry: u32, li: u32) {
+  var mine = 0u;
+  if (on) { mine = atomicAdd(&${name}Count, 1u); }
+  workgroupBarrier();
+  if (li == 0u) {
+    ${name}Base = atomicAdd(&${buf}[${count}], atomicLoad(&${name}Count));
+    atomicStore(&${name}Count, 0u);
+  }
+  let base = workgroupUniformLoad(&${name}Base);
+  if (on) { atomicStore(&${buf}[${list} + base + mine], entry); }
+}`;
+
+// ---- the brick-resolution passes' regions (docs/scaling.md D9) ----
+// brickDist and the glow volume are separable passes over the brick grid
+// with a known reach, so they run over the box of bricks a change can reach,
+// not every brick. The brick kernel notes the box of the bricks whose matter
+// bit flipped (DIST: brickDist reads only that bit) and of those whose light
+// changed (LIGHT), comparing each brick's record with what it held; boxArgs
+// turns them into each pass's region (lo, size, count) and its indirect
+// arguments, and empties them for the next frame. full (a grid's first
+// frame, a window shift, sim.incremental = false) makes every region the grid.
+//   brickDist: each axis into a buffer of its own (distX, distY, then brickDist,
+//     src/derived.js), which holds its values everywhere, so an axis's region
+//     is where its output may change: the box grown by BRICK_DIST_MAX along the
+//     axes done so far.
+//   light: the blur's six passes ping-pong two scratch buffers, so a pass
+//     covers every brick the passes after it read: the last its own output's
+//     reach (2 a pass along each of its axes), each earlier one that and the
+//     next pass's 2 along its axis.
+// Exact: each region holds every brick whose output may change, and every
+// value a pass reads there was written this frame or holds what it would be.
+export const DIST_PASSES = 3;
+export const LIGHT_BLUR_PASSES = 6;
+const LIGHT_TAP_REACH = 2;   // blurFrag's 5 taps
+const axisReach = (axis, r) => [0, 1, 2].map((a) => (a === axis ? r : 0));
+const addReach = (a, b) => a.map((x, i) => x + b[i]);
+const DIST_REACH = [0, 1, 2].map((k) => [0, 1, 2].map((a) => (a <= k ? BRICK_DIST_MAX : 0)));
+const LIGHT_REACH = (() => {
+  const axis = (i) => i % 3;
+  const r = [];
+  r[LIGHT_BLUR_PASSES - 1] = [0, 0, 0];
+  for (let i = 0; i < LIGHT_BLUR_PASSES; i++) r[LIGHT_BLUR_PASSES - 1] = addReach(r[LIGHT_BLUR_PASSES - 1], axisReach(axis(i), LIGHT_TAP_REACH));
+  for (let i = LIGHT_BLUR_PASSES - 2; i >= 0; i--) r[i] = addReach(r[i + 1], axisReach(axis(i + 1), LIGHT_TAP_REACH));
+  return r;
+})();
+// The regions in order: brickDist's axes (0-2), then the light blur's passes (3-8).
+export const REGIONS = { DIST: 0, LIGHT: DIST_PASSES, count: DIST_PASSES + LIGHT_BLUR_PASSES, reach: [...DIST_REACH, ...LIGHT_REACH] };
+// The boxes buffer (src/derived.js), in u32 words: the two change boxes (lo
+// x, y, z then hi x, y, z; empty while lo > hi), each region's lo, size and
+// count (8 words), each region's indirect arguments (4 words).
+export const BOXES = { DIST: 0, LIGHT: 8, REGION: 16, ARGS: 16 + 8 * REGIONS.count, words: 16 + 12 * REGIONS.count };
+const boxesWGSL = /* wgsl */ `
+const BOX_DIST: u32 = ${BOXES.DIST}u;
+const BOX_LIGHT: u32 = ${BOXES.LIGHT}u;
+const BOX_REGION: u32 = ${BOXES.REGION}u;
+const BOX_ARGS: u32 = ${BOXES.ARGS}u;
+const BOX_EMPTY: u32 = 0xffffffffu;   // a box's lo while it holds nothing`;
+// main() of a pass over region P.region: a thread per brick of it. Declares bc
+// (the brick) and i (its number). A thread past the region's end returns.
+const regionMainWGSL = /* wgsl */ `${brickMain}
+  let t = foldThread(wg, nwg, li);
+  let at = BOX_REGION + 8u * P.region;
+  let size = vec3u(boxes[at + 3u], boxes[at + 4u], boxes[at + 5u]);
+  if (t >= boxes[at + 6u]) { return; }
+  let bc = vec3i(vec3u(boxes[at], boxes[at + 1u], boxes[at + 2u]) + vec3u(t % size.x, (t / size.x) % size.y, t / (size.x * size.y)));
+  let i = brickId(bc);`;
+// boxArgs: one thread. full: every region is the grid.
+export const BoxParams = uniformStruct('BoxParams', { full: 'bool' });
+export const boxArgsFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${boxesWGSL}
+${foldArgsWGSL}
+${BoxParams.wgsl}
+@group(3) @binding(1) var<uniform> P: BoxParams;
+@group(2) @binding(0) var<storage, read_write> boxes: array<u32>;
+var<private> REACH: array<vec3i, ${REGIONS.count}> = array<vec3i, ${REGIONS.count}>(${REGIONS.reach.map((r) => `vec3i(${r.join(', ')})`).join(', ')});
+@compute @workgroup_size(1)
+fn main() {
+  let top = vec3i(BX, BY, BZ) - 1;
+  for (var k = 0u; k < ${REGIONS.count}u; k++) {
+    let box = select(BOX_LIGHT, BOX_DIST, k < ${REGIONS.LIGHT}u);
+    let lo = vec3u(boxes[box], boxes[box + 1u], boxes[box + 2u]);
+    let hi = vec3u(boxes[box + 3u], boxes[box + 4u], boxes[box + 5u]);
+    var a = vec3i(0);
+    var b = top;
+    var n = 0u;
+    if (P.full != 0u) {
+      n = NBRICKS;
+    } else if (all(lo <= hi)) {
+      a = max(vec3i(lo) - REACH[k], vec3i(0));
+      b = min(vec3i(hi) + REACH[k], top);
+      let s = vec3u(b - a + 1);
+      n = s.x * s.y * s.z;
+    }
+    let at = BOX_REGION + 8u * k;
+    boxes[at] = u32(a.x);
+    boxes[at + 1u] = u32(a.y);
+    boxes[at + 2u] = u32(a.z);
+    boxes[at + 3u] = u32(b.x - a.x + 1);
+    boxes[at + 4u] = u32(b.y - a.y + 1);
+    boxes[at + 5u] = u32(b.z - a.z + 1);
+    boxes[at + 6u] = n;
+    let args = foldArgs((n + 63u) / 64u);
+    boxes[BOX_ARGS + 4u * k] = args.x;
+    boxes[BOX_ARGS + 4u * k + 1u] = args.y;
+    boxes[BOX_ARGS + 4u * k + 2u] = args.z;
+  }
+  for (var c = 0u; c < 3u; c++) {
+    boxes[BOX_DIST + c] = BOX_EMPTY;
+    boxes[BOX_DIST + 3u + c] = 0u;
+    boxes[BOX_LIGHT + c] = BOX_EMPTY;
+    boxes[BOX_LIGHT + 3u + c] = 0u;
+  }
+}
+`;
 
 // age: one thread per brick. 0 if the brick may have changed since the last
 // derived frame: steps ran since (steps: sim.actNoted) and a quiet map they
@@ -465,6 +598,13 @@ ${brickMain}
 // EMA at 0, FIELDS within FIELDS_DILATE, WORK within WORK_DILATE. Appends go
 // one global atomic per workgroup and list (docs/webgpu.md D4): list order is
 // free, since each entry is a workgroup writing its own brick's cells.
+// From the same neighbourhood, the brick's masks for the field passes'
+// coverage (shaders/fields.js COVER, dirtyLists): which of its 3³ neighbours
+// are EMA bricks, and which are FIELDS bricks (an EMA brick within one of
+// them: the EMA bricks over the 5³ neighbourhood, as rows of 5 bits along x,
+// dilated a brick along each axis in turn); and GI_NEAR, a brick within
+// GI_NEAR_DILATE that changed within GI_RECENT frames (shaders/gi.js giSelect).
+// Written for every brick (a list's reader looks at its own bricks only).
 export const dirtyFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${dirtyListsWGSL(g)}
@@ -486,20 +626,61 @@ fn append(on: bool, entry: u32, list: u32, li: u32) {
   let base = workgroupUniformLoad(&wgBase);
   if (on) { atomicStore(&dlist[list * NBRICKS + base + mine], entry); }
 }
+const ROWS: i32 = 2 * WORK_DILATE + 1;   // the neighbourhood's side, in bricks
 ${brickMain}
   let b = foldThread(wg, nwg, li);
   var near = WORK_DILATE + 1;
   if (b < NBRICKS) {
     let bc = brickCoord(b);
+    var rows: array<u32, ROWS * ROWS>;   // EMA bricks: row (y, z) of the neighbourhood, bit x
+    var gi = false;
     for (var z = -WORK_DILATE; z <= WORK_DILATE; z++) {
       for (var y = -WORK_DILATE; y <= WORK_DILATE; y++) {
+        var row = 0u;
         for (var x = -WORK_DILATE; x <= WORK_DILATE; x++) {
           let q = bc + vec3i(x, y, z);
           if (!brickInGrid(q)) { continue; }
-          if ((age[brickId(q)] & AGE_MASK) < EMA_SETTLE) { near = min(near, max(abs(x), max(abs(y), abs(z)))); }
+          let a = age[brickId(q)] & AGE_MASK;
+          if (a < EMA_SETTLE) {
+            near = min(near, max(abs(x), max(abs(y), abs(z))));
+            row |= 1u << u32(x + WORK_DILATE);
+          }
+          if (a < GI_RECENT && max(abs(x), max(abs(y), abs(z))) <= GI_NEAR_DILATE) { gi = true; }
         }
+        rows[(y + WORK_DILATE) + ROWS * (z + WORK_DILATE)] = row;
       }
     }
+    // FIELDS bricks: the EMA bricks dilated a brick along x, then y, then z
+    // (bits outside a row's ROWS fall off; the grid's edges are outside every row)
+    let side = (1u << u32(ROWS)) - 1u;
+    var dx: array<u32, ROWS * ROWS>;
+    var dy: array<u32, ROWS * ROWS>;
+    for (var i = 0; i < ROWS * ROWS; i++) { let r = rows[i]; dx[i] = (r | (r << 1u) | (r >> 1u)) & side; }
+    for (var z = 0; z < ROWS; z++) {
+      for (var y = 0; y < ROWS; y++) {
+        var r = dx[y + ROWS * z];
+        if (y > 0) { r |= dx[y - 1 + ROWS * z]; }
+        if (y < ROWS - 1) { r |= dx[y + 1 + ROWS * z]; }
+        dy[y + ROWS * z] = r;
+      }
+    }
+    // the masks of the 3³ around the brick, 3 bits (x) to a row (y, z)
+    var em = 0u;
+    var fm = 0u;
+    let mid = WORK_DILATE - 1;   // offset -1, in the rows
+    for (var z = 0; z < 3; z++) {
+      for (var y = 0; y < 3; y++) {
+        let k = (mid + y) + ROWS * (mid + z);
+        let at = u32(3 * y + 9 * z);
+        em |= ((rows[k] >> u32(mid)) & 7u) << at;
+        var f = dy[k];
+        if (mid + z > 0) { f |= dy[k - ROWS]; }
+        if (mid + z < ROWS - 1) { f |= dy[k + ROWS]; }
+        fm |= ((f >> u32(mid)) & 7u) << at;
+      }
+    }
+    atomicStore(&dlist[DL_EMASK + b], em | select(0u, GI_NEAR, gi));
+    atomicStore(&dlist[DL_FMASK + b], fm);
   }
   append(near == 0, b, LIST_EMA, li);
   append(near <= FIELDS_DILATE, b, LIST_FIELDS, li);
@@ -510,22 +691,33 @@ ${brickMain}
 // dirtyArgs: one thread. Each list's length into its LAST word (what the
 // kernels dispatched over it read), its counter back to 0 for the next
 // frame, and its indirect arguments fold()ed as src/gpu/kernels.js folds
-// ([ceil(n / y), y, 1], y = ceil(n / 65535)): a workgroup per entry.
+// ([ceil(n / y), y, 1], y = ceil(n / 65535)): a workgroup per entry; and
+// FIELDS's a thread per entry (DL_THREADS).
+export const foldArgsWGSL = /* wgsl */ `
+const MAX_WG: u32 = ${MAX_WORKGROUPS}u;
+// n workgroups as src/gpu/kernels.js fold() makes them
+fn foldArgs(n: u32) -> vec3u {
+  let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
+  return vec3u((n + y - 1u) / y, y, 1u);
+}`;
 export const dirtyArgsFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${dirtyListsWGSL(g)}
-const MAX_WG: u32 = ${MAX_WORKGROUPS}u;
+${foldArgsWGSL}
 @group(2) @binding(1) var<storage, read_write> dlist: array<atomic<u32>>;
+fn putArgs(at: u32, a: vec3u) {
+  atomicStore(&dlist[at], a.x);
+  atomicStore(&dlist[at + 1u], a.y);
+  atomicStore(&dlist[at + 2u], a.z);
+}
 @compute @workgroup_size(1)
 fn main() {
   for (var l = 0u; l < 3u; l++) {
     let n = atomicLoad(&dlist[DL_COUNT + l]);
     atomicStore(&dlist[DL_LAST + l], n);
     atomicStore(&dlist[DL_COUNT + l], 0u);
-    let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
-    atomicStore(&dlist[DL_ARGS + 4u * l], (n + y - 1u) / y);
-    atomicStore(&dlist[DL_ARGS + 4u * l + 1u], y);
-    atomicStore(&dlist[DL_ARGS + 4u * l + 2u], 1u);
+    putArgs(DL_ARGS + 4u * l, foldArgs(n));
+    if (l == LIST_FIELDS) { putArgs(DL_THREADS, foldArgs((n + 63u) / 64u)); }
   }
 }
 `;
@@ -560,6 +752,15 @@ ${dirtyListsWGSL(g)}
 @group(2) @binding(2) var tFM: texture_3d<f32>;
 @group(2) @binding(3) var tFT: texture_3d<f32>;   // thin-feature mask, per surface channel (the cubic ones read it)
 @group(2) @binding(4) var<storage, read_write> brick: array<BrickInfo>;
+// the regions' change boxes (REGIONS): the bricks whose matter bit flipped, and whose light changed
+@group(2) @binding(5) var<storage, read_write> boxes: array<atomic<u32>>;
+${boxesWGSL}
+fn noteChange(box: u32, b: vec3i) {
+  for (var c = 0u; c < 3u; c++) {
+    atomicMin(&boxes[box + c], u32(b[c]));
+    atomicMax(&boxes[box + 3u + c], u32(b[c]));
+  }
+}
 // Air worth flagging for the data views: off ambient by more than AIR_FLAG_T °C,
 // pressure beyond AIR_FLAG_P, or moving faster than AIR_FLAG_V cells/step.
 const AIR_FLAG_T: f32 = 3.0;
@@ -660,7 +861,11 @@ ${listMainWGSL('LIST_FIELDS')}
              | select(0u, BRICK_THIN, mx.z > 0.0) | select(0u, BRICK_MIXED, mixed);
     var info = brickInfoWord(0u, flags, 0u, false);
     if (atomicLoad(&wgOcc) != 0u || hasSurf || hasMedia) { info = brickInfoWord(bits, flags, atomicLoad(&wgGas), true); }
-    brick[b] = BrickInfo(wgEm[0].xyz / f32(BS * BS * BS), info);
+    let rec = BrickInfo(wgEm[0].xyz / f32(BS * BS * BS), info);
+    let was = brick[b];
+    if (brickMatter(was.info) != brickMatter(rec.info)) { noteChange(BOX_DIST, brickCoord(b)); }
+    if (any(was.emit != rec.emit)) { noteChange(BOX_LIGHT, brickCoord(b)); }
+    brick[b] = rec;
   }
 }
 `;
@@ -671,20 +876,20 @@ ${listMainWGSL('LIST_FIELDS')}
 // too, so a ray can cross that whole cube in one step instead of brick by
 // brick (gfx/core.js skipEmpty). L∞ distance is separable: three passes, each
 // a minimum over a 1D window along one axis (axis 0 reads the brick map, the
-// others the distance so far). One thread per brick.
-export const BrickDistParams = uniformStruct('BrickDistParams', { axis: 'u32' });
+// others the distance so far). One thread per brick of the axis's region
+// (REGIONS: region = axis).
+export const BrickDistParams = uniformStruct('BrickDistParams', { axis: 'u32', region: 'u32' });
 export const brickDistFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${brickInfoWGSL}
+${boxesWGSL}
 ${BrickDistParams.wgsl}
 @group(3) @binding(1) var<uniform> P: BrickDistParams;
 @group(2) @binding(0) var<storage, read> src: array<u32>;   // axis 0: the brick map (4 words a brick), else distances
 @group(2) @binding(1) var<storage, read_write> dst: array<u32>;
+@group(2) @binding(2) var<storage, read> boxes: array<u32>;
 const DIST_MAX: i32 = ${BRICK_DIST_MAX};
-${brickMain}
-  let i = foldThread(wg, nwg, li);
-  if (i >= NBRICKS) { return; }
-  let bc = brickCoord(i);
+${regionMainWGSL}
   var dir = vec3i(0);
   dir[P.axis] = 1;
   let hi = vec3i(BX, BY, BZ) - 1;
@@ -710,11 +915,12 @@ ${brickMain}
 // (gfx/core.js BRICK_DIST_IN_LIGHT, a texture unit freed for gfx/meshCut.js),
 // but brickDist is a storage buffer here (shaders/bindings.js binding 17),
 // which every view reads, and storage buffers don't count against the 16
-// sampled textures, so nothing reads the light volume's alpha.
-export const BlurParams = uniformStruct('BlurParams', { axis: 'u32' });
-export const LIGHT_BLUR_PASSES = 6;
+// sampled textures, so nothing reads the light volume's alpha. One thread
+// per brick of the pass's region (REGIONS: region = REGIONS.LIGHT + pass).
+export const BlurParams = uniformStruct('BlurParams', { axis: 'u32', region: 'u32' });
 export const blurFrag = (g, { last = false } = {}) => /* wgsl */ `
 ${prelude(g, { state: false })}
+${boxesWGSL}
 // tent-ish 5-tap weights (sum 1), and a gain that makes up for light spread past the box
 const LIGHT_BLUR_GAIN: f32 = 1.15;
 var<private> W: array<f32, 5> = array<f32, 5>(0.10, 0.22, 0.36, 0.22, 0.10);
@@ -724,10 +930,8 @@ ${BlurParams.wgsl}
 ${last
     ? '@group(2) @binding(1) var dstTex: texture_storage_3d<rgba16float, write>;   // the light volume'
     : '@group(2) @binding(1) var<storage, read_write> dst: array<vec4f>;'}
-${brickMain}
-  let i = foldThread(wg, nwg, li);
-  if (i >= NBRICKS) { return; }
-  let bc = brickCoord(i);
+@group(2) @binding(2) var<storage, read> boxes: array<u32>;
+${regionMainWGSL}
   var dir = vec3i(0);
   dir[P.axis] = 1;
   let hi = vec3i(BX, BY, BZ) - 1;
@@ -738,6 +942,168 @@ ${brickMain}
     s += src[brickId(q)].rgb * W[k];
   }
   ${last ? 'textureStore(dstTex, bc, vec4f(s * LIGHT_BLUR_GAIN, 1.0));' : 'dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);'}
+}
+`;
+
+// ---- the sun's shadow map, by tiles (src/derived.js shadowTiles) ----
+// The map (shaders/render.js shadowFrag) traces a ray per texel from the sun
+// through the box. A texel's ray reads the cells, the brick map and the final
+// fields along it, so it changes only when a brick it crosses does: the
+// FIELDS bricks hold every such change (the state's, the fields', the brick
+// map's), give or take brickDist's empty-space skips, which land a ray on the
+// same cells. So the map is re-traced in tiles (SHADOW_TILE texels square,
+// the shadow kernel's workgroup): those the FIELDS bricks project onto, each
+// brick's box grown by SHADOW_MARGIN cells (the fields' trilinear and cubic
+// samples reach into the bricks around) and a texel. Every tile when the
+// map's key changes (the sun, its size, the window's origin, the far field's
+// switch: shadowList compares FrameUniforms and the header with what the last
+// list was made for) or src/derived.js says so (full: a derived frame went
+// without a map since the last, a far field attached, sim.incremental off).
+// With a world's far field (FrameUniforms.far) a band of rows each frame too
+// (one in SHADOW_SLICE): its casters change as the world streams in, not with
+// the window's bricks.
+//   shadowMark  a thread per FIELDS brick (the lists' DL_THREADS): its tiles' bits
+//   shadowList  a thread per tile: the list of those to trace; clears the bits
+//   shadowArgs  one thread: the list's length, the indirect arguments, the key
+// It all lives in brickDist's buffer after its NBRICKS distances
+// (shadowTileWords): the shadow kernel already binds that buffer (L.LIGHTING
+// binding 17) and reads the list there (shadowTilesWGSL), so no layout changes.
+export const SHADOW_TILE = 8;         // texels a tile's side: shaders/render.js SHADOW_WORKGROUP
+const SHADOW_RES_MAX = 1024;          // texels a side at most (shaders/render.js shadowRes)
+export const SHADOW_TILES_MAX = (SHADOW_RES_MAX / SHADOW_TILE) ** 2;
+const SHADOW_MARGIN = 2;              // cells: a cubic sample's reach
+export const SHADOW_SLICE = 16;       // with a far field, a row of tiles in this many each frame
+const SHADOW_KEY_WORDS = 8;           // sun xyz, res, origin xyz, far
+export function shadowTileWords(g) {
+  const at = gridDims(g).nbricks, key = at + 4, args = key + SHADOW_KEY_WORDS, bits = args + 4, list = bits + SHADOW_TILES_MAX / 32;
+  return { last: at, count: at + 1, key, args, bits, list, words: list + SHADOW_TILES_MAX };
+}
+/** The shadow kernel's view of the tiles (shaders/render.js shadowFrag): the list's length and entries in brickDist's buffer. */
+export const shadowTilesWGSL = (g) => {
+  const w = shadowTileWords(g);
+  return /* wgsl */ `
+// ---- the tiles to trace (shaders/passes.js shadowTileWords; src/derived.js shadowTiles) ----
+const SH_TILE: u32 = ${SHADOW_TILE}u;
+const SH_LAST: u32 = ${w.last}u;    // the list's length
+const SH_LIST: u32 = ${w.list}u;    // entries: tile x | tile y << 16
+// the corner texel of the list's tile e; false past the list's end
+fn shadowTileAt(e: u32, corner: ptr<function, vec2u>) -> bool {
+  if (e >= brickDist[SH_LAST]) { return false; }
+  let t = brickDist[SH_LIST + e];
+  *corner = vec2u(t & 0xffffu, t >> 16u) * SH_TILE;
+  return true;
+}`;
+};
+// res: the map's texels a side (FrameUniforms.shadowRes); full: every tile;
+// phase: the far field's band of rows this frame (a frame count % SHADOW_SLICE).
+export const ShadowTileParams = uniformStruct('ShadowTileParams', { res: 'u32', full: 'bool', phase: 'u32' });
+const shadowBookWGSL = (g) => {
+  const w = shadowTileWords(g);
+  return /* wgsl */ `
+${frameBindings()}
+${ShadowTileParams.wgsl}
+@group(3) @binding(1) var<uniform> P: ShadowTileParams;
+const SH_TILE: u32 = ${SHADOW_TILE}u;
+const SH_LAST: u32 = ${w.last}u;
+const SH_COUNT: u32 = ${w.count}u;
+const SH_KEY: u32 = ${w.key}u;
+const SH_ARGS: u32 = ${w.args}u;
+const SH_BITS: u32 = ${w.bits}u;
+const SH_LIST: u32 = ${w.list}u;
+const SH_MARGIN: f32 = ${SHADOW_MARGIN.toFixed(1)};
+const SH_SLICE: u32 = ${SHADOW_SLICE}u;
+const SH_PAD: f32 = ${SHADOW_PAD.toFixed(1)};   // shaders/gfx/lighting.js SHADOW_PAD
+@group(2) @binding(0) var<storage, read> dlist: array<u32>;
+@group(2) @binding(1) var<storage, read_write> sh: array<atomic<u32>>;   // brickDist's buffer
+// the map's key as FrameUniforms and the header have it now
+fn shadowKey() -> array<u32, ${SHADOW_KEY_WORDS}> {
+  let o = bitcast<vec3u>(H.origin);
+  return array<u32, ${SHADOW_KEY_WORDS}>(bitcast<u32>(FU.sun.x), bitcast<u32>(FU.sun.y), bitcast<u32>(FU.sun.z), P.res, o.x, o.y, o.z, FU.far);
+}`;
+};
+export const shadowMarkFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${dirtyListsWGSL(g)}
+${shadowBookWGSL(g)}
+${brickMain}
+  let e = foldThread(wg, nwg, li);
+  if (e >= dlist[DL_LAST + LIST_FIELDS]) { return; }
+  let bc = brickCoord(dlist[LIST_FIELDS * NBRICKS + e]);
+  // the map's basis (shaders/gfx/lighting.js sunBasis)
+  let grid = vec3f(f32(NX), f32(NY), f32(NZ));
+  var c = grid * 0.5;
+  let R = 0.5 * length(grid) + SH_PAD;
+  let u = normalize(cross(vec3f(0.0, 1.0, 0.0), FU.sun));
+  let v = cross(FU.sun, u);
+  let res = f32(P.res);
+  let T = 2.0 * R / res;
+  let o = vec3f(H.origin);
+  let ot = vec2f(dot(o, u), dot(o, v)) / T;
+  let snap = (round(ot) - ot) * T;
+  c += snap.x * u + snap.y * v;
+  // the texels whose rays cross the brick's box, grown: its corners' span, and a texel
+  let lo = vec3f(bc * BS) - SH_MARGIN;
+  let hi = vec3f(bc * BS + BS) + SH_MARGIN;
+  var fmin = vec2f(1e30);
+  var fmax = vec2f(-1e30);
+  for (var k = 0u; k < 8u; k++) {
+    let q = select(lo, hi, (vec3u(k) & vec3u(1u, 2u, 4u)) != vec3u(0u)) - c;
+    let f = (vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5) * res - 0.5;   // texel i's ray is at i
+    fmin = min(fmin, f);
+    fmax = max(fmax, f);
+  }
+  let top = vec2i(i32(P.res) - 1);
+  let t0 = vec2u(clamp(vec2i(floor(fmin)) - 1, vec2i(0), top)) / SH_TILE;
+  let t1 = vec2u(clamp(vec2i(ceil(fmax)) + 1, vec2i(0), top)) / SH_TILE;
+  let side = P.res / SH_TILE;
+  for (var y = t0.y; y <= t1.y; y++) {
+    for (var x = t0.x; x <= t1.x; x++) {
+      let t = y * side + x;
+      atomicOr(&sh[SH_BITS + (t >> 5u)], 1u << (t & 31u));
+    }
+  }
+}
+`;
+export const shadowListFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${shadowBookWGSL(g)}
+${appendWGSL('appendTile', 'sh', 'SH_COUNT', 'SH_LIST')}
+${brickMain}
+  let t = foldThread(wg, nwg, li);
+  let side = P.res / SH_TILE;
+  var key = shadowKey();
+  var full = P.full != 0u;
+  for (var k = 0u; k < ${SHADOW_KEY_WORDS}u; k++) { full = full || atomicLoad(&sh[SH_KEY + k]) != key[k]; }
+  var on = false;
+  var entry = 0u;
+  if (t < side * side) {
+    let x = t % side;
+    let y = t / side;
+    let marked = ((atomicLoad(&sh[SH_BITS + (t >> 5u)]) >> (t & 31u)) & 1u) != 0u;
+    let band = FU.far != 0u && y % SH_SLICE == P.phase;
+    on = full || marked || band;
+    entry = x | (y << 16u);
+  }
+  appendTile(on, entry, li);
+  // (every thread has read its bit before the append's barrier; a word's 32 tiles are this workgroup's)
+  if (t < side * side && (t & 31u) == 0u) { atomicStore(&sh[SH_BITS + (t >> 5u)], 0u); }
+}
+`;
+export const shadowArgsFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${shadowBookWGSL(g)}
+${foldArgsWGSL}
+@compute @workgroup_size(1)
+fn main() {
+  let n = atomicLoad(&sh[SH_COUNT]);
+  atomicStore(&sh[SH_LAST], n);
+  atomicStore(&sh[SH_COUNT], 0u);
+  let a = foldArgs(n);
+  atomicStore(&sh[SH_ARGS], a.x);
+  atomicStore(&sh[SH_ARGS + 1u], a.y);
+  atomicStore(&sh[SH_ARGS + 2u], a.z);
+  var key = shadowKey();
+  for (var k = 0u; k < ${SHADOW_KEY_WORDS}u; k++) { atomicStore(&sh[SH_KEY + k], key[k]); }
 }
 `;
 
@@ -871,10 +1237,21 @@ export const WGSL_CHECK = [
   { name: 'dirtyArgs', kind: 'compute', code: dirtyArgsFrag, dispatch: () => [1, 1, 1], layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.BOOK] },
   { name: 'brick', kind: 'compute', code: brickFrag, dispatch: (g) => fold(gridDims(g).nbricks),
     layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, DERIVED_LAYOUT.BRICK] },
-  { name: 'brickDist', kind: 'compute', code: brickDistFrag, dispatch: perBrick, layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.PAIR] },
-  { name: 'blur', kind: 'compute', code: (g) => blurFrag(g), dispatch: perBrick, layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.PAIR] },
+  // (the layouts made after DERIVED_LAYOUT's are named as src/derived.js names them: preload.js's table predates them)
+  { name: 'boxArgs', kind: 'compute', code: boxArgsFrag, dispatch: () => [1, 1, 1], layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.BOXES],
+    layoutNames: [null, null, 'DERIVED_BOXES'] },
+  { name: 'brickDist', kind: 'compute', code: brickDistFrag, dispatch: perBrick, layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.DIST],
+    layoutNames: [null, null, 'DERIVED_DIST'] },
+  { name: 'blur', kind: 'compute', code: (g) => blurFrag(g), dispatch: perBrick, layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.DIST],
+    layoutNames: [null, null, 'DERIVED_DIST'] },
   { name: 'blurLast', kind: 'compute', code: (g) => blurFrag(g, { last: true }), dispatch: perBrick,
     layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.LIGHT] },
+  // the shadow map's tiles (src/derived.js shadowTiles): views with shadows
+  ...[['shadowMark', shadowMarkFrag, perBrick], ['shadowList', shadowListFrag, (g) => fold(Math.ceil(SHADOW_TILES_MAX / 64))],
+    ['shadowArgs', shadowArgsFrag, () => [1, 1, 1]]].map(([name, code, dispatch]) => ({
+    name, kind: 'compute', code, dispatch, params: ShadowTileParams, layouts: () => [RENDER_LAYOUT.FRAME, 'EMPTY', DERIVED_LAYOUT.PAIR],
+    layoutNames: ['FRAME', null, 'DERIVED_PAIR'],
+  })),
   { name: 'brickShift', kind: 'compute', code: brickShiftFrag, dispatch: perBrick, windowed: true,
     layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.PAIR] },
   { name: 'giShift', kind: 'compute', code: giShiftFrag, dispatch: perBrick, windowed: true,
