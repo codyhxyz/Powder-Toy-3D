@@ -1428,9 +1428,12 @@ const settingsPanel = createSettings({
     // The body you see in third person and when you die: Realistic (a
     // skinned, animated, shredded superhero in a wizard's hat and purple
     // boxers, the default) or Stickman (the TPT homage). It switches live, in POV too.
-    { title: 'First person', rows: [
+    { title: 'Character body', rows: [
       { type: 'seg', key: 'character', options: [['real', 'Realistic'], ['stick', 'Stickman']],
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
+      { type: 'custom', el: h('p.row-note', { text: 'Changes your body in third person. First-person hands stay the same.' }) },
+    ] },
+    { title: 'First-person controls', rows: [
       // named as Minecraft names them
       { type: 'slider', key: 'sensitivity', label: 'Mouse Sensitivity', min: SENSITIVITY_RANGE[0], max: SENSITIVITY_RANGE[1], step: 0.05,
         def: DEFAULTS.sensitivity, fmt: (v) => `${Math.round(v * 100)}%`, onChange: save },
