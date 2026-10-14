@@ -96,6 +96,10 @@ const plays = (fn, arg) => ev(async ([src, arg]) => {
 }, [fn.toString(), arg]);
 const names = (list) => list.map((x) => x.name).join(',');
 
+// -- powered mining
+const motor = await plays(() => PE.emit('tool:action', { tool: 'jackhammer', action: 'swing' }));
+check('jackhammer stroke → loud powered rattle', names(motor) === 'drillGrind' && motor[0].gain === 1.5 && !motor[0].at);
+
 // -- the gun
 let r = await plays(() => PE.emit('gun:fire', { origin: new V3(96, 7, 64), dir: new V3(1, 0, 0) }));
 check('gun:fire → shot, thump, delayed echo', names(r) === 'shot,shotThump,shotEcho' && r[2].delay > 0.1 && r.every((x) => !x.at), JSON.stringify(r.map((x) => [x.name, x.delay])));
