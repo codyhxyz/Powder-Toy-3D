@@ -12,6 +12,7 @@ import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
 import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
+import { nativeBodyGravity } from '../v2/modes.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -737,7 +738,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const v = p.vel;
     const v0 = v.clone();   // an axis that runs into unprobed cells keeps this (its time didn't pass)
     const stalled = [false, false, false];
-    const grav = GRAVITY * sim.gravity / SIM_GRAVITY_REF;
+    // Native grid, flight and body share one TF2-like SI force. The body
+    // stores cells/s, so only the modes helper converts metres to cells.
+    const nativeGravity = sim.compact ? nativeBodyGravity(sim, p.pos.toArray()) : null;
+    const grav = nativeGravity ? Math.hypot(...nativeGravity) : GRAVITY * sim.gravity / SIM_GRAVITY_REF;
     const swimming = sub >= SWIM_SHARE;
 
     // the jump button's timing (the pogo's timed presses)
@@ -853,7 +857,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (jet !== p.jetting) { p.jetting = jet; if (!quiet) povEvents.emit('player:jet', { on: jet }); }
 
     // gravity and buoyancy (Archimedes over the submerged share)
-    v.y += (env2.buoy - (1 - thrust)) * grav * dt;   // the jet holds you up as Noita's does, as far as it has spooled
+    if (nativeGravity) {
+      const weight = (1 - thrust - env2.buoy) * dt; // Noita jet support and Archimedes oppose the actual gravity vector
+      v.x += nativeGravity[0] * weight; v.y += nativeGravity[1] * weight; v.z += nativeGravity[2] * weight;
+    } else v.y += (env2.buoy - (1 - thrust)) * grav * dt;
     // Slow Fall: the canopy's drag on the way down, taken implicitly (v' = v − k·v'·|v'|·dt, solved
     // for v'), so it settles on √(g/k) exactly at any frame rate
     const canopy = perks.slowFallArea;

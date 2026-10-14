@@ -1,4 +1,4 @@
-import { captureNativeSnapshot, restoreNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
+import { captureNativeSnapshot, restoreNativeSnapshot, validateNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
 import { nativeHostTick } from './v2/host.js';
 import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
@@ -992,14 +992,16 @@ export class Simulation {
       t = { A: mk('A'), B: mk('B') };
       t.group = this.gpu.bindGroup(this.L.UNDO, [{ binding: 0, resource: { buffer: t.A } }, { binding: 1, resource: { buffer: t.B } }], 'undo snapshot');
     }
-    t.nativeSnapshot = t.nativeError = t.nativePending = null;
+    t.nativeSnapshot = t.nativeError = t.nativePending = t.worldHistory = null;
     const snapshotEpoch = t.snapshotEpoch = (t.snapshotEpoch ?? 0) + 1;
     t.format = this.compact?.isReady ? 'v2' : 'v1';
     if (t.format === 'v2' && this.compact.dynamics) {
       // Calls enqueue all core/aux/activity/dynamics copies in this task,
       // alongside the GPU undo buffers below, before any user edit can run.
-      t.nativePending = captureNativeSnapshot(this.compact, 'v2').then(snapshot => {
-        if (t.snapshotEpoch === snapshotEpoch && this.history.includes(t)) t.nativeSnapshot = snapshot;
+      const native = captureNativeSnapshot(this.compact, 'v2');
+      const world = this.worldWindow?.captureHistory();
+      t.nativePending = Promise.all([native, world]).then(([snapshot, history]) => {
+        if (t.snapshotEpoch === snapshotEpoch && this.history.includes(t)) { t.nativeSnapshot = snapshot; t.worldHistory = history ?? null; }
       }, error => { if (t.snapshotEpoch === snapshotEpoch) t.nativeError = error; }).finally(() => {
         if (t.snapshotEpoch === snapshotEpoch) t.nativePending = null;
       });
@@ -1048,11 +1050,23 @@ export class Simulation {
     if (t.nativePending) return t.nativePending.then(() => this.history.at(-1) === t ? this.undo() : false);
     if (t.nativeError) throw t.nativeError;
     const [dx, dz] = this.undoShift;
-    if (t.nativeSnapshot && (dx || dz)) throw new Error('Native world undo across a shift requires matching retained-world history; entry preserved');
-    if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
-    if (t.format === 'v2' && this.compact && (dx || dz) && !this.nativeIntegration?.isReady) throw new Error('Native shifted undo is not ready');
-    if (t.format === 'v2' && this.compact && t.nativeSnapshot) {
-      restoreNativeSnapshot(this.compact, t.nativeSnapshot);
+    if (t.nativeSnapshot && (dx || dz) && !t.worldHistory) throw new Error('Native world undo across a shift requires matching retained-world history; entry preserved');
+    if (t.worldHistory && (this.worldWindow?.pending || this.deco?.pending)) {
+      return Promise.all([this.worldWindow?.pending, this.deco?.pending]).then(() => this.history.at(-1) === t ? this.undo() : false);
+    }
+    if (!t.worldHistory && (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz)) return false;
+    if (!t.worldHistory && t.format === 'v2' && this.compact && (dx || dz) && !this.nativeIntegration?.isReady) throw new Error('Native shifted undo is not ready');
+    let worldDelta = null;
+    if (t.format === 'v2' && this.compactOwner && t.nativeSnapshot) {
+      const owner = this.compactOwner;
+      if (t.worldHistory) {
+        const commitWorld = this.worldWindow?.prepareHistoryRestore(t.worldHistory);
+        if (!commitWorld) throw new Error('Native world history owner is unavailable');
+        validateNativeSnapshot(owner, t.nativeSnapshot, t.worldHistory.origin);
+        worldDelta = commitWorld();
+      }
+      restoreNativeSnapshot(owner, t.nativeSnapshot);
+      if (!this.compact) owner.exportLegacy();
     } else if (t.format === 'v2' && this.compact) {
       if (dx || dz) this.nativeIntegration.undo(t.compact, t.aux, dx, dz);
       else this.compact.restore(t.compact, t.aux);
@@ -1064,7 +1078,8 @@ export class Simulation {
       this.noteWrite();
     }
     this.history.pop();
-    this.deco?.restore?.(t, dx, dz);
+    this.deco?.restore?.(t, worldDelta ? 0 : dx, worldDelta ? 0 : dz);
+    if (worldDelta) this.worldWindow.finishHistoryRestore(worldDelta);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
     this._retire(t.A);

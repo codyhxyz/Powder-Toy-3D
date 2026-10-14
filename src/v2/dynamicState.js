@@ -83,18 +83,22 @@ export function emptyDynamicState(dims, origin = [0, 0, 0]) {
   for (let b = 0; b < g.nbricks; b++) floats[b * 8 + 6] = AIR.quietTicks;
   return { version: 1, dims: [...dims], origin: [...origin], sequence: 0, blastBatch: 8, isIdle: true,
     particles: new Uint32Array(PARTICLE_CAP * 12), air, control: new Uint32Array(32), held: new Uint32Array(PARTICLE_CAP),
-    shocks: new Uint32Array(g.nbricks), rayRemaining: new Uint32Array(RAY_REQUEST_CAP), requests: [], pendingEvents: [], airArchive: [] };
+    holdSession: null, shocks: new Uint32Array(g.nbricks), rayRemaining: new Uint32Array(RAY_REQUEST_CAP), requests: [], pendingEvents: [], airArchive: [] };
 }
 
 // Preflight BOTH owners before either mutates; callers have already selected
 // the engine and positioned the world. Never accept a different origin here.
-export function restoreNativeSnapshot(owner, snapshot) {
+export function validateNativeSnapshot(owner, snapshot, origin = [owner.sim.origin.x, owner.sim.origin.y, owner.sim.origin.z]) {
   const sim = owner.sim, dims = [sim.g.nx, sim.g.ny, sim.g.nz];
   decodeV2State(snapshot.core, dims);
   if (snapshot.dynamic) {
-    validateDynamicSnapshot(snapshot.dynamic, { dims, origin: [sim.origin.x, sim.origin.y, sim.origin.z] });
+    validateDynamicSnapshot(snapshot.dynamic, { dims, origin });
     if (!owner.dynamics?.isReady) fail('restore owner unavailable');
   }
+}
+export function restoreNativeSnapshot(owner, snapshot) {
+  validateNativeSnapshot(owner, snapshot);
+  const sim = owner.sim;
   owner.restoreState(snapshot.core);
   if (snapshot.dynamic) owner.dynamics.restoreDynamicState(snapshot.dynamic);
   sim.version++; owner.seenVersion = sim.version;

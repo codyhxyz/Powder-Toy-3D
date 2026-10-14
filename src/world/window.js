@@ -76,6 +76,9 @@ export class WorldWindow {
     if (g.ny !== size[1]) throw new Error(`window ${g.ny} cells tall in a world ${size[1]} tall: it spans the world's height`);
     if (size.some((n, i) => n % WIN_STEP && i !== 1)) throw new Error(`world ${size}: x and z must be multiples of ${WIN_STEP}`);
     this.sim = sim;
+    sim.worldWindow = this;
+    this.historyIdentity = {};
+    this.historyReaders = 0;
     this.gpu = sim.gpu;
     this.size = size;
     this.scene = scene;
@@ -130,6 +133,7 @@ export class WorldWindow {
   load(origin = this.centre()) {
     if (this.sim.nativeTransitionKind === 'shift') throw new Error('Cannot replace a world during its native shift');
     const sim = this.sim, g = sim.g;
+    this.historyIdentity = {};
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
     this.nativeStore.clear();
@@ -159,6 +163,7 @@ export class WorldWindow {
   loadSaved(origin, fillState, storeBytes, planted, nativeBytes = null) {
     const sim = this.sim;
     if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
+    this.historyIdentity = {};
     this.epoch++;
     this.persistenceError = null;
     this.store.fromBytes(storeBytes);
@@ -173,10 +178,65 @@ export class WorldWindow {
     this.loaded = true;
   }
 
+  // COW history: stored byte strings are immutable after put(); snapshots copy
+  // only Map indices, never all retained material. Existing sim history limit
+  // bounds the retained versions. A previous leaving readback must land first.
+  captureHistory() {
+    const identity = this.historyIdentity, origin = this.sim.origin.toArray(), planted = this.planted.slice();
+    this.historyReaders++;
+    const capture = () => {
+      if (identity !== this.historyIdentity || this.sim.disposed || this.persistenceError) throw new Error('World changed or failed during history capture');
+      return { window: this, identity, origin, planted, store: new Map(this.store.map), storeBytes: this.store.bytes,
+        nativeStore: new Map(this.nativeStore.map), nativeBytes: this.nativeStore.bytes,
+        decoStore: this.sim.deco ? new Map(this.sim.deco.store) : null };
+    };
+    const pending = [this.pending, this.sim.deco?.pending].filter(Boolean);
+    if (!pending.length) {
+      try { return Promise.resolve(capture()); } finally { this.historyReaders--; }
+    }
+    return Promise.all(pending).then(capture).finally(() => { this.historyReaders--; });
+  }
+  prepareHistoryRestore(h) {
+    if (!h || h.window !== this || h.identity !== this.historyIdentity || this.pending || this.sim.deco?.pending || this.historyReaders)
+      throw new Error('Native world history is not ready for this window');
+    const g = this.sim.g;
+    if (!Array.isArray(h.origin) || h.origin.length !== 3 || h.origin.some((n, i) => !Number.isInteger(n) || n < 0 || (i === 1 ? n !== 0 : n % WIN_STEP !== 0) || n + [g.nx, g.ny, g.nz][i] > this.size[i]) ||
+      !(h.planted instanceof Uint8Array) || h.planted.length !== this.planted.length || !(h.store instanceof Map) || !(h.nativeStore instanceof Map))
+      throw new Error('Invalid native world history');
+    const max = this.wb.reduce((a, b) => a * b, 1), A = new Float32Array(BRICK_FLOATS), B = new Float32Array(BRICK_FLOATS);
+    let legacyBytes = 0, nativeBytes = 0;
+    for (const [key, bytes] of h.store) {
+      if (!Number.isInteger(key) || key < 0 || key >= max || !(bytes instanceof Uint8Array)) throw new Error('Invalid legacy world history brick');
+      decodeBrick(bytes, A, 0, B, 0); legacyBytes += bytes.length;
+    }
+    const native = new NativeBrickStore(this.wb);
+    for (const [key, bytes] of h.nativeStore) { native.put(key, bytes); nativeBytes += bytes.length; }
+    if (legacyBytes !== h.storeBytes || nativeBytes !== h.nativeBytes) throw new Error('Invalid world history byte counts');
+    if (h.decoStore !== null && (!(h.decoStore instanceof Map) || [...h.decoStore].some(([key, bytes]) => !Number.isInteger(key) || key < 0 || key >= max || !(bytes instanceof Uint8Array) || bytes.length !== 256))) throw new Error('Invalid decoration world history');
+    // Allocate all new indices before the commit. Byte payloads remain shared,
+    // future store.put/drop changes only the current Map, not this history.
+    const legacy = new Map(h.store), deco = h.decoStore && new Map(h.decoStore);
+    return () => {
+      const o = this.sim.origin, delta = [h.origin[0] - o.x, h.origin[2] - o.z];
+      this.epoch++;
+      this.store.map = legacy; this.store.bytes = legacyBytes;
+      this.nativeStore.map = native.map; this.nativeStore.bytes = nativeBytes;
+      this.planted.set(h.planted); o.fromArray(h.origin);
+      if (this.sim.deco) { this.sim.deco.epoch++; this.sim.deco.store = deco ?? new Map(); }
+      this.sim.fieldReset = this.sim.giReset = this.sim.changedAll = true;
+      this.sim.forceAll = this.sim.actFull = true;
+      return delta;
+    };
+  }
+  finishHistoryRestore(delta) {
+    this.far?.build();
+    this.sim.onWorldHistoryRestore?.(...delta);
+  }
+
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
-    if (!this.loaded || this.persistenceError || this.sim.nativeTransition) return null;
+    if (!this.loaded || this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
     this.far?.tick();
     if (this.pending || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
@@ -198,6 +258,7 @@ export class WorldWindow {
   // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–4 above.
   shift(dx, dz) {
     if (this.persistenceError) throw this.persistenceError;
+    if (this.historyReaders) throw new Error('World history capture is pending');
     if (this.pending) throw new Error('World shift while leaving slab is pending');
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
     if (this.sim.compactOwner) {
@@ -404,6 +465,7 @@ export class WorldWindow {
   }
 
   dispose() {
+    if (this.sim.worldWindow === this) this.sim.worldWindow = null;
     this.epoch++;
     this.far?.dispose();
     this.gen.dispose();

@@ -1,3 +1,7 @@
+import { WorldWindow } from '../../src/world/window.js';
+import { BrickStore, encodeBrick, BRICK_FLOATS } from '../../src/world/store.js';
+import { NativeBrickStore, encodeNativeBrick } from '../../src/world/nativeStore.js';
+import { heldBase, shockBase } from '../../src/shaders/v2/particles.js';
 // CPU-only: actual foundation/contact/dynamics constructors and save/undo
 // orchestration. GPU commands copy mock bytes; WGSL execution is NOT emulated.
 import assert from 'node:assert/strict';
@@ -56,6 +60,9 @@ new Float32Array(d.air[d.airIndex].bytes).set([1, -2, 3, 4, 0.25, 15, 0, 0]);
 d.airArchive.set('128,0,0', new Uint32Array(new Float32Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer));
 d.pendingOutside.set('129,2,3', 5); words(owner.events)[3] = 7;
 assert.equal(d.applyToolImpulse({ kind: 'neutron', position: [2, 3, 4], direction: [0, 1, 0], radius: 1, count: 3 }).status, 'queued');
+assert.equal(d.applyPhysgun({ mode: 'hold', position: [2, 3, 4], target: [6, 7, 8], radius: 3, strength: 12 }).status, 'queued');
+words(d.control)[heldBase(g)] = d.holdSession.token;
+words(d.control)[shockBase(g)] = 73;
 owner.tick = 17; owner.acc = 0.375; sim.frame = 23; sim.paints = 11;
 const start = reads.length;
 const capture = captureNativeSnapshot(owner, 'v2');
@@ -66,6 +73,9 @@ while (pending.length) pending.shift()();
 const snapshot = await capture;
 assert.deepEqual(decodeV2State(snapshot.core).cells, oldCore);
 assert.deepEqual(snapshot.dynamic.particles, oldParticles);
+assert.equal(snapshot.dynamic.held[0], snapshot.dynamic.holdSession.token);
+assert.equal(snapshot.dynamic.shocks[0], 73);
+assert.deepEqual(snapshot.dynamic.holdSession.target, [6, 7, 8]);
 assert.equal(snapshot.dynamic.requests.length, 1); assert.equal(snapshot.dynamic.airArchive.length, 1);
 assert.equal(snapshot.dynamic.pendingEvents.length, 2);
 const encoded = encodeDynamicState(snapshot.dynamic), decoded = decodeDynamicState(encoded, { dims: [32, 32, 32], origin: [0, 0, 0] });
@@ -79,6 +89,9 @@ assert.equal(writes.length, n, 'wrong-origin dynamic state cannot partially over
 const corrupt = { ...decoded, air: decoded.air.slice() }; corrupt.air[0] = 0x7f800000;
 assert.throws(() => restoreNativeSnapshot(owner, { ...snapshot, dynamic: corrupt }), /air/);
 assert.equal(writes.length, n, 'numeric corruption rejects before any native core or dynamic write');
+const unowned = { ...decoded, holdSession: null };
+assert.throws(() => restoreNativeSnapshot(owner, { ...snapshot, dynamic: unowned }), /held/);
+assert.equal(writes.length, n);
 restoreNativeSnapshot(owner, snapshot);
 assert.deepEqual(words(owner.cells), oldCore); assert.deepEqual(words(d.particles), oldParticles);
 assert.equal(owner.tick, 17); assert.equal(owner.acc, 0.375); assert.equal(d.rayRequests.size, 1);
@@ -95,6 +108,52 @@ assert.equal(await undo, true); assert.deepEqual(words(owner.cells), oldCore); a
 assert.equal(d.pendingOutside.get('129,2,3'), 5);
 sim.snapshot('shift guard'); while (pending.length) pending.shift()(); await sim.history.at(-1).nativePending;
 sim.origin.x = 16; assert.throws(() => sim.undo(), /retained-world history/); assert.equal(sim.history.length, 1); sim.origin.x = 0;
+
+// Full shifted world history: rewind the complete old window AND its COW
+// retained stores before restoring global particles. Deposits made after the
+// snapshot outside the old overlap cannot survive beside the old flight copy.
+const wb = [32, 8, 32], notified = [];
+const world = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu, size: [128, 32, 128], wb,
+  historyIdentity: {}, historyReaders: 0, epoch: 1, pending: null, loaded: true,
+  store: new BrickStore(wb), nativeStore: new NativeBrickStore(wb), planted: new Uint8Array(wb[0] * wb[2]),
+  far: { build() { notified.push('far rebuilt'); } },
+});
+sim.worldWindow = world;
+sim.onWorldHistoryRestore = (...delta) => notified.push(delta);
+const rawBrick = encodeNativeBrick(new Uint32Array(256).fill(123), new Int32Array(64).fill(-456));
+const legacyBrick = encodeBrick(new Float32Array(BRICK_FLOATS), 0, new Float32Array(BRICK_FLOATS), 0);
+world.nativeStore.put(12, rawBrick); world.store.put(12, legacyBrick); world.planted[4] = 1;
+sim.snapshot('whole world'); while (pending.length) pending.shift()(); await sim.history.at(-1).nativePending;
+const entry = sim.history.at(-1), h = entry.worldHistory;
+assert.equal(h.nativeStore.get(12), rawBrick, 'COW shares immutable byte payloads, not deep copies');
+sim.origin.x = 64; d.origin = [64, 0, 0]; words(owner.cells).fill(0); words(d.particles).fill(0);
+world.nativeStore.put(0, rawBrick); world.nativeStore.drop(12); world.store.clear(); world.planted.fill(0);
+const currentMap = world.nativeStore.map, beforeWrites = writes.length;
+h.origin = [16, 0, 0];
+assert.throws(() => sim.undo(), /origin/);
+assert.equal(sim.origin.x, 64); assert.equal(world.nativeStore.map, currentMap); assert.equal(writes.length, beforeWrites);
+assert.equal(sim.history.at(-1), entry, 'failed full-world preflight preserves entry and current world');
+h.origin = [0, 0, 0];
+assert.equal(await sim.undo(), true);
+assert.equal(sim.origin.x, 0); assert.deepEqual(d.origin, [0, 0, 0]);
+assert.equal(world.nativeStore.map.get(12), rawBrick); assert(!world.nativeStore.has(0), 'post-snapshot deposit cannot duplicate restored particle');
+assert.deepEqual(world.store.map.get(12), legacyBrick); assert.equal(world.planted[4], 1);
+assert.deepEqual(words(owner.cells), oldCore); assert.deepEqual(words(d.particles), oldParticles);
+assert.deepEqual(notified, ['far rebuilt', [-64, 0]]);
+assert(sim.fieldReset && sim.giReset);
+// A capture during an earlier leaving readback locks shifts until the store
+// epoch has committed. The global dynamics/core capture itself never waits.
+let land;
+world.pending = new Promise(resolve => { land = resolve; });
+const worldCapture = world.captureHistory();
+assert.equal(world.historyReaders, 1); assert.throws(() => world.shift(16, 0), /history capture/);
+world.nativeStore.put(13, rawBrick); land();
+const landed = await worldCapture; world.pending = null;
+assert(landed.nativeStore.has(13)); assert.equal(world.historyReaders, 0);
+// Existing three-entry undo budget bounds COW versions and dynamic captures.
+delayed = false;
+for (let i = 0; i < 5; i++) { sim.snapshot(`bounded ${i}`); await sim.history.at(-1).nativePending; assert(sim.history.length <= 3); }
+sim.worldWindow = null;
 
 // Real strict save registrations and game preflight: malformed dynamics must
 // fail before app.prepare, legacy cells, or core state are touched.
@@ -119,4 +178,4 @@ const missing = await encodeSave(file.header, [...file.sections].filter(([key]) 
 await assert.rejects(saves.apply(missing)); assert.equal(events.length, 0);
 await saves.apply(saved);
 assert.deepEqual(words(d.particles), oldParticles); assert(d.airArchive.has('128,0,0')); assert.equal(d.rayRequests.size, 1);
-console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save/undo restoration; pre-mutation corruption/origin rejection; shifted-history safety gate passed');
+console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save/undo restoration; pre-mutation corruption/origin rejection; full shifted COW world history; physgun held/shock/controller fields passed');

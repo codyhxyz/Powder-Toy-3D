@@ -50,6 +50,13 @@ const world = {
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
+    sim.onWorldHistoryRestore = (dx, dz) => {
+      if (app.sim !== sim || app.win !== win) return;
+      app.placeVolume(); app.pov?.windowShifted(dx, dz);
+      app.hover.cell.x -= dx; app.hover.cell.z -= dz;
+      if (app.hover.valid && !app.inWindow(app.hover.cell)) app.hover.valid = false;
+      app.pacer?.wake();
+    };
     sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
     win.far = new FarField(app.renderer, win, { sun: app.sun });
     win.far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
@@ -63,6 +70,7 @@ const world = {
     far.buildView().then(() => app.pacer?.wake(), () => {});
   },
   detach(app) {
+    app.sim.onWorldHistoryRestore = null;
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
     app.win?.dispose();
     app.win = null;

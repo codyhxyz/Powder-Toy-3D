@@ -165,10 +165,18 @@ export default {
     function run(ctx, mode) {
       const sim = ctx.sim ?? env.getSim();
       if (sim.compact) {
-        return sim.compact.dynamics.applyPhysgun({ mode: mode === PHYS_MODE.FLING ? 'fling' : 'hold',
+        if (sim.nativeTransition || sim.nativeTransitionError) return false;
+        const result = sim.compact.dynamics.applyPhysgun({ mode: mode === PHYS_MODE.FLING ? 'fling' : 'hold',
           position: worldPosition(sim, hold), target: worldPosition(sim, aimPt), direction: ctx.dir.toArray(),
-          radius: PHYS.RADIUS, dt: ctx.nativeDt ?? 0, strength: legacyVelocityToMS(PHYS.FLING),
+          radius: PHYS.RADIUS, dt: ctx.nativeDt ?? 0,
+          // Fling is m/s; hold uses the owner's default spring frequency, NOT
+          // the legacy fling speed mistakenly treated as stiffness.
+          strength: mode === PHYS_MODE.FLING ? legacyVelocityToMS(PHYS.FLING) : undefined,
         });
+        if (result.status !== 'queued' && result.status !== 'accepted') {
+          env.feedback?.notice?.(result.reason ?? 'Native physgun rejected', { kind: 'error' }); return false;
+        }
+        return true;
       }
       const pov = povGpu(sim), buffer = comBuffer(sim.gpu);
       if (!pov.com(buffer, hold.toArray())) return;   // (its kernels are still building: B5)
@@ -210,7 +218,13 @@ export default {
       flash = BLAST_FLASH_S;
     }
 
+    let nativeReleasePending = false;
     const release = () => {
+      const sim = env.getSim();
+      if (sim?.compact?.dynamics?.holdSession) {
+        nativeReleasePending = !!sim.nativeTransition;
+        if (!nativeReleasePending && !sim.nativeTransitionError) sim.compact.dynamics.releasePhysgun();
+      }
       if (holding) env.feedback?.act('release', { point: hold.clone() });
       holding = false;
     };
@@ -235,6 +249,7 @@ export default {
     return {
       update(ctx) {
         const sim = ctx.sim ?? env.getSim();
+        if (nativeReleasePending && !sim.nativeTransition) { nativeReleasePending = false; release(); }
         if (sim.compact && !sim.nativeCapabilities.physgun) {
           if (ctx.primaryPressed || ctx.secondaryPressed) env.feedback?.notice?.('Native physgun hold is unavailable', { kind: 'error' });
           release(); model.beam.visible = model.sphere.visible = false;
@@ -267,7 +282,7 @@ export default {
           chase(ctx.eye, CHASE * ENGINE.V_MAX * ctx.stepsPerFrame);
           if (ctx.primaryPressed) prevHold.copy(hold);
           if (ctx.secondaryPressed) {
-            run(ctx, PHYS_MODE.FLING);
+            if (run(ctx, PHYS_MODE.FLING) === false) return;
             model.rig.hit(HIT.FLING);
             env.feedback?.act('fling', { point: hold.clone() });
             holding = false;
