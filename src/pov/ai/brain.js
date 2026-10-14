@@ -40,19 +40,14 @@ const SIGHT = 80;                    // cells: farther than this it doesn't see 
 const TOUCH = 4;                     // cells: this close it senses the target even through debris (hears, touches)
 const CHEST = 3;                     // cells above the feet it aims at
 const TOOL_EYE = EYE_HEIGHT;
-// Fairness, the standard shooter-AI rules: it reacts after a perception delay
-// (Halo and Doom AI), its first shot after spotting you misses on purpose and
-// its aim tightens the longer it has you in sight (Naughty Dog's accuracy ramp
-// in Uncharted and The Last of Us), every dangerous action has a wind-up you can
-// see (the tell), a hit staggers it out of a wind-up, and after it lands a hit
-// it takes a breather before the next attack.
+// Halo-style reaction windows, burst correction and pauses, not per-frame aim noise.
+// Hits still stagger wind-ups, and landing a hit gives the target a breather.
 const REACTION_S = 0.7;              // s it has to see the target before it attacks
-// Halo-style reaction windows supply the grace period; weapon spread already supplies inaccuracy.
-const AIM_ERROR_START = 0.025;       // rad, extra aim error (σ) when it first has you in sight...
-const AIM_ERROR = 0.006;             // ...narrowing to this...
-const AIM_RAMP_S = 1.5;              // ...over this long in sight
-const AIM_ERROR_MOVING = 0.00075;    // rad more per cell/s the target moves
-const WARNING_MISS = 2.5;            // body widths aside its first shot lands (a near miss you see and hear)
+const AIM_TRACK_S = 0.16;            // s tracking lag: movement buys time; a stationary target does not
+// Halo CE actor_variant burst geometry: start beside the target, then correct inward.
+// https://c20.reclaimers.net/h1/tags/actor_variant/#burst-geometry
+const BURST_OFFSET = BODY_WIDTH * 0.6; // cells sideways at the start; weapon spread handles individual shots
+const BURST_CORRECT_S = 0.12;        // s for the burst's sideways error to decay by e
 const STAGGER_S = 0.35;              // s a hit stops it (and loses its wind-up)
 const BREATHER_S = 0.9;              // s after it hurts the target before it attacks again
 const THROW_WINDUP = 0.6;            // s the arm is up before a bomb leaves (the tell)
@@ -63,7 +58,7 @@ const GUN_INTERVAL = 1.1;            // s between its shots
 const GUN_CHASE = 60;                // cells: farther than this it closes in while it shoots
 // Halo's guns (src/game/arsenal.js, a Halo match's carry): Halo's AI fires the assault rifle in
 // bursts, and the power weapons from the map's pads, each on its own beat
-const SMG_INTERVAL = 1.2;            // s from one burst to the next...
+const SMG_INTERVAL = 1.5;            // s start-to-start: enough rest for firearm.js's bloom to recover
 const SMG_BURST_S = 0.45;            // ...each holding the trigger this long (about six of the SMG's 13 rounds a second)
 const SNIPER_INTERVAL = 2.2;         // s between its shots (the bolt's 1.2 s and a breath to aim)
 const ROCKET_INTERVAL = 2;           // s between its rockets (the launcher's 0.8 s refire, slowed: no spam)
@@ -207,6 +202,8 @@ export class Agent extends Vehicle {
     this.intent = {};
     this.cool = {};                                // tool → time it's ready again
     this.weapon = null; this.weaponAt = -Infinity;
+    this.aimState = null;
+    this.gunBurst = null;
     this.lastGoal = '';
     // team games (src/game): npc.opponents() → [{ id, pos, vel, alive, holding, reveal?, priority? }]
     this.nobody = this.prey;                      // the record of "no one": never sensed
@@ -236,9 +233,9 @@ export class Agent extends Vehicle {
     this.prey.position.set(t.pos.x, 0, t.pos.z);
     this.prey.velocity.set(t.vel.x, 0, t.vel.z);
     const e = this.eye();
-    const visible = t.alive && (this.dist3 < TOUCH || (this.dist3 < SIGHT && this.npc.world.sees(e, this.chest())));
-    if (visible) {
-      if (!rec.visible) rec.timeBecameVisible = this.now;
+    const visible = t.alive && this.dist3 < SIGHT && this.npc.world.sees(e, this.chest());
+    if (visible && !rec.visible) rec.timeBecameVisible = this.now;
+    if (visible || (t.alive && this.dist3 < TOUCH)) {
       rec.timeLastSensed = this.now;
       rec.lastSensedPosition.set(t.pos.x, t.pos.y, t.pos.z);
     }
@@ -262,8 +259,8 @@ export class Agent extends Vehicle {
       ent.velocity.set(f.vel.x, 0, f.vel.z);
       const rec = this.memory.getRecord(ent);
       const d3 = Math.hypot(f.pos.x - f0.x, f.pos.y - f0.y, f.pos.z - f0.z);
-      const visible = f.alive && (d3 < TOUCH || (d3 < SIGHT && this.npc.world.sees(e, this.chest(f.pos))));
-      const shown = f.alive && (f.reveal || (d3 < this.radar && Math.hypot(f.vel.x, f.vel.z) > RADAR_SPEED));
+      const visible = f.alive && d3 < SIGHT && this.npc.world.sees(e, this.chest(f.pos));
+      const shown = f.alive && (d3 < TOUCH || f.reveal || (d3 < this.radar && Math.hypot(f.vel.x, f.vel.z) > RADAR_SPEED));
       if (visible && !rec.visible) rec.timeBecameVisible = this.now;
       if (visible || shown) { rec.timeLastSensed = this.now; rec.lastSensedPosition.set(f.pos.x, f.pos.y, f.pos.z); }
       rec.visible = visible;
@@ -281,11 +278,30 @@ export class Agent extends Vehicle {
   stagger() {
     this.cooldown('ATTACK', STAGGER_S);
     this.useState = null;
+    this.gunBurst = null;
   }
   // it hurt the target: a breather before the next attack
-  landed() { this.cooldown('ATTACK', BREATHER_S); }
+  landed() { this.cooldown('ATTACK', BREATHER_S); this.gunBurst = null; }
   // s it has had the target in sight, this time
-  get inSight() { return this.sees ? this.now - this.record.timeBecameVisible : 0; }
+  get inSight() { return this.sees ? this.now - Math.max(this.record.timeBecameVisible, this.aimState?.acquiredAt ?? -Infinity) : 0; }
+
+  // One world-space aim point per enemy. No velocity cheating or tracking through cover.
+  updateAim() {
+    const rec = this.record;
+    if (!this.sees || this.aimState?.record !== rec || this.aimState?.seenAt !== rec.timeBecameVisible) {
+      this.aimState = null;
+      this.gunBurst = null;
+      if (this.useState?.tool === 'LASER') this.useState = null;
+    }
+    if (!this.sees) return;
+    const p = this.chest();
+    if (!this.aimState) {
+      this.aimState = { record: rec, seenAt: rec.timeBecameVisible, acquiredAt: this.now, point: p };
+      return;
+    }
+    const q = this.aimState.point, k = -Math.expm1(-this.dt / AIM_TRACK_S);
+    q.x += (p.x - q.x) * k; q.y += (p.y - q.y) * k; q.z += (p.z - q.z) * k;
+  }
 
   // it was hurt by the target (or by opponent `id`), or heard it: it knows where it is now
   alert(id = null) {
@@ -308,16 +324,21 @@ export class Agent extends Vehicle {
   chase(share = 1) { this.pursuit.active = true; this.intent.share = share; this.intent.sprint = share > 0.7; }
   roam(share = 0.35) { this.wander.active = true; this.intent.share = share; }
   lookAt(p) { this.intent.look = { x: p.x, y: p.y, z: p.z }; }
-  hold(tool) { this.intent.tool = tool; }
+  hold(tool) {
+    if (this.gunBurst?.key !== tool) this.gunBurst = null;
+    this.intent.tool = tool;
+  }
 
   // one frame of thinking: senses, (re)arbitration, the current goal
   think(dt) {
     this.now += dt;
     this.dt = dt;
     this.sense();
+    this.updateAim();
     this.clearIntent();
     if (this.regulator.ready()) this.brain.arbitrate();
     this.brain.execute();
+    if (!this.intent.primary && !this.intent.primaryPressed) this.gunBurst = null;
     const g = this.brain.currentSubgoal();
     this.lastGoal = g?.label ?? '';
   }
@@ -647,12 +668,11 @@ function approach(a) {
   a.brain.currentSubgoal()?.addSubgoal?.(g);
 }
 
-// aim the tool at p (with the hand's error), the look ray
-function aimWith(a, p, err = 0) {
-  if (!err) { a.lookAt(p); return; }
-  const e = a.eye();
-  const d = Math.hypot(p.x - e.x, p.y - e.y, p.z - e.z);
-  a.lookAt({ x: p.x + gauss() * err * d, y: p.y + gauss() * err * d, z: p.z + gauss() * err * d });
+// Use the tracked chest, retaining tool-specific height (rockets aim at feet).
+function aimWith(a, p, offset = 0) {
+  const q = a.aimState.point, c = a.chest(), e = a.eye();
+  const dx = q.x - e.x, dz = q.z - e.z, d = Math.hypot(dx, dz) || 1;
+  a.lookAt({ x: q.x + p.x - c.x - dz / d * offset, y: q.y + p.y - c.y, z: q.z + p.z - c.z + dx / d * offset });
 }
 
 const USE = {
@@ -673,7 +693,7 @@ const USE = {
   ROCKET(a) {
     a.hold('ROCKET');
     const f = a.target.pos;
-    aimWith(a, { x: f.x, y: f.y + ROCKET_AIM_UP, z: f.z }, aimError(a));
+    aimWith(a, { x: f.x, y: f.y + ROCKET_AIM_UP, z: f.z });
     if (a.ready('ROCKET')) { a.intent.primaryPressed = true; a.cooldown('ROCKET', ROCKET_INTERVAL); }
   },
   // held through the charge (its red sighting beam is the tell), then let go through the standby
@@ -681,7 +701,7 @@ const USE = {
     const s = useStateFor(a, 'LASER');
     a.hold('LASER');
     s.t += a.dt;
-    aimWith(a, a.chest(), aimError(a));
+    aimWith(a, a.chest());
     a.intent.primary = s.t < LASER_CHARGE_S + LASER_SLACK_S;
     if (s.t >= LASER_CHARGE_S + LASER_SLACK_S + LASER_REFIRE_S) s.tool = null;
   },
@@ -757,35 +777,26 @@ const USE = {
   },
 };
 
-// its aim's error now: wide when it has just seen the target, narrowing over AIM_RAMP_S, wider on a moving one
-function aimError(a) {
-  const t = a.target, ramp = Math.min(a.inSight / AIM_RAMP_S, 1);
-  return AIM_ERROR_START + (AIM_ERROR - AIM_ERROR_START) * ramp + AIM_ERROR_MOVING * Math.hypot(t.vel.x, t.vel.z);
-}
-// The first shot since it spotted you: a near miss to one side (WARNING_MISS body
-// widths), fired when `key` is ready, `interval` before the next. True until it's gone.
-function warningShot(a, key, interval) {
-  if (a.warnedAt === a.record.timeBecameVisible) return false;
-  const c = a.chest(), e = a.eye(), dx = c.x - e.x, dz = c.z - e.z, d = Math.hypot(dx, dz) || 1, side = Math.random() < 0.5 ? -1 : 1;
-  a.lookAt({ x: c.x - (dz / d) * side * WARNING_MISS * BODY_WIDTH, y: c.y, z: c.z + (dx / d) * side * WARNING_MISS * BODY_WIDTH });
-  if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, interval); a.warnedAt = a.record.timeBecameVisible; }
-  return true;
-}
-// A gun: a near miss first (the warning), then aimed shots every `interval`, each holding the trigger
-// for `burst` s (an automatic's burst), closing in from farther than `chaseFrom`.
+// Single shots or bounded automatic bursts; interval is start-to-start, including the rest.
 function fireGun(a, key, interval, { burst = 0, chaseFrom = GUN_CHASE } = {}) {
   a.hold(key);
-  if (warningShot(a, key, interval)) return;
-  aimWith(a, a.chest(), aimError(a));
+  a.intent.secondary = key !== 'SNIPER';   // use the same ironsights/spread reduction as the player; no scope toggles
   if (a.dist3 > chaseFrom) a.chase(0.6);
-  if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, interval); a.burstUntil = a.now + burst; }
-  else if (a.now < (a.burstUntil ?? 0)) a.intent.primary = true;
+  if (a.ready(key)) {
+    a.intent.primaryPressed = true;
+    a.cooldown(key, interval);
+    a.gunBurst = burst ? { key, start: a.now, until: a.now + burst, offset: Math.random() < 0.5 ? -BURST_OFFSET : BURST_OFFSET } : null;
+  }
+  const b = a.gunBurst;
+  if (b && a.now < b.until - 1e-6) a.intent.primary = true;
+  else a.gunBurst = null;
+  aimWith(a, a.chest(), a.gunBurst ? b.offset * Math.exp(-(a.now - b.start) / BURST_CORRECT_S) : 0);
 }
 
 // Raven's weapon system runs beside the goals (TakeAimAndShoot): a bot busy
 // with something else (a team game's objective: holding a hill, guarding a
 // stand) still shoots what it sees, with the gun and the same fairness rules
-// (the reaction delay, the warning miss, the accuracy ramp, the breather), and
+// (the reaction delay, tracking lag, burst correction and breather), and
 // keeps moving where its goal steers it. False when it has nothing to shoot.
 // With a game's limits (agent.weapons: a Halo match's two guns) it shoots the
 // one it would choose to fight with, if that's a gun.
@@ -912,8 +923,8 @@ for (const [G, label] of [[AttackGoal, 'Attack'], [HuntGoal, 'Hunt'], [BreachGoa
 
 export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT, GoToGoal, WanderGoal };
 // for other minds on this one (ai/gunner.js): Raven's fuzzy distance module and weapon choice, the
-// fairness rules (the reaction delay, the warning miss, the aim's error), the tool state, the shared strategies
+// shared tracking, burst timing and reaction delay
 export {
-  distanceModule, pickWeapon, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
-  REACTION_S, warningShot, aimError, useStateFor,
+  distanceModule, pickWeapon, fireGun, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
+  REACTION_S,
 };

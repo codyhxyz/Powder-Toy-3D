@@ -266,7 +266,11 @@ export function createHeld({ scene }) {
         });
       }
       showExtras(fp);
-      if (rec.flame) fanFlame(rec.flame, dt, 1);
+      if (rec.flame) {
+        rec.flame.obj.visible = fp?.obj.userData.torchLit !== false;
+        if (rec.flame.obj.visible) fanFlame(rec.flame, dt, 1);
+        else rec.flame.fresh = true;
+      }
       if (!rec.model.obj.visible) return;   // nothing in hand to hold
       const q = qA.setFromRotationMatrix(mB.extractRotation(m));
       const hand = (spec) => spec && {

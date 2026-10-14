@@ -6,8 +6,8 @@ export const SPRINT_MUSIC = Object.freeze({
 export function sprintMusicProfile(rush, enabled = true) {
   const r = Number.isFinite(rush) ? Math.max(0, Math.min(1, rush)) : 0;
   return {
-    // Bass-only launch (~123 Hz at r=.2); save the opening of the breaks for the late surge.
-    cutoffHz: 80 * 125 ** (r ** 1.5),
+    // Keep the launch bass-only, then open linearly with speed: no second ease-in on top of sprint's.
+    cutoffHz: 125 + 9875 * Math.max(0, (r - 0.2) / 0.8),
     gain: enabled ? (0.22 + 0.24 * r) * r / (r + 0.08) : 0,
   };
 }
