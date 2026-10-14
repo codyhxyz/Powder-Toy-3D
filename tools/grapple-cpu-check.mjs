@@ -105,7 +105,9 @@ for (const fps of [30, 60, 120]) {
   try {
     attach(new THREE.Vector3(210, 50, 200));
     const length = body.pos.distanceTo(grapple.rope.anchor);
-    await frame({ jump: true }); await frames(24);
+    await frame({ jump: true });
+    assert.equal(scene.children.find(o => o.isInstancedMesh).count, 4, 'source grows one flesh-orb batch per frame');
+    await frames(24);
     assert.ok(body.pos.distanceTo(grapple.rope.anchor) < length - 5, 'overhead continuously draws you inward, never fixed length');
     const mesh = scene.children.find(o => o.isInstancedMesh);
     assert.ok(mesh.visible && mesh.count > 0, 'original pulsating flesh-orb line is drawn');
@@ -132,6 +134,19 @@ for (const why of ['sky', 'powder', 'range']) {
     ctx.aim.valid = why !== 'sky'; ctx.aim.id = why === 'powder' ? E.SAND : E.ROCK;
     attach(new THREE.Vector3(why === 'range' ? 268 : 230, 6, 200));
     assert.equal(grapple.active, false, why);
+  } finally { f.dispose(); }
+}
+{
+  const f = await fixture(), { sim, body, grapple, ctx, attach } = f;
+  try {
+    sim.g.windowed = true;
+    attach(new THREE.Vector3(220, 6, 200));
+    body.windowShifted(256, 0); grapple.windowShifted(256, 0);
+    f.anchorId(E.EMPTY); grapple.update(ctx); await flush();
+    assert.ok(grapple.active, 'streaming eviction does not masquerade as anchor destruction');
+    body.windowShifted(-256, 0); grapple.windowShifted(-256, 0);
+    grapple.update(ctx); await flush();
+    assert.equal(grapple.active, false, 'resident destruction is checked again after the window returns');
   } finally { f.dispose(); }
 }
 for (const within of [true, false]) {

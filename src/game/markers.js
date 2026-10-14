@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { BODY_HEIGHT } from '../pov/constants.js';
 import { TEAM_CSS } from './rules.js';
 
@@ -50,9 +51,11 @@ function chevronModel() {
   return m;
 }
 
-function exitModel(bounds) {
+function exitModel(bounds, points) {
   const size = bounds.max.map((n, i) => n - bounds.min[i]), g = new THREE.Group();
-  const geometry = new THREE.BoxGeometry(...size).translate(0, size[1] / 2, 0);
+  const origin = [(bounds.min[0] + bounds.max[0]) / 2, bounds.min[1], (bounds.min[2] + bounds.max[2]) / 2];
+  const geometry = points ? new ConvexGeometry(points.map(p => new THREE.Vector3(...p.map((n, i) => n - origin[i]))))
+    : new THREE.BoxGeometry(...size).translate(0, size[1] / 2, 0);
   const fill = new THREE.Mesh(geometry, basic(NEUTRAL, 0.08));
   const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({ color: NEUTRAL, transparent: true, opacity: 0.8 }));
   g.add(fill, edge); g.userData.mats = [fill.material, edge.material];
@@ -74,9 +77,10 @@ export function createMarkers({ scene, getVolume, getScale }) {
   function setZones(points) {
     while (zones.length > points.length) remove(zones.pop());
     points.forEach((z, i) => {
-      const shape = z.bounds ? z.bounds.max.map((n, k) => n - z.bounds.min[k]).join(',') : String(z.r);
+      const shape = z.bounds ? z.bounds.max.map((n, k) => n - z.bounds.min[k]).join(',')
+        + (z.points ? z.points.map(p => p.map((n, k) => (n - z.bounds.min[k]).toFixed(6)).join(',')).join(';') : '') : String(z.r);
       if (zones[i] && zones[i].userData.shape !== shape) { remove(zones[i]); zones[i] = null; }
-      if (!zones[i]) { zones[i] = z.bounds ? exitModel(z.bounds) : padModel(NEUTRAL, z.r); root.add(zones[i]); }
+      if (!zones[i]) { zones[i] = z.bounds ? exitModel(z.bounds, z.points) : padModel(NEUTRAL, z.r); root.add(zones[i]); }
       Object.assign(zones[i].userData, { at: z, shape });
     });
   }

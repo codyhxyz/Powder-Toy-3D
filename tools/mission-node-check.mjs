@@ -69,6 +69,17 @@ check('either authored exit completes; malformed additional exits invalidate the
   m.extractions = []; assert.equal(validMission(m), false);
   m.extractions = [second, { ...second, height: 0 }]; assert.equal(validMission(m), false);
 });
+check('source convex trigger excludes AABB corners and accepts real body overlap', () => {
+  const m = manifest(), n = Math.SQRT1_2;
+  m.extraction = { at: [1, 0, 1], radius: 1, height: 2, bounds: { min: [0, 0, 0], max: [2, 2, 2] },
+    axes: [{ normal: [n, n, 0], min: 0, max: 2 * n }] };
+  const run = createMissionAttempt(m); run.eliminate('a'); run.eliminate('b');
+  assert.equal(run.update({ dead: false, at: { x: 1.8, y: 1.8, z: 1 }, width: 0.2, height: 0.2 }), 'active');
+  assert.equal(run.update({ dead: false, at: { x: 1.8, y: 0.1, z: 1 }, width: 0.6, height: 0.6 }), 'complete');
+  for (const axes of [[], [{ normal: [0, 0, 0], min: 0, max: 1 }], [{ normal: [1, 0, 0], min: 2, max: 1 }]]) {
+    m.extraction.axes = axes; assert.equal(validMission(m), false);
+  }
+});
 check('multiple exit markers retain full authored box bounds and dispose replaced geometry', () => {
   const scene = new THREE.Scene(), volume = new THREE.Group();
   volume.position.set(7, 8, 9);

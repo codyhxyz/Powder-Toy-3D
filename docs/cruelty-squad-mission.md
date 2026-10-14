@@ -59,6 +59,8 @@ coordinates. Box maps have zero origin; windowed maps subtract `sim.origin`.
 Target/guard IDs must be unique across both lists. At least one target is
 required; `guards: []` is valid. Authored extraction bounds take priority.
 Completion requires player-body overlap, like the original Godot Area.
+Non-box triggers also supply source convex projection `axes` and `points`.
+The controller uses SAT; the marker uses the same convex shape.
 Without bounds, extraction uses horizontal radius and vertical tolerance.
 Author these clear of walls and
 on accessible collision surfaces; the adapter never invents/relocates spawns.

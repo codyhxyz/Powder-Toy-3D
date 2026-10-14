@@ -18,7 +18,7 @@ export function createGrappendix(env) {
   const material = new THREE.MeshBasicMaterial({ color: '#e8aaad' });
   const orbs = new THREE.InstancedMesh(geometry, material, MAX_ORBS);
   orbs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  orbs.frustumCulled = false; orbs.visible = false;
+  orbs.frustumCulled = false; orbs.visible = false; orbs.count = 0;
   env.scene.add(orbs);
   const center = new THREE.Vector3(), start = new THREE.Vector3(), end = new THREE.Vector3();
   const cell = new THREE.Vector3(), offset = new THREE.Vector3(), temp = new THREE.Vector3();
@@ -31,7 +31,7 @@ export function createGrappendix(env) {
     if (body?.rope === rope) body.tether(null);
     povEvents.emit('tool:action', { tool: 'hook', action, point: rope.anchor.clone() });
     rope = target = targetId = body = null;
-    generation++; checking = false; orbs.visible = false;
+    generation++; checking = false; orbs.visible = false; orbs.count = 0;
     env.requestRender?.();
   }
 
@@ -86,7 +86,11 @@ export function createGrappendix(env) {
       }
     }
     else if (!checking && cell.y >= 0) {
-      const read = povGpu(ctx.sim ?? env.getSim()).probe('povCells', { cells: [[cell.x, cell.y, cell.z, 0]], count: 1 });
+      const sim = ctx.sim ?? env.getSim(), g = sim.g;
+      // Evicted cells are not destroyed cells. Keep the source's unlimited
+      // attachment distance; verify again when the anchor becomes resident.
+      const resident = !g.windowed || (cell.x >= 0 && cell.x < g.nx && cell.y < g.ny && cell.z >= 0 && cell.z < g.nz);
+      const read = resident && povGpu(sim).probe('povCells', { cells: [[cell.x, cell.y, cell.z, 0]], count: 1 });
       if (read) {
         checking = true;
         const gen = generation;
@@ -101,7 +105,10 @@ export function createGrappendix(env) {
     // Cruelty Squad's Player origin is its body center; our position is its feet.
     center.copy(body.pos).setY(body.pos.y + body.height / 2);
     const meters = center.distanceTo(rope.anchor) * CELL_M;
-    const count = Math.min(MAX_ORBS, Math.floor(meters) * ORBS_PER_M);
+    const desired = Math.min(MAX_ORBS, Math.floor(meters) * ORBS_PER_M);
+    // Player.gd grows/shrinks one four-orb batch per process frame.
+    const count = desired > orbs.count ? Math.min(desired, orbs.count + ORBS_PER_M)
+      : Math.max(desired, orbs.count - ORBS_PER_M);
     const volume = env.getVolume(), scale = env.getScale();
     volume.updateMatrixWorld();
     volume.localToWorld(start.copy(center)); volume.localToWorld(end.copy(rope.anchor));

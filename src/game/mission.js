@@ -98,6 +98,7 @@ export function createMission(shell) {
       if (!e.bounds) return { ...local(e.at), r: e.radius };
       const lo = local(e.bounds.min), hi = local(e.bounds.max);
       return { x: (lo.x + hi.x) / 2, y: lo.y, z: (lo.z + hi.z) / 2,
+        points: e.points?.map(p => local(p).toArray()),
         bounds: { min: lo.toArray(), max: hi.toArray() } };
     }));
     shell.markers?.setVisible(visible);

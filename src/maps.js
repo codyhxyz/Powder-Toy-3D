@@ -87,7 +87,10 @@ export function validMission(m) {
   }
   const validExit = e => !!e && point(e.at) && Number.isFinite(e.radius) && e.radius > 0
     && Number.isFinite(e.height) && e.height > 0
-    && (!e.bounds || (point(e.bounds.min) && point(e.bounds.max) && e.bounds.max.every((n, i) => n > e.bounds.min[i])));
+    && (!e.bounds || (point(e.bounds.min) && point(e.bounds.max) && e.bounds.max.every((n, i) => n > e.bounds.min[i])))
+    && (e.axes == null || (!!e.bounds && Array.isArray(e.axes) && e.axes.length > 0 && e.axes.every(a =>
+      point(a.normal) && a.normal.some(n => n !== 0) && Number.isFinite(a.min) && Number.isFinite(a.max) && a.max >= a.min)))
+    && (e.points == null || (!!e.bounds && Array.isArray(e.points) && e.points.length >= 4 && e.points.every(point)));
   return validExit(m.extraction) && (m.extractions == null
     || (Array.isArray(m.extractions) && m.extractions.length > 0 && m.extractions.every(validExit)));
 }
