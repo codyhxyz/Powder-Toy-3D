@@ -65,6 +65,21 @@ export function stats(values) {
   return { n: s.length, min: s[0], p50: at(0.5), p95: at(0.95), max: s.at(-1), mean: s.reduce((a, b) => a + b, 0) / s.length };
 }
 
+export function qualityKey(s) {
+  // Compare the precision consumed by GPU uniforms, not OrbitControls' CPU
+  // reconstruction noise (e.g. 13 versus 13.000000000000002).
+  const f32 = values => values.map(value => {
+    const n = Math.fround(value);
+    if (!Number.isFinite(n)) throw new Error('Invalid benchmark camera');
+    return n;
+  });
+  return JSON.stringify({ viewport:s.viewport,canvas:s.canvas,dpr:s.dpr,grid:s.grid,
+    renderScale:s.renderScale,autoRes:s.autoRes,
+    camera:{position:f32(s.camera.position),quaternion:f32(s.camera.quaternion),projection:f32(s.camera.projection)},
+    gfx:s.gfx,upscale:s.app.upscale,nearGI:s.app.nearGI,glowLights:s.app.glowLights,
+    caustics:s.app.caustics,taa:s.post.taa,bloom:s.post.bloom,view:s.app.view });
+}
+
 // Self-contained CPU builder, installed unchanged in the page. No GPU settling,
 // random browser state, heat sources, or per-engine scene generation differences.
 // The settled case is inert architecture, NOT pre-settled sand/water.
@@ -123,7 +138,17 @@ async function selfCheck() {
   assert.equal(water.counts[E.WATER], sand.counts[E.SAND]);
   assert.equal(settled.counts[E.WATER] ?? 0, 0); assert.equal(settled.counts[E.SAND] ?? 0, 0);
   assert.equal(Object.values(sand.counts).reduce((a, b) => a + b, 0), 128 ** 3);
-  console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures');
+  const quality={camera:{position:[1,2,13],quaternion:[0,0,0,1],projection:[1,0,0,1]},
+    app:{upscale:'quality'},post:{taa:true},renderScale:2/3};
+  const noise=structuredClone(quality);noise.camera.position[2]=13.000000000000002;
+  assert.equal(qualityKey(quality),qualityKey(noise));
+  noise.camera.position[2]=13.001;
+  assert.notEqual(qualityKey(quality),qualityKey(noise));
+  const lower=structuredClone(quality);lower.renderScale=0.5;
+  assert.notEqual(qualityKey(quality),qualityKey(lower));
+  const invalid=structuredClone(quality);invalid.camera.position[0]=Infinity;
+  assert.throws(()=>qualityKey(invalid),/Invalid benchmark camera/);
+  console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures, GPU-f32 camera quality checks');
 }
 
 async function run(o) {
@@ -145,6 +170,7 @@ async function run(o) {
       'Warmup advances the fixture. Each engine/scene/diagnostic starts in a fresh page from identical CPU arrays and seed; evolved states are NOT identical.',
       'V2 direct/compatibility use identical physics. Compatibility exports after each tick and renders the legacy projection; this diagnoses conversion cost, not full feature parity.',
       'Fixed camera and frozen render-only animation clocks; forced draws even when idle. Settled geometry is not a live idle-loop/power benchmark.',
+      'Camera equality uses GPU f32 precision; raw CPU camera values remain recorded. Render-quality settings are compared unchanged.',
       'Memory is the app GPU resource registry, not total VRAM; excludes unregistered driver/three/timestamp scratch resources. JS heap is optional Chromium telemetry.',
       'toolCommit identifies this checkout, not necessarily the build served by --url.',
     ], results: [], errors: [] };
@@ -269,13 +295,9 @@ async function run(o) {
             const passes = s.gpuPasses.filter(p => p.name === name);
             return passes.length && passes.every(p => p.gpu !== null) ? [passes.reduce((sum, p) => sum + p.gpu, 0)] : [];
           }))])) };
-        const quality = s => JSON.stringify({ viewport: s.viewport, canvas: s.canvas, dpr: s.dpr, grid: s.grid,
-          renderScale: s.renderScale, autoRes: s.autoRes, camera: s.camera, gfx: s.gfx,
-          upscale: s.app.upscale, nearGI: s.app.nearGI, glowLights: s.app.glowLights, caustics: s.app.caustics,
-          taa: s.post.taa, bloom: s.post.bloom, view: s.app.view });
         const reference = report.results.find(r => r !== result && r.run);
-        if (reference && quality(reference.run.initialSettings) !== quality(result.run.initialSettings)) throw new Error('Camera or render quality differs between cases');
-        if (quality(result.run.initialSettings) !== quality(result.run.finalSettings)) throw new Error('Camera or render quality changed during case');
+        if (reference && qualityKey(reference.run.initialSettings) !== qualityKey(result.run.initialSettings)) throw new Error('Camera or render quality differs between cases');
+        if (qualityKey(result.run.initialSettings) !== qualityKey(result.run.finalSettings)) throw new Error('Camera or render quality changed during case');
         const peer = report.results.find(r => r !== result && r.scene === scene && r.fixture);
         if (peer && peer.fixture.hash !== result.fixture.hash) throw new Error('Initial CPU fixtures differ');
         console.error(`${split ? 'SPLIT DIAGNOSTIC' : 'UNSPLIT'} ${scene}/${engine}${compactPath ? `/${compactPath}` : ''}: wall p50 ${result.summary.wallMs.p50.toFixed(2)} ms, p95 ${result.summary.wallMs.p95.toFixed(2)} ms (NON-PARITY)`);
