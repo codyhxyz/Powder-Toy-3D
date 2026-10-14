@@ -58,14 +58,30 @@ export function placementError(state, item, player = null) {
 export function validState(s) {
   if (!s || s.version !== 1 || !['placed', 'pockets', 'storage'].every(k => Array.isArray(s[k])) || s.pockets.length > POCKETS) return false;
   const all = [...s.placed, ...s.pockets, ...s.storage];
-  if (all.length !== 8 || new Set(all.map(i => i?.id)).size !== all.length) return false;
+  if (all.length < 8 || all.length > 512 || new Set(all.map(i => i?.id)).size !== all.length) return false;
   const originals = new Map([...initialState().placed, ...initialState().pockets, ...initialState().storage].map(i => [i.id, i.kind]));
-  return all.every(i => i && originals.get(i.id) === i.kind) && s.placed.every(i => !placementError(s, i));
+  // Keep every original item when extending a v1 save with catalogue orders.
+  return [...originals].every(([id, kind]) => all.some(i => i?.id === id && i.kind === kind))
+    && all.every(i => i && (originals.get(i.id) === i.kind
+      || (/^order-[1-9]\d{0,5}$/.test(i.id) && Object.hasOwn(ITEMS, i.kind) && i.kind !== 'dresser')))
+    && s.placed.every(i => !placementError(s, i));
 }
 // Atomic actions: a rejected move never removes an item from its original container.
 export function change(state, action, { home = false, dresser = false, player = null } = {}) {
   if (!validState(state)) return { error: 'The furniture save is invalid.' };
   const next = structuredClone(state), { id, type } = action;
+  if (type === 'order') {
+    if (!home) return { error: 'Order furniture from the catalogue in your own home.' };
+    if (!Object.hasOwn(ITEMS, action.kind) || action.kind === 'dresser') return { error: 'Choose a catalogue item.' };
+    if (next.pockets.length >= POCKETS) return { error: 'Your pockets are full. Store or place something first.' };
+    const all = [...next.placed, ...next.pockets, ...next.storage];
+    if (all.length >= 512) return { error: 'Your furniture collection is full.' };
+    const ids = new Set(all.map(i => i.id));
+    let serial = 1;
+    while (ids.has(`order-${serial}`)) serial++;
+    next.pockets.push({ id: `order-${serial}`, kind: action.kind });
+    return { state: next };
+  }
   const source = ['placed', 'pockets', 'storage'].find(k => next[k].some(i => i.id === id));
   if (!source) return { error: 'Choose a furniture item.' };
   const item = next[source].find(i => i.id === id);

@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Village interaction fixture</title>
+<style>body { margin: 0; background: #c4d4b8; --bar-bottom: 12px; } .sr-only { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }</style>
+<script type="module">
+  // Real village controller, models and DOM; no voxel renderer or physics GPU.
+  import * as THREE from 'three';
+  import { createVillage } from '/src/pov/village/index.js';
+  import { HOMES, FLOOR, HOME_Z } from '/src/pov/village/state.js';
+  const size = [512, 128, 512], origin = new THREE.Vector3();
+  const player = {
+    pos: new THREE.Vector3(), vel: new THREE.Vector3(), width: 2, height: 5,
+    size: 1, onGround: true, inLiquid: false, sprintRush: 0, dead: false,
+    teleport(p) { this.pos.copy(p); this.vel.set(0, 0, 0); },
+  };
+  const camera = {
+    look: { yaw: 0, pitch: -.3 }, third: true,
+    forwardH(out) { return out.set(-Math.sin(this.look.yaw), 0, -Math.cos(this.look.yaw)); },
+  };
+  let mode = 'animalCrossing', live = true;
+  const app = {
+    scene: new THREE.Scene(), settings: { volume: 0 },
+    getSim: () => ({ origin }), getScale: () => 1,
+    getVolume: () => ({ position: new THREE.Vector3() }),
+    getMode: () => mode, getWorld: () => ({ scene: { key: 'willowCove' }, P: { size, seed: 'interaction-fixture' } }),
+    requestRender() {}, isTyping: () => false,
+  };
+  const village = createVillage({ app, getPlayer: () => player, live: () => live,
+    freeMouse() {}, releaseInput() {}, camera, onEnabled() {} });
+  function position(x, z, yaw = 0, home = 0) {
+    player.teleport(new THREE.Vector3(size[0] / 2 + HOMES[home] + x, FLOOR, size[2] / 2 + HOME_Z + z));
+    camera.look.yaw = yaw;
+  }
+  function tick(dt = 1 / 60, move = { x: 0, z: 0 }, count = 1) {
+    for (let i = 0; i < count; i++) {
+      const input = { move: { ...move }, jump: false, sprint: false, down: false, crouch: false };
+      village.beforeBody(dt, input);
+      village.afterBody();
+      village.update(dt, true, camera.look.yaw);
+    }
+  }
+  position(0, -4);
+  village.setEnabled(true, { size, seed: 'interaction-fixture' });
+  window.fixture = { village, player, camera, app, position, tick,
+    setMode(value) { mode = value; tick(); }, setLive(value) { live = value; tick(); } };
+</script>

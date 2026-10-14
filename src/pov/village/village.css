@@ -195,3 +195,23 @@ body.village-on .touch-move-label { color: var(--v-ink); }
   .village-panel[open], .village-item-menu { animation: none; }
   .village-panel button, .village-hud button, .village-slot > .village-icon { transition: none; }
 }
+
+/* A catalogue needs readable names and scrolling, rather than tiny pocket slots. */
+.village-panel[data-surface=catalogue] { overflow: auto; border-radius: 28px; }
+.village-theme { display: flex; align-items: center; justify-content: flex-end; gap: 10px; font-size: 14px; }
+.village-theme select { max-width: 60%; padding: 9px 12px; border: 1px solid var(--v-green); border-radius: 12px; color: var(--v-ink); background: var(--v-paper); font: inherit; }
+.village-theme select:focus-visible { outline: 3px solid var(--v-green); outline-offset: 3px; }
+.village-catalogue { grid-template-columns: repeat(4, minmax(0, 1fr)); max-height: 36dvh; overflow-y: auto; padding: 12px 6px; gap: 8px; }
+.village-catalogue .village-slot { aspect-ratio: auto; min-height: 112px; border-radius: 16px; gap: 6px; align-content: center; }
+.village-catalogue .village-item-label { position: static; transform: none; width: auto; padding: 0; background: none; color: var(--v-ink); opacity: 1; font-size: 13px; line-height: 1.25; }
+.village-catalogue .village-item-label::after, .village-catalogue .village-slot > .village-icon:last-child { display: none; }
+[data-surface=catalogue] .village-item-menu { position: static; width: auto; margin-top: 12px; border-radius: 16px; }
+[data-surface=catalogue] .village-item-menu p { margin: 4px 0 10px; font-size: 13px; }
+[data-surface=dialogue] .village-choices { position: static; width: auto; margin: 10px 0; border-radius: 18px; }
+[data-surface=dialogue] .village-topic { text-align: left; white-space: normal; }
+@media (max-width: 600px) {
+  .village-catalogue { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .village-catalogue .village-item-label { transform: none; }
+  .village-tabs { gap: 4px; }
+  .village-panel[data-surface=dialogue] { overflow: auto; max-height: calc(100dvh - 48px); }
+}
