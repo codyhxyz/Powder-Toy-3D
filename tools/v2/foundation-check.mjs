@@ -171,7 +171,19 @@ const gpu = {
 };
 const g = gridLayout(...dims), sim = { gpu, g, id: 1, version: 0, wholeWrites: 0, frame: 0, paints: 0, state: { A: {}, B: {}, F: {} }, marks: {}, tables: {},
   L: { STATE_RO: { entries: [0, 1] }, TABLES: { entries: [0] } }, header: () => ({}), noteWrite() {} };
-const engine = new PhysicsV2(sim); await engine.ready;
+let finishInitialization;
+sim.ready = new Promise(resolve => { finishInitialization = () => {
+  assert.equal(sim.version, 0, 'native readiness cannot suppress Simulation.clear initialization');
+  resolve(sim);
+}; });
+const engine = new PhysicsV2(sim);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(engine.isReady, false, 'finished native kernels still wait for initial state');
+assert.equal(sim.version, 0);
+finishInitialization();
+await engine.ready;
+assert.equal(engine.isReady, true);
+assert.equal(sim.version, 1);
 for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['jetMask', 4], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
 assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, null);
 assert.equal(engine.groups.liquid.entries.length, 7); // plus one shared table = eight
@@ -202,4 +214,10 @@ const gather = v2GatherWGSL(g); assert(gather.includes('w: atomic<u32>')); asser
 const contact = v2BlockWGSL(g, 'fn contactBlock(c:ptr<function,array<vec4u,8>>,b:ptr<function,array<i32,8>>,p:array<vec3i,8>,r:ptr<function,array<u32,8>>) {}');
 assert(contact.includes('contactBlock(&cs, &bs, positions, &requests);'));
 engine.dispose(); for (const name of ['cells', 'aux', 'liquidScratch', 'jetMask', 'events', 'act', 'args']) assert(engine[name].destroyed);
+const failedSim = { ...sim, version: 0, ready: Promise.reject(new Error('initial state failed')) };
+const failedEngine = new PhysicsV2(failedSim);
+await assert.rejects(failedEngine.ready, /initial state failed/);
+assert.equal(failedEngine.isReady, false);
+assert.equal(failedSim.version, 0);
+failedEngine.dispose();
 console.log(`native foundation: ${cases} conservative advection cases, 10000 exact wide products, packing/migration/driver ownership and rest checks passed`);

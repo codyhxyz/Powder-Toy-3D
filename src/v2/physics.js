@@ -119,7 +119,8 @@ export class PhysicsV2 {
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
     this.jets = this.dynamics?.particles && this.dynamics?.control ? new NativeJets(this) : null;
-    this.ready = Promise.all([...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready, this.jets?.ready]).then(() => this);
+    // Publish native readiness only after legacy storage has its blank defaults.
+    this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready, this.jets?.ready]).then(() => this);
     this.isReady = false;
     this.ready.then(() => {
       if (this.disposed) return;
