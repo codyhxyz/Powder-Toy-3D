@@ -89,5 +89,5 @@ assert.ok(app.includes('bindViewInputWake(window, () => { autoRes.wake(); wakeLo
 assert.ok(app.includes('viewSettings, gfx, post.settings)'));
 assert.ok(app.includes('brushKey(brush, toolById(settings.tool).color)'));
 assert.ok(app.includes('pointerPickDirty = true;'));
-assert.ok(app.includes("if (!renderOnly && (pointerPickDirty || runView || pov?.active || testMode === 'preview')) requestPick();"));
+assert.ok(app.includes("if (!renderOnly && (pointerPickDirty || (!postOnly && (runView || pov?.active || testMode === 'preview')))) requestPick();"));
 console.log('PASS view input invalidation: UI stays settled; render settings, camera, resize, brush and async changes redraw');

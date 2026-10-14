@@ -2,7 +2,7 @@ import { DETAIL, settingKey } from './detail.js';
 
 // Only settings read directly by rendering belong in its cache key. Simulation,
 // camera and brush controls are observed through their resulting state instead.
-const VIEW_SETTINGS = ['view', 'upscale', 'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey)];
+const VIEW_SETTINGS = ['view', 'upscale', 'nearGI', 'glowLights', 'caustics', 'materialStyle', ...DETAIL.map(settingKey)];
 export function createViewSettings(settings) {
   return Object.defineProperties({}, Object.fromEntries(VIEW_SETTINGS.map((key) =>
     [key, { enumerable: true, get: () => settings[key] }])));

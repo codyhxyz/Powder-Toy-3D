@@ -1,10 +1,33 @@
-
+import { cozyWaterWGSL } from './cozy.js';
 // Transparent media: liquids (smooth surfaces) and crisp glass. WGSL (the
 // names are the GLSL version's, docs/webgpu.md W2), pasted after surfaceGLSL
 // (reflectTrace meets voxels with crispHit, the floor with floorAlb). The
 // GLSL's inout parameters are pointers; sunShadow(p) of a point inside a
 // volume is lighting.js's sunShadowAt.
 export const liquidGLSL = /* wgsl */ `
+${cozyWaterWGSL}
+// Four nearby opaque probes form a shoreline/intersection mask; water and
+// glass never count as the shore. No new texture or depth prepass is needed.
+fn cozyNearShore(p: vec3f) -> f32 {
+  var shore = 0.0;
+  for (var i = 0; i < 4; i++) {
+    let a = f32(i) * 1.5707963;
+    let q = p + vec3f(cos(a) * 0.55, -0.12, sin(a) * 0.55) / CELL_M;
+    let c = vec3i(floor(q));
+    if (c.y < 0) {
+      shore = max(shore, 1.0 - smoothstep(0.0, 0.65, max(p.y, 0.0) * CELL_M));
+      continue;
+    }
+    if (outside(c)) { continue; }
+    shore = max(shore, smoothstep(0.15, 0.65, smoothOpaque(q)));
+    let id = eid(fetchA(c));
+    if (isCrisp(id) && RCLASS(id) == R_OPAQUE) {
+      let gap = max(abs(p - (vec3f(c) + 0.5)) - 0.5, vec3f(0.0));
+      shore = max(shore, 1.0 - smoothstep(0.0, 0.65, length(gap) * CELL_M));
+    }
+  }
+  return shore;
+}
 fn fresnelSchlick(cosi: f32, ior: f32) -> f32 {
   var f0 = (1.0 - ior) / (1.0 + ior);
   f0 *= f0;
@@ -313,15 +336,25 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
     let r = reflect(*rd, n);
     let gi = surfProbe(hp, n);
     gSkyIn = skyInAt(gi);
-    var env = envReflectGI(gi, n, -*rd, ROUGH(id), ml);
+    let cartoon = FU.materialStyle > 0.5 && cozyWater(id) && geometric.y > 0.55;
+    let rough = select(ROUGH(id), 0.24, cartoon);
+    var env = envReflectGI(gi, n, -*rd, rough, ml);
+    if (cartoon) {
+      let paint = cozyWaterPaint(worldPos(hp), footprint(hp), cozyNearShore(hp));
+      let light = giIrradiance(gi, geometric) + FU.sunCol * ml * max(dot(geometric, FU.sun), 0.0)
+                + sampleLight(hp) * FU.lightGain;
+      *col += *trans * paint.rgb * light * paint.a;
+      *trans *= 1.0 - paint.a;
+      env *= 0.35;
+    }
     var wr = 0.0;
-    if (mirror) { wr = smoothstep(REFL_F_LO, REFL_F_HI, F); }
+    if (mirror && !cartoon) { wr = smoothstep(REFL_F_LO, REFL_F_HI, F); }
     if (wr > 0.0) { env = mix(env, reflectTrace(hp + n * REFL_START, r, env), wr); }
     *col += *trans * F * env;
     // a torch or lantern's highlight (lighting.js lampSpec: its own Fresnel, from the IOR's F0)
     if (FU.lampCount > 0) {
       let f0 = (1.0 - ior) / (1.0 + ior);
-      *col += *trans * lampSpecSeen(hp, n, LampSpecIn(-*rd, ROUGH(id), vec3f(f0 * f0), vec3f(1.0, 0.0, 0.0), 0.0, true));
+      *col += *trans * lampSpecSeen(hp, n, LampSpecIn(-*rd, rough, vec3f(f0 * f0), vec3f(1.0, 0.0, 0.0), 0.0, true));
     }
     *trans *= 1.0 - F;
     let rt = refract(*rd, n, 1.0 / ior);

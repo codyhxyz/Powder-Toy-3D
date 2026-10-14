@@ -37,7 +37,13 @@ for (const file of ['body', 'woman']) {
       ...['index', 'middle', 'ring', 'pinky'].flatMap(f => [1, 2, 3].map(j => `${f}_0${j}`))].map(b => `${b}_${side}`))]) {
     assert.ok(gltf.scene.getObjectByName(name)?.isBone, `${file}: ${name}`);
   }
-  const { hat } = buildGarb(meshes);
+  const garb = buildGarb(meshes);
+  const { hat } = garb;
+  if (file === 'woman') {
+    assert.ok(garb.robe && garb.hoops, 'woman stands in a barrel');
+    garb.robe.computeBoundingBox();
+    assert.ok(garb.robe.boundingBox.max.y - garb.robe.boundingBox.min.y > 0.4, 'barrel covers the torso');
+  } else assert.equal(garb.robe, undefined);
   hat.computeBoundingBox();
   assert.ok(hat.boundingBox.min.toArray().every(Number.isFinite));
   assert.ok(hat.boundingBox.max.toArray().every(Number.isFinite));

@@ -23,8 +23,8 @@ const TEAM_MODES = ['slayer', 'ctf', 'koth', 'infection', 'siege'];
 export const MAPS = [
   { key: 'island', name: 'Island', size: 'world', scene: 'island', dims: WORLD_DIMS,
     desc: 'Beaches, forest, cliffs and caves, a lighthouse and old mines. The world loads around you as you go.' },
-  { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: WORLD_DIMS, modes: ['animalCrossing'],
-    desc: 'A quiet island village with cottages, an orchard, river bridges and a seaside dock. A Sandbox world inspired by Animal Crossing.' },
+  { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: [3072, 128, 1024], modes: ['animalCrossing'],
+    desc: 'A wide island village with cottages, an orchard and a kilometre-long running circuit across river bridges. Inspired by Animal Crossing.' },
   { key: 'volcanoWorld', name: 'Volcano Isles', size: 'world', scene: 'volcanoWorld', dims: WORLD_DIMS,
     desc: 'An archipelago of live volcanoes in open sea, lava pouring down to the water.' },
   { key: 'labWorld', name: 'Lab Complex', size: 'world', scene: 'labWorld', dims: WORLD_DIMS,

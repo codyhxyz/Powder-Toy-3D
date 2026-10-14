@@ -83,6 +83,35 @@ function garbFor(gltf, meshes) {
   return garbByModel.get(gltf);
 }
 
+// Pull the barrels onto the back. buildJetpack's cell offset clears a stick torso;
+// on these meshes it leaves a gap, so the pack reads as floating.
+const PACK_RADIUS = 0.32, PACK_EMBED = 0.04;
+function seatPack(pack, model) {
+  pack.updateWorldMatrix(true, true);
+  const origin = pack.getWorldPosition(new THREE.Vector3());
+  const into = new THREE.Vector3(0, 0, -1).applyQuaternion(pack.getWorldQuaternion(new THREE.Quaternion()));
+  let gap = Infinity;
+  const v = new THREE.Vector3();
+  model.traverse((o) => {
+    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'sleeves') return;
+    // She wears a barrel: the pack straps to that, not to the body inside it.
+    if (model.getObjectByName('robe') && o.name !== 'robe' && o.name !== 'hoops') return;
+    if (!model.getObjectByName('robe') && (o.name === 'robe' || o.name === 'hoops')) return;
+    const n = o.geometry.attributes.position.count;
+    for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 2000))) {
+      o.getVertexPosition(i, v).applyMatrix4(o.matrixWorld);
+      if (Math.abs(v.y - origin.y) > 0.4) continue;   // the back at the barrels, not the hem below
+      const dx = v.x - origin.x, dy = v.y - origin.y, dz = v.z - origin.z;
+      const along = dx * into.x + dy * into.y + dz * into.z;
+      if (dx * dx + dy * dy + dz * dz - along * along < 0.2 && along > 0 && along < gap) gap = along;
+    }
+  });
+  const move = gap - PACK_RADIUS + PACK_EMBED;
+  if (!Number.isFinite(gap) || Math.abs(move) <= 0.005) return;
+  pack.parent.worldToLocal(origin.addScaledVector(into, move));
+  pack.position.copy(origin);
+}
+
 // The body from a loaded glTF. Same per-frame state as the stickman.
 export function createRealFigure(gltf) {
   const u = figureUniforms();
@@ -165,8 +194,10 @@ export function createRealFigure(gltf) {
       mats.push(mesh.material);
     }
   });
-  // Preserve its cell-space fit while parenting to the animated chest bone.
+  // Preserve its cell-space fit while parenting to the animated chest bone, then
+  // sit the barrels on the back. The shared cell offset floats clear of her.
   spine[2].attach(jetpack.root);
+  seatPack(jetpack.root, model);
   const chestToEye = EYE_HEIGHT - spine[2].getWorldPosition(new THREE.Vector3()).y;   // cells at the plain size
   const qRoot = new THREE.Quaternion(), qBind = new THREE.Quaternion();
   const arms = {}, legs = {};

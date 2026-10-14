@@ -40,6 +40,10 @@
 // canvas passes, and three's TAAU (the WebGL2 build made about 17). The split methods (beginScene,
 // endScene, finish) are there for callers that need the parts apart; tools
 // count view frames by wrapping render(), so the app's frames go through it.
+// After radiance/TAA settle, render(..., { postOnly: true }) may retain the
+// resolved colour and bloom: only advance adaptation toward its saved histogram
+// target and composite. app.js certifies external dependencies; canReuse also
+// validates image settings, camera, canvas, presentation and temporal history.
 //
 // Retina (a device pixel ratio of 2: 4× the pixels of the CSS size) made the
 // output-size work the expensive part. Ours is the canvas pass (one fragment
@@ -329,7 +333,7 @@ const MipParams = uniformStruct('MipParams', {
   dst: 'vec2u',     // this level's size
   scatter: 'f32',
 });
-const ReduceParams = uniformStruct('ReduceParams', { dt: 'f32', adapt: 'bool', meter: 'bool', slot: 'u32', packed: 'bool' });
+const ReduceParams = uniformStruct('ReduceParams', { dt: 'f32', adapt: 'bool', meter: 'bool', slot: 'u32', packed: 'bool', reuseTarget: 'bool' });
 const CompositeParams = uniformStruct('CompositeParams', {
   size: 'vec2f', thresh: 'vec2f', hot: 'vec2f',
   bloom: 'f32', exposure: 'f32', sharpen: 'f32', look: 'f32',
@@ -628,7 +632,7 @@ var<workgroup> meterN: array<f32, ${REDUCE_THREADS}>;
 
   // 1. the luminance grid: per sample, a patch mean (premultiplied: the covered part's own
   // luminance), its log2 and coverage; each sample is dropped into its bin, weighted by its coverage
-  if (P.adapt != 0u) {
+  if (P.adapt != 0u && P.reuseTarget == 0u) {
     for (var s = li; s < SAMPLES; s += THREADS) {
       let cell = vec2f(f32(s % GRID_W), f32(s / GRID_W));
       var sum = vec4f(0.0);
@@ -677,24 +681,28 @@ var<workgroup> meterN: array<f32, ${REDUCE_THREADS}>;
   // LOG_DARK, and last frame's gain moved toward it
   var flags = 0u;
   if (P.adapt != 0u) {
-    var total = 0.0;
-    for (var i = 0u; i < BINS; i++) { total += f32(atomicLoad(&bins[i])) / FIXED; }
-    let lo = LOW_PCT * total;
-    let hi = HIGH_PCT * total;
-    var cum = 0.0;
-    var wSum = 0.0;
-    var lSum = 0.0;
-    for (var i = 0u; i < BINS; i++) {
-      let w = f32(atomicLoad(&bins[i])) / FIXED;
-      let part = max(min(cum + w, hi) - max(cum, lo), 0.0);   // this bin's share inside the band
-      lSum += part * (LOG_MIN + (f32(i) + 0.5) / f32(BINS) * (LOG_MAX - LOG_MIN));
-      wSum += part;
-      cum += w;
+    var aim = state.aim;
+    var view = state.view;
+    if (P.reuseTarget == 0u) {
+      var total = 0.0;
+      for (var i = 0u; i < BINS; i++) { total += f32(atomicLoad(&bins[i])) / FIXED; }
+      let lo = LOW_PCT * total;
+      let hi = HIGH_PCT * total;
+      var cum = 0.0;
+      var wSum = 0.0;
+      var lSum = 0.0;
+      for (var i = 0u; i < BINS; i++) {
+        let w = f32(atomicLoad(&bins[i])) / FIXED;
+        let part = max(min(cum + w, hi) - max(cum, lo), 0.0);   // this bin's share inside the band
+        lSum += part * (LOG_MIN + (f32(i) + 0.5) / f32(BINS) * (LOG_MAX - LOG_MIN));
+        wSum += part;
+        cum += w;
+      }
+      view = LOG_DARK;
+      if (wSum > 0.0) { view = lSum / wSum; }
+      aim = 1.0;
+      if (total > EMPTY) { aim = exp2(clamp(LOG_DARK - view, 0.0, MAX_EV)); }
     }
-    var view = LOG_DARK;
-    if (wSum > 0.0) { view = lSum / wSum; }
-    var aim = 1.0;
-    if (total > EMPTY) { aim = exp2(clamp(LOG_DARK - view, 0.0, MAX_EV)); }
     var g = state.gain;
     if (!(g > 0.0)) { g = 1.0; }   // the first frame starts adapted to daylight
     var tau = TAU_LIGHT;
@@ -1189,6 +1197,18 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   };
   // adaptation and the meter, read back 1–3 frames late, one read at a time
   let reading = false, adaptSeen = null, adaptOn = false, meterAt = 0;
+  // References only: no copied scene, and never the mesh-motion cache. These
+  // images belong to the last complete finish(), until any full scene starts.
+  let keptPost = null;
+  const imageStamp = (camera, s) => {
+    camera.updateMatrixWorld();
+    // Composite-only controls don't change radiance, bloom or the histogram.
+    // The app still settles full frames on settings changes through its view key.
+    const { exposure, sharpen, look, hotStart, hotFull, nightGain, sprintBlur, ...imageSettings } = s;
+    return JSON.stringify([imageSettings, camera.matrixWorld.elements, camera.projectionMatrix.elements,
+      presenter?.canvas.width, presenter?.canvas.height, presenter?.format, presenter?.hdrActive,
+      presentation?.key, main.version, size, inSize, post.renderScale]);
+  };
 
   // views and bind groups, made once per texture (per resize: B6) and reused
   const views = new WeakMap();
@@ -1292,6 +1312,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       }
       const z = postSizes(w, h, scale);
       if (z.size[0] === size[0] && z.size[1] === size[1] && z.inSize[0] === inSize[0] && z.inSize[1] === inSize[1] && main.color) return;
+      keptPost = null;
       const outChanged = z.size[0] !== size[0] || z.size[1] !== size[1] || !down.length;
       size = z.size; inSize = z.inSize;
       main.resize(inSize[0], inSize[1]);
@@ -1309,7 +1330,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     },
 
     /** Drop the TAA history (call after scene swaps, teleports, etc.): the next frame takes the current view alone. */
-    reset() { historyValid = false; },
+    reset() { historyValid = false; keptPost = null; },
 
     /**
      * A presented frame's start (render() calls it; the split methods are for
@@ -1323,6 +1344,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * @param {{ target?: { width: number, height: number } | null }} [opts]
      */
     beginScene(camera, { target = null } = {}) {
+      keptPost = null;
       if (jittered) restore(jittered);   // (a scene left unended: don't jitter twice)
       const s = settingsOf();
       const scale = post.renderScale;
@@ -1424,7 +1446,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      *   target: a GPUTexture or { view, width, height, format }; viewmodel, glow:
      *   the held tool's resolved target and its glow layer (F3), canvas only
      */
-    finish({ target = null, dt = ADAPT.DT, viewmodel = null, glow = null } = {}) {
+    finish({ target = null, dt = ADAPT.DT, viewmodel = null, glow = null, postOnly = false } = {}) {
+      if (!postOnly) keptPost = null;
       const s = settingsOf();
       const f = gpu.frame;
       const scene = main.color, depth = main.depth;
@@ -1432,38 +1455,40 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       // three's TAAU: the motion pass writes its inputs at the scene's size (velocity,
       // the colour sanitized), then the node resolves to output size (gpu/three.js:
       // its own submits, after a flush of this encoder)
-      let color = scene, packed = false;
-      resolved = null;
-      if (taaNow) {
-        const inputs = temporal.inputs(inSize[0], inSize[1]);
-        invVP.copy(jitVP).invert();
-        const warp = presentation?.active ? presentation.parameters : IDENTITY;
-        // (bent, this frame or the last: this frame's clip → displayed world cells, prevWorldToClip the rest)
-        if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(presentation.sceneToWorld, invVP);
-        else reproj.multiplyMatrices(prevVP, invVP);
-        const bind = group(L.MOTION, [scene, depth], () => [texEntry(0, scene), texEntry(1, depth)]);
-        const attach = (t) => ({ view: viewOf(t), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR });
-        const rp = f.render({ colorAttachments: [attach(inputs.velocity), attach(inputs.color)] }, 'motion');
-        pipes.motion.draw(rp, {
-          bind: [, , bind],
-          params: {
-            reproj, jitterNdc: [(2 * jitter[0]) / inSize[0], (-2 * jitter[1]) / inSize[1]], size: inSize, historyValid,
-            warpK: warp.k, warpAnchor: warp.anchor, warpDir: warp.dir,
-            prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, prevWorldToClip,
-          },
-        });
-        rp.end();
-        // (still in taaCompress's range: its readers expand it per texel, radiance())
-        color = resolved = temporal.resolve(prevCamera, main.rt?.depthTexture, size);
-        packed = true;
-        post.onPass?.('taa', { kind: 'render' });
-        historyValid = true;
-      }
-      prevVP.copy(curVP);
-      if (presentation) {
-        // (the next frame's "last": this camera, this frame's parameters)
-        prevWorldToClip.multiplyMatrices(curVP, presentation.worldToScene);
-        prevWarp = presentation.active ? presentation.parameters : IDENTITY;
+      let color = postOnly ? keptPost.color : scene, packed = postOnly && keptPost.packed;
+      if (!postOnly) {
+        resolved = null;
+        if (taaNow) {
+          const inputs = temporal.inputs(inSize[0], inSize[1]);
+          invVP.copy(jitVP).invert();
+          const warp = presentation?.active ? presentation.parameters : IDENTITY;
+          // (bent, this frame or the last: this frame's clip → displayed world cells, prevWorldToClip the rest)
+          if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(presentation.sceneToWorld, invVP);
+          else reproj.multiplyMatrices(prevVP, invVP);
+          const bind = group(L.MOTION, [scene, depth], () => [texEntry(0, scene), texEntry(1, depth)]);
+          const attach = (t) => ({ view: viewOf(t), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR });
+          const rp = f.render({ colorAttachments: [attach(inputs.velocity), attach(inputs.color)] }, 'motion');
+          pipes.motion.draw(rp, {
+            bind: [, , bind],
+            params: {
+              reproj, jitterNdc: [(2 * jitter[0]) / inSize[0], (-2 * jitter[1]) / inSize[1]], size: inSize, historyValid,
+              warpK: warp.k, warpAnchor: warp.anchor, warpDir: warp.dir,
+              prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, prevWorldToClip,
+            },
+          });
+          rp.end();
+          // (still in taaCompress's range: its readers expand it per texel, radiance())
+          color = resolved = temporal.resolve(prevCamera, main.rt?.depthTexture, size);
+          packed = true;
+          post.onPass?.('taa', { kind: 'render' });
+          historyValid = true;
+        }
+        prevVP.copy(curVP);
+        if (presentation) {
+          // (the next frame's "last": this camera, this frame's parameters)
+          prevWorldToClip.multiplyMatrices(curVP, presentation.worldToScene);
+          prevWarp = presentation.active ? presentation.parameters : IDENTITY;
+        }
       }
       frame++;
 
@@ -1473,13 +1498,13 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const thresh = [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)];
 
       // bloom's prefilter, at half resolution
-      if (bloomOn) drawPass(pipes.prefilter, viewOf(down[0]), 'prefilter', group(L.PAIR, [color, color], () => [texEntry(0, color), texEntry(1, color), samplerEntry(2)]), { thresh, packed });
+      if (bloomOn && !postOnly) drawPass(pipes.prefilter, viewOf(down[0]), 'prefilter', group(L.PAIR, [color, color], () => [texEntry(0, color), texEntry(1, color), samplerEntry(2)]), { thresh, packed });
 
       // one compute pass: bloom down 1–5, up 4–1, then the reductions
-      if (bloomOn || adaptOn || meterNow) {
+      if ((!postOnly && bloomOn) || adaptOn || meterNow) {
         // (named for the profiler; in its split mode every dispatch is a pass of its own)
         if (!(gpu.timing?.split && gpu.timing?.enabled)) f.compute('post');
-        if (bloomOn) {
+        if (bloomOn && !postOnly) {
           const mip = (k, src, high, dst, extra) => k.dispatch(f, [Math.ceil(dst.width / BLOOM_TILE), Math.ceil(dst.height / BLOOM_TILE), 1], {
             bind: [, , group(L.MIP, [src, high, dst], () => [texEntry(0, src), texEntry(1, high), samplerEntry(2), texEntry(3, dst)])],
             params: { texel: texel(src), dst: sizeOf(dst), ...extra },
@@ -1493,7 +1518,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           const slot = want ? results.next() : NO_SLOT;   // (right before the dispatch that writes it, B7)
           pipes.reduce.dispatch(f, [1, 1, 1], {
             bind: [, , group(L.REDUCE, [color], () => [texEntry(0, color), samplerEntry(1), { binding: 2, resource: { buffer: adaptState } }, { binding: 3, resource: { buffer: results.buffer } }])],
-            params: { dt, adapt: adaptOn, meter: meterNow, slot, packed },
+            params: { dt, adapt: adaptOn, meter: meterNow, slot, packed, reuseTarget: postOnly },
           });
           if (want) read(slot);
         }
@@ -1501,7 +1526,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
       // bloom's last upsample into up[0], then the bloom image: up[0] tent-filtered at its
       // size, so the composite takes one tap of it, not nine (both half the output's size)
-      if (bloomOn) {
+      if (bloomOn && !postOnly) {
         drawPass(pipes.up0, viewOf(up[0]), 'bloomUp0', group(L.PAIR, [up[1], down[0]], () => [texEntry(0, up[1]), texEntry(1, down[0]), samplerEntry(2)]),
           { texel: texel(up[1]), dst: sizeOf(up[0]), scatter: s.bloomScatter });
         drawPass(pipes.tent, viewOf(bloomImage), 'bloom', group(L.PAIR, [up[0], up[0]], () => [texEntry(0, up[0]), texEntry(1, up[0]), samplerEntry(2)]));
@@ -1530,6 +1555,17 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       });
       rp.end();
       post.onPass?.('composite', { kind: 'render' });
+      if (!postOnly && !target && !viewmodel && !glow && adaptOn && !s.night && !s.meter) {
+        keptPost = { color, packed, camera: prevCamera, stamp: imageStamp(prevCamera, s) };
+      }
+    },
+
+    /** Defensive image validation; the app additionally requires settled, unchanged radiance. */
+    canReuse(camera, { viewmodel = null, glow = null } = {}) {
+      const s = settingsOf();
+      return !!(post.isReady && keptPost && !jittered && camera === keptPost.camera
+        && (!taaNow || historyValid) && s.adapt && !s.raw && !s.night && !s.meter
+        && !viewmodel && !glow && !main.refresh() && keptPost.stamp === imageStamp(camera, s));
     },
 
     /**
@@ -1542,11 +1578,19 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * @param {object} camera
      * @param {object | null} [target] a GPUTexture or { view, width, height, format }
      * @param {number} [dt] s since the last frame (eye adaptation's time course)
-     * @param {{ viewmodel?: GPUTexture | null, glow?: GPUTexture | null }} [extra]
-     * @returns {boolean} false while post's pipelines are still building (no hook runs, nothing is recorded)
+     * @param {{ viewmodel?: GPUTexture | null, glow?: GPUTexture | null, postOnly?: boolean }} [extra]
+     *   postOnly: caller certifies radiance/TAA settled and external scene/pick dependencies unchanged.
+     * @returns {boolean} false while pipelines build or post-only validation fails (nothing recorded)
      */
-    render(scene, camera, target = null, dt = ADAPT.DT, { viewmodel = null, glow = null } = {}) {
+    render(scene, camera, target = null, dt = ADAPT.DT, { viewmodel = null, glow = null, postOnly = false } = {}) {
       if (!post.isReady) return false;
+      // A failed post-only attempt records nothing: app.js runs its full path
+      // in this same tick, including beforeView and picking, not stale output.
+      if (postOnly) {
+        if (target || !post.canReuse(camera, { viewmodel, glow })) return false;
+        post.finish({ dt, postOnly: true });
+        return true;
+      }
       const hooks = hooksOf(scene);
       const out = target ? outputOf(target) : null;
       post.beginScene(camera, { target: out });
@@ -1618,6 +1662,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get adaptationBuffer() { return adaptState; },
 
     dispose() {
+      keptPost = null;
       gpu.flush('post dispose');
       presentation?.dispose();
       temporal?.dispose();

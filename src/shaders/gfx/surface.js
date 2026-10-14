@@ -1,4 +1,5 @@
 import { liquidGLSL } from './liquid.js';
+import { cozySurfaceWGSL } from './cozy.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
 import { grainsGLSL, GRAINS_ANY } from './grains.js';
@@ -796,9 +797,11 @@ fn matFlat(id: i32, T: f32, ctype: f32) -> Mat {
 
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
+${cozySurfaceWGSL}
 fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (FU.matDetail < 0.5) { return matFlat(id, T, ctype); }   // (no texture: the cells' own glow)
+  if (FU.materialStyle > 0.5 && cozySupported(id)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
@@ -1018,31 +1021,34 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const FURROW_CAV: f32 = 0.3;              // cavity term down in a furrow
     const FLAKE_SALT: vec3f = vec3f(13.1);    // noise offsets (decorrelate the layers)
     const FIB_SALT: vec3f = vec3f(5.7);
-    var mv: vec4f;
-    var c: vec4f;
-    var fr: f32;   // 0 down a fissure .. 1 on a ridge
-    let pl = woodPlates(p, fp, &mv, &c, &fr);
-    // narrow furrows alias sooner than the plate frequency says
-    let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
-    let lwL = lodFade(FLAKE_FV, fp);
-    let lwB = lodFade(FIB_FH, fp);
-    // flakes and fibres only while drawn (each term below is × its weight)
-    var fl = vec4f(0.0);
-    var fb = vec4f(0.0);
-    if (lwL > 0.0) { fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT); }
-    if (lwB > 0.0) { fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT); }
-    let ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
-    let rl = mix(RIDGE_MEAN, ridge, lwF);
-    let plate = mix(vec3f(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3f(1.0), GREY, c.w), lwF);
-    // (fissures keep the bark's mean albedo: they darken their share, the ridges make it up)
-    m.alb *= mix(FURROW, plate, rl) * mix(FURROW, vec3f(1.0), fr) / mix(FURROW, vec3f(1.0), WOOD_FISSURE_MEAN) * (1.0 + MEANDER_ALB * mv.x)
-           * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5)) * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
-    m.g = pl.yzw + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
-    m.cav = mix(FURROW_CAV, 1.0, rl) * mix(FURROW_CAV, 1.0, fr);
+    let top = woodEndGrain(n);
+    // Fully sawn faces replace every bark result below. Avoid generating it.
+    if (top < 1.0) {
+      var mv: vec4f;
+      var c: vec4f;
+      var fr: f32;   // 0 down a fissure .. 1 on a ridge
+      let pl = woodPlates(p, fp, &mv, &c, &fr);
+      // narrow furrows alias sooner than the plate frequency says
+      let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
+      let lwL = lodFade(FLAKE_FV, fp);
+      let lwB = lodFade(FIB_FH, fp);
+      // flakes and fibres only while drawn (each term below is × its weight)
+      var fl = vec4f(0.0);
+      var fb = vec4f(0.0);
+      if (lwL > 0.0) { fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT); }
+      if (lwB > 0.0) { fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT); }
+      let ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
+      let rl = mix(RIDGE_MEAN, ridge, lwF);
+      let plate = mix(vec3f(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3f(1.0), GREY, c.w), lwF);
+      // (fissures keep the bark's mean albedo: they darken their share, the ridges make it up)
+      m.alb *= mix(FURROW, plate, rl) * mix(FURROW, vec3f(1.0), fr) / mix(FURROW, vec3f(1.0), WOOD_FISSURE_MEAN) * (1.0 + MEANDER_ALB * mv.x)
+             * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5)) * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
+      m.g = pl.yzw + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
+      m.cav = mix(FURROW_CAV, 1.0, rl) * mix(FURROW_CAV, 1.0, fr);
+    }
     // Sawn end grain on top faces: growth rings around the pith of each log
     // (piths on a coarse jittered lattice), wobbling with the grain, latewood
     // bands darker, heartwood darker than sapwood.
-    let top = woodEndGrain(n);
     if (top > 0.0) {
       const LOG_SIZE: f32 = 1.28 / CELL_M;    // cells between piths (1.28 m)
       const RING_M: f32 = 0.013;              // m, growth ring spacing

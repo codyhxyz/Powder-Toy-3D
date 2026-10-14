@@ -34,6 +34,14 @@ try {
   assert.equal(state.weapon, 'GUN');
   await page.waitForFunction(() => __app.pov.player.clearance() !== null);
   assert.equal(await page.evaluate(() => __app.pov.player.clearance()), true, 'authored spawn is clear in actual GPU voxel collision');
+  const floor = await page.evaluate(async () => {
+    const { povGpu } = await import('/src/pov/gpu.js');
+    const a = __app, p = a.pov.player.pos;
+    const read = povGpu(a.sim).probe('povCells', { cells: [[Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z), 0]], count: 1 });
+    if (!read) throw new Error('Spawn-support probe unavailable');
+    return new Float32Array(await read)[0];
+  });
+  assert.ok(floor > 0, 'the authored floor exists in real GPU cells, not just in the CPU scene twin');
   assert.deepEqual(errors, []);
   console.log(`PASS imported ${map} boots mission, armed player and authored actors with clear GPU spawn`, state);
 } finally {

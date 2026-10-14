@@ -38,12 +38,17 @@ jobs:
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
       - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
       - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
+      - run: node tools/detail-culling-cpu-check.mjs
+      - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs
+      - run: node tools/wood-endgrain-cpu-check.mjs
+      - run: node tools/check-cozy-materials.mjs   # CPU artwork execution, material-style plumbing and water scope
       - run: node tools/check-crystal-material.mjs
       - run: node tools/check-crystal-transmission.mjs
       - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
+      - run: node tools/check-willow-cove.mjs   # CPU terrain: body-clear running circuit and village routes
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
       - run: node tools/mission-node-check.mjs && node --test tools/import-paradise-check.mjs tools/import-cruelty-map-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash

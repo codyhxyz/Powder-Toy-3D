@@ -259,6 +259,55 @@ test('adapt', async ({ L, frames = 30, dt = 1 / 60, taa = false } = {}) => {
   return { state, seen: post.adaptation, adapting: post.adapting };
 });
 
+// A settled frame keeps its real TAA resolve and bloom while exposure changes.
+// Same 400×250 fixture as the other post tests; no app or physics fixture.
+test('reuse', async () => {
+  home(camera);
+  setPost({ taa: true, bloom: 0.12, adapt: true, meter: false });
+  post.reset();
+  gpu.write(post.adaptationBuffer, 0, new Float32Array(4));
+  const hooks = sceneHooks({ mode: 'fill', fill: [0.004, 0.004, 0.004, 1] });
+  for (let i = 0; i < 9; i++) frame(hooks);
+  await gpu.fence();
+  await gpu.readback.idle();
+  const readState = async () => Array.from(new Float32Array(await gpu.readback.buffer(post.adaptationBuffer)));
+  const before = await readState();
+  const color = post.targets.resolved, bloom = post.targets.bloom;
+  const oldColor = await gpu.readback.texture(color), oldBloom = await gpu.readback.texture(bloom);
+  const projection = [...camera.projectionMatrix.elements], jitter = [...post.jitter];
+  const reusable = post.canReuse(camera);
+  const beforeStats = { ...gpu.stats };
+  const frozen = post.render(null, camera, null, 0, { postOnly: true });
+  gpu.endFrame();
+  const stats = Object.fromEntries(Object.entries(gpu.stats).map(([k, v]) => [k, v - beforeStats[k]]));
+  const sameState = await readState();
+  const newColor = await gpu.readback.texture(color), newBloom = await gpu.readback.texture(bloom);
+  const changedBytes = (a, b) => {
+    const aa = new Uint8Array(a), bb = new Uint8Array(b);
+    let n = Math.abs(aa.length - bb.length);
+    for (let i = 0; i < Math.min(aa.length, bb.length); i++) if (aa[i] !== bb[i]) n++;
+    return n;
+  };
+  const advanced = post.render(null, camera, null, 1 / 60, { postOnly: true });
+  gpu.endFrame();
+  const after = await readState();
+  const cameraUnchanged = JSON.stringify(projection) === JSON.stringify(camera.projectionMatrix.elements)
+    && JSON.stringify(jitter) === JSON.stringify(post.jitter);
+  camera.position.x += 0.02;
+  const invalidated = !post.canReuse(camera)
+    && !post.render(null, camera, null, 1 / 60, { postOnly: true });
+  frame(sceneHooks()); // Real TAA continues after the retained frame.
+  const resumed = post.canReuse(camera);
+  post.reset();
+  const resetInvalidated = !post.canReuse(camera);
+  await gpu.fence();
+  await gpu.readback.idle();
+  home(camera);
+  return { reusable, frozen, advanced, before, sameState, after, stats,
+    colorChangedBytes: changedBytes(oldColor, newColor), bloomChangedBytes: changedBytes(oldBloom, newBloom),
+    cameraUnchanged, invalidated, resumed, resetInvalidated, failures: [...h.failures] };
+});
+
 // The meter over a uniform scene of radiance L (alpha `a`): post.sceneLuma once a reading lands.
 test('meter', async ({ L, a = 1, frames = 12 } = {}) => {
   setPost({ taa: false, bloom: 0, adapt: false, meter: true });
