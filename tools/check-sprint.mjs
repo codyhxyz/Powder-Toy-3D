@@ -12,6 +12,8 @@ import { viewmodelRig } from '../src/pov/viewmodel.js';
 const walk = 19 * PX, launch = 38 * PX, ceiling = 114 * PX;
 const sprint = { move: { x: 1, z: 0 }, sprint: true };
 const near = (a, b, tolerance = 0.01) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
+const speedH = (body) => Math.hypot(body.vel.x, body.vel.z);
+const rushOf = (speed) => Math.max(0, Math.min(1, (speed - walk) / (ceiling - walk)));
 
 async function fixture(fps = 60, id = null) {
   const sim = { g: { nx: 2048, ny: 128, nz: 2048 }, frame: 0, gravity: 0.025, touchCentres() { return []; }, paint() {} };
@@ -71,7 +73,7 @@ for (const fps of [20, 60, 144]) {
     await run(0.3, { move: sprint.move });
     assert.ok(body.vel.x < walk * 1.3, 'release promptly returns to walk');
     assert.equal(body.sprintBuild, 0);
-    assert.equal(body.sprintRush, 0);
+    near(body.sprintRush, rushOf(body.vel.x), 0.02);
     await run(0.5, { move: sprint.move });
     near(body.vel.x, walk, 0.03);
   } finally { body.dispose(); }
@@ -113,9 +115,15 @@ for (let i = 0; i < profiles[0].length; i++) {
     assert.ok(!body.onGround && !body.jetting);
     await run(0.2, sprint);
     near(body.sprintBuild, charge, 1e-8);
+    assert.ok(body.sprintRush > 0.2, 'a hop keeps the music');
     await run(0.1, { ...sprint, jump: true });
     assert.equal(body.sprintBuild, 0, 'jet flight is not a sprint');
-    assert.equal(body.sprintRush, 0);
+    assert.ok(body.jetting);
+    near(body.sprintRush, rushOf(speedH(body)), 0.02);
+    assert.ok(body.sprintRush > 0.2, 'a sprint-jump keeps the music while you are still fast');
+    await run(1.5);
+    assert.ok(speedH(body) <= walk);
+    assert.equal(body.sprintRush, 0, 'the music stops once you are back to a walk');
 
     body.teleport(new THREE.Vector3(512, 1, 512));
     assert.equal(body.sprintBuild, 0);
