@@ -80,9 +80,18 @@ fn dUnsupported(start: vec3i) -> bool {
   }
   return false;
 }
+fn dInBody(p: vec3i) -> bool {
+  return all(p>=P.boxStart) && all(p<P.boxStart+vec3i(P.boxSize));
+}
+fn dPlanSlot(linear: u32) -> u32 {
+  if(P.mode!=13u) { return linear; }
+  let count=P.boxSize.x*P.boxSize.y*P.boxSize.z;if(linear>=count) { return D_NONE; }
+  let p=P.boxStart+vec3i(i32(linear%P.boxSize.x),i32((linear/P.boxSize.x)%P.boxSize.y),i32(linear/(P.boxSize.x*P.boxSize.y)));
+  return slotOf(p);
+}
 fn dRank(slot: u32) -> u32 {
   let b = slot / 64u; var rank = atomicLoad(&control[D_SPAWN_PREFIX+b]);
-  for (var s = b*64u; s < slot; s++) { if ((plans[s].flags & 1u) != 0u) { rank++; } }
+  for (var s = b*64u; s < slot; s++) { if ((plans[s].flags & 1u) != 0u && (P.mode!=13u || dInBody(cellOf(s)))) { rank++; } }
   return rank;
 }
 fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
@@ -144,6 +153,21 @@ export function blastsWGSL(g,nativeHead,stage) {
     }
     plans[t] = plan;
   `);
+  if (stage === 'bodyPlan') return h + main64(`
+    if(t>=D_SLOTS) { return; }var plan=DPlan(vec3f(0),0u);let p=cellOf(t);
+    let m=loadMaterial(t);let id=cid(m.core);let k=cls(id);
+    if(dInBody(p) && k!=0u && k!=1u && (P.bodyOnly<0 || id==u32(P.bodyOnly)) && (events[t]&1u)==0u) {
+      let center=vec3f(p+P.origin)+0.5;let radial=center.xz-(P.center.xz+P.boxMax.xz)*0.5;
+      let length2=length(radial);var outward=vec2f(0);
+      if(length2>0.000001) { outward=radial/length2; }
+      else { let angle=dRandom(dId(p,0x424f4459u),31u)*6.283185307;outward=vec2f(cos(angle),sin(angle)); }
+      // Preserve the intended outward XZ + lift Y, not legacy's xz->xy swizzle.
+      let direction=vec3f(outward.x+P.bodyAhead.x,P.bodyLift,outward.y+P.bodyAhead.y);
+      let push=select(P.strength,P.bodyPushPowder,k==2u);
+      plan.velocity=P.vector+direction/max(length(direction),0.000001)*push;plan.flags=select(0u,1u,any(plan.velocity!=vec3f(0)));
+    }
+    plans[t]=plan;
+  `,'dPlanSlot(dThread(wg,nwg,li))');
   if (stage === 'couplePlan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
     var plan = DPlan(vec3f(0),0u); let p = cellOf(t);
@@ -205,7 +229,11 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
   `);
   if (stage === 'count') return h + main64(`
     if (t >= D_BRICKS) { return; } var n=0u;
-    for (var s=t*64u;s<(t+1u)*64u;s++) { if ((plans[s].flags&1u)!=0u) { n++; } }
+    if(P.mode==13u) {
+      let base=cellOf(t*64u)&vec3i(-4);
+      if(any(base+vec3i(3)<P.boxStart) || any(base>=P.boxStart+vec3i(P.boxSize))) { atomicStore(&control[D_SPAWN_COUNTS+t],0u);return; }
+    }
+    for (var s=t*64u;s<(t+1u)*64u;s++) { if ((plans[s].flags&1u)!=0u && (P.mode!=13u || dInBody(cellOf(s)))) { n++; } }
     atomicStore(&control[D_SPAWN_COUNTS+t],n);
   `);
   if (stage === 'allocate') return h + main1(`
@@ -260,7 +288,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
       }
     }
     storeMaterial(t,before,after); dWake(cellOf(t));
-  `);
+  `,'dPlanSlot(dThread(wg,nwg,li))');
   if (stage === 'children') return h + main64(/* wgsl */ `
     if (t >= D_CAP) { return; } let offset=atomicLoad(&control[D_CHILD_PREFIX+t]); if (offset==D_NONE) { return; }
     var parent=particles[t]; var n=parent.tail.z;
@@ -319,7 +347,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = ['reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs'];
+export const BLAST_STAGES = ['reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

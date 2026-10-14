@@ -1,6 +1,7 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { MODE_FIELDS } from '../../v2/modes.js';
 import { specialContactWGSL } from './contact.js';
+import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG } from '../../v2/dynamics-reference.js';
@@ -10,6 +11,7 @@ export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
   center: 'vec3f', radius: 'f32', vector: 'vec3f', strength: 'f32', shift: 'vec3i', substep: 'u32', nativeJets: 'u32', ...MODE_FIELDS,
+  boxMax: 'vec3f', bodyPushPowder: 'f32', bodyAhead: 'vec2f', bodyLift: 'f32', bodyOnly: 'i32', boxStart: 'vec3i', boxSize: 'vec3u',
 });
 export const storageLayout = (count, readonly = []) => Array.from({ length: count }, (_, binding) =>
   ({ binding, visibility: STAGE.COMPUTE, buffer: { type: readonly.includes(binding) ? 'read-only-storage' : 'storage' } }));
@@ -89,9 +91,9 @@ fn dOutflow(p: vec3i, m: Material) {
 fn dAmount(m: Material) -> f32 { if (cls(cid(m.core)) == 3u) { return f32(cFill(m.core)) / 65536.0; } return 1.0; }
 `;
 }
-export const main64 = body => /* wgsl */ `@compute @workgroup_size(64)
+export const main64 = (body,index='dThread(wg,nwg,li)') => /* wgsl */ `@compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
- let t = dThread(wg,nwg,li); ${body}
+ let t = ${index}; ${body}
 }`;
 export const main1 = body => `@compute @workgroup_size(1) fn main() { ${body} }`;
 // Family: native3 + particles/scratch/claims/air/control5 = eight storage buffers.
@@ -101,6 +103,7 @@ function head(g, nativeHead) {
     return `case ${e.id}u: { return DNuclear(vec3f(${s.slice(0,3).map(f)}), vec3f(${s.slice(3).map(f)}), ${f(n.h)}, ${f(n.A)}, ${f(n.nuF)}, ${f(n.nuT)}); }`;
   }).join('\n');
   return /* wgsl */ `${dynamicsCommon(g, nativeHead)}
+${impactFoamWGSL}
 struct DFlight { destination: vec4u, effect: vec4f } // hit, deposit, kind, key; energy/direction data
 struct DNuclear { fast: vec3f, thermal: vec3f, h: f32, A: f32, nuF: f32, nuT: f32 }
 @group(1) @binding(0) var<storage, read_write> particles: array<DParticle>;
@@ -198,7 +201,9 @@ export function particlesWGSL(g, nativeHead, stage) {
             if (!neutron && !photon) { dOutflow(previous,m); }
             particles[t].id=0u; atomicSub(&control[0],1u); atomicAdd(&control[16],1u); return;
           }
-          boundary=true; particle.velocity=vec3f(0); particle.position=vec3f(previous+P.origin)+0.5;
+          boundary=true;let velocityAtHit=v+acceleration*(D_DT*entry);
+          energy=0.5*dMass(id)*dAmount(m)*dot(velocityAtHit,velocityAtHit);
+          particle.velocity=vec3f(0); particle.position=vec3f(previous+P.origin)+0.5;
           if (cid(loadMaterial(slotOf(previous)).core)==0u) { deposit=slotOf(previous); }
         }
         break;
@@ -218,7 +223,7 @@ export function particlesWGSL(g, nativeHead, stage) {
         let n = dNuclear(materialId); let e = bitcast<f32>(particle.tail.y);
         let fast = clamp(log(max(e,${f(RAYS.NEUT_E_THERMAL)})/${f(RAYS.NEUT_E_THERMAL)}) / log(${f(RAYS.NEUT_E_FAST/RAYS.NEUT_E_THERMAL)}),0.0,1.0);
         let inverseSpeed = sqrt(${f(RAYS.NEUT_E_THERMAL)}/max(e,${f(RAYS.NEUT_E_THERMAL)}));
-        let cross = vec3f(mix(n.thermal.x,n.fast.x,fast),max(n.fast.y,n.thermal.y*inverseSpeed),max(n.fast.z,n.thermal.z*inverseSpeed)); let total = cross.x+cross.y+cross.z;
+        let cross = vec3f(mix(n.thermal.x,n.fast.x,fast),max(n.fast.y,n.thermal.y*inverseSpeed),max(n.fast.z,n.thermal.z*inverseSpeed))*dAmount(destination); let total = cross.x+cross.y+cross.z;
         let segment = max(0.0,exit-entry)*length(delta);
         if (total > 0.0 && dRandom(particle.id,slot ^ 511u) < 1.0-exp(-total*segment)) {
           hit = slot; hitT = entry; let choice = dRandom(particle.id,slot ^ 1231u)*total;
@@ -228,6 +233,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       } else if (targetId != 0u && cls(targetId) != 4u) {
         hit = slot; hitT = entry; kind = 1u;
         if (inGrid(previous) && cid(loadMaterial(slotOf(previous)).core) == 0u) { deposit = slotOf(previous); }
+        particle.velocity=v+acceleration*(D_DT*entry);
         energy = 0.5*dMass(id)*dAmount(m)*dot(particle.velocity,particle.velocity); break;
       }
       if (next[axis] > 1.0) { break; }
@@ -328,8 +334,25 @@ export function particlesWGSL(g, nativeHead, stage) {
     let before = loadMaterial(s); if (cid(before.core) != 0u) { return; }
     let incoming=dMaterial(particles[t]); let combined=energyAdd(energyOf(before),dParticleEnergy(incoming));
     if (!energyFits(incoming,combined)) { return; }
-    storeMaterial(s,before,withEnergy(incoming,combined)); dWake(cellOf(s));
+    var after=withEnergy(incoming,combined);
+    if(cls(cid(incoming.core))==3u) {
+      let speed2=2.0*flight[t].effect.x/max(dMass(cid(incoming.core))*dAmount(incoming),0.000001);
+      let foam=impactFoam(incoming.core.x>>24u,0u,cFill(incoming.core),0u,speed2);
+      after.core.x=(after.core.x&0x00ffffffu)|(foam<<24u);
+    }
+    storeMaterial(s,before,after); dWake(cellOf(s));
     particles[t].id = 0u; atomicSub(&control[0],1u);
+  `);
+  if(stage==='bodyCouple') return h+main64(`
+    if(t>=D_CAP || particles[t].id==0u) { return; }var p=particles[t];let id=p.c0&255u;
+    if(id>=D_PHOTON || cls(id)==1u || any(p.position<P.center) || any(p.position>P.boxMax) || (P.bodyOnly>=0 && id!=u32(P.bodyOnly))) { return; }
+    let radial=p.position.xz-(P.center.xz+P.boxMax.xz)*0.5;var outward=vec2f(0);
+    if(length(radial)>0.000001) { outward=normalize(radial); }
+    else { let angle=dRandom(p.id,31u)*6.283185307;outward=vec2f(cos(angle),sin(angle)); }
+    let direction=vec3f(outward.x+P.bodyAhead.x,P.bodyLift,outward.y+P.bodyAhead.y);
+    let push=select(P.strength,P.bodyPushPowder,cls(id)==2u);
+    p.velocity=P.vector+direction/max(length(direction),0.000001)*push;
+    particles[t]=p;
   `);
   if (stage === 'holdSelect') return h + main64(`
     if (t>=D_CAP || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
@@ -372,7 +395,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   throw new Error(`Unknown particles stage ${stage}`);
 }
-export const PARTICLE_STAGES = ['clear','integrate','elect','impact','deposit','holdSelect','holdCOM','holdApply'];
+export const PARTICLE_STAGES = ['clear','integrate','elect','impact','deposit','holdSelect','holdCOM','holdApply','bodyCouple'];
 
 export const WGSL_CHECK = PARTICLE_STAGES.map(stage => ({ name: `v2particles_${stage}`, kind: 'compute',
   code: g => particlesWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,PARTICLES_LAYOUT,'EMPTY'], tool: true }));

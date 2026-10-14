@@ -308,3 +308,42 @@ test('more than64K simultaneous promotion candidates conserve every unallocated 
   assert.ok(sources.slice(PARTICLE_CAP).every(s=>s.retry && s.material.bank===s.slot));
   assert.equal(pool.reduce((sum,p)=>sum+BigInt(p.bank),0n)+sources.reduce((sum,s)=>sum+BigInt(s.material?.bank??0),0n),BigInt(count)*(BigInt(count)-1n)/2n);
 });
+
+test('equal32bit stable-ID collisions elect by complete packet, never buffer/list arrival order',()=>{
+  const a={id:19,target:[1,2,3],...matter(),bank:19},b={...a,bank:20};
+  const winner=ps=>{let picked;resolveDeposits(ps,3,()=>true,(_,m)=>picked=m);return picked;};
+  assert.deepEqual(winner([a,b]),winner([b,a]));assert.equal(winner([a,b]).bank,19);
+});
+test('accepted liquid impact preserves incoming foam, adds bounded KE foam once and retains thermal energy',async()=>{
+  const {makeMaterial,energyOf,FULL}=await import('../../src/v2/layout.js');
+  const {depositPacket,particleEnergy}=await import('../../src/v2/dynamics-reference.js');
+  const {impactFoam}=await import('../../src/v2/foam.js');
+  const packet=makeMaterial(E.WATER,20,FULL/3|0,0);packet.core[0]|=64<<24;packet.bank=135;
+  const empty=makeMaterial(0,90),result=depositPacket(packet,empty,{speed2:4});
+  assert.equal(result.core[0]>>>24,impactFoam({incoming:64,amount:FULL/3|0,speed2:4}));
+  assert.equal(energyOf(result),energyOf(empty)+particleEnergy(packet));assert.equal(packet.core[0]>>>24,64);
+  assert.equal(depositPacket(packet,empty,{speed2:0}).core[0]>>>24,64);
+});
+test('native body AABB preserves centre coverage, element filter and intended XZ/lift-Y geometry',async()=>{
+  const {bodyCoupledVelocity}=await import('../../src/v2/dynamics-reference.js');
+  const request={lo:[0,0,0],hi:[4,4,4],velocity:[1,2,3],pushFluid:4,pushPowder:8,lift:1,ahead:[0,0],only:-1};
+  const v=bodyCoupledVelocity(request,[3.5,2,2],E.SAND);assert.ok(v[0]>1);assert.ok(v[1]>2);close(v[2],3);
+  const w=bodyCoupledVelocity(request,[3.5,2,2],E.WATER);close(v[0]-1,2*(w[0]-1));
+  assert.equal(bodyCoupledVelocity({...request,only:E.CLOUD},[3.5,2,2],E.WATER),null);
+  assert.equal(bodyCoupledVelocity(request,[4.1,2,2],E.SAND),null);
+  assert.equal(bodyCoupledVelocity(request,[3.5,2,2],E.METAL),null);
+  assert.deepEqual(bodyCoupledVelocity(request,[2,2,2],E.SAND,11),bodyCoupledVelocity(request,[2,2,2],E.SAND,11));
+});
+test('body driver records bounded AABB candidates and shares exact native allocator, not a sphere',async()=>{
+  const {owner,calls}=mockOwner();owner.sim.origin={x:100,y:0,z:-32};const d=new NativeDynamics(owner);await d.ready;
+  const result=d.applyBodyCoupling({lo:[100.5,0.5,-31.5],hi:[102.5,2.5,-30.5],velocity:[2,0,0],pushFluid:1,pushPowder:2,lift:0.2,ahead:[0,0],only:E.CLOUD});
+  assert.equal(result.status,'queued');assert.equal(result.candidateCells,18);assert.equal(d.capabilities.bodyCoupling,true);
+  const candidate=calls.find(c=>c.name==='v2blasts_bodyPlan');assert.deepEqual(candidate.size,[1,1,1]);
+  assert.deepEqual(candidate.opts.params.boxStart,[0,0,0]);assert.deepEqual(candidate.opts.params.boxSize,[3,3,2]);assert.equal(candidate.opts.params.bodyOnly,E.CLOUD);
+  assert.deepEqual(calls.find(c=>c.name==='v2blasts_apply').size,[1,1,1]);
+  assert.equal(d.applyBodyCoupling({lo:[1,2,3],hi:[0,0,0],velocity:[0,0,0]}).status,'rejected');
+  const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');const {blastsWGSL}=await import('../../src/shaders/v2/blasts.js');
+  const shader=blastsWGSL(owner.g,nativeDynamicsHead,'bodyPlan');assert.match(shader,/dPlanSlot\(dThread/);
+  assert.match(shader,/vec3f\(outward.x\+P.bodyAhead.x,P.bodyLift,outward.y\+P.bodyAhead.y\)/);
+  assert.match(blastsWGSL(owner.g,nativeDynamicsHead,'count'),/P.mode!=13u \|\| dInBody/);
+});

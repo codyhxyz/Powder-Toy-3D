@@ -4,6 +4,7 @@ import { ELEMENTS, E, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { PHYS } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
+import { impactFoam } from './foam.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, AIR_CAPACITY_Q, withPayload, payloadOf, share } from './layout.js';
 import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
 export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
@@ -73,13 +74,18 @@ export function sweep(from, to, occupied) {
     previous = [...cell]; t = next[axis]; cell[axis] += step[axis]; next[axis] += inv[axis];
   }
 }
+export function canonicalParticleBefore(a,b) {
+  const words=p=>new Uint32Array(packParticle({...p,position:p.position??p.target.map(x=>x+0.5),velocity:p.velocity??[0,0,0]}));
+  const aw=words(a),bw=words(b);
+  for(let i=0;i<12;i++) if(aw[i]!==bw[i]) return aw[i]<bw[i];return false;
+}
 export function resolveDeposits(particles, tick, empty, deposit) {
   const claims = new Map();
   for (const p of particles) {
     if (!empty(p.target)) continue;
     const key = p.target.join(','), prev = claims.get(key);
     if (!prev || claimKey(p.id, tick) < claimKey(prev.id, tick) ||
-      (claimKey(p.id, tick) === claimKey(prev.id, tick) && p.id < prev.id)) claims.set(key, p);
+      (claimKey(p.id, tick) === claimKey(prev.id, tick) && canonicalParticleBefore(p,prev))) claims.set(key, p);
   }
   for (const p of claims.values()) deposit(p.target, { core: [...p.core], bank: p.bank });
   return particles.filter(p => claims.get(p.target.join(',')) !== p);
@@ -155,9 +161,14 @@ export function extractPartialPacket(source,amount) {
   const remaining=energyOf(source)-particleEnergy(packet);if(!energyFits(rest,remaining)) return null;
   return {packet,source:withEnergy(rest,remaining)};
 }
-export function depositPacket(packet, destination) {
-  const energy=particleEnergy(packet)+energyOf(destination);
-  return energyFits(packet,energy) ? withEnergy(packet,energy) : null;
+export function depositPacket(packet, destination, {speed2=0}={}) {
+  const energy=particleEnergy(packet)+energyOf(destination);if(!energyFits(packet,energy)) return null;
+  const after=withEnergy(packet,energy);
+  if(dynamicsRows[packet.core[0]&255].kind===K.LIQUID) {
+    const foam=impactFoam({incoming:packet.core[0]>>>24,resident:0,amount:packet.core[1]&0xffffff,fill:0,speed2});
+    after.core[0]=(after.core[0]&0xffffff)|(foam<<24);
+  }
+  return after;
 }
 export function fractureMaterial(material, product) {
   const after={core:new Uint32Array(material.core),bank:material.bank};
@@ -223,4 +234,17 @@ export function airStepReference(cells,dims,{airMode=0,ambientHeat=true}={}) {
     out[i].pressure=pOn?(airMode===4?before.pressure:vp[3]*loss):0;
     out[i].heat=ambientHeat?scalar[0]:0;out[i].gas=scalar[1];
   }return out;
+}
+
+export function bodyCoupledVelocity(request,position,id,tick=0) {
+  const row=dynamicsRows[id];if(!row || id===0 || row.kind===K.SOLID || (request.only>=0 && request.only!==id) ||
+    position.some((x,a)=>x<request.lo[a] || x>request.hi[a])) return null;
+  const radial=[position[0]-(request.lo[0]+request.hi[0])/2,position[2]-(request.lo[2]+request.hi[2])/2];
+  const len=Math.hypot(...radial);let outward;
+  if(len>1e-6) outward=radial.map(x=>x/len);
+  else { const id=stableId(position.map(Math.floor),tick,0x424f4459),r=(hash32(id^Math.imul(tick,2654435761)^31)>>>8)/16777216;
+    outward=[Math.cos(r*2*Math.PI),Math.sin(r*2*Math.PI)]; }
+  const ahead=request.ahead??[0,0],direction=[outward[0]+ahead[0],request.lift??0,outward[1]+ahead[1]];
+  const norm=Math.max(1e-6,Math.hypot(...direction)),push=row.kind===K.POWDER?request.pushPowder:request.pushFluid;
+  return request.velocity.map((v,a)=>v+direction[a]/norm*push);
 }

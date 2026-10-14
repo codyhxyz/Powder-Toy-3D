@@ -203,3 +203,25 @@ before its heat is accepted.
 is disabled ONLY when the actual exact-diversion owner is ready; wind/tools
 still use conservative extraction. The exact jet owner shares the fixed48B
 records and control/free-list ABI (free list begins at control word32).
+
+## Native body coupling and accepted-impact foam
+
+`applyBodyCoupling({lo,hi,velocity,pushFluid,pushPowder,lift,ahead,only})`
+returns queued/rejected status. Bounds are inclusive cell-centre AABBs in WORLD
+cells; velocity/push speeds are SI m/s; ahead(XZ) and lift(Y) are dimensionless.
+The filter is−1/all loose matter or an element ID. Radial outward direction is
+stable per world cell/tick on-axis. This intentionally fixes the legacy XZ→XY
+swizzle. Existing flying material is coupled too, without rewriting its payload.
+
+Grid candidates and apply dispatch cover only the clipped integer AABB, not a
+sphere or the full world. Prefix counters skip bricks outside that box and
+ignore stale plans elsewhere; integer bounds avoid f32-edge inclusion drift.
+The fixed pool/free-list scan still covers65536 slots. Allocation uses the same
+carrier-conserving path as tools; a refusal leaves original Core16/bank/fill
+untouched. No legacy A/B import is involved.
+
+Accepted liquid deposits invoke the jet owner's shared `impactFoam` exactly
+once, preserving incoming foam and adding its bounded70% incoherent speed²
+source above1m/s. This does not alter mass/thermal energy. Failed deposits do
+not accumulate foam. Swept impact energy uses velocity at the crossing time;
+closed-boundary impacts carry the same energy into accepted-deposit foam.

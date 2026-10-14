@@ -121,7 +121,7 @@ export class NativeDynamics {
   get capabilities() {
     const ready=this.isReady&&!this.disposed;
     return { impulse:ready, photon:ready, neutron:ready, wind:ready, pressure:ready, vacuum:ready, cyclone:ready,
-      physicsReady:ready, drawReady:ready&&this.drawAdapter?.isReady===true, physgun:ready };
+      physicsReady:ready, drawReady:ready&&this.drawAdapter?.isReady===true, physgun:ready, bodyCoupling:ready };
   }
   supportsToolKind(kind) { return [...IMPULSE_KINDS,'physgun'].includes(kind) && this.capabilities[kind]===true; }
   get renderState() { return { ...DYNAMICS_ABI, particles:this.particles, control:this.control, liveCountOffset:0,
@@ -141,7 +141,8 @@ export class NativeDynamics {
     const size=(offset,count)=>indirect?{indirect:this.dispatchArgs,offset}:count;
     this._record('blasts','count',size(16,Math.ceil(this.g.nbricks/64)),tick,params);
     this._record('blasts','allocate',size(32,1),tick,params);
-    this._record('blasts','apply',size(0,Math.ceil(this.g.slots/64)),tick,params);
+    const candidates=params.mode===13?params.boxSize.reduce((n,v)=>n*v,1):this.g.slots;
+    this._record('blasts','apply',size(0,Math.ceil(candidates/64)),tick,params);
     this._record('blasts','children',size(48,Math.ceil(PARTICLE_CAP/64)),tick,params);
   }
   _rays(tick) { for (const [slot,r] of this.rayRequests) this._recordRay(slot,r,tick); }
@@ -213,6 +214,31 @@ export class NativeDynamics {
       this._record('blasts','toolPlan',Math.ceil(this.g.slots/64),tick,params); this._allocate(tick,params);
     } else { this._record('air','tool',Math.ceil(this.g.nbricks/64),tick,params); this.airIndex^=1; }
     return {status:'queued',requestId,fallback:'unallocated material remains on the grid; readActivity reports capacityFallbacks'};
+  }
+  /** Exact centre-based AABB used by POV bodies and filtered cloud coupling.
+   * Geometry is in WORLD cells, velocities/push speeds are SI m/s, ahead/lift
+   * are dimensionless direction shares. No legacy B write or import occurs. */
+  applyBodyCoupling(request) {
+    if(!this.isReady || this.disposed) return {status:'rejected',reason:'native dynamics not ready'};
+    const lo=finiteVector(request?.lo),hi=finiteVector(request?.hi),velocity=finiteVector(request?.velocity);
+    const pushFluid=request?.pushFluid??0,pushPowder=request?.pushPowder??0,lift=request?.lift??0,only=request?.only??-1;
+    const ahead=Array.from(request?.ahead??[0,0]);
+    if(!lo || !hi || !velocity || lo.some((x,a)=>x>hi[a]) || ![pushFluid,pushPowder,lift].every(safeDynamicNumber) ||
+      pushFluid<0 || pushPowder<0 || ahead.length!==2 || !ahead.every(safeDynamicNumber) ||
+      !Number.isInteger(only) || only< -1 || only>=ELEMENTS.length)
+      return {status:'rejected',reason:'invalid native body coupling request'};
+    const origin=vector(this.owner.sim.origin),dims=[this.g.nx,this.g.ny,this.g.nz];
+    const start=lo.map((x,a)=>Math.max(0,Math.ceil(x-origin[a]-0.5)));
+    const last=hi.map((x,a)=>Math.min(dims[a]-1,Math.floor(x-origin[a]-0.5)));
+    if(start.some((x,a)=>x>last[a])) return {status:'rejected',reason:'body box has no active cell centres'};
+    if(this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
+    const size=last.map((x,a)=>x-start[a]+1),count=size.reduce((a,b)=>a*b,1),requestId=++this.sequence,tick=this.owner.tick;
+    const params={mode:13,center:lo,boxMax:hi,vector:velocity,strength:pushFluid,bodyPushPowder:pushPowder,
+      bodyAhead:ahead,bodyLift:lift,bodyOnly:only,boxStart:start,boxSize:size,sequence:requestId};
+    this._externalWork();
+    this._record('particles','bodyCouple',PARTICLE_CAP/64,tick,params);
+    this._record('blasts','bodyPlan',Math.ceil(count/64),tick,params);this._allocate(tick,params);
+    return {status:'queued',requestId,candidateCells:count,shape:'centre-based AABB',fallback:'unallocated sources remain exact on grid'};
   }
   /** Real held-clump controller. GMod-style COM attraction/damping is stepped
    * by the same60Hz clock as particles, not the presentation frame rate. */
