@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { E, ELEMENTS } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
+import { World } from '../src/ui/tiles/engine.js';
 import { deviceDirection } from '../src/industry/catalog.js';
 import {
   HEARTH_ENERGY_PER_LIFE, HEARTH_FUEL_IDS, HEARTH_IGNITION_MARGIN,
@@ -80,8 +81,26 @@ close(partial.heatBudget, partial.consumedLife * HEARTH_ENERGY_PER_LIFE, 'partia
 close(partial.heatApplied + partial.heatWasted, partial.heatBudget, 'applied and capped/wasted heat sum to the finite budget');
 check(partial.heatApplied <= partial.heatBudget, 'applied heat cannot exceed consumed-fuel budget');
 const capped = hearthFuelBudget({ id: E.COAL, temperature: HEARTH_MAX_FUEL_TEMPERATURE - 1, life: 1 }, 0.1);
-check(capped.temperature === HEARTH_MAX_FUEL_TEMPERATURE && capped.heatWasted > 0,
-  'source-temperature cap wastes excess budget rather than creating heat');
+check(capped.temperature === HEARTH_MAX_FUEL_TEMPERATURE && capped.heatWasted === 0,
+  'source-temperature cap does not waste extra industrial fuel');
+close(capped.consumedLife * HEARTH_ENERGY_PER_LIFE, ELEMENTS[E.COAL].cap,
+  'one degree of source headroom costs only one degree of delivered heat');
+const atCap = hearthFuelBudget({ id: E.COAL, temperature: HEARTH_MAX_FUEL_TEMPERATURE, life: 1 }, 0.1);
+check(atCap.consumedLife === 0 && atCap.heatApplied === 0 && atCap.life === 1,
+  'no industrial boost is charged when the native source already has no headroom');
+
+const nativeBurn = new World(8, 8);
+nativeBurn.put(4, 4, E.COAL, { T: HEARTH_MAX_FUEL_TEMPERATURE, life: 1 });
+const fuelAt = nativeBurn.idx(4, 4);
+nativeBurn.step();
+check(nativeBurn.life[fuelAt] < 1, 'native combustion still spends real fuel independently of the industrial boost');
+for (let tick = 0; tick < 2200 && nativeBurn.id[fuelAt] === E.COAL; tick++) {
+  const boost = hearthFuelBudget({ id: nativeBurn.id[fuelAt], temperature: nativeBurn.T[fuelAt], life: nativeBurn.life[fuelAt] },
+    1 / HEARTH_STEPS_PER_SECOND);
+  nativeBurn.T[fuelAt] = boost.temperature; nativeBurn.life[fuelAt] = boost.life;
+  nativeBurn.step();
+}
+check(nativeBurn.id[fuelAt] !== E.COAL, 'native burning plus delivered-heat-only boosting still exhausts a finite source');
 const tooLittleToIgnite = hearthFuelBudget({ id: E.COAL, temperature: 20, life: 0.0005 }, 1 / HEARTH_STEPS_PER_SECOND);
 check(tooLittleToIgnite.life === 0 && tooLittleToIgnite.temperature < HEARTH_IGNITION_TEMPERATURE,
   'partial cold fuel cannot receive free ignition heat beyond its remaining life');
@@ -93,6 +112,8 @@ check(hearthUpdateWGSL.includes('id == E_COAL || id == E_BROKENCOAL'), 'WGSL acc
 check(hearthUpdateWGSL.includes('HEARTH_IGNITION_TARGET_T - a.y'), 'WGSL pays for the same ignition headroom as the CPU budget');
 check(hearthUpdateWGSL.includes('min(a.z, BURNRATE(id) * HEARTH_STEPS_PER_SECOND * min(dt, HEARTH_MAX_STEP_SECONDS))'), 'WGSL consumption is capped by real life and the Industry timestep');
 check(hearthUpdateWGSL.includes('(*oA).z = max(0.0, a.z - consumed)'), 'WGSL writes remaining fuel life back to terrain');
+check(hearthUpdateWGSL.includes('if (applied < budget) { consumed = applied / HEARTH_ENERGY_PER_LIFE; }'),
+  'WGSL and CPU preview charge only the delivered industrial boost');
 check(!/\(\*oA\)\.x\s*=/.test(hearthUpdateWGSL) && !/E_SCRAP/.test(hearthUpdateWGSL), 'WGSL never converts charge material into LAVA');
 check(hearthUpdateWGSL.includes('if (id == E_LAVA && (hearthChargeCell'), 'WGSL only guides already-molten charge toward the outlet');
 check(hearthUpdateWGSL.includes('hearthFinite(dt)') && hearthUpdateWGSL.includes('hearthFinite(a.z)'), 'WGSL rejects non-finite time and fuel state');

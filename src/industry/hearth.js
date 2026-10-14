@@ -104,12 +104,15 @@ export function hearthFuelBudget(cell, dt, enabled = true) {
   const heatBudget = consumedLife * HEARTH_ENERGY_PER_LIFE;
   const headroom = Math.max(0, (HEARTH_MAX_FUEL_TEMPERATURE - temperature) * cap);
   const heatApplied = Math.min(heatBudget, headroom);
+  // Native combustion already spends life; the industrial boost pays only for delivered heat.
+  if (heatApplied < heatBudget) consumedLife = heatApplied / HEARTH_ENERGY_PER_LIFE;
+  const paidBudget = consumedLife * HEARTH_ENERGY_PER_LIFE;
   return {
     status: phase,
     consumedLife,
-    heatBudget,
+    heatBudget: paidBudget,
     heatApplied,
-    heatWasted: heatBudget - heatApplied,
+    heatWasted: Math.max(0, paidBudget - heatApplied),
     temperature: temperature + heatApplied / cap,
     life: Math.max(0, cell.life - consumedLife),
   };

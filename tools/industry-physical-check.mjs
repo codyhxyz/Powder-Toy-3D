@@ -11,6 +11,7 @@ const arg = name => process.argv.includes(name) ? process.argv[process.argv.inde
 const selectedCase = arg('--case');
 const port = arg('--port') || '19543';
 const baseUrl = arg('--url') || `http://localhost:${port}/`;
+const useHarness = process.argv.includes('--harness');
 if (!['thermal', 'mechanisms'].includes(selectedCase)) {
   console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms [--port PORT | --url URL]');
   process.exit(2);
@@ -36,17 +37,23 @@ try {
     if (/GPU (validation|internal)|Error while parsing WGSL/.test(message.text())) browserErrors.push(`console: ${message.text().slice(0, 400)}`);
   });
   const url = new URL(baseUrl);
+  if (useHarness) url.pathname = '/tools/harness/sim-check.html';
   url.searchParams.set('size', '128');
   url.searchParams.set('preset', 'empty');
   url.searchParams.set('mode', 'sandbox');
   url.searchParams.set('view', 'plain');
   url.searchParams.set('test', 'manual');
   await within(page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(4_000, totalDeadline - Date.now() - 1_500)) }), totalDeadline - 1_300, 'app navigation');
-  await within(ready(page), totalDeadline - 1_300, 'app ready');
-  const payload = await within(page.evaluate(async ({ caseName, deadline }) => {
+  await within(useHarness ? page.waitForFunction(() => window.__harness?.ready) : ready(page), totalDeadline - 1_300, 'simulation ready');
+  const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness }) => {
     const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 500);
     const caseStarted = performance.now();
-    const a = window.__app;
+    const h = useHarness ? window.__harness : null;
+    const nativeSim = h ? await h.make(128, { debug: false }) : null;
+    const a = h ? { sim: nativeSim, gpu: h.gpu, test: {
+      mode: 'manual', park() {}, ready: () => nativeSim.ready,
+      step(n) { for (let i = 0; i < n; i++) nativeSim.step(); },
+    } } : window.__app;
     if (!a?.sim || !a.test || a.test.mode !== 'manual') throw new Error('manual 128³ app baseline is unavailable');
     a.test.park();
     const sim = a.sim;
@@ -60,7 +67,7 @@ try {
       update: `fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) { *oA = P.material; *oB = vec4f(0.0); }`,
     });
     const errors = [];
-    let gates = null, parts = null;
+    let gates = null, parts = null, thermalPhysics = null;
     const read = async at => {
       const [cell] = await sim.readCell(...at);
       return { id: Math.round(cell[0]), temperature: cell[1], life: cell[2], ctype: Math.floor(cell[3]), seed: cell[3] - Math.floor(cell[3]) };
@@ -87,11 +94,16 @@ try {
 
     try {
       if (caseName === 'thermal') {
-        if (!a.industry) throw new Error('integrated Industry controller is unavailable');
+        if (!a.industry && !h) throw new Error('integrated Industry controller is unavailable');
         const hearth = { id: 'physical-hearth', type: 'hearth', x: 48, y: 12, z: 48, rotation: 0 };
         const emptyPhysics = { version: 1, pumps: [] };
-        a.industry.fromJSON({ version: 1, devices: [hearth], progression: null, paid: [], factoryRun: false,
+        if (h) {
+          const { createIndustryPhysics } = await import('/src/industry/physics.js');
+          thermalPhysics = createIndustryPhysics({ getSim: () => sim, onError: error => errors.push(cleanError(error)) });
+          await thermalPhysics.ready;
+        } else a.industry.fromJSON({ version: 1, devices: [hearth], progression: null, paid: [], factoryRun: false,
           assisted: true, physics: emptyPhysics });
+        const updateIndustry = () => h ? thermalPhysics.step(1 / 60, [hearth]) : a.industry.update(1 / 60, true);
         await Promise.all([a.test.ready(), fill.ready]);
 
         // Full 4×4 tungsten deck, refractory side/rear walls, and a full-height
@@ -125,7 +137,7 @@ try {
         if (!fixtureReady) throw new Error('cold physical fuel, charge, 16-cell base, or empty control-guard fixture did not read back as built');
         // Prime nativeFrame at the present frame. Every measured hearth update below
         // follows exactly four actual sim.step ticks (the app's native 240 Hz batch).
-        a.industry.update(1 / 60, true);
+        updateIndustry();
         const startFrame = sim.frame;
         const scrapCells = [[48, 13, 50], [49, 13, 50], [50, 13, 50], [51, 13, 50], [49, 13, 51], [50, 13, 51]];
         let coal = coalInitial, broken = brokenInitial;
@@ -136,9 +148,9 @@ try {
         let exhaustedBudget = false;
         // One invocation only. The wall-clock deadline, not an unbounded frame count,
         // determines how far real native heat transfer/phase change can progress.
-        for (let batch = 0; batch < 300 && Date.now() < deadline; batch++) {
+        for (let batch = 0; batch < (h ? 1200 : 300) && Date.now() < deadline; batch++) {
           a.test.step(4);
-          a.industry.update(1 / 60, true);
+          updateIndustry();
           updates++;
           nativeTicks = sim.frame - startFrame;
           alignedBatches &&= nativeTicks === updates * 4;
@@ -179,7 +191,8 @@ try {
         const status = Object.values(checks).every(Boolean) ? 'passed' : 'bounded-incomplete';
         return {
           case: caseName, status, checks, apiErrors: errors,
-          observations: { bounds, fixtureTemperatureC: 20, coalStartLife: coalInitial.life,
+          observations: { bounds, integration: h ? 'native Simulation + Industry physics (no app UI)' : 'app controller',
+            fixtureTemperatureC: 20, coalStartLife: coalInitial.life,
             loadedFuelCells: 12, peakCoalTemperatureC, peakBrokenCoalTemperatureC, peakChargeTemperatureC,
             brokenCoalStartLife: brokenInitial.life, coalEnd: coal, brokenCoalEnd: broken,
             scrapSamples, melt, nativeTicks, industryUpdates: updates, nativeBatchSize: 4, fences,
@@ -319,8 +332,10 @@ try {
     } finally {
       gates?.dispose();
       parts?.dispose();
+      thermalPhysics?.dispose();
+      nativeSim?.dispose();
     }
-  }, { caseName: selectedCase, deadline: caseDeadline }), totalDeadline - 1_200, 'physical checkpoint');
+  }, { caseName: selectedCase, deadline: caseDeadline, useHarness }), totalDeadline - 1_200, 'physical checkpoint');
   result = payload;
   if (browserErrors.length) {
     result.browserErrors = browserErrors;

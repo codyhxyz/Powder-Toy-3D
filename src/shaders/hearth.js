@@ -58,6 +58,8 @@ fn hearthUpdate(p: vec3i, a: vec4f, b: vec4f, corner: vec3i, right: vec3i,
       let budget = consumed * HEARTH_ENERGY_PER_LIFE;
       let headroom = max(0.0, (HEARTH_SOURCE_MAX_T - a.y) * cap);
       let applied = min(budget, headroom);
+      // Native combustion already spends fuel; charge only for the extra heat delivered.
+      if (applied < budget) { consumed = applied / HEARTH_ENERGY_PER_LIFE; }
       (*oA).y = a.y + applied / cap;
       (*oA).z = max(0.0, a.z - consumed);
     }
