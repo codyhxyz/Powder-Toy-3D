@@ -6,11 +6,18 @@ import { deviceCell, deviceDirection } from './catalog.js';
 // abstraction spends TPT's real fuel life rather than changing coal globally.
 export const HEARTH_FUEL_IDS = Object.freeze([E.COAL, E.BROKENCOAL]);
 /** Local game-abstraction energy units (cell cap × °C) per consumed unit of
- * saved fuel life. This is not a measurement of coal calorific value.
+ * saved fuel life. Not coal calorific value: at coal's 0.0005 life/native-step,
+ * this supplies 150 units per step, enough for native conduction's 130.8-unit
+ * loss at 2200 °C across six ambient tungsten faces (6 × 0.01 × 2180).
  */
-export const HEARTH_ENERGY_PER_LIFE = 1200;
+export const HEARTH_ENERGY_PER_LIFE = 300000;
 /** Use the real coal ignition threshold for the hearth's paid built-in spark. */
 export const HEARTH_IGNITION_TEMPERATURE = ELEMENTS[E.COAL].ignite;
+/** Minecraft-furnace-style paid starter headroom. A 100 °C margin survives
+ * the native one-step loss to six 20 °C tungsten neighbors: 550 → 470.5 °C.
+ */
+export const HEARTH_IGNITION_MARGIN = 100;
+export const HEARTH_IGNITION_TARGET = HEARTH_IGNITION_TEMPERATURE + HEARTH_IGNITION_MARGIN;
 /** Local hot-source clamp; it does not bypass native charge phase changes. */
 export const HEARTH_MAX_FUEL_TEMPERATURE = 2200;
 // Match the existing Industry step's dt cap, then convert seconds to native ticks.
@@ -85,9 +92,9 @@ export function hearthFuelBudget(cell, dt, enabled = true) {
   let consumedLife;
   let phase;
   if (temperature < HEARTH_IGNITION_TEMPERATURE) {
-    // The built-in starter is a paid spark: cold fuel spends the exact life
-    // needed to reach ignition (or all of its remaining life if it is partial).
-    const sparkEnergy = (HEARTH_IGNITION_TEMPERATURE - temperature) * cap;
+    // The built-in starter is a paid spark with headroom for native conduction;
+    // partial fuel still buys only its finite share of the temperature rise.
+    const sparkEnergy = (HEARTH_IGNITION_TARGET - temperature) * cap;
     consumedLife = Math.min(cell.life, sparkEnergy / HEARTH_ENERGY_PER_LIFE);
     phase = 'ignition';
   } else {

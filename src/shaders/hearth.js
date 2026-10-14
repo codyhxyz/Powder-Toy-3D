@@ -1,6 +1,6 @@
 import { E } from '../elements.js';
 import {
-  HEARTH_ENERGY_PER_LIFE, HEARTH_IGNITION_TEMPERATURE,
+  HEARTH_ENERGY_PER_LIFE, HEARTH_IGNITION_TARGET, HEARTH_IGNITION_TEMPERATURE,
   HEARTH_LAYOUT, HEARTH_MAX_FUEL_TEMPERATURE, HEARTH_MAX_STEP_SECONDS,
   HEARTH_STEPS_PER_SECOND,
 } from '../industry/hearth.js';
@@ -18,6 +18,7 @@ const regionWGSL = (name, r) => `fn ${name}(x: f32, y: f32, z: f32) -> bool {
 export const HEARTH_UNIFORM_FIELDS = Object.freeze({});
 export const hearthUpdateWGSL = /* wgsl */ `
 const HEARTH_IGNITION_T: f32 = ${f32(HEARTH_IGNITION_TEMPERATURE)};
+const HEARTH_IGNITION_TARGET_T: f32 = ${f32(HEARTH_IGNITION_TARGET)};
 const HEARTH_ENERGY_PER_LIFE: f32 = ${f32(HEARTH_ENERGY_PER_LIFE)};
 const HEARTH_SOURCE_MAX_T: f32 = ${f32(HEARTH_MAX_FUEL_TEMPERATURE)};
 const HEARTH_STEPS_PER_SECOND: f32 = ${f32(HEARTH_STEPS_PER_SECOND)};
@@ -47,9 +48,9 @@ fn hearthUpdate(p: vec3i, a: vec4f, b: vec4f, corner: vec3i, right: vec3i,
     if (cap > 0.0 && hearthFinite(cap)) {
       var consumed = 0.0;
       if (a.y < HEARTH_IGNITION_T) {
-        // The usable built-in ignition costs physical fuel life, so an empty
-        // hearth cannot spark or inject heat.
-        let sparkEnergy = (HEARTH_IGNITION_T - a.y) * cap;
+        // The paid starter reaches above native conduction loss, so it can
+        // transition into the ordinary paid burn branch on the next step.
+        let sparkEnergy = (HEARTH_IGNITION_TARGET_T - a.y) * cap;
         consumed = min(a.z, sparkEnergy / HEARTH_ENERGY_PER_LIFE);
       } else {
         consumed = min(a.z, BURNRATE(id) * HEARTH_STEPS_PER_SECOND * min(dt, HEARTH_MAX_STEP_SECONDS));
