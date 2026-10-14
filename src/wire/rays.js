@@ -35,7 +35,12 @@ const rays = {
   // particles fly between frames: the loop keeps ticking while any may be
   // alive, unless paused (they fly only with the steps; a load wakes the layer
   // until a sweep finds it empty, which a paused box would never run)
-  busy(app) { return !!app.sim.rays.active && !app.settings.paused; },
+  busy(app) {
+    const layer = app.sim.rays;
+    // V2 does not run the legacy emitter scan. Its empty "scan pending" flag
+    // must not keep an idle box ticking; actual particles still keep it awake.
+    return !!layer.active && !app.settings.paused && (!app.sim.compact || !!layer.holds);
+  },
 };
 
 export default rays;

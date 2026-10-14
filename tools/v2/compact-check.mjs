@@ -6,6 +6,7 @@ import { PhysicsV2 } from '../../src/v2/physics.js';
 import { prelude, STATE_OPTS, HEADER_FIELDS } from '../../src/shaders/common.js';
 import { compactDecodeWGSL } from '../../src/shaders/compact.js';
 import { Header, uniformStruct } from '../../src/gpu/params.js';
+import raysWire from '../../src/wire/rays.js';
 import { v2BridgeWGSL, v2ImportWGSL, v2InvalidateWGSL, v2ActLayout } from '../../src/shaders/v2.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
@@ -113,4 +114,10 @@ sim.noteWrite(false);
 assert.equal(sim.wholeWrites, wholeBefore, 'flags-only invalidation does not replace compact state');
 sim.noteWrite();
 assert.equal(sim.wholeWrites, wholeBefore + 1, 'actual full-state writes still request full import');
+const app = { sim: { compact: {}, rays: { active: true, holds: false } }, settings: { paused: false } };
+assert.equal(raysWire.busy(app), false, 'an empty legacy scan cannot keep v2 awake');
+app.sim.rays.holds = true;
+assert.equal(raysWire.busy(app), true, 'actual particles are not hidden from the busy check');
+app.sim.compact = null; app.sim.rays.holds = false;
+assert.equal(raysWire.busy(app), true, 'v1 still runs its pending emitter scan');
 console.log('compact CPU protocol checks passed (dispatch, boundaries, paused import, exact undo, cross-mode tags, shared decode)');

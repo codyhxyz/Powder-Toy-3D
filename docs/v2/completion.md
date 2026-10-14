@@ -113,3 +113,81 @@ GPU pass durations overlapped, so their sum is not elapsed frame time.
 
 CPU adapter checks, benchmark self-checks, the production build and browser-launch policy checks passed before renderer integration.
 No feature-completeness claim or default-engine change is justified.
+
+### Native-read milestone results
+
+The implementation now uses compact cells for presentation without a per-tick export.
+The GPU integration check passed on the M5:
+
+- Direct and legacy-projected cell reads agree.
+- Picking, brick occupancy and Plain mesh face counts agree.
+- Paused edits appear without another physics tick.
+- Legacy dirtiness survives sleep.
+- V2 undo restores every compact word, including fractional fill and flux.
+- Cross-mode history tags select the correct restoration path.
+- Ambient-temperature flag refresh does not replace compact state.
+
+CPU checks found and fixed a missing `format` field in the actual parameter packer.
+Review also found unnecessary redraws from awake-but-unchanged bricks.
+The rule writers now report visible changes separately from activity.
+
+The paired frame run used the same settings as the baseline above.
+Each case had eight warmup frames and 24 measured frames.
+Chromium version: `153.0.8010.12`. Adapter: Apple M5.
+
+| Scene | Direct p50 / p95 | Compatibility p50 / p95 |
+| --- | ---: | ---: |
+| Moving sand | 11.1 / 15.3 ms | 11.2 / 16.0 ms |
+| Moving water | 110.6 / 131.0 ms | 110.6 / 129.7 ms |
+| Settled architecture, forced draws | 6.5 / 12.0 ms | 6.2 / 12.2 ms |
+
+Direct samples recorded zero bridge dispatches. Compatibility samples recorded one per frame.
+**This run does not establish a meaningful frame-time improvement from bridge removal.**
+The compatibility path uses the same new invalidation policy, not the historical bridge implementation.
+
+Raw reports:
+
+- `/tmp/tpt-v2-direct-comparison.json`
+- `/tmp/tpt-v2-water-profile.json`
+
+The split water diagnostic places roughly 100 ms in the scene rendering interval.
+The `scene` and `motion` timestamp intervals overlap. They must not be added as separate elapsed costs.
+Individual physics passes were much smaller, with the three flux passes totaling roughly 0.9 ms.
+Removing another physics conversion cannot by itself solve this renderer-dominated fixture.
+
+The broader app check passed movement, mass, edits, presets, exact undo and mode switching.
+Its original idle fixture retained the Lab enemy spawner and legacy foam from a v1 run.
+That is not an actor-free idle box. The rest check now creates a separate heap-and-puddle scene.
+
+The new fixture exposed an empty legacy particle scan that kept the CPU loop awake.
+The busy check now ignores that pending scan only in v2 when no particles exist.
+Actual particles still keep the loop awake. V1 still performs its pending scan.
+After this fix, the actor-free loop slept within 0.5 seconds.
+The check still counted four late submissions in its measurement interval, so the zero-submission assertion remains unverified.
+The test now drains recorded GPU work before sampling. That final test adjustment has not run on the GPU.
+Legacy foam and particles across runtime engine transitions remain integration limitations.
+
+The branch also includes deployed weather commit `3dba791`.
+The merge preserves weather's host-step source and the lightning job capture.
+V2 still does not run the world weather simulation.
+
+### Remaining acceptance blockers
+
+1. Demonstrate a repeatable full-frame improvement without lowering quality.
+2. Fix the app-wide idle failure without hiding active subsystems.
+3. Implement the missing physics and integration requirements listed above.
+4. Preserve exact compact state in saves and cross-mode runtime transitions.
+5. Validate continuous edits and live playback, then deploy and check the live site.
+
+This work remains experimental on `feat/physics-v2-finish`. It is not a completed engine replacement.
+
+### GPU test budget update
+
+The user now requires at most 10 seconds of total GPU occupancy per run, including setup, compilation and cleanup.
+Earlier runs did not use this limit. One app check waited over 60 seconds for idle.
+Exact historical slot boundaries were not recorded, so those runs cannot claim compliance.
+All test commands ended and their cleanup closed the browsers.
+Port 19473 and processes associated with this worktree were absent at the final process check.
+
+Further GPU validation waits for the separately maintained launcher revision that enforces the total limit.
+No launcher edit, guard bypass or GPU rerun is part of this checkpoint.

@@ -116,6 +116,18 @@ try {
   ok(!toggled.off.active && toggled.off.mode === 'v1' && toggled.stepped === 30, `setPhysics('v1'): today's physics steps the box (${toggled.stepped} steps)`);
   ok(toggled.on.active && toggled.v2 === toggled.today, `setPhysics('v2') again: v2 takes today's state (${toggled.v2} grains, today's ${toggled.today})`);
 
+  // A separate actor-free rest fixture: Lab intentionally has an enemy spawner,
+  // and a preceding v1 run can leave legacy foam animating. Neither is an idle box.
+  await page.evaluate(async () => {
+    const a = window.__app, h = window.__v2;
+    a.loadPreset('empty', false);
+    await a.test.ready();
+    a.test.park();
+    h.paint(32, 20, 32, 3, h.E.SAND);
+    h.paint(16, 5, 16, 2, h.E.WATER);
+    const sand = await h.v2Count(h.E.SAND), water = await h.v2Count(h.E.WATER);
+    if (!(sand.n > 0 && water.fill > 0)) throw new Error('Rest fixture must contain a heap and a puddle');
+  });
   // at rest: ticks until v2 certifies the box idle, then the game running (unpaused): its loop sleeps and
   // v2 records nothing (a live settle at SwiftShader's frame rate would take minutes: the ticks go first)
   const rest = await page.evaluate(async () => {
@@ -125,10 +137,14 @@ try {
     a.test.resume();
     a.settings.paused = false;   // (manual mode boots paused)
     const t0 = performance.now();
-    while (!a.loop.asleep && performance.now() - t0 < 60000) await sleep(250);
+    while (!a.loop.asleep && performance.now() - t0 < 10000) await sleep(250);
+    // Drain work recorded before the loop slept, rather than charging its final
+    // submission to the subsequent idle interval.
+    await v2.idleRead;
+    await a.gpu.fence();
     const asleep = a.loop.asleep && v2.asleep, tick0 = v2.tick, s0 = a.gpu.stats.submits;
     await sleep(1000);
-    const out = { ticks, certified: v2.certified, asleep, waited: (performance.now() - t0) / 1000 - 1, run: v2.tick - tick0, submits: a.gpu.stats.submits - s0, why: { loop: a.loop.asleep, v2: v2.asleep, adapting: a.post.adapting, settled: a.renderer?.pacer?.settled } };
+    const out = { ticks, certified: v2.certified, asleep: asleep && a.loop.asleep && v2.asleep, waited: (performance.now() - t0) / 1000 - 1, run: v2.tick - tick0, submits: a.gpu.stats.submits - s0, why: { loop: a.loop.asleep, v2: v2.asleep, adapting: a.post.adapting, busy: a.loop.busy, rays: { active: a.sim.rays.active, holds: a.sim.rays.holds, live: a.sim.rays.live, seen: a.sim.rays.seen }, foam: a.sim.aeration?.bursting } };
     a.test.park();
     a.settings.paused = true;
     return out;
