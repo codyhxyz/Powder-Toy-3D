@@ -41,6 +41,7 @@ jobs:
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/check-crystal-material.mjs
+      - run: node tools/check-crystal-transmission.mjs
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips
       - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread

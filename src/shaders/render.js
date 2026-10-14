@@ -940,7 +940,32 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // ---- crisp voxel ----
       var nFace = vec3f(0.0);
       nFace[ax] = -f32(istp[ax]);
-      if (RCLASS(id) != R_GLASS) {
+      if (id == E_CRYSTAL) {
+        var th = tEnter;
+        var nh = nFace;
+        if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) {
+          if (th > tCut) { cut = true; break; }
+          let hp = ro + rd * th;
+          if (!anyHit) { anyHit = true; hitPos = hp; }
+          let path = crystalInterface(gCrys, hp, nh, rd, gCrysKind == CRYS_CUT, liq, bends < MAX_BENDS,
+                                      max(tCut - th, 0.0), fetchA(cell).y, &col, &trans);
+          if (path.clipped != 0u) { cut = true; break; }
+          if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
+          bends += 2;
+          tCut -= th + path.distance;
+          ro = path.p;
+          rd = safeDir(path.d);
+          cell = vec3i(floor(ro));
+          ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+          tEnter = 0.0; lastB = vec3i(-1); ax = 1;
+          prevCrisp = E_EMPTY;
+          mNext = jit * MEDIA_STEP;
+          phiStale = true;${curved ? `
+          warpRestart(&walk, ro, rd);` : ''}
+          continue;
+        }
+        phiStale = true;
+      } else if (RCLASS(id) != R_GLASS) {
         // the voxel's shape may be smaller than the cell (bevels): it can miss
         var th = tEnter;
         var nh = nFace;
@@ -1542,10 +1567,16 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     let tExit = tMax[ax];
     let id = occCellId(occM, bid, cell);   // eid(fetchA(cell)), from the brick's occupancy: nothing read for an empty cell
     if (id == E_CRYSTAL) {
-      // its prisms (gfx/crystal.js), as the view draws them
+      // Tint only the actual prism chord, not its cell or the air around it.
       var th = tEnter;
       var nh = vec3f(0.0);
-      if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) { oC.x = th; hit = true; break; }
+      if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) {
+        var exitN: vec3f;
+        let end = min(tExit, th + shardExit(gCrys, ro + rd * th, rd, &exitN));
+        if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = th; } tid = id; }
+        tau += meanSigma(id) * max(end - th, 0.0);
+        oC.z = end;
+      }
       phiStale = true;
     } else if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) { oC.x = tEnter; hit = true; break; }

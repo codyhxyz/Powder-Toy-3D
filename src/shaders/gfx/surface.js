@@ -585,9 +585,9 @@ fn pebbleRock(h: f32) -> vec3f {
   return PEB_RUST;
 }
 
-// Fluorite (E_CRYSTAL), on the crystals gfx/crystal.js draws for it: a
-// translucent crystal drawn opaque, so each face works out what it shows of
-// the body behind it. p is a world point; the crystal (gCrys) is in grid units.
+// Fluorite's surface-only fallback for material probes and distant views.
+// The primary volume draws real transmission via liquid.js crystalInterface.
+// p is a world point; the crystal (gCrys) is in grid units.
 // Colour: violet to blue (Weardale, Blue John), drifting over metres so a
 // cluster is one colour, a little different from crystal to crystal. As in
 // amethyst and fluorite points alike, the colour (and the europium that
