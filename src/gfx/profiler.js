@@ -133,7 +133,7 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
         const phase = typeof ps.phase === 'number' ? ps.phase : PHASE_INDEX[ps.phase] ?? OTHER;
         const gpuMs = ps.gpu, ph = phases[phase];
         ph.gpu = ph.gpu === null || gpuMs === null ? null : ph.gpu + gpuMs;
-        const segs = gpuMs === null ? [] : [[ps.start, ps.start + gpuMs]];
+        const segs = gpuMs === null || ps.start === null ? [] : [[ps.start, ps.start + gpuMs]];
         ph.segs.push(...segs);
         const d = ph.detail.find((x) => x.name === ps.name);
         if (d) {

@@ -7,9 +7,13 @@ import { createProfiler } from '../src/gfx/profiler.js';
 globalThis.GPUBufferUsage = { QUERY_RESOLVE: 1, COPY_SRC: 2, MAP_READ: 4, COPY_DST: 8 };
 globalThis.GPUMapMode = { READ: 1 };
 const drain = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+const realNow = performance.now;
 function fixture(supported = true) {
   let clock = 1000000n, allocated = 0;
-  const state = { fail: false, hold: false, pending: [] };
+  // The synchronous mock advances CPU time with GPU work. A separate offset
+  // reproduces a GPU-only clock discontinuity between query sets.
+  performance.now = () => Number(clock) / 1e6;
+  const state = { fail: false, hold: false, pending: [], timestampOffset: 0n, durationOffset: 0n };
   const device = {
     features: new Set(supported ? ['timestamp-query'] : []),
     createQuerySet({ count }) { allocated++; return { values: new BigUint64Array(count), destroy() {} }; },
@@ -32,8 +36,8 @@ function fixture(supported = true) {
           const w = d.timestampWrites, start = clock;
           clock += BigInt(Math.round((d.ms ?? 1) * 1e6));
           if (w) {
-            w.querySet.values[w.beginningOfPassWriteIndex] = start;
-            w.querySet.values[w.endOfPassWriteIndex] = clock;
+            w.querySet.values[w.beginningOfPassWriteIndex] = start + state.timestampOffset;
+            w.querySet.values[w.endOfPassWriteIndex] = clock + state.timestampOffset + state.durationOffset;
           }
         });
         return { end() {} };
@@ -78,6 +82,29 @@ function fixture(supported = true) {
   e = gpu.device.createCommandEncoder(); e.beginRenderPass({}).end();
   gpu.queue.submit([e.finish()]); t._endFrame(3); await drain();
   assert.equal(t.lastCoverage.unlabelled, 1, 'unknown clients remain measured and visible');
+}
+{
+  const { gpu, pass, state } = fixture(), t = gpu.timing;
+  t.enabled = true;
+  const a = gpu.device.createCommandEncoder(), b = gpu.device.createCommandEncoder();
+  pass(a, 'before clock jump'); pass(b, 'after clock jump');
+  gpu.queue.submit([a.finish()]);
+  state.timestampOffset = 20000000000n;
+  gpu.queue.submit([b.finish()]); t._endFrame(1); await drain();
+  assert.equal(t.frameMs, 2, 'within-pass durations survive an inter-submission clock jump');
+  assert.equal(t.lastCoverage.complete, true);
+  assert.equal(t.lastCoverage.timelineComplete, false);
+  assert.equal(t.lastCoverage.spanMs, null, 'never display an impossible GPU frame span');
+  assert(t.lastPasses.every(p => p.start === null));
+}
+{
+  const { gpu, pass, state } = fixture(), t = gpu.timing;
+  t.enabled = true;
+  const e = gpu.device.createCommandEncoder(); pass(e, 'impossible duration');
+  state.durationOffset = 20000000000n;
+  gpu.queue.submit([e.finish()]); t._endFrame(1); await drain();
+  assert.equal(t.frameMs, null);
+  assert.equal(t.lastCoverage.missing[0].error, 'timestamp duration exceeds capture wall time');
 }
 {
   const { gpu, pass } = fixture(), t = gpu.timing;
@@ -162,4 +189,5 @@ function fixture(supported = true) {
   assert.equal(allocated(), 0);
   assert.equal(gpu.timing.frameMs, null);
 }
+performance.now = realNow;
 console.log('profiler coverage OK: automatic clients, submission order, repeated names, overflow, read failures, capture epochs, unsupported devices');
