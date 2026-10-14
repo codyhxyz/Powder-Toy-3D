@@ -111,7 +111,7 @@ export function skyGLSL() {
 // WGSL: the sky's radiance per direction (needs skyGLSL's constants, PI_L and
 // FrameUniforms FU): what lights and is mirrored in the scene
 // (shaders/gfx/lighting.js) and what the box's backdrop shows (gfx/overlays.js).
-export function skyViewGLSL() {
+export function skyViewGLSL({ source = false } = {}) {
   return /* wgsl */ `
 const HORIZON_BLEND: f32 = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
 
@@ -132,6 +132,7 @@ fn airMass(cz0: f32) -> f32 {
 // Clear-sky radiance toward unit d (d.y >= 0; lower directions see the
 // horizon), without the sun's disc (skyRadiance above is its JS twin).
 fn skyRadiance(d: vec3f) -> vec3f {
+  ${source ? 'if (sourceEnabled()) { return sourceSky(d); }' : ''}
   let mu = dot(d, FU.sun);
   let mv = airMass(d.y);
   let ms = airMass(FU.sun.y);
@@ -147,6 +148,7 @@ fn skyRadiance(d: vec3f) -> vec3f {
 
 // Radiance of the environment toward unit d: sky above the horizon, ground below.
 fn skyColor(d: vec3f) -> vec3f {
+  ${source ? 'if (sourceEnabled()) { return sourceSky(d); }' : ''}
   return mix(FU.ground, skyRadiance(d), smoothstep(-HORIZON_BLEND, HORIZON_BLEND, d.y));
 }`;
 }

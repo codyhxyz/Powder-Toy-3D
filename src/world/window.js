@@ -129,6 +129,7 @@ export class WorldWindow {
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
+    this.scene.reset?.();   // imported interaction state is per loaded run, not per cached scene
     sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
@@ -150,9 +151,10 @@ export class WorldWindow {
   // derived passes over. The far field is rebuilt from the scene and the
   // window: stored edits outside the window show from afar once the window has
   // passed over them.
-  loadSaved(origin, fillState, storeBytes, planted) {
+  loadSaved(origin, fillState, storeBytes, planted, interactions = null) {
     const sim = this.sim;
     if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
+    this.scene.interactionState?.restore(interactions);
     this.epoch++;
     this.store.fromBytes(storeBytes);
     this.planted.set(planted);

@@ -1210,6 +1210,7 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
 fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3f {
   let fp = footprint(p);
   var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);   // (foliage keeps its clumps: matOf's leafClumps)
+  if (m.sourceKind != 0u) { return sourceShade(p, normalize(m.sourceNormal), rd, m.alb, m.rough, m.metal, m.f0, m.sourceKind, m.sourceFlags) + m.emit; }
   // the material's bump tilts the normal (applyMat), kept facing the eye (shadeSurf)
   let v = -rd;
   let ns = faceView(bumpNormal(n, m.g), v);
@@ -1298,6 +1299,14 @@ fn cozyFarShore(p: vec3f) -> f32 {
 // the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
 // Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
 fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
+  let original = sourceMaterial(lid, p, vec3f(0.0, 1.0, 0.0));
+  if (original.kind != 0u) {
+    let alpha = select(1.0, original.alpha, (original.flags & 1u) != 0u);
+    let under = farBody(p, rd, lid, sunVis, farSkyOpen(p), bedY);
+    var col = vec3f(0.0); var trans = vec3f(1.0);
+    sourceBlend(sourceShade(p, original.normal, rd, original.albedo, original.roughness, original.metallic, original.f0, original.kind, original.flags) + original.emission, alpha, original.flags, &col, &trans);
+    return col + trans * under;
+  }
   let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
   let geometric = vec3f(0.0, 1.0, 0.0);
@@ -1325,6 +1334,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
 // The sky toward rd from ro, with the key light's disc (sun, or the moon at
 // night: FU.sunCol carries its colour), behind the cumulus deck (gfx/clouds.js).
 fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
+  if (sourceEnabled()) { return sourceSky(rd); }
   let c = skyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z)));
   let r = SUN_TAN_RADIUS;
   let mu = dot(rd, FU.sun);

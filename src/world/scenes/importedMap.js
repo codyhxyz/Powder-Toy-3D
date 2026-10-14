@@ -1,7 +1,9 @@
+import { createImportedInteractionState, decodeImportedIndex } from '../import/importedInteractionState.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 import { importedCell, sourceToCells } from '../import/voxelize.js';
 import { CELL_M } from '../../scale.js';
 import { ELEMENTS, K } from '../../elements.js';
+import { validateAppearanceManifest, validateAppearance } from '../import/appearance.js';
 
 // A converted source level (tools/import-cruelty-map.mjs), served from
 // public/local-maps as a small manifest plus gzip-packed sparse bricks. The
@@ -11,6 +13,7 @@ const IMPORT_U = sceneStruct({ uImportSize: 'vec3i', uImportBricks: 'vec3u' });
 
 /** The manifest alone: what can be checked before its geometry is fetched. */
 export function validateImportedMapManifest(map) {
+  if (map.appearance) validateAppearanceManifest(map.appearance);
   if (map.version !== 1 || map.encoding !== 'sparse-brick-u8-v1' || map.cellMeters !== CELL_M) throw new Error('Unsupported imported map version/scale');
   // Published geometry must be packed: a raw 29 MiB map exceeds the host's per-file limit.
   // (Not `.gz`: a host that recognises that name serves it as `Content-Encoding:
@@ -21,6 +24,21 @@ export function validateImportedMapManifest(map) {
   if (!Number.isFinite(map.plainHeight) || map.plainHeight < 0 || map.plainHeight > map.size[1]) throw new Error('Imported map has no plain height');
   const authoredStart = map.mission?.available === false ? sourceToCells(map, map.mission.sourceSpawn) : map.mission?.spawn;
   if (!Array.isArray(authoredStart) || authoredStart.length !== 3 || !authoredStart.every((n, i) => Number.isFinite(n) && n >= 0 && n < map.size[i])) throw new Error('Imported map has no valid authored start');
+  if (map.interactions) {
+    if (map.interactions.version !== 1 || !Array.isArray(map.interactions.doors) || !Array.isArray(map.interactions.ladders)) throw new Error('Invalid imported interactions');
+    const owned = new Set(), paths = new Set(), volume = map.size.reduce((a, b) => a * b, 1);
+    for (const door of map.interactions.doors) {
+      const { min, max } = door.bounds ?? {};
+      if (typeof door.sourcePath !== 'string' || paths.has(door.sourcePath) || !Array.isArray(min) || !Array.isArray(max) || min.length !== 3 || max.length !== 3 || !min.every((n, k) => Number.isSafeInteger(n) && Number.isSafeInteger(max[k]) && n >= 0 && max[k] > n && max[k] <= map.size[k]) || !Array.isArray(door.cells) || door.cells.length % 2) throw new Error('Invalid imported door bounds/ownership');
+      paths.add(door.sourcePath);
+      if (door.supported && !['res://Scripts/Door.gd', 'res://Scripts/Elevator_Door.gd', 'res://Scripts/down_door.gd'].includes(door.sourceResource)) throw new Error('Unsupported gate cannot be an ordinary door');
+      for (let i = 0; i < door.cells.length; i += 2) {
+        const index = door.cells[i], id = door.cells[i + 1];
+        if (!Number.isSafeInteger(index) || index < 0 || index >= volume || owned.has(index) || !Number.isInteger(id) || !id || !ELEMENTS[id] || !decodeImportedIndex(map, index).every((n, k) => n >= min[k] && n < max[k])) throw new Error('Invalid imported door cell');
+        owned.add(index);
+      }
+    }
+  }
 }
 export function validateImportedMap(map, words) {
   validateImportedMapManifest(map);
@@ -51,15 +69,39 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
   if (words) validateImportedMap(map, words);
   const loaded = () => { if (!words) throw new Error(`${map.id}: its geometry is not loaded yet`); return words; };
   const cell = (x, y, z) => importedCell(map, loaded(), x, y, z);
+  const listeners = new Set();
+  const changed = (at, data) => { for (const fn of listeners) fn(at, data); };
+  let interactions = words ? createImportedInteractionState(map, words, changed) : null;
+  let appearanceWords = null, preparing = null;
   return {
+    get interactionState() { return interactions; },
+    subscribeData(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    reset() { interactions?.reset(); },
     key, label, size: [...map.size], shrine: false, mission: map.mission,
     importManifest: map,
+    get appearanceWords() { return appearanceWords; },
     // The generator's prepare (world/gpu.js) awaits this before data().
     async prepare() {
-      if (words) return;
-      const fetched = await fetchImportedWords(dataURL ?? map.dataFile);
-      validateImportedMap(map, fetched);
-      words = fetched;
+      if (words && (!map.appearance || appearanceWords)) return;
+      if (!preparing) preparing = (async () => {
+        const [geometry, appearance] = await Promise.all([
+          words ?? fetchImportedWords(dataURL ?? map.dataFile),
+          map.appearance ? fetchImportedWords(new URL(map.appearance.dataFile, new URL(dataURL ?? map.dataFile, globalThis.location?.href ?? 'http://localhost/')).href) : null,
+        ]);
+        validateImportedMap(map, geometry);
+        if (appearance) {
+          validateAppearance(map, appearance);
+          if (map.appearance.sha256) {
+            const digest = await crypto.subtle.digest('SHA-256', appearance);
+            const hash = Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, '0')).join('');
+            if (hash !== map.appearance.sha256) throw new Error('Imported appearance checksum mismatch');
+          }
+        }
+        words = geometry;
+        appearanceWords = appearance;
+        interactions ??= createImportedInteractionState(map, words, changed);
+      })().finally(() => { preparing = null; });
+      return preparing;
     },
     params: ({ seed = 0 } = {}) => ({ size: [...map.size], seed, sea: 0, floor: 0 }),
     uniformStruct: IMPORT_U,
@@ -98,8 +140,8 @@ fn sceneCell(w: vec3i) -> SceneCell {
   };
 }
 /** The map's manifest now; its geometry on the first prepare. */
-export async function loadImportedMap(manifestURL, options = {}) {
-  const response = await fetch(manifestURL);
+export async function loadImportedMap(manifestURL, { response, ...options } = {}) {
+  response ??= await fetch(manifestURL);
   if (!response.ok) throw new Error(`Imported map unavailable (${response.status})`);
   const map = await response.json();
   return createImportedMapScene(map, null, { ...options, dataURL: new URL(map.dataFile, response.url || manifestURL).href });

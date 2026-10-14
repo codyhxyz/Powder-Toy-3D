@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { createPlayer } from './player.js';
+import { createPlayer, PX } from './player.js';
 import { createFigure } from './figure.js';
 import { buildCrasher, CRASHER_COLORS } from './figureCrasher.js';
 import { attachModel } from './models.js';
@@ -11,6 +11,8 @@ import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
 import { Agent, wantsMelee } from './ai/brain.js';
 import { throwFrag } from './frag.js';
 import { GunnerAgent } from './ai/gunner.js';
+import { CrueltyAgent } from './ai/cruelty.js';
+import { buildCruelty } from './figureCruelty.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
 import { BODY_HEIGHT, RESPAWN_S } from './constants.js';
@@ -85,9 +87,9 @@ let nextId = 1;
 // an albedo, and createFigure lights it like the body. palette and eyeGlow are
 // this NPC's own arrays (copied from its style's LOOK): the meshes hold them, so
 // a team's colours (tint) are written into them in place.
-function buildWizard(held, hand, palette, eyeGlow) {
+function buildWizard(held, hand, palette, eyeGlow, combatProfile = null, variant = 0) {
   return () => {
-    const rig = buildCrasher({ palette, eyeGlow });
+    const rig = combatProfile ? buildCruelty({ outfit: combatProfile.outfit, variant }) : buildCrasher({ palette, eyeGlow });
     const grip = new THREE.Group();
     grip.position.y = rig.handY;
     grip.scale.setScalar(HELD_SCALE);
@@ -122,7 +124,7 @@ export function createAi({ renderer, getSim }) {
 // passes: team ('red' | 'blue' | 'infected', on body.team), opponents() (who it
 // fights: [{ id, pos, vel, alive, holding }]; without it, the player), respawnS
 // (s dead before it comes back, or a function giving it: Siege's differ by side) and name.
-export function createNpc({ env, ai, home = () => null, style = 'axeman', team = null, opponents = null, respawnS = RESPAWN_S, oneShot = false, name = null }) {
+export function createNpc({ env, ai, home = () => null, style = 'axeman', team = null, opponents = null, respawnS = RESPAWN_S, oneShot = false, name = null, combatProfile = null, threat = null }) {
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true, id });
   body.team = team;
@@ -130,7 +132,8 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
   const styleLook = LOOK[style] ?? LOOK.axeman;
   const palette = Object.fromEntries(Object.entries(styleLook.palette).map(([k, v]) => [k, [...v]]));
   const eyeGlow = [...styleLook.eyeGlow];
-  const figure = createFigure(buildWizard(held, hand, palette, eyeGlow));
+  const variant = [...(name ?? id)].reduce((sum, c) => sum + c.charCodeAt(0), 0);
+  const figure = createFigure(buildWizard(held, hand, palette, eyeGlow, combatProfile, variant));
   const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
   const kit = createKit({ ...env, viewmodel, owner: id, getMuzzleWorld(key) {
     const model = held[key];
@@ -138,20 +141,21 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     return model.getObjectByName('muzzle')?.getWorldPosition(new THREE.Vector3()) ?? null;
   } });
   let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
-  const charmed = () => !!(body.status?.has('CHARMED') || world.player?.status?.has('CHARMED'));
-  const agent = new (style === 'gunner' ? GunnerAgent : Agent)({
-    body, world: ai.world, nav: ai.nav, kit, getSim: env.getSim,
+  const charmed = () => !!(body.status?.has('CHARMED') || world?.player?.status?.has('CHARMED'));
+  const agent = new (combatProfile ? CrueltyAgent : style === 'gunner' ? GunnerAgent : Agent)({
+    body, world: ai.world, nav: ai.nav, kit, getSim: env.getSim, combatProfile, threat,
     packCells: () => pack(id).cells.length,
     bucket: () => { const l = persistentLoad(ownedKey('BUCKET', id), Infinity); return { id: l.cells[0]?.[0] ?? -1, n: l.cells.length }; },
     // Charmed (pheromone, potions.js): a charmed NPC, or a charmed player, isn't hunted: it reads as gone
-    target: () => ({ pos: world.player?.pos ?? body.pos, vel: world.player?.vel ?? body.vel, alive: !!world.player && !world.player.dead && !charmed(), holding: world.holding }),
+    target: () => ({ pos: world?.player?.pos ?? body.pos, vel: world?.player?.vel ?? body.vel, alive: !!world?.player && !world.player.dead && !charmed(), holding: world?.holding }),
     opponents,
   });
+  if (combatProfile) agent.weapons = new Set(combatProfile.weapons);
 
-  let deadTime = 0, stuckT = 0, jumpWait = 0, spawned = false, yaw = 0, chopT = 0;
+  let deadTime = 0, stuckT = 0, jumpWait = 0, spawned = false, yaw = combatProfile?.yaw ?? 0, chopT = 0;
   let carried = style === 'gunner' ? 'SMG' : 'AXE';
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
-  const eye = new THREE.Vector3(), dir = new THREE.Vector3(0, 0, -1), look = new THREE.Vector3();
+  const eye = new THREE.Vector3(), dir = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)), look = new THREE.Vector3();
   const vFeet = new THREE.Vector3(), tmp = new THREE.Vector3(), worldEye = new THREE.Vector3();
   const aim = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 20, P: 0, dist: Infinity };
   const ctx = {
@@ -169,7 +173,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
   const removeTarget = addTarget(bodyTarget(id, body, {
     alive: () => spawned && !body.dead,
     facing: (out) => out.copy(dir),   // where it looks
-    damageScale: DAMAGE_TAKEN, knockback: HIT_KNOCKBACK, knockUp: KNOCK_UP,
+    damageScale: combatProfile?.damageScale ?? DAMAGE_TAKEN, knockback: HIT_KNOCKBACK, knockUp: KNOCK_UP,
     onHurt() {
       agent.stagger();   // a hit stops its wind-up
       agent.alert(povEvents.actor?.id ?? PLAYER);   // it knows where its attacker is now
@@ -232,7 +236,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     // what it's doing (checks): its goal, weapon, tool, pack
     get debug() {
       return {
-        style, goal: agent.lastGoal, weapon: agent.weapon, tool: agent.intent.tool, sees: agent.sees, knows: agent.knows, pack: pack(id).cells.length, refusal: kit.lastRefusal?.text ?? null,
+        style, profile: combatProfile?.role ?? null, sourceHealth: combatProfile?.health ?? null, goal: agent.lastGoal, weapon: agent.weapon, tool: agent.intent.tool, sees: agent.sees, knows: agent.knows, pack: pack(id).cells.length, refusal: kit.lastRefusal?.text ?? null,
         range: agent.mode ?? null, flight: agent.flight ?? null, fuel: body.jetFuel, jetting: body.jetting,
       };
     },
@@ -258,7 +262,12 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       const share = alive && sp > 1e-3 ? Math.min(1, it.share) : 0;
       input.move.x = share ? (agent.velocity.x / sp) * share : 0;
       input.move.z = share ? (agent.velocity.z / sp) * share : 0;
-      input.sprint = it.sprint;
+      // Source Grunt movement is 4.5m/s, not the sandbox's full sprint.
+      if (combatProfile) {
+        const speedShare = Math.min(1, combatProfile.speed / (57 * PX));
+        input.move.x *= speedShare; input.move.z *= speedShare;
+      }
+      input.sprint = combatProfile ? true : it.sprint;
       jumpWait = Math.max(0, jumpWait - dt);
       const want = share * agent.maxSpeed, got = Math.hypot(body.vel.x, body.vel.z);
       stuckT = want > 0 && got < want * STUCK_SPEED ? stuckT + dt : 0;
@@ -283,6 +292,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (dir.lengthSq() < 1e-9) dir.set(0, 0, -1);
       dir.normalize();
       yaw = Math.atan2(-dir.x, -dir.z);
+      if (combatProfile) { agent.facing.x = dir.x; agent.facing.z = dir.z; }
 
       // Halo's in a Halo match: a frag from the eye, whatever is in hand (frag.js), and the melee: the
       // body's kick (kick.js), turned to the enemy first (Halo's melee magnetism)

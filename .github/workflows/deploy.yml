@@ -61,6 +61,14 @@ jobs:
       - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
       - run: node tools/mission-node-check.mjs && node --test tools/import-cruelty-map-check.mjs
+      - name: Ensure ImageMagick for source appearance fixtures
+        run: |
+          if ! command -v magick >/dev/null && ! command -v convert >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y imagemagick
+          fi
+      - run: node --test tools/appearance-conversion-check.mjs tools/check-source-appearance.mjs tools/check-cruelty-post.mjs
+      - run: node --test tools/imported-interactions-check.mjs && node tools/imported-door-passage-check.mjs
+      - run: node tools/ladder-cpu-check.mjs && node tools/cruelty-enemies-cpu-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
       - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips

@@ -993,6 +993,15 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       } else {
         let hp = ro + rd * tEnter;
         if (!anyHit) { anyHit = true; hitPos = hp; }
+        let original = sourceMaterial(id, worldPos(hp), nFace);
+        if (original.kind != 0u) {
+          if (id != prevCrisp) {
+            let alpha = select(1.0, original.alpha, (original.flags & 1u) != 0u);
+            sourceBlend(sourceShade(worldPos(hp), original.normal, rd, original.albedo,
+              original.roughness, original.metallic, original.f0, original.kind, original.flags) + original.emission,
+              alpha, original.flags, &col, &trans);
+          }
+        } else {
         if (id != prevCrisp) {
           // glass interface (flat faces: no bending)
           let F = fresnelSchlick(abs(dot(nFace, rd)), IOR(id)) * select(GLASS_IN_LIQUID_F, 1.0, liq == E_EMPTY);
@@ -1028,6 +1037,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           if (xa != paneAx) { env = envSky(surfProbe(hx, -nX), r); }   // (inside the pane: no sun highlight, as liquid.js's exit)
           col += trans * F * env;
           trans *= 1.0 - F;
+        }
         }
         prevCrisp = id;
         phiStale = true;

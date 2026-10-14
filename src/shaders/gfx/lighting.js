@@ -105,7 +105,7 @@ ${skyGLSL()}
 // World's cumulus deck (clouds.js): sunShadow multiplies its shadow in.
 ${cloudDeckGLSL}
 // airMass, skyRadiance, skyColor: gfx/sky.js skyViewGLSL (the box's backdrop draws the same sky, gfx/overlays.js)
-${skyViewGLSL()}
+${skyViewGLSL({ source: far })}
 // Two Henyey–Greenstein lobes (hgPhase, gfx/sky.js): back lobe gBack, forward
 // lobe gFwd with weight wFwd (the clouds' silver lining, the gas's glow).
 fn hgPhase2(mu: f32, gBack: f32, gFwd: f32, wFwd: f32) -> f32 {

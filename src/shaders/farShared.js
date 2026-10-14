@@ -244,6 +244,7 @@ fn farAir(rd: vec3f) -> vec3f {
   return skyRadiance(h);
 }
 fn farHaze(col: vec3f, rd: vec3f, d: f32, lit: f32) -> vec3f {
+  if (sourceEnabled()) { return sourceFog(col, d); }
   let T = exp(-FAR_HAZE_RGB * d);
   return col * T + lit * farAir(rd) * (1.0 - T);
 }${airSky ? `
@@ -257,6 +258,7 @@ fn farAirLit(a: vec3f, b: vec3f) -> f32 {
   return (${airSky}(a) + 4.0 * ${airSky}(0.5 * (a + bo)) + ${airSky}(bo)) / 6.0;
 }
 fn farHazePremul(col: vec3f, alpha: f32, eye: vec3f, p: vec3f) -> vec3f {
+  if (sourceEnabled()) { return sourceFog(col / max(alpha, 0.0001), distance(eye, p)) * alpha; }
   let v = p - eye;
   let d = length(v);
   let T = exp(-FAR_HAZE_RGB * d);

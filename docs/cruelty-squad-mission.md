@@ -66,10 +66,13 @@ Author these clear of walls and
 on accessible collision surfaces; the adapter never invents/relocates spawns.
 
 Actors optionally support `style: 'axeman' | 'gunner'`, `passive: boolean`, and
-`weapons: [...]`. Targets default passive/unarmed; guards default hostile with
-`GUN`. Allowed tools: `AXE`, `GUN`, `SMG`, `SNIPER`, `ROCKET`, `LASER`. Existing NPC
-appearances/AI are reused rather than claiming to reproduce imported character
-models. Imported geometry must have simulation collision, not just visual
+`weapons: [...]`, plus importer `sourceResource`, `sourceProperties`, `sourceYaw`.
+Mission-only profiles distinguish archetypes and civilian/hostile objectives using
+those source fields (legacy targets default passive/unarmed; guards hostile).
+Allowed tools: `AXE`, `GUN`, `SMG`, `SNIPER`, `ROCKET`, `LASER`. The procedural
+corporate/body-horror figure shares the existing rig; the isolated mission mind
+reuses existing goals/navigation. See [enemy evidence and approximations](cruelty-squad-enemies.md).
+This does not claim exact imported character models or original AI parity. Imported geometry must have simulation collision, not just visual
 meshes: current player/NPC probes are simulation-cell based. Streamed worlds
 also need the initial window to cover the authored spawn. Mode entry focuses
 streaming on that spawn before entering. Actors outside resident cells remain

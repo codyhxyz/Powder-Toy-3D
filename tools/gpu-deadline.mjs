@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const MAX_SLOT_MS = 10000;
-export const CLEANUP_MS = 1000;
+export const MAX_SLOT_MS = 25000;
+export const CLEANUP_MS = 2000;
 export function budgetMs(value) {
   if (!Number.isFinite(value) || value <= CLEANUP_MS || value > MAX_SLOT_MS)
     throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${MAX_SLOT_MS} ms, including startup and cleanup`);
@@ -16,7 +16,7 @@ export function processTable() {
   let text;
   try {
     text = execFileSync('ps', ['-axo', 'pid=,ppid=,lstart=,stat=,args='],
-      { encoding: 'utf8', timeout: 200, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      { encoding: 'utf8', timeout: 500, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) { throw inspectionError('process-table', error); }
   return text.trim().split('\n').map(line => {
     const [pid, ppid, ...rest] = line.trim().split(/\s+/);
@@ -45,7 +45,7 @@ function leaseRoots(table, token) {
   let text;
   try {
     text = execFileSync('ps', ['eww', '-p', candidates.map(p => p.pid).join(','), '-o', 'pid=,args='],
-      { encoding: 'utf8', timeout: 100, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      { encoding: 'utf8', timeout: 250, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) {
     if (error.status === 1 && !String(error.stdout || '').trim() && !String(error.stderr || '').trim()) return [];
     throw inspectionError('orphan-environment', error);
@@ -148,7 +148,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       for (const p of remaining.filter(p => p.pid === owner.pid)) signal(p, 'SIGKILL');
     } catch (error) { failedOwnership(error); }
   };
-  // Kill at 9s of a 10s lease, leaving time to confirm exit and release.
+  // Reserve the last cleanup interval to confirm exit and release the slot.
   const hard = setTimeout(() => {
     forced = releasing = true;
     force();
