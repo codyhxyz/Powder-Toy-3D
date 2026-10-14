@@ -48,7 +48,7 @@ export default {
   ...gear('BUCKET'),
   create(env) {
     const load = persistentLoad(ownedKey('BUCKET', env.owner), BUCKET_CAPACITY);
-    const bottomless = !env.owner;
+    const bottomless = () => !env.owner && env.getMode?.() !== 'factory';
     const transfer = env.transfer;
     const dip = trigger(SCOOP_INTERVAL);   // dips, hold to repeat
     let pour = 0;
@@ -79,7 +79,7 @@ export default {
       if (!aim || aim.id < 0 || ELEMENTS[aim.id].kind !== K.LIQUID) return;
       const holds = load.cells.length ? load.mainId : -1;
       if (holds >= 0 && holds !== aim.id) {   // a new liquid: a bottomless bucket tips out the old one
-        if (!bottomless) { refuse(`The bucket holds ${ELEMENTS[holds].name.toLowerCase()}`, aim.id); return; }
+        if (!bottomless()) { refuse(`The bucket holds ${ELEMENTS[holds].name.toLowerCase()}`, aim.id); return; }
         if (load.busy) return;
         load.cells.length = 0;
         load.version++;
@@ -106,12 +106,13 @@ export default {
       if (ctx.player?.vel) v.add(ctx.player.vel);
       const id = load.mainId;
       const source = [...load.cells.at(-1)];   // what the bottomless bucket refills with
+      const refill = bottomless(); // a Factory pour stays finite even if the mode changes before readback
       const p = transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) });
       if (p) {
         pour -= n;
         const press = pourPress, at = pinned(spout, ctx.sim);
         p.then((landed) => {   // may land after the button is up: announce each press once
-          if (bottomless && landed) {
+          if (refill && bottomless() && landed) {
             for (let i = 0; i < landed; i++) load.cells.push([...source]);
             load.version++;
           }
@@ -141,7 +142,7 @@ export default {
         else pour = 0;
       },
       deselect() { hand.visible = false; pour = 0; },
-      status: () => (bottomless && load.cells.length ? `${ELEMENTS[load.mainId].abbr} ∞` : load.status()),
+      status: () => (bottomless() && load.cells.length ? `${ELEMENTS[load.mainId].abbr} ∞` : load.status()),
       dispose() {
         mesh.dispose();
         hand.removeFromParent();

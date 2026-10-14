@@ -21,9 +21,9 @@
 const sections = new Map();
 const settingKeys = new Set();
 
-export function registerSaveSection(key, { save, load, absent = null }) {
+export function registerSaveSection(key, { save, load, absent = null, validate = null, strict = false }) {
   if (typeof save !== 'function' || typeof load !== 'function') throw new Error(`save section '${key}': needs save and load`);
-  sections.set(key, { save, load, absent });
+  sections.set(key, { save, load, absent, validate, strict });
 }
 
 export function unregisterSaveSection(key) { sections.delete(key); }
@@ -39,18 +39,27 @@ export const savedSettingKeys = () => [...settingKeys];
 export async function collectSections() {
   const started = [];
   for (const [key, s] of sections) {
-    try { started.push([key, s.save()]); } catch (err) { failed(key, err); }
+    let p;
+    try { p = Promise.resolve(s.save()); } catch (error) { p = Promise.reject(error); }
+    // Observe every rejection immediately: a strict section may refuse before
+    // other sections' asynchronous reads have finished.
+    started.push([key, p.then(data => ({ data }), error => ({ error })), s.strict]);
   }
   const out = [];
-  for (const [key, p] of started) {
-    try {
-      const data = await p;
-      if (data !== undefined) out.push({ key, data });
-    } catch (err) { failed(key, err); }
+  for (const [key, p, strict] of started) {
+    const result = await p;
+    if (Object.hasOwn(result, 'error')) { if (strict) throw result.error; failed(key, result.error); }
+    else if (result.data !== undefined) out.push({ key, data: result.data });
   }
   return out;
 }
 const failed = (key, err) => console.error(`save: section '${key}' failed; the save goes without it`, err);
+
+// Critical sections validate before prepare() can replace terrain or modes.
+// Older sections and saves without the new section retain their existing behavior.
+export async function validateSections(data, header) {
+  for (const [key, s] of sections) await s.validate?.(data.get(key), header);
+}
 
 // Hand each registered section its data (a Map from decodeSave), or absent().
 export async function applySections(data, header) {
@@ -59,6 +68,7 @@ export async function applySections(data, header) {
       if (data.has(key)) await s.load(data.get(key), header);
       else await s.absent?.(header);
     } catch (err) {
+      if (s.strict) throw err;
       console.error(`load: section '${key}' failed; the rest of the save loaded`, err);
     }
   }

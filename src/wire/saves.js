@@ -49,6 +49,7 @@ const savesWire = {
         return {
           map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: app.win ? null : settings.preset,
           world: app.win ? { scene: settings.scene, seed: app.worldSeed ?? null } : null,
+          industryMode: app.industry?.state.active ? app.gamemode : undefined,
           guestCopy: app.mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
         };
       },
@@ -59,7 +60,7 @@ const savesWire = {
         app.post.reset();
         app.pov?.worldReplaced();
         app.birds?.worldReplaced();
-        app.toolbar.setUndoEnabled(app.sim.canUndo);
+        app.toolbar.setUndoEnabled(app.gamemode !== 'factory' && app.sim.canUndo);
         app.dock.sync();
         app.toolbar.sync();
         app.settingsPanel.sync();
@@ -133,6 +134,7 @@ const savesWire = {
     app.spawners?.fromJSON(x.spawners);
     app.perkOrbs?.fromJSON(x.perkOrbs);
     app.signs?.fromJSON(x.signs);
+    if (x.industry) app.industry?.fromJSON(x.industry); else app.industry?.reset();
     app.save();
   },
 };
@@ -172,6 +174,7 @@ async function prepareSave(app, h) {
   const { settings } = app;
   if (app.graphicsFailure) throw app.graphicsFailure;
   if (app.mp.guard()) return false;
+  if (app.industry?.pending) throw new SaveRefused('Wait for the current Industry transfer before loading.');
   app.painting = false;
   app.pov?.exit(true);   // the body is left out of a save; you come back in the god view
   if (h.world) {
@@ -198,10 +201,13 @@ async function prepareSave(app, h) {
     app.setSize(size);
   } else {
     // undoable like any scene change; TPT takes a history snapshot before opening a local save (GameController.cpp OpenLocalBrowse)
+    const extras = sceneExtras(app); // a strict machine snapshot can refuse before touching history
     app.sim.snapshot('Loaded save');
-    app.sim.history.at(-1).note = { scene: sceneExtras(app) };
+    app.sim.history.at(-1).note = { scene: extras };
   }
   settings.preset = preset;
+  if (h.industryMode === 'factory' || h.industryMode === 'sandbox') await app.setMode(h.industryMode);
+  else if (app.gamemode === 'factory') await app.setMode('sandbox');
   // an arena's layout (spawns, flags, shrines) is its build's, without its cells
   app.arenaLayout = preset in ARENA_PRESETS ? ARENA_PRESETS[preset].build().layout : null;
   app.signs?.clear();
@@ -210,6 +216,6 @@ async function prepareSave(app, h) {
 }
 
 // What a box holds besides its cells (its scene, signs, spawners, perk orbs), for undoing a load.
-const sceneExtras = (app) => ({ preset: app.settings.preset, signs: app.signs?.toJSON(), spawners: app.spawners?.toJSON(), perkOrbs: app.perkOrbs?.toJSON() });
+const sceneExtras = (app) => ({ preset: app.settings.preset, signs: app.signs?.toJSON(), spawners: app.spawners?.toJSON(), perkOrbs: app.perkOrbs?.toJSON(), industry: app.industry?.toJSON() });
 
 export default savesWire;

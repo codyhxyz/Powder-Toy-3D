@@ -7,6 +7,11 @@
 // layer go to post's canvas pass (F3, F7) through app.viewmodel and app.glow.
 import { createPov } from '../pov/index.js';
 import { isGearTool } from '../elements.js';
+import { QUARRY_SPAWN } from '../industry/catalog.js';
+import { Vector3 } from 'three';
+
+const FACTORY_TOOLS = ['SHOVEL', 'PICKAXE', 'AXE', 'BUCKET', 'HOOK'];
+let factoryBelt = null;
 
 const pov = {
   name: 'pov',
@@ -28,11 +33,12 @@ const pov = {
       getArena: () => app.arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
       // Willow Cove's Animal Crossing: you start in front of your cottage (pov/village/state.js);
       // a Descent level: you start (and respawn) at its spawn
-      dropAt: () => app.villageSpawn() ?? app.descentSpawn?.(),
+      dropAt: () => app.settings.preset === 'quarry' && !app.win ? new Vector3(...QUARRY_SPAWN) : app.villageSpawn() ?? app.descentSpawn?.(),
       getMode: () => app.gamemode, getWorld: () => app.win,   // the village switches on in Animal Crossing on Willow Cove
       requestRender: () => app.requestRender(),
       inWorld: () => !!app.win,
       gamemode: () => app.gamemode,   // Noita's rules (wands only) are its gamemode's, not Descent's: Sandbox there has the tools
+      industryBuilding: () => !!app.industry?.building,
       toolGun: app.toolGun,   // the tool gun's click at the crosshair
       // Q in first person: the spawn menu where it was left (at first, at what's selected)
       showToolsMenu: () => app.dock.reveal((it) => it.id === (app.menuPick ?? app.settings.tool)) || app.dock.reveal((it) => isGearTool(it.id)),
@@ -42,7 +48,12 @@ const pov = {
     p.game.useLayout(app.arenaLayout);
     if (app.bootMatch) p.game.prepare();   // a match was picked: the bots' module loads during the first frames
   },
-  beforeStep(app, dt) { if (app.pov?.active) app.pov.update(dt); },
+  beforeStep(app, dt) {
+    const belt = app.pov?.toolbelt;
+    if (app.gamemode === 'factory' && belt && factoryBelt !== belt) { belt.restrict(FACTORY_TOOLS); factoryBelt = belt; }
+    else if (app.gamemode !== 'factory' && factoryBelt) { factoryBelt.restrict(null); factoryBelt = null; }
+    if (app.pov?.active) app.pov.update(dt);
+  },
   busy(app) { return !!app.pov?.active; },
 };
 

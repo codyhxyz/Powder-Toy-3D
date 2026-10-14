@@ -1,5 +1,5 @@
 import { encodeSave, decodeSave, packCells, unpackCells } from './format.js';
-import { collectSections, applySections, savedSettingKeys } from './sections.js';
+import { collectSections, applySections, validateSections, savedSettingKeys } from './sections.js';
 import { cellTexel } from '../sim.js';
 import { RAYS } from '../rays.js';
 
@@ -71,7 +71,7 @@ export function createSaves(app) {
     if (win) core.push({ key: 'worldStore', data: win.store.toBytes() }, { key: 'worldPlanted', data: win.planted.slice() });
     const extra = collectSections();
     // ---- (the moment ends) ----
-    const [[A, B], list] = await Promise.all([reads[0], rays]);
+    const [[A, B], list, extras] = await Promise.all([reads[0], rays, extra]);
     header.thumbnail = await thumbnail;
     const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), [A, B]);
     const sections = [{ key: 'cells', data: cells }, ...core];
@@ -80,7 +80,7 @@ export function createSaves(app) {
       [list.l0, list.l1, list.l2, list.l3].forEach((l, i) => data.set(l, i * RAY_SLOTS * CHANNELS));
       sections.push({ key: 'rays', data }, { key: 'raysCursor', data: { cursor: raysCursor } });
     }
-    sections.push(...await extra);
+    sections.push(...extras);
     return encodeSave(header, sections);
   }
 
@@ -90,6 +90,7 @@ export function createSaves(app) {
     const { header, sections } = await decodeSave(bytes);
     const cells = sections.get('cells');
     if (!cells || !Array.isArray(header.dims)) throw new Error('this save has no grid');
+    await validateSections(sections, header);
     if (!await app.prepare(header)) return null;
     const sim = app.getSim(), win = app.getWin(), g = sim.g;
     if ([g.nx, g.ny, g.nz].some((n, i) => n !== header.dims[i])) throw new Error(`the save is ${header.dims.join('×')}, the grid ${g.nx}×${g.ny}×${g.nz}`);

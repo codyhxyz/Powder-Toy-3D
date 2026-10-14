@@ -61,6 +61,7 @@ import foam from './foam.js';
 import deco from './deco.js';
 import console_ from './console.js';
 import saves from './saves.js';
+import industry from './industry.js';
 
 /**
  * Every wire, in the order their hooks run. The world attaches first (its
@@ -68,7 +69,7 @@ import saves from './saves.js';
  * window follows the focus in `follow`, so a tick keeps the old one's order:
  * the body, Descent, the god camera, the window, the brush.
  */
-export const WIRES = [world, pov, descent, rays, lightning, signs, birds, mp, mesh, foam, deco, console_, saves];
+export const WIRES = [world, pov, descent, rays, lightning, signs, birds, mp, mesh, foam, deco, console_, industry, saves];
 
 /** A wire by name, or null. */
 export const wireNamed = (name) => WIRES.find((w) => w.name === name) ?? null;

@@ -1,0 +1,28 @@
+.industry {
+  position: fixed; left: 14px; bottom: 68px; z-index: 8;
+  width: min(380px, calc(100vw - 28px)); padding: 10px;
+  color: var(--text); font: 12px/1.4 var(--ui);
+}
+.industry[hidden], .industry [hidden] { display: none; }
+.industry-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.industry button, .industry select {
+  min-height: 30px; padding: 4px 8px; border: 1px solid var(--line-hi);
+  border-radius: var(--r-ctl); background: var(--panel-solid); color: var(--text); font: inherit;
+  cursor: pointer;
+}
+.industry button:hover:not(:disabled) { background: var(--raise-hi); }
+.industry button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.industry button:disabled { color: var(--muted); cursor: not-allowed; }
+.industry select { color-scheme: dark; }
+.industry input { accent-color: var(--accent); }
+.industry-count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.industry-types { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+.industry label { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; }
+.industry p { margin: 8px 0 0; }
+.industry-objective { font-weight: 650; font-variant-numeric: tabular-nums; }
+.industry-help { color: var(--muted); }
+.industry-status { min-height: 2.8em; }
+@media (max-height: 620px) {
+  .industry { bottom: 12px; max-height: calc(100vh - var(--bar-bottom) - 24px); overflow: auto; scrollbar-color: var(--muted) var(--panel-solid); }
+}
+body.pov-nohud .industry { display: none; }

@@ -653,6 +653,7 @@ async function startMode(mode, { fresh = false } = {}) {
   const chosen = resolveMode(mapOf(settings), mode);
   const game = pov?.game;
   selectedMode = chosen.key;
+  ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
   pacer.wake();
   if (chosen.key !== 'animalCrossing') pov?.village.setEnabled(false);
@@ -728,6 +729,7 @@ function loadPreset(name, undoable = true) {
     else arenaLayout = buildPreset(name, sim);
     if (win || !(name in ARENA_GRID)) arenaLayout = null;
     resetSimModes();
+    ctx.industry?.reset({ starters: name === 'quarry' && !win });
     post.reset();
     signs?.clear();
     resetSpawners(name);
@@ -868,6 +870,11 @@ const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const tmpV = new THREE.Vector3();
 function updateBrush() {
   brushValid = false;
+  if (ctx.industry?.building || selectedMode === 'factory') {
+    brush.set({ visible: false });
+    builds?.update({ hover, active: false });
+    return;
+  }
   if (pov?.active) { shapeDrag = null; updateGunBrush(); return; }
   if (isBrush(settings.tool)) {
     if (painting || shapeDrag) {
@@ -1443,6 +1450,8 @@ function setBlocks(on) {
 }
 
 function undo() {
+  if (selectedMode === 'factory') { hud.toast('Factory has no terrain undo. Dismantle machines with B, then right-click.'); return; }
+  if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;
   const { note, label } = sim.history?.at(-1) ?? {};
   const shrine = note?.shrine;
@@ -1451,6 +1460,7 @@ function undo() {
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
     pov?.worldReplaced();
     hud.toast(label ? `Undone ${label}` : 'Undone', { kind: 'undo' });   // Garry's Mod's "Undone Prop": it names what was undone
+    if (!note?.scene && ctx.industry?.state.devices.length) hud.toast('Terrain restored; machine placements are unchanged.');
   }
   // (a world's window moved off all of it: it's kept for when the window comes back)
   else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo', { kind: 'error' });
@@ -1565,6 +1575,10 @@ canvasEl.addEventListener('pointerdown', (e) => {
   else press(e);
 });
 function press(e) {
+  if (selectedMode === 'factory' || ctx.industry?.building) {
+    if (e.button === 0 && !e.altKey && !ctx.industry?.building) hud.toast('B builds machines. V enters the Quarry with mining tools.');
+    return;
+  }
   const wasEditing = !!signs?.editing;
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
@@ -1588,6 +1602,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
+  if (selectedMode === 'factory' || ctx.industry?.building) return false;
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) { signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) }); return true; }
@@ -1634,6 +1649,7 @@ function clickTool() {
 
 // A brush stroke of `tool` from now until the button lets go (undone as one).
 function startStroke(tool) {
+  if (selectedMode === 'factory' || ctx.industry?.building) return;
   if (!mp.isGuest) {
     sim.snapshot(toolById(tool)?.name);
     toolbar.setUndoEnabled(true);
@@ -1658,6 +1674,7 @@ const toolGun = {
   aim() { toolGunOut = true; },
   // a button went down: 'stroke' while a stroke runs until release(), 'click' for one-click tools, null if nothing happened
   press({ erase = false } = {}) {
+    if (selectedMode === 'factory' || ctx.industry?.building) return null;
     if (signs?.editing) { document.activeElement?.blur?.(); return null; }   // as in the god view, the click that ends a sign's edit does nothing else
     if (!erase) {
       const done = clickTool();
@@ -2097,7 +2114,8 @@ function tick(now, renderOnly = false) {
     updateBrush();
 
     prof.phase('paint');
-    if (painting && brushValid) {
+    if (selectedMode === 'factory' || ctx.industry?.building) painting = false;
+  if (painting && brushValid) {
       tmpV.copy(brushCenter).add(sim.origin);   // world cells
       const wind = windFromValid ? [tmpV.x - windFrom.x, tmpV.y - windFrom.y, tmpV.z - windFrom.z] : null;
       windFrom.copy(tmpV);
@@ -2250,6 +2268,7 @@ const ctx = {
   get painting() { return painting; }, set painting(v) { painting = v; },
   get pointerInside() { return pointerInside; }, get uiHover() { return uiHover; },
   get brushValid() { return brushValid; }, get brushCenter() { return brushCenter; },
+  industry: null,
   get menuPick() { return menuPick; }, get gamemode() { return selectedMode; },
   get animTime() { return animTime; }, get graphicsFailure() { return graphicsFailure; },
   // the animation clock as the far field's uniform-like reader takes it ({ value })
@@ -2265,6 +2284,7 @@ const ctx = {
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
   presentation, presentationPoint,
+  setMode: startMode,
   isTyping, selectTool, leaveBuild, setPaused, setRadius, setSimMode, setSimModes, resetSimModes, simModeLock,
   updateSun, save, camState, onNextFrame,
   requestRender: () => pacer.wake(),
@@ -2376,7 +2396,8 @@ try {
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     current: currentMap,   // { map, mode } playing now
-    presentation, setMode: startMode, // the gamemode's render-only effect (gfx/presentation.js): no map reload or simulation mutation
+    get industry() { return ctx.industry; },
+  presentation, setMode: startMode, // the gamemode's render-only effect (gfx/presentation.js): no map reload or simulation mutation
     pickRay, pickScreenRay: (ro, rd) => pickRay(ro, rd, true),   // a pick along a grid ray (pickScreenRay: as the screen shows it)
     undo,            // as ⌘Z does
     hud,             // toast(text, { kind }): GMod's notices (ui/notices.js)

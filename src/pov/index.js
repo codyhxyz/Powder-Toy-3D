@@ -827,7 +827,7 @@ export function createPov(app) {
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
       ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
-      const use = !editing && canUse();
+      const use = !editing && canUse() && !app.industryBuilding?.();
       // a touch tap can start and end between frames: it still holds for one (on desktop the mouse can't)
       const tapped = touch.enabled;
       ctx.primary = use && (buttons.primary || (tapped && buttons.primaryPressed));
