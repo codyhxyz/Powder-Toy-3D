@@ -19,6 +19,7 @@ import { STAGE } from '../gpu/kernels.js';
 import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
 import { gateVariants } from '../gfx/detailGate.js';
 import { glf } from '../glsl.js';
+import { shadowTilesWGSL, SHADOW_TILE } from './passes.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -1459,7 +1460,7 @@ export const PICK_LAYOUTS = () => [LAYOUT.TABLES, LAYOUT.STATE_RO, PICK_LAYOUT];
 // its .x as r32float, which the soft shadows' 16 taps read.
 // =====================================================================
 
-export const SHADOW_WORKGROUP = 8;   // 8×8 threads, a texel each
+export const SHADOW_WORKGROUP = SHADOW_TILE;   // 8×8 threads, a texel each: a tile of src/derived.js shadowTiles' list
 /** The map's size for a grid: texels per side. */
 export const shadowRes = (g) => Math.min(1024, 4 * Math.max(g.nx, g.ny, g.nz));
 
@@ -1576,7 +1577,13 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   oC.w = f32(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
   return oC;
 }
-@compute @workgroup_size(${SHADOW_WORKGROUP}, ${SHADOW_WORKGROUP}) fn main(@builtin(global_invocation_id) id: vec3u) {
+${shadowTilesWGSL(g)}
+// A workgroup per tile of the list src/derived.js shadowTiles made (the tiles
+// whose rays crossed a change, or all of them), a thread per texel.
+@compute @workgroup_size(${SHADOW_WORKGROUP}, ${SHADOW_WORKGROUP}) fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_id) lid: vec3u) {
+  var corner: vec2u;
+  if (!shadowTileAt(wg.x + wg.y * nwg.x, &corner)) { return; }
+  let id = corner + lid.xy;
   let res = u32(max(FU.shadowRes, 1));
   if (id.x >= res || id.y >= res) { return; }
   gFragCoord = vec2f(id.xy) + 0.5;   // the texel's centre (what gl_FragCoord was)

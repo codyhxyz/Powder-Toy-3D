@@ -65,10 +65,21 @@ import { JOIN_REACH } from './gfx/liquidDetail.js';
 //   EMA     the EMA may still change: the brick changed within the last
 //           FIELD_EMA_SETTLE derived frames
 //   FIELDS  the final fields and the brick map may change: an EMA brick
-//           within FIELDS_DILATE bricks (FIELD_REACH)
-//   WORK    the passes in between must run: an EMA brick within WORK_DILATE
+//           within FIELDS_DILATE bricks (FIELD_REACH); the blur runs here too
+//   WORK    the boost's smoothing must run: an EMA brick within WORK_DILATE
 //           (their scratch's reach on top)
 // Each list is one run of brick numbers in the lists buffer (dirtyLists).
+//
+// Within a listed brick a pass computes only the cells a later pass reads
+// (COVER below), so a WORK brick at the list's outer ring computes a shell a
+// cell or two deep, not its 64 cells, and the blur runs over the 27 FIELDS
+// bricks of a changed brick, not the 125 WORK ones. Every reach is at most a
+// brick, so a brick's 3³ neighbourhood decides which of its cells a pass
+// needs: the dirty pass leaves each brick two 27-bit masks, of its neighbours
+// that are EMA bricks and of those that are FIELDS bricks (dirtyLists emask,
+// fmask). Exact: every cell a pass reads was written this frame, or is a
+// persistent buffer's (the EMA, the normalised blur) that holds what the pass
+// before would write there again.
 export const DIRTY = { EMA: 0, FIELDS: 1, WORK: 2 };
 // Frames a cell's EMA keeps changing after its state last did: the slowest
 // channel's blend reaches its 8-bit fixed point by then (gfx/pacing.js
@@ -115,11 +126,51 @@ export const AGE = { MAX: 255, MASK: 255, FRESH: 256, SHIFTED: 512, CHANGED: 102
 // NBRICKS brick numbers each, in DIRTY order), their append counters, their
 // lengths as the last dirty pass left them (what a kernel dispatched over a
 // list reads), and each list's indirect dispatch arguments [x, y, z, pad]
-// (fold()ed: a workgroup per entry).
+// (fold()ed: a workgroup per entry), then the FIELDS list's again with a
+// thread per entry (threads: the shadow map's tile marks, src/derived.js
+// shadowTiles), then the GI's sources' and probes' (gi: shaders/gi.js giArgs
+// writes them here, as their kernels write giSrc, which holds their lists:
+// WebGPU won't take a buffer as a dispatch's arguments and its writable
+// storage at once). Then a word per brick (brick number order): the mask of its
+// 3³ neighbours that are EMA bricks (bit (x+1) + 3(y+1) + 9(z+1) for the
+// neighbour at offset x, y, z) with GI_NEAR in bit GI_NEAR_BIT; and a word
+// per brick, the mask of its neighbours that are FIELDS bricks.
 export function dirtyLists(g) {
   const { nbricks } = gridDims(g), n = 3 * nbricks;
-  return { list: (l) => l * nbricks, count: n, last: n + 4, args: n + 8, words: n + 20 };
+  return {
+    list: (l) => l * nbricks, count: n, last: n + 4, args: n + 8, threads: n + 20, gi: n + 24,
+    emask: n + 32, fmask: n + 32 + nbricks, words: n + 32 + 2 * nbricks,
+  };
 }
+// The GI's view of recent change (shaders/gi.js giSelect): GI_NEAR marks a
+// brick within GI_NEAR_DILATE bricks (at most WORK_DILATE: the dirty pass's
+// own neighbourhood) of one that changed within GI_RECENT derived frames. Its
+// probes are traced at the full rate and its sources every frame; the rest at
+// a background rate. GI_RECENT is the derived passes' settle for the GI
+// (app.js: settleFrames(GI_BLEND, 2)), so a probe near a change converges as
+// it did when every probe was traced every other frame.
+export const GI_NEAR_BIT = 31;
+export const GI_NEAR_DILATE = 2;
+export const GI_RECENT = 22;
+
+// The cells each pass between the EMA and the peak computes, as reaches (per
+// axis, in cells) from the bricks a mask holds: the final fields are written
+// over the FIELDS bricks, so the boost's last stage covers them and a cell
+// around (the peak's 3³ maximum), each earlier stage that and its
+// successor's reach along its axis; the blur's last axis covers the cells
+// whose normalised blur may change (within BLUR_REACH of an EMA brick: the
+// blurred planes keep their values elsewhere), each earlier axis that and its
+// successor's reach. The blur tests DL_EMASK, the boost DL_FMASK.
+export const COVER = {
+  blur: [[BLUR_REACH, 2 * BLUR_REACH, 2 * BLUR_REACH], [BLUR_REACH, BLUR_REACH, 2 * BLUR_REACH], [BLUR_REACH, BLUR_REACH, BLUR_REACH]],
+  boost: [[1, 2, 2], [1, 1, 2], [1, 1, 1]],
+};
+if (Math.max(...COVER.blur.flat(), ...COVER.boost.flat()) > BRICK) throw new Error('shaders/fields.js COVER: a reach past a brick needs more than the 3³ masks');
+// The early return of a pass over a list for the cells it needn't compute
+// (pass: 'blur' or 'boost'; its stage is P.axis). After listMainWGSL.
+const coverWGSL = (pass) => /* wgsl */ `
+  var cover = array<vec3i, 3>(${COVER[pass].map((r) => `vec3i(${r.join(', ')})`).join(', ')});
+  if (!reaches(dlist[${pass === 'blur' ? 'DL_EMASK' : 'DL_FMASK'} + b], p & vec3i(3), cover[P.axis])) { return; }`;
 
 // The lists' WGSL: their offsets, the age bits and the dilations. Each kernel
 // declares the buffer itself: read_write atomics where it appends, read-only
@@ -134,6 +185,13 @@ const LIST_WORK: u32 = ${DIRTY.WORK}u;
 const DL_COUNT: u32 = ${d.count}u;   // words: the append counters, one per list
 const DL_LAST: u32 = ${d.last}u;     // the lists' lengths
 const DL_ARGS: u32 = ${d.args}u;     // the indirect arguments, four words per list
+const DL_THREADS: u32 = ${d.threads}u;   // FIELDS's again, a thread per entry
+const DL_GI: u32 = ${d.gi}u;         // the GI's sources' arguments, then its probes'
+const DL_EMASK: u32 = ${d.emask}u;   // per brick: its neighbours that are EMA bricks, and GI_NEAR
+const DL_FMASK: u32 = ${d.fmask}u;   // per brick: its neighbours that are FIELDS bricks
+const GI_NEAR: u32 = ${(1 << GI_NEAR_BIT) >>> 0}u;
+const GI_NEAR_DILATE: i32 = ${GI_NEAR_DILATE};
+const GI_RECENT: u32 = ${GI_RECENT}u;
 const AGE_MAX: u32 = ${AGE.MAX}u;
 const AGE_MASK: u32 = ${AGE.MASK}u;
 const AGE_FRESH: u32 = ${AGE.FRESH}u;
@@ -142,7 +200,22 @@ const AGE_CHANGED: u32 = ${AGE.CHANGED}u;
 const EMA_SETTLE: u32 = ${FIELD_EMA_SETTLE}u;   // frames
 const FIELDS_DILATE: i32 = ${FIELDS_DILATE};    // bricks
 const WORK_DILATE: i32 = ${WORK_DILATE};
-fn brickInGrid(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(BX, BY, BZ)); }`;
+fn brickInGrid(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(BX, BY, BZ)); }
+// Does the box of cells within r (per axis, at most BS) of local cell l (its
+// place in its brick) meet a brick that mask m holds (a brick's 3³
+// neighbours, DL_EMASK or DL_FMASK)? It reaches the neighbours at offsets
+// floor((l - r) / BS) to floor((l + r) / BS) along each axis.
+fn reaches(m: u32, l: vec3i, r: vec3i) -> bool {
+  let lo = (l - r) >> vec3u(2u);
+  let hi = (l + r) >> vec3u(2u);
+  let row = ((2u << u32(hi.x - lo.x)) - 1u) << u32(lo.x + 1);   // those along x, in a row of the mask's 3 bits
+  for (var z = lo.z; z <= hi.z; z++) {
+    for (var y = lo.y; y <= hi.y; y++) {
+      if (((m >> u32(3 * (y + 1) + 9 * (z + 1))) & row) != 0u) { return true; }
+    }
+  }
+  return false;
+}`;
 };
 
 // main() of a kernel dispatched over one of the lists: a workgroup per entry
@@ -169,7 +242,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 //          stopped carrying falling water when main's pours replaced it: Sync
 //          3). It stays in the layout so src/derived.js's peak group, which
 //          binds it, still matches.
-//   PAIR   a source and a destination (the window shift of the EMA)
+//   PAIR   a source and a destination
+//   SHIFT  two of them (the window shift of the EMA and the normalised blur)
 const ro = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } });
 const rw = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } });
 const out3d = (binding) => ({ binding, visibility: STAGE.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '3d' } });
@@ -183,6 +257,7 @@ export const FIELD_LAYOUT = {
   JET: [ro(0), ro(1), rw(2), ro(JET_BINDING.JET)],
   PEAK: [ro(0), ro(1), ro(2), out3d(3), out3d(4), out3d(5), ro(JET_BINDING.PEAK)],
   PAIR: [ro(0), rw(1)],
+  SHIFT: [ro(0), rw(1), ro(2), rw(3)],
 };
 // The format of the final fields (src/derived.js allocates them).
 export const FIELD_FORMAT = 'rgba16float';
@@ -293,7 +368,7 @@ ${FieldBlurParams.wgsl}
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
 @group(2) @binding(1) var<storage, read> src: array<u32>;
 @group(2) @binding(2) var<storage, read_write> dst: array<u32>;
-${listMainWGSL('LIST_WORK')}
+${listMainWGSL('LIST_FIELDS')}${coverWGSL('blur')}
   var dir = vec3i(0);
   dir[P.axis] = 1;
   var sv = vec4f(0.0);
@@ -340,7 +415,7 @@ ${BoostParams.wgsl}
 @group(2) @binding(1) var<storage, read> src: array<u32>;
 @group(2) @binding(2) var<storage, read_write> dst: array<u32>;
 ${stage === 0 ? jetWGSL(JET_BINDING.JET) : ''}
-${listMainWGSL('LIST_WORK')}
+${listMainWGSL('LIST_WORK')}${coverWGSL('boost')}
   var dir = vec3i(0);
   dir[P.axis] = 1;
   var acc = vec4f(0.0);
@@ -507,13 +582,19 @@ ${listMainWGSL('LIST_WORK')}
 // The EMA follows its cells: cell p takes the history of p + shift, out of
 // place (into a scratch that src/derived.js copies back). Cells shifted in
 // from outside get none (their bricks are SHIFTED: the EMA starts them over).
+// The normalised blur follows them in the same pass, into a scratch of its
+// own (the blur reads it where it doesn't recompute it: COVER); the bricks
+// shifted in and the faces' re-age, so its cells whose taps now reach past
+// the grid's edge, or have no history, are recomputed.
 export const FieldShiftParams = uniformStruct('FieldShiftParams', { shift: 'vec3i' });
 export const fieldShiftFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${FieldShiftParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FieldShiftParams;
-@group(2) @binding(0) var<storage, read> src: array<u32>;
+@group(2) @binding(0) var<storage, read> src: array<u32>;   // the EMA (3 planes)
 @group(2) @binding(1) var<storage, read_write> dst: array<u32>;
+@group(2) @binding(2) var<storage, read> blurSrc: array<u32>;   // the normalised blur (4 planes)
+@group(2) @binding(3) var<storage, read_write> blurDst: array<u32>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let s = foldThread(wg, nwg, li);
@@ -526,6 +607,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var w = 0u;
     if (inside) { w = src[k * SLOTS + t]; }
     dst[k * SLOTS + s] = w;
+  }
+  for (var k = 0u; k < 4u; k++) {
+    var w = 0u;
+    if (inside) { w = blurSrc[k * SLOTS + t]; }
+    blurDst[k * SLOTS + s] = w;
   }
 }
 `;
@@ -558,7 +644,7 @@ export const WGSL_CHECK = [
   { name: 'fieldBoost0', kind: 'compute', code: (g) => fieldBoostFrag(g, 0), layouts: fieldLayouts(true, FIELD_LAYOUT.JET), dispatch: perList },
   { name: 'fieldBoost', kind: 'compute', code: (g) => fieldBoostFrag(g, 1), layouts: fieldLayouts(false), dispatch: perList },
   { name: 'fieldPeak', kind: 'compute', code: fieldPeakFrag, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, FIELD_LAYOUT.PEAK], dispatch: perList },
-  { name: 'fieldShift', kind: 'compute', code: fieldShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.PAIR],
-    dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)), windowed: true },
+  { name: 'fieldShift', kind: 'compute', code: fieldShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.SHIFT],
+    layoutNames: [null, null, 'DERIVED_SHIFT'], dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)), windowed: true },
   { name: 'fieldMax', kind: 'compute', code: fieldMaxFrag, layouts: fieldLayouts(false), dispatch: perList, tool: true },
 ];
