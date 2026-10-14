@@ -46,6 +46,7 @@ jobs:
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips
       - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread
       - run: node tools/check-village.mjs && node tools/check-village-actions.mjs && node tools/check-village-punch.mjs   # peaceful punches, tools and furniture
+      - run: node tools/check-character-models.mjs && node tools/check-loading-character.mjs   # CPU-only bodies, selection and portraits
       - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode
       - run: node tools/firearm-aim-check.mjs && node tools/held-tools-check.mjs
       - run: node tools/torch-cpu-check.mjs   # water quenching and frame-rate-independent flame inertia

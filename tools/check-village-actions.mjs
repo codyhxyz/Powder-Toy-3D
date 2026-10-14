@@ -29,7 +29,7 @@ const size = [384, 128, 256], sim = { origin: new THREE.Vector3() }, world = { s
 const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), size: 1, onGround: true, sprintRush: 0 };
 const camera = { look: { yaw: 0, pitch: 0 }, third: false };
 let active = true, picked = { valid: false }, pending = null, mode = 'animalCrossing', modal = false, tool = null, used = null, inputReleases = 0, actionReleases = 0;
-const app = { scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(), getSim: () => sim, getMode: () => mode, getWorld: () => world,
+const app = { settings: { villageCharacter: 'boy' }, scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(), getSim: () => sim, getMode: () => mode, getWorld: () => world,
   getScale: () => 1, getVolume: () => ({ position: new THREE.Vector3() }), requestRender() {}, isTyping: () => false,
   pickRay: () => pending ?? Promise.resolve(picked) };
 document.querySelector = () => modal ? {} : null;
@@ -87,8 +87,21 @@ village.act({ type: 'tool', key: 'GUN' }); assert.equal(tool, 'TROWEL', 'weapons
 village.act({ type: 'tool-primary' }); assert.equal(used, 'primary', 'UI/touch use reaches the existing tools');
 village.act({ type: 'tool-secondary' }); assert.equal(used, 'secondary');
 village.cycleTool(1); assert.equal(tool, null); village.cycleTool(-1); assert.equal(tool, 'TROWEL');
+const boy = village.avatar, position = player.pos.clone(), savedFurniture = village.state;
+app.settings.villageCharacter = 'girl'; village.update(0.1, true);
+assert.equal(village.avatar.userData.persona, 'girl');
+assert.equal(boy.parent, null, 'live persona swap removes the old avatar');
+assert.ok(player.pos.equals(position), 'persona swap leaves the physical player in place');
+assert.deepEqual(village.state, savedFurniture, 'persona swap leaves furniture untouched');
+assert.equal(tool, 'TROWEL', 'equipped tool survives a persona swap');
+let girlTools = 0; village.avatar.traverse(o => { if (o.name.startsWith('viewmodel-')) girlTools++; });
+assert.equal(girlTools, 1, 'tool is attached to the new persona exactly once');
 player.pos.set(size[0] / 2 + HOMES[0], FLOOR, size[2] / 2 + HOME_Z);
 assert.ok(!village.act({ type: 'grab', id: 'plant' }).error);
+const carried = village.carrying;
+app.settings.villageCharacter = 'boy'; village.update(0.1, true);
+assert.equal(village.avatar.userData.persona, 'boy');
+assert.deepEqual(village.carrying, carried, 'carried furniture survives a live persona swap');
 await village.punch(); assert.equal(__villageSpeech.bonks, 1, 'carrying furniture blocks punch');
 used = null; village.act({ type: 'tool-primary' }); assert.equal(used, null, 'carrying blocks terrain edits');
 village.act({ type: 'tool', key: 'SHOVEL' }); assert.equal(tool, 'TROWEL', 'carrying blocks tool changes');
@@ -130,6 +143,9 @@ village.update(0.5); village.open();
 await village.kick();
 assert.equal(__villageSpeech.bonks, beforeKick + 2, 'menus block kicks too');
 village.close(); village.setEnabled(false);
+app.settings.villageCharacter = 'girl'; village.setEnabled(true, world.P);
+assert.equal(village.avatar.userData.persona, 'girl', 'selection also applies on mode reentry');
+village.setEnabled(false);
 
 const resident = { spec: { home: 1 }, x: 0, z: 0, vx: 100, vz: 100, bonk: 1 };
 for (let i = 0; i < 600; i++) { stepResident(resident, 1 / 60, i / 60, true); assert.ok(Math.abs(resident.x) <= 1 && Math.abs(resident.z) <= 8); }

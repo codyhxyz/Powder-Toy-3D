@@ -20,7 +20,7 @@ const ball = (p, color, at, scale) => mesh(p, new THREE.SphereGeometry(1, 16, 12
 const box = (p, color, at, scale) => mesh(p, new THREE.BoxGeometry(1, 1, 1), color, at, scale);
 const cylinder = (p, color, at, r1, r2, height) => mesh(p, new THREE.CylinderGeometry(r1, r2, height, 20), color, at);
 const ease = x => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t); };
-export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a93' } = {}) {
+export function character({ species = 'human', persona = 'boy', color = '#edbd96', shirt = persona === 'girl' ? '#d87598' : '#5c9a93' } = {}) {
   const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
   const limbs = [];
   for (const x of [-0.55, 0.55]) {
@@ -38,6 +38,14 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
     ball(body, '#76513a', [0, 4.78, 0.14], [1.43, 0.85, 1.18]);
     for (const [x, y] of [[-0.95, 4.75], [-0.45, 4.9], [0.12, 5], [0.8, 4.86]])
       ball(body, '#76513a', [x, y, -0.92], [0.47, 0.5, 0.36]);
+    if (persona === 'girl') {
+      // Animal Crossing's round pigtails and flared dress, on the same animated rig.
+      for (const x of [-1.35, 1.35]) {
+        ball(body, '#76513a', [x, 4.15, 0.28], [0.55, 0.85, 0.55]);
+        ball(body, '#f4ce87', [x, 4.65, 0.04], [0.25, 0.19, 0.23]);
+      }
+      cylinder(body, shirt, [0, 1.48, 0], 0.72, 1.1, 0.85);
+    }
   } else for (const x of [-1, 1]) {
     if (species === 'cat') {
       mesh(body, new THREE.ConeGeometry(0.63, 1.3, 3), color, [x, 5.26, 0]);
@@ -59,6 +67,7 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
   const smile = mesh(body, new THREE.TorusGeometry(0.23, 0.035, 6, 14, Math.PI), '#674b3e', [0, 3.51, -1.13]);
   smile.rotation.z = Math.PI;
   root.name = `village-${species}`;
+  root.userData.persona = persona === 'girl' ? 'girl' : 'boy';
   const leap = createLeapAnimation(body, limbs);
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   let lastTime = 0, phase = 0, lean = 0, toolTime = Infinity, wasUsing = false;
