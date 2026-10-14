@@ -93,6 +93,7 @@ export class GpuTiming {
     this._enabled = on;
     this._epoch++;
     this._parts = [];
+    if (!on) return; // Keep completed results inspectable after stopping a capture.
     this.last = {};
     this.lastPasses = [];
     this.lastCoverage = null;

@@ -79,6 +79,9 @@ function fixture(supported = true) {
     ['same', 1, 0], ['new renderer never registered with profiler', 2, 1], ['same', 3, 3],
   ]);
   assert.deepEqual([t.lastCoverage.observed, t.lastCoverage.timed, t.lastCoverage.complete], [3, 3, true]);
+  t.enabled = false;
+  assert.equal(t.frameMs, 6, 'stopping a capture keeps its completed results inspectable');
+  t.enabled = true;
   e = gpu.device.createCommandEncoder(); e.beginRenderPass({}).end();
   gpu.queue.submit([e.finish()]); t._endFrame(3); await drain();
   assert.equal(t.lastCoverage.unlabelled, 1, 'unknown clients remain measured and visible');
