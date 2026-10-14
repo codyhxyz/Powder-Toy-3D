@@ -22,7 +22,7 @@ export const machinePorts = d => ({
 });
 export function machineBox(d) {
   const ends = d.type === 'miner' ? [deviceCell(d, 0, 1, 0), deviceCell(d, 3, 3, 7)]
-    : [deviceCell(d, 0, d.type === 'heater' ? 0 : 1, 0), deviceCell(d, 3, d.type === 'heater' ? 3 : 1, 3)];
+    : [deviceCell(d, 0, ['heater', 'hearth'].includes(d.type) ? 0 : 1, 0), deviceCell(d, 3, ['heater', 'hearth'].includes(d.type) ? 3 : 1, 3)];
   return { lo: ends[0].map((n, i) => Math.min(n, ends[1][i])), hi: ends[0].map((n, i) => Math.max(n, ends[1][i])) };
 }
 const signature = d => [d.id, d.type, d.x, d.y, d.z, d.rotation].join(':');
@@ -176,7 +176,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
     const seen = new Set(), active = [];
     for (const d of (Array.isArray(devices) ? devices : []).slice(0, INDUSTRY_LIMIT)) {
       // Structural decks are ordinary matter, never a default kind-0 conveyor.
-      if (d?.type === 'foundation' || !validMachine(d, sim.g) || seen.has(d.id)) continue;
+      if (['foundation', 'gate'].includes(d?.type) || !validMachine(d, sim.g) || seen.has(d.id)) continue;
       seen.add(d.id);
       const key = signature(d);
       let s = states.get(key);

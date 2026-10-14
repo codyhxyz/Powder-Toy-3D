@@ -4,6 +4,7 @@ import { DEVICE_TYPES, QUARRY_STARTERS, CASTING_TEMPERATURE } from './catalog.js
 // Sandustry-style growth is paid for by physical deliveries, never a timer.
 const INITIAL_CREDITS = 24;
 const TYPES = Object.keys(DEVICE_TYPES);
+const ADDED_TYPES = new Set(['hearth', 'gate']);
 const starterOwned = Object.fromEntries(TYPES.map(type =>
   [type, QUARRY_STARTERS.filter(d => d.type === type).length]));
 const costOf = owned => TYPES.reduce((sum, type) => sum + owned[type] * DEVICE_TYPES[type].cost, 0);
@@ -21,13 +22,14 @@ export function createProgression(saved) {
   if (saved !== undefined) {
     if (!record(saved) || saved.version !== 1 || !natural(saved.credits) || !natural(saved.earned)
       || !record(saved.owned) || !record(saved.delivered)
-      || Object.keys(saved.owned).length !== TYPES.length
-      || !TYPES.every(type => Object.hasOwn(saved.owned, type) && natural(saved.owned[type]))
+      || Object.keys(saved.owned).some(type => !TYPES.includes(type))
+      || !TYPES.every(type => Object.hasOwn(saved.owned, type) ? natural(saved.owned[type]) : ADDED_TYPES.has(type))
       || !natural(saved.delivered.nuggets) || !natural(saved.delivered.metal)) {
       throw new TypeError('Invalid factory progression save');
     }
     const deliveryValue = saved.delivered.nuggets + saved.delivered.metal * 4;
-    const assets = costOf(saved.owned);
+    const restoredOwned = Object.fromEntries(TYPES.map(type => [type, saved.owned[type] ?? 0]));
+    const assets = costOf(restoredOwned);
     const equity = INITIAL_EQUITY + saved.earned;
     if (!natural(deliveryValue) || !natural(assets) || !natural(equity)
       || deliveryValue !== saved.earned || saved.credits + assets !== equity) {
@@ -35,15 +37,15 @@ export function createProgression(saved) {
     }
     credits = saved.credits;
     earned = saved.earned;
-    owned = Object.fromEntries(TYPES.map(type => [type, saved.owned[type]]));
+    owned = restoredOwned;
     delivered = { nuggets: saved.delivered.nuggets, metal: saved.delivered.metal };
   }
 
   function snapshot() {
     const stage = earned < 12 ? 0 : earned < 48 ? 1 : earned < 96 ? 2 : delivered.metal < 32 ? 3 : 4;
-    const unlocked = TYPES.filter(type => !['miner', 'lift', 'pump', 'heater'].includes(type)
+    const unlocked = TYPES.filter(type => !['miner', 'lift', 'pump', 'heater', 'hearth'].includes(type)
       || ((type === 'miner' || type === 'lift') && earned >= 12)
-      || (type === 'pump' && earned >= 48) || (type === 'heater' && earned >= 96));
+      || (type === 'pump' && earned >= 48) || (['heater', 'hearth'].includes(type) && earned >= 96));
     const goals = [
       `Ship starter gold: ${Math.min(earned, 12)}/12 lifetime credits`,
       `Automate the gold face: ${Math.min(earned, 48)}/48 lifetime credits`,
@@ -54,8 +56,8 @@ export function createProgression(saved) {
     const hints = [
       'Watch the starter sorter. Catch more shallow paydirt; only gold entering the intake earns credits.',
       'Build a mining agent facing the exposed gold wall. Catch its nuggets with belts and a lift.',
-      'Pump the finite east reservoir toward a cooling catch. Keep shipping gold to unlock the furnace.',
-      `Mine METAL into SCRAP. Melt it on a furnace, pump molten metal into a separate intake catch, then cool below ${CASTING_TEMPERATURE}°C; solid metal will not ride belts.`,
+      'Pump the finite east reservoir toward a cooling catch. Keep shipping gold to unlock the coal hearth.',
+      `Mine coal and scrap. Feed coal to the rear firebox and scrap to the middle. Catch and cool the melt below ${CASTING_TEMPERATURE}°C; solid metal will not ride belts.`,
       'Freeplay: all machines stay unlocked. Extend the quarry; dismantling refunds the full price.',
     ];
     return { version: 1, credits, earned, stage, goal: goals[stage], hint: hints[stage],

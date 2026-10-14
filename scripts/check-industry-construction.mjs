@@ -30,7 +30,15 @@ assert.throws(() => deviceSpec({...base,type:'pump',y:122},dims));
 assert(overlaps({...base,type:'pump'},{...base,y:14}));
 assert.equal(baseMaterial('heater'),E.TUNGSTEN);
 assert.equal(baseMaterial('belt'),E.INSULATOR);
-assert.equal(Object.keys(DEVICE_TYPES).length,8);
+assert.deepEqual(Object.keys(DEVICE_TYPES).sort(), ['belt','foundation','gate','hearth','heater','lift','miner','pump','separator','ship']);
+assert.equal(baseMaterial('hearth'), E.TUNGSTEN);
+const gate = deviceSpec({...base, type:'gate'},dims);
+assert.equal(gate.gateMode, 'open');
+assert.equal(gate.gateClosed, false);
+assert.equal(deviceSpec({...base, type:'gate', gateMode:'signal', gateClosed:true},dims).gateClosed, true);
+for (const value of [{gateMode:'toggle'}, {gateClosed:1}, {gateMode:null}]) {
+  assert.throws(() => deviceSpec({...base, type:'gate', ...value},dims), /gate state/);
+}
 assert.equal(DEVICE_TYPES.foundation.cost,1);
 assert.equal(baseMaterial('foundation'),E.TUNGSTEN);
 assert.equal(deviceHeight({type:'foundation'}),1);

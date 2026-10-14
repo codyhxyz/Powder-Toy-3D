@@ -72,6 +72,23 @@ test('starter ownership refunds exactly once; every catalog price is honored', (
   }
 });
 
+test('old ownership saves add no new machines; coal hearth unlocks with the thermal stage', () => {
+  const fresh = createProgression().snapshot();
+  const legacy = clone(fresh);
+  delete legacy.owned.hearth;
+  delete legacy.owned.gate;
+  const restored = createProgression(legacy);
+  assert.deepEqual(restored.snapshot(), fresh);
+  assert.equal(restored.snapshot().owned.hearth, 0);
+  assert.equal(restored.snapshot().owned.gate, 0);
+  assert.equal(restored.canBuild('hearth').ok, false);
+  assert.equal(restored.canBuild('gate').ok, true);
+  assert.equal(deliver(restored, 96).ok, true);
+  assert.equal(restored.canBuild('hearth').ok, true);
+  assert.equal(restored.build('hearth').ok, true);
+  assert.deepEqual(createProgression(clone(restored.snapshot())).snapshot(), restored.snapshot());
+});
+
 test('invalid actions never mutate money or progress, snapshots do not leak mutable state', () => {
   const p = createProgression();
   const before = p.snapshot();
