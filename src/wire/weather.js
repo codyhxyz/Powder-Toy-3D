@@ -26,8 +26,8 @@ function oceanContext(app) {
       return win.scene.ground(Math.floor(x), Math.floor(z), win.P);
     };
   }
-  app.camera.getWorldPosition(eye);
-  if (win?.far) eye.applyMatrix4(win.far.sceneToWorld);
+  // Ocean candidates use world cells: scene -> local grid -> streamed origin.
+  app.volume.worldToLocal(app.camera.getWorldPosition(eye)).add(sim.origin);
   return {
     sim, world: win, mapId: win ? `${win.scene.key}:${win.P.seed}` : null,
     seaLevel: win?.P.sea, target: [eye.x, eye.z],
