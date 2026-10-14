@@ -32,7 +32,7 @@ import { libChecks } from './lib.js';
 //   crystalHit(cell, ro, rd, tEnter, tExit, &t, &n) -> bool   the march's test (sets gCrys*)
 //   crysShard(cell) -> Shard                                  the crystal running through cell
 //   shardHit(s, ro, rd, &tN, tF, &n, &kind) -> bool           ray vs its piece in the cell
-//   shardExit(s, p, d) -> f32                                 distance to leave it from inside
+//   shardExit(s, p, d, &n) -> f32                             distance and outward exit normal
 //   crysRun(cell, dir, &open) -> i32, crysPlane(s, i, &m, &dist)   their parts
 export const crystalGLSL = /* wgsl */ `
 const CRYS_RUN_MAX: i32 = 6;         // cells looked along each way; more crystal than that counts as rock
@@ -160,14 +160,18 @@ fn shardHit(s: Shard, ro: vec3f, rd: vec3f, tN: ptr<function, f32>, tF0: f32, n:
 // How far a ray from p (inside the crystal) along unit d runs before it
 // leaves it (its piece in this cell has no end but its points: through the
 // cell's faces the crystal carries on).
-fn shardExit(s: Shard, p: vec3f, d: vec3f) -> f32 {
+fn shardExit(s: Shard, p: vec3f, d: vec3f, n: ptr<function, vec3f>) -> f32 {
   let q = p - s.o;
   var t = 1e9;
+  *n = s.a;
   for (var i = 0; i < 3; i++) {
     let m = CRYS_HEX[i].x * s.u + CRYS_HEX[i].y * s.w;
     let dn = dot(d, m);
     let dq = dot(q, m);
-    if (abs(dn) > CRYS_RAY_EPS) { t = min(t, (sign(dn) * s.r - dq) / dn); }
+    if (abs(dn) > CRYS_RAY_EPS) {
+      let next = (sign(dn) * s.r - dq) / dn;
+      if (next < t) { t = next; *n = sign(dn) * m; }
+    }
   }
   for (var i = 0; i < 12; i++) {
     if ((s.ends & select(CRYS_END_BACK, CRYS_END_FRONT, i < 6)) == 0) { continue; }
@@ -175,7 +179,10 @@ fn shardExit(s: Shard, p: vec3f, d: vec3f) -> f32 {
     var dist: f32;
     crysPlane(s, i, &m, &dist);
     let dn = dot(d, m);
-    if (dn > CRYS_RAY_EPS) { t = min(t, (dist - dot(q, m)) / dn); }
+    if (dn > CRYS_RAY_EPS) {
+      let next = (dist - dot(q, m)) / dn;
+      if (next < t) { t = next; *n = m; }
+    }
   }
   return max(t, 0.0);
 }
