@@ -7,7 +7,7 @@ import { BODY_MODEL_URL } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import { buildSpartan } from './figureSpartan.js';
 import {
-  createFigure, createContactShadow, JET_NOZZLES, figureMaterial, figureUniforms, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
+  createFigure, createContactShadow, buildJetpack, updateJetFlames, figureMaterial, figureUniforms, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
   CROUCH_POSE, HEAD_LOOK, HEAD_LOOK_MAX, ELBOW_POLE, KNEE_POLE, SPRINT_LEAN,
 } from './figure.js';
 import { prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
@@ -79,7 +79,7 @@ function garbFor(gltf, meshes) {
 }
 
 // The body from a loaded glTF. Same per-frame state as the stickman.
-function createRealFigure(gltf) {
+export function createRealFigure(gltf) {
   const u = figureUniforms();
   const tint = [0, 0, 0, 0];
   const model = cloneSkinned(gltf.scene);   // the download is shared; each body poses its own rig
@@ -153,6 +153,15 @@ function createRealFigure(gltf) {
   root.updateMatrixWorld(true);
   const bone = (n) => model.getObjectByName(n);
   const spine = SPINE_BONES.map(bone), head = HEAD_BONES.map(bone);
+  const jetpack = buildJetpack(root, { up: 3.65, back: 0.75 });
+  jetpack.root.traverse((mesh) => {
+    if (mesh.userData.albedo) {
+      mesh.material = figureMaterial({ albedo: mesh.userData.albedo, u });
+      mats.push(mesh.material);
+    }
+  });
+  // Preserve its cell-space fit while parenting to the animated chest bone.
+  spine[2].attach(jetpack.root);
   const chestToEye = EYE_HEIGHT - spine[2].getWorldPosition(new THREE.Vector3()).y;   // cells at the plain size
   const qRoot = new THREE.Quaternion(), qBind = new THREE.Quaternion();
   const arms = {}, legs = {};
@@ -247,6 +256,7 @@ function createRealFigure(gltf) {
 
   return {
     root,
+    nozzles: jetpack.nozzles,
     // the light is the volume's whatever the grid (gfx/meshLight.js): nothing to rebuild
     bind() {},
     // compile his materials for the scene target before he is first drawn (B5, F8)
@@ -316,6 +326,7 @@ function createRealFigure(gltf) {
         for (const b of head) { turn(b, nod / head.length); b.updateWorldMatrix(false, false); }
       }
       contact.visible = s.onGround && !s.dead && !riding;
+      updateJetFlames(jetpack.flames, s);
     },
     setVisible(v) { root.visible = v; },
     // the eye (world), riding the chest: a held tool's aim frame hangs from it (held.js)
@@ -368,6 +379,7 @@ function createRealFigure(gltf) {
     dispose() {
       mixer.stopAllAction();
       for (const m of mats) m.dispose();
+      jetpack.flames[0].material.dispose();
       contact.material.dispose();
       root.traverse((o) => o.geometry?.dispose());
     },
@@ -430,7 +442,7 @@ export function createBody({ choice }) {
     // which body is showing (tests)
     get showing() { return active() === spartan ? 'spartan' : active() === real ? 'real' : 'stick'; },
     // where the showing body's jetpack exhaust leaves (vfx.js)
-    get nozzles() { return active().nozzles ?? JET_NOZZLES; },
+    get nozzles() { return active().nozzles; },
     get loaded() { return !!real; },
     get real() { return real; },
     get model() { return active().model ?? active().root; },
