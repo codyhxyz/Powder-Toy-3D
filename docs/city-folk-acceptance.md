@@ -159,7 +159,8 @@ untracked `.pi/` artifacts. Both immutable reviewer reports were read.
   feature modules are loaded from immutable pre-optimization `1fcda7c`; IDs,
   not source strings or hashes, are compared.
 - `node --test tools/check-city-folk.mjs`: **13/13**, zero failures/skips,
-  4.68s CPU wall time after follow-up; exhaustive legacy count/sentinels pass.
+  4.36s CPU wall time on reconciled snapshot `041c69d`; exhaustive legacy
+  count/sentinels pass.
 - All four component checks, willow body-clear/circuit routes, three sprint
   checks, all 13 `check-village*.mjs` CPU checks (including art geometry), saves,
   co-op CPU and browser-launch policy check passed; `npm run build` passed.
@@ -179,12 +180,13 @@ These are CPU generator timings only, not guessed GPU savings.
 
 | Window center | Pre-feature production | Composed before | Optimized |
 | --- | ---: | ---: | ---: |
-| Village [-28,12] | 13.60 | 78.79 | 24.09 |
-| Upper [-400,-112] | 12.70 | 181.58 | 183.09 |
-| Orchard [624,80] | 14.38 | 244.57 | 242.41 |
-| City [0,-352] | 8.33 | 83.61 | 21.10 |
-| Meadow [850,70] | 13.72 | 211.82 | 211.69 |
+| Village [-28,12] | 13.33 | 81.12 | 23.98 |
+| Upper [-400,-112] | 12.74 | 179.48 | 181.88 |
+| Orchard [624,80] | 14.39 | 241.99 | 238.74 |
+| City [0,-352] | 7.88 | 85.48 | 20.61 |
+| Meadow [850,70] | 13.66 | 210.11 | 213.27 |
 
+Measurements above are the rerun on production-reconciled `041c69d`.
 Upper/orchard/meadow generation remains substantially costlier than pre-feature;
 these narrow optimizations do not address repeated nature support work. No
 GPU performance failure or acceptable GPU latency is established.
@@ -209,6 +211,33 @@ for (const [name, source] of Object.entries({
 }
 JS
 ```
+
+### Final production reconciliation and rerun
+
+After fix commit `40dd381`, fetched once as directed by the parent. Production
+had advanced four commits to `ae2abc17718ce4a4e175fde99431dc59e53f8716`: Spartan
+thruster geometry updates and a village-art revert (including removal of its
+art-only test/harness). Inspected and merged without conflict, producing
+`041c69dacc00dfd67373b1434953141a340b7214`, **18 ahead / 0 behind** that fetched
+production. No shared checkout, artifact, reset/stash/clean or remote write.
+
+On that reconciled snapshot reran and passed:
+
+- Composed **13/13** and exact-equivalence **189,139,392** comparisons.
+- All four City Folk components including actual village bus frame regressions,
+  willow legacy/body-clear routes, all three sprint checks, and all **12**
+  remaining `check-village*.mjs` CPU checks (the art test was removed by production).
+- Production-change regressions: `jetpack-figure-check.mjs`,
+  `check-character-models.mjs`, `check-loading-character.mjs`,
+  `enemy-aim-cpu-check.mjs` (passes; its Node-only GLB URL attempts log fallback
+  warnings, not a browser/live-model assertion).
+- Saves and co-op CPU, browser-launch policy, Naga four production scene passes,
+  `git diff --check`, and `npm run build` (**1.26s**, existing browser
+  externalization / large-chunk warnings).
+
+The evidence-only commit after this snapshot does not change executable source.
+Parent must do final freshness/release reconciliation; do not infer future
+production freshness from the successful fetched-snapshot rerun.
 
 ## Required parent review / release gates (not claimed complete)
 
