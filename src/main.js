@@ -31,7 +31,8 @@ if (import.meta.env.DEV) {
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
 const TEAM_GAMES = Object.keys(import.meta.glob('./game/index.js')).length > 0;
-const MODES = GAMEMODES.filter((m) => !m.team || TEAM_GAMES);
+// Don't offer an empty mission category when no valid local source map exists.
+const MODES = GAMEMODES.filter(m => (!m.team || TEAM_GAMES) && mapsFor(m.key).length > 0);
 const SETTINGS_STORE = 'powder-toy-3d:settings';   // app.js STORE: the map last played
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;   // app.js MOBILE
 // the most it waits for the loading screen's next step to paint before the
