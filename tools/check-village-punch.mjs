@@ -1,0 +1,74 @@
+// CPU-only: sample the actual toy rig, including rapid repeats and jump/tool overrides.
+import assert from 'node:assert/strict';
+import { character, dispose } from '../src/pov/village/models.js';
+import { PUNCH_COOLDOWN, PUNCH_DURATION, stepResident } from '../src/pov/village/actions.js';
+
+assert.equal(PUNCH_COOLDOWN, 0.2, 'five punches per second, formerly 450 ms recharge');
+assert.ok(PUNCH_DURATION <= PUNCH_COOLDOWN, 'the pose recovers before the next punch');
+const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
+for (const reduced of [false, true]) {
+  globalThis.matchMedia = () => ({ matches: reduced });
+  const avatar = character(), body = avatar.root.children[0], limbs = body.children.slice(0, 4);
+  let time = 0;
+  const pose = (progress, carrying = false, tool = false) =>
+    avatar.animate(time += 1 / 60, 0, false, carrying, 0, 1 - progress, tool);
+  try {
+    pose(0.2);
+    assert.ok(avatar.hand.rotation.x < -0.6, 'fist pulls back before striking');
+    assert.ok(body.rotation.y < 0, 'shoulders coil with the fist');
+    pose(0.4);
+    near(avatar.hand.rotation.x, 1.65);
+    assert.ok(avatar.hand.position.z < 0, 'fist drives forward, not just upward');
+    assert.ok(body.rotation.y > 0 && body.rotation.x < 0, 'torso twists and leans into contact');
+    assert.ok(limbs[0].rotation.x > 0 && limbs[2].rotation.x < 0, 'feet brace the strike');
+    assert.ok(limbs[1].rotation.x > 0, 'off hand guards');
+    near(body.rotation.y, reduced ? 0.1375 : 0.55);
+    pose(0.5); near(avatar.hand.rotation.x, 1.65);
+    pose(0.75);
+    assert.ok(avatar.hand.rotation.x > 0 && avatar.hand.rotation.x < 1.65, 'smooth recovery');
+    pose(1);
+    near(avatar.hand.rotation.x, 0);
+    near(body.rotation.x, 0); near(body.rotation.y, 0); near(body.rotation.z, 0);
+    near(body.position.z, 0); near(avatar.hand.position.z, 0);
+    for (const limb of limbs) { near(limb.rotation.y, 0); near(limb.rotation.z, 0); }
+    pose(0.4); pose(0.4, true);
+    near(avatar.hand.rotation.x, 1.3); near(body.rotation.y, 0);
+    near(avatar.hand.position.z, 0);
+    pose(1, false, true); near(avatar.hand.rotation.x, 0.9);
+    // A short mining tap still plays a complete overhead stroke.
+    avatar.animate(time += 0.1, 0, false, false, 0, 0, true, true);
+    avatar.animate(time += 0.05, 0, false, false, 0, 0, true, false);
+    const high = avatar.hand.rotation.x;
+    avatar.animate(time += 0.075, 0, false, false, 0, 0, true, false);
+    assert.ok(high - avatar.hand.rotation.x > (reduced ? 0.6 : 2.4), 'mining chops down through a large arc, even after releasing');
+    avatar.animate(time += 0.1, 0, false, false, 0, 0, true, false);
+    avatar.animate(time += 0.1, 0, false, false, 0, 0, true, false);
+    near(avatar.hand.rotation.x, 0.9); near(body.rotation.y, 0);
+    // Repeated clicks must not accumulate shoulder offsets or leave a twisted idle pose.
+    for (const fps of [30, 60, 144]) {
+      for (let repeat = 0; repeat < 20; repeat++) {
+        for (let frame = 0; frame < Math.ceil(PUNCH_DURATION * fps); frame++) {
+          avatar.animate(time += 1 / fps, 0, false, false, 0, 1 - frame / (PUNCH_DURATION * fps));
+        }
+        pose(1);
+        near(body.rotation.y, 0); near(body.position.z, 0); near(avatar.hand.position.z, 0);
+      }
+    }
+  } finally { dispose(avatar.root); }
+}
+delete globalThis.matchMedia;
+for (const fps of [30, 60, 144]) {
+  const r = { spec: { home: 1 }, x: 0, z: 6, y: 0, vx: 0, vz: -44, vy: 8, bonk: 0.9 };
+  let last = r.z, peak = 0;
+  for (let frame = 1; frame <= fps * 3; frame++) {
+    stepResident(r, 1 / fps, frame / fps, true);
+    assert.ok(Math.abs(r.z - last) < 44 / fps, 'no position jump during knockback or recovery');
+    if (frame > fps) assert.ok(Math.abs(r.z - last) < 3.5 / fps, 'recoil slows smoothly instead of snapping toward the old walking path');
+    if (frame === fps) assert.ok(6 - r.z > 12, 'strong knockback travels over twelve cells');
+    assert.ok(Math.abs(r.x) <= 1 && Math.abs(r.z) <= 8 && r.y >= 0, 'walls and floor contain the knockback');
+    peak = Math.max(peak, r.y); last = r.z;
+  }
+  assert.ok(peak > 1, 'impact produces a physical hop');
+  near(r.y, 0); near(r.vy, 0);
+}
+console.log('PASS village punch and mining poses, reduced motion, carry/tools, rapid repeats, strong knockback and no snap-back at 30/60/144 fps');

@@ -19,7 +19,8 @@ function mesh(parent, geometry, color, at, scale = [1, 1, 1]) {
 const ball = (p, color, at, scale) => mesh(p, new THREE.SphereGeometry(1, 16, 12), color, at, scale);
 const box = (p, color, at, scale) => mesh(p, new THREE.BoxGeometry(1, 1, 1), color, at, scale);
 const cylinder = (p, color, at, r1, r2, height) => mesh(p, new THREE.CylinderGeometry(r1, r2, height, 20), color, at);
-export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a93' } = {}) {
+const ease = x => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t); };
+export function character({ species = 'human', persona = 'boy', color = '#edbd96', shirt = persona === 'girl' ? '#d87598' : '#5c9a93' } = {}) {
   const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
   const limbs = [];
   for (const x of [-0.55, 0.55]) {
@@ -37,6 +38,14 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
     ball(body, '#76513a', [0, 4.78, 0.14], [1.43, 0.85, 1.18]);
     for (const [x, y] of [[-0.95, 4.75], [-0.45, 4.9], [0.12, 5], [0.8, 4.86]])
       ball(body, '#76513a', [x, y, -0.92], [0.47, 0.5, 0.36]);
+    if (persona === 'girl') {
+      // Animal Crossing's round pigtails and flared dress, on the same animated rig.
+      for (const x of [-1.35, 1.35]) {
+        ball(body, '#76513a', [x, 4.15, 0.28], [0.55, 0.85, 0.55]);
+        ball(body, '#f4ce87', [x, 4.65, 0.04], [0.25, 0.19, 0.23]);
+      }
+      cylinder(body, shirt, [0, 1.48, 0], 0.72, 1.1, 0.85);
+    }
   } else for (const x of [-1, 1]) {
     if (species === 'cat') {
       mesh(body, new THREE.ConeGeometry(0.63, 1.3, 3), color, [x, 5.26, 0]);
@@ -58,12 +67,15 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
   const smile = mesh(body, new THREE.TorusGeometry(0.23, 0.035, 6, 14, Math.PI), '#674b3e', [0, 3.51, -1.13]);
   smile.rotation.z = Math.PI;
   root.name = `village-${species}`;
+  root.userData.persona = persona === 'girl' ? 'girl' : 'boy';
   const leap = createLeapAnimation(body, limbs);
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
-  let lastTime = 0, phase = 0, lean = 0;
+  let lastTime = 0, phase = 0, lean = 0, toolTime = Infinity, wasUsing = false;
   return { root, hand: limbs[3], reset: () => leap.reset(),
     animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, motion = null, kick = 0) {
     const dt = Math.max(0, Math.min(0.1, time - lastTime)); lastTime = time;
+    body.position.z = body.rotation.y = 0;
+    limbs.forEach(l => { l.rotation.y = l.rotation.z = l.position.z = 0; });
     const posing = leap.update(dt, motion, reducedMotion?.matches);
     // Animal Crossing speed-cheat silhouette: pitch forward and scramble, without a phase jump.
     lean += (0.55 * sprintRush - lean) * (1 - Math.exp(-8 * dt));
@@ -74,10 +86,44 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
       body.position.y = Math.sin(time * (talking ? 12 : 2)) * (talking ? 0.08 : 0.035);
       body.rotation.x = -lean;
     }
-    if (tool && !carrying) limbs[3].rotation.x = 0.9 + (using ? Math.sin(time * 18) * 0.4 : 0);
-    if (punch > 0 && !carrying) limbs[3].rotation.x = Math.sin(punch * Math.PI) * 1.9;
+    const working = tool && using && !carrying;
+    if (!tool || carrying) toolTime = Infinity;
+    else if (working && (!wasUsing || toolTime >= 0.38)) toolTime = 0;
+    wasUsing = working;
+    toolTime += dt;
+    if (tool && !carrying) limbs[3].rotation.x = 0.9;
     if (kick > 0 && !carrying) limbs[2].rotation.x = Math.sin(kick * Math.PI) * 1.7;
     body.rotation.z = talking ? Math.sin(time * 9) * 0.025 : 0;
+    if (tool && !carrying && toolTime < 0.38) {
+      // Minecraft's overhead mining stroke: lift high, chop fast, recover even after a tap.
+      const t = toolTime / 0.38, raise = ease(t / 0.4), chop = ease((t - 0.4) / 0.18);
+      const recover = ease((t - 0.65) / 0.35), weight = reducedMotion?.matches ? 0.25 : 1;
+      limbs[3].rotation.x = 0.9 + (1.9 * raise - 2.65 * chop + 0.75 * recover) * weight;
+      limbs[3].rotation.z = -0.35 * raise * (1 - recover) * weight;
+      limbs[1].rotation.x += 0.6 * chop * (1 - recover) * weight;
+      body.rotation.y = (-0.3 * raise + 0.55 * chop) * (1 - recover) * weight;
+      body.rotation.x += -0.2 * chop * (1 - recover) * weight;
+    }
+    if (punch > 0 && !carrying) {
+      // Halo-style melee: coil, snap through the target, hold contact, then recover.
+      const t = 1 - punch, snap = ease((t - 0.2) / 0.2);
+      const wind = ease(t / 0.2) * (1 - snap), hit = snap * (1 - ease((t - 0.5) / 0.5));
+      const weight = reducedMotion?.matches ? 0.25 : 1;
+      limbs[3].rotation.x = -0.65 * wind + 1.65 * hit;
+      limbs[3].rotation.z = (-0.45 * wind - 0.25 * hit) * weight;
+      limbs[3].position.z = (0.3 * wind - 0.8 * hit) * weight;
+      limbs[1].rotation.x += 0.95 * hit * weight;
+      limbs[1].rotation.z = 0.25 * hit * weight;
+      body.rotation.y = (-0.45 * wind + 0.55 * hit) * weight;
+      body.rotation.x += (0.08 * wind - 0.24 * hit) * weight;
+      body.rotation.z += -0.1 * hit * weight;
+      if (!posing) {
+        body.position.y -= 0.16 * wind * weight;
+        body.position.z = -0.45 * hit * weight;
+        limbs[0].rotation.x += 0.45 * hit * weight;
+        limbs[2].rotation.x -= 0.35 * hit * weight;
+      }
+    }
     if (carrying) limbs.forEach((l, i) => { if (i % 2) l.rotation.x = 1.3; });
   } };
 }
@@ -142,6 +188,20 @@ export function nameplate(text) {
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.25), new THREE.MeshBasicMaterial({ map: texture, transparent: true, side: THREE.DoubleSide }));
   sign.rotation.y = Math.PI; sign.renderOrder = 1;
   return sign;
+}
+export function speechBubble(name, text) {
+  const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 192;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff9e6'; ctx.beginPath(); ctx.roundRect(8, 8, 496, 152, 38); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(232, 155); ctx.lineTo(256, 187); ctx.lineTo(280, 155); ctx.fill();
+  ctx.textAlign = 'center'; ctx.fillStyle = '#26786b'; ctx.font = 'bold 32px sans-serif'; ctx.fillText(name, 256, 56);
+  ctx.fillStyle = '#625440'; ctx.font = 'bold 44px sans-serif'; ctx.fillText(text, 256, 121);
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  const bubble = new THREE.Mesh(new THREE.PlaneGeometry(7, 2.625),
+    new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  bubble.name = 'village-speech-bubble'; bubble.position.y = 8;
+  bubble.renderOrder = 2; bubble.visible = false;
+  return bubble;
 }
 export function dispose(root) {
   root.traverse(o => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); });

@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { BODY_MODEL_URL } from '../pov/bodyModel.js';
+import { BODY_MODEL_URLS } from '../pov/bodyModel.js';
 import { buildGarb, GARB_COLORS } from '../pov/garb.js';
 
 const FOV = 20;                       // degrees: a long lens, little distortion (pov/classPortraits.js uses 24)
@@ -41,7 +41,7 @@ export const YOU_YAW = 0.42;                   // rad: the still's turn, a littl
 export const YOU_TIME = 0.6;                   // s into the idle clip: the still's moment
 
 async function loadBody(character, time) {
-  if (character !== 'real') {
+  if (!Object.hasOwn(BODY_MODEL_URLS, character)) {
     const build = character === 'spartan'
       ? (await import('../pov/figureSpartan.js')).buildSpartan
       : (await import('../pov/figure.js')).buildStick;
@@ -57,13 +57,13 @@ async function loadBody(character, time) {
     });
     return { model, mixer: null };
   }
-  const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
+  const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URLS[character]);
   const model = gltf.scene;
   const meshes = [];
   model.traverse((o) => {
     if (!o.isSkinnedMesh) return;
     o.frustumCulled = false;
-    if (o.material.name === 'MI_Hair_1') o.material.color.setRGB(...EYEBROWS);
+    if (['MI_Hair_1', 'MI_Hair_2'].includes(o.material.name)) o.material.color.setRGB(...EYEBROWS);
     meshes.push(o);
   });
   // the hat, skinned to his head bone as in the game

@@ -173,7 +173,7 @@ export function createPov(app) {
   // the shown figure's right hand (a bone), or null
   function rightHand() {
     const body = figure?.model;
-    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(figure.showing === 'real' ? REAL_HAND : STICK_HAND));
+    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(['real', 'woman'].includes(figure.showing) ? REAL_HAND : STICK_HAND));
     return (body && hands.get(body)) ?? null;
   }
   // the right hand in the world while the figure is drawn, else null: a wand's casts are drawn from it in third person (tools/index.js)
