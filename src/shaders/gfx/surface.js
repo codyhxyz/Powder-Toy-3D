@@ -1,4 +1,3 @@
-import { reliefGLSL } from './relief.js';
 import { liquidGLSL } from './liquid.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
@@ -22,8 +21,7 @@ import { glf as f } from '../../glsl.js';
 // fallback), uBevel FU.bevel (crisp-voxel edge radius in cells, 0 = sharp
 // cubes), uGlints FU.glints (1 = sun glints on grains). The close-up detail
 // that was #ifdef'd is a JS template switch (docs/webgpu.md F2): detail is the
-// defines object gfx/detail.js detailDefines() makes ({ DETAIL_RELIEF: 1, ... }).
-//   DETAIL_RELIEF                         relief.js, carved into the smooth hits
+// defines object gfx/detail.js detailDefines() makes ({ DETAIL_GRAINS: 1, ... }).
 //   DETAIL_GRAINS, DETAIL_GRAIN_CLUSTERS  grains.js's gGrainSun in shadeSurf
 //
 // Derivatives: surfView takes the pixel's angular size from dpdx/dpdy of the
@@ -34,7 +32,6 @@ import { glf as f } from '../../glsl.js';
 // grid lines take their fwidth analytically from those ray derivatives
 // (floorFwidth). Nothing here samples with an implicit level.
 export const surfaceGLSL = (detail = {}) => {
-  const relief = !!detail.DETAIL_RELIEF;
   const grains = !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
   return /* wgsl */ `
 ${grains ? `
@@ -369,12 +366,11 @@ const LAVA_SKIN_BUMP: f32 = 0.008 / CELL_M;    // ripples on the melt: 8 mm, in 
 // Turns a lattice 30° about y, so bark plates and rain streaks don't line up with the grid.
 const TURN_Y30: mat3x3f = mat3x3f(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);
 
-// ---- relief: the heights that are geometry up close ----
+// ---- procedural normal mapping: shade detail without tracing extra geometry ----
 // The mid-scale relief of the smooth solids (clumps, crags, bark plates) is a
 // height field over the surface, in cells, centred on 0: matOf bumps the
-// normal by its gradient, and close up (gfx/relief.js, DETAIL_RELIEF) the
-// tracer carves the surface itself by it. Both read it from here, so the
-// geometry and the shading are one relief.
+// normal by its gradient. Like Source's normal-mapped surfaces (Half-Life 2 /
+// TF2), the detail changes lighting, not the hit geometry or its silhouette.
 // Sizes are in metres (m), converted to cells through CELL_M (src/scale.js):
 // a wavelength X_M becomes X_F = CELL_M / X_M per cell, a height X_H = m / CELL_M cells.
 // Sand: the lumpy slump surface a pile's avalanches leave, and clumps and
@@ -551,19 +547,6 @@ fn woodPlates(p: vec3f, fp: f32, mv: ptr<function, vec4f>, c: ptr<function, vec4
 }
 // share of sawn end grain (no bark) on a face with normal n
 fn woodEndGrain(n: vec3f) -> f32 { return smoothstep(WOOD_TOP_EDGE.x, WOOD_TOP_EDGE.y, abs(n.y)); }
-
-// The relief of element id at p (height in cells, gradient): the part of its
-// bump that is real geometry up close. n: the surface normal (wood's end
-// grain is flat). Elements without one return 0.
-fn reliefHeight(id: i32, p: vec3f, n: vec3f, fp: f32) -> vec4f {
-  if (id == E_SAND) { return SAND_SLUMP_H * sandSlumps(p, fp) + SAND_CLUMP_H * sandClumps(p, fp); }
-  if (id == E_SNOW) { return SNOW_DRIFT_H * snowDrifts(p, fp) + SNOW_CLUMP_H * snowClumps(p, fp); }
-  if (id == E_GUNPOWDER) { return POWDER_LUMP_H * powderLumps(p, fp); }
-  if (id == E_ASH) { return ASH_LUMP_H * ashLumps(p, fp); }
-  if (SURF(id) == SURF_CRAG) { var ws: f32; return SURFP(id).x * ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, &ws); }
-  if (id == E_WOOD) { var mv: vec4f; var c: vec4f; var fr: f32; return woodPlates(p, fp, &mv, &c, &fr) * (1.0 - woodEndGrain(n)); }
-  return vec4f(0.0);
-}
 
 // Rubble (E_STONE): rock broken by a pick, a blast or a fall (ROCK breaks
 // into it). Its chips' tones and look, shared by the texture (matOf) and the
@@ -1413,7 +1396,6 @@ fn applyMat(s: ptr<function, Surf>, m: Mat) {
   (*s).cav = clamp(m.cav, 0.0, 1.0); (*s).aniso = m.aniso; (*s).tang = m.tang; (*s).trans = m.trans; (*s).emit = m.emit;
   (*s).n = bumpNormal((*s).ng, m.g);
 }
-${relief ? reliefGLSL : ''}
 // Surface record for a smooth-channel hit: blend the material of the cells of
 // that channel around the point, weighted trilinearly. The two most common
 // elements get a full material each; their border is broken up with noise so
@@ -1465,8 +1447,7 @@ fn flowPhase(p: vec3f) -> f32 { return fract(FU.simClock / FLOW_PERIOD + vnoise(
 fn gatherSurf(hp: vec3f, n: vec3f, ch: i32) -> Surf {
   var s: Surf;
   s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = ch; s.id = E_EMPTY; s.cell = vec3i(floor(hp - n * 0.5)); s.seed = 0.0;
-  s.face = vec3i(0, 1, 0);${relief ? `
-  if (gRelOn) { s.tp = gRelQ; s.tp1 = gRelQ; }   // a carved hit's texture lies over the envelope (gfx/relief.js)` : ''}
+  s.face = vec3i(0, 1, 0);
   let q = hp - n * GATHER_DEPTH - 0.5;
   let c0 = vec3i(floor(q));
   let f = q - vec3f(c0);
@@ -1922,8 +1903,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
     sh = vec3f(1.0);
     if (FU.shadows != 0u) { sh = sunShadow(s.p, ng); }
   }${grains ? `
-  sh *= gGrainSun;   // a grain shaded by the grains next to it (gfx/grains.js)` : ''}${relief ? `
-  sh *= reliefSunVis();   // in the shade of the relief (gfx/relief.js)` : ''}
+  sh *= gGrainSun;   // a grain shaded by the grains next to it (gfx/grains.js)` : ''}
   var aoT = ao * s.cav;
 
   // specular layer (F0) and the energy it takes from the diffuse one
@@ -1949,13 +1929,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
     if (s.flowW > 0.0) { gs = mix(gs, glintSpec(s.tp1, n, v, l, s.rough, F0, s.glintDens), s.flowW); }
     spec = mix(spec, gs, g);
   }
-  var c = sunTerm(sh, dSun, s.cav, spec);${relief ? `
-  // down a carved crevice: less sky and ambient (the sun had reliefSunVis)
-  {
-    let sky = reliefSkyVis();
-    s.cav *= sky;
-    aoT *= sky;
-  }` : ''}
+  var c = sunTerm(sh, dSun, s.cav, spec);
 
   // leaves: sunlight through a thin clump (thickness from the natural-solids field)
   if (s.trans > 0.0 && ngl < 0.0) {
@@ -2114,7 +2088,7 @@ fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
 // is shaded once, whichever kind it is.
 //
 // The library at a detail level, in the order the tracer pastes it after
-// lib(g): surface (relief inside), liquid, liquid detail, media, grains. render.js defines what the material code calls
+// lib(g): surface, liquid, liquid detail, media, grains. render.js defines what the material code calls
 // back (the march's event codes, softBlob, meshCutT) and pastes the
 // decoration's lookups (shaders/gfx/deco.js); a probe brings stand-ins with
 // the GLSL's definitions (the mesh cut and the paint read from the frame).
@@ -2162,7 +2136,7 @@ export const DETAIL_LEVELS_WGSL = {
 };
 
 // The realistic path at detail d: the ray's first event in a cell (a crisp
-// voxel, a carved relief hit, grain geometry), the hit shaded once, the floor,
+// voxel, a smooth surface, grain geometry), the hit shaded once, the floor,
 // a liquid interface with its detail and traced reflection, its absorption,
 // and a media segment. In scope: ro, rd, p (a grid point on the ray), n (a
 // unit normal), ci, a, id (a cell of the state and its element), s (a scalar).
@@ -2172,11 +2146,7 @@ const realisticBody = (d) => /* wgsl */ `
   var nh = n;
   var hitK = 2;   // 1 crisp, 2 smooth, 3 grain
   var hp = p;
-  if (crispHit(ci, id, ro, rd, s, s + 1.0, &t, &nh)) { hitK = 1; hp = ro + rd * t; }${d.DETAIL_RELIEF ? `
-  else {
-    var tr = s;
-    if (reliefHit(ro, rd, CH_GRANULAR, &tr)) { hp = ro + rd * tr; }
-  }` : ''}${GRAINS_ANY(d) ? `
+  if (crispHit(ci, id, ro, rd, s, s + 1.0, &t, &nh)) { hitK = 1; hp = ro + rd * t; }${GRAINS_ANY(d) ? `
   var ev = EV_OPAQUE;
   var tEv = s + 0.5;
   var anyHit = false;

@@ -45,9 +45,8 @@ export const BLOCK = 3;              // cells a side (0.9 m at 30 cm cells: Mine
 const DIG_KINDS = [K.POWDER, K.SOLID];
 const STALE_S = 0.25;                // s a bite dug is taken as gone while the aim (a GPU pick) catches up
 
-// The bite drawn on the surface stands out this far toward you along the aimed axis: past the
-// tallest surface relief up close (gfx/detail.js: rock crags 7 cm ≈ 0.23 cells), which it must cover.
-const RELIEF_CLEAR = 0.25;           // cells
+// Keep the existing highlight clearance around a smooth surface hit.
+const SURFACE_CLEAR = 0.25;          // cells
 
 // The lattice block holding `cell`: its minimum corner.
 export const blockMin = (cell, out = new THREE.Vector3()) => out.copy(cell).divideScalar(BLOCK).floor().multiplyScalar(BLOCK);
@@ -105,7 +104,7 @@ export function digger(env, { power, limit = Infinity, tools, reach }) {
     }
     const axis = t.aim.face >> 1, out = t.aim.face % 2 === 0 ? 1 : -1;   // the aimed face's axis, and outward along it
     const lo = t.min.toArray(), hi = lo.map((v) => v + BLOCK);
-    if (out > 0) hi[axis] += RELIEF_CLEAR; else lo[axis] -= RELIEF_CLEAR;
+    if (out > 0) hi[axis] += SURFACE_CLEAR; else lo[axis] -= SURFACE_CLEAR;
     const cracked = t.need > 1 && t.key === hitKey ? hits / t.need : 0;
     u.uDigMin.value = [...lo, cracked];
     u.uDigMax.value = [...hi, 1 + axis];

@@ -81,10 +81,6 @@ assert.deepEqual(rayCell(boundary,planeRoots(boundary,1,1)[0]),[0,1,0]);
 assert.equal(rayEntryAxis(inverseRay([0,-1,0.5],[0,1,0]),1),1);
 const almostStraight={C:[0,0,0],B:[Math.fround(Math.sqrt(0.5)),Math.fround(Math.sqrt(0.5)),1e-5],A:[0,Math.fround((1/2048)*1e-10),0]};
 close([Math.fround(arcLength(almostStraight,0,1))],[1],2e-7);
-// reliefHit's existing 1.5-cell shell may extend past a chord. Its horizontal
-// extrapolation error k*extension*(sqrt(2)+extension) stays below 1/256 cell.
-assert(ROLLING_LOG.k*1.5*(Math.sqrt(2)+1.5)<1/256);
-
 // Dense independent membership oracle catches lost reentry and boundary roots.
 for (let j=0;j<100;j++) {
   const r={C:[-1,j/40-1,0.5],B:[0.5,-j/50,0],A:[0,0.1,0]};

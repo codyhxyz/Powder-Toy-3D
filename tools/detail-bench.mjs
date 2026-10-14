@@ -15,11 +15,11 @@
 // SwiftShader runs the view on the CPU, so in the container use a small
 // viewport and grid to see it run: --size 64 --viewport 160x100 --cams god --rounds 1.
 // usage: node tools/detail-bench.mjs [--port 5606] [--preset lab|volcano|plume|pour|pourAfter|test] [--cams eyeSand,god]
-//        [--features relief,grains] [--shots outDir] [--size 128] [--viewport 1280x800] [--rounds 7] [--frames 20] [--steps 900]
+//        [--features grains,smoothClose] [--shots outDir] [--size 128] [--viewport 1280x800] [--rounds 7] [--frames 20] [--steps 900]
 // Noise: identical shaders differ by up to ~0.4 ms per camera; rerun a tier
 // that sits near a COST_*_MS boundary.
 // On a software adapter (SwiftShader) the features it can't draw
-// (gfx/detail.js SOFTWARE_UNDRAWABLE: relief, grains, clumps) are skipped with
+// (gfx/detail.js SOFTWARE_UNDRAWABLE: grains, clumps) are skipped with
 // that reason: their first draw crashes its GPU process.
 //        --all  also times every feature on at once against all off
 import { mkdirSync, writeFileSync } from 'fs';

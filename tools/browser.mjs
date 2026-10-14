@@ -112,7 +112,7 @@ function releaseSlot() {
     if (fs.statSync(SLOT_FILE).ino === slotInode && (owner === process.pid || (slotGuardPid > 0 && owner === slotGuardPid)))
       fs.rmSync(SLOT_FILE, { force: true });
   } catch {}
-  if (slotStarted) console.error(`[browser] total GPU slot occupancy ${Date.now() - slotStarted} ms`);
+  if (slotStarted && !slotGuardPid) console.error(`[browser] total GPU slot occupancy ${Date.now() - slotStarted} ms`);
   slotStarted = slotDeadline = 0; slotInode = null; slotToken = ''; slotGuardPid = 0;
 }
 // A failed close must not cancel the independent hard kill or release the
@@ -126,7 +126,7 @@ async function guardSlot(limit) {
   if (!owner) throw new Error('Cannot establish test process ownership; refusing GPU launch');
   watchdog = spawn(process.execPath, [
     fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url)),
-    String(owner.pid), owner.start, String(slotDeadline), SLOT_FILE, String(slotInode), slotToken,
+    String(owner.pid), owner.start, String(slotDeadline), SLOT_FILE, String(slotInode), slotToken, String(slotStarted),
   ], { stdio: ['pipe', 'pipe', 'inherit'] });
   slotGuardPid = watchdog.pid;
   watchdog.stdin.on('error', () => {});
@@ -283,7 +283,7 @@ export async function launchBrowser(options = {}) {
       args: mergeArgs([...GPU_ARGS, ...logArgs, `--tpt-gpu-lease=${slotToken}`],
         args.filter(a => !a.startsWith('--tpt-gpu-lease='))),
       ...launch,
-      env: { ...process.env, ...launch.env, TPT_GPU_LEASE_TOKEN: slotToken },
+      env: { ...(launch.env ?? process.env), TPT_GPU_LEASE_TOKEN: slotToken },
       timeout: Math.max(1, Math.min(launch.timeout || remaining, remaining)),
     });
   } catch (e) {
