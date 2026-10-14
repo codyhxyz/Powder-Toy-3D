@@ -18,6 +18,8 @@ import { muzzleCell } from './transfer.js';
 // the wait isn't lost: it's kept and acts as soon as the wait ends (input
 // buffering), for up to `interval`.
 //
+// buffer: false discards clicks during cooldown (continuous tools stop on release).
+//
 //   const t = trigger(REFIRE);                    // button: 'primary' (default) or 'secondary'
 //   if (t.ready(ctx)) { if (doIt()) t.fire(); }   // ready() once a frame; fire() only when it acted
 //
@@ -59,7 +61,7 @@ const TIME_EPS = 1e-6;   // s: a wait this close to done counts as done (frame t
 // one perk speeds up every tool, a new one included.
 export const toolDt = (ctx) => ctx.dt * (ctx.toolRate ?? 1);
 
-export function trigger(interval, { hold = true, button = 'primary' } = {}) {
+export function trigger(interval, { hold = true, button = 'primary', buffer = true } = {}) {
   const holdWait = typeof hold === 'number' ? Math.max(0, hold - interval) : 0;   // s held repeats wait beyond `interval`
   // The waits run below zero by the part of a frame they overshot, and the next
   // one starts that much early (HL2: m_flNextPrimaryAttack += fire rate), so a
@@ -77,8 +79,8 @@ export function trigger(interval, { hold = true, button = 'primary' } = {}) {
       wait -= dt;
       heldWait -= dt;
       queued = Math.max(0, queued - dt);
-      if (ctx[`${button}Pressed`]) queued = interval;
-      return wait <= TIME_EPS && (queued > 0 || (hold !== false && ctx[button] && heldWait <= TIME_EPS));
+      if (ctx[`${button}Pressed`]) queued = buffer ? interval : 0;
+      return wait <= TIME_EPS && ((buffer ? queued > 0 : ctx[`${button}Pressed`]) || (hold !== false && ctx[button] && heldWait <= TIME_EPS));
     },
     fire() { wait = carry(wait) + interval; heldWait = carry(heldWait) + interval + holdWait; queued = 0; },
     reset() { wait = 0; heldWait = 0; queued = 0; },

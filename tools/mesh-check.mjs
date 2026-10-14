@@ -87,7 +87,7 @@ const CHECKS = {
     ...need(sum(r.counts) > 0 && r.motes > 0, `nothing burst (${sum(r.counts)} effects, ${r.motes} motes)`),
     // each effect's own pixels against the frame just before the bursts: the
     // four pools (star, streak, normal and additive dots) and the birds' motes
-    ...['flash', 'sparks', 'dust', 'tracer', 'jet', 'feathers'].flatMap((k) => need(r.lift[k] > 30, `the ${k} isn't drawn at its spawn point (lift ${r.lift[k]})`)),
+    ...['flash', 'sparks', 'mist', 'tracer', 'jet', 'feathers'].flatMap((k) => need(r.lift[k] > 30, `the ${k} isn't drawn at its spawn point (lift ${r.lift[k]})`)),
     ...need(r.countsAfter3s === 0, `${r.countsAfter3s} particles outlived their lives`),
   ],
   uploads: (r) => [

@@ -1289,7 +1289,8 @@ ${curved ? `  // optical distance is in flat material space, not display-ray t
 fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
-  let n = liquidRipple(p, vec3f(0.0, 1.0, 0.0));
+  let geometric = vec3f(0.0, 1.0, 0.0);
+  let n = liquidOpticalNormal(rd, liquidRipple(p, geometric), geometric, true, IOR(lid));
   let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)

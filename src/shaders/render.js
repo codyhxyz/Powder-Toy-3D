@@ -186,7 +186,11 @@ struct VolumeHit {
   hit: bool,
 }
 // The clip depth of grid point p through the jittered camera, WebGPU's [0, 1] (docs/webgpu.md F4).
-fn volumeDepth(p: vec3f) -> f32 { return clipDepth(FU.viewProj * FU.model * vec4f(p, 1.0)); }
+fn volumeDepth(p: vec3f) -> f32 {
+  let clip = FU.viewProj * FU.model * vec4f(p, 1.0);
+  if (clip.w <= 0.0) { return 0.0; }
+  return clipDepth(clip);
+}
 ${meshCutGLSL}`;
 
 // =====================================================================
@@ -856,13 +860,19 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         stop = true;
       } else {
         let lid = liquidIdAt(hp - n0 * IFACE_PROBE, E_WATER);
-        if (liquidInterface(hp, n0, true, lid, false, &ro, &rd, &col, &trans, &mediumLight)) { liq = lid; }
+        // An immersed camera/near clip is not an air-water interface.
+        if (t0 > bh.x) {
+          liq = liquidIdAt(hp, lid);
+          gSkyIn = skyInAt(probeAt(hp));
+        } else {
+          if (liquidInterface(hp, n0, n0, true, lid, false, &ro, &rd, &col, &trans, &mediumLight)) { liq = lid; }
+          tCut -= tEnter;
+          rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+          tEnter = 0.0; phiA = surfSample(ro);
+        }
         lightRef = vec3f(1.0);
-        if (FU.shadows != 0u) { lightRef = sunShadowAt(hp - n0 * IFACE_PROBE); }   // inside: the map carries the liquid above
+        if (FU.shadows != 0u) { lightRef = sunShadowAt(select(hp - n0 * IFACE_PROBE, hp, t0 > bh.x)); }   // inside: the map carries the liquid above
         lightY = hp.y;
-        tCut -= tEnter;
-        rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
-        tEnter = 0.0; phiA = surfSample(ro);
       }
     }
   }
@@ -1102,14 +1112,15 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           break;
         } else {
           // liquid surface: refract in or out
-          var n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER)));
+          let geometric = surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER));
+          var n = liquidRipple(hp, geometric);
           var lid = liq;
-          if (ev == EV_ENTER) { lid = liquidIdAt(hp - n * IFACE_PROBE, E_WATER); }${liq ? `
+          if (ev == EV_ENTER) { lid = liquidIdAt(hp - geometric * IFACE_PROBE, E_WATER); }${liq ? `
           n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)` : ''}
           if (bends < MAX_BENDS) {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
-            let inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, &ro, &rd, &col, &trans, &mediumLight);
+            let inside = liquidInterface(hp, n, geometric, ev == EV_ENTER, lid, bends == 1, &ro, &rd, &col, &trans, &mediumLight);
             tCut -= tEv;
             liq = select(E_EMPTY, lid, inside);
             if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }

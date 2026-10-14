@@ -10,7 +10,7 @@ import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
 import { gridSpace } from './space.js';
 
-// POV effects: muzzle flash (and a short light), sparks, dust and chips,
+// POV effects: muzzle flash (and a short light), sparks,
 // splash mist and tracers. Cosmetic only: the real debris, splashes and heat
 // are sim cells the engine makes itself, so everything here is small, short
 // and pooled. The particles are gfx/billboards.js's analytic pools (three.quarks
@@ -27,8 +27,6 @@ import { gridSpace } from './space.js';
 // ---- pools: the most particles each effect has alive at once
 const FLASH_MAX = 12;
 const SPARK_MAX = 120;
-const DEBRIS_MAX = 64;
-const CHIP_MAX = 48;
 const MIST_MAX = 96;
 const TRACER_MAX = 48;
 const JET_MAX = 90;
@@ -47,8 +45,6 @@ const FLASH_CORE_COLOR = [12, 9, 6];    // HDR, the core
 const FLASH_EMBERS = 5;                 // sparks thrown out of the muzzle
 const FLASH_EMBER_SPEED = [18, 34];     // cells/s along the aim
 const FLASH_EMBER_SPREAD = 0.35;        // share of the speed thrown sideways at most
-const FLASH_SMOKE = 2;                  // puffs of smoke left at the muzzle
-const FLASH_SMOKE_COLOR = [0.5, 0.5, 0.52];
 const FLASH_LIGHT_COLOR = 0xffb35a;
 const FLASH_LIGHT_TIME = 0.06;          // s, fading linearly
 const FLASH_LIGHT_GAIN = 6;             // illuminance at one cell from the muzzle (scale-free)
@@ -65,24 +61,6 @@ const SPARK_GRAVITY = 40;               // cells/s²
 const SPARK_DRAG = 2;                   // 1/s
 const SPARK_COLOR = [6, 3.4, 1.1];      // HDR, hot orange-white
 const SPARK_SPREAD = 0.8;               // how far from the normal the sparks scatter (0 = along it, 1 = a hemisphere)
-
-// ---- dust and chips (powders, broken solids), tinted by the element hit
-const DUST_GUN = 5;
-const DUST_GRAIN = 2;   // dust puffs a kicked clump of sand trails per frame of flight (kick:grain)
-const CHIPS_GUN = 6;                    // only when a solid broke
-const DUST_SIZE = [0.5, 0.9];           // cells across at birth...
-const DUST_GROW = 2.2;                  // ...growing to this many times that
-const DUST_LIFE = [0.35, 0.6];          // s
-const DUST_SPEED = [2, 6];              // cells/s, mostly along the normal
-const DUST_GRAVITY = 6;                 // cells/s²
-const DUST_DRAG = 5;                    // 1/s
-const DUST_ALPHA = 0.55;
-const CHIP_SIZE = [0.12, 0.24];         // cells
-const CHIP_LIFE = [0.3, 0.55];          // s
-const CHIP_SPEED = [6, 16];             // cells/s
-const CHIP_GRAVITY = 45;                // cells/s²
-const CHIP_DRAG = 1;                    // 1/s
-const DEBRIS_LIGHT = 0.9;               // element colour × this (unlit particles in a lit world)
 
 // ---- splash mist (strikes into liquid, the body falling in)
 const MIST_GUN = 8;
@@ -191,8 +169,6 @@ const SHIELD_POP_SPARKS = 30;
 const SHIELD_POP_SPEED = [12, 30];      // cells/s, every way
 
 // ---- the burrower's drill ('drill' event): cuttings sprayed back out of the face, tinted by what it cuts
-const DRILL_CHIP_RATE = 60;             // chips/s while it cuts
-const DRILL_DUST_RATE = 14;             // dust puffs/s while it cuts
 
 // ---- the laser cannon's beam ('laser' event), after Halo 3's Spartan Laser: a fat
 // red beam with a white-hot core that hangs in the air, thins and burns out over
@@ -270,7 +246,6 @@ const WAND_IMPACT_MOTES = 16;           // motes burst out of an impact
 const WAND_IMPACT_MOTE_SPEED = [3, 10]; // cells/s
 const WAND_IMPACT_SPARKS = 10;          // sparks off a spark-look or fire-look impact
 const WAND_IMPACT_MIST = 10;            // puffs off a liquid-look impact
-const WAND_IMPACT_DUST = 5;             // puffs (and chips) off a dust-look impact
 const WAND_IMPLODE_LIFE = 0.3;          // s the void look's motes take to fall into its point
 const WAND_IMPLODE_RING = [1, 2.5];     // cells out they start
 const WAND_BEAM_MOTES_PER_CELL = 0.5;   // motes shed along a beam per cell...
@@ -315,13 +290,13 @@ export function createVfx(env) {
   const LAYOUT = {
     starAdd: [[['flash', FLASH_MAX]], { texture: 'star', blending: 'additive' }],
     streakAdd: [[['spark', SPARK_MAX], ['tracer', TRACER_MAX]], { texture: 'dot', blending: 'additive', stretched: true }],
-    dotNormal: [[['debris', DEBRIS_MAX], ['chip', CHIP_MAX], ['mist', MIST_MAX], ['jetSmoke', JET_SMOKE_MAX]], { texture: 'dot', blending: 'normal' }],
+    dotNormal: [[['mist', MIST_MAX], ['jetSmoke', JET_SMOKE_MAX]], { texture: 'dot', blending: 'normal' }],
     dotAdd: [[['jet', JET_MAX], ['flame', FLAME_MAX], ['ember', EMBER_MAX], ['mote', MOTE_MAX], ['wandTrail', WAND_TRAIL_MAX]], { texture: 'dot', blending: 'additive' }],
   };
-  // how each effect's particles age: dust and mist puffs grow (from each one's own start size); chips don't
+  // how each effect's particles age: mist and smoke grow from their start size
   const LOOK = {
     flash: { fade: FADE.SHARP }, tracer: { fade: FADE.SHARP }, jet: { fade: FADE.SHARP },
-    debris: { grow: DUST_GROW }, mist: { grow: MIST_GROW }, jetSmoke: { grow: JET_SMOKE_GROW }, flame: { grow: FLAME_GROW },
+    mist: { grow: MIST_GROW }, jetSmoke: { grow: JET_SMOKE_GROW }, flame: { grow: FLAME_GROW },
   };
   const pools = {};
   const fx = {};
@@ -380,10 +355,6 @@ export function createVfx(env) {
       vV.randomDirection().multiplyScalar(FLASH_EMBER_SPREAD).add(dir).multiplyScalar(randIn(FLASH_EMBER_SPEED) * s);
       setP(p, at, vV, SPARK_WIDTH * s, SPARK_COLOR, 1, randIn(SPARK_LIFE) * 0.5, SPARK_GRAVITY, SPARK_DRAG);
     });
-    burst(fx.debris, FLASH_SMOKE, (p) => {
-      vV.randomDirection().add(dir).multiplyScalar(randIn(DUST_SPEED) * s);
-      setP(p, at, vV, randIn(DUST_SIZE) * s, FLASH_SMOKE_COLOR, DUST_ALPHA, randIn(DUST_LIFE), -DUST_GRAVITY, DUST_DRAG);
-    });
     light.color.setHex(FLASH_LIGHT_COLOR);
     light.position.copy(at);
     light.distance = FLASH_LIGHT_RANGE * s;
@@ -396,24 +367,6 @@ export function createVfx(env) {
     burst(fx.spark, n, (p) => {
       around(normalDir, SPARK_SPREAD, vV).multiplyScalar(randIn(SPARK_SPEED) * s);
       setP(p, at, vV, SPARK_WIDTH * s, rgb, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
-    });
-  }
-
-  const debrisRgb = [0, 0, 0];
-  function dust(at, n, normalDir, id) {
-    const s = env.getScale();
-    rgbOf(id, DEBRIS_LIGHT, debrisRgb);
-    burst(fx.debris, n, (p) => {
-      around(normalDir, SPARK_SPREAD, vV).multiplyScalar(randIn(DUST_SPEED) * s);
-      setP(p, at, vV, randIn(DUST_SIZE) * s, debrisRgb, DUST_ALPHA, randIn(DUST_LIFE), DUST_GRAVITY, DUST_DRAG);
-    });
-  }
-  function chips(at, n, normalDir, id) {
-    const s = env.getScale();
-    rgbOf(id, DEBRIS_LIGHT, debrisRgb);
-    burst(fx.chip, n, (p) => {
-      around(normalDir, SPARK_SPREAD, vV).multiplyScalar(randIn(CHIP_SPEED) * s);
-      setP(p, at, vV, randIn(CHIP_SIZE) * s, debrisRgb, 1, randIn(CHIP_LIFE), CHIP_GRAVITY, CHIP_DRAG);
     });
   }
 
@@ -546,18 +499,6 @@ export function createVfx(env) {
       vV.randomDirection().multiplyScalar(randIn(SHIELD_POP_SPEED) * s);
       setP(p, vC, vV, SPARK_WIDTH * s, SHIELD_COLOR, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
     });
-  }
-
-  // the burrower cutting for dt seconds at `at` (world), heading dir: chips and dust thrown back out of the face
-  let drillChipAcc = 0, drillDustAcc = 0;
-  function drillSpray(at, dir, id, dt) {
-    drillChipAcc += DRILL_CHIP_RATE * dt;
-    drillDustAcc += DRILL_DUST_RATE * dt;
-    const nc = Math.floor(drillChipAcc), nd = Math.floor(drillDustAcc);
-    drillChipAcc -= nc; drillDustAcc -= nd;
-    const back = vD.copy(dir).negate();
-    if (nc) chips(at, nc, back, id);
-    if (nd) dust(at, nd, back, id);
   }
 
   // the laser's beam from `from` to `to` (world), the bore `radius` (world units) across
@@ -779,7 +720,7 @@ export function createVfx(env) {
   function wandFlash(at, look, size, life, gain = WAND_FLARE_GAIN) {
     burst(fx.flash, 1, (p) => setP(p, at, vT.set(0, 0, 0), size, tint(look, gain, flareRgb), 1, life));
   }
-  // the look's own particles over n points along a → b (world): sparks, embers, mist, dust or smoke
+  // the look's own particles over n points along a → b (world): sparks, embers, mist or smoke
   function lookParticles(a, b, n, look) {
     const s = env.getScale();
     wD.subVectors(b, a);
@@ -789,7 +730,6 @@ export function createVfx(env) {
       if (look.trail === 'spark') sparks(wP, 1, up, tint(look, WAND_TRAIL_GAIN, sparkRgb));
       else if (look.trail === 'ember') torchEmbers(wP, wV.set(0, 0, 0), 1 / EMBER_RATE);
       else if (look.trail === 'mist') mist(wP, 1, up, look.id, 0, look.id >= 0 ? null : look.rgb);
-      else if (look.trail === 'dust') dust(wP, 1, up, look.id >= 0 ? look.id : E.SAND);
       else if (look.trail === 'smoke') {
         burst(fx.jetSmoke, 1, (p) => {
           wV.randomDirection().multiplyScalar(ROCKET_TRAIL_DRIFT * s);
@@ -819,8 +759,8 @@ export function createVfx(env) {
     });
     lookParticles(a, b, randomRound(len / WAND_TRAIL_EXTRA_STEP), look);
   }
-  // a spell landed at `at` (world), the surface facing `normal` (unit, or null), radius in cells, id the cell hit
-  function wandImpact(at, normal, look, radius, id) {
+  // a spell landed at `at` (world), the surface facing `normal` (unit, or null), radius in cells
+  function wandImpact(at, normal, look, radius) {
     const s = env.getScale();
     const n = normal ?? wN.set(0, 1, 0);
     const size = Math.min(WAND_IMPACT_FLASH[1], Math.max(WAND_IMPACT_FLASH[0], radius * WAND_IMPACT_FLASH_PER_RADIUS)) * s;
@@ -839,12 +779,6 @@ export function createVfx(env) {
     if (look.trail === 'spark' || look.fire) sparks(at, WAND_IMPACT_SPARKS, n, look.fire ? SPARK_COLOR : tint(look, WAND_TRAIL_GAIN, sparkRgb));
     if (look.fire) torchEmbers(at, wV.set(0, 0, 0), WAND_IMPACT_SPARKS / EMBER_RATE);
     if (look.trail === 'mist') mist(at, WAND_IMPACT_MIST, n, look.id, 0, look.id >= 0 ? null : look.rgb);
-    const hitSolid = id >= 0 && ELEMENTS[id] && ELEMENTS[id].kind !== K.LIQUID && ELEMENTS[id].kind !== K.GAS;
-    if (look.trail === 'dust') {
-      const what = hitSolid ? id : look.id >= 0 ? look.id : E.SAND;
-      dust(at, WAND_IMPACT_DUST, n, what);
-      if (hitSolid) chips(at, WAND_IMPACT_DUST, n, id);
-    }
   }
   // a beam (or touch) from → to (world), the look's along it and its own particles where it ends
   function wandBeam(from, to, dir, look, hit) {
@@ -905,21 +839,12 @@ export function createVfx(env) {
       const metal = e.id === E.METAL || e.id === E.SCRAP;
       const solid = el.kind === K.SOLID;
       if (metal || (solid && e.broke === false)) sparks(at, gun ? SPARKS_GUN : SPARKS_AXE, n);
-      if (!gun) return; // Mining already produces real debris; don't overlay cosmetic dust or chips.
-      if (el.kind === K.POWDER && !metal) dust(at, DUST_GUN, n, e.id);
-      if (solid && e.broke === true) {
-        dust(at, DUST_GUN, n, e.id);
-        chips(at, CHIPS_GUN, n, e.id);
-      }
     }),
     povEvents.on('round:move', (e) => {
       if (!live() || !e.from || !e.to) return;
       // bullets streak, rockets smoke; a thrown bomb (and a rocket's body) is drawn by its tool
       if (e.kind === 'round') tracer(toWorld(e.from, vA), toWorld(e.to, vB));
       else if (e.kind === 'rocket') rocketTrail(toWorld(e.from, vA), toWorld(e.to, vB));
-    }),
-    povEvents.on('kick:grain', (e) => {
-      if (live() && e.to && e.id >= 0) dust(toWorld(e.to, vA), DUST_GRAIN, vB.set(0, 1, 0), e.id);
     }),
     povEvents.on('blast', (e) => {
       if (live() && e.point) blast(toWorld(e.point, vA));
@@ -930,9 +855,6 @@ export function createVfx(env) {
     }),
     povEvents.on('flame', (e) => {
       if (live() && !e.by) flameStream(e.muzzleWorld, e.dir, e.length, e.dt);
-    }),
-    povEvents.on('drill', (e) => {
-      if (live() && e.point && e.id >= 0) drillSpray(toWorld(e.point, vA), vB.copy(e.dir), e.id, e.dt);
     }),
     povEvents.on('laser', (e) => {
       if (!live() || !e.from || !e.to) return;
@@ -956,7 +878,7 @@ export function createVfx(env) {
       for (const fl of e.flights ?? []) wandTrail(toWorld(fl.from, wA), toWorld(fl.to, wB), lookOf(fl.effect, fl.material));
     }),
     povEvents.on('wand:impact', (e) => {
-      if (live() && e.point) wandImpact(toWorld(e.point, wA), e.normal ? wB.copy(e.normal).normalize() : null, lookOf(e.effect, e.material), e.radius ?? 1, e.id ?? -1);
+      if (live() && e.point) wandImpact(toWorld(e.point, wA), e.normal ? wB.copy(e.normal).normalize() : null, lookOf(e.effect, e.material), e.radius ?? 1);
     }),
     povEvents.on('wand:beam', (e) => {
       if (live() && e.from && e.to) wandBeam(toWorld(e.from, wA), toWorld(e.to, wB), vD.copy(e.dir).normalize(), lookOf(e.effect, e.material), e.hit);

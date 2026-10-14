@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { MAX_ROUNDS, gravityScale } from '../ballistics.js';
 import { CELL_METERS } from '../vitals.js';
 import { povEvents } from '../events.js';
-import { attachModel } from '../models.js';
-import { viewmodelRig, HIT } from '../viewmodel.js';
+import { HIT } from '../viewmodel.js';
+import { heldModel } from './held.js';
 import { h } from '../../ui/dom.js';
 import { trigger, toolDt } from './action.js';
 import { muzzleCell } from './transfer.js';
@@ -87,21 +87,19 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
   // The held gun: the model (models.js) on a hand of the viewmodel rig and a
   // muzzle point at the end of its bore. The flash is vfx.js's, drawn at gun:fire's muzzleWorld.
   function buildModel(env) {
-    const rig = viewmodelRig(env);
-    const hand = rig.hand(pose.pos);
+    const held = heldModel(env, { model: modelKey, pos: pose.pos });
+    const { hand } = held;
     const muzzle = new THREE.Object3D();
     muzzle.position.set(...pose.muzzle);
     hand.add(muzzle);
-    const mesh = attachModel(hand, modelKey);
     // the hand's rest pose at the hip and aimed in (ironsights: the bore centred, just under the crosshair)
     const hip = new THREE.Vector3(...pose.pos);
     const ads = new THREE.Vector3(...(pose.ads ?? [-pose.muzzle[0], -pose.muzzle[1] - ADS_SIGHT_DROP, pose.pos[2]]));
     return {
-      rig, hand, muzzle,
+      ...held, muzzle,
       aimPose: (k) => hand.userData.rest.lerpVectors(hip, ads, k),
       // the muzzle in world space (for gun:fire's muzzleWorld); valid before the mesh arrives
       muzzleWorld: (out = new THREE.Vector3()) => { muzzle.updateWorldMatrix(true, false); return muzzle.getWorldPosition(out); },
-      dispose() { mesh.dispose(); hand.removeFromParent(); },
     };
   }
 
@@ -175,14 +173,13 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
             model.aimPose(smooth(aimed));
             env.requestRender?.();
           }
-          model.rig.update(ctx);
+          model.update(ctx, !scoped);
           body = ctx.player;
           if (body) body.aimScale = THREE.MathUtils.lerp(1, ADS_SPEED, aimed);
-          model.hand.visible = !scoped;
           if (button.ready(ctx) && fire(ctx)) button.fire();
         },
         deselect() {
-          model.hand.visible = false; button.reset(); setScoped(false);
+          model.deselect(); button.reset(); setScoped(false);
           aimed = 0; model.aimPose(0);
           if (body) body.aimScale = 1;
         },
@@ -202,7 +199,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
         get aimed() { return aimed; },         // 0 at the hip … 1 down the sights
         get muzzle() { return model.muzzle; }, // the viewmodel's muzzle point (Object3D)
         muzzleWorld: model.muzzleWorld,        // (out?) → its world position now
-        dispose() { setScoped(false); overlay?.remove(); model.dispose(); },
+        dispose() { setScoped(false); if (body) body.aimScale = 1; overlay?.remove(); model.dispose(); },
       };
     },
   };

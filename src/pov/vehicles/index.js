@@ -13,14 +13,15 @@ import { loadRapier, createPhysics } from './physics.js';
 import { createLook } from './look.js';
 import { JEEP, buildJeep } from './jeep.js';
 import { HOVERBIKE, buildHoverbike } from './hoverbike.js';
+import { BOAT, buildBoat } from './boat.js';
 import './vehicles.css';
 
 // Vehicles for first person (docs/vehicles.md): a Warthog-style jeep and a
-// drifty hoverbike, rigid bodies in Rapier (physics.js) on a voxel collider
+// drifty hoverbike and a small motorboat, rigid bodies in Rapier (physics.js) on a voxel collider
 // made from the CPU copy of the cells.
 //
 // Where they come from: "homes", each keeping one vehicle alive and bringing
-// it back RESPAWN_S after it's destroyed. A home is a Jeep pad or Hoverbike pad
+// it back RESPAWN_S after it's destroyed. A home is a Jeep, Hoverbike or Boat pad
 // (spawners.js, the palette's Entities) or an entry of spawnLayout(layout) (an
 // arena's list). Nothing loads (Rapier, the cells' copy) until a home exists
 // in first person.
@@ -33,7 +34,7 @@ import './vehicles.css';
 //   vehicles.chase(camera, dir)  // seated: the third-person chase camera
 // and vehicles.use(player) on E (get in, get out, or right an overturned one).
 
-const KINDS = { jeep: { spec: JEEP, build: buildJeep }, hoverbike: { spec: HOVERBIKE, build: buildHoverbike } };
+const KINDS = { jeep: { spec: JEEP, build: buildJeep }, hoverbike: { spec: HOVERBIKE, build: buildHoverbike }, boat: { spec: BOAT, build: buildBoat } };
 export const VEHICLE_KINDS = Object.keys(KINDS);
 
 const RESPAWN_S = 8;                     // s from a vehicle's destruction to a new one on its home (as the NPCs' 8 s)
@@ -61,7 +62,7 @@ const BLAST_LEVER = 0.6;                 // m off the centre of mass the shove l
 const HEAT_DAMAGE = 1;                   // body-healths per second while any part touches a hot cell
 // going up: its tank. The bomb's mechanism (tools/bomb.tool.js): gunpowder with a detonator
 // at its ignition point, so the engine's burn runs through it as a wave. Then it burns.
-const CHARGE = { jeep: 64, hoverbike: 27 };   // cells of gunpowder (4³, 3³): a fuel tank's worth of bang
+const CHARGE = { jeep: 64, hoverbike: 27, boat: 27 };   // cells of gunpowder (4³, 3³): a fuel tank's worth of bang
 const CHARGE_SLACK = 2.5;                // candidate cells per charge cell (some are full)
 const EJECT_DAMAGE = 0.7;                // body-healths the driver takes when it goes up under them
 const WRECK_BURN_S = 14;                 // s the wreck keeps burning...
@@ -353,7 +354,9 @@ export function createVehicles(env) {
     v.driver = PLAYER;
     v.impl.driver.visible = true;
     player.vel.set(0, 0, 0);
-    env.hud?.toast?.(`${v.spec.name}: W/S drive · A/D steer · Space ${v.kind === 'jeep' ? 'handbrake' : 'hop'} · Shift boost · E get out`);
+    env.hud?.toast?.(v.kind === 'boat'
+      ? 'Boat: W/S forward/reverse · A/D steer · motor needs water · E get out'
+      : `${v.spec.name}: W/S drive · A/D steer · Space ${v.kind === 'jeep' ? 'handbrake' : 'hop'} · Shift boost · E get out`);
     povEvents.emit('vehicle:enter', { id: v.id, kind: v.kind });
   }
   // Out beside the driver's door, else the other side, behind, in front, on top: the first spot with room for the body.
@@ -493,7 +496,7 @@ export function createVehicles(env) {
     if (seated) hud.show({ seated: seated.spec.name, health: Math.max(0, seated.health / seated.spec.HEALTH), kmh: Math.abs(seated.impl.speed) * MS, boost: seated.impl.state.boost });
     else if (f.live && f.player) {
       const v = nearest(f.player);
-      hud.show(v ? { prompt: !v.alive ? null : upness(v) < OVERTURNED_UP ? `Flip the ${v.spec.name.toLowerCase()}` : v.kind === 'jeep' ? 'Drive the jeep' : 'Ride the hoverbike' } : null);
+      hud.show(v ? { prompt: !v.alive ? null : upness(v) < OVERTURNED_UP ? `Flip the ${v.spec.name.toLowerCase()}` : v.kind === 'hoverbike' ? 'Ride the hoverbike' : `Drive the ${v.spec.name.toLowerCase()}` } : null);
     } else hud.show(null);
   }
   // before Rapier loads: does anything want a vehicle?
@@ -560,7 +563,7 @@ export function createVehicles(env) {
       camera.lookAt(toGrid(target).multiplyScalar(scale).add(vol.position));
       return true;
     },
-    // An arena's vehicles: layout.vehicles = [{ kind: 'jeep'|'hoverbike', team: 'red'|'blue', at: [x, y, z] (grid cells, the ground under it), yaw (rad, 0 faces +z) }].
+    // An arena's vehicles: layout.vehicles = [{ kind: 'jeep'|'hoverbike'|'boat', team: 'red'|'blue', at: [x, y, z] (grid cells, the ground under it), yaw (rad, 0 faces +z) }].
     // Each is kept alive and comes back RESPAWN_S after it's destroyed. spawnLayout(null) clears them.
     spawnLayout(l) {
       layout = (l?.vehicles ?? []).filter((e) => KINDS[e.kind]).map((e) => ({

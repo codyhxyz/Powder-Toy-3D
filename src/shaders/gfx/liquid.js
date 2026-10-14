@@ -11,6 +11,16 @@ fn fresnelSchlick(cosi: f32, ior: f32) -> f32 {
   return f0 + (1.0 - f0) * pow(1.0 - clamp(cosi, 0.0, 1.0), 5.0);
 }
 
+// Ripples shade a surface; they must not send either ray through its wrong side.
+fn liquidOpticalNormal(rd: vec3f, n: vec3f, geometric: vec3f, entering: bool, ior: f32) -> vec3f {
+  let face = select(-geometric, geometric, entering);
+  let optical = select(-n, n, entering);
+  let rt = refract(rd, optical, select(ior, 1.0 / ior, entering));
+  if (dot(rd, optical) >= 0.0 || dot(reflect(rd, optical), face) <= 0.0
+      || (dot(rt, rt) > 1e-6 && dot(rt, face) >= 0.0)) { return geometric; }
+  return n;
+}
+
 // The sun's highlight on a clear interface with normal n seen from v (toward
 // the eye), GGX roughness rough, per unit of Fresnel (the callers multiply
 // by theirs): the GGX lobe shadeSurf lights every other surface with
@@ -258,10 +268,10 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
 // Updates the ray (restarting just past the interface) and returns true if
 // the ray now travels inside the liquid (entering, or total internal reflection).
 // mirror: trace the scene in the reflection (else the sky only).
-fn liquidInterface(hp: vec3f, n0: vec3f, entering: bool, id: i32, mirror: bool, ro: ptr<function, vec3f>, rd: ptr<function, vec3f>,
+fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i32, mirror: bool, ro: ptr<function, vec3f>, rd: ptr<function, vec3f>,
                    col: ptr<function, vec3f>, trans: ptr<function, vec3f>, mediumLight: ptr<function, vec3f>) -> bool {
   let ior = IOR(id);
-  var n = n0;
+  var n = liquidOpticalNormal(*rd, n0, geometric, entering, ior);
   if (entering) {
     if (dot(n, *rd) > 0.0) { n = -n; }
     let F = fresnelSchlick(-dot(n, *rd), ior);
@@ -284,7 +294,7 @@ fn liquidInterface(hp: vec3f, n0: vec3f, entering: bool, id: i32, mirror: bool, 
     *trans *= 1.0 - F;
     let rt = refract(*rd, n, 1.0 / ior);
     *rd = rt;
-    *ro = hp + rt * IFACE_NUDGE;
+    *ro = hp + rt * IFACE_NUDGE - geometric * IFACE_NUDGE;
     return true;
   }
   if (dot(n, *rd) < 0.0) { n = -n; }
@@ -292,7 +302,7 @@ fn liquidInterface(hp: vec3f, n0: vec3f, entering: bool, id: i32, mirror: bool, 
   if (dot(rt, rt) < 1e-6) {           // total internal reflection
     let rr = reflect(*rd, -n);
     *rd = rr;
-    *ro = hp + rr * IFACE_NUDGE;
+    *ro = hp + rr * IFACE_NUDGE - geometric * IFACE_NUDGE;
     return true;
   }
   // Leaving, the face reflects Fx back inside. That light isn't lost: it
@@ -303,8 +313,7 @@ fn liquidInterface(hp: vec3f, n0: vec3f, entering: bool, id: i32, mirror: bool, 
   *col += *trans * Fx * envSky(surfProbe(hp, -n), reflect(*rd, n));
   *trans *= 1.0 - Fx;
   *rd = rt;
-  *ro = hp + rt * IFACE_NUDGE;
+  *ro = hp + rt * IFACE_NUDGE + geometric * IFACE_NUDGE;
   return false;
 }
 `;
-
