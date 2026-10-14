@@ -58,7 +58,7 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
   smile.rotation.z = Math.PI;
   root.name = `village-${species}`;
   let lastTime = 0, phase = 0, lean = 0;
-  return { root, hand: limbs[3], animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false) {
+  return { root, hand: limbs[3], animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, kick = 0) {
     const dt = Math.max(0, Math.min(0.1, time - lastTime)); lastTime = time;
     // Animal Crossing speed-cheat silhouette: pitch forward and scramble, without a phase jump.
     lean += (0.55 * sprintRush - lean) * (1 - Math.exp(-8 * dt));
@@ -67,6 +67,7 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
     limbs.forEach((l, i) => { l.rotation.x = carrying && i % 2 ? 1.3 : gait * (i < 2 ? 1 : -1) * (i % 2 ? -1 : 1); });
     if (tool && !carrying) limbs[3].rotation.x = 0.9 + (using ? Math.sin(time * 18) * 0.4 : 0);
     if (punch > 0 && !carrying) limbs[3].rotation.x = Math.sin(punch * Math.PI) * 1.9;
+    if (kick > 0 && !carrying) limbs[2].rotation.x = Math.sin(kick * Math.PI) * 1.7;
     body.position.y = Math.sin(time * (talking ? 12 : 2)) * (talking ? 0.08 : 0.035);
     body.rotation.z = talking ? Math.sin(time * 9) * 0.025 : 0;
     body.rotation.x = -lean;

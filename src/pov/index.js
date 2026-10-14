@@ -216,7 +216,7 @@ export function createPov(app) {
       if (cancelled) buttons[`${name}Pressed`] = false;
     },
     wheel: (notches) => { wheelNotches += notches; },
-    kick: () => { if (mode === 'on') { if (village.enabled) void village.punch(); else kickQueued = true; } },
+    kick: () => { if (mode === 'on') { if (village.enabled) void village.kick(); else kickQueued = true; } },
     useVehicle,
   });
   const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
