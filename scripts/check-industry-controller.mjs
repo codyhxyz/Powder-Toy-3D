@@ -95,6 +95,7 @@ async function test(name,fn) { await fn();passed++;console.log(`PASS ${name}`); 
 await test('visible Factory controls replace build hotkeys; Sandbox UI stays hidden without disabling its machines',async()=>{
   const f=fixture(),{app,industry,panel}=f; await settle();
   assert(!key('KeyB').prevented);assert(!industry.building);
+  assert(!key('KeyQ').stopped,'Sandbox Q stays the spawn menu');
   assert(!key('KeyB',true).prevented);assert(!industry.building);
   industry.toggle();assert(!industry.building);assert(!app.toolbar.visible);
   industry.update(0,false);
@@ -104,6 +105,8 @@ await test('visible Factory controls replace build hotkeys; Sandbox UI stays hid
   assert(!industry.state.powered);assert(!panel.hidden);assert(app.toolbar.visible);
   assert(!search(panel,e=>e.type==='checkbox'));
   assert(!key('KeyB').prevented);assert(!industry.building);
+  assert(key('KeyQ').stopped);assert(industry.building,'Q opens Factory Build');
+  assert(key('KeyQ').stopped);assert(!industry.building,'Q closes Factory Build');
   industry.toggle();assert(industry.building);assert(app.toolbar.open);
   assert(!key('KeyB',false,{tagName:'SELECT'}).prevented);assert(industry.building);
   assert(!key('KeyR').prevented);assert.equal(industry.state.rotation,0);
@@ -161,6 +164,7 @@ await test('driving suspends construction input/ghost without losing build selec
   industry.toggle(); assert(industry.building);
   app.pov.vehicles={seated:{kind:'boat'}};
   assert(!industry.building); assert(!industry.state.building);
+  assert(key('KeyQ').stopped);assert(!industry.state.building,'Q while driving does not open Build');
   assert(!key('KeyB',true).prevented, 'driving does not intercept build shortcuts');
   const event={target:app.canvas,button:0,type:'pointerdown',preventDefault(){this.prevented=true;},stopImmediatePropagation(){}};
   listeners.get('pointerdown')(event); assert(!event.prevented);
@@ -332,6 +336,12 @@ await test('placement UI distinguishes aiming, checking, invalid, valid and tran
   app.hover.valid=false;industry.update(0,false);
   assert.equal(feedback.attributes['data-state'],'aim');
   assert.match(feedback.textContent,/Click to place/);
+  industry.update(.05,true);await settle();
+  for (let i=0;i<4 && !industry.pending;i++) industry.update(.05,true);
+  assert(industry.pending,'starter shipping transfer is in flight');
+  industry.update(0,false);
+  assert.equal(feedback.textContent,'Click to place');
+  assert.equal(feedback.attributes['data-state'],'aim');
   industry.dispose();
 });
 console.log(`${passed} Industry controller CPU checks passed (DOM and GPU transport mocked; actual controller, view, physics and app scene functions).`);

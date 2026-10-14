@@ -83,13 +83,16 @@ async function loadBody(character, time) {
   });
   // the hat, skinned to his head bone as in the game
   const body = meshes.reduce((a, b) => (b.geometry.attributes.position.count > a.geometry.attributes.position.count ? b : a));
-  const { hat } = buildGarb(meshes);
-  const hatMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...GARB_COLORS.hat), roughness: 0.85, side: THREE.DoubleSide });
-  const hatMesh = new THREE.SkinnedMesh(hat, hatMat);
-  hatMesh.frustumCulled = false;
-  hatMesh.bind(body.skeleton, body.bindMatrix);
-  body.parent.add(hatMesh);
-  meshes.push(hatMesh);
+  for (const [name, geo] of Object.entries(buildGarb(meshes))) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setRGB(...(GARB_COLORS[name] ?? GARB_COLORS.hat)), roughness: 0.85, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.SkinnedMesh(geo, mat);
+    mesh.frustumCulled = false;
+    mesh.bind(body.skeleton, body.bindMatrix);
+    body.parent.add(mesh);
+    meshes.push(mesh);
+  }
 
   // his idle clip: the breathing
   const mixer = new THREE.AnimationMixer(model);

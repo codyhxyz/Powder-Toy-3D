@@ -59,6 +59,7 @@ try {
       assert.ok(Math.abs(flame.geometry.boundingBox.max.y) < 1e-6, 'flame begins at the mouth and extends down');
       close(flame.getWorldPosition(new THREE.Vector3()), nozzle.getWorldPosition(new THREE.Vector3()), 'flame attached to mouth');
     }
+    assert.ok(pack.getObjectByName('jet-strap'), `${name}: straps hold the pack on`);
     if (['real', 'woman'].includes(name)) assert.equal(pack.parent.name, 'spine_03', 'real pack follows animated chest, not root');
     // Both moving/surfacing and crouched poses; yaw, aim pitch and Shrink all affect mouths.
     for (const pose of [
