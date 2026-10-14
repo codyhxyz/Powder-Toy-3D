@@ -1,7 +1,7 @@
 // Minecraft's short, directional melee reach, but toy knockback only: no health or damage.
 export const PUNCH_REACH = 4.5, PUNCH_COOLDOWN = 0.45, PUNCH_DURATION = 0.3;
 export const VILLAGE_TOOLS = [
-  { key: null, name: 'Hands', hint: 'Click or F to punch · harmless bonks, never damage.' },
+  { key: null, name: 'Hands', hint: 'Left-click to punch · F to kick · harmless bonks, never damage.' },
   { key: 'SHOVEL', name: 'Shovel', primary: 'Dig', secondary: 'Dump', hint: 'Dig soil and sand. Right-click to dump your pack.' },
   { key: 'PICKAXE', name: 'Pickaxe', primary: 'Mine', hint: 'Mine stone. Keep digging to break harder blocks.' },
   { key: 'TROWEL', name: 'Trowel', primary: 'Build', secondary: 'Next material', hint: 'Build with dug material. Right-click changes material.' },

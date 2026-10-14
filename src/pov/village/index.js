@@ -12,7 +12,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   let enabled = false, size = null, state = initialState(), writable = true, warning = '', saveKey = '';
   let residents = [], furnishings = null, time = 0, speaking = null, turn = 0, oldThird = false;
   let held = null, tool = null, toolModel = null, toolMaterials = [], usingTool = false;
-  let punchAt = -Infinity, punchSerial = 0, reaction = '', reactionUntil = 0;
+  let punchAt = -Infinity, punchSerial = 0, kicking = false, reaction = '', reactionUntil = 0;
   function equip(key) {
     if (!VILLAGE_TOOLS.some(t => t.key === key)) return;
     releaseActions(); punchSerial++; tool = key; onTool(key);
@@ -28,9 +28,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       });
     }
   }
-  async function punch() {
-    if (!context().active || ui.opened || held || time - punchAt < PUNCH_COOLDOWN) return;
-    punchAt = time; const token = ++punchSerial, sim = app.getSim(), home = room(), l = local();
+  async function punch(kick = false) {
+    if (!context().active || ui.opened || held || (!kick && tool) || time - punchAt < PUNCH_COOLDOWN) return;
+    punchAt = time; kicking = kick;
+    const token = ++punchSerial, sim = app.getSim(), home = room(), l = local();
     app.requestRender();
     const target = punchTarget(l && { x: l.x - HOMES[home], y: l.y, z: l.z }, camera.look.yaw, residents, home);
     if (!target) return;
@@ -150,6 +151,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function act(action) {
     if (!context().active) return { error: 'Enter the village to use your furniture.' };
     if (action.type === 'punch') { void punch(); return {}; }
+    if (action.type === 'kick') { void punch(true); return {}; }
     if (action.type === 'tool') { if (!ui.opened && !held) equip(action.key); return {}; }
     if (action.type === 'tool-primary' || action.type === 'tool-secondary') {
       if (!ui.opened && !held && tool) useTool(action.type === 'tool-primary' ? 'primary' : 'secondary');
@@ -211,6 +213,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     releaseInput(); punchSerial++; punchAt = -Infinity; reactionUntil = 0;
     onEnabled(on);
     if (!on) {
+      avatar.reset();
       toolModel?.dispose(); toolModel = null; toolMaterials.forEach(m => m.dispose()); toolMaterials = []; tool = null;
       releaseHeld();
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
@@ -276,10 +279,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     const p = getPlayer();
     if (p) {
       avatar.root.position.copy(p.pos).multiplyScalar(scale).add(vol.position); avatar.root.scale.setScalar(scale * p.size);
-      avatar.root.rotation.y = yaw; avatar.root.visible = live() && shown;
+      avatar.root.rotation.y = p.leaping ? Math.atan2(-p.vel.x, -p.vel.z) : yaw; avatar.root.visible = live() && shown;
       const punching = Math.max(0, 1 - (time - punchAt) / PUNCH_DURATION);
-      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0, punching, !!tool, usingTool);
-      if (toolModel) toolModel.obj.visible = !held && !punching;
+      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0, kicking ? 0 : punching, !!tool, usingTool, p, kicking ? punching : 0);
+      if (toolModel) toolModel.obj.visible = !held && (kicking || !punching);
     }
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.
@@ -299,7 +302,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     ui.update({ active: c.active, place: home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home` : 'Tinker Creek' });
   }
   return {
-    setEnabled, beforeBody, afterBody() { if (enabled) collide(); }, update, punch,
+    setEnabled, beforeBody, afterBody() { if (enabled) collide(); }, update, punch, kick: () => punch(true),
     cycleTool(direction) { if (context().active && !ui.opened && !held) equip(VILLAGE_TOOLS[(VILLAGE_TOOLS.findIndex(t => t.key === tool) + Math.sign(direction) + VILLAGE_TOOLS.length) % VILLAGE_TOOLS.length].key); },
     get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held; },
     set usingTool(value) { usingTool = value; },

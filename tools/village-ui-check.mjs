@@ -31,7 +31,10 @@ try {
   await page.locator('[data-action="tool-primary"]').click();
   await page.locator('[data-action="tool-secondary"]').click();
   await page.keyboard.press('f');
-  assert.deepEqual(await page.evaluate(() => actions.map(a => a.type)), ['tool', 'tool-primary', 'tool-secondary', 'punch']);
+  assert.deepEqual(await page.evaluate(() => actions.map(a => a.type)), ['tool', 'tool-primary', 'tool-secondary', 'kick']);
+  await tools.getByRole('button', { name: 'Hands' }).click();
+  await page.locator('[data-action="punch"]').click();
+  assert.equal(await page.evaluate(() => actions.at(-1).type), 'punch', 'punch is a click action, not F');
   await page.screenshot({ path: '/tmp/tpt-ac-tools-desktop.png' });
   await page.setViewportSize({ width: 390, height: 844 });
   await tools.getByRole('button', { name: 'Trowel' }).click();

@@ -372,6 +372,32 @@ function modelTransfer(S, { cells, limit, mode, kinds = 0, breaks = 0 }) {
   return acts;
 }
 
+test('stage:fungus', async () => {
+  const sim = await make(32);
+  const out = { checks: [] };
+  try {
+    load(sim, set => {
+      set(4, 4, 4, E.FUNGUS, { temp: 31, ctype: 3 });
+      set(5, 4, 4, E.ROCK, { temp: 45 });
+    });
+    const before = await state(sim);
+    const engine = createTransfer({ getSim: () => sim });
+    const pack = new Load(10);
+    const cells = await engine.take(pack, { cells: [[4, 4, 4], [5, 4, 4]],
+      kinds: [K.SOLID], breakDebris: true, maxHard: 100 });
+    check(out, 'digging preserves fungus, temperature, life and damp/seed', cells[0].every((v, i) => v === before.a(4, 4, 4)[i]), cells[0]);
+    check(out, 'rock still becomes debris', cells[1][0] === breakInto(E.ROCK));
+    check(out, 'fungus is available in the pack', pack.totals()[E.FUNGUS] === 1);
+    const dug = await state(sim);
+    check(out, 'collected fungus leaves air', dug.id(4, 4, 4) === E.EMPTY);
+    const placed = await engine.put(pack, { cells: [[8, 4, 4]], id: E.FUNGUS });
+    const after = await state(sim);
+    check(out, 'replanting restores the exact fungus cell', placed === 1 && after.a(8, 4, 4).every((v, i) => v === before.a(4, 4, 4)[i]));
+    check(out, 'replanting consumes fungus exactly once', !pack.totals()[E.FUNGUS] && pack.count === 1);
+    return out;
+  } finally { sim.dispose(); }
+});
+
 test('stage:transfer', async ({ size = 32, frames = 30 } = {}) => {
   const out = { checks: [], ms: {} };
   const sim = await make(size);

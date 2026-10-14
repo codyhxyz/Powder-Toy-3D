@@ -539,7 +539,7 @@ function build() {
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
   s.wake = () => { simWake(); wakeLoop(); };
-  sim.gravity = settings.gravity;
+  applyGravity();
   sim.airT = worldMode ? sceneByKey(settings.scene).airT ?? PHYS.AMBIENT : PHYS.AMBIENT;   // (a box: room temperature)
   applySimModes(sim, settings);
   scale = 10 / Math.max(nx, nz);
@@ -689,6 +689,10 @@ function villageSpawn() {
   if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
   return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);
 }
+// Keep the user's setting intact when entering/leaving a low-gravity gamemode.
+function applyGravity() {
+  if (sim) sim.gravity = settings.gravity * (modeByKey(selectedMode)?.gravityScale ?? 1);
+}
 // the map and gamemode playing now, for the menu to open on
 function currentMap() {
   return { map: mapOf(settings)?.key ?? null, mode: pov?.game?.running ? pov.game.mode : selectedMode };
@@ -705,6 +709,7 @@ async function startMode(mode, { fresh = false } = {}) {
   const game = pov?.game;
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
+  applyGravity();
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
   pacer.wake();
@@ -1393,7 +1398,7 @@ const settingsPanel = createSettings({
       waveDemoRow(),
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
-        fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
+        fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: () => { applyGravity(); save(); } },
       // TPT's Simulation Options: gravity, air, ambient heat and edge modes (simModes.js)
       ...simModeRows({ change: setSimMode, locked: simModeLock }),
     ] },
@@ -1475,7 +1480,7 @@ function resetSettings() {
   weather.reset();
   const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
   Object.assign(settings, DEFAULTS, keep);
-  sim.gravity = settings.gravity;
+  applyGravity();
   rig.setSpeed(settings.camSpeed);
   applyDetail();
   dock.sync();
