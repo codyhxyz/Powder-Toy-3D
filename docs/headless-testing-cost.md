@@ -70,6 +70,10 @@ Explicit `finally` cleanup is still preferred.
 
 Before launch, announce the command, worktree, assertion, run count, setup estimate, and total slot budget.
 Afterward, report measured slot occupancy separately from the measurement interval.
+The watchdog prints a report path under `~/.cache/tpt-headless/runs/`.
+The JSON report survives parent exit and closed output pipes.
+It records start time, inspection failure details, and verified release time and occupancy.
+Only `status: "released"` confirms cleanup. An incomplete report does not prove compliance with the time limit.
 Do not extend the deadline or repeat a failed run silently.
 If a suite cannot fit, split its assertions without reducing fixture size or changing physics.
 

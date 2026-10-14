@@ -60,6 +60,7 @@ export async function gpuBusyPct() {
 }
 let slotHeld = false;
 let slotStarted = 0, slotDeadline = 0, slotInode = null, slotToken = '', slotGuardPid = 0, watchdog = null, launching = false, attempted = false;
+let guardFinished = Promise.resolve();
 async function takeSlot() {
   fs.mkdirSync(BUDGET_DIR, { recursive: true });
   const until = Date.now() + SLOT_WAIT_MS;
@@ -85,7 +86,7 @@ async function takeSlot() {
             fs.rmSync(SLOT_FILE, { force: true }); continue;
           }
         }
-        else {
+        if (!slotHeld) {
           if (Date.now() > until) throw new Error(`Headless GPU slot still held by pid ${holder}; giving up. Do a CPU check instead.`);
           console.error(`[browser] waiting for the headless GPU slot (held by pid ${holder})`);
           await sleep(SLOT_POLL_MS);
@@ -131,6 +132,8 @@ async function guardSlot(limit) {
   slotGuardPid = watchdog.pid;
   watchdog.stdin.on('error', () => {});
   const guard = watchdog;
+  let finishGuard;
+  guardFinished = new Promise(resolve => { finishGuard = resolve; });
   let output = '';
   guard.stdout.on('data', data => {
     output += data.toString();
@@ -138,6 +141,7 @@ async function guardSlot(limit) {
     if (output.includes('released\n') && watchdog === guard) {
       watchdog = null;
       releaseSlot();
+      finishGuard();
     }
   });
   try {
@@ -149,10 +153,12 @@ async function guardSlot(limit) {
     });
   } catch (error) {
     watchdog = null;
+    finishGuard();
     guard.kill('SIGTERM'); // our child only; no browser launch has started
     throw error;
   }
   guard.once('exit', () => {
+    finishGuard();
     if (watchdog !== guard) return; // normal release already acknowledged
     watchdog = null;
     void stop(1, new Error('GPU deadline guard exited unexpectedly'));
@@ -222,9 +228,13 @@ async function stop(code, error) {
   if (stopping) return;
   stopping = true;
   if (error) console.error(error);
+  const finished = guardFinished;
   // Only our browsers. A broken driver must not prevent the test process exiting.
   const deadline = setTimeout(() => process.exit(code), Math.max(1, Math.min(1000, slotDeadline - Date.now())));
   await Promise.allSettled([...browsers].map(b => b.close()));
+  // Do not cut off the watchdog's verified release/timing message. This
+  // shares the existing cleanup deadline; it does not extend the GPU lease.
+  await finished;
   clearTimeout(deadline);
   process.exit(code);
 }
