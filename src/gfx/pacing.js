@@ -13,6 +13,9 @@
 //   view     the raymarch and post. It reruns when its key changes (camera,
 //            canvas, scene objects, settings), when the derived passes ran, or
 //            on input, then for viewSettle more frames while TAA converges.
+//            While only three's meshes move (wakeMeshes, or the key's scene
+//            objects alone), app.js draws mesh-only frames (gfx/meshFrames.js):
+//            the volume's scene kept, the meshes and post drawn again.
 // With nothing changing a frame costs a few comparisons and no GPU work; the
 // canvas keeps showing its last image.
 
@@ -71,6 +74,7 @@ export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, on
   let last = -Infinity, lastPresent = -Infinity;
   let derivedKey = null, viewKey = null;
   let derivedLeft = 0, viewLeft = 0;
+  let wakes = 0, meshWake = false;
   return {
     // Is a frame due at rAF time `now` (ms)?
     due(now) {
@@ -87,6 +91,8 @@ export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, on
     },
     get settled() { return derivedLeft <= 0 && viewLeft <= 0; },
     get settleLimit() { return derivedSettle + viewFrames() + 4; },
+    /** Frames the view renders after a change until it has settled (TAA converged). */
+    get viewSettle() { return viewFrames(); },
     // Run the derived passes this frame? key: everything they depend on.
     derived(key) {
       if (key !== derivedKey) { derivedKey = key; derivedLeft = derivedSettle; }
@@ -102,7 +108,15 @@ export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, on
       return true;
     },
     // Input or an outside change: render until settled again.
-    wake() { viewLeft = viewFrames(); onWake?.(); },
+    wake() { viewLeft = viewFrames(); wakes++; onWake?.(); },
+    // Only three's meshes moved (the birds' wings): render until settled
+    // again, and what the volume and our other passes draw still holds
+    // (app.js's mesh-only frames, gfx/meshFrames.js).
+    wakeMeshes() { viewLeft = viewFrames(); meshWake = true; onWake?.(); },
+    /** wake() calls so far: anything outside the view key may have changed what the volume draws. */
+    get wakes() { return wakes; },
+    /** Whether wakeMeshes() was called since the last call; clears it. */
+    takeMeshWake() { const w = meshWake; meshWake = false; return w; },
   };
 }
 
@@ -141,13 +155,23 @@ export function createFrameLoop(frame, { raf = (fn) => requestAnimationFrame(fn)
 // returns a number that changes exactly when that string would have
 // (tools/pacing-check.mjs checks it against the string over recorded inputs).
 //
-//   const viewKey = createViewKey();
+//   const viewKey = createViewKey({ still: [volume, floorGrid] });
 //   pacer.view(viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
 //     win?.far?.chunksDrawn, settings, gfx, post.settings), force);
+//   viewKey.still   // a second counter: changes with all of it but three's meshes
+//
+// still: the scene objects whose world transforms our own passes draw with
+// (the volume's place, the floor grid's). viewKey.still changes when the
+// camera, the canvas, `extra`, the settings objects or one of those changes
+// (or one shows or hides), and not when only the other scene objects (three's
+// meshes) move: app.js's mesh-only frames keep the scene the volume drew while
+// it holds (gfx/meshFrames.js).
 const MAT4 = 16;
 const OBJECT_SLOT = 1 + MAT4;   // id, matrixWorld
-export function createViewKey() {
-  let version = 0, primed = false;
+const STILL_SLOT = 1 + MAT4;    // visible, matrixWorld
+export function createViewKey({ still = [] } = {}) {
+  let version = 0, stillVersion = 0, primed = false;
+  const stillSeen = new Float64Array(still.length * STILL_SLOT).fill(NaN);
   const cameraSeen = new Float64Array(2 * MAT4);
   const scalars = [], objects = [];
   const sceneChanged = createSceneWatch();
@@ -158,7 +182,7 @@ export function createViewKey() {
     objects[i] = jsonCopy(v);
     return true;
   };
-  return (camera, scene, pixelRatio, width, height, extra, a, b, c) => {
+  const key = (camera, scene, pixelRatio, width, height, extra, a, b, c) => {
     let changed = !primed;
     primed = true;
     // (in the old string's order: the camera is read before the scene's world
@@ -166,10 +190,20 @@ export function createViewKey() {
     if (storeNumbers(camera.matrixWorld.elements, cameraSeen, 0) | storeNumbers(camera.projectionMatrix.elements, cameraSeen, MAT4)) changed = true;
     if (scalar(0, pixelRatio) | scalar(1, width) | scalar(2, height) | scalar(3, extra)) changed = true;
     if (object(0, a) | object(1, b) | object(2, c)) changed = true;
+    let stillChanged = changed;   // (all of that is what our passes draw with)
     if (sceneChanged(scene)) changed = true;
+    // (after the scene watch: it brought the world matrices up to date)
+    for (let i = 0; i < still.length; i++) {
+      const o = still[i], at = i * STILL_SLOT, shown = o.visible ? 1 : 0;
+      if (stillSeen[at] !== shown) { stillSeen[at] = shown; stillChanged = true; }
+      if (storeNumbers(o.matrixWorld.elements, stillSeen, at + 1)) stillChanged = true;
+    }
     if (changed) version++;
+    if (stillChanged) stillVersion++;
     return version;
   };
+  Object.defineProperty(key, 'still', { get: () => stillVersion });
+  return key;
 }
 
 // Equal as `${x}` would print them: 0 and -0 alike, NaN equal to NaN.
