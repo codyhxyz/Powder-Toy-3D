@@ -255,8 +255,8 @@ export function createRealFigure(gltf) {
     root.updateWorldMatrix(true, true);
     right.set(1, 0, 0).applyQuaternion(root.getWorldQuaternion(qa));
     for (const a of Object.values(arms)) {
-      turn(a.L.upper, -1.3 * amount);
-      turn(a.L.lower, 0.6 * amount);
+      turn(a.L.upper, -2.4 * amount);
+      turn(a.L.lower, 1.2 * amount);
     }
   }
   const length = (a, b) => a.getWorldPosition(va).distanceTo(b.getWorldPosition(vb));
@@ -423,6 +423,7 @@ export function createRealFigure(gltf) {
           blend(bones, from);
         }
       }
+      flapArms(wing);   // after the grip, or the tool pose erases the wingbeat
     },
     get material() { return mats[0]; },
     // tests: the posed rig and each clip's blend weight

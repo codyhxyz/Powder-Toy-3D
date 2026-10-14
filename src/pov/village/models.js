@@ -295,6 +295,12 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
       body.rotation.x = dresser ? -0.1 * reach : (-0.18 + (pose.pulling ? 0.3 : -0.12) * strain) * reach;
       if (gripping) body.position.y = pose.low ? -0.2 * reach : 0;
     }
+    // A chicken wingbeat. Positive x is the raised arm (the punch above); both arms, not the tool hand only.
+    const flap = pose ? 0 : motion?.flap ?? 0;
+    if (flap > 0) {
+      limbs[1].rotation.x = 2.4 * flap; limbs[3].rotation.x = 2.4 * flap;
+      limbs[1].rotation.z = 1.1 * flap; limbs[3].rotation.z = -1.1 * flap;
+    }
   } };
 }
 export function nameplate(text) {
