@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { E, K } from '../src/elements.js';
 import { deviceCell } from '../src/industry/catalog.js';
-import { createIndustryPhysics, controlCell, machineBox, machinePorts, validMachine } from '../src/industry/physics.js';
+import { createIndustryPhysics, validateIndustryPhysics, controlCell, machineBox, machinePorts, validMachine } from '../src/industry/physics.js';
 import { createTransfer, Load } from '../src/pov/tools/transfer.js';
 import { WGSL_CHECK } from '../src/shaders/industry.js';
 import { transferFrag, TransferParams } from '../src/shaders/transfer.js';
@@ -91,7 +91,7 @@ await test('paused dt, bounds, defaults and all 128 machines', async () => {
   assert.equal(f.edits.at(-1).values.dt, 0.1);
   p.dispose(); p.step(1, [d('belt')]); assert.equal(f.edits.length, 129);
 });
-await test('shipping only on confirmed readback; metal exclusive 90 C gate', async () => {
+await test('shipping only on confirmed readback; metal inclusive 90 C gate', async () => {
   const f = fixture(), shipped = [], p = createIndustryPhysics({ getSim: () => f.sim, onShip: c => shipped.push(c) }); await p.ready;
   p.step(0.1, [d('ship')]); p.step(0.1, [d('ship')]);
   assert.equal(shipped.length, 0);
@@ -124,12 +124,13 @@ await test('pump conserves blocked cargo and spills after dismantling without gu
   p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
   assert.equal(f.calls[0].kinds, 1 << K.LIQUID);
   f.answer([[E.WATER, 24, 0, 0.2], [E.WATER, 25, 0, 0.3]]); await settle();
-  assert.equal(p.pending, 2, 'save sees held matter');
+  assert.equal(p.pending, 0, 'held matter does not prevent saving');
+  assert.equal(p.buffered, 2, 'buffered counts held matter');
   p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
   assert.equal(f.calls[1].mode, 1);
   assert.equal(f.calls[1].guardMaterial, E.INSULATOR);
   assert.equal(f.calls[1].items.length, 2);
-  f.answer(); await settle(); assert.equal(p.pending, 2);
+  f.answer(); await settle(); assert.equal(p.pending, 0); assert.equal(p.buffered, 2);
   p.step(0.1, []); p.step(0.1, []);
   assert.equal(f.calls[2].guardMaterial, -1, 'removed machine can spill without base');
   f.answer([[0, 0, 0, 0], [1, 0, 0, 0]]); await settle();
@@ -153,7 +154,140 @@ await test('fair dispatch eventually reaches every shipping device', async () =>
   }
   assert.equal(new Set(f.calls.map(c => c.guardBase[0])).size, 24); p.dispose();
 });
+await test('cargo snapshot conserves cells and does not alias input or output', async () => {
+  const f = fixture(), p = createIndustryPhysics({ getSim: () => f.sim }); await p.ready;
+  const device = d('pump', { powered: true });
+  p.step(0.1, [device]); p.step(0.1, [device]);
+  f.answer([[E.WATER, 24, 0, 0.25], [E.OIL, 71, 1, 0.5]]); await settle();
+  const snapshot = p.toJSON();
+  assert.deepEqual(snapshot, { version: 1, pumps: [{ id: 'pump', device, cells: [[E.WATER, 24, 0, 0.25], [E.OIL, 71, 1, 0.5]] }] });
+  const canonical = validateIndustryPhysics(snapshot, [device]);
+  canonical.pumps[0].cells[0][1] = -20;
+  canonical.pumps[0].device.x++;
+  assert.deepEqual(p.toJSON(), snapshot, 'validation result owns its arrays/device');
+  const other = fixture(), restored = createIndustryPhysics({ getSim: () => other.sim });
+  // Restore before kernels finish: must not invalidate their readiness epoch.
+  restored.fromJSON(snapshot, [device]); await restored.ready;
+  assert.deepEqual(restored.toJSON(), snapshot);
+  snapshot.pumps[0].cells[0][1] = 999;
+  snapshot.pumps[0].device.x++;
+  assert.equal(restored.toJSON().pumps[0].cells[0][1], 24, 'restore owns its cell tuples');
+  assert.equal(restored.toJSON().pumps[0].device.x, device.x, 'restore owns device geometry');
+  assert.equal(other.calls.length + other.edits.length, 0, 'restore never writes terrain');
+  restored.step(0.1, [device]); assert.equal(other.calls.length, 0, 'restored clock starts safely');
+  restored.step(0.1, [device]);
+  assert.equal(restored.pending, 1); assert.equal(restored.buffered, 0, 'in-flight put is not also buffered');
+  assert.deepEqual(other.calls[0].items, [[E.OIL, 71, 1, 0.5], [E.WATER, 24, 0, 0.25]]);
+  other.answer([[0, 0, 0, 0], [1, 0, 0, 0]]); await settle();
+  assert.deepEqual(restored.toJSON(), { version: 1, pumps: [] }, 'landed cells cannot be reserialized');
+  p.dispose(); restored.dispose();
+});
+await test('detached cargo survives save/load then spills unguarded exactly once', async () => {
+  const f = fixture(), p = createIndustryPhysics({ getSim: () => f.sim }); await p.ready;
+  const snapshot = { version: 1, pumps: [{ id: 'removed', device: d('pump', { id: 'removed', rotation: 2 }), cells: [[E.WATER, 27, 0, 0.25]] }] };
+  p.fromJSON(snapshot, []);
+  assert.deepEqual(p.toJSON(), snapshot);
+  p.step(0.1, []); p.step(0.1, []);
+  assert.equal(f.calls[0].guardMaterial, -1);
+  assert.equal(f.calls[0].mode, 1);
+  assert.deepEqual(f.calls[0].items, snapshot.pumps[0].cells);
+  f.answer(); await settle();
+  assert.deepEqual(p.toJSON(), snapshot, 'blocked spill retains serializable cargo');
+  p.step(0.1, []); p.step(0.1, []);
+  f.answer([[0, 0, 0, 0]]); await settle();
+  assert.equal(p.buffered, 0);
+  assert.deepEqual(p.toJSON(), { version: 1, pumps: [] });
+  p.step(0.1, []); p.step(0.1, []);
+  assert.equal(f.calls.length, 2, 'orphan cannot capture again');
+  p.dispose();
+});
+await test('take and put in-flight snapshots/restores refuse without mutation', async () => {
+  const f = fixture(), p = createIndustryPhysics({ getSim: () => f.sim }); await p.ready;
+  const empty = { version: 1, pumps: [] }, device = d('pump');
+  p.step(0.1, [device]); p.step(0.1, [device]);
+  assert.equal(p.pending, 1);
+  assert.throws(() => p.toJSON(), /pending/);
+  assert.throws(() => p.fromJSON(empty, [device]), /pending/);
+  f.answer([[E.WATER, 24, 0, 0.25]]); await settle();
+  const before = p.toJSON();
+  p.step(0.1, [device]); p.step(0.1, [device]);
+  assert.equal(p.pending, 1); assert.equal(p.buffered, 0);
+  assert.throws(() => p.toJSON(), /pending/);
+  assert.throws(() => p.fromJSON(empty, [device]), /pending/);
+  f.answer(); await settle();
+  assert.deepEqual(p.toJSON(), before, 'failed save/restore leaves rejected put cargo intact');
+  p.fromJSON(empty, []);
+  assert.deepEqual(p.toJSON(), empty, 'valid restore replaces rather than appends owned loads');
+  assert.equal(f.calls.length, 2, 'restore itself issues no transfer');
+  p.reset();
+  assert.deepEqual(p.toJSON(), empty, 'explicit world reset has no old cargo even before rebinding');
+  p.dispose();
+});
+await test('malformed snapshots and wrong active identities reject atomically', async () => {
+  const f = fixture(), p = createIndustryPhysics({ getSim: () => f.sim }); await p.ready;
+  const device = d('pump');
+  const good = { version: 1, pumps: [{ id: device.id, device, cells: [[E.WATER, 25, 0, 0.25]] }] };
+  p.fromJSON(good, [device]);
+  const malformed = [null, [], {}, { ...good, version: 2 }, { ...good, pumps: {} }, { ...good, pumps: Array(129).fill(good.pumps[0]) }];
+  const mutations = [
+    s => s.pumps.push(structuredClone(s.pumps[0])),
+    s => { s.pumps[0] = null; },
+    s => { s.pumps[0].id = 'wrong'; },
+    s => { s.pumps[0].device.id = ''; },
+    s => { s.pumps[0].device.id = 'x'.repeat(129); },
+    s => { s.pumps[0].device.type = 'belt'; },
+    s => { s.pumps[0].device.type = {}; },
+    s => { s.pumps[0].device.x = 1.5; },
+    s => { s.pumps[0].device.x = -1; },
+    s => { s.pumps[0].device.x = 4096; },
+    s => { s.pumps[0].device.x = NaN; },
+    s => { s.pumps[0].device.rotation = 4; },
+    s => { s.pumps[0].device.powered = 'true'; },
+    s => { s.pumps[0].device.filter = -10; },
+    s => { s.pumps[0].cells = []; },
+    s => { s.pumps[0].cells = Array(17).fill([E.WATER, 20, 0, 0]); },
+    s => { s.pumps[0].cells = [null]; },
+    s => { s.pumps[0].cells[0].pop(); },
+    s => { s.pumps[0].cells[0][0] = E.SAND; },
+    s => { s.pumps[0].cells[0][0] = 999; },
+    s => { s.pumps[0].cells[0][0] = E.WATER + 0.5; },
+    s => { s.pumps[0].cells[0][1] = NaN; },
+    s => { s.pumps[0].cells[0][2] = Infinity; },
+    s => { s.pumps[0].cells[0][3] = '0'; },
+    s => { s.pumps[0].cells[0][1] = 1e100; },
+  ];
+  for (const mutate of mutations) { const s = structuredClone(good); mutate(s); malformed.push(s); }
+  for (const s of malformed) {
+    assert.throws(() => validateIndustryPhysics(s, [device]));
+    assert.throws(() => p.fromJSON(s, [device]));
+    assert.deepEqual(p.toJSON(), good);
+  }
+  for (const devices of [null, {}, [device, device], [d('belt', { id: device.id })], [d('pump', { x: 25 })], [d('pump', { rotation: 1 })]]) {
+    assert.throws(() => p.fromJSON(good, devices));
+    assert.deepEqual(p.toJSON(), good);
+  }
+  // A later bad entry cannot replace/append the first already-valid load.
+  const badTail = structuredClone(good);
+  badTail.pumps.push({ id: 'tail', device: d('pump', { id: 'tail' }), cells: [[E.SAND, 20, 0, 0]] });
+  assert.throws(() => p.fromJSON(badTail, [device]));
+  assert.deepEqual(p.toJSON(), good);
+  const outside = structuredClone(good); outside.pumps[0].device.x = 128;
+  assert.doesNotThrow(() => validateIndustryPhysics(outside, []), 'standalone validation is independent of grid size');
+  assert.throws(() => p.fromJSON(outside, []), /outside/);
+  assert.deepEqual(p.toJSON(), good);
+  assert.equal(f.calls.length + f.edits.length, 0, 'validation/restoration never overwrites terrain');
+  p.dispose();
+});
+await test('snapshot maximum capacities and current setting changes remain valid', () => {
+  const pumps = Array.from({ length: 128 }, (_, i) => ({ id: String(i), device: d('pump', { id: String(i), x: i * 4 }),
+    cells: Array.from({ length: 16 }, () => [E.WATER, 20, 0, 0.25]) }));
+  const snapshot = { version: 1, pumps };
+  assert.deepEqual(validateIndustryPhysics(snapshot, []), snapshot);
+  assert.deepEqual(validateIndustryPhysics(snapshot, pumps.map(p => ({ ...p.device, powered: true, filter: E.SAND }))), snapshot,
+    'current powered/filter settings may differ without changing identity');
+});
 await test('Naga CPU validation of full industry and transfer WGSL at 32/128', () => {
+  assert.match(transferFrag({ nx: 32, ny: 32, nz: 32 }), /if \(a\.y > P\.maxTemperature\)/, 'temperature upper bound is inclusive');
   assert.ok(TransferParams.fields.some(f => f.name === 'maxTemperature'));
   const dir = mkdtempSync(join(tmpdir(), 'industry-wgsl-'));
   try {

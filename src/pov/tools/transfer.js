@@ -214,7 +214,7 @@ export function createTransfer({ getSim }) {
     // those no harder than maxHard (loose kinds come out as they are). ids: only
     // these elements (allowMask), or all. Returns a promise of the taken cells,
     // or null when nothing was issued (busy, full).
-    // maxTemperature is exclusive and tested atomically with removal. guard:
+    // maxTemperature is inclusive and tested atomically with removal. guard:
     // {base:[x,y,z], material, port:[x,y,z], powered} requires an intact 4x4
     // base and (optionally) native TPT control, also for put(). Both opt-in.
     take(load, { cells, kinds, want = ANY_ID, breakDebris = false, maxHard = ANY_HARD, maxTemperature = 1e30, guard = null, ids = null, limit = Infinity }) {

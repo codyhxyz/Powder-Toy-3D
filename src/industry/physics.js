@@ -1,4 +1,4 @@
-import { E, K } from '../elements.js';
+import { E, K, ELEMENTS } from '../elements.js';
 import { INDUSTRY_LIMIT, DEVICE_TYPES, FILTER_IDS, baseMaterial, deviceCell, deviceDirection } from './catalog.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { createTransfer, Load } from '../pov/tools/transfer.js';
@@ -29,11 +29,65 @@ export function validMachine(d, g) {
     && d.x >= 0 && d.y >= 0 && d.z >= 0 && d.x + 4 <= g.nx && d.y + 1 < g.ny && d.z + 4 <= g.nz;
 }
 
-/** Call step ONLY alongside native simulation advancement. No timers, no
- * writes from promise callbacks. reset is for WORLD REPLACEMENT, not pause or
- * save. pending includes buffered pump matter: never snapshot/reset while it
- * is nonzero (pause capture by stepping with [] to drain, then save). A blocked
- * drain can remain pending indefinitely; do not silently lose its cargo.
+// Standalone save validation cannot know the loaded grid. fromJSON also checks
+// every saved footprint against the actual sim.g before changing owned loads.
+const SAVE_BOUNDS = { nx: 4096, ny: 4096, nz: 4096 };
+const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+function savedDevice(d) {
+  if (!record(d) || typeof d.type !== 'string' || !validMachine(d, SAVE_BOUNDS) || !d.id.trim() || d.id.length > 128
+      || (d.powered !== undefined && typeof d.powered !== 'boolean')
+      || (d.filter !== undefined && !FILTER_IDS.includes(d.filter))) throw new Error('Invalid industry cargo device');
+  const out = { id: d.id, type: d.type, x: d.x, y: d.y, z: d.z, rotation: d.rotation };
+  if (d.filter !== undefined) out.filter = d.filter;
+  if (d.powered !== undefined) out.powered = d.powered;
+  return out;
+}
+
+/** Validate without mutation; throw on invalid input, otherwise return a deep-
+ * owned canonical {version:1,pumps:[{id,device,cells}]} snapshot. An absent id is
+ * a dismantled pump: retain its device coordinates so its cargo can spill.
+ * An id still in devices must have exactly the same pump geometry/identity.
+ */
+export function validateIndustryPhysics(data, devices) {
+  if (!record(data) || data.version !== 1 || !Array.isArray(data.pumps) || data.pumps.length > INDUSTRY_LIMIT
+      || !Array.isArray(devices) || devices.length > INDUSTRY_LIMIT) throw new Error('Invalid industry cargo snapshot');
+  const current = new Map();
+  for (const spec of devices) {
+    const d = savedDevice(spec);
+    if (current.has(d.id)) throw new Error('Duplicate industry device id');
+    current.set(d.id, d);
+  }
+  const seen = new Set(), pumps = [];
+  for (const entry of data.pumps) {
+    if (!record(entry)) throw new Error('Invalid industry pump cargo');
+    const d = savedDevice(entry.device), key = signature(d), active = current.get(d.id);
+    if (d.type !== 'pump' || entry.id !== d.id || seen.has(key)
+        || (active && signature(active) !== key)) throw new Error('Invalid industry pump identity');
+    if (!Array.isArray(entry.cells) || !entry.cells.length || entry.cells.length > 16) throw new Error('Invalid industry cargo capacity');
+    const cells = [];
+    for (const cell of entry.cells) {
+      if (!Array.isArray(cell) || cell.length !== 4 || !Number.isInteger(cell[0])
+          || ELEMENTS[cell[0]]?.kind !== K.LIQUID
+          || ![cell[1], cell[2], cell[3]].every(n => Number.isFinite(n) && Number.isFinite(Math.fround(n)))) {
+        throw new Error('Invalid industry liquid cargo');
+      }
+      cells.push([...cell]);
+    }
+    seen.add(key);
+    pumps.push({ id: d.id, device: d, cells });
+  }
+  return { version: 1, pumps };
+}
+const machineState = device => ({ device: { ...device }, load: new Load(16), clock: 0, drillClock: 0, blocked: 0, busy: false, metal: false });
+
+/** Call step ONLY alongside native simulation advancement. No timers or writes
+ * from promise callbacks. pending counts in-flight transactions (including
+ * reserved takes/puts); buffered counts only owned cargo, not matter already
+ * put into the world. Pause stepping, wait for pending === 0, then synchronously
+ * capture toJSON together with terrain. Blocked/running pumps need not drain.
+ * fromJSON(snapshot, devices) replaces owned cargo only, never terrain; restore
+ * the matching terrain snapshot separately. Neither operation accepts pending
+ * transfers. reset is for WORLD REPLACEMENT, not pause, mode toggles or save.
  */
 export function createIndustryPhysics({ getSim, onShip = () => {}, onError = console.error }) {
   let sim = null, kernel = null, transfer = null, epoch = 0, disposed = false;
@@ -122,7 +176,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
       const key = signature(d);
       let s = states.get(key);
       if (!s && states.size < INDUSTRY_LIMIT) {
-        s = { device: { ...d }, load: new Load(16), clock: 0, drillClock: 0, blocked: 0, busy: false, metal: false };
+        s = machineState(d);
         states.set(key, s);
       }
       if (!s) continue;
@@ -158,10 +212,38 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
       if (drill) s.drillClock = 0;
     }
   }
+  const pending = () => [...states.values()].reduce((n, s) => n + +(s.busy || s.load.busy), 0);
+  function toJSON() {
+    if (disposed) throw new Error('Industry physics is disposed');
+    if (pending()) throw new Error('Industry transfers are pending');
+    if (sim && sim !== getSim()) throw new Error('Industry simulation changed before snapshot');
+    return validateIndustryPhysics({ version: 1, pumps: [...states.values()]
+      .filter(s => s.device.type === 'pump' && s.load.cells.length)
+      .map(s => ({ id: s.device.id, device: s.device, cells: s.load.cells })) }, []);
+  }
+  function fromJSON(data, devices) {
+    if (disposed) throw new Error('Industry physics is disposed');
+    if (pending()) throw new Error('Industry transfers are pending');
+    const saved = validateIndustryPhysics(data, devices), next = getSim();
+    if (!next || saved.pumps.some(p => !validMachine(p.device, next.g))) throw new Error('Industry cargo is outside the simulation');
+    const restored = saved.pumps.map(p => {
+      const state = machineState(p.device);
+      state.load.cells = p.cells; // canonical validation returned deep-owned data
+      return [signature(p.device), state];
+    });
+    // All validation/allocation precedes mutation. bind only prepares kernels
+    // for a replaced sim; it does not edit or clear terrain.
+    bind();
+    states.clear();
+    cursor = 0;
+    for (const [key, state] of restored) states.set(key, state);
+  }
   bind();
   return {
     get ready() { bind(); return ready; }, step,
-    get pending() { return [...states.values()].reduce((n, s) => n + +s.busy + s.load.count, 0); },
+    get pending() { return pending(); },
+    get buffered() { return [...states.values()].reduce((n, s) => n + s.load.cells.length, 0); },
+    toJSON, fromJSON,
     reset,
     dispose() { reset(); disposed = true; },
   };

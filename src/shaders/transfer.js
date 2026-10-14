@@ -46,7 +46,7 @@ export const TransferParams = uniformStruct('TransferParams', {
   maxHard: 'f32',     // take, breaking: the hardest solid that comes out (HARD units)
   only: 'u32',        // take: 1 = only the elements in `allow`
   allow: `array<vec4u, ${ALLOW_VEC4S}>`,   // take: a bit per element id (id >> 5 picks the u32, id & 31 the bit)
-  maxTemperature: 'f32', // take: exclusive upper bound; defaults to unbounded
+  maxTemperature: 'f32', // take: inclusive upper bound; defaults to unbounded
   ...MACHINE_GUARD_FIELDS, // optional atomic machine interlock (material -1 disables)
   slot: 'u32',        // the ring slot the answer goes to
   cells: `array<vec4f, ${TRANSFER_SLOTS}>`,
@@ -68,7 +68,7 @@ fn qualifies(i: u32, a: vec4f) -> bool {
   let id = eid(a);
   if (!machineEnabled(P.guardBase, P.guardMaterial, P.guardPort, P.guardPowered)) { return false; }
   if (P.mode == MODE_PUT) { return id == E_EMPTY; }
-  if (a.y >= P.maxTemperature) { return false; }
+  if (a.y > P.maxTemperature) { return false; }
   let want = i32(floor(P.cells[i].w + 0.5));
   if (id == E_EMPTY || (want >= 0 && id != want)) { return false; }
   if ((P.kinds & (1u << u32(KIND(id)))) == 0u) { return false; }

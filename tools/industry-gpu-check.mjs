@@ -54,6 +54,7 @@ try {
       put(deviceCell(ship, 0, 1, 0), E.NUGGETS);
       put(deviceCell(ship, 1, 1, 0), E.METAL, 89);
       put(deviceCell(ship, 2, 1, 0), E.METAL, 90);
+      put(deviceCell(ship, 3, 1, 0), E.METAL, 91);
       const read = (m, x = 1, y = 1, z = 1) => sim.readCell(...deviceCell(m, x, y, z));
       const flush = async () => { await sim.readCell(0, 0, 0); await new Promise(r => setTimeout(r, 0)); };
       physics.step(0.1, ds); await flush();
@@ -71,9 +72,9 @@ try {
       check((await read(miner, 1, 1, 4))[0][0] === E[ELEMENTS[E.ROCK].breakInto], 'miner leaves native debris in world');
       check((await read(miner, 1, 1, 5))[0][0] === E.ROCK, 'miner does not drill through occluding face in same pulse');
       check((await read(miner, 1, 1, 8))[0][0] === E.ROCK, 'miner has finite reach');
-      check(shipped.filter(c => c.id === E.NUGGETS).length === 1 && shipped.filter(c => c.id === E.METAL).length === 1, 'shipping confirms only actual removed valuable cells');
-      check((await read(ship, 2, 1, 0))[0][0] === E.METAL, 'exactly 90 C metal remains at intake');
-      check(physics.pending === 8, 'blocked pump conserves eight held liquid cells');
+      check(shipped.filter(c => c.id === E.NUGGETS).length === 1 && shipped.filter(c => c.id === E.METAL).length === 2, 'shipping confirms only actual removed valuable cells');
+      check((await read(ship, 2, 1, 0))[0][0] === E.EMPTY && (await read(ship, 3, 1, 0))[0][0] === E.METAL, '90 C metal ships; 91 C metal remains at intake');
+      check(physics.pending === 0 && physics.buffered === 8, 'blocked pump conserves eight serializable liquid cells');
       machinePorts(pump).outlet.forEach(c => put(c, E.EMPTY));
       for (let i = 0; i < 2; i++) { physics.step(0.1, ds); await flush(); }
       check((await sim.readCell(...machinePorts(pump).outlet[0]))[0][0] === E.WATER, 'pump deposits actual water at elevated outlet');
