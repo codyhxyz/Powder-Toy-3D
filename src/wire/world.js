@@ -52,6 +52,7 @@ const world = {
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
     win.far = new FarField(app.renderer, win, { sun: app.sun });
+    win.far.detail.onChange = () => app.pacer?.wake();
     win.far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
     win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window
     // its view builds with the view that draws it (B5: at boot in the realistic view, else on switching to it),
@@ -67,7 +68,19 @@ const world = {
     app.win?.dispose();
     app.win = null;
   },
-  follow(app) { if (app.win && !app.mp.replica) world.moveWindow(app); },
+  // Keep runnable streaming work alive after the coarse lighting queue ends.
+  // Async detail waits have their own completion wake, so they need no polling.
+  busy(app) {
+    const far = app.win?.far;
+    return !!far && (far.queue.length > 0 || far.detail.busy);
+  },
+  follow(app) {
+    if (!app.win) return;
+    // Replicas do not move or simulate their window, but render-only streaming
+    // must still progress; the host's live cells retain their authority.
+    if (app.mp.replica) app.win.far?.tick();
+    else world.moveWindow(app);
+  },
   beforeView(app) {
     const { win } = app;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)

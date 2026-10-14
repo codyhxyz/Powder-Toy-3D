@@ -882,9 +882,6 @@ export const FAR_VIEW = {
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
   NORMAL_STEP: 2.0,        // the normal's difference step (half a brick)
   ID_INSET: 0.6,           // the element is read this far inside the surface (in the top cell)...
-  ID_JITTER: 5.0,          // ...at a point moved along it up to half this far by world noise (borders don't follow bricks)
-  ID_JITTER_F: 0.21,       // that noise's frequency, per cell
-  ID_DITHER: 2.0,          // ...plus up to half this per pixel and frame, which TAA blends into a soft border (LIQ_ID_DITHER)
   ID_DEEPER: 3.0,          // ...or this far inside, if that brick holds no open cells
   SUN_RAY: [2.5, 7.0, 15.0], // cells toward the sun of the short shadow ray's samples (crowns shading
                            // each other and the ground under them: the height field leaves crowns out)
@@ -1010,12 +1007,12 @@ fn detailAt(p: vec3f) -> u32 {
   let c = vec2i(p.xz) / DETAIL_CHUNK;
   return farOcc[FAR_DETAIL_AT + c.x + DETAIL_NX * c.y];
 }
-// The field a ray stops at: a meshed chunk's opaque matter is its mesh's
-// (drawn first, in front); its liquid surface, shallow water included
-// (opaque .3 + liquid .4), stays the field's.
+// Only liquid-bearing crossings stop the fullscreen ray. Opaque terrain is
+// ALWAYS the cell mesh's, ready or not. Keep the combined shallow-water field
+// (opaque .3 + liquid .4), but never stop in opaque-dominant matter.
 fn farTraceMatter(p: vec3f) -> f32 {
   let v = farSample(p);
-  if (detailAt(p) > 0u && v.r >= v.g) { return 0.0; }
+  if (v.r >= v.g) { return 0.0; }
   return v.r + v.g;
 }
 
@@ -1025,9 +1022,6 @@ const FAR_NEAR: f32 = ${glf(FAR_VIEW.NEAR)};
 const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
 const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
 const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
-const FAR_ID_JITTER: f32 = ${glf(FAR_VIEW.ID_JITTER)};
-const FAR_ID_JITTER_F: f32 = ${glf(FAR_VIEW.ID_JITTER_F)};
-const FAR_ID_DITHER: f32 = ${glf(FAR_VIEW.ID_DITHER)};
 const FAR_ID_DEEPER: f32 = ${glf(FAR_VIEW.ID_DEEPER)};
 const FAR_SUN_RAY_N: i32 = ${FAR_VIEW.SUN_RAY.length};
 var<private> FAR_SUN_RAY: array<f32, ${FAR_VIEW.SUN_RAY.length}> = array<f32, ${FAR_VIEW.SUN_RAY.length}>(${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
@@ -1088,7 +1082,11 @@ fn farRoot(ro: vec3f, rd: vec3f, ta0: f32, tb0: f32, fa0: f32, fb0: f32) -> f32 
     let fm = farTraceMatter(farPath(ro, rd, tm));
     if (fm < FAR_ISO) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
-  return mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
+  // Keep the continuous liquid field's interpolated root, but the liquid
+  // gate can jump at an opaque/water transition: never interpolate into opaque.
+  let hit = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
+  if (farTraceMatter(farPath(ro, rd, hit)) > 0.0) { return hit; }
+  return tb;
 }
 
 // The first point along ro + rd t, t in [t0, t1], where the matter field
@@ -1124,8 +1122,8 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
     if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
     if (detail == 1u) {
       let lo = floor(p.xz / f32(DETAIL_CHUNK)) * f32(DETAIL_CHUNK);
-      let tf = (lo + step(vec2f(0.0), inv.xz) * f32(DETAIL_CHUNK) - ro.xz) * inv.xz;
-      t = min(tf.x, tf.y) + FAR_NUDGE;
+      ${curved ? `t = warpExit(gFarRay, vec3f(lo.x, 0.0, lo.y), vec3f(lo.x + f32(DETAIL_CHUNK), f32(WORLD.y), lo.y + f32(DETAIL_CHUNK)), t).x + FAR_NUDGE;` : `let tf = (lo + step(vec2f(0.0), inv.xz) * f32(DETAIL_CHUNK) - ro.xz) * inv.xz;
+      t = min(tf.x, tf.y) + FAR_NUDGE;`}
       f = -1.0;
       continue;
     }
@@ -1145,12 +1143,13 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
       f = farTraceMatter(p);
       if (f >= FAR_ISO) { *cut = true; return t; }   // (started inside matter: past the window, or at the camera)
     }
-    let fe = farTraceMatter(farPath(ro, rd, max(t, te - FAR_NUDGE)));
+    let ts = max(t, te - FAR_NUDGE);
+    let fe = farTraceMatter(farPath(ro, rd, ts));
     if (max(f, fe) > FAR_NEAR) {
-      let tm = 0.5 * (t + te);
+      let tm = 0.5 * (t + ts);
       let fm = farTraceMatter(farPath(ro, rd, tm));
       if (fm >= FAR_ISO) { return farRoot(ro, rd, t, tm, f, fm); }
-      if (fe >= FAR_ISO) { return farRoot(ro, rd, tm, te, fm, fe); }
+      if (fe >= FAR_ISO) { return farRoot(ro, rd, tm, ts, fm, fe); }
     }
     f = fe;
     t = te + FAR_NUDGE;
@@ -1187,20 +1186,10 @@ fn farAO(p: vec3f, n: vec3f) -> f32 {
   return clamp(1.0 - FAR_AO_K * o, FAR_AO_MIN, 1.0);
 }
 
-// The opaque element at surface point p (normal n): the brick holding the
-// cells just under the surface, read at a point moved along the surface by
-// world noise so borders between materials meander instead of following
-// bricks. The surface is within a fraction of a cell of the matter's top, but
-// that top can be in the brick above or below: the first of the brick just
-// inside, the one outside and the one deeper that holds open cells (its
-// element is the surface's, not what lies buried under it).
-const FAR_ID_SALT_Y: f32 = 17.0;   // decorrelate the jitter noise's axes
-const FAR_ID_SALT_Z: f32 = 31.0;
+// Underwater bed lookup only: unwarped brick IDs just inside, outside or
+// deeper under the surface. Visible mesh materials use their vertex IDs.
 fn farElement(p: vec3f, n: vec3f) -> i32 {
-  let j = (vec3f(vnoise(p * FAR_ID_JITTER_F), vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Y),
-                 vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Z)) - 0.5) * FAR_ID_JITTER
-        + (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * FAR_ID_DITHER;   // spatiotemporal dither (noise.js stbn3)
-  let q = p + j - n * dot(n, j);
+  let q = p;
   var a = farIds(q - n * FAR_ID_INSET);
   if (a.z == 0) {
     let b = farIds(q + n * FAR_ID_INSET);
@@ -1401,17 +1390,16 @@ struct FarOut {
   if (t0 < t1) { tHit = farMarch(ro, rd, t0, t1, tw.x, tw.y, &cut); }
   // the open sea beyond the world (and a march that ran out of steps over it).
   // A world without one (sea 0: world/scenes) has an open plain beyond it at
-  // floor, and inside it a ray that met nothing reaches the world's bottom
-  // (rock below it: the summaries' floor), not a sea.
+  // floor. Inside the world, missing opaque meshes remain loading gaps rather
+  // than being replaced by a fullscreen rock floor.
   let plain = P.sea <= 0.0;
   let level = select(P.sea, P.floor, plain);
   var ps: vec3f;
   var seaOut: bool;
   var tSea = farSeaHit(ro, rd, level, &ps, &seaOut);
-  if (plain && !seaOut) { tSea = farSeaHit(ro, rd, 0.0, &ps, &seaOut); }
-  let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
-  let ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
-    && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));
+  // Only the exterior backdrop uses the plane. In-world water must be an
+  // actual liquid hit; otherwise missing dry terrain would turn into sea.
+  let ocean = seaOut && tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached);
   // A nearer exterior ocean or plain still hides a meshed chunk; inside one, a
   // dry pit below sea level isn't flooded by the coarse sea: the mesh shows.
   if (cached > 0.0 && tHit == NO_HIT && !ocean) { discard; }
@@ -1427,29 +1415,12 @@ struct FarOut {
   } else if (tHit < NO_HIT) {
     let p = farPath(ro, rd, tHit);
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
-    let v = farSample(p);
     if (cut) {
-      // came out of the window inside matter. Behind the window's ground: hidden
-      // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
-      // the sun, in the probes' light just inside the window (none in a cave).
-      // In its water, which the volume draws see-through: that water's body past
-      // the wall, so the window's water carries on past its side.
-      if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
-      else {
-        // the ray carries on through that water to whatever bed lies past the
-        // wall, as the open sea's body beside it does (farLiquid): bottomless
-        // in-scatter alone showed as a bright band along the window's far sides
-        col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0);
-      }
+      // Leaving the window already inside liquid: carry its body and bed on
+      // past the wall. There is deliberately no opaque cut shading branch.
+      col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0);
     } else {
-      let sunVis = farSunLit(p, 0);
-      if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
-      else {
-        let n = farNormal(p, 0);
-        var sv = sunVis;
-        if (sunVis > 0.0 && dot(n, FU.sun) > 0.0) { sv *= farSunRay(p, n); }
-        col = farShadeMaterial(p, n, localRd, sv, farElement(p, n));
-      }
+      col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), farSunLit(p, 0), -1.0);
     }
     col = farHaze(col, rd, tHit, farAirLit(ro - winLo, p - winLo));
     o.depth = farDepth(p);
