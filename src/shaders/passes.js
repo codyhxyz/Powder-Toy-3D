@@ -627,6 +627,25 @@ ${brickMain}
   var near = WORK_DILATE + 1;
   if (b < NBRICKS) {
     let bc = brickCoord(b);
+    // A recent centre proves all three lists, GI_NEAR and the entire FIELDS
+    // mask. Only the 3³ EMA mask still needs neighbours, not the 5³ dilation.
+    if ((age[b] & AGE_MASK) < min(EMA_SETTLE, GI_RECENT) && FIELDS_DILATE >= 1) {
+      near = 0;
+      var em = 0u;
+      for (var z = -1; z <= 1; z++) {
+        for (var y = -1; y <= 1; y++) {
+          for (var x = -1; x <= 1; x++) {
+            let q = bc + vec3i(x, y, z);
+            if (!brickInGrid(q)) { continue; }
+            if ((age[brickId(q)] & AGE_MASK) < EMA_SETTLE) {
+              em |= 1u << u32((x + 1) + 3 * (y + 1) + 9 * (z + 1));
+            }
+          }
+        }
+      }
+      atomicStore(&dlist[DL_EMASK + b], em | GI_NEAR);
+      atomicStore(&dlist[DL_FMASK + b], (1u << 27u) - 1u);
+    } else {
     var rows: array<u32, ROWS * ROWS>;   // EMA bricks: row (y, z) of the neighbourhood, bit x
     var gi = false;
     for (var z = -WORK_DILATE; z <= WORK_DILATE; z++) {
@@ -676,6 +695,7 @@ ${brickMain}
     }
     atomicStore(&dlist[DL_EMASK + b], em | select(0u, GI_NEAR, gi));
     atomicStore(&dlist[DL_FMASK + b], fm);
+    }
   }
   append(near == 0, b, LIST_EMA, li);
   append(near <= FIELDS_DILATE, b, LIST_FIELDS, li);
