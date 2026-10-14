@@ -22,6 +22,7 @@ import { libLayouts } from './shaders/gfx/lib.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
 import { createMediaNoise } from './gfx/mediaNoise.js';
 import { GI_BLEND } from './sim.js';
+import { Occupancy } from './shaders/occupancy.js';
 
 // The derived passes (docs/webgpu.md E): what the renderer reads of the
 // simulation, rebuilt from its state once per derived frame, in the open
@@ -72,9 +73,11 @@ import { GI_BLEND } from './sim.js';
 //   blurred    the normalised blur, 4 planes of pack2x16float (φ.xy, φ.zw, media)          34 MB
 //   fieldSurf, fieldMedia, fieldThin   the final fields, rgba16float 3D textures       3 × 17 MB
 //   brick      BrickInfo per brick (shaders/bindings.js)                                  512 KB
-//   brickDist  u32 per brick: empty-space distance (bindings.js brickDistAt); then the
-//              shadow map's tiles (shaders/passes.js shadowTileWords: their bits, the
-//              list the shadow kernel reads through this binding, its arguments)     194 KB
+//   brickDist  u32 per brick: empty-space distance (bindings.js brickDistAt)              128 KB
+//              then the march's occupancy, 18 words a brick (shaders/occupancy.js)     2.3 MB
+//              then the shadow map's tiles (shaders/passes.js shadowTileWords: their
+//              bits, the list the shadow kernel reads through this binding, its
+//              arguments)                                                              66 KB
 //   distX, distY  brickDist's first two axes, u32 per brick (kept: REGIONS)          2 × 128 KB
 //   boxes      the brick-resolution passes' change boxes, regions and arguments (BOXES)
 //   scratchB   4 words per brick: the per-brick shifts                                   512 KB
@@ -164,6 +167,7 @@ export class Derived {
     this.tmpB = buf('field scratch B', BLURRED_PLANES * slots * 4, S | CS | CD);   // (resetGI clears a run of it; the blur's shift: 4 planes)
     this.blurred = buf('fields blurred', BLURRED_PLANES * slots * 4, S | CD);   // (a shift copies it back)
     this.brick = buf('brick', n * 16);
+    // (after the distances, the march's occupancy, shaders/occupancy.js; after that, the shadow map's tiles)
     this.brickDist = buf('brickDist', this.shadowWords.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
     this.distX = buf('brickDist x', n * 4, S);
     this.distY = buf('brickDist y', n * 4, S);
@@ -231,7 +235,7 @@ export class Derived {
       fieldFinal: kernel('fieldFinal', fieldBlurFrag(g, true), E, L.FIELD, FieldBlurParams),
       fieldBoost0: kernel('fieldBoost0', fieldBoostFrag(g, 0), SL.STATE_RO, L.JET, BoostParams),
       fieldBoost: kernel('fieldBoost', fieldBoostFrag(g, 1), E, L.FIELD, BoostParams),
-      fieldPeak: kernel('fieldPeak', fieldPeakFrag(g), E, L.PEAK, PeakParams),
+      fieldPeak: kernel('fieldPeak', fieldPeakFrag(g), SL.STATE_RO, L.PEAK, PeakParams),
       brick: kernel('brick', brickFrag(g), SL.STATE_RO, L.BRICK),
       boxArgs: kernel('boxArgs', boxArgsFrag(g), E, L.BOXES, BoxParams),
       brickDist: kernel('brickDist', brickDistFrag(g), E, L.DIST, BrickDistParams),
@@ -242,6 +246,7 @@ export class Derived {
       shadowList: gpu.kernel({ name: 'shadowList', code: shadowListFrag(g), layouts: [L.FRAME, E, L.PAIR], params: ShadowTileParams, workgroupSize: [64, 1, 1] }),
       shadowArgs: gpu.kernel({ name: 'shadowArgs', code: shadowArgsFrag(g), layouts: [L.FRAME, E, L.PAIR], params: ShadowTileParams, workgroupSize: [1, 1, 1] }),
     };
+    this.occupancy = new Occupancy(this);   // (its kernel joins this.kernels)
     this.passes = {};
     this._lazy = {
       fieldShift: () => kernel('fieldShift', fieldShiftFrag(g), E, L.SHIFT, FieldShiftParams),
@@ -377,7 +382,7 @@ export class Derived {
       const bind = axis ? [tables, empty, gr.boost[axis]] : [tables, sim.bindRO, gr.boost[0]];
       this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis, aer } });
     }
-    this._dispatch(k.fieldPeak, fields, { bind: [tables, empty, gr.peak], params: { bulk, reach: [1, 1, 1], aer } });
+    this._dispatch(k.fieldPeak, fields, { bind: [tables, sim.bindRO, gr.peak], header: sim.header(), params: { bulk, reach: [1, 1, 1], aer } });
   }
 
   /**
@@ -391,6 +396,7 @@ export class Derived {
     this.updateDirty();
     this.updateFields();
     this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.brick], header: sim.header() });
+    this.occupancy.update();   // over the brick map's list (every brick at a shift: its own onShift)
     this._dispatch(k.boxArgs, [1, 1, 1], { bind: [tables, empty, gr.boxes], params: { full: this.boxFull || !sim.incremental } });
     this.boxFull = false;
     for (let axis = 0; axis < DIST_PASSES; axis++) {
@@ -777,6 +783,7 @@ export class Derived {
 
   dispose() {
     this._offShift?.();
+    this.occupancy.dispose();
     if (this.sim.derived === this) this.sim.attachDerived(null);
     if (!this.gpu.failure) this.gpu.flush('derived dispose');
     for (const x of [this.age, this.dlist, this.ema, this.tmpA, this.tmpB, this.blurred, this.brick, this.brickDist, this.distX, this.distY,

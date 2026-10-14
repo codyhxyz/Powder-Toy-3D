@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Side by side: compositor</title>
+</head>
+<body>
+<script>
+// The side-by-side tool's compositor (tools/side-by-side.mjs serves this page
+// and the run's files on one made-up origin, so the canvas stays readable):
+// A and B side by side under a label bar, |A−B| ×4, and how far apart they
+// are. The images go back to the tool as PUTs to the same origin.
+const BAR = 28;                 // px: the label bar over the pair (even, for the video's 4:2:0)
+const DIFF_GAIN = 4;            // the difference image's gain
+const NEAR = 8, FAR = 32;       // levels (0-255, the largest channel) a pixel counts as differing by
+
+async function bitmap(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  return createImageBitmap(await r.blob());
+}
+const pixels = (img) => {
+  const c = new OffscreenCanvas(img.width, img.height), x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(img, 0, 0);
+  return x.getImageData(0, 0, img.width, img.height);
+};
+async function put(url, canvas) {
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  const r = await fetch(url, { method: 'PUT', body: blob });
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+}
+
+// { a, b }: the two images' URLs; labels: [A's, B's]; ab, diff: where to PUT the
+// composite and the difference image (diff optional). Resolves to the stats,
+// null when the sides' sizes differ.
+window.compose = async ({ a, b, labels, ab, diff = null }) => {
+  const [ia, ib] = await Promise.all([bitmap(a), bitmap(b)]);
+  const w = ia.width, h = ia.height;
+  const pair = new OffscreenCanvas(w * 2, h + BAR), g = pair.getContext('2d');
+  g.fillStyle = '#111'; g.fillRect(0, 0, pair.width, pair.height);
+  g.drawImage(ia, 0, BAR);
+  g.drawImage(ib, w, BAR);
+  g.fillStyle = '#000'; g.fillRect(w - 1, 0, 2, pair.height);
+  g.font = `${Math.round(BAR * 0.55)}px system-ui, sans-serif`;
+  g.textBaseline = 'middle';
+  labels.forEach((text, i) => {
+    g.fillStyle = i ? '#9ecbff' : '#ffd29e';
+    g.fillText(`${'AB'[i]}  ${text}`, i * w + 8, BAR / 2, w - 16);
+  });
+  await put(ab, pair);
+  if (ib.width !== w || ib.height !== h) return null;
+  const pa = pixels(ia).data, pb = pixels(ib).data;
+  const n = w * h;
+  let sum = 0, sq = 0, near = 0, far = 0, max = 0;
+  const out = diff ? new ImageData(w, h) : null;
+  for (let i = 0; i < pa.length; i += 4) {
+    let m = 0;
+    for (let c = 0; c < 3; c++) {
+      const d = Math.abs(pa[i + c] - pb[i + c]);
+      sum += d; sq += d * d;
+      if (d > m) m = d;
+      if (out) out.data[i + c] = Math.min(255, d * DIFF_GAIN);
+    }
+    if (out) out.data[i + 3] = 255;
+    if (m > NEAR) near++;
+    if (m > FAR) far++;
+    if (m > max) max = m;
+  }
+  if (diff) {
+    const c = new OffscreenCanvas(w, h);
+    c.getContext('2d').putImageData(out, 0, 0);
+    await put(diff, c);
+  }
+  const mse = sq / (3 * n);
+  return { mean: sum / (3 * n), over8: near / n, over32: far / n, max, psnr: mse ? 10 * Math.log10((255 * 255) / mse) : Infinity };
+};
+</script>
+</body>
+</html>

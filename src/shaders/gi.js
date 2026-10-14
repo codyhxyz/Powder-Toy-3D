@@ -2,9 +2,10 @@ import { lib, libLayouts } from './gfx/lib.js';
 import { farGIGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
+import { glf } from '../glsl.js';
 import { prelude, gridDims } from './common.js';
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT, LAMP_MAX } from './bindings.js';
-import { dirtyListsWGSL, AGE } from './fields.js';
+import { dirtyListsWGSL } from './fields.js';
 import { DERIVED_LAYOUT, appendWGSL, foldArgsWGSL } from './passes.js';
 
 // Coarse global illumination for the realistic view: one light probe per
@@ -161,8 +162,6 @@ export const giSourceDispatch = (g) => fold(g.nbricks);
 /** The gather's dispatch at a parity: PER_GROUP probes a workgroup. */
 export const giGatherDispatch = (g, parity) => fold(Math.ceil(giProbeCount(g, parity) / GI.PER_GROUP));
 
-const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-
 // What giSource leaves per brick for the gather, in one vec4u: one 16-byte
 // load per ray step (the GLSL fetched three half-float texels):
 //   x, y  rad.rg, then rad.b and cov.x, as half floats (the GLSL's RGBA16F)
@@ -310,7 +309,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       if (!looked) {
         looked = true;
         alb = ALBEDO(cid) * (1.0 - METAL(cid) * (1.0 - GI_METAL_DIFFUSE));
-        em = cellEmission(cid, a.y) + sparkEmit(cid, floor(a.w));   // a live conductor, a lit lamp
+        em = cellEmission(cid, a.y, floor(a.w)) + sparkEmit(cid, floor(a.w));   // a live conductor, a lit lamp
       }
       let nrm = vec3f(nv);
       var e = giIrradiance(pr, nrm);

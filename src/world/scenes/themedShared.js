@@ -1,4 +1,6 @@
 import { E } from '../../elements.js';
+import { pcg } from '../../rng.js';
+import { glf as glslFloat } from '../../glsl.js';
 
 // Shared machinery of the world scenes written once for GPU and CPU: the
 // themed ones (labWorld.js, volcanoWorld.js) and the island's generator
@@ -47,12 +49,8 @@ const TAU = Math.PI * 2;
 // 2D gradient noise peaks near ±1/√2: this scales it to about ±1
 const NOISE_NORM = 1.4142;
 
-// PCG hash, as common.js's pcg (uint32 arithmetic)
-export function pcg(v) {
-  const s = (Math.imul(v, 747796405) + 2891336453) >>> 0;
-  const w = Math.imul((s >>> ((s >>> 28) + 4)) ^ s, 277803737) >>> 0;
-  return ((w >>> 22) ^ w) >>> 0;
-}
+// PCG hash, as common.js's pcg (uint32 arithmetic): src/rng.js's, re-exported for the scenes
+export { pcg };
 
 // The GPU halves (WGSL; the name is the GLSL version's, docs/webgpu.md W2),
 // after the prelude (pcg, u32ToF32, UINT_TO_UNIT) and the scene's uniform
@@ -225,7 +223,6 @@ function helpersJs(seed) {
 // GLSL) and picks. A pick is a list of [name, weight] (weights summing to 1):
 // it gives each name an index, PREFIX_<PICK>_<NAME>, and a cumulative share
 // cut, PREFIX_<PICK>_<NAME>_CUT; pickGLSL writes the function that picks one.
-const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 function flatten(prefix, { ints = {}, floats = {}, salts = {}, picks = {} }) {
   const out = [];   // [name, js value, wgsl text, wgsl type]
   for (const [k, v] of Object.entries(ints)) out.push([`${prefix}_${k}`, v, String(v), 'i32']);
@@ -297,6 +294,18 @@ export function compileShared(src, seed, consts) {
   // eslint-disable-next-line no-new-func
   const make = new Function(...names, `"use strict";\n${toJs(src)}\nreturn { ${fns.join(', ')} };`);
   return make(...names.map((n) => scope[n]));
+}
+
+// A scene's JS twin, built once per key: memoTwin(keyFn, build) is a function
+// of P (a scene's params, a level...) giving build(P), cached under keyFn(P)
+// (the world seed, and its size where the geometry depends on it).
+export function memoTwin(keyFn, build) {
+  const twins = new Map();
+  return (P) => {
+    const k = keyFn(P);
+    if (!twins.has(k)) twins.set(k, build(P));
+    return twins.get(k);
+  };
 }
 
 // The top of the topmost matter in world column (x, z), scanning a cell

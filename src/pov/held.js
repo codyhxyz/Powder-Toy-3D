@@ -223,7 +223,7 @@ export function createHeld({ scene }) {
       // a melee swing's gesture: the grip round the shoulder and along the aim, the tool about its grip
       const fp = firstPerson(viewmodel);
       const gs = fp?.hand.userData.gesture;
-      const [raise, tip, drive] = gs ? gesturePose(h.type, gs.since, gs.span, gesture) : gesture.fill(0);
+      const [raise, tip, drive] = gs ? gesturePose(gs.name ?? h.type, gs.since, gs.span, gesture) : gesture.fill(0);   // (name: a tool's own gesture, the shovel's dig)
       if (raise || drive) {
         frameM.multiply(mA.makeTranslation(h.at[0], -SHOULDER_DROP, -drive))
           .multiply(mA.makeRotationX(raise))

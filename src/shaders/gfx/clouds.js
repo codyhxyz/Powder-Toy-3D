@@ -17,6 +17,7 @@
 // drifts the deck with the simulation clock (frozen when paused).
 import { CELL_M } from '../../scale.js';
 import { libChecks } from './lib.js';
+import { glf } from '../../glsl.js';
 
 export const CLOUD = {
   baseM: 1200,          // m above the sea: the flat bases (lifting condensation level of a humid day)
@@ -71,7 +72,6 @@ export function cloudShift(steps, out) {
   return out;
 }
 
-const glf = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s) ? s : s + '.0'; };
 const cells = (m) => glf(m / CELL_M);
 
 // The deck itself and the sunlight through it, in every pipeline that lights
@@ -142,7 +142,6 @@ fn cloudShadow(w: vec3f) -> f32 {
 // The deck seen in World's sky (the far view, shaders/far.js farSky). Needs,
 // before it: lib() (the deck, lighting.js's sky, hash33, gFragCoord) and the
 // far field's haze (shaders/farShared.js farHazeGLSL: farAir, FAR_HAZE_RGB).
-//   cloudHG(mu, g) -> f32           Henyey–Greenstein phase
 //   cloudLayer(ro, rd) -> vec4f     the deck seen from ro along rd: rgb the light it
 //                                   sends toward the eye (premultiplied, hazed), a how
 //                                   much of what lies behind it still shows
@@ -164,11 +163,6 @@ const CLOUD_T_MIN: f32 = ${glf(CLOUD.tMin)};
 const CLOUD_HAZE_H: f32 = ${cells(CLOUD.hazeScaleM)};
 const CLOUD_FLAT_EPS: f32 = 1e-4;   // height differences below this count as level (the haze's scale-height factor)
 
-fn cloudHG(mu: f32, g: f32) -> f32 {
-  let g2 = g * g;
-  return (1.0 - g2) / (4.0 * PI_L * pow(1.0 + g2 - 2.0 * g * mu, 1.5));
-}
-
 fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
   if (rd.y <= 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
   let lo = FU.cloudSea + CLOUD_BASE;
@@ -177,7 +171,7 @@ fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
   if (t0 > CLOUD_MAX_DIST) { return vec4f(0.0, 0.0, 0.0, 1.0); }
   let t1 = min((hi - ro.y) / rd.y, t0 + CLOUD_MAX_SPAN);
   let dt = (t1 - t0) / f32(CLOUD_STEPS);
-  var t = t0 + dt * hash33(vec3f(gFragCoord, f32(FU.frame))).x;   // jittered: TAA blends the banding away
+  var t = t0 + dt * stbn1(gFragCoord, f32(FU.frame), 0.0);   // jittered (noise.js stbn1: stratified, R1 over frames): TAA blends the banding away
   let mu = dot(rd, FU.sun);
   let detail = 1.0 - smoothstep(CLOUD_DETAIL_NEAR, CLOUD_DETAIL_FAR, t0);
   var S = vec3f(0.0);
@@ -205,7 +199,7 @@ fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
       var b = 1.0;
       var c = 1.0;
       for (var k = 0; k < CLOUD_MS_OCTAVES; k++) {
-        sun += b * mix(cloudHG(mu, CLOUD_G_BACK * c), cloudHG(mu, CLOUD_G_FWD * c), CLOUD_G_MIX) * exp(-a * od);
+        sun += b * hgPhase2(mu, CLOUD_G_BACK * c, CLOUD_G_FWD * c, CLOUD_G_MIX) * exp(-a * od);
         a *= CLOUD_MS_A;
         b *= CLOUD_MS_B;
         c *= CLOUD_MS_C;

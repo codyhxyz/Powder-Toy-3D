@@ -7,6 +7,7 @@ import { cloudsGLSL } from './gfx/clouds.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE, fold } from '../gpu/kernels.js';
 import { CELL_M } from '../scale.js';
+import { SUN_DISC, SUN_DISC_EDGE } from '../gfx/sky.js';
 import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
 import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
@@ -17,6 +18,7 @@ import { presentationWGSL } from '../gfx/presentationMath.js';
 import {
   FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeFor, farSkyGLSL, FAR_SKY,
 } from './farShared.js';
+import { glf } from '../glsl.js';
 export {
   FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeGLSL,
   FAR_CASTER_STEPS, farCastersGLSL, FAR_GI_STEPS, FAR_GI_STEP0, farGIGLSL, FAR_SKY, farSkyGLSL, farHazeFor,
@@ -81,7 +83,6 @@ export {
 // Every kernel takes the region it writes in its params; a pass over a region
 // of the grid is a thread per brick of it, x fastest, then y, then z (its
 // regions span the world's height), folded (gpu/kernels.js fold).
-const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const FAR_FORMATS = { grid: 'rgba16uint', field: 'rgba8unorm', top: 'rgba16float', shadow: 'rgba16float' };
 const C = STAGE.COMPUTE;
 const store = (binding, format, viewDimension = '3d') => ({ binding, visibility: C, storageTexture: { access: 'write-only', format, viewDimension } });
@@ -112,7 +113,7 @@ export const regionDispatch = (size) => fold(Math.ceil(size[0] * size[1] * size[
 // Counting a brick's cells into its texel (both summaries: the generator's and the window's).
 const countGLSL = /* wgsl */ `
 // what stops light in the far field, and what is a transparent liquid
-fn farOpaque(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS && RCLASS(id) != R_LIQUID; }
+fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID; }
 fn farLiquid(id: i32) -> bool { return RCLASS(id) == R_LIQUID; }
 struct FarCount {
   w: array<f32, NE>,   // weights of the brick's own cells by element: opaque (their dominant one) and liquid
@@ -893,8 +894,8 @@ export const FAR_VIEW = {
   AO_MIN: 0.35,            // ...down to this
   WATER_STEP: 4.0,         // the refracted ray's steps under water, looking for the bed...
   WATER_STEPS: 8,          // ...this many at most (deeper reads as open water)
-  SUN_DISC: 40.0,          // the sun's disc radiance, × the sunlight at the ground (the real ratio blooms the whole sky)
-  SUN_DISC_EDGE: 0.15,     // its soft edge, share of its radius
+  SUN_DISC,                // the sun's disc radiance, × the sunlight at the ground (gfx/sky.js: the box's backdrop draws it too)
+  SUN_DISC_EDGE,           // its soft edge, share of its radius
   HAZE: FAR_HAZE,          // extinction per cell of the air, green (farShared.js)
   OCEAN_ROCK: 'ROCK',      // the open sea's bed beyond the world (the generator's floor)
 };
@@ -927,13 +928,10 @@ fn farNear(b: vec3i) -> bool { return textureLoad(tFarField, b, 0).b > 0.5; }
 fn farOcc1(n: vec3i) -> bool { return farOcc[farOcc1At(n)] != 0u; }
 fn farOcc2(n: vec3i) -> bool { return farOcc[farOcc2At(n)] != 0u; }
 // Sun visibility at world point p from the shadow heights: ch 0 every caster, 1 those outside the window.
-// Past the world's edge it's lit: the heights hold only the world's columns, and
-// reading them clamped to the edge stretched an edge wall's shadow to the horizon.
-fn farInWorld(xz: vec2f) -> bool { return all(xz >= vec2f(0.0)) && all(xz < vec2f(WORLD.xz)); }
+// Past the world's edge it's lit (farInWorld).
 fn farSunVis(p: vec3f, ch: i32) -> f32 {
   if (!farInWorld(p.xz)) { return 1.0; }
-  let s = textureSampleLevel(tFarShadow, linearClamp, p.xz / vec2f(WORLD.xz), 0.0)[ch];
-  return smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, p.y + FAR_SHADOW_BIAS - s);
+  return farShadowLit(p.y, textureSampleLevel(tFarShadow, linearClamp, p.xz / vec2f(WORLD.xz), 0.0)[ch]);
 }
 `;
 
@@ -1007,7 +1005,7 @@ ${farHazeFor('farAirSky')}
 ${cloudsGLSL}
 // the detail mesh state of the chunk holding world point p (0: none, 1: dry, 2: with liquids)
 fn detailAt(p: vec3f) -> u32 {
-  if (any(p.xz < vec2f(0.0)) || any(p.xz >= vec2f(WORLD.xz))) { return 0u; }
+  if (!farInWorld(p.xz)) { return 0u; }
   let c = vec2i(p.xz) / DETAIL_CHUNK;
   return farOcc[FAR_DETAIL_AT + c.x + DETAIL_NX * c.y];
 }
@@ -1065,6 +1063,17 @@ fn farExit(ro: vec3f, inv: vec3f, lo: vec3f, size: f32, t: f32) -> f32 {${curved
   return warpExit(gFarRay, lo, lo + size, t).x;` : `
   let tf = (lo + step(vec3f(0.0), inv) * size - ro) * inv;
   return min(tf.x, min(tf.y, tf.z));`}
+}
+
+// Where the ray meets the plane y = level going down (never: NO_HIT, curved WARP_INF), its
+// point *ps there and whether that lies past the world's columns (*past).
+fn farSeaHit(ro: vec3f, rd: vec3f, level: f32, ps: ptr<function, vec3f>, past: ptr<function, bool>) -> f32 {
+  var t = NO_HIT;${curved ? `
+  t = farPlaneHit(gFarRay, level);` : `
+  if (rd.y < 0.0 && ro.y > level) { t = (level - ro.y) / rd.y; }`}
+  *ps = farPath(ro, rd, t);
+  *past = any((*ps).xz < vec2f(0.0)) || any((*ps).xz > vec2f(WORLD.xz));
+  return t;
 }
 
 // Root of the matter field crossing FAR_ISO in [ta, tb] (fa below it, fb at or above).
@@ -1189,7 +1198,7 @@ const FAR_ID_SALT_Z: f32 = 31.0;
 fn farElement(p: vec3f, n: vec3f) -> i32 {
   let j = (vec3f(vnoise(p * FAR_ID_JITTER_F), vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Y),
                  vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Z)) - 0.5) * FAR_ID_JITTER
-        + (hash33(vec3f(gFragCoord, f32(FU.frame))) - 0.5) * FAR_ID_DITHER;
+        + (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * FAR_ID_DITHER;   // spatiotemporal dither (noise.js stbn3)
   let q = p + j - n * dot(n, j);
   var a = farIds(q - n * FAR_ID_INSET);
   if (a.z == 0) {
@@ -1211,23 +1220,17 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
 fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3f {
   let fp = footprint(p);
   var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);   // (foliage keeps its clumps: matOf's leafClumps)
-  // the material's bump tilts the normal (applyMat)
-  var gt = m.g - n * dot(n, m.g);
-  let gl = length(gt);
-  if (gl > BUMP_MAX_SLOPE) { gt *= BUMP_MAX_SLOPE / gl; }
-  var ns = normalize(n - gt);
+  // the material's bump tilts the normal (applyMat), kept facing the eye (shadeSurf)
   let v = -rd;
-  if (dot(ns, v) < SHADE_NV_MIN) { ns = normalize(ns + v * (SHADE_NV_MIN - dot(ns, v))); }
+  let ns = faceView(bumpNormal(n, m.g), v);
   let nv = clamp(dot(ns, v), 1e-4, 1.0);
   let nl = dot(ns, FU.sun);
-  let rough = clamp(m.rough, MAT_ROUGH_MIN, 1.0);
+  let rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0);   // (specular AA)
   let F0 = mix(vec3f(m.f0), m.alb, m.metal);
   let kD = m.alb * (1.0 - m.metal);
-  let wrap = max(nl + m.sss, 0.0) / ((1.0 + m.sss) * (1.0 + m.sss));
-  let lam = orenNayar(nl, nv, dot(FU.sun, v), max(rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE);
-  let dSun = kD * mix(vec3f(lam), wrap * m.sssCol, m.sss);
+  let dSun = sunDiffuse(kD, nl, nv, dot(FU.sun, v), rough, m.sss, m.sssCol);
   let cav = clamp(m.cav, 0.0, 1.0);
-  let c = FU.sunCol * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * ggxSpec(ns, v, FU.sun, rough, F0));
+  let c = sunTerm(vec3f(sunVis), dSun, cav, ggxSpec(ns, v, FU.sun, rough, F0));
   let ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
   return c + kD * ambient + m.emit;
 }
@@ -1235,9 +1238,7 @@ fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3
 // Light scattered toward the eye inside liquid lid, per unit (1 - transmittance) (interiorScatter, without the glow volume);
 // sky: the share of the sky over it (farSkyOpen).
 fn farInScatter(lid: i32, sunVis: f32, sky: f32) -> vec3f {
-  let L = skyAmbient(vec3f(0.0, 1.0, 0.0)) * sky * mix(SKY_IN_FLOOR, 1.0, sunVis)
-        + FU.sunCol * sunVis * max(FU.sun.y, 0.0) * SUN_IN_GAIN;
-  return SCATALB(lid) * L;
+  return SCATALB(lid) * liquidAmbientLight(sky, vec3f(sunVis));
 }
 // The bed under liquid lid at p (normal n, depth below the surface): lit by
 // sun and sky through the liquid above.
@@ -1257,7 +1258,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  let refl = envReflect(p, r, vec3f(sunVis)) * sky;
+  let refl = (skyColor(r) + sunGlint(n, -rd, ROUGH(lid), vec3f(sunVis))) * sky;
   var rt = refract(rd, n, 1.0 / IOR(lid));
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }${curved ? `
   // the refracted ray, displayed straight: a parabola under the surface too
@@ -1304,8 +1305,7 @@ fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
 }
 
 fn farDepth(p: vec3f) -> f32 {
-  let clip = P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0);   // (curved: where it is displayed)
-  return clamp(clip.z / clip.w, 0.0, 1.0);
+  return clipDepth(P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0));   // (curved: where it is displayed)
 }
 
 ${mesh ? FAR_MESH_ENTRY : `struct FarVarying {
@@ -1368,18 +1368,10 @@ struct FarOut {
   // (rock below it: the summaries' floor), not a sea.
   let plain = P.sea <= 0.0;
   let level = select(P.sea, P.floor, plain);
-  var tSea = NO_HIT;${curved ? `
-  tSea = farPlaneHit(gFarRay, level);` : `
-  if (rd.y < 0.0 && ro.y > level) { tSea = (level - ro.y) / rd.y; }`}
-  var ps = farPath(ro, rd, tSea);
-  var seaOut = any(ps.xz < vec2f(0.0)) || any(ps.xz > vec2f(WORLD.xz));
-  if (plain && !seaOut) {
-    tSea = NO_HIT;${curved ? `
-    tSea = farPlaneHit(gFarRay, 0.0);` : `
-    if (rd.y < 0.0 && ro.y > 0.0) { tSea = -ro.y / rd.y; }`}
-    ps = farPath(ro, rd, tSea);
-    seaOut = any(ps.xz < vec2f(0.0)) || any(ps.xz > vec2f(WORLD.xz));
-  }
+  var ps: vec3f;
+  var seaOut: bool;
+  var tSea = farSeaHit(ro, rd, level, &ps, &seaOut);
+  if (plain && !seaOut) { tSea = farSeaHit(ro, rd, 0.0, &ps, &seaOut); }
   let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
   let ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
     && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));

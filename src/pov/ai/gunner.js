@@ -1,7 +1,7 @@
 import { Think, Goal, GoalEvaluator } from 'yuka';
 import {
-  Agent, distanceModule, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
-  REACTION_S, AIM_ERROR_START, AIM_ERROR, AIM_RAMP_S, AIM_ERROR_MOVING, WARNING_MISS,
+  Agent, distanceModule, pickWeapon, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
+  REACTION_S, warningShot, aimError, useStateFor,
 } from './brain.js';
 import { BODY_HEIGHT } from '../constants.js';
 
@@ -36,7 +36,6 @@ const GUNS = {
   GUN: { rate: distanceModule([['close', 'yes'], ['medium', 'very'], ['far', 'yes']]), interval: 1.1 },
   SNIPER: { rate: distanceModule([['close', 'no'], ['medium', 'yes'], ['far', 'very']]), interval: 2.6 },
 };
-const WEAPON_NOISE = 6;              // ± desirability points of whim (brain.js)
 const WEAPON_SWITCH_S = 3;           // s it keeps a gun before re-choosing
 
 export class GunnerAgent extends Agent {
@@ -99,34 +98,17 @@ function fly(a) {
 
 // the gun for the distance (fuzzy), fired as that gun fires, with the axeman's aim rules
 function shoot(a) {
-  let key = a.weapon in GUNS ? a.weapon : null;
-  if (!key || a.now - a.weaponAt >= WEAPON_SWITCH_S) {
-    let best = null, bw = -Infinity;
-    for (const [k, g] of Object.entries(GUNS)) {
-      const w = g.rate(a.dist3) + (Math.random() * 2 - 1) * WEAPON_NOISE;
-      if (w > bw) { bw = w; best = k; }
-    }
-    a.weapon = best; a.weaponAt = a.now;   // the hold starts over with every choice (brain.js chooseWeapon)
-    key = best;
-  }
+  const key = pickWeapon(a, GUNS, WEAPON_SWITCH_S, { floor: -Infinity });   // always one of them
   const g = GUNS[key];
   a.hold(key);
-  const c = a.chest(), t = a.target;
+  const c = a.chest();
   // still reacting to the sight of it, staggered, or catching its breath: face it and hold
   if (a.inSight < REACTION_S || !a.ready('ATTACK')) { a.lookAt(c); return; }
-  if (a.warnedAt !== a.record.timeBecameVisible) {
-    // the first shot since it spotted you: a near miss to one side
-    const e = a.eye(), dx = c.x - e.x, dz = c.z - e.z, d = Math.hypot(dx, dz) || 1, side = Math.random() < 0.5 ? -1 : 1;
-    a.lookAt({ x: c.x - (dz / d) * side * WARNING_MISS * 1.6, y: c.y, z: c.z + (dx / d) * side * WARNING_MISS * 1.6 });
-    if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, g.interval ?? g.rest); a.warnedAt = a.record.timeBecameVisible; }
-    return;
-  }
-  const ramp = Math.min(a.inSight / AIM_RAMP_S, 1);
-  aimWith(a, c, AIM_ERROR_START + (AIM_ERROR - AIM_ERROR_START) * ramp + AIM_ERROR_MOVING * Math.hypot(t.vel.x, t.vel.z));
+  if (warningShot(a, key, g.interval ?? g.rest)) return;
+  aimWith(a, c, aimError(a));
   if (g.burst) {
     // a burst held down, then a rest
-    const s = a.useState ??= {};
-    if (s.tool !== key) { s.tool = key; s.t = 0; }
+    const s = useStateFor(a, key);
     if (!a.ready(key)) return;
     s.t += a.dt;
     a.intent.primary = true;

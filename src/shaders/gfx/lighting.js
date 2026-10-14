@@ -1,4 +1,4 @@
-import { skyGLSL } from '../../gfx/sky.js';
+import { skyGLSL, skyViewGLSL, SUN_TAN_RADIUS } from '../../gfx/sky.js';
 import { cloudDeckGLSL } from './clouds.js';
 import { LAMP_UNIT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 import { WAND_LIGHTS } from '../bindings.js';
@@ -55,7 +55,8 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  *   near field          nearSmoothIn, traceNear(ro, rd, tLim, opaqueOnly, selfSkip, &hc, &hn),
  *                       pixRand(k), nearField(p, ng, n, irr, &vis) (map + probes)
  *   glow lights         glowWorthIt(local, irr), glowLightScale(p, ng, n)
- *   hand lamps          lampLight(p, ng, n)
+ *   hand lamps          lampLight(p, ng, n), lampShade(p, ng, n, soft, view) (+ specular)
+ *   GGX specular        smithV, ggxSpecA, ggxSpec
  * Options (lib() sets them per L.LIGHTING variant): shadowMap: false leaves
  * out what reads the shadow map (the shadow kernel writes it); probes: false
  * what samples the GI bands (GI gather writes them). nearField needs both.
@@ -101,34 +102,12 @@ const PI_L: f32 = 3.14159265;
 ${skyGLSL()}
 // World's cumulus deck (clouds.js): sunShadow multiplies its shadow in.
 ${cloudDeckGLSL}
-const HORIZON_BLEND: f32 = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
-
-// Relative air mass toward zenith cosine cz (gfx/sky.js airMass).
-fn airMass(cz0: f32) -> f32 {
-  let cz = max(cz0, 0.0);
-  return 1.0 / (cz + AIRMASS_HORIZON * exp(-AIRMASS_FALLOFF * cz));
-}
-
-// Clear-sky radiance toward unit d (d.y >= 0; lower directions see the
-// horizon), without the sun's disc (gfx/sky.js has its JS twin).
-fn skyRadiance(d: vec3f) -> vec3f {
-  let mu = dot(d, FU.sun);
-  let mv = airMass(d.y);
-  let ms = airMass(FU.sun.y);
-  let pR = 3.0 / (16.0 * PI_L) * (1.0 + mu * mu);
-  let g2 = AEROSOL_G * AEROSOL_G;
-  let pM = (1.0 - g2) / (4.0 * PI_L * pow(1.0 + g2 - 2.0 * AEROSOL_G * mu, 1.5));
-  // the integral over height of e^(-tau ms x) e^(-tau mv (1 - x)) (x = relative air density)
-  let dm = mv - ms;
-  let ev = exp(-TAU_AIR * mv);
-  var path: vec3f;
-  if (abs(dm) < AIRMASS_EQ_EPS) { path = TAU_AIR * mv * ev; } else { path = mv * (FU.sunExt - ev) / dm; }
-  return FU.keyLight * SKY_MULTI * PI_L * SUN_TOA * (TAU_RAYLEIGH * pR + TAU_AEROSOL * pM) / TAU_AIR * path;
-}
-
-// Radiance of the environment toward unit d: sky above the horizon, ground below.
-fn skyColor(d: vec3f) -> vec3f {
-  return mix(FU.ground, skyRadiance(d), smoothstep(-HORIZON_BLEND, HORIZON_BLEND, d.y));
+// airMass, skyRadiance, skyColor: gfx/sky.js skyViewGLSL (the box's backdrop draws the same sky, gfx/overlays.js)
+${skyViewGLSL()}
+// Two Henyey–Greenstein lobes (hgPhase, gfx/sky.js): back lobe gBack, forward
+// lobe gFwd with weight wFwd (the clouds' silver lining, the gas's glow).
+fn hgPhase2(mu: f32, gBack: f32, gFwd: f32, wFwd: f32) -> f32 {
+  return mix(hgPhase(mu, gBack), hgPhase(mu, gFwd), wFwd);
 }
 // Rough open-environment irradiance / pi on a surface facing n (no occlusion):
 // the sky over the share of n's hemisphere it covers, the ground below. The GI
@@ -169,13 +148,12 @@ const VOLUME_SHADOW_BIAS: f32 = ${VOLUME_SHADOW_BIAS.toFixed(1)};       // depth
 const SUN_RAY_SMOOTH_SKIP: f32 = 0.5;
 const SUN_RAY_ISO_MARGIN: f32 = 0.02;
 const SUN_RAY_REACH_PAD: f32 = 1.5;
-const SUN_RAY_NUDGE: f32 = 1e-4;           // voxels past the box entry at which the start cell is looked up
 
 // Soft shadows (PCSS): the sun is a disc, so a shadow's edge blurs with the
 // distance from its caster. tan of the sun's apparent radius: the real sun is
 // 0.27 deg; 1.2 deg stands in for a slightly hazy sky, so penumbrae read at
 // the scale of the box while contact shadows stay crisp.
-const SUN_TAN_RADIUS: f32 = 0.021;
+const SUN_TAN_RADIUS: f32 = ${SUN_TAN_RADIUS};   // (gfx/sky.js: the backdrop's sun disc is this size too)
 const PCSS_TAPS: i32 = ${PCSS_TAPS};                 // taps for the blocker search, and again for the filter
 const PCSS_HARD_TEXELS: f32 = 1.0;  // penumbra radius (texels) below which the hard path settles the edge
 const PCSS_NS_MIN: f32 = 0.2;       // n.sun floor for the receiver-plane slope (grazing receivers)
@@ -214,10 +192,12 @@ const CAUSTIC_FILL: f32 = 0.7;        // share of the path below the liquid's to
                                       // (water soaked into sand or gravel has no open surface to focus with)
 const CAUSTIC_MAX: f32 = 4.0;         // brightest focus (beams cross past it)
 const CAUSTIC_MIN: f32 = 0.3;         // darkest spread
+// Mean extinction of element id over the three channels (an optical depth's grey share).
+fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }
 // Whether a shadow-map texel sm, seen from depth d, has the receiver under a body of liquid tid.
 fn underPool(sm: vec4f, d: f32, tid: i32) -> bool {
   if (RCLASS(tid) != R_LIQUID || d <= sm.y || d >= sm.z + CAUSTIC_BED_GAP) { return false; }
-  let lenL = (sm.w - f32(tid) * SHADOW_TINT_ID_SCALE) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
+  let lenL = (sm.w - f32(tid) * SHADOW_TINT_ID_SCALE) / max(meanSigma(tid), 1e-4);
   return lenL >= CAUSTIC_FILL * (min(d, sm.z) - sm.y);
 }
 // The light the ripples focus on grid point p lying D cells under the surface (along the sun).
@@ -268,10 +248,11 @@ fn sunRayClear(ro: vec3f, tLim: f32) -> f32 {
   let bh = boxHit(ro, rd);
   let t = max(bh.x, 0.0);
   if (bh.y <= t) { return 1.0; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t + SUN_RAY_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t, &istp, &tDelta, &cell, &tMax);
   var tEnter = t;
   let tSkip = t + SUN_RAY_SMOOTH_SKIP;
   var lastB = vec3i(-1);
@@ -309,6 +290,33 @@ ${shadowMap ? /* wgsl */ `
 // frame. Eight entries, so a private array (docs/webgpu.md C6).
 var<private> VOGEL: array<vec2f, ${PCSS_TAPS}> = array<vec2f, ${PCSS_TAPS}>(${vogel(PCSS_TAPS)});
 
+// Point p in the map whose frame is sunBasis's (c, R, u, v): its depth along
+// the sun, *d, and its 2×2 taps (the low texel *i0, the bilinear fraction *w:
+// wk0). Returns its map coordinate st, 0..1 across the disc.
+fn shadowProject(p: vec3f, c: vec3f, R: f32, u: vec3f, v: vec3f, d: ptr<function, f32>, i0: ptr<function, vec2i>, w: ptr<function, vec2f>) -> vec2f {
+  let q = p - c;
+  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
+  *d = R - dot(q, FU.sun);
+  let f = st * f32(FU.shadowRes) - 0.5;
+  *i0 = vec2i(floor(f));
+  *w = f - vec2f(*i0);
+  return st;
+}
+// The light map texel sm lets through to depth d: tinted by its translucent
+// stretch (its tint element's colour, the proportional share of its optical
+// depth), 1 outside it.
+fn shadowTexelAtt(sm: vec4f, d: f32) -> vec3f {
+  var att = vec3f(1.0);
+  let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
+  if (tid > 0 && d > sm.y) {
+    let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
+    let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
+    let tint = SIGMA(tid) / max(meanSigma(tid), 1e-4);
+    att = exp(-tint * tau * frac);
+  }
+  return att;
+}
+
 // Sun visibility at a surface point hp with normal n, from the map (sunShadow
 // below adds the clouds).
 fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
@@ -318,18 +326,16 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var v: vec3f;
   sunBasis(&c, &R, &u, &v);
   let p = hp + n * SHADOW_NORMAL_OFFSET;
-  let q = p - c;
-  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
-  let d = R - dot(q, FU.sun);
+  var d: f32;
+  var i0: vec2i;
+  var w: vec2f;
+  let st = shadowProject(p, c, R, u, v, &d, &i0, &w);
   // Depth bias. A PCF tap one texel (T voxels) away sees the receiver's own face
   // up to T*(|n.u|+|n.v|)/(n.s) closer, and at the foot of a sun-facing wall it
   // sees that wall up to ~0.6 closer: hence >= 0.8. It must stay well below
   // 1/sun.y (1.23), the depth gap to the top of a 1-voxel step.
   let T = 2.0 * R / f32(FU.shadowRes);
   let bias = max(SHADOW_BIAS_MIN, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, FU.sun), SHADOW_BIAS_NS_MIN) + SHADOW_BIAS_PAD);
-  let f = st * f32(FU.shadowRes) - 0.5;
-  let i0 = vec2i(floor(f));
-  let w = f - vec2f(i0);
   var acc = vec3f(0.0);
   var tr = vec3f(0.0);
   var nLit = 0.0;
@@ -340,14 +346,8 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
     let o = vec2i(k & 1, k >> 1u);
     let sm = textureLoad(tShadow, clamp(i0 + o, vec2i(0), vec2i(FU.shadowRes - 1)), 0);
     let lit = select(0.0, 1.0, d < sm.x + bias);
-    var att = vec3f(1.0);
+    let att = shadowTexelAtt(sm, d);
     let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
-    if (tid > 0 && d > sm.y) {
-      let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
-      let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-      let tint = SIGMA(tid) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
-      att = exp(-tint * tau * frac);
-    }
     let wk = wk0(o, w);
     if (tid > 0 && underPool(sm, d, tid)) { cD += (d - sm.y) * wk; cW += wk; }
     acc += lit * att * wk;
@@ -410,28 +410,21 @@ fn sunMapShadowAt(p: vec3f) -> vec3f {
   var u: vec3f;
   var v: vec3f;
   sunBasis(&c, &R, &u, &v);
-  let q = p - c;
-  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
-  let d = R - dot(q, FU.sun);
-  let f = st * f32(FU.shadowRes) - 0.5;
-  let i0 = vec2i(floor(f));
-  let w = f - vec2f(i0);
+  var d: f32;
+  var i0: vec2i;
+  var w: vec2f;
+  shadowProject(p, c, R, u, v, &d, &i0, &w);
   var acc = vec3f(0.0);
   var cD = 0.0;
   var cW = 0.0;
   for (var k = 0; k < 4; k++) {
     let o = vec2i(k & 1, k >> 1u);
     let sm = textureLoad(tShadow, clamp(i0 + o, vec2i(0), vec2i(FU.shadowRes - 1)), 0);
-    var lit = select(vec3f(0.0), vec3f(1.0), d < sm.x + VOLUME_SHADOW_BIAS);
+    let lit = select(vec3f(0.0), vec3f(1.0), d < sm.x + VOLUME_SHADOW_BIAS) * shadowTexelAtt(sm, d);
     let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
-    if (tid > 0 && d > sm.y) {
-      let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
-      let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-      let tint = SIGMA(tid) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
-      lit *= exp(-tint * tau * frac);
-      if (underPool(sm, d, tid)) { cD += (d - sm.y) * wk0(o, w); cW += wk0(o, w); }
-    }
-    acc += lit * wk0(o, w);
+    let wk = wk0(o, w);
+    if (tid > 0 && underPool(sm, d, tid)) { cD += (d - sm.y) * wk; cW += wk; }
+    acc += lit * wk;
   }
   if (${caustics} && cW > 0.0) { acc *= mix(1.0, causticGain(p, cD / cW), cW); }
   return acc;
@@ -547,7 +540,7 @@ fn occluder(c: vec3i) -> bool {
   if (c.y < 0) { return true; }
   if (outside(c)) { return false; }
   let id = eid(fetchA(c));
-  return id != E_EMPTY && KIND(id) != K_GAS;
+  return !isGasLike(id);
 }
 
 // Smooth per-corner AO on a crisp voxel face (Minecraft style): cell's face
@@ -620,13 +613,14 @@ fn nearSmoothIn(p: vec3f, opaqueOnly: bool) -> bool {
 fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
              hc: ptr<function, vec3i>, hn: ptr<function, vec3f>) -> f32 {
   let rd = safeDir(rd0);
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
   var cell = vec3i(floor(ro));
   *hc = cell;
   *hn = vec3f(0.0);
   if (cell.y < 0 || outside(cell)) { return -1.0; }
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
   var tEnter = 0.0;
   var ax = 1;
   var lastB = vec3i(-1);
@@ -640,7 +634,7 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
     if (!brickMatter(occ)) { ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
     let id = eid(fetchA(cell));
     let axOut = argmin3(tMax);
-    if (id != E_EMPTY && KIND(id) != K_GAS && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
+    if (!isGasLike(id) && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
         && (isCrisp(id) || (tEnter > selfSkip && nearSmoothIn(ro + rd * tClosest(cell, ro, rd, tEnter, tMax[axOut]), opaqueOnly)))) {
       *hc = cell;
       var h = vec3f(0.0);
@@ -664,6 +658,15 @@ fn pixRand3(k: i32) -> vec3f {
   return hash33(vec3f(gFragCoord, ${frame} * f32(NEAR_RAND_STREAMS) + f32(k)));
 }
 fn pixRand(k: i32) -> vec2f { return pixRand3(k).xy; }
+// The estimators' own samples are spatiotemporal (noise.js stbn1/2/3): each
+// 3x3 window of pixels, TAAU's neighbourhood, holds a stratified set, so the
+// window's mean is steady from frame to frame instead of shimmering. White
+// pixRand3 is left for what has no stratification to gain (the glow
+// candidates' in-slab position).
+// A lamp's soft-shadow aim: a point on the disc its ball shows (radius², angle) and along its length.
+fn lampRand(i: i32) -> vec3f {
+  return vec3f(stbn2(gFragCoord, ${frame}, f32(LAMP_STREAM + i)), fract(ignR(gFragCoord) + R1_G * stbnT(${frame}, f32(i))));
+}
 
 // ---- hand lamps: their light ----
 // Each is a tube light (Karis 2013, "Real Shading in Unreal Engine 4": sphere
@@ -710,8 +713,32 @@ fn lampSeen(p: vec3f, n: vec3f) -> vec3f {
 }
 
 ${shadowMap && probes ? /* wgsl */ `
+// The light a secondary ray sees on the matter it meets at p (normal n, lifted
+// off the face): albedo alb times the sun (shadow-mapped), the lamps (lampSeen,
+// unshadowed), the probes' light and the glow there, plus emit, its own light
+// (gfx/materials.js cellEmission + sparkEmit, what the view shows). One cheap
+// model for every second-hand view of a surface, so they all agree: the
+// near-field bounce's hits (nearField) and what a liquid or glass mirrors
+// (liquid.js reflShade, the floor included). No texture, AO or specular:
+// reflections are dimmed by Fresnel and wobbled by ripples, and bounce light
+// is blurred by TAA, so they wouldn't show for the cost.
+fn hitLight(p: vec3f, n: vec3f, alb: vec3f, emit: vec3f) -> vec3f {
+  let ndl = max(dot(n, FU.sun), 0.0);
+  var sun = vec3f(0.0);
+  if (ndl > 0.0) {
+    var shade = vec3f(1.0);
+    if (FU.shadows != 0u) { shade = sunShadowAt(p); }
+    sun = FU.sunCol * ndl * shade;
+  }
+  var lamp = vec3f(0.0);
+  if (FU.lampCount > 0) { lamp = lampSeen(p, n); }   // and the lamps', as the sun's
+  return alb * (sun + lamp + giIrradiance(probeAt(p + n * GI_OFFSET), n) + sampleLight(p) * FU.lightGain) + emit;
+}
+
 // Voxel AO and nearby bounce light (Teardown style). NEAR_RAYS cosine-
-// distributed rays per pixel and frame (TAA averages them) walk the grid up to
+// distributed rays per pixel and frame (stbn2: stratified across each 3x3
+// pixel window and low-discrepancy over frames, so TAAU resolves them
+// without shimmer) walk the grid up to
 // NEAR_RANGE cells. A ray that hits matter sees that matter's own light: its
 // albedo times the sun (shadow-mapped), the probes' light and the glow there,
 // plus what it gives off (emission).
@@ -733,7 +760,7 @@ fn nearField(p: vec3f, ng: vec3f, n: vec3f, irr: vec3f, vis: ptr<function, f32>)
   var sum = vec3f(0.0);
   var vs = 0.0;
   for (var i = 0; i < NEAR_RAYS; i++) {
-    let u = pixRand(i);
+    let u = stbn2(gFragCoord, ${frame}, f32(i));   // stratified over the 3x3 window, golden-ratio steps per ray and frame
     let r = sqrt(u.x);
     let a = 2.0 * PI_L * u.y;
     var d = t1 * (r * cos(a)) + t2 * (r * sin(a)) + n * sqrt(max(1.0 - u.x, 0.0));
@@ -750,18 +777,8 @@ fn nearField(p: vec3f, ng: vec3f, n: vec3f, irr: vec3f, vis: ptr<function, f32>)
     let hid = eid(ah);
     var alb = GROUND_ALB;
     var emit = vec3f(0.0);
-    if (!floorHit) { alb = ALBEDO(hid); emit = cellEmission(hid, ah.y) + sparkEmit(hid, floor(ah.w)); }   // a live conductor, a lit lamp
-    let ndl = max(dot(hn, FU.sun), 0.0);
-    var sun = vec3f(0.0);
-    if (ndl > 0.0) {
-      var shade = vec3f(1.0);
-      if (FU.shadows != 0u) { shade = sunShadowAt(hp); }
-      sun = FU.sunCol * ndl * shade;
-    }
-    var lamp = vec3f(0.0);
-    if (FU.lampCount > 0) { lamp = lampSeen(hp, hn); }   // and the lamps', as the sun's
-    let Lhit = alb * (sun + lamp + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * FU.lightGain) + emit;
-    sum += mix(irr, Lhit, w);
+    if (!floorHit) { alb = ALBEDO(hid); emit = cellEmission(hid, ah.y, floor(ah.w)) + sparkEmit(hid, floor(ah.w)); }   // a live conductor, a lit lamp
+    sum += mix(irr, hitLight(hp, hn, alb, emit), w);
     vs += 1.0 - w;
   }
   *vis = max(vs / f32(NEAR_RAYS), NEAR_VIS_MIN);
@@ -774,8 +791,9 @@ const NEAR_RAYS: i32 = 2;   // (its rays' streams come before the glow candidate
 // The glow volume carries emitted light blurred over bricks: no direction and
 // no shadows. Here each pixel picks one emitting brick near it by resampled
 // importance sampling (GLOW_CANDIDATES random bricks within GLOW_REACH bricks,
-// weighted by emitted power / distance^2) and traces a shadow ray to a random
-// point in it. The glow volume's light is then scaled by what that ray says:
+// weighted by emitted power / distance^2) and traces a shadow ray to a
+// point in it (the pick and the aim are spatiotemporal samples, stbn: steady
+// under TAAU where white noise flickered, docs audit B4). The glow volume's light is then scaled by what that ray says:
 // 0 in its shadow, 2 n.l facing it (1 on average over a hemisphere of
 // emitters). With no emitter among the candidates the glow is left as it is.
 const GLOW_CANDIDATES: i32 = 6;
@@ -785,11 +803,11 @@ const GLOW_EMIT_MIN: f32 = 1e-4;     // a brick's emitted power (luminance) belo
 const GLOW_START: f32 = 0.55;        // cells off the surface a shadow ray starts
 const GLOW_SELF_SKIP: f32 = 1.0;     // smooth-surface cells ignored this close to its start
 const GLOW_ENTRY_PAD: f32 = 0.05;    // cells short of the emitter's brick the ray stops
-const LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
+const GLOW_XI_EPS: f32 = 1e-6;       // floor of 1 - q when the reservoir renormalises its uniform
 // Worth tracing only where the glow is at least this share of the light already there.
 const GLOW_REL_MIN: f32 = 0.05;
 fn glowWorthIt(local: vec3f, irr: vec3f) -> bool {
-  return FU.glowLights != 0u && dot(local, LUMA) > GLOW_REL_MIN * dot(irr, LUMA);
+  return FU.glowLights != 0u && dot(local, LUMA_709) > GLOW_REL_MIN * dot(irr, LUMA_709);
 }
 // The glow's scale at surface point p (geometric normal ng, shading normal n).
 fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
@@ -799,20 +817,30 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
   let span = vec3f(hi - lo + 1);
   var wSum = 0.0;
   var pick = vec3i(-1);
+  // The reservoir's one uniform (Chao 1982's weighted reservoir, renormalised
+  // after each decision so a single number serves every candidate): a
+  // stratified sample, so the pixels of a 3x3 window pick their emitters in
+  // proportion instead of by coin flips. The candidates are stratified along
+  // x (candidate i from the i-th slab of the region: stratified RIS), which
+  // orders them the same way in every pixel, so neighbouring pixels' stratified
+  // uniforms land on neighbouring parts of the emitters.
+  var xi = fract(ignF(gFragCoord) + R1_G * stbnT(${frame}, 0.0));
   for (var i = 0; i < GLOW_CANDIDATES; i++) {
-    let u = pixRand3(NEAR_RAYS + i);
+    var u = pixRand3(NEAR_RAYS + i);
+    u.x = (f32(i) + u.x) / f32(GLOW_CANDIDATES);
     let bc = min(lo + vec3i(u * span), hi);
-    let e = dot(brickAt(bc).emit, LUMA);
+    let e = dot(brickAt(bc).emit, LUMA_709);
     if (e < GLOW_EMIT_MIN) { continue; }
     let dv = (vec3f(bc) + 0.5) * f32(BS) - p;
     let wt = e / max(dot(dv, dv), GLOW_MIN_D2);
     wSum += wt;
-    if (hash13(vec3f(u.zx * 97.0, f32(i))) * wSum < wt) { pick = bc; }
+    let q = wt / wSum;   // chance this candidate replaces the pick
+    if (xi < q) { pick = bc; xi = xi / q; } else { xi = (xi - q) / max(1.0 - q, GLOW_XI_EPS); }
   }
   if (pick.x < 0) { return 1.0; }
   if (all(pick == pb)) { return 1.0; }   // inside the emitter's own brick: no direction to speak of
   let bmin = vec3f(pick * BS);
-  let tgt = bmin + hash33(vec3f(gFragCoord.yx, ${frame} + 0.5)) * f32(BS);
+  let tgt = bmin + stbn3(gFragCoord, ${frame}) * f32(BS);   // the shadow ray's aim in the brick, stratified as well
   let ro = p + ng * GLOW_START;
   let dv = tgt - ro;
   let dist = length(dv);
@@ -831,6 +859,112 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
   return select(0.0, 2.0 * nl, t < 0.0);
 }
 
+// ---- specular: the GGX microfacet BRDF ----
+// The sun's (gfx/surface.js shadeSurf, far.js) and the hand lamps' (lampShade below).
+const GGX_ALPHA_MIN: f32 = 2e-3;   // floor on GGX alpha (= roughness²): keeps the lobe finite
+
+// Height-correlated Smith visibility, V = G2 / (4 n·l n·v).
+fn smithV(nl: f32, nv: f32, a: f32) -> f32 {
+  let a2 = a * a;
+  let gv = nl * sqrt(nv * nv * (1.0 - a2) + a2);
+  let gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
+  return 0.5 / max(gv + gl, 1e-5);
+}
+
+// GGX specular BRDF times n·l, optionally anisotropic: grooves along t are
+// smoother along t than across, so the highlight stretches across them.
+fn ggxSpecA(n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f, t0: vec3f, aniso: f32) -> vec3f {
+  let nl = dot(n, l);
+  if (nl <= 0.0) { return vec3f(0.0); }
+  let h = normalize(v + l);
+  let nv = max(dot(n, v), 1e-4);
+  let nh = max(dot(n, h), 0.0);
+  let vh = max(dot(v, h), 0.0);
+  var a = max(rough * rough, GGX_ALPHA_MIN);
+  var D: f32;
+  if (aniso > 0.0) {
+    let b = normalize(cross(n, t0));
+    let t = cross(b, n);
+    let at = max(a * (1.0 - aniso), GGX_ALPHA_MIN);
+    let ab = max(a * (1.0 + aniso), GGX_ALPHA_MIN);
+    let th = dot(t, h) / at;
+    let bh = dot(b, h) / ab;
+    let d = th * th + bh * bh + nh * nh;
+    D = 1.0 / (PI_L * at * ab * d * d);
+    a = sqrt(at * ab);
+  } else {
+    let a2 = a * a;
+    let d = nh * nh * (a2 - 1.0) + 1.0;
+    D = a2 / (PI_L * d * d);
+  }
+  let F = F0 + (1.0 - F0) * pow(1.0 - vh, 5.0);
+  return D * smithV(nl, nv, a) * F * nl;
+}
+fn ggxSpec(n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f) -> vec3f {
+  return ggxSpecA(n, v, l, rough, F0, vec3f(1.0, 0.0, 0.0), 0.0);
+}
+
+
+// ---- hand lamps: their specular ----
+// A lamp is a tube of radius r and length h (lampNearest), so its highlight is
+// Karis 2013's ("Real Shading in Unreal Engine 4", Area Lights): the BRDF lit
+// from a representative point, the point of the light nearest the reflection
+// ray r. The tube's line first, eq. 19 (shortest distance between the
+// segment L0 + t·Ld and r), then the sphere around that point, eq. 11; l
+// points at the result. Moving the light's origin onto its body widens the
+// lobe, so the energy is put back as the paper does, by the ratio of GGX's
+// normalisation (π α²) at the widened α' to the original: eq. 14,
+// (α / α')², for the sphere, and eq. 20, α / α', for the line (widened in
+// one dimension, anisotropic GGX's π αx αy); the two are accumulated ("these
+// operations can be accumulated ... approximates a convolution of the
+// shapes"). α' is the paper's own widening, eq. 10 (which eq. 14 says it
+// reuses, "the same reasoning used by the specular D modification"):
+// α' = saturate(α + sourceRadius / (3 · distance)); for the line, its
+// half-length is the radius it subtends along its length.
+const LAMP_SPEC_WIDEN: f32 = 1.0 / 3.0;   // α' = α + LAMP_SPEC_WIDEN · radius / d (Karis 2013, eq. 10)
+const LAMP_SPEC_EPS: f32 = 1e-6;    // cells²: a segment this short, or r along it, has no nearest-point solve (t = 0.5)
+// What lampShade needs for the specular: the view direction v (toward the eye),
+// the surface's GGX roughness, F0 and anisotropy (ggxSpecA), and on (false: diffuse only).
+struct LampSpecIn { v: vec3f, rough: f32, F0: vec3f, tang: vec3f, aniso: f32, on: bool }
+struct LampLit { diff: vec3f, spec: vec3f }
+// Lamp i's specular at p (normal n) per unit of its irradiance there, as the
+// sun's is per unit of FU.sunCol (× π: the colour is irradiance / π).
+fn lampSpec(i: i32, p: vec3f, n: vec3f, view: LampSpecIn) -> vec3f {
+  let rr = reflect(-view.v, n);
+  let len = FU.lampShape[i].y;
+  let rad = FU.lampShape[i].x;
+  let L0 = FU.lampPos[i].xyz - p - vec3f(0.0, 0.5 * len, 0.0);
+  let Ld = vec3f(0.0, len, 0.0);
+  let rLd = dot(rr, Ld);
+  let den = dot(Ld, Ld) - rLd * rLd;
+  var t = 0.5;
+  if (den > LAMP_SPEC_EPS) { t = (dot(rr, L0) * rLd - dot(L0, Ld)) / den; }   // eq. 19
+  let Lc = L0 + Ld * clamp(t, 0.0, 1.0);
+  let toRay = dot(Lc, rr) * rr - Lc;                                         // eq. 11
+  let Lp = Lc + toRay * clamp(rad / max(length(toRay), LAMP_SPEC_EPS), 0.0, 1.0);
+  let d = max(length(Lc), LAMP_SPEC_EPS);
+  let a = max(view.rough * view.rough, GGX_ALPHA_MIN);
+  let aS = a / clamp(a + LAMP_SPEC_WIDEN * rad / d, 0.0, 1.0);               // eq. 14's ratio
+  let aL = a / clamp(a + LAMP_SPEC_WIDEN * 0.5 * len / d, 0.0, 1.0);         // eq. 20 (its half-length)
+  return PI_L * ggxSpecA(n, view.v, normalize(Lp), view.rough, view.F0, view.tang, view.aniso) * (aS * aS * aL);
+}
+
+// The lamps' specular at p (normal n) unshadowed, as lampSeen's diffuse: for
+// the clear interfaces (liquid.js liquidInterface: water, ice), which reflect
+// what the light falls on them from the lamps' own bodies.
+fn lampSpecSeen(p: vec3f, n: vec3f, view: LampSpecIn) -> vec3f {
+  var sum = vec3f(0.0);
+  for (var i = 0; i < LAMP_MAX; i++) {
+    if (i >= FU.lampCount) { break; }
+    let dv = lampNearest(i, p) - p;
+    let d2 = dot(dv, dv);
+    let R = FU.lampPos[i].w;
+    if (d2 >= R * R || dot(n, dv) <= 0.0 || !lampLive(i)) { continue; }
+    sum += FU.lampCol[i].rgb * lampFall(d2, R, FU.lampShape[i].x) * lampSpec(i, p, n, view);
+  }
+  return sum;
+}
+
 // ---- hand lamps: their shadows ----
 // The light of the lamps at surface point p (normal n, geometric normal ng),
 // to be multiplied by the albedo: each lampFall's, shadowed by a traced ray
@@ -847,8 +981,10 @@ const LAMP_SELF_SKIP: f32 = 1.0;   // smooth-surface cells ignored this close to
 const LAMP_PAD: f32 = 0.3;         // cells short of the lamp the shadow ray stops (it hangs in air)
 const LAMP_FIXED_PAD: f32 = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
 const LAMP_FIXED_SELF: f32 = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
-fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
+// view: what the specular needs (lampSpec, off in lampSum); the shadow ray is shared.
+fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> LampLit {
   var sum = vec3f(0.0);
+  var spec = vec3f(0.0);
   for (var i = 0; i < LAMP_MAX; i++) {
     if (i >= FU.lampCount) { break; }
     let ro = p + ng * LAMP_START;
@@ -867,7 +1003,7 @@ fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
     let r = FU.lampShape[i].x;
     var aim = near;
     if (soft) {
-      let u = pixRand3(LAMP_STREAM + i);
+      let u = lampRand(i);
       let t1 = normalize(cross(select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(l.y) < 0.9), l));
       let t2 = cross(l, t1);
       let a = 2.0 * PI_L * u.y;
@@ -880,9 +1016,14 @@ fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
     // stop as far short of the aim as it is off the nearest point, so the ray ends by the light, never in the wall a torch hangs on
     let pad = select(LAMP_PAD, LAMP_FIXED_PAD, fixedLamp) + distance(aim, near);
     if (traceNear(ro, sv / max(sd, 1e-4), max(sd - pad, 0.0), true, LAMP_SELF_SKIP, &hc, &hn) >= 0.0) { continue; }
-    sum += FU.lampCol[i].rgb * nl * lampFall(d2, R, r);
+    let E = FU.lampCol[i].rgb * lampFall(d2, R, r);
+    sum += E * nl;
+    if (view.on) { spec += E * lampSpec(i, p, n, view); }
   }
-  return sum;
+  return LampLit(sum, spec);
+}
+fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
+  return lampShade(p, ng, n, soft, LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false)).diff;
 }
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f { return lampSum(p, ng, n, true); }
 `;

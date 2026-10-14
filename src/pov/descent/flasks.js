@@ -12,7 +12,7 @@
 // deeper biomes) lean toward the magic ones.
 
 import { E, ELEMENTS } from '../../elements.js';
-import { rng, hashString, mixSeed } from './rng.js';
+import { rng, hashString, mixSeed } from '../../rng.js';
 import { clampTier } from './gold.js';
 
 // the rarity bands, element keys (WHISKEY is Noita's `alcohol`, TOXIC its `poison`/toxic sludge)

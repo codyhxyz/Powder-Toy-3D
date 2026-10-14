@@ -447,11 +447,78 @@ ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(s
 // own x and y passes, fieldMaxFrag).
 // aer: unread since Sync 3 (the layout's binding 6 above); src/derived.js still passes it.
 export const PeakParams = uniformStruct('PeakParams', { bulk: 'vec4f', reach: 'vec3i', aer: 'u32' });
+// Foliage clumps, baked into the organic field here (after the boost, which
+// would scale them away). A crown drawn as the smooth isosurface of its cells
+// is one green blob, melted plastic; a real crown is lobes of foliage with
+// shaded hollows between them, 0.5-1.5 m across on a broadleaf (the clumped
+// crowns of Sinoquet et al. 2005, "Foliage randomness and light interception
+// in 3D digitised trees", Ann. Bot. 95; the billowed crowns painters and
+// stylised games draw, e.g. Zelda: Breath of the Wild's trees). Each plant
+// cell's φ is scaled by a clump weight: 1 at a clump's centre, falling with
+// the square of the distance to it (a cap of a sphere) to 1 - FOLIAGE_LUMP at
+// its rim, where two clumps meet in a hollow. The clumps are a Worley F1
+// lattice (Worley 1996, "A Cellular Texture Basis Function") in world cells,
+// so they stay put as the window moves and grow with the plant. Since this is
+// the field, the sun's shadow map, the GI and the eye's march all see the
+// same lobes. The lattice is sampled at cell centres and read trilinearly, so
+// a clump spans FOLIAGE_CLUMP_CELLS >= 3 cells: anything finer would come out
+// as single-cell facets (the gem artifact of trilinear isosurfaces).
+// Thin foliage (a one-cell frond, boosted ~1.8x) keeps its tube: the weight
+// fades out between boost factors FOLIAGE_THIN_LO and _HI, so only bulk
+// crowns are lobed and a frond never breaks into beads.
+// Ground cover (the generators' one-cell layer of PLANT on the soil:
+// world/generator.js COVER_PLANT) is left smooth: a meadow is not a crown,
+// and a hollow carved through it would show the soil under it. A plant cell
+// resting on other matter that isn't foliage or wood is ground cover.
+// FOLIAGE_LUMP: most a cell's φ is scaled down, at a clump's rim. With 0.45 a
+// flat crown face's inside cell (σ 0.6: φ 0.83) falls to 0.46, under ISO, so
+// hollows sink most of a cell (~20 cm) between lobes, while deep inside a
+// crown φ stays above ISO (no holes): the bound of rubble's RUBBLE_LUMP (0.45,
+// fieldEmaFrag). Set by eye on a CPU port of these passes (0.4 read as dents
+// in a blob, 0.5 sits on ISO deep inside; 4-cell clumps read as dents too).
+export const FOLIAGE_LUMP = 0.45;
+export const FOLIAGE_CLUMP_CELLS = 3;     // cells between clump centres (0.9 m: a broadleaf's clumps)
+export const FOLIAGE_CLUMP_R = 0.8;       // F1 (lattice units) at which a clump's rim is reached (F1 of a jittered lattice is mostly below it)
+export const FOLIAGE_THIN_LO = 1.1;       // boost factors: a two-cell bough ~1.16, a one-cell sheet ~1.2, ...
+export const FOLIAGE_THIN_HI = 1.5;       // ... a one-cell frond ~1.8 (σ 0.6, bulk peak 0.8)
 export const fieldPeakFrag = (g) => /* wgsl */ `
-${prelude(g, { state: false })}
+${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${dirtyListsWGSL(g)}
 ${PeakParams.wgsl}
+const FOLIAGE_LUMP: f32 = ${FOLIAGE_LUMP};
+const FOLIAGE_CLUMP_CELLS: f32 = ${FOLIAGE_CLUMP_CELLS.toFixed(1)};
+const FOLIAGE_CLUMP_R: f32 = ${FOLIAGE_CLUMP_R};
+const FOLIAGE_THIN_LO: f32 = ${FOLIAGE_THIN_LO};
+const FOLIAGE_THIN_HI: f32 = ${FOLIAGE_THIN_HI};
+// a uniform in [0, 1) from a hash (its top 24 bits: exact in f32)
+fn unit24(h: u32) -> f32 { return f32(h >> 8u) / 16777216.0; }
+// whether plant cell p is ground cover: it rests on matter that isn't
+// foliage, wood or gas (or on the grid's floor)
+fn groundCover(p: vec3i) -> bool {
+  let q = p - vec3i(0, 1, 0);
+  if (!inGrid(q)) { return true; }
+  let u = eid(fetchAs(slotOf(q)));
+  return u != E_EMPTY && u != E_PLANT && u != E_WOOD && MEDIACH(u) < 0;
+}
+// the clump weight of world cell w (see FOLIAGE_LUMP)
+fn foliageClump(w: vec3i) -> f32 {
+  let q = (vec3f(w) + 0.5) / FOLIAGE_CLUMP_CELLS;
+  let i = vec3i(floor(q));
+  var d2 = 1e9;
+  for (var z = -1; z <= 1; z++) {
+    for (var y = -1; y <= 1; y++) {
+      for (var x = -1; x <= 1; x++) {
+        let c = i + vec3i(x, y, z);
+        let j = vec3f(unit24(seedWorld(c, 0u, SALT_FOLIAGE)), unit24(seedWorld(c, 1u, SALT_FOLIAGE)), unit24(seedWorld(c, 2u, SALT_FOLIAGE)));
+        let d = q - (vec3f(c) + j);
+        d2 = min(d2, dot(d, d));
+      }
+    }
+  }
+  let r = clamp(sqrt(d2) / FOLIAGE_CLUMP_R, 0.0, 1.0);
+  return 1.0 - FOLIAGE_LUMP * r * r;
+}
 @group(3) @binding(1) var<uniform> P: PeakParams;   // bulk: each channel's bulk peak
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
 @group(2) @binding(1) var<storage, read> src: array<u32>;       // stage 2: smoothed φ, occupancy
@@ -474,7 +541,12 @@ ${listMainWGSL('LIST_FIELDS')}
   let boosted = step(vec4f(0.5), occ);
   let phi = vec4f(unpack2x16float(blurred[s]), unpack2x16float(blurred[SLOTS + s]));
   let med = vec4f(unpack2x16float(blurred[2u * SLOTS + s]), unpack2x16float(blurred[3u * SLOTS + s]));
-  textureStore(fieldSurf, p, phi * mix(vec4f(1.0), k, boosted));
+  var surf = phi * mix(vec4f(1.0), k, boosted);
+  if (eid(fetchAs(s)) == E_PLANT && !groundCover(p)) {
+    let bulkOnly = 1.0 - smoothstep(FOLIAGE_THIN_LO, FOLIAGE_THIN_HI, k[CH_ORGANIC]);
+    surf[CH_ORGANIC] *= mix(1.0, foliageClump(p + H.origin), bulkOnly);
+  }
+  textureStore(fieldSurf, p, surf);
   textureStore(fieldMedia, p, med);
   textureStore(fieldThin, p, boosted * smoothstep(vec4f(THIN_MASK_LO), vec4f(THIN_MASK_HI), k));
 }
@@ -571,7 +643,7 @@ export const WGSL_CHECK = [
   { name: 'fieldFinal', kind: 'compute', code: (g) => fieldBlurFrag(g, true), layouts: fieldLayouts(false), dispatch: perList },
   { name: 'fieldBoost0', kind: 'compute', code: (g) => fieldBoostFrag(g, 0), layouts: fieldLayouts(true, FIELD_LAYOUT.JET), dispatch: perList },
   { name: 'fieldBoost', kind: 'compute', code: (g) => fieldBoostFrag(g, 1), layouts: fieldLayouts(false), dispatch: perList },
-  { name: 'fieldPeak', kind: 'compute', code: fieldPeakFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.PEAK], dispatch: perList },
+  { name: 'fieldPeak', kind: 'compute', code: fieldPeakFrag, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RO, FIELD_LAYOUT.PEAK], dispatch: perList },
   { name: 'fieldShift', kind: 'compute', code: fieldShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.SHIFT],
     layoutNames: [null, null, 'DERIVED_SHIFT'], dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)), windowed: true },
   { name: 'fieldMax', kind: 'compute', code: fieldMaxFrag, layouts: fieldLayouts(false), dispatch: perList, tool: true },

@@ -40,7 +40,7 @@ const def = (name) => {
   return m[1].replace(/[uif]$/, '');
 };
 const BITS = +def('MIX_BITS'), MASK = +def('MIX_MASK');
-const SALT = parseInt(def('MIX_SALT')), PAIR_SALT = parseInt(def('MIX_PAIR_SALT'));
+const SALT = parseInt(def('SALT_MIX')), PAIR_SALT = parseInt(def('SALT_MIX_PAIR'));
 const SWAP = Math.fround(+def('TOOL_MIX_SWAP'));
 if (BITS !== MIX_BITS || MASK !== (1 << BITS) - 1 || SWAP !== Math.fround(PHYS.TOOL_MIX_SWAP)) fail('Mix constants in the brush\'s kernel disagree with passes.js/physics.js');
 

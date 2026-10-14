@@ -253,6 +253,9 @@ export class Simulation {
     // bumped by every write to the state (steps, edits, loads, undo, network
     // updates), so callers can tell when the world changed
     this.version = 0;
+    // bumped by every whole-grid write (noteWrite: a load, an undo; a shift), so a
+    // second engine kept beside this state (src/v2/physics.js) knows to re-read it all
+    this.wholeWrites = 0;
     // The grid is a window of the world (docs/scaling.md D11): origin is the
     // world cell of grid cell (0, 0, 0), every dispatch's header (B4). A grid
     // that is its whole world stays at 0; shift() moves it.
@@ -827,6 +830,7 @@ export class Simulation {
    */
   noteWrite() {
     this.version++;
+    this.wholeWrites++;
     this.forceAll = true;
     this.actFull = true;
     this.changedAll = true;
@@ -1008,6 +1012,7 @@ export class Simulation {
     }
     this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
     this.version++;
+    this.wholeWrites++;
     this.forceAll = true;
     this.actFull = true;
     // the derived passes shift their own history by whole bricks and re-age

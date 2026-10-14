@@ -15,7 +15,7 @@ const T = willowCoveTwin(P);
 const world = (x, z) => [x + size[0] / 2, z + size[2] / 2];
 const cell = (x, y, z) => T.wcCell(x + size[0] / 2, y, z + size[2] / 2);
 assert.equal(scene.key, 'willowCove');
-assert.equal(scene.label, 'Willow Cove');
+assert.equal(scene.label, 'Tinker Creek');
 assert.equal(scene.shrine, false);
 const map = mapByKey(scene.key);
 assert.equal(map?.scene, scene.key);
@@ -212,4 +212,4 @@ for (let z = -extent + 1; z < extent; z++) for (let x = -extent + 1; x < extent;
     }
   }
 }
-console.log(`Willow Cove OK: ${ids.length.toLocaleString('en-US')} valid authored cells; 4 seeds; ${walked} body-width route samples; terraces, finite river, cottages, bridges, shore stability and independent ground scans.`);
+console.log(`Tinker Creek OK: ${ids.length.toLocaleString('en-US')} valid authored cells; 4 seeds; ${walked} body-width route samples; terraces, finite river, cottages, bridges, shore stability and independent ground scans.`);

@@ -19,9 +19,9 @@ export const SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light'];
 
 export const GEAR = [
   { key: 'SHOVEL', slot: 0, name: 'Shovel', model: 'shovel', abbr: 'SHVL', color: '#8a7a5c', touch: ['Dig', 'Throw'],
-    desc: 'Hold left-click to dig powder or break solids into debris. Right-click throws the load.' },
+    desc: 'Digs loose ground (sand, snow, gravel, grass, moss) into your pack, a bite at a time. Right-click throws a block of it.' },
   { key: 'PICKAXE', slot: 0, name: 'Pickaxe', model: 'pickaxe', abbr: 'PICK', color: '#8f969c', touch: ['Mine'],
-    desc: 'Mines rock into stone for your pack and breaks anything the axe can. Too weak for metal.' },
+    desc: 'Mines the outlined block, rock and all, into your pack in one blow. Leaves wood to the axe; too weak for metal.' },
   { key: 'AXE', slot: 0, name: 'Axe', model: 'axe', abbr: 'AXE', color: '#9a6a3c', touch: ['Chop'],
     desc: 'Chops wood, smashes glass and ice, clears plants. Too weak for rock or metal.' },
   { key: 'KNIFE', slot: 0, name: 'Knife', model: 'knife', abbr: 'KNIF', color: '#c9ccd1', touch: ['Stab'],
@@ -50,8 +50,6 @@ export const GEAR = [
     desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. Right-click empty-handed to blast.' },
   { key: 'BLOWTORCH', slot: 4, name: 'Flamethrower', model: 'flamer', abbr: 'FLMR', color: '#b8322a', touch: ['Burn'],
     desc: 'Hold for a continuous jet of fire, 6 m long: lights wood, sets off gunpowder, melts ice and, slowly, metal.' },
-  { key: 'SCANNER', slot: 4, name: 'Scanner', model: 'scanner', abbr: 'SCAN', color: '#7dff9a', touch: [],
-    desc: 'Reads the material, temperature and pressure of whatever you point it at.' },
   { key: 'POGO', slot: 4, name: 'Pogo stick', model: 'pogo', abbr: 'POGO', color: '#d0453a', touch: [],
     desc: 'Hold it to bounce. Press jump just as you land to bounce higher, three times in a row to the top. Hold jump to fly.' },
   { key: 'TORCH', slot: 5, name: 'Torch', model: 'torch', abbr: 'TRCH', color: '#e07b2a', touch: ['Touch', 'Throw'],

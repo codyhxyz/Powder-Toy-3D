@@ -1,19 +1,23 @@
 // Every use of three.js internals (docs/webgpu.md B10, W20). three r186's
 // WebGPURenderer draws the mesh scene only, on our device, into render
 // targets; the canvas is ours (present.js). This file is the whole interop
-// surface, and tools/gpu-foundation-check.mjs exercises each piece, so a
-// three upgrade that moves an internal fails there loudly.
+// surface, and tools/gpu-foundation-check.mjs exercises each piece (the
+// temporal upscaler, three's TAAUNode on our frame: tools/taau-check.mjs, in
+// the app, and tools/post-check.mjs), so a three upgrade that moves an
+// internal fails there loudly.
 //
 // The rest of src/gpu imports nothing from three, and index.js doesn't
 // re-export this file: sim and derived code reach src/gpu without pulling
 // three into their module graph.
 
 import {
-  WebGPURenderer, ExternalTexture, WebGPUCoordinateSystem,
+  WebGPURenderer, ExternalTexture, WebGPUCoordinateSystem, RenderTarget, DepthTexture, QuadMesh, NodeMaterial,
   RGBAFormat, RedFormat, RGFormat, RGBAIntegerFormat, RedIntegerFormat,
   HalfFloatType, FloatType, UnsignedByteType, UnsignedIntType, IntType,
   LinearFilter, NearestFilter, ClampToEdgeWrapping, NoColorSpace,
 } from 'three/webgpu';
+import { texture as textureNode } from 'three/tsl';
+import TAAUNode from 'three/addons/tsl/display/TAAUNode.js';
 import { GraphicsFailure, deviceLostMessage, gpuErrorMessage } from './errors.js';
 
 /**
@@ -185,6 +189,121 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
   tex.flipY = false;
   tex.colorSpace = NoColorSpace;
   return tex;
+}
+
+/**
+ * three's temporal anti-aliasing upscaler (r186's TAAUNode: Karis 2014's
+ * jittered reconstruction with FSR 2's single-pass history, three's own
+ * jitter sequence, velocity reprojection, variance clipping, thin-feature
+ * locks) run on our frame, for every Upscaling preset, native included: at a
+ * ratio of 1 its resolve is Karis's TAA with the current frame's jitter
+ * filtered out (Blackman-Harris over the jittered samples), which TRAANode,
+ * sampling the jittered frame bilinearly, doesn't do. post.js drives it:
+ * - jitter(camera, w, h) at the scene's start: the node's own Halton offset
+ *   as a view offset on the camera (TAAUNode.setViewOffset), the camera's own
+ *   aspect kept (setViewOffset sets it to the input's, w / h, and
+ *   clearViewOffset doesn't put it back); returns the offset in input pixels,
+ *   y down: input texel m sampled the scene at m + ½ + jitter;
+ * - unjitter(camera) at the scene's end (TAAUNode.clearViewOffset: the next offset);
+ * - inputs(w, h): the two textures the scene's motion pass (post.js) writes at
+ *   the scene's size, the node's inputs: its velocity (rg16float, this
+ *   frame's unjittered NDC minus last frame's, the convention of three's
+ *   VelocityNode, which TAAUNode reads) and the scene's colour (rgba16float);
+ * - resolve(camera, depth, [w, h]): the node's frame (resolve, history copy,
+ *   previous-depth copy: its own submits, after a flush of ours) at output size
+ *   [w, h]; returns the resolved GPUTexture.
+ * Outside a RenderPipeline three never calls the view-offset hooks, and its
+ * per-frame node update is once per gpu frame (createThreeRenderer), so the
+ * node is built once by rendering a 1×1 quad that samples it (that render runs
+ * its first frame) and later frames call its updateBefore directly: one
+ * resolve per resolve() call. While it runs, the renderer's drawing-buffer
+ * size, which TAAUNode takes as the output size, is [w, h].
+ * @param {object} gpu with gpu.three (createThreeRenderer)
+ */
+export function createTemporalUpscaler(gpu) {
+  const renderer = gpu.three.renderer;
+  const target = (name, format, filter) => {
+    const rt = new RenderTarget(1, 1, {
+      type: HalfFloatType, format, depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
+      minFilter: filter, magFilter: filter,
+    });
+    rt.texture.name = name;
+    return rt;
+  };
+  // (the colour bilinear: the node's history seed after a resize samples it at output uv)
+  const velocity = target('taau velocity', RGFormat, NearestFilter);
+  const color = target('taau colour', RGBAFormat, LinearFilter);
+  // TAAUNode reads its input size from the beauty node's render target (TAAUNode.js:399, :513)
+  const beauty = Object.assign(textureNode(color.texture), { isRTTNode: true, renderTarget: color });
+  // (its depth: the scene's, set at the first resolve, before the node is built)
+  const node = new TAAUNode(beauty, textureNode(new DepthTexture(1, 1, FloatType)), textureNode(velocity.texture), null);
+  // our scene depth is depth32float; the copy into the previous-depth texture needs the same format
+  // (TAAUNode switches it to FloatType only for a reversed depth buffer: TAAUNode.js:530)
+  node._previousDepthRenderTarget.depthTexture.type = FloatType;
+  const material = new NodeMaterial();
+  material.name = 'TAAU build';
+  material.colorNode = node;
+  const quad = new QuadMesh(material);
+  const one = new RenderTarget(1, 1, { type: HalfFloatType, depthBuffer: false, stencilBuffer: false, generateMipmaps: false });
+  one.texture.name = 'TAAU build';
+  let built = false;
+
+  const ofThree = (rt) => gpuTextureOf(renderer, rt.texture);
+  return {
+    /** The node (tools read and tune it: currentFrameWeight, depthThreshold, …). */
+    node,
+    /** Baseline current-frame weight (TAAUNode.currentFrameWeight): how fast a still view settles. */
+    get currentWeight() { return node.currentFrameWeight; },
+    /** The motion pass's targets at the scene's size: { velocity, color } GPUTextures. */
+    inputs(w, h) {
+      for (const rt of [velocity, color]) {
+        if (rt.width !== w || rt.height !== h || !renderer.backend.get(rt.texture)?.texture) {
+          rt.setSize(w, h);
+          initRenderTarget(renderer, rt, { ownDepth: false });
+        }
+      }
+      return { velocity: ofThree(velocity), color: ofThree(color) };
+    },
+    jitter(camera, w, h) {
+      node.camera = camera;
+      const aspect = camera.aspect;
+      node.setViewOffset(w, h);
+      if (aspect !== undefined && camera.aspect !== aspect) { camera.aspect = aspect; camera.updateProjectionMatrix(); }
+      const j = node._jitterOffset.value;
+      return [j.x, j.y];
+    },
+    unjitter(camera) {
+      node.camera = camera;
+      node.clearViewOffset();
+    },
+    resolve(camera, depth, [w, h]) {
+      node.camera = camera;
+      if (node.depthNode.value !== depth) node.depthNode.value = depth;
+      const was = renderer.getRenderTarget();
+      renderer.getDrawingBufferSize = (v) => v.set(w, h);
+      try {
+        if (!built) {
+          // the first frame: three builds the node for this quad and runs its updateBefore (NodeUpdateType.FRAME)
+          renderer.setRenderTarget(one);
+          quad.render(renderer);
+          built = true;
+        } else {
+          node.updateBefore({ renderer });
+        }
+      } finally {
+        delete renderer.getDrawingBufferSize;
+        renderer.setRenderTarget(was);
+      }
+      return gpuTextureOf(renderer, node.getTextureNode().value);
+    },
+    dispose() {
+      node.dispose();
+      material.dispose();
+      one.dispose();
+      velocity.dispose();
+      color.dispose();
+    },
+  };
 }
 
 /**

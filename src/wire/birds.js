@@ -23,10 +23,13 @@ const birds = {
   afterStep(app, dt) {
     app.prof.phase('other');   // (their probe pass, birdProbe, counts here)
     app.birds.update(app.settings.paused ? 0 : dt);   // they hold still with the world
-    if (!app.settings.paused && app.birds.count) app.requestRender();
+    // (only their meshes moved: the frame may keep the volume's scene, app.js's mesh-only frames)
+    if (!app.settings.paused && app.birds.count) app.requestMeshFrame();
   },
-  // they fly every tick: the default World scene never settles (docs/webgpu.md F7, K3)
+  // they fly every tick: the default World scene never settles (docs/webgpu.md F7), but
+  // with all else still its frames are mesh-only ones (gfx/meshFrames.js, K3)
   busy(app) { return !app.settings.paused && app.birds.count > 0; },
+  meshesOnly: true,
   invalidate(app) { app.birds.probe.suspend(); },
 };
 

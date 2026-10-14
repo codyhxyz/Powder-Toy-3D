@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { ELEMENTS } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import { pack, packContents, aimInReach, faceNormal, outsideBody } from './transfer.js';
-import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
 import { gear } from './catalog.js';
+import { BLOCK, blockMin } from './dig.js';   // the lattice the shovel and pickaxe dig on: 0.9 m, Minecraft's 1 m block
 
 // Trowel: builds with what the shovel dug up. Left-click sets a block
 // of the chosen material from the pack (transfer.js) against the face you aim
@@ -23,7 +23,6 @@ import { gear } from './catalog.js';
 // Events: tool:action 'place' (cells landed), 'refuse' (nothing to build with,
 // or the block would be inside you), with the element, the point and the count.
 
-const BLOCK = 3;             // cells a side (0.9 m at 30 cm cells: Minecraft's 1 m block)
 const REFIRE = 0.2;          // s between blocks while held (Minecraft's 4-tick place delay)
 const DAB_TIME = 0.05;       // s for the dab forward
 const DAB_PITCH = 0.35;      // rad the blade dips setting a block
@@ -61,7 +60,7 @@ export default {
     // the lattice block next to the aimed face: its cells, bottom up
     function blockAt(aim) {
       const c = aim.cell.clone().add(faceNormal(aim.face));
-      const min = c.divideScalar(BLOCK).floor().multiplyScalar(BLOCK);
+      const min = blockMin(c);
       const cells = [];
       for (let y = 0; y < BLOCK; y++) for (let z = 0; z < BLOCK; z++) for (let x = 0; x < BLOCK; x++) {
         cells.push([min.x + x, min.y + y, min.z + z]);
@@ -91,7 +90,7 @@ export default {
       const block = lastBlock;
       p.then((landed) => {
         block.landed = landed;
-        if (landed) povEvents.emit('tool:action', { tool: 'trowel', action: 'place', id, point, amount: landed });
+        if (landed) env.feedback?.act('place', { id, point, amount: landed });
       });
       rig.hit(HIT.PLACE);
       return true;

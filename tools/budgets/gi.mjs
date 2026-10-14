@@ -8,12 +8,12 @@ export default {
   harness: true,
   scenarios: [
     {
-      name: 'a derived frame with the GI (32³, a cube and a slab): the derived frame\'s 40 dispatches, the GI\'s 3 direct and 2 indirect, one pass, one submit',
+      name: 'a derived frame with the GI (32³, a cube and a slab): the derived frame\'s 42 dispatches, the GI\'s 3 direct and 2 indirect, one pass, one submit',
       run: (page) => page.evaluate(() => window.__harness.run('budget:frame')),
-      // derived (tools/budgets/derived.mjs): 18 indirect (×2) + 4 direct, 18 direct workgroups at 512 bricks;
+      // derived (tools/budgets/derived.mjs): 19 indirect (×2) + 4 direct, 18 direct workgroups at 512 bricks;
       // the GI: giKey 1, giSelect a thread per brick (8), giArgs 1 direct; giSource and giGather over its lists
       expect: {
-        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 47, indirectDispatches: 20,
+        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 49, indirectDispatches: 21,
         workgroupsDirect: 28, bytesAllocated: 0, pipelinesCreated: 0,
       },
     },
@@ -21,7 +21,7 @@ export default {
       name: 'the frame after sim.resetGI(): the gather traces every probe (its list); the clears come before the pass',
       run: (page) => page.evaluate(() => window.__harness.run('budget:reset')),
       expect: {
-        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 47, indirectDispatches: 20,
+        submits: 1, flushes: 1, writeFlushes: 0, computePasses: 1, renderPasses: 0, dispatches: 49, indirectDispatches: 21,
         workgroupsDirect: 28, bytesAllocated: 0, pipelinesCreated: 0,
       },
     },

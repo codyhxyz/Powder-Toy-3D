@@ -526,7 +526,7 @@ test('fused', async () => {
     const fused = await derived.read();
     const { bulk } = fieldWeights(sim.smoothing);
     const gr = derived.groups, f = () => gpu.frame, bind = (grp) => [sim.tables, gpu.emptyGroup, grp];
-    const peak = (reach) => derived.kernels.fieldPeak.dispatch(f(), derived._over(DIRTY.FIELDS), { bind: bind(gr.peak), params: { bulk, reach } });
+    const peak = (reach) => derived.kernels.fieldPeak.dispatch(f(), derived._over(DIRTY.FIELDS), { bind: [sim.tables, sim.bindRO, gr.peak], header: sim.header(), params: { bulk, reach } });
     // stage 2 is in scratch A: x into B, y back into A, then z
     const max = derived.passOf('fieldMax');
     max.dispatch(f(), derived._over(DIRTY.WORK), { bind: bind(gr.boost[1]), params: { axis: 0 } });
@@ -772,8 +772,8 @@ async function indirect(derived, from) {
     const [x, y, z] = new Uint32Array(await gpu.readback.buffer(e.buffer, e.offset, 12));
     listed += x * y * z;
   }
-  // EMA once, WORK three times (the boost), FIELDS five times (the blur 3, peak, brick)
-  return { workgroupsIndirect: n, listedIndirect: listed, listsCallFor: l.ema + 3 * l.work + 5 * l.fields, lists: l };
+  // EMA once, WORK three times (the boost), FIELDS six times (the blur 3, peak, brick, occupancy)
+  return { workgroupsIndirect: n, listedIndirect: listed, listsCallFor: l.ema + 3 * l.work + 6 * l.fields, lists: l };
 }
 // A derived frame of the lab after 4 steps (32³): one submit, one compute
 // pass, 9 indirect dispatches and 12 direct ones, nothing allocated.
@@ -829,7 +829,7 @@ test('budget:move', async () => {
 
 // ---------------------------------------------------------------- bench (tools/derived-bench.mjs)
 const DERIVED_KERNELS = ['noteAwake', 'awake', 'age', 'dirty', 'dirtyArgs', 'fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0',
-  'fieldBoost', 'fieldPeak', 'brick', 'boxArgs', 'brickDist', 'blur', 'blurLast'];
+  'fieldBoost', 'fieldPeak', 'brick', 'occupancy', 'boxArgs', 'brickDist', 'blur', 'blurLast'];
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)] ?? NaN; };
 const nextFrame = () => new Promise((r) => setTimeout(r, 0));
 // ms per derived frame per kernel (split timestamps) over `frames` frames of

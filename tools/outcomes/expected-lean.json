@@ -1,0 +1,372 @@
+{
+ "engine": "lean",
+ "adapter": "lean-sim World (CPU prototype, 60 Hz, 2 g)",
+ "clock": "60 ticks a game second (Speed 1×)",
+ "recorded": "2026-10-12",
+ "tests": {
+  "utube": {
+   "status": "pass",
+   "headline": "left 7.165, right 7.198 cells: 0.99 cm apart; idle at 5.63 s",
+   "criteria": [
+    {
+     "name": "arms level",
+     "measured": 0.99,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": 5.63,
+     "unit": "s",
+     "threshold": "≤ 10",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "partial": {
+   "status": "pass",
+   "headline": "surface 3.34…3.35 cells (0.16 cm; flat would be 3.36); idle at 4.1 s",
+   "criteria": [
+    {
+     "name": "surface flat",
+     "measured": 0.16,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": 4.1,
+     "unit": "s",
+     "threshold": "≤ 8",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "puddle": {
+   "status": "pass",
+   "headline": "196 wet columns, 4 cells from the nearest wall, liquid up to y = 0; idle at 4.07 s",
+   "criteria": [
+    {
+     "name": "rests (certified idle)",
+     "measured": 4.07,
+     "unit": "s",
+     "threshold": "≤ 6",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "has an edge (cells to the nearest wall)",
+     "measured": 4,
+     "unit": "cells",
+     "threshold": "≥ 1",
+     "ok": true
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "pipe": {
+   "status": "pass",
+   "headline": "tank at 3.081 after 43 s (the bore's top is 3), reached at 43 s; 183.99 cells out",
+   "criteria": [
+    {
+     "name": "tank level over the bore's top",
+     "measured": 0.081,
+     "unit": "cells",
+     "threshold": "≤ 0.1",
+     "ok": true
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "hole": {
+   "status": "fail",
+   "headline": "3.5 s ± 0.125 s (16 steps): head 5.5…4.87 cells; the stream 12.78 % off the √(2gh) parabola; unbroken from the hole to the floor in 16 of 16 reads",
+   "criteria": [
+    {
+     "name": "one unbroken stream (worst window: share of its reads)",
+     "measured": 1,
+     "unit": "",
+     "threshold": "≥ 0.9",
+     "ok": true
+    },
+    {
+     "name": "reach off the √(2gh) parabola (worst window)",
+     "measured": 12.78,
+     "unit": "%",
+     "threshold": "≤ 5",
+     "ok": false
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "splash": {
+   "status": "n/a",
+   "headline": "lean reports no cell velocities",
+   "criteria": []
+  },
+  "yield": {
+   "status": "n/a",
+   "headline": "lean has no MUD",
+   "criteria": []
+  },
+  "slab": {
+   "status": "pass",
+   "headline": "0.5 s: fallen 8 cells (its law: 8.44), layers y 20…20 (1 thick)",
+   "criteria": [
+    {
+     "name": "thickest while falling",
+     "measured": 1,
+     "unit": "layers",
+     "threshold": "1",
+     "ok": true
+    },
+    {
+     "name": "fall off its law (worst, in tolerances: a cell or 5 %)",
+     "measured": 1,
+     "unit": "",
+     "threshold": "≤ 1 (at 0.17 s)",
+     "ok": true
+    },
+    {
+     "name": "lands as one layer",
+     "measured": 576,
+     "unit": "grains on the floor",
+     "threshold": "576",
+     "ok": true
+    },
+    {
+     "name": "grains kept",
+     "measured": 576,
+     "unit": "",
+     "threshold": "576",
+     "ok": true
+    }
+   ]
+  },
+  "heapSand": {
+   "status": "pass",
+   "headline": "432 grains: peak 6, footprint 163 columns (radius 7.2), slope 0.83; diagonal / axis reach ×0.98 (×0.96 of a round one); idle 1.18 s after the pour",
+   "criteria": [
+    {
+     "name": "round: diagonal / axis reach, of a round footprint's",
+     "measured": 0.96,
+     "unit": "",
+     "threshold": "1 ± 0.15",
+     "ok": true
+    },
+    {
+     "name": "slope (peak / footprint radius) in its class",
+     "measured": 0.83,
+     "unit": "",
+     "threshold": "0.7…1.3",
+     "ok": true
+    },
+    {
+     "name": "rests after the pour ends",
+     "measured": 1.18,
+     "unit": "s",
+     "threshold": "≤ 2.5",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "grains kept",
+     "measured": 432,
+     "unit": "",
+     "threshold": "432",
+     "ok": true
+    }
+   ]
+  },
+  "heapFlour": {
+   "status": "pass",
+   "headline": "432 grains: peak 10, footprint 111 columns (radius 5.94), slope 1.68; diagonal / axis reach ×1 (×0.99 of a round one); idle 1.6 s after the pour",
+   "criteria": [
+    {
+     "name": "round: diagonal / axis reach, of a round footprint's",
+     "measured": 0.99,
+     "unit": "",
+     "threshold": "1 ± 0.15",
+     "ok": true
+    },
+    {
+     "name": "slope (peak / footprint radius) in its class",
+     "measured": 1.68,
+     "unit": "",
+     "threshold": "1.4…2.6",
+     "ok": true
+    },
+    {
+     "name": "rests after the pour ends",
+     "measured": 1.6,
+     "unit": "s",
+     "threshold": "≤ 2.5",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "grains kept",
+     "measured": 432,
+     "unit": "",
+     "threshold": "432",
+     "ok": true
+    }
+   ]
+  },
+  "throw": {
+   "status": "n/a",
+   "headline": "lean has no thrown matter (its particles are liquid only)",
+   "criteria": []
+  },
+  "flameWood": {
+   "status": "n/a",
+   "headline": "lean has no WOOD, FIRE",
+   "criteria": []
+  },
+  "woodBurns": {
+   "status": "n/a",
+   "headline": "lean has no WOOD",
+   "criteria": []
+  },
+  "blast": {
+   "status": "n/a",
+   "headline": "lean has no BRICK, C4",
+   "criteria": []
+  },
+  "vessel": {
+   "status": "n/a",
+   "headline": "lean has no GUNPOWDER",
+   "criteria": []
+  },
+  "settledWorld": {
+   "status": "n/a",
+   "headline": "lean is a bare simulation: this test boots the game",
+   "criteria": []
+  },
+  "census": {
+   "status": "pass",
+   "headline": "20 checks over 2 s: water off by at most 0 cells, sand by 0, wall by 0",
+   "criteria": [
+    {
+     "name": "liquid + particle mass exact (worst drift)",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    },
+    {
+     "name": "sand cells kept (worst drift)",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    },
+    {
+     "name": "wall cells kept (worst drift)",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "tankStill": {
+   "status": "pass",
+   "headline": "surface 3.976…3.976 (4 is full), idle at 2.55 s",
+   "criteria": [
+    {
+     "name": "stays full (lowest surface)",
+     "measured": 3.976,
+     "unit": "cells",
+     "threshold": "3.85…4",
+     "ok": true
+    },
+    {
+     "name": "stays flat",
+     "measured": 0,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": 2.55,
+     "unit": "s",
+     "threshold": "≤ 4",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "sandFalls": {
+   "status": "pass",
+   "headline": "mean height 11.5 → 0.28; 64 of 64 grains resting on something",
+   "criteria": [
+    {
+     "name": "fell (mean height)",
+     "measured": 0.28,
+     "unit": "cells",
+     "threshold": "< 3",
+     "ok": true
+    },
+    {
+     "name": "landed (grains with something under them)",
+     "measured": 64,
+     "unit": "",
+     "threshold": "64",
+     "ok": true
+    },
+    {
+     "name": "grains kept",
+     "measured": 64,
+     "unit": "",
+     "threshold": "64",
+     "ok": true
+    }
+   ]
+  }
+ }
+}

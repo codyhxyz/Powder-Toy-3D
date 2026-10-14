@@ -46,7 +46,7 @@ const GEM_LIGHT_COLOR = [0.75, 0.85, 1];  // the gem's pale blue-white
 const PULSE_RADIUS_MAX = 12;             // cells: an impact's drawn flash and shock reach at most this
 const stores = new WeakMap();
 const finite = (x, fallback = 0) => Number.isFinite(x) ? x : fallback;
-const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const { clamp } = THREE.MathUtils;
 const clone = (value) => structuredClone(value);
 const zero = new THREE.Vector3();
 

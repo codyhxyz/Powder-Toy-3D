@@ -6,7 +6,7 @@
 //   math   the WGSL twin (presentationMath.js presentationWGSL) against the
 //          JS mapping on a few hundred rays: inverse rays, spans in a box,
 //          exits, the cell at a point (a compute kernel of the test's own);
-//          TAA's reprojection as post ships it (a compute entry added to its
+//          the motion pass's reprojection as post ships it (a compute entry added to its
 //          module) against the JS algebra, and against the camera-only one
 //   box    a 64³ box in the plain view (the cheapest to build): the effect
 //          selected by hand (a box map has no gamemode with it) bends the
@@ -15,7 +15,7 @@
 //          puts it, an overlay (the viewmodel's) and an opted-out mesh aren't
 //          bent; a figure bends where it stands; TAA stays steady while
 //          the camera, and with it the bend's anchor, moves, and the
-//          TaaParams createPost packs for its own draw reproject through the
+//          MotionParams createPost packs for its own draw reproject through the
 //          bend; deep idle (no submits) with the effect on; the gamemodes resolve on a map
 //          without the mode (Sandbox); dropping the effect restores every mesh
 //   boot   the gamemode's effect selected before the grid is built (boot and
@@ -91,20 +91,22 @@ const PAGE_HELPERS = () => {
     for (let i = 0; i < a.data.length; i += 4) s += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
     return s / (3 * a.width * a.height);
   };
-  // TAA's reprojection as post ships it (gfx/post.js taaWGSL's reproject, in a
-  // compute entry added to its module) with TaaParams bytes: this frame's
+  // the motion pass's reprojection as post ships it (gfx/post.js motionWGSL's
+  // presentationReproject, in a compute entry added to its module; three's TAAU
+  // reads the velocity it makes) with MotionParams bytes: this frame's
   // [uv (y down), depth] → the last frame's clip position, or { errs }
   window.__taaReproject = async (params, pts) => {
     const device = __app.gpu.device;
     if (!window.__taaPipe) {
-      const entry = (await import('/src/gfx/post.js')).WGSL_CHECK.find((e) => e.name === 'taa');
+      const entry = (await import('/src/gfx/post.js')).WGSL_CHECK.find((e) => e.name === 'motion');
       const code = `${entry.code()}
 @group(0) @binding(0) var<storage, read> qin: array<vec4f>;
 @group(0) @binding(1) var<storage, read_write> qout: array<vec4f>;
 @compute @workgroup_size(64) fn reprojTest(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= arrayLength(&qin)) { return; }
   warpUse(P.warpK, P.warpAnchor, P.warpDir);
-  qout[id.x] = reproject(qin[id.x].xy, qin[id.x].z);
+  let uv = qin[id.x].xy;
+  qout[id.x] = presentationReproject(vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, qin[id.x].z, 1.0));
 }`;
       const module = device.createShaderModule({ code, label: 'presentation taa reprojection' });
       const errs = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error').map((m) => `${m.lineNum}:${m.linePos} ${m.message}`);
@@ -225,15 +227,15 @@ struct In { o: vec4f, d: vec4f }
   ok(r.spanMiss === 0 && r.worst.span < 1e-2, `math: warpSpans gives boxSpans' spans (${r.spanMiss} rays with another count; worst ${r.worst.span.toExponential(1)} cells)`);
   ok(r.exitAxis === 0 && r.worst.exit < 1e-2, `math: warpExit is nextExit's exit (${r.exitAxis} other axes; worst ${r.worst.exit.toExponential(1)})`);
   ok(r.cellMiss <= Math.ceil(r.inside / 100), `math: warpCell is rayCell's cell (${r.cellMiss} of ${r.inside} differ: f32 at a cell's face)`);
-  // TAA's reprojection as post ships it (gfx/post.js taaWGSL's reproject, its
-  // TaaParams packed as createPost packs them), in a compute entry added to
+  // the motion pass's reprojection as post ships it (gfx/post.js motionWGSL's, its
+  // MotionParams packed as createPost packs them), in a compute entry added to
   // the module: a flat point shown this frame, its pixel and depth, come back
   // to where the last frame showed it, the camera and the bend's anchor both
   // moved. The camera-only reprojection (P.reproj) misses by far more.
   await page.evaluate(PAGE_HELPERS);
   const taa = await page.evaluate(async (gain) => {
     const M = await import('/src/gfx/presentationMath.js'), post = await import('/src/gfx/post.js');
-    const T3 = __app.THREE, entry = post.WGSL_CHECK.find((e) => e.name === 'taa');
+    const T3 = __app.THREE, entry = post.WGSL_CHECK.find((e) => e.name === 'motion');
     // two frames: the scene → world cells transform, two cameras (the app's clip space), the bend anchored under each
     const toWorld = new T3.Matrix4().makeScale(10, 10, 10).setPosition(300, 0, 200), toScene = toWorld.clone().invert();
     const cam = (pos, at) => {
@@ -280,10 +282,10 @@ struct In { o: vec4f, d: vec4f }
     });
     return { n: pts.length, worst, cameraOnly, moved: Math.hypot(prev.anchor[0] - cur.anchor[0], prev.anchor[1] - cur.anchor[1]) };
   }, TAA_K_GAIN);
-  if (taa.errs) ok(false, `math: the TAA reprojection kernel compiles: ${taa.errs.join('; ')}`);
+  if (taa.errs) ok(false, `math: the motion pass's reprojection kernel compiles: ${taa.errs.join('; ')}`);
   else {
     ok(taa.n >= 48 && taa.worst < 1e-3 && taa.cameraOnly > 20 * taa.worst,   // (1e-3: half a pixel of 1000; f32 through world cells in the hundreds)
-      `math: TAA's reprojection (post's WGSL, ${TAA_K_GAIN}× the bend, the anchor ${taa.moved.toFixed(1)} cells on) brings ${taa.n} shown points back to the last frame's: worst ${taa.worst.toExponential(1)} (NDC), the camera-only one's ${taa.cameraOnly.toExponential(1)}`);
+      `math: the motion pass's reprojection (post's WGSL, ${TAA_K_GAIN}× the bend, the anchor ${taa.moved.toFixed(1)} cells on) brings ${taa.n} shown points back to the last frame's: worst ${taa.worst.toExponential(1)} (NDC), the camera-only one's ${taa.cameraOnly.toExponential(1)}`);
   }
   ok(!errors.length, `math: no page or GPU errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
   await page.close();
@@ -479,16 +481,16 @@ async function boxStage(browser, vite, secs) {
   ok(taa.curved <= Math.max(1.5 * taa.flat, taa.flat + 1.5),
     `box: TAA steady while the camera moves bent (${TAA_K_GAIN}× the bend): ${taa.curved.toFixed(2)} levels from a fresh frame after the walk (flat: ${taa.flat.toFixed(2)})`);
 
-  // TAA's reprojection as createPost builds it (finish(): this frame's clip →
-  // world cells, the last frame's parameters and world → clip, swapped after
-  // the draw), not as the test builds it: the TaaParams post's own TAA draw
+  // the motion pass's reprojection as createPost builds it (finish(): this frame's
+  // jittered clip → world cells, the last frame's parameters and world → clip,
+  // swapped after the draw), not as the test builds it: the MotionParams post's own draw
   // packs on a frame after the camera, and the bend's anchor, moved (captured
   // at the draw) bring this frame's displayed points back to where the last
   // frame showed them. The two ways it could be wired wrong miss by far more:
   // the camera alone, and the last frame's parameters swapped in too early.
   const wired = await page.evaluate(async (gain) => {
     const a = __app, p = a.presentation, T = a.THREE, M = await import('/src/gfx/presentationMath.js');
-    const { RenderPipe } = await import('/src/gpu/kernels.js'), entry = (await import('/src/gfx/post.js')).WGSL_CHECK.find((e) => e.name === 'taa');
+    const { RenderPipe } = await import('/src/gpu/kernels.js'), entry = (await import('/src/gfx/post.js')).WGSL_CHECK.find((e) => e.name === 'motion');
     const real = Object.getOwnPropertyDescriptor(p, 'parameters'), draw = RenderPipe.prototype.draw;
     const meshes = Object.values(window.__presentationMeshes);
     const start = a.camera.position.clone(), look = new T.Vector3(0, 1.5, 0);
@@ -496,7 +498,7 @@ async function boxStage(browser, vite, secs) {
     try {
       Object.defineProperty(p, 'parameters', { configurable: true, get: () => ({ ...real.get.call(p), k: p.active ? real.get.call(p).k * gain : 0 }) });
       RenderPipe.prototype.draw = function (rp, o) {
-        if (this.name === 'taa' || this.name === 'taau') packed = entry.params.pack(o.params);   // (as the ring packs them: the matrices change after the draw)
+        if (this.name === 'motion') packed = entry.params.pack(o.params);   // (as the ring packs them: the matrices change after the draw)
         return draw.call(this, rp, o);
       };
       for (const o of meshes) o.visible = false;
@@ -511,6 +513,8 @@ async function boxStage(browser, vite, secs) {
       await a.test.renderOnce();
       if (!packed) return { none: true };
       const vpB = vp(), cur = p.parameters, toScene = p.worldToScene.clone(), o = a.sim.origin;
+      // (the scene drew with three's TAAU's jitter: a point's texel is its unjittered NDC less this, scene pixels y down)
+      const [jx, jy] = a.post.jitter, [iw, ih] = a.post.inSize, jit = [(2 * jx) / iw, (-2 * jy) / ih];
       const clipOf = (m, w) => new T.Vector4(...w, 1).applyMatrix4(m);
       const ndc = (c) => [c.x / c.w, c.y / c.w];
       const toClip = (vpm) => new T.Matrix4().multiplyMatrices(vpm, toScene);
@@ -519,7 +523,7 @@ async function boxStage(browser, vite, secs) {
         const P = [o.x + 4 + ((i * 37) % 56), o.y + ((i * 13) % 40), o.z + 4 + ((i * 29) % 56)];   // world cells in the box
         const c = clipOf(toClip(vpB), M.warp(P, cur));
         if (c.w <= 0 || Math.abs(c.x / c.w) > 1 || Math.abs(c.y / c.w) > 1) continue;
-        pts.push([(c.x / c.w + 1) / 2, (1 - c.y / c.w) / 2, c.z / c.w]);
+        pts.push([(c.x / c.w - jit[0] + 1) / 2, (1 - (c.y / c.w - jit[1])) / 2, c.z / c.w]);
         want.push(ndc(clipOf(toClip(vpA), M.warp(P, prev))));
         early.push(ndc(clipOf(toClip(vpA), M.warp(P, cur))));   // (the last frame's parameters swapped in before the draw)
       }
@@ -530,7 +534,7 @@ async function boxStage(browser, vite, secs) {
       pts.forEach((q, i) => {
         const [x, y, , w] = got.clip[i];
         worst = Math.max(worst, Math.abs(x / w - want[i][0]), Math.abs(y / w - want[i][1]));
-        const r = new T.Vector4(q[0] * 2 - 1, 1 - q[1] * 2, q[2], 1).applyMatrix4(reproj);
+        const r = new T.Vector4(q[0] * 2 - 1 + jit[0], 1 - q[1] * 2 + jit[1], q[2], 1).applyMatrix4(reproj);
         cameraOnly = Math.max(cameraOnly, Math.abs(r.x / r.w - want[i][0]), Math.abs(r.y / r.w - want[i][1]));
         swapped = Math.max(swapped, Math.abs(early[i][0] - want[i][0]), Math.abs(early[i][1] - want[i][1]));
       });
@@ -544,7 +548,7 @@ async function boxStage(browser, vite, secs) {
     }
   }, TAA_K_GAIN);
   ok(!wired.none && !wired.errs && wired.n >= 32 && wired.worst < 1e-3 && wired.cameraOnly > 20 * wired.worst && wired.swapped > 20 * wired.worst,
-    `box: TAA's reprojection as createPost wires it (its own TaaParams, the anchor ${wired.moved?.toFixed(1)} cells on) brings ${wired.n} shown points back to the last frame's: worst ${wired.worst?.toExponential(1)} (NDC); the camera alone ${wired.cameraOnly?.toExponential(1)}, the parameters swapped early ${wired.swapped?.toExponential(1)}${wired.errs ? `: ${wired.errs.join('; ')}` : ''}${wired.none ? ': no TAA draw captured' : ''}`);
+    `box: the motion pass's reprojection as createPost wires it (its own MotionParams, the anchor ${wired.moved?.toFixed(1)} cells on) brings ${wired.n} shown points back to the last frame's: worst ${wired.worst?.toExponential(1)} (NDC); the camera alone ${wired.cameraOnly?.toExponential(1)}, the parameters swapped early ${wired.swapped?.toExponential(1)}${wired.errs ? `: ${wired.errs.join('; ')}` : ''}${wired.none ? ': no motion draw captured' : ''}`);
 
   // deep idle with the effect on: the loop sleeps, no submits
   await page.evaluate(() => __app.test.resume());
@@ -619,7 +623,7 @@ async function worldStage(browser, vite, secs) {
 // ---------------------------------------------------------------- boot
 // The gamemode's effect is selected before the grid is built (app.js's boot
 // and openMap), so the build, and the loading screen with it, wait on the
-// curved variant the view draws, never on a flat one it won't. Willow Cove,
+// curved variant the view draws, never on a flat one it won't. Tinker Creek,
 // the gamemode's map, gets its world WGSL from DP4-W: the Island is given
 // Animal Crossing here instead (maps.js served with it in the Island's modes).
 async function bootStage(browser, vite, secs) {

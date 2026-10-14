@@ -1,6 +1,5 @@
 import { attachModel, jagexColor } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
-import { povEvents } from '../events.js';
 import { gear } from './catalog.js';
 
 // Tool gun: Garry's Mod's gmod_tool. Whatever the spawn menu (Q) picked last,
@@ -53,7 +52,7 @@ export default {
         if (!r) return;
         if (r === 'stroke') down = button;
         rig.hit(HIT.DRY);
-        povEvents.emit('tool:action', { tool: 'toolgun', action: 'fire' });
+        env.feedback?.act('fire');
       },
       // what it holds, by the crosshair (GMod's tool gun shows its mode on its screen and the HUD)
       readout() {

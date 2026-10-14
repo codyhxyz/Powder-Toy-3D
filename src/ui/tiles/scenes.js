@@ -12,6 +12,7 @@
 //     metal), so sparks run up through it and it shines.
 import { K, E } from '../../elements.js';
 import { World } from './engine.js';
+import { rng } from '../../rng.js';
 
 export const TILE = 44;               // tile edge, CSS px
 export const CELL = 2;                // cell edge, CSS px
@@ -37,17 +38,6 @@ export const BLOBS = [                // gas: elliptical gradients, centre/radii
   { cx: 0.75, cy: 0.80, rx: 0.60, ry: 0.50, alpha: 0.18, fade: 0.7 },
 ];
 export const GAS_FILL = 0.9;          // chance a cell holds gas at the brightest point of a blob
-
-function rng(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6D2B79F5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 // blob brightness at a tile point, 0..1 relative to the brightest blob
 export function blobAlpha(px, py) {

@@ -1,5 +1,6 @@
 import { SPELLS, SPELL_BY_ID } from './catalog.js';
 import { compileWand, CONFIG_BOUNDS } from './compiler.js';
+import { rng as mulberry32, hashString } from '../../rng.js';
 
 // Noita's procedural wands, reimplemented from its public rules (not its code):
 // data/scripts/gun/procedural/gun_procedural.lua (get_gun_data,
@@ -128,20 +129,9 @@ const WAND_PRICE_BASE = 50, WAND_PRICE_PER_LEVEL = 210, WAND_PRICE_JITTER = 15;
 export const SALE = 0.5;
 
 // --- seeded random (Noita's Random(a, b) is integer-inclusive, Random() is [0,1)) ---
-export function hashSeed(...parts) {
-  let h = 2166136261 >>> 0;   // FNV-1a over the parts' text
-  for (const c of parts.join('|')) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
-  return h;
-}
+export function hashSeed(...parts) { return hashString(parts.join('|')); }   // FNV-1a over the parts' text
 function rng(seed) {
-  let a = (typeof seed === 'number' ? seed : hashSeed(seed)) >>> 0;
-  const next = () => {   // mulberry32
-    a = (a + 0x6D2B79F5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  const next = mulberry32(typeof seed === 'number' ? seed : hashSeed(seed));
   const int = (lo, hi) => { lo = Math.ceil(lo); hi = Math.floor(hi); return hi < lo ? lo : lo + Math.floor(next() * (hi - lo + 1)); };
   // Noita's native RandomDistribution(min, max, mean, sharpness): a value in
   // [min, max] peaked at mean, sharper with sharpness; 0 is uniform. Its native

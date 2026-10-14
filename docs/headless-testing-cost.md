@@ -57,7 +57,7 @@ It does not wait for unrelated model, world-generation, or audio loading.
 Changing presentation cadence still changes temporal history. Use visual mode for pixel-regression baselines.
 
 The helper closes its browsers on uncaught exceptions, rejected promises, and termination signals.
-Each browser has a ten-minute lifetime by default. `TPT_TEST_TIMEOUT_MS` can raise that limit.
+Each browser has a three-minute lifetime by default (`TPT_TEST_TIMEOUT_MS`). Two rules share the user's GPU: one headless browser machine-wide (a lock in `~/.cache/tpt-headless/slot`), and none while the GPU is busy with something that isn't a test. Holding the lock, `launchBrowser` takes the median of the IO Registry's "Device Utilization %" over about 2 s and waits while it is 50 % or more (a played game holds an M-series GPU above ~80 %, the desktop alone reads 0–25 %), for up to `TPT_GPU_WAIT_MS` (10 minutes). It replaced a 5-minutes-per-session-per-hour allowance (fd09377) that blocked tests on an idle Mac yet let many sessions together run all hour while the user played.
 Explicit `finally` cleanup is still preferred.
 The NPC suite sets a lifetime that covers its requested match count.
 

@@ -1,5 +1,6 @@
 import { gear } from './catalog.js';
 import { lampTool } from './lamp.js';
+import { FLAME_COLOR } from '../../gfx/lamps.js';
 
 // Lantern: the torch's better-off cousin (lamp.js): a steady, warm light
 // that reaches about 10 m. Left-click switches it off and on;
@@ -9,8 +10,8 @@ import { lampTool } from './lamp.js';
 export default lampTool({
   ...gear('LANTERN'),
   light: {
-    color: [1, 0.78, 0.5],   // linear: an oil lantern's warm white (≈ 2,700 K)
-    intensity: 2.5,          // × SUN_COL's units at LAMP_UNIT (1 m): brighter than the torch, still a pool of light;
+    color: FLAME_COLOR,      // a kerosene wick flame's blackbody colour at 1,850 K, unit luminance (gfx/lamps.js)
+    intensity: 2,            // luminance, × SUN_COL's units at LAMP_UNIT (1 m): brighter than the torch, still a pool of light;
                              // 14 floodlit a cave white once the eyes adjusted to it (gfx/post.js ADAPT)
     range: 32,               // cells (10 m)
     flicker: 0,

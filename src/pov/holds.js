@@ -66,7 +66,6 @@ export const HELD = {
   hook: { hold: 'shotgun', left: UNDER([0, 0.06, -0.45]) },
   physgun: { hold: 'physgun', left: UNDER([0, 0.09, -0.32]) },
   toolgun: { hold: 'pistol', scale: 1.1 },
-  scanner: { hold: 'slam', scale: 1 },
   axe: { hold: 'melee' },
   pickaxe: { hold: 'melee2', scale: 1.5, left: { at: [0, 0.55, 0], fingers: [0, 0, -1], palm: [1, 0, 0] } },
   // the shovel's handle runs along its length (z), the blade ahead: held down and across, ready to dig
@@ -99,13 +98,20 @@ export const GESTURES = {
   chop: [[0, 0, 0, 0], [0.13, 2.2, 0.9, 0], [0.24, 0.55, -1.8, 0.4], [0.6, 0, 0, 0]],
   // a stab: drawn back, then driven in at the aim, as far as the arm reaches (TF2's knife)
   stab: [[0, 0, 0, 0], [0.07, 0.15, 0.2, -0.4], [0.15, 0.6, -0.15, 0.45], [0.45, 0, 0, 0]],
+  // a shovel's dig: drawn back with the blade up, thrust ahead along the slanted shaft into the
+  // ground (Lethal Company's shovel reaches contact at 0.13 s), the load lifted, and back to the
+  // ready slant; played at the dig's 0.15 s
+  dig: [[0, 0, 0, 0], [0.06, 0.3, 0.35, -0.3], [0.13, -0.15, 0.15, 1.2], [0.22, 0.35, 0.5, 0.4], [0.3, 0, 0, 0]],
+  // a shovel's throw: the load flicked up and out ahead
+  toss: [[0, 0, 0, 0], [0.06, -0.25, -0.25, 0.1], [0.16, 0.65, 0.75, 0.45], [0.36, 0, 0, 0]],
 };
 const GESTURE_BY_HOLD = { melee: 'chop', melee2: 'chop', knife: 'stab' };
 
 // The gesture's pose [raise, tip, drive] `since` s after a swing, played over at most `span` s.
-export function gesturePose(hold, since, span, out) {
+// name: a GESTURES key, or a hold type (its own gesture: GESTURE_BY_HOLD).
+export function gesturePose(name, since, span, out) {
   out[0] = out[1] = out[2] = 0;
-  const keys = GESTURES[GESTURE_BY_HOLD[hold]];
+  const keys = GESTURES[name] ?? GESTURES[GESTURE_BY_HOLD[name]];
   if (!keys) return out;
   const t = since / Math.min(1, span / keys[keys.length - 1][0]);
   for (let i = 1; i < keys.length; i++) {

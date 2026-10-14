@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { createPurse, siteNuggets, splitGold, enemyGold, NUGGET, NUGGETS_PER_SITE, ENEMY_GOLD_DEFAULT } from '../src/pov/descent/gold.js';
 import { rollShop, buy, SHOP_WANDS } from '../src/pov/descent/shop.js';
-import { mixSeed, hashString, rng } from '../src/pov/descent/rng.js';
+import { mixSeed, hashString, rng } from '../src/rng.js';
 import * as gen from '../src/pov/descent/stubs.js';
 
 let n = 0;

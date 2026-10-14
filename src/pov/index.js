@@ -14,12 +14,12 @@ import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
 import './potions.js';   // Noita's potion statuses: stains and drinks (registers them)
-import { addTarget, PLAYER } from './targets.js';
+import { addTarget, bodyTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { createInteract } from './interact.js';
 import { ORB_LIFT } from '../perkOrbs.js';
 import { CLASSES_ENABLED } from './classes.js';
-import { createClassPicker } from './classPicker.js';
+import { createClassPicker, applyClassTo } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
 import { createNightVision } from './nightVision.js';
 import { KICK_KEY, createKickLeg } from './kick.js';
@@ -34,6 +34,8 @@ import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
 import { createDescent } from './descent/index.js';
 import { preparePov, volumeLight } from './gpu.js';
+import { createVillage } from './village/index.js';
+import { gridSpace } from './space.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -89,8 +91,8 @@ const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little
 const CHASE_IDLE_S = 1.2;               // s without mouse look before it swings back behind
 const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
-// With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
-const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
+// In a TF2-style match (Siege) comma is the class key instead (classPicker.js, classesOn below).
+const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
@@ -136,29 +138,19 @@ export function createPov(app) {
   const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
     .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
-  addTarget({
-    id: PLAYER,
-    get alive() { return !!player && !player.dead && mode === 'on'; },
-    box(min, max) {
-      const hw = player.width / 2;   // (its own size: Shrink)
-      min.set(player.pos.x - hw, player.pos.y, player.pos.z - hw);
-      max.set(player.pos.x + hw, player.pos.y + player.height, player.pos.z + hw);
-    },
-    facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
-    get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
-    hurt(amount, cause, d, opts) {
-      povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
-      player.hurt(amount * (opts?.exact ? 1 : PLAYER_DAMAGE_TAKEN), cause, opts);   // exact: Halo's numbers (halo.js)
-      // d null: the weapon shoves by momentum itself (the kick: shove below)
-      if (d) player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
-    },
-    shove(dv) { player.applyImpulse(dv); },   // a momentum shove (an NPC's kick, cells/s)
-    get body() { return player; },            // the body (a hook pulls on it: player.js tether)
-  });
+  addTarget(bodyTarget(PLAYER, () => player, {
+    alive: () => !!player && !player.dead && mode === 'on',
+    facing: (out) => povCam.dir(out),   // where the player looks
+    damageScale: PLAYER_DAMAGE_TAKEN, knockback: PLAYER_KNOCKBACK, knockUp: PLAYER_KNOCK_UP,
+    onHurt: (amount) => povEvents.emit('player:hit', { amount }),   // inside the attacker's povEvents.as(): carries its id
+  }));
+  // Halo's four modes use armor; Siege and sandbox keep the chosen body.
+  const character = () => game.running && ['slayer', 'ctf', 'koth', 'infection'].includes(game.mode)
+    ? 'spartan' : app.settings.character;
   // the jeep and the hoverbike (vehicles/index.js): Rapier loads on the first one
   const vehicles = createVehicles({
     renderer, scene, hud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
-    getSpawners: app.getSpawners, requestRender: app.requestRender,
+    getSpawners: app.getSpawners, requestRender: app.requestRender, getCharacter: character,
   });
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
@@ -179,8 +171,8 @@ export function createPov(app) {
   let figureShown = false;               // the figure is drawn this frame (the camera is out of the head)
   // the shown figure's right hand (a bone), or null
   function rightHand() {
-    const body = figure?.showing === 'real' ? figure.real.model : figure?.root;
-    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(body === figure.root ? STICK_HAND : REAL_HAND));
+    const body = figure?.model;
+    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(figure.showing === 'real' ? REAL_HAND : STICK_HAND));
     return (body && hands.get(body)) ?? null;
   }
   // the right hand in the world while the figure is drawn, else null: a wand's casts are drawn from it in third person (tools/index.js)
@@ -213,7 +205,7 @@ export function createPov(app) {
   const isLocked = () => locked || test.assumeLocked;
   // Phones and tablets (touch.js): no pointer lock; the thumbs fill the same inputs instead
   const touch = createTouchControls({
-    canvas, active: live,
+    canvas, active: () => live() && !village.blocked,
     turn(dx, dy) { povCam.turn(dx, dy); lookMovedAt = performance.now(); },
     button(name, down, cancelled) {
       buttons[name] = down;
@@ -221,22 +213,26 @@ export function createPov(app) {
       if (cancelled) buttons[`${name}Pressed`] = false;
     },
     wheel: (notches) => { wheelNotches += notches; },
-    kick: () => { if (mode === 'on') kickQueued = true; },
+    kick: () => { if (mode === 'on' && !village.enabled) kickQueued = true; },
     useVehicle,
   });
-  const canUse = () => isLocked() || touch.enabled;   // the tools and the kick take input
+  const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
+  const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput,
+    onEnabled: on => { toolbelt?.setVisible(!on && mode === 'on'); if (on) setMenu(false); },
+    freeMouse: () => { setMenu(false); if (document.pointerLockElement === canvas) document.exitPointerLock(); },
+  });
   createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
   connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain...
   announceMatches();            // ...and calls the matches' moments
 
   // ---- grid ↔ world
-  const toWorld = (g, out) => out.copy(g).multiplyScalar(app.getScale()).add(app.getVolume().position);
+  const { toWorld, toGrid } = gridSpace(app);
   const worldToGrid = new THREE.Matrix4();
   const box = { min: new THREE.Vector3(), max: new THREE.Vector3(), margin: 0 };
 
   // ---- pointer lock
   function requestLock() {
-    if (editing || touch.enabled || document.pointerLockElement === canvas) return;   // touch has no pointer lock
+    if (editing || village.blocked || touch.enabled || document.pointerLockElement === canvas) return;   // touch has no pointer lock
     try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* not allowed here */ }
   }
   document.addEventListener('pointerlockchange', () => {
@@ -305,33 +301,37 @@ export function createPov(app) {
       if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
     }
     // settings and help need the mouse
-    if (((e.key === ',' && !classes) || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
+    if (((e.key === ',' && !classesOn()) || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });   // (a phone's app switch)
   // E (or the touch Vehicle button): get in, out, or right one
   function useVehicle() {
+    if (village.enabled) { village.act({ type: 'interact' }); return; }
     if (live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
   }
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
-  // now, so its keys are heard before the toolbelt's digits.
+  // now, so its keys are heard before the toolbelt's digits. Classes are TF2's, so
+  // they exist only in a TF2-style match (Siege): no picker, tip or class elsewhere.
+  const classesOn = () => !!classes && game.running && game.style === 'tf2';
   const classes = CLASSES_ENABLED ? createClassPicker({
-    isActive: () => active() && mode !== 'exiting',
+    isActive: () => active() && mode !== 'exiting' && !village.enabled,
     getBody: () => player,
     getToolbelt: () => toolbelt,
     lock: requestLock,
     unlock: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
     isLocked: () => locked,
-    toast: (text, opts) => hud.toast(text, opts),
-    allowed: () => !(game.running && game.style === 'halo'),   // a Halo match: no classes (docs/halo-contract.md)
+    toast: (text, opts) => { if (!village.enabled) hud.toast(text, opts); },
+    allowed: () => classesOn(),
     inRoom: () => game.inSpawnRoom(),                         // Siege: the side's respawn room, or setup (TF2)
   }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
     if (editing || !active()) return;
     if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
+    if (village.enabled) return;
     if ((e.button === 0 || e.button === 2) && toolbelt?.confirmSelection?.()) return;   // picks from the slot selector, as in HL2
     if (e.button === 0) { buttons.primary = true; buttons.primaryPressed = true; }
     if (e.button === 2) { buttons.secondary = true; buttons.secondaryPressed = true; }
@@ -341,14 +341,14 @@ export function createPov(app) {
     if (e.button === 2) buttons.secondary = false;
   });
   document.addEventListener('mousemove', (e) => {
-    if (editing || !active() || !locked || mode === 'exiting') return;
+    if (editing || village.blocked || !active() || !locked || mode === 'exiting') return;
     povCam.turn(e.movementX, e.movementY);
     lookMovedAt = performance.now();
   });
   canvas.addEventListener('wheel', (e) => {
     if (editing || !active()) return;
     e.preventDefault();
-    if (!isLocked()) return;
+    if (!isLocked() || village.enabled) return;
     const px = e.deltaY * (e.deltaMode === 1 ? WHEEL_LINE_PX : e.deltaMode === 2 ? WHEEL_PAGE_PX : 1);
     if (!px) return;
     const now = performance.now(), dirn = Math.sign(px);
@@ -368,7 +368,7 @@ export function createPov(app) {
   // ---- lazily built parts
   function ensureFigure() {
     if (!figure) {
-      figure = createBody({ choice: () => app.settings.character });   // realistic or stickman, live
+      figure = createBody({ choice: character });
       scene.add(figure.root);
     }
     figure.bind(volumeLight(app.getVolume()), app.getSim().g);
@@ -485,6 +485,7 @@ export function createPov(app) {
       return;
     }
     if (!createPlayer) { hud.toast('First-person mode is still being built', { kind: 'error' }); return; }
+    if (app.getMode() === 'animalCrossing' && app.getWorld()?.scene.key === 'willowCove') village.setEnabled(true, app.getWorld().P);
     requestLock();   // while the key press still counts as a user gesture
     starting = true;
     const fromSim = app.getSim();
@@ -523,7 +524,7 @@ export function createPov(app) {
 
     // face where the god camera was looking
     const fwd = camera.getWorldDirection(new THREE.Vector3());
-    povCam.setLook(Math.atan2(-fwd.x, -fwd.z), ENTRY_PITCH);
+    povCam.setLook(village.enabled ? 0 : Math.atan2(-fwd.x, -fwd.z), village.enabled ? -0.24 : ENTRY_PITCH);
     povCam.reset();
     zoom.reset();
     feel.reset();
@@ -544,6 +545,7 @@ export function createPov(app) {
   }
 
   function exit(instant = false) {
+    village.setEnabled(false);
     if (!active()) return;
     vehicles.reset(player);
     setMenu(false);
@@ -619,7 +621,7 @@ export function createPov(app) {
     input.jump = input.sprint = input.down = input.crouch = false;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
-    if (editing || mode !== 'on' || player.dead || app.isTyping()) return;
+    if (editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
     if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
       const t = touch.state;   // (the touch stick drives too: forward throttles, sideways steers)
       d.throttle = THREE.MathUtils.clamp((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z, -1, 1);
@@ -645,7 +647,7 @@ export function createPov(app) {
 
   function update(dt) {
     touch.update({
-      live: live(), tool: toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
+      live: live() && !village.blocked, tool: village.enabled ? null : toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
       wantsWheel: !!toolbelt?.wantsWheel, driving: !!vehicles.seated, vehicles: vehicles.list.length > 0,
     });
     descentFrame(dt);
@@ -662,7 +664,9 @@ export function createPov(app) {
     // the body
     readInput();
     vehicles.beforeBody(player);
+    village.beforeBody();
     player.update(dt, input);
+    village.afterBody();
     vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid });
     vehicles.afterBody(player);
     const driving = !!vehicles.seated;
@@ -764,7 +768,7 @@ export function createPov(app) {
     camera.updateMatrixWorld();
     if (pose.done === 'in') {
       mode = 'on';
-      toolbelt?.setVisible(true);
+      toolbelt?.setVisible(!village.enabled);
     } else if (pose.done === 'out') {
       finishExit();
       return;
@@ -772,9 +776,9 @@ export function createPov(app) {
 
     // the figure: shown once the camera is out of the head
     figureShown = pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed;
-    figure.setVisible(figureShown);   // the vehicle draws its driver; a body burst into meat has nothing left to draw
+    figure.setVisible(figureShown && !village.enabled);   // the vehicle draws its driver; a body burst into meat has nothing left to draw
     // the tool in hand on it (held.js; the wand has no model)
-    const holding = held.pick(figureShown && mode === 'on' && !deadSeen ? gearByKey(toolbelt?.selectedKey)?.model ?? null : null, dt);
+    const holding = held.pick(figureShown && !village.enabled && mode === 'on' && !deadSeen ? gearByKey(toolbelt?.selectedKey)?.model ?? null : null, dt);
     figure.update(dt, {
       // Shrink: the figure at the body's size, its gait timed at the plain figure's speed for the size
       feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
@@ -784,11 +788,12 @@ export function createPov(app) {
     });
     held.bind(volumeLight(vol), g);
     held.frame({ figure, yaw: povCam.look.yaw, pitch: povCam.look.pitch, scale: scale * player.size, feet: vFeet, worldToGrid, camera, viewmodel });
-    if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
+    village.update(dt, figureShown, povCam.look.yaw);
+    if (player.jetting && mode === 'on' && !village.enabled) vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
     if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
     for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
-    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
+    viewmodel.visible = !village.enabled && mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
@@ -804,8 +809,8 @@ export function createPov(app) {
         THREE.MathUtils.clamp(ctx.eye.z, hv.cell.z, hv.cell.z + 1));
       aim.dist = closest.distanceTo(ctx.eye);
     } else aim.dist = Infinity;
-    interact.update(ctx.eye, ctx.dir, aim.dist, live() && mode === 'on' && !deadSeen && !driving && !editing);
-    if (live() && toolbelt && !driving) {
+    interact.update(ctx.eye, ctx.dir, aim.dist, live() && mode === 'on' && !deadSeen && !driving && !editing && !village.enabled);
+    if (live() && toolbelt && !driving && !village.enabled) {
       ctx.sim = sim;
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
@@ -860,7 +865,7 @@ export function createPov(app) {
       jetFuel: player.jetFuel, jetting: player.jetting, mana: toolbelt?.mana ?? null, perks: player.perks, status: player.status,
       gold: descent.goldShown,
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
-      locked: canUse(), swooping: mode !== 'on',
+      locked: isLocked() || touch.enabled, swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
       buried: mode === 'on' && !deadSeen && inEyes && player.buriedId >= 0 ? BURIED_COLOR[player.buriedId] : null,
     });
@@ -915,8 +920,7 @@ export function createPov(app) {
   // camera and the body gets picked.
   function aimRay(ro, rd, presentation = false) {
     if (!active() || !player) return false;
-    const scale = app.getScale();
-    ro.copy(camera.position).sub(app.getVolume().position).divideScalar(scale);
+    toGrid(camera.position, ro);
     // the aim, not the shaken view: kick and shake are only felt
     if (mode === 'on' && !deadSeen) povCam.dir(rd);
     else camera.getWorldDirection(rd);
@@ -937,8 +941,8 @@ export function createPov(app) {
     deaths: { heldOn: (id, by) => deaths.heldOn(id, by) },   // the killfeed's books: a kill's weapon
     get toolbelt() { return toolbelt; },
     interact,                        // look + E: the power weapons' pads and dropped guns (arsenal.js)
-    active,
-    locked: canUse,   // the mouse is captured (or touch): a match's "Click to play" (game/hud.js)
+    active: () => active() && !village.enabled,
+    locked: () => isLocked() || touch.enabled,   // the mouse is captured (or touch): a match's "Click to play" (game/hud.js)
     loadNpcs,
     env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
     loadPreset: () => app.loadPreset?.(app.settings.preset),
@@ -957,9 +961,15 @@ export function createPov(app) {
   const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
   povEvents.on('game:start', () => { if (game.style === 'halo') classes?.close({ relock: false }); else joinedTf2(); });
   povEvents.on('game:team', ({ id }) => { if (id === PLAYER && game.running) joinedTf2(); });
+  // the match over, the class comes off with it (its perks and scales), and the picker shuts
+  povEvents.on('game:stop', ({ style }) => {
+    if (style !== 'tf2') return;
+    classes?.close({ relock: false });
+    if (player?.cls) applyClassTo(player, null);
+  });
 
   // god-mode keys POV takes over (app.js skips them while active)
-  const blocksKey = (e) => editing || (active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey));
+  const blocksKey = (e) => editing || (active() && !(PASS_KEYS.has(e.key) && !(e.key === ',' && classesOn())) && !(e.metaKey || e.ctrlKey));
 
   return {
     get active() { return active(); },
@@ -967,6 +977,7 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    village,                     // Tinker Creek's homes, pockets and peaceful neighbors
     descent,                     // the Descent map's gold, shop, altar, pool and refresher (descent/index.js)
     interact,                    // look + E (interact.js): focus, use()
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
@@ -979,7 +990,7 @@ export function createPov(app) {
     },
     openWandEditor() { if (active()) toolbelt?.openEditor(); },
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
-    get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
+    get readout() { return !village.enabled && live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get marchNear() { return active() ? marchNear : 0; },   // cells: the view's near clip (render.js uMarchNear)
     get figure() { return figure; },
     held,                        // the tool in hand on the body (held.js): holding, weight (checks)
@@ -1001,7 +1012,7 @@ export function createPov(app) {
     exit,
     update,
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
-    worldReplaced: () => { toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced(); },
+    worldReplaced: () => { village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced(); },
     // the window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): grid positions move back.
     // The drop point stays put in the world: a respawn far away waits there
     // for the window to come (player.js).

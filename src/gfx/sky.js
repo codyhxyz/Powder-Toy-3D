@@ -7,6 +7,8 @@
 // units are irradiance / pi: a white Lambert surface facing the light has
 // radiance equal to that value.
 
+import { glf } from '../glsl.js';
+
 export const SKY = {
   tauRayleigh: [0.046, 0.108, 0.265], // zenith optical depth of air at 680 / 550 / 440 nm (~lambda^-4)
   tauAerosol: 0.04,     // grey haze (Mie) optical depth: a clear day
@@ -18,7 +20,16 @@ export const SKY = {
   airmassHorizon: 0.025,
   airmassFalloff: 11,
   groundAlb: [0.11, 0.106, 0.102], // the floor's albedo (weathered concrete), continued as open ground around the box
+  floorLineAlb: [0.075, 0.078, 0.085], // the floor grid's seams, darker than the floor (inside the box and out, gfx/overlays.js)
 };
+
+// tan of the sun's apparent radius: the real sun is 0.27 deg; 1.2 deg stands in
+// for a slightly hazy sky, so penumbrae read at the scale of the box (PCSS,
+// shaders/gfx/lighting.js) and its disc and highlights are that size.
+export const SUN_TAN_RADIUS = 0.021;
+// The sun's disc radiance in the sky, x the sunlight at the ground (shaders/far.js FAR_VIEW.SUN_DISC: the real ratio blooms the whole sky)
+export const SUN_DISC = 40.0;
+export const SUN_DISC_EDGE = 0.15;   // its soft edge, share of its radius
 
 // Quadrature for the open-sky irradiance: rings in elevation × steps in azimuth.
 const IRR_RINGS = 16, IRR_STEPS = 32;
@@ -76,7 +87,7 @@ export function skyState(sun, light, out) {
   return out;
 }
 
-const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+export { glf };
 const vec3 = (a) => `vec3f(${a.map(glf).join(', ')})`;
 
 // WGSL for the render library (shaders/gfx/lighting.js; the name is the GLSL
@@ -93,5 +104,49 @@ export function skyGLSL() {
     `const AIRMASS_FALLOFF: f32 = ${glf(SKY.airmassFalloff)};`,
     `const AIRMASS_EQ_EPS: f32 = ${glf(AIRMASS_EQ_EPS)};`,
     `const GROUND_ALB: vec3f = ${vec3(SKY.groundAlb)};`,
+    `const FLOOR_LINE_ALB: vec3f = ${vec3(SKY.floorLineAlb)};   // the grid's seams, darker than the floor`,
   ].join('\n');
+}
+
+// WGSL: the sky's radiance per direction (needs skyGLSL's constants, PI_L and
+// FrameUniforms FU): what lights and is mirrored in the scene
+// (shaders/gfx/lighting.js) and what the box's backdrop shows (gfx/overlays.js).
+export function skyViewGLSL() {
+  return /* wgsl */ `
+const HORIZON_BLEND: f32 = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
+
+// Henyey–Greenstein phase function: the share of light scattered through
+// angle acos(mu) by a medium of asymmetry g, per steradian (the haze here,
+// the clouds and gas lighting.js's hgPhase2 mixes two of).
+fn hgPhase(mu: f32, g: f32) -> f32 {
+  let k = 1.0 + g * g - 2.0 * g * mu;
+  return (1.0 - g * g) / (4.0 * PI_L * k * sqrt(k));
+}
+
+// Relative air mass toward zenith cosine cz (airMass above).
+fn airMass(cz0: f32) -> f32 {
+  let cz = max(cz0, 0.0);
+  return 1.0 / (cz + AIRMASS_HORIZON * exp(-AIRMASS_FALLOFF * cz));
+}
+
+// Clear-sky radiance toward unit d (d.y >= 0; lower directions see the
+// horizon), without the sun's disc (skyRadiance above is its JS twin).
+fn skyRadiance(d: vec3f) -> vec3f {
+  let mu = dot(d, FU.sun);
+  let mv = airMass(d.y);
+  let ms = airMass(FU.sun.y);
+  let pR = 3.0 / (16.0 * PI_L) * (1.0 + mu * mu);
+  let pM = hgPhase(mu, AEROSOL_G);
+  // the integral over height of e^(-tau ms x) e^(-tau mv (1 - x)) (x = relative air density)
+  let dm = mv - ms;
+  let ev = exp(-TAU_AIR * mv);
+  var path: vec3f;
+  if (abs(dm) < AIRMASS_EQ_EPS) { path = TAU_AIR * mv * ev; } else { path = mv * (FU.sunExt - ev) / dm; }
+  return FU.keyLight * SKY_MULTI * PI_L * SUN_TOA * (TAU_RAYLEIGH * pR + TAU_AEROSOL * pM) / TAU_AIR * path;
+}
+
+// Radiance of the environment toward unit d: sky above the horizon, ground below.
+fn skyColor(d: vec3f) -> vec3f {
+  return mix(FU.ground, skyRadiance(d), smoothstep(-HORIZON_BLEND, HORIZON_BLEND, d.y));
+}`;
 }

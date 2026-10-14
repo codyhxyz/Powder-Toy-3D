@@ -36,7 +36,7 @@ import { E, K, ELEMENTS } from '/src/elements.js';
 import { SEED_MAX } from '/src/shaders/common.js';
 import { createPost, POST_DEFAULTS } from '/src/gfx/post.js';
 import { createVolume } from '/src/gfx/volume.js';
-import { createOverlays, FLOOR_Y, EDGE_OPACITY } from '/src/gfx/overlays.js';
+import { createOverlays, FLOOR_Y } from '/src/gfx/overlays.js';
 import { createBrushCursor } from '/src/brush.js';
 import { createMeshCut } from '/src/gfx/meshCut.js';
 import { createDetailGate, gateVariants, PREWARM_DELAY_MS } from '/src/gfx/detailGate.js';
@@ -173,7 +173,7 @@ const viewId = (key) => VIEWS.find((v) => v.key === key).id;
  * The frame's parts: FrameUniforms, the shadow map, then (optionally three's
  * opaque meshes first) the grid, the volume, the edges and the brush.
  */
-function hooks({ view = 'plain', detail = {}, meshes = null, useCut = true, grid = true, edges = true, withBrush = false, volumeOn = true } = {}) {
+function hooks({ view = 'heat', detail = {}, meshes = null, useCut = true, grid = true, edges = true, withBrush = false, volumeOn = true } = {}) {
   return {
     prepare(p) {
       writeFrameUniforms(gpu, {
@@ -195,7 +195,7 @@ function hooks({ view = 'plain', detail = {}, meshes = null, useCut = true, grid
     draw(rp) {
       if (grid) overlays.drawGrid(rp, { model: gridModel, opacity: 1 });
       if (volumeOn) volume.draw(rp, { view, detail, meshDepth: cut.take() });
-      if (edges) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], opacity: EDGE_OPACITY });
+      if (edges) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz] });
       if (withBrush) brush.draw(rp);
     },
   };
@@ -304,7 +304,7 @@ test('views', async ({ entries = null, views = VIEWS.map((v) => v.key), detail =
 // the wrong winding nothing would draw from inside) and every pixel draws.
 // eyes: grid points; each looks down a little off vertical. Per view and eye:
 // the share covered, the pixels left empty and their bounding box.
-test('inside', async ({ views = ['plain'], eyes = [[g.nx / 2 + 0.3, g.ny * 0.6, g.nz / 2 + 0.7]] } = {}) => {
+test('inside', async ({ views = ['heat'], eyes = [[g.nx / 2 + 0.3, g.ny * 0.6, g.nz / 2 + 0.7]] } = {}) => {
   await load('empty');
   const out = [];
   for (const view of views) {
@@ -496,14 +496,14 @@ test('lazy', async () => {
 // frame: the pixels each changes.
 test('overlays', async ({ shots = false } = {}) => {
   await load('test');
-  await volume.viewReady('plain');
+  await volume.viewReady('heat');
   home();
-  const base = await frame({ view: 'plain', grid: false, edges: false });
+  const base = await frame({ view: 'heat', grid: false, edges: false });
   brush.set({ visible: true, position: toScene(16, 44, 16), radius: 5 * SCALE, shape: 0, color: '#ffcc66' });
   const parts = { grid: { grid: true, edges: false }, edges: { grid: false, edges: true }, brush: { grid: false, edges: false, withBrush: true } };
   const out = {};
   for (const [name, o] of Object.entries(parts)) {
-    const f = await frame({ view: 'plain', ...o });
+    const f = await frame({ view: 'heat', ...o });
     let changed = 0, overVolume = 0;
     for (let i = 0; i < f.w * f.h; i++) {
       const d = Math.max(...[0, 1, 2, 3].map((c) => Math.abs(f.color[4 * i + c] - base.color[4 * i + c])));
@@ -513,7 +513,7 @@ test('overlays', async ({ shots = false } = {}) => {
   }
   // a box brush and a line's preview (both ends and the body between)
   brush.setLine({ from: toScene(10, 30, 50), to: toScene(50, 30, 50), radius: 3 * SCALE, shape: 1, color: '#66ccff' });
-  const fl = await frame({ view: 'plain', grid: false, edges: false, withBrush: true });
+  const fl = await frame({ view: 'heat', grid: false, edges: false, withBrush: true });
   let lineChanged = 0;
   for (let i = 0; i < fl.w * fl.h; i++) if (Math.abs(fl.color[4 * i + 3] - base.color[4 * i + 3]) > 1e-3 || Math.abs(fl.color[4 * i] - base.color[4 * i]) > 1e-3) lineChanged++;
   brush.set({ visible: false });
@@ -617,7 +617,7 @@ test('meshFront', async ({ detail = {}, shots = false } = {}) => {
 // module no cache has seen (a unique constant in its text), timed; meanwhile a
 // 4 ms timer measures the main thread's longest gap (docs/webgpu.md goal 4:
 // nothing over 100 ms while pipelines build).
-test('bench', async ({ view = 'plain', detail = {}, runs = 1, grid = null } = {}) => {
+test('bench', async ({ view = 'heat', detail = {}, runs = 1, grid = null } = {}) => {
   const gb = grid ? gridLayout(...grid) : g;
   const L = VOLUME_LAYOUTS().map((entries, i) => gpu.device.createBindGroupLayout({ label: `bench ${i}`, entries }));
   const layout = gpu.device.createPipelineLayout({ label: 'bench', bindGroupLayouts: L });
@@ -672,7 +672,7 @@ test('gate', async () => {
   const v2 = createVolume(gpu, sim);
   const realisticPipes = () => v2.pipelines.filter((p) => p.key.startsWith('realistic|')).map((p) => p.key);
   const gate2 = createDetailGate(gpu);
-  gate2.configure(v2, settings, 'plain');
+  gate2.configure(v2, settings, 'heat');
   await new Promise((r) => setTimeout(r, PREWARM_DELAY_MS + 300));
   const builtInPlain = realisticPipes();
   const nearInPlain = key(gate2.update(camera, [g.nx / 2, g.ny / 2, g.nz / 2], dims, H));

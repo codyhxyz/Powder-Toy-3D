@@ -17,6 +17,7 @@ import { glowMaterial, setGlowTone } from './glow.js';
 import { potionColor } from '../descent/flasks.js';
 import { ELEMENTS } from '../../elements.js';
 import { povGpu } from '../gpu.js';
+import { gridSpace } from '../space.js';
 
 export { emptyLoads };
 
@@ -51,7 +52,17 @@ export { emptyLoads };
 //                    toast(text, opts)   a toast (opts: ui/hud.js toast's, { kind })
 //                    notice(text, opts)  a toast, at most once per NOTICE_INTERVAL per tool
 //                    shake()             a shake of the tool's slot
-//                    refuse(text, extra) an error notice, a shake and tool:action 'refuse' (extra: { id, point })
+//                    refuse(text, extra, { silent })  an error notice, a shake and tool:action 'refuse' (extra: { id, point });
+//                                        silent: no notice (a blow that bounces off says so by its sound)
+//                    act(action, extra)  tool:action `action` (tool: the key in lower case, then extra's fields)
+
+// What the crosshair is on, the god view's hover chip (app.js): the material,
+// its temperature and pressure. Nothing for the sky or the floor.
+const lookReadout = (a) => {
+  if (!a?.valid || a.id < 0) return null;
+  const el = ELEMENTS[a.id];
+  return { name: el.name, color: el.color, T: a.T, P: a.P };
+};
 
 const modules = import.meta.glob('./*.tool.js', { eager: true });
 // every tool's definition, with where it came from, in catalog order
@@ -66,6 +77,8 @@ const toolDefs = () => Object.entries(modules).map(([path, mod]) => ({ path, def
 const DEFAULT_TOOL = GEAR[0].key;   // in hand first (the shovel)
 const NOTICE_INTERVAL = 1.5;   // s between repeats of a tool's notice and refuse toasts
 const MS_PER_S = 1000;
+// a tool's tool:action events (feedback.act): { tool: its key in lower case, action, ...extra }
+const actions = (key) => (action, extra) => povEvents.emit('tool:action', { tool: key.toLowerCase(), action, ...extra });
 // the body holding the tools has a status that takes its hands (status.js noTools: Polymorph);
 // the player's ctx carries its body as ctx.player.body, an NPC's ctx.player is its body
 const noHands = (ctx) => !!(ctx.player?.body?.status ?? ctx.player?.status)?.noTools;
@@ -113,6 +126,7 @@ export function createToolbelt(env) {
   const transfer = sharedTransfer(env);
   const wandRuntime = createWandRuntime({ ...env, transfer });
   const wandRig = viewmodelRig(env);
+  const { toGrid } = gridSpace(env);
   const wandHand = wandRig.hand([0.5, -0.4, -1.2]);
   wandHand.name = 'held-wand';
   wandHand.visible = false;
@@ -144,7 +158,7 @@ export function createToolbelt(env) {
     if (env.viewmodel?.visible) { gem.updateWorldMatrix(true, false); world = gem.getWorldPosition(vTip); }
     else world = env.handWorld?.(vTip) ?? null;
     if (!world) return null;
-    const tip = world.clone().sub(env.getVolume().position).divideScalar(env.getScale());
+    const tip = toGrid(world);
     return { tip, tipWorld: world.clone() };
   }
   // the gem's colour (the wand's main spell) and its flare after a cast
@@ -207,11 +221,12 @@ export function createToolbelt(env) {
         return true;
       },
       // a tool that can't: GMod's error notice (ui/notices.js), the slot's shake
-      refuse(text, extra) {
-        if (!feedback.notice(text, { kind: 'error' })) return;
+      refuse(text, extra, { silent = false } = {}) {
+        if (!silent && !feedback.notice(text, { kind: 'error' })) return;
         feedback.shake();
-        povEvents.emit('tool:action', { tool: def.key.toLowerCase(), action: 'refuse', ...extra });
+        feedback.act('refuse', extra);
       },
+      act: actions(def.key),
     };
     try {
       tools.set(def.key, { def, slot, inst: def.create({ ...env, transfer, ballistics, feedback }) });
@@ -539,7 +554,9 @@ export function createToolbelt(env) {
       }
       syncPotion();
       tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
-      readout = wandSelected ? null : held()?.readout?.(ctx) ?? null;   // a wand shows no name tag: Noita's HUD names the wand only in the inventory
+      // the held tool's own readout (a wand has none: Noita's HUD names the wand
+      // only in the inventory), else what the crosshair is on, as the god view's hover
+      readout = (wandSelected ? null : held()?.readout?.(ctx)) ?? lookReadout(ctx.aim);
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
       for (let i = 0; i < HOTBAR_SLOTS; i++) {
@@ -607,13 +624,18 @@ function waitForKernels(ctx, env) {
 export function createKit(env) {
   const transfer = sharedTransfer(env);
   let lastRefusal = null;
-  const feedback = {
-    toast() {}, shake() {},
-    notice() { return false; },
-    refuse(text) { lastRefusal = { text, at: performance.now() / MS_PER_S }; },
-  };
   const tools = new Map();
   for (const { path, def } of toolDefs()) {
+    const feedback = {
+      toast() {}, shake() {},
+      notice() { return false; },
+      // (a silent refusal, a bounced blow, is only its sound: the brain isn't told)
+      refuse(text, extra, { silent = false } = {}) {
+        if (silent) feedback.act('refuse', extra);
+        else lastRefusal = { text, at: performance.now() / MS_PER_S };
+      },
+      act: actions(def.key),
+    };
     try {
       tools.set(def.key, def.create({ ...env, transfer, feedback, hud: null, isActive: () => false }));
     } catch (err) { console.error(`kit: ${path} failed to start`, err); }

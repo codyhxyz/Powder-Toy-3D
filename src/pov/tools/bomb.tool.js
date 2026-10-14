@@ -2,12 +2,11 @@ import * as THREE from 'three';
 import { ELEMENTS, E } from '../../elements.js';
 import { CELL_M } from '../../scale.js';
 import { SEED_MAX } from '../../shaders/common.js';
-import { gravityScale } from '../ballistics.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
-import { trigger } from './action.js';
-import { Load, cellsNear, ballRadius, muzzleCell } from './transfer.js';
+import { trigger, launcher } from './action.js';
+import { Load, cellsNear, ballRadius } from './transfer.js';
 import { gear } from './catalog.js';
 
 // Bomb: left-click throws a pipe bomb. It flies on the shared
@@ -32,7 +31,6 @@ const REFIRE = 0.8;                     // s between throws while held
 const CHARGE = 125;                     // cells of gunpowder (a 5³ charge)
 const CHARGE_SLACK = 2.5;               // candidate cells per charge cell (some are full)
 const KIND = 'bomb';
-const TUMBLE = 0.4;                     // rad the thrown bomb turns per frame it's drawn
 
 // viewmodel, in cells (camera space)
 const HELD_POS = [0.6, -0.55, -1.3];
@@ -51,29 +49,7 @@ export default {
     let lastBlast = null;
 
     // bombs in flight, drawn where the shared projectiles say they are (also while the bomb isn't held)
-    const flying = new Map();   // round id → model, for the bombs this one threw
-    const mine = new Set();     // ids of the bombs this one threw (another toolbelt's are its own to draw)
-    const world = new THREE.Group();
-    world.name = 'pov-bombs';
-    env.scene.add(world);
-    const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
-    const offs = [
-      povEvents.on('round:move', ({ id, kind, to }) => {
-        if (kind !== KIND || !mine.has(id)) return;
-        let m = flying.get(id);
-        if (!m) { m = attachModel(world, 'bomb', null, { arm: false }); flying.set(id, m); }
-        m.obj.scale.setScalar(env.getScale());
-        toWorld(to, m.obj.position);
-        m.obj.rotation.x += TUMBLE;
-        globalThis.__app?.requestRender?.();
-      }),
-      povEvents.on('round:end', ({ id, kind }) => {
-        if (kind !== KIND || !mine.has(id)) return;
-        mine.delete(id);
-        flying.get(id)?.dispose();
-        flying.delete(id);
-      }),
-    ];
+    const launch = launcher(env, { kind: KIND, model: 'bomb', rig, hit: HIT.THROW, action: 'throw', hand, button });
 
     // the charge: CHARGE cells of gunpowder at its ignition point, in the air in front of the struck face
     function detonate({ hit, normal }) {
@@ -95,35 +71,17 @@ export default {
       povEvents.emit('blast', { point: center.clone() });
     }
 
-    function throwBomb(ctx) {
-      const sim = ctx.sim ?? env.getSim();
-      const dir = ctx.dir.clone().normalize();
-      const m = muzzleCell(ctx.eye, dir, ctx.player.pos, sim.g);
-      if (!m) { env.feedback?.refuse('No room to throw'); return false; }
-      const origin = ctx.eye.clone().addScaledVector(dir, m.t);
-      const id = env.ballistics.fire(origin, dir, gravityScale(sim), {
-        speed: THROW_SPEED, carry: ctx.player.vel, kind: KIND, onStrike: detonate,
-      });
-      if (!id) return false;
-      mine.add(id);
-      rig.hit(HIT.THROW);
-      povEvents.emit('tool:action', { tool: 'bomb', action: 'throw' });
-      return true;
-    }
+    const throwBomb = (ctx) => !!launch.fire(ctx, { gravity: true, speed: THROW_SPEED, carry: ctx.player.vel, onStrike: detonate });
 
     return {
       update(ctx) {
-        hand.visible = true;
-        rig.update(ctx);
-        if (button.ready(ctx) && throwBomb(ctx)) button.fire();
+        launch.update(ctx, throwBomb);
         heldMesh.obj.visible = button.waiting <= 0;   // a fresh one in hand once you can throw again
       },
-      deselect() { hand.visible = false; button.reset(); },
+      deselect: launch.deselect,
       get lastBlast() { return lastBlast; },   // for checks
       dispose() {
-        offs.forEach((off) => off());
-        flying.forEach((m) => m.dispose());
-        world.removeFromParent();
+        launch.dispose();
         heldMesh.dispose();
         hand.removeFromParent();
       },

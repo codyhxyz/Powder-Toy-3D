@@ -7,6 +7,7 @@ import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
 import { faceNormal, pack, cellsNear } from './transfer.js';
+import { digger } from './dig.js';
 import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 
 // A melee tool (the axe, the pickaxe): a short-range swing that breaks
@@ -24,7 +25,8 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //
 // Events (tool = the key in lower case): tool:action 'swing' on every swing;
 // when the head lands on something, impact (source = tool) and the rig's kick,
-// plus tool:action 'refuse' if the struck cell is a solid the blow can't break.
+// plus tool:action 'refuse' if the struck cell is a solid the blow can't break
+// (feedback.refuse, silent: the slot shakes, no toast).
 //
 //   export default meleeTool({ ...gear(KEY),   // the tool definition (catalog.js, docs/pov.md)
 //     blow, frag,              // the blow's tuning (ENERGY ...) and its pass
@@ -40,20 +42,24 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //             thrust?: [hit, miss],                 // cells it drives forward on a blow: a stab, not a chop
 //             ready?, readyPos?: [x, y, z],         // rad and cells offset while tell() holds
 //             lethal?: { hit, miss, thrust } },     // a lethal blow's own motion (the backstab's plunge)
-//     collect });              // true: the debris in the patch goes into the pack (the pickaxe)
+//     dig });                  // { power, tools }: the blow digs a whole lattice block instead (dig.js, the pickaxe):
+//                              //   outlined, cracking over ceil(hard / power) blows, all of it into the pack;
+//                              //   never a solid harder than blow.ENERGY
 //
-// collect: a mine's rubble stays where the rock was, so the next swing lands on
-// loose debris instead of the face behind it. A collecting tool takes the struck
-// element's debris (and any of it already lying in the patch) into the pack
-// (transfer.js) right after the blow, exactly as the shovel would, so the
-// matter is conserved and the hole stays open. With the pack full it stays put.
+// What a blow breaks is the breaker's: every melee tool takes the debris in its
+// patch (whatever broke there, and any debris already lying in it) into its own
+// pack (transfer.js) right after the blow, exactly as the shovel would
+// (Minecraft: a block you break is yours, picked up where you stand). Left lying,
+// chopped leaves hung in the canopy as specks of sawdust and a mine's rubble
+// stopped the next swing short of the face behind it; taken, the matter is
+// conserved and the hole stays open. With the pack full it stays put.
 
 // debris elements: what some breakable solid breaks into
-const DEBRIS = new Set(ELEMENTS.filter((e) => e.breakInto).map((e) => ELEMENTS.findIndex((d) => d.key === e.breakInto)));
+const DEBRIS = [...new Set(ELEMENTS.filter((e) => e.breakInto).map((e) => ELEMENTS.findIndex((d) => d.key === e.breakInto)))];
 
 const TELL_RATE = 12;   // 1/s: the tell (pose.ready) eases in and out this fast, about 0.1 s (by eye, TF2's knife raise is a few frames)
 
-export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE, collect = false }) {
+export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE, dig = null }) {
   const source = key.toLowerCase();
 
   // The held tool: the model (models.js) on a hand of the viewmodel rig, turned about the hand by the swing.
@@ -80,12 +86,33 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
       const thrust = (m) => swing({ rest: 0, hit: m?.thrust?.[0] ?? 0, miss: m?.thrust?.[1] ?? 0, strike: POSE.strike, settle: refire });
       const push = thrust({ thrust: POSE.thrust }), lethalPush = thrust({ thrust: POSE.lethal?.thrust });
       let turning = pose, driving = push, tellK = 0, telling = false;
-      const load = collect ? pack(env.owner) : null;
-      let lastHit = null;
+      const load = pack(env.owner);
+      const digs = dig ? digger(env, { power: dig.power, limit: blow.ENERGY, tools: dig.tools, reach }) : null;   // no harder than the blow's energy (melee.js's rule)
+      let lastHit = null, aimed = null;
+      const full = (id) => { if (!load.busy) env.feedback?.refuse('Your pack is full: build with the trowel or throw some with the shovel', { id }); };
 
-      // Take the debris `id` inside the blow's patch (the same ellipsoid as blowFrag) into the pack.
-      function gather(sim, center, dir, id) {
-        if (!(load.free > 0)) { if (!load.busy) env.feedback?.refuse('Your pack is full: build with the trowel or throw some with the shovel', { id }); return; }
+      // A digging blow (spec.dig): the aimed lattice block cracks, or comes up whole into the pack.
+      function digStrike(ctx, t) {
+        const point = t.aim.cell.clone().addScalar(0.5), normal = faceNormal(t.aim.face);
+        lastHit = { cell: t.aim.cell.clone(), id: t.id };
+        const r = digs.blow(ctx, t, load, env.transfer);
+        // broke: true (it came up), null (it cracked), false (it can't be dug: a bounce)
+        const broke = !r ? false : r.taken ? true : null;
+        if (r && r.hits >= r.need && !r.taken && load.free <= 0) full(t.id);
+        povEvents.emit('impact', { source, point, normal, id: t.id, energy: blow.ENERGY, broke });
+        model.rig.hit(HIT_ROW);
+        if (broke === false && ELEMENTS[t.id]?.kind === K.SOLID) {
+          env.feedback?.refuse(null, { id: t.id, point }, { silent: true });
+          const why = digs.refusal(t.id, name.toLowerCase());
+          if (why) env.feedback?.refuse(why, { id: t.id });
+        }
+        return { landed: true };
+      }
+
+      // Take the debris inside the blow's patch (the same ellipsoid as blowFrag) into the pack;
+      // with it full, say so if the struck cell `id` broke (`broke`).
+      function gather(sim, center, dir, id, broke) {
+        if (!(load.free > 0)) { if (broke) full(id); return; }
         const d = new THREE.Vector3();
         const inPatch = (x, y, z) => {
           d.set(x + 0.5, y + 0.5, z + 0.5).sub(center);
@@ -93,7 +120,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           const across2 = d.lengthSq() - along * along;
           return across2 / (blow.RADIUS * blow.RADIUS) + (along * along) / (blow.DEPTH * blow.DEPTH) < 1;
         };
-        env.transfer?.take(load, { cells: cellsNear(center, Math.max(blow.RADIUS, blow.DEPTH), sim.g, inPatch), kinds: [K.POWDER], want: id });
+        env.transfer?.take(load, { cells: cellsNear(center, Math.max(blow.RADIUS, blow.DEPTH), sim.g, inPatch), kinds: [K.POWDER], ids: DEBRIS });
       }
 
       // the body (an NPC) in reach and nearer than the struck cell, or null
@@ -111,6 +138,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           model.rig.hit(b?.hit ?? HIT_ROW);
           return { landed: true, lethal };
         }
+        if (digs) return aimed ? digStrike(ctx, aimed) : { landed: false };
         if (!aim?.valid || aim.dist > reach || aim.cell.y < 0) return { landed: false };   // air, or the floor
         const sim = ctx.sim ?? env.getSim();
         const c = aim.cell.clone().addScalar(0.5), swingDir = ctx.dir.clone().normalize();
@@ -123,13 +151,11 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         const solid = el?.kind === K.SOLID;
         const broke = solid ? Boolean(el.breakInto) && blow.ENERGY >= el.hard : null;
         const point = aim.cell.clone().addScalar(0.5);
-        if (load) {
-          const debris = broke ? ELEMENTS.findIndex((d) => d.key === el.breakInto) : DEBRIS.has(aim.id) ? aim.id : -1;
-          if (debris >= 0) gather(sim, point, swingDir, debris);
-        }
+        // (every landed blow: the patch breaks more than the struck cell, the axe's leaves around the wood)
+        gather(sim, point, swingDir, aim.id, broke);
         povEvents.emit('impact', { source, point, normal: faceNormal(aim.face), id: aim.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);
-        if (broke === false) povEvents.emit('tool:action', { tool: source, action: 'refuse', id: aim.id, point });
+        if (broke === false) env.feedback?.refuse(null, { id: aim.id, point }, { silent: true });
         return { landed: true };
       }
 
@@ -141,11 +167,12 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           model.hand.userData.gesture.since += dt;
           // the tell: the next blow would be special (a backstab lined up)
           telling = !!tell?.(ctx, bodyInReach(ctx));
+          aimed = digs?.target(ctx) ?? null;
           tellK += ((telling ? 1 : 0) - tellK) * (1 - Math.exp(-TELL_RATE * dt));
           if (button.ready(ctx)) {
             button.fire();
             model.hand.userData.gesture.since = 0;
-            povEvents.emit('tool:action', { tool: source, action: 'swing' });
+            env.feedback?.act('swing');
             const r = strike(ctx);
             turning = r.lethal ? lethalPose : pose;
             driving = r.lethal ? lethalPush : push;
@@ -158,12 +185,12 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           const rp = POSE.readyPos ?? [0, 0, 0];
           model.pivot.position.set(rp[0] * tellK, rp[1] * tellK, rp[2] * tellK - driving.angle(dt));
         },
-        deselect() { model.hand.visible = false; button.reset(); pose.stop(); lethalPose.stop(); push.stop(); lethalPush.stop(); tellK = 0; telling = false; },
+        deselect() { model.hand.visible = false; digs?.hide(); button.reset(); pose.stop(); lethalPose.stop(); push.stop(); lethalPush.stop(); tellK = 0; telling = false; },
         status: () => null,
         get telling() { return telling; },   // for checks: the tell (pose.ready) is up
         windowShifted(dx, dz) { if (lastHit) { lastHit.cell.x -= dx; lastHit.cell.z -= dz; } },   // (docs/scaling.md D11)
         get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
-        dispose() { pass.dispose(); model.dispose(); },
+        dispose() { pass.dispose(); digs?.dispose(); model.dispose(); },
       };
     },
   };

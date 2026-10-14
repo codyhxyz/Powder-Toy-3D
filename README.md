@@ -125,7 +125,9 @@ The tools are physical and finite. Infinite painting stays in the god view.
 Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
 
 Everything you do makes a sound (synthesised with [ZzFX](https://github.com/KilledByAPixel/ZzFX) and placed in 3D):
-impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Shots
+impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Digging
+(the shovel, the pickaxe, the axe, a load set down) plays recordings instead: [Kenney](https://kenney.nl)'s CC0 Impact
+Sounds, level-matched, the blade's bite over its material's texture, five takes a sound (`public/sfx/dig`). Shots
 kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
 draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly and flat-shaded in the RuneScape style, and
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
@@ -152,7 +154,7 @@ player with kills, deaths and ping (BOT for bots), pink while dead.
 The site opens on a map menu, Garry's Mod's New Game screen: gamemodes down the left with their icons, a square
 preview of each map built for the chosen one, its size tagged in the corner, and Start. Sandbox lists every map. A map is one
 place at one size: the boxes (Lab, Volcano, Islet and Empty at 128³, Dam Valley at 256 × 96 × 128) and the
-worlds (Island, Willow Cove, Volcano Isles, Lab Complex, Giant Volcano). The game itself only loads once
+worlds (Island, Tinker Creek, Volcano Isles, Lab Complex, Giant Volcano). The game itself only loads once
 you pick one. **Esc** (with nothing else open), the toolbar's map button or **Settings → Map → Change map**
 brings the menu back over the game. The maps are in `src/maps.js`. `tools/map-thumbs.mjs` renders their previews
 into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A link with a query (`?map=lab`,
@@ -162,7 +164,7 @@ Start brings up a plain loading screen over the map's art: the gamemode, the map
 boot is on now (download, build, shader compile, world, the match being set up), as GMod's loading screen names it.
 The player stands beside it: "This is you." He is the real body, live (`src/ui/youViewer.js`, drawn in a worker so he keeps moving while the boot holds the page): breathing in his idle clip and turning slowly, and a click and drag turns him left or right, as on Skyrim's loading screen. A render of him (`tools/you-portrait.mjs`) stands in until he is up.
 `tools/loading-screen-check.mjs` checks the menu's icons and the loading screen on the GPU.
-**Willow Cove** (`?map=willowCove`) is an Animal Crossing-inspired Sandbox island with cottages, an orchard,
+**Tinker Creek** (`?map=tinkerCreek`) is an Animal Crossing-inspired Sandbox island with cottages, an orchard,
 river bridges, terraces and a seaside dock. Its elevated home camera uses the normal Sandbox controls.
 **Animal Crossing** mode adds only a rolling-log horizon. Select it in the map menu,
 or open `?map=willowCove&mode=animalCrossing`. Sandbox keeps the flat view.

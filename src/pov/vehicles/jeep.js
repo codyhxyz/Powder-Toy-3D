@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GRAVITY } from './physics.js';
 import { hullSamples, hullMatter, surfaceId, isPowder } from './matter.js';
+import { seatedDriver } from './look.js';
 
 // The jeep: a Warthog (Halo's M12 LRV) on Rapier's DynamicRayCastVehicleController,
 // the port of Bullet's btRaycastVehicle: a rigid chassis held up by four
@@ -79,7 +80,12 @@ const HULL_SAMPLES = [3, 2, 5];
 
 const COLOR = {
   body: '#6b7a3a', bodyDark: '#4b5629', tyre: '#262626', hub: '#8a8f94', metal: '#55595e', seat: '#3a2c22',
-  glass: '#a8c8d8', red: '#c8352b', blue: '#2f6fd0', light: [6, 5.4, 3.6], robe: '#5a3d8a', face: '#121014', eyes: [4, 7, 8],
+  glass: '#a8c8d8', red: '#c8352b', blue: '#2f6fd0', light: [6, 5.4, 3.6],
+};
+// m, the seated driver (look.js seatedDriver), upright in the tub
+const DRIVER = {
+  robe: [0.22, 0.3, 0.6], robeAt: [0, 0.3, 0], head: 0.27, headAt: [0, 0.8, 0], hat: [0.24, 0.55], hatAt: [0, 1.15, -0.05],
+  face: 0.2, faceAt: [0, 0.78, 0.1], eye: 0.035, eyeAt: [0.08, 0.82, 0.28],
 };
 
 export function buildJeep(R, phys, look, { at, yaw, team, key }) {
@@ -265,14 +271,6 @@ function jeepModel(look, team) {
     return g;
   });
   // the driver: a seated wizard (the player's look), shown while someone drives
-  const driver = new THREE.Group();
-  at(driver, ...JEEP.SEAT);
-  look.part(driver, new THREE.CylinderGeometry(0.22, 0.3, 0.6, 10), COLOR.robe).position.y = 0.3;
-  look.part(driver, new THREE.SphereGeometry(0.27, 12, 10), COLOR.robe).position.y = 0.8;
-  look.part(driver, new THREE.ConeGeometry(0.24, 0.55, 10), COLOR.robe).position.set(0, 1.15, -0.05);
-  at(look.part(driver, new THREE.SphereGeometry(0.2, 10, 8), COLOR.face, { edge: false }), 0, 0.78, 0.1);
-  for (const x of [-0.08, 0.08]) at(look.glow(driver, new THREE.SphereGeometry(0.035, 6, 4), COLOR.eyes), x, 0.82, 0.28);
-  driver.visible = false;
-  root.add(driver);
+  const driver = seatedDriver(look, root, JEEP.SEAT, DRIVER);
   return { root, wheelMeshes, driver };
 }
