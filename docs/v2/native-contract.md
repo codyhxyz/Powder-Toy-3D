@@ -28,8 +28,32 @@ This excludes particles, air, compatibility caches and render fields. Do not cla
 
 The auxiliary bank stores signed thermal energy, quantization remainders and latent energy.
 It is not scratch or a generic flag word.
-The contact module defines the integer energy unit and capacities in shared JS/WGSL tables.
-Conduction and advection must conserve that defined integer energy.
+The foundation defines integer energy helpers in `layout.js` and `state.js`.
+Conduction and advection conserve that defined integer energy.
+
+`FULL` is 65,536 fill quanta. Each slot retains an air carrier capacity of `FULL`.
+Material capacity per amount quantum is `max(1, round(element.cap * 64))`.
+Total capacity is the carrier plus material capacity times amount.
+Amount is the liquid fill, `FULL` for other matter, and zero for empty air.
+This additive definition preserves uniform temperature when liquid enters or leaves a slot.
+CPU energy uses `BigInt`; WGSL uses signed two-limb integer energy.
+One legacy `cap · °C` corresponds to `FULL * 64 * 4` energy quanta.
+
+### Latent progress
+
+The supported normal temperature maximum remains `PHYS.CELL_TEMP_MAX`, 10,000 °C.
+Normal temperature codes end at 41,093.
+Codes 41,094–53,314 encode hot-phase progress; 53,315–65,535 encode cold-phase progress.
+Each interval contains 12,221 codes, or 12,220 progress intervals.
+During a phase change, the displayed temperature comes from the material's phase threshold.
+The bank retains the exact residual between progress codes.
+
+`cTq` and renderer projection must decode phase tags. Raw temperature bits are not a temperature.
+Total energy includes phase offsets and latent progress, not only sensible heat and the bank.
+The phase module supplies pure JS/WGSL helpers; it does not depend on contact execution.
+Reject invalid phase tags during loading. Migrate old layouts explicitly.
+Unrepresentable transfers must remain at their source or be accounted for elsewhere.
+Do not wrap or discard an energy residual.
 
 Conductive and combustible liquid payloads are a tagged union by element.
 Reject a future element that requires both meanings.
@@ -122,6 +146,15 @@ ID zero denotes an unused record. Do not lose material fields during flight.
 Use deterministic claims, swept collision, conservative deposition and capacity fallback.
 Air uses brick-sized cells with explicit stable fixed-step coefficients and conservative face exchange.
 Blasts use line-of-sight shielding. Liquid impacts cannot destroy solids.
+Particle positions use world-cell coordinates; velocities use metres per second.
+Window shifts leave those world positions unchanged and reindex local air and claim data.
+Particle-only tags 254 and 255 identify photons and neutrons, respectively.
+They must not enter the grid as ordinary element IDs.
+
+The dynamics family consumes a three-buffer native adapter at group 0:
+core, bank and activity. Family-specific group 1 has at most five storage buffers.
+The existing header occupies group 3 binding 0; dynamics parameters occupy binding 1.
+The adapter supplies material accessors, integer energy operations and dirty/activity reporting.
 
 ## Liquid scratch
 
