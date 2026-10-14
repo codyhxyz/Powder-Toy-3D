@@ -197,6 +197,7 @@ export function createPov(app) {
   // input
   const keys = new Set();
   let villageTools = null, villageToolTap = false;
+  let grappleQueued = false;
   let kickQueued = false, kickLeg = null;   // the kick key went down; the kicking leg in the viewmodel (kick.js)
   const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
   let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
@@ -219,6 +220,8 @@ export function createPov(app) {
     useVehicle,
   });
   const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
+  const canGrapple = () => live() && !editing && canUse() && !vehicles.seated
+    && !game.running && (app.gamemode?.() ?? 'sandbox') === 'sandbox' && !app.industryBuilding?.();
   const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
     onEnabled: on => { syncVillageTools(on); toolbelt?.setVisible(mode === 'on'); if (on) setMenu(false); },
     onTool: key => { toolbelt?.restrict(key ? [key] : [], key); },
@@ -268,7 +271,8 @@ export function createPov(app) {
   }
   function releaseActions() {
     buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
-    wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = false;
+    wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = grappleQueued = false;
+    toolbelt?.tool('HOOK')?.cancelGrapple();
     // A buffered dig must not finish after pockets open or furniture takes the hands.
     if (village.enabled) toolbelt?.tool(toolbelt.selectedKey)?.deselect?.();
   }
@@ -314,7 +318,10 @@ export function createPov(app) {
       e.preventDefault();
       if (!e.repeat) swapView();
     }
-    if (e.code === VEHICLE_KEY && !e.repeat && !(mode === 'on' && interact.use())) useVehicle();   // E: the thing looked at first
+    if (e.code === VEHICLE_KEY && !e.repeat) {
+      e.preventDefault();
+      if (!(mode === 'on' && interact.use()) && !useVehicle() && canGrapple()) grappleQueued = true;
+    }
     if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
@@ -332,8 +339,10 @@ export function createPov(app) {
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });   // (a phone's app switch)
   // E (or the touch Vehicle button): get in, out, or right one
   function useVehicle() {
-    if (village.enabled) { village.act({ type: 'interact' }); return; }
-    if (live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
+    if (village.enabled) { village.act({ type: 'interact' }); return true; }
+    const used = live() ? vehicles.use(player) : null;
+    if (used === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
+    return !!used;
   }
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
@@ -751,6 +760,7 @@ export function createPov(app) {
 
     // the body
     readInput();
+    if (!canGrapple()) toolbelt?.tool('HOOK')?.cancelGrapple();
     vehicles.beforeBody(player);
     village.beforeBody();
     player.update(dt, input);
@@ -886,6 +896,9 @@ export function createPov(app) {
       ctx.secondary = use && (buttons.secondary || (tapped && buttons.secondaryPressed));
       ctx.primaryPressed = use && buttons.primaryPressed;
       ctx.secondaryPressed = use && buttons.secondaryPressed;
+      ctx.grappleEnabled = canGrapple() && use;
+      ctx.grapplePressed = ctx.grappleEnabled && grappleQueued;
+      ctx.grappleJump = ctx.grappleEnabled && input.jump;
       ctx.wheel = wheelNotches;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
@@ -896,6 +909,7 @@ export function createPov(app) {
       ctx.player.body = player;   // the body itself, for a tool that hangs it on a rope (the hook: player.tether)
       try { toolbelt.update(ctx); } catch (err) { console.error('POV toolbelt update failed', err); }
     }
+    grappleQueued = false;
     held.place({ figure, viewmodel, dt });   // the tools have moved: the held model, and the hands on it
     // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
     if (kickQueued) {
@@ -932,6 +946,7 @@ export function createPov(app) {
       pogoLabel: village.enabled ? 'Jump charge — release to leap' : 'Pogo charge',
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
+      grappleEnabled: canGrapple(),
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
       buried: mode === 'on' && !deadSeen && inEyes && player.buriedId >= 0 ? BURIED_COLOR[player.buriedId] : null,
     });
