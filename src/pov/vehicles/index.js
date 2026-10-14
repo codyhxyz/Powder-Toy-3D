@@ -160,8 +160,13 @@ export function createVehicles(env) {
       id: v.id,
       get team() { return v.team; },
       get alive() { return v.alive; },
+      get mass() { return impl.body.mass(); },
       box: (min, max) => boxGrid(v, min, max),
       hurt(amount, cause, d) { damage(v, amount, cause); if (d) push(v, d, amount); },
+      shove(dv) {
+        const j = impl.body.mass() * CELL_M;   // target Δv is cells/s; Rapier takes kg·m/s
+        impl.body.applyImpulse({ x: dv.x * j, y: dv.y * j, z: dv.z * j }, true);
+      },
     });
     root.add(impl.root);
     vehicles.push(v);

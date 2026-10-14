@@ -49,7 +49,7 @@ export const GEAR = [
   { key: 'BURROWER', slot: 3, name: 'Burrower', model: 'burrower', abbr: 'BRRW', color: '#c98a2e', touch: ['Fire'],
     desc: 'Fires a drill that homes on the nearest body and bores a real tunnel through the ground to reach it: quick through sand, slow through rock, slower still through metal.' },
   { key: 'PHYSGUN', pickLiquids: true, slot: 4, name: 'Physgun', model: 'physgun', abbr: 'PHYS', color: '#5ff0ff', touch: ['Grab', 'Fling'],
-    desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. Right-click empty-handed to blast.' },
+    desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. With nothing held, right-click to shove matter, bodies and vehicles away without recoil.' },
   { key: 'BLOWTORCH', slot: 4, name: 'Flamethrower', model: 'flamer', abbr: 'FLMR', color: '#b8322a', touch: ['Burn'],
     desc: 'Hold for a continuous jet of fire, 6 m long: lights wood, sets off gunpowder, melts ice and, slowly, metal.' },
   { key: 'POGO', slot: 4, name: 'Pogo stick', model: 'pogo', abbr: 'POGO', color: '#d0453a', touch: [],
