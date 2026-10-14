@@ -692,6 +692,8 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   });
 
   povEvents.on('player:jet', ({ on }) => loop('jetLoop', !!on && live(), { gain: 0.5 }));
+  // a chicken wingbeat: the tool whoosh, thinner and quieter
+  povEvents.on('player:flap', () => { if (live()) play('swoosh', { gain: 0.28, rate: 1.8 }); });
 
   // the laser's charge whine climbs as it fills (tool:action 'laser' 'charge' started the loop)
   povEvents.on('laser:charge', ({ amount = 0, by }) => {
