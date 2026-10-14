@@ -16,7 +16,7 @@ export function createToolbar({ actions, available = {} }) {
     on: { change: () => { actions.setCamera(camera.value); camera.value = cameraId; }, keydown: e => e.stopPropagation() },
   }, [['god', 'God'], ['first', '1st person'], ['third', '3rd person']].map(([value, text]) =>
     h('option', { value, text, disabled: available.camera === false && value !== 'god' })));
-  const build = h('button.industry-build', { type: 'button', title: 'Build factory machines',
+  const build = h('button.industry-build', { type: 'button', title: 'Build factory machines (Q)',
     'aria-controls': 'industry-builder', 'aria-expanded': 'false', 'aria-pressed': 'false',
     on: { click: () => actions.toggleIndustryBuild?.(),
       keydown: e => { if (e.code === 'Space' || e.code === 'Enter') e.stopPropagation(); } } }, 'Build');

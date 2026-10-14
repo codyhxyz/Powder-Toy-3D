@@ -59,7 +59,8 @@ export function createIndustry(app) {
     : pending ? fail('Construction is finishing') : devices.length >= INDUSTRY_LIMIT ? fail('128 machines is the limit')
     : factory() ? progression?.canBuild(type) ?? fail('The Quarry is still loading') : { ok: true };
   const state = () => ({ devices: devices.map(d => ({...d})), progression: factory() ? progression?.snapshot() ?? null : null,
-    active: active(), factory: factory(), selected, building: isBuilding(), dismantling, rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
+    active: active(), factory: factory(), selected, building: isBuilding(), dismantling, rotation, filter, powered, assisted, factoryRun,
+    pending }); // construction only; live machine transfers must not rewrite the placement prompt
   const report = result => { if (!result.ok) app.hud.toast(result.reason); app.requestRender(); return result; };
   const toggle = value => {
     if (!active() || !factory() || driving()) return;
@@ -129,7 +130,17 @@ export function createIndustry(app) {
     filter: value => { filter = value; }, power: value => { powered = factory() ? false : value; },
   });
   const key = e => {
-    if (!isBuilding() || app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Factory Q opens Build only. Sandbox keeps GMod's spawn menu: that is the intentional cheat.
+    if (e.code === 'KeyQ' && !e.repeat && factory() && active()) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (driving()) return;
+      const opening = !building;
+      toggle();
+      if (opening && document.pointerLockElement) document.exitPointerLock();
+      return;
+    }
+    if (!isBuilding()) return;
     if (e.code === 'Escape') {
       e.preventDefault(); e.stopImmediatePropagation();
       if (!e.repeat) toggle(false);
@@ -142,12 +153,19 @@ export function createIndustry(app) {
     if (e.type === 'pointerdown') { if (dismantling) removeAimed(); else placeAimed(); }
   };
   addEventListener('keydown',key,true); addEventListener('pointerdown',pointer,true); addEventListener('mousedown',pointer,true);
+  let spawnLocked = null;
   function modeChanged() {
     if (app.gamemode !== lastMode) {
       if (app.settings.preset === 'quarry' && app.gamemode === 'sandbox' && factoryRun) assisted = true;
       if (factory()) { if (!factoryRun) assisted = true; factoryRun = true; powered = false; }
       lastMode = app.gamemode; building = false; dismantling = false; app.painting = false;
       app.toolbar.setUndoEnabled(!factory() && app.sim.canUndo);
+    }
+    const locked = factory();
+    if (locked !== spawnLocked) {
+      spawnLocked = locked;
+      app.dock?.setSpawnLocked?.(locked);
+      if (locked) app.pov?.closeMenu?.();
     }
     syncToolbar();
   }

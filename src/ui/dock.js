@@ -255,7 +255,9 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     collection.scrollTop = 0;
   }
 
+  let spawnLocked = false;
   function setCollapsed(c) {
+    if (!c && spawnLocked) return;
     const moveFocus = (c ? dock : tab).contains(document.activeElement);
     settings.dockCollapsed = c;
     dock.classList.toggle('collapsed', c);
@@ -263,7 +265,8 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     dock.inert = c;
     tab.inert = !c;
     tab.setAttribute('aria-expanded', String(!c));
-    if (moveFocus) (c ? tab : categories[category]).focus({ preventScroll: true });
+    tab.hidden = spawnLocked;
+    if (moveFocus && !tab.hidden) (c ? tab : categories[category]).focus({ preventScroll: true });
     if (c) preview();
     edge();
   }
@@ -324,11 +327,17 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     sync,
     setCollapsed,
     setEyedropper,
+    setSpawnLocked(locked) {
+      spawnLocked = !!locked;
+      tab.hidden = spawnLocked;
+      if (spawnLocked) setCollapsed(true);
+    },
     toggle: () => setCollapsed(!settings.dockCollapsed),
-    focusSearch: () => { setCollapsed(false); search.focus(); search.select(); },
+    focusSearch: () => { if (spawnLocked) return; setCollapsed(false); search.focus(); search.select(); },
     openProp,
     // Q in first person opens the category containing the requested tool (false if no tile is it).
     reveal(pick) {
+      if (spawnLocked) return false;
       const match = tiles.find(({ it }) => pick(it));
       if (!match) return false;
       category = match.group;
