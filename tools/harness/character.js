@@ -7,7 +7,8 @@ const CHARACTERS = ['woman', 'real', 'stick', 'spartan', 'boy', 'girl'];
 const picked = new URLSearchParams(location.search).get('character');
 let character = CHARACTERS.includes(picked) ? picked : 'woman';
 let canvas = document.querySelector('#view');
-let you = null, drag = null, last = 0;
+let you = null, drag = null, last = 0, epoch = 0;
+const err = document.querySelector('#err');
 
 function size(target) {
   const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -16,20 +17,30 @@ function size(target) {
 }
 
 async function show(next) {
-  character = next;
+  const token = ++epoch;
   drag = null;
+  err.textContent = '';
+  // A new canvas: dispose() drops the old one's WebGL context.
+  const nextCanvas = document.createElement('canvas');
+  nextCanvas.id = 'view';
+  size(nextCanvas);
+  let built;
+  try {
+    built = await createYou({
+      canvas: nextCanvas, width: nextCanvas.width, height: nextCanvas.height, character: next, yaw: YOU_YAW,
+    });
+  } catch (e) {
+    if (token !== epoch) return;
+    console.error(e);
+    err.textContent = `Couldn't show ${next}: ${e.message ?? e}`;
+    return;
+  }
+  if (token !== epoch) { built.dispose(); return; }
   you?.dispose();
-  you = null;
-  // dispose() drops the canvas's WebGL context, so the next body gets a new one
-  const nextCanvas = canvas.cloneNode(false);
   canvas.replaceWith(nextCanvas);
   canvas = nextCanvas;
-  size(canvas);
-  const built = await createYou({
-    canvas, width: canvas.width, height: canvas.height, character, yaw: YOU_YAW,
-  });
-  if (character !== next) { built.dispose(); return; }
   you = built;
+  character = next;
   you.frame();
   const url = new URL(location.href);
   url.searchParams.set('character', character);
