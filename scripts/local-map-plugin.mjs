@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { stat, realpath } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
+import { CRUELTY_PROFILES } from '../src/world/import/crueltyProfiles.js';
 
 // Local game-derived imports are served ONLY by Vite's dev server. Keeping
 // them outside public/ ensures Vite never copies these assets into dist/.
@@ -9,10 +10,11 @@ export function localMapPlugin() {
     name: 'local-user-map', apply: 'serve',
     configureServer(server) {
       const root = resolve(server.config.root, '.tmp-cruelty-import');
+      const files = Object.fromEntries(CRUELTY_PROFILES.filter((p) => !p.blocked).flatMap((p) => ['json', 'bin'].map((extension) => [`/local-maps/${p.id}.${extension}`, `${p.id}.${extension}`])));
       server.middlewares.use(async (req, res, next) => {
         const pathname = req.url?.split('?')[0];
         if (!pathname?.startsWith('/local-maps/')) return next();
-        const file = { '/local-maps/paradise.json': 'paradise.json', '/local-maps/paradise.bin': 'paradise.bin' }[pathname];
+        const file = Object.hasOwn(files, pathname) ? files[pathname] : null;
         if (!file || !['GET', 'HEAD'].includes(req.method)) { res.statusCode = 404; res.end(); return; }
         try {
           const path = await realpath(resolve(root, file));

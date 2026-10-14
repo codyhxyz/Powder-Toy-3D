@@ -116,7 +116,7 @@ test('mission fixture reads authored nodes and local support instead of topmost 
   const t = (p) => [1, 0, 0, 0, 1, 0, 0, 0, 1, ...p];
   for (const path of [PARADISE_NODES.spawn, ...PARADISE_NODES.targets, PARADISE_NODES.extraction]) scene.nodes.set(path, { path, worldTransform: t([0, 1, 0]), props: {} });
   scene.nodes.set('exit-collider', { path: 'exit-collider', parent: PARADISE_NODES.extraction, type: 'CollisionShape', worldTransform: t([0, 1, 0]), props: { shape: 'SubResource( 1 )' } });
-  scene.resources.set(1, { type: 'ConvexPolygonShape', props: { points: 'PoolVector3Array( -1, -1, -2, 1, 1, 2 )' } });
+  scene.resources.set(1, { type: 'ConvexPolygonShape', props: { points: 'PoolVector3Array( -1, -1, -2, 1, -1, -2, -1, 1, -2, 1, 1, -2, -1, -1, 2, 1, -1, 2, -1, 1, 2, 1, 1, 2 )' } });
   const geometry = [...mesh(), ...mesh(triangle.map((p) => [p[0], 5, p[2]]))];
   const map = voxelizeMeshes(geometry, { fixture: E.ROCK });
   const mission = paradiseMission(scene, map, map.words);

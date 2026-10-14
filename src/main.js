@@ -23,10 +23,10 @@ import { probeWebGPU } from './gpu/device.js';
 import { BOOT_RETRY, bootModuleRecovery } from './bootRecovery.js';
 
 // Privately converted game assets live outside public/ and are DEV-only.
-// Production has neither this import nor a Paradise entry without licensed assets.
+// Production has neither this import nor source-map entries without licensed assets.
 if (import.meta.env.DEV) {
-  try { await (await import('./world/import/localMap.js')).installLocalParadise(); }
-  catch (error) { console.error('Local Paradise import failed; map not registered', error); }
+  try { await (await import('./world/import/localMap.js')).installLocalCrueltyMaps(); }
+  catch (error) { console.error('Local source-map imports failed; maps not registered', error); }
 }
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).

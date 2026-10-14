@@ -1,5 +1,5 @@
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
-import { importedCell } from '../import/voxelize.js';
+import { importedCell, sourceToCells } from '../import/voxelize.js';
 import { CELL_M } from '../../scale.js';
 import { ELEMENTS, K } from '../../elements.js';
 
@@ -11,9 +11,10 @@ export function validateImportedMap(map, words) {
   if (!(words instanceof Uint32Array) || words.length < start || words.length % 4 || (words.length - start) % 128) throw new Error('Invalid imported data size');
   for (let i = 0; i < count; i++) if (words[i] && (words[i] < start || (words[i] - start) % 128 || words[i] + 128 > words.length)) throw new Error('Invalid imported brick pointer');
   for (let i = start; i < words.length; i++) for (let k = 0; k < 4; k++) if (!ELEMENTS[(words[i] >>> (k * 8)) & 255]) throw new Error('Unknown imported element');
-  if (!Array.isArray(map.mission?.spawn) || map.mission.spawn.length !== 3 || !map.mission.spawn.every((n, i) => Number.isFinite(n) && n >= 0 && n < map.size[i])) throw new Error('Imported map has no valid authored spawn');
+  const authoredStart = map.mission?.available === false ? sourceToCells(map, map.mission.sourceSpawn) : map.mission?.spawn;
+  if (!Array.isArray(authoredStart) || authoredStart.length !== 3 || !authoredStart.every((n, i) => Number.isFinite(n) && n >= 0 && n < map.size[i])) throw new Error('Imported map has no valid authored start');
 }
-export function createImportedMapScene(map, words, { key = 'paradiseLocal', label = 'Paradise (local source)' } = {}) {
+export function createImportedMapScene(map, words, { key = `${map.id ?? 'imported'}Local`, label = `${map.name ?? 'Imported map'} (local source)` } = {}) {
   validateImportedMap(map, words);
   const cell = (x, y, z) => importedCell(map, words, x, y, z);
   return {
@@ -23,7 +24,7 @@ export function createImportedMapScene(map, words, { key = 'paradiseLocal', labe
     uniformStruct: IMPORT_U,
     uniforms: (P) => ({ uSceneSeed: P.seed >>> 0, uImportSize: map.size, uImportBricks: map.brickDims }),
     data: () => ({ at: 0, words }),
-    start: () => [map.mission.spawn[0], map.mission.spawn[2]],
+    start: () => { const at = map.mission.spawn ?? sourceToCells(map, map.mission.sourceSpawn); return [at[0], at[2]]; },
     cell,
     ground: (x, z) => {
       for (let y = map.size[1] - 1; y >= 0; y--) {

@@ -1,5 +1,9 @@
 # Paradise: real source import (local-only)
 
+The conversion record below describes the initial Paradise prototype.
+For current four-map output, material refinements, actor-clearance checks
+and explicit omissions, see [source comparisons](cruelty-source-comparison.md).
+
 **Status:** CPU-checked conversion of the actual embedded Paradise geometry in
 `Levels/Level2.tscn`, not a screenshot reconstruction. Source/game-derived output
 is **not committed, redistributed, or included in production**. External props,
