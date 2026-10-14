@@ -44,7 +44,7 @@ ${main(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i); let a=fetchA(p); var b=fetchB(p);
 // Read canonical liquid faces even when the renderer would dither this cell out.
 if(KIND(eid(a))==K_LIQUID) {
- let c=A[slotOf(p)]; b=vec4f(vec3f(unpack2x16float(c.z),unpack2x16float(c.w & 65535u).x)/${WEATHER_SPEED_FLUX},b.w);
+ let c=fetchNativeCore(p); b=vec4f(vec3f(unpack2x16float(c.z),unpack2x16float(c.w & 65535u).x)/${WEATHER_SPEED_FLUX},b.w);
 }
 var outA=a; var outB=b; update(p,a,b,&outA,&outB);
 ${spec.nativePrecipitation ? `if(eid(a)==E_EMPTY && (eid(outA)==E_WATER || eid(outA)==E_SNOW)) {

@@ -820,9 +820,12 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var bends = 0;
   var stop = false;
   // the nearest opaque mesh (gfx/meshCut.js), counted along the ray's path:
-  // tCut is in the current ray's t, which restarts at every bend. Curved the
-  // march restarts t at every chord and meshCutT measures a straight ray: no cut there
-  var tCut = ${curved ? 'MESH_CUT_NONE' : 'meshCutT(rd)'};
+  // tCut is in the current ray's t, which restarts at every bend.
+  var tCut = meshCutT(rd);${curved ? `
+  // Depth measures the displayed ray; convert it to the curved path's length.
+  // Keep the remaining budget across chords, brick skips and optical restarts.
+  var meshBudget = MESH_CUT_NONE;
+  if (tCut < MESH_CUT_NONE) { meshBudget = warpArc(walk.ray, 0.0, max(tCut, 0.0)); }` : ''}
   var cut = false;
 
   var lastB = vec3i(-1);
@@ -889,6 +892,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     var chord = 0.0;
     var exitAxis = 0;
     if (!warpSegment(&walk, &cell, &ro, &rd, &chord, &exitAxis)) { break; }
+    if (meshBudget < MESH_CUT_NONE) { tCut = max(0.0, meshBudget - warpArc(walk.ray, 0.0, walk.t)); }
     tEnter = 0.0;
     ax = walk.axis;
     istp = vec3i(sign(rd));
@@ -945,7 +949,32 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // ---- crisp voxel ----
       var nFace = vec3f(0.0);
       nFace[ax] = -f32(istp[ax]);
-      if (RCLASS(id) != R_GLASS) {
+      if (id == E_CRYSTAL) {
+        var th = tEnter;
+        var nh = nFace;
+        if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) {
+          if (th > tCut) { cut = true; break; }
+          let hp = ro + rd * th;
+          if (!anyHit) { anyHit = true; hitPos = hp; }
+          let path = crystalInterface(gCrys, hp, nh, rd, gCrysKind == CRYS_CUT, liq, bends < MAX_BENDS,
+                                      max(tCut - th, 0.0), fetchA(cell).y, &col, &trans);
+          if (path.clipped != 0u) { cut = true; break; }
+          if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
+          bends += 2;
+          tCut -= th + path.distance;
+          ro = path.p;
+          rd = safeDir(path.d);
+          cell = vec3i(floor(ro));
+          ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+          tEnter = 0.0; lastB = vec3i(-1); ax = 1;
+          prevCrisp = E_EMPTY;
+          mNext = jit * MEDIA_STEP;
+          phiStale = true;${curved ? `
+          warpRestart(&walk, ro, rd);` : ''}
+          continue;
+        }
+        phiStale = true;
+      } else if (RCLASS(id) != R_GLASS) {
         // the voxel's shape may be smaller than the cell (bevels): it can miss
         var th = tEnter;
         var nh = nFace;
@@ -1129,6 +1158,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             tEnter = 0.0; lastB = vec3i(-1); ax = 1;
             gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
             phiA = surfSample(ro); phiStale = false;${curved ? `
+            meshBudget = tCut;
             warpRestart(&walk, ro, rd);` : ''}
             // restarted inside something opaque (sand under the water line)
             var oc = -1;
@@ -1208,7 +1238,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // floor of the box${curved ? `
       var floorP: vec3f;
       var floorT: f32;
-      let onFloor = warpFloor(walk, &floorP, &floorT);` : ''}
+      let onFloor = warpFloor(walk, &floorP, &floorT)
+        && (meshBudget >= MESH_CUT_NONE || warpArc(walk.ray, 0.0, floorT) < meshBudget);` : ''}
       if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
         let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
         let hp = ${curved ? 'floorP' : 'ro + rd * tf'};${curved ? `
@@ -1227,7 +1258,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
   // the original camera ray's sky via alpha blending (pale, blob-shaped holes).
   // shortcut: homogeneous liquid beyond the local trace; replace with far-field
   // transmission when that can fit the view's texture-unit budget.
-  if (FU.far != 0u && liq != E_EMPTY && outside(cell) && cell.y >= 0 && cell.y < NY) {
+  // A finite mesh ends that tail too; never scatter an infinite column over it.
+  if (!cut && tCut >= MESH_CUT_NONE && FU.far != 0u && liq != E_EMPTY && outside(cell) && cell.y >= 0 && cell.y < NY) {
     let p = clamp(ro + rd * tEnter, vec3f(0.5), vec3f(GRID) - 0.5);
     col += trans * interiorScatter(liq, p, mediumLight, AMBIENT);
     trans = vec3f(0.0);
@@ -1288,8 +1320,7 @@ export const VOLUME_SCREEN_VERTICES = 3;
 // written where it hit nothing. cut: the view stops at the meshes (the
 // realistic march), so its
 // depth is the nearer of its hit and the mesh's. Curved, the ray's spans in
-// the box are its parabola's (warpWalk), the march has no mesh cut (it
-// measures a straight ray), and t is the displayed ray's throughout.
+// the box are its parabola's (warpWalk); its mesh cut uses arc length.
 const volumeEntry = (view, cut, curved = false) => /* wgsl */ `
 struct VolumeFrag {
   @location(0) color: vec4f,
@@ -1316,7 +1347,7 @@ struct VolumeFrag {
   let h = traceView(ro, rd, t0, bh);
   if (!h.hit) { discard; return o; }
   o.color = h.color;
-  o.depth = ${cut && !curved ? 'meshCutDepth(h.depth)' : 'h.depth'};
+  o.depth = ${cut ? 'meshCutDepth(h.depth)' : 'h.depth'};
   return o;
 }`;
 
@@ -1560,10 +1591,16 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     let tExit = tMax[ax];
     let id = occCellId(occM, bid, cell);   // eid(fetchA(cell)), from the brick's occupancy: nothing read for an empty cell
     if (id == E_CRYSTAL) {
-      // its prisms (gfx/crystal.js), as the view draws them
+      // Tint only the actual prism chord, not its cell or the air around it.
       var th = tEnter;
       var nh = vec3f(0.0);
-      if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) { oC.x = th; hit = true; break; }
+      if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) {
+        var exitN: vec3f;
+        let end = min(tExit, th + shardExit(gCrys, ro + rd * th, rd, &exitN));
+        if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = th; } tid = id; }
+        tau += meanSigma(id) * max(end - th, 0.0);
+        oC.z = end;
+      }
       phiStale = true;
     } else if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) { oC.x = tEnter; hit = true; break; }

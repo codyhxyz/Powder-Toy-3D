@@ -3,6 +3,7 @@
 // pack directly from compact readers; edits return to the host as intents.
 import { prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, TILE, SUPER, SUPER_TEX, atlasDims } from '../shaders/common.js';
 import { fold } from '../gpu/kernels.js';
+import { validMetadata } from './protocol.js';
 
 // World stream codec. The host packs the state into 4 bytes per cell holding
 // only what guests render, and sends a keyframe or an XOR delta against the
@@ -177,15 +178,16 @@ export function createPacker() {
     });
   }
   // records the pack of sim's current copy into a slot and its readback
-  function capture(sim, slot) {
+  function capture(sim, slot, metadata) {
     const gen = generation, dims = [g.nx, g.ny, g.nz];
+    const meta = metadata?.(); // at dispatch, including first-pack compilation delay
     const release = (back) => {
       if (back) slot.bytes = back;
       if (gen === generation) free.push(slot); else slot.buffer.destroy();
     };
     kernel.dispatch(gpu.frame, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRO, slot.group], header: sim.readHeader() });
     return gpu.readback.buffer(slot.buffer, 0, slot.buffer.size, { into: slot.bytes.buffer })
-      .then(() => ({ bytes: slot.bytes, dims, release }), (err) => { release(); throw err; });
+      .then(() => ({ bytes: slot.bytes, dims, meta, release }), (err) => { release(); throw err; });
   }
   return {
     // Starts a capture of the sim's current state; resolves to { bytes, dims, release }
@@ -194,15 +196,15 @@ export function createPacker() {
     // and the slot reads into it next time. The copy is recorded at this call
     // (docs/webgpu.md B7); only the first capture on a grid, while its kernel
     // builds, is taken once it is built.
-    pack(sim) {
+    pack(sim, metadata) {
       if (!sameGrid(g, sim.g) || gpu !== sim.gpu) reset(sim);
       const slot = free.pop();
       if (!slot) return null;
-      if (kernel.state === 'ready') return capture(sim, slot);
+      if (kernel.state === 'ready') return capture(sim, slot, metadata);
       const gen = generation;
       return kernel.ready.then(() => {
         if (gen !== generation || sim.disposed) { slot.buffer.destroy(); throw new Error('codec: the grid changed while the pack kernel built'); }
-        return capture(sim, slot);
+        return capture(sim, slot, metadata);
       });
     },
   };
@@ -221,7 +223,7 @@ export function createUnpacker() {
     sim.stillFlow();   // no velocity is sent, so a guest's grains are textured in place
   };
   return {
-    unpack(sim, bytes) {
+    unpack(sim, bytes, { valid = () => true, commit = () => {} } = {}) {
       if (!sameGrid(g, sim.g) || gpu !== sim.gpu) {
         buffer?.destroy();
         g = sim.g;
@@ -231,10 +233,15 @@ export function createUnpacker() {
         buffer = gpu.createBuffer({ label: 'unpack', size: g.width * g.height * TEXEL_BYTES, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         group = gpu.bindGroup(layout, [{ binding: 0, resource: { buffer } }], 'unpack');
       }
-      gpu.write(buffer, 0, bytes.subarray(0, buffer.size));
-      if (kernel.state === 'ready') { write(sim); return Promise.resolve(); }
-      const k = kernel;
-      pending = pending.then(() => k.ready).then(() => { if (k === kernel && !sim.disposed && !gpu.failure) write(sim); });
+      const k = kernel, b = buffer;
+      const apply = () => {
+        if (k !== kernel || sim.disposed || gpu.failure || !valid()) return false;
+        gpu.write(b, 0, bytes.subarray(0, b.size));
+        commit(); // origin and cells share the same GPU recording
+        write(sim);
+        return true;
+      };
+      pending = pending.then(() => k.ready).then(apply);
       return pending;
     },
   };
@@ -246,21 +253,51 @@ export const FRAME_DELTA = 2; // body is packed XOR the previous frame
 const HEADER_WORDS = 5;
 const HEADER_BYTES = HEADER_WORDS * Uint32Array.BYTES_PER_ELEMENT;
 const COMPRESSION = 'deflate-raw';
+const MAGIC = 0x54505457;
 
 const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
 
-export async function encodeFrame(kind, seq, dims, body) {
+export async function encodeFrame(kind, seq, dims, body, meta = null) {
   const packed = await pipe(body, new CompressionStream(COMPRESSION));
-  const out = new Uint8Array(HEADER_BYTES + packed.length);
-  new Uint32Array(out.buffer, 0, HEADER_WORDS).set([kind, seq, ...dims]);
-  out.set(packed, HEADER_BYTES);
+  const json = meta ? new TextEncoder().encode(JSON.stringify(meta)) : null;
+  const offset = json ? 32 + json.length : HEADER_BYTES;
+  const out = new Uint8Array(offset + packed.length);
+  if (json) {
+    if (!validMetadata(meta) || json.length > 2048) throw new Error('codec: invalid metadata');
+    new Uint32Array(out.buffer, 0, 8).set([MAGIC, kind, seq, ...dims, json.length, body.length]);
+    out.set(json, 32);
+  } else new Uint32Array(out.buffer, 0, HEADER_WORDS).set([kind, seq, ...dims]);
+  out.set(packed, offset);
   return out.buffer;
 }
 
 export async function decodeFrame(buf) {
-  const [kind, seq, ...dims] = new Uint32Array(buf, 0, HEADER_WORDS);
-  const body = await pipe(new Uint8Array(buf, HEADER_BYTES), new DecompressionStream(COMPRESSION));
-  return { kind, seq, dims, body };
+  if (buf.byteLength < HEADER_BYTES) throw new Error('codec: short frame');
+  let [kind, seq, ...dims] = new Uint32Array(buf, 0, HEADER_WORDS), meta = null, offset = HEADER_BYTES, length;
+  if (kind === MAGIC) {
+    if (buf.byteLength < 32) throw new Error('codec: short envelope');
+    const h = new Uint32Array(buf, 0, 8);
+    kind = h[1]; seq = h[2]; dims = [...h.slice(3, 6)]; length = h[7]; offset = 32 + h[6];
+    if (h[6] > 2048 || offset >= buf.byteLength) throw new Error('codec: metadata length');
+    meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 32, h[6])));
+    if (!validMetadata(meta)) throw new Error('codec: metadata');
+  }
+  if (![FRAME_KEY, FRAME_DELTA].includes(kind) || dims.some((n) => !n || n % 16 || n > 512) || dims.reduce((a, b) => a * b, 1) > 16 * 1024 * 1024) throw new Error('codec: dimensions/kind');
+  if (meta && (dims.some((n, i) => n > meta.size[i] || meta.origin[i] < 0 || meta.origin[i] + n > meta.size[i])
+    || (meta.mode === 'world' && dims[1] !== meta.size[1])
+    || (meta.mode === 'box' && (meta.origin.some((n) => n !== 0) || dims.some((n, i) => n !== meta.size[i]))))) throw new Error('codec: window outside world');
+  const at = atlasDims({ nx: dims[0], ny: dims[1], nz: dims[2] });
+  const expected = at.width * at.height * TEXEL_BYTES;
+  if (length !== undefined && length !== expected) throw new Error('codec: body length');
+  const reader = new Blob([new Uint8Array(buf, offset)]).stream().pipeThrough(new DecompressionStream(COMPRESSION)).getReader();
+  const body = new Uint8Array(expected); let used = 0;
+  try { for (;;) {
+    const { done, value } = await reader.read(); if (done) break;
+    if (used + value.length > expected) throw new Error('codec: oversized body');
+    body.set(value, used); used += value.length;
+  } } finally { await reader.cancel(); }
+  if (used !== expected) throw new Error('codec: short body');
+  return { kind, seq, dims, body, meta };
 }
 
 // out = a XOR b (word-wise); returns whether anything differs.

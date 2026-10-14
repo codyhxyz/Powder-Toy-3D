@@ -75,7 +75,7 @@ const world = {
     app.win?.dispose();
     app.win = null;
   },
-  follow(app) { if (app.win) world.moveWindow(app); },
+  follow(app) { if (app.win && !app.mp.replica) world.moveWindow(app); },
   beforeView(app) {
     const { win } = app;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
@@ -102,6 +102,7 @@ const world = {
   // Another scene, a Clear or an Undo meanwhile wins; cancelIsland is for the
   // other whole-grid writers (a save's load, a session's frame).
   loadIsland(app) {
+    if (app.mp.replica) return;
     const sim = app.sim, t = world._islandLoad = { sim, mark: sim.history.at(-1) ?? null };
     t.done = loadIsland(sim, {
       seed: app.worldSeed,
@@ -118,10 +119,11 @@ const world = {
   // undone). Its passes compile in the background first (the first time):
   // till then the window is empty air, and the world fills in when they're done.
   loadScene(app) {
+    if (app.mp.replica) return;
     const w = app.win, epoch = w.epoch;
     if (!w.loaded) app.sim.clear();
     w.whenReady().then(() => {
-      if (app.win !== w || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
+      if (app.mp.replica || app.win !== w || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
       w.load(world.worldStart(app));
       app.placeVolume();
       app.post.reset();
@@ -134,6 +136,7 @@ const world = {
 
   // world mode: start the world over with the window at `origin` (world cells)
   worldLoad(app, origin) {
+    if (app.mp.replica) return;
     app.resetWeather?.();
     app.win.load(origin);
     app.placeVolume();
@@ -156,6 +159,7 @@ const world = {
   },
 
   worldShrine(app) {
+    if (app.mp.replica) return;
     const { win, sim, builds } = app;
     if (!win || !builds || win.scene.shrine === false) return;   // (Descent's temples have their own altars)
     const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
@@ -213,6 +217,7 @@ const world = {
   // World mode: keep the window on the focus, the POV body or else the orbit
   // target (a tool may pin it: __app.worldFocus = [x, z] in world cells).
   moveWindow(app) {
+    if (app.mp.replica) return;
     const { win, sim, pov, controls, scale, anchor, hover } = app;
     let fx, fz;
     const focus = app.villageFocus ?? app.worldFocus;   // (Animal Crossing streams toward your cottage first)

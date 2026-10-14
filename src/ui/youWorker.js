@@ -1,8 +1,9 @@
 // The loading screen's live player (ui/youViewer.js) in a worker, drawing on
 // the OffscreenCanvas the menu hands it (ui/menu.js): its frames go on while
 // the page itself is held by the boot. Messages in:
-//   { canvas, width, height, character }   build and draw one frame; posts 'ready' (or { failed })
-//   { run: true|false }         breathe and turn, or stop
+//   { canvas, width, height, character, zoom }   build and draw one frame; posts 'ready' (or { failed })
+//   { run: true|false, zoom? }  breathe and turn, or stop
+//   { zoom }                    Skyrim's wheel: camera distance, 1 framed
 //   { drag: 'start'|'end' }, { dx }   a drag, dx CSS px from where it started
 import { createYou, YOU_DRAG } from './youViewer.js';
 
@@ -29,7 +30,7 @@ function start() {
 self.onmessage = async ({ data }) => {
   if (data.canvas) {
     try {
-      you = await createYou({ canvas: data.canvas, width: data.width, height: data.height, character: data.character });
+      you = await createYou({ canvas: data.canvas, width: data.width, height: data.height, character: data.character, zoom: data.zoom });
     } catch (err) {
       self.postMessage({ failed: String(err) });
       return;
@@ -39,8 +40,10 @@ self.onmessage = async ({ data }) => {
     start();
   } else if ('run' in data) {
     run = data.run;
+    if ('zoom' in data) you?.setZoom(data.zoom);
     start();
-  } else if (data.drag === 'start') held = you?.yaw ?? null;
+  } else if ('zoom' in data) you?.setZoom(data.zoom);
+  else if (data.drag === 'start') held = you?.yaw ?? null;
   else if (data.drag === 'end') held = null;
   else if ('dx' in data && you && held != null) you.yaw = held + data.dx * YOU_DRAG;
 };

@@ -413,6 +413,10 @@ fn fetchAs(s: u32) -> vec4f {
   return bitcast<vec4f>(A[H.src * SLOTS + s]);
 }
 fn fetchA(p: vec3i) -> vec4f { ${cell('src')}return fetchAs(slotOf(p)); }
+fn fetchNativeCore(p: vec3i) -> vec4u {
+  ${cell('src')}if (H.format != 2u && H.format != 3u) { return vec4u(0u); }
+  return A[slotOf(p)];
+}
 fn fetchNativeAeration(p: vec3i) -> vec3f {
   ${cell('src')}if (H.format != 2u && H.format != 3u) { return vec3f(0.0); }
   let core = A[slotOf(p)];

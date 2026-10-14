@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { createFigure, part, limb } from './figure.js';
+import { createFigure, part, limb, buildJetpack } from './figure.js';
 
 // The wizard, drawn the way Castle Crashers draws its people: a huge round
 // head on a stubby little body, mitten hands, thick black outlines and flat
@@ -32,12 +32,6 @@ const EYE_R = 0.15, EYE_SQUASH = [1, 1.45, 0.6];
 // the hood's point: three shrinking cones, each bent further back, so it flops
 const TIP = [[0.8, 1.0, 0.3], [0.56, 0.85, 0.5], [0.3, 0.7, 0.65]];   // base radius, height, bend (rad) per segment
 const TIP_SEAT = 0.82;                   // the first segment sits this share of HEAD_R up, as wide as the dome there
-// jetpack: one fat brass barrel across the back, a nozzle under each end
-const PACK_R = 0.32, PACK_LEN = 1.0, PACK_Y = 0.85, PACK_Z = 0.9;
-const PACK_SIDE = 0.3;                   // nozzle offset to each side
-const NOZZLE = [0.17, 0.22];             // radius, height
-const FLAME = [0.15, 0.9];               // radius, length at full burn
-
 const OUTLINE = 0.1;                     // cells, outline width
 const COLOR = {                          // albedo, linear
   robe: [0.07, 0.02, 0.26], hood: [0.1, 0.025, 0.34], trim: [0.85, 0.55, 0.08], belt: [0.18, 0.08, 0.03],
@@ -45,7 +39,6 @@ const COLOR = {                          // albedo, linear
   brass: [0.75, 0.42, 0.12], nozzle: [0.1, 0.1, 0.11],
 };
 const EYE_GLOW = [3.2, 3.2, 2.6];        // HDR, unlit: the eyes shine out of the dark
-const FLAME_COLOR = [6, 2.6, 0.7];       // HDR, like the exhaust particles
 
 const blob = (r, [sx, sy, sz], x, y, z) => new THREE.SphereGeometry(r, 20, 14).scale(sx, sy, sz).translate(x, y, z);
 
@@ -82,24 +75,8 @@ export function buildCrasher({ palette = COLOR, eyeGlow = EYE_GLOW, pack = true 
     y = h * 0.8;                         // the next segment starts a little below this one's tip
   }
 
-  const flames = [];
-  const nozY = PACK_Y - PACK_R * 0.8, nozH = NOZZLE[1];
-  if (pack) {
-    // jetpack
-    part(torso, new THREE.CapsuleGeometry(PACK_R, PACK_LEN - 2 * PACK_R, 4, 16).rotateZ(Math.PI / 2).translate(0, PACK_Y, PACK_Z), C.brass);
-    const flameMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    flameMat.color.setRGB(...FLAME_COLOR);
-    const [nozR] = NOZZLE, [flR, flLen] = FLAME;
-    for (const side of [-1, 1]) {
-      part(torso, new THREE.ConeGeometry(nozR, nozH, 12, 1, true).translate(side * PACK_SIDE, nozY - nozH / 2, PACK_Z), C.nozzle);
-      const flame = new THREE.Mesh(new THREE.ConeGeometry(flR, flLen, 12).rotateX(Math.PI).translate(0, -flLen / 2, 0), flameMat);
-      flame.position.set(side * PACK_SIDE, nozY - nozH, PACK_Z);
-      flame.renderOrder = 1;               // after the volume
-      flame.visible = false;
-      torso.add(flame);
-      flames.push(flame);
-    }
-  }
+  // Keep the exhaust behind the robe's flared hem, not inside it.
+  const jetpack = pack ? buildJetpack(torso, { up: 0.85, back: 1.1, color: C.brass, nozzleColor: C.nozzle }) : null;
 
   // stubby sleeved arms with big mittens, short legs in boots
   const shY = TORSO - SHOULDER_DROP;
@@ -116,8 +93,7 @@ export function buildCrasher({ palette = COLOR, eyeGlow = EYE_GLOW, pack = true 
   for (const kn of [knL, knR]) part(kn, blob(1, [bx, by, bz], 0, -SHIN + by * 0.4, -bz * 0.3), C.boot);
 
   return {
-    hipY: HIP_Y, lieLift: HEAD_R * 0.6, outline: OUTLINE, toon: true, flames,
-    nozzles: { back: PACK_Z, up: HIP_Y + nozY - nozH, side: PACK_SIDE },
+    hipY: HIP_Y, lieLift: HEAD_R * 0.6, outline: OUTLINE, toon: true, jetpack,
     body, torso, neck, shL, shR, elL, elR, hipL, hipR, knL, knR,
     handY: -FOREARM - ARM_R * 0.6,       // the mittens' centre below the elbows (something held goes here)
   };

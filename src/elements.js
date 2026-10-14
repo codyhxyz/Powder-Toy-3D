@@ -480,8 +480,9 @@ const defs = [
   // fracture toughness, ~0.5 MPa·√m, lies between ice's (~0.1) and glass's
   // (~0.75), and so does hard. The glow is a game liberty: real fluorite
   // fluoresces only under ultraviolet light (gfx/materials.js FLUORITE_BAND).
-  { key: 'CRYSTAL', abbr: 'CRYS', name: 'Crystal', kind: K.SOLID, render: R.OPAQUE, color: '#9466cf', var: 0.08,
+  { key: 'CRYSTAL', abbr: 'CRYS', name: 'Crystal', kind: K.SOLID, render: R.GLASS, color: '#9466cf', var: 0.08,
     cond: 0.05, cap: 0.65, melt: 1418, hard: 7, breakInto: 'CRYSTAL_DUST', sound: 'shatter',
+    sigma: [0.45, 1.6, 0.3],   // violet transmission: clear thin edges, saturated thick cores
     desc: 'Crystal. Fluorite. Glows blue-violet by itself, enough to light a dark cave. Brittle: it shatters into glowing dust. Melts at 1418 °C.' },
   // Its debris. Crushed, it keeps the crystal's glow (as powdered phosphors do)
   // and its grains' density; molten and cooled it grows back into crystal.

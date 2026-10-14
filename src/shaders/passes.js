@@ -805,7 +805,8 @@ fn openFaces(c: vec3i) -> f32 {
     q[k >> 1u] += select(1, -1, (k & 1) == 0);
     if (q.y < 0) { continue; }                         // the floor
     if (!inGrid(q)) { n += 1.0; continue; }            // open sky past the box
-    if (RCLASS(eid(fetchA(q))) != R_OPAQUE) { n += 1.0; }
+    let id = eid(fetchA(q));
+    if (RCLASS(id) != R_OPAQUE && id != E_CRYSTAL) { n += 1.0; }
   }
   return n;
 }
@@ -845,7 +846,8 @@ ${listMainWGSL('LIST_FIELDS')}
     let ce = cellEmission(id, a.y, floor(a.w)) * SHED(id) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
     if (dot(ce, ce) > 0.0) {
       var f = 1.0;
-      if (RCLASS(id) == R_OPAQUE) { f = openFaces(p) * GLOW_FACE_GAIN; }
+      // Crystal's glass optics must not remove its exposed-face light budget.
+      if (RCLASS(id) == R_OPAQUE || id == E_CRYSTAL) { f = openFaces(p) * GLOW_FACE_GAIN; }
       em = ce * f;
     }
   }

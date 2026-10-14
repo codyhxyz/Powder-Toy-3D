@@ -7,6 +7,7 @@ import { createChat, MAX_CHAT_CHARS } from './chat.js';
 import { sessionToken } from '../account.js';
 import { h } from '../ui/dom.js';
 import './net.css';
+import { stamp, validPose, leash } from './protocol.js';
 
 // Multiplayer: one player hosts and runs the simulation; guests see the
 // host's world (streamed, ~100 ms behind) from their own camera, send paint
@@ -51,9 +52,8 @@ const HOST_AWAY = 'The host switched to another tab, so the world is paused unti
 const HOST_BACK = 'The host is back';
 const STOPPED_HOSTING = 'Stopped hosting';
 const LEFT_WORLD = 'You left the host\'s world';
-// The massive world (the World grid size, docs/scaling.md D11) streams a window
-// that moves; guests can't follow it yet, so it can't be hosted or joined.
-const NO_WORLD = 'Multiplayer isn\'t available in World yet';
+// World co-op shares one host-led loaded area, not independent streaming.
+const COOP_ONLY = 'World co-op uses Sandbox exploration. Switch to Sandbox to host.';
 const CLOSE_NORMAL = 1000; // WebSocket close code for a deliberate disconnect
 
 const ICON_PLAYERS = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/></svg>';
@@ -69,12 +69,15 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 
 // app hooks:
 //   getSim(), getVolume()   current simulation and volume mesh (both are rebuilt on grid size changes)
-//   setGrid([nx, ny, nz])   rebuild the world at the host's grid size (a box, never World); returns false if unsupported
-//   inWorld()               the grid is World's window (docs/scaling.md D11): no hosting, and a guest leaves it
+//   setGrid(dims, metadata) rebuild only when the received map changes; false if unsupported
+//   inWorld()               the grid is World's host-led window (docs/scaling.md D11)
 //   score()                 your [kills, deaths] on the scoreboard (the host sends its own to the guests)
 // gpu: the device (src/gpu), for the remote cursors' brushes (a pipeline of
 // ours, brush.js); the stream's kernels use each simulation's own.
-export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null }) {
+export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null,
+  getMetadata = () => null, commitFrame = () => {}, canHost = () => true, canStream = () => true, sessionChanged = () => {},
+  getPose = () => null, avatars = null, catchUp = () => {},
+}) {
   let role = 'solo';
   let socket = null, room = null, me = null;
   let joiningAs = null; // the role we asked the relay for, until it welcomes us
@@ -96,6 +99,9 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   const unpacker = createUnpacker();
   let world = null, worldDims = null, worldSeq = 0, worldDirty = false, lastKeyRequest = 0;
   let frames = Promise.resolve();
+  let epoch = 0, receivedMeta = null, committedMeta = null, sentMeta = '', lastReceived = 0, hostAway = false;
+  let lastPose = 0, poseSeq = 0, frozen = false, cursorStamp = null, avatarMap = null;
+  const poses = new Map();
 
   let lastPresence = 0, lastPresenceJSON = '';
 
@@ -107,12 +113,18 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
   // ---- connection ----
   function connect(asRole, code) {
+    epoch++;
     room = code;
     joiningAs = asRole;
+    sessionChanged(asRole);
     const token = sessionToken();
     const ws = new WebSocket(`${RELAY_URL}/room/${encodeURIComponent(code)}?role=${asRole}`, token ? [WS_PROTOCOL, token] : []);
     ws.binaryType = 'arraybuffer';
-    ws.onmessage = (e) => (typeof e.data === 'string' ? onMessage(JSON.parse(e.data), asRole) : onFrame(e.data));
+    ws.onmessage = (e) => {
+      if (socket !== ws) return;
+      try { typeof e.data === 'string' ? onMessage(JSON.parse(e.data), asRole) : onFrame(e.data); }
+      catch (err) { console.warn('multiplayer: invalid message', err); }
+    };
     ws.onclose = (e) => {
       if (socket !== ws) return;
       end(e.reason || (role === 'solo' ? 'Could not reach the multiplayer server' : 'Lost connection to the multiplayer server'));
@@ -121,7 +133,11 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   }
 
   function end(reason) {
-    const wasGuest = role === 'guest';
+    const wasGuest = role === 'guest' || joiningAs === 'guest';
+    frozen = wasGuest && inWorld();
+    epoch++; worldDirty = false; receivedMeta = committedMeta = null; sentMeta = ''; worldDims = null; lastReceived = 0;
+    frames = sending = Promise.resolve(); seq = worldSeq = poseSeq = 0; hostAway = false;
+    poses.clear(); avatars?.clear(); sessionChanged('solo');
     socket = null; role = 'solo'; me = null; room = null; sent = null; world = null; joiningAs = null;
     peers.clear();
     pings.clear();
@@ -131,7 +147,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     strokes.length = 0;
     fills.length = 0;
     if (new URLSearchParams(location.search).has(JOIN_PARAM)) history.replaceState(null, '', location.pathname);
-    hud.toast(wasGuest ? `${reason}. You can keep playing with this world on your own.` : reason);
+    hud.toast(frozen ? `${reason}. Reload or choose a map to play solo.` : wasGuest ? `${reason}. You can keep playing with this world on your own.` : reason);
     closePanel();
     syncButton();
   }
@@ -165,9 +181,11 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       }
       case 'welcome':
         role = asRole;
+        frozen = false;
+        sessionChanged(role);
         me = { id: m.id, n: m.n, role: m.role, name: m.name ?? null };
         for (const p of m.peers) peers.set(p.id, p);
-        if (role === 'guest') hud.toast(`Joined the host's world as ${peerName(me)}`);
+        if (role === 'guest') { lastKeyRequest = -Infinity; requestKey(); hud.toast(`Joined as ${peerName(me)}. Waiting for host terrain…`); }
         break;
       case 'join':
         peers.set(m.id, m);
@@ -187,26 +205,44 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         if (p) chat.notice(`${peerName(p)} left`);
         peers.delete(m.id);
         pings.delete(m.id);
-        cursors.remove(m.id);
+        cursors.remove(m.id); avatars?.remove(m.id); poses.delete(m.id);
         break;
       }
+      case 'pose': {
+        const meta = role === 'host' ? getMetadata() : committedMeta;
+        const id = role === 'host' ? m.from : m.peer ?? m.from;
+        if (!from || (role === 'guest' && from.role !== 'host') || !peers.has(id) || id === me?.id || !validPose(m, meta)) break;
+        const prev = poses.get(id), now = performance.now();
+        if (prev && m.seq <= prev.seq) break;
+        if (role === 'host') {
+          const g = getSim().g, bounds = leash(meta, [g.nx, g.ny, g.nz], m.p);
+          const fast = prev && m.warp === prev.warp && Math.hypot(...m.p.map((v, i) => v - prev.p[i])) > 16 + 200 * Math.min(1, (now - prev.at) / 1000);
+          if (m.active && (bounds.outside || fast)) { send({ t: 'catchup', peer: id, map: meta.id }); break; }
+          send({ ...m, t: 'pose', to: undefined, peer: id });
+        }
+        poses.set(id, { ...m, at: now }); avatars?.set(id, m);
+        break;
+      }
+      case 'catchup':
+        if (role === 'guest' && from?.role === 'host' && m.peer === me?.id && m.map === committedMeta?.id) catchUp();
+        break;
       case 'cursor':
-        if (from) cursors.set(m.from, { name: peerName(from), color: peerColor(from) }, m);
+        if (from && validContext(m) && (m.c === null || bounded(m.c))) cursors.set(m.from, { name: peerName(from), color: peerColor(from) }, m);
         break;
       case 'paint':
-        if (role === 'host' && validStroke(m)) strokes.push(m);
+        if (role === 'host' && from?.role === 'guest' && strokes.length < 128 && validContext(m) && validStroke(m)) strokes.push(m);
         break;
       case 'fill':
-        if (role === 'host' && validFill(m)) fills.push(m);
+        if (role === 'host' && from?.role === 'guest' && fills.length < 8 && validContext(m) && validFill(m)) fills.push(m);
         break;
       case 'chat':
         if (from && typeof m.text === 'string') chat.say(peerName(from), peerColor(from), m.text.slice(0, MAX_CHAT_CHARS));
         break;
       case 'key':
-        if (role === 'host') wantKey = true;
+        if (role === 'host' && from?.role === 'guest') wantKey = true;
         break;
       case 'away':
-        if (from?.role === 'host') hud.toast(m.away ? HOST_AWAY : HOST_BACK);
+        if (from?.role === 'host') { hostAway = !!m.away; hud.toast(m.away ? HOST_AWAY : HOST_BACK); }
         break;
       case 'ping':   // the host's: answer it, and keep its table and its score
         if (from?.role !== 'host') return;
@@ -231,19 +267,22 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   const vec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
   // TPT's editing tools (src/editing.js) on a stroke: a line's end e, a box's grow g,
   // the target filter f, specific delete d, the Property tool's [field, value] p
+  const context = () => stamp(role === 'host' ? getMetadata() : committedMeta);
+  const validContext = (m) => m.context === context() || (!context() && m.context == null);
+  const bounded = (v) => vec3(v) && v.every((n, i) => n >= 0 && n < [getSim().g.nx, getSim().g.ny, getSim().g.nz][i]);
   function validEdits(m) {
     const maxDim = Math.max(...['nx', 'ny', 'nz'].map((k) => getSim().g[k]));
-    return (m.e === undefined || vec3(m.e)) && (m.g === undefined || (vec3(m.g) && m.g.every((v) => Math.abs(v) <= maxDim)))
+    return (m.e === undefined || bounded(m.e)) && (m.g === undefined || (vec3(m.g) && m.g.every((v) => Math.abs(v) <= maxDim)))
       && (m.f === undefined || (Number.isInteger(m.f) && m.f >= -1 && m.f < ELEMENTS.length))
       && (m.tool !== PROP_TOOL || (Array.isArray(m.p) && Number.isInteger(m.p[0]) && m.p[0] >= 0 && m.p[0] < PROP_FIELDS.length && !propRangeError(m.p[0], m.p[1])));
   }
   function validStroke(m) {
-    return Array.isArray(m.c) && m.c.length === 3 && m.c.every(Number.isFinite) && PAINTABLE.has(m.tool) &&
-      Number.isFinite(m.r) && Number.isFinite(m.rate) && BRUSH_SHAPES.has(m.shape) && validEdits(m);
+    return bounded(m.c) && PAINTABLE.has(m.tool) &&
+      Number.isFinite(m.r) && Number.isFinite(m.rate) && m.rate >= 0 && m.rate <= 100 && BRUSH_SHAPES.has(m.shape) && validEdits(m);
   }
   function validFill(m) {
-    return vec3(m.c) && m.c.every(Number.isInteger) && Number.isInteger(m.id) && m.id >= 0 && m.id < ELEMENTS.length
-      && Number.isInteger(m.top) && FILL_TOOLS(m.tool) && Number.isFinite(m.r) && Number.isFinite(m.rate) && BRUSH_SHAPES.has(m.shape) && validEdits(m);
+    return bounded(m.c) && m.c.every(Number.isInteger) && Number.isInteger(m.id) && m.id >= 0 && m.id < ELEMENTS.length
+      && Number.isInteger(m.top) && m.top >= 0 && m.top < getSim().g.ny && FILL_TOOLS(m.tool) && Number.isFinite(m.r) && Number.isFinite(m.rate) && BRUSH_SHAPES.has(m.shape) && validEdits(m);
   }
   const xyz = (v) => [v.x, v.y, v.z];
   // a stroke's editing fields as sent (validEdits) and as Simulation.paint takes them
@@ -257,18 +296,22 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   });
 
   // ---- host: stream the world ----
-  async function sendCapture({ bytes, dims, release }) {
+  async function sendCapture({ bytes, dims, meta, release }, generation) {
     const key = wantKey;
     wantKey = false;
     try {
-      const dimsKey = dims.join('x');
-      const fresh = key || !sent || sentDims !== dimsKey;
+      if (epoch !== generation || role !== 'host') return;
+      const dimsKey = dims.join('x'), metadataKey = JSON.stringify(meta);
+      const fresh = key || !sent || sentDims !== dimsKey || stamp(meta) !== stamp(sentMeta ? JSON.parse(sentMeta) : null);
       if (!fresh) {
         scratch ??= new Uint8Array(bytes.length);
-        if (!xorInto(scratch, bytes, sent)) return; // nothing changed (paused, or a still world)
+        const changed = xorInto(scratch, bytes, sent);
+        if (!changed && metadataKey === sentMeta && !meta) return;
+        // Heartbeats distinguish a quiet world from a stale host.
       }
-      const frame = await encodeFrame(fresh ? FRAME_KEY : FRAME_DELTA, seq + 1, dims, fresh ? bytes : scratch);
-      if (role !== 'host' || !socket) return;
+      const frame = await encodeFrame(fresh ? FRAME_KEY : FRAME_DELTA, seq + 1, dims, fresh ? bytes : scratch, meta);
+      if (epoch !== generation || role !== 'host' || !socket) return;
+      sentMeta = metadataKey;
       socket.send(frame);
       seq++;
       if (fresh) { sent = new Uint8Array(bytes.length); scratch = new Uint8Array(bytes.length); sentDims = dimsKey; }
@@ -283,24 +326,30 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
   // ---- guest: receive the world ----
   function onFrame(buf) {
-    frames = frames.then(() => applyFrame(buf)).catch((err) => console.error('multiplayer: bad world frame', err));
+    const generation = epoch;
+    frames = frames.then(() => applyFrame(buf, generation)).catch((err) => { if (epoch === generation) requestKey(); console.error('multiplayer: bad world frame', err); });
   }
 
-  async function applyFrame(buf) {
-    if (role !== 'guest') return;
-    const { kind, seq: n, dims, body } = await decodeFrame(buf);
+  async function applyFrame(buf, generation) {
+    if (role !== 'guest' || epoch !== generation) return;
+    const { kind, seq: n, dims, body, meta } = await decodeFrame(buf);
+    if (role !== 'guest' || epoch !== generation) return;
     if (kind === FRAME_KEY) {
-      // (World's window can be the host's size: a guest still leaves World for the host's box)
-      if ((inWorld() || !sameDims(getSim().g, dims)) && !setGrid(dims)) { socket?.close(); end('The host is using a grid size this version does not know'); return; }
+      const previousSim = getSim();
+      if (!setGrid(dims, meta)) { socket?.close(); end('The host is using a map this version or device cannot load'); return; }
+      if (meta?.id !== receivedMeta?.id || getSim() !== previousSim) {
+        avatars?.clear(); poses.clear(); cursors.clear(); committedMeta = null; lastReceived = 0;
+      }
       world = body;
       worldDims = dims;
-    } else if (kind === FRAME_DELTA && world && n === worldSeq + 1 && body.length === world.length) {
+    } else if (kind === FRAME_DELTA && world && n === worldSeq + 1 && body.length === world.length && sameDims(getSim().g, dims) && stamp(meta) === stamp(receivedMeta)) {
       xorInto(world, world, body);
     } else {
       requestKey();
       return;
     }
     worldSeq = n;
+    receivedMeta = meta;
     worldDirty = true;
   }
 
@@ -335,7 +384,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
   async function onButton() {
     if (role === 'solo' && !socket) {
-      if (inWorld()) { hud.toast(NO_WORLD, { kind: 'error' }); return; }
+      if (!canHost() || frozen) { hud.toast(frozen ? 'Reload or choose a map before hosting.' : COOP_ONLY, { kind: 'error' }); return; }
       const code = crypto.randomUUID().replaceAll('-', '').slice(0, ROOM_CODE_LENGTH);
       connect('host', code);
       syncButton();
@@ -371,7 +420,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     panelTitle.textContent = role === 'solo' ? 'Connecting…' : hosting ? 'Hosting this world' : 'In the host\'s world';
     panelCount.textContent = role === 'solo' ? '' : `${guests + 1} ${guests ? 'players' : 'player'}`;
     stopBtn.textContent = hosting ? 'Stop hosting' : 'Leave';
-    stopBtn.title = hosting ? 'Disconnect every guest and play on your own' : 'Keep this world and play on your own';
+    stopBtn.title = hosting ? 'Disconnect every guest and play on your own' : inWorld() ? 'Disconnect; reload or choose a map to play solo' : 'Keep this world and play on your own';
     copyBtn.disabled = !room;
     const everyone = me ? [{ ...me, you: true }, ...peers.values()] : [];
     everyone.sort((a, b) => (a.role === 'host' ? -1 : b.role === 'host' ? 1 : a.n - b.n));
@@ -389,6 +438,12 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
   return {
     get role() { return role; },
+    get replica() { return frozen || role === 'guest' || joiningAs === 'guest'; },
+    get frozen() { return frozen; },
+    resumeSolo() { if (role === 'solo') frozen = false; },
+    get metadata() { return committedMeta; },
+    get terrainReady() { return !!world && !!lastReceived; },
+    get stale() { return role !== 'guest' || hostAway || !lastReceived || performance.now() - lastReceived > 2500; },
     get isGuest() { return role === 'guest'; },
     get joining() { return role === 'guest' || joiningAs === 'guest'; },   // a guest, or on the way to being one
     get panelOpen() { return panelOpen; },
@@ -409,25 +464,32 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
     // Guests: shows a toast and returns true for host-only actions.
     guard() {
-      if (role !== 'guest') return false;
-      hud.toast(GUEST_BLOCKED, { kind: 'error' });
+      if (role !== 'guest' && joiningAs !== 'guest' && !frozen) return false;
+      hud.toast(frozen ? 'Reload or choose a map to play solo.' : GUEST_BLOCKED, { kind: 'error' });
       return true;
     },
 
-    // In a session (or joining one), World can't be chosen: shows a toast and returns true.
+    guardEntities() {
+      if (role === 'solo' && !frozen && joiningAs !== 'guest') return false;
+      if (role === 'host' && !inWorld()) return false;
+      hud.toast('Co-op shares terrain and exploring bodies, not signs, decoration, NPCs or vehicles.');
+      return true;
+    },
+
+    // Guests follow the host's map; hosts can freely choose another World or box.
     guardWorld() {
-      if (role === 'solo' && !socket) return false;
-      hud.toast(role === 'guest' ? GUEST_BLOCKED : NO_WORLD, { kind: 'error' });
+      if (role !== 'guest' && joiningAs !== 'guest') return false;
+      hud.toast(GUEST_BLOCKED, { kind: 'error' });
       return true;
     },
 
     // Guests send their strokes to the host instead of painting locally.
     paint({ center, radius, shape, tool, rate, replace, wind, ...edits }) {
-      send({ t: 'paint', to: 'host', c: xyz(center), r: radius, shape, tool, rate, replace, w: wind, ...editsOut(edits) });
+      send({ t: 'paint', context: context(), to: 'host', c: xyz(center), r: radius, shape, tool, rate, replace, w: wind, ...editsOut(edits) });
     },
     // ...and their flood fills (src/editing.js runFill's request), which the host reads its world for.
     fill({ cell, id, maxY, stroke: { radius, shape, tool, rate, replace, ...edits } }) {
-      send({ t: 'fill', to: 'host', c: cell, id, top: maxY, r: radius, shape, tool, rate, replace, ...editsOut({ ...edits, filter: -1 }) });
+      send({ t: 'fill', context: context(), to: 'host', c: cell, id, top: maxY, r: radius, shape, tool, rate, replace, ...editsOut({ ...edits, filter: -1 }) });
     },
 
     // Once per frame, before the world is drawn.
@@ -435,17 +497,23 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     update(dt, cursor) {
       const now = performance.now();
       const sim = getSim();
+      const currentMap = role === 'host' ? getMetadata()?.id : committedMeta?.id;
+      if (currentMap !== avatarMap) { avatars?.clear(); poses.clear(); avatarMap = currentMap; }
+      if (context() !== cursorStamp) { cursors.clear(); cursorStamp = context(); }
 
       if (role === 'host') {
         for (const s of strokes) {
+          if (!validContext(s)) continue;
           applyGuestStroke(sim, s, { wind: strokeWind(s.w), edits: editsIn(s), minRadius: MIN_BRUSH_RADIUS, maxRadius: MAX_BRUSH_RADIUS });
         }
         strokes.length = 0;
         for (let i = 0; i < MAX_FILLS_PER_FRAME && fills.length && !filling; i++) {
           const f = fills.shift();
+          if (!validContext(f)) continue;
+          const generation = epoch;
           filling = true;
           const stroke = { radius: Math.min(Math.max(f.r, MIN_BRUSH_RADIUS), MAX_BRUSH_RADIUS), shape: f.shape, tool: f.tool, rate: f.rate, replace: !!f.replace, ...editsIn(f) };
-          runFill(sim, { cell: f.c, id: f.id, maxY: f.top, stroke })
+          runFill(sim, { cell: f.c, id: f.id, maxY: f.top, stroke }, { valid: () => generation === epoch && role === 'host' && validContext(f) })
             .catch((err) => console.error('multiplayer: a guest\'s fill failed', err))
             .finally(() => { filling = false; });
         }
@@ -454,11 +522,12 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
           lastPing = now;
           send({ t: 'ping', at: now, pings: Object.fromEntries(pings), kd: score() });
         }
-        if (hasGuests && now - lastStream >= STREAM_INTERVAL_MS && socket.bufferedAmount < MAX_BUFFERED_BYTES) {
-          const capture = packer.pack(sim);
+        if (hasGuests && canStream() && now - lastStream >= STREAM_INTERVAL_MS && socket.bufferedAmount < MAX_BUFFERED_BYTES) {
+          const generation = epoch;
+          const capture = packer.pack(sim, getMetadata);
           if (capture) {
             lastStream = now;
-            sending = sending.then(() => capture).then(sendCapture)
+            sending = sending.then(() => capture).then((c) => sendCapture(c, generation))
               .catch((err) => console.error('multiplayer: could not capture the world', err));
           }
         }
@@ -466,7 +535,11 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
       // (a keyframe at another size rebuilt the grid first: applyFrame's setGrid)
       if (role === 'guest' && worldDirty && sameDims(sim.g, worldDims)) {
-        unpacker.unpack(sim, world).catch((err) => console.error('multiplayer: could not unpack the world', err));
+        const generation = epoch, meta = receivedMeta, bytes = world.slice();
+        unpacker.unpack(sim, bytes, {
+          valid: () => epoch === generation && role === 'guest' && getSim() === sim,
+          commit: () => { commitFrame(meta); committedMeta = meta; lastReceived = performance.now(); },
+        }).catch((err) => console.error('multiplayer: could not unpack the world', err));
         worldDirty = false;
       }
 
@@ -474,8 +547,8 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       if (role !== 'solo' && peers.size && now - lastPresence >= PRESENCE_INTERVAL_MS) {
         const q = (v) => Math.round(v * CURSOR_STEPS_PER_CELL) / CURSOR_STEPS_PER_CELL;
         const json = JSON.stringify(cursor.visible
-          ? { t: 'cursor', c: cursor.center.toArray().map(q), r: cursor.radius, shape: cursor.shape, tool: cursor.tool, painting: cursor.painting }
-          : { t: 'cursor', c: null });
+          ? { t: 'cursor', context: context(), c: cursor.center.toArray().map(q), r: cursor.radius, shape: cursor.shape, tool: cursor.tool, painting: cursor.painting }
+          : { t: 'cursor', context: context(), c: null });
         if (json !== lastPresenceJSON) {
           socket?.readyState === WebSocket.OPEN && socket.send(json);
           lastPresenceJSON = json;
@@ -483,6 +556,13 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         }
       }
 
+      if (role !== 'solo' && peers.size && now - lastPose >= PRESENCE_INTERVAL_MS) {
+        const meta = role === 'host' ? getMetadata() : committedMeta;
+        const pose = getPose();
+        if (meta && pose) send({ ...pose, t: 'pose', map: meta.id, seq: ++poseSeq, ...(role === 'guest' ? { to: 'host' } : {}) });
+        lastPose = now;
+      }
+      avatars?.update(dt);
       cursors.update(dt);
     },
   };

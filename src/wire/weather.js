@@ -14,7 +14,7 @@ let lastBolt = null;
 const thunderTimes = [];
 let clock = 0, world = null, epoch = -1, simulation = null;
 let terrainWorld = null, groundHeight = () => NaN;
-const enabled = app => !!app.win?.loaded && !app.mp.isGuest;
+const enabled = app => !!app.win?.loaded && !app.mp.isGuest && !app.mp.replica;
 function oceanContext(app) {
   const { win, sim } = app;
   if (terrainWorld !== win) {
@@ -31,7 +31,7 @@ function oceanContext(app) {
   return {
     sim, stepHz: sim.compact ? 60 : WEATHER_STEPS_PER_SECOND, world: win, mapId: win ? `${win.scene.key}:${win.P.seed}` : null,
     seaLevel: win?.P.sea, target: [eye.x, eye.z],
-    oceanEligible: enabled(app) && win.P.sea > 0, isGuest: app.mp.isGuest,
+    oceanEligible: enabled(app) && win.P.sea > 0, isGuest: app.mp.isGuest || app.mp.replica,
     groundHeight,
   };
 }

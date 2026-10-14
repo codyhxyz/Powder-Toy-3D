@@ -243,7 +243,7 @@ const isLiquid = (id) => id >= 0 && KIND[id] === K.LIQUID;
 // quiet: a body that isn't the player's (an NPC, npc.js) doesn't announce its jet on povEvents.
 // perks: its perk set (perks.js). id: an NPC's id (npc.js), carried as `by` on
 // the povEvents its body sends (gibs, eating); the player's has none.
-export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet(), id = null }) {
+export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet(), id = null, readOnly = () => false }) {
   const events = createEmitter('body');
   let kicker = null;   // the kick (kick.js), made once the body is
   let rope = null;     // { anchor (Vector3, grid; the setter keeps it current), length, reel (cells/s, 0 holds), hard, brace }
@@ -256,6 +256,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const meat = createMeat({ renderer, getSim });
   const by = id ? { by: id } : {};
   const emit = (name, data) => {
+    if (readOnly() && ['hurt', 'wound', 'gib', 'death', 'revenge'].includes(name)) return;
     // Revenge Explosion: a hurt sets one off at the next update (it needs the sim), once a cooldown at most
     if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
     if (name === 'wound') wound(p, data.amount, statusCtx);   // a blow, fall or blast bleeds (stains.js)
@@ -705,7 +706,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (!sim) return;
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
     revengeWait = Math.max(0, revengeWait - dt);
-    kicker.update(dt);
+    if (!readOnly()) kicker.update(dt);
     sandSwim = perks.has('SAND_SWIMMER') && !vitals.dead;
     resize();
     if (sim !== lastSim) {
@@ -722,12 +723,12 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     const ready = covered() && inGrid();
     requestProbe(sim);
-    if (gibDue) {
+    if (gibDue && !readOnly()) {
       gibDue = false;
       const point = p.pos.clone().setY(p.pos.y + H / 2);
       meat.gib(p.pos, p.vel, stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
     }
-    meat.update();
+    if (!readOnly()) meat.update();
     if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; }
     if (!input.chargeJump || input.cancelJump || vitals.dead) cancelJump();
     if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
@@ -975,8 +976,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // those are bounces ('pogo'), not landings.
     const pogoSafe = pogoing ? bounceSpeed(POGO_STEPS) + grav * MAX_DT : 0;   // (+ what a longest frame's step adds)
     if (p.onGround && !wasGround && landSpeed > Math.max(LAND_EVENT_SPEED, pogoSafe)) emit('land', { speed: landSpeed });
-    if (slam > 0) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
+    if (slam > 0 && !readOnly()) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
+    if (readOnly()) return; // replica movement/collision only: no hazards, statuses or world coupling
     env.size = size;   // (a smaller body's skin warms and cools faster)
     vitals.update(dt, env);
     p.status.update(dt, env);
@@ -998,7 +1000,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const closing = v.dot(ropeDir);
       // across the rope: damped toward still; along it: eased toward the reel speed
       const across = ropeCross.copy(v).addScaledVector(ropeDir, -closing);
-      v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
+      if (!rope.swing) v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
       if (closing < rope.reel) v.addScaledVector(ropeDir, (rope.reel - closing) * ease(ROPE_EASE, dt));
     }
     if (!rope.hard) return;
@@ -1077,6 +1079,14 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
   return Object.assign(p, {
     spawn, teleport, update, dispose, windowShifted, cancelJump,
+    // null until a fresh probe covers the full ordinary body; used by co-op catch-up.
+    clearance() {
+      if (!g || !covered() || !inGrid()) return null;
+      bounds();
+      for (let y = c0(lo[1]); y <= c1(hi[1]); y++) if (layerHit(1, y) !== null) return false;
+      return true;
+    },
+    invalidateProbe() { generation++; probe.valid = false; },
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },
     // Halo's Overshield ({ layers, chargeS, drainS }: game/powerups.js); its state: 'charging' | 'on' | null
@@ -1088,14 +1098,18 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
     // { lethal: true } takes all the health there is, through the shield (a backstab);
     // { shielded: false } passes the shield (a drink hurts from inside: ingest.js)
-    hurt(amount, cause, { lethal = false, shielded = true } = {}) { vitals.hurt(amount, cause, true, { shielded, lethal }); },
+    hurt(amount, cause, { lethal = false, shielded = true } = {}) { if (!readOnly()) vitals.hurt(amount, cause, true, { shielded, lethal }); },
     holdPogo() { pogoHold = true; },   // a pogo stick in hand: call every frame it's held (tools/pogo.tool.js)
     // Kick along unit dir (kick.js): a body ability, the player's key and an NPC alike. The result, or null while it recovers.
-    kick(dir) { return kicker.kick(dir); },
+    kick(dir) { return readOnly() ? null : kicker.kick(dir); },
     get kicker() { return kicker; },   // for checks (kicker.walked: the cells the last kick's ray crossed)
     // Hang on a rope (see ROPE_*): { anchor, length, reel, hard, brace }, kept by reference (the setter
     // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
-    tether(r) { rope = r; },
+    tether(r) {
+      // Keep air steering additive after releasing a sandbox swing (Noita's momentum-preserving leap).
+      if (!r && rope?.swing && !p.onGround) p.leaping = true;
+      rope = r;
+    },
     ropeHand(out = new THREE.Vector3()) { return out.set(p.pos.x, p.pos.y + ropeHandY(), p.pos.z); },
     on: events.on,
   });

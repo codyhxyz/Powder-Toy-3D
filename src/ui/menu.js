@@ -4,7 +4,7 @@ import { MAPS, mapByKey, mapsFor, isWorld, sizeTag } from '../maps.js';
 import { listSaves, getSave, putSave, deleteSave, downloadSave, pickSaveFile } from '../saves/local.js';
 import { readSaveHeader } from '../saves/format.js';
 import { MODEICONS, MODEICON_BOX } from './modeicons.js';
-import { characterForMode } from '../pov/character.js';
+import { previewCharacter, nextYouZoom } from '../pov/character.js';
 
 // The start menu, Garry's Mod's New Game screen: gamemodes down the left, each
 // with its icon, the maps built for the chosen one as square previews (public/maps, rendered by
@@ -26,8 +26,9 @@ import { characterForMode } from '../pov/character.js';
 // map's art behind the gamemode, the map's name, the game's line, a bar, what
 // the boot is doing now, and the player as he is ("This is you.":
 // public/you.webp, tools/you-portrait.mjs), then live (ui/youViewer.js):
-// breathing, turning slowly, and turned left or right with a drag, as on
-// Skyrim's loading screen.
+// breathing, turning slowly, turned left or right with a drag, and zoomed with
+// the wheel, as on Skyrim's loading screen. It is the body you are about to
+// spawn as (pov/character.js previewCharacter), not a fixed wizard.
 //   loading(status, o)    the screen, with the game's line (src/main.js)
 //   progress(step, text)  a boot step began (STEPS keys; 'cold': the shaders are compiling
 //                         cold; 'match' with app.js's line for it)
@@ -77,10 +78,17 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   let view = 'maps';            // 'maps': a gamemode's maps; 'saves': the Saves list
   let saveList = [], savePick = null, saveCards = [];
   const character = (save = view === 'saves') => {
-    let choice;
-    try { choice = JSON.parse(localStorage.getItem('powder-toy-3d:settings') || '{}')?.character; } catch { /* storage unavailable */ }
-    return characterForMode(save ? 'sandbox' : modeKey, choice);
+    let savedSettings = {};
+    try { savedSettings = JSON.parse(localStorage.getItem('powder-toy-3d:settings') || '{}'); } catch { /* storage unavailable */ }
+    return previewCharacter(save ? 'sandbox' : modeKey, savedSettings.character, savedSettings.villageCharacter);
   };
+  // Decode every still while the menu is up. A boot freezes the page before a
+  // newly pointed-at image can paint, and the previous wizard would stay up.
+  for (const id of ['real', 'woman', 'stick', 'spartan', 'boy', 'girl']) {
+    const img = new Image();
+    img.src = YOU(id);
+    img.decode?.().catch(() => {});
+  }
 
   const backdrop = h('div.mm-backdrop');
   const nav = h('nav.mm-modes', { 'aria-label': 'Gamemodes' });
@@ -137,6 +145,12 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
       h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep),
       youFig));
   document.body.append(el);
+  // Skyrim's loading screen: the wheel zooms him, wherever the pointer is.
+  el.addEventListener('wheel', (e) => {
+    if (!el.classList.contains('loading')) return;
+    e.preventDefault();
+    youLive.zoom(e.deltaY);
+  }, { passive: false });
   prepareYou();
 
   // a preview that isn't there (a map added since tools/map-thumbs.mjs last ran): the card's gradient shows
@@ -385,21 +399,32 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
 // OffscreenCanvas WebGL, or on a failure, the still stays.
 function liveYou(fig, still) {
   let worker = null, canvas = null, ready = false, shown = false, on = false, drag = null;
-  let character = null;
+  let character = null, zoom = 1;
+  const paintStill = () => {
+    still.style.transformOrigin = 'center 58%';
+    still.style.transform = shown || zoom === 1 ? '' : `scale(${(1 / zoom).toFixed(4)})`;
+  };
   const show = () => {
     if (shown || !ready) return;
     shown = true;
+    paintStill();
     still.replaceWith(canvas);
     fig.classList.add('live');
-    worker.postMessage({ run: true });
+    worker.postMessage({ run: true, zoom });
   };
   const prepare = (choice) => {
     if (choice !== character) {
       drop();
       character = choice;
+      zoom = 1;
       fig.dataset.character = choice;
-      still.src = YOU(choice);
-      still.decode?.().catch(() => {});
+      const src = YOU(choice);
+      // Hide the previous portrait at once. A decoded wizard otherwise stays
+      // on screen until the new file paints, which a frozen boot may never do.
+      if (still.getAttribute('src') !== src) still.style.visibility = 'hidden';
+      still.src = src;
+      still.decode?.().then(() => { if (still.getAttribute('src') === src) still.style.visibility = ''; }).catch(() => {});
+      paintStill();
     }
     if (worker || !still.isConnected || typeof OffscreenCanvas === 'undefined' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return;
     const dpr = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
@@ -419,13 +444,14 @@ function liveYou(fig, still) {
       if (worker !== current) return;
       console.warn('loading screen: the live player failed, the still stays', e.message); drop();
     };
-    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height, character }, [off]);
+    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height, character, zoom }, [off]);
   };
   const drop = () => {
     worker?.terminate();
     if (shown) { canvas.replaceWith(still); fig.classList.remove('live', 'dragging'); }
     worker = canvas = drag = null;
     ready = shown = false;
+    paintStill();
   };
   fig.addEventListener('pointerdown', (e) => {
     if (!shown || e.button !== 0) return;
@@ -447,6 +473,11 @@ function liveYou(fig, still) {
   return {
     prepare,
     start(choice) { on = true; prepare(choice); show(); },
+    zoom(deltaY) {
+      zoom = nextYouZoom(zoom, deltaY);
+      if (shown) worker?.postMessage({ zoom });
+      else paintStill();
+    },
     stop() { on = false; release(); drop(); },
   };
 }

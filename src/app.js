@@ -81,7 +81,7 @@ import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
-import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z } from './pov/village/state.js';
+import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
@@ -149,7 +149,7 @@ const DEFAULTS = {
   specificDelete: false, replaceTarget: -1, propField: 'temp', propText: '',
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
-  character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
@@ -178,7 +178,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
+  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -274,7 +274,8 @@ if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
-if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
+if (!['real', 'woman', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
+if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharacter = DEFAULTS.villageCharacter;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
 // Experimental native physics remains opt-in until measured parity/performance
 // acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
@@ -499,7 +500,9 @@ let coreReady = false, coreWait = Promise.resolve();
 const readySims = new WeakSet();   // simulations whose own pipelines are ready (a load can be recorded)
 let viewTime = 0;   // s the scene's animations have run (FrameUniforms.time: it runs with the simulation)
 
+let replicaMap = null;
 function build() {
+  if (!mp.replica) { replicaMap = null; mp.resumeSolo?.(); }
   if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
   pov?.worldReplaced();
@@ -515,7 +518,7 @@ function build() {
     v2Running = false;
     sim.dispose();
   }
-  worldMode = settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
+  worldMode = replicaMap?.mode === 'world' ? { win: replicaMap.dims, size: replicaMap.size } : settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
   if (worldMode && !wire('world')) {
     // (until the world's port lands: the box, and why)
     worldMode = null;
@@ -631,10 +634,19 @@ function pickedNow(cell, o) {
 }
 
 // Multiplayer guests follow the host's grid size (a box: never World).
-function setGrid(dims) {
+function setGrid(dims, meta = null) {
+  if (replicaMap?.id === meta?.id && !!win === (meta?.mode === 'world') && [sim.g.nx, sim.g.ny, sim.g.nz].every((n, i) => n === dims[i])) return true;
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
-  if (!size || !gridFits(SIZES[size])) return false;
-  settings.size = boxSize = size;
+  if (meta?.mode === 'world') {
+    const s = sceneByKey(meta.scene), expected = s && worldOf(WORLDS.world, s);
+    if (!s || s.key !== meta.scene || !expected.size.every((n, i) => n === meta.size[i]) || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
+    settings.size = 'world'; settings.scene = meta.scene; worldSeed = meta.seed;
+    selectedMode = 'sandbox'; presentation.select(null);
+  } else {
+    if (!size || !gridFits(SIZES[size])) return false;
+    settings.size = boxSize = size;
+  }
+  replicaMap = meta ? { ...meta, dims } : null;
   build();
   return true;
 }
@@ -650,6 +662,7 @@ function gridFits(dims) {
 
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild. False if the device can't hold it.
 function setSize(size) {
+  if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   if (!gridFits(dimsOf(size))) return false;
   settings.size = size;
@@ -671,9 +684,11 @@ function useMap(m) {
 // The start menu's Start over a running game (src/main.js): the map, loaded
 // fresh (the current one starts over), then its gamemode.
 function openMap(key, mode = 'sandbox') {
+  if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key);
   if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
+  if (isWorld(m) && mp.role === 'host' && mode !== 'sandbox') { hud.toast('World co-op supports Sandbox exploration only.'); return false; }
   if (isWorld(m) && !wire('world')) { hud.toast(notYet(`${m.name} (World maps)`), { kind: 'error' }); return false; }
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
   modeEpoch++;
@@ -694,7 +709,7 @@ function openMap(key, mode = 'sandbox') {
 // Animal Crossing on Tinker Creek: the drop point in front of your cottage (grid cells), else null
 function villageSpawn() {
   if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
-  return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);
+  return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0] + HOME_ENTRY.x, VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z + HOME_ENTRY.z).sub(sim.origin);
 }
 // Keep the user's setting intact when entering/leaving a low-gravity gamemode.
 function applyGravity() {
@@ -710,6 +725,7 @@ function currentMap() {
 // first drop-in builds it), while the bots' module loads beside it; a map loaded just now (fresh)
 // isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
+  if (mode !== 'sandbox' && win && mp.role && mp.role !== 'solo') { hud.toast('World co-op supports Sandbox exploration, not matches or progression.'); return; }
   const epoch = ++modeEpoch;
   villageFocus = null;
   const chosen = resolveMode(mapOf(settings), mode);
@@ -776,6 +792,8 @@ function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m
 // Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
 const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
+  if (mp.frozen && undoable) { mp.resumeSolo(); replicaMap = null; }
+  if (mp.replica) return false;
   ctx.resetWeather?.();
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
@@ -797,6 +815,7 @@ function loadPreset(name, undoable = true) {
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
   whenSimReady(() => {
+    if (mp.replica) return;
     if (win) wire('world').loadScene(ctx);
     else if (name === 'empty') sim.clear();
     else if (name === 'island') wire('world').loadIsland(ctx);
@@ -882,7 +901,8 @@ function presentationPoint(p, out = new THREE.Vector3()) {
 // grid cells (presentationMath.js inverseRay), t along the displayed ray.
 function screenCurve(ray) {
   const r = inverseRay(ray.origin.clone().add(sim.origin).toArray(), ray.direction.toArray(), presentation.parameters);
-  r.C = r.C.map((v, i) => v - sim.origin.getComponent(i));
+  const origin = sim.origin.toArray();
+  r.C = r.C.map((v, i) => v - origin[i]);
   return r;
 }
 function screenAt(ray, t, out) { return out.fromArray(rayPoint(screenCurve(ray), t)); }
@@ -998,7 +1018,7 @@ function startShape(kind) {
   const start = new THREE.Vector3();
   if (!planePoint(start)) return false;
   clampToGrid(start);
-  shapeDrag = { kind, start, end: start.clone() };
+  shapeDrag = { kind, start, end: start.clone(), sim, origin: sim.origin.clone() };
   hud.dismissHint();
   return true;
 }
@@ -1019,6 +1039,7 @@ function finishShape() {
   const d = shapeDrag;
   shapeDrag = null;
   if (!d) return;
+  if (d.sim !== sim || !d.origin.equals(sim.origin)) { hud.toast('The host area moved; draw the shape again.'); return; }
   const tool = settings.tool;
   const stroke = { ...brushStroke(tool), center: d.start, rate: oneShotRate(tool, settings.rate) };
   if (d.kind === 'line') stroke.end = d.end;
@@ -1052,7 +1073,7 @@ function brushStroke(tool) {
     prop: tool === PROP_TOOL ? propValue() : null,
   };
 }
-const paintStroke = (stroke) => (mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
+const paintStroke = (stroke) => (mp.replica && !mp.isGuest ? undefined : mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
   : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? paintNativeRay(stroke)
     : sim.paint(stroke));
 function paintNativeRay(stroke) {
@@ -1124,6 +1145,7 @@ const FILL_REFUSED = {
   gone: 'The world changed before the fill: try again',
 };
 function fillAt() {
+  if (mp.replica && !mp.isGuest) { mp.guard(); return; }
   if (!hover.valid) { hud.toast('Click a surface to fill from', { kind: 'error' }); return; }
   const tool = settings.tool, st = brushStroke(tool);
   let cell, id, maxY = sim.g.ny - 1;
@@ -1451,12 +1473,16 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
-    // The body you see in third person and when you die: Realistic (a
-    // skinned, animated, shredded superhero in a wizard's hat and purple
-    // boxers, the default) or Stickman (the TPT homage). It switches live, in POV too.
-    { title: 'First person', rows: [
-      { type: 'seg', key: 'character', options: [['real', 'Realistic'], ['stick', 'Stickman']],
+    // The body you see in third person and when you die. Both Quaternius bodies
+    // wear a wizard's hat and purple clothing; Stickman is the TPT homage.
+    { title: 'Character body', rows: [
+      { type: 'seg', key: 'character', options: [['real', 'Male wizard'], ['woman', 'Female wizard'], ['stick', 'Stickman']],
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
+      { type: 'seg', key: 'villageCharacter', options: [['boy', 'Animal Crossing: Boy'], ['girl', 'Girl']],
+        onChange: (v) => { settings.villageCharacter = v; save(); pacer.wake(); } },
+      { type: 'custom', el: h('p.row-note', { text: 'Changes your body and first-person arms.' }) },
+    ] },
+    { title: 'First-person controls', rows: [
       // named as Minecraft names them
       { type: 'slider', key: 'sensitivity', label: 'Mouse Sensitivity', min: SENSITIVITY_RANGE[0], max: SENSITIVITY_RANGE[1], step: 0.05,
         def: DEFAULTS.sensitivity, fmt: (v) => `${Math.round(v * 100)}%`, onChange: save },
@@ -1772,6 +1798,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
+  if ((settings.tool === SIGN_TOOL || isDecoTool(settings.tool) || isSpawnerTool(settings.tool)) && mp.guardEntities?.()) return false;
   if (selectedMode === 'factory' || ctx.industry?.building) return false;
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
   if (settings.tool === SIGN_TOOL) {
@@ -2315,10 +2342,10 @@ function viewClock(held) {
 }
 
 // A native host never falls back to v1 while dependencies are building or unavailable.
-// Only guests intentionally use legacy presentation without running either engine.
+  // Remote replicas use legacy presentation without running either engine.
 // (declarations: the tool picker asks before this line has run)
-function v2Box() { return physicsMode === 'v2' && !mp.isGuest; }
-function v2Status() { return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.isGuest }); }
+function v2Box() { return physicsMode === 'v2' && !mp.replica; }
+function v2Status() { return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica }); }
 function v2Active() { return v2Box() && v2Status().ready; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
 const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
@@ -2373,7 +2400,7 @@ function tick(now, renderOnly = false) {
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
     const nativeSpeed = settings.steps / DEFAULTS.steps;
     ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed)))) : null;
-    for (const w of live) w.beforeStep?.(ctx, sim.nativeTransition || sim.nativeTransitionError ? 0 : dt);   // the body, Descent's level switch
+    for (const w of live) if (!mp.replica || w.name === 'pov' || w.name === 'mp') w.beforeStep?.(ctx, sim.nativeTransition || sim.nativeTransitionError ? 0 : dt);   // the body, Descent's level switch
     // (after the body's update, which can leave it: then the god view moves this tick)
     if (!pov?.active) {
       rig.update(dt);
@@ -2399,9 +2426,9 @@ function tick(now, renderOnly = false) {
   if (physicsV2?.isReady) {
     if (v2Box()) physicsV2.activate(); else { physicsV2.suspend(); v2Running = false; }
   }
-  const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
+  const stepping = !renderOnly && !mp.replica && (!settings.paused || stepOnce);
   ctx.stepping = stepping;
-  if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
+  if (!renderOnly && !mp.replica) scripts?.tick();   // event.tick: every frame, paused too (TPT)
   let stepped = settings.steps;
   if (stepping && v2Box()) {
     // v2: a fixed 60 Hz tick on game time, Speed scaling it (4 steps a frame is 1×); none while it rests
@@ -2427,9 +2454,9 @@ function tick(now, renderOnly = false) {
   ctx.nativeStepped = v2Box() ? (stepping ? stepped : 0) : null;
   ctx.stepping = stepping && (!v2Box() || stepped > 0);
   if (!renderOnly && stepping && stepped > 0) nativeRayStroke = null;
-  if (!renderOnly) scripts?.endFrame();
+  if (!renderOnly && !mp.replica) scripts?.endFrame();
   updateSun();
-  for (const w of live) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
+  for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
   if (settings.time !== timeShown) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
@@ -2531,7 +2558,7 @@ function tick(now, renderOnly = false) {
   // no stroke, nothing waiting for a frame or adapting, no profiler and no
   // wire animating: the loop stops. Input, a setting, a write, a landed read
   // or a built pipeline wakes it.
-  const wantsSteps = !mp.isGuest && (!settings.paused || stepOnce) && !simAsleep();
+  const wantsSteps = !mp.replica && (!settings.paused || stepOnce) && !simAsleep();
   const busy = wantsSteps || painting || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
   settledSleep = present && !runView && pacer.settled && !busy;
   const g = sim.g;

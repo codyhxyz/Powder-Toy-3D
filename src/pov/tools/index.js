@@ -540,6 +540,9 @@ export function createToolbelt(env) {
       // a status that leaves no hands (Polymorph, potions.js): the tool in hand is put away while it lasts,
       // and a wand is drawn again when it ends (putting it away stopped its casting)
       const helpless = noHands(ctx);
+      const hook = tools.get('HOOK')?.inst;
+      if (!ctx.grappleEnabled || helpless || editor.open) hook?.cancelGrapple();
+      else if (ctx.grapplePressed) hook?.grapple(ctx);
       if (helpless && !wasHelpless) putAway();
       else if (!helpless && wasHelpless && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
       wasHelpless = helpless;
@@ -577,7 +580,7 @@ export function createToolbelt(env) {
       if (v && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
       if (v && raf) { cancelAnimationFrame(raf); raf = 0; }
       if (!v && (ballistics.count || wandRuntime.active) && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
-      if (!v) { editor.close(); putAway(); readout = null; }
+      if (!v) { tools.get('HOOK')?.inst.cancelGrapple(); editor.close(); putAway(); readout = null; }
     },
     // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
     // D11): every tool, selected or not, moves the grid positions it keeps.
@@ -614,7 +617,7 @@ export function createToolbelt(env) {
 // without its buttons, so tools keep their animations and timers but nothing
 // fires, swings, pours or grabs, and none of a use's events go out without
 // its edit.
-const IDLE_INPUT = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, drink: false, drinkPressed: false };
+const IDLE_INPUT = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, drink: false, drinkPressed: false, grapplePressed: false, grappleJump: false };
 function waitForKernels(ctx, env) {
   const sim = ctx.sim ?? env.getSim?.();
   return !sim || povGpu(sim).ready ? ctx : { ...ctx, ...IDLE_INPUT };

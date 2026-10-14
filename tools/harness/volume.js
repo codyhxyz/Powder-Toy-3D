@@ -39,6 +39,7 @@ import { createVolume } from '/src/gfx/volume.js';
 import { createOverlays, FLOOR_Y } from '/src/gfx/overlays.js';
 import { createBrushCursor } from '/src/brush.js';
 import { createMeshCut } from '/src/gfx/meshCut.js';
+import { ROLLING_LOG, warp as warpPoint } from '/src/gfx/presentationMath.js';
 import { createDetailGate, gateVariants, PREWARM_DELAY_MS } from '/src/gfx/detailGate.js';
 import { createColdShaderGuard, COLD_TOAST_MS } from '/src/gfx/coldShader.js';
 import { detailDefaults } from '/src/gfx/detail.js';
@@ -173,7 +174,7 @@ const viewId = (key) => VIEWS.find((v) => v.key === key).id;
  * The frame's parts: FrameUniforms, the shadow map, then (optionally three's
  * opaque meshes first) the grid, the volume, the edges and the brush.
  */
-function hooks({ view = 'heat', detail = {}, meshes = null, useCut = true, grid = true, edges = true, withBrush = false, volumeOn = true } = {}) {
+function hooks({ view = 'heat', detail = {}, meshes = null, useCut = true, grid = true, edges = true, withBrush = false, volumeOn = true, warp = null } = {}) {
   return {
     prepare(p) {
       writeFrameUniforms(gpu, {
@@ -194,7 +195,7 @@ function hooks({ view = 'heat', detail = {}, meshes = null, useCut = true, grid 
     } : undefined,
     draw(rp) {
       if (grid) overlays.drawGrid(rp, { model: gridModel, opacity: 1 });
-      if (volumeOn) volume.draw(rp, { view, detail, meshDepth: cut.take() });
+      if (volumeOn) volume.draw(rp, { view, detail, meshDepth: cut.take(), warp });
       if (edges) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz] });
       if (withBrush) brush.draw(rp);
     },
@@ -531,19 +532,27 @@ test('overlays', async ({ shots = false } = {}) => {
 // free surface at the box's submerged back face. The ray bends there and the
 // cut is counted on along its path (render.js: tCut -= tEv); the points are
 // on that face, above the water and under it.
-test('meshes', async ({ detail = {}, shots = false } = {}) => {
+test('meshes', async ({ detail = {}, shots = false, curved = false } = {}) => {
+  const warp = curved ? { k: ROLLING_LOG.k, anchor: [32, 22], dir: [0, 1] } : null;
   await load('pool');
-  await volume.viewReady('realistic', detail);
+  await volume.viewReady('realistic', detail, curved);
   const meshScene = new Scene();
   const sx = 6, sy = 24, sz = 6;   // cells
   const body = new Mesh(new BoxGeometry(sx * SCALE, sy * SCALE, sz * SCALE), new MeshBasicNodeMaterial({ color: 0xff0000 }));
+  // Bake the same display bend into this small fixture; physics/pool stay flat.
+  if (warp) {
+    const p = body.geometry.attributes.position;
+    for (let i = 0; i < p.count; i++) p.setY(i, p.getY(i) - warp.k * (p.getZ(i) / SCALE) ** 2 * SCALE);
+    p.needsUpdate = true;
+  }
   body.position.copy(toScene(32, sy / 2, 22));
   meshScene.add(body);
   meshScene.updateMatrixWorld();
   lookFrom(toScene(32, 22, -12), toScene(32, 9, 32));
   await three.compileAsync(meshScene, camera);
-  const pAbove = project(toScene(32, 19, 19), SMALL), pBelow = project(toScene(32, 6, 19), SMALL), pWater = project(toScene(42, 6, 19), SMALL);
-  const common = { view: 'realistic', detail, meshes: meshScene, grid: false, edges: false, size: SMALL };
+  const shown = (x, y, z) => toScene(...(warp ? warpPoint([x, y, z], warp) : [x, y, z]));
+  const pAbove = project(shown(32, 19, 19), SMALL), pBelow = project(shown(32, 6, 19), SMALL), pWater = project(shown(42, 6, 19), SMALL);
+  const common = { view: 'realistic', detail, meshes: meshScene, grid: false, edges: false, size: SMALL, warp };
   const withCut = await frame({ ...common, useCut: true });
   const control = await frame({ ...common, useCut: false });
   // the box's own depth there: three alone, no volume
@@ -551,7 +560,7 @@ test('meshes', async ({ detail = {}, shots = false } = {}) => {
   const visible = threeHasVisible(meshScene, camera);
   // from above, through the water's surface
   lookFrom(toScene(32, 34, 44), toScene(32, 6, 25));
-  const sTop = project(toScene(32, 18, 25), SMALL), sBelow = project(toScene(32, 6, 25), SMALL);
+  const sTop = project(shown(32, 18, 25), SMALL), sBelow = project(shown(32, 6, 25), SMALL);
   const sCut = await frame({ ...common, useCut: true });
   const sControl = await frame({ ...common, useCut: false });
   const sAlone = await frame({ ...common, useCut: true, volumeOn: false });

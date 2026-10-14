@@ -1,21 +1,24 @@
 // "This is you." live: the loading screen's actual player (ui/menu.js): the
-// realistic wizard, stickman, or Spartan, using the game's models on a small
-// renderer of its own. Skyrim's loading screen: the model turns slowly by
-// itself, and a click and drag turns it left or right. The menu runs it in a
-// worker on an OffscreenCanvas (ui/youWorker.js), so he keeps breathing and
-// turning while the boot holds the page (the map build, the shaders).
+// body you are about to spawn as (pov/character.js previewCharacter): the
+// realistic wizard, stickman, Spartan, or Animal Crossing boy or girl, using
+// the game's models on a small renderer of its own. Skyrim's loading screen:
+// the model turns slowly by itself, a drag turns it left or right, and the
+// wheel moves the camera in and out. The menu runs it in a worker on an
+// OffscreenCanvas (ui/youWorker.js), so he keeps breathing and turning while
+// the boot holds the page (the map build, the shaders).
 // tools/you-portrait.mjs renders one frame of it into public/you.webp, the
 // still shown until this one is up.
 //
 // It lights him like a character-select portrait (TF2's class select, Halo 3's
 // player model in the lobby): a warm key from the front, a cool rim from behind
 // to cut him out of a dark screen, and a soft room for the skin's sheen.
-//   createYou({ canvas, width, height, pixelRatio, yaw, time }) → { canvas, yaw, frame(dt), dispose() }
+//   createYou({ canvas, width, height, character, zoom, pixelRatio, yaw, time }) → { canvas, yaw, zoom, setZoom, frame(dt), dispose() }
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { BODY_MODEL_URL } from '../pov/bodyModel.js';
+import { BODY_MODEL_URLS } from '../pov/bodyModel.js';
+import { YOU_ZOOM_MIN, YOU_ZOOM_MAX } from '../pov/character.js';
 import { buildGarb, GARB_COLORS } from '../pov/garb.js';
 
 const FOV = 20;                       // degrees: a long lens, little distortion (pov/classPortraits.js uses 24)
@@ -40,8 +43,20 @@ export const YOU_DRAG = (2 * Math.PI) / 360;   // rad per CSS px of drag: once r
 export const YOU_YAW = 0.42;                   // rad: the still's turn, a little to screen left (where the live one starts)
 export const YOU_TIME = 0.6;                   // s into the idle clip: the still's moment
 
+function clampZoom(zoom) {
+  return Math.min(YOU_ZOOM_MAX, Math.max(YOU_ZOOM_MIN, zoom || 1));
+}
+
 async function loadBody(character, time) {
-  if (character !== 'real') {
+  if (character === 'boy' || character === 'girl') {
+    // The village avatar you drop in as (village/models.js), not the hidden physics body.
+    const { character: buildVillage } = await import('../pov/village/models.js');
+    const avatar = buildVillage({ persona: character });
+    avatar.root.rotation.y = Math.PI; // faces -z; the portrait camera faces +z
+    let clock = time;
+    return { model: avatar.root, step(dt) { clock += dt; avatar.animate(clock, 0); } };
+  }
+  if (!Object.hasOwn(BODY_MODEL_URLS, character)) {
     const build = character === 'spartan'
       ? (await import('../pov/figureSpartan.js')).buildSpartan
       : (await import('../pov/figure.js')).buildStick;
@@ -55,15 +70,15 @@ async function loadBody(character, time) {
         color: new THREE.Color().setRGB(...o.userData.albedo), roughness: 0.85,
       });
     });
-    return { model, mixer: null };
+    return { model };
   }
-  const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
+  const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URLS[character]);
   const model = gltf.scene;
   const meshes = [];
   model.traverse((o) => {
     if (!o.isSkinnedMesh) return;
     o.frustumCulled = false;
-    if (o.material.name === 'MI_Hair_1') o.material.color.setRGB(...EYEBROWS);
+    if (['MI_Hair_1', 'MI_Hair_2'].includes(o.material.name)) o.material.color.setRGB(...EYEBROWS);
     meshes.push(o);
   });
   // the hat, skinned to his head bone as in the game
@@ -80,11 +95,11 @@ async function loadBody(character, time) {
   const mixer = new THREE.AnimationMixer(model);
   mixer.clipAction(gltf.animations.find((c) => c.name === 'idle')).play();
   mixer.setTime(time);
-  return { model, mixer };
+  return { model, step(dt) { mixer?.update(dt); }, stop() { mixer?.stopAllAction(); } };
 }
 
-export async function createYou({ canvas, width, height, character = 'real', pixelRatio = 1, yaw = YOU_YAW, time = YOU_TIME, preserveDrawingBuffer = false }) {
-  const { model, mixer } = await loadBody(character, time);
+export async function createYou({ canvas, width, height, character = 'real', zoom = 1, pixelRatio = 1, yaw = YOU_YAW, time = YOU_TIME, preserveDrawingBuffer = false }) {
+  const { model, step, stop } = await loadBody(character, time);
   const holder = new THREE.Group();   // turned about his feet; the glTF faces +z, the camera
   holder.add(model);
   const scene = new THREE.Scene();
@@ -101,6 +116,7 @@ export async function createYou({ canvas, width, height, character = 'real', pix
     const n = m.geometry.attributes.position.count;
     for (let i = 0; i < n; i++) box.expandByPoint(m.localToWorld(m.getVertexPosition(i, v)));
   });
+  if (box.isEmpty()) box.setFromObject(model, true);
   const reach = Math.max(Math.abs(box.min.x), Math.abs(box.max.x), Math.abs(box.min.z), Math.abs(box.max.z));
   const centre = new THREE.Vector3(0, (box.min.y + box.max.y) / 2, 0);
   const tall = box.max.y - box.min.y;
@@ -110,7 +126,8 @@ export async function createYou({ canvas, width, height, character = 'real', pix
   const fitH = (tall / 2) / Math.tan(half);
   const fitW = reach / (Math.tan(half) * camera.aspect);
   const dist = Math.max(fitH, fitW) * FRAME_MARGIN + reach;
-  camera.position.set(0, centre.y - Math.sin(LOW_ANGLE) * dist, Math.cos(LOW_ANGLE) * dist);
+  const offset = new THREE.Vector3(0, -Math.sin(LOW_ANGLE) * dist, Math.cos(LOW_ANGLE) * dist);
+  camera.position.copy(centre).add(offset);
   camera.lookAt(centre);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer });
@@ -132,16 +149,20 @@ export async function createYou({ canvas, width, height, character = 'real', pix
   const you = {
     canvas: renderer.domElement,
     yaw,
+    zoom: clampZoom(zoom),
+    setZoom(z) { you.zoom = clampZoom(z); },
     // advance his breathing dt seconds (turning him too, unless held) and draw him at you.yaw
     frame(dt = 0, turn = false) {
       dt = Math.min(dt, MAX_DT);
       if (turn) you.yaw += YOU_SPIN * dt;
-      mixer?.update(dt);
+      step?.(dt);
       holder.rotation.y = you.yaw;
+      camera.position.copy(centre).addScaledVector(offset, you.zoom);
+      camera.lookAt(centre);
       renderer.render(scene, camera);
     },
     dispose() {
-      mixer?.stopAllAction();
+      stop?.();
       pmrem.dispose();
       scene.environment?.dispose();
       model.traverse((o) => {
