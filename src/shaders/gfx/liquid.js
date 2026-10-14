@@ -328,6 +328,10 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
   let ior = IOR(id);
   var n = liquidOpticalNormal(*rd, n0, geometric, entering, ior);
   if (entering) {
+    let cartoon = FU.materialStyle > 0.5 && cozyWater(id) && geometric.y > 0.55;
+    if (cartoon) {
+      n = liquidOpticalNormal(*rd, cozyWaterNormal(worldPos(hp), geometric, footprint(hp)), geometric, true, ior);
+    }
     if (dot(n, *rd) > 0.0) { n = -n; }
     let F = fresnelSchlick(-dot(n, *rd), ior);
     var ml = vec3f(1.0);
@@ -336,8 +340,7 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
     let r = reflect(*rd, n);
     let gi = surfProbe(hp, n);
     gSkyIn = skyInAt(gi);
-    let cartoon = FU.materialStyle > 0.5 && cozyWater(id) && geometric.y > 0.55;
-    let rough = select(ROUGH(id), 0.24, cartoon);
+    let rough = select(ROUGH(id), COZY_WATER_ROUGH, cartoon);
     var env = envReflectGI(gi, n, -*rd, rough, ml);
     if (cartoon) {
       let paint = cozyWaterPaint(worldPos(hp), footprint(hp), cozyNearShore(hp));
@@ -345,7 +348,7 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
                 + sampleLight(hp) * FU.lightGain;
       *col += *trans * paint.rgb * light * paint.a;
       *trans *= 1.0 - paint.a;
-      env *= 0.35;
+      env *= COZY_WATER_REFLECT;
     }
     var wr = 0.0;
     if (mirror && !cartoon) { wr = smoothstep(REFL_F_LO, REFL_F_HI, F); }
