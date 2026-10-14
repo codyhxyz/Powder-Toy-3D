@@ -211,6 +211,17 @@ const CELL_FAR: f32 = 1e9;   // "none yet": beyond any squared distance a search
 // (scale, offset) of the nearest cell's position for its two hashes
 const CELL_HASH_Z: vec2f = vec2f(1.31, 4.7);
 const CELL_HASH_W: vec2f = vec2f(0.71, 9.2);
+// The 27 lattice cells searched, nearest first (the centre, its faces, edges,
+// corners): a cell whose box lies no nearer than the second-nearest seed found
+// so far can't hold either of the two, so its hash is skipped. The result is
+// the full search's (Worley 1996); the corners mostly go untested.
+var<private> CELL_ORDER: array<vec3f, 27> = array<vec3f, 27>(
+  vec3f(0.0, 0.0, 0.0), vec3f(0.0, 0.0, -1.0), vec3f(0.0, -1.0, 0.0), vec3f(-1.0, 0.0, 0.0), vec3f(1.0, 0.0, 0.0),
+  vec3f(0.0, 1.0, 0.0), vec3f(0.0, 0.0, 1.0), vec3f(0.0, -1.0, -1.0), vec3f(-1.0, 0.0, -1.0), vec3f(1.0, 0.0, -1.0),
+  vec3f(0.0, 1.0, -1.0), vec3f(-1.0, -1.0, 0.0), vec3f(1.0, -1.0, 0.0), vec3f(-1.0, 1.0, 0.0), vec3f(1.0, 1.0, 0.0),
+  vec3f(0.0, -1.0, 1.0), vec3f(-1.0, 0.0, 1.0), vec3f(1.0, 0.0, 1.0), vec3f(0.0, 1.0, 1.0), vec3f(-1.0, -1.0, -1.0),
+  vec3f(1.0, -1.0, -1.0), vec3f(-1.0, 1.0, -1.0), vec3f(1.0, 1.0, -1.0), vec3f(-1.0, -1.0, 1.0), vec3f(1.0, -1.0, 1.0),
+  vec3f(-1.0, 1.0, 1.0), vec3f(1.0, 1.0, 1.0));
 fn mCell(p: vec3f, ge: ptr<function, vec3f>, r1: ptr<function, vec3f>) -> vec4f {
   let i = floor(p);
   let f = p - i;
@@ -220,7 +231,11 @@ fn mCell(p: vec3f, ge: ptr<function, vec3f>, r1: ptr<function, vec3f>) -> vec4f 
   var s2 = vec3f(1.0);
   var c1 = vec3f(0.0);
   for (var k = 0; k < 27; k++) {
-    let o = vec3f(f32(k % 3), f32((k / 3) % 3), f32(k / 9)) - 1.0;
+    let o = CELL_ORDER[k];
+    // how near a seed of cell o (anywhere in [o, o + 1)) can be to f
+    let lo = o - f;
+    let gap = max(max(lo, -(lo + 1.0)), vec3f(0.0));
+    if (dot(gap, gap) >= d2) { continue; }
     let r = o + hash33(i + o) - f;
     let d = dot(r, r);
     if (d < d1) { d2 = d1; s2 = s1; d1 = d; s1 = r; c1 = i + o; }
@@ -768,20 +783,31 @@ fn matMacro(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32) {
   (*m).rough += mv.z * s.z;
 }
 
-// The look of element id at world point p (grid units) on a surface with
-// normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
-fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
+// Element id's table values, untextured and not glowing.
+fn matBase(id: i32) -> Mat {
   var m: Mat;
   m.alb = ALBEDO(id); m.g = vec3f(0.0); m.tang = vec3f(1.0, 0.0, 0.0); m.sssCol = vec3f(1.0);
   m.rough = ROUGH(id); m.metal = METAL(id);
   m.f0 = (IOR(id) - 1.0) / (IOR(id) + 1.0); m.f0 *= m.f0;
   m.sss = SSS(id); m.glint = GLINT(id); m.glintDens = 1.0; m.cav = 1.0; m.aniso = 0.0; m.trans = 0.0;
   m.emit = vec3f(0.0);
+  return m;
+}
+// ...and with the cells' own glow at temperature T (ctype: its cell's): the
+// look without textures (FU.matDetail 0), and of a second element where
+// flowing grains meet another (gatherSurf).
+fn matFlat(id: i32, T: f32, ctype: f32) -> Mat {
+  var m = matBase(id);
+  m.emit = cellEmission(id, T, ctype) + sparkEmit(id, ctype);
+  return m;
+}
+
+// The look of element id at world point p (grid units) on a surface with
+// normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
+fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
-  if (FU.matDetail < 0.5) {
-    m.emit = cellEmission(id, T, ctype) + sparkEmit(id, ctype);   // (no texture: the cells' own glow)
-    return m;
-  }
+  if (FU.matDetail < 0.5) { return matFlat(id, T, ctype); }   // (no texture: the cells' own glow)
+  var m = matBase(id);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
   // lattice cells) per cell; the *_H / *_DEPTH bump amplitudes are heights in
@@ -853,14 +879,19 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const CHIP_LOD: f32 = 2.0;                // outlines are sharp: fade them at this multiple of the chip frequency
     const SMALL_SALT: f32 = 17.3;             // decorrelates the small chips' lattice from the big ones'
     const GRIT_OCT: i32 = 2;                  // fBm octaves
-    var geB: vec3f;
-    var r1B: vec3f;
-    var geS: vec3f;
-    var r1S: vec3f;
-    let cb = mCell(p * CHUNK_F, &geB, &r1B);
-    let cs = mCell(p * PEBBLE_F + SMALL_SALT, &geS, &r1S);
     let lwB = lodFade(CHUNK_F * CHIP_LOD, fp);
     let lwS = lodFade(PEBBLE_F * CHIP_LOD, fp);
+    // Chips already faded to their mean aren't searched for (27 cells each):
+    // the stand-ins draw no chip (cb.z >= CHUNK_P, and both weights are 0),
+    // and a void's roughness takes its mean.
+    var geB = vec3f(0.0);
+    var r1B = vec3f(0.0);
+    var geS = vec3f(0.0);
+    var r1S = vec3f(0.0);
+    var cb = vec4f(1.0, 1.0, 1.0, 0.5);
+    var cs = vec4f(1.0, 1.0, 0.5, 0.5);
+    if (lwB > 0.0) { cb = mCell(p * CHUNK_F, &geB, &r1B); }
+    if (lwS > 0.0) { cs = mCell(p * PEBBLE_F + SMALL_SALT, &geS, &r1S); }
     // distance in from each chip's outline (lattice units; < 0 outside it)
     let dB = length(r1B - n * dot(r1B, n));
     let dS = length(r1S - n * dot(r1S, n));
@@ -1327,9 +1358,13 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     let sk = mFbmD(p + vec3f(0.0, FU.time * LAVA_CHURN, 0.0), LAVA_SKIN_FREQ, LAVA_SKIN_OCT, fp);   // churning skin
     let x = (T - Ts) / LAVA_MELT_RANGE + LAVA_SKIN_VAR * sk.x;   // 0 = at the solidus, 1 = fully molten
     let crust = lavaCrust(x);
-    var ge: vec3f;
-    var r1: vec3f;
-    let c = mCell(p * LAVA_PLATE_FREQ, &ge, &r1);   // crust plates
+    // crust plates: searched for (27 cells) while they are wider than a pixel;
+    // past that their albedo spread fades to its mean (cracks fade sooner, lwc)
+    let lwp = lodFade(LAVA_PLATE_FREQ, fp);
+    var ge = vec3f(0.0);
+    var r1 = vec3f(0.0);
+    var c = vec4f(1.0, 1.0, 0.5, 0.5);
+    if (lwp > 0.0) { c = mCell(p * LAVA_PLATE_FREQ, &ge, &r1); }
     let lwc = lodFade(LAVA_PLATE_FREQ * LAVA_CRACK_LOD, fp);
     // crack half-width: hairlines once the crust has set, wide enough to
     // swallow the plates once it has broken up
@@ -1344,7 +1379,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     let eFar = mix(emissionWith(id, Tcrust, ev), emissionWith(id, Tmelt, ev), crk);
     m.emit = mix(eFar, eNear, lwc);
     let solid = 1.0 - crk;
-    m.alb = mix(LAVA_MELT_ALB, ALBEDO(id) * (1.0 + LAVA_CRUST_VAR * (c.z - 0.5)), solid);
+    m.alb = mix(LAVA_MELT_ALB, ALBEDO(id) * (1.0 + LAVA_CRUST_VAR * (c.z - 0.5) * lwp), solid);
     m.rough = mix(LAVA_MELT_ROUGH, LAVA_CRUST_ROUGH, solid);
     m.g = solid * lwc * LAVA_PLATE_BUMP * dSmooth(0.0, LAVA_PLATE_EDGE, c.y) * ge * LAVA_PLATE_FREQ
         + (1.0 - solid) * LAVA_SKIN_BUMP * sk.yzw;
@@ -1393,11 +1428,13 @@ const MAT_BORDER_AMP: f32 = 0.6;    // how far it shifts the share
 // The material of a two-element mix at texture point p (r: share of id2).
 // matOf is huge and a GPU compiler inlines every call to it: the two
 // materials are one call in a loop, not two calls.
+// The second element's share at texture point p, r its share of the cells.
+fn matBorder(r: f32, p: vec3f) -> f32 {
+  return smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y, r + (vnoise(M_ROT * p * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
+}
 fn gatherMat(id1: i32, id2: i32, ct1: f32, ct2: f32, r: f32, p: vec3f, n: vec3f, T: f32, fp: f32) -> Mat {
   var k = 0.0;
-  if (id2 >= 0) {
-    k = smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y, r + (vnoise(M_ROT * p * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
-  }
+  if (id2 >= 0) { k = matBorder(r, p); }
   var m: Mat;
   let count = select(1, 2, k > 0.0);
   for (var j = 0; j < count; j++) {
@@ -1499,12 +1536,21 @@ fn gatherSurf(hp: vec3f, n: vec3f, ch: i32) -> Surf {
     s.flowW = abs(2.0 * ph - 1.0);   // 0 while the second layer resets, 1 while the first does
   }
   // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them);
-  // the flow layers: one gatherMat call in a loop (see gatherMat)
+  // the flow layers: one gatherMat call in a loop (see gatherMat). Flowing,
+  // the layers are the dominant element's, and a second element where it
+  // meets another is blended in untextured (matFlat, its border unmoved), so
+  // no pixel evaluates more than two materials (it was four: two elements in
+  // each layer).
   var m: Mat;
   let layers = select(1, 2, s.flowW > 0.0);
+  let id2t = select(id2, -1, layers == 2);
   for (var j = 0; j < layers; j++) {
-    let mj = gatherMat(id1, id2, ct1, ct2, r, worldPos(select(s.tp1, s.tp, j == 0)), n, s.T, fp);
+    let mj = gatherMat(id1, id2t, ct1, ct2, r, worldPos(select(s.tp1, s.tp, j == 0)), n, s.T, fp);
     if (j == 0) { m = mj; } else { m = mixMat(m, mj, s.flowW); }
+  }
+  if (layers == 2 && id2 >= 0) {
+    let k = matBorder(r, worldPos(hp));
+    if (k > 0.0) { m = mixMat(m, matFlat(id2, s.T, ct2), k); }
   }
   applyMat(&s, m);
   return s;
