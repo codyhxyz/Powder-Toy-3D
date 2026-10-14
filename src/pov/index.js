@@ -197,6 +197,7 @@ export function createPov(app) {
 
   // input
   const keys = new Set();
+  let villageTools = null, villageToolTap = false;
   let kickQueued = false, kickLeg = null;   // the kick key went down; the kicking leg in the viewmodel (kick.js)
   const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
   let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
@@ -215,14 +216,28 @@ export function createPov(app) {
       if (cancelled) buttons[`${name}Pressed`] = false;
     },
     wheel: (notches) => { wheelNotches += notches; },
-    kick: () => { if (mode === 'on' && !village.enabled) kickQueued = true; },
+    kick: () => { if (mode === 'on') { if (village.enabled) void village.punch(); else kickQueued = true; } },
     useVehicle,
   });
   const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
-  const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput,
-    onEnabled: on => { toolbelt?.setVisible(!on && mode === 'on'); if (on) setMenu(false); },
+  const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
+    onEnabled: on => { syncVillageTools(on); toolbelt?.setVisible(mode === 'on'); if (on) setMenu(false); },
+    onTool: key => { toolbelt?.restrict(key ? [key] : [], key); },
+    useTool: button => { villageToolTap = true; buttons[`${button}Pressed`] = true; },
+    toolReadout: () => toolbelt?.readout,
     freeMouse: () => { setMenu(false); if (document.pointerLockElement === canvas) document.exitPointerLock(); },
   });
+  function syncVillageTools(on) {
+    if (!toolbelt) return;
+    if (on && !villageTools) {
+      villageTools = { restricted: toolbelt.restricted, selected: toolbelt.selectedKey };
+      toolbelt.restrict(village.tool ? [village.tool] : [], village.tool);
+    } else if (!on && villageTools) {
+      toolbelt.restrict(villageTools.restricted, villageTools.selected);
+      if (villageTools.selected) toolbelt.select(villageTools.selected);
+      villageTools = null;
+    }
+  }
   const audio = createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({
     active: active(), player, toolbelt, sprintMusic: app.settings.sprintMusic,
   }) });
@@ -248,9 +263,14 @@ export function createPov(app) {
   });
   function releaseInput() {
     keys.clear();
-    buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
-    wheelNotches = wheelAcc = 0;
+    releaseActions();
     touch.reset();
+  }
+  function releaseActions() {
+    buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
+    wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = false;
+    // A buffered dig must not finish after pockets open or furniture takes the hands.
+    if (village.enabled) toolbelt?.tool(toolbelt.selectedKey)?.deselect?.();
   }
 
   // Q: the spawn menu, Garry's Mod's: the mouse is freed and the palette shows
@@ -335,7 +355,7 @@ export function createPov(app) {
   canvas.addEventListener('mousedown', (e) => {
     if (editing || !active()) return;
     if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
-    if (village.enabled) return;
+    if (village.enabled && !village.canAct) return;
     if ((e.button === 0 || e.button === 2) && toolbelt?.confirmSelection?.()) return;   // picks from the slot selector, as in HL2
     if (e.button === 0) { buttons.primary = true; buttons.primaryPressed = true; }
     if (e.button === 2) { buttons.secondary = true; buttons.secondaryPressed = true; }
@@ -352,7 +372,7 @@ export function createPov(app) {
   canvas.addEventListener('wheel', (e) => {
     if (editing || !active()) return;
     e.preventDefault();
-    if (!isLocked() || village.enabled) return;
+    if (!isLocked() || (village.enabled && !village.canAct)) return;
     const px = e.deltaY * (e.deltaMode === 1 ? WHEEL_LINE_PX : e.deltaMode === 2 ? WHEEL_PAGE_PX : 1);
     if (!px) return;
     const now = performance.now(), dirn = Math.sign(px);
@@ -435,6 +455,7 @@ export function createPov(app) {
         });
       } catch (err) { console.error('POV toolbelt failed to start', err); }
     }
+    if (village.enabled) syncVillageTools(true);
     if (toolbelt && player?.kicker) player.kicker.ballistics = toolbelt.ballistics;   // kicked sand flies as a projectile (kick.js)
   }
 
@@ -799,7 +820,7 @@ export function createPov(app) {
     camera.updateMatrixWorld();
     if (pose.done === 'in') {
       mode = 'on';
-      toolbelt?.setVisible(!village.enabled);
+      toolbelt?.setVisible(true);
     } else if (pose.done === 'out') {
       finishExit();
       return;
@@ -825,7 +846,7 @@ export function createPov(app) {
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
     if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
     for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
-    viewmodel.visible = !village.enabled && mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
+    viewmodel.visible = (!village.enabled || (village.canAct && !!village.tool)) && mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
@@ -842,14 +863,21 @@ export function createPov(app) {
       aim.dist = closest.distanceTo(ctx.eye);
     } else aim.dist = Infinity;
     interact.update(ctx.eye, ctx.dir, aim.dist, live() && mode === 'on' && !deadSeen && !driving && !editing && !village.enabled);
-    if (live() && toolbelt && !driving && !village.enabled) {
+    if (village.enabled) {
+      if (wheelNotches) { village.cycleTool(wheelNotches); wheelNotches = 0; }
+      if (!village.tool && buttons.primaryPressed && !editing && (isLocked() || touch.enabled)) void village.punch();
+      village.usingTool = village.canAct && !!village.tool && (buttons.primary || buttons.primaryPressed || buttons.secondary || buttons.secondaryPressed);
+    }
+    if (live() && toolbelt && !driving) {
       ctx.sim = sim;
+      ctx.peaceful = village.enabled;   // mining tools must not turn village play into body combat
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
       ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
-      const use = !editing && canUse() && !app.industryBuilding?.();
+      const use = !editing && (village.enabled ? village.canAct && !!village.tool && (isLocked() || touch.enabled || villageToolTap) : canUse()) && !app.industryBuilding?.();
+      if (village.enabled && !use) toolbelt.tool(toolbelt.selectedKey)?.deselect?.();
       // a touch tap can start and end between frames: it still holds for one (on desktop the mouse can't)
-      const tapped = touch.enabled;
+      const tapped = touch.enabled || villageToolTap;
       ctx.primary = use && (buttons.primary || (tapped && buttons.primaryPressed));
       ctx.secondary = use && (buttons.secondary || (tapped && buttons.secondaryPressed));
       ctx.primaryPressed = use && buttons.primaryPressed;
@@ -881,7 +909,7 @@ export function createPov(app) {
       live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps,
     });
     buttons.primaryPressed = buttons.secondaryPressed = false;
-    wheelNotches = 0;
+    wheelNotches = 0; villageToolTap = false;
 
     // Night Vision: the goggles follow the scene's measured light (nightVision.js)
     nightVision?.update(dt, mode === 'on' && !deadSeen ? player.perks.nightGain : 0);
@@ -1024,7 +1052,7 @@ export function createPov(app) {
     },
     openWandEditor() { if (active()) toolbelt?.openEditor(); },
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
-    get readout() { return !village.enabled && live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
+    get readout() { return live() && mode === 'on' && toolbelt && (!village.enabled || village.tool) ? toolbelt.readout : null; },
     get marchNear() { return active() ? marchNear : 0; },   // cells: the view's near clip (render.js uMarchNear)
     get figure() { return figure; },
     held,                        // the tool in hand on the body (held.js): holding, weight (checks)
