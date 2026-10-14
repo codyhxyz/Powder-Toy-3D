@@ -1,5 +1,5 @@
 // Burrower and laser cannon end-to-end check (docs/pov.md, "Burrower", "Laser cannon"):
-// the drill homes on a body behind a rock hill, bores a tunnel to it that the
+// the drill flies straight at a body behind a rock hill, bores a tunnel to it that the
 // body can walk through, and adds no matter; the laser charges for its full
 // time (releasing early cancels), then one beam vaporises and melts a tunnel
 // through rock and metal and hits the body behind them. The beam's reach comes
@@ -14,7 +14,7 @@
 // V_MAX, and the air it stirs keeps a fifth of the 64³ box awake for the 2.5 s
 // the conveyor runs, which costs SwiftShader 3 to 4 s a frame: 6 to 9 minutes
 // for the part (seconds on a real GPU: docs/webgpu.md I4's Mac list has it).
-// Here the burrower part checks the drill's homing, the kill, the bore and
+// Here the burrower part checks the aimed kill, the bore and
 // that it adds no matter, and pov-gpu-check's edits stage the bore's edit
 // (its cut and conveyor, nothing changed outside its box).
 // usage: node tools/burrower-laser-check.mjs [--only burrower,tunnel,charge,shot | --all] [--shots dir]   (runs its own Vite: tools/vite-server.mjs)
@@ -106,7 +106,7 @@ async function laserRange(app) {
 }
 
 // The hill and the body behind it, the drill fired from the far side of the hill and left to
-// home on the body; the drill's hit is checked. Resolves to the census before the shot.
+// reach the body; the drill's hit is checked. Resolves to the census before the shot.
 async function fireDrill(app) {
   const { p, ev, frames, secs, shot, census, hold } = helpers(app), check = app.check;
   await ev(async ({ HILL, LANE_Z, DUMMY_X, DRILL_X0 }) => {
@@ -114,7 +114,7 @@ async function fireDrill(app) {
     a.sim.paint({ center: new V(HILL.x, HILL.y, LANE_Z), radius: HILL.r, shape: 1, tool: E.ROCK, rate: 1, replace: true });
     window.__dummy.stand(DUMMY_X, LANE_Z);
     a.pov.player.spawn(new V(DRILL_X0, 0, LANE_Z));
-    a.pov.setLook(-Math.PI / 2, 0.15);   // facing +x, a little up: the drill must home down onto the body
+    a.pov.setLook(-Math.PI / 2, 0);   // aim directly at the body behind the hill
   }, { HILL, LANE_Z, DUMMY_X, DRILL_X0 });
   await secs(1);
   check('burrower in hand', (await hold('BURROWER')) === 'BURROWER');
@@ -133,7 +133,7 @@ async function fireDrill(app) {
 }
 
 const parts = [
-  // ================= the burrower: a hill, a still body behind it; the drill homes on it through the hill
+  // ================= the burrower: a hill, a still body behind it; aim through the hill
   ['burrower', async (app) => {
     const { ev, census } = helpers(app), check = app.check;
     const b0 = await fireDrill(app);
