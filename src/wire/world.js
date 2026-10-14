@@ -60,6 +60,7 @@ const world = {
     if (isMaterialView(app.settings.view)) world.buildFarView(app, win.far);
   },
   buildFarView(app, far) {
+    far.detail.build();
     if (far.viewPipeline.state !== 'idle') return;
     far.buildView().then(() => app.pacer?.wake(), () => {});
   },

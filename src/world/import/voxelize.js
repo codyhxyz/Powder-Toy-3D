@@ -31,14 +31,15 @@ export function triangleIntersectsCell(triangle, cell) {
   if (axes.some(separating) || separating(cross(edges[0], edges[1]))) return false;
   return !edges.some((edge) => axes.some((axis) => separating(cross(edge, axis))));
 }
-export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16, alignment = 8, maxCandidates = 100000000, ownerForMesh = null } = {}) {
+export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16, alignment = 8, maxCandidates = 100000000, ownerForMesh = null, onTriangle } = {}) {
   const align = Array.isArray(alignment) ? alignment : [alignment, alignment, alignment];
   if (!(cellMeters > 0) || !Number.isFinite(cellMeters) || !Number.isInteger(padding) || padding < 1 || align.length !== 3 || !align.every(n => Number.isInteger(n) && n >= 8 && n % 8 === 0)) throw new Error('Invalid voxel scale/bounds');
   const ownerNames = [...new Set(meshes.map(m => ownerForMesh?.(m)).filter(Boolean))];
-  const surfaces = meshes.flatMap((m) => m.surfaces.map(s => ({ ...s, owner: ownerNames.indexOf(ownerForMesh?.(m)) + 1 })));
+  // Keep original surface identities for appearance, and ownership separately.
+  const surfaces = meshes.flatMap((m) => m.surfaces.map(surface => ({ surface, owner: ownerNames.indexOf(ownerForMesh?.(m)) + 1 })));
   if (!surfaces.length) throw new Error('No source surfaces');
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-  for (const s of surfaces) {
+  for (const { surface: s } of surfaces) {
     if (!Object.hasOwn(mapping, s.materialPath)) throw new Error(`Unmapped source material: ${s.materialPath}`);
     const id = mapping[s.materialPath];
     if (!Number.isInteger(id) || id < 0 || id > 255) throw new Error(`Invalid mapped element: ${s.materialPath}`);
@@ -73,7 +74,7 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
     // Source node/surface/index order is the stable overlap precedence.
     data[i] = id;
   };
-  for (const s of surfaces) {
+  for (const { surface: s, owner } of surfaces) {
     const id = mapping[s.materialPath];
     if (!id) continue; // An explicit EMPTY mapping (triggers, not a fallback).
     for (let i = 0; i < s.indices.length; i += 3) {
@@ -82,6 +83,9 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
       const normal = cross(sub(t[1], t[0]), sub(t[2], t[0]));
       const dominant = normal.map(Math.abs).indexOf(Math.max(...normal.map(Math.abs)));
       if (Math.abs(normal[dominant]) < 1e-10) continue;
+      // One geometry walk: appearance receives the exact cells accepted by
+      // physics SAT, including overlaps. No approximate second voxelizer.
+      const onHit = onTriangle?.({ surface: s, indexAt: i, triangle: t, element: id, origin, size, brickDims, cellMeters });
       const u = (dominant + 1) % 3, v = (dominant + 2) % 3;
       const min = [0, 1, 2].map((k) => Math.floor(Math.min(...t.map((p) => p[k])) - 1e-8));
       const max = [0, 1, 2].map((k) => Math.floor(Math.max(...t.map((p) => p[k])) + 1e-8));
@@ -93,7 +97,10 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
         for (let c = from; c <= to; c++) {
           if (++candidates > maxCandidates) throw new Error('Voxel candidate budget exceeded');
           const p = []; p[u] = a; p[v] = b; p[dominant] = c;
-          if (triangleIntersectsCell(t, p)) put(p, id, s.owner);
+          if (triangleIntersectsCell(t, p)) {
+            put(p, id, owner);
+            onHit?.(p);
+          }
         }
       }
     }

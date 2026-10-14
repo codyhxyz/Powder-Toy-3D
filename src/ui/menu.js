@@ -1,6 +1,6 @@
 import { h } from './dom.js';
 import { logoMark } from './logo.js';
-import { MAPS, mapByKey, mapsFor, isWorld, sizeTag } from '../maps.js';
+import { MAPS, mapByKey, mapsFor, isWorld, sizeTag, mapPreviewUrl as THUMB } from '../maps.js';
 import { listSaves, getSave, putSave, deleteSave, downloadSave, pickSaveFile } from '../saves/local.js';
 import { readSaveHeader } from '../saves/format.js';
 import { MODEICONS, MODEICON_BOX } from './modeicons.js';
@@ -32,7 +32,6 @@ import { previewCharacter, nextYouZoom } from '../pov/character.js';
 //   loading(status, o)    the screen, with the game's line (src/main.js)
 //   progress(step, text)  a boot step began (STEPS keys; 'cold': the shaders are compiling
 //                         cold; 'match' with app.js's line for it)
-const THUMB = (key) => `/maps/${key}.webp`;
 // 'stick' is the saved paper-bag choice; a new URL cannot reuse the old stickman still.
 const YOU = (character) => character === 'real' ? '/you.webp' : character === 'stick' ? '/you-bag.webp' : `/you-${character}.webp`;
 // the live player's canvas (ui/youWorker.js), sized once for the tallest he is shown (menu.css .mm-you)

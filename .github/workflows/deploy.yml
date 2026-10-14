@@ -46,6 +46,7 @@ jobs:
       - run: node tools/detail-residency-check.mjs && node tools/detail-worker-check.mjs && node tools/far-lod-check.mjs && node tools/surface-mesh-check.mjs   # full-detail terrain ownership, streaming and material seams
       - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
+      - run: node tools/check-opaque-surface.mjs   # liquid transitions must not skip opaque walls
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/wood-endgrain-cpu-check.mjs
       - run: node tools/check-cozy-materials.mjs   # CPU artwork, shader-view selection and water scope
@@ -60,6 +61,12 @@ jobs:
       - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
       - run: node tools/mission-node-check.mjs && node --test tools/import-cruelty-map-check.mjs
+      - name: Ensure ImageMagick for source appearance fixtures
+        run: |
+          if ! command -v magick >/dev/null && ! command -v convert >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y imagemagick
+          fi
+      - run: node --test tools/appearance-conversion-check.mjs tools/check-source-appearance.mjs tools/check-cruelty-post.mjs
       - run: node --test tools/imported-interactions-check.mjs && node tools/imported-door-passage-check.mjs
       - run: node tools/ladder-cpu-check.mjs && node tools/cruelty-enemies-cpu-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
