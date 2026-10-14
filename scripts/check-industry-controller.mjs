@@ -12,9 +12,14 @@ const hooks = registerHooks({ load(url, context, next) {
   return url.endsWith('.css') ? {format:'module',source:'',shortCircuit:true} : next(url,context);
 } });
 const { createIndustry, validateIndustrySave } = await import('../src/industry/index.js');
+const { createIndustryView } = await import('../src/industry/view.js');
+const { createProgression } = await import('../src/industry/progression.js');
 hooks.deregister();
 class Element {
-  children = []; attributes = {};
+  children = []; attributes = {}; style = {setProperty() {}};
+  getAttribute(key) { return this.attributes[key] ?? null; }
+  contains(node) { return node === this || this.children.some(child => child.contains?.(node)); }
+  focus() { document.activeElement = this; }
   append(...children) { this.children.push(...children); }
   setAttribute(key,value) { this.attributes[key] = value; }
   addEventListener() {}
@@ -73,7 +78,7 @@ await test('Sandbox B falls through; Shift+B opens, B closes; Factory B and nati
   assert(key('KeyB',true).prevented);assert(industry.building);
   assert(key('KeyB').prevented);assert(!industry.building);
   industry.update(0,false);
-  const toggle=search(panel,e=>e.textContent==='Industry · Shift+B');assert(toggle);
+  const toggle=search(panel,e=>e.attributes?.['data-action']==='toggle');assert(toggle);assert.equal(toggle.textContent,'Build · Shift+B');
   toggle.onclick();assert(industry.building);toggle.onclick();assert(!industry.building);
   const power=search(panel,e=>e.type==='checkbox');power.checked=true;power.onchange();
   assert(industry.state.powered);
@@ -104,7 +109,7 @@ await test('body blocks ghost and placement only in POV; foundation clearance an
   const root=app.scene.getObjectByName('Industry');
   const block=root.children.slice(1).find(m=>m.position.y===8 && m.position.x===10);
   assert(block);assert.equal(block.children.length,4);assert(block.children.every(m=>m.geometry.type==='BoxGeometry'));
-  search(f.panel,e=>e.textContent==='Refractory block').onclick();industry.update(0,false);
+  search(f.panel,e=>e.attributes?.['data-machine']==='foundation').onclick();industry.update(0,false);
   const ghost=root.children[0];assert.equal(ghost.children[0].scale.y,.25);
   assert(ghost.children.slice(1).every(m=>!m.visible),'structural ghost has no arrows or ports');
   // Body enters while construction.ready yields: recheck must reject before dispatch.
@@ -171,9 +176,89 @@ await test('confirmed grain deliveries toast once per new milestone and keep nex
   assert.match(f.toasts.at(-1),/Mining agent \+ Grain lift/);
   await shipBatch(1);assert.equal(f.toasts.filter(t=>t.startsWith('Unlocked:')).length,1);
   key('KeyB');industry.update(0,false);
-  const next=search(f.panel,e=>e.textContent?.startsWith('Next:'));assert(next && !next.hidden);assert.match(next.textContent,/mining agent/);
+  const next=search(f.panel,e=>e.className==='industry-help' && e.textContent?.startsWith('Next:'));assert(next && !next.hidden);assert.match(next.textContent,/mining agent/);
   const saved=industry.toJSON();industry.fromJSON(saved);industry.update(0,false);
   assert.equal(f.toasts.filter(t=>t.startsWith('Unlocked:')).length,1,'reload does not repeat milestone');
+  industry.dispose();
+});
+await test('construction UI exposes true costs, unlocks, progress, material flows and stable keyboard controls',async()=>{
+  const app={scene:new THREE.Group(),gpu:{three:{prepare:async()=>{}}},requestRender(){},hud:{toast(){}},
+    scale:1,volume:{position:new THREE.Vector3()},pov:{active:false}};
+  const economy=createProgression(),calls=[];
+  const state={active:true,factory:true,building:true,devices:[],selected:'belt',rotation:0,filter:E.NUGGETS,powered:false,pending:false};
+  const actions={canBuild:type=>state.factory?economy.canBuild(type):{ok:true},
+    select:type=>{state.selected=type;calls.push(type);},toggle:()=>calls.push('toggle'),cancel:()=>calls.push('cancel'),
+    place:()=>calls.push('place'),remove:()=>calls.push('remove'),rotate:()=>calls.push('rotate'),
+    filter:value=>state.filter=value,power:value=>state.powered=value};
+  const view=createIndustryView(app,actions),panel=document.body.children.at(-1);
+  const update=(candidate=null,result=null)=>{state.progression=state.factory?economy.snapshot():null;view.update(state,candidate,result,0);};
+  const cls=name=>search(panel,e=>e.className===name);
+  const machine=type=>search(panel,e=>e.attributes?.['data-machine']===type);
+  await settle();update();
+  const belt=machine('belt'),miner=machine('miner'),pump=machine('pump'),heater=machine('heater');
+  assert.equal(cls('industry-balance').textContent,'24');
+  assert.equal(cls('industry-progress').max,12);assert.equal(cls('industry-progress').value,0);
+  assert.match(belt.attributes['aria-label'],/2 credits/);assert.equal(belt.attributes['aria-pressed'],'true');
+  for(const [b,threshold] of [[miner,12],[pump,48],[heater,96]]) {
+    assert.equal(b.attributes['aria-disabled'],'true');assert.match(b.attributes['aria-label'],new RegExp(`Unlock: ${threshold}`));
+    assert(!b.disabled,'locked card remains keyboard-discoverable');b.onclick();
+  }
+  assert.deepEqual(calls,[],'locked cards cannot trigger construction');
+  const before=panel.children.slice();update();assert.deepEqual(panel.children,before);assert.equal(machine('belt'),belt);
+  assert(!search(panel,e=>e.attributes?.role==='status'),'continuous placement feedback must not be a live region');
+  assert(cls('industry-guide').open,'next-step instructions start expanded');
+  machine('separator').onclick();update();
+  const filter=search(panel,e=>e.attributes?.['aria-label']==='Separator output material');
+  filter.value=E.SAND;filter.onchange();update();assert.equal(state.filter,E.SAND);
+  assert(search(panel,e=>e.textContent==='Sand → / others right'));
+  assert(!cls('industry-filter').hidden);assert(cls('industry-power').hidden);
+  assert(economy.build('ship').ok);assert(economy.build('separator').ok);assert(economy.build('belt').ok);update();
+  assert.equal(cls('industry-balance').textContent,'0');assert.equal(belt.attributes['data-availability'],'unavailable');
+  assert.match(belt.attributes['aria-label'],/Need 2 more credits/);
+  economy.ship({id:E.NUGGETS,count:12,temperature:20});update();
+  assert.equal(cls('industry-progress').max,48);assert.equal(cls('industry-progress').value,12);
+  assert.equal(miner.attributes['data-availability'],'unavailable');assert.match(miner.attributes['aria-label'],/Need 6 more/);
+  economy.ship({id:E.NUGGETS,count:84,temperature:20});update();
+  assert.equal(heater.attributes['aria-disabled'],'false');assert.equal(cls('industry-progress').max,32);
+  assert.equal(cls('industry-progress').value,0);
+  economy.ship({id:E.METAL,count:32,temperature:400});update();
+  assert.equal(cls('industry-progress').value,32);assert.match(cls('industry-objective').textContent,/Quarry complete/);
+  state.factory=false;state.selected='pump';update();
+  assert.equal(cls('industry-balance').textContent,'Free');assert(cls('industry-progress').hidden);
+  assert.equal(heater.attributes['aria-disabled'],'false');assert.match(heater.attributes['aria-label'],/Free/);
+  const power=search(panel,e=>e.type==='checkbox');assert(!power.disabled);assert(!cls('industry-power').hidden);
+  power.checked=true;power.onchange();update();assert.match(cls('industry-power-help').textContent,/Blue port.*battery/);
+  state.selected='ship';update();assert(search(panel,e=>e.textContent==='Removed · no credits'),'Sandbox deliveries do not claim to pay credits');
+  state.selected='foundation';update();assert(cls('industry-power').hidden);
+  for(const label of ['Rotate · R','Dismantle','Esc close'])search(panel,e=>e.textContent===label).onclick();
+  assert.deepEqual(calls.slice(-3),['rotate','remove','cancel']);
+  const toggle=search(panel,e=>e.attributes?.['data-action']==='toggle');
+  belt.focus();state.building=false;update();
+  assert.equal(document.activeElement,toggle);assert.equal(toggle.attributes['aria-expanded'],'false');
+  assert.equal(toggle.textContent,'Build · Shift+B');assert(cls('industry-builder').hidden);
+  assert(!cls('industry-hud').hidden,'closed builder retains compact HUD');
+  view.dispose();
+});
+
+await test('placement UI distinguishes aiming, checking, invalid, valid and transfer-pending without stale clearance',async()=>{
+  const f=fixture(),{app,industry,panel}=f;await settle();key('KeyB',true);industry.update(0,false);
+  const feedback=search(panel,e=>e.className==='industry-placement');
+  const place=search(panel,e=>e.attributes?.['data-action']==='place');
+  assert.equal(feedback.attributes['data-state'],'aim');assert(place.disabled);
+  app.hover={valid:true,cell:{x:24,y:7,z:24},face:2,id:E.ROCK};industry.update(0,false);
+  assert.equal(feedback.attributes['data-state'],'checking');assert(place.disabled);
+  const ghost=app.scene.getObjectByName('Industry').children[0];assert.equal(ghost.children[0].material.color.getHexString(),'dcbc74');
+  await settle();industry.update(0,false);
+  assert.equal(feedback.attributes['data-state'],'valid');assert(!place.disabled);
+  assert.equal(ghost.children[0].material.color.getHexString(),'b7d077');
+  app.pov.active=true;app.pov.player.pos={x:26,y:8,z:26};industry.update(0,false);
+  assert.equal(feedback.attributes['data-state'],'invalid');assert(place.disabled);
+  assert.equal(ghost.children[0].material.color.getHexString(),'e5536a');
+  app.pov.active=false;const placing=industry.place(spec('foundation',{x:40}));industry.update(0,false);
+  assert.equal(feedback.attributes['data-state'],'checking');assert(place.disabled);await placing;
+  app.hover.valid=false;industry.update(0,false);
+  assert.equal(feedback.attributes['data-state'],'aim');assert(place.disabled);
+  assert.match(search(panel,e=>e.className==='industry-status').textContent,/Point into the world/);
   industry.dispose();
 });
 console.log(`${passed} Industry controller CPU checks passed (DOM and GPU transport mocked; actual controller, view, physics and app scene functions).`);
