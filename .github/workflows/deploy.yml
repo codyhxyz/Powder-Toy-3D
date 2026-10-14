@@ -45,7 +45,7 @@ jobs:
       - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
-      - run: node tools/mission-node-check.mjs && node --test tools/import-paradise-check.mjs
+      - run: node tools/mission-node-check.mjs && node --test tools/import-paradise-check.mjs tools/import-cruelty-map-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
       - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips
@@ -64,6 +64,7 @@ jobs:
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: npm run build
+      - run: node tools/check-local-map-build.mjs
       - name: Deploy to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
