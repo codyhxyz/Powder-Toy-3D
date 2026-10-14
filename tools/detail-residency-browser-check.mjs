@@ -3,18 +3,20 @@
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
+import { E } from '../src/elements.js';
 
+const urlAt = process.argv.indexOf('--url'), base = urlAt < 0 ? null : process.argv[urlAt + 1];
 const browser = await launchBrowser();
 let vite;
 try {
-  vite = await startVite();
+  if (!base) vite = await startVite();
   const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 320, height: 200 } });
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));
-  await page.goto(vite.url('/?map=labWorld&win=64'));
+  await page.goto(new URL('/?map=labWorld&win=64', base ?? vite.origin).href);
   await ready(page);
   await page.waitForFunction(() => __app.win?.loaded, null, { timeout: 120000 });
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async (gold) => {
     const a = __app, d = a.win.far.detail, f = a.win.far, sim = a.sim, gpu = a.gpu;
     a.test.park();
     f.queue = []; // the fixture only needs one live-derived mesh
@@ -48,8 +50,7 @@ try {
       if (d.entries.get(job.key) !== entry || d.mask[job.key] !== mask) throw new Error(`movement discarded the cached mesh: ${JSON.stringify({ before, version: sim.version, observed: d.simVersion, builds, revision: d.revisions[job.key] })}`);
     }
     const movementBuilds = builds;
-    const { E } = await import('/src/elements.js');
-    sim.paint({ center: new a.THREE.Vector3(8, sim.g.ny - 12, 8), radius: 3, shape: 1, tool: E.GOLD, rate: 1, replace: true });
+    sim.paint({ center: new a.THREE.Vector3(8, sim.g.ny - 12, 8), radius: 3, shape: 1, tool: gold, rate: 1, replace: true });
     a.win.shift(16, 0);
     const staleRetained = d.entries.get(job.key) === entry && entry.step === 0 && d.mask[job.key] === mask;
     await gpu.fence();
@@ -57,9 +58,9 @@ try {
     d.tick(); await settle();
     const replacement = d.entries.get(job.key);
     return { movementBuilds, builds, staleRetained, replaced: replacement !== entry,
-      revised: d.revisions[job.key] > revision, gold: lastIds.includes(E.GOLD),
+      revised: d.revisions[job.key] > revision, gold: lastIds.includes(gold),
       bytes: d.bytes, failure: gpu.failure?.message ?? null };
-  });
+  }, E.GOLD);
   assert.equal(result.movementBuilds, 1, 'four window moves must reuse the initial mesh');
   assert.equal(result.builds, 2, 'only the actual edit requests a replacement');
   assert(result.staleRetained && result.replaced && result.revised && result.gold);
