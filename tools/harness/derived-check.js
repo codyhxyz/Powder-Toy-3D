@@ -766,8 +766,14 @@ const measure = async (fn) => {
 async function indirect(derived, from) {
   const n = await gpu.indirectWorkgroups(from);
   const l = await derived.readLists();
-  // EMA once, WORK six times (blur 3, boost 3), FIELDS twice (peak, brick)
-  return { workgroupsIndirect: n, listsCallFor: l.ema + 6 * l.work + 2 * l.fields, lists: l };
+  // the dispatches over the lists (the rest, brickDist's and the glow volume's, over regions: shaders/passes.js REGIONS)
+  let listed = 0;
+  for (const e of gpu.indirectLog.slice(from).filter((x) => x.buffer === derived.dlist)) {
+    const [x, y, z] = new Uint32Array(await gpu.readback.buffer(e.buffer, e.offset, 12));
+    listed += x * y * z;
+  }
+  // EMA once, WORK three times (the boost), FIELDS six times (the blur 3, peak, brick, occupancy)
+  return { workgroupsIndirect: n, listedIndirect: listed, listsCallFor: l.ema + 3 * l.work + 6 * l.fields, lists: l };
 }
 // A derived frame of the lab after 4 steps (32³): one submit, one compute
 // pass, 9 indirect dispatches and 12 direct ones, nothing allocated.
@@ -782,7 +788,7 @@ test('budget:frame', async ({ scene = 'lab', size = 32, steps = 4 } = {}) => {
     const from = gpu.indirectLog.length;
     const stats = await measure(async () => { derived.updateBricks(); gpu.endFrame(); await sim.gpuSync(); });
     const ind = await indirect(derived, from);
-    return { stats, ...ind, matchesLists: ind.workgroupsIndirect === ind.listsCallFor ? 1 : 0 };
+    return { stats, ...ind, matchesLists: ind.listedIndirect === ind.listsCallFor ? 1 : 0 };
   } finally { dispose(); }
 });
 // A settled scene (no steps, no writes for FIELD_EMA_SETTLE derived frames):
@@ -823,7 +829,7 @@ test('budget:move', async () => {
 
 // ---------------------------------------------------------------- bench (tools/derived-bench.mjs)
 const DERIVED_KERNELS = ['noteAwake', 'awake', 'age', 'dirty', 'dirtyArgs', 'fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0',
-  'fieldBoost', 'fieldPeak', 'brick', 'occupancy', 'brickDist', 'blur', 'blurLast'];
+  'fieldBoost', 'fieldPeak', 'brick', 'occupancy', 'boxArgs', 'brickDist', 'blur', 'blurLast'];
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)] ?? NaN; };
 const nextFrame = () => new Promise((r) => setTimeout(r, 0));
 // ms per derived frame per kernel (split timestamps) over `frames` frames of

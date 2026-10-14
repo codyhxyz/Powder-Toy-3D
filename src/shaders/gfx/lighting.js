@@ -52,9 +52,10 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  *   the air's sky       giAirSkyVis(p) (the probes: band 0's sky visibility)
  *   glow volume (3)     sampleLight(gp) (with wandLight(p))
  *   AO                  occluder(c), faceAO(cell, n, hp), solidity(p), fieldAO(p, n)
- *   near field          nearSmoothIn, traceNear(ro, rd, tLim, opaqueOnly, selfSkip, &hc, &hn),
- *                       pixRand(k), nearField(p, ng, n, irr, &vis) (map + probes)
- *   glow lights         glowWorthIt(local, irr), glowLightScale(p, ng, n)
+ *   traced rays         nearSmoothIn, traceNear(ro, rd, tLim, opaqueOnly, selfSkip, &hc, &hn),
+ *                       pixRand(k), lampRand(i) (the hand lamps' shadows)
+ *   near field          nearSolid(q, &id, &a), hitLight(p, n, alb, emit), nearField(p, ng, n, irr, &vis) (map + probes)
+ *   glow lights         glowWorthIt(local, irr), glowLum(p), glowLightScale(p, ng, n)
  *   hand lamps          lampLight(p, ng, n), lampShade(p, ng, n, soft, view) (+ specular)
  *   GGX specular        smithV, ggxSpecA, ggxSpec
  * Options (lib() sets them per L.LIGHTING variant): shadowMap: false leaves
@@ -143,11 +144,9 @@ const SHADOW_BIAS_PAD: f32 = 0.1;
 const VOLUME_SHADOW_BIAS: f32 = ${VOLUME_SHADOW_BIAS.toFixed(1)};       // depth bias (voxels) for points inside volumes (no normal)
 // Exact sun rays: smooth opaque surfaces block them where their field is
 // inside (by SUN_RAY_ISO_MARGIN: trilinear creases wobble about the level),
-// except within SUN_RAY_SMOOTH_SKIP voxels of the start, which sits on one;
-// the ray stops this far past the nearest occluder depth the shadow-map taps saw.
+// except within SUN_RAY_SMOOTH_SKIP voxels of the start, which sits on one.
 const SUN_RAY_SMOOTH_SKIP: f32 = 0.5;
 const SUN_RAY_ISO_MARGIN: f32 = 0.02;
-const SUN_RAY_REACH_PAD: f32 = 1.5;
 
 // Soft shadows (PCSS): the sun is a disc, so a shadow's edge blurs with the
 // distance from its caster. tan of the sun's apparent radius: the real sun is
@@ -339,7 +338,6 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var acc = vec3f(0.0);
   var tr = vec3f(0.0);
   var nLit = 0.0;
-  var dMin = 1e9;
   var cD = 0.0;   // depth under liquid (along the sun) ...
   var cW = 0.0;   // ... weight of the taps that see it
   for (var k = 0; k < 4; k++) {
@@ -353,7 +351,6 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
     acc += lit * att * wk;
     tr += att * wk;
     nLit += lit;
-    dMin = min(dMin, sm.x);
   }
   if (${caustics} && cW > 0.0) {
     let cg = mix(1.0, causticGain(p, cD / cW), cW);
@@ -385,11 +382,13 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var pen = 0.0;
   if (bN > 0.0) { pen = SUN_TAN_RADIUS * (d - bSum / bN); }
   if (pen < PCSS_HARD_TEXELS * T) {
-    // Hard edge (contact, or no caster near). Where the taps disagree p is
-    // within a texel (~0.44 voxels at 128^3) of a shadow edge, where the map
-    // can only blur: settle it with an exact ray, traced only as far as the
-    // occluders those taps saw.
-    if (nLit > 0.0) { return tr * sunRayClear(p, d - dMin + SUN_RAY_REACH_PAD); }
+    // Hard edge (contact, or no caster near): p is within a texel (~0.44
+    // voxels at 128^3) of the edge, and the hard map's bilinear filter (acc)
+    // draws it as a ramp a texel wide, the map's own resolution, as TF2's and
+    // Halo 3's filtered shadow maps draw theirs. (An exact DDA ray toward the
+    // sun per edge pixel used to sharpen it: a walk through the grid for a
+    // fraction of a cell, sub-pixel past a few metres. sunRayClear stays for
+    // the probes in lib.js.)
     return acc;
   }
   // The filtered visibility is 1/2 on the hard edge and falls to 0 a penumbra
@@ -651,8 +650,8 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
 }
 
 // Random numbers for this pixel (gFragCoord) and frame: k-th of a decorrelated set.
-// Streams, in order: the near-field rays, the glow candidates, a lamp's shadow ray each.
-const LAMP_STREAM: i32 = NEAR_RAYS + GLOW_CANDIDATES;   // the first lamp's
+// Streams: a lamp's shadow ray each (the near field and the glow lights draw none).
+const LAMP_STREAM: i32 = 0;                              // the first lamp's
 const NEAR_RAND_STREAMS: i32 = LAMP_STREAM + LAMP_MAX;   // random streams per frame
 fn pixRand3(k: i32) -> vec3f {
   return hash33(vec3f(gFragCoord, ${frame} * f32(NEAR_RAND_STREAMS) + f32(k)));
@@ -660,9 +659,7 @@ fn pixRand3(k: i32) -> vec3f {
 fn pixRand(k: i32) -> vec2f { return pixRand3(k).xy; }
 // The estimators' own samples are spatiotemporal (noise.js stbn1/2/3): each
 // 3x3 window of pixels, TAAU's neighbourhood, holds a stratified set, so the
-// window's mean is steady from frame to frame instead of shimmering. White
-// pixRand3 is left for what has no stratification to gain (the glow
-// candidates' in-slab position).
+// window's mean is steady from frame to frame instead of shimmering.
 // A lamp's soft-shadow aim: a point on the disc its ball shows (radius², angle) and along its length.
 fn lampRand(i: i32) -> vec3f {
   return vec3f(stbn2(gFragCoord, ${frame}, f32(LAMP_STREAM + i)), fract(ignR(gFragCoord) + R1_G * stbnT(${frame}, f32(i))));
@@ -712,6 +709,66 @@ fn lampSeen(p: vec3f, n: vec3f) -> vec3f {
   return sum;
 }
 
+// ---- the near field: occlusion and bounce within a few cells, from the volumes ----
+// What the probes are too coarse for (they are a brick apart, read GI_OFFSET
+// out): matter within a few cells that shades a surface and lights it with
+// what bounces off it. Source lights its models from an ambient cube and Halo 3
+// its world from SH probes, a light volume read at the surface, with no ray
+// traced per pixel (Mitchell, McTaggart & Green 2006, "Shading in Valve's
+// Source Engine"; Chen & Liu 2008, "Lighting and Material of Halo 3"); the
+// occlusion between them is read off the voxels around the face, as
+// Minecraft's smooth lighting reads it off a block's neighbours. Here: a fixed
+// kernel of NEAR_TAPS points in the hemisphere over the surface (a cosine-
+// weighted set, one along the normal and a ring round it, at a few cells),
+// each asking the fields (smooth matter, already blurred, so its occlusion is
+// soft) and the state (crisp voxels, the floor) how solid it is there. The
+// light the occluding matter sends back is its albedo times the light at one
+// representative point in front of it (the sun through the map, the probes'
+// irradiance, the glow), plus what it gives off. The same every frame, so
+// nothing shimmers and TAA has nothing to average (two random rays a pixel
+// used to walk the grid for it). At surface point p (geometric normal ng,
+// shading normal n), returns the indirect irradiance / pi to use instead of
+// irr * AO, and writes *vis, the visibility for specular occlusion and glow.
+const NEAR_TAPS: i32 = 6;
+const NEAR_START: f32 = 0.55;    // cells off the surface (along its normal) the kernel is centred
+const NEAR_VIS_MIN: f32 = 0.15;  // light left in the deepest crevice
+const NEAR_ISO: vec2f = vec2f(0.35, 0.65);   // smooth fields: empty below, solid above (about SURF_ISO)
+const NEAR_LIQUID: f32 = 0.6;    // how much liquid occludes, relative to solid matter (fieldAO's AO_LIQUID_SOLIDITY)
+const NEAR_REP_D: f32 = 1.0;     // cells from the kernel's centre toward the occluders where their light is looked up
+// The kernel's tangent frame: this fixed oblique direction projected into the
+// surface's plane (a frame that turns smoothly with the normal: the taps don't
+// jump where a select between two axes would flip them).
+const NEAR_FRAME_A: vec3f = vec3f(0.4319, 0.2903, 0.8540);
+// The taps: (x, y, z) a unit direction in the frame (z along n; the ring at
+// 50 degrees from it, its azimuths 72 degrees apart and turned off the grid's
+// axes), w its distance in cells. Cosine-weighted: each counts by its z.
+var<private> NEAR_KERNEL: array<vec4f, NEAR_TAPS> = array<vec4f, NEAR_TAPS>(
+  vec4f(0.0, 0.0, 1.0, 2.2),
+  vec4f(0.7196, 0.2627, 0.6428, 1.5),
+  vec4f(-0.0274, 0.7656, 0.6428, 2.5),
+  vec4f(-0.7366, 0.2105, 0.6428, 1.8),
+  vec4f(-0.4278, -0.6355, 0.6428, 2.6),
+  vec4f(0.4722, -0.6032, 0.6428, 2.0),
+);
+// How solid the world is at q for the near field (0..1), and in *hid the
+// element there (E_EMPTY: none, or the floor: -1) and *ha its cell.
+fn nearSolid(q: vec3f, hid: ptr<function, i32>, ha: ptr<function, vec4f>) -> f32 {
+  *hid = E_EMPTY;
+  *ha = vec4f(0.0);
+  if (q.y < 0.0) { *hid = -1; return 1.0; }
+  let c = vec3i(floor(q));
+  if (outside(c)) { return 0.0; }
+  let sf = surfField(q);
+  var o = max(smoothstep(NEAR_ISO.x, NEAR_ISO.y, max(sf.y, max(sf.z, sf.w))), NEAR_LIQUID * smoothstep(NEAR_ISO.x, NEAR_ISO.y, sf.x));
+  let a = fetchA(c);
+  let id = eid(a);
+  if (!isGasLike(id)) {
+    *hid = id;
+    *ha = a;
+    if (isCrisp(id)) { o = 1.0; }
+  }
+  return o;
+}
 ${shadowMap && probes ? /* wgsl */ `
 // The light a secondary ray sees on the matter it meets at p (normal n, lifted
 // off the face): albedo alb times the sun (shadow-mapped), the lamps (lampSeen,
@@ -735,128 +792,118 @@ fn hitLight(p: vec3f, n: vec3f, alb: vec3f, emit: vec3f) -> vec3f {
   return alb * (sun + lamp + giIrradiance(probeAt(p + n * GI_OFFSET), n) + sampleLight(p) * FU.lightGain) + emit;
 }
 
-// Voxel AO and nearby bounce light (Teardown style). NEAR_RAYS cosine-
-// distributed rays per pixel and frame (stbn2: stratified across each 3x3
-// pixel window and low-discrepancy over frames, so TAAU resolves them
-// without shimmer) walk the grid up to
-// NEAR_RANGE cells. A ray that hits matter sees that matter's own light: its
-// albedo times the sun (shadow-mapped), the probes' light and the glow there,
-// plus what it gives off (emission).
-// A ray that escapes sees what the probes say (irr). Probes already hold
-// occlusion at brick scale, so a hit's weight fades with its distance, handing
-// far hits back to them. At surface point p (geometric normal ng, shading
-// normal n), returns the indirect irradiance / pi to use instead of irr * AO,
-// and writes *vis, the visibility for specular occlusion and glow.
-const NEAR_RAYS: i32 = 2;
-const NEAR_RANGE: f32 = 6.0;     // cells a ray reaches
-const NEAR_START: f32 = 0.55;    // cells off the surface (along its normal) a ray starts
-const NEAR_SELF_SKIP: f32 = 1.0; // smooth-surface cells ignored this close to the start
-const NEAR_HIT_LIFT: f32 = 0.5;  // cells off a hit's face where its light is looked up
-const NEAR_VIS_MIN: f32 = 0.15;  // light left in the deepest crevice
 fn nearField(p: vec3f, ng: vec3f, n: vec3f, irr: vec3f, vis: ptr<function, f32>) -> vec3f {
-  let t1 = normalize(cross(select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(n.y) < 0.9), n));
+  let t1 = normalize(NEAR_FRAME_A - n * dot(NEAR_FRAME_A, n) + vec3f(1e-4, 0.0, 0.0));
   let t2 = cross(n, t1);
   let ro = p + ng * NEAR_START;
-  var sum = vec3f(0.0);
-  var vs = 0.0;
-  for (var i = 0; i < NEAR_RAYS; i++) {
-    let u = stbn2(gFragCoord, ${frame}, f32(i));   // stratified over the 3x3 window, golden-ratio steps per ray and frame
-    let r = sqrt(u.x);
-    let a = 2.0 * PI_L * u.y;
-    var d = t1 * (r * cos(a)) + t2 * (r * sin(a)) + n * sqrt(max(1.0 - u.x, 0.0));
+  var wSum = 0.0;
+  var occ = 0.0;           // weighted occlusion
+  var dirC = vec3f(0.0);   // ... its mean direction
+  var alb = vec3f(0.0);    // the occluders' albedo, weighted as the occlusion ...
+  var albW = 0.0;
+  var emit = vec3f(0.0);   // ... and what they give off
+  for (var i = 0; i < NEAR_TAPS; i++) {
+    let k = NEAR_KERNEL[i];
+    var d = t1 * k.x + t2 * k.y + n * k.z;
     if (dot(d, ng) < 0.0) { d = reflect(d, ng); }   // keep it above the geometric surface
-    var hc: vec3i;
-    var hn: vec3f;
-    let t = traceNear(ro, d, NEAR_RANGE, false, NEAR_SELF_SKIP, &hc, &hn);
-    if (t < 0.0) { sum += irr; vs += 1.0; continue; }
-    let w = 1.0 - t / NEAR_RANGE;
-    let hp = ro + d * t + hn * NEAR_HIT_LIFT;
-    let floorHit = hc.y < 0;
-    var ah = vec4f(0.0);
-    if (!floorHit) { ah = fetchA(hc); }
-    let hid = eid(ah);
-    var alb = GROUND_ALB;
-    var emit = vec3f(0.0);
-    if (!floorHit) { alb = ALBEDO(hid); emit = cellEmission(hid, ah.y, floor(ah.w)) + sparkEmit(hid, floor(ah.w)); }   // a live conductor, a lit lamp
-    sum += mix(irr, hitLight(hp, hn, alb, emit), w);
-    vs += 1.0 - w;
+    var hid: i32;
+    var ha: vec4f;
+    let o = nearSolid(ro + d * k.w, &hid, &ha) * k.z;
+    wSum += k.z;
+    if (o <= 0.0) { continue; }
+    occ += o;
+    dirC += o * d;
+    if (hid < 0) { alb += o * GROUND_ALB; albW += o; }
+    else if (hid != E_EMPTY) {
+      alb += o * ALBEDO(hid);
+      albW += o;
+      emit += o * (cellEmission(hid, ha.y, floor(ha.w)) + sparkEmit(hid, floor(ha.w)));   // a live conductor, a lit lamp
+    }
   }
-  *vis = max(vs / f32(NEAR_RAYS), NEAR_VIS_MIN);
-  return sum / f32(NEAR_RAYS);
+  *vis = max(1.0 - occ / wSum, NEAR_VIS_MIN);
+  if (occ <= 0.0) { return irr; }
+  // smooth matter seen only through its blurred field (the tap's own cell empty): the surface's own
+  if (albW < occ) {
+    let oc = vec3i(floor(p - ng * 0.5));
+    var own = GROUND_ALB;
+    if (oc.y >= 0 && !outside(oc)) {
+      let oid = eid(fetchA(oc));
+      if (oid != E_EMPTY) { own = ALBEDO(oid); }
+    }
+    alb += (occ - albW) * own;
+  }
+  // the light on the occluders, seen as every second-hand view sees matter
+  // (hitLight), at one point in front of them, facing back
+  let dc = dirC / max(length(dirC), 1e-6);
+  let Lhit = hitLight(ro + dc * NEAR_REP_D, -dc, alb / occ, emit / occ);
+  return mix(irr, Lhit, occ / wSum);
 }` : `
-// (no nearField here: it reads the shadow map and the probes)
-const NEAR_RAYS: i32 = 2;   // (its rays' streams come before the glow candidates')`}
+// (no nearField here: it reads the shadow map and the probes)`}
 
 // ---- lava and fire as lights ----
 // The glow volume carries emitted light blurred over bricks: no direction and
-// no shadows. Here each pixel picks one emitting brick near it by resampled
-// importance sampling (GLOW_CANDIDATES random bricks within GLOW_REACH bricks,
-// weighted by emitted power / distance^2) and traces a shadow ray to a
-// point in it (the pick and the aim are spatiotemporal samples, stbn: steady
-// under TAAU where white noise flickered, docs audit B4). The glow volume's light is then scaled by what that ray says:
-// 0 in its shadow, 2 n.l facing it (1 on average over a hemisphere of
-// emitters). With no emitter among the candidates the glow is left as it is.
-const GLOW_CANDIDATES: i32 = 6;
-const GLOW_REACH: i32 = 3;           // bricks each way the candidates are drawn from
-const GLOW_MIN_D2: f32 = 4.0;        // cells^2: floor of the 1/d^2 weight
-const GLOW_EMIT_MIN: f32 = 1e-4;     // a brick's emitted power (luminance) below this is dark
-const GLOW_START: f32 = 0.55;        // cells off the surface a shadow ray starts
-const GLOW_SELF_SKIP: f32 = 1.0;     // smooth-surface cells ignored this close to its start
-const GLOW_ENTRY_PAD: f32 = 0.05;    // cells short of the emitter's brick the ray stops
-const GLOW_XI_EPS: f32 = 1e-6;       // floor of 1 - q when the reservoir renormalises its uniform
-// Worth tracing only where the glow is at least this share of the light already there.
+// no shadows. It gets both here from the volume itself and the fields, the
+// same every frame: the volume's gradient points to its light, so a face
+// toward it takes up to twice the glow and a face away from it none, as far as
+// the gradient is steep against the glow there (deep in a glowing region the
+// light comes from all round, and the glow stays as it is); and GLOW_TAPS
+// points along that direction ask the fields and the state whether opaque
+// matter stands between the face and the light, as Minecraft's block light
+// stops at opaque blocks. A light volume read at the surface, as Source's
+// ambient cubes are (Mitchell et al. 2006), where one shadow ray a pixel to a
+// randomly picked emitting brick used to flicker under TAA.
+const GLOW_START: f32 = 0.55;        // cells off the surface the taps start
+const GLOW_EMIT_MIN: f32 = 1e-4;     // glow (luminance) below this is dark
+const GLOW_GRAD_H: f32 = 2.0;        // cells: the gradient's central-difference step
+// How directional the glow is: |grad E| / E times this. A light r cells away
+// (1/r^2) has |grad E| / E = 2 / r: fully directional within 2 × this of it.
+const GLOW_DIR_LEN: f32 = 8.0;
+const GLOW_TAPS: i32 = 3;
+const GLOW_TAP_D: vec3f = vec3f(1.0, 2.5, 5.0);   // cells from the start toward the light
+// The taps stay within this share of the light's distance (from the gradient,
+// as above: r = 2 E / |grad E|), so none lands in it or past it.
+const GLOW_REACH: f32 = 0.75;
+const GLOW_ISO: vec2f = vec2f(0.4, 0.7);   // smooth fields: clear below, blocking above
+// Worth looking only where the glow is at least this share of the light already there.
 const GLOW_REL_MIN: f32 = 0.05;
 fn glowWorthIt(local: vec3f, irr: vec3f) -> bool {
   return FU.glowLights != 0u && dot(local, LUMA_709) > GLOW_REL_MIN * dot(irr, LUMA_709);
 }
+// The glow volume's luminance at grid point gp (sampleLight's texture, no wand lights).
+fn glowLum(gp: vec3f) -> f32 {
+  let B = vec3f(f32(BX), f32(BY), f32(BZ));
+  let q = clamp(gp / f32(BS), vec3f(0.5), B - 0.5);
+  return dot(textureSampleLevel(tLight, linearClamp, q / B, 0.0).rgb, LUMA_709);
+}
 // The glow's scale at surface point p (geometric normal ng, shading normal n).
 fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
-  let pb = vec3i(floor(p)) / BS;
-  let lo = max(pb - GLOW_REACH, vec3i(0));
-  let hi = min(pb + GLOW_REACH, vec3i(BX, BY, BZ) - 1);
-  let span = vec3f(hi - lo + 1);
-  var wSum = 0.0;
-  var pick = vec3i(-1);
-  // The reservoir's one uniform (Chao 1982's weighted reservoir, renormalised
-  // after each decision so a single number serves every candidate): a
-  // stratified sample, so the pixels of a 3x3 window pick their emitters in
-  // proportion instead of by coin flips. The candidates are stratified along
-  // x (candidate i from the i-th slab of the region: stratified RIS), which
-  // orders them the same way in every pixel, so neighbouring pixels' stratified
-  // uniforms land on neighbouring parts of the emitters.
-  var xi = fract(ignF(gFragCoord) + R1_G * stbnT(${frame}, 0.0));
-  for (var i = 0; i < GLOW_CANDIDATES; i++) {
-    var u = pixRand3(NEAR_RAYS + i);
-    u.x = (f32(i) + u.x) / f32(GLOW_CANDIDATES);
-    let bc = min(lo + vec3i(u * span), hi);
-    let e = dot(brickAt(bc).emit, LUMA_709);
-    if (e < GLOW_EMIT_MIN) { continue; }
-    let dv = (vec3f(bc) + 0.5) * f32(BS) - p;
-    let wt = e / max(dot(dv, dv), GLOW_MIN_D2);
-    wSum += wt;
-    let q = wt / wSum;   // chance this candidate replaces the pick
-    if (xi < q) { pick = bc; xi = xi / q; } else { xi = (xi - q) / max(1.0 - q, GLOW_XI_EPS); }
-  }
-  if (pick.x < 0) { return 1.0; }
-  if (all(pick == pb)) { return 1.0; }   // inside the emitter's own brick: no direction to speak of
-  let bmin = vec3f(pick * BS);
-  let tgt = bmin + stbn3(gFragCoord, ${frame}) * f32(BS);   // the shadow ray's aim in the brick, stratified as well
   let ro = p + ng * GLOW_START;
-  let dv = tgt - ro;
-  let dist = length(dv);
-  let d = dv / dist;
-  let nl = dot(n, d);
-  if (nl <= 0.0) { return 0.0; }
-  // distance to where the ray enters the emitter's brick
-  let sd = safeDir(d);
-  let ta = (bmin - ro) / sd;
-  let tb = (bmin + f32(BS) - ro) / sd;
-  let tn = min(ta, tb);
-  let tIn = max(max(tn.x, tn.y), max(tn.z, 0.0));
-  var hc: vec3i;
-  var hn: vec3f;
-  let t = traceNear(ro, d, max(tIn - GLOW_ENTRY_PAD, 0.0), true, GLOW_SELF_SKIP, &hc, &hn);
-  return select(0.0, 2.0 * nl, t < 0.0);
+  let e0 = glowLum(ro);
+  if (e0 < GLOW_EMIT_MIN) { return 1.0; }
+  let h = vec2f(GLOW_GRAD_H, 0.0);
+  let g = vec3f(glowLum(ro + h.xyy) - glowLum(ro - h.xyy), glowLum(ro + h.yxy) - glowLum(ro - h.yxy),
+                glowLum(ro + h.yyx) - glowLum(ro - h.yyx)) / (2.0 * GLOW_GRAD_H);
+  let gl = length(g);
+  if (gl < 1e-8) { return 1.0; }
+  let L = g / gl;
+  let D = clamp(gl * GLOW_DIR_LEN / e0, 0.0, 1.0);
+  let reach = GLOW_REACH * 2.0 * e0 / gl;
+  var vis = 1.0;
+  let tapD = GLOW_TAP_D;
+  for (var i = 0; i < GLOW_TAPS; i++) {
+    if (tapD[i] > reach) { break; }
+    let q = ro + L * tapD[i];
+    let c = vec3i(floor(q));
+    if (q.y < 0.0 || outside(c)) { break; }   // (past the light: the floor is never between)
+    // opaque matter blocks: granular and natural solids (lava, liquids and glass don't), crisp opaque voxels unless they glow
+    let sf = surfField(q);
+    var o = smoothstep(GLOW_ISO.x, GLOW_ISO.y, max(sf.z, sf.w));
+    let a = fetchA(c);
+    let id = eid(a);
+    if (isCrisp(id) && RCLASS(id) == R_OPAQUE && dot(cellEmission(id, a.y, floor(a.w)) + sparkEmit(id, floor(a.w)), LUMA_709) < GLOW_EMIT_MIN) { o = 1.0; }
+    vis *= 1.0 - o;
+  }
+  return vis * mix(1.0, 2.0 * max(dot(n, L), 0.0), D);
 }
 
 // ---- specular: the GGX microfacet BRDF ----
