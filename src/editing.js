@@ -228,10 +228,10 @@ export function regionMask(g, texel, cells, [dx, dz] = [0, 0]) {
 // are left alone). before() runs right before the pass (the app's undo
 // snapshot). Resolves to { count } or { error } (floodRegion's, or 'gone' when
 // the simulation was replaced meanwhile).
-export async function runFill(sim, req, { openSides = false, before } = {}) {
+export async function runFill(sim, req, { openSides = false, before, valid = () => true } = {}) {
   const o = sim.origin.clone();
   const a = await sim.readStateAAsync();
-  if (sim.disposed) return { error: 'gone' };
+  if (sim.disposed || !valid()) return { error: 'gone' };
   const texel = (x, y, z) => sim.cellTexel(x, y, z);
   const r = floodRegion(a, sim.g, texel, req.cell, { id: req.id, maxY: req.maxY, openSides });
   if (r.error) return r;
