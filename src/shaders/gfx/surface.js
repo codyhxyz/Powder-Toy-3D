@@ -1,6 +1,7 @@
 import { liquidGLSL } from './liquid.js';
 import { cozySurfaceWGSL } from './cozy.js';
-import { sourceShadeWGSL } from './sourceAppearance.js';
+import { sourceShadeWGSL, sourceShadeFallbackWGSL } from './sourceAppearance.js';
+import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
 import { grainsGLSL, GRAINS_ANY } from './grains.js';
@@ -1918,7 +1919,7 @@ fn digMark(s: ptr<function, Surf>) {
   (*s).albedo *= 1.0 - dark;
 }
 
-${sourceShadeWGSL}
+${SOURCE_APPEARANCE_ENABLED ? sourceShadeWGSL : sourceShadeFallbackWGSL}
 fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
   digMark(&s);

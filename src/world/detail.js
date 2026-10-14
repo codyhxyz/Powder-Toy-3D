@@ -31,9 +31,10 @@ export { DETAIL_CHUNK };
 // effect), the chunks wanted change with it (the view key). Conservative
 // warped bounds keep frustum culling without rejecting curved geometry.
 // All view-intersecting columns are wanted at one-cell resolution, nearest
-// first, one in flight at a time, including chunks covered by the live window.
-// The cells kernel and both pipelines build the first time the far view draws
-// (B5: nothing of it builds in views that don't draw it).
+// first within each priority class, with a bounded pool of mesh workers.
+// Exposed missing meshes precede live-window prewarming and stale replacements.
+// The cells kernel and both pipelines build alongside the far view at boot or
+// view switch (B5: nothing builds in views that don't draw it).
 // Only OFFSCREEN spares are bounded; wanted geometry is never budget-evicted.
 // Until a mesh arrives there is a loading gap, not a coarse opaque substitute.
 const PAD = DETAIL_PAD, SPARE_CHUNKS = 192, SPARE_BYTES = 96 * 1024 * 1024;
@@ -58,14 +59,14 @@ export class WorldDetail {
     this.simVersion = this.sim.version;
     this.epoch = 0;
     this.bytes = 0;
-    this.pending = null;
+    this.pending = new Map();
     this.visible = false;
     this.viewKey = null;
     this.disposed = false;
     this.onChange = null; // world wire → pacer: async results redraw even while paused
     this.layout = farSceneLayout(L, DETAIL_CHUNK + 2 * PAD);
     this.cells = gpu.createBuffer({ label: 'detail cells', size: this.layout.cells * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC });
-    // its kernel and pipelines build when the far view is first drawn (tick); the window's don't wait for them
+    // Its kernel and pipelines build with the far view; the window's don't wait for them.
     const scene = this.win.scene, sceneKey = JSON.stringify(SCENE_CELLS_LAYOUT_OF(scene));
     this.stage = gpu.kernel({
       name: `${scene.key} detailCells`, code: farSceneCellsFrag(g, L, scene.glsl(g), this.layout, true),
@@ -85,18 +86,19 @@ export class WorldDetail {
     this.depthView = null;
     this.group = null;   // the cells kernel's group 2 (the scene's resources: made on first use)
     this._m = { worldToScene: new Matrix4(), sceneToWorld: new Matrix4(), eye: new Vector3(), proj: new Matrix4(), frustum: new Frustum(), box: new Box3() };
-    this.worker = new Worker(new URL('./detail-worker.js', import.meta.url), { type: 'module' });
-    this.worker.onmessage = ({ data }) => this.accept(data);
-    this.worker.onerror = (err) => {
-      console.error('world detail worker', err);
-      this.failed = true;
-      this.pending = null;
-      this.onChange?.();
-    };
+    const capacity = Math.min(4, Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 6) - 2));
+    this.workers = Array.from({ length: capacity }, () => {
+      const worker = new Worker(new URL('./detail-worker.js', import.meta.url), { type: 'module' });
+      const slot = { worker, token: null };
+      worker.onmessage = ({ data }) => this.accept(data);
+      worker.onerror = (err) => this.fail('worker', err);
+      return slot;
+    });
   }
 
   reset() {
     this.epoch++;
+    this.pending.clear(); // occupied slots drain their old readback/mesh before reuse
     this.viewKey = null;
     for (const key of [...this.entries.keys()]) this.drop(key);
     this.mask.fill(0);
@@ -140,7 +142,7 @@ export class WorldDetail {
       const changed = this.dirty.get(key);
       if (changed === undefined) continue;
       this.dirty.delete(key);
-      const entry = this.entries.get(key), pending = this.pending?.key === key ? this.pending : null;
+      const entry = this.entries.get(key), pending = this.pending.get(key);
       // A mesh/readback started after these writes already includes them.
       const oldEntry = entry && entry.version < changed, oldJob = pending && pending.version < changed;
       if (!oldEntry && !oldJob) continue;
@@ -211,42 +213,89 @@ export class WorldDetail {
     }
   }
 
+  // A column is hidden only if the live volume covers its entire world height.
+  covered(c) {
+    const o = this.sim.origin, g = this.sim.g, size = this.win.size;
+    return o.x <= c.x && o.z <= c.z && o.y <= 0 && o.y + g.ny >= size[1] &&
+      o.x + g.nx >= Math.min(c.x + DETAIL_CHUNK, size[0]) &&
+      o.z + g.nz >= Math.min(c.z + DETAIL_CHUNK, size[2]);
+  }
+
+  jobs() {
+    return this.wanted.filter(c => !this.pending.has(c.key) && this.entries.get(c.key)?.step !== c.step)
+      .sort((a, b) => {
+        const rank = c => this.entries.has(c.key) ? 2 : this.covered(c) ? 1 : 0;
+        return rank(a) - rank(b) || a.distance - b.distance;
+      });
+  }
+
   // Only runnable work keeps rAF awake. Async waits wake it on completion.
   get busy() {
     return !this.disposed && !this.failed && this.far.built && this.visible &&
-      !this.pending && !this.building && !this.waitingWindow &&
-      this.wanted.some((c) => this.entries.get(c.key)?.step !== c.step);
+      this.workers.some(s => !s.token) && !this.building && !this.waitingWindow &&
+      this.jobs().length > 0;
+  }
+
+  sameJob(a, b) {
+    return !!a && !!b && ['key', 'epoch', 'revision', 'version'].every(k => a[k] === b[k]);
   }
 
   completed(token) {
-    const p = this.pending;
-    if (p && ['key', 'epoch', 'revision', 'version'].every(k => p[k] === token[k])) this.pending = null;
+    if (this.sameJob(this.pending.get(token.key), token)) this.pending.delete(token.key);
+    const slot = this.workers.find(s => this.sameJob(s.token, token));
+    if (slot) slot.token = null;
+    if (!this.failed && !this.disposed) this.onChange?.();
+  }
+
+  fail(where, err) {
+    if (this.failed || this.disposed) return;
+    this.failed = true;
+    if (!this.gpu.failure) console.error(`world detail ${where}`, err);
+    for (const slot of this.workers) { slot.worker.terminate(); slot.token = null; }
+    this.pending.clear();
     this.onChange?.();
   }
 
-  // Every frame (far.tick): the nearest wanted chunk without its mesh, its
-  // cells recorded now and read back, then meshed in the worker.
+  // The world wire starts all three builds alongside the far-view build.
+  build() {
+    if (this.buildPromise) return this.buildPromise;
+    if (this.disposed || this.failed) return Promise.resolve();
+    const pipes = [this.stage, this.pipe, this.depthPipe];
+    if (pipes.every(k => k.state === 'ready')) return Promise.resolve();
+    this.buildPromise = this.building = Promise.all(pipes.map(k => k.build())).then(() => {
+      this.building = null;
+      if (!this.disposed && !this.failed) this.onChange?.();
+    }, err => { this.building = null; this.fail('build', err); });
+    return this.buildPromise;
+  }
+
+  // Each slot stays occupied through readback and meshing, including old epochs.
   tick() {
-    if (this.disposed || this.failed || this.pending || !this.far.built || !this.visible) return;
+    if (this.disposed || this.failed || !this.far.built || !this.visible) return;
     if (this.win.pending) {
       if (!this.waitingWindow) this.waitingWindow = this.win.pending.then(() => {
-        this.waitingWindow = null; this.onChange?.();
-      }, () => { this.waitingWindow = null; this.failed = true; this.onChange?.(); });
+        this.waitingWindow = null;
+        if (!this.disposed && !this.failed) this.onChange?.();
+      }, err => { this.waitingWindow = null; this.fail('window transfer', err); });
       return;
     }
     // No ownership is published before all three pipelines can draw.
-    const pipes = [this.stage, this.pipe, this.depthPipe];
-    if (pipes.some((k) => k.state !== 'ready')) {
-      if (!this.building) this.building = Promise.all(pipes.map(k => k.build())).then(() => {
-        this.building = null; this.onChange?.();
-      }, () => { this.building = null; this.failed = true; this.onChange?.(); });
-      return;
+    if ([this.stage, this.pipe, this.depthPipe].some(k => k.state !== 'ready')) { this.build(); return; }
+    const jobs = this.jobs();
+    for (const slot of this.workers) {
+      if (slot.token) continue;
+      const job = jobs.shift();
+      if (!job) break;
+      try { this.submit(job, slot); }
+      catch (err) { this.fail('submission', err); break; }
     }
-    const job = this.wanted.find((c) => this.entries.get(c.key)?.step !== c.step);
-    if (!job) return;
+  }
+
+  submit(job, slot) {
     const sim = this.sim, o = sim.origin, g = sim.g, gpu = this.gpu, res = this.win.gen.res;
     const token = { ...job, epoch: this.epoch, revision: this.revisions[job.key], version: sim.version };
-    this.pending = token;
+    this.pending.set(job.key, token);
+    slot.token = token;
     const origin = [job.x - PAD, -PAD, job.z - PAD], side = this.layout.side, height = this.win.size[1];
     // the scene's prepass over the columns the cells read (held to the world), then the cells
     const c0 = [Math.max(0, origin[0]), Math.max(0, origin[2])], c1 = [Math.min(this.win.size[0], origin[0] + side), Math.min(this.win.size[2], origin[2] + side)];
@@ -267,28 +316,30 @@ export class WorldDetail {
           const bytes = this.win.store.map.get(this.win.store.key(bx, by, bz));
           if (bytes) edits.push({ at: [bx * BRICK, by * BRICK, bz * BRICK], bytes });
         }
+    // readback.buffer records a copy into its own staging buffer NOW, before
+    // the next dispatch overwrites shared cells. Keep dispatch/copy pairs ordered.
     gpu.readback.buffer(this.cells).then((buf) => {
       if (!this.valid(token)) { this.completed(token); return; }
       const raw = new Uint32Array(buf);
-      this.worker.postMessage({ token, raw, layout: this.layout, origin, height, pad: PAD,
+      slot.worker.postMessage({ token, raw, layout: this.layout, origin, height, pad: PAD,
         bounds: [job.x, 0, job.z, Math.min(job.x + DETAIL_CHUNK, this.win.size[0]), height, Math.min(job.z + DETAIL_CHUNK, this.win.size[2])],
         live, planted, wb, trees, edits }, [raw.buffer, planted.buffer]);
     }).catch((err) => {
-      if (!this.gpu.failure) console.error('world detail readback', err);
-      this.failed = true;
+      this.fail('readback', err);
       this.completed(token);
     });
   }
 
   valid(token) {
-    return !this.disposed && token.epoch === this.epoch && token.revision === this.revisions[token.key];
+    return !this.disposed && !this.failed && token.epoch === this.epoch &&
+      token.revision === this.revisions[token.key] && this.sameJob(this.pending.get(token.key), token);
   }
 
   accept({ token, positions, normals, ids, indices, liquid, error }) {
     const uploaded = [];
     try {
       if (!this.valid(token)) return;
-      if (error) { console.error('world detail mesh', error); this.failed = true; return; }
+      if (error) { this.fail('mesh', error); return; }
       const bytes = positions.byteLength + normals.byteLength + ids.length * 4 + (indices?.byteLength ?? 0);
       // A late offscreen result cannot displace wanted geometry or allocate an
       // oversized spare. Wanted replacements have no geometry budget cutoff.
@@ -319,8 +370,7 @@ export class WorldDetail {
       this.trimSpares();
     } catch (err) {
       for (const b of uploaded) this.sim._retire(b);
-      this.failed = true;
-      if (!this.gpu.failure) console.error('world detail upload', err);
+      this.fail('upload', err);
     } finally { this.completed(token); }
   }
 
@@ -396,7 +446,7 @@ export class WorldDetail {
   dispose() {
     this.disposed = true;
     this.reset();
-    this.worker.terminate();
+    for (const slot of this.workers) { slot.worker.terminate(); slot.token = null; }
     this.sim._retire(this.cells);
     this._dropDepth();
   }

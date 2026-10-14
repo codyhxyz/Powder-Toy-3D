@@ -89,7 +89,7 @@ detail.entries.delete('bent-only');
 
 // Publication derives bounds from actual mesh vertices, not chunk estimates.
 const published = Object.assign(Object.create(WorldDetail.prototype), {
-  pending: {}, wanted: [{ key: 0, distance: 1 }], entries: new Map(), bytes: 0,
+  pending: new Map(), workers: [], wanted: [{ key: 0, distance: 1 }], entries: new Map(), bytes: 0,
   mask: new Uint32Array(1), gpu: { createBuffer: () => ({}), write() {} },
   valid: () => true, makeRoom: () => true, drop() {},
 });

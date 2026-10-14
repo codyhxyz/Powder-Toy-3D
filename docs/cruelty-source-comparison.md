@@ -298,6 +298,19 @@ visual parity. Earlier full-app cold boots exceeded the old ten-second limit;
 subsequent checks stopped on watchdog process-query timeouts or player activity.
 The shared cap is now 25 seconds, with player protection and ownership checks intact.
 
+**Startup hotfix:** the original-art renderer is temporarily disabled at compile
+time. Its per-hit triangle and texture searches were included in every material
+pipeline, even outside Cruelty Squad mode. A runtime switch did not remove that
+native compilation workload. Production uses ordinary element materials and
+does not fetch or allocate appearance payloads. Source assets and numerical
+fixtures remain available. Geometry, interactions, missions and enemy profiles
+are unchanged. Re-enable only after bounded cold full-app and gameplay checks;
+the standalone numerical fixture does not establish startup safety.
+The built-site hotfix check cold-booted Paradise in material view, rendered,
+refreshed into the active mission again, switched to Sandbox and closed the
+browser within a **14.559-second total slot**. All 46 CPU deployment commands
+passed; production near/far WGSL also passed CPU Naga validation.
+
 ## How the levels load
 
 - `src/world/import/localMap.js` registers a map from its manifest alone
