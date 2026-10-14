@@ -168,9 +168,12 @@ fn cubicClose(p: vec3f) -> f32 { return 0.0; }`}
 // how much channel ch reads cubic at p: its thin mask, or being close
 fn cubicShare(p: vec3f, ch: i32) -> f32 {
   if (CH_CUBIC[ch] <= 0.0) { return 0.0; }
+  let close = cubicClose(p);
+  // fieldPeakFrag writes the thin mask in [0, 1]: it cannot raise full close weight.
+  if (close == 1.0) { return 1.0; }
   var t = 0.0;
   if (gThin) { t = fieldTex(tFT, p)[ch]; }
-  return max(t, cubicClose(p));
+  return max(t, close);
 }
 // The surface fields as the tracer sees them: each cubic channel within the
 // band blended toward its cubic reading by its share.
@@ -186,8 +189,12 @@ fn surfSample(p: vec3f) -> vec4f {
 }
 // One channel, at the surface (root finding, normals).
 fn surfChannel(p: vec3f, ch: i32) -> f32 {
-  let v = surfField(p)[ch];
   let w = cubicShare(p, ch);
+  // Surface fields are finite (fields.js: floored normalisation and peak
+  // denominators). At full weight mix(v, cubic, 1) needs no trilinear v.
+  // surfSample still needs that value for its band gate, even at full weight.
+  if (w == 1.0) { return fieldCubic(tFS, p)[ch]; }
+  let v = surfField(p)[ch];
   if (w > 0.0) { return mix(v, fieldCubic(tFS, p)[ch], w); }
   return v;
 }

@@ -201,12 +201,20 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   var ax = 1;   // entry face axis: unknown in the start cell
   var lastB = vec3i(-1);
   var flags = 0u;
+  var bid = 0u;
+  var occM = vec2u(0u);
   var phiA = surfField(ro);
   var stale = false;
   for (var i = 0; i < REFL_MAX_STEPS; i++) {
     if (outside(cell)) { break; }
     let bc = cell / BS;
-    if (any(bc != lastB)) { lastB = bc; flags = brickInfo(bc); }
+    if (any(bc != lastB)) {
+      lastB = bc;
+      bid = brickId(bc);
+      flags = brickInfoOf(bid);
+      if (brickOpaque(flags)) { occM = occMaskOf(bid); }
+      // Keep gThin inherited from the primary march, as before.
+    }
     // only bricks with something opaque can stop it
     if (!brickOpaque(flags)) {
       // an empty brick may sit in a larger empty region: cross all of it
@@ -216,14 +224,22 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
       continue;
     }
     let tExit = min(tMax.x, min(tMax.y, tMax.z));
-    let a = fetchA(cell);
-    let id = eid(a);
+    let id = occCellId(occM, bid, cell);
+    // Exactly the empty crisp-only body's stale update and single DDA step:
+    // phiA is untouched, ties and the reflection iteration budget unchanged.
+    // Smooth fields can reach empty cells, so never bypass a surface brick.
+    if (id == E_EMPTY && (flags & (BRICK_SURF | BRICK_MEDIA)) == 0u) {
+      stale = true;
+      tEnter = tExit;
+      ax = ddaStep(istp, tDelta, &cell, &tMax);
+      continue;
+    }
     if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) {
         var nh = vec3f(0.0);
         nh[ax] = -f32(istp[ax]);
         var th = tEnter;
-        if (crispHit(cell, id, ro, rd, tEnter, tExit, &th, &nh)) { return reflShade(a, ro + rd * th, nh); }
+        if (crispHit(cell, id, ro, rd, tEnter, tExit, &th, &nh)) { return reflShade(fetchA(cell), ro + rd * th, nh); }
       }
       stale = true;
     } else if (brickSurf(flags)) {
