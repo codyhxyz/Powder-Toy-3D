@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { part, limb, STICK_HAND, buildJetpack } from './figure.js';
+import { unlitMaterial } from '../gfx/meshLight.js';
+import { part, limb, STICK_HAND } from './figure.js';
 
 // Halo 3's Mark VI silhouette: sealed helmet, gold visor, broad shoulder
 // plates and segmented armor over a black undersuit. Same rig as figure.js,
@@ -9,6 +10,37 @@ const ARMOR = [0.16, 0.23, 0.065], DARK = [0.018, 0.023, 0.025];
 const TRIM = [0.065, 0.085, 0.045], GOLD = [0.95, 0.48, 0.075];
 const HIP = 2.5, THIGH = 1.2, SHIN = 1.3, TORSO = 1.75;
 const UPPER_ARM = 0.85, FOREARM = 0.85;
+
+// Halo: Reach's jetpack is a bolted thruster pack. The shared barrel is the wizard's.
+function spartanPack(torso, plate) {
+  const root = new THREE.Group();
+  root.name = 'jetpack';
+  root.position.set(0, 1.12, 0.78);
+  torso.add(root);
+  plate(root, 'pack', [0.86, 0.36, 0.1], [0, 0.04, -0.02]);
+  const nozzles = [], flames = [];
+  const material = unlitMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  material.color.setRGB(6, 2.6, 0.7);
+  for (const side of [-1, 1]) {
+    plate(root, 'thruster', [0.26, 0.42, 0.24], [side * 0.3, -0.02, 0.04]);
+    plate(root, 'exhaust', [0.14, 0.05, 0.14], [side * 0.3, -0.24, 0.04], DARK);
+    const bracket = new THREE.BoxGeometry(0.07, 0.06, 0.14);
+    bracket.translate(side * 0.3, 0.1, -0.12);
+    part(root, bracket, DARK).name = 'jet-strap';
+    const nozzle = new THREE.Group();
+    nozzle.name = `jet-nozzle-${side < 0 ? 'left' : 'right'}`;
+    nozzle.position.set(side * 0.3, -0.26, 0.04);
+    root.add(nozzle);
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.9, 12).rotateX(Math.PI).translate(0, -0.45, 0), material);
+    flame.name = 'jet-flame';
+    flame.renderOrder = 1;
+    flame.visible = false;
+    nozzle.add(flame);
+    nozzles.push(nozzle);
+    flames.push(flame);
+  }
+  return { root, nozzles, flames };
+}
 
 export function buildSpartan() {
   const body = new THREE.Group(), torso = new THREE.Group(), neck = new THREE.Group();
@@ -66,7 +98,7 @@ export function buildSpartan() {
   elR.add(hand);
   return {
     hipY: HIP, lieLift: 0.55, body, torso, neck,
-    jetpack: buildJetpack(torso, { up: 1.05, back: 1, color: ARMOR, nozzleColor: DARK }),
+    jetpack: spartanPack(torso, plate),
     shL, shR, elL, elR, hipL, hipR, knL, knR, handY: -FOREARM,
   };
 }
