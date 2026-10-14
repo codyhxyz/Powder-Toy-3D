@@ -14,6 +14,7 @@ The starter line separates gold from sand and ships the gold for credits.
 - **V:** switch between walking and the construction camera.
 
 The panel also has buttons for these actions. Machines do not use E.
+On small screens, **Choose machine** reveals the machine catalog.
 The preview requires clear space; its arrows show the material flow.
 Refractory blocks stack into platforms, catch walls, and chutes.
 

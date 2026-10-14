@@ -121,7 +121,7 @@ export function createIndustry(app) {
     filter: value => { filter = value; }, power: value => { powered = factory() ? false : value; },
   });
   const key = e => {
-    if (!active() || app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!active() || app.isTyping() || (e.target?.tagName === 'SELECT' && e.code !== 'Escape') || e.ctrlKey || e.metaKey || e.altKey) return;
     const buildKey = e.code === 'KeyB' && (building || app.gamemode === 'factory' || e.shiftKey);
     if (buildKey || (building && ['KeyR','Escape'].includes(e.code))) {
       e.preventDefault(); e.stopImmediatePropagation();
@@ -180,6 +180,7 @@ export function createIndustry(app) {
     update, place, remove, modeChanged, get state() { return state(); }, get building() { return building && active(); },
     get pending() { return pending || !!physics.pending; },
     reset({ starters = false } = {}) {
+      if (factory()) app.hud.dismissHint?.(); // The Sandbox pouring hint is false on the initial Factory boot too.
       epoch++; physics.reset(); devices = []; progression = null; paid.clear(); factoryRun = false; assisted = false;
       pending = false; building = false; if (factory()) powered = false; probeKey = ''; lastMode = app.gamemode;
       if (starters && app.settings.preset === 'quarry') {
