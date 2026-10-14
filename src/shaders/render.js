@@ -1330,7 +1330,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   const d = view === 'realistic' ? detail : {};
   const parts = [
     `// volume: ${view}${view === 'realistic' ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
-    lib(g, { variant: 'LIGHTING', far: false, aeration: true, debug, detail: d }),
+    lib(g, { variant: 'LIGHTING', far: view === 'realistic', aeration: true, debug, detail: d }),
     TRACER_WGSL,
     curved ? presentationNearWGSL() : '',
     surfaceGLSL(d),

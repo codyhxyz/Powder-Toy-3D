@@ -3,6 +3,7 @@ import { cloudDeckGLSL } from './clouds.js';
 import { LAMP_UNIT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 import { WAND_LIGHTS } from '../bindings.js';
 import { libChecks } from './lib.js';
+import { lighthouseGLSL } from './lighthouse.js';
 
 // The count lives in shaders/bindings.js beside the uniform arrays it sizes
 // (gfx/uniforms.js imports it from here).
@@ -70,7 +71,7 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  * ambient floor in giIrradiance and giRadiance.
  * @param {{ shadowMap?: boolean, probes?: boolean, giUniforms?: boolean }} [opts]
  */
-export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false } = {}) => {
+export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false, far = false } = {}) => {
   // FU.caustics != 0u, FU.time, f32(FU.frame), or the GI passes' zeros
   const caustics = giUniforms ? 'false' : 'FU.caustics != 0u';
   const time = giUniforms ? '0.0' : 'FU.time';
@@ -609,7 +610,7 @@ fn nearSmoothIn(p: vec3f, opaqueOnly: bool) -> bool {
   let s = surfField(p);
   return max(max(s.y, s.z), max(s.w, select(s.x, 0.0, opaqueOnly))) >= SURF_ISO;
 }
-fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
+fn traceNearSteps(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32, maxSteps: i32,
              hc: ptr<function, vec3i>, hn: ptr<function, vec3f>) -> f32 {
   let rd = safeDir(rd0);
   var istp: vec3i;
@@ -624,7 +625,7 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
   var ax = 1;
   var lastB = vec3i(-1);
   var occ = 0u;
-  for (var i = 0; i < NEAR_MAX_STEPS; i++) {
+  for (var i = 0; i < maxSteps; i++) {
     if (tEnter > tLim) { break; }
     if (cell.y < 0) { *hc = cell; *hn = vec3f(0.0, 1.0, 0.0); return tEnter; }
     if (outside(cell)) { break; }
@@ -647,6 +648,11 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
     tMax[ax] += tDelta[ax];
   }
   return -1.0;
+}
+
+fn traceNear(ro: vec3f, rd: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
+             hc: ptr<function, vec3i>, hn: ptr<function, vec3f>) -> f32 {
+  return traceNearSteps(ro, rd, tLim, opaqueOnly, selfSkip, NEAR_MAX_STEPS, hc, hn);
 }
 
 // Random numbers for this pixel (gFragCoord) and frame: k-th of a decorrelated set.
@@ -1067,12 +1073,15 @@ fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> Lam
     sum += E * nl;
     if (view.on) { spec += E * lampSpec(i, p, n, view); }
   }
+  // Beacon direct light only: no rotating contribution left behind in GI history.
+  ${giUniforms ? '' : 'if (FU.beaconDir.w > 0.0) { sum += beaconDiffuse(p, ng, n); }'}
   return LampLit(sum, spec);
 }
 fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
   return lampShade(p, ng, n, soft, LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false)).diff;
 }
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f { return lampSum(p, ng, n, true); }
+${lighthouseGLSL({ far })}
 `;
 };
 

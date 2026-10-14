@@ -67,6 +67,9 @@ export const gfxUniforms = {
   uCaveAmbient: { value: [0, 0, 0] },   // the scene's ambient floor (a world scene's `ambient`: Descent's caves), radiance
   uDigMin: { value: [0, 0, 0, 0] },     // the dig tools' aimed bite, drawn on the surface (src/pov/tools/dig.js sets it)
   uDigMax: { value: [0, 0, 0, 0] },
+  uBeacon: { value: new Float32Array(4) },     // world xyz, reach in cells
+  uBeaconDir: { value: new Float32Array(4) },  // unit direction, night gain
+  uBeaconCell: { value: new Float32Array(4) }, // physical CRYSTAL switch, world xyz
 };
 
 const sky = { sunExt: null, sunCol: null, skyUp: null, ground: null };
@@ -172,6 +175,7 @@ export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRe
     keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, jitter, cloudShift: u.uCloudShift.value,
     bevel: u.uBevel.value, glints: u.uGlints.value, view, frame: u.uFrame.value, shadowRes,
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
+    beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,
     shadows: !!shadows, nearGI: !!u.uNearGI.value, glowLights: !!u.uGlowLights.value, caustics: !!u.uCaustics.value,
     clouds: !!u.uClouds.value, far: !!far, caveAmbient: u.uCaveAmbient.value, digMin: u.uDigMin.value, digMax: u.uDigMax.value,
   });

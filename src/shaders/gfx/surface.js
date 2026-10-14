@@ -2006,7 +2006,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   // a torch or lantern (traced shadows, so no AO); it has a direction and a
   // size too, so it also reflects as the sun does (lighting.js lampShade:
   // Karis 2013's tube light), with the same multiple-scattering compensation
-  if (FU.lampCount > 0) {
+  if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) {
     let lit = lampShade(s.p, ng, n, true, LampSpecIn(v, s.rough, F0, s.tang, s.aniso, true));
     c += kL * lit.diff + lit.spec * msK;
   }
@@ -2098,7 +2098,7 @@ fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
   }
   if (glowWorthIt(local, irr)) { local *= glowLightScale(pf, n, n); }
   var lamps = vec3f(0.0);
-  if (FU.lampCount > 0) { lamps = lampLight(pf, n, n); }
+  if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { lamps = lampLight(pf, n, n); }
   return alb * (FU.sunCol * ndl * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao) + lamps);
 }
 `;

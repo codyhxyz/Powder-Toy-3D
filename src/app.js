@@ -84,6 +84,8 @@ import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
 import { VIEWS, viewKey as viewKeyOf } from './views.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
+import weatherWire, { weather } from './wire/weather.js';
+import { weatherSection } from './ui/weather.js';
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160],
   valley: ARENA_PRESETS.damValley.size };
@@ -757,6 +759,7 @@ function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m
 // Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
 const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
+  ctx.resetWeather?.();
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
   if (undoable && ctx.industry?.pending) { hud.toast('Wait for the machine transfer before changing the scene.'); return false; }
@@ -1377,6 +1380,7 @@ const settingsPanel = createSettings({
       ...simModeRows({ change: setSimMode, locked: simModeLock }),
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
+    weatherSection(weather, { enabled: () => !!win?.loaded && !mp.isGuest }),
     { title: 'Lighting', rows: [
       // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
@@ -1446,6 +1450,7 @@ if (signInResult.error) hud.toast(signInResult.error);
 account().then((user) => { if (signInResult.signedIn && user) hud.toast(`Signed in as ${user.name}`); });
 
 function resetSettings() {
+  weather.reset();
   const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
   Object.assign(settings, DEFAULTS, keep);
   sim.gravity = settings.gravity;
@@ -2341,7 +2346,7 @@ function tick(now, renderOnly = false) {
     stepOnce = false;
   } else if (stepping) {
     if (v2Running) { v2Running = false; sim.noteWrite(); }   // (today's activity map: every brick, as after a load)
-    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
+    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); weatherWire.step(ctx); sim.step(); scripts?.afterStep(); }
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
@@ -2610,6 +2615,10 @@ try {
     get perkOrbs() { return perkOrbs; },
     get scripts() { return scripts; },   // the console (src/console): .setOpen, .world
     get lightning() { return lightning; },   // the Lightning tool's and storms' bolts (src/lightning.js)
+    weather,
+    get elementWeather() { return ctx.elementWeather; },
+    get oceanEvents() { return ctx.oceanEvents; },
+    get lighthouse() { return ctx.lighthouse; },
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
     get win() { return win; },
@@ -2686,7 +2695,10 @@ try {
           if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
           if (!v2Running) { physicsV2.resync(); v2Running = true; }
           physicsV2.ticks(count);
-        } else for (let i = 0; i < count; i++) sim.step();
+        } else for (let i = 0; i < count; i++) {
+          weatherWire.step(ctx); sim.step();
+          lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });
+        }
         if (DAY.running) day.clock += count;
       },
       // Every pipeline the current settings need is built, ours and three's (B5).
