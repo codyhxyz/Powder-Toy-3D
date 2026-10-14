@@ -47,6 +47,7 @@ jobs:
       - run: node tools/firearm-aim-check.mjs && node tools/held-tools-check.mjs
       - run: node tools/npc-held-check.mjs
       - run: node tools/shrine-interact-cpu-check.mjs
+      - run: node tools/check-weather-wire.mjs && node tools/check-weather.mjs && node tools/check-ocean-events.mjs
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: npm run build
