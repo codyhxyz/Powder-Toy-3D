@@ -1206,6 +1206,8 @@ export const TOOLS = [
     desc: 'Player spawn. Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
   { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a', spawner: true,
     desc: 'Jeep pad. Click open ground: in first person (V) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
+  { id: -22, key: 'BOATPAD', abbr: 'BOAT', name: 'Boat pad', color: '#d69042', spawner: true,
+    desc: 'Boat pad. In a box world, click an open water surface with room for a 3.6 m boat. Press V, swim up and E to board; W/S forward/reverse, A/D steer. Motor needs water; no hop or boost. Returns after destruction. Click again to remove.' },
   { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0', spawner: true,
     desc: 'Hoverbike pad. Click open ground: in first person (V) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
   // TPT's SPRK brush: sparks the conductors inside it (src/electricity.js
@@ -1371,7 +1373,7 @@ export const PALETTE = [
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },   // (no starter wands: wands are the Noita gamemode's alone)
-  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
+  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'BOATPAD', 'FLOCK'] },
   // TPT's DECO menu (its tools in TPT's order)
   { name: 'Deco', items: DECO_TOOLS.map((t) => t.key) },
   // Sections under headers, as Garry's Mod's spawnlists split their props

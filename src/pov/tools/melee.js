@@ -39,6 +39,7 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //                              //   (the knife raised for a backstab); target is the body in reach (rayTarget), or null
 //     pose: { pos, rest, hit, miss, roll, strike,   // the held model, in cells and rad (camera space)
 //             thrust?: [hit, miss],                 // cells it drives forward on a blow: a stab, not a chop
+//             thrustAxis?: [x, y, z],               // unit drive direction (default forward); jackhammer drives down
 //             gesture?: name,                      // holds.js third-person gesture override
 //             ready?, readyPos?: [x, y, z],         // rad and cells offset while tell() holds
 //             lethal?: { hit, miss, thrust } },     // a lethal blow's own motion (the backstab's plunge)
@@ -66,7 +67,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
   function buildModel(env) {
     const model = heldModel(env, { model: modelKey, pos: POSE.pos, pivot: true });
     // Third-person gestures are driven separately by held.js/holds.js.
-    model.hand.userData.gesture = { since: Infinity, span: refire, name: POSE.gesture };
+    model.hand.userData.gesture = { since: Infinity, span: refire, name: POSE.gesture, axis: POSE.thrustAxis };
     return model;
   }
 
@@ -178,7 +179,8 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           const restAngle = POSE.rest + tellK * ((POSE.ready ?? POSE.rest) - POSE.rest);
           model.pivot.rotation.set(restAngle + turning.angle(dt) - POSE.rest, 0, POSE.roll);
           const rp = POSE.readyPos ?? [0, 0, 0];
-          model.pivot.position.set(rp[0] * tellK, rp[1] * tellK, rp[2] * tellK - driving.angle(dt));
+          const axis = POSE.thrustAxis ?? [0, 0, -1], drive = driving.angle(dt);
+          model.pivot.position.set(rp[0] * tellK + axis[0] * drive, rp[1] * tellK + axis[1] * drive, rp[2] * tellK + axis[2] * drive);
         },
         deselect() { model.deselect(); digs?.hide(); button.reset(); pose.stop(); lethalPose.stop(); push.stop(); lethalPush.stop(); tellK = 0; telling = false; },
         status: () => null,

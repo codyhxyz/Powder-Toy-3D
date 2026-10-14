@@ -234,19 +234,26 @@ fn surfCross(ro: vec3f, rd: vec3f, ch: i32, into: bool, ta: f32, tm: f32, tb: f3
   return surfRoot(ro, rd, ch, select(tm, ta, first), select(tb, tm, first), select(m, a, first), select(b, m, first));
 }
 
-// Outward surface normal (−∇φ) of channel ch at p from a tetrahedral central
-// difference; fallback where the gradient vanishes. The step is wide on
-// purpose: trilinear fields have creased gradients at the cell-centre
-// lattice, and a wide stencil irons them out. Where a channel reads cubic
-// (thin features, up close) it is smooth, and the step only has to be small
-// next to a drop's radius.
+// Outward surface normal (−∇φ). Liquid uses opposite axis pairs: a tetrahedral
+// stencil leaks mixed derivatives into other axes (an xy slope gets a false
+// z normal), turning continuous water into lumpy reflections/refractions.
+// The wide step irons out trilinear lattice creases. Cubic features use a
+// smaller step next to a drop's radius; opaque channels keep four taps.
 const NORMAL_STEP: f32 = 0.55;
 const NORMAL_STEP_CUBIC: f32 = 0.25;
 fn surfNormal(p: vec3f, ch: i32, fallback: vec3f) -> vec3f {
-  let k = vec2f(1.0, -1.0);
   let h = mix(NORMAL_STEP, NORMAL_STEP_CUBIC, cubicShare(p, ch));
-  let gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
-         + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
+  var gr: vec3f;
+  if (ch == CH_LIQUID) {
+    let e = vec2f(1.0, 0.0);
+    gr = 2.0 * vec3f(surfChannel(p + e.xyy * h, ch) - surfChannel(p - e.xyy * h, ch),
+                     surfChannel(p + e.yxy * h, ch) - surfChannel(p - e.yxy * h, ch),
+                     surfChannel(p + e.yyx * h, ch) - surfChannel(p - e.yyx * h, ch));
+  } else {
+    let k = vec2f(1.0, -1.0);
+    gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
+       + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
+  }
   let l = length(gr);
   if (l > 1e-5) { return -gr / l; }
   return fallback;

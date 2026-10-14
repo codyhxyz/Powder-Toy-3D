@@ -1,21 +1,25 @@
-# Vehicles: a jeep and a hoverbike (Big Team Battle)
+# Vehicles: jeep, hoverbike and motorboat
 
-Halo's Big Team Battle in the falling-sand world: a Warthog-style **jeep** and a drifty **hoverbike**,
+Halo's Big Team Battle in the falling-sand world: a Warthog-style **jeep**, a drifty **hoverbike**, and a small **motorboat**,
 rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-simd`, the WASM SIMD build, pinned at
 0.21.0) that drive on the sim's own cells. Code: `src/pov/vehicles/`. Boxes only for now (not World's moving window).
 
 ## Playing
 
-- **Get one**: the palette's Entities group has **Jeep pad** and **Hoverbike pad** (spawners.js). Click open
+- **Get one**: the palette's Entities group has **Jeep pad**, **Hoverbike pad** and **Boat pad** (spawners.js). Click open
   ground; in first person a vehicle waits there, and a new one comes 8 s after it's destroyed (a wreck on the
-  pad is cleared away). An arena places its own with `spawnLayout` (below).
+  pad is cleared away). For the boat, click an **open water surface** with at least 3.6 m of room,
+  then press **V**, swim up and **E** to board. Boats placed on land cannot drive. An arena places its own with `spawnLayout` (below).
 - **E** near a vehicle (within 1.8 m of its hull): get in. **E** again: get out, set down beside the driver's
   door (else the other side, behind, in front, on top, wherever the body fits). You keep its momentum.
   **E** at an overturned vehicle rights it (Halo's flip).
-- **Driving**: W/S throttle (S brakes first, then reverses), A/D steer, **Space** handbrake (jeep: the rear
+- **Jeep/hoverbike controls**: W/S throttle (jeep S brakes first, then reverses), A/D steer, **Space** handbrake (jeep: the rear
   wheels lock and the tail swings out) or hop (hoverbike), **Shift** boost (the hoverbike's tank lasts 3 s).
   The mouse orbits Halo's third-person chase camera; when it rests 1.2 s the camera swings back behind.
-  Tools are put away while you drive; the HUD shows the vehicle's health, speed and boost.
+  Tools are put away while you drive; the HUD shows health and speed (plus hoverbike boost).
+- **Boat controls**: W forward, S reverse (slows forward travel first), A/D steer; release to coast.
+  No hop, handbrake or boost. The stern motor must be in liquid. The **Jeep sinks in deep water**
+  (its open hull floods); shallow water still permits wading along the bottom.
 - **Running people over** hurts them from 3 m/s and kills at 10 m/s (Halo's splatter), never your own team
   (`target.team` vs the driver's `player.team`, else the vehicle's team).
 - **Damage**: gun rounds and melee hit the hull (it's a `targets.js` target), blasts hurt and shove it, hot
@@ -33,8 +37,9 @@ rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-simd`, the WASM
 | What the wheels see | **not** the voxels: a raycast wheel sees only the ground straight under its axle, so the grid's 0.3 m risers are walls it bottoms out on. Each vehicle gets a heightfield (40 × 40 cells around it) of the column tops **dilated by the tyre's circle** (a rigid wheel of radius r touches a step's edge √(r² − (r − h)²) ahead of its axle); a step higher than r is a wall, left to the voxels. It collides with nothing; only that vehicle's rays query it. The jeep climbs 27° stairs this way; before, it stopped dead at 18°. | `physics.js` `buildGround` |
 | Jeep | Rapier's `DynamicRayCastVehicleController` (Bullet's btRaycastVehicle port), 4 wheels, 4WD | `jeep.js` |
 | Hoverbike | four ray springs (spring–damper, 1.6 Hz, ζ 0.45) on the same kind of heightfield, whose tops include liquids': it skims lakes. Yaw rate steering, thrust along the nose, low sideways grip (3 /s, 2 /s boosting): hard turns at speed drift ~30–40° | `hoverbike.js` |
-| Matter | hull sample points: Archimedes in liquids (ρ = elements.js dens × 100 kg/m³: a jeep wades in water and floats on lava), quadratic drag in them (C_d 1.05, a cube's), heat damage above 300 °C; under each wheel, rolling resistance and grip by surface | `matter.js`, `jeep.js` |
-| Look | chunky primitives lit like the Castle Crashers wizard (`figure.js` `figureFrag` with `FIG_TOON`: the volume's sun, shadows, GI) with black inverted-hull outlines; team stripe red/blue; a seated wizard drives | `look.js`, `jeep.js`, `hoverbike.js` |
+| Boat | 650 kg, 3.6 m single-seat motorboat; 1.8 m³ buoyancy sampled through the hull, low COM, free roll/pitch, water-only outboard and steering. Minecraft-simple controls, Rust motorboat feel; no fuel system. Slender-hull drag C_d 0.08 with extra heave/side resistance, rather than changing other vehicles' drag | `boat.js` |
+| Matter | hull sample points: Archimedes in liquids (ρ = elements.js dens × 100 kg/m³: a jeep sinks in deep water and floats on denser lava), quadratic drag in them (C_d 1.05, a cube's), heat damage above 300 °C; under each wheel, rolling resistance and grip by surface | `matter.js`, `jeep.js` |
+| Look | chunky primitives lit like the Castle Crashers wizard (`figure.js` `figureFrag` with `FIG_TOON`: the volume's sun, shadows, GI) with black inverted-hull outlines; team stripe red/blue; a seated wizard drives | `look.js`, `jeep.js`, `hoverbike.js`, `boat.js` |
 | Spawning, seats, run-overs, blasts, wrecks, HUD | | `index.js`, `vehicles.css` |
 
 ### Tuning, and where it comes from
@@ -61,7 +66,7 @@ Every number is a named constant with its source in the file. The main ones:
 ```js
 const vehicles = __app.pov.vehicles;    // created by the POV shell (pov/index.js)
 vehicles.spawnLayout({ vehicles: [      // an arena's vehicles; each is kept alive and respawns 8 s after it's destroyed
-  { kind: 'jeep' | 'hoverbike', team: 'red' | 'blue' | null, at: [x, y, z] /* grid cells, the ground under it */, yaw /* rad, 0 faces +z */ },
+  { kind: 'jeep' | 'hoverbike' | 'boat', team: 'red' | 'blue' | null, at: [x, y, z] /* grid cells, the ground under it */, yaw /* rad, 0 faces +z */ },
 ] });                                   // → how many; spawnLayout(null) clears them
 vehicles.list                           // live vehicles and wrecks: { id, kind, team, health, alive, driver, impl: { body (Rapier), state, speed } }
 vehicles.seated                         // the vehicle the player drives, or null
@@ -95,6 +100,11 @@ them), as it resets the NPCs.
 
 ## Checks
 
+- `node tools/boats-node-check.mjs`: CPU boat flotation/roll-pitch recovery, uneven liquid response, motor, coast, steering and
+  reverse, dry/airborne/dead motor gating, shoreline collision, Jeep sinking/drag/heat, palette and pad save roundtrip.
+- `node tools/boats-check.mjs --port <yours>`: UI-mode browser smoke for normal water-surface pad
+  placement, boarding, driving/steering/reverse and exit (GPU budget rules apply).
+
 - `node tools/vehicles-node-check.mjs`: CPU only (Rapier in node, a stand-in for the cells' copy): the jeep
   climbs 27° stairs, the hoverbike 18°, sand slows the jeep ≥ 3× harder than stone.
 - `node tools/vehicles-terrain-check.mjs`: CPU only, Dam Valley with six vehicles driving, circling and
@@ -115,4 +125,6 @@ them), as it resets the NPCs.
 - World mode: the window moves under the vehicles (needs `windowShifted` to move the bodies and the voxels).
 - The body only meets a hull by being pushed back out sideways (`shoveOut`): you can't stand on a jeep's
   roof. Vehicles don't push cells (sand isn't ploughed, water isn't splashed by them).
+- Boats respond to actual liquid cells (the CPU copy can lag by 0.5 s), not decorative rendered waves.
+  The hull uses a sampled displaced volume, not a fluid solver; no wakes, planing or visual-wave coupling.
 - Vehicle-on-vehicle crashes don't hurt; the hoverbike's fans don't blow dust.
