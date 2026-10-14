@@ -7,6 +7,8 @@ import { HOMES, FLOOR, HOME_Z, initialState } from '../src/pov/village/state.js'
 import { VILLAGE_TOOLS, punchTarget, punchOccluded, stepResident } from '../src/pov/village/actions.js';
 
 const hooks = registerHooks({ resolve(specifier, context, next) {
+  if (context.parentURL?.endsWith('/village/index.js') && specifier === './debtBadge.js')
+    return { shortCircuit: true, url: 'data:text/javascript,export function createDebtBadge(){return {update(){},dispose(){}}}' };
   if (context.parentURL?.endsWith('/village/index.js') && specifier === './ui.js') return { shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(`
     export function createVillageUi(opts) {
       let opened = false;

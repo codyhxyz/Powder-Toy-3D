@@ -110,6 +110,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     if (nextButton) {
       nextButton.querySelector('span').textContent = finished ? (dialogue.choiceOnly ? 'Choose an answer' : 'Keep chatting') : 'Show full message';
       nextButton.disabled = finished && !!dialogue.choiceOnly;
+      nextButton.hidden = nextButton.disabled;
       if (nextButton.disabled && document.activeElement === nextButton)
         content.querySelector('.village-topic')?.focus();
     }

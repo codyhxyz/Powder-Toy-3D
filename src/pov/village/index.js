@@ -11,6 +11,7 @@ import { attachModel } from '../models.js';
 import { VILLAGE_TOOLS, PUNCH_COOLDOWN, PUNCH_DURATION, PUNCH_CONTACT, punchTarget, punchOccluded, stepResident } from './actions.js';
 import { TIM_CROOK, crookDialogue } from './crook.js';
 import { createCrookController } from './crookController.js';
+import { createDebtBadge } from './debtBadge.js';
 import { ELEMENTS, K } from '../../elements.js';
 
 export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
@@ -26,7 +27,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   let held = null, tool = null, toolModel = null, toolMaterials = [], usingTool = false;
   let punchAt = -Infinity, punchSerial = 0, kicking = false, reaction = '', reactionUntil = 0;
   let pendingPunch = null;
-  let crook = null, crookModel = null, worldSeed = null;
+  let crook = null, crookModel = null, debtBadge = null, worldSeed = null;
   let bodyFrom = null, crookMotionFrom = null;
   function equip(key) {
     if (interaction || !VILLAGE_TOOLS.some(t => t.key === key)) return;
@@ -334,7 +335,11 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (speaking === crook && crook) {
       if (!context().active) { ui.close(); return; }
       if (choiceId !== undefined) crook.answer(choiceId);
-      if (crook.state.complete) { ui.close(); return; }
+      if (crook.state.complete) {
+        ui.close();
+        debtBadge?.update({ active: enabled, balance: crook.state.balance, reveal: true });
+        return;
+      }
       const line = crookDialogue(crook.state);
       ui.talk(TIM_CROOK, line.text, line.choices, { choiceOnly: true });
       speech.speak(line.text, TIM_CROOK.pitch);
@@ -451,6 +456,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     pendingPunch = null;
     onEnabled(on);
     if (!on) {
+      debtBadge?.dispose(); debtBadge = null;
       releaseActions(); getPlayer()?.cancelJump?.();
       ui.close(); endInteraction(true, true);
       avatar.reset();
@@ -467,6 +473,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     let storage;
     try { storage = localStorage; } catch { storage = { getItem() { throw new Error('Unavailable'); } }; }
     crook = createCrookController(storage, world.seed);
+    debtBadge = createDebtBadge();
+    debtBadge.update({ active: true, balance: crook.state.balance });
     crookModel = character(TIM_CROOK); root.add(crookModel.root);
     equip(null);
     saveKey = `willow-cove:furniture:v1:${world.seed}`;
@@ -703,9 +711,12 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     });
     crookMotionFrom = null;
     const pos = crook.position;
+    debtBadge?.update({ active: enabled, balance: crook.state.balance });
     crookModel.root.visible = crook.visible;
     at(crookModel.root, 0, pos);
-    if (p) crookModel.root.rotation.y = Math.atan2(HOMES[0] + pos.x - p.x, pos.z - p.z);
+    if (crook.phase === 'departing')
+      crookModel.root.rotation.y = Math.atan2(before.x - pos.x, before.z - pos.z);
+    else if (p) crookModel.root.rotation.y = Math.atan2(HOMES[0] + pos.x - p.x, pos.z - p.z);
     crookModel.animate(time, Math.hypot(pos.x - before.x, pos.z - before.z) > 0.001 ? 5 : 0,
       speaking === crook && speech.stats.queued > 0);
     if (talk) { speaking = crook; chat(); }

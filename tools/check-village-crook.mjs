@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import * as THREE from 'three';
 import { initialCrookState, startCrook, answerCrook, crookDialogue, loadCrookState, CROOK_LINES } from '../src/pov/village/crook.js';
-import { HOMES, FLOOR, HOME_Z } from '../src/pov/village/state.js';
+import { HOMES, FLOOR, HOME_Z, HOME_ENTRY } from '../src/pov/village/state.js';
 import { createCrookController } from '../src/pov/village/crookController.js';
 
 const saves = new Map();
@@ -31,6 +31,10 @@ for (const raw of ['{broken', '{"version":99}', '{"version":1,"started":true,"st
 }
 const hooks = registerHooks({ resolve(specifier, context, next) {
   const modules = {
+    './debtBadge.js': `export function createDebtBadge() {
+      const badge = { updates: [], disposed: false, update(value) { this.updates.push(value); }, dispose() { this.disposed = true; } };
+      globalThis.lastDebtBadge = badge; return badge;
+    }`,
     './ui.js': `export function createVillageUi(o) {
       globalThis.uiOptions = o; let opened = false, talking = false;
       return { get opened(){return opened}, get talking(){return talking},
@@ -108,8 +112,24 @@ village.act({ type: 'interact' });
 assert.equal(village.crook.state.step, 1); assert.equal(village.blocked, true);
 while (!village.crook.state.complete) uiOptions.speakNext(lastTalk.choices[0].id);
 assert.equal(village.crook.state.balance, -56000); assert.equal(village.blocked, false);
+assert.equal(lastDebtBadge.updates.filter(u => u.reveal).length, 1, 'completion reveals the debt once');
+assert.equal(lastDebtBadge.updates.at(-1).balance, -56000);
+assert.equal(village.crook.phase, 'departing');
+const exitPosition = village.crook.position;
+for (let i = 0; i < 50; i++) tick();
+assert.equal(village.crook.phase, 'gone');
+assert.equal(village.root.getObjectByName('village-tanuki').visible, false);
+assert.ok(Math.hypot(village.crook.position.x - exitPosition.x, village.crook.position.z - exitPosition.z) > 3, 'Tim walks off, not a teleport');
+const oldBadge = lastDebtBadge;
 reset('first', 0, -14); tick();
 assert.equal(village.crook.state.balance, -56000);
+assert.equal(oldBadge.disposed, true);
+assert.equal(lastDebtBadge.updates.at(-1).balance, -56000);
+assert.ok(lastDebtBadge.updates.every(u => !u.reveal), 'reload restores a docked balance, not the reveal');
+assert.equal(village.root.getObjectByName('village-tanuki').visible, false);
+reset('foyer', HOME_ENTRY.x, HOME_ENTRY.z);
+for (let i = 0; i < 10; i++) tick(-.5);
+assert.equal(village.crook.state.started, true, 'walking straight out of the real entry spawn triggers Tim');
 reset('second'); assert.equal(village.crook.state.started, false);
 exit(); approach(); uiOptions.speakNext(lastTalk.choices[0].id);
 village.setEnabled(false);

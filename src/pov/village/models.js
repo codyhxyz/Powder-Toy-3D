@@ -86,9 +86,10 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
     ball(head, '#edd5ad', [0, 3.65, -1.06], [0.85, 0.48, 0.4]).name = 'light-muzzle';
   }
   for (const x of [-0.55, 0.55]) {
-    eyes.push(ball(head, '#fff9e9', [x, 4.13, -1.02], [0.36, 0.49, 0.15]),
-      ball(head, '#302d29', [x, 4.12, -1.15], [0.2, 0.32, 0.075]),
-      ball(head, '#ffffff', [x - 0.06, 4.25, -1.21], [0.065, 0.09, 0.025]));
+    const eyeZ = tanuki ? -1.35 : -1.02;
+    eyes.push(ball(head, '#fff9e9', [x, 4.13, eyeZ], [0.36, 0.49, 0.15]),
+      ball(head, '#302d29', [x, 4.12, eyeZ - 0.13], [0.2, 0.32, 0.075]),
+      ball(head, '#ffffff', [x - 0.06, 4.25, eyeZ - 0.19], [0.065, 0.09, 0.025]));
     const lid = ball(head, '#674b3e', [x, 4.12, -1.18], [0.27, 0.04, 0.07]);
     lid.name = `sleep-eye-${x < 0 ? 'left' : 'right'}`; lid.visible = false; lids.push(lid);
     ball(head, '#db927e', [x * 1.65, 3.72, -0.94], [0.26, 0.13, 0.055]);
