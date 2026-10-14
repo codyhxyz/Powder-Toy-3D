@@ -8,7 +8,9 @@ import { VILLAGE_TOOLS, PUNCH_COOLDOWN, PUNCH_DURATION, punchTarget, punchOcclud
 
 export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
   const root = new THREE.Group(); root.name = 'willow-village'; root.visible = false; app.scene.add(root);
-  const avatar = character(), speech = createSpeech(); app.scene.add(avatar.root); avatar.root.visible = false;
+  const persona = () => app.settings.villageCharacter === 'girl' ? 'girl' : 'boy';
+  let avatar = character({ persona: persona() });
+  const speech = createSpeech(); app.scene.add(avatar.root); avatar.root.visible = false;
   let enabled = false, size = null, state = initialState(), writable = true, warning = '', saveKey = '';
   let residents = [], furnishings = null, time = 0, speaking = null, turn = 0, oldThird = false;
   let held = null, tool = null, toolModel = null, toolMaterials = [], usingTool = false;
@@ -272,6 +274,12 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!enabled && live() && app.getMode() === 'animalCrossing' && app.getWorld()?.scene.key === 'willowCove') setEnabled(true, app.getWorld().P);
     if (!enabled) return;
     if (app.getMode() !== 'animalCrossing' || app.getWorld()?.scene.key !== 'willowCove') { setEnabled(false); return; }
+    if (avatar.root.userData.persona !== persona()) {
+      // Keep the physical player, furniture and current tool; only replace the look.
+      const old = avatar;
+      avatar = character({ persona: persona() }); app.scene.add(avatar.root);
+      equip(tool); dispose(old.root);
+    }
     time += dt;
     const scale = app.getScale(), vol = app.getVolume(), origin = app.getSim().origin;
     root.scale.setScalar(scale); root.position.copy(origin).multiplyScalar(-scale).add(vol.position);
