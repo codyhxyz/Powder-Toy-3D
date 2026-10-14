@@ -1,14 +1,35 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, dirname, basename, relative } from 'node:path';
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
 import { parseGodot3Scene, embeddedMeshes, reference, transformPoint } from '../src/world/import/godot3.js';
-import { voxelizeMeshes } from '../src/world/import/voxelize.js';
+import { importedCell, voxelizeMeshes } from '../src/world/import/voxelize.js';
 import { CRUELTY_MATERIALS, MATERIAL_LOSSES } from '../src/world/import/crueltyMaterials.js';
 import { crueltyExcludeNode, crueltyMission, hiddenActorHelper, actorVisualAncestor } from '../src/world/import/crueltyMission.js';
 import { CRUELTY_PROFILES, crueltyProfile } from '../src/world/import/crueltyProfiles.js';
 import { CELL_M } from '../src/scale.js';
 import { E } from '../src/elements.js';
+import { ELEMENTS, K } from '../src/elements.js';
+
+// The far field draws its plain at the median height of the level's border
+// (world/far.js beyondLevel), and it asks for that while the world is built —
+// before a map's packed geometry has been fetched. Computing it here keeps that
+// answer exact instead of invented, and lets the menu list a map without it.
+function plainHeight(map, words) {
+  const [wx, , wz] = map.size, hs = [];
+  const column = (x, z) => {
+    for (let y = map.size[1] - 1; y >= 0; y--) {
+      const kind = ELEMENTS[importedCell(map, words, x, y, z)]?.kind;
+      if (kind === K.SOLID || kind === K.POWDER || kind === K.LIQUID) return y + 1;
+    }
+    return 0;
+  };
+  for (let x = 0; x < wx; x++) hs.push(column(x, 0), column(x, wz - 1));
+  for (let z = 1; z < wz - 1; z++) hs.push(column(0, z), column(wx - 1, z));
+  hs.sort((a, b) => a - b);
+  return hs[hs.length >> 1];
+}
 
 export function convertCrueltyMap(text, profile) {
   if (!profile) throw new Error('Unknown source map profile');
@@ -28,6 +49,7 @@ export function convertCrueltyMap(text, profile) {
   const actors = [...scene.nodes.values()].filter((n) => actorResource(n)?.includes('/Enemies/') || actorResource(n) === 'res://Scripts/EnemyHandler.gd').map((n) => ({ path: n.path, sourcePath: n.path, resource: actorResource(n), sourceAt: transformPoint(n.worldTransform, [0, 0, 0]), sourceFlags: Object.fromEntries(Object.entries(n.props).filter(([key]) => /hell|chaos|objective|disabled|visible/.test(key))) }));
   Object.assign(manifest, {
     id: profile.id, name: profile.name,
+    plainHeight: plainHeight(voxel, words),
     mission: crueltyMission(scene, voxel, words, profile),
     preview: true,
     provenance: { sourceFile: `Levels/Level${profile.level}.tscn`, sha256: createHash('sha256').update(text).digest('hex'), originalFormat: 'Godot 3 text scene format=2', distribution: 'Local conversion only; game asset redistribution permission not established', coordinateRule: 'Godot Y-up, identity axes; meters / CELL_M, then integer bounds translation; Qodot scale already applied in .tscn' },
@@ -46,26 +68,34 @@ export function convertCrueltyMap(text, profile) {
 }
 export async function writeConvertedMap({ manifest, words }, output) {
   const prefix = resolve(output), path = relative(resolve('.'), prefix);
-  if (!/^\.tmp-[^/]+\//.test(path)) throw new Error('Game-derived output must stay in an ignored .tmp-* directory outside public/');
-  manifest.dataFile = `${basename(prefix)}.bin`;
+  // Published conversions live in public/local-maps: Vite copies that directory
+  // into dist, so the host serves them as plain static files. Nothing else in
+  // the tree may hold them.
+  if (!/^public\/local-maps\/[^/]+$/.test(path)) throw new Error('Converted maps must be written to public/local-maps/<id>');
   const buffer = Buffer.alloc(words.byteLength);
   words.forEach((word, i) => buffer.writeUInt32LE(word, i * 4));
+  // Sparse bricks are mostly zero, so gzip takes the largest map from 29 MiB to
+  // ~0.5 MiB: under Cloudflare Pages' 25 MiB per-file limit, and a small
+  // download. The loader inflates it in the browser (importedMap.js).
+  const packed = gzipSync(buffer, { level: 9 });
+  manifest.dataFile = `${basename(prefix)}.binpack`;
+  manifest.dataCompression = 'gzip';
   await mkdir(dirname(prefix), { recursive: true });
-  await writeFile(`${prefix}.bin`, buffer);
+  await writeFile(`${prefix}.binpack`, packed);
   await writeFile(`${prefix}.json`, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(JSON.stringify({ output: prefix, id: manifest.id, sha256: manifest.provenance.sha256, size: manifest.size, ...manifest.stats, targets: manifest.mission.targets.length, guards: manifest.mission.guards.length, authoredGuards: manifest.mission.authoredGuards.length, missionAvailable: manifest.mission.available, placementFailures: manifest.mission.placementFailures, exits: manifest.mission.extractions.length, materialGroups: Object.keys(manifest.materialLosses) }, null, 2));
+  console.log(JSON.stringify({ output: prefix, id: manifest.id, sha256: manifest.provenance.sha256, size: manifest.size, ...manifest.stats, packedBytes: packed.byteLength, targets: manifest.mission.targets.length, guards: manifest.mission.guards.length, authoredGuards: manifest.mission.authoredGuards.length, missionAvailable: manifest.mission.available, placementFailures: manifest.mission.placementFailures, exits: manifest.mission.extractions.length, materialGroups: Object.keys(manifest.materialLosses) }, null, 2));
 }
 async function main() {
   const args = process.argv.slice(2), opts = {};
   for (let i = 0; i < args.length; i += 2) {
-    if (!['--map', '--source', '--source-dir', '--out-dir'].includes(args[i]) || !args[i + 1] || Object.hasOwn(opts, args[i])) throw new Error('Usage: --map ID --source LevelN.tscn, or --map all --source-dir DIR [--out-dir .tmp-cruelty-import]');
+    if (!['--map', '--source', '--source-dir', '--out-dir'].includes(args[i]) || !args[i + 1] || Object.hasOwn(opts, args[i])) throw new Error('Usage: --map ID --source LevelN.tscn, or --map all --source-dir DIR [--out-dir public/local-maps]');
     opts[args[i]] = args[i + 1];
   }
   const profiles = opts['--map'] === 'all' ? CRUELTY_PROFILES.filter((p) => !p.blocked) : [crueltyProfile(opts['--map'])];
   if (!profiles[0] || (!opts['--source-dir'] && !opts['--source']) || (profiles.length > 1 && opts['--source']) || (opts['--source'] && opts['--source-dir'])) throw new Error('Select a valid map and matching source file/directory');
   for (const profile of profiles) {
     const source = opts['--source'] ?? resolve(opts['--source-dir'], `Level${profile.level}.tscn`);
-    await writeConvertedMap(convertCrueltyMap(await readFile(source, 'utf8'), profile), resolve(opts['--out-dir'] ?? '.tmp-cruelty-import', profile.id));
+    await writeConvertedMap(convertCrueltyMap(await readFile(source, 'utf8'), profile), resolve(opts['--out-dir'] ?? 'public/local-maps', profile.id));
   }
 }
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main().catch((error) => { console.error(error.message); process.exitCode = 1; });

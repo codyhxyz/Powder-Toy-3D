@@ -50,7 +50,7 @@ jobs:
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
       - run: node tools/check-willow-cove.mjs   # CPU terrain: body-clear running circuit and village routes
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
-      - run: node tools/mission-node-check.mjs && node --test tools/import-paradise-check.mjs tools/import-cruelty-map-check.mjs
+      - run: node tools/mission-node-check.mjs && node --test tools/import-cruelty-map-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
       - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips

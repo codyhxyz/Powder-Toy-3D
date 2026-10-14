@@ -1,4 +1,4 @@
-// One <=10s UI-mode mission slot (manual for --geometry-only) on the full map.
+// One <=10s UI-mode mission slot (manual for --geometry-only) on a published level.
 // Requires local source conversion. Run one map per explicitly planned GPU slot.
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
