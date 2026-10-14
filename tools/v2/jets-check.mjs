@@ -92,7 +92,9 @@ test('foam accepts impacts once, preserves incoming, all liquids participate, re
   assert.ok(physics.indexOf('run(k.v2foam,')>physics.indexOf('run(k.v2gather,'));
   assert.equal(TICK_HZ,60);assert.equal(SUB,3); // actual production clock, not assumed240Hz
   assert.match(v2FoamWGSL(gridLayout(32,32,32)),/if \(cAge\(after\) != 0u\) \{ markBusy/);
-  const renderer=readFileSync('src/shaders/gfx/liquidDetail.js','utf8');assert.match(renderer,/f32\(core.x >> 24u\) \/ 255.0/);
+  const renderer=readFileSync('src/shaders/gfx/liquidDetail.js','utf8');
+  assert.match(renderer,/fetchNativeAeration\(c\)/);
+  assert.match(readFileSync('src/shaders/common.js','utf8'),/f32\(core.x >> 24u\) \/ 255.0/);
 });
 test('generated square and rectangular WGSL validates with <=8 storage bindings',()=>{
   const dir=mkdtempSync(join(tmpdir(),'jets-check-'));

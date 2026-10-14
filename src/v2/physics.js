@@ -411,6 +411,7 @@ export class PhysicsV2 {
     this.seenVersion = sim.version;
     this.seenWhole = sim.wholeWrites;
     this.legacyPending = !legacyCurrent;
+    if (legacyCurrent) this.legacyNative = false; // Saves contain the visual/v1 cache, not edit projection.
     sim.changedAll = true;
   }
 
