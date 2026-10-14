@@ -9,6 +9,13 @@ import { JEEP, buildJeep } from '../src/pov/vehicles/jeep.js';
 import { E, K, ELEMENTS, PALETTE, TOOLS, itemByKey, isSpawnerTool } from '../src/elements.js';
 import { Spawners, SPAWNER, feetOnHit } from '../src/spawners.js';
 import { CELL_M } from '../src/scale.js';
+import { WGSL_CHECK } from '../src/gfx/overlays.js';
+
+// The sky draws after opaque hulls; it must preserve their colors and depth.
+const sky = WGSL_CHECK.find((p) => p.name === 'boxSky');
+assert.equal(sky.depthStencil.depthCompare, 'less-equal');
+assert.equal(sky.depthStencil.depthWriteEnabled, false);
+assert.match(sky.code(), /o\.position = vec4f\(ndc, 1\.0, 1\.0\)/);
 
 const H = 1 / 60, WATER_Y = 6;
 const drive = (o = {}) => ({ throttle: 0, steer: 0, parked: false, dead: false, brake: false, boost: false, ...o });
