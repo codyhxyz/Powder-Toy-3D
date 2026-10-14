@@ -69,10 +69,32 @@ for (const [index, resident] of RESIDENTS.entries()) {
   const furnished = createConversation(resident, null, { home: resident.home, furniture: residentFurniture(resident.home) });
   assert.notEqual(empty.text, furnished.text);
   assert.notEqual(furnished.text, first.text);
+  const morningRoom = { hour: 8, home: resident.home, furniture: residentFurniture(resident.home) };
+  assert.equal(createConversation(resident, null, morningRoom).text, day.text,
+    'opening uses one contextual remark, not both time and furniture');
+  assert.equal(createConversation(resident, null, { ...morningRoom, hour: 14 }).text, furnished.text,
+    'furniture remark remains available when there is no time-of-day remark');
+  const familiar = { ...memory, visits: 3 };
+  assert.equal(createConversation(resident, familiar, morningRoom).text, createConversation(resident, familiar).text,
+    'familiar opening does not also append time and furniture');
+  const branch = advanceConversation(resident, familiar, first.choices[0].id);
+  const remembered = advanceConversation(resident, branch.memory, branch.choices[0].id);
+  const recall = createConversation(resident, remembered.memory);
+  assert.equal(createConversation(resident, remembered.memory, morningRoom).text, recall.text,
+    'remembered advice takes precedence over contextual remarks');
+  assert.equal(createConversation(resident, { ...remembered.memory, visits: 0 }).text, recall.text,
+    'remembered advice does not also append the familiar remark');
   assert.equal(createConversation(resident, null, { home: 0, furniture: [] }).text, first.text);
   assert.equal(createConversation(resident, null, null).text, first.text);
   assert.deepEqual(advanceConversation(resident, first.memory, '__proto__'), first);
   assert.ok(lines.size >= 15, `${resident.name}: 15+ accessible authored lines`);
+  if (resident.name === 'Pippin') {
+    assert.equal(day.text, 'Hey, come in. The clock can wait. Want some tea? I’ve just put the kettle on.');
+    for (const line of [...lines, recall.text]) {
+      assert.ok(line.length <= 180, 'Pippin gives short turns, not a monologue');
+      assert.doesNotMatch(line, /technically|prototype|reliable alarm|community feedback|disregard for dignity/i);
+    }
+  }
   for (const line of lines) {
     assert.ok(!allLines.has(line), 'no cross-resident duplicated dialogue');
     allLines.add(line);
