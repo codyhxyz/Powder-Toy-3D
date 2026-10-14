@@ -965,6 +965,10 @@ export function createPov(app) {
     }
     grappleQueued = false;
     held.place({ figure, viewmodel, dt });   // the tools have moved: the held model, and the hands on it
+    // After the tools: the body is hidden in the eyes, so the wingbeat has to be on the viewmodel arms.
+    if (mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !driving) {
+      viewmodelRig({ viewmodel, getScale: app.getScale() }).poseFlap(player.flap ?? 0);
+    }
     // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
     if (kickQueued) {
       kickQueued = false;

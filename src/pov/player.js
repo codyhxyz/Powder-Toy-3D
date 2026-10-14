@@ -105,7 +105,7 @@ const FLAP_LIFT = 22;                  // cells/s per tap (~6.6 m/s): about 0.13
 const FLAP_CEILING = 4;                // cells/s: a flap cannot climb
 const FLAP_GAP_S = 0.2;                // s between beats
 const FLAP_HOLD_S = 0.18;              // s an air press must be held before it is the jet, not a flap
-const FLAP_ANIM_S = 0.22;              // s the arms stay in the beat
+const FLAP_ANIM_S = 0.45;              // s the arms stay in the beat: long enough to see the wings come back down
 const JET_SPOOL_DOWN_S = 0.3;          // s for it to die away after a release: the climb crests instead of dropping
 const JET_RAMP_S = 0.15;               // s from a hover to the full climb at the jet's hardest push (caps it at climb / this)
 

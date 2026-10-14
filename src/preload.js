@@ -149,10 +149,11 @@ function deviceLost(p) {
 export function warmMap(key, mode = 'sandbox') {
   const m = mapByKey(key);
   if (!m || !launch.adapter) return;
-  const grid = { ...gridOf(m), curved: !!resolveMode(m, mode).effect };
-  const asked = grid.curved ? `${grid.key} curved` : grid.key;
+  const chosen = resolveMode(m, mode);
+  const grid = { ...gridOf(m), curved: !!chosen.effect, view: chosen.defaultView };
+  const asked = `${grid.key}${grid.curved ? ' curved' : ''}${grid.view ? ` ${grid.view}` : ''}`;
   if (warmed.has(asked)) return;
-  grid.volumeOnly = warmed.has(grid.key) || warmed.has(`${grid.key} curved`);
+  grid.volumeOnly = [...warmed].some((key) => key === grid.key || key.startsWith(`${grid.key} `));
   warmed.add(asked);
   if (warmer) warmer.grid(grid);
   else if (wanted.push(grid) === 1) startWarmer();
@@ -185,7 +186,6 @@ async function startWarmer() {
   const names = await layoutNames();
   if (device !== made) return;   // (lost meanwhile: the next warmMap starts over)
   const settings = savedSettings(detail);
-  const view = views.viewKey(settings.view);
   const fallback = gpu.adapterInfo.isFallbackAdapter;
   const pipes = [];
   const state = launch.warm = {
@@ -219,7 +219,7 @@ async function startWarmer() {
   // the grid's own first (the simulation's kernels take longest), then post
   // (the canvas's composite and the stills'), the overlays and the brush
   warmer = {
-    grid({ dims, windowed, world, key, curved = false, volumeOnly = false }) {
+    grid({ dims, windowed, world, key, curved = false, view = views.viewKey(settings.view), volumeOnly = false }) {
       const g = sim.gridLayout(...dims);
       g.windowed = windowed;
       if (!gpu.fits(g)) return;
