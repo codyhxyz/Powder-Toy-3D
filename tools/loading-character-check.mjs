@@ -8,6 +8,7 @@ try {
   const page = await newTestPage(browser, { mode: 'ui' });
   await page.route('**/__loading-character', (r) => r.fulfill({ contentType: 'text/html', body: '<html></html>' }));
   await page.goto(`${base}/__loading-character`);
+  await page.addStyleTag({ url: `${base}/src/ui/menu.css` });
   const results = await page.evaluate(async () => {
     const { createMenu } = await import('/src/ui/menu.js');
     const { GAMEMODES } = await import('/src/maps.js');
@@ -58,6 +59,7 @@ try {
     menu.close();
     window.Worker = NativeWorker;
     menu.loading('Loading', { mode: 'slayer' });
+    window.__loadingMenu = menu;
     return results;
   });
   for (const { label, ok } of results) {
@@ -67,6 +69,28 @@ try {
   await page.waitForSelector('.mm-you.live canvas', { state: 'attached', timeout: 4000 });
   assert.equal(await page.getAttribute('.mm-you', 'data-character'), 'spartan');
   console.log('PASS real Spartan preview worker renders');
+  await page.evaluate(() => {
+    localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ villageCharacter: 'girl' }));
+    window.__loadingMenu.loading('Loading', { mode: 'animalCrossing', map: 'animalCrossing' });
+  });
+  await page.waitForSelector('.mm-you.live canvas', { state: 'attached', timeout: 4000 });
+  assert.equal(await page.getAttribute('.mm-you', 'data-character'), 'girl');
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const zoom = await page.evaluate(() => {
+      const fig = document.querySelector('.mm-you'), canvas = fig.querySelector('canvas');
+      document.querySelector('.mm').dispatchEvent(new WheelEvent('wheel', { deltaY: -1e6, cancelable: true }));
+      return { scale: new DOMMatrix(getComputedStyle(canvas).transform).a, baseHeight: canvas.offsetHeight,
+        figHeight: fig.offsetHeight, transform: canvas.style.transform };
+    });
+    assert.ok(zoom.scale > 2.9, 'zoom enlarges the whole canvas rather than cropping its contents');
+    assert.equal(zoom.baseHeight, zoom.figHeight, 'zoom does not change loading layout');
+    console.log(`PASS unclipped girl zoom at ${viewport.width}px: ${zoom.transform}`);
+    if (process.env.TPT_ZOOM_SCREENSHOTS) {
+      await page.screenshot({ path: `${process.env.TPT_ZOOM_SCREENSHOTS}-${viewport.width}.png` });
+    }
+  }
+  await page.evaluate(() => window.__loadingMenu.close());
 } finally {
   await browser.close();
 }

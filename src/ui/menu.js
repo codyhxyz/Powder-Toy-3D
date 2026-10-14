@@ -400,17 +400,21 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
 function liveYou(fig, still) {
   let worker = null, canvas = null, ready = false, shown = false, on = false, drag = null;
   let character = null, zoom = 1;
-  const paintStill = () => {
-    still.style.transformOrigin = 'center 58%';
-    still.style.transform = shown || zoom === 1 ? '' : `scale(${(1 / zoom).toFixed(4)})`;
+  const paintZoom = () => {
+    // Scale the framed portrait, not its camera: a close-up must not hit a rectangular canvas edge.
+    for (const portrait of [still, canvas]) {
+      if (!portrait) continue;
+      portrait.style.transformOrigin = 'center 58%';
+      portrait.style.transform = zoom === 1 ? '' : `scale(${(1 / zoom).toFixed(4)})`;
+    }
   };
   const show = () => {
     if (shown || !ready) return;
     shown = true;
-    paintStill();
+    paintZoom();
     still.replaceWith(canvas);
     fig.classList.add('live');
-    worker.postMessage({ run: true, zoom });
+    worker.postMessage({ run: true });
   };
   const prepare = (choice) => {
     if (choice !== character) {
@@ -424,7 +428,7 @@ function liveYou(fig, still) {
       if (still.getAttribute('src') !== src) still.style.visibility = 'hidden';
       still.src = src;
       still.decode?.().then(() => { if (still.getAttribute('src') === src) still.style.visibility = ''; }).catch(() => {});
-      paintStill();
+      paintZoom();
     }
     if (worker || !still.isConnected || typeof OffscreenCanvas === 'undefined' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return;
     const dpr = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
@@ -444,14 +448,14 @@ function liveYou(fig, still) {
       if (worker !== current) return;
       console.warn('loading screen: the live player failed, the still stays', e.message); drop();
     };
-    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height, character, zoom }, [off]);
+    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height, character }, [off]);
   };
   const drop = () => {
     worker?.terminate();
     if (shown) { canvas.replaceWith(still); fig.classList.remove('live', 'dragging'); }
     worker = canvas = drag = null;
     ready = shown = false;
-    paintStill();
+    paintZoom();
   };
   fig.addEventListener('pointerdown', (e) => {
     if (!shown || e.button !== 0) return;
@@ -475,8 +479,7 @@ function liveYou(fig, still) {
     start(choice) { on = true; prepare(choice); show(); },
     zoom(deltaY) {
       zoom = nextYouZoom(zoom, deltaY);
-      if (shown) worker?.postMessage({ zoom });
-      else paintStill();
+      paintZoom();
     },
     stop() { on = false; release(); drop(); },
   };
