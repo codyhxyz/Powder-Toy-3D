@@ -43,6 +43,23 @@ export function createSpeech() {
       }
     } catch { /* Audio unavailable: the full dialogue remains readable. */ }
   }
+  async function bonk() {
+    if (muted || document.hidden) return;
+    const token = serial;
+    try {
+      const ctx = AudioContext.getContext(); await ctx.resume();
+      if (token !== serial || muted || document.hidden) return;
+      const source = ctx.createOscillator(), gain = ctx.createGain(), at = ctx.currentTime;
+      source.type = 'sine'; source.frequency.setValueAtTime(420, at);
+      source.frequency.exponentialRampToValueAtTime(95, at + 0.16);
+      source.frequency.exponentialRampToValueAtTime(180, at + 0.25);
+      gain.gain.setValueAtTime(0.001, at); gain.gain.exponentialRampToValueAtTime(0.22, at + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.28);
+      source.connect(gain).connect(ctx.destination); source.start(at); source.stop(at + 0.3);
+      const voice = { source, gain }; voices.push(voice);
+      source.onended = () => { source.disconnect(); gain.disconnect(); voices = voices.filter(v => v !== voice); };
+    } catch { /* Silent when browser audio is unavailable. */ }
+  }
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
-  return { speak, stop, get muted() { return muted; }, set muted(v) { muted = !!v; if (muted) stop(); }, get stats() { return { muted, queued: voices.length, played }; } };
+  return { speak, bonk, stop, get muted() { return muted; }, set muted(v) { muted = !!v; if (muted) stop(); }, get stats() { return { muted, queued: voices.length, played }; } };
 }

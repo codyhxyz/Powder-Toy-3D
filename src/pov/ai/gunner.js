@@ -1,7 +1,7 @@
 import { Think, Goal, GoalEvaluator } from 'yuka';
 import {
-  Agent, distanceModule, pickWeapon, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
-  REACTION_S, warningShot, aimError, useStateFor,
+  Agent, distanceModule, pickWeapon, fireGun, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
+  REACTION_S,
 } from './brain.js';
 import { BODY_HEIGHT } from '../constants.js';
 
@@ -13,7 +13,7 @@ import { BODY_HEIGHT } from '../constants.js';
 // (player.js: hold jump in the air) up to a vantage over you and hovers there,
 // strafing, and when the tank runs low it drops and lands to refuel (the tank
 // refills on the ground). Same fairness rules as the axeman's gun: a reaction
-// delay, a warning shot, an aim that tightens the longer it has you in sight.
+// delay, persistent tracking, short bursts that correct toward the target, and pauses.
 //
 // Strategies: Engage (sees you: keep range, fly, shoot), Hunt, Extinguish and
 // Wander (brain.js's own).
@@ -57,7 +57,7 @@ class EngageEvaluator extends GoalEvaluator {
 class EngageGoal extends Goal {
   execute() {
     const a = this.owner;
-    if (!a.knows) { this.status = Goal.STATUS.COMPLETED; return; }
+    if (!a.knows || !a.sees) { this.status = Goal.STATUS.COMPLETED; return; }
     keepRange(a);
     fly(a);
     shoot(a);
@@ -104,17 +104,7 @@ function shoot(a) {
   const c = a.chest();
   // still reacting to the sight of it, staggered, or catching its breath: face it and hold
   if (a.inSight < REACTION_S || !a.ready('ATTACK')) { a.lookAt(c); return; }
-  if (warningShot(a, key, g.interval ?? g.rest)) return;
-  aimWith(a, c, aimError(a));
-  if (g.burst) {
-    // a burst held down, then a rest
-    const s = useStateFor(a, key);
-    if (!a.ready(key)) return;
-    s.t += a.dt;
-    a.intent.primary = true;
-    a.intent.primaryPressed = s.t <= a.dt;
-    if (s.t >= g.burst) { a.cooldown(key, g.rest); s.t = 0; }
-  } else if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, g.interval); }
+  fireGun(a, key, g.interval ?? g.burst + g.rest, { burst: g.burst, chaseFrom: Infinity });
 }
 
 for (const [G, label] of [[EngageGoal, 'Engage']]) G.prototype.label = label;
