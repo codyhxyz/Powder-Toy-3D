@@ -7,7 +7,7 @@ import './hotbar.css';
 // while you play. A number key or the wheel brings it up at the top centre, a
 // small numbered box per slot and the chosen slot opened downward into one box
 // per tool, then it fades. The tool in hand stays bottom right, where HL2 keeps
-// its ammo. With the mouse free (or on a touch screen) it stays up to click.
+// its ammo. On a touch screen the slots stay up to tap.
 // While it is up, a click picks what it shows and closes it, and the click
 // doesn't fire (HL2 weapon_selection.cpp ProcessInput: IN_ATTACK or IN_ATTACK2
 // selects, the button is swallowed, the selection hides).
@@ -36,8 +36,8 @@ export function createHotbar(onSelect, onSelectTool) {
   document.body.append(bar, held);
   let timer = 0, selected = -1, shown = false;
 
-  // up for SHOW_MS after a pick, longer while the pointer or focus is on it, and
-  // for good while the mouse is free (touch screens never lock it: hotbar.css)
+  // Up after a pick, longer while hovered or focused. Freeing the mouse with
+  // Esc is not a tool-selection request; touch visibility lives in hotbar.css.
   const touch = matchMedia('(hover: none) and (pointer: coarse)');
   const free = () => !touch.matches && !document.pointerLockElement;
   function open() {
@@ -48,13 +48,12 @@ export function createHotbar(onSelect, onSelectTool) {
   }
   function close() {
     clearTimeout(timer);
-    if (free() || bar.matches(':hover') || bar.contains(document.activeElement)) return;
+    if (bar.matches(':hover') || bar.contains(document.activeElement)) return;
     bar.classList.remove('open');
   }
   bar.addEventListener('pointerleave', () => { timer = setTimeout(close, SHOW_MS); });
   bar.addEventListener('focusout', () => { timer = setTimeout(close, SHOW_MS); });
-  const onLock = () => (free() ? open() : close());
-  document.addEventListener('pointerlockchange', onLock);
+  document.addEventListener('pointerlockchange', close);
 
   const iconFor = (def) => def.model
     ? h('img', { src: modelIcon(def.model), alt: '', draggable: 'false' })
@@ -149,12 +148,12 @@ export function createHotbar(onSelect, onSelectTool) {
       bar.classList.toggle('show', shown);
       held.classList.toggle('show', shown);
       bar.inert = !shown;
-      if (shown) { showStack(); if (free()) open(); }
+      if (shown) showStack();
       else { clearTimeout(timer); bar.classList.remove('open'); }
     },
     dispose() {
       clearTimeout(timer);
-      document.removeEventListener('pointerlockchange', onLock);
+      document.removeEventListener('pointerlockchange', close);
       bar.remove(); held.remove();
     },
   };

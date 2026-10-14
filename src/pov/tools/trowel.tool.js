@@ -6,11 +6,12 @@ import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
 import { gear } from './catalog.js';
+import { createMaterialPicker } from './materialPicker.js';
 import { BLOCK, blockMin } from './dig.js';   // the lattice the shovel and pickaxe dig on: 0.9 m, Minecraft's 1 m block
 
 // Trowel: builds with what the shovel dug up. Left-click sets a block
 // of the chosen material from the pack (transfer.js) against the face you aim
-// at; hold to keep building. Right-click picks the next material in the pack.
+// at; hold to keep building. Right-click opens the pack's material picker.
 //
 // Blocks are Minecraft's: a 1 m cube (BLOCK cells a side) on a fixed lattice,
 // so a block set on top of another lines up with it, placed at Minecraft's
@@ -56,6 +57,14 @@ export default {
       if (!have.length) return null;
       return have.find(([id]) => id === chosen) ?? have[0];
     }
+    const picker = env.owner ? null : createMaterialPicker({
+      load, material, choose: (id) => { chosen = id; },
+      onOpenChange(open) {
+        button.reset(); next.reset();
+        env.onEditorOpenChange?.(open);
+      },
+      requestLock: env.requestLock,
+    });
 
     // the lattice block next to the aimed face: its cells, bottom up
     function blockAt(aim) {
@@ -100,28 +109,33 @@ export default {
       update(ctx) {
         hand.visible = true;
         rig.update(ctx);
+        picker?.setVisible(true);
+        if (picker?.open) return;
         if (button.ready(ctx) && place(ctx)) { button.fire(); pose.start(true); }
         if (next.ready(ctx)) {
           next.fire();
-          const have = packContents(load);
-          const cur = have.findIndex(([id]) => id === material()?.[0]);
-          if (have.length) chosen = have[(cur + 1) % have.length][0];
+          if (picker) picker.show();
+          else {
+            const have = packContents(load);
+            const cur = have.findIndex(([id]) => id === material()?.[0]);
+            if (have.length) chosen = have[(cur + 1) % have.length][0];
+          }
         }
         pivot.rotation.x = pose.angle(toolDt(ctx));
       },
-      deselect() { hand.visible = false; button.reset(); next.reset(); pose.stop(); },
+      deselect() { picker?.setVisible(false); hand.visible = false; button.reset(); next.reset(); pose.stop(); },
       status() {
         const mat = material();
         return mat ? `${ELEMENTS[mat[0]].abbr} ×${mat[1]}` : null;
       },
       readout() {
         const mat = material();
-        if (!mat) return { name: 'Pack empty', color: 'transparent', note: 'dig with the shovel' };
-        const kinds = packContents(load).length;
-        return { name: `${ELEMENTS[mat[0]].name} ×${mat[1]}`, color: ELEMENTS[mat[0]].color, note: kinds > 1 ? 'right-click: next' : '' };
+        if (!mat) return { name: 'Pack empty', color: 'transparent', note: 'dig with the shovel or pickaxe' };
+        return { name: `${ELEMENTS[mat[0]].name} ×${mat[1]}`, color: ELEMENTS[mat[0]].color, note: 'right-click: materials' };
       },
       get lastBlock() { return lastBlock; },
-      dispose() { mesh.dispose(); hand.removeFromParent(); },
+      worldReplaced() { picker?.setVisible(false); chosen = -1; },
+      dispose() { picker?.dispose(); mesh.dispose(); hand.removeFromParent(); },
     };
   },
 };

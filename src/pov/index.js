@@ -4,6 +4,7 @@ import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_
 import { createCameraArm } from './cameraArm.js';
 import { ELEMENTS } from '../elements.js';
 import { createBody } from './figureReal.js';
+import { characterForMode } from './character.js';
 import { STICK_HAND } from './figure.js';
 import { createHeld } from './held.js';
 import { gearByKey } from './tools/catalog.js';
@@ -146,9 +147,7 @@ export function createPov(app) {
     damageScale: PLAYER_DAMAGE_TAKEN, knockback: PLAYER_KNOCKBACK, knockUp: PLAYER_KNOCK_UP,
     onHurt: (amount) => povEvents.emit('player:hit', { amount }),   // inside the attacker's povEvents.as(): carries its id
   }));
-  // Halo's four modes use armor; Siege and sandbox keep the chosen body.
-  const character = () => game.running && ['slayer', 'ctf', 'koth', 'infection'].includes(game.mode)
-    ? 'spartan' : app.settings.character;
+  const character = () => characterForMode(game.running ? game.mode : 'sandbox', app.settings.character);
   // the jeep and the hoverbike (vehicles/index.js): Rapier loads on the first one
   const vehicles = createVehicles({
     renderer, scene, hud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
@@ -216,7 +215,7 @@ export function createPov(app) {
       if (cancelled) buttons[`${name}Pressed`] = false;
     },
     wheel: (notches) => { wheelNotches += notches; },
-    kick: () => { if (mode === 'on') { if (village.enabled) void village.punch(); else kickQueued = true; } },
+    kick: () => { if (mode === 'on') { if (village.enabled) void village.kick(); else kickQueued = true; } },
     useVehicle,
   });
   const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
@@ -262,6 +261,7 @@ export function createPov(app) {
     app.requestRender();
   });
   function releaseInput() {
+    player?.cancelJump();
     keys.clear();
     releaseActions();
     touch.reset();
@@ -450,6 +450,7 @@ export function createPov(app) {
           requestRender: app.requestRender,
           getPost: () => app.post,   // its settings: the wand's halo tone maps itself by them (tools/index.js)
           releaseInput,
+          requestLock,
           onEditorOpenChange(open) { editing = open; releaseInput(); sprintOn = false; app.requestRender(); },
         });
       } catch (err) { console.error('POV toolbelt failed to start', err); }
@@ -644,6 +645,9 @@ export function createPov(app) {
   function readInput() {
     input.move.x = input.move.z = 0;
     input.jump = input.sprint = input.down = input.crouch = false;
+    input.chargeJump = village.enabled;
+    input.jumpYaw = povCam.look.yaw;
+    input.cancelJump = true;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
     if (editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
@@ -656,6 +660,7 @@ export function createPov(app) {
       return;
     }
     const t = touch.state;   // the touch stick adds in, analog (touch.js)
+    input.cancelJump = false;
     const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z;
     const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + t.x;
     if (f || r) {
@@ -923,7 +928,8 @@ export function createPov(app) {
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, mana: toolbelt?.mana ?? null, perks: player.perks, status: player.status,
       gold: descent.goldShown,
-      pogo: toolbelt?.selectedKey === 'POGO' ? player.pogoCharge : null,
+      pogo: village.enabled ? player.jumpCharge : toolbelt?.selectedKey === 'POGO' ? player.pogoCharge : null,
+      pogoLabel: village.enabled ? 'Jump charge — release to leap' : 'Pogo charge',
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,

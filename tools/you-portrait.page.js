@@ -4,10 +4,12 @@
 //   render({ width, height, yaw, time }) → a PNG data URL
 import { createYou } from '../src/ui/youViewer.js';
 
-export async function render({ width, height, yaw, time }) {
-  const you = await createYou({ width, height, yaw, time, preserveDrawingBuffer: true });
-  you.frame();
-  const url = you.canvas.toDataURL('image/png');
-  you.dispose();
-  return url;
+export async function render({ width, height, yaw, time, character }) {
+  const you = await createYou({ width, height, yaw, time, character, preserveDrawingBuffer: true });
+  try {
+    you.frame();
+    return you.canvas.toDataURL('image/png');
+  } finally {
+    you.dispose();
+  }
 }
