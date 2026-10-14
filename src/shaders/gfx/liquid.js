@@ -1,7 +1,7 @@
 
 // Transparent media: liquids (smooth surfaces) and crisp glass. WGSL (the
 // names are the GLSL version's, docs/webgpu.md W2), pasted after surfaceGLSL
-// (reflectTrace shades what it meets with crispHit and shadeFloorFw). The
+// (reflectTrace meets voxels with crispHit, the floor with floorAlb). The
 // GLSL's inout parameters are pointers; sunShadow(p) of a point inside a
 // volume is lighting.js's sunShadowAt.
 export const liquidGLSL = /* wgsl */ `
@@ -125,8 +125,19 @@ fn liquidRipple(p: vec3f, n: vec3f) -> vec3f {
 // glass and media along it are skipped. Elsewhere the sky stands in, which is
 // mostly what such a surface shows. Blended over a Fresnel range so the
 // switch doesn't show.
+// One traced reflection a pixel, the first the eye ray meets (a glass pane,
+// a pool's surface); any after it show the probes' environment (envReflectGI),
+// as Source's glass shows its env_cubemap. A second one lies behind the
+// first's reflection, dimmed by its transmission. Far from the eye, traced
+// reflections hand over to that environment too: Source's water does the same
+// between $cheapwaterstartdistance and $cheapwaterenddistance (TF2, Garry's
+// Mod), where its real-time reflection gives way to the cube map.
 const REFL_F_LO: f32 = 0.04;      // Fresnel reflectance where traced reflections start ...
 const REFL_F_HI: f32 = 0.1;       // ... and take over
+// Pixel footprint (cells per pixel) over which traced reflections hand over to the environment.
+const REFL_FP_LO: f32 = 0.2;      // (~66 m away at 1280×800) ...
+const REFL_FP_HI: f32 = 0.35;     // (... ~115 m)
+var<private> gReflTraced: bool = false;   // this pixel has traced its reflection
 const REFL_MAX_STEPS: i32 = 32;   // DDA steps (cells or skipped bricks) before falling back to the sky
 const REFL_START: f32 = 0.05;     // start offset off the surface, cells
 const REFL_PROBE: f32 = 0.5;      // a smooth hit's element is looked up this far inside it, then twice that
@@ -149,8 +160,26 @@ fn reflShade(a: vec4f, hp: vec3f, n: vec3f) -> vec3f {
   }
   return ALBEDO(id) * (sun + giIrradiance(surfProbe(hp, n), n) + sampleLight(q) * FU.lightGain) + emission(id, a.y);
 }
+// The floor in a reflection, lit as reflShade lights matter: the sun
+// (shadow-mapped), the probes' light and the glow, no AO.
+fn reflFloor(hp: vec3f, fw: vec2f) -> vec3f {
+  let n = vec3f(0.0, 1.0, 0.0);
+  let q = vec3f(hp.x, IFACE_PROBE, hp.z);
+  var vis = vec3f(1.0);
+  if (FU.shadows != 0u) { vis = sunShadowAt(q); }
+  return floorAlb(hp, fw) * (FU.sunCol * max(FU.sun.y, 0.0) * vis + giIrradiance(surfProbe(vec3f(hp.x, 0.0, hp.z), n), n)
+                             + sampleLight(q) * FU.lightGain);
+}
 // env: what the ray sees if it meets nothing (envReflectGI at the interface).
+// The pixel's first traced reflection (gReflTraced); later ones, and those far
+// from the eye, return env.
 fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
+  let wf = 1.0 - smoothstep(REFL_FP_LO, REFL_FP_HI, footprint(ro));
+  if (gReflTraced || wf <= 0.0) { return env; }
+  gReflTraced = true;
+  return mix(env, reflectHit(ro, rd0, env), wf);
+}
+fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   let rd = safeDir(rd0);
   let istp = vec3i(sign(rd));
   let tDelta = abs(1.0 / rd);
@@ -219,7 +248,7 @@ fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   if (cell.y < 0 && rd.y < 0.0) {
     // the floor, its grid lines as wide as the whole path from the eye makes them
     let hp = ro - rd * (ro.y / rd.y);
-    return shadeFloorFw(hp, floorFwidthMirror(hp, rd, ro));
+    return reflFloor(hp, floorFwidthMirror(hp, rd, ro));
   }
   return env;
 }

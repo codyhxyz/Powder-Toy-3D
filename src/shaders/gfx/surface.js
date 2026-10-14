@@ -1867,12 +1867,16 @@ fn floorFwidthMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec2f {
 const FLOOR_LINE_ALB: vec3f = vec3f(0.075, 0.078, 0.085);   // the grid's seams, darker than the floor
 const FLOOR_LINE_CELLS: f32 = 8.0;   // cells between the floor's grid lines
 fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f { return shadeFloorFw(hp, floorFwidth(hp, rd)); }
-// fw: the grid lines' fwidth there (floorFwidth, or floorFwidthMirror in a reflection)
-fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
+// The floor's albedo at hp: concrete with its grid lines, fw their fwidth
+// there (floorFwidth, or floorFwidthMirror in a reflection).
+fn floorAlb(hp: vec3f, fw: vec2f) -> vec3f {
   let q = worldPos(hp).xz / FLOOR_LINE_CELLS;
   let gq = abs(fract(q - 0.5) - 0.5) / max(fw / FLOOR_LINE_CELLS, vec2f(1e-4));
   let line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  let alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);
+  return mix(GROUND_ALB, FLOOR_LINE_ALB, line);
+}
+fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
+  let alb = floorAlb(hp, fw);
   let n = vec3f(0.0, 1.0, 0.0);
   let ndl = max(FU.sun.y, 0.0);
   var sh = vec3f(1.0);
