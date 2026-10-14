@@ -11,27 +11,27 @@
 // SwiftShader by accident.
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, processTable } from './gpu-deadline.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 const browsers = new Set();
 const MODES = ['manual', 'preview', 'ui', 'visual'];
-const DEFAULT_TIMEOUT_MS = 3 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = MAX_SLOT_MS;
 // Headless GPU budget. The user plays on this same GPU while agents test, so a
-// headless browser (1) never runs beside another one: one machine-wide at a
-// time, the rest queue on a lock file; and (2) yields to the player: it waits
-// while the GPU is already busy with something that isn't a test. That second
-// rule is the one the player feels, so it measures the GPU instead of
-// rationing time: an idle Mac runs tests freely, a played game holds every
-// session's tests back. macOS reports the accelerator's utilization in the IO
+// headless browser (1) never runs beside another one; (2) releases its slot
+// if the player uses the GPU; and (3) occupies a slot for <=10s TOTAL,
+// including compilation and cleanup. macOS reports utilization in the IO
 // Registry ("Device Utilization %", no permissions needed); its median over
 // BUSY_WINDOW_MS discounts the desktop's own spikes (a window drag, a video).
 // Off macOS (CI, the Linux container) there is no player and no reading.
 const BUDGET_DIR = path.join(os.homedir(), '.cache', 'tpt-headless');
 const SLOT_FILE = path.join(BUDGET_DIR, 'slot');
-const SLOT_WAIT_MS = Number(process.env.TPT_GPU_WAIT_MS ?? 10 * 60 * 1000);   // queue and yield, then give up
+const SLOT_WAIT_MS = Number(process.env.TPT_GPU_WAIT_MS ?? 3000);
 const SLOT_POLL_MS = 2000;
 // A raymarched frame at 30-60 fps keeps the M-series GPU above ~80 %; the
 // desktop alone reads 0-25 % with spikes past 50 % (sampled 2026-10-13).
@@ -43,7 +43,7 @@ const readJSON = (file, fallback) => { try { return JSON.parse(fs.readFileSync(f
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function gpuUtilization() {
   try {
-    const out = execFileSync('/usr/sbin/ioreg', ['-r', '-d', '1', '-c', 'IOAccelerator'], { encoding: 'utf8' });
+    const out = execFileSync('/usr/sbin/ioreg', ['-r', '-d', '1', '-c', 'IOAccelerator'], { encoding: 'utf8', timeout: 200 });
     const m = /"Device Utilization %"=(\d+)/.exec(out);
     return m ? Number(m[1]) : 0;
   } catch { return 0; }
@@ -59,6 +59,7 @@ export async function gpuBusyPct() {
   return v.sort((a, b) => a - b)[BUSY_SAMPLES >> 1];
 }
 let slotHeld = false;
+let slotStarted = 0, slotDeadline = 0, slotInode = null, slotToken = '', slotGuardPid = 0, watchdog = null, launching = false, attempted = false;
 async function takeSlot() {
   fs.mkdirSync(BUDGET_DIR, { recursive: true });
   const until = Date.now() + SLOT_WAIT_MS;
@@ -67,11 +68,23 @@ async function takeSlot() {
       try {
         fs.writeFileSync(SLOT_FILE, String(process.pid), { flag: 'wx' });
         slotHeld = true;
+        slotStarted = Date.now();
+        slotInode = fs.statSync(SLOT_FILE).ino; slotToken = randomUUID();
       } catch (e) {
         if (e.code !== 'EEXIST') throw e;
         const holder = Number(readJSON(SLOT_FILE, 0));
-        if (holder === process.pid) slotHeld = true;
-        else if (!holder || !alive(holder)) { fs.rmSync(SLOT_FILE, { force: true }); continue; }
+        if (holder === process.pid) {
+          const stat = fs.statSync(SLOT_FILE);
+          slotHeld = true; slotStarted ||= stat.mtimeMs; slotInode = stat.ino; slotToken ||= randomUUID();
+        }
+        else if (!holder || !alive(holder)) {
+          const stat = fs.statSync(SLOT_FILE);
+          // A fresh dead-owner lease may still be transferring to its guard.
+          if (Date.now() - stat.mtimeMs >= MAX_SLOT_MS &&
+              fs.statSync(SLOT_FILE).ino === stat.ino && Number(readJSON(SLOT_FILE, 0)) === holder) {
+            fs.rmSync(SLOT_FILE, { force: true }); continue;
+          }
+        }
         else {
           if (Date.now() > until) throw new Error(`Headless GPU slot still held by pid ${holder}; giving up. Do a CPU check instead.`);
           console.error(`[browser] waiting for the headless GPU slot (held by pid ${holder})`);
@@ -83,20 +96,68 @@ async function takeSlot() {
     // the slot is ours, so no other test is on the GPU: whatever is busy is the player
     const busy = await gpuBusyPct();
     if (busy < BUSY_PCT) return;
-    if (Date.now() > until) {
-      releaseSlot();
-      throw new Error(`The GPU is busy (${busy} % used, not by a test): the user is likely playing. Do a CPU check instead, or try again later.`);
-    }
-    console.error(`[browser] the GPU is busy (${busy} % used, not by a test): waiting for the player`);
-    await sleep(SLOT_POLL_MS);
+    releaseSlot();
+    throw new Error(`The GPU is busy (${busy} % used): the user is likely playing. Slot released; do CPU work instead.`);
   }
 }
 function releaseSlot() {
   if (!slotHeld) return;
+  if (watchdog) {
+    watchdog.stdin.write('released\n'); // guard verifies browser descendants exited first
+    return;
+  }
   slotHeld = false;
-  if (Number(readJSON(SLOT_FILE, 0)) === process.pid) fs.rmSync(SLOT_FILE, { force: true });
+  try {
+    const owner = Number(readJSON(SLOT_FILE, 0));
+    if (fs.statSync(SLOT_FILE).ino === slotInode && (owner === process.pid || (slotGuardPid > 0 && owner === slotGuardPid)))
+      fs.rmSync(SLOT_FILE, { force: true });
+  } catch {}
+  if (slotStarted) console.error(`[browser] total GPU slot occupancy ${Date.now() - slotStarted} ms`);
+  slotStarted = slotDeadline = 0; slotInode = null; slotToken = ''; slotGuardPid = 0;
 }
-process.on('exit', releaseSlot);
+// A failed close must not cancel the independent hard kill or release the
+// lock while our browser is still alive.
+process.on('exit', () => { if (!browsers.size && !launching) releaseSlot(); });
+
+async function guardSlot(limit) {
+  if (watchdog) return;
+  slotDeadline = slotStarted + limit;
+  const owner = processTable().find(p => p.pid === process.pid);
+  if (!owner) throw new Error('Cannot establish test process ownership; refusing GPU launch');
+  watchdog = spawn(process.execPath, [
+    fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url)),
+    String(owner.pid), owner.start, String(slotDeadline), SLOT_FILE, String(slotInode), slotToken,
+  ], { stdio: ['pipe', 'pipe', 'inherit'] });
+  slotGuardPid = watchdog.pid;
+  watchdog.stdin.on('error', () => {});
+  const guard = watchdog;
+  let output = '';
+  guard.stdout.on('data', data => {
+    output += data.toString();
+    if (output.includes('stop\n')) void stop(1, new Error('GPU deadline guard cannot verify ownership'));
+    if (output.includes('released\n') && watchdog === guard) {
+      watchdog = null;
+      releaseSlot();
+    }
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('GPU deadline guard did not start')), 500);
+      guard.once('error', error => { clearTimeout(timer); reject(error); });
+      guard.once('exit', () => { clearTimeout(timer); reject(new Error('GPU deadline guard exited before readiness')); });
+      guard.stdout.once('data', () => { clearTimeout(timer); resolve(); });
+    });
+  } catch (error) {
+    watchdog = null;
+    guard.kill('SIGTERM'); // our child only; no browser launch has started
+    throw error;
+  }
+  guard.once('exit', () => {
+    if (watchdog !== guard) return; // normal release already acknowledged
+    watchdog = null;
+    void stop(1, new Error('GPU deadline guard exited unexpectedly'));
+  });
+}
 
 /** True when this run must not accept a fallback (software) WebGPU adapter. */
 export const REAL_GPU = process.argv.includes('--real-gpu')
@@ -162,7 +223,7 @@ async function stop(code, error) {
   stopping = true;
   if (error) console.error(error);
   // Only our browsers. A broken driver must not prevent the test process exiting.
-  const deadline = setTimeout(() => process.exit(code), 5000);
+  const deadline = setTimeout(() => process.exit(code), Math.max(1, Math.min(1000, slotDeadline - Date.now())));
   await Promise.allSettled([...browsers].map(b => b.close()));
   clearTimeout(deadline);
   process.exit(code);
@@ -197,7 +258,8 @@ function hookBrowserLog(fn) {
 
 /**
  * Launches headless Chromium with GPU_ARGS plus `options.args`, closed on
- * uncaught failures and signals and after `lifetimeMs` (TPT_TEST_TIMEOUT_MS).
+ * uncaught failures and signals. `lifetimeMs` includes the entire slot:
+ * player check, launch, compilation, assertions and cleanup; maximum 10s.
  * `browserLog(line)` receives the browser's stderr, GPU process included
  * (adds --enable-logging=stderr).
  * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void } & object} [options] Playwright launch options
@@ -205,24 +267,36 @@ function hookBrowserLog(fn) {
  */
 export async function launchBrowser(options = {}) {
   const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, ...launch } = options;
-  if (!Number.isFinite(lifetimeMs) || lifetimeMs <= 0) throw new RangeError('Test lifetime must be positive milliseconds');
+  budgetMs(lifetimeMs);
+  if (attempted) throw new Error('One browser launch per test process. Reuse contexts; do not retry or renew the GPU slot.');
+  attempted = true; launching = true;
   const logArgs = browserLog && hookBrowserLog(browserLog) ? ['--enable-logging=stderr', '--v=0'] : [];
-  if (!browsers.size) await takeSlot();
   let browser;
   try {
+    await takeSlot();
+    await guardSlot(lifetimeMs);
+    const remaining = slotDeadline - Date.now() - CLEANUP_MS;
+    if (remaining <= 0) throw new Error('GPU slot budget exhausted before browser launch');
+    launching = true;
     browser = await chromium.launch({
       headless: true,
-      args: mergeArgs([...GPU_ARGS, ...logArgs], args),
+      args: mergeArgs([...GPU_ARGS, ...logArgs, `--tpt-gpu-lease=${slotToken}`],
+        args.filter(a => !a.startsWith('--tpt-gpu-lease='))),
       ...launch,
+      env: { ...process.env, ...launch.env, TPT_GPU_LEASE_TOKEN: slotToken },
+      timeout: Math.max(1, Math.min(launch.timeout || remaining, remaining)),
     });
   } catch (e) {
+    launching = false;
     if (!browsers.size) releaseSlot();
     throw e;
   }
   if (!browsers.size) for (const [event, fn] of Object.entries(handlers)) process.on(event, fn);
   browsers.add(browser);
-  const limit = lifetimeMs;
-  const timer = setTimeout(() => stop(1, new Error(`GPU test exceeded ${limit} ms (the run's lifetime, TPT_TEST_TIMEOUT_MS)`)), limit);
+  launching = false;
+  watchdog?.stdin.write('capture\n');
+  const timer = setTimeout(() => stop(1, new Error('GPU slot budget exhausted; closing within the 10s total cap')),
+    Math.max(1, Math.min(lifetimeMs - CLEANUP_MS, slotDeadline - Date.now() - CLEANUP_MS)));
   timer.unref();
   browser.once('disconnected', () => {
     clearTimeout(timer);

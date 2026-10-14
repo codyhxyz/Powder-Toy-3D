@@ -27,7 +27,17 @@ Fetching updates `origin/main`; it does not update local `main`. A branch name i
 
 ## Headless GPU budget — all agents
 
-The user plays the game on this same Mac's GPU while agents work, and headless runs wreck their frame rate. `tools/browser.mjs` enforces two rules: one headless browser machine-wide at a time (others queue on `~/.cache/tpt-headless/slot`), and none while the GPU is busy with something that isn't a test: the user playing. Holding the slot, the launcher reads the GPU's utilization from the IO Registry and waits (up to `TPT_GPU_WAIT_MS`, 10 min) while its median is 50 % or more, then fails with "the user is likely playing". An idle Mac runs tests freely; there is no hourly allowance. Runs last at most 3 minutes (`TPT_TEST_TIMEOUT_MS`). Check on the CPU first, batch what you need into one run, and close every browser the moment you have your answer. Never set `TPT_IGNORE_PLAYER` unless the user says so.
+The user plays on this Mac while agents work. Headless tests can disrupt the game.
+
+- Limit each GPU slot to **5–10 seconds total**, including startup, compilation, warmup, assertions, and cleanup.
+- Plan the command, purpose, run count, expected setup time, and total occupancy before launch.
+- Report measured occupancy afterward. Do not call a short measurement interval the total test time.
+- Do not extend the limit or repeat runs silently.
+- Use CPU checks first. Reuse existing evidence.
+- `tools/browser.mjs` rejects budgets over 10 seconds. Its independent watchdog stops only the test's own process tree.
+- The launcher releases its slot if the player uses the GPU. It does not hold the slot while waiting for the player.
+- Never set `TPT_IGNORE_PLAYER` without explicit user approval.
+- If another test holds the slot, identify its owner and require compliance. Do not kill unrelated processes.
 
 - Use `launchBrowser` and `newTestPage` / `newTestContext` from `tools/browser.mjs`, not another raw Chromium launcher. The deploy enforces it: `tools/check-browser-launch.mjs` fails on any script in `tools/` or `scripts/` that launches a browser itself, except the legacy list in that file, which only shrinks.
 - Pick the cheapest mode that preserves the assertion:
@@ -38,7 +48,7 @@ The user plays the game on this same Mac's GPU while agents work, and headless r
 - Use `ready(page)` instead of a fixed boot sleep. For a full-quality checkpoint in a cheap mode, use `await render(page)` before `page.screenshot()`. It parks the app and converges the view without stepping physics. Resume explicitly after the screenshot if needed. Model, world-generation, and audio readiness still require their own checks.
 - Park the main loop with `__app.test.park()` while inspecting results. Resume with `__app.test.resume()` when live gameplay is required. Do not park during a test interval that is meant to advance gameplay.
 - Do not shrink physics fixtures or lower the global FPS cap to save GPU work. Do not replace global rAF in new interaction tests: Playwright clicks need it.
-- Close browsers in `finally`. The launcher also closes its browsers on uncaught failures/signals and enforces a 10-minute lifetime (`TPT_TEST_TIMEOUT_MS` overrides it).
+- Close browsers in `finally`. `TPT_TEST_TIMEOUT_MS` can shorten the 10-second slot limit, but cannot extend it.
 - Keep GPU-heavy suites short and run benchmarks without competing GPU tests. Existing cross-build benchmarks retain their explicit legacy frame pumps.
 - Direct browser URLs support `?test=manual|ui|preview|visual` and `&paused=1`. These flags are not persisted and normal gameplay is unchanged.
 - Existing worktrees and already-running scripts must adopt this revision before these defaults apply. See `docs/headless-testing-cost.md`; check with `node tools/headless-check.mjs --port YOUR_PORT`.

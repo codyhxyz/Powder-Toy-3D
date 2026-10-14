@@ -32,7 +32,7 @@ if (process.argv.includes('--cpu')) {
 const at = process.argv.indexOf('--port');
 if (at < 0) throw new Error('Supply your owned server --port');
 const start = Date.now(), slotPath = join(homedir(), '.cache/tpt-headless/slot');
-const browser = await launchBrowser({ timeout: 5000, lifetimeMs: 15000 });
+const browser = await launchBrowser({ timeout: 5000, lifetimeMs: 10000 });
 let slotStart = null;
 try { if (readFileSync(slotPath, 'utf8').trim() === String(process.pid)) slotStart = statSync(slotPath).birthtimeMs; } catch {}
 try {
