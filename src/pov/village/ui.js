@@ -49,8 +49,8 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   const actions = createActionButtons('Village actions');
   const hint = h('small.village-action-hint', { role: 'status', 'aria-live': 'polite' });
   const hud = h('div.village-hud', { hidden: true }, h('div.village-place', {}, icon('leaf'),
-    h('div', {}, location, h('small.village-keyhelp', { text: 'WASD to walk · click the scene to look' }),
-      h('small.village-touchhelp', { text: 'Left stick to walk · drag the scene to look' }))),
+    h('div', {}, location, h('small.village-keyhelp', { text: 'WASD to walk · hold Space, release to leap' }),
+      h('small.village-touchhelp', { text: 'Left stick to walk · hold Jump, release to leap' }))),
     h('div.village-controls', {}, hint, actions.root));
   document.body.append(hud, dialog);
 

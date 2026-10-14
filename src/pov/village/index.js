@@ -162,6 +162,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     enabled = on; document.body.classList.toggle('village-on', on);
     releaseInput(); onEnabled(on);
     if (!on) {
+      avatar.reset();
       releaseHeld();
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
       ui.update({ active: false }); camera.third = oldThird;
@@ -225,8 +226,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     const p = getPlayer();
     if (p) {
       avatar.root.position.copy(p.pos).multiplyScalar(scale).add(vol.position); avatar.root.scale.setScalar(scale * p.size);
-      avatar.root.rotation.y = yaw; avatar.root.visible = live() && shown;
-      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0);
+      avatar.root.rotation.y = p.leaping ? Math.atan2(-p.vel.x, -p.vel.z) : yaw; avatar.root.visible = live() && shown;
+      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0, p);
     }
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.
