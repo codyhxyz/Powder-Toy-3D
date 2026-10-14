@@ -57,9 +57,21 @@ It does not wait for unrelated model, world-generation, or audio loading.
 Changing presentation cadence still changes temporal history. Use visual mode for pixel-regression baselines.
 
 The helper closes its browsers on uncaught exceptions, rejected promises, and termination signals.
-Each browser has a three-minute lifetime by default (`TPT_TEST_TIMEOUT_MS`). Two rules share the user's GPU: one headless browser machine-wide (a lock in `~/.cache/tpt-headless/slot`), and none while the GPU is busy with something that isn't a test. Holding the lock, `launchBrowser` takes the median of the IO Registry's "Device Utilization %" over about 2 s and waits while it is 50 % or more (a played game holds an M-series GPU above ~80 %, the desktop alone reads 0–25 %), for up to `TPT_GPU_WAIT_MS` (10 minutes). It replaced a 5-minutes-per-session-per-hour allowance (fd09377) that blocked tests on an idle Mac yet let many sessions together run all hour while the user played.
+Each GPU slot lasts at most **10 seconds total**. This limit includes player detection, browser startup, compilation, warmup, assertions, and cleanup.
+`TPT_TEST_TIMEOUT_MS` can shorten this limit, but cannot extend it.
+An independent watchdog requests closure before the deadline and terminates only the test's own processes if closure fails.
+Process identity checks and a unique launch marker prevent another session's processes from becoming cleanup targets.
+One launch attempt is allowed per test process. Additional pages must reuse that browser.
+
+The machine-wide slot remains at `~/.cache/tpt-headless/slot`.
+If the player uses the GPU, the launcher releases the slot and refuses the test.
+It no longer holds the slot while waiting for the player.
 Explicit `finally` cleanup is still preferred.
-The NPC suite sets a lifetime that covers its requested match count.
+
+Before launch, announce the command, worktree, assertion, run count, setup estimate, and total slot budget.
+Afterward, report measured slot occupancy separately from the measurement interval.
+Do not extend the deadline or repeat a failed run silently.
+If a suite cannot fit, split its assertions without reducing fixture size or changing physics.
 
 ### Rollout
 
