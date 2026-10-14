@@ -34,6 +34,12 @@ export function createToolbar({ views, settings, actions, available = {} }) {
     camOpt('god', 'God', 'God view: build and pour (V)'),
     camOpt('first', '1st', 'Walk in first person (V)'),
     camOpt('third', '3rd', 'Walk in third person (F5 or Ctrl swaps)'));
+  const build = h('button.industry-build', { type: 'button', title: 'Build factory machines',
+    'aria-controls': 'industry-builder', 'aria-expanded': 'false', 'aria-pressed': 'false',
+    on: { click: () => actions.toggleIndustryBuild?.(),
+      keydown: e => { if (e.code === 'Space' || e.code === 'Enter') e.stopPropagation(); } } }, 'Build');
+  build.hidden = true;
+  walk.append(build);
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
   // Save the game into the Saves list (Esc → Saves loads it), Garry's Mod's Save in its spawn menu's Saves
   const saveGame = btn('save', 'Save the game (⌘S)', () => actions.saveGame());
@@ -75,7 +81,7 @@ export function createToolbar({ views, settings, actions, available = {} }) {
 
   document.body.append(bar, pop);
 
-  let isOpen = false;
+  let isOpen = false, industryVisible = false, industryOpen = false;
   function open() {
     isOpen = true;
     viewBtn.setAttribute('aria-expanded', 'true');
@@ -120,11 +126,21 @@ export function createToolbar({ views, settings, actions, available = {} }) {
     get isOpen() { return isOpen; },
     // 'god' | 'first' | 'third'
     setCamera(id) {
-      for (const b of walk.querySelectorAll('button')) {
+      for (const b of walk.querySelectorAll('button[data-cam]')) {
         b.classList.toggle('on', b.dataset.cam === id);
         b.setAttribute('aria-pressed', String(b.dataset.cam === id));
       }
     },
+    setIndustry(visible, open) {
+      if (industryVisible === visible && industryOpen === open) return;
+      industryVisible = visible; industryOpen = open;
+      build.hidden = !visible;
+      build.classList.toggle('on', open);
+      build.setAttribute('aria-pressed', String(open));
+      build.setAttribute('aria-expanded', String(open));
+      walk.setAttribute('aria-label', visible ? 'Camera and construction' : 'Camera');
+    },
+    focusIndustry: () => { if (!build.hidden) build.focus({ preventScroll: true }); },
     setSettingsOpen: (v) => gear.classList.toggle('on', v),
     setUndoEnabled: (v) => { undo.disabled = !v; undo.style.opacity = v ? 1 : 0.4; },
   };

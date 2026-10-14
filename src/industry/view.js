@@ -150,10 +150,15 @@ export function createIndustryView(app, actions) {
       attribute(panel, 'data-building', state.building);
       attribute(toggle, 'aria-expanded', state.building);
       attribute(toggle, 'aria-pressed', state.building);
+      toggle.hidden = state.building;
       const restoreFocus = wasBuilding && !state.building && controls.contains(document.activeElement);
       controls.hidden = !state.building;
       // Escape / Done closure should not strand keyboard focus in hidden UI.
-      if (restoreFocus && !panel.hidden) toggle.focus({ preventScroll: true });
+      if (restoreFocus) {
+        if (panel.hidden) document.activeElement?.blur?.();
+        else if (app.toolbar?.focusIndustry) app.toolbar.focusIndustry();
+        else toggle.focus({ preventScroll: true });
+      }
       wasBuilding = state.building;
       const p = state.progression;
       text(balance, p ? `${p.credits} credits` : 'Loading quarry…');

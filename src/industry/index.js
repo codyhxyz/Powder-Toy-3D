@@ -28,12 +28,13 @@ export function validateIndustrySave(data, dims, preset) {
 
 export function createIndustry(app) {
   let devices = [], progression = null, paid = new Set(), factoryRun = false, assisted = false;
-  let building = false, selected = 'belt', rotation = 0, filter = E.NUGGETS, powered = false;
+  let building = false, dismantling = false, selected = 'belt', rotation = 0, filter = E.NUGGETS, powered = false;
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode;
   // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
   const active = () => !app.win && ['sandbox','factory'].includes(app.gamemode);
   const factory = () => app.gamemode === 'factory' && app.settings.preset === 'quarry';
+  const syncToolbar = () => app.toolbar.setIndustry?.(active() && factory(), building);
   const construction = createConstruction(app);
   const physics = createIndustryPhysics({ getSim: () => app.sim,
     onShip: shipment => {
@@ -54,12 +55,14 @@ export function createIndustry(app) {
     : pending ? fail('Construction is finishing') : devices.length >= INDUSTRY_LIMIT ? fail('128 machines is the limit')
     : factory() ? progression?.canBuild(type) ?? fail('The Quarry is still loading') : { ok: true };
   const state = () => ({ devices: devices.map(d => ({...d})), progression: factory() ? progression?.snapshot() ?? null : null,
-    active: active(), factory: factory(), selected, building: building && active(), rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
+    active: active(), factory: factory(), selected, building: building && active() && factory(), dismantling, rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
   const report = result => { if (!result.ok) app.hud.toast(result.reason); app.requestRender(); return result; };
   const toggle = value => {
-    if (!active()) return;
+    if (!active() || !factory()) return;
     building = value ?? !building; app.painting = false;
+    if (!building) dismantling = false;
     if (building) { app.leaveBuild(); app.dock.setCollapsed(true); }
+    syncToolbar();
     app.requestRender();
   };
   const rotate = () => { rotation = (rotation + 1) % 4; probeKey = ''; app.requestRender(); };
@@ -116,41 +119,45 @@ export function createIndustry(app) {
   };
   const placeAimed = () => { if (candidate) return place(candidate).then(report); report(fail('Aim at a clear surface first')); };
   const removeAimed = () => remove(target()?.id).then(report);
-  const view = createIndustryView(app, { toggle: () => toggle(), cancel: () => toggle(false), rotate, place: placeAimed, remove: removeAimed,
-    select: type => { selected = type; probeKey = ''; toggle(true); }, canBuild,
+  const view = createIndustryView(app, { toggle: () => toggle(), cancel: () => toggle(false), rotate, place: placeAimed,
+    remove: () => { if (building && factory()) { dismantling = !dismantling; probeKey = ''; app.requestRender(); } },
+    select: type => { selected = type; dismantling = false; probeKey = ''; toggle(true); }, canBuild,
     filter: value => { filter = value; }, power: value => { powered = factory() ? false : value; },
   });
   const key = e => {
-    if (!active() || app.isTyping() || (e.target?.tagName === 'SELECT' && e.code !== 'Escape') || e.ctrlKey || e.metaKey || e.altKey) return;
-    const buildKey = e.code === 'KeyB' && (building || app.gamemode === 'factory' || e.shiftKey);
-    if (buildKey || (building && ['KeyR','Escape'].includes(e.code))) {
+    if (!factory() || !building || app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.code === 'Escape') {
       e.preventDefault(); e.stopImmediatePropagation();
-      if (!e.repeat) { if (e.code === 'KeyB') toggle(); else if (e.code === 'KeyR') rotate(); else toggle(false); }
+      if (!e.repeat) toggle(false);
     }
   };
   const pointer = e => {
-    if (!building || !active() || e.target !== app.canvas || e.altKey || ![0,2].includes(e.button)) return;
+    if (!building || !factory() || !active() || e.target !== app.canvas || e.altKey || e.button !== 0) return;
     if (app.pov?.active && !app.pov.locked) return; // first click captures the mouse
     e.preventDefault(); e.stopImmediatePropagation();
-    if (e.type === 'pointerdown') { if (e.button === 2) removeAimed(); else placeAimed(); }
+    if (e.type === 'pointerdown') { if (dismantling) removeAimed(); else placeAimed(); }
   };
   addEventListener('keydown',key,true); addEventListener('pointerdown',pointer,true); addEventListener('mousedown',pointer,true);
   function modeChanged() {
     if (app.gamemode !== lastMode) {
       if (app.settings.preset === 'quarry' && app.gamemode === 'sandbox' && factoryRun) assisted = true;
       if (factory()) { if (!factoryRun) assisted = true; factoryRun = true; powered = false; }
-      lastMode = app.gamemode; building = false; app.painting = false;
+      lastMode = app.gamemode; building = false; dismantling = false; app.painting = false;
       app.toolbar.setUndoEnabled(!factory() && app.sim.canUndo);
     }
+    syncToolbar();
   }
   function update(dt, stepping) {
     if (disposed) return;
     modeChanged();
-    if (!active()) building = false;
+    if (!active() || !factory()) { building = false; dismantling = false; }
     // Physics runs on actual steps, never on paused UI/ghost frames.
     if (stepping && active() && !pending) { physics.step(Math.min(Math.max(dt,0),.05), devices); animation += Math.min(dt,.05); }
-    candidate = null;
-    if (building && app.hover.valid) {
+    candidate = null; candidateResult = null;
+    if (building && dismantling) {
+      candidate = target();
+      if (candidate) candidateResult = { ok: true, reason: 'Click to dismantle' };
+    } else if (building && app.hover.valid) {
       const h = app.hover, xyz = [h.cell.x,h.cell.y,h.cell.z].map(Math.floor);
       const axis = Math.floor(h.face/2), sign = h.face % 2 === 0 ? 1 : -1;
       if (h.id >= 0) xyz[axis] += sign > 0 ? 1 : -(axis === 1 ? deviceHeight({type:selected}) : 4);
@@ -177,17 +184,17 @@ export function createIndustry(app) {
   }
   let lastProbe = fail('Checking clearance…');
   const api = {
-    update, place, remove, modeChanged, get state() { return state(); }, get building() { return building && active(); },
+    update, place, remove, toggle, modeChanged, get state() { return state(); }, get building() { return building && active() && factory(); },
     get pending() { return pending || !!physics.pending; },
     reset({ starters = false } = {}) {
       if (factory()) app.hud.dismissHint?.(); // The Sandbox pouring hint is false on the initial Factory boot too.
       epoch++; physics.reset(); devices = []; progression = null; paid.clear(); factoryRun = false; assisted = false;
-      pending = false; building = false; if (factory()) powered = false; probeKey = ''; lastMode = app.gamemode;
+      pending = false; building = false; dismantling = false; if (factory()) powered = false; probeKey = ''; lastMode = app.gamemode;
       if (starters && app.settings.preset === 'quarry') {
         devices = QUARRY_STARTERS.map(d => ({...deviceSpec(d,dimensions(app)),id:d.id}));
         progression = createProgression(); paid = new Set(devices.map(d => d.id)); factoryRun = factory();
       }
-      app.requestRender();
+      syncToolbar(); app.requestRender();
     },
     toJSON() {
       if (pending || physics.pending) throw new Error('Machines are transferring matter. Pause, wait a moment, then save again.');
@@ -204,14 +211,16 @@ export function createIndustry(app) {
       physics.fromJSON(data.physics,next);
       epoch++; devices = next; progression = nextProgression;
       paid = new Set(data.paid); factoryRun = data.factoryRun; assisted = data.assisted;
-      building = false; probeKey = ''; lastMode = app.gamemode;
+      building = false; dismantling = false; probeKey = ''; lastMode = app.gamemode;
       if (factory()) powered = false;
-      app.requestRender();
+      syncToolbar(); app.requestRender();
     },
     dispose() {
       disposed = true; epoch++; physics.dispose(); view.dispose();
+      app.toolbar.setIndustry?.(false, false);
       removeEventListener('keydown',key,true); removeEventListener('pointerdown',pointer,true); removeEventListener('mousedown',pointer,true);
     },
   };
+  syncToolbar();
   return api;
 }

@@ -35,7 +35,7 @@ try {
       const world = xyz => new a.THREE.Vector3(...xyz).multiplyScalar(a.scale).add(a.volume.position);
       a.camera.position.copy(world([73, 38, 82])); a.controls.target.copy(world([50, 10, 53])); a.controls.update();
     });
-    await page.keyboard.press('b');
+    await page.locator('.industry-build').click();
     await page.evaluate(() => window.__app.industry.update(0, false));
     await render(page);
     before = await page.screenshot({ type: 'jpeg', quality: 88 });

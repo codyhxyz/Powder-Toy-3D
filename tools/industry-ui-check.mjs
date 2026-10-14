@@ -39,6 +39,11 @@ try {
   const capture = async name => {
     await refresh(); await render(page);
     await page.screenshot({ path: `${out}/${name}.png` });
+    if (name === 'sandbox') {
+      assert(await page.locator('.industry').isHidden());
+      assert(await page.locator('.industry-build').isHidden());
+      return;
+    }
     const bounds = await page.locator('.industry').boundingBox();
     const viewport = page.viewportSize();
     assert(bounds && bounds.x >= -1 && bounds.y >= -1
@@ -46,7 +51,7 @@ try {
       && bounds.y + bounds.height <= viewport.height + 1, `${name}: Industry panel must fit viewport`);
   };
   await capture('closed');
-  await page.keyboard.press('b'); await refresh();
+  await page.locator('.industry-build').click(); await refresh();
   assert.equal(await page.evaluate(() => window.__app.industry.building), true);
   const machine = type => page.locator(`[data-machine="${type}"]`);
   assert.equal(await page.locator('[data-machine]').count(), 8);
@@ -56,7 +61,7 @@ try {
   assert.equal(await page.evaluate(() => window.__app.settings.paused), paused, 'Space activates a UI button without toggling simulation');
   assert.equal(await page.evaluate(() => window.__app.industry.state.selected), 'belt');
   const rotation = await page.evaluate(() => window.__app.industry.state.rotation);
-  await page.keyboard.press('r'); await refresh();
+  await page.locator('.industry [data-action="rotate"]').click(); await refresh();
   assert.equal(await page.evaluate(() => window.__app.industry.state.rotation), (rotation + 1) % 4);
   await page.evaluate(() => {
     const a = window.__app;
@@ -75,16 +80,16 @@ try {
     a.hover.valid = false;
     a.industry.update(0, false);
   });
-  await page.keyboard.press('b'); await refresh();
+  await page.locator('.industry-build').click(); await refresh();
   await machine('heater').click(); await refresh();
   assert.equal(await page.evaluate(() => window.__app.industry.state.selected), 'heater');
   await page.setViewportSize({ width: 740, height: 740 });
   await capture('compact');
-  assert(await unobscured(page.locator('.industry-toggle')), 'compact Close must not sit beneath the material selector');
+  assert(await unobscured(page.locator('.industry [data-action="cancel"]')), 'compact Done stays reachable');
   await page.setViewportSize({ width: 390, height: 844 });
   await capture('phone');
-  await page.getByRole('button', { name: 'Choose machine', exact: true }).click();
-  assert(await unobscured(machine('heater')), 'phone chooser must reveal the selected machine');
+  await machine('heater').scrollIntoViewIfNeeded(); await machine('heater').focus();
+  assert(await unobscured(machine('heater')), 'phone catalog can reveal every machine');
   await page.keyboard.press('Space'); await refresh();
   assert(await unobscured(machine('heater')), 'keyboard selection must keep its focused button visible');
 
@@ -101,11 +106,7 @@ try {
   await page.keyboard.press('b');
   assert.equal(await page.evaluate(() => window.__app.industry.building), false);
   await page.keyboard.press('Shift+b'); await refresh();
-  await machine('pump').click(); await refresh();
-  const power = page.locator('.industry').getByRole('checkbox');
-  assert(await power.isVisible());
-  await power.focus(); await page.keyboard.press('Space'); await refresh();
-  assert(await power.isChecked());
+  assert.equal(await page.evaluate(() => window.__app.industry.building), false);
   assert.equal(await page.evaluate(() => window.__app.settings.paused), paused);
   await capture('sandbox');
 
@@ -116,7 +117,7 @@ try {
     await a.pov.enter({ at: new a.THREE.Vector3(48, 8, 84), swoop: 0, hint: false });
   });
   await page.waitForFunction(() => window.__app.pov.mode === 'on');
-  await page.keyboard.press('b');
+  await page.locator('.industry-build').click();
   await page.waitForFunction(() => window.__app.industry.building);
   await page.evaluate(() => window.__app.test.park());
   await capture('pov');
