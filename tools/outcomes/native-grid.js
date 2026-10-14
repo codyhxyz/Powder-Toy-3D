@@ -4,12 +4,11 @@ import { E, ELEMENTS, K } from '../../src/elements.js';
 import { FULL, lifeScale } from '../../src/v2/layout.js';
 import { unpackContact } from '../../src/v2/contact.js';
 import { unpackParticle, PARTICLE_BYTES, PHOTON_TAG, ballistic, dynamicsRows, DT, GRAVITY, CELL_M } from '../../src/v2/dynamics-reference.js';
-import { fallCells, G_TICK, TICK_HZ, v2Rows } from '../../src/shaders/v2.js';
+import { fallCells, TICK_HZ } from '../../src/shaders/v2.js';
+import { fallVelocity } from '../../src/v2/fall.js';
 import { tally } from './lib.js';
 
-// Isolated pending the production persistent-inertia helper (src/v2/fall.js).
-export const gridFallVelocity = core => ELEMENTS[core[0] & 255]?.kind === K.POWDER
-  ? Math.min((core[0] >>> 24) * G_TICK, v2Rows()[core[0] & 255].vt) * CELL_M * TICK_HZ : 0;
+export const gridFallVelocity = fallVelocity;
 export const nativeFall = (id, seconds) => ELEMENTS[id]?.kind === K.POWDER ? fallCells(id, Math.round(seconds * TICK_HZ)) : null;
 export function nativeFlight(id, [vx, vy], seconds) {
   const row = dynamicsRows[id];

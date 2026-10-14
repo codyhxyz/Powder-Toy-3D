@@ -6,6 +6,7 @@ import { gridLayout } from '../../src/sim.js';
 import { cellSlot } from '../../src/shaders/common.js';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { makeMaterial, FULL } from '../../src/v2/layout.js';
+import { setFall } from '../../src/v2/fall.js';
 import { packContact, unpackContact } from '../../src/v2/contact.js';
 import { packParticle, ballistic, DT, GRAVITY, CELL_M, dynamicsRows } from '../../src/v2/dynamics-reference.js';
 import { toGrid, nativeTally, nativeFlight, nativeFall, readNativeState } from './native-grid.js';
@@ -52,6 +53,13 @@ test('flight reuses production ballistic/terminal law, not bare gravity; no inve
   assert.equal(nativeFlight(E.WALL, [1, 0], 1), null);
   assert.equal(nativeFall(E.WATER, 1), null);
   assert.ok(nativeFall(E.SAND, 1) > 0);
+});
+test('native grid readback decodes stored powder velocity, not its fractional age byte', () => {
+  const f=fixture(), sand=makeMaterial(E.SAND);
+  sand.core=setFall(sand.core,3.92,0.625);
+  put(f,[2,3,4],sand);
+  const g=toGrid(f), i=at(g,2,3,4);
+  assert.ok(Math.abs(g.vel[i*3+1]+3.92)<1e-6);
 });
 
 function spyGPU() {

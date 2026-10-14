@@ -1,9 +1,10 @@
 import { fold } from '../gpu/kernels.js';
 import { uniformStruct } from '../gpu/params.js';
 import { prelude, STATE_OPTS, EDIT_FIELDS, STAGE, SEED_MAX } from '../shaders/common.js';
-import { nativeDynamicsHead, SUB, TICK_HZ, FULL, v2Rows } from '../shaders/v2.js';
+import { nativeDynamicsHead, SUB, TICK_HZ, FULL } from '../shaders/v2.js';
 import { MODE_FIELDS, nativeModes } from './modes.js';
 import { modeWGSL } from '../shaders/v2/modes.js';
+import { fallWGSL } from '../shaders/v2/fall.js';
 import { E } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { LEGACY_PRESSURE_PA } from './pressure.js';
@@ -35,6 +36,7 @@ export function nativeWeatherEvaluateWGSL(g, spec, params) {
 ${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
 ${modeWGSL}
+${fallWGSL}
 ${spec.decls ?? ''}
 ${spec.nativeForcing ? 'fn ownLegacy(s: u32) {} // force evaluators never claim legacy replacement ownership' : ''}
 ${scratchWGSL}
@@ -51,10 +53,7 @@ let a=compactProbeA(p,vec4u(particle.c0,particle.tail.xyz));
 var b=vec4f(particle.velocity/${WEATHER_SPEED_SI},fetchB(p).w);` : `if(i>=weatherCount()) { return; }
 let p=weatherCell(i); let a=fetchA(p); var b=fetchB(p);`}
 ${spec.nativeForcing && !spec.nativeParticles ? `if(KIND(eid(a))==K_POWDER) {
- let c=fetchNativeCore(p);let age=f32(c.x>>24u);
- let terminal=array<f32, ${v2Rows().length}>(${v2Rows().map(r=>{const v=r.vt*TICK_HZ*CELL_M;return Number.isInteger(v)?v+'.0':v;}).join(',')});
- let gravity=mGravity(vec3f(p)+0.5);let magnitude=length(gravity);
- b=vec4f(gravity/max(magnitude,0.000001)*min(terminal[u32(eid(a))],magnitude*age/60.0)/${WEATHER_SPEED_SI},b.w);
+ b=vec4f(vec3f(0,-fallVelocity(fetchNativeCore(p)),0)/${WEATHER_SPEED_SI},b.w);
 }` : ''}
 // Read canonical liquid faces even when the renderer would dither this cell out.
 if(KIND(eid(a))==K_LIQUID${spec.nativeParticles ? ' && false' : ''}) {

@@ -336,15 +336,14 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     }
     if (kinetic>0.0 && (k==2u || k==3u || (plan.flags&2u)!=0u) && (plan.flags&8u)==0u) {
       plan.flags|=1u;
-      if(P.mode==14u) {
+      {
         var incoming=vec3f(0);
-        if(k==2u) { let gravity=mGravity(vec3f(cellOf(t))+0.5);let magnitude=length(gravity);
-          incoming=gravity/max(magnitude,0.000001)*min(vtOf(id)*60.0*D_CELL,magnitude*f32(cAge(m.core))/60.0);
-        }
+        if(k==2u) { incoming=vec3f(0,-fallVelocity(m.core),0); }
         if(k==3u) {incoming=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x)*${f(180*CELL_M/65536)};}
         let into=select(id,(plan.flags>>8u)&255u,(plan.flags&2u)!=0u);
         plan.velocity=dBudgetVelocity(incoming,normalize(plan.velocity),kinetic,dMass(into)*dAmount(m));
-      } else {plan.velocity=normalize(plan.velocity)*sqrt(2.0*kinetic/max(dMass(id)*dAmount(m),0.000001));}
+        plan.flags|=32u; // Absolute budgeted velocity already includes incoming motion.
+      }
     }
     plans[t]=plan;
   `);
@@ -408,7 +407,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
           }
         }
         // Bounded forcing supplies absolute velocity; ordinary impulses add to falling motion.
-        let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),P.mode==15u);
+        let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),P.mode==15u || (plan.flags&32u)!=0u);
         if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) { after=remainder; }
         else { atomicAdd(&control[7],1u); if(P.mode==15u) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }

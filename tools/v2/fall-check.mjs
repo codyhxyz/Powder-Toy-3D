@@ -106,7 +106,11 @@ for(const z of [0x7f800000,0xff800000,0x7fc00000,0xffc00001,word(1),word(1.5)]) 
 for(const velocity of [NaN,Infinity,-1,1e50]) assert.throws(()=>setFall(seed,velocity,0),/velocity/);
 // Production R2, promotion and deposit callsites must use the new API.
 assert.match(v2BlockWGSL(g),/setFall\(gr, 0\.0, 0\.0\)/);
-assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/plan.velocity \+ vec3f\(0,-fallVelocity\(before.core\),0\)/);
+const apply=blastsWGSL(g,nativeDynamicsHead,'apply');
+assert.match(apply,/plan.velocity\+incoming/);
+assert.match(apply,/select\(vec3f\(0,-fallVelocity\(before.core\),0\),vec3f\(0\),P.mode==15u \|\| \(plan.flags&32u\)!=0u\)/,
+  'absolute force/blast velocities do not receive incoming motion twice');
+assert.match(blastsWGSL(g,nativeDynamicsHead,'damagePlan'),/incoming=vec3f\(0,-fallVelocity\(m.core\),0\)/);
 assert.match(blastsWGSL(g,nativeDynamicsHead,'couplePlan'),/fallVelocity\(m.core\)>0.0/);
 assert.match(particlesWGSL(g,nativeDynamicsHead,'deposit'),/setFall\(after.core,0.0,0.0\)/);
 assert.doesNotMatch(main,/cAge|G_TICK/);
