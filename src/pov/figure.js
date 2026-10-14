@@ -478,6 +478,14 @@ export function createFigure(build = buildStick) {
       shR.rotation.set(J.shR, 0, J.armOut);
       elL.rotation.x = J.elL;
       elR.rotation.x = J.elR;
+      // A chicken wingbeat: both arms throw up and out, then the pose falls back. Not smoothed,
+      // or the beat would still be rising when the wings had already given up.
+      if (!s.dead && s.flap > 0) {
+        const w = s.flap;
+        shL.rotation.x -= 1.5 * w; shR.rotation.x -= 1.5 * w;
+        shL.rotation.z -= 0.9 * w; shR.rotation.z += 0.9 * w;
+        elL.rotation.x *= 1 - 0.6 * w; elR.rotation.x *= 1 - 0.6 * w;
+      }
       const look = !s.dead && s.look ? s.look : null;
       const aimLean = look ? look.pitch * look.spine : 0;
       torso.rotation.x = -J.lean + aimLean;
