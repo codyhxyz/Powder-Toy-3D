@@ -1,6 +1,9 @@
 import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan, memoTwin } from './themedShared.js';
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
+import { CITY_FOLK_TERRAIN } from './cityFolk/terrain.js';
+
+export { CITY_FOLK_TERRAIN } from './cityFolk/terrain.js';
 
 // Animal Crossing's village/terraces, with Minecraft's one-cell stairs.
 // Fixed topology; the seed changes only material grain. All scenery is matter,
@@ -60,7 +63,10 @@ export const WILLOW_LANDMARKS = Object.freeze({
 const SRC = /* glsl */ `
 bool wcExpanded() { return uWillowWorldX > WC_LEGACY_WORLD_X; }
 
+${CITY_FOLK_TERRAIN.shapeSrc}
+
 int wcRadius(int x, int z) {
+  if (wcExpanded() && abs(x) >= 200) return cfRadius(x, z);
   // Stretch the terrain, not Animal Crossing's cottages, trees or river.
   int ax = thDiv(abs(x), wcExpanded() ? WC_LAND_STRETCH_X : 1);
   return max(max(ax, abs(z)), thDiv(3 * (ax + abs(z)), 4));
@@ -68,7 +74,7 @@ int wcRadius(int x, int z) {
 
 // Rock-backed octagonal shore; dry sand is a single supported layer bounded
 // by a rock lip at the same height, so it cannot topple into the sea.
-int wcHeight(int x, int z) {
+int wcBaseHeight(int x, int z) {
   int r = wcRadius(x, z);
   if (r > WC_RADIUS) return WC_FLOOR;
   if (r >= WC_SHORE) return max(WC_FLOOR, WC_BEACH - (r - WC_SHORE));
@@ -99,6 +105,10 @@ bool wcPath(int x, int z) {
   if (z >= -WC_PATH_HALF && z <= WC_PATH_HALF && x >= WC_ORCHARD_X + WC_GROVE_WIDTH && x <= WC_PATH_X) return true;
   return abs(x - WC_PLAZA_X) <= WC_PLAZA_HALF_X && abs(z - WC_PLAZA_Z) <= WC_PLAZA_HALF_Z;
 }
+
+${CITY_FOLK_TERRAIN.src}
+
+int wcHeight(int x, int z) { return cfHeight(x, z); }
 
 int wcHouseX(int x) {
   if (x < WC_PLAZA_X - WC_PLAZA_HALF_X) return WC_COTTAGE_A;
@@ -142,11 +152,12 @@ int wcTree(int x, int y, int z) {
   return E_EMPTY;
 }
 
-int wcCell(int wx, int y, int wz) {
+int wcBaseCell(int wx, int y, int wz) {
   if (wx < 0 || wz < 0 || y < 0 || wx >= uWillowWorldX || wz >= uWillowWorldZ || y >= uWillowWorldY) return E_EMPTY;
   if (y < WC_FLOOR) return E_ROCK;
   if (y >= WC_SKY) return E_EMPTY;
   int x = wx - thDiv(uWillowWorldX, 2), z = wz - thDiv(uWillowWorldZ, 2);
+  if (cfOuter(x)) return cfOuterCell(x, y, z);
   int r = wcRadius(x, z);
   if (r > WC_RADIUS && !(abs(x - WC_PATH_X) <= WC_DOCK_HALF && z >= WC_DOCK_START && z < WC_DOCK_END))
     return y < WC_SEA ? E_WATER : E_EMPTY;
@@ -201,6 +212,15 @@ int wcCell(int wx, int y, int wz) {
     if (id != E_EMPTY) return id;
   }
   return wcTree(x, y, z);
+}
+
+// Public island-local BASE terrain API. It never invokes overlay modules.
+int cfTerrainCell(int x, int y, int z) {
+  return wcBaseCell(x + thDiv(uWillowWorldX, 2), y, z + thDiv(uWillowWorldZ, 2));
+}
+
+int wcCell(int wx, int y, int wz) {
+  return cfTerrainCell(wx - thDiv(uWillowWorldX, 2), y, wz - thDiv(uWillowWorldZ, 2));
 }
 `;
 
