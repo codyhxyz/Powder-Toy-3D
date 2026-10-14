@@ -36,6 +36,7 @@ export const MODELS = {
   rocket: { fit: 'z', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },         // a rocket in flight (drawn without the arm)
   physgun: { fit: 'z', size: 1.3, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // finned, glowing core, centred
   axe: { fit: 'y', size: 1.25, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },           // handle up from the hand, blade forward
+  jackhammer: { fit: 'z', size: 2.1, anchor: [0.5, 0.5, 0.8], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },
   pickaxe: { fit: 'y', size: 1.3, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },      // handle up from the hand, point forward
   shovel: { fit: 'z', size: 2.2, anchor: [0.5, 0.5, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },           // laid flat, blade forward, held at the end of the handle
   bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.4, roll: 0 } },                    // upright, held by the bail
@@ -183,6 +184,17 @@ const PARTS = {
     { geo: 'box', s: [0.1, 0.24, 0.2], p: [0, 1.0, 0], m: 'ironDark' },
     { geo: 'plate', pts: [[0.08, -0.11], [0.08, 0.11], [0.34, 0.23], [0.42, 0.02], [0.34, -0.25]], depth: 0.055, p: [0, 1.0, 0], rot: [0, H, 0], m: 'iron' },
     { geo: 'box', s: [0.1, 0.13, 0.1], p: [0, 1.0, 0.14], m: 'ironDark' },
+  ],
+  // Rust's powered mining tool: orange motor, side handles, steel piston/chisel along −z.
+  jackhammer: [
+    { geo: 'box', s: [0.44, 0.5, 0.62], p: [0, 0.03, -0.27], m: 'orange' },
+    { geo: 'box', s: [0.48, 0.14, 0.18], p: [0, 0.03, 0.12], m: 'metalDark' },
+    { geo: 'box', s: [0.9, 0.1, 0.1], p: [0, 0, 0], m: 'ironDark' },
+    ...[-1, 1].map((side) => ({ geo: 'box', s: [0.14, 0.16, 0.32], p: [side * 0.42, 0, 0], m: 'grip' })),
+    { geo: 'cyl', r: 0.16, h: 0.32, p: [0, 0.03, -0.7], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.065, h: 0.6, p: [0, 0.03, -1.14], rot: [H, 0, 0], m: 'iron' },
+    { geo: 'box', s: [0.16, 0.04, 0.2], p: [0, 0.03, -1.5], m: 'iron' },
+    ...[-0.4, -0.28, -0.16].map((z) => ({ geo: 'box', s: [0.46, 0.04, 0.045], p: [0, 0.16, z], m: 'metalDark' })),
   ],
   pickaxe: [
     { geo: 'cyl', r: 0.045, h: 1.3, p: [0, 0.5, 0], m: 'wood' },
