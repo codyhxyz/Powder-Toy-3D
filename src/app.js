@@ -2067,9 +2067,6 @@ function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
 // Lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
 // so the grid and the box outline fade by the render scale to keep their weight.
 let volumeDrawn = false;   // the last presented frame drew the volume (__app.view.volumeDrawn)
-let opaqueRasterDrawn = false;
-// Box-only prototype: the world has a separate far/volume target and haze.
-const useOpaqueRaster = () => !win && !blocks && !warpNow()?.k && !testNoVolume && viewKeyOf(settings.view) === 'realistic' && vol.opaqueRaster;
 let volumeFirst = false;  // this frame's volume drew before the scene pass (the opaque hook: world/far.js volumePass)
 // The volume's draw into rp (the scene pass, or its own pass first), its
 // options this frame's (cut.take(): the meshes' depth, once a frame).
@@ -2168,10 +2165,6 @@ const frameHooks = {
         sim.updateGI(SUN, vol.shadowTextures, vol.shadowRes);
       }
     }
-    if (useOpaqueRaster()) {
-      const ready = vol.prepareOpaque(frameDetail);
-      if (ready) wakeWhen(ready);
-    }
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
     for (const w of live) if (frameMode !== 'meshes' || !w.scene) w.compute?.(ctx);
@@ -2183,16 +2176,7 @@ const frameHooks = {
     if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
     if (frameMode === 'capture') { drawVolumeFirst(p); return false; }   // (the volume uncut: the meshes go over it in the meshes hook)
-    let drew = threeMeshes(p, false);
-    opaqueRasterDrawn = false;
-    if (useOpaqueRaster()) {
-      const rp = gpu.frame.render(p.sceneDescriptor({ load: drew }), 'realistic opaque faces');
-      try {
-        opaqueRasterDrawn = vol.drawOpaque(rp, { detail: frameDetail, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
-      } finally { rp.end(); }
-      drew ||= opaqueRasterDrawn;
-    }
-    if (drew && !blocks) cut.capture(p.sceneTarget.depth);
+    const drew = threeMeshes(p, false) ? (blocks ? true : cut.capture(p.sceneTarget.depth)) : false;
     drawVolumeFirst(p);
     return drew;
   },
@@ -2219,7 +2203,7 @@ let frameDetailSeen = null, frameDetailV = 0;   // (the detail variant drawn, th
 function planMeshFrame(runDerived) {
   if (frameDetail !== frameDetailSeen) { frameDetailSeen = frameDetail; frameDetailV++; }
   if (!threeHasVisible(scene, camera)) { meshFrames.release(); return 'full'; }
-  if (runDerived || blocks || useOpaqueRaster() || testNoVolume || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
+  if (runDerived || blocks || testNoVolume || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
     meshFrames.drop();
     return 'full';
   }
@@ -2659,7 +2643,7 @@ try {
     // volumeDrawn: the last presented frame drew the volume (false while its pipeline builds)
     // meshFrames: the last view frame's kind ('full', 'capture', 'meshes': gfx/meshFrames.js) and the kept scene's state
     view: {
-      get time() { return viewTime; }, get frame() { return gfxUniforms.uFrame.value; }, get detailShown() { return detailGate.shown; }, get volumeDrawn() { return volumeDrawn; }, get opaqueRasterDrawn() { return opaqueRasterDrawn; },
+      get time() { return viewTime; }, get frame() { return gfxUniforms.uFrame.value; }, get detailShown() { return detailGate.shown; }, get volumeDrawn() { return volumeDrawn; },
       get meshFrames() { return { mode: lastFrameMode, ...meshFrames.state }; },
     },
     // the frame loop: asleep when settled (deep idle, F7); callbacks: animation frames it ran

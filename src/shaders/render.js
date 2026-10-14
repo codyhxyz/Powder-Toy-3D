@@ -1322,10 +1322,10 @@ struct VolumeFrag {
  * its globals are a template switch, so the flat views carry none of it);
  * its draw is VOLUME_SCREEN_VERTICES.
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
- * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean, entries?: string[] | null }} [opts] entries: internal alternate raster entries sharing the realistic library
+ * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean }} [opts]
  * @returns {string}
  */
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, entries = null } = {}) => {
+export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false } = {}) => {
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const d = view === 'realistic' ? detail : {};
   const parts = [
@@ -1343,7 +1343,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   ];
   if (view === 'realistic') parts.push(farHazeGLSL, realistic(d, curved));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
-  parts.push(...(entries ?? [volumeVertOf(curved), volumeEntry(view, view === 'realistic', curved)]));
+  parts.push(volumeVertOf(curved), volumeEntry(view, view === 'realistic', curved));
   return parts.join('\n');
 };
 

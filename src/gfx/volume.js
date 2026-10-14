@@ -42,8 +42,6 @@ import { frameUniformsOf } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
-import { createBlocks } from './blocks.js';
-import { opaqueWGSL, OPAQUE_LAYOUTS, opaquePipeline } from '../shaders/opaqueRaster.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
@@ -133,18 +131,16 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
   // sim's moveSrc buffer, which whitewater remakes; the dummy while there is
   // none), per depth texture and plane buffer
   const frameGroups = new WeakMap();
-  function volumeFrameGroup(depth, faces = null) {
+  function volumeFrameGroup(depth) {
     const plane = sim.decoPlane ?? { buffer: dummy.buffer, offset: 0, size: dummy.buffer.size };
-    const cacheKey = faces ?? depth;
-    let byPlane = frameGroups.get(cacheKey);
-    if (!byPlane) frameGroups.set(cacheKey, byPlane = new WeakMap());
+    let byPlane = frameGroups.get(depth);
+    if (!byPlane) frameGroups.set(depth, byPlane = new WeakMap());
     let group = byPlane.get(plane.buffer);
     if (!group) {
-      byPlane.set(plane.buffer, group = gpu.bindGroup(faces ? opaqueLayout : L.VOLUME_FRAME, [
+      byPlane.set(plane.buffer, group = gpu.bindGroup(L.VOLUME_FRAME, [
         { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: fu.uniforms.buffer } },
         { binding: 2, resource: viewOf(depth, {}) },
         { binding: 3, resource: { buffer: plane.buffer, offset: plane.offset, size: plane.size } },
-        ...(faces ? [{ binding: 4, resource: { buffer: faces } }] : []),
       ], `${label('volume frame')} ${depth.label}`));
     }
     return group;
@@ -160,9 +156,6 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
     name: 'pick', code: pickFrag(g), layouts: [L.TABLES, L.STATE_RO, L.PICK], params: PickParams, workgroupSize: [PICK_BATCH, 1, 1],
   });
   const pipes = new Map();
-  const opaquePipes = new Map();
-  const opaqueLayout = gpu.layout('OPAQUE_FRAME', OPAQUE_LAYOUTS()[0]);
-  let opaqueFaces = null;
   // A software adapter (SwiftShader: the container, ?software=1) can't draw
   // some detail features (gfx/detail.js SOFTWARE_UNDRAWABLE): the view leaves
   // them out there, and says so once.
@@ -188,33 +181,6 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
 
   const volume = {
     sim,
-    // Internal A/B switch; opt-in until the short GPU comparison passes.
-    opaqueRaster: false,
-    get opaqueRasterStats() { return opaqueFaces?.stats ?? null; },
-    prepareOpaque(detail = {}) {
-      if (!volume.opaqueRaster) return null;
-      opaqueFaces ??= createBlocks(gpu, sim, { facesOnly: true });
-      opaqueFaces.update();
-      const d = drawable(detail), key = detailKey(d);
-      let p = opaquePipes.get(key);
-      if (!p) {
-        opaquePipes.set(key, p = gpu.renderPipeline({
-          name: `opaqueRaster(${key || 'off'})`, code: opaqueWGSL(g, d),
-          layouts: [opaqueLayout, L.STATE_RO, L.LIGHTING], params: VolumeParams, ...opaquePipeline(),
-        }));
-      }
-      return p.opaqueReady ??= Promise.all([opaqueFaces.ready, p.ready]);
-    },
-    drawOpaque(rp, { detail = {}, marchNear = 0, aerCopy = 0 } = {}) {
-      const p = opaquePipes.get(detailKey(drawable(detail)));
-      if (!volume.opaqueRaster || !opaqueFaces?.isReady || !opaqueFaces.meshKey || p?.state !== 'ready') return false;
-      p.draw(rp, {
-        bind: [volumeFrameGroup(dummy.depth, opaqueFaces.faces), sim.bindRO, lightingGroup(L.LIGHTING)], header: sim.header(),
-        params: { marchNear, aerCopy, deco: decoShown(sim) && sim.decoPlane ? 1 : 0 },
-        indirect: { buffer: opaqueFaces.args, offset: 0 },
-      });
-      return true;
-    },
     /** The shadow map's texels per side (FrameUniforms.shadowRes). */
     shadowRes: res,
     /** The shadow map's two textures (F5): rgba32float, and its .x as r32float. */
@@ -383,7 +349,6 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
     dispose() {
       disposed = true;
       gpu.flush('volume dispose');
-      opaqueFaces?.dispose();
       for (const p of pickQueue.splice(0)) p.reject(new Error('volume disposed'));
       pickRing.close();
       shadowMap.destroy();
