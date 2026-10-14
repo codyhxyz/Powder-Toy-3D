@@ -784,6 +784,16 @@ const HIT_CRISP: i32 = 1;    // a crisp voxel (hitCell, hitId, hitA; normal hitN
 const HIT_SMOOTH: i32 = 2;   // a smooth surface of channel hitCh (normal hitN; zero: the field's)
 const HIT_GRAIN: i32 = 3;    // grain geometry (gfx/grains.js: gHitA, gHitK)
 
+// Overlapping liquid must not hide an opaque field that already contains the ray.
+fn surfInsideOpaque(phi: vec4f) -> i32 {
+  var ch = -1;
+  var best = SURF_ISO;
+  for (var c = 1; c < 4; c++) {
+    if (phi[c] >= best) { best = phi[c]; ch = c; }
+  }
+  return ch;
+}
+
 fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ro = ro0;
   let jit = stbn1(gFragCoord, f32(FU.frame), 0.0);   // the media march's start: stratified per 3x3 window, R1 over frames (noise.js)
@@ -851,9 +861,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cuts it open
   // (unless a mesh stands in front of the wall).
   if (tEnter < tCut) {
-    var ch = -1;
-    var best = SURF_ISO;
-    for (var c = 0; c < 4; c++) { if (phiA[c] >= best) { best = phiA[c]; ch = c; } }
+    let opaque = surfInsideOpaque(phiA);
+    let ch = select(select(-1, CH_LIQUID, phiA.x >= SURF_ISO), opaque, opaque >= 0);
     if (ch >= 0) {
       var n0 = vec3f(0.0);
       n0[ax] = -f32(istp[ax]);
@@ -1032,23 +1041,19 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       var evN = vec3f(0.0);   // forced normal (else from the field)
       var phiB = vec4f(0.0);
       if (brickSurf(flags)) {
-        if (phiStale) {
-          phiA = surfSample(ro + rd * tEnter);
-          // Already inside a smooth material at the start of this segment: we
-          // came through glass (a tank of water), or the crossing was missed.
-          if (liq == E_EMPTY) {
-            var ic = -1;
-            var best = SURF_ISO;
-            for (var c = 0; c < 4; c++) { if (phiA[c] >= best) { best = phiA[c]; ic = c; } }
-            if (ic == CH_LIQUID) {
-              liq = liquidIdAt(ro + rd * (tEnter + IFACE_PROBE), E_WATER);
-              let p0 = ro + rd * tEnter;
-              lightRef = vec3f(1.0);
-              if (FU.shadows != 0u) { lightRef = sunShadowAt(p0); }   // inside: the map carries the liquid above
-              lightY = p0.y;
-              gSkyIn = skyInAt(probeAt(p0));
-            } else if (ic >= 0) { ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN = vec3f(0.0); evN[ax] = -f32(istp[ax]); }
-          }
+        if (phiStale) { phiA = surfSample(ro + rd * tEnter); }
+        // A missed entry has no later entering crossing. Recover it in every
+        // segment, including rays in liquid, not just after a brick/glass skip.
+        let ic = surfInsideOpaque(phiA);
+        if (ic >= 0) {
+          ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN[ax] = -f32(istp[ax]);
+        } else if (liq == E_EMPTY && phiA.x >= SURF_ISO) {
+          liq = liquidIdAt(ro + rd * (tEnter + IFACE_PROBE), E_WATER);
+          let p0 = ro + rd * tEnter;
+          lightRef = vec3f(1.0);
+          if (FU.shadows != 0u) { lightRef = sunShadowAt(p0); }   // inside: the map carries the liquid above
+          lightY = p0.y;
+          gSkyIn = skyInAt(probeAt(p0));
         }
         phiB = surfSample(ro + rd * tExit);
         // smooth matter in this cell may be a lone droplet or grain, or (air
@@ -1152,8 +1157,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             meshBudget = tCut;
             warpRestart(&walk, ro, rd);` : ''}
             // restarted inside something opaque (sand under the water line)
-            var oc = -1;
-            for (var c = 1; c < 4; c++) { if (phiA[c] >= SURF_ISO) { oc = c; } }
+            let oc = surfInsideOpaque(phiA);
             if (oc > 0) {
               hitK = HIT_SMOOTH; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
               break;
@@ -1167,6 +1171,19 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             if (FU.shadows != 0u) { lightRef = sunShadowAt(hp + n * IFACE_PROBE); }
             lightY = hp.y;
             gSkyIn = skyInAt(surfProbe(hp, n));
+          }
+          // Keep the remainder of this cell: an opaque crossing may follow
+          // the liquid interface even when the optical bend budget is spent.
+          let resume = min(tEv + IFACE_NUDGE, min(tExit, tCut));
+          if (resume < tExit) {${curved ? `
+            mNext -= resume;
+            walk.t = mix(walk.t, walk.end, resume / tExit);
+            walk.boundary = false;
+            walk.axis = warpEntryAxis(walk.ray, walk.t);` : `
+            tEnter = resume;
+            phiA = surfSample(ro + rd * tEnter);
+            phiStale = false;`}
+            continue;
           }
         }
       }
