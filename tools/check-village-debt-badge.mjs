@@ -22,6 +22,7 @@ class Events {
 }
 
 let animateMode = 'normal';
+let currentModal = null;
 const animations = [];
 class Element extends Events {
   nodeType = 1;
@@ -31,6 +32,8 @@ class Element extends Events {
   hidden = false;
   writes = 0;
   classes = new Set();
+  popoverOpen = false;
+  popoverShows = 0;
   classList = { add: value => this.classes.add(value) };
   constructor(tag) {
     super();
@@ -48,6 +51,9 @@ class Element extends Events {
     this.parent = null;
   }
   getBoundingClientRect() { return { left: 12, top: 678, width: 110, height: 110 }; }
+  matches(selector) { return selector === ':popover-open' && this.popoverOpen; }
+  showPopover() { this.popoverOpen = true; this.popoverShows++; }
+  hidePopover() { this.popoverOpen = false; }
   animate(frames, options) {
     if (animateMode === 'throws') throw new Error('WAAPI unavailable');
     const animation = {
@@ -64,6 +70,7 @@ globalThis.document = {
   body: new Element('body'),
   createElement: tag => new Element(tag),
   createTextNode: text => ({ nodeType: 3, textContent: text }),
+  querySelector: () => currentModal,
 };
 const media = Object.assign(new Events(), { matches: false });
 globalThis.window = Object.assign(new Events(), {
@@ -142,6 +149,25 @@ check('same bubble scales and translates in one segment, holds, settles, never r
   assert.equal(animation.cancelled, true, 'remove animation fill after completion');
   badge.update({ ...state, reveal: true });
   assert.equal(animations.length, before + 1);
+  badge.dispose();
+});
+
+check('same noninteractive bubble stays in the top layer above later modal dialogs', () => {
+  const { badge, root } = fixture();
+  badge.update(state);
+  assert.equal(root.attributes.popover, 'manual');
+  assert.equal(root.popoverOpen, true);
+  assert.equal(root.popoverShows, 1);
+  currentModal = {};
+  badge.update(state);
+  assert.equal(root.popoverShows, 2, 'move above newly opened dialogue');
+  badge.update(state);
+  assert.equal(root.popoverShows, 2, 'no per-frame top-layer churn');
+  assert.equal(document.body.children[0], root, 'no duplicated badge');
+  currentModal = null;
+  badge.update(state);
+  badge.update({ ...state, active: false });
+  assert.equal(root.popoverOpen, false, 'mode exit hides the top-layer overlay');
   badge.dispose();
 });
 

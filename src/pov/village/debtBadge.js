@@ -18,10 +18,29 @@ export function createDebtBadge() {
   }, h('div.village-debt-face', { 'aria-hidden': 'true' },
     glyph, number, h('span.village-debt-caption', { text: 'Your balance' })), spoken);
   document.body.append(bubble);
+  const topLayer = typeof bubble.showPopover === 'function';
+  if (topLayer) bubble.setAttribute('popover', 'manual');
 
   const motion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   let animation = null, disposed = false, revealed = false, pending = false;
   let lastBalance = null;
+  let lastModal = null;
+
+  function hideOverlay() {
+    try { if (bubble.matches?.(':popover-open')) bubble.hidePopover(); } catch { /* detached or unsupported */ }
+    lastModal = null;
+  }
+  function showOverlay() {
+    if (!topLayer) return;
+    const modal = document.querySelector?.('dialog[open]') ?? null;
+    try {
+      // Native dialogs outrank every z-index. Reinsert the SAME noninteractive
+      // bubble into the top layer when a later modal opens above it.
+      if (modal !== lastModal && bubble.matches(':popover-open')) bubble.hidePopover();
+      if (!bubble.matches(':popover-open')) bubble.showPopover();
+      lastModal = modal;
+    } catch { /* Older browsers still get the ordinary fixed HUD. */ }
+  }
 
   function settle() {
     const previous = animation;
@@ -79,9 +98,11 @@ export function createDebtBadge() {
       const visible = Boolean(active) && Number.isFinite(balance) && balance !== 0;
       bubble.hidden = !visible;
       if (!visible) {
+        hideOverlay();
         settle();
         return;
       }
+      showOverlay();
       if (balance !== lastBalance) {
         lastBalance = balance;
         const amount = Math.abs(balance).toLocaleString('en-US');
@@ -95,6 +116,7 @@ export function createDebtBadge() {
     dispose() {
       if (disposed) return;
       disposed = true;
+      hideOverlay();
       settle();
       window.removeEventListener('resize', settle);
       window.visualViewport?.removeEventListener('resize', settle);

@@ -10,6 +10,10 @@
   position: fixed;
   left: max(12px, env(safe-area-inset-left));
   bottom: calc(12px + env(safe-area-inset-bottom));
+  top: auto;
+  right: auto;
+  margin: 0;
+  padding: 0;
   z-index: 9;
   width: 110px;
   height: 110px;
