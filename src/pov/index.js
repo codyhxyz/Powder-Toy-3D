@@ -790,7 +790,9 @@ export function createPov(app) {
     app.coopMove?.(false);
     if (!coop()) { vehicles.beforeBody(player); village.beforeBody(input, dt); }
     const waiting = app.mp.replica && (app.mp.stale || networkPending);
-    player.update(waiting ? 0 : dt, input);
+    // Bus streaming temporarily moves the window away from the held departure
+    // body. Do not run gravity/damage against outside-window cells in transit.
+    player.update(waiting || village.bus.holding ? 0 : dt, input);
     if (app.mp.isGuest && networkPending && !app.mp.stale) {
       const clear = player.clearance();
       if (clear === true) networkPending = false;
