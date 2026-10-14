@@ -86,7 +86,7 @@ The Factory-only Build button opens construction beside the camera controls.
 An illustrated tile selects the machine. Rotate turns its preview.
 Dismantle switches to left-click removal. Selecting a tile returns to placement.
 Done or Escape closes construction. Right-drag remains a camera control.
-There are no B, Shift+B, or R construction shortcuts.
+There are no B, Shift+B, or R construction shortcuts. Q opens Factory Build and does not open the spawn menu. Sandbox keeps the spawn menu.
 Spark-powered Sandbox machines remain supported. Factory uses built-in drives.
 Selection uses a highlight, not redundant labels. Prices, unlock requirements,
 and genuine errors remain visible. Prevent duplicate placements.
