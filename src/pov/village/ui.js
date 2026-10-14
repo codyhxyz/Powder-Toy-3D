@@ -65,23 +65,34 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   function syncActions() {
     const c = context(), active = c.active && !dialog.open, action = active ? primary() : null;
     const equipped = VILLAGE_TOOLS.find(t => t.key === c.tool) ?? VILLAGE_TOOLS[0];
-    tools.hidden = !active || !!c.carry; toolHelp.hidden = tools.hidden;
+    tools.hidden = !active || !!c.carry || !!c.grip || !!c.rest || !!c.busy; toolHelp.hidden = tools.hidden;
     [...tools.children].forEach((b, i) => b.setAttribute('aria-pressed', String(VILLAGE_TOOLS[i].key === c.tool)));
     const readout = c.tool && c.readout ? `${c.readout.name}${c.readout.note ? ` · ${c.readout.note}` : ''}` : '';
     const toolText = readout ? `${equipped.hint} ${readout}` : equipped.hint;
     if (toolHelp.textContent !== toolText) toolHelp.textContent = toolText;
-    const help = c.warning || c.reaction || (c.carry ? `${c.carry.name} · ${c.carry.error || 'Walk and look to move it. Green means you can set it down.'}`
-      : c.home ? 'Walk up to furniture and face it to grab it.' : 'Walk up to a neighbor to talk.');
+    const help = c.feedback || c.warning || c.reaction || (c.grip ? `${c.grip.name} · Move the stick or use WASD to push/pull one square.`
+      : c.rest ? c.rest === 'sleep' ? 'Sleeping peacefully.' : 'Taking a little rest.'
+      : c.busy ? 'Opening or closing the dresser…'
+      : c.carry ? `${c.carry.name} · ${c.carry.error || 'Pocket placement preview. Green means you can set it down.'}`
+      : c.home ? 'Walk up to furniture to use it or grab it.' : 'Walk up to a neighbor to talk.');
     if (hint.textContent !== help) hint.textContent = help;
-    hint.hidden = !active || (!c.carry && !c.warning && !c.reaction && !!action);
+    hint.hidden = !active || (!c.carry && !c.grip && !c.rest && !c.busy && !c.warning && !c.feedback && !c.reaction && !!action);
     const run = type => { act({ type }); syncActions(); };
-    actions.update(!active ? [] : c.carry ? [
+    actions.update(!active ? [] : c.grip ? [
+      { id: 'release', label: 'Let go', key: 'E', codes: ['KeyE', 'Escape'], run: () => run('cancel') },
+      { id: 'stow', label: 'Put in pockets', key: 'I', codes: ['KeyI', 'KeyQ'], disabled: c.grip.moving, run: () => run('stow') },
+    ] : c.rest ? [
+      { id: 'stand', label: c.rest === 'sleep' ? 'Wake up' : 'Stand up', key: 'E', codes: ['KeyE', 'Escape'], run: () => run('cancel') },
+    ] : c.busy ? [
+      { id: 'cancel', label: 'Cancel', key: 'Esc', codes: ['Escape'], run: () => run('cancel') },
+    ] : c.carry ? [
       { id: 'drop', label: 'Set down', key: 'E', codes: ['KeyE'], disabled: !!c.carry.error, run: () => run('drop') },
       { id: 'rotate', label: `Rotate · ${c.carry.rotation * 90}°`, key: 'R', codes: ['KeyR'], run: () => run('rotate') },
       { id: 'stow', label: 'Put in pockets', key: 'I', codes: ['KeyI', 'KeyQ'], run: () => run('stow') },
       { id: 'cancel', label: 'Cancel move', key: 'Esc', codes: ['Escape'], run: () => run('cancel') },
     ] : [
       ...(action ? [{ id: 'interact', label: action.title, key: 'E', codes: ['KeyE'], run: () => act({ type: 'interact' }) }] : []),
+      ...(action?.secondary ? [{ id: 'grab-near', label: action.secondary.title, key: 'G', codes: ['KeyG'], run: () => act({ type: 'secondary' }) }] : []),
       ...(equipped.primary ? [{ id: 'tool-primary', label: equipped.primary, key: 'Click', run: () => run('tool-primary') }] : []),
       ...(equipped.secondary ? [{ id: 'tool-secondary', label: equipped.secondary, key: 'RMB', run: () => run('tool-secondary') }] : []),
       { id: 'punch', label: 'Punch', key: 'F', codes: ['KeyF'], run: () => run('punch') },
@@ -112,7 +123,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     syncActions();
   }
   function show() {
-    onOpen();
+    if (onOpen() === false) return;
     document.body.classList.add('village-menu-open');
     if (!dialog.open) dialog.showModal();
     syncActions(); draw();
@@ -121,11 +132,14 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   function open(which = 'pockets') {
     const c = context();
     if (!c.active || c.carry || !['pockets', 'storage'].includes(which) || (which === 'storage' && !c.dresser)) return;
+    if (which === 'storage' && !c.storageReady) { act({ type: 'openStorage' }); return; }
+    if (c.busy) return;
     stopReveal();
     tab = which; selected = null; message = ''; dialogue = null; show();
   }
   function action(a) {
     const result = act(a);
+    if (result?.pending) return;
     message = (result?.error ?? context().warning) || 'All set!';
     dialog.dataset.result = result?.error ? 'error' : 'success';
     if (!result?.error) selected = null;
@@ -164,7 +178,10 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   function drawCollection(c) {
     const tabs = h('nav.village-tabs', { 'aria-label': 'Furniture collections' });
     for (const [key, label, symbol] of [['pockets', 'Pockets', 'pockets'], ['storage', 'Dresser', 'dresser'], ['catalogue', 'Catalogue', 'leaf']]) {
-      tabs.append(button([icon(symbol), h('span', { text: label })], () => { tab = key; selected = null; message = ''; draw(); }, {
+      tabs.append(button([icon(symbol), h('span', { text: label })], () => {
+        if (key === 'storage') { open('storage'); return; }
+        tab = key; selected = null; message = ''; draw();
+      }, {
         'aria-current': tab === key ? 'page' : null, disabled: key === 'storage' && !c.dresser,
         title: key === 'storage' && !c.dresser ? 'Stand beside your dresser to open storage' : '',
       }));

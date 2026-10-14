@@ -27,7 +27,7 @@
     requestRender() {}, isTyping: () => false,
   };
   const village = createVillage({ app, getPlayer: () => player, live: () => live,
-    freeMouse() {}, releaseInput() {}, camera, onEnabled() {} });
+    freeMouse() {}, releaseInput() {}, releaseActions() {}, camera, onEnabled() {}, onTool() {}, useTool() {} });
   function position(x, z, yaw = 0, home = 0) {
     player.teleport(new THREE.Vector3(size[0] / 2 + HOMES[home] + x, FLOOR, size[2] / 2 + HOME_Z + z));
     camera.look.yaw = yaw;
@@ -35,7 +35,7 @@
   function tick(dt = 1 / 60, move = { x: 0, z: 0 }, count = 1) {
     for (let i = 0; i < count; i++) {
       const input = { move: { ...move }, jump: false, sprint: false, down: false, crouch: false };
-      village.beforeBody(dt, input);
+      village.beforeBody(input, dt);
       village.afterBody();
       village.update(dt, true, camera.look.yaw);
     }

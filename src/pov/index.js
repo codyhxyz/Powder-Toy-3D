@@ -747,7 +747,7 @@ export function createPov(app) {
     // the body
     readInput();
     vehicles.beforeBody(player);
-    village.beforeBody();
+    village.beforeBody(input, dt);
     player.update(dt, input);
     village.afterBody();
     vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid });
