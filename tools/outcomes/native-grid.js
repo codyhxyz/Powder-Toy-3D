@@ -60,7 +60,10 @@ export function toGrid({ layout: l, origin = [0, 0, 0], cells, banks, particles,
     g.moving[i] = g.vel.subarray(i * 3, i * 3 + 3).some(v => v !== 0) ? 1 : 0;
   }
   const bytes = new Uint8Array(particles);
+  const particleWords = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let offset = 0; offset + PARTICLE_BYTES <= bytes.byteLength; offset += PARTICLE_BYTES) {
+    // Empty canonical slots need no object/core allocation during a census.
+    if (particleWords.getUint32(offset + 12, true) === 0) continue;
     const p = unpackParticle(bytes.subarray(offset, offset + PARTICLE_BYTES)), id = p.core[0] & 255;
     if (!p.id || id === E.EMPTY || id >= PHOTON_TAG) continue; // rays and heat carriers are not matter
     const c = unpackContact(p.core, p.bank), liquid = ELEMENTS[id]?.kind === K.LIQUID;
