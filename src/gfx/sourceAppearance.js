@@ -32,8 +32,5 @@ export function uploadAppearance(gpu, texture, words, region) {
     [x, region.planes, z],
   );
 }
-// Hotfix: the per-hit triangle lookup causes excessive native compilation in
-// the full ray marcher, even when its uniform is off. Keep the source assets
-// and standalone fixtures, but do not compile or load this path in the app.
-// Re-enable only after a bounded, cold full-app boot and gameplay check.
-export const SOURCE_APPEARANCE_ENABLED = false;
+// Compile-time emergency switch; enable only with a bounded cold-app check.
+export const SOURCE_APPEARANCE_ENABLED = true;

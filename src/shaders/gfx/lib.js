@@ -70,7 +70,7 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
     materialsGLSL(),
     coreGLSL(g, { flow: v.flow, detail }),
     noiseGLSL,
-    SOURCE_APPEARANCE_ENABLED ? sourceAppearanceWGSL(far) : sourceAppearanceFallbackWGSL,
+    SOURCE_APPEARANCE_ENABLED ? sourceAppearanceWGSL(far, g.sourceGrid) : sourceAppearanceFallbackWGSL,
     lightingGLSL({ ...v, far }),
     crystalGLSL,
   ].join('\n');

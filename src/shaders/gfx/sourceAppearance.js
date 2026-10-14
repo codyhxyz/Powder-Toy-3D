@@ -26,27 +26,40 @@ fn sourceShade(p: vec3f, n: vec3f, rd: vec3f, alb: vec3f, rough: f32, metal: f32
 
 // Renderer adapter for the versioned importer ABI, shared by the live volume
 // and distant cell meshes. No appearance is inferred from an element name.
-export const sourceAppearanceWGSL = (far = true) => /* wgsl */ `
+export const sourceAppearanceWGSL = (far = true, grid = null) => /* wgsl */ `
 fn sourceEnabled() -> bool { return ${far ? 'FU.sourceStyle != 0u && FU.sourceAppearance.y >= 64u' : 'false'}; }
-fn sourceWord(i: u32) -> u32 {
-  ${far ? `if (i >= FU.sourceAppearance.y) { return 0u; }
-  let t = i / 2u;
-  let x = FU.sourceAppearance.z;
-  let z = FU.sourceAppearance.w;
-  let p = vec3u(t % x, FU.sourceAppearance.x + t / (x * z), (t / x) % z);
+fn sourcePair(t: u32) -> vec2u {
+  ${far ? `if (t >= (FU.sourceAppearance.y + 1u) / 2u) { return vec2u(0u); }
+  let x = ${grid ? `${grid[0]}u` : 'FU.sourceAppearance.z'};
+  let z = ${grid ? `${grid[2]}u` : 'FU.sourceAppearance.w'};
+  let row = t / x;
+  let plane = row / z;
+  let p = vec3u(t - row * x, FU.sourceAppearance.x + plane, row - plane * z);
   let v = textureLoad(tFarGrid, vec3i(p), 0);
-  return select(v.x | (v.y << 16u), v.z | (v.w << 16u), (i & 1u) != 0u);` : 'return 0u;'}
+  return vec2u(v.x | (v.y << 16u), v.z | (v.w << 16u));` : 'return vec2u(0u);'}
+}
+fn sourceWord(i: u32) -> u32 {
+  if (i >= FU.sourceAppearance.y) { return 0u; }
+  return sourcePair(i / 2u)[i & 1u];
 }
 fn sourceFloat(i: u32) -> f32 { return bitcast<f32>(sourceWord(i)); }
 fn sourceVec4(i: u32) -> vec4f {
-  return vec4f(sourceFloat(i), sourceFloat(i + 1u), sourceFloat(i + 2u), sourceFloat(i + 3u));
+  let t = i / 2u;
+  let a = sourcePair(t);
+  let b = sourcePair(t + 1u);
+  if ((i & 1u) == 0u) { return bitcast<vec4f>(vec4u(a, b)); }
+  let c = sourcePair(t + 2u);
+  return bitcast<vec4f>(vec4u(a.y, b, c.x));
 }
 fn sourceLinear(c: vec3f) -> vec3f {
   return select(c / 12.92, pow(max((c + 0.055) / 1.055, vec3f(0.0)), vec3f(2.4)), c > vec3f(0.04045));
 }
 fn sourcePixel(at: u32, size: vec2u, p0: vec2i, flags: u32) -> vec4f {
   var p = clamp(p0, vec2i(0), vec2i(size) - 1);
-  if ((flags & ${F.repeat}u) != 0u) { p = ((p0 % vec2i(size)) + vec2i(size)) % vec2i(size); }
+  if ((flags & ${F.repeat}u) != 0u) {
+    let remainder = p0 % vec2i(size);
+    p = select(remainder, remainder + vec2i(size), remainder < vec2i(0));
+  }
   let v = sourceWord(at + u32(p.x) + size.x * u32(p.y));
   var c = vec4f(f32(v & 255u), f32((v >> 8u) & 255u), f32((v >> 16u) & 255u), f32(v >> 24u)) / 255.0;
   if ((flags & ${F.srgb}u) != 0u) { c = vec4f(sourceLinear(c.rgb), c.a); }
@@ -55,11 +68,19 @@ fn sourcePixel(at: u32, size: vec2u, p0: vec2i, flags: u32) -> vec4f {
 fn sourceTexture(at: u32, size: vec2u, uv: vec2f, flags: u32) -> vec4f {
   if (at == 0u || any(size == vec2u(0))) { return vec4f(1.0); }
   let q = uv * vec2f(size);
-  if ((flags & ${F.filter}u) == 0u) { return sourcePixel(at, size, vec2i(floor(q)), flags); }
-  let p = vec2i(floor(q - 0.5));
+  let filtered = (flags & ${F.filter}u) != 0u;
+  let p = vec2i(floor(q - select(0.0, 0.5, filtered)));
   let f = fract(q - 0.5);
-  return mix(mix(sourcePixel(at, size, p, flags), sourcePixel(at, size, p + vec2i(1, 0), flags), f.x),
-    mix(sourcePixel(at, size, p + vec2i(0, 1), flags), sourcePixel(at, size, p + vec2i(1), flags), f.x), f.y);
+  // One sampling call site avoids five copies of the packed reader in Metal.
+  // Keep the original four taps and nested interpolation, not an approximation.
+  var taps: array<vec4f, 4>;
+  let count = select(1u, 4u, filtered);
+  for (var i = 0u; i < count; i++) {
+    let offset = vec2i(i32(i & 1u), i32(i >> 1u));
+    taps[i] = sourcePixel(at, size, p + offset, flags);
+  }
+  if (!filtered) { return taps[0]; }
+  return mix(mix(taps[0], taps[1], f.x), mix(taps[2], taps[3], f.x), f.y);
 }
 struct SourceMaterial {
   albedo: vec3f, alpha: f32, normal: vec3f, kind: u32,

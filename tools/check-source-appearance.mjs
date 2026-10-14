@@ -13,6 +13,7 @@ import { appearanceFixture } from './appearance-fixture.mjs';
 import { createImportedMapScene } from '../src/world/scenes/importedMap.js';
 import { crueltyFrameSettings } from '../src/gfx/crueltyDisplay.js';
 import { FrameUniformsStruct, writeFrameUniforms } from '../src/gfx/uniforms.js';
+import { volumeShaderGrid } from '../src/gfx/volume.js';
 import { Matrix4, Vector3, PerspectiveCamera } from 'three/webgpu';
 
 test('appearance words survive the shared rgba16uint far-grid tail bit-exactly', () => {
@@ -75,7 +76,7 @@ test('all published source payloads validate and contain their declared exact pi
   }
 });
 
-test('disabled appearance does not fetch source artwork; concurrent geometry prepare still coalesces', async () => {
+test('source artwork and geometry prepare together once, retaining the interaction state', async () => {
   const root = new URL('../public/local-maps/', import.meta.url);
   const map = JSON.parse(readFileSync(new URL('apartmentAtrocity.json', root)));
   const savedFetch = globalThis.fetch;
@@ -88,23 +89,32 @@ test('disabled appearance does not fetch source artwork; concurrent geometry pre
     const scene = createImportedMapScene(map, null, { dataURL: 'https://example.test/maps/apartmentAtrocity.binpack' });
     await Promise.all([scene.prepare(), scene.prepare()]);
     await scene.prepare();
-    assert.equal(SOURCE_APPEARANCE_ENABLED, false);
-    assert.deepEqual(urls, ['https://example.test/maps/apartmentAtrocity.binpack']);
-    assert.equal(scene.appearanceWords, null);
+    assert.equal(SOURCE_APPEARANCE_ENABLED, true);
+    assert.deepEqual(urls, ['https://example.test/maps/apartmentAtrocity.binpack', 'https://example.test/maps/apartmentAtrocity.appearance.binpack']);
+    assert(scene.appearanceWords.length > 0);
     assert(scene.data().words.length > 0);
     assert(scene.interactionState, 'door state still shares the loaded geometry');
   } finally { globalThis.fetch = savedFetch; }
 });
 
-test('production near and far shaders exclude the expensive source lookup, not just its uniform', () => {
+test('production near and far shaders keep a single pixel reader and shared vector loads', () => {
   const g = gridLayout(128, 128, 128);
   const shaders = ['realistic', 'cozy'].map(view => volumeFrag(g, { view }));
   for (const check of farChecks().filter(check => check.kind === 'render')) shaders.push(check.code(g));
   for (const code of shaders) {
-    if (code.includes('sourceMaterial(')) assert.match(code, /fn sourceEnabled\(\) -> bool \{ return false; \}/);
-    assert.doesNotMatch(code, /fn sourceWord|fn sourceTexture|fn sourceDiffuse|fn sourceEnvironment/);
-    assert.doesNotMatch(code, /sourceWord\(/, 'no dependent appearance loads reach native compilation');
+    if (!code.includes('sourceMaterial(')) continue;
+    assert.match(code, /fn sourcePair/);
+    const sample = code.slice(code.indexOf('fn sourceTexture'), code.indexOf('struct SourceMaterial'));
+    assert.equal((sample.match(/sourcePixel\(/g) ?? []).length, 1, 'one native sampling call site for all four original taps');
+    assert.match(sample, /mix\(mix\(taps\[0\], taps\[1\]/);
   }
+  const specialized = volumeFrag({ ...g, sourceGrid: [3, 5, 4] }, { view: 'realistic' });
+  assert.match(specialized, /let x = 3u;\s+let z = 4u;/, 'fixed world atlas dimensions reach native compilation');
+  assert.deepEqual(volumeShaderGrid(g, [1088, 488, 1184]).sourceGrid, [272, 122, 296], 'far atlas uses four-cell bricks, not the source directory’s eight-cell bricks');
+  assert.deepEqual(volumeShaderGrid(g, null).sourceGrid, [1, 1, 1]);
+  assert.equal(g.sourceGrid, undefined, 'shader specialization never mutates simulation dimensions');
+  const preload = readFileSync(new URL('../src/preload.js', import.meta.url), 'utf8');
+  assert.match(preload, /volumeShaderGrid\(g, world\)/, 'menu warm-up uses the same specialization');
 });
 
 test('source normal ignores saved night effect without changing the saved setting', () => {

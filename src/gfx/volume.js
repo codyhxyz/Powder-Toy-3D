@@ -32,7 +32,7 @@
 // cut), a pipeline of its own that builds on first use like any variant; a
 // pick walks the displayed ray in the same pick kernel.
 import { Matrix4 } from 'three/webgpu';
-import { WORLD_SIZE } from '../shaders/farShared.js';
+import { WORLD_SIZE, farLayout } from '../shaders/farShared.js';
 import {
   volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES, VOLUME_VIEWS,
   shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, SHADOW_WORKGROUP,
@@ -52,6 +52,10 @@ const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BIN
 
 /** A defines object's key: its switched-on names, sorted. */
 export const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
+// Shared with menu warm-up: the same world must produce identical shader text.
+export const volumeShaderGrid = (g, world) => ({
+  ...g, sourceGrid: world ? farLayout(world).bricks.n : [1, 1, 1],
+});
 
 /**
  * @param {object} gpu
@@ -62,7 +66,9 @@ export const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().j
  * @returns the volume (see the file header)
  */
 export function createVolume(gpu, sim, { shadows = true } = {}) {
-  const g = sim.g;
+  // The atlas dimensions are fixed for this world. Constant divisors avoid
+  // repeating Metal's variable-integer-division expansion at every lookup.
+  const g = volumeShaderGrid(sim.g, sim.world);
   const derived = sim.derived;
   if (!derived) throw new Error('createVolume: the simulation has no derived passes (new Derived(sim) first)');
   const fu = frameUniformsOf(gpu);

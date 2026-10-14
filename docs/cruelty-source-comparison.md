@@ -291,25 +291,28 @@ node tools/source-appearance-gpu-check.mjs
 node tools/cruelty-appearance-browser-check.mjs
 ```
 
-The numerical production-WGSL test passed on the Apple GPU in a 3.206-second
-total slot. It checked native pixels, projected UVs, cut/deletion fallbacks,
-subtractive blending, and the mode gate. This does not establish full-app
-visual parity. Earlier full-app cold boots exceeded the old ten-second limit;
-subsequent checks stopped on watchdog process-query timeouts or player activity.
-The shared cap is now 25 seconds, with player protection and ownership checks intact.
+Native compilation initially stalled in the realistic volume and far shaders.
+Commit `99b2b55` temporarily disabled original artwork to restore startup.
+The optimized renderer now keeps one pixel-reader call site for all four
+bilinear taps, shares paired word loads, and removes repeated sky and bed shading.
+Atlas dimensions are compile-time constants. Menu warm-up uses the same
+specialization as the renderer, including world size in its cache selection.
+These changes preserve original pixels, UVs, filtering, light inputs and blending.
 
-**Startup hotfix:** the original-art renderer is temporarily disabled at compile
-time. Its per-hit triangle and texture searches were included in every material
-pipeline, even outside Cruelty Squad mode. A runtime switch did not remove that
-native compilation workload. Production uses ordinary element materials and
-does not fetch or allocate appearance payloads. Source assets and numerical
-fixtures remain available. Geometry, interactions, missions and enemy profiles
-are unchanged. Re-enable only after bounded cold full-app and gameplay checks;
-the standalone numerical fixture does not establish startup safety.
-The built-site hotfix check cold-booted Paradise in material view, rendered,
-refreshed into the active mission again, switched to Sandbox and closed the
-browser within a **14.559-second total slot**. All 46 CPU deployment commands
-passed; production near/far WGSL also passed CPU Naga validation.
+The numerical production-WGSL test passed on the Apple GPU in **0.717 seconds**
+total. It checked native pixels, projected UVs, aligned and unaligned reads,
+filtered and nearest negative repeat coordinates, cut/deletion fallbacks,
+subtractive blending, and mode gating.
+
+The original-art production build then cold-booted Paradise, rendered a
+full-quality checkpoint, refreshed into the active mission, and switched to
+Sandbox. Saved exposure and bloom stayed unchanged. The complete slot took
+**20.792 seconds**, including startup, compilation and browser cleanup.
+The captured image is `/tmp/cruelty-source-paradise.png`.
+This verifies integration, not pixel-identical Godot rendering or performance
+across all maps and devices. Cold shader compilation remains costly.
+The shared limit remains 25 seconds. Player protection is overridden only with
+explicit user approval; ownership checks and cleanup remain enabled.
 
 ## How the levels load
 

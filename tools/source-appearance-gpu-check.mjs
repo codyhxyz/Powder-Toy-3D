@@ -8,13 +8,17 @@ import { startVite } from './vite-server.mjs';
 import { E } from '../src/elements.js';
 import { spawnSync } from 'node:child_process';
 
-const { words } = appearanceFixture(), region = appearanceRegion([1, 1, 1], words.length);
+const words = new Uint32Array(160);
+words.set(appearanceFixture().words);
+words[1] = words.length;
+words.set([0xff0000ff, 0xff00ff00, 0xffff0000, 0xffffffff], 156);
+const sourceGrid = [3, 5, 4], region = appearanceRegion(sourceGrid, words.length);
 const code = `
 struct FixtureFrame { sourceAppearance: vec4u, time: f32, sourceStyle: u32 }
 @group(0) @binding(0) var tFarGrid: texture_3d<u32>;
 @group(0) @binding(1) var<uniform> FU: FixtureFrame;
 @group(0) @binding(2) var<storage, read_write> results: array<vec4f>;
-${sourceAppearanceWGSL()}
+${sourceAppearanceWGSL(true, sourceGrid)}
 @compute @workgroup_size(1) fn main() {
   let hit = sourceMaterial(${E.ROCK}, vec3f(1.0), vec3f(0.0, 1.0, 0.0));
   results[0] = vec4f(hit.albedo, f32(hit.kind));
@@ -25,6 +29,11 @@ ${sourceAppearanceWGSL()}
   var col = vec3f(0.0); var trans = vec3f(1.0);
   sourceBlend(vec3f(0.0, 1.0, 0.0), 1.0, 2u << 16u, &col, &trans);
   results[5] = vec4f(col + trans, 1.0);
+  results[6] = sourceVec4(67u);
+  results[7] = sourceVec4(68u);
+  results[8] = sourceTexture(156u, vec2u(2u), vec2f(0.5), 268u);
+  results[9] = sourceTexture(156u, vec2u(2u), vec2f(-0.125), 268u);
+  results[10] = sourceTexture(156u, vec2u(2u), vec2f(-0.25), 260u);
 }`;
 async function checkGPU() {
 const vite = await startVite({ harness: true, port: 54979 });
@@ -45,8 +54,8 @@ try {
     uploadAppearance({ queue: device.queue }, texture, new Uint32Array(words), region);
     const uniform = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const frame = new Uint32Array(8); frame.set(region.uniform); frame[5] = 1;
-    const output = device.createBuffer({ size: 96, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-    const read = device.createBuffer({ size: 96, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const output = device.createBuffer({ size: 176, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const read = device.createBuffer({ size: 176, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     try {
       const module = device.createShaderModule({ code });
       const messages = (await module.getCompilationInfo()).messages;
@@ -59,7 +68,7 @@ try {
         device.queue.writeBuffer(uniform, 0, frame);
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setPipeline(pipeline); pass.setBindGroup(0, group); pass.dispatchWorkgroups(1); pass.end();
-        encoder.copyBufferToBuffer(output, 0, read, 0, 96); device.queue.submit([encoder.finish()]);
+        encoder.copyBufferToBuffer(output, 0, read, 0, 176); device.queue.submit([encoder.finish()]);
         await read.mapAsync(GPUMapMode.READ);
         const values = Array.from(new Float32Array(read.getMappedRange().slice(0))); read.unmap(); return values;
       };
@@ -77,7 +86,15 @@ try {
   assert(result.on.slice(4, 20).every(v => v === 0), 'changed element, cut face, side face and deleted geometry have no source artwork');
   assert.deepEqual(result.on.slice(20, 24), [1, 0, 1, 1], 'original subtractive green glass produces magenta, not green');
   assert.equal(result.off[3], 0, 'mode exit disables source lookup');
-  console.log('PASS native production WGSL: exact source pixels/UV, cut/destruction fallback, subtractive blend, mode gating', result.vendor);
+  assert.deepEqual(result.on.slice(24, 28), [0, 1, 0, 0], 'unaligned vector reader');
+  assert.deepEqual(result.on.slice(28, 32), [1, 0, 0, 0.5], 'aligned vector reader');
+  const near = (actual, expected, label) => actual.forEach((v, i) =>
+    assert(Math.abs(v - expected[i]) < 1e-6, `${label}: channel ${i}: ${v} != ${expected[i]}`));
+  // GPU pow() at sRGB1 can differ by two ULPs; retain sub-byte precision.
+  near(result.on.slice(32, 36), [0.5, 0.5, 0.5, 1], 'original bilinear interpolation');
+  near(result.on.slice(36, 40), [0.625, 0.75, 0.75, 1], 'negative repeated filtered UV');
+  near(result.on.slice(40, 44), [1, 1, 1, 1], 'negative repeated nearest UV');
+  console.log('PASS native production WGSL: exact source pixels/UV, packed vectors, filtering/repeat, cut/destruction fallback, subtractive blend, mode gating', result.vendor);
 } finally {
   await browser?.close();
   await vite.close();

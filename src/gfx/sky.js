@@ -131,8 +131,7 @@ fn airMass(cz0: f32) -> f32 {
 
 // Clear-sky radiance toward unit d (d.y >= 0; lower directions see the
 // horizon), without the sun's disc (skyRadiance above is its JS twin).
-fn skyRadiance(d: vec3f) -> vec3f {
-  ${source ? 'if (sourceEnabled()) { return sourceSky(d); }' : ''}
+fn analyticSkyRadiance(d: vec3f) -> vec3f {
   let mu = dot(d, FU.sun);
   let mv = airMass(d.y);
   let ms = airMass(FU.sun.y);
@@ -147,8 +146,12 @@ fn skyRadiance(d: vec3f) -> vec3f {
 }
 
 // Radiance of the environment toward unit d: sky above the horizon, ground below.
+fn skyRadiance(d: vec3f) -> vec3f {
+  ${source ? 'if (sourceEnabled()) { return sourceSky(d); }' : ''}
+  return analyticSkyRadiance(d);
+}
 fn skyColor(d: vec3f) -> vec3f {
   ${source ? 'if (sourceEnabled()) { return sourceSky(d); }' : ''}
-  return mix(FU.ground, skyRadiance(d), smoothstep(-HORIZON_BLEND, HORIZON_BLEND, d.y));
+  return mix(FU.ground, analyticSkyRadiance(d), smoothstep(-HORIZON_BLEND, HORIZON_BLEND, d.y));
 }`;
 }

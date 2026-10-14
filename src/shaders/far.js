@@ -967,7 +967,7 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 export const farFrag = (g, L, mesh = false, { curved = false } = {}) => {
   return /* wgsl */ `
 // far view${curved ? ', curved' : ''}
-${lib(g, { variant: 'LIGHTING', far: true, aeration: false })}
+${lib({ ...g, sourceGrid: L.bricks.n }, { variant: 'LIGHTING', far: true, aeration: false })}
 ${presentationWGSL}${curved ? `
 var<private> gFarRay: WarpRay;
 var<private> gFarWindow: vec4f;
@@ -1254,10 +1254,13 @@ fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> v
   let transmitted = warpRay(warpPoint(p), normalize(warpVector(p, rt)));` : ''}
   var s = -1.0;
   var bed = vec3f(0.0);
+  var bedPoint = p;
+  var bedNormal = vec3f(0.0, 1.0, 0.0);
+  var bedId = FAR_OCEAN_BED;
+  var bedSun = sunVis;
   if (bedY >= 0.0) {
     s = ${curved ? 'farPlaneHit(transmitted, bedY)' : '(p.y - bedY) / max(-rt.y, FAR_FLAT_EPS)'};
-    let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
-    bed = farShadeBed(FAR_OCEAN_BED, q, vec3f(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis, sky);
+    bedPoint = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
   } else {
     var ta = 0.0;
     var fa = farSample(p).r;
@@ -1266,14 +1269,18 @@ fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> v
       let fb = farSample(${curved ? 'warpAt(transmitted, tb)' : 'p + rt * tb'}).r;
       if (fb >= FAR_ISO) {
         s = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
-        let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
-        let nq = farNormal(q, 0);
-        bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0), sky);
+        bedPoint = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
+        bedNormal = farNormal(bedPoint, 0);
+        bedId = farElement(bedPoint, bedNormal);
+        bedSun = sunVis * farSunLit(bedPoint, 0);
         break;
       }
       ta = tb;
       fa = fb;
     }
+  }
+  if (s >= 0.0) {
+    bed = farShadeBed(bedId, bedPoint, bedNormal, p.y - bedPoint.y, lid, bedSun, sky);
   }
 ${curved ? `  // optical distance is in flat material space, not display-ray t
   if (s >= 0.0 && s < WARP_INF) { s = warpArc(transmitted, 0.0, s); }
@@ -1300,29 +1307,34 @@ fn cozyFarShore(p: vec3f) -> f32 {
 // Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
 fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   let original = sourceMaterial(lid, p, vec3f(0.0, 1.0, 0.0));
+  let geometric = vec3f(0.0, 1.0, 0.0);
+  var sky = farSkyOpen(p);
+  var rt = rd;
+  var refl = vec3f(0.0);
+  var F = 0.0;
+  var cartoon = false;
+  var col = vec3f(0.0); var trans = vec3f(1.0);
   if (original.kind != 0u) {
     let alpha = select(1.0, original.alpha, (original.flags & 1u) != 0u);
-    let under = farBody(p, rd, lid, sunVis, farSkyOpen(p), bedY);
-    var col = vec3f(0.0); var trans = vec3f(1.0);
     sourceBlend(sourceShade(p, original.normal, rd, original.albedo, original.roughness, original.metallic, original.f0, original.kind, original.flags) + original.emission, alpha, original.flags, &col, &trans);
-    return col + trans * under;
-  }
-  let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
+  } else {
+  sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
-  let geometric = vec3f(0.0, 1.0, 0.0);
-  let cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
+  cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
   var ripple = geometric;
   if (cartoon) { ripple = cozyWaterNormal(p, geometric, footprint(p)); }
   else { ripple = liquidRipple(p, geometric); }
   let n = liquidOpticalNormal(rd, ripple, geometric, true, IOR(lid));
-  let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
+  F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
   let rough = select(ROUGH(lid), COZY_WATER_ROUGH, cartoon);
-  let refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
-  var rt = refract(rd, n, 1.0 / IOR(lid));
+  refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
+  rt = refract(rd, n, 1.0 / IOR(lid));
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
+  }
   let body = farBody(p, rt, lid, sunVis, sky, bedY);
+  if (original.kind != 0u) { return col + trans * body; }
   if (cartoon) {
     let paint = cozyWaterPaint(p, footprint(p), cozyFarShore(p));
     let light = skyAmbient(geometric) * sky + FU.sunCol * sunVis * max(FU.sun.y, 0.0);
@@ -1335,7 +1347,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
 // night: FU.sunCol carries its colour), behind the cumulus deck (gfx/clouds.js).
 fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
   if (sourceEnabled()) { return sourceSky(rd); }
-  let c = skyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z)));
+  let c = analyticSkyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z)));
   let r = SUN_TAN_RADIUS;
   let mu = dot(rd, FU.sun);
   let disc = smoothstep(cos(r * (1.0 + FAR_SUN_DISC_EDGE)), cos(r * (1.0 - FAR_SUN_DISC_EDGE)), mu);

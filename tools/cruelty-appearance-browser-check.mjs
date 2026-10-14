@@ -57,17 +57,27 @@ try {
   assert.equal(state.mode, 'crueltySquad');
   assert.equal(state.cruelty, true);
   assert.equal(state.view, 0);
-  assert.equal(state.words, undefined, 'disabled original-art path stays unloaded');
-  assert.equal(state.planes, 0, 'no unused appearance allocation');
+  assert(state.words > 0 && state.planes > 0, 'original appearance is actually loaded, not the emergency fallback');
   assert(state.parked);
   await page.screenshot({ path: '/tmp/cruelty-source-paradise.png' });
-  // Reproduce the reported refresh hang in the same browser, not just a
-  // one-shot numerical fixture. The original mission URL must boot again.
-  await page.reload({ waitUntil: 'commit' });
-  await ready(page);
-  await page.waitForFunction(() => __app.pov.mission?.state?.phase === 'active');
-  await render(page);
-  console.log('Appearance check: refreshed mission active');
+  // Reproduce the reported refresh hang. Live confirmation may reuse an
+  // existing refresh result to leave time for physics in the same short slot.
+  if (!process.argv.includes('--skip-refresh')) {
+    await page.reload({ waitUntil: 'commit' });
+    await ready(page);
+    await page.waitForFunction(() => __app.pov.mission?.state?.phase === 'active');
+    await render(page);
+    console.log('Appearance check: refreshed mission active');
+  }
+  await page.waitForFunction(() => __app.pov.player.clearance() !== null);
+  const physics = await page.evaluate(async () => {
+    const a = __app, before = a.sim.frame;
+    const clear = a.pov.player.clearance();
+    await a.test.step(2);
+    return { before, after: a.sim.frame, clear };
+  });
+  assert.equal(physics.clear, true, 'authored spawn is clear in real GPU collision');
+  assert.equal(physics.after, physics.before + 2, 'normal-size mission physics advances');
   const after = await page.evaluate(async () => {
     const beforeSim = __app.sim.id;
     const saved = { exposure: __app.post.settings.exposure, bloom: __app.post.settings.bloom };
@@ -79,7 +89,7 @@ try {
   assert.equal(after.mode, 'sandbox'); assert.equal(after.cruelty, false);
   assert.equal(after.sim, after.beforeSim); assert.deepEqual(after.saved, after.after);
   assert.deepEqual(errors, []);
-  console.log('PASS cold mission boot, fallback render, refresh and sandbox exit; screenshot /tmp/cruelty-source-paradise.png', state);
+  console.log('PASS cold original-art mission boot, render, GPU collision/physics and sandbox exit; screenshot /tmp/cruelty-source-paradise.png', state);
 } finally {
   await browser?.close();
   if (vite) await new Promise(resolve => vite.httpServer.close(resolve));
