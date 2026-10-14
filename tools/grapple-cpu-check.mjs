@@ -13,9 +13,23 @@ import hookDef from '../src/pov/tools/hook.tool.js';
 import { voxelRay } from '../src/pov/ai/world.js';
 import { TRACE, TRACE_BYTES, TRACE_MISS } from '../src/shaders/povTrace.js';
 import { K, ELEMENTS } from '../src/elements.js';
+import { grappleFarCells } from '../src/pov/grappendixTrace.js';
+import { BrickStore, encodeBrick, BRICK_FLOATS } from '../src/world/store.js';
+import { BRICK } from '../src/shaders/common.js';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const near = (a, b, tolerance = 1e-8) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
+
+{
+  const store = new BrickStore([16, 16, 16]);
+  const A = new Float32Array(BRICK_FLOATS), B = new Float32Array(BRICK_FLOATS);
+  // Non-symmetric Y/Z catches a mistaken transpose that a uniform brick hides.
+  A[(0 + BRICK * (1 + BRICK * 2)) * 4] = E.ROCK;
+  store.put(store.key(1, 1, 1), encodeBrick(A, 0, B, 0));
+  const cell = grappleFarCells({ store, size: [64, 64, 64], scene: { importManifest: {}, cell: () => E.EMPTY } });
+  assert.equal(cell(4, 5, 6), E.ROCK, 'saved edit reads actual slab XYZ order');
+  assert.equal(cell(4, 6, 5), E.EMPTY, 'saved edits are not transposed into ghost obstacles');
+}
 
 for (const [meters, factor] of [[0, 0], [3, 0], [3.01, 1], [9.99, 1], [10, 0], [10.01, 0.7], [19.99, 0.7], [20, 0], [20.01, 2], [80, 2]]) {
   near(grappendixFactor(meters / CELL_M), factor);

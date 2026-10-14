@@ -26,7 +26,7 @@ export function grappleFarCells(world) {
       decodeBrick(bytes, cells, 0, cells, BRICK_FLOATS);
       cache.set(key, cells);
     }
-    return Math.round(cells[((y % BRICK * BRICK + z % BRICK) * BRICK + x % BRICK) * 4]);
+    return Math.round(cells[(x % BRICK + BRICK * (y % BRICK + BRICK * (z % BRICK))) * 4]);
   };
 }
 
