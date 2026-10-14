@@ -496,7 +496,7 @@ const readySims = new WeakSet();   // simulations whose own pipelines are ready 
 let viewTime = 0;   // s the scene's animations have run (FrameUniforms.time: it runs with the simulation)
 
 let replicaMap = null;
-function build() {
+function build(savedWorldSize = null) {
   if (!mp.replica) { replicaMap = null; mp.resumeSolo?.(); }
   if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
@@ -514,6 +514,7 @@ function build() {
     sim.dispose();
   }
   worldMode = replicaMap?.mode === 'world' ? { win: replicaMap.dims, size: replicaMap.size } : settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
+  if (worldMode && savedWorldSize) worldMode = { ...worldMode, size: savedWorldSize };
   if (worldMode && !wire('world')) {
     // (until the world's port lands: the box, and why)
     worldMode = null;
@@ -634,7 +635,8 @@ function setGrid(dims, meta = null) {
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
   if (meta?.mode === 'world') {
     const s = sceneByKey(meta.scene), expected = s && worldOf(WORLDS.world, s);
-    if (!s || s.key !== meta.scene || !expected.size.every((n, i) => n === meta.size[i]) || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
+    const supported = expected && [expected.size, s.legacySize].some(d => d?.every((n, i) => n === meta.size[i]));
+    if (!s || s.key !== meta.scene || !supported || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
     settings.size = 'world'; settings.scene = meta.scene; worldSeed = meta.seed;
     selectedMode = 'sandbox'; presentation.select(null);
   } else {
@@ -656,7 +658,9 @@ function gridFits(dims) {
 }
 
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild. False if the device can't hold it.
-function setSize(size) {
+function setSize(size, savedWorldSize = null) {
+  // Only an explicitly supported historical size can override a map's current size.
+  if (savedWorldSize && (!(size in WORLDS) || !sceneByKey(settings.scene).legacySize?.every((n, i) => n === savedWorldSize[i]))) return false;
   if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   if (!gridFits(dimsOf(size))) return false;
@@ -665,7 +669,7 @@ function setSize(size) {
   const resolved = resolveMode(mapOf(settings), selectedMode);
   if (resolved.key !== selectedMode || mapOf(settings)?.size !== size) startMode('sandbox');
   if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
-  build();
+  build(savedWorldSize);
   save();
   return true;
 }

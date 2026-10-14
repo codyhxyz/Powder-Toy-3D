@@ -5,7 +5,7 @@ The starter line separates gold from sand and ships the gold for credits.
 
 ## Controls
 
-- **Build:** open construction beside the camera controls. This interface is Factory-only.
+- **Build, or Q:** open construction beside the camera controls. This interface is Factory-only. Q does not open the element spawn menu. Sandbox keeps that menu; using it marks the run Sandbox-assisted.
 - **Machine tile:** select a piece and leave dismantling mode.
 - **Click:** place the selected machine at the preview.
 - **Rotate:** turn the preview by 90°.
@@ -14,7 +14,7 @@ The starter line separates gold from sand and ships the gold for credits.
 - **Right-drag:** move the construction camera.
 - **God / 1st / 3rd:** choose a camera from the toolbar.
 
-Machines do not use E. There are no B or Shift+B construction shortcuts.
+Machines do not use E. There are no B or Shift+B construction shortcuts. In the god view, E still turns the camera; Q opens Build.
 The illustrated catalog scrolls on small screens.
 The preview requires clear space; its arrows show the material flow.
 Refractory blocks stack into platforms, catch walls, and chutes.

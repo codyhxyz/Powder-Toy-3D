@@ -296,7 +296,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactSpark = new Float32Array(PN);
   const eatCells = [];   // cooked meat touching the body this frame ([x, y, z]), to eat (meat.js)
   const env = { contactId, contactT, contactSpark, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
-  let sprintingNow = false, sprintWalk = WALK_SPEED, sprintCeiling = SPRINT_SPEED * 2;
+  let sprintingNow = false, sprintCarry = false, sprintWalk = WALK_SPEED, sprintCeiling = SPRINT_SPEED * 2;
 
   const p = {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(),
@@ -309,10 +309,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     jetSpool: 0,                  // how far the jet has spooled up, 0..1 (JET_SPOOL_*): its push is smooth01 of it
     sprintBuild: 0,               // 0..1 of uninterrupted running; airborne hops preserve but don't build it
     // Read current velocity: village/vehicle collisions can still change it after update().
+    // Shift charges the surge. Above a walk, speed alone holds the music, blur and FOV
+    // through a hop or a jet tap, until you slow down. A blast that never sprinted stays quiet.
     get sprintRush() {
-      return sprintingNow && !vitals.dead
-        ? Math.max(0, Math.min(1, (Math.hypot(p.vel.x, p.vel.z) - sprintWalk) / Math.max(EPS, sprintCeiling - sprintWalk)))
-        : 0;
+      if (vitals.dead || !sprintCarry) return 0;
+      const speed = Math.hypot(p.vel.x, p.vel.z);
+      return speed <= sprintWalk ? 0
+        : Math.min(1, (speed - sprintWalk) / Math.max(EPS, sprintCeiling - sprintWalk));
     },
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame
@@ -727,7 +730,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       meat.gib(p.pos, p.vel, stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
     }
     if (!readOnly()) meat.update();
-    if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; }
+    if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; sprintCarry = false; }
     if (!input.chargeJump || input.cancelJump || vitals.dead) cancelJump();
     if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
@@ -952,6 +955,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     sprintWalk = WALK_SPEED * footScale;
     sprintCeiling = Math.min(SPRINT_SPEED * 2 * footScale * perks.sprintRate, Math.max(SPRINT_SPEED * 2 * footScale, PERK_SPEED_H));
     sprintingNow = running && !jet && id === null;
+    // A held jump lights the jet and drops sprintingNow. Speed still holds the effects.
+    if (id !== null || swimming || crouch > 0) sprintCarry = false;
+    else if (sprintingNow) sprintCarry = true;
+    else if (Math.hypot(v.x, v.z) <= sprintWalk) sprintCarry = false;
     // follow the ground down small ledges
     if (!p.onGround && wasGround && !jumped && !swimming) {
       const r = sweep(1, -STEP_DOWN);
@@ -1030,7 +1037,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; sinceJumpPress = Infinity; sinceBounce = Infinity;
     cancelJump();
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
-    p.jetSpool = 0; p.knock = 0; p.sprintBuild = 0; sprintingNow = false;
+    p.jetSpool = 0; p.knock = 0; p.sprintBuild = 0; sprintingNow = false; sprintCarry = false;
     generation++; probe.valid = false;   // reject in-flight probes from the old spot
     env.contactN = 0; env.headInLiquid = false; env.liquidId = E.WATER; env.buriedId = -1; env.pressure = 0;
     contactId.fill(0); contactT.fill(0); contactSpark.fill(0);

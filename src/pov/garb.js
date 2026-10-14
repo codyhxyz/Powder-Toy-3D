@@ -4,11 +4,13 @@ import * as THREE from 'three';
 // cone, the tip bent back), built once per loaded model, seated on the head and
 // skinned wholly to the head bone, so every clip (walk, swim, death...) carries
 // it. Below it he wears only his boxers, dyed the hat's purple when the model is
-// packed (tools/character-pack.mjs): wizard boxers.
+// packed (tools/character-pack.mjs): wizard boxers. She gets a robe over the
+// bikini the female mesh ships in, skinned to the spine so it walks with her.
 //
 // Lengths are in model units (metres); the body's own scale takes them to cells.
 
 const HEAD_BONE = 'Head';
+const ROBE_BONES = ['pelvis', 'spine_01', 'spine_02', 'spine_03'];
 
 // hat (sizes as multiples of the head's half-width)
 const HAT_BRIM = 2.0;                    // brim radius
@@ -21,7 +23,7 @@ const HAT_SEAT = 0.4;                    // brim sits this share of the head's h
 const HAT_TILT = 0.12;                   // rad back
 const HAT_RINGS = 14, HAT_SEGMENTS = 28;
 
-export const GARB_COLORS = { hat: [0.16, 0.06, 0.35] };   // albedo, linear
+export const GARB_COLORS = { hat: [0.16, 0.06, 0.35], robe: [0.11, 0.035, 0.26] };   // albedo, linear
 
 // Every body vertex in the bind pose, with its skin influences and its main bone.
 function bodyVertices(meshes) {
@@ -78,6 +80,46 @@ function buildHat(verts, boneIndex) {
   return geo;
 }
 
+function skinTo(geo, index) {
+  const n = geo.attributes.position.count;
+  const skinIdx = new Array(n * 4).fill(0), skinW = new Array(n * 4).fill(0);
+  const one = typeof index === 'function' ? null : index;
+  for (let i = 0; i < n; i++) {
+    skinIdx[i * 4] = one ?? index(i);
+    skinW[i * 4] = 1;
+  }
+  geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIdx, 4));
+  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinW, 4));
+  geo.deleteAttribute('uv');
+  return geo;
+}
+
+// A closed robe from mid-thigh to the shoulders, a little clear of the body.
+// Sleeveless: the arms leave at the sides instead of punching holes in the cloth.
+function buildRobe(verts, boneIndex) {
+  const torso = verts.filter((p) => ROBE_BONES.includes(p.bone));
+  const hips = verts.filter((p) => p.bone === 'pelvis' || p.bone.startsWith('thigh'));
+  const boneY = Object.fromEntries(ROBE_BONES.map((name) => {
+    const pts = verts.filter((p) => p.bone === name);
+    return [name, pts.reduce((s, p) => s + p.y, 0) / pts.length];
+  }));
+  const nearest = (y) => ROBE_BONES.reduce((a, b) => Math.abs(boneY[b] - y) < Math.abs(boneY[a] - y) ? b : a);
+  const hem = Math.min(...hips.map((p) => p.y)) + 0.05;
+  // Stop at the shoulders. The spine reaches the neck; a tube that high floats off her.
+  const neck = Math.min(Math.max(...torso.map((p) => p.y)), boneY.spine_03 + 0.08);
+  const profile = [];
+  for (let i = 0; i <= 7; i++) {
+    const t = i / 7, y = hem + (neck - hem) * t;
+    let r = 0.07;
+    for (const p of torso.concat(hips)) if (Math.abs(p.y - y) <= 0.07) r = Math.max(r, Math.hypot(p.x, p.z));
+    profile.push([r + 0.018 + (1 - t) * 0.03, y]);
+  }
+  const robe = skinTo(new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), 18), 0);
+  const pos = robe.attributes.position, idx = robe.attributes.skinIndex;
+  for (let i = 0; i < pos.count; i++) idx.setX(i, boneIndex(nearest(pos.getY(i))));
+  return robe;
+}
+
 // The hat's geometry, from the model's skinned meshes (bind pose). Skin indices
 // refer to meshes[0].skeleton's bones.
 export function buildGarb(meshes) {
@@ -87,5 +129,8 @@ export function buildGarb(meshes) {
     if (i < 0) throw new Error(`the character model has no ${name} bone`);
     return i;
   };
-  return { hat: buildHat(bodyVertices(meshes), boneIndex) };
+  const verts = bodyVertices(meshes);
+  const garb = { hat: buildHat(verts, boneIndex) };
+  if (meshes.some((m) => m.material?.name === 'MI_Superhero_Female')) garb.robe = buildRobe(verts, boneIndex);
+  return garb;
 }
