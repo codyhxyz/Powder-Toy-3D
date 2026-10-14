@@ -1,3 +1,4 @@
+import { nativeModes, modeSignature } from './modes.js';
 import { fold } from '../gpu/kernels.js';
 import { cTq } from './layout.js';
 import { encodeV2State, decodeV2State } from './state.js';
@@ -51,6 +52,8 @@ export class PhysicsV2 {
   constructor(sim, { contactWGSL = '', Dynamics = null } = {}) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);
     this.sim = sim;
+    this.modeSettings = nativeModes(sim);
+    this.settingsSignature = modeSignature(this.modeSettings);
     sim.compact = sim.compactOwner = this;
     this.legacyPending = true;
     this.layout = v2ActLayout(g);
@@ -101,7 +104,7 @@ export class PhysicsV2 {
     };
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2externalEvents: 'contact', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     for (const k of V2_KERNELS) {
@@ -141,7 +144,22 @@ export class PhysicsV2 {
 
   // Writes to today's state since the last look: an edit (the brush, a stamp, a tool) marks its bricks
   // and bumps the version; a whole-grid write (a load, an undo) bumps wholeWrites too.
+  _noteModes() {
+    const settings = nativeModes(this.sim), signature = modeSignature(settings);
+    if (signature === this.settingsSignature) return;
+    this.modeSettings = settings; this.settingsSignature = signature;
+    // Wake only the activity state. No legacy import, fractional core or bank
+    // rewrite; general brush wake() deliberately does NOT perform this sweep.
+    const busy = new Uint32Array(this.g.nbricks).fill(1);
+    this.gpu.write(this.act, this.layout.busy0 * 4, busy);
+    this.gpu.write(this.act, this.layout.busy1 * 4, busy);
+    this.writtenSinceTick = true;
+    this.dynamics?._work();
+    this.wake();
+  }
+
   _noteWrites() {
+    this._noteModes();
     const sim = this.sim;
     if ((sim.wholeWrites ?? 0) !== this.seenWhole) { this.seenWhole = sim.wholeWrites ?? 0; this.importFull = true; this.writtenSinceTick = true; this.wake(); }
     if (sim.version !== this.seenVersion) { this.seenVersion = sim.version; this.importMarked = true; this.writtenSinceTick = true; this.wake(); }
@@ -150,13 +168,13 @@ export class PhysicsV2 {
   /** Nothing has written since the last tick ran (a read of its stats still describes the box). */
   get unwrittenSinceTick() {
     const sim = this.sim;
-    return !this.writtenSinceTick && sim.version === this.seenVersion && (sim.wholeWrites ?? 0) === this.seenWhole;
+    return this.settingsSignature === modeSignature(nativeModes(sim)) && !this.writtenSinceTick && sim.version === this.seenVersion && (sim.wholeWrites ?? 0) === this.seenWhole;
   }
 
   /** Certified idle with nothing written since: ticking would record nothing. */
   get asleep() {
     const sim = this.sim;
-    return this.certified && (!this.dynamics || this.dynamics.isIdle === true) && !this.importFull && !this.importMarked && sim.version === this.seenVersion && (sim.wholeWrites ?? 0) === this.seenWhole;
+    return this.settingsSignature === modeSignature(nativeModes(sim)) && this.certified && (!this.dynamics || this.dynamics.isIdle === true) && !this.importFull && !this.importMarked && sim.version === this.seenVersion && (sim.wholeWrites ?? 0) === this.seenWhole;
   }
 
   // The counts after the ticks recorded so far: certifies idle when no brick is awake and nothing wrote since.
@@ -177,7 +195,7 @@ export class PhysicsV2 {
   // The tick's params: its number, which busy words it reads (the last tick's) and writes, its offset.
   _params(t) {
     const A = this.layout;
-    return { tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t), preserveLegacyMarks: this.sim.compact === this ? 0 : 1 };
+    return { ...nativeModes(this.sim), tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t), preserveLegacyMarks: this.sim.compact === this ? 0 : 1 };
   }
 
   // Records the import of what today's writers changed, if anything is pending (params: the next tick's).
@@ -289,6 +307,7 @@ export class PhysicsV2 {
       run(k.v2limit, ind(ARGS2.BRICKS));
       run(k.v2gather, ind(ARGS2.BRICKS));
     }
+    if (params.edge === 1) run(k.v2boundary, ind(ARGS2.BRICKS));
     this.dynamics?.advanceAir(this.tick);
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
     this.legacyPending = true;

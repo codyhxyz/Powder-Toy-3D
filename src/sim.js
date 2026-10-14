@@ -462,6 +462,8 @@ export class Simulation {
   set airT(v) {
     if (v === this.airT) return;
     setAirT(this.gpu, v);
+    // Native settings wake activity, not the lossy legacy material cache.
+    if (this.compact) { this.compact._noteModes(); return; }
     if (this.version === 0) return;
     const fresh = this.passOf('fresh');
     if (fresh.state === 'ready') this.freshFlags(false);

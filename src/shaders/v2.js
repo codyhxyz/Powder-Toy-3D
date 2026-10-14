@@ -5,6 +5,8 @@ import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
+import { MODE_FIELDS } from '../v2/modes.js';
+import { modeWGSL } from './v2/modes.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -123,7 +125,7 @@ export function fallCells(id, ticks) {
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, words: ledger + 6 };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6 };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -132,7 +134,7 @@ export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, STATS: 12, words: 32 };
 // stats: [tick, awake bricks, busy bricks the tick before, quiet ticks in a row, last busy tick, columns]
 export const STATS = { TICK: 0, AWAKE: 1, BUSY: 2, QUIET: 3, LAST_BUSY: 4, COLS: 5, words: 8 };
 
-export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32' });
+export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', ...MODE_FIELDS });
 
 const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type } });
 // group 2 of every v2 kernel: the cells, the activity words, the element rows (and for args, the args)
@@ -166,6 +168,7 @@ ${V2Params.wgsl}
 @group(2) @binding(2) var<storage, read> EV: array<vec4f>;
 
 const V2_BUSY0: u32 = ${a.busy0}u;
+${modeWGSL}
 const V2_QUIET: u32 = ${a.quiet}u;
 const V2_AWAKE: u32 = ${a.awake}u;
 const V2_LIST: u32 = ${a.list}u;
@@ -177,6 +180,7 @@ const V2_VISIBLE: u32 = ${a.visible}u;
 const V2_STATE_DIRTY: u32 = ${a.state}u;
 const V2_ENERGY_SOURCE: u32 = ${a.energySource}u;
 const V2_ENERGY_SINK: u32 = ${a.energySink}u;
+const V2_BOUNDARY_MASS: u32 = ${a.boundaryMass}u;
 const CNT_AWAKE: u32 = ${CNT.AWAKE}u;
 const CNT_COLS: u32 = ${CNT.COLS}u;
 const CNT_BUSY: u32 = ${CNT.BUSY}u;
@@ -229,6 +233,10 @@ fn noteEnergySource(position: vec3i, amount: vec2u) {
   if ((amount.y & 0x80000000u) != 0u) { noteEnergyCounter(V2_ENERGY_SINK, energyNeg(amount)); }
   else { noteEnergyCounter(V2_ENERGY_SOURCE, amount); }
 }
+fn noteBoundaryMass(amount: u32) {
+  let old=atomicAdd(&act2[V2_BOUNDARY_MASS],amount);
+  if (old>0xffffffffu-amount) { atomicAdd(&act2[V2_BOUNDARY_MASS+1u],1u); }
+}
 fn noteEnergySink(position: vec3i, amount: vec2u) {
   if ((amount.y & 0x80000000u) != 0u) { noteEnergyCounter(V2_ENERGY_SOURCE, energyNeg(amount)); }
   else { noteEnergyCounter(V2_ENERGY_SINK, amount); }
@@ -239,7 +247,7 @@ fn storeCell(p: vec3i, c: vec4u) {
   noteVisible(p, loadCore(s), c);
   storeCore(s, c);
 }
-fn cellAt(p: vec3i) -> vec4u { if (!inGrid(p)) { return WALL_CELL; } return loadCell(p); }
+fn cellAt(p: vec3i) -> vec4u { let q=mEdge(p); if (!inGrid(q)) { return WALL_CELL; } return loadCell(q); }
 fn cid(c: vec4u) -> u32 { return c.x & 255u; }
 fn cRawTq(c: vec4u) -> u32 { return (c.x >> 8u) & 0xffffu; }
 fn cTq(c: vec4u) -> u32 { return phaseTq(cid(c), cRawTq(c)); }
@@ -271,7 +279,7 @@ fn fluidC(c: vec4u) -> bool { let k = clsOf(c); return k == C_AIR || k == C_GAS 
 
 // ---- activity ----
 fn brickOfCell(p: vec3i) -> u32 { return brickId(p >> vec3u(2u)); }
-fn markBusy(p: vec3i) { atomicStore(&act2[P.busyOut + brickOfCell(p)], 1u); }
+fn markBusy(p: vec3i) { let q=mEdge(p); if (inGrid(q)) { atomicStore(&act2[P.busyOut + brickOfCell(q)], 1u); } }
 fn awakeCell(p: vec3i) -> bool { return atomicLoad(&act2[V2_AWAKE + brickOfCell(p)]) != 0u; }
 fn useAwake() -> u32 { return atomicLoad(&act2[V2_COUNT + CNT_USE_AWAKE]); }
 fn axisV(a: i32) -> vec3i { var d = vec3i(0); d[a] = 1; return d; }
@@ -377,7 +385,7 @@ ${MAIN} {
   for (var dz = -1; dz <= 1; dz++) {
     for (var dy = -1; dy <= 1; dy++) {
       for (var dx = -1; dx <= 1; dx++) {
-        let n = bc + vec3i(dx, dy, dz);
+        let n = mEdge((bc + vec3i(dx, dy, dz))*BS)/BS;
         if (all(n >= vec3i(0)) && all(n < vec3i(BX, BY, BZ)) && atomicLoad(&act2[P.busyIn + brickId(n)]) != 0u) { near = true; }
       }
     }
@@ -453,6 +461,7 @@ fn main() {
 export const v2ColumnWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${MAIN} {
+  if (P.gravMode != 0u || P.gravity == 0.0 || P.edge != 0u) { return; }
   let k = foldThread(wg, nwg, li);
   if (k >= atomicLoad(&act2[V2_COUNT + CNT_USE_COLS]) * 16u) { return; }
   let col = atomicLoad(&act2[V2_COLS + k / 16u]);
@@ -478,7 +487,7 @@ ${MAIN} {
     }
     markBusy(p);
     let age = min(cAge(c) + 1u, 255u);
-    let v = min(f32(age) * G_TICK, vtOf(cid(c)));
+    let v = min(f32(age) * G_TICK * P.gravity / 19.6, vtOf(cid(c)));
     var a = bitcast<f32>(c.z) + v;
     let d = i32(floor(a));
     a = a - f32(d);
@@ -508,6 +517,53 @@ ${MAIN} {
     runAge = nAge;
     runFrac = a;
   }
+}
+`;
+
+// Open faces alone are sinks. The retained empty carrier owns its energy;
+// only removed material enthalpy/bank and fill enter the existing exact ledger.
+export const v2BoundaryWGSL = (g) => /* wgsl */ `
+${v2Head(g, { state: false }, 'contact')}
+${MAIN} {
+  if (P.edge!=1u) { return; }
+  let e=foldId(wg,nwg); if (e>=useAwake()) { return; }
+  let s=atomicLoad(&act2[V2_LIST+e])*64u+li; let p=cellOf(s);
+  let before=loadMaterial(s); let c=before.core; let k=clsOf(c);
+  if (k!=C_LIQUID && k!=C_GAS) { return; }
+  if ((events[s]&1u)!=0u) { return; }
+  var drive=0.0;
+  for (var a=0;a<3;a++) { for (var side=-1;side<=1;side+=2) {
+    if (inGrid(p+axisV(a)*side)) { continue; }
+    let force=f32(side)*mGravity(vec3f(p)+0.5)[a]/19.6;
+    if (k==C_LIQUID) { drive+=max(0.0,f32(cFill(c))/FULLF+force); }
+    else if (k==C_GAS) { drive+=0.25; }
+    else { drive+=max(0.0,force); }
+  } }
+  if (drive<=0.0) { return; } markBusy(p);
+  let carrier=makeMaterial(0u,f32(cTq(c))*0.25-273.25,0u,0u);
+  var after=carrier; var amount=FULLU;
+  if (k==C_LIQUID) {
+    amount=min(cFill(c),max(1u,u32(ACC*drive)));
+    let carried=energySub(energyOf(before),energyOf(carrier));
+    let heat=energyShare(carried,0u,amount,cFill(c));
+    var core=c; let left=cFill(c)-amount;
+    if (left==0u) { core=carrier.core; }
+    else { core.y=(core.y&0xff000000u)|left;
+      let fuel=energyDiv(energyMul(payloadOf(c),left),cFill(c)).x;
+      if (!conductsNative(cid(c))) { core.w=(core.w&65535u)|(fuel<<16u); }
+    }
+    after=withEnergy(Material(core,before.bank),energySub(energyOf(before),heat));
+  } else {
+    // Same physical clock as column fall; accumulate only outward force.
+    let age=min(cAge(c)+1u,255u);
+    let fraction=select(bitcast<f32>(c.z),0.0,k==C_GAS)+select(min(f32(age)*G_TICK*drive,vtOf(cid(c))),drive,k==C_GAS);
+    if (fraction<1.0) {
+      if (k==C_GAS) { var rng=seed3(p,P.tick,971u); if (rnd(&rng)>=fraction) { return; } }
+      else { storeCell(p,setFall(c,age,fraction)); return; }
+    }
+  }
+  noteBoundaryMass(amount); noteEnergySink(p,energySub(energyOf(before),energyOf(after)));
+  storeMaterial(s,before,after); if (cid(after.core)==0u) { events[s]=0u; }
 }
 `;
 
@@ -546,8 +602,9 @@ const LIQ_SWAP: f32 = 0.3;   // a denser liquid over a lighter one
 const GAS_SWAP: f32 = 0.5;   // gas rising or sinking through air or gas, or bubbling up through a liquid
 const DIFFUSE: f32 = 0.25;   // a young gas's lateral swap with air
 fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
-fn supportAt(p: vec3i) -> bool {
-  if (!inGrid(p)) { return true; }
+fn supportAt(position: vec3i) -> bool {
+  let p=mEdge(position);
+  if (!inGrid(p)) { return P.edge != 1u; }
   let s = slotOf(p);
   let l = s & 63u;
   return ((atomicLoad(&act2[V2_OCC + 2u * (s >> 6u) + (l >> 5u)]) >> (l & 31u)) & 1u) != 0u;
@@ -559,26 +616,27 @@ ${MAIN} {
   let j = li % 8u;
   let u = brickCoord(b) * BS + P.offset + 2 * vec3i(i32(j & 1u), i32((j >> 1u) & 1u), i32(j >> 2u));
   let c0 = u - vec3i(1);
-  if (c0.y < 0) { return; }
+  let down=mDown(vec3f(c0)+1.0);
+  let gravityOn=any(down!=vec3i(0));
   var cs: array<vec4u, 8>;
   var orig: array<vec4u, 8>;
   var bs: array<i32, 8>; var oldBanks: array<i32, 8>;
   var positions: array<vec3i, 8>; var requests: array<u32, 8>; var pending: array<u32, 8>;
   for (var i = 0u; i < 8u; i++) {
-    let p = c0 + off8(i); positions[i] = p;
+    let p = mEdge(c0 + mBlockOffset(off8(i),down)); positions[i] = p;
     cs[i] = cellAt(p); orig[i] = cs[i];
     if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
     requests[i] = pending[i];
     oldBanks[i] = bs[i];
   }
   // R2 topple
-  for (var c = 0u; c < 4u; c++) {
+  for (var c = 0u; c < 4u && gravityOn; c++) {
     let ti = 4u + c;
     let gr = cs[ti];
     if (clsOf(gr) != C_POWDER) { continue; }
     let kb = clsOf(cs[c]);
     if (kb != C_SOLID && kb != C_POWDER) { continue; }   // falling or sinking belong to other rules
-    let pTop = c0 + off8(ti);
+    let pTop = positions[ti];
     let drop = dropOfE(cid(gr));
     var cand = array<u32, 3>(0u, 0u, 0u);
     var w = array<f32, 3>(0.0, 0.0, 0.0);
@@ -593,11 +651,10 @@ ${MAIN} {
         if (!fluidC(cs[4u + (c2 & 1u) + (c & 2u)]) && !fluidC(cs[4u + (c & 1u) + (c2 & 2u)])) { continue; }
       }
       // cohesion: drop − 1 more empty cells under the target
-      let pt = c0 + off8(c2);
+      let pt = positions[c2];
       var ok = true;
       for (var dd = 1u; dd < drop; dd++) {
-        let yy = pt.y - i32(dd);
-        if (yy < 0 || supportAt(vec3i(pt.x, yy, pt.z))) { ok = false; }
+        if (supportAt(pt + down*i32(dd))) { ok = false; }
       }
       if (!ok) { continue; }
       cand[nc] = c2;
@@ -616,10 +673,10 @@ ${MAIN} {
     cs[ti] = zeroQ(moved);
     let bank = bs[pick]; bs[pick] = bs[ti]; bs[ti] = bank;
     let request = pending[pick]; pending[pick] = pending[ti]; pending[ti] = request;
-    markBusy(c0 + off8(pick));
+    markBusy(positions[pick]);
   }
   // R3 sink and float, R4 buoyancy: a denser movable over a lighter fluid swaps down
-  for (var c = 0u; c < 4u; c++) {
+  for (var c = 0u; c < 4u && gravityOn; c++) {
     let lo = cs[c];
     let hi = cs[4u + c];
     let kL = clsOf(lo);
@@ -629,7 +686,7 @@ ${MAIN} {
     let dU = densOfE(cid(hi));
     let dL = densOfE(cid(lo));
     if (dU <= dL) { continue; }
-    let pU = c0 + off8(4u + c);
+    let pU = positions[4u + c];
     markBusy(pU);
     var chance = GAS_SWAP;
     if (kU == C_POWDER) { chance = SINK_RATE * (1.0 - dL / dU); } else if (kU == C_LIQUID && kL == C_LIQUID) { chance = LIQ_SWAP; }
@@ -639,7 +696,7 @@ ${MAIN} {
       cs[4u + c] = resetMotionAge(zeroQ(lo));
       let bank = bs[c]; bs[c] = bs[4u + c]; bs[4u + c] = bank;
       let request = pending[c]; pending[c] = pending[4u + c]; pending[4u + c] = request;
-      markBusy(c0 + off8(c));
+      markBusy(positions[c]);
     }
   }
   // R4 gas: lateral swaps with air while young (x pairs, then z pairs)
@@ -655,7 +712,7 @@ ${MAIN} {
     if (k0 == C_GAS && k1 == C_AIR && cAge(a0) < DIFFUSE_AGE) { young = true; }
     if (k1 == C_GAS && k0 == C_AIR && cAge(a1) < DIFFUSE_AGE) { young = true; }
     if (!young) { continue; }
-    let p0 = c0 + off8(i0);
+    let p0 = positions[i0];
     markBusy(p0);
     var rs = seed3(p0, P.tick, 79u + m);
     if (rnd(&rs) < DIFFUSE) {
@@ -663,7 +720,7 @@ ${MAIN} {
       cs[i1] = zeroQ(a0);
       let bank = bs[i0]; bs[i0] = bs[i1]; bs[i1] = bank;
       let request = pending[i0]; pending[i0] = pending[i1]; pending[i1] = request;
-      markBusy(c0 + off8(i1));
+      markBusy(positions[i1]);
     }
   }
   // Gas ageing is motion state; reaction/lifetime changes belong to contact.
@@ -673,6 +730,18 @@ ${MAIN} {
     }
   }
   ${contactWGSL ? 'contactBlock(&cs, &bs, positions, &requests);' : '// Contact module not installed: no reaction capability advertised.'}
+  ${contactWGSL.includes('fn contactBoundary(') ? `
+  if (P.edge==1u && mAirHeat()) {
+    for (var i=0u;i<8u;i++) {
+      let p=positions[i]; if (!inGrid(p)) { continue; }
+      // R5 exposed sides and top, never the floor, solid walls or loop seams.
+      let open=u32(p.x==0)+u32(p.x==NX-1)+u32(p.z==0)+u32(p.z==NZ-1)+u32(p.y==NY-1);
+      if (open!=0u) {
+        let m=contactBoundary(Material(cs[i],bs[i]),open,u32(clamp(round((P.ambient+273.25)*4.0),0.0,65535.0)),p);
+        cs[i]=m.core; bs[i]=m.bank;
+      }
+    }
+  }` : ''}
   for (var i = 0u; i < 8u; i++) {
     let p = positions[i];
     if (inGrid(p)) {
@@ -705,7 +774,7 @@ fn claimOf(p: vec3i) -> vec2u {
   var best = 0u;
   var bt = 0u;
   for (var i = 0; i < 6; i++) {
-    let q = p + face6(i);
+    let q = mEdge(p + face6(i));
     if (!inGrid(q)) { continue; }
     let c = flowCell(q);
     if (isLiq(c) && cid(c) > best) { best = cid(c); bt = cTq(c); }
@@ -725,7 +794,7 @@ fn faceFlux(pi: vec3i, ci: vec4u, pj: vec3i, cj: vec4u, a: i32, qold: f32) -> f3
   if (!wi && claimOf(pi).x != liq) { return 0.0; }
   if (!wj && claimOf(pj).x != liq) { return 0.0; }
   var drive = headOf(ci) - headOf(cj);
-  if (a == 1) { drive -= 1.0; }
+  drive += mFaceDrive(pi, a);
   let damp = dampOf(liq);
   let band = max(max(DEADQ * max(stiffOf(ci), stiffOf(cj)) / FULLF, 1.5 * damp / ACC), yieldOf(liq));
   if (abs(drive) < band) { drive = 0.0; }
@@ -736,9 +805,9 @@ fn faceFlux(pi: vec3i, ci: vec4u, pj: vec3i, cj: vec4u, a: i32, qold: f32) -> f3
   var v = q + ACC * drive;
   if (drive == 0.0) { v *= 0.5; }
   if ((v > 0.0 && !wi) || (v < 0.0 && !wj)) { v = 0.0; }
-  if (a != 1) {
-    if (v > 0.0 && !wj && cFill(ci) < FILM && !wetAt(pj - vec3i(0, 1, 0))) { v = 0.0; }
-    if (v < 0.0 && !wi && cFill(cj) < FILM && !wetAt(pi - vec3i(0, 1, 0))) { v = 0.0; }
+  if (mDown(vec3f(pi)+0.5)[a] == 0) {
+    if (v > 0.0 && !wj && cFill(ci) < FILM && !wetAt(mEdge(pj + mDown(vec3f(pj)+0.5)))) { v = 0.0; }
+    if (v < 0.0 && !wi && cFill(cj) < FILM && !wetAt(mEdge(pi + mDown(vec3f(pi)+0.5)))) { v = 0.0; }
   }
   v *= 1.0 - damp;
   if (abs(v) < QMIN) { v = 0.0; }
@@ -771,7 +840,7 @@ ${brickCell}
   let q0 = qOf(c);
   var q = vec3f(0.0);
   for (var a = 0; a < 3; a++) {
-    let pj = p + axisV(a);
+    let pj = mEdge(p + axisV(a));
     if (!inGrid(pj)) { continue; }
     let cj = flowCell(pj);
     if (!isOpenC(cj)) { continue; }
@@ -783,7 +852,7 @@ ${brickCell}
   cells[s].z = pack2x16float(q.xy);
   cells[s].w = (c.w & 0xffff0000u) | (pack2x16float(vec2f(q.z, 0.0)) & 0xffffu);
   for (var a = 0; a < 3; a++) {
-    let ph = p - axisV(a);
+    let ph = mEdge(p - axisV(a));
     if (!inGrid(ph) || awakeCell(ph)) { continue; }
     let ch = loadCell(ph);
     if (isOpenC(ch) && faceFlux(ph, ch, p, c, a, qOf(ch)[a]) != 0.0) { markBusy(ph); markBusy(p); }
@@ -809,7 +878,7 @@ ${brickCell}
     var out = 0u;
     for (var a = 0; a < 3; a++) {
       if (q[a] > 0.0) { a6[2 * a] = u32(trunc(q[a])); }
-      let ph = p - axisV(a);
+      let ph = mEdge(p - axisV(a));
       if (inGrid(ph) && awakeCell(ph)) {
         let ch = loadCell(ph);
         if (isOpenC(ch)) { let qh = qOf(ch)[a]; if (qh < 0.0) { a6[2 * a + 1] = u32(trunc(-qh)); } }
@@ -859,10 +928,10 @@ fn snapshot(s: u32) -> Material {
 }
 fn faceQ(p: vec3i, face: u32) -> f32 {
   let axis = i32(face / 2u); var owner = p;
-  if ((face & 1u) != 0u) { owner -= axisV(axis); }
-  if (!inGrid(owner) || !inGrid(p + face6(i32(face)))) { return 0.0; }
-  if (!awakeCell(p) || !awakeCell(p + face6(i32(face)))) { return 0.0; }
-  if (!isOpenC(snapshot(slotOf(p)).core) || !isOpenC(snapshot(slotOf(p + face6(i32(face)))).core)) { return 0.0; }
+  if ((face & 1u) != 0u) { owner = mEdge(owner - axisV(axis)); }
+  if (!inGrid(owner) || !inGrid(mEdge(p + face6(i32(face))))) { return 0.0; }
+  if (!awakeCell(p) || !awakeCell(mEdge(p + face6(i32(face))))) { return 0.0; }
+  if (!isOpenC(snapshot(slotOf(p)).core) || !isOpenC(snapshot(slotOf(mEdge(p + face6(i32(face))))).core)) { return 0.0; }
   let s = slotOf(owner); var q = 0.0;
   if (axis == 2) { q = unpack2x16float(atomicLoad(&cells[s].w) & 65535u).x; }
   else { q = unpack2x16float(cells[s].z)[axis]; }
@@ -898,7 +967,7 @@ struct TransportPacket { amount: u32, heat: vec2u, fuel: u32 }
 fn sendOf(p: vec3i, face: u32) -> TransportPacket {
   let empty = TransportPacket(0u, vec2u(0u), 0u);
   let n = rawSendOf(p, face); if (n == 0u) { return empty; }
-  let src = snapshot(slotOf(p)); let dst = snapshot(slotOf(p + face6(i32(face))));
+  let src = snapshot(slotOf(p)); let dst = snapshot(slotOf(mEdge(p + face6(i32(face)))));
   let prefix = prefixOf(p, face);
   let heat = transportedEnergy(src, prefix, n);
   if (!energyPacketFits(src, dst, heat, n)) { markBusy(p); return empty; }
@@ -920,7 +989,7 @@ ${brickCell}
   var payload = i32(payloadOf(src.core)); var id = cid(src.core); var ct = ctypeOf(src.core);
   var strongest = 0u; var code = payloadOf(src.core);
   for (var face = 0u; face < 6u; face++) {
-    let q = p + face6(i32(face)); if (!inGrid(q) || !awakeCell(q)) { continue; }
+    let q = mEdge(p + face6(i32(face))); if (!inGrid(q) || !awakeCell(q)) { continue; }
     let out = sendOf(p, face);
     let incoming = sendOf(q, face ^ 1u);
     if (out.amount != 0u) {
@@ -1001,6 +1070,7 @@ export const V2_KERNELS = [
   { name: 'v2activity', code: v2ActivityWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2cols', code: v2ColsWGSL, layouts: own, dispatch: (g) => fold(Math.ceil((g.nx / 4) * (g.nz / 4) / 64)) },
   { name: 'v2args', code: v2ArgsWGSL, layouts: () => [LAYOUT.TABLES, 'EMPTY', V2_ARGS_LAYOUT], dispatch: () => [1, 1, 1], workgroupSize: [1, 1, 1] },
+  { name: 'v2boundary', code: v2BoundaryWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2column', code: v2ColumnWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2support', code: v2SupportWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2block', code: v2BlockWGSL, layouts: contact, dispatch: perBrick },

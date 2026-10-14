@@ -1,4 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
+import { MODE_FIELDS } from '../../v2/modes.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG } from '../../v2/dynamics-reference.js';
@@ -7,7 +8,7 @@ import { ELEMENTS, E, R } from '../../elements.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
-  center: 'vec3f', radius: 'f32', vector: 'vec3f', strength: 'f32', shift: 'vec3i', substep: 'u32',
+  center: 'vec3f', radius: 'f32', vector: 'vec3f', strength: 'f32', shift: 'vec3i', substep: 'u32', ...MODE_FIELDS,
 });
 export const storageLayout = (count, readonly = []) => Array.from({ length: count }, (_, binding) =>
   ({ binding, visibility: STAGE.COMPUTE, buffer: { type: readonly.includes(binding) ? 'read-only-storage' : 'storage' } }));
@@ -128,7 +129,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     // World-window exits are retained, not deleted. A later shift can bring them back.
     dWake(startCell);
     let m = dMaterial(particle); let id = cid(m.core); let neutron = id == D_NEUTRON; let photon = id == D_PHOTON;
-    var v = particle.velocity; var acceleration = vec3f(0,-D_G,0);
+    var v = particle.velocity; var acceleration = mGravity(local);
     if (photon) {
       let life = (particle.c0 >> 8u)&65535u; particle.c0 = (particle.c0&0xff0000ffu) | (max(1u,life)-1u)<<8u;
       acceleration = vec3f(0);
@@ -137,7 +138,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); return; }
       if ((particle.c0&256u)==0u) { particle.tail.x -= 1u; } acceleration = vec3f(0);
     } else {
-      let wind = air[brickOfCell(startCell)].vp.xyz;
+      let wind = select(vec3f(0),air[brickOfCell(startCell)].vp.xyz,mAirVelocity());
       if (cls(id) == 4u || atomicLoad(&control[D_HELD+t])!=0u) { acceleration = vec3f(0); }
       let relative = v - wind;
       // Implicit quadratic drag is stable at any speed; it is NOT a displacement cap.
