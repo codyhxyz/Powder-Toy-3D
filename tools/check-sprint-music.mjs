@@ -51,7 +51,8 @@ const param = (value) => ({ value, calls: [], setTargetAtTime(...args) { this.ca
 const node = (extra = {}) => ({ ...extra, connect(to) { this.output = to; return to; } });
 const input = node();
 let starts = 0;
-const source = node({ playbackRate: param(1), start() { starts++; } });
+const source = node({ playbackRate: param(1), offsets: [], stops: [],
+  start(time, offset) { starts++; this.offsets.push(offset); }, stop(time) { this.stops.push(time); }, disconnect() {} });
 const filter = node({ frequency: param(0), Q: param(0) });
 const gain = node({ gain: param(1) });
 const ctx = {
@@ -63,6 +64,8 @@ const ctx = {
 };
 const music = createSprintMusic(ctx, input);
 assert.equal(gain.gain.value, 0, 'transport starts muted');
+assert.equal(starts, 0, 'no audio work before the first active update');
+music.update(0.2);
 assert.equal(source.loop, true);
 assert.equal(source.output, filter);
 assert.equal(filter.output, gain);
@@ -79,8 +82,14 @@ assert.equal(gain.gain.calls.length, count, 'unchanged targets do not reschedule
 music.update(1, false);
 assert.deepEqual(gain.gain.calls.at(-1), [0, 12, 0.025], 'option off fades immediately on audio clock');
 assert.equal(music.stats().gain, 0);
+assert.equal(music.stats().playing, false);
+ctx.currentTime += 0.25;
 music.update(1);
+assert.equal(starts, 2, 're-enable resumes a stopped source');
+assert.equal(source.offsets.at(-1), 0.25, 'resumption seeks the same beat instead of bar one');
 music.update(0); // inactive/dead/hidden paths supply zero attained rush
-assert.deepEqual(gain.gain.calls.at(-1), [0, 12, 0.025], 'zero rush uses prompt mute fade');
-assert.equal(starts, 1, 're-enabling preserves transport phase');
+assert.deepEqual(gain.gain.calls.at(-1), [0, 12.25, 0.025], 'zero rush uses prompt mute fade');
+music.update(1, true, false);
+assert.equal(music.stats().playing, false, 'inactive/hidden/dead stop the source, not only its gain');
+assert.equal(source.stops.at(-1), 12.37);
 console.log(`Sprint music CPU checks passed: ${pcm.length} samples, ${expectedDuration.toFixed(3)}s @ ${SPRINT_MUSIC.bpm} BPM, peak=${peak.toFixed(3)}, RMS=${rms.toFixed(3)}, seam=${seam.toFixed(5)}; ${(performance.now() - started).toFixed(0)}ms total. No GPU used.`);

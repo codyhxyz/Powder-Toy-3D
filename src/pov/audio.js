@@ -401,7 +401,6 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         S.loops[name] = { audio, on: false };
       }
       S.sprintMusic = createSprintMusic(ctx, listener.getInput());
-      S.buffers.set('sprintMusic', [S.sprintMusic.buffer]);
       if (ctx.state !== 'running') ctx.resume().catch(() => {});
       S.started = true;
       warmUp();
@@ -777,7 +776,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
       const pl = s.player;
       const rush = s.active && !document.hidden && pl && !pl.dead ? pl.sprintRush ?? 0 : 0;
-      S.sprintMusic.update(rush, s.sprintMusic !== false);
+      S.sprintMusic.update(rush, s.sprintMusic !== false, !!(s.active && !document.hidden && pl && !pl.dead));
       // Leave space for the break/bass; retain the original wind-only mix when disabled.
       const windGain = (s.sprintMusic !== false ? 0.22 : 0.7) * rush * rush;
       loop('sprintWind', windGain > 0.001, { gain: windGain });

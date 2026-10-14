@@ -61,6 +61,7 @@ import { createDetailGate, gateVariants } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE, UPSCALE_FLOOR } from './gfx/post.js';
+import { sprintBlurStep } from './gfx/sprintBlur.js';
 import { createPresentation } from './gfx/presentation.js';
 import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
 import { povEvents } from './pov/events.js';
@@ -146,6 +147,7 @@ const DEFAULTS = {
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
   character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
   profiler: false,
@@ -155,6 +157,8 @@ const DEFAULTS = {
 // cheapest upscaling. Only the defaults change; anything the player picks in
 // Settings still sticks.
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
+REDUCED_MOTION.addEventListener('change', () => wakeLoop());
 const MOBILE_DEFAULTS = {
   size: BOX_DEFAULT, preset: 'lab',
   nearGI: false, glowLights: false, caustics: false, upscale: 'performance',
@@ -171,7 +175,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
+  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -1417,6 +1421,10 @@ const settingsPanel = createSettings({
         onChange: (v) => { settings.viewBobbing = v; save(); } },
       { type: 'seg', key: 'sprintMode', options: [['hold', 'Sprint: Hold'], ['toggle', 'Toggle']],
         onChange: (v) => { settings.sprintMode = v; save(); } },
+      { type: 'seg', key: 'sprintBlur', options: [[true, 'Sprint Blur: On'], [false, 'Off']],
+        onChange: (v) => { settings.sprintBlur = v; save(); } },
+      { type: 'seg', key: 'sprintMusic', options: [[true, 'Sprint Music: On'], [false, 'Off']],
+        onChange: (v) => { settings.sprintMusic = v; save(); } },
     ] },
     ...(accountsEnabled ? [accountSection({ toast: (text, opts) => hud.toast(text, opts) })] : []),
     // for working on the app itself (the frame loop applies it)
@@ -2411,6 +2419,10 @@ function tick(now, renderOnly = false) {
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     // (the blocks' faces are radiance, as the realistic view's; the data views are finished colours)
     post.settings.raw = blocks ? false : settings.view !== 0;
+    const blurAllowed = settings.sprintBlur && !REDUCED_MOTION.matches && pov?.mode === 'on'
+      && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
+    post.settings.sprintBlur = blurAllowed
+      ? sprintBlurStep(post.settings.sprintBlur, pov.player?.sprintRush ?? 0, dt) : 0;
     // The preset is a share of the screen's (device) pixels, FSR 2's; post takes shares of the canvas's.
     post.settings.upscale = presetOf() * DEVICE_RATIO / pixelRatio;
     post.settings.adaptive = presetOf() < 1;

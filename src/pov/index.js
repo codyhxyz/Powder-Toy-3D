@@ -223,7 +223,9 @@ export function createPov(app) {
     onEnabled: on => { toolbelt?.setVisible(!on && mode === 'on'); if (on) setMenu(false); },
     freeMouse: () => { setMenu(false); if (document.pointerLockElement === canvas) document.exitPointerLock(); },
   });
-  const audio = createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
+  const audio = createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({
+    active: active(), player, toolbelt, sprintMusic: app.settings.sprintMusic,
+  }) });
   connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain...
   announceMatches();            // ...and calls the matches' moments
 

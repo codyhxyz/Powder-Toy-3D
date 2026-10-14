@@ -105,31 +105,42 @@ export function renderSprintMusic(sampleRate = SPRINT_MUSIC.sampleRate) {
   return pcm;
 }
 
-// One always-running, initially muted transport: speed/options never restart
-// the beat. Connect to the existing listener input, not directly to speakers.
+// Speed changes preserve the beat. Hidden/inactive/disabled stops the source;
+// resuming seeks the same transport clock rather than restarting bar one.
 export function createSprintMusic(ctx, input) {
   const pcm = renderSprintMusic();
   const buffer = ctx.createBuffer(1, pcm.length, SPRINT_MUSIC.sampleRate);
   buffer.getChannelData(0).set(pcm);
-  const source = ctx.createBufferSource(), filter = ctx.createBiquadFilter(), gain = ctx.createGain();
-  source.buffer = buffer;
-  source.loop = true;
+  const filter = ctx.createBiquadFilter(), gain = ctx.createGain();
   filter.type = 'lowpass';
   filter.Q.value = 0.5;
   filter.frequency.value = 250;
   gain.gain.value = 0;
-  source.connect(filter).connect(gain).connect(input);
-  source.start();
+  filter.connect(gain).connect(input);
+  const epoch = ctx.currentTime;
+  let source = null, playing = false;
   let target = sprintMusicProfile(0);
   return {
     buffer,
-    update(rush, enabled = true) {
-      const next = sprintMusicProfile(rush, enabled), t = ctx.currentTime;
+    update(rush, enabled = true, active = true) {
+      const next = sprintMusicProfile(rush, enabled && active), t = ctx.currentTime;
+      if (enabled && active && !playing) {
+        source?.stop(); // cancel an old fade-out before replacing it at the same beat
+        source?.disconnect();
+        source = ctx.createBufferSource();
+        source.buffer = buffer; source.loop = true;
+        source.connect(filter);
+        source.start(t, (t - epoch) % buffer.duration);
+        playing = true;
+      } else if ((!enabled || !active) && playing) {
+        source.stop(t + 0.12); // ~5 fade constants: silence before releasing the audio work
+        playing = false;
+      }
       if (next.cutoffHz !== target.cutoffHz) filter.frequency.setTargetAtTime(next.cutoffHz, t, 0.18);
       if (next.gain !== target.gain) gain.gain.setTargetAtTime(next.gain, t, next.gain === 0 ? 0.025 : 0.12);
       target = next;
     },
     stats: () => ({ ...target, gainNow: gain.gain.value, cutoffNowHz: filter.frequency.value,
-      bpm: SPRINT_MUSIC.bpm, duration: buffer.duration, playbackRate: source.playbackRate.value }),
+      bpm: SPRINT_MUSIC.bpm, duration: buffer.duration, playing, playbackRate: source?.playbackRate.value ?? 1 }),
   };
 }
