@@ -212,6 +212,9 @@ export class WorldWindow {
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;
+    // Fill/restore/plant transferred residency, not world contents. summarize
+    // already recorded real writes before the move; don't dirty meshes again.
+    if (this.far) this.far.detail.simVersion = sim.version;
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
   }
 

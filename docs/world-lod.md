@@ -3,11 +3,14 @@
 The simulation window controls physics, not the limit of visible detail.
 
 - `world/detail.js` selects visible 32-cell columns by projected size.
-- A worker builds one-cell surface meshes outside the simulation window.
+- A worker builds one-cell surface meshes, including visible chunks inside the simulation window.
+- Camera turns and simulation-window moves retain cached geometry. The shaders hide its fragments inside the live window.
 - Live cells override stored edits. Stored edits override generated cells and trees.
 - A depth pass stops coarse rays at cached geometry. Coarse liquid rendering remains active.
 - A chunk mask changes ownership only after its mesh is ready.
-- Edits invalidate affected chunks and their padding. Revision checks reject old worker results.
+- Simulation writes mark chunks and their padding stale. Summaries request replacements without removing the old meshes.
+- Window transfers do not mark unchanged geometry stale. Revision checks still reject jobs from before an edit or world reset.
+- Completed off-screen jobs remain cached when space permits. Empty chunks also retain their completed state.
 - Uncached chunks retain the coarse field while the worker builds their geometry.
 - The cache retains at most 192 chunks and 96 MiB of geometry arrays.
   GPU geometry duplicates those arrays. Worker storage and render targets are additional memory.
@@ -45,6 +48,7 @@ Run the CPU checks:
 
 ```sh
 node tools/surface-mesh-check.mjs
+node tools/detail-residency-check.mjs
 node tools/detail-worker-check.mjs
 node tools/far-lod-check.mjs
 node tools/material-lod-check.mjs
@@ -65,6 +69,7 @@ Run the browser checks:
 ```sh
 node tools/idle-check.mjs 5493
 node tools/world-detail-check.mjs 5493 /tmp/world-detail
+node tools/detail-residency-browser-check.mjs --port 56371
 node tools/gpu-failure-check.mjs 5493
 node tools/gpu-process-loss-check.mjs 5493
 ```
