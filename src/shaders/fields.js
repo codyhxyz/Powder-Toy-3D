@@ -406,7 +406,6 @@ export const FOLIAGE_CLUMP_CELLS = 3;     // cells between clump centres (0.9 m:
 export const FOLIAGE_CLUMP_R = 0.8;       // F1 (lattice units) at which a clump's rim is reached (F1 of a jittered lattice is mostly below it)
 export const FOLIAGE_THIN_LO = 1.1;       // boost factors: a two-cell bough ~1.16, a one-cell sheet ~1.2, ...
 export const FOLIAGE_THIN_HI = 1.5;       // ... a one-cell frond ~1.8 (σ 0.6, bulk peak 0.8)
-const FOLIAGE_SALT = 0x6c656166;          // the clump lattice's own random stream ('leaf')
 export const fieldPeakFrag = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
@@ -417,7 +416,6 @@ const FOLIAGE_CLUMP_CELLS: f32 = ${FOLIAGE_CLUMP_CELLS.toFixed(1)};
 const FOLIAGE_CLUMP_R: f32 = ${FOLIAGE_CLUMP_R};
 const FOLIAGE_THIN_LO: f32 = ${FOLIAGE_THIN_LO};
 const FOLIAGE_THIN_HI: f32 = ${FOLIAGE_THIN_HI};
-const FOLIAGE_SALT: u32 = ${FOLIAGE_SALT}u;
 // a uniform in [0, 1) from a hash (its top 24 bits: exact in f32)
 fn unit24(h: u32) -> f32 { return f32(h >> 8u) / 16777216.0; }
 // whether plant cell p is ground cover: it rests on matter that isn't
@@ -437,7 +435,7 @@ fn foliageClump(w: vec3i) -> f32 {
     for (var y = -1; y <= 1; y++) {
       for (var x = -1; x <= 1; x++) {
         let c = i + vec3i(x, y, z);
-        let j = vec3f(unit24(seedWorld(c, 0u, FOLIAGE_SALT)), unit24(seedWorld(c, 1u, FOLIAGE_SALT)), unit24(seedWorld(c, 2u, FOLIAGE_SALT)));
+        let j = vec3f(unit24(seedWorld(c, 0u, SALT_FOLIAGE)), unit24(seedWorld(c, 1u, SALT_FOLIAGE)), unit24(seedWorld(c, 2u, SALT_FOLIAGE)));
         let d = q - (vec3f(c) + j);
         d2 = min(d2, dot(d, d));
       }

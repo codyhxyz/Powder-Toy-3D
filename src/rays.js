@@ -6,6 +6,7 @@
 import { ELEMENTS, E, R, itemByKey } from './elements.js';
 import { BRICK } from './shaders/common.js';
 import { activityPeriod } from './shaders/activity.js';
+import { glf as f } from './glsl.js';
 
 // Particle kinds (the list's kind channel; 0 = a free slot).
 export const RAY_KIND = { NONE: 0, PHOTON: 1, NEUTRON: 2 };
@@ -129,7 +130,6 @@ export const isClear = (e) => e.render !== R.OPAQUE;
 // a switch over those ids rather than an NE-entry array (docs/webgpu.md C6:
 // never a big const array indexed at runtime). Table values keep the GLSL's
 // six significant digits.
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const g6 = (x) => f(+x.toPrecision(6));
 // fn name(id: i32) -> T over the elements whose value isn't the default
 function switchFn(name, type, rows, fallback) {

@@ -6,6 +6,7 @@ import { grainsGLSL, GRAINS_ANY } from './grains.js';
 import { lib, libLayouts } from './lib.js';
 import { fullscreenVert } from '../../gpu/wgsl.js';
 import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.js';
+import { glf as f } from '../../glsl.js';
 
 // Opaque surfaces: per-element solid textures (world-space, so nothing
 // reveals the grid), bevelled crisp voxels, and energy-conserving PBR shading.
@@ -32,12 +33,10 @@ import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.j
 // non-uniform control flow, where WGSL has no derivatives, so the floor's
 // grid lines take their fwidth analytically from those ray derivatives
 // (floorFwidth). Nothing here samples with an implicit level.
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const surfaceGLSL = (detail = {}) => {
   const relief = !!detail.DETAIL_RELIEF;
   const grains = !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
   return /* wgsl */ `
-const PI_S: f32 = 3.14159265;
 ${grains ? `
 // Close-up grains (gfx/grains.js, gfx/detail.js): compiled in only when switched on.
 var<private> gGrainSun: f32 = 1.0;   // sun visibility past a grain's neighbours, set around its shadeSurf` : ''}
@@ -314,7 +313,6 @@ fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
 // away and runs INCAND_SKIN_DROP below the bulk, while crevices and pores (low
 // cavity term) show the hot interior: heat reads as glowing cracks rather than
 // a tint over the whole surface.
-const LUMA_W: vec3f = vec3f(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance (render.js luma)
 // (gfx/materials.js kirchhoff; cellEmission is the same without the texture,
 // for everything that sees the surface second-hand.)
 // glow of material m of element id with its visible surface at Ts (°C)
@@ -507,20 +505,31 @@ fn woodPlates(p: vec3f, fp: f32, mv: ptr<function, vec4f>, c: ptr<function, vec4
   let J = TURN_Y30 * mat3x3f(WOOD_PLATE_FH, 0.0, 0.0, 0.0, WOOD_PLATE_FV, 0.0, 0.0, 0.0, WOOD_PLATE_FH);
   let m = mFbmD(p, WOOD_MEANDER_F, WOOD_MEANDER_OCT, fp);
   *mv = m;
+  // Each layer is drawn only while its LOD weight is above 0: past its fade it
+  // is multiplied away, so its cellular search and noise were wasted work (a
+  // trunk across the view paid for the 27-cell search at any distance). The
+  // results are unchanged: the callers mix c and fr by these same weights.
+  let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
+  let lwR = lodFade(WOOD_RIDGE_FH * WOOD_FURROW_LOD, fp);
+  *c = vec4f(0.0);
+  *fr = WOOD_FISSURE_MEAN;
+  if (lwF <= 0.0 && lwR <= 0.0) { return vec4f(0.0); }
   let wv = mFbmD(p, WOOD_WAVE_F, WOOD_WAVE_OCT, fp);
   let pw = p + WOOD_MEANDER * m.x * vec3f(1.0, 0.0, 1.0) + WOOD_WAVE * wv.yzw;
-  var ge: vec3f;
-  var r1: vec3f;
-  let cc = mCell(J * pw, &ge, &r1);
-  *c = cc;
-  let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
-  // furrow: up from its floor to the plate; dome: down from the plate's seed
-  let h = WOOD_FUR_DEPTH * smoothstep(0.0, WOOD_FUR_W, cc.y) - 0.5 * WOOD_PLATE_DOME * dot(r1, r1);
-  let pl = lwF * vec4f(h, transpose(J) * (WOOD_FUR_DEPTH * dSmooth(0.0, WOOD_FUR_W, cc.y) * ge + WOOD_PLATE_DOME * r1));
+  var pl = vec4f(0.0);
+  if (lwF > 0.0) {
+    var ge: vec3f;
+    var r1: vec3f;
+    let cc = mCell(J * pw, &ge, &r1);
+    *c = cc;
+    // furrow: up from its floor to the plate; dome: down from the plate's seed
+    let h = WOOD_FUR_DEPTH * smoothstep(0.0, WOOD_FUR_W, cc.y) - 0.5 * WOOD_PLATE_DOME * dot(r1, r1);
+    pl = lwF * vec4f(h, transpose(J) * (WOOD_FUR_DEPTH * dSmooth(0.0, WOOD_FUR_W, cc.y) * ge + WOOD_PLATE_DOME * r1));
+  }
+  if (lwR <= 0.0) { return pl; }
   // fissures: down from the plates' level (the relief's top stays the plates')
   let JR = TURN_Y30 * mat3x3f(WOOD_RIDGE_FH, 0.0, 0.0, 0.0, WOOD_RIDGE_FV, 0.0, 0.0, 0.0, WOOD_RIDGE_FH);
   let cr = mCreaseJ(pw, JR, WOOD_FISSURE_SALT);
-  let lwR = lodFade(WOOD_RIDGE_FH * WOOD_FURROW_LOD, fp);
   let ridge = smoothstep(0.0, WOOD_FISSURE_W, cr.x);
   *fr = mix(WOOD_FISSURE_MEAN, ridge, lwR);
   return pl + lwR * WOOD_FISSURE_DEPTH * vec4f(ridge - 1.0, dSmooth(0.0, WOOD_FISSURE_W, cr.x) * cr.yzw);
@@ -662,7 +671,7 @@ fn crystalLook(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, T: f32, fp: f
   let x = s.len - dot(q, s.d);   // back from the apex: the nested points narrow toward it
   let z = zr / max(min(s.r, x / CRYS_TIP_K), CRYS_ZONE_EPS);   // 0 on the axis, 1 on the faces
   let bands = mix(CRYS_BANDS_MIN, CRYS_BANDS_MAX, fract(s.seed * CRYS_SALT));
-  let band = 0.5 + 0.5 * cos(2.0 * PI_S * z * bands);
+  let band = 0.5 + 0.5 * cos(2.0 * PI * z * bands);
   let lz = lodFade(bands / s.r, fp);
   let zoned = mix(col, mix(col, FLUORITE_BLUE + FLUORITE_VIOLET - col, CRYS_BAND_MIX * band), lz);
   (*m).alb = mix(FLUORITE_MILK, zoned, mix(1.0 - CRYS_PALE_MIX, 1.0, coloured));
@@ -990,12 +999,15 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     var c: vec4f;
     var fr: f32;   // 0 down a fissure .. 1 on a ridge
     let pl = woodPlates(p, fp, &mv, &c, &fr);
-    let fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT);
-    let fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT);
     // narrow furrows alias sooner than the plate frequency says
     let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
     let lwL = lodFade(FLAKE_FV, fp);
     let lwB = lodFade(FIB_FH, fp);
+    // flakes and fibres only while drawn (each term below is × its weight)
+    var fl = vec4f(0.0);
+    var fb = vec4f(0.0);
+    if (lwL > 0.0) { fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT); }
+    if (lwB > 0.0) { fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT); }
     let ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
     let rl = mix(RIDGE_MEAN, ridge, lwF);
     let plate = mix(vec3f(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3f(1.0), GREY, c.w), lwF);
@@ -1353,16 +1365,18 @@ fn albedoOf(id: i32, p: vec3f, seed: f32) -> vec3f {
 
 const MAT_ROUGH_MIN: f32 = 0.04;   // smoothest a textured surface may get (GGX roughness)
 const BUMP_MAX_SLOPE: f32 = 1.5;   // cap on the bump's tangential height gradient
+// bump: tilt normal ng by the tangential part of the height gradient g (the far field's surfaces too)
+fn bumpNormal(ng: vec3f, g: vec3f) -> vec3f {
+  var gt = g - ng * dot(ng, g);
+  let gl = length(gt);
+  if (gl > BUMP_MAX_SLOPE) { gt *= BUMP_MAX_SLOPE / gl; }
+  return normalize(ng - gt);
+}
 fn applyMat(s: ptr<function, Surf>, m: Mat) {
   (*s).albedo = max(m.alb, vec3f(0.0)); (*s).rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0); (*s).metal = m.metal; (*s).f0 = m.f0;
   (*s).sss = m.sss; (*s).sssCol = m.sssCol; (*s).glint = m.glint; (*s).glintDens = m.glintDens;
   (*s).cav = clamp(m.cav, 0.0, 1.0); (*s).aniso = m.aniso; (*s).tang = m.tang; (*s).trans = m.trans; (*s).emit = m.emit;
-  // bump: tilt the normal by the tangential part of the height gradient
-  let ng = (*s).ng;
-  var gt = m.g - ng * dot(ng, m.g);
-  let gl = length(gt);
-  if (gl > BUMP_MAX_SLOPE) { gt *= BUMP_MAX_SLOPE / gl; }
-  (*s).n = normalize(ng - gt);
+  (*s).n = bumpNormal((*s).ng, m.g);
 }
 ${relief ? reliefGLSL : ''}
 // Surface record for a smooth-channel hit: blend the material of the cells of
@@ -1689,7 +1703,7 @@ const GLINT_R0: f32 = 0.17;           // facet ball radius: solid core, ...
 const GLINT_R1: f32 = 0.25;           // ... soft edge (lattice units)
 const GLINT_COV: f32 = 0.0396;        // volume of that soft ball = the disc area it covers on average
 const GLINT_DELTA: f32 = 0.12;        // angular tolerance (radians)
-const GLINT_OMEGA: f32 = PI_S * GLINT_DELTA * GLINT_DELTA * 0.5;   // integral of the kernel below
+const GLINT_OMEGA: f32 = PI * GLINT_DELTA * GLINT_DELTA * 0.5;   // integral of the kernel below
 // Cap on the facets' slope spread: the crystal faces that flash lie flatter
 // than the grains' overall roughness, so sparkles gather around the sun's
 // reflection instead of peppering the whole surface.
@@ -1697,7 +1711,6 @@ const GLINT_FACET_ROUGH: f32 = 0.5;
 const GLINT_LEVEL_SALT: f32 = 17.3;   // decorrelates the facets of different levels
 const GLINT_NORMAL_SALT: f32 = 41.7;  // decorrelates a facet's normal from its position
 const GLINT_FRAME_UP_MAX: f32 = 0.9;  // |n.y| above which the tangent frame is built from x instead of y
-const TWO_PI_S: f32 = 6.2831853;
 
 // Kernel weight times coverage of the facet in q's lattice cell.
 fn glintFacet(q: vec3f, n: vec3f, t1: vec3f, t2: vec3f, h: vec3f, a2: f32, salt: f32) -> f32 {
@@ -1706,7 +1719,7 @@ fn glintFacet(q: vec3f, n: vec3f, t1: vec3f, t2: vec3f, h: vec3f, a2: f32, salt:
   let cov = 1.0 - smoothstep(GLINT_R0, GLINT_R1, length(q - ci - (GLINT_R1 + (1.0 - 2.0 * GLINT_R1) * h1)));
   if (cov <= 0.0) { return 0.0; }
   let h2 = hash33(ci + salt + GLINT_NORMAL_SALT);
-  let phi = TWO_PI_S * h2.x;
+  let phi = TWO_PI * h2.x;
   let ct = sqrt((1.0 - h2.y) / (1.0 + (a2 - 1.0) * h2.y));
   let st = sqrt(max(1.0 - ct * ct, 0.0));
   let m = (t1 * cos(phi) + t2 * sin(phi)) * st + n * ct;
@@ -1742,7 +1755,7 @@ fn glintSpec(p: vec3f, n: vec3f, v: vec3f, l: vec3f, rough: f32, F0: vec3f, dens
 fn orenNayar(nl: f32, nv: f32, lv: f32, sigma: f32) -> f32 {
   let s = lv - nl * nv;
   let t = select(1.0, max(max(nl, nv), 1e-3), s > 0.0);
-  let A = 1.0 / (1.0 + (0.5 - 2.0 / (3.0 * PI_S)) * sigma);
+  let A = 1.0 / (1.0 + (0.5 - 2.0 / (3.0 * PI)) * sigma);
   return max(nl, 0.0) * A * (1.0 + sigma * s / t);
 }
 
@@ -1761,6 +1774,27 @@ const ON_SIGMA_RATE: f32 = 1.6;
 // Sun diffuse: this much ignores the cavity term, plus SUN_CAV_GAIN × cavity.
 const SUN_CAV_MIN: f32 = 0.5;
 const SUN_CAV_GAIN: f32 = 0.5;
+// The sun's terms shadeSurf and the far field's surfaces (shaders/far.js) share.
+// Bumped normal n kept on the visible side of v (toward the eye).
+fn faceView(n: vec3f, v: vec3f) -> vec3f {
+  var o = n;
+  let nv = dot(n, v);
+  if (nv < SHADE_NV_MIN) { o = normalize(n + v * (SHADE_NV_MIN - nv)); }
+  return o;
+}
+// Sun diffuse of diffuse colour kD (rough powders back-scatter: Oren–Nayar; porous
+// stuff, sss, wraps light past the terminator, tinted sssCol). lv = l·v.
+fn sunDiffuse(kD: vec3f, nl: f32, nv: f32, lv: f32, rough: f32, sss: f32, sssCol: vec3f) -> vec3f {
+  let lam = orenNayar(nl, nv, lv, max(rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE);
+  let wrap = max(nl + sss, 0.0) / ((1.0 + sss) * (1.0 + sss));
+  return kD * mix(vec3f(lam), wrap * sssCol, sss);
+}
+// The sun's light through visibility sh: diffuse dSun (sunDiffuse) under the
+// cavity term, and specular spec (FU.sunCol is irradiance / pi in this
+// renderer's units, hence the pi on the BRDF term).
+fn sunTerm(sh: vec3f, dSun: vec3f, cav: f32, spec: vec3f) -> vec3f {
+  return FU.sunCol * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI * spec);
+}
 // Leaves: thickness of the clump toward the sun, from two samples of the natural-solids field
 // (distance along the sun ray, cells; cells of path each stands for).
 const LEAF_TH_D1: f32 = 0.9;
@@ -1831,9 +1865,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   }
   var local = sampleLight(s.p + ng * LOCAL_PROBE_LIFT) * FU.lightGain;
   // keep the bumped normal on the visible side
-  var n = s.n;
-  let nvr = dot(n, v);
-  if (nvr < SHADE_NV_MIN) { n = normalize(n + v * (SHADE_NV_MIN - nvr)); }
+  let n = faceView(s.n, v);
   let nv = clamp(dot(n, v), 1e-4, 1.0);
   let l = FU.sun;
   let nl = dot(n, l);
@@ -1860,10 +1892,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   let kD = s.albedo * (1.0 - s.metal) * (1.0 - FssEss - Fms * Ems);
 
   // sun: diffuse (rough powders back-scatter; porous stuff wraps light past the terminator)
-  let sigma = max(s.rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE;
-  let lam = orenNayar(nl, nv, dot(l, v), sigma);
-  let wrap = max(nl + w, 0.0) / ((1.0 + w) * (1.0 + w));
-  let dSun = kD * mix(vec3f(lam), wrap * s.sssCol, w);
+  let dSun = sunDiffuse(kD, nl, nv, dot(l, v), s.rough, w, s.sssCol);
   // sun: specular, with multiple-scattering energy compensation
   let msK = 1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0);   // (the lamps' specular below takes it too)
   var spec = ggxSpecA(n, v, l, s.rough, F0, s.tang, s.aniso) * msK;
@@ -1874,8 +1903,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
     if (s.flowW > 0.0) { gs = mix(gs, glintSpec(s.tp1, n, v, l, s.rough, F0, s.glintDens), s.flowW); }
     spec = mix(spec, gs, g);
   }
-  // (FU.sunCol is irradiance / pi in this renderer's units, hence the pi on the BRDF term)
-  var c = FU.sunCol * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * s.cav) + PI_S * spec);${relief ? `
+  var c = sunTerm(sh, dSun, s.cav, spec);${relief ? `
   // down a carved crevice: less sky and ambient (the sun had reliefSunVis)
   {
     let sky = reliefSkyVis();

@@ -65,10 +65,15 @@ const SUN_IN_GAIN: f32 = 0.6;     // sunlight scattered per unit of sun elevatio
 // code without the probes: the far field's open sea.
 var<private> gSkyIn: f32 = 1.0;
 fn skyInAt(gi: Probe) -> f32 { return giSkyVis(gi, vec3f(0.0, 1.0, 0.0)); }
+// the sky's and sun's share of it, the sky open by sky over where the light got in
+// (gSkyIn here; the far field's liquids, shaders/far.js farInScatter, read their own)
+fn liquidAmbientLight(sky: f32, sunVis: vec3f) -> vec3f {
+  return skyAmbient(vec3f(0.0, 1.0, 0.0)) * sky * mix(vec3f(SKY_IN_FLOOR), vec3f(1.0), sunVis)
+       + FU.sunCol * sunVis * max(FU.sun.y, 0.0) * SUN_IN_GAIN;
+}
 // the light scattered inside at p, per unit of scattering albedo (gfx/deco.js scatters its paint in it too)
 fn interiorLight(p: vec3f, sunVis: vec3f) -> vec3f {
-  return skyAmbient(vec3f(0.0, 1.0, 0.0)) * gSkyIn * mix(vec3f(SKY_IN_FLOOR), vec3f(1.0), sunVis)
-       + FU.sunCol * sunVis * max(FU.sun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * FU.lightGain;
+  return liquidAmbientLight(gSkyIn, sunVis) + sampleLight(p) * FU.lightGain;
 }
 fn interiorScatter(id: i32, p: vec3f, sunVis: vec3f, T: f32) -> vec3f {
   return SCATALB(id) * interiorLight(p, sunVis) + emission(id, T);
@@ -158,10 +163,11 @@ fn reflShade(a: vec4f, hp: vec3f, n: vec3f) -> vec3f {
 // env: what the ray sees if it meets nothing (envReflectGI at the interface).
 fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   let rd = safeDir(rd0);
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
   var cell = vec3i(floor(ro));
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
   var tEnter = 0.0;
   var ax = 1;   // entry face axis: unknown in the start cell
   var lastB = vec3i(-1);
@@ -217,10 +223,8 @@ fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     } else {
       stale = true;
     }
-    ax = argmin3(tMax);
     tEnter = tExit;
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    ax = ddaStep(istp, tDelta, &cell, &tMax);
   }
   if (cell.y < 0 && rd.y < 0.0) {
     // the floor, its grid lines as wide as the whole path from the eye makes

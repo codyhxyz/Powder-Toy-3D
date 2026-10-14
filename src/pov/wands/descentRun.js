@@ -1,6 +1,7 @@
 import { SPELL_BY_ID } from './catalog.js';
 import { compileWand } from './compiler.js';
 import { starterWand, bombWand } from './generate.js';
+import { createEmitter } from '../events.js';
 
 // A Descent run's wands and spells (docs/descent-contract.md, B): Noita's
 // inventory, four wand slots and a bag of loose spells, kept across the
@@ -12,8 +13,8 @@ export const WAND_SLOTS = 4;   // Noita: four wand slots in the inventory
 export const BAG_MAX = 64;     // spells carried loose (Noita: 16 inventory slots; ours holds a run's worth)
 export const POTION_SLOTS = 4; // Noita: four item slots beside the wands; ours hold potion flasks only
 
-const listeners = { change: new Set(), drop: new Set(), refresh: new Set(), place: new Set(), reset: new Set() };
-const emit = (name, payload) => { for (const fn of listeners[name]) { try { fn(payload); } catch (err) { console.error(`descentWands ${name} listener failed`, err); } } };
+const events = createEmitter('descentWands');   // 'change', 'drop', 'refresh', 'place', 'reset' (descentWands.on)
+const emit = events.emit;
 const copyWand = (w) => ({ ...w, cards: [...w.cards], config: { ...w.config }, ...(w.look ? { look: { ...w.look } } : {}) });
 
 // potions: the run's flasks, { id, material (element key it was found with), name, cells: [[id, T, life, seed]] }
@@ -113,5 +114,5 @@ export const descentWands = {
   // put a wand or spell pickup at a world point (a chest's spill): { kind: 'wand' | 'spell', wand?, spell?, world: [x, y, z], site }
   place(item) { emit('place', item); },
   // listen: 'change' (wands, bag or potions), 'drop' (a wand left the inventory), 'refresh', 'place', 'reset' (a new run); returns an unsubscribe
-  on(name, fn) { listeners[name].add(fn); return () => listeners[name].delete(fn); },
+  on: events.on,
 };

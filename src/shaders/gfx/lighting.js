@@ -104,6 +104,11 @@ ${skyGLSL()}
 ${cloudDeckGLSL}
 // airMass, skyRadiance, skyColor: gfx/sky.js skyViewGLSL (the box's backdrop draws the same sky, gfx/overlays.js)
 ${skyViewGLSL()}
+// Two Henyey–Greenstein lobes (hgPhase, gfx/sky.js): back lobe gBack, forward
+// lobe gFwd with weight wFwd (the clouds' silver lining, the gas's glow).
+fn hgPhase2(mu: f32, gBack: f32, gFwd: f32, wFwd: f32) -> f32 {
+  return mix(hgPhase(mu, gBack), hgPhase(mu, gFwd), wFwd);
+}
 // Rough open-environment irradiance / pi on a surface facing n (no occlusion):
 // the sky over the share of n's hemisphere it covers, the ground below. The GI
 // probes integrate the real thing; this is for code without them.
@@ -143,7 +148,6 @@ const VOLUME_SHADOW_BIAS: f32 = ${VOLUME_SHADOW_BIAS.toFixed(1)};       // depth
 const SUN_RAY_SMOOTH_SKIP: f32 = 0.5;
 const SUN_RAY_ISO_MARGIN: f32 = 0.02;
 const SUN_RAY_REACH_PAD: f32 = 1.5;
-const SUN_RAY_NUDGE: f32 = 1e-4;           // voxels past the box entry at which the start cell is looked up
 
 // Soft shadows (PCSS): the sun is a disc, so a shadow's edge blurs with the
 // distance from its caster. tan of the sun's apparent radius: the real sun is
@@ -188,10 +192,12 @@ const CAUSTIC_FILL: f32 = 0.7;        // share of the path below the liquid's to
                                       // (water soaked into sand or gravel has no open surface to focus with)
 const CAUSTIC_MAX: f32 = 4.0;         // brightest focus (beams cross past it)
 const CAUSTIC_MIN: f32 = 0.3;         // darkest spread
+// Mean extinction of element id over the three channels (an optical depth's grey share).
+fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }
 // Whether a shadow-map texel sm, seen from depth d, has the receiver under a body of liquid tid.
 fn underPool(sm: vec4f, d: f32, tid: i32) -> bool {
   if (RCLASS(tid) != R_LIQUID || d <= sm.y || d >= sm.z + CAUSTIC_BED_GAP) { return false; }
-  let lenL = (sm.w - f32(tid) * SHADOW_TINT_ID_SCALE) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
+  let lenL = (sm.w - f32(tid) * SHADOW_TINT_ID_SCALE) / max(meanSigma(tid), 1e-4);
   return lenL >= CAUSTIC_FILL * (min(d, sm.z) - sm.y);
 }
 // The light the ripples focus on grid point p lying D cells under the surface (along the sun).
@@ -242,10 +248,11 @@ fn sunRayClear(ro: vec3f, tLim: f32) -> f32 {
   let bh = boxHit(ro, rd);
   let t = max(bh.x, 0.0);
   if (bh.y <= t) { return 1.0; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t + SUN_RAY_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t, &istp, &tDelta, &cell, &tMax);
   var tEnter = t;
   let tSkip = t + SUN_RAY_SMOOTH_SKIP;
   var lastB = vec3i(-1);
@@ -283,6 +290,33 @@ ${shadowMap ? /* wgsl */ `
 // frame. Eight entries, so a private array (docs/webgpu.md C6).
 var<private> VOGEL: array<vec2f, ${PCSS_TAPS}> = array<vec2f, ${PCSS_TAPS}>(${vogel(PCSS_TAPS)});
 
+// Point p in the map whose frame is sunBasis's (c, R, u, v): its depth along
+// the sun, *d, and its 2×2 taps (the low texel *i0, the bilinear fraction *w:
+// wk0). Returns its map coordinate st, 0..1 across the disc.
+fn shadowProject(p: vec3f, c: vec3f, R: f32, u: vec3f, v: vec3f, d: ptr<function, f32>, i0: ptr<function, vec2i>, w: ptr<function, vec2f>) -> vec2f {
+  let q = p - c;
+  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
+  *d = R - dot(q, FU.sun);
+  let f = st * f32(FU.shadowRes) - 0.5;
+  *i0 = vec2i(floor(f));
+  *w = f - vec2f(*i0);
+  return st;
+}
+// The light map texel sm lets through to depth d: tinted by its translucent
+// stretch (its tint element's colour, the proportional share of its optical
+// depth), 1 outside it.
+fn shadowTexelAtt(sm: vec4f, d: f32) -> vec3f {
+  var att = vec3f(1.0);
+  let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
+  if (tid > 0 && d > sm.y) {
+    let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
+    let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
+    let tint = SIGMA(tid) / max(meanSigma(tid), 1e-4);
+    att = exp(-tint * tau * frac);
+  }
+  return att;
+}
+
 // Sun visibility at a surface point hp with normal n, from the map (sunShadow
 // below adds the clouds).
 fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
@@ -292,18 +326,16 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var v: vec3f;
   sunBasis(&c, &R, &u, &v);
   let p = hp + n * SHADOW_NORMAL_OFFSET;
-  let q = p - c;
-  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
-  let d = R - dot(q, FU.sun);
+  var d: f32;
+  var i0: vec2i;
+  var w: vec2f;
+  let st = shadowProject(p, c, R, u, v, &d, &i0, &w);
   // Depth bias. A PCF tap one texel (T voxels) away sees the receiver's own face
   // up to T*(|n.u|+|n.v|)/(n.s) closer, and at the foot of a sun-facing wall it
   // sees that wall up to ~0.6 closer: hence >= 0.8. It must stay well below
   // 1/sun.y (1.23), the depth gap to the top of a 1-voxel step.
   let T = 2.0 * R / f32(FU.shadowRes);
   let bias = max(SHADOW_BIAS_MIN, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, FU.sun), SHADOW_BIAS_NS_MIN) + SHADOW_BIAS_PAD);
-  let f = st * f32(FU.shadowRes) - 0.5;
-  let i0 = vec2i(floor(f));
-  let w = f - vec2f(i0);
   var acc = vec3f(0.0);
   var tr = vec3f(0.0);
   var nLit = 0.0;
@@ -314,14 +346,8 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
     let o = vec2i(k & 1, k >> 1u);
     let sm = textureLoad(tShadow, clamp(i0 + o, vec2i(0), vec2i(FU.shadowRes - 1)), 0);
     let lit = select(0.0, 1.0, d < sm.x + bias);
-    var att = vec3f(1.0);
+    let att = shadowTexelAtt(sm, d);
     let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
-    if (tid > 0 && d > sm.y) {
-      let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
-      let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-      let tint = SIGMA(tid) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
-      att = exp(-tint * tau * frac);
-    }
     let wk = wk0(o, w);
     if (tid > 0 && underPool(sm, d, tid)) { cD += (d - sm.y) * wk; cW += wk; }
     acc += lit * att * wk;
@@ -384,28 +410,21 @@ fn sunMapShadowAt(p: vec3f) -> vec3f {
   var u: vec3f;
   var v: vec3f;
   sunBasis(&c, &R, &u, &v);
-  let q = p - c;
-  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
-  let d = R - dot(q, FU.sun);
-  let f = st * f32(FU.shadowRes) - 0.5;
-  let i0 = vec2i(floor(f));
-  let w = f - vec2f(i0);
+  var d: f32;
+  var i0: vec2i;
+  var w: vec2f;
+  shadowProject(p, c, R, u, v, &d, &i0, &w);
   var acc = vec3f(0.0);
   var cD = 0.0;
   var cW = 0.0;
   for (var k = 0; k < 4; k++) {
     let o = vec2i(k & 1, k >> 1u);
     let sm = textureLoad(tShadow, clamp(i0 + o, vec2i(0), vec2i(FU.shadowRes - 1)), 0);
-    var lit = select(vec3f(0.0), vec3f(1.0), d < sm.x + VOLUME_SHADOW_BIAS);
+    let lit = select(vec3f(0.0), vec3f(1.0), d < sm.x + VOLUME_SHADOW_BIAS) * shadowTexelAtt(sm, d);
     let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
-    if (tid > 0 && d > sm.y) {
-      let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
-      let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-      let tint = SIGMA(tid) / max(dot(SIGMA(tid), vec3f(1.0 / 3.0)), 1e-4);
-      lit *= exp(-tint * tau * frac);
-      if (underPool(sm, d, tid)) { cD += (d - sm.y) * wk0(o, w); cW += wk0(o, w); }
-    }
-    acc += lit * wk0(o, w);
+    let wk = wk0(o, w);
+    if (tid > 0 && underPool(sm, d, tid)) { cD += (d - sm.y) * wk; cW += wk; }
+    acc += lit * wk;
   }
   if (${caustics} && cW > 0.0) { acc *= mix(1.0, causticGain(p, cD / cW), cW); }
   return acc;
@@ -521,7 +540,7 @@ fn occluder(c: vec3i) -> bool {
   if (c.y < 0) { return true; }
   if (outside(c)) { return false; }
   let id = eid(fetchA(c));
-  return id != E_EMPTY && KIND(id) != K_GAS;
+  return !isGasLike(id);
 }
 
 // Smooth per-corner AO on a crisp voxel face (Minecraft style): cell's face
@@ -594,13 +613,14 @@ fn nearSmoothIn(p: vec3f, opaqueOnly: bool) -> bool {
 fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
              hc: ptr<function, vec3i>, hn: ptr<function, vec3f>) -> f32 {
   let rd = safeDir(rd0);
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var tMax: vec3f;
   var cell = vec3i(floor(ro));
   *hc = cell;
   *hn = vec3f(0.0);
   if (cell.y < 0 || outside(cell)) { return -1.0; }
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
   var tEnter = 0.0;
   var ax = 1;
   var lastB = vec3i(-1);
@@ -614,7 +634,7 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
     if (!brickMatter(occ)) { ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); continue; }
     let id = eid(fetchA(cell));
     let axOut = argmin3(tMax);
-    if (id != E_EMPTY && KIND(id) != K_GAS && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
+    if (!isGasLike(id) && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
         && (isCrisp(id) || (tEnter > selfSkip && nearSmoothIn(ro + rd * tClosest(cell, ro, rd, tEnter, tMax[axOut]), opaqueOnly)))) {
       *hc = cell;
       var h = vec3f(0.0);
@@ -784,11 +804,10 @@ const GLOW_START: f32 = 0.55;        // cells off the surface a shadow ray start
 const GLOW_SELF_SKIP: f32 = 1.0;     // smooth-surface cells ignored this close to its start
 const GLOW_ENTRY_PAD: f32 = 0.05;    // cells short of the emitter's brick the ray stops
 const GLOW_XI_EPS: f32 = 1e-6;       // floor of 1 - q when the reservoir renormalises its uniform
-const LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
 // Worth tracing only where the glow is at least this share of the light already there.
 const GLOW_REL_MIN: f32 = 0.05;
 fn glowWorthIt(local: vec3f, irr: vec3f) -> bool {
-  return FU.glowLights != 0u && dot(local, LUMA) > GLOW_REL_MIN * dot(irr, LUMA);
+  return FU.glowLights != 0u && dot(local, LUMA_709) > GLOW_REL_MIN * dot(irr, LUMA_709);
 }
 // The glow's scale at surface point p (geometric normal ng, shading normal n).
 fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
@@ -810,7 +829,7 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
     var u = pixRand3(NEAR_RAYS + i);
     u.x = (f32(i) + u.x) / f32(GLOW_CANDIDATES);
     let bc = min(lo + vec3i(u * span), hi);
-    let e = dot(brickAt(bc).emit, LUMA);
+    let e = dot(brickAt(bc).emit, LUMA_709);
     if (e < GLOW_EMIT_MIN) { continue; }
     let dv = (vec3f(bc) + 0.5) * f32(BS) - p;
     let wt = e / max(dot(dv, dv), GLOW_MIN_D2);

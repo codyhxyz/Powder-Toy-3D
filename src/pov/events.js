@@ -10,7 +10,31 @@
 // camera kick for the player), and its view punches are dropped: they belong
 // to a camera it doesn't have.
 
-const listeners = new Map();
+// A named-event emitter (the bus below, and every per-object one: a body's,
+// a worm's, the Descent run's, the inventory's): on(name, fn) returns an
+// unsubscribe; emit(name, payload) calls the name's listeners in the order they
+// came, a listener that throws is logged (as `label`) and the rest still run;
+// clear() drops them all.
+export function createEmitter(label) {
+  const listeners = new Map();
+  return {
+    on(name, fn) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name).add(fn);
+      return () => listeners.get(name)?.delete(fn);
+    },
+    emit(name, payload) {
+      const set = listeners.get(name);
+      if (!set) return;
+      for (const fn of set) {
+        try { fn(payload); } catch (err) { console.error(`${label} '${name}' listener failed`, err); }
+      }
+    },
+    clear() { listeners.clear(); },
+  };
+}
+
+const bus = createEmitter('povEvents');
 const OWN_VIEW = new Set(['punch']);   // events about the player's own view, never an NPC's
 let actor = null;
 
@@ -23,20 +47,12 @@ export const povEvents = {
   },
   get actor() { return actor; },
   // fn(payload); returns an unsubscribe function
-  on(name, fn) {
-    if (!listeners.has(name)) listeners.set(name, new Set());
-    listeners.get(name).add(fn);
-    return () => listeners.get(name)?.delete(fn);
-  },
+  on: bus.on,
   emit(name, payload = {}) {
     if (actor) {
       if (OWN_VIEW.has(name)) return;
       payload = { ...payload, by: actor.id, from: actor.at?.clone?.() ?? null };
     }
-    const set = listeners.get(name);
-    if (!set) return;
-    for (const fn of set) {
-      try { fn(payload); } catch (err) { console.error(`povEvents '${name}' listener failed`, err); }
-    }
+    bus.emit(name, payload);
   },
 };

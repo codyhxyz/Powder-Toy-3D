@@ -5,6 +5,7 @@ import { CELL_METERS } from './vitals.js';
 import { MELEE_SOURCES } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
+import { gridSpace } from './space.js';
 
 // POV sound. Every noise in first person comes from an event (docs/pov.md,
 // "Gunplay v2"): the gun, the tools and the shell announce what happened on
@@ -356,7 +357,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
 
   const now = () => S.ctx.currentTime;              // the audio clock: for scheduling audio params
   const clock = () => performance.now() / 1000;     // s, wall clock: for this module's own timers (the audio clock can stall or race)
-  const toWorld = (g, out) => out.copy(g).multiplyScalar(getScale()).add(getVolume().position);
+  const { toWorld } = gridSpace({ getScale, getVolume });
 
   // ---- start-up, on a user gesture in POV
   async function start() {

@@ -1,6 +1,6 @@
 import { E } from '../../elements.js';
 import { WORLD_SIZE } from '../../shaders/farShared.js';
-import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared } from './themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, memoTwin } from './themedShared.js';
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 import { ISLAND_VIEW_XZ } from './island.js';
@@ -491,11 +491,7 @@ int gvCellIn(int x, int y, int z, int top) {
 int gvCell(int x, int y, int z) { return y >= GV_SKY ? E_EMPTY : gvCellIn(x, y, z, gvTop(x, z)); }
 `;
 
-const twins = new Map();   // the JS twin per world seed
-function twin(P) {
-  if (!twins.has(P.seed)) twins.set(P.seed, compileShared(SRC, P.seed, jsConstants(P_, G)));
-  return twins.get(P.seed);
-}
+const twin = memoTwin((P) => P.seed, (P) => compileShared(SRC, P.seed, jsConstants(P_, G)));   // the JS twin per world seed
 export const GIANT = { ...G.ints, ...G.floats };
 export const giantTwin = twin;   // (tools/scene-themed-preview.mjs)
 

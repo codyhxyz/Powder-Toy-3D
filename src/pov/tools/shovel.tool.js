@@ -4,7 +4,6 @@ import { HAND_REACH } from '../constants.js';
 import {
   pack, cellsNear, outsideBody, bodyExit, toStepVelocity, faceNormal, ballRadius, pinned,
 } from './transfer.js';
-import { povEvents } from '../events.js';
 import { trigger, swing, toolDt } from './action.js';
 import { digger, BLOCK } from './dig.js';
 import { attachModel, MODELS } from '../models.js';
@@ -91,7 +90,6 @@ export default {
       held.add(heap);
     });
     let heapVersion = -1;
-    const act = (action, extra) => povEvents.emit('tool:action', { tool: 'shovel', action, ...extra });
     const refuse = (text, id) => env.feedback?.refuse(text, { id });
     const full = (id) => { if (!load.busy) refuse('Your pack is full: build with the trowel or right-click to throw', id); };
 
@@ -125,9 +123,9 @@ export default {
       rig.hit(HIT.SHOVEL);
       if (r.taken) {
         const at = pinned(point, ctx.sim), id = t.id;
-        r.taken.then((got) => { if (got.length) act('dig', { id, point: at(), amount: got.length }); });
+        r.taken.then((got) => { if (got.length) env.feedback?.act('dig', { id, point: at(), amount: got.length }); });
       } else if (r.hits < r.need) {
-        act('chip', { id: t.id, point });
+        env.feedback?.act('chip', { id: t.id, point });
       } else if (load.free <= 0) full(t.id);
       return true;
     }
@@ -154,7 +152,7 @@ export default {
       if (ctx.player?.vel) v.add(ctx.player.vel);
       const id = load.cells.at(-1)[0], at = pinned(center, ctx.sim);   // the dump's sound stays where it happened (D11)
       const p = transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) });
-      p?.then((landed) => { if (landed) act('dump', { id, point: at(), amount: landed }); });
+      p?.then((landed) => { if (landed) env.feedback?.act('dump', { id, point: at(), amount: landed }); });
       return !!p;
     }
 

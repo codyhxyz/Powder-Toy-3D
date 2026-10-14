@@ -244,7 +244,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     updateHeld();
     const c = context(), home = room();
     if ((!c.active || (ui.talking && home !== speaking?.spec.home)) && ui.opened) ui.close();
-    ui.update({ active: c.active, place: home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home` : 'Willow Cove' });
+    ui.update({ active: c.active, place: home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home` : 'Tinker Creek' });
   }
   return {
     setEnabled, beforeBody, afterBody() { if (enabled) collide(); }, update,

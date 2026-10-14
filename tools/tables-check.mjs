@@ -442,6 +442,8 @@ function parseConsts(text) {
     const t = s.trim();
     if (/^-?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?[iuf]?$/i.test(t)) return Number(t.replace(/[iuf]$/i, ''));
     if (consts.has(t)) return value(t);
+    const paren = /^\((.*)\)$/.exec(t);   // glf wraps negatives: (-273.15)
+    if (paren) return num(paren[1]);
     const div = /^(.+?)\s*\/\s*(.+)$/.exec(t);
     if (div) { const a = num(div[1]), b = num(div[2]); return a === undefined || b === undefined ? undefined : a / b; }
     return undefined;

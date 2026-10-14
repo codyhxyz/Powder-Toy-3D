@@ -6,6 +6,7 @@ import {
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { createBillboards } from '../gfx/billboards.js';
 import { prepareMesh } from '../gfx/meshLight.js';
+import { glf } from '../glsl.js';
 
 // The birds on screen: every bird is one instance of one InstancedMesh (one
 // draw call), its wings beating in the vertex shader, lit by the same sun and
@@ -70,7 +71,6 @@ const MOTE_FALLOFF = 2;
 
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 const randIn = ([lo, hi]) => rand(lo, hi);
-const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const v3 = (a) => `vec3(${a.map(glf).join(', ')})`;
 
 function birdGeometry() {

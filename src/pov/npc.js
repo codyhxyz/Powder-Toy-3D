@@ -3,7 +3,7 @@ import { createPlayer } from './player.js';
 import { createFigure } from './figure.js';
 import { buildCrasher, CRASHER_COLORS } from './figureCrasher.js';
 import { attachModel } from './models.js';
-import { addTarget, PLAYER } from './targets.js';
+import { addTarget, bodyTarget, spotAround, PLAYER } from './targets.js';
 import { povEvents } from './events.js';
 import { createKit } from './tools/index.js';
 import { gearByKey } from './tools/catalog.js';
@@ -13,7 +13,7 @@ import { throwFrag } from './frag.js';
 import { GunnerAgent } from './ai/gunner.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
-import { BODY_HEIGHT } from './constants.js';
+import { BODY_HEIGHT, RESPAWN_S } from './constants.js';
 
 export { createWorm } from './worm.js';
 
@@ -53,7 +53,6 @@ const DAMAGE_TAKEN = 0.6;         // share of a weapon's damage it takes: four g
 const KNOCK_UP = 0.4;             // upward share of a knockback
 
 // life
-const RESPAWN_S = 8;              // s dead before another comes
 const SPAWN_DIST = 30;            // cells from the player it appears (dropped from above)
 const SPAWN_DROP = 18;            // cells above the player's feet
 const EDGE = 4;                   // cells: spawns stay this far inside the box walls
@@ -157,33 +156,20 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
   const offLanded = povEvents.on('player:hit', (e) => { if (e.by === id) agent.landed(); });
   const hit = {};
 
-  const removeTarget = addTarget({
-    id,
-    get alive() { return spawned && !body.dead; },
-    box(min, max) {
-      const hw = body.width / 2;   // (its own size: Shrink)
-      min.set(body.pos.x - hw, body.pos.y, body.pos.z - hw);
-      max.set(body.pos.x + hw, body.pos.y + body.height, body.pos.z + hw);
-    },
-    facing: (out) => out.copy(dir),   // where it looks (the knife's backstab test)
-    body,                             // its statuses scale its weapons (targets.js dealtScale)
-    hurt(amount, cause, d, opts) {
-      body.hurt(amount * (opts?.exact ? 1 : DAMAGE_TAKEN), cause, opts);   // exact: Halo's numbers (halo.js)
+  const removeTarget = addTarget(bodyTarget(id, body, {
+    alive: () => spawned && !body.dead,
+    facing: (out) => out.copy(dir),   // where it looks
+    damageScale: DAMAGE_TAKEN, knockback: HIT_KNOCKBACK, knockUp: KNOCK_UP,
+    onHurt() {
       agent.stagger();   // a hit stops its wind-up
-      // d null: the weapon shoves it itself (the kick, by momentum: shove below)
-      if (d) body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
       agent.alert(povEvents.actor?.id ?? PLAYER);   // it knows where its attacker is now
     },
-    shove(dv) { body.applyImpulse(dv); },   // a momentum shove (the kick, cells/s)
-    get body() { return body; },            // its body (the hook pulls on it: player.js tether)
-  });
+  }));
 
   // drop in at SPAWN_DIST from the player, on a random bearing, inside the box (or at `at`)
   function spawn(sim, at = home()) {
     const g = sim.g, p = world.player.pos;
-    const a = Math.random() * 2 * Math.PI;
-    const x = THREE.MathUtils.clamp(p.x + Math.cos(a) * SPAWN_DIST, EDGE, g.nx - EDGE);
-    const z = THREE.MathUtils.clamp(p.z + Math.sin(a) * SPAWN_DIST, EDGE, g.nz - EDGE);
+    const { x, z } = spotAround(p, SPAWN_DIST, EDGE, g);
     const y = Math.min(p.y + SPAWN_DROP, g.ny - BODY_HEIGHT - 1);
     body.spawn(at ? new THREE.Vector3(at.x, at.y, at.z) : new THREE.Vector3(x, y, z));
     agent.record.timeLastSensed = -Infinity;
