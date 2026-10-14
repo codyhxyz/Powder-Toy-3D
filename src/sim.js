@@ -461,8 +461,8 @@ export class Simulation {
     setAirT(this.gpu, v);
     if (this.version === 0) return;
     const fresh = this.passOf('fresh');
-    if (fresh.state === 'ready') this.freshFlags();
-    else fresh.ready.then(() => { if (!this.disposed && !this.gpu.failure) this.freshFlags(); }, () => {});
+    if (fresh.state === 'ready') this.freshFlags(false);
+    else fresh.ready.then(() => { if (!this.disposed && !this.gpu.failure) this.freshFlags(false); }, () => {});
   }
 
   wake() {
@@ -848,9 +848,9 @@ export class Simulation {
    * the next map rebuilds every inert bit and draws every unit, and the
    * derived passes rebuild every brick.
    */
-  noteWrite() {
+  noteWrite(replaceState = true) {
     this.version++;
-    this.wholeWrites++;
+    if (replaceState) this.wholeWrites++;
     this.forceAll = true;
     this.actFull = true;
     this.changedAll = true;
@@ -864,9 +864,9 @@ export class Simulation {
    * the next map draws every unit). Its kernel is built on demand:
    * sim.prepare('fresh').
    */
-  freshFlags() {
+  freshFlags(replaceState = true) {
     this._dispatch(this.passOf('fresh'), fold(Math.ceil(this.g.slots / 64)), { bind: [this.tables, this.bindRW], header: this.header() });
-    this.noteWrite();
+    this.noteWrite(replaceState);
   }
 
   // Upload CPU-built state (Float32Array RGBA per atlas texel: cellTexel)

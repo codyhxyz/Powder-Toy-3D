@@ -136,7 +136,7 @@ export function fallCells(id, ticks) {
 // v2's activity words (u32), one run per brick each, then the brick columns and the counts.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, count: 7 * nb + bx * bz, words: 8 * nb + bx * bz + 8 };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, words: 9 * nb + bx * bz + 8 };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -162,6 +162,7 @@ function v2Head(g, opts = { state: false }) {
   const a = v2ActLayout(g);
   return /* wgsl */ `
 ${prelude(g, opts)}
+${compactDecodeWGSL}
 ${V2Params.wgsl}
 @group(3) @binding(1) var<uniform> P: V2Params;
 @group(2) @binding(0) var<storage, read_write> cells: array<vec4u>;
@@ -176,6 +177,7 @@ const V2_OCC: u32 = ${a.occ}u;
 const V2_COLS: u32 = ${a.cols}u;
 const V2_COUNT: u32 = ${a.count}u;
 const V2_LEGACY: u32 = ${a.legacy}u;
+const V2_VISIBLE: u32 = ${a.visible}u;
 const CNT_AWAKE: u32 = ${CNT.AWAKE}u;
 const CNT_COLS: u32 = ${CNT.COLS}u;
 const CNT_BUSY: u32 = ${CNT.BUSY}u;
@@ -203,7 +205,19 @@ const WALL_CELL: vec4u = vec4u(${ELEMENTS.find((e) => e.key === 'WALL').id}u, 0u
 
 // ---- the cell (the layout is this module's header comment) ----
 fn loadCell(p: vec3i) -> vec4u { return cells[slotOf(p)]; }
-fn storeCell(p: vec3i, c: vec4u) { cells[slotOf(p)] = c; }
+// Keep redraws separate from activity: fall fractions, gas ages and sub-threshold
+// liquid flux can keep a rule busy without changing a pixel or the legacy cache.
+fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
+  if (all(compactA(p, before) == compactA(p, after))) { return; }
+  let b = brickOfCell(p);
+  atomicStore(&act2[V2_VISIBLE + b], 1u);
+  atomicStore(&act2[V2_LEGACY + b], 1u);
+}
+fn storeCell(p: vec3i, c: vec4u) {
+  let s = slotOf(p);
+  noteVisible(p, cells[s], c);
+  cells[s] = c;
+}
 fn cellAt(p: vec3i) -> vec4u { if (!inGrid(p)) { return WALL_CELL; } return loadCell(p); }
 fn cid(c: vec4u) -> u32 { return c.x & 255u; }
 fn cTq(c: vec4u) -> u32 { return (c.x >> 8u) & 0xffffu; }
@@ -250,7 +264,6 @@ fn face6(i: i32) -> vec3i { var d = vec3i(0); d[i >> 1u] = 1 - 2 * (i & 1); retu
 // shows half its cells, and a thin film a speckle: volume kept on average); air and liquids get a seed
 // from their position (theirs isn't kept).
 const bridgeWGSL = /* wgsl */ `
-${compactDecodeWGSL}
 // a cell of today's state A as v2 holds it: a liquid full, everything still
 fn importA(a: vec4f) -> vec4u {
   let id = u32(clamp(eid(a), 0, NE - 1));
@@ -799,36 +812,43 @@ ${brickCell}
     }
   }
   if (poss) { markBusy(p); }
+  var next = c;
   if (isLiq(c)) {
     if (dF != 0) {
       let fl = i32(cFill(c)) + dF;
       if (fl > 0) {
-        cells[s].y = (c.y & 0xff000000u) | u32(fl);
+        next.y = (c.y & 0xff000000u) | u32(fl);
+        cells[s].y = next.y;
       } else {
         cells[s].x = c.x & 0xffffff00u;   // dry: air, at its temperature (its age byte stays: see above)
         cells[s].y = 0u;
+        next.x = c.x & 0xffffff00u;
+        next.y = 0u;
       }
     }
   } else if (dF > 0) {
     cells[s].x = (c.y & 255u) | (((c.y >> 8u) & 0xffffu) << 8u);   // the claim's liquid at its temperature
     cells[s].y = u32(dF);
+    next.x = (c.y & 255u) | (((c.y >> 8u) & 0xffffu) << 8u);
+    next.y = u32(dF);
   } else {
     cells[s].y = 0u;
   }
+  // Do not store the entire vector here: neighbours still read its face flux
+  // and outflow limit. Those words are read-only throughout this gather.
+  noteVisible(p, c, next);
 }
 `;
 
-// Mark potentially changed bricks without reading or converting their cells.
-// Include busyOut: the column pass can touch distant bricks in an awake column,
-// and offset blocks can write neighbours outside the original awake list.
+// The writers report changed projections, including distant column destinations
+// and offset-block neighbours. An awake halo alone must not invalidate the view.
 // Compatibility dirtiness is independent of presentation marks and survives sleep.
 export const v2InvalidateWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false, marks: true })}
 ${MAIN} {
   let b = foldThread(wg, nwg, li);
   if (b >= NBRICKS) { return; }
-  if (atomicLoad(&act2[V2_AWAKE + b]) == 0u && atomicLoad(&act2[P.busyOut + b]) == 0u) { return; }
-  atomicStore(&act2[V2_LEGACY + b], 1u);
+  if (atomicExchange(&act2[V2_VISIBLE + b], 0u) == 0u) { return; }
   atomicOr(&marks[MARK_DERIVED + (b >> 5u)], 1u << (b & 31u));
   atomicStore(&marks[MARK_FOAMS + b], 1u);
 }

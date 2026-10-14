@@ -5,6 +5,7 @@ import { Simulation, gridLayout } from '../../src/sim.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { prelude, STATE_OPTS, HEADER_FIELDS } from '../../src/shaders/common.js';
 import { compactDecodeWGSL } from '../../src/shaders/compact.js';
+import { Header, uniformStruct } from '../../src/gpu/params.js';
 import { v2BridgeWGSL, v2ImportWGSL, v2InvalidateWGSL, v2ActLayout } from '../../src/shaders/v2.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
@@ -41,6 +42,9 @@ assert.equal(sim.readHeader().format, 2);
 assert.equal(sim.readHeader().src, 1, 'copy index is not overloaded');
 assert.equal(sim.bindRO, v2.groups.read);
 assert.equal(HEADER_FIELDS.format, 'u32');
+assert.deepEqual(Header.fields, uniformStruct('Header', HEADER_FIELDS).fields, 'CPU and shader header layouts agree');
+const packed = Header.pack(sim.readHeader());
+assert.equal(new DataView(packed).getUint32(Header.offsets.format, true), 2, 'real parameter ring can pack the compact selector');
 
 calls.length = 0;
 v2.ticks(40);
@@ -98,8 +102,15 @@ assert(direct.includes('A: array<vec4u>'), 'compact NaN-like bit patterns are lo
 assert(bridge.includes('V2_LEGACY + b'));
 assert(!bridge.includes('V2_LIST + e'), 'lazy export is not limited to current awake bricks');
 assert(v2InvalidateWGSL(g).includes('MARK_DERIVED'));
+assert(v2InvalidateWGSL(g).includes('atomicExchange(&act2[V2_VISIBLE + b], 0u)'));
+assert(!v2InvalidateWGSL(g).includes('atomicLoad(&act2[V2_AWAKE + b])'), 'quiet awake halos do not reset render ages');
 const layout = v2ActLayout(g);
 assert(layout.legacy > layout.count && layout.words >= layout.legacy + g.nbricks);
 const driver = readFileSync(new URL('../../src/v2/physics.js', import.meta.url), 'utf8');
 assert(!driver.slice(driver.indexOf('  _tick()'), driver.indexOf('  ticks(n)')).includes('run(k.v2bridge'));
+const wholeBefore = sim.wholeWrites;
+sim.noteWrite(false);
+assert.equal(sim.wholeWrites, wholeBefore, 'flags-only invalidation does not replace compact state');
+sim.noteWrite();
+assert.equal(sim.wholeWrites, wholeBefore + 1, 'actual full-state writes still request full import');
 console.log('compact CPU protocol checks passed (dispatch, boundaries, paused import, exact undo, cross-mode tags, shared decode)');

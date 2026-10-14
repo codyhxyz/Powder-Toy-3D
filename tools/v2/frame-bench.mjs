@@ -12,6 +12,7 @@ const HELP = `Usage: node tools/v2/frame-bench.mjs [options]
   --frames N       measured frames per case (default 60)
   --warmup N       simulated warmup frames per case (default 12)
   --engine both|v1|v2 (default both)
+  --v2-path direct|compatibility|both (default direct; same-physics bridge comparison)
   --scene all|sand|water|settled (default all)
   --view realistic|plain (default realistic; plain is an explicit blocks-renderer diagnostic)
   --port N         private strict-port Vite server (otherwise OS-assigned)
@@ -25,10 +26,10 @@ One frame: v1 test.step(4) / v2 test.step(1), then renderOnce + GPU fence.
 Non-parity: v2 is missing physics; no equivalent-work speedup claim until the full suite passes.`;
 
 export function parseArgs(argv) {
-  const o = { frames: 60, warmup: 12, engine: 'both', scene: 'all', view: 'realistic', seed: 12345,
+  const o = { frames: 60, warmup: 12, engine: 'both', 'v2-path': 'direct', scene: 'all', view: 'realistic', seed: 12345,
     port: null, url: null, out: null, split: false, selfCheck: false, help: false };
   const flags = { '--split': 'split', '--self-check': 'selfCheck', '--help': 'help' };
-  const values = new Set(['frames', 'warmup', 'engine', 'scene', 'view', 'seed', 'port', 'url', 'out']);
+  const values = new Set(['frames', 'warmup', 'engine', 'v2-path', 'scene', 'view', 'seed', 'port', 'url', 'out']);
   const seen = new Set();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i], key = arg.slice(2);
@@ -44,7 +45,7 @@ export function parseArgs(argv) {
     if (key === 'port' && o.port === null) continue;
     if (!Number.isSafeInteger(o[key]) || o[key] < min || o[key] > max) throw new Error(`${key} must be an integer in [${min}, ${max}]`);
   }
-  for (const [key, allowed] of Object.entries({ engine: ['both', 'v1', 'v2'], scene: ['all', 'sand', 'water', 'settled'], view: ['realistic', 'plain'] })) {
+  for (const [key, allowed] of Object.entries({ engine: ['both', 'v1', 'v2'], 'v2-path': ['direct', 'compatibility', 'both'], scene: ['all', 'sand', 'water', 'settled'], view: ['realistic', 'plain'] })) {
     if (!allowed.includes(o[key])) throw new Error(`${key} must be ${allowed.join('|')}`);
   }
   if ([5173, 8787].includes(o.port)) throw new Error('Use a private port, not 5173 or 8787');
@@ -107,7 +108,7 @@ async function selfCheck() {
   assert.equal(parseArgs([]).view, 'realistic');
   assert.equal(parseArgs(['--warmup', '0', '--seed', '0', '--split']).split, true);
   for (const argv of [['--frames', '0'], ['--warmup', '-1'], ['--frames', '1.5'], ['--seed', '4294967296'],
-    ['--engine', 'v3'], ['--view', 'cheap'], ['--port', '5173'], ['--url', 'file:///tmp/a'],
+    ['--engine', 'v3'], ['--v2-path', 'unknown'], ['--view', 'cheap'], ['--port', '5173'], ['--url', 'file:///tmp/a'],
     ['--url', 'http://localhost', '--port', '43199'], ['--out'], ['--oops'], ['--split', '--split']]) assert.throws(() => parseArgs(argv));
   const { gridLayout, cellTexel } = await import('../../src/sim.js');
   const { E } = await import('../../src/elements.js');
@@ -142,6 +143,7 @@ async function run(o) {
       'Unsplit timestamp instrumentation is enabled for headline samples. GPU pass sums are NOT elapsed GPU frame time: intervals can overlap. Copies/gaps are excluded. Wall time is the headline metric.',
       'Timing readback settling and explicit awake-count readbacks are outside wall samples. Native asynchronous simulation bookkeeping remains inside.',
       'Warmup advances the fixture. Each engine/scene/diagnostic starts in a fresh page from identical CPU arrays and seed; evolved states are NOT identical.',
+      'V2 direct/compatibility use identical physics. Compatibility exports after each tick and renders the legacy projection; this diagnoses conversion cost, not full feature parity.',
       'Fixed camera and frozen render-only animation clocks; forced draws even when idle. Settled geometry is not a live idle-loop/power benchmark.',
       'Memory is the app GPU resource registry, not total VRAM; excludes unregistered driver/three/timestamp scratch resources. JS heap is optional Chromium telemetry.',
       'toolCommit identifies this checkout, not necessarily the build served by --url.',
@@ -153,9 +155,11 @@ async function run(o) {
     browser = await launchBrowser();
     report.browserVersion = browser.version();
     const engines = o.engine === 'both' ? ['v1', 'v2'] : [o.engine];
+    const cases = engines.flatMap(engine => engine === 'v1' ? [{ engine, compactPath: null }]
+      : (o['v2-path'] === 'both' ? ['direct', 'compatibility'] : [o['v2-path']]).map(compactPath => ({ engine, compactPath })));
     const scenes = o.scene === 'all' ? ['sand', 'water', 'settled'] : [o.scene];
-    for (const split of o.split ? [false, true] : [false]) for (const scene of scenes) for (const engine of engines) {
-      const result = { engine, scene, diagnosticSplit: split, errors: [], warnings: [], samples: [] };
+    for (const split of o.split ? [false, true] : [false]) for (const scene of scenes) for (const { engine, compactPath } of cases) {
+      const result = { engine, compactPath, scene, diagnosticSplit: split, errors: [], warnings: [], samples: [] };
       report.results.push(result);
       const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
       page.on('pageerror', e => result.errors.push(`pageerror: ${e.message}`));
@@ -178,9 +182,14 @@ async function run(o) {
         await page.evaluate(async () => { const a = window.__app; a.test.park(); await a.test.ready(); await a.physics.v2?.ready; });
         result.adapter = await gpuInfo(page); // helper rejects fallback adapters on macOS
         await page.addScriptTag({ content: `window.__frameBenchFixture = ${buildFixture.toString()};` });
-        result.fixture = await page.evaluate(async ({ engine, scene, seed }) => {
+        result.fixture = await page.evaluate(async ({ engine, compactPath, scene, seed }) => {
           const a = window.__app;
           if (a.physics.mode !== engine || (engine === 'v2' && !a.physics.active)) throw new Error('Wrong physics engine');
+          if (engine === 'v2') {
+            if (typeof a.sim.readHeader !== 'function') throw new Error('This build has no compact reader path');
+            a.physics.v2.forceCompatibility = compactPath === 'compatibility';
+            if (a.sim.readHeader().format !== (compactPath === 'direct' ? 2 : 0)) throw new Error('Wrong v2 reader path');
+          }
           a.settings.profiler = false;
           a.gfx.smoothing = 1; a.gfx.materials = 1;
           a.autoRes.enabled = false; a.autoRes.scale = 1;
@@ -197,8 +206,8 @@ async function run(o) {
           await a.gpu.fence();
           if (!a.view.volumeDrawn) throw new Error('Scene renderer did not draw');
           return fixture.meta;
-        }, { engine, scene, seed: o.seed });
-        result.run = await page.evaluate(async ({ engine, frames, warmup, split }) => {
+        }, { engine, compactPath, scene, seed: o.seed });
+        result.run = await page.evaluate(async ({ engine, compactPath, frames, warmup, split }) => {
           const a = window.__app, gpu = a.gpu, timing = gpu.timing;
           const stepCount = engine === 'v1' ? 4 : 1;
           const snapshot = () => ({ simFrame: a.sim.frame, v2Tick: a.physics.v2?.tick ?? null,
@@ -220,9 +229,13 @@ async function run(o) {
           await gpu.fence();
           timing.split = split; timing.enabled = true;
           const samples = window.__frameBenchSamples = [];
+          let bridges = 0;
+          const onPass = a.sim.onPass;
+          a.sim.onPass = (name, info) => { if (name === 'v2bridge') bridges++; onPass?.(name, info); };
           try {
             for (let i = 0; i < frames; i++) {
               const start = snapshot();
+              bridges = 0;
               const t0 = performance.now();
               a.test.step(stepCount);
               await a.test.renderOnce(); // includes its fence; explicit fence keeps the contract visible
@@ -230,19 +243,20 @@ async function run(o) {
               const wallMs = performance.now() - t0;
               await timing.settled(); // do not charge timestamp readback drainage to frame latency
               const current = timing.enabled && timing.lastFrame === gpu.frameNo;
-              const sample = { index: i, wallMs, start, end: snapshot(), frame: gpu.frameNo,
+              const sample = { index: i, wallMs, start, end: snapshot(), frame: gpu.frameNo, bridgeDispatches: bridges,
                 gpuPassSumMs: current ? timing.frameMs : null, gpuPasses: current ? structuredClone(timing.lastPasses) : [],
                 gpuCoverage: current ? structuredClone(timing.lastCoverage) : null,
                 renderScale: a.post.renderScale, volumeDrawn: a.view.volumeDrawn };
               sample.awake = await awake(); // diagnostic readback, outside wall/timestamp samples
               await gpu.fence();
               samples.push(sample);
+              if (engine === 'v2' && compactPath === 'direct' && bridges !== 0) throw new Error('Direct tick/render unexpectedly exported legacy cells');
               if (!sample.volumeDrawn || sample.renderScale !== initialSettings.renderScale || a.autoRes.enabled || a.autoRes.scale !== 1) throw new Error('Rendering/quality changed during measurement');
             }
-          } finally { timing.enabled = false; timing.split = false; }
+          } finally { timing.enabled = false; timing.split = false; a.sim.onPass = onPass; }
           return { initialSettings, finalSettings: settings(), before, after: snapshot(), memoryBefore, memoryAfter: memory(),
             timestampSupported: timing.supported, stepCount, samples };
-        }, { engine, frames: o.frames, warmup: o.warmup, split });
+        }, { engine, compactPath, frames: o.frames, warmup: o.warmup, split });
         result.samples = result.run.samples;
         delete result.run.samples;
         const passNames = [...new Set(result.samples.flatMap(s => s.gpuPasses.map(p => p.name)))].sort();
@@ -264,7 +278,7 @@ async function run(o) {
         if (quality(result.run.initialSettings) !== quality(result.run.finalSettings)) throw new Error('Camera or render quality changed during case');
         const peer = report.results.find(r => r !== result && r.scene === scene && r.fixture);
         if (peer && peer.fixture.hash !== result.fixture.hash) throw new Error('Initial CPU fixtures differ');
-        console.error(`${split ? 'SPLIT DIAGNOSTIC' : 'UNSPLIT'} ${scene}/${engine}: wall p50 ${result.summary.wallMs.p50.toFixed(2)} ms, p95 ${result.summary.wallMs.p95.toFixed(2)} ms (NON-PARITY)`);
+        console.error(`${split ? 'SPLIT DIAGNOSTIC' : 'UNSPLIT'} ${scene}/${engine}${compactPath ? `/${compactPath}` : ''}: wall p50 ${result.summary.wallMs.p50.toFixed(2)} ms, p95 ${result.summary.wallMs.p95.toFixed(2)} ms (NON-PARITY)`);
       } catch (e) {
         result.errors.push(e.stack ?? String(e));
         // Preserve already completed raw frames if a later frame fails.

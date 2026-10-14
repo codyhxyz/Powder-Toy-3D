@@ -11,11 +11,15 @@ try {
   const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 640, height: 480 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
-  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', m => {
+    if (m.type() !== 'error') return;
+    if (/^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(m.location().url) && /ERR_CONNECTION_REFUSED/.test(m.text())) return;
+    errors.push(m.text());
+  });
   await page.goto(vite.url('/?size=64&preset=empty&physics=v2'));
   await ready(page);
   await page.evaluate(async () => {
-    const a = __app, { E } = await import('/src/elements.js');
+    const a = __app, { E, ELEMENTS } = await import('/src/elements.js');
     const { prelude, STATE_OPTS, cellSlot, marksLayout } = await import('/src/shaders/common.js');
     const { fold } = await import('/src/gpu/kernels.js');
     const { VIEWS } = await import('/src/views.js');
@@ -25,7 +29,7 @@ try {
     const check = (ok, message) => { if (!ok) throw new Error(message); console.log(`ok ${message}`); };
     const equal = (x, y) => x.length === y.length && x.every((v, i) => v === y[i]);
     const raw = async () => new Uint32Array(await gpu.readback.buffer(a.physics.v2.cells, 0, bytes));
-    const paint = (x, y, z, id) => sim.paint({ center: new a.THREE.Vector3(x, y, z), radius: 2, shape: 0, tool: id, rate: 1, replace: false });
+    const paint = (x, y, z, id) => sim.paint({ center: new a.THREE.Vector3(x, y, z), radius: 2, shape: 0, tool: id, rate: 1 / ELEMENTS[id].spawn, replace: false });
     const passes = [];
     const prev = sim.onPass;
     sim.onPass = (name, info) => { passes.push(name); prev?.(name, info); };
@@ -49,7 +53,9 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
     window.__compactTest = { check, equal, raw, paint, passes, decoded, E, VIEWS, cellSlot, marksLayout, out, prev };
 
     paint(32, 40, 32, E.SAND);
-    a.physics.v2.sync(); passes.length = 0;
+    a.physics.v2.sync();
+    check((await a.physics.v2.readCells()).id.some(id => id === E.SAND), 'sand fixture really contains painted grains');
+    passes.length = 0;
     a.test.step(210); // >fall + quiet cycle: no presentation or legacy reads during these ticks
     await gpu.fence();
     check(!passes.includes('v2bridge'), 'many normal ticks never bridge');
@@ -67,11 +73,13 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
     check(cell[0][0] === new Float32Array(direct.buffer)[slot * 4], 'raw readCell agrees with direct reader');
     a.physics.v2.forceCompatibility = false;
     // New edit after hundreds of compact ticks must not resurrect the old airborne sand.
+    passes.length = 0;
     paint(10, 20, 10, E.STONE);
     const beforeTick = a.physics.v2.tick;
     sim.readHeader(); // paused presentation boundary imports the edit
     const cells = await a.physics.v2.readCells();
-    check(cells.id[10 + sim.g.nx * (10 + sim.g.nz * 20)] === E.STONE, 'paused edit imported before another tick');
+    const editedId = cells.id[10 + sim.g.nx * (10 + sim.g.nz * 20)];
+    check(editedId === E.STONE, `paused edit imported before another tick (got ${editedId}, expected ${E.STONE}; passes ${passes.join(',')}; stone count ${cells.id.filter(id => id === E.STONE).length})`);
     check(a.physics.v2.tick === beforeTick, 'paused import does not step physics');
     const top = 32 + sim.g.nx * (32 + sim.g.nz * 40);
     check(cells.id[top] === E.EMPTY, 'edit after many ticks does not resurrect stale cache cells');
@@ -118,6 +126,10 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
     const seed = gpu.createBuffer({ label: 'exact compact undo fixture', size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     gpu.write(seed, 0, words);
     sim.noteWrite(); a.physics.v2.restore(seed);
+    await sim.prepare('fresh');
+    sim.airT = 19;
+    a.physics.v2.sync();
+    h.check(h.equal(words, await h.raw()), 'ambient flag refresh preserves fractional fill and flux');
     sim.snapshot('fractional fill and flux');
     h.paint(20, 5, 20, h.E.STONE);
     a.test.step(1);
