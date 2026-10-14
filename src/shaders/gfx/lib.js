@@ -155,7 +155,9 @@ const PROBE_CALLS = {
   var qtN = s;
   var qn = n;
   var qKind: i32;
-  acc.y += select(0.0, 1.0, shardHit(qs, p, d, &qtN, s + 1.0, &qn, &qKind)) + f32(qKind) + qtN + shardExit(qs, p, d);
+  acc.y += select(0.0, 1.0, shardHit(qs, p, d, &qtN, s + 1.0, &qn, &qKind)) + f32(qKind) + qtN;
+  acc.y += shardExit(qs, p, d, &qm);
+  acc += vec4f(qm, 0.0);
   var qt = 0.0;
   var qcn = n;
   acc.z += select(0.0, 1.0, crystalHit(ci, p, d, s, s + 1.0, &qt, &qcn)) + qt + f32(gCrysKind) + gCrys.r;`,

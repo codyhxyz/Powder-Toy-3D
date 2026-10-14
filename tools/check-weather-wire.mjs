@@ -25,13 +25,18 @@ const app = {
   day: { clock: 0 }, settings: { paused: true, view: 0 },
   lightning: { lastBolt: null, reset() { calls.lightningReset++; } },
 };
-const calls = { source: 0, ocean: 0, lightningReset: 0 };
+const calls = { source: 0, ocean: 0, lightningReset: 0, clearFog: 0 };
 wire.boot(app);
 let stepped = null, triggered = null, arm = null;
 app.elementWeather = { step(state, ctx) {
   assert(ctx.advancing && ctx.host);
   assert.equal(ctx.sim, app.sim);
   calls.source++;
+}, clearFog(ctx) {
+  assert.equal(ctx.sim, app.sim);
+  assert.equal(ctx.world, app.win);
+  assert.equal(ctx.host, true);
+  calls.clearFog++;
 }, reset() {} };
 app.oceanEvents = {
   active: false, reset() { this.active = false; }, cancel() { this.active = false; },
@@ -51,6 +56,29 @@ function checkContext(context) {
   assert.equal(context.groundHeight(124, 240), 8);
 }
 try {
+  for (const strength of ['light', 'thick']) {
+    weather.setFog(strength);
+    const count = calls.clearFog;
+    weather.setFog('off');
+    assert.equal(calls.clearFog, count + 1, 'Off clears fog synchronously while paused');
+    weather.setFog('off');
+    assert.equal(calls.clearFog, count + 1, 'repeated Off does not edit again');
+  }
+  assert.equal(calls.source, 0);
+  assert.equal(weather.state.time, 0, 'clearing fog never advances physics');
+  weather.setFog('thick');
+  const clears = calls.clearFog;
+  app.mp.isGuest = true;
+  weather.setFog('off');
+  assert.equal(calls.clearFog, clears, 'guests cannot clear host matter');
+  app.mp.isGuest = false;
+  weather.setFog('light');
+  app.win.epoch++;
+  wire.afterStep(app);
+  assert.equal(calls.clearFog, clears, 'world reset does not erase the new world');
+  weather.setFog('thick');
+  weather.setPreset('clear');
+  assert.equal(calls.clearFog, clears + 1, 'Clear also turns fog off immediately');
   weather.setPreset('storm');
   for (let i = 0; i < 5; i++) wire.afterStep(app);
   assert.equal(calls.source, 0); assert.equal(calls.ocean, 0);

@@ -1,4 +1,5 @@
 import { fold } from './gpu/kernels.js';
+import { E } from './elements.js';
 import {
   weatherRoofFrag, weatherUpdateWGSL, weatherDeclsWGSL, WeatherParams,
   WEATHER_ROOF_LAYOUT, WEATHER_SOURCE_LAYOUT,
@@ -56,7 +57,7 @@ export function elementWeatherPolicy(state, context = {}) {
  *   sources.step(state, { sim, world, advancing: true, host: !mp.isGuest, fogEnabled });
  * The first permitted call lazily prepares kernels; await sources.ready in a
  * fixture, then call step again. Readiness callbacks NEVER write simulation.
- * Clear/cancel and reset/dispose only stop sources; emitted matter survives.
+ * Clear/reset stop sources; clearFog explicitly erases the low cloud layer.
  * Box fixtures may explicitly opt in with enabled:true and seaLevel.
  */
 export function createElementWeather() {
@@ -91,6 +92,22 @@ export function createElementWeather() {
   const api = {
     get pulses() { return pulses; },
     get ready() { return resources?.ready ?? Promise.resolve(); },
+    clearFog({ sim, world, host = false } = {}) {
+      if (disposed || !host || !world?.loaded || !sim || sim.disposed || sim.gpu?.failure || sim.gpu?.lost) return false;
+      const sea = world.P?.sea;
+      if (!Number.isFinite(sea) || !Number.isFinite(sim.origin.y)) return false;
+      const { nx, ny, nz } = sim.g;
+      const cloudBottom = Math.max(sim.origin.y + 2, sea + 14,
+        sim.origin.y + ny - ELEMENT_WEATHER.cloudMargin - ELEMENT_WEATHER.cloudDepth);
+      const top = Math.min(ny, cloudBottom - sim.origin.y);
+      const radius = Math.max(nx, ny, nz);
+      // Fog drifts out of its source band. Erase low CLOUD, not sky clouds or rain.
+      sim.paint({
+        center: { x: nx / 2, y: top - radius, z: nz / 2 }, radius,
+        shape: 1, tool: E.EMPTY, rate: 1, replace: false, filter: E.CLOUD, erase: true,
+      });
+      return true;
+    },
     step(state, context = {}) {
       if (disposed) return false;
       const policy = elementWeatherPolicy(state, context);

@@ -636,11 +636,17 @@ fn traceNearSteps(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: 
     let axOut = argmin3(tMax);
     if (!isGasLike(id) && (!opaqueOnly || RCLASS(id) == R_OPAQUE)
         && (isCrisp(id) || (tEnter > selfSkip && nearSmoothIn(ro + rd * tClosest(cell, ro, rd, tEnter, tMax[axOut]), opaqueOnly)))) {
-      *hc = cell;
       var h = vec3f(0.0);
       h[ax] = -f32(istp[ax]);
-      *hn = h;
-      return tEnter;
+      var th = tEnter;
+      var hit = true;
+      if (id == E_CRYSTAL) {
+        // Trace the visible prism, not its enclosing cube. Do not overwrite
+        // gCrys*: these secondary rays run while shading the primary crystal.
+        var kind: i32;
+        hit = shardHit(crysShard(cell), ro, rd, &th, min(tMax[axOut], tLim), &h, &kind);
+      }
+      if (hit) { *hc = cell; *hn = h; return th; }
     }
     ax = axOut;
     tEnter = tMax[ax];
