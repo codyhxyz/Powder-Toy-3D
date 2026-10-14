@@ -1,9 +1,9 @@
 # Physical factory delivery plan
 
-Status: implementation contract approved. This document does not describe shipped behavior.
+Status: modules integrated; controller and UI integration in progress. Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
-The integration branch includes upstream updates through `3b59162c944b920c5f3954bf329cdfda315488ac`.
+The integration branch includes upstream updates through `6c375ce1beda29e90c0a1621e5cc3e24382c605c`.
 
 ## Target player experience
 
@@ -13,7 +13,7 @@ The player processes real material through a complete production line:
 2. Release a fuel batch through a physical gate.
 3. Supply heat to a hearth with finite fuel.
 4. Melt scrap through the existing temperature and phase-change rules.
-5. Drain molten metal into a separate catch.
+5. Drain molten metal into a separate catch at the shipping intake.
 6. Supply cooling water from the finite reservoir.
 7. Ship cooled metal through the existing intake.
 
@@ -44,17 +44,17 @@ Routing uses existing refractory blocks before specialized pieces.
 
 | Requirement | Evidence required before delivery | Current state |
 | --- | --- | --- |
-| Finite-fuel heat | Fuel exhaustion stops added heat. The heat source does not duplicate fuel. | Pending |
+| Finite-fuel heat | Fuel exhaustion stops added heat. The heat source does not duplicate fuel. | CPU budget and conduction checks pass; GPU pending |
 | Useful temperatures | A constructed hearth melts the target scrap at normal timing. | Pending |
-| Ignition | A player can start the process without unrestricted Sandbox spawning. | Pending |
+| Ignition | A player can start the process without unrestricted Sandbox spawning. | Paid starter passes CPU conduction checks; native fixture pending |
 | Physical gate | Closed material blocks flow. Opening preserves material and temperature. | Pending |
-| Obstructed closure | Closure never overwrites grains, liquids, or unrelated solids. | Pending |
-| Gate lifecycle | Removal, damaged structure, pending actions, and saves preserve owned material. | Pending |
+| Obstructed closure | Closure never overwrites grains, liquids, or unrelated solids. | CPU transition checks and shader type validation pass; GPU pending |
+| Gate lifecycle | Removal, damaged structure, pending actions, and saves preserve owned material. | CPU ownership and lifecycle checks pass; controller/save integration pending |
 | Controls | A Factory player can install and operate permitted controls without an economy bypass. | Pending |
-| Diagnostics | Each reported condition comes from current machine state or bounded observations. | Pending |
+| Diagnostics | Each reported condition comes from current machine state or bounded observations. | Async CPU regressions and shader type validation pass; controller/GPU pending |
 | Routing | The production line carries actual material between distinct hot and cold regions. | Pending |
 | Economy | Construction charges and refunds remain correct. Existing progression remains usable. | Pending |
-| Compatibility | Existing saves, built-in drives, Sandbox sparks, and unrelated modes still work. | Pending |
+| Compatibility | Existing saves, built-in drives, Sandbox sparks, and unrelated modes still work. | Existing construction, controller, physics, and Quarry CPU suites pass; final integration pending |
 | End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Pending |
 | Resource use | Tests use the shared browser helper and respect the total GPU-slot budget. | Pending |
 | Release | Changes reach GitHub main, deployment succeeds, and the live site passes a focused check. | Pending |
@@ -89,6 +89,23 @@ These are open questions, not implementation claims.
 - Runtime diagnostics do not exist. Add a bounded, inspected-device probe.
 - Existing foundation blocks, belts, lifts, and pumps cover general routing.
 - No additional general transport pieces are approved.
+- Mining must preserve coal's remaining fuel life; the old miner incorrectly cleared it.
+- Ignition needs paid temperature headroom because native conduction precedes burning.
+- Gates must check their bases before actuation, not only their shutter cells.
+- Switch shutdown must use the native countdown to avoid immediate relatching.
+- Purchased metal costs five credits because shipping one metal cell earns four credits.
+- Cool metal at the intake. Cooled metal is a stationary solid, not belt cargo.
+- The vertical gate controls a lateral outlet. It is not a horizontal hopper lid.
+
+### Current validation
+
+- 279 hearth CPU budget, conduction, geometry, and composed-shader checks pass.
+- 17 gate/control CPU tests pass, including native switch-bank shutdown and gate shader type validation.
+- Diagnostics pass mocked asynchronous ownership, mutation, staleness, and disposal regressions.
+- Existing construction, controller, machine-transfer, and Quarry CPU suites pass.
+- Async-read and browser-launch policy checks pass.
+- The production build passes with isolated dependencies installed from the lockfile.
+- No native GPU melting, drainage, cooling, or shipment test has passed for the new hearth yet.
 
 ## Work boundaries
 

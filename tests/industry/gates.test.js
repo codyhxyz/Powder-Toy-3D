@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { packCells, unpackCells } from '../../src/saves/format.js';
 import { E } from '../../src/elements.js';
+import { controlPartsWGSL } from '../../src/industry/controlParts.js';
 import {
   GATE_APERTURE_CELLS, GATE_OWNER_MARKER, GATE_STATUS, GATE_CLOSED_AUDIT_SECONDS,
   GATE_RETRY_SECONDS, GATE_SIGNAL_POLL_SECONDS, gateGeometry, validateGateDevice,
@@ -19,14 +20,16 @@ const cells = kind => Array(GATE_APERTURE_CELLS).fill(kind);
 const owned = cells('owned');
 const empty = cells('empty');
 const foreign = cells('foreign');
-test('the real gate kernel passes Naga type validation', () => {
+test('the real gate and control-part kernels pass Naga type validation', () => {
   const dir = mkdtempSync(join(tmpdir(), 'industry-gate-wgsl-'));
   try {
-    const file = join(dir, 'gate.wgsl');
-    writeFileSync(file, gateWGSL({ nx: 128, ny: 128, nz: 128 }));
-    const result = spawnSync('naga', [file], { encoding: 'utf8' });
-    assert.ifError(result.error);
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    for (const [name, code] of [['gate', gateWGSL], ['controls', controlPartsWGSL]]) {
+      const file = join(dir, `${name}.wgsl`);
+      writeFileSync(file, code({ nx: 128, ny: 128, nz: 128 }));
+      const result = spawnSync('naga', [file], { encoding: 'utf8' });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, `${name}: ${result.stdout}\n${result.stderr}`);
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 const deferred = () => {
