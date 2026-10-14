@@ -85,7 +85,8 @@ export function validMission(m) {
     ids.add(a.id);
   }
   const e = m.extraction;
-  return !!e && point(e.at) && Number.isFinite(e.radius) && e.radius > 0 && Number.isFinite(e.height) && e.height > 0;
+  if (!e || !point(e.at) || !Number.isFinite(e.radius) || e.radius <= 0 || !Number.isFinite(e.height) || e.height <= 0) return false;
+  return !e.bounds || (point(e.bounds.min) && point(e.bounds.max) && e.bounds.max.every((n, i) => n > e.bounds.min[i]));
 }
 
 const eligible = (map, mode) => !!map?.modes?.includes(mode) && (mode !== 'crueltySquad' || validMission(map.mission));

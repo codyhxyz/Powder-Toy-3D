@@ -17,13 +17,19 @@ export function createMissionAttempt(manifest) {
       eliminated.add(id);
       return true;
     },
-    update({ dead, at }) {
+    update({ dead, at, width = 0, height = 0 }) {
       if (phase !== 'active') return phase;
       // Player death wins over extraction on the same frame.
       if (dead) phase = 'failed';
       else if (eliminated.size === manifest.targets.length && at) {
         const e = manifest.extraction;
-        if (Math.hypot(at.x - e.at[0], at.z - e.at[2]) <= e.radius && Math.abs(at.y - e.at[1]) <= e.height) phase = 'complete';
+        const b = e.bounds, hw = width / 2;
+        // Original Godot Area enters when the player's collision body touches its authored volume.
+        const inside = b ? at.x + hw >= b.min[0] && at.x - hw <= b.max[0]
+          && at.y + height >= b.min[1] && at.y <= b.max[1]
+          && at.z + hw >= b.min[2] && at.z - hw <= b.max[2]
+          : Math.hypot(at.x - e.at[0], at.z - e.at[2]) <= e.radius && Math.abs(at.y - e.at[1]) <= e.height;
+        if (inside) phase = 'complete';
       }
       return phase;
     },

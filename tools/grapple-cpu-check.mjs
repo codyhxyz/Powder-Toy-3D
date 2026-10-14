@@ -9,6 +9,7 @@ import { setPovGpu } from '../src/pov/gpu.js';
 import { PROBE, PROBE_CELLS } from '../src/shaders/povBody.js';
 import { E } from '../src/elements.js';
 import { addTarget } from '../src/pov/targets.js';
+import hookDef from '../src/pov/tools/hook.tool.js';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const near = (a, b, tolerance = 1e-8) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
@@ -28,6 +29,9 @@ near(velocity.x, 60);
 crueltyMove(velocity, new THREE.Vector2(), { grounded: true, jumpPressed: true }, 1 / 60);
 near(velocity.x, 54);
 near(velocity.y, CRUELTY_JUMP);
+const diagonal = new THREE.Vector3();
+crueltyMove(diagonal, new THREE.Vector2(1, -1), { grounded: false }, 1 / 60);
+near(diagonal.length() * CELL_M, Math.SQRT2 * 9 * 2 / 60);
 console.log('ok source distance bands/seams, gravity-scaled acceleration, tangent momentum, ground friction, jump, FPS');
 
 async function fixture(fps = 60) {
@@ -130,6 +134,20 @@ for (const why of ['sky', 'powder', 'range']) {
     assert.equal(grapple.active, false, why);
   } finally { f.dispose(); }
 }
+for (const within of [true, false]) {
+  const f = await fixture(), { grapple, ctx } = f;
+  try {
+    ctx.aim.cell.set(260, 20, 200);
+    const point = new THREE.Vector3(260, within ? 20.01 : 20.99, 200.99);
+    const distance = GRAPPENDIX_RANGE + (within ? -0.001 : 0.001);
+    ctx.eye.set(260 - Math.sqrt(distance ** 2 - (point.y - 1) ** 2), 1, point.z);
+    ctx.dir.subVectors(point, ctx.eye).normalize();
+    ctx.aim.dist = distance;
+    grapple.toggle(ctx);
+    assert.equal(grapple.active, within, '20 m gate uses the actual crosshair ray hit, not the cell face center');
+    if (within) assert.ok(grapple.rope.anchor.distanceTo(point) < 1e-8);
+  } finally { f.dispose(); }
+}
 for (const why of ['tear', 'release', 'death', 'replacement']) {
   const f = await fixture(), { body, grapple, attach, frame } = f;
   try {
@@ -154,7 +172,7 @@ for (const why of ['tear', 'release', 'death', 'replacement']) {
 }
 {
   const f = await fixture(), { body, grapple, ctx, frame } = f;
-  const target = { pos: new THREE.Vector3(220, 1, 200), vel: new THREE.Vector3(), dead: false };
+  const target = { pos: new THREE.Vector3(220, 1, 200), vel: new THREE.Vector3(), dead: false, positionEpoch: 0 };
   const off = addTarget({ id: 'grappendix-test', get alive() { return !target.dead; }, body: target, hurt() {},
     box(lo, hi) { lo.copy(target.pos).add(new THREE.Vector3(-1, 0, -1)); hi.copy(target.pos).add(new THREE.Vector3(1, 6, 1)); } });
   try {
@@ -166,9 +184,31 @@ for (const why of ['tear', 'release', 'death', 'replacement']) {
     assert.ok(grapple.active && target.vel.x < 0, 'original pulls corpses back, not living enemies');
     grapple.release(); grapple.toggle(ctx);
     assert.ok(grapple.active, 'a dead body remains a grapple target, not a gun target');
+    target.positionEpoch++; await frame();
+    assert.equal(grapple.active, false, 'same-body respawn/teleport invalidates the previous anchor offset');
+    grapple.toggle(ctx);
     off(); await frame();
     assert.equal(body.rope, null);
   } finally { off(); f.dispose(); }
 }
 assert.ok(GRAPPENDIX_RANGE * CELL_M === 20);
+{
+  const f = await fixture(), { body, grapple, attach, ctx, sim, scene } = f;
+  const viewmodel = new THREE.Group(), volume = scene.children.find(o => o.isGroup);
+  scene.add(viewmodel);
+  const hook = hookDef.create({ scene, viewmodel, getSim: () => sim, getVolume: () => volume, getScale: () => 1, isActive: () => true });
+  try {
+    ctx.aim.cell.set(225, 8, 200); ctx.aim.dist = 25; ctx.dir.set(1, 0, 0);
+    ctx.primaryPressed = true; hook.update(ctx); ctx.primaryPressed = false;
+    for (let i = 0; i < 15 && hook.state !== 'anchor'; i++) { hook.tick(ctx); await flush(); }
+    assert.equal(hook.state, 'anchor');
+    attach(new THREE.Vector3(230, 10, 200));
+    const mine = body.rope;
+    hook.deselect();
+    assert.equal(body.rope, mine, 'old Hook weapon cleanup cannot clear the current E tether');
+    hook.dispose();
+    assert.equal(body.rope, mine, 'disposing the old Hook cannot clear another tool tether');
+    assert.ok(grapple.active);
+  } finally { hook.dispose(); f.dispose(); }
+}
 console.log('ok source overhead pull/dead zone/refire, flesh-orb rendering, range, misses, shifts, lifecycle, stale reads, moving NPC');

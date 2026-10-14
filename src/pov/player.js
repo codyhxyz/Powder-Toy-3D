@@ -247,6 +247,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let kicker = null;   // the kick (kick.js), made once the body is
   let rope = null;     // { anchor (Vector3, grid; the setter keeps it current), length, reel (cells/s, 0 holds), hard, brace }
   let crueltyFlight = false;   // retain the source game's air physics through release, until landing
+  let positionEpoch = 0;       // a teleport/respawn replaces attachment-local coordinates, unlike a window shift
   let revengeWait = 0, revengeDue = false;
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
@@ -324,6 +325,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     perks,                        // its perks (perks.js)
     get size() { return size; },  // × the plain body's size (Shrink)
     get height() { return H; },   // cells, feet to crown
+    get positionEpoch() { return positionEpoch; },
     get width() { return 2 * HW; },   // cells, the square footprint's side
     get eyeHeight() { return EYE; },  // cells above the feet
     get buriedId() { return env.buriedId; },   // the powder or solid the head is buried in, or -1
@@ -774,7 +776,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     // controls
     wish.set(alive ? input.move?.x ?? 0 : 0, alive ? input.move?.z ?? 0 : 0);
-    if (wish.length() > 1) wish.normalize();
+    if (wish.length() > 1 && !cruelty) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
     // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
@@ -1035,6 +1037,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (![feet?.x, feet?.y, feet?.z].every(Number.isFinite)) return false;
     rope = null;   // a hook rope would yank the body back across the jump
     p.pos.copy(feet);
+    positionEpoch++;
     crueltyFlight = false;
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);

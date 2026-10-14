@@ -107,10 +107,12 @@ export default {
     const hand = new THREE.Vector3(), tmp = new THREE.Vector3(), tmpB = new THREE.Vector3();
 
     const bodyOf = (ctx) => ctx.player?.body ?? ctx.player;
+    const untetherMine = () => { if (myBody?.rope === rope) myBody.tether(null); };
+    const untetherTheirs = () => { if (theirBody?.rope === theirRope) theirBody.tether(null); };
 
     function letGo(action = 'release') {
-      myBody?.tether?.(null);
-      theirBody?.tether?.(null);
+      untetherMine();
+      untetherTheirs();
       rope = theirRope = theirBody = null;
       generation++;
       if (state === 'anchor' || state === 'body') env.feedback?.act(action, { point: claw.clone() });
@@ -247,6 +249,7 @@ export default {
       const body = myBody;
       if (!body || state === 'idle') { draw(); return; }
       if (body.dead) { letGo(); draw(); return; }
+      if (rope && body.rope !== rope && (state === 'anchor' || state === 'body')) { letGo(); draw(); return; }
       body.ropeHand(hand);
       const sim = ctx.sim ?? env.getSim();
       if (state === 'out') {
@@ -272,7 +275,7 @@ export default {
         clawVel.multiplyScalar(d > 0 ? REEL_SPEED * carryShare / d : 0);
         claw.addScaledVector(clawVel, dt);
         if (d < ARRIVE || load.cells.length === 0) {
-          body.tether(null); rope = null;
+          untetherMine(); rope = null;
           if (load.cells.length === 0 || putDown(ctx, tmp.copy(ctx.eye ?? hand).addScaledVector(ctx.dir ?? dir, PUT_AHEAD))) {
             if (!load.busy) { state = 'idle'; wait = REFIRE; }
           }
@@ -291,7 +294,7 @@ export default {
         model.hand.visible = true;
         model.rig.update(ctx);
         if (ctx.secondaryPressed && state !== 'idle') {
-          if (state === 'carry' && load.cells.length) { myBody?.tether(null); rope = null; putDown(ctx, claw.clone()); state = 'back'; }
+          if (state === 'carry' && load.cells.length) { untetherMine(); rope = null; putDown(ctx, claw.clone()); state = 'back'; }
           else if (state === 'anchor' || state === 'body') letGo();
           else if (state === 'out') { generation++; state = 'back'; }
         }
@@ -328,7 +331,7 @@ export default {
       get rope() { return rope; },            // for checks
       get claw() { return claw.clone(); },    // for checks
       dispose() {
-        myBody?.tether?.(null); theirBody?.tether?.(null);
+        untetherMine(); untetherTheirs();
         model.dispose();
       },
     };

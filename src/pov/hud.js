@@ -252,7 +252,7 @@ export function createPovHud() {
       set(fx.hurt, 'opacity', String(round((f.hurt ?? 0) * HURT_FLASH_GAIN)));
 
       // death screen
-      set(death, '.show', !!s.dead);
+      set(death, '.show', !!s.dead && !s.mission);
       if (s.dead) {
         set(hint, '.show', false);
         set(deathCause, 'text', s.cause || '');

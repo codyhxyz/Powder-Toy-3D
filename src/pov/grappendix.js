@@ -5,7 +5,6 @@ import { povGpu } from './gpu.js';
 import { rayTarget, targetById, PLAYER } from './targets.js';
 import { povEvents } from './events.js';
 import { GRAPPENDIX_RANGE } from './grappendixPhysics.js';
-import { faceNormal } from './tools/transfer.js';
 
 // weapon.gd: Tertiary_Weapon toggles an instant, <20 m attachment. Player.gd supplies the force.
 // The original visual is four pulsating flesh orbs per meter, not a hemp rope or a flying claw.
@@ -23,8 +22,9 @@ export function createGrappendix(env) {
   env.scene.add(orbs);
   const center = new THREE.Vector3(), start = new THREE.Vector3(), end = new THREE.Vector3();
   const cell = new THREE.Vector3(), offset = new THREE.Vector3(), temp = new THREE.Vector3();
+  const hitBox = new THREE.Box3(), hitRay = new THREE.Ray(), hit = new THREE.Vector3();
   const pose = new THREE.Object3D();
-  let body = null, target = null, targetId = null, rope = null, checking = false, generation = 0, time = 1;
+  let body = null, target = null, targetId = null, targetEpoch = null, rope = null, checking = false, generation = 0, time = 1;
 
   function release(action = 'release') {
     if (!rope) return;
@@ -40,13 +40,19 @@ export function createGrappendix(env) {
     const mine = ctx.player?.body ?? ctx.player;
     if (!mine?.tether || mine.dead) return;
     const aim = ctx.aim;
-    const who = rayTarget(ctx.eye, ctx.dir, Math.min(GRAPPENDIX_RANGE, aim?.valid ? aim.dist : Infinity), PLAYER, null, true);
+    let cellPoint = null;
+    if (aim?.valid) {
+      hitBox.min.copy(aim.cell); hitBox.max.copy(aim.cell).addScalar(1);
+      cellPoint = hitRay.set(ctx.eye, ctx.dir).intersectBox(hitBox, hit);
+    }
+    const blockDistance = cellPoint ? ctx.eye.distanceTo(cellPoint) : aim?.valid ? aim.dist : Infinity;
+    const who = rayTarget(ctx.eye, ctx.dir, Math.min(GRAPPENDIX_RANGE, blockDistance), PLAYER, null, true);
     let point = null;
     if (who?.target.body && ctx.eye.distanceTo(who.point) < GRAPPENDIX_RANGE) {
-      target = who.target.body; targetId = who.target.id; point = who.point.clone();
+      target = who.target.body; targetId = who.target.id; targetEpoch = target.positionEpoch; point = who.point.clone();
       offset.subVectors(point, target.pos);
-    } else if (aim?.valid && solid(aim.id)) {
-      point = aim.cell.clone().addScalar(0.5).add(faceNormal(aim.face, temp).multiplyScalar(0.5));
+    } else if (cellPoint && solid(aim.id)) {
+      point = cellPoint.clone();
       if (ctx.eye.distanceTo(point) >= GRAPPENDIX_RANGE) point = null;
       else { cell.copy(aim.cell); target = targetId = null; }
     }
@@ -67,7 +73,9 @@ export function createGrappendix(env) {
   function update(ctx) {
     time += ctx.dt;
     if (!rope) return;
-    if (body.dead || body.rope !== rope || target?.gibbed || (targetId && targetById(targetId)?.body !== target)) { release(); return; }
+    if (body.dead || body.rope !== rope || target?.gibbed
+      || (target && target.positionEpoch !== targetEpoch)
+      || (targetId && targetById(targetId)?.body !== target)) { release(); return; }
     if (target) {
       rope.anchor.copy(target.pos).add(offset);
       // EnemyHandler.gd: alive enemies are anchors; only corpses receive the reciprocal 22 m/s² pull.

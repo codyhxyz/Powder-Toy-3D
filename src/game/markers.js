@@ -50,6 +50,15 @@ function chevronModel() {
   return m;
 }
 
+function exitModel(bounds) {
+  const size = bounds.max.map((n, i) => n - bounds.min[i]), g = new THREE.Group();
+  const geometry = new THREE.BoxGeometry(...size).translate(0, size[1] / 2, 0);
+  const fill = new THREE.Mesh(geometry, basic(NEUTRAL, 0.08));
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({ color: NEUTRAL, transparent: true, opacity: 0.8 }));
+  g.add(fill, edge); g.userData.mats = [fill.material, edge.material];
+  return g;
+}
+
 export function createMarkers({ scene, getVolume, getScale }) {
   const root = new THREE.Group();
   root.name = 'game-markers';
@@ -59,7 +68,7 @@ export function createMarkers({ scene, getVolume, getScale }) {
     obj.position.set(p.x, p.y, p.z).multiplyScalar(s).add(v.position);
     obj.scale.setScalar(s);
   };
-  let stands = {}, flags = {}, zone = null, zoneR = 0;
+  let stands = {}, flags = {}, zone = null, zoneShape = '';
   const chevrons = new Map();   // bot id → mesh
 
   function clear() {
@@ -85,8 +94,9 @@ export function createMarkers({ scene, getVolume, getScale }) {
     },
     // a hill or the core: { x, y, z, r }, coloured by who holds it (null: no one)
     zone(z) {
-      if (zone && zoneR !== z.r) { root.remove(zone); zone.traverse((c) => { c.geometry?.dispose(); c.material?.dispose(); }); zone = null; }
-      if (!zone) { zone = padModel(NEUTRAL, z.r); zoneR = z.r; root.add(zone); }
+      const shape = z.bounds ? z.bounds.max.map((n, i) => n - z.bounds.min[i]).join(',') : String(z.r);
+      if (zone && zoneShape !== shape) { root.remove(zone); zone.traverse((c) => { c.geometry?.dispose(); c.material?.dispose(); }); zone = null; }
+      if (!zone) { zone = z.bounds ? exitModel(z.bounds) : padModel(NEUTRAL, z.r); zoneShape = shape; root.add(zone); }
       zone.userData.at = z;
     },
     noZone() { if (zone) { root.remove(zone); zone = null; } },

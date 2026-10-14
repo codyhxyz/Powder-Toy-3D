@@ -331,7 +331,7 @@ export function createPov(app) {
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
     if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
     // (not in a Halo match: no sandbox tools, no spawn menu, docs/halo-contract.md)
-    if (e.code === 'KeyQ' && !e.repeat && mode === 'on' && game.style !== 'halo') {
+    if (e.code === 'KeyQ' && !e.repeat && mode === 'on' && game.style !== 'halo' && !mission.engaged) {
       if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
     }
     // settings and help need the mouse
@@ -674,14 +674,13 @@ export function createPov(app) {
     }
     const t = touch.state;   // the touch stick adds in, analog (touch.js)
     input.cancelJump = false;
-    const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z;
-    const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + t.x;
+    const f = THREE.MathUtils.clamp((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z, -1, 1);
+    const r = THREE.MathUtils.clamp((keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + t.x, -1, 1);
     if (f || r) {
       const fw = povCam.forwardH(vA), rt = povCam.rightH(vB);
-      let x = fw.x * f + rt.x * r, z = fw.z * f + rt.z * r;
-      const len = Math.hypot(x, z);
-      if (len > 1) { x /= len; z /= len; }
-      input.move.x = x; input.move.z = z;
+      // The body normalizes Noita movement; Cruelty Squad keeps diagonal air acceleration.
+      input.move.x = fw.x * f + rt.x * r;
+      input.move.z = fw.z * f + rt.z * r;
     }
     input.jump = keys.has('Space') || t.jump;
     input.sprint = t.sprint || (app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight'));
@@ -950,6 +949,7 @@ export function createPov(app) {
       pogo: village.enabled ? player.jumpCharge : toolbelt?.selectedKey === 'POGO' ? player.pogoCharge : null,
       pogoLabel: village.enabled ? 'Jump charge — release to leap' : 'Pogo charge',
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
+      mission: mission.engaged,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
       grappleEnabled: canGrapple(),
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,

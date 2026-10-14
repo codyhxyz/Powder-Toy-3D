@@ -21,7 +21,9 @@ check('unsupported maps remain ineligible; all registered missions validate', ()
 });
 check('reject invalid/duplicate metadata rather than invent objectives', () => {
   for (const alter of [m => m.targets[0].at[0] = NaN, m => m.guards[0].id = 'a', m => m.extraction.radius = 0,
-    m => m.spawn = null, m => m.targets[0].style = 'imaginary', m => m.targets[0].weapons = ['PHYSGUN']]) {
+    m => m.spawn = null, m => m.targets[0].style = 'imaginary', m => m.targets[0].weapons = ['PHYSGUN'],
+    m => m.extraction.bounds = { min: [0, 0, 0], max: [1, NaN, 1] },
+    m => m.extraction.bounds = { min: [0, 0, 0], max: [1, 0, 1] }]) {
     const m = manifest(); alter(m); assert.equal(validMission(m), false); assert.throws(() => createMissionAttempt(m));
   }
 });
@@ -50,6 +52,13 @@ check('death fails even on extraction frame; fresh retry clears all objective pr
   assert.equal(run.update({ at: exit, dead: false }), 'failed');
   assert.equal(createMissionAttempt(m).state.eliminated, 0);
 });
+check('authored rectangular extraction uses full width and body overlap, not an inscribed cylinder', () => {
+  const m = manifest();
+  m.extraction.bounds = { min: [20, 4, 19], max: [80, 40, 21] };
+  const run = createMissionAttempt(m); run.eliminate('a'); run.eliminate('b');
+  assert.equal(run.update({ dead: false, at: { x: 79, y: 3, z: 18.1 }, width: 1, height: 5 }), 'active');
+  assert.equal(run.update({ dead: false, at: { x: 79, y: 3, z: 18.7 }, width: 1, height: 5 }), 'complete');
+});
 check('no time limit or individual respawn in lifecycle; stopped attempts remain stopped', () => {
   const run = createMissionAttempt(manifest());
   assert.equal(run.update({ at: exit, dead: false, time: 1e9 }), 'active');
@@ -73,7 +82,11 @@ function fixture({ defer = false } = {}) {
     loaded.push(n); return n;
   } };
   const ready = { mod, ai: {} };
+  const toolbelt = { selectedKey: 'SHOVEL', restricted: null,
+    restrict(keys, selected) { this.restricted = keys; if (selected) this.selectedKey = selected; },
+    select(key) { this.selectedKey = key; } };
   const shell = { scene, player, app: { getSim: () => sim, openMap: (...args) => opened.push(args) },
+    toolbelt,
     env: () => ({}), loadNpcs: () => defer ? new Promise(r => resolve = r) : Promise.resolve(ready),
     respawnPlayer: (at) => { player.pos.copy(at); player.dead = false; }, hud: { update: (state) => hud.push(state) } };
   return { shell, loaded, opened, hud, player, scene, sim, release: () => resolve(ready) };
@@ -87,6 +100,8 @@ check('adapter creates exactly authored actors and spawn in origin-relative cell
   assert.equal(f.loaded[0].options.opponents().length, 0);
   assert.deepEqual([...f.loaded[2].agent.weapons], ['GUN']);
   assert.equal(f.loaded[2].options.opponents()[0].id, 'player');
+  assert.deepEqual(f.shell.toolbelt.restricted, ['GUN', 'SMG']);
+  assert.equal(f.shell.toolbelt.selectedKey, 'GUN', 'mission starts armed, not holding a shovel');
 });
 check('adapter guards do not count and targets never respawn after death', () => {
   f.loaded[2].kill(); f.loaded[0].kill(); mission.update(100, {});
@@ -104,6 +119,7 @@ check('retry rebuilds actors and objectives, cleanup removes all scene/target ow
   assert.equal(mission.state.eliminated, 0); assert.ok(f.loaded.slice(0, 3).every(n => n.disposed));
   f.player.dead = true; mission.update(0, {}); assert.equal(mission.state.phase, 'failed');
   mission.end(); assert.equal(mission.state, null); assert.equal(mission.engaged, false);
+  assert.equal(f.shell.toolbelt.selectedKey, 'SHOVEL'); assert.equal(f.shell.toolbelt.restricted, null);
   assert.equal(f.scene.children.length, 0); assert.ok(f.loaded.every(n => n.disposed));
 });
 const pending = fixture({ defer: true }), cancelled = createMission(pending.shell);

@@ -9,7 +9,7 @@ export function createMission(shell) {
   let epoch = 0, attempt = null, manifest = null, mapKey = null, loading = false;
   const actors = new Map();
   const local = (at) => new THREE.Vector3(...at).sub(shell.app.getSim().origin);
-  let visible = false;
+  let visible = false, priorTools = null;
   const updateHud = () => shell.hud?.update(attempt ? { ...attempt.state, name: manifest.name, extraction: manifest.extraction } : null, visible);
 
   function end() {
@@ -17,6 +17,11 @@ export function createMission(shell) {
     loading = false;
     for (const n of actors.values()) { shell.scene.remove(n.root); n.dispose(); }
     actors.clear();
+    if (priorTools && shell.toolbelt) {
+      shell.toolbelt.restrict(priorTools.restricted, priorTools.selected);
+      if (priorTools.selected) shell.toolbelt.select(priorTools.selected);
+      priorTools = null;
+    }
     attempt?.stop();
     attempt = manifest = mapKey = null;
     shell.markers?.clear();
@@ -36,6 +41,11 @@ export function createMission(shell) {
       attempt = createMissionAttempt(manifest);
       visible = true;
       shell.respawnPlayer(local(manifest.spawn));
+      if (shell.toolbelt) {
+        priorTools = { restricted: shell.toolbelt.restricted, selected: shell.toolbelt.selectedKey };
+        shell.toolbelt.restrict(['GUN', 'SMG'], 'GUN');
+        shell.toolbelt.select('GUN');
+      }
       for (const [spec, target] of [...manifest.targets.map((s) => [s, true]), ...manifest.guards.map((s) => [s, false])]) {
         const passive = spec.passive ?? target;
         const n = mod.createNpc({ env: shell.env(), ai, oneShot: true, name: spec.name,
@@ -78,14 +88,18 @@ export function createMission(shell) {
       for (const [id, n] of actors) if (n.missionTarget && n.body.dead) attempt.eliminate(id);
       const world = shell.player.pos.clone().add(shell.app.getSim().origin);
       const before = attempt.state.phase;
-      const phase = attempt.update({ dead: shell.player.dead, at: world });
+      const phase = attempt.update({ dead: shell.player.dead, at: world, width: shell.player.width, height: shell.player.height });
       if (phase !== before) {
         shell.freeMouse?.();
         povEvents.emit(`mission:${phase}`, { id: manifest.id });
       }
     }
-    const at = local(manifest.extraction.at);
-    shell.markers?.zone({ ...at, r: manifest.extraction.radius });
+    const e = manifest.extraction, at = local(e.at);
+    if (e.bounds) {
+      const lo = local(e.bounds.min), hi = local(e.bounds.max);
+      shell.markers?.zone({ x: (lo.x + hi.x) / 2, y: lo.y, z: (lo.z + hi.z) / 2,
+        bounds: { min: lo.toArray(), max: hi.toArray() } });
+    } else shell.markers?.zone({ ...at, r: e.radius });
     shell.markers?.setVisible(visible);
     shell.markers?.update({ time: performance.now() / 1000, myTeam: 'red', bots: [...actors.values()].filter((n) => n.missionTarget)
       .map((n) => ({ id: n.id, pos: n.body.pos, alive: !n.body.dead, team: 'red' })) });
