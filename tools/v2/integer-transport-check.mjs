@@ -5,14 +5,14 @@ import { ELEMENTS } from '../../src/elements.js';
 import { liquidTransportWGSL } from '../../src/shaders/v2.js';
 import { FULL, MAX_FILL, capacityPerQuantum, isLiquid, share } from '../../src/v2/layout.js';
 import { PHASE_ROWS, PHASE_STEPS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
-import { limbs, wide, signed, mul, mulSmall, energyDiv, energyDivExact, phaseDiv, energyScale, energyShare, shareUnsigned } from './integer-transport-reference.mjs';
+import { limbs, wide, signed, mul, mulSmall, energyDiv, energyDivExact, phaseDiv, phaseDivExact, highestBit, energyScale, energyShare, shareUnsigned } from './integer-transport-reference.mjs';
 const U32 = 0xffffffffn, U64 = (1n << 64n) - 1n;
 let seed = 0x71abc987, checks = 0;
 const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
 const randomWide = () => BigInt(rnd()) << 32n | BigInt(rnd());
 function checkEnergy(a, d, options = {}) {
   const result = energyDiv(limbs(a), d, options);
-  assert.deepEqual(result, d ? [Number((a / BigInt(d)) & U32), Number(a % BigInt(d))] : energyDivExact(limbs(a), 0)); checks++;
+  assert.deepEqual(result, d ? [Number((a / BigInt(d)) & U32), Number(a % BigInt(d))] : [0xffffffff,Number(a & U32)]); checks++;
 }
 function checkPhase(a, b, options = {}) { assert.equal(wide(phaseDiv(limbs(a), limbs(b), options)), b ? a / b : 0n); checks++; }
 function checkShare(e, p, n, d, options = {}) {
@@ -22,6 +22,23 @@ function checkShare(e, p, n, d, options = {}) {
 const edges = [0n, 1n, 2n, 3n, (1n << 31n) - 1n, 1n << 31n, (1n << 32n) - 1n, 1n << 32n,
   (1n << 32n) + 1n, (1n << 63n) - 1n, 1n << 63n, U64 - 1n, U64];
 const stressStats = {};
+for(let width=0;width<=64;width++) {
+  const a=(1n<<BigInt(width))-1n;
+  assert.equal(highestBit(limbs(a)),width-1);
+  for(const d of [1,3,65537,0x80000000]) {
+    assert.deepEqual(energyDivExact(limbs(a),d),[Number((a/BigInt(d))&U32),Number(a%BigInt(d))]);
+    checks++;
+  }
+  for(const b of [0n,1n,3n,1n<<32n,1n<<63n]) {
+    assert.equal(wide(phaseDivExact(limbs(a),limbs(b))),b?a/b:0n);
+    checks++;
+  }
+}
+for(const file of ['state','phase']) {
+  const source=readFileSync(new URL(`../../src/shaders/v2/${file}.js`,import.meta.url),'utf8');
+  assert(source.includes('countLeadingZeros(a.x)') && source.includes('countLeadingZeros(a.y)'));
+  assert(!/for\s*\(\s*var\s+(?:i|bit)\s*=\s*63\b/.test(source),'exact division must use its data-dependent leading bit');
+}
 for (const a of edges) for (const d of [0, 1, 2, 3, 65535, FULL, FULL + 1, MAX_FILL, 0x7fffffff, 0x80000000]) {
   for (const perturb of [-8, 0, 8]) checkEnergy(a, d, { perturb, stats: stressStats });
 }

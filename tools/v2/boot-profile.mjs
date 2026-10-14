@@ -24,7 +24,7 @@ try {
     const gpu=window.__harness.gpu,start=performance.now(),original=gpu.kernel.bind(gpu);
     const note=row=>console.info('NATIVE_BOOT '+JSON.stringify({ms:Math.round(performance.now()-start),...row}));
     gpu.kernel=desc=>{
-      note({stage:'queued',name:desc.name});
+      note({stage:desc.build==='manual'?'deferred':'queued',name:desc.name});
       const k=original(desc);
       k.ready.then(()=>note({stage:'ready',name:desc.name}),e=>note({stage:'failed',name:desc.name,error:String(e)}));
       return k;

@@ -8,6 +8,7 @@ export const less = (a, b) => a[1] < b[1] || a[1] === b[1] && a[0] < b[0];
 export function add(a, b) { const lo = (a[0] + b[0]) >>> 0; return [lo, (a[1] + b[1] + (lo < a[0] ? 1 : 0)) >>> 0]; }
 export const neg = a => add([~a[0] >>> 0, ~a[1] >>> 0], [1, 0]);
 export const sub = (a, b) => add(a, neg(b));
+export const highestBit = a => a[1] ? 63-Math.clz32(a[1]) : 31-Math.clz32(a[0]);
 export function mul(a, b) {
   const a0 = a & 65535, a1 = a >>> 16, b0 = b & 65535, b1 = b >>> 16;
   const p = a0 * b0, t = a1 * b0 + (p >>> 16), t0 = t & 65535, t1 = a0 * b1 + t0;
@@ -24,8 +25,9 @@ function candidate(a, b, options) {
   return options.estimate ? options.estimate(q) : F(q + (options.perturb ?? 0) * ulp);
 }
 export function energyDivExact(a, d) {
+  if(d===0) return [0xffffffff,a[0]];
   let r = 0, q = 0;
-  for (let i = 63; i >= 0; i--) {
+  for (let i = highestBit(a); i >= 0; i--) {
     const bit = i >= 32 ? (a[1] >>> (i - 32)) & 1 : (a[0] >>> i) & 1;
     r = ((r << 1) | bit) >>> 0;
     if (r >= d) { r = (r - d) >>> 0; if (i < 32) q = (q | (1 << i)) >>> 0; }
@@ -34,7 +36,7 @@ export function energyDivExact(a, d) {
 }
 export function energyDiv(a, d, options = {}) {
   count(options, 'energyCalls');
-  const fallback = () => { count(options, 'energyFallback'); count(options, 'bitIterations', 64); return energyDivExact(a, d); };
+  const fallback = () => { count(options, 'energyFallback'); count(options, 'bitIterations', d ? highestBit(a)+1 : 0); return energyDivExact(a, d); };
   if (d === 0 || a[1] >= d) return fallback();
   if (a[1] === 0) { count(options, 'energyU32'); return [Math.floor(a[0] / d), a[0] % d]; }
   if ((d & (d - 1)) === 0) {
@@ -55,7 +57,7 @@ export function energyDiv(a, d, options = {}) {
 }
 export function phaseDivExact(a, b) {
   let q = [0, 0], r = [0, 0]; if (!(b[0] || b[1])) return q;
-  for (let bit = 63; bit >= 0; bit--) {
+  for (let bit = highestBit(a); bit >= 0; bit--) {
     r = [(r[0] << 1) >>> 0, ((r[1] << 1) | (r[0] >>> 31)) >>> 0];
     const incoming = bit >= 32 ? (a[1] >>> (bit - 32)) & 1 : (a[0] >>> bit) & 1;
     r[0] = (r[0] | incoming) >>> 0;
@@ -95,7 +97,7 @@ export function phaseDiv(a, b, options = {}) {
       }
     }
   }
-  count(options, 'phaseFallback'); count(options, 'bitIterations', 64); return phaseDivExact(a, b);
+  count(options, 'phaseFallback'); count(options, 'bitIterations', highestBit(a)+1); return phaseDivExact(a, b);
 }
 export function energyScale(e, n, d, options = {}) {
   if (!d || !n) return [0, 0]; if (n === d) return e;

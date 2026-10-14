@@ -27,7 +27,9 @@ fn phaseMulSmall(a:vec2u,n:u32)->vec2u {
 fn phaseDivExact(a:vec2u,b:vec2u)->vec2u {
  var quotient=vec2u(0u); var remainder=vec2u(0u);
  if(all(b==vec2u(0u))){return quotient;}
- for(var bit=63;bit>=0;bit--){
+ var top=31-i32(countLeadingZeros(a.x));
+ if(a.y!=0u){top=63-i32(countLeadingZeros(a.y));}
+ for(var bit=top;bit>=0;bit--){
   remainder=vec2u(remainder.x<<1u,(remainder.y<<1u)|(remainder.x>>31u));
   var incoming=0u;
   if(bit>=32){incoming=(a.y>>u32(bit-32))&1u;}else{incoming=(a.x>>u32(bit))&1u;}

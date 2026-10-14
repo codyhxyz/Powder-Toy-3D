@@ -34,8 +34,13 @@ fn energyMul(a: u32, b: u32) -> vec2u {
 }
 // Positive dividend, divisor <= 2^31; returns quotient low word and exact remainder.
 fn energyDivExact(a: vec2u, d: u32) -> vec2u {
+  if (d == 0u) { return vec2u(0xffffffffu, a.x); }
   var r = 0u; var q = 0u;
-  for (var i = 63; i >= 0; i--) {
+  // Leading zero bits contribute nothing; a data-dependent bound also avoids
+  // expanding 64 rounds at each inlined thermal conversion during compilation.
+  var top = 31 - i32(countLeadingZeros(a.x));
+  if (a.y != 0u) { top = 63 - i32(countLeadingZeros(a.y)); }
+  for (var i = top; i >= 0; i--) {
     var bit = 0u;
     if (i >= 32) { bit = (a.y >> u32(i - 32)) & 1u; } else { bit = (a.x >> u32(i)) & 1u; }
     r = (r << 1u) | bit;
