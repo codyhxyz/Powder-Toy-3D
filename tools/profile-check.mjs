@@ -83,8 +83,10 @@ try {
       `the phases and passes add up to the frame: ${ms(sample.gpu)} ms GPU`);
     check(sample.coverage?.complete && sample.coverage.observed === sample.passes.length,
       `${sample.passes.length}/${sample.coverage?.observed} device passes represented, including external renderers`);
-    check(sample.passes.every(p => Number.isFinite(p.start) && p.start >= 0 && p.start + p.gpu <= sample.coverage.spanMs + 1e-6),
-      'actual timestamp intervals fit the GPU span (gaps and overlap are not erased)');
+    check(sample.coverage.timelineComplete
+      ? sample.passes.every(p => Number.isFinite(p.start) && p.start >= 0 && p.start + p.gpu <= sample.coverage.spanMs + 1e-6)
+      : sample.coverage.spanMs === null && sample.passes.every(p => p.start === null),
+    'timestamp intervals fit the GPU span, or inconsistent clocks suppress the timeline');
     if (APP) check(sample.passes.some(p => p.name.startsWith('three:')), 'Three.js passes are timed too');
     check(typeof sample.memory === 'number' && sample.memory > 0 && sample.gpuName && Array.isArray(sample.totals) && sample.totals.length > 0,
       `memory ${(sample.memory / 2 ** 20).toFixed(1)} MB, gpu "${sample.gpuName}", ${sample.totals.length} totals`);

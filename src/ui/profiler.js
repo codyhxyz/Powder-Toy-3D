@@ -82,6 +82,7 @@ function report(s) {
     `frame     ${ms(s.gpu)} ms GPU pass time (Three.js included${s.split ? '; split dispatches' : ''}),`,
     `coverage  ${s.coverage ? `${s.coverage.timed}/${s.coverage.observed} passes timed; ${s.coverage.complete ? 'complete' : 'INCOMPLETE — total unavailable'}` : 'no timestamps'}`,
     ...(s.coverage?.missing ?? []).map(p => `missing   ${p.name}: ${p.error}`),
+    ...(s.coverage?.complete && !s.coverage.timelineComplete ? ['timeline  unavailable: inconsistent cross-submission GPU timestamps; pass durations retained'] : []),
     `scope     pass durations can overlap; excludes copies/uploads, browser compositor and other devices; timeline preserves gaps`,
     `          ${ms(s.cpu)} ms CPU (mean of the frames since the last sample); the sampled frame took ${ms(s.wall)} ms of CPU`,
     '',
@@ -138,7 +139,7 @@ export function createProfilerPanel({ onClose } = {}) {
     h('div.row.head', {}, h('span.name', { text: 'phase' }), h('span.num', { text: 'cpu' }), h('span.num', { text: 'gpu' }),
       h('span', { text: 'timeline (ms)' })),
     rows.flatMap((r) => [r.row, r.detail]),
-    h('div.row.total', {}, h('span.name', { text: 'frame' }), totalCpu, totalGpu, totalTrack),
+    h('div.row.total', {}, h('span.name', { text: 'pass sum' }), totalCpu, totalGpu, totalTrack),
     h('div.spark', { title: `GPU time of the last ${HISTORY} sampled frames (line: ${BUDGET_MS.toFixed(1)} ms, ${MAX_FPS} fps)` }, spark));
   document.body.append(el);
 
@@ -273,7 +274,7 @@ export function createProfilerPanel({ onClose } = {}) {
       el.classList.remove('idle');
       status.textContent = s.coverage && !s.coverage.complete ? `INCOMPLETE · ${s.coverage.timed}/${s.coverage.observed} passes`
         : s.gpu == null ? 'sampled · no GPU timestamps'
-          : `sampled · ${s.coverage.timed}/${s.coverage.observed} passes${s.coverage.unlabelled ? ` · ${s.coverage.unlabelled} unlabelled` : ''}`;
+          : `sampled · ${s.coverage.timed}/${s.coverage.observed} passes${!s.coverage.timelineComplete ? ' · timeline unavailable' : ''}${s.coverage.unlabelled ? ` · ${s.coverage.unlabelled} unlabelled` : ''}`;
       tCpu.v.textContent = ms(s.cpu);
       tGpu.v.textContent = ms(s.gpu);
       tCpu.el.classList.toggle('warn', s.cpu != null && s.cpu > BUDGET_MS);
@@ -302,7 +303,8 @@ export function createProfilerPanel({ onClose } = {}) {
       });
       totalCpu.textContent = ms(s.cpu);
       totalGpu.textContent = ms(s.gpu);
-      totalTrack.replaceChildren(h('i', { style: { width: pct((s.gpu ?? 0) / span) } }));
+      // A sum of overlapping pass durations is not a wall-time interval.
+      totalTrack.replaceChildren();
       // the frame budget, as a tick on every track and a line over the strip
       const top = Math.max(BUDGET_MS, ...s.totals);
       el.style.setProperty('--budget', pct(BUDGET_MS / span));

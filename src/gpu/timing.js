@@ -35,7 +35,7 @@ export class GpuTiming {
         enc[method] = (descriptor = {}) => {
           this.passCount++;
           if (!this.enabled) return begin(descriptor);
-          record ??= { epoch: this._epoch, passes: [], pool: null, used: 0 };
+          record ??= { epoch: this._epoch, recordedAt: performance.now(), passes: [], pool: null, used: 0 };
           const name = this.scope || descriptor.label || `(unlabelled ${kind})`;
           const pass = { name, kind, phase: 'other', epoch: this._epoch, error: null, index: null };
           this.onPass?.(pass);
@@ -114,15 +114,18 @@ export class GpuTiming {
 
   async _read(record) {
     const { pool, passes, used } = record;
-    if (!pool) return passes;
+    const result = { passes, recordedAt: record.recordedAt };
+    if (!pool) return result;
     try {
       await pool.staging.mapAsync(GPUMapMode.READ, 0, used * 16);
       const times = new BigUint64Array(pool.staging.getMappedRange(0, used * 16));
+      const elapsed = performance.now() - record.recordedAt;
       for (const pass of passes) {
         if (pass.index === null) continue;
         pass.begin = times[pass.index * 2];
         pass.end = times[pass.index * 2 + 1];
         if (pass.end < pass.begin) pass.error = 'invalid timestamps';
+        else if (Number(pass.end - pass.begin) / 1e6 > elapsed + 2) pass.error = 'timestamp duration exceeds capture wall time';
       }
     } catch {
       for (const pass of passes) if (pass.index !== null) pass.error = 'timestamp readback failed';
@@ -131,7 +134,7 @@ export class GpuTiming {
       if (!this.gpu.lost && this._idle.length < POOLS_KEPT) this._idle.push(pool);
       else { pool.queries.destroy(); pool.resolve.destroy(); pool.staging.destroy(); }
     }
-    return passes;
+    return result;
   }
 
   _endFrame(frameNo) {
@@ -140,7 +143,7 @@ export class GpuTiming {
     if (!parts.length) return;
     const done = Promise.all(parts).then((groups) => {
       if (epoch !== this._epoch) return;
-      const records = groups.flat().filter(p => p.epoch === epoch);
+      const records = groups.flatMap(g => g.passes).filter(p => p.epoch === epoch);
       const timed = records.filter(p => !p.error);
       const first = timed.reduce((v, p) => v === null || p.begin < v ? p.begin : v, null);
       const passes = records.map(p => ({
@@ -150,12 +153,20 @@ export class GpuTiming {
       }));
       const merged = {};
       for (const p of passes) if (p.gpu !== null) merged[p.name] = (merged[p.name] ?? 0) + p.gpu;
+      const span = Math.max(0, ...passes.filter(p => p.gpu !== null).map(p => p.start + p.gpu));
+      // Driver timestamp origins can jump between submissions (observed on
+      // Metal). No GPU interval can exceed recording→readback wall time.
+      // Allow 2 ms for clock precision; retain durations, reject fake gaps.
+      const elapsed = performance.now() - Math.min(...groups.map(g => g.recordedAt));
+      const timelineComplete = timed.length === records.length && span <= elapsed + 2;
+      if (!timelineComplete) for (const p of passes) p.start = null;
       const coverage = {
         complete: timed.length === records.length,
         observed: records.length, timed: timed.length,
         missing: passes.filter(p => p.error).map(({ name, error }) => ({ name, error })),
         unlabelled: passes.filter(p => p.name.startsWith('(unlabelled')).length,
-        spanMs: Math.max(0, ...passes.filter(p => p.gpu !== null).map(p => p.start + p.gpu)),
+        timelineComplete,
+        spanMs: timelineComplete ? span : null,
       };
       const frameMs = coverage.complete ? Object.values(merged).reduce((a, b) => a + b, 0) : null;
       if (frameNo >= this.lastFrame) {

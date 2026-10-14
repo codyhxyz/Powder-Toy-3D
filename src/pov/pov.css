@@ -177,6 +177,9 @@ body.pov-locked canvas { cursor: none; }
 .pov-use-title { font-weight: 640; }
 .pov-use-lines { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); }
 .pov-use .action-buttons { margin-top: 4px; font-size: 12px; }
+.pov-use.key-only .action-label { display: none; }
+.pov-use.key-only .action-button { border: 0; background: transparent; box-shadow: none; padding: 0 8px; }
+.pov-use.key-only .action-key { display: inline-block; }
 /* ---- pointer-lock prompt */
 .pov-lock {
   position: absolute; left: 50%; top: calc(50% - 70px); transform: translate(-50%, 4px);

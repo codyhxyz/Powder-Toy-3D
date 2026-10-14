@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { uniform, vec3, float, abs, dot, normalize, pow, sin, positionView, positionWorld, normalView } from 'three/tsl';
-import { createBillboards, FADE } from '../gfx/billboards.js';
+import { createBillboards, FADE, sprite } from '../gfx/billboards.js';
 import { prepareMesh } from '../gfx/meshLight.js';
 import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
@@ -9,6 +9,7 @@ import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
 import { gridSpace } from './space.js';
+import { VIEWMODEL_GLOW_LAYER } from './viewmodel.js';
 
 // POV effects: muzzle flash (and a short light), sparks,
 // splash mist and tracers. Cosmetic only: the real debris, splashes and heat
@@ -82,7 +83,6 @@ const MIST_ALPHA = 0.5;
 const TRACER_LIFE = 0.07;               // s
 const TRACER_WIDTH = 0.12;              // cells
 const TRACER_COLOR = [5, 3.2, 1.4];     // HDR
-const TRACER_NEAR = 2.5;                // cells: the part of a segment closer than this to the camera isn't drawn
 
 // ---- jetpack exhaust: flame licks and a smoke trail out of each nozzle
 const JET_RATE = 70;                    // flame particles/s per nozzle
@@ -280,22 +280,22 @@ export function muzzleLight() {
   return muzzle;
 }
 
-// env = { scene, camera, getVolume, getScale, isActive: () => bool }
+// env = { scene, getVolume, getScale, isActive: () => bool }
 export function createVfx(env) {
-  const { scene, camera } = env;
+  const { scene } = env;
   // the pools: one draw each (gfx/billboards.js), sized for the effects they hold
   const batch = new THREE.Group();
   batch.name = 'pov-vfx';
   const pool = (name, effects, opts) => createBillboards({ name, capacity: effects.reduce((n, [, max]) => n + max, 0), ...opts });
   const LAYOUT = {
     starAdd: [[['flash', FLASH_MAX]], { texture: 'star', blending: 'additive' }],
-    streakAdd: [[['spark', SPARK_MAX], ['tracer', TRACER_MAX]], { texture: 'dot', blending: 'additive', stretched: true }],
+    streakAdd: [[['spark', SPARK_MAX]], { texture: 'dot', blending: 'additive', stretched: true }],
     dotNormal: [[['mist', MIST_MAX], ['jetSmoke', JET_SMOKE_MAX]], { texture: 'dot', blending: 'normal' }],
     dotAdd: [[['jet', JET_MAX], ['flame', FLAME_MAX], ['ember', EMBER_MAX], ['mote', MOTE_MAX], ['wandTrail', WAND_TRAIL_MAX]], { texture: 'dot', blending: 'additive' }],
   };
   // how each effect's particles age: mist and smoke grow from their start size
   const LOOK = {
-    flash: { fade: FADE.SHARP }, tracer: { fade: FADE.SHARP }, jet: { fade: FADE.SHARP },
+    flash: { fade: FADE.SHARP }, jet: { fade: FADE.SHARP },
     mist: { grow: MIST_GROW }, jetSmoke: { grow: JET_SMOKE_GROW }, flame: { grow: FLAME_GROW },
   };
   const pools = {};
@@ -313,6 +313,58 @@ export function createVfx(env) {
   let lightT = 0;
 
   let lastDt = 0;   // the last frame's step (the aim's motes)
+
+  // Gun streaks have an explicit, bounded lifetime, independent of particle emitters.
+  const tracerGeo = new THREE.CylinderGeometry(1, 1, 1, 4, 1, true);
+  const tracers = Array.from({ length: TRACER_MAX }, () => {
+    const material = new THREE.MeshBasicNodeMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    material.color.setRGB(...TRACER_COLOR);
+    const mesh = new THREE.Mesh(tracerGeo, material);
+    mesh.visible = false;
+    batch.add(mesh);
+    return { mesh, left: 0, fresh: false };
+  });
+  let tracerNext = 0;
+  const flashes = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  function handFlash(anchor) {
+    let f = flashes.find((f) => f.left <= 0);
+    if (!f) {
+      if (flashes.length >= FLASH_MAX) f = flashes[0];
+      else {
+        const material = new THREE.SpriteNodeMaterial({
+          map: sprite('star'), transparent: true, depthTest: false, depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        material.color.setRGB(...FLASH_COLOR);
+        const mesh = new THREE.Sprite(material);
+        mesh.userData.vmLayer = VIEWMODEL_GLOW_LAYER;
+        mesh.layers.set(VIEWMODEL_GLOW_LAYER);
+        f = { mesh, left: 0, fresh: false };
+        flashes.push(f);
+      }
+    }
+    anchor.add(f.mesh);
+    f.mesh.position.set(0, 0, -FLASH_FORWARD);
+    f.mesh.scale.setScalar(FLASH_SIZE);
+    f.mesh.visible = true;
+    f.mesh.material.opacity = 1;
+    f.left = FLASH_LIFE;
+    f.fresh = true;
+  }
+  function fadeShots(dt) {
+    for (const f of [...tracers, ...flashes]) {
+      if (f.left <= 0) continue;
+      if (f.fresh && Number.isFinite(dt)) { f.fresh = false; continue; }
+      f.left = Math.max(0, f.left - dt);
+      f.mesh.visible = f.left > 0;
+      f.mesh.material.opacity = f.left / (f.mesh.isSprite ? FLASH_LIFE : TRACER_LIFE);
+      if (!f.left && f.mesh.isSprite) f.mesh.removeFromParent();
+    }
+  }
+  const shotCount = () => tracers.filter((f) => f.left > 0).length + flashes.filter((f) => f.left > 0).length;
 
   // ---- spawning
   let cur = null;   // the effect whose particles are being set (setP)
@@ -345,11 +397,14 @@ export function createVfx(env) {
   }
 
   // ---- effects (points in world units, directions unit)
-  function muzzleFlash(at, dir) {
+  function muzzleFlash(at, dir, anchor = null) {
     const s = env.getScale();
-    burst(fx.flash, 1, (p) => setP(p, vV.copy(at).addScaledVector(dir, FLASH_FORWARD * s), vT.set(0, 0, 0),
-      FLASH_SIZE * s, FLASH_COLOR, 1, FLASH_LIFE));
-    burst(fx.flash, 1, (p) => setP(p, at, vT.set(0, 0, 0), FLASH_CORE_SIZE * s, FLASH_CORE_COLOR, 1, FLASH_LIFE));
+    if (anchor) handFlash(anchor);
+    else {
+      burst(fx.flash, 1, (p) => setP(p, vV.copy(at).addScaledVector(dir, FLASH_FORWARD * s), vT.set(0, 0, 0),
+        FLASH_SIZE * s, FLASH_COLOR, 1, FLASH_LIFE));
+      burst(fx.flash, 1, (p) => setP(p, at, vT.set(0, 0, 0), FLASH_CORE_SIZE * s, FLASH_CORE_COLOR, 1, FLASH_LIFE));
+    }
     fx.spark.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
     burst(fx.spark, FLASH_EMBERS, (p) => {
       vV.randomDirection().multiplyScalar(FLASH_EMBER_SPREAD).add(dir).multiplyScalar(randIn(FLASH_EMBER_SPEED) * s);
@@ -385,25 +440,20 @@ export function createVfx(env) {
     });
   }
 
-  // a streak over the world segment a → b, minus what lies within TRACER_NEAR of the camera
+  // Draw the actual segment, including its muzzle end in first person.
   function tracer(a, b) {
-    const s = env.getScale();
-    const cam = camera.getWorldPosition(vC);
     const len = vD.subVectors(b, a).length();
-    if (len <= 0) return;
+    if (!(len > 1e-6)) return;
     vD.divideScalar(len);
-    // start of the visible part: solve |a + t·d − cam| = near for the far root, if a is inside
-    const near = TRACER_NEAR * s;
-    let t0 = 0;
-    const m = vT.subVectors(a, cam), bq = m.dot(vD), cq = m.lengthSq() - near * near;
-    if (cq < 0) t0 = -bq + Math.sqrt(bq * bq - cq);
-    if (t0 >= len) return;
-    const visible = len - t0;
-    fx.tracer.speedFactor = 1 / (TRACER_WIDTH * s);
-    burst(fx.tracer, 1, (p) => {
-      setP(p, b, vV.copy(vD).multiplyScalar(visible), TRACER_WIDTH * s, TRACER_COLOR, 1, TRACER_LIFE);
-      p.move = 0;   // the velocity only orients and sizes the streak; it stays where it was drawn
-    });
+    const f = tracers[tracerNext++ % TRACER_MAX];
+    f.mesh.position.copy(a).lerp(b, 0.5);
+    f.mesh.quaternion.setFromUnitVectors(up, vD);
+    const radius = TRACER_WIDTH * env.getScale() / 2;
+    f.mesh.scale.set(radius, len, radius);
+    f.mesh.material.opacity = 1;
+    f.mesh.visible = true;
+    f.left = TRACER_LIFE;
+    f.fresh = true;
   }
 
   // a rocket flew from a to b (world): smoke puffs along the way, a flame at b
@@ -826,7 +876,7 @@ export function createVfx(env) {
     povEvents.on('gun:fire', (e) => {
       if (!live()) return;
       const at = e.muzzleWorld && !e.by ? vA.copy(e.muzzleWorld) : toWorld(e.origin, vA);   // an NPC's viewmodel isn't drawn: flash at the muzzle cell
-      muzzleFlash(at, vB.copy(e.dir).normalize());
+      muzzleFlash(at, vB.copy(e.dir).normalize(), e.by ? null : e.muzzleAnchor);
     }),
     povEvents.on('impact', (e) => {
       if (!live() || !e.point) return;
@@ -893,7 +943,7 @@ export function createVfx(env) {
   ];
 
   const count = () => {
-    let n = beams.length + (aimBeam.group.visible ? 1 : 0);
+    let n = shotCount() + beams.length + (aimBeam.group.visible ? 1 : 0);
     for (const pl of Object.values(pools)) n += pl.count();
     return n;
   };
@@ -913,6 +963,8 @@ export function createVfx(env) {
     burn(feet, dt) { if (live()) burn(feet, dt); },
     // every POV frame; true while anything is still showing (keep rendering)
     update(dt) {
+      const wasBusy = lightT > 0 || count() > 0;
+      fadeShots(dt);
       for (const pl of Object.values(pools)) pl.update(dt);
       fadeBeams(dt);
       fadeAim(dt);
@@ -923,18 +975,22 @@ export function createVfx(env) {
       light.intensity = lightT > 0 ? FLASH_LIGHT_GAIN * s * s * (lightT / FLASH_LIGHT_TIME) : 0;
       const lit = lightT > 0;
       lightT = Math.max(0, lightT - dt);
-      return lit || count() > 0;
+      // The frame that removes the last effect must also redraw, or it stays on the canvas.
+      return wasBusy || lit || count() > 0;
     },
     // particle counts per effect (checks)
     counts() {
       const o = {};
       for (const k in fx) o[k] = fx[k].pool.count(k);
+      o.tracer = tracers.filter((f) => f.left > 0).length;
+      o.flash += flashes.filter((f) => f.left > 0).length;
       return o;
     },
     get busy() { return lightT > 0 || count() > 0; },
     setVisible(v) { batch.visible = v; },
     // drop everything in flight (leaving POV)
     clear() {
+      fadeShots(Infinity);
       for (const pl of Object.values(pools)) pl.clear();
       fadeBeams(Infinity);
       lightT = 0;
@@ -943,6 +999,8 @@ export function createVfx(env) {
     dispose() {
       disposed = true;
       offs.forEach((f) => f());
+      for (const f of [...tracers, ...flashes]) { f.mesh.removeFromParent(); f.mesh.material.dispose(); }
+      tracerGeo.dispose();
       fadeBeams(Infinity);
       for (const pl of Object.values(pools)) pl.dispose();
       scene.remove(batch);

@@ -469,7 +469,7 @@ The map menu (Esc, or ⌘O) lists your saves under **Saves**, Garry's Mod's menu
 so export the ones you want to keep elsewhere.
 
 A save is exact: every cell's element, temperature, life, ctype and colour seed, its velocity and pressure, as the
-GPU holds them. It also keeps the signs, the spawners and perk orbs, the fast particles in flight, the time of day,
+GPU holds them. It also keeps the signs, entity placements (legacy spawners included) and perk orbs, the fast particles in flight, the time of day,
 gravity and speed, and where the god camera was. What derives from the cells (activity, render fields, light) is
 rebuilt on load. The body, NPCs, birds and vehicles are left out: you come back in the god view.
 

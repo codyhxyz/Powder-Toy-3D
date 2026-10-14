@@ -1,6 +1,6 @@
 import { povEvents } from './events.js';
 
-// Feel: what a shot, a blow, a blast or a hard landing does to the view. A
+// Feel: what a shot, a blow or a blast does to the view. A
 // view punch that springs back, a trauma shake (Eiserloh: shake = trauma² × smooth
 // noise, so bursts build up and small knocks stay small), the hitmarker and
 // the crosshair bloom. Everything comes in through povEvents and the player's
@@ -16,6 +16,14 @@ const PUNCH_DAMPING = 9;                // 1/s: velocity damping (PUNCH_DAMPING)
 const PUNCH_SPRING = 65;                // 1/s²: torsional spring back to zero (PUNCH_SPRING_CONSTANT)
 const PUNCH_SPRING_STEP_MAX = 2;        // the spring's per-frame factor is clamped to this (Source's clamp)
 const PUNCH_EPS = 0.001 * DEG * DEG;    // rad²: below this angle² and rate² the punch snaps to rest (Source's 0.001 deg²)
+
+// Minecraft-style steady mining: the hands carry the swing, the view gets one small contact nod.
+// Peak angles (rad), time to peak and total duration (s); no noise, roll or spring overshoot.
+const TOOL_CONTACT = {
+  pickaxe: { pitch: -0.6 * DEG, yaw: 0, attack: 0.04, duration: 0.26 },
+  axe: { pitch: -0.35 * DEG, yaw: -0.15 * DEG, attack: 0.045, duration: 0.24 },
+  shovel: { pitch: -0.18 * DEG, yaw: 0, attack: 0.035, duration: 0.14 },
+};
 
 // ---- trauma shake
 export const SHAKE_SCALE = 1;           // global multiplier on the shake (0 turns it off)
@@ -55,10 +63,6 @@ const TRAUMA_PRESSURE_RATE = 2.5;       // trauma per second at full pressure
 // a bomb's blast ('blast' event): trauma at the eye, falling off with distance like an impact's
 const TRAUMA_BOMB = 0.9;
 const BOMB_FAR = 48;                    // cells: no shake from a blast this far away
-// hard landings ('land' speed, cells/s)
-const LAND_TRAUMA_MIN = 13;             // softer than this (a jump lands at ≈ 12) doesn't shake
-const LAND_TRAUMA_FULL = 55;            // cells/s for the full TRAUMA_LAND
-const TRAUMA_LAND = 0.7;
 // damage of any other kind ('hurt' amount, share of health)
 const HURT_SHAKE_MIN = 0.05;            // smaller hits (and steady burning, batched at 0.02) don't shake
 const TRAUMA_PER_HEALTH = 1.5;          // trauma per unit of health lost
@@ -104,6 +108,7 @@ export function createFeel({ hud }) {
 
   let trauma = 0, rumble = 0, time = 0;
   const punch = { pitch: 0, yaw: 0, vp: 0, vy: 0 };   // rad and rad/s
+  let contact = null, contactTime = 0;
   let bloom = 0, hitT = 0, hitBroke = false;
   let drunk = 0, drunkSway = 0, drunkTime = 0;   // s of Drunkenness left; the sway's size (0..1); its clock
   let player = null, unbindPlayer = [];
@@ -113,6 +118,13 @@ export function createFeel({ hud }) {
 
   const addTrauma = (x) => { if (x > 0) trauma = Math.min(1, trauma + x); };
   const addRumble = (x) => { if (x > 0) rumble = Math.min(1, rumble + x); };
+  const toolContact = (profile) => {
+    // Fast shovel transfers share one nod instead of stacking or restarting it mid-motion.
+    if (contact) return;
+    contact = profile;
+    contactTime = 0;
+    globalThis.__app?.requestRender?.();
+  };
 
   const offs = [
     povEvents.on('gun:fire', ({ by }) => {
@@ -122,13 +134,18 @@ export function createFeel({ hud }) {
     }),
     povEvents.on('impact', (e) => {
       if (!live) return;
-      if (e.point) {
+      const tool = !e.by && TOOL_CONTACT[e.source];
+      if (tool) toolContact(tool);
+      else if (e.point) {
         const d = Math.hypot(e.point.x - eye.x, e.point.y - eye.y, e.point.z - eye.z);
         const near = 1 - smooth01((d - IMPACT_NEAR) / (IMPACT_FAR - IMPACT_NEAR));
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
       // the hitmarker is the player's shots into a body only (TF2's hit sound: blocks and terrain don't ding)
       if (HITMARKER_SOURCES.has(e.source) && e.body && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }
+    }),
+    povEvents.on('tool:action', ({ tool, action, amount = 0, by }) => {
+      if (live && !by && tool === 'shovel' && (action === 'chip' || (action === 'dig' && amount > 0))) toolContact(TOOL_CONTACT.shovel);
     }),
     povEvents.on('blast', ({ point }) => {
       if (!live || !point) return;
@@ -162,10 +179,6 @@ export function createFeel({ hud }) {
     if (cause === BLAST_CAUSE) addTrauma(Math.min(TRAUMA_BLAST_MAX, amount * TRAUMA_PER_BLAST_HEALTH));
     else if (amount >= HURT_SHAKE_MIN) addTrauma(Math.min(TRAUMA_HURT_MAX, amount * TRAUMA_PER_HEALTH));
   }
-  function onLand({ speed = 0 }) {
-    if (!live) return;
-    addTrauma(TRAUMA_LAND * clamp01((speed - LAND_TRAUMA_MIN) / (LAND_TRAUMA_FULL - LAND_TRAUMA_MIN)));
-  }
 
   return {
     offsets,
@@ -179,17 +192,18 @@ export function createFeel({ hud }) {
     get drunkSway() { return drunkSway; },   // the drunk sway's size now, 0..1
     get hit() { return hitT; },
     addTrauma,
-    // the body whose hurt and land events shake the view
+    // the body whose hurt events shake the view
     bindPlayer(p) {
       unbindPlayer.forEach((f) => f?.());
       player = p;
-      unbindPlayer = p ? [p.on('hurt', onHurt), p.on('land', onLand)] : [];
+      unbindPlayer = p ? [p.on('hurt', onHurt)] : [];
     },
     // a fresh body (drop in, respawn): nothing carried over
     reset() {
       trauma = rumble = bloom = hitT = 0;
       drunk = drunkSway = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
+      contact = null; contactTime = 0;
       offsets.pitch = offsets.yaw = offsets.roll = offsets.punchPitch = offsets.punchYaw = 0;
     },
     // Every POV frame. s = { dt, live (in the eyes and alive), eye (grid) }.
@@ -226,6 +240,21 @@ export function createFeel({ hud }) {
       offsets.pitch = offsets.punchPitch + shake * noise(t, SEED_PITCH);
       offsets.yaw = offsets.punchYaw + shake * noise(t, SEED_YAW);
       offsets.roll = (shake * SHAKE_ROLL + rumble * rumble * SHAKE_ANGLE * RUMBLE_ROLL * m) * noise(t, SEED_ROLL);
+
+      if (contact) {
+        contactTime += dt;
+        const { pitch, yaw, attack, duration } = contact;
+        const weight = contactTime < attack
+          ? smooth01(contactTime / attack)
+          : 1 - smooth01((contactTime - attack) / (duration - attack));
+        offsets.pitch += pitch * weight * m;
+        offsets.yaw += yaw * weight * m;
+        // Like other view punches, the contact nod belongs to the eyes, not the third-person camera.
+        offsets.punchPitch += pitch * weight * m;
+        offsets.punchYaw += yaw * weight * m;
+        if (contactTime >= duration) contact = null;
+        globalThis.__app?.requestRender?.();
+      }
 
       drunk = Math.max(0, drunk - dt);
       drunkSway += (clamp01(drunk / DRUNK_WASTED_S) - drunkSway) * (1 - Math.exp(-DRUNK_EASE * dt));

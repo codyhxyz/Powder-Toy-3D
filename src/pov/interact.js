@@ -6,7 +6,8 @@ import { HAND_REACH } from './constants.js';
 // Look at a thing and press E: Noita's pick-up rule (wands, potions, a Holy
 // Mountain's perks and shop) and Garry's Mod's +use key. Whatever is under the
 // crosshair within reach shows its name and what it does, so you know what you
-// take before you take it; walking into it does nothing.
+// take before you take it. Shrine perks use proximity instead of aim;
+// walking nearby reveals the choice, but still requires E to take it.
 //
 // Things are offered by providers: interact.provide(() => [{ id, position
 // (grid cells, Vector3), radius (cells), title, lines: [string], verb, use() }])
@@ -31,8 +32,10 @@ export function createInteract() {
     if (key === shownKey) return;
     shownKey = key;
     prompt.classList.toggle('show', !!t);
+    prompt.classList.toggle('key-only', !!t?.proximity);
     actions.update(t ? [{ id: 'use', label: t.verb ?? 'Take', key: 'E', run: use }] : []);
     if (!t) return;
+    actions.root.querySelector('button').setAttribute('aria-label', `${t.verb ?? 'Take'} ${t.title}`);
     title.textContent = t.title;
     lines.replaceChildren(...(t.lines ?? []).map((l) => h('span', { text: l })));
   }
@@ -53,6 +56,12 @@ export function createInteract() {
         let best = Infinity;
         for (const fn of providers) for (const t of fn()) {
           to.subVectors(t.position, eye);
+          // Noita's shrine choice: stand by the desired perk, no precise aiming.
+          if (t.proximity) {
+            const distance = to.length();
+            if (distance <= REACH && distance < best) { best = distance; focus = t; }
+            continue;
+          }
           const along = to.dot(dir);
           if (along <= 0 || along > REACH || along > blocked + t.radius) continue;
           const off = to.addScaledVector(dir, -along).length();

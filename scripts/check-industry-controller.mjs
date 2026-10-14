@@ -97,6 +97,21 @@ await test('Sandbox B falls through; Shift+B opens, B closes; Factory B and nati
   industry.dispose();
 });
 
+await test('driving suspends construction input/ghost without losing build selection',async()=>{
+  const {app,industry}=fixture(); await settle();
+  key('KeyB',true); assert(industry.building);
+  app.pov.vehicles={seated:{kind:'boat'}};
+  assert(!industry.building); assert(!industry.state.building);
+  assert(!key('KeyB',true).prevented, 'driving does not intercept build shortcuts');
+  const event={target:app.canvas,button:0,type:'pointerdown',preventDefault(){this.prevented=true;},stopImmediatePropagation(){}};
+  listeners.get('pointerdown')(event); assert(!event.prevented);
+  industry.update(0,false); assert(!industry.state.building);
+  app.pov.vehicles.seated=null;
+  assert(industry.building, 'exit restores previous build state');
+  industry.update(0,false); assert(industry.state.building);
+  industry.dispose();
+});
+
 await test('body blocks ghost and placement only in POV; foundation clearance and static geometry',async()=>{
   const f=fixture(),{app,industry}=f;await settle();
   key('KeyB',true);app.hover={valid:true,cell:{x:8,y:7,z:8},face:2,id:E.ROCK};

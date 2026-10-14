@@ -26,6 +26,7 @@ import { createGpu } from './gpu/device.js';
 import { createPresenter } from './gpu/present.js';
 import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/three.js';
 import { Simulation, GI_BLEND } from './sim.js';
+import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
 import { createVolume } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
@@ -34,7 +35,7 @@ import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
-import { SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
+import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
@@ -106,12 +107,7 @@ const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE, [-22]: SPAWNER.BOAT,
   [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM, [-33]: SPAWNER.BIRDS };   // the Spawners tools' kinds
-const SPAWNER_SET = {
-  [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
-  [SPAWNER.BOAT]: 'Boat pad set: press V, swim up and press E; motor needs water',
-  [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
-  [SPAWNER.BIRDS]: 'Bird flock set: they live here now',
-};
+const SPAWNER_SET = { [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here' };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
 
@@ -1344,6 +1340,33 @@ function mapRow() {
   return { type: 'custom', el: h('div.map-row', {}, name, tag, change), sync };
 }
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
+function waveDemoRow() {
+  let busy = false;
+  const note = h('p.row-note');
+  const buttons = [['shore', 'Create shore wave'], ['ocean', 'Create offshore wave']].map(([kind, text]) =>
+    h('button', { type: 'button', text, on: { click: async () => {
+      if (busy) return;
+      busy = true; sync();
+      try {
+        const made = await seedWaveDemo(win, kind);
+        if (made) {
+          setSettingsOpen(false);
+          hud.toast(settings.paused ? 'Wave created. Unpause to let it move.' : 'Wave created. Undo restores the water.');
+          wakeLoop();
+        } else hud.toast('Move into sea water and try again.');
+      } catch (error) {
+        console.error('Wave demo:', error);
+        hud.toast('Could not create the wave.');
+      } finally { busy = false; sync(); }
+    } } }));
+  const sync = () => {
+    const why = mp.isGuest ? 'The host controls the water.'
+      : !win?.loaded || !(win.P.sea > 0) ? 'Requires a world with an ocean.' : '';
+    buttons.forEach(button => { button.disabled = busy || !!why; });
+    note.textContent = busy ? 'Preparing wave…' : why || 'One-shot physical waves, not automatic swells. Changes water volume; supports Undo. Use offshore waves in open sea.';
+  };
+  return { type: 'custom', el: h('div', {}, h('div.seg', { role: 'group', 'aria-label': 'Create a physical wave' }, buttons), note), sync };
+}
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -1352,6 +1375,7 @@ const settingsPanel = createSettings({
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
+      waveDemoRow(),
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
@@ -1710,11 +1734,12 @@ function clickTool() {
     if (!spawners) { hud.toast(notYet('Spawners'), { kind: 'error' }); return false; }
     if (!hover.valid) { hud.toast('Click a surface to set it on', { kind: 'error' }); return false; }
     const kind = SPAWNER_KIND[settings.tool];
-    const r = spawners.toggle(kind, feetOnHit(hover));
+    const r = spawners.place(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
-    else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
-    return r !== 'full';
+    else if (r === 'unsupported') hud.toast('Vehicles and NPCs are not supported in scrolling World maps; use a box map', { kind: 'error' });
+    else hud.toast(r === 'removed' ? 'Player spawn removed' : SPAWNER_SET[kind] ?? `${toolById(settings.tool).name} spawned`);
+    return r !== 'full' && r !== 'unsupported';
   }
   if (isBuild(settings.tool)) {
     if (mp.guard()) return false;

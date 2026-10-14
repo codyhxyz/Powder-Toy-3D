@@ -770,6 +770,9 @@ const GLASS_IN_LIQUID_F: f32 = 0.3;
 // (reflectTrace, gfx/liquid.js); panes past them reflect the sky.
 const GLASS_TRACED_PANES: i32 = 2;
 const MAX_BENDS: i32 = 6;
+// Fade unresolved underwater scenery over two bricks at the simulation edge.
+// The window bounds data availability, not the extent of the water.
+const LIQ_WINDOW_FADE: f32 = 2.0 * f32(BS);
 const BEND_EXTRA_STEPS: i32 = ${BEND_EXTRA_STEPS};
 
 // The opaque hit that ends the ray is recorded and shaded once, after the
@@ -1203,7 +1206,15 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)` : ''}
     }
     if (sp == 0) {
-      if (hitK != HIT_NONE) { col += trans * c; trans = vec3f(0.0); }
+      if (hitK != HIT_NONE) {
+        if (FU.far != 0u && liq != E_EMPTY) {
+          // Match the continuation below instead of drawing a hard seam where
+          // a refracted ray just misses the last available bed/obstacle cell.
+          let edge = min(min(hitP.x, f32(NX) - hitP.x), min(hitP.z, f32(NZ) - hitP.z));
+          c = mix(interiorScatter(liq, hitP, mediumLight, AMBIENT), c, smoothstep(0.0, LIQ_WINDOW_FADE, edge));
+        }
+        col += trans * c; trans = vec3f(0.0);
+      }
       // floor of the box${curved ? `
       var floorP: vec3f;
       var floorT: f32;
@@ -1221,6 +1232,15 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       col = mix(col, gAltCol + gAltTrans * c, w);
       trans *= 1.0 - w;
     }` : ''}
+  }
+  // A bent ray still submerged when it leaves the window must not reveal
+  // the original camera ray's sky via alpha blending (pale, blob-shaped holes).
+  // shortcut: homogeneous liquid beyond the local trace; replace with far-field
+  // transmission when that can fit the view's texture-unit budget.
+  if (FU.far != 0u && liq != E_EMPTY && outside(cell) && cell.y >= 0 && cell.y < NY) {
+    let p = clamp(ro + rd * tEnter, vec3f(0.5), vec3f(GRID) - 0.5);
+    col += trans * interiorScatter(liq, p, mediumLight, AMBIENT);
+    trans = vec3f(0.0);
   }
   // only thin gas: keep it (and its glow), at its depth
   if (!anyHit && (mOp > MEDIA_KEEP_ALPHA || dot(col, vec3f(1.0)) > MEDIA_KEEP_RADIANCE)) { anyHit = true; }
