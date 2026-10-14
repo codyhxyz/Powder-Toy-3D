@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Village character model sheet</title>
+<style>
+  body { margin: 0; background: #eee9dd; color: #544b3f; font: 16px sans-serif; }
+  canvas { display: block; width: 100%; }
+  #names { display: flex; text-align: center; padding: 16px 0; }
+  #names span { flex: 1; }
+</style>
+<div id="names"></div>
+<script type="module">
+import * as THREE from 'three';
+import { character, dispose } from '/src/pov/village/models.js';
+import { RESIDENTS } from '/src/pov/village/residents.js';
+import { TIM_CROOK } from '/src/pov/village/crook.js';
+
+const specs = [
+  { name: 'Boy', persona: 'boy' }, { name: 'Girl', persona: 'girl' },
+  ...RESIDENTS, TIM_CROOK,
+];
+document.querySelector('#names').replaceChildren(...specs.map(spec => {
+  const label = document.createElement('span'); label.textContent = spec.name; return label;
+}));
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(1440, 800);
+renderer.setClearColor('#eee9dd');
+document.body.append(renderer.domElement);
+const camera = new THREE.OrthographicCamera(-2.3, 2.3, 7.35, -0.35, 0.1, 100);
+camera.position.set(0, 0, -20); camera.lookAt(0, 0, 0);
+const models = specs.map(spec => {
+  const model = character(spec), scene = new THREE.Scene(); scene.add(model.root);
+  return { model, scene };
+});
+window.draw = (time = 0, talking = false) => {
+  renderer.setScissorTest(true);
+  models.forEach(({ model, scene }, i) => {
+    model.animate(time, 0, talking);
+    for (let row = 0; row < 2; row++) {
+      model.root.rotation.y = row ? -0.65 : 0;
+      renderer.setViewport(i * 240, row ? 0 : 400, 240, 400);
+      renderer.setScissor(i * 240, row ? 0 : 400, 240, 400);
+      renderer.render(scene, camera);
+    }
+  });
+};
+window.draw();
+window.modelSheet = models;
+window.sheetReady = true;
+window.addEventListener('pagehide', () => {
+  models.forEach(({ model }) => dispose(model.root)); renderer.dispose();
+});
+</script>
+</html>
