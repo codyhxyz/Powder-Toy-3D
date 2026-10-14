@@ -150,7 +150,7 @@ export const LAYOUT_NAMES = {
   mesh: ['TABLES', 'STATE_RO', 'BLOCK_MESH'], draw: ['FRAME', 'BLOCK_FACES', 'BLOCK_SUN_MAP'], sun: ['EMPTY', 'BLOCK_FACES'],
 };
 
-const FACE_WGSL = /* wgsl */ `
+export const FACE_WGSL = /* wgsl */ `
 struct Face {
   pos: u32,    // x | y << 10 | z << 20 (grid cells)
   info: u32,   // side (0-5: -x +x -y +y -z +z) | id << 3 | ao << 11 (4 corners × 2 bits, 3: open) | tint << 19 | glow << 27 (1: live spark, 2: lit lamp)
@@ -162,7 +162,7 @@ struct Face {
 // Corners 0 (0,0), 1 (1,0), 2 (1,1), 3 (0,1) make triangles (0,1,2) (0,2,3),
 // counter-clockwise seen from outside a face toward +axis (u, v, axis
 // right-handed); a face toward -axis is the same square with u and v swapped.
-const CORNER_WGSL = /* wgsl */ `
+export const CORNER_WGSL = /* wgsl */ `
 struct Corner {
   grid: vec3f,
   uv: vec2f,

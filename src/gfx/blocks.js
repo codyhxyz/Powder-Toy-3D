@@ -29,9 +29,9 @@ const TEX = { TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };     // (GPUTextu
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim
- * @param {{ world?: boolean }} [opts] world: the grid is a world's window
+ * @param {{ world?: boolean, facesOnly?: boolean }} [opts] facesOnly: extraction for a different renderer; no Plain pipelines or sun map
  */
-export function createBlocks(gpu, sim, { world = false } = {}) {
+export function createBlocks(gpu, sim, { world = false, facesOnly = false } = {}) {
   const g = sim.g;
   const fu = frameUniformsOf(gpu);
   const label = (x) => `sim${sim.id} blocks ${x}`;
@@ -41,9 +41,9 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
   }
   // the sun's shadow map (shaders/blocks.js sunMatrix), drawn by update()
   const sunRes = sunMapRes(g);
-  const sunMap = gpu.createTexture({ label: label('sun map'), size: [sunRes, sunRes], format: SUN_MAP_FORMAT, usage: TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING });
-  const sunView = sunMap.createView({ label: label('sun map') });
-  const sunSampler = gpu._blocksSunSampler ??= gpu.device.createSampler({
+  const sunMap = facesOnly ? null : gpu.createTexture({ label: label('sun map'), size: [sunRes, sunRes], format: SUN_MAP_FORMAT, usage: TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING });
+  const sunView = sunMap?.createView({ label: label('sun map') });
+  const sunSampler = facesOnly ? null : gpu._blocksSunSampler ??= gpu.device.createSampler({
     label: 'blocks sun map', compare: 'less-equal', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
   });
   const cap = faceCapacity(g, gpu.device.limits.maxStorageBufferBindingSize);
@@ -56,7 +56,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
     { binding: 2, resource: { buffer: args } }, { binding: 3, resource: { buffer: ring.buffer } },
   ], label('mesh'));
   const facesGroup = gpu.bindGroup(L.BLOCK_FACES, [{ binding: 0, resource: { buffer: faces } }], label('faces'));
-  const sunGroup = gpu.bindGroup(L.BLOCK_SUN_MAP, [{ binding: 0, resource: sunView }, { binding: 1, resource: sunSampler }], label('sun map'));
+  const sunGroup = facesOnly ? null : gpu.bindGroup(L.BLOCK_SUN_MAP, [{ binding: 0, resource: sunView }, { binding: 1, resource: sunSampler }], label('sun map'));
 
   const meshCode = meshWGSL(g);
   const mesh = gpu.kernel({
@@ -65,15 +65,15 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
   const finish = gpu.kernel({
     name: 'blocks.finish', code: meshCode, entry: 'finish', layouts: [L.TABLES, L.STATE_RO, L.BLOCK_MESH], params: MeshParams, workgroupSize: [1, 1, 1],
   });
-  const drawCode = drawWGSL(g);
+  const drawCode = facesOnly ? null : drawWGSL(g);
   const p = blockPipelines();
-  const pipe = (name, desc) => gpu.renderPipeline({ name, code: drawCode, layouts: [fu.layout, L.BLOCK_FACES, L.BLOCK_SUN_MAP], params: BlockDrawParams, ...desc });
+  const pipe = (name, desc) => facesOnly ? null : gpu.renderPipeline({ name, code: drawCode, layouts: [fu.layout, L.BLOCK_FACES, L.BLOCK_SUN_MAP], params: BlockDrawParams, ...desc });
   const opaque = pipe('blocks.opaque', p.opaque);
   const absorb = pipe('blocks.absorb', p.absorb);
   const scatter = pipe('blocks.scatter', p.scatter);
   const floor = pipe('blocks.floor', p.floor);
-  const sunPipe = gpu.renderPipeline({ name: 'blocks.sun', code: sunWGSL(), layouts: [undefined, L.BLOCK_FACES], params: BlockDrawParams, ...p.sun });
-  const all = [mesh, finish, opaque, absorb, scatter, floor, sunPipe];
+  const sunPipe = facesOnly ? null : gpu.renderPipeline({ name: 'blocks.sun', code: sunWGSL(), layouts: [undefined, L.BLOCK_FACES], params: BlockDrawParams, ...p.sun });
+  const all = [mesh, finish, opaque, absorb, scatter, floor, sunPipe].filter(Boolean);
   const n = [g.nx, g.ny, g.nz];
   let sun = sunMatrix({ x: 0, y: 1, z: 0 }, n, sunRes);
   let sunKey = null;      // the sun the map was drawn from
@@ -88,6 +88,8 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
   const blocks = {
     sim,
     stats,
+    // Shared extraction/indirect buffers; realistic shading never uses Plain materials.
+    faces, args,
     /** Every pipeline is built. */
     ready: Promise.all(all.map((x) => x.ready)).then(() => blocks),
     get isReady() { return all.every((x) => x.state === 'ready'); },
@@ -102,7 +104,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
     update({ force = false, sun: light = null } = {}) {
       if (disposed || mesh.state !== 'ready' || finish.state !== 'ready') return false;
       const key = `${sim.version}|${sim.cur}|${sim.origin.x},${sim.origin.y},${sim.origin.z}`;
-      if (key === lastKey && !force) { if (light) drawSun(light); return false; }
+      if (key === lastKey && !force) { if (light && !facesOnly) drawSun(light); return false; }
       lastKey = key;
       sunDrawn = false;
       const f = gpu.frame;
@@ -123,7 +125,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
           console.warn(`blocks: ${o} opaque and ${t} translucent faces, over the buffer's ${cap.o} and ${cap.t}: the rest aren't drawn`);
         }
       }, () => {});
-      if (light) drawSun(light);
+      if (light && !facesOnly) drawSun(light);
       return true;
     },
 
@@ -133,7 +135,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
      * @param {{ marchNear?: number, floor?: boolean }} [opts]
      */
     drawOpaque(rp, { marchNear = 0, floor: withFloor = false } = {}) {
-      if (!blocks.isReady) return false;
+      if (facesOnly || !blocks.isReady) return false;
       const params = drawParams(0, marchNear);
       opaque.draw(rp, { bind: [fu.group, facesGroup, sunGroup], params, indirect: { buffer: args, offset: 0 } });
       if (withFloor) floor.draw(rp, { bind: [fu.group, facesGroup, sunGroup], params, count: 6 });
@@ -141,7 +143,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
     },
     /** The translucent faces (liquids, glass, gases, flames), after everything opaque. */
     drawTranslucent(rp, { marchNear = 0 } = {}) {
-      if (!blocks.isReady) return false;
+      if (facesOnly || !blocks.isReady) return false;
       const opts = { bind: [fu.group, facesGroup, sunGroup], params: drawParams(cap.o, marchNear), indirect: { buffer: args, offset: 16 } };
       absorb.draw(rp, opts);
       scatter.draw(rp, opts);
@@ -158,7 +160,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
       gpu.flush('blocks dispose');
       ring.close();
       faces.destroy();
-      sunMap.destroy();
+      sunMap?.destroy();
       counts.destroy();
       args.destroy();
     },
