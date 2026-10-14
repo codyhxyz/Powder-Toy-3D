@@ -17,9 +17,12 @@ try {
   page.on('console', m => { if (m.type() === 'error') { errors.push(m.text()); console.error(m.text()); } });
   page.on('requestfailed', r => console.error('Request failed:', r.url(), r.failure()?.errorText));
   page.on('response', r => { if (r.status() >= 400) console.error('HTTP:', r.status(), r.url()); });
-  await page.goto(`${origin}/?map=paradise&mode=crueltySquad&view=realistic`);
+  await page.goto(`${origin}/?map=paradise&mode=crueltySquad&view=realistic`, { waitUntil: 'commit' });
+  console.log('Appearance check: page committed');
   await ready(page);
+  console.log('Appearance check: app exposed');
   await page.waitForFunction(() => __app.pov.mission.active);
+  console.log('Appearance check: mission active');
   await render(page);
   const state = await page.evaluate(() => ({
     mode: __app.current().mode, cruelty: __app.post.settings.cruelty,
