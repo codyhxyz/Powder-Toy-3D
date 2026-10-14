@@ -13,7 +13,7 @@ import { wound, createBodyWorld } from './stains.js';
 import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
 import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
-import { FLAP_ANIM_S } from './flapPose.js';
+import { FLAP_SIGNAL_S } from './flapPose.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -329,8 +329,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     },
     // 1 on the tap, back to 0 as the wings settle. The viewmodel and the body read it.
     get flap() {
-      if (vitals.dead || sinceFlap >= FLAP_ANIM_S) return 0;
-    return 1 - Math.min(1, sinceFlap / FLAP_ANIM_S);
+    if (vitals.dead || sinceFlap >= FLAP_SIGNAL_S) return 0;
+    return 1 - Math.min(1, sinceFlap / FLAP_SIGNAL_S);
     },
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame

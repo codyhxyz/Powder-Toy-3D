@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Action timing preview</title>
+<style>
+  body { background:#172426; color:#f2eadc; font:16px system-ui; margin:16px; }
+  button { padding:10px 18px; margin-bottom:8px; }
+  canvas { display:block; }
+  p { margin:8px 0; }
+</style>
+<button id="play" disabled>Play motion and punch sound</button>
+<p>Top: first-person wings / wizard. Bottom: village wings / punch.</p>
+<script type="module">
+import * as THREE from 'three';
+import { viewmodelRig } from '../../src/pov/viewmodel.js';
+import { createRealFigure, loadModel } from '../../src/pov/figureReal.js';
+import { character, dispose } from '../../src/pov/village/models.js';
+import { createSpeech } from '../../src/pov/village/speech.js';
+import { PUNCH_CONTACT, PUNCH_DURATION } from '../../src/pov/village/actions.js';
+
+window.ready = (async () => {
+  const gltf = await loadModel('real');
+  const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
+  renderer.setSize(960,720); renderer.setScissorTest(true);
+  document.body.append(renderer.domElement);
+  const scenes = Array.from({length:4}, () => {
+    const scene = new THREE.Scene(); scene.background = new THREE.Color('#334b50');
+    const sky = new THREE.HemisphereLight(0xfff6e3,0x547269,3); sky.layers.enableAll(); scene.add(sky);
+    const light = new THREE.DirectionalLight(0xffffff,2); light.position.set(-3,7,-4); light.layers.enableAll(); scene.add(light);
+    return scene;
+  });
+  const vm = new THREE.Group(), rig = viewmodelRig({viewmodel:vm,getScale:()=>1});
+  const figure = createRealFigure(gltf), flap = character(), punch = character();
+  // Keep the actual geometry/rig; standard light replaces the app's volume
+  // node shader so this inexpensive WebGL timing fixture needs no simulation.
+  const poseMaterials = [];
+  figure.root.traverse(o => {
+    if (!o.isMesh || !o.material?.isNodeMaterial) return;
+    const look=o.userData.look ?? {};
+    const material=new THREE.MeshStandardMaterial({color:new THREE.Color(...(look.albedo ?? [0.5,0.4,0.6])),
+      map:look.map ?? null,normalMap:look.normalMap ?? null,side:look.side ?? THREE.FrontSide});
+    poseMaterials.push(material); o.material=material;
+  });
+  figure.setVisible(true);
+  scenes[0].add(vm); scenes[1].add(figure.root); scenes[2].add(flap.root); scenes[3].add(punch.root);
+  const cameras = [new THREE.PerspectiveCamera(75,640/360,0.01,40),
+    ...Array.from({length:3}, () => {
+      const camera = new THREE.PerspectiveCamera(40,320/360,0.01,40);
+      camera.position.set(5,4,-10); camera.lookAt(0,2.7,0); return camera;
+    })];
+  cameras[0].layers.set(5);
+  cameras[3].position.set(5,4,10); cameras[3].lookAt(0,2.7,0); // actual rear gameplay silhouette
+  const rects = [[0,360,640,360],[640,360,320,360],[0,0,320,360],[320,0,320,360]];
+  const state = {feet:new THREE.Vector3(),scale:1,yaw:0,worldToGrid:new THREE.Matrix4(),
+    speedH:0,velY:-4,onGround:false,inLiquid:false,dead:false};
+  const speech = createSpeech();
+  let playing = false;
+  function draw(t, dt) {
+    const since = t < 1.4 ? t % 0.2 : Infinity, signal = Math.max(0,1-since/0.2);
+    rig.poseFlap(signal,dt); figure.update(dt,{...state,flap:signal});
+    flap.animate(t,0,false,false,0,0,false,false,{flap:signal});
+    const punchAge = t - (0.2 + Math.floor(Math.max(0,t-0.2)/0.7)*0.7);
+    const amount = t < 0.2 ? 0 : Math.max(0,1-punchAge/PUNCH_DURATION);
+    punch.animate(t,0,false,false,0,amount);
+    for (let i=0;i<4;i++) {
+      const [x,y,w,h]=rects[i]; renderer.setViewport(x,y,w,h); renderer.setScissor(x,y,w,h);
+      renderer.render(scenes[i],cameras[i]);
+    }
+  }
+  draw(0,0);
+  window.play = async (record = false) => {
+    if (playing) return; playing=true;
+    // Capture the real Web Audio mix without playing it on the host speakers.
+    const ctx = new window.AudioContext(), audio = ctx.createMediaStreamDestination();
+    const shared = {get currentTime(){return ctx.currentTime;}, sampleRate:ctx.sampleRate,
+      destination:audio, resume:()=>ctx.resume(),
+      createBuffer:ctx.createBuffer.bind(ctx),createBufferSource:ctx.createBufferSource.bind(ctx),
+      createGain:ctx.createGain.bind(ctx),createBiquadFilter:ctx.createBiquadFilter.bind(ctx)};
+    THREE.AudioContext.setContext(record ? shared : ctx); await ctx.resume();
+    const chunks=[], frames=[], stream=renderer.domElement.captureStream(30);
+    stream.addTrack(audio.stream.getAudioTracks()[0]);
+    const recorder = record ? new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8,opus'}) : null;
+    const done = recorder ? new Promise(resolve=>{recorder.ondataavailable=e=>chunks.push(e.data);recorder.onstop=resolve;}) : null;
+    recorder?.start();
+    let start, last=0, attack=-1, hit=-1, nextFrame=0;
+    await new Promise(resolve => {
+      function frame(now) {
+        start ??= now; const t=Math.min(2.6,(now-start)/1000), dt=Math.min(0.05,t-last); last=t;
+        draw(t,dt);
+        const n=Math.floor((t-0.2)/0.7);
+        if (n>=0 && n!==attack) { attack=n; void speech.swing(PUNCH_CONTACT); }
+        if (n>=0 && t-(0.2+n*0.7)>=PUNCH_CONTACT && n!==hit) {hit=n;void speech.bonk();}
+        if (record && t>=nextFrame) {frames.push(renderer.domElement.toDataURL('image/png'));nextFrame+=0.1;}
+        if (t<2.6) requestAnimationFrame(frame); else resolve();
+      }
+      requestAnimationFrame(frame);
+    });
+    recorder?.stop(); if(done) await done;
+    stream.getTracks().forEach(track=>track.stop()); speech.stop(); await ctx.close();
+    THREE.AudioContext.setContext(undefined); playing=false;
+    if (!record) return;
+    const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    let raw=''; for(let i=0;i<bytes.length;i+=8192)raw+=String.fromCharCode(...bytes.subarray(i,i+8192));
+    return {video:btoa(raw),frames};
+  };
+  window.cleanup=()=>{speech.stop();rig.dispose();figure.dispose();dispose(flap.root);dispose(punch.root);poseMaterials.forEach(m=>m.dispose());renderer.dispose();renderer.forceContextLoss();};
+  document.querySelector('#play').disabled=false;
+  document.querySelector('#play').onclick=()=>{window.playPromise=window.play(window.capture===true);};
+})();
+</script>
+</html>

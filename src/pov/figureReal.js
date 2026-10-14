@@ -13,7 +13,7 @@ import {
 import { prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
 import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limbs.js';
 import { strikePose, sampleKickPose, kickBlend } from './strikePose.js';
-import { flapPose, sampleFlap } from './flapPose.js';
+import { createFlapAnimation } from './flapPose.js';
 
 // The realistic body: Quaternius's Superhero Male (Universal Base Characters,
 // CC0), sculpted muscles in his mesh and normal map, playing clips from
@@ -263,12 +263,11 @@ export function createRealFigure(gltf, { bag = false } = {}) {
     qb.setFromAxisAngle(right, angle);
     bone.quaternion.premultiply(qa.clone().invert().multiply(qb).multiply(qa));
   }
-  const wingPose = flapPose(), wingUpper = new THREE.Vector3(), wingLower = new THREE.Vector3();
+  const wingAnimation = createFlapAnimation(), wingUpper = new THREE.Vector3(), wingLower = new THREE.Vector3();
   const wingShoulder = new THREE.Vector3(), wingTarget = new THREE.Vector3(), wingPole = new THREE.Vector3();
   const wingFromUpper = new THREE.Quaternion(), wingFromLower = new THREE.Quaternion();
-  function flapArms(amount) {
-    if (!(amount > 0)) return;
-    sampleFlap(amount, wingPose);
+  function flapArms(dt, amount) {
+    const wingPose = wingAnimation.update(dt, amount);
     if (!(wingPose.weight > 0)) return;
     root.updateWorldMatrix(true, true);
     root.getWorldQuaternion(qRoot);
@@ -401,7 +400,8 @@ export function createRealFigure(gltf, { bag = false } = {}) {
         for (const b of head) { turn(b, nod / head.length); b.updateWorldMatrix(false, false); }
       }
       const wing = s.dead ? 0 : s.flap ?? 0;
-      flapArms(wing);   // reach() keeps a gripping arm aimed; the free arm keeps flapping
+      if (s.dead) wingAnimation.reset();
+      flapArms(dt, wing);   // reach() keeps a gripping arm aimed; the free arm keeps flapping
       if (s.kick != null && !s.dead) {
         sampleKickPose(s.kick, kickPose);
         const weight = kickBlend(s.kick);
