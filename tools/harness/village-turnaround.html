@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Village turnarounds — front, side, rear</title>
+<style>
+  body { margin: 0; background: #12151c; color: #e8e6e3; font: 16px system-ui, sans-serif; }
+  #names { display: grid; grid-template-columns: repeat(6, 1fr); text-align: center; padding: 12px 0; }
+  canvas { display: block; width: 100%; }
+  p { text-align: center; margin: 8px; }
+  a { color: #e8c58d; }
+</style>
+<div id="names"></div>
+<canvas id="sheet"></canvas>
+<p>Rows: front · side · rear. <a href="./character.html?character=girl&view=rear">Open interactive character viewer</a></p>
+<script type="module">
+import * as THREE from 'three';
+import { character, dispose } from '/src/pov/village/models.js';
+import { RESIDENTS } from '/src/pov/village/residents.js';
+import { TIM_CROOK } from '/src/pov/village/crook.js';
+const specs = [{ name: 'Boy', persona: 'boy' }, { name: 'Girl', persona: 'girl' }, ...RESIDENTS, TIM_CROOK];
+const models = specs.map(spec => {
+  const label = document.createElement('span'); label.textContent = spec.name; document.querySelector('#names').append(label);
+  const model = character(spec), scene = new THREE.Scene(); scene.add(model.root); return { model, scene };
+});
+const renderer = new THREE.WebGLRenderer({ canvas: document.querySelector('#sheet'), antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(1440, 1080);
+renderer.setClearColor('#12151c');
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+const camera = new THREE.OrthographicCamera(-2.15, 2.15, 7, -0.35, 0.1, 100);
+camera.position.set(0, 0, -20); camera.lookAt(0, 0, 0);
+renderer.setScissorTest(true);
+models.forEach(({ model, scene }, col) => {
+  [0, -Math.PI / 2, Math.PI].forEach((yaw, row) => {
+    model.root.rotation.y = yaw;
+    renderer.setViewport(col * 240, (2 - row) * 360, 240, 360);
+    renderer.setScissor(col * 240, (2 - row) * 360, 240, 360);
+    renderer.render(scene, camera);
+  });
+});
+window.sheetReady = true;
+addEventListener('pagehide', () => { models.forEach(({ model }) => dispose(model.root)); renderer.dispose(); });
+</script>
+</html>

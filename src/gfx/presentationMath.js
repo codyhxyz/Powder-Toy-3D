@@ -16,6 +16,19 @@ export function warp(p, e = IDENTITY, inverse = false) {
   }
   return q;
 }
+// A parabola's highest point can lie inside the box, not at a corner.
+export function warpBox(box, e = IDENTITY, out = box) {
+  out.copy(box);
+  if (!e.k || box.isEmpty()) return out;
+  const x0 = (box.min.x - e.anchor[0]) * e.dir[0], x1 = (box.max.x - e.anchor[0]) * e.dir[0];
+  const z0 = (box.min.z - e.anchor[1]) * e.dir[1], z1 = (box.max.z - e.anchor[1]) * e.dir[1];
+  const lo = Math.min(x0, x1) + Math.min(z0, z1), hi = Math.max(x0, x1) + Math.max(z0, z1);
+  const minSq = lo <= 0 && hi >= 0 ? 0 : Math.min(lo * lo, hi * hi);
+  const a = e.k * minSq, b = e.k * Math.max(lo * lo, hi * hi);
+  out.min.y -= Math.max(a, b);
+  out.max.y -= Math.min(a, b);
+  return out;
+}
 export function warpTangent(p, d, e = IDENTITY, inverse = false) {
   const q = [...d];
   const s = (p[0] - e.anchor[0]) * e.dir[0] + (p[2] - e.anchor[1]) * e.dir[1];

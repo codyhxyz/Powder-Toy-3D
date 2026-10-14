@@ -13,6 +13,8 @@ import { TIM_CROOK, crookDialogue } from './crook.js';
 import { createCrookController } from './crookController.js';
 import { createDebtBadge } from './debtBadge.js';
 import { ELEMENTS, K } from '../../elements.js';
+import { createCityBus, CITY_BUS_STOPS } from './bus.js';
+import { CITY_FOLK_CITY } from '../../world/scenes/cityFolk/city.js';
 
 export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
   const root = new THREE.Group(); root.name = 'willow-village'; root.visible = false; app.scene.add(root);
@@ -29,8 +31,14 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   let pendingPunch = null;
   let crook = null, crookModel = null, debtBadge = null, worldSeed = null;
   let bodyFrom = null, crookMotionFrom = null;
+  const bus = createCityBus({
+    getWorld: app.getWorld, getSim: app.getSim, getMode: app.getMode, getPlayer,
+    active: () => enabled && live() && !document.hidden && !held && !interaction && !ui.opened,
+    withVillageFocus: (...args) => app.withVillageFocus(...args),
+    requestRender: app.requestRender, notify: message => { feedback = message; app.hud?.toast(message); },
+  });
   function equip(key) {
-    if (interaction || !VILLAGE_TOOLS.some(t => t.key === key)) return;
+    if (bus.busy || interaction || !VILLAGE_TOOLS.some(t => t.key === key)) return;
     releaseActions(); punchSerial++; tool = key; onTool(key);
     toolModel?.dispose(); toolModel = null;
     toolMaterials.forEach(m => m.dispose()); toolMaterials = [];
@@ -45,7 +53,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     }
   }
   async function punch(kick = false) {
-    if (!context().active || ui.opened || held || interaction || (!kick && tool) || time - punchAt < PUNCH_COOLDOWN) return;
+    if (!context().active || bus.busy || ui.opened || held || interaction || (!kick && tool) || time - punchAt < PUNCH_COOLDOWN) return;
     punchAt = time; kicking = kick;
     pendingPunch = null;
     speech.swing(PUNCH_CONTACT);
@@ -307,6 +315,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   }
   function nearby() {
     if (!context().active || held || interaction) return null;
+    if (bus.busy) return { title: 'Cancel bus journey', use: () => bus.cancel() };
+    const stop = bus.nearby();
+    if (stop) return { title: CITY_BUS_STOPS[stop].label, use: () => { releaseInput(); releaseActions(); void bus.board(stop); } };
     const p = local(), home = room(p);
     if (crook?.visible && !crook.state.complete && p.y < 1 && p.z < -13
       && Math.hypot(p.x - HOMES[0] - crook.position.x, p.z - crook.position.z) < 7)
@@ -358,6 +369,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   }
   function act(action) {
     if (!context().active) return { error: 'Enter the village to use your furniture.' };
+    if (bus.busy) {
+      if (action.type === 'interact' || action.type === 'cancel') { bus.cancel(); return {}; }
+      return { error: 'Finish or cancel the bus journey first.' };
+    }
     if (ui.talking) return { error: 'Finish or close the conversation first.' };
     if (action.type === 'punch') { void punch(); return {}; }
     if (action.type === 'tool') { if (!ui.opened && !held && !interaction) equip(action.key); return {}; }
@@ -417,6 +432,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     return { state: structuredClone(state) };
   }
   const ui = createVillageUi({ context, act, primary: nearby, onOpen() {
+    if (bus.busy) return false;
     if (interaction && interaction.kind !== 'dresser' && endInteraction().error) return false;
     punchSerial++; pendingPunch = null; usingTool = false; releaseActions(); getPlayer()?.cancelJump?.(); releaseInput(); freeMouse();
   },
@@ -427,6 +443,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   // but native Tab/Enter/Space still work on its buttons (no custom focus trap).
   addEventListener('keydown', e => {
     if (!enabled || !live() || document.querySelector('.mm.open')) return;
+    if (bus.busy && e.code === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); bus.cancel(); return; }
     if (ui.opened) {
       e.stopImmediatePropagation();
       if (e.code === 'Escape' || e.code === 'KeyI' || e.code === 'KeyQ') { e.preventDefault(); if (!e.repeat) ui.close(); }
@@ -445,7 +462,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   addEventListener('keyup', e => { if (enabled && ui.opened) e.stopImmediatePropagation(); }, { capture: true });
   document.addEventListener('visibilitychange', () => {
     if (!enabled || !document.hidden) return;
-    ui.close(); endInteraction(true, true); releaseHeld();
+    bus.invalidate(); ui.close(); endInteraction(true, true); releaseHeld();
   });
 
   function setEnabled(on, world = null) {
@@ -456,6 +473,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     pendingPunch = null;
     onEnabled(on);
     if (!on) {
+      bus.invalidate();
       debtBadge?.dispose(); debtBadge = null;
       releaseActions(); getPlayer()?.cancelJump?.();
       ui.close(); endInteraction(true, true);
@@ -510,10 +528,20 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const sign = nameplate(home ? `${RESIDENTS[home - 1].name}’s home` : 'Your home');
       sign.position.set(size[0] / 2 + HOMES[home], FLOOR + 12, size[2] / 2 + HOME_Z - 12.05); root.add(sign);
     }
+    if (size[0] === 3072) {
+      for (const [key, label] of [['townStop', 'City bus · Board with E'], ['cityStop', 'Tinker Creek bus · Return with E'],
+        ['emporium', 'Lantern Emporium'], ['tailor', 'Thread & Thimble'], ['theatre', 'Marquee Theatre']]) {
+        const landmark = CITY_FOLK_CITY.landmarks[key], sign = nameplate(label);
+        const [x, z] = key.endsWith('Stop') ? landmark.at : landmark.entry;
+        sign.position.set(size[0] / 2 + x, landmark.floor + (key.endsWith('Stop') ? 14 : 16), size[2] / 2 + z + 0.1);
+        root.add(sign);
+      }
+    }
     root.visible = true; update(0);
   }
   function beforeBody(input, dt = 0) {
     if (!enabled || !getPlayer()) return;
+    if (bus.busy) { bus.freeze(input); return; }
     checkInteraction();
     previous.copy(getPlayer().pos);
     const l = local();
@@ -677,7 +705,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     updateHeld();
     const c = context(), home = room();
     if ((!c.active || (ui.talking && speaking !== crook && home !== speaking?.spec.home)) && ui.opened) ui.close();
-    ui.update({ active: c.active, place: home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home` : 'Tinker Creek' });
+    const here = getPlayer()?.pos.clone().add(app.getSim().origin);
+    const inCity = size[0] === 3072 && here && here.z - size[2] / 2 <= -280;
+    ui.update({ active: c.active, place: bus.busy ? 'Bus journey · E / Esc to cancel' : home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home`
+      : inCity ? 'City square · return bus at the south end' : size[0] === 3072 ? 'Tinker Creek · city bus at the northern gate' : 'Tinker Creek' });
   }
   function crookSnapshot() {
     return crook ? { state: crook.state, phase: crook.phase, position: crook.position } : null;
@@ -724,15 +755,17 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   return {
     setEnabled, beforeBody, afterBody() {
       if (!enabled) return;
+      if (bus.busy) { bus.freeze(); return; }
       if (interaction && getPlayer()?.dead) { ui.close(); endInteraction(false, true); }
       if (interaction) setPlayer(interaction.position);
       else collide();
       crookMotionFrom = bodyFrom; bodyFrom = null;
     }, update, punch, kick: () => punch(true),
     cycleTool(direction) { if (context().active && !ui.opened && !held && !interaction) equip(VILLAGE_TOOLS[(VILLAGE_TOOLS.findIndex(t => t.key === tool) + Math.sign(direction) + VILLAGE_TOOLS.length) % VILLAGE_TOOLS.length].key); },
-    get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held && !interaction; },
+    get bus() { return bus; },
+    get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held && !interaction && !bus.busy; },
     set usingTool(value) { usingTool = value; },
-    get enabled() { return enabled; }, get blocked() { return enabled && (ui.opened || (!!interaction && interaction.kind !== 'grip')); },
+    get enabled() { return enabled; }, get blocked() { return enabled && (bus.holding || ui.opened || (!!interaction && interaction.kind !== 'grip')); },
     get state() { return structuredClone(state); }, get residents() { return residents.map(r => ({ name: r.spec.name, species: r.spec.species, home: r.spec.home, x: r.x, z: r.z })); },
     get speech() { return speech.stats; }, get context() { return context(); }, get root() { return root; }, get avatar() { return avatar.root; },
     get crook() { return crookSnapshot(); },

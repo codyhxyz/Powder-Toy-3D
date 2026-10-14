@@ -15,8 +15,8 @@ import { WorldDetail } from './detail.js';
 
 // The far field of a massive world (docs/scaling.md D11, phase W4;
 // docs/webgpu.md G1; the WGSL and the far grid's layout are in
-// shaders/far.js): a brick-resolution grid of the whole world, drawn wherever
-// the window isn't.
+// shaders/far.js): a brick-resolution grid of the whole world, lighting and
+// liquids beyond the window. Cell meshes own opaque terrain at every distance.
 //
 // Built from the world's scene (world/scenes), progressively: the window's
 // region from its state at once, then the rest a chunk at a time from the
@@ -67,9 +67,9 @@ import { WorldDetail } from './detail.js';
 // as big as the volume's; B5: the data views never build it): the far field
 // shows once it is ready.
 //
-// Near the window the detail meshes (world/detail.js, docs/world-lod.md:
-// render-only meshes of the chunks' cells) replace the coarse field: drawn
-// just before the view, which leaves their chunks' opaque field to them, and
+// Throughout the view the detail meshes (world/detail.js, docs/world-lod.md:
+// render-only meshes of the chunks' cells) own opaque terrain: drawn
+// just before the view, which never draws coarse opaque terrain, and
 // before the scene pass their depth (prepass), where the view's march stops.
 //
 // The rolling log (gfx/presentation.js: `presentation`, set by
