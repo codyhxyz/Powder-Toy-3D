@@ -14,7 +14,7 @@ export default meleeTool({
   reach: 5,                // cells (1.5 m): close enough to press the bit into the face
   body: { damage: 0.06, energy: 12, cause: 'Jackhammered' },
   pose: {
-    pos: [0.6, -0.8, -1.4], rest: 0, hit: 0, miss: 0, roll: 0,
-    thrust: [0.07, 0.04], strike: 0.025, gesture: 'drill',
+    pos: [1, -0.15, -3.2], rest: 0, hit: 0, miss: 0, roll: 0,
+    thrust: [0.07, 0.04], thrustAxis: [0, -1, 0], strike: 0.025, gesture: 'drill',
   },
 });

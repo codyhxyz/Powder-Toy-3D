@@ -151,12 +151,12 @@ const lines = (depthWriteEnabled) => ({
   depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled, depthCompare: 'less-equal' },
 });
 const LAYOUTS = () => [RENDER_LAYOUT.FRAME];
-// opaque, behind everything: no depth written or tested
+// Drawn after opaque meshes: far-plane sky must not overwrite their colors.
 const SKY_PIPE = {
   vertex: { entry: 'vs' },
   fragment: { entry: 'fs', targets: [{ format: SCENE_FORMATS.color }] },
   primitive: { topology: 'triangle-list' },
-  depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled: false, depthCompare: 'always' },
+  depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled: false, depthCompare: 'less-equal' },
 };
 
 /** tools/check-wgsl.mjs (and the menu's warm-up, B5) */

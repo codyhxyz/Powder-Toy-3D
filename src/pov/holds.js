@@ -67,7 +67,8 @@ export const HELD = {
   physgun: { hold: 'physgun', left: UNDER([0, 0.09, -0.32]) },
   toolgun: { hold: 'pistol', scale: 1.1 },
   axe: { hold: 'melee' },
-  jackhammer: { hold: 'shotgun', scale: 1.1, right: { ...FIST, at: [0.42, 0, 0] }, left: FORE([-0.42, 0, 0]) },
+  jackhammer: { hold: 'slam', at: [0.25, -1.25, -1.05], pitch: 0, spine: 0, scale: 1.1,
+    right: FIST, left: FORE([-0.84, 0, 0]) },
   pickaxe: { hold: 'melee2', scale: 1.5, left: { at: [0, 0.55, 0], fingers: [0, 0, -1], palm: [1, 0, 0] } },
   // the shovel's handle runs along its length (z), the blade ahead: held down and across, ready to dig
   shovel: {

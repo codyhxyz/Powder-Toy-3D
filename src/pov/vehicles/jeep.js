@@ -75,7 +75,7 @@ const WHEELS = [
 const CHAMFER_Y = 0.5;                   // m up the nose and tail the skid plate rises...
 const CHAMFER_Z = 0.8;                   // ...over this much of the floor: 32°, steeper than any ramp it's meant to climb
 const TUB_FRICTION = 0.25;               // steel skid plate on rock and sand (μ ≈ 0.2–0.4): it slides up an edge rather than snagging
-const HULL_VOLUME = 3.2;                 // m³ the tub, frame and tyres displace when wading (an open tub floods)
+const HULL_VOLUME = 1.8;                 // m³ flooded open tub/frame/tyres: < 3 t water displacement, so it sinks
 const HULL_SAMPLES = [3, 2, 5];
 
 const COLOR = {
