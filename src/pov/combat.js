@@ -85,7 +85,7 @@ export function createCombat(shell) {
     scene: shell.scene, getSim: shell.getSim, getVolume: shell.getVolume, getScale: shell.getScale,
     ballistics: shell.ballistics, world: shell.world,
   });
-  const env = { viewmodel: shell.viewmodel, getScale: shell.getScale };
+  const env = { viewmodel: shell.viewmodel, getScale: shell.getScale, getCharacter: shell.getCharacter };
   let lob = null, queued = false, wait = 0, hitT = 0, red = false;
 
   addEventListener('keydown', (e) => {

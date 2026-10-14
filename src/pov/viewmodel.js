@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { povEvents } from './events.js';
 import { flameOverlay } from './flame.js';
+import { updateViewmodelArms } from './viewmodelArms.js';
 import { useWebGPUCamera, gpuTextureOf } from '../gpu/three.js';
 import { guardMeshes, PENDING_MASK } from '../gfx/meshLight.js';
 import { BRICK } from '../shaders/common.js';
@@ -222,6 +223,7 @@ function createRig(env) {
       h.position.copy(h.userData.rest).add(pos);
       h.rotation.copy(rot);
     }
+    updateViewmodelArms(root, env.getCharacter?.() ?? 'stick');
     setLayers(env.viewmodel);
     if (!settled()) globalThis.__app?.requestRender?.();
   }

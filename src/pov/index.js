@@ -161,7 +161,7 @@ export function createPov(app) {
   viewmodel.visible = false;
   // Halo's grenades (G), red reticle and hitmarker in a Halo match (combat.js; the melee is kick.js)
   const combat = createCombat({
-    scene, viewmodel, hud: povHud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+    scene, viewmodel, hud: povHud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
     ballistics: () => toolbelt?.ballistics ?? null, world: () => npcAi?.world ?? null,
     active: () => mode === 'on', isTyping: app.isTyping,
   });
@@ -174,7 +174,7 @@ export function createPov(app) {
   // the shown figure's right hand (a bone), or null
   function rightHand() {
     const body = figure?.model;
-    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(figure.showing === 'real' ? REAL_HAND : STICK_HAND));
+    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(['real', 'woman'].includes(figure.showing) ? REAL_HAND : STICK_HAND));
     return (body && hands.get(body)) ?? null;
   }
   // the right hand in the world while the figure is drawn, else null: a wand's casts are drawn from it in third person (tools/index.js)
@@ -198,6 +198,7 @@ export function createPov(app) {
   // input
   const keys = new Set();
   let villageTools = null, villageToolTap = false;
+  let grappleQueued = false;
   let kickQueued = false, kickLeg = null;   // the kick key went down; the kicking leg in the viewmodel (kick.js)
   const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
   let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
@@ -222,6 +223,8 @@ export function createPov(app) {
   const coop = () => app.mp.replica || (app.inWorld?.() && app.mp.role === 'host');
   const coopHint = () => hud.toast('Co-op exploration: walk, jump and jet. Use god view to edit; weapons, vehicles, perks and progression require solo play.');
   const canUse = () => !coop() && !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
+  const canGrapple = () => !coop() && live() && !editing && canUse() && !vehicles.seated
+    && !game.running && (app.gamemode?.() ?? 'sandbox') === 'sandbox' && !app.industryBuilding?.();
   const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
     onEnabled: on => { syncVillageTools(on); toolbelt?.setVisible(mode === 'on'); if (on) setMenu(false); },
     onTool: key => { toolbelt?.restrict(key ? [key] : [], key); },
@@ -271,7 +274,8 @@ export function createPov(app) {
   }
   function releaseActions() {
     buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
-    wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = false;
+    wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = grappleQueued = false;
+    toolbelt?.tool('HOOK')?.cancelGrapple();
     // A buffered dig must not finish after pockets open or furniture takes the hands.
     if (village.enabled) toolbelt?.tool(toolbelt.selectedKey)?.deselect?.();
   }
@@ -317,8 +321,12 @@ export function createPov(app) {
       e.preventDefault();
       if (!e.repeat) swapView();
     }
-    if (coop() && [VEHICLE_KEY, KICK_KEY, 'KeyG', 'KeyQ'].includes(e.code)) { if (!e.repeat) coopHint(); return; }
-    if (e.code === VEHICLE_KEY && !e.repeat && !(mode === 'on' && interact.use())) useVehicle();   // E: the thing looked at first
+    if (coop() && [KICK_KEY, 'KeyG', 'KeyQ'].includes(e.code)) { if (!e.repeat) coopHint(); return; }
+    if (e.code === VEHICLE_KEY && !e.repeat) {
+      e.preventDefault();
+      if (coop()) { coopHint(); return; }
+      if (!(mode === 'on' && interact.use()) && !useVehicle() && canGrapple()) grappleQueued = true;
+    }
     if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
@@ -336,9 +344,11 @@ export function createPov(app) {
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });   // (a phone's app switch)
   // E (or the touch Vehicle button): get in, out, or right one
   function useVehicle() {
-    if (coop()) { coopHint(); return; }
-    if (village.enabled) { village.act({ type: 'interact' }); return; }
-    if (live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
+    if (coop()) { coopHint(); return true; }
+    if (village.enabled) { village.act({ type: 'interact' }); return true; }
+    const used = live() ? vehicles.use(player) : null;
+    if (used === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
+    return !!used;
   }
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
@@ -444,7 +454,7 @@ export function createPov(app) {
       try {
         toolbelt = createToolbelt({
           renderer, scene,
-          getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+          getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
           getAimCamera: () => povCam.pose.eyeDist <= FIGURE_HIDE_DIST ? camera : null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
@@ -775,8 +785,9 @@ export function createPov(app) {
 
     // the body
     readInput();
+    if (!canGrapple()) toolbelt?.tool('HOOK')?.cancelGrapple();
     app.coopMove?.(false);
-    if (!coop()) { vehicles.beforeBody(player); village.beforeBody(); }
+    if (!coop()) { vehicles.beforeBody(player); village.beforeBody(input, dt); }
     const waiting = app.mp.replica && (app.mp.stale || networkPending);
     player.update(waiting ? 0 : dt, input);
     if (app.mp.isGuest && networkPending && !app.mp.stale) {
@@ -796,7 +807,9 @@ export function createPov(app) {
     }
     app.coopMove?.(true);
     if (!coop()) {
-      village.afterBody(); vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid }); vehicles.afterBody(player);
+      village.afterBody();
+      vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid });
+      vehicles.afterBody(player);
     }
     const driving = !!vehicles.seated;
     if (driving !== wasDriving) {   // in a vehicle the hands are on the wheel; out of it (E, or it blew up) they're back
@@ -927,6 +940,9 @@ export function createPov(app) {
       ctx.secondary = use && (buttons.secondary || (tapped && buttons.secondaryPressed));
       ctx.primaryPressed = use && buttons.primaryPressed;
       ctx.secondaryPressed = use && buttons.secondaryPressed;
+      ctx.grappleEnabled = canGrapple() && use;
+      ctx.grapplePressed = ctx.grappleEnabled && grappleQueued;
+      ctx.grappleJump = ctx.grappleEnabled && input.jump;
       ctx.wheel = wheelNotches;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
@@ -937,6 +953,7 @@ export function createPov(app) {
       ctx.player.body = player;   // the body itself, for a tool that hangs it on a rope (the hook: player.tether)
       try { toolbelt.update(ctx); } catch (err) { console.error('POV toolbelt update failed', err); }
     }
+    grappleQueued = false;
     held.place({ figure, viewmodel, dt });   // the tools have moved: the held model, and the hands on it
     // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
     if (kickQueued) {
@@ -973,6 +990,7 @@ export function createPov(app) {
       pogoLabel: village.enabled ? 'Jump charge — release to leap' : 'Pogo charge',
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
+      grappleEnabled: canGrapple(),
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
       buried: mode === 'on' && !deadSeen && inEyes && player.buriedId >= 0 ? BURIED_COLOR[player.buriedId] : null,
     });

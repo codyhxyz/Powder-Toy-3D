@@ -251,6 +251,7 @@ body.pov-locked canvas { cursor: none; }
 }
 .pov-hint.show { opacity: 1; transform: translate(-50%, 0); }
 .pov-hint span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.pov-hint span[hidden] { display: none; }
 .pov-hint kbd { color: var(--text); }
 
 /* ---- hitmarker: four short diagonal ticks around the centre (feel.js drives opacity) */

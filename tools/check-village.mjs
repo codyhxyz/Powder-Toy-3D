@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { initialState, validState, change, placementError, loadState, ITEMS, carryTarget, bounds, overlaps } from '../src/pov/village/state.js';
+import { initialState, validState, change, placementError, loadState, ITEMS, carryTarget, bounds, overlaps, HOME_ENTRY, gripPosition } from '../src/pov/village/state.js';
 import { character, furniture, dispose } from '../src/pov/village/models.js';
 
 let state = initialState();
@@ -20,8 +20,17 @@ for (const kind of ['plant', 'sofa', 'bed']) for (let rotation = 0; rotation < 4
 assert.ok(change(state, { type: 'place', id: 'plant', x: 6, z: 0, rotation: 0 }).error, 'cannot place outside home');
 assert.ok(change(state, { type: 'store', id: 'plant' }, { home: true }).error, 'dresser proximity required');
 assert.ok(change(state, { type: 'withdraw', id: 'chair2' }, { dresser: true }).error, 'neighbor storage inaccessible');
-for (const [x, z, rotation] of [[0, 0, 0], [0, -8, 0], [20, 0, 0], [-6, 5, 0], [6, 6, 0], [6, 0, 4], [NaN, 0, 0]])
+for (const [x, z, rotation] of [[0, -8, 0], [20, 0, 0], [-6, 5, 0], [6, 6, 0], [6, 0, 4], [NaN, 0, 0]])
   assert.ok(placementError(state, { id: 'sofa', kind: 'sofa', x, z, rotation }), 'bad positions rejected');
+for (const z of [-7, -4, 0, 5, 8])
+  assert.equal(placementError(state, { id: 'plant', kind: 'plant', x: 0, z, rotation: 0 }), null, 'center floor is usable');
+assert.match(placementError(state, { id: 'plant', kind: 'plant', x: HOME_ENTRY.x, z: HOME_ENTRY.z + 1, rotation: 0 }), /doorway/);
+const centerRoom = change(state, { type: 'place', id: 'plant', x: 0, z: -4, rotation: 0 }, { home: true }).state;
+assert.ok(validState(centerRoom));
+assert.deepEqual(loadState({ getItem: () => JSON.stringify(centerRoom) }, 'test').state, centerRoom, 'center placement survives reload');
+assert.ok(centerRoom.placed.every(i => !overlaps(bounds(i), { x: HOME_ENTRY.x - 0.8, z: HOME_ENTRY.z - 0.8, w: 1.6, d: 1.6 })), 'entry spawn stays clear when the old spawn is furnished');
+const doorwayRoom = change(state, { type: 'place', id: 'plant', x: 0, z: -7, rotation: 0 }, { home: true }).state;
+assert.ok(gripPosition(doorwayRoom, doorwayRoom.placed.find(i => i.id === 'plant'), HOME_ENTRY), 'furniture beyond the entrance can be gripped from the entry, not trapping a returning player');
 assert.ok(placementError(state, { id: 'plant', kind: 'plant', x: 6, z: 0, rotation: 0 }, { x: 6, z: 0 }), 'cannot place on player');
 apply({ type: 'place', id: 'sofa', x: 6, z: 0, rotation: 0 });
 apply({ type: 'place', id: 'sofa', x: 6, z: 0, rotation: 1 });
@@ -32,9 +41,9 @@ apply({ type: 'store', id: 'plant' });
 apply({ type: 'withdraw', id: 'plant' });
 apply({ type: 'place', id: 'plant', x: 6, z: 0, rotation: 0 });
 const untouched = JSON.stringify(state);
-assert.ok(change(state, { type: 'place', id: 'plant', x: 0, z: 0, rotation: 0 }, home).error);
+assert.ok(change(state, { type: 'place', id: 'plant', x: 0, z: -8, rotation: 0 }, home).error);
 assert.equal(JSON.stringify(state), untouched, 'failed action leaves original untouched');
-for (const mutation of [s => s.version++, s => s.pockets.push(s.placed[0]), s => s.placed[0].kind = 'unknown', s => s.storage.pop(), s => s.placed[0].x = 0]) {
+for (const mutation of [s => s.version++, s => s.pockets.push(s.placed[0]), s => s.placed[0].kind = 'unknown', s => s.storage.pop(), s => s.placed[0].x = 20]) {
   const s = structuredClone(state); mutation(s); assert.equal(validState(s), false);
 }
 assert.equal(loadState({ getItem: () => null }, 'test').writable, true);
@@ -48,5 +57,18 @@ for (const kind of Object.keys(ITEMS)) {
 }
 for (const species of ['human', 'cat', 'rabbit', 'bear']) {
   const model = character({ species }); model.animate(1, 3); assert.ok(model.root.children.length); dispose(model.root);
+}
+for (const persona of ['boy', 'girl']) {
+  const model = character({ persona });
+  assert.equal(model.root.userData.persona, persona);
+  const hand = model.hand;
+  for (const args of [[1, 3], [1.1, 0, true], [1.2, 2, false, true], [1.3, 8, false, false, 1],
+    [1.4, 0, false, false, 0, 0.5], [1.5, 3, false, false, 0, 0, true, true]]) {
+    model.animate(...args);
+    model.root.updateMatrixWorld(true);
+    model.root.traverse(o => assert.ok(o.matrixWorld.elements.every(Number.isFinite)));
+  }
+  assert.equal(model.hand, hand, 'persona keeps a stable tool attachment');
+  model.reset(); dispose(model.root);
 }
 console.log('PASS village placement, collision bounds, ownership, rotation, conservation, save validation, and all procedural models');

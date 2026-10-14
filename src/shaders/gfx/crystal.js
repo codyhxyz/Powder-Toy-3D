@@ -79,6 +79,8 @@ struct Shard {
   ends: i32,      // the points in this cell (CRYS_END_*)
   len: f32,       // root face to apex, along d (cells)
   seed: f32,      // a hash of the crystal, in [0, 1)
+  caps: i32,      // ends of the whole run (ends above is only this cell's piece)
+  span: f32,      // whole run's cell extent along d; closes rooted/buried ends
 }
 
 // The crystal the last crystalHit landed on, for the look (gfx/surface.js
@@ -187,6 +189,78 @@ fn shardExit(s: Shard, p: vec3f, d: vec3f, n: ptr<function, vec3f>) -> f32 {
   return max(t, 0.0);
 }
 
+// Transmission crosses the entire prism, not one voxel slice. End planes
+// must remain visible from a middle cell or the interior has false seams.
+fn shardBodyExit(s: Shard, p: vec3f, d: vec3f, n: ptr<function, vec3f>) -> f32 {
+  var body = s;
+  body.ends = s.caps;
+  var t = shardExit(body, p, d, n);
+  let dn = dot(d, s.d);
+  if (abs(dn) > CRYS_RAY_EPS) {
+    let end = select(0.0, s.span, dn > 0.0);
+    let next = (end - dot(p - s.o, s.d)) / dn;
+    if (next < t) { t = max(next, 0.0); *n = sign(dn) * s.d; }
+  }
+  return t;
+}
+
+const CRYS_OPTICAL_EPS: f32 = 0.002;
+const CRYS_INTERNAL_STEPS: i32 = 3;   // two internal bounces, then absorb trapped light
+struct CrystalPath {
+  p: vec3f,
+  d: vec3f,
+  through: vec3f,
+  glow: vec3f,
+  frontF: f32,
+  distance: f32,
+  clipped: u32,
+}
+
+// A bounded dielectric path. Unlike alpha-painted faces, this leaves the
+// primary ray at the back facet to actually see the world behind the gem.
+fn crystalPath(s: Shard, hp: vec3f, incoming: vec3f, n: vec3f, eta: f32, sigma: vec3f,
+               inside: bool, bend: bool, limit: f32) -> CrystalPath {
+  var o = CrystalPath(hp, incoming, vec3f(1.0), vec3f(0.0), 0.0, 0.0, 0u);
+  let f0 = pow((eta - 1.0) / (eta + 1.0), 2.0);
+  if (!inside) {
+    o.frontF = f0 + (1.0 - f0) * pow(1.0 - clamp(-dot(n, incoming), 0.0, 1.0), 5.0);
+    if (bend) {
+      let rt = refract(incoming, n, 1.0 / eta);
+      if (dot(rt, rt) < 1e-6) { o.frontF = 1.0; o.through = vec3f(0.0); return o; }
+      o.d = rt;
+    }
+    o.through *= 1.0 - o.frontF;
+  }
+  for (var bounce = 0; bounce < CRYS_INTERNAL_STEPS; bounce++) {
+    var exitN: vec3f;
+    let chord = shardBodyExit(s, o.p, o.d, &exitN);
+    let remaining = max(limit - o.distance, 0.0);
+    let seg = min(chord, remaining);
+    let att = exp(-sigma * seg);
+    o.glow += o.through * (1.0 - att);
+    o.through *= att;
+    o.p += o.d * seg;
+    o.distance += seg;
+    if (chord >= remaining) { o.clipped = 1u; return o; }
+    var rt = o.d;
+    if (bend) { rt = refract(o.d, -exitN, eta); }
+    if (dot(rt, rt) < 1e-6) {
+      o.d = reflect(o.d, exitN);
+      // The next exit must not re-hit the facet we just reflected off.
+      o.p -= exitN * CRYS_OPTICAL_EPS;
+      continue;
+    }
+    let fx = f0 + (1.0 - f0) * pow(1.0 - clamp(dot(rt, exitN), 0.0, 1.0), 5.0);
+    o.through *= 1.0 - fx;
+    o.d = rt;
+    o.p += (exitN + rt) * CRYS_OPTICAL_EPS;
+    return o;
+  }
+  // A bounded caustic path must not leak straight through its reflecting face.
+  o.through = vec3f(0.0);
+  return o;
+}
+
 // The crystal running through cell (a crystal cell in the grid).
 fn crysShard(cell: vec3i) -> Shard {
   // which way it runs (y first, so ties go up)
@@ -260,6 +334,9 @@ fn crysShard(cell: vec3i) -> Shard {
   if (best >= 1 && fwd == 1) { ends = CRYS_END_FRONT; }
   if (loose && back == 1) { ends = ends | CRYS_END_BACK; }
   s.ends = ends;
+  s.caps = select(0, CRYS_END_FRONT, best >= 1);
+  if (loose) { s.caps = s.caps | CRYS_END_BACK; }
+  s.span = n;
   return s;
 }
 

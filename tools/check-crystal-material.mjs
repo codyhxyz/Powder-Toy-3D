@@ -6,6 +6,8 @@ import { crystalGLSL } from '../src/shaders/gfx/crystal.js';
 import { lightingGLSL } from '../src/shaders/gfx/lighting.js';
 import { surfaceGLSL, WGSL_CHECK } from '../src/shaders/gfx/surface.js';
 import { lib, libChecks, LIB_VARIANTS } from '../src/shaders/gfx/lib.js';
+import { volumeFrag, shadowFrag } from '../src/shaders/render.js';
+import { allDetailDefines } from '../src/gfx/detail.js';
 
 const lighting = lightingGLSL();
 const trace = lighting.slice(lighting.indexOf('fn traceNearSteps('), lighting.indexOf('fn traceNear('));
@@ -31,6 +33,9 @@ if (process.argv.includes('--naga')) {
       .map(check => [check.name, check.code(grid)]),
     ...Object.keys(LIB_VARIANTS).map(variant => [variant,
       lib(grid, { variant }) + '\n@compute @workgroup_size(1) fn main() {}']),
+    ...[false, true].map(curved => [`volume-${curved ? 'curved' : 'straight'}`,
+      volumeFrag(grid, { detail: allDetailDefines(), curved })]),
+    ['shadow', shadowFrag(grid)],
   ];
   for (const [name, code] of modules) {
     const result = spawnSync('naga', ['--stdin-file-path', `${name}.wgsl`], {

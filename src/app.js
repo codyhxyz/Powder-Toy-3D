@@ -79,7 +79,7 @@ import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
-import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z } from './pov/village/state.js';
+import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
@@ -147,7 +147,7 @@ const DEFAULTS = {
   specificDelete: false, replaceTarget: -1, propField: 'temp', propText: '',
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
-  character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
@@ -176,7 +176,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
+  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -272,7 +272,8 @@ if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
-if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
+if (!['real', 'woman', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
+if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharacter = DEFAULTS.villageCharacter;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
 // ?physics=v2: the new physics' fast version (src/v2/physics.js, docs/v2.md 5) in box mode, loaded only
 // then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
@@ -701,7 +702,7 @@ function openMap(key, mode = 'sandbox') {
 // Animal Crossing on Tinker Creek: the drop point in front of your cottage (grid cells), else null
 function villageSpawn() {
   if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
-  return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);
+  return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0] + HOME_ENTRY.x, VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z + HOME_ENTRY.z).sub(sim.origin);
 }
 // Keep the user's setting intact when entering/leaving a low-gravity gamemode.
 function applyGravity() {
@@ -893,7 +894,8 @@ function presentationPoint(p, out = new THREE.Vector3()) {
 // grid cells (presentationMath.js inverseRay), t along the displayed ray.
 function screenCurve(ray) {
   const r = inverseRay(ray.origin.clone().add(sim.origin).toArray(), ray.direction.toArray(), presentation.parameters);
-  r.C = r.C.map((v, i) => v - sim.origin.getComponent(i));
+  const origin = sim.origin.toArray();
+  r.C = r.C.map((v, i) => v - origin[i]);
   return r;
 }
 function screenAt(ray, t, out) { return out.fromArray(rayPoint(screenCurve(ray), t)); }
@@ -1445,13 +1447,14 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
-    // The body you see in third person and when you die: Realistic (a
-    // skinned, animated, shredded superhero in a wizard's hat and purple
-    // boxers, the default) or Stickman (the TPT homage). It switches live, in POV too.
+    // The body you see in third person and when you die. Both Quaternius bodies
+    // wear a wizard's hat and purple clothing; Stickman is the TPT homage.
     { title: 'Character body', rows: [
-      { type: 'seg', key: 'character', options: [['real', 'Realistic'], ['stick', 'Stickman']],
+      { type: 'seg', key: 'character', options: [['real', 'Male wizard'], ['woman', 'Female wizard'], ['stick', 'Stickman']],
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
-      { type: 'custom', el: h('p.row-note', { text: 'Changes your body in third person. First-person hands stay the same.' }) },
+      { type: 'seg', key: 'villageCharacter', options: [['boy', 'Animal Crossing: Boy'], ['girl', 'Girl']],
+        onChange: (v) => { settings.villageCharacter = v; save(); pacer.wake(); } },
+      { type: 'custom', el: h('p.row-note', { text: 'Changes your body and first-person arms.' }) },
     ] },
     { title: 'First-person controls', rows: [
       // named as Minecraft names them
