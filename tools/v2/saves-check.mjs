@@ -1,7 +1,7 @@
 // CPU-only: exact compact codec + the real save-section registration/game container.
 // GPU dispatch/upload is covered by compact-check; live continuation by the documented app plan.
 import assert from 'node:assert/strict';
-import { encodeV2State, decodeV2State, stateLengths } from '../../src/v2/state.js';
+import { encodeV2State, decodeV2State, stateLengths, V2_STATE_VERSION } from '../../src/v2/state.js';
 import { encodeSave, decodeSave, readSaveHeader } from '../../src/saves/format.js';
 import { createSaves } from '../../src/saves/game.js';
 import savesWire from '../../src/wire/saves.js';
@@ -19,7 +19,7 @@ state.aux.set([0xffffffff, 0x7fc00001, 0x80000000, 0xdeadbeef]);
 state.activity[0] = 1;
 state.args[12] = state.tick;
 const bytes = encodeV2State(state);
-assert.deepEqual(decodeV2State(bytes, dims), { ...state, hasAux: true, version: 1 });
+assert.deepEqual(decodeV2State(bytes, dims), { ...state, hasAux: true, version: V2_STATE_VERSION });
 const padded = new Uint8Array(bytes.length + 9); padded.set(bytes, 5);
 assert.deepEqual(decodeV2State(padded.subarray(5, 5 + bytes.length), dims).cells, state.cells);
 assert.throws(() => encodeV2State({ ...state, cells: state.cells.subarray(4) }), /length/);
@@ -34,7 +34,7 @@ for (const n of [0, 1, 11, 12, 100, bytes.length - 1, bytes.length - 4]) assert.
 assert.throws(() => decodeV2State(new Uint8Array(bytes.length + 1), dims), /magic/);
 assert.throws(() => decodeV2State(bytes, [64, 32, 32]), /dimensions/);
 assert.throws(() => decodeV2State(new Float32Array(bytes.length), dims), /invalid/);
-for (const [offset, value, re] of [[0, 0, /magic/], [4, 2, /version/], [8, 0xffffffff, /length/]]) {
+for (const [offset, value, re] of [[0, 0, /magic/], [4, V2_STATE_VERSION + 1, /version/], [8, 0xffffffff, /length/]]) {
   const bad = bytes.slice(); new DataView(bad.buffer).setUint32(offset, value, true);
   assert.throws(() => decodeV2State(bad, dims), re);
 }

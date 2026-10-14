@@ -2,7 +2,7 @@ import { fold } from '../gpu/kernels.js';
 import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
-  V2_KERNELS, V2Params, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
+  V2_KERNELS, V2Params, nativeDynamicsHead, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
 
@@ -47,7 +47,7 @@ function tableOf(gpu) {
 
 export class PhysicsV2 {
   /** @param {import('../sim.js').Simulation} sim */
-  constructor(sim) {
+  constructor(sim, { contactWGSL = '', Dynamics = null } = {}) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);
     this.sim = sim;
     sim.compact = sim.compactOwner = this;
@@ -68,6 +68,12 @@ export class PhysicsV2 {
     const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${sim.id} v2 ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     this.cells = buf('cells', g.slots * 16);
+    this.aux = buf('energy banks', g.slots * 4);
+    this.liquidScratch = buf('liquid snapshots', g.slots * 16);
+    this.events = buf('material requests', g.slots * 4);
+    // Explicit injection seams. These modules do not exist in the foundation alone.
+    this.contactReady = false;
+    this.dynamics = null;
     this.act = buf('activity', this.layout.words * 4);
     this.args = buf('args', ARGS2.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
     // every brick starts asleep (its quiet run full): only what the first import changes wakes, so a
@@ -76,6 +82,8 @@ export class PhysicsV2 {
     const L = {
       V2: gpu.layout('V2', V2_LAYOUT), ARGS: gpu.layout('V2_ARGS', V2_ARGS_LAYOUT), STATE: gpu.layout('V2_STATE', V2_STATE_LAYOUT),
       INVALIDATE: gpu.layout('V2_INVALIDATE', V2_INVALIDATE_LAYOUT),
+      MATERIAL: gpu.layout('V2_MATERIAL', V2_MATERIAL_LAYOUT), LIQUID: gpu.layout('V2_LIQUID', V2_LIQUID_LAYOUT),
+      CONTACT: gpu.layout('V2_CONTACT', V2_CONTACT_LAYOUT), IMPORT: gpu.layout('V2_IMPORT', V2_IMPORT_LAYOUT),
     };
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
     const own = [b(0, this.cells), b(1, this.act), b(2, tableOf(gpu))];
@@ -83,22 +91,32 @@ export class PhysicsV2 {
       read: gpu.bindGroup(sim.L.STATE_RO, [b(0, this.cells), b(1, sim.state.B)], 'compact readers'),
       invalidate: gpu.bindGroup(L.INVALIDATE, [b(3, sim.marks)], 'compact invalidation'),
       v2: gpu.bindGroup(L.V2, own, 'v2'),
+      material: gpu.bindGroup(L.MATERIAL, [...own, b(4, this.aux)], 'v2 material'),
+      liquid: gpu.bindGroup(L.LIQUID, [...own, b(4, this.aux), b(5, this.liquidScratch)], 'v2 liquid'),
+      contact: gpu.bindGroup(L.CONTACT, [...own, b(4, this.aux), b(6, this.events)], 'v2 contact'),
+      import: gpu.bindGroup(L.IMPORT, [b(0, sim.state.A), b(1, sim.state.B), b(3, sim.marks)], 'v2 import'),
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
       state: gpu.bindGroup(L.STATE, [b(0, sim.state.A), b(1, sim.state.B), b(2, sim.state.F), b(3, sim.marks)], 'v2 state'),
     };
+    this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
+    this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
+    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'material', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid' }[name] ?? 'v2');
+    const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     for (const k of V2_KERNELS) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, code: k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
-        layouts: [sim.L.TABLES, withState ? L.STATE : k.name === 'v2invalidate' ? L.INVALIDATE : gpu.L.EMPTY, k.name === 'v2args' ? L.ARGS : L.V2],
+        name: k.name, code: k.name === 'v2block' ? k.code(g, contactWGSL) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        layouts: [sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : k.name === 'v2invalidate' ? L.INVALIDATE : gpu.L.EMPTY, familyLayouts[this.familyOf(k.name)]],
       });
     }
-    this.ready = Promise.all(Object.values(this.kernels).map((k) => k.ready)).then(() => this);
+    this.dynamics = Dynamics ? new Dynamics(this) : null;
+    this.ready = Promise.all([...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready]).then(() => this);
     this.isReady = false;
     this.ready.then(() => {
       if (this.disposed) return;
       this.isReady = true;
+      this.contactReady = !!contactWGSL;
       sim.version++;
       sim.changedAll = true;
     }, () => {});
@@ -137,7 +155,7 @@ export class PhysicsV2 {
   /** Certified idle with nothing written since: ticking would record nothing. */
   get asleep() {
     const sim = this.sim;
-    return this.certified && !this.importFull && !this.importMarked && sim.version === this.seenVersion && (sim.wholeWrites ?? 0) === this.seenWhole;
+    return this.certified && (!this.dynamics || this.dynamics.isIdle === true) && !this.importFull && !this.importMarked && sim.version === this.seenVersion && (sim.wholeWrites ?? 0) === this.seenWhole;
   }
 
   // The counts after the ticks recorded so far: certifies idle when no brick is awake and nothing wrote since.
@@ -163,7 +181,7 @@ export class PhysicsV2 {
     if (!this.importFull && !this.importMarked) return;
     const { gpu, sim } = this;
     this.kernels.v2import.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
+      bind: [sim.tables, this.groups.import, this.groups.material], header: { ...sim.header(), capture: 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
     });
     sim.onPass?.('v2import', { kind: 'compute', gpuMs: null });
     this.legacyPending = true;
@@ -219,6 +237,8 @@ export class PhysicsV2 {
       else gpu.frame.clear(this.aux);
     }
     gpu.frame.copy(snapshot, 0, this.cells, 0, g.slots * 16);
+    gpu.frame.clear(this.liquidScratch);
+    gpu.frame.clear(this.events);
     gpu.frame.clear(this.act);
     const m = marksLayout(g);
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
@@ -242,7 +262,7 @@ export class PhysicsV2 {
     const header = sim.header();
     const own = [sim.tables, gpu.emptyGroup, groups.v2];
     const invalidation = [sim.tables, groups.invalidate, groups.v2];
-    const run = (kernel, size, bind = own, p = params) => {
+    const run = (kernel, size, bind = [sim.tables, gpu.emptyGroup, groups[this.familyOf(kernel.name)]], p = params) => {
       kernel.dispatch(f, size, { bind, header, params: p });
       sim.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
     };
@@ -251,14 +271,17 @@ export class PhysicsV2 {
     run(k.v2activity, fold(Math.ceil(this.g.nbricks / 64)));
     run(k.v2cols, fold(Math.ceil((this.g.bx * this.g.bz) / 64)));
     run(k.v2args, [1, 1, 1], [sim.tables, gpu.emptyGroup, groups.args]);
+    this.dynamics?.advanceParticles(this.tick);
     run(k.v2column, ind(ARGS2.COLS));
     run(k.v2support, ind(ARGS2.BRICKS));
     run(k.v2block, ind(ARGS2.BLOCKS));
+    this.dynamics?.consumeMaterialEvents(this.tick);
     for (let s = 0; s < SUB; s++) {
       run(k.v2flux, ind(ARGS2.BRICKS));
       run(k.v2limit, ind(ARGS2.BRICKS));
       run(k.v2gather, ind(ARGS2.BRICKS));
     }
+    this.dynamics?.advanceAir(this.tick);
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
     this.legacyPending = true;
     // A test-only same-physics baseline for full-frame direct/compat comparisons.
@@ -331,6 +354,8 @@ export class PhysicsV2 {
     if (!this.aux && state.aux.some(word => word !== 0)) throw new Error('v2 state: auxiliary owner is unavailable');
     if (this.aux) gpu.write(this.aux, 0, state.aux);
     gpu.write(this.cells, 0, state.cells);
+    gpu.frame.clear(this.liquidScratch);
+    gpu.frame.clear(this.events);
     gpu.write(this.act, 0, state.activity);
     gpu.write(this.args, 0, state.args);
     // Legacy A/B loaded by saves/game is only a projection of these words.
@@ -389,6 +414,7 @@ export class PhysicsV2 {
     if (this.sim.compactOwner === this) this.sim.compactOwner = null;
     this.wake();
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');
-    for (const b of [this.cells, this.act, this.args]) b.destroy();
+    this.dynamics?.dispose();
+    for (const b of [this.cells, this.aux, this.liquidScratch, this.events, this.act, this.args]) b.destroy();
   }
 }

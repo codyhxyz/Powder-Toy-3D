@@ -1,3 +1,4 @@
+import { nativeStateWGSL, materialStorageWGSL } from './v2/state.js';
 import { compactDecodeWGSL } from './compact.js';
 import { prelude, gridDims, LAYOUT, stateLayout, SEED_MAX, STAGE } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
@@ -10,24 +11,9 @@ import { CELL_M } from '../scale.js';
 // WGSL here). Behind ?physics=v2 (src/v2/physics.js drives it); nothing
 // imports this module with the flag off.
 //
-// One fixed 60 Hz tick at 2 g. One copy of the state, 16 bytes a cell,
-// updated in place, in the same slot order as today's state (brick-major,
-// shaders/common.js slotOf), so the bridge to today's renderer is slot for
-// slot. Presentation decodes compact cells directly; legacy edits/readbacks export lazily.
-// Every v2 kernel reaches a cell through loadCell/storeCell (or the
-// cells[slot] twin where a workgroup walks a brick's own run of 64 slots):
-//
-//   word0  id u8 · T u16 (¼ K steps from -273.25 °C, so whole °C are exact) · age u8
-//          (age: a falling powder's ticks of fall; a gas's ticks since it moved; a liquid, while the
-//          flux runs: which face carries its remainder, and how much, when its outflow is limited)
-//   word1  liquid: fill u24 (1.0 = 2¹⁶, above it compressed) · ctype u8
-//          air:    the claim, while the flux runs: the liquid id (u8) and T (u16) it would take
-//          others: life f16 · ctype u8 · spare u8
-//   word2  liquid and air: the flux on the +x and +y faces (2 × f16, fill units a substep)
-//          powder: the sub-cell fall fraction (f32)
-//   word3  liquid and air: the flux on the +z face (f16) · liquid: its outflow limit K (u16, of 65,535)
-//          others: spare u16 · seed u16 (the colour variation today's renderer reads)
-//
+// Core format 2: 16-byte cells + signed 4-byte energy bank; transient liquid
+// snapshots 16 bytes and material requests 4 bytes. See docs/v2/native-contract.md.
+// Neither the upper liquid payload nor foam is temporary limiter storage.
 // The tick (5.4, minus the passes this version leaves out):
 //   import    cells today's writers changed (the brush, presets, undo) into v2's state
 //   activity  busy bricks (a rule was *possible* in them) → AWAKE bricks: busy in their 3³
@@ -136,7 +122,7 @@ export function fallCells(id, ticks) {
 // v2's activity words (u32), one run per brick each, then the brick columns and the counts.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, words: 9 * nb + bx * bz + 8 };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, words: 10 * nb + bx * bz + 8 };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -151,18 +137,27 @@ const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { 
 // group 2 of every v2 kernel: the cells, the activity words, the element rows (and for args, the args)
 export const V2_LAYOUT = [buf(0, 'storage'), buf(1, 'storage'), buf(2, 'read-only-storage')];
 export const V2_ARGS_LAYOUT = [...V2_LAYOUT, buf(3, 'storage')];
+export const V2_MATERIAL_LAYOUT = [...V2_LAYOUT, buf(4, 'storage')];
+export const V2_LIQUID_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage')];
+export const V2_CONTACT_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(6, 'storage')];
 // group 1 of the import and the bridge: today's state, its flags and marks (no activity arrays)
 export const V2_STATE_OPTS = { state: 'read_write', flags: true, marks: true };
 export const V2_STATE_LAYOUT = stateLayout(V2_STATE_OPTS);
+export const V2_IMPORT_OPTS = { state: 'read', flags: false, marks: true };
+export const V2_IMPORT_LAYOUT = stateLayout(V2_IMPORT_OPTS);
 
 // ---------------------------------------------------------------- WGSL
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
 
-function v2Head(g, opts = { state: false }) {
+export function v2Head(g, opts = { state: false }, family = 'base') {
   const a = v2ActLayout(g);
   return /* wgsl */ `
-${prelude(g, opts)}
-${compactDecodeWGSL}
+${prelude(g, opts).replace(/\bMaterial\b/g, 'LegacyMaterial')}
+${opts.state === 'read' ? '' : compactDecodeWGSL}
+${nativeStateWGSL}
+${family !== 'base' ? materialStorageWGSL : ''}
+${family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>;' : ''}
+${family === 'contact' ? '@group(2) @binding(6) var<storage, read_write> events: array<u32>;' : ''}
 ${V2Params.wgsl}
 @group(3) @binding(1) var<uniform> P: V2Params;
 @group(2) @binding(0) var<storage, read_write> cells: array<vec4u>;
@@ -178,6 +173,7 @@ const V2_COLS: u32 = ${a.cols}u;
 const V2_COUNT: u32 = ${a.count}u;
 const V2_LEGACY: u32 = ${a.legacy}u;
 const V2_VISIBLE: u32 = ${a.visible}u;
+const V2_STATE_DIRTY: u32 = ${a.state}u;
 const CNT_AWAKE: u32 = ${CNT.AWAKE}u;
 const CNT_COLS: u32 = ${CNT.COLS}u;
 const CNT_BUSY: u32 = ${CNT.BUSY}u;
@@ -204,7 +200,9 @@ const C_GAS: u32 = ${V2.GAS}u;
 const WALL_CELL: vec4u = vec4u(${ELEMENTS.find((e) => e.key === 'WALL').id}u, 0u, 0u, 0u);
 
 // ---- the cell (the layout is this module's header comment) ----
-fn loadCell(p: vec3i) -> vec4u { return cells[slotOf(p)]; }
+fn loadCore(s: u32) -> vec4u { return cells[s]; }
+fn storeCore(s: u32, c: vec4u) { cells[s] = c; }
+fn loadCell(p: vec3i) -> vec4u { return loadCore(slotOf(p)); }
 // Keep redraws separate from activity: fall fractions, gas ages and sub-threshold
 // liquid flux can keep a rule busy without changing a pixel or the legacy cache.
 fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
@@ -213,10 +211,12 @@ fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
   atomicStore(&act2[V2_VISIBLE + b], 1u);
   atomicStore(&act2[V2_LEGACY + b], 1u);
 }
+fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); }
 fn storeCell(p: vec3i, c: vec4u) {
   let s = slotOf(p);
-  noteVisible(p, cells[s], c);
-  cells[s] = c;
+  if (any(loadCore(s) != c)) { noteState(s); }
+  noteVisible(p, loadCore(s), c);
+  storeCore(s, c);
 }
 fn cellAt(p: vec3i) -> vec4u { if (!inGrid(p)) { return WALL_CELL; } return loadCell(p); }
 fn cid(c: vec4u) -> u32 { return c.x & 255u; }
@@ -232,10 +232,8 @@ fn zeroQ(c: vec4u) -> vec4u {
   return vec4u(c.x, c.y, 0u, c.w & 0xffff0000u);
 }
 // a powder's fall state: its age and sub-cell fraction
+fn resetMotionAge(c: vec4u) -> vec4u { if (isLiq(c)) { return c; } return withAge(c, 0u); }
 fn setFall(c: vec4u, age: u32, frac: f32) -> vec4u { var o = withAge(c, age); o.z = bitcast<u32>(frac); return o; }
-fn lifeOf(c: vec4u) -> f32 { return unpack2x16float(c.y).x; }
-fn withLife(c: vec4u, life: f32) -> vec4u { var o = c; o.y = (c.y & 0xffff0000u) | (pack2x16float(vec2f(life, 0.0)) & 0xffffu); return o; }
-
 // ---- the element rows (EV: shaders/v2.js v2Table) ----
 fn cls(id: u32) -> u32 { return u32(EV[2u * id].x); }
 fn clsOf(c: vec4u) -> u32 { return cls(cid(c)); }
@@ -269,17 +267,20 @@ fn importA(a: vec4f) -> vec4u {
   let id = u32(clamp(eid(a), 0, NE - 1));
   let k = cls(id);
   let tq = u32(clamp(round((a.y + T_OFFSET) * 4.0), 0.0, 65535.0));
-  let ct = u32(clamp(floor(a.w), 0.0, 255.0));
+  let legacyCtype = u32(max(floor(a.w), 0.0));
+  let ct = select(legacyCtype & 255u, 0u, conductsNative(id));
   let seed = u32(clamp(fract(a.w) / SEED_MAX * 65536.0, 0.0, 65535.0));
   var c = vec4u(id | (tq << 8u), 0u, 0u, 0u);
   if (k == C_LIQUID) {
     c.y = FULLU | (ct << 24u);
+    c = withLife(c, a.z);
   } else if (k != C_AIR) {
     var life = a.z;
     if (k == C_GAS && fadeOf(id) > 0.0 && life <= 0.0) { life = 1.0; }
-    c.y = (pack2x16float(vec2f(life, 0.0)) & 0xffffu) | (ct << 16u);
+    c.y = (u32(clamp(round(life * FUEL_Q), 0.0, 65535.0))) | (ct << 16u);
     c.w = seed << 16u;
   }
+  if (conductsNative(id)) { c = withSpark(c, legacyCtype); }
   return c;
 }
 `;
@@ -291,7 +292,7 @@ const MAIN = '@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wg: v
 // projection is insufficient: a hidden film looks like air, and a cell may change away and back.
 // A whole replacement (load/undo: P.full) owns every cell. Changed non-air wakes its brick.
 export const v2ImportWGSL = (g) => /* wgsl */ `
-${v2Head(g, V2_STATE_OPTS)}
+${v2Head(g, V2_IMPORT_OPTS, 'material')}
 ${bridgeWGSL}
 var<workgroup> wgMarked: u32;
 var<workgroup> wgChanged: atomic<u32>;
@@ -312,11 +313,13 @@ ${MAIN} {
   let owned = atomicAnd(&marks[MARK_OWNED + (s >> 5u)], ~mask) & mask;
   if (P.full != 0u || owned != 0u) {
     let n = importA(a);
-    if (any(n != c)) {
-      cells[s] = n;
+    let oldBank = banks[s];
+    banks[s] = 0; // explicit ownership resets even when the imported core compares equal
+    if (any(n != c) || oldBank != 0) {
+      cells[s] = n; noteState(s);
       // (air that stays air, at another temperature or seed, makes no rule possible: a load of an
       // empty box wakes nothing)
-      if (clsOf(n) != C_AIR || clsOf(c) != C_AIR) { atomicOr(&wgChanged, 1u); }
+      if (clsOf(n) != C_AIR || clsOf(c) != C_AIR || oldBank != 0) { atomicOr(&wgChanged, 1u); }
     }
   }
   workgroupBarrier();
@@ -414,7 +417,7 @@ fn main() {
 // falls into; it lands on the run below; overshooting onto a falling run it takes that run's age, so the
 // two move as one (5.3). Liquids and solids are floors (powders sink into liquids in the block pass).
 export const v2ColumnWGSL = (g) => /* wgsl */ `
-${v2Head(g)}
+${v2Head(g, { state: false }, 'material')}
 ${MAIN} {
   let k = foldThread(wg, nwg, li);
   if (k >= atomicLoad(&act2[V2_COUNT + CNT_USE_COLS]) * 16u) { return; }
@@ -457,8 +460,10 @@ ${MAIN} {
     if (to != y) {
       let q = vec3i(x, to, z);
       let o = zeroQ(loadCell(q));
-      storeCell(q, c);
-      storeCell(p, o);
+      let source = loadMaterial(slotOf(p));
+      let destination = loadMaterial(slotOf(q));
+      storeMaterial(slotOf(q), destination, Material(c, source.bank));
+      storeMaterial(slotOf(p), source, Material(o, destination.bank));
       markBusy(q);
     } else {
       storeCell(p, c);
@@ -495,8 +500,9 @@ ${MAIN} {
 // its element's drop test read from the support snapshot; diagonals for half the positions, hashed, so
 // heaps come out round), R3 sink and float (a denser movable over a lighter fluid swaps down), R4 gas
 // (lateral random swaps while young; a fading gas spends its life and leaves air).
-export const v2BlockWGSL = (g) => /* wgsl */ `
-${v2Head(g)}
+export const v2BlockWGSL = (g, contactWGSL = '') => /* wgsl */ `
+${v2Head(g, { state: false }, 'contact')}
+${contactWGSL}
 // share of positions whose grains may topple diagonally (lean-sim MOORE 0.5: an octagon, not a square or diamond)
 const MOORE_U: u32 = 0x80000000u;
 // powder sinking through a fluid: this share of (1 - ρ_fluid/ρ_powder) a tick its pair is in one block
@@ -521,7 +527,13 @@ ${MAIN} {
   if (c0.y < 0) { return; }
   var cs: array<vec4u, 8>;
   var orig: array<vec4u, 8>;
-  for (var i = 0u; i < 8u; i++) { cs[i] = cellAt(c0 + off8(i)); orig[i] = cs[i]; }
+  var bs: array<i32, 8>; var oldBanks: array<i32, 8>;
+  var positions: array<vec3i, 8>; var requests: array<u32, 8>;
+  for (var i = 0u; i < 8u; i++) {
+    let p = c0 + off8(i); positions[i] = p;
+    cs[i] = cellAt(p); orig[i] = cs[i];
+    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; } oldBanks[i] = bs[i];
+  }
   // R2 topple
   for (var c = 0u; c < 4u; c++) {
     let ti = 4u + c;
@@ -565,6 +577,7 @@ ${MAIN} {
     let moved = cs[pick];
     cs[pick] = setFall(gr, 0u, 0.0);
     cs[ti] = zeroQ(moved);
+    let bank = bs[pick]; bs[pick] = bs[ti]; bs[ti] = bank;
     markBusy(c0 + off8(pick));
   }
   // R3 sink and float, R4 buoyancy: a denser movable over a lighter fluid swaps down
@@ -584,8 +597,9 @@ ${MAIN} {
     if (kU == C_POWDER) { chance = SINK_RATE * (1.0 - dL / dU); } else if (kU == C_LIQUID && kL == C_LIQUID) { chance = LIQ_SWAP; }
     var rs = seed3(pU, P.tick, 78u);
     if (rnd(&rs) < chance) {
-      cs[c] = withAge(zeroQ(hi), 0u);
-      cs[4u + c] = withAge(zeroQ(lo), 0u);
+      cs[c] = resetMotionAge(zeroQ(hi));
+      cs[4u + c] = resetMotionAge(zeroQ(lo));
+      let bank = bs[c]; bs[c] = bs[4u + c]; bs[4u + c] = bank;
       markBusy(c0 + off8(c));
     }
   }
@@ -608,28 +622,24 @@ ${MAIN} {
     if (rnd(&rs) < DIFFUSE) {
       cs[i0] = zeroQ(a1);
       cs[i1] = zeroQ(a0);
+      let bank = bs[i0]; bs[i0] = bs[i1]; bs[i1] = bank;
       markBusy(c0 + off8(i1));
     }
   }
-  // R4 gas ageing and fading
+  // Gas ageing is motion state; reaction/lifetime changes belong to contact.
   for (var i = 0u; i < 8u; i++) {
-    let gc = cs[i];
-    if (clsOf(gc) != C_GAS) { continue; }
-    let fade = fadeOf(cid(gc));
-    let age = cAge(gc);
-    if (fade <= 0.0 && age >= DIFFUSE_AGE) { continue; }
-    let p = c0 + off8(i);
-    markBusy(p);
-    var o = withAge(gc, age + 1u);
-    if (fade > 0.0) {
-      let life = lifeOf(gc) - fade;
-      if (life <= 0.0) { o = vec4u(gc.x & 0x00ffff00u, 0u, 0u, 0u); } else { o = withLife(o, life); }
+    if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < DIFFUSE_AGE) {
+      cs[i] = withAge(cs[i], cAge(cs[i]) + 1u); markBusy(positions[i]);
     }
-    cs[i] = o;
   }
+  ${contactWGSL ? 'contactBlock(&cs, &bs, positions, &requests);' : '// Contact module not installed: no reaction capability advertised.'}
   for (var i = 0u; i < 8u; i++) {
-    let p = c0 + off8(i);
-    if (inGrid(p) && any(cs[i] != orig[i])) { storeCell(p, cs[i]); }
+    let p = positions[i];
+    if (inGrid(p)) {
+      let slot = slotOf(p);
+      storeMaterial(slot, Material(orig[i], oldBanks[i]), Material(cs[i], bs[i]));
+      events[slot] |= requests[i];
+    }
   }
 }
 `;
@@ -648,7 +658,8 @@ fn headOf(c: vec4u) -> f32 {
   return 1.0 + (fl - FULLF) / (COMP * FULLF);
 }
 fn stiffOf(c: vec4u) -> f32 { if (isLiq(c) && cFill(c) > FULLU) { return 1.0 / COMP; } return 1.0; }
-fn wetAt(p: vec3i) -> bool { return inGrid(p) && isLiq(loadCell(p)); }
+fn flowCell(p: vec3i) -> vec4u { let s = slotOf(p); return vec4u(cells[s].x, cells[s].y, 0u, 0u); }
+fn wetAt(p: vec3i) -> bool { return inGrid(p) && isLiq(flowCell(p)); }
 // the liquid an air cell would take this substep, and its temperature: the highest liquid id among its faces
 fn claimOf(p: vec3i) -> vec2u {
   var best = 0u;
@@ -656,7 +667,7 @@ fn claimOf(p: vec3i) -> vec2u {
   for (var i = 0; i < 6; i++) {
     let q = p + face6(i);
     if (!inGrid(q)) { continue; }
-    let c = loadCell(q);
+    let c = flowCell(q);
     if (isLiq(c) && cid(c) > best) { best = cid(c); bt = cTq(c); }
   }
   return vec2u(best, bt);
@@ -688,7 +699,15 @@ fn faceFlux(pi: vec3i, ci: vec4u, pj: vec3i, cj: vec4u, a: i32, qold: f32) -> f3
   }
   v *= 1.0 - damp;
   if (abs(v) < QMIN) { v = 0.0; }
-  return clamp(v, -Q_MAX, Q_MAX);
+  // Six faces share conservative headroom. Outgoing mass can only add space;
+  // no destination can exceed the sixteen-cell persistent-payload bound.
+  var room = MAX_FILL;
+  if (v > 0.0 && wj) { room -= cFill(cj); }
+  if (v < 0.0 && wi) { room -= cFill(ci); }
+  let rawCap = min(Q_MAX, f32(room / 6u));
+  // f16 rounds to nearest; leave one ulp of headroom before packing.
+  let cap = max(0.0, rawCap - max(1.0, rawCap / 1024.0));
+  return clamp(v, -cap, cap);
 }
 `;
 const brickCell = /* wgsl */ `
@@ -700,7 +719,7 @@ const brickCell = /* wgsl */ `
 // pass 1: each open cell's +x, +y, +z faces; a face into a sleeping brick stays shut this tick and wakes
 // it, and a −face whose owner sleeps wakes the owner if it would flow
 export const v2FluxWGSL = (g) => /* wgsl */ `
-${v2Head(g)}
+${v2Head(g, { state: false }, 'liquid')}
 ${fluxWGSL}
 ${MAIN} {
 ${brickCell}
@@ -711,12 +730,13 @@ ${brickCell}
   for (var a = 0; a < 3; a++) {
     let pj = p + axisV(a);
     if (!inGrid(pj)) { continue; }
-    let cj = loadCell(pj);
+    let cj = flowCell(pj);
     if (!isOpenC(cj)) { continue; }
     var v = faceFlux(p, c, pj, cj, a, q0[a]);
     if (v != 0.0 && !awakeCell(pj)) { markBusy(p); markBusy(pj); v = 0.0; }
     q[a] = v;
   }
+  if (any(q != q0)) { noteState(s); }
   cells[s].z = pack2x16float(q.xy);
   cells[s].w = (c.w & 0xffff0000u) | (pack2x16float(vec2f(q.z, 0.0)) & 0xffffu);
   for (var a = 0; a < 3; a++) {
@@ -734,7 +754,7 @@ ${brickCell}
 // it drains to exactly 0 (lean-sim's exact f64 K does the same; a 16-bit K alone strands the last quanta).
 // The face and the remainder go in its age byte. An air cell gets its claim.
 export const v2LimitWGSL = (g) => /* wgsl */ `
-${v2Head(g)}
+${v2Head(g, { state: false }, 'liquid')}
 ${fluxWGSL}
 ${MAIN} {
 ${brickCell}
@@ -747,7 +767,7 @@ ${brickCell}
     for (var a = 0; a < 3; a++) {
       if (q[a] > 0.0) { a6[2 * a] = u32(trunc(q[a])); }
       let ph = p - axisV(a);
-      if (inGrid(ph)) {
+      if (inGrid(ph) && awakeCell(ph)) {
         let ch = loadCell(ph);
         if (isOpenC(ch)) { let qh = qOf(ch)[a]; if (qh < 0.0) { a6[2 * a + 1] = u32(trunc(-qh)); } }
       }
@@ -767,78 +787,107 @@ ${brickCell}
       }
       tag = mx | (min(fl - sum, 31u) << 3u);
     }
-    cells[s].w = (c.w & 0xffffu) | (kq << 16u);
-    cells[s].x = (c.x & 0x00ffffffu) | (tag << 24u);
-  } else if (kc == C_AIR) {
-    let cl = claimOf(p);
-    cells[s].y = cl.x | (cl.y << 8u);
+    let payload = payloadOf(c);
+    liquidScratch[s] = vec4u(kq | (tag << 16u) | (ctypeOf(c) << 24u),
+      (c.x & 0xffffffu) | ((payload & 255u) << 24u), cFill(c) | ((payload >> 8u) << 24u), bitcast<u32>(banks[s]));
+  } else {
+    liquidScratch[s] = vec4u(65535u, c.x & 0xffffffu, 0u, bitcast<u32>(banks[s]));
   }
 }
 `;
 
-// pass 3: integer transfers, each face's computed alike by its two cells from the source's limit, so mass
-// is exact. A cell writes only its own id, temperature and fill here (a drying cell keeps its age byte:
-// its receivers read its remainder there)
-export const v2GatherWGSL = (g) => /* wgsl */ `
-${v2Head(g)}
-// what a face carries out of src (|v| its flux; face its index in src's face6 order)
-fn sendOf(v: f32, src: vec4u, face: u32) -> i32 {
-  let kq = src.w >> 16u;
-  var t = (u32(trunc(abs(v))) * kq) / 65535u;
-  let tag = cAge(src);
-  if (kq < 65535u && (tag & 7u) == face) { t += tag >> 3u; }
-  return i32(t);
+// Gather's w lane is atomic: payload and z-flux share a physical word. Every
+// write preserves the flux bits; neighboring reads are atomic too. x/y, banks
+// are destination-only, all source material comes from immutable scratch.
+function gatherHead(g) {
+  return v2Head(g, { state: false }, 'liquid')
+    .replace('var<storage, read_write> cells: array<vec4u>;', 'var<storage, read_write> cells: array<GatherCore>;\nstruct GatherCore { x: u32, y: u32, z: u32, w: atomic<u32> }')
+    .replace('fn loadCore(s: u32) -> vec4u { return cells[s]; }', 'fn loadCore(s: u32) -> vec4u { return vec4u(cells[s].x, cells[s].y, cells[s].z, atomicLoad(&cells[s].w)); }')
+    .replace('fn storeCore(s: u32, c: vec4u) { cells[s] = c; }', 'fn storeCore(s: u32, c: vec4u) { cells[s].x = c.x; cells[s].y = c.y; cells[s].z = c.z; atomicStore(&cells[s].w, c.w); }');
 }
+export const v2GatherWGSL = (g) => /* wgsl */ `
+${gatherHead(g)}
+fn snapshot(s: u32) -> Material {
+  let a = liquidScratch[s];
+  let payload = (a.y >> 24u) | ((a.z >> 24u) << 8u);
+  var c = vec4u(a.y & 0xffffffu, (a.z & 0xffffffu) | (a.x & 0xff000000u), 0u, payload << 16u);
+  if (cid(c) == 0u) { c.y = 0u; }
+  return Material(c, bitcast<i32>(a.w));
+}
+fn faceQ(p: vec3i, face: u32) -> f32 {
+  let axis = i32(face / 2u); var owner = p;
+  if ((face & 1u) != 0u) { owner -= axisV(axis); }
+  if (!inGrid(owner) || !inGrid(p + face6(i32(face)))) { return 0.0; }
+  if (!awakeCell(owner) || !awakeCell(p + face6(i32(face)))) { return 0.0; }
+  let s = slotOf(owner); var q = 0.0;
+  if (axis == 2) { q = unpack2x16float(atomicLoad(&cells[s].w) & 65535u).x; }
+  else { q = unpack2x16float(cells[s].z)[axis]; }
+  return select(q, -q, (face & 1u) != 0u);
+}
+fn sendOf(p: vec3i, face: u32) -> u32 {
+  if (!isLiq(snapshot(slotOf(p)).core)) { return 0u; }
+  let a = liquidScratch[slotOf(p)]; let kq = a.x & 65535u;
+  let tag = (a.x >> 16u) & 255u;
+  var n = u32(max(trunc(faceQ(p, face)), 0.0)) * kq / 65535u;
+  if (kq < 65535u && (tag & 7u) == face) { n += tag >> 3u; }
+  return n;
+}
+fn prefixOf(p: vec3i, face: u32) -> u32 {
+  var n = 0u; for (var f = 0u; f < face; f++) { n += sendOf(p, f); } return n;
+}
+fn shareUnsigned(total: u32, prefix: u32, n: u32, fill: u32) -> u32 {
+  if (fill == 0u) { return 0u; }
+  return energyDiv(energyMul(total, prefix + n), fill).x - energyDiv(energyMul(total, prefix), fill).x;
+}
+fn shareBank(bank: i32, prefix: u32, n: u32, fill: u32) -> i32 {
+  let magnitude = select(bitcast<u32>(bank), 0u - bitcast<u32>(bank), bank < 0);
+  let value = shareUnsigned(magnitude, prefix, n, fill);
+  return select(i32(value), -i32(value), bank < 0);
+}
+fn transportedEnergy(src: Material, prefix: u32, n: u32) -> vec2u {
+  let carried = energySub(energyOf(src), energyMul(FULLU, cTq(src.core)));
+  return energyShare(carried, prefix, n, cFill(src.core));
+}
+
 ${MAIN} {
 ${brickCell}
-  let c = cells[s];
-  if (!isOpenC(c)) { return; }
-  let q = qOf(c);
-  var dF = 0;
-  var poss = false;
-  for (var a = 0; a < 3; a++) {
-    let v = q[a];
-    let fa = u32(2 * a);
-    if (v != 0.0) {
-      poss = true;
-      if (v > 0.0) { dF -= sendOf(v, c, fa); } else { dF += sendOf(v, loadCell(p + axisV(a)), fa + 1u); }
+  let before = loadCore(s); let src = snapshot(s);
+  if (!isOpenC(src.core)) { return; }
+  var fill = i32(cFill(src.core)); var energy = energyOf(src);
+  var payload = i32(payloadOf(src.core)); var id = cid(src.core); var ct = ctypeOf(src.core);
+  var strongest = 0u; var code = payloadOf(src.core);
+  for (var face = 0u; face < 6u; face++) {
+    let q = p + face6(i32(face)); if (!inGrid(q) || !awakeCell(q)) { continue; }
+    let out = sendOf(p, face);
+    let incoming = sendOf(q, face ^ 1u);
+    if (out != 0u) {
+      let prefix = prefixOf(p, face);
+      fill -= i32(out); energy = energySub(energy, transportedEnergy(src, prefix, out));
+      if (!conductsNative(cid(src.core))) { payload -= i32(shareUnsigned(payloadOf(src.core), prefix, out, cFill(src.core))); }
     }
-    let ph = p - axisV(a);
-    if (!inGrid(ph)) { continue; }
-    let ch = loadCell(ph);
-    if (!isOpenC(ch)) { continue; }
-    let vh = qOf(ch)[a];
-    if (vh != 0.0) {
-      poss = true;
-      if (vh > 0.0) { dF += sendOf(vh, ch, fa); } else { dF -= sendOf(vh, c, fa + 1u); }
+    if (incoming != 0u) {
+      let other = snapshot(slotOf(q)); let prefix = prefixOf(q, face ^ 1u);
+      fill += i32(incoming); energy = energyAdd(energy, transportedEnergy(other, prefix, incoming));
+      if (id == 0u) { id = cid(other.core); }
+      if (incoming > strongest && cid(src.core) == 0u) { ct = ctypeOf(other.core); strongest = incoming; }
+      if (!conductsNative(id)) { payload += i32(shareUnsigned(payloadOf(other.core), prefix, incoming, cFill(other.core))); }
+      else { code = max(code, payloadOf(other.core)); }
     }
+    if (out != 0u || incoming != 0u || faceQ(p, face) != 0.0) { markBusy(p); }
   }
-  if (poss) { markBusy(p); }
-  var next = c;
-  if (isLiq(c)) {
-    if (dF != 0) {
-      let fl = i32(cFill(c)) + dF;
-      if (fl > 0) {
-        next.y = (c.y & 0xff000000u) | u32(fl);
-        cells[s].y = next.y;
-      } else {
-        cells[s].x = c.x & 0xffffff00u;   // dry: air, at its temperature (its age byte stays: see above)
-        cells[s].y = 0u;
-        next.x = c.x & 0xffffff00u;
-        next.y = 0u;
-      }
-    }
-  } else if (dF > 0) {
-    cells[s].x = (c.y & 255u) | (((c.y >> 8u) & 0xffffu) << 8u);   // the claim's liquid at its temperature
-    cells[s].y = u32(dF);
-    next.x = (c.y & 255u) | (((c.y >> 8u) & 0xffffu) << 8u);
-    next.y = u32(dF);
-  } else {
-    cells[s].y = 0u;
+  var next = before;
+  if (fill == 0) { next.x &= 0xffffff00u; next.y = 0u; next.w &= 65535u; }
+  else {
+    next.x = (next.x & 0xffffff00u) | id;
+    next.y = u32(fill) | (ct << 24u);
+    next.w = (next.w & 65535u) | (select(u32(payload), code, conductsNative(id)) << 16u);
   }
-  // Do not store the entire vector here: neighbours still read its face flux
-  // and outflow limit. Those words are read-only throughout this gather.
-  noteVisible(p, c, next);
+  let after = withEnergy(Material(next, src.bank), energy);
+  // z and the low16 w face flux are immutable throughout gather.
+  cells[s].x = after.core.x; cells[s].y = after.core.y;
+  atomicStore(&cells[s].w, after.core.w); banks[s] = after.bank;
+  noteVisible(p, before, after.core);
+  if (any(before != after.core) || src.bank != after.bank) { noteState(s); }
 }
 `;
 
@@ -880,21 +929,63 @@ ${MAIN} {
 const perBrick = (g) => fold(Math.ceil(gridDims(g).nbricks / 64));
 const own = () => [LAYOUT.TABLES, 'EMPTY', V2_LAYOUT];
 const withState = () => [LAYOUT.TABLES, V2_STATE_LAYOUT, V2_LAYOUT];
+const material = () => [LAYOUT.TABLES, 'EMPTY', V2_MATERIAL_LAYOUT];
+const liquid = () => [LAYOUT.TABLES, 'EMPTY', V2_LIQUID_LAYOUT];
+const contact = () => [LAYOUT.TABLES, 'EMPTY', V2_CONTACT_LAYOUT];
 /** Every v2 kernel: name, WGSL, group layouts (as WGSL_CHECK lists them), a sample dispatch. */
 export const V2_KERNELS = [
-  { name: 'v2import', code: v2ImportWGSL, layouts: withState, dispatch: (g) => fold(gridDims(g).nbricks) },
+  { name: 'v2import', code: v2ImportWGSL, layouts: () => [LAYOUT.TABLES, V2_IMPORT_LAYOUT, V2_MATERIAL_LAYOUT], dispatch: (g) => fold(gridDims(g).nbricks) },
   { name: 'v2activity', code: v2ActivityWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2cols', code: v2ColsWGSL, layouts: own, dispatch: (g) => fold(Math.ceil((g.nx / 4) * (g.nz / 4) / 64)) },
   { name: 'v2args', code: v2ArgsWGSL, layouts: () => [LAYOUT.TABLES, 'EMPTY', V2_ARGS_LAYOUT], dispatch: () => [1, 1, 1], workgroupSize: [1, 1, 1] },
-  { name: 'v2column', code: v2ColumnWGSL, layouts: own, dispatch: perBrick },
+  { name: 'v2column', code: v2ColumnWGSL, layouts: material, dispatch: perBrick },
   { name: 'v2support', code: v2SupportWGSL, layouts: own, dispatch: perBrick },
-  { name: 'v2block', code: v2BlockWGSL, layouts: own, dispatch: perBrick },
-  { name: 'v2flux', code: v2FluxWGSL, layouts: own, dispatch: perBrick },
-  { name: 'v2limit', code: v2LimitWGSL, layouts: own, dispatch: perBrick },
-  { name: 'v2gather', code: v2GatherWGSL, layouts: own, dispatch: perBrick },
+  { name: 'v2block', code: v2BlockWGSL, layouts: contact, dispatch: perBrick },
+  { name: 'v2flux', code: v2FluxWGSL, layouts: liquid, dispatch: perBrick },
+  { name: 'v2limit', code: v2LimitWGSL, layouts: liquid, dispatch: perBrick },
+  { name: 'v2gather', code: v2GatherWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2invalidate', code: v2InvalidateWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_LAYOUT], dispatch: perBrick },
   { name: 'v2bridge', code: v2BridgeWGSL, layouts: withState, dispatch: perBrick },
 ];
 
 /** tools/check-wgsl.mjs, tools/check-sampler-budget.mjs (src/gpu/checks.js): built only with ?physics=v2. */
 export const WGSL_CHECK = V2_KERNELS.map(({ name, code, layouts, dispatch }) => ({ name, kind: 'compute', code, layouts, dispatch, tool: true }));
+
+// Dynamics owns group1 (up to five family buffers). This adapter has exactly
+// three storage bindings and no legacy element buffer, leaving the device's
+// guaranteed eight-buffer budget intact. P is supplied by the family module.
+export const V2_DYNAMICS_LAYOUT = [buf(0, 'storage'), buf(1, 'storage'), buf(2, 'storage')];
+export function nativeDynamicsHead(g) {
+  const common = prelude(g, { state: false });
+  const grid = common.slice(0, common.indexOf('// ---- the element tables'));
+  const layout = common.slice(common.indexOf('// ---- the header and the state'), common.indexOf('// ---- the state\'s accessors'));
+  const random = common.slice(common.indexOf('// ---- random streams'), common.indexOf('// ---- the shared physics tests'));
+  let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
+  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)))', 'if (all(before == after))')
+    .replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
+  const rows = Array.from(v2Table());
+  const ev = Array.from({ length: rows.length / 4 }, (_, i) => `vec4f(${rows.slice(i * 4, i * 4 + 4).map(f).join(',')})`);
+  return `${grid}\n${layout}\n${random}
+@group(0) @binding(0) var<storage, read_write> cells: array<vec4u>;
+@group(0) @binding(2) var<storage, read_write> act2: array<atomic<u32>>;
+const EV = array<vec4f, ${ev.length}>(${ev.join(',')});
+${shared}
+${nativeStateWGSL}
+${materialStorageWGSL.replace('@group(2) @binding(4)', '@group(0) @binding(1)')}`;
+}
+
+// CPU validators exercise the injection ABI, not just the empty default seam.
+const CONTACT_ABI_PROBE = `fn contactBlock(cores: ptr<function, array<vec4u, 8>>, banksIn: ptr<function, array<i32, 8>>, positions: array<vec3i, 8>, requests: ptr<function, array<u32, 8>>) {
+  let m = Material((*cores)[0], (*banksIn)[0]);
+  let n = withEnergy(m, energyAdd(energyOf(m), energySigned(-1)));
+  (*cores)[0] = n.core; (*banksIn)[0] = n.bank;
+  if (inGrid(positions[0])) { markBusy(positions[0]); (*requests)[0] |= 1u; }
+}`;
+WGSL_CHECK.push({ name: 'v2contactABI', kind: 'compute', code: g => v2BlockWGSL(g, CONTACT_ABI_PROBE), layouts: contact, dispatch: perBrick, tool: true });
+WGSL_CHECK.push({ name: 'v2dynamicsABI', kind: 'compute', code: g => `${nativeDynamicsHead(g)}
+${V2Params.wgsl}
+@group(3) @binding(1) var<uniform> P: V2Params;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= SLOTS) { return; }
+  let m = loadMaterial(gid.x); storeMaterial(gid.x, m, withEnergy(m, energyOf(m))); markBusy(cellOf(gid.x));
+}`, layouts: () => [V2_DYNAMICS_LAYOUT, 'EMPTY', 'EMPTY'], dispatch: perBrick, tool: true });
