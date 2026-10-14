@@ -58,6 +58,8 @@ const WALK_SPEED = SPRINT_SPEED / 3;   // cells/s (2.9 m/s): Noita has no walk; 
 const SPRINT_BUILD_S = 7;             // player only: a quick 2× walk launch, then a late surge to 2× Mina's run
 const MOVE_EASE = 0.15;                // share of the gap to the wished speed closed per Noita frame, ground and air (accel_x)
 const JUMP_SPEED = 95 * PX;            // cells/s: a 1.9 m jump (jump_velocity_y)
+// Minecraft's horse jump: hold to charge, release to leap. Scale from our Noita gait.
+const JUMP_CHARGE_S = 0.8;
 const STEP_HEIGHT = 1.1;               // cells: ledges up to this are stepped onto (1 cell + slack)
 // Crouch (input.crouch, held): Source's duck (gamemovement.cpp). The hull goes
 // from 72 units to 36 and the eye from 64 to 28; it takes TIME_TO_DUCK 0.4 s
@@ -247,6 +249,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
   let prevJump = false, sinceJumpPress = Infinity, sinceBounce = Infinity;
+  let jumpCharge = null;
   let gibDue = false;   // vitals.js GIB_HEALTH: the body bursts into meat at the next update (it needs the sim)
   const meat = createMeat({ renderer, getSim });
   const by = id ? { by: id } : {};
@@ -314,6 +317,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
     get pogoCharge() { return p.pogoing && !p.dead ? pogoStep / POGO_STEPS : null; },
+    get jumpCharge() { return !p.dead ? jumpCharge : null; },
+    leaping: false,
     perks,                        // its perks (perks.js)
     get size() { return size; },  // × the plain body's size (Shrink)
     get height() { return H; },   // cells, feet to crown
@@ -722,6 +727,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     }
     meat.update();
     if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; }
+    if (!input.chargeJump || input.cancelJump || vitals.dead) cancelJump();
     if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
 
@@ -746,10 +752,19 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     prevJump = jumpDown;
     sinceJumpPress = pressed ? 0 : sinceJumpPress + dt;
     sinceBounce += dt;
-    const pogoing = alive && pogoHold && !swimming;   // it doesn't bounce off liquid: it sinks in
+    const pogoing = alive && pogoHold && !swimming && !input.chargeJump;   // village Space belongs to the leap
     pogoHold = false;
     p.pogoing = pogoing;
     if (!pogoing) pogoStep = 0;
+    if (swimming || p.onGround) p.leaping = false;
+    let leap = null;
+    if (input.chargeJump && alive && !input.cancelJump && !swimming && p.onGround) {
+      if (pressed) jumpCharge = 0;
+      if (jumpCharge !== null) {
+        if (jumpDown) jumpCharge = Math.min(1, jumpCharge + dt / JUMP_CHARGE_S);
+        else { leap = jumpCharge; jumpCharge = null; }
+      }
+    } else jumpCharge = null;
 
     crouchStep(dt, alive && !!input.crouch && !swimming);
 
@@ -779,7 +794,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jetRun = Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H));
     const runSpeed = footRun + (jetRun - footRun) * smooth01(p.jetSpool);   // the flight speed spools with the jet
     const swingingOnRope = !!rope?.hard && !p.onGround && !swimming;
-    if (swingingOnRope) {
+    if (swingingOnRope || p.leaping) {
       // on a rope in the air: Noita's ease only ever adds speed toward the wished
       // direction (it never brakes), so a swing keeps its momentum and can be pumped
       if (wish.lengthSq() > 0) {
@@ -791,12 +806,21 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
       vh.lerp(wish.clone().multiplyScalar(runSpeed), ease(MOVE_EASE, dt));
-      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED * gait; p.onGround = false; jumpedNow = true; }
+      if (p.onGround && alive && input.jump && !pogoing && !input.chargeJump) { v.y = JUMP_SPEED * gait; p.onGround = false; jumpedNow = true; }
     } else if (swimming && wish.lengthSq() > 0) {
       // strokes: accelerate toward the wished speed, never brake
       const dir = wish.clone().normalize();
       const add = Math.min(Math.max(SWIM_SPEED * gait * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
       vh.addScaledVector(dir, add);
+    }
+    if (leap !== null) {
+      v.y = JUMP_SPEED * gait * (0.65 + 0.7 * leap) + grav * dtSmooth / 2;
+      const direction = wish.lengthSq() > 0 ? wish.clone().normalize()
+        : new THREE.Vector2(-Math.sin(input.jumpYaw ?? 0), -Math.cos(input.jumpYaw ?? 0));
+      // Preserve a sprint run-up; air steering adds control without braking the takeoff.
+      const forward = (WALK_SPEED + (SPRINT_SPEED * 1.5 - WALK_SPEED) * leap) * gait;
+      vh.addScaledVector(direction, Math.max(0, forward - vh.dot(direction)));
+      p.onGround = false; p.leaping = true; jumpedNow = true;
     }
     v.x = vh.x; v.z = vh.y;
     if (alive && p.inLiquid) {
@@ -834,7 +858,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Levitating (Levitatium, potions.js): Noita's Faster Levitation, 75% faster, and here the tank holds
     const levitating = p.status.has('LEVITATING');
     const jetRise = Math.min(JET_RISE * gait * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE * gait, PERK_SPEED_V));
-    const jetWants = alive && !!input.jump && !pogoing;
+    const jetWants = alive && !!input.jump && !pogoing && !input.chargeJump;
     // Swimming can settle waist-deep: hand off at the surface, not only below SWIM_SHARE.
     const clings = jetWants && !p.onGround && !p.headInLiquid && ((perks.has('LUKKI') && clinging()) || levitating);
     const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings);
@@ -935,6 +959,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_GROUND / tankS);
     else if (p.jetIdleS > JET_AIR_WAIT_S) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_AIR / tankS);
+    if (p.onGround) p.leaping = false;
 
     // landing and impacts. Landings never hurt, as in Noita (no fall damage);
     // being thrown into a wall or ceiling (a blast) still does. On a pogo the
@@ -988,6 +1013,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     });
   }
 
+  function cancelJump() { jumpCharge = null; p.leaping = false; }
+
   // A jump to another spot (Teleportitis, potions.js; the wand's teleport, whose
   // runtime checks full-box clearance first): health, fuel and statuses kept,
   // the probe re-read there.
@@ -999,6 +1026,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; sinceJumpPress = Infinity; sinceBounce = Infinity;
+    cancelJump();
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     p.jetSpool = 0; p.knock = 0; p.sprintBuild = 0; sprintingNow = false;
     generation++; probe.valid = false;   // reject in-flight probes from the old spot
@@ -1040,7 +1068,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   }
 
   return Object.assign(p, {
-    spawn, teleport, update, dispose, windowShifted,
+    spawn, teleport, update, dispose, windowShifted, cancelJump,
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },
     // Halo's Overshield ({ layers, chargeS, drainS }: game/powerups.js); its state: 'charging' | 'on' | null
