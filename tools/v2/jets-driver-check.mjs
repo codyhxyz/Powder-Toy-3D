@@ -16,7 +16,7 @@ function recorder(ready = () => Promise.resolve()) {
     queue:{writeBuffer(){}},write(){},flush(){},
     layout:(name,entries)=>({name,entries}),L:{EMPTY:{entries:[]}},emptyGroup:{},
     bindGroup(layout,entries){assert.equal(layout.entries.length,entries.length);return {layout,entries};},
-    kernel(d){assert.ok(d.layouts.reduce((n,l)=>n+l.entries.length,0)<=8);return {...d,ready:ready(d.name),dispatch(frame,size,data){commands.push({name:d.name,size,...data});}};},
+    kernel(d){assert.ok(d.layouts.reduce((n,l)=>n+l.entries.length,0)<=8);return {...d,ready:ready(d.name),dispatch(frame,size,data){d.params.pack(data.params);commands.push({name:d.name,size,...data});}};},
     frame:{clear(buffer){commands.push({clear:buffer});},copy(){}},
     readback:{buffer:(b,o,n)=>Promise.resolve(new ArrayBuffer(n))},
   };
@@ -28,7 +28,8 @@ function recorder(ready = () => Promise.resolve()) {
 test('real driver shares canonical pool and records every jet stage between snapshot and gather',async()=>{
   const {sim,commands,buffers}=recorder();
   const owner=new PhysicsV2(sim,{Dynamics:NativeDynamics});await owner.ready;owner.ticks(1);
-  assert.equal(owner._params(1).nativeJets,1);
+  assert.equal('nativeJets' in owner._params(1),false);
+  assert.equal(owner.dynamics._params(1).nativeJets,1);
   assert.equal(owner.jets.group.entries[2].resource.buffer,owner.dynamics.particles);
   assert.equal(owner.jets.group.entries[3].resource.buffer,owner.dynamics.control);
   assert.equal(owner.dynamics.particles.size,48*65536);

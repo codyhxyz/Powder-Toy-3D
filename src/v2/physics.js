@@ -200,7 +200,7 @@ export class PhysicsV2 {
   // The tick's params: its number, which busy words it reads (the last tick's) and writes, its offset.
   _params(t) {
     const A = this.layout;
-    return { ...nativeModes(this.sim), nativeJets: this.jets?.isReady ? 1 : 0, tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t), preserveLegacyMarks: this.sim.compact === this ? 0 : 1 };
+    return { ...nativeModes(this.sim), tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t), preserveLegacyMarks: this.sim.compact === this ? 0 : 1 };
   }
 
   // Records the import of what today's writers changed, if anything is pending (params: the next tick's).
