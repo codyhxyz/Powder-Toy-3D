@@ -1,4 +1,5 @@
 import { compactDecodeWGSL } from './compact.js';
+import { LEGACY_PRESSURE_PA } from '../v2/dynamics-reference.js';
 import { elementsGLSL, ELEMENTS, ELEMENT_FIELDS, RXDEF_FIELDS, K, REACTIONS, mechanismTables } from '../elements.js';
 import { electricityGLSL, ELEC_FIELDS } from '../electricity.js';
 import { incandescenceGLSL, INCAND, INCAND_KNOTS, LUMA_709 } from '../gfx/incandescence.js';
@@ -413,7 +414,13 @@ fn fetchAs(s: u32) -> vec4f {
 }
 fn fetchA(p: vec3i) -> vec4f { ${cell('src')}return fetchAs(slotOf(p)); }
 fn fetchBs(s: u32) -> vec4f {
-  ${slot('src')}if (H.format == 2u || H.format == 3u) { return vec4f(0.0); }
+  ${slot('src')}if (H.format == 2u) { return vec4f(0.0); }
+  if (H.format == 3u) {
+    // Physical readers bind current native coarse air in B (two vec4s/brick).
+    // Return the existing probe ABI, not Pa disguised as legacy pressure.
+    let air = B[(s >> 6u) * 2u];
+    return vec4f(air.xyz / ${240 * CELL_M}, air.w / ${LEGACY_PRESSURE_PA});
+  }
   return B[H.src * SLOTS + s];
 }
 fn fetchB(p: vec3i) -> vec4f { ${cell('src')}return fetchBs(slotOf(p)); }

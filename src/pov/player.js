@@ -13,6 +13,7 @@ import { wound, createBodyWorld } from './stains.js';
 import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
 import { nativeBodyGravity } from '../v2/modes.js';
+import { bodyEditStepRate, nativeBodyPressureFactor } from '../v2/body.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -618,7 +619,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const ahead = speed > EPS ? DISPLACE_AHEAD / speed : 0;
     // one edit over the cells whose centres are in the body's box (shaders/povBody.js)
     povGpu(sim).edit('povCouple', sim.touchCentres(lo, hi), {
-      lo, hi, vel: vC.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX),
+      lo, hi, vel: vC.copy(p.vel).divideScalar(bodyEditStepRate(sim, stepRate)).clampScalar(-PHYS.V_MAX, PHYS.V_MAX),
       pushFluid: DISPLACE_PUSH_FLUID * Math.min(1, speed / DISPLACE_FULL_SPEED), pushPowder: DISPLACE_PUSH_POWDER,
       lift: speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0,
       ahead: [p.vel.x * ahead, p.vel.z * ahead], frame: sim.frame, only: -1,
@@ -671,7 +672,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (cloud.cloud && stepRate > 0) {
       const lo = [c.x - r, c.y - r, c.z - r], hi = [c.x + r, c.y + r, c.z + r];
       povGpu(sim).edit('povCouple', sim.touchCentres(lo, hi), {
-        lo, hi, vel: vC.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX),
+        lo, hi, vel: vC.copy(p.vel).divideScalar(bodyEditStepRate(sim, stepRate)).clampScalar(-PHYS.V_MAX, PHYS.V_MAX),
         pushFluid: 0, pushPowder: 0, lift: 0, ahead: [0, 0], frame: sim.frame, only: E.CLOUD,
       });
     }
@@ -902,7 +903,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // pressure: a = −∇P·P_ACCEL/ρ per step², for each step the sim took
     vK.copy(v);   // (what pressure and impulses change from here is the knock)
     if (steps > 0) {
-      const k = -PHYS.P_ACCEL / RHO_BODY * steps * stepRate;   // (cells/step² per unit ∇P) × steps × (steps/s) → cells/s
+      const k = sim.compact ? nativeBodyPressureFactor(steps, BODY_DENS) : -PHYS.P_ACCEL / RHO_BODY * steps * stepRate;   // (cells/step² per unit ∇P) × steps × (steps/s) → cells/s
       const before = v.length();
       v.x += env2.gx * k; v.y += env2.gy * k; v.z += env2.gz * k;
       const after = v.length();

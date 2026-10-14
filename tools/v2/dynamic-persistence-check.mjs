@@ -1,3 +1,6 @@
+import { coupleNativeBody, bodyEditStepRate, nativeBodyPressureFactor } from '../../src/v2/body.js';
+import { LEGACY_PRESSURE_PA, CELL_M } from '../../src/v2/dynamics-reference.js';
+import { povGpu } from '../../src/pov/gpu.js';
 import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore, encodeBrick, BRICK_FLOATS } from '../../src/world/store.js';
 import { NativeBrickStore, encodeNativeBrick } from '../../src/world/nativeStore.js';
@@ -178,4 +181,37 @@ const missing = await encodeSave(file.header, [...file.sections].filter(([key]) 
 await assert.rejects(saves.apply(missing)); assert.equal(events.length, 0);
 await saves.apply(saved);
 assert.deepEqual(words(d.particles), oldParticles); assert(d.airArchive.has('128,0,0')); assert.equal(d.rayRequests.size, 1);
-console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save/undo restoration; pre-mutation corruption/origin rejection; full shifted COW world history; physgun held/shock/controller fields passed');
+// Physical native readers bind actual ping-pong coarse air, not the legacy B
+// cache. The shared format3 accessors convert pressure for existing vitals.
+const ring = { next: () => 0, read: () => Promise.resolve(new ArrayBuffer(16)) };
+const probe = gpu.kernel({ name: 'native body probe routing' });
+for (const index of [0, 1]) {
+  d.airIndex = index;
+  await sim.probe(probe, [1, 1, 1], { ring, bind: [sim.tables, sim.bindRO, {}] });
+  const opts = dispatches.at(-1).opts;
+  assert.equal(opts.header.format, 3); assert.equal(opts.bind[1][1].resource.buffer, d.air[index]);
+}
+owner.suspend();
+await sim.probe(probe, [1, 1, 1], { ring, bind: [sim.tables, sim.bindRO, {}] });
+assert.equal(dispatches.at(-1).opts.header.format, 0);
+owner.activate();
+assert.equal(bodyEditStepRate(sim, 60), 240);
+assert(Math.abs(nativeBodyPressureFactor(60, 9.8) + LEGACY_PRESSURE_PA / (980 * CELL_M ** 2)) < 1e-12);
+// Actual POV edit entrypoint must never build or execute a destructive legacy
+// velocity-only edit. Allocation refusal cannot refill material/reset banks.
+const body = { lo: [0, 0, 0], hi: [2, 5, 2], vel: [10 / bodyEditStepRate(sim, 60), 0, 0],
+  pushFluid: 0.1, pushPowder: 0.2, lift: 0.5, ahead: [0, 0.2], only: -1 };
+const originalCouple = d.applyBodyCoupling;
+let request;
+d.applyBodyCoupling = value => { request = value; return { status: 'rejected', reason: 'allocator full' }; };
+sim.editKernel = () => { throw new Error('Native body attempted lossy legacy edit'); };
+const coreBefore = words(owner.cells).slice(), bankBefore = words(owner.aux).slice();
+assert.equal(povGpu(sim).edit('povCouple', { lo: body.lo, hi: body.hi }, body), false);
+assert(Math.abs(request.velocity[0] - 10 * CELL_M) < 1e-12);
+assert.deepEqual(request.lo, body.lo); assert.deepEqual(request.hi, body.hi);
+assert.deepEqual(words(owner.cells), coreBefore); assert.deepEqual(words(owner.aux), bankBefore);
+d.applyBodyCoupling = undefined;
+assert.equal(coupleNativeBody(sim, body), false, 'missing actual coupling capability stays explicitly gated');
+d.applyBodyCoupling = originalCouple; delete sim.editKernel;
+
+console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save/undo restoration; pre-mutation corruption/origin rejection; full shifted COW world history; physgun held/shock/controller fields; actual-air probe/body SI boundaries and lossless refusal passed');

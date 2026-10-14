@@ -1,4 +1,5 @@
 import { NativeTransfer } from '../v2/transfer.js';
+import { coupleNativeBody } from '../v2/body.js';
 // The first person's GPU work on WebGPU (docs/webgpu.md G2): every write to
 // the world is an edit (sim.edit, D6: one dispatch over a box, in call order,
 // the bricks it changes marked on the GPU), and every read is a probe whose
@@ -136,6 +137,7 @@ class PovGpu {
    * @returns {boolean} false when nothing was recorded (no box, or the kernel is still building)
    */
   edit(name, box, values, opts) {
+    if (this.sim.compact && name === 'povCouple') return !!box && coupleNativeBody(this.sim, values);
     const k = this.editKernel(name);
     if (!box || !ready(k.main) || (k.apply && !ready(k.apply))) return false;
     this.sim.edit(k, box, values, opts);
