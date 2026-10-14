@@ -185,6 +185,14 @@ int wcCell(int wx, int y, int wz) {
   }
   return wcTree(x, y, z);
 }
+
+// Provenance only: keep wcCell's terrain precedence, including ground grass.
+int wcFoliage(int wx, int y, int wz, int id) {
+  if (id != E_PLANT) return 0;
+  int x = wx - thDiv(uWillowWorldX, 2), z = wz - thDiv(uWillowWorldZ, 2);
+  if (y < wcHeight(x, z)) return 0;
+  return wcTree(x, y, z) == E_PLANT ? E_PLANT : 0;
+}
 `;
 
 // The JS twin per world (seed and size): the seed is in scope for any shared
@@ -205,8 +213,9 @@ ${helpersGLSL}
 ${srcWgsl ??= toWgsl(SRC, { consts: definesTypes('WC', L), uniforms: WC_U.sceneTypes })}
 fn sceneCell(w: vec3i) -> SceneCell {
   let id = wcCell(w.x, w.y, w.z);
+  let ctype = f32(wcFoliage(w.x, w.y, w.z, id));
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, WC_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), ctype + seed), vec4f(0.0));
 }
 `;
 
