@@ -5,6 +5,30 @@ Audit base: `b64183051da3ba978ab85f1e38399756fc842daf`, fetched from `origin/mai
 **Status: incomplete.** Renderer integration is one milestone, not completion of physics v2.
 The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` was superseded.
 
+## Runtime checks — 2026-10-14
+
+At base `88a2334`, `tools/v2/column-browser-check.mjs` executed the production
+R1 shader in Chromium/WebGPU. It used the existing slab fixture: 576 sand
+grains in a 32³ grid, stepped for 180 ticks.
+
+- All six checkpoints retained 576 grains in one layer.
+- At tick 30, measured fall was 8 cells; the declared law predicted 8.439.
+- All grains reached the floor by tick 60 and remained there through tick 180.
+- No page or GPU validation errors were reported.
+- GPU slot occupancy was 643 ms. This is test occupancy, not frame time.
+
+Raw result: `/tmp/v2-native-column-runtime-88a2334.json`.
+Lease report: `~/.cache/tpt-headless/runs/3990-4012.json`.
+
+This checks **R1 only**, not contact physics, particles, liquids, rendering,
+or the complete engine. The full-engine slab test was terminated during
+startup without returning assertions (lease `93668-93690`, 8628 ms).
+The full water renderer check also remains unverified.
+
+`tools/v2/boot-profile.mjs` records pipeline-ready events during full native
+startup. Its first attempt could not acquire the GPU slot; it launched no
+browser and produced no timing samples.
+
 ## What exists
 
 `src/v2/physics.js` drives `src/shaders/v2.js` behind `?physics=v2`.
