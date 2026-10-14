@@ -1,4 +1,4 @@
-import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS } from '../../v2/phase.js';
+import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetPerQuantum } from '../../v2/phase.js';
 import { ELEMENTS } from '../../elements.js';
 const field = (name, get) => `fn ${name}(id:u32)->i32 { switch id { ${PHASE_ROWS.map((r, i) => `case ${i}u: { return ${get(r, i)}; }`).join('\n')} default: { return 0; } } }`;
 // Requires foundation energyAdd/Sub/Signed/Mul; no bindings. vec2u is low,high.
@@ -42,6 +42,14 @@ fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
 }
 fn phaseOffsetEnergy(id:u32,amount:u32)->vec2u {
  let offset=phaseOffsetPerQuantum(id); let magnitude=energyMul(u32(abs(offset)),amount);
+ if(offset<0){return energySub(vec2u(0u),magnitude);}return magnitude;
+}
+${field('phaseLavaOffsetPerQuantum', (_, i) => phaseOffsetPerQuantum(10, i))}
+fn phaseMaterialOffsetEnergy(id:u32,amount:u32,ctype:u32)->vec2u {
+ if(id!=10u){return phaseOffsetEnergy(id,amount);}
+ var source=ctype;if(source>=${ELEMENTS.length}u){source=3u;}
+ let offset=phaseLavaOffsetPerQuantum(source);
+ let magnitude=energyMul(u32(abs(offset)),amount);
  if(offset<0){return energySub(vec2u(0u),magnitude);}return magnitude;
 }
 fn phaseLatentEnergy(id:u32,raw:u32,amount:u32)->vec2u {

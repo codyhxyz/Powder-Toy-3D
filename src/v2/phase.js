@@ -32,6 +32,27 @@ link('CLOUD', 'SNOW', 0, -PHYS.L_FUSE);
 link('MERCURY', 'SOLID_MERCURY', -38.83, -37);
 link('MERCURY', 'MERCURY_VAPOR', 356.73, 955);
 link('CO2', 'DRY_ICE', -78.5, -213.1);
+// Irreversible single-product transitions still need a formation-energy zero:
+// latent heat must not turn nitrogen's -196 C vapour into thousands-C air.
+// Reversible families above are anchors. Weighted products intentionally keep
+// one source enthalpy (selecting a different composition can change its T).
+const anchors = new Set(['WATER','ICE','SNOW','CLOUD','STEAM','MERCURY','SOLID_MERCURY','MERCURY_VAPOR','CO2','DRY_ICE']);
+for (let pass = 0; pass < ELEMENTS.length; pass++) {
+  let changed = false;
+  for (const e of ELEMENTS) {
+    if (anchors.has(e.key)) continue;
+    const row = PHASE_ROWS[e.id], hot = !!row.hot;
+    const transition = row.hot ?? row.cold;
+    if (!transition || typeof transition.into !== 'string' || transition.into === 'SAME' || transition.into === 'LAVA') continue;
+    const product = E[transition.into];
+    const productCapacity = product === E.EMPTY ? 0 : cp(product);
+    const offset = PHASE_ROWS[product].offset + (productCapacity - cp(e.id)) * q(transition.T)
+      + (hot ? -row.hotLatent : row.coldLatent);
+    if (offset !== row.offset) { row.offset = offset; changed = true; }
+  }
+  if (!changed) break;
+  if (pass === ELEMENTS.length - 1) throw Error('inconsistent native phase formation-energy cycle');
+}
 export const phaseAmount = core => ELEMENTS[core[0] & 255].kind === K.LIQUID ? core[1] & 0xffffff : (core[0] & 255) === E.EMPTY ? 0 : PHASE_FULL;
 export function phaseTemperatureQ(id, raw) {
   if (!Number.isInteger(raw) || raw < 0 || raw > 65535 || !PHASE_ROWS[id]) throw Error('invalid native temperature/id');
@@ -40,7 +61,13 @@ export function phaseTemperatureQ(id, raw) {
   if ((hot ? row.hotLatent : row.coldLatent) <= 0) throw Error(`invalid phase tag for ${ELEMENTS[id].key}`);
   return hot ? row.hotQ : row.coldQ;
 }
-export function phaseOffsetEnergy(id, amount) { return BigInt(PHASE_ROWS[id].offset) * BigInt(amount); }
+export function phaseOffsetPerQuantum(id, ctype = 0) {
+  if (id !== E.LAVA) return PHASE_ROWS[id].offset;
+  const source = ELEMENTS[ctype]?.melt > 0 ? ctype : E.STONE;
+  return PHASE_ROWS[source].offset + (cp(source) - cp(E.LAVA)) * q(ELEMENTS[source].melt);
+}
+export function phaseOffsetEnergy(id, amount, ctype = 0) { return BigInt(phaseOffsetPerQuantum(id, ctype)) * BigInt(amount); }
+export const phaseMaterialOffsetEnergy = phaseOffsetEnergy;
 export function phaseLatentEnergy(id, raw, amount) {
   phaseTemperatureQ(id, raw); // rejects invalid tags, including zero-latent types
   if (raw <= PHASE_NORMAL_MAX) return 0n;

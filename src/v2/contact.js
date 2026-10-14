@@ -3,7 +3,8 @@
 // CPU tests exercise the same branches, not an independently drifting port.
 import { ELEMENTS, E, K, REACTIONS, mechanisms } from '../elements.js';
 import { ELEC, SPARK_COST, WIRE, CONDUCTS } from '../electricity.js';
-import { PHYS } from '../physics.js';
+import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
+import { CELL_M } from '../scale.js';
 import { EMITTERS } from '../rays.js';
 
 import { FUEL_Q, MAX_FILL } from './layout.js';
@@ -12,6 +13,10 @@ export const ENERGY_SCALE = 256 * 65536;
 export const CONTACT_FULL = 65536;
 export const LIFE_SCALE = FUEL_Q;
 export const CONTACT_HZ = 60;
+// Same TF2 2g native clock as foundation R1; a powder age is elapsed fall
+// ticks, not proof it has reached the legacy dust suspension speed.
+export const CONTACT_G_TICK = 19.6 / CELL_M / CONTACT_HZ ** 2;
+export const DUST_MIN_FALL_AGE = Math.ceil(PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE / CONTACT_HZ / CONTACT_G_TICK);
 export const CONTACT_REQUEST = { DETONATE: 1, GAS: 2, NEUTRON: 4 };
 const q = T => Math.round((T + 273.25) * 4);
 const cap = ELEMENTS.map(e => Math.max(1, Math.round(e.cap * 64)));
@@ -45,7 +50,7 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
     meltQ: e.melt ? q(e.melt) : 65536, meltInto: E[e.meltInto] ?? e.id,
     igniteQ: e.ignite ? q(e.ignite) : 65536, flashQ: e.flash ? q(e.flash) : 65536,
     burn: Math.round(e.burnRate * LIFE_SCALE * 4), heat: Math.round(e.burnHeat * 256 * 4), flameQ: q(e.flameT),
-    ash: +e.ash, blast: +!!e.blast, blastAir: +!!e.blast?.air, blastChance: Math.min(1, (e.blast?.flame ?? 0) * 8),
+    ash: +e.ash, blast: +!!e.blast, blastAir: +!!e.blast?.air, blastChance: 1 - (1 - (e.blast?.flame ?? 0)) ** 8,
     acid: +e.acid, edible: +(e.kind !== K.EMPTY && e.kind !== K.GAS && !e.acidProof),
     fizz: +(e.fizz > 0), bed: +e.mossBed, rots: +e.rots, singFood: +(e.id !== E.EMPTY && !e.singProof),
     conductor: +CONDUCTS[e.id], cost: SPARK_COST[e.id], wire: +WIRE[e.id],
@@ -57,7 +62,7 @@ export const CONTACT_REACTIONS = REACTIONS.map(r => ({
   a: E[r.a], b: E[r.b] ?? -1, aOut: spec(r.into[0]), bOut: spec(r.into[1]),
   // Legacy probabilities per 240 Hz tick → hazard/second, corrected for a
   // face present half the 60 Hz ticks. Never multiply the heat by pairing.
-  chance: Math.min(1, (r.chance ?? 1) * 8), minQ: q(r.minT ?? -273.25), maxQ: q(r.maxT ?? 10000),
+  chance: 1 - (1 - (r.chance ?? 1)) ** 8, minQ: q(r.minT ?? -273.25), maxQ: q(r.maxT ?? 10000),
   heat: Math.round((r.heat ?? 0) * 256), gas: +(!!r.puff),
   // Hydrogen's adiabatic oxygen flame: existing elements.js reaction content.
   ceiling: q(r.a === 'HYDROGEN' ? (r.b === 'OXYGEN' ? 2800 : 2254) : 10000),
@@ -124,9 +129,14 @@ export function ctCreate(input, id, tq) {
 // Keep scalar kernel bodies within this deliberately small JS/WGSL subset:
 // numeric locals, structs copied with ctCopy, fixed arrays, explicit casts and
 // integer division. The emitter rejects unsupported JS constructs.
+export function ctDensity(c) {
+  const row = ctRow(c.id);
+  if (row.kind === 0 || row.kind === 4) return row.density * ctF(row.spawnQ) / Math.max(4, ctF(c.tq));
+  return row.density;
+}
 export function ctCapacity(c) { return 65536 + ctAmount(c) * ctRow(c.id).capacity; }
 export function ctAmount(c) { if (c.id === E.EMPTY) return 0; if (ctRow(c.id).kind === 3) return c.fill; return 65536; }
-export function ctOffset(c) { return phaseOffsetEnergy(c.id, ctAmount(c)); }
+export function ctOffset(c) { return phaseOffsetEnergy(c.id, ctAmount(c), c.ctype); }
 export function ctEnergy(c) { return BigInt(ctCapacity(c)) * BigInt(c.tq) + ctOffset(c) + phaseLatentEnergy(c.id, c.raw, ctAmount(c)) + BigInt(c.bank); }
 export const ctAdd = (a, b) => a + b;
 export const ctSub = (a, b) => a - b;
@@ -181,7 +191,7 @@ export function ctPhase(input, surface, random) {
   const r = ctRow(c.id);
   if (r.hotOut >= 0 && ctPastPhase(c, true)) {
     c = ctConvert(c, ctProduct(r.hotOut, random), r.hotOf);
-    if (r.hotGas !== 0) c.request = c.request | 2;
+    if (r.hotGas !== 0 && c.id !== input.id) c.request = c.request | 2;
     return c;
   }
   if (r.coldOut >= 0 && ctPastPhase(c, false)) {
@@ -197,6 +207,8 @@ export function ctPhase(input, surface, random) {
   }
   return c;
 }
+export const ctLife = c => c.life / (c.id === E.SINGULARITY ? 256 : 2048);
+export function ctWithLife(c, value) { return { ...c, life: Math.round(value * (c.id === E.SINGULARITY ? 256 : 2048)) }; }
 export function ctLive(c) { return ctRow(c.id).conductor !== 0 && c.spark % 9 > 4; }
 export function ctConductsInto(from, to) {
   if (from === E.NSCN && to === E.PSCN) return false;
@@ -208,7 +220,7 @@ export function ctCloneable(id) { return id !== E.EMPTY && id !== E.WALL && id !
 export function ctElectric(input, ns, random) {
   let c = ctCopy(input);
   const r = ctRow(c.id);
-  const life0 = c.life;
+  const life0 = ctLife(c);
   let off = false;
   let on = false;
   let p = false;
@@ -218,22 +230,22 @@ export function ctElectric(input, ns, random) {
   let best = 0;
   for (let k = 0; k < 3; k++) {
     const b = ns[k];
-    if (b.id === c.id) { off = off || (b.life > 0 && b.life < 10); on = on || b.life >= 10; }
+    if (b.id === c.id) { off = off || (ctLife(b) > 0 && ctLife(b) < 10); on = on || ctLife(b) >= 10; }
     if (ctLive(b)) { p = p || b.id === E.PSCN; n = n || b.id === E.NSCN; }
     hot = hot || (b.id !== E.EMPTY && b.id !== E.TSNS && ctRow(b.id).wire === 0 && b.tq > c.tq);
     dc = dc || b.id === E.BATTERY;
-    if (b.id === E.BATTERY || (b.id === E.TSNS && b.life >= 1)) best = 400;
+    if (b.id === E.BATTERY || (b.id === E.TSNS && ctLife(b) >= 1)) best = 400;
     else if (ctLive(b) && ctConductsInto(b.id, c.id)) best = Math.max(best, ctDiv(b.spark, 9));
   }
   if (c.id === E.SWITCH || c.id === E.PCLN) {
-    if (c.life > 0 && c.life !== 10) c.life--;
-    if (life0 === 10 && off) c.life = 9;
-    else if (life0 === 0 && on) c.life = 10;
-    if (p && life0 < 10) c.life = 10;
-    if (n) c.life = 9;
-    if (c.life > 0 && c.life !== 10) c.busy = 1;
+    if (ctLife(c) > 0 && ctLife(c) !== 10) c = ctWithLife(c, ctLife(c) - 1);
+    if (life0 === 10 && off) c = ctWithLife(c, 9);
+    else if (life0 === 0 && on) c = ctWithLife(c, 10);
+    if (p && life0 < 10) c = ctWithLife(c, 10);
+    if (n) c = ctWithLife(c, 9);
+    if (ctLife(c) > 0 && ctLife(c) !== 10) c.busy = 1;
   }
-  if (c.id === E.TSNS) { c.life = 0; if (hot) c.life = 1; }
+  if (c.id === E.TSNS) { c = ctWithLife(c, 0); if (hot) c = ctWithLife(c, 1); }
   if (r.conductor === 0) return c;
   let ph = c.spark % 9;
   let level = ctDiv(c.spark, 9);
@@ -308,7 +320,7 @@ export function ctStep(input, ns, seed) {
     hotTouch = hotTouch || (br.kind !== 0 && br.kind !== 4 && b.tq >= r.igniteQ);
     fuseTouch = fuseTouch || (b.id === E.FUSE && b.life <= 102);
     fuseEnd = fuseEnd && !(b.id === E.FUSE && b.life > c.life);
-    if (b.id === E.CLONE || (b.id === E.PCLN && b.life === 10)) clone = Math.max(clone, b.ctype);
+    if (b.id === E.CLONE || (b.id === E.PCLN && ctLife(b) === 10)) clone = Math.max(clone, b.ctype);
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
   }
@@ -361,7 +373,7 @@ export function ctStep(input, ns, seed) {
           if (c.life === 0) {
             let id = E.CO2;
             if (r.ash !== 0 && random < 0.5) id = E.ASH;
-            return ctConvert(c, id, 0);
+            return ctDecay(c, id);
           }
         }
       }
@@ -384,8 +396,8 @@ export function ctStep(input, ns, seed) {
       }
     }
   }
-  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 0.048 * ctF(plant)) return ctConvert(c, E.PLANT, 0); }
-  if (r.rots !== 0 && fungus > 0 && c.tq < 1493) { c.busy = 1; if (random < 0.0008 * ctF(fungus)) return ctConvert(c, E.FUNGUS, 0); }
+  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 0.048 * ctF(plant)) return ctCreate(c, E.PLANT, c.tq); }
+  if (r.rots !== 0 && fungus > 0 && c.tq < 1493) { c.busy = 1; if (random < 0.0008 * ctF(fungus)) return ctCreate(c, E.FUNGUS, c.tq); }
   if (c.id === E.MOSS || c.id === E.FUNGUS) {
     c.ctype = 0;
     if (c.tq < 1493) c.ctype = Math.max(0, damp);
@@ -393,7 +405,7 @@ export function ctStep(input, ns, seed) {
   if ((c.id === E.CLONE || c.id === E.PCLN) && c.ctype === 0 && growOf > 0) c.ctype = growOf;
   if (c.id === E.EMPTY) {
     if (clone > 0 && clone < 91) { c.busy = 1; if (random < 0.48) return ctCreate(c, clone, ctRow(clone).spawnQ); }
-    if (moss > 0 && bed > 0) { c.busy = 1; if (random < 0.0008 * ctF(moss)) return ctConvert(c, E.MOSS, 0); }
+    if (moss > 0 && bed > 0) { c.busy = 1; if (random < 0.0008 * ctF(moss)) return ctCreate(c, E.MOSS, c.tq); }
   }
   if (c.id === E.CLOUD) {
     if (cloud >= 2 || air >= 2) {
@@ -401,20 +413,21 @@ export function ctStep(input, ns, seed) {
       if (cloud >= 2 && random < 0.00032 * ctF(cloud * 2 - 3)) return ctConvert(c, E.WATER, 0);
       const temp = ctF(c.tq) * 0.25 - 273.25;
       const es = Math.exp(17.625 * (temp / Math.max(1, temp + 243.04) - 20 / 263.04));
-      if (air >= 2 && random < 0.00024 * ctF(air * 2 - 3) * es) return ctConvert(c, E.EMPTY, 0);
+      if (air >= 2 && random < 0.00024 * ctF(air * 2 - 3) * es) return ctDecay(c, E.EMPTY);
     }
     // Falling snow age is the native run-speed proxy, not a random charge.
     for (let k = 0; k < 3; k++) {
       if (c.tq <= 1093 && ns[k].id === E.SNOW && ns[k].age > 0) {
         c.busy = 1;
-        if (random < 0.5) c.ctype = Math.min(60, c.ctype + 1);
+        if (random < Math.min(ctF(ns[k].age) * CONTACT_G_TICK, 1.0 / 6.0)) c.ctype = Math.min(60, c.ctype + 1);
       }
     }
   }
-  if (c.id === E.DUST && c.age > 0 && dust > 0 && air > 0 && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
+  if (c.id === E.DUST && c.age >= DUST_MIN_FALL_AGE && dust > 0 && air > 0 && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
   if (c.id === E.SINGULARITY) {
     // Mass has 1/256 cell units; unlike normalized fuel it reaches 200 cells.
     c.busy = 1;
+    if (c.life >= 51200) { c.request = c.request | 1; return c; }
     const mass = ctF(c.life) / 256;
     c.life = Math.max(0, c.life - Math.max(1, ctI(614.4 / Math.max(1, mass * mass))));
     if (c.life < 256 || c.life >= 51200) c.request = c.request | 1;
@@ -426,7 +439,7 @@ export function ctStep(input, ns, seed) {
 export const CONTACT_KERNEL = [
   [ctInherit, ['CTCell', 'CTCell'], 'CTCell'], [ctRecordChange, ['CTCell', 'vec2u'], 'CTCell'],
   [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'],
-  [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
+  [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctElectric, ['CTCell', 'array<CTCell, 3>', 'f32'], 'CTCell'],
@@ -469,6 +482,7 @@ export function contactDensity(id, temperatureQ) {
 export const ctPairValue = (a, b, changed) => ({ a, b, changed });
 export const ctRxAt = (a, b) => CONTACT_RX_INDEX[a * ELEMENTS.length + b];
 export const ctRx = index => CONTACT_REACTIONS[index];
+export const ctCeilEnergy = (energy, divisor) => Number((energy + BigInt(divisor) - 1n) / BigInt(divisor));
 export const ctCommonQ = (energy, a, b) => Number((energy - ctOffset(a) - ctOffset(b)) / BigInt(ctCapacity(a) + ctCapacity(b)));
 export const ctRemainder = (energy, a, b) => energy - ctEnergy(a) - ctEnergy(b);
 export function ctBalance(a0, b0, energy, ceiling) {
@@ -559,7 +573,7 @@ export function ctSwallow(a0, b0, seed) {
   if (b.id === E.SINGULARITY && b.life > a.life) return ctPairValue(a, b, 0);
   a.busy = 1; b.busy = 1;
   if (b.id !== E.SINGULARITY && ctRoll(seed, 15) >= 1) return ctPairValue(a, b, 0);
-  let mass = ctI(ctRow(b.id).density * 25.6);
+  let mass = ctI(ctDensity(b) * 25.6);
   if (b.id === E.SINGULARITY) mass = b.life;
   a.life = Math.min(65535, a.life + mass);
   const energy = ctAdd(ctEnergy(a), ctEnergy(b));
@@ -577,12 +591,26 @@ export function ctPlume(a0, b0, seed, up) {
   let id = E.FIRE;
   if (ctRoll(seed, 17) < 0.2) id = E.SMOKE;
   else if (ctRoll(seed, 17) < 0.4) id = E.CO2;
-  const energy = ctAdd(ctEnergy(a), ctEnergy(b));
+  const initial = ctAdd(ctEnergy(a), ctEnergy(b));
   const oxy = b.id === E.OXYGEN;
-  b = ctInherit(ctNew(id, a.tq, 65536), b);
+  const fuel = ctRow(a.id);
+  // Plume formation/heat is not free. Debit finite fuel at the same energy
+  // per fuel unit as this material's burnHeat/burnRate content ratio.
+  const perFuel = ctDiv(fuel.heat * 65536, Math.max(1, fuel.burn));
+  if (perFuel <= 0) return ctPairValue(a0, b0, 0);
+  const plumeQ = Math.min(fuel.flameQ, Math.max(2493, ctI(ctF(fuel.flameQ - 1093) * 0.85) + 1093));
+  b = ctInherit(ctNew(id, plumeQ, 65536), b);
   if (oxy && id === E.FIRE) b.ctype = E.OXYGEN;
-  let pair = ctBalance(a, b, energy, 41093);
+  const wanted = ctAdd(ctEnergy(a), ctEnergy(b));
+  let spend = 0;
+  if (ctLess(initial, wanted)) spend = ctCeilEnergy(ctSub(wanted, initial), perFuel);
+  if (spend > a.life) return ctPairValue(a0, b0, 0);
+  a.life = a.life - spend;
+  const released = ctMul(spend, perFuel);
+  const total = ctAdd(initial, released);
+  let pair = ctBalance(a, b, total, 41093);
   if (pair.changed === 0) return ctPairValue(a0, b0, 0);
+  pair.a.source = ctAdd(pair.a.source, released);
   pair.b.request = pair.b.request | 2;
   return pair;
 }
@@ -630,4 +658,23 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
     if (cells[i].busy) busy.push(i);
   }
   return { cores, banks, requests, busy, sources: cells.map(c => c.source), sinks: cells.map(c => c.sink) };
+}
+
+// R5 ambient exchange is a boundary condition, never a global pull. The owner
+// counts exposed open side/top faces (not the floor or closed/periodic edges).
+export function ctBoundary(input, openFaces, ambientQ) {
+  let c = ctCopy(input);
+  const perFace = ctDiv(ctFlux(c, ctNew(E.EMPTY, ambientQ, 65536)), 2);
+  const transfer = perFace * Math.max(0, Math.min(5, openFaces));
+  if (transfer === 0) return c;
+  const before = ctEnergy(c);
+  c = ctHeat(c, transfer);
+  c.busy = 1;
+  return ctRecordChange(c, before);
+}
+CONTACT_KERNEL.push([ctBoundary, ['CTCell', 'i32', 'i32'], 'CTCell']);
+
+// Pressure execution belongs to the air owner; SING's life is mass*256.
+export function contactVacuum(core) {
+  return (core[0] & 255) === E.SINGULARITY ? Math.max(PHYS.P_MIN, -PHYS.SING_P_PER_MASS * (core[1] & 65535) / 256) : 0;
 }

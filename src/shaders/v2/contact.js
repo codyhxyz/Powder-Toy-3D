@@ -1,5 +1,5 @@
 import { E, ELEMENTS } from '../../elements.js';
-import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, CONTACT_KERNEL } from '../../v2/contact.js';
+import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, CONTACT_KERNEL, DUST_MIN_FALL_AGE, CONTACT_G_TICK } from '../../v2/contact.js';
 
 const integerRowFields = new Set(['kind','capacity','offset','spawnQ','spawnLife','hotQ','hotOut','hotL','hotGas','hotOf','coldQ','coldOut','coldL','coldOf','meltQ','meltInto','igniteQ','flashQ','burn','heat','flameQ','ash','blast','blastAir','acid','edible','fizz','bed','rots','singFood','conductor','wire']);
 const rowFields = Object.keys(CONTACT_ROWS[0]);
@@ -50,6 +50,8 @@ const generated = CONTACT_KERNEL.map(([fn, args, result]) => emitContactKernel(f
 
 export const contactWGSL = /* wgsl */ `
 ${Object.entries(E).map(([k, id]) => `const CT_${k}:i32=${id};`).join('\n')}
+const DUST_MIN_FALL_AGE:i32=${DUST_MIN_FALL_AGE};
+const CONTACT_G_TICK:f32=${CONTACT_G_TICK};
 struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,burning:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,source:vec2u,sink:vec2u }
 struct CTPair { a:CTCell,b:CTCell,changed:i32 }
 struct CTRow { ${rowFields.map(k => `${k}:${integerRowFields.has(k) ? 'i32' : 'f32'}`).join(',')} }
@@ -80,6 +82,8 @@ fn ctRoll(seed:i32,salt:i32)->f32 {
  return f32(h>>8u)/16777216.0;
 }
 fn ctCopy(c:CTCell)->CTCell{return c;}
+fn ctLife(c:CTCell)->f32{return lifeOf(ctMaterial(c).core);}
+fn ctWithLife(input:CTCell,value:f32)->CTCell{var c=input;c.life=i32(payloadOf(withLife(ctMaterial(c).core,value)));return c;}
 fn ctDiv(a:i32,b:i32)->i32{return a/b;}
 fn ctNew(id:i32,tq:i32,fill:i32)->CTCell {
  var life=ctRow(id).spawnLife;
@@ -88,10 +92,11 @@ fn ctNew(id:i32,tq:i32,fill:i32)->CTCell {
 }
 fn ctPairValue(a:CTCell,b:CTCell,changed:i32)->CTPair{return CTPair(a,b,changed);}
 fn ctMaterial(c:CTCell)->Material {
- var core=vec4u(u32(c.id)|(u32(c.raw)<<8u),u32(c.fill),0u,0u);
+ var core=vec4u(u32(c.id)|(u32(c.raw)<<8u),u32(c.fill)|(u32(c.ctype)<<24u),0u,0u);
+ if(ctRow(c.id).kind!=3){core.y=u32(c.life)|(u32(c.ctype)<<16u);}else{core.w=u32(c.life)<<16u;}
  return Material(core,c.bank);
 }
-fn ctOffset(c:CTCell)->vec2u{return phaseOffsetEnergy(u32(c.id),u32(ctAmount(c)));}
+fn ctOffset(c:CTCell)->vec2u{return phaseMaterialOffsetEnergy(u32(c.id),u32(ctAmount(c)),u32(c.ctype));}
 fn ctEnergy(c:CTCell)->vec2u{return energyOf(ctMaterial(c));}
 fn ctAdd(a:vec2u,b:vec2u)->vec2u{return energyAdd(a,b);}
 fn ctSub(a:vec2u,b:vec2u)->vec2u{return energySub(a,b);}
@@ -110,6 +115,7 @@ fn ctPastPhase(c:CTCell,hot:bool)->bool {
  if(hot){return !phaseLess(ctEnergy(c),energyAdd(baseline,latent));}
  return !phaseLess(energySub(baseline,latent),ctEnergy(c));
 }
+fn ctCeilEnergy(energy:vec2u,divisor:i32)->i32{return i32(phaseDiv(energyAdd(energy,energySigned(divisor-1)),vec2u(u32(divisor),0u)).x);}
 fn ctCommonQ(energy:vec2u,a:CTCell,b:CTCell)->i32 {
  let sensible=energySub(energySub(energy,ctOffset(a)),ctOffset(b));
  if(phaseLess(sensible,vec2u(0u))){return 0;}
@@ -146,11 +152,20 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
  }
  return core;
 }
+fn contactVacuum(core:vec4u)->f32 {if((core.x&255u)==u32(CT_SINGULARITY)){return max(-50.0,-2.5*f32(core.y&65535u)/256.0);}return 0.0;}
 fn contactDensity(core:vec4u)->f32 {
  let id=i32(core.x&255u);let row=ctRow(id);
  if(row.kind==0 || row.kind==4){return row.density*f32(row.spawnQ)/max(4.0,f32(phaseTq(u32(id),(core.x>>8u)&65535u)));}
  return row.density;
 }
+fn contactBoundary(material:Material,openFaces:u32,ambientQ:u32,position:vec3i)->Material {
+ let c=ctBoundary(ctUnpack(material.core,material.bank),i32(openFaces),i32(ambientQ));
+ if(any(c.source!=vec2u(0u))){noteEnergySource(position,c.source);}
+ if(any(c.sink!=vec2u(0u))){noteEnergySink(position,c.sink);}
+ if(c.busy!=0){markBusy(position);}
+ return Material(ctPack(c,material.core),c.bank);
+}
+
 fn ctSeed(position:vec3i,tick:u32)->i32 {
  return bitcast<i32>(u32(position.x)*73856093u ^ u32(position.y)*19349663u ^ u32(position.z)*83492791u ^ tick*2654435761u);
 }

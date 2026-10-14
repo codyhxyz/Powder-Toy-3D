@@ -83,7 +83,7 @@ test('uniform-temperature liquid advection leaves persistent carrier energy',()=
   for(const id of ELEMENTS.filter(e=>e.kind===K.LIQUID).map(e=>e.id)) {
     for(const amount of [1,17,32768,65536]) {
       const a=cell(id,20),b=cell(E.EMPTY,20),before=energy(a)+energy(b);
-      const parcel=(BigInt(C.ctRow(id).capacity)*BigInt(a.tq)+BigInt(C.ctRow(id).offset))*BigInt(amount);
+      const parcel=(BigInt(C.ctRow(id).capacity)*BigInt(a.tq)+BigInt(F.phaseOffsetPerQuantum(id,a.ctype)))*BigInt(amount);
       const na=amount===65536?cell(E.EMPTY,20):cell(id,20,65536-amount);
       const nb=cell(id,20,amount);
       const ea=energy(a)-parcel,eb=energy(b)+parcel;
@@ -113,7 +113,7 @@ test('all 14 reaction rows dispatch real products, obey gates, and balance heat'
 test('all electric pairs obey TPT diode/switch direction, 3608 retained',()=>{
   for(const a of ELEMENTS)for(const b of ELEMENTS) assert.equal(C.ctConductsInto(a.id,b.id),conductsInto(a.id,b.id));
   for(const e of ELEMENTS.filter(e=>CONDUCTS[e.id])) {
-    const c=cell(e.id); if(e.id===E.SWITCH)c.life=10;
+    const c=cell(e.id); if(e.id===E.SWITCH)c.life=20480;
     const out=C.ctElectric(c,ns(cell(E.BATTERY)),0.999);
     assert.equal(out.spark,e.id===E.LAMP?81:packSpark(8,400-Math.trunc(SPARK_COST[e.id])),e.key);
     if(e.id!==E.LAMP)assert.equal(C.ctElectric(out,ns(),0).spark%9,7);
@@ -122,11 +122,11 @@ test('all electric pairs obey TPT diode/switch direction, 3608 retained',()=>{
 test('switch off wins, powered clone controls, TSNS ignores wires, steady DC lamp sleeps',()=>{
   const p=cell(E.PSCN),n=cell(E.NSCN);p.spark=n.spark=3608;
   for(const id of [E.SWITCH,E.PCLN]) {
-    const c=cell(id);assert.equal(C.ctElectric(c,ns(p),0).life,10);
-    c.life=10;assert.equal(C.ctElectric(c,ns(p,n),0).life,9);
+    const c=cell(id);assert.equal(C.ctElectric(c,ns(p),0).life,20480);
+    c.life=20480;assert.equal(C.ctElectric(c,ns(p,n),0).life,18432);
   }
   const sensor=cell(E.TSNS,100);assert.equal(C.ctElectric(sensor,ns(cell(E.METAL,500)),0).life,0);
-  assert.equal(C.ctElectric(sensor,ns(cell(E.WOOD,500)),0).life,1);
+  assert.equal(C.ctElectric(sensor,ns(cell(E.WOOD,500)),0).life,2048);
   const lamp=C.ctElectric(cell(E.LAMP),ns(cell(E.BATTERY)),0);assert.equal(lamp.spark,81);assert.equal(lamp.busy,0);
   assert.ok(C.ctElectric(lamp,ns(),0).spark>0);
   const ready=cell(E.METAL),front=cell(E.METAL);front.spark=3608;
@@ -154,7 +154,7 @@ test('blasts request source without consuming, fuse handoff, suspended dust and 
     assert.equal(out.id,c.id,e.key);assert.ok(out.request&1,e.key);
   }
   const fuse=cell(E.FUSE),lit=cell(E.FUSE);lit.life=100;assert.ok(C.ctStep(fuse,ns(lit),0).life<2048);
-  const dust=cell(E.DUST,500);dust.age=10;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
+  const dust=cell(E.DUST,500);dust.age=C.DUST_MIN_FALL_AGE;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
   let emitted=false;
   for(let seed=0;seed<100000;seed++)if(C.ctStep(cell(E.PLUTONIUM),ns(),seed).request&4){emitted=true;break;}
   assert.ok(emitted);assert.equal(C.ctStep(cell(E.URANIUM),ns(),0).request&4,0);
