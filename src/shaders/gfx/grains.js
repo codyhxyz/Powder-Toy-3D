@@ -475,7 +475,8 @@ var<private> gAltK: i32 = GK_VOID;
 // The textured granular surface hit at hp: does geometry replace it here?
 // True if every granular cell around hp holds geometry (or there are none,
 // e.g. the blurred trail of a lone cell that moved on); *w = its weight.
-fn grainSuppress(hp: vec3f, w: ptr<function, f32>) -> bool {
+// Without clod budget, only known pebble surfaces can still be replaced.
+fn grainSuppress(hp: vec3f, clods: bool, w: ptr<function, f32>) -> bool {
   let fp = footprint(hp);
   *w = grainWMax(fp);
   if (*w <= 0.0) { return false; }
@@ -486,9 +487,11 @@ fn grainSuppress(hp: vec3f, w: ptr<function, f32>) -> bool {
     if (outside(c)) { continue; }
     let id = eid(fetchA(c));
     if (SURFCH(id) != CH_GRANULAR) { continue; }
+    if (!clods && !isPebbles(id)) { return false; }
     if (!grainElement(id) || !grainCellOk(c, id)) { return false; }
     wMin = min(wMin, grainW(id, fp));
   }
+  if (!clods && wMin > 1.0) { return false; }   // empty blur envelope: keep the smooth fallback
   if (wMin <= 1.0) { *w = wMin; }
   return *w > 0.0;
 }
@@ -510,6 +513,9 @@ fn grainEvent(cell: vec3i, id: i32, a: vec4f, ro: vec3f, rd: vec3f, tEnter: f32,
   if (id == E_EMPTY && gPebInside && !isoCand) { gPebInside = surfField(ro + rd * tEnter)[CH_GRANULAR] >= SURF_ISO; }
   fillCand = id == E_EMPTY && (isoCand || gPebInside);` : ''}
   if (!cand && !isoCand && !fillCand) { return; }
+  // Snapshot before the last allowed clod test increments the counter: that
+  // test must still be able to replace its own smooth surface.
+  let clods = gClodCells < CLOD_MAX_CELLS;
   // 1. this cell's geometry (gated by footprint before any per-cell work)
   var tG = NO_HIT;
   var wG = 0.0;
@@ -538,7 +544,7 @@ fn grainEvent(cell: vec3i, id: i32, a: vec4f, ro: vec3f, rd: vec3f, tEnter: f32,
   var wS: f32;
   var tIn = tEnter;   // where the ray is inside the smooth surface from
   var supp = false;
-  if (isoCand && tG >= *tEv && grainSuppress(ro + rd * (*tEv), &wS)) {
+  if (isoCand && tG >= *tEv && grainSuppress(ro + rd * (*tEv), clods, &wS)) {
     let hp = ro + rd * (*tEv);
     if (gGrainMode == GM_OPEN && wS < 1.0) {
       gAltW = wS; gAltGeom = false; gAltCol = col; gAltTrans = trans; gAltRd = rd; gAltP = hp;
