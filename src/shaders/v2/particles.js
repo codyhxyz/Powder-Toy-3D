@@ -1,0 +1,256 @@
+import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
+import { uniformStruct } from '../../gpu/params.js';
+import { STAGE } from '../../gpu/kernels.js';
+import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG } from '../../v2/dynamics-reference.js';
+import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
+import { ELEMENTS, E, R } from '../../elements.js';
+export { PARTICLE_CAP };
+export const DynamicParams = uniformStruct('DynamicParams', {
+  tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
+  center: 'vec3f', radius: 'f32', vector: 'vec3f', strength: 'f32', shift: 'vec3i', substep: 'u32',
+});
+export const storageLayout = (count, readonly = []) => Array.from({ length: count }, (_, binding) =>
+  ({ binding, visibility: STAGE.COMPUTE, buffer: { type: readonly.includes(binding) ? 'read-only-storage' : 'storage' } }));
+export const PARTICLES_LAYOUT = storageLayout(5, [3]);
+export const CONTROL = Object.freeze({ LIVE: 0, AIR: 1, PENDING: 2, BLAST: 3, FREE: 4, SPAWNS: 5, ENERGY: 6,
+  FREE_LIST: 16, PREFIX: 16 + PARTICLE_CAP });
+const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
+const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
+  `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
+export function dynamicsCommon(g, nativeHead) {
+  return /* wgsl */ `
+${DynamicParams.wgsl}
+@group(3) @binding(1) var<uniform> P: DynamicParams;
+${nativeHead(g)}
+const D_CAP: u32 = ${PARTICLE_CAP}u;
+const D_SLOTS: u32 = ${g.slots}u;
+const D_BRICKS: u32 = ${g.nbricks}u;
+const D_NONE: u32 = 0xffffffffu;
+const D_CELL: f32 = ${f(CELL_M)};
+const D_DT: f32 = ${f(DT)};
+const D_G: f32 = ${f(GRAVITY)};
+const D_NEUTRON: u32 = ${NEUTRON_TAG}u;
+const D_PHOTON: u32 = 254u;
+const D_FREE: u32 = ${CONTROL.FREE_LIST}u;
+const D_PREFIX: u32 = ${CONTROL.PREFIX}u;
+const D_COUNTS: u32 = D_PREFIX + D_BRICKS;
+struct DParticle { position: vec3f, id: u32, velocity: vec3f, c0: u32, tail: vec4u }
+struct DAir { vp: vec4f, thermal: vec4f } // m/s, Pa; excess K, gas fraction, quiet ticks, reserved
+${table('dMass', 'f32', 'mass', 0.001)}
+${table('dToughness', 'f32', 'toughness', 1e30)}
+${table('dStrength', 'f32', 'strength', 1e30)}
+${table('dBreak', 'i32', 'breakInto', -1)}
+${table('dTerminal', 'f32', 'terminal', 55)}
+${table('dLift', 'f32', 'lift', 12)}
+fn dHash(x0: u32) -> u32 { var x = x0; x = (x ^ (x >> 16u)) * 0x7feb352du; x = (x ^ (x >> 15u)) * 0x846ca68bu; return x ^ (x >> 16u); }
+fn dId(p: vec3i, rule: u32) -> u32 { let w = vec3u(p + P.origin); return max(1u, dHash(w.x * 73856093u ^ w.y * 19349663u ^ w.z * 83492791u ^ P.tick * 2654435761u ^ rule)); }
+fn dKey(id: u32) -> u32 { return dHash(id ^ P.tick * 2654435761u); }
+fn dRandom(id: u32, salt: u32) -> f32 { return f32(dHash(id ^ P.tick * 2654435761u ^ salt) >> 8u) / 16777216.0; }
+fn dDir(id: u32) -> vec3f { let z = 2.0 * dRandom(id, 51u) - 1.0; let a = dRandom(id, 91u) * 6.283185307; let r = sqrt(max(0.0, 1.0-z*z)); return vec3f(r*cos(a), z, r*sin(a)); }
+fn dMaterial(p: DParticle) -> Material { return Material(vec4u(p.c0, p.tail.xyz), bitcast<i32>(p.tail.w)); }
+fn dParticle(position: vec3f, velocity: vec3f, id: u32, m: Material) -> DParticle { return DParticle(position, id, velocity, m.core.x, vec4u(m.core.yzw, bitcast<u32>(m.bank))); }
+fn dEmpty() -> Material { return makeMaterial(0u, 20.0, 0u, 0u); }
+fn dAddHeat(m: Material, heat: f32) -> Material {
+  // One legacy cap*C = FULL*64*4 native energy units; fission's 150
+  // exceeds signed32, so multiply/add in the foundation's signed64 pair.
+  let amount = energyMul(u32(round(abs(heat)*256.0)),65536u);
+  if (heat < 0.0) { return withEnergy(m,energySub(energyOf(m),amount)); }
+  return withEnergy(m,energyAdd(energyOf(m),amount));
+}
+fn dWake(p: vec3i) {
+  // New sources must wake the old and new neighbourhood, even across a brick boundary.
+  for (var z = -1; z <= 1; z++) { for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let q = p + 4 * vec3i(x,y,z); if (inGrid(q)) { markBusy(q); }
+  } } }
+}
+fn dThread(wg: vec3u, nwg: vec3u, li: u32) -> u32 { return (wg.x + wg.y * nwg.x) * 64u + li; }
+fn dAxis(a: u32) -> vec3i { var v = vec3i(0); v[a] = 1; return v; }
+fn dOpen(p: vec3i) -> bool { if (!inGrid(p)) { return false; } let k = cls(cid(loadMaterial(slotOf(p)).core)); return k == 0u || k == 4u; }
+fn dAmount(m: Material) -> f32 { if (cls(cid(m.core)) == 3u) { return f32(cFill(m.core)) / 65536.0; } return 1.0; }
+`;
+}
+export const main64 = body => /* wgsl */ `@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+ let t = dThread(wg,nwg,li); ${body}
+}`;
+export const main1 = body => `@compute @workgroup_size(1) fn main() { ${body} }`;
+// Family: native3 + particles/scratch/claims/air/control5 = eight storage buffers.
+function head(g, nativeHead) {
+  const nuclear = ELEMENTS.filter(e => NUCLEAR[e.key]).map(e => {
+    const s = sigmas(e.key), n = NUCLEAR[e.key];
+    return `case ${e.id}u: { return DNuclear(vec3f(${s.slice(0,3).map(f)}), vec3f(${s.slice(3).map(f)}), ${f(n.h)}, ${f(n.A)}, ${f(n.nuF)}, ${f(n.nuT)}); }`;
+  }).join('\n');
+  return /* wgsl */ `${dynamicsCommon(g, nativeHead)}
+struct DFlight { destination: vec4u, effect: vec4f } // hit, deposit, kind, key; energy/direction data
+struct DNuclear { fast: vec3f, thermal: vec3f, h: f32, A: f32, nuF: f32, nuT: f32 }
+@group(1) @binding(0) var<storage, read_write> particles: array<DParticle>;
+@group(1) @binding(1) var<storage, read_write> flight: array<DFlight>;
+@group(1) @binding(2) var<storage, read_write> claims: array<atomic<u32>>;
+@group(1) @binding(3) var<storage, read> air: array<DAir>;
+@group(1) @binding(4) var<storage, read_write> control: array<atomic<u32>>;
+fn dNuclear(id: u32) -> DNuclear { switch id { ${nuclear} default: { return DNuclear(vec3f(0), vec3f(0), 0.0, 1.0, 0.0, 0.0); } } }
+fn dOptical(id: u32) -> vec4f { switch id {
+${ELEMENTS.map(e => `case ${e.id}u: { return vec4f(${(e.sigma ?? [0,0,0]).map(f).join(',')},${f(e.render === R.OPAQUE ? -(1+(e.reflect ?? 0)) : 0)}); }`).join('\n')}
+default: { return vec4f(0); } } }
+fn dIOR(id: u32) -> f32 { switch id {
+case ${E.GLASS}u: { return 1.5; } case ${E.WATER}u: { return 1.333; } case ${E.ICE}u: { return 1.31; }
+default: { return 1.0; } } }
+fn dPhotonEnergy(p: DParticle) -> vec3f { return bitcast<vec3f>(p.tail.xyz); }
+fn dClaim(s: u32, kind: u32, key: u32) { if (s != D_NONE) { atomicMin(&claims[s * 4u + kind * 2u], key); } }
+fn dWon(s: u32, kind: u32, index: u32) -> bool { return s != D_NONE && atomicLoad(&claims[s*4u+kind*2u+1u]) == index; }
+`;
+}
+export function particlesWGSL(g, nativeHead, stage) {
+  const h = head(g, nativeHead);
+  if (stage === 'clear') return h + main64(`
+    if (t < D_SLOTS * 4u) { atomicStore(&claims[t], D_NONE); }
+    if (t == 0u) { atomicStore(&control[0],0u); }
+  `);
+  if (stage === 'integrate') return h + main64(/* wgsl */ `
+    if (t >= D_CAP) { return; }
+    var particle = particles[t]; flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
+    if (particle.id == 0u) { return; }
+    atomicAdd(&control[0],1u);
+    let local = particle.position - vec3f(P.origin); let startCell = vec3i(floor(local));
+    // World-window exits are retained, not deleted. A later shift can bring them back.
+    if (!inGrid(startCell)) { return; }
+    dWake(startCell);
+    let m = dMaterial(particle); let id = cid(m.core); let neutron = id == D_NEUTRON; let photon = id == D_PHOTON;
+    var v = particle.velocity; var acceleration = vec3f(0,-D_G,0);
+    if (photon) {
+      let life = particle.c0 >> 8u; particle.c0 = D_PHOTON | (max(1u,life)-1u)<<8u;
+      acceleration = vec3f(0);
+    } else if (neutron) {
+      if (particle.tail.z > 0u) { return; } // pending children: allocator must account for every one
+      if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); return; }
+      particle.tail.x -= 1u; acceleration = vec3f(0);
+    } else {
+      let wind = air[brickOfCell(startCell)].vp.xyz;
+      if (cls(id) == 4u) { acceleration = vec3f(0); }
+      let relative = v - wind;
+      // Implicit quadratic drag is stable at any speed; it is NOT a displacement cap.
+      let drag = D_G / (dTerminal(id) * dTerminal(id));
+      v = wind + relative / (1.0 + drag * length(relative) * D_DT);
+    }
+    let end = local + (v * D_DT + 0.5 * acceleration * D_DT * D_DT) / D_CELL;
+    particle.velocity = v + acceleration * D_DT;
+    let delta = end - local; var cell = startCell; var previous = startCell;
+    var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
+    for (var a = 0u; a < 3u; a++) { if (delta[a] != 0.0) {
+      stride[a] = abs(1.0 / delta[a]);
+      next[a] = (f32(cell[a] + select(0,1,delta[a]>0.0)) - local[a]) / delta[a];
+    } }
+    var hit = D_NONE; var deposit = D_NONE; var hitT = 1.0; var kind = 0u; var energy = 0.0;
+    var entry = 0.0; var entryAxis = 1u; var optical = vec3f(0);
+    loop {
+      if (!inGrid(cell)) { break; }
+      let slot = slotOf(cell); let destination = loadMaterial(slot); let targetId = cid(destination.core);
+      var axis = 0u; if (next.y < next.x) { axis = 1u; } if (next.z < next[axis]) { axis = 2u; }
+      let exit = min(1.0,next[axis]);
+      if (photon) {
+        let optics = dOptical(targetId); let segment = max(0.0,exit-entry)*length(delta);
+        let priorId = cid(loadMaterial(slotOf(previous)).core);
+        if ((particle.c0>>8u)==0u || optics.w<0.0 || any(optics.xyz>vec3f(0)) || dIOR(priorId)!=dIOR(targetId)) {
+          hit=slot; hitT=entry; energy=segment; kind=5u;
+          optical=vec3f(f32(entryAxis),dIOR(priorId)/dIOR(targetId),f32(step[entryAxis])); break;
+        }
+      } else if (neutron) {
+        var materialId = targetId;
+        if (materialId == ${E.LAVA}u) { materialId = (destination.core.y >> 24u) & 255u; }
+        let n = dNuclear(materialId); let e = bitcast<f32>(particle.tail.y);
+        let fast = clamp(log(max(e,${f(RAYS.NEUT_E_THERMAL)})/${f(RAYS.NEUT_E_THERMAL)}) / log(${f(RAYS.NEUT_E_FAST/RAYS.NEUT_E_THERMAL)}),0.0,1.0);
+        let inverseSpeed = sqrt(${f(RAYS.NEUT_E_THERMAL)}/max(e,${f(RAYS.NEUT_E_THERMAL)}));
+        let cross = vec3f(mix(n.thermal.x,n.fast.x,fast),max(n.fast.y,n.thermal.y*inverseSpeed),max(n.fast.z,n.thermal.z*inverseSpeed)); let total = cross.x+cross.y+cross.z;
+        let segment = max(0.0,exit-entry)*length(delta);
+        if (total > 0.0 && dRandom(particle.id,slot ^ 511u) < 1.0-exp(-total*segment)) {
+          hit = slot; hitT = entry; let choice = dRandom(particle.id,slot ^ 1231u)*total;
+          if (choice < cross.x) { kind = 2u; } else if (choice < cross.x+cross.y) { kind = 3u; } else { kind = 4u; }
+          energy = mix(n.nuT,n.nuF,fast); break;
+        }
+      } else if (targetId != 0u && cls(targetId) != 4u) {
+        hit = slot; hitT = entry; kind = 1u;
+        if (inGrid(previous) && cid(loadMaterial(slotOf(previous)).core) == 0u) { deposit = slotOf(previous); }
+        energy = 0.5*dMass(id)*dAmount(m)*dot(particle.velocity,particle.velocity); break;
+      }
+      if (next[axis] > 1.0) { break; }
+      previous = cell; entry = next[axis]; entryAxis=axis; cell[axis] += step[axis]; next[axis] += stride[axis];
+    }
+    if (hit == D_NONE) {
+      particle.position = end + vec3f(P.origin);
+      // Gas packets hand back to an empty destination after each cell crossing.
+      if (!neutron && !photon && cls(id) == 4u && inGrid(cell) && any(cell != startCell) && cid(loadMaterial(slotOf(cell)).core) == 0u) { deposit = slotOf(cell); }
+    } else {
+      particle.position = local + delta * max(0.0,hitT - 0.00001 / max(length(delta),0.00001)) + vec3f(P.origin);
+    }
+    particles[t] = particle;
+    flight[t] = DFlight(vec4u(hit,deposit,kind,dKey(particle.id)), vec4f(energy,optical));
+    dClaim(hit,0u,dKey(particle.id)); dClaim(deposit,1u,dKey(particle.id));
+  `);
+  if (stage === 'elect') return h + main64(`
+    if (t >= D_CAP || particles[t].id == 0u) { return; }
+    let f = flight[t];
+    for (var kind = 0u; kind < 2u; kind++) { let s = f.destination[kind];
+      if (s != D_NONE && atomicLoad(&claims[s*4u+kind*2u]) == f.destination.w) { atomicMin(&claims[s*4u+kind*2u+1u],t); }
+    }
+  `);
+  if (stage === 'impact') return h + main64(/* wgsl */ `
+    if (t >= D_CAP || particles[t].id == 0u) { return; }
+    let f = flight[t]; let s = f.destination.x; if (!dWon(s,0u,t)) { return; }
+    var p = particles[t]; let before = loadMaterial(s); var after = before;
+    if (f.destination.z == 1u) {
+      let id = cid(before.core); let cost = dToughness(id);
+      if (cls(p.c0 & 255u) != 3u && dBreak(id) >= 0 && f.effect.x >= cost) {
+        after.core.x = (before.core.x & 0xffffff00u) | u32(dBreak(id));
+        // Fracture spends KE, never manufactures heat. Stop at the first face;
+        // remaining KE survives for the next swept segment.
+        p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)));
+      } else { p.velocity = vec3f(0); }
+    } else if (f.destination.z == 5u) {
+      let old = dPhotonEnergy(p); let optics = dOptical(cid(before.core)); var left = old;
+      let direction = normalize(p.velocity); var normal = vec3f(0); normal[u32(f.effect.y)] = -f.effect.w;
+      if ((p.c0>>8u)==0u) { left=vec3f(0); }
+      else if (optics.w<0.0) {
+        left *= max(0.0,-optics.w-1.0); p.velocity=reflect(p.velocity,normal);
+      } else if (f.effect.z!=1.0) {
+        // Snell's law, with total internal reflection; TPT GLASS/WATR optics.
+        let bent=refract(direction,normal,f.effect.z);
+        if (dot(bent,bent)<0.000001) { p.velocity=reflect(p.velocity,normal); }
+        else { p.velocity=normalize(bent)*length(p.velocity); p.position+=normalize(p.velocity)*0.0001; }
+      } else {
+        left *= exp(-optics.xyz*f.effect.x); p.position+=direction*(f.effect.x+0.0001);
+      }
+      if (max(left.x,max(left.y,left.z))<${f(RAYS.PHOTON_E_MIN)}) { left=vec3f(0); }
+      after=dAddHeat(before,dot(old-left,vec3f(${f(RAYS.PHOTON_HEAT/3)})));
+      p.tail=vec4u(bitcast<vec3u>(left),p.tail.w);
+      if (all(left==vec3f(0))) { p.id=0u; atomicSub(&control[0],1u); }
+    } else if (f.destination.z == 2u) {
+      var id = cid(before.core); if (id == ${E.LAVA}u) { id = (before.core.y >> 24u) & 255u; }
+      let n = dNuclear(id); let alpha = pow((n.A-1.0)/(n.A+1.0),2.0);
+      let r = dRandom(p.id,415u); let keep = select(alpha+(1.0-alpha)*r,r,dRandom(p.id,416u)<n.h);
+      let e = max(${f(RAYS.NEUT_E_THERMAL)},bitcast<f32>(p.tail.y)*keep); p.tail.y = bitcast<u32>(e);
+      let speed = D_CELL * 60.0 * clamp(${f(RAYS.NEUT_V)}*sqrt(e/${f(RAYS.NEUT_E_FAST)}),${f(RAYS.NEUT_V_THERMAL)},${f(RAYS.NEUT_V)});
+      p.velocity = dDir(p.id)*speed;
+    } else {
+      // Native energy-bank helper is supplied by the thermal foundation.
+      after = dAddHeat(before, select(${f(RAYS.CAPTURE_HEAT)},${f(RAYS.FISSION_HEAT)},f.destination.z==4u));
+      if (f.destination.z == 4u) {
+        p.tail.y = bitcast<u32>(${f(RAYS.NEUT_E_FAST)});
+        p.tail.z = u32(floor(f.effect.x-1.0)) + select(0u,1u,dRandom(p.id,761u)<fract(f.effect.x-1.0));
+        p.velocity = dDir(p.id)*${f(RAYS.NEUT_V*60*CELL_M)};
+      } else { p.id = 0u; atomicSub(&control[0],1u); }
+    }
+    storeMaterial(s,before,after); dWake(cellOf(s)); particles[t] = p;
+  `);
+  if (stage === 'deposit') return h + main64(`
+    if (t >= D_CAP || particles[t].id == 0u) { return; }
+    let s = flight[t].destination.y; if (!dWon(s,1u,t)) { return; }
+    let before = loadMaterial(s); if (cid(before.core) != 0u) { return; }
+    storeMaterial(s,before,dMaterial(particles[t])); dWake(cellOf(s));
+    particles[t].id = 0u; atomicSub(&control[0],1u);
+  `);
+  throw new Error(`Unknown particles stage ${stage}`);
+}
+export const PARTICLE_STAGES = ['clear','integrate','elect','impact','deposit'];
+
+export const WGSL_CHECK = PARTICLE_STAGES.map(stage => ({ name: `v2particles_${stage}`, kind: 'compute',
+  code: g => particlesWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,PARTICLES_LAYOUT,'EMPTY'], tool: true }));
