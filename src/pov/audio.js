@@ -689,7 +689,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     }
   });
 
-  povEvents.on('player:jet', ({ on }) => loop('jetLoop', !!on && live()));
+  povEvents.on('player:jet', ({ on }) => loop('jetLoop', !!on && live(), { gain: 0.5 }));
 
   // the laser's charge whine climbs as it fills (tool:action 'laser' 'charge' started the loop)
   povEvents.on('laser:charge', ({ amount = 0, by }) => {
