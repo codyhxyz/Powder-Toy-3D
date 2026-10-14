@@ -16,6 +16,34 @@ export function reference(value) {
   if (!m) fail(`Invalid resource reference: ${value}`);
   return { kind: m[1], id: Number(m[2]) };
 }
+function primitiveString(raw) {
+  const escapes = { a: '\u0007', b: '\b', t: '\t', n: '\n', v: '\u000b', f: '\f', r: '\r', e: '\u001b', '"': '"', "'": "'", '\\': '\\' };
+  let value = '';
+  for (let i = 1; i < raw.length - 1; i++) {
+    if (raw[i] !== '\\') { value += raw[i]; continue; }
+    const escaped = raw[++i];
+    if (escaped === 'u' && /^[0-9a-f]{4}$/i.test(raw.slice(i + 1, i + 5))) { value += String.fromCharCode(parseInt(raw.slice(i + 1, i + 5), 16)); i += 4; }
+    else if (Object.hasOwn(escapes, escaped)) value += escapes[escaped];
+    else fail(`Unsupported Godot string escape: ${escaped}`);
+  }
+  return value;
+}
+/** Root-authored primitive overrides only; never evaluate GDScript/resource data. */
+export function authoredPrimitiveProperties(node) {
+  const result = {};
+  for (const [key, raw] of Object.entries(node.props)) {
+    if (key === 'script' || key === 'transform') continue;
+    if (raw === 'true' || raw === 'false') result[key] = raw === 'true';
+    else if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(raw) && Number.isFinite(Number(raw))) result[key] = Number(raw);
+    else if (/^"(?:[^"\\]|\\[\s\S])*"$/.test(raw)) result[key] = primitiveString(raw);
+  }
+  return result;
+}
+export function sourceActorMetadata(node, scene) {
+  const resource = node.instance ?? node.props.script;
+  return { sourceResource: resource ? scene.external.get(reference(resource).id)?.path ?? null : null,
+    sourceProperties: authoredPrimitiveProperties(node), sourceYaw: Math.atan2(node.worldTransform[6], node.worldTransform[8]) };
+}
 export function properties(body) {
   const result = {};
   const matches = [...body.matchAll(/^([\w/]+) = /gm)];
