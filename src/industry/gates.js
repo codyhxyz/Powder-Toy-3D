@@ -2,7 +2,7 @@ import { E } from '../elements.js';
 import { prelude, STATE_OPTS, LAYOUT } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { RING_LAYOUT, ringWGSL } from '../shaders/povBody.js';
-import { INDUSTRY_LIMIT, deviceCell } from './catalog.js';
+import { INDUSTRY_LIMIT, deviceCell, baseMaterial } from './catalog.js';
 
 // TPT WALL has no life field semantics. Keep this exact f32 integer in A.z;
 // ownership always requires both WALL and this marker, never element ID alone.
@@ -69,7 +69,7 @@ export function gateRequestsClosed(gateMode, energized = false) {
 }
 
 /** CPU reference transition table. Aperture entries are owned, empty, or foreign. */
-export function resolveGateTransition({ mode = 'open', energized = false, expectedClosed = false, aperture, remove = false }) {
+export function resolveGateTransition({ mode = 'open', energized = false, expectedClosed = false, aperture, remove = false, baseIntact = true }) {
   if (!Array.isArray(aperture) || aperture.length !== GATE_APERTURE_CELLS
       || !aperture.every(v => v === 'owned' || v === 'empty' || v === 'foreign')) throw new TypeError('Invalid gate aperture state');
   if (typeof expectedClosed !== 'boolean') throw new TypeError('Invalid expected gate state');
@@ -79,6 +79,7 @@ export function resolveGateTransition({ mode = 'open', energized = false, expect
   const allEmpty = aperture.every(v => v === 'empty');
   if (remove) return { status: GATE_STATUS.OPEN, gateClosed: false, desiredClosed: false, write: 'erase-owned', changed: owned > 0 };
   const desiredClosed = gateRequestsClosed(mode, energized);
+  if (!baseIntact) return { status: GATE_STATUS.DAMAGED, gateClosed: expectedClosed, desiredClosed, write: 'none', changed: false };
   if (desiredClosed) {
     if (allOwned) return { status: GATE_STATUS.CLOSED, gateClosed: true, desiredClosed, write: 'none', changed: false };
     if (owned > 0 || expectedClosed) return { status: GATE_STATUS.DAMAGED, gateClosed: expectedClosed, desiredClosed, write: 'none', changed: false };
@@ -91,7 +92,7 @@ export function resolveGateTransition({ mode = 'open', energized = false, expect
 }
 
 const GateParams = uniformStruct('IndustryGate', {
-  at: 'vec3i', across: 'vec3i', port: 'vec3i', gateMode: 'u32', expectedClosed: 'u32', operation: 'u32', slot: 'u32',
+  at: 'vec3i', across: 'vec3i', port: 'vec3i', base: 'vec3i', gateMode: 'u32', expectedClosed: 'u32', operation: 'u32', slot: 'u32',
 });
 
 /** One-invocation preflight-and-write kernel. The leaf is an actuator, never cargo. */
@@ -107,6 +108,14 @@ const INDUSTRY_GATE_BLOCKED: u32 = 3u;
 const INDUSTRY_GATE_DAMAGED: u32 = 4u;
 
 fn gateOwned(a: vec4f) -> bool { return eid(a) == E_WALL && a.z == INDUSTRY_GATE_OWNER_TAG; }
+fn gateBaseIntact() -> bool {
+  for (var z = 0; z < 4; z++) { for (var x = 0; x < 4; x++) {
+    let p = P.base + vec3i(x, 0, z);
+    if (!inGrid(p)) { return false; }
+    if (eid(fetchA(p)) != ${baseMaterial('gate')}) { return false; }
+  } }
+  return true;
+}
 fn gateSignal(port: vec3i) -> bool {
   if (!inGrid(port)) { return false; }
   let a = fetchA(port);
@@ -162,7 +171,7 @@ fn main() {
       status = INDUSTRY_GATE_OPEN;
       physicallyClosed = false;
     }
-  } else if (inBounds) {
+  } else if (inBounds && gateBaseIntact()) {
     // TPT's native battery/SWCH/spark signal is energized-open; absent signal closes.
     desiredClosed = P.gateMode == 1u || (P.gateMode == 2u && !gateSignal(P.port));
     if (desiredClosed) {
@@ -258,7 +267,7 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
     const geom = d.geometry;
     const slot = ctx.ring.next();
     ctx.sim._dispatch(ctx.kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(),
-      params: { at: geom.at, across: geom.across, port: geom.port,
+      params: { at: geom.at, across: geom.across, port: geom.port, base: [d.x, d.y, d.z],
         gateMode: operation === 'remove' ? 0 : MODES[d.gateMode], expectedClosed: +(operation === 'remove' ? false : d.gateClosed),
         operation: +(operation === 'remove'), slot } });
     const result = ctx.ring.read(slot);

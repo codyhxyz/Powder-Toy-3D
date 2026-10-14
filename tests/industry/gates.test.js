@@ -125,6 +125,18 @@ test('gate mode and native signal semantics are energized-open / absent-close', 
   assert.throws(() => gateRequestsClosed('toggle', true), /mode/);
 });
 
+test('a destroyed base jams actuation but still permits owned-only dismantling', () => {
+  for (const mode of ['open', 'closed', 'signal']) for (const aperture of [empty, owned]) {
+    const result = resolveGateTransition({ mode, aperture, expectedClosed: aperture === owned, baseIntact: false });
+    assert.equal(result.status, GATE_STATUS.DAMAGED);
+    assert.equal(result.write, 'none');
+  }
+  assert.equal(resolveGateTransition({ aperture: owned, remove: true, baseIntact: false }).write, 'erase-owned');
+  const code = gateWGSL(BOUNDS);
+  assert.match(code, /else if \(inBounds && gateBaseIntact\(\)\)/);
+  assert.match(code, /P\.base \+ vec3i\(x, 0, z\)/);
+});
+
 test('gate aperture, base, across vector and port rotate together and remain bounded', () => {
   const axes = [[1, 0, 0], [0, 0, 1], [-1, 0, 0], [0, 0, -1]];
   for (let rotation = 0; rotation < 4; rotation++) {
@@ -173,6 +185,7 @@ test('pending close is fenced from dismantle; removal waits and erases only tagg
   gates.step(1 / 60, [d]);
   await waitFor(() => fake.requests.length === 1);
   assert.equal(gates.pending, 1);
+  assert.deepEqual(fake.requests[0].params.base, [d.x, d.y, d.z]);
   const removing = gates.remove(d);
   assert.ok(gates.pending > 0);
   fake.answer(0, [2, 1, 1, 1]);

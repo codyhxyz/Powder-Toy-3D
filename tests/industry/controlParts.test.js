@@ -5,6 +5,7 @@ import {
   controlPartsWGSL, WGSL_CHECK, createFactoryControlParts,
 } from '../../src/industry/controlParts.js';
 import { E } from '../../src/elements.js';
+import { World } from '../../src/ui/tiles/engine.js';
 
 const BOUNDS = { nx: 32, ny: 32, nz: 32 };
 const deferred = () => {
@@ -76,7 +77,7 @@ test('control-part WGSL writes only an empty cell and toggles only actual E_SWIT
   assert.match(code, /@compute @workgroup_size\(1\)/);
   assert.match(code, /if \(eid\(a\) == E_EMPTY\)/);
   assert.match(code, /if \(P\.mode == FACTORY_PART_TOGGLE && eid\(a\) == E_SWITCH\)/);
-  assert.match(code, /outA\.z = select\(SWITCH_ON, 0\.0, a\.z == SWITCH_ON\)/);
+  assert.match(code, /outA\.z = select\(SWITCH_ON, SWITCH_ON - 1\.0, a\.z == SWITCH_ON\)/);
   assert.match(code, /SPAWNLIFE\(P\.material\)/);
   assert.match(code, /markBrick\(brickId\(P\.at >> vec3u\(2u\)\)\)/);
   assert.match(code, /markControlNeighbours\(P\.at\)/);
@@ -84,6 +85,18 @@ test('control-part WGSL writes only an empty cell and toggles only actual E_SWIT
   assert.deepEqual(WGSL_CHECK[0].layouts().at(-1), [{ binding: 0, buffer: { type: 'storage' } }]);
   const featureBody = code.slice(code.indexOf('const FACTORY_PART_PLACE'));
   assert.doesNotMatch(featureBody, /E_PCLN|E_CLONE|newElement|credits|partsSpent/);
+});
+
+test('OFF propagates through a touching switch bank instead of relatching ON', () => {
+  const world = new World(8, 8);
+  world.put(3, 3, E.SWITCH, { life: 9 });
+  world.put(4, 3, E.SWITCH, { life: 10 });
+  world.step();
+  assert.equal(world.life[world.idx(3, 3)], 8);
+  assert.equal(world.life[world.idx(4, 3)], 9);
+  for (let step = 0; step < 12; step++) world.step();
+  assert.equal(world.life[world.idx(3, 3)], 0);
+  assert.equal(world.life[world.idx(4, 3)], 0);
 });
 
 test('place resolves only after confirmed write; occupied writes and non-switch toggles fail', async () => {

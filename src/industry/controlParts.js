@@ -97,7 +97,8 @@ fn main() {
       }
     } else if (P.mode == FACTORY_PART_TOGGLE && eid(a) == E_SWITCH) {
       var outA = a;
-      outA.z = select(SWITCH_ON, 0.0, a.z == SWITCH_ON);
+      // TPT shutdown countdown spreads OFF through a touching switch bank.
+      outA.z = select(SWITCH_ON, SWITCH_ON - 1.0, a.z == SWITCH_ON);
       if (writeCell(P.at, a, b, fetchF(P.at), outA, b)) {
         markBrick(brickId(P.at >> vec3u(2u)));
         markControlNeighbours(P.at);
