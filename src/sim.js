@@ -1,3 +1,6 @@
+import { nativeHostTick } from './v2/host.js';
+import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
+import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
 import {
   BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims, sleepUnitOf,
   marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
@@ -493,10 +496,30 @@ export class Simulation {
     if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(); return this._bindRO; }
     return v2.groups.read;
   }
-  readHeader() {
+  get nativeCapabilities() { return nativeCapabilities(this); }
+  async prepareNative(owner = this.compactOwner) {
+    await owner?.ready;
+    if (!owner?.aux) return false;
+    if (this.nativeIntegration?.owner !== owner) {
+      this.nativeIntegration?.dispose();
+      this.nativeIntegration = new NativeIntegration(this, owner);
+    }
+    await this.nativeIntegration.ready;
+    return true;
+  }
+  applyNativeTool(request) {
+    const kind = request.kind ?? 'impulse';
+    if (!this.compact || !this.nativeCapabilities[kind]) return false;
+    this.compact.sync();
+    const accepted = this.compact.nativeDynamics.applyToolImpulse(request);
+    const ok = accepted === 'accepted' || accepted === 'queued' || accepted?.status === 'accepted' || accepted?.status === 'queued';
+    if (ok) { this.compact.wake(); this.wake(); }
+    return ok;
+  }
+  readHeader({ physical = false } = {}) {
     this.compact?.sync();
     const v2 = this.compact;
-    return { ...this.header(), format: v2?.isReady && !(v2.forceCompatibility && this.gpu.testMode) ? 2 : 0 };
+    return { ...this.header(), format: v2?.isReady && !(v2.forceCompatibility && this.gpu.testMode) ? (physical ? 3 : 2) : 0 };
   }
 
   // Records a dispatch into the frame's compute pass and tells the profiler.
@@ -591,7 +614,12 @@ export class Simulation {
   // ---- the step (docs/webgpu.md D1) ----
 
   step() {
-    this.compact?.suspend();
+    // Callers outside app.js (scripts/fixtures) step the active engine too.
+    // Engine switching is explicit; a step must never silently suspend v2.
+    if (this.compact) {
+      if (this.compact.isReady) nativeHostTick(this.compact);
+      return;
+    }
     const f = this.gpu.frame;   // (throws GraphicsFailure once graphics have stopped)
     this.frame++;   // simulation time and parity advance even when there is nothing to step
     // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,
@@ -794,6 +822,20 @@ export class Simulation {
   // last paint (the Wind tool's drag). One edit (docs/webgpu.md D6): Mix, whose
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
+    if (this.compact && tool === TOOLS.find(t => t.key === 'WIND').id) {
+      if (!this.nativeCapabilities.impulse) throw new Error('Native wind impulse is unavailable');
+      if (!wind || !Math.hypot(...wind)) return;
+      // TPT's wind drag is an input displacement, not a per-frame force.
+      // Its accumulated delta-v is independent of presentation frequency.
+      if (!nativeImpulse(this, { position: center, direction: wind, radius,
+        deltaV: legacyVelocityToMS(Math.hypot(...wind) * PHYS.TOOL_WIND),
+      })) throw new Error('Native wind impulse was rejected');
+      return;
+    }
+    if (this.compact && nativeRayKind(tool)) {
+      if (!emitNativeRay(this, { center, radius, shape, tool, rate })) throw new Error('Native particle tool unavailable or rejected');
+      return;
+    }
     if (tool === PROP_TOOL && !prop) return;
     // TPT's deco tools paint the decoration layer, not the cells (src/deco.js): made on the first stroke
     if (isDecoTool(tool)) { this.ensureDeco()?.paint?.({ center, radius, shape, tool }); return; }
@@ -982,15 +1024,19 @@ export class Simulation {
     if (!t) return false;
     const [dx, dz] = this.undoShift;
     if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
-    // v2 is box-only. Never silently misplace an exact compact history entry.
-    if (t.format === 'v2' && this.compact && (dx || dz)) throw new Error('Shifted compact undo is unsupported');
+    if (t.format === 'v2' && this.compact && (dx || dz) && !this.nativeIntegration?.isReady) throw new Error('Native shifted undo is not ready');
     this.history.pop();
-    this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
-      bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
-    });
+    if (t.format === 'v2' && this.compact) {
+      if (dx || dz) this.nativeIntegration.undo(t.compact, t.aux, dx, dz);
+      else this.compact.restore(t.compact, t.aux);
+      this.nativeIntegration?.changed();
+    } else {
+      this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
+        bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
+      });
+      this.noteWrite();
+    }
     this.deco?.restore?.(t, dx, dz);
-    this.noteWrite();
-    if (t.format === 'v2' && this.compact) this.compact.restore(t.compact, t.aux);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
     this._retire(t.A);
@@ -1034,8 +1080,14 @@ export class Simulation {
     if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
       throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
     }
+    const native = this.compactOwner?.isReady ? this.nativeIntegration : null;
+    if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
+    // Synchronize/project before moving either representation. Legacy shifting
+    // is a cache move, never permission to reimport the entire native grid.
+    this.compactOwner?.exportLegacy();
+    native?.shift(dx, dz);
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
-    this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur), params: { shift } });
+    this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
     this.cur = 1 - this.cur;
     // the flow field: into a scratch, then back
     this.flowTmp ??= this.gpu.createBuffer({ label: `sim${this.id} flow shift`, size: this.flow.size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
@@ -1054,6 +1106,7 @@ export class Simulation {
     this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
     this.version++;
     this.wholeWrites++;
+    native?.shifted();
     this.forceAll = true;
     this.actFull = true;
     // the derived passes shift their own history by whole bricks and re-age
@@ -1326,7 +1379,7 @@ export class Simulation {
    */
   probe(kernel, size, { ring, bind = [], params = {} }) {
     const slot = ring.next();
-    this._dispatch(kernel, size, { bind, header: bind[1] === this.compact?.groups.read ? this.readHeader() : this.header(), params: { ...params, slot } });
+    this._dispatch(kernel, size, { bind, header: bind[1] === this.compact?.groups.read ? this.readHeader({ physical: true }) : this.header(), params: { ...params, slot } });
     return ring.read(slot);
   }
 
@@ -1458,6 +1511,7 @@ export class Simulation {
 
   dispose() {
     this.disposed = true;
+    this.nativeIntegration?.dispose();
     this.wake();   // an outstanding readback cannot certify a disposed simulation
     // what is recorded on these buffers goes out first: a destroyed buffer in a
     // later submit is a validation error, while one already submitted is freed

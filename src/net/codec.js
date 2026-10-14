@@ -1,3 +1,6 @@
+// Protocol contract: these quantized packets are render projections, NOT
+// authoritative native snapshots. Guests never simulate them. Native hosts
+// pack directly from compact readers; edits return to the host as intents.
 import { prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, TILE, SUPER, SUPER_TEX, atlasDims } from '../shaders/common.js';
 import { fold } from '../gpu/kernels.js';
 
@@ -212,6 +215,7 @@ export function createPacker() {
 export function createUnpacker() {
   let g = null, gpu = null, kernel = null, buffer = null, group = null, pending = Promise.resolve();
   const write = (sim) => {
+    sim.compact?.suspend(); // render-only guest ownership; never simulate projected packets
     kernel.dispatch(gpu.frame, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRW, group], header: sim.header() });
     sim.noteWrite();
     sim.stillFlow();   // no velocity is sent, so a guest's grains are textured in place

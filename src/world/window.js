@@ -1,3 +1,4 @@
+import { NativeBrickStore } from './nativeStore.js';
 import { BRICK } from '../shaders/common.js';
 import { restoreEdit, BRICK_CELLS } from '../shaders/window.js';
 import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../shaders/generate.js';
@@ -85,6 +86,7 @@ export class WorldWindow {
     this.gen = new WorldGenerator(sim, scene, this.P, { regions: [[S.side, size[1], S.side]] });
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
     this.store = new BrickStore(this.wb);
+    this.nativeStore = new NativeBrickStore(this.wb); // exact core+bank; projection never decides whether to retain
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in
     this.baked = new Map();
     this.candidates = new Map();                                  // tree candidates by brick column (treesIn)
@@ -129,6 +131,8 @@ export class WorldWindow {
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
+    this.nativeStore.clear();
+    this.persistenceError = null;
     sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
@@ -150,11 +154,14 @@ export class WorldWindow {
   // derived passes over. The far field is rebuilt from the scene and the
   // window: stored edits outside the window show from afar once the window has
   // passed over them.
-  loadSaved(origin, fillState, storeBytes, planted) {
+  loadSaved(origin, fillState, storeBytes, planted, nativeBytes = null) {
     const sim = this.sim;
     if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
     this.epoch++;
+    this.persistenceError = null;
     this.store.fromBytes(storeBytes);
+    this.nativeStore.clear();
+    if (nativeBytes) this.nativeStore.fromBytes(nativeBytes);
     this.planted.set(planted);
     sim.origin.set(origin[0], 0, origin[2]);
     fillState();
@@ -167,9 +174,10 @@ export class WorldWindow {
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
-    if (!this.loaded) return null;
+    if (!this.loaded || this.persistenceError) return null;
     this.far?.tick();
     if (this.pending || this.sim.deco?.pending) return null;
+    if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;
     const off = [fx - (o.x + g.nx / 2), fz - (o.z + g.nz / 2)];
     const at = [o.x, o.z], span = [g.nx, g.nz], world = [this.size[0], this.size[2]];
@@ -187,6 +195,9 @@ export class WorldWindow {
 
   // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–4 above.
   shift(dx, dz) {
+    if (this.persistenceError) throw this.persistenceError;
+    if (this.pending) throw new Error('World shift while leaving slab is pending');
+    if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
     const t0 = performance.now();
     const sim = this.sim, g = sim.g, before = sim.origin.clone();
     // the slab that leaves (grid cells before the move) and the one the move uncovers (after it)
@@ -196,9 +207,10 @@ export class WorldWindow {
     const enterHi = enterLo.map((v, i) => v + size[i]);
     const bricks = size.map((n) => n / BRICK);
     // 1.
+    const nativeRead = sim.nativeIntegration?.captureSlab(leaveLo, bricks);
     this.gen.diff(this.P, leaveLo, bricks, this.leave);
     const leaveB = [before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK];
-    this.readBack(leaveB, bricks);
+    this.readBack(leaveB, bricks, nativeRead);
     // the decoration of the slab that leaves goes into its own store (src/deco.js)
     sim.deco?.leave(leaveLo, bricks, (x, y, z) => this.store.key(leaveB[0] + x, leaveB[1] + y, leaveB[2] + z));
     this.far?.summarize(leaveLo, bricks);
@@ -212,6 +224,9 @@ export class WorldWindow {
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;
+    // Import only generator-owned coordinates, then restore exact retained
+    // material after all legacy stamps. Untouched overlap is never imported.
+    this.restoreNative(enterLo, bricks);
     // Fill/restore/plant transferred residency, not world contents. summarize
     // already recorded real writes before the move; don't dirty meshes again.
     if (this.far) this.far.detail.simVersion = sim.version;
@@ -223,7 +238,7 @@ export class WorldWindow {
   // more bricks differ than the estimate (then a second for the rest). The
   // bricks that match the generator leave the store, the ones that differ go
   // into it. base is slab brick 0's world brick.
-  readBack(base, bricks) {
+  readBack(base, bricks, nativeRead = null) {
     const n = bricks[0] * bricks[1] * bricks[2], rb = this.gpu.readback, out = this.leave, epoch = this.epoch;
     const est = Math.min(n, Math.max(READ_MIN, Math.ceil(this.lastKept * READ_AHEAD)));
     const t0 = performance.now(), last = () => this.last;
@@ -231,7 +246,7 @@ export class WorldWindow {
     const head = rb.buffer(out.head, 0, Math.ceil(leaveHeadBytes(n) / 4) * 4);
     const cells = rb.buffer(out.cells, 0, est * LEAVE_BRICK_BYTES);
     let t1 = 0, kept = 0;
-    this.pending = Promise.all([head, cells]).then(async ([h, c]) => {
+    this.pending = Promise.all([head, cells, nativeRead]).then(async ([h, c, native]) => {
       if (epoch !== this.epoch) return;
       t1 = performance.now();
       const words = new Uint32Array(h), count = Math.min(words[0], n);
@@ -254,6 +269,8 @@ export class WorldWindow {
       for (let i = 0; i < n; i++) {
         const key = this.store.key(base[0] + (i % bricks[0]), base[1] + Math.floor(i / bricks[0]) % bricks[1], base[2] + Math.floor(i / (bricks[0] * bricks[1])));
         if (!keep.has(key)) this.store.drop(key);
+        if (native) this.nativeStore.put(key, native[i]);
+        else this.nativeStore.drop(key);
       }
       kept = count;
       this.lastKept = count;
@@ -261,7 +278,8 @@ export class WorldWindow {
       const L = last();
       if (L && epoch === this.epoch) Object.assign(L, { flagsMs: t1 - t0, readbackMs: t1 - t0, keepMs: performance.now() - t1, kept, landedAt: performance.now() });
     }).catch((err) => {
-      if (!this.gpu.failure) console.error('world window: a leaving slab could not be read back; its edits are lost', err);
+      if (nativeRead && epoch === this.epoch) this.persistenceError = err;
+      if (!this.gpu.failure) console.error('world window: leaving slab readback failed; native streaming/saving is blocked', err);
     }).finally(() => { this.pending = null; });
   }
 
@@ -302,6 +320,25 @@ export class WorldWindow {
     return keys.length;
   }
 
+  restoreNative(lo, bricks) {
+    const sim = this.sim, native = sim.nativeIntegration;
+    if (!native?.isReady) return 0;
+    sim.compactOwner.sync();
+    const o = sim.origin, base = [o.x, o.y, o.z].map((v, i) => (v + lo[i]) / BRICK);
+    const entries = [], keys = [];
+    for (let z = 0; z < bricks[2]; z++) for (let y = 0; y < bricks[1]; y++) for (let x = 0; x < bricks[0]; x++) {
+      const key = this.nativeStore.key(base[0] + x, base[1] + y, base[2] + z);
+      const bytes = this.nativeStore.map.get(key);
+      if (!bytes) continue;
+      entries.push({ index: x + bricks[0] * (y + bricks[1] * z), bytes });
+      keys.push(key);
+    }
+    native.restoreBricks(lo, bricks, entries);
+    for (const key of keys) this.nativeStore.drop(key);
+    if (!sim.compact) sim.compactOwner.exportLegacy();
+    return keys.length;
+  }
+
   // Stamp the scene's trees in the brick columns of grid cells [lo, hi) (x and z,
   // brick-aligned) that are visited for the first time, clipped to those
   // columns, and mark them planted. Returns how many trees were stamped.
@@ -335,7 +372,7 @@ export class WorldWindow {
     }
     if (this.plantCost) this.plantCost.bakeMs += performance.now() - t1;
     if (!list.length) return 0;
-    return this.gen.stampMany(list, mask);
+    return this.gen.stampMany(list, mask, { lo, hi: hi.map(v => v - 1) });
   }
 
   bakeTree(t) {
@@ -349,7 +386,7 @@ export class WorldWindow {
 
   // The store's size: bricks kept, bytes, and the brick columns planted.
   stats() {
-    return { bricks: this.store.size, bytes: this.store.bytes, planted: this.planted.reduce((n, v) => n + v, 0) };
+    return { bricks: this.store.size, bytes: this.store.bytes + this.nativeStore.bytes, nativeBricks: this.nativeStore.size, planted: this.planted.reduce((n, v) => n + v, 0) };
   }
 
   dispose() {

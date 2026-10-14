@@ -1,3 +1,4 @@
+import { validateNativeWorldStore } from '../world/nativeStore.js';
 // Saves (src/saves; docs/webgpu.md Sync log S4, U12): ⌘S or the toolbar's
 // Save keeps the game in the Saves list, with a picture; the map menu's Saves
 // (Esc, ⌘O) loads one, exports it as a .tpt3d file or opens one. Garry's
@@ -43,6 +44,17 @@ const savesWire = {
       load: (m) => app.setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes, ...m }),
       absent: () => app.resetSimModes(),
     });
+    // Core world-store bytes are captured alongside the legacy world store.
+    // Register the strict type/validation contract before container decoding.
+    registerSaveSection('worldNativeStore', {
+      strict: true, save: () => undefined, load: () => {},
+      validate: (data, h) => {
+        const listed = h.sections?.some(s => s.key === 'worldNativeStore');
+        const required = h.world && h.sections?.some(s => s.key === 'physicsV2');
+        if (data === undefined && (listed || required)) throw new Error('Native world store is missing');
+        validateNativeWorldStore(data, h.world);
+      },
+    });
     // This section owns the compact engine's exact words and continuation clock.
     // Other physics side buffers must register their actual owner, not piggyback on cells.
     registerSaveSection('physicsV2', {
@@ -50,7 +62,6 @@ const savesWire = {
       save: () => app.physics.v2?.captureState(app.physics.mode),
       validate: (data, h) => {
         if (data === undefined && !h.sections?.some(s => s.key === 'physicsV2')) return;
-        if (h.world) throw new Error('v2 state: world saves are not supported');
         decodeV2State(data, h.dims);
       },
       load: async (data, h) => {

@@ -16,7 +16,7 @@ function fixture() {
   const sim = {
     id: 1, frame: 0, g: { nx: 64, ny: 64, nz: 64 }, origin: new Vector3(100, 0, 200),
     L: { TABLES: {}, STATE_RO: {} }, tables: {}, bindRO: {},
-    header() { return { origin: this.origin.toArray(), src: 0, dst: 0 }; },
+    readHeader() { return { origin: this.origin.toArray(), src: 0, dst: 0 }; },
     editKernel(name, desc) { assert.equal(desc.reads, 'own'); return { name, ready: compilation }; },
     edit(kernel, box, params, opts) { calls.push({ kind: 'edit', box, params, opts }); },
     _retire(buffer) { calls.push({ kind: 'retire', buffer }); buffer.destroy(); },
@@ -206,6 +206,16 @@ assert.equal(marine(tank, 16, 16), false, 'elevated sealed tank must not inherit
 const basin = (x, y, z) => (x === 10 || x === 20 || z === 10 || z === 20) && y < 25 ? 'solid' : sea(x, y, z);
 assert.equal(marine(basin, 16, 16), false, 'closed basin');
 assert.equal(marine((x, y, z) => y === 19 ? 'air' : y === 22 ? 'water' : sea(x, y, z), 16, 16), false, 'detached water above sea');
+
+// Native host clock: unchanged per-second source strength at 60Hz,
+// including the source's non-integral 7.5-tick cadence.
+const native = fixture(); native.ctx.stepHz = 60;
+assert(await native.events.trigger(native.ctx));
+for (let i = 1; i <= 60; i++) { native.sim.frame = i; native.events.step({ ocean: 1 }, native.ctx); }
+assert.equal(native.writes().filter(w => w.params.surge > 0).length, 8, 'eight surge pulses in one native second');
+assert.equal(native.writes().filter(w => w.params.chop > 0).length, 5, 'chop includes both t=0-ish and t=1 boundary');
+assert.equal(native.writes().at(-1).params.time, 1);
+native.events.dispose();
 
 if (process.argv.includes('--naga')) {
   const dir = mkdtempSync(join(tmpdir(), 'ocean-wgsl-'));

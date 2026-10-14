@@ -192,7 +192,7 @@ export class Stamper {
    * @param {{ s: object, at: number[], seed: number, key?: string }[]} list
    * @param {{ mask?: Uint8Array | null, scrub?: boolean }} [opts]
    */
-  stamp(list, { mask = null, scrub = false } = {}) {
+  stamp(list, { mask = null, scrub = false, clip = null } = {}) {
     list = list.filter((t) => t.s);
     if (!list.length) return 0;
     // the vec4s the batch uploads: its shapes not in the pool, or after a fresh start at most all of them
@@ -218,7 +218,10 @@ export class Stamper {
     const sim = this.sim, bind = [{ buffer: this.pool }];
     for (const t of list) {
       const s = t.s, foot = Math.min(s.foot ?? 0, MAX_FOOT), at = t.at;
-      sim.edit(this.kernel, { lo: [at[0], at[1] - foot, at[2]], hi: [at[0] + s.w - 1, at[1] + s.h - 1, at[2] + s.d - 1] }, {
+      const lo = [at[0], at[1] - foot, at[2]], hi = [at[0] + s.w - 1, at[1] + s.h - 1, at[2] + s.d - 1];
+      if (clip) for (let i = 0; i < 3; i++) { lo[i] = Math.max(lo[i], clip.lo[i]); hi[i] = Math.min(hi[i], clip.hi[i]); }
+      if (lo.some((v, i) => v > hi[i])) continue;
+      sim.edit(this.kernel, { lo, hi }, {
         at, foot, size: [s.w, s.h, s.d], base: bases.get(t), seed: t.seed >>> 0, masked: mask ? 1 : 0, maskW: this.maskW,
       }, { bind, scrub });
     }
@@ -314,7 +317,7 @@ export class WorldGenerator {
    * grid cells) one edit each, writing only the grid brick columns set in mask
    * (a byte per column, x fastest; null: all). Returns how many.
    */
-  stampMany(list, mask = null) { return (this.stamper ?? stamperFor(this.sim)).stamp(list, { mask }); }
+  stampMany(list, mask = null, clip = null) { return (this.stamper ?? stamperFor(this.sim)).stamp(list, { mask, clip }); }
 
   /** Stamp the trees of world P whose crowns may reach the grid (at world `origin`). Returns them. */
   plantTrees(P = this.P, origin = [0, 0, 0]) {

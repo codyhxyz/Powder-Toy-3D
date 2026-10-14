@@ -1,3 +1,4 @@
+import { NativeTransfer } from '../v2/transfer.js';
 // The first person's GPU work on WebGPU (docs/webgpu.md G2): every write to
 // the world is an edit (sim.edit, D6: one dispatch over a box, in call order,
 // the bricks it changes marked on the GPU), and every read is a probe whose
@@ -186,7 +187,7 @@ class PovGpu {
     let group = this.d.comGroups.get(buffer);
     if (!group) this.d.comGroups.set(buffer, group = this.gpu.bindGroup(this.d.layouts.com, [{ binding: 0, resource: { buffer } }], 'pov com'));
     const sim = this.sim;
-    sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRO, group], header: sim.readHeader(), params: { hold } });
+    sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRO, group], header: sim.readHeader({ physical: true }), params: { hold } });
     return true;
   }
 
@@ -212,6 +213,11 @@ class PovGpu {
    * @returns {Promise<ArrayBuffer> | null} TRANSFER_SLOTS vec4s; null while the kernel is building
    */
   transfer(values) {
+    if (this.sim.compact) {
+      this.nativeTransfer ??= new NativeTransfer(this.sim);
+      return this.nativeTransfer.run(values);
+    }
+    if (values.items?.some(c => c.length > 4)) throw new Error('Native cargo must be placed with native physics; switching to v1 cannot discard fill/banks');
     const k = this._transferKernel();
     if (!ready(k)) return null;
     const sim = this.sim;
@@ -250,7 +256,7 @@ class PovGpu {
     d.laserApplyGroup ??= this.gpu.bindGroup(d.layouts.laserApply, [{ binding: 0, resource: { buffer: d.beam } }], 'pov laser apply');
     const slot = ring.next();
     const header = sim.header();
-    sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, sim.bindRO, d.laserReachGroup], header: sim.readHeader(), params: { muzzle, dir, slot } });
+    sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, sim.bindRO, d.laserReachGroup], header: sim.readHeader({ physical: true }), params: { muzzle, dir, slot } });
     sim._dispatch(apply, { indirect: d.beamArgs, offset: 0 }, { bind: [sim.tables, sim.bindRW, d.laserApplyGroup], header, params: { muzzle, dir, slot } });
     this._wrote();
     return ring.read(slot).then((bytes) => {

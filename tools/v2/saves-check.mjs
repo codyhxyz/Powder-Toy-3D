@@ -1,3 +1,6 @@
+import { NativeBrickStore, encodeNativeBrick } from '../../src/world/nativeStore.js';
+import { BrickStore } from '../../src/world/store.js';
+import { WorldWindow } from '../../src/world/window.js';
 // CPU-only: exact compact codec + the real save-section registration/game container.
 // GPU dispatch/upload is covered by compact-check; live continuation by the documented app plan.
 import assert from 'node:assert/strict';
@@ -131,4 +134,34 @@ await assert.rejects(saves.apply(editHeader(saved, h => { h.sections.find(s => s
 assert(!events.includes('prepare'));
 const wrapper = new Uint8Array(saved.length + 8); wrapper.set(saved, 4);
 assert.deepEqual((await decodeSave(new DataView(wrapper.buffer, 4, saved.length))).sections.get('physicsV2'), decoded.sections.get('physicsV2'));
-console.log('v2 saves CPU checks passed: raw words/clock/activity, real section + container round trips, suspended mode, old saves, pre-mutation corruption rejection');
+// Native world stores are a separate strict section, captured with the
+// window and restored through the actual WorldWindow.loadSaved path.
+sim.origin = { x: 0, y: 0, z: 0, set(x, y, z) { Object.assign(this, { x, y, z }); } };
+sim.dropHistory = () => {};
+const world = Object.assign(Object.create(WorldWindow.prototype), {
+  sim, loaded: true, pending: null, size: [64, 32, 64], epoch: 0,
+  store: new BrickStore([16, 8, 16]), nativeStore: new NativeBrickStore([16, 8, 16]), planted: new Uint8Array(16 * 16),
+});
+const nativeBrick = encodeNativeBrick(new Uint32Array(256).fill(0xffa01234), new Int32Array(64).fill(-321));
+world.nativeStore.put(7, nativeBrick); world.planted[4] = 1;
+const worlds = createSaves({
+  settings: app.settings, getSim: () => sim, getWin: () => world,
+  header: () => ({ name: 'native world', size: 'test', world: { scene: 'island', seed: 9 } }),
+  prepareCapture: () => engine.ready,
+  prepare() { events.push('prepare'); return true; }, finish() {}, onSettings() {},
+});
+const worldSave = await worlds.capture('retained material');
+world.nativeStore.clear(); world.planted.fill(0);
+await worlds.apply(worldSave);
+assert.deepEqual(world.nativeStore.map.get(7), nativeBrick);
+assert.equal(world.planted[4], 1);
+assert.deepEqual(restored.cells, state.cells);
+for (const change of [h => { h.sections.find(s => s.key === 'worldNativeStore').type = 'future'; },
+  h => { h.world.size[0] = 63; }]) {
+  events.length = 0;
+  await assert.rejects(worlds.apply(editHeader(worldSave, change)), /[Nn]ative/);
+  assert(!events.includes('prepare'), 'native world corruption rejects before any scene mutation');
+}
+world.persistenceError = new Error('readback failed');
+await assert.rejects(worlds.capture('must not lose data'), /readback failed/);
+console.log('v2 saves CPU checks passed: raw words/clock/activity, real section + container round trips, suspended mode, old saves, native world retained state, pre-mutation corruption rejection');

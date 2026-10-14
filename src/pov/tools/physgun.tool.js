@@ -1,3 +1,4 @@
+import { worldPosition, legacyVelocityToMS } from '../../v2/tools.js';
 import * as THREE from 'three';
 import { PHYS as ENGINE } from '../../physics.js';
 import { PHYS, PHYS_MODE, BLAST, glowTexture, disposeTree } from '../../shaders/povTools.js';
@@ -163,6 +164,12 @@ export default {
 
     function run(ctx, mode) {
       const sim = ctx.sim ?? env.getSim();
+      if (sim.compact) {
+        return sim.compact.nativeDynamics.applyPhysgun({ mode: mode === PHYS_MODE.FLING ? 'fling' : 'hold',
+          position: worldPosition(sim, hold), target: worldPosition(sim, aimPt), direction: ctx.dir.toArray(),
+          radius: PHYS.RADIUS, dt: ctx.nativeDt ?? 0, strength: legacyVelocityToMS(PHYS.FLING),
+        });
+      }
       const pov = povGpu(sim), buffer = comBuffer(sim.gpu);
       if (!pov.com(buffer, hold.toArray())) return;   // (its kernels are still building: B5)
       // the hold point's velocity, so the ball keeps up as the aim moves
@@ -186,7 +193,10 @@ export default {
       const reach = hit ? hit.dist : Math.min(face + BLAST.BITE, BLAST.RANGE);
       hold.copy(ctx.eye).addScaledVector(dir, reach);
       if (hit) hit.target.shove?.(dir.clone().multiplyScalar(PUNT_SPEED));
-      else {
+      else if (sim.compact) {
+        sim.applyNativeTool({ kind: 'impulse', position: worldPosition(sim, hold), direction: dir.toArray(),
+          radius: BLAST.RADIUS0 + BLAST.SPREAD * reach, strength: PUNT_SPEED * CELL_M });
+      } else {
         // The cone's bounding box: both ends, padded by its far-end radius.
         const pad = BLAST.RADIUS0 + BLAST.SPREAD * reach;
         const a = ctx.eye.toArray(), b = hold.toArray();
@@ -224,6 +234,12 @@ export default {
 
     return {
       update(ctx) {
+        const sim = ctx.sim ?? env.getSim();
+        if (sim.compact && !sim.nativeCapabilities.physgun) {
+          if (ctx.primaryPressed || ctx.secondaryPressed) env.feedback?.notice?.('Native physgun hold is unavailable', { kind: 'error' });
+          release(); model.beam.visible = model.sphere.visible = false;
+          return;
+        }
         time += ctx.dt;
         blastWait = Math.max(blastWait - toolDt(ctx), 0);
         flash = Math.max(flash - ctx.dt, 0);

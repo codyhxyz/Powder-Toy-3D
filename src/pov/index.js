@@ -423,7 +423,7 @@ export function createPov(app) {
           getMode: () => app.gamemode?.() ?? 'sandbox',   // the gamemode playing: Noita's wands only in it
           toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
           isActive: () => live() && !editing,
-          getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
+          getStepsPerFrame: () => app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps),
           requestRender: app.requestRender,
           getPost: () => app.post,   // its settings: the wand's halo tone maps itself by them (tools/index.js)
           releaseInput,
@@ -657,7 +657,7 @@ export function createPov(app) {
     // the NPCs: one per enemy spawner, with every tool you have. Not in a world
     // (g.windowed): the NPCs don't move with the window (windowShifted).
     const sp = app.getSpawners?.();
-    const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
+    const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps) };
     const npcsWanted = !!sp && !g.windowed;
     const homes = npcsWanted ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
     if (homes.some((s) => !s.consumed)) {
@@ -841,7 +841,8 @@ export function createPov(app) {
       ctx.sim = sim;
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
-      ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
+      ctx.nativeDt = sim.compact ? (app.nativeToolSteps ?? 0) / 60 : undefined;
+      ctx.stepsPerFrame = app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps);
       const use = !editing && canUse() && !app.industryBuilding?.();
       // a touch tap can start and end between frames: it still holds for one (on desktop the mouse can't)
       const tapped = touch.enabled;
@@ -873,7 +874,7 @@ export function createPov(app) {
     kickLeg?.update(dt);
     combat.update({
       dt, player, eye: ctx.eye, dir: ctx.dir, tool: toolbelt?.selectedKey ?? null,
-      live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps,
+      live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps),
     });
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;

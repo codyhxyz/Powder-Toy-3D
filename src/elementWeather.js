@@ -96,6 +96,7 @@ export function createElementWeather() {
       const policy = elementWeatherPolicy(state, context);
       if (!policy) return false;
       const { sim, world } = context;
+      const cadence = Math.max(1, Math.round(ELEMENT_WEATHER.cadence * (context.stepHz ?? 240) / 240));
       ensure(sim);
       if (worldKey !== world || epoch !== world?.epoch || sim.frame < lastFrame) {
         worldKey = world; epoch = world?.epoch; nextFrame = 0; lastFrame = -1;
@@ -104,16 +105,16 @@ export function createElementWeather() {
       const { scan, source, group, roof } = resources;
       if (scan.state !== 'ready' || source.main.state !== 'ready' || source.apply.state !== 'ready') return false;
       scan.dispatch(sim.gpu.frame, fold(Math.ceil(sim.g.nx * sim.g.nz / 64)), {
-        bind: [sim.tables, sim.bindRO, group], header: sim.header(),
+        bind: [sim.tables, sim.bindRO, group], header: sim.readHeader({ physical: true }),
       });
       sim.onPass?.(scan.name, { kind: 'compute', gpuMs: null });
       const { boxes, ...values } = policy;
-      values.pulse = Math.floor(sim.frame / ELEMENT_WEATHER.cadence) >>> 0;
+      values.pulse = Math.floor(sim.frame / cadence) >>> 0;
       // Separate thin bands bound the shared scratch and avoid dispatching the
       // empty column between sea fog and high clouds. At most five dispatches
       // per pulse: one roof scan and two phases per band, never a full-grid edit.
       for (const box of boxes) sim.edit(source, box, values, { bind: [{ buffer: roof }] });
-      pulses++; lastFrame = sim.frame; nextFrame = sim.frame + ELEMENT_WEATHER.cadence;
+      pulses++; lastFrame = sim.frame; nextFrame = sim.frame + cadence;
       return true;
     },
     reset() {

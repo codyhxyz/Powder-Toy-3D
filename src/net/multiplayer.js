@@ -1,3 +1,4 @@
+import { applyGuestStroke } from './edits.js';
 import { ELEMENTS, TOOLS, PROP_TOOL } from '../elements.js';
 import { propRangeError, runFill, PROP_FIELDS } from '../editing.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, xorInto, FRAME_KEY, FRAME_DELTA } from './codec.js';
@@ -437,10 +438,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
       if (role === 'host') {
         for (const s of strokes) {
-          sim.paint({
-            center: { x: s.c[0], y: s.c[1], z: s.c[2] }, radius: Math.min(Math.max(s.r, MIN_BRUSH_RADIUS), MAX_BRUSH_RADIUS),
-            shape: s.shape, tool: s.tool, rate: s.rate, replace: !!s.replace, wind: strokeWind(s.w), ...editsIn(s),
-          });
+          applyGuestStroke(sim, s, { wind: strokeWind(s.w), edits: editsIn(s), minRadius: MIN_BRUSH_RADIUS, maxRadius: MAX_BRUSH_RADIUS });
         }
         strokes.length = 0;
         for (let i = 0; i < MAX_FILLS_PER_FRAME && fills.length && !filling; i++) {

@@ -314,7 +314,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
           const words = new Array(PICK_BATCH).fill(0);
           slots.forEach((s, i) => { words[i] = s; });
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
-            bind: [sim.tables, sim.bindRO, pickGroup], header: sim.readHeader(),
+            bind: [sim.tables, sim.bindRO, pickGroup], header: sim.readHeader({ physical: true }),
             params: {
               ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
               warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])),

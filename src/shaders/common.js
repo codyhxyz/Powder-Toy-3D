@@ -407,12 +407,13 @@ fn ${name}s(s: u32) -> ${type} {
   // H.src remains a copy index; H.format alone selects the storage representation.
   const out = o.state === 'read' ? [compactDecodeWGSL, `
 fn fetchAs(s: u32) -> vec4f {
-  ${slot('src')}if (H.format == 2u) { return compactA(cellOf(s), A[s]); }
+  ${slot('src')}if (H.format == 3u) { return compactProbeA(cellOf(s), A[s]); }
+  if (H.format == 2u) { return compactA(cellOf(s), A[s]); }
   return bitcast<vec4f>(A[H.src * SLOTS + s]);
 }
 fn fetchA(p: vec3i) -> vec4f { ${cell('src')}return fetchAs(slotOf(p)); }
 fn fetchBs(s: u32) -> vec4f {
-  ${slot('src')}if (H.format == 2u) { return vec4f(0.0); }
+  ${slot('src')}if (H.format == 2u || H.format == 3u) { return vec4f(0.0); }
   return B[H.src * SLOTS + s];
 }
 fn fetchB(p: vec3i) -> vec4f { ${cell('src')}return fetchBs(slotOf(p)); }

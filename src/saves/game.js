@@ -1,3 +1,4 @@
+import { validateNativeWorldStore } from '../world/nativeStore.js';
 import { encodeSave, decodeSave, packCells, unpackCells } from './format.js';
 import { collectSections, applySections, validateSections, savedSettingKeys } from './sections.js';
 import { cellTexel } from '../sim.js';
@@ -48,6 +49,7 @@ export function createSaves(app) {
       if (!win.loaded) throw new SaveRefused('The world is still loading: try again in a moment');
       // a slab that left the window is still on its way into the store: wait for it
       while (win.pending) await win.pending.catch(() => {});
+      if (win.persistenceError) throw new SaveRefused('Native world readback failed; saving would lose retained material');
       if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
     }
     // the conversion to the atlas order and the particles' kernels, built before the moment
@@ -68,7 +70,7 @@ export function createSaves(app) {
     const core = [
       { key: 'settings', data: Object.fromEntries(savedSettingKeys().filter((k) => k in settings).map((k) => [k, settings[k]])) },
     ];
-    if (win) core.push({ key: 'worldStore', data: win.store.toBytes() }, { key: 'worldPlanted', data: win.planted.slice() });
+    if (win) core.push({ key: 'worldStore', data: win.store.toBytes() }, { key: 'worldNativeStore', data: win.nativeStore.toBytes() }, { key: 'worldPlanted', data: win.planted.slice() });
     const extra = collectSections();
     // ---- (the moment ends) ----
     const [[A, B], list, extras] = await Promise.all([reads[0], rays, extra]);
@@ -93,6 +95,7 @@ export function createSaves(app) {
         || header.dims.some(n => !Number.isSafeInteger(n) || n <= 0)
         || !Number.isSafeInteger(header.dims.reduce((a, n) => a * n, 32))
         || cells.length !== header.dims.reduce((a, n) => a * n, 32)) throw new Error('this save has an invalid grid');
+    validateNativeWorldStore(sections.get('worldNativeStore'), header.world);
     await validateSections(sections, header);
     if (!await app.prepare(header)) return null;
     const sim = app.getSim(), win = app.getWin(), g = sim.g;
@@ -103,7 +106,7 @@ export function createSaves(app) {
       if (!win) throw new Error('a world save, but no world is loaded');
       const store = sections.get('worldStore'), planted = sections.get('worldPlanted');
       if (!store || !planted) throw new Error('this world save has no world edits');
-      win.loadSaved(header.world.origin, () => sim.load(A, B), store, planted);
+      win.loadSaved(header.world.origin, () => sim.load(A, B), store, planted, sections.get('worldNativeStore'));
     } else sim.load(A, B);
     // the particles in flight (sim.load let the old ones go). The step counter
     // isn't saved: storms and the cloud deck time themselves by it, and it only runs forward.

@@ -22,7 +22,7 @@ const rays = {
   // the sprites' size: px per cell at unit distance, for the scene target's height
   beforeView(app) {
     app.volume.updateMatrixWorld();
-    app.sim.rays.updateView?.(app.camera, app.post.sceneTarget.height || app.canvas.height * app.post.renderScale, app.volume.matrixWorld);
+    (app.sim.compact?.nativeDynamics?.rays ?? app.sim.rays).updateView?.(app.camera, app.post.sceneTarget.height || app.canvas.height * app.post.renderScale, app.volume.matrixWorld);
   },
   // (Not bent by a presentation effect yet, as main's Points were: the
   // sprites' vertex stage, shaders/rays.js, would warp each particle's world
@@ -30,12 +30,14 @@ const rays = {
   // parameters app.presentation holds while active: U12's.)
   scene(app, rp) {
     const t = app.post.sceneTarget;
-    app.sim.rays.draw?.(rp, { width: t.width, height: t.height });
+    (app.sim.compact?.nativeDynamics?.rays ?? app.sim.rays).draw?.(rp, { width: t.width, height: t.height });
   },
   // particles fly between frames: the loop keeps ticking while any may be
   // alive, unless paused (they fly only with the steps; a load wakes the layer
   // until a sweep finds it empty, which a paused box would never run)
   busy(app) {
+    const native = app.sim.compact?.nativeDynamics;
+    if (native?.rays) return !app.settings.paused && (!!native.rays.active || !!native.active);
     const layer = app.sim.rays;
     // V2 does not run the legacy emitter scan. Its empty "scan pending" flag
     // must not keep an idle box ticking; actual particles still keep it awake.

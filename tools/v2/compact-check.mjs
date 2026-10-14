@@ -134,8 +134,8 @@ assert.equal(calls.at(-1).name, 'v2import', 'legacy undo in v2 imports the resto
 
 sim.snapshot('shift guard');
 sim.origin.x = 16;
-assert.throws(() => sim.undo(), /Shifted compact undo/);
-assert.equal(sim.history.length, 1, 'unsupported shift keeps the history entry');
+assert.throws(() => sim.undo(), /Native shifted undo is not ready/);
+assert.equal(sim.history.length, 1, 'a not-yet-ready shift keeps the history entry');
 sim.origin.x = 0;
 
 const direct = prelude(g, STATE_OPTS.STATE_RO), bridge = v2BridgeWGSL(g), imported = v2ImportWGSL(g);

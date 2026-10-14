@@ -55,5 +55,14 @@ app.settings.paused = false;
 assert.equal(wire.busy(app), false, 'clear daytime does not keep presentation running');
 app.win = null; wire.afterStep(app);
 assert.equal(weather.tsunami.eligible, false);
+app.win = world;
+world.epoch++; wire.attach(app);
+weather.setPreset('storm');
+const nativeSources = calls.source;
+for (let i = 0; i < 60; i++) { wire.step(app, { hz: 60 }); sim.frame++; }
+assert(Math.abs(weather.state.time - 1) < 1e-12, '60 native host ticks advance weather by exactly one second');
+assert.equal(calls.source - nativeSources, 60, 'native host retains every weather source hook');
+app.mp.isGuest = true; wire.step(app, { hz: 60 });
+assert.equal(calls.source - nativeSources, 60, 'native guests still never emit weather');
 weather.dispose();
 console.log('Weather wire CPU: render-only/guest/manual gating, paused reload cancellation, clear semantics and idle passed.');

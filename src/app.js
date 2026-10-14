@@ -1,3 +1,5 @@
+import { emitNativeRay, nativeRayKind } from './v2/tools.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -269,12 +271,13 @@ if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
 if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
-// ?physics=v2: the new physics' fast version (src/v2/physics.js, docs/v2.md 5) in box mode, loaded only
-// then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
-// switches back to it while the body is out, and to v2 again after). __app.setPhysics('v2' | 'v1') for tools.
+// Experimental native physics remains opt-in until measured parity/performance
+// acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
+// Multiplayer guests are deliberately render-only, irrespective of host engine.
 let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
 let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
-let physicsV2 = null;    // the box's PhysicsV2 while the mode is v2
+let physicsV2 = null;    // the authoritative native host (guests never simulate)
+let nativeRayStroke = null;
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
 
 let saveTimer = 0;
@@ -519,13 +522,13 @@ function build() {
   }
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win = null;
+  nativeRayStroke = null;
   sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
-  if (physicsMode === 'v2') {
-    if (worldMode) hud.toast('The new physics (?physics=v2) runs in boxes: this world keeps today\'s', { kind: 'hint' });
-    else {
-      physicsV2 = new V2mod.PhysicsV2(sim);
-      physicsV2.ready.then(() => wakeLoop(), () => {});   // (the loop may have slept meanwhile)
-    }
+  if (physicsMode === 'v2' && !mp.isGuest) {
+    physicsV2 = new V2mod.PhysicsV2(sim);
+    const owner = physicsV2;
+    owner.integrationReady = sim.prepareNative(owner);
+    owner.integrationReady.then(() => wakeLoop(), () => {});
   }
   derived = new Derived(sim);
   blocksOn = plainView();
@@ -1036,8 +1039,23 @@ function brushStroke(tool) {
   };
 }
 const paintStroke = (stroke) => (mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
-  : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? undefined   // (v2 has no particle layer: selectTool)
+  : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? paintNativeRay(stroke)
     : sim.paint(stroke));
+function paintNativeRay(stroke) {
+  if (!sim.nativeCapabilities[nativeRayKind(stroke.tool)]) {
+    hud.toast('Native particle tool unavailable', { kind: 'error' });
+    return false;
+  }
+  // Retain input until a native tick, not one emission per presentation frame.
+  nativeRayStroke = { ...stroke, center: stroke.center.clone() };
+  physicsV2?.wake();
+  return true;
+}
+function nativeBeforeStep() {
+  scripts?.beforeStep();
+  weatherWire.step(ctx, { hz: 60 });
+  if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / 60);
+}
 
 function editModeText() {
   const t = ELEMENTS[settings.replaceTarget]?.name;
@@ -1177,8 +1195,12 @@ function selectTool(id) {
   setEyedropper(false);
   // a tool whose subsystem isn't ported yet stays greyed out (src/wire)
   const needs = toolWire(id);
-  // the new physics' fast version has no particle layer: photons and neutrons wait for today's physics
-  if (needs === 'rays' && v2Box()) {
+  if (v2Box() && toolById(id)?.key === 'WIND' && !sim.nativeCapabilities.impulse) {
+    hud.toast('Native wind impulse is unavailable', { kind: 'error' });
+    return;
+  }
+  // Native particle tools require a functioning, ready producer/consumer path.
+  if (needs === 'rays' && v2Box() && !sim.nativeCapabilities[nativeRayKind(id)]) {
     hud.toast(`${toolById(id)?.name ?? 'That tool'}: not in the new physics (?physics=v2) yet`, { kind: 'error' });
     return;
   }
@@ -2251,11 +2273,12 @@ function viewClock(held) {
   cloudShift(t, gfxUniforms.uCloudShift.value);
 }
 
-// The new physics owns this box's steps (?physics=v2): no world, body or guest. Today's step never runs
-// meanwhile, not even while v2's pipelines build (then nothing steps); v2Active: they're built.
+// A native host never falls back to v1 while dependencies are building or unavailable.
+// Only guests intentionally use legacy presentation without running either engine.
 // (declarations: the tool picker asks before this line has run)
-function v2Box() { return physicsMode === 'v2' && !!physicsV2 && !win && !pov?.active && !mp.isGuest; }
-function v2Active() { return v2Box() && physicsV2.isReady; }
+function v2Box() { return physicsMode === 'v2' && !mp.isGuest; }
+function v2Status() { return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.isGuest }); }
+function v2Active() { return v2Box() && v2Status().ready; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
 const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
   : sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
@@ -2306,6 +2329,8 @@ function tick(now, renderOnly = false) {
   if (!renderOnly) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
+    const nativeSpeed = settings.steps / DEFAULTS.steps;
+    ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed)))) : null;
     for (const w of live) w.beforeStep?.(ctx, dt);   // the body, Descent's level switch
     // (after the body's update, which can leave it: then the god view moves this tick)
     if (!pov?.active) {
@@ -2341,11 +2366,14 @@ function tick(now, renderOnly = false) {
     stepped = 0;
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }
-      stepped = physicsV2.frame(dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused, each: () => scripts?.beforeStep() });
-      for (let i = 0; i < stepped; i++) scripts?.afterStep();
+      stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
+        keepAlive: !!nativeRayStroke || live.some(w => w.busy?.(ctx)),
+        before: nativeBeforeStep,
+        after: () => scripts?.afterStep(),
+      });
     }
-    if (DAY.running) day.clock += settings.steps;
-    animTime += dt;
+    if (DAY.running) day.clock += stepped * 4; // legacy day tuning is 240 ticks/s, native host is 60
+    animTime += stepped / 60;
     stepOnce = false;
   } else if (stepping) {
     if (v2Running) { physicsV2.suspend(); v2Running = false; }
@@ -2354,6 +2382,9 @@ function tick(now, renderOnly = false) {
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  ctx.nativeStepped = v2Box() ? (stepping ? stepped : 0) : null;
+  ctx.stepping = stepping && (!v2Box() || stepped > 0);
+  if (!renderOnly && stepping && stepped > 0) nativeRayStroke = null;
   if (!renderOnly) scripts?.endFrame();
   updateSun();
   for (const w of live) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
@@ -2576,7 +2607,7 @@ async function allReady() {
     // (bent by a presentation effect: the view's curved variant, and a world's curved far view)
     const curved = !!warpNow(), far = win?.far;
     await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
-      ...(physicsV2 ? [physicsV2.ready] : []),
+      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady] : []),
       ...(far && curved && view === 'realistic' ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
@@ -2652,19 +2683,20 @@ try {
       if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
       if (mode === 'v2') V2mod ??= await import('./v2/physics.js');
       physicsMode = mode;
-      if (mode === 'v2' && worldMode) hud.toast('The new physics (?physics=v2) runs in boxes: this world keeps today\'s', { kind: 'hint' });
-      if (mode === 'v2' && !physicsV2 && !worldMode) physicsV2 = new V2mod.PhysicsV2(sim);
+      if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim);
       if (mode === 'v1' && physicsV2) {
         physicsV2.suspend();
         v2Running = false;
       }
       await physicsV2?.ready;
+      if (mode === 'v2' && physicsV2) await sim.prepareNative(physicsV2);
+      if (mode === 'v2' && !v2Status().ready && !mp.isGuest) hud.toast(v2Status().reason, { kind: 'error' });
       if (mode === 'v2' && v2Box()) physicsV2.activate();
       pacer.wake();
       wakeLoop();
       return physicsMode;
     },
-    get physics() { return { mode: physicsMode, active: v2Active(), v2: physicsV2 }; },
+    get physics() { return { mode: physicsMode, active: v2Active(), readiness: v2Status(), capabilities: sim.nativeCapabilities, v2: physicsV2 }; },
     fill: (req) => runFill(sim, req, { openSides: !!win }),   // a flood fill on the current grid (editing.js runFill), for tools
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
@@ -2700,7 +2732,9 @@ try {
         if (v2Box()) {
           if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
           if (!v2Running) { physicsV2.activate(); v2Running = true; }
-          physicsV2.ticks(count);
+          for (let i = 0; i < count; i++) nativeHostTick(physicsV2, {
+            before: nativeBeforeStep, after: () => scripts?.afterStep(),
+          });
         } else for (let i = 0; i < count; i++) {
           weatherWire.step(ctx); sim.step();
           lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });

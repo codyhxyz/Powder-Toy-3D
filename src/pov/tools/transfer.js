@@ -44,7 +44,8 @@ export function allowMask(ids) {
 }
 
 // A cell's contents as carried: [element id, temperature °C, life, ctype + seed].
-export const cellOf = (buf, i) => [buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]];
+export const cellOf = (buf, i) => [buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3],
+  ...(buf.native ? buf.native.subarray(i * 5, i * 5 + 5) : [])];
 
 const keyOf = (x, y, z) => `${x},${y},${z}`;
 
@@ -95,7 +96,7 @@ export function bodyExit(eye, dir, feet, margin = 0) {
 
 // Sim velocity (cells/step) from a velocity in cells/s, at the current step rate.
 export function toStepVelocity(v, ctx, out = new THREE.Vector3()) {
-  const stepsPerSecond = ctx.stepsPerFrame > 0 && ctx.dt > 0 ? ctx.stepsPerFrame / ctx.dt : 0;
+  const stepsPerSecond = ctx.sim?.compact ? 60 : ctx.stepsPerFrame > 0 && ctx.dt > 0 ? ctx.stepsPerFrame / ctx.dt : 0;
   if (!stepsPerSecond) return out.set(0, 0, 0);
   out.copy(v).divideScalar(stepsPerSecond);
   if (out.length() > PHYS.V_MAX) out.setLength(PHYS.V_MAX);
@@ -201,7 +202,7 @@ export function createTransfer({ getSim }) {
     });
     if (!answer) return null;   // (its kernel is still building: B5)
     inFlight++;
-    return answer.then((bytes) => { inFlight--; return new Float32Array(bytes, 0, count * SLOT_COMPONENTS); },
+    return answer.then((bytes) => { inFlight--; return bytes instanceof Float32Array ? bytes : new Float32Array(bytes, 0, count * SLOT_COMPONENTS); },
       (err) => { inFlight--; throw err; });
   }
 
