@@ -164,12 +164,7 @@ for (const def of [pistol, smg, sniper]) {
         assert.deepEqual(events, ['gun:fire'], `${label}: no dry click`);
         assert.deepEqual(notices, [], `${label}: no blocked notice`);
         assert.ok(shots[0].dir.dot(dir) > 0, `${label}: shoots forward`);
-        if (near !== 'open') assert.deepEqual(shots[0].origin.toArray(), eye.toArray(), `${label}: starts before obstruction`);
-        else {
-          const expected = mode === 'hidden' || mode === 'scope'
-            ? eye.clone().addScaledVector(dir, m.t + 1e-3) : tool.muzzleWorld();
-          assert.ok(shots[0].origin.distanceTo(expected) < 1e-9, `${label}: normal muzzle preserved`);
-        }
+        assert.deepEqual(shots[0].origin.toArray(), eye.toArray(), `${label}: eye origin never skips nearby cover`);
         e.ballistics.count = Infinity;
         tool.update({ ...c, dt: 10, primary: true, primaryPressed: true });
         assert.equal(shots.length, 1, `${label}: capacity limit preserved`);

@@ -131,7 +131,9 @@ export function createBillboards({ name, capacity, texture: tex = 'dot', blendin
   // alpha over life
   const fadeOut = float(1).sub(t);
   const fadeSharp = select(t.lessThan(0.4), mix(float(1), float(0.6), t.div(0.4)), mix(float(0.6), float(0), t.sub(0.4).div(0.6)));
-  const alpha = C.w.mul(select(Ex.z.greaterThan(0.5), fadeSharp, fadeOut));
+  // Eager mix: select hoists shared age into only the SHARP branch in r186,
+  // leaving OUT particles at age zero and resurrecting them on the next burst.
+  const alpha = C.w.mul(mix(fadeOut, fadeSharp, select(Ex.z.greaterThan(0.5), 1, 0)));
   const mv = cameraViewMatrix.mul(vec4(pos, 1)).xyz;
   const quad = positionGeometry.xy;
   let view;
