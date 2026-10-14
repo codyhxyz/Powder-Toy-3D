@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { initialState, validState, change, loadState, POCKETS } from '../src/pov/village/state.js';
+import { initialState, validState, change, loadState, POCKETS, ITEMS } from '../src/pov/village/state.js';
 
 const home = { home: true, dresser: true };
 let state = initialState();
@@ -29,4 +29,12 @@ const renamed = structuredClone(state);
 renamed.pockets.find(i => i.id.startsWith('order-')).id = 'untrusted-id';
 assert.equal(validState(renamed), false);
 assert.deepEqual(loadState({ getItem: () => JSON.stringify(original) }, 'test').state, original, 'old saves remain valid without migration');
+for (const kind of Object.keys(ITEMS).filter(k => k !== 'dresser')) {
+  const result = change(original, { type: 'order', kind }, home);
+  assert.ok(result.state && validState(result.state), kind);
+  const item = result.state.pockets.at(-1);
+  assert.equal(item.kind, kind);
+  const stored = change(result.state, { type: 'store', id: item.id }, home).state;
+  assert.deepEqual(loadState({ getItem: () => JSON.stringify(stored) }, kind).state, stored);
+}
 console.log('PASS catalogue orders, capacity, unique IDs, corruption rejection and v1 save preservation');

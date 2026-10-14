@@ -92,7 +92,7 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
     const sitting = pose?.kind === 'sit', sleeping = pose?.kind === 'sleep';
     const gripping = pose?.kind === 'grip', dresser = pose?.kind === 'dresser';
     const effort = pose?.effort ?? 0, reach = pose?.reach ?? 0, pull = pose?.pull ?? 0;
-    knees.forEach(k => { k.rotation.x = sitting ? -Math.PI / 2 : 0; });
+    knees.forEach(k => { k.rotation.x = sitting ? -Math.PI / 2 : gripping && pose.low ? -1.2 * reach : 0; });
     elbows.forEach(e => { e.rotation.x = dresser ? -0.8 * pull : gripping ? -0.2 : 0; });
     eyes.forEach(e => { e.visible = !sleeping; });
     lids.forEach(e => { e.visible = sleeping; });
@@ -101,10 +101,16 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
     if (sitting || sleeping) {
       limbs.forEach((l, i) => { l.rotation.x = i % 2 ? -0.15 : sitting ? Math.PI / 2 : 0; });
       body.rotation.x = sleeping ? Math.PI / 2 : -0.06;
-      body.position.y = Math.sin(time * 2) * (sleeping ? 0.025 : 0.015);
+      body.position.y = reducedMotion?.matches ? 0 : Math.sin(time * 2) * (sleeping ? 0.025 : 0.015);
     } else if (gripping || dresser) {
-      limbs.forEach((l, i) => { if (i % 2) l.rotation.x = dresser ? 1.35 * reach - 0.45 * pull : 1.2 + 0.08 * effort; });
-      body.rotation.x = dresser ? -0.1 * reach : -0.18 - 0.1 * effort;
+      // Animal Crossing's reach-in, then forward push versus backward yank.
+      const strain = reducedMotion?.matches ? 0 : effort;
+      limbs.forEach((l, i) => {
+        if (i % 2) l.rotation.x = dresser ? 1.35 * reach - 0.45 * pull : (1.2 + 0.08 * strain) * reach;
+        else if (gripping && pose.low) l.rotation.x += 0.75 * reach;
+      });
+      body.rotation.x = dresser ? -0.1 * reach : (-0.18 + (pose.pulling ? 0.3 : -0.12) * strain) * reach;
+      if (gripping) body.position.y = pose.low ? -0.2 * reach : 0;
     }
   } };
 }

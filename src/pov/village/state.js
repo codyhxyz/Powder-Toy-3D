@@ -60,9 +60,9 @@ export function gripPosition(state, item, player, radius = 0.8) {
     .sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z))
     .find(p => Math.hypot(p.x - player.x, p.z - player.z) <= 3.5 && playerPathClear(state, player, p, radius)) ?? null;
 }
-export function standPosition(state, item, from, entry, radius = 0.8) {
+export function standPosition(state, item, from, entry, radius = 0.8, clear = () => true) {
   return [entry, ...sides(item, radius)].find(p =>
-    playerPathClear(state, p, p, radius) && playerPathClear(state, from, p, radius, item.id)) ?? null;
+    playerPathClear(state, p, p, radius) && playerPathClear(state, from, p, radius, item.id) && clear(p)) ?? null;
 }
 export function gripMove(state, item, player, direction, radius = 0.8) {
   if (!direction || !((Math.abs(direction.x) === 1 && direction.z === 0)

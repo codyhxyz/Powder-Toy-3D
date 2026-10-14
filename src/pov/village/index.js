@@ -66,7 +66,16 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!p || p.y < -1 || p.y > 12) return -1;
     return HOMES.findIndex(x => Math.abs(p.x - x) < 10 && Math.abs(p.z) < 10);
   }
-  const ownPosition = () => { const p = local(); return p ? { x: p.x - HOMES[0], z: p.z } : null; };
+  const roomPosition = (home = 0) => { const p = local(); return p ? { x: p.x - HOMES[home], z: p.z } : null; };
+  const ownPosition = () => roomPosition();
+  const roomState = home => home === 0 ? state : { placed: residentFurniture(home) };
+  function charactersClear(home, from, to) {
+    const radius = 1.4 * getPlayer().size;
+    const obstacles = residents.map(r => ({ x: HOMES[r.spec.home] - HOMES[home] + r.x, z: r.z, radius: 1.4 }));
+    const next = resolveCharacterMotion(from, to, radius, obstacles);
+    return Math.hypot(next.x - to.x, next.z - to.z) < 1e-7
+      && obstacles.every(r => Math.hypot(to.x - r.x, to.z - r.z) >= radius + r.radius - 1e-7);
+  }
   function context() {
     const p = ownPosition(), active = enabled && live() && !document.hidden && !document.querySelector('.mm.open');
     return { active, home: active && room() === 0, dresser: active && room() === 0 && Math.hypot(p.x - DRESSER.x, p.z - DRESSER.z) <= 5.5,
@@ -112,10 +121,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       catch { warning = 'Your changes are in memory only: browser storage is full or unavailable.'; }
     }
   }
-  function setPlayer(point) {
+  function setPlayer(point, home = interaction?.home ?? 0) {
     const p = getPlayer(), origin = app.getSim().origin;
     if (!p) return;
-    p.pos.set(size[0] / 2 + HOMES[0] + point.x - origin.x, FLOOR - origin.y,
+    p.pos.set(size[0] / 2 + HOMES[home] + point.x - origin.x, FLOOR - origin.y,
       size[2] / 2 + HOME_Z + point.z - origin.z);
     p.vel.set(0, 0, 0); p.onGround = true;
     anchoredAt.copy(p.pos).add(origin);
@@ -129,9 +138,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (drawer) drawer.position.z = interaction?.kind === 'dresser' ? -0.65 * interaction.drawer.extension : 0;
   }
   function beginInteraction(kind, item, position, yaw, extra = {}) {
-    const entry = ownPosition();
+    const entry = roomPosition(extra.home ?? 0);
     ui.close(); releaseInput(); releaseActions(); punchSerial++; punchAt = -Infinity; usingTool = false;
-    interaction = { kind, item: { ...item }, position: { x: position.x, z: position.z }, entry, yaw,
+    interaction = { kind, home: 0, item: { ...item }, position: { x: position.x, z: position.z }, entry, yaw,
       radius: getPlayer().width / 2, elapsed: 0, pitch: camera.look.pitch, third: camera.third, ...extra };
     feedback = '';
     camera.third = true; camera.look.pitch = Math.min(camera.look.pitch, -0.6);
@@ -143,7 +152,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!s) return {};
     let destination = s.move?.fromPlayer ?? s.position;
     if (relocate && ['sit', 'sleep'].includes(s.kind)) {
-      destination = standPosition(state, s.item, s.position, s.entry, getPlayer().width / 2);
+      destination = standPosition(roomState(s.home), s.item, s.position, s.entry, getPlayer().width / 2,
+        p => charactersClear(s.home, s.position, p));
       if (!destination && force) destination = { x: 0, z: 0 };
       if (!destination) return fail('There is no clear place to stand.');
     }
@@ -151,7 +161,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (model && saved) at(model, 0, saved);
     camera.look.pitch = s.pitch; camera.third = s.third;
     interaction = null; feedback = '';
-    if (relocate && getPlayer() && !getPlayer().dead) setPlayer(destination);
+    if (relocate && getPlayer() && !getPlayer().dead) setPlayer(destination, s.home);
     drawInteraction(); releaseInput(); app.requestRender();
     return {};
   }
@@ -167,16 +177,18 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     const relocated = p && p.pos.clone().add(app.getSim().origin).distanceTo(anchoredAt) > 0.25;
     if (!p || p.dead || relocated) {
       ui.close(); endInteraction(false, true);
-    } else if (!context().active || room() !== 0) {
+    } else if (!context().active || room() !== interaction.home) {
       ui.close(); endInteraction(true, true);
     }
   }
-  function startRest(item) {
+  function startRest(item, home = room()) {
     const p = getPlayer(), pose = restPose(item, p?.size), c = context();
-    if (!pose || !c.home || held || interaction || Math.abs(local().y) > 0.75 || distance(item) > 2.5)
-      return fail('Walk up to a chair or bed in your home first.');
-    if (!playerPathClear(state, c.player, pose, p.width / 2, item.id)) return fail('There is no clear way to rest there.');
-    return beginInteraction(pose.kind, item, pose, pose.yaw, { pose });
+    const here = roomPosition(home);
+    if (!pose || home < 0 || !c.active || held || interaction || Math.abs(local().y) > 0.75 || distance(item, here) > 2.5)
+      return fail('Walk up to a chair or bed first.');
+    if (!playerPathClear(roomState(home), here, pose, p.width / 2, item.id) || !charactersClear(home, here, pose))
+      return fail('There is no clear way to rest there.');
+    return beginInteraction(pose.kind, item, pose, pose.yaw, { pose, home });
   }
   function openDresser(pending = null) {
     const c = context(), p = getPlayer();
@@ -193,6 +205,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     const s = interaction;
     if (!s) return;
     if (s.kind === 'grip') {
+      s.elapsed += dt;
       s.wait = Math.max(0, (s.wait ?? 0) - dt);
       const direction = cardinal(input?.move ?? { x: 0, z: 0 });
       if (!s.move && !s.wait && direction) {
@@ -207,7 +220,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
         s.visual = { ...m.from, x: THREE.MathUtils.lerp(m.from.x, m.target.x, t), z: THREE.MathUtils.lerp(m.from.z, m.target.z, t) };
         s.position = { x: THREE.MathUtils.lerp(m.fromPlayer.x, m.player.x, t), z: THREE.MathUtils.lerp(m.fromPlayer.z, m.player.z, t) };
         if (m.elapsed >= 0.35) {
-          const result = change(state, { type: 'place', ...m.target }, { home: true, player: m.player });
+          // gripMove already swept the actual body radius; pocket placement's
+          // fixed one-cell clearance would reject the normal 0.8-cell grip.
+          const result = change(state, { type: 'place', ...m.target }, { home: true });
           if (result.error) { s.position = m.fromPlayer; fail(result.error); }
           else { saveState(result.state); s.item = m.target; s.position = m.player; }
           s.visual = null; s.move = null;
@@ -270,9 +285,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function nearby() {
     if (!context().active || held || interaction) return null;
     const p = local(), home = room(p);
-    if (home === 0) {
-      const here = ownPosition(), forward = camera.forwardH(new THREE.Vector3());
-      const item = [DRESSER, ...state.placed].filter(i => {
+    if (home >= 0) {
+      const here = roomPosition(home), forward = camera.forwardH(new THREE.Vector3());
+      const item = [DRESSER, ...roomState(home).placed].filter(i => {
+        if (home !== 0 && !restPose(i)) return false;
         const b = bounds(i), dx = THREE.MathUtils.clamp(here.x, b.x, b.x + b.w) - here.x;
         const dz = THREE.MathUtils.clamp(here.z, b.z, b.z + b.d) - here.z;
         return distance(i, here) <= 2.5 && (dx * forward.x + dz * forward.z >= Math.hypot(dx, dz) * 0.2);
@@ -281,10 +297,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const pose = restPose(item);
       if (pose) return {
         title: `${pose.kind === 'sleep' ? 'Sleep in' : 'Sit on'} ${ITEMS[item.kind].name.toLowerCase()}`,
-        use: () => startRest(item),
-        secondary: { title: `Grab ${ITEMS[item.kind].name.toLowerCase()}`, use: () => grab(item.id) },
+        use: () => startRest(item, home),
+        secondary: home === 0 ? { title: `Grab ${ITEMS[item.kind].name.toLowerCase()}`, use: () => grab(item.id) } : null,
       };
-      return item ? { title: `Grab ${ITEMS[item.kind].name.toLowerCase()}`, use: () => grab(item.id) } : null;
+      if (home === 0) return item ? { title: `Grab ${ITEMS[item.kind].name.toLowerCase()}`, use: () => grab(item.id) } : null;
     }
     const r = residents.find(r => r.spec.home === home && Math.hypot(p.x - HOMES[home] - r.x, p.z - r.z) < 7);
     return r ? { title: `Talk to ${r.spec.name}`, use: () => { speaking = r; chat(undefined, true); } } : null;
@@ -316,7 +332,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       return nearby()?.use() ?? {};
     }
     if (action.type === 'secondary') return nearby()?.secondary?.use() ?? {};
-    if (action.type === 'rest') return startRest(state.placed.find(i => i.id === action.id));
+    if (action.type === 'rest') return startRest(roomState(room()).placed.find(i => i.id === action.id));
     if (action.type === 'openStorage') return openDresser();
     if (action.type === 'grab') return grab(action.id);
     if (action.type === 'cancel') {
@@ -406,7 +422,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
       ui.update({ active: false }); camera.third = oldThird;
       for (const child of [...root.children]) dispose(child);
-      furnishings = null; residents = []; return;
+      furnishings = null; residents = []; ownMeshes.clear(); return;
     }
     size = world.size; oldThird = camera.third; camera.third = true;
     equip(null);
@@ -420,19 +436,23 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const raw = localStorage.getItem(memoryKey), data = raw === null ? null : JSON.parse(raw);
       if (raw !== null && (!data || data.version !== 1 || !data.residents || typeof data.residents !== 'object' || Array.isArray(data.residents)))
         throw new Error('Unknown neighbor save');
+      if (data && Object.keys(data.residents).some(name => !RESIDENTS.some(r => r.name === name)))
+        memoryWritable = false;
       for (const r of RESIDENTS) {
         const value = data?.residents[r.name];
         const memory = hydrateMemory(value, r);
         // A noncanonical or future record may hold information we cannot read.
-        if (value && JSON.stringify(memory) !== JSON.stringify(value)) memoryWritable = false;
+        if (data && Object.hasOwn(data.residents, r.name) && JSON.stringify(memory) !== JSON.stringify(value)) memoryWritable = false;
         memories[r.name] = memory;
       }
     } catch { memoryWritable = false; }
     if (!memoryWritable) warning += ' Neighbor memories are temporary; the unreadable save will not be overwritten.';
     rebuildFurniture();
     residents = RESIDENTS.map(spec => {
-      const model = character(spec); root.add(model.root);
-      return { spec, model, x: 0, z: 0, vx: 0, vz: 0, bonk: 0 };
+      const model = character(spec);
+      const height = new THREE.Box3().setFromObject(model.root).max.y;
+      root.add(model.root);
+      return { spec, model, height, x: 0, z: 0, vx: 0, vz: 0, bonk: 0 };
     });
     for (let home = 0; home < 4; home++) {
       const sign = nameplate(home ? `${RESIDENTS[home - 1].name}’s home` : 'Your home');
@@ -458,16 +478,22 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   }
   function characterObstacles(p) {
     const o = app.getSim().origin, floor = FLOOR - o.y;
-    if (Math.min(previous.y, p.pos.y) >= floor + 6.9 || Math.max(previous.y, p.pos.y) + p.height <= floor) return [];
-    return residents.map(r => ({
+    if (Math.max(previous.y, p.pos.y) + p.height <= floor) return [];
+    return residents.filter(r => Math.min(previous.y, p.pos.y) < floor + r.height).map(r => ({
       x: size[0] / 2 + HOMES[r.spec.home] + r.x - o.x,
-      z: size[2] / 2 + HOME_Z + r.z - o.z, radius: 1.4,
+      z: size[2] / 2 + HOME_Z + r.z - o.z, radius: 1.4, top: floor + r.height,
     }));
   }
   function collide() {
     const p = getPlayer(); if (!p) return;
     const obstacles = characterObstacles(p), radius = 1.4 * p.size;
-    const motion = resolveCharacterMotion(previous, p.pos, radius, obstacles);
+    // A charged jump must not fall down through a neighbor's body.
+    for (const r of obstacles) if (p.vel.y <= 0 && previous.y >= r.top - 0.05 && p.pos.y <= r.top
+      && Math.hypot(p.pos.x - r.x, p.pos.z - r.z) < radius + r.radius) {
+      p.pos.y = r.top; p.vel.y = 0; p.onGround = true;
+    }
+    const solidCharacters = obstacles.filter(r => p.pos.y < r.top - 0.01);
+    const motion = resolveCharacterMotion(previous, p.pos, radius, solidCharacters);
     p.pos.x = motion.x; p.pos.z = motion.z;
     if (motion.blocked) p.vel.x = p.vel.z = 0;
     const o = app.getSim().origin, floor = FLOOR - o.y;
@@ -495,7 +521,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const oldX = x, oldZ = z;
       if (!blocked(x + dx / steps, z)) x += dx / steps; else p.vel.x = 0;
       if (!blocked(x, z + dz / steps)) z += dz / steps; else p.vel.z = 0;
-      const checked = resolveCharacterMotion({ x: oldX, z: oldZ }, { x, z }, radius, obstacles);
+      const checked = resolveCharacterMotion({ x: oldX, z: oldZ }, { x, z }, radius, solidCharacters);
       // Furniture's alternate route cannot slide us through a neighbor or wall.
       if (Math.hypot(checked.x - x, checked.z - z) > 1e-7) {
         x = oldX; z = oldZ; p.vel.x = p.vel.z = 0; break;
@@ -520,7 +546,13 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const punching = interaction ? 0 : Math.max(0, 1 - (time - punchAt) / PUNCH_DURATION);
       let pose = interaction?.pose ?? null;
       if (pose) avatar.root.position.y += pose.y * scale;
-      if (interaction?.kind === 'grip') pose = { kind: 'grip', effort: interaction.move ? Math.sin(Math.PI * interaction.move.elapsed / 0.35) : 0 };
+      if (interaction?.kind === 'grip') {
+        const m = interaction.move, spec = ITEMS[interaction.item.kind];
+        const toward = m ? -(m.target.x - m.from.x) * Math.sin(interaction.yaw) - (m.target.z - m.from.z) * Math.cos(interaction.yaw) : 0;
+        pose = { kind: 'grip', reach: Math.min(1, interaction.elapsed / 0.2), pulling: toward < 0,
+          effort: m ? Math.sin(Math.PI * m.elapsed / 0.35) : 0,
+          low: (spec.lyingHeight ?? spec.seatHeight ?? spec.h) < 2 };
+      }
       if (interaction?.kind === 'dresser') pose = { kind: 'dresser', ...interaction.drawer };
       avatar.animate(time, interaction?.move ? 2 : Math.hypot(p.vel.x, p.vel.z), false, !!held,
         !interaction && p.onGround && !p.inLiquid ? p.sprintRush : 0, kicking ? 0 : punching, !!tool && !interaction,

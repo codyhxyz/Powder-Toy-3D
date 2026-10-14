@@ -197,7 +197,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
       filter.value = theme;
       content.append(h('label.village-theme', {}, 'Browse a set ', filter));
     }
-    const items = catalogue ? Object.entries(ITEMS).filter(([kind, spec]) => kind !== 'dresser' && (theme === 'all' || (spec.theme ?? 'classic') === theme))
+    const items = catalogue ? Object.entries(ITEMS).filter(([, spec]) => theme === 'all' || (spec.theme ?? 'classic') === theme)
       .map(([kind]) => ({ id: kind, kind })) : c.state[tab];
     const grid = h(`div.village-pockets${catalogue ? '.village-catalogue' : ''}`, { role: 'group', 'aria-label': `${tab} furniture` });
     const count = catalogue ? items.length : tab === 'pockets' ? POCKETS : Math.max(10, Math.ceil(items.length / 10) * 10);
@@ -217,7 +217,8 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
         h('strong', { text: ITEMS[item.kind].name }));
       if (catalogue) {
         menu.append(h('p', { text: `${ITEMS[item.kind].theme ?? 'Classic'} set · ${ITEMS[item.kind].w} × ${ITEMS[item.kind].d} floor space` }),
-          button('Add to pockets', () => action({ type: 'order', kind: item.kind }), { disabled: !c.home || c.state.pockets.length >= POCKETS }));
+          item.kind === 'dresser' ? h('p', { text: 'Included with your home. Walk up to it to open storage.' }) :
+            button('Add to pockets', () => action({ type: 'order', kind: item.kind }), { disabled: !c.home || c.state.pockets.length >= POCKETS }));
       } else if (tab !== 'storage') {
         menu.append(button('Take out to place', () => {
           const result = act({ type: 'grab', id: item.id });
