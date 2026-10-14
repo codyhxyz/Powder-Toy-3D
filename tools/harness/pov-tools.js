@@ -454,6 +454,7 @@ test('stage:jackhammer', async () => {
   const out = { checks: [], numbers: {} };
   const sim = await make(64);
   const { default: definition } = await import('/src/pov/tools/jackhammer.tool.js');
+  const { HAND_REACH } = await import('/src/pov/constants.js');
   const { pack, createTransfer } = await import('/src/pov/tools/transfer.js');
   const { createToolbelt } = await import('/src/pov/tools/index.js');
   const { povEvents } = await import('/src/pov/events.js');
@@ -521,7 +522,10 @@ test('stage:jackhammer', async () => {
     check(out, 'metal remains intact; refused mining impact', t.METAL === before && !t.SCRAP && loadout.count === 0
       && impacts.at(-1)?.broke === false, t);
     slab(E.ROCK); await strike(E.ROCK, { dist: 6 });
-    check(out, 'short range: distant rock untouched', (await totals(sim)).ROCK === before && loadout.count === 0);
+    check(out, 'mines beyond eye height without cutting out', loadout.count === 27
+      && (await totals(sim)).ROCK === before - 27);
+    clearPack(); slab(E.ROCK); await strike(E.ROCK, { dist: HAND_REACH + 1 });
+    check(out, 'mining still respects hand reach', (await totals(sim)).ROCK === before && loadout.count === 0);
 
     slab(E.WOOD); await strike(E.WOOD);
     check(out, 'pickaxe material tags: leaves wood to the axe', (await totals(sim)).WOOD === before && loadout.count === 0);

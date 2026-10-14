@@ -54,7 +54,13 @@ const pov = {
     else if (app.gamemode !== 'factory' && factoryBelt) { factoryBelt.restrict(null); factoryBelt = null; }
     if (app.pov?.active) app.pov.update(dt);
   },
-  busy(app) { return !!app.pov?.active; },
+  afterStep(app, dt) {
+    if (app.renderOnly || !app.pov?.active) app.pov?.updateEntities(app.renderOnly || app.settings.paused ? 0 : dt);
+    if (!app.renderOnly && !app.settings.paused && app.pov?.npcs.length) app.requestMeshFrame();
+  },
+  busy(app) {
+    return !!app.pov?.active || !!app.pov?.entitiesPending || (!app.settings.paused && (app.pov?.npcs.length > 0 || app.pov?.vehicles.list.length > 0));
+  },
 };
 
 export default pov;

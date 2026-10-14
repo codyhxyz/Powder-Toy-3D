@@ -119,7 +119,7 @@ export function createAi({ renderer, getSim }) {
 // passes: team ('red' | 'blue' | 'infected', on body.team), opponents() (who it
 // fights: [{ id, pos, vel, alive, holding }]; without it, the player), respawnS
 // (s dead before it comes back, or a function giving it: Siege's differ by side) and name.
-export function createNpc({ env, ai, home = () => null, style = 'axeman', team = null, opponents = null, respawnS = RESPAWN_S, name = null }) {
+export function createNpc({ env, ai, home = () => null, style = 'axeman', team = null, opponents = null, respawnS = RESPAWN_S, oneShot = false, name = null }) {
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true, id });
   body.team = team;
@@ -131,13 +131,13 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
   const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
   const kit = createKit({ ...env, viewmodel, owner: id });
   let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
-  const charmed = () => !!(body.status?.has('CHARMED') || world.player.status?.has('CHARMED'));
+  const charmed = () => !!(body.status?.has('CHARMED') || world.player?.status?.has('CHARMED'));
   const agent = new (style === 'gunner' ? GunnerAgent : Agent)({
     body, world: ai.world, nav: ai.nav, kit, getSim: env.getSim,
     packCells: () => pack(id).cells.length,
     bucket: () => { const l = persistentLoad(ownedKey('BUCKET', id), Infinity); return { id: l.cells[0]?.[0] ?? -1, n: l.cells.length }; },
     // Charmed (pheromone, potions.js): a charmed NPC, or a charmed player, isn't hunted: it reads as gone
-    target: () => ({ pos: world.player.pos, vel: world.player.vel, alive: !world.player.dead && !charmed(), holding: world.holding }),
+    target: () => ({ pos: world.player?.pos ?? body.pos, vel: world.player?.vel ?? body.vel, alive: !!world.player && !world.player.dead && !charmed(), holding: world.holding }),
     opponents,
   });
 
@@ -168,7 +168,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
 
   // drop in at SPAWN_DIST from the player, on a random bearing, inside the box (or at `at`)
   function spawn(sim, at = home()) {
-    const g = sim.g, p = world.player.pos;
+    const g = sim.g, p = world.player?.pos ?? at ?? body.pos;
     const { x, z } = spotAround(p, SPAWN_DIST, EDGE, g);
     const y = Math.min(p.y + SPAWN_DROP, g.ny - BODY_HEIGHT - 1);
     body.spawn(at ? new THREE.Vector3(at.x, at.y, at.z) : new THREE.Vector3(x, y, z));
@@ -216,6 +216,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     bind(volume, g) { figure.bind(volume, g); },
     compile(r, camera, scene) { return figure.compile(r, camera, scene); },
     get body() { return body; },
+    get finished() { return oneShot && body.dead && deadTime >= RESPAWN_S; },
     get agent() { return agent; },
     get kit() { return kit; },
     // what it's doing (checks): its goal, weapon, tool, pack
@@ -228,18 +229,18 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     update(dt, w) {
       world = w;
       const sim = env.getSim();
-      if (!sim || dt <= 0) return;
+      if (!sim) return;
       if (!spawned) spawn(sim);
       if (body.dead) {
         deadTime += dt;
         kit.putAway();
-        if (deadTime >= (typeof respawnS === 'function' ? respawnS() : respawnS)) spawn(sim);
+        if (!oneShot && deadTime >= (typeof respawnS === 'function' ? respawnS() : respawnS)) spawn(sim);
       }
       const alive = !body.dead;
 
       // think: the brain on the ground plane (Yuka keeps its own velocity; only the position follows the body)
       agent.position.set(body.pos.x, 0, body.pos.z);
-      if (alive && ai.world.ready) { agent.think(dt); agent.update(dt); } else agent.clearIntent();
+      if (dt > 0 && alive && ai.world.ready) { agent.think(dt); agent.update(dt); } else agent.clearIntent();
       const it = agent.intent;
 
       // the body: the steered velocity is the wished move
@@ -310,7 +311,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       });
     },
     setVisible(v) { figure.setVisible(v && spawned && !body.gibbed); },
-    reset() { spawned = false; kit.putAway(); figure.setVisible(false); },
+    reset() { if (oneShot) return; spawned = false; kit.putAway(); figure.setVisible(false); },
     // a fresh NPC at `at` (grid cells): health, memory and cooldowns reset (playtests)
     placeAt(at) { const sim = env.getSim(); if (sim && world) spawn(sim, at); },
     dispose() { offLanded(); removeTarget(); kit.dispose(); figure.dispose(); body.dispose(); },

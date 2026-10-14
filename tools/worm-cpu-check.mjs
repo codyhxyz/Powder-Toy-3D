@@ -6,7 +6,7 @@
 // usage: node tools/worm-cpu-check.mjs [wall] [giant]
 import * as THREE from 'three';
 import { createWorm } from '../src/pov/worm.js';
-import { addTarget, PLAYER } from '../src/pov/targets.js';
+import { addTarget, allTargets, PLAYER } from '../src/pov/targets.js';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { OUTSIDE } from '../src/pov/ai/world.js';
 import { setPovGpu } from '../src/pov/gpu.js';
@@ -32,6 +32,8 @@ addTarget({
   hurt(a, c) { player.hurt += a; player.cause = c; },
 });
 const worm = createWorm({ env: { getSim: () => sim }, ai: { world }, home: () => ({ x: 30, y: GROUND, z: 64 }), size });
+worm.bind(null, sim.g);
+if (!worm.root.children[0].material.isNodeMaterial) throw new Error('Worm uses the WebGPU figure material');
 console.log(`${size} worm${wall ? ', a WALL slab in the way' : ''}`);
 const w = { player, toWorld: (g, o) => o.copy(g), worldToGrid: new THREE.Matrix4(), scale: 1 };
 let maxY = -Infinity, maxX = -Infinity;
@@ -50,5 +52,15 @@ if (wall) {
   check('it breaches', d.breaches > 0 && maxY > GROUND + 5.5, `${d.breaches} breaches, up to ${(maxY - GROUND).toFixed(1)} cells over the ground`);
   check('it bites', d.bites > 0 && player.cause === 'Eaten by a worm', `${d.bites} bites, ${player.hurt.toFixed(2)} health, ${player.cause}`);
 }
+worm.dispose();
+const single = createWorm({ env: { getSim: () => sim }, ai: { world }, home: () => ({ x: 30, y: GROUND, z: 64 }), size, oneShot: true });
+try {
+  const god = { ...w, player: null };
+  single.update(0, god);
+  [...allTargets()].find((t) => t.id === single.id).hurt(1e6, 'Test');
+  for (let f = 0; f < FPS * 5; f++) single.update(1 / FPS, god);
+  single.reset(); single.update(0, god);
+  check('one-shot corpse finishes without respawning in god view', single.finished && single.body.dead && !single.root.visible, 'runtime can retire it and idle');
+} finally { single.dispose(); }
 console.log(fails ? `${fails} FAILED` : 'all ok');
 process.exit(fails ? 1 : 0);

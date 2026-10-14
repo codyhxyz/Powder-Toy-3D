@@ -17,6 +17,8 @@ const { GEAR, gearByKey } = await import('../src/pov/tools/catalog.js');
 const { GEAR_ITEMS } = await import('../src/elements.js');
 const { gesturePose } = await import('../src/pov/holds.js');
 const { trigger } = await import('../src/pov/tools/action.js');
+const { E } = await import('../src/elements.js');
+const { EYE_HEIGHT, HAND_REACH } = await import('../src/pov/constants.js');
 const env = () => ({ viewmodel: new THREE.Group(), getScale: () => 1, owner: 'held-tools-cpu',
   getVolume: () => new THREE.Object3D(), ballistics: { windowShifted() {} } });
 const ctx = (extra = {}) => ({ dt: 1 / 60, eye: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, -1),
@@ -104,6 +106,28 @@ for (const fps of [30, 60, 144]) {
     assert.deepEqual(pivot.parent.userData.gesture.axis, [0, -1, 0], 'third-person stroke drives down too');
   } finally { tool.dispose(); }
 }
+// Standing mining: the old five-cell reach could not reach even slightly
+// forward of the feet, or keep drilling as the face receded.
+{
+  const e = env(); let bites = 0;
+  e.transfer = { take: () => { bites++; return Promise.resolve([]); } };
+  const tool = jackhammer.create(e);
+  try {
+    const eye = new THREE.Vector3(20.5, 20 + EYE_HEIGHT, 20.5);
+    const dir = new THREE.Vector3(0, -1, 0.2).normalize();
+    for (let i = 0; i < 3; i++) {
+      const dist = (EYE_HEIGHT + i * 3) / -dir.y;
+      const cell = eye.clone().addScaledVector(dir, dist).floor();
+      tool.update(ctx({ dt: REFIRE, eye, dir, sim: { g: { nx: 64, ny: 64, nz: 64 } }, primary: true,
+        aim: { valid: true, cell, face: 2, id: E.ROCK, dist } }));
+    }
+    assert.equal(bites, 3, 'standing drill follows three receding ground bites without a pause');
+    tool.update(ctx({ dt: REFIRE, eye, dir, primary: true,
+      aim: { valid: true, cell: new THREE.Vector3(20, 0, 20), face: 2, id: E.ROCK, dist: HAND_REACH + 1 } }));
+    assert.equal(bites, 3, 'out-of-reach ground stays untouched');
+  } finally { tool.dispose(); }
+}
+
 // Existing buffered triggers retain their behavior.
 const t = trigger(REFIRE); t.ready(ctx({ primaryPressed: true })); t.fire();
 t.ready(ctx({ dt: 0.01, primaryPressed: true }));
