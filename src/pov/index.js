@@ -726,6 +726,7 @@ export function createPov(app) {
     if (coop()) return null;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     if (!sim || !vol) return null;
+    importedInteractions.update(dt);
     const g = sim.g;
     vol.updateMatrixWorld();
     worldToGrid.copy(vol.matrixWorld).invert();
@@ -863,7 +864,6 @@ export function createPov(app) {
     if (!coop()) {
       game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
       mission.update(dt, npcMod ? npcFrame : null);
-      importedInteractions.update(dt);
     }
 
     deaths.update();   // the killfeed: who died this frame, and to what

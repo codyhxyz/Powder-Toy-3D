@@ -65,7 +65,7 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
     if (!door.supported) { if (!automatic) toast(door.requirement); return false; }
     const { world, sim, state, map, origin } = c;
     const previous = state.states.get(door.sourcePath), opening = !previous?.open;
-    if (!opening && door.kind === 'sliding' && !automatic) { toast('Closes automatically after 5 seconds'); return false; }
+    if (!opening && door.autoCloseSeconds && !automatic) { toast('Closes automatically after 5 seconds'); return false; }
     if (!opening && importedDoorOccupied(door, getBodies(), origin)) {
       if (!automatic) toast('Doorway occupied');
       return false;
@@ -120,12 +120,16 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
       const point = here.map((n, k) => Math.max(min[k] + 0.5, Math.min(max[k] - 0.5, n)) - c.origin[k]);
       return { id: `imported:${door.sourcePath}`, position: new Vector3(...point), radius: 0.8,
         title: door.kind === 'gate' ? 'Sealed gate' : door.kind === 'sliding' ? 'Elevator door' : 'Door',
-        lines: door.supported ? [door.ownershipWarning ?? 'Voxel-retract adaptation'] : [door.requirement], verb: door.supported ? c.state.states.get(door.sourcePath)?.open ? door.kind === 'sliding' ? 'Auto-closes' : 'Close' : 'Open' : 'Inspect requirement', use: () => { void use(door); } };
+        lines: door.supported ? door.ownershipWarning ? [door.ownershipWarning] : [] : [door.requirement], verb: door.supported ? c.state.states.get(door.sourcePath)?.open ? door.autoCloseSeconds ? 'Auto-closes' : 'Close' : 'Open' : 'Inspect requirement', use: () => { void use(door); } };
     });
   });
   return {
     use,
     get lastError() { return lastError; },
+    get timedDoor() {
+      const c = current();
+      return !!c && (c.map.interactions?.doors ?? []).some(d => d.autoCloseSeconds && c.state.states.get(d.sourcePath)?.open && resident(d, c));
+    },
     update(dt) {
       const c = current();
       if (!c || c.world.pending) return;

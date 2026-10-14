@@ -61,7 +61,7 @@ const pov = {
     if (!app.renderOnly && !app.settings.paused && app.pov?.npcs.length) app.requestMeshFrame();
   },
   busy(app) {
-    return !!app.pov?.active || !!app.pov?.entitiesPending || (!app.settings.paused && (app.pov?.npcs.length > 0 || app.pov?.vehicles.list.length > 0));
+    return !!app.pov?.active || !!app.pov?.entitiesPending || (!app.settings.paused && (app.pov?.npcs.length > 0 || app.pov?.vehicles.list.length > 0 || app.pov?.importedInteractions?.timedDoor));
   },
 };
 

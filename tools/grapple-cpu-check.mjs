@@ -341,7 +341,7 @@ for (const delta of [-0.001, 0, 0.001]) {
 }
 
 // Published Paradise data: no resized world, fabricated distant target cell or GPU.
-// This authored street ray first meets a solid at 91.65 m, well outside 128-cell residency.
+// This authored street ray first meets a solid at 92.25 m, well outside 128-cell residency.
 {
   const { readFileSync } = await import('node:fs');
   const { gunzipSync } = await import('node:zlib');
@@ -358,13 +358,13 @@ for (const delta of [-0.001, 0, 0.001]) {
     sim.origin.set(304, 0, 544); f.world(world);
     f.liveSource((x, y, z) => source.cell(x + sim.origin.x, y, z + sim.origin.z));
     const aim = () => {
-      body.pos.set(64.5, 20.5 - body.eyeHeight, 64.5);
-      ctx.eye.set(64.5, 20.5, 64.5); ctx.dir.set(1, 0, 0); ctx.aim.valid = false;
+      body.pos.set(64.5, 21.5 - body.eyeHeight, 64.5);
+      ctx.eye.set(64.5, 21.5, 64.5); ctx.dir.set(1, 0, 0); ctx.aim.valid = false;
     };
     aim(); await grapple.toggle(ctx);
     assert.ok(grapple.active, 'actual source solid attaches beyond resident window and old range');
-    near(ctx.eye.distanceTo(grapple.rope.anchor) * CELL_M, 91.65);
-    assert.equal(grapple.rope.anchor.x + sim.origin.x, 674);
+    near(ctx.eye.distanceTo(grapple.rope.anchor) * CELL_M, 92.25);
+    assert.equal(grapple.rope.anchor.x + sim.origin.x, 676);
     grapple.update(ctx); assert.ok(grapple.active, 'far source anchor survives validation');
     const anchor = grapple.rope.anchor.clone();
     body.windowShifted(320, 0); sim.origin.x += 320; grapple.windowShifted(320, 0);
@@ -374,13 +374,13 @@ for (const delta of [-0.001, 0, 0.001]) {
     sim.origin.x = 304; aim(); f.anchorId(E.ROCK);
 
     // Fresh foreground matter must occlude both far terrain and a farther actor.
-    f.liveCells.set('90,20,64', E.ROCK);
+    f.liveCells.set('90,21,64', E.ROCK);
     const actor = { pos: new THREE.Vector3(200, 18, 64), positionEpoch: 0 };
     const off = addTarget({ id: 'far-occluded', alive: true, body: actor,
       box(lo, hi) { lo.copy(actor.pos); hi.copy(actor.pos).addScalar(4); } });
     await grapple.toggle(ctx);
     near(grapple.rope.anchor.x, 90, 1e-4);
-    grapple.release(); f.liveCells.set('90,20,64', E.WATER);
+    grapple.release(); f.liveCells.set('90,21,64', E.WATER);
     await grapple.toggle(ctx);
     assert.equal(grapple.active, false, 'unanchorable foreground liquid blocks terrain and actor');
     off(); f.liveCells.clear();
@@ -404,9 +404,9 @@ for (const delta of [-0.001, 0, 0.001]) {
     // Put the original wall IN the live window, then destroy all resident
     // matter. It must not reappear from the CPU source when firing through it.
     sim.origin.x = 624;
-    ctx.eye.set(26.5, 20.5, 64.5); body.pos.copy(ctx.eye).setY(20.5 - body.eyeHeight);
+    ctx.eye.set(26.5, 21.5, 64.5); body.pos.copy(ctx.eye).setY(21.5 - body.eyeHeight);
     await grapple.toggle(ctx);
-    assert.equal(grapple.rope.anchor.x + sim.origin.x, 674);
+    assert.equal(grapple.rope.anchor.x + sim.origin.x, 676);
     grapple.release(); f.liveSource(() => E.EMPTY);
     await grapple.toggle(ctx);
     assert.equal(grapple.active, false, 'resident destructive edits are never replaced by pristine source geometry');
@@ -424,4 +424,4 @@ for (const delta of [-0.001, 0, 0.001]) {
     assert.equal(body.rope, null, 'same-window map reload resets attached cable');
   } finally { f.dispose(); }
 }
-console.log('ok 75 m live-voxel pull, 91.65 m Paradise far attachment, occlusion, destructive edits, saved edits, 200 m cutoff/visual/reset, pending cancellation');
+console.log('ok 75 m live-voxel pull, 92.25 m Paradise far attachment, occlusion, destructive edits, saved edits, 200 m cutoff/visual/reset, pending cancellation');

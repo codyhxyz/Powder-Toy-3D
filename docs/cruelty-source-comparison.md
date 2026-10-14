@@ -1,23 +1,25 @@
 # Cruelty Squad source levels: conversion and provenance
 
 Four original levels, converted from the game's own embedded meshes into this
-game's voxels and published with the site. No geometry is cropped, scaled down,
-resampled or manually redrawn. Characters are this game's NPCs; external props
-and source scripts are not reproduced.
+game's 0.3 m voxels and published with the site. No authored geometry is cropped,
+scaled down or manually redrawn. Empty horizontal bounds are padded to the
+16-cell streaming grid. Characters use destination NPCs; external props and
+source scripts are not copied.
 
 | Level | Source size (cells) | Triangles | Runtime targets | Runtime / authored guards | Packed | Why it is here |
 |---|---|---:|---:|---:|---:|---|
-| Pharmakokinetiks | 440×384×816 | 12,903 | Mission unavailable | 21 / 21 | 196 KB | Compact indoor layout; Sandbox only |
-| Paradise | 1088×488×1184 | 57,888 | 3 | 50 / 51 | 502 KB | Rooftops, streets, outdoor grapple routes |
-| Androgen Assault | 680×568×808 | 50,434 | 2 | 46 / 48 | 431 KB | Dense combat routes, two exits |
-| Apartment Atrocity | 472×1008×560 | 17,398 | 1 | 27 / 31 | 158 KB | Strong vertical contrast, three exits |
+| Pharmakokinetiks | 448×384×816 | 12,903 | 2 | 21 / 21 | 190 KB | Compact indoor layout |
+| Paradise | 1088×488×1184 | 57,888 | 3 | 50 / 51 | 478 KB | Rooftops, streets, outdoor grapple routes |
+| Androgen Assault | 688×568×816 | 50,434 | 2 | 47 / 48 | 414 KB | Dense combat routes, two exits |
+| Apartment Atrocity | 480×1008×560 | 17,398 | 1 | 31 / 31 | 157 KB | Strong vertical contrast, three exits |
 
-Pharmakokinetiks keeps both authored targets in its inventory, but Pinky's
-source position has no clear standing volume for our ordinary body, so the
-mission is disabled rather than given a guessed target position. Seven
-obstructed guards across the other maps are omitted from spawning, never
-moved; their original positions stay in the manifests. Every actor that does
-spawn has solid support and full ordinary-body clearance.
+The original converter inflated exact grid-plane surfaces into both adjoining
+cells. Source winding now selects only the solid side; boundary-only triangle
+edges do not thicken ceilings. This restores standing door clearance and Pinky's
+placement without moving actors or shrinking bodies. All four missions are
+available. Two obstructed guards are omitted, never moved; their original
+positions remain in the manifests. Every runtime actor has solid support and
+full ordinary-body clearance.
 
 Feet use only the original X/Z and support within 3 m below the source pivot.
 Godot actor roots are pivots, not feet, and the external character scenes
@@ -46,10 +48,9 @@ The input is the original level data, not a reconstruction:
 **That permission covers mods of Cruelty Squad. It is not evidence that these
 converted level assets may be republished inside a different game.** This
 project publishes them anyway, at the maintainer's direction and risk. If a
-rights holder objects, the assets come out with one change: delete
-`public/local-maps/` (every converted map then unregisters itself, and the code
-path is inert), or revert the commit that added it. Nothing else in the build
-depends on them.
+rights holder objects, remove the assets and update the build's required asset
+list, or revert the publication commit. Runtime registration tolerates missing
+assets; CI deliberately requires the currently published catalogue.
 
 ## Material policy
 
@@ -77,7 +78,7 @@ npm run dev -- --port 53927 --strictPort
 ```
 
 Output goes to `public/local-maps/<id>.json` and `<id>.binpack`. Sparse bricks
-are mostly zero, so gzip takes the largest map from 29 MiB to 502 KB — under
+are mostly zero, so gzip takes the largest map from 28 MiB to 478 KB — under
 Cloudflare Pages' 25 MiB per-file limit. The writer refuses any other
 directory, and `validateImportedMapManifest` refuses an unpacked manifest, so
 a raw map cannot be shipped by accident.
@@ -96,7 +97,7 @@ compares them.
 - The manifest also carries the median height of the level's border. The far
   field asks for that while the world is built, before any geometry is fetched
   (`world/far.js` beyondLevel); computing it at conversion keeps that answer
-exact rather than invented.
+  source-derived rather than invented.
 - `src/world/scenes/importedMap.js` builds the scene and inflates the packed
   bricks in `prepare()`, which `world/gpu.js` already awaits before `data()`:
   geometry is fetched when a map is opened, not while the menu lists it.
@@ -108,6 +109,10 @@ exact rather than invented.
 
 ```sh
 node --test tools/import-cruelty-map-check.mjs
+node --test tools/imported-interactions-check.mjs
+node tools/imported-door-passage-check.mjs
+node tools/cruelty-enemies-cpu-check.mjs
+node tools/ladder-cpu-check.mjs
 node tools/check-local-map-build.mjs            # after npm run build
 CRUELTY_SOURCE_DIR=/path/to/Levels node --test tools/import-cruelty-map-check.mjs
 ```
@@ -124,4 +129,7 @@ colliders to within 0.002 m.
 Paradise's full mission also passed a UI-mode browser check in a 5.76 s total
 GPU slot: the normal 128×488×128 window, three targets, 53 actors, pistol
 selected, clear player collision and a solid source floor in actual GPU cells.
-The other maps have CPU source and clearance checks, not browser checks.
+That earlier browser check predates the interaction/AI changes. Current source
+door passage tests use the real standing body and all four published maps.
+See [interaction audit](cruelty-interaction-audit.md) and
+[enemy evidence](cruelty-squad-enemies.md) for supported behavior and remaining gaps.

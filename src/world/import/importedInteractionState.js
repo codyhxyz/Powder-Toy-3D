@@ -29,6 +29,30 @@ export function createImportedInteractionState(map, words, changed = () => {}) {
   return {
     get epoch() { return epoch; },
     states,
+    snapshot() {
+      return { version: 1, doors: [...states].map(([sourcePath, state]) => ({
+        sourcePath, open: state.open, alive: [...state.alive], elapsed: state.elapsed,
+      })) };
+    },
+    restore(saved) {
+      const doors = map.interactions?.doors ?? [], seen = new Set();
+      if (saved != null) {
+        if (saved.version !== 1 || !Array.isArray(saved.doors) || saved.doors.length > doors.length) throw new Error('Invalid saved door state');
+        for (const s of saved.doors) {
+          const door = doors.find(d => d.sourcePath === s.sourcePath);
+          if (!door?.supported || seen.has(s.sourcePath) || typeof s.open !== 'boolean' ||
+              !Array.isArray(s.alive) || s.alive.length !== door.cells.length / 2 ||
+              !s.alive.every(n => n === 0 || n === 1) || !Number.isFinite(s.elapsed) || s.elapsed < 0) throw new Error('Invalid saved door state');
+          seen.add(s.sourcePath);
+        }
+      }
+      this.reset();
+      for (const s of saved?.doors ?? []) {
+        const door = doors.find(d => d.sourcePath === s.sourcePath);
+        states.set(s.sourcePath, { open: s.open, alive: Uint8Array.from(s.alive), elapsed: s.elapsed });
+        write(door.cells, s.alive.map((alive, i) => !s.open && alive ? door.cells[i * 2 + 1] : 0));
+      }
+    },
     open(door, alive) {
       if (!door.supported) return false;
       states.set(door.sourcePath, { open: true, alive: Uint8Array.from(alive), elapsed: 0 });

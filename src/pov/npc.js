@@ -141,13 +141,13 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     return model.getObjectByName('muzzle')?.getWorldPosition(new THREE.Vector3()) ?? null;
   } });
   let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
-  const charmed = () => !!(body.status?.has('CHARMED') || world.player?.status?.has('CHARMED'));
+  const charmed = () => !!(body.status?.has('CHARMED') || world?.player?.status?.has('CHARMED'));
   const agent = new (combatProfile ? CrueltyAgent : style === 'gunner' ? GunnerAgent : Agent)({
     body, world: ai.world, nav: ai.nav, kit, getSim: env.getSim, combatProfile, threat,
     packCells: () => pack(id).cells.length,
     bucket: () => { const l = persistentLoad(ownedKey('BUCKET', id), Infinity); return { id: l.cells[0]?.[0] ?? -1, n: l.cells.length }; },
     // Charmed (pheromone, potions.js): a charmed NPC, or a charmed player, isn't hunted: it reads as gone
-    target: () => ({ pos: world.player?.pos ?? body.pos, vel: world.player?.vel ?? body.vel, alive: !!world.player && !world.player.dead && !charmed(), holding: world.holding }),
+    target: () => ({ pos: world?.player?.pos ?? body.pos, vel: world?.player?.vel ?? body.vel, alive: !!world?.player && !world.player.dead && !charmed(), holding: world?.holding }),
     opponents,
   });
   if (combatProfile) agent.weapons = new Set(combatProfile.weapons);

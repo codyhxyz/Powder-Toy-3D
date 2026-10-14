@@ -37,7 +37,9 @@ export function convertCrueltyMap(text, profile) {
   if (profile.blocked) throw new Error(`${profile.name} not imported: ${profile.blocked}`);
   const scene = parseGodot3Scene(text);
   const meshes = embeddedMeshes(scene, { excludeNode: crueltyExcludeNode });
-  const voxel = voxelizeMeshes(meshes, CRUELTY_MATERIALS, { cellMeters: CELL_M, ownerForMesh: m => doorAncestor(m, scene) });
+  // Horizontal world streaming advances in 16-cell steps; the vertical grid
+  // and packed bricks need only 8. Add air padding, never alter source geometry.
+  const voxel = voxelizeMeshes(meshes, CRUELTY_MATERIALS, { cellMeters: CELL_M, alignment: [16, 8, 16], ownerForMesh: m => doorAncestor(m, scene) });
   const { words, ownedCells, ...manifest } = voxel;
   const elementNames = Object.fromEntries(Object.entries(E).map(([name, id]) => [id, name]));
   const usage = {};

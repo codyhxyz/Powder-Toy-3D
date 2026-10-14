@@ -14,8 +14,15 @@ const ROLES = {
   civilian: { health: 15, weapon: null, reaction: 1.1, outfit: 'civilian' },
   executive: { health: 15, weapon: null, reaction: 1.1, outfit: 'executive' },
   hostileTarget: { health: 100, weapon: 'GUN', reaction: 1.1, interval: 0.7, spread: 0.08, outfit: 'executive' },
+  // Public mod scene reference (see docs): equipment remains a stand-in.
+  chief: { health: 300, weapon: 'GUN', reaction: 1.1, interval: 0.7, spread: 0.1, speedMeters: 1, engageMeters: 2, outfit: 'mutant' },
+  copNarc: { health: 50, weapon: 'SMG', reaction: 1.2, interval: 1.8, burst: 0.16, spread: 0.12, speedMeters: 7, engageMeters: 5, outfit: 'riot' },
+  cultLeader: { health: 15, weapon: null, reaction: 1.1, outfit: 'executive' },
 };
 function classify(text) {
+  if (/Obj_Chief|(?:^|\/)Chief(?:$|[._])/i.test(text)) return 'chief';
+  if (/Cop_?Narc/i.test(text)) return 'copNarc';
+  if (/Cult_?Leader/i.test(text)) return 'cultLeader';
   if (/Cop_?Shotgun/i.test(text)) return 'copShotgun';
   if (/Cop_?Revolver/i.test(text)) return 'copRevolver';
   if (/Elite/i.test(text)) return 'elite';
@@ -34,20 +41,20 @@ export function crueltyProfile(spec, { target = false, cellMeters = 0.3 } = {}) 
   const role = classify(spec.sourceResource ?? '') ?? classify(spec.sourcePath ?? spec.name ?? '')
     ?? (target ? 'civilian' : 'grunt');
   const p = spec.sourceProperties ?? {};
-  const civilian = spec.passive ?? p.civilian ?? (spec.sourceResource?.endsWith('/EnemyHandler.gd') ? false : role === 'civilian' || role === 'executive');
+  const civilian = spec.passive ?? p.civilian ?? (spec.sourceResource?.endsWith('/EnemyHandler.gd') ? false : ['civilian', 'executive', 'cultLeader'].includes(role));
   const effectiveRole = !civilian && ['civilian', 'executive'].includes(role) ? 'hostileTarget' : role;
   const r = ROLES[effectiveRole], meters = positive(cellMeters, 0.3);
   const health = positive(p.health, r.health);
   // weapon.gd's public weapon enum; only consume it if explicitly authored.
   const sourceWeapon = ({ 0: 'GUN', 1: 'SMG', 4: 'SMG', 5: 'ROCKET', 6: 'SNIPER', 7: 'SMG', 8: 'SMG', 9: 'GUN' })[p.current_weapon];
   return Object.freeze({
-    role: effectiveRole, outfit: r.outfit, civilian, stupid: !!p.stupid,
+    role: effectiveRole, outfit: r.outfit, civilian, stupid: p.stupid ?? (role === 'cultLeader' || /Nerd/i.test(spec.sourceResource ?? spec.sourcePath ?? spec.name ?? '')),
     health, damageScale: 40 / health, // destination pistol .5 -> source pistol 20 / source HP
     weapons: Object.freeze(civilian ? [] : [...(spec.sourceResource ? [sourceWeapon ?? r.weapon ?? 'GUN'] : spec.weapons ?? [r.weapon ?? 'GUN'])]),
     reaction: Number.isFinite(p.reaction_time) && p.reaction_time >= 0 ? 0.5 + p.reaction_time / 15 : r.reaction,
     sight: positive(p.ai_distance, r.sightMeters ?? 100) / meters,
-    speed: (Number.isFinite(p.move_speed) && p.move_speed >= 0 ? p.move_speed : 4.5) / meters,
-    chaseFrom: positive(p.engage_distance, 7) / meters,
+    speed: (Number.isFinite(p.move_speed) && p.move_speed >= 0 ? p.move_speed : r.speedMeters ?? 4.5) / meters,
+    chaseFrom: positive(p.engage_distance, r.engageMeters ?? 7) / meters,
     memory: 12, touch: 0, track: 0.2, stagger: 0.12, breather: 0,
     interval: r.interval ?? 1.1, burst: p.burst === false ? 0 : r.burst ?? 0,
     spread: Number.isFinite(p.enemy_accuracy) && p.enemy_accuracy >= 0 ? p.enemy_accuracy : r.spread ?? 0.1, patrol: !civilian && p.no_patrol !== true && p.move_speed !== 0,

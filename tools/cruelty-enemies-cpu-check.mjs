@@ -36,7 +36,8 @@ const manifest = { id: 'cpu-enemies', name: 'CPU enemies', spawn: [0, 0, -20],
   guards: ['E_Grunt', 'E_Elite', 'E_Security', 'E_Cop_Revolver', 'E_Cop_Shotgun', 'E_Assassin', 'E_Knifelord', 'E_Mutant'].map(n => actor(n)),
   extraction: { at: [50, 0, 0], radius: 2, height: 4 } };
 await mission.start({ key: 'cpu-enemies', cellMeters: 0.3, mission: manifest });
-const actors = mission.actors;
+  const actors = mission.actors;
+  for (const actor of actors) assert.doesNotThrow(() => actor.debug, 'dormant actors have no frame world yet');
 const step = (a, dt = 1 / 60) => { a.regulator.ready = () => true; a.think(dt); return a.intent; };
 const fire = a => a.intent.primary || a.intent.primaryPressed;
 try {
@@ -143,13 +144,28 @@ try {
       n.dispose();
     }
   });
-  check('checked-in imported missions exercise all legacy archetypes without invented metadata', () => {
+  check('checked-in imported missions use real source resources rather than misleading legacy names', () => {
     const roles = new Set();
     for (const file of ['paradise', 'androgenAssault', 'apartmentAtrocity', 'pharmakokinetiks']) {
       const map = JSON.parse(fs.readFileSync(new URL(`../public/local-maps/${file}.json`, import.meta.url)));
       for (const s of map.mission.guards) roles.add(crueltyProfile(s).role);
     }
-    for (const role of ['grunt', 'elite', 'security', 'copRevolver', 'copShotgun', 'assassin', 'mutant']) assert.ok(roles.has(role), role);
+    for (const role of ['grunt', 'elite', 'security', 'copRevolver', 'copShotgun', 'assassin', 'knifelord']) assert.ok(roles.has(role), role);
+    const paradise = JSON.parse(fs.readFileSync(new URL('../public/local-maps/paradise.json', import.meta.url)));
+    for (const s of paradise.mission.targets) {
+      const p = crueltyProfile(s, { target: true });
+      assert.ok(p.civilian && p.stupid && p.weapons.length === 0, 'authored Nerd defaults survive PackedScene references');
+      assert.equal(p.health, 15);
+    }
+    const androgen = JSON.parse(fs.readFileSync(new URL('../public/local-maps/androgenAssault.json', import.meta.url)));
+    const chief = crueltyProfile(androgen.mission.targets.find(s => /Chief/.test(s.sourceResource)), { target: true });
+    const narc = crueltyProfile(androgen.mission.targets.find(s => /Cop_Narc/.test(s.sourceResource)), { target: true });
+    assert.ok(!chief.civilian && !narc.civilian, 'armed source objectives are not silently made passive');
+    assert.equal(chief.health, 300);
+    assert.equal(narc.health, 50);
+    const apartment = JSON.parse(fs.readFileSync(new URL('../public/local-maps/apartmentAtrocity.json', import.meta.url)));
+    const cult = crueltyProfile(apartment.mission.targets[0], { target: true });
+    assert.ok(cult.civilian && cult.stupid && cult.weapons.length === 0);
   });
 } finally { mission.end(); }
 assert.equal(scene.children.length, 0);

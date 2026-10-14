@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { part } from './figure.js';
 
 // Cruelty Squad's deliberately repellent corporate/body-horror palette, not
@@ -72,6 +73,23 @@ export function buildCruelty({ outfit = 'uniform', variant = 0 } = {}) {
   const knL = joint(hipL, 'shin', 0, -1.15, 1.05, 0.38, accent);
   const knR = joint(hipR, 'shin', 0, -1.15, 1.05, 0.38, accent);
   for (const kn of [knL, knR]) box(kn, 'square-shoe', [0.48, 0.28, 0.7], [0, -1.06, -0.12], BLACK);
+  // A face's teeth/eyes move together: batch by joint/color, not a draw per tooth.
+  for (const parent of [body, torso, neck, shL, shR, elL, elR, hipL, hipR, knL, knR]) {
+    const batches = new Map();
+    for (const mesh of parent.children) {
+      if (!mesh.isMesh || ['ballistic-vest', 'respirator'].includes(mesh.name)) continue;
+      const key = mesh.userData.albedo.join(',');
+      if (!batches.has(key)) batches.set(key, []);
+      batches.get(key).push(mesh);
+    }
+    for (const meshes of batches.values()) {
+      if (meshes.length < 2) continue;
+      const merged = mergeGeometries(meshes.map(m => m.geometry));
+      for (const mesh of meshes) mesh.geometry.dispose();
+      meshes[0].geometry = merged;
+      for (const mesh of meshes.slice(1)) parent.remove(mesh);
+    }
+  }
   return { body, torso, neck, shL, shR, elL, elR, hipL, hipR, knL, knR,
     hipY: 2.35, lieLift: 0.45, thigh: 1.15, shin: 1.05, upperArm: 0.9, forearm: 0.9, handY: -0.9 };
 }

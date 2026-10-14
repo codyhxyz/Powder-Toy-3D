@@ -6,6 +6,20 @@ const sub = (a, b) => a.map((v, i) => v - b[i]);
 const dot = (a, b) => a.reduce((n, v, i) => n + v * b[i], 0);
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 export function triangleIntersectsCell(triangle, cell) {
+  // Godot uses clockwise faces: this cross points into the solid. A flat
+  // face on a grid boundary belongs to that side only, not BOTH adjacent
+  // cells (which otherwise lowers ceilings into authored doorways).
+  const normal = cross(sub(triangle[1], triangle[0]), sub(triangle[2], triangle[0]));
+  for (let k = 0; k < 3; k++) {
+    const boundary = Math.round(triangle[0][k]);
+    if (Math.abs(normal[k]) > 1e-10 && triangle.every(p => Math.abs(p[k] - boundary) < 1e-7)) {
+      if (cell[k] !== boundary - (normal[k] < 0 ? 1 : 0)) return false;
+    } else {
+      // A face's edge merely touching a neighboring cell has no area in it.
+      if (Math.min(...triangle.map(p => p[k])) >= cell[k] + 1 - 1e-8 ||
+          Math.max(...triangle.map(p => p[k])) <= cell[k] + 1e-8) return false;
+    }
+  }
   const t = triangle.map((p) => p.map((v, k) => v - cell[k] - 0.5));
   const edges = [sub(t[1], t[0]), sub(t[2], t[1]), sub(t[0], t[2])];
   const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -18,7 +32,8 @@ export function triangleIntersectsCell(triangle, cell) {
   return !edges.some((edge) => axes.some((axis) => separating(cross(edge, axis))));
 }
 export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16, alignment = 8, maxCandidates = 100000000, ownerForMesh = null } = {}) {
-  if (!(cellMeters > 0) || !Number.isFinite(cellMeters) || !Number.isInteger(padding) || padding < 1 || !Number.isInteger(alignment) || alignment < 8 || alignment % 8) throw new Error('Invalid voxel scale/bounds');
+  const align = Array.isArray(alignment) ? alignment : [alignment, alignment, alignment];
+  if (!(cellMeters > 0) || !Number.isFinite(cellMeters) || !Number.isInteger(padding) || padding < 1 || align.length !== 3 || !align.every(n => Number.isInteger(n) && n >= 8 && n % 8 === 0)) throw new Error('Invalid voxel scale/bounds');
   const ownerNames = [...new Set(meshes.map(m => ownerForMesh?.(m)).filter(Boolean))];
   const surfaces = meshes.flatMap((m) => m.surfaces.map(s => ({ ...s, owner: ownerNames.indexOf(ownerForMesh?.(m)) + 1 })));
   if (!surfaces.length) throw new Error('No source surfaces');
@@ -34,7 +49,7 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
     }
   }
   const origin = lo.map((v) => Math.floor(v) - padding);
-  const size = hi.map((v, k) => Math.ceil((Math.ceil(v) - origin[k] + padding + 1) / alignment) * alignment);
+  const size = hi.map((v, k) => Math.ceil((Math.ceil(v) - origin[k] + padding + 1) / align[k]) * align[k]);
   const brickDims = size.map((n) => n / IMPORT_BRICK);
   const tableSize = brickDims.reduce((a, b) => a * b, 1);
   if (!Number.isSafeInteger(tableSize) || tableSize > 16000000) throw new Error('Source bounds exceed import budget');

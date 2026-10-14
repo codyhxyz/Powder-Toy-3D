@@ -2,7 +2,8 @@ import { reference, numbers, transformPoint, sourceActorMetadata } from './godot
 import { sourceToCells } from './voxelize.js';
 import { convexProjectionAxes } from './convexVolume.js';
 
-const DOORS = new Set(['Door.gd', 'Elevator_Door.gd', 'Divine_Door.gd', 'Profane_Door.gd', 'Terror_Door.gd']);
+const ORDINARY = new Set(['Door.gd', 'Elevator_Door.gd', 'down_door.gd']);
+const DOORS = new Set([...ORDINARY, 'Divine_Door.gd', 'Profane_Door.gd', 'Terror_Door.gd']);
 export const scriptResource = (node, scene) => node.props.script ? scene.external.get(reference(node.props.script).id)?.path : null;
 export function doorAncestor(mesh, scene) {
   let node = scene.nodes.get(mesh.nodePath);
@@ -15,7 +16,7 @@ export function doorAncestor(mesh, scene) {
 export function crueltyInteractions(scene, meshes, map, ownedCells) {
   const inventory = [...scene.nodes.values()].filter(n => n.props.script || n.instance).map(n => {
     const metadata = sourceActorMetadata(n, scene), script = scriptResource(n, scene)?.split('/').pop();
-    const treatment = ['Door.gd', 'Elevator_Door.gd'].includes(script) ? 'exclusive-cell-voxel-retraction'
+    const treatment = ORDINARY.has(script) ? 'exclusive-cell-voxel-retraction'
       : DOORS.has(script) ? 'closed-unsupported-progression'
       : script === 'Ladder.gd' ? 'authored-volume-exported'
       : script === 'Exit.gd' ? 'normal-mission-extraction'
@@ -33,11 +34,11 @@ export function crueltyInteractions(scene, meshes, map, ownedCells) {
       if (!points.length) continue;
       const min = [0, 1, 2].map(k => Math.floor(Math.min(...points.map(p => p[k])) - 1e-8));
       const max = [0, 1, 2].map(k => Math.floor(Math.max(...points.map(p => p[k])) + 1e-8) + 1);
-      const supported = script === 'Door.gd' || script === 'Elevator_Door.gd';
+      const supported = ORDINARY.has(script), timed = supported && script !== 'Door.gd';
       doors.push({ sourcePath: node.path, sourceResource, bounds: { min, max }, cells: ownedCells[node.path] ?? [],
-        kind: script === 'Elevator_Door.gd' ? 'sliding' : supported ? 'swing' : 'gate', supported,
+        kind: script === 'down_door.gd' ? 'vertical' : script === 'Elevator_Door.gd' ? 'sliding' : supported ? 'swing' : 'gate', supported,
         requirement: supported ? null : script === 'Divine_Door.gd' ? 'Requires intact soul (unsupported)' : script === 'Profane_Door.gd' ? 'Requires husk mode (unsupported)' : 'Requires hope discarded (unsupported)',
-        sourceProperties: sourceActorMetadata(node, scene).sourceProperties, autoCloseSeconds: script === 'Elevator_Door.gd' ? 5 : null,
+        sourceProperties: sourceActorMetadata(node, scene).sourceProperties, autoCloseSeconds: timed ? 5 : null,
         ownershipWarning: ownedCells[node.path]?.length ? null : 'No exclusive voxels: overlapping static geometry is not removed',
         adaptation: supported ? 'Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated' : 'Closed; original progression is not implemented' });
     }

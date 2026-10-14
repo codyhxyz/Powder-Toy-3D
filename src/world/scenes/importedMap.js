@@ -29,7 +29,7 @@ export function validateImportedMapManifest(map) {
       const { min, max } = door.bounds ?? {};
       if (typeof door.sourcePath !== 'string' || paths.has(door.sourcePath) || !Array.isArray(min) || !Array.isArray(max) || min.length !== 3 || max.length !== 3 || !min.every((n, k) => Number.isSafeInteger(n) && Number.isSafeInteger(max[k]) && n >= 0 && max[k] > n && max[k] <= map.size[k]) || !Array.isArray(door.cells) || door.cells.length % 2) throw new Error('Invalid imported door bounds/ownership');
       paths.add(door.sourcePath);
-      if (door.supported && !['res://Scripts/Door.gd', 'res://Scripts/Elevator_Door.gd'].includes(door.sourceResource)) throw new Error('Unsupported gate cannot be an ordinary door');
+      if (door.supported && !['res://Scripts/Door.gd', 'res://Scripts/Elevator_Door.gd', 'res://Scripts/down_door.gd'].includes(door.sourceResource)) throw new Error('Unsupported gate cannot be an ordinary door');
       for (let i = 0; i < door.cells.length; i += 2) {
         const index = door.cells[i], id = door.cells[i + 1];
         if (!Number.isSafeInteger(index) || index < 0 || index >= volume || owned.has(index) || !Number.isInteger(id) || !id || !ELEMENTS[id] || !decodeImportedIndex(map, index).every((n, k) => n >= min[k] && n < max[k])) throw new Error('Invalid imported door cell');
@@ -70,6 +70,7 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
   const listeners = new Set();
   const changed = (at, data) => { for (const fn of listeners) fn(at, data); };
   let interactions = words ? createImportedInteractionState(map, words, changed) : null;
+  let preparing = null;
   return {
     get interactionState() { return interactions; },
     subscribeData(fn) { listeners.add(fn); return () => listeners.delete(fn); },
@@ -79,10 +80,12 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
     // The generator's prepare (world/gpu.js) awaits this before data().
     async prepare() {
       if (words) return;
-      const fetched = await fetchImportedWords(dataURL ?? map.dataFile);
-      validateImportedMap(map, fetched);
-      words = fetched;
-      interactions = createImportedInteractionState(map, words, changed);
+      if (!preparing) preparing = fetchImportedWords(dataURL ?? map.dataFile).then(fetched => {
+        validateImportedMap(map, fetched);
+        words = fetched;
+        interactions = createImportedInteractionState(map, words, changed);
+      }).catch(error => { preparing = null; throw error; });
+      return preparing;
     },
     params: ({ seed = 0 } = {}) => ({ size: [...map.size], seed, sea: 0, floor: 0 }),
     uniformStruct: IMPORT_U,

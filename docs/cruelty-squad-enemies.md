@@ -37,6 +37,16 @@ Inspected locally:
 These scripts are a decompiled modding reference, not verified vanilla scene
 exports. No original enemy meshes, textures or scripts are copied into the game.
 
+Additional scene evidence: `V0IDDR0ID/BrutalSquad`, commit
+`2c0bd3b510687ebfe0df2c81c012e116cd932258`,
+`BrutalSquad/Entities/Enemies/`. These are mod scenes, not proof of every vanilla
+default. `Obj_Chief.tscn` specifies 300 HP, 1 m/s movement, 2 m engagement and an
+acid-spray weapon. `E_Cop_Narc.tscn` specifies 50 HP, 7 m/s movement, 5 m
+engagement, a shotgun and poison-on-death. `Obj_Cult_Leader.tscn` explicitly sets
+15 HP, civilian and stupid; it must not become hostile merely because its name
+sounds threatening. These classifications replace the earlier unknown-target
+fallbacks. Supplied Nerd scenes likewise default to stationary civilians.
+
 ## Profile policy
 
 `sourceResource` is classified before legacy `sourcePath`/name. Authored primitive
@@ -64,11 +74,15 @@ Actual supplied scene properties win where available.
 | Assassin | 60 | 0.8 | SNIPER | 1.8 / 0 | 0.025 |
 | Knifelord | 60 | 0.7 | AXE stand-in | existing melee windup | — |
 | Mutant | 80 | 0.9 | AXE stand-in | existing melee windup | — |
+| Chief | 300 | 1.1 | slow GUN stand-in for acid spray | 1.0 / 0 | 0.10 |
+| Cop Narc | 50 | 1.1 | short SMG stand-in for shotgun | 1.8 / 0.16 | 0.12 |
+| Cult Leader | 15 | — | none | — | — |
 | Civilian / executive | 15 | — | none | — | — |
 | Unclassified hostile objective | 100 | 1.1 | GUN | 0.7 / 0 | 0.08 |
 
 No NPC shotgun or knife tool is present in the catalog; stand-ins retain actual
 existing held models and ballistics, not fictional original weapon parity.
+Chief's acid spray and Narc's poison-on-death are not reproduced.
 Cadence is intentionally bounded for destination damage/tool behavior, not the
 source's timer/ammo economy. Original per-scene equipment is absent unless supplied
 as explicit `current_weapon` metadata. Aim error is held per salvo and added to the
@@ -86,6 +100,8 @@ then LOS in any direction. No through-wall touch/radar acquisition. A hit alerts
 the guard to the attacker; losing sight clears aim and hunts **last-known**, not
 live unseen position, followed by search using the existing Wander goal.
 Memory expires after 12s (an adaptation; original timeout uses frame counters).
+The reference also paths toward the live player position after losing sight;
+our last-known search deliberately avoids tracking an unseen live position.
 Reacquisition waits again. No automatic squad-alert broadcast or source patrol
 routes are invented. Ordinary civilians wait, flee after being hurt, never attack;
 `stupid` civilians such as the Nerds remain stationary. Flee steering uses existing
@@ -101,6 +117,7 @@ face variation distinguish roles without external assets. Unlike the wizard,
 the neutral silhouette fits the actual 1.6×5.5×1.6-cell hitbox. Existing animation,
 right-hand articulation and weapon attachments remain; animated limbs/weapons can
 extend beyond the ordinary body box exactly as other figure rigs do.
+Static parts sharing a joint and color are batched to limit draw calls.
 
 ## CPU validation and remaining validation
 
@@ -112,6 +129,5 @@ no-flight, authored overrides, neutral mesh bounds and non-mission isolation.
 `tools/enemy-aim-cpu-check.mjs` separately exercises existing real firearm behavior.
 `tools/mission-node-check.mjs` covers mission lifecycle/extraction/one-shot actors.
 
-No browser/GPU run performed. Parent must validate streamed authored spawns,
-visual readability, animation/weapon scale and balance in the integrated manifests
-and perform the live-site deployment separately.
+CPU checks do not prove exact original difficulty: dormant streamed-out actors,
+weapon stand-ins, normalized damage and missing boss mechanics remain adaptations.

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
+import { Vector3 } from 'three';
 import { readFile } from 'node:fs/promises';
+import { gzipSync } from 'node:zlib';
 import { createImportedMapScene } from '../src/world/scenes/importedMap.js';
 import { voxelizeMeshes, importedCell } from '../src/world/import/voxelize.js';
 import { parseGodot3Scene, sourceActorMetadata, authoredPrimitiveProperties } from '../src/world/import/godot3.js';
@@ -10,13 +13,22 @@ import { embeddedMeshes } from '../src/world/import/godot3.js';
 import { createImportedInteractions, importedDoorOccupied, IMPORTED_DOOR_EDIT, WGSL_CHECK } from '../src/pov/importedInteractions.js';
 import { decodeImportedIndex } from '../src/world/import/importedInteractionState.js';
 import { WorldWindow } from '../src/world/window.js';
+import { BrickStore } from '../src/world/store.js';
+import { createSaves } from '../src/saves/game.js';
+import { decodeSave } from '../src/saves/format.js';
 import { E } from '../src/elements.js';
 import { gridLayout } from '../src/sim.js';
 import { WgslReflect } from '../node_modules/wgsl_reflect/wgsl_reflect.module.js';
 
+registerHooks({ load(url, context, next) {
+  if (url.endsWith('/src/pov/index.js')) return { format: 'module', source: 'export function createPov() { throw new Error("UI shell unused in wire timer check"); }', shortCircuit: true };
+  return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : next(url, context);
+} });
+const { default: povWire } = await import('../src/wire/pov.js');
+
 function fixture() {
   const surface = x => ({ materialPath: 'door', positions: new Float64Array([x, 2, 6, 6, 2, 6, 6, 7, 6]), indices: new Uint32Array([0, 1, 2]) });
-  const voxel = voxelizeMeshes([{ nodePath: 'door', surfaces: [surface(3)] }, { nodePath: 'wall', surfaces: [surface(5)] }], { door: E.WOOD }, { cellMeters: 1, padding: 2, ownerForMesh: m => m.nodePath === 'door' ? 'door' : null });
+  const voxel = voxelizeMeshes([{ nodePath: 'door', surfaces: [surface(3)] }, { nodePath: 'wall', surfaces: [surface(5)] }], { door: E.WOOD }, { cellMeters: 1, padding: 2, alignment: 16, ownerForMesh: m => m.nodePath === 'door' ? 'door' : null });
   const { words, ownedCells } = voxel;
   // Only test fixture scaling differs from source geometry; runtime scale is canonical.
   const map = { ...voxel, cellMeters: 0.3, id: 'test', dataFile: 'test.binpack', dataCompression: 'gzip', plainHeight: 0, mission: { spawn: [1, 1, 1] } };
@@ -58,6 +70,14 @@ function fixture() {
   return { map, scene, door, sim, world, runtime, gpuCells, bodies, uploads, provider };
 }
 const keyOf = (f, i) => decodeImportedIndex(f.map, f.door.cells[i * 2]).join(',');
+
+test('concurrent generator preparation shares one canonical interaction state', async () => {
+  const f = fixture(), packed = gzipSync(Buffer.from(f.scene.data().words.buffer));
+  const scene = createImportedMapScene(f.map, null, { dataURL: `data:application/octet-stream;base64,${packed.toString('base64')}` });
+  const states = await Promise.all([1, 2, 3].map(async () => { await scene.prepare(); return scene.interactionState; }));
+  assert.ok(states[0]);
+  assert.ok(states.every(state => state === states[0]), 'near and far generators must not diverge');
+});
 
 test('E provider opens/closes exclusively owned cells, CPU/GPU generator agree; reset precedes retry fill', async () => {
   const f = fixture(), original = f.scene.data().words.slice();
@@ -134,6 +154,59 @@ test('sliding door timer closes after 5 seconds, deferring while occupied', asyn
   assert.equal(f.scene.interactionState.states.get('door').open, false);
 });
 
+test('timed doors keep world updates alive outside POV, but not while paused', async () => {
+  const f = fixture(); f.door.autoCloseSeconds = 5; f.door.kind = 'sliding';
+  const app = { settings: { paused: false }, pov: { active: false, npcs: [], vehicles: { list: [] }, importedInteractions: f.runtime } };
+  assert.equal(povWire.busy(app), false);
+  await f.runtime.use(f.door);
+  assert.equal(povWire.busy(app), true);
+  app.settings.paused = true;
+  assert.equal(povWire.busy(app), false);
+  app.settings.paused = false;
+  f.runtime.update(5.1); await f.world.pending;
+  assert.equal(povWire.busy(app), false);
+});
+
+test('real save codec restores open doors, destruction masks, timers and canonical words before fill', async () => {
+  const f = fixture();
+  f.door.autoCloseSeconds = 5;
+  f.gpuCells.delete(keyOf(f, 0));
+  await f.runtime.use(f.door);
+  f.runtime.update(2);
+  const expected = f.scene.interactionState.snapshot();
+  Object.assign(f.sim.g, gridLayout(f.sim.g.nx, f.sim.g.ny, f.sim.g.nz));
+  f.sim.origin = new Vector3();
+  const blank = () => [new Float32Array(f.sim.g.width * f.sim.g.height * 4), new Float32Array(f.sim.g.width * f.sim.g.height * 4)];
+  Object.assign(f.sim, { rays: { active: false }, prepare: async () => {}, readState: async () => blank(),
+    blankState: blank, load() {}, dropHistory() {} });
+  Object.assign(f.world, { loaded: true, epoch: 0, size: f.map.size,
+    store: new BrickStore(f.map.size.map(n => n / 4)),
+    planted: new Uint8Array(f.map.size[0] * f.map.size[2] / 16),
+    loadSaved: WorldWindow.prototype.loadSaved });
+  const saves = createSaves({ settings: {}, getSim: () => f.sim, getWin: () => f.world,
+    header: () => ({ map: 'test', world: { scene: 'test', seed: 0 } }), prepare: async () => true, finish() {}, onSettings() {} });
+  const bytes = await saves.capture('open door');
+  assert.deepEqual((await decodeSave(bytes)).sections.get('worldInteractions'), expected);
+  f.scene.reset(); assert.equal(f.scene.interactionState.states.size, 0);
+  await saves.apply(bytes);
+  assert.deepEqual(f.scene.interactionState.snapshot(), expected);
+  assert.equal(f.scene.cell(...keyOf(f, 1).split(',').map(Number)), 0);
+  const before = f.scene.data().words.slice();
+  assert.throws(() => f.scene.interactionState.restore({ version: 1, doors: [{ ...expected.doors[0], alive: [7] }] }), /Invalid saved door/);
+  assert.deepEqual(f.scene.data().words, before, 'invalid save cannot mutate terrain');
+  f.scene.interactionState.restore(undefined);
+  assert.equal(f.scene.interactionState.states.size, 0, 'legacy saves clear current attempt state');
+  // A use/auto-close can begin while capture waits for shader preparation.
+  f.sim.prepare = async () => { void f.runtime.use(f.door); };
+  f.sim.readState = async () => {
+    assert.equal(f.world.pending, null, 'copies must wait for the new door transaction');
+    assert.equal(f.scene.interactionState.states.get('door').open, true);
+    return blank();
+  };
+  const duringPreparation = await decodeSave(await saves.capture('door opened during preparation'));
+  assert.equal(duringPreparation.sections.get('worldInteractions').doors[0].open, true);
+});
+
 test('door WGSL parses on CPU with main entry and bounded storage bindings', () => {
   const module = new WgslReflect(WGSL_CHECK[0].code(gridLayout(32, 32, 32)));
   assert.deepEqual(module.entry.compute.map(e => e.name), ['main']);
@@ -151,10 +224,10 @@ test('actor metadata retains only authored finite primitive properties and world
 });
 
 const sourceDir = process.env.CRUELTY_SOURCE_DIR;
-if (sourceDir) for (const [level, expected] of [[1, [22, 3, 3, 1]], [2, [45, 7, 1, 4]], [3, [22, 1, 0, 1]], [4, [67, 1, 1, 4]], [6, [39, 1, 0, 2]]]) test(`source Level${level}: complete scripted inventory and authored door/ladder counts`, async () => {
+if (sourceDir) for (const [level, expected] of [[1, [22, 3, 0, 3, 1]], [2, [45, 7, 14, 1, 4]], [3, [22, 1, 0, 0, 1]], [4, [67, 1, 0, 1, 4]], [6, [39, 1, 0, 0, 2]]]) test(`source Level${level}: complete scripted inventory and authored door/ladder counts`, async () => {
   const scene = parseGodot3Scene(await readFile(`${sourceDir}/Level${level}.tscn`, 'utf8'));
   const inventory = crueltyInteractions(scene, embeddedMeshes(scene, { excludeNode: crueltyExcludeNode }), { cellMeters: 0.3, origin: [0, 0, 0] }, {});
-  assert.deepEqual([inventory.doors.filter(d => d.kind === 'swing').length, inventory.doors.filter(d => d.kind === 'sliding').length, inventory.doors.filter(d => !d.supported).length, inventory.ladders.length], expected);
+  assert.deepEqual([inventory.doors.filter(d => d.kind === 'swing').length, inventory.doors.filter(d => d.kind === 'sliding').length, inventory.doors.filter(d => d.kind === 'vertical').length, inventory.doors.filter(d => !d.supported).length, inventory.ladders.length], expected);
   assert.equal(inventory.inventory.length, [...scene.nodes.values()].filter(n => n.props.script || n.instance).length);
-  console.log(`Level${level}: swing/sliding/gates/ladders=${expected.join('/')} scripted+packed=${inventory.inventory.length}`);
+  console.log(`Level${level}: swing/sliding/vertical/gates/ladders=${expected.join('/')} scripted+packed=${inventory.inventory.length}`);
 });
