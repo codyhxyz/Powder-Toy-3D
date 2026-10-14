@@ -7,12 +7,14 @@ import { join } from 'node:path';
 import { CRUELTY_PROFILES } from '../src/world/import/crueltyProfiles.js';
 import { actorBodyClear } from '../src/world/import/crueltyMission.js';
 import { createImportedMapScene } from '../src/world/scenes/importedMap.js';
+import { validateAppearance } from '../src/world/import/appearance.js';
+import { createHash } from 'node:crypto';
 import { ELEMENTS, K } from '../src/elements.js';
 
 // Cloudflare Pages rejects any single asset over 25 MiB (docs/cruelty-source-comparison.md).
 const FILE_LIMIT = 25 * 1024 * 1024;
 const profiles = CRUELTY_PROFILES.filter((p) => !p.blocked);
-const expected = profiles.flatMap((p) => [`${p.id}.json`, `${p.id}.binpack`]).sort();
+const expected = profiles.flatMap((p) => [`${p.id}.json`, `${p.id}.binpack`, `${p.id}.appearance.binpack`]).sort();
 let packed = 0;
 
 for (const directory of ['public/local-maps', 'dist/local-maps']) {
@@ -20,11 +22,14 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
   for (const name of expected) {
     const path = join(directory, name), info = await stat(path);
     assert.ok(info.size < FILE_LIMIT, `${path} is under the host's per-file limit`);
+    if (directory === 'public/local-maps' && name.endsWith('.binpack')) packed += info.size;
     if (!name.endsWith('.json')) continue;
     const map = JSON.parse(await readFile(path, 'utf8'));
     assert.equal(map.id, name.slice(0, -5));
     const buffer = gunzipSync(await readFile(join(directory, `${map.id}.binpack`)));
-    if (directory === 'public/local-maps') packed += info.size;
+    const appearance = gunzipSync(await readFile(join(directory, map.appearance.dataFile)));
+    validateAppearance(map, new Uint32Array(appearance.buffer, appearance.byteOffset, appearance.byteLength / 4));
+    assert.equal(createHash('sha256').update(appearance).digest('hex'), map.appearance.sha256);
     const words = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
     // Validates the manifest, every brick pointer and every packed element id.
     const scene = createImportedMapScene(map, words);
@@ -40,4 +45,4 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
   }
   assert.ok(!expected.some((n) => n.endsWith('.bin')), `${directory} ships no uncompressed geometry`);
 }
-console.log(`PASS the build ships ${profiles.length} converted source levels, packed (${(packed / 1e6).toFixed(2)} MB of packed geometry, under the 25 MiB per-file limit)`);
+console.log(`PASS the build ships ${profiles.length} converted source levels with original appearance (${(packed / 1e6).toFixed(2)} MB packed, under the 25 MiB per-file limit)`);

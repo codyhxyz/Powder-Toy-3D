@@ -30,10 +30,9 @@ current storage and streaming budget. It is not replaced by a smaller map.
 
 ## Provenance and rights
 
-The currently published geometry was converted from the mod source below,
-not reconstructed by hand. The appearance-capable converter additionally
-accepts the authorized complete recovered original game via `--source-root`;
-it does not silently mix original resources with old mod scenes:
+The published geometry and appearance now come from the authorized recovered
+original game through `--source-root`. Earlier geometry-only imports used the
+mod source below. The pipeline does not mix those two source sets:
 
 - [CrueltySquadVR-Modloader](https://github.com/teddybear082/CrueltySquadVR-Modloader)
   commit `1ab57e830d5e4a8f5ab6eb800a3e9108faafbcf8`,
@@ -111,8 +110,7 @@ node tools/import-cruelty-map.mjs --map all \
 # Equivalent: --gdre "$GDRE_BIN". Output remains public/local-maps/<id>.*.
 ```
 
-This command regenerates assets; it is intentionally **not run as part of the
-conversion-only implementation**. Integration must regenerate them separately.
+This command regenerates all four published maps and their appearance assets.
 Without `--source-root`, the existing `--source`/`--source-dir` fixture and
 geometry-only behaviour is unchanged. The shared parser now also understands
 standalone `[gd_resource]` roots and multiline node-group headers.
@@ -195,8 +193,7 @@ serialization is little-endian, and all spare words are zero.
 Shader code is matched by audited **code SHA-256**, not a per-map filename
 assignment. Modes are exported in `APPEARANCE_MODES`; unknown code or material
 forms/properties fail with identity/hash and require review, never fake art.
-The conversion records the mode and source parameters; a renderer port is
-separate work:
+The conversion records each mode and its source parameters:
 
 | Mode | Source behaviour to port |
 |---|---|
@@ -213,8 +210,9 @@ separate work:
 Source scripts that change illumination, fog, sky, or geometry at runtime are
 recorded, not emulated here. External PackedScene prop/actor geometry is not
 expanded. Procedural skies, non-PNG texture resources, unknown shaders and
-unsupported material properties fail explicitly. This implementation makes no
-claim that the runtime renderer already consumes these appearance assets.
+unsupported material properties fail explicitly. The runtime consumes modes
+0–5, which cover the four published levels. Modes 6–8 retain their source
+parameters but do not reproduce original vertex snapping or actor wobble.
 
 **Known original data loss:** recovered Level4 ArrayMesh46 `surfaces/29`
 (`Elevator1.png`) contains raw half `0x7c00` (+Infinity) at UV byte20, including
@@ -226,7 +224,7 @@ fallback. `appearance.losses` records node/surface/material, count, reason
 No UV is clamped, replaced or fabricated. The other three maps have no such
 omissions.
 
-CPU-only in-memory recovered-source measurements (not published assets):
+Published recovered-source appearance:
 
 | Map | Appearance triangles | Materials | Lights | Max triangles/brick | Gzip ~MB |
 |---|---:|---:|---:|---:|---:|
@@ -252,6 +250,44 @@ They verify canonical names, appearance pointers/indices, original-source
 hash inventory, explicit Level4 omissions, and byte-for-byte equality of the
 appearance-enabled geometry and missions against a legacy physics-only
 conversion of the **same recovered scenes**.
+
+### Runtime appearance
+
+Only Cruelty Squad's material views enable original appearance. Data views,
+thumbnails of data views, and other gamemodes retain their existing treatment.
+Mode changes clear temporal history. Saved graphics settings remain unchanged.
+
+The near volume and far detail meshes use one shared source-triangle lookup.
+It projects the physical hit onto a nearby original triangle with a compatible
+normal and matching physical element. The triangle supplies the original UV.
+New cut faces without a matching original surface use the physical substrate.
+No original mesh overlay hides holes or replaces voxel destruction.
+
+The existing far-grid texture stores read-only appearance words in extra Y
+planes. This adds no sampled textures or storage buffers. Terrain kernels keep
+their original bounds. Runtime validation checks pointers, pixel ranges, hashes,
+and fixed work limits before upload: 1,024 triangles per brick and 16 lights.
+
+Sampling respects original repeat, filtering, sRGB, animation FPS, and native
+pixel dimensions. The renderer ports the original flesh, water, swamp-water,
+and scrolling UV expressions. Original materials supply ambient light, fog,
+panorama, roughness, metal, specular, and blend modes. Subtractive green glass
+removes green from the room instead of becoming an opaque green window.
+
+The post pass ports `PaletteLimiter.shader`: 16/255 colour steps, signed 0.002
+noise, and gamma 1. It bypasses cinematic exposure, bloom, sharpening, adaptation,
+night vision, and AgX without changing saved settings.
+
+This is not pixel-identical Godot emulation. Voxel geometry, transparent layer
+ordering, specular integration, fog transmission, SSR, and dynamic source
+scripts remain differences. The four source levels contain no shadow-enabled
+lights. A future payload with such lights fails explicitly until supported.
+
+```sh
+node --test tools/check-source-appearance.mjs tools/check-cruelty-post.mjs
+node tools/check-sampler-budget.mjs
+node tools/cruelty-appearance-browser-check.mjs
+```
 
 ## How the levels load
 

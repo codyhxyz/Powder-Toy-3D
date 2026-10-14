@@ -1,5 +1,6 @@
 import { liquidGLSL } from './liquid.js';
 import { cozySurfaceWGSL } from './cozy.js';
+import { sourceShadeWGSL } from './sourceAppearance.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
 import { grainsGLSL, GRAINS_ANY } from './grains.js';
@@ -65,6 +66,9 @@ struct Surf {
   tang: vec3f,
   trans: f32,       // backlit translucency (leaves)
   emit: vec3f,      // emitted radiance (incandescence)
+  sourceNormal: vec3f,
+  sourceKind: u32,  // 0 ordinary, 1 imported lit material, 2 imported unshaded
+  sourceFlags: u32,
 }
 
 // ---- view: set once per pixel by the tracer, in uniform control flow ----
@@ -304,6 +308,7 @@ struct Mat {
   sssCol: vec3f,
   rough: f32, metal: f32, f0: f32, sss: f32, glint: f32, glintDens: f32, cav: f32, aniso: f32, trans: f32,
   slopeVar: f32,  // the bump's slope variance a pixel covers but can't show, per axis (specular AA: aaRough)
+  sourceNormal: vec3f, sourceKind: u32, sourceFlags: u32,
 }
 
 fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
@@ -314,6 +319,9 @@ fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
   a.sss = mix(a.sss, b.sss, k); a.glint = mix(a.glint, b.glint, k); a.glintDens = mix(a.glintDens, b.glintDens, k);
   a.cav = mix(a.cav, b.cav, k); a.aniso = mix(a.aniso, b.aniso, k); a.trans = mix(a.trans, b.trans, k);
   a.slopeVar = mix(a.slopeVar, b.slopeVar, k);
+  a.sourceNormal = mix(a.sourceNormal, b.sourceNormal, k);
+  a.sourceKind = select(a.sourceKind, b.sourceKind, k >= 0.5);
+  a.sourceFlags = select(a.sourceFlags, b.sourceFlags, k >= 0.5);
   return a;
 }
 
@@ -799,6 +807,19 @@ fn matFlat(id: i32, T: f32, ctype: f32) -> Mat {
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
 ${cozySurfaceWGSL}
 fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
+  if (sourceEnabled()) {
+    let original = sourceMaterial(id, p, n);
+    if (original.kind != 0u) {
+      var authored = matBase(id);
+      authored.alb = original.albedo; authored.rough = original.roughness;
+      authored.metal = original.metallic; authored.f0 = original.f0;
+      authored.glint = 0.0; authored.sss = 0.0;
+      authored.emit = original.emission + cellEmission(id, T, ctype) + sparkEmit(id, ctype);
+      authored.sourceNormal = original.normal; authored.sourceKind = original.kind;
+      authored.sourceFlags = original.flags;
+      return authored;
+    }
+  }
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (FU.matDetail < 0.5) { return matFlat(id, T, ctype); }   // (no texture: the cells' own glow)
   if (FU.materialStyle > 0.5 && cozySupported(id)) { return cozyMat(id, p, n, T, ctype, fp); }
@@ -1406,6 +1427,8 @@ fn bumpNormal(ng: vec3f, g: vec3f) -> vec3f {
   return normalize(ng - gt);
 }
 fn applyMat(s: ptr<function, Surf>, m: Mat) {
+  (*s).sourceNormal = m.sourceNormal; (*s).sourceKind = m.sourceKind;
+  (*s).sourceFlags = m.sourceFlags;
   (*s).albedo = max(m.alb, vec3f(0.0)); (*s).rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0); (*s).metal = m.metal; (*s).f0 = m.f0;
   (*s).sss = m.sss; (*s).sssCol = m.sssCol; (*s).glint = m.glint; (*s).glintDens = m.glintDens;
   (*s).cav = clamp(m.cav, 0.0, 1.0); (*s).aniso = m.aniso; (*s).tang = m.tang; (*s).trans = m.trans; (*s).emit = m.emit;
@@ -1895,9 +1918,14 @@ fn digMark(s: ptr<function, Surf>) {
   (*s).albedo *= 1.0 - dark;
 }
 
+${sourceShadeWGSL}
 fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
   digMark(&s);
+  if (s.sourceKind != 0u) {
+    return sourceShade(worldPos(s.p), normalize(s.sourceNormal), rd, s.albedo, s.rough, s.metal, s.f0, s.sourceKind, s.sourceFlags) + s.emit
+      + s.albedo * (sampleLight(s.p) * FU.lightGain + wandLight(s.p));
+  }
   let v = -rd;
   let ng = s.ng;
   // AO, unless the traced near field replaces it below (FU.nearGI: it brings its own occlusion)

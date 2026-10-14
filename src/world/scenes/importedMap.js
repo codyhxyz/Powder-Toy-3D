@@ -2,6 +2,7 @@ import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 import { importedCell, sourceToCells } from '../import/voxelize.js';
 import { CELL_M } from '../../scale.js';
 import { ELEMENTS, K } from '../../elements.js';
+import { validateAppearanceManifest, validateAppearance } from '../import/appearance.js';
 
 // A converted source level (tools/import-cruelty-map.mjs), served from
 // public/local-maps as a small manifest plus gzip-packed sparse bricks. The
@@ -11,6 +12,7 @@ const IMPORT_U = sceneStruct({ uImportSize: 'vec3i', uImportBricks: 'vec3u' });
 
 /** The manifest alone: what can be checked before its geometry is fetched. */
 export function validateImportedMapManifest(map) {
+  if (map.appearance) validateAppearanceManifest(map.appearance);
   if (map.version !== 1 || map.encoding !== 'sparse-brick-u8-v1' || map.cellMeters !== CELL_M) throw new Error('Unsupported imported map version/scale');
   // Published geometry must be packed: a raw 29 MiB map exceeds the host's per-file limit.
   // (Not `.gz`: a host that recognises that name serves it as `Content-Encoding:
@@ -51,15 +53,32 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
   if (words) validateImportedMap(map, words);
   const loaded = () => { if (!words) throw new Error(`${map.id}: its geometry is not loaded yet`); return words; };
   const cell = (x, y, z) => importedCell(map, loaded(), x, y, z);
+  let appearanceWords = null, preparing = null;
   return {
     key, label, size: [...map.size], shrine: false, mission: map.mission,
     importManifest: map,
+    get appearanceWords() { return appearanceWords; },
     // The generator's prepare (world/gpu.js) awaits this before data().
     async prepare() {
-      if (words) return;
-      const fetched = await fetchImportedWords(dataURL ?? map.dataFile);
-      validateImportedMap(map, fetched);
-      words = fetched;
+      if (words && (!map.appearance || appearanceWords)) return;
+      if (!preparing) preparing = (async () => {
+        const [geometry, appearance] = await Promise.all([
+          words ?? fetchImportedWords(dataURL ?? map.dataFile),
+          map.appearance ? fetchImportedWords(new URL(map.appearance.dataFile, new URL(dataURL ?? map.dataFile, globalThis.location?.href ?? 'http://localhost/')).href) : null,
+        ]);
+        validateImportedMap(map, geometry);
+        if (appearance) {
+          validateAppearance(map, appearance);
+          if (map.appearance.sha256) {
+            const digest = await crypto.subtle.digest('SHA-256', appearance);
+            const hash = Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, '0')).join('');
+            if (hash !== map.appearance.sha256) throw new Error('Imported appearance checksum mismatch');
+          }
+        }
+        words = geometry;
+        appearanceWords = appearance;
+      })().finally(() => { preparing = null; });
+      return preparing;
     },
     params: ({ seed = 0 } = {}) => ({ size: [...map.size], seed, sea: 0, floor: 0 }),
     uniformStruct: IMPORT_U,

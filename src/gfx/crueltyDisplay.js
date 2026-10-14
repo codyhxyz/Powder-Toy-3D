@@ -16,7 +16,7 @@ fn crueltyDisplay(rgb: vec3f, uv: vec2f, time: f32) -> vec3f {
 // Frame-local overrides only: never change the user's saved cinematic controls.
 // Original normal display uses linear tone mapping, not a cinematic exposure/look.
 export function crueltyFrameSettings(s) {
-  return s.cruelty ? { ...s, bloom: 0, sharpen: 0, adapt: false, exposure: 0, raw: false } : s;
+  return s.cruelty ? { ...s, bloom: 0, sharpen: 0, adapt: false, exposure: 0, raw: false, night: 0 } : s;
 }
 
 // CPU reference for the source's display-value math (not GPU sin precision).
