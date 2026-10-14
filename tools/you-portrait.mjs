@@ -33,7 +33,7 @@ try {
   await page.route('**/__portrait', (route) => route.fulfill({ contentType: 'text/html', body: '<html></html>' }));
   await page.goto(`http://localhost:${port}/__portrait`);
   for (const character of characters) {
-    const OUT = join(new URL('..', import.meta.url).pathname, `public/you${character === 'real' ? '' : `-${character}`}.webp`);
+    const OUT = join(new URL('..', import.meta.url).pathname, `public/you${character === 'real' ? '' : `-${character === 'stick' ? 'bag' : character}`}.webp`);
     const url = await page.evaluate(async ([w, h, character]) => {
       const { render } = await import('/tools/you-portrait.page.js');
       return render({ width: w, height: h, character });

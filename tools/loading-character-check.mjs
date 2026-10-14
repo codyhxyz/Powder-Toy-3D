@@ -28,7 +28,7 @@ try {
     for (const mode of ['slayer', 'ctf', 'koth', 'infection', 'siege', 'sandbox']) {
       menu.loading('Loading', { mode });
       const character = ['siege', 'sandbox'].includes(mode) ? 'stick' : 'spartan';
-      check(`${mode}: correct still and worker`, img() === `/you-${character}.webp` && workers.at(-1).character === character);
+      check(`${mode}: correct still and worker`, img() === `/you-${character === 'stick' ? 'bag' : character}.webp` && workers.at(-1).character === character);
     }
     workers.at(-1).onmessage({ data: 'ready' });
     check('ready worker replaces still', !!fig().querySelector('canvas'));
@@ -40,7 +40,7 @@ try {
     workers.at(-1).onmessage({ data: { failed: 'test failure' } });
     check('worker failure keeps correct fallback', img() === '/you-spartan.webp');
     menu.loading('Loading save', { name: 'Save' });
-    check('save ignores previously selected Halo mode', img() === '/you-stick.webp');
+    check('save ignores previously selected Halo mode', img() === '/you-bag.webp');
     localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ character: 'real' }));
     menu.loading('Loading', { mode: 'sandbox' });
     check('changed preference is re-read', img() === '/you.webp');
