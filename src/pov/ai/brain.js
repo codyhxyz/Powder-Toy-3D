@@ -192,7 +192,7 @@ export class Agent extends Vehicle {
     this.wander = new WanderBehavior(4, 8, 30);
     for (const b of [this.pursuit, this.seek, this.wander]) { b.active = false; this.steering.add(b); }
     this.memory = new MemorySystem(this);
-    this.memory.memorySpan = MEMORY_S;
+    this.memory.memorySpan = npc.combatProfile?.memory ?? MEMORY_S;
     this.memory.createRecord(this.prey);
     this.record.timeLastSensed = -Infinity;      // Yuka starts it at -1: as if just seen
     this.brain = new Think(this);
@@ -220,7 +220,11 @@ export class Agent extends Vehicle {
   chest(p = this.target.pos) { return { x: p.x, y: p.y + CHEST, z: p.z }; }
   get record() { return this.memory.getRecord(this.prey); }
   get sees() { return this.record.visible; }
-  get knows() { return this.target.alive && this.now - this.record.timeLastSensed < MEMORY_S; }
+  get reactionTime() { return this.npc.combatProfile?.reaction ?? REACTION_S; }
+  get memorySpan() { return this.npc.combatProfile?.memory ?? MEMORY_S; }
+  get touchRange() { return this.npc.combatProfile?.touch ?? TOUCH; }
+  canSee(at, distance) { return distance < SIGHT && this.npc.world.sees(this.eye(), this.chest(at)); }
+  get knows() { return this.target.alive && this.now - this.record.timeLastSensed < this.memorySpan; }
   get lastSeen() { const p = this.record.lastSensedPosition; return { x: p.x, y: p.y, z: p.z }; }
   get dist() { return hdist(this.feet, this.target.pos); }
   get dist3() { const t = this.target.pos, f = this.feet; return Math.hypot(t.x - f.x, t.y - f.y, t.z - f.z); }
@@ -232,10 +236,9 @@ export class Agent extends Vehicle {
     const t = this.target, rec = this.record;
     this.prey.position.set(t.pos.x, 0, t.pos.z);
     this.prey.velocity.set(t.vel.x, 0, t.vel.z);
-    const e = this.eye();
-    const visible = t.alive && this.dist3 < SIGHT && this.npc.world.sees(e, this.chest());
+    const visible = t.alive && this.canSee(t.pos, this.dist3);
     if (visible && !rec.visible) rec.timeBecameVisible = this.now;
-    if (visible || (t.alive && this.dist3 < TOUCH)) {
+    if (visible || (t.alive && this.dist3 < this.touchRange)) {
       rec.timeLastSensed = this.now;
       rec.lastSensedPosition.set(t.pos.x, t.pos.y, t.pos.z);
     }
@@ -245,7 +248,7 @@ export class Agent extends Vehicle {
   // Every opponent: seen (sight or touch), shown on the motion tracker, or
   // revealed by the game (a flag carrier); then the one to go after.
   senseAll(foes) {
-    const e = this.eye(), f0 = this.feet;
+    const f0 = this.feet;
     let best = null, bestScore = Infinity;
     for (const f of foes) {
       let ent = this.foes.get(f.id);
@@ -259,12 +262,12 @@ export class Agent extends Vehicle {
       ent.velocity.set(f.vel.x, 0, f.vel.z);
       const rec = this.memory.getRecord(ent);
       const d3 = Math.hypot(f.pos.x - f0.x, f.pos.y - f0.y, f.pos.z - f0.z);
-      const visible = f.alive && d3 < SIGHT && this.npc.world.sees(e, this.chest(f.pos));
-      const shown = f.alive && (d3 < TOUCH || f.reveal || (d3 < this.radar && Math.hypot(f.vel.x, f.vel.z) > RADAR_SPEED));
+      const visible = f.alive && this.canSee(f.pos, d3);
+      const shown = f.alive && (d3 < this.touchRange || f.reveal || (d3 < this.radar && Math.hypot(f.vel.x, f.vel.z) > RADAR_SPEED));
       if (visible && !rec.visible) rec.timeBecameVisible = this.now;
       if (visible || shown) { rec.timeLastSensed = this.now; rec.lastSensedPosition.set(f.pos.x, f.pos.y, f.pos.z); }
       rec.visible = visible;
-      if (!f.alive || this.now - rec.timeLastSensed >= MEMORY_S) continue;
+      if (!f.alive || this.now - rec.timeLastSensed >= this.memorySpan) continue;
       const score = d3 + (visible ? 0 : UNSEEN_PENALTY) - (f.id === this.foeId ? KEEP_TARGET : 0) - (f.priority ?? 0);
       if (score < bestScore) { bestScore = score; best = f; }
     }
@@ -276,12 +279,12 @@ export class Agent extends Vehicle {
 
   // a hit: stagger out of whatever it was winding up
   stagger() {
-    this.cooldown('ATTACK', STAGGER_S);
+    this.cooldown('ATTACK', this.npc.combatProfile?.stagger ?? STAGGER_S);
     this.useState = null;
     this.gunBurst = null;
   }
   // it hurt the target: a breather before the next attack
-  landed() { this.cooldown('ATTACK', BREATHER_S); this.gunBurst = null; }
+  landed() { this.cooldown('ATTACK', this.npc.combatProfile?.breather ?? BREATHER_S); this.gunBurst = null; }
   // s it has had the target in sight, this time
   get inSight() { return this.sees ? this.now - Math.max(this.record.timeBecameVisible, this.aimState?.acquiredAt ?? -Infinity) : 0; }
 
@@ -299,7 +302,7 @@ export class Agent extends Vehicle {
       this.aimState = { record: rec, seenAt: rec.timeBecameVisible, acquiredAt: this.now, point: p };
       return;
     }
-    const q = this.aimState.point, k = -Math.expm1(-this.dt / AIM_TRACK_S);
+    const q = this.aimState.point, k = -Math.expm1(-this.dt / (this.npc.combatProfile?.track ?? AIM_TRACK_S));
     q.x += (p.x - q.x) * k; q.y += (p.y - q.y) * k; q.z += (p.z - q.z) * k;
   }
 
@@ -478,7 +481,7 @@ class AttackGoal extends CompositeGoal {
       return;
     }
     // not yet: still reacting to the sight of it, staggered, or catching its breath; face it and hold
-    if ((a.sees && a.inSight < REACTION_S) || !a.ready('ATTACK')) {
+    if ((a.sees && a.inSight < a.reactionTime) || !a.ready('ATTACK')) {
       a.lookAt(a.chest());
       a.hold(WEAPONS[w].holds?.(a) ?? w);
       return;
@@ -779,18 +782,27 @@ const USE = {
 
 // Single shots or bounded automatic bursts; interval is start-to-start, including the rest.
 function fireGun(a, key, interval, { burst = 0, chaseFrom = GUN_CHASE } = {}) {
+  const profile = a.npc.combatProfile;
+  if (profile) { interval = profile.interval; burst = profile.burst; chaseFrom = profile.chaseFrom; }
   a.hold(key);
   a.intent.secondary = key !== 'SNIPER';   // use the same ironsights/spread reduction as the player; no scope toggles
   if (a.dist3 > chaseFrom) a.chase(0.6);
   if (a.ready(key)) {
     a.intent.primaryPressed = true;
     a.cooldown(key, interval);
+    // Mission-only angular aim error held for this salvo (weapon.gd enemy_accuracy).
+    if (profile) a.shotError = { x: (Math.random() * 2 - 1) * profile.spread, y: (Math.random() * 2 - 1) * profile.spread };
     a.gunBurst = burst ? { key, start: a.now, until: a.now + burst, offset: Math.random() < 0.5 ? -BURST_OFFSET : BURST_OFFSET } : null;
   }
   const b = a.gunBurst;
   if (b && a.now < b.until - 1e-6) a.intent.primary = true;
   else a.gunBurst = null;
-  aimWith(a, a.chest(), a.gunBurst ? b.offset * Math.exp(-(a.now - b.start) / BURST_CORRECT_S) : 0);
+  aimWith(a, a.chest(), profile ? 0 : a.gunBurst ? b.offset * Math.exp(-(a.now - b.start) / BURST_CORRECT_S) : 0);
+  if (profile && a.shotError) {
+    const p = a.intent.look, e = a.eye(), dx = p.x - e.x, dz = p.z - e.z, d = Math.hypot(dx, dz) || 1;
+    p.x -= dz * Math.tan(a.shotError.x); p.z += dx * Math.tan(a.shotError.x);
+    p.y += d * Math.tan(a.shotError.y);
+  }
 }
 
 // Raven's weapon system runs beside the goals (TakeAimAndShoot): a bot busy
@@ -805,7 +817,7 @@ export function takeAimAndShoot(a) {
   if (!a.knows || !a.sees) return false;
   const w = a.weapons ? chooseWeapon(a) : 'GUN';
   if (!SHOOTERS.has(w)) return false;
-  if (a.inSight < REACTION_S || !a.ready('ATTACK')) { a.hold(w); a.lookAt(a.chest()); return true; }
+  if (a.inSight < a.reactionTime || !a.ready('ATTACK')) { a.hold(w); a.lookAt(a.chest()); return true; }
   const { share, sprint } = a.intent, steer = [a.pursuit.active, a.seek.active, a.wander.active];
   USE[w](a);
   a.intent.share = share; a.intent.sprint = sprint;
@@ -925,6 +937,6 @@ export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT, GoToGoal, WanderGoal };
 // for other minds on this one (ai/gunner.js): Raven's fuzzy distance module and weapon choice, the
 // shared tracking, burst timing and reaction delay
 export {
-  distanceModule, pickWeapon, fireGun, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
+  distanceModule, pickWeapon, fireGun, hdist, AttackEvaluator, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
   REACTION_S,
 };
