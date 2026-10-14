@@ -112,20 +112,20 @@ const live = gpu.textures.filter((t) => !t.destroyed);
 assert.ok(live.every((t) => t.width >= 1 && t.height >= 1), 'no empty texture');
 console.log('PASS: internal sizes (FSR 2 presets of the output, native never lowered, Ultra Performance floor), output-sized TAA output and bloom, LOD footprint, TAA off, resize');
 
-// The frame's passes in order (W16, F7): scene, the motion pass, three's TAAU, its expand (post.js taaExpand),
-// prefilter, one compute pass (bloom down 1-5, up 4-1, the reduction), bloom's up[0], the canvas.
+// The frame's passes in order (W16, F7): scene, the motion pass, three's TAAU (its readers expand it per texel: post.js radiance()),
+// prefilter, one compute pass (bloom down 1-5, up 4-1, the reduction), bloom's up[0] and its tent, the canvas.
 post.settings.upscale = 1; post.settings.resolutionScale = 1; post.settings.adapt = true;
 gpu.log.length = 0;
 render();
 const order = gpu.log.filter((e) => e.kind !== 'flush' && e.kind !== 'destroy').map((e) => (e.kind === 'pass' ? `[${e.name}]` : e.name));
-assert.deepEqual(order, ['[scene]', '[motion]', 'motion', '[taau]', '[taa expand]', 'taaExpand', '[prefilter]', 'prefilter', '[post]', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown',
+assert.deepEqual(order, ['[scene]', '[motion]', 'motion', '[taau]', '[prefilter]', 'prefilter', '[post]', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown',
   'bloomUp', 'bloomUp', 'bloomUp', 'bloomUp', 'postReduce', '[bloomUp0]', 'bloomUp0', '[bloom]', 'bloomTent', '[canvas]', 'composite bgra8unorm'], order.join(' '));
 const ups = gpu.log.filter((e) => e.kind !== 'pass' && (e.name === 'bloomUp' || e.name === 'bloomUp0')).map((e) => e.params.dst.join('×'));
 assert.deepEqual(ups, ['28×18', '56×37', '112×75', '225×150', '450×301'], 'bloom up from 1/32 to 1/2 of 901×603');
 post.settings.raw = true;
 gpu.log.length = 0;
 render();
-assert.deepEqual(gpu.log.filter((e) => e.kind === 'pass').map((e) => e.name), ['scene', 'motion', 'taau', 'taa expand', 'canvas'], 'a data view: no bloom, no adaptation');
+assert.deepEqual(gpu.log.filter((e) => e.kind === 'pass').map((e) => e.name), ['scene', 'motion', 'taau', 'canvas'], 'a data view: no bloom, no adaptation');
 post.settings.raw = false;
 console.log('PASS: pass order (scene, motion, TAAU, expand, prefilter, one compute pass, up[0], canvas), bloom sizes, raw view');
 
@@ -190,7 +190,7 @@ console.log('PASS: jitter: TAAUNode\'s Halton(2, 3) over its 32 offsets, y down,
   post.onPass = (name) => note('onPass', name);
   gpu.log.length = 0;
   post.render(parts, camera);
-  assert.deepEqual(events().slice(0, 12), ['prepare', 'compute', '[scene]', 'draw', 'meshes', '[overlay]', 'overlay', 'onPass scene', '[motion]', '[taau]', '[taa expand]', 'onPass taa'], events().join(' '));
+  assert.deepEqual(events().slice(0, 11), ['prepare', 'compute', '[scene]', 'draw', 'meshes', '[overlay]', 'overlay', 'onPass scene', '[motion]', '[taau]', 'onPass taa'], events().join(' '));
   assert.equal(inside, 'jittered', 'prepare sees the jittered camera (FrameUniforms.viewProj, F6)');
   assert.ok(near(rayProj, before), 'withoutJitter runs fn with the camera\'s own projection');
   assert.ok(near(after, inPrepare), '…and jitters it again after');
