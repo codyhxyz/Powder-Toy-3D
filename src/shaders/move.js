@@ -679,11 +679,12 @@ export const MOVE_FORM = 'unrolled';
 /**
  * The move kernel (docs/webgpu.md D2): the name is the WebGL block pass's (W2).
  * @param {object} g grid
- * @param {{ form?: string, debug?: boolean, raceProbe?: boolean }} [opts]
+ * @param {{ form?: string, debug?: boolean, raceProbe?: boolean, optimize?: boolean }} [opts]
+ *   optimize: skip proven redundant reads/work; false keeps the reference for A/B tests
  *   raceProbe: test only (sim.test.raceProbe, I2.10), a variant whose solve
  *   also reads a cell of the next block along x, a race in place
  */
-export const moveBlockFrag = (g, { form = MOVE_FORM, debug = false, raceProbe = false } = {}) => {
+export const moveBlockFrag = (g, { form = MOVE_FORM, debug = false, raceProbe = false, optimize = true } = {}) => {
   const f = MOVE_FORMS[form]();
   const u = sleepUnitOf(g);
   // the content's new state at cell c (heat-warmed), its flags, and where it came from
@@ -839,11 +840,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     base = 4 * brickCoord(brick) + 2 * vec3i(k & 1, (k >> 1u) & 1, k >> 2u) + par;
   }
   // it runs if a cell of it lies in a unit this map's steps draw
-  var run = false;
+  var run = ${optimize ? 'P.margin == 0u && par == 0' : 'false'};${optimize ? `
+  // Offset-zero home blocks lie entirely in their DRAWN-list unit.
+  // MOVE1 and margin blocks still need the eight-cell membership test.
+  if (!run) {` : ''}
   for (var i = 0; i < 8; i++) {
     let c = edgeCell(cellAt(base, i));
     if (inGrid(c) && drawnUnit(unitOfCell(c))) { run = true; }
-  }
+  }${optimize ? '\n  }' : ''}
   if (!run) { return; }${debug ? `
   for (var i = 0; i < 8; i++) {
     let c = edgeCell(cellAt(base, i));
@@ -855,7 +859,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     // isn't quiet), air loses its decoration
     for (var i = 0; i < 8; i++) {
       let c = edgeCell(cellAt(base, i));
-      if (!inGrid(c)) { continue; }
+      if (!inGrid(c)) { continue; }${optimize ? `
+      // In place on a nonfresh step no flags/state are written; deco and flow still run.
+      if (P.fresh != 0u || P.outOfPlace != 0u) {` : ''}
       let f0 = fetchF(c);
       var fl = f0;
       if (P.fresh != 0u) { fl &= ~FLAG_DIRTY; }
@@ -864,7 +870,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
         moveSrc[P.srcAt + slotOf(c)] = u32(i);
       } else if (fl != f0) {
         writeFlags(c, fl);
-      }
+      }${optimize ? '\n      }' : ''}
       if (P.deco != 0u) {
         let ds = P.decoAt + slotOf(c);
         if (moveSrc[ds] != 0u && eid(fetchA(c)) == E_EMPTY) { moveSrc[ds] = 0u; }
