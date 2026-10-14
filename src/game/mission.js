@@ -94,12 +94,12 @@ export function createMission(shell) {
         povEvents.emit(`mission:${phase}`, { id: manifest.id });
       }
     }
-    const e = manifest.extraction, at = local(e.at);
-    if (e.bounds) {
+    shell.markers?.zones((manifest.extractions ?? [manifest.extraction]).map(e => {
+      if (!e.bounds) return { ...local(e.at), r: e.radius };
       const lo = local(e.bounds.min), hi = local(e.bounds.max);
-      shell.markers?.zone({ x: (lo.x + hi.x) / 2, y: lo.y, z: (lo.z + hi.z) / 2,
-        bounds: { min: lo.toArray(), max: hi.toArray() } });
-    } else shell.markers?.zone({ ...at, r: e.radius });
+      return { x: (lo.x + hi.x) / 2, y: lo.y, z: (lo.z + hi.z) / 2,
+        bounds: { min: lo.toArray(), max: hi.toArray() } };
+    }));
     shell.markers?.setVisible(visible);
     shell.markers?.update({ time: performance.now() / 1000, myTeam: 'red', bots: [...actors.values()].filter((n) => n.missionTarget)
       .map((n) => ({ id: n.id, pos: n.body.pos, alive: !n.body.dead, team: 'red' })) });

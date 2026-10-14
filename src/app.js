@@ -759,11 +759,24 @@ async function startMode(mode, { fresh = false } = {}) {
   if (chosen.key === 'crueltySquad' && pov) {
     game?.end();
     const map = mapOf(settings);
-    if (win) await win.whenReady();
+    pov.exit(true);
+    if (win) {
+      const world = win, focus = [map.mission.spawn[0], map.mission.spawn[2]];
+      // Reuse the authored-mode focus seam: switching from far-away Sandbox
+      // must load the source spawn, not teleport into nonresident voxel cells.
+      villageFocus = focus;
+      try {
+        await world.whenReady();
+        await world.pending;
+        while (epoch === modeEpoch && win === world && wire('world')?.moveWindow(ctx)) await world.pending;
+        if (epoch !== modeEpoch || win !== world) return false;
+      } finally { if (villageFocus === focus) villageFocus = null; }
+    }
     if (epoch !== modeEpoch) return false;
     const at = new THREE.Vector3(...map.mission.spawn).sub(sim.origin);
     await pov.enter({ at, swoop: 0, hint: false, valid: () => epoch === modeEpoch });
     if (epoch !== modeEpoch || !pov.player) return false;
+    pov.setLook(map.mission.spawnYaw ?? 0, 0);
     return pov.mission.start(map);
   }
   if (!chosen.team || !game) {

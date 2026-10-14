@@ -75,6 +75,7 @@ const point = (p) => Array.isArray(p) && p.length === 3 && p.every(Number.isFini
 const weapons = new Set(['AXE', 'GUN', 'SMG', 'SNIPER', 'ROCKET', 'LASER']);
 export function validMission(m) {
   if (!m || typeof m.id !== 'string' || !m.id || typeof m.name !== 'string' || !m.name || !point(m.spawn)) return false;
+  if (m.spawnYaw != null && !Number.isFinite(m.spawnYaw)) return false;
   if (!Array.isArray(m.targets) || !m.targets.length || !Array.isArray(m.guards)) return false;
   const ids = new Set();
   for (const a of [...m.targets, ...m.guards]) {
@@ -84,9 +85,11 @@ export function validMission(m) {
     if (a.weapons != null && (!Array.isArray(a.weapons) || !a.weapons.every((k) => weapons.has(k)))) return false;
     ids.add(a.id);
   }
-  const e = m.extraction;
-  if (!e || !point(e.at) || !Number.isFinite(e.radius) || e.radius <= 0 || !Number.isFinite(e.height) || e.height <= 0) return false;
-  return !e.bounds || (point(e.bounds.min) && point(e.bounds.max) && e.bounds.max.every((n, i) => n > e.bounds.min[i]));
+  const validExit = e => !!e && point(e.at) && Number.isFinite(e.radius) && e.radius > 0
+    && Number.isFinite(e.height) && e.height > 0
+    && (!e.bounds || (point(e.bounds.min) && point(e.bounds.max) && e.bounds.max.every((n, i) => n > e.bounds.min[i])));
+  return validExit(m.extraction) && (m.extractions == null
+    || (Array.isArray(m.extractions) && m.extractions.length > 0 && m.extractions.every(validExit)));
 }
 
 const eligible = (map, mode) => !!map?.modes?.includes(mode) && (mode !== 'crueltySquad' || validMission(map.mission));

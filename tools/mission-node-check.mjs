@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { createMissionAttempt, validMission } from '../src/game/missionRules.js';
 import { createMission } from '../src/game/mission.js';
 import { GunnerAgent } from '../src/pov/ai/gunner.js';
+import { createMarkers } from '../src/game/markers.js';
 import { MAPS, mapsFor, resolveMode } from '../src/maps.js';
 
 const manifest = () => ({ id: 'fixture', name: 'CPU fixture (not a playable map)', spawn: [12, 4, 20],
@@ -22,6 +23,7 @@ check('unsupported maps remain ineligible; all registered missions validate', ()
 check('reject invalid/duplicate metadata rather than invent objectives', () => {
   for (const alter of [m => m.targets[0].at[0] = NaN, m => m.guards[0].id = 'a', m => m.extraction.radius = 0,
     m => m.spawn = null, m => m.targets[0].style = 'imaginary', m => m.targets[0].weapons = ['PHYSGUN'],
+    m => m.spawnYaw = NaN,
     m => m.extraction.bounds = { min: [0, 0, 0], max: [1, NaN, 1] },
     m => m.extraction.bounds = { min: [0, 0, 0], max: [1, 0, 1] }]) {
     const m = manifest(); alter(m); assert.equal(validMission(m), false); assert.throws(() => createMissionAttempt(m));
@@ -58,6 +60,33 @@ check('authored rectangular extraction uses full width and body overlap, not an 
   const run = createMissionAttempt(m); run.eliminate('a'); run.eliminate('b');
   assert.equal(run.update({ dead: false, at: { x: 79, y: 3, z: 18.1 }, width: 1, height: 5 }), 'active');
   assert.equal(run.update({ dead: false, at: { x: 79, y: 3, z: 18.7 }, width: 1, height: 5 }), 'complete');
+});
+check('either authored exit completes; malformed additional exits invalidate the manifest', () => {
+  const m = manifest(), second = { at: [100, 4, 20], radius: 2, height: 4 };
+  m.extractions = [m.extraction, second];
+  const run = createMissionAttempt(m); run.eliminate('a'); run.eliminate('b');
+  assert.equal(run.update({ dead: false, at: { x: 100, y: 4, z: 20 } }), 'complete');
+  m.extractions = []; assert.equal(validMission(m), false);
+  m.extractions = [second, { ...second, height: 0 }]; assert.equal(validMission(m), false);
+});
+check('multiple exit markers retain full authored box bounds and dispose replaced geometry', () => {
+  const scene = new THREE.Scene(), volume = new THREE.Group();
+  volume.position.set(7, 8, 9);
+  const markers = createMarkers({ scene, getVolume: () => volume, getScale: () => 0.3 });
+  const a = { x: 20, y: 4, z: 20, bounds: { min: [10, 4, 19], max: [30, 40, 21] } };
+  const b = { x: 100, y: 4, z: 20, r: 2 };
+  markers.zones([a, b]);
+  markers.update({ time: 0, bots: [], myTeam: 'red' });
+  const root = scene.children[0], first = root.children[0];
+  assert.equal(root.children.length, 2);
+  assert.deepEqual(first.position.toArray(), [13, 9.2, 15]);
+  assert.equal(first.children[0].geometry.parameters.width, 20);
+  assert.equal(first.children[0].geometry.parameters.depth, 2);
+  let disposed = false;
+  first.children[0].geometry.addEventListener('dispose', () => disposed = true);
+  markers.zone(b);
+  assert.equal(root.children.length, 1); assert.equal(disposed, true);
+  markers.clear(); assert.equal(root.children.length, 0);
 });
 check('no time limit or individual respawn in lifecycle; stopped attempts remain stopped', () => {
   const run = createMissionAttempt(manifest());

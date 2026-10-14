@@ -259,7 +259,7 @@ export function createPov(app) {
 
   // ---- pointer lock
   function requestLock() {
-    if (editing || village.blocked || touch.enabled || document.pointerLockElement === canvas) return;   // touch has no pointer lock
+    if (editing || village.blocked || (mission.engaged && !mission.active) || touch.enabled || document.pointerLockElement === canvas) return;
     try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* not allowed here */ }
   }
   document.addEventListener('pointerlockchange', () => {
@@ -683,7 +683,8 @@ export function createPov(app) {
     input.cancelJump = true;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
-    if ((app.mp.replica && (app.mp.stale || networkPending)) || editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
+    if ((app.mp.replica && (app.mp.stale || networkPending)) || (mission.engaged && !mission.active)
+      || editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
     if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
       const t = touch.state;   // (the touch stick drives too: forward throttles, sideways steers)
       d.throttle = THREE.MathUtils.clamp((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z, -1, 1);

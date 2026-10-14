@@ -68,15 +68,25 @@ export function createMarkers({ scene, getVolume, getScale }) {
     obj.position.set(p.x, p.y, p.z).multiplyScalar(s).add(v.position);
     obj.scale.setScalar(s);
   };
-  let stands = {}, flags = {}, zone = null, zoneShape = '';
+  let stands = {}, flags = {}, zones = [];
   const chevrons = new Map();   // bot id → mesh
+  const remove = o => { root.remove(o); o.traverse(c => { c.geometry?.dispose(); c.material?.dispose(); }); };
+  function setZones(points) {
+    while (zones.length > points.length) remove(zones.pop());
+    points.forEach((z, i) => {
+      const shape = z.bounds ? z.bounds.max.map((n, k) => n - z.bounds.min[k]).join(',') : String(z.r);
+      if (zones[i] && zones[i].userData.shape !== shape) { remove(zones[i]); zones[i] = null; }
+      if (!zones[i]) { zones[i] = z.bounds ? exitModel(z.bounds) : padModel(NEUTRAL, z.r); root.add(zones[i]); }
+      Object.assign(zones[i].userData, { at: z, shape });
+    });
+  }
 
   function clear() {
     for (const o of [...root.children]) {
       root.remove(o);
       o.traverse((c) => { c.geometry?.dispose(); c.material?.dispose(); });
     }
-    stands = {}; flags = {}; zone = null; chevrons.clear();
+    stands = {}; flags = {}; zones = []; chevrons.clear();
   }
 
   return {
@@ -93,13 +103,9 @@ export function createMarkers({ scene, getVolume, getScale }) {
       }
     },
     // a hill or the core: { x, y, z, r }, coloured by who holds it (null: no one)
-    zone(z) {
-      const shape = z.bounds ? z.bounds.max.map((n, i) => n - z.bounds.min[i]).join(',') : String(z.r);
-      if (zone && zoneShape !== shape) { root.remove(zone); zone.traverse((c) => { c.geometry?.dispose(); c.material?.dispose(); }); zone = null; }
-      if (!zone) { zone = z.bounds ? exitModel(z.bounds) : padModel(NEUTRAL, z.r); zoneShape = shape; root.add(zone); }
-      zone.userData.at = z;
-    },
-    noZone() { if (zone) { root.remove(zone); zone = null; } },
+    zone(z) { setZones([z]); },
+    zones: setZones,
+    noZone() { setZones([]); },
     // every frame: flags where they are, the zone's colour, chevrons over the bots
     update({ time, flagAt, zoneOwner, zoneContested, bots, myTeam }) {
       for (const [team, s] of Object.entries(stands)) place(s, s.userData.at);
@@ -108,7 +114,7 @@ export function createMarkers({ scene, getVolume, getScale }) {
         f.visible = !!p;
         if (p) { place(f, p); f.rotation.y = time * 0.8; }
       }
-      if (zone) {
+      for (const zone of zones) {
         place(zone, zone.userData.at);
         const flash = zoneContested && Math.sin(time * CONTESTED_HZ * Math.PI * 2) > 0;
         const color = flash ? '#ffffff' : zoneOwner ? TEAM_CSS[zoneOwner] : NEUTRAL;
