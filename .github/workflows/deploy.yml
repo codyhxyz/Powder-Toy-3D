@@ -26,6 +26,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # immutable pre-feature generator for exact legacy cell acceptance
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -39,6 +41,7 @@ jobs:
       - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
       - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
       - run: node tools/detail-culling-cpu-check.mjs
+      - run: node tools/detail-residency-check.mjs && node tools/detail-worker-check.mjs && node tools/far-lod-check.mjs && node tools/surface-mesh-check.mjs   # full-detail terrain ownership, streaming and material seams
       - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs
@@ -48,14 +51,17 @@ jobs:
       - run: node tools/check-crystal-transmission.mjs
       - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
+      - run: node tools/check-strikes.mjs   # CPU quaternion kicks/punches, bone frames, visibility and repeat recovery
       - run: node tools/check-willow-cove.mjs   # CPU terrain: body-clear running circuit and village routes
+      - run: node --test tools/check-city-folk.mjs   # composed world, exact legacy geometry, city bus/edit lifecycle
+      - run: node tools/check-city-folk-terrain.mjs && node tools/check-city-folk-town.mjs && node tools/check-city-folk-nature.mjs && node tools/check-city-folk-bus.mjs
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
-      - run: node tools/mission-node-check.mjs && node --test tools/import-paradise-check.mjs tools/import-cruelty-map-check.mjs
+      - run: node tools/mission-node-check.mjs && node --test tools/import-cruelty-map-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
       - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips
       - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread
-      - run: node tools/check-village.mjs && node tools/check-village-art.mjs && node tools/check-village-actions.mjs && node tools/check-village-punch.mjs && node tools/check-village-speech.mjs && node tools/check-village-residents.mjs   # character artwork, peaceful punches, tools, furniture and neighbor dialogue
+      - run: node tools/check-village.mjs && node tools/check-village-shapes.mjs && node tools/check-village-actions.mjs && node tools/check-village-punch.mjs && node tools/check-village-speech.mjs && node tools/check-village-residents.mjs   # character shapes, peaceful punches, tools, furniture and neighbor dialogue
       - run: node tools/check-village-crook.mjs && node tools/check-village-debt-badge.mjs   # CPU doorstep dialogue, persistent debt and shrink/glide HUD
       - run: node tools/check-character-models.mjs && node tools/check-loading-character.mjs   # CPU-only bodies, selection and portraits
       - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode

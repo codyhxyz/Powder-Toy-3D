@@ -1,10 +1,13 @@
-// One <=10s UI-mode mission slot (manual for --geometry-only) on the full map.
-// Requires local source conversion. Run one map per explicitly planned GPU slot.
+// One <=10s UI-mode mission slot (manual for --geometry-only) on a published level.
+// node tools/cruelty-map-browser-check.mjs paradise [--url https://tpt3d.codyh.xyz] [--geometry-only]
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 
-const map = process.argv[2] ?? 'paradise', geometryOnly = process.argv.includes('--geometry-only'), vite = await startVite();
+const urlIndex = process.argv.indexOf('--url');
+const map = process.argv[2] ?? 'paradise', geometryOnly = process.argv.includes('--geometry-only');
+const vite = urlIndex < 0 ? await startVite() : null;
+const origin = urlIndex < 0 ? vite.origin : process.argv[urlIndex + 1];
 let browser;
 try {
   browser = await launchBrowser();
@@ -12,7 +15,7 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') console.error('Browser:', message.text()); });
-  await page.goto(`${vite.origin}/?map=${encodeURIComponent(map)}&mode=${geometryOnly ? 'sandbox' : 'crueltySquad'}&view=plain`);
+  await page.goto(`${origin}/?map=${encodeURIComponent(map)}&mode=${geometryOnly ? 'sandbox' : 'crueltySquad'}&view=plain`);
   await ready(page);
   if (geometryOnly) {
     await page.evaluate(async key => {
@@ -45,17 +48,19 @@ try {
   }
   await page.waitForFunction(() => __app.pov.player.clearance() !== null);
   assert.equal(await page.evaluate(() => __app.pov.player.clearance()), true, 'authored spawn is clear in actual GPU voxel collision');
-  const floor = await page.evaluate(async () => {
-    const { povGpu } = await import('/src/pov/gpu.js');
-    const a = __app, p = a.pov.player.pos;
-    const read = povGpu(a.sim).probe('povCells', { cells: [[Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z), 0]], count: 1 });
-    if (!read) throw new Error('Spawn-support probe unavailable');
-    return new Float32Array(await read)[0];
-  });
-  assert.ok(floor > 0, 'the authored floor exists in real GPU cells, not just in the CPU scene twin');
+  if (urlIndex < 0) {
+    const floor = await page.evaluate(async () => {
+      const { povGpu } = await import('/src/pov/gpu.js');   // (a dev-server source path)
+      const a = __app, p = a.pov.player.pos;
+      const read = povGpu(a.sim).probe('povCells', { cells: [[Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z), 0]], count: 1 });
+      if (!read) throw new Error('Spawn-support probe unavailable');
+      return new Float32Array(await read)[0];
+    });
+    assert.ok(floor > 0, 'the authored floor exists in real GPU cells, not just in the CPU scene twin');
+  }
   assert.deepEqual(errors, []);
-  console.log(`PASS imported ${map}: ${geometryOnly ? 'geometry' : 'mission'}, clear GPU spawn and solid authored floor`, state);
+  console.log(`PASS imported ${map}: ${geometryOnly ? 'geometry' : 'mission'}, clear GPU spawn` + (urlIndex < 0 ? " and solid authored floor in real GPU cells" : ""), state);
 } finally {
   await browser?.close();
-  await vite.close();
+  await vite?.close();
 }

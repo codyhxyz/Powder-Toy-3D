@@ -1,0 +1,6715 @@
+{
+  "version": 1,
+  "encoding": "sparse-brick-u8-v1",
+  "cellMeters": 0.3,
+  "origin": [
+    -526,
+    -308,
+    -53
+  ],
+  "size": [
+    1088,
+    488,
+    1184
+  ],
+  "brickDims": [
+    136,
+    61,
+    148
+  ],
+  "stats": {
+    "triangles": 57888,
+    "candidates": 29600173,
+    "cells": 7633563,
+    "bricks": 49207,
+    "bytes": 30105216
+  },
+  "id": "paradise",
+  "name": "Paradise",
+  "plainHeight": 0,
+  "mission": {
+    "id": "paradise",
+    "name": "Paradise",
+    "available": true,
+    "spawn": [
+      702.6666666666667,
+      311,
+      58
+    ],
+    "spawnYaw": 0,
+    "sourceSpawn": [
+      53,
+      1.5,
+      1.5
+    ],
+    "sourceSpawnPath": "QodotMap/entity_9_Player",
+    "sourceSpawnTransform": [
+      1,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      53,
+      1.5,
+      1.5
+    ],
+    "targets": [
+      {
+        "id": "Nerd_1",
+        "name": "Paradise target (Nerd_1)",
+        "at": [
+          457.725,
+          335,
+          559.1266666666667
+        ],
+        "sourceAt": [
+          -20.4825,
+          9.00043,
+          151.838
+        ],
+        "sourcePath": "Nerd_1",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Nerd_2",
+        "name": "Paradise target (Nerd_2)",
+        "at": [
+          613.3696666666667,
+          299,
+          548.9933333333333
+        ],
+        "sourceAt": [
+          26.2109,
+          -2.04942,
+          148.798
+        ],
+        "sourcePath": "Nerd_2",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Nerd_3",
+        "name": "Paradise target (Nerd_3)",
+        "at": [
+          481.75666666666666,
+          332,
+          680.6033333333334
+        ],
+        "sourceAt": [
+          -13.273,
+          7.00043,
+          188.281
+        ],
+        "sourcePath": "Nerd_3",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      }
+    ],
+    "guards": [
+      {
+        "id": "QodotMap/entity_19_E_Grunt",
+        "name": "entity_19_E_Grunt",
+        "at": [
+          607.6666666666666,
+          312,
+          276.33333333333337
+        ],
+        "sourceAt": [
+          24.5,
+          1.5,
+          67
+        ],
+        "sourcePath": "QodotMap/entity_19_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_20_E_Grunt",
+        "name": "entity_20_E_Grunt",
+        "at": [
+          544.3333333333334,
+          312,
+          513
+        ],
+        "sourceAt": [
+          5.5,
+          1.5,
+          138
+        ],
+        "sourcePath": "QodotMap/entity_20_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_24_E_Mutant",
+        "name": "entity_24_E_Mutant",
+        "at": [
+          594.3333333333334,
+          312,
+          664.6666666666667
+        ],
+        "sourceAt": [
+          20.5,
+          1.5,
+          183.5
+        ],
+        "sourcePath": "QodotMap/entity_24_E_Mutant",
+        "style": "axeman"
+      },
+      {
+        "id": "QodotMap/entity_25_E_Grunt",
+        "name": "entity_25_E_Grunt",
+        "at": [
+          111,
+          319,
+          614.6666666666667
+        ],
+        "sourceAt": [
+          -124.5,
+          3.5,
+          168.5
+        ],
+        "sourcePath": "QodotMap/entity_25_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_38_E_Grunt",
+        "name": "entity_38_E_Grunt",
+        "at": [
+          574.3333333333334,
+          312,
+          531.3333333333334
+        ],
+        "sourceAt": [
+          14.5,
+          1.5,
+          143.5
+        ],
+        "sourcePath": "QodotMap/entity_38_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_42_E_Grunt",
+        "name": "entity_42_E_Grunt",
+        "at": [
+          601,
+          335,
+          324.6666666666667
+        ],
+        "sourceAt": [
+          22.5,
+          8.5,
+          81.5
+        ],
+        "sourcePath": "QodotMap/entity_42_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_43_E_Grunt",
+        "name": "entity_43_E_Grunt",
+        "at": [
+          521,
+          319,
+          546.3333333333334
+        ],
+        "sourceAt": [
+          -1.5,
+          3.5,
+          148
+        ],
+        "sourcePath": "QodotMap/entity_43_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_44_E_Grunt",
+        "name": "entity_44_E_Grunt",
+        "at": [
+          485.1666666666667,
+          335,
+          534.6666666666667
+        ],
+        "sourceAt": [
+          -12.25,
+          8.5,
+          144.5
+        ],
+        "sourcePath": "QodotMap/entity_44_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_48_E_Grunt",
+        "name": "entity_48_E_Grunt",
+        "at": [
+          517.6666666666666,
+          335,
+          531.3333333333334
+        ],
+        "sourceAt": [
+          -2.5,
+          8.5,
+          143.5
+        ],
+        "sourcePath": "QodotMap/entity_48_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_51_E_Grunt",
+        "name": "entity_51_E_Grunt",
+        "at": [
+          791,
+          312,
+          608
+        ],
+        "sourceAt": [
+          79.5,
+          1.5,
+          166.5
+        ],
+        "sourcePath": "QodotMap/entity_51_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_52_E_Grunt",
+        "name": "entity_52_E_Grunt",
+        "at": [
+          797.6666666666667,
+          329,
+          628
+        ],
+        "sourceAt": [
+          81.5,
+          6.5,
+          172.5
+        ],
+        "sourcePath": "QodotMap/entity_52_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_67_E_Mutant",
+        "name": "entity_67_E_Mutant",
+        "at": [
+          451,
+          312,
+          681.3333333333334
+        ],
+        "sourceAt": [
+          -22.5,
+          1.5,
+          188.5
+        ],
+        "sourcePath": "QodotMap/entity_67_E_Mutant",
+        "style": "axeman"
+      },
+      {
+        "id": "QodotMap/entity_77_E_Grunt",
+        "name": "entity_77_E_Grunt",
+        "at": [
+          491,
+          319,
+          548
+        ],
+        "sourceAt": [
+          -10.5,
+          3.5,
+          148.5
+        ],
+        "sourcePath": "QodotMap/entity_77_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_81_E_Grunt",
+        "name": "entity_81_E_Grunt",
+        "at": [
+          277.66666666666663,
+          312,
+          989.6666666666667
+        ],
+        "sourceAt": [
+          -74.5,
+          1.5,
+          281
+        ],
+        "sourcePath": "QodotMap/entity_81_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_82_E_Grunt",
+        "name": "entity_82_E_Grunt",
+        "at": [
+          269.3333333333333,
+          312,
+          994.6666666666667
+        ],
+        "sourceAt": [
+          -77,
+          1.5,
+          282.5
+        ],
+        "sourcePath": "QodotMap/entity_82_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_83_E_Grunt",
+        "name": "entity_83_E_Grunt",
+        "at": [
+          307.66666666666663,
+          312,
+          1008
+        ],
+        "sourceAt": [
+          -65.5,
+          1.5,
+          286.5
+        ],
+        "sourcePath": "QodotMap/entity_83_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_84_E_Grunt",
+        "name": "entity_84_E_Grunt",
+        "at": [
+          356,
+          312,
+          1101.3333333333335
+        ],
+        "sourceAt": [
+          -51,
+          1.5,
+          314.5
+        ],
+        "sourcePath": "QodotMap/entity_84_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_85_E_Grunt",
+        "name": "entity_85_E_Grunt",
+        "at": [
+          314.3333333333333,
+          312,
+          1149.6666666666667
+        ],
+        "sourceAt": [
+          -63.5,
+          1.5,
+          329
+        ],
+        "sourcePath": "QodotMap/entity_85_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_86_E_Grunt",
+        "name": "entity_86_E_Grunt",
+        "at": [
+          402.66666666666663,
+          312,
+          1059.6666666666667
+        ],
+        "sourceAt": [
+          -37,
+          1.5,
+          302
+        ],
+        "sourcePath": "QodotMap/entity_86_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_87_E_Grunt",
+        "name": "entity_87_E_Grunt",
+        "at": [
+          374.3333333333333,
+          329,
+          948
+        ],
+        "sourceAt": [
+          -45.5,
+          6.5,
+          268.5
+        ],
+        "sourcePath": "QodotMap/entity_87_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_88_E_Grunt",
+        "name": "entity_88_E_Grunt",
+        "at": [
+          374.3333333333333,
+          329,
+          1023
+        ],
+        "sourceAt": [
+          -45.5,
+          6.5,
+          291
+        ],
+        "sourcePath": "QodotMap/entity_88_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_89_E_Grunt",
+        "name": "entity_89_E_Grunt",
+        "at": [
+          422.66666666666663,
+          329,
+          1051.3333333333335
+        ],
+        "sourceAt": [
+          -31,
+          6.5,
+          299.5
+        ],
+        "sourcePath": "QodotMap/entity_89_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_90_E_Grunt",
+        "name": "entity_90_E_Grunt",
+        "at": [
+          377.66666666666663,
+          345,
+          988
+        ],
+        "sourceAt": [
+          -44.5,
+          11.5,
+          280.5
+        ],
+        "sourcePath": "QodotMap/entity_90_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_91_E_Grunt",
+        "name": "entity_91_E_Grunt",
+        "at": [
+          427.66666666666663,
+          345,
+          968
+        ],
+        "sourceAt": [
+          -29.5,
+          11.5,
+          274.5
+        ],
+        "sourcePath": "QodotMap/entity_91_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_92_E_Grunt",
+        "name": "entity_92_E_Grunt",
+        "at": [
+          382.66666666666663,
+          345,
+          1048
+        ],
+        "sourceAt": [
+          -43,
+          11.5,
+          298.5
+        ],
+        "sourcePath": "QodotMap/entity_92_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_118_E_Grunt",
+        "name": "entity_118_E_Grunt",
+        "at": [
+          114.33333333333331,
+          319,
+          574.6666666666667
+        ],
+        "sourceAt": [
+          -123.5,
+          3.5,
+          156.5
+        ],
+        "sourcePath": "QodotMap/entity_118_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_227_E_Elite",
+        "name": "entity_227_E_Elite",
+        "at": [
+          317.66666666666663,
+          312,
+          1048
+        ],
+        "sourceAt": [
+          -62.5,
+          1.5,
+          298.5
+        ],
+        "sourcePath": "QodotMap/entity_227_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_228_E_Elite",
+        "name": "entity_228_E_Elite",
+        "at": [
+          344.75,
+          312,
+          1066.75
+        ],
+        "sourceAt": [
+          -54.375,
+          1.5,
+          304.125
+        ],
+        "sourcePath": "QodotMap/entity_228_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_229_E_Elite",
+        "name": "entity_229_E_Elite",
+        "at": [
+          401,
+          312,
+          1014.6666666666667
+        ],
+        "sourceAt": [
+          -37.5,
+          1.5,
+          288.5
+        ],
+        "sourcePath": "QodotMap/entity_229_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_230_E_Elite",
+        "name": "entity_230_E_Elite",
+        "at": [
+          404.3333333333333,
+          345,
+          1011.3333333333334
+        ],
+        "sourceAt": [
+          -36.5,
+          11.5,
+          287.5
+        ],
+        "sourcePath": "QodotMap/entity_230_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_231_E_Security",
+        "name": "entity_231_E_Security",
+        "at": [
+          477.6666666666667,
+          312,
+          704.6666666666667
+        ],
+        "sourceAt": [
+          -14.5,
+          1.5,
+          195.5
+        ],
+        "sourcePath": "QodotMap/entity_231_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_232_E_Security",
+        "name": "entity_232_E_Security",
+        "at": [
+          517.6666666666666,
+          312,
+          708
+        ],
+        "sourceAt": [
+          -2.5,
+          1.5,
+          196.5
+        ],
+        "sourcePath": "QodotMap/entity_232_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_233_E_Security",
+        "name": "entity_233_E_Security",
+        "at": [
+          481,
+          335,
+          554.6666666666667
+        ],
+        "sourceAt": [
+          -13.5,
+          8.5,
+          150.5
+        ],
+        "sourcePath": "QodotMap/entity_233_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_234_E_Elite",
+        "name": "entity_234_E_Elite",
+        "at": [
+          454.3333333333333,
+          312,
+          518
+        ],
+        "sourceAt": [
+          -21.5,
+          1.5,
+          139.5
+        ],
+        "sourcePath": "QodotMap/entity_234_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_236_E_Security",
+        "name": "entity_236_E_Security",
+        "at": [
+          621,
+          312,
+          521.3333333333334
+        ],
+        "sourceAt": [
+          28.5,
+          1.5,
+          140.5
+        ],
+        "sourcePath": "QodotMap/entity_236_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_237_E_Security",
+        "name": "entity_237_E_Security",
+        "at": [
+          634.3333333333334,
+          312,
+          558
+        ],
+        "sourceAt": [
+          32.5,
+          1.5,
+          151.5
+        ],
+        "sourcePath": "QodotMap/entity_237_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_238_E_Security",
+        "name": "entity_238_E_Security",
+        "at": [
+          501,
+          312,
+          708
+        ],
+        "sourceAt": [
+          -7.5,
+          1.5,
+          196.5
+        ],
+        "sourcePath": "QodotMap/entity_238_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_239_E_Elite",
+        "name": "entity_239_E_Elite",
+        "at": [
+          137.66666666666663,
+          319,
+          614.6666666666667
+        ],
+        "sourceAt": [
+          -116.5,
+          3.5,
+          168.5
+        ],
+        "sourcePath": "QodotMap/entity_239_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_240_E_Elite",
+        "name": "entity_240_E_Elite",
+        "at": [
+          137.66666666666663,
+          319,
+          598
+        ],
+        "sourceAt": [
+          -116.5,
+          3.5,
+          163.5
+        ],
+        "sourcePath": "QodotMap/entity_240_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_241_E_Security",
+        "name": "entity_241_E_Security",
+        "at": [
+          91,
+          342,
+          568
+        ],
+        "sourceAt": [
+          -130.5,
+          10.5,
+          154.5
+        ],
+        "sourcePath": "QodotMap/entity_241_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_242_E_Security",
+        "name": "entity_242_E_Security",
+        "at": [
+          81,
+          342,
+          641.3333333333334
+        ],
+        "sourceAt": [
+          -133.5,
+          10.5,
+          176.5
+        ],
+        "sourcePath": "QodotMap/entity_242_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_243_E_Security",
+        "name": "entity_243_E_Security",
+        "at": [
+          314.3333333333333,
+          329,
+          778
+        ],
+        "sourceAt": [
+          -63.5,
+          6.5,
+          217.5
+        ],
+        "sourcePath": "QodotMap/entity_243_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_244_E_Security",
+        "name": "entity_244_E_Security",
+        "at": [
+          607.6666666666666,
+          312,
+          284.6666666666667
+        ],
+        "sourceAt": [
+          24.5,
+          1.5,
+          69.5
+        ],
+        "sourcePath": "QodotMap/entity_244_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_245_E_Security",
+        "name": "entity_245_E_Security",
+        "at": [
+          634.3333333333334,
+          319,
+          324.6666666666667
+        ],
+        "sourceAt": [
+          32.5,
+          3.5,
+          81.5
+        ],
+        "sourcePath": "QodotMap/entity_245_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_246_E_Security",
+        "name": "entity_246_E_Security",
+        "at": [
+          827.6666666666667,
+          312,
+          204.66666666666669
+        ],
+        "sourceAt": [
+          90.5,
+          1.5,
+          45.5
+        ],
+        "sourcePath": "QodotMap/entity_246_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_253_E_Security",
+        "name": "entity_253_E_Security",
+        "at": [
+          971,
+          315,
+          431.33333333333337
+        ],
+        "sourceAt": [
+          133.5,
+          2.5,
+          113.5
+        ],
+        "sourcePath": "QodotMap/entity_253_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_254_E_Elite",
+        "name": "entity_254_E_Elite",
+        "at": [
+          811,
+          329,
+          608
+        ],
+        "sourceAt": [
+          85.5,
+          6.5,
+          166.5
+        ],
+        "sourcePath": "QodotMap/entity_254_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_255_E_Elite",
+        "name": "entity_255_E_Elite",
+        "at": [
+          271,
+          312,
+          1024.6666666666667
+        ],
+        "sourceAt": [
+          -76.5,
+          1.5,
+          291.5
+        ],
+        "sourcePath": "QodotMap/entity_255_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Cop_Revolver",
+        "name": "Cop_Revolver",
+        "at": [
+          611.972,
+          312,
+          669.95
+        ],
+        "sourceAt": [
+          25.7916,
+          2.04689,
+          185.085
+        ],
+        "sourcePath": "Cop_Revolver",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Cop_Shotgun",
+        "name": "Cop_Shotgun",
+        "at": [
+          611.6923333333333,
+          312,
+          659.2933333333334
+        ],
+        "sourceAt": [
+          25.7077,
+          1.7324,
+          181.888
+        ],
+        "sourcePath": "Cop_Shotgun",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      }
+    ],
+    "authoredTargets": [
+      {
+        "id": "Nerd_1",
+        "name": "Paradise target (Nerd_1)",
+        "at": [
+          457.725,
+          335,
+          559.1266666666667
+        ],
+        "sourceAt": [
+          -20.4825,
+          9.00043,
+          151.838
+        ],
+        "sourcePath": "Nerd_1",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Nerd_2",
+        "name": "Paradise target (Nerd_2)",
+        "at": [
+          613.3696666666667,
+          299,
+          548.9933333333333
+        ],
+        "sourceAt": [
+          26.2109,
+          -2.04942,
+          148.798
+        ],
+        "sourcePath": "Nerd_2",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Nerd_3",
+        "name": "Paradise target (Nerd_3)",
+        "at": [
+          481.75666666666666,
+          332,
+          680.6033333333334
+        ],
+        "sourceAt": [
+          -13.273,
+          7.00043,
+          188.281
+        ],
+        "sourcePath": "Nerd_3",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      }
+    ],
+    "authoredGuards": [
+      {
+        "id": "QodotMap/entity_19_E_Grunt",
+        "name": "entity_19_E_Grunt",
+        "at": [
+          607.6666666666666,
+          312,
+          276.33333333333337
+        ],
+        "sourceAt": [
+          24.5,
+          1.5,
+          67
+        ],
+        "sourcePath": "QodotMap/entity_19_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_20_E_Grunt",
+        "name": "entity_20_E_Grunt",
+        "at": [
+          544.3333333333334,
+          312,
+          513
+        ],
+        "sourceAt": [
+          5.5,
+          1.5,
+          138
+        ],
+        "sourcePath": "QodotMap/entity_20_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_24_E_Mutant",
+        "name": "entity_24_E_Mutant",
+        "at": [
+          594.3333333333334,
+          312,
+          664.6666666666667
+        ],
+        "sourceAt": [
+          20.5,
+          1.5,
+          183.5
+        ],
+        "sourcePath": "QodotMap/entity_24_E_Mutant",
+        "style": "axeman"
+      },
+      {
+        "id": "QodotMap/entity_25_E_Grunt",
+        "name": "entity_25_E_Grunt",
+        "at": [
+          111,
+          319,
+          614.6666666666667
+        ],
+        "sourceAt": [
+          -124.5,
+          3.5,
+          168.5
+        ],
+        "sourcePath": "QodotMap/entity_25_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_38_E_Grunt",
+        "name": "entity_38_E_Grunt",
+        "at": [
+          574.3333333333334,
+          312,
+          531.3333333333334
+        ],
+        "sourceAt": [
+          14.5,
+          1.5,
+          143.5
+        ],
+        "sourcePath": "QodotMap/entity_38_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_42_E_Grunt",
+        "name": "entity_42_E_Grunt",
+        "at": [
+          601,
+          335,
+          324.6666666666667
+        ],
+        "sourceAt": [
+          22.5,
+          8.5,
+          81.5
+        ],
+        "sourcePath": "QodotMap/entity_42_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_43_E_Grunt",
+        "name": "entity_43_E_Grunt",
+        "at": [
+          521,
+          319,
+          546.3333333333334
+        ],
+        "sourceAt": [
+          -1.5,
+          3.5,
+          148
+        ],
+        "sourcePath": "QodotMap/entity_43_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_44_E_Grunt",
+        "name": "entity_44_E_Grunt",
+        "at": [
+          485.1666666666667,
+          335,
+          534.6666666666667
+        ],
+        "sourceAt": [
+          -12.25,
+          8.5,
+          144.5
+        ],
+        "sourcePath": "QodotMap/entity_44_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_48_E_Grunt",
+        "name": "entity_48_E_Grunt",
+        "at": [
+          517.6666666666666,
+          335,
+          531.3333333333334
+        ],
+        "sourceAt": [
+          -2.5,
+          8.5,
+          143.5
+        ],
+        "sourcePath": "QodotMap/entity_48_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_51_E_Grunt",
+        "name": "entity_51_E_Grunt",
+        "at": [
+          791,
+          312,
+          608
+        ],
+        "sourceAt": [
+          79.5,
+          1.5,
+          166.5
+        ],
+        "sourcePath": "QodotMap/entity_51_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_52_E_Grunt",
+        "name": "entity_52_E_Grunt",
+        "at": [
+          797.6666666666667,
+          329,
+          628
+        ],
+        "sourceAt": [
+          81.5,
+          6.5,
+          172.5
+        ],
+        "sourcePath": "QodotMap/entity_52_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_67_E_Mutant",
+        "name": "entity_67_E_Mutant",
+        "at": [
+          451,
+          312,
+          681.3333333333334
+        ],
+        "sourceAt": [
+          -22.5,
+          1.5,
+          188.5
+        ],
+        "sourcePath": "QodotMap/entity_67_E_Mutant",
+        "style": "axeman"
+      },
+      {
+        "id": "QodotMap/entity_77_E_Grunt",
+        "name": "entity_77_E_Grunt",
+        "at": [
+          491,
+          319,
+          548
+        ],
+        "sourceAt": [
+          -10.5,
+          3.5,
+          148.5
+        ],
+        "sourcePath": "QodotMap/entity_77_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_81_E_Grunt",
+        "name": "entity_81_E_Grunt",
+        "at": [
+          277.66666666666663,
+          312,
+          989.6666666666667
+        ],
+        "sourceAt": [
+          -74.5,
+          1.5,
+          281
+        ],
+        "sourcePath": "QodotMap/entity_81_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_82_E_Grunt",
+        "name": "entity_82_E_Grunt",
+        "at": [
+          269.3333333333333,
+          312,
+          994.6666666666667
+        ],
+        "sourceAt": [
+          -77,
+          1.5,
+          282.5
+        ],
+        "sourcePath": "QodotMap/entity_82_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_83_E_Grunt",
+        "name": "entity_83_E_Grunt",
+        "at": [
+          307.66666666666663,
+          312,
+          1008
+        ],
+        "sourceAt": [
+          -65.5,
+          1.5,
+          286.5
+        ],
+        "sourcePath": "QodotMap/entity_83_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_84_E_Grunt",
+        "name": "entity_84_E_Grunt",
+        "at": [
+          356,
+          312,
+          1101.3333333333335
+        ],
+        "sourceAt": [
+          -51,
+          1.5,
+          314.5
+        ],
+        "sourcePath": "QodotMap/entity_84_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_85_E_Grunt",
+        "name": "entity_85_E_Grunt",
+        "at": [
+          314.3333333333333,
+          312,
+          1149.6666666666667
+        ],
+        "sourceAt": [
+          -63.5,
+          1.5,
+          329
+        ],
+        "sourcePath": "QodotMap/entity_85_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_86_E_Grunt",
+        "name": "entity_86_E_Grunt",
+        "at": [
+          402.66666666666663,
+          312,
+          1059.6666666666667
+        ],
+        "sourceAt": [
+          -37,
+          1.5,
+          302
+        ],
+        "sourcePath": "QodotMap/entity_86_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_87_E_Grunt",
+        "name": "entity_87_E_Grunt",
+        "at": [
+          374.3333333333333,
+          329,
+          948
+        ],
+        "sourceAt": [
+          -45.5,
+          6.5,
+          268.5
+        ],
+        "sourcePath": "QodotMap/entity_87_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_88_E_Grunt",
+        "name": "entity_88_E_Grunt",
+        "at": [
+          374.3333333333333,
+          329,
+          1023
+        ],
+        "sourceAt": [
+          -45.5,
+          6.5,
+          291
+        ],
+        "sourcePath": "QodotMap/entity_88_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_89_E_Grunt",
+        "name": "entity_89_E_Grunt",
+        "at": [
+          422.66666666666663,
+          329,
+          1051.3333333333335
+        ],
+        "sourceAt": [
+          -31,
+          6.5,
+          299.5
+        ],
+        "sourcePath": "QodotMap/entity_89_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_90_E_Grunt",
+        "name": "entity_90_E_Grunt",
+        "at": [
+          377.66666666666663,
+          345,
+          988
+        ],
+        "sourceAt": [
+          -44.5,
+          11.5,
+          280.5
+        ],
+        "sourcePath": "QodotMap/entity_90_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_91_E_Grunt",
+        "name": "entity_91_E_Grunt",
+        "at": [
+          427.66666666666663,
+          345,
+          968
+        ],
+        "sourceAt": [
+          -29.5,
+          11.5,
+          274.5
+        ],
+        "sourcePath": "QodotMap/entity_91_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_92_E_Grunt",
+        "name": "entity_92_E_Grunt",
+        "at": [
+          382.66666666666663,
+          345,
+          1048
+        ],
+        "sourceAt": [
+          -43,
+          11.5,
+          298.5
+        ],
+        "sourcePath": "QodotMap/entity_92_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_118_E_Grunt",
+        "name": "entity_118_E_Grunt",
+        "at": [
+          114.33333333333331,
+          319,
+          574.6666666666667
+        ],
+        "sourceAt": [
+          -123.5,
+          3.5,
+          156.5
+        ],
+        "sourcePath": "QodotMap/entity_118_E_Grunt",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_227_E_Elite",
+        "name": "entity_227_E_Elite",
+        "at": [
+          317.66666666666663,
+          312,
+          1048
+        ],
+        "sourceAt": [
+          -62.5,
+          1.5,
+          298.5
+        ],
+        "sourcePath": "QodotMap/entity_227_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_228_E_Elite",
+        "name": "entity_228_E_Elite",
+        "at": [
+          344.75,
+          312,
+          1066.75
+        ],
+        "sourceAt": [
+          -54.375,
+          1.5,
+          304.125
+        ],
+        "sourcePath": "QodotMap/entity_228_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_229_E_Elite",
+        "name": "entity_229_E_Elite",
+        "at": [
+          401,
+          312,
+          1014.6666666666667
+        ],
+        "sourceAt": [
+          -37.5,
+          1.5,
+          288.5
+        ],
+        "sourcePath": "QodotMap/entity_229_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_230_E_Elite",
+        "name": "entity_230_E_Elite",
+        "at": [
+          404.3333333333333,
+          345,
+          1011.3333333333334
+        ],
+        "sourceAt": [
+          -36.5,
+          11.5,
+          287.5
+        ],
+        "sourcePath": "QodotMap/entity_230_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_231_E_Security",
+        "name": "entity_231_E_Security",
+        "at": [
+          477.6666666666667,
+          312,
+          704.6666666666667
+        ],
+        "sourceAt": [
+          -14.5,
+          1.5,
+          195.5
+        ],
+        "sourcePath": "QodotMap/entity_231_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_232_E_Security",
+        "name": "entity_232_E_Security",
+        "at": [
+          517.6666666666666,
+          312,
+          708
+        ],
+        "sourceAt": [
+          -2.5,
+          1.5,
+          196.5
+        ],
+        "sourcePath": "QodotMap/entity_232_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_233_E_Security",
+        "name": "entity_233_E_Security",
+        "at": [
+          481,
+          335,
+          554.6666666666667
+        ],
+        "sourceAt": [
+          -13.5,
+          8.5,
+          150.5
+        ],
+        "sourcePath": "QodotMap/entity_233_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_234_E_Elite",
+        "name": "entity_234_E_Elite",
+        "at": [
+          454.3333333333333,
+          312,
+          518
+        ],
+        "sourceAt": [
+          -21.5,
+          1.5,
+          139.5
+        ],
+        "sourcePath": "QodotMap/entity_234_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_235_E_Security",
+        "name": "entity_235_E_Security",
+        "at": null,
+        "sourceAt": [
+          17.5,
+          6.5,
+          145.5
+        ],
+        "sourcePath": "QodotMap/entity_235_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_236_E_Security",
+        "name": "entity_236_E_Security",
+        "at": [
+          621,
+          312,
+          521.3333333333334
+        ],
+        "sourceAt": [
+          28.5,
+          1.5,
+          140.5
+        ],
+        "sourcePath": "QodotMap/entity_236_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_237_E_Security",
+        "name": "entity_237_E_Security",
+        "at": [
+          634.3333333333334,
+          312,
+          558
+        ],
+        "sourceAt": [
+          32.5,
+          1.5,
+          151.5
+        ],
+        "sourcePath": "QodotMap/entity_237_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_238_E_Security",
+        "name": "entity_238_E_Security",
+        "at": [
+          501,
+          312,
+          708
+        ],
+        "sourceAt": [
+          -7.5,
+          1.5,
+          196.5
+        ],
+        "sourcePath": "QodotMap/entity_238_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_239_E_Elite",
+        "name": "entity_239_E_Elite",
+        "at": [
+          137.66666666666663,
+          319,
+          614.6666666666667
+        ],
+        "sourceAt": [
+          -116.5,
+          3.5,
+          168.5
+        ],
+        "sourcePath": "QodotMap/entity_239_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_240_E_Elite",
+        "name": "entity_240_E_Elite",
+        "at": [
+          137.66666666666663,
+          319,
+          598
+        ],
+        "sourceAt": [
+          -116.5,
+          3.5,
+          163.5
+        ],
+        "sourcePath": "QodotMap/entity_240_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_241_E_Security",
+        "name": "entity_241_E_Security",
+        "at": [
+          91,
+          342,
+          568
+        ],
+        "sourceAt": [
+          -130.5,
+          10.5,
+          154.5
+        ],
+        "sourcePath": "QodotMap/entity_241_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_242_E_Security",
+        "name": "entity_242_E_Security",
+        "at": [
+          81,
+          342,
+          641.3333333333334
+        ],
+        "sourceAt": [
+          -133.5,
+          10.5,
+          176.5
+        ],
+        "sourcePath": "QodotMap/entity_242_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_243_E_Security",
+        "name": "entity_243_E_Security",
+        "at": [
+          314.3333333333333,
+          329,
+          778
+        ],
+        "sourceAt": [
+          -63.5,
+          6.5,
+          217.5
+        ],
+        "sourcePath": "QodotMap/entity_243_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_244_E_Security",
+        "name": "entity_244_E_Security",
+        "at": [
+          607.6666666666666,
+          312,
+          284.6666666666667
+        ],
+        "sourceAt": [
+          24.5,
+          1.5,
+          69.5
+        ],
+        "sourcePath": "QodotMap/entity_244_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_245_E_Security",
+        "name": "entity_245_E_Security",
+        "at": [
+          634.3333333333334,
+          319,
+          324.6666666666667
+        ],
+        "sourceAt": [
+          32.5,
+          3.5,
+          81.5
+        ],
+        "sourcePath": "QodotMap/entity_245_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_246_E_Security",
+        "name": "entity_246_E_Security",
+        "at": [
+          827.6666666666667,
+          312,
+          204.66666666666669
+        ],
+        "sourceAt": [
+          90.5,
+          1.5,
+          45.5
+        ],
+        "sourcePath": "QodotMap/entity_246_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_253_E_Security",
+        "name": "entity_253_E_Security",
+        "at": [
+          971,
+          315,
+          431.33333333333337
+        ],
+        "sourceAt": [
+          133.5,
+          2.5,
+          113.5
+        ],
+        "sourcePath": "QodotMap/entity_253_E_Security",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_254_E_Elite",
+        "name": "entity_254_E_Elite",
+        "at": [
+          811,
+          329,
+          608
+        ],
+        "sourceAt": [
+          85.5,
+          6.5,
+          166.5
+        ],
+        "sourcePath": "QodotMap/entity_254_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "QodotMap/entity_255_E_Elite",
+        "name": "entity_255_E_Elite",
+        "at": [
+          271,
+          312,
+          1024.6666666666667
+        ],
+        "sourceAt": [
+          -76.5,
+          1.5,
+          291.5
+        ],
+        "sourcePath": "QodotMap/entity_255_E_Elite",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Cop_Revolver",
+        "name": "Cop_Revolver",
+        "at": [
+          611.972,
+          312,
+          669.95
+        ],
+        "sourceAt": [
+          25.7916,
+          2.04689,
+          185.085
+        ],
+        "sourcePath": "Cop_Revolver",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      },
+      {
+        "id": "Cop_Shotgun",
+        "name": "Cop_Shotgun",
+        "at": [
+          611.6923333333333,
+          312,
+          659.2933333333334
+        ],
+        "sourceAt": [
+          25.7077,
+          1.7324,
+          181.888
+        ],
+        "sourcePath": "Cop_Shotgun",
+        "style": "gunner",
+        "weapons": [
+          "GUN"
+        ]
+      }
+    ],
+    "placementFailures": [
+      {
+        "sourcePath": "QodotMap/entity_235_E_Security",
+        "sourceAt": [
+          17.5,
+          6.5,
+          145.5
+        ],
+        "role": "guard",
+        "bodyDimensions": [
+          1.6,
+          5.5,
+          1.6
+        ],
+        "reason": "No SOLID support with full ordinary body clearance at authored X/Z within 3 meters below pivot"
+      }
+    ],
+    "extraction": {
+      "at": [
+        699.3333333333334,
+        308,
+        21.333333333333332
+      ],
+      "radius": 1.6666666666666679,
+      "height": 63.333333333333314,
+      "sourcePath": "QodotMap/entity_225_Exit",
+      "sourceAt": [
+        52,
+        9.5,
+        -9.5
+      ],
+      "bounds": {
+        "min": [
+          669.3333333333334,
+          308,
+          19.666666666666664
+        ],
+        "max": [
+          729.3333333333334,
+          371.3333333333333,
+          23
+        ]
+      },
+      "points": [
+        [
+          669.3333333333334,
+          371.3333333333333,
+          19.666666666666664
+        ],
+        [
+          669.3333333333334,
+          308,
+          19.666666666666664
+        ],
+        [
+          729.3333333333334,
+          308,
+          19.666666666666664
+        ],
+        [
+          729.3333333333334,
+          371.3333333333333,
+          19.666666666666664
+        ],
+        [
+          669.3333333333334,
+          371.3333333333333,
+          23
+        ],
+        [
+          669.3333333333334,
+          308,
+          23
+        ],
+        [
+          729.3333333333334,
+          308,
+          23
+        ],
+        [
+          729.3333333333334,
+          371.3333333333333,
+          23
+        ]
+      ],
+      "sourcePoints": [
+        [
+          43.00000000000001,
+          18.999999999999993,
+          -10
+        ],
+        [
+          43.00000000000001,
+          0,
+          -10
+        ],
+        [
+          61.00000000000001,
+          0,
+          -10
+        ],
+        [
+          61.00000000000001,
+          18.999999999999993,
+          -10
+        ],
+        [
+          43.00000000000001,
+          18.999999999999993,
+          -9
+        ],
+        [
+          43.00000000000001,
+          0,
+          -9
+        ],
+        [
+          61.00000000000001,
+          0,
+          -9
+        ],
+        [
+          61.00000000000001,
+          18.999999999999993,
+          -9
+        ]
+      ],
+      "axes": [
+        {
+          "normal": [
+            1,
+            0,
+            0
+          ],
+          "min": 669.3333333333334,
+          "max": 729.3333333333334
+        },
+        {
+          "normal": [
+            0,
+            1,
+            0
+          ],
+          "min": 308,
+          "max": 371.3333333333333
+        },
+        {
+          "normal": [
+            0,
+            0,
+            1
+          ],
+          "min": 19.666666666666664,
+          "max": 23
+        },
+        {
+          "normal": [
+            0.7259526839058266,
+            0.6877446479107833,
+            0
+          ],
+          "min": 697.7296813174878,
+          "max": 784.8440033861871
+        },
+        {
+          "normal": [
+            0,
+            0.05255883312276372,
+            0.9986178293325098
+          ],
+          "min": 35.82760457868392,
+          "max": 42.48505677423398
+        },
+        {
+          "normal": [
+            0.05547001962252295,
+            0,
+            -0.9984603532054125
+          ],
+          "min": 14.163345010284214,
+          "max": 20.819747364986963
+        },
+        {
+          "normal": [
+            0.7259526839058266,
+            -0.6877446479107833,
+            0
+          ],
+          "min": 230.52181717009577,
+          "max": 317.63613923879495
+        },
+        {
+          "normal": [
+            0,
+            0.05255883312276372,
+            -0.9986178293325098
+          ],
+          "min": -6.780089472836497,
+          "max": -0.12263727728642948
+        },
+        {
+          "normal": [
+            0.05547001962252295,
+            0,
+            0.9984603532054125
+          ],
+          "min": 56.76432008038181,
+          "max": 63.420722435084556
+        }
+      ]
+    },
+    "extractions": [
+      {
+        "at": [
+          699.3333333333334,
+          308,
+          21.333333333333332
+        ],
+        "radius": 1.6666666666666679,
+        "height": 63.333333333333314,
+        "sourcePath": "QodotMap/entity_225_Exit",
+        "sourceAt": [
+          52,
+          9.5,
+          -9.5
+        ],
+        "bounds": {
+          "min": [
+            669.3333333333334,
+            308,
+            19.666666666666664
+          ],
+          "max": [
+            729.3333333333334,
+            371.3333333333333,
+            23
+          ]
+        },
+        "points": [
+          [
+            669.3333333333334,
+            371.3333333333333,
+            19.666666666666664
+          ],
+          [
+            669.3333333333334,
+            308,
+            19.666666666666664
+          ],
+          [
+            729.3333333333334,
+            308,
+            19.666666666666664
+          ],
+          [
+            729.3333333333334,
+            371.3333333333333,
+            19.666666666666664
+          ],
+          [
+            669.3333333333334,
+            371.3333333333333,
+            23
+          ],
+          [
+            669.3333333333334,
+            308,
+            23
+          ],
+          [
+            729.3333333333334,
+            308,
+            23
+          ],
+          [
+            729.3333333333334,
+            371.3333333333333,
+            23
+          ]
+        ],
+        "sourcePoints": [
+          [
+            43.00000000000001,
+            18.999999999999993,
+            -10
+          ],
+          [
+            43.00000000000001,
+            0,
+            -10
+          ],
+          [
+            61.00000000000001,
+            0,
+            -10
+          ],
+          [
+            61.00000000000001,
+            18.999999999999993,
+            -10
+          ],
+          [
+            43.00000000000001,
+            18.999999999999993,
+            -9
+          ],
+          [
+            43.00000000000001,
+            0,
+            -9
+          ],
+          [
+            61.00000000000001,
+            0,
+            -9
+          ],
+          [
+            61.00000000000001,
+            18.999999999999993,
+            -9
+          ]
+        ],
+        "axes": [
+          {
+            "normal": [
+              1,
+              0,
+              0
+            ],
+            "min": 669.3333333333334,
+            "max": 729.3333333333334
+          },
+          {
+            "normal": [
+              0,
+              1,
+              0
+            ],
+            "min": 308,
+            "max": 371.3333333333333
+          },
+          {
+            "normal": [
+              0,
+              0,
+              1
+            ],
+            "min": 19.666666666666664,
+            "max": 23
+          },
+          {
+            "normal": [
+              0.7259526839058266,
+              0.6877446479107833,
+              0
+            ],
+            "min": 697.7296813174878,
+            "max": 784.8440033861871
+          },
+          {
+            "normal": [
+              0,
+              0.05255883312276372,
+              0.9986178293325098
+            ],
+            "min": 35.82760457868392,
+            "max": 42.48505677423398
+          },
+          {
+            "normal": [
+              0.05547001962252295,
+              0,
+              -0.9984603532054125
+            ],
+            "min": 14.163345010284214,
+            "max": 20.819747364986963
+          },
+          {
+            "normal": [
+              0.7259526839058266,
+              -0.6877446479107833,
+              0
+            ],
+            "min": 230.52181717009577,
+            "max": 317.63613923879495
+          },
+          {
+            "normal": [
+              0,
+              0.05255883312276372,
+              -0.9986178293325098
+            ],
+            "min": -6.780089472836497,
+            "max": -0.12263727728642948
+          },
+          {
+            "normal": [
+              0.05547001962252295,
+              0,
+              0.9984603532054125
+            ],
+            "min": 56.76432008038181,
+            "max": 63.420722435084556
+          }
+        ]
+      }
+    ]
+  },
+  "preview": true,
+  "provenance": {
+    "sourceFile": "Levels/Level2.tscn",
+    "sha256": "4f55b5e60a6995ec2fd6c73a5181824591fc519705ea23e4d3d062b8c7bc4c4e",
+    "originalFormat": "Godot 3 text scene format=2",
+    "distribution": "Local conversion only; game asset redistribution permission not established",
+    "coordinateRule": "Godot Y-up, identity axes; meters / CELL_M, then integer bounds translation; Qodot scale already applied in .tscn"
+  },
+  "materialMapping": {
+    "__default__": "WALL",
+    "res://Imported_Mesh/Snirby.material": "WOOD",
+    "res://Maps/textures/base/1.png": "ROCK",
+    "res://Maps/textures/base/alien_1.png": "ROCK",
+    "res://Maps/textures/base/alien_2.png": "ROCK",
+    "res://Maps/textures/base/arches.png": "ROCK",
+    "res://Maps/textures/base/bathroom.png": "CERAMIC",
+    "res://Maps/textures/base/BlackWall.png": "ROCK",
+    "res://Maps/textures/base/blue_yellow.png": "ROCK",
+    "res://Maps/textures/base/catacomb.png": "ROCK",
+    "res://Maps/textures/base/chainlink.tres": "METAL",
+    "res://Maps/textures/base/cobble1.png": "ROCK",
+    "res://Maps/textures/base/cobble2.png": "ROCK",
+    "res://Maps/textures/base/cyber_1.png": "ROCK",
+    "res://Maps/textures/base/cyber_2.png": "ROCK",
+    "res://Maps/textures/base/Diamond_Tile.png": "CERAMIC",
+    "res://Maps/textures/base/divinedoor.png": "METAL",
+    "res://Maps/textures/base/Elevator1.png": "METAL",
+    "res://Maps/textures/base/flesh_tile.png": "ROCK",
+    "res://Maps/textures/base/flesh.tres": "ROCK",
+    "res://Maps/textures/base/flower.png": "ROCK",
+    "res://Maps/textures/base/freak_tile.png": "CERAMIC",
+    "res://Maps/textures/base/frog1.png": "ROCK",
+    "res://Maps/textures/base/glass_green.tres": "GLASS",
+    "res://Maps/textures/base/glass1.tres": "GLASS",
+    "res://Maps/textures/base/Granite1.png": "ROCK",
+    "res://Maps/textures/base/grate.png": "METAL",
+    "res://Maps/textures/base/greenplank.png": "WOOD",
+    "res://Maps/textures/base/greenwall.png": "ROCK",
+    "res://Maps/textures/base/GreyWall.png": "ROCK",
+    "res://Maps/textures/base/joe2.png": "ROCK",
+    "res://Maps/textures/base/light1.tres": "CRYSTAL",
+    "res://Maps/textures/base/maario.png": "ROCK",
+    "res://Maps/textures/base/Marble1.tres": "LIMESTONE",
+    "res://Maps/textures/base/Marble1red.tres": "LIMESTONE",
+    "res://Maps/textures/base/MarbleFace1.png": "LIMESTONE",
+    "res://Maps/textures/base/metal_door.png": "METAL",
+    "res://Maps/textures/base/mosaic_1.png": "CERAMIC",
+    "res://Maps/textures/base/non_slip_tile.png": "CERAMIC",
+    "res://Maps/textures/base/pizzahouse.png": "ROCK",
+    "res://Maps/textures/base/plain_wall.png": "ROCK",
+    "res://Maps/textures/base/plain_wall2.png": "ROCK",
+    "res://Maps/textures/base/psycho_tile.png": "CERAMIC",
+    "res://Maps/textures/base/RedWall.png": "ROCK",
+    "res://Maps/textures/base/rug1.png": "WOOD",
+    "res://Maps/textures/base/star_tile.png": "CERAMIC",
+    "res://Maps/textures/base/Stone_Tile_dark.png": "ROCK",
+    "res://Maps/textures/base/Stone_Tile.png": "ROCK",
+    "res://Maps/textures/base/Stone_Wall_1.png": "ROCK",
+    "res://Maps/textures/base/Stone_wall_2.png": "ROCK",
+    "res://Maps/textures/base/Stone2.png": "ROCK",
+    "res://Maps/textures/base/Stone2face.png": "ROCK",
+    "res://Maps/textures/base/Stone3.png": "ROCK",
+    "res://Maps/textures/base/Stone4.png": "ROCK",
+    "res://Maps/textures/base/Teal_Tile.png": "CERAMIC",
+    "res://Maps/textures/base/Teal_Tile2.png": "CERAMIC",
+    "res://Maps/textures/base/TealWall.png": "ROCK",
+    "res://Maps/textures/base/Wall_Crusty_face.png": "ROCK",
+    "res://Maps/textures/base/Wall_Crusty.png": "ROCK",
+    "res://Maps/textures/base/water.tres": "WATER",
+    "res://Maps/textures/base/Wood_Door2.png": "WOOD",
+    "res://Maps/textures/base/Wood1.png": "WOOD",
+    "res://Maps/textures/base/Wood2.tres": "WOOD",
+    "res://Maps/textures/suburb/funko.png": "ROCK",
+    "res://Maps/textures/suburb/suburb_brick_1.png": "BRICK",
+    "res://Maps/textures/suburb/suburb_brick_2.png": "BRICK",
+    "res://Maps/textures/suburb/suburb_grass_red.png": "PLANT",
+    "res://Maps/textures/suburb/suburb_grass.png": "PLANT",
+    "res://Maps/textures/suburb/suburb_roof_1.png": "BRICK",
+    "res://Maps/textures/suburb/suburb_roof_2.png": "BRICK",
+    "res://Maps/textures/suburb/suburb_wall_1.png": "ROCK",
+    "res://Maps/textures/suburb/suburb_wall_2.png": "ROCK",
+    "res://Maps/textures/suburb/suburb_wall_3.png": "ROCK",
+    "res://Maps/textures/swamp/swamptree.png": "WOOD",
+    "res://Maps/textures/swamp/swampwater1.tres": "WATER"
+  },
+  "materialUsage": {
+    "res://Maps/textures/base/BlackWall.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 909
+    },
+    "res://Maps/textures/base/Stone_Wall_1.png": {
+      "element": "ROCK",
+      "surfaces": 7,
+      "triangles": 4626
+    },
+    "res://Maps/textures/base/catacomb.png": {
+      "element": "ROCK",
+      "surfaces": 6,
+      "triangles": 1496
+    },
+    "res://Maps/textures/base/Granite1.png": {
+      "element": "ROCK",
+      "surfaces": 5,
+      "triangles": 3946
+    },
+    "res://Maps/textures/suburb/suburb_grass.png": {
+      "element": "PLANT",
+      "surfaces": 1,
+      "triangles": 646
+    },
+    "res://Maps/textures/base/Stone3.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 96
+    },
+    "res://Maps/textures/base/Stone4.png": {
+      "element": "ROCK",
+      "surfaces": 7,
+      "triangles": 3544
+    },
+    "res://Maps/textures/suburb/suburb_brick_2.png": {
+      "element": "BRICK",
+      "surfaces": 2,
+      "triangles": 1616
+    },
+    "res://Maps/textures/base/cobble1.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 30
+    },
+    "res://Maps/textures/suburb/suburb_grass_red.png": {
+      "element": "PLANT",
+      "surfaces": 1,
+      "triangles": 84
+    },
+    "res://Maps/textures/base/Stone_wall_2.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 764
+    },
+    "res://Maps/textures/suburb/suburb_wall_1.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 1695
+    },
+    "res://Maps/textures/base/TealWall.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 130
+    },
+    "res://Maps/textures/base/Teal_Tile.png": {
+      "element": "CERAMIC",
+      "surfaces": 1,
+      "triangles": 290
+    },
+    "res://Maps/textures/base/cyber_1.png": {
+      "element": "ROCK",
+      "surfaces": 8,
+      "triangles": 1132
+    },
+    "res://Maps/textures/base/blue_yellow.png": {
+      "element": "ROCK",
+      "surfaces": 2,
+      "triangles": 446
+    },
+    "res://Maps/textures/base/freak_tile.png": {
+      "element": "CERAMIC",
+      "surfaces": 1,
+      "triangles": 601
+    },
+    "res://Maps/textures/suburb/suburb_roof_1.png": {
+      "element": "BRICK",
+      "surfaces": 1,
+      "triangles": 36
+    },
+    "res://Maps/textures/base/psycho_tile.png": {
+      "element": "CERAMIC",
+      "surfaces": 4,
+      "triangles": 1502
+    },
+    "res://Maps/textures/base/MarbleFace1.png": {
+      "element": "LIMESTONE",
+      "surfaces": 4,
+      "triangles": 592
+    },
+    "res://Maps/textures/base/Wood1.png": {
+      "element": "WOOD",
+      "surfaces": 4,
+      "triangles": 1016
+    },
+    "res://Maps/textures/base/alien_1.png": {
+      "element": "ROCK",
+      "surfaces": 5,
+      "triangles": 2064
+    },
+    "res://Maps/textures/base/Marble1.tres": {
+      "element": "LIMESTONE",
+      "surfaces": 1,
+      "triangles": 11066
+    },
+    "res://Maps/textures/base/star_tile.png": {
+      "element": "CERAMIC",
+      "surfaces": 2,
+      "triangles": 2631
+    },
+    "res://Maps/textures/base/plain_wall2.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 304
+    },
+    "res://Maps/textures/base/chainlink.tres": {
+      "element": "METAL",
+      "surfaces": 1,
+      "triangles": 54
+    },
+    "res://Maps/textures/base/Wall_Crusty.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 130
+    },
+    "res://Maps/textures/base/Wall_Crusty_face.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 96
+    },
+    "res://Maps/textures/base/Teal_Tile2.png": {
+      "element": "CERAMIC",
+      "surfaces": 1,
+      "triangles": 3816
+    },
+    "res://Maps/textures/base/Diamond_Tile.png": {
+      "element": "CERAMIC",
+      "surfaces": 2,
+      "triangles": 494
+    },
+    "res://Maps/textures/base/Stone2.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 24
+    },
+    "res://Maps/textures/base/cyber_2.png": {
+      "element": "ROCK",
+      "surfaces": 3,
+      "triangles": 525
+    },
+    "res://Maps/textures/suburb/suburb_wall_3.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 1059
+    },
+    "res://Maps/textures/base/non_slip_tile.png": {
+      "element": "CERAMIC",
+      "surfaces": 1,
+      "triangles": 138
+    },
+    "res://Maps/textures/base/maario.png": {
+      "element": "ROCK",
+      "surfaces": 9,
+      "triangles": 386
+    },
+    "res://Maps/textures/base/mosaic_1.png": {
+      "element": "CERAMIC",
+      "surfaces": 3,
+      "triangles": 64
+    },
+    "__default__": {
+      "element": "WALL",
+      "surfaces": 2,
+      "triangles": 256
+    },
+    "res://Maps/textures/base/frog1.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 71
+    },
+    "res://Maps/textures/base/alien_2.png": {
+      "element": "ROCK",
+      "surfaces": 2,
+      "triangles": 196
+    },
+    "res://Maps/textures/base/Stone2face.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 22
+    },
+    "res://Maps/textures/suburb/suburb_brick_1.png": {
+      "element": "BRICK",
+      "surfaces": 1,
+      "triangles": 491
+    },
+    "res://Maps/textures/base/plain_wall.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 40
+    },
+    "res://Maps/textures/suburb/suburb_wall_2.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 835
+    },
+    "res://Maps/textures/base/bathroom.png": {
+      "element": "CERAMIC",
+      "surfaces": 1,
+      "triangles": 20
+    },
+    "res://Maps/textures/base/flesh_tile.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 376
+    },
+    "res://Maps/textures/base/Wood2.tres": {
+      "element": "WOOD",
+      "surfaces": 3,
+      "triangles": 1520
+    },
+    "res://Maps/textures/suburb/suburb_roof_2.png": {
+      "element": "BRICK",
+      "surfaces": 1,
+      "triangles": 78
+    },
+    "res://Maps/textures/base/arches.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 208
+    },
+    "res://Maps/textures/base/cobble2.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 2
+    },
+    "res://Maps/textures/base/pizzahouse.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 80
+    },
+    "res://Maps/textures/base/Stone_Tile.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 254
+    },
+    "res://Maps/textures/base/Elevator1.png": {
+      "element": "METAL",
+      "surfaces": 11,
+      "triangles": 700
+    },
+    "res://Maps/textures/base/grate.png": {
+      "element": "METAL",
+      "surfaces": 2,
+      "triangles": 30
+    },
+    "res://Maps/textures/base/GreyWall.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 4
+    },
+    "res://Maps/textures/base/glass1.tres": {
+      "element": "GLASS",
+      "surfaces": 100,
+      "triangles": 1580
+    },
+    "res://Maps/textures/base/1.png": {
+      "element": "ROCK",
+      "surfaces": 3,
+      "triangles": 10
+    },
+    "res://Maps/textures/suburb/funko.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 84
+    },
+    "res://Maps/textures/base/rug1.png": {
+      "element": "WOOD",
+      "surfaces": 1,
+      "triangles": 2
+    },
+    "res://Maps/textures/base/flower.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 72
+    },
+    "res://Maps/textures/base/joe2.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 2
+    },
+    "res://Maps/textures/base/light1.tres": {
+      "element": "CRYSTAL",
+      "surfaces": 1,
+      "triangles": 30
+    },
+    "res://Maps/textures/base/glass_green.tres": {
+      "element": "GLASS",
+      "surfaces": 20,
+      "triangles": 296
+    },
+    "res://Maps/textures/base/Marble1red.tres": {
+      "element": "LIMESTONE",
+      "surfaces": 1,
+      "triangles": 168
+    },
+    "res://Maps/textures/base/RedWall.png": {
+      "element": "ROCK",
+      "surfaces": 7,
+      "triangles": 92
+    },
+    "res://Maps/textures/base/greenplank.png": {
+      "element": "WOOD",
+      "surfaces": 1,
+      "triangles": 370
+    },
+    "res://Maps/textures/base/Stone_Tile_dark.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 507
+    },
+    "res://Maps/textures/base/greenwall.png": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 40
+    },
+    "res://Maps/textures/swamp/swamptree.png": {
+      "element": "WOOD",
+      "surfaces": 1,
+      "triangles": 24
+    },
+    "res://Maps/textures/swamp/swampwater1.tres": {
+      "element": "WATER",
+      "surfaces": 1,
+      "triangles": 100
+    },
+    "res://Maps/textures/base/flesh.tres": {
+      "element": "ROCK",
+      "surfaces": 1,
+      "triangles": 120
+    },
+    "res://Maps/textures/base/water.tres": {
+      "element": "WATER",
+      "surfaces": 1,
+      "triangles": 2
+    },
+    "res://Maps/textures/base/Wood_Door2.png": {
+      "element": "WOOD",
+      "surfaces": 24,
+      "triangles": 288
+    },
+    "res://Maps/textures/base/metal_door.png": {
+      "element": "METAL",
+      "surfaces": 21,
+      "triangles": 252
+    },
+    "res://Maps/textures/base/divinedoor.png": {
+      "element": "METAL",
+      "surfaces": 1,
+      "triangles": 12
+    },
+    "res://Imported_Mesh/Snirby.material": {
+      "element": "WOOD",
+      "surfaces": 1,
+      "triangles": 606
+    }
+  },
+  "materialLosses": {
+    "BRICK": "Existing building brick; patterned roofs share its break/acid/heat behavior rather than a new roof texture element.",
+    "CERAMIC": "Existing brittle, acid-proof fired tile; source patterns/glazes omitted. Different toughness/melting from original game geometry.",
+    "CRYSTAL": "Existing self-glowing brittle material; not exact lamp color, volumetric light shader or an electrical circuit. LAMP would require an unsupported power feed.",
+    "GLASS": "Transparent brittle panel; colored panes and display graphics omitted. Screens are not programmable/electrical devices.",
+    "LIMESTONE": "Closest existing carbonate behavior for marble; not a separate marble palette. Acid/heat/break behavior is ours, not source script parity.",
+    "METAL": "Conductive/breakable metal; no source door motion, container contents, grate holes below cell resolution or screen circuitry is invented.",
+    "PLANT": "Existing rooted, flammable plant for turf; our water-driven growth differs from static source grass. Grass soil backing is not invented.",
+    "ROCK": "Structural substrate; painted facades, grotesque/mossy graphics and animated pattern shaders are not reproduced. No edible/growing mechanic is inferred from a surface picture.",
+    "WALL": "Untextured collision substrate only; original purpose of material-less faces is ambiguous. Not a fallback for unknown materials.",
+    "WATER": "Existing liquid; colored/swamp water is not classified as blood/toxic without source mechanic evidence. Surface-only voxel liquid can drain.",
+    "WOOD": "Burnable/breakable organic substrate; rug fiber and painted doors use existing wood rather than a new cosmetic element."
+  },
+  "sourceNodes": [
+    {
+      "path": "QodotMap/entity_0_worldspawn/entity_0_mesh_instance",
+      "triangles": 51332
+    },
+    {
+      "path": "QodotMap/entity_1_Destructible/entity_1_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_2_Destructible/entity_2_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_3_Destructible/entity_3_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_4_Destructible/entity_4_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_5_Elevator_Door/entity_5_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_8_Water/entity_8_mesh_instance",
+      "triangles": 2
+    },
+    {
+      "path": "QodotMap/entity_11_func_group/entity_11_mesh_instance",
+      "triangles": 144
+    },
+    {
+      "path": "QodotMap/entity_12_func_group/entity_12_mesh_instance",
+      "triangles": 144
+    },
+    {
+      "path": "QodotMap/entity_13_func_group/entity_13_mesh_instance",
+      "triangles": 144
+    },
+    {
+      "path": "QodotMap/entity_14_Door/entity_14_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_53_Destructible/entity_53_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_54_Destructible/entity_54_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_55_Destructible/entity_55_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_56_Destructible/entity_56_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_57_Destructible/entity_57_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_58_Destructible/entity_58_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_59_Destructible/entity_59_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_60_Destructible/entity_60_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_61_Destructible/entity_61_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_62_Destructible/entity_62_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_63_Destructible/entity_63_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_64_Destructible/entity_64_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_65_Destructible/entity_65_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_66_Destructible/entity_66_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_70_Destructible/entity_70_mesh_instance",
+      "triangles": 24
+    },
+    {
+      "path": "QodotMap/entity_71_Destructible/entity_71_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_72_Destructible/entity_72_mesh_instance",
+      "triangles": 32
+    },
+    {
+      "path": "QodotMap/entity_73_Destructible/entity_73_mesh_instance",
+      "triangles": 44
+    },
+    {
+      "path": "QodotMap/entity_74_Destructible/entity_74_mesh_instance",
+      "triangles": 44
+    },
+    {
+      "path": "QodotMap/entity_75_Destructible/entity_75_mesh_instance",
+      "triangles": 44
+    },
+    {
+      "path": "QodotMap/entity_76_Destructible/entity_76_mesh_instance",
+      "triangles": 44
+    },
+    {
+      "path": "QodotMap/entity_78_Destructible/entity_78_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_97_Destructible/entity_97_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_98_Destructible/entity_98_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_99_Destructible/entity_99_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_100_Destructible/entity_100_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_101_Destructible/entity_101_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_102_Destructible/entity_102_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_103_Destructible/entity_103_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_104_Destructible/entity_104_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_105_Destructible/entity_105_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_106_Destructible/entity_106_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_107_Destructible/entity_107_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_108_Destructible/entity_108_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_109_Destructible/entity_109_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_110_Destructible/entity_110_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_111_Destructible/entity_111_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_112_Destructible/entity_112_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_113_Destructible/entity_113_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_114_Destructible/entity_114_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_115_Destructible/entity_115_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_116_Destructible/entity_116_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_117_Destructible/entity_117_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_119_Door/entity_119_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_120_Destructible/entity_120_mesh_instance",
+      "triangles": 32
+    },
+    {
+      "path": "QodotMap/entity_121_Destructible/entity_121_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_122_Destructible/entity_122_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_123_Destructible/entity_123_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_124_Destructible/entity_124_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_125_Destructible/entity_125_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_126_Destructible/entity_126_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_127_Destructible/entity_127_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_128_Door/entity_128_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_129_Door/entity_129_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_130_Door/entity_130_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_131_Door/entity_131_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_132_Door/entity_132_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_133_func_group/entity_133_mesh_instance",
+      "triangles": 248
+    },
+    {
+      "path": "QodotMap/entity_134_func_group/entity_134_mesh_instance",
+      "triangles": 248
+    },
+    {
+      "path": "QodotMap/entity_135_func_group/entity_135_mesh_instance",
+      "triangles": 60
+    },
+    {
+      "path": "QodotMap/entity_136_func_group/entity_136_mesh_instance",
+      "triangles": 60
+    },
+    {
+      "path": "QodotMap/entity_137_Elevator_Door/entity_137_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_138_Destructible/entity_138_mesh_instance",
+      "triangles": 24
+    },
+    {
+      "path": "QodotMap/entity_139_Destructible/entity_139_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_140_Destructible/entity_140_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_141_Destructible/entity_141_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_142_Destructible/entity_142_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_143_Destructible/entity_143_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_144_Destructible/entity_144_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_145_Destructible/entity_145_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_146_Destructible/entity_146_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_147_Destructible/entity_147_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_148_Destructible/entity_148_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_149_Destructible/entity_149_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_150_Destructible/entity_150_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_151_Destructible/entity_151_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_152_Destructible/entity_152_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_153_Destructible/entity_153_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_154_Destructible/entity_154_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_155_Destructible/entity_155_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_156_Destructible/entity_156_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_157_Destructible/entity_157_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_158_Destructible/entity_158_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_159_Destructible/entity_159_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_160_Destructible/entity_160_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_161_Destructible/entity_161_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_162_Door/entity_162_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_163_Door/entity_163_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_164_Door/entity_164_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_165_Door/entity_165_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_166_Door/entity_166_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_167_Door/entity_167_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_168_Door/entity_168_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_169_Door/entity_169_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_170_Door/entity_170_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_171_Door/entity_171_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_172_Door/entity_172_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_173_Door/entity_173_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_174_Door/entity_174_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_175_Door/entity_175_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_176_Door/entity_176_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_177_Door/entity_177_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_178_Door/entity_178_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_179_Destructible/entity_179_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_180_Destructible/entity_180_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_181_Destructible/entity_181_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_182_Elevator_Door/entity_182_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_183_Elevator_Door/entity_183_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_184_Elevator_Door/entity_184_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_185_Door/entity_185_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_186_Door/entity_186_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_187_Door/entity_187_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_188_Door/entity_188_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_189_Elevator_Door/entity_189_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_190_func_group/entity_190_mesh_instance",
+      "triangles": 60
+    },
+    {
+      "path": "QodotMap/entity_191_func_group/entity_191_mesh_instance",
+      "triangles": 60
+    },
+    {
+      "path": "QodotMap/entity_192_func_group/entity_192_mesh_instance",
+      "triangles": 60
+    },
+    {
+      "path": "QodotMap/entity_193_Env_Rotation_Y/entity_193_mesh_instance",
+      "triangles": 236
+    },
+    {
+      "path": "QodotMap/entity_194_Env_Rotation_Y/entity_194_mesh_instance",
+      "triangles": 292
+    },
+    {
+      "path": "QodotMap/entity_195_Env_Rotation_Y/entity_195_mesh_instance",
+      "triangles": 200
+    },
+    {
+      "path": "QodotMap/entity_196_Destructible/entity_196_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_197_Destructible/entity_197_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_198_Destructible/entity_198_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_199_Destructible/entity_199_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_200_Destructible/entity_200_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_201_Destructible/entity_201_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_202_Destructible/entity_202_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_203_Destructible/entity_203_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_204_Door/entity_204_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_205_Door/entity_205_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_206_Door/entity_206_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_207_Door/entity_207_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_208_Door/entity_208_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_209_Door/entity_209_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_210_Destructible/entity_210_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_211_Destructible/entity_211_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_212_Destructible/entity_212_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_213_Destructible/entity_213_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_214_Destructible/entity_214_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_215_Destructible/entity_215_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_216_Destructible/entity_216_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_217_Destructible/entity_217_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_218_func_group/entity_218_mesh_instance",
+      "triangles": 68
+    },
+    {
+      "path": "QodotMap/entity_219_func_group/entity_219_mesh_instance",
+      "triangles": 68
+    },
+    {
+      "path": "QodotMap/entity_220_func_group/entity_220_mesh_instance",
+      "triangles": 68
+    },
+    {
+      "path": "QodotMap/entity_221_func_group/entity_221_mesh_instance",
+      "triangles": 68
+    },
+    {
+      "path": "QodotMap/entity_222_func_group/entity_222_mesh_instance",
+      "triangles": 68
+    },
+    {
+      "path": "QodotMap/entity_223_func_group/entity_223_mesh_instance",
+      "triangles": 68
+    },
+    {
+      "path": "QodotMap/entity_224_Elevator/entity_224_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_256_Elevator_Door_Down/entity_256_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_257_Elevator_Door_Down/entity_257_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_258_Elevator_Door_Down/entity_258_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_259_Elevator_Door_Down/entity_259_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_260_Elevator_Door_Down/entity_260_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_261_Elevator_Door_Down/entity_261_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_262_Elevator_Door_Down/entity_262_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_263_Elevator_Door_Down/entity_263_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_264_Elevator_Door_Down/entity_264_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_265_Elevator_Door_Down/entity_265_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_266_Elevator_Door_Down/entity_266_mesh_instance",
+      "triangles": 20
+    },
+    {
+      "path": "QodotMap/entity_267_Elevator_Door_Down/entity_267_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_268_Elevator_Door_Down/entity_268_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_285_Door/entity_285_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_286_Door/entity_286_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_287_Door/entity_287_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_288_Door/entity_288_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_289_Destructible/entity_289_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_290_Destructible/entity_290_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_291_Destructible/entity_291_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_292_Destructible/entity_292_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_293_Destructible/entity_293_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_294_Destructible/entity_294_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_295_Destructible/entity_295_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_296_Destructible/entity_296_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_297_Destructible/entity_297_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_298_Destructible/entity_298_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_325_Destructible/entity_325_mesh_instance",
+      "triangles": 64
+    },
+    {
+      "path": "QodotMap/entity_326_Destructible/entity_326_mesh_instance",
+      "triangles": 64
+    },
+    {
+      "path": "QodotMap/entity_327_Destructible/entity_327_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_328_Destructible/entity_328_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_329_Destructible/entity_329_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_330_Destructible/entity_330_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_331_Destructible/entity_331_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_332_Destructible/entity_332_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_333_Destructible/entity_333_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_334_Destructible/entity_334_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_335_Door/entity_335_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_336_Door/entity_336_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_337_Door/entity_337_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_338_Door/entity_338_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_339_Door/entity_339_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_340_Door/entity_340_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_341_Door/entity_341_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_342_Elevator_Door_Down/entity_342_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_343_Destructible/entity_343_mesh_instance",
+      "triangles": 24
+    },
+    {
+      "path": "QodotMap/entity_344_func_group/entity_344_mesh_instance",
+      "triangles": 224
+    },
+    {
+      "path": "QodotMap/entity_345_func_group/entity_345_mesh_instance",
+      "triangles": 224
+    },
+    {
+      "path": "QodotMap/entity_346_func_group/entity_346_mesh_instance",
+      "triangles": 224
+    },
+    {
+      "path": "QodotMap/entity_347_func_group/entity_347_mesh_instance",
+      "triangles": 140
+    },
+    {
+      "path": "QodotMap/entity_348_func_group/entity_348_mesh_instance",
+      "triangles": 140
+    },
+    {
+      "path": "QodotMap/entity_357_Elevator_Door/entity_357_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "QodotMap/entity_369_DivineDoor/entity_369_mesh_instance",
+      "triangles": 12
+    },
+    {
+      "path": "snirby/Snirby/Skeleton/Sphere",
+      "triangles": 606
+    }
+  ],
+  "sourceActors": [
+    {
+      "path": "QodotMap/entity_10_E_Civilian1",
+      "sourcePath": "QodotMap/entity_10_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        41.5,
+        2.25,
+        91.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_17_E_Civilian1",
+      "sourcePath": "QodotMap/entity_17_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        23.5,
+        3.5,
+        82.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_18_E_Civilian2",
+      "sourcePath": "QodotMap/entity_18_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        26.5,
+        3.5,
+        80.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_19_E_Grunt",
+      "sourcePath": "QodotMap/entity_19_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        24.5,
+        1.5,
+        67
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_20_E_Grunt",
+      "sourcePath": "QodotMap/entity_20_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        5.5,
+        1.5,
+        138
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_21_E_Civilian2",
+      "sourcePath": "QodotMap/entity_21_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        81.5,
+        1.5,
+        162.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_22_E_Civilian1",
+      "sourcePath": "QodotMap/entity_22_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        83.5,
+        1.5,
+        162.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_23_E_Dog",
+      "sourcePath": "QodotMap/entity_23_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -35.5,
+        1.5,
+        173.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_24_E_Mutant",
+      "sourcePath": "QodotMap/entity_24_E_Mutant",
+      "resource": "res://Entities/Enemies/E_Knifelord.tscn",
+      "sourceAt": [
+        20.5,
+        1.5,
+        183.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_25_E_Grunt",
+      "sourcePath": "QodotMap/entity_25_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -124.5,
+        3.5,
+        168.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_26_E_Civilian1",
+      "sourcePath": "QodotMap/entity_26_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -10.5,
+        1.5,
+        185.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_27_E_Civilian2",
+      "sourcePath": "QodotMap/entity_27_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -6.5,
+        1.5,
+        188.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_28_E_Civilian1",
+      "sourcePath": "QodotMap/entity_28_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        28.5,
+        1.5,
+        146.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_29_E_Civilian2",
+      "sourcePath": "QodotMap/entity_29_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        31.5,
+        1.5,
+        140.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_30_E_Civilian1",
+      "sourcePath": "QodotMap/entity_30_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        14.5,
+        1.5,
+        126.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_31_E_Civilian2",
+      "sourcePath": "QodotMap/entity_31_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        40.5,
+        1.5,
+        186.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_32_E_Civilian1",
+      "sourcePath": "QodotMap/entity_32_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        1.5,
+        1.5,
+        209.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_33_E_Civilian2",
+      "sourcePath": "QodotMap/entity_33_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -42.5,
+        1.5,
+        254.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_34_E_Civilian1",
+      "sourcePath": "QodotMap/entity_34_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -68.5,
+        1.5,
+        264.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_35_E_Civilian1",
+      "sourcePath": "QodotMap/entity_35_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -25.5,
+        2,
+        177.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_36_E_Civilian2",
+      "sourcePath": "QodotMap/entity_36_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        86.5,
+        6.5,
+        161.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_37_E_Civilian2",
+      "sourcePath": "QodotMap/entity_37_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        79.5,
+        6.5,
+        166.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_38_E_Grunt",
+      "sourcePath": "QodotMap/entity_38_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        14.5,
+        1.5,
+        143.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_39_E_Civilian1",
+      "sourcePath": "QodotMap/entity_39_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        18.5,
+        1.5,
+        143.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_40_E_Civilian2",
+      "sourcePath": "QodotMap/entity_40_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        18.5,
+        1.5,
+        144.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_41_E_Flower",
+      "sourcePath": "QodotMap/entity_41_E_Flower",
+      "resource": "res://Entities/Enemies/E_Flower.tscn",
+      "sourceAt": [
+        101.5,
+        -1.5,
+        40.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_42_E_Grunt",
+      "sourcePath": "QodotMap/entity_42_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        22.5,
+        8.5,
+        81.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_43_E_Grunt",
+      "sourcePath": "QodotMap/entity_43_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -1.5,
+        3.5,
+        148
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_44_E_Grunt",
+      "sourcePath": "QodotMap/entity_44_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -12.25,
+        8.5,
+        144.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_45_E_Civilian2",
+      "sourcePath": "QodotMap/entity_45_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -11.5,
+        3.5,
+        153.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_46_E_Civilian1",
+      "sourcePath": "QodotMap/entity_46_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        2.5,
+        3.5,
+        149.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_47_E_Civilian1",
+      "sourcePath": "QodotMap/entity_47_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -0.5,
+        8.5,
+        145.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_48_E_Grunt",
+      "sourcePath": "QodotMap/entity_48_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -2.5,
+        8.5,
+        143.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_49_E_Civilian2",
+      "sourcePath": "QodotMap/entity_49_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        16.5,
+        6.5,
+        155.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_50_E_Civilian2",
+      "sourcePath": "QodotMap/entity_50_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        17.5,
+        6.5,
+        155.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_51_E_Grunt",
+      "sourcePath": "QodotMap/entity_51_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        79.5,
+        1.5,
+        166.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_52_E_Grunt",
+      "sourcePath": "QodotMap/entity_52_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        81.5,
+        6.5,
+        172.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_67_E_Mutant",
+      "sourcePath": "QodotMap/entity_67_E_Mutant",
+      "resource": "res://Entities/Enemies/E_Knifelord.tscn",
+      "sourceAt": [
+        -22.5,
+        1.5,
+        188.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_68_E_Civilian2",
+      "sourcePath": "QodotMap/entity_68_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -11.5,
+        6.5,
+        186.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_69_E_Dog",
+      "sourcePath": "QodotMap/entity_69_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        4.5,
+        1.5,
+        201.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_77_E_Grunt",
+      "sourcePath": "QodotMap/entity_77_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -10.5,
+        3.5,
+        148.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_81_E_Grunt",
+      "sourcePath": "QodotMap/entity_81_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -74.5,
+        1.5,
+        281
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_82_E_Grunt",
+      "sourcePath": "QodotMap/entity_82_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -77,
+        1.5,
+        282.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_83_E_Grunt",
+      "sourcePath": "QodotMap/entity_83_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -65.5,
+        1.5,
+        286.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_84_E_Grunt",
+      "sourcePath": "QodotMap/entity_84_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -51,
+        1.5,
+        314.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_85_E_Grunt",
+      "sourcePath": "QodotMap/entity_85_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -63.5,
+        1.5,
+        329
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_86_E_Grunt",
+      "sourcePath": "QodotMap/entity_86_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -37,
+        1.5,
+        302
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_87_E_Grunt",
+      "sourcePath": "QodotMap/entity_87_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -45.5,
+        6.5,
+        268.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_88_E_Grunt",
+      "sourcePath": "QodotMap/entity_88_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -45.5,
+        6.5,
+        291
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_89_E_Grunt",
+      "sourcePath": "QodotMap/entity_89_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -31,
+        6.5,
+        299.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_90_E_Grunt",
+      "sourcePath": "QodotMap/entity_90_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -44.5,
+        11.5,
+        280.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_91_E_Grunt",
+      "sourcePath": "QodotMap/entity_91_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -29.5,
+        11.5,
+        274.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_92_E_Grunt",
+      "sourcePath": "QodotMap/entity_92_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -43,
+        11.5,
+        298.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_93_E_Dog",
+      "sourcePath": "QodotMap/entity_93_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -59.5,
+        1.5,
+        302
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_94_E_Dog",
+      "sourcePath": "QodotMap/entity_94_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -67,
+        1.5,
+        295.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_95_E_Dog",
+      "sourcePath": "QodotMap/entity_95_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -59.5,
+        1.5,
+        313
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_96_E_Dog",
+      "sourcePath": "QodotMap/entity_96_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -76,
+        1.5,
+        287
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_118_E_Grunt",
+      "sourcePath": "QodotMap/entity_118_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -123.5,
+        3.5,
+        156.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_226_E_Civilian1",
+      "sourcePath": "QodotMap/entity_226_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -7.5,
+        13.5,
+        150.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_227_E_Elite",
+      "sourcePath": "QodotMap/entity_227_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -62.5,
+        1.5,
+        298.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_228_E_Elite",
+      "sourcePath": "QodotMap/entity_228_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -54.375,
+        1.5,
+        304.125
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_229_E_Elite",
+      "sourcePath": "QodotMap/entity_229_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -37.5,
+        1.5,
+        288.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_230_E_Elite",
+      "sourcePath": "QodotMap/entity_230_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -36.5,
+        11.5,
+        287.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_231_E_Security",
+      "sourcePath": "QodotMap/entity_231_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -14.5,
+        1.5,
+        195.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_232_E_Security",
+      "sourcePath": "QodotMap/entity_232_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -2.5,
+        1.5,
+        196.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_233_E_Security",
+      "sourcePath": "QodotMap/entity_233_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -13.5,
+        8.5,
+        150.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_234_E_Elite",
+      "sourcePath": "QodotMap/entity_234_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -21.5,
+        1.5,
+        139.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_235_E_Security",
+      "sourcePath": "QodotMap/entity_235_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        17.5,
+        6.5,
+        145.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_236_E_Security",
+      "sourcePath": "QodotMap/entity_236_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        28.5,
+        1.5,
+        140.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_237_E_Security",
+      "sourcePath": "QodotMap/entity_237_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        32.5,
+        1.5,
+        151.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_238_E_Security",
+      "sourcePath": "QodotMap/entity_238_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -7.5,
+        1.5,
+        196.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_239_E_Elite",
+      "sourcePath": "QodotMap/entity_239_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -116.5,
+        3.5,
+        168.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_240_E_Elite",
+      "sourcePath": "QodotMap/entity_240_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -116.5,
+        3.5,
+        163.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_241_E_Security",
+      "sourcePath": "QodotMap/entity_241_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -130.5,
+        10.5,
+        154.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_242_E_Security",
+      "sourcePath": "QodotMap/entity_242_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -133.5,
+        10.5,
+        176.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_243_E_Security",
+      "sourcePath": "QodotMap/entity_243_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -63.5,
+        6.5,
+        217.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_244_E_Security",
+      "sourcePath": "QodotMap/entity_244_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        24.5,
+        1.5,
+        69.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_245_E_Security",
+      "sourcePath": "QodotMap/entity_245_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        32.5,
+        3.5,
+        81.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_246_E_Security",
+      "sourcePath": "QodotMap/entity_246_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        90.5,
+        1.5,
+        45.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_247_E_Civilian2",
+      "sourcePath": "QodotMap/entity_247_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        121.5,
+        2.5,
+        113.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_248_E_Civilian1",
+      "sourcePath": "QodotMap/entity_248_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        123.5,
+        2.5,
+        106.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_249_E_Civilian2",
+      "sourcePath": "QodotMap/entity_249_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        114.5,
+        2.5,
+        118.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_250_E_Civilian1",
+      "sourcePath": "QodotMap/entity_250_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        117.5,
+        2.5,
+        110.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_251_E_Civilian2",
+      "sourcePath": "QodotMap/entity_251_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        115.5,
+        2.5,
+        102.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_252_E_Civilian1",
+      "sourcePath": "QodotMap/entity_252_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        110.5,
+        2.5,
+        107.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_253_E_Security",
+      "sourcePath": "QodotMap/entity_253_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        133.5,
+        2.5,
+        113.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_254_E_Elite",
+      "sourcePath": "QodotMap/entity_254_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        85.5,
+        6.5,
+        166.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_255_E_Elite",
+      "sourcePath": "QodotMap/entity_255_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -76.5,
+        1.5,
+        291.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_358_E_CreeperRocket",
+      "sourcePath": "QodotMap/entity_358_E_CreeperRocket",
+      "resource": "res://Entities/Enemies/E_Rocket_Creeper.tscn",
+      "sourceAt": [
+        22.25,
+        -2.5,
+        57.25
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_359_E_CreeperGrunt",
+      "sourcePath": "QodotMap/entity_359_E_CreeperGrunt",
+      "resource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+      "sourceAt": [
+        34.125,
+        -2.5,
+        47.625
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_360_E_CreeperGrunt",
+      "sourcePath": "QodotMap/entity_360_E_CreeperGrunt",
+      "resource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+      "sourceAt": [
+        34.375,
+        -7.5,
+        42.375
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_361_E_Dog",
+      "sourcePath": "QodotMap/entity_361_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        33.875,
+        -7.5,
+        47.75
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_362_E_Dog",
+      "sourcePath": "QodotMap/entity_362_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        50.25,
+        -2.5,
+        50.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_363_E_Zombie",
+      "sourcePath": "QodotMap/entity_363_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        53.25,
+        -7.5,
+        55.875
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_364_E_Zombie",
+      "sourcePath": "QodotMap/entity_364_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        52.125,
+        -7.5,
+        53.875
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_365_E_Zombie",
+      "sourcePath": "QodotMap/entity_365_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        62.125,
+        -2.5,
+        49.75
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_366_E_Zombie",
+      "sourcePath": "QodotMap/entity_366_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        62.5,
+        -2.5,
+        57.75
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_368_E_Zombie",
+      "sourcePath": "QodotMap/entity_368_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        42.5,
+        -2.5,
+        44.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Nerd_2",
+      "sourcePath": "Nerd_2",
+      "resource": "res://Entities/Enemies/Obj_Nerd_2.tscn",
+      "sourceAt": [
+        26.2109,
+        -2.04942,
+        148.798
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Nerd_1",
+      "sourcePath": "Nerd_1",
+      "resource": "res://Entities/Enemies/Obj_Nerd_1.tscn",
+      "sourceAt": [
+        -20.4825,
+        9.00043,
+        151.838
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Nerd_3",
+      "sourcePath": "Nerd_3",
+      "resource": "res://Entities/Enemies/Obj_Nerd_3.tscn",
+      "sourceAt": [
+        -13.273,
+        7.00043,
+        188.281
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Civilian",
+      "sourcePath": "Civilian",
+      "resource": "res://Entities/Enemies/E_Civilian_Cultist_1.tscn",
+      "sourceAt": [
+        90.8122,
+        12.0004,
+        46.2296
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Cop_Revolver",
+      "sourcePath": "Cop_Revolver",
+      "resource": "res://Entities/Enemies/E_Cop_Revolver.tscn",
+      "sourceAt": [
+        25.7916,
+        2.04689,
+        185.085
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Psycho",
+      "sourcePath": "Psycho",
+      "resource": "res://Entities/Enemies/E_Psycho.tscn",
+      "sourceAt": [
+        -12.2717,
+        7.00043,
+        183.015
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Orbot",
+      "sourcePath": "Orbot",
+      "resource": "res://Entities/Enemies/E_Orbot.tscn",
+      "sourceAt": [
+        -25.9848,
+        2.76973,
+        163.02
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Killerbot",
+      "sourcePath": "Killerbot",
+      "resource": "res://Entities/Enemies/E_Killerbot.tscn",
+      "sourceAt": [
+        13.7131,
+        2.99348,
+        219.796
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Cult_Sniper",
+      "sourcePath": "Cult_Sniper",
+      "resource": "res://Entities/Enemies/E_Cultist_Sniper.tscn",
+      "sourceAt": [
+        -23.9115,
+        18.0004,
+        263.233
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Cop_Shotgun",
+      "sourcePath": "Cop_Shotgun",
+      "resource": "res://Entities/Enemies/E_Cop_Shotgun.tscn",
+      "sourceAt": [
+        25.7077,
+        1.7324,
+        181.888
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Civilian2",
+      "sourcePath": "Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceAt": [
+        -36.3826,
+        12.0004,
+        284.891
+      ],
+      "sourceFlags": {
+        "hell_objective": "true"
+      }
+    },
+    {
+      "path": "Grunt",
+      "sourcePath": "Grunt",
+      "resource": "res://Entities/Enemies/E_Paratrooper.tscn",
+      "sourceAt": [
+        -41.3116,
+        11.5643,
+        291.337
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Grunt2",
+      "sourcePath": "Grunt2",
+      "resource": "res://Entities/Enemies/E_Paratrooper.tscn",
+      "sourceAt": [
+        -47.0234,
+        11.5643,
+        273.55
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Grunt3",
+      "sourcePath": "Grunt3",
+      "resource": "res://Entities/Enemies/E_Paratrooper.tscn",
+      "sourceAt": [
+        -36.9533,
+        6.65949,
+        285.436
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective",
+      "sourcePath": "Chaos_Objective",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        87.1045,
+        12.0004,
+        46.6558
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective2",
+      "sourcePath": "Chaos_Objective2",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        91.7282,
+        7.00043,
+        54.3706
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective3",
+      "sourcePath": "Chaos_Objective3",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        98.0694,
+        2.00043,
+        65.8163
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective4",
+      "sourcePath": "Chaos_Objective4",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        127.104,
+        3.00043,
+        110.621
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective5",
+      "sourcePath": "Chaos_Objective5",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        83.2496,
+        7.00043,
+        166.488
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective6",
+      "sourcePath": "Chaos_Objective6",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        32.0209,
+        2.00043,
+        142.609
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective7",
+      "sourcePath": "Chaos_Objective7",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -3.84742,
+        14.0004,
+        144.918
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective8",
+      "sourcePath": "Chaos_Objective8",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -64.8803,
+        2.00043,
+        115.491
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective9",
+      "sourcePath": "Chaos_Objective9",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -129.222,
+        11.0004,
+        192.268
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective10",
+      "sourcePath": "Chaos_Objective10",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -130.006,
+        4.00043,
+        128.992
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective11",
+      "sourcePath": "Chaos_Objective11",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        23.5288,
+        9.00043,
+        83.2176
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective12",
+      "sourcePath": "Chaos_Objective12",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        68.7644,
+        2.00043,
+        161.179
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective13",
+      "sourcePath": "Chaos_Objective13",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -29.1163,
+        2.00043,
+        296.349
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective14",
+      "sourcePath": "Chaos_Objective14",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -42.2768,
+        7.00043,
+        299.507
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective15",
+      "sourcePath": "Chaos_Objective15",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -59.8734,
+        7.00043,
+        217.872
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective16",
+      "sourcePath": "Chaos_Objective16",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        15.481,
+        14.0004,
+        158.366
+      ],
+      "sourceFlags": {}
+    }
+  ],
+  "actorInventory": [
+    {
+      "path": "QodotMap/entity_10_E_Civilian1",
+      "sourcePath": "QodotMap/entity_10_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        41.5,
+        2.25,
+        91.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_17_E_Civilian1",
+      "sourcePath": "QodotMap/entity_17_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        23.5,
+        3.5,
+        82.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_18_E_Civilian2",
+      "sourcePath": "QodotMap/entity_18_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        26.5,
+        3.5,
+        80.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_19_E_Grunt",
+      "sourcePath": "QodotMap/entity_19_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        24.5,
+        1.5,
+        67
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_20_E_Grunt",
+      "sourcePath": "QodotMap/entity_20_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        5.5,
+        1.5,
+        138
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_21_E_Civilian2",
+      "sourcePath": "QodotMap/entity_21_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        81.5,
+        1.5,
+        162.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_22_E_Civilian1",
+      "sourcePath": "QodotMap/entity_22_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        83.5,
+        1.5,
+        162.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_23_E_Dog",
+      "sourcePath": "QodotMap/entity_23_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -35.5,
+        1.5,
+        173.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_24_E_Mutant",
+      "sourcePath": "QodotMap/entity_24_E_Mutant",
+      "resource": "res://Entities/Enemies/E_Knifelord.tscn",
+      "sourceAt": [
+        20.5,
+        1.5,
+        183.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_25_E_Grunt",
+      "sourcePath": "QodotMap/entity_25_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -124.5,
+        3.5,
+        168.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_26_E_Civilian1",
+      "sourcePath": "QodotMap/entity_26_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -10.5,
+        1.5,
+        185.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_27_E_Civilian2",
+      "sourcePath": "QodotMap/entity_27_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -6.5,
+        1.5,
+        188.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_28_E_Civilian1",
+      "sourcePath": "QodotMap/entity_28_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        28.5,
+        1.5,
+        146.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_29_E_Civilian2",
+      "sourcePath": "QodotMap/entity_29_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        31.5,
+        1.5,
+        140.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_30_E_Civilian1",
+      "sourcePath": "QodotMap/entity_30_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        14.5,
+        1.5,
+        126.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_31_E_Civilian2",
+      "sourcePath": "QodotMap/entity_31_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        40.5,
+        1.5,
+        186.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_32_E_Civilian1",
+      "sourcePath": "QodotMap/entity_32_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        1.5,
+        1.5,
+        209.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_33_E_Civilian2",
+      "sourcePath": "QodotMap/entity_33_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -42.5,
+        1.5,
+        254.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_34_E_Civilian1",
+      "sourcePath": "QodotMap/entity_34_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -68.5,
+        1.5,
+        264.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_35_E_Civilian1",
+      "sourcePath": "QodotMap/entity_35_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -25.5,
+        2,
+        177.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_36_E_Civilian2",
+      "sourcePath": "QodotMap/entity_36_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        86.5,
+        6.5,
+        161.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_37_E_Civilian2",
+      "sourcePath": "QodotMap/entity_37_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        79.5,
+        6.5,
+        166.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_38_E_Grunt",
+      "sourcePath": "QodotMap/entity_38_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        14.5,
+        1.5,
+        143.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_39_E_Civilian1",
+      "sourcePath": "QodotMap/entity_39_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        18.5,
+        1.5,
+        143.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_40_E_Civilian2",
+      "sourcePath": "QodotMap/entity_40_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        18.5,
+        1.5,
+        144.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_41_E_Flower",
+      "sourcePath": "QodotMap/entity_41_E_Flower",
+      "resource": "res://Entities/Enemies/E_Flower.tscn",
+      "sourceAt": [
+        101.5,
+        -1.5,
+        40.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_42_E_Grunt",
+      "sourcePath": "QodotMap/entity_42_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        22.5,
+        8.5,
+        81.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_43_E_Grunt",
+      "sourcePath": "QodotMap/entity_43_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -1.5,
+        3.5,
+        148
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_44_E_Grunt",
+      "sourcePath": "QodotMap/entity_44_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -12.25,
+        8.5,
+        144.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_45_E_Civilian2",
+      "sourcePath": "QodotMap/entity_45_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -11.5,
+        3.5,
+        153.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_46_E_Civilian1",
+      "sourcePath": "QodotMap/entity_46_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        2.5,
+        3.5,
+        149.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_47_E_Civilian1",
+      "sourcePath": "QodotMap/entity_47_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -0.5,
+        8.5,
+        145.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_48_E_Grunt",
+      "sourcePath": "QodotMap/entity_48_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -2.5,
+        8.5,
+        143.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_49_E_Civilian2",
+      "sourcePath": "QodotMap/entity_49_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        16.5,
+        6.5,
+        155.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_50_E_Civilian2",
+      "sourcePath": "QodotMap/entity_50_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        17.5,
+        6.5,
+        155.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_51_E_Grunt",
+      "sourcePath": "QodotMap/entity_51_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        79.5,
+        1.5,
+        166.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_52_E_Grunt",
+      "sourcePath": "QodotMap/entity_52_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        81.5,
+        6.5,
+        172.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_67_E_Mutant",
+      "sourcePath": "QodotMap/entity_67_E_Mutant",
+      "resource": "res://Entities/Enemies/E_Knifelord.tscn",
+      "sourceAt": [
+        -22.5,
+        1.5,
+        188.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_68_E_Civilian2",
+      "sourcePath": "QodotMap/entity_68_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        -11.5,
+        6.5,
+        186.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_69_E_Dog",
+      "sourcePath": "QodotMap/entity_69_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        4.5,
+        1.5,
+        201.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_77_E_Grunt",
+      "sourcePath": "QodotMap/entity_77_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -10.5,
+        3.5,
+        148.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_81_E_Grunt",
+      "sourcePath": "QodotMap/entity_81_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -74.5,
+        1.5,
+        281
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_82_E_Grunt",
+      "sourcePath": "QodotMap/entity_82_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -77,
+        1.5,
+        282.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_83_E_Grunt",
+      "sourcePath": "QodotMap/entity_83_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -65.5,
+        1.5,
+        286.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_84_E_Grunt",
+      "sourcePath": "QodotMap/entity_84_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -51,
+        1.5,
+        314.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_85_E_Grunt",
+      "sourcePath": "QodotMap/entity_85_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -63.5,
+        1.5,
+        329
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_86_E_Grunt",
+      "sourcePath": "QodotMap/entity_86_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -37,
+        1.5,
+        302
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_87_E_Grunt",
+      "sourcePath": "QodotMap/entity_87_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -45.5,
+        6.5,
+        268.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_88_E_Grunt",
+      "sourcePath": "QodotMap/entity_88_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -45.5,
+        6.5,
+        291
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_89_E_Grunt",
+      "sourcePath": "QodotMap/entity_89_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -31,
+        6.5,
+        299.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_90_E_Grunt",
+      "sourcePath": "QodotMap/entity_90_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -44.5,
+        11.5,
+        280.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_91_E_Grunt",
+      "sourcePath": "QodotMap/entity_91_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -29.5,
+        11.5,
+        274.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_92_E_Grunt",
+      "sourcePath": "QodotMap/entity_92_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -43,
+        11.5,
+        298.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_93_E_Dog",
+      "sourcePath": "QodotMap/entity_93_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -59.5,
+        1.5,
+        302
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_94_E_Dog",
+      "sourcePath": "QodotMap/entity_94_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -67,
+        1.5,
+        295.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_95_E_Dog",
+      "sourcePath": "QodotMap/entity_95_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -59.5,
+        1.5,
+        313
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_96_E_Dog",
+      "sourcePath": "QodotMap/entity_96_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        -76,
+        1.5,
+        287
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_118_E_Grunt",
+      "sourcePath": "QodotMap/entity_118_E_Grunt",
+      "resource": "res://Entities/Enemies/E_Grunt.tscn",
+      "sourceAt": [
+        -123.5,
+        3.5,
+        156.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_226_E_Civilian1",
+      "sourcePath": "QodotMap/entity_226_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        -7.5,
+        13.5,
+        150.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_227_E_Elite",
+      "sourcePath": "QodotMap/entity_227_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -62.5,
+        1.5,
+        298.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_228_E_Elite",
+      "sourcePath": "QodotMap/entity_228_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -54.375,
+        1.5,
+        304.125
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_229_E_Elite",
+      "sourcePath": "QodotMap/entity_229_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -37.5,
+        1.5,
+        288.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_230_E_Elite",
+      "sourcePath": "QodotMap/entity_230_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -36.5,
+        11.5,
+        287.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_231_E_Security",
+      "sourcePath": "QodotMap/entity_231_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -14.5,
+        1.5,
+        195.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_232_E_Security",
+      "sourcePath": "QodotMap/entity_232_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -2.5,
+        1.5,
+        196.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_233_E_Security",
+      "sourcePath": "QodotMap/entity_233_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -13.5,
+        8.5,
+        150.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_234_E_Elite",
+      "sourcePath": "QodotMap/entity_234_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -21.5,
+        1.5,
+        139.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_235_E_Security",
+      "sourcePath": "QodotMap/entity_235_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        17.5,
+        6.5,
+        145.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_236_E_Security",
+      "sourcePath": "QodotMap/entity_236_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        28.5,
+        1.5,
+        140.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_237_E_Security",
+      "sourcePath": "QodotMap/entity_237_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        32.5,
+        1.5,
+        151.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_238_E_Security",
+      "sourcePath": "QodotMap/entity_238_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -7.5,
+        1.5,
+        196.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_239_E_Elite",
+      "sourcePath": "QodotMap/entity_239_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -116.5,
+        3.5,
+        168.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_240_E_Elite",
+      "sourcePath": "QodotMap/entity_240_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -116.5,
+        3.5,
+        163.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_241_E_Security",
+      "sourcePath": "QodotMap/entity_241_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -130.5,
+        10.5,
+        154.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_242_E_Security",
+      "sourcePath": "QodotMap/entity_242_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -133.5,
+        10.5,
+        176.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_243_E_Security",
+      "sourcePath": "QodotMap/entity_243_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        -63.5,
+        6.5,
+        217.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_244_E_Security",
+      "sourcePath": "QodotMap/entity_244_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        24.5,
+        1.5,
+        69.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_245_E_Security",
+      "sourcePath": "QodotMap/entity_245_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        32.5,
+        3.5,
+        81.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_246_E_Security",
+      "sourcePath": "QodotMap/entity_246_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        90.5,
+        1.5,
+        45.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_247_E_Civilian2",
+      "sourcePath": "QodotMap/entity_247_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        121.5,
+        2.5,
+        113.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_248_E_Civilian1",
+      "sourcePath": "QodotMap/entity_248_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        123.5,
+        2.5,
+        106.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_249_E_Civilian2",
+      "sourcePath": "QodotMap/entity_249_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        114.5,
+        2.5,
+        118.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_250_E_Civilian1",
+      "sourcePath": "QodotMap/entity_250_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        117.5,
+        2.5,
+        110.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_251_E_Civilian2",
+      "sourcePath": "QodotMap/entity_251_E_Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian.tscn",
+      "sourceAt": [
+        115.5,
+        2.5,
+        102.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_252_E_Civilian1",
+      "sourcePath": "QodotMap/entity_252_E_Civilian1",
+      "resource": "res://Entities/Enemies/E_Civilian_Female.tscn",
+      "sourceAt": [
+        110.5,
+        2.5,
+        107.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_253_E_Security",
+      "sourcePath": "QodotMap/entity_253_E_Security",
+      "resource": "res://Entities/Enemies/E_Security.tscn",
+      "sourceAt": [
+        133.5,
+        2.5,
+        113.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_254_E_Elite",
+      "sourcePath": "QodotMap/entity_254_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        85.5,
+        6.5,
+        166.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_255_E_Elite",
+      "sourcePath": "QodotMap/entity_255_E_Elite",
+      "resource": "res://Entities/Enemies/E_Elite.tscn",
+      "sourceAt": [
+        -76.5,
+        1.5,
+        291.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_358_E_CreeperRocket",
+      "sourcePath": "QodotMap/entity_358_E_CreeperRocket",
+      "resource": "res://Entities/Enemies/E_Rocket_Creeper.tscn",
+      "sourceAt": [
+        22.25,
+        -2.5,
+        57.25
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_359_E_CreeperGrunt",
+      "sourcePath": "QodotMap/entity_359_E_CreeperGrunt",
+      "resource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+      "sourceAt": [
+        34.125,
+        -2.5,
+        47.625
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_360_E_CreeperGrunt",
+      "sourcePath": "QodotMap/entity_360_E_CreeperGrunt",
+      "resource": "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+      "sourceAt": [
+        34.375,
+        -7.5,
+        42.375
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_361_E_Dog",
+      "sourcePath": "QodotMap/entity_361_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        33.875,
+        -7.5,
+        47.75
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_362_E_Dog",
+      "sourcePath": "QodotMap/entity_362_E_Dog",
+      "resource": "res://Entities/Enemies/E_Dog.tscn",
+      "sourceAt": [
+        50.25,
+        -2.5,
+        50.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_363_E_Zombie",
+      "sourcePath": "QodotMap/entity_363_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        53.25,
+        -7.5,
+        55.875
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_364_E_Zombie",
+      "sourcePath": "QodotMap/entity_364_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        52.125,
+        -7.5,
+        53.875
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_365_E_Zombie",
+      "sourcePath": "QodotMap/entity_365_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        62.125,
+        -2.5,
+        49.75
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_366_E_Zombie",
+      "sourcePath": "QodotMap/entity_366_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        62.5,
+        -2.5,
+        57.75
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "QodotMap/entity_368_E_Zombie",
+      "sourcePath": "QodotMap/entity_368_E_Zombie",
+      "resource": "res://Entities/Enemies/E_Zombie.tscn",
+      "sourceAt": [
+        42.5,
+        -2.5,
+        44.5
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Nerd_2",
+      "sourcePath": "Nerd_2",
+      "resource": "res://Entities/Enemies/Obj_Nerd_2.tscn",
+      "sourceAt": [
+        26.2109,
+        -2.04942,
+        148.798
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Nerd_1",
+      "sourcePath": "Nerd_1",
+      "resource": "res://Entities/Enemies/Obj_Nerd_1.tscn",
+      "sourceAt": [
+        -20.4825,
+        9.00043,
+        151.838
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Nerd_3",
+      "sourcePath": "Nerd_3",
+      "resource": "res://Entities/Enemies/Obj_Nerd_3.tscn",
+      "sourceAt": [
+        -13.273,
+        7.00043,
+        188.281
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Civilian",
+      "sourcePath": "Civilian",
+      "resource": "res://Entities/Enemies/E_Civilian_Cultist_1.tscn",
+      "sourceAt": [
+        90.8122,
+        12.0004,
+        46.2296
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Cop_Revolver",
+      "sourcePath": "Cop_Revolver",
+      "resource": "res://Entities/Enemies/E_Cop_Revolver.tscn",
+      "sourceAt": [
+        25.7916,
+        2.04689,
+        185.085
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Psycho",
+      "sourcePath": "Psycho",
+      "resource": "res://Entities/Enemies/E_Psycho.tscn",
+      "sourceAt": [
+        -12.2717,
+        7.00043,
+        183.015
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Orbot",
+      "sourcePath": "Orbot",
+      "resource": "res://Entities/Enemies/E_Orbot.tscn",
+      "sourceAt": [
+        -25.9848,
+        2.76973,
+        163.02
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Killerbot",
+      "sourcePath": "Killerbot",
+      "resource": "res://Entities/Enemies/E_Killerbot.tscn",
+      "sourceAt": [
+        13.7131,
+        2.99348,
+        219.796
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Cult_Sniper",
+      "sourcePath": "Cult_Sniper",
+      "resource": "res://Entities/Enemies/E_Cultist_Sniper.tscn",
+      "sourceAt": [
+        -23.9115,
+        18.0004,
+        263.233
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Cop_Shotgun",
+      "sourcePath": "Cop_Shotgun",
+      "resource": "res://Entities/Enemies/E_Cop_Shotgun.tscn",
+      "sourceAt": [
+        25.7077,
+        1.7324,
+        181.888
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Civilian2",
+      "sourcePath": "Civilian2",
+      "resource": "res://Entities/Enemies/E_Civilian4.tscn",
+      "sourceAt": [
+        -36.3826,
+        12.0004,
+        284.891
+      ],
+      "sourceFlags": {
+        "hell_objective": "true"
+      }
+    },
+    {
+      "path": "Grunt",
+      "sourcePath": "Grunt",
+      "resource": "res://Entities/Enemies/E_Paratrooper.tscn",
+      "sourceAt": [
+        -41.3116,
+        11.5643,
+        291.337
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Grunt2",
+      "sourcePath": "Grunt2",
+      "resource": "res://Entities/Enemies/E_Paratrooper.tscn",
+      "sourceAt": [
+        -47.0234,
+        11.5643,
+        273.55
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Grunt3",
+      "sourcePath": "Grunt3",
+      "resource": "res://Entities/Enemies/E_Paratrooper.tscn",
+      "sourceAt": [
+        -36.9533,
+        6.65949,
+        285.436
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective",
+      "sourcePath": "Chaos_Objective",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        87.1045,
+        12.0004,
+        46.6558
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective2",
+      "sourcePath": "Chaos_Objective2",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        91.7282,
+        7.00043,
+        54.3706
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective3",
+      "sourcePath": "Chaos_Objective3",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        98.0694,
+        2.00043,
+        65.8163
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective4",
+      "sourcePath": "Chaos_Objective4",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        127.104,
+        3.00043,
+        110.621
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective5",
+      "sourcePath": "Chaos_Objective5",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        83.2496,
+        7.00043,
+        166.488
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective6",
+      "sourcePath": "Chaos_Objective6",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        32.0209,
+        2.00043,
+        142.609
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective7",
+      "sourcePath": "Chaos_Objective7",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -3.84742,
+        14.0004,
+        144.918
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective8",
+      "sourcePath": "Chaos_Objective8",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -64.8803,
+        2.00043,
+        115.491
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective9",
+      "sourcePath": "Chaos_Objective9",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -129.222,
+        11.0004,
+        192.268
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective10",
+      "sourcePath": "Chaos_Objective10",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -130.006,
+        4.00043,
+        128.992
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective11",
+      "sourcePath": "Chaos_Objective11",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        23.5288,
+        9.00043,
+        83.2176
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective12",
+      "sourcePath": "Chaos_Objective12",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        68.7644,
+        2.00043,
+        161.179
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective13",
+      "sourcePath": "Chaos_Objective13",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -29.1163,
+        2.00043,
+        296.349
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective14",
+      "sourcePath": "Chaos_Objective14",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -42.2768,
+        7.00043,
+        299.507
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective15",
+      "sourcePath": "Chaos_Objective15",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        -59.8734,
+        7.00043,
+        217.872
+      ],
+      "sourceFlags": {}
+    },
+    {
+      "path": "Chaos_Objective16",
+      "sourcePath": "Chaos_Objective16",
+      "resource": "res://Entities/Enemies/Chaos_Objective.tscn",
+      "sourceAt": [
+        15.481,
+        14.0004,
+        158.366
+      ],
+      "sourceFlags": {}
+    }
+  ],
+  "excludedActorVisualHelpers": [],
+  "excludedActorVisuals": [],
+  "collision": {
+    "method": "Conservative triangle/cell intersection; generated elements use existing voxel collision and destruction",
+    "originalShapes": {
+      "ConcavePolygonShape": 1,
+      "ConvexPolygonShape": 487,
+      "BoxShape": 1
+    }
+  },
+  "unresolvedPackedScenes": [
+    "res://Entities/Enemies/Chaos_Objective.tscn",
+    "res://Entities/Enemies/E_Civilian.tscn",
+    "res://Entities/Enemies/E_Civilian4.tscn",
+    "res://Entities/Enemies/E_Civilian_Cultist_1.tscn",
+    "res://Entities/Enemies/E_Civilian_Female.tscn",
+    "res://Entities/Enemies/E_Cop_Revolver.tscn",
+    "res://Entities/Enemies/E_Cop_Shotgun.tscn",
+    "res://Entities/Enemies/E_Cultist_Sniper.tscn",
+    "res://Entities/Enemies/E_Dog.tscn",
+    "res://Entities/Enemies/E_Elite.tscn",
+    "res://Entities/Enemies/E_Flower.tscn",
+    "res://Entities/Enemies/E_Grunt.tscn",
+    "res://Entities/Enemies/E_Grunt_Creeper.tscn",
+    "res://Entities/Enemies/E_Killerbot.tscn",
+    "res://Entities/Enemies/E_Knifelord.tscn",
+    "res://Entities/Enemies/E_Orbot.tscn",
+    "res://Entities/Enemies/E_Paratrooper.tscn",
+    "res://Entities/Enemies/E_Psycho.tscn",
+    "res://Entities/Enemies/E_Rocket_Creeper.tscn",
+    "res://Entities/Enemies/E_Security.tscn",
+    "res://Entities/Enemies/E_Zombie.tscn",
+    "res://Entities/Enemies/Obj_Nerd_1.tscn",
+    "res://Entities/Enemies/Obj_Nerd_2.tscn",
+    "res://Entities/Enemies/Obj_Nerd_3.tscn",
+    "res://Entities/Grill.tscn",
+    "res://Entities/Level_Painting.tscn",
+    "res://Entities/Objects/Gun_Pickup.tscn",
+    "res://Entities/Physics_Objects/Implant_Object.tscn",
+    "res://Entities/Physics_Objects/pills.tscn",
+    "res://Entities/Physics_Objects/pizzaslice.tscn",
+    "res://Entities/Physics_Objects/random_food.tscn",
+    "res://Entities/Props/Plant_1.tscn",
+    "res://Entities/Props/Plant_2.tscn",
+    "res://Entities/Props/Toilet.tscn",
+    "res://Entities/Props/Trashcan.tscn",
+    "res://Entities/Props/Trashcan2.tscn",
+    "res://Entities/Props/Tree.tscn",
+    "res://Entities/Props/Tree2.tscn",
+    "res://Entities/Props/fullpizza.tscn",
+    "res://Entities/Vehicles/New_Car.tscn",
+    "res://Entities/vendingmachine.tscn",
+    "res://Player_Test.tscn"
+  ],
+  "limitations": [
+    "Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.",
+    "Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.",
+    "Doors and elevators are imported at authored rest transforms, not animated.",
+    "Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.",
+    "All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.",
+    "NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.",
+    "Source texture names translate to audited physical materials; original texture pixels and shader effects are not copied."
+  ],
+  "dataFile": "paradise.binpack",
+  "dataCompression": "gzip"
+}

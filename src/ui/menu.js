@@ -33,7 +33,8 @@ import { previewCharacter, nextYouZoom } from '../pov/character.js';
 //   progress(step, text)  a boot step began (STEPS keys; 'cold': the shaders are compiling
 //                         cold; 'match' with app.js's line for it)
 const THUMB = (key) => `/maps/${key}.webp`;
-const YOU = (character) => character === 'real' ? '/you.webp' : `/you-${character}.webp`;
+// 'stick' is the saved paper-bag choice; a new URL cannot reuse the old stickman still.
+const YOU = (character) => character === 'real' ? '/you.webp' : character === 'stick' ? '/you-bag.webp' : `/you-${character}.webp`;
 // the live player's canvas (ui/youWorker.js), sized once for the tallest he is shown (menu.css .mm-you)
 const YOU_MAX_H = 560;                 // CSS px
 const YOU_ASPECT = 260 / 420;          // the still's width over its height (tools/you-portrait.mjs SHOWN_W, SHOWN_H)

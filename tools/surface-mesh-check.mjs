@@ -189,6 +189,19 @@ for (const step of [2, 4]) {
   closed(m);
   assert(m.ids.every(id => id === E.GOLD), 'coarse representative is occupied, not liquid/air');
 }
+// A straight road on a flat terrain plane: source-cell material edges must
+// remain straight for the whole strip, including two independently meshed chunks.
+const roadAt = (x, y) => y < 0 ? (x >= -2 && x < 2 ? E.BRICK : E.ROCK) : E.EMPTY;
+for (const z0 of [-24, 0]) {
+  const road = mesh([-8, -2, z0, 8, 2, z0 + 24], roadAt);
+  for (const [i, face] of faces(road).entries()) {
+    assert(face.every(p => p[1] === 0));
+    const brick = road.ids[i * 3] === E.BRICK;
+    assert(brick ? face.every(p => p[0] >= -2 && p[0] <= 2) :
+      face.every(p => p[0] <= -2) || face.every(p => p[0] >= 2), 'road IDs never wander across the source material boundary');
+  }
+  assert.equal(area(road), 16 * 24, 'road plane has no loading/seam holes once meshed');
+}
 const mixed = mesh(box, (x, y, z) => y === 0 && z === 0 && (x === 0 || x === 1) ? (x ? E.WOOD : E.GOLD) : 0);
 assert(mixed.ids.includes(E.WOOD) && mixed.ids.includes(E.GOLD), 'both triangle materials preserved');
 closed(mixed);

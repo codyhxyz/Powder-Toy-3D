@@ -10,7 +10,7 @@ import { rayTarget, dealtScale, PLAYER } from './targets.js';
 import { gravityScale } from './ballistics.js';
 import { BODY_MASS_KG, cellKg, split, brace } from './tug.js';
 import { viewmodelRig, heldMaterial } from './viewmodel.js';
-import { swing } from './tools/action.js';
+import { strikePose, sampleKickPose } from './strikePose.js';
 import { sharedTransfer, cellsNear, outsideBody, persistentLoad, ownedKey } from './tools/transfer.js';
 import { behind } from './tools/knife.tool.js';
 import { voxelWalk, isLoose } from './grid.js';
@@ -321,8 +321,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
 // ---------------------------------------------------------------- the leg in first person
 
 // The kicking leg in the viewmodel: a shin and boot swung up from below the
-// view about the hip, eased the way the melee tools swing (tools/action.js
-// swing): it stops short where the boot lands and follows through on a miss.
+// view about the hip and knee, using the same chamber/snap as the body.
 // Camera space, cells (+x right, +y up, −z forward). Drawn higher than a real
 // hip so the boot comes into the frame, as first-person legs are.
 const LEG_HIP = [0.4, -0.9, 0.3];    // cells: the pivot, below and just behind the eye
@@ -331,36 +330,43 @@ const LEG_WIDTH = 0.34;              // cells
 const BOOT = [0.42, 0.3, 0.8];       // cells: width, height, length (toward −z)
 const LEG_COLOR = '#ae8058';         // his bare skin: the realistic body's albedo map, averaged over the shin
 const BOOT_COLOR = LEG_COLOR;        // and he kicks barefoot
-const LEG_REST = 0;                  // rad: hanging down, out of view
-const LEG_HIT = 1.6;                 // rad: the boot landed (level, ahead)
-const LEG_MISS = 1.95;               // rad: a miss follows through, higher
-const LEG_STRIKE = 0.08;             // s for the boot to come up
 
 export function createKickLeg(env) {
   const rig = viewmodelRig(env);
   const hand = rig.hand(LEG_HIP);
   const pivot = new THREE.Group();
+  pivot.name = 'kick-hip';
   hand.add(pivot);
+  const knee = new THREE.Group();
+  knee.name = 'kick-knee'; knee.position.y = -LEG_LENGTH / 2; pivot.add(knee);
   const legMat = heldMaterial(LEG_COLOR), bootMat = heldMaterial(BOOT_COLOR);
-  const shin = new THREE.Mesh(new THREE.BoxGeometry(LEG_WIDTH, LEG_LENGTH, LEG_WIDTH), legMat);
-  shin.position.y = -LEG_LENGTH / 2;
+  const geometry = new THREE.BoxGeometry(LEG_WIDTH, LEG_LENGTH / 2, LEG_WIDTH);
+  const thigh = new THREE.Mesh(geometry, legMat), shin = new THREE.Mesh(geometry, legMat);
+  thigh.position.y = shin.position.y = -LEG_LENGTH / 4;
   const boot = new THREE.Mesh(new THREE.BoxGeometry(...BOOT), bootMat);
-  boot.position.set(0, -LEG_LENGTH, (LEG_WIDTH - BOOT[2]) / 2);
-  pivot.add(shin, boot);
-  const pose = swing({ rest: LEG_REST, hit: LEG_HIT, miss: LEG_MISS, strike: LEG_STRIKE, settle: KICK_REFIRE });
-  let t = Infinity;
+  boot.name = 'kick-boot';
+  boot.position.set(0, -LEG_LENGTH / 2, (LEG_WIDTH - BOOT[2]) / 2);
+  pivot.add(thigh); knee.add(shin, boot);
+  const pose = strikePose(), follow = new THREE.Quaternion(), axis = new THREE.Vector3(1, 0, 0);
+  let t = Infinity, landed = true;
   return {
-    start(landed) { pose.start(landed); t = 0; hand.visible = true; },
+    start(hit) {
+      landed = hit; t = 0; hand.visible = true;
+      pivot.quaternion.identity(); knee.quaternion.identity();
+    },
     update(dt) {
       if (t === Infinity) return;
       t += dt;
-      pivot.rotation.x = pose.angle(dt);
-      if (t >= KICK_REFIRE) { hand.visible = false; t = Infinity; pose.stop(); }
+      const p = Math.min(1, t / KICK_REFIRE);
+      sampleKickPose(p, pose);
+      pivot.quaternion.copy(pose.hip); knee.quaternion.copy(pose.knee);
+      if (!landed) pivot.quaternion.premultiply(follow.setFromAxisAngle(axis, 0.15 * Math.sin(Math.PI * p)));
+      if (t >= KICK_REFIRE) { hand.visible = false; t = Infinity; pivot.quaternion.identity(); knee.quaternion.identity(); }
       globalThis.__app?.requestRender?.();
     },
     dispose() {
-      shin.geometry.dispose(); boot.geometry.dispose(); legMat.dispose(); bootMat.dispose();
-      hand.removeFromParent();
+      geometry.dispose(); boot.geometry.dispose(); legMat.dispose(); bootMat.dispose();
+      rig.releaseHand(hand);
     },
   };
 }
