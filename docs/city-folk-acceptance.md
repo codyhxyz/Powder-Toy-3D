@@ -241,6 +241,30 @@ production freshness from the successful fetched-snapshot rerun.
 
 ## Required parent review / release gates (not claimed complete)
 
+### Parent verification after the final lifecycle fix
+
+- Integrated `6dfdddf` closes synchronous visibility-hidden and disable/reenable
+  invalidation. A fresh independent reviewer found no implementation blocker.
+  Both actual-event regressions fail the pre-fix code. Explicit E/Esc rollback,
+  refused/throwing teleport, and same-body respawn regressions still pass.
+- Parent reran the real village bus component and the composed suite:
+  **13 passed, zero failed or skipped**.
+- Real Apple M5 / Metal 3 compiled the production fill, leave, far-cell, and
+  detail-cell pipelines. A geometry compute entry matched **345,600 ID samples**
+  against the CPU across two expanded-world seeds and one legacy-world seed.
+  These are sampled columns, not an exhaustive GPU comparison.
+- Numeric GPU slot occupancy was **6,880 ms**, including startup and cleanup.
+  The independent watchdog report is `6284-6315.json`, status `released`,
+  no failures and no forced cleanup. The private server also closed.
+- A separate real-app E/edited-streaming check was aborted before its gameplay
+  assertions. The watchdog could not inspect process ownership within its
+  deadline. Its report, `51055-51088.json`, confirms `released` after **4,880 ms**.
+  The browser, owner/guard processes, and private port were confirmed stopped.
+  No bypass, deadline extension, or retry was used.
+- Geometry source did not change between numeric GPU validation and the final
+  three-file lifecycle fix. Full visual inspection, live E/Esc roundtrip, and
+  real-app edited slab restoration remain **unverified**, not passing evidence.
+
 1. Review this composed implementation and test/adaptor changes independently.
 2. Review original artwork, clear landmark identities, scenic shoreline quality,
    rolling-log appearance and discoverability of bus controls visually.
