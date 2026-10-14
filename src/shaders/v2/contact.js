@@ -8,7 +8,15 @@ const integerRowFields = new Set(['kind','capacity','offset','spawnQ','spawnLife
 const rowFields = Object.keys(CONTACT_ROWS[0]);
 const rxFields = Object.keys(CONTACT_REACTIONS[0]);
 const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
-const table = (name, struct, rows, fields, integer) => `fn ${name}(id:i32)->${struct} { switch id { ${rows.map((r, i) => `case ${i}: { return ${struct}(${fields.map(k => integer(k) ? r[k] : float(r[k])).join(',')}); }`).join('\n')} default: { return ${struct}(${fields.map(k => integer(k) ? 0 : '0.0').join(',')}); } } }`;
+// Keep one constant copy of each rule instead of repeating struct-valued
+// switch branches at every inlined lookup. The signed guard preserves defaults.
+const table = (name, struct, rows, fields, integer) => `const ${name}Table:array<${struct},${rows.length}> = array<${struct},${rows.length}>(
+${rows.map(r => `${struct}(${fields.map(k => integer(k) ? r[k] : float(r[k])).join(',')})`).join(',\n')}
+);
+fn ${name}(id:i32)->${struct} {
+ if(id<0 || id>=${rows.length}){return ${struct}(${fields.map(k => integer(k) ? 0 : '0.0').join(',')});}
+ return ${name}Table[id];
+}`;
 
 // These functions use an intentionally restricted source subset: no JS object
 // literals, closures, implicit integer division or dynamic member operations.
