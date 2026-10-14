@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { part, limb, STICK_HAND } from './figure.js';
+import { part, limb, STICK_HAND, buildJetpack } from './figure.js';
 
 // Halo 3's Mark VI silhouette: sealed helmet, gold visor, broad shoulder
 // plates and segmented armor over a black undersuit. Same rig as figure.js,
@@ -66,6 +66,7 @@ export function buildSpartan() {
   elR.add(hand);
   return {
     hipY: HIP, lieLift: 0.55, body, torso, neck,
+    jetpack: buildJetpack(torso, { up: 1.05, back: 1, color: ARMOR, nozzleColor: DARK }),
     shL, shR, elL, elR, hipL, hipR, knL, knR, handY: -FOREARM,
   };
 }

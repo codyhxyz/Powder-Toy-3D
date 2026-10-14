@@ -30,7 +30,8 @@
   with the same eight clips retargeted to her rig, a fitted pointed hat, and purple clothing.
   The selection is saved and also shown on the loading screen. Halo modes still use Spartan armor.
   Each model loads only when selected; Stickman stands in while it loads or if it fails.
-  The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
+  Player bodies and wizard NPCs carry visible jetpacks. Flames and particles leave the animated nozzle mouths,
+  following the torso's pose and body size (`figure.js`, `buildJetpack`).
   In Animal Crossing mode, the separate **Animal Crossing: Boy | Girl** setting selects the village persona.
   The girl has pigtails and a pink dress. Both personas use the same walking, jumping, tool, and furniture animations.
   Persona changes apply immediately and preserve the player position, equipped tool, and carried furniture.
