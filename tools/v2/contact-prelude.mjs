@@ -1,7 +1,10 @@
 // Explicit shared-foundation ABI fixture for CPU Naga validation. This is NOT
 // a GPU launcher or replacement for integration tests with the real driver.
 import { phaseWGSL } from '../../src/shaders/v2/phase.js';
+import { nativeStateWGSL } from '../../src/shaders/v2/state.js';
 import { ELEMENTS, K } from '../../src/elements.js';
+// Use the actual arithmetic ABI, including fast division dependencies.
+const arithmetic = nativeStateWGSL.slice(nativeStateWGSL.indexOf('fn energyAdd('), nativeStateWGSL.indexOf('fn energyOf('));
 export const contactPrelude = /* wgsl */ `
 struct Material {core:vec4u,bank:i32}
 struct Params {tick:u32}
@@ -11,16 +14,7 @@ fn inGrid(p:vec3i)->bool{return all(p>=vec3i(0))&&all(p<vec3i(32));}
 fn markBusy(p:vec3i){}
 fn noteEnergySource(p:vec3i,energy:vec2u){}
 fn noteEnergySink(p:vec3i,energy:vec2u){}
-fn energySigned(x:i32)->vec2u{return vec2u(bitcast<u32>(x),select(0u,0xffffffffu,x<0));}
-fn energyAdd(a:vec2u,b:vec2u)->vec2u {let low=a.x+b.x;return vec2u(low,a.y+b.y+select(0u,1u,low<a.x));}
-fn energySub(a:vec2u,b:vec2u)->vec2u {return energyAdd(a,energyAdd(~b,vec2u(1u,0u)));}
-fn energyMul(a:u32,b:u32)->vec2u {
- let a0=a&65535u;let a1=a>>16u;let b0=b&65535u;let b1=b>>16u;
- let low=a0*b0;let mid0=a1*b0;let mid1=a0*b1;
- var out=vec2u(low,a1*b1);
- out=energyAdd(out,vec2u(mid0<<16u,mid0>>16u));
- return energyAdd(out,vec2u(mid1<<16u,mid1>>16u));
-}
+${arithmetic}
 ${phaseWGSL}
 fn fixtureLiquid(id:u32)->bool{return ${ELEMENTS.filter(e=>e.kind===K.LIQUID).map(e=>`id==${e.id}u`).join(' || ')};}
 fn fixtureAmount(c:vec4u)->u32{let id=c.x&255u;if(id==0u){return 0u;}if(fixtureLiquid(id)){return c.y&0xffffffu;}return 65536u;}
