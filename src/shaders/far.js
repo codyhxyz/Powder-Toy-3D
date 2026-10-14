@@ -1301,12 +1301,15 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
   let geometric = vec3f(0.0, 1.0, 0.0);
-  let n = liquidOpticalNormal(rd, liquidRipple(p, geometric), geometric, true, IOR(lid));
+  let cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
+  var ripple = geometric;
+  if (cartoon) { ripple = cozyWaterNormal(p, geometric, footprint(p)); }
+  else { ripple = liquidRipple(p, geometric); }
+  let n = liquidOpticalNormal(rd, ripple, geometric, true, IOR(lid));
   let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  let cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
-  let rough = select(ROUGH(lid), 0.24, cartoon);
+  let rough = select(ROUGH(lid), COZY_WATER_ROUGH, cartoon);
   let refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
   var rt = refract(rd, n, 1.0 / IOR(lid));
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
@@ -1314,7 +1317,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   if (cartoon) {
     let paint = cozyWaterPaint(p, footprint(p), cozyFarShore(p));
     let light = skyAmbient(geometric) * sky + FU.sunCol * sunVis * max(FU.sun.y, 0.0);
-    return paint.rgb * light * paint.a + (1.0 - paint.a) * (F * refl * 0.35 + (1.0 - F) * body);
+    return paint.rgb * light * paint.a + (1.0 - paint.a) * (F * refl * COZY_WATER_REFLECT + (1.0 - F) * body);
   }
   return F * refl + (1.0 - F) * body;
 }
