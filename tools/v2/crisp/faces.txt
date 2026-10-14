@@ -1,0 +1,12 @@
+lab 128x128x128: cells air 1970596, opaque 48024, liquid 66872, glass 11660, gas 0
+  exposed faces: opaque 10972, liquid 10752, glass 19424; surface bricks 572 of 32768
+  facing the god-view camera: opaque 6384 (58%), liquid 5382; kept by a 16³-chunk direction cull: 6384 (58%)
+  face instance bytes at 8 B (opaque) + 16 B (liquid/glass): 0.57 MB
+volcano 128x128x128: cells air 1877436, opaque 150348, liquid 69368, glass 0, gas 0
+  exposed faces: opaque 22200, liquid 13952, glass 0; surface bricks 1178 of 32768
+  facing the god-view camera: opaque 15572 (70%), liquid 11904; kept by a 16³-chunk direction cull: 15572 (70%)
+  face instance bytes at 8 B (opaque) + 16 B (liquid/glass): 0.40 MB
+damValley 256x96x128: cells air 2193943, opaque 931887, liquid 19248, glass 650, gas 0
+  exposed faces: opaque 133962, liquid 1372, glass 596; surface bricks 6631 of 49152
+  facing the god-view camera: opaque 83365 (62%), liquid 1372; kept by a 16³-chunk direction cull: 83365 (62%)
+  face instance bytes at 8 B (opaque) + 16 B (liquid/glass): 1.10 MB

@@ -26,7 +26,10 @@
 // keeps it awake, a stale read after a particle stroke) wait for its port
 // (src/wire/rays.js, U12): the stage says they're skipped.
 //
-//   node tools/idle-check.mjs [--stage sim,app,run]
+// --physics v2 runs the app and run stages under the new physics' fast version (?physics=v2,
+// src/v2/physics.js): its certificate and its ticks stand for the Simulation's.
+//
+//   node tools/idle-check.mjs [--stage sim,app,run] [--physics v2]
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
@@ -34,6 +37,8 @@ import { openHarness } from './harness/open.mjs';
 
 const argv = process.argv.slice(2);
 const STAGES = (argv.includes('--stage') ? argv[argv.indexOf('--stage') + 1] : 'sim,app,run').split(',');
+const PHYSICS = argv.includes('--physics') ? argv[argv.indexOf('--physics') + 1] : null;
+const BOX = `/?size=64&preset=empty&view=plain${PHYSICS ? `&physics=${PHYSICS}` : ''}`;
 let failures = 0;
 
 async function simStage(browser) {
@@ -215,7 +220,7 @@ async function appStage(browser) {
     page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
     // (the relay the UI asks for quota isn't running here)
     page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(`console: ${m.text()}`); });
-    await page.goto(vite.url('/?size=64&preset=empty&view=plain'));
+    await page.goto(vite.url(BOX));
     await page.waitForFunction(() => window.__app?.sim, null, { polling: 250, timeout: 150000 });
     await page.evaluate(() => { const a = window.__app; a.post.settings.taa = false; return a.test.ready(); });
     await page.evaluate(() => window.__app.test.resume());
@@ -278,7 +283,7 @@ async function runStage(browser) {
     const errors = [];
     page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
     page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(`console: ${m.text()}`); });
-    await page.goto(vite.url('/?size=64&preset=empty&view=plain'));
+    await page.goto(vite.url(BOX));
     await page.waitForFunction(() => window.__app?.sim, null, { polling: 250, timeout: 150000 });
     await page.evaluate(() => { const a = window.__app; a.post.settings.taa = false; return a.test.ready(); });
     // running, as a player's session runs: unpaused, a step a frame (manual mode boots paused and parked)
@@ -288,30 +293,33 @@ async function runStage(browser) {
       const t = Date.now();
       await page.waitForFunction(() => window.__app.loop.asleep, null, { polling: 250, timeout: 150000 });
       const m = await page.evaluate(async () => {
-        const a = window.__app, s0 = a.gpu.stats.submits, c0 = a.loop.callbacks, f0 = a.sim.frame;
+        const a = window.__app, v2 = a.physics?.active ? a.physics.v2 : null, ticks = () => (v2 ? v2.tick : a.sim.frame);
+        const s0 = a.gpu.stats.submits, c0 = a.loop.callbacks, f0 = ticks();
         await new Promise((r) => setTimeout(r, 1000));
         return {
-          submits: a.gpu.stats.submits - s0, callbacks: a.loop.callbacks - c0, steps: a.sim.frame - f0, asleep: a.loop.asleep,
-          paused: a.settings.paused, certified: a.sim.idleCertified, hud: document.querySelector('.stats b')?.textContent,
+          submits: a.gpu.stats.submits - s0, callbacks: a.loop.callbacks - c0, steps: ticks() - f0, asleep: a.loop.asleep,
+          paused: a.settings.paused, certified: v2 ? v2.asleep : a.sim.idleCertified, hud: document.querySelector('.stats b')?.textContent,
         };
       });
       ok(m.submits === 0 && m.callbacks === 0 && m.steps === 0 && m.asleep && !m.paused && m.certified && m.hud === 'idle',
         `${after}: running, certified idle, asleep after ${((Date.now() - t) / 1000).toFixed(0)} s; then ${m.submits} submits, ${m.callbacks} animation frames, ${m.steps} steps over 1 s, the HUD reading '${m.hud}' (${secs()})`);
     };
+    if (PHYSICS) ok(await page.evaluate((m) => window.__app.physics.mode === m && window.__app.physics.active, PHYSICS), `the box runs physics ${PHYSICS}`);
     await asleep('the empty box');
-    const before = await page.evaluate(() => ({ frame: window.__app.sim.frame, version: window.__app.sim.version, callbacks: window.__app.loop.callbacks }));
+    // (steps taken: v2's ticks when it runs the box)
+    const before = await page.evaluate(() => { const a = window.__app; return { frame: a.physics?.active ? a.physics.v2.tick : a.sim.frame, version: a.sim.version, callbacks: a.loop.callbacks }; });
     // a rock on the floor (it settles in a few steps)
     await page.evaluate(async () => {
       const a = window.__app, { E } = await import('/src/elements.js');
       a.sim.paint({ center: new a.THREE.Vector3(32, 2, 32), radius: 2, shape: 0, tool: E.ROCK, rate: 1, replace: false });
     });
-    const woke = await page.waitForFunction((f) => window.__app.sim.frame > f, before.frame, { polling: 100, timeout: 20000 }).then(() => true, () => false);
+    const woke = await page.waitForFunction((f) => { const a = window.__app; return (a.physics?.active ? a.physics.v2.tick : a.sim.frame) > f; }, before.frame, { polling: 100, timeout: 20000 }).then(() => true, () => false);
     ok(woke, 'a stroke wakes it: the steps run again');
     await asleep('the stroke settled');
     const after = await page.evaluate(async () => {
       const a = window.__app, { E } = await import('/src/elements.js');
       const c = await a.sim.census();
-      return { frame: a.sim.frame, version: a.sim.version, callbacks: a.loop.callbacks, rock: c[E.ROCK]?.n ?? 0 };
+      return { frame: a.physics?.active ? a.physics.v2.tick : a.sim.frame, version: a.sim.version, callbacks: a.loop.callbacks, rock: c[E.ROCK]?.n ?? 0 };
     });
     ok(after.rock > 0 && after.version > before.version, `between: ${after.frame - before.frame} steps, ${after.callbacks - before.callbacks} animation frames, ${after.rock} rock cells`);
     await page.evaluate(() => window.__app.test.park());
