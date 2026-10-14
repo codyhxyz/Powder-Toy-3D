@@ -25,9 +25,17 @@ const N = ARENA_SIZE;
 const KIND = ELEMENTS.map((e) => e.kind);
 function copyOf(ids) {
   const at = (x, y, z) => (y * N[2] + z) * N[0] + x;
+  const changes = [];
   return {
-    ready: true, version: 1, dims: N,
+    ready: true, version: 1, dims: N, reads: 0,
+    // A precise edit journal stands in for the model's conservative brick
+    // revisions; world-model-node-check exercises those with real captures.
+    hasIdChanges(b, since) {
+      return since < 1 || changes.some(c => c.version > since &&
+        c.x0 <= b.x1 && c.x1 >= b.x0 && c.y0 <= b.y1 && c.y1 >= b.y0 && c.z0 <= b.z1 && c.z1 >= b.z0);
+    },
     id(x, y, z) {
+      this.reads++;
       x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
       if (y >= N[1]) return E.EMPTY;
       if (x < 0 || z < 0 || y < 0 || x >= N[0] || z >= N[2]) return -1;
@@ -36,6 +44,7 @@ function copyOf(ids) {
     kind: (i) => (i === -1 ? K.SOLID : KIND[i]),
     // [x0, x1) × [y0, y1) × [z0, z1), clipped to the grid
     fill(x0, y0, z0, x1, y1, z1, id) {
+      changes.push({ x0, x1: x1 - 1, y0, y1: y1 - 1, z0, z1: z1 - 1, version: this.version + 1 });
       for (let y = Math.max(0, y0); y < Math.min(N[1], y1); y++)
         for (let z = Math.max(0, z0); z < Math.min(N[2], z1); z++)
           for (let x = Math.max(0, x0); x < Math.min(N[0], x1); x++) ids[at(x, y, z)] = id;
@@ -50,8 +59,8 @@ const cells = copyOf(ids);
 // listing, coVoxelData, leaves out the voxels at index 119 and 239 of any axis
 // at this voxel size, though they collide; it's checked against the shadow.)
 const cellKey = (x, y, z) => ((y + 1) * (N[2] + 2) + z + 1) * (N[0] + 2) + x + 1;
-function shadowed() {
-  const p = createPhysics(RAPIER, cells);
+function shadowed(source = cells) {
+  const p = createPhysics(RAPIER, source);
   const on = new Set(), create = p.world.createCollider.bind(p.world);
   p.voxels = on;
   p.redundant = 0;
@@ -150,6 +159,71 @@ for (let f = 0; f < FRAMES; f++) {
 }
 check('incremental sync equals a from-scratch one (voxels and ray grounds)', firstBad === null,
   `${syncs} syncs over ${FRAMES} frames, up to ${worst} voxels`);
+
+// ---- locality: exact results and cell-read counts, independent of timings
+const local = copyOf(new Uint8Array(N[0] * N[1] * N[2]));
+local.fill(0, 0, 0, ...N.map((v, i) => i === 1 ? 24 : v), E.ROCK);
+local.version++;
+const parkedCenters = [
+  { key: 'near', x: 32, y: 27, z: 32, ...JEEP.GROUND },
+  { key: 'overlap', x: 40, y: 27, z: 32, ...HOVERBIKE.GROUND },
+  { key: 'far', x: 180, y: 27, z: 90, ...HOVERBIKE.GROUND },
+];
+const p = shadowed(local);
+p.syncTerrain(parkedCenters);
+const verify = (label, centers = parkedCenters) => {
+  const ref = shadowed(local);
+  ref.syncTerrain(centers);
+  check(label, same(sorted(p.voxels), sorted(ref.voxels)) && centers.every(c => sameGround(groundOf(p, c.key), groundOf(ref, c.key))) && !p.redundant);
+  ref.world.free();
+};
+const edit = (x, y, z, id) => { local.fill(x, y, z, x + 1, y + 1, z + 1, id); local.version++; };
+local.reads = 0;
+edit(120, 80, 65, E.ROCK);
+p.syncTerrain(parkedCenters);
+check('distant material edit: zero local voxel/ground cell reads and zero toggles', local.reads === 0 && p.toggled === 0, `${local.reads} reads`);
+verify('distant edit preserves exact collider and grounds');
+const farGround = p.ground('far');
+edit(32, 23, 32, E.EMPTY);
+local.reads = 0;
+p.syncTerrain(parkedCenters);
+check('nearby edit scans affected overlapping regions but retains distant ground', local.reads > 0 && p.toggled === 1 && p.ground('far') === farGround, `${local.reads} reads`);
+verify('nearby edit matches full rebuild with overlapping regions');
+edit(33, 23, 32, E.EMPTY);
+edit(34, 24, 32, E.WATER); // liquid matters to hovering ground, not voxel solidity
+edit(120, 81, 65, E.SAND); // latest capture is distant
+p.syncTerrain(parkedCenters);
+verify('nearby and liquid edits survive several skipped captures ending with a distant edit');
+local.reads = 0;
+p.syncTerrain(parkedCenters, true);
+check('force rereads even when all revisions are unchanged', local.reads > 0);
+verify('force retains exact results');
+edit(120, 82, 65, E.ROCK);
+const movedCenters = parkedCenters.map((c, i) => i === 0 ? { ...c, x: c.x + 8 } : c);
+p.syncTerrain(movedCenters);
+verify('movement on a distant-edit capture still fills newly covered cells', movedCenters);
+// Ground samples extend below the voxel box; checking only that box loses this edit.
+const high = [{ key: 'high', x: 32, y: 40, z: 32, ...HOVERBIKE.GROUND }];
+p.syncTerrain(high, true);
+const oldGround = groundOf(p, 'high');
+edit(32, 24, 32, E.WATER);
+p.syncTerrain(high);
+check('liquid below voxel coverage still changes ray ground', !sameGround(oldGround, groundOf(p, 'high')) && p.toggled === 0);
+verify('ground-only edit matches full rebuild', high);
+local.idVersion = local.version;
+local.version++; // a temperature-only capture does not advance material revision
+local.reads = 0;
+check('temperature-only capture does not sync or read terrain', !p.syncTerrain(high) && local.reads === 0);
+delete local.idVersion;
+// Test doubles and older model callers need no locality API.
+delete local.hasIdChanges;
+local.version++;
+local.reads = 0;
+p.syncTerrain(high);
+check('models without locality metadata conservatively reread', local.reads > 0);
+verify('fallback model matches full rebuild', high);
+p.world.free();
+phys.world.free();
 
 // ---- time: syncs with six vehicles
 function timeIt(label, { readback, drive }) {

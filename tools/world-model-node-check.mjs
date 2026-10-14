@@ -181,6 +181,8 @@ async function suite(useWorker) {
   await frame(60);
   check(`${how}: a temperature changes: version +1, idVersion not`, npc.version === v0 + 1 && npc.idVersion === i0);
   check(`${how}: and reads back`, npc.T(...sim.cell(1234)) === decodeTempCode(sim.temps[1234]));
+  const boxAt = (i) => { const [x, y, z] = sim.cell(i); return { x0: x, x1: x, y0: y, y1: y, z0: z, z1: z }; };
+  check(`${how}: temperature-only capture leaves local material revisions unchanged`, !npc.hasIdChanges(boxAt(1234), i0));
   v0 = npc.version;
   sim.ids[777] = sim.ids[777] === E.WATER ? E.SAND : E.WATER; sim.write();
   await frame(60);
@@ -188,6 +190,37 @@ async function suite(useWorker) {
   check(`${how}: every view sees the same versions`, views.every((v) => v.version === npc.version && v.idVersion === npc.idVersion));
   sameCells(npc, sim, `${how}: every cell after the changes`);
   sameStand(npc, sim, `${how}: standAt after the changes`);
+  check(`${how}: a material change invalidates its brick, not a distant brick`,
+    npc.hasIdChanges(boxAt(777), i0) && !npc.hasIdChanges(boxAt(sim.ids.length - 1), i0));
+  const since = npc.idVersion;
+  const edits = [0, 1, 2, 3, sim.ids.length / 2 + 1234, sim.ids.length - 1];
+  for (const i of edits) {
+    const before = npc.idVersion;
+    sim.ids[i] = sim.ids[i] === E.WATER ? E.SAND : E.WATER; sim.write();
+    await frame(60);
+    check(`${how}: material locality records packed cell ${i}`, npc.hasIdChanges(boxAt(i), before));
+  }
+  check(`${how}: local changes survive multiple captures skipped by a consumer (both packed words and grid edges)`,
+    edits.every(i => npc.hasIdChanges(boxAt(i), since)) && !npc.hasIdChanges(boxAt(777), since));
+  check(`${how}: caught-up consumers and immutable outside walls stay clean`,
+    !npc.hasIdChanges(boxAt(0), npc.idVersion) && !npc.hasIdChanges({ x0: -8, x1: -1, y0: 0, y1: 8, z0: 0, z1: 8 }, since));
+  // Origin/sim replacement with identical dimensions and bytes must invalidate
+  // every region, including ones with only empty cells or outside walls.
+  const emptyBrick = { x0: 0, x1: 3, y0: 0, y1: 3, z0: 0, z1: 3 };
+  const outside = { x0: -8, x1: -1, y0: 0, y1: 8, z0: 0, z1: 8 };
+  for (let y = 0; y < 4; y++) for (let z = 0; z < 4; z++) for (let x = 0; x < 4; x++)
+    sim.ids[(y * sim.g.nz + z) * sim.g.nx + x] = E.EMPTY;
+  sim.write();
+  await frame(60);
+  for (const changeIdentity of [() => { sim.id++; }, () => { sim.origin = { toArray: () => [16, 0, 0] }; }]) {
+    const before = npc.idVersion;
+    changeIdentity();
+    await frame(60);
+    check(`${how}: same-size identity/origin reset invalidates material locality`,
+      npc.idVersion > before && npc.hasIdChanges(boxAt(777), before));
+    check(`${how}: reset invalidates all-air and outside-only regions`,
+      npc.hasIdChanges(emptyBrick, before) && npc.hasIdChanges(outside, before));
+  }
 
   if (useWorker) {
     const at = sim.cell(4321), before = npc.id(...at), v = npc.version, seen = [];
@@ -222,11 +255,13 @@ async function suite(useWorker) {
     console.error = (...a) => errs.push(a.join(' '));
     sim.ids[5] = sim.ids[5] === E.STONE ? E.SAND : E.STONE;
     v0 = npc.version;
+    const beforeFailure = npc.idVersion;
     await frame(120, () => sim.write());
     console.error = err0;
     check(`${how}: the worker breaks mid-capture: reported once, no readback fails after`,
       errs.length === 1 && errs[0].includes('World model worker failed'), errs.join(' | '));
     check(`${how}: the main thread takes over and reads the change`, npc.version === v0 + 1 && npc.id(...sim.cell(5)) === sim.ids[5]);
+    check(`${how}: fallback preserves locality revisions`, npc.hasIdChanges(boxAt(5), beforeFailure) && !npc.hasIdChanges(boxAt(10000), beforeFailure));
   }
 }
 
