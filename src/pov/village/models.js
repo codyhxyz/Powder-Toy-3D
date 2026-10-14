@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 export { furniture } from './furnitureModels.js';
 import { createLeapAnimation } from './leap.js';
+import { strikePose, sampleKickPose, kickBlend } from '../strikePose.js';
 
 // Original toy-like silhouettes; baked soft directional shading works with the
 // voxel renderer's unlit scene and its shared rolling-log mesh transform.
@@ -101,6 +102,9 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
   root.userData.persona = persona === 'girl' ? 'girl' : 'boy';
   const leap = createLeapAnimation(body, limbs);
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+  const kickPose = strikePose(), punchPose = new THREE.Quaternion();
+  const punchGuard = new THREE.Quaternion().setFromEuler(new THREE.Euler(2.2, 0, 0.6));
+  const punchHit = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.8, 0, 0.6));
   let lastTime = 0, phase = 0, lean = 0, toolTime = Infinity, wasUsing = false;
   return { root, hand: limbs[3], reset: () => leap.reset(),
     animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, motion = null, kick = 0, pose = null) {
@@ -125,7 +129,6 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
     wasUsing = working;
     toolTime += dt;
     if (tool && !carrying) limbs[3].rotation.x = 0.9;
-    if (kick > 0 && !carrying) limbs[2].rotation.x = Math.sin(kick * Math.PI) * 1.7;
     body.rotation.z = talking ? Math.sin(time * 9) * 0.025 : 0;
     if (tool && !carrying && toolTime < 0.38) {
       // Minecraft's overhead mining stroke: lift high, chop fast, recover even after a tap.
@@ -143,11 +146,11 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
       const jab = ease((t - 0.3) / 0.1) * (1 - ease((t - 0.62) / 0.16));
       const follow = ease((t - 0.4) / 0.12) * (1 - ease((t - 0.68) / 0.2));
       const weight = reducedMotion?.matches ? 0.25 : 1;
-      limbs[3].rotation.x += ((2.2 - 0.4 * jab) - limbs[3].rotation.x) * guard;
-      limbs[3].rotation.z = 0.6 * guard;
+      punchPose.copy(punchGuard).slerp(punchHit, jab);
+      limbs[3].quaternion.slerp(punchPose, guard);
       elbows[1].rotation.x = 0.7 * guard * (1 - jab);
       limbs[3].position.y += (0.3 + 0.3 * jab) * guard;
-      limbs[3].position.z = (-0.7 - 0.85 * jab) * guard;
+      limbs[3].position.z = (-0.7 - 1.45 * jab) * guard;
       limbs[1].rotation.x += (2.1 - limbs[1].rotation.x) * guard;
       limbs[1].rotation.z = -0.6 * guard;
       elbows[0].rotation.x = 0.85 * guard;
@@ -188,9 +191,15 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
     }
     // A chicken wingbeat. Positive x is the raised arm (the punch above); both arms, not the tool hand only.
     const flap = pose ? 0 : motion?.flap ?? 0;
-    if (flap > 0) {
+    if (flap > 0 && !(punch > 0 && !carrying)) {
       limbs[1].rotation.x = 2.4 * flap; limbs[3].rotation.x = 2.4 * flap;
       limbs[1].rotation.z = 1.1 * flap; limbs[3].rotation.z = -1.1 * flap;
+    }
+    if (kick > 0 && !carrying && !pose) {
+      sampleKickPose(1 - kick, kickPose);
+      limbs[2].quaternion.slerp(kickPose.hip, kickBlend(1 - kick));
+      knees[1].quaternion.slerp(kickPose.knee, kickBlend(1 - kick));
+      if (!reducedMotion?.matches) body.quaternion.multiply(kickPose.torso);
     }
   } };
 }
