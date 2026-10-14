@@ -191,7 +191,7 @@ test('actual generated shaders carry the reference conservation and numeric guar
   assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/remainder=dCarrier\(after\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'finish'),/sqrt\(a\.vp\.w\*a\.vp\.w\+addedP2\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'select'),/energyFits\(dProduct\(m\),dProductEnergy\(m\)\)/);
-  assert.match(particlesWGSL(g,nativeDynamicsHead,'integrate'),/crossed>D_SWEEP_MAX/);
+  assert.match(particlesWGSL(g,nativeDynamicsHead,'integrate'),/crossedLimit/);
   const tool=airWGSL(g,nativeDynamicsHead,'tool');assert.doesNotMatch(tool,/P\.strength\*D_DT/);
   assert.match(airWGSL(g,nativeDynamicsHead,'step'),/open\*before\.vp\.w\/A_RHO\*A_DT\/A_DX/);
 });
@@ -266,4 +266,45 @@ test('unused blast batches indirect-dispatch zero work with separate nonaliased 
     assert.equal(c.size.indirect,d.dispatchArgs);assert.notEqual(c.size.indirect,d.control);
   }
   assert.equal(d.plans.size,owner.g.slots*16);
+});
+
+test('3D air shock remains finite, closed-volume scalars conserve, and uniform pressure has no wall force',async()=>{
+  const {airStepReference}=await import('../../src/v2/dynamics-reference.js');
+  const dims=[5,5,5],initial=Array.from({length:125},()=>({velocity:[0,0,0],pressure:1000,heat:0,gas:0}));
+  const uniform=airStepReference(initial,dims);assert.ok(uniform.every(a=>a.velocity.every(v=>Math.abs(v)<1e-12)));
+  let state=initial.map((a,i)=>({...a,pressure:i===62?3000:0,heat:i===62?100:0,gas:i===62?1:0}));
+  for(let n=0;n<600;n++) {
+    state=airStepReference(state,dims);
+    assert.ok(state.every(a=>[...a.velocity,a.pressure,a.heat,a.gas].every(Number.isFinite)));
+    assert.ok(state.every(a=>a.gas>=-1e-12));
+  }
+  close(state.reduce((s,a)=>s+a.heat,0),100,1e-8);close(state.reduce((s,a)=>s+a.gas,0),1,1e-10);
+  const frozen=airStepReference(initial,dims,{airMode:4});assert.ok(frozen.every(a=>a.pressure===1000));
+  const off=airStepReference(initial,dims,{airMode:3,ambientHeat:false});assert.ok(off.every(a=>a.pressure===0&&a.heat===0&&a.velocity.every(v=>v===0)));
+});
+test('native gravity/air/edge modes and exact-jets gate reach every dynamics dispatch',async()=>{
+  const {owner,calls}=mockOwner();owner.sim.gravityMode=2;owner.sim.airMode=4;owner.sim.edgeMode=2;owner.sim._gravity=.05;owner.sim.ambientHeat=false;
+  owner.jets={isReady:true};const d=new NativeDynamics(owner);await d.ready;d.advanceParticles(1);d.advanceAir(1);
+  for(const c of calls.filter(c=>c.opts)) {
+    assert.equal(c.opts.params.gravity,39.2);assert.equal(c.opts.params.gravMode,2);assert.equal(c.opts.params.airMode,4);
+    assert.equal(c.opts.params.edge,2);assert.equal(c.opts.params.ambientHeat,0);assert.equal(c.opts.params.nativeJets,1);
+  }
+  const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  const {blastsWGSL}=await import('../../src/shaders/v2/blasts.js');
+  const {particlesWGSL}=await import('../../src/shaders/v2/particles.js');
+  const plan=blastsWGSL(owner.g,nativeDynamicsHead,'couplePlan');
+  assert.match(plan,/P\.gravMode==2u \|\| P\.edge!=0u/);assert.match(plan,/dUnsupported\(p\)/);
+  assert.match(plan,/P\.nativeJets==0u && k==3u/);
+  const fly=particlesWGSL(owner.g,nativeDynamicsHead,'integrate');assert.match(fly,/mGravity\(local\)/);
+  assert.match(fly,/cell=mEdge\(cell\)/);assert.match(fly,/dOutflow\(previous,m\)/);
+  assert.match(fly,/contactNuclearMaterial\(destination\.core\)/);
+});
+test('more than64K simultaneous promotion candidates conserve every unallocated source',()=>{
+  const count=PARTICLE_CAP+1701,pool=new Array(PARTICLE_CAP);
+  const sources=Array.from({length:count},(_,slot)=>({slot,material:{...matter(),bank:slot},particle:{id:slot+1,...matter(),bank:slot}}));
+  allocateSources(sources,pool);
+  assert.equal(pool.filter(p=>p?.id).length,PARTICLE_CAP);
+  assert.equal(sources.filter(s=>s.material).length,1701);
+  assert.ok(sources.slice(PARTICLE_CAP).every(s=>s.retry && s.material.bank===s.slot));
+  assert.equal(pool.reduce((sum,p)=>sum+BigInt(p.bank),0n)+sources.reduce((sum,s)=>sum+BigInt(s.material?.bank??0),0n),BigInt(count)*(BigInt(count)-1n)/2n);
 });

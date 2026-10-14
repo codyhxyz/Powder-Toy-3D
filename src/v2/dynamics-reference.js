@@ -3,6 +3,7 @@
 import { ELEMENTS, E, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { PHYS } from '../physics.js';
+import { contactVacuum, specialExplosion } from './contact.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, AIR_CAPACITY_Q, withPayload, payloadOf, share } from './layout.js';
 export { CELL_M };
 export const PARTICLE_CAP = 65536;
@@ -20,7 +21,7 @@ export const GUNPOWDER_PRESSURE = ELEMENTS[E.GUNPOWDER].blast.P;
 export const LEGACY_PRESSURE_PA = Math.sqrt(GUNPOWDER_ENERGY_J * 0.25 * 2 * AIR.rho * AIR.sound ** 2 / AIR.edge ** 3) / GUNPOWDER_PRESSURE;
 export const legacyPressureToPa = value => value * LEGACY_PRESSURE_PA;
 export const specialBlastEnergy = legacyPressure => GUNPOWDER_ENERGY_J * (Math.max(0,Math.min(PHYS.P_MAX,legacyPressure))/GUNPOWDER_PRESSURE) ** 2;
-export const singularityVacuumPa = core => (core[0]&255)===E.SINGULARITY ? legacyPressureToPa(Math.max(PHYS.P_MIN,-PHYS.SING_P_PER_MASS*(core[1]&65535)/256)) : 0;
+export const singularityVacuumPa = core => legacyPressureToPa(contactVacuum(core));
 export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;
 export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
@@ -174,7 +175,7 @@ export function fractureMaterial(material, product) {
 }
 export function chargeEnergy(material) {
   const id=material.core[0]&255,row=dynamicsRows[id];
-  if(id===E.SINGULARITY) { const mass=(material.core[1]&65535)/256; return mass===0 ? 0 : specialBlastEnergy(Math.min(PHYS.P_MAX,mass*PHYS.SING_BURST_P_PER_MASS)); }
+  const special=specialExplosion(material.core,GUNPOWDER_ENERGY_J);if(special) return special.energyJ;
   return row.energy*(row.kind===K.LIQUID ? (material.core[1]&0xffffff)/65536 : 1);
 }
 export const pressureEnergy = p => p*p*AIR.edge**3/(2*AIR.rho*AIR.sound**2);
@@ -196,4 +197,39 @@ export function holdVelocities(particles, destination, strength=12, dt=DT) {
   for(let a=0;a<3;a++) mean[a]/=mass;
   const desired=mean.map((v,a)=>(v-omega*(v+omega*offset[a]/mass*CELL_M)*step)*decay);
   return particles.map(p=>desired.map((v,a)=>v+(p.velocity[a]-mean[a])*Math.exp(-2*omega*step)));
+}
+
+// Scalar/pressure/velocity twin of one air substep in a closed rectangular
+// fixture. Faces are evaluated in canonical order, just like air.js aFlux.
+export function airStepReference(cells,dims,{airMode=0,ambientHeat=true}={}) {
+  const [nx,ny,nz]=dims,dt=DT/AIR.substeps,dx=AIR.edge;
+  const vOn=[0,1,4].includes(airMode),pOn=[0,2,4].includes(airMode);
+  const input=cells.map(a=>({...a,velocity:vOn?[...a.velocity]:[0,0,0],pressure:pOn?a.pressure:0,heat:ambientHeat?a.heat:0}));
+  const idx=(x,y,z)=>x+nx*(z+nz*y),loss=AIR.loss**(1/AIR.substeps);
+  const flux=(l,r,axis)=>{
+    const lv=[...l.velocity,l.pressure],rv=[...r.velocity,r.pressure];
+    const acoustic=lv.map((v,i)=>-0.5*AIR.sound*(rv[i]-v));
+    acoustic[axis]+=(lv[3]+rv[3])/(2*AIR.rho);acoustic[3]+=AIR.rho*AIR.sound**2*(lv[axis]+rv[axis])/2;
+    const courant=Math.max(-1/12,Math.min(1/12,(lv[axis]+rv[axis])*0.5*dt/dx));
+    const donor=courant>=0?l:r;
+    const vp=acoustic.map((v,i)=>v*dt/dx+(i<3?donor.velocity[i]*courant:0));
+    const scalars=['heat','gas'].map((field,i)=>{
+      if(i===0&&!ambientHeat || i===1&&!pOn&&!vOn) return 0;
+      const gradient=r[field]-l[field];
+      return courant*donor[field]-(Math.abs(gradient)<AIR.scalarQuantum?0:AIR.diffusion*dt/dx**2*gradient);
+    });return {vp,scalars};
+  };
+  const out=input.map(a=>({...a,velocity:[...a.velocity]}));
+  for(let y=0;y<ny;y++)for(let z=0;z<nz;z++)for(let x=0;x<nx;x++) {
+    const i=idx(x,y,z),before=input[i],vp=[...before.velocity,before.pressure],scalar=[before.heat,before.gas];
+    for(let axis=0;axis<3;axis++)for(const sign of [-1,1]) {
+      const q=[x,y,z];q[axis]+=sign;if(q.some((v,a)=>v<0||v>=dims[a]))continue;
+      const other=input[idx(...q)],f=sign>0?flux(before,other,axis):flux(other,before,axis);
+      for(let a=0;a<4;a++)vp[a]-=sign*f.vp[a];vp[axis]+=sign*before.pressure/AIR.rho*dt/dx;
+      for(let a=0;a<2;a++)scalar[a]-=sign*f.scalars[a];
+    }
+    out[i].velocity=vOn?(airMode===4?[...before.velocity]:vp.slice(0,3).map(v=>v*loss)):[0,0,0];
+    out[i].pressure=pOn?(airMode===4?before.pressure:vp[3]*loss):0;
+    out[i].heat=ambientHeat?scalar[0]:0;out[i].gas=scalar[1];
+  }return out;
 }

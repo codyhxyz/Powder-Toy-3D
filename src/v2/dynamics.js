@@ -1,4 +1,6 @@
 import { fold } from '../gpu/kernels.js';
+import { ELEMENTS, K } from '../elements.js';
+import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP } from '../shaders/v2/blasts.js';
@@ -41,6 +43,8 @@ export function validateDynamicState(snapshot,g) {
     if(!s.particles[i*12+3]) continue;
     if([0,1,2,4,5,6].some(k=>!safeDynamicNumber(particleFloats[i*12+k]))) throw new Error('Invalid native particle coordinates/velocity');
     const tag=s.particles[i*12+7]&255;
+    if(tag===0 || (tag<ELEMENTS.length && ELEMENTS[tag].kind===K.LIQUID && (s.particles[i*12+8]&0xffffff)===0) || (tag>=ELEMENTS.length && tag<254)) throw new Error('Invalid native particle material');
+    if(s.held[i] && tag>=254) throw new Error('A ray cannot be a held native material');
     if(tag===254 && [8,9,10].some(k=>!safeDynamicNumber(particleFloats[i*12+k]) || particleFloats[i*12+k]<0)) throw new Error('Invalid native photon energy');
     if(tag===255 && (!safeDynamicNumber(particleFloats[i*12+9]) || particleFloats[i*12+9]<0 || s.particles[i*12+10]>2)) throw new Error('Invalid native neutron payload');
   }
@@ -123,7 +127,7 @@ export class NativeDynamics {
   get renderState() { return { ...DYNAMICS_ABI, particles:this.particles, control:this.control, liveCountOffset:0,
     ready:this.isReady&&!this.disposed, interpolationSeconds:1/60, origin:[...this.origin] }; }
   attachDrawAdapter(adapter) { this.drawAdapter=adapter; }
-  _params(tick,extra={}) { return { ...this.owner._params?.(tick),tick,origin:vector(this.owner.sim.origin),sequence:this.sequence,...extra }; }
+  _params(tick,extra={}) { return { ...this.owner._params?.(tick),...nativeModes(this.owner.sim),tick,nativeJets:+(this.owner.jets?.isReady===true),origin:vector(this.owner.sim.origin),sequence:this.sequence,...extra }; }
   _check() { if (!this.isReady || this.disposed) throw new Error('NativeDynamics is not ready'); }
   _record(family,stage,count,tick,params={}) {
     this._check(); const k=this.kernels[`${family}/${stage}`];
@@ -176,7 +180,7 @@ export class NativeDynamics {
     this._record('air','faces',bricks,tick);
     this._record('air','source',bricks,tick); this.airIndex^=1;
     for (let i=0;i<AIR.substeps;i++) { this._record('air','step',bricks,tick,{substep:i}); this.airIndex^=1; }
-    this._record('air','gas',cells,tick);
+    this._record('air','gas',cells,tick);this._record('air','gasBoundary',cells,tick);
     this._record('blasts','couplePlan',cells,tick); this._allocate(tick);
     this.gpu.frame.clear(this.control,4,8); // recompute air and durable-event counts, not live particles
     this._record('air','activity',bricks,tick);
@@ -255,13 +259,13 @@ export class NativeDynamics {
   /** Enqueue beside the owner's idle read, at the SAME recording boundary. */
   async readActivity() {
     this._check(); const serial=this.serial,epoch=this.owner.epoch;
-    const first=this.gpu.readback.buffer(this.control,0,68);
+    const first=this.gpu.readback.buffer(this.control,0,80);
     const pending=this.gpu.readback.buffer(this.control,rayRequestBase(this.g)*4,RAY_REQUEST_CAP*4);
     const [raw,requests]=await Promise.all([first,pending]);
     const c=new Uint32Array(raw),r=new Uint32Array(requests);
     let queued=0; for (const [slot] of this.rayRequests) { queued+=r[slot]; if(r[slot]===0 && serial===this.serial) this.rayRequests.delete(slot); }
     const stats={particles:c[0],air:c[1],events:c[2],queued,capacityFallbacks:c[7],
-      outsideObligations:this.pendingOutside.size,blastBatch:this.blastBatch,outflowPackets:c[16]};
+      outsideObligations:this.pendingOutside.size,blastBatch:this.blastBatch,outflowPackets:c[16],sweepRetries:c[19]};
     if (!this.disposed && serial===this.serial && epoch===this.owner.epoch) {
       this.stats=stats; this.isIdle=stats.particles===0 && stats.air===0 && stats.events===0 && queued===0 && !stats.outsideObligations;
     }

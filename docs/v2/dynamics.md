@@ -174,3 +174,32 @@ integration limitation, not a claimed completed transport proof.
 `validateDynamicState(snapshot,g)` is pure and exported. App/save callers should
 preflight it before mutating ANY app or GPU state, then call restore. It includes
 held memberships, queued rays, pending shock and source obligations.
+
+## Modes / shared producer integration
+
+DynamicParams carries the shared native mode fields; gravity is SI from
+`nativeModes(sim)` (`setting/.025*19.6`). Particle acceleration is `mGravity`;
+wind drag respects air velocity modes. Radial/open/loop powders use real
+particle flight: a canonical walk toward `mDown` promotes an entire unsupported
+run, never a one-cell-per-tick fallback. Capacity refusal leaves each source
+unchanged/busy. The CPU census includes67237 simultaneous candidates and exact
+refused-bank totals, not a reduced fixture.
+
+Air honors pressure-off, velocity-off, off, no-update, ambient heat, loop faces
+and void reservoirs. No-update freezes velocity/pressure transport/decay, not
+explicit source/tool writes. Gas drift wakes on possible motion even when a
+probabilistic move did not win that tick. Void matter/gas outflow is ledgered
+and counted; world-window exits remain retained. Loop particles sweep every
+crossed cell before wrapping; the analytical progress bound scales with the
+segment, not the box size. `sweepRetries` reports a numerical non-progress guard.
+
+The special source/nuclear helpers are imported from the contact owner's
+`specialContactWGSL`: molten Pu/uranium retain their nuclear ctype. Deferred
+unrepresentable capture/fission stores the exact interaction in the neutron
+record at world coordinates, freezes life, and never spawns fission children
+before its heat is accepted.
+
+`P.nativeJets` comes from `owner.jets?.isReady`. The after-gather jet heuristic
+is disabled ONLY when the actual exact-diversion owner is ready; wind/tools
+still use conservative extraction. The exact jet owner shares the fixed48B
+records and control/free-list ABI (free list begins at control word32).

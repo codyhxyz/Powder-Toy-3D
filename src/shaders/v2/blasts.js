@@ -34,19 +34,18 @@ const D_ENERGY_SUMS: u32 = D_SPAWN_COUNTS + D_BRICKS;
 fn dExplosive(id: u32) -> DExplosive { switch id { ${blastTables} default: { return DExplosive(0.0,0u,20.0,0u); } } }
 fn dEvaporates(m: Material) -> bool { return cid(m.core)==${E.SINGULARITY}u && payloadOf(m.core)==0u; }
 fn dChargeEnergy(m: Material) -> f32 {
-  if (cid(m.core)==${E.SINGULARITY}u) {
-    if (dEvaporates(m)) { return 0.0; }
-    let mass=f32(payloadOf(m.core))/256.0;
-    let pressure=min(${f(PHYS.P_MAX)},mass*${f(PHYS.SING_BURST_P_PER_MASS)})*${f(LEGACY_PRESSURE_PA)};
-    return pressure*pressure*${f(AIR.edge**3)}/(2.0*${f(AIR.rho*AIR.sound**2)}*0.25);
+  if (cid(m.core)==${E.SINGULARITY}u || cid(m.core)==${E.DUST}u) {
+    return contactSpecialExplosion(m.core,${f(dynamicsRows[E.GUNPOWDER].energy)}).x;
   }
   return dExplosive(cid(m.core)).energy*dAmount(m);
 }
 fn dProduct(m: Material) -> Material {
   if (dEvaporates(m)) { return dCarrier(m); }
-  let e=dExplosive(cid(m.core));
-  let temperature=select(e.temperature,max(e.temperature,f32(cTq(m.core))*0.25-273.25),cid(m.core)==${E.DUST}u);
-  return makeMaterial(e.product,temperature,65536u,e.ctype);
+  if(cid(m.core)==${E.SINGULARITY}u || cid(m.core)==${E.DUST}u) {
+    let e=contactSpecialExplosion(m.core,${f(dynamicsRows[E.GUNPOWDER].energy)});
+    return makeMaterial(u32(e.y),e.z,65536u,u32(e.w));
+  }
+  let e=dExplosive(cid(m.core));return makeMaterial(e.product,e.temperature,65536u,e.ctype);
 }
 fn dProductEnergy(m: Material) -> vec2u {
   // cap=1 is a 27-litre water cell: 27kg *4184J/(kg K). The reserved
@@ -70,7 +69,17 @@ fn dShielded(source: vec3i, destination: vec3i) -> bool {
   }
   return false;
 }
-fn dPressureAt(p: vec3i) -> f32 { if (!inGrid(p)) { return 0.0; } return air[brickOfCell(p)].vp.w; }
+fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
+fn dUnsupported(start: vec3i) -> bool {
+  var p=start;
+  for(var n=0u;n<D_SWEEP_MAX;n++) {
+    let down=mDown(vec3f(p)+0.5);if(all(down==vec3i(0))) { return false; }
+    p=mEdge(p+down);if(!inGrid(p)) { return P.edge==1u; }
+    let k=cls(cid(loadMaterial(slotOf(p)).core));
+    if(k==0u || k==4u) { return true; } if(k!=2u || all(p==start)) { return false; }
+  }
+  return false;
+}
 fn dRank(slot: u32) -> u32 {
   let b = slot / 64u; var rank = atomicLoad(&control[D_SPAWN_PREFIX+b]);
   for (var s = b*64u; s < slot; s++) { if ((plans[s].flags & 1u) != 0u) { rank++; } }
@@ -140,16 +149,22 @@ export function blastsWGSL(g,nativeHead,stage) {
     var plan = DPlan(vec3f(0),0u); let p = cellOf(t);
     let m = loadMaterial(t); let id = cid(m.core); let k = cls(id);
     if (id != 0u && (events[t]&1u)==0u) {
-      let wind = air[brickOfCell(p)].vp.xyz;
+      let wind = select(vec3f(0),air[brickOfCell(p)].vp.xyz,mAirVelocity());
       if (k==1u && dBreak(id)>=0) {
         var difference = 0.0;
         for (var a=0u;a<3u;a++) { difference = max(difference,abs(dPressureAt(p+dAxis(a)*4)-dPressureAt(p-dAxis(a)*4))); }
         if (difference > dStrength(id)) { plan.flags=2u|(u32(dBreak(id))<<8u); }
       } else if (k==2u || k==3u) {
         var exposed = false; for (var a=0u;a<3u;a++) { exposed = exposed || dOpen(p+dAxis(a)) || dOpen(p-dAxis(a)); }
+        if (k==2u && P.gravity>0.0 && (P.gravMode==2u || P.edge!=0u) && dUnsupported(p)) {
+          // Real SI flight replaces disabled radial/open/loop column falls.
+          // Whole unsupported runs promote together; full capacity leaves every
+          // unallocated source exact and busy for deterministic retry.
+          plan.flags=1u;plan.velocity=vec3f(0);
+        }
         if (exposed && length(wind)>dLift(id)) { plan.flags=1u; plan.velocity=wind; }
         // §4.2: flux over an unsupported lip faster than 1m/s becomes a droplet.
-        if (P.nativeJets==0u && k==3u && dOpen(p+vec3i(0,-1,0))) {
+if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
           let q=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x);
           let velocity=q * ${f(180*CELL_M/65536)};
           if (length(velocity.xz)>1.0) {
@@ -198,7 +213,7 @@ export function blastsWGSL(g,nativeHead,stage) {
     for (var i=0u;i<D_CAP;i++) {
       if (particles[i].id==0u) { atomicStore(&control[D_FREE+free],i); free++; }
       atomicStore(&control[D_CHILD_PREFIX+i],D_NONE);
-      if (particles[i].id!=0u && (particles[i].c0&255u)==D_NEUTRON && particles[i].tail.z>0u) {
+      if (particles[i].id!=0u && particles[i].c0==D_NEUTRON && particles[i].tail.z>0u) {
         atomicStore(&control[D_CHILD_PREFIX+i],children); children+=particles[i].tail.z;
       }
     }
@@ -299,7 +314,7 @@ export function blastsWGSL(g,nativeHead,stage) {
     // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE,
     // 1/4 hot products. Pressure energy p² V / (2 rho c²), not an arbitrary kick.
     let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(before)*0.25/${f(AIR.edge**3)};
-    a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); a.thermal.z=0.0; air[b]=a;
+    if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a;
     events[s]&=~1u; dWake(cellOf(s));
   `);
   throw new Error(`Unknown blast stage ${stage}`);
