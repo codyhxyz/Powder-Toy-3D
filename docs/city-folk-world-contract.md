@@ -202,6 +202,19 @@ The `at` coordinates are world X/Z, not island-local coordinates.
 `cityBusArrivalClear(sim, feet, player)` checks the edited live support and body volume.
 Tests must exercise the real helpers with injected adapters.
 
+### Composed checks that must be resolved
+
+The acceptance lane identified these checks while reading the separate modules:
+
+- Include town approaches in the protected route mask and connected route graph.
+- Match terrain pads to actual shop, museum, café, cottage, and plot footprints.
+- Generate flowers, rocks, and discovery spots away from protected paths.
+- Do not count metadata for objects that the composed generator excludes.
+- Add a longitudinal riverside branch with nearby real water.
+- A bridge crossing alone does not satisfy the riverside branch requirement.
+
+Integration must verify these against generated cells, then update the evidence checklist.
+
 ## Delivery tracking
 
 The first workflow wrapper stopped after a bookkeeping error.
