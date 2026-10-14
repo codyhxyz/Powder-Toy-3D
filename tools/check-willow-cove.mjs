@@ -4,12 +4,19 @@
 // tools/willow-cove-check.mjs.
 // Run: node tools/check-willow-cove.mjs
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { mapByKey, mapsFor, mapOf, GAMEMODES, DEFAULT_MAP, MOBILE_MAP } from '../src/maps.js';
 import { sceneByKey } from '../src/world/scenes/index.js';
 import { willowCove as scene, willowCoveTwin, WILLOW_COVE as C, WILLOW_LANDMARKS as M } from '../src/world/scenes/willowCove.js';
+import { CELL_M } from '../src/scale.js';
+import { farLayout, WORLD_SIZE } from '../src/shaders/farShared.js';
+import { prepareSave } from '../src/wire/saves.js';
 
-const size = [1024, 128, 1024];
+const size = scene.size;
+assert.deepEqual(size, [3072, 128, 1024]);
+assert.deepEqual(WORLD_SIZE, [1024, 128, 1024], 'other maps keep their existing size');
+assert.deepEqual(farLayout(size).bricks.n, [768, 32, 256], 'the wider world fits the existing far-field layout');
 const P = scene.params({ size, seed: 20261008 });
 const T = willowCoveTwin(P);
 const world = (x, z) => [x + size[0] / 2, z + size[2] / 2];
@@ -43,10 +50,12 @@ assert.doesNotMatch(wgsl, /\b(?:void|ivec[234]|vec[234]\(|uniform\s+int|out\s+ve
 assert.deepEqual(Object.keys(scene.uniforms(P)), ['uSceneSeed', 'uWillowWorldX', 'uWillowWorldY', 'uWillowWorldZ']);
 assert.deepEqual(Object.keys(scene.uniformStruct.sceneTypes), Object.keys(scene.uniforms(P)), 'every uniform in the struct');
 
-// Cache the entire authored island (including its submerged edge and dock).
-// This also checks every authored cell's element ID, not just landmarks.
+// Cache the village core, including its north/south shore and dock.
+// The long running circuit and distant shore are checked separately below.
 const extent = 200, width = extent * 2 + 1, height = C.SKY;
 const ids = new Uint16Array(width * width * height);
+const legacy = willowCoveTwin(scene.params({ size: scene.legacySize, seed: P.seed }));
+const legacyIds = new Uint16Array(ids.length);
 const index = (x, y, z) => ((z + extent) * width + x + extent) * height + y;
 const counts = new Map();
 for (let z = -extent; z <= extent; z++) {
@@ -55,9 +64,41 @@ for (let z = -extent; z <= extent; z++) {
       const id = cell(x, y, z);
       assert(Number.isInteger(id) && ELEMENTS[id], `invalid cell ${x},${y},${z}: ${id}`);
       ids[index(x, y, z)] = id;
+      legacyIds[index(x, y, z)] = legacy.wcCell(x + 512, y, z + 512);
       counts.set(id, (counts.get(id) ?? 0) + 1);
     }
   }
+}
+// Golden geometry from production b81b9063, before the expansion: old saves
+// retain every authored cell, rather than silently changing their generator.
+assert.equal(createHash('sha256').update(new Uint8Array(legacyIds.buffer)).digest('hex'),
+  '1fbc36d0ba57628e816eba5c47336d988293c0d93fd5c8c0ea01ea122303bce2');
+
+// Load the real save preparation path, retaining old coordinates/store keys.
+// Switching back to a new map must rebuild the larger world.
+{
+  const builds = [];
+  const makeWorld = dims => ({ size: dims, whenReady: async () => {} });
+  const app = {
+    settings: { size: 'world', scene: scene.key }, win: makeWorld(size), worldSeed: P.seed,
+    mp: { guard: () => false, guardWorld: () => false }, pov: { exit() {} },
+    WORLDS: { world: { size: WORLD_SIZE } }, sceneByKey,
+    setSize(key, savedSize) { builds.push(savedSize); this.win = makeWorld(savedSize ?? scene.size); },
+  };
+  const h = { size: 'world', world: { scene: scene.key, seed: P.seed, size: [...scene.legacySize], origin: [448, 0, 448] } };
+  const unchanged = structuredClone(h);
+  assert.equal(await prepareSave(app, h), true);
+  assert.deepEqual(app.win.size, scene.legacySize);
+  assert.deepEqual(builds, [scene.legacySize]);
+  assert.deepEqual(h, unchanged, 'saved origin, seed and dimensions are not migrated or discarded');
+  assert.equal(await prepareSave(app, h), true);
+  assert.equal(builds.length, 1, 'reloading the same legacy world does not rebuild');
+  const fresh = { size: 'world', world: { ...h.world, size: [...size] } };
+  assert.equal(await prepareSave(app, fresh), true);
+  assert.deepEqual(app.win.size, size);
+  assert.deepEqual(builds, [scene.legacySize, null]);
+  await assert.rejects(prepareSave(app, { size: 'world', world: { ...h.world, size: [1024, 256, 1024] } }), /different size/);
+  assert.equal(builds.length, 2, 'unknown save dimensions refused before rebuilding');
 }
 const at = (x, y, z) => x >= -extent && x <= extent && z >= -extent && z <= extent && y >= 0 && y < height
   ? ids[index(x, y, z)] : cell(x, y, z);
@@ -67,7 +108,7 @@ for (const id of [E.ROCK, E.WATER, E.SAND, E.PLANT, E.WOOD, E.BRICK, E.GLASS]) a
 assert(!counts.has(E.CLONE), 'the finite pond must not silently acquire an untyped source');
 
 // Deterministic samples, fixed topology across seeds, world and slab edges.
-const edges = [-1, 0, 1, 127, 128, 255, 256, 335, 336, 511, 512, 687, 688, 895, 896, 1023, 1024];
+const edges = [-1, 0, 1, 127, 128, 255, 256, 335, 336, 511, 512, 687, 688, 895, 896, 1023, 1024, 1535, 1536, 2047, 2048, 3071, 3072];
 for (const seed of [0, 1, P.seed, 0xffffffff]) {
   const params = scene.params({ size, seed });
   const twin = willowCoveTwin(params);
@@ -80,7 +121,7 @@ for (const seed of [0, 1, P.seed, 0xffffffff]) {
   }
   for (let i = 0; i < 20000; i++) {
     const x = (i * 97) % width - extent, z = (i * 193 + Math.floor(i / width)) % width - extent, y = (i * 31) % height;
-    assert.equal(twin.wcCell(...[x + 512, y, z + 512]), at(x, y, z));
+    assert.equal(twin.wcCell(...[x + size[0] / 2, y, z + size[2] / 2]), at(x, y, z));
   }
 }
 
@@ -139,7 +180,7 @@ for (const [x, z] of M.cottages) {
   assert.equal(at(x, C.LOW + C.WALL_H + C.ROOF_H - 1, z), E.BRICK);
 }
 for (const [x, z] of M.bridges) {
-  const h = z < 0 ? C.MID : C.LOW;
+  const h = z < C.MID_Z ? C.MID : C.LOW;
   for (let y = h - C.FREEBOARD; y < h - C.DECK_THICK; y++) assert.equal(at(x, y, z), E.EMPTY, 'clearance over water');
   for (let y = h - C.DECK_THICK; y < h; y++) assert.equal(at(x, y, z), E.WOOD);
   for (const side of [-1, 1]) {
@@ -194,6 +235,26 @@ route([[C.PATH_X, 0], M.orchard]);
 route([[C.PATH_X, C.LANE_Z], M.dock]);
 for (const [x, z] of M.cottages) route([[C.PATH_X, C.LANE_Z], [x, C.LANE_Z], [x, z]]);
 
+// More than four times the ORIGINAL island's full diameter, not just its
+// short village lane. Check every cell and the full body width around the lap.
+const originalDiameter = 176 * 2;
+const straight = C.RUN_HALF * 2;
+assert(straight > originalDiameter * 4, 'over 4x the former maximum straight-line sprint distance');
+const beforeLoop = walked;
+route(M.runningLoop);
+for (let x = -C.RUN_HALF; x <= C.RUN_HALF; x++) {
+  assert.equal(walkTop(x, C.LANE_Z), C.LOW, 'flat outward straight');
+  assert.equal(walkTop(x, C.RUN_RETURN_Z), C.LOW, 'flat return straight');
+}
+// Dry, body-clear access from home and plaza to the circuit.
+route([M.plaza, [C.PATH_X, C.PLAZA_Z], [C.PATH_X, C.LANE_Z], M.runningLoop[0]]);
+const lap = M.runningLoop.slice(1).reduce((n, [x, z], i) =>
+  n + Math.abs(x - M.runningLoop[i][0]) + Math.abs(z - M.runningLoop[i][1]), 0);
+assert.equal(lap, 3808);
+assert.equal(M.runningLoop[0][0], M.runningLoop.at(-1)[0]);
+assert.equal(M.runningLoop[0][1], M.runningLoop.at(-1)[1]);
+console.log(`Running circuit OK: ${(straight * CELL_M).toFixed(0)} m straight (${(straight / originalDiameter).toFixed(2)}x old island); ${(lap * CELL_M).toFixed(1)} m closed lap; ${walked - beforeLoop} body-width route samples.`);
+
 // Stability: exhaustive surface/material audit, including every beach grain
 // and tree leaf. Water is intentionally allowed to move at the finite falls.
 const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -209,6 +270,22 @@ for (let z = -extent + 1; z < extent; z++) for (let x = -extent + 1; x < extent;
       for (const [dx, dz] of sides) assert.notEqual(at(x + dx, y, z + dz), E.WATER, `plant touching water at ${x},${y},${z}`);
       assert.notEqual(at(x, y - 1, z), E.WATER);
       assert.notEqual(at(x, y + 1, z), E.WATER);
+    }
+  }
+}
+// Sample the new east/west shore at every z and every stretched terrain
+// column, including the material transition and the rock-backed sand lip.
+for (let z = -C.RADIUS - 1; z <= C.RADIUS + 1; z++) {
+  for (let x = -C.RADIUS * C.LAND_STRETCH_X - 7; x <= C.RADIUS * C.LAND_STRETCH_X + 7; x += C.LAND_STRETCH_X) {
+    if (Math.abs(x) < extent) continue;
+    const h = T.wcHeight(x, z);
+    const id = at(x, h - 1, z);
+    if (id === E.SAND) {
+      assert(solid(at(x, h - 2, z)), 'new beach has a solid foundation');
+      for (const [dx, dz] of sides) assert(drySupport(at(x + dx, h - 2, z + dz)), 'new beach cannot topple');
+    }
+    if (id === E.PLANT) {
+      for (const [dx, dz] of sides) assert.notEqual(at(x + dx, h - 1, z + dz), E.WATER, 'new grass does not touch water');
     }
   }
 }

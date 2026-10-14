@@ -2,7 +2,7 @@ import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, gro
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 
-// Animal Crossing's compact village/terraces, with Minecraft's one-cell stairs.
+// Animal Crossing's village/terraces, with Minecraft's one-cell stairs.
 // Fixed topology; the seed changes only material grain. All scenery is matter,
 // shared by streaming, diffs, the far field and the CPU twin, not overlays.
 // ponytail: finite pond/falls; add a typed spring source when they must persist.
@@ -10,6 +10,8 @@ const L = {
   ints: {
     FLOOR: 4, SEA: 16, BEACH: 18, LOW: 24, MID: 36, HIGH: 48, SKY: 80,
     RADIUS: 176, SHORE: 165, BEACH_IN: 148, GRASS_IN: 140,
+    LEGACY_WORLD_X: 1024,
+    LAND_STRETCH_X: 7, RUN_HALF: 920, RUN_RETURN_Z: -28,
     MID_Z: -48, HIGH_Z: -104, TERRACE_STEP: 12,
     PATH_X: -64, PATH_HALF: 6, PATH_NORTH: -116, PATH_SOUTH: 156,
     LANE_Z: 36, LANE_WEST: -110, LANE_EAST: 128,
@@ -34,6 +36,7 @@ const L = {
   salts: { CELL: 0x5c071e },
 };
 
+export const WILLOW_SIZE = [3072, 128, 1024];
 // Landmark coordinates are island-local [x,z]; add half the world dimensions.
 export const WILLOW_COVE = Object.freeze(L.ints);
 export const WILLOW_LANDMARKS = Object.freeze({
@@ -42,7 +45,12 @@ export const WILLOW_LANDMARKS = Object.freeze({
   pondLookout: [L.ints.HIGH_PATH_EAST, L.ints.PATH_NORTH],
   lowerStairs: [L.ints.PATH_X, L.ints.MID_Z],
   upperStairs: [L.ints.PATH_X, L.ints.HIGH_Z],
-  bridges: [[L.ints.RIVER_X, L.ints.LANE_Z], [L.ints.RIVER_X, L.ints.MID_PATH_Z]],
+  bridges: [[L.ints.RIVER_X, L.ints.LANE_Z], [L.ints.RIVER_X, L.ints.MID_PATH_Z], [L.ints.RIVER_X, L.ints.RUN_RETURN_Z]],
+  runningLoop: [
+    [-L.ints.RUN_HALF, L.ints.LANE_Z], [L.ints.RUN_HALF, L.ints.LANE_Z],
+    [L.ints.RUN_HALF, L.ints.RUN_RETURN_Z], [-L.ints.RUN_HALF, L.ints.RUN_RETURN_Z],
+    [-L.ints.RUN_HALF, L.ints.LANE_Z],
+  ],
   orchard: [-88, 0], woods: [80, L.ints.MID_PATH_Z],
   beach: [L.ints.PATH_X, 150], dock: [L.ints.PATH_X, 188],
   cottages: [L.ints.COTTAGE_A, L.ints.COTTAGE_B, L.ints.COTTAGE_C, L.ints.COTTAGE_D]
@@ -50,8 +58,12 @@ export const WILLOW_LANDMARKS = Object.freeze({
 });
 
 const SRC = /* glsl */ `
+bool wcExpanded() { return uWillowWorldX > WC_LEGACY_WORLD_X; }
+
 int wcRadius(int x, int z) {
-  return max(max(abs(x), abs(z)), thDiv(3 * (abs(x) + abs(z)), 4));
+  // Stretch the terrain, not Animal Crossing's cottages, trees or river.
+  int ax = thDiv(abs(x), wcExpanded() ? WC_LAND_STRETCH_X : 1);
+  return max(max(ax, abs(z)), thDiv(3 * (ax + abs(z)), 4));
 }
 
 // Rock-backed octagonal shore; dry sand is a single supported layer bounded
@@ -75,6 +87,10 @@ int wcHeight(int x, int z) {
 }
 
 bool wcPath(int x, int z) {
+  if (wcExpanded()) {
+    if (abs(x) <= WC_RUN_HALF && (abs(z - WC_LANE_Z) < WC_PATH_HALF || abs(z - WC_RUN_RETURN_Z) < WC_PATH_HALF)) return true;
+    if (abs(abs(x) - WC_RUN_HALF) < WC_PATH_HALF && z >= WC_RUN_RETURN_Z && z <= WC_LANE_Z) return true;
+  }
   if (abs(x - WC_PATH_X) < WC_PATH_HALF && z >= WC_PATH_NORTH - WC_PATH_HALF && z < WC_PATH_SOUTH) return true;
   if (abs(z - WC_LANE_Z) < WC_PATH_HALF && x >= WC_LANE_WEST && x <= WC_LANE_EAST) return true;
   if (abs(z - WC_MID_PATH_Z) < WC_PATH_HALF && x >= WC_MID_PATH_WEST && x <= WC_MID_PATH_EAST) return true;
@@ -136,9 +152,10 @@ int wcCell(int wx, int y, int wz) {
     return y < WC_SEA ? E_WATER : E_EMPTY;
   int h = wcHeight(x, z);
 
-  // Two bank-anchored timber bridges, with clear water beneath the decks.
-  int bz = z < 0 ? WC_MID_PATH_Z : WC_LANE_Z;
-  int bh = z < 0 ? WC_MID : WC_LOW;
+  // Bank-anchored timber bridges, including the running circuit's return.
+  bool upperBridge = z < 0 && (!wcExpanded() || z < WC_MID_Z);
+  int bz = upperBridge ? WC_MID_PATH_Z : z < 0 ? WC_RUN_RETURN_Z : WC_LANE_Z;
+  int bh = upperBridge ? WC_MID : WC_LOW;
   if (abs(z - bz) < WC_PATH_HALF && abs(x - WC_RIVER_X) <= WC_BRIDGE_HALF) {
     if (y >= bh - WC_DECK_THICK && y < bh) return E_WOOD;
     if (abs(z - bz) == WC_PATH_HALF - 1 && y >= bh && y < bh + WC_BRIDGE_RAIL_H) return E_WOOD;
@@ -212,6 +229,8 @@ fn sceneCell(w: vec3i) -> SceneCell {
 
 export const willowCove = {
   key: 'willowCove', label: 'Tinker Creek', shrine: false,
+  size: WILLOW_SIZE,
+  legacySize: [L.ints.LEGACY_WORLD_X, 128, 1024], // Old voxel saves keep their original terrain and coordinates.
   view: { dir: [0.65, 1.15, 1.4], dist: 240, lift: 12 },
   params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: L.ints.SEA, floor: L.ints.FLOOR }),
   glsl: () => willowWgsl(),
