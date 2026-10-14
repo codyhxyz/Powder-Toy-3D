@@ -132,3 +132,62 @@ The parent checks the live site and reports any check that remains unverified.
 
 GPU slots remain limited to 10 seconds total, including startup and cleanup.
 Do not bypass player detection or repeat failed GPU runs without parent approval.
+
+## Coordinated interfaces and sites
+
+These decisions resolve the parallel lanes' supervisor requests.
+All coordinates below are island-local.
+
+- Terrain supplies `cfHeight(x, z)`, `cfTerrainCell(x, y, z)`, and `cfPath(x, z)`.
+- `cfTerrainCell` returns base terrain before new town, nature, and city overlays.
+- Nature support checks must not call the composed cell recursively.
+- Landmark records use `at`, `entry` where applicable, `floor`, and `half` for footprint dimensions.
+- Enterable landmarks publish their doors and approach routes.
+- Terrain publishes route polylines, water samples, and meadow samples.
+- Nature publishes representative objects and their kinds.
+
+| Feature | Center or arrival | Floor |
+| --- | --- | --- |
+| Town hall | `[-280, 12]` | 24 |
+| Event square | `[-326, 12]` | 24 |
+| Bulletin board | `[-326, 0]` | 24 |
+| Shops | `[-380, 12]`, `[-430, 12]` | 24 |
+| Museum | `[300, -80]` | 36 |
+| Café annex | `[264, -80]` | 36 |
+| Upper cottages | `[-400, -112]`, `[-680, -112]` | 48 |
+| Lower cottages | `[-400, 80]`, `[-680, 80]` | 24 |
+| Vacant plots | `[-500, -112]`, `[-500, 80]` | 48, 24 |
+| Town gate | `[-260, -124]` | 48 |
+| Gate approach | `[-260, -116]` | 48 |
+| Town bus stop | `[-236, -116]` | 48 |
+| Town bus arrival | `[-220, -116]` | 48 |
+| City square | `[0, -352]` | 48 |
+| City bus stop and arrival | `[0, -304]` | 48 |
+
+The separate city occupies `x = -160..160`, `z = -440..-280`.
+Its main façades are the Emporium, Tailor, and Theatre.
+Their entries are `[-88, -376]`, `[0, -384]`, and `[88, -376]`.
+The gate and town bus apron must remain clear after all overlays.
+
+The transport lane supplies `createCityBus` with injected app adapters.
+Its `withVillageFocus(at, valid, visit)` adapter streams without replacing the world.
+The focus remains active during arrival-clearance checks.
+The village E action boards the bus and supports cancellation.
+
+## Delivery tracking
+
+The first workflow wrapper stopped after a bookkeeping error.
+Its five implementation workers remained active.
+The parent tracks their exact runs and will integrate them after completion.
+Do not restart an active lane or accept partial work as completion.
+
+| Lane | Active run |
+| --- | --- |
+| Terrain and routes | `a16bc4ca` |
+| Town landmarks | `3787400b` |
+| Nature | `b10a34e9` |
+| City and bus | `7ce70b0b` |
+| Acceptance tests | `c4d09a48` |
+
+If a child lacks an `apply_patch` tool, it uses its native file edit tools.
+No child invokes a nonexistent patch executable through the shell.
