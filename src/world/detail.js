@@ -16,7 +16,8 @@ export { DETAIL_CHUNK };
 // scene's sceneCell, the live window's state where it overlaps, the trees the
 // window would plant, the store's edits) are read back once (the scene cells
 // kernel, shaders/far.js farSceneCellsFrag's live variant), meshed in a worker
-// (world/detail-worker.js: surface nets), not simulated, and drawn with the
+// (world/detail-worker.js: surface nets plus separate tagged leaf clusters),
+// not simulated, and drawn with the
 // far view's material (shaders/far.js farFrag's mesh variant) in our scene
 // pass before the far view, which leaves a meshed chunk's opaque field to the
 // mesh (the detail mask, after the occupancy levels in the far field's
@@ -284,12 +285,17 @@ export class WorldDetail {
     return !this.disposed && token.epoch === this.epoch && token.revision === this.revisions[token.key];
   }
 
-  accept({ token, positions, normals, ids, indices, liquid, error }) {
+  accept({ token, positions, normals, ids, indices, leaves = [], liquid, error }) {
     this.pending = null;
     if (!this.valid(token)) return;
     if (error) { console.error('world detail mesh', error); this.failed = true; return; }
-    const bytes = positions.byteLength + normals.byteLength + ids.length * 4 + (indices?.byteLength ?? 0);
     const distance = this.wanted.find((c) => c.key === token.key)?.distance ?? Infinity;
+    // One base mesh, two leaf-only LODs. Count allocated bytes, including
+    // uint32 material attributes and index-buffer alignment, for every LOD.
+    const meshes = [{ positions, normals, ids, indices }, ...leaves];
+    const aligned = n => Math.max(4, Math.ceil(n / 4) * 4);
+    const bytes = meshes.reduce((sum, m) => sum + (m.indices.length
+      ? aligned(m.positions.byteLength) + aligned(m.normals.byteLength) + aligned(m.ids.length * 4) + aligned(m.indices.byteLength) : 0), 0);
     // Keep the nearest chunks, never cycle through them forever when the
     // budget is full. Reconsider rejected chunks only after the view changes.
     if (!this.makeRoom(distance, bytes, false, token.key)) {
@@ -297,21 +303,40 @@ export class WorldDetail {
       for (const c of this.wanted) if (c.distance >= distance && !this.entries.has(c.key)) this.blocked.add(c.key);
       return;
     }
-    const gpu = this.gpu;
+    const gpu = this.gpu, buffers = [];
     const upload = (label, data, usage) => {
-      const b = gpu.createBuffer({ label, size: Math.max(4, Math.ceil(data.byteLength / 4) * 4), usage: usage | BUFFER.COPY_DST });
+      const b = gpu.createBuffer({ label, size: aligned(data.byteLength), usage: usage | BUFFER.COPY_DST });
+      buffers.push(b); // retire even a partially uploaded entry on failure
       gpu.write(b, 0, data, { ordered: false });
       return b;
     };
-    const u32 = indices instanceof Uint32Array;
-    // (16-bit indices padded to whole words: a buffer write is 4-byte aligned)
-    const index = !indices || u32 || indices.length % 2 === 0 ? indices : Uint16Array.from([...indices, 0]);
-    const buffers = indices?.length ? [
-      upload('detail positions', positions, BUFFER.VERTEX), upload('detail normals', normals, BUFFER.VERTEX),
-      upload('detail elements', Uint32Array.from(ids), BUFFER.VERTEX), upload('detail indices', index, BUFFER.INDEX),
-    ] : [];
+    let parts;
+    try {
+      parts = meshes.map((m, part) => {
+        if (!m.indices.length) return null;
+        const u32 = m.indices instanceof Uint32Array;
+        // (16-bit indices padded to whole words: a buffer write is 4-byte aligned)
+        const index = u32 || m.indices.length % 2 === 0 ? m.indices : Uint16Array.from([...m.indices, 0]);
+        return {
+          buffers: [
+            upload('detail positions', m.positions, BUFFER.VERTEX), upload('detail normals', m.normals, BUFFER.VERTEX),
+            upload('detail elements', Uint32Array.from(m.ids, id => id | (part ? 256 : 0)), BUFFER.VERTEX),
+            upload('detail indices', index, BUFFER.INDEX),
+          ],
+          count: m.indices.length, format: u32 ? 'uint32' : 'uint16',
+        };
+      });
+    } catch (err) {
+      for (const b of buffers) this.sim._retire(b);
+      console.error('world detail upload', err);
+      this.failed = true;
+      return;
+    }
     this.drop(token.key);
-    this.entries.set(token.key, { buffers, count: indices?.length ?? 0, format: u32 ? 'uint32' : 'uint16', bytes, step: token.step, version: token.version });
+    this.entries.set(token.key, {
+      buffers, parts, leafLOD: 0, count: (parts[0]?.count ?? 0) + (parts[1]?.count ?? 0),
+      x: token.x, z: token.z, bytes, step: token.step, version: token.version,
+    });
     this.bytes += bytes;
     // Publish the mesh and its ownership together; the raymarch must never
     // skip a chunk whose geometry is still being prepared.
@@ -331,8 +356,11 @@ export class WorldDetail {
     if (!this.visible || this.pipe.state !== 'ready' || !this.entries.size) return 0;
     const header = { origin: [0, 0, 0], src: this.sim.cur, dst: this.sim.cur };
     for (const e of this.entries.values()) {
-      if (!e.count) continue;
-      this.pipe.draw(rp, { bind, header, params, count: e.count, vertexBuffers: e.buffers.slice(0, 3), index: { buffer: e.buffers[3], format: e.format } });
+      // The prepass latches leafLOD for this frame; without one, use fine.
+      for (const part of [e.parts[0], e.parts[1 + e.leafLOD]]) if (part) {
+        this.pipe.draw(rp, { bind, header, params, count: part.count, vertexBuffers: part.buffers.slice(0, 3), index: { buffer: part.buffers[3], format: part.format } });
+      }
+      e.leafLOD = 0;
     }
     return this.entries.size;
   }
@@ -362,9 +390,20 @@ export class WorldDetail {
       depthStencilAttachment: { view: this.depthZ.createView(), depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'discard' },
     }, 'far detail depth');
     try {
+      // Minecraft-style lower foliage detail at distance: a single broad
+      // blade below six pixels/cell, not a second copy of the terrain mesh.
+      // Derive pixels from this effective target, not the browser's CSS size.
+      const matrix = params.worldToClip.elements ?? params.worldToClip;
+      const perspective = Math.hypot(matrix[3], matrix[7], matrix[11]);
+      const pxCell = h * 0.5 * Math.hypot(matrix[1], matrix[5], matrix[9]) / (perspective || 1);
       for (const e of this.entries.values()) {
         if (!e.count) continue;
-        this.depthPipe.draw(rp, { params, count: e.count, vertexBuffers: [e.buffers[0]], index: { buffer: e.buffers[3], format: e.format } });
+        const lo = [e.x, 0, e.z], hi = [Math.min(e.x + DETAIL_CHUNK, this.win.size[0]), this.win.size[1], Math.min(e.z + DETAIL_CHUNK, this.win.size[2])];
+        const distance = Math.max(1, Math.hypot(...params.eye.map((v, i) => Math.max(lo[i] - v, 0, v - hi[i]))));
+        e.leafLOD = pxCell / (perspective ? distance : 1) >= 6 ? 0 : 1;
+        for (const part of [e.parts[0], e.parts[1 + e.leafLOD]]) if (part) {
+          this.depthPipe.draw(rp, { params, count: part.count, vertexBuffers: [part.buffers[0]], index: { buffer: part.buffers[3], format: part.format } });
+        }
       }
     } finally {
       rp.end();

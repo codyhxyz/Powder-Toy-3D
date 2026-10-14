@@ -546,6 +546,14 @@ int dsCell(int x, int y, int z) {
   if (t >= 0) return t;
   return DS_LEVEL == 0 ? dsMines(x, y, z) : dsDeep(x, y, z);
 }
+
+// Only the Mines' native crowns: not grass, temple or Wang-kit plants.
+int dsFoliage(int x, int y, int z, int id) {
+  if (DS_LEVEL != 0 || id != E_PLANT || y < DS_SURF_LO || y >= DS_TREE_TOP) return 0;
+  int top = dsTop(x, z);
+  if (y < top || (y == top && dsMtn(x, z) < float(DS_GRASS_MTN))) return 0;
+  return dsTree(x, y, z) == E_PLANT ? E_PLANT : 0;
+}
 `;
 
 // ---- the Wang tilings (levels with a kit), one bake per level: CPU, ~150 ms,
@@ -632,8 +640,9 @@ fn sceneCell(w: vec3i) -> SceneCell {
   if ((id == E_SNOW || id == E_ICE) && DS_AIR_T <= 0.0) { T = max(T, DS_AIR_T); }
   if (DS_LEVEL == 2) { T = min(T, DS_COLD_T); }   // the Snowy Depths are frozen through
   if (dsTemple(w.x, w.y, w.z) < 0) { T = dsWangT(w, id, T); }   // ...but for what a kit lays down warm (or burning)
+  let ctype = f32(dsFoliage(w.x, w.y, w.z, id));
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, DS_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
 }
 `;
 };

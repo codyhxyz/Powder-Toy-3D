@@ -4,20 +4,21 @@ import assert from 'node:assert/strict';
 import { DataUtils } from 'three';
 import { E } from '../src/elements.js';
 import { encodeBrick, BRICK_FLOATS } from '../src/world/store.js';
+import { meshPadding } from '../src/world/surfaceMesh.js';
 let result;
 globalThis.self = { postMessage: data => { result = data; } };
 await import('../src/world/detail-worker.js');
-const side = 40, height = 128, cols = 12, width = cols * side;
+const pad = meshPadding(), side = 32 + 2 * pad, height = 128;
 const base = () => ({
-  token: { step: 1 }, layout: { side, cols, width }, origin: [-4, -4, -4], pad: 4, height,
+  token: { step: 1 }, layout: { side }, origin: [-pad, -pad, -pad], pad, height,
   bounds: [0, 0, 0, 32, 128, 32], live: [100, 0, 100, 128, 128, 128],
   planted: new Uint8Array(8 * 8), wb: [8, 32, 8],
   trees: [{ x: 16, y: 8, z: 16, seed: 12345, size: 12, variant: 'pine', quarter: 0 }],
-  edits: [], raw: new Uint16Array(width * Math.ceil(side / cols) * height * 4),
+  edits: [], raw: new Uint32Array(side * side * height),
 });
 function cell(d, x, y, z, id) {
   x -= d.origin[0]; z -= d.origin[2];
-  d.raw[4 * (x + (z % cols) * side + (y + Math.floor(z / cols) * height) * width)] = DataUtils.toHalfFloat(id);
+  d.raw[x + side * (z + side * y)] = DataUtils.toHalfFloat(id);
 }
 function run(d) {
   self.onmessage({ data: d });
@@ -25,11 +26,12 @@ function run(d) {
   return result;
 }
 let d = base(), mesh = run(d);
-assert(mesh.ids.includes(E.PLANT));
+assert(mesh.leaves[0].ids.includes(E.PLANT));
+assert(!mesh.ids.includes(E.PLANT), 'tree leaves must not retain a closed crown mesh');
 assert(mesh.ids.includes(E.WOOD));
 assert(!mesh.ids.includes(E.PLANT + 1), 'baked id+1 must be decoded');
 d = base(); d.planted.fill(1);
-assert(!run(d).ids.includes(E.PLANT), 'visited trees must not regenerate');
+assert.equal(run(d).leaves[0].indices.length, 0, 'visited trees must not regenerate');
 const A = new Float32Array(BRICK_FLOATS), B = new Float32Array(BRICK_FLOATS);
 for (let i = 0; i < 64; i++) A[i * 4] = E.GOLD;
 d.edits = [{ at: [12, 20, 12], bytes: encodeBrick(A, 0, B, 0) }];

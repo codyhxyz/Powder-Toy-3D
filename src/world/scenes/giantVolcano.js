@@ -530,6 +530,8 @@ fn sceneCell(w: vec3i) -> SceneCell {
   if (id == E_ROCK || id == E_BASALT) { T = mix(SPAWNT(id), SPAWNT(E_SNOW), gvFrost(w.x, w.y, w.z)); }   // frozen under the snow
   if (id == E_LAVA) { T = GV_MAGMA_T; ctype = f32(E_STONE); }   // hotter than spawned lava, setting to stone powder that rolls off the source
   if (id == E_CLONE) { ctype = f32(E_LAVA); }                   // the endless lava source
+  // PLANT comes only from gvTree's crowns here, never ground grass (FOLIAGE_CTYPE).
+  if (id == E_PLANT) { ctype = f32(E_PLANT); }
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, GV_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
   return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
 }
