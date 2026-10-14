@@ -62,6 +62,7 @@ import { createDetailGate, gateVariants } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE, UPSCALE_FLOOR } from './gfx/post.js';
+import { canPostFrame } from './gfx/postFrames.js';
 import { sprintBlurStep } from './gfx/sprintBlur.js';
 import { createPresentation } from './gfx/presentation.js';
 import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
@@ -2434,8 +2435,10 @@ function tick(now, renderOnly = false) {
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
-  let runView = present && pacer.view(viewV,
-    runDerived || wantFrame() || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
+  const viewChanged = viewV !== viewSeen;
+  let runView = present && pacer.view(viewV, runDerived || wantFrame());
+  // Adaptation is scheduled separately below: forcing the view here would
+  // restart TAA settling on every exposure update, forever until eyes settle.
   // three's meshes moved, and nothing else in the key (gfx/meshFrames.js), since the last view frame
   if (pacer.takeMeshWake() || (viewV !== viewSeen && viewKey.still === stillSeen)) meshesMoved = true;
   viewSeen = viewV;
@@ -2443,6 +2446,19 @@ function tick(now, renderOnly = false) {
   if (present && !runView && autoRes.recover(clock.getElapsed())) {
     post.settings.resolutionScale = autoRes.scale;
     pacer.wake();   // settle the final full-quality still; don't wake auto resolution
+    runView = true;
+  }
+  let postOnly = false;
+  if (present && !renderOnly && !runView && post.adapting) {
+    if (canPostFrame({ renderOnly, runView, runDerived, settled: pacer.settled, viewChanged,
+      worldChanged, meshesMoved, pointerDirty: pointerPickDirty, painting, povActive: pov?.active,
+      busy: live.some((w) => w.busy?.(ctx)) })) {
+      prof.phase('post');
+      postOnly = post.render(null, camera, null, dt,
+        { postOnly: true, viewmodel: ctx.viewmodel, glow: ctx.glow });
+    }
+    // Failed validation records nothing; run all full-frame preparation and
+    // picks below in this same tick. Raw/night/meter/held tools stay full.
     runView = true;
   }
   if (!renderOnly) {
@@ -2461,8 +2477,8 @@ function tick(now, renderOnly = false) {
   }
   // Picking is input work, not presentation: a preview must keep it responsive.
   // (Asked for before the frame, so the frame's compute pass marches it.)
-  if (!renderOnly && (pointerPickDirty || runView || pov?.active || testMode === 'preview')) requestPick();
-  if (runView) {
+  if (!renderOnly && (pointerPickDirty || (!postOnly && (runView || pov?.active || testMode === 'preview')))) requestPick();
+  if (runView && !postOnly) {
     prof.phase('view');
     updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
     frameMode = renderOnly ? 'full' : planMeshFrame(runDerived);
@@ -2492,6 +2508,14 @@ function tick(now, renderOnly = false) {
     lastFrameMode = frameMode;
     frameMode = 'full';
     // (a test's capture: the canvas texture is this frame's only until the task ends)
+    if (captureNext) { const c = captureNext; captureNext = null; c(post.capture()); }
+    prof.phase('other');
+  }
+  if (postOnly) {
+    // Exposure-only frames cannot measure scene rendering cost, advance the
+    // scene clock, or recapture mesh motion. Capture the freshly composited canvas.
+    renderedLast = false;
+    lastFrameMode = 'post';
     if (captureNext) { const c = captureNext; captureNext = null; c(post.capture()); }
     prof.phase('other');
   }
