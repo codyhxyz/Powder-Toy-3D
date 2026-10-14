@@ -85,7 +85,7 @@ import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
-import { VIEWS, viewKey as viewKeyOf, isMaterialView } from './views.js';
+import { VIEWS, viewKey as viewKeyOf, viewForMode, isMaterialView } from './views.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
 import weatherWire, { weather } from './wire/weather.js';
@@ -226,10 +226,8 @@ settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed:
 // ?view=plain (or a view's id): the view to boot in. The test tools boot the
 // plain view, the cheapest to build (docs/webgpu.md B5, I1).
 const viewParam = params.get('view');
-if (viewParam !== null) {
-  const v = VIEWS.find((x) => x.key === viewParam || String(x.id) === viewParam);
-  if (v) settings.view = v.id;
-}
+const linkedView = VIEWS.find((v) => v.key === viewParam || String(v.id) === viewParam);
+if (linkedView) settings.view = linkedView.id;
 // ?win=<x>[,<y>,<z>]: a world window of another size, for the test tools
 // (docs/webgpu.md G1: container tests run world scenes 64 wide), applied by
 // build() before the window's Simulation is made (worldModeOf). x and z are
@@ -270,6 +268,7 @@ if (bootMap) useMap(bootMap);
 // Set from the first frame: Noita's wands-only toolbelt reads it (pov gamemode). modeEpoch: a later
 // map or mode takes over a mode still starting (startMode)
 let selectedMode = bootMap ? resolveMode(bootMap, launch.mode ?? params.get('mode') ?? 'sandbox').key : 'sandbox', modeEpoch = 0;
+if (!linkedView) settings.view = viewForMode(modeByKey(selectedMode), settings.view);
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
@@ -692,10 +691,13 @@ function openMap(key, mode = 'sandbox') {
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
   modeEpoch++;
   pov?.game?.end();   // cancel pending team loads before replacing their world
+  pov?.mission?.end();
   // the gamemode, and its presentation effect, before the grid: the build then
   // waits on the view's pipelines as they will draw (B5: the rolling log's
   // curved variants, behind the loading screen); startMode below finds them chosen
   const chosen = resolveMode(m, mode);
+  const modeView = viewForMode(chosen, settings.view);
+  if (modeView !== settings.view) setView(modeView);
   selectedMode = chosen.key;
   presentation.select(chosen.effect ?? null);
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
@@ -729,6 +731,8 @@ async function startMode(mode, { fresh = false } = {}) {
   villageFocus = null;
   const chosen = resolveMode(mapOf(settings), mode);
   const game = pov?.game;
+  pov?.mission?.end();
+  if (chosen.key !== selectedMode && chosen.defaultView) setView(viewForMode(chosen, settings.view));
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
   applyGravity();
@@ -759,6 +763,29 @@ async function startMode(mode, { fresh = false } = {}) {
       console.error('Village failed to start', error);
     }
     return false;
+  }
+  if (chosen.key === 'crueltySquad' && pov) {
+    game?.end();
+    const map = mapOf(settings);
+    pov.exit(true);
+    if (win) {
+      const world = win, focus = [map.mission.spawn[0], map.mission.spawn[2]];
+      // Reuse the authored-mode focus seam: switching from far-away Sandbox
+      // must load the source spawn, not teleport into nonresident voxel cells.
+      villageFocus = focus;
+      try {
+        await world.whenReady();
+        await world.pending;
+        while (epoch === modeEpoch && win === world && wire('world')?.moveWindow(ctx)) await world.pending;
+        if (epoch !== modeEpoch || win !== world) return false;
+      } finally { if (villageFocus === focus) villageFocus = null; }
+    }
+    if (epoch !== modeEpoch) return false;
+    const at = new THREE.Vector3(...map.mission.spawn).sub(sim.origin);
+    await pov.enter({ at, swoop: 0, hint: false, valid: () => epoch === modeEpoch });
+    if (epoch !== modeEpoch || !pov.player) return false;
+    pov.setLook(map.mission.spawnYaw ?? 0, 0);
+    return pov.mission.start(map);
   }
   if (!chosen.team || !game) {
     game?.end();   // (end() also cancels a match still starting)

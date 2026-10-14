@@ -28,6 +28,9 @@ import { KICK_KEY, createKickLeg } from './kick.js';
 import { createCombat } from './combat.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
+import { createMission } from '../game/mission.js';
+import { createMissionHud } from '../game/missionHud.js';
+import { createMarkers } from '../game/markers.js';
 import { createDeathWatch } from './killfeed.js';
 import { createSandboxMedals } from './sandboxMedals.js';
 import { connectAnnouncer, announceMatches } from './announcer.js';
@@ -131,10 +134,10 @@ export function createPov(app) {
   let npcBallistics = null;
   let npcMod = null, npcAi = null, npcLoading = null;   // npc.js and what NPCs share, loaded on first use
   // the killfeed's books (killfeed.js): who hurt whom last, and every body that can die
-  const bodyById = (id) => [...npcs.values(), ...game.bots].find((n) => n.id === id) ?? null;
+  const bodyById = (id) => [...npcs.values(), ...game.bots, ...mission.actors].find((n) => n.id === id) ?? null;
   const deaths = createDeathWatch({
     heldBy: (id) => (id === PLAYER ? toolbelt?.selectedKey ?? null : bodyById(id)?.agent?.intent.tool ?? bodyById(id)?.agent?.weapon ?? null),
-    bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values()].map((n) => [n.id, n.body, n.kind])],
+    bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values(), ...mission.actors].map((n) => [n.id, n.body, n.kind])],
     quiet: () => game.running,   // a team game posts its own (src/game/index.js died)
   });
   // Halo 3's medals outside a match (sandboxMedals.js; a match's are src/game/feel.js's)
@@ -222,9 +225,9 @@ export function createPov(app) {
   });
   const coop = () => app.mp.replica || (app.inWorld?.() && app.mp.role === 'host');
   const coopHint = () => hud.toast('Co-op exploration: walk, jump and jet. Use god view to edit; weapons, vehicles, perks and progression require solo play.');
-  const canUse = () => !village.enabled && !coop() && (isLocked() || touch.enabled);   // village furniture is not a weapon
+  const canUse = () => !village.enabled && !coop() && (!mission.engaged || mission.active) && (isLocked() || touch.enabled);
   const canGrapple = () => !coop() && live() && !editing && canUse() && !vehicles.seated
-    && !game.running && (app.gamemode?.() ?? 'sandbox') === 'sandbox' && !app.industryBuilding?.();
+    && !game.running && ['sandbox', 'crueltySquad'].includes(app.gamemode?.() ?? 'sandbox') && !app.industryBuilding?.();
   const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
     onEnabled: on => { syncVillageTools(on); toolbelt?.setVisible(mode === 'on'); if (on) setMenu(false); },
     onTool: key => { toolbelt?.restrict(key ? [key] : [], key); },
@@ -256,7 +259,7 @@ export function createPov(app) {
 
   // ---- pointer lock
   function requestLock() {
-    if (editing || village.blocked || touch.enabled || document.pointerLockElement === canvas) return;   // touch has no pointer lock
+    if (editing || village.blocked || (mission.engaged && !mission.active) || touch.enabled || document.pointerLockElement === canvas) return;
     try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* not allowed here */ }
   }
   document.addEventListener('pointerlockchange', () => {
@@ -275,7 +278,7 @@ export function createPov(app) {
   function releaseActions() {
     buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = wheelAcc = 0; villageToolTap = false; kickQueued = grappleQueued = false;
-    toolbelt?.tool('HOOK')?.cancelGrapple();
+    toolbelt?.grapple?.release();
     // A buffered dig must not finish after pockets open or furniture takes the hands.
     if (village.enabled) toolbelt?.tool(toolbelt.selectedKey)?.deselect?.();
   }
@@ -334,7 +337,7 @@ export function createPov(app) {
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
     if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
     // (not in a Halo match: no sandbox tools, no spawn menu, docs/halo-contract.md)
-    if (e.code === 'KeyQ' && !e.repeat && mode === 'on' && game.style !== 'halo') {
+    if (e.code === 'KeyQ' && !e.repeat && mode === 'on' && game.style !== 'halo' && !mission.engaged) {
       if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
     }
     // settings and help need the mouse
@@ -600,6 +603,7 @@ export function createPov(app) {
   }
 
   function exit(instant = false) {
+    if (mission.engaged) { mission.end(); void app.setMode('sandbox'); }
     village.setEnabled(false);
     if (!active()) return;
     vehicles.reset(player);
@@ -679,7 +683,8 @@ export function createPov(app) {
     input.cancelJump = true;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
-    if ((app.mp.replica && (app.mp.stale || networkPending)) || editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
+    if ((app.mp.replica && (app.mp.stale || networkPending)) || (mission.engaged && !mission.active)
+      || editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
     if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
       const t = touch.state;   // (the touch stick drives too: forward throttles, sideways steers)
       d.throttle = THREE.MathUtils.clamp((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z, -1, 1);
@@ -690,14 +695,13 @@ export function createPov(app) {
     }
     const t = touch.state;   // the touch stick adds in, analog (touch.js)
     input.cancelJump = false;
-    const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z;
-    const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + t.x;
+    const f = THREE.MathUtils.clamp((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z, -1, 1);
+    const r = THREE.MathUtils.clamp((keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + t.x, -1, 1);
     if (f || r) {
       const fw = povCam.forwardH(vA), rt = povCam.rightH(vB);
-      let x = fw.x * f + rt.x * r, z = fw.z * f + rt.z * r;
-      const len = Math.hypot(x, z);
-      if (len > 1) { x /= len; z /= len; }
-      input.move.x = x; input.move.z = z;
+      // The body normalizes Noita movement; Cruelty Squad keeps diagonal air acceleration.
+      input.move.x = fw.x * f + rt.x * r;
+      input.move.z = fw.z * f + rt.z * r;
     }
     input.jump = keys.has('Space') || t.jump;
     input.sprint = t.sprint || (app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight'));
@@ -718,7 +722,7 @@ export function createPov(app) {
     const sp = app.getSpawners?.();
     const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
     const npcsWanted = !!sp && !g.windowed;
-    const homes = npcsWanted ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
+    const homes = npcsWanted && !mission.engaged ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
     if (homes.some((s) => !s.consumed)) {
       ensureKernels();
       npcBallistics ??= createBallistics({ renderer });
@@ -754,7 +758,7 @@ export function createPov(app) {
         if (home?.oneShot) sp.remove(home);   // the corpse finished; no invisible body keeps the editor awake
         scene.remove(n.root); n.dispose(); npcs.delete(id);
       }
-      if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
+      if ((npcsWanted && (npcs.size || game.botCount)) || mission.active) npcAi.world.update(dt);
       if (npcsWanted && npcs.size) {
         for (const n of npcs.values()) { n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame); }
       } else for (const n of npcs.values()) n.setVisible(false);
@@ -786,7 +790,8 @@ export function createPov(app) {
 
     // the body
     readInput();
-    if (!canGrapple()) toolbelt?.tool('HOOK')?.cancelGrapple();
+    input.cruelty = !coop() && app.gamemode?.() === 'crueltySquad';
+    if (!canGrapple()) toolbelt?.grapple?.release();
     app.coopMove?.(false);
     if (!coop()) { vehicles.beforeBody(player); village.beforeBody(input, dt); }
     const waiting = app.mp.replica && (app.mp.stale || networkPending);
@@ -828,7 +833,7 @@ export function createPov(app) {
     if (deadSeen) {
       deadTime += dt;
       const asked = !match && deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keys.has('Space'));
-      if ((deadTime >= (match?.delay ?? RESPAWN_DELAY) || asked) && mode === 'on') {
+      if (!mission.engaged && (deadTime >= (match?.delay ?? RESPAWN_DELAY) || asked) && mode === 'on') {
         keys.delete('Space');   // the key that respawned doesn't also jump
         player.spawn(match ? match.at() : dropPoint.clone());
         classes?.spawned(player);
@@ -842,7 +847,10 @@ export function createPov(app) {
     speedH = Math.hypot(player.vel.x, player.vel.z);
 
     const npcFrame = updateEntities(dt, { vehiclesUpdated: true });
-    if (!coop()) game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
+    if (!coop()) {
+      game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
+      mission.update(dt, npcMod ? npcFrame : null);
+    }
 
     deaths.update();   // the killfeed: who died this frame, and to what
     medals.update();   // the sandbox's medal stack (its fades)
@@ -945,7 +953,6 @@ export function createPov(app) {
       ctx.secondaryPressed = use && buttons.secondaryPressed;
       ctx.grappleEnabled = canGrapple() && use;
       ctx.grapplePressed = ctx.grappleEnabled && grappleQueued;
-      ctx.grappleJump = ctx.grappleEnabled && input.jump;
       ctx.wheel = wheelNotches;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
@@ -992,6 +999,7 @@ export function createPov(app) {
       pogo: village.enabled ? player.jumpCharge : toolbelt?.selectedKey === 'POGO' ? player.pogoCharge : null,
       pogoLabel: village.enabled ? 'Jump charge — release to leap' : 'Pogo charge',
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
+      mission: mission.engaged,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
       grappleEnabled: canGrapple(),
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
@@ -1085,6 +1093,31 @@ export function createPov(app) {
     },
     freeMouse: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
   });
+  const mission = createMission({
+    app, scene,
+    get player() { return player; },
+    get toolbelt() { return toolbelt; },
+    loadNpcs,
+    env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
+    respawnPlayer(at) {
+      player.spawn(at);
+      player.team = null;
+      if (player.cls) applyClassTo(player, null);
+      classes?.close({ relock: false });
+      deadSeen = false; deadTime = 0;
+      toolbelt?.setVisible(mode === 'on');
+      feel.reset();
+    },
+    compile(n) {
+      n.bind(volumeLight(app.getVolume()), app.getSim().g);
+      n.compile(renderer, camera, scene).then(() => app.requestRender()).catch((err) => console.error('Mission NPC figure failed to compile', err));
+    },
+    bind: (n) => n.bind(volumeLight(app.getVolume()), app.getSim().g),
+    freeMouse: () => { releaseInput(); if (document.pointerLockElement === canvas) document.exitPointerLock(); },
+    markers: createMarkers({ scene, getVolume: app.getVolume, getScale: app.getScale }),
+    hud: createMissionHud({ retry: () => mission.retry(), leave: () => exit(true) }),
+  });
+
   // TF2's class menu opens when you join a team: a Siege match's start and a team switch
   // ('.'). A Halo match has no classes: the picker shuts (docs/halo-contract.md).
   const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
@@ -1129,7 +1162,8 @@ export function createPov(app) {
     get figure() { return figure; },
     held,                        // the tool in hand on the body (held.js): holding, weight (checks)
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
-    get npcs() { return [...npcs.values()]; },
+    get npcs() { return [...npcs.values(), ...mission.actors]; },
+    mission,
     events: povEvents,           // the POV event bus (checks)
     medals,                      // the sandbox's medals (sandboxMedals.js): medals() the player's counts
     game,                        // team games (src/game): start(mode), end(), useLayout(layout), state
@@ -1151,6 +1185,7 @@ export function createPov(app) {
     },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
     worldReplaced: () => {
+      mission.end();
       village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
       for (const n of npcs.values()) { scene.remove(n.root); n.dispose(); }
       npcs.clear();
@@ -1164,7 +1199,8 @@ export function createPov(app) {
       dropPoint.x -= dx;
       dropPoint.z -= dz;
       player?.windowShifted(dx, dz);
-      if (app.mp.replica && (dx || dz)) player?.invalidateProbe();
+    mission.windowShifted(dx, dz);
+    if (app.mp.replica && (dx || dz)) player?.invalidateProbe();
       toolbelt?.windowShifted(dx, dz);
       combat.windowShifted(dx, dz);
     },

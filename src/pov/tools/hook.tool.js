@@ -99,7 +99,6 @@ export default {
 
     // state: idle | out (flying) | bite (waiting for the take) | anchor | body | carry (a bite coming home) | back (empty, coming home)
     let state = 'idle', wait = 0;
-    let quick = false, overhead = false, pulling = false;
     const origin = new THREE.Vector3(), dir = new THREE.Vector3(), claw = new THREE.Vector3(), clawVel = new THREE.Vector3();
     const anchorCell = new THREE.Vector3();
     let travelled = 0, travelEnd = 0, caught = null;   // caught: what the claw will meet ({ kind, point, cell, id, target })
@@ -108,11 +107,12 @@ export default {
     const hand = new THREE.Vector3(), tmp = new THREE.Vector3(), tmpB = new THREE.Vector3();
 
     const bodyOf = (ctx) => ctx.player?.body ?? ctx.player;
+    const untetherMine = () => { if (myBody?.rope === rope) myBody.tether(null); };
+    const untetherTheirs = () => { if (theirBody?.rope === theirRope) theirBody.tether(null); };
 
     function letGo(action = 'release') {
-      quick = pulling = false;
-      myBody?.tether?.(null);
-      theirBody?.tether?.(null);
+      untetherMine();
+      untetherTheirs();
       rope = theirRope = theirBody = null;
       generation++;
       if (state === 'anchor' || state === 'body') env.feedback?.act(action, { point: claw.clone() });
@@ -120,7 +120,7 @@ export default {
       wait = REFIRE;
     }
 
-    function fire(ctx, worldOnly = false) {
+    function fire(ctx) {
       const body = bodyOf(ctx);
       if (!body?.tether) return false;
       myBody = body;
@@ -128,14 +128,14 @@ export default {
       origin.copy(ctx.eye);
       const aim = ctx.aim;
       const cellDist = aim?.valid ? aim.dist : Infinity;
-      const who = worldOnly ? null : rayTarget(ctx.eye, dir, Math.min(HOOK_RANGE, cellDist), povEvents.actor?.id ?? PLAYER);
+      const who = rayTarget(ctx.eye, dir, Math.min(HOOK_RANGE, cellDist), povEvents.actor?.id ?? PLAYER);
       caught = null;
       if (who) caught = { kind: 'body', point: who.point.clone(), target: who.target, id: -1 };
       else if (aim?.valid && cellDist <= HOOK_RANGE) {
         const id = aim.cell.y < 0 ? -1 : aim.id;
         const point = aim.cell.clone().addScalar(0.5).add(faceNormal(aim.face, tmp).multiplyScalar(0.5));
         if (isAnchor(id)) caught = { kind: 'anchor', point, cell: aim.cell.clone(), id };
-        else if (!worldOnly && isLoose(id)) caught = { kind: 'loose', point, cell: aim.cell.clone(), id };
+        else if (isLoose(id)) caught = { kind: 'loose', point, cell: aim.cell.clone(), id };
       }
       travelled = 0;
       travelEnd = caught ? origin.distanceTo(caught.point) : HOOK_RANGE;
@@ -150,13 +150,10 @@ export default {
     function arrive(ctx) {
       const body = myBody;
       body.ropeHand(hand);
-      if (!caught) { quick = false; env.feedback?.act('miss', { point: claw.clone() }); state = 'back'; return; }
+      if (!caught) { env.feedback?.act('miss', { point: claw.clone() }); state = 'back'; return; }
       if (caught.kind === 'anchor') {
         anchorCell.copy(caught.cell);
-        const length = hand.distanceTo(claw);
-        overhead = claw.y - hand.y > length * 0.5;
-        if (overhead) pulling = false;
-        rope = { anchor: claw.clone(), length, reel: 0, hard: true, brace: false, swing: quick };
+        rope = { anchor: claw.clone(), length: hand.distanceTo(claw), reel: 0, hard: true, brace: false };
         body.tether(rope);
         state = 'anchor';
         env.feedback?.act('catch', { id: caught.id, point: claw.clone() });
@@ -252,21 +249,15 @@ export default {
       const body = myBody;
       if (!body || state === 'idle') { draw(); return; }
       if (body.dead) { letGo(); draw(); return; }
+      if (rope && body.rope !== rope && (state === 'anchor' || state === 'body')) { letGo(); draw(); return; }
       body.ropeHand(hand);
       const sim = ctx.sim ?? env.getSim();
       if (state === 'out') {
-        if (quick && ctx.grappleJump && !body.onGround) pulling = true;   // a jump while the claw flies still counts
         travelled = Math.min(travelled + HOOK_SPEED * dt, travelEnd);
         claw.copy(origin).addScaledVector(dir, travelled);
         if (caught?.kind === 'body') claw.copy(caught.point);   // (it flies at the body: it lands where it was)
         if (travelled >= travelEnd) arrive(ctx);
       } else if (state === 'anchor') {
-        if (quick) {
-          if (body.rope !== rope) { cancelGrapple(); draw(); return; }   // teleport or respawn severed the tether
-          // Cruelty Squad's pendulum stays full-length overhead; a forward jump starts the winch.
-          if (!overhead && ctx.grappleJump && !body.onGround) pulling = true;
-          rope.reel = pulling ? REEL_SPEED : 0;
-        }
         if (rope.reel > 0 && hand.distanceTo(claw) < ARRIVE) letGo();
         else if (sim) checkAnchor(sim);
       } else if (state === 'body') {
@@ -284,7 +275,7 @@ export default {
         clawVel.multiplyScalar(d > 0 ? REEL_SPEED * carryShare / d : 0);
         claw.addScaledVector(clawVel, dt);
         if (d < ARRIVE || load.cells.length === 0) {
-          body.tether(null); rope = null;
+          untetherMine(); rope = null;
           if (load.cells.length === 0 || putDown(ctx, tmp.copy(ctx.eye ?? hand).addScaledVector(ctx.dir ?? dir, PUT_AHEAD))) {
             if (!load.busy) { state = 'idle'; wait = REFIRE; }
           }
@@ -298,29 +289,12 @@ export default {
       draw();
     }
 
-    function cancelGrapple() {
-      if (!quick) return;
-      quick = pulling = false;
-      letGo();
-    }
-
     return {
-      // Sandbox's E shortcut uses the same claw and rope, without taking the tool in hand.
-      grapple(ctx) {
-        if (quick) { cancelGrapple(); return; }
-        if (state === 'anchor' || state === 'body' || state === 'out') { letGo(); return; }
-        if ((state !== 'idle' && state !== 'back') || wait > 0) return;
-        quick = fire(ctx, true);
-        pulling = false;
-        if (quick) model.hand.visible = false;
-      },
-      cancelGrapple,
       update(ctx) {
-        if (quick) { model.hand.visible = false; return; }
         model.hand.visible = true;
         model.rig.update(ctx);
         if (ctx.secondaryPressed && state !== 'idle') {
-          if (state === 'carry' && load.cells.length) { myBody?.tether(null); rope = null; putDown(ctx, claw.clone()); state = 'back'; }
+          if (state === 'carry' && load.cells.length) { untetherMine(); rope = null; putDown(ctx, claw.clone()); state = 'back'; }
           else if (state === 'anchor' || state === 'body') letGo();
           else if (state === 'out') { generation++; state = 'back'; }
         }
@@ -335,7 +309,6 @@ export default {
       tick(ctx) { if (env.isActive?.()) tick(ctx); },
       deselect() {
         model.hand.visible = false;
-        if (quick) return;   // swapping weapons must not cut the sandbox rope
         if (state === 'anchor' || state === 'body') letGo();
         else if (state === 'out') { generation++; state = 'back'; }   // (a bite being taken still comes home: tick)
       },
@@ -350,17 +323,15 @@ export default {
         checking = false;
       },
       worldReplaced() {
-        cancelGrapple();
         if (state === 'anchor' || state === 'body') letGo();
         generation++;
         state = 'idle';
       },
       get state() { return state; },          // for checks
       get rope() { return rope; },            // for checks
-      get grappling() { return quick; },
       get claw() { return claw.clone(); },    // for checks
       dispose() {
-        myBody?.tether?.(null); theirBody?.tether?.(null);
+        untetherMine(); untetherTheirs();
         model.dispose();
       },
     };

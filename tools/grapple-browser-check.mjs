@@ -1,4 +1,4 @@
-// One <=10s manual-mode slot: real E wiring, held-tool independence and release.
+// One <=10s manual-mode slot: original Grappendix E wiring, held-tool independence and release.
 // node tools/grapple-browser-check.mjs [--url https://tpt3d.codyh.xyz]
 import assert from 'node:assert/strict';
 import { E } from '../src/elements.js';
@@ -20,9 +20,9 @@ try {
     await a.test.ready();
     await a.pov.enter({ at: new V(12, 0, 32.5), swoop: 0, hint: false });
     a.pov.test.assumeLocked = true;
-    a.pov.setLook(-Math.PI / 2, Math.atan2(39.5, 12));
-    a.sim.paint({ center: new V(26, 44, 32), radius: 2, shape: 1, tool: id, rate: 1, replace: true });
-    a.hover.valid = true; a.hover.cell.set(24, 44, 32); a.hover.face = 1; a.hover.id = id;
+    a.pov.setLook(-Math.PI / 2, Math.atan2(17.5, 12));
+    a.sim.paint({ center: new V(26, 22, 32), radius: 2, shape: 1, tool: id, rate: 1, replace: true });
+    a.hover.valid = true; a.hover.cell.set(24, 22, 32); a.hover.face = 1; a.hover.id = id;
     for (let i = 0; i < 3; i++) { a.pov.update(1 / 30); await a.gpu.fence(); }
     window.__grappleHeld = a.pov.toolbelt.selectedKey;
   }, E.ROCK);
@@ -30,12 +30,11 @@ try {
   const attached = await page.evaluate(async () => {
     const a = __app;
     for (let i = 0; i < 6; i++) { a.pov.update(1 / 30); await a.gpu.fence(); }
-    const hook = a.pov.toolbelt.tool('HOOK');
-    return { state: hook.state, quick: hook.grappling, reel: hook.rope?.reel, held: a.pov.toolbelt.selectedKey, before: __grappleHeld };
+    const hook = a.pov.toolbelt.grapple;
+    return { quick: hook.active, original: hook.rope?.grappendix, held: a.pov.toolbelt.selectedKey, before: __grappleHeld };
   });
-  assert.equal(attached.state, 'anchor');
   assert.equal(attached.quick, true);
-  assert.equal(attached.reel, 0);
+  assert.equal(attached.original, true);
   assert.equal(attached.held, attached.before, 'E leaves the selected weapon alone');
   await page.evaluate(() => {
     window.__vehicleUse = __app.pov.vehicles.use;
@@ -51,7 +50,7 @@ try {
   await page.keyboard.press('e');
   assert.equal(await page.evaluate(() => { __app.pov.update(1 / 30); return __app.pov.player.rope === null; }), true);
   assert.deepEqual(errors, []);
-  console.log('PASS real E attach/release, overhead hold, held-tool independence, vehicle-use priority, no page errors');
+  console.log('PASS real E Grappendix attach/release, held-tool independence, vehicle-use priority, no page errors');
 } finally {
   await browser?.close();
   await vite?.close();

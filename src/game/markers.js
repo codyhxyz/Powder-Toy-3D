@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { BODY_HEIGHT } from '../pov/constants.js';
 import { TEAM_CSS } from './rules.js';
 
@@ -50,6 +51,17 @@ function chevronModel() {
   return m;
 }
 
+function exitModel(bounds, points) {
+  const size = bounds.max.map((n, i) => n - bounds.min[i]), g = new THREE.Group();
+  const origin = [(bounds.min[0] + bounds.max[0]) / 2, bounds.min[1], (bounds.min[2] + bounds.max[2]) / 2];
+  const geometry = points ? new ConvexGeometry(points.map(p => new THREE.Vector3(...p.map((n, i) => n - origin[i]))))
+    : new THREE.BoxGeometry(...size).translate(0, size[1] / 2, 0);
+  const fill = new THREE.Mesh(geometry, basic(NEUTRAL, 0.08));
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({ color: NEUTRAL, transparent: true, opacity: 0.8 }));
+  g.add(fill, edge); g.userData.mats = [fill.material, edge.material];
+  return g;
+}
+
 export function createMarkers({ scene, getVolume, getScale }) {
   const root = new THREE.Group();
   root.name = 'game-markers';
@@ -59,15 +71,26 @@ export function createMarkers({ scene, getVolume, getScale }) {
     obj.position.set(p.x, p.y, p.z).multiplyScalar(s).add(v.position);
     obj.scale.setScalar(s);
   };
-  let stands = {}, flags = {}, zone = null, zoneR = 0;
+  let stands = {}, flags = {}, zones = [];
   const chevrons = new Map();   // bot id → mesh
+  const remove = o => { root.remove(o); o.traverse(c => { c.geometry?.dispose(); c.material?.dispose(); }); };
+  function setZones(points) {
+    while (zones.length > points.length) remove(zones.pop());
+    points.forEach((z, i) => {
+      const shape = z.bounds ? z.bounds.max.map((n, k) => n - z.bounds.min[k]).join(',')
+        + (z.points ? z.points.map(p => p.map((n, k) => (n - z.bounds.min[k]).toFixed(6)).join(',')).join(';') : '') : String(z.r);
+      if (zones[i] && zones[i].userData.shape !== shape) { remove(zones[i]); zones[i] = null; }
+      if (!zones[i]) { zones[i] = z.bounds ? exitModel(z.bounds, z.points) : padModel(NEUTRAL, z.r); root.add(zones[i]); }
+      Object.assign(zones[i].userData, { at: z, shape });
+    });
+  }
 
   function clear() {
     for (const o of [...root.children]) {
       root.remove(o);
       o.traverse((c) => { c.geometry?.dispose(); c.material?.dispose(); });
     }
-    stands = {}; flags = {}; zone = null; chevrons.clear();
+    stands = {}; flags = {}; zones = []; chevrons.clear();
   }
 
   return {
@@ -84,12 +107,9 @@ export function createMarkers({ scene, getVolume, getScale }) {
       }
     },
     // a hill or the core: { x, y, z, r }, coloured by who holds it (null: no one)
-    zone(z) {
-      if (zone && zoneR !== z.r) { root.remove(zone); zone.traverse((c) => { c.geometry?.dispose(); c.material?.dispose(); }); zone = null; }
-      if (!zone) { zone = padModel(NEUTRAL, z.r); zoneR = z.r; root.add(zone); }
-      zone.userData.at = z;
-    },
-    noZone() { if (zone) { root.remove(zone); zone = null; } },
+    zone(z) { setZones([z]); },
+    zones: setZones,
+    noZone() { setZones([]); },
     // every frame: flags where they are, the zone's colour, chevrons over the bots
     update({ time, flagAt, zoneOwner, zoneContested, bots, myTeam }) {
       for (const [team, s] of Object.entries(stands)) place(s, s.userData.at);
@@ -98,7 +118,7 @@ export function createMarkers({ scene, getVolume, getScale }) {
         f.visible = !!p;
         if (p) { place(f, p); f.rotation.y = time * 0.8; }
       }
-      if (zone) {
+      for (const zone of zones) {
         place(zone, zone.userData.at);
         const flash = zoneContested && Math.sin(time * CONTESTED_HZ * Math.PI * 2) > 0;
         const color = flash ? '#ffffff' : zoneOwner ? TEAM_CSS[zoneOwner] : NEUTRAL;

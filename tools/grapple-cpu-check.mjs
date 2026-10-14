@@ -1,197 +1,229 @@
-// Real hook and body over CPU cell probes. No browser, GPU or model downloads.
+// Original flat-screen Grappendix formulas + real body/controller over CPU probes; no GPU.
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import hookDef from '../src/pov/tools/hook.tool.js';
+import { CELL_M } from '../src/scale.js';
 import { createPlayer } from '../src/pov/player.js';
+import { createGrappendix } from '../src/pov/grappendix.js';
+import { CRUELTY_GRAVITY, CRUELTY_JUMP, GRAPPENDIX_RANGE, grappendixFactor, pullGrappendix, crueltyMove } from '../src/pov/grappendixPhysics.js';
 import { setPovGpu } from '../src/pov/gpu.js';
 import { PROBE, PROBE_CELLS } from '../src/shaders/povBody.js';
 import { E } from '../src/elements.js';
+import { addTarget } from '../src/pov/targets.js';
+import hookDef from '../src/pov/tools/hook.tool.js';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const near = (a, b, tolerance = 1e-8) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
 
+for (const [meters, factor] of [[0, 0], [3, 0], [3.01, 1], [9.99, 1], [10, 0], [10.01, 0.7], [19.99, 0.7], [20, 0], [20.01, 2], [80, 2]]) {
+  near(grappendixFactor(meters / CELL_M), factor);
+}
+for (const fps of [30, 60, 120]) {
+  const velocity = new THREE.Vector3(0, 0, 30);
+  for (let i = 0; i < fps; i++) pullGrappendix(velocity, new THREE.Vector3(), new THREE.Vector3(15 / CELL_M, 0, 0), CRUELTY_GRAVITY, 1 / fps);
+  near(velocity.x * CELL_M, 22 * 2.3 * 0.7);
+  near(velocity.z, 30, 1e-8);
+}
+const velocity = new THREE.Vector3(60, 0, 0);
+crueltyMove(velocity, new THREE.Vector2(), { grounded: false }, 1 / 60);
+near(velocity.x, 60);
+crueltyMove(velocity, new THREE.Vector2(), { grounded: true, jumpPressed: true }, 1 / 60);
+near(velocity.x, 54);
+near(velocity.y, CRUELTY_JUMP);
+const diagonal = new THREE.Vector3();
+crueltyMove(diagonal, new THREE.Vector2(1, -1), { grounded: false }, 1 / 60);
+near(diagonal.length() * CELL_M, Math.SQRT2 * 9 * 2 / 60);
+console.log('ok source distance bands/seams, gravity-scaled acceleration, tangent momentum, ground friction, jump, FPS');
+
 async function fixture(fps = 60) {
   const sim = { g: { nx: 512, ny: 256, nz: 512 }, frame: 0, gravity: 0.025, touchCentres: () => [], paint() {} };
-  let anchorId = E.ROCK;
+  let anchorId = E.ROCK, resolveRead;
+  let holdRead = false;
   setPovGpu(sim, {
     ready: true, edit: () => true, transfer: () => null,
     probe(name, { boxLo: lo }) {
-      if (name === 'povCells') return Promise.resolve(new Float32Array([anchorId, 20, 0, 0]).buffer);
+      if (name === 'povCells') return holdRead ? new Promise(resolve => { resolveRead = resolve; })
+        : Promise.resolve(new Float32Array([anchorId, 20, 0, 0]).buffer);
       const buf = new Float32Array(PROBE_CELLS * 4);
       for (let y = 0; y < PROBE.Y; y++) for (let z = 0; z < PROBE.Z; z++) for (let x = 0; x < PROBE.X; x++) {
         const i = ((y * PROBE.Z + z) * PROBE.X + x) * 4;
-        buf[i] = lo[1] + y < 1 ? E.WALL : E.EMPTY;
-        buf[i + 1] = 20;
+        buf[i] = lo[1] + y < 1 ? E.WALL : E.EMPTY; buf[i + 1] = 20;
       }
       return Promise.resolve(buf.buffer);
     },
   });
   const body = createPlayer({ renderer: {}, getSim: () => sim, quiet: true });
-  const scene = new THREE.Scene(), viewmodel = new THREE.Group(), volume = new THREE.Group();
-  scene.add(viewmodel, volume);
-  const events = [];
-  const hook = hookDef.create({
-    scene, viewmodel, getSim: () => sim, getVolume: () => volume, getScale: () => 1,
-    isActive: () => true, feedback: { act: action => events.push(action) },
-  });
+  const scene = new THREE.Scene(), volume = new THREE.Group(); scene.add(volume);
+  const grapple = createGrappendix({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => 1 });
   const ctx = {
     dt: 1 / fps, sim, player: { body }, eye: new THREE.Vector3(), dir: new THREE.Vector3(),
     aim: { valid: true, cell: new THREE.Vector3(), id: E.ROCK, face: 1, dist: 0 },
-    primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, grappleJump: false,
   };
   const frame = async (input = {}) => {
-    sim.frame += 4;
-    body.update(ctx.dt, input);
+    sim.frame += 4; body.update(ctx.dt, input);
     ctx.eye.copy(body.pos).setY(body.pos.y + body.eyeHeight);
-    ctx.grappleJump = !!input.jump;
-    hook.tick(ctx);
-    await flush();
+    grapple.update(ctx); await flush();
   };
-  const frames = async (n, input = {}, each = () => {}) => {
-    for (let i = 0; i < n; i++) { await frame(input); each(); }
-  };
-  body.spawn(new THREE.Vector3(200, 1, 200));
-  await frames(5);
-  const fire = cell => {
+  const frames = async (n, input = {}) => { for (let i = 0; i < n; i++) await frame(input); };
+  body.spawn(new THREE.Vector3(200, 1, 200)); await frames(5);
+  const attach = cell => {
     ctx.aim.cell.copy(cell);
-    const hit = cell.clone().addScalar(0.5).add(new THREE.Vector3(-0.5, 0, 0));
-    ctx.dir.subVectors(hit, ctx.eye).normalize();
-    ctx.aim.dist = hit.distanceTo(ctx.eye);
-    hook.grapple(ctx);
+    const point = cell.clone().addScalar(0.5).add(new THREE.Vector3(-0.5, 0, 0));
+    ctx.dir.subVectors(point, ctx.eye).normalize(); ctx.aim.dist = point.distanceTo(ctx.eye);
+    grapple.toggle(ctx);
   };
-  const attached = async () => {
-    for (let i = 0; i < fps && hook.state === 'out'; i++) await frame();
-    assert.equal(hook.state, 'anchor');
-  };
-  return { body, hook, ctx, events, frame, frames, fire, attached, anchorId: id => { anchorId = id; },
-    dispose() { hook.dispose(); body.dispose(); } };
+  return { sim, scene, body, grapple, ctx, frame, frames, attach,
+    anchorId(id) { anchorId = id; },
+    holdRead(v) { holdRead = v; },
+    completeRead(id) { resolveRead(new Float32Array([id, 20, 0, 0]).buffer); },
+    dispose() { grapple.dispose(); body.dispose(); } };
 }
 
 for (const fps of [30, 60, 120]) {
-  const f = await fixture(fps), { body, hook, ctx, fire, attached, frame, frames } = f;
+  const f = await fixture(fps), { body, grapple, attach, frames, ctx } = f;
   try {
-    fire(new THREE.Vector3(215, 65, 200));
-    await attached();
-    const length = hook.rope.length;
-    assert.ok(hook.grappling && hook.rope.swing);
-    hook.deselect();
-    assert.equal(body.rope, hook.rope, 'changing weapons keeps the shortcut tether');
-    ctx.primary = ctx.primaryPressed = ctx.secondaryPressed = true;
-    hook.update(ctx);
-    assert.equal(hook.rope.reel, 0, 'held weapon buttons do not operate the shortcut');
-    ctx.primary = ctx.primaryPressed = ctx.secondaryPressed = false;
-    body.vel.set(-25, 40, 0);
-    let minX = body.pos.x, maxX = minX, stretch = 0, inward = false, outward = false;
-    await frames(fps * 3, { move: { x: 1, z: 0 } }, () => {
-      assert.equal(hook.state, 'anchor');
-      near(hook.rope.length, length);
-      assert.equal(hook.rope.reel, 0, 'overhead rope never auto-reels');
-      minX = Math.min(minX, body.pos.x); maxX = Math.max(maxX, body.pos.x);
-      stretch = Math.max(stretch, body.ropeHand().distanceTo(hook.rope.anchor) - length);
-      inward ||= body.vel.x > 5; outward ||= body.vel.x < -5;
-    });
-    assert.ok(maxX - minX > 10 && inward && outward, 'a full pendulum arc with controllable momentum');
-    assert.ok(stretch < 1.5, `bounded rope stretch at ${fps} fps: ${stretch}`);
-    await frame({ jump: true });
-    assert.equal(hook.rope.reel, 0, 'jump does not shorten an overhead swing');
+    attach(new THREE.Vector3(250, 6, 200));
+    assert.ok(grapple.active && body.rope.grappendix, 'instant attachment without projectile flight');
+    assert.equal(body.rope.hard, false, 'no fixed-length rope constraint');
+    await frames(Math.round(fps / 5));
+    const groundedSpeed = body.vel.x;
+    assert.ok(body.onGround && groundedSpeed < 2, 'source ground friction holds you back until jumping');
+    await frames(Math.round(fps / 3), { jump: true });
+    assert.ok(!body.onGround && body.vel.x > groundedSpeed + 10, 'jump escapes ground friction and launches forward');
+    assert.equal(body.jetting, false, 'holding jump does not substitute Noita jet thrust for source physics');
     const velocity = body.vel.clone();
-    hook.grapple(ctx);
-    assert.equal(body.rope, null, 'second E releases');
-    assert.equal(hook.grappling, false);
-    assert.deepEqual(body.vel.toArray(), velocity.toArray(), 'release does not eat momentum');
-    await frame({ move: { x: Math.sign(velocity.x), z: 0 } });
-    assert.ok(Math.abs(body.vel.x) >= Math.abs(velocity.x) - 0.1, 'air steering preserves launch velocity');
-    console.log(`ok ${fps} fps overhead swing, input pumping, fixed length, release momentum`);
-  } finally { f.dispose(); }
-}
-
-{
-  const f = await fixture(), { body, hook, ctx, fire, attached, frames } = f;
-  try {
-    fire(new THREE.Vector3(260, 6, 200));
-    await attached();
-    await frames(12);
-    assert.equal(hook.rope.reel, 0, 'front anchor waits for a jump');
-    const start = body.pos.x, length = hook.rope.length;
-    await frames(6, { jump: true });
-    assert.ok(hook.rope.reel > 0 && body.pos.x > start + 1, 'jump engages forward pull');
-    await frames(12);
-    assert.ok(hook.rope.reel > 0, 'a tap keeps pulling without holding E or Space');
-    assert.ok(hook.rope.length < length && body.vel.x > 15, 'winch takes up slack and builds forward speed');
-    body.vel.z = 30;
-    await frames(1);
-    assert.ok(body.vel.z > 25, 'reeling preserves lateral swing instead of damping it');
-    const anchor = hook.rope.anchor.clone(), claw = hook.claw;
-    hook.windowShifted(32, -16);
-    near(hook.rope.anchor.x, anchor.x - 32);
-    near(hook.rope.anchor.z, anchor.z + 16);
-    near(hook.claw.x, claw.x - 32);
-    hook.worldReplaced();
-    assert.equal(hook.state, 'idle');
-    assert.equal(hook.grappling, false);
+    grapple.toggle(ctx);
     assert.equal(body.rope, null);
-    console.log('ok front jump pull, persistent winch, lateral momentum, window shift, world replacement');
-  } finally { f.dispose(); }
-}
-
-for (const reason of ['tear', 'cancel', 'teleport', 'death']) {
-  const f = await fixture(), { body, hook, fire, attached, frame } = f;
-  try {
-    fire(new THREE.Vector3(220, 55, 200)); await attached();
-    if (reason === 'tear') { f.anchorId(E.EMPTY); await frame(); await frame(); }
-    if (reason === 'cancel') hook.cancelGrapple();
-    if (reason === 'teleport') { body.teleport(new THREE.Vector3(180, 1, 180)); await frame(); }
-    if (reason === 'death') { body.hurt(2, 'test', { shielded: false }); await frame(); }
-    assert.equal(hook.grappling, false, reason);
-    assert.equal(body.rope, null, reason);
-    if (reason === 'tear') assert.ok(f.events.includes('tear'));
+    assert.deepEqual(body.vel.toArray(), velocity.toArray(), 'release keeps full momentum');
+    await frames(1);
+    near(body.vel.x, velocity.x);
+    console.log(`ok ${fps} fps instantaneous attach, ground pull, jump launch, no jet, release momentum`);
   } finally { f.dispose(); }
 }
 
 {
-  const f = await fixture(), { body, hook, fire, frames } = f;
+  const f = await fixture(), { body, grapple, attach, frame, frames, ctx, scene } = f;
   try {
-    fire(new THREE.Vector3(280, 6, 200));
-    await frames(1, { jump: true });
-    assert.equal(hook.state, 'out', 'jump happened before the claw arrived');
-    await frames(20);
-    assert.ok(hook.rope.reel > 0 && body.vel.x > 10, 'a jump during flight engages the forward pull');
-    await frames(180);
-    assert.equal(body.rope, null, 'arrival ends the winch');
-    assert.equal(hook.grappling, false, 'arrival allows refiring');
+    attach(new THREE.Vector3(210, 50, 200));
+    const length = body.pos.distanceTo(grapple.rope.anchor);
+    await frame({ jump: true });
+    assert.equal(scene.children.find(o => o.isInstancedMesh).count, 4, 'source grows one flesh-orb batch per frame');
+    await frames(24);
+    assert.ok(body.pos.distanceTo(grapple.rope.anchor) < length - 5, 'overhead continuously draws you inward, never fixed length');
+    const mesh = scene.children.find(o => o.isInstancedMesh);
+    assert.ok(mesh.visible && mesh.count > 0, 'original pulsating flesh-orb line is drawn');
+    const anchor = grapple.rope.anchor.clone();
+    body.windowShifted(16, -8); grapple.windowShifted(16, -8);
+    near(grapple.rope.anchor.x, anchor.x - 16); near(grapple.rope.anchor.z, anchor.z + 8);
+    // Near the anchor original acceleration turns off but attachment remains.
+    body.teleport(new THREE.Vector3(180, 30, 180)); await frame();
+    assert.equal(grapple.active, false, 'teleport severed the tether');
+    attach(new THREE.Vector3(182, 32, 180));
+    await frames(2);
+    assert.equal(grapple.active, true, 'no auto-release within the original 3 m dead zone');
+    const held = body.rope;
+    grapple.release(); attach(new THREE.Vector3(184, 32, 180));
+    assert.ok(grapple.active && body.rope !== held, 'immediate refire, no added cooldown/retraction');
+    ctx.aim.valid = false; grapple.toggle(ctx);
+    assert.equal(grapple.active, false, 'E releases even while aimed at sky');
   } finally { f.dispose(); }
 }
 
-for (const target of ['sky', 'loose', 'range']) {
-  const f = await fixture(), { hook, ctx, fire, frames } = f;
+for (const why of ['sky', 'powder', 'range']) {
+  const f = await fixture(), { grapple, attach, ctx } = f;
   try {
-    ctx.aim.valid = target !== 'sky';
-    ctx.aim.id = target === 'loose' ? E.SAND : E.ROCK;
-    fire(new THREE.Vector3(target === 'range' ? 350 : 240, 6, 200));
-    await frames(65);
-    assert.equal(hook.rope, null, `${target} cannot anchor a traversal grapple`);
-    assert.equal(hook.grappling, false, 'miss allows another E shot');
-    assert.ok(f.events.includes('miss'));
+    ctx.aim.valid = why !== 'sky'; ctx.aim.id = why === 'powder' ? E.SAND : E.ROCK;
+    attach(new THREE.Vector3(why === 'range' ? 268 : 230, 6, 200));
+    assert.equal(grapple.active, false, why);
   } finally { f.dispose(); }
 }
-console.log('ok broken anchor, input cancellation, teleport, death, sky/loose/out-of-range misses');
-
 {
-  const f = await fixture(), { body, hook, ctx, attached, frames } = f;
+  const f = await fixture(), { sim, body, grapple, ctx, attach } = f;
   try {
-    ctx.aim.cell.set(250, 6, 200);
-    ctx.dir.set(1, 0, 0); ctx.aim.dist = 50;
-    ctx.primary = ctx.primaryPressed = true;
-    hook.update(ctx); ctx.primaryPressed = false;
-    await attached();
-    assert.equal(hook.grappling, false, 'ordinary held hook is not the E shortcut');
-    hook.update(ctx);
-    assert.ok(hook.rope.reel > 0, 'left-click still reels the ordinary hook');
-    ctx.primary = false; hook.update(ctx);
-    assert.equal(hook.rope.reel, 0, 'letting go of left-click still hangs');
-    ctx.secondaryPressed = true; hook.update(ctx);
-    assert.equal(body.rope, null, 'right-click still releases the ordinary hook');
-    await frames(25);
+    sim.g.windowed = true;
+    attach(new THREE.Vector3(220, 6, 200));
+    body.windowShifted(256, 0); grapple.windowShifted(256, 0);
+    f.anchorId(E.EMPTY); grapple.update(ctx); await flush();
+    assert.ok(grapple.active, 'streaming eviction does not masquerade as anchor destruction');
+    body.windowShifted(-256, 0); grapple.windowShifted(-256, 0);
+    grapple.update(ctx); await flush();
+    assert.equal(grapple.active, false, 'resident destruction is checked again after the window returns');
   } finally { f.dispose(); }
 }
-console.log('ok existing held-hook mouse controls unchanged');
+for (const within of [true, false]) {
+  const f = await fixture(), { grapple, ctx } = f;
+  try {
+    ctx.aim.cell.set(260, 20, 200);
+    const point = new THREE.Vector3(260, within ? 20.01 : 20.99, 200.99);
+    const distance = GRAPPENDIX_RANGE + (within ? -0.001 : 0.001);
+    ctx.eye.set(260 - Math.sqrt(distance ** 2 - (point.y - 1) ** 2), 1, point.z);
+    ctx.dir.subVectors(point, ctx.eye).normalize();
+    ctx.aim.dist = distance;
+    grapple.toggle(ctx);
+    assert.equal(grapple.active, within, '20 m gate uses the actual crosshair ray hit, not the cell face center');
+    if (within) assert.ok(grapple.rope.anchor.distanceTo(point) < 1e-8);
+  } finally { f.dispose(); }
+}
+for (const why of ['tear', 'release', 'death', 'replacement']) {
+  const f = await fixture(), { body, grapple, attach, frame } = f;
+  try {
+    attach(new THREE.Vector3(230, 10, 200));
+    if (why === 'tear') { f.anchorId(E.EMPTY); await frame(); }
+    if (why === 'release') grapple.release();
+    if (why === 'death') { body.hurt(2, 'test', { shielded: false }); await frame(); }
+    if (why === 'replacement') { body.tether({ anchor: new THREE.Vector3(), hard: true }); await frame(); }
+    assert.equal(grapple.active, false, why);
+    if (why === 'replacement') assert.ok(body.rope, 'cannot sever another tool/vehicle tether');
+    else assert.equal(body.rope, null);
+  } finally { f.dispose(); }
+}
+{
+  const f = await fixture(), { grapple, attach, frame } = f;
+  try {
+    attach(new THREE.Vector3(230, 10, 200)); f.holdRead(true); await frame();
+    grapple.release(); attach(new THREE.Vector3(232, 10, 200));
+    f.completeRead(E.EMPTY); await flush();
+    assert.equal(grapple.active, true, 'stale anchor reads cannot tear out a new grapple');
+  } finally { f.dispose(); }
+}
+{
+  const f = await fixture(), { body, grapple, ctx, frame } = f;
+  const target = { pos: new THREE.Vector3(220, 1, 200), vel: new THREE.Vector3(), dead: false, positionEpoch: 0 };
+  const off = addTarget({ id: 'grappendix-test', get alive() { return !target.dead; }, body: target, hurt() {},
+    box(lo, hi) { lo.copy(target.pos).add(new THREE.Vector3(-1, 0, -1)); hi.copy(target.pos).add(new THREE.Vector3(1, 6, 1)); } });
+  try {
+    ctx.aim.valid = false; ctx.dir.set(1, 0, 0); grapple.toggle(ctx);
+    assert.ok(grapple.active, 'original can attach to an NPC');
+    const anchor = grapple.rope.anchor.clone(); target.pos.x += 5; await frame();
+    near(grapple.rope.anchor.x, anchor.x + 5);
+    target.dead = true; await frame();
+    assert.ok(grapple.active && target.vel.x < 0, 'original pulls corpses back, not living enemies');
+    grapple.release(); grapple.toggle(ctx);
+    assert.ok(grapple.active, 'a dead body remains a grapple target, not a gun target');
+    target.positionEpoch++; await frame();
+    assert.equal(grapple.active, false, 'same-body respawn/teleport invalidates the previous anchor offset');
+    grapple.toggle(ctx);
+    off(); await frame();
+    assert.equal(body.rope, null);
+  } finally { off(); f.dispose(); }
+}
+assert.ok(GRAPPENDIX_RANGE * CELL_M === 20);
+{
+  const f = await fixture(), { body, grapple, attach, ctx, sim, scene } = f;
+  const viewmodel = new THREE.Group(), volume = scene.children.find(o => o.isGroup);
+  scene.add(viewmodel);
+  const hook = hookDef.create({ scene, viewmodel, getSim: () => sim, getVolume: () => volume, getScale: () => 1, isActive: () => true });
+  try {
+    ctx.aim.cell.set(225, 8, 200); ctx.aim.dist = 25; ctx.dir.set(1, 0, 0);
+    ctx.primaryPressed = true; hook.update(ctx); ctx.primaryPressed = false;
+    for (let i = 0; i < 15 && hook.state !== 'anchor'; i++) { hook.tick(ctx); await flush(); }
+    assert.equal(hook.state, 'anchor');
+    attach(new THREE.Vector3(230, 10, 200));
+    const mine = body.rope;
+    hook.deselect();
+    assert.equal(body.rope, mine, 'old Hook weapon cleanup cannot clear the current E tether');
+    hook.dispose();
+    assert.equal(body.rope, mine, 'disposing the old Hook cannot clear another tool tether');
+    assert.ok(grapple.active);
+  } finally { hook.dispose(); f.dispose(); }
+}
+console.log('ok source overhead pull/dead zone/refire, flesh-orb rendering, range, misses, shifts, lifecycle, stale reads, moving NPC');
