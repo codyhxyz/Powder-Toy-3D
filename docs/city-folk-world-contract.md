@@ -174,6 +174,29 @@ Its `withVillageFocus(at, valid, visit)` adapter streams without replacing the w
 The focus remains active during arrival-clearance checks.
 The village E action boards the bus and supports cancellation.
 
+### Published lane APIs
+
+The terrain lane exports `CITY_FOLK_TERRAIN` from its helper and `willowCove.js`.
+Its sites and bridges include `at`, `entry`, `floor`, and `half`.
+Routes use `points`, or a `curve` with `from` and `to`.
+It also publishes pond, island, cove, mouth, fall, and meadow samples.
+The east central ramp moves to `x = 240` to avoid the museum footprint.
+
+The bus implementation is `src/pov/village/bus.js`.
+It exports `CITY_BUS_STOPS`, `createCityBus`, `withCityBusFocus`, and `cityBusArrivalClear`.
+`createCityBus` accepts these injected adapters:
+`getWorld`, `getSim`, `getMode`, `getPlayer`, `active`,
+`withVillageFocus`, `requestRender`, and optional `notify`.
+Its public methods are `nearby`, `board`, `freeze`, `cancel`, and `dispose`.
+Its `busy` getter indicates a journey.
+`board` returns a promise for `{ ok, reason }`.
+
+`withCityBusFocus` accepts one options object:
+`world`, `at`, `valid`, `getFocus`, `setFocus`, `move`, and `visit`.
+The `at` coordinates are world X/Z, not island-local coordinates.
+`cityBusArrivalClear(sim, feet, player)` checks the edited live support and body volume.
+Tests must exercise the real helpers with injected adapters.
+
 ## Delivery tracking
 
 The first workflow wrapper stopped after a bookkeeping error.
