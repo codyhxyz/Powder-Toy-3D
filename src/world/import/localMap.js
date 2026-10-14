@@ -1,30 +1,32 @@
 import { MAPS } from '../../maps.js';
 import { WORLD_SCENES } from '../scenes/index.js';
 import { loadImportedMap } from '../scenes/importedMap.js';
-import { CRUELTY_PROFILES, crueltyProfile } from './crueltyProfiles.js';
+import { CRUELTY_PROFILES } from './crueltyProfiles.js';
 
-// Called only through a DEV-only dynamic import in main.js. Missing/invalid
-// assets never register substitute geometry. Each profile is independently local.
+// The converted source levels live in public/local-maps and ship with the site.
+// Only their manifests load at boot (the menu needs the names, sizes and modes);
+// each map's geometry is fetched when it is opened. A missing or invalid asset
+// never registers a substitute: the map is simply absent from the menu.
 async function installProfile(profile) {
-  const url = `/local-maps/${profile.id}.json`;
-  const response = await fetch(url);
+  const response = await fetch(`/local-maps/${profile.id}.json`);
   if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`Cannot inspect local ${profile.name} (${response.status})`);
-  const scene = await loadImportedMap(url, { key: `${profile.id}Local`, label: `${profile.name} (VOXEL PREVIEW)` });
-  if (scene.importManifest.id !== profile.id) throw new Error(`Local source profile mismatch: ${profile.id}`);
-  if (MAPS.some((m) => m.key === profile.id) || WORLD_SCENES.some((s) => s.key === scene.key)) throw new Error(`Duplicate local map registration: ${profile.id}`);
+  if (!response.ok) throw new Error(`Cannot read the converted ${profile.name} (${response.status})`);
+  const scene = await loadImportedMap(`/local-maps/${profile.id}.json`, { key: `${profile.id}Local`, label: `${profile.name} (source import)` });
+  if (scene.importManifest.id !== profile.id) throw new Error(`Converted map profile mismatch: ${profile.id}`);
+  if (MAPS.some((m) => m.key === profile.id) || WORLD_SCENES.some((s) => s.key === scene.key)) throw new Error(`Duplicate map registration: ${profile.id}`);
   const omitted = scene.mission.placementFailures.filter((p) => p.role === 'guard').length;
-  const map = { key: profile.id, name: `${profile.name} (VOXEL PREVIEW; ${omitted} guards omitted)`, size: 'world', scene: scene.key, dims: scene.size, modes: scene.mission.available === false ? [] : ['crueltySquad'], mission: scene.mission,
-    desc: `Full Level${profile.level} embedded geometry. ${omitted} obstructed guards omitted; ${scene.mission.available === false ? 'mission unavailable: obstructed spawn/target; Sandbox geometry comparison only' : 'clearance-checked NPC adaptation, not full original AI'}. Local-only; external props/scripts not imported.` };
+  const blocked = scene.mission.available === false;
+  const map = { key: profile.id, name: profile.name, size: 'world', scene: scene.key, dims: scene.size,
+    modes: blocked ? [] : ['crueltySquad'], mission: scene.mission,
+    desc: `The original Level ${profile.level} layout, converted into physical voxels. ${blocked
+      ? 'Sandbox only: a target has no clear standing volume for this game\'s body. '
+      : `${omitted ? `${omitted} obstructed guard${omitted === 1 ? '' : 's'} omitted. ` : ''}`}Characters are this game's NPCs, not the original AI; external props and scripts are not imported.` };
   WORLD_SCENES.push(scene); MAPS.push(map);
   return map;
 }
-export const installLocalParadise = () => installProfile(crueltyProfile('paradise'));
 export async function installLocalCrueltyMaps() {
-  const maps = [];
-  for (const profile of CRUELTY_PROFILES.filter((p) => !p.blocked)) {
-    try { const map = await installProfile(profile); if (map) maps.push(map); }
-    catch (error) { console.error(`Local ${profile.name} import failed; map not registered`, error); }
-  }
-  return maps;
+  // One request per map, in parallel: each is small, and the menu waits for them.
+  const installed = await Promise.all(CRUELTY_PROFILES.filter((p) => !p.blocked).map((profile) =>
+    installProfile(profile).catch((error) => { console.error(`Converted ${profile.name} not registered`, error); return null; })));
+  return installed.filter(Boolean);
 }
