@@ -13,6 +13,7 @@ import {
 import { prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
 import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limbs.js';
 import { strikePose, sampleKickPose, kickBlend } from './strikePose.js';
+import { flapPose, sampleFlap } from './flapPose.js';
 
 // The realistic body: Quaternius's Superhero Male (Universal Base Characters,
 // CC0), sculpted muscles in his mesh and normal map, playing clips from
@@ -262,15 +263,30 @@ export function createRealFigure(gltf, { bag = false } = {}) {
     qb.setFromAxisAngle(right, angle);
     bone.quaternion.premultiply(qa.clone().invert().multiply(qb).multiply(qa));
   }
-  let wing = 0;
+  const wingPose = flapPose(), wingUpper = new THREE.Vector3(), wingLower = new THREE.Vector3();
+  const wingShoulder = new THREE.Vector3(), wingTarget = new THREE.Vector3(), wingPole = new THREE.Vector3();
+  const wingFromUpper = new THREE.Quaternion(), wingFromLower = new THREE.Quaternion();
   function flapArms(amount) {
     if (!(amount > 0)) return;
+    sampleFlap(amount, wingPose);
+    if (!(wingPose.weight > 0)) return;
     root.updateWorldMatrix(true, true);
-    right.set(1, 0, 0).applyQuaternion(root.getWorldQuaternion(qa));
-    for (const a of Object.values(arms)) {
-      turn(a.L.upper, -2.4 * amount);
-      turn(a.L.lower, 1.2 * amount);
+    root.getWorldQuaternion(qRoot);
+    for (const [side, a] of Object.entries(arms)) {
+      const shoulder = side === 'l' ? wingPose.left : wingPose.right;
+      const scale = a.L.upper.getWorldScale(vScale).x;
+      a.L.upper.getWorldPosition(wingShoulder);
+      wingUpper.set(0, -a.L.lower.position.length() * scale, 0).applyQuaternion(shoulder);
+      wingLower.set(0, -a.L.end.length() * scale, 0).applyQuaternion(wingPose.elbow).applyQuaternion(shoulder);
+      wingTarget.copy(wingUpper).add(wingLower).applyQuaternion(qRoot).add(wingShoulder);
+      wingPole.copy(wingUpper).applyQuaternion(qRoot).add(wingShoulder);
+      wingFromUpper.copy(a.L.upper.quaternion); wingFromLower.copy(a.L.lower.quaternion);
+      // IK translates the shared wing pose into either skeleton's bone axes.
+      solveLimb(a.L, wingTarget, wingPole);
+      a.L.upper.quaternion.copy(wingFromUpper.slerp(a.L.upper.quaternion, wingPose.weight));
+      a.L.lower.quaternion.copy(wingFromLower.slerp(a.L.lower.quaternion, wingPose.weight));
     }
+    holding = true;
   }
   const length = (a, b) => a.getWorldPosition(va).distanceTo(b.getWorldPosition(vb));
   function crouchBend(c) {
@@ -384,8 +400,8 @@ export function createRealFigure(gltf, { bag = false } = {}) {
         for (const b of spine) { turn(b, (lean - rushLean) / spine.length); b.updateWorldMatrix(false, false); }
         for (const b of head) { turn(b, nod / head.length); b.updateWorldMatrix(false, false); }
       }
-      wing = s.dead ? 0 : s.flap ?? 0;
-      flapArms(wing);   // empty hands; a held tool's reach() poses the arms again, higher
+      const wing = s.dead ? 0 : s.flap ?? 0;
+      flapArms(wing);   // reach() keeps a gripping arm aimed; the free arm keeps flapping
       if (s.kick != null && !s.dead) {
         sampleKickPose(s.kick, kickPose);
         const weight = kickBlend(s.kick);
@@ -427,10 +443,6 @@ export function createRealFigure(gltf, { bag = false } = {}) {
         const ws = a.hand.getWorldScale(vScale).x;
         const wrist = vAt.copy(a.frame.fingers).multiplyScalar(GRIP_ALONG * a.frame.reach).addScaledVector(a.frame.palm, GRIP_PALM)
           .applyQuaternion(qHand).multiplyScalar(-ws).add(g.pos);
-        if (wing > 0) {
-          wrist.y += 0.9 * wing * s;
-          wrist.addScaledVector(vAt.set(a.side, 0, 0).applyQuaternion(qRoot), 0.35 * wing * s);
-        }
         const target = wrist.clone();
         solveLimb(a.L, target, pole(a.L, a.side, ELBOW_POLE));
         setWorldQuaternion(a.hand, qHand);
@@ -447,7 +459,6 @@ export function createRealFigure(gltf, { bag = false } = {}) {
           blend(bones, from);
         }
       }
-      flapArms(wing);   // after the grip, or the tool pose erases the wingbeat
     },
     get material() { return mats[0]; },
     // tests: the posed rig and each clip's blend weight

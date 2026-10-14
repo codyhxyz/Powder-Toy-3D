@@ -7,6 +7,7 @@ import { surfaceGLSL } from '../src/shaders/gfx/surface.js';
 import { cozySurfaceWGSL, cozyWaterWGSL } from '../src/shaders/gfx/cozy.js';
 import { noiseGLSL } from '../src/shaders/gfx/noise.js';
 import { glslMod } from '../src/gpu/wgsl.js';
+import { compositeWGSL } from '../src/gfx/post.js';
 
 const surface = surfaceGLSL({});
 const definition = (name) => {
@@ -60,34 +61,54 @@ export const SWATCHES = [
   ['Rock', E.ROCK, [0, 0, 1]],
   ['Sand', E.SAND, [0, 1, 0]],
   ['Brick', E.BRICK, [0, 0, 1]],
+  ['Tile', E.CERAMIC, [0, 0, 1]],
+  ['Soil', E.MUD, [0, 1, 0]],
+  ['Snow', E.SNOW, [0, 1, 0]],
+  ['Metal', E.METAL, [0, 0, 1]],
   ['Water', E.WATER, [0, 1, 0]],
 ];
 
-export function swatchCode(size = 144) {
+export function swatchCode(size = 144, beforeWGSL = '') {
+  const composite = compositeWGSL();
+  const tone = composite.slice(composite.indexOf('const SRGB_TO_REC2020:'), composite.indexOf('// AgX desaturates'));
+  const before = beforeWGSL.replace(/\bcozy[A-Z]\w*/g, name => `before_${name}`).replace(/\bCOZY_/g, 'BEFORE_COZY_');
+  const height = size * (before ? 2 : 1);
   return `${cozyFixture}
+${before}
+${composite.match(/const LUMA_709:[^\n]+/)[0]}
+struct FixturePost { look: f32 }
+var<private> P: FixturePost;
+${tone}
 @group(0) @binding(0) var<storage, read_write> pixels: array<vec4f>;
 @compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) gid: vec3u) {
   let width = ${size * SWATCHES.length}u;
-  if (gid.x >= width || gid.y >= ${size}u) { return; }
+  if (gid.x >= width || gid.y >= ${height}u) { return; }
   let tile = gid.x / ${size}u;
-  let uv = (vec2f(f32(gid.x % ${size}u), f32(gid.y)) + 0.5) / ${size}.0;
+  let uv = (vec2f(f32(gid.x % ${size}u), f32(gid.y % ${size}u)) + 0.5) / ${size}.0;
   let metres = vec2f(uv.x, 1.0 - uv.y) * 3.0 + vec2f(0.31, 0.17);
   let fp = 3.0 / ${size}.0 / CELL_M;
   FU.time = 4.0;
+  P.look = 0.5;
   var colour: vec3f;
   switch tile {
 ${SWATCHES.map(([, id, n], i) => {
   const p = n[1] ? 'vec3f(metres.x, 0.0, metres.y)' : 'vec3f(metres.x, metres.y, 0.0)';
   return i === SWATCHES.length - 1
     ? `case ${i}u: {
-      let paint = cozyWaterPaint(${p} / CELL_M, fp, clamp(1.0 - uv.x * 2.5, 0.0, 1.0));
+      var paint: vec4f;
+      ${before ? `if (gid.y < ${size}u) { paint = before_cozyWaterPaint(${p} / CELL_M, fp, clamp(1.0 - uv.x * 2.5, 0.0, 1.0)); } else` : ''}
+      { paint = cozyWaterPaint(${p} / CELL_M, fp, clamp(1.0 - uv.x * 2.5, 0.0, 1.0)); }
       let bed = mix(vec3f(0.14, 0.35, 0.31), vec3f(0.015, 0.1, 0.23), uv.x);
-      colour = paint.rgb * paint.a + bed * (1.0 - paint.a);
+      colour = (paint.rgb * paint.a + bed * (1.0 - paint.a)) * 2.0;
     }`
-    : `case ${i}u: { colour = cozyMat(${id}, ${p} / CELL_M, vec3f(${n.join(',')}), 20.0, 0.0, fp).alb * 2.0; }`;
+    : `case ${i}u: {
+      ${before ? `if (gid.y < ${size}u) { colour = before_cozyMat(${id}, ${p} / CELL_M, vec3f(${n.join(',')}), 20.0, 0.0, fp).alb * 2.0; } else` : ''}
+      { colour = cozyMat(${id}, ${p} / CELL_M, vec3f(${n.join(',')}), 20.0, 0.0, fp).alb * 2.0; }
+    }`;
 }).join('\n')}
     default: { colour = vec3f(0.0); }
   }
-  pixels[gid.y * width + gid.x] = vec4f(colour, 1.0);
+  // Flat-lit artwork through the game's actual tone mapper; not gameplay.
+  pixels[gid.y * width + gid.x] = vec4f(agx(colour), 1.0);
 }`;
 }

@@ -3,6 +3,7 @@ export { furniture } from './furnitureModels.js';
 import { createLeapAnimation } from './leap.js';
 import { loft, hairGeometry, faceEllipse, faceStroke, eyeSurface, eyeTexture, noseGeometry, clothTexture } from './characterShapes.js';
 import { strikePose, sampleKickPose, kickBlend } from '../strikePose.js';
+import { flapPose, sampleFlap } from '../flapPose.js';
 
 // Wild World / City Folk silhouettes; baked shading and painted details work
 // in the voxel renderer's unlit scene and shared rolling-log mesh transform.
@@ -141,6 +142,7 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
   const leap = createLeapAnimation(body, limbs);
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   const kickPose = strikePose(), punchPose = new THREE.Quaternion();
+  const wingPose = flapPose();
   const punchGuard = new THREE.Quaternion().setFromEuler(new THREE.Euler(2.2, 0, 0.6));
   const punchHit = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.8, 0, 0.6));
   let lastTime = 0, phase = 0, lean = 0, toolTime = Infinity, wasUsing = false;
@@ -227,11 +229,16 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
       body.rotation.x = dresser ? -0.1 * reach : (-0.18 + (pose.pulling ? 0.3 : -0.12) * strain) * reach;
       if (gripping) body.position.y = pose.low ? -0.2 * reach : 0;
     }
-    // A chicken wingbeat. Positive x is the raised arm (the punch above); both arms, not the tool hand only.
     const flap = pose ? 0 : motion?.flap ?? 0;
-    if (flap > 0 && !(punch > 0 && !carrying)) {
-      limbs[1].rotation.x = 2.4 * flap; limbs[3].rotation.x = 2.4 * flap;
-      limbs[1].rotation.z = 1.1 * flap; limbs[3].rotation.z = -1.1 * flap;
+    if (flap > 0 && !carrying && !(punch > 0)) {
+      sampleFlap(flap, wingPose);
+      if (reducedMotion?.matches) wingPose.weight *= 0.35;
+      limbs[1].quaternion.slerp(wingPose.left, wingPose.weight);
+      elbows[0].quaternion.slerp(wingPose.elbow, wingPose.weight);
+      if (!tool) {
+        limbs[3].quaternion.slerp(wingPose.right, wingPose.weight);
+        elbows[1].quaternion.slerp(wingPose.elbow, wingPose.weight);
+      }
     }
     if (kick > 0 && !carrying && !pose) {
       sampleKickPose(1 - kick, kickPose);

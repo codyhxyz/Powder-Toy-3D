@@ -1364,7 +1364,8 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   if (lit) parts.push(farHazeGLSL, realistic(d, curved));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
-  return parts.join('\n');
+  // Keep the heavier artwork out of Realistic's active shader path/registers.
+  return parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
 };
 
 // ---- the pipeline (docs/webgpu.md F1, F2) ----

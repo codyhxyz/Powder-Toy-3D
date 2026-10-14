@@ -183,17 +183,17 @@ for (const [id, move, expected, perk] of [
     const plain = await drop(false);
     const flapped = await drop(true);
     console.log(`chicken flap: ${plain.t.toFixed(3)}s fall -> ${flapped.t.toFixed(3)}s mashed`);
-    assert.ok(flapped.t > plain.t + 0.14, `flapping should stretch the fall (${plain.t.toFixed(3)} -> ${flapped.t.toFixed(3)})`);
-    assert.ok(flapped.t < plain.t + 0.4, `a chicken does not fly (${plain.t.toFixed(3)} -> ${flapped.t.toFixed(3)})`);
-    assert.ok(flapped.top < 41, 'a flap cannot climb');
+    assert.ok(flapped.t > plain.t + 0.4, `double-strength flapping substantially extends airtime (${plain.t.toFixed(3)} -> ${flapped.t.toFixed(3)})`);
+    assert.ok(flapped.t < 3, 'bounded wingbeats still descend without the jet');
+    assert.ok(flapped.top < 41, 'wingbeats cannot bank unlimited upward speed');
 
     body.spawn(new THREE.Vector3(512, 8, 512));
     await run(0.12);
     const before = body.vel.y;
     await run(1 / 60, { jump: true });
     assert.ok(!body.jetting, 'a tap is not the jet');
-    assert.ok(body.flap > 0.8, 'the arms are up on the tap');
-    assert.ok(body.vel.y <= 4.01);
+    assert.ok(body.flap > 0.8, 'a new animation beat starts on the tap');
+    assert.ok(body.vel.y <= 8.01);
     assert.ok(body.vel.y > before, 'a flap shaves the fall');
     const after = body.vel.y;
     await run(1 / 60);
@@ -207,6 +207,27 @@ for (const [id, move, expected, perk] of [
     assert.ok(body.onGround);
     await run(3 / 60, { jump: true });
     assert.ok(body.jetting, 'a jump you keep holding still jets');
+  } finally { body.dispose(); }
+}
+
+for (const fps of [20, 60, 144]) {
+  const { body, run } = await fixture(fps);
+  try {
+    const tap = async (jump, vy) => {
+      body.spawn(new THREE.Vector3(512, 100, 512));
+      await run(0.1);
+      body.vel.y = vy;
+      await run(1 / fps, jump ? { jump: true } : {});
+      return body.vel.y;
+    };
+    const falling = await tap(false, -80), lifted = await tap(true, -80);
+    near(lifted - falling, 44, 1e-6);   // exactly 2 × the old 22 cells/s impulse
+    assert.ok(!body.jetting, 'the doubled impulse does not activate the jet');
+    await run(0.25);
+    assert.equal(body.flap, 0, 'a stroke recovers before the next allowed beat');
+    const gravityOnly = await tap(false, 0), capped = await tap(true, 0);
+    near(capped - gravityOnly, 8, 1e-6);
+    assert.ok(capped <= 8, 'doubled upward cap, accounting for this frame gravity');
   } finally { body.dispose(); }
 }
 
