@@ -1,9 +1,32 @@
-// CPU-only: every built-in map must have a real, square WebP menu preview.
+// CPU-only: every menu map, including source imports, needs a square preview.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { MAPS } from '../src/maps.js';
+import { installLocalCrueltyMaps } from '../src/world/import/localMap.js';
+import { CRUELTY_PROFILES } from '../src/world/import/crueltyProfiles.js';
 import { E } from '../src/elements.js';
 import { trace, renderDescent } from './descent-thumb.mjs';
+
+// Use the same registration as main.js; only replace its network transport.
+const fetch = globalThis.fetch;
+try {
+  globalThis.fetch = async input => {
+    const url = new URL(input, 'https://map-previews.test');
+    assert.equal(url.origin, 'https://map-previews.test');
+    assert.match(url.pathname, /^\/local-maps\/[a-zA-Z0-9_-]+\.json$/);
+    const bytes = readFileSync(new URL(`../public${url.pathname}`, import.meta.url));
+    const response = new Response(bytes, { headers: { 'Content-Type': 'application/json' } });
+    Object.defineProperty(response, 'url', { value: url.href });
+    return response;
+  };
+  const installed = await installLocalCrueltyMaps();
+  assert.deepEqual(installed.map(m => m.key).sort(),
+    CRUELTY_PROFILES.filter(p => !p.blocked).map(p => p.id).sort(),
+    'every published source map registers before checking its preview');
+  assert.ok(installed.every(m => MAPS.includes(m)), 'source maps enter the actual menu catalogue');
+} finally {
+  globalThis.fetch = fetch;
+}
 
 for (const map of MAPS) {
   const b = readFileSync(new URL(`../public/maps/${map.key}.webp`, import.meta.url));

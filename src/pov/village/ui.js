@@ -140,7 +140,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
   }
   function open(which = 'pockets') {
     const c = context();
-    if (!c.active || c.carry || !['pockets', 'storage'].includes(which) || (which === 'storage' && !c.dresser)) return;
+    if (!c.active || c.carry || !['pockets', 'storage', 'catalogue'].includes(which) || (which === 'storage' && !c.dresser)) return;
     if (which === 'storage' && !c.storageReady) { act({ type: 'openStorage' }); return; }
     if (c.busy) return;
     stopReveal();
@@ -229,7 +229,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
       if (catalogue) {
         menu.append(h('p', { text: `${ITEMS[item.kind].theme ?? 'Classic'} set · ${ITEMS[item.kind].w} × ${ITEMS[item.kind].d} floor space` }),
           item.kind === 'dresser' ? h('p', { text: 'Included with your home. Walk up to it to open storage.' }) :
-            button('Add to pockets', () => action({ type: 'order', kind: item.kind }), { disabled: !c.home || c.state.pockets.length >= POCKETS }));
+            button('Add to pockets', () => action({ type: 'order', kind: item.kind }), { disabled: !(c.home || c.catalogue) || c.state.pockets.length >= POCKETS }));
       } else if (tab !== 'storage') {
         menu.append(button('Take out to place', () => {
           const result = act({ type: 'grab', id: item.id });
