@@ -60,6 +60,11 @@ No hidden fuel counters are approved.
 Use a shutter inside a reserved four-cell footprint.
 Define one rotated aperture and its exact ownership marker.
 The marker must not alter the native behavior of its material.
+The approved aperture is local x=0..3, y=1..3, z=2 inside a 4×4×4 reservation.
+The approved marker is `WALL` with `a.z = 1048573`.
+Ownership also requires the exact registered shutter coordinates.
+Opening preserves the seed and removes only cells with both the correct material and marker.
+Native movement, reaction, rest, and save paths must preserve this marker.
 
 Export `createGatePhysics({getSim, onError, onState})`.
 Provide `ready`, `step(dt, devices)`, `remove(device)`, `pending`, `status(id)`, `reset()`, and `dispose()`.
@@ -92,6 +97,13 @@ The GPU backend never charges credits.
 Placement succeeds only in an empty cell.
 Toggling operates only on a real switch at the requested position.
 Temperature-sensor configuration must use the native threshold convention.
+TSNS thresholds use `PHYS.CELL_TEMP_MIN` through `PHYS.CELL_TEMP_MAX`, currently −273.15°C through 10000°C.
+The default threshold is 200°C.
+Other parts reject threshold fields.
+
+Approved part prices are TSNS 3 credits, SWITCH 2 credits, and BATTERY 5 credits.
+METAL, PSCN, NSCN, and INSULATOR each cost 1 credit.
+These are construction prices, not stored electrical energy.
 
 The controller persists consumed credit expenditure as `partsSpent`.
 Old saves default to zero.
