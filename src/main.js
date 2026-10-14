@@ -17,9 +17,10 @@ import './fonts.css';   // Archivo and Silkscreen, self-hosted
 import './ui/menu.css';
 import { createMenu } from './ui/menu.js';
 import { launch, mark } from './launch.js';
-import { preloadGame, gameFetched, warmMap } from './preload.js';
+import { preloadGame, gameFetched, refreshGameFiles, warmMap } from './preload.js';
 import { GAMEMODES, mapOf, mapByKey, mapsFor, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
 import { probeWebGPU } from './gpu/device.js';
+import { BOOT_RETRY, bootModuleRecovery } from './bootRecovery.js';
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
 const TEAM_GAMES = Object.keys(import.meta.glob('./game/index.js')).length > 0;
@@ -90,7 +91,14 @@ async function start(map, mode) {
   menu.loading('Loading something cool, please be patient');
   await bootInSteps();
 }
-launch.ready = () => menu.close();
+launch.ready = () => {
+  menu.close();
+  const url = new URL(location.href);
+  if (url.searchParams.has(BOOT_RETRY)) {
+    url.searchParams.delete(BOOT_RETRY);
+    history.replaceState(history.state, '', url.href);
+  }
+};
 // The loading screen's steps as the boot reaches them (ui/menu.js STEPS): the
 // download and the build's start here, then app.js's pipeline builds, world,
 // and a team mode's match being set up behind the screen (its status line).
@@ -142,7 +150,6 @@ async function loadSave(what, meta) {
   launch.map = !meta?.world && emptyDims.every((n, i) => n === meta?.dims?.[i]) ? 'empty' : meta?.map ?? null;
   launch.mode = 'sandbox';
   menu.loading('Loading your save', { name: meta?.name ?? 'Save' });
-  launch.ready = () => menu.close();
   await bootInSteps();
 }
 
@@ -178,6 +185,7 @@ async function boot() {
   if (!p.ok) return;           // (the probe's handler explained)
   launch.adapter = p.adapter;  // app.js: createGpu on it, unless preload.js made the device already (launch.gpu)
   try {
+    if (new URL(location.href).searchParams.has(BOOT_RETRY)) await refreshGameFiles();
     app = await import('./app.js');
   } catch (err) {
     // app.js's createGpu was refused a device: as good as no adapter (B2)
@@ -187,6 +195,25 @@ async function boot() {
     }
     menu.close();
     if (err.name === 'GraphicsFailure') throw err; // app.js already explained the stopped state
+    const recovery = bootModuleRecovery(err, { ...launch, href: location.href, running: !!window.__app });
+    if (recovery) {
+      console.error('Game module download failed', err);
+      if (recovery.automatic) {
+        location.replace(recovery.href);
+        return;
+      }
+      showError('The game files could not be downloaded. The site may have updated, or the connection was interrupted.\n'
+        + (launch.save != null ? 'Reload the page, then select your save again.' : 'Check your connection, then reload the page.'));
+      const el = document.getElementById('error');
+      el.style.flexDirection = 'column';
+      el.style.gap = '20px';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Reload page';
+      button.onclick = () => location.replace(recovery.href);
+      el.append(button);
+      return;
+    }
     // three.js says this only when the browser won't give it a WebGPU context at all
     const off = /WebGPU is not available|Unable to create WebGPU context/i.test(String(err.message));
     showError((off ? WEBGPU_OFF + '\n\n' : '') + String(err.stack || err));
