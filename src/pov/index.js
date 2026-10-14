@@ -160,7 +160,7 @@ export function createPov(app) {
   viewmodel.visible = false;
   // Halo's grenades (G), red reticle and hitmarker in a Halo match (combat.js; the melee is kick.js)
   const combat = createCombat({
-    scene, viewmodel, hud: povHud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+    scene, viewmodel, hud: povHud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
     ballistics: () => toolbelt?.ballistics ?? null, world: () => npcAi?.world ?? null,
     active: () => mode === 'on', isTyping: app.isTyping,
   });
@@ -438,7 +438,7 @@ export function createPov(app) {
       try {
         toolbelt = createToolbelt({
           renderer, scene,
-          getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+          getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
           getAimCamera: () => povCam.pose.eyeDist <= FIGURE_HIDE_DIST ? camera : null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)

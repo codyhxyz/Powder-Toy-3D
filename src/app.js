@@ -1433,7 +1433,7 @@ const settingsPanel = createSettings({
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
       { type: 'seg', key: 'villageCharacter', options: [['boy', 'Animal Crossing: Boy'], ['girl', 'Girl']],
         onChange: (v) => { settings.villageCharacter = v; save(); pacer.wake(); } },
-      { type: 'custom', el: h('p.row-note', { text: 'Changes your body in third person. First-person hands stay the same.' }) },
+      { type: 'custom', el: h('p.row-note', { text: 'Changes your body and first-person arms.' }) },
     ] },
     { title: 'First-person controls', rows: [
       // named as Minecraft names them
