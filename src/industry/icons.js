@@ -9,6 +9,8 @@ const paths = {
   lift: '<path d="M5 27V5m22 22V5 M4 27h24 M9 22h14 M16 18V6m-5 5 5-5 5 5"/>',
   pump: '<path d="M4 25h8V8h15m-4-4 4 4-4 4 M4 21v8"/><circle cx="12" cy="17" r="4"/><path d="M12 15v4"/>',
   heater: '<path d="M5 27V12h5m12 0h5v15 M5 27h22 M12 23c-5-6 3-8 2-16 8 5 11 10 5 16 M12 27v-4h7v4"/>',
+  hearth: '<path d="M4 26h24 M6 25V9h20v16 M8 21h16 M9 17h14 M10 11c-2-4 2-5 2-8 4 3 6 7 2 9m2 5 3-2 3 2 M4 6h24"/>',
+  gate: '<path d="M4 27V5h5v22 M23 27V5h5v22 M4 6h24 M8 11h16v11H8z M12 11v11m8-11v11 M4 27h24"/>',
 };
 export function machineIcon(type) {
   const icon = document.createElement('span');

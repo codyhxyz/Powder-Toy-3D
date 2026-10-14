@@ -3,6 +3,7 @@ import { DEVICE_TYPES, FILTER_IDS, CASTING_TEMPERATURE } from './catalog.js';
 import { machineIcon } from './icons.js';
 import { ELEMENTS } from '../elements.js';
 import { deviceHeight } from './validation.js';
+import { createOperationsView } from './operationsView.js';
 import './industry.css';
 
 const box = (parent, size, at, color) => {
@@ -15,6 +16,29 @@ function model(type) {
     // Minecraft-style structural block: static edging inside the physical deck.
     for (const x of [-1.94, 1.94]) box(root,[.08,.96,4],[x,.5,0],color);
     for (const z of [-1.94, 1.94]) box(root,[4,.96,.08],[0,.5,z],color);
+    return root;
+  }
+  if (type === 'hearth') {
+    // Sandustry keeps the finite fire physically behind the charge and its outlet.
+    box(root,[3.7,.28,3.7],[0,.24,0],'#424958');
+    for (const x of [-1.82,1.82]) box(root,[.24,1.55,3.7],[x,1,0],color);
+    for (const z of [-1.82,1.82]) box(root,[3.7,.42,.24],[0,.4,z],color);
+    box(root,[3.05,.14,.8],[0,.48,-1.32],'#ea8765'); // local fuel band: z=0, y=1..3
+    for (const z of [-.38,.38]) box(root,[2.7,.16,.62],[0,.55,z],'#747b89'); // charge: z=1..2
+    box(root,[2.5,.18,.62],[0,.75,1.56],'#dcbc74'); // catch the outlet at local z=3
+    box(root,[1.3,.18,.58],[0,.48,2.15],'#dcbc74');
+    addPortMarker(root);
+    return root;
+  }
+  if (type === 'gate') {
+    // TPT matter remains the obstruction: this shutter is drawn only when closure is confirmed.
+    for (const x of [-1.78,1.78]) box(root,[.34,3.1,.42],[x,1.8,0],color);
+    box(root,[3.9,.42,.55],[0,3.55,0],color);
+    box(root,[3.9,.24,.65],[0,.26,0],'#424958');
+    const shutter = box(root,[3.05,2.25,.16],[0,1.55,0],color);
+    shutter.name = 'gate-shutter'; shutter.visible = false;
+    for (const y of [-.75,0,.75]) box(shutter,[3.15,.1,.22],[0,y,.02],'#424958');
+    addPortMarker(root);
     return root;
   }
   // Sandustry's open handling decks: hardware hugs the sides, not the stream.
@@ -46,7 +70,13 @@ function model(type) {
     box(root,[.3,1.6,.3],[-1.6,1.8,0],color); box(root,[1.1,.4,.5],[-1.1,2.6,0],color);
     box(root,[1.3,.15,.25],[1,1.3,0],color);
   }
+  addPortMarker(root);
   return root;
+}
+function addPortMarker(root) {
+  const marker = box(root,[.5,.5,.5],[-2.5,.5,-.5],'#7cbdd1');
+  marker.name = 'industry-port-marker';
+  marker.visible = false;
 }
 
 // Detailed physical guidance stays in titles, not repeated palette labels.
@@ -59,6 +89,8 @@ const MACHINE_HELP = {
   lift: 'Build a catch above the lift. It launches grains, not liquids or solid blocks.',
   pump: 'Moves water or molten metal. Feed the low inlet and catch the high outlet.',
   heater: 'Cool the melt in a separate catch. Keep finished metal away from the hot bed.',
+  hearth: 'Fuel goes at local z=0, y=1–3. Put charge in local z=1–2 and catch output at local z=3.',
+  gate: 'Choose Open, Closed, or Signal when inspecting the gate. Signal opens while energized; blocked closure waits, and damage is reported.',
 };
 const UNLOCK_AT = { miner: 12, lift: 12, pump: 48, heater: 96 };
 // Never rebuild the palette on simulation frames: keep focus and native controls.
@@ -68,6 +100,7 @@ const attribute = (node, key, value) => { value = String(value); if (node.getAtt
 export function createIndustryView(app, actions) {
   const root = new THREE.Group(); root.name = 'Industry'; app.scene.add(root);
   const templates = Object.fromEntries(Object.keys(DEVICE_TYPES).map(type => [type, model(type)]));
+  const placeableTypes = Object.keys(DEVICE_TYPES).filter(type => !DEVICE_TYPES[type].factoryLegacy);
   const ghost = new THREE.Group();
   const frame = new THREE.Mesh(new THREE.BoxGeometry(4,4,4), new THREE.MeshBasicMaterial({color:'#dcbc74',wireframe:true}));
   frame.position.set(0,2,0); ghost.add(frame);
@@ -79,8 +112,10 @@ export function createIndustryView(app, actions) {
   reject.rotation.z = -Math.PI / 2; reject.position.set(1.6,1.4,0); ghost.add(reject);
   const port = box(ghost,[.5,.5,.5],[-2.5,.5,-.5],'#7cbdd1');
   ghost.visible = false; root.add(ghost);
+  const partGhost = new THREE.Mesh(new THREE.BoxGeometry(1.04,1.04,1.04), new THREE.MeshBasicMaterial({ color:'#7cbdd1', wireframe:true }));
+  partGhost.name = 'industry-part-ghost'; partGhost.visible = false; root.add(partGhost);
   let ready = false, disposed = false;
-  Promise.all([...Object.values(templates),ghost].map(m => app.gpu.three.prepare(m))).then(() => { ready = true; app.requestRender(); }, err => app.hud.toast(`Industry graphics: ${err.message}`));
+  Promise.all([...Object.values(templates),ghost,partGhost].map(m => app.gpu.three.prepare(m))).then(() => { ready = true; app.requestRender(); }, err => app.hud.toast(`Industry graphics: ${err.message}`));
   const meshes = new Map();
   const node = (tag, className, parent, content) => {
     const el = document.createElement(tag); el.className = className;
@@ -99,6 +134,7 @@ export function createIndustryView(app, actions) {
   toggle.setAttribute('data-action', 'toggle'); toggle.setAttribute('aria-controls', 'industry-builder');
   const goal = node('div', 'industry-goal', hud);
   const objective = node('p', 'industry-objective', goal);
+  const stageHint = node('p', 'industry-stage-hint', hud);
   const tally = node('span', 'industry-tally', goal);
   const progress = node('progress', 'industry-progress', hud);
 
@@ -106,7 +142,8 @@ export function createIndustryView(app, actions) {
   const scroll = node('div', 'industry-scroll', controls);
   const types = node('div', 'industry-types', scroll);
   types.setAttribute('role', 'group'); types.setAttribute('aria-label', 'Choose a machine');
-  const typeButtons = Object.fromEntries(Object.entries(DEVICE_TYPES).map(([key, d]) => {
+  const typeButtons = Object.fromEntries(placeableTypes.map(key => {
+    const d = DEVICE_TYPES[key];
     const b = button('', () => {
       if (actions.canBuild(key).ok) actions.select(key);
     }, types, 'industry-machine');
@@ -123,6 +160,7 @@ export function createIndustryView(app, actions) {
   const filter = node('select', '', filterLabel); filter.setAttribute('aria-label', 'Separator output material');
   for (const id of FILTER_IDS) { const o = node('option', '', filter, ELEMENTS[id].name); o.value = id; }
   filter.onchange = () => actions.filter(Number(filter.value));
+  const operations = createOperationsView(scroll, actions);
 
   const footer = node('div', 'industry-footer', controls);
   // Deliberately not a live region: cursor clearance checks change constantly.
@@ -137,7 +175,7 @@ export function createIndustryView(app, actions) {
   panel.addEventListener('keydown', e => {
     // Keep native activation/selection keys out of the global game shortcuts.
     // Do not preventDefault: Space still clicks a button and selects remain native.
-    if (e.target.tagName === 'SELECT'
+    if (['SELECT', 'INPUT'].includes(e.target.tagName)
       || ['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.code)) e.stopPropagation();
   });
   document.body.append(panel);
@@ -165,6 +203,8 @@ export function createIndustryView(app, actions) {
       balance.title = state.assisted && p ? 'Sandbox-assisted run' : '';
       goal.hidden = progress.hidden = !p;
       text(objective, p?.goal.split(':')[0].split(' — ')[0] ?? '');
+      text(stageHint, p?.hint ?? '');
+      stageHint.hidden = !p?.hint;
       objective.title = p?.hint ?? '';
       if (p) {
         const max = [12, 48, 96, 32, 32][p.stage];
@@ -177,7 +217,7 @@ export function createIndustryView(app, actions) {
       }
       for (const [key, { b, cost, availability }] of Object.entries(typeButtons)) {
         const d = DEVICE_TYPES[key], can = actions.canBuild(key);
-        const locked = p && !p.unlocked.includes(key);
+        const locked = p && Object.hasOwn(UNLOCK_AT, key) && !p.unlocked.includes(key);
         const shortfall = p ? Math.max(0, d.cost - p.credits) : 0;
         const reason = locked ? `Unlock: ${UNLOCK_AT[key]} lifetime credits` : !can.ok ? shortfall ? `Need ${shortfall} more credits` : can.reason : '';
         text(cost, `${d.cost} cr`);
@@ -191,29 +231,41 @@ export function createIndustryView(app, actions) {
         b.title = `${d.description} ${MACHINE_HELP[key]}${reason ? ` ${reason}.` : ''}`;
       }
       selected.hidden = dismantling;
-      text(tip, DEVICE_TYPES[state.selected].description);
-      tip.title = MACHINE_HELP[state.selected];
+      const selectedType = state.selected ?? 'foundation';
+      text(tip, `${DEVICE_TYPES[selectedType].description} ${MACHINE_HELP[selectedType] ?? ''}`.trim());
+      tip.title = MACHINE_HELP[selectedType] ?? '';
+      operations.update(state);
       filterLabel.hidden = state.selected !== 'separator';
       if (String(filter.value) !== String(state.filter)) filter.value = state.filter;
       text(rotate, `Rotate · ${state.rotation * 90}°`);
       rotate.disabled = dismantling;
       attribute(remove, 'aria-pressed', dismantling);
-      const checking = !dismantling && !!candidate && result?.reason === 'Checking clearance…';
-      const valid = !!candidate && !!result?.ok && !state.pending;
-      const placementState = state.pending || checking ? 'checking' : !candidate ? 'aim' : valid ? 'valid' : 'invalid';
+      const partPlacement = !!state.part && !state.inspectMode;
+      const activeCandidate = partPlacement ? state.partCandidate : candidate;
+      const checking = !dismantling && !!activeCandidate && result?.reason === 'Checking clearance…';
+      const valid = !!activeCandidate && !!result?.ok && !state.pending;
+      const placementState = state.pending || checking ? 'checking' : !activeCandidate ? 'aim' : valid ? 'valid' : 'invalid';
       attribute(status, 'data-state', placementState);
-      text(status, state.pending ? 'Finishing transfer…' : checking ? 'Checking clearance…'
+      text(status, state.inspectMode ? 'Select a machine or cell to inspect' : state.pending ? state.part ? 'Placing control part…' : 'Finishing transfer…' : checking ? 'Checking clearance…'
         : result && !result.ok && result.reason ? result.reason
-        : dismantling ? 'Click a piece to remove · full refund' : 'Click to place');
+        : dismantling ? 'Click a piece to remove · full refund' : partPlacement ? 'Click an open cell to place one part' : 'Click to place');
       for (const [id,m] of meshes) if (!state.devices.some(d => d.id === id)) { m.removeFromParent(); meshes.delete(id); }
       for (const d of state.devices) {
         let m = meshes.get(d.id);
-        if (!m) { m = templates[d.type].clone(); root.add(m); meshes.set(d.id,m); }
+        if (!m) { m = templates[d.type].clone(); m.name = `industry-machine-${d.id}`; root.add(m); meshes.set(d.id,m); }
         m.position.set(d.x+2,d.y,d.z+2); m.rotation.y = -d.rotation * Math.PI / 2;
         const drill = m.getObjectByName('drill'); if (drill) drill.rotation.y = time * 4;
+        const marker = m.getObjectByName('industry-port-marker');
+        if (marker) marker.visible = !!d.powered || d.type === 'gate' && d.gateMode === 'signal';
+        const shutter = m.getObjectByName('gate-shutter');
+        if (shutter) shutter.visible = d.gateClosed === true;
       }
       root.scale.setScalar(app.scale); root.position.copy(app.volume.position);
-      ghost.visible = state.factory && state.building && !!candidate;
+      ghost.visible = state.factory && state.building && !state.inspectMode && !state.part && !!candidate;
+      partGhost.visible = state.factory && state.building && !state.inspectMode && !!state.part
+        && state.partCandidate?.type === state.part
+        && [state.partCandidate.x,state.partCandidate.y,state.partCandidate.z].every(Number.isInteger);
+      if (partGhost.visible) partGhost.position.set(state.partCandidate.x+.5,state.partCandidate.y+.5,state.partCandidate.z+.5);
       if (candidate) {
         const height = deviceHeight(candidate); frame.scale.y = height / 4; frame.position.y = height / 2;
         ghost.position.set(candidate.x+2,candidate.y,candidate.z+2); ghost.rotation.y = -candidate.rotation * Math.PI/2;
@@ -224,12 +276,12 @@ export function createIndustryView(app, actions) {
         reject.visible = !dismantling && candidate.type === 'separator';
         const color = dismantling ? '#e5536a' : placementState === 'checking' ? '#dcbc74' : valid ? '#b7d077' : '#e5536a';
         frame.material.color.set(color); flow.material.color.set(color);
-        port.visible = !dismantling && candidate.powered && !structural;
+        port.visible = !dismantling && (candidate.powered || candidate.type === 'gate' && candidate.gateMode === 'signal') && !structural;
       }
     },
     dispose() {
       disposed = true; root.removeFromParent(); panel.remove();
-      for (const m of [...Object.values(templates),ghost]) m.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
+      for (const m of [...Object.values(templates),ghost,partGhost]) m.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
     },
   };
 }
