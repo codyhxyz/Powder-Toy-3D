@@ -24,6 +24,7 @@ const pov = {
     const p = app.pov = createPov({
       renderer: app.renderer, scene: app.scene, camera: app.camera, controls: app.controls, canvas: app.canvas, hud: app.hud,
       settings: app.settings, mp: app.mp, isTyping: app.isTyping, post: app.post,
+      coopMove: (after) => app.coopMove?.(after),
       getSim: () => app.sim, getVolume: () => app.volume, getScale: () => app.scale,
       hover: app.hover, pointerHover: () => app.pointerInside && !app.uiHover, pickRay: app.pickRay,
       presentationPoint: app.presentationPoint,   // a grid point where a presentation effect shows it (the aim's displayed eye)
@@ -44,7 +45,7 @@ const pov = {
       showToolsMenu: () => app.dock.reveal((it) => it.id === (app.menuPick ?? app.settings.tool)) || app.dock.reveal((it) => isGearTool(it.id)),
       hideToolsMenu: () => app.dock.setCollapsed(true),
     });
-    p.vehicles.spawnLayout(app.arenaLayout);   // the scene loaded before the POV shell existed
+    if (!app.mp.replica) p.vehicles.spawnLayout(app.arenaLayout);   // the scene loaded before the POV shell existed
     p.game.useLayout(app.arenaLayout);
     if (app.bootMatch) p.game.prepare();   // a match was picked: the bots' module loads during the first frames
   },

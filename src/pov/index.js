@@ -36,6 +36,7 @@ import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
 import { createDescent } from './descent/index.js';
 import { preparePov, volumeLight } from './gpu.js';
+import { leash } from '../net/protocol.js';
 import { createVillage } from './village/index.js';
 import { gridSpace } from './space.js';
 
@@ -218,7 +219,9 @@ export function createPov(app) {
     kick: () => { if (mode === 'on') { if (village.enabled) void village.kick(); else kickQueued = true; } },
     useVehicle,
   });
-  const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
+  const coop = () => app.mp.replica || (app.inWorld?.() && app.mp.role === 'host');
+  const coopHint = () => hud.toast('Co-op exploration: walk, jump and jet. Use god view to edit; weapons, vehicles, perks and progression require solo play.');
+  const canUse = () => !coop() && !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
   const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
     onEnabled: on => { syncVillageTools(on); toolbelt?.setVisible(mode === 'on'); if (on) setMenu(false); },
     onTool: key => { toolbelt?.restrict(key ? [key] : [], key); },
@@ -314,6 +317,7 @@ export function createPov(app) {
       e.preventDefault();
       if (!e.repeat) swapView();
     }
+    if (coop() && [VEHICLE_KEY, KICK_KEY, 'KeyG', 'KeyQ'].includes(e.code)) { if (!e.repeat) coopHint(); return; }
     if (e.code === VEHICLE_KEY && !e.repeat && !(mode === 'on' && interact.use())) useVehicle();   // E: the thing looked at first
     if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
@@ -332,6 +336,7 @@ export function createPov(app) {
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });   // (a phone's app switch)
   // E (or the touch Vehicle button): get in, out, or right one
   function useVehicle() {
+    if (coop()) { coopHint(); return; }
     if (village.enabled) { village.act({ type: 'interact' }); return; }
     if (live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
   }
@@ -355,6 +360,7 @@ export function createPov(app) {
   canvas.addEventListener('mousedown', (e) => {
     if (editing || !active()) return;
     if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
+    if (coop()) { coopHint(); return; }
     if (village.enabled && !village.canAct) return;
     if ((e.button === 0 || e.button === 2) && toolbelt?.confirmSelection?.()) return;   // picks from the slot selector, as in HL2
     if (e.button === 0) { buttons.primary = true; buttons.primaryPressed = true; }
@@ -419,7 +425,7 @@ export function createPov(app) {
   }
   function ensureParts() {
     if (!player) {
-      player = createPlayer({ renderer, getSim: app.getSim });
+      player = createPlayer({ renderer, getSim: app.getSim, readOnly: () => app.mp.replica });
       player.on('revive', () => { hud.toast(`${perkName('EXTRA_LIFE')}: back on your feet`); povEvents.emit('perk:revive', { point: player.pos.clone() }); });
       player.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
       povEvents.on('blast', ({ by }) => { if (!by) player.ownBlast(); });   // the player's own rocket or bomb
@@ -434,7 +440,7 @@ export function createPov(app) {
       } catch (err) { console.error('POV effects failed to start', err); }
     }
     if (!camera.parent) scene.add(camera);   // its children (the viewmodel) render with the scene
-    if (!toolbelt && createToolbelt) {
+    if (!toolbelt && createToolbelt && !app.mp.replica) {
       try {
         toolbelt = createToolbelt({
           renderer, scene,
@@ -445,7 +451,7 @@ export function createPov(app) {
           getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
           getMode: () => app.gamemode?.() ?? 'sandbox',   // the gamemode playing: Noita's wands only in it
           toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
-          isActive: () => live() && !editing,
+          isActive: () => live() && !editing && !coop(),
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
           requestRender: app.requestRender,
           getPost: () => app.post,   // its settings: the wand's halo tone maps itself by them (tools/index.js)
@@ -503,7 +509,15 @@ export function createPov(app) {
   async function dropIn(opts = {}) {
     const { swoop = SWOOP_S, hint = true } = opts;
     if (mode === 'on' || mode === 'entering' || starting) return;
-    if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet", { kind: 'error' }); return; }
+    if (app.mp.replica && (!app.mp.isGuest || !app.mp.terrainReady || app.mp.metadata?.mode !== 'world' || app.mp.stale)) {
+      hud.toast('Wait for a live World snapshot from the host before dropping in.'); return;
+    }
+    const entryMap = app.mp.metadata?.id;
+    if (app.mp.isGuest) {
+      const m = app.mp.metadata, g = app.getSim().g;
+      opts = { ...opts, at: new THREE.Vector3(...leash(m, [g.nx, g.ny, g.nz], m.focus).target).sub(app.getSim().origin) };
+      coopHint();
+    }
     if (mode === 'exiting') {   // changed our mind halfway out: fly back in
       mode = 'entering';
       povCam.startSwoop('in', camPose());
@@ -511,15 +525,16 @@ export function createPov(app) {
       return;
     }
     if (!createPlayer) { hud.toast('First-person mode is still being built', { kind: 'error' }); return; }
-    if (app.getMode() === 'animalCrossing' && app.getWorld()?.scene.key === 'willowCove') village.setEnabled(true, app.getWorld().P);
+    if (!coop() && app.getMode() === 'animalCrossing' && app.getWorld()?.scene.key === 'willowCove') village.setEnabled(true, app.getWorld().P);
     requestLock();   // while the key press still counts as a user gesture
     starting = true;
+    if (coop()) coopHint();
     const fromSim = app.getSim();
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
     try {
       await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure(), ensureKernels()]);
       // a new grid meanwhile (another map), or the caller's own reason to give up (opts.valid)
-      if (fromSim !== app.getSim() || opts.valid?.() === false) {
+      if (fromSim !== app.getSim() || opts.valid?.() === false || (entryMap && (app.mp.metadata?.id !== entryMap || !app.mp.isGuest))) {
         starting = false;
         if (document.pointerLockElement === canvas) document.exitPointerLock();
         return;
@@ -556,7 +571,10 @@ export function createPov(app) {
     feel.reset();
     if (opts.at && !player.dead) player.teleport(dropPoint.clone());
     else player.spawn(dropPoint.clone());
-    classes?.spawned(player);
+    if (app.mp.isGuest) {
+      player.perks.clear(); player.speedScale = player.aimScale = 1; player.spawn(dropPoint.clone());
+      networkPending = true; networkWarp++;
+    } else classes?.spawned(player);
     enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
     povCam.startSwoop('in', camPose(), { duration: swoop });
@@ -650,7 +668,7 @@ export function createPov(app) {
     input.cancelJump = true;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
-    if (editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
+    if ((app.mp.replica && (app.mp.stale || networkPending)) || editing || village.blocked || mode !== 'on' || player.dead || app.isTyping()) return;
     if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
       const t = touch.state;   // (the touch stick drives too: forward throttles, sideways steers)
       d.throttle = THREE.MathUtils.clamp((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z, -1, 1);
@@ -677,6 +695,7 @@ export function createPov(app) {
 
   // The same entities belong to the scene, not to its current camera mode.
   function updateEntities(dt, { vehiclesUpdated = false } = {}) {
+    if (coop()) return null;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     if (!sim || !vol) return null;
     const g = sim.g;
@@ -733,6 +752,11 @@ export function createPov(app) {
     return npcFrame;
   }
 
+  let networkPending = false, networkWarp = 0;
+  function networkCatchup(feet) {
+    player?.teleport(feet); dropPoint.copy(feet); networkPending = true; networkWarp++;
+    povCam.reset(); feel.reset();
+  }
   function update(dt) {
     touch.update({
       live: live() && !village.blocked, tool: village.enabled ? null : toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
@@ -751,12 +775,29 @@ export function createPov(app) {
 
     // the body
     readInput();
-    vehicles.beforeBody(player);
-    village.beforeBody();
-    player.update(dt, input);
-    village.afterBody();
-    vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid });
-    vehicles.afterBody(player);
+    app.coopMove?.(false);
+    if (!coop()) { vehicles.beforeBody(player); village.beforeBody(); }
+    const waiting = app.mp.replica && (app.mp.stale || networkPending);
+    player.update(waiting ? 0 : dt, input);
+    if (app.mp.isGuest && networkPending && !app.mp.stale) {
+      const clear = player.clearance();
+      if (clear === true) networkPending = false;
+      else if (clear === false) {
+        // Probe each candidate before allowing movement. Search above a buried
+        // anchor; never respawn at an old outside-window dropPoint.
+        const next = player.pos.clone(); next.y += 2;
+        if (next.y > g.ny - 7) {
+          next.y = 1; next.x += 3;
+          const m = app.mp.metadata, b = leash(m, [g.nx, g.ny, g.nz], next.clone().add(sim.origin).toArray());
+          if (next.x + sim.origin.x > b.hi[0]) next.x = b.lo[0] - sim.origin.x;
+        }
+        player.teleport(next);
+      }
+    }
+    app.coopMove?.(true);
+    if (!coop()) {
+      village.afterBody(); vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid }); vehicles.afterBody(player);
+    }
     const driving = !!vehicles.seated;
     if (driving !== wasDriving) {   // in a vehicle the hands are on the wheel; out of it (E, or it blew up) they're back
       wasDriving = driving;
@@ -785,12 +826,12 @@ export function createPov(app) {
     speedH = Math.hypot(player.vel.x, player.vel.z);
 
     const npcFrame = updateEntities(dt, { vehiclesUpdated: true });
-    game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
+    if (!coop()) game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
 
     deaths.update();   // the killfeed: who died this frame, and to what
     medals.update();   // the sandbox's medal stack (its fades)
 
-    takePerks();
+    if (!coop()) takePerks();
 
     // the camera, with the kick and shake on top of the look
     vA.copy(player.pos).setY(player.pos.y + player.eyeHeight);
@@ -824,7 +865,7 @@ export function createPov(app) {
     camera.updateMatrixWorld();
     if (pose.done === 'in') {
       mode = 'on';
-      toolbelt?.setVisible(true);
+      toolbelt?.setVisible(!coop());
     } else if (pose.done === 'out') {
       finishExit();
       return;
@@ -850,7 +891,7 @@ export function createPov(app) {
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
     if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
     for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
-    viewmodel.visible = (!village.enabled || (village.canAct && !!village.tool)) && mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
+    viewmodel.visible = !coop() && (!village.enabled || (village.canAct && !!village.tool)) && mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
@@ -866,13 +907,13 @@ export function createPov(app) {
         THREE.MathUtils.clamp(ctx.eye.z, hv.cell.z, hv.cell.z + 1));
       aim.dist = closest.distanceTo(ctx.eye);
     } else aim.dist = Infinity;
-    interact.update(ctx.eye, ctx.dir, aim.dist, live() && mode === 'on' && !deadSeen && !driving && !editing && !village.enabled);
+    interact.update(ctx.eye, ctx.dir, aim.dist, !coop() && live() && mode === 'on' && !deadSeen && !driving && !editing && !village.enabled);
     if (village.enabled) {
       if (wheelNotches) { village.cycleTool(wheelNotches); wheelNotches = 0; }
       if (!village.tool && buttons.primaryPressed && !editing && (isLocked() || touch.enabled)) void village.punch();
       village.usingTool = village.canAct && !!village.tool && (buttons.primary || buttons.primaryPressed || buttons.secondary || buttons.secondaryPressed);
     }
-    if (live() && toolbelt && !driving) {
+    if (live() && toolbelt && !driving && !coop()) {
       ctx.sim = sim;
       ctx.peaceful = village.enabled;   // mining tools must not turn village play into body combat
       ctx.dt = dt;
@@ -908,7 +949,7 @@ export function createPov(app) {
       }
     }
     kickLeg?.update(dt);
-    combat.update({
+    if (!coop()) combat.update({
       dt, player, eye: ctx.eye, dir: ctx.dir, tool: toolbelt?.selectedKey ?? null,
       live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps,
     });
@@ -940,6 +981,7 @@ export function createPov(app) {
   // The Descent map (descent/index.js): every frame, in the body or not (its
   // nuggets and shop items follow the window in the god view too)
   function descentFrame(dt) {
+    if (coop()) return;
     const sp = npcs.size ? app.getSpawners?.() : null;
     descent.update({
       dt, time: performance.now() / 1000, player, live: mode === 'on' && live(),
@@ -1039,6 +1081,10 @@ export function createPov(app) {
 
   return {
     get active() { return active(); },
+    get networkLook() { return povCam.look; },
+    get networkPending() { return networkPending; },
+    get networkWarp() { return networkWarp; },
+    networkCatchup,
     audio,
     get mode() { return mode; },
     get locked() { return isLocked(); },
@@ -1097,6 +1143,7 @@ export function createPov(app) {
       dropPoint.x -= dx;
       dropPoint.z -= dz;
       player?.windowShifted(dx, dz);
+      if (app.mp.replica && (dx || dz)) player?.invalidateProbe();
       toolbelt?.windowShifted(dx, dz);
       combat.windowShifted(dx, dz);
     },
