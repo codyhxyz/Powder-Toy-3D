@@ -1,5 +1,7 @@
 import { E, ELEMENTS } from '../../elements.js';
-import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, CONTACT_KERNEL, DUST_MIN_FALL_AGE, CONTACT_G_TICK } from '../../v2/contact.js';
+import { PHYS } from '../../physics.js';
+import { contactKernelWGSL } from './contact-kernel.js';
+import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, CONTACT_G_TICK, CONTACT_ELEMENT_COUNT } from '../../v2/contact.js';
 
 const integerRowFields = new Set(['kind','capacity','offset','spawnQ','spawnLife','hotQ','hotOut','hotL','hotGas','hotOf','coldQ','coldOut','coldL','coldOf','meltQ','meltInto','igniteQ','flashQ','burn','heat','flameQ','ash','blast','blastAir','acid','edible','fizz','bed','rots','singFood','conductor','wire']);
 const rowFields = Object.keys(CONTACT_ROWS[0]);
@@ -46,13 +48,43 @@ export function emitContactKernel(fn, types, result) {
   // explicit grouping; all bitwise kernel writes already use assignment RHS.
   return `fn ${match[1]}(${args.map((a, i) => `${a === 'of' ? 'sourceType' : a === 'from' ? 'fromId' : a}:${types[i]}`).join(',')})->${result} {${body}\n}`;
 }
-const generated = CONTACT_KERNEL.map(([fn, args, result]) => emitContactKernel(fn, args, result)).join('\n');
+const generated = contactKernelWGSL;
+
+// Standalone dynamics-facing declarations; importing these does not pull the
+// contact rule kernel, storage bindings or activity/ledger functions into air.
+export const specialContactWGSL = /* wgsl */ `
+fn contactNuclearMaterial(core:vec4u)->u32 {
+ let id=core.x&255u;let ctype=core.y>>24u;
+ if(id==${E.LAVA}u && ctype>0u && ctype<${ELEMENTS.length}u){return ctype;}return id;
+}
+fn contactVacuum(core:vec4u)->f32 {
+ if((core.x&255u)==${E.SINGULARITY}u){return max(${float(PHYS.P_MIN)},-${float(PHYS.SING_P_PER_MASS)}*f32(core.y&65535u)/256.0);}
+ return 0.0;
+}
+// (energy J, product ID, product C, product ctype); caller recognizes DUST/SING
+// by ID, not energy>0: zero-mass SING must consume its terminal request too.
+fn contactSpecialExplosion(core:vec4u,gunpowderEnergyJ:f32)->vec4f {
+ let id=core.x&255u;
+ if(id!=${E.DUST}u && id!=${E.SINGULARITY}u){return vec4f(0.0);}
+ let temperature=f32(phaseTq(id,(core.x>>8u)&65535u))*0.25-273.25;
+ let mass=f32(core.y&65535u)/256.0;
+ var pressure=${float(PHYS.DUST_P)};
+ var productT=max(temperature,${float(PHYS.DUST_FLAME_T)});
+ if(id==${E.SINGULARITY}u){
+  if(mass==0.0){return vec4f(0.0,${float(E.EMPTY)},temperature,0.0);}
+  pressure=${float(PHYS.SING_BURST_P_PER_MASS)}*mass;productT=${float(PHYS.SING_BURST_T)};
+ }
+ let ratio=min(${float(PHYS.P_MAX)},pressure)/${float(ELEMENTS[E.GUNPOWDER].blast.P)};
+ return vec4f(gunpowderEnergyJ*ratio*ratio,${float(E.FIRE)},productT,0.0);
+}
+`;
 
 export const contactWGSL = /* wgsl */ `
 ${Object.entries(E).map(([k, id]) => `const CT_${k}:i32=${id};`).join('\n')}
 const DUST_MIN_FALL_AGE:i32=${DUST_MIN_FALL_AGE};
 const CONTACT_G_TICK:f32=${CONTACT_G_TICK};
-struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,burning:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,source:vec2u,sink:vec2u }
+const CONTACT_ELEMENT_COUNT:i32=${CONTACT_ELEMENT_COUNT};
+struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
 struct CTPair { a:CTCell,b:CTCell,changed:i32 }
 struct CTRow { ${rowFields.map(k => `${k}:${integerRowFields.has(k) ? 'i32' : 'f32'}`).join(',')} }
 struct CTRx { ${rxFields.map(k => `${k}:${k === 'chance' ? 'f32' : 'i32'}`).join(',')} }
@@ -88,7 +120,7 @@ fn ctDiv(a:i32,b:i32)->i32{return a/b;}
 fn ctNew(id:i32,tq:i32,fill:i32)->CTCell {
  var life=ctRow(id).spawnLife;
  if(ctRow(id).kind==3){life=i32(phaseDiv(energyMul(u32(life),u32(fill)),vec2u(65536u,0u)).x);}
- return CTCell(id,tq,tq,fill,life,select(0,CT_STONE,id==CT_LAVA),0,0,0,0,0,0,0,0,vec2u(0u),vec2u(0u));
+ return CTCell(id,tq,tq,fill,life,select(0,CT_STONE,id==CT_LAVA),0,0,0,1,0,0,0,0,0,-1,0,0,vec2u(0u),vec2u(0u));
 }
 fn ctPairValue(a:CTCell,b:CTCell,changed:i32)->CTPair{return CTPair(a,b,changed);}
 fn ctMaterial(c:CTCell)->Material {
@@ -133,7 +165,7 @@ fn ctUnpack(core:vec4u,bank:i32)->CTCell {
  if(liquid){
   c.fill=i32(core.y&0xffffffu);c.ctype=i32(core.y>>24u);c.age=0;c.burning=0;c.life=i32(core.w>>16u);
   if(row.burn>0){c.burning=c.ctype>>7;c.ctype&=127;}
-  if(row.conductor!=0){c.spark=i32(core.w>>16u);c.life=0;}
+  if(row.conductor!=0){c.spark=i32((core.w>>16u)&4095u);c.life=0;}
  }
  return c;
 }
@@ -145,20 +177,22 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
  if(liquid){
   core.y=u32(c.fill)|(u32(c.ctype)<<24u);
   if(row.burn>0 && c.burning!=0){core.y|=0x80000000u;}
-  core.w=(core.w&65535u)|(u32(select(c.life,c.spark,row.conductor!=0))<<16u);
+  if(row.conductor!=0){core.w=(core.w&0xf000ffffu)|(u32(c.spark&4095)<<16u);}
+  else{core.w=(core.w&65535u)|(u32(c.life)<<16u);}
  }else{
   core.y=(core.y&0xfe000000u)|(u32(c.burning)<<24u)|u32(c.life)|(u32(c.ctype)<<16u);
   core.w=(core.w&0xfffff000u)|u32(c.spark);
  }
  return core;
 }
-fn contactVacuum(core:vec4u)->f32 {if((core.x&255u)==u32(CT_SINGULARITY)){return max(-50.0,-2.5*f32(core.y&65535u)/256.0);}return 0.0;}
+${specialContactWGSL}
 fn contactDensity(core:vec4u)->f32 {
  let id=i32(core.x&255u);let row=ctRow(id);
  if(row.kind==0 || row.kind==4){return row.density*f32(row.spawnQ)/max(4.0,f32(phaseTq(u32(id),(core.x>>8u)&65535u)));}
  return row.density;
 }
 fn contactBoundary(material:Material,openFaces:u32,ambientQ:u32,position:vec3i)->Material {
+ if(!inGrid(position)){return material;}
  let c=ctBoundary(ctUnpack(material.core,material.bank),i32(openFaces),i32(ambientQ));
  if(any(c.source!=vec2u(0u))){noteEnergySource(position,c.source);}
  if(any(c.sink!=vec2u(0u))){noteEnergySink(position,c.sink);}
@@ -173,13 +207,14 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  var cells:array<CTCell,8>;
  for(var i=0u;i<8u;i++){
   cells[i]=ctUnpack((*cores)[i],(*banks)[i]);cells[i].request=i32((*requests)[i]);
+  cells[i].valid=select(0,1,inGrid(positions[i]));
   if((cells[i].request&5)!=0){cells[i].done=1;cells[i].busy=1;}
  }
  for(var i=0u;i<8u;i++){
   for(var axis=0u;axis<3u;axis++){
-   let j=i^(1u<<axis);if(j<=i){continue;}
+   let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    let flux=ctFlux(cells[i],cells[j]);
-   if(flux!=0){cells[i]=ctHeat(cells[i],flux);cells[j]=ctHeat(cells[j],-flux);}
+   if(flux!=0){cells[i]=ctHeat(cells[i],flux);cells[j]=ctHeat(cells[j],-flux);cells[i].busy=1;cells[j].busy=1;}
    let seed=ctSeed(positions[i],P.tick)^i32(j);
    var pair=ctReaction(cells[i],cells[j],seed);
    if(pair.changed==0){pair=ctAcid(pair.a,pair.b,seed);}
@@ -191,17 +226,27 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  }
  let snapshot=cells;
  for(var i=0u;i<8u;i++){
+  if(cells[i].valid==0){continue;}
   let ns=array<CTCell,3>(snapshot[i^1u],snapshot[i^2u],snapshot[i^4u]);
   cells[i]=ctStep(cells[i],ns,ctSeed(positions[i],P.tick));
  }
  for(var i=0u;i<8u;i++){
   for(var axis=0u;axis<3u;axis++){
-   let j=i^(1u<<axis);if(j<=i){continue;}
+   let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
+   var pair=ctResolvePhase(cells[i],cells[j]);
+   if(pair.changed==0){let rev=ctResolvePhase(pair.b,pair.a);pair=ctPairValue(rev.b,rev.a,rev.changed);}
+   cells[i]=pair.a;cells[j]=pair.b;
+  }
+ }
+ for(var i=0u;i<8u;i++){
+  for(var axis=0u;axis<3u;axis++){
+   let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    let pair=ctPlume(cells[i],cells[j],ctSeed(positions[i],P.tick)^i32(j),select(0,1,positions[j].y>positions[i].y));
    cells[i]=pair.a;cells[j]=pair.b;
   }
  }
  for(var i=0u;i<8u;i++){
+  if(cells[i].valid==0){continue;}
   (*cores)[i]=ctPack(cells[i],(*cores)[i]);(*banks)[i]=cells[i].bank;(*requests)[i]|=u32(cells[i].request);
   if(any(cells[i].source!=vec2u(0u))){noteEnergySource(positions[i],cells[i].source);}
   if(any(cells[i].sink!=vec2u(0u))){noteEnergySink(positions[i],cells[i].sink);}

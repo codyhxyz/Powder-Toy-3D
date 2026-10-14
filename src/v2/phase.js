@@ -95,4 +95,13 @@ export function encodePhaseEnergy(id, amount, energy) {
   }
   return null;
 }
-export function validatePhaseCore(core) { phaseTemperatureQ(core[0] & 255, (core[0] >>> 8) & 65535); }
+export function validatePhaseCore(core) {
+  const id = core[0] & 255;
+  phaseTemperatureQ(id, (core[0] >>> 8) & 65535);
+  if (id === E.LAVA) {
+    const source = core[1] >>> 24;
+    // Zero is the historical painted-lava default (STONE). Other ctype values
+    // must name an actual meltable source, not silently reinterpret a bad save.
+    if (source !== 0 && !(ELEMENTS[source]?.melt > 0)) throw Error('invalid native lava source');
+  }
+}

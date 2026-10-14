@@ -7,6 +7,7 @@ struct Material {core:vec4u,bank:i32}
 struct Params {tick:u32}
 @group(0) @binding(0) var<uniform> P:Params;
 @group(0) @binding(1) var<storage,read_write> result:array<vec4u>;
+fn inGrid(p:vec3i)->bool{return all(p>=vec3i(0))&&all(p<vec3i(32));}
 fn markBusy(p:vec3i){}
 fn noteEnergySource(p:vec3i,energy:vec2u){}
 fn noteEnergySink(p:vec3i,energy:vec2u){}
