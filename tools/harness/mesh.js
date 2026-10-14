@@ -86,7 +86,7 @@ const sim = new Simulation(gpu, N, N, N, { debug: false });
 const derived = new Derived(sim);
 const vol = createVolume(gpu, sim);
 const cut = createMeshCut(gpu);
-await Promise.all([post.ready, sim.ready, derived.ready, vol.ready, vol.noiseReady, vol.viewReady('plain')]);
+await Promise.all([post.ready, sim.ready, derived.ready, vol.ready, vol.noiseReady, vol.viewReady('heat')]);
 const g = sim.g;
 
 // the box in the scene as app.js places it: SCALE scene units across, centred over the origin
@@ -168,7 +168,7 @@ function threeMeshes(p, transparent) {
   return true;
 }
 // One presented frame, as app.js draws it; resolves to the canvas as presented.
-async function frame({ view = 'plain', gi = false, viewmodel = null, glow = null, volumeOn = true } = {}) {
+async function frame({ view = 'heat', gi = false, viewmodel = null, glow = null, volumeOn = true } = {}) {
   updateGfxUniforms(sim, SUN, KEY);
   updateMeshLight(app);
   post.render({

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Raster bench</title>
+<!--
+  The v2 raster bench (docs/v2.md 11, "Week 0"): the lab's (or the volcano's)
+  real cells drawn as v2 would draw them, as 4× MSAA at the output size and as
+  TAAU at ⅔, on this device, with pass times, cold compile times, transient
+  attachments and 1 or 2 frames in flight. Go/no-go: if the MSAA frame costs
+  more than 1.5× the TAAU frame, both without the shadow pass they share, v2
+  falls back to TAAU (judge 1, gate 1).
+  Standalone: it imports nothing from src/. bench/raster.js has the options.
+-->
+<style>
+  :root {
+    --bg: #f6f5f2; --fg: #1d1c1a; --muted: #6a675f; --card: #ffffff; --line: #dedad2;
+    --accent: #2b6cb0; --accent-fg: #ffffff; --good: #2f7d32; --warn: #a15c00; --bad: #b3261e;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --fg: #ecebe7; --muted: #a09d95; --card: #201f1d; --line: #34322e;
+      --accent: #5b9be0; --accent-fg: #0d1520; --good: #6cc070; --warn: #e0a040; --bad: #f07068;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left));
+    max-width: 920px; margin: 0 auto;
+  }
+  h1 { font-size: 24px; margin: 4px 0 2px; }
+  h2 { font-size: 19px; margin: 28px 0 8px; }
+  h3 { font-size: 16px; margin: 18px 0 6px; }
+  p { margin: 6px 0; }
+  .muted { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 12px 0; }
+  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+  select, input[type="number"] { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 44px; }
+  label.check { flex-direction: row; align-items: center; gap: 10px; color: var(--fg); min-height: 44px; }
+  label.check input { width: 22px; height: 22px; }
+  button { font: inherit; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); padding: 10px 16px; min-height: 44px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-size: 20px; font-weight: 600; width: 100%; min-height: 60px; margin-top: 12px; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+  #status { margin-top: 10px; min-height: 1.5em; }
+  #status.error { color: var(--bad); white-space: pre-wrap; }
+  canvas#view { display: block; width: 100%; height: 34vh; background: #000; border-radius: 12px; margin-top: 12px; }
+  body.running canvas#view { position: fixed; left: 0; top: 0; border-radius: 0; margin: 0; z-index: 10; }
+  #hud { display: none; }
+  body.running #hud {
+    display: block; position: fixed; left: 8px; top: max(8px, env(safe-area-inset-top)); z-index: 11;
+    background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 13px; padding: 4px 8px; border-radius: 6px;
+  }
+  .verdicts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .verdict { text-align: center; }
+  .verdict .choice { font-size: 40px; font-weight: 700; letter-spacing: 0.02em; }
+  .verdict .choice.msaa { color: var(--good); }
+  .verdict .choice.taau { color: var(--warn); }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 14px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  textarea { width: 100%; height: 160px; font: 12px/1.3 ui-monospace, Menlo, monospace; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  ul { padding-left: 20px; margin: 6px 0; }
+</style>
+</head>
+<body>
+<h1>Raster bench</h1>
+<p class="muted">Powder Toy 3D v2, week 0: what v2's frame costs on this device, drawn with 4× MSAA and with TAAU at ⅔ resolution.</p>
+
+<div class="card">
+  <form id="options" onsubmit="return false">
+    <label>Scene
+      <select name="scene"><option value="lab">Lab</option><option value="volcano">Volcano (heavier)</option><option value="lab,volcano">Both</option></select>
+    </label>
+    <label>Resolution
+      <select name="res">
+        <option value="both">Both</option>
+        <option value="device">Device pixels (CSS × devicePixelRatio)</option>
+        <option value="v2">v2's base (1.5× CSS on a phone, 1× on a computer)</option>
+      </select>
+    </label>
+    <label>Frames per run
+      <select name="frames"><option>120</option><option selected>300</option><option>600</option></select>
+    </label>
+    <label>Shadow map
+      <select name="shadow"><option value="1024">1024²</option><option value="2048">2048²</option></select>
+    </label>
+    <label class="check"><input type="checkbox" name="cold" checked> Cold compile (no pipeline cache)</label>
+  </form>
+  <button class="primary" id="start">Start</button>
+  <div id="status" class="muted">Takes about a minute per scene. Keep the screen on and the page in front.</div>
+</div>
+
+<canvas id="view" hidden></canvas>
+<div id="hud"></div>
+
+<div id="results"></div>
+<div class="actions" id="actions" hidden>
+  <button id="copy">Copy JSON</button>
+  <button id="download">Download JSON</button>
+</div>
+<textarea id="json" readonly hidden></textarea>
+
+<h2>What it measures</h2>
+<div class="card">
+  <ul>
+    <li>The scene's real cells (the game's lab or volcano preset at 128³), drawn as v2 draws them: a sun shadow map, the opaque faces, then liquids and glass at 1× over the resolved colour and depth, then the tone map.</li>
+    <li><b>MSAA</b>: the opaque pass at the output size with 4× MSAA, resolved, its samples discarded. <b>TAAU</b>: the opaque pass at ⅔ size, jittered, then a resolve that reprojects history and upscales.</li>
+    <li>Each is run with 1 and 2 frames in flight, and MSAA also with transient attachments where the browser has them. The camera follows the same orbit in every run.</li>
+    <li>GPU time per pass comes from timestamp queries where the browser has them; otherwise from the time between submitting a frame and the GPU finishing it, with extra runs that skip the shadow pass.</li>
+    <li>The verdict: if the MSAA frame costs more than 1.5× the TAAU frame, v2's default anti-aliasing becomes TAAU (docs/v2.md, section 11). Both frames are compared without the shadow pass, which is the same in both and which v2 redraws only when the sun or the cells change; the whole frame's ratio is shown beside it.</li>
+  </ul>
+</div>
+
+<script type="module" src="./raster.js"></script>
+</body>
+</html>

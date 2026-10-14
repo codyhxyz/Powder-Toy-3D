@@ -9,11 +9,13 @@
 // included. Only an element with its own special case in react.js (water,
 // fire, clone...) needs the same case added below; scripts/check-tile-engine.mjs
 // flags any that are missing.
-import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH } from '../../elements.js';
+import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH, mossBed, fungusFood, singEats } from '../../elements.js';
 import { PHYS } from '../../physics.js';
+import { pcg } from '../../rng.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 import { GRAV as GRAV_MODE } from '../../simModes.js';
 import { PACE } from '../../shaders/move.js';
+import { SALT } from '../../shaders/common.js';
 import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
@@ -67,8 +69,6 @@ const RX_LOOKUP = M.lookup, RX_ANY = M.rx.length > 0;
 // RX_PAIRINGS steps (react.js RX_PAIRINGS is 3·2).
 const RX_AXES = 2, RX_PARITIES = 2;
 const RX_PAIRINGS = RX_AXES * RX_PARITIES;
-const RX_SALT = 0x52;   // (react.js)
-const SING_SALT = 0x5a;   // a singularity's stream (react.js)
 // the softest breakable solid (react.js HARD_MIN)
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
@@ -83,8 +83,6 @@ const jet = (a, b) => (KIND[a] === K.LIQUID && isGasLike(b)) || (KIND[b] === K.L
 const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
 // growers: moss and fungus keep their damp in their ctype (activity.js grower, mossBed, fungusFood, dampOf)
 const grower = (id) => id === E.MOSS || id === E.FUNGUS;
-const mossBed = (id) => id === E.ROCK || id === E.BASALT || id === E.STONE || id === E.LIMESTONE || id === E.SANDSTONE;
-const fungusFood = (id) => id === E.WOOD || id === E.SAWDUST || id === E.PLANT;
 function dampOf(T, nid, nW) {
   if (T >= PHYS.DAMP_DRY_T) return 0;
   let h = 0;
@@ -104,15 +102,10 @@ const rnd = Math.random;
 // A pair's shared random stream (react.js seeds it with seed3 at the pair's
 // base cell): the PCG hash (shaders/common.js pcg), so both cells of a pair
 // draw the same numbers.
-const pcg = (v) => {
-  const s = (Math.imul(v >>> 0, 747796405) + 2891336453) >>> 0;
-  const w = Math.imul(((s >>> ((s >>> 28) + 4)) ^ s) >>> 0, 277803737) >>> 0;
-  return ((w >>> 22) ^ w) >>> 0;
-};
 const LCG_MUL = 1664525;   // (shaders/common.js)
 const UINT_TO_UNIT = 1 / 4294967296;
 const pairStream = { s: 0 };
-const pairSeed = (cell, frame, salt = RX_SALT) => { pairStream.s = pcg(cell + pcg(Math.imul(frame, LCG_MUL) + salt)); };
+const pairSeed = (cell, frame, salt = SALT.RX) => { pairStream.s = pcg(cell + pcg(Math.imul(frame, LCG_MUL) + salt)); };
 const pairRnd = () => { pairStream.s = pcg(pairStream.s); return pairStream.s * UINT_TO_UNIT; };
 // the product of spec sp (react.js pickOut): one draw from `draw` for a weighted list, -1 = SAME
 function pickOut(sp, draw) {
@@ -189,8 +182,7 @@ function latentChance(T, Tp, C, L, rising) {
   lat.T = Tp;
   return rnd() * L < e;
 }
-// singularity (react.js singEats, singVacuum, singTakes)
-const singEats = (j) => j !== E.EMPTY && j !== E.WALL && j !== E.VOID && j !== E.SINGULARITY;
+// singularity (react.js singEats, singVacuum, singTakes; singEats is elements.js's)
 const singVacuum = (m) => Math.max(PHYS.P_MIN, -PHYS.SING_P_PER_MASS * m);
 const singTakes = (ma, a, mb, b) => ma > mb || (ma === mb && a < b);
 
@@ -690,7 +682,7 @@ export class World {
         const partnerIn = qx >= 0 && qy >= 0 && qx < nx && qy < ny;
         let swallow = false;
         if (partnerIn && (id === E.SINGULARITY ? singEats(nid[q]) : nid[q] === E.SINGULARITY && singEats(id)) && !RX_LOOKUP[id * NE + nid[q]]) {
-          pairSeed(base ? i : qy * nx + qx, this.frame, SING_SALT);
+          pairSeed(base ? i : qy * nx + qx, this.frame, SALT.SING);
           swallow = pairRnd() < PHYS.SING_EAT * RX_PAIRINGS;
         }
         if (RX_ANY) {

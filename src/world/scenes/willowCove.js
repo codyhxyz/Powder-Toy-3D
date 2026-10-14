@@ -1,4 +1,4 @@
-import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan } from './themedShared.js';
+import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan, memoTwin } from './themedShared.js';
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 
@@ -187,19 +187,11 @@ int wcCell(int wx, int y, int wz) {
 }
 `;
 
-// One cached twin suffices: geometry does not vary by seed, and worlds switch
-// sequentially. Keep the actual seed in scope for any shared hash calls.
-let cachedKey, cachedTwin;
-export function willowCoveTwin(P) {
-  const key = `${P.seed}:${P.size}`;
-  if (key !== cachedKey) {
-    cachedTwin = compileShared(SRC, P.seed, {
-      ...jsConstants('WC', L), uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2],
-    });
-    cachedKey = key;
-  }
-  return cachedTwin;
-}
+// The JS twin per world (seed and size): the seed is in scope for any shared
+// hash calls.
+export const willowCoveTwin = memoTwin((P) => `${P.seed}:${P.size}`, (P) => compileShared(SRC, P.seed, {
+  ...jsConstants('WC', L), uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2],
+}));
 
 // The scene's WGSL (scenes/sceneGpu.js): its uniforms (the world's size,
 // cells), constants, the helpers, the geometry (from the subset:
@@ -219,7 +211,7 @@ fn sceneCell(w: vec3i) -> SceneCell {
 `;
 
 export const willowCove = {
-  key: 'willowCove', label: 'Willow Cove', shrine: false,
+  key: 'willowCove', label: 'Tinker Creek', shrine: false,
   view: { dir: [0.65, 1.15, 1.4], dist: 240, lift: 12 },
   params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: L.ints.SEA, floor: L.ints.FLOOR }),
   glsl: () => willowWgsl(),

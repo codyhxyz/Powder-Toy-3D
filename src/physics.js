@@ -3,6 +3,7 @@
 // (src/ui/tiles/engine.js) imports the same object, so the two can't drift.
 // Per-element numbers live in elements.js; these are the rules around them.
 import { CELL_M } from './scale.js';
+import { glf as f } from './glsl.js';
 
 // The sim's clock (scale.js). It steps ~240 times a second (4 steps a frame at
 // 60 fps), and its default gravity (sim.js GRAVITY_DEFAULT) at that rate is
@@ -34,15 +35,17 @@ const TOOL_FRAME_RATE = 60;                       // fps: brushes apply once a f
 const STEPS_PER_FRAME = NOMINAL_STEP_RATE / TOOL_FRAME_RATE;   // the sim's steps in such a frame
 const TOOL_GRAV_EDGE_G = 4;                       // a gravity well's pull at the brush edge, in g (game choice)
 
+const KELVIN = 273.15;   // °C to K
+
 export const PHYS = {
   AMBIENT: 20,               // °C, room temperature
-  KELVIN: 273.15,            // °C to K
+  KELVIN,                    // °C to K
 
   // heat (react.js)
   AIR_AMBIENT_PULL: 0.002,   // per step, the open world above the box pulls air back to ambient
   L_FUSE: 80,                // latent heat of melting/freezing, cap·°C
   L_BOIL: 540,               // latent heat of boiling/condensing, cap·°C
-  CELL_TEMP_MIN: -273.15,
+  CELL_TEMP_MIN: -KELVIN,    // absolute zero
   CELL_TEMP_MAX: 10000,      // plasma's 10,000 °C (elements.js PLASMA, TPT's MAX_TEMP)
   // Each face moves at most this share of the energy that would bring the
   // smaller-capacity cell of the pair to the other's temperature, per step:
@@ -371,10 +374,9 @@ export const PHYS = {
 
 // WGSL for the shared prelude (shaders/common.js): every PHYS entry as an f32
 // const. The type is explicit so WGSL doesn't fold expressions over them in
-// f64 (docs/webgpu.md H1.7); the literal is JS's own, so the f32 is
-// Math.fround of it, the value the CPU twin's Float32 tables hold too
+// f64 (docs/webgpu.md H1.7); the literal (src/glsl.js glf) gives exactly
+// Math.fround of the JS value, the value the CPU twin's Float32 tables hold too
 // (tools/tables-check.mjs reads each one back). (Name kept from the GLSL
 // version, docs/webgpu.md W2.)
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const physicsGLSL = () =>
   Object.entries(PHYS).map(([k, v]) => `const ${k}: f32 = ${f(v)};`).join('\n');

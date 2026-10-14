@@ -9,7 +9,6 @@ import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { liquidDetailGLSL, LIQ_DETAIL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
-import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
@@ -19,6 +18,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
 import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
 import { gateVariants } from '../gfx/detailGate.js';
+import { glf } from '../glsl.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -31,8 +31,8 @@ import { gateVariants } from '../gfx/detailGate.js';
 // - liquids refract (real bent rays), absorb (Beer–Lambert) and reflect;
 // - smoke, steam and fire are density volumes.
 // Views 1-4 (heat, pressure, flow, X-ray) are false-colour data views with
-// their own marches (below); view 0 is the realistic render, view 5 the plain
-// one (gfx/plain.js).
+// their own marches (below); view 0 is the realistic render. The plain view
+// (5) isn't the volume's: the blocks renderer draws it (gfx/blocks.js).
 //
 // WGSL (docs/webgpu.md F2; the names are the GLSL version's, W2). Each view is
 // a module of its own, a vertex and a fragment entry (volumeFrag(g, { view,
@@ -66,11 +66,6 @@ import { gateVariants } from '../gfx/detailGate.js';
 
 // ---- data views: WGSL generated from the colormaps in src/views.js ----
 
-const WGSL_DIGITS = 7;   // significant digits of generated float literals (float32 holds ~7)
-const glf = (x) => {
-  const s = String(+(+x).toPrecision(WGSL_DIGITS));
-  return /[.e]/.test(s) ? s : s + '.0';
-};
 const srgbOf = (hex) => [0, 2, 4].map((o) => parseInt(hex.slice(1 + o, 3 + o), 16) / 255);
 const vec3 = (v) => `vec3f(${v.map(glf).join(', ')})`;
 
@@ -127,13 +122,13 @@ const xrayMu = () => {
 // restarts the ray, so its path can be longer than one crossing of the box.
 const BEND_EXTRA_STEPS = 128;
 
-// The view modules: keys of src/views.js VIEWS.
-export const VOLUME_VIEWS = VIEWS.map((v) => v.key);
+// The view modules: keys of src/views.js VIEWS (but plain: gfx/blocks.js draws it).
+export const VOLUME_VIEWS = VIEWS.map((v) => v.key).filter((k) => k !== 'plain');
 const DATA_VIEWS = ['heat', 'pressure', 'flow', 'xray'];
 
 // The decoration layer (TPT's deco colour, src/deco.js) in the view: every
 // view pastes shaders/gfx/deco.js, its lookups (decoAt, decoLinear, decoTint
-// and their constants: plain.js calls them) and its hooks (decoSurf,
+// and their constants) and its hooks (decoSurf,
 // absorbDeco: the realistic tracer calls them), reading the plane at group 0
 // binding 3. VolumeParams.deco switches the lookups off (Ctrl+B, or nothing
 // decorated: decoAt reads no paint, so decoTint keeps the albedo), so drawing
@@ -181,15 +176,6 @@ fn softBlob(cell: vec3i, ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> f32 {
   return smoothstep(BLOB_R_OUT, BLOB_R_IN, length(ro + rd * tm - cc)) * BLOB_PEAK;
 }
 
-// ACES filmic curve, Narkowicz's fit: (x(Ax + B)) / (x(Cx + D) + E).
-const ACES_A: f32 = 2.51;
-const ACES_B: f32 = 0.03;
-const ACES_C: f32 = 2.43;
-const ACES_D: f32 = 0.59;
-const ACES_E: f32 = 0.14;
-fn aces(x: vec3f) -> vec3f {
-  return clamp((x * (ACES_A * x + ACES_B)) / (x * (ACES_C * x + ACES_D) + ACES_E), vec3f(0.0), vec3f(1.0));
-}
 
 // What a view's trace drew: premultiplied colour, frag_depth, and whether
 // anything was hit (else the entry discards).
@@ -199,10 +185,7 @@ struct VolumeHit {
   hit: bool,
 }
 // The clip depth of grid point p through the jittered camera, WebGPU's [0, 1] (docs/webgpu.md F4).
-fn volumeDepth(p: vec3f) -> f32 {
-  let clip = FU.viewProj * FU.model * vec4f(p, 1.0);
-  return clamp(clip.z / clip.w, 0.0, 1.0);
-}
+fn volumeDepth(p: vec3f) -> f32 { return clipDepth(FU.viewProj * FU.model * vec4f(p, 1.0)); }
 ${meshCutGLSL}`;
 
 // =====================================================================
@@ -240,10 +223,11 @@ fn ${name}(ro0: vec3f, rd0: vec3f, t0: f32, ax0: i32) -> DataMarch {
   var trans = 1.0;
   var tHit = -1.0;
   var ax = ax0;
-  var istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
   var prevId = E_EMPTY;
   var lastB = vec3i(-1);
@@ -302,10 +286,8 @@ ${body}
     prevId = id;${curved ? `
     warpAdvance(&walk);
     if (warpCell(walk.ray, walk.t).y < 0) { break; }` : `
-    ax = argmin3(tMax);
     tEnter = tExit;
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];`}
+    ax = ddaStep(istp, tDelta, &cell, &tMax);`}
   }
 ${flush}${curved ? `
   var floorP: vec3f;
@@ -347,7 +329,7 @@ const DATA_MIN_ALPHA: f32 = 0.002;   // pixels covered less than this are left e
 const DATA_GAMMA: f32 = 2.2;
 fn toLinear(c: vec3f) -> vec3f { return pow(c, vec3f(DATA_GAMMA)); }
 fn toSrgb(c: vec3f) -> vec3f { return pow(c, vec3f(1.0 / DATA_GAMMA)); }
-fn luma(c: vec3f) -> f32 { return dot(c, LUMA_W); }   // Rec. 709 weights (gfx/surface.js)
+fn luma(c: vec3f) -> f32 { return dot(c, LUMA_709); }   // Rec. 709 weights (shaders/common.js)
 
 ${colormapWGSL('heat', COLORMAPS.heat)}
 ${colormapWGSL('pressure', COLORMAPS.pressure)}
@@ -752,13 +734,6 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   return o;
 }`;
 
-// The plain view (gfx/plain.js): its own march, a finished colour.
-const plainView = () => /* wgsl */ `
-fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
-  let po = plainView(ro, rd, t0, bh);
-  return VolumeHit(po.color, po.depth, po.hit);
-}`;
-
 // =====================================================================
 // The realistic view (0).
 // =====================================================================
@@ -803,19 +778,19 @@ const HIT_GRAIN: i32 = 3;    // grain geometry (gfx/grains.js: gHitA, gHitK)
 
 fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ro = ro0;
-  let jit = ign(gFragCoord, f32(FU.frame));
+  let jit = stbn1(gFragCoord, f32(FU.frame), 0.0);   // the media march's start: stratified per 3x3 window, R1 over frames (noise.js)
   var mNext = jit * MEDIA_STEP;   // next media sample along the ray (gfx/media.js)
   var mOp = 0.0;                  // opacity of the media so far
-  // hot air bends light (heat shimmer): perturb the ray once, up front
-  var rd = safeDir(hazeBend(FU.cam, rd0, t0, bh.y));${curved ? `
+  var rd = safeDir(rd0);${curved ? `
   // the rolling log (shaders/gfx/presentation.js): the displayed ray's parabola, walked a chord at a time
   var walk = warpWalk(ro, rd, P.marchNear);` : ''}
 
   // ray (ro, rd) and its DDA state; refraction restarts both
-  var istp = vec3i(sign(rd));
-  var tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var tEnter = t0;
   var ax = i32(bh.z);
 
@@ -833,7 +808,7 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   // got in), then faded with depth below it
   var lightRef = vec3f(1.0);
   var lightY = 0.0;
-  let liqDither = (hash33(vec3f(gFragCoord, f32(FU.frame))) - 0.5) * LIQ_ID_DITHER;
+  let liqDither = (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * LIQ_ID_DITHER;   // spatiotemporal, not white: no speckle on mixed liquids (noise.js)
   var bends = 0;
   var stop = false;
   // the nearest opaque mesh (gfx/meshCut.js), counted along the ray's path:
@@ -844,6 +819,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 
   var lastB = vec3i(-1);
   var flags = 0u;
+  var bid = 0u;              // the brick's number (brickId(lastB)) ...
+  var occM = vec2u(0u);      // ... and its occupancy mask (shaders/occupancy.js), loaded with flags
   var phiA = surfSample(${curved ? 'warpAt(walk.ray, walk.t)' : 'ro + rd * tEnter'});   // fields at the current segment start
   var phiStale = false;
   // the hit that ends the ray (HIT_*), shaded after the march
@@ -883,8 +860,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         if (FU.shadows != 0u) { lightRef = sunShadowAt(hp - n0 * IFACE_PROBE); }   // inside: the map carries the liquid above
         lightY = hp.y;
         tCut -= tEnter;
-        rd = safeDir(rd); istp = vec3i(sign(rd)); tDelta = abs(1.0 / rd);
-        cell = vec3i(floor(ro)); tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+        rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
         tEnter = 0.0; phiA = surfSample(ro);
       }
     }
@@ -908,7 +884,13 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     if (stop || outside(cell)) { break; }
     if (tEnter >= tCut) { cut = true; break; }
     let bc = cell / BS;
-    if (any(bc != lastB)) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
+    if (any(bc != lastB)) {
+      lastB = bc;
+      bid = brickId(bc);
+      flags = brickInfoOf(bid);
+      gThin = brickThin(flags);
+      if (flags != 0u) { occM = occMaskOf(bid); }
+    }
     if (flags == 0u) {
       ${curved ? 'warpSkip(&walk, bc, true);' : 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
       prevCrisp = E_EMPTY;
@@ -916,8 +898,29 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       continue;
     }
     let tExit = min(tMax.x, min(tMax.y, tMax.z));
-    let a = fetchA(cell);
-    let id = eid(a);
+    // The cell's element from the brick's occupancy (shaders/occupancy.js),
+    // what eid(fetchA(cell)) reads: an empty cell reads nothing, any other
+    // one byte. State A itself is read only where its values are used (the
+    // crisp hit, a pane, a grain, a liquid's own cell): an empty cell's are
+    // never, so its march reads no state at all.
+    let id = occCellId(occM, bid, cell);${curved ? '' : `
+    // An empty cell of a brick that holds crisp matter only (no smooth
+    // surface or media reaching it), out of liquid and before the mesh cut,
+    // draws nothing: the body below would only note that it passed it (and,
+    // with grains, look for the gravel's pebbles in it, gPebInside). Pass it
+    // here as the body would, with the same DDA arithmetic and the same loop
+    // count, so every hit is the one the full march finds, at the same t.
+    if (id == E_EMPTY && (flags & (BRICK_SURF | BRICK_MEDIA)) == 0u && liq == E_EMPTY && tExit < tCut${grains ? ' && !gPebInside' : ''}) {
+      prevCrisp = E_EMPTY;
+      phiStale = true;
+      phiA = vec4f(0.0);   // (the body's phiB: no smooth surface here)
+      if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
+      ax = argmin3(tMax);
+      tEnter = tExit;
+      cell[ax] += istp[ax];
+      tMax[ax] += tDelta[ax];
+      continue;
+    }`}
 
     if (isCrisp(id)) {
       // ---- crisp voxel ----
@@ -931,7 +934,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           if (th > tCut) { cut = true; break; }   // (a bevelled voxel's face behind the mesh)
           let hp = ro + rd * th;
           if (!anyHit) { anyHit = true; hitPos = hp; }
-          hitK = HIT_CRISP; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = a;
+          hitK = HIT_CRISP; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = fetchA(cell);
           break;
         }
         phiStale = true;
@@ -946,14 +949,14 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           let gi = surfProbe(hp, nFace);
           gSkyIn = skyInAt(gi);
           let r = reflect(rd, nFace);
-          paneEnv = envReflectGI(gi, r, mediumLight);
+          paneEnv = envReflectGI(gi, nFace, -rd, ROUGH(id), mediumLight);
           if (panes < GLASS_TRACED_PANES) { paneEnv = reflectTrace(hp + nFace * REFL_START, r, paneEnv); }
           paneAx = ax;
           panes++;
           col += trans * F * paneEnv;
           trans *= 1.0 - F;
         }
-        absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, a.y, &col, &trans);   // (stained glass: gfx/deco.js)
+        absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, fetchA(cell).y, &col, &trans);   // (stained glass: gfx/deco.js)
         // Leaving the pane, its far face reflects as much again (into air; less
         // into liquid; none against something opaque, which it touches, the
         // floor included, nor behind a mesh). A face parallel to the front one
@@ -970,7 +973,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           let F = fresnelSchlick(abs(dot(nX, rd)), IOR(id)) * select(1.0, GLASS_IN_LIQUID_F, SURFCH(nid) == CH_LIQUID);
           let r = reflect(rd, nX);
           var env = paneEnv;
-          if (xa != paneAx) { env = envReflectGI(surfProbe(hx, -nX), r, mediumLight); }
+          if (xa != paneAx) { env = envSky(surfProbe(hx, -nX), r); }   // (inside the pane: no sun highlight, as liquid.js's exit)
           col += trans * F * env;
           trans *= 1.0 - F;
         }
@@ -1045,7 +1048,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
 
       if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
       // grains (gfx/grains.js), not past the cut either: geometry in front of it may still end the segment
-      grainEvent(cell, id, a, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
+      // (grainEvent reads the cell's state only for a grain element's cell: its cand)
+      var ga = vec4f(0.0);
+      if (grainElement(id)) { ga = fetchA(cell); }
+      grainEvent(cell, id, ga, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
       cut = ev == EV_NONE && tEv >= tCut;` : ''}
 
       // ---- what lies along [tEnter, tEv] ----
@@ -1061,7 +1067,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         mediumLight = lightRef * exp(-SIGMA(liq) * max(lightY - pm.y, 0.0) / max(FU.sun.y, LIQ_SUN_Y_MIN));
         let own = SURFCH(id) == CH_LIQUID;
         // (painted liquid: gfx/deco.js; drops and pours show their colour: gfx/liquid.js thinBodySeg)
-        absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, select(AMBIENT, a.y, own), &col, &trans);
+        var tOwn = AMBIENT;   // (the cell's temperature where it is the liquid's own)
+        if (own) { tOwn = fetchA(cell).y; }
+        absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, tOwn, &col, &trans);
       } else if (brickMedia(flags)) {
         let al = mediaSegment(ro, rd, tEnter, tEv, &mNext, &col, &trans);
         // until something is hit, hitPos tracks the first gas, and the gas
@@ -1076,7 +1084,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // ray passes through a groove: its march restarts where it leaves
       if (ev == EV_OPAQUE && dot(evN, evN) == 0.0 && !reliefHit(ro, rd, evCh, &tEv)) {
         ro += rd * tEv; mNext -= tEv; tCut -= tEv;
-        cell = vec3i(floor(ro)); tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+        cell = vec3i(floor(ro)); tMax = ddaNext(ro, rd, cell);
         tEnter = 0.0; lastB = vec3i(-1); ax = argmin3(tMax);
         phiA = surfSample(ro); phiStale = false;${curved ? `
         warpRestart(&walk, ro, rd);` : ''}
@@ -1104,8 +1112,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             tCut -= tEv;
             liq = select(E_EMPTY, lid, inside);
             if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
-            rd = safeDir(rd); istp = vec3i(sign(rd)); tDelta = abs(1.0 / rd);
-            cell = vec3i(floor(ro)); tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+            rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
             tEnter = 0.0; lastB = vec3i(-1); ax = 1;
             gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
             phiA = surfSample(ro); phiStale = false;${curved ? `
@@ -1137,10 +1144,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     warpAdvance(&walk);
     if (walk.boundary) { cell = warpCellAfter(walk.ray, walk.t, walk.axis); } else { cell = warpCell(walk.ray, walk.t); }
     if (cell.y < 0) { break; }   // opaque physical floor; do not draw the second span through it` : `
-    ax = argmin3(tMax);
     tEnter = tExit;
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];`}
+    ax = ddaStep(istp, tDelta, &cell, &tMax);`}
   }
 
   // ---- shading, one call site for every kind of hit ----
@@ -1242,7 +1247,7 @@ export const VOLUME_SCREEN_VERTICES = 3;
 // The fragment entry `fs`: the pixel's ray, its footprint (derivatives, at
 // the top in uniform control flow), the box, the view's trace; nothing is
 // written where it hit nothing. cut: the view stops at the meshes (the
-// realistic march; plain's once gfx/plain.js marches to meshCutT), so its
+// realistic march), so its
 // depth is the nearer of its hit and the mesh's. Curved, the ray's spans in
 // the box are its parabola's (warpWalk), the march has no mesh cut (it
 // measures a straight ray), and t is the displayed ray's throughout.
@@ -1279,7 +1284,7 @@ struct VolumeFrag {
 /**
  * The volume's WGSL module for grid g: a vertex entry `vs` and a fragment
  * entry `fs` drawing `view` (a key of src/views.js VIEWS: 'realistic',
- * 'heat', 'pressure', 'flow', 'xray', 'plain'). detail: the close-up detail's
+ * 'heat', 'pressure', 'flow', 'xray'). detail: the close-up detail's
  * defines (gfx/detail.js detailDefines), which only the realistic view reads.
  * curved: the rolling log's variant (docs/webgpu.md F2: a block this size and
  * its globals are a template switch, so the flat views carry none of it);
@@ -1291,7 +1296,6 @@ struct VolumeFrag {
 export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false } = {}) => {
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const d = view === 'realistic' ? detail : {};
-  const plainCut = view === 'plain' && /\bmeshCutT\s*\(/.test(plainGLSL(g));
   const parts = [
     `// volume: ${view}${view === 'realistic' ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
     lib(g, { variant: 'LIGHTING', far: false, aeration: true, debug, detail: d }),
@@ -1306,9 +1310,8 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     grainsGLSL(d),
   ];
   if (view === 'realistic') parts.push(farHazeGLSL, realistic(d, curved));
-  else if (view === 'plain') parts.push(plainGLSL(g, { curved }), plainView());
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
-  parts.push(volumeVertOf(curved), volumeEntry(view, view === 'realistic' || plainCut, curved));
+  parts.push(volumeVertOf(curved), volumeEntry(view, view === 'realistic', curved));
   return parts.join('\n');
 };
 
@@ -1380,10 +1383,11 @@ fn pickRay(ro: vec3f, rd0: vec3f) -> Pick {
   let bh = boxHit(ro, rd);
   let t0 = max(bh.x, 0.0);
   if (bh.y <= t0) { return miss; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t0, &istp, &tDelta, &cell, &tMax);
   var ax = i32(bh.z);
   // Exact cell traversal: one ray is cheap, and it must not depend on the
   // presentation's brick map (a preview or a one-off pick can precede its rebuild).
@@ -1391,13 +1395,11 @@ fn pickRay(ro: vec3f, rd0: vec3f) -> Pick {
     if (outside(cell)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
-    if (id != E_EMPTY && KIND(id) != K_GAS) {
+    if (!isGasLike(id)) {
       let face = ax * 2 + select(0, 1, istp[ax] > 0);   // normal = -step
       return Pick(vec4f(vec3f(cell), f32(face)), vec4f(f32(id), a.y, fetchB(cell).w, a.z));
     }
-    ax = argmin3(tMax);
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
+    ax = ddaStep(istp, tDelta, &cell, &tMax);
   }
   if (cell.y < 0 && rd.y < 0.0) {
     // floor hit
@@ -1414,7 +1416,7 @@ fn pickCurved(ro: vec3f, rd: vec3f) -> Pick {
     if (!warpLocate(&walk, &cell)) { break; }
     let a = fetchA(cell);
     let id = eid(a);
-    if (id != E_EMPTY && KIND(id) != K_GAS) {
+    if (!isGasLike(id)) {
       let axis = warpEntryAxis(walk.ray, walk.t);
       let face = 2 * axis + select(0, 1, warpSlope(walk.ray, walk.t)[axis] > 0.0);
       return Pick(vec4f(vec3f(cell), f32(face)), vec4f(f32(id), a.y, fetchB(cell).w, a.z));
@@ -1484,13 +1486,16 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   let bh = boxHit(ro, rd);
   let t = max(bh.x, 0.0);
   if (bh.y <= t) { return oC; }
-  let istp = vec3i(sign(rd));
-  let tDelta = abs(1.0 / rd);
-  var cell = clamp(vec3i(floor(ro + rd * (t + DDA_START_NUDGE))), vec3i(0), GRID - 1);
-  var tMax = (vec3f(cell) + step(vec3f(0.0), rd) - ro) / rd;
+  var istp: vec3i;
+  var tDelta: vec3f;
+  var cell: vec3i;
+  var tMax: vec3f;
+  ddaStart(ro, rd, t, &istp, &tDelta, &cell, &tMax);
   var tEnter = t;
   var lastB = vec3i(-1);
   var flags = 0u;
+  var bid = 0u;           // the brick's number and occupancy mask (shaders/occupancy.js)
+  var occM = vec2u(0u);
   var tid = 0;
   var lid = E_WATER;
   var tau = 0.0;
@@ -1501,11 +1506,17 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   for (var i = 0; i < MAX_STEPS; i++) {
     if (hit || outside(cell)) { break; }
     let bc = cell / BS;
-    if (any(bc != lastB)) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
+    if (any(bc != lastB)) {
+      lastB = bc;
+      bid = brickId(bc);
+      flags = brickInfoOf(bid);
+      gThin = brickThin(flags);
+      if (flags != 0u) { occM = occMaskOf(bid); }
+    }
     if (flags == 0u) { skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); phiStale = true; continue; }
     let ax = argmin3(tMax);
     let tExit = tMax[ax];
-    let id = eid(fetchA(cell));
+    let id = occCellId(occM, bid, cell);   // eid(fetchA(cell)), from the brick's occupancy: nothing read for an empty cell
     if (id == E_CRYSTAL) {
       // its prisms (gfx/crystal.js), as the view draws them
       var th = tEnter;
@@ -1515,7 +1526,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     } else if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) { oC.x = tEnter; hit = true; break; }
       if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = id; }
-      tau += dot(SIGMA(id), vec3f(1.0 / 3.0)) * (tExit - tEnter);
+      tau += meanSigma(id) * (tExit - tEnter);
       oC.z = tExit;
       phiStale = true;
     } else if (brickSurf(flags) || brickMedia(flags)) {
@@ -1535,7 +1546,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
       if (lenL > 0.0) {
         if (SURFCH(id) == CH_LIQUID) { lid = id; }
         if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = lid; }
-        tau += dot(SIGMA(lid), vec3f(1.0 / 3.0)) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
+        tau += meanSigma(lid) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
         oC.z = tEnd;
       }
       if (brickMedia(flags)) {
@@ -1704,7 +1715,7 @@ export function warmChecks(view, settings, { fallback = false, curved = false } 
     const { base, near } = gateDetails(settings, fallback);
     out.push(volumeCheck(`volume.realistic(${keyOf(base) || 'off'})${tag}`, 'realistic', base, undefined, curved));
     if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.realistic(${keyOf(near)})${tag}`, 'realistic', near, undefined, curved), idle: true });
-  } else out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));
+  } else if (VOLUME_VIEWS.includes(view)) out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));   // (plain: the blocks renderer's)
   if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
   out.push(PICK_CHECK);
   return out;

@@ -1,5 +1,5 @@
 import { lamps } from '../pov/lamps.js';
-import { LAMP_MAX } from '../gfx/lamps.js';
+import { LAMP_MAX, FLAME_COLOR } from '../gfx/lamps.js';
 
 // Wall torches as lights (elements.js WALL_TORCH). A torch is one cell, and the
 // glow volume (shaders/passes.js brickFrag) spreads a cell's light over bricks:
@@ -12,8 +12,8 @@ import { LAMP_MAX } from '../gfx/lamps.js';
 // A scene lists its torches (world scene `torches()`: world cells of the heads);
 // a torch dug out or burnt goes dark (the shader checks its cell is a torch).
 export const TORCH_LIGHT = {
-  color: [1, 0.52, 0.2],   // linear: a pitch flame's ~1,900 K orange (the hand torch's, pov/tools/torch.tool.js)
-  intensity: 0.5,          // × SUN_COL's units at LAMP_UNIT (1 m): half the hand torch's (the hand's lights what you look at)
+  color: FLAME_COLOR,      // a flame's blackbody colour at 1,850 K, unit luminance (gfx/lamps.js; the hand torch's)
+  intensity: 0.3,          // luminance, × SUN_COL's units at LAMP_UNIT (1 m): half the hand torch's (the hand's lights what you look at)
   range: 14,               // cells: the pool fades out over the last few (Karis's window) into darkness
   slots: LAMP_MAX - 2,     // at most this many lit at once, the nearest: the hand's torch and a thrown one keep theirs
   reach: 40,               // cells: no farther from the eye than this (past it a pool is a speck)

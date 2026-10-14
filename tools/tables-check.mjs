@@ -296,7 +296,7 @@ export function expectedTables(M) {
     ['ROUGH', 'f32', (e) => LOOK[e.id].rough], ['METAL', 'f32', (e) => LOOK[e.id].metal], ['IOR', 'f32', (e) => LOOK[e.id].ior],
     ['SSS', 'f32', (e) => LOOK[e.id].sss], ['GLINT', 'f32', (e) => LOOK[e.id].glint], ['BEVEL', 'f32', (e) => LOOK[e.id].bevel],
     ['ALBEDO', 'vec3f', (e) => LOOK[e.id].alb], ['SCATALB', 'vec3f', (e) => LOOK[e.id].scatAlb], ['EMIT', 'vec3f', (e) => LOOK[e.id].emit],
-    ['SURF', 'i32', (e) => LOOK[e.id].surf], ['CRAG', 'vec4f', (e) => LOOK[e.id].crag], ['SHED', 'f32', (e) => LOOK[e.id].shed],
+    ['SURF', 'i32', (e) => LOOK[e.id].surf], ['SURFP', 'vec4f', (e) => LOOK[e.id].surfP], ['MACRO', 'vec4f', (e) => LOOK[e.id].macro], ['SHED', 'f32', (e) => LOOK[e.id].shed],
   ];
   const pad = (arr, empty) => (arr.length ? arr : [empty]);
   const rx = pad(m.rx, [0, 0, 0, 0, 0, 0, 0]);
@@ -442,6 +442,8 @@ function parseConsts(text) {
     const t = s.trim();
     if (/^-?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?[iuf]?$/i.test(t)) return Number(t.replace(/[iuf]$/i, ''));
     if (consts.has(t)) return value(t);
+    const paren = /^\((.*)\)$/.exec(t);   // glf wraps negatives: (-273.15)
+    if (paren) return num(paren[1]);
     const div = /^(.+?)\s*\/\s*(.+)$/.exec(t);
     if (div) { const a = num(div[1]), b = num(div[2]); return a === undefined || b === undefined ? undefined : a / b; }
     return undefined;

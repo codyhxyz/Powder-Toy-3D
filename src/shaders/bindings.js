@@ -68,6 +68,9 @@ export const FRAME_UNIFORMS = [
   ['far', 'u32', 'uFar (bool): a world\'s far field is drawn (box and world share pipelines, E)'],
   // appended (F6) at Sync 3: a world scene's ambient floor (Descent's caves), in giIrradiance and giRadiance
   ['caveAmbient', 'vec3f', 'uCaveAmbient'],
+  // the dig tools' aimed bite (pov/tools/dig.js), drawn on the surface itself (surface.js digMark)
+  ['digMin', 'vec4f', 'uDigMin: its min corner, grid cells; w: share of the blows it needs that have landed (cracks)'],
+  ['digMax', 'vec4f', 'uDigMax: its max corner; w: 1 + the aimed face\'s axis, 0: none shown'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));
@@ -159,7 +162,7 @@ const LIGHTING_BINDINGS = [
   [14, 'linearClamp', 'sampler', { sampler: { type: 'filtering' } }],
   [15, 'linearRepeat', 'sampler', { sampler: { type: 'filtering' } }],
   [16, 'brick', 'array<BrickInfo>', readBuffer],        // the brick map, brickId order
-  [17, 'brickDist', 'array<u32>', readBuffer],          // empty-space distance + 1 per brick (brickDistAt)
+  [17, 'brickDist', 'array<u32>', readBuffer],          // empty-space distance + 1 per brick (brickDistAt), then the occupancy (shaders/occupancy.js)
   [18, 'flow', 'array<vec2u>', readBuffer],             // flow, per slot: 3 × f16 + 0 (pack2x16float)
   [19, 'aeration', 'array<vec2u>', readBuffer],         // whitewater's aeration, both copies (G4)
 ];

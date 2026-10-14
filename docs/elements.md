@@ -265,6 +265,17 @@ shared mechanism; anything else names its own code.
 New maps are where new elements come from: when a map needs a material we lack, it gets added, and one that TPT has
 can just be added.
 
+How a hand tool treats a new element is two fields on its row (`elements.js`, Minecraft's `mineable/<tool>` block
+tags and sound groups), with defaults that are right for most:
+
+- `tool`: which tool digs it, `'shovel'`, `'pickaxe'` or `'axe'`. Powder defaults to the shovel and a breakable solid
+  to the pickaxe; set `'axe'` on wood and `'shovel'` on ground a shovel cuts (grass, moss). How many blows it takes
+  comes from `hard` against the tool's power (`pov/tools/dig.js`).
+- `dig`: its recorded dig sound, `'sand'`, `'gravel'`, `'soil'`, `'rock'`, `'glass'`, `'metal'` or `'wood'`
+  (`public/sfx/dig`). Powder defaults to sand and a solid follows its `sound` (else rock).
+
+The shovel, the pickaxe, their sounds and the NPCs' digging all read these two, so nothing else needs touching.
+
 - **Basalt** (giant volcano, 2026-10-11): fresh lava rock, the dark flows and cinder cones on the volcano's flanks.
   Minecraft's basalt and Noita's lava rock; not in TPT. ROCK is the same rock weathered. It melts at 1200 °C, and its
   lava sets back into basalt. Moss grows on it.

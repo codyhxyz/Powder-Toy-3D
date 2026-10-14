@@ -9,7 +9,7 @@
 // common roll), plus CHEST_ROLLS rolls on Noita's order of likelihood. The same
 // chest (its site) always holds the same things.
 
-import { rng, hashString, mixSeed } from './rng.js';
+import { rng, hashString, mixSeed } from '../../rng.js';
 import { siteNuggets, clampTier } from './gold.js';
 import { rollPotion } from './flasks.js';
 

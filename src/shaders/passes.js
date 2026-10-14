@@ -64,7 +64,6 @@ ${atlasIndexWGSL(g)}`;
 // The Mix tool pairs cells inside blocks of 2^MIX_BITS cells a side: up to 7
 // cells apart, as MIX.cpp's reach of 10 pixels (±5) at strength 1.
 export const MIX_BITS = 3;
-const MIX_SALT = 0x4d, MIX_PAIR_SALT = 0x4e;   // the Mix tool's random streams (seedWorld salts)
 
 // TPT's air tools on our cells (elements.js TOOLS -50..-57, physics.js TOOL_*).
 // TPT moves its air and lets particles follow it by their advection; we have
@@ -85,8 +84,6 @@ const MIX_SALT = 0x4d, MIX_PAIR_SALT = 0x4e;   // the Mix tool's random streams 
 const brushToolsWGSL = /* wgsl */ `
 const MIX_BITS: u32 = ${MIX_BITS}u;
 const MIX_MASK: u32 = ${(1 << MIX_BITS) - 1}u;
-const MIX_SALT: u32 = ${MIX_SALT}u;
-const MIX_PAIR_SALT: u32 = ${MIX_PAIR_SALT}u;
 // Is the fill's mask off at cell p (its byte below half of MASK_ON)?
 fn maskOff(p: vec3i) -> bool {
   let t = atlasIndex(p);
@@ -127,25 +124,23 @@ fn gravityWell(id: i32, v: vec3f, d: vec3f, sgn: f32) -> vec3f {
   if (id == E_EMPTY || KIND(id) == K_SOLID) { return v; }
   return clamp(v - sgn * TOOL_GRAVITY * d / max(P.radius, BRUSH_EDGE_EPS), vec3f(-V_MAX), vec3f(V_MAX));
 }
-// what Mix moves (MIX.cpp: TYPE_PART | TYPE_LIQUID | TYPE_GAS)
-fn mixes(id: i32) -> bool { let k = KIND(id); return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
 // a cell's index in its block (x, then y, then z bits)
 fn mixIndex(l: vec3i) -> i32 { return l.x | (l.y << MIX_BITS) | (l.z << (2u * MIX_BITS)); }
 fn mixCell(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
-  let fs = pcg(P.frame * LCG_MUL + MIX_SALT);   // this paint's block offset
+  let fs = pcg(P.frame * LCG_MUL + SALT_MIX);   // this paint's block offset
   let off = vec3i(vec3u(fs, fs >> MIX_BITS, fs >> (2u * MIX_BITS)) & vec3u(MIX_MASK));
   let w = p + H.origin + off;              // world cell, so blocks don't follow the window
   let l = w & vec3i(i32(MIX_MASK));        // the cell in its block (two's complement: fine below 0)
   let base = w - l;
-  let hs = seedWorld(base, P.frame, MIX_SALT);
+  let hs = seedWorld(base, P.frame, SALT_MIX);
   let m = vec3i(vec3u(hs, hs >> MIX_BITS, hs >> (2u * MIX_BITS)) & vec3u(MIX_MASK));   // the block's mask
   let lq = l ^ m;
   let q = p + lq - l;
   if (all(m == vec3i(0)) || !inGrid(q) || !inBrush(p) || !inBrush(q)) { return; }
   let qa = fetchA(q);
   let id = eid(a);
-  if (!mixes(id) || KIND(eid(qa)) != KIND(id)) { return; }
-  var ps = seedWorld(base + select(lq, l, mixIndex(l) < mixIndex(lq)), P.frame, MIX_PAIR_SALT);
+  if (!isLooseOrGas(id) || KIND(eid(qa)) != KIND(id)) { return; }
+  var ps = seedWorld(base + select(lq, l, mixIndex(l) < mixIndex(lq)), P.frame, SALT_MIX_PAIR);
   if (rnd(&ps) >= TOOL_MIX_SWAP) { return; }
   *oA = qa;
   *oB = vec4f(fetchB(q).xyz, b.w);   // the cell moves with its velocity; the air's pressure stays
@@ -154,7 +149,6 @@ fn mixCell(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<funct
 
 // The update editMain calls (shaders/common.js): fn update(p, a, b, oA, oB).
 export const paintUpdateWGSL = /* wgsl */ `
-const PAINT_RNG_SALT: u32 = 0xb7u;    // salt that gives the brush its own random stream (seed3)
 const BRUSH_EDGE_EPS: f32 = 0.001;    // keeps smoothstep's edges apart at radius 0
 const SEGMENT_EPS: f32 = 1e-6;        // a line's squared length below which it is a dab
 ${propGLSL()}
@@ -167,7 +161,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let d = vec3f(p) + 0.5 - P.center;   // from the brush's centre: Cyclone and the gravity wells turn about it
   let falloff = 1.0 - smoothstep(P.radius * TOOL_FALLOFF, P.radius + BRUSH_EDGE_EPS, r);
 
-  var rs = seed3(p, P.frame, PAINT_RNG_SALT);
+  var rs = seed3(p, P.frame, SALT_PAINT);
   let id = eid(a);
   if (P.filter_ >= 0 && id != P.filter_) { return; }
   // TPT's PropertyTool sets particles only (SetProperty skips empty pixels); pressure is the air's own
@@ -181,7 +175,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     let T = SPAWNT(tool);
     let ctype = select(0.0, f32(E_STONE), tool == E_LAVA);
     *oA = vec4f(f32(tool), T, SPAWNLIFE(tool), ctype + rnd(&rs) * SEED_MAX);
-    let vy = select(0.0, SPAWN_DROP_V, KIND(tool) == K_POWDER || KIND(tool) == K_LIQUID);
+    let vy = select(0.0, SPAWN_DROP_V, isLoose(tool));
     *oB = vec4f(0.0, vy, 0.0, b.w);
   } else if (tool == T_ERASE || tool >= 0 || propErases) {   // (tool >= 0 here: specific delete)
     *oA = vec4f(f32(E_EMPTY), airT(), 0.0, rnd(&rs) * SEED_MAX);
@@ -606,7 +600,7 @@ ${listMainWGSL('LIST_FIELDS')}
   let mf = textureLoad(tFM, p, 0);
   // something opaque (not liquid, glass or gas) here or in an opaque surface field
   var opaque = 0.0;
-  if (id != E_EMPTY && KIND(id) != K_GAS && RCLASS(id) != R_LIQUID && RCLASS(id) != R_GLASS) { opaque = 1.0; }
+  if (!isGasLike(id) && RCLASS(id) != R_LIQUID && RCLASS(id) != R_GLASS) { opaque = 1.0; }
   opaque = max(opaque, max(sf.y, max(sf.z, sf.w)));
   // liquids (and ice): one, or more than one
   if (SURFCH(id) == CH_LIQUID) {
@@ -617,10 +611,10 @@ ${listMainWGSL('LIST_FIELDS')}
   wgMax[li] = vec4f(max(max(sf.x, sf.y), max(sf.z, sf.w)), opaque, max(max(tm.x, tm.y), max(tm.z, tm.w)), max(mf.x, max(mf.y, mf.z)));
   var em = vec3f(0.0);
   if (id == E_FIRE || id == E_PLASMA) { em = blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN; }
-  else if (id != E_EMPTY && KIND(id) != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)) || lampLit(id, floor(a.w)))) {
+  else if (!isGasLike(id) && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)) || lampLit(id, floor(a.w)))) {
     // small sources shed more (gfx/materials.js SHED); a live conductor or a
     // lit lamp too (LAMP_ROOM_GAIN) (src/electricity.js)
-    let ce = cellEmission(id, a.y) * SHED(id) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
+    let ce = cellEmission(id, a.y, floor(a.w)) * SHED(id) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
     if (dot(ce, ce) > 0.0) {
       var f = 1.0;
       if (RCLASS(id) == R_OPAQUE) { f = openFaces(p) * GLOW_FACE_GAIN; }

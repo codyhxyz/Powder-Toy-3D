@@ -4,6 +4,7 @@ import { ARGS } from '../activity.js';
 import { simModesGLSL, SIM_MODE_FIELDS } from '../../simModes.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { fold, MAX_WORKGROUPS } from '../../gpu/kernels.js';
+import { glf } from '../../glsl.js';
 
 // Close-up liquid detail (gfx/detail.js switches): what a liquid surface shows
 // once a pixel is a few millimetres across. Each part compiles in only with
@@ -114,7 +115,7 @@ const PE_FIT = [                  // [We below which it applies, coefficient, ex
   [18, 6, -0.25], [45, 2.45, 0.25], [351, 14.1, -0.25], [2670, 0.766, 0.25], [Infinity, 5.5, 0],
 ];
 
-const g = (x) => (Number.isInteger(x) ? x.toFixed(1) : x.toPrecision(6));
+const g = (x) => glf(Number.isInteger(x) ? x : +x.toPrecision(6));
 // A per-liquid value as a function of the element id (0 for the rest): three
 // liquids, so a comparison chain rather than an NE-entry table (docs/webgpu.md C6).
 const perLiquidFn = (name, fn) => `fn ${name}(id: i32) -> f32 {
@@ -486,7 +487,7 @@ fn aerPrev(c: vec3i) -> vec4f {
   let w = aer[P.cur * SLOTS + slotOf(c)];
   return vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
 }
-fn supports(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS; }
+fn supports(id: i32) -> bool { return !isGasLike(id); }
 // ${AER_FOAMS_NOTE}
 fn foams(id: i32) -> bool { return FOAMS(id); }
 // Air (or gas) at p, its content now from q: a wake if liquid off the ground

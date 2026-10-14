@@ -160,7 +160,7 @@ const PROBE_CALLS = {
   var qcn = n;
   acc.z += select(0.0, 1.0, crystalHit(ci, p, d, s, s + 1.0, &qt, &qcn)) + qt + f32(gCrysKind) + gCrys.r;`,
   clouds: () => `
-  acc.x += cloudDensity(p, s) + cloudShadow(p) + cloudHG(d.y, s);
+  acc.x += cloudDensity(p, s) + cloudShadow(p) + hgPhase(d.y, s);
   acc += cloudLayer(p, d);`,
   farShared: ({ casters = true, gi = true, probes = true } = {}) => `
   let qft = farUnpack(vec4u(vec3u(ci), u32(ni.y)));

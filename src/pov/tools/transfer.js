@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT } from '../../shaders/transfer.js';
+import { TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT, ALLOW_IDS } from '../../shaders/transfer.js';
 import { povGpu } from '../gpu.js';
 import { ELEMENTS } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
+import { voxelWalk } from '../grid.js';
 
 // Exact cell transfer: the shared machinery the hand tools use to take cells out
 // of the grid and put them back, conserving matter exactly although readbacks
@@ -28,9 +29,19 @@ import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 const MAX_IN_FLIGHT = 8;                 // transfers awaiting readback at once
 const SLOT_COMPONENTS = 4;               // vec4 per slot: (cell xyz, wanted id); an item; an answer
 const ANY_ID = -1;                       // slot filter: any element of the allowed kinds
+const ANY_HARD = 1e30;                   // take maxHard: no cap (a finite f32: the uniform buffer carries it)
 
 export { TRANSFER_SLOTS };
 export const KIND_BIT = (kind) => 1 << kind;
+
+// A take's `allow` mask (shaders/transfer.js): a bit per element id, as vec4us.
+export function allowMask(ids) {
+  const words = new Uint32Array(ALLOW_IDS / 32);
+  for (const id of ids) words[id >> 5] |= 1 << (id & 31);
+  const out = [];
+  for (let i = 0; i < words.length; i += 4) out.push([...words.subarray(i, i + 4)]);
+  return out;
+}
 
 // A cell's contents as carried: [element id, temperature °C, life, ctype + seed].
 export const cellOf = (buf, i) => [buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]];
@@ -109,31 +120,36 @@ export class Load {
   get busy() { return this.reserved > 0 || this.out > 0; }
   // the element most of the load is (carried cells only), or -1 when empty
   get mainId() {
-    const n = new Map();
-    for (const c of this.cells) n.set(c[0], (n.get(c[0]) ?? 0) + 1);
     let best = -1, bestN = 0;
-    for (const [id, k] of n) if (k > bestN) { best = id; bestN = k; }
+    for (const [id, k] of Object.entries(this.totals())) if (k > bestN) { best = +id; bestN = k; }
     return best;
   }
-  get mixed() { return this.cells.some((c) => c[0] !== this.cells[0][0]); }
+  get mixed() { return Object.keys(this.totals()).length > 1; }
   status() {
     if (!this.count) return null;
     const id = this.mainId;
     const abbr = id >= 0 ? ELEMENTS[id].abbr : '';
     return `${abbr}${this.mixed ? '+' : ''} ×${this.count}`;
   }
-  // per-element totals, for conservation checks: { id: count }
+  // per-element totals, for conservation checks: { id: count }. Counted once per
+  // change (the hotbar asks every frame, and a full pack is tens of thousands of cells).
   totals() {
-    const t = {};
-    for (const c of this.cells) t[c[0]] = (t[c[0]] ?? 0) + 1;
-    return t;
+    if (this.tally?.version !== this.version || this.tally.length !== this.cells.length) {
+      const t = {};
+      for (const c of this.cells) t[c[0]] = (t[c[0]] ?? 0) + 1;
+      this.tally = { version: this.version, length: this.cells.length, t };
+    }
+    return { ...this.tally.t };
   }
 }
 
 // The pack: the player's inventory of loose matter. The shovel digs into it, the
 // trowel builds from it and the shovel throws from it. Liquids go in the bucket.
 export const PACK_KEY = 'PACK';
-export const PACK_CAPACITY = 1000;   // cells (≈ 27 m³ at 30 cm cells: about 37 trowel blocks)
+// Minecraft's inventory: 36 slots of 64 blocks (minecraft.wiki/w/Inventory), a block being the
+// trowel's 3³ cells. Big enough that digging never stops for a full pack (Astroneer and Deep Rock
+// Galactic never stop you digging either); it was 1000 cells, full after about 12 s of sand.
+export const PACK_CAPACITY = 36 * 64 * 27;   // cells (62 208 ≈ 1680 m³ at 30 cm cells)
 // owner: whose pack (env.owner, an NPC's id); the player's when absent
 export const ownedKey = (key, owner) => (owner ? `${owner}:${key}` : key);
 export const pack = (owner) => persistentLoad(ownedKey(PACK_KEY, owner), PACK_CAPACITY);
@@ -161,7 +177,7 @@ export function createTransfer({ getSim }) {
   let inFlight = 0;
 
   // Record the transfer's one dispatch and read its answer back.
-  function run({ cells, wants, items, mode, kinds = 0, breakDebris = false, limit, vel }) {
+  function run({ cells, wants, items, mode, kinds = 0, breakDebris = false, maxHard = ANY_HARD, allow = null, limit, vel }) {
     const sim = getSim();
     const n = Math.min(cells.length, TRANSFER_SLOTS);
     if (!sim || !n || limit <= 0 || inFlight >= MAX_IN_FLIGHT) return null;
@@ -177,7 +193,7 @@ export function createTransfer({ getSim }) {
     }
     const count = slots.length;
     const answer = povGpu(sim).transfer({
-      count, limit: Math.min(limit, TRANSFER_SLOTS), mode, kinds, breaks: breakDebris ? 1 : 0,
+      count, limit: Math.min(limit, TRANSFER_SLOTS), mode, kinds, breaks: breakDebris ? 1 : 0, maxHard, only: allow ? 1 : 0, allow: allow ?? [],
       vel: vel ?? [0, 0, 0], cells: slots, items: items ? items.slice(0, TRANSFER_SLOTS) : [],
     });
     if (!answer) return null;   // (its kernel is still building: B5)
@@ -192,14 +208,16 @@ export function createTransfer({ getSim }) {
 
     // Take up to `load.free` (or `limit`) qualifying cells from `cells` (nearest
     // first) into `load`. kinds: element kinds allowed (K.*). want: one element
-    // id only, or -1. breakDebris: solids come out as their debris. Returns a
-    // promise of the taken cells, or null when nothing was issued (busy, full).
-    take(load, { cells, kinds, want = ANY_ID, breakDebris = false, limit = Infinity }) {
+    // id only, or -1. breakDebris: solids come out as their debris, and only
+    // those no harder than maxHard (loose kinds come out as they are). ids: only
+    // these elements (allowMask), or all. Returns a promise of the taken cells,
+    // or null when nothing was issued (busy, full).
+    take(load, { cells, kinds, want = ANY_ID, breakDebris = false, maxHard = ANY_HARD, ids = null, limit = Infinity }) {
       const n = Math.min(limit, load.free);
       if (n <= 0) return null;
       const mask = kinds.reduce((m, k) => m | KIND_BIT(k), 0);
       const wants = want === ANY_ID ? null : cells.map(() => want);
-      const p = run({ cells, wants, mode: TRANSFER_TAKE, kinds: mask, breakDebris, limit: n });
+      const p = run({ cells, wants, mode: TRANSFER_TAKE, kinds: mask, breakDebris, maxHard, allow: ids && allowMask(ids), limit: n });
       if (!p) return null;
       load.reserved += n;
       return p.then((buf) => {
@@ -284,13 +302,8 @@ export function pinned(point, sim) {
   return () => p.clone().sub(sim.origin);
 }
 
-// The outward normal of a pick face (shaders/render.js pickFrag: axis * 2, +1
-// when the ray stepped +axis, so even faces face +axis).
-export function faceNormal(face, out = new THREE.Vector3()) {
-  out.set(0, 0, 0);
-  out.setComponent(Math.floor(face / 2), face % 2 === 0 ? 1 : -1);
-  return out;
-}
+// The outward normal of a pick face (../grid.js; the tools import it from here)
+export { faceNormal } from '../grid.js';
 
 const MUZZLE_SEARCH = 16;           // cells walked along the ray by muzzleCell
 
@@ -303,26 +316,14 @@ const MUZZLE_SEARCH = 16;           // cells walked along the ray by muzzleCell
 export function muzzleCell(eye, dir, pos, g) {
   const half = BODY_WIDTH / 2;
   const lo = [pos.x - half, pos.y, pos.z - half], hi = [pos.x + half, pos.y + BODY_HEIGHT, pos.z + half];
-  const o = [eye.x, eye.y, eye.z], d = [dir.x, dir.y, dir.z];
-  const c = o.map(Math.floor);
-  const step = d.map(Math.sign);
-  const tDelta = d.map((v) => (v === 0 ? Infinity : Math.abs(1 / v)));
-  const tMax = d.map((v, k) => (v === 0 ? Infinity : ((v > 0 ? c[k] + 1 : c[k]) - o[k]) / v));
-  const overlaps = () => c.every((v, k) => v < hi[k] && v + 1 > lo[k]);
   const path = [];
-  let t = 0;
-  for (let i = 0; i < MUZZLE_SEARCH; i++) {
-    path.push(new THREE.Vector3(...c));
-    if (!overlaps()) {
-      const inGrid = c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < g.nx && c[1] < g.ny && c[2] < g.nz;
-      return inGrid ? { cell: new THREE.Vector3(...c), t, path } : null;
-    }
-    const k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
-    t = tMax[k];
-    c[k] += step[k];
-    tMax[k] += tDelta[k];
-  }
-  return null;
+  return voxelWalk(eye, dir, Infinity, (x, y, z, t) => {
+    path.push(new THREE.Vector3(x, y, z));
+    const c = [x, y, z];
+    if (c.every((v, k) => v < hi[k] && v + 1 > lo[k])) return undefined;   // still inside the body
+    const inGrid = x >= 0 && y >= 0 && z >= 0 && x < g.nx && y < g.ny && z < g.nz;
+    return inGrid ? { cell: new THREE.Vector3(x, y, z), t, path } : null;
+  }, MUZZLE_SEARCH) ?? null;
 }
 
 // Radius of a ball of n cells.

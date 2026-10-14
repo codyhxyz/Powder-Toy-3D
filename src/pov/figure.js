@@ -122,14 +122,18 @@ export const figureVert = '';
 // WEBGPU-STUB (docs/webgpu.md J3)
 export function figureFrag() { throw new Error('figureFrag removed in the WebGPU port: docs/webgpu.md F8 (figure.js figureMaterial)'); }
 
+const NO_TINT = [0, 0, 0, 0];   // rgb, share: no stain
+
 /**
  * A figure's per-body values, shared by its materials: emit (linear HDR
  * radiance added unlit: heat glow, a burning wreck), tint (a stain over the
  * albedo: rgb, share) and worldToGrid (scene → grid cells). Uniform nodes:
- * set .value.
+ * set .value. The tint starts unstained (share 0): three's Vector4() is
+ * (0, 0, 0, 1), a full black stain on whatever never sets it (a tool held on
+ * the body, a vehicle; the GLSL's unset uniform read 0).
  */
 export function figureUniforms() {
-  return { emit: uniform(new THREE.Vector3()), tint: uniform(new THREE.Vector4()), worldToGrid: uniform(new THREE.Matrix4()) };
+  return { emit: uniform(new THREE.Vector3()), tint: uniform(new THREE.Vector4(...NO_TINT)), worldToGrid: uniform(new THREE.Matrix4()) };
 }
 
 /**

@@ -9,6 +9,8 @@ Many Claude sessions and their subagents work here at the same time, some in thi
 
 ## Headless GPU budget — all agents
 
+The user plays the game on this same Mac's GPU while agents work, and headless runs wreck their frame rate. `tools/browser.mjs` enforces two rules: one headless browser machine-wide at a time (others queue on `~/.cache/tpt-headless/slot`), and none while the GPU is busy with something that isn't a test: the user playing. Holding the slot, the launcher reads the GPU's utilization from the IO Registry and waits (up to `TPT_GPU_WAIT_MS`, 10 min) while its median is 50 % or more, then fails with "the user is likely playing". An idle Mac runs tests freely; there is no hourly allowance. Runs last at most 3 minutes (`TPT_TEST_TIMEOUT_MS`). Check on the CPU first, batch what you need into one run, and close every browser the moment you have your answer. Never set `TPT_IGNORE_PLAYER` unless the user says so.
+
 - Use `launchBrowser` and `newTestPage` / `newTestContext` from `tools/browser.mjs`, not another raw Chromium launcher. The deploy enforces it: `tools/check-browser-launch.mjs` fails on any script in `tools/` or `scripts/` that launches a browser itself, except the legacy list in that file, which only shrinks.
 - Pick the cheapest mode that preserves the assertion:
   - `manual`: numerical tests. The app loop is parked at boot. Step explicitly through `__app.test.step(n)` or existing `sim.step()` calls.

@@ -4,7 +4,6 @@ import { HAND_REACH } from '../constants.js';
 import {
   persistentLoad, ownedKey, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor, pinned,
 } from './transfer.js';
-import { povEvents } from '../events.js';
 import { trigger, toolDt } from './action.js';
 import { attachModel, BUCKET_SIDES } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
@@ -71,7 +70,6 @@ export default {
       held.add(surface);
       surfaceVersion = -1;
     });
-    const act = (action, extra) => povEvents.emit('tool:action', { tool: 'bucket', action, ...extra });
 
     const refuse = (text, id) => env.feedback?.refuse(text, { id });
 
@@ -90,7 +88,7 @@ export default {
       if (p) {
         dip.fire();
         const id = aim.id, at = pinned(center, ctx.sim);
-        p.then((got) => { if (got.length) act('scoop', { id, point: at(), amount: got.length }); });
+        p.then((got) => { if (got.length) env.feedback?.act('scoop', { id, point: at(), amount: got.length }); });
       }
     }
 
@@ -117,7 +115,7 @@ export default {
           }
           if (!landed || pourHeard === press) return;
           pourHeard = press;
-          act('pour', { id, point: at(), amount: landed });
+          env.feedback?.act('pour', { id, point: at(), amount: landed });
         });
       }
     }

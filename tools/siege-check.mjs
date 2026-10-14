@@ -8,8 +8,8 @@
 //   - the gates open (game:setup), the player takes point A alone (game:point),
 //     the spawns move up and the clock gains time
 //   - dead, comma picks a class for the next spawn, and the respawn has it
-//   - a Halo match (Slayer): no picker, comma does nothing, no class on the body
-//   - sandbox: comma opens the picker again
+//   - a Halo match (Slayer): no picker, comma opens Settings, no class on the body
+//   - sandbox: no picker, comma opens Settings, no class on the body (classes are Siege's only)
 //   - no page errors
 //
 // usage: node tools/siege-check.mjs [--url http://localhost:5421] [--preset lab|damValley] [--shot file.jpg]
@@ -108,19 +108,34 @@ try {
   check('dead, comma opens the picker', deadOpen);
   check('the pick applies on the respawn', respawned, await p.evaluate(() => `${window.__app.pov.player.cls}`));
 
-  // ---- a Halo match: no classes
+  // ---- outside Siege, no classes: comma is Settings
+  const noClasses = async () => {
+    await p.keyboard.press(',');
+    await p.waitForTimeout(300);
+    const r = await p.evaluate(() => ({ open: window.__app.pov.classes.isOpen, cls: window.__app.pov.player.cls ?? null, style: window.__app.pov.game.style ?? null,
+      settings: !!document.querySelector('.drawer[aria-label="Settings"].open'), tip: window.__classTips }));
+    await p.keyboard.press(',');   // Settings shut again
+    await p.waitForTimeout(200);
+    return r;
+  };
+  await p.evaluate(() => {   // count the class tip's toasts from here on
+    window.__classTips = 0;
+    new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (/Press , to choose a class/.test(n.textContent ?? '')) window.__classTips++; })
+      .observe(document.body, { childList: true, subtree: true });
+  });
   await p.evaluate(() => window.__app.pov.game.start('slayer', { side: 'red' }));
   await p.waitForTimeout(1500);
-  await p.keyboard.press(',');
-  const halo = await p.evaluate(() => ({ open: window.__app.pov.classes.isOpen, cls: window.__app.pov.player.cls, style: window.__app.pov.game.style }));
-  check('Slayer: comma does nothing and the body has no class', halo.style === 'halo' && !halo.open && !halo.cls, JSON.stringify(halo));
+  const halo = await noClasses();
+  check('Slayer: no picker, comma opens Settings, no class on the body', halo.style === 'halo' && !halo.open && halo.settings && !halo.cls, JSON.stringify(halo));
 
-  // ---- sandbox: comma is the class key again
   await p.evaluate(() => window.__app.pov.game.end());
-  await p.keyboard.press(',');
-  const sandbox = await p.evaluate(() => window.__app.pov.classes.isOpen);
-  await p.keyboard.press('Escape');
-  check('sandbox: comma opens the picker', sandbox);
+  await p.waitForTimeout(500);
+  const sandbox = await noClasses();
+  check('sandbox: no picker, comma opens Settings, no class on the body', !sandbox.open && sandbox.settings && !sandbox.cls, JSON.stringify(sandbox));
+  await p.evaluate(() => window.__app.pov.player.hurt(1e6, 'check'));
+  const back = await until(() => !window.__app.pov.player.dead, null, 20000);
+  const respawn = await noClasses();
+  check('sandbox respawn: still no class, no class tip', back && !respawn.cls && !respawn.open && !respawn.tip, JSON.stringify(respawn));
 
   check('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
 } finally {

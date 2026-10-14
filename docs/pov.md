@@ -34,9 +34,14 @@
   are slots (Dig, Build, Guns, Explosives, Gadgets); pressing one again steps to the next tool in it, and the
   wheel steps through everything carried. God powers (infinite painting) stay in god view, one `V` away. The
   list below is the original ten; the guns and the rocket launcher are under "Guns" below.
-  1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
-     refuses), into the **pack** (the inventory, `transfer.js` `pack()`, 1,000 cells). Right-click throws a
-     bladeful from it where you aim.
+  1. **Shovel**: digs like Minecraft's (`tools/dig.js`): each click (or every 0.15 s held) takes the
+     outlined bite, 3 cells deep behind the face you aim at and the trowel's 3×3 lattice square across it,
+     into the **pack** (the inventory, `transfer.js` `pack()`, Minecraft's 36 × 64 blocks). Powder comes up in
+     one dig, and so does soil (grass and plants, moss, fungus); wood is the axe's and rock the pickaxe's (`dig.js` `material`,
+     Minecraft's best tool per block): they refuse with a toast naming the tool. Right-click throws a block's
+     worth from it where you aim; hold to keep throwing. Third person plays its dig and toss (`holds.js` GESTURES).
+     The aimed bite's outline and cracks are drawn on the surface itself (`surface.js` `digMark`, FrameUniforms
+     `digMin`/`digMax`), so they follow a trunk or a slope.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.
   3. **Axe**: a short-range swing that breaks breakable solids in a wide, shallow patch into debris. It's
      weaker and less focused than the gun, and chops trees and smashes windows.
@@ -48,16 +53,16 @@
      stuff flies farther). It can't lift or knock over solids (no rigid bodies).
   6. **Trowel**: builds Minecraft-style 1 m blocks (3³ cells on a fixed lattice) from the pack against the
      face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
-  7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
-     pressure, distance.
   8. **Flamethrower** (was the blowtorch): see "Light and fire" below.
   9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
      charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
      and the blasts stack; the blast is the engine's.
-  10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js, shaders/povTools.js
-      `PICK`): a slower blow with more energy in a narrower, deeper patch. It mines rock, a 3×3 face two
-      cells deep a swing, into STONE that each swing gathers into the pack (so the rubble never plugs the
-      hole; with the pack full it stays put). Metal still turns it away.
+  10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js `dig`), at the HL2
+      crowbar's 0.4 s. Each blow digs the outlined bite (`tools/dig.js`, the shovel's) whole: rock and
+      anything softer in one blow, as its debris (ROCK → STONE) into the pack. Wood it leaves to the axe;
+      nothing harder than its blow's energy (`PICK.ENERGY` 52): metal still turns it away.
+      Digging sounds are recorded (`public/sfx/dig`, Kenney's Impact Sounds, CC0): the blade's bite over its
+      material's texture (sand, gravel, soil), strikes by material (rock, glass, metal, wood), a load's thud.
 - Mouse look with pointer lock. `F5` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
@@ -71,7 +76,7 @@ first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera ch
 
 - **Left thumb**: a move stick, analog; pushed to its rim it sprints. Driving, it throttles and steers.
 - **Right thumb**: the held tool's two buttons, named by its catalog entry (`catalog.js` `touch`: [left-click,
-  right-click]; a tool with none, like the scanner, shows none), Nearer / Farther while the tool takes the
+  right-click]; a tool with none, like the pogo stick, shows none), Nearer / Farther while the tool takes the
   wheel (the physgun holding), Kick, Vehicle (when there are any: get in or out), Crouch (Dive in liquid) and
   Jump (hold to fly; Brake when driving). Tools are picked by tapping the hotbar.
 - **Look**: a one-finger drag anywhere else on the scene, as mouse movement (the Sensitivity setting applies).
@@ -447,12 +452,18 @@ export default {
   (a stab drives forward instead of only turning) and `pose.lethal` (a lethal blow's own motion).
 - `viewmodel.js` `HIT` and `rig.hit(HIT.X)`: a tool's shot, blow or fling, as the hand's spring kick plus
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
-- `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
-  `tool:action 'refuse'`.
-- `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the scanner, the trowel's material).
+- `env.feedback.notice(text)` / `refuse(text, { id, point }, { silent })`: the throttled "can't" toast, slot shake and
+  `tool:action 'refuse'` (silent: no toast, a blow that bounces off). `env.feedback.act(action, extra)`: every other
+  `tool:action`, with `tool` the key in lower case.
+- `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the trowel's material). Without one, the crosshair shows what it's on,
+  as the god view's hover does (no scanner tool: hovering is enough).
 - `env.ballistics`: the shared projectiles; `fire(origin, dir, gravityScale(sim), { speed, carry, kind,
   onStrike })` flies anything ballistic (the gun's rounds, the bomb) and the toolbelt keeps it flying.
 - `transfer.js` `muzzleCell()`: where something leaves the hand (the first cell clear of the body).
+- `action.js` `launcher(env, { kind, model, ... })`: a thrown or fired thing (the bomb, the rocket, the lamps, the flask):
+  `fire(ctx, opts)` finds the muzzle cell or refuses, fires on `env.ballistics`, kicks the rig and emits the action,
+  and draws each round in flight; `launchFrom(env, ctx, refuse)` is just the muzzle part (the burrower).
+- `pov/space.js` `gridSpace(env)`: `toWorld(g, out)` / `toGrid(w, out)` between grid cells and the scene.
 - `transfer.js` `pack()`: the shared inventory of loose matter; `put(load, { id })` places one element of it.
 
 `ctx` is built by the body module every frame in POV:
@@ -537,7 +548,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `round:move` | guns, bomb, rocket | `{ id, kind, from, to }` (kind 'round', 'bomb' or 'rocket'). A round in flight moved this frame (grid), for tracers and the rocket's smoke. |
 | `round:end` | guns, bomb, rocket | `{ id, kind }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe, pickaxe, knife, flask | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife'\|'flask', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb, flask | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'\|'flask'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'\|'shatter'\|'drink'. Physgun 'hold' state is read from the tool, not an event. |
+| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb, flask | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'\|'flask'; action is 'dig'\|'chip'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'\|'shatter'\|'drink'. Physgun 'hold' state is read from the tool, not an event. |
 | `drunk` | ingest.js (whiskey) | `{ seconds }`. Seconds of Drunk added to the player (feel.js sways the view; an NPC's has `by`). |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
@@ -601,8 +612,7 @@ powder, axe through wood/glass/plants/ice, pickaxe through rock, bomb what's lef
 to your column, pillar up by jumping and setting a trowel block under its feet), **Cover** (hurt and under
 fire: two trowel blocks between you), **Extinguish** (on fire: run to water), **Gather** (idle: dig sand for
 building), **Wander**. A strategy that fails is put on a 4 s cooldown. Reflexes in `npc.js`: jump when blocked,
-swim up to breathe, dive after a player below, jet out of water at a wall. The scanner is the one tool it never
-uses: it only reads out a cell, and the world model already knows.
+swim up to breathe, dive after a player below, jet out of water at a wall.
 
 Yuka gotcha: a `CompositeGoal` runs its subgoals in the order they were **added** (Yuka's `addSubgoal`
 unshifts and `currentSubgoal()` takes the last), the reverse of Buckland's C++.

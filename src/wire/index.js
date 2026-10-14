@@ -27,7 +27,9 @@
 //   afterStep(app, dt)    each tick, after them (app.stepping: whether it stepped;
 //                         lightning, birds and their probe, multiplayer)
 //   compute(app)  in a presented frame, after FrameUniforms is written: E1
-//                 work that reads it (far-field upkeep, probes; post's compute hook)
+//                 work that reads it (far-field upkeep, probes; post's compute hook).
+//                 A mesh-only frame (gfx/meshFrames.js) keeps what the wires drew
+//                 into the scene pass, and skips the compute of a wire with a scene hook
 //   beforeView(app, dt)   in a presented frame, before it is drawn (signs, the
 //                 far field's view, figures' uniforms and external textures,
 //                 the held tool's target: app.viewmodel, app.glow)
@@ -37,6 +39,10 @@
 //   busy(app)     true while it animates or waits on something the frame
 //                 loop must keep ticking for (birds, POV, a session, rays):
 //                 otherwise a settled app stops its loop (deep idle, F7)
+//   meshesOnly    true when what busy() animates is three's meshes alone (the
+//                 birds), which it signals with app.requestMeshFrame(): the
+//                 frames may then keep the volume's scene (gfx/meshFrames.js);
+//                 any other busy wire makes every frame a full one
 //   invalidate(app)   graphics stopped: reject its outstanding reads
 // `app` is app.js's context (`ctx` there): J3's { gpu, three, sim, derived,
 // scene, camera, settings, pacer, post } (three is three.js's renderer, also

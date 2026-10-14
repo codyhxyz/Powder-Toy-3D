@@ -139,8 +139,9 @@ exact, rasterizes only the pixels the box covers with no classification pass, an
 compressed attachments on M1–M4. Compute raymarching is Phase 2.
 
 **W16. Post keeps the full- and half-resolution image passes as fragment passes and runs the small mips and the
-reductions in one compute pass.** TAA/TAAU, the bloom prefilter into `down[0]`, the final `up[0]` and the canvas
-composite are fragment passes into compressed attachments. Bloom levels 1–5 down and 4–1 up, the histogram,
+reductions in one compute pass.** The motion pass (three's TAAU's inputs), the bloom prefilter into `down[0]`, the
+final `up[0]` and the canvas composite are fragment passes into compressed attachments; three's TAAUNode resolves
+between the motion pass and the prefilter, in its own submits (`gfx/post.js`, `gpu/three.js createTemporalUpscaler`). Bloom levels 1–5 down and 4–1 up, the histogram,
 adaptation and meter run in a single compute pass between them: mips at 1/8 to 1/64 resolution gain nothing from
 compression, and each render pass is a full Metal render encoder (F7).
 
@@ -259,7 +260,9 @@ E1 (ours)   compute: POV edits, paint, N × step, lightning, window move, rays,
             ── only if three has something visible: flush; three.render(scene) into the scene target (its own
                submit); in POV three.render(viewmodels) into their MSAA target (its own submit) ──
 E2 (ours)   render:  rays overlay (only while rays are active; depthReadOnly)
-            render:  TAA/TAAU → history[next]; render: bloom prefilter → down[0]
+            render:  motion pass → TAAU's velocity and colour (the scene's size)
+            ── flush; three's TAAUNode: resolve → output size, history and previous-depth copies (its own submits) ──
+            render:  bloom prefilter → down[0]
             compute: bloom down 1–5, up 4–1; luminance grid, histogram, adaptation, meter
             render:  bloom up[0]
             render:  canvas pass (composite over the sky gradient, viewmodel composite, glow)
@@ -1008,8 +1011,8 @@ brick 1), counted twice each (B3).
   brush after it), because they are ours (`src/gfx/overlays.js`, `src/brush.js`). In box mode three has nothing
   visible, so the frame is one scene pass and one command buffer.
 - The rays overlay now draws after three's transparents (the constructions ghost): additive sprites over it. Accepted.
-- Render passes per presented frame: 1 (scene) + three's (0 in box mode) + 0–1 (overlay) + 3 post (TAA, prefilter,
-  `up[0]`) + 1 (canvas); compute passes: E1's + 1 (post).
+- Render passes per presented frame: 1 (scene) + three's (0 in box mode) + 0–1 (overlay) + 3 post (motion, prefilter,
+  `up[0]`) + three's TAAU (its resolve, in its own submits) + 1 (canvas); compute passes: E1's + 1 (post).
 
 ### F2. The volume pass
 
@@ -1055,10 +1058,11 @@ brick 1), counted twice each (B3).
 - **Y down.** Framebuffer and texture coordinates are top-left in WebGPU. Image passes use
   `uv = (pixel + 0.5) / size` with `uv.y = 0.5 − 0.5·ndc.y`. Per-pixel noise hashed from `position.xy` flips vertically
   against WebGL: accepted, not emulated. `renderThumb`'s CPU row flip (`app.js:1057-1060`) goes.
-- **Jitter.** Post keeps mutating `camera.projectionMatrix` in place (`post.js:884-900`): row 0 += `jx_ndc`·row 3,
-  row 1 += `jy_ndc`·row 3, with `jx_ndc = 2·jx/w` and `jy_ndc = −2·jy/h` for a pixel offset `(jx, jy)` measured with y
-  down. TAA's `uJitter` is that pixel offset. three reads the matrix at render time, so the meshes jitter with the
-  volume.
+- **Jitter.** The one jitter is three's TAAUNode's own (its Halton(2, 3) offsets): `post.beginScene` sets it as a
+  view offset on the camera (`Camera.setViewOffset`, through `gpu/three.js`; the camera keeps its own aspect) and
+  `endScene` clears it. Projection column 2 moves by `2·jx/w` and `−2·jy/h` for a pixel offset `(jx, jy)` measured
+  with y down: scene texel `m` sampled the view at `m + ½ + jitter`. `post.jitter` (`FrameUniforms.jitter`) is that
+  offset. three reads the matrix at render time, so the meshes jitter with the volume.
 
 ### F5. Shadow map, pick, thumbnails, screenshots
 
@@ -1128,11 +1132,12 @@ by the volume, shadow (writer variant), GI gather (writer variant), GI source, s
 ### F7. Post, pacing and the canvas
 
 - **Fragment passes** on a full-screen triangle, `loadOp: 'clear'` (they overwrite every pixel), into textures with
-  `RENDER_ATTACHMENT | TEXTURE_BINDING` only: TAA/TAAU → `history[next]`; the bloom prefilter → `down[0]` (half
-  resolution); after the compute pass, `up[0]` (half resolution, reading `up[1]` and `down[0]`).
+  `RENDER_ATTACHMENT | TEXTURE_BINDING` only: the motion pass → TAAU's velocity and colour (three's render targets);
+  the bloom prefilter → `down[0]` (half resolution); after the compute pass, `up[0]` (half resolution, reading `up[1]`
+  and `down[0]`). three's TAAUNode keeps its own history and resolve targets.
 - **One compute pass**: bloom down 1–5 and up 4–1 (each a dispatch reading the previous level with the same taps
   and weights as today's fragment filters, writing its own `rgba16float` storage texture; those levels are separate
-  textures, so adding `STORAGE_BINDING` never touches `history`, `down[0]` or `up[0]`, which keeps them compressible),
+  textures, so adding `STORAGE_BINDING` never touches `down[0]` or `up[0]`, which keeps them compressible),
   then, in one workgroup, the luminance grid, the 64-bin histogram (fixed-point `atomicAdd` in workgroup memory,
   weight·2²⁰, replacing f16 additive points), the adaptation update in place in a 16-byte storage buffer (no 1×1
   ping-pong), and the meter (16×16 tile sums reduced on the GPU). `post.adapting`, `post.adaptation` and
@@ -1159,7 +1164,8 @@ by the volume, shadow (writer variant), GI gather (writer variant), GI source, s
   multiplayer, rays), app.js stops scheduling `requestAnimationFrame`. `pacer.wake()`, every input listener, resize,
   `requestRender`, `sim.wake()`/`sim.edit`, a settings change and a resolving readback or pipeline restart it. A
   settled box scene then costs no CPU at all. The default World scene never settles: its birds wake the view every
-  tick and the full march re-runs at 60 Hz for a few small bird meshes. That is its dominant idle cost, left for K3.
+  tick and the full march re-runs at 60 Hz for a few small bird meshes. That is its dominant idle cost, left for K3
+  (now K3's mesh-only frames: the march's scene is kept while only the birds move).
 
 ### F8. Mesh materials (three, TSL)
 
@@ -1595,7 +1601,7 @@ gates before handing back. "GLSL" is the GLSL being replaced (measured from the 
 | **U2 Sim core** (GPU) | `src/sim.js`, `src/shaders/move.js`, `react.js`, `activity.js`, `passes.js` (paint, copy, fresh, awake), `window.js` (shift, undoShift, flowShift), `src/gfx/regions.js` (retire), `tools/sim-check.mjs` (new), `skip-model.mjs`, `activity-check.mjs`, `sleep-crossover.mjs`, `tools/harness/sim-*` (new), `tools/budgets/sim.mjs` | U0, U1 | ~1350 | **first**: react and the move ported mechanically and timed on SwiftShader; the move's code form fixed (D2) and recorded; then I2 stages at 32³/64³ in the harness with recorded ms/step per kernel and per-tool step budgets; activity-check `--harness` 0; skip-model with its negative controls; the sim bench page for checkpoint M1 |
 | **U3 Render library core** | `src/shaders/gfx/core.js`, `noise.js`, `lighting.js`, `crystal.js`, `clouds.js`, `src/shaders/gfx/lib.js` (new: `lib(g)` assembly), `src/shaders/farShared.js` (new: far layout, haze, casters and GI snippets, moved from `far.js`), `tools/lib-check.mjs` (new) | U0, U1 | ~1290 + ~150 far | a probe kernel calling every exported function validates and builds; spot values of noise, `sunBasis`, SH evaluation vs JS |
 | **U4 Derived** (GPU) | `src/derived.js` (new), `src/shaders/fields.js`, `src/shaders/passes.js` (brick, blur, brickDist, age, dirty), `tools/derived-check.mjs`, `derived-bench.mjs`, `tools/budgets/derived.mjs` | U2 | ~340 (+ ~400 JS from sim.js) | derived-check bit for bit in the harness, including a shift case; brick bits decode test; allocates the GI probe and light textures (zeros until U9) so the volume can bind them |
-| **U5 Render materials** | `src/shaders/gfx/surface.js`, `liquid.js`, `liquidDetail.js` (render part), `media.js`, `mediaDetail.js`, `relief.js`, `grains.js`, `plain.js`, `tools/material-lod-check.mjs` | U3 | ~3350 | every detail combination validates (check-wgsl a) in a probe kernel, builds where within budget; material-lod-check |
+| **U5 Render materials** | `src/shaders/gfx/surface.js`, `liquid.js`, `liquidDetail.js` (render part), `media.js`, `mediaDetail.js`, `relief.js`, `grains.js`, `tools/material-lod-check.mjs` | U3 | ~3350 | every detail combination validates (check-wgsl a) in a probe kernel, builds where within budget; material-lod-check |
 | **U6 Volume, shadow, pick, scene overlays** (GPU) | `src/shaders/render.js`, `src/views.js`, `src/gfx/uniforms.js`, `src/gfx/detail.js`, `src/gfx/detailGate.js`, `src/gfx/mediaNoise.js`, `src/gfx/coldShader.js`, `src/gfx/overlays.js` (new: floor grid, box edges), `src/brush.js`, `tools/compile-bench.mjs` (→ pipeline bench), `tools/detail-bench.mjs` | U3, U4, U5 | ~840 + brush | harness scene pass renders the plain view at 64³ and every view module that fits the budget (the rest on `WGSL_MAC_ONLY`, validated); shadow (both textures) and pick kernels against a known scene; grid, edges and brush drawn in the scene pass |
 | **U7 Post, pacing, profiler** | `src/gfx/post.js`, `src/gfx/pacing.js`, `src/gfx/profiler.js`, `src/ui/profiler.js`, `src/gfx/programs.js` (delete), `tools/resolution-check.mjs`, `profile-check.mjs`, `tools/budgets/post.mjs` | U0 | ~500 | post on a synthetic scene target in a 400×250 viewport: TAA converges, adaptation reads back, 3 render + 1 compute pass, the opaque canvas presents the sky gradient; createViewKey's counter changes exactly when the old string would (a test over recorded inputs); resolution-check |
 | **U8 App integration** (GPU) | `src/app.js`, `src/main.js`, `src/launch.js`, `src/preload.js`, `src/ui/topbar.js`, `index.html`, `src/wire/*.js` (new: creates every wire module, J3), `tools/headless-check.mjs`, `tools/gpu-failure-check.mjs`, `tools/idle-check.mjs`, `tools/regress.mjs`, `tools/smoke.mjs` (new), `tools/budgets/app.mjs` | U2, U4, U6, U7 | 0 | the box app boots (`?view=plain` in the container; other views as U6 built them); `__app.test.ready()`, `test.renderOnce()`, `__app.view`, `?win=`; deep idle: 0 submits and 0 rAF callbacks when settled (idle-check); headless-check, gpu-failure-check, smoke (box presets) with the allowlist; budgets for the settled box scene and a box view frame (1 submit) |
@@ -1728,14 +1734,20 @@ a second code path (subgroups, `shader-f16`) has to be a clear win to earn its t
   bricks on the GPU and read back only changed ones. No zero-copy access is needed for this (W6 stands).
 - **Mesh-only frames.** When only three's meshes move (the default World scene's birds, with camera and sim still),
   keep the converged pre-mesh scene (colour and depth) and re-run only the mesh layer and post instead of the volume
-  and far march at 60 Hz: the dominant power cost of the default scene. Render-only.
+  and far march at 60 Hz: the dominant power cost of the default scene. Render-only. Landed (`src/gfx/meshFrames.js`):
+  a capture of the TAA settle count accumulates the uncut scene at output size, as TAAU reconstructs it, and later
+  frames restore it at their jitter, three's meshes depth-tested over it (behind translucent water they are hidden
+  rather than tinted: S1's cut only on full frames); the sim clock's animation holds meanwhile, as in deep idle.
 - **Toroidal world windows** (x and z ring addressing in supertile units): a move rewrites only the entering slab,
   with no shift and no full derived rebuild. W10's index rule keeps it to `brickId`/`brickCoord`, `world/window.js` and
   the 3D-texture samplers (clamp the logical coordinate, then wrap with `repeat`). Not waking the whole grid after a
   move changes quiet-skip drift: decide then.
 - **Compact id volume for the march**: ids packed 4 per `u32` in brick order, written where the derived pass knows
   bricks changed; the DDA's hot fetch drops from 16 B and ~15 integer operations to 1 B. Same for pick, shadow and the
-  sign probe. Render-only.
+  sign probe. Render-only. *Done for the realistic view's march and the shadow map* (`shaders/occupancy.js`: a 64-bit
+  occupancy mask and 64 id bytes per brick, in the brickDist buffer, rebuilt with the brick map; empty cells of crisp-only
+  bricks are passed without the cell body). Pick stays exact cell by cell on the state (it must not wait for the brick
+  map); the data views, the GI gather, the POV trace, the sign probe and the shading's secondary walks still read A.
 - D7 packed state and packed flags; with it, `moveSrc`'s 3 bits move into the flow word's unused f16 lane (one buffer,
   one binding and 4 B per cell per step less on the Whitewater path).
 - `shader-f16` paths for fields, light, GI, post and the volume's shading; subgroup reductions and ballot compaction.
@@ -1797,8 +1809,8 @@ parallel.
   Crossing's rolling log bends the shown world, physics stays flat). `main` patched three's materials with
   `onBeforeCompile`, which WebGPURenderer never runs. The port bends meshes through TSL instead: a bend chained onto each
   node material's clip position. The volume, the pick, the far view and the plain view get curved variants (the
-  displayed ray walked as chords of its parabola), and TAA reprojects through unwarp and the last frame's warp, within
-  `TaaParams`' 256 B. The mesh cut is off while curved, as in `main`. Boot, `openMap` and the menu warm-up select the
+  displayed ray walked as chords of its parabola), and the motion pass (three's TAAU's velocity) reprojects through
+  unwarp and the last frame's warp, within `MotionParams`' 256 B. The mesh cut is off while curved, as in `main`. Boot, `openMap` and the menu warm-up select the
   mode's effect before the grid is built, so the curved variants compile behind the loading screen. Still unbent:
   remote cursors, the rays' sprites, the floor grid, the box edges and the brush shapes (a box only shows the last three
   when the effect is forced on it).

@@ -4,6 +4,7 @@ import { ELEMENTS, E, K } from '../../elements.js';
 import { GRAVITY } from './physics.js';
 import { hullSamples, hullMatter } from './matter.js';
 import { yawQuat } from './jeep.js';
+import { seatedDriver } from './look.js';
 
 // The hoverbike: a rigid body held up by ray springs, Halo's Ghost by way of
 // every hover racer (WipEout, F-Zero GX): four rays straight down from its
@@ -67,7 +68,12 @@ const HULL_SAMPLES = [2, 1, 3];
 
 const COLOR = {
   body: '#5c6670', trim: '#2c3036', seat: '#2a2320', red: '#c8352b', blue: '#2f6fd0', neutral: '#d0a030',
-  glow: [1.2, 4.5, 7], robe: '#5a3d8a', face: '#121014', eyes: [4, 7, 8],
+  glow: [1.2, 4.5, 7],
+};
+// m, the seated rider (look.js seatedDriver), leant forward to the bars
+const DRIVER = {
+  robe: [0.2, 0.28, 0.55], robeAt: [0, 0.3, 0.05], head: 0.25, headAt: [0, 0.75, 0.15], hat: [0.22, 0.5], hatAt: [0, 1.08, 0.1],
+  face: 0.18, faceAt: [0, 0.73, 0.26], eye: 0.032, eyeAt: [0.07, 0.77, 0.42],
 };
 
 // the first thing under (x, y, z) (cells), within LIQUID_PROBE: is it a liquid?
@@ -198,14 +204,6 @@ function bikeModel(look, team) {
       pads.push(p);
     }
   }
-  const driver = new THREE.Group();
-  at(driver, ...HOVERBIKE.SEAT);
-  look.part(driver, new THREE.CylinderGeometry(0.2, 0.28, 0.55, 10), COLOR.robe).position.set(0, 0.3, 0.05);
-  look.part(driver, new THREE.SphereGeometry(0.25, 12, 10), COLOR.robe).position.set(0, 0.75, 0.15);
-  look.part(driver, new THREE.ConeGeometry(0.22, 0.5, 10), COLOR.robe).position.set(0, 1.08, 0.1);
-  at(look.part(driver, new THREE.SphereGeometry(0.18, 10, 8), COLOR.face, { edge: false }), 0, 0.73, 0.26);
-  for (const x of [-0.07, 0.07]) at(look.glow(driver, new THREE.SphereGeometry(0.032, 6, 4), COLOR.eyes), x, 0.77, 0.42);
-  driver.visible = false;
-  show.add(driver);
+  const driver = seatedDriver(look, show, HOVERBIKE.SEAT, DRIVER);
   return { root, driver, show, pads };
 }

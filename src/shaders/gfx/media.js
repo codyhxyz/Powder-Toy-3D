@@ -24,7 +24,9 @@
 // the smooth gas, with transport-reduced extinction) beyond SELF_SHADOW_DIST,
 // times one sample of the detailed gas before that: billows shade themselves.
 // Sky light is attenuated by the gas above; the glow volume (fire, lava)
-// scatters isotropically.
+// scatters isotropically. The hand lamps and wall torches light the gas as the
+// sun does (gasLamps: Unreal's Volumetric Fog with local lights), unshadowed
+// by walls but windowed to their reach.
 // Flames are soot: sheets with a sharp edge that rise in tongues, absorbing and
 // emitting blackbody light (Kirchhoff) at the temperature of the burning gas,
 // hotter in the core, with a flicker. Tongues are sized like a real fire's
@@ -171,11 +173,7 @@ fn gasDensity(p0: vec3f, warp: f32, m: ptr<function, vec4f>, nf: ptr<function, v
   return d;
 }
 
-fn hgPhase(mu: f32, g: f32) -> f32 {
-  let k = 1.0 + g * g - 2.0 * g * mu;
-  return (1.0 - g * g) / (4.0 * PI_L * k * sqrt(k));
-}
-fn gasPhase(mu: f32, g: f32) -> f32 { return mix(hgPhase(mu, PHASE_BACK_G * g), hgPhase(mu, g), PHASE_FWD_W); }
+fn gasPhase(mu: f32, g: f32) -> f32 { return hgPhase2(mu, PHASE_BACK_G * g, g, PHASE_FWD_W); }
 
 // Skylight (the gas above shades it) plus the glow volume, scattered.
 fn gasAmbient(p: vec3f) -> vec3f {
@@ -203,10 +201,43 @@ fn gasSun(p: vec3f, sigT: f32) -> vec3f {
   return T * exp(-dot(MD_EXT, d) * SELF_SHADOW_DIST);
 }
 
-// Heat shimmer: hot air has a lower refractive index, so rays bend. Returns
-// the (possibly perturbed) primary ray direction for the box span [t0, t1].
-fn hazeBend(ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> vec3f {
-  return rd;
+// The hand lamps' and wall torches' light scattered toward the eye at p (gas
+// of extinction sigT, scattering mean anisotropy g, octave energy factor bMul:
+// the sun's), as Unreal's Volumetric Fog lights its fog with local lights
+// (Wronski 2014, "Volumetric Fog", SIGGRAPH Advances): each lamp's falloff
+// (lighting.js lampFall, from its tube's nearest point) times the phase toward
+// it, octave by octave as the sun's, in the sunlight's units (FU.sunCol's,
+// irradiance / pi). The gas between p and the lamp shades it by one sample of
+// the smooth field halfway there (the midpoint rule), as the sun's near gas
+// does (gasSun), and thin gas not at all; walls don't (Unreal's local lights
+// without volumetric shadows), so the light is windowed to the lamp's reach.
+fn gasLamps(p: vec3f, rd: vec3f, sigT: f32, g0: f32, bMul: f32) -> vec3f {
+  var sum = vec3f(0.0);
+  for (var i = 0; i < LAMP_MAX; i++) {
+    if (i >= FU.lampCount) { break; }
+    let q = lampNearest(i, p);
+    let dv = q - p;
+    let d2 = dot(dv, dv);
+    let R = FU.lampPos[i].w;
+    if (d2 >= R * R || !lampLive(i)) { continue; }
+    let d = sqrt(d2);
+    let mu = dot(rd, dv) * inverseSqrt(max(d2, 1e-8));   // (lighting.js lampSeen's guard)
+    var Tl = 1.0;
+    if (sigT >= SELF_SHADOW_MIN_SIGMA) {
+      Tl = exp(-dot(MD_EXT, gasBase(mediaField(0.5 * (p + q)))) * d);
+    }
+    var L = 0.0;
+    var g = g0;
+    var b = 1.0;
+    for (var k = 0; k < MS_OCTAVES; k++) {
+      L += b * gasPhase(mu, g) * Tl;
+      b *= bMul;
+      g *= MS_C;
+      Tl = sqrt(Tl);
+    }
+    sum += FU.lampCol[i].rgb * lampFall(d2, R, FU.lampShape[i].x) * L;
+  }
+  return sum;
 }
 
 // Integrate the media over the ray segment [ta, tb]. *next is the next
@@ -241,7 +272,8 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
       // sun, octave by octave: each sees half the optical depth (sqrt of T)
       var Ts = gasSun(p, sigT);
       var Lsun = vec3f(0.0);
-      var g = dot(sigS2, MD_G.xy) / sigS;
+      let g0 = dot(sigS2, MD_G.xy) / sigS;
+      var g = g0;
       var b = 1.0;
       let bMul = MS_B * sigS / sigT;
       for (var i = 0; i < MS_OCTAVES; i++) {
@@ -251,8 +283,10 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
         Ts = sqrt(Ts);
       }
       if (amb.x < 0.0) { amb = gasAmbient(ro + rd * (0.5 * (ta + tb))); }
-      // FU.sunCol is irradiance / pi
-      S = sigS * (PI_L * FU.sunCol * Lsun + amb);
+      // FU.sunCol is irradiance / pi; so is a lamp's colour × falloff
+      var Llamp = vec3f(0.0);
+      if (FU.lampCount > 0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }
+      S = sigS * (PI_L * (FU.sunCol * Lsun + Llamp) + amb);
     }
     if (sig.z > 0.0 && m.z > FLAME_MIN_FIRE) {
       // flames: soot emits blackbody light at the burning gas's temperature

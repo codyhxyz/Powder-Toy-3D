@@ -18,6 +18,9 @@ import { unlitMaterial } from '../../gfx/meshLight.js';
 
 const OUTLINE_M = 0.045;                 // m, the outline's thickness (figure.js draws the wizard's at ~0.05 m)
 const CHAR_ALBEDO = 0.12;                // share of its colour a burnt-out wreck keeps
+const DRIVER_COLOR = { robe: '#5a3d8a', face: '#121014', eyes: [4, 7, 8] };   // the seated wizard's (linear HDR eyes)
+const DRIVER_SEGMENTS = 10;              // around his robe, hat and face (his head two more)
+const EYE_SEGMENTS = 6;                  // around each eye
 
 const OUTLINE_MAT = unlitMaterial({ color: 0x000000, side: THREE.BackSide });
 const linear = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };   // THREE.Color is linear
@@ -75,4 +78,23 @@ export function createLook() {
     ember(r, g, b) { u.emit.value.set(r, g, b); },
     dispose() { for (const m of byColor.values()) m.dispose(); },
   };
+}
+
+// The driver: a seated wizard (the player's look) at seat ([x, y, z], m, his
+// hips) on parent, built with look's part and glow, hidden until someone
+// drives. fig sizes him for the seat (m): { robe: [top r, bottom r, height],
+// head: r, hat: [r, height], face: r, eye: r, and each part's centre at robeAt,
+// headAt, hatAt, faceAt, eyeAt (the right eye's; the left mirrors it) }.
+export function seatedDriver(look, parent, seat, fig) {
+  const driver = new THREE.Group();
+  driver.position.set(...seat);
+  look.part(driver, new THREE.CylinderGeometry(...fig.robe, DRIVER_SEGMENTS), DRIVER_COLOR.robe).position.set(...fig.robeAt);
+  look.part(driver, new THREE.SphereGeometry(fig.head, DRIVER_SEGMENTS + 2, DRIVER_SEGMENTS), DRIVER_COLOR.robe).position.set(...fig.headAt);
+  look.part(driver, new THREE.ConeGeometry(...fig.hat, DRIVER_SEGMENTS), DRIVER_COLOR.robe).position.set(...fig.hatAt);
+  look.part(driver, new THREE.SphereGeometry(fig.face, DRIVER_SEGMENTS, DRIVER_SEGMENTS - 2), DRIVER_COLOR.face, { edge: false }).position.set(...fig.faceAt);
+  const [ex, ey, ez] = fig.eyeAt;
+  for (const x of [-ex, ex]) look.glow(driver, new THREE.SphereGeometry(fig.eye, EYE_SEGMENTS, EYE_SEGMENTS - 2), DRIVER_COLOR.eyes).position.set(x, ey, ez);
+  driver.visible = false;
+  parent.add(driver);
+  return driver;
 }

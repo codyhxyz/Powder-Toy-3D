@@ -8,6 +8,7 @@ import { beamTargets, PLAYER } from '../targets.js';
 import { toolDt } from './action.js';
 import { gear } from './catalog.js';
 import { bodyExit } from './transfer.js';
+import { gridSpace } from '../space.js';
 
 // Laser cannon: Halo's Spartan Laser. Hold left-click to charge it; it fires
 // itself the moment the charge is full, and letting go before that cancels
@@ -62,6 +63,7 @@ export default {
   ...gear('LASER'),
   create(env) {
     const rig = viewmodelRig(env);
+    const { toWorld } = gridSpace(env);
     const hand = rig.hand(HELD_POS);
     const muzzle = new THREE.Object3D();
     muzzle.position.set(...MUZZLE);
@@ -97,7 +99,7 @@ export default {
       shots.push(shot);
       reach.then((r) => { shot.reach = Math.min(Math.max(r.reach, 0), LASER.LENGTH); shot.stopId = r.stopId; },
         () => { shots.splice(shots.indexOf(shot), 1); });   // (graphics stopped: the shot is gone with the world)
-      povEvents.emit('tool:action', { tool: 'laser', action: 'fire' });
+      env.feedback?.act('fire');
       povEvents.emit('gun:fire', { origin: from.clone(), dir: dir.clone(), muzzleWorld, gun: 'LASER', sound: { voice: 'laserFire', rate: 1, gain: 1.4, thump: 2.5 } });
       povEvents.emit('shake', { trauma: SHAKE });
       return true;
@@ -116,7 +118,6 @@ export default {
             povEvents.emit('impact', { source: 'laser', point: h.point.clone(), normal: dir.clone().negate(), id: -1, energy: LASER.ENERGY, broke: null, body: true });
           }
           lastShot = { from: from.clone(), dir: dir.clone(), reach, stopId, end: end.clone(), hits: hits.map((h) => h.target.id) };
-          const toWorld = (g) => g.clone().multiplyScalar(env.getScale()).add(env.getVolume().position);
           povEvents.emit('laser', { from: muzzleWorld ?? toWorld(from), to: toWorld(end), dir: dir.clone(), radius: LASER.CORE_RADIUS * env.getScale(), hit: reach < LASER.LENGTH });
         });
       }
@@ -129,12 +130,12 @@ export default {
       const from = muzzle.getWorldPosition(new THREE.Vector3());
       const a = ctx.aim;
       const dist = a?.valid && Number.isFinite(a.dist) ? Math.min(a.dist, LASER.LENGTH) : LASER.LENGTH;
-      const to = ctx.eye.clone().addScaledVector(ctx.dir.clone().normalize(), dist).multiplyScalar(env.getScale()).add(env.getVolume().position);
+      const to = toWorld(ctx.eye.clone().addScaledVector(ctx.dir.clone().normalize(), dist));
       povEvents.emit('laser:aim', { from, to, amount });
     }
 
     function cancel() {
-      if (charge > 0) povEvents.emit('tool:action', { tool: 'laser', action: 'cancel' });
+      if (charge > 0) env.feedback?.act('cancel');
       charge = 0;
     }
 
@@ -147,7 +148,7 @@ export default {
         standby = Math.max(0, standby - dt);
         if (!ctx.primary) { cancel(); armed = true; }
         else if (armed && standby <= 0) {
-          if (charge === 0) povEvents.emit('tool:action', { tool: 'laser', action: 'charge' });
+          if (charge === 0) env.feedback?.act('charge');
           charge += dt;
           povEvents.emit('laser:charge', { amount: Math.min(1, charge / CHARGE_S), dt });
           aim(ctx, Math.min(1, charge / CHARGE_S));

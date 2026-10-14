@@ -1,3 +1,5 @@
+import { glf } from '../glsl.js';
+
 // Incandescence: the light a hot opaque body gives off, as a table over
 // temperature that the shaders interpolate (common.js, incandescence(); the
 // table rides in the element tables' buffer, INCAND_TAB(i)).
@@ -32,7 +34,7 @@ export const INCAND = {
   SKIN_DROP: 200,
 };
 
-const LUMA = [0.2126, 0.7152, 0.0722];   // Rec.709 luminance weights (linear sRGB)
+export const LUMA_709 = [0.2126, 0.7152, 0.0722];   // Rec.709 luminance weights (linear sRGB; WGSL: LUMA_709 in shaders/common.js)
 const LAMBDA = [360, 830, 1];            // nm: integration range and step
 export const KELVIN = 273.15;            // °C to K (WGSL: C_TO_K in shaders/common.js)
 // physical constants (SI) and the luminous efficacy of 555 nm light
@@ -73,11 +75,14 @@ function colourOf(spd) {
     cmf(l).forEach((v, k) => { xyz[k] += KM * p * v; });
   }
   const rgb = XYZ_TO_SRGB.map((row) => Math.max(0, row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]));
-  const y = rgb.reduce((s, v, k) => s + v * LUMA[k], 0);
+  const y = rgb.reduce((s, v, k) => s + v * LUMA_709[k], 0);
   return { chroma: rgb.map((v) => v / y), lum: xyz[1] };
 }
 // blackbody at tC (°C)
 const blackbody = (tC) => colourOf((l) => planck(l, tC + KELVIN));
+// The colour of a blackbody at tK (kelvin): linear sRGB of unit luminance (a flame's
+// light, gfx/lamps.js FLAME_COLOR). Unreal's light Temperature is the same idea.
+export const blackbodyChroma = (tK) => colourOf((l) => planck(l, tK)).chroma;
 
 // Luminescence (gfx/materials.js emit): a mineral's emission band, a Gaussian
 // peaking at peak nm, fwhm nm wide, through the same colour matching. Returns
@@ -104,7 +109,7 @@ export const INCAND_TABLE = (() => {
   });
 })();
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(+x.toPrecision(TABLE_DIGITS)));
+const f = (x) => glf(Number.isInteger(x) ? x : +x.toPrecision(TABLE_DIGITS));
 
 // The table as the GPU holds it (shaders/common.js tablesWGSL: incand, an
 // array of INCAND.N vec4f): each knot at TABLE_DIGITS significant digits.

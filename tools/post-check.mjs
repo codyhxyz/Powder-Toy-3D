@@ -1,7 +1,7 @@
 // Post check (docs/webgpu.md U7's acceptance): src/gfx/post.js on its harness
 // page (tools/harness/post.html), a synthetic scene target at 400×250, no app.
 //
-//   passes      a presented frame is the scene pass, 3 render passes and 1
+//   passes      a presented frame is the scene pass, 4 render passes and 1
 //               compute pass of post's, and the canvas pass: one submit. An E1
 //               kernel that reads FrameUniforms, recorded in compute() after
 //               prepare()'s write, sees this frame's jitter and pixScale, and the
@@ -30,9 +30,10 @@
 //   chain       the plane over the sky (TAA, bloom, sharpening): each bloom level
 //               (prefilter, down 1–5, up 4–1, up[0]) against the WGSL's taps and
 //               weights in JS from the GPU's level before, its energy, and every
-//               canvas pixel against the composite in JS (CAS, the bloom term,
-//               AgX, sRGB, the sky behind partial coverage, the dither) from the
-//               GPU's resolved frame and up[0]; with stronger settings again
+//               canvas pixel against the composite in JS (CAS, the bloom term: one
+//               bilinear tap of up[0]'s 3×3 tent, AgX, sRGB, the sky behind partial
+//               coverage, the dither) from the GPU's resolved frame and up[0]; with
+//               stronger settings again, and upscaled (TAAU at 1/1.5)
 //   canvas      an empty scene: the opaque canvas presents the sky gradient (alpha
 //               255; the capture against this file's gradient and against
 //               Playwright's screenshot of the page, and Chrome's own rendering of
@@ -53,6 +54,19 @@ import { SKY, ADAPT, POST_DEFAULTS, NV_PHOSPHOR, MIPS } from '../src/gfx/post.js
 import { halfToFloat } from '../src/gpu/readback.js';
 
 const argv = process.argv.slice(2);
+// three's TAAU (gfx/post.js, gpu/three.js): a frame's submits with it, ours before it (the scene and the
+// motion pass), its resolve and its two copies (the history, the previous depth), ours after…
+const TAAU_SUBMITS = 5;
+const TAAU_CYCLE = 32;   // …and its jitter's cycle, frames (TAAUNode's 32 Halton offsets)
+// frames a still view gets to settle: TAAUNode's current-frame weight (0.025) takes ~3× the
+// frames of the old resolve's 0.07
+const TAAU_SETTLE_FRAMES = 256;
+// The frame after a jump, against the still view's error: three's TAAU samples its history
+// bilinearly (the old resolve used Catmull-Rom), so a jump softens the next frame
+const MOVED_SOFTER = 1.5;
+// The meter reads TAAU's resolve: its half-float history stalls within an f16 step over the
+// current-frame weight of the scene's value (2⁻¹¹ / 0.025 ≈ 2e-2 of an ulp's share: under 1e-3)
+const METER_TOLERANCE = 1e-3;
 const ONLY = argv.includes('--only') ? argv[argv.indexOf('--only') + 1].split(',') : null;
 let failures = 0;
 const check = (ok, line) => { if (!ok) failures++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${line}`); };
@@ -189,8 +203,15 @@ function ign(x, y) {
   const a = r(r(r(x) * r(0.06711056)) + r(r(y) * r(0.00583715)));
   return fract(r(r(52.9829189) * r(fract(a))));
 }
-// one canvas pixel (0..255, before the 8-bit rounding) from the resolved frame and up[0]
-function compositeAt(hist, up0, s, x, y, noise = ign(x, y)) {
+// the bloom pass: up[0]'s 3×3 tent (1-2-1 ⊗ 1-2-1) on its texel grid, edges clamped; the
+// composite takes one bilinear tap of it (the old nine-tap tent9 of up[0], inside the frame)
+const tentRef = (src) => makeImage(src.w, src.h, (x, y) => {
+  let acc = [0, 0, 0];
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) acc = addTo(acc, texelAt(src, x + i, y + j), (2 - Math.abs(i)) * (2 - Math.abs(j)) / 16);
+  return acc;
+});
+// one canvas pixel (0..255, before the 8-bit rounding) from the resolved frame and the bloom image (tentRef of up[0])
+function compositeAt(hist, bloom, s, x, y, noise = ign(x, y)) {
   const u = (x + 0.5) / hist.w, v = (y + 0.5) / hist.h;
   const c = sanitize(texelAt(hist, x, y));
   let rad = c.slice(0, 3);
@@ -208,7 +229,7 @@ function compositeAt(hist, up0, s, x, y, noise = ign(x, y)) {
     rad = t.map((z) => z / lt);
   }
   if (s.bloom > 0 && !s.raw) {
-    const b = tent9(up0, u, v), br = bright(c, [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)]);
+    const b = sample(bloom, u, v), br = bright(c, [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)]);
     rad = rad.map((z, k) => z + s.bloom * (b[k] - br[k]));
   }
   let o = s.raw ? srgb(rad.map((z) => clamp(z, 0, 1))) : srgb(tonemap(rad.map((z) => Math.max(z, 0) * 2 ** s.exposure), s));
@@ -234,20 +255,20 @@ try {
   if (want('passes')) {
     console.log('\npasses');
     const { stats } = await run('budget:frame');
-    check(stats.renderPasses === 5 && stats.computePasses === 1 && stats.submits === 1,
-      `a presented frame: ${stats.renderPasses} render passes (scene + taa, prefilter, bloom up0 + canvas), ${stats.computePasses} compute pass, ${stats.submits} submit`);
-    check(stats.dispatches === 10 && stats.draws === 5, `${stats.dispatches} dispatches (bloom down 5, up 4, reduce 1), ${stats.draws} draws (scene 1 + post 4)`);
+    check(stats.renderPasses === 6 && stats.computePasses === 1 && stats.submits === TAAU_SUBMITS,
+      `a presented frame: ${stats.renderPasses} render passes (scene + motion, prefilter, bloom up0, bloom + canvas), ${stats.computePasses} compute pass, ${stats.submits} submit`);
+    check(stats.dispatches === 10 && stats.draws === 6, `${stats.dispatches} dispatches (bloom down 5, up 4, reduce 1), ${stats.draws} draws (scene 1 + post 5)`);
     check(stats.bytesAllocated === 0 && stats.pipelinesCreated === 0, `nothing allocated or built per frame (${stats.bytesAllocated} B, ${stats.pipelinesCreated} pipelines)`);
     for (const upscale of [1, 1 / 1.5]) {
       const r = await run('frameUniforms', { route: 'hooks', upscale });
       const [jx, jy, pix, p20] = r.seen;
-      const want = [r.jitter[0], r.jitter[1], r.inSize[0] / r.size[0], -2 * r.jitter[0] / r.inSize[0]];
+      const want = [r.jitter[0], r.jitter[1], r.inSize[0] / r.size[0], 2 * r.jitter[0] / r.inSize[0]];   // (three's view offset: +2·jx/w in column 2)
       const same = r.seen.every((x, i) => Math.abs(x - want[i]) < 1e-6);
-      check(same && r.stats.submits === 1 && r.stats.writeFlushes === 0 && r.jitter.some((j) => j !== 0),
+      check(same && r.stats.submits === TAAU_SUBMITS && r.stats.writeFlushes === 0 && r.jitter.some((j) => j !== 0),
         `E1's FrameUniforms reader in compute() after prepare()'s write (upscale ${r5(upscale)}): it saw this frame's jitter ${[jx, jy].map(r5)} (${r.jitter.map(r5)}), pixScale ${r5(pix)}, the jittered projection [2][0] ${r5(p20)} (${r5(want[3])}); ${r.stats.submits} submit, ${r.stats.writeFlushes} write flushes`);
     }
     const c = await run('frameUniforms', { route: 'before' });
-    check(c.stats.writeFlushes === 1 && c.stats.submits === 2 && Math.abs(c.seen[0] - c.jitter[0]) > 1e-3,
+    check(c.stats.writeFlushes === 1 && c.stats.submits === TAAU_SUBMITS + 1 && Math.abs(c.seen[0] - c.jitter[0]) > 1e-3,
       `control, the reader recorded before render(): the write flushes (${c.stats.writeFlushes}), ${c.stats.submits} submits, and it saw the frame before's jitter ${r5(c.seen[0])} (this frame's ${r5(c.jitter[0])})`);
   }
 
@@ -261,9 +282,9 @@ try {
 
   if (want('taa')) {
     console.log('\ntaa (still camera; error: mean |Δ| of c/(1+luma) against the 8×8-supersampled reference)');
-    const r = await run('taa', { frames: 128, every: 16 });
+    const r = await run('taa', { frames: TAAU_SETTLE_FRAMES, every: TAAU_CYCLE });
     const last = r.curve.at(-1), first = r.curve[1];
-    console.log(`     aliased frame ${r5(r.alias.rgb)}; TAA by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ16 ${r5(c.delta)})`}`).join(', ')}`);
+    console.log(`     aliased frame ${r5(r.alias.rgb)}; TAA by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ${TAAU_CYCLE} ${r5(c.delta)})`}`).join(', ')}`);
     check(last.rgb < 0.8 * r.alias.rgb, `TAA converges nearer the reference than the aliased frame: ${r5(last.rgb)} < 0.8 × ${r5(r.alias.rgb)} (alpha ${r5(last.alpha)} vs ${r5(r.alias.alpha)})`);
     check(last.delta < 3e-4 && last.delta < first.delta / 4, `and settles: the change over a jitter cycle falls from ${r5(first.delta)} to ${r5(last.delta)}`);
     const none = (await run('taa', { frames: 96, jitterSign: 0 })).curve.at(-1);
@@ -277,7 +298,7 @@ try {
     for (const [label, arg] of [['3 px diagonal jump', { kind: 'pan', moving: 1, step: 0.06, axes: [1, 0.7] }], ['dolly jump (2.4% closer)', { kind: 'dolly', moving: 1, step: 0.1 }]]) {
       const ok = await run('motion', arg);
       const ctrl = await run('motion', { ...arg, control: true });
-      check(ok.moved.rgb < 1.25 * ok.static.rgb && ctrl.moved.rgb > 1.8 * ok.moved.rgb,
+      check(ok.moved.rgb < MOVED_SOFTER * ok.static.rgb && ctrl.moved.rgb > 1.8 * ok.moved.rgb,
         `${label}: ${r5(ok.moved.rgb)} after (still ${r5(ok.static.rgb)}); unaware of the motion ${r5(ctrl.moved.rgb)}`);
     }
     const pan = await run('motion', { kind: 'pan', moving: 64 });
@@ -287,9 +308,9 @@ try {
 
   if (want('taau')) {
     console.log('\ntaau (upscale 1/1.5)');
-    const r = await run('taa', { upscale: 1 / 1.5, frames: 192, every: 48 });
+    const r = await run('taa', { upscale: 1 / 1.5, frames: TAAU_SETTLE_FRAMES, every: 2 * TAAU_CYCLE });
     const last = r.curve.at(-1);
-    console.log(`     scene ${r.inSize.join('×')} → ${r.size.join('×')}; by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ48 ${r5(c.delta)})`}`).join(', ')}`);
+    console.log(`     scene ${r.inSize.join('×')} → ${r.size.join('×')}; by frame: ${r.curve.map((c) => `${c.k}: ${r5(c.rgb)}${c.delta == null ? '' : ` (Δ${2 * TAAU_CYCLE} ${r5(c.delta)})`}`).join(', ')}`);
     check(last.delta < 5e-4 && r.inSize[0] === 267 && r.inSize[1] === 167, `TAAU settles from ${r.inSize.join('×')} samples: change over a cycle ${r5(last.delta)}; error ${r5(last.rgb)} (native aliased ${r5(r.alias.rgb)})`);
   }
 
@@ -320,7 +341,7 @@ try {
     console.log('\nmeter');
     const L = 0.04;
     const m = await run('meter', { L });
-    check(m.luma != null && Math.abs(m.luma / f16(L) - 1) < 1e-4, `post.sceneLuma of a uniform ${L}: ${m.luma} (its half float ${f16(L)})`);
+    check(m.luma != null && Math.abs(m.luma / f16(L) - 1) < METER_TOLERANCE, `post.sceneLuma of a uniform ${L}: ${m.luma} (its half float ${f16(L)})`);
     const u = await run('meter', { L, a: 0.3 });
     check(u.luma === null, `under the coverage threshold: ${u.luma}`);
   }
@@ -363,10 +384,15 @@ try {
 
   if (want('chain')) {
     console.log('\nchain (the plane over the sky: each bloom level from the GPU\'s level before, every canvas pixel from the GPU\'s resolved frame and up[0])');
-    for (const [label, settings] of [['defaults (adaptation held at 1)', {}], ['bloom 1, sharpen 1, look 0, exposure +1.5', { bloom: 1, sharpen: 1, look: 0, exposure: 1.5 }]]) {
+    const chains = [
+      ['defaults (adaptation held at 1)', {}],
+      ['bloom 1, sharpen 1, look 0, exposure +1.5', { bloom: 1, sharpen: 1, look: 0, exposure: 1.5 }],
+      ['upscaled 1/1.5', { upscale: 1 / 1.5 }],
+    ];
+    for (const [label, settings] of chains) {
       const r = await run('chain', { settings });
       const s = r.settings;
-      const hist = image(r.history), down = r.down.map(image), up = r.up.map(image);
+      const hist = image(r.history), down = r.down.map(image), up = r.up.map(image), bloom = tentRef(up[0]);
       const th = [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)];
       const levels = [['prefilter', prefilterRef(hist, down[0].w, down[0].h, th), down[0]]];
       for (let i = 1; i < MIPS; i++) levels.push([`down ${i}`, downRef(down[i - 1], down[i].w, down[i].h), down[i]]);
@@ -374,7 +400,7 @@ try {
       const errs = levels.map(([name, ref, got]) => ({ name, ...levelError(ref, got) }));
       const worst = errs.reduce((a, b) => (b.rel > a.rel ? b : a));
       console.log(`     ${label}: ${errs.map((e) => `${e.name} ${e.rel.toExponential(1)}`).join(', ')} (mean relative error)`);
-      check(errs.every((e) => e.rel < 2e-3 && e.max < 2e-3), `${label}: 11 bloom levels match the taps and weights, worst ${worst.name}: relative ${worst.rel.toExponential(2)}, max |Δ| ${Math.max(...errs.map((e) => e.max)).toExponential(2)} (half floats)`);
+      check(errs.every((e) => e.rel < 2e-3 && e.max < 2e-3), `${label}: ${levels.length} bloom levels match the taps and weights, worst ${worst.name}: relative ${worst.rel.toExponential(2)}, max |Δ| ${Math.max(...errs.map((e) => e.max)).toExponential(2)} (half floats)`);
       const mean = (t) => { let m = 0; for (let i = 0; i < t.d.length; i += 4) m += t.d[i] + t.d[i + 1] + t.d[i + 2]; return m / (t.d.length / 4); };
       const energy = mean(up[0]) / mean(down[0]);
       check(Math.abs(energy - 1) < 0.03 && mean(down[0]) > 1e-3, `${label}: the chain keeps the bright part's energy: mean up[0] / mean down[0] = ${energy.toFixed(4)}`);
@@ -384,9 +410,9 @@ try {
       for (let y = 0; y < r.canvas.h; y++) {
         for (let x = 0; x < r.canvas.w; x++) {
           const i = 4 * (y * r.canvas.w + x), noise = ign(x, y);
-          const ref = compositeAt(hist, up[0], s, x, y, noise);
+          const ref = compositeAt(hist, bloom, s, x, y, noise);
           // (next to a wrap of the noise: the other side's value too)
-          const alt = Math.min(noise, 1 - noise) < IGN_WRAP ? compositeAt(hist, up[0], s, x, y, noise < 0.5 ? noise + 1 : noise - 1) : ref;
+          const alt = Math.min(noise, 1 - noise) < IGN_WRAP ? compositeAt(hist, bloom, s, x, y, noise < 0.5 ? noise + 1 : noise - 1) : ref;
           const a = texelAt(hist, x, y)[3];
           if (a > 0.02 && a < 0.98) partial++;
           for (let k = 0; k < 3; k++) {
@@ -399,7 +425,7 @@ try {
       // how much the CAS and bloom terms move pixels (the check is only as strong as they are), every 5th pixel
       for (let k = 0; k < (r.canvas.w / 5) * (r.canvas.h / 5); k++) {
         const x = 5 * (k % (r.canvas.w / 5)), y = 5 * Math.floor(k / (r.canvas.w / 5));
-        const base = compositeAt(hist, up[0], { ...s, sharpen: 0, bloom: 0 }, x, y), withCas = compositeAt(hist, up[0], { ...s, bloom: 0 }, x, y), all = compositeAt(hist, up[0], s, x, y);
+        const base = compositeAt(hist, bloom, { ...s, sharpen: 0, bloom: 0 }, x, y), withCas = compositeAt(hist, bloom, { ...s, bloom: 0 }, x, y), all = compositeAt(hist, bloom, s, x, y);
         sharpened = Math.max(sharpened, ...withCas.map((z, k) => Math.abs(z - base[k])));
         bloomed = Math.max(bloomed, ...all.map((z, k) => Math.abs(z - withCas[k])));
       }
@@ -462,7 +488,7 @@ try {
     const [frontWithout, behindWithout] = r.without, [front, behind] = r.with;
     check(front[0] > 200 && front[0] > 2 * front[1] && front[0] > 2 * front[2], `the box in front of the plane shows: ${front.slice(0, 3)} (the plane there: ${frontWithout.slice(0, 3)})`);
     check(behind.slice(0, 3).join() === behindWithout.slice(0, 3).join(), `the box behind it doesn't: ${behind.slice(0, 3)} (the plane: ${behindWithout.slice(0, 3)})`);
-    check(r.stats.submits === 3 && r.taaStats.submits === 3, `ours before three, three's own, ours after: ${r.stats.submits} submits (TAA, bloom, adaptation on: ${r.taaStats.submits}, ${r.taaStats.renderPasses} render passes of ours)`);
+    check(r.stats.submits === 3 && r.taaStats.submits === 3 + TAAU_SUBMITS - 1, `ours before three, three's own, ours after: ${r.stats.submits} submits (TAA, bloom, adaptation on: ${r.taaStats.submits}, ${r.taaStats.renderPasses} render passes of ours)`);
     check(r.taa[0][0] > 200, `with TAA the box still shows: ${r.taa[0].slice(0, 3)}`);
     const f3 = await p3.evaluate(() => window.__harness.failures);
     check(!f3.length && !errs.length, `no GPU failures or page errors${f3.length || errs.length ? `: ${[...f3, ...errs].join(' | ')}` : ''}`);
