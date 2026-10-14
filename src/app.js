@@ -1860,7 +1860,7 @@ addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- profiler (Settings → Developer)
 // gfx/profiler.js measures (gpu.timing in split mode) and ui/profiler.js shows.
-const profPanel = createProfilerPanel();
+const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = false; save(); applyProfiler(); } });
 const prof = createProfiler(gpu, {
   describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes }),
   onSample: profPanel.update,

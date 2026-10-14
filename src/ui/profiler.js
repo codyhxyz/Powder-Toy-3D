@@ -1,4 +1,5 @@
 import { h } from './dom.js';
+import { ICON } from './icons.js';
 import { PHASES, HISTORY, FRAMES } from '../gfx/profiler.js';
 import { MAX_FPS } from '../gfx/pacing.js';
 import './profiler.css';
@@ -90,10 +91,11 @@ function report(s) {
   return lines.join('\n');
 }
 
-export function createProfilerPanel() {
+export function createProfilerPanel({ onClose } = {}) {
   const status = h('span.status', { title: 'Once a second the latest frame whose GPU timestamps have come back is shown:'
     + ' every pass of ours is timed, and while the profiler is on every dispatch runs as a pass of its own.'
     + ' Timings assume nothing else is using the GPU.' });
+  const close = h('button.close', { type: 'button', title: 'Close the profiler', 'aria-label': 'Close the profiler', html: ICON.close, on: { click: () => onClose?.() } });
   const copy = h('button.copy', { type: 'button', text: 'Copy', title: 'Copy a plain-text report' });
   const tile = (key, title) => {
     const v = h('b', { text: '–' });
@@ -123,7 +125,7 @@ export function createProfilerPanel() {
   const totalCpu = h('span.num'), totalGpu = h('span.num'), totalTrack = h('span.track');
   const spark = [...Array(HISTORY)].map(() => h('i'));
   const el = h('div.prof', { role: 'region', 'aria-label': 'Profiler' },
-    h('header', {}, h('b', { text: 'Profiler' }), status, copy),
+    h('header', {}, h('b', { text: 'Profiler' }), status, copy, close),
     h('div.prof-tiles', {}, tFps.el, tFrame.el, tCpu.el, tGpu.el),
     h('div.section', {}, h('span', { text: 'Frame time' }), h('span.prof-hint', { text: 'hover a bar to hold' })),
     h('div.graph', {}, canvas),
