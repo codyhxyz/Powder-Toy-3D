@@ -268,6 +268,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       let id = cid(before.core); let cost = dToughness(id);
       if (cls(p.c0 & 255u) != 3u && dBreak(id) >= 0 && f.effect.x >= cost) {
         after.core.x = (before.core.x & 0xffffff00u) | u32(dBreak(id));
+        if (cid(after.core)!=id && cls(cid(after.core))==2u) { after.core=setFall(after.core,0.0,0.0); }
         if (!energyFits(after,energyOf(before))) { particles[t].velocity=vec3f(0); return; }
         after=withEnergy(after,energyOf(before));
         // Fracture spends KE, never manufactures heat. Stop at the first face;
@@ -341,6 +342,8 @@ export function particlesWGSL(g, nativeHead, stage) {
       let foam=impactFoam(incoming.core.x>>24u,0u,cFill(incoming.core),0u,speed2);
       after.core.x=(after.core.x&0x00ffffffu)|(foam<<24u);
     }
+    // Deposition is a resting contact, not a replay of launch-time fall state.
+    if(cls(cid(after.core))==2u) { after.core=setFall(after.core,0.0,0.0); }
     storeMaterial(s,before,after); dWake(cellOf(s));
     particles[t].id = 0u; atomicSub(&control[0],1u);
   `);

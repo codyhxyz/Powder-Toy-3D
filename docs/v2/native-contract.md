@@ -20,11 +20,23 @@ This excludes particles, air, compatibility caches and render fields. Do not cla
 
 | Word | Liquid | Other materials |
 | --- | --- | --- |
-| 0 | ID u8, quarter-K temperature u16, foam u8 | ID u8, temperature u16, fall/gas age u8 |
-| 1 | Fill u24, material ctype u8 | Life/fuel u16, material ctype u8, persistent flags u8 |
-| 2 | Face flux x/y, two f16 | Powder fall fraction, otherwise mechanism state |
+| 0 | ID u8, quarter-K temperature u16, foam u8 | ID u8, temperature u16, powder fraction low8 / gas age u8 |
+| 1 | Fill u24, material ctype u8 | Life/fuel u16, material ctype u8, burn bit24, powder fraction high7 |
+| 2 | Face flux x/y, two f16 | Powder marked negative f32 downward m/s, otherwise mechanism state |
 | 3 low16 | Face flux z, f16 | Spark code u12 plus device flags |
 | 3 high16 | Spark/device state for conductors, fuel/life for other liquids | Color seed u16 |
+
+Powder velocity uses word2's sign bit as a format marker, including negative zero.
+Its magnitude is real downward m/s, independent of the current gravity setting.
+The Q15 fractional displacement (cells) uses word0 bits24..31 and word1 bits25..31;
+floor quantization loses less than 1/32768 cell per tick, in addition to f32 arithmetic.
+Burn bit24, life, ctype and the complete seed/spark word are untouched. Heat and
+property-only changes preserve motion; landing/toppling resets it. Promotion
+inherits world-Y momentum, and resting particle deposition clears old fall state.
+Legacy nonnegative word2 is a fraction in [0,1); its old age decodes once using
+nominal 19.6 m/s², capped at the material run speed. Historical custom gravity is
+not recoverable from that old ABI. The sign marker permits old/new format2 cells
+in the same lossless save/stream without changing the material version.
 
 The auxiliary bank stores signed thermal energy, quantization remainders and latent energy.
 It is not scratch or a generic flag word.

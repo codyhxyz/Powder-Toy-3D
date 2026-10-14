@@ -1,3 +1,5 @@
+import { fallTerminal } from '../v2/fall.js';
+import { fallWGSL } from './v2/fall.js';
 import { FOAM_ROWS } from '../v2/foam.js';
 import { nativeStateWGSL, materialStorageWGSL } from './v2/state.js';
 import { compactDecodeWGSL } from './compact.js';
@@ -76,8 +78,6 @@ const dropOf = (deg) => (deg <= 50 ? 1 : deg <= 67 ? 2 : 3);
 // Terminal run speed, m/s (5.1: "dust and ash drift, grains and debris fall fast"): a bulk run of grains
 // 12 m/s (lean-sim's VT_SAND); flakes drift down at 3 m/s (a snowflake's ~1 m/s, read from the god view's
 // 30 m away at 2 g: Minecraft's snow and Noita's ash fall slow enough to watch).
-const RUN_MS = { ASH: 3, SNOW: 3, SAWDUST: 4 };
-const RUN_DEFAULT_MS = 12;
 
 // Liquids: yield (5.4: "rest and yield are one knob") as a dead band in cells of head, so mud, slime and
 // lava hold a slope; viscosity as the flux damping, from today's rows' drag (water 0.01: lean-sim's DAMP).
@@ -97,7 +97,7 @@ export function v2Rows() {
     return {
       key: e.key, cls,
       drop: cls === V2.POWDER ? dropOf(REPOSE[e.key] ?? 34) : 0,
-      vt: cls === V2.POWDER ? (RUN_MS[e.key] ?? RUN_DEFAULT_MS) / CELL_M / TICK_HZ : 0,
+      vt: cls === V2.POWDER ? fallTerminal(e.id) / CELL_M / TICK_HZ : 0,
       dens: e.dens,
       yieldHead: cls === V2.LIQUID ? YIELD[e.key] ?? 0 : 0,
       damp: cls === V2.LIQUID ? Math.min(Math.max(e.drag ?? 0.01, 0.005), 0.3) : 0,
@@ -263,9 +263,8 @@ fn zeroQ(c: vec4u) -> vec4u {
   if (k != C_AIR && k != C_LIQUID) { return c; }
   return vec4u(c.x, c.y, 0u, c.w & 0xffff0000u);
 }
-// a powder's fall state: its age and sub-cell fraction
-fn resetMotionAge(c: vec4u) -> vec4u { if (isLiq(c)) { return c; } return withAge(c, 0u); }
-fn setFall(c: vec4u, age: u32, frac: f32) -> vec4u { var o = withAge(c, age); o.z = bitcast<u32>(frac); return o; }
+${fallWGSL}
+fn resetMotionAge(c: vec4u) -> vec4u { if (isLiq(c)) { return c; } if (clsOf(c) == C_POWDER) { return setFall(c, 0.0, 0.0); } return withAge(c, 0u); }
 // ---- the element rows (EV: shaders/v2.js v2Table) ----
 fn cls(id: u32) -> u32 { return u32(EV[2u * id].x); }
 fn clsOf(c: vec4u) -> u32 { return cls(cid(c)); }
@@ -484,14 +483,14 @@ fn main() {
 `;
 
 // ---- R1 column fall: a thread a column of an awake brick column, bottom up (lean-sim columnFall).
-// Everything in [fl, y) is air or gas. A powder with nothing under it falls ⌊s(age)⌋ − ⌊s(age−1)⌋ cells
-// a tick (s: the fall from rest at g, capped at its run speed), swapping places with the air or gas it
-// falls into; it lands on the run below; overshooting onto a falling run it takes that run's age, so the
+// Everything in [fl, y) is air or gas. Integrate stored SI velocity, then its
+// sub-cell displacement; gravity changes acceleration, never prior momentum.
+// Landing on a falling run inherits its velocity and fraction, so the
 // two move as one (5.3). Liquids and solids are floors (powders sink into liquids in the block pass).
 export const v2ColumnWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${MAIN} {
-  if (P.gravMode != 0u || P.gravity == 0.0 || P.edge != 0u) { return; }
+  if (P.gravMode == 2u || P.edge != 0u) { return; }
   let k = foldThread(wg, nwg, li);
   if (k >= atomicLoad(&act2[V2_COUNT + CNT_USE_COLS]) * 16u) { return; }
   let col = atomicLoad(&act2[V2_COLS + k / 16u]);
@@ -500,7 +499,7 @@ ${MAIN} {
   let z = i32(col / u32(BX)) * BS + i32(t >> 2u);
   var fl = 0;
   var runFalling = false;
-  var runAge = 0u;
+  var runVelocity = 0.0;
   var runFrac = 0.0;
   for (var y = 0; y < NY; y++) {
     let p = vec3i(x, y, z);
@@ -510,26 +509,27 @@ ${MAIN} {
     if (kc != C_POWDER) { fl = y + 1; runFalling = false; continue; }
     if (y == fl) {
       // supported: a landing ends its fall
-      if (cAge(c) != 0u || c.z != 0u) { storeCell(p, setFall(c, 0u, 0.0)); markBusy(p); }
+      if (fallVelocity(c) != 0.0 || fallFraction(c) != 0.0) { storeCell(p, setFall(c, 0.0, 0.0)); markBusy(p); }
       fl = y + 1;
       runFalling = false;
       continue;
     }
+    let gravity = select(P.gravity, 0.0, P.gravMode == 1u);
+    let v = nextFallVelocity(c, gravity);
+    if (v == 0.0) { fl = y + 1; runFalling = false; continue; }
     markBusy(p);
-    let age = min(cAge(c) + 1u, 255u);
-    let v = min(f32(age) * G_TICK * P.gravity / 19.6, vtOf(cid(c)));
-    var a = bitcast<f32>(c.z) + v;
+    var a = fallDistance(c, v);
     let d = i32(floor(a));
     a = a - f32(d);
     var to = y - d;
-    var nAge = age;
+    var velocity = v;
     if (to <= fl) {
       if (to < fl) {
-        if (runFalling) { nAge = runAge; a = runFrac; } else { nAge = 0u; a = 0.0; }
+        if (runFalling) { velocity = runVelocity; a = runFrac; } else { velocity = 0.0; a = 0.0; }
       }
       to = fl;
     }
-    c = setFall(c, nAge, a);
+    c = setFall(c, velocity, a);
     if (to != y) {
       let q = vec3i(x, to, z);
       let o = zeroQ(loadCell(q));
@@ -543,8 +543,8 @@ ${MAIN} {
       storeCell(p, c);
     }
     fl = to + 1;
-    runFalling = nAge != 0u;
-    runAge = nAge;
+    runFalling = velocity != 0.0;
+    runVelocity = velocity;
     runFrac = a;
   }
 }
@@ -584,13 +584,8 @@ ${MAIN} {
     }
     after=withEnergy(Material(core,before.bank),energySub(energyOf(before),heat));
   } else {
-    // Same physical clock as column fall; accumulate only outward force.
-    let age=min(cAge(c)+1u,255u);
-    let fraction=select(bitcast<f32>(c.z),0.0,k==C_GAS)+select(min(f32(age)*G_TICK*drive,vtOf(cid(c))),drive,k==C_GAS);
-    if (fraction<1.0) {
-      if (k==C_GAS) { var rng=seed3(p,P.tick,971u); if (rnd(&rng)>=fraction) { return; } }
-      else { storeCell(p,setFall(c,age,fraction)); return; }
-    }
+    // Only gas reaches this branch; powder outflow belongs to dynamics.
+    if (drive<1.0) { var rng=seed3(p,P.tick,971u); if (rnd(&rng)>=drive) { return; } }
   }
   noteBoundaryMass(amount); noteEnergySink(p,energySub(energyOf(before),energyOf(after)));
   storeMaterial(s,before,after); if (cid(after.core)==0u) { events[s]=0u; }
@@ -702,7 +697,7 @@ ${MAIN} {
     var pick = cand[0];
     for (var m = 0u; m < nc; m++) { r -= w[m]; if (r <= 0.0) { pick = cand[m]; break; } }
     let moved = cs[pick];
-    cs[pick] = setFall(gr, 0u, 0.0);
+    cs[pick] = setFall(gr, 0.0, 0.0);
     cs[ti] = zeroQ(moved);
     let bank = bs[pick]; bs[pick] = bs[ti]; bs[ti] = bank;
     let request = pending[pick]; pending[pick] = pending[ti]; pending[ti] = request;

@@ -4,6 +4,7 @@
 import { ELEMENTS, E, K, REACTIONS, mechanisms } from '../elements.js';
 import { SPARK_COST, WIRE, CONDUCTS } from '../electricity.js';
 import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
+import { fallVelocity } from './fall.js';
 import { CELL_M } from '../scale.js';
 import { EMITTERS } from '../rays.js';
 
@@ -14,9 +15,10 @@ export const CONTACT_FULL = 65536;
 export const CONTACT_ELEMENT_COUNT = ELEMENTS.length;
 export const LIFE_SCALE = FUEL_Q;
 export const CONTACT_HZ = 60;
-// Same TF2 2g native clock as foundation R1; a powder age is elapsed fall
-// ticks, not proof it has reached the legacy dust suspension speed.
+// Historical age constants remain for old fixtures; contacts use stored speed
+// in cells/tick, never age times the currently configured gravity.
 export const CONTACT_G_TICK = 19.6 / CELL_M / CONTACT_HZ ** 2;
+export const DUST_MIN_FALL_SPEED = PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE / CONTACT_HZ; // cells/tick
 export const DUST_MIN_FALL_AGE = Math.ceil(PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE / CONTACT_HZ / CONTACT_G_TICK);
 export const CONTACT_REQUEST = { DETONATE: 1, GAS: 2, NEUTRON: 4 };
 const q = T => Math.round((T + 273.25) * 4);
@@ -94,7 +96,7 @@ export const ctRoll = (seed, salt) => {
 export function ctNew(id, tq, fill) {
   const r = ctRow(id), life = r.kind === K.LIQUID ? Math.trunc(r.spawnLife * fill / 65536) : r.spawnLife;
   if (life > 65535) throw Error('contact fuel payload overflow');
-  return { id, tq, raw: tq, fill, life, ctype: id === E.LAVA ? E.STONE : 0, spark: 0, age: 0, burning: 0, valid: 1, bank: 0, state: 0, request: 0, busy: 0, done: 0, pending: -1, pendingOf: 0, pendingGas: 0, source: 0n, sink: 0n };
+  return { id, tq, raw: tq, fill, life, ctype: id === E.LAVA ? E.STONE : 0, spark: 0, age: 0, fallSpeed: 0, burning: 0, valid: 1, bank: 0, state: 0, request: 0, busy: 0, done: 0, pending: -1, pendingOf: 0, pendingGas: 0, source: 0n, sink: 0n };
 }
 export function ctFits(c, energy) {
   const phase = encodePhaseEnergy(c.id, ctAmount(c), energy);
@@ -455,15 +457,15 @@ export function ctStep(input, ns, seed) {
       const es = Math.exp(17.625 * (temp / Math.max(1, temp + 243.04) - 20 / 263.04));
       if (air >= 2 && random < 0.00024 * ctF(air * 2 - 3) * es) return ctDecay(c, E.EMPTY);
     }
-    // Falling snow age is the native run-speed proxy, not a random charge.
+    // Use real stored speed: gravity changes must not rewrite contact inertia.
     for (let k = 0; k < 3; k++) {
-      if (c.tq <= 1093 && ns[k].valid !== 0 && ns[k].id === E.SNOW && ns[k].age > 0) {
+      if (c.tq <= 1093 && ns[k].valid !== 0 && ns[k].id === E.SNOW && ns[k].fallSpeed > 0.0) {
         c.busy = 1;
-        if (random < Math.min(ctF(ns[k].age) * CONTACT_G_TICK, 1.0 / 6.0)) c.ctype = Math.min(60, c.ctype + 1);
+        if (random < Math.min(ns[k].fallSpeed, 1.0 / 6.0)) c.ctype = Math.min(60, c.ctype + 1);
       }
     }
   }
-  if (c.id === E.DUST && c.age >= DUST_MIN_FALL_AGE && dust > 0 && air > 0 && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
+  if (c.id === E.DUST && c.fallSpeed >= DUST_MIN_FALL_SPEED && dust > 0 && air > 0 && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
   if (c.id === E.SINGULARITY) {
     // Mass has 1/256 cell units; unlike normalized fuel it reaches 200 cells.
     c.busy = 1;
@@ -493,13 +495,13 @@ export function unpackContact(core, bank = 0) {
     life: liquid ? (CONDUCTS[id] ? 0 : core[3] >>> 16) : core[1] & 65535,
     ctype: liquid ? (core[1] >>> 24) & (ELEMENTS[id].burnRate > 0 ? 127 : 255) : (core[1] >>> 16) & 255,
     spark: CONDUCTS[id] ? (liquid ? (core[3] >>> 16) & 4095 : core[3] & 4095) : 0,
-    state: core[2] | 0, valid: 1, bank, request: 0, busy: 0, done: 0, pending: -1, pendingOf: 0, pendingGas: 0, source: 0n, sink: 0n };
+    fallSpeed: fallVelocity(core) / (CELL_M * CONTACT_HZ), state: core[2] | 0, valid: 1, bank, request: 0, busy: 0, done: 0, pending: -1, pendingOf: 0, pendingGas: 0, source: 0n, sink: 0n };
 }
 export function packContact(c, original = new Uint32Array(4)) {
   const core = new Uint32Array(original), liquid = ELEMENTS[c.id].kind === K.LIQUID;
   const changed = c.id !== (original[0] & 255);
   if (changed) core.fill(0);
-  core[0] = c.id | (c.raw << 8) | ((liquid ? (core[0] >>> 24) : c.age) << 24);
+  core[0] = c.id | (c.raw << 8) | ((liquid || ELEMENTS[c.id].kind === K.POWDER ? (core[0] >>> 24) : c.age) << 24);
   if (liquid) {
     core[1] = c.fill | (c.ctype << 24);
     if (ELEMENTS[c.id].burnRate > 0 && c.burning !== 0) core[1] |= 0x80000000;
@@ -507,7 +509,7 @@ export function packContact(c, original = new Uint32Array(4)) {
     else core[3] = (core[3] & 65535) | (c.life << 16);
   } else {
     core[1] = (core[1] & 0xfe000000) | (c.burning << 24) | c.life | (c.ctype << 16);
-    core[3] = (core[3] & 0xfffff000) | c.spark;
+    if (CONDUCTS[c.id]) core[3] = (core[3] & 0xfffff000) | c.spark;
   }
   return { core, bank: c.bank };
 }

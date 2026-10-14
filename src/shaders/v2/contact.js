@@ -1,7 +1,8 @@
 import { E, ELEMENTS } from '../../elements.js';
+import { CELL_M } from '../../scale.js';
 import { PHYS } from '../../physics.js';
 import { contactKernelWGSL } from './contact-kernel.js';
-import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, CONTACT_G_TICK, CONTACT_ELEMENT_COUNT } from '../../v2/contact.js';
+import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, DUST_MIN_FALL_SPEED, CONTACT_G_TICK, CONTACT_HZ, CONTACT_ELEMENT_COUNT } from '../../v2/contact.js';
 
 const integerRowFields = new Set(['kind','capacity','offset','spawnQ','spawnLife','hotQ','hotOut','hotL','hotGas','hotOf','coldQ','coldOut','coldL','coldOf','meltQ','meltInto','igniteQ','flashQ','burn','heat','flameQ','ash','blast','blastAir','acid','edible','fizz','bed','rots','singFood','conductor','wire']);
 const rowFields = Object.keys(CONTACT_ROWS[0]);
@@ -81,10 +82,11 @@ fn contactSpecialExplosion(core:vec4u,gunpowderEnergyJ:f32)->vec4f {
 
 export const contactWGSL = /* wgsl */ `
 ${Object.entries(E).map(([k, id]) => `const CT_${k}:i32=${id};`).join('\n')}
+const DUST_MIN_FALL_SPEED:f32=${DUST_MIN_FALL_SPEED};
 const DUST_MIN_FALL_AGE:i32=${DUST_MIN_FALL_AGE};
 const CONTACT_G_TICK:f32=${CONTACT_G_TICK};
 const CONTACT_ELEMENT_COUNT:i32=${CONTACT_ELEMENT_COUNT};
-struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
+struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,fallSpeed:f32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
 struct CTPair { a:CTCell,b:CTCell,changed:i32 }
 struct CTRow { ${rowFields.map(k => `${k}:${integerRowFields.has(k) ? 'i32' : 'f32'}`).join(',')} }
 struct CTRx { ${rxFields.map(k => `${k}:${k === 'chance' ? 'f32' : 'i32'}`).join(',')} }
@@ -120,7 +122,7 @@ fn ctDiv(a:i32,b:i32)->i32{return a/b;}
 fn ctNew(id:i32,tq:i32,fill:i32)->CTCell {
  var life=ctRow(id).spawnLife;
  if(ctRow(id).kind==3){life=i32(phaseDiv(energyMul(u32(life),u32(fill)),vec2u(65536u,0u)).x);}
- return CTCell(id,tq,tq,fill,life,select(0,CT_STONE,id==CT_LAVA),0,0,0,1,0,0,0,0,0,-1,0,0,vec2u(0u),vec2u(0u));
+ return CTCell(id,tq,tq,fill,life,select(0,CT_STONE,id==CT_LAVA),0,0,0.0,0,1,0,0,0,0,0,-1,0,0,vec2u(0u),vec2u(0u));
 }
 fn ctPairValue(a:CTCell,b:CTCell,changed:i32)->CTPair{return CTPair(a,b,changed);}
 fn ctMaterial(c:CTCell)->Material {
@@ -159,7 +161,7 @@ ${generated}
 fn ctUnpack(core:vec4u,bank:i32)->CTCell {
  let id=i32(core.x&255u);let row=ctRow(id);let liquid=row.kind==3;
  var c=ctNew(id,i32(phaseTq(u32(id),(core.x>>8u)&65535u)),65536);
- c.raw=i32((core.x>>8u)&65535u);c.bank=bank;c.age=i32(core.x>>24u);
+ c.raw=i32((core.x>>8u)&65535u);c.bank=bank;c.age=i32(core.x>>24u);c.fallSpeed=fallVelocity(core)/${CELL_M * CONTACT_HZ};
  c.burning=i32((core.y>>24u)&1u);c.ctype=i32((core.y>>16u)&255u);c.life=i32(core.y&65535u);c.state=bitcast<i32>(core.z);
  if(row.conductor!=0){c.spark=i32(core.w&4095u);}
  if(liquid){
@@ -172,7 +174,7 @@ fn ctUnpack(core:vec4u,bank:i32)->CTCell {
 fn ctPack(c:CTCell,original:vec4u)->vec4u {
  var core=original;if(c.id!=i32(original.x&255u)){core=vec4u(0u);}
  let row=ctRow(c.id);let liquid=row.kind==3;
- let age=select(u32(c.age),core.x>>24u,liquid);
+ let age=select(u32(c.age),core.x>>24u,liquid || row.kind==2);
  core.x=u32(c.id)|(u32(c.raw)<<8u)|(age<<24u);
  if(liquid){
   core.y=u32(c.fill)|(u32(c.ctype)<<24u);
@@ -181,7 +183,7 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
   else{core.w=(core.w&65535u)|(u32(c.life)<<16u);}
  }else{
   core.y=(core.y&0xfe000000u)|(u32(c.burning)<<24u)|u32(c.life)|(u32(c.ctype)<<16u);
-  core.w=(core.w&0xfffff000u)|u32(c.spark);
+  if(row.conductor!=0){core.w=(core.w&0xfffff000u)|u32(c.spark);}
  }
  return core;
 }

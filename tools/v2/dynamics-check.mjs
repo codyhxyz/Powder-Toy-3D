@@ -7,7 +7,7 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { PARTICLE_CAP, DT, GRAVITY, CELL_M, AIR, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
-const matter=(id=E.SAND)=>({core:[id|(1173<<8)|0xaa000000,0xfedcba98,0x76543210,0xcdefabcd].map(x=>x>>>0),bank:-123456789});
+const matter=(id=E.SAND)=>({core:[id|(1173<<8)|0xaa000000,0xfedcba98,0x3f400000,0xcdefabcd].map(x=>x>>>0),bank:-123456789});
 
 test('48B particle preserves every material word, signed bank and stable ID',()=>{
   const p={position:[-12.5,17.25,104.75],velocity:[180,-5,3],id:0xfefdfcfb,...matter()};

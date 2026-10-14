@@ -1,5 +1,6 @@
 // Explicit shared-foundation ABI fixture for CPU Naga validation. This is NOT
 // a GPU launcher or replacement for integration tests with the real driver.
+import { fallWGSL } from '../../src/shaders/v2/fall.js';
 import { phaseWGSL } from '../../src/shaders/v2/phase.js';
 import { nativeStateWGSL } from '../../src/shaders/v2/state.js';
 import { ELEMENTS, K } from '../../src/elements.js';
@@ -14,6 +15,7 @@ fn inGrid(p:vec3i)->bool{return all(p>=vec3i(0))&&all(p<vec3i(32));}
 fn markBusy(p:vec3i){}
 fn noteEnergySource(p:vec3i,energy:vec2u){}
 fn noteEnergySink(p:vec3i,energy:vec2u){}
+${fallWGSL}
 ${arithmetic}
 ${phaseWGSL}
 fn fixtureLiquid(id:u32)->bool{return ${ELEMENTS.filter(e=>e.kind===K.LIQUID).map(e=>`id==${e.id}u`).join(' || ')};}

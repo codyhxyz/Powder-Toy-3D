@@ -1,6 +1,7 @@
 import { NativeJets } from './jets.js';
 import { nativeModes, modeSignature } from './modes.js';
 import { fold } from '../gpu/kernels.js';
+import { fallVelocity } from './fall.js';
 import { cTq } from './layout.js';
 import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
@@ -425,20 +426,21 @@ export class PhysicsV2 {
 
   /**
    * The cells as they are at this call, per cell at x + nx·(z + nz·y): { id, cls, fill (cells of liquid:
-   * fill / 2¹⁶), T (°C), age }.
+   * fill / 2¹⁶), T (°C), age (gas/foam), fallVelocity (downward m/s) }.
    */
   async readCells() {
     this.sync();
     const g = this.g, words = new Uint32Array(await this.gpu.readback.buffer(this.cells, 0, g.slots * 16));
     const n = g.nx * g.ny * g.nz, rows = v2Rows();
-    const out = { id: new Int32Array(n), cls: new Uint8Array(n), fill: new Float32Array(n), T: new Float32Array(n), age: new Uint8Array(n) };
+    const out = { id: new Int32Array(n), cls: new Uint8Array(n), fill: new Float32Array(n), T: new Float32Array(n), age: new Uint8Array(n), fallVelocity: new Float32Array(n) };
     for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
       const i = x + g.nx * (z + g.nz * y), w = cellSlot(g, x, y, z) * 4;
       const id = words[w] & 255, cls = rows[id]?.cls ?? V2.SOLID;
       out.id[i] = id;
       out.cls[i] = cls;
       out.T[i] = cTq(words.subarray(w, w + 4)) * 0.25 - 273.25;
-      out.age[i] = words[w] >>> 24;
+      out.age[i] = cls === V2.POWDER ? 0 : words[w] >>> 24;
+      out.fallVelocity[i] = fallVelocity(words.subarray(w, w + 4));
       if (cls === V2.LIQUID) out.fill[i] = (words[w + 1] & 0xffffff) / FULL;
     }
     return out;

@@ -275,7 +275,7 @@ export function blastsWGSL(g,nativeHead,stage) {
         if (difference > dStrength(id)) { plan.flags=2u|(u32(dBreak(id))<<8u); }
       } else if (k==2u || k==3u) {
         var exposed = false; for (var a=0u;a<3u;a++) { exposed = exposed || dOpen(p+dAxis(a)) || dOpen(p-dAxis(a)); }
-        if (k==2u && P.gravity>0.0 && (P.gravMode==2u || P.edge!=0u) && dUnsupported(p)) {
+        if (k==2u && (P.gravMode==2u || P.edge!=0u) && ((P.gravity>0.0 && P.gravMode!=1u && dUnsupported(p)) || fallVelocity(m.core)>0.0)) {
           // Real SI flight replaces disabled radial/open/loop column falls.
           // Whole unsupported runs promote together; full capacity leaves every
           // unallocated source exact and busy for deterministic retry.
@@ -377,6 +377,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     let before=loadMaterial(t); var after=before;
     if ((plan.flags&2u)!=0u) {
       after.core.x=(after.core.x&0xffffff00u)|((plan.flags>>8u)&255u);
+      if (cid(after.core)!=cid(before.core) && cls(cid(after.core))==2u) { after.core=setFall(after.core,0.0,0.0); }
       if (!energyFits(after,energyOf(before))) { dWake(cellOf(t)); return; }
       after=withEnergy(after,energyOf(before));
     }
@@ -406,7 +407,9 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
             remainder=withEnergy(rest,remainingEnergy);
           }
         }
-        if (dSpawn(t,rank,packet,plan.velocity,P.sequence ^ 0x53504157u)) { after=remainder; }
+        // Bounded forcing supplies absolute velocity; ordinary impulses add to falling motion.
+        let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),P.mode==15u);
+        if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) { after=remainder; }
         else { atomicAdd(&control[7],1u); if(P.mode==15u) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }
     }

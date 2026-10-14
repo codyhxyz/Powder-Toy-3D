@@ -1,5 +1,6 @@
 // Pure validation of the authoritative four-word Material ABI. Never repair
 // malformed words: banks, phase progress, fuel/spark and motion must round-trip.
+import { validateFall } from './fall.js';
 import { ELEMENTS, K } from '../elements.js';
 import { validatePhaseCore } from './phase.js';
 import { MAX_FILL, isLiquid } from './layout.js';
@@ -14,8 +15,7 @@ export function validateMaterialCore(core) {
       if ((half & 0x7c00) === 0x7c00) throw new Error('Invalid native liquid flux');
     }
   } else if (ELEMENTS[id].kind === K.POWDER) {
-    const word = new Uint32Array([core[2]]);
-    if (!Number.isFinite(new Float32Array(word.buffer)[0])) throw new Error('Invalid native fall state');
+    validateFall(core);
   }
   // Life/fuel is an unsigned16 integer, not a half float: all65536 payloads
   // are representable (including compressed fuel and SING's different scale).

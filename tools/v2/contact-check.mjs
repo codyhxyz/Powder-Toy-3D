@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { setFall } from '../../src/v2/fall.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -159,7 +160,7 @@ test('blasts request source without consuming, fuse handoff, suspended dust and 
     assert.equal(out.id,c.id,e.key);assert.ok(out.request&1,e.key);
   }
   const fuse=cell(E.FUSE),lit=cell(E.FUSE);lit.life=100;assert.ok(C.ctStep(fuse,ns(lit),0).life<2048);
-  const dust=cell(E.DUST,500);dust.age=C.DUST_MIN_FALL_AGE;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
+  const dust=cell(E.DUST,500);dust.fallSpeed=C.DUST_MIN_FALL_SPEED;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
   let emitted=false;
   for(let seed=0;seed<100000;seed++)if(C.ctStep(cell(E.PLUTONIUM),ns(),seed).request&4){emitted=true;break;}
   assert.ok(emitted);assert.equal(C.ctStep(cell(E.URANIUM),ns(),0).request&4,0);
@@ -291,9 +292,9 @@ test('cloud rain/evaporation/storm charge, clone emit/control and singularity li
     if(rain&&evap)break;
   }
   assert.ok(rain);assert.equal(energy(rain),energy(cloud));assert.ok(evap);assert.equal(energy(evap)+evap.sink-evap.source,energy(cloud));
-  const cold=cell(E.CLOUD,0),snow=cell(E.SNOW);snow.age=40;let charged=false;
+  const cold=cell(E.CLOUD,0),snow=cell(E.SNOW);snow.fallSpeed=40*C.CONTACT_G_TICK;let charged=false;
   for(let seed=0;seed<100;seed++)if(C.ctStep(cold,ns(snow),seed).ctype>0){charged=true;break;}
-  assert.ok(charged);snow.age=0;assert.equal(C.ctStep(cold,ns(snow),0).ctype,0,'stationary snow cannot charge cloud');
+  assert.ok(charged);snow.fallSpeed=0;assert.equal(C.ctStep(cold,ns(snow),0).ctype,0,'stationary snow cannot charge cloud');
   for(const id of [E.CLONE,E.PCLN]) {
     const clone=cell(id);clone.ctype=E.WATER;clone.life=id===E.PCLN?20480:0;
     let out;for(let seed=0;seed<100;seed++){out=C.ctStep(cell(E.EMPTY),ns(clone),seed);if(out.id===E.WATER)break;}
@@ -316,16 +317,16 @@ test('pending source obligations survive chemistry/phase and OR with existing ga
   assert.equal(out.requests[0]&3,3);assert.equal(out.requests[1]&4,4);
   assert.ok(out.busy.includes(0)&&out.busy.includes(1));
 });
-test('reserved spark flags, independent fall ages and burn flags survive native contact packing',()=>{
+test('reserved spark flags, independent fall velocity and burn flags survive native contact packing',()=>{
   for(const id of [E.WATER,E.MERCURY,E.METAL]) {
     const c=cell(id);c.spark=3608;
     const m=C.packContact(c);m.core[3]|=ELEMENTS[id].kind===K.LIQUID?0xf0000000:0x0000f000;
     const decoded=C.unpackContact(m.core,m.bank),out=C.packContact(decoded,m.core);
     assert.equal(decoded.spark,3608);assert.deepEqual(out.core,m.core);
   }
-  const grain=cell(E.SAWDUST);grain.age=255;grain.burning=1;
-  const m=C.packContact(grain),decoded=C.unpackContact(m.core,m.bank);assert.equal(decoded.age,255);assert.equal(decoded.burning,1);
-  const slow=cell(E.DUST,500);slow.age=C.DUST_MIN_FALL_AGE-1;assert.equal(C.ctStep(slow,ns(cell(E.DUST)),0).request&1,0);
+  const grain=cell(E.SAWDUST);grain.burning=1;
+  const m=C.packContact(grain);m.core=setFall(m.core,2.5,0.625);const decoded=C.unpackContact(m.core,m.bank);assert.equal(decoded.fallSpeed,2.5/18);assert.equal(decoded.burning,1);assert.deepEqual(C.packContact(decoded,m.core).core,m.core);
+  const slow=cell(E.DUST,500);slow.fallSpeed=C.DUST_MIN_FALL_SPEED-0.001;assert.equal(C.ctStep(slow,ns(cell(E.DUST)),0).request&1,0);
 });
 test('temperature-aware gas density and boundary-only ambient exchange preserve rest',()=>{
   for(const e of ELEMENTS.filter(e=>e.kind===K.GAS||e.kind===K.EMPTY)) {
