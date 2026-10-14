@@ -45,6 +45,9 @@ export function createPovHud() {
   };
   const cross = h('div.pov-cross', {}, h('i'), h('i'), h('i'), h('i'), h('b'));
   const hitmark = h('div.pov-hitmark');
+  const pogoText = h('b'), pogoFill = h('div.pov-fill'), pogoCue = h('span');
+  const pogo = h('div.pov-pogo', {},
+    pogoText, h('div.pov-track', {}, pogoFill), pogoCue);
   const shieldEdge = h('div.pov-fx.pov-shieldfx');
   // Halo's grenade count, beside the held tool's readout (which sits below-right of the crosshair)
   const nadeCount = h('b');
@@ -108,7 +111,7 @@ export function createPovHud() {
     h('span', { text: 'God leaves' }));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
-    fx.buried, fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, nades, vitals, lock, death, hint);
+    fx.buried, fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, pogo, nades, vitals, lock, death, hint);
   document.body.append(root);
 
   // DOM writes only on change
@@ -153,6 +156,14 @@ export function createPovHud() {
       set(cross, '.reach', !!s.aimInReach);
       set(cross, '.third', !!s.third);
       set(vitals, '.show', live);
+      set(pogo, '.show', live && !!s.pogo);
+      if (s.pogo) {
+        const { step, max, held, ready } = s.pogo;
+        set(pogoFill, 'transform', `scaleX(${step / max})`);
+        set(pogoText, 'text', `Pogo ${step}/${max}${step === max ? ' · MAX' : ''}`);
+        set(pogoCue, 'text', held ? 'Release jump for next bounce' : ready ? 'Jump now!' : 'Tap jump on landing');
+        set(pogo, '.ready', ready);
+      }
       // perks: an icon each, with its stacks, redrawn when the set changes
       if (s.perks && (s.perks !== perkSet || s.perks.version !== perkVersion)) {
         perkSet = s.perks; perkVersion = s.perks.version;

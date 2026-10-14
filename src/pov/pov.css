@@ -79,6 +79,20 @@ body.pov-locked canvas { cursor: none; }
 .pov-cross.reach i:nth-child(4) { transform: translateX(-1.5px); }
 .pov-cross.reach b { opacity: 1; background: var(--accent); }
 
+/* Pogo power stays near the aim; the timing cue uses the body's actual Keen window. */
+.pov-pogo {
+  position: absolute; left: 50%; top: calc(50% + 40px); transform: translateX(-50%);
+  display: none; width: 220px; max-width: calc(100vw - 32px); box-sizing: border-box;
+  padding: 8px 12px; background: rgba(12, 16, 20, 0.9); border-radius: 4px;
+  color: #fff; text-align: center; font-size: 12px; line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.pov-pogo.show { display: grid; gap: 5px; }
+.pov-pogo .pov-track { width: 100%; height: 6px; }
+.pov-pogo .pov-fill { background: #f0c86a; transition: none; }
+.pov-pogo.ready { color: #a8f5b4; }
+.pov-pogo.ready .pov-fill { background: #a8f5b4; }
+
 /* ---- vitals (bottom left; the hotbar hangs from the top) */
 .pov-vitals {
   position: absolute; left: 16px; bottom: 16px;
@@ -280,6 +294,7 @@ body.pov-on.pov-nohud .pov-nades { display: none; }
 /* F1 (as in Minecraft): the HUD and the hand hidden. Screen effects, the death
    screen and the click-to-look prompt stay. */
 body.pov-on.pov-nohud .pov-cross,
+body.pov-on.pov-nohud .pov-pogo,
 body.pov-on.pov-nohud .pov-hitmark,
 body.pov-on.pov-nohud .pov-vitals,
 body.pov-on.pov-nohud .hotbar,
