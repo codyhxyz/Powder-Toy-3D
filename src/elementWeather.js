@@ -121,8 +121,10 @@ export function createElementWeather() {
       if (sim.frame === lastFrame || sim.frame < nextFrame) return false;
       const { scan, source, group, roof } = resources;
       if (scan.state !== 'ready' || source.main.state !== 'ready' || source.apply.state !== 'ready') return false;
+      const read = sim.compact ? sim.bindPhysicalRO : sim.bindRO;
+      if (!read) return false;
       scan.dispatch(sim.gpu.frame, fold(Math.ceil(sim.g.nx * sim.g.nz / 64)), {
-        bind: [sim.tables, sim.bindRO, group], header: sim.readHeader({ physical: true }),
+        bind: [sim.tables, read, group], header: sim.readHeader({ physical: true }),
       });
       sim.onPass?.(scan.name, { kind: 'compute', gpuMs: null });
       const { boxes, ...values } = policy;

@@ -191,6 +191,8 @@ for (const index of [0, 1]) {
   const opts = dispatches.at(-1).opts;
   assert.equal(opts.header.format, 3); assert.equal(opts.bind[1][1].resource.buffer, d.air[index]);
 }
+assert.equal(povGpu(sim).com(buffer({ size: 16, label: 'body com test' }), [1, 2, 3]), true);
+assert.equal(dispatches.at(-1).opts.bind[1][1].resource.buffer, d.air[d.airIndex]);
 owner.suspend();
 await sim.probe(probe, [1, 1, 1], { ring, bind: [sim.tables, sim.bindRO, {}] });
 assert.equal(dispatches.at(-1).opts.header.format, 0);

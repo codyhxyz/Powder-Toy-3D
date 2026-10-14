@@ -306,6 +306,8 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
     recordPicks() {
       if (!pickQueue.length) return;
       if (pickKernel.state !== 'ready') { pickKernel.ready.then(recordPicksQuietly, failPicks); return; }
+      const read = sim.compact ? sim.bindPhysicalRO : sim.bindRO;
+      if (!read) { sim.compactOwner.ready.then(recordPicksQuietly, failPicks); return; }
       while (pickQueue.length) {
         const batch = pickQueue.splice(0, PICK_BATCH);
         let slots;
@@ -314,7 +316,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
           const words = new Array(PICK_BATCH).fill(0);
           slots.forEach((s, i) => { words[i] = s; });
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
-            bind: [sim.tables, sim.bindRO, pickGroup], header: sim.readHeader({ physical: true }),
+            bind: [sim.tables, read, pickGroup], header: sim.readHeader({ physical: true }),
             params: {
               ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
               warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])),

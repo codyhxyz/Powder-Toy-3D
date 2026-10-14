@@ -499,6 +499,21 @@ export class Simulation {
     if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(); return this._bindRO; }
     return v2.groups.read;
   }
+  // Physical readers share the compact core but read current native coarse
+  // air in B. Renderer format2 keeps its existing projection-only read group.
+  get bindPhysicalRO() {
+    const base = this.bindRO;
+    if (!this.compact || base !== this.compact.groups.read) return base;
+    const d = this.compact.dynamics;
+    if (!d?.isReady) return null;
+    if (this._physicalOwner !== this.compact) {
+      this._physicalOwner = this.compact;
+      this._physicalGroups = d.air.map(buffer => this.gpu.bindGroup(this.L.STATE_RO, [
+        { binding: 0, resource: { buffer: this.compact.cells } }, { binding: 1, resource: { buffer } },
+      ], 'native physical readers'));
+    }
+    return this._physicalGroups[d.airIndex];
+  }
   get nativeCapabilities() { return nativeCapabilities(this); }
   async prepareNative(owner = this.compactOwner) {
     await owner?.ready;
@@ -1423,17 +1438,9 @@ export class Simulation {
   probe(kernel, size, { ring, bind = [], params = {} }) {
     const physical = !!this.compact && bind[1] === this.compact.groups.read;
     if (physical) {
-      const d = this.compact.dynamics;
-      if (!d?.isReady) return null;
-      // Every physical reader (body, traces, clearance...) gets actual native
-      // air, without changing format2 renderer reads or adding a binding.
-      if (this._physicalOwner !== this.compact) {
-        this._physicalOwner = this.compact;
-        this._physicalGroups = d.air.map(buffer => this.gpu.bindGroup(this.L.STATE_RO, [
-          { binding: 0, resource: { buffer: this.compact.cells } }, { binding: 1, resource: { buffer } },
-        ], 'native physical readers'));
-      }
-      bind = [...bind]; bind[1] = this._physicalGroups[d.airIndex];
+      const state = this.bindPhysicalRO;
+      if (!state) return null;
+      bind = [...bind]; bind[1] = state;
     }
     const slot = ring.next();
     this._dispatch(kernel, size, { bind, header: physical ? this.readHeader({ physical: true }) : this.header(), params: { ...params, slot } });

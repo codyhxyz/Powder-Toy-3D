@@ -110,13 +110,16 @@ export function createOceanEvents() {
   }
   function updateColumns(context, r) {
     const sim = context.sim, key = [...originOf(sim), context.seaLevel, context.groundHeight];
+    const read = sim.compact ? sim.bindPhysicalRO : sim.bindRO;
+    if (!read) return false;
     if (!equal(r.edgeKey, key)) {
       sim.gpu.write(r.edges, 0, oceanOpenEdges(context));
       r.edgeKey = key;
     }
     r.probe.dispatch(sim.gpu.frame, fold(Math.ceil(sim.g.nx * sim.g.nz / 64)), {
-      bind: [sim.tables, sim.bindRO, r.group], header: sim.readHeader({ physical: true }), params: { sea: context.seaLevel },
+      bind: [sim.tables, read, r.group], header: sim.readHeader({ physical: true }), params: { sea: context.seaLevel },
     });
+    return true;
   }
   const api = {
     get active() { return !!event; },
@@ -139,7 +142,7 @@ export function createOceanEvents() {
         const r = ensure(sim);
         await r.whenReady;
         if (!current()) return false;
-        updateColumns(context, r);
+        if (!updateColumns(context, r)) return false;
         const bytes = await sim.gpu.readback.buffer(r.columns, 0, r.columns.size);
         if (!current()) return false;
         const data = new Float32Array(bytes);
@@ -192,7 +195,7 @@ export function createOceanEvents() {
         hi[2] = Math.min(nz - 1, Math.floor(event.source[1] + extent[1] - o[2]));
       }
       if (lo.some((v, i) => v > hi[i])) return false;
-      updateColumns(context, r); // ordered before edit; authoritative live mask each forcing tick
+      if (!updateColumns(context, r)) return false; // ordered before edit; authoritative live mask each forcing tick
       sim.edit(r.force, { lo, hi }, {
         sea, time: frame / C.stepsPerSecond, chop, surge, wind,
         source: event?.source ?? [0, 0], direction: event?.direction ?? [1, 0],
