@@ -6,7 +6,7 @@ import { launchBrowser, newTestPage, ready } from './browser.mjs';
 
 const invokedAt = Date.now();
 const totalDeadline = invokedAt + 8_500; // leave >=1.5s for browser/slot cleanup
-const caseDeadline = invokedAt + 7_600;  // hard stop for fixture, compile, and assertions
+const caseDeadline = invokedAt + 6_300;  // finish before evaluate's deadline, with time to return observations
 const arg = name => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
 const selectedCase = arg('--case');
 const port = arg('--port') || '19543';
@@ -103,7 +103,9 @@ try {
         box([52, 13, 48], [52, 17, 52], refractory);
         box([48, 13, 47], [51, 17, 47], refractory);
         box([48, 13, 49], [51, 17, 49], refractory);
-        box([50, 13, 48], [50, 13, 48], refractory); // retain broken coal in its physical firebox cell
+        // Hold the charge during this melting-only checkpoint; drainage is a separate assertion.
+        box([48, 13, 51], [51, 17, 51], refractory);
+        box([48, 13, 48], [51, 15, 48], E.BROKENCOAL, 20, ELEMENTS[E.BROKENCOAL].life);
         one([48, 13, 48], E.COAL, 20, ELEMENTS[E.COAL].life);
         one([51, 13, 48], E.BROKENCOAL, 20, ELEMENTS[E.BROKENCOAL].life);
         box([48, 13, 50], [51, 13, 50], E.SCRAP, 20, ELEMENTS[E.SCRAP].life ?? 0);
@@ -130,10 +132,11 @@ try {
         let scrapSamples = [scrapInitial];
         let alignedBatches = true, updates = 0, nativeTicks = 0, fences = 0;
         let ignition = false, fuelLifeReduced = false, melt = null;
+        let peakCoalTemperatureC = 20, peakBrokenCoalTemperatureC = 20, peakChargeTemperatureC = 20;
         let exhaustedBudget = false;
         // One invocation only. The wall-clock deadline, not an unbounded frame count,
         // determines how far real native heat transfer/phase change can progress.
-        for (let batch = 0; batch < 1_200 && Date.now() < deadline; batch++) {
+        for (let batch = 0; batch < 300 && Date.now() < deadline; batch++) {
           a.test.step(4);
           a.industry.update(1 / 60, true);
           updates++;
@@ -147,6 +150,9 @@ try {
           ]);
           ignition ||= coal.temperature >= ELEMENTS[E.COAL].ignite || broken.temperature >= ELEMENTS[E.BROKENCOAL].ignite;
           fuelLifeReduced ||= coal.life < coalInitial.life - 1e-7 || broken.life < brokenInitial.life - 1e-7;
+          peakCoalTemperatureC = Math.max(peakCoalTemperatureC, coal.temperature);
+          peakBrokenCoalTemperatureC = Math.max(peakBrokenCoalTemperatureC, broken.temperature);
+          peakChargeTemperatureC = Math.max(peakChargeTemperatureC, ...scrapSamples.filter(cell => cell.id === E.SCRAP || cell.id === E.LAVA).map(cell => cell.temperature));
           melt = scrapSamples.find(cell => cell.id === E.LAVA && cell.ctype === E.METAL) ?? null;
           if (melt) break;
         }
@@ -174,6 +180,7 @@ try {
         return {
           case: caseName, status, checks, apiErrors: errors,
           observations: { bounds, fixtureTemperatureC: 20, coalStartLife: coalInitial.life,
+            loadedFuelCells: 12, peakCoalTemperatureC, peakBrokenCoalTemperatureC, peakChargeTemperatureC,
             brokenCoalStartLife: brokenInitial.life, coalEnd: coal, brokenCoalEnd: broken,
             scrapSamples, melt, nativeTicks, industryUpdates: updates, nativeBatchSize: 4, fences,
             waterFixture: 'none; native ambient unchanged', elapsedCaseMs: Math.round(performance.now() - caseStarted) },
