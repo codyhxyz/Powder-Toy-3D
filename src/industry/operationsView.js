@@ -1,18 +1,11 @@
 import { DEVICE_TYPES } from './catalog.js';
+import { CONTROL_PARTS, CONTROL_PART_THRESHOLD_BOUNDS } from './controlParts.js';
 
-export const SENSOR_THRESHOLD_MIN = -273.15;
-export const SENSOR_THRESHOLD_MAX = 10000;
-export const SENSOR_THRESHOLD_DEFAULT = 200;
+export const [SENSOR_THRESHOLD_MIN, SENSOR_THRESHOLD_MAX] = CONTROL_PART_THRESHOLD_BOUNDS;
+export const SENSOR_THRESHOLD_DEFAULT = CONTROL_PARTS.TSNS.defaultThreshold;
 
-export const FACTORY_PARTS = Object.freeze([
-  { key: 'TSNS3', label: 'Temperature sensor', price: 3 },
-  { key: 'SWITCH2', label: 'Switch', price: 2 },
-  { key: 'BATTERY5', label: 'Battery', price: 5 },
-  { key: 'METAL1', label: 'Metal conductor', price: 1 },
-  { key: 'PSCN1', label: 'P-type conductor', price: 1 },
-  { key: 'NSCN1', label: 'N-type conductor', price: 1 },
-  { key: 'INSULATOR1', label: 'Insulator', price: 1 },
-]);
+export const FACTORY_PARTS = Object.freeze(Object.values(CONTROL_PARTS)
+  .map(part => ({ key: part.key, label: part.name, price: part.cost })));
 
 export function validSensorThreshold(value) {
   if (value === '' || value === null || value === undefined) return false;
@@ -123,6 +116,7 @@ export function createOperationsView(parent, actions = {}) {
   const machineName = node('p', 'industry-inspection-machine', inspection);
   const observation = node('p', 'industry-observation', inspection);
   const freshness = node('p', 'industry-freshness', inspection);
+  const samples = node('p', 'industry-observed-regions', inspection);
   const gateResult = node('p', 'industry-gate-result', inspection);
   const drive = button(inspection, 'industry-drive', '', () => {});
   const gateModes = node('div', 'industry-gate-modes', inspection);
@@ -147,7 +141,7 @@ export function createOperationsView(parent, actions = {}) {
         attribute(element, 'aria-pressed', state.part === part.key);
         element.disabled = typeof actions?.selectPart !== 'function';
       }
-      const thresholdMode = state.part === 'TSNS3';
+      const thresholdMode = state.part === 'TSNS';
       thresholdLabel.hidden = thresholdHelp.hidden = !thresholdMode;
       threshold.disabled = typeof actions?.setThreshold !== 'function';
       if (document.activeElement !== threshold) {
@@ -165,28 +159,35 @@ export function createOperationsView(parent, actions = {}) {
 
       const details = state.inspection;
       const device = details?.device;
-      inspection.hidden = !device;
-      if (!device) return;
-      const name = DEVICE_TYPES[device.type]?.name ?? device.type ?? 'Machine';
+      inspection.hidden = !device && !details?.controlPart;
+      if (inspection.hidden) return;
+      const name = device ? DEVICE_TYPES[device.type]?.name ?? device.type
+        : CONTROL_PARTS[details.controlPart.type]?.name ?? 'Control part';
       text(machineName, name);
 
       const presented = presentFactoryObservation(details.observation);
       text(observation, presented.label);
       text(freshness, presented.sampleLabel);
+      const regions = Object.entries(details.observation?.regions ?? {});
+      samples.hidden = !regions.length;
+      text(samples, regions.map(([name, region]) => {
+        const heat = Number.isFinite(region.maxTemperatureC) ? ` · peak ${Math.round(region.maxTemperatureC)}°C` : '';
+        return `${name}: ${region.eligible ?? '?'} eligible / ${region.sampled ?? '?'} sampled${heat}`;
+      }).join(' · '));
       observation.setAttribute('data-status', presented.status);
       freshness.setAttribute('data-freshness', presented.freshness);
 
-      const usableId = typeof device.id === 'string' && device.id.length > 0;
-      const canDrive = device.type !== 'foundation' && usableId;
+      const usableId = typeof device?.id === 'string' && device.id.length > 0;
+      const canDrive = usableId && !['foundation', 'gate'].includes(device.type);
       drive.hidden = !canDrive;
       drive.disabled = !canDrive || typeof actions?.setDrive !== 'function';
-      text(drive, device.powered ? 'Disable native port control' : 'Enable native port control');
-      attribute(drive, 'aria-pressed', !!device.powered);
+      text(drive, device?.powered ? 'Disable native port control' : 'Enable native port control');
+      attribute(drive, 'aria-pressed', !!device?.powered);
       drive.onclick = () => {
         if (canDrive && typeof actions?.setDrive === 'function') action(actions, 'setDrive', device.id, !device.powered);
       };
 
-      const isGate = device.type === 'gate';
+      const isGate = device?.type === 'gate';
       gateModes.hidden = gateHelp.hidden = gateResult.hidden = !isGate;
       if (isGate) {
         text(gateResult, presentGateResult(details.gateStatus));
@@ -202,10 +203,14 @@ export function createOperationsView(parent, actions = {}) {
 
       const part = details.controlPart;
       const isSwitch = part?.type === 'SWITCH';
-      controlPart.hidden = toggleControl.hidden = !isSwitch;
+      controlPart.hidden = !part;
+      toggleControl.hidden = !isSwitch;
+      if (part) {
+        const name = CONTROL_PARTS[part.type]?.name ?? part.type;
+        const thresholdText = part.type === 'TSNS' && Number.isFinite(part.threshold) ? ` · threshold ${part.threshold}°C` : '';
+        text(controlPartText, `${name}${part.on === true ? ' · on' : part.on === false ? ' · off' : ''}${thresholdText}`);
+      }
       if (isSwitch) {
-        const thresholdText = Number.isFinite(part.threshold) ? ` · threshold ${part.threshold}°C` : '';
-        text(controlPartText, `Inspected switch${part.on === true ? ' · on' : part.on === false ? ' · off' : ''}${thresholdText}`);
         toggleControl.disabled = typeof actions?.toggleControl !== 'function';
         attribute(toggleControl, 'aria-pressed', part.on === true);
         text(toggleControl, part.on === true ? 'Turn inspected switch off' : part.on === false ? 'Turn inspected switch on' : 'Toggle inspected switch');

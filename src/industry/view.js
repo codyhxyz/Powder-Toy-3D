@@ -92,7 +92,7 @@ const MACHINE_HELP = {
   hearth: 'Fuel goes at local z=0, y=1–3. Put charge in local z=1–2 and catch output at local z=3.',
   gate: 'Choose Open, Closed, or Signal when inspecting the gate. Signal opens while energized; blocked closure waits, and damage is reported.',
 };
-const UNLOCK_AT = { miner: 12, lift: 12, pump: 48, heater: 96 };
+const UNLOCK_AT = { miner: 12, lift: 12, pump: 48, heater: 96, hearth: 96 };
 // Never rebuild the palette on simulation frames: keep focus and native controls.
 const text = (node, value) => { value = String(value); if (node.textContent !== value) node.textContent = value; };
 const attribute = (node, key, value) => { value = String(value); if (node.getAttribute(key) !== value) node.setAttribute(key, value); };

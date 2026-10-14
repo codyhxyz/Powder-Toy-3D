@@ -278,7 +278,7 @@ await test('construction UI exposes true costs, unlocks, progress, material flow
   const cls=name=>search(panel,e=>e.className===name);
   const machine=type=>search(panel,e=>e.attributes?.['data-machine']===type);
   await settle();update();
-  const belt=machine('belt'),miner=machine('miner'),pump=machine('pump'),heater=machine('heater');
+  const belt=machine('belt'),miner=machine('miner'),pump=machine('pump'),heater=machine('hearth');
   assert.equal(cls('industry-balance').textContent,'24 credits');
   assert.equal(cls('industry-progress').max,12);assert.equal(cls('industry-progress').value,0);
   assert.match(belt.attributes['aria-label'],/2 credits/);assert.equal(belt.attributes['aria-pressed'],'true');

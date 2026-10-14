@@ -13,6 +13,7 @@ const {
   createOperationsView, FACTORY_PARTS, presentFactoryObservation, presentGateResult, validSensorThreshold,
 } = await import('../src/industry/operationsView.js');
 const { DEVICE_TYPES } = await import('../src/industry/catalog.js');
+const { CONTROL_PARTS } = await import('../src/industry/controlParts.js');
 hooks.deregister();
 
 class Element {
@@ -121,10 +122,8 @@ assert.match(classNode('industry-tip').textContent, /charge in local z=1–2.*ca
 assert.equal(classNode('industry-stage-hint').textContent, progression.hint);
 assert.equal(classNode('industry-stage-hint').hidden, false, 'current stage guidance is visible, not title-only');
 assert.deepEqual(machineTypes.includes('heater'), false);
-assert.deepEqual(FACTORY_PARTS.map(({ key, price }) => [key, price]), [
-  ['TSNS3', 3], ['SWITCH2', 2], ['BATTERY5', 5], ['METAL1', 1],
-  ['PSCN1', 1], ['NSCN1', 1], ['INSULATOR1', 1],
-]);
+assert.deepEqual(FACTORY_PARTS.map(({ key, price }) => [key, price]),
+  Object.values(CONTROL_PARTS).map(part => [part.key, part.cost]));
 
 // Saved legacy heater and new models remain in the scene, with truthful gate/port markers.
 const industryRoot = app.scene.children.find(child => child.name === 'Industry');
@@ -141,12 +140,12 @@ assert.equal(app.scene.children.find(child => child.name === 'Industry').childre
 assert.equal(gateReference.getObjectByName('gate-shutter').visible, false, 'open gate aperture remains visibly open');
 
 // Paid part choices use canonical keys; TSNS threshold is finite and PHYS-bounded.
-const selectSensor = buttons(panel, 'data-part', 'TSNS3');
+const selectSensor = buttons(panel, 'data-part', 'TSNS');
 assert(selectSensor);
 selectSensor.onclick();
-assert.deepEqual(calls.at(-1), ['selectPart', 'TSNS3']);
-const sensorState = { ...state, part: 'TSNS3', partThreshold: SENSOR_THRESHOLD_DEFAULT,
-  partCandidate: { x: 40, y: 6, z: 12, type: 'TSNS3', threshold: 200 } };
+assert.deepEqual(calls.at(-1), ['selectPart', 'TSNS']);
+const sensorState = { ...state, part: 'TSNS', partThreshold: SENSOR_THRESHOLD_DEFAULT,
+  partCandidate: { x: 40, y: 6, z: 12, type: 'TSNS', threshold: 200 } };
 tick(sensorState);
 const threshold = classNode('industry-threshold-input');
 assert.equal(threshold.min, String(SENSOR_THRESHOLD_MIN));
@@ -185,13 +184,15 @@ inspectToggle.onclick();
 assert.deepEqual(calls.at(-1), ['toggleInspect']);
 const heaterInspection = {
   device: heater,
-  observation: { status: 'ready', freshness: 'stale', running: 'unconfirmed' },
+  observation: { status: 'ready', freshness: 'stale', running: 'unconfirmed',
+    regions: { fuel: { eligible: 4, sampled: 12, maxTemperatureC: 1860 } } },
   gateStatus: null,
 };
 tick({ ...state, inspectMode: true, part: null, partCandidate: null, inspection: heaterInspection });
 assert.equal(inspectToggle.getAttribute('aria-pressed'), 'true');
 assert.equal(classNode('industry-observation').textContent, 'Ready — transfer not confirmed');
 assert.equal(classNode('industry-freshness').textContent, 'Sample: stale');
+assert.match(classNode('industry-observed-regions').textContent, /fuel: 4 eligible \/ 12 sampled · peak 1860°C/);
 assert.doesNotMatch(classNode('industry-observation').textContent, /running|throughput/i);
 const drive = classNode('industry-drive');
 assert.equal(drive.hidden, false);
@@ -220,21 +221,27 @@ assert.equal(switchButton.hidden, false);
 switchButton.onclick();
 assert.deepEqual(calls.at(-1), ['toggleControl'], 'switch action gets no device argument and is scoped to inspection');
 tick({ ...state, inspectMode: true, part: null, partCandidate: null,
+  inspection: { device: null, controlPart: { type: 'SWITCH', x: 8, y: 5, z: 9, on: true } } });
+assert.equal(classNode('industry-inspection').hidden, false, 'standalone electrical controls do not need an associated machine');
+assert.equal(switchButton.hidden, false);
+assert.equal(drive.hidden, true);
+tick({ ...state, inspectMode: true, part: null, partCandidate: null,
   inspection: { device: switchInspection, controlPart: { type: 'TSNS', x: 8, y: 5, z: 9, threshold: 200, on: false } } });
 assert.equal(classNode('industry-switch-toggle').hidden, true, 'non-switch electronics never get a toggle control');
+assert.match(classNode('industry-control-part-label').textContent, /Temperature sensor · off · threshold 200°C/);
 
 // Factory/build visibility remains dynamic; inspection mode suppresses placement ghosts.
 tick({ ...state, factory: false, inspectMode: true, partCandidate: sensorState.partCandidate });
 assert.equal(panel.hidden, true);
 assert.equal(partGhost.visible, false);
-tick({ ...state, factory: true, building: false, inspectMode: false, part: 'TSNS3', partCandidate: sensorState.partCandidate });
+tick({ ...state, factory: true, building: false, inspectMode: false, part: 'TSNS', partCandidate: sensorState.partCandidate });
 assert.equal(classNode('industry-builder').hidden, true);
 assert.equal(partGhost.visible, false);
 
 const optionalActionParent = new Element();
 const optionalOperations = createOperationsView(optionalActionParent, {});
 assert.doesNotThrow(() => optionalOperations.update({
-  part: 'TSNS3', partThreshold: SENSOR_THRESHOLD_DEFAULT, inspectMode: true,
+  part: 'TSNS', partThreshold: SENSOR_THRESHOLD_DEFAULT, inspectMode: true,
   inspection: { device: gate, gateStatus: { pending: true }, controlPart: { type: 'SWITCH', on: false } },
 }));
 assert.equal(find(optionalActionParent, element => element.className === 'industry-part').disabled, true);
