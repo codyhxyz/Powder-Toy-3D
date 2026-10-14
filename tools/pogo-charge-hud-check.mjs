@@ -17,7 +17,7 @@ try {
         window.hud = createPovHud();
         hud.show(true);
         window.state = {dt: 1/60, health: 1, breath: 1, locked: true,
-          pogo: {step: 0, max: 3, held: false, ready: false}};
+          pogo: 0};
         hud.update(state);
       </script>`,
   }));
@@ -25,23 +25,20 @@ try {
   await page.waitForFunction(() => window.hud);
   const meter = page.locator('.pov-pogo');
   assert.equal(await meter.isVisible(), true);
-  assert.match(await meter.innerText(), /Pogo 0\/3/);
-  for (const step of [1, 2, 3]) {
-    await page.evaluate(step => { state.pogo.step = step; hud.update(state); }, step);
-    assert.match(await meter.innerText(), new RegExp(`Pogo ${step}/3`));
+  for (const step of [0, 1, 2, 3]) {
+    await page.evaluate(step => { state.pogo = step / 3; hud.update(state); }, step);
+    assert.equal(await meter.innerText(), '', 'bar only: no numbers or timing cues');
     const fill = await page.locator('.pov-pogo .pov-fill').evaluate(el => Number(el.style.transform.match(/[\d.]+/)[0]));
     assert.ok(Math.abs(fill - step / 3) < 0.00001);
   }
-  assert.match(await meter.innerText(), /MAX/);
+  const desktop = await meter.boundingBox();
+  assert.equal(desktop.width, 80);
+  assert.equal(desktop.height, 4);
   await page.screenshot({ path: '/tmp/pogo-charge-desktop.png' });
-  await page.evaluate(() => { state.pogo.ready = true; hud.update(state); });
-  assert.match(await meter.innerText(), /Jump now!/);
   await page.setViewportSize({ width: 390, height: 844 });
   const rect = await meter.boundingBox();
   assert.ok(rect.x >= 0 && rect.x + rect.width <= 390, 'meter fits a phone');
   await page.screenshot({ path: '/tmp/pogo-charge-mobile.png' });
-  await page.evaluate(() => { state.pogo.held = true; state.pogo.ready = false; hud.update(state); });
-  assert.match(await meter.innerText(), /Release jump/);
   for (const patch of [{ dead: true }, { swooping: true }, { pogo: null }]) {
     await page.evaluate(patch => hud.update({ ...state, ...patch }), patch);
     assert.equal(await meter.isVisible(), false);
@@ -52,7 +49,7 @@ try {
   assert.equal(await meter.isVisible(), false);
   await page.evaluate(() => hud.dispose());
   assert.equal(await meter.count(), 0);
-  console.log('Pogo HUD: power, cues, desktop/mobile layout, visibility and cleanup passed');
+  console.log('Pogo HUD: bar-only power, desktop/mobile layout, visibility and cleanup passed');
 } finally {
   await browser.close();
 }

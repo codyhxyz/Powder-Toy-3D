@@ -37,30 +37,23 @@ async function until(test) {
 try {
   body.spawn(new THREE.Vector3(64, 1, 64));
   assert.equal(body.pogoCharge, null);
-  await until(() => body.pogoCharge?.ready);
-  assert.equal(body.pogoCharge.step, 0);
-  assert.equal(body.pogoCharge.max, 3);
+  await until(() => body.pogoing && body.vel.y > 0);
+  assert.equal(body.pogoCharge, 0);
   await step(true);
-  assert.equal(body.pogoCharge.step, 1, 'the cue matches an accepted late press');
-  assert.equal(body.pogoCharge.held, true);
-  assert.equal(body.pogoCharge.ready, false);
+  assert.equal(body.pogoCharge, 1 / 3, 'a timed press fills one third');
   for (let level = 2; level <= 3; level++) {
     await step();
     await until(() => body.onGround);
-    assert.equal(body.pogoCharge.ready, true, 'cue on actual ground contact');
     await step(true);
-    assert.equal(body.pogoCharge.step, level);
+    assert.equal(body.pogoCharge, level / 3);
   }
   await step();
-  assert.equal(body.pogoCharge.ready, false, 'no extra charge cue after a timed bounce');
   await until(() => body.onGround);
   await step(true);
-  assert.equal(body.pogoCharge.step, 3, 'full power is capped');
+  assert.equal(body.pogoCharge, 1, 'full power is capped');
   await until(() => body.onGround);
   await step();
-  assert.equal(body.pogoCharge.step, 0, 'missed landing resets the meter');
-  for (let n = 0; n < 14; n++) await step();
-  assert.equal(body.pogoCharge.ready, false, 'late cue expires with the physics window');
+  assert.equal(body.pogoCharge, 0, 'missed landing resets the meter');
   await step(false, false);
   assert.equal(body.pogoCharge, null, 'putting away the pogo hides its charge');
   liquid = true;
@@ -69,10 +62,10 @@ try {
   liquid = false;
   body.spawn(new THREE.Vector3(64, 1, 64));
   assert.equal(body.pogoCharge, null, 'respawn clears charge');
-  await until(() => body.pogoCharge);
+  await until(() => body.pogoCharge != null);
   body.hurt(2, 'test', { shielded: false });
   assert.equal(body.pogoCharge, null, 'death hides charge immediately');
-  console.log('Pogo charge: levels, timing, held input, misses, deselection, swimming and respawn passed');
+  console.log('Pogo charge: levels, misses, deselection, swimming and respawn passed');
 } finally {
   body.dispose();
 }

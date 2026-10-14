@@ -79,19 +79,14 @@ body.pov-locked canvas { cursor: none; }
 .pov-cross.reach i:nth-child(4) { transform: translateX(-1.5px); }
 .pov-cross.reach b { opacity: 1; background: var(--accent); }
 
-/* Pogo power stays near the aim; the timing cue uses the body's actual Keen window. */
-.pov-pogo {
-  position: absolute; left: 50%; top: calc(50% + 40px); transform: translateX(-50%);
-  display: none; width: 220px; max-width: calc(100vw - 32px); box-sizing: border-box;
-  padding: 8px 12px; background: rgba(12, 16, 20, 0.9); border-radius: 4px;
-  color: #fff; text-align: center; font-size: 12px; line-height: 1.4;
-  font-variant-numeric: tabular-nums;
+/* A small charge bar below the aim, only while riding the pogo. */
+.pov-pogo.pov-track {
+  position: absolute; left: 50%; top: calc(50% + 28px); transform: translateX(-50%);
+  display: none; width: 80px; height: 4px;
+  background: rgba(12, 16, 20, 0.85);
 }
-.pov-pogo.show { display: grid; gap: 5px; }
-.pov-pogo .pov-track { width: 100%; height: 6px; }
+.pov-pogo.show { display: block; }
 .pov-pogo .pov-fill { background: #f0c86a; transition: none; }
-.pov-pogo.ready { color: #a8f5b4; }
-.pov-pogo.ready .pov-fill { background: #a8f5b4; }
 
 /* ---- vitals (bottom left; the hotbar hangs from the top) */
 .pov-vitals {

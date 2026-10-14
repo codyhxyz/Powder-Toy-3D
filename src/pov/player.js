@@ -313,14 +313,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
-    get pogoCharge() {
-      if (!p.pogoing || p.dead) return null;
-      return {
-        step: pogoStep, max: POGO_STEPS, held: prevJump,
-        // Show the real landing/late-press window, never a guessed time to terrain.
-        ready: !prevJump && (p.onGround || (!bounceTimed && sinceBounce <= POGO_WINDOW_S && p.vel.y > 0 && pogoStep < POGO_STEPS)),
-      };
-    },
+    get pogoCharge() { return p.pogoing && !p.dead ? pogoStep / POGO_STEPS : null; },
     perks,                        // its perks (perks.js)
     get size() { return size; },  // × the plain body's size (Shrink)
     get height() { return H; },   // cells, feet to crown
