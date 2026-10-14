@@ -57,19 +57,29 @@ try {
   assert.equal(state.mode, 'crueltySquad');
   assert.equal(state.cruelty, true);
   assert.equal(state.view, 0);
-  assert(state.words > 0 && state.planes > 0 && state.parked);
+  assert.equal(state.words, undefined, 'disabled original-art path stays unloaded');
+  assert.equal(state.planes, 0, 'no unused appearance allocation');
+  assert(state.parked);
   await page.screenshot({ path: '/tmp/cruelty-source-paradise.png' });
+  // Reproduce the reported refresh hang in the same browser, not just a
+  // one-shot numerical fixture. The original mission URL must boot again.
+  await page.reload({ waitUntil: 'commit' });
+  await ready(page);
+  await page.waitForFunction(() => __app.pov.mission?.state?.phase === 'active');
+  await render(page);
+  console.log('Appearance check: refreshed mission active');
   const after = await page.evaluate(async () => {
+    const beforeSim = __app.sim.id;
     const saved = { exposure: __app.post.settings.exposure, bloom: __app.post.settings.bloom };
     await __app.setMode('sandbox');
     await __app.test.renderOnce();
-    return { mode: __app.current().mode, cruelty: __app.post.settings.cruelty, sim: __app.sim.id,
+    return { mode: __app.current().mode, cruelty: __app.post.settings.cruelty, sim: __app.sim.id, beforeSim,
       saved, after: { exposure: __app.post.settings.exposure, bloom: __app.post.settings.bloom } };
   });
   assert.equal(after.mode, 'sandbox'); assert.equal(after.cruelty, false);
-  assert.equal(after.sim, state.sim); assert.deepEqual(after.saved, after.after);
+  assert.equal(after.sim, after.beforeSim); assert.deepEqual(after.saved, after.after);
   assert.deepEqual(errors, []);
-  console.log('PASS original-art upload/render and sandbox exit; screenshot /tmp/cruelty-source-paradise.png', state);
+  console.log('PASS cold mission boot, fallback render, refresh and sandbox exit; screenshot /tmp/cruelty-source-paradise.png', state);
 } finally {
   await browser?.close();
   if (vite) await new Promise(resolve => vite.httpServer.close(resolve));
