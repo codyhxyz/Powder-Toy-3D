@@ -104,11 +104,11 @@ assert.equal(village.state.placed.find(i => i.id === 'bed').x, before.x + 1);
 assert.equal(village.state.placed.find(i => i.id === 'bed').z, before.z, 'diagonal input snaps to one cardinal axis');
 near(village.context.player.x, beforePlayer.x + 1);
 assert.ok(validState(village.state));
-tick(16, { x: 1, z: 0 }); // second cell fits exactly; the third crosses the reserved aisle
-assert.ok(blockedSounds > 0); assert.equal(village.state.placed.find(i => i.id === 'bed').x, before.x + 2);
+tick(70, { x: 1, z: 0 }); // cross the room center; stop only when the player reaches the dresser
+assert.ok(blockedSounds > 0); assert.equal(village.state.placed.find(i => i.id === 'bed').x, 0);
 village.act({ type: 'cancel' });
 assert.equal(village.interaction, null);
-assert.equal(JSON.parse(saves.get('willow-cove:furniture:v1:cpu')).placed.find(i => i.id === 'bed').x, before.x + 2);
+assert.equal(JSON.parse(saves.get('willow-cove:furniture:v1:cpu')).placed.find(i => i.id === 'bed').x, 0);
 
 // Every public storage entry path waits for reaching/pulling, then executes.
 for (const entry of ['open', 'openStorage', 'store', 'withdraw']) {

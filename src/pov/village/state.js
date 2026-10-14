@@ -7,6 +7,7 @@ export { RESIDENTS } from './residents.js';
 // Furniture coordinates are relative to the room, never the streaming window.
 export const HOMES = [COVE.COTTAGE_A, COVE.COTTAGE_B, COVE.COTTAGE_C, COVE.COTTAGE_D];
 export const FLOOR = COVE.LOW, HOME_Z = COVE.COTTAGE_Z, POCKETS = 20;
+export const HOME_ENTRY = Object.freeze({ x: 0, z: -COVE.HOUSE_HALF + COVE.WALL_THICK + 1 });
 export const DRESSER = Object.freeze({ id: 'dresser', kind: 'dresser', x: 6, z: 6, rotation: 0 });
 export function initialState() {
   return { version: 1, placed: [
@@ -36,7 +37,8 @@ const sweep = (a, b) => ({
   w: Math.max(a.x + a.w, b.x + b.w) - Math.min(a.x, b.x),
   d: Math.max(a.z + a.d, b.z + b.d) - Math.min(a.z, b.z),
 });
-const inside = b => b.x >= -9 && b.z >= -9 && b.x + b.w <= 9 && b.z + b.d <= 9;
+const interiorHalf = COVE.HOUSE_HALF - COVE.WALL_THICK;
+const inside = b => b.x >= -interiorHalf && b.z >= -interiorHalf && b.x + b.w <= interiorHalf && b.z + b.d <= interiorHalf;
 const ease = value => { const t = Math.max(0, Math.min(1, value)); return t * t * (3 - 2 * t); };
 export function cardinal({ x, z }) {
   if (!Number.isFinite(x + z) || Math.hypot(x, z) < 0.2) return null;
@@ -100,8 +102,8 @@ export function placementError(state, item, player = null) {
   if (!ITEMS[item.kind] || item.kind === 'dresser' || !Number.isInteger(item.x) || !Number.isInteger(item.z) || !Number.isInteger(item.rotation) || item.rotation < 0 || item.rotation > 3) return 'Choose a valid furniture position.';
   const b = bounds(item);
   if (b.x < -9 || b.z < -9 || b.x + b.w > 9 || b.z + b.d > 9) return 'Keep furniture inside the room.';
-  // A permanent two-cell aisle joins the door, spawn and back wall; never trap a returning player.
-  if (overlaps(b, { x: -2, z: -10, w: 4, d: 20 })) return 'Leave the doorway and center aisle clear.';
+  // Keep only a body-sized landing at the actual door; the rest is usable floor.
+  if (overlaps(b, { x: HOME_ENTRY.x - 1, z: HOME_ENTRY.z - 1, w: 2, d: 2 })) return 'Leave the doorway clear.';
   if ([DRESSER, ...state.placed].some(p => p.id !== item.id && overlaps(b, bounds(p), 0.25))) return 'That space is already occupied.';
   if (player && overlaps(b, { x: player.x - 1, z: player.z - 1, w: 2, d: 2 })) return 'Move your character out of that space first.';
   return null;
