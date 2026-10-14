@@ -71,16 +71,21 @@ const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
 const gltfPromises = new Map();   // one download per model for the page
 export function loadModel(choice) {
-  // the file is meshopt-compressed (tools/character-compress.mjs)
-  if (!gltfPromises.has(choice)) {
-    gltfPromises.set(choice, new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URLS[choice]));
+  // the file is meshopt-compressed (tools/character-compress.mjs). Keyed by URL so the
+  // paper-bag guy shares the male download.
+  const url = BODY_MODEL_URLS[choice];
+  if (!gltfPromises.has(url)) {
+    gltfPromises.set(url, new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(url));
   }
-  return gltfPromises.get(choice);
+  return gltfPromises.get(url);
 }
-const garbByModel = new WeakMap();   // the hat's geometry, built once per download and shared by every body
-function garbFor(gltf, meshes) {
-  if (!garbByModel.has(gltf)) garbByModel.set(gltf, buildGarb(meshes));
-  return garbByModel.get(gltf);
+const garbByModel = new WeakMap();   // hat or bag geometry, built once per download
+function garbFor(gltf, meshes, bag = false) {
+  let entry = garbByModel.get(gltf);
+  if (!entry) garbByModel.set(gltf, entry = {});
+  const kind = bag ? 'bag' : 'wizard';
+  if (!entry[kind]) entry[kind] = buildGarb(meshes, { bag });
+  return entry[kind];
 }
 
 // Pull the barrels onto the back. buildJetpack's cell offset clears a stick torso;
@@ -113,7 +118,7 @@ function seatPack(pack, model) {
 }
 
 // The body from a loaded glTF. Same per-frame state as the stickman.
-export function createRealFigure(gltf) {
+export function createRealFigure(gltf, { bag = false } = {}) {
   const u = figureUniforms();
   const tint = [0, 0, 0, 0];
   const model = cloneSkinned(gltf.scene);   // the download is shared; each body poses its own rig
@@ -134,7 +139,7 @@ export function createRealFigure(gltf) {
   for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
 
   // the wizard's hat, on this body's own skeleton
-  for (const [name, geo] of Object.entries(garbFor(gltf, meshes))) {
+  for (const [name, geo] of Object.entries(garbFor(gltf, meshes, bag))) {
     const garment = new THREE.SkinnedMesh(geo, body.material);
     garment.name = name;
     garment.frustumCulled = false;
@@ -460,7 +465,7 @@ export function createBody({ choice }) {
     loadModel(key)
       .then(async (gltf) => {
         if (disposed) return;
-        const fig = createRealFigure(gltf);
+        const fig = createRealFigure(gltf, { bag: key === 'stick' });
         try {
           if (bound) fig.bind(...bound);
           await fig.compile();   // pipelines built before it joins the scene, so switching doesn't hitch (B5)

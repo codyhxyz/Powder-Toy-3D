@@ -177,7 +177,9 @@ export function createPov(app) {
   // the shown figure's right hand (a bone), or null
   function rightHand() {
     const body = figure?.model;
-    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(['real', 'woman'].includes(figure.showing) ? REAL_HAND : STICK_HAND));
+    // Paper bag uses the male mesh. The procedural stickman only stands in while that mesh loads.
+    const gltfHand = ['real', 'woman'].includes(figure.showing) || (figure.showing === 'stick' && figure.loaded);
+    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(gltfHand ? REAL_HAND : STICK_HAND));
     return (body && hands.get(body)) ?? null;
   }
   // the right hand in the world while the figure is drawn, else null: a wand's casts are drawn from it in third person (tools/index.js)

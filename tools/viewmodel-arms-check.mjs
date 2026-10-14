@@ -57,7 +57,7 @@ const ctx = { dt: 0, dir: new THREE.Vector3(0, 0, -1), player: {} };
 const update = () => rig.update(ctx);
 try {
   update();
-  assert.ok(original.every(o => o.visible), 'stickman keeps its original simple arm');
+  assert.ok(original.every(o => o.visible), 'simple arm stays until the male mesh arrives');
   character = 'real'; update();
   assert.ok(original.every(o => o.visible), 'simple arm remains while the asset loads');
   // Rapid switching must not attach duplicate meshes when a shared request resolves.
@@ -75,7 +75,7 @@ try {
   const back = new THREE.Vector3(0, 0, 1).applyQuaternion(real.quaternion);
   assert.ok(back.distanceTo(new THREE.Vector3(...MODELS.jackhammer.arm).normalize()) < 1e-6, 'forearm follows the existing grip direction');
   character = 'stick'; update();
-  assert.ok(!real.visible && original.every(o => o.visible), 'switch back to stickman live');
+  assert.ok(real.visible && original.every(o => !o.visible), 'paper bag uses the male arm');
   character = 'real'; update();
   assert.ok(real.visible && original.every(o => !o.visible), 'cached arm reappears live');
   character = 'woman'; update(); await flush();

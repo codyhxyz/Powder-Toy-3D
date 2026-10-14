@@ -90,6 +90,12 @@ for (const file of ['body', 'woman']) {
   }
   const garb = buildGarb(meshes);
   const { hat } = garb;
+  if (file === 'body') {
+    const bagged = buildGarb(meshes, { bag: true });
+    assert.ok(bagged.bag && bagged.marker && !bagged.hat, 'paper bag replaces the wizard hat');
+    bagged.bag.dispose();
+    bagged.marker.dispose();
+  }
   if (file === 'woman') {
     assert.ok(garb.robe && garb.hoops && garb.bung, 'woman stands in a barrel');
     garb.robe.computeBoundingBox();

@@ -21,7 +21,7 @@
   the room: under a low ceiling it stays crouched until it's out. In liquid `C` swims down instead. The
   stickman squats (figure.js `CROUCH_POSE`, the pelvis dropped so the feet stay down); the realistic body has
   no crouch clip, so figureReal.js bends its pelvis, spine, thighs, calves and feet on top of the clips.
-- **The body** (setting: Male wizard | Female wizard | Stickman, key `character`): Male wizard (`real`) is the default: Quaternius's
+- **The body** (setting: Male wizard | Female wizard | Paper bag, key `character`): Male wizard (`real`) is the default: Quaternius's
   Superhero Male (Universal Base Characters, CC0), his muscles sculpted into the mesh and its normal map,
   playing Universal Animation Library clips retargeted onto his skeleton (`tools/character-pack.mjs`:
   each bone keeps the mannequin's world-space turn off its rest pose). A wizard in a pointed hat skinned
@@ -29,7 +29,7 @@
   on 2026-10-11 so the abs show. Female wizard (`woman`) uses Superhero Female from the same pack,
   with the same eight clips retargeted to her rig, a fitted pointed hat, and purple clothing.
   The selection is saved and also shown on the loading screen. Halo modes still use Spartan armor.
-  Each model loads only when selected; Stickman stands in while it loads or if it fails.
+  Paper bag (`stick`) is that same male body with a grocery bag over his head and a Sharpie face on it (garb.js), no wizard hat. The procedural stickman is only the stand-in while a model loads or if it fails.
   Player bodies and wizard NPCs carry visible jetpacks. Flames and particles leave the animated nozzle mouths,
   following the torso's pose and body size (`figure.js`, `buildJetpack`).
   In Animal Crossing mode, the separate **Animal Crossing: Boy | Girl** setting selects the village persona.
