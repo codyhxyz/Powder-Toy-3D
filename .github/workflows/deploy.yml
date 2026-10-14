@@ -52,6 +52,7 @@ jobs:
       - run: node tools/check-character-models.mjs && node tools/check-loading-character.mjs   # CPU-only bodies, selection and portraits
       - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode
       - run: node tools/firearm-aim-check.mjs && node tools/held-tools-check.mjs
+      - run: node tools/viewmodel-arms-check.mjs   # CPU GLBs: muscular view arms, grip alignment, live selection and disposal
       - run: node tools/torch-cpu-check.mjs   # water quenching and frame-rate-independent flame inertia
       - run: node tools/npc-held-check.mjs
       - run: node tools/shrine-interact-cpu-check.mjs

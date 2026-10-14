@@ -70,7 +70,7 @@ const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * 
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
 const gltfPromises = new Map();   // one download per model for the page
-function loadModel(choice) {
+export function loadModel(choice) {
   // the file is meshopt-compressed (tools/character-compress.mjs)
   if (!gltfPromises.has(choice)) {
     gltfPromises.set(choice, new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URLS[choice]));
