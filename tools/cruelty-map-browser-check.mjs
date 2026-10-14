@@ -1,4 +1,4 @@
-// One <=10s manual-mode slot on the full imported map, not a reduced physics fixture.
+// One <=10s UI-mode mission slot (manual for --geometry-only) on the full map.
 // Requires local source conversion. Run one map per explicitly planned GPU slot.
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
@@ -34,8 +34,7 @@ try {
       targets: a.pov.mission.state?.total, actors: a.pov.npcs.length,
       weapon: a.pov.toolbelt.selectedKey,
       window: [a.sim.g.nx, a.sim.g.ny, a.sim.g.nz],
-      sourceSize: a.settings.worldSize,
-      errors: a.test.errors,
+      sourceSize: a.win.size,
     };
   });
   assert.equal(state.mode, geometryOnly ? 'sandbox' : 'crueltySquad');

@@ -77,4 +77,8 @@ arched exits are not approximated as rectangular completion volumes.
 Hidden and visible actor art is excluded from terrain; hidden static world
 geometry is retained. All original actor roots remain in the inventory.
 
-Full-map GPU validation remains separate from these CPU checks.
+Paradise's full mission also passed a UI-mode browser check in a 5.76 s
+total GPU slot. It used the normal 128×488×128 streamed window and verified
+three targets, 53 actors, pistol selection, clear player collision and a
+solid source floor in actual GPU cells. The test parked the game after entry.
+The other maps currently have CPU source/clearance checks, not browser checks.
