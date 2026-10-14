@@ -13,6 +13,7 @@ import { scaleFor } from '../constructions/runtime.js';
 import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
 import { WORLD_SCENES } from '../world/scenes/index.js';
 import { presentationWGSL } from '../gfx/presentationMath.js';
+import { meshPadding } from '../world/surfaceMesh.js';
 // The parts the window's own pipelines read (the layout, haze, casters and GI)
 // live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
 import {
@@ -711,7 +712,7 @@ export const occupancyWords = (L) => detailMaskAt(L) + detailChunks(L)[0] * deta
 // 1 a dry mesh drawn there, 2 one with liquids. The view leaves a meshed
 // chunk's opaque field to its mesh (and crosses a dry one whole).
 export const DETAIL_CHUNK = 32;
-export const DETAIL_PAD = 4;   // cells of the chunk's neighbours its cells take in (the mesh's normals and seams)
+export const DETAIL_PAD = meshPadding(1);   // cells of the chunk's neighbours its cells take in (the mesh's seams and smoothed normals: world/surfaceMesh.js)
 export const detailChunks = (L) => [Math.ceil(L.size[0] / DETAIL_CHUNK), Math.ceil(L.size[2] / DETAIL_CHUNK)];
 /** The detail mask's first word in the occupancy buffer. */
 export const detailMaskAt = (L) => L.l1.n[0] * L.l1.n[1] * L.l1.n[2] + L.l2.n[0] * L.l2.n[1] * L.l2.n[2];

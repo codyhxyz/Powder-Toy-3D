@@ -1,12 +1,14 @@
 // Isolated CPU contract checks: node tools/surface-mesh-check.mjs
 import assert from 'node:assert/strict';
-import { buildSurfaceMesh } from '../src/world/surfaceMesh.js';
+import { buildSurfaceMesh, meshPadding } from '../src/world/surfaceMesh.js';
 import { ELEMENTS, E, K, R } from '../src/elements.js';
 
 function volume(bounds, at, step = 1) {
   // Deliberately different origins for neighbouring chunks: alignment must be global.
-  const origin = bounds.slice(0, 3).map(v => (Math.floor((v - step / 2) / step) - 1) * step);
-  const size = origin.map((v, a) => (Math.ceil((bounds[a + 3] - step / 2) / step) + 2) * step - v);
+  // Exactly the padding the contract asks for: the grid's blocks and the smoothing's reach.
+  const reach = meshPadding(step) - 2 * step;
+  const origin = bounds.slice(0, 3).map(v => (Math.floor((v - step / 2) / step) - 1) * step - reach);
+  const size = origin.map((v, a) => (Math.ceil((bounds[a + 3] - step / 2) / step) + 2) * step + reach - v);
   const ids = new Uint8Array(size[0] * size[1] * size[2]);
   for (let z = 0; z < size[2]; z++) for (let y = 0; y < size[1]; y++) for (let x = 0; x < size[0]; x++) {
     ids[x + size[0] * (y + size[1] * z)] = at(x + origin[0], y + origin[1], z + origin[2]);
@@ -229,6 +231,36 @@ for (const axis of [0, 1, 2]) for (const sign of [-1, 1]) {
     assert(cross[axis] * sign > 0, 'plane winding is outward');
   }
 }
+// Loose ground on a gentle slope shades as the slope, not as its steps (the
+// stripes on lawns and beaches): a 1:5 staircase's vertex normals stay within
+// SLOPE_TOLERANCE of the ramp's (the cell-wide gradient's are up to 27° off).
+const SLOPE_TOLERANCE = 2;   // degrees
+const ramp = (top, under) => (x, y) => y < Math.floor(x / 5) - 2 ? under : y === Math.floor(x / 5) - 2 ? top : 0;
+const deg = (n, r) => Math.acos(Math.min(1, n[0] * r[0] + n[1] * r[1] + n[2] * r[2])) * 180 / Math.PI;
+for (const [top, under] of [[E.SAND, E.SAND], [E.PLANT, E.STONE]]) {
+  const m = mesh([0, -12, 0, 32, 12, 32], ramp(top, under)), len = Math.hypot(0.2, 1), r = [-0.2 / len, 1 / len, 0];
+  for (let i = 0; i < m.positions.length; i += 3) {
+    if (m.positions[i] < 3 || m.positions[i] > 29 || m.positions[i + 2] < 3 || m.positions[i + 2] > 29) continue;
+    assert(deg(m.normals.subarray(i, i + 3), r) < SLOPE_TOLERANCE, `loose ground ${ELEMENTS[top].key} shades as its slope`);
+  }
+}
+// Everything else keeps the cell-wide normal, whatever ground it stands on:
+// a wall, a trunk and its crown read the same on rock as on sand.
+const standing = (ground) => (x, y, z) => y < 0 ? ground
+  : x === 4 && z >= 2 && z < 12 && y < 7 ? E.BRICK
+  : Math.hypot(x - 12, z - 6) < 1.2 && y < 6 ? E.WOOD
+  : (x - 12) ** 2 + (y - 9) ** 2 + (z - 6) ** 2 < 16 ? E.PLANT : 0;
+const onRock = mesh([0, -6, 0, 16, 16, 14], standing(E.ROCK)), onSand = mesh([0, -6, 0, 16, 16, 14], standing(E.SAND));
+const normalAt = (m) => new Map(Array.from({ length: m.ids.length }, (_, i) => [`${m.positions.subarray(3 * i, 3 * i + 3)}:${m.ids[i]}`, m.normals.subarray(3 * i, 3 * i + 3)]));
+const rockNormals = normalAt(onRock);
+let kept = 0;
+for (const [k, n] of normalAt(onSand)) {
+  if (!/:(\d+)$/.test(k) || ![E.BRICK, E.WOOD, E.PLANT].includes(+k.split(':')[1])) continue;
+  assert.deepEqual(n, rockNormals.get(k), `${k}: walls, trunks and crowns keep their normals on loose ground`);
+  kept++;
+}
+assert(kept > 100, 'the standing features were compared');
+
 const input = volume(box, single), before = input.ids.slice();
 buildSurfaceMesh(input.ids, input.options);
 assert.deepEqual(input.ids, before, 'input is not mutated');
@@ -237,4 +269,4 @@ assert.throws(() => buildSurfaceMesh(input.ids.subarray(1), input.options), Rang
 assert.throws(() => buildSurfaceMesh(new Uint8Array(8), { size: [2, 2, 2], origin: [0, 0, 0], bounds: [0, 0, 0, 2, 2, 2] }), /padded/);
 // Topology-only padding is insufficient for chunk-independent gradients.
 assert.throws(() => buildSurfaceMesh(new Uint8Array(27), { size: [3, 3, 3], origin: [-1, -1, -1], bounds: [0, 0, 0, 1, 1, 1] }), /padded/);
-console.log('surface-mesh-check: PASS (indexed, unique vertices, smooth/unit/outward normals, fallback, exact seams, isolated/manifold/winding, high IDs, thin branch/tunnel, steps 1/2/4, 255 closed sign cases, validation; 32x32 plane: 2048 triangles vs 8192 tetrahedra, 75% reduction)');
+console.log('surface-mesh-check: PASS (indexed, unique vertices, smooth/unit/outward normals, loose ground shades as its slope, walls/trunks/crowns keep theirs, fallback, exact seams, isolated/manifold/winding, high IDs, thin branch/tunnel, steps 1/2/4, 255 closed sign cases, validation; 32x32 plane: 2048 triangles vs 8192 tetrahedra, 75% reduction)');

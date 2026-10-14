@@ -120,6 +120,8 @@ export const POST_DEFAULTS = {
   taa: true,
   upscale: 1, // render scale per axis under TAA, of the output's pixels (1 = native; see UPSCALE)
   resolutionScale: 1, // automatic multiplier under an upscaling preset (never at native); output and history stay full size
+  adaptive: null, // resolutionScale applies; null: under an upscaling preset (upscale < 1). The app's Fast draws 1:1 on a page-sized canvas and still adapts
+  floor: null, // lowest render scale it may take, of the output's pixels; null: UPSCALE_FLOOR
   bloom: 0.3, // fraction of above-threshold light scattered into the halo (0..1)
   // EV stops. +0.7 with look 0.5 reproduces the mean brightness and saturation of the
   // old in-shader ACES (measured on the lab and volcano presets).
@@ -1256,13 +1258,15 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get settleWeight() { return temporalOf()?.currentWeight ?? 1; },
     /**
      * Render scale per axis the next render uses, of the output's pixels: the
-     * preset's (UPSCALE); under an upscaling preset × the automatic
-     * resolutionScale, not below UPSCALE_FLOOR. Native stays native. 1 without TAA.
+     * preset's (UPSCALE); while adaptive (under an upscaling preset) × the
+     * automatic resolutionScale, not below the floor (UPSCALE_FLOOR). Native
+     * stays native. 1 without TAA.
      */
     get renderScale() {
       const s = settingsOf();
-      if (!s.taa || !temporalOf() || s.upscale >= 1) return 1;
-      return Math.max(UPSCALE_FLOOR, s.upscale * Math.min(1, Math.max(AUTO_RES.MIN, s.resolutionScale)));
+      if (!s.taa || !temporalOf()) return 1;
+      if (!(s.adaptive ?? s.upscale < 1)) return Math.min(1, s.upscale);
+      return Math.max(s.floor ?? UPSCALE_FLOOR, s.upscale * Math.min(1, Math.max(AUTO_RES.MIN, s.resolutionScale)));
     },
     /**
      * GPUTextures: { scene, depth, resolved (TAA's output, in taaCompress's range, or the scene without TAA), bloom (the
