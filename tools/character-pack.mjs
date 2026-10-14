@@ -5,7 +5,7 @@
 // onto his skeleton. Then tools/character-compress.mjs compresses the result
 // with meshopt and checks it against the uncompressed one.
 //
-// usage: node tools/character-pack.mjs <Superhero_Male_FullBody.gltf> <UAL1_Standard.glb> <UAL1_Standard_RM.glb> [out.glb] [--raw <uncompressed.glb>]
+// usage: node tools/character-pack.mjs <Superhero_Male_FullBody.gltf|Superhero_Female_FullBody.gltf> <UAL1_Standard.glb> <UAL1_Standard_RM.glb> [out.glb] [--raw <uncompressed.glb>]
 //   (the .gltf from the Universal Base Characters Standard zip's "Base Characters/Godot - UE" folder,
 //   with its .bin and textures beside it; the two .glb from the Universal Animation Library Standard
 //   zip's Unreal-Godot folder: the _RM twin has root motion baked in, which gives each locomotion
@@ -53,7 +53,7 @@ const rawAt = args.indexOf('--raw');
 const rawPath = rawAt >= 0 ? args.splice(rawAt, 2)[1] : null;
 const [bodyPath, ualPath, rmPath, outArg] = args;
 if (!bodyPath || !ualPath || !rmPath) {
-  console.error('usage: node tools/character-pack.mjs <Superhero_Male_FullBody.gltf> <UAL1_Standard.glb> <UAL1_Standard_RM.glb> [out.glb] [--raw <uncompressed.glb>]');
+  console.error('usage: node tools/character-pack.mjs <Superhero_Male_FullBody.gltf|Superhero_Female_FullBody.gltf> <UAL1_Standard.glb> <UAL1_Standard_RM.glb> [out.glb] [--raw <uncompressed.glb>]');
   process.exit(1);
 }
 const outPath = outArg ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public/models/character/body.glb');
@@ -75,12 +75,15 @@ const CLIPS = [
 // gets the higher quality, since its blocks show up as dents in the light.
 const MAPS = {
   MI_Superhero_Male: [['baseColor', 1024, 88], ['normal', 1024, 94]],
+  MI_Superhero_Female: [['baseColor', 1024, 88], ['normal', 1024, 94]],
   MI_Eyes: [['baseColor', 128, 90]],
   MI_Hair_1: [['baseColor', 256, 85]],   // the eyebrows (greyscale: figureReal.js tints them)
+  MI_Hair_2: [['baseColor', 256, 85]],
 };
+const female = path.basename(bodyPath) === 'Superhero_Female_FullBody.gltf';
 const BOXERS = {
-  material: 'MI_Superhero_Male',
-  white: '../Textures/T_Superhero_Male_Ligh.png',   // from the .gltf's folder: the skin with white boxers
+  material: female ? 'MI_Superhero_Female' : 'MI_Superhero_Male',
+  white: female ? '../Textures/T_Superhero_Female_Light_BaseColor.png' : '../Textures/T_Superhero_Male_Ligh.png',
   color: GARB_COLORS.hat,                           // linear albedo
   edge: [12, 48],                                   // sRGB levels of difference between the two skins: no cloth at or below, all cloth at or above
 };
@@ -156,7 +159,7 @@ async function readBody(file) {
       if (m.name === BOXERS.material && slot === 'baseColor') {
         const dyed = path.join(tmp, `${name}_dyed.png`);
         const share = dyeBoxers(file, path.join(dir, BOXERS.white), dyed);
-        console.log(`boxers: ${(share * 100).toFixed(1)}% of ${name} dyed`);
+        console.log(`clothing: ${(share * 100).toFixed(1)}% of ${name} dyed`);
         file = dyed;
       }
       const webp = path.join(tmp, `${name}.webp`);

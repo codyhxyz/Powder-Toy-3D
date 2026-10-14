@@ -435,7 +435,13 @@ test('particles', async () => {
   povEvents.emit('impact', { point: V(...SPAWN.sparks), id: E.METAL, source: 'gun', normal: up, broke: false });
   povEvents.emit('round:move', { kind: 'round', from: V(4, 6, 4), to: V(24, 2, 20) });   // (SPAWN.tracer: its middle)
   povEvents.emit('gun:fire', { origin: V(...SPAWN.flash), dir: V(1, 0, 0) });
-  vfx.jet(V(24, 5.8, 30), 0, 0.1);   // a jetpack's flames, 0.1 s of them (SPAWN.jet: its nozzles, figure.js JET_NOZZLES)
+  const nozzles = [-0.3, 0.3].map((x) => {
+    const nozzle = new THREE.Object3D();
+    nozzle.position.copy(toScene(SPAWN.jet[0] + x, SPAWN.jet[1], SPAWN.jet[2]));
+    nozzle.scale.setScalar(SCALE);
+    return nozzle;
+  });
+  vfx.jet(nozzles, 0.1);
   birds.feathers(SPAWN.feathers, (p, o) => o.copy(toScene(p[0], p[1], p[2])));
   vfx.update(1 / 60);
   birds.update(1 / 60, [], (p, o) => o.copy(toScene(p.x, p.y, p.z)), { glow: 1, camera, span: 3 });

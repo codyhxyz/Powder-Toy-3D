@@ -15,6 +15,7 @@
 // reprojection (three's TAAU's velocity) take it, and no GLSL is left in the presentation's modules.
 // tools/presentation-check.mjs runs the GPU side.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import * as THREE from 'three/webgpu';
 import { vec4 } from 'three/tsl';
 import { IDENTITY, ROLLING_LOG, effectParameters, warp, warpTangent, inverseRay, rayPoint, roots, planeRoots, boxSpans, nextExit, chordLimit, rayCell, rayEntryAxis, arcLength, presentationWGSL, presentationGLSL } from '../src/gfx/presentationMath.js';
@@ -24,7 +25,7 @@ import { presentationNearWGSL, presentationNearGLSL } from '../src/shaders/gfx/p
 import { volumeFrag, pickFrag, VOLUME_VIEWS, warmChecks } from '../src/shaders/render.js';
 import { farFrag, farDetailDepthFrag, farLayout, WORLD_SIZE } from '../src/shaders/far.js';
 import { motionWGSL, WGSL_CHECK as postChecks } from '../src/gfx/post.js';
-import { gridLayout } from '../src/sim.js';
+import { gridLayout, Vec3 } from '../src/sim.js';
 import { mapByKey, mapsFor, resolveMode, modeByKey } from '../src/maps.js';
 const close = (a,b,eps=1e-8) => {
   assert.equal(a.length,b.length);
@@ -50,6 +51,25 @@ for (let j=0; j<200; j++) {
 }
 assert.deepEqual(warp([1,2,3],IDENTITY),[1,2,3]);
 assert.deepEqual(inverseRay([1,2,3],[0,1,0]),{C:[1,2,3],B:[0,1,0],A:[0,0,0]});
+
+// The tool gun calls the app's screenCurve on every held stroke. Use the
+// simulation's actual Vec3, not THREE.Vector3: their method sets differ.
+const appSource = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const curveSource = appSource.match(/function screenCurve\(ray\) \{[\s\S]*?\n\}/)?.[0];
+assert(curveSource, 'app screenCurve fixture');
+for (const origin of [new Vec3(), new Vec3(256, 8, -128)]) {
+  for (const parameters of [IDENTITY, e]) {
+    const curve = new Function('sim', 'presentation', 'inverseRay', `return (${curveSource});`)(
+      { origin }, { parameters }, inverseRay);
+    const ray = new THREE.Ray(new THREE.Vector3(32, 12, 32), new THREE.Vector3(0.2, -0.5, -1).normalize());
+    for (const distance of [0, 8, 32]) {
+      const point = rayPoint(curve(ray), distance);
+      const displayed = warp(point.map((v, i) => v + origin.toArray()[i]), parameters);
+      close(displayed, ray.at(distance, new THREE.Vector3()).add(origin).toArray());
+    }
+  }
+}
+
 assert.deepEqual(roots(0,0,1),[]);
 assert.deepEqual(roots(0,2,-4),[2]);
 assert.deepEqual(roots(1,-4,4),[2]);
@@ -255,8 +275,32 @@ for (const v of VOLUME_VIEWS) {
 }
 const realisticCurved=modules['volume.realistic.curved'];
 for (const call of ['warpSkip(&walk, bc, true)','warpRestart(&walk, ro, rd)','warpGridPoint(hitPos)','MESH_CUT_NONE']) assert(realisticCurved.includes(call), `volume.realistic.curved: ${call}`);
-assert(!/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: no mesh cut (its straight-ray distance isn\'t the chord march\'s)');
+assert(/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: preserve the opaque mesh depth');
+for (const call of ['var tCut = meshCutT(rd)', 'meshBudget = warpArc(walk.ray, 0.0, max(tCut, 0.0))',
+  'meshBudget - warpArc(walk.ray, 0.0, walk.t)', 'meshBudget = tCut;',
+  'warpArc(walk.ray, 0.0, floorT) < meshBudget', 'if (!cut && tCut >= MESH_CUT_NONE && FU.far'])
+  assert(realisticCurved.includes(call), `curved mesh cut: ${call}`);
 assert(/meshCutDepth\(h\.depth\)/.test(modules['volume.realistic']), 'flat: the mesh cut');
+// A mesh depth is distance on the DISPLAYED ray, not on each cell's chord.
+// Arc budgets survive arbitrary chord starts/skips and a refracted restart.
+for (const direction of [[0, -0.2, -1], [1, 0, 0], [0, -1, 0]]) {
+  const d = new THREE.Vector3(...direction).normalize().toArray();
+  const bend = effectParameters(ROLLING_LOG.k, [64, 80]);
+  const ray = inverseRay([64, 40, 100], d, bend);
+  const meshT = 60, budget = arcLength(ray, 0, meshT);
+  close(warp(rayPoint(ray, meshT), bend),
+    [64, 40, 100].map((v, i) => v + d[i] * meshT));
+  for (const start of [0, 1, 16, 32, 59.9, 60, 70]) {
+    const remaining = Math.max(0, budget - arcLength(ray, 0, start));
+    close([remaining], [start < meshT ? arcLength(ray, start, meshT) : 0], 1e-6);
+  }
+  const bendT = 20, left = budget - arcLength(ray, 0, bendT);
+  const at = rayPoint(ray, bendT), outgoing = new THREE.Vector3(0.2, -0.6, -1).normalize().toArray();
+  const shownDirection = new THREE.Vector3(...warpTangent(at, outgoing, bend)).normalize().toArray();
+  const restarted = inverseRay(warp(at, bend), shownDirection, bend);
+  const used = arcLength(restarted, 0, 3);
+  assert(left - used > 0 && left - used < left, 'refraction consumes, rather than resets, the mesh budget');
+}
 assert(modules.pick.includes('fn pickCurved') && modules.pick.includes('warpUse(P.ro[i].w'), 'pick: the displayed ray for a curved pick');
 // the menu's warm-up (src/preload.js) for a gamemode that bends the view: its curved variants, the ones it draws
 for (const v of ['realistic','heat']) {

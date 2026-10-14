@@ -4,7 +4,6 @@ import { createBillboards, FADE, sprite } from '../gfx/billboards.js';
 import { prepareMesh } from '../gfx/meshLight.js';
 import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
-import { JET_NOZZLES } from './figure.js';
 import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
@@ -704,26 +703,26 @@ export function createVfx(env) {
     if (aimT <= 0) aimBeam.group.visible = false;
   }
 
-  // jetpack exhaust for dt seconds, out of the nozzles of a body at feet (grid) facing yaw
+  // Jet exhaust follows the posed nozzle mouths, including lean, yaw and body scale.
   let jetAcc = 0, smokeAcc = 0;
   const vN = new THREE.Vector3();
-  function jet(feet, yaw, dt, N = JET_NOZZLES) {
-    const s = env.getScale();
+  const jetDir = new THREE.Vector3(), jetScale = new THREE.Vector3();
+  function jet(nozzles, dt) {
     jetAcc += JET_RATE * dt;
     smokeAcc += JET_SMOKE_RATE * dt;
     const nFlame = Math.floor(jetAcc), nSmoke = Math.floor(smokeAcc);
     jetAcc -= nFlame; smokeAcc -= nSmoke;
-    const bx = Math.sin(yaw), bz = Math.cos(yaw);   // behind the body (forward is −z at yaw 0)
-    for (const side of [-1, 1]) {
-      vN.set(feet.x + bx * N.back + bz * N.side * side, feet.y + N.up, feet.z + bz * N.back - bx * N.side * side);
-      const at = toWorld(vN, vP);
+    for (const nozzle of nozzles) {
+      const at = nozzle.getWorldPosition(vP);
+      jetDir.set(0, -1, 0).transformDirection(nozzle.matrixWorld);
+      const s = nozzle.getWorldScale(jetScale).x;
       burst(fx.jet, nFlame, (p) => {
-        vV.randomDirection().multiplyScalar(JET_SPREAD); vV.y -= 1;
+        vV.randomDirection().multiplyScalar(JET_SPREAD).add(jetDir);
         vV.multiplyScalar(randIn(JET_SPEED) * s);
         setP(p, at, vV, randIn(JET_SIZE) * s, JET_COLOR, 1, randIn(JET_LIFE));
       });
       burst(fx.jetSmoke, nSmoke, (p) => {
-        vV.randomDirection().multiplyScalar(JET_SPREAD * 2); vV.y -= 1;
+        vV.randomDirection().multiplyScalar(JET_SPREAD * 2).add(jetDir);
         vV.multiplyScalar(randIn(JET_SMOKE_SPEED) * s);
         setP(p, at, vV, randIn(JET_SMOKE_SIZE) * s, JET_SMOKE_COLOR, JET_SMOKE_ALPHA, randIn(JET_SMOKE_LIFE), JET_SMOKE_GRAVITY, JET_SMOKE_DRAG);
       });
@@ -971,8 +970,8 @@ export function createVfx(env) {
       const n = Math.min(MIST_SPLASH_MAX, speed * MIST_SPLASH_PER_SPEED);
       mist(toWorld(feet, vA), n, vB.set(0, 1, 0), liquidId ?? E.WATER, MIST_SPLASH_RING);
     },
-    // the jetpack firing this frame: feet (grid), yaw (rad), dt (s), nozzles (the body's, JET_NOZZLES' shape)
-    jet(feet, yaw, dt, nozzles) { if (live()) jet(feet, yaw, dt, nozzles); },
+    // The jetpack firing this frame: animated nozzle transforms and dt (s).
+    jet(nozzles, dt) { if (live()) jet(nozzles, dt); },
     // a burning body this frame: feet (grid), dt (s)
     burn(feet, dt) { if (live()) burn(feet, dt); },
     // every POV frame; true while anything is still showing (keep rendering)

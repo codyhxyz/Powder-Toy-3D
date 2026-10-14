@@ -93,7 +93,7 @@ function buildFigure({ color, pose, model }, k) {
   rig.torso.rotation.x = -(P.lean ?? 0);
   // sleeves a shade darker than the robe, so the arms read against it
   for (const j of [rig.shL, rig.shR, rig.elL, rig.elR]) j.children.forEach((m) => { if (m.isMesh && m.userData.albedo === palette.robe) m.userData.albedo = shade(accent, SLEEVE_SHADE); });
-  for (const f of rig.flames) { f.visible = !!P.flames; f.material.color.setRGB(...FLAME); f.scale.set(FLAME_WIDTH, FLAME_LEN, FLAME_WIDTH); }
+  for (const f of rig.jetpack.flames) { f.visible = !!P.flames; f.material.color.setRGB(...FLAME); f.scale.set(FLAME_WIDTH, FLAME_LEN, FLAME_WIDTH); }
 
   // the tool in the right mitten, held along the forearm, levelled toward forward
   let held = null;
