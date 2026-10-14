@@ -23,7 +23,7 @@
 // of under ~3 minutes each on SwiftShader. App tests (the default island)
 // boot the game itself (Vite on --port + 1, or --app-url: a dev server of any
 // checkout, e.g. the frozen v1 checkout's or a v2 candidate's with --app-query
-// engine=v2; a bundled build needs __app.test.elements: engine-app.js).
+// physics=v2; a bundled build needs __app.test.elements: engine-app.js).
 //
 // Every run first checks the roundness measure on footprints whose answer is
 // known (lib.js selfCheck: lattice discs read round, squares and diamonds
@@ -34,7 +34,7 @@
 //
 // usage: node tools/outcomes.mjs [--engine v1|lean|v2] [--group liquids,solids,...] [--tests utube,puddle]
 //          [--strict [--phase P2]] [--json results.json] [--record] [--expected file.json] [--verbose] [--list]
-//          [--port N] [--app-url http://127.0.0.1:N] [--app-query engine=v2] [--seed N] [--self-check]
+//          [--port N] [--app-url http://127.0.0.1:N] [--app-query physics=v2] [--seed N] [--self-check]
 //   groups: liquids, solids, fire, blasts, world, census, controls
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -154,7 +154,7 @@ if (ENGINE === 'lean') {
         const errors = [];
         try {
           say(`browser run: ${t.name} (the game at ${base}${t.url})`);
-          const engine = createEngine(browser, { base, query: opt('app-query', ENGINE === 'v2' ? 'engine=v2' : ''), errors });
+          const engine = createEngine(browser, { base, query: opt('app-query', ENGINE === 'v2' ? 'physics=v2' : ''), expectedPhysics: ENGINE, errors });
           const r = await runTest(t, engine, { seed: SEED, budgetMs: BUDGET_MS * 2 });
           r.engine = ENGINE;
           r.adapter = engine.info.label;
