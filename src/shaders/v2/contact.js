@@ -203,7 +203,7 @@ fn contactBoundary(material:Material,openFaces:u32,ambientQ:u32,position:vec3i)-
 }
 
 fn ctSeed(position:vec3i,tick:u32)->i32 {
- return bitcast<i32>(u32(position.x)*73856093u ^ u32(position.y)*19349663u ^ u32(position.z)*83492791u ^ tick*2654435761u);
+ return bitcast<i32>((u32(position.x)*73856093u) ^ (u32(position.y)*19349663u) ^ (u32(position.z)*83492791u) ^ (tick*2654435761u));
 }
 fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,8>>,positions:array<vec3i,8>,requests:ptr<function,array<u32,8>>) {
  var cells:array<CTCell,8>;

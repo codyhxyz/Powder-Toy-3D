@@ -8,6 +8,13 @@ import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { contactPrelude, contactEntry } from './contact-prelude.mjs';
+// Chromium's WGSL parser rejects ungrouped arithmetic mixed with XOR, even
+// though Naga accepts it. Check the real emitted seed expression before bundling.
+const seedExpression=contactWGSL.match(/fn ctSeed[^]*?return bitcast<i32>\(([^;]+)\);/)[1];
+assert.deepEqual(seedExpression.split(' ^ '),[
+  '(u32(position.x)*73856093u)','(u32(position.y)*19349663u)',
+  '(u32(position.z)*83492791u)','(tick*2654435761u)',
+]);
 const dir = mkdtempSync(join(tmpdir(), 'contact-build-'));
 try {
   const bundle = await build({ configFile: false, logLevel: 'warn', build: {
