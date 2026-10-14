@@ -12,14 +12,38 @@ let browser;
 try {
   browser = await launchBrowser();
   const page = await newTestPage(browser, { mode: 'ui', viewport: { width: 640, height: 400 } });
+  if (process.argv.includes('--diagnostic')) await page.addInitScript(() => {
+    const pending = new Set();
+    for (const method of ['createComputePipelineAsync', 'createRenderPipelineAsync']) {
+      const original = GPUDevice.prototype[method];
+      GPUDevice.prototype[method] = function (descriptor) {
+        const name = descriptor.label ?? method;
+        pending.add(name);
+        return original.call(this, descriptor).finally(() => pending.delete(name));
+      };
+    }
+    setInterval(() => console.debug('Appearance boot:', JSON.stringify({
+      pending: [...pending],
+      marks: performance.getEntriesByType('mark').map(m => m.name),
+      screen: document.body?.innerText.slice(-500),
+    })), 3000);
+  });
   const errors = [];
   page.on('pageerror', e => { errors.push(e.message); console.error(e.message); });
-  page.on('console', m => { if (m.type() === 'error') { errors.push(m.text()); console.error(m.text()); } });
+  page.on('console', m => {
+    if (m.text().startsWith('Appearance boot:')) console.log(m.text());
+    if (m.type() === 'error') { errors.push(m.text()); console.error(m.text()); }
+  });
   page.on('requestfailed', r => console.error('Request failed:', r.url(), r.failure()?.errorText));
   page.on('response', r => { if (r.status() >= 400) console.error('HTTP:', r.status(), r.url()); });
   await page.goto(`${origin}/?map=paradise&mode=crueltySquad&view=realistic`, { waitUntil: 'commit' });
   console.log('Appearance check: page committed');
-  await ready(page);
+  await Promise.race([
+    ready(page),
+    page.waitForFunction(() => document.getElementById('error')?.textContent.trim()).then(async () => {
+      throw new Error(`Game startup error: ${await page.locator('#error').textContent()}`);
+    }),
+  ]);
   console.log('Appearance check: app exposed');
   await page.waitForFunction(() => __app.pov.mission.active);
   console.log('Appearance check: mission active');
