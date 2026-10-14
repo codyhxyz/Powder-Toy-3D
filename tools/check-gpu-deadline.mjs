@@ -46,14 +46,17 @@ try {
   if (orphan) { fixture.kill('SIGKILL'); await fixtureExit; }
   const start = Date.now(), deadline = start + 1500;
   guard = spawn(process.execPath, [fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url)),
-    String(owner.pid), owner.start, String(deadline), slot, String(statSync(slot).ino), token],
+    String(owner.pid), owner.start, String(deadline), slot, String(statSync(slot).ino), token, String(start)],
   { stdio: ['pipe', 'pipe', 'pipe'] });
+  let guardLog = '';
+  guard.stderr.on('data', data => { guardLog += data.toString(); });
   const guardExit = once(guard, 'exit');
   await once(guard.stdout, 'data');
   assert.equal(readFileSync(slot, 'utf8').trim(), String(guard.pid), 'live watchdog retains the slot after owner death');
   guard.stdin.write('capture\n');
   const [, signal] = await fixtureExit;
   await guardExit;
+  assert.match(guardLog, /total GPU slot occupancy \d+ ms/, 'forced runs must report actual total occupancy');
   assert.equal(signal, 'SIGKILL', 'independent guard stops a run that ignores graceful shutdown');
   assert(Date.now() - start < 1500, 'cleanup must finish inside the complete slot budget');
   assert.equal(existsSync(slot), false);

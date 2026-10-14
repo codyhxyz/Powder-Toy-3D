@@ -51,8 +51,9 @@ function leaseRoots(table, token) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [pidText, start, deadlineText, slot, inode, token] = process.argv.slice(2);
+  const [pidText, start, deadlineText, slot, inode, token, startedText] = process.argv.slice(2);
   const owner = { pid: Number(pidText), start }, deadline = Number(deadlineText);
+  const started = Number(startedText ?? Date.now());
   if (!Number.isSafeInteger(owner.pid) || owner.pid <= 1 || !Number.isFinite(deadline)) process.exit(2);
   // Keep the numeric lock compatible with older launchers. The watchdog,
   // not the possibly-dead test, owns it until orphan cleanup is confirmed.
@@ -111,6 +112,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       capture();
       if (releasing && (forced ? captured.length === 0 : browserTree.length === 0)) {
         unlinkOwnedSlot();
+        console.error(`[browser] total GPU slot occupancy ${Date.now() - started} ms${forced ? ' (forced cleanup)' : ''}`);
         process.stdout.write('released\n');
         clearTimeout(graceful); clearTimeout(hard); clearInterval(observe);
         process.exit(forced ? 1 : 0);
