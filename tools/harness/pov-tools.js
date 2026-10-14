@@ -449,6 +449,115 @@ test('stage:flask', async () => {
   }
 });
 
+// ---------------------------------------------------------------- jackhammer (same 64³ hand-tool fixture)
+test('stage:jackhammer', async () => {
+  const out = { checks: [], numbers: {} };
+  const sim = await make(64);
+  const { default: definition } = await import('/src/pov/tools/jackhammer.tool.js');
+  const { pack, createTransfer } = await import('/src/pov/tools/transfer.js');
+  const { createToolbelt } = await import('/src/pov/tools/index.js');
+  const { povEvents } = await import('/src/pov/events.js');
+  const toasts = [], impacts = [];
+  const env = toolEnv(sim, toasts, { owner: 'jackhammer-check', feedback: { act() {}, refuse: (t) => toasts.push(t) } });
+  env.transfer = createTransfer(env);
+  let tool = definition.create(env);
+  const loadout = pack(env.owner);
+  const player = { pos: V(2, 0, 2), vel: V(), onGround: true };
+  const center = V(20, 20, 20);
+  const off = povEvents.on('impact', (e) => { if (e.source === 'jackhammer') impacts.push(e); });
+  const settle = async () => {
+    for (let i = 0; i < 300 && env.transfer.pending; i++) { await gpu.fence(); await tick(); }
+    if (env.transfer.pending) throw new Error('jackhammer transfer did not settle');
+  };
+  const clearPack = () => { loadout.cells.length = 0; loadout.version++; };
+  // Identical 9×9×3 slab dimensions to stage:hand. No physics steps between
+  // edit and census: the check is exact fracture/transfer, not rubble settling.
+  const slab = (id) => {
+    // Fresh dig history after a world replacement (do not treat a new slab
+    // as the previous scene's recently mined/stale aim).
+    tool.dispose(); tool = definition.create(env);
+    load(sim, (set) => {
+      for (let z = 20; z < 23; z++) for (let y = 16; y < 25; y++) for (let x = 16; x < 25; x++) set(x, y, z, id);
+    });
+  };
+  const strike = async (id, aimExtra = {}) => {
+    tool.deselect();
+    const c = toolCtx(sim, player, center.clone(), id, { primary: true, primaryPressed: true });
+    Object.assign(c.aim, { face: 5 }, aimExtra);
+    tool.update(c); await settle();
+  };
+  let belt;
+  try {
+    clearPack();
+    belt = createToolbelt(toolEnv(sim, [])); belt.setVisible(true);
+    dispatchEvent(new KeyboardEvent('keydown', { key: '1' }));
+    const cycle = [belt.selectedKey];
+    for (let i = 0; i < 4; i++) { dispatchEvent(new KeyboardEvent('keydown', { key: '1' })); cycle.push(belt.selectedKey); }
+    check(out, 'Dig slot cycles through appended jackhammer', cycle.includes('JACKHAMMER'), cycle);
+    belt.select('JACKHAMMER');
+    check(out, 'direct selection and hotbar agree', belt.selectedKey === 'JACKHAMMER'
+      && document.querySelector('.hb-tool[data-key="JACKHAMMER"][aria-pressed="true"]') !== null);
+    const { gfxUniforms } = await import('/src/gfx/uniforms.js');
+    belt.update(toolCtx(sim, player, center, E.ROCK));
+    check(out, 'selected jackhammer outlines its mining bite', gfxUniforms.uDigMax.value[3] > 0);
+    belt.update(toolCtx(sim, player, null, -1, { wheel: 1 }));
+    check(out, 'wheel moves from last Dig tool to Build slot', belt.selectedKey === 'TROWEL', belt.selectedKey);
+    check(out, 'switching tools clears mining outline', gfxUniforms.uDigMax.value[3] === 0);
+    belt.dispose(); belt = null;
+
+    slab(E.ROCK);
+    const before = (await totals(sim)).ROCK;
+    await strike(E.ROCK);
+    let t = await totals(sim, [loadout]);
+    out.numbers.rock = { before, ...t, pack: loadout.count };
+    check(out, 'outlined 3³ rock bite becomes 27 stone, exactly conserved', loadout.count === 27 && loadout.mainId === E.STONE
+      && t.ROCK === before - 27 && (t.ROCK ?? 0) + (t.STONE ?? 0) === before, out.numbers.rock);
+    check(out, 'rock impact classified as mining break', impacts.at(-1)?.broke === true && impacts.at(-1)?.id === E.ROCK);
+    tool.windowShifted(3, 4);
+    check(out, 'lastHit follows window shifts', tool.lastHit.cell.equals(V(17, 20, 16)));
+
+    clearPack(); slab(E.METAL); await strike(E.METAL);
+    t = await totals(sim, [loadout]);
+    check(out, 'metal remains intact; refused mining impact', t.METAL === before && !t.SCRAP && loadout.count === 0
+      && impacts.at(-1)?.broke === false, t);
+    slab(E.ROCK); await strike(E.ROCK, { dist: 6 });
+    check(out, 'short range: distant rock untouched', (await totals(sim)).ROCK === before && loadout.count === 0);
+
+    slab(E.WOOD); await strike(E.WOOD);
+    check(out, 'pickaxe material tags: leaves wood to the axe', (await totals(sim)).WOOD === before && loadout.count === 0);
+
+    // Full real pack (not a lowered capacity) leaves unmined rock intact.
+    for (let i = 0; i < loadout.capacity; i++) loadout.cells.push([E.STONE, 20, 0, 0]);
+    loadout.version++;
+    slab(E.ROCK); await strike(E.ROCK);
+    t = await totals(sim);
+    check(out, 'full pack: rock stays intact, no debris lost', loadout.count === loadout.capacity && !t.STONE
+      && t.ROCK === before && toasts.some((v) => /pack is full/.test(v)), t);
+    clearPack();
+    await strike(E.ROCK);
+    check(out, 'mining resumes when pack is emptied', loadout.count === 27 && loadout.mainId === E.STONE);
+    t = await totals(sim, [loadout]);
+    check(out, 'resumed mining still conserves mass', (t.ROCK ?? 0) + (t.STONE ?? 0) === before, t);
+
+    clearPack(); slab(E.STONE); await strike(E.STONE);
+    check(out, 'existing loose stone is collected without duplication', loadout.count === 27 && loadout.mainId === E.STONE
+      && (await totals(sim, [loadout])).STONE === before);
+
+    // One free slot: only one cell mined, the rest stays rock.
+    clearPack();
+    for (let i = 1; i < loadout.capacity; i++) loadout.cells.push([E.STONE, 20, 0, 0]);
+    loadout.version++;
+    slab(E.ROCK); await strike(E.ROCK);
+    t = await totals(sim);
+    check(out, 'one free slot: exactly one taken, remaining rock intact', loadout.count === loadout.capacity
+      && !t.STONE && t.ROCK === before - 1, t);
+    check(out, 'no GPU failures', !h.failures.length, h.failures.join(' | '));
+    return out;
+  } finally {
+    await settle(); off(); belt?.dispose(); tool.dispose(); clearPack(); sim.dispose();
+  }
+});
+
 // ---------------------------------------------------------------- hand (axe, physgun)
 // pov-tools-b's scenes. The axe's: the old check's slabs, cell for cell (9
 // tall, 9 wide, 3 deep, 20 cells apart), two rows of three on 64³ where the

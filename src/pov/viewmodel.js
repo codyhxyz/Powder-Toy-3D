@@ -242,6 +242,11 @@ function createRig(env) {
       hands.push(h);
       return h;
     },
+    releaseHand(hand) {
+      const i = hands.indexOf(hand);
+      if (i !== -1) hands.splice(i, 1);
+      hand.removeFromParent();
+    },
     update,
     kick,
     hit,

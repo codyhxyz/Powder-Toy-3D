@@ -42,6 +42,7 @@ import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
 import { createBrushCursor } from './brush.js';
+import { bindBrushEraseClick } from './brushInput.js';
 import { createCameraRig } from './camera.js';
 import { createMeshCut } from './gfx/meshCut.js';
 import { createMeshFrames } from './gfx/meshFrames.js';
@@ -1619,6 +1620,25 @@ async function renderThumb(viewId, out) {
 
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;
+const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
+  && !signs?.editing && !painting && !shapeDrag;
+bindBrushEraseClick(canvasEl, {
+  canErase: canEraseClick,
+  erase: e => eraseClick(e).catch(err => { console.error('Erase click failed', err); hud.toast('Could not erase here. Try again.'); }),
+});
+async function eraseClick(e) {
+  pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  const from = sim, ray = gridRay(), stroke = brushStroke(ERASE_TOOL);
+  const hit = await pickRay(ray.origin, ray.direction, true);
+  if (from !== sim || !hit.valid || hit.id < 0 || !canEraseClick()) return;
+  if (!mp.isGuest) {
+    sim.snapshot(toolById(ERASE_TOOL).name);
+    toolbar.setUndoEnabled(true);
+  }
+  paintStroke({ ...stroke, center: hit.cell.clone().addScalar(0.5) });
+  pacer.wake();
+  hud.dismissHint();
+}
 canvasEl.addEventListener('pointermove', (e) => {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   pointerClient = [e.clientX, e.clientY];
