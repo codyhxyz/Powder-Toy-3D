@@ -283,7 +283,7 @@ export async function launchBrowser(options = {}) {
       args: mergeArgs([...GPU_ARGS, ...logArgs, `--tpt-gpu-lease=${slotToken}`],
         args.filter(a => !a.startsWith('--tpt-gpu-lease='))),
       ...launch,
-      env: { ...process.env, ...launch.env, TPT_GPU_LEASE_TOKEN: slotToken },
+      env: { ...(launch.env ?? process.env), TPT_GPU_LEASE_TOKEN: slotToken },
       timeout: Math.max(1, Math.min(launch.timeout || remaining, remaining)),
     });
   } catch (e) {
