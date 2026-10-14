@@ -2,6 +2,23 @@
 
 Many Claude sessions and their subagents work here at the same time, some in this checkout and some in their own worktrees. Leave things as tidy as you found them.
 
+## Start here — every session and worktree
+
+Before code investigation, profiling, edits, or delegation:
+
+1. Run `git fetch origin`. If it fails, report that freshness is unverified.
+2. Run `git status --short --branch` and `git rev-list --left-right --count HEAD...origin/main`.
+3. Read the current instructions with `git show origin/main:CLAUDE.md`.
+4. For new live-site work, create an isolated worktree from the fetched `origin/main`, not local `main` or `HEAD`.
+5. Report the starting commit and any divergence. Give subagents the verified worktree and base commit.
+
+For resumed work, compare its base with the fetched remote before continuing.
+An explicit request for a local branch or historical commit overrides the base choice, not the freshness check.
+Preserve shared edits and local-only commits. Never reset, clean, stash, or merge the dirty shared checkout automatically.
+Fetching updates `origin/main`; it does not update local `main`. A branch name is not proof of production freshness.
+
+## Shared checkout and deployment
+
 - Stop what you start. When you're done with a dev server (vite, `wrangler dev`), a headless browser or a test script, stop it, and before you hand back a result. Kill only your own processes, by PID or by your own port. Never use a broad `pkill`, because it takes down other sessions' runs.
 - Use your own port. Start servers on an unusual port with `--strictPort` (not 5173 or 8787), so you never attach to someone else's server or collide with theirs.
 - Commit only your own changes. This checkout often holds other sessions' uncommitted work. Don't stage, revert or reformat files you didn't touch.
