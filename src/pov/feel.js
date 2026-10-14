@@ -1,6 +1,6 @@
 import { povEvents } from './events.js';
 
-// Feel: what a shot, a blow, a blast or a hard landing does to the view. A
+// Feel: what a shot, a blow or a blast does to the view. A
 // view punch that springs back, a trauma shake (Eiserloh: shake = trauma² × smooth
 // noise, so bursts build up and small knocks stay small), the hitmarker and
 // the crosshair bloom. Everything comes in through povEvents and the player's
@@ -55,10 +55,6 @@ const TRAUMA_PRESSURE_RATE = 2.5;       // trauma per second at full pressure
 // a bomb's blast ('blast' event): trauma at the eye, falling off with distance like an impact's
 const TRAUMA_BOMB = 0.9;
 const BOMB_FAR = 48;                    // cells: no shake from a blast this far away
-// hard landings ('land' speed, cells/s)
-const LAND_TRAUMA_MIN = 13;             // softer than this (a jump lands at ≈ 12) doesn't shake
-const LAND_TRAUMA_FULL = 55;            // cells/s for the full TRAUMA_LAND
-const TRAUMA_LAND = 0.7;
 // damage of any other kind ('hurt' amount, share of health)
 const HURT_SHAKE_MIN = 0.05;            // smaller hits (and steady burning, batched at 0.02) don't shake
 const TRAUMA_PER_HEALTH = 1.5;          // trauma per unit of health lost
@@ -162,10 +158,6 @@ export function createFeel({ hud }) {
     if (cause === BLAST_CAUSE) addTrauma(Math.min(TRAUMA_BLAST_MAX, amount * TRAUMA_PER_BLAST_HEALTH));
     else if (amount >= HURT_SHAKE_MIN) addTrauma(Math.min(TRAUMA_HURT_MAX, amount * TRAUMA_PER_HEALTH));
   }
-  function onLand({ speed = 0 }) {
-    if (!live) return;
-    addTrauma(TRAUMA_LAND * clamp01((speed - LAND_TRAUMA_MIN) / (LAND_TRAUMA_FULL - LAND_TRAUMA_MIN)));
-  }
 
   return {
     offsets,
@@ -179,11 +171,11 @@ export function createFeel({ hud }) {
     get drunkSway() { return drunkSway; },   // the drunk sway's size now, 0..1
     get hit() { return hitT; },
     addTrauma,
-    // the body whose hurt and land events shake the view
+    // the body whose hurt events shake the view
     bindPlayer(p) {
       unbindPlayer.forEach((f) => f?.());
       player = p;
-      unbindPlayer = p ? [p.on('hurt', onHurt), p.on('land', onLand)] : [];
+      unbindPlayer = p ? [p.on('hurt', onHurt)] : [];
     },
     // a fresh body (drop in, respawn): nothing carried over
     reset() {

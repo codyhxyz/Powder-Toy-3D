@@ -396,7 +396,6 @@ export function createPov(app) {
   function ensureParts() {
     if (!player) {
       player = createPlayer({ renderer, getSim: app.getSim });
-      player.on('land', ({ speed }) => povCam.land(speed));
       player.on('revive', () => { hud.toast(`${perkName('EXTRA_LIFE')}: back on your feet`); povEvents.emit('perk:revive', { point: player.pos.clone() }); });
       player.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
       povEvents.on('blast', ({ by }) => { if (!by) player.ownBlast(); });   // the player's own rocket or bomb
