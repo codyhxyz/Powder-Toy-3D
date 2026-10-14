@@ -176,7 +176,7 @@ V2 still does not run the world weather simulation.
 1. Demonstrate a repeatable full-frame improvement without lowering quality.
 2. Fix the app-wide idle failure without hiding active subsystems.
 3. Implement the missing physics and integration requirements listed above.
-4. Preserve exact compact state in saves and cross-mode runtime transitions.
+4. Validate exact compact saves and cross-mode runtime transitions on the GPU. The CPU-checked implementation and remaining app acceptance plan are in [persistence.md](persistence.md); multiplayer remains separate.
 5. Validate continuous edits and live playback, then deploy and check the live site.
 
 This work remains experimental on `feat/physics-v2-finish`. It is not a completed engine replacement.

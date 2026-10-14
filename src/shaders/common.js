@@ -168,8 +168,10 @@ export function slotCell(g, s) {
 // then one word the debug prelude counts out-of-grid accesses in (dbg, I2.8).
 // Offsets in u32 words; WGSL has them as MARK_* consts.
 export function marksLayout(g) {
-  const { nbricks } = gridDims(g), bits = Math.ceil(nbricks / 32);
-  return { act: 0, derived: bits, foams: 2 * bits, dbg: 2 * bits + nbricks, words: 2 * bits + nbricks + 1 };
+  const { nbricks, slots } = gridDims(g), bits = Math.ceil(nbricks / 32);
+  const owned = 2 * bits + nbricks + 1;
+  // Sticky positional ownership, independent of ping-pong F and activity consumption.
+  return { act: 0, derived: bits, foams: 2 * bits, dbg: 2 * bits + nbricks, owned, words: owned + Math.ceil(slots / 32) };
 }
 
 // The sleeping unit of a grid (docs/webgpu.md W12, D5): a brick (SLEEP_UNIT),
@@ -321,7 +323,7 @@ const READ_STAGES = STAGE.COMPUTE | STAGE.FRAGMENT;
 // on where the window is) and the state copies a dispatch reads (src) and
 // writes (dst). Every pipeline has it at group 3 binding 0. The JS side packs
 // it from the same fields (src/gpu/params.js uniformStruct('Header', HEADER_FIELDS)).
-export const HEADER_FIELDS = { origin: 'vec3i', src: 'u32', dst: 'u32', format: 'u32' };
+export const HEADER_FIELDS = { origin: 'vec3i', src: 'u32', dst: 'u32', format: 'u32', capture: 'u32' };
 export const Header = hostStruct('Header', HEADER_FIELDS, { space: 'uniform' });
 
 // Which state bindings a prelude declares (group 1, docs/webgpu.md C4):
@@ -417,16 +419,26 @@ fn fetchB(p: vec3i) -> vec4f { ${cell('src')}return fetchBs(slotOf(p)); }
 `] : [fetch('fetchA', 'A', 'vec4f'), fetch('fetchB', 'B', 'vec4f')];
   if (o.flags) out.push(fetch('fetchF', 'F', 'u32'));
   if (o.state === 'read_write') {
-    out.push(`// Store cell p's new state in the copy H.dst names. The caller has
+    out.push(`${o.marks ? `// A legacy write owns this coordinate until compact import consumes the bit.
+// Atomic bits live outside F: neither ping-pong skips nor activity rebuilds lose them.
+fn ownLegacy(s: u32) {
+  if (H.capture != 0u) { atomicOr(&marks[MARK_OWNED + (s >> 5u)], 1u << (s & 31u)); }
+}
+fn noteLegacy(s: u32, a: vec4f, b: vec4f) {
+  if (H.capture != 0u && (any(a != fetchAs(s)) || any(b != fetchBs(s)))) { ownLegacy(s); }
+}` : ''}
+// Store cell p's new state in the copy H.dst names. The caller has
 // established inGrid(p) and its own box test (D8.9).
 fn writeState(p: vec3i, a: vec4f, b: vec4f, f: u32) {
   ${o.debug ? 'if (!inGrid(p) || H.dst > 1u) { dbgOob(); return; }\n  ' : ''}let i = H.dst * SLOTS + slotOf(p);
+  ${o.marks ? 'noteLegacy(slotOf(p), a, b);' : ''}
   A[i] = a;
   B[i] = b;
   F[i] = f;
 }
 fn writeStateS(s: u32, a: vec4f, b: vec4f, f: u32) {
   ${o.debug ? 'if (s >= SLOTS || H.dst > 1u) { dbgOob(); return; }\n  ' : ''}let i = H.dst * SLOTS + s;
+  ${o.marks ? 'noteLegacy(s, a, b);' : ''}
   A[i] = a;
   B[i] = b;
   F[i] = f;
@@ -443,6 +455,8 @@ fn writeFlags(p: vec3i, f: u32) {
 // caller marks the brick (markBrick; editMain does, once per workgroup).
 fn writeCell(p: vec3i, a: vec4f, b: vec4f, f: u32, oA: vec4f, oB: vec4f) -> bool {
   if (!inGrid(p)) { return false; }
+  // Explicit edit calls also own no-op writes (erasing projected air must erase hidden fill).
+  ${o.marks ? 'ownLegacy(slotOf(p));' : ''}
   if (all(oA == a) && all(oB == b)) { return false; }
   writeState(p, oA, oB, writtenFlags(f, a, b, oA, oB));
   return true;
@@ -485,6 +499,7 @@ const MARK_ACT: u32 = ${m.act}u;
 const MARK_DERIVED: u32 = ${m.derived}u;
 const MARK_FOAMS: u32 = ${m.foams}u;
 const MARK_DBG: u32 = ${m.dbg}u;
+const MARK_OWNED: u32 = ${m.owned}u;
 const MARK_WORDS: u32 = ${m.words}u;
 ${physicsGLSL()}
 const SEED_MAX: f32 = ${SEED_MAX};   // a cell's random seed (the fraction in state A's w) stays below this

@@ -477,7 +477,7 @@ export class Simulation {
    * default: an edit's).
    */
   header(src = this.cur, dst = src) {
-    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0 };
+    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0, capture: this.compactOwner?.isReady ? 1 : 0 };
   }
 
   // Writer/readback compatibility boundaries. Internal compact kernels bind
@@ -944,7 +944,15 @@ export class Simulation {
       t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes,
         usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
       f.copy(this.compact.cells, 0, t.compact, 0, bytes);
-    } else if (t.compact) { this._retire(t.compact); t.compact = null; }
+      if (this.compact.aux) {
+        t.aux ??= this.gpu.createBuffer({ label: `sim${this.id} undo aux`, size: this.g.slots * 4,
+          usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+        f.copy(this.compact.aux, 0, t.aux, 0, this.g.slots * 4);
+      } else if (t.aux) { this._retire(t.aux); t.aux = null; }
+    } else {
+      if (t.compact) { this._retire(t.compact); t.compact = null; }
+      if (t.aux) { this._retire(t.aux); t.aux = null; }
+    }
     f.copy(A, this.cur * bytes, t.A, 0, bytes);
     f.copy(B, this.cur * bytes, t.B, 0, bytes);
     t.deco = null;
@@ -982,18 +990,19 @@ export class Simulation {
     });
     this.deco?.restore?.(t, dx, dz);
     this.noteWrite();
-    if (t.format === 'v2' && this.compact) this.compact.restore(t.compact);
+    if (t.format === 'v2' && this.compact) this.compact.restore(t.compact, t.aux);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
     this._retire(t.A);
     this._retire(t.B);
     if (t.compact) this._retire(t.compact);
+    if (t.aux) this._retire(t.aux);
     return true;
   }
 
   // Forget the undo snapshots (they hold a window that has moved or been replaced).
   dropHistory() {
-    for (const t of this.history) { this._retire(t.A); this._retire(t.B); if (t.compact) this._retire(t.compact); }
+    for (const t of this.history) { this._retire(t.A); this._retire(t.B); if (t.compact) this._retire(t.compact); if (t.aux) this._retire(t.aux); }
     this.history = [];
   }
 

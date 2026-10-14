@@ -7,6 +7,7 @@
 // like the codec's, recorded at the moment it is asked for and read back
 // without a stall (saves/game.js).
 import { createSaves, SaveRefused } from '../saves/game.js';
+import { decodeV2State } from '../v2/state.js';
 import { registerSaveSection, registerSavedSettings } from '../saves/sections.js';
 import { putSave, getSave, cleanName } from '../saves/local.js';
 import { SIM_MODE_KEYS, SIM_MODE_DEFAULTS } from '../simModes.js';
@@ -42,8 +43,29 @@ const savesWire = {
       load: (m) => app.setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes, ...m }),
       absent: () => app.resetSimModes(),
     });
+    // This section owns the compact engine's exact words and continuation clock.
+    // Other physics side buffers must register their actual owner, not piggyback on cells.
+    registerSaveSection('physicsV2', {
+      strict: true,
+      save: () => app.physics.v2?.captureState(app.physics.mode),
+      validate: (data, h) => {
+        if (data === undefined && !h.sections?.some(s => s.key === 'physicsV2')) return;
+        if (h.world) throw new Error('v2 state: world saves are not supported');
+        decodeV2State(data, h.dims);
+      },
+      load: async (data, h) => {
+        const state = decodeV2State(data, h.dims);
+        await app.setPhysics('v2');
+        if (!app.physics.v2) throw new Error('v2 state: no compact engine for this grid');
+        app.physics.v2.restoreState(data, { legacyCurrent: state.mode === 'v1' });
+        if (state.mode === 'v1') await app.setPhysics('v1');
+      },
+      // An old save is an intentional legacy replacement, never a reason to revive retained cells.
+      absent: () => app.physics.v2?.resync(),
+    });
     saves = createSaves({
       settings, getSim: () => app.sim, getWin: () => app.win,
+      prepareCapture: () => app.physics.v2?.ready,
       header: () => {
         const m = mapOf(settings);
         return {

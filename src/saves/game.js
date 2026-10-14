@@ -51,7 +51,7 @@ export function createSaves(app) {
       if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
     }
     // the conversion to the atlas order and the particles' kernels, built before the moment
-    await Promise.all([sim.prepare('toAtlas'), sim.rays.prepare?.()]);
+    await Promise.all([sim.prepare('toAtlas'), sim.rays.prepare?.(), app.prepareCapture?.()]);
     if (sim !== app.getSim() || sim.disposed) throw new SaveRefused('The map changed while saving');
     // ---- from here to the readbacks, one task: everything below is the same moment ----
     const g = sim.g;
@@ -89,7 +89,10 @@ export function createSaves(app) {
   async function apply(bytes) {
     const { header, sections } = await decodeSave(bytes);
     const cells = sections.get('cells');
-    if (!cells || !Array.isArray(header.dims)) throw new Error('this save has no grid');
+    if (!(cells instanceof Uint8Array) || !Array.isArray(header.dims) || header.dims.length !== 3
+        || header.dims.some(n => !Number.isSafeInteger(n) || n <= 0)
+        || !Number.isSafeInteger(header.dims.reduce((a, n) => a * n, 32))
+        || cells.length !== header.dims.reduce((a, n) => a * n, 32)) throw new Error('this save has an invalid grid');
     await validateSections(sections, header);
     if (!await app.prepare(header)) return null;
     const sim = app.getSim(), win = app.getWin(), g = sim.g;

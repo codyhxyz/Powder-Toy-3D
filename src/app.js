@@ -2254,7 +2254,7 @@ function viewClock(held) {
 // The new physics owns this box's steps (?physics=v2): no world, body or guest. Today's step never runs
 // meanwhile, not even while v2's pipelines build (then nothing steps); v2Active: they're built.
 // (declarations: the tool picker asks before this line has run)
-function v2Box() { return !!physicsV2 && !win && !pov?.active && !mp.isGuest; }
+function v2Box() { return physicsMode === 'v2' && !!physicsV2 && !win && !pov?.active && !mp.isGuest; }
 function v2Active() { return v2Box() && physicsV2.isReady; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
 const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
@@ -2655,11 +2655,11 @@ try {
       if (mode === 'v2' && worldMode) hud.toast('The new physics (?physics=v2) runs in boxes: this world keeps today\'s', { kind: 'hint' });
       if (mode === 'v2' && !physicsV2 && !worldMode) physicsV2 = new V2mod.PhysicsV2(sim);
       if (mode === 'v1' && physicsV2) {
-        physicsV2.dispose();
-        physicsV2 = null;
-        if (v2Running) { v2Running = false; sim.noteWrite(); }
+        physicsV2.suspend();
+        v2Running = false;
       }
       await physicsV2?.ready;
+      if (mode === 'v2' && v2Box()) physicsV2.activate();
       pacer.wake();
       wakeLoop();
       return physicsMode;

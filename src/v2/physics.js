@@ -1,5 +1,6 @@
 import { fold } from '../gpu/kernels.js';
-import { cellSlot } from '../shaders/common.js';
+import { encodeV2State, decodeV2State } from './state.js';
+import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
   V2_KERNELS, V2Params, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
@@ -49,7 +50,7 @@ export class PhysicsV2 {
   constructor(sim) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);
     this.sim = sim;
-    sim.compact = this;
+    sim.compact = sim.compactOwner = this;
     this.legacyPending = true;
     this.layout = v2ActLayout(g);
     this.tick = 0;          // ticks run (they're numbered from 1)
@@ -162,7 +163,7 @@ export class PhysicsV2 {
     if (!this.importFull && !this.importMarked) return;
     const { gpu, sim } = this;
     this.kernels.v2import.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.state, this.groups.v2], header: sim.header(), params: { ...params, full: this.importFull ? 1 : 0 },
+      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
     });
     sim.onPass?.('v2import', { kind: 'compute', gpuMs: null });
     this.legacyPending = true;
@@ -184,7 +185,7 @@ export class PhysicsV2 {
     if (!this.legacyPending) return;
     const { sim, gpu } = this;
     this.kernels.v2bridge.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.state, this.groups.v2], header: sim.header(), params: this._params(this.tick + 1),
+      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0 }, params: this._params(this.tick + 1),
     });
     sim.onPass?.('v2bridge', { kind: 'compute', gpuMs: null });
     this.legacyPending = false;
@@ -193,23 +194,34 @@ export class PhysicsV2 {
   activate() {
     if (this.sim.compact === this) return;
     this.sim.compact = this;
-    this.resync();
+    this.sync();
     this.sim.changedAll = true;
     this.sim.version++;
+    this.seenVersion = this.sim.version;
   }
 
   suspend() {
     if (this.sim.compact !== this) return;
     if (!this.gpu.failure) this.exportLegacy();
     this.sim.compact = null;
-    this.sim.noteWrite();
+    // A presentation switch is not a state replacement. The retained owner
+    // imports only sticky per-cell legacy writes, even after v1 activity consumes its marks.
+    this.sim.noteWrite(false);
+    this.seenVersion = this.sim.version;
   }
 
   // Undo restores every compact word, including fill, face flux and fall state.
-  restore(snapshot) {
+  restore(snapshot, aux = null) {
     const { sim, gpu, g } = this;
+    if (aux && !this.aux) throw new Error('v2 state: auxiliary owner is unavailable');
+    if (this.aux) {
+      if (aux) gpu.frame.copy(aux, 0, this.aux, 0, g.slots * 4);
+      else gpu.frame.clear(this.aux);
+    }
     gpu.frame.copy(snapshot, 0, this.cells, 0, g.slots * 16);
     gpu.frame.clear(this.act);
+    const m = marksLayout(g);
+    gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
     gpu.write(this.act, this.layout.busy0 * 4, new Uint32Array(g.nbricks).fill(1));
     gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
     gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(1));
@@ -296,6 +308,51 @@ export class PhysicsV2 {
     return n;
   }
 
+  // Every read is recorded before the first await, alongside saves/game's legacy read.
+  // A suspended engine still owns untouched compact cells; sync consumes actual v1 writes.
+  async captureState(mode = this.sim.compact === this ? 'v2' : 'v1') {
+    if (!this.isReady || this.disposed) throw new Error('v2 state: engine is not ready');
+    this.sync();
+    const { gpu, sim, g } = this;
+    const meta = { dims: [g.nx, g.ny, g.nz], mode, tick: this.tick, acc: this.acc,
+      frame: sim.frame, paints: sim.paints, certified: this.certified, writtenSinceTick: this.writtenSinceTick };
+    const reads = [this.cells, this.act, this.args, ...(this.aux ? [this.aux] : [])].map(b => gpu.readback.buffer(b, 0, b.size));
+    const [cells, activity, args, aux] = (await Promise.all(reads)).map(b => new Uint32Array(b));
+    // GPU buffers may have alignment padding; the format owns only the logical words.
+    return encodeV2State({ ...meta, cells: cells.subarray(0, g.slots * 4),
+      activity: activity.subarray(0, this.layout.words), args: args.subarray(0, ARGS2.words),
+      ...(aux ? { aux: aux.subarray(0, g.slots) } : {}) });
+  }
+
+  restoreState(bytes, { legacyCurrent = false } = {}) {
+    if (!this.isReady || this.disposed) throw new Error('v2 state: engine is not ready');
+    const { sim, gpu, g } = this;
+    const state = decodeV2State(bytes, [g.nx, g.ny, g.nz]);
+    if (!this.aux && state.aux.some(word => word !== 0)) throw new Error('v2 state: auxiliary owner is unavailable');
+    if (this.aux) gpu.write(this.aux, 0, state.aux);
+    gpu.write(this.cells, 0, state.cells);
+    gpu.write(this.act, 0, state.activity);
+    gpu.write(this.args, 0, state.args);
+    // Legacy A/B loaded by saves/game is only a projection of these words.
+    // Dirtiness is cache metadata, not physics state; rebuild that projection on demand.
+    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(legacyCurrent ? 0 : 1));
+    const m = marksLayout(g);
+    gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
+    this.tick = state.tick;
+    this.acc = state.acc;
+    sim.frame = state.frame;
+    sim.paints = state.paints;
+    this.wake(); // invalidates any outstanding idle read from the previous scene
+    this.certified = state.certified;
+    this.writtenSinceTick = state.writtenSinceTick;
+    this.stats = null;
+    this.importFull = this.importMarked = false;
+    this.seenVersion = sim.version;
+    this.seenWhole = sim.wholeWrites;
+    this.legacyPending = !legacyCurrent;
+    sim.changedAll = true;
+  }
+
   // ---- reads (tools) ----
 
   /** The stats as they are at this call: { tick, awake, busy, quiet, lastBusy, cols, units }. */
@@ -329,6 +386,7 @@ export class PhysicsV2 {
     if (this.disposed) return;
     this.suspend();
     this.disposed = true;
+    if (this.sim.compactOwner === this) this.sim.compactOwner = null;
     this.wake();
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');
     for (const b of [this.cells, this.act, this.args]) b.destroy();

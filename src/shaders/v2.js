@@ -286,11 +286,10 @@ fn importA(a: vec4f) -> vec4u {
 
 const MAIN = '@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32)';
 
-// ---- import: the bricks today's writers marked, cell by cell where today's state A isn't what the
-// bridge last wrote there; or after a whole write (a load, an undo, the flag turned on: P.full), every
-// cell, since A is then the truth: a part-filled liquid cell the bridge shows as air would otherwise
-// match an air cell written there and outlive the write. The bricks where it changed something other
-// than air's temperature or seed are busy for the activity pass
+// ---- import: sticky positional ownership survives v1 activity rebuilds and ping-pong copies.
+// Only actual legacy writes (or explicit edit boxes) replace compact cells. Comparing the final
+// projection is insufficient: a hidden film looks like air, and a cell may change away and back.
+// A whole replacement (load/undo: P.full) owns every cell. Changed non-air wakes its brick.
 export const v2ImportWGSL = (g) => /* wgsl */ `
 ${v2Head(g, V2_STATE_OPTS)}
 ${bridgeWGSL}
@@ -301,14 +300,17 @@ ${MAIN} {
   if (b >= NBRICKS) { return; }
   if (li == 0u) {
     let w = atomicLoad(&marks[MARK_ACT + (b >> 5u)]);
-    wgMarked = select(0u, 1u, P.full != 0u || (w & (1u << (b & 31u))) != 0u);
+    let owned = atomicLoad(&marks[MARK_OWNED + b * 2u]) | atomicLoad(&marks[MARK_OWNED + b * 2u + 1u]);
+    wgMarked = select(0u, 1u, P.full != 0u || owned != 0u || (w & (1u << (b & 31u))) != 0u);
   }
   if (workgroupUniformLoad(&wgMarked) == 0u) { return; }
   let s = b * 64u + li;
   let p = cellOf(s);
   let a = fetchAs(s);
   let c = cells[s];
-  if (P.full != 0u || any(a != compactA(p, c))) {
+  let mask = 1u << (s & 31u);
+  let owned = atomicAnd(&marks[MARK_OWNED + (s >> 5u)], ~mask) & mask;
+  if (P.full != 0u || owned != 0u) {
     let n = importA(a);
     if (any(n != c)) {
       cells[s] = n;
