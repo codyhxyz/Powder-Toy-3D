@@ -7,7 +7,7 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { externalBlastBase, blastsWGSL, rayRequestBase } from '../../src/shaders/v2/blasts.js';
 import { encodeDynamicState, decodeDynamicState } from '../../src/v2/dynamicState.js';
-import { externalBlastPressure, externalBlastBudget, validateExternalBlasts } from '../../src/v2/externalBlast.js';
+import { externalBlastPressure, externalBlastBudget, validateExternalBlasts, externalBlastVelocity } from '../../src/v2/externalBlast.js';
 import { blastPlan, pressureEnergy, dynamicsRows } from '../../src/v2/dynamics-reference.js';
 import { povGpu } from '../../src/pov/gpu.js';
 import { TOOLS, E } from '../../src/elements.js';
@@ -29,28 +29,34 @@ const d=new NativeDynamics(owner,{blastBatch:1});owner.dynamics=d;sim.compactOwn
 const blast=TOOLS.find(t=>t.key==='BLAST').id;
 assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast}),true);
 assert.equal(d.externalBlasts.size,1);
-assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:1,tool:blast}),false);
-assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast,filter:E.SAND}),false);
+assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:1,tool:blast}),true);
+assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast,filter:E.SAND}),true);
 assert.equal(povGpu(sim).edit('povRocket',{lo:[-10,-10,-10],hi:[20,20,20]},{center:[4,4,4]}),true);
 assert.equal(d.applyExternalBlast({position:[200,0,0],radius:2,energy:100}).status,'queued');
-const stages=commands.slice(0,11).map(c=>c.name.split('_')[1]);
-assert.deepEqual(stages,['externalBegin','workArgs','plan','sum','normalize','damagePlan','count','allocate','externalGate','apply','finish']);
+const mask=new Uint8Array(g.width*g.height);mask[12]=255;
+assert.equal(sim.paint({center:new Vector3(4,4,4),end:new Vector3(9,4,4),grow:[2,1,0],radius:2,shape:1,tool:blast,filter:E.SAND,mask:{lo:[1,1,1],hi:[6,6,6],data:mask}}),true);
+mask[12]=0;const selection=d.externalBlasts.get(5).selection;
+assert.equal(new Uint8Array(selection.maskWords.buffer)[12],255,'queued masks own immutable bytes');
+assert.deepEqual(selection.end,[9,4,4]);assert.deepEqual(selection.grow,[2,1,0]);assert.equal(selection.filter,E.SAND);
+assert.deepEqual(selection.lo,[1,1,1]);assert.deepEqual(selection.hi,[6,6,6]);
+const stages=commands.slice(0,13).map(c=>c.name.split('_')[1]);
+assert.deepEqual(stages,['externalBegin','workArgs','plan','externalParticlePlan','sum','normalize','damagePlan','count','allocate','externalGate','externalParticleApply','apply','finish']);
 // Completion flags stay GPU-authoritative across repeated recordings, snapshots,
 // and restores. No readback is required between a blast and the next tick.
 const flags=new Uint32Array(d.control.bytes);flags[externalBlastBase(g)]=1;
 d.consumeMaterialEvents(1);d.consumeMaterialEvents(2);
 assert.equal(flags[externalBlastBase(g)],1,'recording must not reset completion');
 const snapshot=await d.snapshotDynamicState(),saved=decodeDynamicState(encodeDynamicState(snapshot));
-assert.equal(saved.externalBlasts.length,3);assert.equal(saved.externalBlastDone[0],1);
+assert.equal(saved.externalBlasts.length,6);assert.equal(saved.externalBlastDone[0],1);assert.deepEqual(saved.externalBlasts[5].selection,selection);
 d.restoreDynamicState(saved);assert.equal(flags[externalBlastBase(g)],1);
-assert.deepEqual(d.externalBlasts.get(2).position,[200,0,0],'out-of-window obligation survives');
+assert.deepEqual(d.externalBlasts.get(4).position,[200,0,0],'out-of-window obligation survives');
 const before=writes.length,bad=structuredClone(saved);bad.externalBlasts[0].energy=NaN;
 assert.throws(()=>d.restoreDynamicState(bad),/external blast/);assert.equal(writes.length,before);
-for(const mutate of [s=>s.externalBlastDone=null,s=>s.externalBlasts=null,s=>delete s.externalBlastDone,s=>s.externalBlastDone[63]=1,s=>s.externalBlastDone[0]=2,s=>s.externalBlasts.push({...s.externalBlasts[0]}),s=>s.externalBlasts[0].requestId=s.sequence+1]) {
+for(const mutate of [s=>s.externalBlasts[5].selection.maskWords=null,s=>s.externalBlasts[5].selection.maskOrigin=null,s=>s.externalBlasts[5].selection.lo=[9,9,9],s=>s.externalBlastDone=null,s=>s.externalBlasts=null,s=>delete s.externalBlastDone,s=>s.externalBlastDone[63]=1,s=>s.externalBlastDone[0]=2,s=>s.externalBlasts.push({...s.externalBlasts[0]}),s=>s.externalBlasts[0].requestId=s.sequence+1]) {
   const invalid=structuredClone(saved);mutate(invalid);assert.throws(()=>validateExternalBlasts(invalid));
   assert.throws(()=>encodeDynamicState(invalid));const prior=writes.length;assert.throws(()=>d.restoreDynamicState(invalid));assert.equal(writes.length,prior);
 }
-const ack=d.readActivity();d._work();await ack;assert.equal(d.externalBlasts.size,2,'completed requests acknowledged only after GPU flag read');
+const ack=d.readActivity();d._work();await ack;assert.equal(d.externalBlasts.size,5,'completed requests acknowledged only after GPU flag read');
 const acknowledged=await d.snapshotDynamicState();assert.equal(acknowledged.externalBlastDone[0],0,'retired slots cannot create orphan save flags');
 for(let i=d.externalBlasts.size;i<64;i++) assert.equal(d.applyExternalBlast({position:[200,0,0],radius:1,energy:1}).status,'queued');
 assert.equal(d.applyExternalBlast({position:[1,1,1],radius:1,energy:1}).status,'rejected');
@@ -65,6 +71,15 @@ for(const energy of [1,100,10000]) {
   assert(Math.abs(0.5*mass*velocity**2-budgets[0])<1e-9);
   assert(Number.isFinite(mass*velocity),'real SI momentum');
 }
+// Grid and flying material share ONE half-energy normalization. Particle heat
+// is paid from its share, with the remainder funding incremental—not absolute—KE.
+const shares=externalBlastBudget(100,[100,200,300,400]);assert(Math.abs(shares.reduce((a,b)=>a+b,0)-50)<1e-9);
+for(const v of [[10,-3,2],[-10,4,0],[0,0,0]]) for(const mass of [0.001,0.7,27]) {
+ const share=shares[2],heat=share/4,newV=externalBlastVelocity(v,[1,0,0],share-heat,mass);
+ const ke=x=>0.5*mass*x.reduce((a,b)=>a+b*b,0);
+ assert(Math.abs(ke(newV)-ke(v)+heat-share)<1e-9);assert.equal(newV[1],v[1]);assert.equal(newV[2],v[2]);
+ assert(newV[0]>=v[0]);
+}
 assert(AIR.edge>0);
 const shielded=blastPlan([0,0,0],[[2,0,0]],p=>p[0]===1,100);
 assert.equal(shielded[0].energy,0);
@@ -77,6 +92,11 @@ assert.match(shader('externalGate'),/control\[5\].*>atomicLoad\(&control\[4\]/);
 assert.match(shader('apply'),/P.mode==14u && atomicLoad\(&control\[3\]\)==D_NONE/);
 assert.match(shader('finish'),/atomicStore\(&control\[.*P.substep\],1u\)/);
 assert.match(shader('plan'),/dExternalShielded\(p\)/);
+assert.match(shader('externalParticlePlan'),/id>=254u/);
+assert.match(shader('externalParticlePlan'),/dExternalShieldedPosition\(particle.position-vec3f\(P.origin\)\)/);
+assert.match(shader('normalize'),/D_EXTERNAL_PARTICLES/);
+assert.match(shader('externalParticleApply'),/atomicLoad\(&control\[3\]\)==D_NONE/);
+assert.match(shader('finish'),/weight\/total/);
 // Codec corruption must not interpret explicit null as a backwards-compatible omission.
 const encoded=encodeDynamicState(saved),view=new DataView(encoded.buffer),oldLength=view.getUint32(8,true),oldAt=Math.ceil((16+oldLength)/4)*4;
 const metadata=JSON.parse(new TextDecoder().decode(encoded.subarray(16,16+oldLength)));

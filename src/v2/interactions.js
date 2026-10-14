@@ -34,13 +34,13 @@ function refused(sim, reason) {
   sim.nativeInteractionResult = { status: 'rejected', reason };
   return false;
 }
-function blast(sim, center, radius, pressure) {
+function blast(sim, center, radius, pressure, selection) {
   const d = sim.compactOwner?.dynamics;
   if (!d?.isReady || sim.nativeTransition || sim.nativeTransitionError) return refused(sim, 'native external blast unavailable');
   // Powder Toy pressure calibration, same acoustic J/Pa conversion as native
   // voxel charges. External sources allocate half (not quarter) to air, hence /2.
   sim.compactOwner.sync();
-  const result = d.applyExternalBlast({ position: worldPosition(sim, center), radius, energy: specialBlastEnergy(pressure) / 2 });
+  const result = d.applyExternalBlast({ position: worldPosition(sim, center), radius, energy: specialBlastEnergy(pressure) / 2, ...(selection?{selection}:{}) });
   sim.nativeInteractionResult = result;
   if (result.status !== 'queued') return false;
   sim.wake();
@@ -58,20 +58,20 @@ export function routeNativePaint(sim, stroke) {
       frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?sim._paintMask(mask.data):sim.noMask);
   }
   if (tool !== ids.BLAST) return null;
-  const sameEnd = ['x', 'y', 'z'].every(k => center[k] === end[k]);
-  if (shape !== 0 || mask || filter !== -1 || erase || !sameEnd || grow?.some(v => v !== 0))
-    return refused(sim, 'external blast currently requires an unfiltered spherical dab');
-  return blast(sim, center, radius, PHYS.TOOL_PRESSURE);
+  const selection={shape,end:worldPosition(sim,end),grow:grow??[0,0,0],filter,fade:true};
+  if(mask) {
+    const bytes=new Uint8Array(Math.ceil(sim.g.width*sim.g.height/4)*4);
+    bytes.set(mask.data.subarray(0,bytes.length));selection.maskWords=new Uint32Array(bytes.buffer);
+    selection.maskOrigin=[sim.origin.x,sim.origin.y,sim.origin.z];
+    selection.lo=mask.lo.map((v,a)=>Math.ceil(v)+selection.maskOrigin[a]);selection.hi=mask.hi.map((v,a)=>Math.floor(v)+selection.maskOrigin[a]);
+  }
+  return blast(sim, center, radius, PHYS.TOOL_PRESSURE, selection);
 }
 export function routeNativePOV(sim, name, box, values) {
   if (forceSpecs[name]) return force(sim,name,box,values);
   if (name !== 'povRocket') return null;
   if (!box) return refused(sim, 'rocket has no active bounds');
-  // Do not silently expand a caller's clipped bounds. Standard rocket callers
-  // supply this radius; custom sub-boxes must wait for shaped external sources.
-  const center = values.center, dims = [sim.g.nx, sim.g.ny, sim.g.nz];
-  if (center.some((v, a) => box.lo[a] > Math.max(0, Math.ceil(v - ROCKET.PULSE_RADIUS - 0.5)) ||
-    box.hi[a] < Math.min(dims[a] - 1, Math.floor(v + ROCKET.PULSE_RADIUS - 0.5))))
-    return refused(sim, 'rocket bounds do not contain its native blast sphere');
-  return blast(sim, center, ROCKET.PULSE_RADIUS, ROCKET.PULSE_P);
+  const origin=[sim.origin.x,sim.origin.y,sim.origin.z];
+  return blast(sim,values.center,ROCKET.PULSE_RADIUS,ROCKET.PULSE_P,{shape:0,end:worldPosition(sim,values.center),grow:[0,0,0],filter:-1,fade:false,
+    lo:box.lo.map((v,a)=>Math.ceil(v)+origin[a]),hi:box.hi.map((v,a)=>Math.floor(v)+origin[a])});
 }

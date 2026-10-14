@@ -11,6 +11,7 @@ export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
   center: 'vec3f', radius: 'f32', vector: 'vec3f', strength: 'f32', shift: 'vec3i', substep: 'u32', nativeJets: 'u32', ...MODE_FIELDS,
+  blastEnd:'vec3f', blastGrow:'vec3f', blastShape:'u32', blastFilter:'i32', blastMasked:'u32', blastMaskOrigin:'vec3i', blastFade:'u32', blastBounded:'u32', blastLo:'vec3i', blastHi:'vec3i',
   boxMax: 'vec3f', bodyPushPowder: 'f32', bodyAhead: 'vec2f', bodyLift: 'f32', bodyOnly: 'i32', boxStart: 'vec3i', boxSize: 'vec3u',
 });
 export const storageLayout = (count, readonly = []) => Array.from({ length: count }, (_, binding) =>

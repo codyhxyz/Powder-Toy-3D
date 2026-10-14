@@ -83,7 +83,17 @@ export const MIX_BITS = 3;
 // No cell is lost or copied (tools/brush-tools-check.mjs runs a twin of it).
 // A cell reads its partner, so Mix is a two-phase edit (sim.js paint: every
 // read sees the state before the stroke, docs/webgpu.md D6).
+// Shared by native external sources: exactly the brush's swept/grown metric.
+export const strokeDistanceWGSL = `
+fn strokeDistance(position: vec3f, center: vec3f, end: vec3f, grow: vec3f, shape: u32) -> f32 {
+  var d=position-center;let segment=end-center;
+  d-=segment*clamp(dot(d,segment)/max(dot(segment,segment),1e-6),0.0,1.0);
+  d=max(abs(d)-grow,vec3f(0));
+  if(shape==0u) { return length(d); }return max(d.x,max(d.y,d.z));
+}
+`;
 const brushToolsWGSL = /* wgsl */ `
+${strokeDistanceWGSL}
 const MIX_BITS: u32 = ${MIX_BITS}u;
 const MIX_MASK: u32 = ${(1 << MIX_BITS) - 1}u;
 // Is the fill's mask off at cell p (its byte below half of MASK_ON)?
@@ -99,12 +109,7 @@ fn strokeDist(p: vec3i) -> f32 {
     if (maskOff(p)) { return P.radius + 1.0; }
     return 0.0;
   }
-  var d = vec3f(p) + 0.5 - P.center;
-  let s = P.end - P.center;
-  d -= s * clamp(dot(d, s) / max(dot(s, s), SEGMENT_EPS), 0.0, 1.0);   // from the line's nearest point
-  d = max(abs(d) - P.grow, vec3f(0.0));                                  // from the box's core
-  if (P.shape == 0u) { return length(d); }
-  return max(d.x, max(d.y, d.z));
+  return strokeDistance(vec3f(p)+0.5,P.center,P.end,P.grow,P.shape);
 }
 fn inBrush(p: vec3i) -> bool { return strokeDist(p) <= P.radius; }
 // a push dv given to the air, as the cell (id at T) takes it, capped at V_MAX
@@ -253,7 +258,7 @@ export const CONVERT_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: 
 // Cell p's texel in the atlas (sim.js cellTexel): supertile i's square at
 // (i % STW, i / STW), its brick k's tile at (k.x, k.z + SUPER.z·k.y), the cell
 // at (x + BRICK·(y & 1), z + BRICK·(y >> 1)) in the tile.
-const atlasIndexWGSL = (g) => {
+export const atlasIndexWGSL = (g) => {
   const at = atlasDims(g);
   return /* wgsl */ `
 const STW: i32 = ${at.stw};   // supertiles per atlas row (shaders/common.js atlasDims)

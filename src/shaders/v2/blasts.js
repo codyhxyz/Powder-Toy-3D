@@ -5,6 +5,7 @@ import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
 import { PHYS } from '../../physics.js';
 import { EXTERNAL_BLAST_CAP } from '../../v2/externalBlast.js';
+import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
 import { fold } from '../../gpu/kernels.js';
 export { DynamicParams };
 // Native cells/bank/activity3 + events, particles, air, control, plans5.
@@ -15,7 +16,11 @@ export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
 export const rayRequestBase = g => SPAWN_PREFIX + g.nbricks * 3;
 export const externalBlastBase = g => heldBase(g) + PARTICLE_CAP;
-export const controlWords = g => externalBlastBase(g) + EXTERNAL_BLAST_CAP;
+export const externalParticleBase = g => externalBlastBase(g) + EXTERNAL_BLAST_CAP;
+export const externalAirBase = g => externalParticleBase(g) + PARTICLE_CAP*4;
+export const externalMaskBase = g => externalAirBase(g) + g.nbricks + 1;
+export const externalMaskWords = g => Math.ceil(g.width*g.height/4);
+export const controlWords = g => externalMaskBase(g) + externalMaskWords(g);
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
 function head(g, nativeHead) {
@@ -33,6 +38,26 @@ const D_CHILD_PREFIX: u32 = ${CHILD_PREFIX}u;
 const D_SPAWN_PREFIX: u32 = ${SPAWN_PREFIX}u;
 const D_SPAWN_COUNTS: u32 = D_SPAWN_PREFIX + D_BRICKS;
 const D_ENERGY_SUMS: u32 = D_SPAWN_COUNTS + D_BRICKS;
+${strokeDistanceWGSL}
+${atlasIndexWGSL(g)}
+const D_EXTERNAL_PARTICLES:u32=${externalParticleBase(g)}u;
+fn dSelected(position: vec3f,id: u32) -> f32 {
+ if(P.blastBounded!=0u && (any(vec3i(floor(position))<P.blastLo) || any(vec3i(floor(position))>P.blastHi))) { return 0.0; }
+ if(P.blastFilter>=0 && id!=u32(P.blastFilter)) { return 0.0; }
+ var distance=0.0;
+ if(P.blastMasked!=0u) {
+  let p=vec3i(floor(position))-P.blastMaskOrigin;if(!inGrid(p)) { return 0.0; }
+  let index=atlasIndex(p);let word=atomicLoad(&control[${externalMaskBase(g)}u+(index>>2u)]);
+  if(((word>>((index&3u)*8u))&255u)<128u) { return 0.0; }
+ } else { distance=strokeDistance(position,P.center,P.blastEnd,P.blastGrow,P.blastShape); }
+ if(distance>P.radius) { return 0.0; }
+ if(P.blastFade==0u) { return 1.0; }
+ return 1.0-smoothstep(P.radius*${f(PHYS.TOOL_FALLOFF)},P.radius+0.001,distance);
+}
+fn dBudgetVelocity(v: vec3f, direction: vec3f, energy: f32, mass: f32) -> vec3f {
+ if(energy<=0.0) { return v; }let along=dot(v,direction);
+ return v+direction*(sqrt(along*along+2.0*energy/max(mass,0.000001))-along);
+}
 fn dExplosive(id: u32) -> DExplosive { switch id { ${blastTables} default: { return DExplosive(0.0,0u,20.0,0u); } } }
 fn dEvaporates(m: Material) -> bool { return cid(m.core)==${E.SINGULARITY}u && payloadOf(m.core)==0u; }
 fn dChargeEnergy(m: Material) -> f32 {
@@ -72,8 +97,9 @@ fn dShielded(source: vec3i, destination: vec3i) -> bool {
   return false;
 }
 // Exact external source position (not the voxel centre) for DDA shielding.
-fn dExternalShielded(destination: vec3i) -> bool {
-  let start=P.center-vec3f(P.origin);let delta=vec3f(destination)+0.5-start;
+fn dExternalShieldedPosition(endpoint: vec3f) -> bool {
+  let destination=vec3i(floor(endpoint));
+  let start=P.center-vec3f(P.origin);let delta=endpoint-start;
   var cell=vec3i(floor(start));var next=vec3f(1e30);var stride=vec3f(1e30);let step=vec3i(sign(delta));
   if(all(cell==destination)) { return false; }
   for(var a=0u;a<3u;a++) { if(delta[a]!=0.0) {
@@ -90,6 +116,7 @@ fn dExternalShielded(destination: vec3i) -> bool {
   }
   return true;
 }
+fn dExternalShielded(destination: vec3i) -> bool { return dExternalShieldedPosition(vec3f(destination)+0.5); }
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
 fn dUnsupported(start: vec3i) -> bool {
   var p=start;
@@ -165,8 +192,9 @@ export function blastsWGSL(g,nativeHead,stage) {
         var sourcePos=vec3i(floor(P.center))-P.origin; var explosionEnergy=P.strength;
         var delta=vec3f(p+P.origin)+0.5-P.center;
         if(P.mode!=14u) { sourcePos=cellOf(source); explosionEnergy=dChargeEnergy(loadMaterial(source)); delta=vec3f(p-sourcePos); }
-        if(P.mode==14u && length(delta)>P.radius) { plans[t]=plan; return; } let r2 = max(0.25,dot(delta,delta));
-        let received = explosionEnergy * 0.5 / (12.566370614359*r2);
+        var weight=1.0;if(P.mode==14u) { weight=dSelected(vec3f(p+P.origin)+0.5,id); }
+        if(weight==0.0) { plans[t]=plan; return; } let r2 = max(0.25,dot(delta,delta));
+        let received = explosionEnergy * 0.5 * weight / (12.566370614359*r2);
         var shielded=false;
         if(P.mode==14u) { shielded=dExternalShielded(p); } else { shielded=dShielded(sourcePos,p); }
         if (received >= 0.01 && !shielded) {
@@ -175,6 +203,35 @@ export function blastsWGSL(g,nativeHead,stage) {
       }
     }
     plans[t] = plan;
+  `);
+  if(stage==='externalParticlePlan') return h+main64(`
+    if(t>=D_CAP) { return; }let base=D_EXTERNAL_PARTICLES+t*4u;
+    for(var a=0u;a<4u;a++) { atomicStore(&control[base+a],0u); }
+    if(atomicLoad(&control[3])==D_NONE) { return; }
+    let particle=particles[t];let id=particle.c0&255u;
+    if(particle.id==0u || id>=254u) { return; }
+    let local=vec3i(floor(particle.position))-P.origin;if(!inGrid(local)) { return; }
+    let weight=dSelected(particle.position,id);if(weight==0.0 || dExternalShieldedPosition(particle.position-vec3f(P.origin))) { return; }
+    let delta=particle.position-P.center;let energy=P.strength*0.5*weight/(12.566370614359*max(0.25,dot(delta,delta)));
+    if(energy<0.01) { return; }let impulse=normalize(delta+vec3f(0.000001))*energy;
+    for(var a=0u;a<3u;a++) { atomicStore(&control[base+a],bitcast<u32>(impulse[a])); }
+    atomicStore(&control[base+3u],particle.id);
+  `);
+  if(stage==='externalParticleApply') return h+main64(`
+    if(t>=D_CAP || atomicLoad(&control[3])==D_NONE) { return; }
+    let base=D_EXTERNAL_PARTICLES+t*4u;var particle=particles[t];
+    if(particle.id==0u || particle.id!=atomicLoad(&control[base+3u])) { return; }
+    let impulse=vec3f(bitcast<f32>(atomicLoad(&control[base])),bitcast<f32>(atomicLoad(&control[base+1u])),bitcast<f32>(atomicLoad(&control[base+2u])));
+    let received=length(impulse)*bitcast<f32>(atomicLoad(&control[6]));if(received<=0.0) { return; }
+    let before=dMaterial(particle);var after=before;var kinetic=received;
+    // One quarter of this packet's already-normalized share becomes heat;
+    // retain the same total budget, never a second blast-energy grant.
+    let heat=vec2u(u32(min(floor(received*0.25*${f(16777216/(1000*CELL_M**3*4184))}),4294967040.0)),0u);
+    let energy=energyAdd(energyOf(before),heat);
+    if(energyFits(before,energy)) { after=withEnergy(before,energy);kinetic-=f32(heat.x)/${f(16777216/(1000*CELL_M**3*4184))}; }
+    particle.velocity=dBudgetVelocity(particle.velocity,normalize(impulse),kinetic,dMass(cid(before.core))*dAmount(before));
+    particle.c0=after.core.x;particle.tail=vec4u(after.core.yzw,bitcast<u32>(after.bank));particles[t]=particle;
+    let p=vec3i(floor(particle.position))-P.origin;noteEnergySource(p,energySub(energyOf(after),energyOf(before)));dWake(p);
   `);
   if (stage === 'toolPlan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
@@ -243,9 +300,23 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     if (t >= D_BRICKS) { return; } var energy=0.0;
     for (var s=t*64u;s<(t+1u)*64u;s++) { energy += length(plans[s].velocity); }
     atomicStore(&control[D_ENERGY_SUMS+t],bitcast<u32>(energy));
+    if(P.mode==14u) {
+      var weight=0.0;for(var s=t*64u;s<(t+1u)*64u;s++) {
+        let p=cellOf(s);let selected=dSelected(vec3f(p+P.origin)+0.5,cid(loadMaterial(s).core));
+        if(selected>0.0 && !dExternalShielded(p)) {weight+=selected;}
+      }
+      atomicStore(&control[${externalAirBase(g)}u+t],bitcast<u32>(weight));
+    }
   `);
   if (stage === 'normalize') return h + main1(`
     var sum=0.0; for (var b=0u;b<D_BRICKS;b++) { sum += bitcast<f32>(atomicLoad(&control[D_ENERGY_SUMS+b])); }
+    if(P.mode==14u) { for(var i=0u;i<D_CAP;i++) {
+      let base=D_EXTERNAL_PARTICLES+i*4u;
+      sum+=length(vec3f(bitcast<f32>(atomicLoad(&control[base])),bitcast<f32>(atomicLoad(&control[base+1u])),bitcast<f32>(atomicLoad(&control[base+2u]))));
+    } }
+    if(P.mode==14u) { var airWeight=0.0;for(var b=0u;b<D_BRICKS;b++) {airWeight+=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)}u+b]));}
+      atomicStore(&control[${externalAirBase(g)+g.nbricks}u],bitcast<u32>(airWeight));
+    }
     let source=atomicLoad(&control[3]); var scale=1.0;
     if (source!=D_NONE) {
       var budget=P.strength; if(P.mode!=14u) { budget=dChargeEnergy(loadMaterial(source)); }
@@ -263,7 +334,16 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
       else { kinetic=0.0; }
     }
     if (kinetic>0.0 && (k==2u || k==3u || (plan.flags&2u)!=0u) && (plan.flags&8u)==0u) {
-      plan.flags|=1u; plan.velocity = normalize(plan.velocity)*sqrt(2.0*kinetic/max(dMass(id)*dAmount(m),0.000001));
+      plan.flags|=1u;
+      if(P.mode==14u) {
+        var incoming=vec3f(0);
+        if(k==2u) { let gravity=mGravity(vec3f(cellOf(t))+0.5);let magnitude=length(gravity);
+          incoming=gravity/max(magnitude,0.000001)*min(vtOf(id)*60.0*D_CELL,magnitude*f32(cAge(m.core))/60.0);
+        }
+        if(k==3u) {incoming=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x)*${f(180*CELL_M/65536)};}
+        let into=select(id,(plan.flags>>8u)&255u,(plan.flags&2u)!=0u);
+        plan.velocity=dBudgetVelocity(incoming,normalize(plan.velocity),kinetic,dMass(into)*dAmount(m));
+      } else {plan.velocity=normalize(plan.velocity)*sqrt(2.0*kinetic/max(dMass(id)*dAmount(m),0.000001));}
     }
     plans[t]=plan;
   `);
@@ -367,10 +447,12 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
   if (stage === 'finish') return h + main1(/* wgsl */ `
     let s=atomicLoad(&control[3]); if (s==D_NONE) { return; }
     if(P.mode==14u) {
-      let p=vec3i(floor(P.center))-P.origin;let b=brickOfCell(p);var a=air[b];
-      let addedP2=${f(AIR.rho*AIR.sound**2/AIR.edge**3)}*P.strength;
-      if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); }
-      a.thermal.z=0.0;air[b]=a;dWake(p);
+      let total=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)+g.nbricks}u]));
+      if(mAirPressure() && total>0.0) { for(var b=0u;b<D_BRICKS;b++) {
+        let weight=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)}u+b]));if(weight<=0.0) {continue;}
+        var a=air[b];let addedP2=${f(AIR.rho*AIR.sound**2/AIR.edge**3)}*P.strength*weight/total;
+        a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2);a.thermal.z=0.0;air[b]=a;dWake(cellOf(b*64u));
+      } }
       atomicStore(&control[${externalBlastBase(g)}u+P.substep],1u);return;
     }
     let before=loadMaterial(s); let explosive=dExplosive(cid(before.core));
@@ -396,7 +478,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = ['reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan','externalBegin','externalGate'];
+export const BLAST_STAGES = ['reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

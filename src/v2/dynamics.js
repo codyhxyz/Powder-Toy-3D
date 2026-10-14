@@ -1,12 +1,12 @@
 import { RAYS } from '../rays.js';
 import { validateMaterialCore } from './materialValidation.js';
-import { EXTERNAL_BLAST_CAP, validExternalBlast, validateExternalBlasts } from './externalBlast.js';
+import { EXTERNAL_BLAST_CAP, validExternalBlast, validateExternalBlasts, cloneExternalBlast } from './externalBlast.js';
 import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase } from '../shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase } from '../shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
 
@@ -30,7 +30,7 @@ const cloneRequest = r => ({ ...r, position:[...r.position], direction:[...r.dir
 /** Pure validation: callers may preflight a save before ANY app/GPU mutation. */
 export function validateDynamicState(snapshot,g) {
   const s=snapshot;
-  const external = validateExternalBlasts(s ?? {});
+  const external = validateExternalBlasts(s ?? {},g);
   if (!s || s.version!==1 || !equal(s.dims??[],[g.nx,g.ny,g.nz]) || !finiteVector(s.origin) ||
     !s.origin.every(Number.isInteger) || !(s.particles instanceof Uint32Array) || s.particles.length!==PARTICLE_CAP*12 ||
     !(s.air instanceof Uint32Array) || s.air.length!==g.nbricks*8 || !(s.control instanceof Uint32Array) || s.control.length!==32 ||
@@ -163,21 +163,28 @@ export class NativeDynamics {
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
   }
   applyExternalBlast(request) {
-    if(!this.isReady || this.disposed || !validExternalBlast(request)) return {status:'rejected',reason:'invalid or unavailable external blast'};
+    if(!this.isReady || this.disposed || !validExternalBlast(request,this.g)) return {status:'rejected',reason:'invalid or unavailable external blast'};
     if(this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
     let slot=0;while(this.externalBlasts.has(slot)) slot++;
     if(slot>=EXTERNAL_BLAST_CAP) return {status:'rejected',reason:'external blast queue full; retry explicitly'};
-    const r={position:[...request.position],energy:request.energy,radius:request.radius,requestId:++this.sequence};
+    const r=cloneExternalBlast({position:request.position,energy:request.energy,radius:request.radius,requestId:++this.sequence,...(request.selection?{selection:request.selection}:{})});
     this.externalBlasts.set(slot,r);this.gpu.write(this.control,(externalBlastBase(this.g)+slot)*4,new Uint32Array([0]));
     this._externalWork();this._recordExternalBlast(slot,r,this.owner.tick);
     return {status:'queued',requestId:r.requestId};
   }
   _recordExternalBlast(slot,r,tick) {
-    const p={mode:14,center:r.position,strength:r.energy,radius:r.radius,sequence:r.requestId,substep:slot};
+    const s=r.selection;
+    const p={mode:14,center:r.position,strength:r.energy,radius:r.radius,sequence:r.requestId,substep:slot,
+      blastEnd:s?.end??r.position,blastGrow:s?.grow??[0,0,0],blastShape:s?.shape??0,blastFilter:s?.filter??-1,
+      blastBounded:+!!s?.lo,blastLo:s?.lo??[0,0,0],blastHi:s?.hi??[0,0,0],
+      blastFade:+!!s?.fade,blastMasked:+!!s?.maskWords,blastMaskOrigin:s?.maskOrigin??[0,0,0]};
+    if(s?.maskWords) this.gpu.write(this.control,externalMaskBase(this.g)*4,s.maskWords);
     this._record('blasts','externalBegin',1,tick,p);
     this._record('blasts','workArgs',1,tick,p);
     this.gpu.frame.copy(this.control,20*4,this.dispatchArgs,0,48);
-    for(const stage of ['plan','sum','normalize','damagePlan','count','allocate','externalGate','apply','finish']) {
+    this.gpu.frame.copy(this.control,28*4,this.dispatchArgs,48,4);
+    for(const stage of ['plan','externalParticlePlan','sum','normalize','damagePlan','count','allocate','externalGate','externalParticleApply','apply','finish']) {
+      if(stage==='externalParticlePlan' || stage==='externalParticleApply') { this._record('blasts',stage,{indirect:this.dispatchArgs,offset:48},tick,p);continue; }
       const offset=['normalize','allocate','externalGate','finish'].includes(stage)?32:
         (['sum','count'].includes(stage)?16:0);
       this._record('blasts',stage,{indirect:this.dispatchArgs,offset},tick,p);
@@ -342,7 +349,7 @@ export class NativeDynamics {
     this._check(); const g=this.g,origin=[...this.origin],serial=this.serial;
     const metadata={version:1,dims:[g.nx,g.ny,g.nz],origin,sequence:this.sequence,blastBatch:this.blastBatch,isIdle:this.isIdle,
       holdSession:this.holdSession?structuredClone(this.holdSession):null,
-      externalBlasts:[...this.externalBlasts].map(([slot,r])=>({slot,...r,position:[...r.position]})),
+      externalBlasts:[...this.externalBlasts].map(([slot,r])=>({slot,...cloneExternalBlast(r)})),
       requests:[...this.rayRequests].map(([slot,r])=>({slot,...cloneRequest(r)})),
       airArchive:[...this.airArchive].map(([worldCell,words])=>({worldCell:worldCell.split(',').map(Number),words:new Uint32Array(words)})),
       pendingEvents:[...this.pendingOutside].map(([worldCell,bits])=>({worldCell:worldCell.split(',').map(Number),bits}))};
