@@ -41,6 +41,7 @@ jobs:
       - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
       - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
       - run: node tools/detail-culling-cpu-check.mjs
+      - run: node tools/detail-residency-check.mjs && node tools/detail-worker-check.mjs && node tools/far-lod-check.mjs && node tools/surface-mesh-check.mjs   # full-detail terrain ownership, streaming and material seams
       - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs

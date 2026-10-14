@@ -1,4 +1,4 @@
-# World rendering and LOD
+# Full-detail world rendering
 
 The simulation window controls physics, not the limit of visible detail.
 
@@ -54,31 +54,16 @@ node tools/surface-mesh-check.mjs
 node tools/detail-residency-check.mjs
 node tools/detail-worker-check.mjs
 node tools/far-lod-check.mjs
-node tools/material-lod-check.mjs
+node tools/detail-culling-cpu-check.mjs
+node tools/check-presentation.mjs
+node tools/check-imports.mjs
 node tools/resolution-check.mjs
-node tools/check-shaders.mjs     # WebGPU port: replaced by check-imports.mjs here and check-wgsl.mjs,
-                                 # which validates WGSL in headless Chromium (see docs/webgpu.md I1)
-node tools/gpu-readback-check.mjs
 ```
 
-Start a dedicated server:
-
-```sh
-npm run dev -- --port 5493 --strictPort
-```
-
-Run the browser checks:
-
-```sh
-node tools/idle-check.mjs 5493
-node tools/world-detail-check.mjs 5493 /tmp/world-detail
-node tools/detail-residency-browser-check.mjs --port 56371
-node tools/gpu-failure-check.mjs 5493
-node tools/gpu-process-loss-check.mjs 5493
-```
-
-The detail browser check historically compared coarse versus cached rendering, saves screenshots, and checks edit preservation after a window shift. Its old coarse-fallback expectations are not evidence for the full-detail-only path.
-`lod-frame-bench.mjs beforePort afterPort` compares complete frames between two builds at the same output and internal resolution.
+GPU checks must use `tools/browser.mjs` and stay within the total slot budget in `CLAUDE.md`.
+`world-detail-check.mjs` historically compared coarse versus cached rendering.
+Its old fallback assertions need revision before it can validate this path.
+Historical browser scripts and `lod-frame-bench.mjs` are not evidence for the new renderer.
 
 ## Historical local measurements
 
