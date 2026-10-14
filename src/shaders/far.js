@@ -1244,9 +1244,14 @@ fn farInScatter(lid: i32, sunVis: f32, sky: f32) -> vec3f {
 // The bed under liquid lid at p (normal n, depth below the surface): lit by
 // sun and sky through the liquid above.
 fn farShadeBed(id: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, sky: f32) -> vec3f {
-  let alb = matOf(id, p, n, AMBIENT, 0.0, footprint(p)).alb;
-  let down = exp(-SIGMA(lid) * depth / max(FU.sun.y, FAR_SUN_Y_MIN));
-  return alb * (FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0) * down + skyAmbient(n) * sky * exp(-SIGMA(lid) * depth));
+let alb = matOf(id, p, n, AMBIENT, 0.0, footprint(p)).alb;
+let down = exp(-SIGMA(lid) * depth / max(FU.sun.y, FAR_SUN_Y_MIN));
+// The same world-anchored sunlight pattern as the simulated bed.
+var focus = 1.0;
+if (FU.caustics != 0u && depth > 0.0 && FU.sun.y > 0.0) {
+focus = causticGain(p, depth / max(FU.sun.y, FAR_SUN_Y_MIN));
+}
+return alb * (FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0) * down * focus + skyAmbient(n) * sky * exp(-SIGMA(lid) * depth));
 }
 // Liquid lid's body seen from p along rt, under its surface: down to the bed
 // (the opaque field along rt when bedY < 0, else the plane y = bedY), dimmed
