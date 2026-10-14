@@ -38,6 +38,7 @@ jobs:
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
       - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
       - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
+      - run: node tools/detail-culling-cpu-check.mjs
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/check-crystal-material.mjs

@@ -1,4 +1,4 @@
-import { Vector3, Matrix4, Frustum, Box3 } from 'three/webgpu';
+import { Vector3, Matrix4, Frustum, Box3, WebGPUCoordinateSystem } from 'three/webgpu';
 // Cache ownership, limits and checks: docs/world-lod.md.
 import { BRICK } from '../shaders/common.js';
 import {
@@ -311,12 +311,24 @@ export class WorldDetail {
       upload('detail elements', Uint32Array.from(ids), BUFFER.VERTEX), upload('detail indices', index, BUFFER.INDEX),
     ] : [];
     this.drop(token.key);
-    this.entries.set(token.key, { buffers, count: indices?.length ?? 0, format: u32 ? 'uint32' : 'uint16', bytes, step: token.step, version: token.version });
+    this.entries.set(token.key, { buffers, count: indices?.length ?? 0, format: u32 ? 'uint32' : 'uint16', bytes, step: token.step, version: token.version,
+      bounds: new Box3().setFromArray(positions) });
     this.bytes += bytes;
     // Publish the mesh and its ownership together; the raymarch must never
     // skip a chunk whose geometry is still being prepared.
     this.mask[token.key] = buffers.length ? (liquid ? 2 : 1) : 0;
     this.maskDirty = true;
+  }
+
+  // Cache residency is not visibility. Use the actual jittered draw matrix;
+  // the flat frustum cannot bound the rolling log's curved geometry.
+  *visibleDrawEntries(params) {
+    const bent = params.warpK !== 0;
+    const frustum = this._m.frustum;
+    if (!bent) frustum.setFromProjectionMatrix(params.worldToClip, WebGPUCoordinateSystem);
+    for (const e of this.entries.values()) {
+      if (e.count && (bent || frustum.intersectsBox(e.bounds))) yield e;
+    }
   }
 
   /**
@@ -330,11 +342,12 @@ export class WorldDetail {
   draw(rp, params, bind) {
     if (!this.visible || this.pipe.state !== 'ready' || !this.entries.size) return 0;
     const header = { origin: [0, 0, 0], src: this.sim.cur, dst: this.sim.cur };
-    for (const e of this.entries.values()) {
-      if (!e.count) continue;
+    let drawn = 0;
+    for (const e of this.visibleDrawEntries(params)) {
       this.pipe.draw(rp, { bind, header, params, count: e.count, vertexBuffers: e.buffers.slice(0, 3), index: { buffer: e.buffers[3], format: e.format } });
+      drawn++;
     }
-    return this.entries.size;
+    return drawn;
   }
 
   /**
@@ -362,8 +375,7 @@ export class WorldDetail {
       depthStencilAttachment: { view: this.depthZ.createView(), depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'discard' },
     }, 'far detail depth');
     try {
-      for (const e of this.entries.values()) {
-        if (!e.count) continue;
+      for (const e of this.visibleDrawEntries(params)) {
         this.depthPipe.draw(rp, { params, count: e.count, vertexBuffers: [e.buffers[0]], index: { buffer: e.buffers[3], format: e.format } });
       }
     } finally {
