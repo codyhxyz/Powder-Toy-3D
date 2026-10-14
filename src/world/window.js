@@ -128,6 +128,7 @@ export class WorldWindow {
   // edits, nothing planted. A whole-grid write (docs/webgpu.md D6): the next
   // map draws every unit, so no syncCopies follows (G1). Needs whenReady.
   load(origin = this.centre()) {
+    if (this.sim.nativeTransitionKind === 'shift') throw new Error('Cannot replace a world during its native shift');
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
@@ -136,6 +137,7 @@ export class WorldWindow {
     sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
+    sim.resetNativeDynamics();
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
     if (this.scene.trees) this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
     sim.noteWrite();
@@ -174,7 +176,7 @@ export class WorldWindow {
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
-    if (!this.loaded || this.persistenceError) return null;
+    if (!this.loaded || this.persistenceError || this.sim.nativeTransition) return null;
     this.far?.tick();
     if (this.pending || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;

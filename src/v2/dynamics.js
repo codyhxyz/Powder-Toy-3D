@@ -283,7 +283,7 @@ export class NativeDynamics {
   }
   restoreDynamicState(snapshot) {
     this._check(); const g=this.g,s=snapshot;
-    const {requests,archive,outside,events}=validateDynamicState(s,g);
+    const { requests, archive, outside, events } = validateDynamicState(s, g);
     // All validation precedes all writes. Bad saves never partially replace state.
     this.gpu.write(this.particles,0,s.particles);
     for(const b of this.air) this.gpu.write(b,0,s.air);

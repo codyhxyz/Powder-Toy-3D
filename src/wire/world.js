@@ -50,6 +50,7 @@ const world = {
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
+    sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
     win.far = new FarField(app.renderer, win, { sun: app.sun });
     win.far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
     win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window

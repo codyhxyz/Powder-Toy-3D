@@ -1559,13 +1559,15 @@ function setBlocks(on) {
   pacer.wake();
 }
 
-function undo() {
+async function undo() {
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;
   const { note, label } = sim.history?.at(-1) ?? {};
   const shrine = note?.shrine;
-  if (sim.undo()) {
+  let restored;
+  try { restored = await sim.undo(); } catch (error) { hud.toast(error.message, { kind: 'error' }); return; }
+  if (restored) {
     if (shrine) perkOrbs?.removeShrine(shrine);
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
     if (note?.industry) {

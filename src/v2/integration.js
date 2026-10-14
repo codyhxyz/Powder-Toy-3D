@@ -74,9 +74,10 @@ export class NativeIntegration {
       sim.nativeCommitting = true;
       try { return commit(); } finally { sim.nativeCommitting = false; }
     }).catch(error => { sim.nativeTransitionError = error; throw error; }).finally(() => {
-      if (sim.nativeTransition === transition) sim.nativeTransition = null;
+      if (sim.nativeTransition === transition) { sim.nativeTransition = null; sim.nativeTransitionKind = null; }
       sim.wake();
     });
+    sim.nativeTransitionKind = 'shift';
     sim.nativeTransition = transition;
     return transition;
   }

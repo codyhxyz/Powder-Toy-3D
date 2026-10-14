@@ -1,3 +1,4 @@
+import { captureNativeSnapshot, encodeDynamicState, decodeDynamicState, emptyDynamicState } from '../v2/dynamicState.js';
 import { validateNativeWorldStore } from '../world/nativeStore.js';
 // Saves (src/saves; docs/webgpu.md Sync log S4, U12): ⌘S or the toolbar's
 // Save keeps the game in the Saves list, with a picture; the map menu's Saves
@@ -34,6 +35,7 @@ const savesWire = {
 
   boot(app) {
     const { settings } = app;
+    let nativeCapture = null;
     // the gravity and speed a world was saved with come back with it (TPT keeps gravity in a save)
     registerSavedSettings(['gravity', 'steps']);
     // The simulation modes (simModes.js) are the world's, as TPT keeps gravity,
@@ -59,7 +61,10 @@ const savesWire = {
     // Other physics side buffers must register their actual owner, not piggyback on cells.
     registerSaveSection('physicsV2', {
       strict: true,
-      save: () => app.physics.v2?.captureState(app.physics.mode),
+      save: () => {
+        nativeCapture = app.physics.v2 ? captureNativeSnapshot(app.physics.v2, app.physics.mode) : null;
+        return nativeCapture?.then(s => s.core);
+      },
       validate: (data, h) => {
         if (data === undefined && !h.sections?.some(s => s.key === 'physicsV2')) return;
         decodeV2State(data, h.dims);
@@ -74,6 +79,28 @@ const savesWire = {
       // An old save is an intentional legacy replacement, never a reason to revive retained cells.
       absent: () => app.physics.v2?.resync(),
     });
+    registerSaveSection('physicsV2Dynamics', {
+      strict: true,
+      save: () => nativeCapture?.then(s => s.dynamic ? encodeDynamicState(s.dynamic) : undefined),
+      validate: (data, h) => {
+        const listed = h.sections?.some(s => s.key === 'physicsV2Dynamics');
+        if (h.nativeDynamicsVersion !== undefined && h.nativeDynamicsVersion !== 1) throw new Error('Unsupported native dynamics save version');
+        if (data === undefined && !listed && h.nativeDynamicsVersion === undefined) return;
+        if (!h.sections?.some(s => s.key === 'physicsV2')) throw new Error('Native dynamics requires matching core state');
+        decodeDynamicState(data, { dims: h.dims, origin: h.world?.origin ?? [0, 0, 0] });
+      },
+      load: (data, h) => {
+        const d = app.physics.v2?.dynamics;
+        if (!d?.isReady) throw new Error('Native dynamics restore owner is unavailable');
+        const o = app.sim.origin;
+        const snapshot = decodeDynamicState(data, { dims: h.dims, origin: [o.x, o.y, o.z] });
+        d.restoreDynamicState(snapshot);
+      },
+      absent: () => {
+        const d = app.physics.v2?.dynamics, sim = app.sim;
+        if (d) d.restoreDynamicState(emptyDynamicState([sim.g.nx, sim.g.ny, sim.g.nz], [sim.origin.x, sim.origin.y, sim.origin.z]));
+      },
+    });
     saves = createSaves({
       settings, getSim: () => app.sim, getWin: () => app.win,
       prepareCapture: () => app.physics.v2?.ready,
@@ -83,6 +110,7 @@ const savesWire = {
           map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: app.win ? null : settings.preset,
           world: app.win ? { scene: settings.scene, seed: app.worldSeed ?? null } : null,
           industryMode: app.industry?.state.active ? app.gamemode : undefined,
+          nativeDynamicsVersion: app.physics.v2?.dynamics ? 1 : undefined,
           guestCopy: app.mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
         };
       },

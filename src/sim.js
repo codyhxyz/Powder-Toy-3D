@@ -1,3 +1,4 @@
+import { captureNativeSnapshot, restoreNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
 import { nativeHostTick } from './v2/host.js';
 import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
@@ -731,7 +732,7 @@ export class Simulation {
    *   resets dcolour (the brush, a stamp, the console's script: main's scrubDeco callers)
    */
   edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false } = {}) {
-    if ((this.nativeTransition && !this.nativeCommitting) || this.nativeTransitionError) return false;
+    if ((this.nativeTransitionKind === 'shift' && !this.nativeCommitting) || this.nativeTransitionError) return false;
     const box = this._clip(lo, hi);
     if (!box) return;
     const [a, b] = box;
@@ -916,9 +917,12 @@ export class Simulation {
     this.noteWrite(replaceState);
   }
 
+  resetNativeDynamics() { return resetNativeDynamics(this.compactOwner); }
+
   // Upload CPU-built state (Float32Array RGBA per atlas texel: cellTexel)
   // into the current copy, with fresh flags (docs/webgpu.md C2).
   load(dataA, dataB) {
+    if (this.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
     const { width, height } = this.g, texels = width * height;
     const scratch = this._atlasScratch();
     this.gpu.write(scratch, 0, dataA.subarray(0, texels * 4));
@@ -931,6 +935,7 @@ export class Simulation {
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
+    this.resetNativeDynamics();
     this.rays.reset();   // a new state: the old particles go, and it may hold plutonium
     this.deco?.reset?.();   // a new state: its decoration, if any, comes after (src/deco.js uploadDeco)
   }
@@ -978,6 +983,7 @@ export class Simulation {
   // and what it was taken before (t.label: 'Sand', 'House'), for the undo
   // notice's "Undone Sand" (Garry's Mod's "Undone Prop").
   snapshot(label = null, limit = UNDO_LIMIT) {
+    if (this.nativeTransition || this.nativeTransitionError) throw new Error('Cannot snapshot during a native world transition');
     this.legacyState();
     const f = this.gpu.frame, bytes = this.g.slots * 16, { A, B } = this.state;
     let t = this.history.length >= limit ? this.history.shift() : null;
@@ -986,7 +992,18 @@ export class Simulation {
       t = { A: mk('A'), B: mk('B') };
       t.group = this.gpu.bindGroup(this.L.UNDO, [{ binding: 0, resource: { buffer: t.A } }, { binding: 1, resource: { buffer: t.B } }], 'undo snapshot');
     }
+    t.nativeSnapshot = t.nativeError = t.nativePending = null;
+    const snapshotEpoch = t.snapshotEpoch = (t.snapshotEpoch ?? 0) + 1;
     t.format = this.compact?.isReady ? 'v2' : 'v1';
+    if (t.format === 'v2' && this.compact.dynamics) {
+      // Calls enqueue all core/aux/activity/dynamics copies in this task,
+      // alongside the GPU undo buffers below, before any user edit can run.
+      t.nativePending = captureNativeSnapshot(this.compact, 'v2').then(snapshot => {
+        if (t.snapshotEpoch === snapshotEpoch && this.history.includes(t)) t.nativeSnapshot = snapshot;
+      }, error => { if (t.snapshotEpoch === snapshotEpoch) t.nativeError = error; }).finally(() => {
+        if (t.snapshotEpoch === snapshotEpoch) t.nativePending = null;
+      });
+    }
     if (t.format === 'v2') {
       t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes,
         usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
@@ -1027,11 +1044,16 @@ export class Simulation {
   undo() {
     const t = this.history.at(-1);
     if (!t) return false;
+    if (this.nativeTransition || this.nativeTransitionError) throw new Error('Cannot undo during a native world transition');
+    if (t.nativePending) return t.nativePending.then(() => this.history.at(-1) === t ? this.undo() : false);
+    if (t.nativeError) throw t.nativeError;
     const [dx, dz] = this.undoShift;
+    if (t.nativeSnapshot && (dx || dz)) throw new Error('Native world undo across a shift requires matching retained-world history; entry preserved');
     if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
     if (t.format === 'v2' && this.compact && (dx || dz) && !this.nativeIntegration?.isReady) throw new Error('Native shifted undo is not ready');
-    this.history.pop();
-    if (t.format === 'v2' && this.compact) {
+    if (t.format === 'v2' && this.compact && t.nativeSnapshot) {
+      restoreNativeSnapshot(this.compact, t.nativeSnapshot);
+    } else if (t.format === 'v2' && this.compact) {
       if (dx || dz) this.nativeIntegration.undo(t.compact, t.aux, dx, dz);
       else this.compact.restore(t.compact, t.aux);
       this.nativeIntegration?.changed();
@@ -1041,6 +1063,7 @@ export class Simulation {
       });
       this.noteWrite();
     }
+    this.history.pop();
     this.deco?.restore?.(t, dx, dz);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
