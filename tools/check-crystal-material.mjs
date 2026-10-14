@@ -8,6 +8,8 @@ import { surfaceGLSL, WGSL_CHECK } from '../src/shaders/gfx/surface.js';
 import { lib, libChecks, LIB_VARIANTS } from '../src/shaders/gfx/lib.js';
 import { volumeFrag, shadowFrag } from '../src/shaders/render.js';
 import { allDetailDefines } from '../src/gfx/detail.js';
+import { brickFrag } from '../src/shaders/passes.js';
+import { giSourceFrag } from '../src/shaders/gi.js';
 
 const lighting = lightingGLSL();
 const trace = lighting.slice(lighting.indexOf('fn traceNearSteps('), lighting.indexOf('fn traceNear('));
@@ -26,8 +28,22 @@ assert.match(surface, /exp\(-vec3f\(/, 'depth has wavelength-dependent absorptio
 assert.match(surface, /CRYS_STRIA_ROUGH \* st \* lodFade/);
 assert.doesNotMatch(surface, /CRYS_STRIA_GLOW/, 'growth marks must not become luminous stripes');
 
+const grid = { nx: 64, ny: 64, nz: 64 };
+const bricks = brickFrag(grid);
+assert.match(bricks, /RCLASS\(id\) == R_OPAQUE \|\| id == E_CRYSTAL\) \{ f = openFaces\(p\) \* GLOW_FACE_GAIN;/,
+  'glass optics must not reduce the exposed-face glow budget to 1');
+assert.match(bricks, /RCLASS\(id\) != R_OPAQUE && id != E_CRYSTAL/,
+  'internal crystal-to-crystal faces must not multiply the glow');
+const giSource = giSourceFrag(grid);
+assert.match(giSource, /let opaque = cid != E_EMPTY && RCLASS\(cid\) == R_OPAQUE;/,
+  'emitting glass must stay out of the opaque mask');
+assert.match(giSource, /all\(m == vec2u\(0u\)\) && head\[6\] == 0u/,
+  'a crystal-only brick must not discard its bounced light');
+assert.match(giSource, /if \(opaque \|\| cid == E_CRYSTAL\)/);
+assert.match(giSource, /cid == E_CRYSTAL\) \{ alb = vec3f\(0\.0\);/,
+  'restoring emission must not restore opaque diffuse shading');
+
 if (process.argv.includes('--naga')) {
-  const grid = { nx: 64, ny: 64, nz: 64 };
   const modules = [
     ...[...WGSL_CHECK(), ...libChecks('crystal'), ...libChecks('lighting')]
       .map(check => [check.name, check.code(grid)]),
@@ -36,6 +52,8 @@ if (process.argv.includes('--naga')) {
     ...[false, true].map(curved => [`volume-${curved ? 'curved' : 'straight'}`,
       volumeFrag(grid, { detail: allDetailDefines(), curved })]),
     ['shadow', shadowFrag(grid)],
+    ['brick-emission', bricks],
+    ['gi-source', giSource],
   ];
   for (const [name, code] of modules) {
     const result = spawnSync('naga', ['--stdin-file-path', `${name}.wgsl`], {
@@ -46,4 +64,4 @@ if (process.argv.includes('--naga')) {
     console.log(`ok: ${name}`);
   }
 }
-console.log('ok: crystal prism shadows, primary-hit isolation, absorptive interiors, non-emissive growth marks');
+console.log('ok: crystal prism shadows, hit isolation, absorptive interiors, subtle growth marks, exposed-face glow and translucent GI emission');

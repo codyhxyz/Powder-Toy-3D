@@ -49,7 +49,7 @@ const console_ = {
     const { settings } = app;
     try {
       app.scripts = createConsole({
-        getSim: () => app.sim, isGuest: () => app.mp.isGuest,
+        getSim: () => app.sim, isGuest: () => app.mp.replica,
         paused: () => settings.paused, setPaused: app.setPaused,
         stepNow: (n) => { for (let i = 0; i < n; i++) app.sim.step(); if (DAY.running) app.day.clock += n; },
         gravity: () => settings.gravity / app.DEFAULTS.gravity,

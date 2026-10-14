@@ -3,7 +3,7 @@
 // tools/you-portrait.page.js and saved as a transparent WebP at public/you.webp.
 // Rerun after changing the body's model or the hat.
 // Needs a dev server: `node_modules/.bin/vite --port 5611 --strictPort`, then
-// usage: node tools/you-portrait.mjs [--port 5611] [--character real|woman|stick|spartan] [--png path]
+// usage: node tools/you-portrait.mjs [--port 5611] [--character real|woman|stick|spartan|boy|girl] [--png path]
 // --character also accepts a comma-separated list, baked in one GPU slot.
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -16,7 +16,7 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i
 const port = opt('port', '5611');
 const keepPng = opt('png', null);
 const characters = opt('character', 'real').split(',');
-if (characters.some((c) => !['real', 'woman', 'stick', 'spartan'].includes(c))) throw new Error('Unknown character');
+if (characters.some((c) => !['real', 'woman', 'stick', 'spartan', 'boy', 'girl'].includes(c))) throw new Error('Unknown character');
 
 const SHOWN_W = 260, SHOWN_H = 420;   // CSS px the loading screen shows him at, at most (menu.css .mm-you)
 const DENSITY = 2;                     // the file's px per CSS px: sharp on a 2x screen

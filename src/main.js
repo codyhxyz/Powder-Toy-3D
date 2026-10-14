@@ -95,7 +95,7 @@ async function start(map, mode) {
   }
   launch.map = map;
   launch.mode = mode;
-  menu.loading('Loading something cool, please be patient');
+  menu.loading('Loading something cool, please be patient', { map, mode });
   await bootInSteps();
 }
 launch.ready = () => {

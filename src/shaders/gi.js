@@ -219,9 +219,10 @@ fn maskHas(m: vec2u, b: u32) -> bool { return ((select(m.y, m.x, b < 32u) >> (b 
 
 // The workgroup's opaque mask (2 words) and its projections along x, y, z
 // (16 bits each), ORed in by the cells; then the same words and the
-// translucent cells' extinction (f32 bits), read back by every thread at once.
-var<workgroup> wOr: array<atomic<u32>, 5>;
-var<workgroup> wHead: array<u32, 6>;
+// translucent cells' extinction (f32 bits) and a crystal-emitter flag, read
+// back by every thread at once without adding crystals to the opaque mask.
+var<workgroup> wOr: array<atomic<u32>, 6>;   // word 5: a translucent crystal emits here
+var<workgroup> wHead: array<u32, 7>;
 // Per-cell parts of the brick's sums, reduced into [0]: pass 1 the extinction
 // (wA.w); pass 2 the light leaving the exposed faces and their count (wA), and
 // the light-weighted normals (wB).
@@ -262,6 +263,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let a = fetchA(c);
   let cid = eid(a);
   let opaque = cid != E_EMPTY && RCLASS(cid) == R_OPAQUE;
+  if (cid == E_CRYSTAL) { atomicOr(&wOr[5], 1u); }
   var tau = 0.0;
   if (cid != E_EMPTY && !opaque) { tau = dot(SIGMA(cid), vec3f(1.0 / 3.0)) * select(1.0, clamp(a.z, 0.0, 1.0), cid == E_SMOKE); }
   if (opaque) {
@@ -276,6 +278,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   if (li == 0u) {
     for (var k = 0u; k < 5u; k++) { wHead[k] = atomicLoad(&wOr[k]); }
     wHead[5] = bitcast<u32>(wA[0].w);
+    wHead[6] = atomicLoad(&wOr[5]);
   }
   let head = workgroupUniformLoad(&wHead);
   let m = vec2u(head[0], head[1]);
@@ -283,7 +286,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   // translucent matter: mean extinction per cell times the brick's width
   let trans = exp(-bitcast<f32>(head[5]) * f32(BS) / f32(BRICK_CELLS));
   let covOut = 1.0 - (1.0 - cov) * trans;
-  if (all(m == vec2u(0u))) {
+  if (all(m == vec2u(0u)) && head[6] == 0u) {
     if (li == 0u) { giSrc[id] = giSrcPack(vec3f(0.0), covOut, vec3f(0.0)); }
     return;
   }
@@ -294,7 +297,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var rad = vec3f(0.0);
   var dir = vec3f(0.0);
   var nf = 0.0;
-  if (opaque) {
+  // Emitters need not be opaque: crystals still light the cave through glass.
+  if (opaque || cid == E_CRYSTAL) {
     var looked = false;      // albedo and emission: looked up once, if a face is exposed
     var alb = vec3f(0.0);
     var em = vec3f(0.0);     // what the cell gives off
@@ -306,9 +310,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       var covered: bool;
       if (all(ln >= vec3i(0)) && all(ln < vec3i(BS))) { covered = maskHas(m, cellBit(ln)); } else { covered = giOpaque(c + nv); }
       if (covered) { continue; }
+      if (cid == E_CRYSTAL && !outside(c + nv) && eid(fetchA(c + nv)) == E_CRYSTAL) { continue; }
       if (!looked) {
         looked = true;
         alb = ALBEDO(cid) * (1.0 - METAL(cid) * (1.0 - GI_METAL_DIFFUSE));
+        if (cid == E_CRYSTAL) { alb = vec3f(0.0); }   // keep its emission, not opaque diffuse paint
         em = cellEmission(cid, a.y, floor(a.w)) + sparkEmit(cid, floor(a.w));   // a live conductor, a lit lamp
       }
       let nrm = vec3f(nv);

@@ -493,7 +493,9 @@ let coreReady = false, coreWait = Promise.resolve();
 const readySims = new WeakSet();   // simulations whose own pipelines are ready (a load can be recorded)
 let viewTime = 0;   // s the scene's animations have run (FrameUniforms.time: it runs with the simulation)
 
+let replicaMap = null;
 function build() {
+  if (!mp.replica) { replicaMap = null; mp.resumeSolo?.(); }
   if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
   pov?.worldReplaced();
@@ -509,7 +511,7 @@ function build() {
     v2Running = false;
     sim.dispose();
   }
-  worldMode = settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
+  worldMode = replicaMap?.mode === 'world' ? { win: replicaMap.dims, size: replicaMap.size } : settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
   if (worldMode && !wire('world')) {
     // (until the world's port lands: the box, and why)
     worldMode = null;
@@ -625,10 +627,19 @@ function pickedNow(cell, o) {
 }
 
 // Multiplayer guests follow the host's grid size (a box: never World).
-function setGrid(dims) {
+function setGrid(dims, meta = null) {
+  if (replicaMap?.id === meta?.id && !!win === (meta?.mode === 'world') && [sim.g.nx, sim.g.ny, sim.g.nz].every((n, i) => n === dims[i])) return true;
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
-  if (!size || !gridFits(SIZES[size])) return false;
-  settings.size = boxSize = size;
+  if (meta?.mode === 'world') {
+    const s = sceneByKey(meta.scene), expected = s && worldOf(WORLDS.world, s);
+    if (!s || s.key !== meta.scene || !expected.size.every((n, i) => n === meta.size[i]) || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
+    settings.size = 'world'; settings.scene = meta.scene; worldSeed = meta.seed;
+    selectedMode = 'sandbox'; presentation.select(null);
+  } else {
+    if (!size || !gridFits(SIZES[size])) return false;
+    settings.size = boxSize = size;
+  }
+  replicaMap = meta ? { ...meta, dims } : null;
   build();
   return true;
 }
@@ -644,6 +655,7 @@ function gridFits(dims) {
 
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild. False if the device can't hold it.
 function setSize(size) {
+  if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   if (!gridFits(dimsOf(size))) return false;
   settings.size = size;
@@ -665,9 +677,11 @@ function useMap(m) {
 // The start menu's Start over a running game (src/main.js): the map, loaded
 // fresh (the current one starts over), then its gamemode.
 function openMap(key, mode = 'sandbox') {
+  if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key);
   if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
+  if (isWorld(m) && mp.role === 'host' && mode !== 'sandbox') { hud.toast('World co-op supports Sandbox exploration only.'); return false; }
   if (isWorld(m) && !wire('world')) { hud.toast(notYet(`${m.name} (World maps)`), { kind: 'error' }); return false; }
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
   modeEpoch++;
@@ -705,6 +719,7 @@ function currentMap() {
 // first drop-in builds it), while the bots' module loads beside it; a map loaded just now (fresh)
 // isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
+  if (mode !== 'sandbox' && win && mp.role && mp.role !== 'solo') { hud.toast('World co-op supports Sandbox exploration, not matches or progression.'); return; }
   const epoch = ++modeEpoch;
   villageFocus = null;
   const chosen = resolveMode(mapOf(settings), mode);
@@ -782,6 +797,8 @@ function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m
 // Box scenes another unit's port builds: the Islet is the world's generator on a box (src/wire/world.js).
 const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
+  if (mp.frozen && undoable) { mp.resumeSolo(); replicaMap = null; }
+  if (mp.replica) return false;
   ctx.resetWeather?.();
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
@@ -803,6 +820,7 @@ function loadPreset(name, undoable = true) {
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
   whenSimReady(() => {
+    if (mp.replica) return;
     if (win) wire('world').loadScene(ctx);
     else if (name === 'empty') sim.clear();
     else if (name === 'island') wire('world').loadIsland(ctx);
@@ -1005,7 +1023,7 @@ function startShape(kind) {
   const start = new THREE.Vector3();
   if (!planePoint(start)) return false;
   clampToGrid(start);
-  shapeDrag = { kind, start, end: start.clone() };
+  shapeDrag = { kind, start, end: start.clone(), sim, origin: sim.origin.clone() };
   hud.dismissHint();
   return true;
 }
@@ -1026,6 +1044,7 @@ function finishShape() {
   const d = shapeDrag;
   shapeDrag = null;
   if (!d) return;
+  if (d.sim !== sim || !d.origin.equals(sim.origin)) { hud.toast('The host area moved; draw the shape again.'); return; }
   const tool = settings.tool;
   const stroke = { ...brushStroke(tool), center: d.start, rate: oneShotRate(tool, settings.rate) };
   if (d.kind === 'line') stroke.end = d.end;
@@ -1059,7 +1078,7 @@ function brushStroke(tool) {
     prop: tool === PROP_TOOL ? propValue() : null,
   };
 }
-const paintStroke = (stroke) => (mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
+const paintStroke = (stroke) => (mp.replica && !mp.isGuest ? undefined : mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
   : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? undefined   // (v2 has no particle layer: selectTool)
     : sim.paint(stroke));
 
@@ -1116,6 +1135,7 @@ const FILL_REFUSED = {
   gone: 'The world changed before the fill: try again',
 };
 function fillAt() {
+  if (mp.replica && !mp.isGuest) { mp.guard(); return; }
   if (!hover.valid) { hud.toast('Click a surface to fill from', { kind: 'error' }); return; }
   const tool = settings.tool, st = brushStroke(tool);
   let cell, id, maxY = sim.g.ny - 1;
@@ -1762,6 +1782,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
+  if ((settings.tool === SIGN_TOOL || isDecoTool(settings.tool) || isSpawnerTool(settings.tool)) && mp.guardEntities?.()) return false;
   if (selectedMode === 'factory' || ctx.industry?.building) return false;
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
   if (settings.tool === SIGN_TOOL) {
@@ -2360,7 +2381,7 @@ function tick(now, renderOnly = false) {
   if (!renderOnly) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
-    for (const w of live) w.beforeStep?.(ctx, dt);   // the body, Descent's level switch
+    for (const w of live) if (!mp.replica || w.name === 'pov' || w.name === 'mp') w.beforeStep?.(ctx, dt);   // the body, Descent's level switch
     // (after the body's update, which can leave it: then the god view moves this tick)
     if (!pov?.active) {
       rig.update(dt);
@@ -2383,9 +2404,9 @@ function tick(now, renderOnly = false) {
     if (releasePending) painting = releasePending = false;   // (the button went up before this tick: its one paint)
   }
   prof.phase('sim');
-  const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
+  const stepping = !renderOnly && !mp.replica && (!settings.paused || stepOnce);
   ctx.stepping = stepping;
-  if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
+  if (!renderOnly && !mp.replica) scripts?.tick();   // event.tick: every frame, paused too (TPT)
   let stepped = settings.steps;
   if (stepping && v2Box()) {
     // v2: a fixed 60 Hz tick on game time, Speed scaling it (4 steps a frame is 1×); none while it rests
@@ -2405,9 +2426,9 @@ function tick(now, renderOnly = false) {
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
-  if (!renderOnly) scripts?.endFrame();
+  if (!renderOnly && !mp.replica) scripts?.endFrame();
   updateSun();
-  for (const w of live) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
+  for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
   if (settings.time !== timeShown) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
@@ -2509,7 +2530,7 @@ function tick(now, renderOnly = false) {
   // no stroke, nothing waiting for a frame or adapting, no profiler and no
   // wire animating: the loop stops. Input, a setting, a write, a landed read
   // or a built pipeline wakes it.
-  const wantsSteps = !mp.isGuest && (!settings.paused || stepOnce) && !simAsleep();
+  const wantsSteps = !mp.replica && (!settings.paused || stepOnce) && !simAsleep();
   const busy = wantsSteps || painting || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
   settledSleep = present && !runView && pacer.settled && !busy;
   const g = sim.g;
