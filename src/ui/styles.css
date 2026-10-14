@@ -128,6 +128,9 @@ button { font: inherit; color: inherit; }
 }
 .cam-seg > button:hover { color: var(--text); background: var(--raise); }
 .cam-seg > button.on { background: #ffffff12; color: #e9e7e2; }
+.cam-seg > .industry-build { color: #dcbc74; padding-inline: 12px; }
+.cam-seg > .industry-build.on { background: #dcbc74; color: #1a1408; }
+.cam-seg > .industry-build[hidden] { display: none; }
 .toolbar .sep { width: 1px; height: 18px; background: var(--line); margin: 0 6px; flex-shrink: 0; }
 
 .view-btn {

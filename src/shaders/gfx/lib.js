@@ -6,7 +6,6 @@ import { coreGLSL, ddaGLSL } from './core.js';
 import { noiseGLSL } from './noise.js';
 import { lightingGLSL } from './lighting.js';
 import { crystalGLSL } from './crystal.js';
-import { foliageGLSL } from './foliage.js';
 import { cloudsGLSL } from './clouds.js';
 import { farLayout, farLayoutGLSL, farSkyGLSL, farHazeFor, farCastersGLSL, farGIGLSL, WORLD_SIZE } from '../farShared.js';
 
@@ -69,7 +68,6 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
     materialsGLSL(),
     coreGLSL(g, { flow: v.flow, detail }),
     noiseGLSL,
-    foliageGLSL,
     lightingGLSL(v),
     crystalGLSL,
   ].join('\n');

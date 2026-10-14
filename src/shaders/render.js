@@ -783,7 +783,6 @@ const HIT_NONE: i32 = 0;
 const HIT_CRISP: i32 = 1;    // a crisp voxel (hitCell, hitId, hitA; normal hitN)
 const HIT_SMOOTH: i32 = 2;   // a smooth surface of channel hitCh (normal hitN; zero: the field's)
 const HIT_GRAIN: i32 = 3;    // grain geometry (gfx/grains.js: gHitA, gHitK)
-const EV_FOLIAGE: i32 = 5;  // an actual leaf, not the organic channel's shell
 
 fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ro = ro0;
@@ -1061,25 +1060,14 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         phiStale = true;
       }
 
-      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }
-      // Find the leaf before grainEvent can save an alternate granular hit.
-      // Trace through the whole clipped cell: suppressing a smooth grain
-      // surface below may reveal a leaf that was behind that surface.
-      var leafA = vec4f(0.0);
-      var leafT = NO_HIT;
-      var leafN = vec3f(0.0);
-      if (id == E_PLANT) { leafA = fetchA(cell); }
-      if (isFoliage(leafA)) { foliageHit(cell, ro, rd, tEnter, min(tExit, tCut), &leafT, &leafN); }
-      if (leafT <= tEv) { ev = EV_FOLIAGE; tEv = leafT; evN = leafN; cut = false; }${grains ? `
+      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
       // grains (gfx/grains.js), not past the cut either: geometry in front of it may still end the segment
       // (grainEvent reads the cell's state only for a grain element's cell: its cand)
       var ga = vec4f(0.0);
       if (grainElement(id)) { ga = fetchA(cell); }
       grainEvent(cell, id, ga, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
-      cut = ev == EV_NONE && tEv >= tCut;
-      if (leafT <= tEv) { ev = EV_FOLIAGE; tEv = leafT; evN = leafN; cut = false; }` : ''}
+      cut = ev == EV_NONE && tEv >= tCut;` : ''}
 
-      // Do not end the ray at cell entry: smoke/water before the blade still shades it.
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
         let pm = ro + rd * (0.5 * (tEnter + tEv));
@@ -1120,11 +1108,6 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       if (cut) { break; }
       if (ev != EV_NONE) {
         let hp = ro + rd * tEv;
-        if (ev == EV_FOLIAGE) {
-          if (!anyHit) { anyHit = true; hitPos = hp; }
-          hitK = HIT_CRISP; hitP = hp; hitN = evN; hitCell = cell; hitId = id; hitA = leafA;
-          break;
-        }
         if (!anyHit) { anyHit = true; hitPos = hp; }${grains ? `
         if (ev == EV_GRAIN) { hitK = HIT_GRAIN; hitP = hp; break; }` : ''}
         if (ev == EV_OPAQUE) {
@@ -1569,11 +1552,6 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     let ax = argmin3(tMax);
     let tExit = tMax[ax];
     let id = occCellId(occM, bid, cell);   // eid(fetchA(cell)), from the brick's occupancy: nothing read for an empty cell
-    var leafT = NO_HIT;
-    if (id == E_PLANT && isFoliage(fetchA(cell))) {
-      var ln = vec3f(0.0);
-      foliageHit(cell, ro, rd, tEnter, tExit, &leafT, &ln);
-    }
     if (id == E_CRYSTAL) {
       // its prisms (gfx/crystal.js), as the view draws them
       var th = tEnter;
@@ -1592,7 +1570,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
       var tM = tExit;
       var phiM = phiB;
       if (SURFCH(id) >= 0 || (gThin && id == E_EMPTY)) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }   // (as the view's)
-      var tOp = leafT;
+      var tOp = NO_HIT;
       for (var c = 1; c < 4; c++) {
         tOp = min(tOp, surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]));
       }
@@ -1624,7 +1602,6 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     } else {
       phiStale = true;
     }
-    if (leafT < NO_HIT) { oC.x = leafT; hit = true; break; }
     tEnter = tExit;
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];

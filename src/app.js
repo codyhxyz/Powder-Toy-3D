@@ -1271,6 +1271,7 @@ function pickHovered() {
 
 const actions = {
   togglePause: () => setPaused(!settings.paused),
+  toggleIndustryBuild: () => ctx.industry?.toggle(),
   undo,
   // (in a world, over where the camera is looking: home is wherever you are)
   resetCamera: () => {
@@ -1528,7 +1529,7 @@ function setBlocks(on) {
 }
 
 function undo() {
-  if (selectedMode === 'factory') { hud.toast('Factory has no terrain undo. Dismantle machines with B, then right-click.'); return; }
+  if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;
   const { note, label } = sim.history?.at(-1) ?? {};
@@ -1679,7 +1680,7 @@ canvasEl.addEventListener('pointerdown', (e) => {
 });
 function press(e) {
   if (selectedMode === 'factory' || ctx.industry?.building) {
-    if (e.button === 0 && !e.altKey && !ctx.industry?.building) hud.toast('B builds machines. V enters the Quarry with mining tools.');
+    if (e.button === 0 && !e.altKey && !ctx.industry?.building) hud.toast('Use Build for machines, or choose 1st to mine.');
     return;
   }
   const wasEditing = !!signs?.editing;

@@ -1487,7 +1487,7 @@ fn gatherSurf(hp: vec3f, n: vec3f, ch: i32) -> Surf {
     if (outside(c)) { continue; }
     let a = fetchA(c);
     let id = eid(a);
-    if (SURFCH(id) != ch || isFoliage(a)) { continue; }
+    if (SURFCH(id) != ch) { continue; }
     let wv = mix(1.0 - f, f, vec3f(o));
     let w = wv.x * wv.y * wv.z + GATHER_W_MIN;
     T += w * a.y;
@@ -1509,7 +1509,7 @@ fn gatherSurf(hp: vec3f, n: vec3f, ch: i32) -> Surf {
       if (outside(c)) { continue; }
       let a = fetchA(c);
       let id = eid(a);
-      if (SURFCH(id) != ch || isFoliage(a)) { continue; }
+      if (SURFCH(id) != ch) { continue; }
       id1 = id; w1 = 1.0; T = a.y; wsum = 1.0; s.cell = c; s.seed = fract(a.w); ct1 = floor(a.w);
       if (flowing) { vel = cellFlow(c); }
     }
@@ -1705,16 +1705,6 @@ fn crispSurf(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f) -> Surf {
   else if (an.y >= an.z) { s.face = vec3i(0, i32(sign(fd.y)), 0); }
   else { s.face = vec3i(0, 0, i32(sign(fd.z))); }
   s.T = crispT(cell, a.y, hp, s.face);
-  if (isFoliage(a)) {
-    // The blade is geometry now: do not paint miniature fake leaves onto it.
-    // Use the same macro colour and thin-leaf transmission as PLANT's old look.
-    var m = matFlat(id, s.T, floor(a.w));
-    matMacro(&m, id, worldPos(hp), n, footprint(hp));
-    m.trans = 1.0;
-    s.ch = CH_ORGANIC;   // field AO, not a solid cube's corner AO
-    applyMat(&s, m);
-    return s;
-  }
   // an isolated grain carries its texture with it (its seed moves with the grain);
   // a voxel's is anchored in the world
   const GRAIN_TEX_SPREAD: f32 = 61.0;   // cells of texture space the seed spreads grains over

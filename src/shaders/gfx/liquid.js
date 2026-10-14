@@ -218,9 +218,6 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     let tExit = min(tMax.x, min(tMax.y, tMax.z));
     let a = fetchA(cell);
     let id = eid(a);
-    var leafT = NO_HIT;
-    var leafN = vec3f(0.0);
-    if (isFoliage(a)) { foliageHit(cell, ro, rd, tEnter, tExit, &leafT, &leafN); }
     if (isCrisp(id)) {
       if (RCLASS(id) != R_GLASS) {
         var nh = vec3f(0.0);
@@ -239,7 +236,6 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
         if (t < tOp) { tOp = t; ch = c; }
       }
       if (ch > 0) {
-        if (leafT < tOp) { return reflShade(a, ro + rd * leafT, leafN); }
         let hp = ro + rd * tOp;
         // forward difference: the field is SURF_ISO at hp
         let e = vec2f(REFL_NORMAL_STEP, 0.0);
@@ -256,7 +252,6 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     } else {
       stale = true;
     }
-    if (leafT < NO_HIT) { return reflShade(a, ro + rd * leafT, leafN); }
     tEnter = tExit;
     ax = ddaStep(istp, tDelta, &cell, &tMax);
   }

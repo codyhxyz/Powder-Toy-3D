@@ -407,11 +407,11 @@ export class FarField {
   // aligned; bricks along x, y, z) into the far grid, at the window's origin:
   // the slab about to leave on a move (before the shift), a slab of a sweep,
   // or all of it. derive: rebuild what derives from the grid before the next view.
-  // sweep: the slab stays in the window (the detail chunks keep their meshes).
-  summarize(lo, bricks, derive = true, sweep = false) {
+  // Keep cached detail until changed cells have a replacement mesh.
+  summarize(lo, bricks, derive = true) {
     if (!this.built) return;
     const sim = this.sim, o = sim.origin;
-    this.detail[sweep ? 'stale' : 'invalidate']([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
+    this.detail.stale([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
     const at = [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], size = [bricks[0], bricks[2]];
     this.region(this.k.win, this.groupsFixed.win, at, size, { state: sim.bindRO, header: sim.header() });
     this.boost(at, size);
@@ -434,19 +434,20 @@ export class FarField {
   // over the window's region, a slab a frame, while the simulation changes it.
   tick() {
     if (!this.built) return;
-    this.detail.tick();
     if (this.queue.length) this.sceneChunks();
     const g = this.sim.g;
     this.age++;
-    if (this.sweep < 0) {
-      if (this.sim.version === this.version || this.age < SWEEP_FRAMES) return;
+    if (this.sweep < 0 && this.sim.version !== this.version && this.age >= SWEEP_FRAMES) {
       this.sweep = 0;
       this.age = 0;
       this.version = this.sim.version;
     }
-    const x = this.sweep * SWEEP_CELLS, last = x + SWEEP_CELLS >= g.nx;
-    this.summarize([x, 0, 0], [SWEEP_CELLS / BRICK, g.ny / BRICK, g.nz / BRICK], last, true);
-    this.sweep = last ? -1 : this.sweep + 1;
+    if (this.sweep >= 0) {
+      const x = this.sweep * SWEEP_CELLS, last = x + SWEEP_CELLS >= g.nx;
+      this.summarize([x, 0, 0], [SWEEP_CELLS / BRICK, g.ny / BRICK, g.nz / BRICK], last);
+      this.sweep = last ? -1 : this.sweep + 1;
+    }
+    this.detail.tick(); // submit after staleness checks, not just before invalidating the job
   }
 
   // Rebuild what derives from the far grid (after it changed) and the shadow
