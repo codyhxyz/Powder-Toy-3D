@@ -215,12 +215,15 @@ fn ctSeed(position:vec3i,tick:u32)->i32 {
 }
 fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,8>>,positions:array<vec3i,8>,requests:ptr<function,array<u32,8>>) {
  var cells:array<CTCell,8>;
- for(var i=0u;i<8u;i++){
+ // Native event storage has at least one 64-cell brick. Keep the bound
+ // runtime-backed so Metal need not duplicate every contact rule eight times.
+ let count=min(8u,arrayLength(&events));
+ for(var i=0u;i<count;i++){
   cells[i]=ctUnpack((*cores)[i],(*banks)[i]);cells[i].request=i32((*requests)[i]);
   cells[i].valid=select(0,1,inGrid(positions[i]));
   if((cells[i].request&5)!=0){cells[i].done=1;cells[i].busy=1;}
  }
- for(var i=0u;i<8u;i++){
+ for(var i=0u;i<count;i++){
   for(var axis=0u;axis<3u;axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    let flux=ctFlux(cells[i],cells[j]);
@@ -235,12 +238,12 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   }
  }
  let snapshot=cells;
- for(var i=0u;i<8u;i++){
+ for(var i=0u;i<count;i++){
   if(cells[i].valid==0){continue;}
   let ns=array<CTCell,3>(snapshot[i^1u],snapshot[i^2u],snapshot[i^4u]);
   cells[i]=ctStep(cells[i],ns,ctSeed(positions[i],P.tick));
  }
- for(var i=0u;i<8u;i++){
+ for(var i=0u;i<count;i++){
   for(var axis=0u;axis<3u;axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    var pair=ctResolvePhase(cells[i],cells[j]);
@@ -248,14 +251,14 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
    cells[i]=pair.a;cells[j]=pair.b;
   }
  }
- for(var i=0u;i<8u;i++){
+ for(var i=0u;i<count;i++){
   for(var axis=0u;axis<3u;axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    let pair=ctPlume(cells[i],cells[j],ctSeed(positions[i],P.tick)^i32(j),select(0,1,positions[j].y>positions[i].y));
    cells[i]=pair.a;cells[j]=pair.b;
   }
  }
- for(var i=0u;i<8u;i++){
+ for(var i=0u;i<count;i++){
   if(cells[i].valid==0){continue;}
   (*cores)[i]=ctPack(cells[i],(*cores)[i]);(*banks)[i]=cells[i].bank;(*requests)[i]|=u32(cells[i].request);
   if(any(cells[i].source!=vec2u(0u))){noteEnergySource(positions[i],cells[i].source);}

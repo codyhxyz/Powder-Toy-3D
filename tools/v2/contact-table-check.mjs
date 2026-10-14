@@ -6,6 +6,15 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../../src/v2/contact.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
+import { gridLayout } from '../../src/sim.js';
+
+const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
+assert(block.includes('let count=min(8u,arrayLength(&events));'));
+assert.equal((block.match(/for\(var i=0u;i<count;i\+\+\)/g)||[]).length,6);
+for(const dims of [[16,8,8],[32,32,32],[32,16,24],[128,128,128]]) {
+  const g=gridLayout(...dims);
+  assert.equal(Math.min(8,g.slots),8,'every native block still processes all eight cells');
+}
 
 // Independent ABI expectation: fields not listed here are f32, including cost
 // and emitter. Field order must remain the canonical content constructor order.
