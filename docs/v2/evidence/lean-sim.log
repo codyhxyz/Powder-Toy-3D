@@ -1,0 +1,216 @@
+params {"TICK_HZ":60,"CELL_M":0.3,"G_MS2":19.6,"SUB":3,"FULL":65536,"ACC":132.15,"COMP":0.0081,"DAMP":0.01,"DEADQ":2,"FILM_FRACTION":0.125}
+slab (24x1x24 sand from y=30):
+  {"tick":10,"centreFallen":0,"ideal":1,"thickness":1}
+  {"tick":20,"centreFallen":3,"ideal":3.81,"thickness":1}
+  {"tick":30,"centreFallen":8,"ideal":8.44,"thickness":1}
+  {"tick":40,"centreFallen":14,"ideal":14.75,"thickness":1}
+  {"tick":50,"centreFallen":21,"ideal":21.42,"thickness":1}
+  {"tick":60,"centreFallen":28,"ideal":28.09,"thickness":1}
+  {"tick":70,"centreFallen":30,"ideal":30,"thickness":1}
+  {"tick":80,"centreFallen":30,"ideal":30,"thickness":1}
+  {"tick":90,"centreFallen":30,"ideal":30,"thickness":1}
+heap sand (drop 1): {"element":"sand (drop 1)","bricks":600,"busyMean":20.2,"busyMax":38,"remeshMean":15.9,"remeshMax":38,"grains":870,"ticks":394,"idleCertifiedAtTick":385,"idleAt":"6.42 s","pourEnded":"4.87 s","idleAfterPour":"1.55 s","peak":8,"footprint":272,"rAxis":9,"rDiag":9.19,"diagOverAxis":1.02,"slope":0.89}
+   ............................
+   ............................
+   ............................
+   ..........1111111.1.........
+   .........1222222211.........
+   .......1112233332221........
+   .......112333444333211......
+   .....11123444444443221......
+   .....12234455555543221......
+   .....122345566666543211.....
+   .....123345667676654321.....
+   .....123455678777654321.....
+   .....1234567888776543221....
+   .....123445677766544321.....
+   .....122345566765443221.....
+   .....122234555655443211.....
+   ......1223344555443321......
+   .......122344444333221......
+   ........12233333332111......
+   .........12222222221........
+   ..........111111111.........
+   ............................
+   ............................
+   ............................
+heap flour (drop 2): {"element":"flour (drop 2)","bricks":600,"busyMean":24.5,"busyMax":42,"remeshMean":13.8,"remeshMax":31,"grains":870,"ticks":460,"idleCertifiedAtTick":451,"idleAt":"7.52 s","pourEnded":"4.87 s","idleAfterPour":"2.65 s","peak":13,"footprint":178,"rAxis":7.25,"rDiag":7.42,"diagOverAxis":1.02,"slope":1.79}
+   ............................
+   ............................
+   ............................
+   ............................
+   ............1...............
+   ..........112222111.........
+   .........12334433331........
+   ........1335555554321.......
+   .......1345777776542........
+   .......23568999886431.......
+   .......24578####97642.......
+   .......24579####98642.......
+   .......24579####98642.......
+   .......24579####88642.......
+   .......13567899986431.......
+   .......12456788766421.......
+   ........1244566554221.......
+   .........1333444322.........
+   .........112222221..........
+   .............1..............
+   ............................
+   ............................
+   ............................
+   ............................
+utube:
+  {"tick":300,"time":"5.00 s","left":12.4,"right":12.24,"busyBricks":48,"massDrift":0}
+  {"tick":600,"time":"10.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":900,"time":"15.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":1200,"time":"20.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":1500,"time":"25.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":1800,"time":"30.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":2100,"time":"35.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":2400,"time":"40.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":2700,"time":"45.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":3000,"time":"50.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":3300,"time":"55.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  {"tick":3600,"time":"60.00 s","left":12.35,"right":12.28,"busyBricks":0,"massDrift":0}
+  idle certified at tick 384
+puddle:
+  {"tick":150,"time":"2.50 s","wetCells":1686,"fillMin":0,"fillMax":0.233,"busyBricks":120,"massDrift":0}
+  {"tick":300,"time":"5.00 s","wetCells":2526,"fillMin":0.048,"fillMax":0.123,"busyBricks":178,"massDrift":0}
+  {"tick":450,"time":"7.50 s","wetCells":2526,"fillMin":0.071,"fillMax":0.109,"busyBricks":138,"massDrift":0}
+  {"tick":600,"time":"10.00 s","wetCells":2526,"fillMin":0.071,"fillMax":0.103,"busyBricks":95,"massDrift":0}
+  {"tick":750,"time":"12.50 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":14,"massDrift":0}
+  {"tick":900,"time":"15.00 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":0,"massDrift":0}
+  {"tick":1050,"time":"17.50 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":0,"massDrift":0}
+  {"tick":1200,"time":"20.00 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":0,"massDrift":0}
+  {"tick":1350,"time":"22.50 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":0,"massDrift":0}
+  {"tick":1500,"time":"25.00 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":0,"massDrift":0}
+  {"tick":1650,"time":"27.50 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":0,"massDrift":0}
+  {"tick":1800,"time":"30.00 s","wetCells":2526,"fillMin":0.072,"fillMax":0.103,"busyBricks":0,"massDrift":0}
+  idle certified at tick 867
+   .............000000000000000000000000...0...........
+   .........00000000000000000000000000000000000........
+   ........0000000000000000000000000000000000000.......
+   ......00000000000000000000000000000000000000000.....
+   ...00000000000000000000000000000000000000000000000..
+   .00000000000000000000000000000000000000000000000000.
+   .00000000000000000000000000000000000000000000000000.
+   0000000000000000000000000000000000000000000000000000
+   0000000000000000000000000000000000000000000000000000
+   0000000000000000000000000000000000000000000000000000
+   0000000000000000000000000001000000000000000000000000
+   0000000000000000000000000111100000000000000000000000
+   0000000000000000000000000010000000000000000000000000
+   0000000000000000000001111111000000000000000000000000
+   0000000000000000000000100001110000000000000000000000
+   0000000000000000000000000000000000000000000000000000
+   0000000000000000000000000000000000000000000000000000
+   0000000000000000000000000000000000000000000000000000
+   0000000000000000000000000000000000000000000000000000
+   .000000000000000000000000000000000000000000000000000
+   0000000000000000000000000000000000000000000000000000
+   .00000000000000000000000000000000000000000000000000.
+   ....00000000000000000000000000000000000000000000....
+   ......0000000000000000000000000000000000000000......
+   ........000000000000000000000000000000000000........
+   .........0000000000000000000000000000000000.........
+partial:
+  {"tick":150,"time":"2.50 s","surfaceMin":4.18,"surfaceMax":4.27,"busyBricks":98,"massDrift":0}
+  {"tick":300,"time":"5.00 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":450,"time":"7.50 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":600,"time":"10.00 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":750,"time":"12.50 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":900,"time":"15.00 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":1050,"time":"17.50 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":1200,"time":"20.00 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":1350,"time":"22.50 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":1500,"time":"25.00 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":1650,"time":"27.50 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  {"tick":1800,"time":"30.00 s","surfaceMin":4.22,"surfaceMax":4.24,"busyBricks":0,"massDrift":0}
+  idle certified at tick 256
+pipe:
+  {"tick":300,"time":"5.00 s","tankCells":772.4,"tankLevel":21.03,"busyBricks":40,"massDrift":0}
+  {"tick":600,"time":"10.00 s","tankCells":582.4,"tankLevel":16.31,"busyBricks":36,"massDrift":0}
+  {"tick":900,"time":"15.00 s","tankCells":448,"tankLevel":12.91,"busyBricks":32,"massDrift":0}
+  {"tick":1200,"time":"20.00 s","tankCells":354,"tankLevel":10.51,"busyBricks":28,"massDrift":0}
+  {"tick":1500,"time":"25.00 s","tankCells":287.9,"tankLevel":8.79,"busyBricks":42,"massDrift":0}
+  {"tick":1800,"time":"30.00 s","tankCells":242.4,"tankLevel":7.57,"busyBricks":40,"massDrift":0}
+  {"tick":2100,"time":"35.00 s","tankCells":210.1,"tankLevel":6.73,"busyBricks":40,"massDrift":0}
+  {"tick":2400,"time":"40.00 s","tankCells":187.6,"tankLevel":6.13,"busyBricks":40,"massDrift":0}
+  {"tick":2700,"time":"45.00 s","tankCells":172.9,"tankLevel":5.73,"busyBricks":40,"massDrift":0}
+  {"tick":3000,"time":"50.00 s","tankCells":162.4,"tankLevel":5.45,"busyBricks":40,"massDrift":0}
+  {"tick":3300,"time":"55.00 s","tankCells":154.8,"tankLevel":5.25,"busyBricks":38,"massDrift":0}
+  {"tick":3600,"time":"60.00 s","tankCells":149.6,"tankLevel":5.1,"busyBricks":38,"massDrift":0}
+  idle certified at tick -1
+  torricelli {"bricks":180,"busyMean":28.4,"busyMax":38,"remeshMean":5.6,"remeshMax":14,"headCells":10.5,"exitCellsPerS":29.8,"torricelliCellsPerS":37,"ratio":0.8,"landX":31.3,"parabolaX":28.8,"particlesInFlight":220,"massDrift":0}
+hole, x-y slice through the hole (~ fill >= 1/2, , >= 1/16, . less):
+  at 0.5s
+   |                                        |
+   |#       #                               |
+   |#       #                               |
+   |#.......#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~~******                         |
+   |#~~~~~~~#     *******                   |
+   |#########         *****                 |
+   |#########           * * **              |
+   |#########           **                  |
+   |#########              ** *  **         |
+   |#########                               |
+   |#########                               |
+   |#########                               |
+   |#########                               |
+   |#########                               |
+   |#########                               |
+   |#########                               |
+   |#########                               |
+   |#########.                              |
+  at 2s
+   |                                        |
+   |#       #                               |
+   |#       #                               |
+   |#       #                               |
+   |#       #                               |
+   |#       #                               |
+   |#       #                               |
+   |#       #                               |
+   |#..... .#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~#                               |
+   |#~~~~~~~~****                           |
+   |#~~~~~~~#  *****                        |
+   |#########      *****                    |
+   |#########         ****                  |
+   |#########           ***                 |
+   |#########             ** *              |
+   |#########               **              |
+   |#########                ***            |
+   |#########               ***             |
+   |#########                 * *           |
+   |#########             * *..,..          |
+   |#########                .,.,..**.      |
+   |#########         **    .,,..,~,.... ...|
+   |#########,.. *         .,.~.........~.,,|
+   |#########.,,,,,..,,,,,,~~~,,..~,~....~~~|
+throw (particles): [{"v":[0.5,0],"landsAtX":29,"ideal":29,"ticks":54},{"v":[0.5,0.5],"landsAtX":46,"ideal":46,"ticks":88},{"v":[1.5,0.3],"landsAtX":110,"ideal":110,"ticks":72}]
