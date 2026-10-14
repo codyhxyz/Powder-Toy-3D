@@ -4,7 +4,7 @@ import { character, furniture, nameplate, speechBubble, dispose } from './models
 import { createSpeech } from './speech.js';
 import { createVillageUi } from './ui.js';
 import { attachModel } from '../models.js';
-import { VILLAGE_TOOLS, PUNCH_COOLDOWN, PUNCH_DURATION, punchTarget, punchOccluded, stepResident } from './actions.js';
+import { VILLAGE_TOOLS, PUNCH_COOLDOWN, PUNCH_DURATION, PUNCH_CONTACT, punchTarget, punchOccluded, stepResident } from './actions.js';
 
 export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
   const root = new THREE.Group(); root.name = 'willow-village'; root.visible = false; app.scene.add(root);
@@ -15,6 +15,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   let residents = [], furnishings = null, time = 0, speaking = null, turn = 0, oldThird = false;
   let held = null, tool = null, toolModel = null, toolMaterials = [], usingTool = false;
   let punchAt = -Infinity, punchSerial = 0, kicking = false, reaction = '', reactionUntil = 0;
+  let pendingPunch = null;
   function equip(key) {
     if (!VILLAGE_TOOLS.some(t => t.key === key)) return;
     releaseActions(); punchSerial++; tool = key; onTool(key);
@@ -33,6 +34,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   async function punch(kick = false) {
     if (!context().active || ui.opened || held || (!kick && tool) || time - punchAt < PUNCH_COOLDOWN) return;
     punchAt = time; kicking = kick;
+    pendingPunch = null;
+    speech.swing(PUNCH_CONTACT);
     const token = ++punchSerial, sim = app.getSim(), home = room(), l = local();
     app.requestRender();
     const target = punchTarget(l && { x: l.x - HOMES[home], y: l.y, z: l.z }, camera.look.yaw, residents, home);
@@ -45,13 +48,23 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       const hit = await app.pickRay(start, dir);
       if (token !== punchSerial || !context().active || ui.opened || held || app.getSim() !== sim || !sim.origin.equals(origin)
         || room() !== home || getPlayer().pos.distanceTo(start.clone().setY(start.y - 3)) > 1) return;
-      const now = local(), still = punchTarget({ x: now.x - HOMES[home], y: now.y, z: now.z }, camera.look.yaw, residents, home);
-      if (time - punchAt > PUNCH_COOLDOWN || still?.resident !== r || punchOccluded(hit, start, distance)) return;
-      r.vx = dir.x * 44; r.vz = dir.z * 44; r.vy = 8; r.bonk = 0.9;
-      r.replyUntil = time + 2;
-      reaction = `${r.spec.name}: Hey! Boing!`; reactionUntil = time + 2;
-      speech.speak('Hey! Boing!', r.spec.pitch); speech.bonk(); app.requestRender();
+      if (punchOccluded(hit, start, distance)) return;
+      pendingPunch = { token, sim, home, r, origin, start, dir };
+      landPunch();
     } catch { /* A failed world probe must never punch through terrain. */ }
+  }
+  function landPunch() {
+    if (!pendingPunch || time - punchAt < PUNCH_CONTACT) return;
+    const { token, sim, home, r, origin, start, dir } = pendingPunch; pendingPunch = null;
+    if (token !== punchSerial || time - punchAt > PUNCH_COOLDOWN || !context().active || ui.opened || held
+      || app.getSim() !== sim || !sim.origin.equals(origin) || room() !== home
+      || getPlayer().pos.distanceTo(start.clone().setY(start.y - 3)) > 1) return;
+    const now = local(), still = punchTarget({ x: now.x - HOMES[home], y: now.y, z: now.z }, camera.look.yaw, residents, home);
+    if (still?.resident !== r) return;
+    r.vx = dir.x * 44; r.vz = dir.z * 44; r.vy = 8; r.bonk = 0.9;
+    r.replyUntil = time + 2;
+    reaction = `${r.spec.name}: Hey! Boing!`; reactionUntil = time + 2;
+    speech.speak('Hey! Boing!', r.spec.pitch); speech.bonk(); app.requestRender();
   }
   const previous = new THREE.Vector3();
   const local = () => {
@@ -214,6 +227,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (on === enabled) return;
     enabled = on; document.body.classList.toggle('village-on', on);
     releaseInput(); punchSerial++; punchAt = -Infinity; reactionUntil = 0;
+    pendingPunch = null;
     onEnabled(on);
     if (!on) {
       avatar.reset();
@@ -283,6 +297,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       equip(tool); dispose(old.root);
     }
     time += dt;
+    landPunch();
     const scale = app.getScale(), vol = app.getVolume(), origin = app.getSim().origin;
     root.scale.setScalar(scale); root.position.copy(origin).multiplyScalar(-scale).add(vol.position);
     root.visible = true;

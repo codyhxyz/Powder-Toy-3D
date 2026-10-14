@@ -22,14 +22,16 @@ const cylinder = (p, color, at, r1, r2, height) => mesh(p, new THREE.CylinderGeo
 const ease = x => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t); };
 export function character({ species = 'human', persona = 'boy', color = '#edbd96', shirt = persona === 'girl' ? '#d87598' : '#5c9a93' } = {}) {
   const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
-  const limbs = [];
+  const limbs = [], elbows = [];
   for (const x of [-0.55, 0.55]) {
     const leg = new THREE.Group(); leg.position.set(x, 1.25, 0); body.add(leg);
     ball(leg, '#665a51', [0, -0.32, 0], [0.36, 0.65, 0.36]);
     ball(leg, '#f6ecd0', [0, -0.95, -0.2], [0.43, 0.27, 0.63]); limbs.push(leg);
     const arm = new THREE.Group(); arm.position.set(x * 2, 2.7, 0); body.add(arm);
     ball(arm, shirt, [0, -0.15, 0], [0.43, 0.55, 0.43]);
-    ball(arm, color, [0, -0.77, 0], [0.32, 0.4, 0.33]); limbs.push(arm);
+    const elbow = new THREE.Group(); elbow.position.y = -0.45; arm.add(elbow); elbows.push(elbow);
+    const fist = ball(elbow, color, [0, -0.32, 0], [0.32, 0.4, 0.33]);
+    fist.name = x > 0 ? 'village-right-fist' : 'village-left-fist'; limbs.push(arm);
   }
   ball(body, shirt, [0, 2.15, 0], [1.05, 1.12, 0.65]);
   box(body, '#f5e8c3', [0, 2.2, -0.64], [1.75, 0.24, 0.12]);
@@ -76,6 +78,7 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
     const dt = Math.max(0, Math.min(0.1, time - lastTime)); lastTime = time;
     body.position.z = body.rotation.y = 0;
     limbs.forEach(l => { l.rotation.y = l.rotation.z = l.position.z = 0; });
+    elbows.forEach(e => { e.rotation.x = 0; e.parent.position.y = 2.7; });
     const posing = leap.update(dt, motion, reducedMotion?.matches);
     // Animal Crossing speed-cheat silhouette: pitch forward and scramble, without a phase jump.
     lean += (0.55 * sprintRush - lean) * (1 - Math.exp(-8 * dt));
@@ -105,23 +108,28 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
       body.rotation.x += -0.2 * chop * (1 - recover) * weight;
     }
     if (punch > 0 && !carrying) {
-      // Halo-style melee: coil, snap through the target, hold contact, then recover.
-      const t = 1 - punch, snap = ease((t - 0.2) / 0.2);
-      const wind = ease(t / 0.2) * (1 - snap), hit = snap * (1 - ease((t - 0.5) / 0.5));
+      // Halo-like quick melee; readable guard/contact/recovery poses (jasondeheras.com/gamedesign/powerfulcombo).
+      const t = 1 - punch, guard = ease(t / 0.18) * (1 - ease((t - 0.88) / 0.12));
+      const jab = ease((t - 0.3) / 0.1) * (1 - ease((t - 0.62) / 0.16));
+      const follow = ease((t - 0.4) / 0.12) * (1 - ease((t - 0.68) / 0.2));
       const weight = reducedMotion?.matches ? 0.25 : 1;
-      limbs[3].rotation.x = -0.65 * wind + 1.65 * hit;
-      limbs[3].rotation.z = (-0.45 * wind - 0.25 * hit) * weight;
-      limbs[3].position.z = (0.3 * wind - 0.8 * hit) * weight;
-      limbs[1].rotation.x += 0.95 * hit * weight;
-      limbs[1].rotation.z = 0.25 * hit * weight;
-      body.rotation.y = (-0.45 * wind + 0.55 * hit) * weight;
-      body.rotation.x += (0.08 * wind - 0.24 * hit) * weight;
-      body.rotation.z += -0.1 * hit * weight;
+      limbs[3].rotation.x += ((2.2 - 0.4 * jab) - limbs[3].rotation.x) * guard;
+      limbs[3].rotation.z = 0.6 * guard;
+      elbows[1].rotation.x = 0.7 * guard * (1 - jab);
+      limbs[3].position.y += (0.3 + 0.3 * jab) * guard;
+      limbs[3].position.z = (-0.7 - 0.85 * jab) * guard;
+      limbs[1].rotation.x += (2.1 - limbs[1].rotation.x) * guard;
+      limbs[1].rotation.z = -0.6 * guard;
+      elbows[0].rotation.x = 0.85 * guard;
+      limbs[1].position.y += 0.3 * guard;
+      limbs[1].position.z = -0.7 * guard;
+      body.rotation.y = 0.18 * follow * weight;
       if (!posing) {
-        body.position.y -= 0.16 * wind * weight;
-        body.position.z = -0.45 * hit * weight;
-        limbs[0].rotation.x += 0.45 * hit * weight;
-        limbs[2].rotation.x -= 0.35 * hit * weight;
+        // The fist leads; suppress sprint's forward lean rather than bowing into the punch.
+        body.rotation.x *= 1 - guard;
+        body.position.z = -0.1 * follow * weight;
+        limbs[0].rotation.x += 0.18 * follow * weight;
+        limbs[2].rotation.x -= 0.12 * follow * weight;
       }
     }
     if (carrying) limbs.forEach((l, i) => { if (i % 2) l.rotation.x = 1.3; });

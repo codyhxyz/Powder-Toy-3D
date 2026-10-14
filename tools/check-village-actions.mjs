@@ -23,7 +23,8 @@ globalThis.addEventListener = (key, fn) => events.set(key, fn);
 globalThis.document = { body: { classList: { toggle() {} } }, querySelector: () => null,
   createElement: () => ({ getContext: () => ({ beginPath() {}, roundRect() {}, moveTo() {}, lineTo() {}, fill() {}, fillText() {} }) }) };
 globalThis.localStorage = { getItem: () => null, setItem() {} };
-globalThis.__villageSpeech = { stats: { played: 0 }, muted: false, bonks: 0, speak() { this.stats.played++; }, bonk() { this.bonks++; }, stop() {} };
+globalThis.__villageSpeech = { stats: { played: 0 }, muted: false, bonks: 0, swings: 0,
+  speak() { this.stats.played++; }, swing() { this.swings++; }, bonk() { this.bonks++; }, stop() {} };
 const { createVillage } = await import('../src/pov/village/index.js');
 const size = [384, 128, 256], sim = { origin: new THREE.Vector3() }, world = { scene: { key: 'willowCove' }, P: { size, seed: 1 } };
 const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), size: 1, onGround: true, sprintRush: 0 };
@@ -42,10 +43,15 @@ assert.equal(camera.third, true);
 assert.equal(village.tool, null);
 assert.deepEqual(village.state, initialState());
 await village.punch();
+assert.equal(__villageSpeech.bonks, 0, 'no knockback at click time, before the fist arrives');
+assert.equal(__villageSpeech.swings, 1, 'accepted punch always has a swing sound');
+const before = village.residents[0].z;
+village.update(0.04, true);
+assert.equal(__villageSpeech.bonks, 0, 'raising the fist does not hit yet');
+village.update(0.041, true);
 assert.equal(__villageSpeech.bonks, 1, 'nearby forward neighbor gets a bonk');
 assert.equal(__villageSpeech.stats.played, 1, 'brief animalese reaction');
-const before = village.residents[0].z;
-village.update(0.1, true); assert.ok(village.residents[0].z < before, 'neighbor recoils away, not damaged');
+village.update(0.019, true); assert.ok(village.residents[0].z < before, 'neighbor recoils away, not damaged');
 assert.ok(village.avatar.children[0].children[3].rotation.x > 1, 'the AC avatar visibly extends its punching arm');
 const bubble = village.root.getObjectByName('village-speech-bubble'), bubbleWorld = new THREE.Vector3(), headWorld = new THREE.Vector3();
 bubble.getWorldPosition(bubbleWorld);
@@ -57,8 +63,10 @@ const facing = new THREE.Quaternion(); bubble.getWorldQuaternion(facing);
 assert.ok(facing.angleTo(app.camera.quaternion) < 1e-8, 'bubble faces the camera despite resident yaw and recoil tilt');
 assert.deepEqual(village.state, initialState(), 'punching leaves saved furniture untouched');
 await village.punch(); assert.equal(__villageSpeech.bonks, 1, 'cooldown blocks repeats');
+assert.equal(__villageSpeech.swings, 1, 'cooldown blocks duplicate swing sounds too');
 village.update(0.5); camera.look.yaw = Math.PI;
 await village.punch(); assert.equal(__villageSpeech.bonks, 1, 'cannot punch behind your back');
+assert.equal(__villageSpeech.swings, 2, 'a missed punch still makes a whoosh');
 village.update(0.5); atMaple();
 picked = { valid: true, cell: player.pos.clone().add(new THREE.Vector3(0, 3, -1)) };
 await village.punch(); assert.equal(__villageSpeech.bonks, 1, 'terrain between fist and neighbor blocks hit');
@@ -109,6 +117,19 @@ village.act({ type: 'cancel' });
 village.setEnabled(false); assert.equal(camera.third, false); assert.equal(village.tool, null);
 let models = 0; village.avatar.traverse(o => { if (o.name.startsWith('viewmodel-')) models++; }); assert.equal(models, 0, 'exit disposes held model');
 
+for (const cancel of [
+  () => { village.open(); village.close(); },
+  () => { camera.look.yaw = Math.PI; },
+  () => { player.pos.x += 2; },
+  () => { village.act({ type: 'tool', key: 'SHOVEL' }); },
+]) {
+  atMaple(); village.setEnabled(true, world.P);
+  const count = __villageSpeech.bonks;
+  await village.punch(); cancel(); village.update(0.081);
+  assert.equal(__villageSpeech.bonks, count, 'contact rechecks menu, aim, movement and equipment after anticipation');
+  village.setEnabled(false);
+}
+
 atMaple(); village.setEnabled(true, world.P);
 const beforeRapid = __villageSpeech.bonks;
 await village.punch();
@@ -119,16 +140,18 @@ village.update(0.002);
 const rapidTarget = village.residents[0];
 player.pos.set(size[0] / 2 + HOMES[1] + rapidTarget.x, FLOOR, size[2] / 2 + HOME_Z + rapidTarget.z + 3);
 await village.punch();
+village.update(0.081);
 assert.equal(__villageSpeech.bonks, beforeRapid + 2, 'can bonk again after 200 ms, without the old dead time');
 village.setEnabled(false);
 
 atMaple(); village.setEnabled(true, world.P);
 const beforeKick = __villageSpeech.bonks;
 await village.kick();
-assert.equal(__villageSpeech.bonks, beforeKick + 1, 'kick also gives harmless knockback and a bonk');
+assert.equal(__villageSpeech.bonks, beforeKick, 'kick also waits for contact');
 village.update(0.1, true);
+assert.equal(__villageSpeech.bonks, beforeKick + 1, 'kick also gives harmless knockback and a bonk');
 assert.ok(village.avatar.children[0].children[2].rotation.x > 1, 'kick extends the leg');
-assert.equal(village.avatar.children[0].children[3].rotation.x, 0, 'kick does not punch with the arm');
+assert.ok(Math.abs(village.avatar.children[0].children[3].rotation.x) < 1e-8, 'kick does not punch with the arm');
 await village.punch();
 assert.equal(__villageSpeech.bonks, beforeKick + 1, 'kick and punch share a cooldown');
 village.update(0.5);
@@ -138,6 +161,7 @@ assert.equal(__villageSpeech.bonks, beforeKick + 1, 'punch needs empty hands, pr
 const maple = village.residents[0];
 player.pos.set(size[0] / 2 + HOMES[1] + maple.x, FLOOR, size[2] / 2 + HOME_Z + maple.z + 3);
 await village.kick();
+village.update(0.081, true);
 assert.equal(__villageSpeech.bonks, beforeKick + 2, 'F can kick with a tool equipped');
 village.update(0.5); village.open();
 await village.kick();

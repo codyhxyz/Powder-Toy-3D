@@ -3,14 +3,18 @@ import { AudioContext } from 'three';
 // Original animalese: short voiced syllables with vowel formants, not recorded
 // Nintendo audio. THREE's shared context also obeys browser audio suspension.
 export function createSpeech() {
-  let voices = [], serial = 0, muted = false, played = 0;
-  function stop() {
+  let voices = [], serial = 0, effectSerial = 0, muted = false, played = 0;
+  function stop(all = true) {
     serial++;
-    for (const v of voices) { try { v.source.stop(); } catch { /* already ended */ } v.source.disconnect(); v.gain.disconnect(); }
-    voices = [];
+    if (all) effectSerial++;
+    for (const v of voices.filter(v => all || !v.effect)) {
+      try { v.source.stop(); } catch { /* already ended */ }
+      v.source.disconnect(); v.gain.disconnect();
+    }
+    voices = all ? [] : voices.filter(v => v.effect);
   }
   async function speak(text, pitch = 1) {
-    stop();
+    stop(false);
     if (muted || document.hidden) return;
     const token = serial;
     try {
@@ -43,23 +47,43 @@ export function createSpeech() {
       }
     } catch { /* Audio unavailable: the full dialogue remains readable. */ }
   }
-  async function bonk() {
+  async function swing(contact = 0.08) {
     if (muted || document.hidden) return;
-    const token = serial;
+    const token = effectSerial;
     try {
       const ctx = AudioContext.getContext(); await ctx.resume();
-      if (token !== serial || muted || document.hidden) return;
+      if (token !== effectSerial || muted || document.hidden) return;
+      // A short filtered air rush peaks as the fist extends, including on a miss.
+      const duration = 0.11, buffer = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * duration), ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      const source = ctx.createBufferSource(), filter = ctx.createBiquadFilter(), gain = ctx.createGain();
+      const at = ctx.currentTime + Math.max(0, contact - 0.045);
+      source.buffer = buffer; filter.type = 'bandpass'; filter.Q.value = 0.7;
+      filter.frequency.setValueAtTime(1800, at); filter.frequency.exponentialRampToValueAtTime(450, at + duration);
+      gain.gain.setValueAtTime(0.001, at); gain.gain.exponentialRampToValueAtTime(0.7, at + 0.045);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + duration);
+      source.connect(filter).connect(gain).connect(ctx.destination); source.start(at);
+      const voice = { source, gain, effect: true }; voices.push(voice);
+      source.onended = () => { source.disconnect(); filter.disconnect(); gain.disconnect(); voices = voices.filter(v => v !== voice); };
+    } catch { /* Silent when browser audio is unavailable. */ }
+  }
+  async function bonk() {
+    if (muted || document.hidden) return;
+    const token = effectSerial;
+    try {
+      const ctx = AudioContext.getContext(); await ctx.resume();
+      if (token !== effectSerial || muted || document.hidden) return;
       const source = ctx.createOscillator(), gain = ctx.createGain(), at = ctx.currentTime;
-      source.type = 'sine'; source.frequency.setValueAtTime(420, at);
-      source.frequency.exponentialRampToValueAtTime(95, at + 0.16);
-      source.frequency.exponentialRampToValueAtTime(180, at + 0.25);
-      gain.gain.setValueAtTime(0.001, at); gain.gain.exponentialRampToValueAtTime(0.22, at + 0.008);
-      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.28);
-      source.connect(gain).connect(ctx.destination); source.start(at); source.stop(at + 0.3);
-      const voice = { source, gain }; voices.push(voice);
+      source.type = 'triangle'; source.frequency.setValueAtTime(180, at);
+      source.frequency.exponentialRampToValueAtTime(55, at + 0.12);
+      gain.gain.setValueAtTime(0.001, at); gain.gain.exponentialRampToValueAtTime(0.5, at + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.14);
+      source.connect(gain).connect(ctx.destination); source.start(at); source.stop(at + 0.15);
+      const voice = { source, gain, effect: true }; voices.push(voice);
       source.onended = () => { source.disconnect(); gain.disconnect(); voices = voices.filter(v => v !== voice); };
     } catch { /* Silent when browser audio is unavailable. */ }
   }
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
-  return { speak, bonk, stop, get muted() { return muted; }, set muted(v) { muted = !!v; if (muted) stop(); }, get stats() { return { muted, queued: voices.length, played }; } };
+  return { speak, swing, bonk, stop, get muted() { return muted; }, set muted(v) { muted = !!v; if (muted) stop(); }, get stats() { return { muted, queued: voices.length, played }; } };
 }

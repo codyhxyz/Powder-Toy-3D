@@ -1,5 +1,6 @@
 // CPU-only: sample the actual toy rig, including rapid repeats and jump/tool overrides.
 import assert from 'node:assert/strict';
+import * as THREE from 'three';
 import { character, dispose } from '../src/pov/village/models.js';
 import { PUNCH_COOLDOWN, PUNCH_DURATION, stepResident } from '../src/pov/village/actions.js';
 
@@ -9,27 +10,34 @@ const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
 for (const reduced of [false, true]) {
   globalThis.matchMedia = () => ({ matches: reduced });
   const avatar = character(), body = avatar.root.children[0], limbs = body.children.slice(0, 4);
+  const fist = avatar.root.getObjectByName('village-right-fist'), fistAt = () => fist.getWorldPosition(new THREE.Vector3());
   let time = 0;
   const pose = (progress, carrying = false, tool = false) =>
     avatar.animate(time += 1 / 60, 0, false, carrying, 0, 1 - progress, tool);
   try {
     pose(0.2);
-    assert.ok(avatar.hand.rotation.x < -0.6, 'fist pulls back before striking');
-    assert.ok(body.rotation.y < 0, 'shoulders coil with the fist');
+    const guard = fistAt();
+    assert.ok(guard.y > 3.4 && guard.z < -1 && guard.x > 1.4, 'bent elbow raises fist beside cheek, visible past the head from behind');
+    near(body.rotation.x, 0); near(body.rotation.y, 0); near(body.position.z, 0);
     pose(0.4);
-    near(avatar.hand.rotation.x, 1.65);
-    assert.ok(avatar.hand.position.z < 0, 'fist drives forward, not just upward');
-    assert.ok(body.rotation.y > 0 && body.rotation.x < 0, 'torso twists and leans into contact');
-    assert.ok(limbs[0].rotation.x > 0 && limbs[2].rotation.x < 0, 'feet brace the strike');
-    assert.ok(limbs[1].rotation.x > 0, 'off hand guards');
-    near(body.rotation.y, reduced ? 0.1375 : 0.55);
-    pose(0.5); near(avatar.hand.rotation.x, 1.65);
+    near(avatar.hand.rotation.x, 1.8);
+    assert.ok(fistAt().z < guard.z - 1 && fistAt().y > 3.4, 'raised fist extends forward over a full cell at jaw height');
+    near(body.rotation.y, 0); near(body.position.z, 0);
+    pose(0.55);
+    assert.ok(body.rotation.y > 0 && limbs[0].rotation.x > 0 && limbs[2].rotation.x < 0, 'shoulders and stance follow AFTER the fist arrives');
+    near(body.rotation.x, 0);
+    assert.ok(limbs[1].rotation.x > 2, 'off hand stays raised in guard');
+    near(body.rotation.y, reduced ? 0.045 : 0.18);
     pose(0.75);
-    assert.ok(avatar.hand.rotation.x > 0 && avatar.hand.rotation.x < 1.65, 'smooth recovery');
+    assert.ok(fistAt().y > 3.4, 'retract to raised guard, not a dangling arm');
+    for (let t = 0.15; t <= 0.88; t += 0.02) {
+      pose(t); assert.ok(fistAt().y > 3.3, 'fist remains high for most of the punch');
+    }
     pose(1);
     near(avatar.hand.rotation.x, 0);
     near(body.rotation.x, 0); near(body.rotation.y, 0); near(body.rotation.z, 0);
     near(body.position.z, 0); near(avatar.hand.position.z, 0);
+    near(avatar.hand.position.y, 2.7); near(fist.parent.rotation.x, 0);
     for (const limb of limbs) { near(limb.rotation.y, 0); near(limb.rotation.z, 0); }
     pose(0.4); pose(0.4, true);
     near(avatar.hand.rotation.x, 1.3); near(body.rotation.y, 0);
