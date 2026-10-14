@@ -103,47 +103,47 @@ const STORIES = {
   },
   Pippin: {
     greetings: [
-      'The workshop is open. The clock is not working, so technically it has been open all night.',
-      'Good, a witness. If this gadget starts humming, I meant it to. If it smokes, we were never here.',
-      'I cleared the other seat. Entirely coincidental. It has only been waiting since breakfast.',
+      'Hey, come in. The clock can wait.',
+      'Good to see you. Pull up a seat.',
+      'Oh, hey. Let me put these tools down.',
     ],
-    warm: 'You can use the chipped mug. It is my favorite, which is why this is a rather elaborate compliment.',
-    morning: 'Morning. The kettle is my only invention with a reliable alarm. It screams until I listen.',
-    evening: 'I test the quiet mechanisms after dark. The loud ones have already received community feedback.',
-    furnished: 'A desk keeps the unfinished parts together. Without one, I would have to call the entire house a prototype.',
-    sparse: 'Empty floor. A bold design choice. Very difficult to trip over; I approve.',
+    warm: 'I’m glad you stopped by. It gets quiet in here.',
+    morning: 'Want some tea? I’ve just put the kettle on.',
+    evening: 'I’m done for tonight. Stay for a bit?',
+    furnished: 'There’s room at the desk if you want to sit with me.',
+    sparse: 'It’s a bit empty in here. I’m still getting things sorted.',
     topics: {
       clock: {
-        label: 'Will that clock ever work?',
+        label: 'How’s the clock?',
         lines: [
-          'It loses a minute every hour. Clover says it is learning. I suspect the escapement. Shall I repair it or retire it?',
-          'The clock ticked twice today, then rested on its reputation. Another repair, or a dignified life as a paperweight?',
+          'It loses a minute every hour. I think one of the gears is worn. Worth another try, do you think?',
+          'It was my father’s. I’d like to get it running again, but I’m worried about damaging it. Maybe I should leave it alone.',
         ],
         choices: [
-          { id: 'fix-clock', label: 'Try one more repair.', text: 'Fine. One gear at a time, not another heroic pile of parts. Optimism is tolerable when it comes with a screwdriver.', recall: 'I tried your one-more-repair policy. The clock now loses half a minute. A smaller, more precise disappointment.' },
-          { id: 'retire-clock', label: 'It can be lovely without working.', text: 'Dangerous philosophy for a tinkerer. Still, it was my father’s. I suppose I was keeping more than the time.', recall: 'The clock is on the shelf now. Your idea. I still wind it sometimes; do not make a ceremony of that.' },
+          { id: 'fix-clock', label: 'Try one more repair.', text: 'All right. I’ll take it slowly this time. Would you help me keep track of the pieces?', recall: 'I tried another repair, like you suggested. The clock’s keeping better time now.' },
+          { id: 'retire-clock', label: 'You can keep it without fixing it.', text: 'Yeah. It was my father’s, so I’d keep it either way. It can stay on the shelf for now.', recall: 'I’ve left the clock on the shelf, like we talked about. I still like having it here.' },
         ],
       },
       comfort: {
-        label: 'What makes a good room?',
+        label: 'How’s the room coming along?',
         lines: [
-          'Maple sands the undersides of tables. Admirable. I judge a table by whether it rocks while I drink from it.',
-          'Clover offered me six plants. I negotiated down to one. I prefer housemates that do not depend on my memory.',
+          'I’ve been moving things around. I need somewhere to work, but I’d like it to feel less like a shed.',
+          'Clover offered me a few plants. I could fit one by the window if I moved the lamp. What do you think?',
         ],
         choices: [
-          { id: 'practical', label: 'Function comes first.', text: 'Exactly. A lamp should illuminate the thing you dropped, not merely look thoughtful about darkness.', recall: 'I moved the lamp after our practical-room discussion. Found three screws. The room has paid its rent.' },
-          { id: 'beautiful', label: 'Beauty is useful too.', text: 'Hm. The blue cup does improve the tea without altering the liquid. An irritatingly sound argument.', recall: 'I kept the blue cup on display. Your beauty argument has survived testing. Unfortunately.' },
+          { id: 'practical', label: 'Keep your workspace clear.', text: 'You’re right. I’ll sort the tools first. I keep losing the small screwdriver.', recall: 'I cleared the desk after we talked. Found the screwdriver, too. It was under my notes.' },
+          { id: 'beautiful', label: 'Make room for something you like.', text: 'I’d like a bit of green in here. I’ll ask Clover which plant is hardest to kill.', recall: 'I’ve saved a spot by the window for one of Clover’s plants. You were right about making the room feel nicer.' },
         ],
       },
       keepsake: {
-        label: 'Why keep that bent bell?',
+        label: 'What’s that bell?',
         lines: [
-          'That bell rang on my first bicycle. It makes a dreadful sound. No, I have not considered throwing it out.',
-          'I polished the bicycle bell. For corrosion prevention. The fact that it reminds me of summer is incidental.',
+          'It’s from my first bicycle. I bent it when I fell off coming down the hill. It still rings, though.',
+          'I cleaned up the old bicycle bell today. I hadn’t thought about that summer in ages.',
         ],
         choices: [
-          { id: 'ring-bell', label: 'May I hear it?', text: 'One ring. There. Awful, isn’t it? You should have heard it coming down the hill. We thought we were magnificent.', recall: 'I heard someone laugh outside and thought of you ringing the old bell. Similar disregard for dignity.' },
-          { id: 'keep-private', label: 'You can keep that story to yourself.', text: 'Thank you. People tend to treat a closed drawer as an invitation. You may stay for tea; no investigation required.', recall: 'You did not pry about the bell. I noticed. There is a spare cup here whenever you want it.' },
+          { id: 'ring-bell', label: 'Can I hear it?', text: 'Here, give it a try. Not much of a ring left, is there? I used to think everyone should hear me coming.', recall: 'I put the bicycle bell out after you tried it. It’s nice to have it where I can see it.' },
+          { id: 'keep-private', label: 'You don’t have to tell me about it.', text: 'Thanks. Maybe another time. For now, I’m just glad you’re here.', recall: 'Thanks for letting me keep that story to myself. You’re always welcome here.' },
         ],
       },
     },
@@ -180,19 +180,18 @@ export function hydrateMemory(raw, resident) {
 
 const menu = story => Object.entries(story.topics).map(([id, topic]) => ({ id, label: topic.label }));
 function situation(story, resident, context) {
-  const parts = [];
   if (Number.isFinite(context?.hour) && context.hour >= 0 && context.hour < 24) {
-    if (context.hour < 11) parts.push(story.morning);
-    else if (context.hour >= 18) parts.push(story.evening);
+    if (context.hour < 11) return story.morning;
+    if (context.hour >= 18) return story.evening;
   }
   // Only comment on furnishing when the caller explicitly supplies this room.
   const home = RESIDENTS.find(r => r.name === resident).home;
   if (context?.home === home && Array.isArray(context.furniture)) {
     const kind = { Maple: 'chair', Clover: 'plant', Pippin: 'desk' }[resident];
-    if (context.furniture.some(item => item?.kind === kind || ITEMS[item?.kind]?.family === kind)) parts.push(story.furnished);
-    else if (context.furniture.length === 0) parts.push(story.sparse);
+    if (context.furniture.some(item => item?.kind === kind || ITEMS[item?.kind]?.family === kind)) return story.furnished;
+    if (context.furniture.length === 0) return story.sparse;
   }
-  return parts.join(' ');
+  return '';
 }
 
 // create = a new visit; advance = one offered choice, never another visit.
@@ -204,8 +203,9 @@ export function createConversation(resident, rawMemory, context = {}) {
   memory.visits = Math.min(visit + 1, 1000000);
   memory.node = 'topics';
   const recall = story.topics[memory.lastTopic]?.choices.find(c => c.id === memory.lastChoice)?.recall;
-  const text = [story.greetings[visit % story.greetings.length], visit >= 3 ? story.warm : '',
-    recall || '', situation(story, name, context)].filter(Boolean).join(' ');
+  // Animal Crossing-style short turns: one greeting and one follow-up, not a pile of barks.
+  const followUp = recall || (visit >= 3 ? story.warm : situation(story, name, context));
+  const text = [story.greetings[visit % story.greetings.length], followUp].filter(Boolean).join(' ');
   return { text, choices: menu(story), memory };
 }
 
