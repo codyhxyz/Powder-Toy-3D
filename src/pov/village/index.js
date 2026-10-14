@@ -226,7 +226,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     if (p) {
       avatar.root.position.copy(p.pos).multiplyScalar(scale).add(vol.position); avatar.root.scale.setScalar(scale * p.size);
       avatar.root.rotation.y = yaw; avatar.root.visible = live() && shown;
-      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held);
+      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0);
     }
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.

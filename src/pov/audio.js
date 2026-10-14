@@ -161,6 +161,8 @@ const PRESETS = {
   torchLoop: [.5, 0, 120, , 1, 0, 4, 1, , , , , , 16, , , , .9, , .1, 600],
   // the jetpack firing: a low, rumbling roar under the torch's hiss
   jetLoop: [.45, 0, 90, , 1, 0, 4, 1, , , , , , 20, , , , .9, , .15, 500],
+  // Air rushing past: restrained at launch, a broad roar only at the late surge.
+  sprintWind: [.4, 0, 120, , 1, 0, 4, 1, , , , , , 10, , , , .9, , .1, -3000],
   // a bomb going off: a deep noise burst sliding down, a long crushed tail
   boom: [2, .1, 70, .01, .25, 1.3, 4, 1.5, -0.3, , , , , 1.2, , .4, , .4, .15, , -700],
   // a tool that can't (WALL, a full bucket): a dull, dead clunk
@@ -251,7 +253,7 @@ const PRESETS = {
   overshield: [.6, 0, 140, .1, 2.5, .4, 0, 1, .7, , , , , , 9, , , .7, , .25],
 };
 // presets that play as seamless loops (one render each)
-const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge']);
+const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge', 'sprintWind']);
 // Minecraft's rain bed and rolling thunder, through the existing mute/limiter.
 PRESETS.weatherRain = [.18, 0, 850, .05, 1, .05, 4, 1, , , , , , 4, , , , .5, , .15, -1800];
 PRESETS.weatherThunder = [.7, .08, 55, .04, .7, 2.8, 4, 1.4, -.15, , , , .1, 2, , .1, .1, .55, , , -450];
@@ -767,8 +769,16 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       if (!s.active || s.player?.dead) stopLoops();
       if (S.loops.pourLoop.on && clock() - lastPour > Math.max(POUR_TAIL_S, POUR_TAIL_FRAMES * frameDt)) loop('pourLoop', false);
       if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
-      // Halo's alarm while the shield is down and not yet refilling
       const pl = s.player;
+      const rush = s.active && !document.hidden && pl && !pl.dead ? pl.sprintRush ?? 0 : 0;
+      const windGain = 0.7 * rush * rush;
+      loop('sprintWind', windGain > 0.001, { gain: windGain });
+      if (S.loops.sprintWind.on) {
+        const a = S.loops.sprintWind.audio;
+        a.gain.gain.setTargetAtTime(windGain, now(), LOOP_FADE_S);
+        a.source.playbackRate.setTargetAtTime(0.7 + 0.5 * rush, now(), LOOP_FADE_S);
+      }
+      // Halo's alarm while the shield is down and not yet refilling
       if (s.active && pl && !pl.dead && pl.shieldMax > 0 && pl.shield <= 0 && !pl.shieldCharging && t - lastBeep >= SHIELD_BEEP_S) { lastBeep = t; play('shieldBeep'); }
     }
     if (s.active && !document.hidden) next = requestAnimationFrame(tick);

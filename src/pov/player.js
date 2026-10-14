@@ -54,6 +54,8 @@ const GRAVITY = 350 * PX;              // cells/s² (175, 5.4 g) at the default 
 const SIM_GRAVITY_REF = 0.025;         // ...which is this many cells/step² (sim.js GRAVITY_DEFAULT); the setting scales it
 const SPRINT_SPEED = 57 * PX;          // cells/s (8.6 m/s): Mina's run (velocity_max_x)
 const WALK_SPEED = SPRINT_SPEED / 3;   // cells/s (2.9 m/s): Noita has no walk; holding sprint runs as Mina does
+// Noita's run supplies the scale; its Fleet Foot doubling is the long-run ceiling.
+const SPRINT_BUILD_S = 7;             // player only: a quick 2× walk launch, then a late surge to 2× Mina's run
 const MOVE_EASE = 0.15;                // share of the gap to the wished speed closed per Noita frame, ground and air (accel_x)
 const JUMP_SPEED = 95 * PX;            // cells/s: a 1.9 m jump (jump_velocity_y)
 const STEP_HEIGHT = 1.1;               // cells: ledges up to this are stepped onto (1 cell + slack)
@@ -290,6 +292,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactSpark = new Float32Array(PN);
   const eatCells = [];   // cooked meat touching the body this frame ([x, y, z]), to eat (meat.js)
   const env = { contactId, contactT, contactSpark, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
+  let sprintingNow = false, sprintWalk = WALK_SPEED, sprintCeiling = SPRINT_SPEED * 2;
 
   const p = {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(),
@@ -300,6 +303,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     jetBurnS: 0,                  // s the current press has fired
     jetIdleS: 0,                  // s since the jet last fired
     jetSpool: 0,                  // how far the jet has spooled up, 0..1 (JET_SPOOL_*): its push is smooth01 of it
+    sprintBuild: 0,               // 0..1 of uninterrupted running; airborne hops preserve but don't build it
+    // Read current velocity: village/vehicle collisions can still change it after update().
+    get sprintRush() {
+      return sprintingNow && !vitals.dead
+        ? Math.max(0, Math.min(1, (Math.hypot(p.vel.x, p.vel.z) - sprintWalk) / Math.max(EPS, sprintCeiling - sprintWalk)))
+        : 0;
+    },
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
@@ -710,6 +720,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       meat.gib(p.pos, p.vel, stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
     }
     meat.update();
+    if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; }
     if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
 
@@ -750,8 +761,18 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Shrink: × gait (√size); the jet's own speeds too
     // Crouched: no sprint, and a third of the speed on the ground
     const sprinting = alive && input.sprint && crouch === 0;
-    const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.aimScale * p.status.moveScale * gait
+    const footScale = p.speedScale * p.aimScale * p.status.moveScale * gait
       * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
+    const running = sprinting && wish.lengthSq() > 0 && !swimming && !p.jetting && !rope?.hard;
+    const along = vh.dot(wish);
+    // No charge at rest, into a wall, or through a reversal; a hop keeps its run-up.
+    if (!running || along < 0 || (p.onGround && along < WALK_SPEED * footScale * 0.5)) p.sprintBuild = 0;
+    else if (p.onGround) p.sprintBuild = Math.min(1, p.sprintBuild + dt / SPRINT_BUILD_S);
+    const t = p.sprintBuild;
+    // Quartic ease-in with a rounded ceiling: quiet first half, strongest acceleration at 75%, no final snap.
+    const surge = t ** 4 * (5 - 4 * t);
+    const sprintSpeed = id !== null ? SPRINT_SPEED : WALK_SPEED * 2 + (SPRINT_SPEED * 2 - WALK_SPEED * 2) * surge;
+    const footSpeed = (sprinting ? sprintSpeed : WALK_SPEED) * footScale;
     const jetFly = JET_FLY_SPEED * gait;
     const footRun = sprinting ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
     const jetRun = Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H));
@@ -901,6 +922,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       }
     }
     stalled.forEach((st, a) => { if (st) v[comp[a]] = v0[comp[a]]; });
+    sprintWalk = WALK_SPEED * footScale;
+    sprintCeiling = Math.min(SPRINT_SPEED * 2 * footScale * perks.sprintRate, Math.max(SPRINT_SPEED * 2 * footScale, PERK_SPEED_H));
+    sprintingNow = running && !jet && id === null;
     // follow the ground down small ledges
     if (!p.onGround && wasGround && !jumped && !swimming) {
       const r = sweep(1, -STEP_DOWN);
@@ -974,7 +998,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; sinceJumpPress = Infinity; sinceBounce = Infinity;
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
-    p.jetSpool = 0; p.knock = 0;
+    p.jetSpool = 0; p.knock = 0; p.sprintBuild = 0; sprintingNow = false;
     generation++; probe.valid = false;   // reject in-flight probes from the old spot
     env.contactN = 0; env.headInLiquid = false; env.liquidId = E.WATER; env.buriedId = -1; env.pressure = 0;
     contactId.fill(0); contactT.fill(0); contactSpark.fill(0);

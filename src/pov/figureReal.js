@@ -8,7 +8,7 @@ import { buildGarb, GARB_COLORS } from './garb.js';
 import { buildSpartan } from './figureSpartan.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureMaterial, figureUniforms, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
-  CROUCH_POSE, HEAD_LOOK, HEAD_LOOK_MAX, ELBOW_POLE, KNEE_POLE,
+  CROUCH_POSE, HEAD_LOOK, HEAD_LOOK_MAX, ELBOW_POLE, KNEE_POLE, SPRINT_LEAN,
 } from './figure.js';
 import { prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
 import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limbs.js';
@@ -303,14 +303,16 @@ function createRealFigure(gltf) {
       bend += ((s.dead ? 0 : (s.crouch ?? 0) * w.ground) - bend) * approach(CROUCH_RATE, dt);
       crouchBend(bend);
       keepPose();
+      // The cheat-speed lean rides on the clips, not the camera; feet stay on the ground.
+      const rushLean = SPRINT_LEAN * (s.sprintRush ?? 0) * w.ground * (1 - bend) * !riding;
       // the look: the torso leans into a held tool's aim, the head follows the rest
-      if (s.look && !s.dead) {
+      if ((s.look || rushLean) && !s.dead) {
         holding = true;
         root.updateWorldMatrix(true, true);
         right.set(1, 0, 0).applyQuaternion(root.getWorldQuaternion(qa));
-        const lean = s.look.pitch * s.look.spine;
-        const nod = THREE.MathUtils.clamp((s.look.pitch - lean) * HEAD_LOOK, -HEAD_LOOK_MAX, HEAD_LOOK_MAX);
-        for (const b of spine) { turn(b, lean / spine.length); b.updateWorldMatrix(false, false); }
+        const lean = (s.look?.pitch ?? 0) * (s.look?.spine ?? 0);
+        const nod = THREE.MathUtils.clamp(((s.look?.pitch ?? 0) - lean) * HEAD_LOOK, -HEAD_LOOK_MAX, HEAD_LOOK_MAX);
+        for (const b of spine) { turn(b, (lean - rushLean) / spine.length); b.updateWorldMatrix(false, false); }
         for (const b of head) { turn(b, nod / head.length); b.updateWorldMatrix(false, false); }
       }
       contact.visible = s.onGround && !s.dead && !riding;

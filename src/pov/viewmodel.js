@@ -197,8 +197,9 @@ function createRig(env) {
     const speedH = p.vel ? Math.hypot(p.vel.x, p.vel.z) : 0;
     const walking = p.onGround && !p.inLiquid;
     const bobbing = ctx.viewBobbing !== false;   // the View Bobbing setting (Minecraft's: it stills the hand too)
-    bobAmp += ((walking && bobbing ? Math.min(speedH / BOB_FULL_SPEED, 1) : 0) - bobAmp) * approach(BOB_RATE, dt);
-    if (walking) bobPhase += (speedH / BOB_STRIDE) * 2 * Math.PI * dt;
+    const rush = p.body?.sprintRush ?? 0;
+    bobAmp += ((walking && bobbing ? Math.min(speedH / BOB_FULL_SPEED, 1) * (1 - 0.65 * rush) : 0) - bobAmp) * approach(BOB_RATE, dt);
+    if (walking) bobPhase += (speedH / (1 + rush) / BOB_STRIDE) * 2 * Math.PI * dt;
     const bobY = -BOB_Y * bobAmp * 0.5 * (1 - Math.cos(2 * bobPhase));
     const bobX = BOB_X * bobAmp * Math.sin(bobPhase);
 

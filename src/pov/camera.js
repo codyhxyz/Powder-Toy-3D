@@ -17,7 +17,6 @@ const DEG = THREE.MathUtils.degToRad;
 export const POV_FOV = 75;              // degrees, vertical: the default of the FOV setting
 export const POV_FOV_RANGE = [55, 110]; // degrees, the setting's slider
 const SPRINT_FOV_BOOST = 7;             // degrees wider while sprinting
-const SPRINT_FOV_SPEED = 8;             // cells/s of ground speed from which the sprint FOV shows
 const FOV_RATE = 5;                     // 1/s: how fast the FOV follows its target
 const ZOOM_RATE = 25;                   // 1/s: ...while zooming a scope in or out (HL2's crossbow zooms in about 0.1 s)
 
@@ -185,7 +184,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     },
     // Call once per frame. s = {
     //   dt, eye (world, the unbobbed eye), feet (world), scale (world units per cell),
-    //   speedH (cells/s), onGround, inLiquid, sprinting, dead, deadTime (s), box {min, max, margin} (world),
+    //   speedH (cells/s), onGround, inLiquid, sprintRush (0..1), dead, deadTime (s), box {min, max, margin} (world),
     //   shake {pitch, yaw, roll, punchPitch, punchYaw} (rad, optional: feel.js offsets added to the look;
     //     punch*: the view punch's share of them, which third person leaves out),
     //   arm (optional: the spring arms, cameraArm.js, in world space) {
@@ -202,8 +201,10 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       // (footfalls); the bob only shows walking on dry ground.
       const striding = s.onGround && !s.dead;
       const walking = bobbing() && striding && !s.inLiquid;
-      bobAmp += ((walking ? Math.min(s.speedH / BOB_FULL_SPEED, 1) : 0) - bobAmp) * approach(BOB_RATE, dt);
-      if (striding) bobPhase += (s.speedH / BOB_STRIDE) * 2 * Math.PI * dt;
+      const rush = s.sprintRush ?? 0;
+      // Longer, steadier strides at cheat speed, not a camera/footstep jackhammer.
+      bobAmp += ((walking ? Math.min(s.speedH / BOB_FULL_SPEED, 1) * (1 - 0.65 * rush) : 0) - bobAmp) * approach(BOB_RATE, dt);
+      if (striding) bobPhase += (s.speedH / (1 + rush) / BOB_STRIDE) * 2 * Math.PI * dt;
       const step = footfallIndex(bobPhase);
       if (step !== stepIndex) {
         pose.footfall = striding && s.speedH > STEP_MIN_SPEED;
@@ -262,7 +263,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       }
 
       // FOV: a little wider at a sprint, narrower through a scope
-      const sprintBoost = zoom === 1 && s.sprinting && s.onGround && s.speedH > SPRINT_FOV_SPEED ? SPRINT_FOV_BOOST : 0;
+      const sprintBoost = zoom === 1 && !s.dead ? SPRINT_FOV_BOOST * (s.sprintRush ?? 0) : 0;
       const fovTarget = (fovSetting() + sprintBoost) / zoom;
       fov += (fovTarget - fov) * approach(zoom > 1 || fov < fovSetting() - 1 ? ZOOM_RATE : FOV_RATE, dt);
 
