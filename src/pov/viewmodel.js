@@ -157,27 +157,33 @@ function createRig(env) {
   let prevYaw = NaN, prevPitch = NaN;
   let time = 0, bobPhase = 0, bobAmp = 0, swim = 0;
   const pos = new THREE.Vector3(), rot = new THREE.Euler(), flapE = new THREE.Euler(), flapQ = new THREE.Quaternion();
-  // A free wing on the empty side. The tool's own forearm swings with it; one gun-bob was not a flap.
-  const wingSleeve = new THREE.MeshLambertMaterial({ color: 0x8a3a2a, flatShading: true });
-  const wingSkin = new THREE.MeshLambertMaterial({ color: 0xc48a5c, flatShading: true });
-  const wingGeo = { fist: new THREE.BoxGeometry(0.22, 0.2, 0.24), fore: new THREE.BoxGeometry(0.2, 0.2, 2.4) };
-  const wingArms = [-1, 1].map((side) => {
-    const g = new THREE.Group();
-    g.name = 'flap-wing';
-    const fist = new THREE.Mesh(wingGeo.fist, wingSkin);
-    const fore = new THREE.Mesh(wingGeo.fore, wingSleeve);
-    fore.position.z = 1.25;
-    g.add(fist, fore);
-    g.visible = false;
-    g.traverse((o) => o.layers.set(VIEWMODEL_LAYER));
-    root.add(g);
-    return { g, side };
-  });
+  // Built on the first flap, not at rig creation: a mesh id draws from Math.random, and the
+  // gun's spread uses that same generator (firearm.js).
+  let wingArms = null, wingSleeve = null, wingSkin = null, wingGeo = null;
+  function wings() {
+    if (wingArms) return wingArms;
+    wingSleeve = new THREE.MeshLambertMaterial({ color: 0x8a3a2a, flatShading: true });
+    wingSkin = new THREE.MeshLambertMaterial({ color: 0xc48a5c, flatShading: true });
+    wingGeo = { fist: new THREE.BoxGeometry(0.22, 0.2, 0.24), fore: new THREE.BoxGeometry(0.2, 0.2, 2.4) };
+    wingArms = [-1, 1].map((side) => {
+      const g = new THREE.Group();
+      g.name = 'flap-wing';
+      const fist = new THREE.Mesh(wingGeo.fist, wingSkin);
+      const fore = new THREE.Mesh(wingGeo.fore, wingSleeve);
+      fore.position.z = 1.25;
+      g.add(fist, fore);
+      g.traverse((o) => o.layers.set(VIEWMODEL_LAYER));
+      root.add(g);
+      return { g, side };
+    });
+    return wingArms;
+  }
   function poseFlap(wing) {
     const beat = wing > 0 ? wing : 0;
+    if (beat <= 0.02 && !wingArms) return;
     const heldRight = hands.some((h) => h.visible && h.userData.rest.x > 0.05);
     const heldLeft = hands.some((h) => h.visible && h.userData.rest.x < -0.05);
-    for (const { g, side } of wingArms) {
+    for (const { g, side } of wings()) {
       g.visible = beat > 0.02 && !(side > 0 && heldRight) && !(side < 0 && heldLeft);
       // Shoulder at the lower corner. rotation.x 1.15 hangs the wing down; the beat throws it up across the view.
       g.position.set(side * 0.9, -0.25 + beat * 1.15, -0.85);
@@ -303,8 +309,8 @@ function createRig(env) {
     },
     poseFlap,
     dispose() {
-      wingSleeve.dispose(); wingSkin.dispose();
-      wingGeo.fist.dispose(); wingGeo.fore.dispose();
+      wingSleeve?.dispose(); wingSkin?.dispose();
+      wingGeo?.fist.dispose(); wingGeo?.fore.dispose();
       root.removeFromParent();
     },
   };
