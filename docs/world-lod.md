@@ -4,7 +4,9 @@ The simulation window controls physics, not the limit of visible detail.
 
 - `world/detail.js` selects every view-intersecting 32-cell column, nearest first, at step 1. There is no projected-size or distance cutoff.
 - Flat and bent views retain frustum culling. Bent views use conservative warped bounds, including the parabola's interior peak.
-- A worker builds one-cell surface meshes, including visible chunks inside the simulation window.
+- A pool of one to four workers builds one-cell surface meshes. The pool leaves two logical CPU cores free, where possible.
+- Missing exposed meshes come first, then missing meshes fully covered by the live window, then stale replacements. Each group uses nearest-first order.
+- Coverage requires the whole column: X, Z, and the full world height. Covered meshes prepare the cache for later window moves.
 - Camera turns and simulation-window moves retain cached geometry. The shaders hide its fragments inside the live window.
 - Live cells override stored edits. Stored edits override generated cells and trees.
 - A depth pass stops liquid rays at cached geometry, preventing exterior ocean from flooding dry pits. Coarse liquid rendering, including shallow mixed occupancy, remains active.
@@ -14,7 +16,11 @@ The simulation window controls physics, not the limit of visible detail.
 - Simulation writes mark chunks and their padding stale. Summaries request replacements without removing the old meshes.
 - Window transfers do not mark unchanged geometry stale. Revision checks still reject jobs from before an edit or world reset.
 - Completed off-screen jobs remain cached when space permits. Empty chunks also retain their completed state.
-- Uncached opaque chunks have loading gaps while the worker builds full-detail geometry, never a coarse substitution. Initial streaming is sequential; turning the camera or bending the view can expose more gaps.
+- Uncached opaque chunks have loading gaps until their full-detail meshes arrive. They never use coarse substitutes. Camera turns and bent views can expose more gaps.
+- Each worker slot holds one job through GPU readback and meshing. Every cells dispatch records its staging copy before the next dispatch.
+- Jobs own separate cell and planted snapshots. Epoch, revision, and version checks prevent old results from replacing newer jobs.
+- World reset rejects old results but keeps their slots occupied until completion. A fatal detail error terminates the pool and stops new jobs.
+- The three detail pipelines start with the far-view pipeline at boot or view switch. Build completion wakes paused rendering without polling.
 - Wanted meshes are not limited by 192 chunks or 96 MiB and cannot be evicted by late offscreen completions. Those bounds apply only to offscreen spares, oldest first. Total visible geometry memory is therefore not bounded by these cache limits. GPU buffers, worker/readback storage and render targets also consume memory.
 - Completion, rejection, failure, drop and reset wake the app through the world wire. Runnable detail work prevents deep sleep even after the far lighting queue ends. Pipeline, worker/readback and window-transfer waits wake on completion instead of continuously polling, including when simulation is paused. Replicas tick render-only far/detail work without moving or simulating their window. A detail failure stops further detail submissions rather than retrying forever; remaining gaps require reload.
 - Chunk padding and the common cell lattice retain mesh seams. Surface nets can have non-manifold diagonal contacts. Liquid surfaces and underwater beds still use the coarse field and may differ from the cell geometry.
