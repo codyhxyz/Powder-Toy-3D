@@ -54,7 +54,14 @@ for (const [gravity,mode,expected] of [[39.2,0,3.92],[9.8,0,3.43],[19.6,1,10*19.
   assert.notEqual(fallVelocity(result.core),7.1866666667);
   const cpu=stepFall(seed,mode===1?0:gravity);close(fallVelocity(cpu.core),fallVelocity(result.core));
   close(fallFraction(cpu.core),fallFraction(result.core),FALL_QUANTIZATION_BOUND);assert.equal(cpu.cells,result.cells);
-  for(let n=0;n<20;n++) { const next=column(result.core,gravity,mode); assert.ok(fallVelocity(next.core)>=fallVelocity(result.core)-1e-6); }
+  let current=result.core;
+  for(let n=0;n<20;n++) {
+    const next=column(current,gravity,mode), expectedStep=stepFall(current,mode===1?0:gravity);
+    close(fallVelocity(next.core),fallVelocity(expectedStep.core));
+    close(fallFraction(next.core),fallFraction(expectedStep.core),FALL_QUANTIZATION_BOUND);
+    assert.equal(next.cells,expectedStep.cells);
+    current=next.core;
+  }
 }
 // Off-gravity stationary powders are barriers, not transparent column holes.
 const stopped=column(setFall(seed,12,0.8),0,1,makeMaterial(E.SNOW).core);
