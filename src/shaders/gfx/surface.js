@@ -593,15 +593,15 @@ fn pebbleRock(h: f32) -> vec3f {
 // amethyst and fluorite points alike, the colour (and the europium that
 // glows) gathered toward the growing end: a crystal is milky toward its root
 // and takes its colour over its last CRYS_COLOUR_LEN cells.
-const FLUORITE_VIOLET: vec3f = vec3f(0.105, 0.045, 0.27);   // linear albedo of the body's colours
-const FLUORITE_BLUE: vec3f = vec3f(0.045, 0.08, 0.3);
-const FLUORITE_MILK: vec3f = vec3f(0.3, 0.28, 0.34);        // the colourless root, clouded with inclusions
+const FLUORITE_VIOLET: vec3f = vec3f(0.085, 0.018, 0.21);   // linear albedo of the body's colours
+const FLUORITE_BLUE: vec3f = vec3f(0.026, 0.042, 0.23);
+const FLUORITE_MILK: vec3f = vec3f(0.19, 0.16, 0.23);      // the root, clouded with inclusions
 const CRYS_HUE_M: f32 = 3.0;               // m: the colour drifts over this
 const CRYS_HUE_F: f32 = CELL_M / CRYS_HUE_M;
 const CRYS_HUE_EDGE: vec2f = vec2f(0.4, 0.7);  // violet below the drift noise's first edge, blue above the second
 const CRYS_SHADE_VAR: f32 = 0.15;          // ± crystal-to-crystal shade
 const CRYS_COLOUR_LEN: vec2f = vec2f(0.5, 2.0);   // cells back from the apex: full colour to here, milky past here
-const CRYS_PALE_MIX: f32 = 0.6;            // how milky the root is
+const CRYS_PALE_MIX: f32 = 0.18;           // inclusions at the root, not a white-painted stem
 const CRYS_ROOT_GLOW: f32 = 0.4;           // the root's glow, relative to the coloured part
 // Colour zoning: phantoms. A crystal grew as nested crystals, each taking up
 // colour centres (and europium) its own way; a face shows the zone the
@@ -610,7 +610,7 @@ const CRYS_ROOT_GLOW: f32 = 0.4;           // the root's glow, relative to the c
 const CRYS_ZONE_DEPTH: f32 = 0.6;
 const CRYS_BANDS_MIN: f32 = 1.5;           // zones from axis to faces
 const CRYS_BANDS_MAX: f32 = 3.0;
-const CRYS_BAND_MIX: f32 = 0.25;           // how far a zone shifts toward the other colour (subtle)
+const CRYS_BAND_MIX: f32 = 0.12;           // how far a zone shifts toward the other colour (subtle)
 const CRYS_ZONE_GLOW: f32 = 0.1;           // ± share the glow swings across the zones…
 const CRYS_SEED_GLOW: f32 = 0.25;          // …and from crystal to crystal (both average out)
 // Glow from inside. A thin glowing body is as bright as the path the eye
@@ -622,20 +622,20 @@ const CRYS_SEED_GLOW: f32 = 0.25;          // …and from crystal to crystal (bo
 // its point (the luminescent-concentrator effect: Weber & Lambe 1976), whose
 // faces are a few times smaller than its sides: the points glow brightest.
 const CRYS_PATH_MAX: f32 = 3.0;            // most mean chords a view counts (end-on)
-const CRYS_PIPE: f32 = 0.25;               // share of the light piped to the point
-const CRYS_PIPE_MAX: f32 = 2.5;            // most the point is brightened
+const CRYS_PIPE: f32 = 0.12;               // share of the light piped to the point
+const CRYS_PIPE_MAX: f32 = 1.5;            // preserve colour in the point, not a blown-out cap
 // area of the sides per unit length, per apothem: 6 faces 2/√3 apothems wide;
 // area of the point per apothem²: the hexagon (2√3) over the faces' cosine to the axis
 const CRYS_SIDE_AREA: f32 = 6.9282;
 const CRYS_TIP_AREA: f32 = 3.4641 * 1.6154;
 // Faces: each face of a crystal grew (and so glows and takes its colour) a
 // little its own way, so its facets read apart; and prism faces carry growth
-// lines across them (quartz's horizontal striations), a few per centimetre
-// at most, drawn as fine bands in the glow until they are smaller than a pixel.
+// lines across them (quartz's horizontal striations), visible only in the
+// polish: bright horizontal emission bands made these look like ribbed plastic.
 const CRYS_FACE_VAR: f32 = 0.18;           // ± face-to-face glow
 const CRYS_STRIA_M: f32 = 0.012;           // m: the growth lines' typical spacing
 const CRYS_STRIA_F: f32 = CELL_M / CRYS_STRIA_M;   // per cell
-const CRYS_STRIA_GLOW: f32 = 0.25;         // glow swing across a line
+const CRYS_STRIA_ROUGH: f32 = 0.025;       // subtle growth marks in reflected light only
 // Where it grows on into other crystal its cell cuts it: a rough, milky break.
 const CRYS_CUT_ROUGH: f32 = 0.3;
 const CRYS_CUT_GLINT: f32 = 0.6;
@@ -670,15 +670,24 @@ fn crystalLook(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, T: f32, fp: f
   let z = zr / max(min(s.r, x / CRYS_TIP_K), CRYS_ZONE_EPS);   // 0 on the axis, 1 on the faces
   let bands = mix(CRYS_BANDS_MIN, CRYS_BANDS_MAX, fract(s.seed * CRYS_SALT));
   let band = 0.5 + 0.5 * cos(2.0 * PI * z * bands);
-  let lz = lodFade(bands / s.r, fp);
+  let lz = lodFade(bands / max(min(s.r, x / CRYS_TIP_K), CRYS_ZONE_EPS), fp);
   let zoned = mix(col, mix(col, FLUORITE_BLUE + FLUORITE_VIOLET - col, CRYS_BAND_MIX * band), lz);
   (*m).alb = mix(FLUORITE_MILK, zoned, mix(1.0 - CRYS_PALE_MIX, 1.0, coloured));
-  // glow: the view's path through the body, the light piped to the point
-  let chord = min(shardExit(s, gp, r) / (2.0 * s.r), CRYS_PATH_MAX);
+  // Noita's readable gem silhouette, with depth inside rather than glowing
+  // paint: Beer–Lambert absorption and the actual rear facet's reflection.
+  var exitN: vec3f;
+  let chord = min(shardExit(s, gp, r, &exitN) / (2.0 * s.r), CRYS_PATH_MAX);
+  let absorption = exp(-vec3f(0.8, 1.65, 0.38) * chord);
+  let exitCos = clamp(dot(r, exitN), 0.0, 1.0);
+  let critical = sqrt(1.0 - 1.0 / (ior * ior));
+  let trapped = 1.0 - smoothstep(critical - 0.04, critical + 0.04, exitCos);
+  (*m).alb *= mix(vec3f(1.0), absorption, 0.7 * lp);
+  (*m).rough = 0.065;
   let body = max(s.len - CRYS_TIP_K * s.r, 0.0);
   let pipe = select(1.0 - CRYS_PIPE, min(1.0 + CRYS_PIPE * CRYS_SIDE_AREA * body / (CRYS_TIP_AREA * s.r), CRYS_PIPE_MAX),
                     gCrysKind == CRYS_TIP);
-  var glow = tr * mix(1.0, chord * pipe, lp);
+  let depthGlow = (1.0 - exp(-1.4 * chord)) * pipe * mix(0.55, 1.15, trapped);
+  var glow = tr * mix(1.0, depthGlow, lp);
   // which face: the hexagon side (or the face of the point above it) it faces
   var face = 0;
   var fb = -2.0;
@@ -690,11 +699,11 @@ fn crystalLook(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, T: f32, fp: f
   glow *= 1.0 + CRYS_FACE_VAR * (2.0 * fh - 1.0) * lp;
   if (gCrysKind == CRYS_SIDE) {
     let st = vnoise(vec3f(dot(gp - s.o, s.a) * CRYS_STRIA_F, fh * CRYS_SALT, s.seed * CRYS_SALT2));
-    glow *= 1.0 + CRYS_STRIA_GLOW * (2.0 * st - 1.0) * lodFade(CRYS_STRIA_F, fp);
+    (*m).rough += CRYS_STRIA_ROUGH * st * lodFade(CRYS_STRIA_F, fp);
   }
   glow *= mix(CRYS_ROOT_GLOW, 1.0, coloured);
   glow *= (1.0 + CRYS_ZONE_GLOW * (2.0 * band - 1.0) * lz) * (1.0 + CRYS_SEED_GLOW * (2.0 * fract(s.seed * CRYS_SALT2) - 1.0));
-  return hotEmit(*m, id, T) * glow;
+  return hotEmit(*m, id, T) * glow * mix(vec3f(1.0), absorption, 0.65 * lp);
 }
 
 // ---- play-distance variation, shared by every opaque material ----

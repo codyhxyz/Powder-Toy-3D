@@ -53,6 +53,7 @@ import { createBrand, createToolbar } from './ui/topbar.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
+import { createShaderPicker } from './ui/shaders.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
@@ -545,7 +546,7 @@ function build() {
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
   s.wake = () => { simWake(); wakeLoop(); };
-  sim.gravity = settings.gravity;
+  applyGravity();
   sim.airT = worldMode ? sceneByKey(settings.scene).airT ?? PHYS.AMBIENT : PHYS.AMBIENT;   // (a box: room temperature)
   applySimModes(sim, settings);
   scale = 10 / Math.max(nx, nz);
@@ -695,6 +696,10 @@ function villageSpawn() {
   if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
   return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);
 }
+// Keep the user's setting intact when entering/leaving a low-gravity gamemode.
+function applyGravity() {
+  if (sim) sim.gravity = settings.gravity * (modeByKey(selectedMode)?.gravityScale ?? 1);
+}
 // the map and gamemode playing now, for the menu to open on
 function currentMap() {
   return { map: mapOf(settings)?.key ?? null, mode: pov?.game?.running ? pov.game.mode : selectedMode };
@@ -711,6 +716,7 @@ async function startMode(mode, { fresh = false } = {}) {
   const game = pov?.game;
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
+  applyGravity();
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
   pacer.wake();
@@ -1331,7 +1337,7 @@ const actions = {
     if (camState() === 'god') { painting = false; pov.enter(); }
   },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
-  openShaders: () => { setSettingsOpen(true); settingsPanel.focusViews(); },
+  openShaders: () => setShadersOpen(!shaderPanel.isOpen),
   toggleHelp: () => help.setOpen(!help.isOpen),
   // the start menu over the game (src/main.js), the way Garry's Mod's Esc brings up its menu
   openMenu: () => { painting = false; launch.openMenu?.(); },
@@ -1396,6 +1402,10 @@ function waveDemoRow() {
   };
   return { type: 'custom', el: h('div', {}, h('div.seg', { role: 'group', 'aria-label': 'Create a physical wave' }, buttons), note), sync };
 }
+const shaderPanel = createShaderPicker({
+  settings, views: VIEWS, renderThumb, onChange: setView,
+  onClose: () => setShadersOpen(false), trigger: toolbar.shaderButton,
+});
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -1408,16 +1418,13 @@ const settingsPanel = createSettings({
         h('button.btn', { type: 'button', text: 'Keyboard shortcuts', title: 'Keyboard shortcuts (?)',
           on: { click: actions.toggleHelp } })) },
     ] },
-    { title: 'Shader', rows: [
-      { type: 'views', key: 'view', label: 'Shader', options: VIEWS, renderThumb, onChange: setView },
-    ] },
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
       waveDemoRow(),
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
-        fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
+        fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: () => { applyGravity(); save(); } },
       // TPT's Simulation Options: gravity, air, ambient heat and edge modes (simModes.js)
       ...simModeRows({ change: setSimMode, locked: simModeLock }),
     ] },
@@ -1499,12 +1506,13 @@ function resetSettings() {
   weather.reset();
   const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
   Object.assign(settings, DEFAULTS, keep);
-  sim.gravity = settings.gravity;
+  applyGravity();
   rig.setSpeed(settings.camSpeed);
   applyDetail();
   dock.sync();
   hud.setPaused(settings.paused);
   settingsPanel.sync();
+  shaderPanel.sync();
   hud.setEditMode(editModeText());
   save();
   hud.toast('Settings reset', { kind: 'cleanup' });
@@ -1534,8 +1542,14 @@ function setSimModes(modes) {
 function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }); }
 
 function setSettingsOpen(v) {
+  if (v) shaderPanel.setOpen(false);
   settingsPanel.setOpen(v);
   toolbar.setSettingsOpen(v);
+}
+
+function setShadersOpen(v) {
+  if (v) setSettingsOpen(false);
+  shaderPanel.setOpen(v);
 }
 
 function setPaused(p) {
@@ -1557,6 +1571,7 @@ function setView(id) {
   const key = viewKeyOf(id);
   if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   settingsPanel.sync();
+  shaderPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
   save();
 }
@@ -1959,9 +1974,9 @@ addEventListener('keydown', (e) => {
   // Minecraft Java's screenshot key; holding it must not download a stream of images.
   else if (k === 'F2') { e.preventDefault(); if (!e.repeat) actions.screenshot(); }
   else if (k === 'Escape') {
-    const overlay = eyedropper || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
+    const overlay = eyedropper || shaderPanel.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
     shapeDrag = null;   // a line or box being dragged is dropped
-    setEyedropper(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
+    setEyedropper(false); setShadersOpen(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
     if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
   }

@@ -81,7 +81,9 @@ export default {
       if (!shot) return false;
       const { origin, dir } = shot;
       muzzle.updateWorldMatrix(true, false);
-      povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld: muzzle.getWorldPosition(new THREE.Vector3()), gun: 'ROCKET', sound: { voice: 'swoosh', rate: 0.6, gain: 1.6, thump: 1.5 } });
+      const muzzleWorld = env.getMuzzleWorld?.('ROCKET')
+        ?? (povEvents.actor ? null : muzzle.getWorldPosition(new THREE.Vector3()));
+      povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld, gun: 'ROCKET', sound: { voice: 'swoosh', rate: 0.6, gain: 1.6, thump: 1.5 } });
       return true;
     }
 

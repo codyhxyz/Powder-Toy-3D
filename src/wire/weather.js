@@ -26,8 +26,8 @@ function oceanContext(app) {
       return win.scene.ground(Math.floor(x), Math.floor(z), win.P);
     };
   }
-  app.camera.getWorldPosition(eye);
-  if (win?.far) eye.applyMatrix4(win.far.sceneToWorld);
+  // Ocean candidates use world cells: scene -> local grid -> streamed origin.
+  app.volume.worldToLocal(app.camera.getWorldPosition(eye)).add(sim.origin);
   return {
     sim, stepHz: sim.compact ? 60 : WEATHER_STEPS_PER_SECOND, world: win, mapId: win ? `${win.scene.key}:${win.P.seed}` : null,
     seaLevel: win?.P.sea, target: [eye.x, eye.z],
@@ -57,7 +57,16 @@ const wire = {
     app.oceanEvents = createOceanEvents();
     app.lighthouse = createLighthouse({ onChange: () => app.pacer.wake() });
     app.resetWeather = () => reset(app);
-    weather.subscribe(() => app.pacer.wake());
+    let fog = weather.selection.fog;
+    weather.subscribe(() => {
+      const next = weather.selection.fog;
+      if (fog !== 'off' && next === 'off' && enabled(app) &&
+          world === app.win && epoch === app.win?.epoch && simulation === app.sim) {
+        app.elementWeather.clearFog({ sim: app.sim, world: app.win, host: true });
+      }
+      fog = next;
+      app.pacer.wake();
+    });
     weather.setTsunamiHooks({
       trigger: () => enabled(app) ? app.oceanEvents.trigger(oceanContext(app)) : false,
       cancel: () => app.oceanEvents.cancel(),

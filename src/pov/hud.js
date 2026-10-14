@@ -46,7 +46,7 @@ export function createPovHud() {
   const cross = h('div.pov-cross', {}, h('i'), h('i'), h('i'), h('i'), h('b'));
   const hitmark = h('div.pov-hitmark');
   const pogoFill = h('div.pov-fill');
-  const pogo = h('div.pov-pogo.pov-track', { 'aria-label': 'Pogo charge' }, pogoFill);
+  const pogo = h('div.pov-pogo.pov-track', { role: 'progressbar', 'aria-label': 'Pogo charge', 'aria-valuemin': 0, 'aria-valuemax': 100 }, pogoFill);
   const shieldEdge = h('div.pov-fx.pov-shieldfx');
   // Halo's grenade count, beside the held tool's readout (which sits below-right of the crosshair)
   const nadeCount = h('b');
@@ -157,6 +157,8 @@ export function createPovHud() {
       set(vitals, '.show', live);
       set(pogo, '.show', live && s.pogo != null);
       set(pogoFill, 'transform', `scaleX(${s.pogo ?? 0})`);
+      pogo.setAttribute('aria-label', s.pogoLabel ?? 'Pogo charge');
+      pogo.setAttribute('aria-valuenow', Math.round((s.pogo ?? 0) * 100));
       // perks: an icon each, with its stacks, redrawn when the set changes
       if (s.perks && (s.perks !== perkSet || s.perks.version !== perkVersion)) {
         perkSet = s.perks; perkVersion = s.perks.version;

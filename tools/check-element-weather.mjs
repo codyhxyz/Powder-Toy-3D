@@ -40,6 +40,31 @@ const makeSim = () => ({
   _retire(buffer) { buffer.retired = true; },
 });
 const sim = makeSim(), world = { loaded: true, epoch: 0, P: { sea: 18 } };
+// Off uses the already-ready filtered brush, with no step/readback/compilation.
+{
+  const fog = createElementWeather(), edits = [];
+  const fixture = { ...sim, paint: args => edits.push(args) };
+  assert.equal(fog.clearFog({ sim: fixture, world }), false);
+  assert.equal(fog.clearFog({ sim: fixture, world: { ...world, loaded: false }, host: true }), false);
+  for (const y of [-8, 0, 32]) {
+    fixture.origin = { ...sim.origin, y };
+    assert.equal(fog.clearFog({ sim: fixture, world, host: true }), true);
+    const edit = edits.at(-1);
+    assert.equal(edit.filter, E.CLOUD);
+    assert.equal(edit.erase, true);
+    assert.equal(edit.shape, 1);
+    const top = edit.center.y + edit.radius;
+    const skyBottom = Math.max(y + 2, world.P.sea + 14,
+      y + sim.g.ny - ELEMENT_WEATHER.cloudMargin - ELEMENT_WEATHER.cloudDepth);
+    assert.equal(top + y, skyBottom);
+    assert(edit.center.y - edit.radius < 0);
+    assert(edit.center.x - edit.radius < 0 && edit.center.x + edit.radius > sim.g.nx);
+    assert(edit.center.z - edit.radius < 0 && edit.center.z + edit.radius > sim.g.nz);
+  }
+  fog.dispose();
+  assert.equal(fog.clearFog({ sim: fixture, world, host: true }), false);
+  assert.equal(edits.length, 3);
+}
 const context = { sim, world, advancing: true, host: true, fogEnabled: true };
 const storm = { preset: 'storm', cloud: 1, rain: 1, storm: 1, fog: 1, wind: [3, 4], time: 10 };
 const clear = { ...storm, preset: 'clear' };

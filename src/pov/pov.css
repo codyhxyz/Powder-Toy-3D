@@ -179,16 +179,28 @@ body.pov-locked canvas { cursor: none; }
 @keyframes pov-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* ---- look + E (interact.js): what's under the crosshair, just below it */
-.pov-use { position: fixed; left: 50%; top: calc(50% + 28px); transform: translate(-50%, 4px); opacity: 0; pointer-events: none;
-  display: flex; flex-direction: column; align-items: center; gap: 2px; max-width: min(340px, 80vw); padding: 7px 12px; text-align: center;
-  transition: opacity 120ms, transform 120ms var(--ease); z-index: 6; }
-.pov-use.show { opacity: 1; transform: translate(-50%, 0); }
-.pov-use-title { font-weight: 640; }
-.pov-use-lines { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); }
-.pov-use .action-buttons { margin-top: 4px; font-size: 12px; }
+.pov-use { position: fixed; left: 50%; top: calc(50% + 28px); transform: translate(-50%, 4px); opacity: 0; visibility: hidden; pointer-events: none;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px;
+  width: max-content; max-width: min(360px, calc(100vw - 32px)); padding: 12px 16px; text-align: left;
+  background: var(--panel-solid); color: var(--text); border: 1px solid var(--line-hi); border-radius: var(--r-panel);
+  transition: opacity 120ms, transform 120ms var(--ease); z-index: 13; }
+.pov-use.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+.pov-use-title { grid-column: 1; font-size: 13px; font-weight: 640; overflow-wrap: anywhere; }
+.pov-use-lines { grid-column: 1; display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 1.5; color: #b8c1d1; overflow-wrap: anywhere; }
+.pov-use-lines:empty { display: none; }
+.pov-use .action-buttons { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: 12px; }
+.pov-use .action-button { padding: 8px; border: 1px solid var(--line-hi); border-radius: var(--r-ctl); background: var(--raise); cursor: pointer; }
+.pov-use .action-button:hover { background: var(--raise-hi); }
 .pov-use.key-only .action-label { display: none; }
-.pov-use.key-only .action-button { border: 0; background: transparent; box-shadow: none; padding: 0 8px; }
+.pov-use.key-only .action-button { border: 0; min-width: 44px; }
 .pov-use.key-only .action-key { display: inline-block; }
+@media (hover: none) and (pointer: coarse) {
+  .pov-use.key-only .action-label { display: inline; }
+  .pov-use.key-only .action-key { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pov-use { transition: none; }
+}
 /* ---- pointer-lock prompt */
 .pov-lock {
   position: absolute; left: 50%; top: calc(50% - 70px); transform: translate(-50%, 4px);

@@ -148,6 +148,15 @@ kbd {
 }
 .popover.open { opacity: 1; transform: none; pointer-events: auto; }
 
+.shader-picker {
+  right: max(14px, env(safe-area-inset-right)); top: var(--bar-bottom);
+  width: min(340px, calc(100vw - 28px)); max-height: calc(100dvh - var(--bar-bottom) - 14px);
+  overflow-y: auto; padding: 12px;
+}
+.shader-picker:not(.open) { visibility: hidden; }
+.shader-picker header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.shader-picker h2 { margin: 0; font-size: 15px; font-weight: 680; }
+
 /* ------------------------------------------------------------------ drawer: settings */
 .drawer {
   position: fixed; right: 14px; top: 58px; bottom: 14px; z-index: 15;

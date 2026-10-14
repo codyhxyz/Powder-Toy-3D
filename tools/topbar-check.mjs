@@ -7,8 +7,10 @@ import { launchBrowser, newTestPage } from './browser.mjs';
 const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 assert.match(app, /text: 'Save game'/);
 assert.match(app, /text: 'Keyboard shortcuts'/);
-assert.match(app, /type: 'views', key: 'view', label: 'Shader', options: VIEWS, renderThumb/);
-assert.match(app, /openShaders:.*setSettingsOpen\(true\); settingsPanel.focusViews\(\)/);
+assert.doesNotMatch(app, /title: 'Shader'|focusViews/);
+assert.match(app, /openShaders:.*setShadersOpen\(!shaderPanel.isOpen\)/);
+assert.match(app, /if \(v\) shaderPanel.setOpen\(false\)/);
+assert.match(app, /if \(v\) setSettingsOpen\(false\)/);
 assert.match(app, /k === 'F2'\) \{ e.preventDefault\(\); if \(!e.repeat\) actions.screenshot\(\); \}/);
 assert.doesNotMatch(app, /toolbar\.(sync|close|isOpen)/);
 
@@ -28,12 +30,12 @@ try {
     }));
     await page.goto(`${url}/__toolbar-check`);
     await page.evaluate(async () => {
-      const [{ createToolbar }, { createHud }, { createSettings }, { h }, { VIEWS }] = await Promise.all([
+      const [{ createToolbar }, { createHud }, { createSettings }, { h }, { VIEWS }, { createShaderPicker }] = await Promise.all([
         import('/src/ui/topbar.js'), import('/src/ui/hud.js'), import('/src/ui/settings.js'), import('/src/ui/dom.js'),
-        import('/src/views.js'),
+        import('/src/views.js'), import('/src/ui/shaders.js'),
       ]);
       const settings = { paused: false, view: 0 };
-      let panel;
+      let panel, shaders;
       const hud = createHud({ onTogglePause: () => { settings.paused = !settings.paused; hud.setPaused(settings.paused); } });
       hud.setPaused(false);
       hud.setStats({ fpsV: 60, stepsV: 120, cellsV: '64³', resV: '1440 × 900' });
@@ -43,15 +45,17 @@ try {
         setCamera: id => calls.push(id),
         toggleIndustryBuild: () => calls.push('build'),
         undo: () => calls.push('undo'),
-        openShaders: () => { panel.setOpen(true); panel.focusViews(); },
-        toggleSettings: () => { panel.setOpen(!panel.isOpen); toolbar.setSettingsOpen(panel.isOpen); },
+        openShaders: () => { panel.setOpen(false); toolbar.setSettingsOpen(false); shaders.setOpen(!shaders.isOpen); },
+        toggleSettings: () => { shaders.setOpen(false); panel.setOpen(!panel.isOpen); toolbar.setSettingsOpen(panel.isOpen); },
       } });
       toolbar.setUndoEnabled(false);
       panel = createSettings({ settings, onClose: () => panel.setOpen(false), sections: [
         { title: 'Game', rows: [{ type: 'custom', el: h('div.settings-actions', {},
           h('button.btn', { text: 'Save game', on: { click: () => calls.push('save') } }),
           h('button.btn', { text: 'Keyboard shortcuts', on: { click: () => calls.push('help') } })) }] },
-        { title: 'Shader', rows: [{ type: 'views', key: 'view', label: 'Shader', options: VIEWS,
+      ] });
+      shaders = createShaderPicker({ settings, views: VIEWS, trigger: toolbar.shaderButton,
+          onClose: () => shaders.setOpen(false),
           renderThumb: async (id, canvas) => {
             maxInFlight = Math.max(maxInFlight, ++inFlight);
             await new Promise(requestAnimationFrame);
@@ -61,9 +65,8 @@ try {
             canvas.dataset.rendered = '1';
             renders++; inFlight--;
             return true;
-          }, onChange: id => { settings.view = id; } }] },
-      ] });
-      window.fixture = { settings, hud, toolbar, panel, calls,
+          }, onChange: id => { settings.view = id; } });
+      window.fixture = { settings, hud, toolbar, panel, shaders, calls,
         get renders() { return renders; }, get maxInFlight() { return maxInFlight; } };
       // Match the game's global Space binding to detect double keyboard activation.
       addEventListener('keydown', e => {
@@ -88,6 +91,10 @@ try {
     assert.equal(await page.locator('.camera-select').inputValue(), 'third');
     assert.equal(await page.evaluate(() => fixture.renders), 0, 'no previews while closed');
     await bar.getByRole('button', { name: 'Change shader', exact: true }).click();
+    assert.equal(await page.evaluate(() => fixture.panel.isOpen), false, 'palette never opens Settings');
+    assert.equal(await page.locator('.drawer .view-card').count(), 0, 'shaders removed from Settings');
+    assert.equal(await page.getByRole('dialog', { name: 'Shaders', exact: true }).isVisible(), true);
+    assert.equal(await bar.getByRole('button', { name: 'Change shader', exact: true }).getAttribute('aria-expanded'), 'true');
     assert.equal(await page.locator(':focus').getAttribute('aria-label'), 'Realistic');
     assert.equal(await page.locator('.view-card').count(), 6);
     await page.waitForFunction(() => document.querySelectorAll('.view-card canvas[data-rendered="1"]').length === 6);
@@ -98,13 +105,29 @@ try {
     assert.equal(await page.evaluate(() => fixture.settings.paused), false, 'shader keyboard activation does not pause gameplay');
     await page.evaluate(() => {
       fixture.settings.view = 5;
-      fixture.panel.sync();
-      fixture.panel.setOpen(false);
-      fixture.panel.setOpen(true);
+      fixture.shaders.sync();
+      fixture.shaders.setOpen(false);
+      fixture.shaders.setOpen(true);
     });
     await page.waitForFunction(() => !document.querySelector('.view-card:last-child .preview-status:not([hidden])'));
     assert.equal(await page.getByRole('button', { name: 'Plain', exact: true }).getAttribute('aria-pressed'), 'true', 'external view changes sync');
     assert.equal(await page.evaluate(() => fixture.maxInFlight), 1, 'reopening never overlaps preview readbacks');
+    await page.screenshot({ path: `/tmp/tpt-shaders-${touch ? 'mobile' : 'desktop'}.png`, animations: 'disabled' });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => fixture.shaders.isOpen), false, 'Escape closes picker');
+    assert.equal(await page.locator(':focus').getAttribute('aria-label'), 'Change shader', 'focus returns to palette');
+    await bar.getByRole('button', { name: 'Change shader', exact: true }).click();
+    await bar.getByRole('button', { name: 'Change shader', exact: true }).click();
+    assert.equal(await page.evaluate(() => fixture.shaders.isOpen), false, 'palette toggles picker shut');
+    await bar.getByRole('button', { name: 'Change shader', exact: true }).click();
+    await bar.getByRole('button', { name: 'Settings (,)', exact: true }).click();
+    assert.equal(await page.evaluate(() => fixture.shaders.isOpen), false, 'gear closes picker');
+    assert.equal(await page.evaluate(() => fixture.panel.isOpen), true, 'gear opens only Settings');
+    await bar.getByRole('button', { name: 'Change shader', exact: true }).click();
+    assert.equal(await page.evaluate(() => fixture.panel.isOpen), false, 'palette closes Settings');
+    await page.getByRole('button', { name: 'Close shaders', exact: true }).click();
+    assert.equal(await page.evaluate(() => fixture.shaders.isOpen), false);
+    await bar.getByRole('button', { name: 'Settings (,)', exact: true }).click();
     await page.getByRole('button', { name: 'Save game', exact: true }).click();
     await page.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click();
     assert.deepEqual(await page.evaluate(() => fixture.calls.slice(-2)), ['save', 'help']);
