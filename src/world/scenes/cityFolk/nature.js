@@ -6,21 +6,21 @@
 export const CITY_FOLK_NATURE = Object.freeze({
   ints: {
     PITCH: 32, OFFSET: 16, TOP: 30,
-    CEDAR_WEST: -800, CEDAR_EAST: -288, CEDAR_NORTH: -136, CEDAR_SOUTH: -60,
+    CEDAR_WEST: -800, CEDAR_EAST: 800, CEDAR_NORTH: -136, CEDAR_SOUTH: -60,
     GROVE_WEST: 240, GROVE_EAST: 848, GROVE_NORTH: 64, GROVE_SOUTH: 116,
     ORCHARD_WEST: 560, ORCHARD_EAST: 752,
     PALM_WEST: -848, PALM_EAST: 848, PALM_NORTH: 144, PALM_SOUTH: 164,
   },
   salts: { PATCH: 0x6e6174 },
   landmarks: Object.freeze({
-    cedarWoods: { at: [-464, -112], floor: 48, kind: 'cedar', half: [7, 7] },
-    hardwoodGrove: { at: [304, 80], floor: 24, kind: 'hardwood', half: [9, 9] },
-    nativeOrchard: { at: [624, 80], floor: 24, kind: 'apple', half: [9, 9] },
-    beachPalms: { at: [336, 152], floor: 18, kind: 'palm', half: [10, 7] },
-    flowerPatch: { at: [400, 100], floor: 24, kind: 'flowers', half: [10, 6] },
-    rocks: { at: [464, 100], floor: 24, kind: 'rock', half: [3, 2] },
+    cedarWoods: { at: [-464, -112], floor: 48, kind: 'cedar', half: [40, 7] },
+    hardwoodGrove: { at: [304, 80], floor: 24, kind: 'hardwood', half: [80, 9] },
+    nativeOrchard: { at: [624, 80], floor: 24, kind: 'apple', half: [40, 9] },
+    beachPalms: { at: [816, 152], floor: 18, kind: 'palm', half: [40, 7] },
+    flowerPatch: { at: [400, 120], floor: 24, kind: 'flowers', half: [10, 6] },
+    rocks: { at: [464, 120], floor: 24, kind: 'rock', half: [3, 2] },
     shells: { at: [304, 156], floor: 18, kind: 'shell', half: [2, 2] },
-    discovery: { at: [432, 100], floor: 24, kind: 'buried-fossil', half: [3, 3] },
+    discovery: { at: [432, 120], floor: 24, kind: 'buried-fossil', half: [3, 3] },
     wornGround: { at: [416, 44], floor: 24, kind: 'wear', half: [40, 2] },
     openMeadow: { at: [200, 92], floor: 24, kind: 'meadow', half: [24, 20] },
   }),
@@ -68,14 +68,20 @@ int cfNatureTree(int x, int y, int z, int h) {
   int ax = thDiv(x, NATURE_PITCH) * NATURE_PITCH + NATURE_OFFSET;
   int az = thDiv(z, NATURE_PITCH) * NATURE_PITCH + NATURE_OFFSET;
   int kind = 0;
-  if (ax >= NATURE_CEDAR_WEST && ax <= NATURE_CEDAR_EAST && az >= NATURE_CEDAR_NORTH && az <= NATURE_CEDAR_SOUTH && h >= 36) kind = 1;
+  if (ax >= NATURE_CEDAR_WEST && ax <= NATURE_CEDAR_EAST && abs(ax) >= 288 && az >= NATURE_CEDAR_NORTH && az <= NATURE_CEDAR_SOUTH && h >= 36) kind = 1;
+  // Mid-terrace cedars line the eastern woods branch; the upper lattice
+  // remains intact. The route itself and all crown samples stay excluded.
+  if (ax >= 400 && ax <= 720 && z >= -71 && z <= -57 && h >= 36) {
+    az = -64;
+    kind = 1;
+  }
   if (ax >= NATURE_GROVE_WEST && ax <= NATURE_GROVE_EAST && az >= NATURE_GROVE_NORTH && az <= NATURE_GROVE_SOUTH) {
     // Gaps between groves remain usable meadow, not a wall of trees.
     if (thMod(ax - NATURE_OFFSET, 128) != 64) kind = 2;
     if (ax >= NATURE_ORCHARD_WEST && ax <= NATURE_ORCHARD_EAST) kind = 3;
   }
   // The beach uses its own z center rather than the woodland lattice.
-  if (z >= NATURE_PALM_NORTH && z <= NATURE_PALM_SOUTH && ax >= NATURE_PALM_WEST && ax <= NATURE_PALM_EAST && abs(ax) >= 256 && thMod(ax - NATURE_OFFSET, 96) == 32) {
+  if (z >= NATURE_PALM_NORTH && z <= NATURE_PALM_SOUTH && ax >= NATURE_PALM_WEST && ax <= NATURE_PALM_EAST && abs(ax) >= 256 && (thMod(ax - NATURE_OFFSET, 96) == 32 || abs(ax) >= 800)) {
     az = 152;
     kind = 4;
   }
@@ -136,7 +142,7 @@ int cfNatureCell(int x, int y, int z, int h, int id) {
   // Small repeated clearings between trees: flowers, a low stone and a
   // star-shaped dig mark with a pale fossil two cells below the surface.
   int px = thMod(x - 400 + 64, 128) - 64;
-  int pz = z - 100;
+  int pz = z - 120;
   if (grass && x >= 240 && x <= 848 && abs(pz) <= 6) {
     if (abs(px) <= 10 && abs(pz) <= 5) {
       int fx = thMod(px + 2, 5) - 2, fz = thMod(pz + 2, 5) - 2;

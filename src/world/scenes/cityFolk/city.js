@@ -47,7 +47,7 @@ int cfCityBusStopCell(int x, int y, int z, int id) {
   if (y < CITY_FLOOR) return E_BRICK;
   // Town geometry has priority: preserve gate posts and adjacent overlays.
   if (id != E_EMPTY) return id;
-  return cfCityStop(x, y, z, CITY_STOP_X, CITY_STOP_Z);
+  return cfCityStop(x, y, z, CITY_STOP_X, CITY_STOP_Z - 4);
 }
 int cfCityCell(int x, int y, int z, int id) {
   bool city = x >= CITY_WEST && x <= CITY_EAST && z >= CITY_NORTH && z <= CITY_SOUTH;
@@ -63,7 +63,7 @@ int cfCityCell(int x, int y, int z, int id) {
   if (matter != E_EMPTY) return matter;
   matter = cfCityShop(x, y, z, CITY_THEATRE_X, CITY_THEATRE_Z, 2);
   if (matter != E_EMPTY) return matter;
-  matter = cfCityStop(x, y, z, 0, CITY_CITY_STOP_Z);
+  matter = cfCityStop(x, y, z, 0, CITY_CITY_STOP_Z + 12);
   if (matter != E_EMPTY) return matter;
   int pz = z - CITY_PLAZA_Z;
   // Low corner planters and lamps leave the square's crossing clear.

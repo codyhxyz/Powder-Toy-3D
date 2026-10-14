@@ -2,6 +2,13 @@ import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, gro
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
 import { CITY_FOLK_TERRAIN } from './cityFolk/terrain.js';
+import { CITY_FOLK_TOWN } from './cityFolk/town.js';
+import { CITY_FOLK_NATURE } from './cityFolk/nature.js';
+import { CITY_FOLK_CITY } from './cityFolk/city.js';
+
+const overlays = [['TOWN', CITY_FOLK_TOWN], ['NATURE', CITY_FOLK_NATURE], ['CITY', CITY_FOLK_CITY]];
+const overlayConstants = () => Object.assign({}, ...overlays.map(([prefix, module]) => jsConstants(prefix, module)));
+const overlayTypes = () => Object.assign({}, ...overlays.map(([prefix, module]) => definesTypes(prefix, module)));
 
 export { CITY_FOLK_TERRAIN } from './cityFolk/terrain.js';
 
@@ -219,15 +226,28 @@ int cfTerrainCell(int x, int y, int z) {
   return wcBaseCell(x + thDiv(uWillowWorldX, 2), y, z + thDiv(uWillowWorldZ, 2));
 }
 
+${CITY_FOLK_TOWN.src}
+${CITY_FOLK_NATURE.src}
+${CITY_FOLK_CITY.src}
+
 int wcCell(int wx, int y, int wz) {
-  return cfTerrainCell(wx - thDiv(uWillowWorldX, 2), y, wz - thDiv(uWillowWorldZ, 2));
+  // Bounds precede overlays: no authored foundation may leak outside the world.
+  if (wx < 0 || wz < 0 || y < 0 || wx >= uWillowWorldX || wz >= uWillowWorldZ || y >= uWillowWorldY) return E_EMPTY;
+  int x = wx - thDiv(uWillowWorldX, 2), z = wz - thDiv(uWillowWorldZ, 2);
+  int id = cfTerrainCell(x, y, z);
+  if (!wcExpanded()) return id;
+  int h = cfHeight(x, z);
+  id = cfNatureCell(x, y, z, h, id);
+  id = cfTownCell(x, y, z, h, id);
+  id = cfCityCell(x, y, z, id);
+  return cfCityBusStopCell(x, y, z, id);
 }
 `;
 
 // The JS twin per world (seed and size): the seed is in scope for any shared
 // hash calls.
 export const willowCoveTwin = memoTwin((P) => `${P.seed}:${P.size}`, (P) => compileShared(SRC, P.seed, {
-  ...jsConstants('WC', L), uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2],
+  ...jsConstants('WC', L), ...overlayConstants(), uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2],
 }));
 
 // The scene's WGSL (scenes/sceneGpu.js): its uniforms (the world's size,
@@ -238,8 +258,9 @@ let srcWgsl = null;
 const willowWgsl = () => /* wgsl */ `
 ${sceneHeadWGSL(WC_U)}
 ${definesGLSL('WC', L)}
+${overlays.map(([prefix, module]) => definesGLSL(prefix, module)).join('\n')}
 ${helpersGLSL}
-${srcWgsl ??= toWgsl(SRC, { consts: definesTypes('WC', L), uniforms: WC_U.sceneTypes })}
+${srcWgsl ??= toWgsl(SRC, { consts: { ...definesTypes('WC', L), ...overlayTypes() }, uniforms: WC_U.sceneTypes })}
 fn sceneCell(w: vec3i) -> SceneCell {
   let id = wcCell(w.x, w.y, w.z);
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, WC_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
@@ -257,5 +278,5 @@ export const willowCove = {
   uniformStruct: WC_U,
   uniforms: (P) => ({ uSceneSeed: P.seed, uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2] }),
   start: (P) => [Math.floor(P.size[0] / 2) + L.ints.PLAZA_X, Math.floor(P.size[2] / 2) + L.ints.PLAZA_Z],
-  ground: (x, z, P) => groundScan(willowCoveTwin(P).wcCell, x, z, Math.min(P.size[1], L.ints.SKY)),
+  ground: (x, z, P) => groundScan(willowCoveTwin(P).wcCell, x, z, Math.min(P.size[1], P.size[0] > L.ints.LEGACY_WORLD_X ? P.size[1] : L.ints.SKY)),
 };

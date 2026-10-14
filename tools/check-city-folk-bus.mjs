@@ -12,7 +12,7 @@ import { createCityBus, CITY_BUS_STOPS, withCityBusFocus, cityBusArrivalClear } 
 const shared = compileShared(C.src, 123, jsConstants('CITY', C));
 const city = shared.cfCityCell, stop = shared.cfCityBusStopCell;
 const twin = willowCoveTwin({ seed: 123, size: [3072, 128, 1024] });
-const cell = (x, y, z) => stop(x - 1536, y, z - 512, city(x - 1536, y, z - 512, twin.wcCell(x, y, z)));
+const cell = (x, y, z) => twin.wcCell(x, y, z);
 assert.match(toWgsl(C.src, { consts: definesTypes('CITY', C) }), /fn cfCityCell/);
 const city2 = compileShared(C.src, 123, jsConstants('CITY', C)).cfCityCell;
 for (let x = -164; x <= 164; x += 4) for (let z = -444; z <= -276; z += 4)
@@ -33,7 +33,7 @@ for(const key of ['emporium','tailor','theatre']) {
 }
 for(const p of [C.landmarks.townArrival,C.landmarks.cityArrival]) solidFootprint(p[0],p[2]);
 assert.equal(stop(-236,59,-120,E.EMPTY),E.METAL,'real shelter roof');
-assert.equal(stop(-236,49,-121,E.EMPTY),E.WOOD,'real shelter bench');
+assert.equal(stop(-236,49,-125,E.EMPTY),E.WOOD,'real shelter bench');
 for(let y=0;y<128;y++) {
   assert.equal(city(-236,y,-116,E.WATER),E.WATER,'city is strictly district-only');
   assert.equal(stop(-260,y,-124,E.WOOD),E.WOOD,'gate center untouched');

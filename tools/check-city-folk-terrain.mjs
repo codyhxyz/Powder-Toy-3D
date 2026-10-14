@@ -1,4 +1,5 @@
-// CPU-only terrain/route acceptance. No renderer, browser or overlay imports.
+// CPU-only BASE terrain/route acceptance. Composed overlays are independently
+// checked by check-city-folk.mjs; pads are intentionally clear before buildings.
 // Run: node tools/check-city-folk-terrain.mjs
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -7,8 +8,8 @@ import { willowCove as scene, willowCoveTwin, CITY_FOLK_TERRAIN as C, WILLOW_LAN
 
 const P = scene.params({ size: scene.size, seed: 20261008 });
 const T = willowCoveTwin(P);
-const cell = (x, y, z) => T.wcCell(x + 1536, y, z + 512);
-const dry = id => [E.ROCK, E.WOOD, E.BRICK, E.PLANT, E.SAND].includes(id);
+const cell = (x, y, z) => T.cfTerrainCell(x, y, z);
+const dry = id => [E.ROCK, E.WOOD, E.BRICK, E.SANDSTONE, E.PLANT, E.SAND].includes(id);
 let walked = 0;
 const visited = new Set();
 function sample(x, z, previous) {
@@ -33,9 +34,8 @@ function line(points) {
   let previous;
   for (let i = 1; i < points.length; i++) {
     const [ax, az] = points[i - 1], [bx, bz] = points[i];
-    assert(ax === bx || az === bz, 'axis-aligned route samples');
-    const n = Math.abs(bx - ax) + Math.abs(bz - az);
-    for (let k = 0; k <= n; k++) previous = sample(ax + Math.sign(bx - ax) * k, az + Math.sign(bz - az) * k, previous);
+    const n = Math.max(Math.abs(bx - ax), Math.abs(bz - az));
+    for (let k = 0; k <= n; k++) previous = sample(Math.round(ax + (bx - ax) * k / n), Math.round(az + (bz - az) * k / n), previous);
   }
 }
 for (const r of C.routes) {

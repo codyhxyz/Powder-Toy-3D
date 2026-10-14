@@ -42,7 +42,7 @@ for (const m of Object.values(N.landmarks)) {
 // support flood fill (no detached leaves, fronds, fruit or coconuts).
 let treeCells = 0;
 for (const [name, x, z, accent, minimumHeight] of [
-  ['cedar', -464, -112, E.MOSS, 27],
+  ['cedar', -592, -112, E.MOSS, 27],
   ['hardwood', 304, 80, E.PLANT, 22],
   ['apple', 624, 80, E.BRICK, 22],
   ['palm', 336, 152, E.SANDSTONE, 20],
@@ -71,12 +71,12 @@ for (const [name, x, z, accent, minimumHeight] of [
   assert.equal(reached.size, cells.size, `${name}: every cell connected to ground`);
   treeCells += cells.size;
 }
-assert.equal(at(400, 24, 100), E.PLANT, 'flower stem');
-assert([E.CERAMIC, E.BRICK].includes(at(400, 25, 100)), 'flower petals');
-assert.equal(at(464, 24, 100), E.ROCK, 'scattered rock');
+assert.equal(at(400, 24, 120), E.PLANT, 'flower stem');
+assert([E.CERAMIC, E.BRICK].includes(at(400, 25, 120)), 'flower petals');
+assert.equal(at(464, 24, 120), E.ROCK, 'scattered rock');
 assert.equal(at(304, 18, 156), E.CERAMIC, 'ivory shell');
-assert.equal(at(432, 23, 100), E.SANDSTONE, 'visible discovery star');
-assert.equal(at(432, 22, 100), E.LIMESTONE, 'buried pale fossil');
+assert.equal(at(432, 23, 120), E.SANDSTONE, 'visible discovery star');
+assert.equal(at(432, 22, 120), E.LIMESTONE, 'buried pale fossil');
 assert.equal(at(416, 23, 44), E.SANDSTONE, 'worn route shoulder');
 terrainReads = 0;
 assert.equal(T.cfNatureCell(640, 50, 80, 24, E.EMPTY), E.EMPTY);
@@ -91,7 +91,7 @@ for (const [x, z] of [[624, 36], [-560, -28], [528, 36]]) {
   for (let y = 0; y < 90; y++) assert.equal(at(x, y, z), support(x, y, z), 'protected sprint body');
 }
 reserve = () => true;
-for (const [x, z] of [[-464, -112], [624, 80], [400, 100], [432, 100], [304, 156], [416, 44]]) {
+for (const [x, z] of [[-464, -112], [624, 80], [400, 120], [432, 120], [304, 156], [416, 44]]) {
   for (let y = 0; y < 90; y++) assert.equal(at(x, y, z), support(x, y, z), 'town reservation');
 }
 reserve = (x, z) => x === 449 && z === 90;
@@ -113,15 +113,15 @@ for (let z = -176; z <= 196; z += 4) for (let x = -188; x <= 188; x += 4) {
 // assuming that the stretched octagonal beach is a rectangular sand strip.
 // Final terrain and town changes still require the independent composed suite.
 const fixtureHeight = height, fixtureSupport = support;
-height = (x, z) => old.wcHeight(x, z);
-support = (x, y, z) => old.wcCell(x + 1536, y, z + 512);
+height = (x, z) => old.cfHeight(x, z);
+support = (x, y, z) => old.cfTerrainCell(x, y, z);
 for (const key of ['cedarWoods', 'hardwoodGrove', 'nativeOrchard', 'beachPalms']) {
   const { at: [x, z], floor } = N.landmarks[key];
   assert.equal(height(x, z), floor, `${key}: real terrain floor`);
   assert.equal(at(x, floor + 10, z), E.WOOD, `${key}: supported on actual bare terrain`);
 }
 assert.equal(at(304, 18, 156), E.CERAMIC, 'shell lies on actual dry beach');
-assert.equal(at(339, 37, 145), E.PLANT, 'supported palm frond can overhang inland beach lip');
+assert.equal(at(819, 37, 145), E.PLANT, 'supported palm frond can overhang inland beach lip');
 height = fixtureHeight;
 support = fixtureSupport;
 
@@ -129,7 +129,7 @@ support = fixtureSupport;
 // hole below a trunk, and paths/reservations beneath prospective crowns.
 const dry = support;
 support = (x, y, z) => y === height(x, z) - 1 ? E.WATER : dry(x, y, z);
-for (const [x, z] of [[400, 100], [464, 100], [432, 100], [304, 156], [624, 80]]) {
+for (const [x, z] of [[400, 120], [464, 120], [432, 120], [304, 156], [624, 80]]) {
   const h = height(x, z);
   for (let y = h - 2; y <= h + 30; y++) assert.equal(at(x, y, z), support(x, y, z), 'water/river never decorated');
 }

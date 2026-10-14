@@ -11,7 +11,7 @@ const ints = {
   MUSEUM_X: 300, MUSEUM_Z: -80, MUSEUM_HALF_X: 22, MUSEUM_HALF_Z: 16,
   CAFE_X: 264, CAFE_Z: -80, CAFE_HALF_X: 14, CAFE_HALF_Z: 12,
   COTTAGE_A_X: -400, COTTAGE_B_X: -680, UPPER_Z: -112, LOWER_Z: 80,
-  HOUSE_HALF: 12, UPPER_PATH_Z: -96, LOWER_PATH_Z: 100,
+  HOUSE_HALF: 12, UPPER_PATH_Z: -94, LOWER_PATH_Z: 100,
   PLOT_X: -500, PLOT_HALF: 14,
   GATE_X: -260, GATE_Z: -124, GATE_HALF_X: 14, GATE_HALF_Z: 4,
   GATE_DOOR_HALF: 6, GATE_DOOR_H: 18,
@@ -46,7 +46,7 @@ const landmarks = Object.freeze({
     [[-430, 22], [-430, 26]], [[-380, 22], [-380, 26]], [[-430, 26], [-326, 26]],
     [[300, -64], [300, -52]], [[300, -52], [340, -52]], [[340, -52], [340, -80]],
     [[250, -80], [240, -80]],
-    [[-400, -100], [-400, -96]], [[-680, -100], [-680, -96]], [[-500, -98], [-500, -96]],
+    [[-400, -100], [-400, -94]], [[-680, -100], [-680, -94]], [[-500, -98], [-500, -94]],
     [[-400, 92], [-400, 100]], [[-680, 92], [-680, 100]], [[-500, 94], [-500, 100]],
     [[-260, -128], [-260, -116]], [[-260, -116], [-220, -116]],
   ],
@@ -145,7 +145,9 @@ int cfTownShell(int a, int y, int b, int f, int hx, int hz, int kind, int id) {
 
 int cfTownPlot(int a, int y, int b, int f, int id) {
   if (abs(a) > TOWN_PLOT_HALF || abs(b) > TOWN_PLOT_HALF || y < 0 || y >= f + 10) return id;
-  if (y < f - 1) return E_ROCK;
+  // Survey plots may overhang a river-bank pad: retain the base channel
+  // beneath its deck, rather than damming the connected west waterfalls.
+  if (y < f - 1) return id == E_WATER ? id : E_ROCK;
   if (y == f - 1) return E_BRICK;
   // Survey stakes and a sign, leaving a wide southern entrance.
   if (abs(a) >= TOWN_PLOT_HALF - 1 && abs(b) >= TOWN_PLOT_HALF - 1 && y < f + 4) return E_WOOD;
