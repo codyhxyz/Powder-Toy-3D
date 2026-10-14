@@ -462,7 +462,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   addEventListener('keyup', e => { if (enabled && ui.opened) e.stopImmediatePropagation(); }, { capture: true });
   document.addEventListener('visibilitychange', () => {
     if (!enabled || !document.hidden) return;
-    bus.cancel(); ui.close(); endInteraction(true, true); releaseHeld();
+    bus.invalidate(); ui.close(); endInteraction(true, true); releaseHeld();
   });
 
   function setEnabled(on, world = null) {
@@ -473,7 +473,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     pendingPunch = null;
     onEnabled(on);
     if (!on) {
-      bus.cancel();
+      bus.invalidate();
       debtBadge?.dispose(); debtBadge = null;
       releaseActions(); getPlayer()?.cancelJump?.();
       ui.close(); endInteraction(true, true);
@@ -765,7 +765,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     get bus() { return bus; },
     get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held && !interaction && !bus.busy; },
     set usingTool(value) { usingTool = value; },
-    get enabled() { return enabled; }, get blocked() { return enabled && (bus.busy || ui.opened || (!!interaction && interaction.kind !== 'grip')); },
+    get enabled() { return enabled; }, get blocked() { return enabled && (bus.holding || ui.opened || (!!interaction && interaction.kind !== 'grip')); },
     get state() { return structuredClone(state); }, get residents() { return residents.map(r => ({ name: r.spec.name, species: r.spec.species, home: r.spec.home, x: r.x, z: r.z })); },
     get speech() { return speech.stats; }, get context() { return context(); }, get root() { return root; }, get avatar() { return avatar.root; },
     get crook() { return crookSnapshot(); },

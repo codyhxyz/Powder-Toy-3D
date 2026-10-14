@@ -56,7 +56,8 @@ export async function cityBusArrivalClear(sim, feet, player) {
 // Adapter: {getWorld,getSim,getMode,getPlayer,active,withVillageFocus,
 // requestRender,notify}. withVillageFocus(at:[worldX,worldZ],valid,visit) must
 // hold exclusive streaming focus until visit resolves. Repeated requests are
-// rejected rather than overlapping journeys. cancel() does not reset a world.
+// rejected rather than overlapping journeys. cancel() restores departure;
+// invalidate() irrevocably releases the body's lifecycle ownership.
 export function createCityBus(adapter) {
   let journey = null, disposed = false;
   const { getWorld, getSim, getMode, getPlayer } = adapter;
@@ -97,7 +98,8 @@ export function createCityBus(adapter) {
         && world.loaded && adapter.active() && getMode() === 'animalCrossing' && getPlayer() === player && !player.dead);
       return !invalidated;
     };
-    const ticket = { same, sim, player, source: player.pos.clone().add(sim.origin), cancelled: false };
+    const ticket = { same, invalidate() { invalidated = true; }, sim, player,
+      source: player.pos.clone().add(sim.origin), cancelled: false };
     journey = ticket; freeze(); adapter.requestRender();
     const valid = () => journey === ticket && !ticket.cancelled && same();
     const dest = worldPoint(CITY_BUS_STOPS[CITY_BUS_STOPS[from].destination].arrival, world);
@@ -135,6 +137,7 @@ export function createCityBus(adapter) {
     get busy() { return !!journey; },
     get holding() { return !!journey && journey.same(); },
     cancel() { if (journey) journey.cancelled = true; },
-    dispose() { disposed = true; if (journey) journey.cancelled = true; },
+    invalidate() { journey?.invalidate(); },
+    dispose() { disposed = true; journey?.invalidate(); },
   };
 }

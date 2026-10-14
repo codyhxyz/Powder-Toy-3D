@@ -53,7 +53,7 @@ function fixture() {
   const sim={origin:new Vector3(1216,0,336),g:{nx:160,ny:128,nz:160},deco:{pending:null}};
   const start=CITY_BUS_STOPS.town.arrival;
   const player={pos:new Vector3(start[0]+1536,48,start[2]+512).sub(sim.origin),vel:new Vector3(),width:1.6,height:5.5,dead:false,
-    cancelJump(){},teleports:0,teleport(feet){this.pos.copy(feet);this.teleports++;return true;}};
+    cancelJump(){this.jumpCharge=null;},teleports:0,teleport(feet){this.pos.copy(feet);this.teleports++;return true;}};
   const world={scene:{key:'willowCove'},loaded:true,epoch:1,P:{size:[3072,128,1024],seed:123},sim,pending:null,
     load(){throw Error('bus must not reload');},store:edits};
   currentWorld=world;
@@ -167,8 +167,13 @@ const hooks=registerHooks({resolve(specifier,context,next){
     return {shortCircuit:true,url:`data:text/javascript,${encodeURIComponent(modules[specifier])}`};
   return next(specifier,context);
 }});
-globalThis.addEventListener=()=>{};
-globalThis.document={hidden:false,body:{classList:{toggle(){}}},querySelector:()=>null,addEventListener(){},
+const keyListeners = new Map(), documentListeners = new Map();
+const retainListener = listeners => (type, listener) => {
+  if (!listeners.has(type)) listeners.set(type, []);
+  listeners.get(type).push(listener);
+};
+globalThis.addEventListener=retainListener(keyListeners);
+globalThis.document={hidden:false,body:{classList:{toggle(){}}},querySelector:()=>null,addEventListener:retainListener(documentListeners),
   createElement:()=>({getContext:()=>({beginPath(){},roundRect(){},moveTo(){},lineTo(){},fill(){},fillText(){}})})};
 globalThis.localStorage={getItem:()=>null,setItem(){}};
 const {createVillage}=await import('../src/pov/village/index.js');
@@ -186,30 +191,57 @@ const {createVillage}=await import('../src/pov/village/index.js');
   village.act({type:'interact'});
   for(let i=0;village.bus.busy&&i<1000;i++)await Promise.resolve();
   assert.deepEqual(absolute(f),[1316,48,396]);assert.deepEqual(village.state,furniture,'furniture untouched on round trip');
-  const gate=deferred();f.world.pending=gate.promise;village.act({type:'interact'});
-  assert.equal(village.bus.busy,true);assert.deepEqual(village.act({type:'interact'}),{},'E action cancels too');
-  gate.resolve();for(let i=0;village.bus.busy&&i<1000;i++)await Promise.resolve();
-  assert.equal(village.bus.busy,false);assert.deepEqual(absolute(f),[1316,48,396]);
+  for (const cancel of ['E', 'Escape']) {
+    const release = deferred(), started = deferred(), read = f.sim.readCell, source = absolute(f);
+    f.sim.readCell = async (...args) => { const result = read(...args); started.resolve(); await release.promise; return result; };
+    const pending = village.bus.board(); await started.promise;
+    const moves = f.moves.length, n = f.player.teleports;
+    if (cancel === 'E') assert.deepEqual(village.act({type:'interact'}),{},'E action cancels too');
+    else for (const listener of keyListeners.get('keydown')) listener({ code: 'Escape', preventDefault(){}, stopImmediatePropagation(){} });
+    assert.equal(village.bus.holding, true, `${cancel}: explicit cancellation still owns departure`);
+    assert.equal(village.blocked, true, `${cancel}: input remains held until departure restoration`);
+    release.resolve(); assert.equal((await pending).ok, false);
+    assert.deepEqual(absolute(f), source, `${cancel}: departure restored after streaming`);
+    assert(f.moves.length > moves, `${cancel}: cancellation rolls window back`);
+    assert.equal(f.player.teleports, n); assert.equal(f.focus, null); assert.equal(village.bus.busy, false);
+    f.sim.readCell = read;
+  }
   // Match the production beforeBody -> holding -> afterBody frame path.
   // Respawn reuses the same body, and transient inactivity can also recover
   // before delayed arrival reads finish. Neither may revive the old ticket.
-  for (const invalid of ['death', 'inactive']) {
+  for (const invalid of ['visibility-event', 'disable-reenable', 'death', 'inactive']) {
     f.player.pos.set(1316 - f.sim.origin.x, 48, 396 - f.sim.origin.z);
     const release = deferred(), started = deferred(), read = f.sim.readCell;
     f.sim.readCell = async (...args) => { const result = read(...args); started.resolve(); await release.promise; return result; };
     const pending = village.bus.board(); await started.promise;
     assert(f.focus); const n = f.player.teleports, store = f.world.store;
-    if (invalid === 'death') f.player.dead = true; else document.hidden = true;
-    const input = { move: { x: 1, z: -1 }, jump: true };
-    village.beforeBody(input); assert.equal(village.bus.holding, false); village.afterBody();
-    f.player.dead = false; document.hidden = false;
-    f.player.pos.set(72, 56, 96); f.player.vel.set(3, 4, 5);
+    const input = { move: { x: 1, z: -1 }, jump: true, chargeJump: true, sprint: true, down: true, crouch: true };
+    const inputBefore = structuredClone(input);
+    if (invalid === 'visibility-event') {
+      document.hidden = true;
+      assert.equal(documentListeners.get('visibilitychange').length, 1, 'retain the actual visibility listener');
+      for (const listener of documentListeners.get('visibilitychange')) listener();
+      // Reactivate the SAME body before any frame/holding query or read completion.
+      document.hidden = false;
+      for (const listener of documentListeners.get('visibilitychange')) listener();
+    } else if (invalid === 'disable-reenable') {
+      village.setEnabled(false);
+      village.setEnabled(true, f.world.P);
+    } else {
+      if (invalid === 'death') f.player.dead = true; else document.hidden = true;
+      village.beforeBody(input); assert.equal(village.bus.holding, false); village.afterBody();
+      f.player.dead = false; document.hidden = false;
+    }
+    f.player.pos.set(72, 56, 96); f.player.vel.set(3, 4, 5); f.player.jumpCharge = 0.7;
     const pos = f.player.pos.clone(), origin = f.sim.origin.clone(), moves = f.moves.length;
-    village.beforeBody(input); assert.equal(village.bus.holding, false); village.afterBody();
-    assert(f.player.pos.equals(pos)); assert.deepEqual(input.move, { x: 1, z: -1 });
+    village.beforeBody(input); assert.equal(village.bus.holding, false, `${invalid}: lifecycle invalidity is permanent`); village.afterBody();
+    assert(f.player.pos.equals(pos)); assert.deepEqual(input, inputBefore);
+    assert.equal(village.blocked, false, `${invalid}: actual POV readInput/touch gate no longer suppresses input`);
+    assert.deepEqual(f.player.vel.toArray(), [3, 4, 5]); assert.equal(f.player.jumpCharge, 0.7);
     release.resolve(); assert.equal((await pending).ok, false);
     assert.equal(f.player.teleports, n); assert(f.player.pos.equals(pos));
-    assert.deepEqual(f.player.vel.toArray(), [3, 4, 5]); assert(f.sim.origin.equals(origin));
+    assert.deepEqual(f.player.vel.toArray(), [3, 4, 5]); assert.equal(f.player.jumpCharge, 0.7);
+    assert.deepEqual(input, inputBefore); assert(f.sim.origin.equals(origin));
     assert.equal(f.moves.length, moves, 'invalidated journey must not stream rollback');
     assert.equal(f.focus, null); assert.equal(village.bus.busy, false); assert.equal(f.world.store, store);
     assert.deepEqual(village.state, furniture); f.sim.readCell = read;
@@ -217,4 +249,4 @@ const {createVillage}=await import('../src/pov/village/index.js');
   village.setEnabled(false);
 }
 hooks.deregister();
-console.log('city-folk bus CPU: geometry/shared-WGSL, deterministic matter, entrances, supported round trips, persistent edits, cancellation/repeats/disposal/replacement/isolation, actual village E wiring/furniture preservation: PASS');
+console.log('city-folk bus CPU: geometry/shared-WGSL, deterministic matter, entrances, supported round trips, persistent edits, cancellation/repeats/disposal/replacement/isolation, actual village E/Esc, visibility-event and disable/reenable lifecycle/input/focus/furniture preservation: PASS');
