@@ -23,9 +23,8 @@ fn phaseLess(a:vec2u,b:vec2u)->bool {
 fn phaseMulSmall(a:vec2u,n:u32)->vec2u {
  let low=energyMul(a.x,n); return vec2u(low.x,low.y+a.y*n);
 }
-// Exact unsigned division, only used while banking a latent transition. No
-// f32 intermediate: compressed liquids have more than 2^32 latent units.
-fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
+// Exact unsigned long division is the fallback, never an approximate result.
+fn phaseDivExact(a:vec2u,b:vec2u)->vec2u {
  var quotient=vec2u(0u); var remainder=vec2u(0u);
  if(all(b==vec2u(0u))){return quotient;}
  for(var bit=63;bit>=0;bit--){
@@ -33,12 +32,54 @@ fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
   var incoming=0u;
   if(bit>=32){incoming=(a.y>>u32(bit-32))&1u;}else{incoming=(a.x>>u32(bit))&1u;}
   remainder.x|=incoming;
-  if(!phaseLess(remainder,b)){
+  if(!energyLess(remainder,b)){
    remainder=energySub(remainder,b);
    if(bit>=32){quotient.y|=1u<<u32(bit-32);}else{quotient.x|=1u<<u32(bit);}
   }
  }
  return quotient;
+}
+fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
+ if(all(b==vec2u(0u))){return vec2u(0u);}
+ if(energyLess(a,b)){return vec2u(0u);}
+ if(b.y==0u && (b.x & (b.x-1u))==0u){
+  if(b.x==1u){return a;}
+  let shift=firstTrailingBit(b.x);
+  return vec2u((a.x>>shift)|(a.y<<(32u-shift)),a.y>>shift);
+ }
+ if(b.y==0u && b.x<=0x80000000u){
+  // Long division retains the HIGH quotient too. For PHASE_STEPS (<=65536),
+  // radix-65536 digits keep BOTH intermediate numerators <=2^32-1: each is
+  // remainder*65536+digit, remainder<d<=65536. Only exact builtin / and %.
+  let high=a.y/b.x; let rem=a.y%b.x;
+  if(b.x<=65536u){
+   let middle=(rem<<16u)|(a.x>>16u);
+   let low=((middle%b.x)<<16u)|(a.x&65535u);
+   return vec2u(((middle/b.x)<<16u)|(low/b.x),high);
+  }
+  return vec2u(energyDiv(vec2u(a.x,rem),b.x).x,high);
+ }
+ if(b.x==0u && (b.y & (b.y-1u))==0u){return vec2u(a.y>>firstTrailingBit(b.y),0u);}
+ // phaseEncode's quotient <= PHASE_STEPS (12220). Restrict both factors:
+ // b<2^48, q<=65535 => b*q<2^64, so phaseMulSmall CANNOT overflow.
+ // Other domains, and any inaccurate estimate, retain exact long division.
+ if(b.y<=65535u){
+  let estimate=(f32(a.y)*4294967296.0+f32(a.x))/(f32(b.y)*4294967296.0+f32(b.x));
+  if(estimate<65536.0){
+   var q=u32(max(estimate,0.0)); var product=phaseMulSmall(b,q);
+   for(var attempt=0u;attempt<4u;attempt++){
+    if(energyLess(a,product)){
+     if(q==0u){break;}
+     q--; product=energySub(product,b);
+    }else{
+     if(energyLess(energySub(a,product),b)){return vec2u(q,0u);}
+     if(q==65535u){break;}
+     q++; product=energyAdd(product,b);
+    }
+   }
+  }
+ }
+ return phaseDivExact(a,b);
 }
 fn phaseOffsetEnergy(id:u32,amount:u32)->vec2u {
  let offset=phaseOffsetPerQuantum(id); let magnitude=energyMul(u32(abs(offset)),amount);

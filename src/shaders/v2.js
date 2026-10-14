@@ -880,7 +880,7 @@ fn prefixOf(p: vec3i, face: u32) -> u32 {
   var n = 0u; for (var f = 0u; f < face; f++) { n += rawSendOf(p, f); } return n;
 }
 fn shareUnsigned(total: u32, prefix: u32, n: u32, fill: u32) -> u32 {
-  if (fill == 0u) { return 0u; }
+  if (fill == 0u || total == 0u || n == 0u) { return 0u; }
   return energyDiv(energyMul(total, prefix + n), fill).x - energyDiv(energyMul(total, prefix), fill).x;
 }
 fn shareBank(bank: i32, prefix: u32, n: u32, fill: u32) -> i32 {
@@ -892,17 +892,24 @@ fn transportedEnergy(src: Material, prefix: u32, n: u32) -> vec2u {
   let carried = energySub(energyOf(src), energyMul(FULLU, cTq(src.core)));
   return energyShare(carried, prefix, n, cFill(src.core));
 }
-fn sendOf(p: vec3i, face: u32) -> u32 {
-  let n = rawSendOf(p, face); if (n == 0u) { return 0u; }
+// Invocation-local packet: gating and gather consume the exact same heat/fuel.
+// No per-face storage, new scratch allocation or additional binding.
+struct TransportPacket { amount: u32, heat: vec2u, fuel: u32 }
+fn sendOf(p: vec3i, face: u32) -> TransportPacket {
+  let empty = TransportPacket(0u, vec2u(0u), 0u);
+  let n = rawSendOf(p, face); if (n == 0u) { return empty; }
   let src = snapshot(slotOf(p)); let dst = snapshot(slotOf(p + face6(i32(face))));
-  if (!energyPacketFits(src, dst, transportedEnergy(src, prefixOf(p, face), n), n)) { markBusy(p); return 0u; }
-  if (!conductsNative(cid(src.core))) {
-    let fuel = shareUnsigned(payloadOf(src.core), prefixOf(p, face), n, cFill(src.core));
+  let prefix = prefixOf(p, face);
+  let heat = transportedEnergy(src, prefix, n);
+  if (!energyPacketFits(src, dst, heat, n)) { markBusy(p); return empty; }
+  var fuel = 0u;
+  if (!conductsNative(cid(src.core)) && payloadOf(src.core) != 0u) {
+    fuel = shareUnsigned(payloadOf(src.core), prefix, n, cFill(src.core));
     // Payload concentration can grow through integer apportionment. Reserve an
     // equal share of actual u16 headroom, rather than assuming fresh full fuel.
-    if (fuel > (65535u - payloadOf(dst.core)) / 6u) { markBusy(p); return 0u; }
+    if (fuel > (65535u - payloadOf(dst.core)) / 6u) { markBusy(p); return empty; }
   }
-  return n;
+  return TransportPacket(n, heat, fuel);
 }
 
 ${MAIN} {
@@ -916,20 +923,19 @@ ${brickCell}
     let q = p + face6(i32(face)); if (!inGrid(q) || !awakeCell(q)) { continue; }
     let out = sendOf(p, face);
     let incoming = sendOf(q, face ^ 1u);
-    if (out != 0u) {
-      let prefix = prefixOf(p, face);
-      fill -= i32(out); energy = energySub(energy, transportedEnergy(src, prefix, out));
-      if (!conductsNative(cid(src.core))) { payload -= i32(shareUnsigned(payloadOf(src.core), prefix, out, cFill(src.core))); }
+    if (out.amount != 0u) {
+      fill -= i32(out.amount); energy = energySub(energy, out.heat);
+      if (!conductsNative(cid(src.core))) { payload -= i32(out.fuel); }
     }
-    if (incoming != 0u) {
-      let other = snapshot(slotOf(q)); let prefix = prefixOf(q, face ^ 1u);
-      fill += i32(incoming); energy = energyAdd(energy, transportedEnergy(other, prefix, incoming));
+    if (incoming.amount != 0u) {
+      let other = snapshot(slotOf(q));
+      fill += i32(incoming.amount); energy = energyAdd(energy, incoming.heat);
       if (id == 0u) { id = cid(other.core); }
-      if (incoming > strongest && cid(src.core) == 0u) { ct = ctypeOf(other.core); strongest = incoming; }
-      if (!conductsNative(id)) { payload += i32(shareUnsigned(payloadOf(other.core), prefix, incoming, cFill(other.core))); }
+      if (incoming.amount > strongest && cid(src.core) == 0u) { ct = ctypeOf(other.core); strongest = incoming.amount; }
+      if (!conductsNative(id)) { payload += i32(incoming.fuel); }
       else { code = max(code, payloadOf(other.core)); }
     }
-    if (out != 0u || incoming != 0u || faceQ(p, face) != 0.0) { markBusy(p); }
+    if (out.amount != 0u || incoming.amount != 0u || faceQ(p, face) != 0.0) { markBusy(p); }
   }
   var next = before;
   if (fill == 0) { next.x &= 0xffffff00u; next.y = 0u; next.w &= 65535u; }

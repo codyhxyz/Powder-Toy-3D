@@ -33,7 +33,7 @@ fn energyMul(a: u32, b: u32) -> vec2u {
   return vec2u((t1 << 16u) | (p & 65535u), a1 * b1 + (t >> 16u) + (t1 >> 16u));
 }
 // Positive dividend, divisor <= 2^31; returns quotient low word and exact remainder.
-fn energyDiv(a: vec2u, d: u32) -> vec2u {
+fn energyDivExact(a: vec2u, d: u32) -> vec2u {
   var r = 0u; var q = 0u;
   for (var i = 63; i >= 0; i--) {
     var bit = 0u;
@@ -43,10 +43,40 @@ fn energyDiv(a: vec2u, d: u32) -> vec2u {
   }
   return vec2u(q, r);
 }
+// Unsigned limb comparison (phaseLess is signed).
+fn energyLess(a: vec2u, b: vec2u) -> bool { return a.y < b.y || (a.y == b.y && a.x < b.x); }
+fn energyDiv(a: vec2u, d: u32) -> vec2u {
+  // Preserve the original low-word quotient contract, including d==0, outside
+  // the bounded-quotient domain. The exact fallback supports d <= 2^31.
+  if (d == 0u || a.y >= d) { return energyDivExact(a, d); }
+  if (a.y == 0u) { return vec2u(a.x / d, a.x % d); }
+  if ((d & (d - 1u)) == 0u) {
+    let shift = firstTrailingBit(d); // hi<d and hi!=0 imply 1<=shift<=31.
+    return vec2u((a.x >> shift) | (a.y << (32u - shift)), a.x & (d - 1u));
+  }
+  // A float is only a candidate, NEVER the result. Clamp below 2^32 before
+  // conversion (the greatest f32 below 2^32 is 2^32-256). Four corrections
+  // bound work even with backend rounding/FMA differences or huge quotients.
+  var q = u32(clamp((f32(a.y) * 4294967296.0 + f32(a.x)) / f32(d), 0.0, 4294967040.0));
+  var product = energyMul(q, d); // u32*u32 always fits u64.
+  for (var attempt = 0u; attempt < 4u; attempt++) {
+    if (energyLess(a, product)) {
+      if (q == 0u) { break; }
+      q--; product = energySub(product, vec2u(d, 0u));
+    } else {
+      let r = energySub(a, product);
+      if (r.y == 0u && r.x < d) { return vec2u(q, r.x); }
+      if (q == 0xffffffffu) { break; }
+      q++; product = energyAdd(product, vec2u(d, 0u));
+    }
+  }
+  return energyDivExact(a, d);
+}
 // Scale signed energy by n/d (0 <= n <= d), retaining all wide bits.
 // The quotient is bounded by source energy per fill quantum (u32 here).
 fn energyScale(e: vec2u, n: u32, d: u32) -> vec2u {
   if (d == 0u || n == 0u) { return vec2u(0u); }
+  if (n == d) { return e; }
   let negative = (e.y & 0x80000000u) != 0u;
   let magnitude = select(e, energyNeg(e), negative);
   let qr = energyDiv(magnitude, d);
@@ -54,7 +84,22 @@ fn energyScale(e: vec2u, n: u32, d: u32) -> vec2u {
   return select(scaled, energyNeg(scaled), negative);
 }
 fn energyShare(e: vec2u, prefix: u32, n: u32, d: u32) -> vec2u {
-  return energySub(energyScale(e, prefix + n, d), energyScale(e, prefix, d));
+  if (d == 0u || n == 0u || all(e == vec2u(0u))) { return vec2u(0u); }
+  if (prefix == 0u && n == d) { return e; }
+  let negative = (e.y & 0x80000000u) != 0u;
+  let magnitude = select(e, energyNeg(e), negative);
+  // Out-of-domain quotients keep the original scale behavior.
+  if (magnitude.y >= d) { return energySub(energyScale(e, prefix + n, d), energyScale(e, prefix, d)); }
+  let qr = energyDiv(magnitude, d);
+  // floor(E*(p+n)/d)-floor(E*p/d) = q*n + the remainder shares.
+  var tail = 0u;
+  if (qr.y != 0u) {
+    tail = qr.y;
+    if (prefix + n != d) { tail = energyDiv(energyMul(qr.y, prefix + n), d).x; }
+    if (prefix != 0u) { tail -= energyDiv(energyMul(qr.y, prefix), d).x; }
+  }
+  let packet = energyAdd(energyMul(qr.x, n), vec2u(tail, 0u));
+  return select(packet, energyNeg(packet), negative);
 }
 fn energyOf(m: Material) -> vec2u {
   let amount = materialAmount(m.core); let id = cid(m.core);
