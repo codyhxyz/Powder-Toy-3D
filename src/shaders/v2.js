@@ -131,14 +131,14 @@ export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, STATS: 12, words: 32 };
 // stats: [tick, awake bricks, busy bricks the tick before, quiet ticks in a row, last busy tick, columns]
 export const STATS = { TICK: 0, AWAKE: 1, BUSY: 2, QUIET: 3, LAST_BUSY: 4, COLS: 5, words: 8 };
 
-export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i' });
+export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32' });
 
 const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type } });
 // group 2 of every v2 kernel: the cells, the activity words, the element rows (and for args, the args)
 export const V2_LAYOUT = [buf(0, 'storage'), buf(1, 'storage'), buf(2, 'read-only-storage')];
 export const V2_ARGS_LAYOUT = [...V2_LAYOUT, buf(3, 'storage')];
 export const V2_MATERIAL_LAYOUT = [...V2_LAYOUT, buf(4, 'storage')];
-export const V2_LIQUID_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage')];
+export const V2_LIQUID_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage'), buf(6, 'storage')];
 export const V2_CONTACT_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(6, 'storage')];
 // group 1 of the import and the bridge: today's state, its flags and marks (no activity arrays)
 export const V2_STATE_OPTS = { state: 'read_write', flags: true, marks: true };
@@ -157,7 +157,7 @@ ${opts.state === 'read' ? '' : compactDecodeWGSL}
 ${nativeStateWGSL}
 ${family !== 'base' ? materialStorageWGSL : ''}
 ${family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>;' : ''}
-${family === 'contact' ? '@group(2) @binding(6) var<storage, read_write> events: array<u32>;' : ''}
+${family === 'contact' || family === 'liquid' ? '@group(2) @binding(6) var<storage, read_write> events: array<u32>;' : ''}
 ${V2Params.wgsl}
 @group(3) @binding(1) var<uniform> P: V2Params;
 @group(2) @binding(0) var<storage, read_write> cells: array<vec4u>;
@@ -220,7 +220,8 @@ fn storeCell(p: vec3i, c: vec4u) {
 }
 fn cellAt(p: vec3i) -> vec4u { if (!inGrid(p)) { return WALL_CELL; } return loadCell(p); }
 fn cid(c: vec4u) -> u32 { return c.x & 255u; }
-fn cTq(c: vec4u) -> u32 { return (c.x >> 8u) & 0xffffu; }
+fn cRawTq(c: vec4u) -> u32 { return (c.x >> 8u) & 0xffffu; }
+fn cTq(c: vec4u) -> u32 { return phaseTq(cid(c), cRawTq(c)); }
 fn cAge(c: vec4u) -> u32 { return c.x >> 24u; }
 fn withAge(c: vec4u, age: u32) -> vec4u { var o = c; o.x = (c.x & 0x00ffffffu) | (min(age, 255u) << 24u); return o; }
 fn cFill(c: vec4u) -> u32 { return c.y & 0xffffffu; }
@@ -266,7 +267,7 @@ const bridgeWGSL = /* wgsl */ `
 fn importA(a: vec4f) -> vec4u {
   let id = u32(clamp(eid(a), 0, NE - 1));
   let k = cls(id);
-  let tq = u32(clamp(round((a.y + T_OFFSET) * 4.0), 0.0, 65535.0));
+  let tq = u32(clamp(round((a.y + T_OFFSET) * 4.0), 0.0, 41093.0));
   let legacyCtype = u32(max(floor(a.w), 0.0));
   let ct = select(legacyCtype & 255u, 0u, conductsNative(id));
   let seed = u32(clamp(fract(a.w) / SEED_MAX * 65536.0, 0.0, 65535.0));
@@ -325,9 +326,20 @@ ${MAIN} {
   workgroupBarrier();
   if (li == 0u) {
     atomicStore(&act2[V2_LEGACY + b], 1u);
-    atomicAnd(&marks[MARK_ACT + (b >> 5u)], ~(1u << (b & 31u)));
+    if (P.preserveLegacyMarks == 0u) { atomicAnd(&marks[MARK_ACT + (b >> 5u)], ~(1u << (b & 31u))); }
     if (atomicLoad(&wgChanged) != 0u) { atomicStore(&act2[P.busyIn + b], 1u); }
   }
+}
+`;
+
+// Retire requests only for explicitly replaced external slots, before import
+// consumes ownership bits. Native requests elsewhere survive paused edits.
+export const v2ExternalEventsWGSL = (g) => /* wgsl */ `
+${v2Head(g, { state: false, marks: true }, 'contact')}
+${MAIN} {
+  let s = foldThread(wg, nwg, li); if (s >= SLOTS) { return; }
+  let owned = atomicLoad(&marks[MARK_OWNED + (s >> 5u)]) & (1u << (s & 31u));
+  if (P.full != 0u || owned != 0u) { events[s] = 0u; }
 }
 `;
 
@@ -417,7 +429,7 @@ fn main() {
 // falls into; it lands on the run below; overshooting onto a falling run it takes that run's age, so the
 // two move as one (5.3). Liquids and solids are floors (powders sink into liquids in the block pass).
 export const v2ColumnWGSL = (g) => /* wgsl */ `
-${v2Head(g, { state: false }, 'material')}
+${v2Head(g, { state: false }, 'contact')}
 ${MAIN} {
   let k = foldThread(wg, nwg, li);
   if (k >= atomicLoad(&act2[V2_COUNT + CNT_USE_COLS]) * 16u) { return; }
@@ -460,6 +472,7 @@ ${MAIN} {
     if (to != y) {
       let q = vec3i(x, to, z);
       let o = zeroQ(loadCell(q));
+      let request = events[slotOf(p)]; events[slotOf(p)] = events[slotOf(q)]; events[slotOf(q)] = request;
       let source = loadMaterial(slotOf(p));
       let destination = loadMaterial(slotOf(q));
       storeMaterial(slotOf(q), destination, Material(c, source.bank));
@@ -528,11 +541,11 @@ ${MAIN} {
   var cs: array<vec4u, 8>;
   var orig: array<vec4u, 8>;
   var bs: array<i32, 8>; var oldBanks: array<i32, 8>;
-  var positions: array<vec3i, 8>; var requests: array<u32, 8>;
+  var positions: array<vec3i, 8>; var requests: array<u32, 8>; var pending: array<u32, 8>;
   for (var i = 0u; i < 8u; i++) {
     let p = c0 + off8(i); positions[i] = p;
     cs[i] = cellAt(p); orig[i] = cs[i];
-    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; } oldBanks[i] = bs[i];
+    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; } oldBanks[i] = bs[i];
   }
   // R2 topple
   for (var c = 0u; c < 4u; c++) {
@@ -578,6 +591,7 @@ ${MAIN} {
     cs[pick] = setFall(gr, 0u, 0.0);
     cs[ti] = zeroQ(moved);
     let bank = bs[pick]; bs[pick] = bs[ti]; bs[ti] = bank;
+    let request = pending[pick]; pending[pick] = pending[ti]; pending[ti] = request;
     markBusy(c0 + off8(pick));
   }
   // R3 sink and float, R4 buoyancy: a denser movable over a lighter fluid swaps down
@@ -600,6 +614,7 @@ ${MAIN} {
       cs[c] = resetMotionAge(zeroQ(hi));
       cs[4u + c] = resetMotionAge(zeroQ(lo));
       let bank = bs[c]; bs[c] = bs[4u + c]; bs[4u + c] = bank;
+      let request = pending[c]; pending[c] = pending[4u + c]; pending[4u + c] = request;
       markBusy(c0 + off8(c));
     }
   }
@@ -623,6 +638,7 @@ ${MAIN} {
       cs[i0] = zeroQ(a1);
       cs[i1] = zeroQ(a0);
       let bank = bs[i0]; bs[i0] = bs[i1]; bs[i1] = bank;
+      let request = pending[i0]; pending[i0] = pending[i1]; pending[i1] = request;
       markBusy(c0 + off8(i1));
     }
   }
@@ -638,7 +654,7 @@ ${MAIN} {
     if (inGrid(p)) {
       let slot = slotOf(p);
       storeMaterial(slot, Material(orig[i], oldBanks[i]), Material(cs[i], bs[i]));
-      events[slot] |= requests[i];
+      events[slot] = pending[i] | requests[i];
     }
   }
 }
@@ -673,6 +689,9 @@ fn claimOf(p: vec3i) -> vec2u {
   return vec2u(best, bt);
 }
 fn faceFlux(pi: vec3i, ci: vec4u, pj: vec3i, cj: vec4u, a: i32, qold: f32) -> f32 {
+  // An unallocated detonation must retain its one source for deterministic
+  // retry, not split that source into several liquid cells after the consumer.
+  if (((events[slotOf(pi)] | events[slotOf(pj)]) & 1u) != 0u) { markBusy(pi); markBusy(pj); return 0.0; }
   let wi = isLiq(ci);
   let wj = isLiq(cj);
   if (!wi && !wj) { return 0.0; }
@@ -818,13 +837,14 @@ fn faceQ(p: vec3i, face: u32) -> f32 {
   let axis = i32(face / 2u); var owner = p;
   if ((face & 1u) != 0u) { owner -= axisV(axis); }
   if (!inGrid(owner) || !inGrid(p + face6(i32(face)))) { return 0.0; }
-  if (!awakeCell(owner) || !awakeCell(p + face6(i32(face)))) { return 0.0; }
+  if (!awakeCell(p) || !awakeCell(p + face6(i32(face)))) { return 0.0; }
+  if (!isOpenC(snapshot(slotOf(p)).core) || !isOpenC(snapshot(slotOf(p + face6(i32(face)))).core)) { return 0.0; }
   let s = slotOf(owner); var q = 0.0;
   if (axis == 2) { q = unpack2x16float(atomicLoad(&cells[s].w) & 65535u).x; }
   else { q = unpack2x16float(cells[s].z)[axis]; }
   return select(q, -q, (face & 1u) != 0u);
 }
-fn sendOf(p: vec3i, face: u32) -> u32 {
+fn rawSendOf(p: vec3i, face: u32) -> u32 {
   if (!isLiq(snapshot(slotOf(p)).core)) { return 0u; }
   let a = liquidScratch[slotOf(p)]; let kq = a.x & 65535u;
   let tag = (a.x >> 16u) & 255u;
@@ -833,7 +853,7 @@ fn sendOf(p: vec3i, face: u32) -> u32 {
   return n;
 }
 fn prefixOf(p: vec3i, face: u32) -> u32 {
-  var n = 0u; for (var f = 0u; f < face; f++) { n += sendOf(p, f); } return n;
+  var n = 0u; for (var f = 0u; f < face; f++) { n += rawSendOf(p, f); } return n;
 }
 fn shareUnsigned(total: u32, prefix: u32, n: u32, fill: u32) -> u32 {
   if (fill == 0u) { return 0u; }
@@ -847,6 +867,18 @@ fn shareBank(bank: i32, prefix: u32, n: u32, fill: u32) -> i32 {
 fn transportedEnergy(src: Material, prefix: u32, n: u32) -> vec2u {
   let carried = energySub(energyOf(src), energyMul(FULLU, cTq(src.core)));
   return energyShare(carried, prefix, n, cFill(src.core));
+}
+fn sendOf(p: vec3i, face: u32) -> u32 {
+  let n = rawSendOf(p, face); if (n == 0u) { return 0u; }
+  let src = snapshot(slotOf(p)); let dst = snapshot(slotOf(p + face6(i32(face))));
+  if (!energyPacketFits(src, dst, transportedEnergy(src, prefixOf(p, face), n), n)) { markBusy(p); return 0u; }
+  if (!conductsNative(cid(src.core))) {
+    let fuel = shareUnsigned(payloadOf(src.core), prefixOf(p, face), n, cFill(src.core));
+    // Payload concentration can grow through integer apportionment. Reserve an
+    // equal share of actual u16 headroom, rather than assuming fresh full fuel.
+    if (fuel > (65535u - payloadOf(dst.core)) / 6u) { markBusy(p); return 0u; }
+  }
+  return n;
 }
 
 ${MAIN} {
@@ -934,11 +966,12 @@ const liquid = () => [LAYOUT.TABLES, 'EMPTY', V2_LIQUID_LAYOUT];
 const contact = () => [LAYOUT.TABLES, 'EMPTY', V2_CONTACT_LAYOUT];
 /** Every v2 kernel: name, WGSL, group layouts (as WGSL_CHECK lists them), a sample dispatch. */
 export const V2_KERNELS = [
+  { name: 'v2externalEvents', code: v2ExternalEventsWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_CONTACT_LAYOUT], dispatch: (g) => fold(gridDims(g).nbricks) },
   { name: 'v2import', code: v2ImportWGSL, layouts: () => [LAYOUT.TABLES, V2_IMPORT_LAYOUT, V2_MATERIAL_LAYOUT], dispatch: (g) => fold(gridDims(g).nbricks) },
   { name: 'v2activity', code: v2ActivityWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2cols', code: v2ColsWGSL, layouts: own, dispatch: (g) => fold(Math.ceil((g.nx / 4) * (g.nz / 4) / 64)) },
   { name: 'v2args', code: v2ArgsWGSL, layouts: () => [LAYOUT.TABLES, 'EMPTY', V2_ARGS_LAYOUT], dispatch: () => [1, 1, 1], workgroupSize: [1, 1, 1] },
-  { name: 'v2column', code: v2ColumnWGSL, layouts: material, dispatch: perBrick },
+  { name: 'v2column', code: v2ColumnWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2support', code: v2SupportWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2block', code: v2BlockWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2flux', code: v2FluxWGSL, layouts: liquid, dispatch: perBrick },

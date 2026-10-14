@@ -1,13 +1,18 @@
+import { PHASE_ROWS } from '../v2/phase.js';
 import { ELEMENTS } from '../elements.js';
 // Shared presentation/legacy projection of the authoritative v2 payload.
 // Whole-cell liquid dithering intentionally matches the old bridge. This is
 // NOT a lossless save representation: fill, flux and fall state stay in v2.
 export const compactDecodeWGSL = /* wgsl */ `
+const COMPACT_HOT_T = array<u32, ${PHASE_ROWS.length}>(${PHASE_ROWS.map(r => `${r.hotQ}u`).join(',')});
+const COMPACT_COLD_T = array<u32, ${PHASE_ROWS.length}>(${PHASE_ROWS.map(r => `${r.coldQ}u`).join(',')});
+fn compactTq(c: vec4u) -> u32 { let raw = (c.x >> 8u) & 65535u; if (raw <= 41093u) { return raw; }
+  return select(COMPACT_COLD_T[c.x & 255u], COMPACT_HOT_T[c.x & 255u], raw < 53315u); }
 const COMPACT_CONDUCTS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(!!e.conducts)).join(',')});
 fn compactA(p: vec3i, c: vec4u) -> vec4f {
   let id = i32(c.x & 255u);
   let k = KIND(id);
-  let T = f32((c.x >> 8u) & 65535u) * 0.25 - 273.25;
+  let T = f32(compactTq(c)) * 0.25 - 273.25;
   let seed = f32(seed3(p, 0u, 991u) >> 16u) * (SEED_MAX / 65536.0);
   if (k == K_LIQUID) {
     if ((c.y & 0xffffffu) > (seed3(p, 0u, 4243u) >> 16u)) {

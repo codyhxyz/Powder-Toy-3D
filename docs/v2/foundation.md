@@ -8,9 +8,11 @@ CPU-checked; this is not a GPU-validation or feature-parity claim.
 request 4 bytes per slot: **20 authoritative / 40 resident bytes**, before
 activity, dynamics, legacy compatibility and renderer storage. Disposal destroys
 all four; undo/full restoration clears transient storage. Explicit legacy-owned
-imports zero the bank even when imported core words compare equal.
+imports zero the bank even when imported core words compare equal. Suspended
+imports pass `preserveLegacyMarks=1`: capturing retained v2 while v1 owns
+physics does not consume v1's pending edit wake marks.
 
-Bindings are per family: base 3, material 4, liquid/contact 5 native storage
+Bindings are per family: base 3, material 4, contact 5 and liquid 6 native storage
 buffers. Import adds three legacy buffers plus the element table: eight total.
 Import reads legacy A/B and marks, not F. Bridge retains the old four legacy
 buffers but does not bind banks. Dynamics' adapter has only core/bank/activity
@@ -19,7 +21,11 @@ in group 0, with baked material tables, leaving five group-1 storage bindings.
 `PhysicsV2(sim, {contactWGSL, Dynamics})` is an explicit injection seam. Empty
 options do not advertise those capabilities. `v2BlockWGSL(g, contactWGSL)` loads
 local core/bank arrays and zero requests, calls the contracted `contactBlock`,
-then stores all material and ORs requests. `nativeDynamicsHead(g)` supplies the
+then stores all material and ORs new requests with pending requests that moved
+alongside the local material. Column and block swaps also move pending requests.
+A boundary pass retires requests only on externally owned replacement slots before
+import consumes those ownership bits. Liquid faces close while a detonation is
+pending, so a failed allocation retains one source for retry instead of splitting. `nativeDynamicsHead(g)` supplies the
 shared Material/accessors, grid, random and energy API, without a table buffer;
 its family supplies `P.tick`. Dynamics must provide a positive `isIdle` certificate
 before the foundation permits whole-engine sleep. Parent integration owns module
@@ -33,7 +39,7 @@ quantum is `max(1, round(element.cap*64))`. For a liquid,
 
 ```
 C = 65536 + fill * capacityPerQuantum(id)
-E = C * temperatureQuarterK + signedBank
+E = C * temperatureQuarterK + phaseOffset(id)*amount + latentProgress + signedBank
 ```
 
 For a nonliquid, fill in the capacity formula is 65536, except empty cells have
@@ -43,8 +49,9 @@ energy by moving both words together. JS uses BigInt; WGSL uses two unsigned
 32-bit limbs for signed two's-complement energy. Arithmetic never converts
 integer energy to f32.
 
-A source sends `amount*capacityPerQuantum*Tq`, plus its bank's cumulative integer
-share. Each face uses `trunc(bank*(prefix+amount)/fill)-trunc(bank*prefix/fill)`;
+A source sends the cumulative integer share of
+`E - 65536*Tq` (material heat, reference-phase offset, latent progress and bank).
+Each face uses `trunc(carried*(prefix+amount)/fill)-trunc(carried*prefix/fill)`;
 the face order is +x,-x,+y,-y,+z,-z. The sender and receiver evaluate identical
 transfers from immutable snapshots. Cumulative shares telescope, so full drainage
 transfers every signed remainder, including the last quantum. Temperature
@@ -83,7 +90,9 @@ liquid life from the element and exact fill, and wake activity. Invalid prototyp
 life/compression is rejected. Old nonzero opaque auxiliary words are rejected:
 there was no defined energy unit to migrate. Old truncated conductor codes
 cannot be recovered; migration does not invent the missing bits. Version 2
-round-trips raw core and signed-bank bit patterns exactly.
+round-trips valid raw core and signed-bank bit patterns exactly. Invalid phase
+tags are rejected before upload; prototype temperatures over 10000 C are rejected
+with an explicit conversion error, never reinterpreted as phase progress.
 
 ## Evidence
 
@@ -93,5 +102,37 @@ round-trips raw core and signed-bank bit patterns exactly.
 - `node tools/v2/compact-wgsl-check.mjs`: all discovered WGSL Naga validation.
 - `node tools/check-sampler-budget.mjs`: every grid's binding budget.
 
-Contact phase tags extend the energy formula and migration validation; that
-integration is tracked separately until the supplied helper is connected.
+## Phase tags and range safety
+
+The contact-owned pure phase helpers are integrated. Supported sensible raw Tq
+is 0..41093 (through 10000 C). Hot tags 41094..53314 and cold tags 53315..65535
+have 12221 codes / 12220 intervals. `cTq` and `compactTq` decode their physical
+threshold temperature; `cRawTq` exposes the stored tag. `energyOf` includes phase
+reference offset and latent progress in wide integer units. `withEnergy` first
+encodes an exact latent plateau, then sensible heat plus a signed residual.
+`energyFits` is the required exact round-trip check before a rule commits an
+extreme total that may not fit. The JS helper throws on bank overflow.
+
+Liquid admission reserves a sixth of destination fuel and energy headroom for
+each face. Its energy bounds are affine over amount for the destination's current
+normal/phase interval, and reserve headroom both before and after possible local
+drainage. A refused packet remains at its source and marks activity busy; it is
+not discarded. Raw cumulative face prefixes remain fixed even when another face
+is refused, so energy/fuel shares are still identical at sender and receiver.
+This intentionally conservative saturation policy can stall extreme-bank or
+full-payload mixtures rather than lose state.
+
+The authoritative dirty word is separate from visible, legacy projection and
+rule-busy words. Flux-only and bank-only changes mark authoritative state, not a
+spurious visible change. Version-1 migration expands the previous activity layout.
+
+## Pending parent-only GPU regression
+
+Under the shared 10-second **total** slot budget after launcher adoption: settle
+a v1 brick, edit a moving material into it, save/capture the retained suspended
+v2 owner before the v1 activity rebuild, then compare the next v1 step with a
+no-save control. Assert MARK_ACT survives capture and the edited material moves
+identically; verify neighboring retained fractional liquid is unchanged. The CPU
+regression records actual capture/import dispatch flags and checks the guarded
+kernel write, but does not substitute for this GPU assertion. No GPU run was
+performed by this implementation lane.

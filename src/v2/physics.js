@@ -1,4 +1,5 @@
 import { fold } from '../gpu/kernels.js';
+import { cTq } from './layout.js';
 import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
@@ -92,7 +93,7 @@ export class PhysicsV2 {
       invalidate: gpu.bindGroup(L.INVALIDATE, [b(3, sim.marks)], 'compact invalidation'),
       v2: gpu.bindGroup(L.V2, own, 'v2'),
       material: gpu.bindGroup(L.MATERIAL, [...own, b(4, this.aux)], 'v2 material'),
-      liquid: gpu.bindGroup(L.LIQUID, [...own, b(4, this.aux), b(5, this.liquidScratch)], 'v2 liquid'),
+      liquid: gpu.bindGroup(L.LIQUID, [...own, b(4, this.aux), b(5, this.liquidScratch), b(6, this.events)], 'v2 liquid'),
       contact: gpu.bindGroup(L.CONTACT, [...own, b(4, this.aux), b(6, this.events)], 'v2 contact'),
       import: gpu.bindGroup(L.IMPORT, [b(0, sim.state.A), b(1, sim.state.B), b(3, sim.marks)], 'v2 import'),
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
@@ -100,14 +101,14 @@ export class PhysicsV2 {
     };
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'material', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2externalEvents: 'contact', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     for (const k of V2_KERNELS) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       this.kernels[k.name] = gpu.kernel({
         name: k.name, code: k.name === 'v2block' ? k.code(g, contactWGSL) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
-        layouts: [sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : k.name === 'v2invalidate' ? L.INVALIDATE : gpu.L.EMPTY, familyLayouts[this.familyOf(k.name)]],
+        layouts: [sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, familyLayouts[this.familyOf(k.name)]],
       });
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
@@ -173,13 +174,17 @@ export class PhysicsV2 {
   // The tick's params: its number, which busy words it reads (the last tick's) and writes, its offset.
   _params(t) {
     const A = this.layout;
-    return { tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t) };
+    return { tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t), preserveLegacyMarks: this.sim.compact === this ? 0 : 1 };
   }
 
   // Records the import of what today's writers changed, if anything is pending (params: the next tick's).
   _import(params) {
     if (!this.importFull && !this.importMarked) return;
     const { gpu, sim } = this;
+    this.kernels.v2externalEvents.dispatch(gpu.frame, fold(this.g.nbricks), {
+      bind: [sim.tables, this.groups.invalidate, this.groups.contact], header: sim.header(), params: { ...params, full: this.importFull ? 1 : 0 },
+    });
+    sim.onPass?.('v2externalEvents', { kind: 'compute', gpuMs: null });
     this.kernels.v2import.dispatch(gpu.frame, fold(this.g.nbricks), {
       bind: [sim.tables, this.groups.import, this.groups.material], header: { ...sim.header(), capture: 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
     });
@@ -400,7 +405,7 @@ export class PhysicsV2 {
       const id = words[w] & 255, cls = rows[id]?.cls ?? V2.SOLID;
       out.id[i] = id;
       out.cls[i] = cls;
-      out.T[i] = ((words[w] >>> 8) & 0xffff) * 0.25 - 273.25;
+      out.T[i] = cTq(words.subarray(w, w + 4)) * 0.25 - 273.25;
       out.age[i] = words[w] >>> 24;
       if (cls === V2.LIQUID) out.fill[i] = (words[w + 1] & 0xffffff) / FULL;
     }

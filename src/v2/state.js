@@ -1,6 +1,7 @@
 // The v2 save section owns the compact engine, not the legacy projection.
 // Version 2 replaces prototype limiter/half-life packing with persistent payloads.
 // Arrays are little-endian raw u32 words; no float conversion may touch them.
+import { validatePhaseCore } from './phase.js';
 import { ELEMENTS } from '../elements.js';
 import { MATERIAL_VERSION, FULL, MAX_FILL, FUEL_Q, isLiquid, isConductor } from './layout.js';
 import { gridDims } from '../shaders/common.js';
@@ -74,6 +75,10 @@ export function decodeV2State(bytes, dims) {
   // Before the auxiliary owner existed, its state was the all-zero initial state.
   state.aux ??= new Uint32Array(lengths.cells / 4);
   if (version === 1) migratePrototype(state);
+  for (let i = 0; i < state.cells.length; i += 4) {
+    try { validatePhaseCore(state.cells.subarray(i, i + 4)); }
+    catch (error) { fail(error.message); }
+  }
   return state;
 }
 

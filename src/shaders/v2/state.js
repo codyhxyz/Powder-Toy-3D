@@ -1,3 +1,4 @@
+import { phaseWGSL } from './phase.js';
 import { ELEMENTS } from '../../elements.js';
 import { capacityPerQuantum, AIR_CAPACITY_Q, FULL, MAX_FILL, FUEL_Q } from '../../v2/layout.js';
 
@@ -9,6 +10,8 @@ const MATERIAL_CONDUCTS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => St
 const MAX_FILL: u32 = ${MAX_FILL}u;
 const FUEL_Q: f32 = ${FUEL_Q}.0;
 struct Material { core: vec4u, bank: i32 }
+${phaseWGSL}
+fn materialAmount(c: vec4u) -> u32 { if (cid(c) == 0u) { return 0u; } if (isLiq(c)) { return cFill(c); } return 65536u; }
 fn capacityPerQuantum(id: u32) -> u32 { return MATERIAL_CAP[id]; }
 fn conductsNative(id: u32) -> bool { return MATERIAL_CONDUCTS[id]; }
 fn capacityQ(c: vec4u) -> u32 {
@@ -51,13 +54,61 @@ fn energyScale(e: vec2u, n: u32, d: u32) -> vec2u {
 fn energyShare(e: vec2u, prefix: u32, n: u32, d: u32) -> vec2u {
   return energySub(energyScale(e, prefix + n, d), energyScale(e, prefix, d));
 }
-fn energyOf(m: Material) -> vec2u { return energyAdd(energyMul(capacityQ(m.core), cTq(m.core)), energySigned(m.bank)); }
+fn energyOf(m: Material) -> vec2u {
+  let amount = materialAmount(m.core); let id = cid(m.core);
+  let sensible = energyAdd(energyMul(capacityQ(m.core), cTq(m.core)), energySigned(m.bank));
+  return energyAdd(sensible, energyAdd(phaseOffsetEnergy(id, amount), phaseLatentEnergy(id, cRawTq(m.core), amount)));
+}
 fn withEnergy(m: Material, e: vec2u) -> Material {
-  var out = m; var tq = 0u;
-  if ((e.y & 0x80000000u) == 0u) { tq = min(65535u, energyDiv(e, capacityQ(m.core)).x); }
+  var out = m; let id = cid(m.core); let amount = materialAmount(m.core);
+  let phase = phaseEncode(id, amount, e);
+  var tq = phase.x; var bank = phase.y;
+  if (tq == 0xffffffffu) {
+    let sensible = energySub(e, phaseOffsetEnergy(id, amount)); tq = 0u;
+    if ((sensible.y & 0x80000000u) == 0u) { tq = min(41093u, energyDiv(sensible, capacityQ(m.core)).x); }
+    bank = energySub(sensible, energyMul(capacityQ(m.core), tq)).x;
+  }
   out.core.x = (m.core.x & 0xff0000ffu) | (tq << 8u);
-  out.bank = bitcast<i32>(energySub(e, energyMul(capacityQ(m.core), tq)).x);
+  out.bank = bitcast<i32>(bank);
   return out;
+}
+// Call before committing a transfer/rule: an extreme signed bank is allowed,
+// but a sum outside the format must remain at its source, never truncate.
+fn energyFits(m: Material, e: vec2u) -> bool { return all(energyOf(withEnergy(m, e)) == e); }
+struct EnergyBounds { lo: vec2u, hi: vec2u }
+// Choose one affine, fully representable interval (normal or the current
+// phase plateau). Affine bounds permit independent conservative face budgets.
+fn energyBounds(c: vec4u, amount: u32) -> EnergyBounds {
+  let id = cid(c); let capacity = 65536u + amount * capacityPerQuantum(id);
+  let offset = phaseOffsetEnergy(id, amount); let raw = cRawTq(c);
+  if (raw > 41093u) {
+    let hot = raw < PHASE_COLD_BASE;
+    let threshold = energyAdd(offset, energyMul(capacity, cTq(c)));
+    let latent = energyMul(u32(select(phaseColdLatent(id), phaseHotLatent(id), hot)), amount);
+    if (hot) { return EnergyBounds(threshold, energyAdd(threshold, latent)); }
+    return EnergyBounds(energySub(threshold, latent), threshold);
+  }
+  return EnergyBounds(energyAdd(offset, energySigned(-2147483648)),
+    energyAdd(energyAdd(offset, energyMul(capacity, 41093u)), energySigned(2147483647)));
+}
+fn energyPacketFits(src: Material, dst: Material, packet: vec2u, n: u32) -> bool {
+  var receiver = dst.core;
+  if (cid(receiver) == 0u) { receiver.x = (receiver.x & 0xffffff00u) | cid(src.core); receiver.y = 0u; }
+  let amount = materialAmount(dst.core);
+  let b = energyBounds(receiver, amount); let next = energyBounds(receiver, amount + n);
+  let dry = energyBounds(receiver, 0u); let carrier = energyMul(65536u, cTq(dst.core));
+  let e = energyOf(dst);
+  // Other faces may drain the receiver this pass. Reserve only headroom that
+  // exists both before and after complete drainage, not outgoing heat twice.
+  let currentLo = energySub(e, b.lo); let dryLo = energySub(carrier, dry.lo);
+  let currentHi = energySub(b.hi, e); let dryHi = energySub(dry.hi, carrier);
+  let roomLo = select(currentLo, dryLo, phaseLess(dryLo, currentLo));
+  let roomHi = select(currentHi, dryHi, phaseLess(dryHi, currentHi));
+  let excessLo = energySub(packet, energySub(next.lo, b.lo));
+  let excessHi = energySub(packet, energySub(next.hi, b.hi));
+  if (phaseLess(excessLo, vec2u(0u)) && phaseLess(roomLo, phaseMulSmall(energyNeg(excessLo), 6u))) { return false; }
+  if (phaseLess(vec2u(0u), excessHi) && phaseLess(roomHi, phaseMulSmall(excessHi, 6u))) { return false; }
+  return true;
 }
 fn ctypeOf(c: vec4u) -> u32 { if (isLiq(c)) { return c.y >> 24u; } return (c.y >> 16u) & 255u; }
 fn withCtype(c: vec4u, ct: u32) -> vec4u { var o = c; if (isLiq(c)) { o.y = (c.y & 0xffffffu) | ((ct & 255u) << 24u); } else { o.y = (c.y & 0xff00ffffu) | ((ct & 255u) << 16u); } return o; }
@@ -68,7 +119,7 @@ fn withLife(c: vec4u, v: f32) -> vec4u { return withPayload(c, u32(clamp(round(v
 fn sparkOf(c: vec4u) -> u32 { if (isLiq(c)) { return (c.w >> 16u) & 4095u; } return c.w & 4095u; }
 fn withSpark(c: vec4u, code: u32) -> vec4u { var o = c; if (isLiq(c)) { o.w = (c.w & 0xf000ffffu) | ((code & 4095u) << 16u); } else { o.w = (c.w & 0xfffff000u) | (code & 4095u); } return o; }
 fn makeMaterial(id: u32, temperature: f32, amount: u32, ct: u32) -> Material {
-  let tq = u32(clamp(round((temperature + 273.25) * 4.0), 0.0, 65535.0));
+  let tq = u32(clamp(round((temperature + 273.25) * 4.0), 0.0, 41093.0));
   var c = vec4u(id | (tq << 8u), 0u, 0u, 0u);
   if (cls(id) == C_LIQUID) { c.y = min(amount, MAX_FILL) | (ct << 24u); } else { c.y = ct << 16u; }
   var life = MATERIAL_LIFE[id];
