@@ -891,7 +891,7 @@ export function createPov(app) {
       p.y += ORB_LIFT;
       const have = player.perks.count(o.key);
       return { id: `perk${o.id}`, position: p, radius: PERK_TARGET_R, title: `${perkName(o.key)}${have ? ` (have ×${have})` : ''}`,
-        lines: [PERK[o.key].desc, ...(o.shrine ? ['Taking it takes the others away.'] : [])], verb: 'Take',
+        lines: [PERK[o.key].desc], verb: 'Take', proximity: !!o.shrine,
         use: () => { const got = orbs.take(o); if (got) gainPerk(player, got); return !!got; } };
     }).filter(Boolean);
   });
