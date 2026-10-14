@@ -225,7 +225,8 @@ export function createHeld({ scene }) {
       const gs = fp?.hand.userData.gesture;
       const [raise, tip, drive] = gs ? gesturePose(gs.name ?? h.type, gs.since, gs.span, gesture) : gesture.fill(0);   // (name: a tool's own gesture, the shovel's dig)
       if (raise || drive) {
-        frameM.multiply(mA.makeTranslation(h.at[0], -SHOULDER_DROP, -drive))
+        const axis = gs?.axis ?? [0, 0, -1];
+        frameM.multiply(mA.makeTranslation(h.at[0] + axis[0] * drive, -SHOULDER_DROP + axis[1] * drive, axis[2] * drive))
           .multiply(mA.makeRotationX(raise))
           .multiply(mA.makeTranslation(-h.at[0], SHOULDER_DROP, 0));
       }

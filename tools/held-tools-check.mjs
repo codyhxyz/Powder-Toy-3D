@@ -23,6 +23,9 @@ const ctx = (extra = {}) => ({ dt: 1 / 60, eye: new THREE.Vector3(), dir: new TH
   player: { onGround: true }, aim: { valid: false }, primary: false, primaryPressed: false, ...extra });
 
 const e = env(), held = heldModel(e, { model: 'jackhammer', pos: [0, 0, -1], pivot: true });
+const bit = held.mesh.obj.getObjectByName('bit'), motor = held.mesh.obj.getObjectByName('motor');
+assert.ok(bit.position.y < motor.position.y, 'bit points down below the motor');
+assert.equal(bit.position.z, motor.position.z, 'bit is not a forward barrel');
 let freed = 0, geometries = 0;
 held.mesh.obj.traverse((o) => { if (o.geometry) { geometries++; o.geometry.addEventListener('dispose', () => freed++); } });
 assert.equal(held.hand.visible, false);
@@ -41,6 +44,14 @@ assert.equal(a.rig, b.rig, 'tools share the environment rig');
 a.dispose(); b.update(ctx());
 assert.equal(b.hand.visible, true); assert.equal(b.rig.root.parent, e.viewmodel, 'disposing one tool does not own the rig');
 b.dispose();
+
+const ve = env(), vertical = jackhammer.create(ve);
+try {
+  vertical.update(ctx({ dt: 0, primary: true, primaryPressed: true }));
+  vertical.update(ctx({ dt: 0.025 }));
+  const pivot = ve.viewmodel.userData.rig.root.children[0].children[0];
+  assert.deepEqual(pivot.position.toArray(), [0, -0.04, 0], 'peak piston stroke is down, not forward');
+} finally { vertical.dispose(); }
 
 for (const def of [axe, jackhammer, sniper, pistol, flamer]) {
   const e = env(), tool = def.create(e), rig = e.viewmodel.userData.rig;
@@ -87,7 +98,10 @@ for (const fps of [30, 60, 144]) {
     for (let i = 1; i < fps; i++) tool.update(ctx({ dt: 1 / fps, toolRate: 2, primary: true }));
     assert.equal(strokes, 20, 'tool-rate perk doubles cadence');
     const pivot = e.viewmodel.userData.rig.root.children[0].children[0];
-    assert.equal(pivot.rotation.x, 0, 'no broad swing'); assert.ok(Math.abs(pivot.position.z) <= 0.07);
+    assert.equal(pivot.rotation.x, 0, 'no broad swing');
+    assert.equal(pivot.position.z, 0, 'no forward hammering');
+    assert.ok(pivot.position.y <= 0 && pivot.position.y >= -0.07, 'vertical piston stroke');
+    assert.deepEqual(pivot.parent.userData.gesture.axis, [0, -1, 0], 'third-person stroke drives down too');
   } finally { tool.dispose(); }
 }
 // Existing buffered triggers retain their behavior.
