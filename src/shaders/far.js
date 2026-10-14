@@ -18,6 +18,7 @@ import { presentationWGSL } from '../gfx/presentationMath.js';
 import {
   FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeFor, farSkyGLSL, FAR_SKY,
 } from './farShared.js';
+import { glf } from '../glsl.js';
 export {
   FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeGLSL,
   FAR_CASTER_STEPS, farCastersGLSL, FAR_GI_STEPS, FAR_GI_STEP0, farGIGLSL, FAR_SKY, farSkyGLSL, farHazeFor,
@@ -82,7 +83,6 @@ export {
 // Every kernel takes the region it writes in its params; a pass over a region
 // of the grid is a thread per brick of it, x fastest, then y, then z (its
 // regions span the world's height), folded (gpu/kernels.js fold).
-const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const FAR_FORMATS = { grid: 'rgba16uint', field: 'rgba8unorm', top: 'rgba16float', shadow: 'rgba16float' };
 const C = STAGE.COMPUTE;
 const store = (binding, format, viewDimension = '3d') => ({ binding, visibility: C, storageTexture: { access: 'write-only', format, viewDimension } });

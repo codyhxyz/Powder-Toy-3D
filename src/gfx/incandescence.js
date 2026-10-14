@@ -1,3 +1,5 @@
+import { glf } from '../glsl.js';
+
 // Incandescence: the light a hot opaque body gives off, as a table over
 // temperature that the shaders interpolate (common.js, incandescence(); the
 // table rides in the element tables' buffer, INCAND_TAB(i)).
@@ -107,7 +109,7 @@ export const INCAND_TABLE = (() => {
   });
 })();
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(+x.toPrecision(TABLE_DIGITS)));
+const f = (x) => glf(Number.isInteger(x) ? x : +x.toPrecision(TABLE_DIGITS));
 
 // The table as the GPU holds it (shaders/common.js tablesWGSL: incand, an
 // array of INCAND.N vec4f): each knot at TABLE_DIGITS significant digits.

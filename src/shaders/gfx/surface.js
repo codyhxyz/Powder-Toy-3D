@@ -6,6 +6,7 @@ import { grainsGLSL, GRAINS_ANY } from './grains.js';
 import { lib, libLayouts } from './lib.js';
 import { fullscreenVert } from '../../gpu/wgsl.js';
 import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.js';
+import { glf as f } from '../../glsl.js';
 
 // Opaque surfaces: per-element solid textures (world-space, so nothing
 // reveals the grid), bevelled crisp voxels, and energy-conserving PBR shading.
@@ -32,7 +33,6 @@ import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.j
 // non-uniform control flow, where WGSL has no derivatives, so the floor's
 // grid lines take their fwidth analytically from those ray derivatives
 // (floorFwidth). Nothing here samples with an implicit level.
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const surfaceGLSL = (detail = {}) => {
   const relief = !!detail.DETAIL_RELIEF;
   const grains = !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);

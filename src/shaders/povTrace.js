@@ -3,6 +3,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { ddaGLSL } from './gfx/core.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
+import { glf as lit } from '../glsl.js';
 
 // GPU work for the guns' ballistic rounds (src/pov/ballistics.js), on WebGPU
 // (docs/webgpu.md G2).
@@ -36,7 +37,6 @@ export const TRACE_SIGHT = 2;   // a camera's line of sight (pov/cameraArm.js): 
 export const TRACE_BYTES = TRACE.ROUNDS * TRACE.ROWS * 16;
 
 // A JS number as a WGSL f32 literal (H1.7)
-const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
 
 // The segments (grid cells; starts[i].w as above, 0 for an idle thread) and the
 // ring slot the answer goes to.

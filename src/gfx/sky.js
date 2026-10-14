@@ -7,6 +7,8 @@
 // units are irradiance / pi: a white Lambert surface facing the light has
 // radiance equal to that value.
 
+import { glf } from '../glsl.js';
+
 export const SKY = {
   tauRayleigh: [0.046, 0.108, 0.265], // zenith optical depth of air at 680 / 550 / 440 nm (~lambda^-4)
   tauAerosol: 0.04,     // grey haze (Mie) optical depth: a clear day
@@ -85,7 +87,7 @@ export function skyState(sun, light, out) {
   return out;
 }
 
-export const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+export { glf };
 const vec3 = (a) => `vec3f(${a.map(glf).join(', ')})`;
 
 // WGSL for the render library (shaders/gfx/lighting.js; the name is the GLSL

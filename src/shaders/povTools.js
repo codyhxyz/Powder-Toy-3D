@@ -5,6 +5,7 @@ import { fold } from '../gpu/kernels.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 import { ELEMENTS, E } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
+import { consts } from '../glsl.js';
 
 // GPU work for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js),
 // and the worm's head (src/pov/worm.js), on WebGPU (docs/webgpu.md G2, D6, D7).
@@ -160,10 +161,6 @@ export const BLAST = {
   PULSE_SHARE: 0.8,  // share of the weakest solid's breaking pressure
 };
 BLAST.PULSE_P = BLAST.PULSE_SHARE * WEAKEST_HARD * ENGINE.P_BREAK_PER_HARD;
-
-// A JS number as a WGSL f32 literal; a tuning block as typed consts (H1.7)
-const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
-const consts = (prefix, obj) => Object.entries(obj).map(([k, v]) => `const ${prefix}_${k}: f32 = ${lit(v)};`).join('\n');
 
 // A melee blow (the axe, the pickaxe, the knife, a worm's head; its tuning is
 // AXE, PICK, KNIFE or WORM_BITE): break breakable solids in its patch into
