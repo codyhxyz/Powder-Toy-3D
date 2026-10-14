@@ -10,7 +10,7 @@ The integrated controller and UI pass:
 - `node scripts/check-industry-controller.mjs`: 11 checks.
 - `node scripts/check-industry-factory-ui.mjs`.
 - Existing construction, transfer, and Quarry checks.
-- Hearth budget/conduction checks: 279 checks.
+- Hearth budget/conduction checks: 284 checks, including finite native combustion after the boost accounting fix.
 - Diagnostics request ownership, freshness, reset, and disposal regressions.
 - Naga type validation of composed Industry, diagnostics, gate, and control shaders.
 
@@ -74,11 +74,40 @@ Its case deadline now precedes the outer evaluation deadline.
 
 The next attempt was refused because measured GPU use was 52%.
 The launcher released the slot after **1997 ms**, before opening a browser.
-There was no further GPU retry.
+There was no retry until the user confirmed they were idle.
+
+After the user confirmed they were not playing, one protected retry completed.
+The twelve-cell firebox reached 2200°C; charge peaked at 1076.8179°C.
+No melt was observed after 1200 native ticks.
+Total slot occupancy: **6428 ms**.
+Report: `~/.cache/tpt-headless/runs/95544-95588.json`.
+
+The boost previously spent nominal fuel even when its source-temperature cap discarded heat.
+It now charges only for heat actually delivered.
+Native combustion still spends fuel, and CPU checks prove the source remains finite.
+An app-based retry reached a charge peak of **1273.66°C** after 768 native ticks.
+The sampled COAL cell retained 0.5257 life.
+The bounded run still did not observe a melt.
+Total slot occupancy: **6469 ms**.
+Report: `~/.cache/tpt-headless/runs/17036-17075.json`.
+
+An optional `--harness` mode now uses the existing native Simulation harness.
+It retains the 128³ physics fixture but omits app graphics startup.
+This mode cannot prove UI/controller interaction.
+Its first attempt was refused at 93% measured GPU load before opening a browser.
+The slot was released after **1968 ms**.
+GPU load alone does not establish that the user is playing.
+No busy-check override was used.
+
+The CPU investigation also found a construction mismatch:
+the diagnostic fixture seeds one-cell tungsten walls and an internal baffle.
+The Factory builder cannot currently reproduce that arrangement.
+Even a melt in this fixture would not prove a player-buildable production line.
 
 ## Open requirements
 
 - Prove useful melting with cold, buildable containment and finite physical fuel.
+- Resolve the test fixture's internal-lining construction mismatch.
 - Verify ash removal or another usable way to refill the firebox.
 - Route actual molten metal to a separate shipping intake.
 - Cool it there with actual water and confirm shipment.

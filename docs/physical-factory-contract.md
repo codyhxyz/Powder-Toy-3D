@@ -57,6 +57,8 @@ Fuel cells retain authoritative temperature and remaining life in terrain saves.
 No hidden fuel counters are approved.
 The current calibration buys 300000 local heat units per fuel-life unit.
 The paid starter targets 550°C; the industrial source limit is 2200°C.
+The boost spends life only for delivered heat, not unused source headroom.
+Native combustion still consumes its own fuel normally.
 These are game rules, not measured coal chemistry.
 Hearth timing follows native simulation ticks, not presentation frames.
 Mining retains coal's remaining fuel life; it does not refill exhausted coal.
@@ -163,6 +165,9 @@ Its opening does not push matter; use gravity, pressure, or an existing transpor
 The hearth does not include invisible refractory walls.
 Build containment with existing tungsten foundations outside its working volume.
 Keep the rear fuel row supplied and the front molten outlet clear.
+The current diagnostic fixture's internal one-cell baffle is not player-buildable.
+It is a thermal experiment, not an accepted construction plan.
+A buildable containment and refueling plan remains a release requirement.
 
 Cooled metal is a stationary solid; ordinary belts cannot carry it.
 Route molten metal to the shipping intake, then cool it there.
