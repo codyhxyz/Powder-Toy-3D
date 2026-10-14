@@ -46,6 +46,7 @@ jobs:
       - run: node tools/check-village.mjs && node tools/check-village-actions.mjs   # peaceful punches, tools and furniture
       - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode
       - run: node tools/firearm-aim-check.mjs && node tools/held-tools-check.mjs
+      - run: node tools/torch-cpu-check.mjs   # water quenching and frame-rate-independent flame inertia
       - run: node tools/npc-held-check.mjs
       - run: node tools/shrine-interact-cpu-check.mjs
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
