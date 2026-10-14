@@ -22,7 +22,7 @@ try {
   const errors=[];
   const page=await openHarness(browser,vite,'/tools/harness/outcomes.html?engine=v2',{errors});
   page.on('console',m=>{if(m.text().startsWith('[contact-trace]'))console.log(m.text());});
-  const result=await page.evaluate(async()=>{
+  const result=await page.evaluate(async(fixedBounds)=>{
     const {gridLayout}=await import('/src/sim.js');
     const {E}=await import('/src/elements.js');
     const {LAYOUT,tablesBuffer,cellSlot}=await import('/src/shaders/common.js');
@@ -83,7 +83,16 @@ try {
       const bind=[gpu.bindGroup(tables,[{binding:0,resource:{buffer:buffer('contact legacy tables',legacy.byteLength,legacy)}}]),
         gpu.emptyGroup,gpu.bindGroup(material,entries)];
       const start=performance.now();
-      const kernel=gpu.kernel({name:'production contact thermal check',code:v2BlockWGSL(g,contactWGSL),params:V2Params,
+      let code=v2BlockWGSL(g,contactWGSL);
+      if(fixedBounds)for(const [before,after] of [
+        ['let blockCount=min(8u,arrayLength(&events));','let blockCount=8u;'],
+        ['let count=min(8u,arrayLength(&events));','let count=8u;'],
+        ['fn ctNeighborCount()->i32 { return i32(min(3u,arrayLength(&events))); }','fn ctNeighborCount()->i32 { return 3; }'],
+      ]) {
+        if(code.split(before).length!==2)throw Error('fixed-bound diagnostic source drift');
+        code=code.replace(before,after);
+      }
+      const kernel=gpu.kernel({name:'production contact thermal check',code,params:V2Params,
         layouts:[tables,gpu.L.EMPTY,material],workgroupSize:[64,1,1]});
       await kernel.ready;
       const compileMs=performance.now()-start;
@@ -96,12 +105,13 @@ try {
         gpu.readback.buffer(cells,0,initial.byteLength),gpu.readback.buffer(banks,0,bankData.byteLength),
       ]);
       const raw=new Uint32Array(rawBytes),afterBanks=new Int32Array(bankBytes);
-      return {scope:'production R2–R5 only',ticks:32,fixture:[32,32,32],compileMs,before,after:total(raw,afterBanks),
+      return {scope:'production R2–R5 only',variant:fixedBounds?'fixed-bound diagnostic':'production',
+        ticks:32,fixture:[32,32,32],compileMs,before,after:total(raw,afterBanks),
         beforeHot,beforeCold,afterHot:String(energyOf({core:raw.subarray(hot*4,hot*4+4),bank:afterBanks[hot]})),
         afterCold:String(energyOf({core:raw.subarray(cold*4,cold*4+4),bank:afterBanks[cold]})),
         failures:[...window.__harness.failures]};
     } finally {for(const b of buffers)b.destroy();}
-  });
+  },process.argv.includes('--fixed-bounds'));
   result.errors=errors;
   if(output)writeFileSync(output,JSON.stringify(result,null,2)+'\n');
   assert.deepEqual(errors,[]);assert.deepEqual(result.failures,[]);
