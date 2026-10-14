@@ -398,7 +398,6 @@ export function createPov(app) {
   function ensureParts() {
     if (!player) {
       player = createPlayer({ renderer, getSim: app.getSim });
-      player.on('land', ({ speed }) => povCam.land(speed));
       player.on('revive', () => { hud.toast(`${perkName('EXTRA_LIFE')}: back on your feet`); povEvents.emit('perk:revive', { point: player.pos.clone() }); });
       player.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
       povEvents.on('blast', ({ by }) => { if (!by) player.ownBlast(); });   // the player's own rocket or bomb
@@ -920,7 +919,7 @@ export function createPov(app) {
       p.y += ORB_LIFT;
       const have = player.perks.count(o.key);
       return { id: `perk${o.id}`, position: p, radius: PERK_TARGET_R, title: `${perkName(o.key)}${have ? ` (have ×${have})` : ''}`,
-        lines: [PERK[o.key].desc, ...(o.shrine ? ['Taking it takes the others away.'] : [])], verb: 'Take',
+        lines: [PERK[o.key].desc], verb: 'Take', proximity: !!o.shrine,
         use: () => { const got = orbs.take(o); if (got) gainPerk(player, got); return !!got; } };
     }).filter(Boolean);
   });

@@ -25,5 +25,5 @@ export default firearm({
   sound: { rate: 0.7, gain: 1.5, thump: 2 },
   scope: { zoom: 4 },        // the view narrows to a quarter
   // the held rifle, in cells (camera space)
-  pose: { pos: [0.45, -0.5, -1.9], muzzle: [0, 0.1, -1.2] },
+  pose: { pos: [0.45, -0.5, -1.9] },
 });

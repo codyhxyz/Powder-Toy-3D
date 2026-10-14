@@ -31,5 +31,5 @@ export default firearm({
   hit: HIT.SMG,
   sound: { rate: 1.25, gain: 0.7, thump: 0.5 },
   // the held SMG, in cells (camera space)
-  pose: { pos: [0.5, -0.45, -1.5], muzzle: [0, 0.094, -0.625] },
+  pose: { pos: [0.5, -0.45, -1.5] },
 });
