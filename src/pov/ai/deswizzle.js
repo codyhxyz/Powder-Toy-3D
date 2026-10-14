@@ -21,7 +21,9 @@ const BRICK = 4;                        // shaders/common.js BRICK, which this l
 // atlas's brick table for these dims. cells: Uint32Array(nx·ny·nz / 2), the
 // last capture's cells, overwritten with this one's. → the OR of every word's
 // change (old ^ new): 0 when nothing changed; & ID_BITS: some id changed.
-export function deswizzle(src, rows, [nx, ny, nz], cells) {
+// Optional idChanges: one byte per atlas brick, cleared by the caller. Only
+// material changes mark it; temperatures never invalidate vehicle terrain.
+export function deswizzle(src, rows, [nx, ny, nz], cells, idChanges = null) {
   const { brick, table, rowOff } = rows;
   if (brick !== BRICK) throw new Error(`deswizzle is unrolled for ${BRICK}-cell bricks, not ${brick}`);
   const bx = nx >> 2, bz = nz >> 2;
@@ -33,7 +35,9 @@ export function deswizzle(src, rows, [nx, ny, nz], cells) {
       for (let b = 0; b < bx; b++, o += 2) {
         const t = table[first + b] + off;
         const w0 = (src[t] & 0xffff) | (src[t + 1] << 16), w1 = (src[t + 2] & 0xffff) | (src[t + 3] << 16);
-        diff |= (cells[o] ^ w0) | (cells[o + 1] ^ w1);
+        const change = (cells[o] ^ w0) | (cells[o + 1] ^ w1);
+        diff |= change;
+        if (idChanges && (change & ID_BITS)) idChanges[first + b] = 1;
         cells[o] = w0;
         cells[o + 1] = w1;
       }
