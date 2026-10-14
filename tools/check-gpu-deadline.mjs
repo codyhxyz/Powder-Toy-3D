@@ -13,6 +13,15 @@ import { budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-dead
 
 for (const n of [5000, 10000]) assert.equal(budgetMs(n), n);
 for (const n of [0, -1, NaN, Infinity, 1000, 10001, 180000]) assert.throws(() => budgetMs(n), RangeError);
+try {
+  process.env.TPT_USER_APPROVED_SLOT_MS='30000';
+  assert.equal(budgetMs(30000),30000);
+  assert.throws(()=>budgetMs(30001),RangeError);
+  for(const bad of ['','NaN','Infinity','-1','9999','30001','30000.5']) {
+    process.env.TPT_USER_APPROVED_SLOT_MS=bad;
+    assert.throws(()=>budgetMs(5000),RangeError);
+  }
+} finally {delete process.env.TPT_USER_APPROVED_SLOT_MS;}
 const table = [
   { pid: 100, ppid: 1, start: 'ours' }, { pid: 101, ppid: 100, start: 'driver' },
   { pid: 102, ppid: 101, start: 'browser' }, { pid: 103, ppid: 102, start: 'gpu' },

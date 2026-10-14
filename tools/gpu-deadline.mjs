@@ -9,8 +9,14 @@ export const MAX_SLOT_MS = 10000;
 export const CLEANUP_MS = 1000;
 export const PROCESS_QUERY_MS = 500;
 export function budgetMs(value) {
-  if (!Number.isFinite(value) || value <= CLEANUP_MS || value > MAX_SLOT_MS)
-    throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${MAX_SLOT_MS} ms, including startup and cleanup`);
+  // Set only after explicit user permission for a longer diagnostic. Defaults
+  // remain unchanged; the independent guard inherits the same bounded approval.
+  const approved = process.env.TPT_USER_APPROVED_SLOT_MS;
+  const limit = approved === undefined ? MAX_SLOT_MS : Number(approved);
+  if (!Number.isInteger(limit) || limit < MAX_SLOT_MS || limit > 30000)
+    throw new RangeError('User-approved GPU slot must be between 10000 and 30000 ms');
+  if (!Number.isFinite(value) || value <= CLEANUP_MS || value > limit)
+    throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${limit} ms, including startup and cleanup`);
   return value;
 }
 export function processTable() {
