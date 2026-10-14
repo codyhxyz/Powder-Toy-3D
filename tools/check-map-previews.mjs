@@ -1,11 +1,24 @@
 // CPU-only: every menu map, including source imports, needs a square preview.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { MAPS } from '../src/maps.js';
+import { MAPS, mapPreviewUrl } from '../src/maps.js';
 import { installLocalCrueltyMaps } from '../src/world/import/localMap.js';
 import { CRUELTY_PROFILES } from '../src/world/import/crueltyProfiles.js';
 import { E } from '../src/elements.js';
 import { trace, renderDescent } from './descent-thumb.mjs';
+import { geometry, shader } from './willow-cozy-thumb.mjs';
+import { cozySurfaceWGSL, cozyWaterWGSL } from '../src/shaders/gfx/cozy.js';
+import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
+
+assert.equal(mapPreviewUrl('willowCove'), '/maps/willowCove.webp?v=2', 'replace the four-hour cached legacy preview');
+assert.equal(mapPreviewUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'aliases use the current canonical preview');
+assert.equal(mapPreviewUrl('island'), '/maps/island.webp', 'unrelated previews keep their URLs');
+const crossing = geometry(32), cozy = shader(32);
+assert.equal(crossing.hits.length, 32 * 32 * 12);
+assert(crossing.hits.every(Number.isFinite));
+assert(crossing.materials.has(E.WOOD) && crossing.materials.has(E.BRICK) && crossing.materials.has(E.WATER));
+assert(cozy.includes(cozySurfaceWGSL) && cozy.includes(cozyWaterWGSL), 'use current production Cozy artwork, never plain palette colours');
+assert.equal(new WgslReflect(cozy).entry.compute[0].name, 'main');
 
 // Use the same registration as main.js; only replace its network transport.
 const fetch = globalThis.fetch;
@@ -57,4 +70,4 @@ assert.equal(trace([-1, 1, 1], [0, 1, 0], [3, 3, 3], cell), null);
 const sample = renderDescent(32);
 assert.ok(sample.materials.has(E.SNOW) && sample.materials.has(E.ROCK) && sample.materials.has(E.PLANT), 'real Mines terrain, not a placeholder');
 assert.ok(new Set(sample.rgb).size > 32, 'shaded scene has image detail');
-console.log(`PASS ${MAPS.length} square map previews; CPU Descent voxel traversal and scene render.`);
+console.log(`PASS ${MAPS.length} square map previews; current Crossing geometry, production Cozy WGSL, cache revisions and CPU Descent render.`);
