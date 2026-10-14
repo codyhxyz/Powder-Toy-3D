@@ -1,4 +1,4 @@
-import { numbers, reference, transformPoint } from './godot3.js';
+import { numbers, reference, transformPoint, sourceActorMetadata } from './godot3.js';
 import { sourceToCells, importedCell } from './voxelize.js';
 import { convexProjectionAxes } from './convexVolume.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../../pov/constants.js';
@@ -82,7 +82,7 @@ export function crueltyMission(scene, map, words, profile) {
     const node = sourceNode(scene, path);
     if (!normalEligible(node)) throw new Error(`Non-normal actor in mission profile: ${path}`);
     const sourceAt = authored(path);
-    return { id: path, name, at: placement(path, role), sourceAt, sourcePath: path, style, ...(style === 'gunner' ? { weapons: ['GUN'] } : {}) };
+    return { id: path, name, at: placement(path, role), sourceAt, sourcePath: path, ...sourceActorMetadata(node, scene), style, ...(style === 'gunner' ? { weapons: ['GUN'] } : {}) };
   };
   const authoredTargets = profile.targets.map((path) => actor(path, `${profile.name} target (${sourceNode(scene, path).name ?? path})`, 'gunner', 'target'));
   const authoredGuards = [...scene.nodes.values()].filter((node) => node.instance && normalEligible(node) && !profile.targets.includes(node.path) && Object.hasOwn(GUARD_STYLES, scene.external.get(reference(node.instance).id)?.path))

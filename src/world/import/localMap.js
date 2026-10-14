@@ -20,7 +20,7 @@ async function installProfile(profile) {
     modes: blocked ? [] : ['crueltySquad'], mission: scene.mission,
     desc: `The original Level ${profile.level} layout, converted into physical voxels. ${blocked
       ? 'Sandbox only: a target has no clear standing volume for this game\'s body. '
-      : `${omitted ? `${omitted} obstructed guard${omitted === 1 ? '' : 's'} omitted. ` : ''}`}Characters are this game's NPCs, not the original AI; external props and scripts are not imported.` };
+      : `${omitted ? `${omitted} obstructed guard${omitted === 1 ? '' : 's'} omitted. ` : ''}`}Characters are this game's NPCs, not the original AI. Ordinary doors retract with E; special gates need unsupported progression. Other script losses are inventoried in the manifest.` };
   WORLD_SCENES.push(scene); MAPS.push(map);
   return map;
 }

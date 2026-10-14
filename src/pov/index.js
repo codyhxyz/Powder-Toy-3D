@@ -19,6 +19,7 @@ import { addTarget, bodyTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { createInteract } from './interact.js';
 import { overlapsLadder } from './ladder.js';
+import { createImportedInteractions } from './importedInteractions.js';
 import { ORB_LIFT } from '../perkOrbs.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker, applyClassTo } from './classPicker.js';
@@ -862,6 +863,7 @@ export function createPov(app) {
     if (!coop()) {
       game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
       mission.update(dt, npcMod ? npcFrame : null);
+      importedInteractions.update(dt);
     }
 
     deaths.update();   // the killfeed: who died this frame, and to what
@@ -1134,6 +1136,11 @@ export function createPov(app) {
     hud: createMissionHud({ retry: () => mission.retry(), leave: () => exit(true) }),
   });
 
+  const importedInteractions = createImportedInteractions({ app, interact,
+    getBodies: () => [player, ...npcs.values()].map(n => n?.body ?? n).concat(mission.actors.map(n => n.body), game.bots.map(n => n.body)),
+    toast: text => hud.toast?.(text),
+  });
+
   // TF2's class menu opens when you join a team: a Siege match's start and a team switch
   // ('.'). A Halo match has no classes: the picker shuts (docs/halo-contract.md).
   const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
@@ -1163,6 +1170,7 @@ export function createPov(app) {
     village,                     // Tinker Creek's homes, pockets and peaceful neighbors
     descent,                     // the Descent map's gold, shop, altar, pool and refresher (descent/index.js)
     interact,                    // look + E (interact.js): focus, use()
+    importedInteractions,        // source-map doors (exclusive voxel cells, not AABB carves)
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
     get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
     get editingWand() { return editing; },

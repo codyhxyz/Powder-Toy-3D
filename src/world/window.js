@@ -129,6 +129,7 @@ export class WorldWindow {
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
+    this.scene.reset?.();   // imported interaction state is per loaded run, not per cached scene
     sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);

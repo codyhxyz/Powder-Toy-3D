@@ -82,6 +82,11 @@ export class SceneGpu {
       const total = this.preAt * 4 + (scene.pre ? preWords([this.preCells, 1, 1]) : 0);
       this.data = gpu.createBuffer({ label: `scene ${scene.key} data`, size: Math.max(16, Math.ceil(total / 4) * 16), usage: BUFFER.STORAGE | BUFFER.COPY_DST | BUFFER.COPY_SRC });
       if (d.words.length) gpu.write(this.data, d.at * 4, d.words);
+      // Imported interactions change only owned packed words, on use rather
+      // than per frame. Ordered writes preserve earlier fill/diff commands.
+      this.unsubscribeData = scene.subscribeData?.((at, words) => {
+        if (!this.disposed) gpu.write(this.data, (d.at + at) * 4, words, { ordered: true });
+      });
       this.writeGroup = (this.bakeKernel || this.preKernel) && gpu.bindGroup(gpu.L['scene write'], [
         { binding: SCENE_BINDING.uniforms, resource: { buffer: this.uniforms.buffer } },
         { binding: SCENE_BINDING.data, resource: { buffer: this.data } }], `scene ${scene.key} write`);
@@ -125,6 +130,7 @@ export class SceneGpu {
 
   dispose() {
     this.disposed = true;
+    this.unsubscribeData?.();
     for (const b of [this.uniforms.buffer, this.data]) if (b) this.sim._retire(b);
   }
 }
