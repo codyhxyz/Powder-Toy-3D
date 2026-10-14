@@ -153,7 +153,7 @@ for (const reduced of [false, true]) {
     animate(30); near(body.rotation.x, lean, 1e-8);
     const arm = avatar.hand.rotation.x;
     avatar.animate(time += 1 / 60, 20, false, false, 0, 0.5, false, false, pose);
-    near(avatar.hand.rotation.x, 1.9, 1e-8);
+    near(avatar.hand.rotation.x, 1.65, 1e-8);
     animate(1); near(avatar.hand.rotation.x, arm, 1e-8);
     avatar.animate(time += 1 / 60, 20, false, false, 0, 0, true, false, pose);
     near(avatar.hand.rotation.x, 0.9, 1e-8);
