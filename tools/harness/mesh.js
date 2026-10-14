@@ -415,8 +415,8 @@ test('viewmodel', async () => {
   return { ...out, failures: h.failures };
 });
 
-// The particles: the effects' billboard pools (a gun's impact on stone: dust,
-// chips; sparks off metal; a tracer; a muzzle flash) and the birds' motes.
+// The particles: splash mist, sparks off metal, a tracer, a muzzle flash,
+// and the birds' motes.
 test('particles', async () => {
   await load(ROOFED);
   lookFrom(new THREE.Vector3(9, 4, 11), new THREE.Vector3(0, 1.5, 0));
@@ -430,8 +430,8 @@ test('particles', async () => {
   // grid points (the box's cells, or past them) whose pixels show the sky
   // behind, not the settling floor; the sparks' streaks (0.09 cells wide)
   // near the camera, where they span pixels
-  const SPAWN = { flash: [10, 6, 10], sparks: [34, 12, 40], dust: [30, 14, 36], tracer: [14, 4, 12], jet: [24, 9, 30.6], feathers: [16, 10, 16] };
-  povEvents.emit('impact', { point: V(...SPAWN.dust), id: E.STONE, source: 'gun', normal: up, broke: true });
+  const SPAWN = { flash: [10, 6, 10], sparks: [34, 12, 40], mist: [30, 14, 36], tracer: [14, 4, 12], jet: [24, 9, 30.6], feathers: [16, 10, 16] };
+  povEvents.emit('impact', { point: V(...SPAWN.mist), id: E.WATER, source: 'gun', normal: up, broke: true });
   povEvents.emit('impact', { point: V(...SPAWN.sparks), id: E.METAL, source: 'gun', normal: up, broke: false });
   povEvents.emit('round:move', { kind: 'round', from: V(4, 6, 4), to: V(24, 2, 20) });   // (SPAWN.tracer: its middle)
   povEvents.emit('gun:fire', { origin: V(...SPAWN.flash), dir: V(1, 0, 0) });
