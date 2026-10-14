@@ -31,7 +31,7 @@ at `<20` meters. Neither source claims our new 100/200 m settings.
 100 m is a deliberate 5× traversal extension over flat-screen acquisition,
 not a correction to source units. Full-scale imported streets/rooftops exceed
 both the old 20 m gate and the ~19.2 m half-width of a 128-cell simulation
-window. The Paradise CPU fixture's actual source wall is 91.65 m away.
+window. The Paradise CPU fixture's actual source wall is 92.25 m away.
 The 200 m safety budget leaves twice the acquisition reach for swings/falls and
 moving anchors without an unlimited runaway cable. Forces, source distance
 bands, E toggle, jump-to-launch and momentum on release are unchanged.
@@ -116,7 +116,7 @@ The other implants are not implemented.
 
 Run `node tools/grapple-cpu-check.mjs`.
 The check covers source force boundaries and 30/60/120 FPS movement, real
-75 m voxel attachment/pull, the published Paradise 91.65 m far hit in a normal
+75 m voxel attachment/pull, the published Paradise 92.25 m far hit in a normal
 128-cell window, closest resident occlusion, destroyed resident vs pristine
 source cells, saved far edits, 100 m acquisition boundaries, 200 m release and
 800-orb capacity, moving anchors, and stale/pending lifecycle cleanup.

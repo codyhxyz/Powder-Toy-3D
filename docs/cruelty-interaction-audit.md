@@ -136,3 +136,8 @@ Existing importer CPU tests, import checks, async checks and production build pa
 published source doorways in all four maps. `tools/cruelty-interactions-browser-check.mjs`
 checks E and real GPU collision; `WGSL_CHECK` exposes the `importedDoor` kernel.
 Published manifests include all integrated interaction and actor metadata.
+The built-site browser check passed in a 6.73-second total GPU slot:
+Pharmakokinetiks, two targets and 23 actors; real E opening cleared the standing
+body probe, and E closing restored its obstruction. A separate authored-guard
+visual checkpoint passed in 4.35 seconds. No geometry, body or streaming window
+was reduced for either check.

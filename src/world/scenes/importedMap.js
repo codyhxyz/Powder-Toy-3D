@@ -124,8 +124,8 @@ fn sceneCell(w: vec3i) -> SceneCell {
   };
 }
 /** The map's manifest now; its geometry on the first prepare. */
-export async function loadImportedMap(manifestURL, options = {}) {
-  const response = await fetch(manifestURL);
+export async function loadImportedMap(manifestURL, { response, ...options } = {}) {
+  response ??= await fetch(manifestURL);
   if (!response.ok) throw new Error(`Imported map unavailable (${response.status})`);
   const map = await response.json();
   return createImportedMapScene(map, null, { ...options, dataURL: new URL(map.dataFile, response.url || manifestURL).href });

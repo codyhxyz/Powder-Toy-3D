@@ -11,7 +11,7 @@ async function installProfile(profile) {
   const response = await fetch(`/local-maps/${profile.id}.json`);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Cannot read the converted ${profile.name} (${response.status})`);
-  const scene = await loadImportedMap(`/local-maps/${profile.id}.json`, { key: `${profile.id}Local`, label: `${profile.name} (source import)` });
+  const scene = await loadImportedMap(`/local-maps/${profile.id}.json`, { response, key: `${profile.id}Local`, label: `${profile.name} (source import)` });
   if (scene.importManifest.id !== profile.id) throw new Error(`Converted map profile mismatch: ${profile.id}`);
   if (MAPS.some((m) => m.key === profile.id) || WORLD_SCENES.some((s) => s.key === scene.key)) throw new Error(`Duplicate map registration: ${profile.id}`);
   const omitted = scene.mission.placementFailures.filter((p) => p.role === 'guard').length;

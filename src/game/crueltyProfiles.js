@@ -32,7 +32,7 @@ function classify(text) {
   if (/Mutant/i.test(text)) return 'mutant';
   if (/Grunt/i.test(text)) return 'grunt';
   if (/Executive/i.test(text)) return 'executive';
-  if (/Nerd|Civilian|Stupid_Civilian/i.test(text)) return 'civilian';
+  if (/Nerd|Civilian|Stupid_Civilian|Obj_Pinky/i.test(text)) return 'civilian';
   return null;
 }
 const positive = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
@@ -48,7 +48,7 @@ export function crueltyProfile(spec, { target = false, cellMeters = 0.3 } = {}) 
   // weapon.gd's public weapon enum; only consume it if explicitly authored.
   const sourceWeapon = ({ 0: 'GUN', 1: 'SMG', 4: 'SMG', 5: 'ROCKET', 6: 'SNIPER', 7: 'SMG', 8: 'SMG', 9: 'GUN' })[p.current_weapon];
   return Object.freeze({
-    role: effectiveRole, outfit: r.outfit, civilian, stupid: p.stupid ?? (role === 'cultLeader' || /Nerd/i.test(spec.sourceResource ?? spec.sourcePath ?? spec.name ?? '')),
+    role: effectiveRole, outfit: r.outfit, civilian, stupid: p.stupid ?? (role === 'cultLeader' || /Nerd|Obj_Pinky/i.test(spec.sourceResource ?? spec.sourcePath ?? spec.name ?? '')),
     health, damageScale: 40 / health, // destination pistol .5 -> source pistol 20 / source HP
     weapons: Object.freeze(civilian ? [] : [...(spec.sourceResource ? [sourceWeapon ?? r.weapon ?? 'GUN'] : spec.weapons ?? [r.weapon ?? 'GUN'])]),
     reaction: Number.isFinite(p.reaction_time) && p.reaction_time >= 0 ? 0.5 + p.reaction_time / 15 : r.reaction,

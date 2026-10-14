@@ -166,6 +166,10 @@ try {
     const apartment = JSON.parse(fs.readFileSync(new URL('../public/local-maps/apartmentAtrocity.json', import.meta.url)));
     const cult = crueltyProfile(apartment.mission.targets[0], { target: true });
     assert.ok(cult.civilian && cult.stupid && cult.weapons.length === 0);
+    const pharma = JSON.parse(fs.readFileSync(new URL('../public/local-maps/pharmakokinetiks.json', import.meta.url)));
+    const pinky = crueltyProfile(pharma.mission.targets.find(s => /Obj_Pinky/.test(s.sourceResource)), { target: true });
+    assert.ok(pinky.civilian && pinky.stupid && pinky.weapons.length === 0);
+    assert.equal(pinky.health, 15);
   });
 } finally { mission.end(); }
 assert.equal(scene.children.length, 0);

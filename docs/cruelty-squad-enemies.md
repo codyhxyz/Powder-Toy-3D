@@ -46,6 +46,8 @@ engagement, a shotgun and poison-on-death. `Obj_Cult_Leader.tscn` explicitly set
 15 HP, civilian and stupid; it must not become hostile merely because its name
 sounds threatening. These classifications replace the earlier unknown-target
 fallbacks. Supplied Nerd scenes likewise default to stationary civilians.
+`Obj_Pinky.tscn` in the same pinned reference also specifies 15 HP, civilian
+and stupid; Pinky is stationary, not an invented hostile boss.
 
 ## Profile policy
 
@@ -74,8 +76,8 @@ Actual supplied scene properties win where available.
 | Assassin | 60 | 0.8 | SNIPER | 1.8 / 0 | 0.025 |
 | Knifelord | 60 | 0.7 | AXE stand-in | existing melee windup | — |
 | Mutant | 80 | 0.9 | AXE stand-in | existing melee windup | — |
-| Chief | 300 | 1.1 | slow GUN stand-in for acid spray | 1.0 / 0 | 0.10 |
-| Cop Narc | 50 | 1.1 | short SMG stand-in for shotgun | 1.8 / 0.16 | 0.12 |
+| Chief | 300 | 1.1 | slow GUN stand-in for acid spray | 0.7 / 0 | 0.10 |
+| Cop Narc | 50 | 1.2 | short SMG stand-in for shotgun | 1.8 / 0.16 | 0.12 |
 | Cult Leader | 15 | — | none | — | — |
 | Civilian / executive | 15 | — | none | — | — |
 | Unclassified hostile objective | 100 | 1.1 | GUN | 0.7 / 0 | 0.08 |
@@ -131,3 +133,7 @@ no-flight, authored overrides, neutral mesh bounds and non-mission isolation.
 
 CPU checks do not prove exact original difficulty: dormant streamed-out actors,
 weapon stand-ins, normalized damage and missing boss mechanics remain adaptations.
+The built production bundle also passed a 23-actor mission check in 6.73 seconds
+total GPU occupancy. An in-game screenshot of an unchanged authored guard
+passed in a separate 4.35-second slot: saturated uniform, crooked eyes/teeth,
+articulated stance and the existing held pistol are visible.
