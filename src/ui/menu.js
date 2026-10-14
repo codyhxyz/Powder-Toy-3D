@@ -4,6 +4,7 @@ import { MAPS, mapByKey, mapsFor, isWorld, sizeTag } from '../maps.js';
 import { listSaves, getSave, putSave, deleteSave, downloadSave, pickSaveFile } from '../saves/local.js';
 import { readSaveHeader } from '../saves/format.js';
 import { MODEICONS, MODEICON_BOX } from './modeicons.js';
+import { characterForMode } from '../pov/character.js';
 
 // The start menu, Garry's Mod's New Game screen: gamemodes down the left, each
 // with its icon, the maps built for the chosen one as square previews (public/maps, rendered by
@@ -31,7 +32,7 @@ import { MODEICONS, MODEICON_BOX } from './modeicons.js';
 //   progress(step, text)  a boot step began (STEPS keys; 'cold': the shaders are compiling
 //                         cold; 'match' with app.js's line for it)
 const THUMB = (key) => `/maps/${key}.webp`;
-const YOU = '/you.webp';
+const YOU = (character) => character === 'real' ? '/you.webp' : `/you-${character}.webp`;
 // the live player's canvas (ui/youWorker.js), sized once for the tallest he is shown (menu.css .mm-you)
 const YOU_MAX_H = 560;                 // CSS px
 const YOU_ASPECT = 260 / 420;          // the still's width over its height (tools/you-portrait.mjs SHOWN_W, SHOWN_H)
@@ -75,6 +76,11 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   let busy = false;
   let view = 'maps';            // 'maps': a gamemode's maps; 'saves': the Saves list
   let saveList = [], savePick = null, saveCards = [];
+  const character = (save = view === 'saves') => {
+    let choice;
+    try { choice = JSON.parse(localStorage.getItem('powder-toy-3d:settings') || '{}')?.character; } catch { /* storage unavailable */ }
+    return characterForMode(save ? 'sandbox' : modeKey, choice);
+  };
 
   const backdrop = h('div.mm-backdrop');
   const nav = h('nav.mm-modes', { 'aria-label': 'Gamemodes' });
@@ -97,15 +103,20 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   const loadStatus = h('div.mm-load-status');
   const loadStep = h('div.mm-load-step');
   // (eager, at low priority: he must be there the moment Start is pressed, when the page is about to freeze compiling)
-  const you = h('img', { src: YOU, alt: '', decoding: 'async', fetchpriority: 'low', draggable: false });
+  const you = h('img', { src: YOU(character()), alt: '', decoding: 'async', fetchpriority: 'low', draggable: false });
   // decoded while the menu is up: a fast boot freezes the page (the map build, the shaders) before an
   // undecoded image paints, and the caption then points at nothing
   you.decode?.().catch(() => {});
-  you.addEventListener('error', () => you.closest('figure')?.remove());
+  you.addEventListener('error', () => { you.style.visibility = 'hidden'; });
+  you.addEventListener('load', () => { you.style.visibility = ''; });
   const youFig = h('figure.mm-you', {}, you, h('figcaption', { text: 'This is you.' }));
   const youLive = liveYou(youFig, you);
   // built in the background once the menu is up (an idle moment, as src/preload.js waits for one)
-  const prepareYou = () => (self.requestIdleCallback ? requestIdleCallback(youLive.prepare, { timeout: YOU_IDLE_TIMEOUT_MS }) : setTimeout(youLive.prepare, YOU_NO_IDLE_DELAY_MS));
+  const prepareYou = () => {
+    const prepare = () => { if (el.classList.contains('open') && !busy) youLive.prepare(character()); };
+    if (self.requestIdleCallback) requestIdleCallback(prepare, { timeout: YOU_IDLE_TIMEOUT_MS });
+    else setTimeout(prepare, YOU_NO_IDLE_DELAY_MS);
+  };
 
   const el = h('div.mm', { role: 'dialog', 'aria-label': 'Maps' },
     backdrop,
@@ -186,11 +197,13 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     view = 'maps';
     renderModes();
     renderMaps();
+    prepareYou();
   }
 
   // ---- Saves ----
   async function showSaves(select) {
     view = 'saves';
+    prepareYou();
     try { saveList = await listSaves(); } catch (err) { saveList = []; console.warn('saves: storage unavailable', err); }
     if (view !== 'saves') return;
     savePick = saveList.find((x) => x.id === (select ?? savePick?.id)) ?? saveList[0] ?? null;
@@ -349,7 +362,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
       cold = false;
       renderStep();
       el.classList.add('open', 'loading');
-      youLive.start();
+      youLive.start(character(save));
     },
     // a boot step began (text: its line, if not STEPS' own: the match's, from app.js)
     progress(step, text) {
@@ -372,6 +385,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
 // OffscreenCanvas WebGL, or on a failure, the still stays.
 function liveYou(fig, still) {
   let worker = null, canvas = null, ready = false, shown = false, on = false, drag = null;
+  let character = null;
   const show = () => {
     if (shown || !ready) return;
     shown = true;
@@ -379,7 +393,14 @@ function liveYou(fig, still) {
     fig.classList.add('live');
     worker.postMessage({ run: true });
   };
-  const prepare = () => {
+  const prepare = (choice) => {
+    if (choice !== character) {
+      drop();
+      character = choice;
+      fig.dataset.character = choice;
+      still.src = YOU(choice);
+      still.decode?.().catch(() => {});
+    }
     if (worker || !still.isConnected || typeof OffscreenCanvas === 'undefined' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return;
     const dpr = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
     canvas = h('canvas.mm-you-live');
@@ -387,13 +408,18 @@ function liveYou(fig, still) {
     canvas.height = Math.round(YOU_MAX_H * dpr);
     const off = canvas.transferControlToOffscreen();
     worker = new Worker(new URL('./youWorker.js', import.meta.url), { type: 'module' });
+    const current = worker;
     worker.onmessage = ({ data }) => {
+      if (worker !== current) return;
       if (data === 'ready') { ready = true; if (on) show(); return; }
       console.warn('loading screen: the live player failed, the still stays', data.failed);
       drop();
     };
-    worker.onerror = (e) => { console.warn('loading screen: the live player failed, the still stays', e.message); drop(); };
-    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height }, [off]);
+    worker.onerror = (e) => {
+      if (worker !== current) return;
+      console.warn('loading screen: the live player failed, the still stays', e.message); drop();
+    };
+    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height, character }, [off]);
   };
   const drop = () => {
     worker?.terminate();
@@ -420,7 +446,7 @@ function liveYou(fig, still) {
   fig.addEventListener('pointercancel', release);
   return {
     prepare,
-    start() { on = true; prepare(); show(); },
+    start(choice) { on = true; prepare(choice); show(); },
     stop() { on = false; release(); drop(); },
   };
 }
