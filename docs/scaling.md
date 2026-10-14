@@ -444,9 +444,9 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     `toolbelt.windowShifted` reaches every tool: the gun's rounds (positions, trace answers asked before the move,
     the last impact), the physgun's hold point, the axe's last hit; a tool's async event pins its point
     (`transfer.js pinned`). Leaving POV in World brings the god view back over the body, framed as it was.
-  - Multiplayer: hosting in World is refused ("Multiplayer isn't available in World yet"), and so is World while
-    hosting; a guest's grid always follows the host's box (a key frame takes a guest out of World), and an invite
-    opened with World saved boots in a box.
+  - Multiplayer: a World host streams its loaded window. Guests walk that area in first person and are leashed
+    to the host (LEGO Star Wars: free nearby, caught up after a jump). They do not stream their own window.
+    Weapons, vehicles, NPCs and progression stay solo. A box session still uses the host's box.
   - `Simulation.run` gives a pass kept across grids of the same size (a POV tool's, the construction stamp) the
     current simulation's origin, instead of keeping the first one's.
   - Checked headless (under other sessions' GPU load, 11–16 fps):
