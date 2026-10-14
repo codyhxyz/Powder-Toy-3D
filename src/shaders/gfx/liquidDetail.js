@@ -124,13 +124,13 @@ ${Object.keys(LIQ_PROPS).map((k) => `  if (id == E_${k}) { return ${g(fn(LIQ_PRO
 }`;
 const wgslArray = (xs) => `array<f32, ${xs.length}>(${xs.map(g).join(', ')})`;
 
-/** Whether any liquid detail switch is on (the GLSL's LIQ_DETAIL), for the tracer. */
-export const LIQ_DETAIL = (detail = {}) => !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM);
+/** Native compact foam is always compiled; legacy detail switches still gate their effects. */
+export const LIQ_DETAIL = () => true;
 
 export const liquidDetailGLSL = (detail = {}) => {
   const ripples = !!detail.DETAIL_LIQ_RIPPLES;
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
-  const foam = !!detail.DETAIL_LIQ_FOAM;
+  const foam = true; // native §4.3 foam is independent of the legacy Whitewater switch
   return /* wgsl */ `
 // Which copy of the aeration buffer (binding 19: both copies, docs/webgpu.md
 // G4) is the current one, 0 or 1. The aeration's ping-pong isn't the state's,
@@ -322,7 +322,7 @@ fn liquidDetail(hp: vec3f, n0: vec3f, id: i32, col: ptr<function, vec3f>, trans:
   var n = n0;${ripples ? `
   n = liquidCapillary(hp, n);` : ''}${meniscus ? `
   n = liquidMeniscus(hp, n, id);` : ''}${foam ? `
-  liquidFoam(hp, &n, id, col, trans);` : ''}
+  if (H.format == 2u || H.format == 3u || ${!!detail.DETAIL_LIQ_FOAM}) { liquidFoam(hp, &n, id, col, trans); }` : ''}
   return n;` : `
   return n0;   // (no liquid detail compiled in)`}
 }

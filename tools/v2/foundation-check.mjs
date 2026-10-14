@@ -172,8 +172,9 @@ const gpu = {
 const g = gridLayout(...dims), sim = { gpu, g, id: 1, version: 0, wholeWrites: 0, frame: 0, paints: 0, state: { A: {}, B: {}, F: {} }, marks: {}, tables: {},
   L: { STATE_RO: { entries: [0, 1] }, TABLES: { entries: [0] } }, header: () => ({}), noteWrite() {} };
 const engine = new PhysicsV2(sim); await engine.ready;
-for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
-assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null);
+for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['jetMask', 4], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
+assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, null);
+assert.equal(engine.groups.liquid.entries.length, 7); // plus one shared table = eight
 assert.equal(engine.nativeDynamics.layout.entries.length, 3); assert.equal(V2_DYNAMICS_LAYOUT.length, 3);
 engine.sync();
 const resetRequests = commands.findIndex(c => c[0] === 'dispatch' && c[1] === 'v2externalEvents');
@@ -194,11 +195,11 @@ assert.equal(suspendedImport[2].params.full, 0, 'capture does not force whole re
 sim.compact = engine; sim.version++; engine.sync();
 assert.equal(commands.filter(c => c[0] === 'dispatch' && c[1] === 'v2import').at(-1)[2].params.preserveLegacyMarks, 0);
 engine.restore({}, {});
-for (const buffer of [engine.liquidScratch, engine.events]) assert(commands.some(c => c[0] === 'clear' && c[1] === buffer));
+for (const buffer of [engine.liquidScratch, engine.jetMask, engine.events]) assert(commands.some(c => c[0] === 'clear' && c[1] === buffer));
 const source = v2ImportWGSL(g); assert(source.includes('if (P.preserveLegacyMarks == 0u) { atomicAnd(&marks[MARK_ACT'), 'suspended imports retain legacy wake marks'); assert(source.indexOf('banks[s] = 0') < source.indexOf('if (any(n != c)'), 'equal cores still reset bank');
 const limit = v2LimitWGSL(g); assert(!/cells\[s\]\.[xyzw]\s*=/.test(limit.slice(limit.indexOf('fn main'))), 'limiter never writes persistent core');
 const gather = v2GatherWGSL(g); assert(gather.includes('w: atomic<u32>')); assert(gather.includes('atomicLoad(&cells[s].w)')); assert(gather.includes('atomicStore(&cells[s].w'));
 const contact = v2BlockWGSL(g, 'fn contactBlock(c:ptr<function,array<vec4u,8>>,b:ptr<function,array<i32,8>>,p:array<vec3i,8>,r:ptr<function,array<u32,8>>) {}');
 assert(contact.includes('contactBlock(&cs, &bs, positions, &requests);'));
-engine.dispose(); for (const name of ['cells', 'aux', 'liquidScratch', 'events', 'act', 'args']) assert(engine[name].destroyed);
+engine.dispose(); for (const name of ['cells', 'aux', 'liquidScratch', 'jetMask', 'events', 'act', 'args']) assert(engine[name].destroyed);
 console.log(`native foundation: ${cases} conservative advection cases, 10000 exact wide products, packing/migration/driver ownership and rest checks passed`);

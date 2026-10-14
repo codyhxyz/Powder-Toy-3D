@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ELEMENTS } from '../../src/elements.js';
+import { liquidTransportWGSL } from '../../src/shaders/v2.js';
 import { FULL, MAX_FILL, capacityPerQuantum, isLiquid, share } from '../../src/v2/layout.js';
 import { PHASE_ROWS, PHASE_STEPS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
 import { limbs, wide, signed, mul, mulSmall, energyDiv, energyDivExact, phaseDiv, energyScale, energyShare, shareUnsigned } from './integer-transport-reference.mjs';
@@ -148,10 +149,11 @@ for (const material of ELEMENTS.filter(e => isLiquid(e.id))) {
 }
 const source = readFileSync(new URL('../../src/shaders/v2.js', import.meta.url), 'utf8');
 const gather = source.slice(source.indexOf('export const v2GatherWGSL'), source.indexOf('export const', source.indexOf('export const v2GatherWGSL') + 20));
-assert.match(gather, /struct TransportPacket/);
+assert.match(gather, /\$\{liquidTransportWGSL\}/);
+assert.match(liquidTransportWGSL, /struct TransportPacket/);
 assert.match(gather, /energySub\(energy, out.heat\)/);
 assert.match(gather, /energyAdd\(energy, incoming.heat\)/);
-assert.equal((gather.match(/transportedEnergy\(src, prefix, n\)/g) ?? []).length, 1, 'gating computes each packet only once');
+assert.equal((liquidTransportWGSL.match(/transportedEnergy\(src, prefix, n\)/g) ?? []).length, 1, 'gating computes each packet only once');
 const report = s => ({ ...s, fallbackRate: `${(100 * ((s.energyFallback ?? 0) + (s.phaseFallback ?? 0)) / (s.energyCalls + s.phaseCalls)).toFixed(5)}%` });
 console.log(`${checks} exact BigInt oracle checks; all ${ELEMENTS.length} materials; ${samples} liquid + ${phaseSamples} phase domain samples`);
 console.log(`bounds: capacity=${maxCapacity}; latent*PHASE_STEPS=${maxLatentProduct}; |offset|=${maxOffset}`);

@@ -1183,7 +1183,16 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         s = gatherSurf(hitP, ns, hitCh);
       }
       decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
-      c = shadeSurf(s, shadeRd);${grains ? `
+      c = shadeSurf(s, shadeRd);
+      // Native molten liquids share compact foam, not water's refraction or
+      // detail eligibility. Layer only reflected light; retain heat emission.
+      if ((H.format == 2u || H.format == 3u) && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+        var foamCol = vec3f(0.0);
+        var foamTrans = vec3f(1.0);
+        var foamN = s.n;
+        liquidFoam(s.p, &foamN, s.id, &foamCol, &foamTrans);
+        c = foamCol + foamTrans * (c - s.emit) + s.emit;
+      }${grains ? `
       gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)` : ''}
     }
     if (sp == 0) {

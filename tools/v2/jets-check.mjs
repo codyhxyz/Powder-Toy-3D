@@ -8,6 +8,7 @@ import { E } from '../../src/elements.js';
 import { FULL, MAX_FILL, makeMaterial, withPayload, energyOf, cTq, cFill, ctypeOf, payloadOf, share, isConductor, energyPacketFits } from '../../src/v2/layout.js';
 import { FOAM_ROWS, decayFoam, impactFoam } from '../../src/v2/foam.js';
 import { gridLayout } from '../../src/sim.js';
+import { CONTROL } from '../../src/shaders/v2/particles.js';
 import { jetsWGSL, JET_STAGES } from '../../src/shaders/v2/jets.js';
 import { v2GatherWGSL, v2LimitWGSL, v2FoamWGSL, liquidTransportWGSL, SUB, TICK_HZ } from '../../src/shaders/v2.js';
 
@@ -53,6 +54,8 @@ test('partial, dry, conductive sparks, dtype and max-fill packets retain exact m
 });
 test('allocation is canonical prefix, honest overflow, actual accepted face gate',()=>{
   const code=jetsWGSL(gridLayout(32,32,32),'allocate');
+  assert.equal(CONTROL.FREE_LIST,32);
+  assert.match(code,/const D_FREE: u32 = 32u/);
   assert.match(code,/requested-free/);assert.match(code,/control\[D_FREE\+free\],i/);
   const spawn=jetsWGSL(gridLayout(32,32,32),'spawn');
   assert.match(spawn,/rank<atomicLoad\(&control\[4\]\)/);assert.match(spawn,/accepted\|=1u<<f/);
@@ -66,6 +69,13 @@ test('gather burn follows actual mass, immutable snapshot, no racy full-core flu
   assert.match(gather,/cFill\(src.core\) > sent/);assert.match(gather,/incoming.amount != 0u/);
   assert.match(gather,/atomicLoad\(&jetMask\[slotOf\(q\)\]\)/);
   assert.doesNotMatch(liquidTransportWGSL,/loadCore\(s\)/);
+  assert.match(limit,/atomicStore\(&jetMask\[s\], c.x & 0xff000000u\)/);
+  // Sleeping cells have no current snapshot: faceQ must reject them first.
+  assert.ok(liquidTransportWGSL.indexOf('!awakeCell(p)')<liquidTransportWGSL.indexOf('!isOpenC(snapshot'));
+  assert.match(liquidTransportWGSL,/mEdge\(p \+ face6\(i32\(face\)\)\)/);
+  const candidate=jetsWGSL(g,'candidate');
+  assert.match(candidate,/!awakeCell\(q\)/);
+  assert.match(candidate,/mEdge\(p\+face6\(i32\(face\)\)\)/);
 });
 test('foam accepts impacts once, preserves incoming, all liquids participate, reaches zero on native clock',()=>{
   assert.equal(impactFoam({incoming:143,amount:FULL,speed2:0}),143);

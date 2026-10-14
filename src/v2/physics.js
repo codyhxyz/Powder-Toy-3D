@@ -450,6 +450,6 @@ export class PhysicsV2 {
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');
     this.jets?.dispose();
     this.dynamics?.dispose();
-    for (const b of [this.cells, this.aux, this.liquidScratch, this.events, this.act, this.args]) b.destroy();
+    for (const b of [this.cells, this.aux, this.liquidScratch, this.jetMask, this.events, this.act, this.args]) b.destroy();
   }
 }
