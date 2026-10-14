@@ -13,7 +13,7 @@ import { MAX_SLOT_MS, budgetMs, ownedTree, processTable, inspectionFailure } fro
 
 assert.equal(MAX_SLOT_MS, 25000);
 for (const n of [5000, 10000, 25000]) assert.equal(budgetMs(n), n);
-for (const n of [0, -1, NaN, Infinity, 1000, 25001, 180000]) assert.throws(() => budgetMs(n), RangeError);
+for (const n of [0, -1, NaN, Infinity, 1000, 2000, 25001, 180000]) assert.throws(() => budgetMs(n), RangeError);
 const table = [
   { pid: 100, ppid: 1, start: 'ours' }, { pid: 101, ppid: 100, start: 'driver' },
   { pid: 102, ppid: 101, start: 'browser' }, { pid: 103, ppid: 102, start: 'gpu' },
