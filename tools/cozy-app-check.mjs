@@ -17,13 +17,19 @@ try {
   browser = await launchBrowser({ lifetimeMs: 10000 });
   const page = await newTestPage(browser, { mode: 'ui', viewport: { width: 960, height: 640 } });
   page.setDefaultTimeout(3500);
+  page.setDefaultNavigationTimeout(3500);
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => {
     if (m.type() === 'error' && !m.text().includes('ERR_CONNECTION_REFUSED')) errors.push(m.text());
   });
   // The existing 64³ Lab fixture is only a settings smoke, not a physics test.
   await page.goto(`${origin}/?size=64&preset=lab&paused=1&test=ui`);
-  await ready(page);
+  let bootTimer;
+  try {
+    await Promise.race([ready(page), new Promise((_, reject) => {
+      bootTimer = setTimeout(() => reject(new Error('App boot exceeded this short GPU slot; no settings assertions ran')), 3500);
+    })]);
+  } finally { clearTimeout(bootTimer); }
   const initial = await page.evaluate(() => ({ version: __app.sim.version, style: __app.settings.materialStyle }));
   assert.equal(initial.style, 0);
   await page.keyboard.press(',');
