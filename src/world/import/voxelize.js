@@ -17,7 +17,7 @@ export function triangleIntersectsCell(triangle, cell) {
   if (axes.some(separating) || separating(cross(edges[0], edges[1]))) return false;
   return !edges.some((edge) => axes.some((axis) => separating(cross(edge, axis))));
 }
-export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16, alignment = 8, maxCandidates = 100000000 } = {}) {
+export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16, alignment = 8, maxCandidates = 100000000, onTriangle } = {}) {
   if (!(cellMeters > 0) || !Number.isFinite(cellMeters) || !Number.isInteger(padding) || padding < 1 || !Number.isInteger(alignment) || alignment < 8 || alignment % 8) throw new Error('Invalid voxel scale/bounds');
   const surfaces = meshes.flatMap((m) => m.surfaces);
   if (!surfaces.length) throw new Error('No source surfaces');
@@ -58,6 +58,9 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
       const normal = cross(sub(t[1], t[0]), sub(t[2], t[0]));
       const dominant = normal.map(Math.abs).indexOf(Math.max(...normal.map(Math.abs)));
       if (Math.abs(normal[dominant]) < 1e-10) continue;
+      // One geometry walk: appearance receives the exact cells accepted by
+      // physics SAT, including overlaps. No approximate second voxelizer.
+      const onHit = onTriangle?.({ surface: s, indexAt: i, triangle: t, element: id, origin, size, brickDims, cellMeters });
       const u = (dominant + 1) % 3, v = (dominant + 2) % 3;
       const min = [0, 1, 2].map((k) => Math.floor(Math.min(...t.map((p) => p[k])) - 1e-8));
       const max = [0, 1, 2].map((k) => Math.floor(Math.max(...t.map((p) => p[k])) + 1e-8));
@@ -69,7 +72,10 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
         for (let c = from; c <= to; c++) {
           if (++candidates > maxCandidates) throw new Error('Voxel candidate budget exceeded');
           const p = []; p[u] = a; p[v] = b; p[dominant] = c;
-          if (triangleIntersectsCell(t, p)) put(p, id);
+          if (triangleIntersectsCell(t, p)) {
+            put(p, id);
+            onHit?.(p);
+          }
         }
       }
     }

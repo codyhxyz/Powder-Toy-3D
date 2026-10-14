@@ -30,7 +30,10 @@ current storage and streaming budget. It is not replaced by a smaller map.
 
 ## Provenance and rights
 
-The input is the original level data, not a reconstruction:
+The currently published geometry was converted from the mod source below,
+not reconstructed by hand. The appearance-capable converter additionally
+accepts the authorized complete recovered original game via `--source-root`;
+it does not silently mix original resources with old mod scenes:
 
 - [CrueltySquadVR-Modloader](https://github.com/teddybear082/CrueltySquadVR-Modloader)
   commit `1ab57e830d5e4a8f5ab6eb800a3e9108faafbcf8`,
@@ -62,7 +65,9 @@ establish edible walls or spontaneous growth. Red water is not classified as
 blood without a source mechanic. Display textures become glass, not invented
 circuitry. Rugs use existing burnable Wood; flexible fibre behaviour is not
 reproduced. Original texture pixels, animated shaders and colours are not
-copied. Unknown material paths fail conversion. Each manifest records the
+copied by the legacy geometry-only conversion. With `--source-root`, native
+original appearance is retained separately; it never changes physical element
+assignments. Unknown material paths fail conversion. Each manifest records the
 exact mapping, per-path usage counts and the mechanical and visual losses.
 
 A future element needs a distinct reusable interaction, not a texture name.
@@ -88,6 +93,165 @@ it before the loader sees it, so the loader would inflate raw bytes and fail.
 The loader inflates only a real gzip stream (its magic bytes), so either host
 behaviour decodes to the same words; a CPU test serves the file both ways and
 compares them.
+
+## Reproducible original appearance conversion (conversion only)
+
+The source root must be the complete recovered original game, not the old
+`/tmp/cruelty-vr-unpacked` mod folder. `--source-root` selects canonical
+`Levels/Level{1,2,4,6}.tscn` using the existing profiles and verifies each
+adjacent original `.json` name: Pharmakokinetiks, Paradise, Androgen Assault,
+Apartment Atrocity. Sin Space Engineering remains explicitly budget-blocked.
+No per-map texture assignments exist: scene material references lead through
+SpatialMaterial/ShaderMaterial/AnimatedTexture to the original PNG resources.
+
+```sh
+export GDRE_BIN='/tmp/gdre-cruelty/Godot RE Tools.app/Contents/MacOS/Godot RE Tools'
+node tools/import-cruelty-map.mjs --map all \
+  --source-root /Users/codyhergenroeder/Library/Caches/tpt-cruelty-source/recovered
+# Equivalent: --gdre "$GDRE_BIN". Output remains public/local-maps/<id>.*.
+```
+
+This command regenerates assets; it is intentionally **not run as part of the
+conversion-only implementation**. Integration must regenerate them separately.
+Without `--source-root`, the existing `--source`/`--source-dir` fixture and
+geometry-only behaviour is unchanged. The shared parser now also understands
+standalone `[gd_resource]` roots and multiline node-group headers.
+
+`magick` is the existing system dependency for native-size RGBA8 PNG expansion:
+no resize, atlas, palette replacement or resampling. Source import flags are
+retained (repeat/filter/mipmaps/sRGB and the complete property inventory).
+Original PNG alpha-border import fixup, GPU compression and generated mipmaps
+are not baked into these original pixels. Pixel-changing size-limit,
+premultiplied-alpha and inverted-colour import requests fail explicitly.
+Identical decoded pixel sequences/dimensions share storage, while material
+identity, albedo resource identity and physical material path remain distinct.
+Animation frames are contiguous at equal native dimensions with source FPS;
+nonuniform delays, paused/one-shot/nested animations and unequal sizes fail.
+
+Recovered `Imported_Mesh/Snirby.material` is still a Godot `RSCC` binary. The
+Node adapter recognizes `RSRC`/`RSCC` and invokes configured GDRE's generic
+`--headless --bin-to-txt=FILE --output=TEMP` export, then uses the same text
+resource parser and removes its temporary directory in `finally`. It does not
+hand-decode binary resources, infer a texture by filename or modify the source
+root. Missing GDRE is an actionable error. Provenance hashes the **original
+binary**, not merely its exported text.
+
+### Appearance v1 ABI
+
+`src/world/import/appearanceFormat.js` is the browser-safe authoritative
+contract. The writer emits gzip `<id>.appearance.binpack`, plus
+`manifest.appearance` (`version`, `wordCount`/`totalWords`, `dataFile`,
+`dataCompression`, uncompressed/packed SHA-256 and byte counts, materials,
+texture pointers, source identities/hashes, lights/environment and losses).
+All pointers are absolute **u32 word offsets**, floats are f32 bitcasts, byte
+serialization is little-endian, and all spare words are zero.
+
+- Header: 64 words; 0 version, 1 totalWords, 2–4 brickDims, 5 directoryAt,
+  6 trianglesAt, 7 materialsAt, 8 materialCount, 9 triangleCount, 10 lightsAt,
+  11 lightCount, 12 environmentAt, 13 maxBrickTriangles; 14–63 reserved.
+- Directory: same X-fastest brick count/order as physics, 0 for empty or a
+  pointer to `[count, zeroBasedTriangleIndex, ...]`. `voxelizeMeshes` calls an
+  optional triangle hook once and its returned hit hook only after the same
+  occupied-cell SAT acceptance used by physics. There is **one geometry walk**,
+  no independent appearance voxelizer. Overlaps list all accepted triangles;
+  physical overlap precedence remains unchanged.
+- Triangle: 24 words, six vec4s: `p0.xyz/materialIndex`, UV-U affine
+  gradient/bias, UV-V affine gradient/bias, unit normal/`dot(normal,p0)`,
+  barycentric-u affine gradient/bias, barycentric-v affine gradient/bias.
+  Positions are origin-adjusted world cells. Material UV scale/offset is baked
+  into the UV affine functions. Barycentric inside is `u>=0,v>=0,u+v<=1`.
+- Both supported mesh formats 97559 (24-byte stride) and skinned 97495
+  (36-byte stride) store half-float UV at byte **20**. Godot 3.5
+  `VisualServer::mesh_surface_make_offsets_from_format` and `ArrayType` put
+  TEX_UV before BONES/WEIGHTS; skin bytes follow UV, not precede it.
+  Positions/index arrays remain unchanged. Other layouts fail rather than guess.
+- Material: 32 words: 0 textureAt, 1 width, 2 height, 3 flags; 4–7 albedo RGBA;
+  8–10 emission RGB, 11 energy; 12 roughness, 13 metallic, 14 specular,
+  15 expected physical element; 16 frameCount, 17 FPS, 18 frameStride,
+  19 shader mode; 20 snapRes, 21 paletteswap; 22–25 roughness texture
+  offset/width/height/channel, 26–29 metallic texture offset/width/height/channel;
+  30–31 reserved. Texture channels are Godot 0R/1G/2B/3A/4grayscale. Null
+  textureAt=0 means genuinely untextured, never a substituted picture.
+  RGBA8 stores R in the least significant byte. Frame strides are pixel words.
+- Flags: transparent=1, unshaded=2, repeat=4, filter=8, mipmaps=16,
+  doubleSided=32, alphaScissor=64, vertexColor=128, sRGB=256, animated=512;
+  Godot blend/diffuse/specular enums occupy shifts16/20/24. Reserved flags
+  alphaScissor/vertexColor are not emitted by the supported resources.
+- Lights: 16 words: position.xyz/type (0 omni,1 directional,2 spot),
+  color.rgb/energy, direction.xyz/range, attenuation/angle/spotAttenuation/
+  shadowFlag. Positions/ranges are cells; directions are normalized world
+  negative-Z. Source script identities/hashes and node overrides are recorded,
+  not executed; actor visual helpers are excluded from terrain.
+- Environment: 32 words: ambient RGB/energy, fog RGB/enabled,
+  fog begin/end in cells, curve/transmit flag, panorama offset/width/height/
+  background mode, 9-word orientation Basis, rotation speed/axis (0Y,1X),
+  ambient sky contribution, background energy, fog transmit curve, fog sun
+  amount, fog depth enabled. Rotation defaults are read as source exported
+  properties, not invented or obtained by running scripts. Full source props
+  retain effects outside this fixed record (SSR, conditionals, draw distance).
+
+### Shader modes and explicit gaps
+
+Shader code is matched by audited **code SHA-256**, not a per-map filename
+assignment. Modes are exported in `APPEARANCE_MODES`; unknown code or material
+forms/properties fail with identity/hash and require review, never fake art.
+The conversion records the mode and source parameters; a renderer port is
+separate work:
+
+| Mode | Source behaviour to port |
+|---|---|
+| 0 spatial | SpatialMaterial albedo, material flags, roughness/metal/specular and native texture maps |
+| 1 unshaded | Original bare unshaded shader, genuinely no albedo texture |
+| 2 water | UV multiplied by `(1+.01*cos(V*10+time),1+.02*sin(U*10+time))`; alpha `(R+G)*2` |
+| 3 flesh | UV pulse: `clamp(1+.0005*cos/sin(UV*10+tan(time*5)),1,1.5)` |
+| 4 swampWater | UV multiply `(1+.0025*cos(10+time*.5),1+.005*sin(10+time*.5))` |
+| 5 scroll | Samples `2*UV+(0,-time*.2)` |
+| 6 realPSX | Source view-space vertex snapping at snapRes; ambient-light-disabled, double-sided |
+| 7 realPSXWobble | Snap resolution `snapRes+sin(time)*10`, optional palette swap `(R,2B,.5G)` |
+| 8 psx | Original time/position-dependent vertex wobble, unshaded alpha texture |
+
+Source scripts that change illumination, fog, sky, or geometry at runtime are
+recorded, not emulated here. External PackedScene prop/actor geometry is not
+expanded. Procedural skies, non-PNG texture resources, unknown shaders and
+unsupported material properties fail explicitly. This implementation makes no
+claim that the runtime renderer already consumes these appearance assets.
+
+**Known original data loss:** recovered Level4 ArrayMesh46 `surfaces/29`
+(`Elevator1.png`) contains raw half `0x7c00` (+Infinity) at UV byte20, including
+vertex0. Exactly **240 triangles** have undefined UVs (480 nonfinite source
+components). Those triangles remain fully present in physics but are omitted
+from the appearance acceleration only, using explicit physical-substrate
+fallback. `appearance.losses` records node/surface/material, count, reason
+`source-nonfinite-uv` and exact vertex/component/byte-offset/half-bit evidence.
+No UV is clamped, replaced or fabricated. The other three maps have no such
+omissions.
+
+CPU-only in-memory recovered-source measurements (not published assets):
+
+| Map | Appearance triangles | Materials | Lights | Max triangles/brick | Gzip ~MB |
+|---|---:|---:|---:|---:|---:|
+| Pharmakokinetiks | 12,903 | 71 | 1 | 157 | 1.78 |
+| Paradise | 57,888 | 75 | 2 | 643 | 2.76 |
+| Androgen Assault | 50,194 | 61 | 1 | 259 | 2.05 |
+| Apartment Atrocity | 17,398 | 68 | 1 | 375 | 1.53 |
+
+Exact compressed sizes can vary with compression-tool versions; source and
+uncompressed payload hashes establish identity. Fixtures verify deterministic
+word packing, gzip round trips, native RGBA texels, deduplication, animation,
+UV affine mapping, brick visibility, explicit undefined-UV losses, unsupported
+resources, source lighting/environment and the binary-text adapter.
+
+```sh
+node --test tools/appearance-conversion-check.mjs tools/import-cruelty-map-check.mjs
+CRUELTY_SOURCE_ROOT=/path/to/recovered GDRE_BIN=/path/to/gdre \
+  node --test tools/appearance-conversion-check.mjs
+```
+
+The optional four-map source tests run entirely on CPU and write no assets.
+They verify canonical names, appearance pointers/indices, original-source
+hash inventory, explicit Level4 omissions, and byte-for-byte equality of the
+appearance-enabled geometry and missions against a legacy physics-only
+conversion of the **same recovered scenes**.
 
 ## How the levels load
 

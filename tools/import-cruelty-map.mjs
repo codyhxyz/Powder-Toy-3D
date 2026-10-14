@@ -11,6 +11,8 @@ import { CRUELTY_PROFILES, crueltyProfile } from '../src/world/import/crueltyPro
 import { CELL_M } from '../src/scale.js';
 import { E } from '../src/elements.js';
 import { ELEMENTS, K } from '../src/elements.js';
+import { AppearanceResources } from './appearance-resources.mjs';
+import { AppearanceConversion, littleEndianWords } from './appearance-conversion.mjs';
 
 // The far field draws its plain at the median height of the level's border
 // (world/far.js beyondLevel), and it asks for that while the world is built —
@@ -31,12 +33,19 @@ function plainHeight(map, words) {
   return hs[hs.length >> 1];
 }
 
-export function convertCrueltyMap(text, profile) {
+export function convertCrueltyMap(text, profile, { sourceRoot, gdre, magick } = {}) {
   if (!profile) throw new Error('Unknown source map profile');
   if (profile.blocked) throw new Error(`${profile.name} not imported: ${profile.blocked}`);
   const scene = parseGodot3Scene(text);
   const meshes = embeddedMeshes(scene, { excludeNode: crueltyExcludeNode });
-  const voxel = voxelizeMeshes(meshes, CRUELTY_MATERIALS, { cellMeters: CELL_M });
+  const resources = sourceRoot ? new AppearanceResources(sourceRoot, { gdre, magick }) : null;
+  if (resources) {
+    const info = JSON.parse(resources.read(`res://Levels/Level${profile.level}.json`).toString('utf8'));
+    if (info.name !== profile.name) throw new Error(`Canonical Level${profile.level} name mismatch: ${info.name} != ${profile.name}`);
+  }
+  const appearance = resources ? new AppearanceConversion(resources, resources.context(scene, `res://Levels/Level${profile.level}.tscn`, text), meshes, CRUELTY_MATERIALS) : null;
+  const voxel = voxelizeMeshes(meshes, CRUELTY_MATERIALS, { cellMeters: CELL_M, onTriangle: appearance?.onTriangle });
+  const packedAppearance = appearance?.pack(voxel, { excludeNode: crueltyExcludeNode });
   const { words, ...manifest } = voxel;
   const elementNames = Object.fromEntries(Object.entries(E).map(([name, id]) => [id, name]));
   const usage = {};
@@ -64,16 +73,19 @@ export function convertCrueltyMap(text, profile) {
     unresolvedPackedScenes: [...scene.external.values()].filter((r) => r.type === 'PackedScene').map((r) => r.path).sort(),
     limitations: ['Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.', 'Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.', 'Doors and elevators are imported at authored rest transforms, not animated.', 'Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.', 'All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.', 'NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.', 'Source texture names translate to audited physical materials; original texture pixels and shader effects are not copied.'],
   });
-  return { manifest, words };
+  if (packedAppearance) {
+    manifest.appearance = packedAppearance.metadata;
+    manifest.limitations[manifest.limitations.length - 1] = 'Original appearance is retained in the separate versioned source-triangle payload; physical elements and their mechanics remain the audited translation.';
+  }
+  return { manifest, words, ...(packedAppearance ? { appearanceWords: packedAppearance.words } : {}) };
 }
-export async function writeConvertedMap({ manifest, words }, output) {
+export async function writeConvertedMap({ manifest, words, appearanceWords }, output) {
   const prefix = resolve(output), path = relative(resolve('.'), prefix);
   // Published conversions live in public/local-maps: Vite copies that directory
   // into dist, so the host serves them as plain static files. Nothing else in
   // the tree may hold them.
   if (!/^public\/local-maps\/[^/]+$/.test(path)) throw new Error('Converted maps must be written to public/local-maps/<id>');
-  const buffer = Buffer.alloc(words.byteLength);
-  words.forEach((word, i) => buffer.writeUInt32LE(word, i * 4));
+  const buffer = littleEndianWords(words);
   // Sparse bricks are mostly zero, so gzip takes the largest map from 29 MiB to
   // ~0.5 MiB: under Cloudflare Pages' 25 MiB per-file limit, and a small
   // download. The loader inflates it in the browser (importedMap.js).
@@ -82,20 +94,27 @@ export async function writeConvertedMap({ manifest, words }, output) {
   manifest.dataCompression = 'gzip';
   await mkdir(dirname(prefix), { recursive: true });
   await writeFile(`${prefix}.binpack`, packed);
+  if (appearanceWords) {
+    const raw = littleEndianWords(appearanceWords), data = gzipSync(raw, { level: 9 });
+    Object.assign(manifest.appearance, { dataFile: `${basename(prefix)}.appearance.binpack`, dataCompression: 'gzip', bytes: raw.length, packedBytes: data.length, sha256: createHash('sha256').update(raw).digest('hex'), packedSha256: createHash('sha256').update(data).digest('hex') });
+    await writeFile(`${prefix}.appearance.binpack`, data);
+  }
   await writeFile(`${prefix}.json`, `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(JSON.stringify({ output: prefix, id: manifest.id, sha256: manifest.provenance.sha256, size: manifest.size, ...manifest.stats, packedBytes: packed.byteLength, targets: manifest.mission.targets.length, guards: manifest.mission.guards.length, authoredGuards: manifest.mission.authoredGuards.length, missionAvailable: manifest.mission.available, placementFailures: manifest.mission.placementFailures, exits: manifest.mission.extractions.length, materialGroups: Object.keys(manifest.materialLosses) }, null, 2));
 }
 async function main() {
   const args = process.argv.slice(2), opts = {};
   for (let i = 0; i < args.length; i += 2) {
-    if (!['--map', '--source', '--source-dir', '--out-dir'].includes(args[i]) || !args[i + 1] || Object.hasOwn(opts, args[i])) throw new Error('Usage: --map ID --source LevelN.tscn, or --map all --source-dir DIR [--out-dir public/local-maps]');
+    if (!['--map', '--source', '--source-dir', '--source-root', '--gdre', '--out-dir'].includes(args[i]) || !args[i + 1] || Object.hasOwn(opts, args[i])) throw new Error('Usage: --map ID|all --source-root RECOVERED [--gdre GDRE_BIN] [--out-dir public/local-maps], or legacy --source FILE / --source-dir Levels');
     opts[args[i]] = args[i + 1];
   }
   const profiles = opts['--map'] === 'all' ? CRUELTY_PROFILES.filter((p) => !p.blocked) : [crueltyProfile(opts['--map'])];
-  if (!profiles[0] || (!opts['--source-dir'] && !opts['--source']) || (profiles.length > 1 && opts['--source']) || (opts['--source'] && opts['--source-dir'])) throw new Error('Select a valid map and matching source file/directory');
+  const roots = ['--source-root', '--source-dir', '--source'].filter(k => opts[k]);
+  if (!profiles[0] || roots.length !== 1 || (profiles.length > 1 && opts['--source'])) throw new Error('Select a valid map and exactly one source root/file/directory');
   for (const profile of profiles) {
-    const source = opts['--source'] ?? resolve(opts['--source-dir'], `Level${profile.level}.tscn`);
-    await writeConvertedMap(convertCrueltyMap(await readFile(source, 'utf8'), profile), resolve(opts['--out-dir'] ?? 'public/local-maps', profile.id));
+    const sourceRoot = opts['--source-root'];
+    const source = sourceRoot ? resolve(sourceRoot, 'Levels', `Level${profile.level}.tscn`) : opts['--source'] ?? resolve(opts['--source-dir'], `Level${profile.level}.tscn`);
+    await writeConvertedMap(convertCrueltyMap(await readFile(source, 'utf8'), profile, { sourceRoot, gdre: opts['--gdre'] }), resolve(opts['--out-dir'] ?? 'public/local-maps', profile.id));
   }
 }
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main().catch((error) => { console.error(error.message); process.exitCode = 1; });

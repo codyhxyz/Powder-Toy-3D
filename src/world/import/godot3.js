@@ -16,7 +16,7 @@ export function reference(value) {
   if (!m) fail(`Invalid resource reference: ${value}`);
   return { kind: m[1], id: Number(m[2]) };
 }
-function properties(body) {
+export function properties(body) {
   const result = {};
   const matches = [...body.matchAll(/^([\w/]+) = /gm)];
   matches.forEach((m, i) => { result[m[1]] = body.slice(m.index + m[0].length, matches[i + 1]?.index ?? body.length).trim(); });
@@ -31,18 +31,24 @@ function compose(a, b) {
   for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) result.push(a[k] * b[j * 3] + a[k + 3] * b[j * 3 + 1] + a[k + 6] * b[j * 3 + 2]);
   return [...result, ...origin];
 }
-export function parseGodot3Scene(text) {
-  if (!/^\[gd_scene [^\n]*format=2\]/.test(text)) fail('Expected a Godot 3 format=2 .tscn');
-  const headers = [...text.matchAll(/^\[(ext_resource|sub_resource|node|connection|editable) ([^\n]*)\]\r?$/gm)];
+// Shared parser for scenes and standalone .tres/.material resources. Script
+// strings stay data; the conversion never evaluates Godot code.
+export function parseGodot3Resource(text) {
+  const top = text.match(/^\[gd_(scene|resource) ([^\n]*format=2)\]/);
+  if (!top) fail('Expected a Godot 3 format=2 scene/resource');
+  const type = top[2].match(/type="([^"]+)"/)?.[1];
+  // Godot group arrays can make node headers span several lines.
+  const headers = [...text.matchAll(/^\[(ext_resource|sub_resource|node|connection|editable|resource)(?: ([\s\S]*?))?\]\r?$/gm)];
   const external = new Map(), resources = new Map(), nodes = new Map();
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i], attrs = {};
     if (h[1] === 'connection' || h[1] === 'editable') continue;
-    for (const m of h[2].matchAll(/(\w+)=("[^"]*"|(?:ExtResource|SubResource)\(\s*\d+\s*\)|\d+)/g)) attrs[m[1]] = m[2].startsWith('"') ? JSON.parse(m[2]) : m[2];
+    for (const m of (h[2] ?? '').matchAll(/(\w+)=("[^"]*"|(?:ExtResource|SubResource)\(\s*\d+\s*\)|\d+)/g)) attrs[m[1]] = m[2].startsWith('"') ? JSON.parse(m[2]) : m[2];
     const props = properties(text.slice(h.index + h[0].length, headers[i + 1]?.index ?? text.length));
     const record = { ...attrs, props };
     if (h[1] === 'ext_resource') external.set(Number(attrs.id), record);
     else if (h[1] === 'sub_resource') resources.set(Number(attrs.id), record);
+    else if (h[1] === 'resource') resources.set('root', { type, props });
     else {
       const path = attrs.parent == null ? '.' : attrs.parent === '.' ? attrs.name : `${attrs.parent}/${attrs.name}`;
       if (nodes.has(path)) fail(`Duplicate node ${path}`);
@@ -63,7 +69,15 @@ export function parseGodot3Scene(text) {
     return node.worldTransform;
   };
   for (const node of nodes.values()) world(node);
-  return { external, resources, nodes };
+  return { external, resources, nodes, type };
+}
+export function parseGodot3Scene(text) {
+  if (!/^\[gd_scene [^\n]*format=2\]/.test(text)) fail('Expected a Godot 3 format=2 .tscn');
+  return parseGodot3Resource(text);
+}
+export function halfFloat(bits) {
+  const sign = bits & 0x8000 ? -1 : 1, exponent = bits >> 10 & 31, fraction = bits & 1023;
+  return sign * (exponent === 0 ? fraction * 2 ** -24 : exponent === 31 ? (fraction ? NaN : Infinity) : (1 + fraction / 1024) * 2 ** (exponent - 15));
 }
 function bytes(value) {
   const ns = numbers(value, 'PoolByteArray');
@@ -78,15 +92,25 @@ export function decodeSurface(body) {
   if (Number(p.primitive) !== 4) fail('Only triangle primitives are supported');
   if (!Number.isInteger(count) || count < 1 || !Number.isInteger(indexCount) || indexCount < 0 || indexCount % 3) fail('Invalid surface counts');
   // float32 XYZ (12), compressed normal/tangent (4 each), half UV (4).
-  // The skinned 97495 stream additionally has 4-byte bones + 8-byte weights.
+  // Both formats have UV at byte 20. Per Godot 3.5 visual_server.h
+  // ArrayType order, BONES (6) and WEIGHTS (7) FOLLOW TEX_UV (4): the
+  // skinned 97495 stream adds 4-byte bones + 8-byte weights AFTER UV.
+  // No octahedral/split-stream format is accepted here.
   const data = bytes(p.array_data), indices = bytes(p.array_index_data);
   const expectedStride = format === 97559 ? 24 : 36;
   if (data.length !== count * expectedStride) fail(`Unsupported vertex stream: ${data.length}/${count}, format ${format}`);
-  const view = new DataView(data.buffer), positions = new Float64Array(count * 3);
+  const view = new DataView(data.buffer), positions = new Float64Array(count * 3), uvs = new Float64Array(count * 2), uvBits = new Uint16Array(count * 2);
   for (let i = 0; i < count; i++) for (let k = 0; k < 3; k++) {
     const n = view.getFloat32(i * expectedStride + k * 4, true);
     if (!Number.isFinite(n)) fail('Nonfinite vertex');
     positions[i * 3 + k] = n;
+  }
+  for (let i = 0; i < count; i++) for (let k = 0; k < 2; k++) {
+    const bits = view.getUint16(i * expectedStride + 20 + k * 2, true);
+    uvBits[i * 2 + k] = bits;
+    // Keep source undefined UVs as data. Physics remains unchanged; the
+    // appearance converter explicitly inventories/omits affected triangles.
+    uvs[i * 2 + k] = halfFloat(bits);
   }
   const width = count >= 65536 ? 4 : 2;
   if (indices.length !== indexCount * width) fail('Invalid index buffer length');
@@ -97,7 +121,7 @@ export function decodeSurface(body) {
     if (index >= count) fail('Vertex index out of range');
     triangles[i] = index;
   }
-  return { positions, indices: triangles, material: p.material ? reference(p.material) : null, format };
+  return { positions, uvs, uvBits, indices: triangles, material: p.material ? reference(p.material) : null, format };
 }
 export function materialPath(scene, ref) {
   if (ref.kind === 'ExtResource') return scene.external.get(ref.id)?.path ?? fail(`Missing external material ${ref.id}`);
@@ -114,12 +138,18 @@ export function embeddedMeshes(scene, { excludeNode = () => false } = {}) {
     if (ref.kind !== 'SubResource') fail(`External mesh unavailable: ${node.path}`);
     const resource = scene.resources.get(ref.id);
     if (resource?.type !== 'ArrayMesh') fail(`Unsupported mesh: ${node.path}`);
-    if (!decoded.has(ref.id)) decoded.set(ref.id, Object.entries(resource.props).filter(([key]) => /^surfaces\/\d+$/.test(key)).map(([, body]) => decodeSurface(body)));
+    if (!decoded.has(ref.id)) decoded.set(ref.id, Object.entries(resource.props).filter(([key]) => /^surfaces\/\d+$/.test(key)).map(([key, body]) => {
+      try { return { ...decodeSurface(body), sourceSurface: key }; }
+      catch (error) { throw new Error(`${node.path} ArrayMesh ${ref.id} ${key}: ${error.message}`); }
+    }));
     const surfaces = decoded.get(ref.id).map((surface) => {
       const positions = new Float64Array(surface.positions.length);
       for (let i = 0; i < positions.length; i += 3) positions.set(transformPoint(node.worldTransform, surface.positions.subarray(i, i + 3)), i);
       const material = node.props.material_override ? reference(node.props.material_override) : surface.material;
-      return { ...surface, positions, materialPath: material ? materialPath(scene, material) : '__default__' };
+      const resource = material?.kind === 'SubResource' ? scene.resources.get(material.id) : null;
+      return { ...surface, positions, material, nodePath: node.path, materialProperties: resource?.props ?? null,
+        albedoResource: resource?.props.albedo_texture ? reference(resource.props.albedo_texture) : null,
+        materialPath: material ? materialPath(scene, material) : '__default__' };
     });
     meshes.push({ nodePath: node.path, surfaces });
   }
