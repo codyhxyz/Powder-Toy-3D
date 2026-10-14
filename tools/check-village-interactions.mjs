@@ -10,6 +10,7 @@ import { BODY_WIDTH, BODY_HEIGHT } from '../src/pov/constants.js';
 import { residentFurniture } from '../src/pov/village/residents.js';
 const hooks = registerHooks({ resolve(specifier, context, next) {
   const modules = {
+    './debtBadge.js': `export function createDebtBadge(){return {update(){},dispose(){}}}`,
     './ui.js': `export function createVillageUi(opts) {
       globalThis.uiOptions = opts; let opened = false, talking = false;
       return {

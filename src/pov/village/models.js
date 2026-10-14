@@ -39,8 +39,22 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
     const fist = ball(elbow, color, [0, -0.27, 0], [0.32, 0.4, 0.33]);
     fist.name = `village-${side}-fist`; limbs.push(arm);
   }
-  ball(body, shirt, [0, 2.15, 0], [1.05, 1.12, 0.65]);
-  box(body, '#f5e8c3', [0, 2.2, -0.64], [1.75, 0.24, 0.12]);
+  const tanuki = species === 'tanuki';
+  ball(body, shirt, [0, 2.15, 0], tanuki ? [1.32, 1.23, 0.88] : [1.05, 1.12, 0.65]);
+  if (tanuki) {
+    const denim = '#648aa3';
+    ball(body, denim, [0, 1.65, 0], [1.3, 0.85, 0.9]);
+    box(body, denim, [0, 2.35, -0.83], [1.36, 1.22, 0.18]).name = 'overall-bib';
+    for (const x of [-0.52, 0.52]) {
+      box(body, denim, [x, 2.94, -0.67], [0.24, 0.82, 0.2]).rotation.x = -0.3;
+      ball(body, '#d6ba69', [x, 2.74, -0.96], [0.1, 0.1, 0.04]);
+      box(body, '#f1e6cc', [x * 0.4, 2.46, -0.97], [0.21, 0.47, 0.035]).rotation.z = x * 0.35;
+    }
+    box(body, '#52778d', [0, 2.13, -0.99], [0.73, 0.47, 0.08]).name = 'receipt-pocket';
+    const tail = new THREE.Group(); tail.name = 'ring-tail'; tail.position.set(0, 1.65, 0.65);
+    tail.rotation.x = Math.PI / 3; body.add(tail);
+    for (let i = 0; i < 6; i++) ball(tail, i % 2 ? '#604738' : color, [0, i * 0.32, 0], [0.49 - i * 0.025, 0.3, 0.49 - i * 0.025]);
+  } else box(body, '#f5e8c3', [0, 2.2, -0.64], [1.75, 0.24, 0.12]);
   const head = new THREE.Group(); body.add(head);
   ball(head, color, [0, 4.08, 0], [1.4, 1.36, 1.19]);
   if (species === 'human') {
@@ -64,18 +78,24 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
       ball(head, color, [x * 0.9, rabbit ? 5.65 : 5.05, 0], [rabbit ? 0.44 : 0.65, rabbit ? 1.2 : 0.65, 0.39]);
       ball(head, '#dfa59e', [x * 0.9, rabbit ? 5.7 : 5.05, -0.32], [0.26, rabbit ? 0.8 : 0.39, 0.1]);
     }
-    ball(body, color, [0.1, 1.9, 0.87], species === 'cat' ? [0.3, 0.85, 0.35] : [0.45, 0.45, 0.45]);
+    if (!tanuki) ball(body, color, [0.1, 1.9, 0.87], species === 'cat' ? [0.3, 0.85, 0.35] : [0.45, 0.45, 0.45]);
+  }
+  if (tanuki) {
+    for (const x of [-0.58, 0.58])
+      ball(head, '#634838', [x, 4.18, -1.04], [0.66, 0.61, 0.24]).name = 'raccoon-mask';
+    ball(head, '#edd5ad', [0, 3.65, -1.06], [0.85, 0.48, 0.4]).name = 'light-muzzle';
   }
   for (const x of [-0.55, 0.55]) {
-    eyes.push(ball(head, '#fff9e9', [x, 4.13, -1.02], [0.36, 0.49, 0.15]),
-      ball(head, '#302d29', [x, 4.12, -1.15], [0.2, 0.32, 0.075]),
-      ball(head, '#ffffff', [x - 0.06, 4.25, -1.21], [0.065, 0.09, 0.025]));
+    const eyeZ = tanuki ? -1.35 : -1.02;
+    eyes.push(ball(head, '#fff9e9', [x, 4.13, eyeZ], [0.36, 0.49, 0.15]),
+      ball(head, '#302d29', [x, 4.12, eyeZ - 0.13], [0.2, 0.32, 0.075]),
+      ball(head, '#ffffff', [x - 0.06, 4.25, eyeZ - 0.19], [0.065, 0.09, 0.025]));
     const lid = ball(head, '#674b3e', [x, 4.12, -1.18], [0.27, 0.04, 0.07]);
     lid.name = `sleep-eye-${x < 0 ? 'left' : 'right'}`; lid.visible = false; lids.push(lid);
     ball(head, '#db927e', [x * 1.65, 3.72, -0.94], [0.26, 0.13, 0.055]);
   }
-  ball(head, species === 'human' ? '#d99e76' : '#77534b', [0, 3.83, -1.18], [0.21, 0.16, 0.23]);
-  const smile = mesh(head, new THREE.TorusGeometry(0.23, 0.035, 6, 14, Math.PI), '#674b3e', [0, 3.51, -1.13]);
+  ball(head, species === 'human' ? '#d99e76' : '#77534b', [0, 3.83, tanuki ? -1.48 : -1.18], [0.21, 0.16, 0.23]);
+  const smile = mesh(head, new THREE.TorusGeometry(0.23, 0.035, 6, 14, Math.PI), '#674b3e', [0, 3.51, tanuki ? -1.45 : -1.13]);
   smile.rotation.z = Math.PI;
   root.name = `village-${species}`;
   root.userData.persona = persona === 'girl' ? 'girl' : 'boy';
