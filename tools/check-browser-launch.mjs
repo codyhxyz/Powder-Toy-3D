@@ -23,7 +23,7 @@ const LEGACY = new Set([
   'tools/dock-check.mjs', 'tools/headless-cost.mjs',
   'tools/keys-check.mjs', 'tools/menu-check.mjs',
   'tools/modes-check.mjs',
-  'tools/tool-selection-check.mjs', 'tools/topbar-check.mjs',
+  'tools/tool-selection-check.mjs',
   'tools/world-load-time.mjs',
 ]);
 

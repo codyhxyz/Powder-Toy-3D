@@ -5,7 +5,6 @@ import { povEvents } from '../events.js';
 import { heldModel } from './held.js';
 import { h } from '../../ui/dom.js';
 import { trigger, toolDt } from './action.js';
-import { muzzleCell } from './transfer.js';
 import { gridSpace } from '../space.js';
 import './firearm.css';
 
@@ -14,9 +13,10 @@ import './firearm.css';
 // spend their energy breaking and shoving cells along their path
 // (povTrace.js strikeFrag). They add nothing to the world.
 //
-// The round and its effects leave the same model-space barrel exit. Aim from
-// there toward the crosshair. At point-blank range, start at the eye so the
-// round hits the nearby surface instead of spawning beyond it.
+// Source's CBasePlayer::Weapon_ShootPosition returns EyePosition. Keep the
+// ballistic ray independent of the animated barrel: only cosmetic effects use it.
+// In first person use the rendered eye and direction, including view punch,
+// so the spread stays centred on the crosshair while the camera recoils.
 //
 // Accuracy is Half-Life 2's pistol (weapon_pistol.cpp): every shot adds
 // spread.penalty seconds of inaccuracy, up to spread.penaltyMax, which wears
@@ -54,7 +54,6 @@ import './firearm.css';
 //     scope: { zoom },                            // optional: right-click zoom
 //     pose: { pos, ads } });                      // hip and optional aimed poses, in cells (camera space)
 
-const MUZZLE_NUDGE = 1e-3;         // cells past the muzzle cell's entry face the round starts
 const BODY_MASS_KG = 70;           // kg, the player
 const SPREAD_RECOVER = 1;          // s of accuracy penalty worn off per second
 const SPREAD_RECOVER_DELAY = 0.25; // s after a shot before the penalty starts wearing off
@@ -120,26 +119,15 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
 
       function fire(ctx) {
         const sim = ctx.sim ?? env.getSim();
-        const aimDir = ctx.dir.clone().normalize();
-        const m = muzzleCell(ctx.eye, aimDir, ctx.player.pos, sim.g);
-        const aim = ctx.aim;
         if (ballistics.count >= MAX_ROUNDS) return false;
+        const camera = !povEvents.actor && env.getAimCamera?.();
+        const origin = camera ? toGrid(camera.getWorldPosition(new THREE.Vector3())) : ctx.eye.clone();
+        const aimDir = camera ? camera.getWorldDirection(new THREE.Vector3()) : ctx.dir.clone().normalize();
         const cone = THREE.MathUtils.lerp(spread.min, spread.max, Math.min(1, penalty / spread.penaltyMax))
           * THREE.MathUtils.lerp(1, ADS_SPREAD, aimed);
         const firstPerson = !povEvents.actor && env.viewmodel.visible && model.hand.visible;
         const world = model.hand.visible && (firstPerson || env.heldOnBody?.()) ? model.muzzleWorld() : null;
-        const origin = world
-          ? toGrid(world)
-          : ctx.eye.clone().addScaledVector(aimDir, m ? m.t + MUZZLE_NUDGE : 0);
-        // Close terrain changes the launch point, never whether the gun fires.
-        if (!m || (aim?.valid && (
-          (aim.cell && m.path.some((c) => c.equals(aim.cell)))
-          || aim.dist <= origin.clone().sub(ctx.eye).dot(aimDir)
-        ))) origin.copy(ctx.eye);
-        const distance = aim?.valid && Number.isFinite(aim.dist) ? aim.dist : Math.max(sim.g.nx, sim.g.ny, sim.g.nz);
-        // Do not let a close crosshair target turn the shot backwards into the player.
-        const target = ctx.eye.clone().addScaledVector(aimDir, Math.max(distance, origin.distanceTo(ctx.eye) + 1));
-        const dir = scatter(target.sub(origin).normalize(), cone);
+        const dir = scatter(aimDir, cone);
         const id = ballistics.fire(origin, dir, gravityScale(sim), {
           speed, energy: round.energy, depth: round.depth, damage: round.damage,
         });
@@ -153,7 +141,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
         lastShot = { id, origin: origin.clone(), dir: dir.clone(), cell: origin.clone().floor(), dv: dv.clone(), cone };
         model.rig.hit(hit);
         povEvents.emit('gun:fire', {
-          origin: origin.clone(), dir: dir.clone(),
+          id, origin: origin.clone(), dir: dir.clone(),
           muzzleWorld: world ?? toWorld(origin),
           muzzleAnchor: firstPerson ? model.muzzle : null, gun: key, sound,
         });
@@ -190,7 +178,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
         windowShifted(dx, dz) {
           for (const v of lastShot ? [lastShot.origin, lastShot.cell] : []) { v.x -= dx; v.z -= dz; }
         },
-        // for checks: the last shot ({ id, origin, dir, cell (muzzle), dv (recoil), cone }) and the rounds
+        // for checks: the last shot ({ id, origin, dir, cell (origin), dv (recoil), cone }) and the rounds
         get lastShot() { return lastShot; },
         get ballistics() { return ballistics; },
         get penalty() { return penalty; },

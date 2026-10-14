@@ -3,6 +3,7 @@ import { ICON } from './icons.js';
 
 // Settings drawer built from a declarative spec.
 //   { type: 'seg', key, options: [[value, label]], onChange }
+//   { type: 'select', key, label, options: [[value, label]], onChange }
 //   { type: 'slider', key, label, min, max, step, def, fmt, onChange }
 //   { type: 'switch', key, label, desc?, badge?, tier?, onChange }   (badge: a cost label, styled by tier)
 //   { type: 'more', label, rows }   rows tucked under a collapsed disclosure
@@ -21,6 +22,16 @@ export function createSettings({ settings, sections, footer, onClose }) {
   };
 
   const rowEl = (r) => {
+    if (r.type === 'select') {
+      const select = h('select.settings-select', { 'aria-label': r.label,
+        on: {
+          change: () => { r.onChange(r.options.find(([value]) => String(value) === select.value)[0]); syncAll(); },
+          keydown: e => e.stopPropagation(),
+        },
+      }, r.options.map(([value, text]) => h('option', { value, text })));
+      syncers.push(() => { select.value = settings[r.key]; });
+      return select;
+    }
     if (r.type === 'seg') {
       const btns = r.options.map(([value, label]) => {
         const b = h('button', { type: 'button', text: label, on: { click: () => { r.onChange(value); syncAll(); } } });

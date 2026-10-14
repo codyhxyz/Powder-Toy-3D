@@ -3,13 +3,18 @@ import { ICON } from './icons.js';
 import { CLASSES_ENABLED } from '../pov/classes.js';
 import { createNotices } from './notices.js';
 
-export function createHud() {
-  // stats below the toolbar
+export function createHud({ onTogglePause }) {
+  // Playback shares the bottom-right performance strip.
   const fps = h('b'), cells = h('b'), steps = h('b'), res = h('b');
   const fpsUnit = document.createTextNode(' fps');
   // replace mode or specific delete, as TPT's HUD line says [REPLACE MODE] (GameView.cpp)
   const editMode = h('span.edit-mode');
   const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res), editMode);
+  const pause = h('button.icon-btn.pause-btn', { type: 'button', on: {
+    click: onTogglePause,
+    keydown: e => { if (e.code === 'Space' || e.code === 'Enter') e.stopPropagation(); },
+  } });
+  stats.append(pause);
 
   // hover readout (follows the cursor)
   const chip = h('i'), name = h('b'), temp = h('span'), pres = h('span');
@@ -34,6 +39,12 @@ export function createHud() {
   let hintTimer = setTimeout(() => hint.classList.add('gone'), 12000);
 
   return {
+    setPaused(paused) {
+      pause.innerHTML = paused ? ICON.play : ICON.pause;
+      pause.title = paused ? 'Resume (Space)' : 'Pause (Space)';
+      pause.setAttribute('aria-label', pause.title);
+      pause.classList.toggle('on', paused);
+    },
     // called every frame: only touch the DOM when a value changes (each write re-lays out the HUD)
     setStats({ fpsV, stepsV, cellsV, resV }) {
       // null fps: nothing is being drawn (a paused, still scene)

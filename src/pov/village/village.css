@@ -122,10 +122,10 @@ body.village-on, .village-panel, .village-hud {
 .village-action-hint[hidden] { display: none; }
 body.village-on .game-hud, body.village-on .hotbar, body.village-on .hb-held, body.village-on .pov-cross, body.village-on .pov-vitals, body.village-on .pov-hint, body.village-on .pov-lock, body.village-on .pov-use, body.village-on .touch-tool-name, body.village-on .touch-actions .touch-row:not(:last-child) { display: none !important; }
 body.village-menu-open .village-hud, body.village-menu-open .pov-touch, body.village-menu-open .toolbar, body.village-menu-open .brand, body.village-menu-open .stats { visibility: hidden; }
-body.village-on .toolbar, body.village-on .toolbar .cam-seg { background: #fff9e6ed; color: var(--v-ink); border-color: transparent; box-shadow: 0 4px 15px #33452620; border-radius: 19px; font-family: var(--v-font); }
-body.village-on .toolbar .icon-btn, body.village-on .toolbar .view-btn, body.village-on .cam-seg > button { color: #6a6550; }
-body.village-on .toolbar .icon-btn:hover:not(:disabled), body.village-on .cam-seg > button.on { background: #c7e5ca; color: #285d4a; }
-body.village-on .toolbar .pause-btn.on { background: #f5d981; color: #665124; border-radius: 13px; }
+body.village-on .toolbar { background: #fff9e6ed; color: var(--v-ink); border-color: transparent; box-shadow: 0 4px 15px #33452620; border-radius: 19px; font-family: var(--v-font); }
+body.village-on .toolbar .icon-btn, body.village-on .camera-select { color: #6a6550; }
+body.village-on .camera-select { color-scheme: light; }
+body.village-on .toolbar .icon-btn:hover:not(:disabled), body.village-on .camera-select:hover { background: #c7e5ca; color: #285d4a; }
 body.village-on .pov-touch button, body.village-on .touch-stick { color: var(--v-ink); background: #fff9e6e8; border: 0; font-family: var(--v-font); font-weight: 800; box-shadow: 0 4px 15px #33452625; }
 body.village-on .pov-touch button { border-radius: 24px; }
 body.village-on .touch-knob { background: #9dceb0; border: 0; }
@@ -175,7 +175,7 @@ body.village-on .touch-move-label { color: var(--v-ink); }
   .village-place .village-keyhelp { display: none; }
   .village-place .village-touchhelp { display: block; }
   .village-hud { inset: var(--bar-bottom) max(12px, env(safe-area-inset-right)) auto max(12px, env(safe-area-inset-left)); }
-  .village-controls { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(max(14px, env(safe-area-inset-bottom)) + 64px); max-width: min(240px, calc(100vw - 156px)); }
+  .village-controls { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(max(14px, env(safe-area-inset-bottom)) + 114px); max-width: min(240px, calc(100vw - 156px)); }
   .village-controls .action-buttons { flex-direction: column; align-items: stretch; width: 100%; gap: 8px; }
   .village-controls .action-button { min-height: 48px; font-size: 15px; padding: 10px 18px; }
   .village-controls .action-key, .village-keycap, .village-footer-hint { display: none; }

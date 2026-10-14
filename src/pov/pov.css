@@ -79,6 +79,15 @@ body.pov-locked canvas { cursor: none; }
 .pov-cross.reach i:nth-child(4) { transform: translateX(-1.5px); }
 .pov-cross.reach b { opacity: 1; background: var(--accent); }
 
+/* A small charge bar below the aim, only while riding the pogo. */
+.pov-pogo.pov-track {
+  position: absolute; left: 50%; top: calc(50% + 28px); transform: translateX(-50%);
+  display: none; width: 80px; height: 4px;
+  background: rgba(12, 16, 20, 0.85);
+}
+.pov-pogo.show { display: block; }
+.pov-pogo .pov-fill { background: #f0c86a; transition: none; }
+
 /* ---- vitals (bottom left; the hotbar hangs from the top) */
 .pov-vitals {
   position: absolute; left: 16px; bottom: 16px;
@@ -280,6 +289,7 @@ body.pov-on.pov-nohud .pov-nades { display: none; }
 /* F1 (as in Minecraft): the HUD and the hand hidden. Screen effects, the death
    screen and the click-to-look prompt stay. */
 body.pov-on.pov-nohud .pov-cross,
+body.pov-on.pov-nohud .pov-pogo,
 body.pov-on.pov-nohud .pov-hitmark,
 body.pov-on.pov-nohud .pov-vitals,
 body.pov-on.pov-nohud .hotbar,
@@ -327,7 +337,8 @@ body.pov-on.pov-menu .pov-lock { display: none; }
   .touch-knob { width: 42px; height: 42px; border-radius: 50%; background: var(--raise-hi); border: 1px solid var(--line-hi); }
   .touch-move-label { position: absolute; bottom: 8px; font-size: 12px; color: var(--muted); }
   .touch-actions {
-    position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: var(--touch-lift);
+    /* Leave the bottom-right playback/stat strip reachable. */
+    position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: calc(var(--touch-lift) + 50px);
     display: flex; flex-direction: column; align-items: flex-end; gap: var(--touch-gap);
   }
   .touch-row { display: flex; gap: var(--touch-gap); }

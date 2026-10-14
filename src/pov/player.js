@@ -313,6 +313,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
+    get pogoCharge() { return p.pogoing && !p.dead ? pogoStep / POGO_STEPS : null; },
     perks,                        // its perks (perks.js)
     get size() { return size; },  // × the plain body's size (Shrink)
     get height() { return H; },   // cells, feet to crown

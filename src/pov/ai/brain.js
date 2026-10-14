@@ -47,10 +47,11 @@ const TOOL_EYE = EYE_HEIGHT;
 // see (the tell), a hit staggers it out of a wind-up, and after it lands a hit
 // it takes a breather before the next attack.
 const REACTION_S = 0.7;              // s it has to see the target before it attacks
-const AIM_ERROR_START = 0.16;        // rad, its gun's spread (σ) when it first has you in sight...
-const AIM_ERROR = 0.05;              // ...narrowing to this...
-const AIM_RAMP_S = 4;                // ...over this long in sight
-const AIM_ERROR_MOVING = 0.003;      // rad more per cell/s the target moves
+// Halo-style reaction windows supply the grace period; weapon spread already supplies inaccuracy.
+const AIM_ERROR_START = 0.025;       // rad, extra aim error (σ) when it first has you in sight...
+const AIM_ERROR = 0.006;             // ...narrowing to this...
+const AIM_RAMP_S = 1.5;              // ...over this long in sight
+const AIM_ERROR_MOVING = 0.00075;    // rad more per cell/s the target moves
 const WARNING_MISS = 2.5;            // body widths aside its first shot lands (a near miss you see and hear)
 const STAGGER_S = 0.35;              // s a hit stops it (and loses its wind-up)
 const BREATHER_S = 0.9;              // s after it hurts the target before it attacks again
