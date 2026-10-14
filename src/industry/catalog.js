@@ -29,4 +29,4 @@ export function deviceCell(d, x, y, z) {
 export function deviceDirection(d) {
   return [[0, 0, 1], [-1, 0, 0], [0, 0, -1], [1, 0, 0]][d.rotation];
 }
-export const baseMaterial = type => type === 'heater' ? E.TUNGSTEN : E.INSULATOR;
+export const baseMaterial = type => ['heater', 'pump', 'ship', 'foundation'].includes(type) ? E.TUNGSTEN : E.INSULATOR;

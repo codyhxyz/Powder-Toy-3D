@@ -70,6 +70,9 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     // The 2200 C cap stays below tungsten's melting point; native conduction,
     // latent heat and phase changes still handle the material.
     if (y >= 0 && y <= 3 && a.y < 2200.0) { (*oA).y = min(2200.0, a.y + 7200.0 * P.dt); }
+    // A pouring hearth: the furnace's spout nudges molten material forward,
+    // then gravity and whatever catch the player built take over.
+    if (id == E_LAVA) { *oB = vec4f(vec3f(P.forward) * 0.3 + vec3f(0.0, max(b.y, 0.0), 0.0), b.w); }
     return;
   }
   // Only grains actually touching the intact deck. No remote force on a

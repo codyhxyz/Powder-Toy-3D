@@ -15,7 +15,9 @@ const region = (d, x0, x1, y0, y1, z0, z1) => {
 export const machinePorts = d => ({
   inlet: region(d, 0, 3, 1, 2, -1, -1),
   outlet: region(d, 0, 3, 5, 6, 4, 4),
-  mouth: region(d, 0, 3, 1, 1, 0, 3),
+  // The collector's open gantry includes grains that freeze above its floor;
+  // TPT's cooled metal is static, so it does not fall like an inventory item.
+  mouth: region(d, 0, 3, 1, 3, 0, 3),
 });
 export function machineBox(d) {
   const ends = d.type === 'miner' ? [deviceCell(d, 0, 1, 0), deviceCell(d, 3, 3, 7)]

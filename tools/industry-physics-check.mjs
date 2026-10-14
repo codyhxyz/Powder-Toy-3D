@@ -49,7 +49,7 @@ await test('rotated ports, bounds and finite drilling footprint', () => {
     assert.equal(b.hi[2] - b.lo[2] + 1, rotation % 2 ? 4 : 8);
     assert.equal(b.hi[1] - b.lo[1] + 1, 3);
     assert.equal(machinePorts(m).inlet.length, 8);
-    assert.equal(new Set(machinePorts(m).mouth.map(String)).size, 16);
+    assert.equal(new Set(machinePorts(m).mouth.map(String)).size, 48);
   }
   assert.equal(validMachine(d('belt'), { nx: 128, ny: 128, nz: 128 }), true);
   for (const bad of [{ x: NaN }, { rotation: 4 }, { x: 125 }, { type: '__proto__' }, { y: -1 }])
