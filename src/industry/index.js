@@ -310,6 +310,8 @@ export function createIndustry(app) {
     const partMode = !!part && active() && factory() && !driving();
     if ((!isBuilding() && !partMode && !inspectMode) || e.target !== app.canvas || e.altKey || e.button !== 0) return;
     if (app.pov?.active && !app.pov.locked) return; // first click captures the mouse
+    // Consuming the canvas click also suppresses its normal focus change.
+    document.activeElement?.blur?.();
     e.preventDefault(); e.stopImmediatePropagation();
     if (e.type === 'pointerdown') {
       if (inspectMode) {

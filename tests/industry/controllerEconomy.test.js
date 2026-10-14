@@ -139,6 +139,30 @@ test('standalone sensor inspection stays pinned when the cursor moves to the pan
   f.industry.dispose();
 });
 
+test('canvas placement releases threshold focus so Escape and Q still work', async () => {
+  const f = fixture(); await settle();
+  const panel = document.body.children.at(-1);
+  const input = findNode(panel, element => element.className === 'industry-threshold-input');
+  f.app.isTyping = () => document.activeElement?.tagName === 'INPUT';
+  f.app.hover = { valid: true, cell: { x: 80, y: 40, z: 80 }, face: 2, id: -1 };
+  for (const code of ['Escape', 'KeyQ']) {
+    f.industry.selectPart('TSNS'); f.industry.update(0, false); input.focus();
+    assert.equal(f.app.isTyping(), true);
+    const before = partCalls(f).length;
+    listeners.get('pointerdown')({ target: f.app.canvas, button: 0, type: 'pointerdown',
+      preventDefault() {}, stopImmediatePropagation() {} });
+    assert.equal(f.app.isTyping(), false);
+    await waitFor(() => partCalls(f).length > before);
+    f.answer('industry factory control parts', [2, E.TSNS, 200, 0]); await settle();
+    const event = { code, preventDefault() { this.prevented = true; }, stopImmediatePropagation() {} };
+    listeners.get('keydown')(event);
+    assert.equal(event.prevented, true);
+    assert.equal(f.industry.state.part, null);
+    assert.equal(f.industry.state.building, false);
+  }
+  f.industry.dispose();
+});
+
 test('partsSpent migrates old saves, validates equity, and prices metal above its shipment value', () => {
   let p = createProgression();
   const legacy = p.snapshot(); delete legacy.partsSpent;
