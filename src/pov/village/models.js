@@ -144,7 +144,7 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
   const kickPose = strikePose(), punchPose = new THREE.Quaternion();
   const wingAnimation = createFlapAnimation();
   const punchGuard = new THREE.Quaternion().setFromEuler(new THREE.Euler(2.2, 0, 0.7));
-  const punchHit = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.78, 0, 0.8));
+  const punchHit = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.8, 0, 0.8));
   let lastTime = 0, phase = 0, lean = 0, toolTime = Infinity, wasUsing = false;
   return { root, hand: limbs[3], reset: () => leap.reset(),
     animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, motion = null, kick = 0, pose = null) {

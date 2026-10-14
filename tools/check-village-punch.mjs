@@ -22,7 +22,7 @@ for (const reduced of [false, true]) {
     assert.ok(body.rotation.y < 0 && Math.abs(body.rotation.y) < 0.3, 'torso coils away before the strike');
     near(body.position.z, 0);
     pose(0.4);
-    near(avatar.hand.rotation.x, 1.78);
+    near(avatar.hand.rotation.x, 1.8);
     assert.ok(fistAt().z < guard.z - (reduced ? 0.9 : 1.5) && fistAt().y > 3.4, 'jaw-height strike extends visibly; reduced motion suppresses torso travel');
     assert.ok(body.rotation.y > 0 && body.position.z < 0, 'torso and stance drive through contact');
     assert.ok(Math.abs(avatar.hand.position.z) < 0.8, 'shoulder stays attached to chest, not teleported two cells ahead');
