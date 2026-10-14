@@ -107,7 +107,12 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     if (!dialogue || !dialog.open) return;
     if (typed) typed.textContent = dialogue.text.slice(0, revealed);
     const finished = revealed >= dialogue.text.length;
-    if (nextButton) nextButton.querySelector('span').textContent = finished ? 'Keep chatting' : 'Show full message';
+    if (nextButton) {
+      nextButton.querySelector('span').textContent = finished ? (dialogue.choiceOnly ? 'Choose an answer' : 'Keep chatting') : 'Show full message';
+      nextButton.disabled = finished && !!dialogue.choiceOnly;
+      if (nextButton.disabled && document.activeElement === nextButton)
+        content.querySelector('.village-topic')?.focus();
+    }
     dialog.classList.toggle('is-revealing', !finished);
     if (!finished) revealTimer = setTimeout(() => { revealed++; reveal(); }, /[.!?]/.test(dialogue.text[revealed - 1] ?? '') ? 160 : 36);
     else revealTimer = null;
@@ -116,7 +121,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     if (!dialogue) return;
     if (revealed < dialogue.text.length) {
       stopReveal(); revealed = dialogue.text.length; reveal(); stopSpeech?.();
-    } else speakNext();
+    } else if (!dialogue.choiceOnly) speakNext();
   }
   function close() {
     stopReveal();
@@ -130,7 +135,7 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     document.body.classList.add('village-menu-open');
     if (!dialog.open) dialog.showModal();
     syncActions(); draw();
-    (dialogue ? nextButton : closeButton)?.focus();
+    (dialogue ? (nextButton?.disabled ? content.querySelector('.village-topic') : nextButton) : closeButton)?.focus();
   }
   function open(which = 'pockets') {
     const c = context();
@@ -163,10 +168,13 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
       const speech = h('p.village-dialogue', {}, h('span.sr-only', { text: dialogue.text }), typed);
       nextButton = button([h('span'), icon('arrow')], advance, { class: 'village-next', 'data-focus': 'next' });
       content.append(speech, h('div.village-choices', {},
-        nextButton, ...(dialogue.choices ?? []).map(choice => button(choice.label, () => speakNext(choice.id),
+        nextButton, ...(dialogue.choices ?? []).map(choice => button(choice.label, () => {
+          if (dialogue.choiceOnly && revealed < dialogue.text.length) { advance(); return; }
+          speakNext(choice.id);
+        },
           { class: 'village-topic', 'data-focus': `topic-${choice.id}` })),
-        button('See you soon!', close, { class: 'village-goodbye' })));
-      footer.append(h('span.village-chat-hint', {}, keycap('E'), h('span', { text: 'or tap to continue' })),
+        ...(dialogue.choiceOnly ? [] : [button('See you soon!', close, { class: 'village-goodbye' })])));
+      footer.append(h('span.village-chat-hint', {}, keycap('E'), h('span', { text: dialogue.choiceOnly ? 'Reveal message · choose an answer' : 'or tap to continue' })),
         button([icon(c.muted ? 'mute' : 'sound'), h('span', { text: c.muted ? 'Sound off' : 'Animalese' })],
           () => { toggleMute(); draw(); }, { class: 'village-sound', 'aria-label': c.muted ? 'Unmute animalese' : 'Mute animalese', 'data-focus': 'sound' }));
       stopReveal(); reveal();
@@ -236,8 +244,8 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
     open, close, draw, get opened() { return dialog.open; }, get talking() { return !!dialogue; },
     handleKey(e) { syncActions(); return actions.handleKey(e); },
     dialogueKey(e) { if (dialogue && e.code === 'KeyE') { e.preventDefault(); if (!e.repeat) advance(); } },
-    talk(resident, text, choices = []) {
-      stopReveal(); dialogue = { ...resident, text, choices }; revealed = reducedMotion.matches ? text.length : 0;
+    talk(resident, text, choices = [], options = {}) {
+      stopReveal(); dialogue = { ...resident, text, choices, choiceOnly: !!options.choiceOnly }; revealed = reducedMotion.matches ? text.length : 0;
       message = ''; show();
     },
     update({ active, place }) {

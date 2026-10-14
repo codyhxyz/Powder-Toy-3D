@@ -9,6 +9,9 @@ import { createSpeech } from './speech.js';
 import { createVillageUi } from './ui.js';
 import { attachModel } from '../models.js';
 import { VILLAGE_TOOLS, PUNCH_COOLDOWN, PUNCH_DURATION, PUNCH_CONTACT, punchTarget, punchOccluded, stepResident } from './actions.js';
+import { TIM_CROOK, crookDialogue } from './crook.js';
+import { createCrookController } from './crookController.js';
+import { ELEMENTS, K } from '../../elements.js';
 
 export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
   const root = new THREE.Group(); root.name = 'willow-village'; root.visible = false; app.scene.add(root);
@@ -23,6 +26,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   let held = null, tool = null, toolModel = null, toolMaterials = [], usingTool = false;
   let punchAt = -Infinity, punchSerial = 0, kicking = false, reaction = '', reactionUntil = 0;
   let pendingPunch = null;
+  let crook = null, crookModel = null, worldSeed = null;
+  let bodyFrom = null, crookMotionFrom = null;
   function equip(key) {
     if (interaction || !VILLAGE_TOOLS.some(t => t.key === key)) return;
     releaseActions(); punchSerial++; tool = key; onTool(key);
@@ -88,6 +93,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function charactersClear(home, from, to) {
     const radius = 1.4 * getPlayer().size;
     const obstacles = residents.map(r => ({ x: HOMES[r.spec.home] - HOMES[home] + r.x, z: r.z, radius: 1.4 }));
+    if (crook?.visible) obstacles.push({ x: HOMES[0] - HOMES[home] + crook.position.x, z: crook.position.z, radius: 1.4 });
     const next = resolveCharacterMotion(from, to, radius, obstacles);
     return Math.hypot(next.x - to.x, next.z - to.z) < 1e-7
       && obstacles.every(r => Math.hypot(to.x - r.x, to.z - r.z) >= radius + r.radius - 1e-7);
@@ -95,7 +101,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function context() {
     const p = ownPosition(), active = enabled && live() && !document.hidden && !document.querySelector('.mm.open');
     return { active, home: active && room() === 0, dresser: active && room() === 0 && Math.hypot(p.x - DRESSER.x, p.z - DRESSER.z) <= 5.5,
-      player: p, state, warning, feedback, muted: speech.muted, tool, readout: toolReadout?.(), reaction: time < reactionUntil ? reaction : '',
+      player: p, state, crook: crookSnapshot(), warning: warning + (crook?.warning ?? ''), feedback, muted: speech.muted, tool, readout: toolReadout?.(), reaction: time < reactionUntil ? reaction : '',
       grip: interaction?.kind === 'grip' ? { name: ITEMS[interaction.item.kind].name, moving: !!interaction.move } : null,
       rest: ['sit', 'sleep'].includes(interaction?.kind) ? interaction.kind : null,
       busy: interaction?.kind === 'dresser' && interaction.phase !== 'open',
@@ -301,6 +307,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function nearby() {
     if (!context().active || held || interaction) return null;
     const p = local(), home = room(p);
+    if (crook?.visible && !crook.state.complete && p.y < 1 && p.z < -13
+      && Math.hypot(p.x - HOMES[0] - crook.position.x, p.z - crook.position.z) < 7)
+      return { title: 'Talk to Tim Crook', use: () => { if (crook.talk()) { speaking = crook; chat(); } } };
     if (home >= 0) {
       const here = roomPosition(home), forward = camera.forwardH(new THREE.Vector3());
       const item = [DRESSER, ...roomState(home).placed].filter(i => {
@@ -322,6 +331,15 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     return r ? { title: `Talk to ${r.spec.name}`, use: () => { speaking = r; chat(undefined, true); } } : null;
   }
   function chat(choiceId, first = false) {
+    if (speaking === crook && crook) {
+      if (!context().active) { ui.close(); return; }
+      if (choiceId !== undefined) crook.answer(choiceId);
+      if (crook.state.complete) { ui.close(); return; }
+      const line = crookDialogue(crook.state);
+      ui.talk(TIM_CROOK, line.text, line.choices, { choiceOnly: true });
+      speech.speak(line.text, TIM_CROOK.pitch);
+      return;
+    }
     if (!speaking || !context().active || room() !== speaking.spec.home) { ui.close(); return; }
     const r = speaking.spec, ctx = { home: r.home, hour: new Date().getHours(), furniture: residentFurniture(r.home) };
     const result = first ? createConversation(r, memories[r.name], ctx)
@@ -335,6 +353,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   }
   function act(action) {
     if (!context().active) return { error: 'Enter the village to use your furniture.' };
+    if (ui.talking) return { error: 'Finish or close the conversation first.' };
     if (action.type === 'punch') { void punch(); return {}; }
     if (action.type === 'tool') { if (!ui.opened && !held && !interaction) equip(action.key); return {}; }
     if (action.type === 'kick') { void punch(true); return {}; }
@@ -394,9 +413,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   }
   const ui = createVillageUi({ context, act, primary: nearby, onOpen() {
     if (interaction && interaction.kind !== 'dresser' && endInteraction().error) return false;
-    punchSerial++; releaseInput(); freeMouse();
+    punchSerial++; pendingPunch = null; usingTool = false; releaseActions(); getPlayer()?.cancelJump?.(); releaseInput(); freeMouse();
   },
-    onClose() { closeDresser(); speech.stop(); speaking = null; releaseInput(); app.requestRender(); },
+    onClose() { closeDresser(); crook?.close(); speech.stop(); speaking = null; releaseInput(); app.requestRender(); },
     speakNext: chat, stopSpeech: speech.stop, toggleMute() { speech.muted = !speech.muted; } });
 
   // Captured before toolbelt listeners are created. A modal owns keyboard input,
@@ -432,6 +451,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     pendingPunch = null;
     onEnabled(on);
     if (!on) {
+      releaseActions(); getPlayer()?.cancelJump?.();
       ui.close(); endInteraction(true, true);
       avatar.reset();
       toolModel?.dispose(); toolModel = null; toolMaterials.forEach(m => m.dispose()); toolMaterials = []; tool = null;
@@ -439,9 +459,15 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
       ui.update({ active: false }); camera.third = oldThird;
       for (const child of [...root.children]) dispose(child);
-      furnishings = null; residents = []; ownMeshes.clear(); return;
+      furnishings = null; residents = []; crook = crookModel = null; bodyFrom = crookMotionFrom = null; worldSeed = null; ownMeshes.clear(); return;
     }
     size = world.size; oldThird = camera.third; camera.third = true;
+    worldSeed = world.seed;
+    // Storage may itself be unavailable (e.g. a browser privacy policy).
+    let storage;
+    try { storage = localStorage; } catch { storage = { getItem() { throw new Error('Unavailable'); } }; }
+    crook = createCrookController(storage, world.seed);
+    crookModel = character(TIM_CROOK); root.add(crookModel.root);
     equip(null);
     saveKey = `willow-cove:furniture:v1:${world.seed}`;
     let saved;
@@ -482,6 +508,18 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!enabled || !getPlayer()) return;
     checkInteraction();
     previous.copy(getPlayer().pos);
+    const l = local();
+    bodyFrom = l && { x: l.x - HOMES[0], y: l.y, z: l.z };
+    if (ui.opened) {
+      if (input) {
+        input.move.x = input.move.z = 0;
+        input.jump = input.chargeJump = input.sprint = input.down = input.crouch = false;
+        input.cancelJump = true;
+      }
+      getPlayer().cancelJump?.();
+      getPlayer().vel.x = getPlayer().vel.z = 0;
+      return;
+    }
     if (!interaction) return;
     tickInteraction(Math.max(0, Math.min(0.1, dt)), input);
     if (!interaction) return;
@@ -497,10 +535,15 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function characterObstacles(p) {
     const o = app.getSim().origin, floor = FLOOR - o.y;
     if (Math.max(previous.y, p.pos.y) + p.height <= floor) return [];
-    return residents.filter(r => Math.min(previous.y, p.pos.y) < floor + r.height).map(r => ({
+    const actors = residents.filter(r => Math.min(previous.y, p.pos.y) < floor + r.height).map(r => ({
       x: size[0] / 2 + HOMES[r.spec.home] + r.x - o.x,
       z: size[2] / 2 + HOME_Z + r.z - o.z, radius: 1.4, top: floor + r.height,
     }));
+    if (crook?.visible && Math.min(previous.y, p.pos.y) < floor + 6) actors.push({
+      x: size[0] / 2 + HOMES[0] + crook.position.x - o.x,
+      z: size[2] / 2 + HOME_Z + crook.position.z - o.z, radius: 1.4, top: floor + 6,
+    });
+    return actors;
   }
   function collide() {
     const p = getPlayer(); if (!p) return;
@@ -551,6 +594,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!enabled && live() && app.getMode() === 'animalCrossing' && app.getWorld()?.scene.key === 'willowCove') setEnabled(true, app.getWorld().P);
     if (!enabled) return;
     if (app.getMode() !== 'animalCrossing' || app.getWorld()?.scene.key !== 'willowCove') { setEnabled(false); return; }
+    if (app.getWorld()?.P.seed !== worldSeed) { setEnabled(false); setEnabled(true, app.getWorld().P); return; }
     if (avatar.root.userData.persona !== persona()) {
       if (interaction) { ui.close(); endInteraction(true, true); }
       // Keep the physical player, furniture and current tool; only replace the look.
@@ -586,6 +630,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       if (toolModel) toolModel.obj.visible = !held && (kicking || !punching) && !interaction;
     }
     const active = context().active;
+    tickCrook(dt, active);
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.
       const from = { x: r.x, z: r.z };
@@ -595,6 +640,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
         obstacles.push({ x: l.x - HOMES[r.spec.home], z: l.z, radius: 1.4 * p.size });
       for (const other of residents) if (other !== r)
         obstacles.push({ x: HOMES[other.spec.home] - HOMES[r.spec.home] + other.x, z: other.z, radius: 1.4 });
+      if (crook?.visible) obstacles.push({ x: HOMES[0] - HOMES[r.spec.home] + crook.position.x, z: crook.position.z, radius: 1.4 });
       const motion = resolveCharacterMotion(from, r, 1.4, obstacles);
       const layout = { placed: residentFurniture(r.spec.home) };
       const clear = playerPathClear(layout, from, motion, 1.4);
@@ -622,8 +668,47 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (held && (!context().active || room() !== 0)) { releaseHeld(); rebuildFurniture(); }
     updateHeld();
     const c = context(), home = room();
-    if ((!c.active || (ui.talking && home !== speaking?.spec.home)) && ui.opened) ui.close();
+    if ((!c.active || (ui.talking && speaking !== crook && home !== speaking?.spec.home)) && ui.opened) ui.close();
     ui.update({ active: c.active, place: home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home` : 'Tinker Creek' });
+  }
+  function crookSnapshot() {
+    return crook ? { state: crook.state, phase: crook.phase, position: crook.position } : null;
+  }
+  function crookPathClear(from, to) {
+    // The bounded porch path excludes all cottage walls and furniture. Check
+    // the player's existing CPU terrain probe as well; never request GPU work.
+    if (to.z > -14.5 || to.z < -28 || Math.abs(to.x) > 10) return false;
+    const p = getPlayer(), o = app.getSim().origin;
+    if (!p.cellAt) return true; // CPU adapters without terrain.
+    const x = size[0] / 2 + HOMES[0] + to.x - o.x, z = size[2] / 2 + HOME_Z + to.z - o.z;
+    const y = FLOOR - o.y;
+    const solid = id => id < 0 || ELEMENTS[id]?.kind === K.SOLID || ELEMENTS[id]?.kind === K.POWDER;
+    for (let a = Math.floor(x - 1.4); a <= Math.floor(x + 1.4); a++)
+      for (let b = Math.floor(z - 1.4); b <= Math.floor(z + 1.4); b++) {
+        if (!solid(p.cellAt(a, Math.floor(y - 0.1), b))) return false;
+        for (let h = Math.floor(y); h < y + 5.8; h++)
+          if (solid(p.cellAt(a, h, b))) return false;
+      }
+    return true;
+  }
+  function tickCrook(dt, active) {
+    if (!crook || !crookModel) return;
+    const p = local(), before = crook.position;
+    const talk = active && crook.tick(dt, p && { x: p.x - HOMES[0], y: p.y, z: p.z }, {
+      grounded: getPlayer().onGround && !getPlayer().leaping,
+      busy: ui.opened || !!held || !!interaction, radius: 1.4 * getPlayer().size,
+      motionFrom: crookMotionFrom,
+      obstacles: residents.map(r => ({ x: HOMES[r.spec.home] - HOMES[0] + r.x, z: r.z, radius: 1.4 })),
+      clear: crookPathClear,
+    });
+    crookMotionFrom = null;
+    const pos = crook.position;
+    crookModel.root.visible = crook.visible;
+    at(crookModel.root, 0, pos);
+    if (p) crookModel.root.rotation.y = Math.atan2(HOMES[0] + pos.x - p.x, pos.z - p.z);
+    crookModel.animate(time, Math.hypot(pos.x - before.x, pos.z - before.z) > 0.001 ? 5 : 0,
+      speaking === crook && speech.stats.queued > 0);
+    if (talk) { speaking = crook; chat(); }
   }
   return {
     setEnabled, beforeBody, afterBody() {
@@ -631,6 +716,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       if (interaction && getPlayer()?.dead) { ui.close(); endInteraction(false, true); }
       if (interaction) setPlayer(interaction.position);
       else collide();
+      crookMotionFrom = bodyFrom; bodyFrom = null;
     }, update, punch, kick: () => punch(true),
     cycleTool(direction) { if (context().active && !ui.opened && !held && !interaction) equip(VILLAGE_TOOLS[(VILLAGE_TOOLS.findIndex(t => t.key === tool) + Math.sign(direction) + VILLAGE_TOOLS.length) % VILLAGE_TOOLS.length].key); },
     get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held && !interaction; },
@@ -638,6 +724,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     get enabled() { return enabled; }, get blocked() { return enabled && (ui.opened || (!!interaction && interaction.kind !== 'grip')); },
     get state() { return structuredClone(state); }, get residents() { return residents.map(r => ({ name: r.spec.name, species: r.spec.species, home: r.spec.home, x: r.x, z: r.z })); },
     get speech() { return speech.stats; }, get context() { return context(); }, get root() { return root; }, get avatar() { return avatar.root; },
+    get crook() { return crookSnapshot(); },
     get carrying() { return held ? { ...held.target, error: held.error } : null; },
     get interaction() {
       return interaction ? { kind: interaction.kind, id: interaction.item.id, position: { ...interaction.position },
