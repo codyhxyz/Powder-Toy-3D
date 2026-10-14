@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Factory build controls — before & after</title>
+<style>
+  :root { color-scheme: dark; --paper:#151719; --panel:#23272b; --ink:#f1f0e9; --muted:#afb6bc; --line:#454b50; --gold:#e4bd70; --good:#c1d48b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.5 system-ui,sans-serif; }
+  button { font:inherit; color:inherit; cursor:pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline:3px solid var(--gold); outline-offset:3px; }
+  button:disabled { cursor:not-allowed; }
+  ::selection { background:var(--gold); color:#17191b; }
+  main { max-width:1680px; margin:auto; padding:30px clamp(16px,3vw,48px); }
+  h1 { font-size:clamp(27px,3vw,42px); line-height:1.15; letter-spacing:-.025em; margin:0 0 10px; font-weight:650; }
+  h2 { font-size:18px; margin:0; }
+  p { margin:0; }
+  .intro { color:var(--muted); max-width:76ch; }
+  .intro strong { color:var(--ink); }
+  .view-controls { display:flex; gap:8px; flex-wrap:wrap; margin:24px 0 18px; align-items:center; }
+  .view-controls button,.reset,.copy { border:1px solid var(--line); border-radius:5px; background:transparent; padding:9px 14px; min-height:42px; }
+  .view-controls [aria-pressed=true] { background:var(--gold); border-color:var(--gold); color:#1d211f; font-weight:650; }
+  .view-controls .note { margin-left:auto; color:var(--muted); font-size:13px; }
+  .comparison { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+  .comparison[data-view=after] { grid-template-columns:1fr; max-width:1280px; margin:auto; }
+  .comparison[data-view=after] .before { display:none; }
+  .pane-heading { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px; gap:12px; }
+  .pane-heading span { font-size:12px; color:var(--muted); }
+  .stage { width:100%; aspect-ratio:8/5; overflow:hidden; position:relative; background:#101314; border-radius:8px; }
+  .before img { width:100%; height:100%; display:block; }
+  .caption { color:var(--muted); font-size:13px; margin-top:12px; min-height:42px; }
+  .caption strong { color:var(--ink); }
+  .game { width:1280px; height:800px; position:absolute; inset:0 auto auto 0; transform:scale(var(--scale,1)); transform-origin:top left; background:#777 url('@@WORLD@@') center/cover; color:#f2f0e9; font:16px/1.4 system-ui,sans-serif; }
+  .game button { border:1px solid #576066; border-radius:5px; background:#30353b; padding:9px 13px; min-height:44px; }
+  .game button:hover:not(:disabled) { background:#41484e; border-color:var(--gold); }
+  .game button[aria-pressed=true] { color:#1e211f; background:var(--gold); border-color:var(--gold); }
+  .chrome { position:absolute; inset:0 0 auto; height:96px; background-size:1280px 800px; pointer-events:none; }
+  .toolbar { position:absolute; top:14px; left:510px; }
+  .toolbar #build { font-weight:650; min-width:104px; }
+  .sidebar { position:absolute; left:14px; top:104px; width:352px; background:#22252b; border-radius:9px; overflow:hidden; box-shadow:0 8px 24px #0005; font-size:13px; }
+  .objective { padding:12px; }
+  .objective .numbers { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  #credits { color:var(--gold); font-size:24px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .objective .goal { display:flex; justify-content:space-between; gap:8px; }
+  .goal span { color:#bbc2c9; font-variant-numeric:tabular-nums; }
+  .objective progress { width:100%; height:5px; display:block; margin:8px 0 0; accent-color:var(--gold); }
+  .tray { border-top:1px solid #444b52; }
+  .tray[hidden] { display:none; }
+  .tray-body { padding:12px; }
+  .selected { padding:12px 0 0; }
+  .selected p { color:#bdc5cc; font-size:12px; min-height:34px; }
+  .machines { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
+  .game .machine { display:grid; grid-template-columns:36px minmax(0,1fr); align-items:center; column-gap:7px; text-align:left; padding:9px; background:#272b31; min-height:73px; }
+  .industry-icon { display:block; width:36px; height:36px; grid-row:1 / 3; }
+  .industry-icon svg { display:block; width:100%; height:100%; }
+  .machine strong { font-size:13px; font-weight:600; line-height:1.2; }
+  .machine small { display:block; font-size:11px; color:var(--gold); }
+  .unlock { grid-column:1 / -1; margin-top:5px; font-size:10px; color:#a8b4be; }
+  .unlock svg { width:10px; height:10px; margin-right:4px; vertical-align:-1px; }
+  .game .machine[aria-pressed=true] { background:#37362d; color:var(--ink); border-color:var(--gold); box-shadow:inset 0 0 0 1px var(--gold); }
+  .game .machine:disabled { background:#24292e; border-color:#41484e; }
+  .machine:disabled strong,.machine:disabled small { color:#9ca8b0; }
+  .machine:disabled .industry-icon { opacity:.65; }
+  .actions { display:grid; grid-template-columns:1.1fr 1fr .8fr; gap:7px; padding:11px 12px; border-top:1px solid #444c53; }
+  .game .actions button { font-size:12px; min-height:38px; padding:6px; }
+  #instruction { grid-column:1 / -1; color:#c6cfb8; font-size:12px; margin-bottom:3px; }
+  #dismantle[aria-pressed=true] { background:#734c40; border-color:#f0b39b; color:#fff3ee; }
+  .game #done { background:var(--gold); color:#22251e; border-color:var(--gold); font-weight:700; }
+  .game .placed { position:absolute; padding:7px 11px; min-height:44px; transform:translate(-50%,-50%); background:#d4ba75; color:#171e24; border-color:#f9e4ae; box-shadow:0 6px 9px #0005; font-size:13px; }
+  .placed .arrow { display:inline-block; font-size:23px; vertical-align:middle; margin-right:5px; }
+  .game[data-action=remove] .placed { background:#633b30; color:#ffddd0; border-color:#f3bea7; cursor:crosshair; }
+  .game[data-action=place] { cursor:crosshair; }
+  .game .toolbar,.game .sidebar { cursor:default; }
+  .toast { position:absolute; left:50%; top:335px; transform:translateX(-50%); padding:9px 15px; border-radius:5px; background:#172027ed; font-size:15px; color:#edf1e4; pointer-events:none; }
+  .toast:empty { display:none; }
+  footer { border-top:1px solid var(--line); margin-top:24px; padding-top:18px; display:flex; align-items:center; flex-wrap:wrap; gap:12px; font-size:13px; color:var(--muted); }
+  footer p { flex:1; min-width:240px; }
+  .copy { color:var(--gold); }
+  #feedback { margin-top:10px; color:var(--ink); user-select:all; }
+  details { font-size:12px; color:var(--muted); margin-top:17px; }
+  summary { cursor:pointer; width:fit-content; padding:4px 0; text-underline-offset:3px; }
+  details p { margin-top:8px; max-width:95ch; }
+  @media(max-width:900px) { .comparison { grid-template-columns:1fr; } .view-controls .note { flex-basis:100%; margin-left:0; } main { padding-top:22px; } }
+  @media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }
+  @media print { .view-controls,.reset,.copy { display:none; } main { padding:0; } .comparison { grid-template-columns:1fr; } .pane { break-inside:avoid; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Same panel, less clutter.</h1>
+  <p class="intro">Keep the machine illustrations and side panel. Drop the repeated labels.</p>
+  <nav class="view-controls" aria-label="Comparison view">
+    <button data-view="compare" aria-pressed="true">Side by side</button>
+    <button data-view="after" aria-pressed="false">Try the new controls</button>
+    <button id="reset" class="reset">Reset demo</button>
+    <span class="note">Try: Done → Build → choose a piece → click the floor.</span>
+  </nav>
+  <div class="comparison" data-view="compare">
+    <section class="pane before">
+      <div class="pane-heading"><h2>Before · current game</h2><span>Actual screenshot · build panel open</span></div>
+      <div class="stage"><img src="@@BEFORE@@" alt="Current Factory interface: tall left-side construction panel, Close B, Rotate R, and right-click dismantling hints."></div>
+      <p class="caption">The current illustrated panel, with repeated readiness labels and key hints.</p>
+    </section>
+    <section class="pane after">
+      <div class="pane-heading"><h2>After · lighter touch</h2><span>Interactive mockup · Factory only</span></div>
+      <div class="stage" id="after-stage">
+        <div class="game" id="game" data-action="place">
+          <div class="chrome" aria-hidden="true"></div>
+          <div class="toolbar" aria-label="Proposed game toolbar">
+            <button id="build" aria-expanded="true" aria-pressed="true" aria-controls="tray">Build</button>
+          </div>
+          <div class="toast" role="status" aria-live="polite"></div>
+          <div class="sidebar">
+          <div class="objective">
+            <div class="numbers"><span id="credits">24 credits</span></div>
+            <div class="goal"><strong>Ship starter gold</strong><span>0 / 12</span></div>
+            <progress max="12" value="0" aria-label="Demo starter objective: 0 of 12 lifetime credits"></progress>
+          </div>
+          <section class="tray" id="tray" aria-label="Factory construction">
+            <div class="tray-body">
+              <div class="machines" aria-label="Choose a machine"></div>
+              <div class="selected"><p id="description"></p></div>
+            </div>
+            <div class="actions">
+              <span id="instruction">Click to place</span>
+              <button id="rotate">Rotate · 0°</button>
+              <button id="dismantle" aria-pressed="false">Dismantle</button>
+              <button id="done">Done</button>
+            </div>
+          </section>
+          </div>
+        </div>
+      </div>
+      <p class="caption">Same illustrations. A border shows selection. Available pieces need no status label; locks keep their unlock requirement.</p>
+    </section>
+  </div>
+  <footer><p><strong>Factory only.</strong> This is a mockup; the live game is unchanged.</p><button class="copy">Copy this direction</button></footer>
+  <p id="feedback" hidden></p>
+  <details><summary>What is real in this comparison?</summary><p>Before is a screenshot of the live Factory UI captured @@DATE@@. Both views use the same quarry camera and paused terrain. The proposed overlay is a desktop interaction sketch; placements and credit changes are local demo state, not physics. The camera is static in this artifact. Prices and names come from <code>src/industry/catalog.js</code>. No game code, save data, or production controls were changed to make this artifact.</p></details>
+</main>
+<script>
+  @@ICONS@@
+  const machines = @@MACHINES@@;
+  document.querySelector('.chrome').style.backgroundImage = `url("${document.querySelector('.before img').src}")`;
+  const game = document.querySelector('#game'), tray = document.querySelector('#tray');
+  const choices = document.querySelector('.machines'), build = document.querySelector('#build');
+  const toast = document.querySelector('.toast');
+  let selected = 'belt', angle = 0, credits = 24, action = 'place', open = true;
+  const placed = new Map();
+  for (const [id, m] of Object.entries(machines)) {
+    const b = document.createElement('button'); b.className = 'machine'; b.dataset.machine = id;
+    const title = document.createElement('strong'); title.textContent = m.name;
+    const detail = document.createElement('small'); detail.textContent = `${m.cost} cr`;
+    const icon = machineIcon(id); icon.style.color = m.color;
+    b.append(icon, title, detail); b.disabled = !!m.unlock; b.title = m.description;
+    if (m.unlock) {
+      const lock = document.createElement('span'); lock.className = 'unlock';
+      lock.innerHTML = '<svg aria-hidden="true" viewBox="0 0 12 12" fill="none" stroke="currentColor"><rect x="2" y="5" width="8" height="6" rx="1"/><path d="M4 5V3a2 2 0 0 1 4 0v2"/></svg>';
+      lock.append(document.createTextNode(`${m.unlock} lifetime credits`)); b.append(lock);
+    }
+    b.onclick = () => { selected = id; action = 'place'; toast.textContent = ''; sync(); };
+    choices.append(b);
+  }
+  function sync() {
+    const m = machines[selected];
+    game.dataset.action = open ? action : 'none'; tray.hidden = !open;
+    build.setAttribute('aria-pressed', open); build.setAttribute('aria-expanded', open);
+    document.querySelector('#credits').textContent = `${credits} credits`;
+    document.querySelector('#description').textContent = m.description;
+    document.querySelector('#rotate').textContent = `Rotate · ${angle}°`;
+    document.querySelector('#rotate').disabled = action === 'remove';
+    document.querySelector('#dismantle').setAttribute('aria-pressed', action === 'remove');
+    document.querySelector('#instruction').textContent = action === 'remove'
+      ? 'Click a piece to remove · full refund'
+      : 'Click to place';
+    for (const b of choices.children) b.setAttribute('aria-pressed', b.dataset.machine === selected && action === 'place');
+  }
+  build.onclick = () => { open = !open; toast.textContent = ''; sync(); };
+  document.querySelector('#done').onclick = () => { open = false; toast.textContent = ''; sync(); build.focus(); };
+  document.querySelector('#rotate').onclick = () => { angle = (angle + 90) % 360; sync(); };
+  document.querySelector('#dismantle').onclick = () => { action = action === 'remove' ? 'place' : 'remove'; sync(); };
+  document.querySelector('#reset').onclick = () => {
+    for (const el of placed.keys()) el.remove();
+    placed.clear(); credits = 24; selected = 'belt'; angle = 0; action = 'place'; toast.textContent = ''; sync();
+  };
+  game.addEventListener('click', e => {
+    if (e.target !== game || !open) return;
+    if (action === 'remove') { toast.textContent = 'Click a piece you placed in this demo to remove it.'; return; }
+    const rect = game.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * 1280 / rect.width, y = (e.clientY - rect.top) * 800 / rect.height;
+    if (x < 385 || y < 180 || y > 720) { toast.textContent = 'Try the open floor beside the panel.'; return; }
+    const m = machines[selected];
+    if (credits < m.cost) { toast.textContent = 'Not enough demo credits. Dismantle a piece or reset the demo.'; return; }
+    const el = document.createElement('button'); el.className = 'placed';
+    el.style.left = `${x}px`; el.style.top = `${y}px`;
+    const arrow = document.createElement('span'); arrow.className = 'arrow'; arrow.textContent = '→'; arrow.style.transform = `rotate(${angle}deg)`;
+    el.append(arrow, document.createTextNode(m.name)); el.setAttribute('aria-label', `Placed ${m.name}; select Dismantle to refund ${m.cost} credits`);
+    el.onclick = () => {
+      if (!open) return;
+      if (action !== 'remove') { toast.textContent = 'Choose Dismantle, then click this piece to remove it.'; return; }
+      credits += placed.get(el); placed.delete(el); el.remove(); toast.textContent = `Removed ${m.name} · ${m.cost} credits refunded`; sync();
+    };
+    placed.set(el, m.cost); game.append(el); credits -= m.cost;
+    toast.textContent = `Placed ${m.name} · ${m.cost} credits · click again to place another`; sync();
+  });
+  game.addEventListener('contextmenu', e => {
+    e.preventDefault(); toast.textContent = 'Right-drag is reserved for the camera. This mockup keeps the camera still.';
+  });
+  document.querySelectorAll('[data-view]').forEach(b => {
+    if (b.tagName !== 'BUTTON') return;
+    b.onclick = () => {
+      document.querySelector('.comparison').dataset.view = b.dataset.view;
+      document.querySelectorAll('.view-controls button').forEach(other => other.setAttribute('aria-pressed', other === b));
+    };
+  });
+  new ResizeObserver(entries => game.style.setProperty('--scale', entries[0].contentRect.width / 1280)).observe(document.querySelector('#after-stage'));
+  document.querySelector('.copy').onclick = async () => {
+    const value = 'Keep the original illustrated side panel, Factory only. Remove Selected / Ready to build and other redundant labels. Show selection with a border; keep prices and lock requirements. Keep visible Build, Rotate, Dismantle and Done controls. Do not add this interface to Sandbox.';
+    const feedback = document.querySelector('#feedback'); feedback.hidden = false;
+    try { await navigator.clipboard.writeText(value); feedback.textContent = 'Copied. Paste this direction into the chat when you are ready.'; }
+    catch { feedback.textContent = value; }
+  };
+  sync();
+</script>
+</body>
+</html>
