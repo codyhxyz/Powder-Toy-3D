@@ -49,6 +49,9 @@ assert.equal(flags[externalBlastBase(g)],1,'recording must not reset completion'
 const snapshot=await d.snapshotDynamicState(),saved=decodeDynamicState(encodeDynamicState(snapshot));
 assert.equal(saved.externalBlasts.length,6);assert.equal(saved.externalBlastDone[0],1);assert.deepEqual(saved.externalBlasts[5].selection,selection);
 d.restoreDynamicState(saved);assert.equal(flags[externalBlastBase(g)],1);
+await d.shiftWindow([4,0,0]);assert.deepEqual(d.externalBlasts.get(5).selection.maskOrigin,[0,0,0]);
+assert.deepEqual(d.externalBlasts.get(5).selection.lo,[1,1,1]);assert.equal(d.externalBlasts.get(5).selection.maskWords[3],255);
+d.restoreDynamicState(saved);
 assert.deepEqual(d.externalBlasts.get(4).position,[200,0,0],'out-of-window obligation survives');
 const before=writes.length,bad=structuredClone(saved);bad.externalBlasts[0].energy=NaN;
 assert.throws(()=>d.restoreDynamicState(bad),/external blast/);assert.equal(writes.length,before);

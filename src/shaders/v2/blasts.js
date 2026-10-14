@@ -6,6 +6,7 @@ import { RAYS } from '../../rays.js';
 import { PHYS } from '../../physics.js';
 import { EXTERNAL_BLAST_CAP } from '../../v2/externalBlast.js';
 import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
+import { atlasDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
 export { DynamicParams };
 // Native cells/bank/activity3 + events, particles, air, control, plans5.
@@ -19,7 +20,7 @@ export const externalBlastBase = g => heldBase(g) + PARTICLE_CAP;
 export const externalParticleBase = g => externalBlastBase(g) + EXTERNAL_BLAST_CAP;
 export const externalAirBase = g => externalParticleBase(g) + PARTICLE_CAP*4;
 export const externalMaskBase = g => externalAirBase(g) + g.nbricks + 1;
-export const externalMaskWords = g => Math.ceil(g.width*g.height/4);
+export const externalMaskWords = g => { const {width,height}=atlasDims(g);return Math.ceil(width*height/4); };
 export const controlWords = g => externalMaskBase(g) + externalMaskWords(g);
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
