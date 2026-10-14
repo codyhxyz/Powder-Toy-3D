@@ -1163,7 +1163,8 @@ let uiHover = false;
 let eyedropper = false; // armed by the dock's Eyedropper or by I away from any element
 createBrand();
 const card = createCard();
-const hud = createHud();
+const hud = createHud({ onTogglePause: () => setPaused(!settings.paused) });
+hud.setPaused(settings.paused);
 const help = createHelp(() => help.setOpen(false));
 
 function accentFor(hex) {
@@ -1311,7 +1312,7 @@ const actions = {
   renderThumb,
 };
 // (greyed out until their subsystems are ported: src/wire)
-const toolbar = createToolbar({ views: VIEWS, settings, actions, available: { camera: !!wire('pov'), saves: !!wire('saves') } });
+const toolbar = createToolbar({ actions, available: { camera: !!wire('pov') } });
 // Tab held: Garry's Mod's scoreboard (ui/scoreboard.js), in the body and in the god view, while
 // you're on the world: with the mouse held by the body, or nothing focused (a click on the world
 // lets go of the controls: press). With a control or a dialog focused, Tab moves through them.
@@ -1373,6 +1374,16 @@ const settingsPanel = createSettings({
   onClose: () => setSettingsOpen(false),
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
+    { title: 'Game', rows: [
+      { type: 'custom', el: h('div.settings-actions', {},
+        h('button.btn', { type: 'button', text: 'Save game', title: 'Save game (⌘S)',
+          disabled: !wire('saves'), on: { click: actions.saveGame } }),
+        h('button.btn', { type: 'button', text: 'Keyboard shortcuts', title: 'Keyboard shortcuts (?)',
+          on: { click: actions.toggleHelp } })) },
+    ] },
+    { title: 'Shader', rows: [
+      { type: 'select', key: 'view', label: 'Shader', options: VIEWS.map(v => [v.id, v.name]), onChange: setView },
+    ] },
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
@@ -1465,7 +1476,8 @@ function resetSettings() {
   rig.setSpeed(settings.camSpeed);
   applyDetail();
   dock.sync();
-  toolbar.sync();
+  hud.setPaused(settings.paused);
+  settingsPanel.sync();
   hud.setEditMode(editModeText());
   save();
   hud.toast('Settings reset', { kind: 'cleanup' });
@@ -1497,13 +1509,12 @@ function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings
 function setSettingsOpen(v) {
   settingsPanel.setOpen(v);
   toolbar.setSettingsOpen(v);
-  if (v) toolbar.close();
 }
 
 function setPaused(p) {
   if (mp.guard()) return;
   settings.paused = p;
-  toolbar.sync();
+  hud.setPaused(settings.paused);
 }
 
 // A view (src/views.js) is a pipeline of its own (shaders/render.js): one not
@@ -1518,7 +1529,7 @@ function setView(id) {
   prepareGI();
   const key = viewKeyOf(id);
   if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
-  toolbar.sync();
+  settingsPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
   save();
 }
@@ -1645,7 +1656,6 @@ async function renderThumb(viewId, out) {
   }
   ctx2d.putImageData(img, 0, 0);
   out.dataset.rendered = '1';
-  if (viewId === settings.view) toolbar.sync();
   return true;
 }
 
@@ -1679,7 +1689,6 @@ canvasEl.addEventListener('pointermove', (e) => {
 });
 canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
-  toolbar.close();
   if (pov?.active) {   // POV handles its own mouse buttons, but for the tool gun's middle one:
     // pick up what it aims at, Minecraft creative's pick block (TPT's middle click samples too)
     if (e.button === 1 && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN') {
@@ -1887,7 +1896,7 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   // ⌘S saves, ⌘O opens the Saves list: every program's keys (TPT has none: its Save
   // and Open buttons go local with Ctrl held, GameView.cpp saveSimulationButton, searchButton)
-  // (in the body Ctrl is the camera key and S walks back: there only ⌘ saves; the toolbar's Save always does)
+  // (in the body Ctrl is the camera key and S walks back: there only ⌘ saves; Settings' Save always does)
   const fileMod = e.metaKey || (e.ctrlKey && !pov?.active);
   if (fileMod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!e.repeat) actions.saveGame(); return; }
   if (fileMod && e.key.toLowerCase() === 'o') { e.preventDefault(); if (!e.repeat) actions.openSaves(); return; }
@@ -1920,9 +1929,9 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') {
-    const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
+    const overlay = eyedropper || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
     shapeDrag = null;   // a line or box being dragged is dropped
-    setEyedropper(false); toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
+    setEyedropper(false); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
     if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
   }

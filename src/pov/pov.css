@@ -337,7 +337,8 @@ body.pov-on.pov-menu .pov-lock { display: none; }
   .touch-knob { width: 42px; height: 42px; border-radius: 50%; background: var(--raise-hi); border: 1px solid var(--line-hi); }
   .touch-move-label { position: absolute; bottom: 8px; font-size: 12px; color: var(--muted); }
   .touch-actions {
-    position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: var(--touch-lift);
+    /* Leave the bottom-right playback/stat strip reachable. */
+    position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: calc(var(--touch-lift) + 50px);
     display: flex; flex-direction: column; align-items: flex-end; gap: var(--touch-gap);
   }
   .touch-row { display: flex; gap: var(--touch-gap); }

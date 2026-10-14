@@ -5,6 +5,7 @@ import { WGSLNodeBuilder, WebGPURenderer, Scene, PerspectiveCamera, Vector3, Obj
 import { createBillboards } from '../src/gfx/billboards.js';
 import { createVfx } from '../src/pov/vfx.js';
 import { povEvents } from '../src/pov/events.js';
+import { createBallistics } from '../src/pov/ballistics.js';
 
 // Building nodes needs renderer capabilities, not a device, canvas, or browser.
 const renderer = new WebGPURenderer({ canvas: { addEventListener() {}, removeEventListener() {}, style: {} } });
@@ -50,5 +51,56 @@ try {
     assert.equal(vfx.busy, false, 'effects expire between shots');
     assert.ok(Object.values(vfx.counts()).every((n) => n === 0), 'no live CPU slots from earlier shots');
   }
+  // Muzzle visuals do not move the eye-fired bullet or its hit endpoint.
+  const origin = new Vector3(0, 0, 0), muzzle = new Vector3(1, -0.5, -2);
+  const fire = (id) => povEvents.emit('gun:fire', {
+    id, origin, muzzleWorld: muzzle, dir: new Vector3(0, 0, -1),
+  });
+  const move = (id, from, to) => povEvents.emit('round:move', { id, kind: 'round', from, to });
+  const endpoints = () => {
+    const mesh = vfx.batch.children.find((m) => m.name === 'pov-tracer' && m.visible);
+    assert.ok(mesh, 'tracer drawn');
+    mesh.updateMatrixWorld();
+    return [-0.5, 0.5].map((y) => new Vector3(0, y, 0).applyMatrix4(mesh.matrixWorld));
+  };
+  const close = (a, b, message) => assert.ok(a.distanceTo(b) < 1e-9, message);
+  vfx.clear(); fire(101);
+  move(101, origin, origin);
+  assert.equal(vfx.counts().tracer, 0, 'pending trace draws nothing');
+  const far = new Vector3(0, 0, -20);
+  move(101, origin, far);
+  let [a, b] = endpoints();
+  close(a, muzzle, 'first moving segment leaves the barrel');
+  close(b, far, 'cosmetic tracer ends at true impact');
+  close(origin, new Vector3(), 'event physics origin unchanged');
+  vfx.update(1); vfx.update(1); // expire first segment without clearing the shot state
+  move(101, far, new Vector3(0, 0, -40));
+  [a, b] = endpoints();
+  close(a, far, 'later segments follow real flight without barrel offset');
+  vfx.clear(); fire(102);
+  move(102, origin, new Vector3(0, 0, -0.1));
+  [a, b] = endpoints();
+  close(a, origin, 'point-blank tracer cannot start behind its hit');
+  close(b, new Vector3(0, 0, -0.1), 'point-blank hit stays in front');
+  for (const clear of [() => povEvents.emit('round:end', { id: 103 }), () => vfx.clear()]) {
+    vfx.clear(); fire(103); clear(); move(103, origin, far);
+    close(endpoints()[0], origin, 'ended/cleared round drops its cosmetic start');
+  }
+  vfx.clear();
+  const playerRounds = createBallistics(), npcRounds = createBallistics();
+  try {
+    const dir = new Vector3(0, 0, -1);
+    const playerId = playerRounds.fire(origin, dir);
+    const npcId = npcRounds.fire(new Vector3(10, 0, 0), dir);
+    assert.notEqual(playerId, npcId, 'separate ballistic instances have globally unique event IDs');
+    fire(playerId);
+    povEvents.as({ id: 'npc', at: new Vector3(10, 0, 0) }, () => {
+      povEvents.emit('gun:fire', { id: npcId, origin: new Vector3(10, 0, 0), dir });
+      npcRounds.clear();
+    });
+    move(playerId, origin, far);
+    close(endpoints()[0], muzzle, 'interleaved NPC shot/end cannot consume the player muzzle');
+  } finally { playerRounds.dispose(); npcRounds.dispose(); }
   console.log('PASS: round/stretched GPU age initialized for all fades; 20 shots expire, flash/light gone by 50 ms');
+  console.log('PASS: muzzle-to-hit tracer, zero-motion wait, point-blank cover, true later segments, cleanup');
 } finally { vfx.dispose(); }
