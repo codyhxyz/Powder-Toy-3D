@@ -1,8 +1,14 @@
 // CPU-only async mock of the Industry diagnostics runtime; no browser/GPU or full-grid reads.
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createIndustryDiagnostics, industryDiagnosticSignature, presentIndustryDiagnostic } from '../src/industry/diagnostics.js';
 import { E, K } from '../src/elements.js';
+import { HEARTH_FUEL_IDS, hearthRegions } from '../src/industry/hearth.js';
 import { deviceCell } from '../src/industry/catalog.js';
+import { industryDiagnosticsWGSL } from '../src/shaders/industryDiagnostics.js';
 
 const RESULT_VECS = 9;
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -43,6 +49,11 @@ async function issue(api, sim, device, overrides, values) {
   assert.ok(read, 'one compact GPU result readback was issued');
   read.resolve(answer(values));
   return promise;
+}
+function fixture(id, { start = 10000, staleMs = 500, throttleMs = 100 } = {}) {
+  const sim = makeSim(id), clock = { now: start };
+  const api = createIndustryDiagnostics({ getSim: () => sim, throttleMs, staleMs, now: () => clock.now });
+  return { sim, clock, api };
 }
 let now = 1000;
 const sim = makeSim();
@@ -236,8 +247,147 @@ now += 101;
   assert.ok(disposeSim.test.dispatches <= 1);
 }
 
+// Cache hits supersede a different active request before returning; its late
+// completion cannot evict the still-valid cache entry for the same device.
+{
+  const f = fixture(10);
+  const device = { id: 'cache-race', type: 'hearth', x: 30, y: 4, z: 30, rotation: 0, powered: false };
+  const overridesA = {
+    base: { material: E.TUNGSTEN, cells: [[30, 4, 30]] },
+    regions: { fuel: { cells: [[30, 5, 30]], ids: [E.COAL] } },
+    statusPolicy: { primaryRegions: ['fuel'] },
+  };
+  const overridesB = {
+    base: { material: E.TUNGSTEN, cells: [[30, 4, 30]] },
+    regions: { fuel: { cells: [[31, 5, 30]], ids: [E.COAL] } },
+    statusPolicy: { primaryRegions: ['fuel'] },
+  };
+  const cacheA = await issue(f.api, f.sim, device, overridesA, { baseExpected: 1, baseMatched: 1, regions: [[1, 1, 450, 450]] });
+  assert.equal(cacheA.status, 'ready');
+  const requestB = f.api.inspect(device, overridesB);
+  await flush();
+  const readB = f.sim.test.reads.at(-1);
+  assert.ok(readB);
+  const cachedA = await f.api.inspect(device, overridesA);
+  assert.equal(cachedA.status, 'ready', 'cache A is returned while B is in flight');
+  readB.resolve(answer({ baseExpected: 1, baseMatched: 1, regions: [[1, 0, 0, 450]] }));
+  assert.equal((await requestB).freshness, 'stale', 'superseded B is discarded');
+  assert.equal(f.api.snapshot(device).status, 'ready');
+  assert.equal(f.api.snapshot(device).freshness, 'fresh', 'late B neither publishes nor evicts cache A');
+}
+
+// Caller mutations after inspect cannot change normalized geometry, guard,
+// eligibility, or policy while the request waits for dispatch/readback.
+{
+  const f = fixture(11);
+  const device = { id: 'override-copy', type: 'hearth', x: 40, y: 4, z: 40, rotation: 0, powered: true };
+  const overrides = {
+    base: { material: E.TUNGSTEN, cells: [[40, 4, 40]] },
+    guard: { base: [40, 4, 40], material: E.TUNGSTEN, port: [39, 4, 41], powered: true },
+    regions: { fuel: { cells: [[40, 5, 40]], ids: [E.COAL], requiresPositiveLife: true } },
+    statusPolicy: { primaryRegions: ['fuel'] },
+  };
+  const pending = f.api.inspect(device, overrides);
+  overrides.base.cells[0][0] = 99;
+  overrides.guard.base[0] = 98;
+  overrides.guard.port[0] = 97;
+  overrides.regions.fuel.cells[0][0] = 96;
+  overrides.regions.fuel.ids[0] = E.SCRAP;
+  overrides.statusPolicy.primaryRegions[0] = 'mutated';
+  await flush();
+  assert.deepEqual(f.sim.test.params.baseCells[0].slice(0, 3), [40, 4, 40]);
+  assert.deepEqual(f.sim.test.params.guardBase, [40, 4, 40]);
+  assert.deepEqual(f.sim.test.params.guardPort, [39, 4, 41]);
+  assert.deepEqual(f.sim.test.params.samples[0], [40, 5, 40, 0]);
+  assert.equal(f.sim.test.params.rules[0][1], E.COAL);
+  assert.ok((f.sim.test.params.limits[0][3] & 8) !== 0, 'positive-life policy survives caller mutation');
+  f.sim.test.reads[0].resolve(answer({ baseExpected: 1, baseMatched: 1, control: 1, controlRequired: 1, regions: [[1, 1, 450, 450]] }));
+  assert.equal((await pending).status, 'ready', 'copied primary-region policy is used at completion');
+}
+
+// A disposed simulation object invalidates its cache on both snapshot and
+// inspect paths, even when getSim keeps returning that same object.
+{
+  const f = fixture(12);
+  const device = { id: 'disposed-sim-cache', type: 'pump', x: 50, y: 4, z: 50, rotation: 0, powered: false };
+  const fresh = await issue(f.api, f.sim, device, {}, { regions: [[1, 1, 20, 20], [0, 0, 0, -3.402823e38]] });
+  assert.equal(fresh.status, 'ready');
+  const dispatches = f.sim.test.dispatches;
+  f.sim.disposed = true;
+  const snapshot = f.api.snapshot(device);
+  assert.equal(snapshot.freshness, 'stale');
+  assert.notEqual(snapshot.status, 'ready');
+  const inspected = await f.api.inspect(device);
+  assert.equal(inspected.status, 'unknown');
+  assert.equal(inspected.reason, 'simulation disposed');
+  assert.equal(f.sim.test.dispatches, dispatches, 'disposed simulation cannot serve its throttled cache or dispatch');
+}
+
+// Freshness is measured from dispatch/sample time, so a slow readback cannot
+// be returned as fresh merely because its completion callback just ran.
+{
+  const f = fixture(13, { staleMs: 500 });
+  const device = { id: 'slow-readback', type: 'pump', x: 60, y: 4, z: 60, rotation: 0, powered: false };
+  const dispatchAt = f.clock.now;
+  const pending = f.api.inspect(device);
+  await flush();
+  f.clock.now += 501;
+  f.sim.test.reads[0].resolve(answer({ regions: [[1, 1, 20, 20], [0, 0, 0, -3.402823e38]] }));
+  const completed = await pending;
+  assert.equal(completed.sampledAt, dispatchAt);
+  assert.equal(completed.freshness, 'stale');
+  assert.equal(f.api.snapshot(device).freshness, 'stale');
+}
+
+// Hearth status is based on the bounded native fuel cells and rejects exhausted
+// coal IDs; positive remaining terrain life is encoded into the same probe.
+{
+  const f = fixture(14);
+  const device = { id: 'fuel-life', type: 'hearth', x: 70, y: 4, z: 70, rotation: 0, powered: true };
+  const fuel = hearthRegions(device).fuel;
+  const overrides = {
+    regions: { fuel: { cells: fuel, kinds: [K.POWDER], ids: [...HEARTH_FUEL_IDS], requiresPositiveLife: true } },
+    statusPolicy: { primaryRegions: ['fuel'] },
+  };
+  const exhausted = await issue(f.api, f.sim, device, overrides, { control: 1, controlRequired: 1, regions: [[12, 0, 0, 0]] });
+  assert.equal(exhausted.status, 'empty inlet', 'fuel IDs with no positive life are not ready');
+  assert.deepEqual(f.sim.test.params.rules[0], [1 << K.POWDER, E.COAL, E.BROKENCOAL, -1]);
+  assert.ok((f.sim.test.params.limits[0][3] & 8) !== 0);
+  f.clock.now += 101;
+  const burning = await issue(f.api, f.sim, device, overrides, { control: 1, controlRequired: 1, regions: [[12, 1, 1, 450]] });
+  assert.equal(burning.status, 'ready', 'remaining positive-life fuel is eligible');
+  assert.equal(burning.evidence.regions.fuel.eligible, 1);
+}
+
+// The legacy heater's capped heating and molten-output motion are separate
+// eligibility branches: E.LAVA bypasses the ordinary <2200 C heat limit.
+{
+  const f = fixture(15);
+  const device = { id: 'heater-hot-lava', type: 'heater', x: 80, y: 4, z: 80, rotation: 0, powered: false };
+  const hotLava = await issue(f.api, f.sim, device, {}, { baseExpected: 16, baseMatched: 16, regions: [[1, 1, 2300, 2300]] });
+  assert.equal(hotLava.status, 'ready', 'hot LAVA remains an eligible legacy output');
+  assert.equal(f.sim.test.params.rules[0][1], E.LAVA);
+  assert.ok((f.sim.test.params.limits[0][3] & 16) !== 0, 'heater rule encodes the LAVA temperature exemption');
+  assert.equal(f.sim.test.params.limits[0][2], 2200);
+  const wgsl = industryDiagnosticsWGSL({ nx: 32, ny: 32, nz: 32 });
+  assert.ok(wgsl.includes('if ((flags & RULE_TEMP_EXEMPT_IDS) != 0u)'));
+  assert.ok(wgsl.includes('idMatches = true;'));
+  assert.ok(wgsl.includes('if ((flags & RULE_POSITIVE_LIFE) != 0u && !(a.z > 0.0))'));
+  assert.ok(wgsl.includes('a.y >= maxT') && wgsl.includes('a.y > maxT'));
+  const dir = mkdtempSync(join(tmpdir(), 'industry-diagnostics-wgsl-'));
+  try {
+    const file = join(dir, 'industry-diagnostics.wgsl');
+    writeFileSync(file, wgsl);
+    const naga = spawnSync('naga', [file], { encoding: 'utf8' });
+    if (naga.error?.code === 'ENOENT') throw new Error('Install naga-cli for CPU-only Industry diagnostics WGSL validation.');
+    assert.equal(naga.status, 0, `Naga must accept the complete diagnostics shader:\n${naga.stdout}\n${naga.stderr}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // Pure helper and region safety checks.
 assert.equal(presentIndustryDiagnostic({ status: 'ready' }).running, 'unconfirmed');
 assert.equal(api.recordConfirmation(pump, { source: 'desired-mode', closed: true }), false);
 assert.equal(errors.length, 0);
-console.log('ok bounded async probes, eligibility, native control, base damage, stale/reset/dispose, and confirmed evidence');
+console.log('ok bounded async probes, request ownership, override snapshots, positive-life fuel, heater lava exception, stale/reset/dispose, and confirmed evidence; Naga CPU validation passed');

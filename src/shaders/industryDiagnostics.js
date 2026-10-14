@@ -37,16 +37,25 @@ const RESULT_VECS: u32 = ${INDUSTRY_DIAGNOSTICS.RESULT_VECS}u;
 const RULE_SUPPORT: u32 = 1u;
 const RULE_BREAKABLE_CLEAR: u32 = 2u;
 const RULE_TEMP_EXCLUSIVE: u32 = 4u;
+const RULE_POSITIVE_LIFE: u32 = 8u;
+const RULE_TEMP_EXEMPT_IDS: u32 = 16u;
 
 fn eligible(id: i32, a: vec4f, p: vec3i, rule: vec4i, limits: vec4f) -> bool {
   if (id == E_EMPTY) { return false; }
   if (rule.x != 0 && (u32(rule.x) & (1u << u32(KIND(id)))) == 0u) { return false; }
+  let flags = u32(limits.w);
   var idMatches = rule.y < 0;
   var maxT = limits.z;
-  if (rule.y >= 0 && id == rule.y) { idMatches = true; maxT = limits.x; }
-  if (rule.z >= 0 && id == rule.z) { idMatches = true; maxT = limits.y; }
+  if ((flags & RULE_TEMP_EXEMPT_IDS) != 0u) {
+    idMatches = true;
+    if (rule.y >= 0 && id == rule.y) { maxT = limits.x; }
+    if (rule.z >= 0 && id == rule.z) { maxT = limits.y; }
+  } else {
+    if (rule.y >= 0 && id == rule.y) { idMatches = true; maxT = limits.x; }
+    if (rule.z >= 0 && id == rule.z) { idMatches = true; maxT = limits.y; }
+  }
   if (!idMatches || id == rule.w) { return false; }
-  let flags = u32(limits.w);
+  if ((flags & RULE_POSITIVE_LIFE) != 0u && !(a.z > 0.0)) { return false; }
   if (((flags & RULE_TEMP_EXCLUSIVE) != 0u && a.y >= maxT) || ((flags & RULE_TEMP_EXCLUSIVE) == 0u && a.y > maxT)) { return false; }
   if ((flags & RULE_SUPPORT) != 0u) {
     let under = p - vec3i(0, 1, 0);

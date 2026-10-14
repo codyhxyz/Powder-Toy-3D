@@ -15,6 +15,8 @@ const MAX_TEMP = 1e30;
 const RULE_SUPPORT = 1;
 const RULE_BREAKABLE_CLEAR = 2;
 const RULE_TEMP_EXCLUSIVE = 4;
+const RULE_POSITIVE_LIFE = 8;
+const RULE_TEMP_EXEMPT_IDS = 16;
 const UNKNOWN = 'unknown';
 
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -130,7 +132,11 @@ function defaultRegions(device, overrides) {
       add('work', work, { kinds: [K.POWDER], requiresSupport: true });
       add('target', targets, { kinds: [K.SOLID], breakableClear: true });
     } else if (device.type === 'heater') {
-      add('work', regionCells(device, 0, 3, 1, 3, 0, 3), { maxTemperature: 2200, exclusiveTemperature: true });
+      // Like TPT's heat tool, heating stops at its cap; the legacy heater still
+      // guides already-molten lava forward, so hot lava remains eligible here.
+      add('work', regionCells(device, 0, 3, 1, 3, 0, 3), {
+        maxTemperature: 2200, exclusiveTemperature: true, temperatureExemptIds: [E.LAVA],
+      });
     }
   }
   if (record(overrides.regions)) {
@@ -192,24 +198,31 @@ function normalizeRequest(device, overrides, sim) {
     const inside = cells.filter(p => inGrid(p, g));
     const kinds = spec.kinds ?? [];
     const ids = spec.ids ?? [];
+    const temperatureExemptIds = spec.temperatureExemptIds ?? [];
     const maxTemperatures = spec.maxTemperatures ?? [];
     if (!Array.isArray(kinds) || kinds.some(k => !Number.isInteger(k) || k < K.EMPTY || k > K.GAS)
         || !Array.isArray(ids) || ids.length > 2 || ids.some(id => !Number.isInteger(id) || id < 0 || id >= ELEMENTS.length)
+        || !Array.isArray(temperatureExemptIds) || temperatureExemptIds.length > 2
+        || temperatureExemptIds.some(id => !Number.isInteger(id) || id < 0 || id >= ELEMENTS.length)
+        || (temperatureExemptIds.length > 0 && ids.length > 0)
         || !Array.isArray(maxTemperatures) || (maxTemperatures.length && maxTemperatures.length !== ids.length)
         || maxTemperatures.some(t => !Number.isFinite(t) || !Number.isFinite(Math.fround(t)))
         || (spec.maxTemperature !== undefined && (!Number.isFinite(spec.maxTemperature) || !Number.isFinite(Math.fround(spec.maxTemperature))))
         || (spec.excludeId !== undefined && (!Number.isInteger(spec.excludeId) || spec.excludeId < 0 || spec.excludeId >= ELEMENTS.length))
-        || ['requiresSupport', 'breakableClear', 'exclusiveTemperature'].some(key => spec[key] !== undefined && typeof spec[key] !== 'boolean')) {
+        || ['requiresSupport', 'breakableClear', 'exclusiveTemperature', 'requiresPositiveLife'].some(key => spec[key] !== undefined && typeof spec[key] !== 'boolean')) {
       return { error: `invalid ${name} eligibility rule` };
     }
     const maxAny = spec.maxTemperature ?? MAX_TEMP;
-    const max0 = ids.length ? (maxTemperatures[0] ?? maxAny) : maxAny;
-    const max1 = ids.length > 1 ? (maxTemperatures[1] ?? maxAny) : maxAny;
+    const ruleIds = temperatureExemptIds.length ? temperatureExemptIds : ids;
+    const max0 = temperatureExemptIds.length ? MAX_TEMP : ids.length ? (maxTemperatures[0] ?? maxAny) : maxAny;
+    const max1 = temperatureExemptIds.length ? MAX_TEMP : ids.length > 1 ? (maxTemperatures[1] ?? maxAny) : maxAny;
     const flags = (spec.requiresSupport ? RULE_SUPPORT : 0) | (spec.breakableClear ? RULE_BREAKABLE_CLEAR : 0)
-      | (spec.exclusiveTemperature ? RULE_TEMP_EXCLUSIVE : 0);
+      | (spec.exclusiveTemperature ? RULE_TEMP_EXCLUSIVE : 0)
+      | (spec.requiresPositiveLife ? RULE_POSITIVE_LIFE : 0)
+      | (temperatureExemptIds.length ? RULE_TEMP_EXEMPT_IDS : 0);
     entries.push({
       cells: inside,
-      rule: [bitKinds(kinds), ids[0] ?? -1, ids[1] ?? -1, spec.excludeId ?? -1],
+      rule: [bitKinds(kinds), ruleIds[0] ?? -1, ruleIds[1] ?? -1, spec.excludeId ?? -1],
       limits: [max0, max1, maxAny, flags],
     });
     regionInfo[name] = { requested: cells.length, sampled: inside.length, clipped: cells.length - inside.length };
@@ -330,9 +343,13 @@ function withFreshness(cached, now, staleMs, pending = false) {
  * device's base, native control port, and named machine regions (never the grid).
  * `inspect(device, overrides)` accepts explicit `base`, `guard`, `regions`, and
  * `statusPolicy` for new machines. Region rules accept `kinds`, up to two `ids`,
- * optional `maxTemperature`/`maxTemperatures`, `excludeId`, `requiresSupport`,
- * and `breakableClear`; cells are absolute [x,y,z] coordinates from the owning
- * hearth/gate geometry helper. Region results include observed temperature ranges.
+ * optional `maxTemperature`/`maxTemperatures`, `temperatureExemptIds`, `excludeId`,
+ * `requiresSupport`, `requiresPositiveLife`, and `breakableClear`; cells are
+ * absolute [x,y,z] coordinates from the owning hearth/gate geometry helper.
+ * Hearth integration should pass `regions: { fuel: { cells: hearthRegions(device).fuel,
+ * ids: HEARTH_FUEL_IDS, requiresPositiveLife: true } }` and
+ * `statusPolicy: { primaryRegions: ['fuel'] }` (import the geometry and fuel IDs
+ * from `industry/hearth.js`). Region results include observed temperature ranges.
  *
  * Standard port/transport regions mirror industry physics and its WGSL. Ship's
  * alternating nugget/metal target is private: until the parent supplies the
@@ -355,12 +372,15 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
   function rememberInvalidated(reason) {
     for (const [id, request] of latestById) boundedSet(invalidatedById, id, { signature: request.deviceSignature, reason });
   }
+  let simDisposed = false;
   function invalidateForSimulation(next) {
-    if (next === sim) return;
-    rememberInvalidated('simulation changed; old observation invalidated');
+    const nextDisposed = !!next?.disposed;
+    if (next === sim && nextDisposed === simDisposed) return;
+    rememberInvalidated(nextDisposed ? 'simulation disposed; old observation invalidated' : 'simulation changed; old observation invalidated');
     generation++;
     if (active) active.cancelled = true;
     sim = next;
+    simDisposed = nextDisposed;
     kernelState = null;
     cache.clear(); latestById.clear(); transfers.clear(); confirmations.clear();
   }
@@ -413,12 +433,21 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
       }));
       return attachEvidence(lifecycleSnapshot(identity, { reason: 'not sampled' }));
     }
-    if (latest.deviceSignature !== signature) return attachEvidence(lifecycleSnapshot(identity, { reason: 'device identity changed; old observation invalidated', freshness: 'stale' }));
+    if (latest.deviceSignature !== signature) {
+      if (active?.deviceId === identity.id) active.cancelled = true;
+      return attachEvidence(lifecycleSnapshot(identity, { reason: 'device identity changed; old observation invalidated', freshness: 'stale' }));
+    }
     const cached = cache.get(latest.key);
     if (cached) return attachEvidence(withFreshness(cached, now(), staleMs, active?.key === latest.key));
     if (active?.key === latest.key) return unknownFor(latest, 'observation pending', 'pending', true);
     if (active) return unknownFor(latest, 'another inspected machine is pending', 'pending', true);
     return unknownFor(latest, 'observation unavailable', UNKNOWN);
+  }
+
+  function ownsRequest(job) {
+    const latest = latestById.get(job.deviceId);
+    return active === job && !job.cancelled && job.generation === generation
+      && latest?.key === job.key && latest.deviceSignature === job.deviceSignature;
   }
 
   async function run(request, job) {
@@ -437,10 +466,15 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
       job.sim.gpu.flush?.('industry diagnostics');
       const bytes = await prepared.ring.read(slot);
       const completedAt = now();
-      if (disposed || job.cancelled || job.generation !== generation || getSim() !== job.sim || job.sim.disposed) {
+      if (disposed || !ownsRequest(job) || getSim() !== job.sim || job.sim.disposed) {
         return unknownFor(request, 'stale observation discarded', 'stale');
       }
-      const observed = decode(request, bytes, job.startedAt, completedAt);
+      const observed = withFreshness(decode(request, bytes, job.startedAt, completedAt), completedAt, staleMs);
+      // A superseded readback may finish after a cache hit or identity change;
+      // it no longer owns this device's result and must not evict/publish data.
+      if (disposed || !ownsRequest(job) || getSim() !== job.sim || job.sim.disposed) {
+        return unknownFor(request, 'stale observation discarded', 'stale');
+      }
       for (const [key, entry] of cache) if (entry.id === request.device.id && key !== request.key) cache.delete(key);
       boundedSet(cache, request.key, observed);
       return attachEvidence(clone(observed));
@@ -458,13 +492,17 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
     if (disposed) return Promise.resolve(lifecycleSnapshot(device, { reason: 'diagnostics disposed' }));
     const bound = currentSim();
     if (!bound) return Promise.resolve(lifecycleSnapshot(device, { reason: 'no simulation' }));
+    if (bound.disposed) return Promise.resolve(lifecycleSnapshot(device, { reason: 'simulation disposed' }));
     if (!record(overrides)) return Promise.resolve(lifecycleSnapshot(device, { reason: 'invalid diagnostic overrides' }));
     let request;
-    try { request = normalizeRequest(device, overrides, bound); }
+    try { request = normalizeRequest(device, clone(overrides), bound); }
     catch (error) { return Promise.resolve(lifecycleSnapshot(device, { reason: error?.message ?? 'invalid diagnostic request' })); }
     if (request.error) return Promise.resolve(lifecycleSnapshot(device, { reason: request.error }));
     boundedSet(latestById, request.device.id, request);
     invalidatedById.delete(request.device.id);
+    // Selection/configuration changes supersede the active result even when the
+    // new request can be answered from cache; never let its completion publish.
+    if (active && (active.key !== request.key || active.generation !== generation || active.cancelled)) active.cancelled = true;
     const cached = cache.get(request.key);
     if (cached && now() - cached.sampledAt < throttleMs) return Promise.resolve(attachEvidence(withFreshness(cached, now(), staleMs)));
     if (active) {
@@ -472,7 +510,8 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
       active.cancelled = true;
       return Promise.resolve(unknownFor(request, 'another observation is in flight', 'pending', true));
     }
-    const job = { key: request.key, generation, sim: bound, cancelled: false, promise: null, startedAt: null };
+    const job = { key: request.key, deviceId: request.device.id, deviceSignature: request.deviceSignature,
+      generation, sim: bound, cancelled: false, promise: null, startedAt: null };
     active = job;
     job.promise = run(request, job);
     return job.promise;
