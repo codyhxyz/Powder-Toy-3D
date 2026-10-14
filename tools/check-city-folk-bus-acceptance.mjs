@@ -78,6 +78,44 @@ export async function acceptCityBus({ scene, twin, size, seed }) {
       assert(absolute().equals(town)); assert.equal(teleports, n); assert.equal(focus, null); assert.deepEqual(store.toBytes(), before);
       store.drop(bytesAt(city.x, y, city.z));
     }
+    // The real controller/focus loop must not transfer its hold anchor when
+    // the player refuses teleport or throws (not just an always-true adapter).
+    const teleport = player.teleport;
+    for (const rejection of ['false', 'throw']) {
+      const departure = town.clone().add(new Vector3(-8, 0, 3)); place(departure);
+      const before = store.toBytes(), n = teleports;
+      let attempts = 0;
+      player.teleport = () => { attempts++; if (rejection === 'throw') throw Error('teleport refused'); return false; };
+      const result = await bus.board();
+      assert.deepEqual(result, { ok: false, reason: rejection === 'throw' ? 'failed' : 'unavailable' });
+      assert.equal(attempts, 1); assert(absolute().equals(departure), `${rejection}: actual departure retained`);
+      assert.equal(teleports, n); assert.equal(focus, null); assert.equal(bus.busy, false);
+      assert.equal(world.store, store); assert.equal(currentWorld, world); assert.equal(currentSim, sim);
+      assert.deepEqual(store.toBytes(), before); assert.deepEqual(furniture, furnitureBefore);
+      assert.equal(player.health, 83); assert.deepEqual(player.statuses, { chill: 0.3 });
+    }
+    player.teleport = teleport;
+    // Invalidity observed by the actual frame entry points must not reverse
+    // when the SAME player revives/reactivates before arrival reads finish.
+    for (const invalid of ['death', 'inactive']) {
+      place(town); holdReads = { ...deferred(), started: deferred() };
+      const pending = bus.board(); await holdReads.started.promise;
+      const n = teleports, before = store.toBytes();
+      if (invalid === 'death') player.dead = true; else active = false;
+      bus.freeze(); assert.equal(bus.holding, false);
+      player.dead = false; active = true;
+      const respawn = town.clone().add(new Vector3(48, 8, 40));
+      player.pos.copy(respawn).sub(sim.origin); player.vel.set(3, 4, 5); player.jumpCharge = 0.7;
+      const origin = sim.origin.clone(), shiftCount = shifts;
+      bus.freeze(); assert.equal(bus.holding, false, `${invalid}: ticket remains invalid after recovery`);
+      holdReads.release(); holdReads = null;
+      assert.equal((await pending).ok, false); assert.equal(teleports, n);
+      assert(absolute().equals(respawn), `${invalid}: no freeze/rollback of recovered body`);
+      assert(sim.origin.equals(origin)); assert.equal(shifts, shiftCount, 'no rollback streaming');
+      assert.deepEqual(player.vel.toArray(), [3, 4, 5]); assert.equal(player.jumpCharge, 0.7);
+      assert.equal(focus, null); assert.equal(bus.busy, false); assert.equal(world.store, store);
+      assert.deepEqual(store.toBytes(), before);
+    }
     // Cancellation/invalidations race while actual edited-cell reads are pending.
     for (const reason of ['cancel', 'mode', 'inactive', 'death', 'epoch', 'replacement', 'origin']) {
       mode = 'animalCrossing'; active = true; player.dead = false; currentWorld = world; currentSim = sim; place(town);

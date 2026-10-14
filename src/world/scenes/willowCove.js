@@ -234,8 +234,15 @@ int wcCell(int wx, int y, int wz) {
   // Bounds precede overlays: no authored foundation may leak outside the world.
   if (wx < 0 || wz < 0 || y < 0 || wx >= uWillowWorldX || wz >= uWillowWorldZ || y >= uWillowWorldY) return E_EMPTY;
   int x = wx - thDiv(uWillowWorldX, 2), z = wz - thDiv(uWillowWorldZ, 2);
+  if (!wcExpanded()) return cfTerrainCell(x, y, z);
+  // The district replaces every cell in its inclusive bounds, irrespective
+  // of the input ID. It never overlaps the town stop; no main-town work is
+  // relevant here (including the city's EMPTY interiors and sky).
+  if (x >= CITY_WEST && x <= CITY_EAST && z >= CITY_NORTH && z <= CITY_SOUTH) return cfCityCell(x, y, z, E_EMPTY);
   int id = cfTerrainCell(x, y, z);
-  if (!wcExpanded()) return id;
+  // Nature explicitly excludes this core; all town/stop footprints and
+  // approaches are outside it. The X=0 city was dispatched above, not skipped.
+  if (abs(x) < 192) return id;
   int h = cfHeight(x, z);
   id = cfNatureCell(x, y, z, h, id);
   id = cfTownCell(x, y, z, h, id);

@@ -185,16 +185,28 @@ test('I02 solo saves retain supported geometries, coordinates and reject unknown
 });
 
 test('I03 exhaustive exact legacy cells against immutable pre-feature generator', async () => {
-  const base = '1b43dcc4ae126a92834f12a16637d945d9719fb0';
+  // Production ancestor; its scene blob is identical to the former
+  // feature-merge baseline (6cb934194aa094d7821579ea13e2a895cbb90e60).
+  const base = 'f8d9d8d6b00a2e25c641ad6086e759ba79a6f579';
   let src = execFileSync('git', ['show', `${base}:src/world/scenes/willowCove.js`], { encoding: 'utf8' });
   src = src.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, new URL('../src/world/scenes/willowCove.js', import.meta.url)).href}'`);
   const old = await import(`data:text/javascript;base64,${Buffer.from(src).toString('base64')}`);
   const dims = scene.legacySize, p = scene.params({ size: dims, seed });
   const expected = old.willowCoveTwin(p), actual = willow.willowCoveTwin(p);
+  // Confidence that the immutable callable is meaningful, not an empty or
+  // accidentally bypassed baseline. Still compare every generated ID below.
+  for (const [x, y, z, id] of [[404, 24, 572, E.WOOD], [404, 28, 572, E.GLASS],
+    [548, 43, 388, E.WATER], [512, 0, 512, E.ROCK], [0, 127, 0, E.EMPTY]]) {
+    assert.equal(expected.wcCell(x, y, z), id, 'legacy baseline sentinel');
+    assert.equal(actual.wcCell(x, y, z), id, 'legacy composed sentinel');
+  }
+  let comparisons = 0, nonempty = 0;
   for (let z = 0; z < dims[2]; z++) for (let x = 0; x < dims[0]; x++) for (let y = 0; y < dims[1]; y++) {
     const a = actual.wcCell(x, y, z), b = expected.wcCell(x, y, z);
     if (a !== b) assert.fail(`legacy changed at ${x},${y},${z}: ${b}->${a}`);
+    comparisons++; if (b !== E.EMPTY) nonempty++;
   }
+  assert.equal(comparisons, 134217728); assert.equal(nonempty, 17633585);
 });
 
 test('I04 original cottages, doors, furniture coordinates and village behavior', () => {

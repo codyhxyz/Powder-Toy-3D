@@ -190,6 +190,30 @@ const {createVillage}=await import('../src/pov/village/index.js');
   assert.equal(village.bus.busy,true);assert.deepEqual(village.act({type:'interact'}),{},'E action cancels too');
   gate.resolve();for(let i=0;village.bus.busy&&i<1000;i++)await Promise.resolve();
   assert.equal(village.bus.busy,false);assert.deepEqual(absolute(f),[1316,48,396]);
+  // Match the production beforeBody -> holding -> afterBody frame path.
+  // Respawn reuses the same body, and transient inactivity can also recover
+  // before delayed arrival reads finish. Neither may revive the old ticket.
+  for (const invalid of ['death', 'inactive']) {
+    f.player.pos.set(1316 - f.sim.origin.x, 48, 396 - f.sim.origin.z);
+    const release = deferred(), started = deferred(), read = f.sim.readCell;
+    f.sim.readCell = async (...args) => { const result = read(...args); started.resolve(); await release.promise; return result; };
+    const pending = village.bus.board(); await started.promise;
+    assert(f.focus); const n = f.player.teleports, store = f.world.store;
+    if (invalid === 'death') f.player.dead = true; else document.hidden = true;
+    const input = { move: { x: 1, z: -1 }, jump: true };
+    village.beforeBody(input); assert.equal(village.bus.holding, false); village.afterBody();
+    f.player.dead = false; document.hidden = false;
+    f.player.pos.set(72, 56, 96); f.player.vel.set(3, 4, 5);
+    const pos = f.player.pos.clone(), origin = f.sim.origin.clone(), moves = f.moves.length;
+    village.beforeBody(input); assert.equal(village.bus.holding, false); village.afterBody();
+    assert(f.player.pos.equals(pos)); assert.deepEqual(input.move, { x: 1, z: -1 });
+    release.resolve(); assert.equal((await pending).ok, false);
+    assert.equal(f.player.teleports, n); assert(f.player.pos.equals(pos));
+    assert.deepEqual(f.player.vel.toArray(), [3, 4, 5]); assert(f.sim.origin.equals(origin));
+    assert.equal(f.moves.length, moves, 'invalidated journey must not stream rollback');
+    assert.equal(f.focus, null); assert.equal(village.bus.busy, false); assert.equal(f.world.store, store);
+    assert.deepEqual(village.state, furniture); f.sim.readCell = read;
+  }
   village.setEnabled(false);
 }
 hooks.deregister();

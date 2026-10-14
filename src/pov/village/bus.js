@@ -87,8 +87,16 @@ export function createCityBus(adapter) {
   async function board(from = nearby()) {
     if (!from || from !== nearby() || journey || !available()) return { ok: false, reason: 'unavailable' };
     const world = getWorld(), sim = getSim(), player = getPlayer(), epoch = world.epoch;
-    const same = () => !disposed && getWorld() === world && getSim() === sim && world.epoch === epoch
-      && world.loaded && adapter.active() && getMode() === 'animalCrossing' && getPlayer() === player && !player.dead;
+    // Lifecycle rejection is permanent for this ticket. The same body can
+    // respawn/reactivate while arrival reads are pending; it is then no longer
+    // owned by the old journey, even if all current conditions match again.
+    let invalidated = false;
+    const same = () => {
+      if (invalidated) return false;
+      invalidated = !(!disposed && getWorld() === world && getSim() === sim && world.epoch === epoch
+        && world.loaded && adapter.active() && getMode() === 'animalCrossing' && getPlayer() === player && !player.dead);
+      return !invalidated;
+    };
     const ticket = { same, sim, player, source: player.pos.clone().add(sim.origin), cancelled: false };
     journey = ticket; freeze(); adapter.requestRender();
     const valid = () => journey === ticket && !ticket.cancelled && same();
@@ -100,9 +108,11 @@ export function createCityBus(adapter) {
         const clear = await cityBusArrivalClear(sim, feet, player);
         if (!valid() || !current() || !sim.origin.equals(origin)) return false;
         if (!clear) { reason = 'blocked'; return false; }
-        // End the hold before teleport; preserve health, statuses and furniture.
-        ticket.source.copy(dest);
-        return player.teleport(feet);
+        // Keep holding the actual departure if teleport refuses or throws.
+        // Successful teleport alone transfers the held anchor to the arrival.
+        const teleported = player.teleport(feet);
+        if (teleported) ticket.source.copy(dest);
+        return teleported;
       });
       if (!arrived && !ticket.cancelled && reason !== 'blocked') reason = 'unavailable';
     } catch { reason = 'failed'; }

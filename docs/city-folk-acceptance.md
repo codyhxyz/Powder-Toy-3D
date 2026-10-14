@@ -17,8 +17,13 @@ The independent acceptance lane originally reported 5 passing / 8 failing
 baseline groups. Those initial reds were NOT accepted as completion. The final
 composed suite passes **13/13 groups, zero failures/skips**, about **4.41 seconds
 CPU wall time**. This includes **134,217,728 exact legacy cell comparisons**
-against immutable pre-feature commit `1b43dcc4ae126a92834f12a16637d945d9719fb0`.
-CI checkout fetches full history to make that comparison reproducible.
+against production ancestor `f8d9d8d6b00a2e25c641ad6086e759ba79a6f579`.
+Its scene blob was verified identical to the former feature-merge baseline
+`1b43dcc4ae126a92834f12a16637d945d9719fb0`:
+`6cb934194aa094d7821579ea13e2a895cbb90e60`. The test still evaluates every
+cell, asserts 17,633,585 nonempty cells and cottage/glass/water/foundation/sky
+sentinels. CI checkout fetches full history; the legacy gate no longer depends
+on feature-branch merge ancestry.
 
 No browser, dev server, GPU process, player-detection bypass, push or deployment
 was performed by the integration writer. GPU occupancy: **0 seconds**.
@@ -28,9 +33,13 @@ Independent review and release remain required; CPU success is not deployment.
 
 - A single bounded `wcCell` wrapper composes BASE → nature → town → city →
   town bus stop for expanded worlds only. All module constants/types and shared
-  source feed both the JS twin and WGSL. Bounds precede overlays. No global
-  original-core X guard skips the city at `[0,-352]`. Nature support queries
-  only `cfHeight` / `cfTerrainCell`, never the composed cell recursively.
+  source feed both the JS twin and WGSL. Bounds precede overlays. The city is
+  dispatched first inside its actual inclusive bounds: `cfCityCell` overwrites
+  every input ID there, including EMPTY interiors/sky, and never intersects
+  the town stop. Only then may `abs(x)<192` return BASE: nature explicitly
+  excludes it, and all town/stop footprints/approaches lie outside it. No
+  global X guard skips the city at `[0,-352]`. Nature support queries only
+  `cfHeight` / `cfTerrainCell`, never the composed cell recursively.
 - Terrain pads match both actual shops, square, museum/café, cottages, vacant
   plots and door approaches. Town approach metadata feeds the route mask and
   connected graph. Upper doors use a high avenue at Z=-94, clear of plot stakes;
@@ -91,11 +100,11 @@ IDs match the independent suite's TAP names.
 | I01 | World and simulation dimensions | 3072×128×1024 world; unchanged window; real production `setGrid` exercised in CPU VM |
 | I03 | Exact legacy geometry | Every cell of 1024×128×1024 compared to fixed pre-feature generator; unchanged golden hash also passes |
 | I04 | Original cottages, doors, furniture and behavior | Exact coordinates/door volumes and real village interaction controller regressions |
-| I01/I02 | Solo/co-op loading of both sizes | Real save preparation / setGrid paths; supported dimensions and saved origins retained, unsupported sizes rejected |
+| I01/I02 | Solo/co-op size acceptance | Production save preparation / extracted setGrid with stub worlds accept supported dimensions and retain header origins; unsupported sizes rejected. NOT real app restoration or streaming evidence |
 | I05 | Determinism and bounded generation | Four seeds, slab/world edges, valid integer IDs, 3000 independent ground columns per seed; finite focus convergence bound; no per-cell async |
 | I05 | Shared CPU/streaming/far-field scene source | Actual composed callable functions and emitted WGSL parsed with WgslReflect, including town stop; GPU execution/parity remains parent-owned |
 | I06 | Store persistence and player/furniture state | Real BrickStore codec edits including non-ID state bytes survive roundtrip/refused journeys; identity preserved; status/health/furniture fixtures retained; real village E/controller checked by bus lane |
-| I06 | Safe edited arrival and cancellation | Occupied/missing/wet support refused; focus held through reads; cancellation, mode/inactive/death/epoch/world replacement/origin races reject stale teleport |
+| I06 | Safe edited arrival and cancellation | Occupied/missing/wet support and false/throw teleport refused without moving departure; focus held through reads; explicit cancellation restores departure; latched lifecycle rejection survives SAME-body death/respawn or inactive/reactivation with pending reads, without teleport/freeze/rollback of recovered body |
 | I06 | Other-mode isolation | All non-Animal-Crossing modes, non-Tinker scene, legacy geometry, remote boarding and disposed controller refuse transport |
 | I07 | Original art and identity | Original authored source shapes/materials, distinct composed hashes; independent source/art/visual review still required |
 
@@ -125,6 +134,81 @@ IDs match the independent suite's TAP names.
   warnings remain; no new dependency or asset was introduced.
 
 The composed and four component CPU checks are registered in the deploy workflow.
+
+## Independent-review follow-up (assigned merged base `1fcda7c`)
+
+Fetch succeeded at start: **16 ahead / 0 behind**, with only the pre-existing
+untracked `.pi/` artifacts. Both immutable reviewer reports were read.
+
+- Teleport now transfers the held anchor only after success. Real controller /
+  focus-loop tests cover false and thrown teleport, exact noncentral departure,
+  health/status/furniture/store bytes and identity, and focus cleanup.
+- Each ticket permanently latches observed lifecycle invalidity. Production
+  `beforeBody → bus.holding → afterBody` wiring and same-body respawn were
+  inspected after the merge. Tests exercise those real village frame methods
+  through death and hidden/inactive state, recover before delayed reads finish,
+  and assert no teleport, body/input/velocity modification or rollback streaming.
+  Explicit user cancellation still restores the safe departure and releases focus.
+- No caching architecture, grid/FPS reductions, module geometry or dependencies
+  changed. The only generation optimizations are the proved spatial dispatches.
+- `node tools/check-city-folk-equivalence.mjs`: **189,139,392 exact composed ID
+  comparisons**, **37,423,374 nonempty** comparisons, zero mismatches. Seeds
+  1, 20261008 and 4294967295; every cell of X=-200..200, Z=-512..511, Y=0..127
+  (entire affected core AND city plus X seams), five complete 128³ windows per
+  seed, and out-of-world/Y/city-boundary samples. Reference scene and all four
+  feature modules are loaded from immutable pre-optimization `1fcda7c`; IDs,
+  not source strings or hashes, are compared.
+- `node --test tools/check-city-folk.mjs`: **13/13**, zero failures/skips,
+  4.68s CPU wall time after follow-up; exhaustive legacy count/sentinels pass.
+- All four component checks, willow body-clear/circuit routes, three sprint
+  checks, all 13 `check-village*.mjs` CPU checks (including art geometry), saves,
+  co-op CPU and browser-launch policy check passed; `npm run build` passed.
+- Naga CPU semantic validation passed for actual production **fill, leave,
+  farSceneCells and live detailCells** generators (87,967 / 84,965 / 83,422 /
+  83,951 source characters). This is stronger than WgslReflect parsing, but NOT
+  device compilation or GPU execution/parity. No GPU/browser/server launched:
+  **0 seconds GPU occupancy**.
+
+### Reproducible CPU timings
+
+The equivalence command also times serial complete 128³ sweeps at seed 20261008,
+world size 3072×128×1024. Each generator/site receives two warmups then five
+measurements; values below are medians in ms, with retained before/after
+checksums. Centers are island-local; X/Z are center-64..center+63, Y=0..127.
+These are CPU generator timings only, not guessed GPU savings.
+
+| Window center | Pre-feature production | Composed before | Optimized |
+| --- | ---: | ---: | ---: |
+| Village [-28,12] | 13.60 | 78.79 | 24.09 |
+| Upper [-400,-112] | 12.70 | 181.58 | 183.09 |
+| Orchard [624,80] | 14.38 | 244.57 | 242.41 |
+| City [0,-352] | 8.33 | 83.61 | 21.10 |
+| Meadow [850,70] | 13.72 | 211.82 | 211.69 |
+
+Upper/orchard/meadow generation remains substantially costlier than pre-feature;
+these narrow optimizations do not address repeated nature support work. No
+GPU performance failure or acceptable GPU latency is established.
+
+Reproduce Naga validation without GPU execution:
+
+```sh
+node --input-type=module <<'JS'
+import { execFileSync } from 'node:child_process';
+import { gridLayout } from './src/sim.js';
+import { willowCove as scene } from './src/world/scenes/willowCove.js';
+import { sceneFillFrag, sceneDiffFrag } from './src/shaders/generate.js';
+import { farLayout, farSceneLayout, farSceneCellsFrag, DETAIL_CHUNK, DETAIL_PAD } from './src/shaders/far.js';
+const g = { ...gridLayout(128, 128, 128), windowed: true }, L = farLayout(scene.size), code = scene.glsl(g);
+for (const [name, source] of Object.entries({
+  fill: sceneFillFrag(g, code, { data: !!scene.data }), leave: sceneDiffFrag(g, code),
+  farSceneCells: farSceneCellsFrag(g, L, code, farSceneLayout(L)),
+  detailCells: farSceneCellsFrag(g, L, code, farSceneLayout(L, DETAIL_CHUNK + 2 * DETAIL_PAD), true),
+})) {
+  execFileSync('naga', ['--stdin-file-path', `${name}.wgsl`], { input: source });
+  console.log(`${scene.key} ${name}: Naga CPU semantic validation PASS`);
+}
+JS
+```
 
 ## Required parent review / release gates (not claimed complete)
 
