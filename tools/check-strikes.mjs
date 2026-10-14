@@ -13,6 +13,7 @@ import { createKickLeg, KICK_REFIRE } from '../src/pov/kick.js';
 import { character, dispose } from '../src/pov/village/models.js';
 import { PUNCH_DURATION } from '../src/pov/village/actions.js';
 import { viewmodelRig } from '../src/pov/viewmodel.js';
+import { flapPose, sampleFlap, FLAP_ANIM_S } from '../src/pov/flapPose.js';
 
 const nearQ = (a, b, label) => assert.ok(1 - Math.abs(a.dot(b)) / (a.length() * b.length()) < 1e-7, label);
 const identity = new THREE.Quaternion(), pose = strikePose();
@@ -30,6 +31,17 @@ for (const key of Object.keys(pose)) nearQ(pose[key], atContact[key], 'extension
 assert.ok(new THREE.Euler().setFromQuaternion(atContact.hip).x > 1.8, 'kick goes above horizontal');
 assert.ok(new THREE.Euler().setFromQuaternion(atContact.knee).x > -0.2, 'shin snaps straight');
 assert.ok(new THREE.Euler().setFromQuaternion(sampleKickPose(0.16, pose).knee).x < -2, 'knee chambers before striking');
+const wingPose = flapPose();
+for (const remaining of [0, 1]) {
+  sampleFlap(remaining, wingPose);
+  for (const key of ['left', 'right', 'elbow']) nearQ(wingPose[key], identity, 'flap starts/ends without a snap');
+  assert.equal(wingPose.weight, 0, 'endpoints preserve baseline pose');
+}
+for (let remaining = 0; remaining <= 1; remaining += 0.001) {
+  sampleFlap(remaining, wingPose);
+  for (const key of ['left', 'right', 'elbow']) assert.ok(Math.abs(wingPose[key].length() - 1) < 1e-8, 'flap quaternion remains normalized');
+}
+assert.equal(FLAP_ANIM_S, 0.2, 'a full stroke fits the refire interval');
 
 const state = {
   feet: new THREE.Vector3(), scale: 1, yaw: 0, worldToGrid: new THREE.Matrix4(),
@@ -47,6 +59,19 @@ for (const build of [buildStick, buildSpartan, buildCrasher]) {
       assert.ok(foot.z < -rig.hipY * 0.7 && foot.y > rig.hipY, `${build.name}: foot extends forward and up`);
       fig.update(0, state);
       [rig.hipR, rig.knR, rig.torso].forEach((b, i) => nearQ(b.quaternion, idle[i], 'no idle twist after repeated kicks'));
+    }
+    const wingIdle = [rig.shL, rig.shR, rig.elL, rig.elR].map(b => b.quaternion.clone());
+    for (let repeat = 0; repeat < 20; repeat++) {
+      fig.update(0, { ...state, flap: 0.78 });
+      sampleFlap(0.78, wingPose);
+      nearQ(rig.shL.quaternion, wingPose.left, 'left upstroke follows the shared pose');
+      nearQ(rig.shR.quaternion, wingPose.right, 'right upstroke follows the shared pose');
+      nearQ(rig.elR.quaternion, wingPose.elbow, 'elbows fold on the upstroke');
+      fig.update(0, { ...state, flap: 0.48 });
+      sampleFlap(0.48, wingPose);
+      nearQ(rig.shR.quaternion, wingPose.right, 'distinct downward power stroke');
+      fig.update(0, state);
+      [rig.shL, rig.shR, rig.elL, rig.elR].forEach((b, i) => nearQ(b.quaternion, wingIdle[i], 'no arm drift after repeated flaps'));
     }
     for (let i = 0; i < 60; i++) fig.update(1 / 60, { ...state, crouch: 1 });
     fig.update(0, { ...state, crouch: 1, kick: 0.16 });
@@ -116,6 +141,25 @@ for (const file of ['body', 'woman']) {
           nearQ(kicking.root.getObjectByName(name).quaternion, control.root.getObjectByName(name).quaternion, `${file}: ${fps} FPS ${name} crouch/gait restored`);
       }
     } finally { control.dispose(); kicking.dispose(); }
+    fig.update(0, state);
+    const armBones = ['upperarm_l', 'lowerarm_l', 'upperarm_r', 'lowerarm_r'].map(n => fig.root.getObjectByName(n));
+    const wingIdle = armBones.map(b => b.quaternion.clone());
+    const hand = fig.root.getObjectByName('hand_r'), shoulder = fig.root.getObjectByName('upperarm_r');
+    for (let repeat = 0; repeat < 30; repeat++) {
+      fig.update(0, { ...state, flap: 0.78 });
+      const up = hand.getWorldPosition(new THREE.Vector3());
+      assert.ok(up.y > shoulder.getWorldPosition(new THREE.Vector3()).y, `${file}: wing raises above the shoulder`);
+      fig.update(0, { ...state, flap: 0.48 });
+      const down = hand.getWorldPosition(new THREE.Vector3());
+      assert.ok(up.y - down.y > 1, `${file}: substantial downstroke, not a head-height flicker`);
+      fig.update(0, state);
+      armBones.forEach((b, i) => nearQ(b.quaternion, wingIdle[i], `${file}: no untracked bone drift after flapping`));
+    }
+    const grip = { pos: hand.getWorldPosition(new THREE.Vector3()), fingers: new THREE.Vector3(0, 0, -1), palm: new THREE.Vector3(0, -1, 0) };
+    fig.reach({ right: grip });
+    const aimed = armBones.slice(2).map(b => b.quaternion.clone());
+    fig.update(0, { ...state, flap: 0.78 }); fig.reach({ right: grip });
+    armBones.slice(2).forEach((b, i) => nearQ(b.quaternion, aimed[i], 'flap does not break the held grip'));
   } finally { fig.dispose(); }
 }
 
@@ -146,6 +190,32 @@ for (const fps of [30, 60, 144]) {
   assert.equal(vm.getObjectByName('kick-hip'), undefined, 'disposed leg detaches');
 }
 
+{
+  const vm = new THREE.Group(), rig = viewmodelRig({ viewmodel: vm, getScale: () => 1 });
+  const camera = new THREE.PerspectiveCamera(75, 16 / 9, 0.01, 12);
+  try {
+    rig.poseFlap(0);
+    assert.equal(vm.getObjectByName('flap-wing'), undefined, 'idle never allocates wing meshes');
+    rig.poseFlap(0.78);
+    const wings = []; vm.traverse(o => { if (o.name === 'flap-wing') wings.push(o); });
+    assert.equal(wings.length, 2, 'two articulated wings');
+    for (const wing of wings) {
+      assert.ok(wing.getObjectByName('flap-elbow'), 'wing has a separate elbow, not one rotating bar');
+      const at = wing.getObjectByName('flap-fist').getWorldPosition(new THREE.Vector3()).project(camera);
+      assert.ok(Math.abs(at.x) < 1 && Math.abs(at.y) < 1 && at.z > -1 && at.z < 1, 'wingbeat visible near the edge of the view');
+    }
+    const hand = rig.hand([0.5, -0.4, -1.5]); hand.visible = true;
+    const ctx = { dt: 0, dir: new THREE.Vector3(0, 0, -1), player: { body: { flap: 0.78 } } };
+    rig.update(ctx);
+    nearQ(hand.quaternion, identity, 'flapping does not throw a held weapon across the view');
+    assert.ok(hand.position.distanceTo(hand.userData.rest) < 1e-8, 'weapon grip stays put');
+    assert.equal(wings[1].visible, false, 'no duplicate wing on a gripping hand');
+    assert.equal(wings[0].visible, true, 'free hand keeps flapping');
+    rig.poseFlap(0);
+    assert.ok(wings.every(w => !w.visible), 'wings hide after recovery');
+  } finally { rig.dispose(); }
+}
+
 for (const reduced of [false, true]) {
   globalThis.matchMedia = () => ({ matches: reduced });
   const avatar = character(), body = avatar.root.children[0];
@@ -172,8 +242,15 @@ for (const reduced of [false, true]) {
     nearQ(leg.quaternion, identity, 'carrying blocks kick');
     animate(0, 0.6, false, false, null, { kind: 'sit' });
     assert.equal(leg.rotation.x, Math.PI / 2, 'seated pose wins over kick');
+    animate(0, 0, false, false, { flap: 0.78 });
+    const wingArm = avatar.hand.quaternion.clone();
+    assert.ok(wingArm.angleTo(identity) > 0.2, 'toy has a visible wing upstroke in both motion modes');
+    animate(0, 0, true, false, { flap: 0.78 });
+    assert.ok(Math.abs(avatar.hand.rotation.x - 0.9) < 1e-8, 'tool grip overrides toy wing');
+    animate(0, 0, false, true, { flap: 0.78 });
+    assert.ok(Math.abs(avatar.hand.rotation.x - 1.3) < 1e-8, 'carrying overrides toy wing');
   } finally { dispose(avatar.root); }
 }
 delete globalThis.matchMedia;
 assert.equal(PUNCH_DURATION, 0.2, 'do not change five-punches-per-second gameplay');
-console.log('PASS quaternion strikes: chamber/snap/hold, all rigs, yaw/scale, idle restoration, POV visibility, overrides and repeats at 30/60/144 fps');
+console.log('PASS quaternion strikes and wingbeats: all rigs, bone frames, full stroke/recovery, POV visibility, grips, overrides and repeats');
