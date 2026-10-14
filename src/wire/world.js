@@ -212,13 +212,18 @@ const world = {
     else { fx = controls.target.x / scale + anchor.x; fz = controls.target.z / scale + anchor.y; }
     const move = win.update(fx, fz);
     if (!move) return;
-    const [dx, dz] = move;
-    app.placeVolume();
-    pov?.windowShifted(dx, dz);
-    hover.cell.x -= dx;   // the last pick, in the moved grid (signs follow sim.origin themselves)
-    hover.cell.z -= dz;
-    if (hover.valid && !app.inWindow(hover.cell)) hover.valid = false;
-    return move;
+    const committed = ([dx, dz]) => {
+      if (app.sim !== sim || app.win !== win) return;
+      app.placeVolume();
+      pov?.windowShifted(dx, dz);
+      hover.cell.x -= dx;
+      hover.cell.z -= dz;
+      if (hover.valid && !app.inWindow(hover.cell)) hover.valid = false;
+      app.pacer?.wake();
+      return [dx, dz];
+    };
+    if (move.then) { move.then(committed, error => app.hud?.toast?.(error.message, { kind: 'error' })); return null; }
+    return committed(move);
   },
 };
 

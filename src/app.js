@@ -275,7 +275,11 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
 // Multiplayer guests are deliberately render-only, irrespective of host engine.
 let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
-let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
+async function loadNativePhysics() {
+  const [physics, contact, dynamics] = await Promise.all([import('./v2/physics.js'), import('./shaders/v2/contact.js'), import('./v2/dynamics.js')]);
+  return { ...physics, options: { contactWGSL: contact.contactWGSL, Dynamics: dynamics.NativeDynamics } };
+}
+let V2mod = physicsMode === 'v2' ? await loadNativePhysics() : null;
 let physicsV2 = null;    // the authoritative native host (guests never simulate)
 let nativeRayStroke = null;
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
@@ -525,7 +529,7 @@ function build() {
   nativeRayStroke = null;
   sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   if (physicsMode === 'v2' && !mp.isGuest) {
-    physicsV2 = new V2mod.PhysicsV2(sim);
+    physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
     const owner = physicsV2;
     owner.integrationReady = sim.prepareNative(owner);
     owner.integrationReady.then(() => wakeLoop(), () => {});
@@ -2331,7 +2335,7 @@ function tick(now, renderOnly = false) {
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
     const nativeSpeed = settings.steps / DEFAULTS.steps;
     ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed)))) : null;
-    for (const w of live) w.beforeStep?.(ctx, dt);   // the body, Descent's level switch
+    for (const w of live) w.beforeStep?.(ctx, sim.nativeTransition || sim.nativeTransitionError ? 0 : dt);   // the body, Descent's level switch
     // (after the body's update, which can leave it: then the god view moves this tick)
     if (!pov?.active) {
       rig.update(dt);
@@ -2681,9 +2685,9 @@ try {
     // resolves once v2's pipelines are built. Not persisted. physics: { mode, active, v2 (its PhysicsV2) }
     async setPhysics(mode) {
       if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
-      if (mode === 'v2') V2mod ??= await import('./v2/physics.js');
+      if (mode === 'v2') V2mod ??= await loadNativePhysics();
       physicsMode = mode;
-      if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim);
+      if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
       if (mode === 'v1' && physicsV2) {
         physicsV2.suspend();
         v2Running = false;

@@ -98,15 +98,22 @@ const sim = Object.assign(Object.create(Simulation.prototype), {
 const owner = new PhysicsV2(sim); await owner.ready;
 // The foundation lane owns allocation; this fixture supplies it on old bases.
 owner.aux ??= buffer({ size: g.slots * 4 });
-owner.capabilities = { ...owner.capabilities, contact: true };
-owner.nativeDynamics = { ready: Promise.resolve(), rays: { ready: true, draw() {}, updateView() {} }, capabilities: { impulse: true, photon: true, neutron: true },
-  shiftWindow: delta => shifts.push(delta), applyToolImpulse: r => { requests.push(r); return 'accepted'; } };
+const adapter = owner.nativeDynamics;
+assert(adapter.head && adapter.layout && adapter.group, 'foundation nativeDynamics is the immutable shader adapter');
+owner.contactReady = true;
+owner.dynamics = { isReady: true, isIdle: true,
+  advanceParticles: () => calls.push({ name: 'native-particle-tick' }),
+  consumeMaterialEvents: () => calls.push({ name: 'native-event-tick' }),
+  advanceAir: () => calls.push({ name: 'native-air-tick' }), ready: Promise.resolve(), capabilities: { physicsReady: true, drawReady: true, impulse: true, photon: true, neutron: true },
+  readActivity: async () => ({}), shiftWindow: delta => { shifts.push(delta); return Promise.resolve(); }, applyToolImpulse: r => { requests.push(r); return 'accepted'; } };
 await sim.prepareNative(owner);
+const shiftNative = (dx, dz) => sim.nativeIntegration.beginShift(dx, dz, () => sim.shift(dx, dz));
+assert.equal(owner.nativeDynamics, adapter, 'application does not overwrite foundation adapter');
 assert.equal(nativeCapabilities(sim).world, true);
 assert.equal(nativeReadiness(sim, { world: true, pov: true }).ready, true);
-owner.capabilities.contact = false;
+owner.contactReady = false;
 assert.equal(nativeReadiness(sim, { world: true }).ready, false, 'pipeline names alone do not advertise contact parity');
-owner.capabilities.contact = true;
+owner.contactReady = true;
 assert.equal(nativeReadiness(sim, { guest: true }).reason, 'render-only guest');
 assert.equal(sim.readHeader({ physical: true }).format, 3);
 assert.equal(sim.readHeader().format, 2, 'renderer and codec keep presentation semantics');
@@ -133,7 +140,7 @@ const duplicate = encoded.slice(); new DataView(duplicate.buffer).setUint32(4 + 
 assert.throws(() => validateNativeWorldStore(encoded, null));
 
 calls.length = 0;
-sim.shift(16, 0);
+await shiftNative(16, 0);
 assert.deepEqual(shifts, [[16, 0, 0]], 'only dynamics local fields reindex; world particle positions belong to dynamics');
 for (let s = 0; s < g.slots; s++) {
   const q = slotCell(g, s); q[0] += 16;
@@ -144,7 +151,7 @@ for (let s = 0; s < g.slots; s++) {
 }
 owner.sync();
 assert(!calls.some(c => c.name === 'v2import' && c.opts.params.full === 1), 'a residency shift never reimports projected whole-grid state');
-sim.shift(-16, 0);
+await shiftNative(-16, 0);
 const window = Object.assign(Object.create(WorldWindow.prototype), { sim, nativeStore: stored });
 assert.equal(window.restoreNative([0, 0, 0], [4, 8, 8]), 256);
 assert.equal(stored.size, 0);
@@ -156,10 +163,29 @@ for (const [dx, dz] of [[-16, 0], [0, 16], [0, -16]]) {
   const lo = [dx < 0 ? 16 : 0, 0, dz < 0 ? 16 : 0];
   const bricks = [dx ? 4 : 8, 8, dz ? 4 : 8];
   const leaving = await sim.nativeIntegration.captureSlab(lo, bricks);
-  sim.shift(dx, dz); sim.shift(-dx, -dz);
+  await shiftNative(dx, dz); await shiftNative(-dx, -dz);
   sim.nativeIntegration.restoreBricks(lo, bricks, leaving.map((bytes, index) => ({ index, bytes })));
   assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 }
+
+// Real asynchronous boundary: no core shift, origin movement, tools or ticks
+// until dynamics has rebased its local air/claims. World particle words remain its own.
+const oldShift = owner.dynamics.shiftWindow;
+let finishShift;
+owner.dynamics.shiftWindow = () => new Promise(resolve => { finishShift = resolve; });
+const oldOrigin = sim.origin.x, oldTick = owner.tick, oldCore = core.slice();
+const inFlightShift = shiftNative(16, 0);
+assert(sim.nativeTransition);
+assert.equal(nativeHostSteps(owner, 1, { keepAlive: true }), 0);
+assert.equal(nativeReadiness(sim, { world: true }).ready, false);
+assert.equal(sim.applyNativeTool({ kind: 'impulse' }), false);
+assert.equal(sim.origin.x, oldOrigin); assert.equal(owner.tick, oldTick); assert.deepEqual(core, oldCore);
+finishShift(); await inFlightShift;
+assert.equal(sim.nativeTransition, null); assert.equal(sim.origin.x, oldOrigin + 16);
+owner.dynamics.shiftWindow = oldShift;
+await shiftNative(-16, 0);
+sim.nativeIntegration.restoreBricks([0, 0, 0], [4, 8, 8], slab.map((bytes, index) => ({ index, bytes })));
+assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 
 // Sparse restoration touches only selected bricks (raw slab order differs
 // from the compact brick's internal y/z bit order).
@@ -237,9 +263,9 @@ assert.deepEqual(worldPosition(sim, [1, 2, 3]), [129, 2, 259]);
 assert(nativeImpulse(sim, { position: [1, 2, 3], direction: [3, 0, 0], radius: 4, acceleration: 12, dt: 1 / 60 }));
 assert.equal(requests.at(-1).strength, 0.2); assert.deepEqual(requests.at(-1).direction, [1, 0, 0]);
 assert.deepEqual(requests.at(-1).position, [129, 2, 259]);
-owner.nativeDynamics.applyToolImpulse = () => undefined;
+owner.dynamics.applyToolImpulse = () => undefined;
 assert.equal(sim.applyNativeTool({ kind: 'impulse' }), false, 'undefined/no-op is never accepted');
-owner.nativeDynamics.applyToolImpulse = r => { requests.push(r); return { status: 'queued' }; };
+owner.dynamics.applyToolImpulse = r => { requests.push(r); return { status: 'queued' }; };
 const photon = TOOLS.find(t => t.key === 'PHOTON').id;
 const stroke = { tool: photon, center: { x: 1, y: 2, z: 3 }, radius: 1, shape: 1, rate: 0.007 };
 requests.length = 0; sim.nativeEmission = undefined;
@@ -250,9 +276,9 @@ for (let i = 0; i < 120; i++) assert(emitNativeRay(sim, stroke, 1 / 120));
 assert.equal(requests.reduce((n, r) => n + r.count, 0), emitted);
 assert(requests.every(r => r.count > 0 && Number.isInteger(r.count)));
 assert.equal(sim.nativeCapabilities.physgun, false, 'generic impulse cannot advertise working physgun hold');
-const presentation = owner.nativeDynamics.rays; owner.nativeDynamics.rays = null;
+owner.dynamics.capabilities.drawReady = false;
 assert.equal(sim.nativeCapabilities.photon, false, 'invisible particle tools remain blocked until native presentation exists');
-owner.nativeDynamics.rays = presentation;
+owner.dynamics.capabilities.drawReady = true;
 const nativeEdits = edits.length;
 sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [1, 0, 0] });
 assert.equal(edits.length, nativeEdits, 'live native wind never writes legacy velocity or reimports liquid cells');

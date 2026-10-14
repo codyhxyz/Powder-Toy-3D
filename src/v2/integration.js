@@ -8,14 +8,14 @@ export { encodeNativeBrick, decodeNativeBrick, NATIVE_BRICK_BYTES } from '../wor
 // The application owns residency, not dynamics. The dynamics owner must shift
 // its particles/air explicitly; a missing hook blocks native worlds, never v1 fallback.
 export function nativeCapabilities(sim) {
-  const owner = sim?.compactOwner, integration = sim?.nativeIntegration, d = owner?.nativeDynamics;
+  const owner = sim?.compactOwner, integration = sim?.nativeIntegration, d = owner?.dynamics;
   const state = !!(owner?.isReady && !owner.disposed && !sim.disposed && owner.aux && integration?.owner === owner && integration.isReady);
-  const tools = state && integration.dynamicsReady === true;
-  const particles = tools && d?.rays?.ready === true && typeof d.rays.draw === 'function' && typeof d.rays.updateView === 'function';
+  const tools = state && d?.capabilities?.physicsReady === true && d.isReady === true;
+  const particles = tools && d.capabilities.drawReady === true;
   return {
     state,
-    world: state && owner.capabilities?.contact === true && integration.dynamicsReady === true && (typeof d?.shiftWindow === 'function' || typeof d?.shiftOrigin === 'function'),
-    pov: state && owner.capabilities?.contact === true && integration.dynamicsReady === true && typeof d?.applyToolImpulse === 'function',
+    world: state && owner.contactReady === true && tools && (typeof d?.shiftWindow === 'function' || typeof d?.shiftOrigin === 'function'),
+    pov: state && owner.contactReady === true && tools && typeof d?.applyToolImpulse === 'function',
     physgun: tools && d?.capabilities?.physgun === true && typeof d?.applyPhysgun === 'function',
     impulse: tools && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.impulse === true || d?.supportsToolKind?.('impulse') === true),
     photon: particles && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.photon === true || d?.supportsToolKind?.('photon') === true),
@@ -28,9 +28,9 @@ export class NativeIntegration {
     if (!owner?.aux) throw new Error('native integration requires authoritative auxiliary banks');
     this.sim = sim; this.owner = owner; this.gpu = sim.gpu;
     const gpu = this.gpu;
-    const dynamics = owner.nativeDynamics;
+    const dynamics = owner.dynamics;
     if (dynamics?.ready) Promise.resolve(dynamics.ready).then(() => {
-      if (owner.nativeDynamics === dynamics) { this.dynamicsReady = true; sim.wake(); }
+      if (owner.dynamics === dynamics) { this.dynamicsReady = true; sim.wake(); }
     }, () => {});
     this.layout = gpu.layout('NATIVE_WINDOW', NATIVE_WINDOW_LAYOUT);
     this.kernels = Object.fromEntries([['shift', nativeShiftWGSL], ['gather', nativeGatherWGSL], ['scatter', nativeScatterWGSL]].map(([name, code]) =>
@@ -62,14 +62,33 @@ export class NativeIntegration {
     o.seenVersion = sim.version; o.seenWhole = sim.wholeWrites;
     o.wake(); sim.wake();
   }
+  beginShift(dx, dz, commit) {
+    const { sim, owner } = this;
+    if (sim.nativeTransition) throw new Error('Native transition already pending');
+    if (!nativeCapabilities(sim).world) throw new Error('Native world dynamics unavailable');
+    owner.sync();
+    const pending = owner.dynamics.shiftWindow([dx, 0, dz]);
+    const transition = Promise.resolve(pending).then(() => {
+      if (sim.disposed || owner.disposed) throw new Error('Native world replaced during shift');
+      this.preparedShift = [dx, dz];
+      sim.nativeCommitting = true;
+      try { return commit(); } finally { sim.nativeCommitting = false; }
+    }).catch(error => { sim.nativeTransitionError = error; throw error; }).finally(() => {
+      if (sim.nativeTransition === transition) sim.nativeTransition = null;
+      sim.wake();
+    });
+    sim.nativeTransition = transition;
+    return transition;
+  }
   shift(dx, dz) {
     const { owner: o, sim } = this;
     if (!nativeCapabilities(sim).world) throw new Error('native world dynamics shift is unavailable');
     o.sync();
     this.scratch ??= [this.buffer('shift cores', sim.g.slots * 16), this.buffer('shift banks', sim.g.slots * 4)];
+    if (this.preparedShift?.[0] !== dx || this.preparedShift?.[1] !== dz) throw new Error('Await native dynamics before moving core/origin');
     this.run('shift', sim.g.slots, this.group(o.cells, o.aux, ...this.scratch), { shift: [dx, 0, dz] });
     o.restore(...this.scratch);
-    (o.nativeDynamics.shiftWindow ?? o.nativeDynamics.shiftOrigin).call(o.nativeDynamics, [dx, 0, dz]);
+    this.preparedShift = null;
   }
   undo(core, bank, dx, dz) {
     const { owner: o, sim, gpu } = this;

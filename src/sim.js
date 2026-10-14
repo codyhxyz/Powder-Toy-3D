@@ -508,10 +508,11 @@ export class Simulation {
     return true;
   }
   applyNativeTool(request) {
+    if (this.nativeTransition || this.nativeTransitionError) return false;
     const kind = request.kind ?? 'impulse';
     if (!this.compact || !this.nativeCapabilities[kind]) return false;
     this.compact.sync();
-    const accepted = this.compact.nativeDynamics.applyToolImpulse(request);
+    const accepted = this.compact.dynamics.applyToolImpulse(request);
     const ok = accepted === 'accepted' || accepted === 'queued' || accepted?.status === 'accepted' || accepted?.status === 'queued';
     if (ok) { this.compact.wake(); this.wake(); }
     return ok;
@@ -728,6 +729,7 @@ export class Simulation {
    *   resets dcolour (the brush, a stamp, the console's script: main's scrubDeco callers)
    */
   edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false } = {}) {
+    if ((this.nativeTransition && !this.nativeCommitting) || this.nativeTransitionError) return false;
     const box = this._clip(lo, hi);
     if (!box) return;
     const [a, b] = box;
@@ -822,6 +824,7 @@ export class Simulation {
   // last paint (the Wind tool's drag). One edit (docs/webgpu.md D6): Mix, whose
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
+    if (this.nativeTransition || this.nativeTransitionError) return false;
     if (this.compact && tool === TOOLS.find(t => t.key === 'WIND').id) {
       if (!this.nativeCapabilities.impulse) throw new Error('Native wind impulse is unavailable');
       if (!wind || !Math.hypot(...wind)) return;

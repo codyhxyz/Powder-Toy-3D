@@ -189,8 +189,8 @@ export class WorldWindow {
     }
     if (!best) return null;
     const move = best.axis ? [0, best.d] : [best.d, 0];
-    this.shift(...move);
-    return move;
+    const result = this.shift(...move);
+    return result?.then ? result.then(() => move) : move;
   }
 
   // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–4 above.
@@ -198,6 +198,18 @@ export class WorldWindow {
     if (this.persistenceError) throw this.persistenceError;
     if (this.pending) throw new Error('World shift while leaving slab is pending');
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
+    if (this.sim.compactOwner) {
+      const transition = this.sim.nativeIntegration.beginShift(dx, dz, () => {
+        this.pending = null;
+        this._shiftCommitted(dx, dz);
+      });
+      this.pending = transition;
+      transition.catch(error => { this.persistenceError = error; });
+      return transition;
+    }
+    return this._shiftCommitted(dx, dz);
+  }
+  _shiftCommitted(dx, dz) {
     const t0 = performance.now();
     const sim = this.sim, g = sim.g, before = sim.origin.clone();
     // the slab that leaves (grid cells before the move) and the one the move uncovers (after it)

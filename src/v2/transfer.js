@@ -28,7 +28,7 @@ export class NativeTransfer {
   }
   run(values) {
     const sim = this.sim, o = sim.compact, gpu = sim.gpu;
-    if (!o || !sim.nativeIntegration?.isReady || this.kernel.state !== 'ready') return null;
+    if (sim.nativeTransition || sim.nativeTransitionError || !o || !sim.nativeIntegration?.isReady || this.kernel.state !== 'ready') return null;
     o.sync();
     const upload = new Uint32Array(TRANSFER_SLOTS * 8);
     (values.items ?? []).forEach((cell, i) => {

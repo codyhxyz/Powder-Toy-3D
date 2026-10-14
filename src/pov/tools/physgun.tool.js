@@ -165,7 +165,7 @@ export default {
     function run(ctx, mode) {
       const sim = ctx.sim ?? env.getSim();
       if (sim.compact) {
-        return sim.compact.nativeDynamics.applyPhysgun({ mode: mode === PHYS_MODE.FLING ? 'fling' : 'hold',
+        return sim.compact.dynamics.applyPhysgun({ mode: mode === PHYS_MODE.FLING ? 'fling' : 'hold',
           position: worldPosition(sim, hold), target: worldPosition(sim, aimPt), direction: ctx.dir.toArray(),
           radius: PHYS.RADIUS, dt: ctx.nativeDt ?? 0, strength: legacyVelocityToMS(PHYS.FLING),
         });

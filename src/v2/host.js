@@ -2,7 +2,7 @@
 // instead of recording an unbounded burst. Guests never own this clock.
 export const HOST_HZ = 60;
 export function nativeHostSteps(owner, dt, { speed = 1, once = false, keepAlive = false, before, after } = {}) {
-  if (!owner?.isReady || owner.disposed) return 0;
+  if (!owner?.isReady || owner.disposed || owner.sim.nativeTransition || owner.sim.nativeTransitionError) return 0;
   if (!Number.isFinite(dt) || !Number.isFinite(speed) || speed < 0) throw new Error('Invalid native host time');
   owner.activate();
   owner.sync();
@@ -16,6 +16,7 @@ export function nativeHostSteps(owner, dt, { speed = 1, once = false, keepAlive 
   return n;
 }
 export function nativeHostTick(owner, { before, after } = {}) {
+  if (owner.sim.nativeTransition || owner.sim.nativeTransitionError) return 0;
   before?.();
   const frame = owner.sim.frame;
   owner.ticks(1);
@@ -27,6 +28,7 @@ export function nativeHostTick(owner, { before, after } = {}) {
 export function nativeReadiness(sim, { world = false, pov = false, guest = false } = {}) {
   if (guest) return { ready: false, reason: 'render-only guest' };
   if (!sim?.compactOwner?.isReady) return { ready: false, reason: 'native pipelines building' };
+  if (sim.nativeTransition || sim.nativeTransitionError) return { ready: false, reason: 'native world transition pending or failed' };
   const c = sim.nativeCapabilities;
   if (!c?.state) return { ready: false, reason: 'native state integration unavailable' };
   if (world && !c.world) return { ready: false, reason: 'native world dynamics shift unavailable' };
