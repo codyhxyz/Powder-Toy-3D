@@ -1,3 +1,4 @@
+import { compactDecodeWGSL } from './compact.js';
 import { elementsGLSL, ELEMENTS, ELEMENT_FIELDS, RXDEF_FIELDS, K, REACTIONS, mechanismTables } from '../elements.js';
 import { electricityGLSL, ELEC_FIELDS } from '../electricity.js';
 import { incandescenceGLSL, INCAND, INCAND_KNOTS, LUMA_709 } from '../gfx/incandescence.js';
@@ -320,7 +321,7 @@ const READ_STAGES = STAGE.COMPUTE | STAGE.FRAGMENT;
 // on where the window is) and the state copies a dispatch reads (src) and
 // writes (dst). Every pipeline has it at group 3 binding 0. The JS side packs
 // it from the same fields (src/gpu/params.js uniformStruct('Header', HEADER_FIELDS)).
-export const HEADER_FIELDS = { origin: 'vec3i', src: 'u32', dst: 'u32' };
+export const HEADER_FIELDS = { origin: 'vec3i', src: 'u32', dst: 'u32', format: 'u32' };
 export const Header = hostStruct('Header', HEADER_FIELDS, { space: 'uniform' });
 
 // Which state bindings a prelude declares (group 1, docs/webgpu.md C4):
@@ -377,7 +378,7 @@ const stateBindings = (o) => {
   const acc = o.state === 'read_write' ? 'read_write' : 'read';
   return [
     ...(o.state ? [
-      `@group(1) @binding(0) var<storage, ${acc}> A: array<vec4f>;   // both copies: copy c of slot s at c·SLOTS + s`,
+      `@group(1) @binding(0) var<storage, ${acc}> A: array<${o.state === 'read' ? 'vec4u' : 'vec4f'}>;   // both copies: copy c of slot s at c·SLOTS + s`,
       `@group(1) @binding(1) var<storage, ${acc}> B: array<vec4f>;`] : []),
     ...(o.flags ? [`@group(1) @binding(2) var<storage, ${acc}> F: array<u32>;`] : []),
     ...(o.marks ? ['@group(1) @binding(3) var<storage, read_write> marks: array<atomic<u32>>;'] : []),
@@ -400,7 +401,20 @@ function accessorsWGSL(o) {
 fn ${name}s(s: u32) -> ${type} {
   ${slot('src')}return ${buf}[H.src * SLOTS + s];
 }`;
-  const out = [fetch('fetchA', 'A', 'vec4f'), fetch('fetchB', 'B', 'vec4f')];
+  // Read-only A is raw words: compact payloads may contain NaN float bit patterns.
+  // H.src remains a copy index; H.format alone selects the storage representation.
+  const out = o.state === 'read' ? [compactDecodeWGSL, `
+fn fetchAs(s: u32) -> vec4f {
+  ${slot('src')}if (H.format == 2u) { return compactA(cellOf(s), A[s]); }
+  return bitcast<vec4f>(A[H.src * SLOTS + s]);
+}
+fn fetchA(p: vec3i) -> vec4f { ${cell('src')}return fetchAs(slotOf(p)); }
+fn fetchBs(s: u32) -> vec4f {
+  ${slot('src')}if (H.format == 2u) { return vec4f(0.0); }
+  return B[H.src * SLOTS + s];
+}
+fn fetchB(p: vec3i) -> vec4f { ${cell('src')}return fetchBs(slotOf(p)); }
+`] : [fetch('fetchA', 'A', 'vec4f'), fetch('fetchB', 'B', 'vec4f')];
   if (o.flags) out.push(fetch('fetchF', 'F', 'u32'));
   if (o.state === 'read_write') {
     out.push(`// Store cell p's new state in the copy H.dst names. The caller has

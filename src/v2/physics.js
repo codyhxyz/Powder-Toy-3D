@@ -1,22 +1,14 @@
 import { fold } from '../gpu/kernels.js';
 import { cellSlot } from '../shaders/common.js';
 import {
-  V2_KERNELS, V2Params, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
+  V2_KERNELS, V2Params, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
 
-// Physics v2, the fast version (?physics=v2; docs/v2.md 5): the driver of
-// shaders/v2.js's kernels over one Simulation's grid. Today's Simulation
-// stays the state its writers (the brush, presets, undo, saves) and readers
-// (the renderer, the picker, the brush) use; v2 keeps its own 16-byte cells
-// beside it, imports what the writers change and bridges what its ticks
-// change back into today's state A, so both renderers draw it unchanged.
-//
-//   const v2 = new PhysicsV2(sim);   // owns its buffers; the sim is never stepped meanwhile
-//   await v2.ready;
-//   v2.frame(dt, { speed });          // the app: a fixed 60 Hz tick on an accumulator
-//   v2.ticks(n);                      // tools: n ticks now
-//
+// Opt-in box physics. Compact cells are authoritative; read-only presentation
+// consumes them directly. Legacy A/B are a lazy, lossy compatibility cache for
+// existing editing/readback APIs, not a per-tick renderer intermediate.
+
 // Rest (docs/v2.md 5.6): every pass marks the bricks where a rule was
 // possible; a brick sleeps once nothing was busy in its 3³ neighbourhood for
 // one 8-tick offset cycle; when a read of the counts says no brick is awake
@@ -57,6 +49,8 @@ export class PhysicsV2 {
   constructor(sim) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);
     this.sim = sim;
+    sim.compact = this;
+    this.legacyPending = true;
     this.layout = v2ActLayout(g);
     this.tick = 0;          // ticks run (they're numbered from 1)
     this.acc = 0;           // the accumulator's fraction of a tick
@@ -80,10 +74,13 @@ export class PhysicsV2 {
     gpu.queue.writeBuffer(this.act, this.layout.quiet * 4, new Uint32Array(g.nbricks).fill(QUIET_TICKS));
     const L = {
       V2: gpu.layout('V2', V2_LAYOUT), ARGS: gpu.layout('V2_ARGS', V2_ARGS_LAYOUT), STATE: gpu.layout('V2_STATE', V2_STATE_LAYOUT),
+      INVALIDATE: gpu.layout('V2_INVALIDATE', V2_INVALIDATE_LAYOUT),
     };
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
     const own = [b(0, this.cells), b(1, this.act), b(2, tableOf(gpu))];
     this.groups = {
+      read: gpu.bindGroup(sim.L.STATE_RO, [b(0, this.cells), b(1, sim.state.B)], 'compact readers'),
+      invalidate: gpu.bindGroup(L.INVALIDATE, [b(3, sim.marks)], 'compact invalidation'),
       v2: gpu.bindGroup(L.V2, own, 'v2'),
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
       state: gpu.bindGroup(L.STATE, [b(0, sim.state.A), b(1, sim.state.B), b(2, sim.state.F), b(3, sim.marks)], 'v2 state'),
@@ -93,12 +90,17 @@ export class PhysicsV2 {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       this.kernels[k.name] = gpu.kernel({
         name: k.name, code: k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
-        layouts: [sim.L.TABLES, withState ? L.STATE : gpu.L.EMPTY, k.name === 'v2args' ? L.ARGS : L.V2],
+        layouts: [sim.L.TABLES, withState ? L.STATE : k.name === 'v2invalidate' ? L.INVALIDATE : gpu.L.EMPTY, k.name === 'v2args' ? L.ARGS : L.V2],
       });
     }
     this.ready = Promise.all(Object.values(this.kernels).map((k) => k.ready)).then(() => this);
     this.isReady = false;
-    this.ready.then(() => { this.isReady = true; }, () => {});
+    this.ready.then(() => {
+      if (this.disposed) return;
+      this.isReady = true;
+      sim.version++;
+      sim.changedAll = true;
+    }, () => {});
   }
 
   // ---- writes and rest ----
@@ -162,6 +164,8 @@ export class PhysicsV2 {
     this.kernels.v2import.dispatch(gpu.frame, fold(this.g.nbricks), {
       bind: [sim.tables, this.groups.state, this.groups.v2], header: sim.header(), params: { ...params, full: this.importFull ? 1 : 0 },
     });
+    sim.onPass?.('v2import', { kind: 'compute', gpuMs: null });
+    this.legacyPending = true;
     this.importFull = this.importMarked = false;
   }
 
@@ -172,15 +176,60 @@ export class PhysicsV2 {
     this._import(this._params(this.tick + 1));
   }
 
+  /** Export only at a legacy boundary, before recording its commands. Use only
+   * the legacy header and private groups: readHeader/bindRW would recurse. */
+  exportLegacy() {
+    if (!this.isReady || this.disposed) return;
+    this.sync();
+    if (!this.legacyPending) return;
+    const { sim, gpu } = this;
+    this.kernels.v2bridge.dispatch(gpu.frame, fold(this.g.nbricks), {
+      bind: [sim.tables, this.groups.state, this.groups.v2], header: sim.header(), params: this._params(this.tick + 1),
+    });
+    sim.onPass?.('v2bridge', { kind: 'compute', gpuMs: null });
+    this.legacyPending = false;
+  }
+
+  activate() {
+    if (this.sim.compact === this) return;
+    this.sim.compact = this;
+    this.resync();
+    this.sim.changedAll = true;
+    this.sim.version++;
+  }
+
+  suspend() {
+    if (this.sim.compact !== this) return;
+    if (!this.gpu.failure) this.exportLegacy();
+    this.sim.compact = null;
+    this.sim.noteWrite();
+  }
+
+  // Undo restores every compact word, including fill, face flux and fall state.
+  restore(snapshot) {
+    const { sim, gpu, g } = this;
+    gpu.frame.copy(snapshot, 0, this.cells, 0, g.slots * 16);
+    gpu.frame.clear(this.act);
+    gpu.write(this.act, this.layout.busy0 * 4, new Uint32Array(g.nbricks).fill(1));
+    gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
+    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(1));
+    this.importFull = this.importMarked = false;
+    this.seenVersion = sim.version;
+    this.seenWhole = sim.wholeWrites;
+    this.legacyPending = this.writtenSinceTick = true;
+    this.wake();
+  }
+
   /** Records one tick (docs/v2.md 5.4) into the open frame. */
   _tick() {
+    this._noteWrites();
     const { gpu, sim, kernels: k, groups } = this;
     const f = gpu.frame;
     const params = this._params(++this.tick);
     this.writtenSinceTick = false;
     const header = sim.header();
     const own = [sim.tables, gpu.emptyGroup, groups.v2];
-    const state = [sim.tables, groups.state, groups.v2];
+    const invalidation = [sim.tables, groups.invalidate, groups.v2];
     const run = (kernel, size, bind = own, p = params) => {
       kernel.dispatch(f, size, { bind, header, params: p });
       sim.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
@@ -198,7 +247,10 @@ export class PhysicsV2 {
       run(k.v2limit, ind(ARGS2.BRICKS));
       run(k.v2gather, ind(ARGS2.BRICKS));
     }
-    run(k.v2bridge, ind(ARGS2.BRICKS), state);
+    run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
+    this.legacyPending = true;
+    // A test-only same-physics baseline for full-frame direct/compat comparisons.
+    if (this.forceCompatibility && gpu.testMode) this.exportLegacy();
   }
 
   /**
@@ -207,13 +259,14 @@ export class PhysicsV2 {
    */
   ticks(n) {
     if (!this.isReady || this.disposed) return 0;
+    this.activate();
     this._noteWrites();
     for (let i = 0; i < n; i++) this._tick();
     if (n > 0) this._ran();
     return n;
   }
 
-  // after ticks: today's state changed (the bridge), so the derived passes' key moves; then the idle read
+  // After ticks the authoritative state changed: advance the derived key, then read idle.
   _ran() {
     this.sim.version++;
     this.seenVersion = this.sim.version;
@@ -230,6 +283,7 @@ export class PhysicsV2 {
    */
   frame(dt, { speed = 1, once = false, each = null } = {}) {
     if (!this.isReady || this.disposed) return 0;
+    this.activate();
     this._noteWrites();
     if (this.asleep) { this.acc = 0; return 0; }
     this.acc += Math.max(0, dt) * TICK_HZ * speed;
@@ -255,6 +309,7 @@ export class PhysicsV2 {
    * fill / 2¹⁶), T (°C), age }.
    */
   async readCells() {
+    this.sync();
     const g = this.g, words = new Uint32Array(await this.gpu.readback.buffer(this.cells, 0, g.slots * 16));
     const n = g.nx * g.ny * g.nz, rows = v2Rows();
     const out = { id: new Int32Array(n), cls: new Uint8Array(n), fill: new Float32Array(n), T: new Float32Array(n), age: new Uint8Array(n) };
@@ -272,6 +327,7 @@ export class PhysicsV2 {
 
   dispose() {
     if (this.disposed) return;
+    this.suspend();
     this.disposed = true;
     this.wake();
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');

@@ -244,7 +244,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
-        bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header: sim.header(),
+        bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header: sim.readHeader(),
         params: {
           meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth && !curved ? 1 : 0, marchNear, aerCopy,
           deco: decoShown(sim) && sim.decoPlane ? 1 : 0,
@@ -266,7 +266,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
       // the tiles to re-trace: those a change crossed, or all (src/derived.js shadowTiles)
       const tiles = derived.shadowTiles(res, shadowMap);
       if (!tiles) return false;
-      shadowKernel.dispatch(gpu.frame, tiles, { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.header() });
+      shadowKernel.dispatch(gpu.frame, tiles, { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.readHeader() });
       return true;
     },
 
@@ -314,7 +314,7 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
           const words = new Array(PICK_BATCH).fill(0);
           slots.forEach((s, i) => { words[i] = s; });
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
-            bind: [sim.tables, sim.bindRO, pickGroup], header: sim.header(),
+            bind: [sim.tables, sim.bindRO, pickGroup], header: sim.readHeader(),
             params: {
               ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
               warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])),

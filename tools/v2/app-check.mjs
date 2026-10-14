@@ -1,6 +1,6 @@
 // The new physics' fast version in the game (?physics=v2, src/v2/physics.js): a 64³ box boots with it,
 // painting, erasing, a box preset and undo reach its cells, its ticks reach what today's renderer,
-// picker and census read (the bridge), and the flag turns off and on again. Manual mode: every tick
+// picker and census read (direct readers / lazy legacy cache), and the flag turns off and on again. Manual mode: every tick
 // is an explicit __app.test.step (60 a game second).
 //
 //   node tools/v2/app-check.mjs [--port N] [--shot dir]   (--shot: a converged frame of the lab, mid-run)
@@ -74,6 +74,8 @@ try {
   // a box preset (the lab: glass tank, water, oil, a sand pile, lava under a plate), then undo
   const lab = await page.evaluate(async () => {
     const a = window.__app, h = window.__v2;
+    a.physics.v2.sync();
+    h.beforeLab = new Uint32Array(await a.gpu.readback.buffer(a.physics.v2.cells, 0, a.sim.g.slots * 16));
     a.loadPreset('lab');
     await a.test.ready();
     a.test.step(1);
@@ -92,10 +94,10 @@ try {
   const undone = await page.evaluate(async () => {
     const a = window.__app, h = window.__v2;
     a.undo();
-    // (v2Count imports the write first: v2's cells are then today's state A, cell for cell)
-    return { water: (await h.v2Count(h.E.WATER)).n, today: await h.todayCount(h.E.WATER) };
+    const words = new Uint32Array(await a.gpu.readback.buffer(a.physics.v2.cells, 0, a.sim.g.slots * 16));
+    return { water: (await h.v2Count(h.E.WATER)).n, today: await h.todayCount(h.E.WATER), exact: words.every((w, i) => w === h.beforeLab[i]) };
   });
-  ok(undone.water === undone.today && undone.water < lab.w0 / 2, `undo goes back to the box before the lab: ${undone.water} water cells in v2, ${undone.today} in today's state`);
+  ok(undone.exact, `undo restores exact pre-lab compact words: ${undone.water} fractional water cells in v2, ${undone.today} whole cells in the legacy projection`);
 
   // the flag off, then on again: today's step runs, then v2 picks up today's state
   const toggled = await page.evaluate(async () => {

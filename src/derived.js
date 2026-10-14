@@ -326,6 +326,7 @@ export class Derived {
    */
   updateDirty() {
     const sim = this.sim;
+    sim.compact?.sync();   // paused edits must import before age consumes their marks
     this.frameNo++;
     this._carry();
     // a new kernel or a reset changes the fields everywhere, and so does the
@@ -371,7 +372,7 @@ export class Derived {
     const { w, bulk, s } = fieldWeights(sim.smoothing);
     const aer = this._jet();   // (the groups below follow its buffer)
     this._dispatch(k.fieldEma, this._over(DIRTY.EMA), {
-      bind: [tables, sim.bindRO, gr.ema], header: sim.header(),
+      bind: [tables, sim.bindRO, gr.ema], header: sim.readHeader(),
       params: { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset, aer },
     });
     const work = this._over(DIRTY.WORK), fields = this._over(DIRTY.FIELDS);
@@ -380,9 +381,9 @@ export class Derived {
     }
     for (let axis = 0; axis < 3; axis++) {
       const bind = axis ? [tables, empty, gr.boost[axis]] : [tables, sim.bindRO, gr.boost[0]];
-      this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis, aer } });
+      this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.readHeader(), params: { s, axis, aer } });
     }
-    this._dispatch(k.fieldPeak, fields, { bind: [tables, sim.bindRO, gr.peak], header: sim.header(), params: { bulk, reach: [1, 1, 1], aer } });
+    this._dispatch(k.fieldPeak, fields, { bind: [tables, sim.bindRO, gr.peak], header: sim.readHeader(), params: { bulk, reach: [1, 1, 1], aer } });
   }
 
   /**
@@ -395,7 +396,7 @@ export class Derived {
     const sim = this.sim, k = this.kernels, gr = this.groups, tables = sim.tables, empty = this.gpu.emptyGroup;
     this.updateDirty();
     this.updateFields();
-    this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.brick], header: sim.header() });
+    this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.brick], header: sim.readHeader() });
     this.occupancy.update();   // over the brick map's list (every brick at a shift: its own onShift)
     this._dispatch(k.boxArgs, [1, 1, 1], { bind: [tables, empty, gr.boxes], params: { full: this.boxFull || !sim.incremental } });
     this.boxFull = false;
@@ -436,7 +437,7 @@ export class Derived {
     this._shadowAt = this.frameNo;
     this._shadowMap = map;
     const params = { res, full, phase: this._shadowFrames++ % SHADOW_SLICE };
-    const opts = { bind: [frame, this.gpu.emptyGroup, this.groups.shadow], header: sim.header(), params };
+    const opts = { bind: [frame, this.gpu.emptyGroup, this.groups.shadow], header: sim.readHeader(), params };
     if (!full) this._dispatch(k.shadowMark, { indirect: this.dlist, offset: this.lists.threads * 4 }, opts);
     this._dispatch(k.shadowList, fold(Math.ceil((res / SHADOW_TILE) ** 2 / 64)), opts);
     this._dispatch(k.shadowArgs, [1, 1, 1], opts);
@@ -485,7 +486,7 @@ export class Derived {
       this.prepareGI().catch(() => {});   // (a kernel that fails stops graphics through gpu.fail)
       return false;
     }
-    const sim = this.sim, header = sim.header(), empty = this.gpu.emptyGroup;
+    const sim = this.sim, header = sim.readHeader(), empty = this.gpu.emptyGroup;
     const sun = Boolean(shadows && shadow?.map);
     // the lists (shaders/gi.js giSelect): a reset traces every probe and
     // replaces it; a GI frame that may have missed changes runs at the full rate

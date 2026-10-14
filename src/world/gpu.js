@@ -291,7 +291,7 @@ export class WorldGenerator {
       { binding: LEAVE_BINDING.head, resource: { buffer: out.head } }, { binding: LEAVE_BINDING.cells, resource: { buffer: out.cells } }]),
     `${this.scene.key} leave`);
     this.kernels.diff.dispatch(f, leaveDispatch(bricks), {
-      bind: [sim.tables, sim.bindRO, out.group], header: sim.header(),
+      bind: [sim.tables, sim.bindRO, out.group], header: sim.readHeader(),
       params: {
         lo, bricks, wlo: [(o.x + lo[0]) / BRICK, (o.y + lo[1]) / BRICK, (o.z + lo[2]) / BRICK], wb: P.size.map((n) => n / BRICK),
       },

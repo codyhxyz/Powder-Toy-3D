@@ -318,11 +318,11 @@ export class Simulation {
     const L = (this.L = simLayouts(gpu));
     this.tables = tablesOf(gpu).group;
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
-    this.bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
-    this.bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
-    this.bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
+    this._bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
+    this._bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
+    this._bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
     this.bindBuild = gpu.bindGroup(L.STATE_BUILD, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build');
-    this.bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
+    this._bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
     this._groups();
 
     // ---- kernels (B5): built now, asynchronously; sim.ready resolves when they are ----
@@ -477,7 +477,26 @@ export class Simulation {
    * default: an edit's).
    */
   header(src = this.cur, dst = src) {
-    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst };
+    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0 };
+  }
+
+  // Writer/readback compatibility boundaries. Internal compact kernels bind
+  // their own groups and legacy headers, so synchronization cannot recurse.
+  legacyState() { this.compact?.exportLegacy(); }
+  get bindRW() { this.legacyState(); return this._bindRW; }
+  get bindAct() { this.legacyState(); return this._bindAct; }
+  get bindFlagsRO() { this.legacyState(); return this._bindFlagsRO; }
+  get bindRO() {
+    const v2 = this.compact;
+    if (!v2?.isReady) return this._bindRO;
+    v2.sync();
+    if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(); return this._bindRO; }
+    return v2.groups.read;
+  }
+  readHeader() {
+    this.compact?.sync();
+    const v2 = this.compact;
+    return { ...this.header(), format: v2?.isReady && !(v2.forceCompatibility && this.gpu.testMode) ? 2 : 0 };
   }
 
   // Records a dispatch into the frame's compute pass and tells the profiler.
@@ -572,6 +591,7 @@ export class Simulation {
   // ---- the step (docs/webgpu.md D1) ----
 
   step() {
+    this.compact?.suspend();
     const f = this.gpu.frame;   // (throws GraphicsFailure once graphics have stopped)
     this.frame++;   // simulation time and parity advance even when there is nothing to step
     // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,
@@ -702,8 +722,8 @@ export class Simulation {
     deco?.beforeWrite?.(f, clipped);
     this._dispatch(kernel.main, size, { bind: groups, header, params });
     if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
-    deco?.scrub?.(f, clipped);
     this.version++;
+    deco?.scrub?.(f, clipped);
     this.wake();   // the next step rebuilds the map: the marked bricks are forced
   }
 
@@ -904,12 +924,14 @@ export class Simulation {
   }
 
   // ---- undo history: GPU copies of the state, newest last ----
-  // Each snapshot is the current A and B (~67 MB at 128³), so keep only a few.
+  // Each snapshot keeps legacy A/B (~67 MB at 128³); v2 entries additionally
+  // keep exact compact words (~34 MB). The projection is only for undo in v1.
   // Each remembers the window's origin it was taken at (t.origin): after the
   // window moves (docs/scaling.md D11) it still holds the cells where they were,
   // and what it was taken before (t.label: 'Sand', 'House'), for the undo
   // notice's "Undone Sand" (Garry's Mod's "Undone Prop").
   snapshot(label = null, limit = UNDO_LIMIT) {
+    this.legacyState();
     const f = this.gpu.frame, bytes = this.g.slots * 16, { A, B } = this.state;
     let t = this.history.length >= limit ? this.history.shift() : null;
     if (!t) {
@@ -917,6 +939,12 @@ export class Simulation {
       t = { A: mk('A'), B: mk('B') };
       t.group = this.gpu.bindGroup(this.L.UNDO, [{ binding: 0, resource: { buffer: t.A } }, { binding: 1, resource: { buffer: t.B } }], 'undo snapshot');
     }
+    t.format = this.compact?.isReady ? 'v2' : 'v1';
+    if (t.format === 'v2') {
+      t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes,
+        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      f.copy(this.compact.cells, 0, t.compact, 0, bytes);
+    } else if (t.compact) { this._retire(t.compact); t.compact = null; }
     f.copy(A, this.cur * bytes, t.A, 0, bytes);
     f.copy(B, this.cur * bytes, t.B, 0, bytes);
     t.deco = null;
@@ -946,22 +974,26 @@ export class Simulation {
     if (!t) return false;
     const [dx, dz] = this.undoShift;
     if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
+    // v2 is box-only. Never silently misplace an exact compact history entry.
+    if (t.format === 'v2' && this.compact && (dx || dz)) throw new Error('Shifted compact undo is unsupported');
     this.history.pop();
     this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
       bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
     });
     this.deco?.restore?.(t, dx, dz);
     this.noteWrite();
+    if (t.format === 'v2' && this.compact) this.compact.restore(t.compact);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
     this._retire(t.A);
     this._retire(t.B);
+    if (t.compact) this._retire(t.compact);
     return true;
   }
 
   // Forget the undo snapshots (they hold a window that has moved or been replaced).
   dropHistory() {
-    for (const t of this.history) { this._retire(t.A); this._retire(t.B); }
+    for (const t of this.history) { this._retire(t.A); this._retire(t.B); if (t.compact) this._retire(t.compact); }
     this.history = [];
   }
 
@@ -1168,6 +1200,7 @@ export class Simulation {
    * @returns {Promise<[Float32Array, Float32Array]>}
    */
   async readCell(x, y, z) {
+    this.legacyState();
     const s = cellSlot(this.g, x, y, z), at = (this.cur * this.g.slots + s) * 16, rb = this.gpu.readback;
     const [a, b] = await Promise.all([rb.buffer(this.state.A, at, 16), rb.buffer(this.state.B, at, 16)]);
     return [new Float32Array(a), new Float32Array(b)];
@@ -1240,7 +1273,7 @@ export class Simulation {
     }
     const k = this.passOf('inertRef');
     if (k.state !== 'ready') await k.ready;   // (once prepared, it records at the call, as the other reads do)
-    this._dispatch(k, fold(g.nbricks), { bind: [this.tables, this.bindRO, this._refGroup], header: this.header() });
+    this._dispatch(k, fold(g.nbricks), { bind: [this.tables, this.bindRO, this._refGroup], header: this.readHeader() });
     const w = new Uint32Array(await this.gpu.readback.buffer(this.refInert, 0, g.nbricks * 4));
     const out = new Uint8Array(g.nbricks);
     for (let id = 0; id < g.nbricks; id++) {
@@ -1284,7 +1317,7 @@ export class Simulation {
    */
   probe(kernel, size, { ring, bind = [], params = {} }) {
     const slot = ring.next();
-    this._dispatch(kernel, size, { bind, header: this.header(), params: { ...params, slot } });
+    this._dispatch(kernel, size, { bind, header: bind[1] === this.compact?.groups.read ? this.readHeader() : this.header(), params: { ...params, slot } });
     return ring.read(slot);
   }
 

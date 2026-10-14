@@ -195,7 +195,7 @@ export function createBirdWorld({ getSim, getWin }) {
       if (!sim || busy || disabled || disposed || age < PROBE_S || sim.gpu.lost || sim.gpu.failure) return;
       ensure(sim);
       if (kernel.state !== 'ready') return;   // (it builds in the background)
-      kernel.dispatch(gpu.frame, fold(Math.ceil(probeColumns(g) / 64)), { bind: [sim.tables, sim.bindRO, group], header: sim.header() });
+      kernel.dispatch(gpu.frame, fold(Math.ceil(probeColumns(g) / 64)), { bind: [sim.tables, sim.bindRO, group], header: sim.readHeader() });
       busy = true;
       age = 0;
       const o = sim.origin.clone(), from = sim, token = generation, into = buf;

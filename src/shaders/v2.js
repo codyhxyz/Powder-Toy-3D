@@ -1,3 +1,4 @@
+import { compactDecodeWGSL } from './compact.js';
 import { prelude, gridDims, LAYOUT, stateLayout, SEED_MAX, STAGE } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
@@ -12,7 +13,8 @@ import { CELL_M } from '../scale.js';
 // One fixed 60 Hz tick at 2 g. One copy of the state, 16 bytes a cell,
 // updated in place, in the same slot order as today's state (brick-major,
 // shaders/common.js slotOf), so the bridge to today's renderer is slot for
-// slot. Every v2 kernel reaches a cell through loadCell/storeCell (or the
+// slot. Presentation decodes compact cells directly; legacy edits/readbacks export lazily.
+// Every v2 kernel reaches a cell through loadCell/storeCell (or the
 // cells[slot] twin where a workgroup walks a brick's own run of 64 slots):
 //
 //   word0  id u8 · T u16 (¼ K steps from -273.25 °C, so whole °C are exact) · age u8
@@ -35,7 +37,8 @@ import { CELL_M } from '../scale.js';
 //   block     R2 topple (2×2×2 blocks at one of 8 offsets, slope by element), R3 sink and
 //             float (density swaps), R4 gas: rise, sink, diffuse while young, fade
 //   flux ×3   R13: per-face flux from head differences, the outflow limit, the integer gather
-//   bridge    id and temperature into today's state for today's renderer, picker and brush
+//   invalidate  awake-brick presentation marks and persistent compatibility-dirty bits
+//   bridge    only at legacy editing/readback boundaries, never a normal tick
 // Rest: a settled box has no awake brick, and the driver then dispatches nothing at all.
 
 // ---------------------------------------------------------------- clock and units
@@ -133,7 +136,7 @@ export function fallCells(id, ticks) {
 // v2's activity words (u32), one run per brick each, then the brick columns and the counts.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, count: 7 * nb + bx * bz, words: 7 * nb + bx * bz + 8 };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, count: 7 * nb + bx * bz, words: 8 * nb + bx * bz + 8 };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -172,6 +175,7 @@ const V2_LIST: u32 = ${a.list}u;
 const V2_OCC: u32 = ${a.occ}u;
 const V2_COLS: u32 = ${a.cols}u;
 const V2_COUNT: u32 = ${a.count}u;
+const V2_LEGACY: u32 = ${a.legacy}u;
 const CNT_AWAKE: u32 = ${CNT.AWAKE}u;
 const CNT_COLS: u32 = ${CNT.COLS}u;
 const CNT_BUSY: u32 = ${CNT.BUSY}u;
@@ -246,19 +250,7 @@ fn face6(i: i32) -> vec3i { var d = vec3i(0); d[i >> 1u] = 1 - 2 * (i & 1); retu
 // shows half its cells, and a thin film a speckle: volume kept on average); air and liquids get a seed
 // from their position (theirs isn't kept).
 const bridgeWGSL = /* wgsl */ `
-fn tempC(c: vec4u) -> f32 { return f32(cTq(c)) * 0.25 - T_OFFSET; }
-fn posSeed(p: vec3i) -> f32 { return f32(seed3(p, 0u, 991u) >> 16u) * (SEED_MAX / 65536.0); }
-fn bridgeA(p: vec3i, c: vec4u) -> vec4f {
-  let id = cid(c);
-  let k = cls(id);
-  let T = tempC(c);
-  if (k == C_LIQUID) {
-    if (cFill(c) > (seed3(p, 0u, 4243u) >> 16u)) { return vec4f(f32(id), T, 0.0, f32(c.y >> 24u) + posSeed(p)); }
-    return vec4f(0.0, T, 0.0, posSeed(p));
-  }
-  if (k == C_AIR) { return vec4f(0.0, T, 0.0, posSeed(p)); }
-  return vec4f(f32(id), T, lifeOf(c), f32((c.y >> 16u) & 255u) + f32(c.w >> 16u) * (SEED_MAX / 65536.0));
-}
+${compactDecodeWGSL}
 // a cell of today's state A as v2 holds it: a liquid full, everything still
 fn importA(a: vec4f) -> vec4u {
   let id = u32(clamp(eid(a), 0, NE - 1));
@@ -303,7 +295,7 @@ ${MAIN} {
   let p = cellOf(s);
   let a = fetchAs(s);
   let c = cells[s];
-  if (P.full != 0u || any(a != bridgeA(p, c))) {
+  if (P.full != 0u || any(a != compactA(p, c))) {
     let n = importA(a);
     if (any(n != c)) {
       cells[s] = n;
@@ -314,6 +306,7 @@ ${MAIN} {
   }
   workgroupBarrier();
   if (li == 0u) {
+    atomicStore(&act2[V2_LEGACY + b], 1u);
     atomicAnd(&marks[MARK_ACT + (b >> 5u)], ~(1u << (b & 31u)));
     if (atomicLoad(&wgChanged) != 0u) { atomicStore(&act2[P.busyIn + b], 1u); }
   }
@@ -825,27 +818,39 @@ ${brickCell}
 }
 `;
 
-// ---- the bridge: an awake brick's cells into today's state A (B still, F as a writer leaves them),
-// where they differ; a brick it changed is marked for the derived passes (not for today's activity
-// build: its MARK_ACT bit is the import's, for today's writers)
+// Mark potentially changed bricks without reading or converting their cells.
+// Include busyOut: the column pass can touch distant bricks in an awake column,
+// and offset blocks can write neighbours outside the original awake list.
+// Compatibility dirtiness is independent of presentation marks and survives sleep.
+export const v2InvalidateWGSL = (g) => /* wgsl */ `
+${v2Head(g, { state: false, marks: true })}
+${MAIN} {
+  let b = foldThread(wg, nwg, li);
+  if (b >= NBRICKS) { return; }
+  if (atomicLoad(&act2[V2_AWAKE + b]) == 0u && atomicLoad(&act2[P.busyOut + b]) == 0u) { return; }
+  atomicStore(&act2[V2_LEGACY + b], 1u);
+  atomicOr(&marks[MARK_DERIVED + (b >> 5u)], 1u << (b & 31u));
+  atomicStore(&marks[MARK_FOAMS + b], 1u);
+}
+`;
+export const V2_INVALIDATE_LAYOUT = stateLayout({ state: false, marks: true });
+
+// Lazy boundary export. Scan brick flags, never the current awake list: a brick
+// can have changed and gone to sleep long before a legacy reader/writer arrives.
 export const v2BridgeWGSL = (g) => /* wgsl */ `
 ${v2Head(g, V2_STATE_OPTS)}
 ${bridgeWGSL}
-var<workgroup> wgN: u32;
-var<workgroup> wgChanged: atomic<u32>;
+var<workgroup> wgPending: u32;
 ${MAIN} {
-  let e = foldId(wg, nwg);
-  if (li == 0u) { wgN = useAwake(); }
-  if (e >= workgroupUniformLoad(&wgN)) { return; }
-  let b = atomicLoad(&act2[V2_LIST + e]);
+  let b = foldId(wg, nwg);
+  if (b >= NBRICKS) { return; }
+  if (li == 0u) { wgPending = atomicLoad(&act2[V2_LEGACY + b]); }
+  if (workgroupUniformLoad(&wgPending) == 0u) { return; }
   let s = b * 64u + li;
   let p = cellOf(s);
-  if (writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), bridgeA(p, cells[s]), vec4f(0.0))) { atomicOr(&wgChanged, 1u); }
+  writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), compactA(p, cells[s]), vec4f(0.0));
   workgroupBarrier();
-  if (li == 0u && atomicLoad(&wgChanged) != 0u) {
-    atomicOr(&marks[MARK_DERIVED + (b >> 5u)], 1u << (b & 31u));
-    atomicStore(&marks[MARK_FOAMS + b], 1u);
-  }
+  if (li == 0u) { atomicStore(&act2[V2_LEGACY + b], 0u); }
 }
 `;
 
@@ -865,6 +870,7 @@ export const V2_KERNELS = [
   { name: 'v2flux', code: v2FluxWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2limit', code: v2LimitWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2gather', code: v2GatherWGSL, layouts: own, dispatch: perBrick },
+  { name: 'v2invalidate', code: v2InvalidateWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_LAYOUT], dispatch: perBrick },
   { name: 'v2bridge', code: v2BridgeWGSL, layouts: withState, dispatch: perBrick },
 ];
 

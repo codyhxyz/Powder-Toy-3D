@@ -413,7 +413,7 @@ export class FarField {
     const sim = this.sim, o = sim.origin;
     this.detail.stale([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
     const at = [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], size = [bricks[0], bricks[2]];
-    this.region(this.k.win, this.groupsFixed.win, at, size, { state: sim.bindRO, header: sim.header() });
+    this.region(this.k.win, this.groupsFixed.win, at, size, { state: sim.bindRO, header: sim.readHeader() });
     this.boost(at, size);
     if (derive) this.dirty = true;
     const bx = this.L.bricks.n[0];
@@ -556,7 +556,7 @@ export class FarField {
     const bind = [this._frameGroup(occ ? this.under.occView : null), sim.bindRO, this.vol.lightingGroup];
     this.detail.draw(rp, p, bind);   // (first: the view depth-tests against the meshes)
     this.viewPipeline.draw(rp, {
-      bind, header: { origin: [0, 0, 0], src: sim.cur, dst: sim.cur },   // (world cells throughout: worldPos() is the identity)
+      bind, header: { ...sim.readHeader(), origin: [0, 0, 0] },   // (world cells throughout: worldPos() is the identity)
       params: p, count: 3,
     });
     return true;

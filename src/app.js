@@ -2324,6 +2324,9 @@ function tick(now, renderOnly = false) {
     if (releasePending) painting = releasePending = false;   // (the button went up before this tick: its one paint)
   }
   prof.phase('sim');
+  if (physicsV2?.isReady) {
+    if (v2Box()) physicsV2.activate(); else { physicsV2.suspend(); v2Running = false; }
+  }
   const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
   ctx.stepping = stepping;
   if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
@@ -2332,7 +2335,7 @@ function tick(now, renderOnly = false) {
     // v2: a fixed 60 Hz tick on game time, Speed scaling it (4 steps a frame is 1×); none while it rests
     stepped = 0;
     if (v2Active()) {
-      if (!v2Running) { physicsV2.resync(); v2Running = true; }
+      if (!v2Running) { physicsV2.activate(); v2Running = true; }
       stepped = physicsV2.frame(dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused, each: () => scripts?.beforeStep() });
       for (let i = 0; i < stepped; i++) scripts?.afterStep();
     }
@@ -2340,7 +2343,7 @@ function tick(now, renderOnly = false) {
     animTime += dt;
     stepOnce = false;
   } else if (stepping) {
-    if (v2Running) { v2Running = false; sim.noteWrite(); }   // (today's activity map: every brick, as after a load)
+    if (v2Running) { physicsV2.suspend(); v2Running = false; }
     for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
@@ -2684,7 +2687,7 @@ try {
         if (!readySims.has(sim)) throw new Error('The grid is still building its pipelines: await __app.test.ready() first');
         if (v2Box()) {
           if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
-          if (!v2Running) { physicsV2.resync(); v2Running = true; }
+          if (!v2Running) { physicsV2.activate(); v2Running = true; }
           physicsV2.ticks(count);
         } else for (let i = 0; i < count; i++) sim.step();
         if (DAY.running) day.clock += count;

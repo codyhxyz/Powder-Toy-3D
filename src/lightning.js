@@ -114,7 +114,7 @@ export function createLightning() {
     const id0 = sim.id, kernels = k, f = sim.gpu.frame;
     const slot = kernels.pick.next();
     f.clear(kernels.pick.buffer, kernels.pick.offset(slot), kernels.pick.slotBytes);   // (its key is an atomicMax)
-    kernels.search.dispatch(f, fold(sim.g.nbricks), { bind: [sim.tables, sim.bindRO, kernels.pickGroup], header: sim.header(), params: { slot } });
+    kernels.search.dispatch(f, fold(sim.g.nbricks), { bind: [sim.tables, sim.bindRO, kernels.pickGroup], header: sim.readHeader(), params: { slot } });
     kernels.pick.read(slot).then((bytes) => {
       const key = new Uint32Array(bytes)[0];
       if (sim.id !== id0 || k !== kernels || sim.disposed || key === 0) return undefined;
@@ -128,7 +128,7 @@ export function createLightning() {
     const cols = stormColumns(origin, [g.nx, g.ny, g.nz]);
     const slot = kernels.scanRing.next();
     kernels.scan.dispatch(sim.gpu.frame, [1, 1, 1], {
-      bind: [sim.tables, sim.bindRO, kernels.scanGroup], header: sim.header(),
+      bind: [sim.tables, sim.bindRO, kernels.scanGroup], header: sim.readHeader(),
       params: { cols: cols.map((c) => [c[0], c[1], 0, 0]), count: cols.length, fromY: Math.floor(origin[1]), slot },
     });
     return kernels.scanRing.read(slot).then((bytes) => {

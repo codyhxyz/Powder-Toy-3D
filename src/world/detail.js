@@ -253,7 +253,7 @@ export class WorldDetail {
     res.prepassFor([c0[0], 0, c0[1]], [c1[0], height, c1[1]]);
     this.group ??= gpu.bindGroup(this.stage.groups[2], res.entries([{ binding: SCENE_CELLS_BINDING, resource: { buffer: this.cells } }]), 'detail cells');
     this.stage.dispatch(gpu.frame, sceneCellsDispatch(this.layout), {
-      bind: [sim.tables, sim.bindRO, this.group], header: sim.header(), params: { chunkLo: [origin[0], origin[2]] },
+      bind: [sim.tables, sim.bindRO, this.group], header: sim.readHeader(), params: { chunkLo: [origin[0], origin[2]] },
     });
     const live = [o.x, o.y, o.z, o.x + g.nx, o.y + g.ny, o.z + g.nz];
     const planted = this.win.planted.slice();
@@ -329,7 +329,7 @@ export class WorldDetail {
    */
   draw(rp, params, bind) {
     if (!this.visible || this.pipe.state !== 'ready' || !this.entries.size) return 0;
-    const header = { origin: [0, 0, 0], src: this.sim.cur, dst: this.sim.cur };
+    const header = { ...this.sim.readHeader(), origin: [0, 0, 0] };
     for (const e of this.entries.values()) {
       if (!e.count) continue;
       this.pipe.draw(rp, { bind, header, params, count: e.count, vertexBuffers: e.buffers.slice(0, 3), index: { buffer: e.buffers[3], format: e.format } });

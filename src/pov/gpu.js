@@ -186,7 +186,7 @@ class PovGpu {
     let group = this.d.comGroups.get(buffer);
     if (!group) this.d.comGroups.set(buffer, group = this.gpu.bindGroup(this.d.layouts.com, [{ binding: 0, resource: { buffer } }], 'pov com'));
     const sim = this.sim;
-    sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRO, group], header: sim.header(), params: { hold } });
+    sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRO, group], header: sim.readHeader(), params: { hold } });
     return true;
   }
 
@@ -250,7 +250,7 @@ class PovGpu {
     d.laserApplyGroup ??= this.gpu.bindGroup(d.layouts.laserApply, [{ binding: 0, resource: { buffer: d.beam } }], 'pov laser apply');
     const slot = ring.next();
     const header = sim.header();
-    sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, sim.bindRO, d.laserReachGroup], header, params: { muzzle, dir, slot } });
+    sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, sim.bindRO, d.laserReachGroup], header: sim.readHeader(), params: { muzzle, dir, slot } });
     sim._dispatch(apply, { indirect: d.beamArgs, offset: 0 }, { bind: [sim.tables, sim.bindRW, d.laserApplyGroup], header, params: { muzzle, dir, slot } });
     this._wrote();
     return ring.read(slot).then((bytes) => {

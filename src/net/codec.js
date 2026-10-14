@@ -180,7 +180,7 @@ export function createPacker() {
       if (back) slot.bytes = back;
       if (gen === generation) free.push(slot); else slot.buffer.destroy();
     };
-    kernel.dispatch(gpu.frame, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRO, slot.group], header: sim.header() });
+    kernel.dispatch(gpu.frame, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRO, slot.group], header: sim.readHeader() });
     return gpu.readback.buffer(slot.buffer, 0, slot.buffer.size, { into: slot.bytes.buffer })
       .then(() => ({ bytes: slot.bytes, dims, release }), (err) => { release(); throw err; });
   }
