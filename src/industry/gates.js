@@ -149,7 +149,7 @@ fn main() {
   } }
 
   var status = INDUSTRY_GATE_DAMAGED;
-  var physicallyClosed = P.expectedClosed;
+  var physicallyClosed = P.expectedClosed != 0u;
   var changed = false;
   var desiredClosed = false;
   if (P.operation == 1u) {

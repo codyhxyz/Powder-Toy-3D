@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { packCells, unpackCells } from '../../src/saves/format.js';
 import { E } from '../../src/elements.js';
 import {
@@ -15,6 +19,16 @@ const cells = kind => Array(GATE_APERTURE_CELLS).fill(kind);
 const owned = cells('owned');
 const empty = cells('empty');
 const foreign = cells('foreign');
+test('the real gate kernel passes Naga type validation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'industry-gate-wgsl-'));
+  try {
+    const file = join(dir, 'gate.wgsl');
+    writeFileSync(file, gateWGSL({ nx: 128, ny: 128, nz: 128 }));
+    const result = spawnSync('naga', [file], { encoding: 'utf8' });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 const deferred = () => {
   let resolve;
   const promise = new Promise(r => { resolve = r; });
