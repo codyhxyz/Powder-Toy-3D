@@ -13,9 +13,12 @@ import { gridLayout } from '../../src/sim.js';
 const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
 assert(block.includes('let count=min(8u,arrayLength(&events));'));
 assert.equal((block.match(/for\(var i=0u;i<count;i\+\+\)/g)||[]).length,6);
+assert.equal((block.match(/axis<u32\(ctNeighborCount\(\)\)/g)||[]).length,3);
+assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,3);
 for(const dims of [[16,8,8],[32,32,32],[32,16,24],[128,128,128]]) {
   const g=gridLayout(...dims);
   assert.equal(Math.min(8,g.slots),8,'every native block still processes all eight cells');
+  assert.equal(Math.min(3,g.slots),3,'every native cell still visits all three neighbors');
 }
 assert.equal(CONTACT_ROWS.length,91);
 assert.equal(CONTACT_REACTIONS.length,14);

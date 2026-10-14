@@ -57,7 +57,9 @@ export function emitContactKernel(fn, types, result) {
   // explicit grouping; all bitwise kernel writes already use assignment RHS.
   return `fn ${match[1]}(${args.map((a, i) => `${a === 'of' ? 'sourceType' : a === 'from' ? 'fromId' : a}:${types[i]}`).join(',')})->${result} {${body}\n}`;
 }
-const generated = contactKernelWGSL;
+// Preserve the three-neighbor traversal while avoiding backend expansion of
+// large rule bodies. Valid native event buffers always contain at least 8 slots.
+const generated = contactKernelWGSL.replaceAll('k < 3;', 'k < ctNeighborCount();');
 
 // Standalone dynamics-facing declarations; importing these does not pull the
 // contact rule kernel, storage bindings or activity/ledger functions into air.
@@ -96,6 +98,7 @@ const CONTACT_G_TICK:f32=${CONTACT_G_TICK};
 const CONTACT_ELEMENT_COUNT:i32=${CONTACT_ELEMENT_COUNT};
 struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,fallSpeed:f32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
 struct CTPair { a:CTCell,b:CTCell,changed:i32 }
+fn ctNeighborCount()->i32 { return i32(min(3u,arrayLength(&events))); }
 struct CTRow { ${CONTACT_ROW_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
 struct CTRx { ${CONTACT_RX_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
 ${table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA, layout.rowOffset, layout.rowStride)}
@@ -224,7 +227,7 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   if((cells[i].request&5)!=0){cells[i].done=1;cells[i].busy=1;}
  }
  for(var i=0u;i<count;i++){
-  for(var axis=0u;axis<3u;axis++){
+  for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    let flux=ctFlux(cells[i],cells[j]);
    if(flux!=0){cells[i]=ctHeat(cells[i],flux);cells[j]=ctHeat(cells[j],-flux);cells[i].busy=1;cells[j].busy=1;}
@@ -244,7 +247,7 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   cells[i]=ctStep(cells[i],ns,ctSeed(positions[i],P.tick));
  }
  for(var i=0u;i<count;i++){
-  for(var axis=0u;axis<3u;axis++){
+  for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    var pair=ctResolvePhase(cells[i],cells[j]);
    if(pair.changed==0){let rev=ctResolvePhase(pair.b,pair.a);pair=ctPairValue(rev.b,rev.a,rev.changed);}
@@ -252,7 +255,7 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   }
  }
  for(var i=0u;i<count;i++){
-  for(var axis=0u;axis<3u;axis++){
+  for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    let pair=ctPlume(cells[i],cells[j],ctSeed(positions[i],P.tick)^i32(j),select(0,1,positions[j].y>positions[i].y));
    cells[i]=pair.a;cells[j]=pair.b;
