@@ -1,0 +1,134 @@
+# City Folk world: completion contract
+
+The user approved the full feature list below.
+This is one complete world update, not a prototype or a first pass.
+The base is production commit `cd5d7a4876e11dd06888bd6f4e0e3b21d3baa30a`.
+The integration worktree is `/Users/codyhergenroeder/code/claude/tpt-city-folk-world`.
+
+## Finished world
+
+- Upper and lower neighborhoods, winding cliffs, and broad ramps.
+- A meandering river, a fork, a small river island, and connected waterfalls.
+- Separate small ponds in clearings.
+- A southern beach with coves and river mouths.
+- Open meadows between landmarks.
+- The existing 552 m straights and 1.14 km closed sprint circuit.
+- Scenic branches through woods, beside rivers, and along cliffs.
+- Additional bridges, alternate loops, and neighborhood shortcuts.
+- Dirt paths and worn grass around busy places.
+- Upper cedar woods and lower hardwood groves.
+- Native-fruit trees, small orchards, and flower patches.
+- Beach palms, scattered rocks, shells, and buried discovery spots.
+- A town hall, event square, and bulletin board.
+- A shopping area with distinct Nook-inspired and Able Sisters-inspired buildings.
+- A museum with a café entrance.
+- Additional cottages in upper and lower neighborhoods.
+- Vacant house plots.
+- A northern town gate and bus stop.
+- A separate city district with a working bus connection and return trip.
+
+The landmarks need clear identities, entrances, and physical access.
+The city needs a square and distinct commercial façades.
+Shop economies, fishing systems, new resident AI, and museum collections are outside this world-generation request.
+Do not turn those unrelated systems into delivery dependencies.
+
+## Invariants
+
+- Keep Tinker Creek's key, aliases, Animal Crossing mode, and rolling-log presentation.
+- Keep the world at `3072 × 128 × 1024` cells.
+- Keep the simulation window at its current size.
+- Keep both sprint straights flat, dry, and clear across their full body width.
+- Keep the four existing cottages, their doors, furniture coordinates, and village behavior.
+- Keep the old `1024 × 128 × 1024` save geometry exact.
+- Keep solo and co-op loading of both supported world sizes.
+- Keep generated scenery consistent across streaming, the far field, and the CPU twin.
+- Keep voxel edits when the player takes the bus or returns.
+- Use deterministic, bounded generation without per-cell asynchronous work.
+- Use the existing shared-source scene machinery and installed dependencies.
+- Use original artwork and building shapes, not copied Nintendo assets.
+
+## Parallel ownership
+
+Each implementation lane uses its own managed worktree.
+Each lane commits only its own work and reports its commit, files, checks, and remaining integration needs.
+No implementation lane pushes or deploys.
+No implementation lane launches another agent.
+All implementation lanes use CPU checks only.
+The parent controls GPU checks and release.
+
+### Terrain and routes
+
+Own `src/world/scenes/willowCove.js` and new terrain helpers under `src/world/scenes/cityFolk/`.
+Own tests specific to terrain and route geometry.
+Implement all terrain, water, and route requirements.
+Provide `cfPath(x, z)` in the shared source for all protected paths.
+Publish additional route samples and landmark access points for the other lanes.
+Preserve legacy geometry and the long sprint circuit.
+Do not wire unfinished landmark or nature modules.
+The integration lane joins those modules later.
+
+### Town landmarks
+
+Own `src/world/scenes/cityFolk/town.js` and landmark tests.
+Implement all town buildings, the square, board, gate, and additional cottage plots.
+Do not edit `willowCove.js`, village mechanics, or transport wiring.
+Export `CITY_FOLK_TOWN` with `ints`, `salts`, `src`, and `landmarks`.
+Use the `TOWN` prefix for constants.
+The source defines `cfTownCell(x, y, z, h, id)` and `cfTownReserved(x, z)`.
+Return `id` outside owned geometry.
+Here, `h` is terrain height and `id` is the existing cell.
+Publish door and walkway samples.
+
+### Nature
+
+Own `src/world/scenes/cityFolk/nature.js` and nature tests.
+Implement all vegetation, natural objects, discovery scenery, and worn-ground requirements.
+Do not edit `willowCove.js`, other scene modules, or village mechanics.
+Export `CITY_FOLK_NATURE` with `ints`, `salts`, `src`, and `landmarks`.
+Use the `NATURE` prefix for constants.
+The source defines `cfNatureCell(x, y, z, h, id)`.
+Return `id` outside owned geometry.
+Exclude `cfPath(x, z)` and `cfTownReserved(x, z)` from vegetation and obstacles.
+Do not replace buildings, water, bridges, or the four original cottages.
+Static worn dirt satisfies the world-generation requirement.
+
+### City and bus
+
+Own `src/world/scenes/cityFolk/city.js`, a bus helper, and transport tests.
+This lane can edit village interaction wiring and narrowly scoped app wiring.
+Do not edit `willowCove.js`, town geometry, or nature geometry.
+Export `CITY_FOLK_CITY` with `ints`, `salts`, `src`, and `landmarks`.
+Use the `CITY` prefix for constants.
+The source defines `cfCityCell(x, y, z, id)`.
+Return `id` outside the city.
+Place the separate city outside the main town and sprint circuit, within the current world bounds.
+Implement discoverable bus boarding, a safe arrival, and a return trip.
+Reuse streaming and preserve the world's edit store.
+Do not reload the scene to simulate a bus journey.
+
+### Acceptance tests
+
+Own a new independent CPU acceptance suite and a requirement-to-evidence checklist.
+Do not edit implementation modules or existing tests while other lanes work.
+Start from the finished-world list, not from the current implementation.
+Cover terrain access, every landmark entrance, nature exclusions, both sprint straights, route connectivity, and bus round trips.
+Cover deterministic generation, legacy saves, co-op sizes, edit persistence, cancellation, and other-mode isolation.
+Report any requirement without evidence.
+
+## Integration and release
+
+The integration lane owns the final composition, existing test updates, metadata, and documentation.
+It merges all lane commits into the integration worktree.
+It fixes integration gaps rather than accepting unwired modules as complete.
+Nature runs before town geometry so that buildings take priority.
+The city override must not replace the original town or old save geometry.
+
+Completion needs independent review and an evidence entry for every finished-world bullet.
+Tests must inspect the composed scene, not only isolated helpers.
+CPU checks, the production build, and deployment checks must pass.
+The parent audits the result, fetches and merges current production, then pushes `main`.
+The GitHub deploy must succeed.
+The parent checks the live site and reports any check that remains unverified.
+
+GPU slots remain limited to 10 seconds total, including startup and cleanup.
+Do not bypass player detection or repeat failed GPU runs without parent approval.
