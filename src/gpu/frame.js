@@ -93,8 +93,6 @@ export class GpuFrame {
     if (this._passKind === 'render') throw new Error(`gpu.frame.compute("${name}") while render pass "${this._passName}" is open`);
     this._endPass();
     const desc = { label: name };
-    const writes = timing._writes(name);
-    if (writes) desc.timestampWrites = writes;
     this._pass = this._encoder().beginComputePass(desc);
     this._passKind = 'compute';
     this._passName = name;
@@ -113,9 +111,7 @@ export class GpuFrame {
     if (this._passKind === 'render') throw new Error(`gpu.frame.render("${name}") while render pass "${this._passName}" is open`);
     this._endPass();
     if (this.commands >= FLUSH_DISPATCHES || this.gpu.paramRing.free < RING_RESERVE) this.gpu.flush('params ring');
-    const timing = this.gpu.timing;
-    const writes = timing._writes(name);
-    const rp = this._encoder().beginRenderPass({ label: name, ...descriptor, ...(writes ? { timestampWrites: writes } : {}) });
+    const rp = this._encoder().beginRenderPass({ label: name, ...descriptor });
     const end = rp.end.bind(rp);
     rp.frame = this;
     rp.passName = name;
@@ -230,7 +226,6 @@ export class GpuFrame {
     this._endPass();
     const gpu = this.gpu;
     const enc = this.encoder;
-    gpu.timing._beforeSubmit(enc);
     gpu.readback._beforeSubmit(enc);
     gpu.stats.bytesUploaded += gpu.paramRing.upload(gpu.queue);
     this.encoder = null;
