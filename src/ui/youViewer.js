@@ -48,10 +48,13 @@ function clampZoom(zoom) {
 }
 
 async function loadBody(character, time) {
-  if (character === 'boy' || character === 'girl') {
+  if (['boy', 'girl', 'maple', 'clover', 'pippin', 'crook'].includes(character)) {
     // The village avatar you drop in as (village/models.js), not the hidden physics body.
     const { character: buildVillage } = await import('../pov/village/models.js');
-    const avatar = buildVillage({ persona: character });
+    const { RESIDENTS } = await import('../pov/village/residents.js');
+    const { TIM_CROOK } = await import('../pov/village/crook.js');
+    const spec = character === 'crook' ? TIM_CROOK : RESIDENTS.find(r => r.name.toLowerCase() === character);
+    const avatar = buildVillage(spec ?? { persona: character });
     avatar.root.rotation.y = Math.PI; // faces -z; the portrait camera faces +z
     let clock = time;
     return { model: avatar.root, step(dt) { clock += dt; avatar.animate(clock, 0); } };
