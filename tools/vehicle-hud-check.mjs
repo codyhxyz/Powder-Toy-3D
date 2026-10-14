@@ -18,7 +18,11 @@ try {
     page.on('console', m => {
       if (m.type() === 'error' && !/^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(m.location().url)) errors.push(m.text());
     });
-    await page.goto(url.href); await ready(page);
+    await page.goto(url.href);
+    try { await ready(page); } catch (error) {
+      console.error('Boot diagnostics:', errors, await page.evaluate(() => document.body.innerText.slice(-2500)));
+      throw error;
+    }
     await page.waitForFunction(() => window.__app?.pov?.vehicles && window.__app?.industry);
     await page.evaluate(({ water, temp, life }) => {
       const a = window.__app, [A, B] = a.sim.blankState(), g = a.sim.g;
