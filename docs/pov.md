@@ -153,6 +153,9 @@ Spread surrounds that direction. Barrel animation and delayed hover results cann
 The flash stays on the barrel. The first tracer segment connects the barrel to the bullet's real path.
 At point-blank range, the tracer starts at the eye instead of behind the hit.
 NPCs and the third-person fallback use their own body-eye aim.
+NPCs keep their equipped weapon visible between attacks, with the handle in the mitten and the barrel along their aim.
+Their muzzle flash and first tracer segment use that visible barrel, not the head or the hidden viewmodel.
+`node tools/npc-held-check.mjs` checks these poses and effects without a GPU.
 `node tools/firearm-aim-check.mjs` checks alignment without a GPU.
 
 | Gun | Fire | Round energy (sim KE) | Borrowed from |
