@@ -104,6 +104,18 @@ the diagnostic fixture seeds one-cell tungsten walls and an internal baffle.
 The Factory builder cannot currently reproduce that arrangement.
 Even a melt in this fixture would not prove a player-buildable production line.
 
+The next fixture replaces that diagnostic lining with real atomic construction:
+one hearth and sixteen standard foundations form an open batch tub.
+Its containment has 256 tungsten cells, outside the hearth reservation.
+The test starts with four scrap cells and 44 physical BROKENCOAL cells at 20°C.
+There is no intact COAL or internal baffle.
+The geometry passes normal bounds and overlap validation.
+This revised fixture has not run on the GPU.
+It does not yet assert real shovel loading, ash clearing, or bucket extraction.
+
+CPU geometry command:
+`node tools/industry-physical-check.mjs --case thermal --preflight`.
+
 ## Open requirements
 
 - Prove useful melting with cold, buildable containment and finite physical fuel.
