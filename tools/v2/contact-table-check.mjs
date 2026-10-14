@@ -94,6 +94,13 @@ assert.deepEqual(V2_CONTACT_LAYOUT.map(b=>[b.binding,b.buffer.type]),[
   [0,'storage'],[1,'storage'],[2,'read-only-storage'],[4,'storage'],[6,'storage'],
 ],'existing contact binding layout unchanged');
 const foundation=v2BlockWGSL(gridLayout(32,32,32),contactWGSL);
+const entry=foundation.slice(foundation.indexOf('@compute @workgroup_size(64)'));
+assert(entry.includes('let blockCount=min(8u,arrayLength(&events));'));
+assert(entry.includes('let columnCount=blockCount/2u;'));
+assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,5);
+assert.equal((entry.match(/m\s*<\s*blockCount/g)||[]).length,1);
+assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,3);
+assert(!/for[^{]*<\s*[48]u/.test(entry),'no fixed wrapper bounds expand thermal calls');
 assert.equal((foundation.match(/var<storage,/g)||[]).length,6,'actual foundation+contact storage binding count unchanged');
 assert.equal((foundation.match(/@group\(2\) @binding\(2\)/g)||[]).length,1,'EV binding reused exactly once');
 assert.ok(foundation.includes('var<storage, read> EV: array<vec4u>;'),'raw-u32 EV prevents integer NaN canonicalization');

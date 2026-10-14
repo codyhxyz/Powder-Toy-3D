@@ -650,18 +650,22 @@ ${MAIN} {
   let c0 = u - vec3i(1);
   let down=mDown(vec3f(c0)+1.0);
   let gravityOn=any(down!=vec3i(0));
+  // Every valid grid has at least eight event slots. Runtime bounds prevent
+  // backend expansion of eight copies of the large thermal/contact helpers.
+  let blockCount=min(8u,arrayLength(&events));
+  let columnCount=blockCount/2u;
   var cs: array<vec4u, 8>;
   var orig: array<vec4u, 8>;
   var bs: array<i32, 8>; var oldBanks: array<i32, 8>;
   var positions: array<vec3i, 8>; var requests: array<u32, 8>; var pending: array<u32, 8>;
-  for (var i = 0u; i < 8u; i++) {
+  for (var i = 0u; i < blockCount; i++) {
     let p = mEdge(c0 + mBlockOffset(off8(i),down)); positions[i] = p;
     cs[i] = cellAt(p); orig[i] = cs[i];
     if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
     oldBanks[i] = bs[i];
   }
   // R2 topple
-  for (var c = 0u; c < 4u && gravityOn; c++) {
+  for (var c = 0u; c < columnCount && gravityOn; c++) {
     let ti = 4u + c;
     let gr = cs[ti];
     if (!inGrid(positions[ti])) { continue; }
@@ -674,7 +678,7 @@ ${MAIN} {
     var w = array<f32, 3>(0.0, 0.0, 0.0);
     var nc = 0u;
     var wsum = 0.0;
-    for (var c2 = 0u; c2 < 4u; c2++) {
+    for (var c2 = 0u; c2 < columnCount; c2++) {
       if (c2 == c || !inGrid(positions[c2]) || !fluidC(cs[c2]) || !fluidC(cs[4u + c2])) { continue; }
       let diag = (c2 ^ c) == 3u;
       if (diag) {
@@ -708,7 +712,7 @@ ${MAIN} {
     markBusy(positions[pick]);
   }
   // R3 sink and float, R4 buoyancy: a denser movable over a lighter fluid swaps down
-  for (var c = 0u; c < 4u && gravityOn; c++) {
+  for (var c = 0u; c < columnCount && gravityOn; c++) {
     let lo = cs[c];
     let hi = cs[4u + c];
     let kL = clsOf(lo);
@@ -732,7 +736,7 @@ ${MAIN} {
     }
   }
   // R4 gas: lateral swaps with air while young (x pairs, then z pairs)
-  for (var m = 0u; m < 8u; m++) {
+  for (var m = 0u; m < blockCount; m++) {
     var i0 = 0u;
     var i1 = 0u;
     if (m < 4u) { i0 = 2u * m; i1 = i0 + 1u; } else { i0 = (m - 4u) + ((m - 4u) & 2u); i1 = i0 + 2u; }
@@ -757,18 +761,18 @@ ${MAIN} {
     }
   }
   // Gas ageing is motion state; reaction/lifetime changes belong to contact.
-  for (var i = 0u; i < 8u; i++) {
+  for (var i = 0u; i < blockCount; i++) {
     if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < DIFFUSE_AGE) {
       cs[i] = withAge(cs[i], cAge(cs[i]) + 1u); markBusy(positions[i]);
     }
   }
   // Obligations follow the moved material, not its old position. Loading these
   // before swaps would duplicate an event at both the old and new locations.
-  for (var i = 0u; i < 8u; i++) { requests[i] = pending[i]; }
+  for (var i = 0u; i < blockCount; i++) { requests[i] = pending[i]; }
   ${contactWGSL ? 'contactBlock(&cs, &bs, positions, &requests);' : '// Contact module not installed: no reaction capability advertised.'}
   ${contactWGSL.includes('fn contactBoundary(') ? `
   if (P.edge==1u && mAirHeat()) {
-    for (var i=0u;i<8u;i++) {
+    for (var i=0u;i<blockCount;i++) {
       let p=positions[i]; if (!inGrid(p)) { continue; }
       // R5 exposed sides and top, never the floor, solid walls or loop seams.
       let open=u32(p.x==0)+u32(p.x==NX-1)+u32(p.z==0)+u32(p.z==NZ-1)+u32(p.y==NY-1);
@@ -778,7 +782,7 @@ ${MAIN} {
       }
     }
   }` : ''}
-  for (var i = 0u; i < 8u; i++) {
+  for (var i = 0u; i < blockCount; i++) {
     let p = positions[i];
     if (inGrid(p)) {
       let slot = slotOf(p);
