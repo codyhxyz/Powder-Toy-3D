@@ -1,4 +1,5 @@
 import { liquidGLSL } from './liquid.js';
+import { cozySurfaceWGSL } from './cozy.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
 import { grainsGLSL, GRAINS_ANY } from './grains.js';
@@ -796,9 +797,11 @@ fn matFlat(id: i32, T: f32, ctype: f32) -> Mat {
 
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
+${cozySurfaceWGSL}
 fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (FU.matDetail < 0.5) { return matFlat(id, T, ctype); }   // (no texture: the cells' own glow)
+  if (FU.materialStyle > 0.5 && cozySupported(id)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
