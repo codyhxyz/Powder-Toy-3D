@@ -19,7 +19,7 @@ function captureComplete(data, errors) {
 // CPU-only negative controls; run before any browser launch or slot acquisition.
 if (process.argv.includes('--self-test')) {
   const frame = { coverage: { complete: true }, passes: [{ name: 'scene', gpu: 1 }, { name: 'three:meshes', gpu: 0.1 }] };
-  const good = { startup: { ...frame, volumeDrawn: true }, frames: [frame], cpu: [{ volumeDrawn: true }] };
+  const good = { startup: { ...structuredClone(frame), volumeDrawn: true }, frames: [structuredClone(frame)], cpu: [{ volumeDrawn: true }] };
   assert.equal(captureComplete(good, []), true);
   for (const breakCapture of [
     d => { d.startup.volumeDrawn = false; },
@@ -27,6 +27,7 @@ if (process.argv.includes('--self-test')) {
     d => { d.startup.passes = []; },
     d => { d.startup.passes[0].gpu = null; },
     d => { d.frames[0].passes[0].gpu = NaN; },
+    d => { d.frames[0].passes = [{ name: 'three:meshes', gpu: 0.1 }]; },
     d => { d.frames[0].coverage.complete = false; },
     d => { d.frames = []; },
     d => { d.cpu = []; },
