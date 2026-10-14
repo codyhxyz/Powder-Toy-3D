@@ -55,7 +55,7 @@ import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js'
 import { createDetailGate, gateVariants } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
-import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
+import { createPost, createAutoResolution, UPSCALE, UPSCALE_FLOOR } from './gfx/post.js';
 import { createPresentation } from './gfx/presentation.js';
 import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
 import { povEvents } from './pov/events.js';
@@ -304,10 +304,29 @@ const renderer = await createThreeRenderer(gpu, canvas, { hdr: presenter.hdr });
 // presets are shares of these real pixels, as AMD FSR 2 defines its modes
 // (gfx/post.js UPSCALE): Off renders every one of them. Phones stay at 1
 // (their GPUs pay for every output pixel of post).
+// The canvas takes the screen's pixels only while the preset draws the scene
+// with more pixels than the page has (Off, Quality and Balanced on Retina).
+// Fast draws it at the page's size, where a Retina canvas adds output pixels
+// and nothing for them to show but TAAU's still-camera build-up, and post pays
+// for every one: 14.1 ms at the Retina canvas against 3.8 ms at the page's
+// size for the same 1.3 MP scene, measured on the M5 (2026-10-13). Fast keeps
+// the page-sized canvas, the scene 1:1 on it, and auto resolution still works
+// under it (post.settings.adaptive) from the same floor of the screen.
 const RETINA_MAX = 2;
-const pixelRatio = MOBILE ? 1 : Math.min(devicePixelRatio, RETINA_MAX);
+const DEVICE_RATIO = MOBILE ? 1 : Math.min(devicePixelRatio, RETINA_MAX);
+const presetOf = () => UPSCALE[settings.upscale] ?? UPSCALE.native;
+const outputRatio = () => (presetOf() * DEVICE_RATIO > 1 ? DEVICE_RATIO : 1);
+let pixelRatio = outputRatio();
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
+// The canvas follows the Upscaling preset (Settings), however it was set: at a
+// frame's start, before it draws anything (tick), as the resize does between frames.
+function applyOutputRatio() {
+  if (outputRatio() === pixelRatio) return;
+  pixelRatio = outputRatio();
+  renderer.setPixelRatio(pixelRatio);
+  renderer.setSize(innerWidth, innerHeight);
+}
 
 // the grid: the simulation, its derived passes and its volume (made per grid: build)
 let sim, derived, vol, scale;
@@ -2074,6 +2093,7 @@ function tick(now, renderOnly = false) {
   // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
   if (!renderOnly && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
   if (prof.on !== settings.profiler) applyProfiler();
+  applyOutputRatio();
   prof.beginFrame(now);
   if (!renderOnly) clock.update(now);
   const dt = renderOnly ? 0 : Math.min(clock.getDelta(), DT_MAX);
@@ -2170,7 +2190,10 @@ function tick(now, renderOnly = false) {
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     // (the blocks' faces are radiance, as the realistic view's; the data views are finished colours)
     post.settings.raw = blocks ? false : settings.view !== 0;
-    post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;   // a share of the canvas's (device) pixels, FSR 2's
+    // The preset is a share of the screen's (device) pixels, FSR 2's; post takes shares of the canvas's.
+    post.settings.upscale = presetOf() * DEVICE_RATIO / pixelRatio;
+    post.settings.adaptive = presetOf() < 1;
+    post.settings.floor = UPSCALE_FLOOR * DEVICE_RATIO / pixelRatio;
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
@@ -2213,7 +2236,7 @@ function tick(now, renderOnly = false) {
     stepsV: settings.paused || mp.isGuest ? 0 : stepRate, // preview fps is not the simulation rate
     // the cells simulated (a world's window), and the world's
     cellsV: `${millions([g.nx, g.ny, g.nz])}${win ? ` of ${millions(win.size)}` : ''}`,
-    resV: autoRes.enabled ? `${Math.round(post.renderScale * 100)}% res` : '',
+    resV: autoRes.enabled ? `${Math.round(post.renderScale * pixelRatio / DEVICE_RATIO * 100)}% res` : '',   // of the screen's pixels across, as the presets
   });
   prof.endFrame(stepping ? settings.steps : 0);
   lastIdle = !runView && !stepping && performance.now() - t0 < CAP_IDLE_MS;

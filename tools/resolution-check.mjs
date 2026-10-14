@@ -119,7 +119,7 @@ gpu.log.length = 0;
 render();
 const order = gpu.log.filter((e) => e.kind !== 'flush' && e.kind !== 'destroy').map((e) => (e.kind === 'pass' ? `[${e.name}]` : e.name));
 assert.deepEqual(order, ['[scene]', '[motion]', 'motion', '[taau]', '[taa expand]', 'taaExpand', '[prefilter]', 'prefilter', '[post]', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown', 'bloomDown',
-  'bloomUp', 'bloomUp', 'bloomUp', 'bloomUp', 'postReduce', '[bloomUp0]', 'bloomUp0', '[canvas]', 'composite bgra8unorm'], order.join(' '));
+  'bloomUp', 'bloomUp', 'bloomUp', 'bloomUp', 'postReduce', '[bloomUp0]', 'bloomUp0', '[bloom]', 'bloomTent', '[canvas]', 'composite bgra8unorm'], order.join(' '));
 const ups = gpu.log.filter((e) => e.kind !== 'pass' && (e.name === 'bloomUp' || e.name === 'bloomUp0')).map((e) => e.params.dst.join('×'));
 assert.deepEqual(ups, ['28×18', '56×37', '112×75', '225×150', '450×301'], 'bloom up from 1/32 to 1/2 of 901×603');
 post.settings.raw = true;
