@@ -14,7 +14,7 @@ import { portraitScene } from '../src/pov/classPortraits.js';
 
 const hooks = registerHooks({ load(url, context, next) {
   if (url.endsWith('/pov/bodyModel.js')) {
-    return { format: 'module', source: 'export const BODY_MODEL_URL = "/models/character/body.glb";', shortCircuit: true };
+    return { format: 'module', source: 'export const BODY_MODEL_URLS = { real: "/models/character/body.glb", woman: "/models/character/woman.glb" };', shortCircuit: true };
   }
   return next(url, context);
 } });
@@ -28,9 +28,11 @@ loader.register(parser => ({
   beforeRoot() { parser.loadTextureImage = async () => new THREE.Texture(); },
 }));
 const gltf = await loader.parseAsync(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '');
+const femaleData = await readFile(new URL('../public/models/character/woman.glb', import.meta.url));
+const female = await loader.parseAsync(femaleData.buffer.slice(femaleData.byteOffset, femaleData.byteOffset + femaleData.byteLength), '');
 const figures = [
   ['stick', createFigure(buildStick)], ['spartan', createFigure(buildSpartan)],
-  ['wizard', createFigure(() => buildCrasher())], ['real', createRealFigure(gltf)],
+  ['wizard', createFigure(() => buildCrasher())], ['real', createRealFigure(gltf)], ['woman', createRealFigure(female)],
 ];
 const scene = new THREE.Scene();
 const vfx = createVfx({
@@ -57,7 +59,7 @@ try {
       assert.ok(Math.abs(flame.geometry.boundingBox.max.y) < 1e-6, 'flame begins at the mouth and extends down');
       close(flame.getWorldPosition(new THREE.Vector3()), nozzle.getWorldPosition(new THREE.Vector3()), 'flame attached to mouth');
     }
-    if (name === 'real') assert.equal(pack.parent.name, 'spine_03', 'real pack follows animated chest, not root');
+    if (['real', 'woman'].includes(name)) assert.equal(pack.parent.name, 'spine_03', 'real pack follows animated chest, not root');
     // Both moving/surfacing and crouched poses; yaw, aim pitch and Shrink all affect mouths.
     for (const pose of [
       { onGround: false, jetting: true, inLiquid: true, speedH: 3 },
