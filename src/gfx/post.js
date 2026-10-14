@@ -115,6 +115,7 @@ import { uniformStruct, fullscreenVert, luma as lumaWGSL, STAGE } from '../gpu/i
 import { initRenderTarget, gpuTextureOf, createTemporalUpscaler } from '../gpu/three.js';
 import { IDENTITY, presentationWGSL } from './presentationMath.js';
 import { glf as f } from '../glsl.js';
+import { sprintBlurWGSL } from './sprintBlur.js';
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -127,6 +128,7 @@ export const POST_DEFAULTS = {
   // old in-shader ACES (measured on the lab and volcano presets).
   exposure: 0.7,
   sharpen: 0.25, // CAS-style post-TAA sharpen (0..1)
+  sprintBlur: 0, // transient 0..1 speed effect, set by the POV shell; never stored or used in stills
   look: 0.5, // 0 = AgX base, 1 = Blender's AgX "Punchy" look
   raw: false, // true = only encode to sRGB (false-colour data views keep exact legend colours)
   bloomThreshold: 1.6, // max-channel radiance where bloom starts…
@@ -333,7 +335,7 @@ const CompositeParams = uniformStruct('CompositeParams', {
   bloom: 'f32', exposure: 'f32', sharpen: 'f32', look: 'f32',
   raw: 'bool', adapt: 'bool', night: 'f32', nightGain: 'f32',
   nightSeed: 'u32', opaque: 'bool', viewmodel: 'bool', glow: 'bool',
-  vmNight: 'f32', peak: 'f32',
+  vmNight: 'f32', peak: 'f32', sprintBlur: 'f32',
   packed: 'bool',   // the resolved frame is TAAU's, in taaCompress's range (radiance())
   white: 'f32',   // the brightest value sent: srgbEncode(max(peak, 1)), once a frame rather than per pixel
   skyTop: 'vec3f', skyMid: 'vec3f', skyLow: 'vec3f', skyGlow: 'vec4f',
@@ -394,6 +396,21 @@ fn taaExpand(c: vec4f) -> vec4f { return vec4f(c.rgb / max(1.0 - max(c.r, max(c.
 // an output-size pass writing the expanded frame out for them to read back:
 // at Retina size that pass cost ~2 ms (M5, 2026-10-13).
 fn radiance(c: vec4f, packed: u32) -> vec4f { if (packed != 0u) { return taaExpand(c); } return c; }
+
+// Expand each TAA texel before filtering: interpolating compressed highlights loses energy.
+fn tapRadiance(t: texture_2d<f32>, s: sampler, uv: vec2f, packed: u32) -> vec4f {
+  if (packed == 0u) { return textureSampleLevel(t, s, uv, 0.0); }
+  let size = vec2i(textureDimensions(t));
+  let hi = size - 1;
+  let q = uv * vec2f(size) - 0.5;
+  let i = vec2i(floor(q));
+  let w = q - floor(q);
+  let a = taaExpand(textureLoad(t, clamp(i, vec2i(0), hi), 0));
+  let b = taaExpand(textureLoad(t, clamp(i + vec2i(1, 0), vec2i(0), hi), 0));
+  let c = taaExpand(textureLoad(t, clamp(i + vec2i(0, 1), vec2i(0), hi), 0));
+  let d = taaExpand(textureLoad(t, clamp(i + vec2i(1, 1), vec2i(0), hi), 0));
+  return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
 
 // Soft-knee bright pass on the max channel: the share of the light that blooms (th: threshold, knee).
 fn bright(c: vec3f, th: vec2f) -> vec3f {
@@ -576,22 +593,6 @@ struct AdaptState { gain: f32, aim: f32, view: f32, pad: f32, }   // (aim: the g
 @group(3) @binding(1) var<uniform> P: ReduceParams;
 
 const THREADS: u32 = ${REDUCE_THREADS}u;
-// A bilinear tap of the resolved frame as radiance (radiance()). Packed, its four
-// texels are expanded before they are blended (as an expanded frame would be
-// filtered: the expand isn't linear); else the sampler's own tap.
-fn tapRadiance(uv: vec2f) -> vec4f {
-  if (P.packed == 0u) { return textureSampleLevel(tSrc, smp, uv, 0.0); }
-  let size = vec2i(textureDimensions(tSrc));
-  let hi = size - 1;
-  let q = uv * vec2f(size) - 0.5;
-  let i = vec2i(floor(q));
-  let w = q - floor(q);
-  let a = taaExpand(textureLoad(tSrc, clamp(i, vec2i(0), hi), 0));
-  let b = taaExpand(textureLoad(tSrc, clamp(i + vec2i(1, 0), vec2i(0), hi), 0));
-  let c = taaExpand(textureLoad(tSrc, clamp(i + vec2i(0, 1), vec2i(0), hi), 0));
-  let d = taaExpand(textureLoad(tSrc, clamp(i + vec2i(1, 1), vec2i(0), hi), 0));
-  return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
-}
 // eye adaptation (ADAPT in gfx/post.js)
 const GRID_W: u32 = ${ADAPT.GRID[0]}u;
 const GRID: vec2f = ${vec2(ADAPT.GRID)};
@@ -634,7 +635,7 @@ var<workgroup> meterN: array<f32, ${REDUCE_THREADS}>;
       for (var y = 0u; y < TAPS; y++) {
         for (var x = 0u; x < TAPS; x++) {
           let uv = (cell + (vec2f(f32(x), f32(y)) + 0.5) / f32(TAPS)) / GRID;
-          sum += sanitize(tapRadiance(uv));
+          sum += sanitize(tapRadiance(tSrc, smp, uv, P.packed));
         }
       }
       sum /= f32(TAPS * TAPS);
@@ -653,7 +654,7 @@ var<workgroup> meterN: array<f32, ${REDUCE_THREADS}>;
     let tile = vec2f(f32(li % u32(METER_SIZE)), f32(li / u32(METER_SIZE)));
     for (var j = 0u; j < METER_TAPS; j++) {
       for (var i = 0u; i < METER_TAPS; i++) {
-        let c = sanitize(tapRadiance((tile + (vec2f(f32(i), f32(j)) + 0.5) / f32(METER_TAPS)) / METER_SIZE));
+        let c = sanitize(tapRadiance(tSrc, smp, (tile + (vec2f(f32(i), f32(j)) + 0.5) / f32(METER_TAPS)) / METER_SIZE, P.packed));
         let w = step(METER_COVERED, c.a);
         ms += w * log(METER_LOG_FLOOR + luma(c.rgb) / max(c.a, 1e-3));
         mc += w;
@@ -889,11 +890,12 @@ fn sky(uv: vec2f) -> vec3f {
   return mix(c, P.skyGlow.rgb, P.skyGlow.a * saturate(1.0 - t));
 }
 
+${sprintBlurWGSL()}
 @fragment fn fs(in: FullScreen) -> @location(0) vec4f {
   let p = vec2i(in.position.xy);
   let hi = vec2i(P.size) - 1;
   let uv = (vec2f(p) + 0.5) / P.size;
-  let c = sanitize(radiance(textureLoad(tColor, p, 0), P.packed));
+  var c = sanitize(radiance(textureLoad(tColor, p, 0), P.packed));
   var rad = c.rgb;
 
   if (P.sharpen > 0.0) {
@@ -910,6 +912,10 @@ fn sky(uv: vec2f) -> vec3f {
     rad = itm(max((e.rgb + k * (n.rgb + s.rgb + w.rgb + r.rgb)) / (1.0 + 4.0 * k), vec3f(0.0)));
   }
 
+  // Blur world radiance and coverage together, after sharpening, before the unblurred hands/HUD.
+  let streak = sprintBlur(uv, c);
+  rad += streak.rgb - c.rgb;
+  c = streak;
   if (P.bloom > 0.0) {
     // the bloom image is up[0] already tent-filtered (the bloom pass): one bilinear tap
     let b = textureSampleLevel(tBloom, smp, uv, 0.0).rgb;
@@ -1519,6 +1525,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           adapt: adaptOn, night: s.raw ? 0 : s.night, nightSeed: frame, opaque: out.canvas,
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
           peak: out.canvas && presenter?.hdrActive && !s.raw ? HDR_OUT.PEAK : 1, packed,
+          sprintBlur: s.raw ? 0 : s.sprintBlur,
         }),
       });
       rp.end();
@@ -1673,6 +1680,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       raw: s.raw, adapt: o.adapt, night: o.night, nightGain: s.nightGain,
       nightSeed: o.nightSeed >>> 0, opaque: o.opaque, viewmodel: o.viewmodel, glow: o.glow, vmNight: o.vmNight, peak: o.peak, packed: !!o.packed,
       white: srgbEncode(Math.max(o.peak, 1)),
+      sprintBlur: Number.isFinite(o.sprintBlur) ? Math.max(0, Math.min(1, o.sprintBlur)) : 0,
       skyTop: sky.top, skyMid: sky.mid, skyLow: sky.low, skyGlow: sky.glow,
     };
   }
