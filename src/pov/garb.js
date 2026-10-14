@@ -27,6 +27,7 @@ export const GARB_COLORS = {
   hat: [0.16, 0.06, 0.35],
   robe: [0.40, 0.20, 0.07],   // oak staves
   hoops: [0.16, 0.15, 0.14],  // iron
+  bung: [0.33, 0.18, 0.08],   // cork
 };   // albedo, linear
 
 // Every body vertex in the bind pose, with its skin influences and its main bone.
@@ -98,8 +99,64 @@ function skinTo(geo, index) {
   return geo;
 }
 
-// A barrel she stands in: narrower at the ends, fat in the middle, twelve staves.
-// The hat and arms come out the top; the legs come out the bottom.
+// A barrel she stands in. Staves are separate planks with seams. The side planks
+// stop under her hands, so the hanging arms fall outside the wood instead of through it.
+const STAVES = 14;
+const STAVE_GAP = 0.05;          // rad of seam between planks
+const STAVE_THICK = 0.016;
+const ARM_NOTCH = 0.95;          // rad from ±x (the arms) with no wood above the hands
+const NOTCH_Y = 0.78;            // m: side planks end below the idle hands
+
+function radiusAt(y, hem, top, radius) {
+  const t = Math.max(0, Math.min(1, (y - hem) / (top - hem)));
+  return radius * (0.9 + 0.16 * Math.sin(t * Math.PI));
+}
+function fromSide(ang) {
+  const a = Math.abs(Math.atan2(Math.sin(ang), Math.cos(ang)));
+  return Math.min(a, Math.PI - a);   // 0 on the arms' sides, π/2 front and back
+}
+function pushTri(idx, a, b, c) { idx.push(a, b, c); }
+function addQuad(idx, a, b, c, d) { pushTri(idx, a, b, c); pushTri(idx, a, c, d); }
+
+function buildStaves(hem, top, radius) {
+  const pos = [], nrm = [], idx = [];
+  const half = Math.PI / STAVES - STAVE_GAP / 2;
+  const steps = 6;
+  for (let s = 0; s < STAVES; s++) {
+    const ang = (s + 0.5) * (Math.PI * 2 / STAVES);
+    const y1 = fromSide(ang) < ARM_NOTCH ? Math.min(top, NOTCH_Y) : top;
+    const base = pos.length / 3;
+    for (let i = 0; i <= steps; i++) {
+      const y = hem + (y1 - hem) * (i / steps);
+      const r = radiusAt(y, hem, top, radius);
+      for (const side of [-1, 1]) {
+        const a = ang + side * half, c = Math.cos(a), z = Math.sin(a);
+        for (const layer of [0, 1]) {
+          const rr = r + layer * STAVE_THICK;
+          pos.push(rr * c, y, rr * z);
+          nrm.push(layer ? c : -c, 0, layer ? z : -z);
+        }
+      }
+    }
+    const ring = 4;
+    for (let i = 0; i < steps; i++) {
+      const o = base + i * ring;
+      addQuad(idx, o + 1, o + 5, o + 7, o + 3);   // outer, facing out
+      addQuad(idx, o + 0, o + 2, o + 6, o + 4);   // inner, facing in
+      addQuad(idx, o + 0, o + 4, o + 5, o + 1);   // left edge
+      addQuad(idx, o + 3, o + 7, o + 6, o + 2);   // right edge
+    }
+    const top0 = base + steps * ring;
+    addQuad(idx, base + 0, base + 2, base + 3, base + 1);       // bottom cap
+    addQuad(idx, top0 + 1, top0 + 3, top0 + 2, top0 + 0);       // top cap
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
 function buildBarrel(verts, boneIndex) {
   const hips = verts.filter((p) => p.bone === 'pelvis' || p.bone.startsWith('thigh'));
   const boneY = Object.fromEntries(ROBE_BONES.map((name) => {
@@ -109,29 +166,54 @@ function buildBarrel(verts, boneIndex) {
   const nearest = (y) => ROBE_BONES.reduce((a, b) => Math.abs(boneY[b] - y) < Math.abs(boneY[a] - y) ? b : a);
   let hipR = 0.16;
   for (const p of hips) if (Math.abs(p.y - boneY.pelvis) < 0.1) hipR = Math.max(hipR, Math.hypot(p.x, p.z));
-  const radius = hipR + 0.07;
-  const hem = Math.min(...hips.map((p) => p.y)) + 0.06;
-  const top = boneY.spine_03 + 0.04;
-  const profile = [];
-  for (let i = 0; i <= 8; i++) {
-    const t = i / 8;
-    const bulge = Math.sin(t * Math.PI);
-    profile.push([radius * (0.88 + 0.2 * bulge), hem + (top - hem) * t]);
-  }
-  const robe = skinTo(new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), 12), 0);
-  const pos = robe.attributes.position, idx = robe.attributes.skinIndex;
-  for (let i = 0; i < pos.count; i++) idx.setX(i, boneIndex(nearest(pos.getY(i))));
-  return { robe, hoops: buildHoops(profile, boneIndex, nearest) };
+  const radius = hipR + 0.08;
+  const hem = Math.min(...hips.map((p) => p.y)) + 0.04;
+  // Front and back run up over the chest. The sides stay open so the arms hang out.
+  const top = boneY.spine_03 + 0.16;
+  const robe = skinByHeight(buildStaves(hem, top, radius), boneIndex, nearest);
+  const hoops = buildHoops(hem, top, radius, boneIndex, nearest);
+  const bung = new THREE.CylinderGeometry(0.02, 0.018, 0.045, 8);
+  bung.rotateX(Math.PI / 2);
+  bung.translate(0, hem + (top - hem) * 0.42, radiusAt(hem + (top - hem) * 0.42, hem, top, radius) + 0.03);
+  return { robe, hoops, bung: skinTo(bung, boneIndex(nearest(hem + (top - hem) * 0.42))) };
 }
 
-function buildHoops(profile, boneIndex, nearest) {
-  const parts = [0.06, 0.5, 0.94].map((t) => {
-    const [r, y] = profile[Math.round(t * (profile.length - 1))];
-    const hoop = new THREE.TorusGeometry(r + 0.01, 0.014, 6, 18);
+function skinByHeight(geo, boneIndex, nearest) {
+  skinTo(geo, 0);
+  const pos = geo.attributes.position, idx = geo.attributes.skinIndex;
+  for (let i = 0; i < pos.count; i++) idx.setX(i, boneIndex(nearest(pos.getY(i))));
+  return geo;
+}
+
+function buildHoops(hem, top, radius, boneIndex, nearest) {
+  const parts = [];
+  const add = (geo, y) => parts.push(skinTo(geo, boneIndex(nearest(y))));
+  for (const t of [0.04, 0.28]) {
+    const y = hem + (NOTCH_Y - hem) * t;
+    const hoop = new THREE.TorusGeometry(radiusAt(y, hem, top, radius) + STAVE_THICK + 0.008, 0.02, 6, 22);
     hoop.rotateX(Math.PI / 2);
     hoop.translate(0, y, 0);
-    return skinTo(hoop, boneIndex(nearest(y)));
-  });
+    add(hoop, y);
+  }
+  // Front and back bands only: a full hoop here would run through the hanging arms.
+  for (const t of [0.55, 0.96]) {
+    const y = hem + (top - hem) * t;
+    const r = radiusAt(y, hem, top, radius) + STAVE_THICK + 0.008;
+    const arcLen = Math.PI * 0.22;
+    // Center each band on the front and the back. An arc that starts on that
+    // axis runs out into the arms.
+    for (const center of [Math.PI / 2, -Math.PI / 2]) {
+      const arc = new THREE.TorusGeometry(r, 0.016, 6, 10, arcLen);
+      arc.rotateX(Math.PI / 2);
+      arc.rotateY(arcLen / 2 - center);
+      arc.translate(0, y, 0);
+      add(arc, y);
+    }
+  }
+  return mergeSkinned(parts);
+}
+
+function mergeSkinned(parts) {
   const n = parts.reduce((s, g) => s + g.attributes.position.count, 0);
   const p = new Float32Array(n * 3), normal = new Float32Array(n * 3);
   const skinI = new Uint16Array(n * 4), skinW = new Float32Array(n * 4);

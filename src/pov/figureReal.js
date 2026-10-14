@@ -93,7 +93,7 @@ function seatPack(pack, model) {
   let gap = Infinity;
   const v = new THREE.Vector3();
   model.traverse((o) => {
-    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'sleeves') return;
+    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'sleeves' || o.name === 'bung') return;
     // She wears a barrel: the pack straps to that, not to the body inside it.
     if (model.getObjectByName('robe') && o.name !== 'robe' && o.name !== 'hoops') return;
     if (!model.getObjectByName('robe') && (o.name === 'robe' || o.name === 'hoops')) return;
