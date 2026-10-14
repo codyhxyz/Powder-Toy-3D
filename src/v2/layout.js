@@ -60,11 +60,9 @@ export const share = (total, before, amount, fill) => fill ? BigInt(total) * Big
 export function energyFits(m, e) { try { return energyOf(withEnergy(m, e)) === e; } catch { return false; } }
 export function energyBounds(core, amount) {
   const id = cid(core), cap = BigInt(AIR_CAPACITY_Q + amount * capacityPerQuantum(id)), offset = phaseOffsetEnergy(id, amount);
-  if (cRawTq(core) > PHASE_NORMAL_MAX) {
-    const hot = cRawTq(core) < PHASE_COLD_BASE, threshold = offset + cap * BigInt(cTq(core));
-    const latent = BigInt(hot ? PHASE_ROWS[id].hotLatent : PHASE_ROWS[id].coldLatent) * BigInt(amount);
-    return hot ? { lo: threshold, hi: threshold + latent } : { lo: threshold - latent, hi: threshold };
-  }
+  // Every current liquid plateau lies inside this representable interval.
+  // Restricting a tagged receiver to its plateau makes its drained headroom
+  // zero and incorrectly dams ordinary hot/cold arrivals.
   return { lo: offset - 2147483648n, hi: offset + cap * BigInt(PHASE_NORMAL_MAX) + 2147483647n };
 }
 export function energyPacketFits(src, dst, packet, n) {

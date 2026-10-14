@@ -76,18 +76,11 @@ fn withEnergy(m: Material, e: vec2u) -> Material {
 // but a sum outside the format must remain at its source, never truncate.
 fn energyFits(m: Material, e: vec2u) -> bool { return all(energyOf(withEnergy(m, e)) == e); }
 struct EnergyBounds { lo: vec2u, hi: vec2u }
-// Choose one affine, fully representable interval (normal or the current
-// phase plateau). Affine bounds permit independent conservative face budgets.
+// This affine interval contains all supported liquid plateaus. Restricting
+// a tagged receiver to its plateau incorrectly dams hot/cold arrivals.
 fn energyBounds(c: vec4u, amount: u32) -> EnergyBounds {
   let id = cid(c); let capacity = 65536u + amount * capacityPerQuantum(id);
-  let offset = phaseOffsetEnergy(id, amount); let raw = cRawTq(c);
-  if (raw > 41093u) {
-    let hot = raw < PHASE_COLD_BASE;
-    let threshold = energyAdd(offset, energyMul(capacity, cTq(c)));
-    let latent = energyMul(u32(select(phaseColdLatent(id), phaseHotLatent(id), hot)), amount);
-    if (hot) { return EnergyBounds(threshold, energyAdd(threshold, latent)); }
-    return EnergyBounds(energySub(threshold, latent), threshold);
-  }
+  let offset = phaseOffsetEnergy(id, amount);
   return EnergyBounds(energyAdd(offset, energySigned(-2147483648)),
     energyAdd(energyAdd(offset, energyMul(capacity, 41093u)), energySigned(2147483647)));
 }

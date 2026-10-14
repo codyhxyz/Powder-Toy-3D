@@ -13,17 +13,18 @@ const PREFIX = 12;
 const MAX_META = 4096;
 
 const fail = (message) => { throw new Error(`v2 state: ${message}`); };
-export function stateLengths(dims, hasAux = false, version = V2_STATE_VERSION) {
+export function stateLengths(dims, hasAux = false, version = V2_STATE_VERSION, energyLedger = true) {
   if (!Array.isArray(dims) || dims.length !== 3 || dims.some(n => !Number.isSafeInteger(n) || n <= 0 || n > 4096)) fail('invalid dimensions');
   const g = gridDims({ nx: dims[0], ny: dims[1], nz: dims[2] });
   if (!Number.isSafeInteger(g.slots) || g.slots > 2 ** 28) fail('grid too large');
-  return { cells: g.slots * 4, activity: v2ActLayout(g).words - (version === 1 ? g.nbricks : 0), args: ARGS2.words, ...(hasAux ? { aux: g.slots } : {}) };
+  return { cells: g.slots * 4, activity: v2ActLayout(g).words - (version === 1 ? g.nbricks + 6 : energyLedger ? 0 : 6), args: ARGS2.words, ...(hasAux ? { aux: g.slots } : {}) };
 }
 
 function validateMeta(meta, dims, version = V2_STATE_VERSION) {
   if (!meta || meta.version !== version) fail('unsupported version');
   if (meta.hasAux !== undefined && typeof meta.hasAux !== 'boolean') fail('invalid aux descriptor');
-  const lengths = stateLengths(meta.dims, meta.hasAux, version);
+  if (meta.energyLedger !== undefined && typeof meta.energyLedger !== 'boolean') fail('invalid energy ledger descriptor');
+  const lengths = stateLengths(meta.dims, meta.hasAux, version, meta.energyLedger === true);
   if (dims && (dims.length !== 3 || dims.some((n, i) => n !== meta.dims[i]))) fail('dimensions do not match save');
   for (const key of ['tick', 'frame', 'paints']) if (!Number.isSafeInteger(meta[key]) || meta[key] < 0) fail(`invalid ${key}`);
   if (!Number.isFinite(meta.acc) || meta.acc < 0 || meta.acc >= 1) fail('invalid accumulator');
@@ -36,6 +37,7 @@ export function encodeV2State(state) {
   const { cells, activity, args, aux, ...meta } = state;
   meta.hasAux = aux !== undefined;
   meta.version = V2_STATE_VERSION;
+  meta.energyLedger = true;
   const lengths = validateMeta(meta);
   const arrays = { cells, activity, args, aux };
   for (const [key, length] of Object.entries(lengths)) if (!(arrays[key] instanceof Uint32Array) || arrays[key].length !== length) fail(`invalid ${key} length/type`);
@@ -75,9 +77,16 @@ export function decodeV2State(bytes, dims) {
   // Before the auxiliary owner existed, its state was the all-zero initial state.
   state.aux ??= new Uint32Array(lengths.cells / 4);
   if (version === 1) migratePrototype(state);
+  else if (!state.energyLedger) {
+    const activity = new Uint32Array(stateLengths(state.dims, true).activity);
+    activity.set(state.activity);
+    state.activity = activity;
+  }
+  state.energyLedger = true;
   for (let i = 0; i < state.cells.length; i += 4) {
     try { validatePhaseCore(state.cells.subarray(i, i + 4)); }
     catch (error) { fail(error.message); }
+    if (isLiquid(state.cells[i] & 255) && (state.cells[i + 1] & 0xffffff) > MAX_FILL) fail('native fill exceeds compression limit');
   }
   return state;
 }

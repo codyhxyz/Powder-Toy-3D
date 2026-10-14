@@ -163,9 +163,12 @@ export class PhysicsV2 {
   _readIdle() {
     if (this.idleRead || this.certified || this.disposed) return;
     const epoch = this.epoch;
-    this.idleRead = this.gpu.readback.buffer(this.args, ARGS2.STATS * 4, STATS.words * 4).then((bytes) => {
+    this.idleRead = Promise.all([
+      this.gpu.readback.buffer(this.args, ARGS2.STATS * 4, STATS.words * 4),
+      this.dynamics?.readActivity(),
+    ]).then(([bytes]) => {
       this.stats = new Uint32Array(bytes);
-      if (!this.disposed && epoch === this.epoch && this.stats[STATS.AWAKE] === 0) this.certified = true;
+      if (!this.disposed && epoch === this.epoch && this.stats[STATS.AWAKE] === 0 && (!this.dynamics || this.dynamics.isIdle === true)) this.certified = true;
     }).catch(() => {}).finally(() => { this.idleRead = null; });
   }
 

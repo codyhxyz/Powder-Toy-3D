@@ -9,6 +9,7 @@ import { encodeSave, decodeSave, readSaveHeader } from '../../src/saves/format.j
 import { createSaves } from '../../src/saves/game.js';
 import savesWire from '../../src/wire/saves.js';
 import { gridLayout } from '../../src/sim.js';
+import { E } from '../../src/elements.js';
 
 const dims = [32, 32, 32], lengths = stateLengths(dims, true);
 const state = { dims, mode: 'v2', tick: 713, acc: 0.375, frame: 819, paints: 23, certified: false, writtenSinceTick: true };
@@ -22,7 +23,11 @@ state.aux.set([0xffffffff, 0x7fc00001, 0x80000000, 0xdeadbeef]);
 state.activity[0] = 1;
 state.args[12] = state.tick;
 const bytes = encodeV2State(state);
-assert.deepEqual(decodeV2State(bytes, dims), { ...state, hasAux: true, version: V2_STATE_VERSION });
+assert.deepEqual(decodeV2State(bytes, dims), { ...state, hasAux: true, energyLedger: true, version: V2_STATE_VERSION });
+const oversizedFill = new Uint32Array(state.cells);
+oversizedFill[0] = E.WATER | (1173 << 8);
+oversizedFill[1] = 0xffffff;
+assert.throws(() => decodeV2State(encodeV2State({ ...state, cells: oversizedFill })), /fill exceeds compression limit/);
 const padded = new Uint8Array(bytes.length + 9); padded.set(bytes, 5);
 assert.deepEqual(decodeV2State(padded.subarray(5, 5 + bytes.length), dims).cells, state.cells);
 assert.throws(() => encodeV2State({ ...state, cells: state.cells.subarray(4) }), /length/);

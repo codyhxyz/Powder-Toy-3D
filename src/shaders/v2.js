@@ -122,7 +122,8 @@ export function fallCells(id, ticks) {
 // v2's activity words (u32), one run per brick each, then the brick columns and the counts.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, words: 10 * nb + bx * bz + 8 };
+  const ledger = 10 * nb + bx * bz + 8;
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, words: ledger + 6 };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -174,6 +175,8 @@ const V2_COUNT: u32 = ${a.count}u;
 const V2_LEGACY: u32 = ${a.legacy}u;
 const V2_VISIBLE: u32 = ${a.visible}u;
 const V2_STATE_DIRTY: u32 = ${a.state}u;
+const V2_ENERGY_SOURCE: u32 = ${a.energySource}u;
+const V2_ENERGY_SINK: u32 = ${a.energySink}u;
 const CNT_AWAKE: u32 = ${CNT.AWAKE}u;
 const CNT_COLS: u32 = ${CNT.COLS}u;
 const CNT_BUSY: u32 = ${CNT.BUSY}u;
@@ -212,6 +215,24 @@ fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
   atomicStore(&act2[V2_LEGACY + b], 1u);
 }
 fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); }
+// Explicit chemical/removed-material energy, separate from conservative transfers.
+// Three atomic words retain carries across concurrent additions (96-bit totals).
+fn noteEnergyCounter(index: u32, amount: vec2u) {
+  if (all(amount == vec2u(0u))) { return; }
+  let low = atomicAdd(&act2[index], amount.x);
+  let carry = select(0u, 1u, low > 0xffffffffu - amount.x);
+  let increment = amount.y + carry;
+  let high = atomicAdd(&act2[index + 1u], increment);
+  if (high > 0xffffffffu - increment) { atomicAdd(&act2[index + 2u], 1u); }
+}
+fn noteEnergySource(position: vec3i, amount: vec2u) {
+  if ((amount.y & 0x80000000u) != 0u) { noteEnergyCounter(V2_ENERGY_SINK, energyNeg(amount)); }
+  else { noteEnergyCounter(V2_ENERGY_SOURCE, amount); }
+}
+fn noteEnergySink(position: vec3i, amount: vec2u) {
+  if ((amount.y & 0x80000000u) != 0u) { noteEnergyCounter(V2_ENERGY_SOURCE, energyNeg(amount)); }
+  else { noteEnergyCounter(V2_ENERGY_SINK, amount); }
+}
 fn storeCell(p: vec3i, c: vec4u) {
   let s = slotOf(p);
   if (any(loadCore(s) != c)) { noteState(s); }
@@ -545,7 +566,9 @@ ${MAIN} {
   for (var i = 0u; i < 8u; i++) {
     let p = c0 + off8(i); positions[i] = p;
     cs[i] = cellAt(p); orig[i] = cs[i];
-    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; } oldBanks[i] = bs[i];
+    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
+    requests[i] = pending[i];
+    oldBanks[i] = bs[i];
   }
   // R2 topple
   for (var c = 0u; c < 4u; c++) {
