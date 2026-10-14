@@ -413,6 +413,12 @@ fn fetchAs(s: u32) -> vec4f {
   return bitcast<vec4f>(A[H.src * SLOTS + s]);
 }
 fn fetchA(p: vec3i) -> vec4f { ${cell('src')}return fetchAs(slotOf(p)); }
+fn fetchNativeAeration(p: vec3i) -> vec3f {
+  ${cell('src')}if (H.format != 2u && H.format != 3u) { return vec3f(0.0); }
+  let core = A[slotOf(p)];
+  if (KIND(i32(core.x & 255u)) != K_LIQUID || (core.y & 0xffffffu) == 0u) { return vec3f(0.0); }
+  return vec3f(f32(core.x >> 24u) / 255.0, 1.0, 1.0);
+}
 fn fetchBs(s: u32) -> vec4f {
   ${slot('src')}if (H.format == 2u) { return vec4f(0.0); }
   if (H.format == 3u) {

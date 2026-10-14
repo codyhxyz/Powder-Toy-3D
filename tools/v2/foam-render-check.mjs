@@ -13,8 +13,11 @@ import { liquidDetailGLSL } from '../../src/shaders/gfx/liquidDetail.js';
 test('compact high-byte foam is independent of legacy Whitewater; v1 eligibility is unchanged',()=>{
   for(const enabled of [false,true]) {
     const source=liquidDetailGLSL({DETAIL_LIQ_FOAM:+enabled});
-    assert.match(source,/f32\(core.x >> 24u\) \/ 255.0/);
-    assert.match(source,/KIND\(i32\(core.x & 255u\)\) != K_LIQUID/);
+    assert.match(source,/return fetchNativeAeration\(c\)/);
+    assert.doesNotMatch(source,/\bA\s*\[/,'raw state reads stay in checked accessors');
+    const integrated=volumeFrag(gridLayout(32,32,32),{detail:{DETAIL_LIQ_FOAM:+enabled}});
+    assert.match(integrated,/f32\(core.x >> 24u\) \/ 255.0/);
+    assert.match(integrated,/KIND\(i32\(core.x & 255u\)\) != K_LIQUID/);
     assert.match(source,/SURFCH\(id\) == CH_LIQUID && id != E_ICE/,'legacy ripple/meniscus eligibility');
     assert.ok(source.includes(`H.format == 2u || H.format == 3u || ${enabled}`));
     assert.match(source,/let w = aeration\[gAerCopy \* SLOTS \+ slotOf\(c\)\]/,'legacy field remains intact');

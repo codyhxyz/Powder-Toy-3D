@@ -223,9 +223,7 @@ const AER_LIQ_MIN: f32 = 0.02;       // liquid weight below which the read is no
 fn aerTap(c: vec3i) -> vec3f {
   if (outside(c)) { return vec3f(0.0); }
   if (H.format == 2u || H.format == 3u) {
-    let core = A[slotOf(c)];
-    if (KIND(i32(core.x & 255u)) != K_LIQUID || (core.y & 0xffffffu) == 0u) { return vec3f(0.0); }
-    return vec3f(f32(core.x >> 24u) / 255.0, 1.0, 1.0);
+    return fetchNativeAeration(c);
   }
   let w = aeration[gAerCopy * SLOTS + slotOf(c)];
   let f = vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
