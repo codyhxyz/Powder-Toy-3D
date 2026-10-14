@@ -211,6 +211,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     releaseInput(); punchSerial++; punchAt = -Infinity; reactionUntil = 0;
     onEnabled(on);
     if (!on) {
+      avatar.reset();
       toolModel?.dispose(); toolModel = null; toolMaterials.forEach(m => m.dispose()); toolMaterials = []; tool = null;
       releaseHeld();
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
@@ -276,9 +277,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     const p = getPlayer();
     if (p) {
       avatar.root.position.copy(p.pos).multiplyScalar(scale).add(vol.position); avatar.root.scale.setScalar(scale * p.size);
-      avatar.root.rotation.y = yaw; avatar.root.visible = live() && shown;
+      avatar.root.rotation.y = p.leaping ? Math.atan2(-p.vel.x, -p.vel.z) : yaw; avatar.root.visible = live() && shown;
       const punching = Math.max(0, 1 - (time - punchAt) / PUNCH_DURATION);
-      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0, punching, !!tool, usingTool);
+      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0, punching, !!tool, usingTool, p);
       if (toolModel) toolModel.obj.visible = !held && !punching;
     }
     for (const r of residents) {
