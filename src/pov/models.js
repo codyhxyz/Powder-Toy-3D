@@ -448,7 +448,7 @@ function arm(dir) {
 
 const AXIS = { x: 0, y: 1, z: 2 };
 // Barrel exits in the parts' coordinates, before the model is centred and fitted.
-const MUZZLES = { pistol: [0, 0.2, -0.56], gun: [0, 0.21, -0.945], sniper: [0, 0.22, -1.73] };
+const MUZZLES = { pistol: [0, 0.2, -0.56], gun: [0, 0.21, -0.945], sniper: [0, 0.22, -1.73], rpg: [0, 0.3, -1.07] };
 
 // A normalised model `key` (see MODELS), wrapped in a group whose origin is the
 // anchor, with the arm on its grip (unless withArm is false: a thrown bomb).
