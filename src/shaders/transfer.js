@@ -118,7 +118,8 @@ fn main(@builtin(local_invocation_index) i: u32) {
     } else {
       let id = eid(a);
       var got = id;
-      if (P.breaks != 0u && KIND(id) == K_SOLID) { got = BREAKINTO(id); }
+      // Minecraft's Silk Touch: lift fungus intact for replanting; impacts still make sawdust.
+      if (P.breaks != 0u && KIND(id) == K_SOLID && id != E_FUNGUS) { got = BREAKINTO(id); }
       out = vec4f(f32(got), a.yzw);
       // air at ambient, keeping the cell's random seed and the air pressure
       oA = vec4f(f32(E_EMPTY), airT(), 0.0, fract(a.w));

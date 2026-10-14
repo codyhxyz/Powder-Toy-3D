@@ -43,7 +43,7 @@ try {
   const inventoryIds = s => [...s.placed, ...s.pockets, ...s.storage].map(i => i.id).sort();
   const original = inventoryIds(first.state);
   const controls = page.locator('.village-controls');
-  assert.equal(await controls.getByRole('button').count(), 2, 'pockets and harmless punch stay visible; no irrelevant arrange action');
+  assert.equal(await controls.getByRole('button').count(), 3, 'pockets, punch and kick stay visible; no irrelevant arrange action');
   assert.equal(await page.getByRole('group', { name: 'World tools', exact: true }).getByRole('button').count(), 4, 'hands and terrain tools are discoverable');
   assert.equal(await controls.locator('[data-action="pockets"] .action-key').textContent(), 'I');
   assert.equal(await controls.getByText('H', { exact: true }).count(), 0, 'no separate arrange shortcut');
