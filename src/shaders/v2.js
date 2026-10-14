@@ -316,12 +316,34 @@ fn importA(a: vec4f) -> vec4u {
   if (conductsNative(id)) { c = withSpark(c, legacyCtype); }
   return c;
 }
+// Native editing projection is non-dithered. Merge only changed properties;
+// neither pressure/momentum nor a seed-only change owns material quantities.
+fn importProperties(p: vec3i, m: Material, a: vec4f) -> Material {
+  let before = compactProbeA(p, m.core);
+  var out = m;
+  if (a.z != before.z && !(isLiq(m.core) && conductsNative(cid(m.core)))) {
+    out.core = withLife(out.core, a.z);
+  }
+  if (floor(a.w) != floor(before.w)) {
+    let ct = u32(max(floor(a.w), 0.0));
+    if (conductsNative(cid(m.core))) { out.core = withSpark(out.core, ct); }
+    else { out.core = withCtype(out.core, ct); }
+  }
+  if (a.y != before.y) {
+    // Add sensible heat to the existing phase/bank, retaining latent residual.
+    let dq = i32(round(clamp((a.y + T_OFFSET) * 4.0, 0.0, 41093.0))) - i32(cTq(m.core));
+    let heat = energyMul(capacityQ(m.core), u32(abs(dq)));
+    let editedEnergy = energyAdd(energyOf(out), select(heat, energyNeg(heat), dq < 0));
+    if (energyFits(out, editedEnergy)) { out = withEnergy(out, editedEnergy); }
+  }
+  return out;
+}
 `;
 
 const MAIN = '@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32)';
 
 // ---- import: sticky positional ownership survives v1 activity rebuilds and ping-pong copies.
-// Only actual legacy writes (or explicit edit boxes) replace compact cells. Comparing the final
+// Only actual v1 writes or eligible explicit replacement intents replace compact cells. Comparing the final
 // projection is insufficient: a hidden film looks like air, and a cell may change away and back.
 // A whole replacement (load/undo: P.full) owns every cell. Changed non-air wakes its brick.
 export const v2ImportWGSL = (g) => /* wgsl */ `
@@ -353,6 +375,12 @@ ${MAIN} {
       // (air that stays air, at another temperature or seed, makes no rule possible: a load of an
       // empty box wakes nothing)
       if (clsOf(n) != C_AIR || clsOf(c) != C_AIR || oldBank != 0) { atomicOr(&wgChanged, 1u); }
+    }
+  } else if (H.capture == 2u) {
+    let next = importProperties(p, Material(c, banks[s]), a);
+    if (any(next.core != c) || next.bank != banks[s]) {
+      cells[s] = next.core; banks[s] = next.bank; noteState(s);
+      atomicOr(&wgChanged, 1u);
     }
   }
   workgroupBarrier();
@@ -1094,11 +1122,11 @@ var<workgroup> wgPending: u32;
 ${MAIN} {
   let b = foldId(wg, nwg);
   if (b >= NBRICKS) { return; }
-  if (li == 0u) { wgPending = atomicLoad(&act2[V2_LEGACY + b]); }
+  if (li == 0u) { wgPending = P.full | atomicLoad(&act2[V2_LEGACY + b]); }
   if (workgroupUniformLoad(&wgPending) == 0u) { return; }
   let s = b * 64u + li;
   let p = cellOf(s);
-  writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), compactA(p, cells[s]), vec4f(0.0));
+  writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), select(compactA(p, cells[s]), compactProbeA(p, cells[s]), H.format == 3u), vec4f(0.0));
   workgroupBarrier();
   if (li == 0u) { atomicStore(&act2[V2_LEGACY + b], 0u); }
 }

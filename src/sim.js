@@ -483,20 +483,20 @@ export class Simulation {
    * default: an edit's).
    */
   header(src = this.cur, dst = src) {
-    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0, capture: this.compactOwner?.isReady ? 1 : 0 };
+    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0, capture: this.compactOwner?.isReady ? (this.compact === this.compactOwner ? 2 : 1) : 0 };
   }
 
   // Writer/readback compatibility boundaries. Internal compact kernels bind
   // their own groups and legacy headers, so synchronization cannot recurse.
-  legacyState() { this.compact?.exportLegacy(); }
-  get bindRW() { this.legacyState(); return this._bindRW; }
+  legacyState(native = false) { this.compact?.exportLegacy(native); }
+  get bindRW() { this.legacyState(true); return this._bindRW; }
   get bindAct() { this.legacyState(); return this._bindAct; }
   get bindFlagsRO() { this.legacyState(); return this._bindFlagsRO; }
   get bindRO() {
     const v2 = this.compact;
     if (!v2?.isReady) return this._bindRO;
     v2.sync();
-    if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(); return this._bindRO; }
+    if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(false); return this._bindRO; }
     return v2.groups.read;
   }
   // Physical readers share the compact core but read current native coarse

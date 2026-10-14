@@ -439,7 +439,8 @@ fn ownLegacy(s: u32) {
   if (H.capture != 0u) { atomicOr(&marks[MARK_OWNED + (s >> 5u)], 1u << (s & 31u)); }
 }
 fn noteLegacy(s: u32, a: vec4f, b: vec4f) {
-  if (H.capture != 0u && (any(a != fetchAs(s)) || any(b != fetchBs(s)))) { ownLegacy(s); }
+  if ((H.capture == 1u && (any(a != fetchAs(s)) || any(b != fetchBs(s)))) ||
+      (H.capture == 2u && eid(a) != eid(fetchAs(s)))) { ownLegacy(s); }
 }` : ''}
 // Store cell p's new state in the copy H.dst names. The caller has
 // established inGrid(p) and its own box test (D8.9).
@@ -469,8 +470,7 @@ fn writeFlags(p: vec3i, f: u32) {
 // caller marks the brick (markBrick; editMain does, once per workgroup).
 fn writeCell(p: vec3i, a: vec4f, b: vec4f, f: u32, oA: vec4f, oB: vec4f) -> bool {
   if (!inGrid(p)) { return false; }
-  // Explicit edit calls also own no-op writes (erasing projected air must erase hidden fill).
-  ${o.marks ? 'ownLegacy(slotOf(p));' : ''}
+  // Eligibility belongs to the edit branch, not its enclosing dispatch box.
   if (all(oA == a) && all(oB == b)) { return false; }
   writeState(p, oA, oB, writtenFlags(f, a, b, oA, oB));
   return true;

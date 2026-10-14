@@ -206,11 +206,11 @@ export class PhysicsV2 {
     if (!this.importFull && !this.importMarked) return;
     const { gpu, sim } = this;
     this.kernels.v2externalEvents.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.invalidate, this.groups.contact], header: sim.header(), params: { ...params, full: this.importFull ? 1 : 0 },
+      bind: [sim.tables, this.groups.invalidate, this.groups.contact], header: { ...sim.header(), capture: 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
     });
     sim.onPass?.('v2externalEvents', { kind: 'compute', gpuMs: null });
     this.kernels.v2import.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.import, this.groups.material], header: { ...sim.header(), capture: 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
+      bind: [sim.tables, this.groups.import, this.groups.material], header: { ...sim.header(), capture: this.legacyNative ? 2 : 0 }, params: { ...params, full: this.importFull ? 1 : 0 },
     });
     sim.onPass?.('v2import', { kind: 'compute', gpuMs: null });
     this.legacyPending = true;
@@ -226,16 +226,18 @@ export class PhysicsV2 {
 
   /** Export only at a legacy boundary, before recording its commands. Use only
    * the legacy header and private groups: readHeader/bindRW would recurse. */
-  exportLegacy() {
+  exportLegacy(native = this.sim.compact === this) {
     if (!this.isReady || this.disposed) return;
     this.sync();
-    if (!this.legacyPending) return;
+    const modeChanged = this.legacyNative !== native;
+    if (!this.legacyPending && !modeChanged) return;
     const { sim, gpu } = this;
     this.kernels.v2bridge.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0 }, params: this._params(this.tick + 1),
+      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0, format: native ? 3 : 0 }, params: { ...this._params(this.tick + 1), full: modeChanged ? 1 : 0 },
     });
     sim.onPass?.('v2bridge', { kind: 'compute', gpuMs: null });
     this.legacyPending = false;
+    this.legacyNative = native;
   }
 
   activate() {
@@ -249,7 +251,7 @@ export class PhysicsV2 {
 
   suspend() {
     if (this.sim.compact !== this) return;
-    if (!this.gpu.failure) this.exportLegacy();
+    if (!this.gpu.failure) this.exportLegacy(false);
     this.sim.compact = null;
     // A presentation switch is not a state replacement. The retained owner
     // imports only sticky per-cell legacy writes, even after v1 activity consumes its marks.
@@ -318,7 +320,7 @@ export class PhysicsV2 {
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
     this.legacyPending = true;
     // A test-only same-physics baseline for full-frame direct/compat comparisons.
-    if (this.forceCompatibility && gpu.testMode) this.exportLegacy();
+    if (this.forceCompatibility && gpu.testMode) this.exportLegacy(false);
   }
 
   /**

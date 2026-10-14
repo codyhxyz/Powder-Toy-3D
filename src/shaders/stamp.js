@@ -64,6 +64,7 @@ fn footing(p: vec3i, y0: i32, foot: i32) -> bool {
 // Cell p (state B b) stamped with voxel s: its element, temperature and
 // ctype, a fresh colour seed, at rest.
 fn stampPut(p: vec3i, s: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  ownLegacy(slotOf(p)); // only an eligible voxel/footing, including explicit air
   let id = i32(s.x + 0.5) - 1;
   var rs = seed3(p, P.seed, SALT_STAMP);
   *oA = vec4f(f32(id), s.y, SPAWNLIFE(id), s.z + rnd(&rs) * SEED_MAX);

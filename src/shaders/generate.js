@@ -43,6 +43,7 @@ fn cellDiffers(a: vec4f, gen: vec4f) -> bool {
 export const FillParams = uniformStruct('FillParams', { ...EDIT_FIELDS, origin: 'vec3i' });
 const FILL_UPDATE = /* wgsl */ `
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  ownLegacy(slotOf(p)); // generation explicitly replaces every cell in its slab
   let c = sceneCell(P.origin + p);
   *oA = c.A;
   *oB = c.B;

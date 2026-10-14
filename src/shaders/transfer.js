@@ -109,6 +109,7 @@ fn main(@builtin(local_invocation_index) i: u32) {
   // 3. the acting slots write their own cells (no two slots share one)
   var out = vec4f(-1.0, 0.0, 0.0, 0.0);
   if (q == 1u && rank < P.limit) {
+    ownLegacy(slotOf(c));
     var oA: vec4f;
     var oB: vec4f;
     if (P.mode == MODE_PUT) {

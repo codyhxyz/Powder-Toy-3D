@@ -194,3 +194,29 @@ The target permits eight storage buffers per shader stage. Use family-specific l
 Only the parent launches GPU validation.
 The total GPU occupancy limit is 10 seconds, including startup, compilation and cleanup.
 Do not lower quality, shrink established fixtures, bypass the guard or silently retry.
+
+### Legacy edit intent (CPU-checked)
+
+`H.capture=1` records sticky coordinate ownership for every changed retained-v1
+write, including changed-away-and-back. `capture=2` is active-native editing:
+only element changes automatically replace material. Eligible brush replacement,
+erase, TYPE, successful Mix, stamp voxels/footings, generation, script SPAWN/TYPE,
+transfer and construction branches explicitly call `ownLegacy`. Generic
+`writeCell` does **not** claim unchanged/rejected dispatch-box cells.
+
+Native edits export `compactProbeA` so hidden fractional liquids participate in
+material filters and property predicates. The compatibility cache tracks this
+physical edit projection separately from visual `compactA`; mode transitions
+refresh the entire projection with capture disabled. Legacy snapshots/readback,
+v1 suspension and forced compatibility rendering request the visual projection.
+Native authoritative snapshots are unchanged.
+
+Unowned property edits merge only differing temperature/life/ctype in marked
+bricks. Temperature adds sensible energy using native capacity and phase helpers;
+unchanged mass, residual energy, fuel, burn bits and conductor unions are not
+reset by unrelated property, pressure or momentum writes. Explicit replacement
+retains the full import/reset semantics. Momentum/air forcing is a separate API.
+
+`node tools/v2/edit-intent-check.mjs` executes production brush/stamp/partial-import
+branch bodies with CPU adapters and spies on the real export cache protocol.
+It is CPU evidence, not WebGPU execution evidence.

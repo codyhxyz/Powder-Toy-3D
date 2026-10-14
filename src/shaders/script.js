@@ -49,6 +49,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let id = eid(a);
   if ((m & EDIT_IF_EMPTY) != 0u && id != E_EMPTY) { return; }
   if ((m & EDIT_IF_MATTER) != 0u && id == E_EMPTY) { return; }
+  if ((m & (EDIT_SPAWN | EDIT_TYPE)) != 0u) { ownLegacy(slotOf(p)); }
   let seed = fract(a.w);
   if ((m & EDIT_SPAWN) != 0u) {
     let n = i32(va.x + 0.5);

@@ -144,6 +144,7 @@ fn mixCell(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<funct
   if (!isLooseOrGas(id) || KIND(eid(qa)) != KIND(id)) { return; }
   var ps = seedWorld(base + select(lq, l, mixIndex(l) < mixIndex(lq)), P.frame, SALT_MIX_PAIR);
   if (rnd(&ps) >= TOOL_MIX_SWAP) { return; }
+  ownLegacy(slotOf(p)); // a successful Mix swap replaces the selected cell
   *oA = qa;
   *oB = vec4f(fetchB(q).xyz, b.w);   // the cell moves with its velocity; the air's pressure stays
 }
@@ -171,15 +172,20 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let propErases = tool == T_PROP && P.prop == PROP_TYPE && P.propValue == f32(E_EMPTY);   // TPT: type NONE kills the particle
 
   if (tool >= 0 && P.del == 0u) {
-    if (id == tool) { return; }
+    if (id == tool) {
+      if (P.replace != 0u) { ownLegacy(slotOf(p)); }
+      return;
+    }
     if (id != E_EMPTY && P.replace == 0u) { return; }
     if (rnd(&rs) > SPAWNDENS(tool) * P.rate) { return; }
+    ownLegacy(slotOf(p));
     let T = SPAWNT(tool);
     let ctype = select(0.0, f32(E_STONE), tool == E_LAVA);
     *oA = vec4f(f32(tool), T, SPAWNLIFE(tool), ctype + rnd(&rs) * SEED_MAX);
     let vy = select(0.0, SPAWN_DROP_V, isLoose(tool));
     *oB = vec4f(0.0, vy, 0.0, b.w);
   } else if (tool == T_ERASE || tool >= 0 || propErases) {   // (tool >= 0 here: specific delete)
+    ownLegacy(slotOf(p));
     *oA = vec4f(f32(E_EMPTY), airT(), 0.0, rnd(&rs) * SEED_MAX);
     *oB = vec4f(0.0, 0.0, 0.0, b.w);
   } else if (tool == T_HEAT) {
@@ -205,7 +211,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   } else if (tool == T_PROP) {
     let v = P.propValue;
     if (P.prop == PROP_PRESSURE) { (*oB).w = v; }
-    else if (P.prop == PROP_TYPE) { (*oA).x = v; }
+    else if (P.prop == PROP_TYPE) { ownLegacy(slotOf(p)); (*oA).x = v; }
     else if (P.prop == PROP_CTYPE) { (*oA).w = v + fract(a.w); }
     else if (P.prop == PROP_TEMP) { (*oA).y = v; }
     else if (P.prop == PROP_LIFE) { (*oA).z = v; }
