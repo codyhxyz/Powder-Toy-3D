@@ -12,7 +12,7 @@ import {
 } from '../shaders/far.js';
 import { gfxUniforms, frameUniformsOf } from '../gfx/uniforms.js';
 import { WorldDetail } from './detail.js';
-import { appearanceRegion, uploadAppearance } from '../gfx/sourceAppearance.js';
+import { appearanceRegion, uploadAppearance, SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
 
 // The far field of a massive world (docs/scaling.md D11, phase W4;
 // docs/webgpu.md G1; the WGSL and the far grid's layout are in
@@ -123,7 +123,7 @@ export class FarField {
     const [bx, by, bz] = L.bricks.n;
     const tex3 = (label, format) => gpu.createTexture({ label, size: [bx, by, bz], dimension: '3d', format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
     const tex2 = (label, format) => gpu.createTexture({ label, size: [bx, bz], format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
-    this.appearance = appearanceRegion(L.bricks.n, win.scene.importManifest?.appearance?.totalWords ?? 0, gpu.device.limits.maxTextureDimension3D);
+    this.appearance = appearanceRegion(L.bricks.n, SOURCE_APPEARANCE_ENABLED ? (win.scene.importManifest?.appearance?.totalWords ?? 0) : 0, gpu.device.limits.maxTextureDimension3D);
     this.grid = gpu.createTexture({ label: 'far grid + source appearance', size: this.appearance.size, dimension: '3d',
       format: FAR_FORMATS.grid, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC | TEX.COPY_DST });
     this.field = tex3('far field', FAR_FORMATS.field);   // what the view draws (farBoostFrag)

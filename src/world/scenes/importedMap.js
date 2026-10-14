@@ -4,6 +4,7 @@ import { importedCell, sourceToCells } from '../import/voxelize.js';
 import { CELL_M } from '../../scale.js';
 import { ELEMENTS, K } from '../../elements.js';
 import { validateAppearanceManifest, validateAppearance } from '../import/appearance.js';
+import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 
 // A converted source level (tools/import-cruelty-map.mjs), served from
 // public/local-maps as a small manifest plus gzip-packed sparse bricks. The
@@ -82,11 +83,11 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
     get appearanceWords() { return appearanceWords; },
     // The generator's prepare (world/gpu.js) awaits this before data().
     async prepare() {
-      if (words && (!map.appearance || appearanceWords)) return;
+      if (words && (!SOURCE_APPEARANCE_ENABLED || !map.appearance || appearanceWords)) return;
       if (!preparing) preparing = (async () => {
         const [geometry, appearance] = await Promise.all([
           words ?? fetchImportedWords(dataURL ?? map.dataFile),
-          map.appearance ? fetchImportedWords(new URL(map.appearance.dataFile, new URL(dataURL ?? map.dataFile, globalThis.location?.href ?? 'http://localhost/')).href) : null,
+          SOURCE_APPEARANCE_ENABLED && map.appearance ? fetchImportedWords(new URL(map.appearance.dataFile, new URL(dataURL ?? map.dataFile, globalThis.location?.href ?? 'http://localhost/')).href) : null,
         ]);
         validateImportedMap(map, geometry);
         if (appearance) {
