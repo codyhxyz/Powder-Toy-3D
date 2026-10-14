@@ -12,6 +12,7 @@ import {
 } from './figure.js';
 import { prepareMesh, getMeshGpu } from '../gfx/meshLight.js';
 import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limbs.js';
+import { strikePose, sampleKickPose, kickBlend } from './strikePose.js';
 
 // The realistic body: Quaternius's Superhero Male (Universal Base Characters,
 // CC0), sculpted muscles in his mesh and normal map, playing clips from
@@ -191,6 +192,13 @@ export function createRealFigure(gltf, { bag = false } = {}) {
   // ---- looking and holding: bones read off the bind pose (the clone is still in it)
   root.updateMatrixWorld(true);
   const bone = (n) => model.getObjectByName(n);
+  const kickPose = strikePose(), kickFoot = new THREE.Quaternion(), kickTurn = new THREE.Quaternion();
+  // Body-axis turns must be conjugated into each bone's resting parent frame.
+  const kickJoints = [['thigh_r', 'hip'], ['calf_r', 'knee'], ['foot_r', 'foot'], ['spine_01', 'torso']].map(([name, key]) => {
+    const b = bone(name);
+    const basis = b.parent.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(root.getWorldQuaternion(new THREE.Quaternion()));
+    return { b, key, basis, inverse: basis.clone().invert(), bind: b.quaternion.clone() };
+  });
   const spine = SPINE_BONES.map(bone), head = HEAD_BONES.map(bone);
   const jetpack = buildJetpack(root, { up: 3.65, back: 0.75 });
   jetpack.root.traverse((mesh) => {
@@ -378,6 +386,17 @@ export function createRealFigure(gltf, { bag = false } = {}) {
       }
       wing = s.dead ? 0 : s.flap ?? 0;
       flapArms(wing);   // empty hands; a held tool's reach() poses the arms again, higher
+      if (s.kick != null && !s.dead) {
+        sampleKickPose(s.kick, kickPose);
+        const weight = kickBlend(s.kick);
+        kickFoot.copy(kickPose.knee).invert().multiply(kickTurn.copy(kickPose.hip).invert());
+        for (const { b, key, basis, inverse, bind } of kickJoints) {
+          kickTurn.copy(basis).multiply(key === 'foot' ? kickFoot : kickPose[key]).multiply(inverse);
+          if (key === 'torso') b.quaternion.premultiply(kickTurn);
+          else b.quaternion.slerp(kickTurn.multiply(bind), weight);
+        }
+        holding = true;   // restore even untracked bones before the next mixer update
+      }
       contact.visible = s.onGround && !s.dead && !riding;
       updateJetFlames(jetpack.flames, s);
     },
