@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 export { furniture } from './furnitureModels.js';
 import { createLeapAnimation } from './leap.js';
-import { loft, hairGeometry, faceEllipse, faceStroke, noseGeometry, clothTexture } from './characterShapes.js';
+import { loft, hairGeometry, faceEllipse, faceStroke, eyeSurface, eyeTexture, noseGeometry, clothTexture } from './characterShapes.js';
 import { strikePose, sampleKickPose, kickBlend } from '../strikePose.js';
 
 // Wild World / City Folk silhouettes; baked shading and painted details work
@@ -108,22 +108,34 @@ export function character({ species = 'human', persona = 'boy', color = '#edbd96
     for (const x of [-0.58, 0.58])
       mesh(head, faceEllipse(x, 4.18, 0.64, 0.59, 0.025), '#634838', origin).name = 'raccoon-mask';
     mesh(head, faceEllipse(0, 3.66, 0.76, 0.41, 0.045), '#edd5ad', origin).name = 'light-muzzle';
+  } else if (species === 'bear') {
+    mesh(head, faceEllipse(0, 3.7, 0.55, 0.29, 0.045), '#e8c695', origin).name = 'light-muzzle';
+  } else if (species === 'cat' || species === 'rabbit') {
+    for (const x of [-0.18, 0.18])
+      mesh(head, faceEllipse(x, 3.7, 0.25, 0.19, 0.04), '#f5e5c2', origin).name = 'light-muzzle';
   }
   for (const x of [-0.55, 0.55]) {
     const eye = new THREE.Group(); eye.name = 'village-eye'; head.add(eye); eyes.push(eye);
-    mesh(eye, faceEllipse(x, 4.15, 0.33, 0.46, 0.055), ink, origin);
-    mesh(eye, faceEllipse(x, 4.15, 0.28, 0.4, 0.065), '#fff9e9', origin);
-    mesh(eye, faceEllipse(x + 0.035, 4.13, girl ? 0.215 : 0.18, girl ? 0.27 : 0.3, 0.075),
-      girl ? '#396956' : '#38322c', origin);
-    if (!girl) mesh(eye, faceEllipse(x - 0.055, 4.29, 0.055, 0.07, 0.085), '#fff9e9', origin);
-    if (girl) for (const d of [-1, 0, 1])
-      mesh(eye, faceStroke([[x + d * 0.16, 3.78], [x + d * 0.22, 3.66]], 0.035, 0.06), ink, origin);
+    const painted = mesh(eye, eyeSurface(x, 4.15), '#ffffff', origin);
+    painted.material.map = eyeTexture(species, girl);
+    painted.material.transparent = true; painted.material.depthWrite = false;
     const lid = mesh(head, faceStroke([[x - 0.25, 4.14], [x, 4.07], [x + 0.25, 4.14]], 0.035, 0.09), ink, origin);
     lid.name = `sleep-eye-${x < 0 ? 'left' : 'right'}`; lid.visible = false; lids.push(lid);
     mesh(head, faceEllipse(x * 1.65, 3.78, 0.22, 0.1, 0.025), '#d99678', origin);
   }
-  mesh(head, noseGeometry(), human ? '#e27b35' : '#77534b', origin).name = 'village-nose';
-  mesh(head, faceStroke([[-0.28, 3.62], [0, 3.49], [0.28, 3.62]], 0.04, 0.065), ink, origin).name = 'village-smile';
+  const nose = species === 'bear'
+    ? ball(head, '#684936', [0, 3.92, -1.23], [0.19, 0.12, 0.12])
+    : tanuki ? ball(head, '#372e2b', [0, 3.94, -1.25], [0.26, 0.17, 0.15])
+      : mesh(head, noseGeometry(species), human ? '#e27b35' : species === 'cat' ? '#ae716a' : '#c28592', origin);
+  nose.name = 'village-nose';
+  const splitMouth = species === 'cat' || species === 'rabbit';
+  mesh(head, faceStroke(splitMouth
+    ? [[-0.25, 3.63], [-0.12, 3.59], [0, 3.68], [0.12, 3.59], [0.25, 3.63]]
+    : [[-0.25, 3.62], [0, 3.51], [0.25, 3.62]], 0.026, 0.065), ink, origin).name = 'village-smile';
+  if (splitMouth)
+    mesh(head, faceStroke([[0, 3.85], [0, 3.68]], 0.02, 0.065), ink, origin);
+  if (species === 'cat') for (const x of [-1, 1]) for (const y of [3.78, 3.91])
+    mesh(head, faceStroke([[x * 0.78, y], [x * 1.12, y + 0.045]], 0.013, 0.025), '#8c694a', origin);
   root.name = `village-${species}`;
   root.userData.persona = persona === 'girl' ? 'girl' : 'boy';
   const leap = createLeapAnimation(body, limbs);

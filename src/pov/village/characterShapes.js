@@ -97,6 +97,69 @@ export function faceEllipse(x, y, rx, ry, depth = 0.015) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
   g.setIndex(indices); g.computeVertexNormals(); return g;
 }
+export function eyeSurface(x, y) {
+  const p = [], uv = [], indices = [], columns = 8, rows = 12;
+  for (let row = 0; row <= rows; row++) for (let col = 0; col <= columns; col++) {
+    const u = col / columns, v = row / rows;
+    p.push(...facePoint(x + (u - 0.5) * 0.78, y + (v - 0.5) * 1.12, 0.08));
+    uv.push(u, v);
+    if (row && col) {
+      const a = (row - 1) * (columns + 1) + col - 1, b = a + columns + 1;
+      indices.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(indices); g.computeVertexNormals(); return g;
+}
+
+// Near the boundary this is distance in face units, not a scaled ellipse radius.
+// A fixed-width stroke therefore stays the same thickness at the top and sides.
+function ellipseDistance(x, y, rx, ry) {
+  const k = Math.hypot(x / rx, y / ry), gradient = Math.hypot(x / (rx * rx), y / (ry * ry));
+  return gradient ? k * (k - 1) / gradient : -Math.min(rx, ry);
+}
+function segmentDistance(x, y, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const t = THREE.MathUtils.clamp(((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy), 0, 1);
+  return Math.hypot(x - ax - dx * t, y - ay - dy * t);
+}
+export function eyeTexture(species, girl) {
+  const width = 128, height = 192, pixels = new Uint8Array(width * height * 4);
+  const cat = species === 'cat', rabbit = species === 'rabbit', bear = species === 'bear', tanuki = species === 'tanuki';
+  const rx = cat ? 0.32 : rabbit ? 0.28 : 0.30, ry = bear || tanuki ? 0.35 : cat ? 0.36 : 0.42;
+  const ink = [78, 53, 38], white = [255, 249, 233];
+  const iris = girl ? [54, 105, 83] : cat ? [140, 155, 87] : rabbit ? [117, 71, 61] : [50, 43, 35];
+  const aa = 0.78 / width, stroke = 0.027;
+  for (let row = 0; row < height; row++) for (let col = 0; col < width; col++) {
+    const x = ((col + 0.5) / width - 0.5) * 0.78, y = ((row + 0.5) / height - 0.5) * 1.12;
+    const distance = ellipseDistance(x, y, rx, ry);
+    let alpha = THREE.MathUtils.clamp(0.5 - distance / aa, 0, 1), rgb = ink;
+    if (distance < 0) {
+      const fill = THREE.MathUtils.clamp(0.5 - (distance + stroke) / aa, 0, 1);
+      rgb = ink.map((v, i) => v + (white[i] - v) * fill);
+      const pupil = ellipseDistance(x - 0.01, y + 0.025, girl ? 0.17 : 0.15, girl ? 0.235 : 0.26);
+      const pupilFill = THREE.MathUtils.clamp(0.5 - pupil / aa, 0, 1);
+      rgb = rgb.map((v, i) => v + (iris[i] - v) * pupilFill);
+      if (cat && ellipseDistance(x - 0.01, y + 0.025, 0.065, 0.235) < 0) rgb = ink;
+      if (!girl && !tanuki && ellipseDistance(x + 0.045, y - 0.13, 0.045, 0.055) < 0) rgb = white;
+    }
+    if (girl) for (const lash of [-1, 0, 1]) {
+      const startX = lash * 0.16, startY = -ry * Math.sqrt(1 - (startX / rx) ** 2) + 0.015;
+      const d = segmentDistance(x, y, startX, startY, startX * 1.2, startY - 0.11) - 0.018;
+      const coverage = THREE.MathUtils.clamp(0.5 - d / aa, 0, 1);
+      if (coverage > alpha || (coverage > 0 && y < startY)) { rgb = ink; alpha = Math.max(alpha, coverage); }
+    }
+    const i = (row * width + col) * 4;
+    pixels.set([...rgb.map(Math.round), Math.round(alpha * 255)], i);
+  }
+  const texture = new THREE.DataTexture(pixels, width, height);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.LinearFilter; texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true; texture.needsUpdate = true;
+  return texture;
+}
 export function faceStroke(points, width = 0.035, depth = 0.02) {
   const curve = new THREE.CatmullRomCurve3(points.map(([x, y]) => new THREE.Vector3(x, y, 0)));
   const p = [], indices = [], steps = 20;
@@ -110,12 +173,24 @@ export function faceStroke(points, width = 0.035, depth = 0.02) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
   g.setIndex(indices); g.computeVertexNormals(); return g;
 }
-export function noseGeometry() {
+export function noseGeometry(species = 'human') {
+  if (species === 'rabbit') {
+    const heart = new THREE.Shape();
+    heart.moveTo(0, 3.82);
+    heart.bezierCurveTo(-0.06, 3.88, -0.16, 3.91, -0.1, 3.98);
+    heart.bezierCurveTo(-0.06, 4.02, 0, 3.99, 0, 3.96);
+    heart.bezierCurveTo(0, 3.99, 0.06, 4.02, 0.1, 3.98);
+    heart.bezierCurveTo(0.16, 3.91, 0.06, 3.88, 0, 3.82);
+    return new THREE.ShapeGeometry(heart, 6).rotateY(Math.PI).translate(0, 0, -1.27);
+  }
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute([
-    -0.18, 3.8, -1.2, 0.18, 3.8, -1.2, 0, 4.06, -1.18, 0, 3.86, -1.47,
-  ], 3));
-  g.setIndex([0, 2, 3, 2, 1, 3, 0, 3, 1, 0, 1, 2]); g.computeVertexNormals(); return g;
+  const cat = species === 'cat';
+  const p = cat
+    ? [-0.13, 3.96, -1.2, 0.13, 3.96, -1.2, 0, 3.8, -1.23, 0, 3.92, -1.34]
+    : [-0.18, 3.8, -1.2, 0.18, 3.8, -1.2, 0, 4.06, -1.18, 0, 3.86, -1.47];
+  g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+  g.setIndex(cat ? [0, 3, 2, 2, 3, 1, 0, 1, 3, 0, 2, 1] : [0, 2, 3, 2, 1, 3, 0, 3, 1, 0, 1, 2]);
+  g.computeVertexNormals(); return g;
 }
 
 export function clothTexture(color, kind) {

@@ -28,9 +28,15 @@ try {
       await page.screenshot({ path: join(out, `${persona}-${view}.png`) });
     }
   }
+  for (const resident of ['maple', 'clover', 'pippin', 'crook']) {
+    await page.locator(`[data-character=${resident}]`).click();
+    await page.waitForFunction(resident => document.querySelector(`[data-character=${resident}]`).getAttribute('aria-pressed') === 'true', resident);
+    await page.locator('[data-view=front]').click();
+    await page.screenshot({ path: join(out, `${resident}-front.png`) });
+  }
   assert.equal(await page.locator('#err').textContent(), '');
   assert.deepEqual(errors, []);
-  console.log(`PASS all six turnarounds and both playable characters in the actual viewer; captures ${out}`);
+  console.log(`PASS all six turnarounds, playable front/side/rear and resident face close-ups in the actual viewer; captures ${out}`);
 } finally {
   await browser.close();
 }

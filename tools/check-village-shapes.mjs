@@ -3,9 +3,11 @@ import * as THREE from 'three';
 import { character, dispose } from '../src/pov/village/models.js';
 import { RESIDENTS } from '../src/pov/village/residents.js';
 import { TIM_CROOK } from '../src/pov/village/crook.js';
+import { eyeTexture } from '../src/pov/village/characterShapes.js';
 
 const ray = (from, direction, meshes) =>
   new THREE.Raycaster(new THREE.Vector3(...from), new THREE.Vector3(...direction)).intersectObjects(meshes)[0]?.object;
+const noses = new Map();
 for (const spec of [{ persona: 'boy' }, { persona: 'girl' }, ...RESIDENTS, TIM_CROOK]) {
   const model = character(spec), root = model.root;
   root.updateMatrixWorld(true);
@@ -22,6 +24,12 @@ for (const spec of [{ persona: 'boy' }, { persona: 'girl' }, ...RESIDENTS, TIM_C
       assert.ok(o.geometry.attributes.uv, 'painted geometry has UVs');
     }
   });
+  const nose = root.getObjectByName('village-nose');
+  const noseSize = new THREE.Box3().setFromObject(nose).getSize(new THREE.Vector3());
+  noses.set(spec.species ?? 'human', JSON.stringify([nose.geometry.type, ...noseSize.toArray().map(n => n.toFixed(4))]));
+  const eye = root.getObjectByName('village-eye');
+  assert.equal(eye.children.length, 1, 'eye outline, white and pupil share one painted surface');
+  assert.ok(eye.children[0].material.map.isDataTexture);
   if (spec.persona) {
     assert.equal(root.getObjectsByProperty('name', 'village-hair').length, 1, 'one continuous hairstyle');
     assert.equal(hair.geometry.type, 'BufferGeometry', 'hair is not sphere primitives');
@@ -63,3 +71,25 @@ for (const spec of [{ persona: 'boy' }, { persona: 'girl' }, ...RESIDENTS, TIM_C
   assert.equal(disposedTextures, textures, 'procedural clothing textures released');
   console.log(`PASS ${spec.name ?? spec.persona}: ${meshes} meshes, ${triangles} triangles; silhouettes, poses, textures`);
 }
+assert.equal(noses.size, 5);
+assert.equal(new Set(noses.values()).size, 5, 'all five species have different nose silhouettes, not recoloured human noses');
+
+const texture = eyeTexture('human', false), { width, height, data } = texture.image;
+const thickness = vertical => {
+  let count = 0;
+  const length = vertical ? height : width, span = vertical ? 1.12 : 0.78;
+  for (let i = 0; i < length; i++) {
+    const at = ((i + 0.5) / length - 0.5) * span;
+    if (at < (vertical ? 0.32 : 0.22)) continue;
+    const x = vertical ? width / 2 : i, y = vertical ? i : height / 2;
+    const pixel = (y * width + x) * 4;
+    if (data[pixel + 3] > 127 && data[pixel] < 140 && data[pixel + 1] < 110) count++;
+  }
+  return count * span / length;
+};
+const horizontal = thickness(false), vertical = thickness(true);
+assert.ok(horizontal > 0.02 && horizontal < 0.04, 'thin reference-style eye outline');
+assert.ok(Math.abs(horizontal - vertical) < 0.009, 'outline thickness is consistent at side and top');
+assert.equal(data[3], 0, 'outside of eye remains transparent');
+texture.dispose();
+console.log(`PASS painted eye outline: side ${horizontal.toFixed(3)}, top ${vertical.toFixed(3)} face units`);
