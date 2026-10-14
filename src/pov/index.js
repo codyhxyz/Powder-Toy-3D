@@ -605,6 +605,7 @@ export function createPov(app) {
   }
 
   function exit(instant = false) {
+    viewmodel.userData.rig?.resetFlap();
     if (mission.engaged) { mission.end(); void app.setMode('sandbox'); }
     village.setEnabled(false);
     if (!active()) return;
@@ -968,9 +969,9 @@ export function createPov(app) {
     grappleQueued = false;
     held.place({ figure, viewmodel, dt });   // the tools have moved: the held model, and the hands on it
     // After the tools: the body is hidden in the eyes, so the wingbeat has to be on the viewmodel arms.
-    if (mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !driving) {
-      viewmodelRig({ viewmodel, getScale: app.getScale() }).poseFlap(player.flap ?? 0);
-    }
+    if (viewmodel.visible) {
+      viewmodelRig({ viewmodel, getScale: app.getScale }).poseFlap(player.flap ?? 0, dt);
+    } else viewmodel.userData.rig?.resetFlap();
     // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
     if (kickQueued) {
       kickQueued = false;
