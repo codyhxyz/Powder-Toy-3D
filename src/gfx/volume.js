@@ -42,6 +42,7 @@ import { frameUniformsOf } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
+import { isMaterialView } from '../views.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
@@ -204,11 +205,11 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      */
     pipeline(view, detail = {}, build = 'now', curved = false) {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
-      const d = view === 'realistic' ? drawable(detail) : {};
+    const d = isMaterialView(view) ? drawable(detail) : {};
       const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}`;
       let p = pipes.get(key);
       if (!p) {
-        const name = view === 'realistic' ? `volume.realistic(${detailKey(d) || 'off'})` : `volume.${view}`;
+      const name = isMaterialView(view) ? `volume.${view}(${detailKey(d) || 'off'})` : `volume.${view}`;
         pipes.set(key, p = gpu.renderPipeline({
           name: curved ? `${name}.curved` : name,
           code: volumeFrag(g, { view, detail: d, curved }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
