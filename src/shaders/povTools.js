@@ -137,17 +137,8 @@ export const PHYS_MODE = { HOLD: 0, FLING: 1 };
 // (water and sand at V_MAX, metal dust 0.2 cells/step, gases capped at V_MAX),
 // pointing away from the muzzle. falloff fades toward the cone's end and its
 // rim. The cone stops BITE cells past the aimed face, so walls shield what's
-// behind them. Solids don't move: there are no rigid bodies.
-//
-// The shove alone barely dents a pile or a pool: the struck layer runs into
-// the still matter behind it, which has nowhere to go. So where the cone meets
-// a surface it also leaves a pressure pulse (the air pressure the engine
-// already carries, react.js), centred PULSE_DEPTH past the face: just under a
-// water surface or inside a pile. The engine's pressure gradient then throws
-// what lies above and around it up and out, a splash or a crater. The pulse is
-// PULSE_SHARE of the pressure that breaks the weakest breakable solid
-// (hard · P_BREAK_PER_HARD), so it never smashes one.
-const WEAKEST_HARD = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
+// behind them. Solid cells don't move; the tool punts rigid bodies separately.
+// No pressure pulse: its radial backwash knocked the wielder away.
 export const BLAST = {
   IMPULSE: 16,       // DENS · cells/step given to each cell at full strength
   RANGE: 16,         // cells from the muzzle
@@ -156,11 +147,7 @@ export const BLAST = {
   BITE: 1.5,         // cells past the aimed face it still pushes
   EDGE: 0.6,         // share of the radius / range held at full strength before fading
   COOLDOWN: 0.4,     // s between blasts
-  PULSE_DEPTH: 1,    // cells past the aimed face the pulse is centred
-  PULSE_RADIUS: 2.5, // cells, the pulse's reach (full strength inside EDGE of it)
-  PULSE_SHARE: 0.8,  // share of the weakest solid's breaking pressure
 };
-BLAST.PULSE_P = BLAST.PULSE_SHARE * WEAKEST_HARD * ENGINE.P_BREAK_PER_HARD;
 
 // A melee blow (the axe, the pickaxe, the knife, a worm's head; its tuning is
 // AXE, PICK, KNIFE or WORM_BITE): break breakable solids in its patch into
@@ -447,18 +434,11 @@ export const BlastParams = uniformStruct('BlastParams', {
   muzzle: 'vec3f',    // grid cells
   reach: 'f32',       // cells along the aim it pushes, ≤ BLAST.RANGE
   dir: 'vec3f',       // unit aim
-  pulseP: 'f32',      // the pressure pulse's pressure (0: the cone met no surface)...
-  pulse: 'vec3f',     // ...and its centre, grid cells
 });
 export const blastWGSL = /* wgsl */ `
 ${consts('BLAST', BLAST)}
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   let id = eid(a);
-  let k = KIND(id);
-  let rp = length(vec3f(p) + 0.5 - P.pulse);
-  if (k != K_SOLID && rp < BLAST_PULSE_RADIUS) {
-    (*oB).w = max(b.w, P.pulseP * (1.0 - smoothstep(BLAST_EDGE, 1.0, rp / BLAST_PULSE_RADIUS)));
-  }
   let d = vec3f(p) + 0.5 - P.muzzle;
   let along = dot(d, P.dir);
   if (along < 0.0 || along > P.reach) { return; }

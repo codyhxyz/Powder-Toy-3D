@@ -11,17 +11,8 @@ import { gear } from './catalog.js';
 import { gridSpace } from '../space.js';
 
 // Burrower: Cruelty Squad's Cerebral Bore, without the health cost. It fires a
-// drill that homes on the nearest live body (targets.js: an NPC, another
-// player) and bores a real tunnel through whatever is between, then drills
-// into the body it reaches. With no body about it flies along the crosshair.
-//
-// Guidance is proportional navigation, the textbook homing-missile law
-// (Zarchan, "Tactical and Strategic Missile Guidance", ch. 2: n_c = N'·V_c·λ̇):
-// the heading turns NAV_RATIO times as fast as the line of sight to the target
-// does, Ω = (r × v_rel) / |r|², so it leads a moving target and closes on a
-// still one along a curve. PN is derived for small heading errors; while the
-// target is behind the drill (more than 90° off) it turns straight at it at
-// the full rate instead (pure pursuit). The turn rate is clamped to TURN_MAX.
+// drill straight along the crosshair at launch, with no homing, and bores a
+// real tunnel through whatever is ahead, then drills into the body it reaches.
 //
 // The drill is power-limited (shaders/povBore.js BURROW): its speed through
 // matter is its power over the work a cell of advance takes, Teale's rule, so
@@ -42,13 +33,10 @@ import { gridSpace } from '../space.js';
 // tool:action 'burrower' 'grind' { point, id } every GRIND_S while it cuts;
 // impact { source: 'burrower', body: true } when it reaches a body.
 
-const FLIGHT_SPEED = 12 / CELL_METERS;   // cells/s in the open (12 m/s: slow enough to watch it hunt)
-const NAV_RATIO = 4;                     // PN's effective navigation ratio N' (Zarchan: 3 to 5)
-const TURN_MAX = 3;                      // rad/s, the fastest the drill can turn
+const FLIGHT_SPEED = 12 / CELL_METERS;   // cells/s in the open (12 m/s)
 const LIFETIME = 12;                     // s a drill runs at most
 const STALL_S = 1.5;                     // s stuck on something it can't cut before it gives up
 const CONVEY_AFTER = 2.5;                // s the spoil conveyor runs on after the drill stops
-const LOCK_RANGE = 256;                  // cells: bodies farther than this aren't homed on
 const HIT_REACH = 1;                     // cells from a body's box at which the nose is in it
 const DAMAGE = 1;                        // health it takes from the body it drills into (one kills)
 const HIT_ENERGY = 60;                   // the impact's energy, for the shake and the hitmarker (sim KE units)
@@ -59,14 +47,13 @@ const SPIN = 30;                         // rad/s the drill's bit turns
 const MAX_DRILLS = 4;                    // drills in flight at once (one launcher)
 const PROBE_INFLIGHT = 6;                // probe readbacks in flight at once (all drills)
 const WORK_EPS = 1e-3;                   // work below this is open air
-const TARGET_V_EASE = 0.3;               // share of each frame's measured target velocity in its running estimate
 const RGBA = 4;
 
 // viewmodel, in cells (camera space): on the shoulder, like the rocket launcher
 const HELD_POS = [0.55, -0.55, -1.5];
 const MUZZLE = [0, 0.15, -0.6];          // cells from the model's centre to the tube's mouth
 
-const vT = new THREE.Vector3(), vR = new THREE.Vector3(), vW = new THREE.Vector3(), vQ = new THREE.Quaternion();
+const vT = new THREE.Vector3(), vQ = new THREE.Quaternion();
 
 export default {
   ...gear('BURROWER'),
@@ -115,33 +102,6 @@ export default {
       return { work: p.data[i], blocked: p.data[i + 1], id: Math.round(p.data[i + 2]), known: true };
     }
 
-    // proportional navigation toward the target (see the top), clamped to TURN_MAX
-    function steer(d, dt) {
-      const near = nearestTarget(d.pos, LOCK_RANGE, d.exclude);
-      if (!near) { d.target = null; return; }
-      if (d.target !== near.target) { d.target = near.target; d.tPrev = near.center.clone(); d.tVel.set(0, 0, 0); }
-      vT.subVectors(near.center, d.tPrev).divideScalar(Math.max(dt, 1e-6));
-      d.tVel.lerp(vT, TARGET_V_EASE);
-      d.tPrev.copy(near.center);
-      const r = vR.subVectors(near.center, d.pos);
-      const dist2 = r.lengthSq();
-      if (dist2 < 1e-6) return;
-      let rate;
-      if (r.dot(d.dir) < 0) {
-        // behind: pure pursuit, turning straight at it
-        vW.crossVectors(d.dir, r);
-        if (vW.lengthSq() < 1e-9) vW.set(0, 1, 0).cross(d.dir);
-        rate = TURN_MAX;
-      } else {
-        // Ω = r × v_rel / |r|², heading rate N'·Ω
-        const vRel = vT.copy(d.tVel).addScaledVector(d.dir, -d.speed);
-        vW.crossVectors(r, vRel).divideScalar(dist2).multiplyScalar(NAV_RATIO);
-        rate = Math.min(vW.length(), TURN_MAX);
-      }
-      if (rate <= 0 || vW.lengthSq() < 1e-12) return;
-      d.dir.applyQuaternion(vQ.setFromAxisAngle(vW.normalize(), rate * dt)).normalize();
-    }
-
     // the bore's edit for this frame: cut from → to (cut), convey along the path
     function runBore(sim, d, from, to, cut) {
       const n = Math.min(d.path.length, BURROW.PATH_MAX);
@@ -182,7 +142,6 @@ export default {
         if (d.convey <= 0) end(d);
         return;
       }
-      steer(d, dt);
       const a = ahead(d);
       const cutting = a.work > WORK_EPS || a.blocked > 0;
       d.speed = a.blocked > 0 ? 0 : a.work > WORK_EPS ? Math.min(FLIGHT_SPEED, BURROW.POWER / a.work) : FLIGHT_SPEED;
@@ -237,7 +196,7 @@ export default {
       const d = {
         id: nextId++, alive: true, state: 'flying', pos: origin.clone(), dir: dir.clone(), speed: FLIGHT_SPEED,
         age: 0, stall: 0, grind: 0, spin: 0, convey: 0, why: null, path: [], probe: null,
-        exclude: povEvents.actor?.id ?? PLAYER, target: null, tPrev: new THREE.Vector3(), tVel: new THREE.Vector3(),
+        exclude: povEvents.actor?.id ?? PLAYER,
         shift: new THREE.Vector3(),   // the window's total shift since launch (docs/scaling.md D11)
         model: null, nose: 0,
       };
@@ -274,7 +233,7 @@ export default {
       status: () => null,
       windowShifted(dx, dz) {
         for (const d of drills) {
-          for (const v of [d.pos, d.tPrev, ...d.path]) { v.x -= dx; v.z -= dz; }
+          for (const v of [d.pos, ...d.path]) { v.x -= dx; v.z -= dz; }
           d.shift.x += dx; d.shift.z += dz;
         }
         if (lastHit) { lastHit.point.x -= dx; lastHit.point.z -= dz; }

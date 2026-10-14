@@ -121,7 +121,7 @@ export function segmentTarget(a, b, exclude = null, ignored = null) {
 
 // The nearest live target to `point` within maxDist of its box: { target, dist
 // (to the box, 0 inside it), center (the box's middle) }, or null. The
-// burrower's drill homes on it.
+// burrower's drill uses this for contact damage.
 export function nearestTarget(point, maxDist = Infinity, exclude = null) {
   let best = null;
   for (const t of targets) {

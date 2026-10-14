@@ -6,6 +6,9 @@ import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { toolDt } from './action.js';
 import { gear } from './catalog.js';
+import { CELL_M } from '../../scale.js';
+import { rayTarget, PLAYER } from '../targets.js';
+import { povEvents } from '../events.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
 // hold left-click to grab what's around the aim point: every frame one kernel
@@ -19,9 +22,8 @@ import { gear } from './catalog.js';
 // round swings the ball after it instead of leaving it out of the beam's
 // reach. Right-click flings the ball along the aim; letting go drops it.
 // Right-click with nothing held blasts: one shove into the loose matter in a
-// cone along the aim, and a pressure pulse just past the surface it meets that
-// splashes water and craters piles (shaders/povTools.js BLAST). It can't lift or knock over
-// solids: there are no rigid bodies.
+// cone along the aim (shaders/povTools.js BLAST), or a punt to the body it hits.
+// Vehicle hulls and actors move; solid terrain stays anchored.
 //
 // The beam's reaction force on the player is left out (the body doesn't feel
 // the weight it carries).
@@ -46,6 +48,7 @@ const TIP_SIZE = 0.35;            // cells, the glow at the tip
 const TIP_IDLE = 0.35;            // tip glow opacity while not holding
 const BLAST_FLASH_S = 0.15;       // s the beam flashes along a blast
 const CHASE = 0.8;                // share of V_MAX the hold point chases the aim at, so the ball keeps up
+const PUNT_SPEED = 8 / CELL_M;    // cells/s: GMod-inspired gravity-gun punt, without recoil or damage
 
 // Additive glow strongest where the sphere is seen edge-on: a light outline of
 // the reach that never veils what's inside it.
@@ -173,24 +176,24 @@ export default {
       }, { bind: [{ buffer }] });
     }
 
-    // One shove along the aim, stopping just past the aimed face, and a
-    // pressure pulse just past the face if it's within range (shaders/povTools.js
-    // BLAST). The beam flashes to where it stops (drawn from `hold`).
+    // GMod's gravity-gun punt: the target moves, not the wielder. No radial
+    // pressure pulse: it propagated back into the player's body.
     function blast(ctx) {
       const sim = ctx.sim ?? env.getSim();
-      const face = ctx.aim?.valid && ctx.aim.dist + BLAST.PULSE_DEPTH <= BLAST.RANGE ? ctx.aim.dist : Infinity;
-      const reach = Math.min(face + BLAST.BITE, BLAST.RANGE);
+      const face = ctx.aim?.valid ? ctx.aim.dist : Infinity;
       const dir = ctx.dir.clone().normalize();
-      const pulse = Number.isFinite(face);
+      const hit = rayTarget(ctx.eye, dir, Math.min(face, BLAST.RANGE), povEvents.actor?.id ?? PLAYER);
+      const reach = hit ? hit.dist : Math.min(face + BLAST.BITE, BLAST.RANGE);
       hold.copy(ctx.eye).addScaledVector(dir, reach);
-      // the cone's bounding box: both ends, padded by the radius at the far end
-      // (and the pulse's, which sits inside the cone's reach)
-      const pad = Math.max(BLAST.RADIUS0 + BLAST.SPREAD * reach, BLAST.PULSE_RADIUS);
-      const a = ctx.eye.toArray(), b = hold.toArray();
-      povGpu(sim).edit('povBlast', sim.touchCentres(a.map((x, i) => Math.min(x, b[i]) - pad), a.map((x, i) => Math.max(x, b[i]) + pad)), {
-        muzzle: ctx.eye, dir, reach,
-        pulse: ctx.eye.clone().addScaledVector(dir, pulse ? face + BLAST.PULSE_DEPTH : 0), pulseP: pulse ? BLAST.PULSE_P : 0,
-      });
+      if (hit) hit.target.shove?.(dir.clone().multiplyScalar(PUNT_SPEED));
+      else {
+        // The cone's bounding box: both ends, padded by its far-end radius.
+        const pad = BLAST.RADIUS0 + BLAST.SPREAD * reach;
+        const a = ctx.eye.toArray(), b = hold.toArray();
+        povGpu(sim).edit('povBlast', sim.touchCentres(a.map((x, i) => Math.min(x, b[i]) - pad), a.map((x, i) => Math.max(x, b[i]) + pad)), {
+          muzzle: ctx.eye, dir, reach,
+        });
+      }
       model.rig.hit(HIT.FLING);
       env.feedback?.act('blast', { point: hold.clone() });
       blastWait = BLAST.COOLDOWN;
