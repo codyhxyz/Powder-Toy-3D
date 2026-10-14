@@ -91,6 +91,13 @@ await test('paused dt, bounds, defaults and all 128 machines', async () => {
   assert.equal(f.edits.at(-1).values.dt, 0.1);
   p.dispose(); p.step(1, [d('belt')]); assert.equal(f.edits.length, 129);
 });
+await test('foundations are structural matter, with no edit or transfer dispatch', async () => {
+  const f = fixture(), p = createIndustryPhysics({ getSim: () => f.sim }); await p.ready;
+  p.step(.1, [d('foundation'), d('foundation', {id:'top',y:127})]);
+  assert.equal(f.edits.length + f.calls.length,0);
+  assert.deepEqual(p.toJSON(),{version:1,pumps:[]});
+  p.dispose();
+});
 await test('shipping only on confirmed readback; metal inclusive 90 C gate', async () => {
   const f = fixture(), shipped = [], p = createIndustryPhysics({ getSim: () => f.sim, onShip: c => shipped.push(c) }); await p.ready;
   p.step(0.1, [d('ship')]); p.step(0.1, [d('ship')]);
@@ -271,6 +278,13 @@ await test('malformed snapshots and wrong active identities reject atomically', 
   badTail.pumps.push({ id: 'tail', device: d('pump', { id: 'tail' }), cells: [[E.SAND, 20, 0, 0]] });
   assert.throws(() => p.fromJSON(badTail, [device]));
   assert.deepEqual(p.toJSON(), good);
+  const duplicateOrphans = structuredClone(good);
+  duplicateOrphans.pumps.push({...structuredClone(good.pumps[0]),device:{...device,x:40}});
+  assert.throws(() => validateIndustryPhysics(duplicateOrphans, []),/identity/,'orphan IDs must be unique even at different locations');
+  const tooTall = structuredClone(good); tooTall.pumps[0].device.y = 122;
+  assert.throws(() => validateIndustryPhysics(tooTall, [], f.sim.g),/outside/,'all seven rows of an orphan pump must fit');
+  assert.throws(() => p.fromJSON(tooTall, []), /outside/);
+  assert.deepEqual(p.toJSON(),good);
   const outside = structuredClone(good); outside.pumps[0].device.x = 128;
   assert.doesNotThrow(() => validateIndustryPhysics(outside, []), 'standalone validation is independent of grid size');
   assert.throws(() => p.fromJSON(outside, []), /outside/);

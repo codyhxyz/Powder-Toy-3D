@@ -2,7 +2,7 @@ import { DEVICE_TYPES, FILTER_IDS, INDUSTRY_LIMIT } from './catalog.js';
 import { E } from '../elements.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 
-export const deviceHeight = d => d.type === 'pump' ? 7 : 4;
+export const deviceHeight = d => d.type === 'foundation' ? 1 : d.type === 'pump' ? 7 : 4;
 export const overlaps = (a, b) => a.x < b.x + 4 && a.x + 4 > b.x && a.y < b.y + deviceHeight(b) && a.y + deviceHeight(a) > b.y && a.z < b.z + 4 && a.z + 4 > b.z;
 export function deviceSpec(value, dims) {
   if (!value || !Object.hasOwn(DEVICE_TYPES, value.type)) throw new Error('Choose an Industry machine');

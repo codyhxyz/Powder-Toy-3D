@@ -3,7 +3,7 @@ import { createIndustryPhysics, validateIndustryPhysics } from './physics.js';
 import { createProgression } from './progression.js';
 import { createConstruction } from './construction.js';
 import { createIndustryView } from './view.js';
-import { deviceSpec, validateDevices, overlaps, overlapsBody } from './validation.js';
+import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } from './validation.js';
 import { allLoads } from '../pov/tools/transfer.js';
 import { E } from '../elements.js';
 
@@ -22,20 +22,30 @@ export function validateIndustrySave(data, dims, preset) {
       if (owned[type] !== devices.filter(d => d.type === type && data.paid.includes(d.id)).length) throw new Error('Industry ownership does not match its machines');
     }
   } else if (data.factoryRun || data.paid.length) throw new Error('Missing Factory progression');
-  validateIndustryPhysics(data.physics, devices);
+  validateIndustryPhysics(data.physics, devices, { nx: dims[0], ny: dims[1], nz: dims[2] });
   return devices;
 }
 
 export function createIndustry(app) {
   let devices = [], progression = null, paid = new Set(), factoryRun = false, assisted = false;
   let building = false, selected = 'belt', rotation = 0, filter = E.NUGGETS, powered = false;
-  let epoch = 0, sequence = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
+  let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode;
   const active = () => !app.win && ['sandbox','factory'].includes(app.gamemode);
   const factory = () => app.gamemode === 'factory' && app.settings.preset === 'quarry';
   const construction = createConstruction(app);
   const physics = createIndustryPhysics({ getSim: () => app.sim,
-    onShip: shipment => { if (!disposed && factory()) { progression?.ship(shipment); app.requestRender(); } },
+    onShip: shipment => {
+      if (disposed || !factory() || !progression) return;
+      const before = progression.snapshot();
+      progression.ship(shipment);
+      const after = progression.snapshot();
+      if (after.stage > before.stage) {
+        const unlocked = after.unlocked.filter(type => !before.unlocked.includes(type)).map(type => DEVICE_TYPES[type].name);
+        app.hud.toast(after.complete ? 'Quarry complete — keep expanding!' : `Unlocked: ${unlocked.join(' + ')}. ${after.hint}`);
+      }
+      app.requestRender();
+    },
     onError: error => app.hud.toast(`Industry: ${error?.message ?? error}`),
   });
   physics.ready.catch(error => app.hud.toast(`Industry unavailable: ${error.message}`));
@@ -43,7 +53,7 @@ export function createIndustry(app) {
     : pending ? fail('Construction is finishing') : devices.length >= INDUSTRY_LIMIT ? fail('128 machines is the limit')
     : factory() ? progression?.canBuild(type) ?? fail('The Quarry is still loading') : { ok: true };
   const state = () => ({ devices: devices.map(d => ({...d})), progression: factory() ? progression?.snapshot() ?? null : null,
-    active: active(), selected, building: building && active(), rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
+    active: active(), factory: factory(), selected, building: building && active(), rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
   const report = result => { if (!result.ok) app.hud.toast(result.reason); app.requestRender(); return result; };
   const toggle = value => {
     if (!active()) return;
@@ -54,8 +64,9 @@ export function createIndustry(app) {
   const rotate = () => { rotation = (rotation + 1) % 4; probeKey = ''; app.requestRender(); };
   function check(d) {
     const can = canBuild(d.type); if (!can.ok) return can;
+    if (factory() && d.powered) return fail('Spark drive is Sandbox-only. Use the built-in drive in Factory.');
     if (devices.some(other => overlaps(d, other))) return fail('Another machine occupies that space');
-    if (overlapsBody(d, app.pov?.player?.pos)) return fail('Move clear of the machine footprint');
+    if (app.pov?.active && overlapsBody(d, app.pov.player?.pos)) return fail('Move clear of the machine footprint');
     return { ok: true };
   }
   async function place(spec) {
@@ -67,11 +78,10 @@ export function createIndustry(app) {
       await construction.ready;
       if (token !== epoch || disposed) return fail('The map changed');
       // Check the body again immediately before dispatch, not after a queued compile.
-      if (overlapsBody(d, app.pov?.player?.pos)) return fail('Move clear of the machine footprint');
+      if (app.pov?.active && overlapsBody(d, app.pov.player?.pos)) return fail('Move clear of the machine footprint');
       if (!await construction.run(d, 1)) return fail('Obstructed: clear the full 4 × 4 deck and headroom first');
       if (token !== epoch || disposed) return fail('The map changed');
-      let id;
-      do { id = `machine-${++sequence}`; } while (devices.some(other => other.id === id));
+      const id = crypto.randomUUID(); // Never reuse IDs belonging to retained orphan pump cargo.
       // The single pending construction reserves both cost and space. No other
       // build/refund/load can change this economy while its GPU answer lands.
       if (charge) {
@@ -101,17 +111,18 @@ export function createIndustry(app) {
   }
   const target = () => {
     const h = app.hover; if (!h.valid) return null;
-    return devices.find(d => h.cell.x >= d.x && h.cell.x < d.x+4 && h.cell.y >= d.y && h.cell.y < d.y+4 && h.cell.z >= d.z && h.cell.z < d.z+4);
+    return devices.find(d => h.cell.x >= d.x && h.cell.x < d.x+4 && h.cell.y >= d.y && h.cell.y < d.y+deviceHeight(d) && h.cell.z >= d.z && h.cell.z < d.z+4);
   };
   const placeAimed = () => { if (candidate) return place(candidate).then(report); report(fail('Aim at a clear surface first')); };
   const removeAimed = () => remove(target()?.id).then(report);
   const view = createIndustryView(app, { toggle: () => toggle(), cancel: () => toggle(false), rotate, place: placeAimed, remove: removeAimed,
     select: type => { selected = type; probeKey = ''; toggle(true); }, canBuild,
-    filter: value => { filter = value; }, power: value => { powered = value; },
+    filter: value => { filter = value; }, power: value => { powered = factory() ? false : value; },
   });
   const key = e => {
     if (!active() || app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.code === 'KeyB' || (building && ['KeyR','Escape'].includes(e.code))) {
+    const buildKey = e.code === 'KeyB' && (building || app.gamemode === 'factory' || e.shiftKey);
+    if (buildKey || (building && ['KeyR','Escape'].includes(e.code))) {
       e.preventDefault(); e.stopImmediatePropagation();
       if (!e.repeat) { if (e.code === 'KeyB') toggle(); else if (e.code === 'KeyR') rotate(); else toggle(false); }
     }
@@ -126,7 +137,7 @@ export function createIndustry(app) {
   function modeChanged() {
     if (app.gamemode !== lastMode) {
       if (app.settings.preset === 'quarry' && app.gamemode === 'sandbox' && factoryRun) assisted = true;
-      if (factory()) { if (!factoryRun) assisted = true; factoryRun = true; }
+      if (factory()) { if (!factoryRun) assisted = true; factoryRun = true; powered = false; }
       lastMode = app.gamemode; building = false; app.painting = false;
       app.toolbar.setUndoEnabled(!factory() && app.sim.canUndo);
     }
@@ -141,7 +152,7 @@ export function createIndustry(app) {
     if (building && app.hover.valid) {
       const h = app.hover, xyz = [h.cell.x,h.cell.y,h.cell.z].map(Math.floor);
       const axis = Math.floor(h.face/2), sign = h.face % 2 === 0 ? 1 : -1;
-      if (h.id >= 0) xyz[axis] += sign > 0 ? 1 : -4;
+      if (h.id >= 0) xyz[axis] += sign > 0 ? 1 : -(axis === 1 ? deviceHeight({type:selected}) : 4);
       // Horizontal snap keeps adjacent transport decks contiguous; height is
       // exact so terraces, lifts and player-made shelves all remain buildable.
       candidate = { type:selected, x:Math.floor(xyz[0]/4)*4, y:Math.max(0,xyz[1]), z:Math.floor(xyz[2]/4)*4, rotation, filter, powered };
@@ -169,7 +180,7 @@ export function createIndustry(app) {
     get pending() { return pending || !!physics.pending; },
     reset({ starters = false } = {}) {
       epoch++; physics.reset(); devices = []; progression = null; paid.clear(); factoryRun = false; assisted = false;
-      pending = false; building = false; sequence = 0; probeKey = ''; lastMode = app.gamemode;
+      pending = false; building = false; if (factory()) powered = false; probeKey = ''; lastMode = app.gamemode;
       if (starters && app.settings.preset === 'quarry') {
         devices = QUARRY_STARTERS.map(d => ({...deviceSpec(d,dimensions(app)),id:d.id}));
         progression = createProgression(); paid = new Set(devices.map(d => d.id)); factoryRun = factory();
@@ -183,11 +194,17 @@ export function createIndustry(app) {
         paid:[...paid], factoryRun, assisted, physics:physics.toJSON() };
     },
     fromJSON(data) {
+      if (disposed || pending || physics.pending) throw new Error('Wait for the current machine transfer before restoring Industry.');
       const next = validateIndustrySave(data,dimensions(app),app.settings.preset);
-      api.reset(); devices = next; progression = data.progression ? createProgression(data.progression) : null;
+      const nextProgression = data.progression ? createProgression(data.progression) : null;
+      // Physics validates and allocates before replacing its loads. Do not reset
+      // first: a malformed orphan must leave both registrations and cargo intact.
+      physics.fromJSON(data.physics,next);
+      epoch++; devices = next; progression = nextProgression;
       paid = new Set(data.paid); factoryRun = data.factoryRun; assisted = data.assisted;
-      sequence = 0;
-      physics.fromJSON(data.physics,devices); app.requestRender();
+      building = false; probeKey = ''; lastMode = app.gamemode;
+      if (factory()) powered = false;
+      app.requestRender();
     },
     dispose() {
       disposed = true; epoch++; physics.dispose(); view.dispose();

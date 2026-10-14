@@ -44,11 +44,13 @@ an existing liquid. Only nonempty loads appear. `device` includes permitted
 optional `filter`/`powered` values. Dismantled pumps are included until their
 cargo spills; their retained geometry provides the spill location.
 
-`validateIndustryPhysics(data, devices)` throws on invalid input and returns a
+`validateIndustryPhysics(data, devices, bounds?)` throws on invalid input and returns a
 deep-owned canonical snapshot otherwise. It accepts at most 128 unique pump
-signatures and 16 cells/load. IDs are nonblank strings of at most 128 characters;
-coordinates are nonnegative integers with a footprint inside a 4096³ envelope.
-`fromJSON` additionally checks every saved footprint against the actual grid.
+IDs (including orphan IDs) and 16 cells/load. IDs contain 1–64 letters, digits,
+underscores or hyphens; new placements use UUIDs. Coordinates are nonnegative
+integers with the entire device footprint inside `bounds` (`{nx, ny, nz}`),
+defaulting to a 4096³ envelope. Save preflight supplies the header dimensions;
+`fromJSON` supplies the actual grid dimensions before replacing any loads.
 Cell state must be finite and representable as finite f32 values. If a saved id
 is present in `devices`, its type/position/orientation must match exactly. If
 absent, it is detached cargo and spills without a machine/base/control guard on

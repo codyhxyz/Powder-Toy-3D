@@ -714,11 +714,20 @@ const presetWire = (name) => (name === 'island' ? 'world' : null);
 function loadPreset(name, undoable = true) {
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
+  if (undoable && ctx.industry?.pending) { hud.toast('Wait for the machine transfer before changing the scene.'); return false; }
   if (!win && presetWire(name) && !wire(presetWire(name))) {
     hud.toast(`${notYet(sceneLabel(name))}. Here is the Lab instead`, { kind: 'error' });
     name = 'lab';
   }
-  if (undoable && !win) sim.snapshot(sceneLabel(name));
+  if (undoable && !win) {
+    // Scene undo must restore registered machines and conserved pump cargo,
+    // not just their physical decks. Ordinary brush snapshots stay terrain-only.
+    let industry;
+    try { if (ctx.industry) industry = { preset: settings.preset, data: ctx.industry.toJSON() }; }
+    catch (error) { hud.toast(error.message); return false; }
+    sim.snapshot(sceneLabel(name));
+    if (industry) sim.history.at(-1).note = { industry };
+  }
   settings.preset = name;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
@@ -1458,9 +1467,14 @@ function undo() {
   if (sim.undo()) {
     if (shrine) perkOrbs?.removeShrine(shrine);
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
+    if (note?.industry) {
+      settings.preset = note.industry.preset;
+      ctx.industry?.fromJSON(note.industry.data);
+      save();
+    }
     pov?.worldReplaced();
     hud.toast(label ? `Undone ${label}` : 'Undone', { kind: 'undo' });   // Garry's Mod's "Undone Prop": it names what was undone
-    if (!note?.scene && ctx.industry?.state.devices.length) hud.toast('Terrain restored; machine placements are unchanged.');
+    if (!note?.scene && !note?.industry && ctx.industry?.state.devices.length) hud.toast('Terrain restored; machine placements are unchanged.');
   }
   // (a world's window moved off all of it: it's kept for when the window comes back)
   else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo', { kind: 'error' });

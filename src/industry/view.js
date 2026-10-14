@@ -10,6 +10,12 @@ const box = (parent, size, at, color) => {
 };
 function model(type) {
   const root = new THREE.Group(), color = DEVICE_TYPES[type].color;
+  if (type === 'foundation') {
+    // Minecraft-style structural block: static edging inside the physical deck.
+    for (const x of [-1.94, 1.94]) box(root,[.08,.96,4],[x,.5,0],color);
+    for (const z of [-1.94, 1.94]) box(root,[4,.96,.08],[0,.5,z],color);
+    return root;
+  }
   // Sandustry's open handling decks: hardware hugs the sides, not the stream.
   for (const x of [-1.85, 1.85]) box(root, [.24,.38,3.9], [x,1.1,0], color);
   for (const z of [-1.5,0,1.5]) box(root, [3.4,.13,.18], [0,1.06,z], '#424958');
@@ -62,9 +68,10 @@ export function createIndustryView(app, actions) {
   const panel = document.createElement('section'); panel.className = 'industry panel'; panel.setAttribute('aria-label','Industry construction');
   const button = (text, fn, parent = panel) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = text; b.onclick = fn; parent.append(b); return b; };
   const top = document.createElement('div'); top.className = 'industry-row'; panel.append(top);
-  const toggle = button('Industry · B',actions.toggle,top);
+  const toggle = button('Industry',actions.toggle,top);
   const count = document.createElement('span'); count.className = 'industry-count'; top.append(count);
   const objective = document.createElement('p'); objective.className = 'industry-objective'; panel.append(objective);
+  const nextStep = document.createElement('p'); nextStep.className = 'industry-help'; panel.append(nextStep);
   const controls = document.createElement('div'); panel.append(controls);
   const types = document.createElement('div'); types.className = 'industry-types'; types.setAttribute('role','group'); types.setAttribute('aria-label','Machine'); controls.append(types);
   const typeButtons = Object.fromEntries(Object.entries(DEVICE_TYPES).map(([key,d]) => [key,button(d.name,() => actions.select(key),types)]));
@@ -89,10 +96,14 @@ export function createIndustryView(app, actions) {
       if (disposed) return;
       panel.hidden = !state.active; root.visible = state.active && ready;
       toggle.setAttribute('aria-pressed',String(state.building)); controls.hidden = !state.building;
+      const shortcut = state.factory || state.building ? 'B' : 'Shift+B';
+      toggle.textContent = `Industry · ${shortcut}`;
+      toggle.title = `${shortcut}: ${state.building ? 'close' : 'open'} construction${state.factory ? '' : ' · B changes brush shape outside construction'}`;
       count.textContent = `${state.devices.length} / 128`;
       objective.hidden = !state.progression;
       const p = state.progression;
       objective.textContent = p ? `${p.credits} credits · ${typeof p.goal === 'string' ? p.goal : p.hint}${state.assisted ? ' · Sandbox-assisted' : ''}` : '';
+      nextStep.hidden = !p; nextStep.textContent = p ? `Next: ${p.hint}` : '';
       for (const [key,b] of Object.entries(typeButtons)) {
         const d = DEVICE_TYPES[key], can = actions.canBuild(key);
         b.textContent = `${d.name}${p ? ` · ${d.cost}` : ''}`;
@@ -100,7 +111,9 @@ export function createIndustryView(app, actions) {
         b.setAttribute('aria-pressed',String(key === state.selected));
       }
       filterLabel.hidden = state.selected !== 'separator'; filter.value = state.filter; power.checked = state.powered;
-      const text = state.building ? (result?.reason || 'Aim at a clear surface. Keep the deck and outlets open.') : (p?.hint || 'Build physical grain-handling machines. Sandbox construction is free.');
+      powerLabel.hidden = state.factory || state.selected === 'foundation'; power.disabled = state.factory;
+      help.textContent = 'Click place · Right-click dismantle · R rotate · B / Esc close · V walk / orbit';
+      const text = state.building ? (result?.reason || 'Aim at a clear surface. Keep the deck and outlets open.') : (p ? 'B: build · V: walk / orbit' : 'Shift+B: build machines for free · B: brush shape');
       if (text !== lastStatus) { status.textContent = text; lastStatus = text; }
       for (const [id,m] of meshes) if (!state.devices.some(d => d.id === id)) { m.removeFromParent(); meshes.delete(id); }
       for (const d of state.devices) {
@@ -116,8 +129,10 @@ export function createIndustryView(app, actions) {
         ghost.position.set(candidate.x+2,candidate.y,candidate.z+2); ghost.rotation.y = -candidate.rotation * Math.PI/2;
         inlet.position.z = candidate.type === 'pump' ? -2.5 : -2.15;
         outlet.position.set(0,candidate.type === 'pump' ? 5.6 : 1.2,candidate.type === 'pump' ? 2.5 : 2.15);
+        const structural = candidate.type === 'foundation';
+        flow.visible = inlet.visible = outlet.visible = !structural;
         reject.visible = candidate.type === 'separator';
-        const color = result?.ok ? '#b7d077' : '#e5536a'; frame.material.color.set(color); flow.material.color.set(color); port.visible = candidate.powered;
+        const color = result?.ok ? '#b7d077' : '#e5536a'; frame.material.color.set(color); flow.material.color.set(color); port.visible = candidate.powered && !structural;
       }
     },
     dispose() {

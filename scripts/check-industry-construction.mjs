@@ -30,6 +30,14 @@ assert.throws(() => deviceSpec({...base,type:'pump',y:122},dims));
 assert(overlaps({...base,type:'pump'},{...base,y:14}));
 assert.equal(baseMaterial('heater'),E.TUNGSTEN);
 assert.equal(baseMaterial('belt'),E.INSULATOR);
+assert.equal(Object.keys(DEVICE_TYPES).length,8);
+assert.equal(DEVICE_TYPES.foundation.cost,1);
+assert.equal(baseMaterial('foundation'),E.TUNGSTEN);
+assert.equal(deviceHeight({type:'foundation'}),1);
+assert.equal(deviceSpec({...base,type:'foundation',y:127},dims).y,127);
+const foundation = {...base,type:'foundation'};
+assert(!overlaps(foundation,{...base,y:9}), 'machines can sit immediately on foundations');
+assert.equal(validateDevices([foundation,{...foundation,id:'stacked',y:9}],dims).length,2);
 for(let rotation=0; rotation<4; rotation++) {
   const d={...base,rotation}, a=deviceCell(d,1,1,1), b=deviceCell(d,1,1,2);
   assert.deepEqual(b.map((v,i)=>v-a[i]),deviceDirection(d));

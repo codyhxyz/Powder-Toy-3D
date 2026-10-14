@@ -20,7 +20,7 @@ inventory-recipe dialogs. Existing Sandbox and its electricity stay intact.
 `catalog.js` defines the device types, geometry helpers, and starter placements.
 A device is `{id, type, x, y, z, rotation, filter, powered}`:
 integer grid-space minimum corner of a 4x4 base, feet at y; rotation 0..3.
-Local forward is +Z. `powered` true opts into existing TPT spark control;
+Local forward is +Z. In Sandbox, `powered` true opts into existing TPT spark control;
 false means the machine's built-in drive. No abstract electricity currency.
 `filter` is a permitted element ID for the separator, default NUGGETS.
 Optional transient fields belong to the physics lane, not serialized UI state.
@@ -58,6 +58,8 @@ All serializable external data is validated before mutation.
 
 ## Physical behavior
 
+- Refractory block: stage-0, one-credit 4×1×4 TUNGSTEN foundation. Stackable
+  catch walls, chutes and platforms; no active physics or directional hardware.
 - Belt: supports and pushes touching loose grains forward. Not an inventory.
 - Lift: pushes loose grains upward, allowing multi-level chutes and catches.
 - Separator: chosen material goes forward, other loose grains go right;
@@ -78,8 +80,10 @@ All serializable external data is validated before mutation.
 
 ## Experience
 
-Default build controls: B toggles industry construction, click places,
-R rotates, right click dismantles, Escape cancels. Native buttons mirror
+Default build controls: B opens construction in Factory; Shift+B opens it in
+Sandbox (plain B retains brush shape). While building, B or Escape closes,
+click places, R rotates, right click dismantles. Spark drive is Sandbox-only;
+Factory uses built-in drives. Native buttons mirror
 keyboard actions. Drag belts only if safe; prevent duplicate placements.
 Support both orbit/god view and first person. No duplicate E handler.
 The placement ghost clearly shows inlet/output/direction and invalid placement.

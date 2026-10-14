@@ -3,6 +3,7 @@ import { INDUSTRY_LIMIT, DEVICE_TYPES, FILTER_IDS, baseMaterial, deviceCell, dev
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { createTransfer, Load } from '../pov/tools/transfer.js';
 import { povGpu } from '../pov/gpu.js';
+import { deviceHeight } from './validation.js';
 
 // Ports are integer local cells, rotated exactly like construction geometry.
 export const controlCell = d => deviceCell(d, -1, 0, 1);
@@ -28,17 +29,18 @@ const signature = d => [d.id, d.type, d.x, d.y, d.z, d.rotation].join(':');
 export function validMachine(d, g) {
   return d && typeof d.id === 'string' && Object.hasOwn(DEVICE_TYPES, d.type)
     && [d.x, d.y, d.z, d.rotation].every(Number.isInteger) && d.rotation >= 0 && d.rotation < 4
-    && d.x >= 0 && d.y >= 0 && d.z >= 0 && d.x + 4 <= g.nx && d.y + 1 < g.ny && d.z + 4 <= g.nz;
+    && d.x >= 0 && d.y >= 0 && d.z >= 0 && d.x + 4 <= g.nx && d.y + deviceHeight(d) <= g.ny && d.z + 4 <= g.nz;
 }
 
-// Standalone save validation cannot know the loaded grid. fromJSON also checks
-// every saved footprint against the actual sim.g before changing owned loads.
+// Callers loading a world pass its header dimensions before changing terrain.
+// Standalone cargo validation uses the maximum supported save bounds.
 const SAVE_BOUNDS = { nx: 4096, ny: 4096, nz: 4096 };
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-function savedDevice(d) {
-  if (!record(d) || typeof d.type !== 'string' || !validMachine(d, SAVE_BOUNDS) || !d.id.trim() || d.id.length > 128
+function savedDevice(d, bounds) {
+  if (!record(d) || typeof d.type !== 'string' || !validMachine(d, SAVE_BOUNDS) || !/^[a-zA-Z0-9_-]{1,64}$/.test(d.id)
       || (d.powered !== undefined && typeof d.powered !== 'boolean')
       || (d.filter !== undefined && !FILTER_IDS.includes(d.filter))) throw new Error('Invalid industry cargo device');
+  if (!validMachine(d, bounds)) throw new Error('Industry cargo is outside the simulation');
   const out = { id: d.id, type: d.type, x: d.x, y: d.y, z: d.z, rotation: d.rotation };
   if (d.filter !== undefined) out.filter = d.filter;
   if (d.powered !== undefined) out.powered = d.powered;
@@ -50,20 +52,20 @@ function savedDevice(d) {
  * a dismantled pump: retain its device coordinates so its cargo can spill.
  * An id still in devices must have exactly the same pump geometry/identity.
  */
-export function validateIndustryPhysics(data, devices) {
+export function validateIndustryPhysics(data, devices, bounds = SAVE_BOUNDS) {
   if (!record(data) || data.version !== 1 || !Array.isArray(data.pumps) || data.pumps.length > INDUSTRY_LIMIT
       || !Array.isArray(devices) || devices.length > INDUSTRY_LIMIT) throw new Error('Invalid industry cargo snapshot');
   const current = new Map();
   for (const spec of devices) {
-    const d = savedDevice(spec);
+    const d = savedDevice(spec, bounds);
     if (current.has(d.id)) throw new Error('Duplicate industry device id');
     current.set(d.id, d);
   }
   const seen = new Set(), pumps = [];
   for (const entry of data.pumps) {
     if (!record(entry)) throw new Error('Invalid industry pump cargo');
-    const d = savedDevice(entry.device), key = signature(d), active = current.get(d.id);
-    if (d.type !== 'pump' || entry.id !== d.id || seen.has(key)
+    const d = savedDevice(entry.device, bounds), key = signature(d), active = current.get(d.id);
+    if (d.type !== 'pump' || entry.id !== d.id || seen.has(d.id)
         || (active && signature(active) !== key)) throw new Error('Invalid industry pump identity');
     if (!Array.isArray(entry.cells) || !entry.cells.length || entry.cells.length > 16) throw new Error('Invalid industry cargo capacity');
     const cells = [];
@@ -75,7 +77,7 @@ export function validateIndustryPhysics(data, devices) {
       }
       cells.push([...cell]);
     }
-    seen.add(key);
+    seen.add(d.id);
     pumps.push({ id: d.id, device: d, cells });
   }
   return { version: 1, pumps };
@@ -173,7 +175,8 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
     dt = Math.min(dt, 0.1);
     const seen = new Set(), active = [];
     for (const d of (Array.isArray(devices) ? devices : []).slice(0, INDUSTRY_LIMIT)) {
-      if (!validMachine(d, sim.g) || seen.has(d.id)) continue;
+      // Structural decks are ordinary matter, never a default kind-0 conveyor.
+      if (d?.type === 'foundation' || !validMachine(d, sim.g) || seen.has(d.id)) continue;
       seen.add(d.id);
       const key = signature(d);
       let s = states.get(key);
@@ -225,8 +228,9 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
   function fromJSON(data, devices) {
     if (disposed) throw new Error('Industry physics is disposed');
     if (pending()) throw new Error('Industry transfers are pending');
-    const saved = validateIndustryPhysics(data, devices), next = getSim();
-    if (!next || saved.pumps.some(p => !validMachine(p.device, next.g))) throw new Error('Industry cargo is outside the simulation');
+    const next = getSim();
+    if (!next) throw new Error('Industry cargo is outside the simulation');
+    const saved = validateIndustryPhysics(data, devices, next.g);
     const restored = saved.pumps.map(p => {
       const state = machineState(p.device);
       state.load.cells = p.cells; // canonical validation returned deep-owned data

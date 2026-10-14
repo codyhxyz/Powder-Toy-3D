@@ -4,6 +4,7 @@ import { E } from '../elements.js';
 export const INDUSTRY_LIMIT = 128;
 export const DEVICE_SIZE = 4;
 export const DEVICE_TYPES = Object.freeze({
+  foundation: { name: 'Refractory block', cost: 1, color: '#929ba8', description: 'Stackable tungsten deck. Build catch walls, chutes and platforms.' },
   belt: { name: 'Conveyor', cost: 2, color: '#e4b45c', description: 'Moves loose grains forward along its deck.' },
   separator: { name: 'Separator', cost: 10, color: '#b7d077', description: 'Selected grains go forward. Other grains go right.' },
   ship: { name: 'Shipping intake', cost: 12, color: '#d9be84', description: 'Ships gold nuggets and cooled metal that enter its mouth.' },

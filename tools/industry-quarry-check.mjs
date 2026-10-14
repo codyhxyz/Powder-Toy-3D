@@ -14,6 +14,12 @@ test('physical deliveries unlock permanent stages, full-price builds/refunds, co
   let p = createProgression();
   assert.equal(p.snapshot().credits, 24);
   assert.equal(p.snapshot().stage, 0);
+  assert.equal(p.canBuild('foundation').ok, true);
+  assert.equal(p.build('foundation').ok, true);
+  assert.equal(p.snapshot().credits, 23);
+  assert.deepEqual(createProgression(clone(p.snapshot())).snapshot(),p.snapshot());
+  assert.equal(p.refund('foundation').ok, true);
+  assert.equal(p.snapshot().credits, 24);
   assert.equal(p.canBuild('miner').ok, false);
   assert.equal(deliver(p, 12).ok, true);
   assert.equal(p.snapshot().stage, 1);
