@@ -86,13 +86,14 @@ test('air sleeps independently, one active neighbour or source wakes it',()=>{
 });
 
 function mockOwner() {
-  globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4};
+  globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,INDIRECT:8};
   const calls=[],buffers=[];
   const copy=(b,offset,src)=>{ const u=src instanceof ArrayBuffer?new Uint8Array(src):new Uint8Array(src.buffer,src.byteOffset,src.byteLength);new Uint8Array(b.bytes).set(u,offset); };
   const gpu={createBuffer:({size,label})=>{const b={size,label,bytes:new ArrayBuffer(size),destroy(){this.destroyed=true;}};buffers.push(b);return b;},
     queue:{writeBuffer:copy},write:copy,layout:(_name,l)=>l,bindGroup:(_l,b)=>b,
     kernel:d=>({name:d.name,ready:Promise.resolve(),dispatch:(frame,size,opts)=>calls.push({name:d.name,size,opts})}),
-    frame:{clear:(b,offset=0,size=b.size-offset)=>new Uint8Array(b.bytes,offset,size).fill(0)},
+    frame:{clear:(b,offset=0,size=b.size-offset)=>new Uint8Array(b.bytes,offset,size).fill(0),
+      copy:(src,offset,dest,to,size)=>new Uint8Array(dest.bytes,to,size).set(new Uint8Array(src.bytes,offset,size))},
     readback:{buffer:(b,offset,size)=>{calls.push({read:b.label});return Promise.resolve(b.bytes.slice(offset,offset+size));}}};
   const g=gridLayout(16,8,8),owner={gpu,g,epoch:0,tick:1,sim:{origin:{x:0,y:0,z:0},header:()=>({})},
     nativeDynamics:{head:()=>'',layout:[],group:[]},wake(){this.epoch++;},_params:()=>({})};
@@ -187,7 +188,7 @@ test('actual generated shaders carry the reference conservation and numeric guar
   assert.match(impact,/energyFits\(before,dHeatEnergy/);
   assert.match(impact,/p\.tail\.w=\(u32\(f\.effect\.y\)>>2u\)&3u/);
   assert.match(deposit,/energyAdd\(energyOf\(before\),dParticleEnergy\(incoming\)\)/);
-  assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/after=dCarrier\(after\)/);
+  assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/remainder=dCarrier\(after\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'finish'),/sqrt\(a\.vp\.w\*a\.vp\.w\+addedP2\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'select'),/energyFits\(dProduct\(m\),dProductEnergy\(m\)\)/);
   assert.match(particlesWGSL(g,nativeDynamicsHead,'integrate'),/crossed>D_SWEEP_MAX/);
@@ -201,4 +202,68 @@ test('API rejects f32-overflow inputs; invalid particle and air words cannot par
   const snapshot=await d.snapshotDynamicState();snapshot.particles[3]=1;snapshot.particles[0]=0x7fc00000;
   assert.throws(()=>d.restoreDynamicState(snapshot),/coordinates/);
   snapshot.particles[3]=0;snapshot.air[0]=0x7f800000;assert.throws(()=>d.restoreDynamicState(snapshot),/air values/);
+});
+
+test('real physgun attracts COM and damps relative velocity without collapsing the clump',async()=>{
+  const {holdVelocities}=await import('../../src/v2/dynamics-reference.js');
+  const ps=[{mass:1,position:[-1,0,0],velocity:[0,0,0]},{mass:3,position:[1,0,0],velocity:[0,0,0]}];
+  const initialGap=ps[1].position[0]-ps[0].position[0],destination=[20,10,3];
+  for(let step=0;step<360;step++) {
+    const velocities=holdVelocities(ps,destination,12,DT);
+    ps.forEach((p,i)=>{p.velocity=velocities[i];p.position=p.position.map((x,a)=>x+p.velocity[a]*DT/CELL_M);});
+  }
+  const com=[0,1,2].map(a=>(ps[0].position[a]+ps[1].position[a]*3)/4);
+  com.forEach((x,i)=>close(x,destination[i],1e-6));close(ps[1].position[0]-ps[0].position[0],initialGap,1e-10);
+  assert.ok(ps.every(p=>Math.hypot(...p.velocity)<1e-6));
+  const moving=holdVelocities([{mass:1,position:[0,0,0],velocity:[10,0,0]},{mass:1,position:[0,0,0],velocity:[-10,0,0]}],[0,0,0]);
+  assert.ok(Math.abs(moving[0][0]-moving[1][0])<20);
+});
+test('physgun recording uses a COM reducer and fixed-step controller, snapshots preserve selection',async()=>{
+  const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
+  const result=d.applyPhysgun({mode:'hold',position:[1,2,3],target:[5,6,7],radius:2,strength:12,dt:DT});
+  assert.equal(result.status,'queued');assert.equal(d.capabilities.physgun,true);
+  d.advanceParticles(2);
+  assert.equal(calls.filter(c=>c.name==='v2particles_holdCOM').length,1);
+  assert.equal(calls.filter(c=>c.name==='v2particles_holdApply').length,1);
+  const saved=await d.snapshotDynamicState();assert.deepEqual(saved.holdSession.target,[5,6,7]);
+  d.restoreDynamicState(saved);assert.equal(d.holdSession.token,result.requestId);
+  assert.equal(d.applyPhysgun({mode:'fling',position:[1,2,3],direction:[1,0,0],radius:2,strength:20}).status,'queued');
+  assert.equal(d.holdSession,null);
+});
+
+test('compressed partial liquid jet conserves fill, fuel/spark union and signed64 enthalpy',async()=>{
+  const {makeMaterial,withPayload,energyOf,payloadOf,FULL}=await import('../../src/v2/layout.js');
+  const {extractPartialPacket,particleEnergy,depositPacket}=await import('../../src/v2/dynamics-reference.js');
+  for(const id of [E.WATER,E.OIL]) for(const amount of [1,1711,FULL]) {
+    let m=withPayload(makeMaterial(id,73,FULL+719,0),id===E.WATER?3608:1291);
+    m.bank=-113;m.core[2]=0xdeadbeef;m.core[3]=(m.core[3]&0xffff0000)|0x3726;
+    const split=extractPartialPacket(m,amount);assert.ok(split);
+    assert.equal((split.packet.core[1]&0xffffff)+(split.source.core[1]&0xffffff),FULL+719);
+    assert.equal(energyOf(split.source)+particleEnergy(split.packet),energyOf(m));
+    if(id===E.WATER) { assert.equal(payloadOf(split.packet.core),3608);assert.equal(payloadOf(split.source.core),3608); }
+    else assert.equal(payloadOf(split.packet.core)+payloadOf(split.source.core),1291);
+    assert.equal(split.packet.core[2],0xdeadbeef);assert.equal(split.packet.core[3]&65535,0x3726);
+    const empty=makeMaterial(0,-30),landed=depositPacket(split.packet,empty);assert.ok(landed);
+    assert.equal(energyOf(split.source)+energyOf(landed),energyOf(m)+energyOf(empty));
+  }
+});
+test('DUST/SING pressure-derived energy reproduces prescribed targets and vacuum is bounded',async()=>{
+  const {makeMaterial,withPayload}=await import('../../src/v2/layout.js');
+  const {chargeEnergy,addBlastPressure,legacyPressureToPa,singularityVacuumPa}=await import('../../src/v2/dynamics-reference.js');
+  const {PHYS}=await import('../../src/physics.js');
+  close(addBlastPressure(0,chargeEnergy(makeMaterial(E.DUST))),legacyPressureToPa(PHYS.DUST_P),1e-9);
+  const small=withPayload(makeMaterial(E.SINGULARITY),10*256),large=withPayload(makeMaterial(E.SINGULARITY),20*256);
+  close(chargeEnergy(large),4*chargeEnergy(small));
+  close(addBlastPressure(0,chargeEnergy(large)),legacyPressureToPa(20*PHYS.SING_BURST_P_PER_MASS));
+  assert.equal(singularityVacuumPa(small.core),legacyPressureToPa(-25));assert.equal(singularityVacuumPa(large.core),legacyPressureToPa(PHYS.P_MIN));
+  assert.ok(chargeEnergy(withPayload(small,255))>0);assert.equal(chargeEnergy(withPayload(small,0)),0);
+  close(chargeEnergy(makeMaterial(E.DUST)),30375,1e-8);
+});
+test('unused blast batches indirect-dispatch zero work with separate nonaliased args',async()=>{
+  const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;d.consumeMaterialEvents(1);
+  assert.equal(calls.filter(c=>c.name==='v2blasts_workArgs').length,8);
+  for(const c of calls.filter(c=>['v2blasts_plan','v2blasts_apply','v2blasts_allocate','v2blasts_children'].includes(c.name))) {
+    assert.equal(c.size.indirect,d.dispatchArgs);assert.notEqual(c.size.indirect,d.control);
+  }
+  assert.equal(d.plans.size,owner.g.slots*16);
 });

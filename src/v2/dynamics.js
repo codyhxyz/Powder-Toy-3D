@@ -19,7 +19,54 @@ const finiteVector = x => { const v=vector(x); return v.length===3 && v.every(sa
 const key = p => p.join(',');
 const isInside = (p,g) => p.every((x,a) => x>=0 && x<[g.nx,g.ny,g.nz][a]);
 const equal = (a,b) => a.length===b.length && a.every((x,i)=>x===b[i]);
+const IMPULSE_KINDS=['impulse','photon','neutron','wind','pressure','vacuum','cyclone'];
 const cloneRequest = r => ({ ...r, position:[...r.position], direction:[...r.direction] });
+
+/** Pure validation: callers may preflight a save before ANY app/GPU mutation. */
+export function validateDynamicState(snapshot,g) {
+  const s=snapshot;
+  if (!s || s.version!==1 || !equal(s.dims??[],[g.nx,g.ny,g.nz]) || !finiteVector(s.origin) ||
+    !s.origin.every(Number.isInteger) || !(s.particles instanceof Uint32Array) || s.particles.length!==PARTICLE_CAP*12 ||
+    !(s.air instanceof Uint32Array) || s.air.length!==g.nbricks*8 || !(s.control instanceof Uint32Array) || s.control.length!==32 ||
+    !(s.held instanceof Uint32Array) || s.held.length!==PARTICLE_CAP || !(s.shocks instanceof Uint32Array) || s.shocks.length!==g.nbricks ||
+    !(s.rayRemaining instanceof Uint32Array) || s.rayRemaining.length!==RAY_REQUEST_CAP || !Array.isArray(s.requests) ||
+    !Array.isArray(s.pendingEvents) || !Array.isArray(s.airArchive) || !Number.isInteger(s.sequence) || s.sequence<0 || s.sequence>0xfffffffe ||
+    !Number.isInteger(s.blastBatch) || s.blastBatch<1 || s.blastBatch>64) throw new Error('Invalid native dynamics snapshot');
+  if(s.holdSession && (!Number.isInteger(s.holdSession.token) || s.holdSession.token<1 || s.holdSession.token>s.sequence ||
+    !finiteVector(s.holdSession.position) || !finiteVector(s.holdSession.target) || !safeDynamicNumber(s.holdSession.radius) || s.holdSession.radius<0 ||
+    !safeDynamicNumber(s.holdSession.strength) || s.holdSession.strength<0 || !Number.isInteger(s.holdSession.lastTick))) throw new Error('Invalid native physgun state');
+  for(const token of s.held) if(token && token!==s.holdSession?.token) throw new Error('Unowned native held particle');
+  const particleFloats=new Float32Array(s.particles.buffer,s.particles.byteOffset,s.particles.length);
+  for(let i=0;i<PARTICLE_CAP;i++) {
+    if(!s.particles[i*12+3]) continue;
+    if([0,1,2,4,5,6].some(k=>!safeDynamicNumber(particleFloats[i*12+k]))) throw new Error('Invalid native particle coordinates/velocity');
+    const tag=s.particles[i*12+7]&255;
+    if(tag===254 && [8,9,10].some(k=>!safeDynamicNumber(particleFloats[i*12+k]) || particleFloats[i*12+k]<0)) throw new Error('Invalid native photon energy');
+    if(tag===255 && (!safeDynamicNumber(particleFloats[i*12+9]) || particleFloats[i*12+9]<0 || s.particles[i*12+10]>2)) throw new Error('Invalid native neutron payload');
+  }
+  if(!new Float32Array(s.air.buffer,s.air.byteOffset,s.air.length).every(safeDynamicNumber)) throw new Error('Invalid native air values');
+  const requests=new Map(),archive=new Map(),outside=new Map(),events=new Uint32Array(g.slots);
+  for (const r of s.requests) {
+    if (!Number.isInteger(r.slot) || r.slot<0 || r.slot>=RAY_REQUEST_CAP || requests.has(r.slot) ||
+      !['photon','neutron'].includes(r.kind) || !finiteVector(r.position) || !finiteVector(r.direction) ||
+      !safeDynamicNumber(r.radius) || r.radius<0 || !Number.isInteger(r.count) || r.count<1 || r.count>PARTICLE_CAP ||
+      !Number.isInteger(r.requestId) || r.requestId<1 || r.requestId>s.sequence || s.rayRemaining[r.slot]>r.count) throw new Error('Invalid queued native ray');
+    requests.set(r.slot,cloneRequest(r));
+  }
+  for(let slot=0;slot<RAY_REQUEST_CAP;slot++) if(s.rayRemaining[slot] && !requests.has(slot)) throw new Error('Unowned native ray obligation');
+  for (const e of s.pendingEvents) {
+    if (!finiteVector(e.worldCell) || !e.worldCell.every(Number.isInteger) || !Number.isInteger(e.bits) || e.bits<1 || (e.bits&~7)!==0) throw new Error('Invalid pending native event');
+    const p=e.worldCell.map((x,a)=>x-s.origin[a]);
+    if(isInside(p,g)) events[cellSlot(g,...p)]|=e.bits;
+    else outside.set(key(e.worldCell),(outside.get(key(e.worldCell))??0)|e.bits);
+  }
+  for (const a of s.airArchive) {
+    if (!finiteVector(a.worldCell) || !a.worldCell.every(Number.isInteger) || !(a.words instanceof Uint32Array) || a.words.length!==8 || archive.has(key(a.worldCell))) throw new Error('Invalid archived native air');
+    if(!new Float32Array(a.words.buffer,a.words.byteOffset,a.words.length).every(safeDynamicNumber)) throw new Error('Invalid archived native air values');
+    archive.set(key(a.worldCell),new Uint32Array(a.words));
+  }
+  return {requests,archive,outside,events};
+}
 
 /** Native recording driver. No method advancing physics submits, waits, or
  * imports/exports legacy state. The owner supplies the three-buffer Material
@@ -33,17 +80,19 @@ export class NativeDynamics {
     this.origin=vector(owner.sim.origin); this.sequence=0; this.serial=0; this.airIndex=0;
     this.isReady=false; this.isIdle=false; this.disposed=false; this.stats=null;
     this.rayRequests=new Map(); this.airArchive=new Map(); this.pendingOutside=new Map();
-    this.drawAdapter=null; this.buffers=[];
+    this.drawAdapter=null; this.holdSession=null; this.buffers=[];
     const gpu=this.gpu, g=this.g;
     const usage=GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST;
-    const make=(label,size) => { const b=gpu.createBuffer({label:`v2 dynamics ${label}`,size:Math.max(16,Math.ceil(size/16)*16),usage}); this.buffers.push(b); return b; };
+    const make=(label,size,extraUsage=0) => { const b=gpu.createBuffer({label:`v2 dynamics ${label}`,size:Math.max(16,Math.ceil(size/16)*16),usage:usage|extraUsage}); this.buffers.push(b); return b; };
     this.particles=make('particles',PARTICLE_CAP*PARTICLE_BYTES);
     this.flight=make('flight',PARTICLE_CAP*32);
     this.claims=make('claims',g.slots*16);
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
     this.faces=make('faces',g.nbricks*16);
     this.control=make('control',controlWords(g)*4);
-    this.plans=make('plans',g.slots*32);
+    this.dispatchArgs=make('dispatch args',64,GPUBufferUsage.INDIRECT);
+    const args=new Uint32Array(16);args[13]=PARTICLE_CAP/64;args[14]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
+    this.plans=make('plans',g.slots*16);
     const initial=new Float32Array(g.nbricks*8); for (let b=0;b<g.nbricks;b++) initial[b*8+6]=AIR.quietTicks;
     for (const b of this.air) gpu.queue.writeBuffer(b,0,initial);
     const L={ particles:gpu.layout('V2_PARTICLES',PARTICLES_LAYOUT), blasts:gpu.layout('V2_BLASTS',BLASTS_LAYOUT), air:gpu.layout('V2_AIR',AIR_LAYOUT) };
@@ -56,7 +105,7 @@ export class NativeDynamics {
     this.kernels={};
     for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES]]) {
       for (const stage of stages) {
-        const single=family==='blasts' && ['reset','normalize','allocate','finish','rayEmit'].includes(stage);
+        const single=(family==='blasts' && ['reset','normalize','allocate','finish','rayEmit','workArgs'].includes(stage)) || (family==='particles' && stage==='holdCOM');
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -68,9 +117,9 @@ export class NativeDynamics {
   get capabilities() {
     const ready=this.isReady&&!this.disposed;
     return { impulse:ready, photon:ready, neutron:ready, wind:ready, pressure:ready, vacuum:ready, cyclone:ready,
-      physicsReady:ready, drawReady:ready&&this.drawAdapter?.isReady===true, physgun:false };
+      physicsReady:ready, drawReady:ready&&this.drawAdapter?.isReady===true, physgun:ready };
   }
-  supportsToolKind(kind) { return this.capabilities[kind]===true; }
+  supportsToolKind(kind) { return [...IMPULSE_KINDS,'physgun'].includes(kind) && this.capabilities[kind]===true; }
   get renderState() { return { ...DYNAMICS_ABI, particles:this.particles, control:this.control, liveCountOffset:0,
     ready:this.isReady&&!this.disposed, interpolationSeconds:1/60, origin:[...this.origin] }; }
   attachDrawAdapter(adapter) { this.drawAdapter=adapter; }
@@ -78,17 +127,18 @@ export class NativeDynamics {
   _check() { if (!this.isReady || this.disposed) throw new Error('NativeDynamics is not ready'); }
   _record(family,stage,count,tick,params={}) {
     this._check(); const k=this.kernels[`${family}/${stage}`];
-    k.dispatch(this.gpu.frame,fold(count),{bind:[this.owner.nativeDynamics.group,this.groups[family][this.airIndex]],
+    k.dispatch(this.gpu.frame,typeof count==='number'?fold(count):count,{bind:[this.owner.nativeDynamics.group,this.groups[family][this.airIndex]],
       header:this.owner.sim.header?.(),params:this._params(tick,params)});
     this.owner.sim.onPass?.(k.name,{kind:'compute',gpuMs:null});
   }
   _work() { this.isIdle=false; this.serial++; }
   _externalWork() { this._work(); this.owner.wake(); }
-  _allocate(tick,params={}) {
-    this._record('blasts','count',Math.ceil(this.g.nbricks/64),tick,params);
-    this._record('blasts','allocate',1,tick,params);
-    this._record('blasts','apply',Math.ceil(this.g.slots/64),tick,params);
-    this._record('blasts','children',Math.ceil(PARTICLE_CAP/64),tick,params);
+  _allocate(tick,params={},indirect=false) {
+    const size=(offset,count)=>indirect?{indirect:this.dispatchArgs,offset}:count;
+    this._record('blasts','count',size(16,Math.ceil(this.g.nbricks/64)),tick,params);
+    this._record('blasts','allocate',size(32,1),tick,params);
+    this._record('blasts','apply',size(0,Math.ceil(this.g.slots/64)),tick,params);
+    this._record('blasts','children',size(48,Math.ceil(PARTICLE_CAP/64)),tick,params);
   }
   _rays(tick) { for (const [slot,r] of this.rayRequests) this._recordRay(slot,r,tick); }
   _recordRay(slot,r,tick) {
@@ -96,7 +146,7 @@ export class NativeDynamics {
       vector:r.direction.map(v=>v*36),radius:r.radius,strength:r.count,sequence:r.requestId,substep:slot});
   }
   advanceParticles(tick) {
-    this._work(); this._rays(tick);
+    this._work(); this._rays(tick); this._hold(tick);
     this._record('particles','clear',Math.ceil(this.g.slots*4/64),tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
   }
@@ -107,12 +157,18 @@ export class NativeDynamics {
     for (let n=0;n<this.blastBatch;n++) {
       this._record('blasts','reset',1,tick);
       this._record('blasts','select',Math.ceil(this.g.slots/64),tick);
-      this._record('blasts','plan',Math.ceil(this.g.slots/64),tick);
-      this._record('blasts','sum',Math.ceil(this.g.nbricks/64),tick);
-      this._record('blasts','normalize',1,tick);
-      this._record('blasts','damagePlan',Math.ceil(this.g.slots/64),tick);
-      this._allocate(tick);
-      this._record('blasts','finish',1,tick);
+      this._record('blasts','workArgs',1,tick);
+      // Separate INDIRECT buffer: never bind a read_write storage buffer as
+      // the indirect source of that same dispatch (WebGPU usage conflict).
+      this.gpu.frame.copy(this.control,20*4,this.dispatchArgs,0,48);
+      this.gpu.frame.copy(this.control,28*4,this.dispatchArgs,48,4);
+      const size=offset=>({indirect:this.dispatchArgs,offset});
+      this._record('blasts','plan',size(0),tick);
+      this._record('blasts','sum',size(16),tick);
+      this._record('blasts','normalize',size(32),tick);
+      this._record('blasts','damagePlan',size(0),tick);
+      this._allocate(tick,{},true);
+      this._record('blasts','finish',size(32),tick);
     }
   }
   advanceAir(tick) {
@@ -131,7 +187,7 @@ export class NativeDynamics {
     if (!this.isReady || this.disposed) return {status:'rejected',reason:'native dynamics not ready'};
     const kind=request?.kind,position=finiteVector(request?.position),direction=finiteVector(request?.direction??[0,0,0]);
     const radius=request?.radius??0, strength=request?.strength??0;
-    if (!this.supportsToolKind(kind) || !position || !direction || !safeDynamicNumber(radius) || radius<0 ||
+    if (!IMPULSE_KINDS.includes(kind) || !this.supportsToolKind(kind) || !position || !direction || !safeDynamicNumber(radius) || radius<0 ||
       !safeDynamicNumber(strength)) return {status:'rejected',reason:'invalid native tool request'};
     if (this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
     const requestId=++this.sequence,tick=this.owner.tick;
@@ -154,6 +210,48 @@ export class NativeDynamics {
     } else { this._record('air','tool',Math.ceil(this.g.nbricks/64),tick,params); this.airIndex^=1; }
     return {status:'queued',requestId,fallback:'unallocated material remains on the grid; readActivity reports capacityFallbacks'};
   }
+  /** Real held-clump controller. GMod-style COM attraction/damping is stepped
+   * by the same60Hz clock as particles, not the presentation frame rate. */
+  applyPhysgun(request) {
+    if (!this.isReady || this.disposed) return {status:'rejected',reason:'native dynamics not ready'};
+    const mode=request?.mode,position=finiteVector(request?.position),destination=finiteVector(request?.target??request?.position);
+    const direction=finiteVector(request?.direction??[0,0,0]),radius=request?.radius??1,dt=request?.dt??1/60;
+    const strength=request?.strength??12;
+    if (!['hold','fling','punt'].includes(mode) || !position || !destination || !direction ||
+      !safeDynamicNumber(radius) || radius<0 || !safeDynamicNumber(strength) || strength<0 || !safeDynamicNumber(dt) || dt<0 || dt>0.25)
+      return {status:'rejected',reason:'invalid native physgun request'};
+    if(this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
+    this._externalWork(); const tick=this.owner.tick;
+    if(mode==='hold') {
+      if(!this.holdSession) {
+        const token=++this.sequence;
+        this.holdSession={token,position:[...position],target:[...destination],radius,strength,lastTick:tick};
+        const params={mode:9,center:position,radius,vector:[0,0,0],strength:0,sequence:token};
+        this._record('particles','holdSelect',PARTICLE_CAP/64,tick,params);
+        this._record('blasts','toolPlan',Math.ceil(this.g.slots/64),tick,params);this._allocate(tick,params);
+      }
+      this.holdSession.target=[...destination];this.holdSession.strength=strength;this.holdSession.lastTick=tick;
+      return {status:'queued',requestId:this.holdSession.token,controller:'critically-damped COM',clockHz:60};
+    }
+    const token=this.holdSession?.token??0,norm=Math.hypot(...direction),velocity=direction.map(v=>norm?v/norm*strength:0);
+    const requestId=++this.sequence,params={mode:mode==='fling'?10:11,center:position,radius,vector:velocity,strength:0,sequence:token};
+    this._record('particles','holdApply',PARTICLE_CAP/64,tick,params);
+    if(!token) { this._record('blasts','toolPlan',Math.ceil(this.g.slots/64),tick,{...params,sequence:requestId});this._allocate(tick,{...params,sequence:requestId}); }
+    this.holdSession=null;return {status:'queued',requestId};
+  }
+  _hold(tick) {
+    const hold=this.holdSession;if(!hold) return;
+    if(tick-hold.lastTick>8) { this.releasePhysgun();return; }
+    const params={mode:9,sequence:hold.token,center:hold.target,strength:hold.strength,radius:1/60};
+    this._record('particles','holdCOM',1,tick,params);
+    this._record('particles','holdApply',PARTICLE_CAP/64,tick,params);
+  }
+  releasePhysgun() {
+    if(!this.holdSession || this.disposed) return {status:'rejected',reason:'no held native clump'};
+    const requestId=this.holdSession.token;
+    this._record('particles','holdApply',PARTICLE_CAP/64,this.owner.tick,{mode:12,sequence:requestId});
+    this.holdSession=null;this._externalWork();return {status:'queued',requestId};
+  }
   /** Enqueue beside the owner's idle read, at the SAME recording boundary. */
   async readActivity() {
     this._check(); const serial=this.serial,epoch=this.owner.epoch;
@@ -174,6 +272,7 @@ export class NativeDynamics {
   async snapshotDynamicState() {
     this._check(); const g=this.g,origin=[...this.origin],serial=this.serial;
     const metadata={version:1,dims:[g.nx,g.ny,g.nz],origin,sequence:this.sequence,blastBatch:this.blastBatch,isIdle:this.isIdle,
+      holdSession:this.holdSession?structuredClone(this.holdSession):null,
       requests:[...this.rayRequests].map(([slot,r])=>({slot,...cloneRequest(r)})),
       airArchive:[...this.airArchive].map(([worldCell,words])=>({worldCell:worldCell.split(',').map(Number),words:new Uint32Array(words)})),
       pendingEvents:[...this.pendingOutside].map(([worldCell,bits])=>({worldCell:worldCell.split(',').map(Number),bits}))};
@@ -184,42 +283,7 @@ export class NativeDynamics {
   }
   restoreDynamicState(snapshot) {
     this._check(); const g=this.g,s=snapshot;
-    if (!s || s.version!==1 || !equal(s.dims??[],[g.nx,g.ny,g.nz]) || !finiteVector(s.origin) ||
-      !s.origin.every(Number.isInteger) || !(s.particles instanceof Uint32Array) || s.particles.length!==PARTICLE_CAP*12 ||
-      !(s.air instanceof Uint32Array) || s.air.length!==g.nbricks*8 || !(s.control instanceof Uint32Array) || s.control.length!==32 ||
-      !(s.held instanceof Uint32Array) || s.held.length!==PARTICLE_CAP || !(s.shocks instanceof Uint32Array) || s.shocks.length!==g.nbricks ||
-      !(s.rayRemaining instanceof Uint32Array) || s.rayRemaining.length!==RAY_REQUEST_CAP || !Array.isArray(s.requests) ||
-      !Array.isArray(s.pendingEvents) || !Array.isArray(s.airArchive) || !Number.isInteger(s.sequence) || s.sequence<0 || s.sequence>0xfffffffe ||
-      !Number.isInteger(s.blastBatch) || s.blastBatch<1 || s.blastBatch>64) throw new Error('Invalid native dynamics snapshot');
-    const particleFloats=new Float32Array(s.particles.buffer,s.particles.byteOffset,s.particles.length);
-    for(let i=0;i<PARTICLE_CAP;i++) {
-      if(!s.particles[i*12+3]) continue;
-      if([0,1,2,4,5,6].some(k=>!safeDynamicNumber(particleFloats[i*12+k]))) throw new Error('Invalid native particle coordinates/velocity');
-      const tag=s.particles[i*12+7]&255;
-      if(tag===254 && [8,9,10].some(k=>!safeDynamicNumber(particleFloats[i*12+k]) || particleFloats[i*12+k]<0)) throw new Error('Invalid native photon energy');
-      if(tag===255 && (!safeDynamicNumber(particleFloats[i*12+9]) || particleFloats[i*12+9]<0 || s.particles[i*12+10]>2)) throw new Error('Invalid native neutron payload');
-    }
-    if(!new Float32Array(s.air.buffer,s.air.byteOffset,s.air.length).every(safeDynamicNumber)) throw new Error('Invalid native air values');
-    const requests=new Map(),archive=new Map(),outside=new Map(),events=new Uint32Array(g.slots);
-    for (const r of s.requests) {
-      if (!Number.isInteger(r.slot) || r.slot<0 || r.slot>=RAY_REQUEST_CAP || requests.has(r.slot) ||
-        !['photon','neutron'].includes(r.kind) || !finiteVector(r.position) || !finiteVector(r.direction) ||
-        !safeDynamicNumber(r.radius) || r.radius<0 || !Number.isInteger(r.count) || r.count<1 || r.count>PARTICLE_CAP ||
-        !Number.isInteger(r.requestId) || r.requestId<1 || r.requestId>s.sequence || s.rayRemaining[r.slot]>r.count) throw new Error('Invalid queued native ray');
-      requests.set(r.slot,cloneRequest(r));
-    }
-    for(let slot=0;slot<RAY_REQUEST_CAP;slot++) if(s.rayRemaining[slot] && !requests.has(slot)) throw new Error('Unowned native ray obligation');
-    for (const e of s.pendingEvents) {
-      if (!finiteVector(e.worldCell) || !e.worldCell.every(Number.isInteger) || !Number.isInteger(e.bits) || e.bits<1 || (e.bits&~7)!==0) throw new Error('Invalid pending native event');
-      const p=e.worldCell.map((x,a)=>x-s.origin[a]);
-      if(isInside(p,g)) events[cellSlot(g,...p)]|=e.bits;
-      else outside.set(key(e.worldCell),(outside.get(key(e.worldCell))??0)|e.bits);
-    }
-    for (const a of s.airArchive) {
-      if (!finiteVector(a.worldCell) || !a.worldCell.every(Number.isInteger) || !(a.words instanceof Uint32Array) || a.words.length!==8 || archive.has(key(a.worldCell))) throw new Error('Invalid archived native air');
-      if(!new Float32Array(a.words.buffer,a.words.byteOffset,a.words.length).every(safeDynamicNumber)) throw new Error('Invalid archived native air values');
-      archive.set(key(a.worldCell),new Uint32Array(a.words));
-    }
+    const {requests,archive,outside,events}=validateDynamicState(s,g);
     // All validation precedes all writes. Bad saves never partially replace state.
     this.gpu.write(this.particles,0,s.particles);
     for(const b of this.air) this.gpu.write(b,0,s.air);
@@ -229,6 +293,7 @@ export class NativeDynamics {
     this.gpu.write(this.owner.events,0,events); this.gpu.frame.clear(this.flight); this.gpu.frame.clear(this.claims); this.gpu.frame.clear(this.plans);
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; this.blastBatch=s.blastBatch;
     this.rayRequests=requests; this.airArchive=archive; this.pendingOutside=outside;
+    this.holdSession=s.holdSession?structuredClone(s.holdSession):null;
     this._externalWork(); this.stats=null; // establish idle only from an epoch-checked read
   }
   /** Explicit world/persistence boundary; brick-aligned windows preserve exact

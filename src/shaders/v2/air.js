@@ -1,6 +1,8 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, storageLayout, main64 } from './particles.js';
-import { AIR, DT, GRAVITY } from '../../v2/dynamics-reference.js';
+import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
+import { PHYS } from '../../physics.js';
+import { E } from '../../elements.js';
 export const AIR_LAYOUT = storageLayout(5, [0]);
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 function head(g,nativeHead) {
@@ -18,6 +20,12 @@ const A_DIFF: f32 = ${f(AIR.diffusion)};
 const A_PQ: f32 = ${f(AIR.pQuantum)};
 const A_VQ: f32 = ${f(AIR.vQuantum)};
 const A_SQ: f32 = ${f(AIR.scalarQuantum)};
+// contactVacuum twin: singularity raw life is mass in1/256-cell units.
+// Legacy pressure is explicitly converted, shared with native tool adapters.
+fn aVacuum(core: vec4u) -> f32 {
+  if (cid(core)!=${E.SINGULARITY}u) { return 0.0; }
+  return max(${f(PHYS.P_MIN)},-${f(PHYS.SING_P_PER_MASS)}*f32(payloadOf(core))/256.0)*${f(LEGACY_PRESSURE_PA)};
+}
 fn aBase(b: u32) -> vec3i { return cellOf(b*64u) & vec3i(-4); }
 fn aNeighbor(b: u32, axis: u32, sign_: i32) -> u32 {
   let p=aBase(b)+dAxis(axis)*4*sign_; if (!inGrid(p)) { return D_NONE; } return brickOfCell(p);
@@ -64,8 +72,19 @@ export function airWGSL(g,nativeHead,stage) {
     faces[t]=vec4f(open,buoyancy);
   `);
   if (stage==='source') return h+main64(/* wgsl */ `
-    if (t>=D_BRICKS) { return; } var a=airIn[t]; var count=0u; var heat=0.0;
+    if (t>=D_BRICKS) { return; } var a=airIn[t]; var count=0u; var heat=0.0; var vacuum=0.0;
     for (var s=t*64u;s<(t+1u)*64u;s++) {
+      let core=loadMaterial(s).core; vacuum=min(vacuum,aVacuum(core));
+      // The contact rule's0.6 open-neighbour ring, including cross-brick faces.
+      // Interior neighbours already share the stronger source-brick target.
+      if (cls(cid(core))==0u || cls(cid(core))==4u) {
+        let p=cellOf(s);
+        for(var axis=0u;axis<3u;axis++) {
+          let local=p[axis]&3; if(local!=0 && local!=3) { continue; }
+          let q=p+dAxis(axis)*select(-1,1,local==3);
+          if(inGrid(q)) { vacuum=min(vacuum,${f(PHYS.SING_RING)}*aVacuum(loadMaterial(slotOf(q)).core)); }
+        }
+      }
       if ((events[s]&2u)!=0u) {
         count++; heat+=(f32(cTq(loadMaterial(s).core))*0.25-293.25)/64.0;
         events[s]&=~2u; // bit consumed only together with its bounded, once-only source
@@ -77,6 +96,7 @@ export function airWGSL(g,nativeHead,stage) {
       a.vp.w+=f32(count)*${f(AIR.gasPressure)}; a.thermal.x+=heat;
       a.thermal.y+=f32(count)/64.0; a.thermal.z=0.0; dWake(aBase(t));
     }
+    if (vacuum<0.0) { a.vp.w=min(a.vp.w,vacuum); a.thermal.z=0.0; dWake(aBase(t)); }
     airOut[t]=a;
   `);
   if (stage==='step') return h+main64(/* wgsl */ `

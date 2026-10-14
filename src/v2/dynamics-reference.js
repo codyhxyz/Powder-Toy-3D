@@ -2,7 +2,8 @@
 // seconds, m/s, J and Pa. No legacy state is read by the native kernels.
 import { ELEMENTS, E, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
-import { energyOf, withEnergy, energyFits, makeMaterial, cTq, AIR_CAPACITY_Q } from './layout.js';
+import { PHYS } from '../physics.js';
+import { energyOf, withEnergy, energyFits, makeMaterial, cTq, AIR_CAPACITY_Q, withPayload, payloadOf, share } from './layout.js';
 export { CELL_M };
 export const PARTICLE_CAP = 65536;
 export const PARTICLE_BYTES = 48;
@@ -12,6 +13,14 @@ export const BLAST_SCALE = 1e-3; // Deliberate miniature TNT scale, R10.
 export const AIR = Object.freeze({ edge: 4 * CELL_M, rho: 1.225, sound: 50,
   substeps: 8, loss: 0.9999, diffusion: 0.04, pQuantum: 0.02, vQuantum: 0.0002,
   scalarQuantum: 1e-7, quietTicks: 8, gasPressure: 1.225 * 50 ** 2 / 64 });
+// Compatibility scale calibrated to the EXISTING gunpowder row, not an
+// independent pressure/J table. Native tools accept Pa; legacy adapters convert.
+export const GUNPOWDER_ENERGY_J = ELEMENTS[E.GUNPOWDER].dens * 100 * CELL_M ** 3 * 3e6 * BLAST_SCALE;
+export const GUNPOWDER_PRESSURE = ELEMENTS[E.GUNPOWDER].blast.P;
+export const LEGACY_PRESSURE_PA = Math.sqrt(GUNPOWDER_ENERGY_J * 0.25 * 2 * AIR.rho * AIR.sound ** 2 / AIR.edge ** 3) / GUNPOWDER_PRESSURE;
+export const legacyPressureToPa = value => value * LEGACY_PRESSURE_PA;
+export const specialBlastEnergy = legacyPressure => GUNPOWDER_ENERGY_J * (Math.max(0,Math.min(PHYS.P_MAX,legacyPressure))/GUNPOWDER_PRESSURE) ** 2;
+export const singularityVacuumPa = core => (core[0]&255)===E.SINGULARITY ? legacyPressureToPa(Math.max(PHYS.P_MIN,-PHYS.SING_P_PER_MASS*(core[1]&65535)/256)) : 0;
 export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;
 export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
@@ -25,10 +34,10 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   strength: e.breakInto ? e.hard / CELL_M ** 2 : 1e30,
   terminal: ({ ASH: 3, SNOW: 3, SAWDUST: 4, DUST: 3 })[e.key] ?? 55,
   lift: ({ ASH: 1, DUST: 1, SNOW: 2, SAWDUST: 2 })[e.key] ?? 12,
-  energy: e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,
-  product: e.blast ? E[e.blast.into ?? 'FIRE'] : 0,
+  energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,
+  product: e.key==='DUST' ? E.FIRE : e.key==='SINGULARITY' ? E.FIRE : e.blast ? E[e.blast.into ?? 'FIRE'] : 0,
   productCtype: e.blast?.of ? E[e.blast.of] : 0,
-  productT: e.blast?.T ?? 20,
+  productT: e.key==='DUST' ? PHYS.DUST_FLAME_T : e.key==='SINGULARITY' ? PHYS.SING_BURST_T : e.blast?.T ?? 20,
 }));
 export function hash32(x) {
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
@@ -139,6 +148,21 @@ export function extractPacket(m) {
   return { packet:{core:new Uint32Array(m.core),bank:m.bank},
     source:makeMaterial(0,cTq(m.core)*0.25-273.25,0,0) };
 }
+export function extractPartialPacket(source,amount) {
+  const total=source.core[1]&0xffffff;
+  if(!Number.isInteger(amount) || amount<1 || amount>total) throw new RangeError('particle extraction amount');
+  if(amount===total) return extractPacket(source);
+  let packet={core:new Uint32Array(source.core),bank:source.bank},rest={core:new Uint32Array(source.core),bank:source.bank};
+  packet.core[1]=(packet.core[1]&0xff000000)|amount;rest.core[1]=(rest.core[1]&0xff000000)|(total-amount);
+  if(!(ELEMENTS[source.core[0]&255].elec>0)) {
+    const fuel=Number(share(payloadOf(source.core),0,amount,total));
+    packet=withPayload(packet,fuel);rest=withPayload(rest,payloadOf(source.core)-fuel);
+  }
+  const e=share(particleEnergy(source),0,amount,total)+BigInt(AIR_CAPACITY_Q)*BigInt(cTq(source.core));
+  if(!energyFits(packet,e)) return null;packet=withEnergy(packet,e);
+  const remaining=energyOf(source)-particleEnergy(packet);if(!energyFits(rest,remaining)) return null;
+  return {packet,source:withEnergy(rest,remaining)};
+}
 export function depositPacket(packet, destination) {
   const energy=particleEnergy(packet)+energyOf(destination);
   return energyFits(packet,energy) ? withEnergy(packet,energy) : null;
@@ -150,6 +174,7 @@ export function fractureMaterial(material, product) {
 }
 export function chargeEnergy(material) {
   const id=material.core[0]&255,row=dynamicsRows[id];
+  if(id===E.SINGULARITY) { const mass=(material.core[1]&65535)/256; return mass===0 ? 0 : specialBlastEnergy(Math.min(PHYS.P_MAX,mass*PHYS.SING_BURST_P_PER_MASS)); }
   return row.energy*(row.kind===K.LIQUID ? (material.core[1]&0xffffff)/65536 : 1);
 }
 export const pressureEnergy = p => p*p*AIR.edge**3/(2*AIR.rho*AIR.sound**2);
@@ -158,4 +183,17 @@ export function refractDirection(direction,normal,ratio) {
   const dot=direction.reduce((s,x,i)=>s+x*normal[i],0),k=1-ratio*ratio*(1-dot*dot);
   if(k<0) return direction.map((x,i)=>x-2*dot*normal[i]);
   return direction.map((x,i)=>ratio*x-(ratio*dot+Math.sqrt(k))*normal[i]);
+}
+
+export function holdVelocities(particles, destination, strength=12, dt=DT) {
+  let mass=0;const offset=[0,0,0],mean=[0,0,0];
+  for(const p of particles) {
+    const m=p.mass;mass+=m;
+    for(let a=0;a<3;a++) { offset[a]+=(p.position[a]-destination[a])*m;mean[a]+=p.velocity[a]*m; }
+  }
+  if(!mass) return [];
+  const omega=Math.max(1,Math.min(60,strength)),step=Math.max(0,Math.min(.1,dt)),decay=Math.exp(-omega*step);
+  for(let a=0;a<3;a++) mean[a]/=mass;
+  const desired=mean.map((v,a)=>(v-omega*(v+omega*offset[a]/mass*CELL_M)*step)*decay);
+  return particles.map(p=>desired.map((v,a)=>v+(p.velocity[a]-mean[a])*Math.exp(-2*omega*step)));
 }

@@ -42,8 +42,7 @@ reported by `readActivity().capacityFallbacks`. Pending ray emissions retry.
 
 `capabilities` separates `physicsReady` from `drawReady`; `attachDrawAdapter`
 sets the latter only from an actual adapter's `isReady`. Physics capability is
-not proof of visible particles. `physgun` remains false until a real hold
-controller exists; a uniform impulse is not advertised as hold.
+not proof of visible particles. `physgun` reports the real controller described below, independently of draw readiness.
 
 `renderState` exposes `particles`, `control`, readiness, and exact record ABI:
 
@@ -52,7 +51,7 @@ controller exists; a uniform impulse is not advertised as hold.
 - byte16 velocity.xyz f32 **m/s**, byte28 core.word0 u32.
 - byte32/36/40 core.word1/2/3, byte44 signed i32 bank.
 - Particle-only tag254 photon,255 neutron; never write these into the grid.
-  Photon core0 upper24 holds remaining life; words1–3 hold RGB f32 energy.
+  Photon core0 bits8..23 hold life, bits24..31 the last optical medium; words1–3 hold RGB f32 energy.
   Neutron words1–3 hold life, energy f32(MeV), pending children u32.
 - `control` byte0 is live count, not a compacted draw list. A renderer can draw
   instanced65536 and reject ID0, or build its own draw-indirect list. No
@@ -74,8 +73,7 @@ in J; density uses the existing element density table (100kg/m³ per unit).
 Default batch8, configurable1..64, bounds recording work. For1000 immediately
 eligible sources, ideal service latency is125 ticks (2.0833s) at default,
 16 ticks (0.2667s) at64; real chains/blocked capacity can take longer. This is
-NOT a claim of dense-explosion timing parity. Full-grid plans and fixed-cap
-allocation scans remain a performance risk requiring parent-owned GPU evidence.
+NOT a claim of dense-explosion timing parity. Empty batch work is indirect-dispatched at zero workgroups; selection still scans events. Fixed-cap allocation scans and active full-grid plans remain a performance risk requiring parent-owned GPU evidence. Plans and claims each cost16B/cell, below128MiB/binding at6.3M cells.
 
 Air is32B per4³ brick in two copies. Eight60Hz substeps use50m/s acoustic
 Rusanov exchange plus bounded conservative upwind/diffusive heat/gas transport.
@@ -136,3 +134,43 @@ memory grows with explored active air; compression/eviction is not implemented.
 - API inputs must fit finite f32-safe arithmetic (absolute magnitude<=1e12).
   Restore validates live particle coordinates/energy and air floats before
   any writes. Snapshot carries pending shock terms and held-membership storage.
+
+
+## Physgun and native special sources
+
+`applyPhysgun({mode:'hold'|'fling'|'punt',position,target?,direction,radius,dt,strength})`
+accepts world-cell coordinates. Hold selects loose matter (including existing
+flight records), tracks membership separately without consuming any Material
+bits, computes mass-weighted COM in canonical slot order, and applies a
+critically damped COM spring plus relative velocity damping. Held particles
+keep their offsets, do not deposit, and receive gravity compensation; they
+still sweep/collide. Hold strength is stiffness in1/s (default12, bounded1..60).
+The controller runs at native60Hz, not render cadence. Refresh hold requests
+while held; after8 ticks without refresh it releases. Fling/punt strength is
+delta-v m/s. `releasePhysgun()` explicitly releases without an impulse. Selection
+and controller metadata survive snapshots and shifts. A full pool leaves grid
+material intact and reports cumulative fallback attempts, never erases it.
+
+DUST and SINGULARITY are recognized special events despite having no normal
+`element.blast` row. They use the existing gunpowder calibration:
+`E(P)=121500*(clamp(P,0,200)/60)^2` J. Thus DUST P30 gives30375J and FIRE
+(nominal1700C); SING mass=rawlife/256 gives P=mass capped200 and FIRE
+(nominal3000C), including tiny positive mass. Temperature remains bounded by
+actually accounted thermal energy. Only ZERO mass is terminal evaporation:
+EMPTY retains the original carrier, and removed material enthalpy is ledgered.
+The explicit compatibility pressure scale is
+`sqrt(Egp*0.25*2*rho*c²/brickVolume)/Pgp`, not an independent Pa/J guess.
+`legacyPressureToPa()` is exported for legacy brush adapters; native requests
+already use Pa. The singularity vacuum uses max(-50,-2.5mass) and the0.6
+open-neighbour ring, with the same conversion, and wakes adjacent bricks.
+
+Partial liquid ejection conserves exact fill, extensive fuel (or the intact
+conductive spark union), signed64 enthalpy and the stationary air carrier.
+Current jet detection samples fast unsupported flux AFTER liquid substeps;
+this is conservative but is NOT yet exact pre-gather face-outflow diversion.
+That timing hook belongs to the foundation liquid driver and remains an
+integration limitation, not a claimed completed transport proof.
+
+`validateDynamicState(snapshot,g)` is pure and exported. App/save callers should
+preflight it before mutating ANY app or GPU state, then call restore. It includes
+held memberships, queued rays, pending shock and source obligations.

@@ -49,6 +49,9 @@ ${table('dStrength', 'f32', 'strength', 1e30)}
 ${table('dBreak', 'i32', 'breakInto', -1)}
 ${table('dTerminal', 'f32', 'terminal', 55)}
 ${table('dLift', 'f32', 'lift', 12)}
+fn dConductive(id: u32) -> bool { switch id {
+${ELEMENTS.filter(e=>e.elec>0).map(e=>`case ${e.id}u: { return true; }`).join('\n')}
+default: { return false; } } }
 fn dHash(x0: u32) -> u32 { var x = x0; x = (x ^ (x >> 16u)) * 0x7feb352du; x = (x ^ (x >> 15u)) * 0x846ca68bu; return x ^ (x >> 16u); }
 fn dId(p: vec3i, rule: u32) -> u32 { let w = vec3u(p + P.origin); return max(1u, dHash(w.x * 73856093u ^ w.y * 19349663u ^ w.z * 83492791u ^ P.tick * 2654435761u ^ rule)); }
 fn dKey(id: u32) -> u32 { return dHash(id ^ P.tick * 2654435761u); }
@@ -114,7 +117,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   const h = head(g, nativeHead);
   if (stage === 'clear') return h + main64(`
     if (t < D_SLOTS * 4u) { atomicStore(&claims[t], D_NONE); }
-    if (t == 0u) { atomicStore(&control[0],0u); }
+    if (t == 0u) { atomicStore(&control[0],0u); atomicStore(&control[18],0u); }
   `);
   if (stage === 'integrate') return h + main64(/* wgsl */ `
     if (t >= D_CAP) { return; }
@@ -134,7 +137,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       let life = (particle.c0 >> 8u)&65535u; particle.c0 = (particle.c0&0xff0000ffu) | (max(1u,life)-1u)<<8u;
       acceleration = vec3f(0);
     } else if (neutron) {
-      if (particle.tail.z > 0u) { return; } // pending children: allocator must account for every one
+      if (particle.tail.z > 0u) { atomicAdd(&control[18],particle.tail.z); return; } // pending children: allocator must account for every one
       if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); return; }
       if ((particle.c0&256u)==0u) { particle.tail.x -= 1u; } acceleration = vec3f(0);
     } else {
@@ -275,6 +278,7 @@ export function particlesWGSL(g, nativeHead, stage) {
         p.tail.y = bitcast<u32>(${f(RAYS.NEUT_E_FAST)});
         atomicAdd(&control[D_SHOCK+brickOfCell(cellOf(s))],${Math.round(RAYS.FISSION_P*256)}u);
         p.tail.z = u32(floor(f.effect.x-1.0)) + select(0u,1u,dRandom(p.id,761u)<fract(f.effect.x-1.0));
+        atomicAdd(&control[18],p.tail.z);
         p.velocity = dDir(p.id)*${f(RAYS.NEUT_V*60*CELL_M)};
       } else { p.id = 0u; atomicSub(&control[0],1u); }
     }
@@ -290,9 +294,48 @@ export function particlesWGSL(g, nativeHead, stage) {
     storeMaterial(s,before,withEnergy(incoming,combined)); dWake(cellOf(s));
     particles[t].id = 0u; atomicSub(&control[0],1u);
   `);
+  if (stage === 'holdSelect') return h + main64(`
+    if (t>=D_CAP || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
+    if (distance(particles[t].position,P.center)<=P.radius) { atomicStore(&control[D_HELD+t],P.sequence); }
+  `);
+  if (stage === 'holdCOM') return h + main1(`
+    var mass=0.0; var offset=vec3f(0); var velocity=vec3f(0); var count=0u;
+    for (var i=0u;i<D_CAP;i++) {
+      let p=particles[i]; if (p.id==0u || atomicLoad(&control[D_HELD+i])!=P.sequence) { continue; }
+      let m=dMass(p.c0&255u)*dAmount(dMaterial(p));
+      mass+=m; offset+=(p.position-P.center)*m; velocity+=p.velocity*m; count++;
+    }
+    var center=P.center; if (mass>0.0) { center+=offset/mass; velocity/=mass; }
+    for(var a=0u;a<3u;a++) { atomicStore(&control[8u+a],bitcast<u32>(center[a])); atomicStore(&control[12u+a],bitcast<u32>(velocity[a])); }
+    atomicStore(&control[11],bitcast<u32>(mass)); atomicStore(&control[15],count);
+  `);
+  if (stage === 'holdApply') return h + main64(`
+    if (t>=D_CAP || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
+    let held=atomicLoad(&control[D_HELD+t]); var p=particles[t];
+    if (P.mode==9u) {
+      if (held!=P.sequence) { return; }
+      var center=vec3f(0); var mean=vec3f(0);
+      for(var a=0u;a<3u;a++) { center[a]=bitcast<f32>(atomicLoad(&control[8u+a])); mean[a]=bitcast<f32>(atomicLoad(&control[12u+a])); }
+      // GMod-style physgun: a critically damped COM spring, with relative
+      // velocity damping. It attracts to a point, rather than repeatedly
+      // kicking all matter in one arbitrary direction. Fixed60Hz, no gravity
+      // while held; collisions still use the ordinary swept DDA.
+      let omega=clamp(P.strength,1.0,60.0); let dt=clamp(P.radius,0.0,0.1);
+      let error=(center-P.center)*D_CELL; let decay=exp(-omega*dt);
+      let relative=mean-P.vector;
+      let desired=P.vector+(relative-omega*(relative+omega*error)*dt)*decay;
+      p.velocity=desired+(p.velocity-mean)*exp(-2.0*omega*dt);
+    } else {
+      let selected=select(distance(p.position,P.center)<=P.radius,held==P.sequence,P.sequence!=0u);
+      if (!selected) { return; }
+      if (P.mode!=12u) { p.velocity+=P.vector; }
+      atomicStore(&control[D_HELD+t],0u);
+    }
+    particles[t]=p; let local=vec3i(floor(p.position))-P.origin; if (inGrid(local)) { dWake(local); }
+  `);
   throw new Error(`Unknown particles stage ${stage}`);
 }
-export const PARTICLE_STAGES = ['clear','integrate','elect','impact','deposit'];
+export const PARTICLE_STAGES = ['clear','integrate','elect','impact','deposit','holdSelect','holdCOM','holdApply'];
 
 export const WGSL_CHECK = PARTICLE_STAGES.map(stage => ({ name: `v2particles_${stage}`, kind: 'compute',
   code: g => particlesWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,PARTICLES_LAYOUT,'EMPTY'], tool: true }));
