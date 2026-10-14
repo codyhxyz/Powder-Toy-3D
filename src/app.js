@@ -65,6 +65,7 @@ import { createPresentation } from './gfx/presentation.js';
 import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
 import { povEvents } from './pov/events.js';
 import { createPacer, settleFrames, createViewKey, createFrameLoop, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
+import { createViewSettings, bindViewInputWake, brushKey } from './gfx/viewInputs.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { createProfiler } from './gfx/profiler.js';
@@ -816,6 +817,7 @@ let arenaLayout = null;
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
 let pointerInside = false;
+let pointerPickDirty = false;   // a new pointer ray needs a pick even if the scene stayed cached
 let pointerClient = [0, 0];
 const raycaster = new THREE.Raycaster();
 const hover = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0 };
@@ -873,6 +875,7 @@ function screenPlane(ray, height, out) {
 function requestPick() {
   const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
+  pointerPickDirty = false;
   const ray = fromPov ? povRay : gridRay();
   const skipLiquids = fromPov && skipPickLiquids();
   pickPending = true;
@@ -949,16 +952,6 @@ function updateBrush() {
     color: toolById(settings.tool).color,
   });
   builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
-}
-
-// The brush's state as the view key sees it (the brush is ours, not in three's scene).
-function brushKey() {
-  let k = '';
-  for (const m of Object.values(brush.parts)) {
-    if (!m.visible) { k += '-|'; continue; }
-    k += `${m.shape},${m.position.x},${m.position.y},${m.position.z},${m.scale.x},${m.scale.y},${m.scale.z},${m.quaternion.x},${m.quaternion.y},${m.quaternion.z},${m.quaternion.w}|`;
-  }
-  return k;
 }
 
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
@@ -1664,6 +1657,7 @@ async function eraseClick(e) {
   hud.dismissHint();
 }
 canvasEl.addEventListener('pointermove', (e) => {
+  pointerPickDirty = true;
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   pointerClient = [e.clientX, e.clientY];
   pointerInside = true;
@@ -1976,10 +1970,8 @@ const pacer = createPacer({
 // the view's key: a counter that changes when what the view shows does
 // (gfx/pacing.js); viewKey.still, when what our own passes draw with does
 const viewKey = createViewKey({ still: [volume, floorGrid] });
-// input of any kind may change what the view shows
-for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
-  addEventListener(type, () => { autoRes.wake(); pacer.wake(); }, { capture: true, passive: true });
-}
+const viewSettings = createViewSettings(settings);
+bindViewInputWake(window, () => { autoRes.wake(); wakeLoop(); });
 let lastVersion = -1, renderedLast = false;
 // the browser capping the page at 30 Hz (gfx/pacing.js createCapCheck): say so once
 const capCheck = createCapCheck();
@@ -2371,8 +2363,8 @@ function tick(now, renderOnly = false) {
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-    `${win?.far?.chunksDrawn}|${brushKey()}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
-    settings, gfx, post.settings) : viewSeen;
+    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
+    viewSettings, gfx, post.settings) : viewSeen;
   let runView = present && pacer.view(viewV,
     runDerived || wantFrame() || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
   // three's meshes moved, and nothing else in the key (gfx/meshFrames.js), since the last view frame
@@ -2400,7 +2392,7 @@ function tick(now, renderOnly = false) {
   }
   // Picking is input work, not presentation: a preview must keep it responsive.
   // (Asked for before the frame, so the frame's compute pass marches it.)
-  if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
+  if (!renderOnly && (pointerPickDirty || runView || pov?.active || testMode === 'preview')) requestPick();
   if (runView) {
     prof.phase('view');
     updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
