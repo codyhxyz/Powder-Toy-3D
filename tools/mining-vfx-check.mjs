@@ -24,9 +24,11 @@ try {
       assert.equal(vfx.counts().chip, undefined, `${source}: no cosmetic chip pool`);
     }
   }
-  vfx.clear();
-  hit('pickaxe', E.METAL, false);
-  assert.ok(vfx.counts().spark > 0, 'refused strike still sparks');
+  for (const source of ['pickaxe', 'jackhammer']) {
+    vfx.clear();
+    hit(source, E.METAL, false);
+    assert.ok(vfx.counts().spark > 0, `${source}: refused strike still sparks`);
+  }
   vfx.clear();
   hit('pickaxe', E.WATER);
   assert.ok(vfx.counts().mist > 0, 'liquid splash unchanged');

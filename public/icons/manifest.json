@@ -1,7 +1,7 @@
 {
  "three": "186",
  "page": "0e255a992f87f2b336579c0de96072a0",
- "sources": "e081d098e3398e7de729f92a094a5b2b",
+ "sources": "a8e5d968df94410567e6909631af1375",
  "files": {
   "icons/gun.png": "17bba6be0d681d4ec074f7f16fd93e3f",
   "icons/pistol.png": "b5863a5f26c8f57dfd6b696f0737456b",
@@ -10,6 +10,7 @@
   "icons/rocket.png": "6a52ecd2bf3566e50f2d26b216830988",
   "icons/physgun.png": "7485aa2b3e779db305b638412e62bff0",
   "icons/axe.png": "9a958f29cd6e52f310c8b563c15d2b6d",
+  "icons/jackhammer.png": "355d0769644faf7f4f0aee97b2daa88c",
   "icons/pickaxe.png": "f5c2c8fc4f4a8d909e693c283389cc1e",
   "icons/shovel.png": "1b5bf45138b0065fd4b8573436c83b65",
   "icons/bucket.png": "fc31a0c4f7587100cf0c6b9976d932ec",

@@ -63,7 +63,10 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
       if (renderer.info.autoReset) renderer.info.reset();
     }
     if (gpu._frame.open) gpu.flush('before three');
-    return render(scene, camera);
+    const previousScope = gpu.timing.scope;
+    gpu.timing.scope = `three:${scene.name || scene.material?.name || 'meshes'}`;
+    try { return render(scene, camera); }
+    finally { gpu.timing.scope = previousScope; }
   };
 
   gpu.three = {

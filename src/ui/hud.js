@@ -19,7 +19,7 @@ export function createHud() {
   const TOUCH_FIRST = matchMedia('(hover: none) and (pointer: coarse)').matches;
   const hint = h('div.hint.panel', { html: TOUCH_FIRST
     ? '<b>Drag</b> to pour. <b>Two fingers</b> to turn and zoom.'
-    : '<b>Drag</b> on the floor to pour. <b>Right-drag</b> to look around. Press <b>?</b> for shortcuts.' });
+    : '<b>Drag</b> to pour. <b>Right-click</b> to erase; <b>right-drag</b> to look around. Press <b>?</b> for shortcuts.' });
 
   // colour key for data views (heat, pressure, ...); hidden in the realistic view
   const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });
@@ -80,6 +80,7 @@ export function createHelp(onClose) {
       h('div.cols', {},
         h('h3', { text: 'Painting' }),
         row('Paint', 'Left drag'),
+        row('Erase on release (drag instead to orbit)', 'Right click'),
         row('Brush size', '[', ']'),
         row('Brush size', 'Shift', 'Scroll'),
         row('Sphere or cube brush', 'B'),

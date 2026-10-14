@@ -282,7 +282,7 @@ const SAMPLE_GROUPS = ['bite', 'sand', 'gravel', 'soil', 'rock', 'glass', 'metal
 const SAMPLE_NAMES = new Set(SAMPLE_GROUPS.map((g) => `dig:${g}`));
 const SAMPLE_BASE = `${import.meta.env?.BASE_URL ?? '/'}sfx/dig/`;
 const sampleUrl = (group, take) => `${SAMPLE_BASE}${group}-${take}.mp3`;
-const DIG_SOURCES = new Set(['axe', 'pickaxe']);   // the swung tools whose blows on cells play the dig samples
+const DIG_SOURCES = new Set(['axe', 'pickaxe', 'jackhammer']);   // the swung tools whose blows on cells play the dig samples
 const DIG_TEXTURE_GAIN = 0.8;           // the material's texture under the blade's bite
 const DUMP_TEXTURE_GAIN = 0.5;          // the grains' texture under a load's thud
 const CHIP_GAIN = 0.5;                  // a blow that only cracked: its material at half (Minecraft's hit is a quieter break)

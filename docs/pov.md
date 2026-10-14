@@ -396,6 +396,32 @@ player.dispose()
 
 The shell owns respawning (it calls `spawn` again after the death screen).
 
+### Authoring a held tool
+
+1. Append to `tools/catalog.js` (never insert: palette IDs must stay stable), choosing a slot,
+   model and touch-button labels. Add `models.js` parts/icon pose and `holds.js` third-person hold.
+   Bake the icon with `node tools/bake-icons.mjs --only MODEL` and verify `--check`.
+2. Prefer a config-only `*.tool.js`: `meleeTool` for blows, `firearm` for rounds. For a bespoke
+   tool use `tools/held.js` `heldModel(env, { model, pos, pivot? })`: initially hidden;
+   `update(ctx, visible = true)` equips/follows the rig, `deselect()` hides, `dispose()` releases
+   the model geometry and unregisters its hand. The shared rig belongs to the environment, not
+   the tool. This is the small Roblox-style equipped/update/unequipped/cleanup lifecycle;
+   actions, getters, world resources and their cleanup remain ordinary tool code.
+3. Keep timers on `toolDt`/`trigger`; reset them on deselect. A scope passes `false` to held-model
+   update (the rig still advances). Keep `windowShifted` for stored grid points and don't assume
+   a HUD exists: NPCs use the same tools. Use `transfer.js` for conservation, and classify new
+   mining sources in `constants.js`/`audio.js` rather than adding fake debris in VFX.
+
+**Jackhammer** (`JACKHAMMER`, Dig): Rust-inspired hold-primary mining, ten strokes/s within
+5 cells (1.5 m). It reuses the pickaxe's `dig.js` outlined lattice bites: energy limit 52 breaks rock (30), not
+METAL (60), with the same material tags and power 30. Each mined cell enters the pack as one
+debris cell (rock → stone); existing loose stone is collected too. A full pack leaves the rock
+intact; a nearly full pack takes only what fits. A 0.07-cell axial stroke replaces the axe swing in both views.
+`buffer: false` discards cooldown taps so release cannot trigger a delayed stroke; existing tools
+keep their buffered timing. Checks: `node tools/held-tools-check.mjs` (CPU),
+`node tools/mining-vfx-check.mjs` (CPU), and `node tools/jackhammer-check.mjs --port 19483`
+(short guarded manual-mode GPU fixture, no app loop).
+
 ### The tool contract
 
 `src/pov/tools/index.js` exports `createToolbelt(env)`. The body module calls it when POV starts, if the
@@ -440,7 +466,7 @@ export default {
 
 **Shared feel: use these, don't hand-roll per tool**, so every tool (and a new one) acts and responds the same:
 
-- `tools/action.js` `trigger(interval, { hold, button })`: when a button acts. HL2's weapon timing: acts on
+- `tools/action.js` `trigger(interval, { hold, button, buffer = true })`: when a button acts. HL2's weapon timing: acts on
   the frame the button goes down, then every `interval` while held (`hold: false` for one per click), and
   a click during the wait is buffered. `swing(spec)`: a melee blow's eased pose, stopping short on a hit and
   following through on a miss.

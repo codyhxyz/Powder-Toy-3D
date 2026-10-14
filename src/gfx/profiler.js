@@ -5,7 +5,7 @@
 //
 // On, every frame times its phases on the CPU (performance.now() between the
 // phase marks the frame loop sets). On the GPU, gpu.timing runs in split mode
-// (docs/webgpu.md B8): every pass of ours gets timestamp queries, and every
+// (docs/webgpu.md B8): every pass on the shared device gets timestamp queries, and every
 // dispatch a compute pass of its own named after its kernel, so the report
 // keeps its per-pass shape. The profiler notes, as each timed pass begins,
 // which phase the frame was in; when that frame's timestamps land (1–3 frames
@@ -17,19 +17,16 @@
 // its start to the next frame's start (what a hitch looks like), its own CPU
 // work, and that work by phase.
 //
-// What it can't see: three's passes (the meshes; three keeps its own
-// timestamps) and the cost of splitting itself (a pass per dispatch costs a
-// little on a tiled GPU; tools/profile-check.mjs measures the difference).
-// Passes of one name in one frame (react × steps) share that name's total
-// evenly: gpu.timing.last sums them. Chrome quantizes timestamps to 100 µs
-// unless WebGPU's developer features are on.
+// Three's meshes and TAAU are included automatically. Copy/upload commands,
+// the browser compositor and other devices are outside GPU pass time.
+// Splitting has overhead; compare with unsplit captures for total frame cost.
+// Missing queries/readback failures invalidate the total, not silently zero it.
 
 const SAMPLE_INTERVAL_MS = 1000;   // between samples
 const IDLE_AFTER_MS = 500;         // without GPU work before the overlay says idle
 const FRAMES_KEPT = 16;            // frames whose passes are kept while their timestamps are in flight
 export const HISTORY = 40;         // recent samples' GPU totals kept for the spike strip
 export const FRAMES = 180;         // recent frames kept for the frame-time graph (3 s at the 60 fps cap)
-const UNNAMED = '(unnamed)';       // label of a pass with no name
 const MS_PER_S = 1000;
 const CANVAS_BYTES = 4;            // per canvas pixel: RGBA8 (the presenter's)
 
@@ -40,24 +37,23 @@ export const PHASES = [
   { id: 'derived', label: 'Derived' },   // render fields, bricks, empty-space distance, glow volume
   { id: 'shadow', label: 'Shadow' },     // the sun's shadow map
   { id: 'gi', label: 'GI' },             // GI probes
-  { id: 'view', label: 'View' },         // the scene pass: the raymarch, far field, overlays (three's meshes untimed)
+  { id: 'view', label: 'View' },         // raymarch, far field, overlays and three's meshes
   { id: 'post', label: 'Post' },         // TAA or TAAU, bloom, adaptation, the canvas composite
   { id: 'other', label: 'Other' },       // picking, signs, multiplayer, first-person probes, frame-loop upkeep
 ];
 const PHASE_INDEX = Object.fromEntries(PHASES.map((p, i) => [p.id, i]));
 const OTHER = PHASE_INDEX.other;
 
-// gpu.timing hands out timestampWrites per pass by name (_writes); the
-// profiler watches it to learn each timed pass's phase, in order. Installed
+// gpu.timing observes every pass at the device boundary; the profiler tags
+// each record with its phase, including passes whose timing failed. Installed
 // once per gpu; `watch` is the profiler's (null while it is off).
 function watchTimedPasses(timing) {
   if (timing.__profiler) return timing.__profiler;
   const hook = { watch: null };
-  const writes = timing._writes.bind(timing);
-  timing._writes = (name) => {
-    const w = writes(name);
-    if (w) hook.watch?.(name);
-    return w;
+  const previous = timing.onPass;
+  timing.onPass = (pass) => {
+    previous?.(pass);
+    hook.watch?.(pass);
   };
   timing.__profiler = hook;
   return hook;
@@ -93,13 +89,13 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
   let gpuName = '';
   let on = false;
   let mark = 0, cur = OTHER;   // time of the last phase mark, and the phase since then
-  let passesAtBegin = 0;       // render + compute passes of ours when the frame began
+  let passesAtBegin = 0;       // all render + compute passes when the frame began
   let frameNow = 0, frameStart = 0, prevNow = 0, prevWorked = false;
   let lastSample = -Infinity, lastWorked = 0, idle = false, sampledFrame = -1;
   let cpuFrames = 0, workedFrames = 0, drawDt = 0, drawN = 0, steps = 0;   // this window
   let maps = { awake: null, drawn: null }, mapsReading = false;
 
-  const passCount = () => gpu.stats.renderPasses + gpu.stats.computePasses;
+  const passCount = () => timing.passCount;
   // the gpu frame a pass recorded now belongs to: endFrame increments frameNo,
   // then closes the timing frame under the new number
   const frameTag = () => gpu.frameNo + 1;
@@ -111,7 +107,7 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
     }
     return r;
   };
-  const watch = (name) => { recordOf(frameTag()).passes.push({ name: name || UNNAMED, phase: cur }); };
+  const watch = (pass) => { pass.phase = cur; recordOf(frameTag()).passes.push(pass); };
 
   // Brick shares from the sim's maps (docs/webgpu.md G5: brick level), read
   // asynchronously; a sample shows the latest that has landed.
@@ -128,31 +124,29 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
   // over the frame }), or one without GPU times (ms null: no timestamp-query)
   function makeSample(tag, ms) {
     const rec = tag === null ? null : frames.get(tag);
+    const coverage = ms ? timing.lastCoverage : null;
     const phases = PHASES.map((p) => ({ ...p, gpu: ms ? 0 : null, cpu: cpuFrames ? 0 : null, segs: [], detail: [] }));
     const passes = [];
     let gpuAt = 0;
-    if (ms && rec) {
-      const count = {};
-      for (const ps of rec.passes) count[ps.name] = (count[ps.name] ?? 0) + 1;
-      let prev = -1;
-      for (const ps of rec.passes) {
-        const gpuMs = (ms[ps.name] ?? 0) / count[ps.name];
-        const ph = phases[ps.phase];
-        ph.gpu += gpuMs;
-        // contiguous passes of one phase draw as one bar
-        if (ps.phase === prev) ph.segs[ph.segs.length - 1][1] = gpuAt + gpuMs;
-        else ph.segs.push([gpuAt, gpuAt + gpuMs]);
-        prev = ps.phase;
-        // per pass name: its runs this frame, and where each sat on the timeline
-        const seg = [gpuAt, gpuAt + gpuMs];
+    if (ms) {
+      for (const ps of timing.lastPasses) {
+        const phase = typeof ps.phase === 'number' ? ps.phase : PHASE_INDEX[ps.phase] ?? OTHER;
+        const gpuMs = ps.gpu, ph = phases[phase];
+        ph.gpu = ph.gpu === null || gpuMs === null ? null : ph.gpu + gpuMs;
+        const segs = gpuMs === null ? [] : [[ps.start, ps.start + gpuMs]];
+        ph.segs.push(...segs);
         const d = ph.detail.find((x) => x.name === ps.name);
-        if (d) { d.count++; d.gpu += gpuMs; d.segs.push(seg); } else ph.detail.push({ name: ps.name, count: 1, gpu: gpuMs, segs: [seg] });
-        passes.push({ phase: ps.phase, name: ps.name, start: gpuAt, gpu: gpuMs });
-        gpuAt += gpuMs;
+        if (d) {
+          d.count++;
+          d.gpu = d.gpu === null || gpuMs === null ? null : d.gpu + gpuMs;
+          d.segs.push(...segs);
+        } else ph.detail.push({ name: ps.name, count: 1, gpu: gpuMs, segs });
+        passes.push({ ...ps, phase });
+        gpuAt += gpuMs ?? 0;
       }
     }
     if (cpuFrames) phases.forEach((ph, i) => { ph.cpu = cpuSum[i] / cpuFrames; });
-    if (ms) {
+    if (coverage?.complete) {
       totals.push(gpuAt);
       if (totals.length > HISTORY) totals.shift();
     }
@@ -164,7 +158,9 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
       overhead: 0,          // (no syncs: nothing to subtract)
       split: timing.split,  // one pass per dispatch while timed
       wall: rec?.wall ?? null,   // the sampled frame's CPU time, beginFrame to endFrame
-      gpu: ms ? gpuAt : null,
+      gpu: coverage?.complete ? gpuAt : null,
+      measuredGpu: ms ? gpuAt : null,
+      coverage,
       cpu: cpuFrames ? cpuSum.reduce((s, x) => s + x, 0) / cpuFrames : null,
       steps: rec?.steps ?? 0,
       fps,

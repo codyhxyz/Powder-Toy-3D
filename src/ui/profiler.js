@@ -79,7 +79,10 @@ function report(s) {
     `rate      ${s.fps == null ? '–' : s.fps.toFixed(1)} fps, ${s.stepsPerSec == null ? '–' : s.stepsPerSec.toFixed(0)} steps/s; ${s.steps} steps in the sampled frame`,
     `sim step  ${ms(perStep(s, simPhase(s).gpu))} ms GPU, ${ms(perStep(s, simPhase(s).cpu))} ms CPU`,
     `memory    ${(s.memory / MB).toFixed(0)} MB in our buffers and textures, three's targets and the canvas`,
-    `frame     ${ms(s.gpu)} ms GPU (one frame, timestamp queries${s.split ? ', every dispatch a pass of its own' : ''}; three's meshes untimed),`,
+    `frame     ${ms(s.gpu)} ms GPU pass time (Three.js included${s.split ? '; split dispatches' : ''}),`,
+    `coverage  ${s.coverage ? `${s.coverage.timed}/${s.coverage.observed} passes timed; ${s.coverage.complete ? 'complete' : 'INCOMPLETE — total unavailable'}` : 'no timestamps'}`,
+    ...(s.coverage?.missing ?? []).map(p => `missing   ${p.name}: ${p.error}`),
+    `scope     pass durations can overlap; excludes copies/uploads, browser compositor and other devices; timeline preserves gaps`,
     `          ${ms(s.cpu)} ms CPU (mean of the frames since the last sample); the sampled frame took ${ms(s.wall)} ms of CPU`,
     '',
     `${pad('phase', 9)}${'gpu ms'.padStart(7)}${'cpu ms'.padStart(8)}  passes: gpu ms`,
@@ -93,7 +96,7 @@ function report(s) {
 
 export function createProfilerPanel({ onClose } = {}) {
   const status = h('span.status', { title: 'Once a second the latest frame whose GPU timestamps have come back is shown:'
-    + ' every pass of ours is timed, and while the profiler is on every dispatch runs as a pass of its own.'
+    + ' Every pass on the shared GPU device is observed, including Three.js. Missing timings invalidate the total.'
     + ' Timings assume nothing else is using the GPU.' });
   const close = h('button.close', { type: 'button', title: 'Close the profiler', 'aria-label': 'Close the profiler', html: ICON.close, on: { click: () => onClose?.() } });
   const copy = h('button.copy', { type: 'button', text: 'Copy', title: 'Copy a plain-text report' });
@@ -104,7 +107,7 @@ export function createProfilerPanel({ onClose } = {}) {
   const tFps = tile('fps', 'Frames per second over the graph\'s window');
   const tFrame = tile('ms / frame', `Mean frame time over the graph's window (${BUDGET_MS.toFixed(1)} ms at ${MAX_FPS} fps)`);
   const tCpu = tile('cpu ms', 'CPU time of a frame (mean of the frames since the last sample)');
-  const tGpu = tile('gpu ms', 'GPU time of the last sampled frame');
+  const tGpu = tile('gpu ms', 'Sum of GPU pass durations, including Three.js. Passes can overlap; copies/uploads and the browser compositor are excluded.');
   const canvas = h('canvas', { style: { height: `${GRAPH_H}px` } });
   const ctx = canvas.getContext('2d');
   const gline = h('div.gline');
@@ -268,7 +271,9 @@ export function createProfilerPanel({ onClose } = {}) {
       if (!s) { idle(); return; }
       last = s;
       el.classList.remove('idle');
-      status.textContent = s.gpu == null ? 'sampled · no GPU timestamps' : `sampled · timestamps${s.split ? ', split passes' : ''}`;
+      status.textContent = s.coverage && !s.coverage.complete ? `INCOMPLETE · ${s.coverage.timed}/${s.coverage.observed} passes`
+        : s.gpu == null ? 'sampled · no GPU timestamps'
+          : `sampled · ${s.coverage.timed}/${s.coverage.observed} passes${s.coverage.unlabelled ? ` · ${s.coverage.unlabelled} unlabelled` : ''}`;
       tCpu.v.textContent = ms(s.cpu);
       tGpu.v.textContent = ms(s.gpu);
       tCpu.el.classList.toggle('warn', s.cpu != null && s.cpu > BUDGET_MS);
@@ -278,7 +283,7 @@ export function createProfilerPanel({ onClose } = {}) {
       state.textContent = `awake ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)}`;
       // (its own line: a Retina canvas and its scene size no longer fit beside the rest)
       size.textContent = `canvas ${s.canvas.join('×')}${s.renderScale < 1 ? ` → scene ${sceneSize(s)}` : ''}`;
-      const span = Math.max(s.gpu ?? 0, BUDGET_MS);
+      const span = Math.max(s.coverage?.spanMs ?? 0, BUDGET_MS);
       rows.forEach((r, i) => {
         const p = s.phases[i];
         r.cpu.textContent = ms(p.cpu);

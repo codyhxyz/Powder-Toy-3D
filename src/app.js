@@ -42,6 +42,7 @@ import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
 import { createBrushCursor } from './brush.js';
+import { bindBrushEraseClick } from './brushInput.js';
 import { createCameraRig } from './camera.js';
 import { createMeshCut } from './gfx/meshCut.js';
 import { createMeshFrames } from './gfx/meshFrames.js';
@@ -103,10 +104,11 @@ const worldOf = (w, s) => (s.size ? { size: s.size, win: [w.win[0], s.size[1], w
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
-const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE,
+const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE, [-22]: SPAWNER.BOAT,
   [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM, [-33]: SPAWNER.BIRDS };   // the Spawners tools' kinds
 const SPAWNER_SET = {
   [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
+  [SPAWNER.BOAT]: 'Boat pad set: press V, swim up and press E; motor needs water',
   [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
   [SPAWNER.BIRDS]: 'Bird flock set: they live here now',
 };
@@ -1618,6 +1620,25 @@ async function renderThumb(viewId, out) {
 
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;
+const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
+  && !signs?.editing && !painting && !shapeDrag;
+bindBrushEraseClick(canvasEl, {
+  canErase: canEraseClick,
+  erase: e => eraseClick(e).catch(err => { console.error('Erase click failed', err); hud.toast('Could not erase here. Try again.'); }),
+});
+async function eraseClick(e) {
+  pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  const from = sim, ray = gridRay(), stroke = brushStroke(ERASE_TOOL);
+  const hit = await pickRay(ray.origin, ray.direction, true);
+  if (from !== sim || !hit.valid || hit.id < 0 || !canEraseClick()) return;
+  if (!mp.isGuest) {
+    sim.snapshot(toolById(ERASE_TOOL).name);
+    toolbar.setUndoEnabled(true);
+  }
+  paintStroke({ ...stroke, center: hit.cell.clone().addScalar(0.5) });
+  pacer.wake();
+  hud.dismissHint();
+}
 canvasEl.addEventListener('pointermove', (e) => {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   pointerClient = [e.clientX, e.clientY];

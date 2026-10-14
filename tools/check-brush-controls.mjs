@@ -1,5 +1,5 @@
-// CPU check of the real app/tool-gun handlers: outside right-drag orbits,
-// first-person right-click erases without changing the selected brush.
+// CPU check of the real app/tool-gun handlers: outside click erases on release,
+// drag orbits, and first-person right-click keeps its held erase stroke.
 // node tools/check-brush-controls.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -12,7 +12,7 @@ const tool = readFileSync(new URL('../src/pov/tools/toolgun.tool.js', import.met
 const fn = name => {
   const start = app.indexOf(`function ${name}(`);
   assert(start >= 0);
-  return app.slice(start, app.indexOf('\n}', start) + 2);
+  return app.slice(app.slice(start - 6, start) === 'async ' ? start - 6 : start, app.indexOf('\n}', start) + 2);
 };
 const start = app.indexOf('const toolGun = {');
 const gun = app.slice(start, app.indexOf('\n};', start) + 3).replace('const toolGun', 'var toolGun');
@@ -59,8 +59,29 @@ assert.equal(c.painting, false, 'changing tools ends the stroke');
 
 const before = snapshots;
 c.press({ button: 2 });
-assert.equal(snapshots, before, 'outside right-click never paints or erases');
+assert.equal(snapshots, before, 'outside right-button press never paints or erases');
 vm.runInContext(app.match(/^controls\.mouseButtons = .*;$/m)[0], c);
 assert.equal(c.controls.mouseButtons.RIGHT, THREE.MOUSE.ROTATE, 'outside right-drag orbits');
 assert.equal(c.controls.mouseButtons.MIDDLE, THREE.MOUSE.PAN);
-console.log('ok: first-person right-click erase, release, selection, undo snapshots; outside right-drag camera');
+// The released click's own pick, not a stale hover, supplies the erase centre.
+const paints = [];
+Object.assign(c, {
+  innerWidth: 900, innerHeight: 600, pointer: new THREE.Vector2(),
+  gridRay: () => ({ origin: new THREE.Vector3(), direction: new THREE.Vector3(0, -1, 0) }),
+  pickRay: async () => ({ valid: true, id: E.WALL, cell: new THREE.Vector3(10, 11, 12) }),
+  canEraseClick: () => true,
+  brushStroke: tool => ({ tool, radius: 3, shape: 0 }),
+  paintStroke: stroke => paints.push(stroke),
+});
+vm.runInContext(fn('eraseClick'), c);
+await c.eraseClick({ clientX: 450, clientY: 300 });
+assert.equal(paints.length, 1);
+assert.equal(paints[0].tool, c.ERASE_TOOL);
+assert.deepEqual(paints[0].center.toArray(), [10.5, 11.5, 12.5]);
+assert.equal(c.settings.tool, E.SAND);
+assert.equal(snapshots, before + 1, 'one undo snapshot for the erased click');
+assert.equal(c.painting, false, 'a released click never starts a held stroke');
+c.canEraseClick = () => false;
+await c.eraseClick({ clientX: 450, clientY: 300 });
+assert.equal(paints.length, 1, 'a mode change during the async pick cancels the erase');
+console.log('ok: first-person erase unchanged; outside press safe, released click erases one dab with undo');
