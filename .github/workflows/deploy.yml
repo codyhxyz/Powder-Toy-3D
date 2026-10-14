@@ -41,6 +41,7 @@ jobs:
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
+      - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread
       - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode
       - run: node tools/firearm-aim-check.mjs && node tools/held-tools-check.mjs
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
