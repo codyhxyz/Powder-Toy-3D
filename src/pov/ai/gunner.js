@@ -98,7 +98,9 @@ function fly(a) {
 
 // the gun for the distance (fuzzy), fired as that gun fires, with the axeman's aim rules
 function shoot(a) {
-  const key = pickWeapon(a, GUNS, WEAPON_SWITCH_S, { floor: -Infinity });   // always one of them
+  // An authored mission can restrict this existing NPC's loadout.
+  const key = pickWeapon(a, GUNS, WEAPON_SWITCH_S, { floor: -Infinity, keep: (k) => !a.weapons || a.weapons.has(k), ok: (k) => !a.weapons || a.weapons.has(k) });
+  if (!key) return;
   const g = GUNS[key];
   a.hold(key);
   const c = a.chest();

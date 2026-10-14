@@ -28,6 +28,9 @@ import { KICK_KEY, createKickLeg } from './kick.js';
 import { createCombat } from './combat.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
+import { createMission } from '../game/mission.js';
+import { createMissionHud } from '../game/missionHud.js';
+import { createMarkers } from '../game/markers.js';
 import { createDeathWatch } from './killfeed.js';
 import { createSandboxMedals } from './sandboxMedals.js';
 import { connectAnnouncer, announceMatches } from './announcer.js';
@@ -130,10 +133,10 @@ export function createPov(app) {
   let npcBallistics = null;
   let npcMod = null, npcAi = null, npcLoading = null;   // npc.js and what NPCs share, loaded on first use
   // the killfeed's books (killfeed.js): who hurt whom last, and every body that can die
-  const bodyById = (id) => [...npcs.values(), ...game.bots].find((n) => n.id === id) ?? null;
+  const bodyById = (id) => [...npcs.values(), ...game.bots, ...mission.actors].find((n) => n.id === id) ?? null;
   const deaths = createDeathWatch({
     heldBy: (id) => (id === PLAYER ? toolbelt?.selectedKey ?? null : bodyById(id)?.agent?.intent.tool ?? bodyById(id)?.agent?.weapon ?? null),
-    bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values()].map((n) => [n.id, n.body, n.kind])],
+    bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values(), ...mission.actors].map((n) => [n.id, n.body, n.kind])],
     quiet: () => game.running,   // a team game posts its own (src/game/index.js died)
   });
   // Halo 3's medals outside a match (sandboxMedals.js; a match's are src/game/feel.js's)
@@ -580,6 +583,7 @@ export function createPov(app) {
   }
 
   function exit(instant = false) {
+    if (mission.engaged) { mission.end(); void app.setMode('sandbox'); }
     village.setEnabled(false);
     if (!active()) return;
     vehicles.reset(player);
@@ -697,7 +701,7 @@ export function createPov(app) {
     const sp = app.getSpawners?.();
     const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
     const npcsWanted = !!sp && !g.windowed;
-    const homes = npcsWanted ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
+    const homes = npcsWanted && !mission.engaged ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
     if (homes.some((s) => !s.consumed)) {
       ensureKernels();
       npcBallistics ??= createBallistics({ renderer });
@@ -733,7 +737,7 @@ export function createPov(app) {
         if (home?.oneShot) sp.remove(home);   // the corpse finished; no invisible body keeps the editor awake
         scene.remove(n.root); n.dispose(); npcs.delete(id);
       }
-      if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
+      if ((npcsWanted && (npcs.size || game.botCount)) || mission.active) npcAi.world.update(dt);
       if (npcsWanted && npcs.size) {
         for (const n of npcs.values()) { n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame); }
       } else for (const n of npcs.values()) n.setVisible(false);
@@ -782,7 +786,7 @@ export function createPov(app) {
     if (deadSeen) {
       deadTime += dt;
       const asked = !match && deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keys.has('Space'));
-      if ((deadTime >= (match?.delay ?? RESPAWN_DELAY) || asked) && mode === 'on') {
+      if (!mission.engaged && (deadTime >= (match?.delay ?? RESPAWN_DELAY) || asked) && mode === 'on') {
         keys.delete('Space');   // the key that respawned doesn't also jump
         player.spawn(match ? match.at() : dropPoint.clone());
         classes?.spawned(player);
@@ -797,6 +801,7 @@ export function createPov(app) {
 
     const npcFrame = updateEntities(dt, { vehiclesUpdated: true });
     game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
+    mission.update(dt, npcMod ? npcFrame : null);
 
     deaths.update();   // the killfeed: who died this frame, and to what
     medals.update();   // the sandbox's medal stack (its fades)
@@ -1037,6 +1042,31 @@ export function createPov(app) {
     },
     freeMouse: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
   });
+  const mission = createMission({
+    app, scene,
+    get player() { return player; },
+    get toolbelt() { return toolbelt; },
+    loadNpcs,
+    env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
+    respawnPlayer(at) {
+      player.spawn(at);
+      player.team = null;
+      if (player.cls) applyClassTo(player, null);
+      classes?.close({ relock: false });
+      deadSeen = false; deadTime = 0;
+      toolbelt?.setVisible(mode === 'on');
+      feel.reset();
+    },
+    compile(n) {
+      n.bind(volumeLight(app.getVolume()), app.getSim().g);
+      n.compile(renderer, camera, scene).then(() => app.requestRender()).catch((err) => console.error('Mission NPC figure failed to compile', err));
+    },
+    bind: (n) => n.bind(volumeLight(app.getVolume()), app.getSim().g),
+    freeMouse: () => { releaseInput(); if (document.pointerLockElement === canvas) document.exitPointerLock(); },
+    markers: createMarkers({ scene, getVolume: app.getVolume, getScale: app.getScale }),
+    hud: createMissionHud({ retry: () => mission.retry(), leave: () => exit(true) }),
+  });
+
   // TF2's class menu opens when you join a team: a Siege match's start and a team switch
   // ('.'). A Halo match has no classes: the picker shuts (docs/halo-contract.md).
   const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
@@ -1077,7 +1107,8 @@ export function createPov(app) {
     get figure() { return figure; },
     held,                        // the tool in hand on the body (held.js): holding, weight (checks)
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
-    get npcs() { return [...npcs.values()]; },
+    get npcs() { return [...npcs.values(), ...mission.actors]; },
+    mission,
     events: povEvents,           // the POV event bus (checks)
     medals,                      // the sandbox's medals (sandboxMedals.js): medals() the player's counts
     game,                        // team games (src/game): start(mode), end(), useLayout(layout), state
@@ -1099,6 +1130,7 @@ export function createPov(app) {
     },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
     worldReplaced: () => {
+      mission.end();
       village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
       for (const n of npcs.values()) { scene.remove(n.root); n.dispose(); }
       npcs.clear();
@@ -1112,6 +1144,7 @@ export function createPov(app) {
       dropPoint.x -= dx;
       dropPoint.z -= dz;
       player?.windowShifted(dx, dz);
+      mission.windowShifted(dx, dz);
       toolbelt?.windowShifted(dx, dz);
       combat.windowShifted(dx, dz);
     },

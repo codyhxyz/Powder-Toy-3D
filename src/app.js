@@ -672,6 +672,7 @@ function openMap(key, mode = 'sandbox') {
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
   modeEpoch++;
   pov?.game?.end();   // cancel pending team loads before replacing their world
+  pov?.mission?.end();
   // the gamemode, and its presentation effect, before the grid: the build then
   // waits on the view's pipelines as they will draw (B5: the rolling log's
   // curved variants, behind the loading screen); startMode below finds them chosen
@@ -708,6 +709,7 @@ async function startMode(mode, { fresh = false } = {}) {
   villageFocus = null;
   const chosen = resolveMode(mapOf(settings), mode);
   const game = pov?.game;
+  pov?.mission?.end();
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
   applyGravity();
@@ -738,6 +740,16 @@ async function startMode(mode, { fresh = false } = {}) {
       console.error('Village failed to start', error);
     }
     return false;
+  }
+  if (chosen.key === 'crueltySquad' && pov) {
+    game?.end();
+    const map = mapOf(settings);
+    if (win) await win.whenReady();
+    if (epoch !== modeEpoch) return false;
+    const at = new THREE.Vector3(...map.mission.spawn).sub(sim.origin);
+    await pov.enter({ at, swoop: 0, hint: false, valid: () => epoch === modeEpoch });
+    if (epoch !== modeEpoch || !pov.player) return false;
+    return pov.mission.start(map);
   }
   if (!chosen.team || !game) {
     game?.end();   // (end() also cancels a match still starting)
