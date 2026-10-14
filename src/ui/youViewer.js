@@ -65,7 +65,7 @@ async function loadBody(character, time) {
     model.position.y = rig.hipY;
     model.rotation.y = Math.PI; // procedural bodies face -z; the portrait camera faces +z
     model.traverse((o) => {
-      if (!o.isMesh) return;
+      if (!o.isMesh || !o.userData.albedo) return;   // jet flames have their own material
       o.material = new THREE.MeshStandardMaterial({
         color: new THREE.Color().setRGB(...o.userData.albedo), roughness: 0.85,
       });

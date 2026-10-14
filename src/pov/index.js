@@ -895,7 +895,7 @@ export function createPov(app) {
       feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
       speedH: speedH / player.size, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose, crouch: player.crouch,
-      sprintRush: driving ? 0 : player.sprintRush,
+      sprintRush: driving ? 0 : player.sprintRush, flap: player.flap,
       look: { pitch: povCam.look.pitch, spine: holding.spine }, lift: holding.lift, ride: holding.ride,
     });
     held.bind(volumeLight(vol), g);
