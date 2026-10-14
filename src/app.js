@@ -653,6 +653,7 @@ async function startMode(mode, { fresh = false } = {}) {
   const chosen = resolveMode(mapOf(settings), mode);
   const game = pov?.game;
   selectedMode = chosen.key;
+  if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
   pacer.wake();

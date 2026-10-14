@@ -58,5 +58,5 @@ subsequent advancing steps. Neither validation nor restoration modifies callers'
 objects, terrain, or the simulation clock.
 
 Cargo uses the existing exact-transfer Load: it retains its captured temperature
-without heat exchange while buffered. Shipping accepts metal at **90°C or below**;
+without heat exchange while buffered. Shipping accepts metal at **400°C or below**;
 this limit is tested atomically with removal, not from a stale CPU temperature.

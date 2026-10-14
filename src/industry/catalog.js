@@ -3,6 +3,9 @@ import { E } from '../elements.js';
 // Sandustry's physical streams, built with TPT matter rather than item slots.
 export const INDUSTRY_LIMIT = 128;
 export const DEVICE_SIZE = 4;
+// Castings must lose their visible heat, not reach room temperature beside a
+// working foundry. Native heat/steam tests settle quenched metal around 230 C.
+export const CASTING_TEMPERATURE = 400;
 export const DEVICE_TYPES = Object.freeze({
   foundation: { name: 'Refractory block', cost: 1, color: '#929ba8', description: 'Stackable tungsten deck. Build catch walls, chutes and platforms.' },
   belt: { name: 'Conveyor', cost: 2, color: '#e4b45c', description: 'Moves loose grains forward along its deck.' },

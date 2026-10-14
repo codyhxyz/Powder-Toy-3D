@@ -43,9 +43,9 @@ test('physical deliveries unlock permanent stages, full-price builds/refunds, co
   assert.equal(p.snapshot().stage, 3);
   assert.equal(p.build('heater').ok, true);
   const before = p.snapshot();
-  assert.equal(deliver(p, 32, E.METAL, 91).ok, false);
+  assert.equal(deliver(p, 32, E.METAL, 401).ok, false);
   assert.deepEqual(p.snapshot(), before);
-  assert.equal(deliver(p, 31, E.METAL, 90).ok, true);
+  assert.equal(deliver(p, 31, E.METAL, 400).ok, true);
   assert.equal(p.snapshot().complete, false);
   assert.equal(deliver(p, 1, E.METAL, -10).ok, true);
   assert.equal(p.snapshot().complete, true);

@@ -1,5 +1,5 @@
 import { E, K, ELEMENTS } from '../elements.js';
-import { INDUSTRY_LIMIT, DEVICE_TYPES, FILTER_IDS, baseMaterial, deviceCell, deviceDirection } from './catalog.js';
+import { INDUSTRY_LIMIT, DEVICE_TYPES, FILTER_IDS, CASTING_TEMPERATURE, baseMaterial, deviceCell, deviceDirection } from './catalog.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { createTransfer, Load } from '../pov/tools/transfer.js';
 import { povGpu } from '../pov/gpu.js';
@@ -144,7 +144,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
   function ship(s, d) {
     const id = s.metal ? E.METAL : E.NUGGETS;
     const p = transfer.take(s.load, { cells: machinePorts(d).mouth, kinds: [K.POWDER, K.SOLID],
-      want: id, maxTemperature: id === E.METAL ? 90 : 1e30, guard: machineGuard(d), limit: 16 });
+      want: id, maxTemperature: id === E.METAL ? CASTING_TEMPERATURE : 1e30, guard: machineGuard(d), limit: 16 });
     if (track(s, p, got => {
       // Credit only the actual atomically removed cells, never an estimate or
       // a pre-read. Preserve exact per-cell temperature for progression.

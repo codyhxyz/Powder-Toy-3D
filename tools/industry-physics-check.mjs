@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { E, K } from '../src/elements.js';
-import { deviceCell } from '../src/industry/catalog.js';
+import { deviceCell, CASTING_TEMPERATURE } from '../src/industry/catalog.js';
 import { createIndustryPhysics, validateIndustryPhysics, controlCell, machineBox, machinePorts, validMachine } from '../src/industry/physics.js';
 import { createTransfer, Load } from '../src/pov/tools/transfer.js';
 import { WGSL_CHECK } from '../src/shaders/industry.js';
@@ -98,19 +98,19 @@ await test('foundations are structural matter, with no edit or transfer dispatch
   assert.deepEqual(p.toJSON(),{version:1,pumps:[]});
   p.dispose();
 });
-await test('shipping only on confirmed readback; metal inclusive 90 C gate', async () => {
+await test('shipping only on confirmed readback; inclusive casting-temperature gate', async () => {
   const f = fixture(), shipped = [], p = createIndustryPhysics({ getSim: () => f.sim, onShip: c => shipped.push(c) }); await p.ready;
   p.step(0.1, [d('ship')]); p.step(0.1, [d('ship')]);
   assert.equal(shipped.length, 0);
   assert.equal(p.pending, 1);
   assert.equal(f.calls[0].cells[0][3], E.NUGGETS);
-  assert.equal(f.calls[0].guardMaterial, E.INSULATOR);
+  assert.equal(f.calls[0].guardMaterial, E.TUNGSTEN);
   p.step(0.1, [d('ship')]); assert.equal(f.calls.length, 1, 'no concurrent request from a device');
   f.answer([[E.NUGGETS, 31, 0, 0.2]]); await settle();
   assert.deepEqual(shipped, [{ id: E.NUGGETS, count: 1, temperature: 31 }]);
   p.step(0.1, [d('ship')]);
   assert.equal(f.calls[1].cells[0][3], E.METAL);
-  assert.equal(f.calls[1].maxTemperature, 90);
+  assert.equal(f.calls[1].maxTemperature, CASTING_TEMPERATURE);
   f.answer(); await settle(); assert.equal(shipped.length, 1);
   p.dispose();
 });
@@ -135,7 +135,7 @@ await test('pump conserves blocked cargo and spills after dismantling without gu
   assert.equal(p.buffered, 2, 'buffered counts held matter');
   p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
   assert.equal(f.calls[1].mode, 1);
-  assert.equal(f.calls[1].guardMaterial, E.INSULATOR);
+  assert.equal(f.calls[1].guardMaterial, E.TUNGSTEN);
   assert.equal(f.calls[1].items.length, 2);
   f.answer(); await settle(); assert.equal(p.pending, 0); assert.equal(p.buffered, 2);
   p.step(0.1, []); p.step(0.1, []);

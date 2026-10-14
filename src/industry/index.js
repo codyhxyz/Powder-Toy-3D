@@ -31,6 +31,7 @@ export function createIndustry(app) {
   let building = false, selected = 'belt', rotation = 0, filter = E.NUGGETS, powered = false;
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode;
+  // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
   const active = () => !app.win && ['sandbox','factory'].includes(app.gamemode);
   const factory = () => app.gamemode === 'factory' && app.settings.preset === 'quarry';
   const construction = createConstruction(app);

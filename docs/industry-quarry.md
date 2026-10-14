@@ -9,7 +9,7 @@ CPU check: `node --test tools/industry-quarry-check.mjs` (no browser/GPU).
   spawning the map or advancing time, earns money.
 - Nuggets pay **1 credit** each. Lifetime earnings unlock miner/lift at **12**,
   pump at **48**, furnace at **96**. Spending never removes an unlock.
-- Cooled METAL (temperature **<=90°C**) pays **4 credits** per cell. SCRAP,
+- Cooled METAL (temperature **<=400°C**) pays **4 credits** per cell. SCRAP,
   GOLD, molten matter and hot METAL do not qualify. Mine metal into scrap,
   melt it, route the melt into a shipping catch, then cool it: solid metal
   does not ride a conveyor. Ship **32 cold METAL** and reach 96 lifetime
@@ -24,8 +24,8 @@ CPU check: `node --test tools/industry-quarry-check.mjs` (no browser/GPU).
   never trusted from serialized display fields. Snapshots are detached JSON.
   This validates consistency, not authenticity of user-edited local saves.
 
-These are initial minute-scale milestones, pending parent-owned real-flow
-playtesting. No offline income, production timer, inventory recipe or E action.
+The native integration test ships 14 starter nuggets within six simulated seconds.
+There is no offline income, production timer, inventory recipe, or E action.
 
 ## Map, 128³
 
@@ -55,12 +55,15 @@ base wording, the preset now writes starter decks with catalog `baseMaterial`.
 The runtime must register these existing starters without restamping/charging.
 This prevents grains dropping through before asynchronous setup finishes.
 
-## Validation limits / handoff
+## Validation
 
 CPU checks cover progression, malformed saves/actions, refund loops, catalog
-prices, completion/freeplay, geometry bounds/material IDs, ramps, resources,
-spawn, starter placement and map eligibility. Real belt/sorter throughput,
-GPU-confirmed shipping, pump inlet alignment, melt/cool capture and POV walking
-need the parent's integrated browser validation. The shelf offers construction
-space, but actual pump port offsets may require a tuned bank opening. No new
-materials, shaders, global material rules or controls are introduced here.
+prices, completion/freeplay, geometry bounds, ramps, resources, and map eligibility.
+`tools/industry-gpu-check.mjs` checks native electricity, mining, transport,
+shipping, and conserved pump cargo. `tools/industry-thermal-check.mjs` melts
+scrap, pumps the melt into a separate catch, cools it, and ships the resulting metal.
+`tools/industry-integration-check.mjs` checks construction, the starter line,
+save/load, Clear/Undo, Sandbox shortcuts, and first-person construction.
+
+The reservoir shelf provides pump space. Its bank needs an opening for the inlet.
+No global material rules change.

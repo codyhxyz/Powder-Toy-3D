@@ -18,7 +18,7 @@ try {
     const { E, ELEMENTS } = await import('/src/elements.js');
     const { ELEC, SPARK_BORN, SPARK_CYCLE } = await import('/src/electricity.js');
     const { createIndustryPhysics, controlCell, machinePorts } = await import('/src/industry/physics.js');
-    const { baseMaterial, deviceCell } = await import('/src/industry/catalog.js');
+    const { baseMaterial, deviceCell, CASTING_TEMPERATURE } = await import('/src/industry/catalog.js');
     const shipped = [], failures = [], checks = [];
     const check = (ok, name) => { if (!ok) throw new Error(name); checks.push(name); };
     const physics = createIndustryPhysics({ getSim: () => sim, onShip: c => shipped.push(c), onError: e => failures.push(String(e)) });
@@ -52,9 +52,9 @@ try {
       inlet.forEach(c => put(c, E.WATER, 27));
       machinePorts(pump).outlet.forEach(c => put(c, E.WALL));
       put(deviceCell(ship, 0, 1, 0), E.NUGGETS);
-      put(deviceCell(ship, 1, 1, 0), E.METAL, 89);
-      put(deviceCell(ship, 2, 1, 0), E.METAL, 90);
-      put(deviceCell(ship, 3, 1, 0), E.METAL, 91);
+      put(deviceCell(ship, 1, 1, 0), E.METAL, CASTING_TEMPERATURE - 1);
+      put(deviceCell(ship, 2, 1, 0), E.METAL, CASTING_TEMPERATURE);
+      put(deviceCell(ship, 3, 1, 0), E.METAL, CASTING_TEMPERATURE + 1);
       const read = (m, x = 1, y = 1, z = 1) => sim.readCell(...deviceCell(m, x, y, z));
       const flush = async () => { await sim.readCell(0, 0, 0); await new Promise(r => setTimeout(r, 0)); };
       physics.step(0.1, ds); await flush();
@@ -73,7 +73,7 @@ try {
       check((await read(miner, 1, 1, 5))[0][0] === E.ROCK, 'miner does not drill through occluding face in same pulse');
       check((await read(miner, 1, 1, 8))[0][0] === E.ROCK, 'miner has finite reach');
       check(shipped.filter(c => c.id === E.NUGGETS).length === 1 && shipped.filter(c => c.id === E.METAL).length === 2, 'shipping confirms only actual removed valuable cells');
-      check((await read(ship, 2, 1, 0))[0][0] === E.EMPTY && (await read(ship, 3, 1, 0))[0][0] === E.METAL, '90 C metal ships; 91 C metal remains at intake');
+      check((await read(ship, 2, 1, 0))[0][0] === E.EMPTY && (await read(ship, 3, 1, 0))[0][0] === E.METAL, 'casting-temperature metal ships; hotter metal remains at intake');
       check(physics.pending === 0 && physics.buffered === 8, 'blocked pump conserves eight serializable liquid cells');
       machinePorts(pump).outlet.forEach(c => put(c, E.EMPTY));
       for (let i = 0; i < 2; i++) { physics.step(0.1, ds); await flush(); }
@@ -91,6 +91,23 @@ try {
       }
       check((await read(belt))[0][0] !== E.NUGGETS, 'belt grain actually travels at default sim speed');
       check(lifted, 'lift grain actually rises under native gravity');
+      // A whole production line, not just a velocity probe: drill a GOLD face,
+      // carry its native NUGGETS backward, and ship them through a second belt.
+      sim.clear(); physics.reset(); await physics.ready; shipped.length = 0;
+      const digger = d('miner', 8, 12), rearBelt = d('belt', 8, 8, { rotation: 2 });
+      const receiver = d('ship', 8, 4, { rotation: 2 });
+      [digger, rearBelt, receiver].forEach(base);
+      for (let z = 16; z <= 17; z++) for (let x = 8; x <= 11; x++) {
+        put([x, 8, z], E.ROCK);
+        put([x, 9, z], E.GOLD);
+        put([x, 10, z], E.GOLD);
+      }
+      for (let frame = 0; frame < 240; frame++) {
+        physics.step(1 / 60, [digger, rearBelt, receiver]);
+        for (let n = 0; n < 4; n++) sim.step();
+        if (frame % 6 === 5) await flush();
+      }
+      check(shipped.some(c => c.id === E.NUGGETS), 'mining agent -> real debris -> rear belt -> shipping intake');
       check(failures.length === 0, `no async errors: ${failures.join(', ')}`);
       return checks;
     } finally { physics.dispose(); app.test.park(); }

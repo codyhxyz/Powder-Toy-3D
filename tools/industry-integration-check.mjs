@@ -73,11 +73,81 @@ try {
   assert.equal(paused.frame, paused.afterFrame);
   console.log('ok: paused updates do not mine, ship, or advance physics');
 
+  const persistence = await page.evaluate(async () => {
+    const a = window.__app;
+    const before = a.industry.toJSON();
+    const saving = a.saveGame('Industry integration');
+    await a.test.render();
+    const meta = await saving;
+    if (!meta) throw new Error('Factory save was refused');
+    await a.industry.place({ type: 'belt', x: 60, y: 8, z: 84 });
+    const restored = await a.openSave(meta.id);
+    return { restored, before, after: a.industry.toJSON(), mode: a.current().mode };
+  });
+  assert.equal(persistence.restored, true);
+  assert.equal(persistence.mode, 'factory');
+  assert.deepEqual(persistence.after, persistence.before, 'real save restores matching economy and machines');
+  console.log('ok: native save/load restores Factory mode, machines and credits');
+
+  const sandbox = await page.evaluate(async () => {
+    const a = window.__app;
+    await a.setMode('sandbox');
+    a.industry.update(0, false);
+    const placed = await a.industry.place({ type: 'pump', x: 60, y: 8, z: 84, powered: true });
+    const before = a.industry.toJSON();
+    if (!a.loadPreset('empty')) throw new Error('Clear was refused');
+    await a.gpu.fence();
+    const cleared = a.industry.state.devices.length;
+    a.undo();
+    await a.gpu.fence();
+    return { placed, cleared, before, after: a.industry.toJSON() };
+  });
+  assert(sandbox.placed.ok, JSON.stringify(sandbox.placed));
+  assert.equal(sandbox.cleared, 0);
+  assert.deepEqual(sandbox.after, sandbox.before, 'Clear/Undo restores industry instead of only dead decks');
+  await page.keyboard.press('b');
+  assert.equal(await page.evaluate(() => window.__app.industry.building), false, 'Sandbox B retains brush shortcut');
+  await page.keyboard.press('Shift+b');
+  assert.equal(await page.evaluate(() => window.__app.industry.building), true);
+  await page.keyboard.press('r');
+  assert.equal(await page.evaluate(() => window.__app.industry.state.rotation), 1);
+  console.log('ok: Sandbox machines/electricity are free; Clear/Undo and native construction keys work');
+
+  await page.evaluate(() => {
+    const a = window.__app;
+    const world = xyz => new a.THREE.Vector3(...xyz).multiplyScalar(a.scale).add(a.volume.position);
+    a.camera.position.copy(world([73, 38, 82]));
+    a.controls.target.copy(world([50, 10, 53]));
+    a.controls.update();
+    a.industry.update(0, false);
+  });
   await render(page);
   await page.screenshot({ path: '/tmp/industry-desktop.png' });
   await page.setViewportSize({ width: 740, height: 740 });
   await render(page);
   await page.screenshot({ path: '/tmp/industry-compact.png' });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(async () => {
+    const a = window.__app;
+    await a.setMode('factory');
+    a.settings.paused = true;
+    a.test.resume();
+    await a.pov.enter({ at: new a.THREE.Vector3(48, 8, 84), swoop: 0, hint: false });
+  });
+  await page.waitForFunction(() => window.__app.pov.mode === 'on');
+  await page.keyboard.press('b');
+  await page.waitForFunction(() => window.__app.industry.building);
+  const bodyGuard = await page.evaluate(async () => {
+    const a = window.__app, p = a.pov.player.pos;
+    const result = await a.industry.place({ type: 'belt', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });
+    a.test.park();
+    return result;
+  });
+  assert.equal(bodyGuard.ok, false);
+  assert.match(bodyGuard.reason, /Move clear/);
+  await render(page);
+  await page.screenshot({ path: '/tmp/industry-pov.png' });
+  console.log('ok: first-person construction opens and protects the live player footprint');
   assert.deepEqual(errors, []);
   console.log('ok: no page/WGSL errors; /tmp/industry-{desktop,compact}.png');
 } finally {

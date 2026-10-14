@@ -1,5 +1,5 @@
 import { E } from '../elements.js';
-import { DEVICE_TYPES, QUARRY_STARTERS } from './catalog.js';
+import { DEVICE_TYPES, QUARRY_STARTERS, CASTING_TEMPERATURE } from './catalog.js';
 
 // Sandustry-style growth is paid for by physical deliveries, never a timer.
 const INITIAL_CREDITS = 24;
@@ -55,7 +55,7 @@ export function createProgression(saved) {
       'Watch the starter sorter. Catch more shallow paydirt; only gold entering the intake earns credits.',
       'Build a mining agent facing the exposed gold wall. Catch its nuggets with belts and a lift.',
       'Pump the finite east reservoir toward a cooling catch. Keep shipping gold to unlock the furnace.',
-      'Mine METAL into SCRAP. Melt it on a furnace, route molten metal into an intake catch, then cool to 90°C or below; solid metal will not ride belts.',
+      `Mine METAL into SCRAP. Melt it on a furnace, pump molten metal into a separate intake catch, then cool below ${CASTING_TEMPERATURE}°C; solid metal will not ride belts.`,
       'Freeplay: all machines stay unlocked. Extend the quarry; dismantling refunds the full price.',
     ];
     return { version: 1, credits, earned, stage, goal: goals[stage], hint: hints[stage],
@@ -87,7 +87,7 @@ export function createProgression(saved) {
       || !Number.isFinite(batch.temperature)) return fail('Invalid physical delivery');
     const key = batch.id === E.NUGGETS ? 'nuggets' : batch.id === E.METAL ? 'metal' : null;
     if (!key) return fail('Intake accepts gold nuggets and cooled metal only');
-    if (key === 'metal' && batch.temperature > 90) return fail('Cool metal to 90°C or below');
+    if (key === 'metal' && batch.temperature > CASTING_TEMPERATURE) return fail(`Cool metal to ${CASTING_TEMPERATURE}°C or below`);
     const value = batch.count * (key === 'metal' ? 4 : 1);
     if (!natural(value) || !natural(INITIAL_EQUITY + earned + value)
       || !natural(credits + value) || !natural(delivered[key] + batch.count)) return fail('Delivery exceeds economy limit');
