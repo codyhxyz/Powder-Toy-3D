@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { HOMES, FLOOR, HOME_Z, ITEMS, RESIDENTS, DRESSER, initialState, loadState, change, bounds, overlaps, carryTarget, placementError,
+import { HOMES, FLOOR, HOME_Z, HOME_ENTRY, ITEMS, RESIDENTS, DRESSER, initialState, loadState, change, bounds, overlaps, carryTarget, placementError,
   cardinal, playerPathClear, gripPosition, standPosition, gripMove, moveProgress, restPose, drawerFrame } from './state.js';
 import { residentFurniture, createConversation, advanceConversation, hydrateMemory } from './residents.js';
 import { resolveCharacterMotion } from './characterCollision.js';
@@ -157,7 +157,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (relocate && ['sit', 'sleep'].includes(s.kind)) {
       destination = standPosition(roomState(s.home), s.item, s.position, s.entry, getPlayer().width / 2,
         p => charactersClear(s.home, s.position, p));
-      if (!destination && force) destination = { x: 0, z: 0 };
+      if (!destination && force) destination = HOME_ENTRY;
       if (!destination) return fail('There is no clear place to stand.');
     }
     const model = ownMeshes.get(s.item.id), saved = state.placed.find(i => i.id === s.item.id);

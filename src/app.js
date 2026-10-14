@@ -79,7 +79,7 @@ import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
-import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z } from './pov/village/state.js';
+import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
@@ -688,7 +688,7 @@ function openMap(key, mode = 'sandbox') {
 // Animal Crossing on Tinker Creek: the drop point in front of your cottage (grid cells), else null
 function villageSpawn() {
   if (selectedMode !== 'animalCrossing' || win?.scene.key !== 'willowCove') return null;
-  return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0], VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z - 4).sub(sim.origin);
+  return new THREE.Vector3(win.P.size[0] / 2 + VILLAGE_HOMES[0] + HOME_ENTRY.x, VILLAGE_FLOOR, win.P.size[2] / 2 + VILLAGE_Z + HOME_ENTRY.z).sub(sim.origin);
 }
 // Keep the user's setting intact when entering/leaving a low-gravity gamemode.
 function applyGravity() {
