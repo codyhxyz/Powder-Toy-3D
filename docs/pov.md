@@ -568,7 +568,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `body:shield` | player.js (any body) | `{ id, state: 'hit'\|'break'\|'recharge'\|'full', amount?, point, height }`. A body's Energy Shield event (vitals.js), on the bus: point its feet (grid), height its own (vfx.js's shimmer and pop, audio.js). |
 | `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
 | `gun:fire` | pistol, SMG, sniper, rocket | `{ origin, dir, muzzleWorld, gun, sound }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash; gun the tool key; sound `{ rate, gain, thump, voice }` scales the pistol's shot). |
-| `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
+| `gun:dry` | legacy | `{}`. Dry-click audio hook; firearms no longer emit this. Close terrain moves the shot origin to the eye instead of blocking fire. |
 | `round:move` | guns, bomb, rocket | `{ id, kind, from, to }` (kind 'round', 'bomb' or 'rocket'). A round in flight moved this frame (grid), for tracers and the rocket's smoke. |
 | `round:end` | guns, bomb, rocket | `{ id, kind }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe, pickaxe, knife, flask | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife'\|'flask', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
