@@ -8,7 +8,6 @@ import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
-import { OceanWaves } from './waves.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2;
 // docs/webgpu.md G1).
@@ -80,7 +79,6 @@ export class WorldWindow {
     this.size = size;
     this.scene = scene;
     this.P = scene.params({ size, seed });
-    this.waves = new OceanWaves(this);
     // its own generator, not generatorFor's shared one: tools run two windows
     // (its prepass room covers the far field's chunks too: world/far.js)
     const S = farSceneLayout(farLayout(size));

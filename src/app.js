@@ -147,7 +147,7 @@ const DEFAULTS = {
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
   character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
-  nearGI: true, glowLights: true, caustics: true, oceanWaves: 'gentle',
+  nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
   profiler: false,
 };
@@ -158,7 +158,7 @@ const DEFAULTS = {
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;
 const MOBILE_DEFAULTS = {
   size: BOX_DEFAULT, preset: 'lab',
-  nearGI: false, glowLights: false, caustics: false, oceanWaves: 'off', upscale: 'performance',
+  nearGI: false, glowLights: false, caustics: false, upscale: 'performance',
   ...Object.fromEntries(DETAIL.map((f) => [settingKey(f), false])),
 };
 if (MOBILE) Object.assign(DEFAULTS, MOBILE_DEFAULTS);
@@ -173,7 +173,7 @@ const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
-  'nearGI', 'glowLights', 'caustics', 'oceanWaves', ...DETAIL.map(settingKey), 'profiler'];
+  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -1352,10 +1352,6 @@ const settingsPanel = createSettings({
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
-      { type: 'seg', key: 'oceanWaves', options: [['off', 'Ocean waves: Off'], ['gentle', 'Gentle'], ['large', 'Large']],
-        disabled: () => mp.isGuest ? 'The host controls ocean waves.'
-          : !win || !(win.P.sea > 0) ? 'Requires a world with an ocean. Physical waves add simulation work.' : false,
-        onChange: (v) => { settings.oceanWaves = v; save(); wakeLoop(); } },
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
@@ -2240,7 +2236,7 @@ function v2Active() { return v2Box() && physicsV2.isReady; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
 const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
   : sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
-    && sim.quietOk && sim.skipSleeping && !sim.rays.active && !win?.waves.enabled(settings.oceanWaves));
+    && sim.quietOk && sim.skipSleeping && !sim.rays.active);
 
 // the camera the toolbar shows: god view, or the body's first / third person
 const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
@@ -2327,7 +2323,7 @@ function tick(now, renderOnly = false) {
     stepOnce = false;
   } else if (stepping) {
     if (v2Running) { v2Running = false; sim.noteWrite(); }   // (today's activity map: every brick, as after a load)
-    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); win?.waves.step(settings.oceanWaves); sim.step(); scripts?.afterStep(); }
+    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
@@ -2672,7 +2668,7 @@ try {
           if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
           if (!v2Running) { physicsV2.resync(); v2Running = true; }
           physicsV2.ticks(count);
-        } else for (let i = 0; i < count; i++) { win?.waves.step(settings.oceanWaves); sim.step(); }
+        } else for (let i = 0; i < count; i++) sim.step();
         if (DAY.running) day.clock += count;
       },
       // Every pipeline the current settings need is built, ours and three's (B5).
