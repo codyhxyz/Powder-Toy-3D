@@ -1,6 +1,6 @@
 // GPU: production R2–R5 kernel, not the full engine. Closed thermal fixture.
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync } from 'node:fs';
 import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
@@ -8,10 +8,17 @@ import { openHarness } from '../harness/open.mjs';
 const outputIndex=process.argv.indexOf('--out');
 const output=outputIndex<0?null:process.argv[outputIndex+1];
 if(outputIndex>=0 && (!output || output.startsWith('--'))) throw Error('--out needs a path');
+const dumpIndex=process.argv.indexOf('--dump-shaders');
+const dump=dumpIndex<0?null:process.argv[dumpIndex+1];
+if(dumpIndex>=0 && (!dump || dump.startsWith('--')))throw Error('--dump-shaders needs a path');
+if(dump)writeFileSync(dump,'');
 const vite=await startVite({harness:true,port:19627});
 let browser;
 try {
-  browser=await launchBrowser();
+  browser=await launchBrowser(dump ? {
+    args:['--enable-dawn-features=dump_shaders,disable_symbol_renaming'],
+    browserLog:line=>appendFileSync(dump,line+'\n'),
+  } : {});
   const errors=[];
   const page=await openHarness(browser,vite,'/tools/harness/outcomes.html?engine=v2',{errors});
   page.on('console',m=>{if(m.text().startsWith('[contact-trace]'))console.log(m.text());});
