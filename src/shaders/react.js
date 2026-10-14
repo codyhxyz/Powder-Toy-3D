@@ -118,7 +118,7 @@ export const REACT_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { 
 // A quiet brick is one uniform branch for the workgroup. At the end, the
 // brick's word in marks.foams says whether any cell of it now holds a foaming
 // liquid, the aeration list's input (docs/webgpu.md D3, G4).
-export const reactFrag = (g, { debug = false } = {}) => /* wgsl */ `
+export const reactFrag = (g, { debug = false, tiled = true } = {}) => /* wgsl */ `
 ${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
 ${ReactParams.wgsl}
 @group(3) @binding(1) var<uniform> P: ReactParams;
@@ -126,6 +126,31 @@ ${ReactParams.wgsl}
 ${inertNearGLSL}
 ${electricReactGLSL}
 ${simModesGLSL}
+${tiled ? /* wgsl */ `
+// 64 interior cells in cellOf/slotOf's tile order, then six 16-cell faces
+// (+x,-x,+y,-y,+z,-z). No edges/corners are needed for this stencil.
+var<workgroup> reactA: array<vec4f, 160>;
+var<workgroup> reactB: array<vec4f, 160>;
+fn reactTileIndex(l: vec3i) -> u32 {
+  if (l.x == 4) { return u32(64 + l.y + 4 * l.z); }
+  if (l.x == -1) { return u32(80 + l.y + 4 * l.z); }
+  if (l.y == 4) { return u32(96 + l.x + 4 * l.z); }
+  if (l.y == -1) { return u32(112 + l.x + 4 * l.z); }
+  if (l.z == 4) { return u32(128 + l.x + 4 * l.y); }
+  if (l.z == -1) { return u32(144 + l.x + 4 * l.y); }
+  return u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1u)));
+}
+// k in 0..96: the local coordinate of each halo slot, exactly once.
+fn reactHaloCell(k: u32) -> vec3i {
+  let face = k / 16u;
+  let u = i32(k & 3u);
+  let v = i32((k >> 2u) & 3u);
+  let side = select(4, -1, (face & 1u) != 0u);
+  if (face < 2u) { return vec3i(side, u, v); }
+  if (face < 4u) { return vec3i(u, side, v); }
+  return vec3i(u, v, side);
+}
+` : ''}
 
 // the FACES index (activity.js: +x, -x, +y, -y, +z, -z) of a unit axis vector
 fn faceOf(d: vec3f) -> i32 {
@@ -242,10 +267,10 @@ fn latent(T: ptr<function, f32>, acc: ptr<function, f32>, Tp: f32, C: f32, L: f3
 }
 
 // Cell p's step. Returns whether what it becomes foams (gfx/materials.js FOAMS).
-fn reactCell(p: vec3i, quiet: bool) -> bool {
+fn reactCell(p: vec3i, quiet: bool${tiled ? ', li: u32' : ''}) -> bool {
   let faces = i32(P.faces);
-  let a = fetchA(p);
-  let b = fetchB(p);
+  let a = ${tiled ? 'reactA[li]' : 'fetchA(p)'};
+  let b = ${tiled ? 'reactB[li]' : 'fetchB(p)'};
   let dirty = fetchF(p) & FLAG_DIRTY;   // the move pass's mark (shaders/common.js nearChange)
   // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
   // Its cells were inert when the activity map was built, so their neighbour
@@ -274,8 +299,9 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   for (var i = 0; i < faces; i++) {
     let q = edgeCell(p + FACES(i));   // (past a loop edge: the far side)
     if (inGrid(q)) {
-      na[i] = fetchA(q);
-      nb[i] = fetchB(q);
+      ${tiled ? 'let ti = reactTileIndex((p & vec3i(3)) + FACES(i));' : ''}
+      na[i] = ${tiled ? 'reactA[ti]' : 'fetchA(q)'};
+      nb[i] = ${tiled ? 'reactB[ti]' : 'fetchB(q)'};
     } else if (P.edge == EDGE_VOID) {
       na[i] = VOID_AIR_A();   // open: still air at ambient, no pressure (simModes.js)
       nb[i] = vec4f(0.0);
@@ -973,7 +999,24 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let w = foldId(wg, nwg);
   if (w >= act[ACT_COUNT + CNT_DRAWN] * UNIT_B) { return; }   // the whole workgroup
   let brick = act[ACT_DRAWNL + w / UNIT_B] * UNIT_B + w % UNIT_B;
-  if (reactCell(cellOf(brick * 64u + li), quietBrick(brick))) { atomicOr(&wgFoams, 1u); }
+  ${tiled ? /* wgsl */ `let p = cellOf(brick * 64u + li);
+  let quiet = quietBrick(brick);
+  // Own loads also supply quiet copy-through. Retain the state/debug helpers.
+  reactA[li] = fetchA(p);
+  reactB[li] = fetchB(p);
+  if (!quiet || P.rays != 0u) {
+    let origin = p & ~vec3i(3);
+    for (var k = li; k < 96u; k += 64u) {
+      let q = edgeCell(origin + reactHaloCell(k));
+      if (inGrid(q)) {
+        reactA[64u + k] = fetchA(q);
+        reactB[64u + k] = fetchB(q);
+      }
+    }
+  }
+  // Unconditional: quiet/ray activity must not control barrier participation.
+  workgroupBarrier();
+  if (reactCell(p, quiet, li))` : 'if (reactCell(cellOf(brick * 64u + li), quietBrick(brick)))'} { atomicOr(&wgFoams, 1u); }
   workgroupBarrier();
   if (li == 0u) { atomicStore(&marks[MARK_FOAMS + brick], atomicLoad(&wgFoams)); }
 }
