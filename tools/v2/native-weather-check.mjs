@@ -11,6 +11,7 @@ import { legacyPressureToPa } from '../../src/v2/pressure.js';
 import { gravityAt, nativeModes, ballisticModes } from '../../src/v2/modes.js';
 import { allocateSources, packParticle, unpackParticle } from '../../src/v2/dynamics-reference.js';
 import { E } from '../../src/elements.js';
+import { GRAV, AIR } from '../../src/simModes.js';
 import { CELL_M } from '../../src/scale.js';
 const close=(a,b,e=1e-8)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
 globalThis.GPUBufferUsage={STORAGE:128};
@@ -94,4 +95,28 @@ velocity.forEach((v,a)=>close(unpacked.velocity[a],v,1e-6)); assert.equal(unpack
 const modes=nativeModes(sim), advanced=ballisticModes(packet.position,velocity,1/60,[32,64,32],modes);
 close(advanced.position[0]-packet.position[0],velocity[0]/60/CELL_M);
 close(advanced.velocity[1]-velocity[1],gravityAt(packet.position,[32,64,32],modes)[1]/60);
+const source={slot:2,material:snow,particle:packet}, fullPool=[{id:1}];
+allocateSources([source],fullPool,1); assert.equal(source.retry,true); assert.deepEqual(source.material,snow);
+allocateSources([source],[],1); assert.equal(source.retry,false); assert.equal(source.material,null);
+// Frozen/disabled air selectors and radial/off gravity are packed into actual dispatches.
+for(const gravityMode of [GRAV.OFF,GRAV.RADIAL]) for(const airMode of Object.values(AIR)) {
+ sim.gravityMode=gravityMode;sim.airMode=airMode;
+ force.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{});
+ assert.equal(calls.at(-1).params.gravMode,gravityMode);assert.equal(calls.at(-1).params.airMode,airMode);
+}
+// Small mock device proves brick-safe tiling honors binding byte limits.
+gpu.limits={maxStorageBufferBindingSize:4096,maxBufferSize:4096};
+const start=retired.length;
+force.run({lo:[0,0,0],hi:[7,3,7]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{});
+assert.equal(retired.length-start,4);assert(retired.slice(start).every(b=>b.size<=4096));
+delete gpu.limits;
+// Composite readiness must not drop strikes while a later commit stage compiles.
+const pendingSim=fixture(); let release;
+pendingSim.compactOwner.dynamics.isReady=false;
+pendingSim.compactOwner.dynamics.ready=new Promise(resolve=>{release=resolve;});
+const pending=createNativeWeatherKernel(pendingSim,'pendingOcean',oceanEventsEdit);
+assert.equal(pending.main.state,'pending');
+assert.equal(pending.run({lo:[0,0,0],hi:[0,0,0]},{}),false);
+pendingSim.compactOwner.dynamics.isReady=true;release();await pending.ready;
+assert.equal(pending.main.state,'ready');
 console.log('native producers: actual weather/ocean/bolt dispatch, physical reads, exact bounds/cadence, owner bindings; independent SI/property/particle oracles passed (no GPU execution)');

@@ -1,6 +1,6 @@
 import { fold } from '../gpu/kernels.js';
 import { uniformStruct } from '../gpu/params.js';
-import { prelude, STATE_OPTS, EDIT_FIELDS, STAGE } from '../shaders/common.js';
+import { prelude, STATE_OPTS, EDIT_FIELDS, STAGE, SEED_MAX } from '../shaders/common.js';
 import { nativeDynamicsHead, SUB, TICK_HZ, FULL } from '../shaders/v2.js';
 import { MODE_FIELDS, nativeModes } from './modes.js';
 import { modeWGSL } from '../shaders/v2/modes.js';
@@ -53,7 +53,7 @@ ${spec.nativePrecipitation ? `if(eid(a)==E_EMPTY && (eid(outA)==E_WATER || eid(o
  outB=vec4f(vec3f(outB.x,0,outB.z)+down*abs(outB.y),outB.w);
 }` : ''}
 var delta=vec4f((outB.xyz-b.xyz)*${WEATHER_SPEED_SI},(outB.w-b.w)*${LEGACY_PRESSURE_PA});
-if(KIND(eid(outA))==K_LIQUID) { delta=vec4f(0,0,0,delta.w); }
+if(KIND(eid(outA))==K_LIQUID${spec.nativePrecipitation ? ' || eid(outA)==E_SNOW' : ''}) { delta=vec4f(0,0,0,delta.w); }
 results[i]=WeatherResult(a,outA,vec4f(outB.xyz,select(0.0,1.0,any(outB.xyz!=b.xyz))),delta);`)}
 `;
 }
@@ -97,7 +97,7 @@ if(r.before.x!=r.after.x) {
  // Only a genuinely new source cell gets fresh fill/bank/seed.
  m=makeMaterial(id,r.after.y,FULLU,u32(floor(r.after.w)));
  m.core=withLife(m.core,r.after.z);
- if(!isLiq(m.core)) { m.core.w=u32(fract(r.after.w)/${0.999 / 65536})<<16u; }
+ if(!isLiq(m.core)) { m.core.w=u32(fract(r.after.w)/${SEED_MAX / 65536})<<16u; }
 } else {
  if(r.after.y!=r.before.y) {
   let dt=i32(round((r.after.y-r.before.y)*4.0));
@@ -137,11 +137,25 @@ export function createNativeWeatherKernel(sim, name, spec) {
     code:nativeWeatherCommitWGSL(sim.g,params,stage),layouts:[o.nativeDynamics.layout,commitLayout]})]));
   const ready=Promise.all([evaluate.ready,...Object.values(commits).map(k=>k.ready),d.ready]);
   ready.catch(()=>{});
-  return { ready, main:evaluate, apply:commits.material,
+  const built = () => evaluate.state==='ready' && Object.values(commits).every(k=>k.state==='ready') && d.isReady;
+  const status = { get state() { return built() ? 'ready' : 'pending'; } };
+  const kernel = { ready, main:status, apply:status,
     run(box, values, source) {
-      if(evaluate.state!=='ready' || Object.values(commits).some(k=>k.state!=='ready') || !d.isReady) return false;
-      o.sync();
+      if(!built() || sim.disposed || o.disposed || sim.compactOwner!==o) return false;
+      if(!box || box.lo.some((v,a)=>v>box.hi[a])) return false;
       const count=box.hi.reduce((n,v,a)=>n*(v-box.lo[a]+1),1);
+      const limit=Math.min(gpu.limits?.maxStorageBufferBindingSize ?? 128*1024*1024, gpu.limits?.maxBufferSize ?? Infinity);
+      if(count*64>limit) {
+        // Split only X/Z, at brick boundaries: weather's above-neighbour reads
+        // retain their snapshot and no coarse air brick receives two targets.
+        const axis=box.hi[0]-box.lo[0]>=box.hi[2]-box.lo[2]?0:2;
+        const cut=Math.floor((box.lo[axis]+box.hi[axis]+1)/8)*4;
+        if(cut<=box.lo[axis] || cut>box.hi[axis]) throw new RangeError('Native weather scratch exceeds device binding limit');
+        const left={lo:[...box.lo],hi:[...box.hi]},right={lo:[...box.lo],hi:[...box.hi]};
+        left.hi[axis]=cut-1;right.lo[axis]=cut;
+        return kernel.run(left,values,source) && kernel.run(right,values,source);
+      }
+      o.sync();
       const scratch=gpu.createBuffer({label:`${name} native results`,size:count*64,usage:0x80});
       const entries=(buffers,start=0)=>buffers.map((buffer,i)=>({binding:start+i,resource:{buffer}}));
       const evalGroup=gpu.bindGroup(evalLayout,[...(source?[{binding:0,resource:{buffer:source}}]:[]),...entries([scratch],1)],name);
@@ -166,4 +180,5 @@ export function createNativeWeatherKernel(sim, name, spec) {
       return true;
     },
   };
+  return kernel;
 }

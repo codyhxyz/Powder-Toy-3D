@@ -132,8 +132,8 @@ export function createElementWeather() {
       const { boxes, ...values } = policy;
       values.pulse = Math.floor(sim.frame / cadence) >>> 0;
       // Separate thin bands bound the shared scratch and avoid dispatching the
-      // empty column between sea fog and high clouds. At most five dispatches
-      // per pulse: one roof scan and two phases per band, never a full-grid edit.
+      // empty column between sea fog and high clouds. V1 uses two edit phases;
+      // native commits properties/air and allocates only new snow sources.
       for (const box of boxes) {
         if (sim.compactOwner) source.run(box, values, roof);
         else sim.edit(source, box, values, { bind: [{ buffer: roof }] });
