@@ -4,7 +4,7 @@ import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_P
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
 import { PHYS } from '../../physics.js';
-import { EXTERNAL_BLAST_CAP } from '../../v2/externalBlast.js';
+import { EXTERNAL_BLAST_CAP, blastHeatBudgetWGSL } from '../../v2/externalBlast.js';
 import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
 import { atlasDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
@@ -59,6 +59,7 @@ fn dBudgetVelocity(v: vec3f, direction: vec3f, energy: f32, mass: f32) -> vec3f 
  if(energy<=0.0) { return v; }let along=dot(v,direction);
  return v+direction*(sqrt(along*along+2.0*energy/max(mass,0.000001))-along);
 }
+${blastHeatBudgetWGSL}
 fn dExplosive(id: u32) -> DExplosive { switch id { ${blastTables} default: { return DExplosive(0.0,0u,20.0,0u); } } }
 fn dEvaporates(m: Material) -> bool { return cid(m.core)==${E.SINGULARITY}u && payloadOf(m.core)==0u; }
 fn dChargeEnergy(m: Material) -> f32 {
@@ -227,12 +228,12 @@ export function blastsWGSL(g,nativeHead,stage) {
     let before=dMaterial(particle);var after=before;var kinetic=received;
     // One quarter of this packet's already-normalized share becomes heat;
     // retain the same total budget, never a second blast-energy grant.
-    let heat=vec2u(u32(min(floor(received*0.25*${f(16777216/(1000*CELL_M**3*4184))}),4294967040.0)),0u);
-    let energy=energyAdd(energyOf(before),heat);
-    if(energyFits(before,energy)) { after=withEnergy(before,energy);kinetic-=f32(heat.x)/${f(16777216/(1000*CELL_M**3*4184))}; }
-    particle.velocity=dBudgetVelocity(particle.velocity,normalize(impulse),kinetic,dMass(cid(before.core))*dAmount(before));
+    let heat=dQuantizedBlastHeat(received);
+    let energy=energyAdd(packetOwnedEnergy(before),heat);
+    if(packetEnergyFits(before,energy)) { after=withPacketEnergy(before,energy);kinetic=dBlastKineticRemainder(received,heat); }
+    particle.velocity=dBlastBudgetVelocity(particle.velocity,normalize(impulse),kinetic,dMass(cid(before.core))*dAmount(before));
     particle.c0=after.core.x;particle.tail=vec4u(after.core.yzw,bitcast<u32>(after.bank));particles[t]=particle;
-    let p=vec3i(floor(particle.position))-P.origin;noteEnergySource(p,energySub(energyOf(after),energyOf(before)));dWake(p);
+    let p=vec3i(floor(particle.position))-P.origin;noteEnergySource(p,energySub(packetOwnedEnergy(after),packetOwnedEnergy(before)));dWake(p);
   `);
   if (stage === 'toolPlan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
@@ -398,9 +399,8 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
               packet.core=withPayload(packet.core,fuel); rest.core=withPayload(rest.core,payloadOf(after.core)-fuel);
             }
             let share=energyShare(dParticleEnergy(after),0u,amount,total);
-            let packetEnergy=energyAdd(share,energyMul(65536u,cTq(after.core)));
-            if (!energyFits(packet,packetEnergy)) { dWake(cellOf(t)); return; }
-            packet=withEnergy(packet,packetEnergy);
+            if (!packetEnergyFits(packet,share)) { dWake(cellOf(t)); return; }
+            packet=withPacketEnergy(packet,share);
             let remainingEnergy=energySub(energyOf(after),dParticleEnergy(packet));
             if (!energyFits(rest,remainingEnergy)) { dWake(cellOf(t)); return; }
             remainder=withEnergy(rest,remainingEnergy);

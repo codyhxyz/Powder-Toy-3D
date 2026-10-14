@@ -78,9 +78,9 @@ export function phaseLatentEnergy(id, raw, amount) {
 }
 // Return an exact representable phase code+bank, or null for sensible energy.
 // The final code includes the full threshold; the contact pass consumes it.
-export function encodePhaseEnergy(id, amount, energy) {
-  const row = PHASE_ROWS[id], capacity = BigInt(PHASE_FULL + amount * cp(id));
-  const sensible = energy - phaseOffsetEnergy(id, amount);
+export function encodePhaseEnergy(id, amount, energy, capacity = BigInt(PHASE_FULL + amount * cp(id)), ctype = 0) {
+  const row = PHASE_ROWS[id];
+  const sensible = energy - phaseOffsetEnergy(id, amount, ctype);
   for (const hot of [true, false]) {
     const latent = BigInt(hot ? row.hotLatent : row.coldLatent) * BigInt(amount);
     if (latent <= 0n) continue;

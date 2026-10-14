@@ -104,8 +104,10 @@ fn phaseLatentEnergy(id:u32,raw:u32,amount:u32)->vec2u {
 }
 // raw=0xffffffff is not in a latent interval. y is bitcast<i32>(residual).
 fn phaseEncode(id:u32,amount:u32,energy:vec2u)->vec2u {
- let capacity=65536u+amount*u32(phaseCapacityPerQuantum(id));
- let sensible=energySub(energy,phaseOffsetEnergy(id,amount));
+ return phaseEncodeCapacity(id,amount,energy,65536u+amount*u32(phaseCapacityPerQuantum(id)),0u);
+}
+fn phaseEncodeCapacity(id:u32,amount:u32,energy:vec2u,capacity:u32,ctype:u32)->vec2u {
+ let sensible=energySub(energy,phaseMaterialOffsetEnergy(id,amount,ctype));
  for(var side=0u;side<2u;side++){
   let hot=side==0u;
   let per=select(phaseColdLatent(id),phaseHotLatent(id),hot);

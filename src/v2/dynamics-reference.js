@@ -5,7 +5,7 @@ import { CELL_M } from '../scale.js';
 import { PHYS } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
-import { energyOf, withEnergy, energyFits, makeMaterial, cTq, AIR_CAPACITY_Q, withPayload, payloadOf, share } from './layout.js';
+import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
 export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
 export { CELL_M };
@@ -141,7 +141,7 @@ export function airQuiet(state, neighbors = []) {
 
 // Exact native energy twins of the WGSL handoff. The stationary grid's air
 // carrier is NOT part of a flying material packet; its bank still is.
-export const particleEnergy = m => energyOf(m)-BigInt(AIR_CAPACITY_Q)*BigInt(cTq(m.core));
+export const particleEnergy = packetOwnedEnergy;
 export function extractPacket(m) {
   return { packet:{core:new Uint32Array(m.core),bank:m.bank},
     source:makeMaterial(0,cTq(m.core)*0.25-273.25,0,0) };
@@ -156,8 +156,8 @@ export function extractPartialPacket(source,amount) {
     const fuel=Number(share(payloadOf(source.core),0,amount,total));
     packet=withPayload(packet,fuel);rest=withPayload(rest,payloadOf(source.core)-fuel);
   }
-  const e=share(particleEnergy(source),0,amount,total)+BigInt(AIR_CAPACITY_Q)*BigInt(cTq(source.core));
-  if(!energyFits(packet,e)) return null;packet=withEnergy(packet,e);
+  const e=share(particleEnergy(source),0,amount,total);
+  if(!packetEnergyFits(packet,e)) return null;packet=withPacketEnergy(packet,e);
   const remaining=energyOf(source)-particleEnergy(packet);if(!energyFits(rest,remaining)) return null;
   return {packet,source:withEnergy(rest,remaining)};
 }

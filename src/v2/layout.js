@@ -31,11 +31,20 @@ export function capacityQ(c) {
   return AIR_CAPACITY_Q + (id === 0 ? 0 : isLiquid(id) ? cFill(c) : FULL) * capacityPerQuantum(id);
 }
 export const energyOf = m => BigInt(capacityQ(m.core)) * BigInt(cTq(m.core)) + phaseOffsetEnergy(cid(m.core), phaseAmount(m.core), ctypeOf(m.core)) + phaseLatentEnergy(cid(m.core), cRawTq(m.core), phaseAmount(m.core)) + BigInt(m.bank);
-export function withEnergy(m, energy) {
-  const id = cid(m.core), amount = phaseAmount(m.core), cap = BigInt(capacityQ(m.core));
-  const phase = encodePhaseEnergy(id, amount, energy);
+export function withEnergy(m, energy) { return encodeMaterialEnergy(m, energy, capacityQ(m.core)); }
+// Flying material owns no stationary air carrier. Its signed bank and phase
+// formation/latent energy travel with it; encoding must use that same capacity.
+export const packetCapacityQ = core => capacityQ(core) - AIR_CAPACITY_Q;
+export const packetOwnedEnergy = m => energyOf(m) - BigInt(AIR_CAPACITY_Q) * BigInt(cTq(m.core));
+export const withPacketEnergy = (m, energy) => encodeMaterialEnergy(m, energy, packetCapacityQ(m.core), ctypeOf(m.core));
+export function packetEnergyFits(m, energy) {
+  try { return packetOwnedEnergy(withPacketEnergy(m, energy)) === energy; } catch { return false; }
+}
+function encodeMaterialEnergy(m, energy, capacity, phaseCtype = 0) {
+  const id = cid(m.core), amount = phaseAmount(m.core), cap = BigInt(capacity);
+  const phase = encodePhaseEnergy(id, amount, energy, cap, phaseCtype);
   const sensible = energy - phaseOffsetEnergy(id, amount, ctypeOf(m.core));
-  const tq = phase?.raw ?? Number(sensible < 0n ? 0n : sensible / cap > BigInt(PHASE_NORMAL_MAX) ? BigInt(PHASE_NORMAL_MAX) : sensible / cap);
+  const tq = phase?.raw ?? Number(sensible < 0n || cap === 0n ? 0n : sensible / cap > BigInt(PHASE_NORMAL_MAX) ? BigInt(PHASE_NORMAL_MAX) : sensible / cap);
   const bank = phase?.bank ?? Number(sensible - BigInt(tq) * cap);
   if (!Number.isInteger(bank) || bank < -2147483648 || bank > 2147483647) throw new RangeError('native energy bank overflow');
   const core = new Uint32Array(m.core);

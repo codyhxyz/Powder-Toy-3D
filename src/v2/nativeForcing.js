@@ -24,6 +24,12 @@ fn forceHeat(m: Material, r: WeatherResult) -> Material {
  let e=energyAdd(energyOf(m),select(heat,energyNeg(heat),dt<0));
  if(!energyFits(m,e)) { return m; }return withEnergy(m,e);
 }
+fn forcePacketHeat(m: Material, r: WeatherResult) -> Material {
+ if(r.after.y==r.before.y) { return m; }
+ let dt=i32(round((r.after.y-r.before.y)*4.0));let heat=energyMul(packetCapacityQ(m.core),u32(abs(dt)));
+ let e=energyAdd(packetOwnedEnergy(m),select(heat,energyNeg(heat),dt<0));
+ if(!packetEnergyFits(m,e)) { return m; }return withPacketEnergy(m,e);
+}
 `;
   if(stage==='plan') return head+weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i);let s=slotOf(p);let r=results[i];let before=loadMaterial(s);
@@ -38,15 +44,15 @@ if(any(after.core!=before.core) || after.bank!=before.bank) {
   if(stage==='particles') return head+weatherMain(`if(i>=65536u) { return; }
 var particle=particles[i];let r=results[i];
 if(particle.id==0u || (particle.c0&255u)>=254u || r.before.x==0.0) { return; }
-let before=Material(vec4u(particle.c0,particle.tail.xyz),bitcast<i32>(particle.tail.w));var after=forceHeat(before,r);
+let before=Material(vec4u(particle.c0,particle.tail.xyz),bitcast<i32>(particle.tail.w));var after=forcePacketHeat(before,r);
 if(r.before.x!=r.after.x) {
- after.core.x=(after.core.x&0xffffff00u)|u32(r.after.x);
- if(!energyFits(after,energyOf(before))) { return; }after=withEnergy(after,energyOf(before));
+ let enthalpy=packetOwnedEnergy(after);after.core.x=(after.core.x&0xffffff00u)|u32(r.after.x);
+ if(!packetEnergyFits(after,enthalpy)) { return; }after=withPacketEnergy(after,enthalpy);
 }
 if(r.motion.w!=0.0) { particle.velocity=r.motion.xyz*${WEATHER_SPEED_SI}; }
 particle.c0=after.core.x;particle.tail=vec4u(after.core.yzw,bitcast<u32>(after.bank));particles[i]=particle;
 let p=vec3i(floor(particle.position))-P.origin;
-noteEnergySource(p,energySub(energyOf(after),energyOf(before)));markBusy(p);
+noteEnergySource(p,energySub(packetOwnedEnergy(after),packetOwnedEnergy(before)));markBusy(p);
 `);
   throw new Error(`Unknown native force stage ${stage}`);
 }

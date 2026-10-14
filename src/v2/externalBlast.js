@@ -3,6 +3,7 @@ import { ELEMENTS } from '../elements.js';
 // External sources are not voxel charges. Their immutable world-space requests
 // and GPU completion words survive saves/windows; acknowledgement is not execution.
 import { AIR } from './pressure.js';
+import { CELL_M } from '../scale.js';
 export const EXTERNAL_BLAST_CAP = 64;
 const finite = n => Number.isFinite(n) && Math.abs(n) <= 1e12 && Number.isFinite(Math.fround(n));
 const vector=v=>Array.isArray(v) && v.length===3 && v.every(finite);
@@ -45,6 +46,84 @@ export function externalBlastBudget(energy, received) {
   const sum = received.reduce((a, b) => a + b, 0), scale = Math.min(1, energy * 0.5 / Math.max(sum, 1e-6));
   return received.map(e => e * scale);
 }
+
+// Exact f32 share -> native heat quanta. Integer division cannot round heat
+// above its quarter-share. Keep the existing bounded one-word heat grant.
+export const BLAST_NATIVE_J_DENOMINATOR = Math.round(1000 * CELL_M ** 3 * 4184);
+export const BLAST_NATIVE_J_NUMERATOR = 16777216;
+const floatBits = new DataView(new ArrayBuffer(4));
+const bitsOf = x => { floatBits.setFloat32(0,x,true); return floatBits.getUint32(0,true); };
+const fromBits = x => { floatBits.setUint32(0,x,true); return floatBits.getFloat32(0,true); };
+export function quantizedBlastHeat(received) {
+  received=Math.fround(received);if(!(received>0)) return 0n;
+  const bits=bitsOf(received),exponent=(bits>>>23)&255;
+  let numerator=BigInt((bits&0x7fffff)|(exponent?0x800000:0))*BigInt(BLAST_NATIVE_J_NUMERATOR);
+  const shift=exponent?exponent-150:-149;
+  numerator=shift>=0?numerator<<BigInt(shift):numerator>>BigInt(-shift);
+  const heat=numerator/BigInt(4*BLAST_NATIVE_J_DENOMINATOR);
+  return heat>4294967040n?4294967040n:heat;
+}
+export function blastKineticRemainder(received,heat) {
+  if(heat===0n) return Math.fround(received);
+  const f=Math.fround;
+  const paid=fromBits(bitsOf(f(f(f(Number(heat))*BLAST_NATIVE_J_DENOMINATOR)/BLAST_NATIVE_J_NUMERATOR))+2);
+  const remainder=Math.fround(Math.fround(received)-paid);
+  return remainder>0?fromBits(bitsOf(remainder)-1):0;
+}
+// Stored-f32 twin, with a higher precision incremental-work oracle in tests.
+export function boundedBlastVelocity(velocity,direction,budget,mass) {
+  const f=Math.fround,v=velocity.map(f),d=direction.map(f);mass=f(mass);budget=f(budget);
+  const sum=x=>f(f(x[0]+x[1])+x[2]);
+  const along=sum(v.map((x,i)=>f(x*d[i])));
+  const kick=f(f(Math.sqrt(f(f(along*along)+f(f(2*budget)/Math.max(mass,1e-6)))))-along);
+  let after=v.map((x,i)=>f(x+f(d[i]*kick)));
+  const fits=a=>{
+    const delta=a.map((x,i)=>f(x-v[i])),work=delta.map((x,i)=>f(x*v[i])),square=delta.map(x=>f(f(x*x)*0.5));
+    const magnitude=sum(work.map((x,i)=>f(Math.abs(x)+square[i])));
+    return f(mass*f(sum(work.map((x,i)=>f(x+square[i])))+f(magnitude*0.000002)))<=budget;
+  };
+  if(budget<=0) return v;
+  if(fits(after)) return after;
+  after=after.map((x,i)=>f(v[i]+f(f(x-v[i])*0.99999)));
+  return fits(after)?after:v;
+}
+export const blastHeatBudgetWGSL = `
+fn dQuantizedBlastHeat(received:f32)->vec2u {
+ if(received<=0.0){return vec2u(0u);}
+ // Above this conservative threshold the bounded heat grant always fits.
+ if(received>=120000000.0){return vec2u(4294967040u,0u);}
+ let bits=bitcast<u32>(received);let exponent=(bits>>23u)&255u;
+ let mantissa=(bits&0x7fffffu)|select(0u,0x800000u,exponent!=0u);
+ var numerator=energyMul(mantissa,${BLAST_NATIVE_J_NUMERATOR}u);
+ let shift=select(-149,i32(exponent)-150,exponent!=0u);
+ if(shift>0){let n=u32(shift);numerator=vec2u(numerator.x<<n,(numerator.y<<n)|(numerator.x>>(32u-n)));}
+ else if(shift<0) {let n=u32(-shift);if(n>=64u){numerator=vec2u(0u);}else if(n>=32u){numerator=vec2u(numerator.y>>(n-32u),0u);}else{numerator=vec2u((numerator.x>>n)|(numerator.y<<(32u-n)),numerator.y>>n);}}
+ let heat=phaseDiv(numerator,vec2u(${4*BLAST_NATIVE_J_DENOMINATOR}u,0u));
+ if(heat.y!=0u){return vec2u(4294967040u,0u);}return vec2u(min(heat.x,4294967040u),0u);
+}
+fn dBlastKineticRemainder(received:f32,heat:vec2u)->f32 {
+ if(heat.x==0u){return received;}
+ // u32->f32 and the product each round once; the power-of-two division
+ // is exact. Two upward ulps cover both errors, then round KE downward.
+ let paid=bitcast<f32>(bitcast<u32>(f32(heat.x)*${BLAST_NATIVE_J_DENOMINATOR}.0/${BLAST_NATIVE_J_NUMERATOR}.0)+2u);
+ let remainder=received-paid;if(remainder<=0.0){return 0.0;}
+ return bitcast<f32>(bitcast<u32>(remainder)-1u);
+}
+fn dBlastVelocityFits(before:vec3f,after:vec3f,budget:f32,mass:f32)->bool {
+ let delta=after-before;let work=before*delta;let square=delta*delta*0.5;
+ // Incremental work avoids cancellation of two huge absolute kinetic energies.
+ // Bound f32 rounding in the subtractions/products/sums conservatively.
+ let magnitude=dot(abs(work)+square,vec3f(1.0));
+ let upper=mass*(dot(work+square,vec3f(1.0))+magnitude*0.000002);
+ return upper<=budget;
+}
+fn dBlastBudgetVelocity(before:vec3f,direction:vec3f,budget:f32,mass:f32)->vec3f {
+ var after=dBudgetVelocity(before,direction,budget,mass);
+ if(dBlastVelocityFits(before,after,budget,mass)){return after;}
+ after=before+(after-before)*0.99999;
+ if(dBlastVelocityFits(before,after,budget,mass)){return after;}return before;
+}
+`;
 
 // CPU numerical specification of the shader's energy-funded radial impulse.
 export function externalBlastVelocity(velocity,direction,energy,mass) {

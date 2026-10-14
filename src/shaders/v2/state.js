@@ -106,14 +106,19 @@ fn energyOf(m: Material) -> vec2u {
   let sensible = energyAdd(energyMul(capacityQ(m.core), cTq(m.core)), energySigned(m.bank));
   return energyAdd(sensible, energyAdd(phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core)), phaseLatentEnergy(id, cRawTq(m.core), amount)));
 }
-fn withEnergy(m: Material, e: vec2u) -> Material {
+fn withEnergy(m: Material, e: vec2u) -> Material { return encodeMaterialEnergy(m,e,capacityQ(m.core),0u); }
+fn packetCapacityQ(c: vec4u) -> u32 { return capacityQ(c) - 65536u; }
+fn packetOwnedEnergy(m: Material) -> vec2u { return energySub(energyOf(m),energyMul(65536u,cTq(m.core))); }
+fn withPacketEnergy(m: Material, e: vec2u) -> Material { return encodeMaterialEnergy(m,e,packetCapacityQ(m.core),ctypeOf(m.core)); }
+fn packetEnergyFits(m: Material, e: vec2u) -> bool { return all(packetOwnedEnergy(withPacketEnergy(m,e)) == e); }
+fn encodeMaterialEnergy(m: Material, e: vec2u, capacity: u32, phaseCtype: u32) -> Material {
   var out = m; let id = cid(m.core); let amount = materialAmount(m.core);
-  let phase = phaseEncode(id, amount, e);
+  let phase = phaseEncodeCapacity(id, amount, e, capacity, phaseCtype);
   var tq = phase.x; var bank = phase.y;
   if (tq == 0xffffffffu) {
     let sensible = energySub(e, phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core))); tq = 0u;
-    if ((sensible.y & 0x80000000u) == 0u) { tq = min(41093u, energyDiv(sensible, capacityQ(m.core)).x); }
-    bank = energySub(sensible, energyMul(capacityQ(m.core), tq)).x;
+    if ((sensible.y & 0x80000000u) == 0u && capacity != 0u) { tq = min(41093u, energyDiv(sensible, capacity).x); }
+    bank = energySub(sensible, energyMul(capacity, tq)).x;
   }
   out.core.x = (m.core.x & 0xff0000ffu) | (tq << 8u);
   out.bank = bitcast<i32>(bank);

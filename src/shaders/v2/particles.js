@@ -66,7 +66,7 @@ fn dMaterial(p: DParticle) -> Material { return Material(vec4u(p.c0, p.tail.xyz)
 fn dParticle(position: vec3f, velocity: vec3f, id: u32, m: Material) -> DParticle { return DParticle(position, id, velocity, m.core.x, vec4u(m.core.yzw, bitcast<u32>(m.bank))); }
 fn dEmpty() -> Material { return makeMaterial(0u, 20.0, 0u, 0u); }
 fn dCarrier(m: Material) -> Material { return makeMaterial(0u,f32(cTq(m.core))*0.25-273.25,0u,0u); }
-fn dParticleEnergy(m: Material) -> vec2u { return energySub(energyOf(m),energyMul(65536u,cTq(m.core))); }
+fn dParticleEnergy(m: Material) -> vec2u { return packetOwnedEnergy(m); }
 fn dHeatEnergy(m: Material, heat: f32) -> vec2u {
   // One legacy cap*C = FULL*64*4 native energy units; fission's 150
   // exceeds signed32, so multiply/add in the foundation's signed64 pair.
