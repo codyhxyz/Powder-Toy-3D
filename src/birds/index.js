@@ -10,7 +10,7 @@ import { CELL_M } from '../scale.js';
 // Life in the world: flocks of magical birds (flock.js flies them, probe.js
 // tells them where the ground, the perches and the fires are, render.js draws
 // them). A World has a few ambient flocks roaming near wherever you are; the
-// palette's Bird flock spawner (Entities) keeps a flock homed on its spot,
+// palette's one-shot Bird flock (Entities) lives around its placement,
 // in a world or a box. They take off from a body that comes near and from
 // gunshots and blasts (the POV event bus), roost at night, glow at dusk and
 // night, burn in fire and fall when shot or struck (pov/targets.js).
@@ -91,7 +91,7 @@ export function createBirdLife(env) {
   const unregister = (b) => { b.removeTarget?.(); b.removeTarget = null; };
 
   function addFlock(key, kind, home, opts = {}) {
-    const n = Math.round(rand(L.FLOCK_MIN, L.FLOCK_MAX + 1) - 0.5);
+    const n = opts.count ?? Math.round(rand(L.FLOCK_MIN, L.FLOCK_MAX + 1) - 0.5);
     viewOf();
     const flock = new Flock(probe.world, [home.x, home.y, home.z], n, opts);
     for (const b of flock.birds) register(b);
@@ -144,14 +144,18 @@ export function createBirdLife(env) {
       const key = `spawner:${s.id}`, e = flocks.get(key);
       if (e) {
         if (e.flock.alive) { e.deadT = 0; continue; }
+        if (s.oneShot) { sp.consume(s); continue; }
         e.deadT += dt;
         if (e.deadT < L.RESPAWN_S) continue;
         dropFlock(key);
       }
-      if (!sim) continue;
-      // they burst up off the pad
-      addFlock(key, 'spawner', { x: s.world.x, y: s.world.y + BIRD.SPAN, z: s.world.z }, { homeR: Math.max(homeR, BIRD.EDGE) })
-        .home.set(s.world.x, 0, s.world.z);
+      if (!sim || s.consumed) continue;
+      // A saved one-shot flock restores only its survivors, never dead birds.
+      const count = s.oneShot && Number.isInteger(s.state?.birdCount) ? Math.max(0, Math.min(L.FLOCK_MAX, s.state.birdCount)) : undefined;
+      if (count === 0) { sp.consume(s); continue; }
+      const flock = addFlock(key, 'spawner', { x: s.world.x, y: s.world.y + BIRD.SPAN, z: s.world.z }, { homeR: Math.max(homeR, BIRD.EDGE), count });
+      flock.home.set(s.world.x, 0, s.world.z);
+      if (s.oneShot) s.snapshot = () => ({ consumed: !flock.alive, state: { birdCount: flock.alive } });
     }
   }
 
@@ -216,13 +220,13 @@ export function createBirdLife(env) {
       if (night && el > deg(L.WAKE_EL)) night = false;
       else if (!night && el < deg(L.ROOST_EL)) night = true;
       glow = 1 - smooth(deg(L.GLOW_FULL_EL), deg(L.GLOW_NONE_EL), el);
+      spawned(dt);   // creation/removal works while paused; only movement uses dt
       if (dt > 0) {
         // what the ground is: a world's ambient flocks need it before there are
         // any, a box only once a flock lives in it (the probe costs a dispatch
         // and a readback every PROBE_S)
         if (win || flocks.size) probe.update(dt);
         if (win) ambient(dt);
-        spawned(dt);
         const player = env.player();
         const ctx = { night, threats: player ? [player] : [] };
         if (probe.ready || !win) for (const { flock } of flocks.values()) {

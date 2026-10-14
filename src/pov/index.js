@@ -20,6 +20,7 @@ import { createInteract } from './interact.js';
 import { ORB_LIFT } from '../perkOrbs.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker, applyClassTo } from './classPicker.js';
+import { createBallistics } from './ballistics.js';
 import { createVehicles } from './vehicles/index.js';
 import { createNightVision } from './nightVision.js';
 import { KICK_KEY, createKickLeg } from './kick.js';
@@ -125,6 +126,7 @@ export function createPov(app) {
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
+  let npcBallistics = null;
   let npcMod = null, npcAi = null, npcLoading = null;   // npc.js and what NPCs share, loaded on first use
   // the killfeed's books (killfeed.js): who hurt whom last, and every body that can die
   const bodyById = (id) => [...npcs.values(), ...game.bots].find((n) => n.id === id) ?? null;
@@ -584,7 +586,7 @@ export function createPov(app) {
     controls.enabled = true;
     controls.update();
     figure?.setVisible(false);
-    for (const n of npcs.values()) n.reset();
+    for (const n of npcs.values()) n.setVisible(true);
     vehicles.reset(player);
     game.setVisible(false);
     viewmodel.visible = false;
@@ -645,6 +647,62 @@ export function createPov(app) {
     input.crouch = input.down = keys.has(CROUCH_KEY) || t.down;   // crouched on land, swimming down in liquid
   }
 
+  // The same entities belong to the scene, not to its current camera mode.
+  function updateEntities(dt, { vehiclesUpdated = false } = {}) {
+    const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
+    if (!sim || !vol) return null;
+    const g = sim.g;
+    vol.updateMatrixWorld();
+    worldToGrid.copy(vol.matrixWorld).invert();
+    if (!vehiclesUpdated) vehicles.update(dt, { player: active() ? player : null, live: live() && mode === 'on', worldToGrid });
+    // the NPCs: one per enemy spawner, with every tool you have. Not in a world
+    // (g.windowed): the NPCs don't move with the window (windowShifted).
+    const sp = app.getSpawners?.();
+    const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
+    const npcsWanted = !!sp && !g.windowed;
+    const homes = npcsWanted ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
+    if (homes.some((s) => !s.consumed)) {
+      ensureKernels();
+      npcBallistics ??= createBallistics({ renderer });
+      npcBallistics.prepare(sim);
+      if (!npcMod) loadNpcs().then(() => app.requestRender()).catch(() => {});
+    }
+    if (npcMod) {
+      for (const s of homes) {
+        if (npcs.has(s.id) || s.consumed) continue;
+        const spec = {
+          env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: npcBallistics },
+          ai: npcAi, oneShot: s.oneShot,
+          home: () => sp.feet(s),   // it appears, and comes back, on its spawner
+        };
+        const worm = s.kind === SPAWNER.WORM || s.kind === SPAWNER.GIANT_WORM;
+        const n = worm ? npcMod.createWorm({ ...spec, size: s.kind === SPAWNER.GIANT_WORM ? 'giant' : 'small' })
+          : npcMod.createNpc({ ...spec, style: s.kind === SPAWNER.GUNNER ? 'gunner' : 'axeman' });
+        scene.add(n.root);
+        n.body.on('death', () => sp.consume(s));
+        n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
+        n.bind(volumeLight(app.getVolume()), g);
+        n.compile(renderer, camera, scene).then(() => app.requestRender()).catch((err) => console.error('NPC figure failed to compile', err));
+        npcs.set(s.id, n);
+        // Spawn even on a paused editor frame; dt=0 only poses the new body.
+        n.update(0, npcFrame);
+        if (s.oneShot) s.snapshot = () => ({ consumed: n.body.dead,
+          world: [n.body.pos.x + sim.origin.x, n.body.pos.y, n.body.pos.z + sim.origin.z] });
+      }
+      // a spawner taken away takes its NPC with it
+      for (const [id, n] of npcs) {
+        if (homes.some((s) => s.id === id) || (npcsWanted === false && sp?.list.some((s) => s.id === id))) continue;
+        scene.remove(n.root); n.dispose(); npcs.delete(id);
+      }
+      if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
+      if (npcsWanted && npcs.size) {
+        for (const n of npcs.values()) { n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame); }
+      } else for (const n of npcs.values()) n.setVisible(false);
+    }
+    if (npcBallistics && dt > 0) npcBallistics.update({ sim, dt, stepsPerFrame: npcFrame.stepsPerFrame });
+    return npcFrame;
+  }
+
   function update(dt) {
     touch.update({
       live: live() && !village.blocked, tool: village.enabled ? null : toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
@@ -696,41 +754,9 @@ export function createPov(app) {
     }
     speedH = Math.hypot(player.vel.x, player.vel.z);
 
-    // the NPCs: one per enemy spawner, with every tool you have. Not in a world
-    // (g.windowed): the NPCs don't move with the window (windowShifted).
-    const sp = app.getSpawners?.();
-    const npcFrame = { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
-    const npcsWanted = !!sp && !g.windowed && (mode === 'on' || mode === 'entering') && !!toolbelt;
-    const homes = npcsWanted && !game.running ? ENEMY_KINDS.flatMap((k) => sp.of(k)) : [];   // a team game (src/game) has its own bots
-    if (homes.length && !npcMod) loadNpcs().catch(() => {});
-    if (npcMod) {
-      for (const s of homes) {
-        if (npcs.has(s.id)) continue;
-        const spec = {
-          env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics },
-          ai: npcAi,
-          home: () => sp.feet(s),   // it appears, and comes back, on its spawner
-        };
-        const worm = s.kind === SPAWNER.WORM || s.kind === SPAWNER.GIANT_WORM;
-        const n = worm ? npcMod.createWorm({ ...spec, size: s.kind === SPAWNER.GIANT_WORM ? 'giant' : 'small' })
-          : npcMod.createNpc({ ...spec, style: s.kind === SPAWNER.GUNNER ? 'gunner' : 'axeman' });
-        scene.add(n.root);
-        n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
-        n.bind(volumeLight(app.getVolume()), g);
-        n.compile(renderer, camera, scene);
-        npcs.set(s.id, n);
-      }
-      // a spawner taken away takes its NPC with it
-      for (const [id, n] of npcs) {
-        if (homes.some((s) => s.id === id) || (npcsWanted === false && sp?.list.some((s) => s.id === id))) continue;
-        scene.remove(n.root); n.dispose(); npcs.delete(id);
-      }
-      if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
-      if (npcsWanted && npcs.size) {
-        for (const n of npcs.values()) { n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame); }
-      } else for (const n of npcs.values()) n.reset();
-    }
-    game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
+    const npcFrame = updateEntities(dt, { vehiclesUpdated: true });
+    game.update(dt, npcMod ? npcFrame : null);   // team bots retain their own lifecycle
+
     deaths.update();   // the killfeed: who died this frame, and to what
     medals.update();   // the sandbox's medal stack (its fades)
 
@@ -1011,8 +1037,18 @@ export function createPov(app) {
     enter,
     exit,
     update,
+    updateEntities,
+    get entitiesPending() {
+      return vehicles.pending || (!app.getSim()?.g.windowed && app.getSpawners?.()?.list.some((s) => !s.consumed && (s.oneShot || !game.running) && ENEMY_KINDS.includes(s.kind) && !npcs.has(s.id)));
+    },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
-    worldReplaced: () => { village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced(); },
+    worldReplaced: () => {
+      village.setEnabled(false); toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced();
+      for (const n of npcs.values()) { scene.remove(n.root); n.dispose(); }
+      npcs.clear();
+      npcBallistics?.clear();
+      vehicles.worldReplaced();
+    },
     // the window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): grid positions move back.
     // The drop point stays put in the world: a respawn far away waits there
     // for the window to come (player.js).

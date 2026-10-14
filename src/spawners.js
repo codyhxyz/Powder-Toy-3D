@@ -1,27 +1,9 @@
 import * as THREE from 'three';
 import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 
-// Spawners: markers the god view sets on surfaces (the palette's Entities group).
-//
-//   enemy   in first person, keeps one NPC (pov/npc.js) alive here: it appears
-//           here, and comes back here a few seconds after it dies (an axeman)
-//   gunner  the same, a jetpack gunner (npc.js, style 'gunner'): Noita's jetpack Hiisi
-//   worm    the same, a worm (pov/worm.js) that comes up here and burrows in
-//   giantworm  the same, the giant worm (worm.js size 'giant')
-//   player  where V drops you in (the one nearest the cursor) and where you respawn
-//   jeep, hoverbike, boat
-//           in first person, keeps one vehicle (pov/vehicles/) parked here: it
-//           comes back here a few seconds after it's destroyed
-//   birds   keeps a flock of birds (birds/) homed here, in the god view and first person
-//
-// None is placed in any world by default; the lab's own axeman is the only one a scene brings.
-//
-// Clicking a surface with a spawner tool sets one; clicking at an existing one
-// of that kind takes it away. A spawner stands on a world cell, like a sign, so
-// in a world bigger than the grid it stays put while the window moves.
-//
-// Each shows as a glowing pad with a ghost of a body standing on it (the birds'
-// has no ghost: its flock is on show); in first person the ghost hides and the pad stays.
+// Legacy/arena spawners keep an entity alive; the sandbox palette places a
+// one-shot entity instead, like Garry's Mod's spawn menu (no pad or toggle).
+// An absent oneShot flag deliberately retains old saved-spawner semantics.
 
 export const SPAWNER = { ENEMY: 'enemy', GUNNER: 'gunner', WORM: 'worm', GIANT_WORM: 'giantworm', PLAYER: 'player', JEEP: 'jeep', HOVERBIKE: 'hoverbike', BOAT: 'boat', BIRDS: 'birds' };
 // the kinds that keep a creature alive (pov/index.js); old spawners are 'enemy': axemen
@@ -94,9 +76,22 @@ export class Spawners {
     return 'added';
   }
 
-  add(kind, feet) {
-    const s = { id: nextId++, kind, world: feet.clone().add(this.getSim().origin), obj: marker(kind) };
-    this.root.add(s.obj);
+  // Player spawn is intentionally still a toggleable marker.
+  place(kind, feet) {
+    if (kind === SPAWNER.PLAYER) return this.toggle(kind, feet);
+    if (this.getSim().g.windowed && kind !== SPAWNER.BIRDS) return 'unsupported';
+    // Retire spent records before reusing their budget; repeated kills must not
+    // accumulate an unbounded registry (or NPC corpses with their own probes).
+    for (const s of this.of(kind)) if (s.oneShot && (s.consumed || s.snapshot?.().consumed)) this.remove(s);
+    if (this.of(kind).length >= MAX_PER_KIND) return 'full';
+    this.add(kind, feet, { oneShot: true });
+    return 'added';
+  }
+
+  add(kind, feet, { oneShot = false, state = null } = {}) {
+    const s = { id: nextId++, kind, world: feet.clone().add(this.getSim().origin), oneShot: oneShot && kind !== SPAWNER.PLAYER, state };
+    s.obj = s.oneShot ? null : marker(kind);
+    if (s.obj) this.root.add(s.obj);
     this.list.push(s);
     this.update();
     this.onChange();
@@ -107,21 +102,31 @@ export class Spawners {
     const i = this.list.indexOf(s);
     if (i < 0) return;
     this.list.splice(i, 1);
-    s.obj.removeFromParent();
-    s.obj.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+    s.obj?.removeFromParent();
+    s.obj?.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
     this.onChange();
   }
 
   clear() { for (const s of [...this.list]) this.remove(s); }
 
   // The spawners for a save (saves/game.js), feet in world cells, and back.
-  toJSON() { return this.list.map((s) => ({ kind: s.kind, world: s.world.toArray() })); }
+  consume(s) { if (s.oneShot) { s.consumed = true; this.onChange(); } }
+
+  toJSON() {
+    return this.list.flatMap((s) => {
+      if (s.oneShot && s.consumed) return [];
+      const snapshot = s.snapshot?.();
+      if (s.oneShot && snapshot?.consumed) return [];
+      return [{ kind: s.kind, world: snapshot?.world ?? s.world.toArray(),
+        ...(s.oneShot ? { oneShot: true, state: snapshot?.state ?? s.state } : {}) }];
+    });
+  }
   fromJSON(arr) {
     this.clear();
     const kinds = new Set(Object.values(SPAWNER)), origin = this.getSim().origin;
     for (const s of arr ?? []) {
-      if (!kinds.has(s?.kind) || !Array.isArray(s.world) || this.of(s.kind).length >= MAX_PER_KIND) continue;
-      this.add(s.kind, new THREE.Vector3().fromArray(s.world).sub(origin));
+      if (!kinds.has(s?.kind) || !Array.isArray(s.world) || s.world.length !== 3 || !s.world.every(Number.isFinite) || (s.oneShot === true && s.consumed) || this.of(s.kind).length >= MAX_PER_KIND) continue;
+      this.add(s.kind, new THREE.Vector3().fromArray(s.world).sub(origin), { oneShot: s.oneShot === true, state: s.state ?? null });
     }
   }
 
@@ -148,7 +153,7 @@ export class Spawners {
   }
 
   // in first person the ghosts hide (the pads stay)
-  setGhosts(v) { this.ghosts = v; for (const s of this.list) if (s.obj.userData.ghost) s.obj.userData.ghost.visible = v; }
+  setGhosts(v) { this.ghosts = v; for (const s of this.list) if (s.obj?.userData.ghost) s.obj.userData.ghost.visible = v; }
 
   // every frame: markers follow the world's scale, the volume and the window
   update() {
@@ -156,6 +161,7 @@ export class Spawners {
     if (!sim || !vol) return;
     const f = new THREE.Vector3();
     for (const s of this.list) {
+      if (!s.obj) continue;
       const inside = this.feet(s, f);
       s.obj.visible = !!inside;
       if (!inside) continue;

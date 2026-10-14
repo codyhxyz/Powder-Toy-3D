@@ -34,7 +34,7 @@ import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
-import { SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
+import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
@@ -106,12 +106,7 @@ const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE, [-22]: SPAWNER.BOAT,
   [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM, [-33]: SPAWNER.BIRDS };   // the Spawners tools' kinds
-const SPAWNER_SET = {
-  [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
-  [SPAWNER.BOAT]: 'Boat pad set: press V, swim up and press E; motor needs water',
-  [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
-  [SPAWNER.BIRDS]: 'Bird flock set: they live here now',
-};
+const SPAWNER_SET = { [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here' };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
 
@@ -1710,11 +1705,12 @@ function clickTool() {
     if (!spawners) { hud.toast(notYet('Spawners'), { kind: 'error' }); return false; }
     if (!hover.valid) { hud.toast('Click a surface to set it on', { kind: 'error' }); return false; }
     const kind = SPAWNER_KIND[settings.tool];
-    const r = spawners.toggle(kind, feetOnHit(hover));
+    const r = spawners.place(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
-    else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
-    return r !== 'full';
+    else if (r === 'unsupported') hud.toast('Vehicles and NPCs are not supported in scrolling World maps; use a box map', { kind: 'error' });
+    else hud.toast(r === 'removed' ? 'Player spawn removed' : SPAWNER_SET[kind] ?? `${toolById(settings.tool).name} spawned`);
+    return r !== 'full' && r !== 'unsupported';
   }
   if (isBuild(settings.tool)) {
     if (mp.guard()) return false;

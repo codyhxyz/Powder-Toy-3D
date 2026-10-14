@@ -166,7 +166,7 @@ function buildLook(size) {
 
 // One worm. ai: { world } (npc.js createAi). env: { renderer, getSim }.
 // home(): its spawner's feet (grid cells), or null for a spot near the player.
-export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small' }) {
+export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small', oneShot = false }) {
   const id = `worm${nextId++}`;
   const size = WORM_SIZE[sizeKey];
   const R = size.radius;
@@ -535,15 +535,15 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     get segments() { return segs; },
     update(dt, w) {
       const sim = env.getSim();
-      if (!sim || dt <= 0) return;
+      if (!sim) return;
       dt = Math.min(dt, MAX_DT);
-      if (!world.ready) return;
-      if (!spawned) spawn(home());
+      if (!spawned && (home() || world.ready)) spawn(home());
+      if (!spawned) return;
       if (dead) {
         deadTime += dt;
         if (deadTime < CORPSE_S) sag(dt, deadTime, true);
-        if (deadTime >= RESPAWN_S) spawn(home());
-      } else {
+        if (!oneShot && deadTime >= RESPAWN_S) spawn(home());
+      } else if (dt > 0 && world.ready) {
         if (world.T(v.position.x, v.position.y, v.position.z) > HOT_T) hurt(BURN_RATE * dt, 'Burned', headV.set(v.position.x, v.position.y, v.position.z));
         decide(dt, w);
         move(dt);
@@ -551,12 +551,12 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
         strandedT = !anchored && v.velocity.length() < STRANDED_SPEED ? strandedT + dt : 0;
         if (strandedT > 0) sag(dt, strandedT, false);
       }
-      const near = !dead && bite(dt);
+      const near = dt > 0 && !dead && bite(dt);
       look.root.visible = spawned && !(dead && deadTime >= CORPSE_S);
       draw(dt, w, near);
     },
     setVisible(vis) { look.root.visible = vis && spawned && !(dead && deadTime >= CORPSE_S); },
-    reset() { spawned = false; look.root.visible = false; },
+    reset() { if (oneShot) return; spawned = false; look.root.visible = false; },
     placeAt(at) { if (env.getSim() && world.ready) spawn(at); },
     dispose() {
       offShot(); offBlast();

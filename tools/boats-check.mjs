@@ -1,4 +1,4 @@
-// Real-shell smoke: normal palette + water click, pad spawn, E seat, W/S/A/D,
+// Real-shell smoke: normal palette + water click, one-shot spawn, E seat, W/S/A/D,
 // chase camera and exit. CPU physics coverage is boats-node-check.mjs.
 // node tools/boats-check.mjs --port 5497 (owned dev server), or --url https://tpt3d.codyh.xyz
 import assert from 'node:assert/strict';
@@ -34,7 +34,7 @@ try {
   }, { id: E.WATER, temp: ELEMENTS[E.WATER].temp, life: ELEMENTS[E.WATER].life });
   await page.keyboard.press('t');
   await page.getByRole('button', { name: 'Entities', exact: true }).click();
-  await page.getByRole('button', { name: 'Boat pad', exact: true }).click();
+  await page.getByRole('button', { name: 'Boat', exact: true }).click();
   const click = await page.evaluate(() => {
     const a = window.__app;
     const p = new a.THREE.Vector3(64, 20, 64).multiplyScalar(a.scale).add(a.volume.position).project(a.camera);

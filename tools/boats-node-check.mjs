@@ -136,7 +136,7 @@ test('Jeep sinks fully below water, retaining liquid drag and heat', { hot: true
   assert.ok(v.body.linvel().y > -8, 'liquid drag limits sinking speed');
 }, buildJeep, JEEP);
 
-// Normal pad data path: palette -> SPAWNER -> surface hit -> saved marker.
+// Stable tool ID and legacy pad save path (new one-shots: entities-node-check.mjs).
 assert.equal(SPAWNER.BOAT, 'boat');
 const tool = itemByKey('BOATPAD');
 assert.ok(tool && isSpawnerTool(tool.id) && PALETTE.find((p) => p.name === 'Entities').items.includes('BOATPAD'));
@@ -151,6 +151,6 @@ try {
   assert.deepEqual(sp.toJSON(), saved); assert.equal(sp.of('boat').length, 1);
   assert.equal(sp.of('boat')[0].obj.name, 'spawner-boat');
   sp.toggle(SPAWNER.BOAT, surface); assert.equal(sp.of('boat').length, 0);
-  console.log('ok Boat pad palette, water-surface placement, save roundtrip and removal');
+  console.log('ok Boat tool ID, legacy water-surface pad, save roundtrip and removal');
 } finally { sp.clear(); }
 console.log('all boat checks passed');
