@@ -163,6 +163,26 @@ test('canvas placement releases threshold focus so Escape and Q still work', asy
   f.industry.dispose();
 });
 
+test('inspection does not capture driving input and resumes after leaving the vehicle', async () => {
+  const f = fixture(); await settle();
+  f.industry.toggleInspect(true);
+  f.app.pov.vehicles = { seated: { kind: 'boat' } };
+  f.industry.update(0, false);
+  const event = { target: f.app.canvas, button: 0, type: 'pointerdown',
+    preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+  listeners.get('pointerdown')(event);
+  assert.equal(event.prevented, undefined);
+  assert.equal(event.stopped, undefined);
+  const escape = { code: 'Escape', preventDefault() { this.prevented = true; }, stopImmediatePropagation() {} };
+  listeners.get('keydown')(escape);
+  assert.equal(escape.prevented, undefined);
+  assert.equal(f.industry.state.building, false);
+  f.app.pov.vehicles.seated = null; f.industry.update(0, false);
+  assert.equal(f.industry.state.building, true);
+  assert.equal(f.industry.state.inspectMode, true);
+  f.industry.dispose();
+});
+
 test('partsSpent migrates old saves, validates equity, and prices metal above its shipment value', () => {
   let p = createProgression();
   const legacy = p.snapshot(); delete legacy.partsSpent;

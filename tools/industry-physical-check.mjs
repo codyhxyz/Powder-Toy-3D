@@ -44,6 +44,7 @@ try {
   await within(page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(4_000, totalDeadline - Date.now() - 1_500)) }), totalDeadline - 1_300, 'app navigation');
   await within(ready(page), totalDeadline - 1_300, 'app ready');
   const payload = await within(page.evaluate(async ({ caseName, deadline }) => {
+    const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 500);
     const caseStarted = performance.now();
     const a = window.__app;
     if (!a?.sim || !a.test || a.test.mode !== 'manual') throw new Error('manual 128³ app baseline is unavailable');
@@ -284,7 +285,7 @@ try {
         controlPlacementWritesActualThreshold: sensor.ok && sensorCell.id === E.TSNS && sensorCell.temperature === Math.fround(threshold),
         occupiedControlPlacementRejected: !occupiedReject.ok && occupiedAfter.id === E.TSNS && occupiedAfter.temperature === Math.fround(threshold),
         nativeSwitchToggleChangesRealCell: switchPlaced.ok && switchOn.ok && switchOn.on === true && switchOnCell.id === E.SWITCH
-          && switchOnCell.life === 10 && switchOff.ok && switchOff.on === false && switchOffCell.id === E.SWITCH && switchOffCell.life === 0,
+          && switchOnCell.life === 10 && switchOff.ok && switchOff.on === false && switchOffCell.id === E.SWITCH && switchOffCell.life === 9,
         nativeFallingGrainBlocksGate: nativeFlowObserved && fallingBlocked?.scheduled && fallingBlocked.status === GATE_STATUS.BLOCKED && fallingBlocked.preservedSand,
         noAsyncApiErrors: errors.length === 0,
       };

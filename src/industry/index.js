@@ -297,7 +297,7 @@ export function createIndustry(app) {
       if (opening && document.pointerLockElement) document.exitPointerLock();
       return;
     }
-    if (!isBuilding() && !part && !inspectMode) return;
+    if (driving() || (!isBuilding() && !part && !inspectMode)) return;
     if (e.code === 'Escape') {
       e.preventDefault(); e.stopImmediatePropagation();
       if (!e.repeat) {
@@ -308,7 +308,8 @@ export function createIndustry(app) {
   };
   const pointer = e => {
     const partMode = !!part && active() && factory() && !driving();
-    if ((!isBuilding() && !partMode && !inspectMode) || e.target !== app.canvas || e.altKey || e.button !== 0) return;
+    const inspecting = inspectMode && active() && factory() && !driving();
+    if ((!isBuilding() && !partMode && !inspecting) || e.target !== app.canvas || e.altKey || e.button !== 0) return;
     if (app.pov?.active && !app.pov.locked) return; // first click captures the mouse
     // Consuming the canvas click also suppresses its normal focus change.
     document.activeElement?.blur?.();
@@ -353,7 +354,7 @@ export function createIndustry(app) {
       on: type === 'SWITCH' ? signal : null };
   }
   function inspectHovered() {
-    if (!inspectMode || !active() || !factory()) { clearInspection(); return; }
+    if (!inspectMode || !active() || !factory() || driving()) { clearInspection(); return; }
     const cell = inspectionAnchor ?? hoverCell();
     if (!cell) { clearInspection(); return; }
     const registered = targetAt(cell) ?? controlOwnerAt(cell);
