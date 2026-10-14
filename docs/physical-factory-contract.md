@@ -46,6 +46,7 @@ The industrial heat rule is an abstraction, not a claim about ordinary coal comb
 Finite physical fuel consumption must bound the total added heat.
 Residual hot walls can continue transferring stored heat after the fuel expires.
 An empty or disabled hearth must not create heat.
+This refers to added industrial heat, not native combustion or stored heat.
 The device must ignite real fuel without requiring free Sandbox spawning.
 The charge still melts and cools through native phase-change rules.
 Do not directly convert scrap to molten metal.
@@ -54,6 +55,11 @@ The agent defines an explicit fuel region, charge region, and safe output direct
 The geometry must be buildable with existing refractory blocks.
 Fuel cells retain authoritative temperature and remaining life in terrain saves.
 No hidden fuel counters are approved.
+The current calibration buys 300000 local heat units per fuel-life unit.
+The paid starter targets 550°C; the industrial source limit is 2200°C.
+These are game rules, not measured coal chemistry.
+Hearth timing follows native simulation ticks, not presentation frames.
+Mining retains coal's remaining fuel life; it does not refill exhausted coal.
 
 ## Physical gate
 
@@ -80,6 +86,8 @@ In signal mode, the existing real control port commands open while energized.
 Without a signal, the gate requests closure.
 A blocked closure leaves the gate open.
 A damaged owned shutter reports damage and does not silently regenerate.
+The gate also checks all sixteen base cells before actuation.
+A damaged base jams the gate; explicit dismantling can still remove owned shutter cells.
 Opening and removal erase only the gate's tagged material.
 No gate operation stores grains or liquids outside the simulation.
 All transitions are atomic and bounded.
@@ -96,13 +104,15 @@ The parent handles credits before or after confirmed placement, with rollback on
 The GPU backend never charges credits.
 Placement succeeds only in an empty cell.
 Toggling operates only on a real switch at the requested position.
+Switch shutdown starts the native countdown, so OFF spreads through touching switches.
 Temperature-sensor configuration must use the native threshold convention.
 TSNS thresholds use `PHYS.CELL_TEMP_MIN` through `PHYS.CELL_TEMP_MAX`, currently −273.15°C through 10000°C.
 The default threshold is 200°C.
 Other parts reject threshold fields.
 
 Approved part prices are TSNS 3 credits, SWITCH 2 credits, and BATTERY 5 credits.
-METAL, PSCN, NSCN, and INSULATOR each cost 1 credit.
+METAL costs 5 credits; PSCN, NSCN, and INSULATOR each cost 1 credit.
+Metal costs more than its four-credit shipping value to prevent purchase-and-shipment profit.
 These are construction prices, not stored electrical energy.
 
 The controller persists consumed credit expenditure as `partsSpent`.
@@ -145,3 +155,19 @@ No first-wave implementation agent starts a browser.
 The parent schedules GPU validation after integration.
 Each slot includes startup, compilation, assertions, and cleanup within ten seconds.
 If a required fixture cannot fit, report that limitation before changing its scope.
+
+## Routing constraints
+
+The gate is a vertical shutter across a lateral outlet, not a horizontal hopper lid.
+Its opening does not push matter; use gravity, pressure, or an existing transport device.
+The hearth does not include invisible refractory walls.
+Build containment with existing tungsten foundations outside its working volume.
+Keep the rear fuel row supplied and the front molten outlet clear.
+
+Cooled metal is a stationary solid; ordinary belts cannot carry it.
+Route molten metal to the shipping intake, then cool it there.
+Do not present a belt carrying cooled ingots as a working production step.
+The finite reservoir can supply cooling water, but it is not an infinite source.
+
+The complete process remains unverified until the native-physics fixture passes.
+CPU budget checks do not prove three-dimensional melting, drainage, or cooling.
