@@ -20,7 +20,7 @@ export function appPreloadPlugin({ entry = 'src/app.js' } = {}) {
         // the app chunk and every chunk it imports, but not the page's own (already loaded)
         const chunks = new Map();
         const walk = (c) => {
-          if (chunks.has(c.fileName)) return;
+          if (!c || c.type !== 'chunk' || chunks.has(c.fileName)) return;
           chunks.set(c.fileName, c);
           for (const f of c.imports) walk(bundle[f]);
         };
@@ -35,6 +35,11 @@ export function appPreloadPlugin({ entry = 'src/app.js' } = {}) {
           styles: [...styles].map((f) => base + f),
           workers: workers.map((f) => base + f.fileName),
         };
+        // Recovery also repairs optional startup chunks (?shot, ?physics=v2).
+        // Do not add them to normal menu preloading.
+        for (const c of chunks.values()) for (const f of c.dynamicImports ?? []) walk(bundle[f]);
+        list.retry = [...new Set([...chunks.values()].filter(c => !c.isEntry)
+          .flatMap(c => [c.fileName, ...(c.viteMetadata?.importedCss ?? [])]))].map(f => base + f);
         return { html, tags: [{ tag: 'script', attrs: { type: 'application/json', id: PRELOAD_LIST }, children: JSON.stringify(list), injectTo: 'body' }] };
       },
     },

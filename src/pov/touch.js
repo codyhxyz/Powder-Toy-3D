@@ -139,7 +139,10 @@ export function createTouchControls({ canvas, active, turn, button, wheel, kick,
       }
       // (only what changed is written: this runs every frame)
       setText(down, s.inLiquid ? 'Dive' : 'Crouch');
-      setText(jump, s.driving ? 'Brake' : 'Jump / fly');
+      setText(jump, s.driving ? s.vehicleKind === 'hoverbike' ? 'Hop' : 'Brake' : 'Jump / fly');
+      const boat = s.driving && s.vehicleKind === 'boat';
+      setHidden(jump, boat);
+      if (boat) held.get(jump)?.(true);
       setText(vehicle, s.driving ? 'Get out' : 'Vehicle');
       setHidden(down, s.driving);
       setHidden(kicker, s.driving);

@@ -60,8 +60,8 @@ const KICK_RISE = 0.05 * 30;          // cells/s, up
 
 // How each tool's moment feels, in one table so every tool (and any new one) gets the same treatment:
 // kick, the hand's spring strength (above); punch, the view punch (feel.js, Source's ViewPunch spring) as
-// [min, max] rad ranges, pitch + up and yaw + left. The axe's are HL2's crowbar (CWeaponCrowbar::AddViewKick:
-// 1–2° down, 1–2° right). The gun's peaks where its old camera kick did (2°): Source's spring peaks at
+// [min, max] rad ranges, pitch + up and yaw + left. Mining contact is handled by feel.js, not this spring.
+// The gun's peaks where its old camera kick did (2°): Source's spring peaks at
 // ≈ 1.28 × the punch angle, so 2° / 1.28.
 const DEG = Math.PI / 180;
 const GUN_PUNCH = (2 / 1.28) * DEG;
@@ -71,10 +71,10 @@ export const HIT = {
   SNIPER: { kick: 2.2, punch: { pitch: [4 * DEG, 5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },     // a .50: a heavy shove up
   ROCKET: { kick: 1.6, punch: { pitch: [2 * DEG, 3 * DEG] } },                         // a rocket leaving the tube
   DRY: { kick: 0.25 },                                                                 // a dry click
-  AXE: { kick: 0.5, punch: { pitch: [-2 * DEG, -1 * DEG], yaw: [-2 * DEG, -1 * DEG] } },   // a blow landing
-  PICK: { kick: 0.7, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1.5 * DEG, -0.5 * DEG] } },   // a pickaxe blow: heavier, straight down
+  AXE: { kick: 0.5 },                                                                  // the hand carries the chop
+  PICK: { kick: 0.7 },                                                                 // the heavier head's recoil stays in the hand
   FLING: { kick: 0.6 },                                                                // a physgun fling
-  SHOVEL: { kick: 0.25, punch: { pitch: [-0.75 * DEG, -0.25 * DEG] } },               // a dig: half the knife's nod, as it comes every 0.15 s (the crowbar's 1–2° at that rate would shake the view)
+  SHOVEL: { kick: 0.25 },                                                            // the blade carries the scoop
   PLACE: { kick: 0.3 },                                                                // a trowel block set down
   THROW: { kick: 0.4 },                                                                // a bomb thrown
   DRINK: { kick: 0.15, punch: { pitch: [1 * DEG, 1.5 * DEG] } },                     // a gulp from the flask: the head tips back

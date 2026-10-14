@@ -44,8 +44,7 @@ for (const code of variants) {
     let s = surfField(p);
     let band = CH_CUBIC * select(vec4f(0.0), vec4f(1.0), s > vec4f(CUBIC_LO)) * select(vec4f(0.0), vec4f(1.0), s < vec4f(CUBIC_HI));
     if (all(band == vec4f(0.0))) { return s; }
-    var thin = vec4f(0.0);
-    if (gThin) { thin = fieldTex(tFT, p); }
+    let thin = fieldTex(tFT, p);
     let w = band * max(thin, vec4f(cubicClose(p)));
     if (all(w == vec4f(0.0))) { return s; }
     return mix(s, fieldCubic(tFS, p), w);
@@ -98,11 +97,11 @@ for (const cubicChannel of [0, 1]) for (const thinEnabled of [false, true]) {
           () => { reads.thin++; return [mask]; },
           () => { reads.linear++; return [v]; },
           () => { reads.cubic++; return [c]; }, mix);
-        const w = cubicChannel ? Math.max(thinEnabled ? mask : 0, close) : 0;
+        const w = cubicChannel ? Math.max(mask, close) : 0;
         const expected = w > 0 ? mix(v, c, w) : v;
         assert.equal(channel(null, 0), expected);
         assert.deepEqual(reads, {
-          thin: Number(!!cubicChannel && thinEnabled && close !== 1),
+          thin: Number(!!cubicChannel && close !== 1),
           linear: Number(w !== 1), cubic: Number(w > 0),
         });
         // A backend may lower mix to a + w*(b-a), with cancellation at w=1.

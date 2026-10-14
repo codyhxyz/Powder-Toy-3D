@@ -26,8 +26,9 @@ import { E, K } from '../../elements.js';
 //
 // The sync is incremental (a Minecraft chunk's remesh, not the world's): a
 // region that moves only reads the cells entering it and empties the ones
-// that left every region; a new readback re-reads each covered cell once
-// (overlapping regions aren't walked twice); a vehicle's ray ground is rebuilt
+// that left every region; a new readback re-reads only regions with changed
+// material bricks (once per covered cell, even where those regions overlap).
+// A vehicle's ray ground is rebuilt
 // only when its window moved or a column top under it changed. The result is
 // the same collider a full rebuild makes (tools/vehicles-terrain-check.mjs).
 
@@ -113,7 +114,8 @@ export function createPhysics(R, cells) {
     const rC = r / CELL_M;
     const x0 = Math.floor(cx) - GROUND_HALF, z0 = Math.floor(cz) - GROUND_HALF;
     const yS = Math.floor(cy + GROUND_UP), yE = Math.floor(cy - GROUND_DOWN);
-    if (!fresh && g && g.x0 === x0 && g.z0 === z0 && g.yS === yS && g.yE === yE && g.r === r && g.liquid === liquid) return g;   // the same window over the same cells
+    const changed = fresh && localChange({ x0, x1: x0 + n, y0: yE, y1: yS, z0, z1: z0 + n });
+    if (!changed && g && g.x0 === x0 && g.z0 === z0 && g.yS === yS && g.yE === yE && g.r === r && g.liquid === liquid) return g;   // the same window over the same cells
     for (let i = 0; i <= n; i++) for (let k = 0; k <= n; k++) {
       let t = yE - NOWHERE;
       for (let y = yS; y >= Math.max(yE, -1); y--) if (stops(x0 + i, y, z0 + k) || (liquid && floats(x0 + i, y, z0 + k))) { t = y + 1; break; }
@@ -242,6 +244,9 @@ export function createPhysics(R, cells) {
   // that differ; cells of regions left behind are emptied. Runs after a
   // readback (or `force`), or once a vehicle has moved REGION_RESYNC from its
   // region's centre (then every region is re-centred). Returns whether it ran.
+  // Old/test world models without locality metadata conservatively reread all.
+  let forced = false;
+  const localChange = (box) => forced || !cells.hasIdChanges || cells.hasIdChanges(box, seenVersion);
   function syncTerrain(centers, force = false) {
     if (!cells.ready) return false;
     const d = cells.dims;
@@ -256,8 +261,9 @@ export function createPhysics(R, cells) {
       moved = Math.hypot(c.x - b.cx, c.y - b.cy, c.z - b.cz) > REGION_RESYNC;
     }
     if (!fresh && !moved) return false;
-    seenVersion = version;
+    forced = force;
     const next = centers.map((c) => clampBox(c.x, c.y, c.z));
+    const dirty = fresh ? next.filter(localChange) : [];
     toggled = 0;
     // the regions that changed: cover the new ones before uncovering the old,
     // so a cell in both never empties and refills
@@ -266,10 +272,10 @@ export function createPhysics(R, cells) {
       const j = gone.findIndex((o) => sameCells(o, b));
       if (j >= 0) gone.splice(j, 1); else added.push(b);
     }
-    for (const b of added) coverBox(b, !fresh);   // after a readback, reread() reads them below
+    for (const b of added) coverBox(b, !dirty.includes(b));   // dirty regions are read below; other new cells still need filling
     for (const b of gone) uncoverBox(b);
     boxes = next;
-    if (fresh) reread(next);
+    reread(dirty);
     flush();
     // the rays' grounds
     const keep = new Set();
@@ -279,6 +285,7 @@ export function createPhysics(R, cells) {
       grounds.set(c.key, buildGround(c, grounds.get(c.key), fresh));
     }
     for (const [key, g] of grounds) if (!keep.has(key)) { world.removeCollider(g.collider, false); grounds.delete(key); }
+    seenVersion = version;
     return true;
   }
 

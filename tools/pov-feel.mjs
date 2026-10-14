@@ -158,13 +158,13 @@ try {
   const tNear = await ev(async () => {
     const a = window.__app; a.pov.feel.reset();
     const pt = a.pov.ctx.eye.clone().add(a.pov.ctx.dir.clone().multiplyScalar(4));
-    (await import('/src/pov/events.js')).povEvents.emit('impact', { source: 'axe', point: pt, normal: pt.clone().set(-1, 0, 0), id: 1, energy: 40, broke: false });
+    (await import('/src/pov/events.js')).povEvents.emit('impact', { source: 'gun', point: pt, normal: pt.clone().set(-1, 0, 0), id: 1, energy: 40, broke: false });
     return a.pov.feel.trauma;
   });
   const tFar = await ev(async () => {
     const a = window.__app; a.pov.feel.reset();
     const pt = a.pov.ctx.eye.clone().add(a.pov.ctx.dir.clone().multiplyScalar(30));
-    (await import('/src/pov/events.js')).povEvents.emit('impact', { source: 'axe', point: pt, normal: pt.clone().set(-1, 0, 0), id: 1, energy: 40, broke: false });
+    (await import('/src/pov/events.js')).povEvents.emit('impact', { source: 'gun', point: pt, normal: pt.clone().set(-1, 0, 0), id: 1, energy: 40, broke: false });
     return a.pov.feel.trauma;
   });
   check('impact shake falls off with distance', tNear > 0.15 && tFar === 0, `near ${tNear.toFixed(3)}, far ${tFar.toFixed(3)}`);

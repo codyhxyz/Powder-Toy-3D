@@ -1,6 +1,7 @@
 import { pickaxeFrag, PICK } from '../../shaders/povTools.js';
 import { meleeTool } from './melee.js';
 import { gear } from './catalog.js';
+import { HAND_REACH } from '../constants.js';
 
 // Rust's jackhammer: hold for rapid powered mining, not an axe swing. Reuse
 // the pick's outlined lattice mining (52 energy beats ROCK 30, never METAL
@@ -11,7 +12,7 @@ export default meleeTool({
   blow: PICK, frag: pickaxeFrag, hit: { kick: 0.025 }, refire: REFIRE,
   dig: { power: 30, tools: ['pickaxe', 'shovel'] },
   buffer: false,            // release stops mining, including a tap during cooldown
-  reach: 5,                // cells (1.5 m): close enough to press the bit into the face
+  reach: HAND_REACH,        // Minecraft's mining reach: includes the ground below the eye and the next bite
   body: { damage: 0.06, energy: 12, cause: 'Jackhammered' },
   pose: {
     pos: [1, -0.15, -3.2], rest: 0, hit: 0, miss: 0, roll: 0,

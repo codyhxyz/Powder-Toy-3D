@@ -3,6 +3,8 @@
 Approved direction: physical grains, direct construction, spills and gravity,
 progression, and the same machines in Sandbox. No E machine interactions or
 inventory-recipe dialogs. Existing Sandbox and its electricity stay intact.
+The approved UI revision restricts the build interface to Factory.
+Existing Sandbox machines, saves, and physics remain supported.
 
 ## Ownership
 
@@ -49,7 +51,7 @@ Always 128³. No new global material rules unless the parent approves.
 
 `createIndustry(app)` returns
 `{update(dt, stepping), reset(), dispose(), toJSON(), fromJSON(data),
-  place(spec), remove(id), get state(), get building()}`.
+  place(spec), remove(id), toggle(open?), get state(), get building()}`.
 `state` includes devices, progression snapshot (null in Sandbox), active and
 selected type; expose this via `__app.industry` for tests.
 `place` and `remove` validate bounds, mode, affordability, occupancy,
@@ -80,11 +82,14 @@ All serializable external data is validated before mutation.
 
 ## Experience
 
-Default build controls: B opens construction in Factory; Shift+B opens it in
-Sandbox (plain B retains brush shape). While building, B or Escape closes,
-click places, R rotates, right click dismantles. Spark drive is Sandbox-only;
-Factory uses built-in drives. Native buttons mirror
-keyboard actions. Drag belts only if safe; prevent duplicate placements.
+The Factory-only Build button opens construction beside the camera controls.
+An illustrated tile selects the machine. Rotate turns its preview.
+Dismantle switches to left-click removal. Selecting a tile returns to placement.
+Done or Escape closes construction. Right-drag remains a camera control.
+There are no B, Shift+B, or R construction shortcuts.
+Spark-powered Sandbox machines remain supported. Factory uses built-in drives.
+Selection uses a highlight, not redundant labels. Prices, unlock requirements,
+and genuine errors remain visible. Prevent duplicate placements.
 Support both orbit/god view and first person. No duplicate E handler.
 The placement ghost clearly shows inlet/output/direction and invalid placement.
 Use existing typography/panels. Machines have distinct unlit/baked silhouettes
@@ -111,3 +116,5 @@ Preserve pause, mode switch, map reset, save/load, and Sandbox behavior.
 Parent runs a full playable path, shader checks, build, fresh reviews, then
 fetches/merges current origin/main and pushes HEAD:main; watches GitHub deploy
 and checks the live site. Do not touch the user's dirty original checkout.
+For the approved sidebar revision, the user explicitly waived GPU testing.
+Use CPU checks, a production build, and HTTP deployment checks for this revision.

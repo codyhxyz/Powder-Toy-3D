@@ -1193,23 +1193,23 @@ export const TOOLS = [
   { id: -4, key: 'BLAST', abbr: 'PRES', name: 'Pressure', color: '#b994ff', desc: 'Pressure. Adds air pressure that pushes things outward.' },
   { id: -5, key: 'SIGN', abbr: 'SIGN', name: 'Sign', color: '#efe7d2',
     desc: 'Sign. Displays text. Click a surface to pin one. {t}, {p} and {e} show live temperature, pressure and element.' },
-  // Spawners are handled by the app too (src/spawners.js): markers, not cells.
-  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a', spawner: true,
-    desc: 'Axeman spawner. Click a surface: in first person (V) an axeman with every tool appears here. Tries to kill you. Comes back after it dies. Click it again to remove it.' },
-  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a', spawner: true,
-    desc: 'Gunner spawner. Click a surface: in first person (V) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
-  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a', spawner: true,
-    desc: 'Worm spawner. Click a surface: in first person (V) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. Wall and metal stop it. Click it again to remove it.' },
-  { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm spawner', color: '#7a3550', spawner: true,
-    desc: 'Giant worm spawner. Click a surface: in first person (V) a giant worm burrows in here, Noita\'s Jättimato: twenty metres long, seven times as tough as the worm, and faster. Click it again to remove it.' },
+  // Entity placements are handled by the app (src/spawners.js), not cells.
+  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman', color: '#e0453a', spawner: true,
+    desc: 'Axeman: click a surface to spawn an axeman. Each click adds a new entity, with no pad or respawn.' },
+  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner', color: '#e08a2a', spawner: true,
+    desc: 'Gunner: click a surface to spawn a jetpack gunner. Each click adds a new entity, with no pad or respawn.' },
+  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm', color: '#b0607a', spawner: true,
+    desc: 'Worm: click a surface to spawn a burrowing worm. Each click adds a new entity, with no pad or respawn.' },
+  { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm', color: '#7a3550', spawner: true,
+    desc: 'Giant worm: click a surface to spawn a giant burrowing worm. Each click adds a new entity, with no pad or respawn.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff', spawner: true,
     desc: 'Player spawn. Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
-  { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a', spawner: true,
-    desc: 'Jeep pad. Click open ground: in first person (V) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
-  { id: -22, key: 'BOATPAD', abbr: 'BOAT', name: 'Boat pad', color: '#d69042', spawner: true,
-    desc: 'Boat pad. In a box world, click an open water surface with room for a 3.6 m boat. Press V, swim up and E to board; W/S forward/reverse, A/D steer. Motor needs water; no hop or boost. Returns after destruction. Click again to remove.' },
-  { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0', spawner: true,
-    desc: 'Hoverbike pad. Click open ground: in first person (V) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
+  { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep', color: '#8fa04a', spawner: true,
+    desc: 'Jeep: click a surface to spawn a jeep; press V then E nearby to drive. Each click adds a new entity, with no pad or respawn.' },
+  { id: -22, key: 'BOATPAD', abbr: 'BOAT', name: 'Boat', color: '#d69042', spawner: true,
+    desc: 'Boat: click a surface to spawn a boat; press V then E nearby to drive; the motor needs water. Each click adds a new entity, with no pad or respawn.' },
+  { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike', color: '#5fd0e0', spawner: true,
+    desc: 'Hoverbike: click a surface to spawn a hoverbike; press V then E nearby to ride. Each click adds a new entity, with no pad or respawn.' },
   // TPT's SPRK brush: sparks the conductors inside it (src/electricity.js
   // sparkCell). -8 is left for the Lightning tool (branch el-mat).
   { id: -9, key: 'SPARK', abbr: 'SPRK', name: 'Spark', color: '#ffff80',
@@ -1245,7 +1245,7 @@ export const TOOLS = [
     desc: 'Cool air. Decreases air temperature inside the brush, not the matter in it. Cold air sinks.' },
   // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
   { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff', spawner: true,
-    desc: 'Bird flock. Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
+    desc: 'Bird flock: click a surface to spawn one flock of magical birds. Each click adds a new entity, with no pad or respawn.' },
   // TPT's Property tool (src/gui/game/tool/PropertyTool.cpp, its colour): sets
   // one property of the matter under the brush (src/editing.js PROP_FIELDS).
   { id: -60, key: 'PROP', abbr: 'PROP', name: 'Property', color: '#fea900',

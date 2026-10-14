@@ -108,10 +108,10 @@ try {
   await page.keyboard.press('b');
   assert.equal(await page.evaluate(() => window.__app.industry.building), false, 'Sandbox B retains brush shortcut');
   await page.keyboard.press('Shift+b');
-  assert.equal(await page.evaluate(() => window.__app.industry.building), true);
-  await page.keyboard.press('r');
-  assert.equal(await page.evaluate(() => window.__app.industry.state.rotation), 1);
-  console.log('ok: Sandbox machines/electricity are free; Clear/Undo and native construction keys work');
+  assert.equal(await page.evaluate(() => window.__app.industry.building), false);
+  assert(await page.locator('.industry-build').isHidden());
+  assert(await page.locator('.industry').isHidden());
+  console.log('ok: Sandbox saved machines/electricity and Clear/Undo work; Factory-only build UI stays hidden');
 
   await page.evaluate(() => {
     const a = window.__app;
@@ -135,8 +135,10 @@ try {
     await a.pov.enter({ at: new a.THREE.Vector3(48, 8, 84), swoop: 0, hint: false });
   });
   await page.waitForFunction(() => window.__app.pov.mode === 'on');
-  await page.keyboard.press('b');
+  await page.locator('.industry-build').click();
   await page.waitForFunction(() => window.__app.industry.building);
+  await page.locator('.industry [data-action="rotate"]').click();
+  assert.equal(await page.evaluate(() => window.__app.industry.state.rotation), 1);
   const bodyGuard = await page.evaluate(async () => {
     const a = window.__app, p = a.pov.player.pos;
     const result = await a.industry.place({ type: 'belt', x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) });

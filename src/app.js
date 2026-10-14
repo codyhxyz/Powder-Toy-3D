@@ -26,6 +26,7 @@ import { createGpu } from './gpu/device.js';
 import { createPresenter } from './gpu/present.js';
 import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/three.js';
 import { Simulation, GI_BLEND } from './sim.js';
+import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
 import { createVolume } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
@@ -34,7 +35,7 @@ import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
-import { SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
+import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
@@ -64,6 +65,7 @@ import { createPresentation } from './gfx/presentation.js';
 import { inverseRay, rayPoint, planeRoots, warp } from './gfx/presentationMath.js';
 import { povEvents } from './pov/events.js';
 import { createPacer, settleFrames, createViewKey, createFrameLoop, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
+import { createViewSettings, bindViewInputWake, brushKey } from './gfx/viewInputs.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { createProfiler } from './gfx/profiler.js';
@@ -106,12 +108,7 @@ const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE, [-22]: SPAWNER.BOAT,
   [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM, [-33]: SPAWNER.BIRDS };   // the Spawners tools' kinds
-const SPAWNER_SET = {
-  [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
-  [SPAWNER.BOAT]: 'Boat pad set: press V, swim up and press E; motor needs water',
-  [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
-  [SPAWNER.BIRDS]: 'Bird flock set: they live here now',
-};
+const SPAWNER_SET = { [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here' };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
 
@@ -820,6 +817,7 @@ let arenaLayout = null;
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
 let pointerInside = false;
+let pointerPickDirty = false;   // a new pointer ray needs a pick even if the scene stayed cached
 let pointerClient = [0, 0];
 const raycaster = new THREE.Raycaster();
 const hover = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0 };
@@ -877,6 +875,7 @@ function screenPlane(ray, height, out) {
 function requestPick() {
   const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
+  pointerPickDirty = false;
   const ray = fromPov ? povRay : gridRay();
   const skipLiquids = fromPov && skipPickLiquids();
   pickPending = true;
@@ -953,16 +952,6 @@ function updateBrush() {
     color: toolById(settings.tool).color,
   });
   builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
-}
-
-// The brush's state as the view key sees it (the brush is ours, not in three's scene).
-function brushKey() {
-  let k = '';
-  for (const m of Object.values(brush.parts)) {
-    if (!m.visible) { k += '-|'; continue; }
-    k += `${m.shape},${m.position.x},${m.position.y},${m.position.z},${m.scale.x},${m.scale.y},${m.scale.z},${m.quaternion.x},${m.quaternion.y},${m.quaternion.z},${m.quaternion.w}|`;
-  }
-  return k;
 }
 
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
@@ -1282,6 +1271,7 @@ function pickHovered() {
 
 const actions = {
   togglePause: () => setPaused(!settings.paused),
+  toggleIndustryBuild: () => ctx.industry?.toggle(),
   undo,
   // (in a world, over where the camera is looking: home is wherever you are)
   resetCamera: () => {
@@ -1344,6 +1334,33 @@ function mapRow() {
   return { type: 'custom', el: h('div.map-row', {}, name, tag, change), sync };
 }
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
+function waveDemoRow() {
+  let busy = false;
+  const note = h('p.row-note');
+  const buttons = [['shore', 'Create shore wave'], ['ocean', 'Create offshore wave']].map(([kind, text]) =>
+    h('button', { type: 'button', text, on: { click: async () => {
+      if (busy) return;
+      busy = true; sync();
+      try {
+        const made = await seedWaveDemo(win, kind);
+        if (made) {
+          setSettingsOpen(false);
+          hud.toast(settings.paused ? 'Wave created. Unpause to let it move.' : 'Wave created. Undo restores the water.');
+          wakeLoop();
+        } else hud.toast('Move into sea water and try again.');
+      } catch (error) {
+        console.error('Wave demo:', error);
+        hud.toast('Could not create the wave.');
+      } finally { busy = false; sync(); }
+    } } }));
+  const sync = () => {
+    const why = mp.isGuest ? 'The host controls the water.'
+      : !win?.loaded || !(win.P.sea > 0) ? 'Requires a world with an ocean.' : '';
+    buttons.forEach(button => { button.disabled = busy || !!why; });
+    note.textContent = busy ? 'Preparing wave…' : why || 'One-shot physical waves, not automatic swells. Changes water volume; supports Undo. Use offshore waves in open sea.';
+  };
+  return { type: 'custom', el: h('div', {}, h('div.seg', { role: 'group', 'aria-label': 'Create a physical wave' }, buttons), note), sync };
+}
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -1352,6 +1369,7 @@ const settingsPanel = createSettings({
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
+      waveDemoRow(),
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
@@ -1511,7 +1529,7 @@ function setBlocks(on) {
 }
 
 function undo() {
-  if (selectedMode === 'factory') { hud.toast('Factory has no terrain undo. Dismantle machines with B, then right-click.'); return; }
+  if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;
   const { note, label } = sim.history?.at(-1) ?? {};
@@ -1640,6 +1658,7 @@ async function eraseClick(e) {
   hud.dismissHint();
 }
 canvasEl.addEventListener('pointermove', (e) => {
+  pointerPickDirty = true;
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   pointerClient = [e.clientX, e.clientY];
   pointerInside = true;
@@ -1661,7 +1680,7 @@ canvasEl.addEventListener('pointerdown', (e) => {
 });
 function press(e) {
   if (selectedMode === 'factory' || ctx.industry?.building) {
-    if (e.button === 0 && !e.altKey && !ctx.industry?.building) hud.toast('B builds machines. V enters the Quarry with mining tools.');
+    if (e.button === 0 && !e.altKey && !ctx.industry?.building) hud.toast('Use Build for machines, or choose 1st to mine.');
     return;
   }
   const wasEditing = !!signs?.editing;
@@ -1710,11 +1729,12 @@ function clickTool() {
     if (!spawners) { hud.toast(notYet('Spawners'), { kind: 'error' }); return false; }
     if (!hover.valid) { hud.toast('Click a surface to set it on', { kind: 'error' }); return false; }
     const kind = SPAWNER_KIND[settings.tool];
-    const r = spawners.toggle(kind, feetOnHit(hover));
+    const r = spawners.place(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
-    else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
-    return r !== 'full';
+    else if (r === 'unsupported') hud.toast('Vehicles and NPCs are not supported in scrolling World maps; use a box map', { kind: 'error' });
+    else hud.toast(r === 'removed' ? 'Player spawn removed' : SPAWNER_SET[kind] ?? `${toolById(settings.tool).name} spawned`);
+    return r !== 'full' && r !== 'unsupported';
   }
   if (isBuild(settings.tool)) {
     if (mp.guard()) return false;
@@ -1951,10 +1971,8 @@ const pacer = createPacer({
 // the view's key: a counter that changes when what the view shows does
 // (gfx/pacing.js); viewKey.still, when what our own passes draw with does
 const viewKey = createViewKey({ still: [volume, floorGrid] });
-// input of any kind may change what the view shows
-for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
-  addEventListener(type, () => { autoRes.wake(); pacer.wake(); }, { capture: true, passive: true });
-}
+const viewSettings = createViewSettings(settings);
+bindViewInputWake(window, () => { autoRes.wake(); wakeLoop(); });
 let lastVersion = -1, renderedLast = false;
 // the browser capping the page at 30 Hz (gfx/pacing.js createCapCheck): say so once
 const capCheck = createCapCheck();
@@ -2346,8 +2364,8 @@ function tick(now, renderOnly = false) {
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-    `${win?.far?.chunksDrawn}|${brushKey()}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
-    settings, gfx, post.settings) : viewSeen;
+    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
+    viewSettings, gfx, post.settings) : viewSeen;
   let runView = present && pacer.view(viewV,
     runDerived || wantFrame() || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
   // three's meshes moved, and nothing else in the key (gfx/meshFrames.js), since the last view frame
@@ -2375,7 +2393,7 @@ function tick(now, renderOnly = false) {
   }
   // Picking is input work, not presentation: a preview must keep it responsive.
   // (Asked for before the frame, so the frame's compute pass marches it.)
-  if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
+  if (!renderOnly && (pointerPickDirty || runView || pov?.active || testMode === 'preview')) requestPick();
   if (runView) {
     prof.phase('view');
     updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)

@@ -149,8 +149,8 @@ fn fieldCubic(t: texture_3d<f32>, p: vec3f) -> vec4f {
 // lone grain), so the cheap one decides.
 const CUBIC_LO: f32 = 0.3;
 const CUBIC_HI: f32 = 0.85;
-// Whether the brick being traced holds thin cubic matter (brickThin): set by
-// the marches on entering each brick, so bulk matter never reads the mask.
+// The march's hint for extra midpoint probes, not a surface-sampling gate:
+// interpolation can reach thin texels outside the current brick.
 var<private> gThin: bool = true;
 // Up close: the view march sets the eye and its pixel's angular size
 // (gfx/surface.js surfView); other passes leave it 0, and read no closer.
@@ -171,8 +171,7 @@ fn cubicShare(p: vec3f, ch: i32) -> f32 {
   let close = cubicClose(p);
   // fieldPeakFrag writes the thin mask in [0, 1]: it cannot raise full close weight.
   if (close == 1.0) { return 1.0; }
-  var t = 0.0;
-  if (gThin) { t = fieldTex(tFT, p)[ch]; }
+  let t = fieldTex(tFT, p)[ch];
   return max(t, close);
 }
 // The surface fields as the tracer sees them: each cubic channel within the
@@ -181,8 +180,7 @@ fn surfSample(p: vec3f) -> vec4f {
   let s = surfField(p);
   let band = CH_CUBIC * select(vec4f(0.0), vec4f(1.0), s > vec4f(CUBIC_LO)) * select(vec4f(0.0), vec4f(1.0), s < vec4f(CUBIC_HI));
   if (all(band == vec4f(0.0))) { return s; }
-  var thin = vec4f(0.0);
-  if (gThin) { thin = fieldTex(tFT, p); }
+  let thin = fieldTex(tFT, p);
   let w = band * max(thin, vec4f(cubicClose(p)));
   if (all(w == vec4f(0.0))) { return s; }
   return mix(s, fieldCubic(tFS, p), w);

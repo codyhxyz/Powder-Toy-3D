@@ -4,12 +4,18 @@ Halo's Big Team Battle in the falling-sand world: a Warthog-style **jeep**, a dr
 rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-simd`, the WASM SIMD build, pinned at
 0.21.0) that drive on the sim's own cells. Code: `src/pov/vehicles/`. Boxes only for now (not World's moving window).
 
+The same palette rule applies to **Axeman**, **Gunner**, **Worm**, **Giant worm** and **Bird flock**:
+one click creates one creature (or flock), not a permanent spawner. Dead placements do not return on load.
+Flocks save only their surviving count. **Player spawn** remains a toggleable spawn marker.
+Scrolling World maps reject vehicles/NPCs with an error; bird flocks remain supported.
+
 ## Playing
 
-- **Get one**: the palette's Entities group has **Jeep pad**, **Hoverbike pad** and **Boat pad** (spawners.js). Click open
-  ground; in first person a vehicle waits there, and a new one comes 8 s after it's destroyed (a wreck on the
-  pad is cleared away). For the boat, click an **open water surface** with at least 3.6 m of room,
-  then press **V**, swim up and **E** to board. Boats placed on land cannot drive. An arena places its own with `spawnLayout` (below).
+- **Get one**: the palette's Entities group has **Jeep**, **Hoverbike** and **Boat** (spawners.js). Like GMod,
+  each click adds one real entity immediately in god view, even next to another: no pad, no toggle and no respawn.
+  Vehicles keep their identity across POV/god switches, move in unpaused god view, and save their current pose/health.
+  Destroyed one-shots are omitted from saves. For the boat, click an **open water surface** with at least 3.6 m of room,
+  then press **V**, swim up and **E** to board. Boats placed on land cannot drive. Arena `spawnLayout` vehicles and legacy saved pads still replenish after 8 s (below).
 - **E** near a vehicle (within 1.8 m of its hull): get in. **E** again: get out, set down beside the driver's
   door (else the other side, behind, in front, on top, wherever the body fits). You keep its momentum.
   **E** at an overturned vehicle rights it (Halo's flip).
@@ -95,14 +101,20 @@ emitter's name for the same).
 updates (so drowning, burning and the body→sim coupling still apply to a seated driver), `update(dt, …)`
 steps the physics, `afterBody(player)` moves the body with the seat (velocity included), and `chase(camera,
 dir)` places the chase camera, pulled in when a wall is behind it. While seated the figure, the hand and the
-toolbelt are hidden; leaving first person gets you out and hides the vehicles (the god view doesn't step
-them), as it resets the NPCs.
+toolbelt are hidden; leaving first person gets you out without resetting or hiding scene entities. God view steps
+vehicles and NPCs only while unpaused; zero-time frames can create/pose them without advancing physics.
 
 ## Checks
 
+- `node tools/entities-node-check.mjs`: CPU registry/vehicle lifecycle: no toggle or marker, limits, unsupported World,
+  active pose/health saves, permanent one-shot death, camera reset preservation, legacy pads and arena respawn.
+- `node tools/entities-npc-node-check.mjs`: CPU NPC creation/death/reset decisions, legacy respawn and no god-view player target.
+- `node tools/entities-check.mjs --url <site>` (or `--port <yours>`): browser smoke for palette names, immediate god-view
+  entities, pause, camera identity, permanent boat death/save-load and arena respawn. No dev-only page imports.
+
 - `node tools/boats-node-check.mjs`: CPU boat flotation/roll-pitch recovery, uneven liquid response, motor, coast, steering and
   reverse, dry/airborne/dead motor gating, shoreline collision, Jeep sinking/drag/heat, palette and pad save roundtrip.
-- `node tools/boats-check.mjs --port <yours>`: UI-mode browser smoke for normal water-surface pad
+- `node tools/boats-check.mjs --port <yours>`: UI-mode browser smoke for normal water-surface entity
   placement, boarding, driving/steering/reverse and exit (GPU budget rules apply).
 
 - `node tools/vehicles-node-check.mjs`: CPU only (Rapier in node, a stand-in for the cells' copy): the jeep

@@ -30,6 +30,7 @@
 import { BODY_MODEL_URL } from './pov/bodyModel.js';
 import { launch } from './launch.js';
 import { mapByKey, isWorld, resolveMode } from './maps.js';
+import { refreshBootFiles } from './bootRecovery.js';
 
 const PRELOAD_LIST = 'app-preload';   // scripts/app-preload-plugin.mjs PRELOAD_LIST
 const IDLE_TIMEOUT_MS = 2000;         // the longest it waits for an idle moment once the page has loaded
@@ -67,6 +68,12 @@ function preload() {
 export function gameFetched() {
   preload();
   return fetched;
+}
+
+// Development has no hashed bundle manifest.
+export async function refreshGameFiles() {
+  const el = document.getElementById(PRELOAD_LIST);
+  await refreshBootFiles(el ? JSON.parse(el.textContent) : null);
 }
 
 const whenIdle = (fn) => (window.requestIdleCallback
