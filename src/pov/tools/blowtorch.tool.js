@@ -3,8 +3,7 @@ import { ELEMENTS } from '../../elements.js';
 import { flamerFrag, flameBox, FLAMER } from '../../shaders/povTools.js';
 import { toolPass } from '../gpu.js';
 import { povEvents } from '../events.js';
-import { attachModel } from '../models.js';
-import { viewmodelRig } from '../viewmodel.js';
+import { heldModel } from './held.js';
 import { bodyExit } from './transfer.js';
 import { toolDt } from './action.js';
 import { gear } from './catalog.js';
@@ -33,12 +32,11 @@ const MUZZLE = [0, 0.15, -0.4];   // cells from the model's centre to the nozzle
 export default {
   ...gear('BLOWTORCH'),
   create(env) {
-    const rig = viewmodelRig(env);
-    const hand = rig.hand(HELD_POS);
+    const held = heldModel(env, { model: 'flamer', pos: HELD_POS });
+    const { hand, mesh } = held;
     const muzzle = new THREE.Object3D();
     muzzle.position.set(...MUZZLE);
     hand.add(muzzle);
-    const mesh = attachModel(hand, 'flamer');
     const flame = mesh.obj.getObjectByName('flame');
     flame.visible = false;
     const baseLen = flame.scale.y;
@@ -74,15 +72,14 @@ export default {
 
     return {
       update(ctx) {
-        hand.visible = true;
-        rig.update(ctx);
+        held.update(ctx);
         setBurning(!!ctx.primary);
         if (burning) {
           burn(ctx);
           flame.scale.y = baseLen * (1 + (Math.random() - 0.5) * 2 * FLICKER);
         }
       },
-      deselect() { hand.visible = false; setBurning(false); },
+      deselect() { held.deselect(); setBurning(false); },
       // the temperature of what the flame is on, while it burns
       readout(ctx) {
         const a = ctx.aim;
@@ -92,7 +89,7 @@ export default {
       },
       get burning() { return burning; },
       get nozzle() { return nozzle; },   // for checks: grid cells
-      dispose() { setBurning(false); pass.dispose(); mesh.dispose(); hand.removeFromParent(); },
+      dispose() { setBurning(false); pass.dispose(); held.dispose(); },
     };
   },
 };

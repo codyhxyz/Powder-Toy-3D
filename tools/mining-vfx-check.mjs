@@ -24,9 +24,11 @@ try {
       assert.equal(vfx.counts().chip, 0, `${source}: no cosmetic chips`);
     }
   }
-  vfx.clear();
-  hit('pickaxe', E.METAL, false);
-  assert.ok(vfx.counts().spark > 0, 'refused strike still sparks');
+  for (const source of ['pickaxe', 'jackhammer']) {
+    vfx.clear();
+    hit(source, E.METAL, false);
+    assert.ok(vfx.counts().spark > 0, `${source}: refused strike still sparks`);
+  }
   vfx.clear();
   hit('gun', E.ROCK);
   assert.ok(vfx.counts().debris > 0 && vfx.counts().chip > 0, 'gun effects unchanged');

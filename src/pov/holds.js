@@ -67,6 +67,7 @@ export const HELD = {
   physgun: { hold: 'physgun', left: UNDER([0, 0.09, -0.32]) },
   toolgun: { hold: 'pistol', scale: 1.1 },
   axe: { hold: 'melee' },
+  jackhammer: { hold: 'shotgun', scale: 1.1, right: FORE([0.42, 0, 0]), left: FORE([-0.42, 0, 0]) },
   pickaxe: { hold: 'melee2', scale: 1.5, left: { at: [0, 0.55, 0], fingers: [0, 0, -1], palm: [1, 0, 0] } },
   // the shovel's handle runs along its length (z), the blade ahead: held down and across, ready to dig
   shovel: {
@@ -94,6 +95,8 @@ export const HELD = {
 // than its gesture plays it faster (melee.js refire).
 export const SHOULDER_DROP = 0.85;       // cells the shoulder sits below the eye (the grip turns about it, at the hold's right)
 export const GESTURES = {
+  // Rust's jackhammer: a small axial piston stroke, never an overhead chop.
+  drill: [[0, 0, 0, 0], [0.025, 0, 0, 0.07], [0.1, 0, 0, 0]],
   // overhead and down: up past the head, then through the aim to arm's length (Garry's Mod's melee2)
   chop: [[0, 0, 0, 0], [0.13, 2.2, 0.9, 0], [0.24, 0.55, -1.8, 0.4], [0.6, 0, 0, 0]],
   // a stab: drawn back, then driven in at the aim, as far as the arm reaches (TF2's knife)
