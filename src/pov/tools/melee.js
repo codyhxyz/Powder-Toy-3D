@@ -121,7 +121,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
       }
 
       // the body (an NPC) in reach and nearer than the struck cell, or null
-      const bodyInReach = (ctx) => rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(reach, ctx.aim?.valid ? ctx.aim.dist : Infinity), povEvents.actor?.id ?? PLAYER);
+      const bodyInReach = (ctx) => ctx.peaceful ? null : rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(reach, ctx.aim?.valid ? ctx.aim.dist : Infinity), povEvents.actor?.id ?? PLAYER);
 
       // { landed, lethal }
       function strike(ctx) {

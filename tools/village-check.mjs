@@ -43,7 +43,8 @@ try {
   const inventoryIds = s => [...s.placed, ...s.pockets, ...s.storage].map(i => i.id).sort();
   const original = inventoryIds(first.state);
   const controls = page.locator('.village-controls');
-  assert.equal(await controls.getByRole('button').count(), 1, 'pockets stay visible; no irrelevant arrange action');
+  assert.equal(await controls.getByRole('button').count(), 2, 'pockets and harmless punch stay visible; no irrelevant arrange action');
+  assert.equal(await page.getByRole('group', { name: 'World tools', exact: true }).getByRole('button').count(), 4, 'hands and terrain tools are discoverable');
   assert.equal(await controls.locator('[data-action="pockets"] .action-key').textContent(), 'I');
   assert.equal(await controls.getByText('H', { exact: true }).count(), 0, 'no separate arrange shortcut');
   await render(page); await page.screenshot({ path: join(out, 'home.png') });
@@ -336,7 +337,7 @@ try {
     a.test.resume();
   });
   await mobile.waitForFunction(() => document.querySelector('.village-location').textContent === 'Tinker Creek');
-  assert.equal(await touchActions.getByRole('button').count(), 1, 'irrelevant interaction hides outside');
+  assert.equal(await touchActions.getByRole('button').count(), 2, 'irrelevant interaction hides outside; punch and pockets remain');
   assert.equal(await touchActions.getByRole('button', { name: 'Pockets' }).isVisible(), true);
   await render(mobile); await mobile.screenshot({ path: join(out, 'touch-outside.png') });
   assert.deepEqual(errors, [], 'desktop and real touch contexts have no page errors');
