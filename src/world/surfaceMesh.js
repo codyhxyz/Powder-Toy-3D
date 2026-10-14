@@ -45,9 +45,8 @@ const RING = 3 << 6;
 // Only loose ground takes it: sand, soil, gravel, snow and the plants on them
 // lie in slopes. Walls, wood, rock and metal keep the cell-wide normal: the
 // blur would round a wall's or a trunk's foot into the ground and every
-// feature under ~3σ into a blob. So does foliage, as in the window
-// (shaders/fields.js groundCover): a crown is lobes, not a hill, while a plant
-// cell resting on soil is ground cover. And on the ground it applies where
+// feature under ~3σ into a blob. So does foliage: a crown is lobes, not a
+// hill, while a plant cell resting on soil is ground cover. And on the ground it applies where
 // the blurred surface runs through the vertex, as over a staircase; the lip
 // of a one-cell layer, an edge or a corner reads well off 0.5 there and keeps
 // its edge.
