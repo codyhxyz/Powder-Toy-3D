@@ -49,4 +49,17 @@ for (const kind of Object.keys(ITEMS)) {
 for (const species of ['human', 'cat', 'rabbit', 'bear']) {
   const model = character({ species }); model.animate(1, 3); assert.ok(model.root.children.length); dispose(model.root);
 }
+for (const persona of ['boy', 'girl']) {
+  const model = character({ persona });
+  assert.equal(model.root.userData.persona, persona);
+  const hand = model.hand;
+  for (const args of [[1, 3], [1.1, 0, true], [1.2, 2, false, true], [1.3, 8, false, false, 1],
+    [1.4, 0, false, false, 0, 0.5], [1.5, 3, false, false, 0, 0, true, true]]) {
+    model.animate(...args);
+    model.root.updateMatrixWorld(true);
+    model.root.traverse(o => assert.ok(o.matrixWorld.elements.every(Number.isFinite)));
+  }
+  assert.equal(model.hand, hand, 'persona keeps a stable tool attachment');
+  model.reset(); dispose(model.root);
+}
 console.log('PASS village placement, collision bounds, ownership, rotation, conservation, save validation, and all procedural models');

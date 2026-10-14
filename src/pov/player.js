@@ -990,7 +990,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const closing = v.dot(ropeDir);
       // across the rope: damped toward still; along it: eased toward the reel speed
       const across = ropeCross.copy(v).addScaledVector(ropeDir, -closing);
-      v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
+      if (!rope.swing) v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
       if (closing < rope.reel) v.addScaledVector(ropeDir, (rope.reel - closing) * ease(ROPE_EASE, dt));
     }
     if (!rope.hard) return;
@@ -1087,7 +1087,11 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get kicker() { return kicker; },   // for checks (kicker.walked: the cells the last kick's ray crossed)
     // Hang on a rope (see ROPE_*): { anchor, length, reel, hard, brace }, kept by reference (the setter
     // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
-    tether(r) { rope = r; },
+    tether(r) {
+      // Keep air steering additive after releasing a sandbox swing (Noita's momentum-preserving leap).
+      if (!r && rope?.swing && !p.onGround) p.leaping = true;
+      rope = r;
+    },
     ropeHand(out = new THREE.Vector3()) { return out.set(p.pos.x, p.pos.y + ropeHandY(), p.pos.z); },
     on: events.on,
   });

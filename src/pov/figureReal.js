@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT, EYE_HEIGHT } from './constants.js';
-import { BODY_MODEL_URL } from './bodyModel.js';
+import { BODY_MODEL_URLS } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import { buildSpartan } from './figureSpartan.js';
 import {
@@ -23,7 +23,7 @@ import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limb
 //
 // createBody({ choice }) returns the stickman's interface (root, bind,
 // compile, update, setVisible, dispose), so the shell swaps them freely.
-// choice() is read every frame: 'stick', 'real', or the Halo-only 'spartan'.
+// choice() is read every frame: 'stick', 'real', 'woman', or the Halo-only 'spartan'.
 //
 // Lighting: his meshes use figure.js's figureMaterial, the world's own lighting
 // (sun and its shadow map, GI probes, glow from hot matter; gfx/meshLight.js),
@@ -33,7 +33,10 @@ import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limb
 // Tints over each glTF material's albedo map (linear). The eyebrows' map is a
 // greyscale hair mask, tinted in the pack's engines by Quaternius's hair shader:
 // a dark brown here.
-const TINT_BY_MATERIAL = { MI_Superhero_Male: [1, 1, 1], MI_Eyes: [1, 1, 1], MI_Hair_1: [0.06, 0.035, 0.02] };
+const TINT_BY_MATERIAL = {
+  MI_Superhero_Male: [1, 1, 1], MI_Superhero_Female: [1, 1, 1], MI_Eyes: [1, 1, 1],
+  MI_Hair_1: [0.06, 0.035, 0.02], MI_Hair_2: [0.06, 0.035, 0.02],
+};
 const MODEL_YAW = Math.PI;               // rad: the glTF faces +z, the body's forward is -z at yaw 0
 
 // Locomotion. Clip speeds come from the file (extras.speed, metres/s of the
@@ -66,11 +69,13 @@ const SIDES = { r: 'right', l: 'left' };
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
-let gltfPromise = null;   // one download for the page
-function loadModel() {
+const gltfPromises = new Map();   // one download per model for the page
+function loadModel(choice) {
   // the file is meshopt-compressed (tools/character-compress.mjs)
-  gltfPromise ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
-  return gltfPromise;
+  if (!gltfPromises.has(choice)) {
+    gltfPromises.set(choice, new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URLS[choice]));
+  }
+  return gltfPromises.get(choice);
 }
 const garbByModel = new WeakMap();   // the hat's geometry, built once per download and shared by every body
 function garbFor(gltf, meshes) {
@@ -386,53 +391,58 @@ export function createRealFigure(gltf) {
   };
 }
 
-// The shell chooses 'spartan' in Halo, otherwise the saved 'real' or 'stick'.
+// The shell chooses 'spartan' in Halo, otherwise the saved body.
 // The stickman stands in while the realistic wizard loads and compiles.
 // The Castle Crashers wizard (figureCrasher.js) only draws NPCs.
 export function createBody({ choice }) {
   const stick = createFigure();
   const spartan = createFigure(buildSpartan);
   const light = [stick, spartan];   // procedural bodies, no model download
-  let real = null, failed = false, loading = false;
+  const figures = new Map(), failed = new Set(), loading = new Set();
+  let disposed = false;
   let bound = null;
   const root = new THREE.Group();
   root.visible = false;
   for (const f of light) { root.add(f.root); f.setVisible(true); }   // the parts show or hide by choice; root is the body's visibility
 
-  const wantsReal = () => choice() === 'real' && !failed;
-  function load() {
-    if (loading || real || failed) return;
-    loading = true;
-    loadModel()
+  const wantsReal = () => Object.hasOwn(BODY_MODEL_URLS, choice()) && !failed.has(choice());
+  function load(key = choice()) {
+    if (disposed || loading.has(key) || figures.has(key) || failed.has(key)) return;
+    loading.add(key);
+    loadModel(key)
       .then(async (gltf) => {
+        if (disposed) return;
         const fig = createRealFigure(gltf);
-        if (bound) fig.bind(...bound);
-        await fig.compile();   // its pipelines built before it joins the scene, so switching doesn't hitch (B5)
-        root.add(fig.root);
-        real = fig;
+        try {
+          if (bound) fig.bind(...bound);
+          await fig.compile();   // pipelines built before it joins the scene, so switching doesn't hitch (B5)
+          if (disposed) { fig.dispose(); return; }
+          root.add(fig.root);
+          figures.set(key, fig);
+        } catch (err) { fig.dispose(); throw err; }
       })
-      .catch((err) => { failed = true; console.error('Realistic body failed to load; using the stickman', err); })
-      .finally(() => { loading = false; });
+      .catch((err) => { failed.add(key); console.error(`${key} body failed to load; using the stickman`, err); })
+      .finally(() => { loading.delete(key); });
   }
-  const active = () => choice() === 'spartan' ? spartan : (wantsReal() ? real ?? stick : stick);
+  const active = () => choice() === 'spartan' ? spartan : (wantsReal() ? figures.get(choice()) ?? stick : stick);
 
   return {
     root,
     bind(volume, g) {
       bound = [volume, g];
       for (const f of light) f.bind(volume, g);
-      real?.bind(volume, g);
+      for (const f of figures.values()) f.bind(volume, g);
       if (wantsReal()) load();
     },
     get material() { return active().material; },
     compile() {
-      return Promise.all([...light.map((f) => f.compile()), real?.compile()]);
+      return Promise.all([...light, ...figures.values()].map((f) => f.compile()));
     },
     update(dt, s) {
       if (wantsReal()) load();
       const fig = active();
       for (const f of light) f.setVisible(fig === f);
-      real?.setVisible(fig === real);
+      for (const f of figures.values()) f.setVisible(fig === f);
       fig.update(dt, s);
     },
     setVisible(v) { root.visible = v; },
@@ -440,15 +450,16 @@ export function createBody({ choice }) {
     anchor(out) { return active().anchor(out); },
     reach(r) { active().reach(r); },
     // which body is showing (tests)
-    get showing() { return active() === spartan ? 'spartan' : active() === real ? 'real' : 'stick'; },
+    get showing() { return active() === spartan ? 'spartan' : active() === stick ? 'stick' : choice(); },
     // where the showing body's jetpack exhaust leaves (vfx.js)
     get nozzles() { return active().nozzles; },
-    get loaded() { return !!real; },
-    get real() { return real; },
+    get loaded() { return figures.has(choice()); },
+    get real() { return figures.get(choice()) ?? null; },
     get model() { return active().model ?? active().root; },
     dispose() {
+      disposed = true;
       for (const f of light) f.dispose();
-      real?.dispose();
+      for (const f of figures.values()) f.dispose();
     },
   };
 }

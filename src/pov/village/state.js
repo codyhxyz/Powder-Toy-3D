@@ -1,26 +1,12 @@
 import { WILLOW_COVE as COVE } from '../../world/scenes/willowCove.js';
+import { ITEMS } from './catalog.js';
+export { ITEMS } from './catalog.js';
+export { RESIDENTS } from './residents.js';
 
 // Animal Crossing's pockets and home storage; Minecraft-style snapped placement.
 // Furniture coordinates are relative to the room, never the streaming window.
 export const HOMES = [COVE.COTTAGE_A, COVE.COTTAGE_B, COVE.COTTAGE_C, COVE.COTTAGE_D];
 export const FLOOR = COVE.LOW, HOME_Z = COVE.COTTAGE_Z, POCKETS = 20;
-export const ITEMS = Object.freeze({
-  bed: { name: 'Patchwork bed', w: 4, d: 6, h: 2.85, color: '#7ba995' },
-  chair: { name: 'Oak chair', w: 2, d: 2, h: 3.4, color: '#cf9c62' },
-  table: { name: 'Round table', w: 4, d: 4, h: 3.05, color: '#d4ac77' },
-  sofa: { name: 'Sage sofa', w: 6, d: 3, h: 3.1, color: '#81a994' },
-  lamp: { name: 'Sunflower lamp', w: 2, d: 2, h: 4.2, color: '#e5bd66' },
-  plant: { name: 'Leafy plant', w: 2, d: 2, h: 3.5, color: '#568c61' },
-  dresser: { name: 'Oak dresser', w: 4, d: 3, h: 3.65, color: '#c99562' },
-});
-export const RESIDENTS = [
-  { name: 'Maple', species: 'bear', home: 1, color: '#c59471', shirt: '#c87362', pitch: 0.85,
-    lines: ['Welcome to Tinker Creek! I am Maple. This little cottage is my cozy corner.', 'A chair, a good book, and a friend stopping by. That is my kind of afternoon!', 'Your house is the first cottage on the lane. Try opening your pockets to make it your own.'] },
-  { name: 'Clover', species: 'rabbit', home: 2, color: '#e8d8b8', shirt: '#8da76b', pitch: 1.3,
-    lines: ['Hi, neighbor! Clover here. Come in! I was just giving my plants a pep talk.', 'I keep my extra furniture in a dresser. More space for hopping around!', 'A room feels different when you turn a chair toward the window. Give it a try!'] },
-  { name: 'Pippin', species: 'cat', home: 3, color: '#d9a66a', shirt: '#679fab', pitch: 1.1,
-    lines: ['Oh, a visitor! I am Pippin. You can always find me pottering around my home.', 'The river sounds lovely today. Maybe I will take a walk later.', 'No two homes need to look alike. Mine needs a comfy place for a nap!'] },
-];
 export const DRESSER = Object.freeze({ id: 'dresser', kind: 'dresser', x: 6, z: 6, rotation: 0 });
 export function initialState() {
   return { version: 1, placed: [
@@ -35,8 +21,7 @@ export function bounds(item) {
   const w = turn ? spec.d : spec.w, d = turn ? spec.w : spec.d;
   return { x: item.x - w / 2, z: item.z - d / 2, w, d };
 }
-// Animal Crossing-style carrying: hold the full-size piece just ahead of the
-// player, snapping only the eventual drop position, not opening a floor editor.
+// Pocket-only placement preview. Placed pieces use grounded grid movement.
 export function carryTarget(item, player, yaw) {
   const b = bounds(item), sx = Math.sin(yaw), cz = Math.cos(yaw);
   const reach = 1.5 + Math.abs(sx) * b.w / 2 + Math.abs(cz) * b.d / 2;
@@ -44,6 +29,72 @@ export function carryTarget(item, player, yaw) {
 }
 export function overlaps(a, b, margin = 0) {
   return a.x < b.x + b.w + margin && a.x + a.w + margin > b.x && a.z < b.z + b.d + margin && a.z + a.d + margin > b.z;
+}
+const footprint = (p, radius) => ({ x: p.x - radius, z: p.z - radius, w: radius * 2, d: radius * 2 });
+const sweep = (a, b) => ({
+  x: Math.min(a.x, b.x), z: Math.min(a.z, b.z),
+  w: Math.max(a.x + a.w, b.x + b.w) - Math.min(a.x, b.x),
+  d: Math.max(a.z + a.d, b.z + b.d) - Math.min(a.z, b.z),
+});
+const inside = b => b.x >= -9 && b.z >= -9 && b.x + b.w <= 9 && b.z + b.d <= 9;
+const ease = value => { const t = Math.max(0, Math.min(1, value)); return t * t * (3 - 2 * t); };
+export function cardinal({ x, z }) {
+  if (!Number.isFinite(x + z) || Math.hypot(x, z) < 0.2) return null;
+  // Animal Crossing's rook movement: X wins exact stick/keyboard ties.
+  return Math.abs(x) >= Math.abs(z) ? { x: Math.sign(x), z: 0 } : { x: 0, z: Math.sign(z) };
+}
+export function playerPathClear(state, from, to, radius = 0.8, ignore = null) {
+  if (!from || !to) return false;
+  const path = sweep(footprint(from, radius), footprint(to, radius));
+  return inside(path) && ![DRESSER, ...state.placed].some(i => i.id !== ignore && overlaps(path, bounds(i), 0.05));
+}
+function sides(item, radius) {
+  const b = bounds(item), gap = radius + 0.12;
+  return [
+    { x: b.x - gap, z: item.z }, { x: b.x + b.w + gap, z: item.z },
+    { x: item.x, z: b.z - gap }, { x: item.x, z: b.z + b.d + gap },
+  ];
+}
+export function gripPosition(state, item, player, radius = 0.8) {
+  return sides(item, radius)
+    .sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z))
+    .find(p => Math.hypot(p.x - player.x, p.z - player.z) <= 3.5 && playerPathClear(state, player, p, radius)) ?? null;
+}
+export function standPosition(state, item, from, entry, radius = 0.8, clear = () => true) {
+  return [entry, ...sides(item, radius)].find(p =>
+    playerPathClear(state, p, p, radius) && playerPathClear(state, from, p, radius, item.id) && clear(p)) ?? null;
+}
+export function gripMove(state, item, player, direction, radius = 0.8) {
+  if (!direction || !((Math.abs(direction.x) === 1 && direction.z === 0)
+    || (direction.x === 0 && Math.abs(direction.z) === 1))) return { error: 'Move one direction at a time.' };
+  const target = { ...item, x: item.x + direction.x, z: item.z + direction.z };
+  const nextPlayer = { x: player.x + direction.x, z: player.z + direction.z };
+  const error = placementError(state, target);
+  if (error) return { error };
+  const path = sweep(bounds(item), bounds(target));
+  if ([DRESSER, ...state.placed].some(i => i.id !== item.id && overlaps(path, bounds(i), 0.25))
+    || !playerPathClear(state, player, nextPlayer, radius, item.id)) return { error: 'No room to push or pull that way.' };
+  return { target, player: nextPlayer };
+}
+export const moveProgress = seconds => ease((seconds - 0.07) / 0.28);
+export function restPose(item, size = 1) {
+  const spec = ITEMS[item?.kind];
+  if (!spec || !(spec.seatHeight || spec.lyingHeight)) return null;
+  const sleeping = !!spec.lyingHeight, yaw = item.rotation * Math.PI / 2;
+  const z = sleeping ? -2.2 : -0.15;
+  return {
+    kind: sleeping ? 'sleep' : 'sit', x: item.x + Math.sin(yaw) * z,
+    z: item.z + Math.cos(yaw) * z,
+    y: sleeping ? spec.lyingHeight + 0.65 * size : spec.seatHeight - 1.25 * size, yaw,
+  };
+}
+export function drawerFrame(seconds, closing = false, from = 1) {
+  if (closing) {
+    const t = ease(seconds / 0.25), extension = from * (1 - t);
+    return { reach: 1 - t, pull: extension, extension, ready: false, done: seconds >= 0.25 };
+  }
+  const reach = ease(seconds / 0.22), pull = ease((seconds - 0.22) / 0.43);
+  return { reach, pull, extension: pull, ready: seconds >= 0.65, done: false };
 }
 export function placementError(state, item, player = null) {
   if (!ITEMS[item.kind] || item.kind === 'dresser' || !Number.isInteger(item.x) || !Number.isInteger(item.z) || !Number.isInteger(item.rotation) || item.rotation < 0 || item.rotation > 3) return 'Choose a valid furniture position.';
@@ -58,14 +109,30 @@ export function placementError(state, item, player = null) {
 export function validState(s) {
   if (!s || s.version !== 1 || !['placed', 'pockets', 'storage'].every(k => Array.isArray(s[k])) || s.pockets.length > POCKETS) return false;
   const all = [...s.placed, ...s.pockets, ...s.storage];
-  if (all.length !== 8 || new Set(all.map(i => i?.id)).size !== all.length) return false;
+  if (all.length < 8 || all.length > 512 || new Set(all.map(i => i?.id)).size !== all.length) return false;
   const originals = new Map([...initialState().placed, ...initialState().pockets, ...initialState().storage].map(i => [i.id, i.kind]));
-  return all.every(i => i && originals.get(i.id) === i.kind) && s.placed.every(i => !placementError(s, i));
+  // Keep every original item when extending a v1 save with catalogue orders.
+  return [...originals].every(([id, kind]) => all.some(i => i?.id === id && i.kind === kind))
+    && all.every(i => i && (originals.get(i.id) === i.kind
+      || (/^order-[1-9]\d{0,5}$/.test(i.id) && Object.hasOwn(ITEMS, i.kind) && i.kind !== 'dresser')))
+    && s.placed.every(i => !placementError(s, i));
 }
 // Atomic actions: a rejected move never removes an item from its original container.
 export function change(state, action, { home = false, dresser = false, player = null } = {}) {
   if (!validState(state)) return { error: 'The furniture save is invalid.' };
   const next = structuredClone(state), { id, type } = action;
+  if (type === 'order') {
+    if (!home) return { error: 'Order furniture from the catalogue in your own home.' };
+    if (!Object.hasOwn(ITEMS, action.kind) || action.kind === 'dresser') return { error: 'Choose a catalogue item.' };
+    if (next.pockets.length >= POCKETS) return { error: 'Your pockets are full. Store or place something first.' };
+    const all = [...next.placed, ...next.pockets, ...next.storage];
+    if (all.length >= 512) return { error: 'Your furniture collection is full.' };
+    const ids = new Set(all.map(i => i.id));
+    let serial = 1;
+    while (ids.has(`order-${serial}`)) serial++;
+    next.pockets.push({ id: `order-${serial}`, kind: action.kind });
+    return { state: next };
+  }
   const source = ['placed', 'pockets', 'storage'].find(k => next[k].some(i => i.id === id));
   if (!source) return { error: 'Choose a furniture item.' };
   const item = next[source].find(i => i.id === id);
