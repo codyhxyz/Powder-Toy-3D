@@ -26,7 +26,9 @@
   playing Universal Animation Library clips retargeted onto his skeleton (`tools/character-pack.mjs`:
   each bone keeps the mannequin's world-space turn off its rest pose). A wizard in a pointed hat skinned
   to his head (garb.js) and boxers dyed the hat's purple when the model is packed. The robe was dropped
-  on 2026-10-11 so the abs show. Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
+  on 2026-10-11 so the abs show. Stickman stands in while it loads.
+  Player bodies and wizard NPCs carry visible jetpacks. Flames and particles leave the animated nozzle mouths,
+  following the torso's pose and body size (`figure.js`, `buildJetpack`).
   The Castle Crashers wizard (figureCrasher.js: the stickman's rig with a huge hooded head, glowing eyes,
   outlines and cel shading) was a choice and the default until 2026-10-10; now it only draws the NPCs and
   the class portraits.

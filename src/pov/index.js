@@ -846,7 +846,7 @@ export function createPov(app) {
     held.bind(volumeLight(vol), g);
     held.frame({ figure, yaw: povCam.look.yaw, pitch: povCam.look.pitch, scale: scale * player.size, feet: vFeet, worldToGrid, camera, viewmodel });
     village.update(dt, figureShown, povCam.look.yaw);
-    if (player.jetting && mode === 'on' && !village.enabled) vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
+    if (player.jetting && mode === 'on' && !village.enabled) vfx?.jet(figure.nozzles, dt);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
     if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
     for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
