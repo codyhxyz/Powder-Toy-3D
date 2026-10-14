@@ -1,152 +1,142 @@
-# City Folk independent acceptance
+# City Folk composed-world acceptance evidence
 
-## Executable delivery and current evidence
+## Scope and provenance
 
-Run from the integration checkout with its installed dependencies:
+Integration started at `bd15dca37a9b843801506a216809e80e7f61d408`, branch
+`city-folk-world`, after a successful fetch: 7 ahead / 0 behind origin/main.
+The completion contract is `docs/city-folk-world-contract.md` (unchanged).
+Original lane commits verified and cherry-picked:
 
-```sh
-node --check tools/check-city-folk.mjs
-node --check tools/check-city-folk-bus-acceptance.mjs
-node --test tools/check-city-folk.mjs
-```
+- Terrain: `e2569cb422fa24f6e628e40240f7776e2a280f24` → `80de37d`
+- Town: `0b2f2c6772067238f3ab3c6dbbdfc05e84ffd3f8` → `47c0e46`
+- Nature: `22dab51f2d400f6744cf94724c1028dc7fd72ab8` → `1a98c79`
+- City/bus: `8e930e2adb0f196a40dc71290a1d06774b4f649e` → `bf23938`
+- Independent acceptance: `3a1d74c3725963e1e9855b975a7a740baa13c8b6` → `e2768a8`
 
-This is an independent CPU acceptance suite, not a plan or a world implementation.
-It imports the production `willowCoveTwin` and inspects **composed cells**, including
-body envelopes, supports, water volumes, doors and authored nature materials.
-Missing modules, metadata, protected-path functions or scenery FAIL; nothing is
-conditionally skipped. Bus checks use the real controller, real focus loop,
-real arrival-clearance routine, composed generator, and `BrickStore` codec with
-edited live-cell reads. No browser, dev server, GPU, new dependency or bypass.
+The independent acceptance lane originally reported 5 passing / 8 failing
+baseline groups. Those initial reds were NOT accepted as completion. The final
+composed suite passes **13/13 groups, zero failures/skips**, about **4.41 seconds
+CPU wall time**. This includes **134,217,728 exact legacy cell comparisons**
+against immutable pre-feature commit `1b43dcc4ae126a92834f12a16637d945d9719fb0`.
+CI checkout fetches full history to make that comparison reproducible.
 
-Baseline lane evidence (integration base `1b43dcc4ae126a92834f12a16637d945d9719fb0`):
+No browser, dev server, GPU process, player-detection bypass, push or deployment
+was performed by the integration writer. GPU occupancy: **0 seconds**.
+Independent review and release remain required; CPU success is not deployment.
 
-- Both syntax checks passed.
-- Complete suite: **5 passed, 8 failed, 0 skipped** (13 groups), 2.53 seconds CPU wall time.
-- Passing: identity/aliases/modes/rolling-log setting and solo/co-op dimensions;
-  solo save preparation; **all 134,217,728 legacy cells**, independently compared
-  to the immutable pre-feature generator; original cottage/furniture/controller
-  regressions; every cell of the original sprint circuit's body envelope.
-- Red: terrain metadata/source, town, nature, city and transport modules have not
-  been merged/composed in this lane. These are expected integration failures,
-  **not evidence that the completed world is accepted**.
-- Initial attempts exposed missing local dependencies; an ignored, lane-local
-  `node_modules` symlink reuses the installed sprint checkout dependencies.
-  No dependency files were modified. A harness output regex was corrected from
-  `passed` to `pass`; the unchanged village behavior test genuinely passes.
-- A separate read-only CPU composition of the transport lane's actual city source
-  validated the bus acceptance harness: roundtrip, edited landings, cancellation
-  races, mode isolation and finite focus checks all pass. This is component/harness
-  evidence **only**, not final composed-world acceptance. The remote-boarding
-  fixture uses a 64-cell offset; the published town boarding radius is22 cells.
+## Integration changes inspected by the tests
 
-The integrator must rerun the full command and update this evidence after joining
-all lanes. A grouped test stops at its first assertion: later assertions in that
-group are **unverified until the entire group passes**.
+- A single bounded `wcCell` wrapper composes BASE → nature → town → city →
+  town bus stop for expanded worlds only. All module constants/types and shared
+  source feed both the JS twin and WGSL. Bounds precede overlays. No global
+  original-core X guard skips the city at `[0,-352]`. Nature support queries
+  only `cfHeight` / `cfTerrainCell`, never the composed cell recursively.
+- Terrain pads match both actual shops, square, museum/café, cottages, vacant
+  plots and door approaches. Town approach metadata feeds the route mask and
+  connected graph. Upper doors use a high avenue at Z=-94, clear of plot stakes;
+  its additional bridge retains river water beneath the deck. The west plot
+  also retains the channel beneath its pad instead of damming the waterfalls.
+- Broad ramps retain one-cell rises and level treads. West rise joins the gate
+  apron smoothly; east rise begins beyond the café pad. Hall and lower-home
+  approaches go around shells, not through closed back walls. The eastern woods
+  connection uses the open café/museum corridor and the museum's south entrance.
+- The actual longitudinal riverside branch follows Z=36..100, 20 cells west of
+  the meandering channel, connected at both ends. Its nearby water is inspected.
+- Flower/rock/discovery samples moved from protected Z=100 to actual dry Z=120.
+  Tree regions encompass multiple generated roots. Eastern mid-terrace cedars
+  provide real context for the woods branch; beach palms occupy the outer dry
+  beach rather than invalid cove-edge samples. New dirt trails use stable brown
+  sandstone, while the original circuit/core retain their brick surfaces.
+- Shelters leave gate/boarding clearance intact and the city walk to the square
+  clear. Expanded ground scans include tall city roofs above the old 80-cell cap.
+- Acceptance adapters now use published unobstructed cliff samples rather than
+  sampling the new high avenue as a cliff. Assertions were not weakened or
+  skipped. Added assertions inspect dirt trails, the composed adjacent gate
+  post/roof, the west river reach, and emitted town-stop WGSL.
+- Terrain lane tests explicitly inspect BASE pads (buildings occupy them after
+  composition); independent acceptance still inspects actual composed cells.
 
-## Requirement-to-evidence checklist
+## Finished-world checklist
 
-`PASS(base)` establishes a preserved invariant on the assigned base, not final
-integration. `RED/pending` means an executable assertion exists but has no passing
-composed-world evidence yet. IDs match TAP test names.
+All PASS entries below mean **CPU composed-world evidence**, not visual sign-off.
+IDs match the independent suite's TAP names.
 
-| ID | Finished-world requirement | Executable evidence | Current status |
-| --- | --- | --- | --- |
-| F01 | Upper/lower neighborhoods, winding cliffs, broad ramps | Unit-rise six-cell-wide ramp sweeps; composed elevation across multiple non-collinear cliff points; new cottages at floors 48/24 | RED/pending |
-| F02 | Meandering river, fork, small island, connected waterfalls | Every rasterized river/fork column is wet and bed-supported; adjacent wet vertical intervals connect; shared fork junction; dry body-clear island with four-direction wet samples and bounded dry-land flood-fill; tall falls | RED/pending |
-| F03 | Separate small ponds in clearings | At least two wet, bed-supported small pond centers; four body-clear banks per pond; bounded wet-component flood-fill proves isolation from river reaches | RED/pending |
-| F04 | Southern beach, coves and river mouths | Sand-supported body-clear southern beach points; southern wet mouths; coastline scan proves cove indentation relative to shoulders | RED/pending |
-| F05 | Open meadows between landmarks | At least two 24-cell-wide clearing sweeps with support, body clearance and bounded slopes | RED/pending |
-| F06 | Existing 552m straights and 1.14km closed circuit | Exact 552m/3808-cell dimensions; complete loop sweep; both straights at floor24 across the full six-cell envelope | PASS(base) |
-| F07 | Scenic woods/riverside/cliff branches | Published scenic polylines rasterized against composed support/clearance and `cfPath`; connectivity to plaza; nearby wooded/wet/cliff context assertions | RED/pending |
-| F08 | Additional bridges, alternate loops, shortcuts | More composed timber bridges than old three; two closed alternate cycles; shortcut sweeps; one connected route graph | RED/pending |
-| F09 | Dirt paths and worn grass near busy places | Actual stable brown sandstone at published worn-ground site; protected routes remain clear and reserved floors unmodified by nature | RED/pending |
-| F10 | Upper cedar woods, lower hardwood groves | Multiple actual trunks/crowns in declared regions; upper cedars/lower hardwood elevation; differing canopy/trunk volumes | RED/pending |
-| F11 | Native-fruit trees, small orchards, flower patches | Multiple orchard trees with real red apple clusters; authored flower material at declared clearing | RED/pending |
-| F12 | Beach palms, scattered rocks, shells, buried discovery spots | Multiple beach trunks/fronds distinct from hardwoods; authored rock/shell cells; limestone discovery below surface | RED/pending |
-| F13 | Town hall, event square, bulletin board | Above-ground building/board geometry, square pavement, usable approaches, doors and graph reachability | RED/pending |
-| F14 | Distinct Nook-/Able-inspired shopping buildings | Both real above-ground structures; distinct voxel footprint hashes; clear doors linked to plaza | RED/pending |
-| F15 | Museum with café entrance | Both real structures, external entrances, café/museum adjoining doorway and access polylines | RED/pending |
-| F16 | Additional upper/lower cottages | Four additional structures at floors48/24; all entrance body checks and route reachability | RED/pending |
-| F17 | Vacant plots | At least two paved empty body-clear centers, physical survey stakes, entrance access | RED/pending |
-| F18 | Northern gate and bus stop | Gate structure/passage; real bus shelter; clear boarding apron and connection to plaza | RED/pending |
-| F19a | Separate city district, square, distinct commercial façades | City bounds independent of town/sprint; square/arrival body sweeps; three different authored façades | RED/pending |
-| F19b | **Separate city physical access** | Independent city-only route graph from arrival to square and every commercial entrance, not inferred from town graph | RED/pending |
-| F19c | Working city bus and return | Real discoverable boarding/return; focus-held edited arrival scans; roundtrip absolute coordinates; input freeze and duplicate-trip refusal | RED/pending |
+| ID | Requirement | Passing evidence |
+| --- | --- | --- |
+| F01 | Upper/lower neighborhoods, winding cliffs, broad ramps | Unit-rise body-envelope sweeps, level broad treads, physical winding cliff samples, homes at floors 48/24 |
+| F02 | Meander, fork, small island, connected waterfalls | Every east/west reach and fork column wet with bed support; adjacent vertical water intervals connect; fork junction; bounded dry island flood-fill; tall falls |
+| F03 | Separate small ponds in clearings | Two wet supported centers, body-clear banks, bounded isolated wet-component flood-fill |
+| F04 | Southern beach, coves, river mouths | Sand-supported clear beaches, wet mouths, physical shoreline indentation scans |
+| F05 | Open meadows | Multiple 24-cell-wide body-clear clearing sweeps |
+| F06 | Existing 552m straights / 1.14km closed sprint circuit | Exact 552m and 3808-cell/1142.4m dimensions; complete circuit and six-cell-wide straight envelopes remain flat, dry and clear |
+| F07 | Woods/riverside/cliff scenic branches | One connected protected graph; nearby composed tree trunks/cliff elevations/water; riverside Z span >=24 with >=24 actual wet neighboring samples |
+| F08 | Bridges, alternate loops, shortcuts | 15 new timber bridge samples, two closed alternate cycles, connected shortcut sweeps |
+| F09 | Dirt paths and worn grass | Actual sandstone dirt trails and busy-route wear; protected routes and reserved town surfaces preserved |
+| F10 | Upper cedar woods / lower hardwood groves | Multiple actual trunks/crowns in declared regions; upper/lower elevations; distinct voxel volumes |
+| F11 | Native fruit, orchards, flowers | Multiple actual apple trees with red fruit; generated flower material in dry clearing |
+| F12 | Palms, rocks, shells, buried discoveries | Multiple dry beach palms with distinct fronds; real rock/shell cells; buried limestone and surface dig mark |
+| F13 | Town hall, square, bulletin board | Above-ground structures, square pavement, doors and graph reachability |
+| F14 | Distinct supply/tailor shops | Different façade hashes, actual supported structures, connected clear entrances |
+| F15 | Museum and café | External entrances, adjoining café/museum doorway, connected approaches |
+| F16 | Additional upper/lower cottages | Four new structures, all doors clear and connected |
+| F17 | Vacant house plots | Empty supported centers, survey stakes, accessible entrances |
+| F18 | Northern gate and bus stop | Gate passage, real shelter/apron, connected boarding, composed adjacent gate post and roof preserved |
+| F19 | Separate city and return bus | Separate square and three distinct façades; independent city entrance graph; real controller/focus/edited-clearance roundtrip |
 
-| ID | Invariant | Evidence | Current status |
-| --- | --- | --- | --- |
-| I01a | Tinker Creek key, aliases, Animal Crossing and rolling log | Registered map/scene, `tinkerCreek` alias, mode availability and `effect === rollingLog` | PASS(base); rendered effect still manual |
-| I01b | World3072×128×1024, unchanged simulation window | Exact dimensions; production `setGrid` invoked in CPU VM with128³; wrong height rejected | PASS(base) |
-| F06 | Flat dry full-body sprint straights | Every x and full envelope, not selected center samples | PASS(base) |
-| I04 | Original four cottages, doors, furniture and behavior | Exact home/entry/furniture coordinates; door voxel volumes; unchanged real-controller interaction suite executed | PASS(base) |
-| I03 | Exact1024×128×1024 legacy geometry | Exhaustive cell comparison to fixed pre-feature commit, not a regenerated golden or sampled core | PASS(base) |
-| I01/I02 | Solo/co-op load both sizes | Real `prepareSave`; production `setGrid`; saved origins/header unchanged; unsupported sizes rejected | PASS(base) |
-| I05 | Streaming/far field/CPU consistent scenery | Same composed shared functions emitted to WGSL and callable in twin; CPU WGSL parser; independent ground scan on3000 columns×4 seeds and slab/world boundaries | RED/pending; actual GPU parity remains parent-owned |
-| I06 | Bus preserves voxel edits | Real codec stores edited town/city bricks including temperature/velocity bytes; byte-for-byte store identity/content after roundtrip and refused journeys | RED/pending |
-| I05/I06 | Deterministic bounded generation, no per-cell async | Valid integer cells repeated at boundaries across4 seeds; ground scans; focus loop nonconvergence checked at finite maximum | RED/pending |
-| I05 | Existing shared-source machinery/dependencies | Actual composed twin functions and parsed WGSL definitions; no hand-ported overlay or added dependency | RED/pending |
-| I07 | Original artwork/building shapes | Distinct composed structures are executable evidence; asset provenance and visual identity require source/art review, never infer originality from exports | **UNVERIFIED manual review** |
-| I06 | Cancellation and isolation | Cancel during pending edited-cell reads; mode/inactivity/death/epoch/replacement/origin invalidation; remote boarding, legacy-size, non-Tinker and disposed bus rejected | RED/pending |
+## Invariants and regression evidence
 
-## Production seams and integration instructions
+| ID | Invariant | Passing evidence / remaining limit |
+| --- | --- | --- |
+| I01 | Identity, aliases, Animal Crossing, rolling-log presentation | Registered key/alias/modes and rolling-log setting unchanged; rendered effect still parent-owned |
+| I01 | World and simulation dimensions | 3072×128×1024 world; unchanged window; real production `setGrid` exercised in CPU VM |
+| I03 | Exact legacy geometry | Every cell of 1024×128×1024 compared to fixed pre-feature generator; unchanged golden hash also passes |
+| I04 | Original cottages, doors, furniture and behavior | Exact coordinates/door volumes and real village interaction controller regressions |
+| I01/I02 | Solo/co-op loading of both sizes | Real save preparation / setGrid paths; supported dimensions and saved origins retained, unsupported sizes rejected |
+| I05 | Determinism and bounded generation | Four seeds, slab/world edges, valid integer IDs, 3000 independent ground columns per seed; finite focus convergence bound; no per-cell async |
+| I05 | Shared CPU/streaming/far-field scene source | Actual composed callable functions and emitted WGSL parsed with WgslReflect, including town stop; GPU execution/parity remains parent-owned |
+| I06 | Store persistence and player/furniture state | Real BrickStore codec edits including non-ID state bytes survive roundtrip/refused journeys; identity preserved; status/health/furniture fixtures retained; real village E/controller checked by bus lane |
+| I06 | Safe edited arrival and cancellation | Occupied/missing/wet support refused; focus held through reads; cancellation, mode/inactive/death/epoch/world replacement/origin races reject stale teleport |
+| I06 | Other-mode isolation | All non-Animal-Crossing modes, non-Tinker scene, legacy geometry, remote boarding and disposed controller refuse transport |
+| I07 | Original art and identity | Original authored source shapes/materials, distinct composed hashes; independent source/art/visual review still required |
 
-No test-only application hook is required. All coordinates are **island-local
-cells**, not metres; `wcCell` receives `[x + worldX/2, y, z + worldZ/2]`.
+## Commands and outputs
 
-1. Compose terrain, nature, town, city into `willowCove` for expanded worlds only.
-   Preserve the legacy branch exactly. Nature runs before town. Export
-   `CITY_FOLK_TERRAIN` from `willowCove.js`; the suite reads its published metadata.
-   Keep `wcHeight` and expose `cfHeight`, `cfTerrainCell`, `cfPath`,
-   `cfTownReserved`, `cfNatureCell`, `cfTownCell`, `cfCityCell` in the actual twin
-   and emitted source. All real paths, including final town approaches, need
-   `cfPath` protection. Do not replace the twin with a testing fixture.
-2. Terrain adapter accepts current `routes` records (`name`, `points` or
-   `curve/from/to`) and `landmarks` (`meadows`, `ponds`, `island`, `coves`,
-   `mouths`, `waterfalls`, `bridges`). It derives dense curve samples using the
-   actual shared `cfWoodsZ`, `cfCliffZ`, `cfRiverX`, `cfForkX`, `cfHighEdge`.
-   Alternate lower cycles close along the existing sprint straight. The original
-   plaza-to-circuit and original cottage connectors are included explicitly.
-   Town-to-curved-woods centerline offsets are swept as additional short links.
-   Update adapters to final
-   published names if needed; do **not** delete blocked route assertions.
-3. Town metadata uses records `{at, entry, floor, half}`: `townHall`,
-   `eventSquare`, `bulletinBoard`, `nookShop`, `ableShop`, `museum`, `cafe`,
-   `cottages`, `plots`, `gate`, `approaches`, `reservedFootprints`.
-   The boarding record comes from `CITY_FOLK_CITY.landmarks.townStop`.
-   The café's `museumDoor` is a separate required entrance.
-4. Nature metadata currently declares regions `cedarWoods`, `hardwoodGrove`,
-   `nativeOrchard`, `beachPalms` and points `flowerPatch`, `rocks`, `shells`,
-   `discovery`, `wornGround`. Tests find actual lattice trunks in those regions
-   and inspect volumes/materials, never pass merely because a kind is named.
-   Orchard bounds use its published ints. Small scenery has explicit expected
-   existing element IDs, not expectations generated from the composed output.
-5. City metadata: `square`, `emporium`, `tailor`, `theatre`, `townStop`,
-   `cityStop`, `townArrival`, `cityArrival`; arrival arrays are `[x,y,z]`.
-   City walkways are independently swept from arrival to square and all doors.
-   Agreed bounds `x=-160..160,z=-440..-280`, floor48; square `[0,-352]`,
-   arrival `[0,48,-304]`, doors `[-88,-376]`, `[0,-384]`, `[88,-376]`.
-6. Bus exports from `src/pov/village/bus.js`: `createCityBus`,
-   `withCityBusFocus`, `cityBusArrivalClear`, `CITY_BUS_STOPS`. The injected
-   adapter shape is the real transport API (`getWorld/getSim/getMode/getPlayer`,
-   `active`, `withVillageFocus`, `requestRender`, `notify`). The CPU adapter
-   shifts128³ origins in16-cell steps without replacing world/store and reads
-   generator cells plus decoded edits. This checks the real helper contract;
-   parent must also verify the actual village E-action/app wiring, streaming
-   slabs and rendered UI. A passing helper is **not** proof that E is wired.
+- `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci`: passed; 55 packages installed.
+  Existing dependency audit reports **2 moderate vulnerabilities**; no dependency
+  files changed, no unrelated upgrade was attempted.
+- `node --check tools/check-city-folk.mjs` and bus-acceptance syntax check: passed.
+- `node --test tools/check-city-folk.mjs`: **13 passed, 0 failed/skipped**.
+- Four `node tools/check-city-folk-{terrain,town,nature,bus}.mjs`: passed.
+  Terrain: 10180 body-width samples, 9835 connected centerline cells, 14 grounded
+  pads, 15 bridges, 3 falls. Town: 9 buildings, 63756 clear body cells. Nature:
+  6394 face-connected tree voxels. Bus: actual village E wiring and lifecycle.
+- `node tools/check-willow-cove.mjs`: passed; 12,864,080 valid authored legacy
+  cells, 5982 route samples; sprint circuit 4731 envelope samples.
+- All 12 `tools/check-village*.mjs` CPU checks: passed (actions, catalogue,
+  collision, crook, debt badge, interactions, jump, orders, punch, residents,
+  speech, core village).
+- `node tools/check-sprint.mjs`, sprint-blur and sprint-music checks: passed.
+- `node tools/saves-check.mjs`: lossless cells/files/store/registry tests passed.
+- `node --experimental-vm-modules tools/world-coop-cpu-check.mjs`: passed;
+  production codec/transport/avatar/body tests, no GPU.
+- `node tools/check-browser-launch.mjs`: passed; 12 pre-existing legacy launchers.
+- `git diff --check`: passed.
+- `npm run build`: passed. Existing browser-externalization and large-chunk
+  warnings remain; no new dependency or asset was introduced.
 
-## Review and release gates still owned by parent
+The composed and four component CPU checks are registered in the deploy workflow.
 
-- Rerun composed CPU suite; record every TAP failure and fix implementation or
-  metadata composition, not by skips or weaker assertions.
-- Review scenic contextual identity, original art/provenance, distinguishability
-  of landmarks, noticeability of boarding, and actual E/cancel wiring.
-- Confirm scenic shoreline appearance visually. CPU tests include bounded dry-land
-  flood-fill for the river island and wet-component flood-fill for each pond;
-  these are not proofs of rendered shoreline quality.
-- Real GPU twin/streaming/far-field equality, rolling-log appearance and actual
-  edited-slab persistence are not established by the injected CPU simulation.
-- Production build, independent review, GitHub deployment and live-site checks
-  remain **not run** by this lane. GPU/browser launch is explicitly forbidden
-  here; only parent can arrange a compliant slot.
-- Shop economies, fishing, resident AI and collections are outside scope and
-  are not acceptance dependencies.
+## Required parent review / release gates (not claimed complete)
+
+1. Review this composed implementation and test/adaptor changes independently.
+2. Review original artwork, clear landmark identities, scenic shoreline quality,
+   rolling-log appearance and discoverability of bus controls visually.
+3. Verify actual GPU compilation, streaming/far-field/CPU parity, real app focus
+   lifetime, E/Esc cancellation and edited slab persistence. Injected CPU evidence
+   is not a replacement for these checks. Use only parent-approved <=10-second
+   total GPU slots; no bypasses.
+4. Fetch and reconcile any production commits newer than the assigned base,
+   push main, watch successful GitHub deployment and check the live site.
+
+No known unmet implementation bullet remains in the checked CPU scope. Shop
+ economies, fishing, new AI and museum collections remain deliberately out of scope.

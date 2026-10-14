@@ -55,8 +55,8 @@ function terrain() {
     ...M.cottages.map(([x, z]) => ({ name: `original-door-${x}`, points: [[x, C.LANE_Z], [x, z - C.HOUSE_HALF]] })), ...rs], ramps: rs.filter(r => r.name.startsWith('ramp-')),
     loops: rs.filter(r => r.name.startsWith('lower-loop-')).map(r => [...r.points, r.points[0]]),
     shortcuts: rs.filter(r => r.name.includes('shortcut')), meadows: l.meadows, bridges: [...M.bridges, ...l.bridges],
-    cliffs: [-840, -600, 840].map(x => ({ upper: [x, twin.cfHighEdge(x) - 2], lower: [x, twin.cfHighEdge(x) + 2] })),
-    water: { river, fork, ponds, island, waterfalls: l.waterfalls, mouths: l.mouths, coves: l.coves, beaches: [[-900, 152], [900, 152]] } };
+    cliffs: need(l.cliffs, 'terrain.landmarks.cliffs').map(x => ({ upper: [x, twin.cfHighEdge(x) - 2], lower: [x, twin.cfHighEdge(x) + 2] })),
+    water: { river, fork, otherRivers: [river.map(([x, z]) => [-x, z])], ponds, island, waterfalls: l.waterfalls, mouths: l.mouths, coves: l.coves, beaches: [[-900, 152], [900, 152]] } };
 }
 function townMetadata(raw, urban) {
   const l = need(raw.landmarks, 'town.landmarks'), b = need(urban.landmarks.townStop, 'city townStop');
@@ -280,7 +280,7 @@ test('F02/F03/F04 connected meander/fork/falls, river island, separate ponds, be
     for (let y = C.FLOOR; y < 64; y++) if (cell(x, y, z) === E.WATER) ys.push(y);
     assert(ys.length, `${label}: no composed water at ${key(p)}`); if (bed) assert(dry(cell(x, ys[0] - 1, z)), `${label}: solid bed`); return ys;
   };
-  const reaches = [raster(river), raster(fork)];
+  const reaches = [raster(river), raster(fork), ...need(w.otherRivers, 'water.otherRivers').map(raster)];
   for (const [i, reach] of reaches.entries()) {
     let prev;
     for (const p of reach) {
@@ -361,6 +361,9 @@ test('F13-F18 all town identities, entrances, new homes and plots compose and co
   doors.forEach(p => assert(reachable.has(key(p)), `entrance disconnected from plaza: ${key(p)}`));
   for (const name of ['eventSquare', 'busStop']) assert(reachable.has(key(at(l[name].entry ?? l[name]))), `${name} disconnected`);
   entrance({ entry: l.cafe.museumDoor, floor: l.cafe.floor }, 'cafe/museum adjoining doorway');
+  // The bus overlay intersects the gate's east post, not its ownership.
+  for (let y = 48; y < 66; y++) assert.equal(cell(-248, y, -124), E.LIMESTONE, 'adjacent gate post survives bus composition');
+  for (let y = 66; y < 70; y++) assert.equal(cell(-248, y, -124), E.BRICK, 'adjacent gate roof survives bus composition');
 });
 
 test('F09-F12 distinct composed nature, worn ground, buried discoveries and exclusion zones', async () => {
@@ -392,6 +395,11 @@ test('F09-F12 distinct composed nature, worn ground, buried discoveries and excl
     const r = need(l[name], `nature.${name}`), [x, z] = at(r), h = twin.wcHeight(x, z);
     assert.equal(cell(x, h + offset, z), material, `${name}: actual authored landmark missing from composition`);
     if (name === 'discovery') assert(offset < 0, 'discovery is buried');
+  }
+  for (const p of need(willow.CITY_FOLK_TERRAIN.landmarks.dirtPaths, 'terrain.dirtPaths')) {
+    const [x, z] = at(p), h = body(p, 'actual dirt trail');
+    assert(twin.cfPath(x, z), 'dirt trail protected');
+    assert.equal(cell(x, h - 1, z), E.SANDSTONE, 'stable brown dirt trail, not a renamed brick path');
   }
   const t = terrain(), tl = townMetadata(await town(), await city());
   const routes = [M.runningLoop, ...polylines(t.routes, 'routes'), ...polylines(t.ramps, 'ramps'), ...polylines(t.loops, 'loops'), ...polylines(t.shortcuts, 'shortcuts'), ...polylines(tl.walkways, 'walkways')];
@@ -434,7 +442,7 @@ test('I05 deterministic bounded generation, CPU ground and shared streaming/far-
     }
   }
   const wgsl = scene.glsl();
-  for (const fn of ['wcCell', 'cfPath', 'cfTerrainCell', 'cfNatureCell', 'cfTownCell', 'cfCityCell']) {
+  for (const fn of ['wcCell', 'cfPath', 'cfTerrainCell', 'cfNatureCell', 'cfTownCell', 'cfCityCell', 'cfCityBusStopCell']) {
     assert.equal(typeof need(twin[fn], `composed twin.${fn}`), 'function'); assert.match(wgsl, new RegExp(`fn ${fn}\\(`));
   }
   const reflected = new WgslReflect(wgsl);
