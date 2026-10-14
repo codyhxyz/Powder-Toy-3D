@@ -156,6 +156,21 @@ await test('dismantling is explicit left-click mode; right-drag reaches camera a
   industry.dispose();
 });
 
+await test('driving suspends construction input/ghost without losing build selection',async()=>{
+  const {app,industry}=fixture('factory'); await settle();
+  industry.toggle(); assert(industry.building);
+  app.pov.vehicles={seated:{kind:'boat'}};
+  assert(!industry.building); assert(!industry.state.building);
+  assert(!key('KeyB',true).prevented, 'driving does not intercept build shortcuts');
+  const event={target:app.canvas,button:0,type:'pointerdown',preventDefault(){this.prevented=true;},stopImmediatePropagation(){}};
+  listeners.get('pointerdown')(event); assert(!event.prevented);
+  industry.update(0,false); assert(!industry.state.building);
+  app.pov.vehicles.seated=null;
+  assert(industry.building, 'exit restores previous build state');
+  industry.update(0,false); assert(industry.state.building);
+  industry.dispose();
+});
+
 await test('body blocks ghost and placement only in POV; foundation clearance and static geometry',async()=>{
   const f=fixture('factory'),{app,industry}=f;await settle();
   industry.toggle();app.hover={valid:true,cell:{x:8,y:7,z:8},face:2,id:E.ROCK};

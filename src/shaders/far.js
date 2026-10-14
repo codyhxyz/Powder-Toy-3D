@@ -591,7 +591,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var A = sceneCell(vec3i(col.x, c.y, col.y)).A;${live ? `
   let local = vec3i(col.x, c.y, col.y) - H.origin;
   if (inGrid(local)) { A = fetchA(local); }` : ''}
-  cells[i] = pack2x16float(A.xy);
+  // A.w is ctype + seed (A.z is life). Bit 0 of integer half-float ids
+  // 0..255 is free: truncation/rounding still returns the id, temperature
+  // keeps all its bits. Only the detail worker consumes the foliage tag.
+  let id = eid(A);
+  cells[i] = pack2x16float(A.xy) | select(0u, 1u, id == E_PLANT && floor(A.w) == f32(E_PLANT));
 }
 `;
 // The summary's group 2: the grid (written), the scene cells, the window
@@ -1477,10 +1481,13 @@ struct MeshVarying {
   surfView(ro, displayRd);   // pixel footprint for material LOD (uniform control flow)
   let winLo = vec3f(P.winLo);
   if (all(p.xz >= winLo.xz) && all(p.xz < winLo.xz + vec2f(GRID.xz))) { discard; }
-  let n = normalize(v.normal);
+  var n = normalize(v.normal);
+  // Only leaf buffers carry bit 8: face their two-sided blades toward the
+  // arriving ray without changing ground (including untagged PLANT) normals.
+  if ((v.element & 256u) != 0u && dot(n, rd) > 0.0) { n = -n; }
   // the coarse crown's density is not this leaf's shadow: sampling it here
   // would turn detailed branches black inside the old, inflated silhouette
-  let col = farShadeMaterial(p, n, rd, farSunLit(p, 0), i32(v.element));
+  let col = farShadeMaterial(p, n, rd, farSunLit(p, 0), i32(v.element & 255u));
   return vec4f(farHaze(col, displayRd, displayDist, farAirLit(ro - winLo, p - winLo)), 1.0);
 }`;
 

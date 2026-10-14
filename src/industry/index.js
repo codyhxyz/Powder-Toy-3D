@@ -33,8 +33,12 @@ export function createIndustry(app) {
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode;
   // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
   const active = () => !app.win && ['sandbox','factory'].includes(app.gamemode);
+  // Keep machines running and preserve the build selection, but driving has no
+  // construction input or placement ghost. Exit restores the previous console.
+  const driving = () => !!app.pov?.vehicles?.seated;
   const factory = () => app.gamemode === 'factory' && app.settings.preset === 'quarry';
-  const syncToolbar = () => app.toolbar.setIndustry?.(active() && factory(), building);
+  const isBuilding = () => building && active() && factory() && !driving();
+  const syncToolbar = () => app.toolbar.setIndustry?.(active() && factory(), isBuilding());
   const construction = createConstruction(app);
   const physics = createIndustryPhysics({ getSim: () => app.sim,
     onShip: shipment => {
@@ -55,10 +59,10 @@ export function createIndustry(app) {
     : pending ? fail('Construction is finishing') : devices.length >= INDUSTRY_LIMIT ? fail('128 machines is the limit')
     : factory() ? progression?.canBuild(type) ?? fail('The Quarry is still loading') : { ok: true };
   const state = () => ({ devices: devices.map(d => ({...d})), progression: factory() ? progression?.snapshot() ?? null : null,
-    active: active(), factory: factory(), selected, building: building && active() && factory(), dismantling, rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
+    active: active(), factory: factory(), selected, building: isBuilding(), dismantling, rotation, filter, powered, assisted, factoryRun, pending: pending || !!physics.pending });
   const report = result => { if (!result.ok) app.hud.toast(result.reason); app.requestRender(); return result; };
   const toggle = value => {
-    if (!active() || !factory()) return;
+    if (!active() || !factory() || driving()) return;
     building = value ?? !building; app.painting = false;
     if (!building) dismantling = false;
     if (building) { app.leaveBuild(); app.dock.setCollapsed(true); }
@@ -120,19 +124,19 @@ export function createIndustry(app) {
   const placeAimed = () => { if (candidate) return place(candidate).then(report); report(fail('Aim at a clear surface first')); };
   const removeAimed = () => remove(target()?.id).then(report);
   const view = createIndustryView(app, { toggle: () => toggle(), cancel: () => toggle(false), rotate, place: placeAimed,
-    remove: () => { if (building && factory()) { dismantling = !dismantling; probeKey = ''; app.requestRender(); } },
+    remove: () => { if (isBuilding()) { dismantling = !dismantling; probeKey = ''; app.requestRender(); } },
     select: type => { selected = type; dismantling = false; probeKey = ''; toggle(true); }, canBuild,
     filter: value => { filter = value; }, power: value => { powered = factory() ? false : value; },
   });
   const key = e => {
-    if (!factory() || !building || app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!isBuilding() || app.isTyping() || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.code === 'Escape') {
       e.preventDefault(); e.stopImmediatePropagation();
       if (!e.repeat) toggle(false);
     }
   };
   const pointer = e => {
-    if (!building || !factory() || !active() || e.target !== app.canvas || e.altKey || e.button !== 0) return;
+    if (!isBuilding() || e.target !== app.canvas || e.altKey || e.button !== 0) return;
     if (app.pov?.active && !app.pov.locked) return; // first click captures the mouse
     e.preventDefault(); e.stopImmediatePropagation();
     if (e.type === 'pointerdown') { if (dismantling) removeAimed(); else placeAimed(); }
@@ -154,10 +158,10 @@ export function createIndustry(app) {
     // Physics runs on actual steps, never on paused UI/ghost frames.
     if (stepping && active() && !pending) { physics.step(Math.min(Math.max(dt,0),.05), devices); animation += Math.min(dt,.05); }
     candidate = null; candidateResult = null;
-    if (building && dismantling) {
+    if (isBuilding() && dismantling) {
       candidate = target();
       if (candidate) candidateResult = { ok: true, reason: 'Click to dismantle' };
-    } else if (building && app.hover.valid) {
+    } else if (isBuilding() && app.hover.valid) {
       const h = app.hover, xyz = [h.cell.x,h.cell.y,h.cell.z].map(Math.floor);
       const axis = Math.floor(h.face/2), sign = h.face % 2 === 0 ? 1 : -1;
       if (h.id >= 0) xyz[axis] += sign > 0 ? 1 : -(axis === 1 ? deviceHeight({type:selected}) : 4);
@@ -184,7 +188,7 @@ export function createIndustry(app) {
   }
   let lastProbe = fail('Checking clearance…');
   const api = {
-    update, place, remove, toggle, modeChanged, get state() { return state(); }, get building() { return building && active() && factory(); },
+    update, place, remove, toggle, modeChanged, get state() { return state(); }, get building() { return isBuilding(); },
     get pending() { return pending || !!physics.pending; },
     reset({ starters = false } = {}) {
       if (factory()) app.hud.dismissHint?.(); // The Sandbox pouring hint is false on the initial Factory boot too.

@@ -323,9 +323,11 @@ ${listMainWGSL('LIST_EMA')}
   let id = eid(a);
   var sv = vec4f(0.0);
   var m = vec4f(0.0);
-  let ch = SURFCH(id);
+  // Remove the crown BEFORE convolution: hiding just PLANT-coloured hits
+  // would leave the blurred shell extending into its empty neighbours.
+  let ch = select(SURFCH(id), -1, isFoliage(a));
   let md = MEDIACH(id);
-  let crisp = id != E_EMPTY && ch < 0 && md < 0;
+  let crisp = id != E_EMPTY && ch < 0 && md < 0 && !isFoliage(a);
   if (ch >= 0) {
     var v = 1.0;
     if (id == E_STONE) { v = 1.0 - RUBBLE_LUMP * fract(fract(a.w) * RUBBLE_LUMP_HASH); }
@@ -430,7 +432,8 @@ ${listMainWGSL('LIST_WORK')}${coverWGSL('boost')}
     var w = 0.5 * (1.0 - P.s);
     if (i == 0) { w = P.s; }
 ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(src[SLOTS + t]));
-    let ch = SURFCH(eid(fetchAs(t)));
+    let a = fetchAs(t);
+    let ch = select(SURFCH(eid(a)), -1, isFoliage(a));
     if (ch >= 0) { occ[ch] = 1.0; }
     if (jetAt(q)) { occ.x = 1.0; }   // a pour's wake is current liquid (jetWGSL)` : `    acc += w * unpack4x8unorm(src[t]);
     occ = max(occ, unpack4x8unorm(src[SLOTS + t]));`}

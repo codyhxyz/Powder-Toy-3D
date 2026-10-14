@@ -10,6 +10,7 @@
 import { HUMAN, MASONRY, TAU, odd } from './shared.js';
 import { STRUCTURES } from './structures.js';
 import { light } from './lights.js';
+import { FOLIAGE_CTYPE } from '../foliage.js';
 
 // ---------------------------------------------------------------- houses
 
@@ -499,9 +500,22 @@ export function shrine({ box, footing }) {
   }
 }
 
+// Tree crowns use the same PLANT physics as before. Mark their provenance so
+// rendering can leave real gaps without also turning grass into tree leaves.
+function tree(api, variant) {
+  const leafApi = { ...api };
+  for (const [name, material] of Object.entries({ put: 3, box: 6, ball: 4, disc: 4, rod: 3 })) {
+    leafApi[name] = (...args) => {
+      if (args[material] === 'PLANT') args[material + 1] = { ...args[material + 1], ctype: FOLIAGE_CTYPE };
+      return api[name](...args);
+    };
+  }
+  TREES[variant](leafApi);
+}
+
 export const BUILTINS = {
   HOUSE: house,
-  TREE: (api, variant) => TREES[variant](api),
+  TREE: tree,
   CAMPFIRE: campfire,
   IGLOO: igloo,
   BARREL: barrel,

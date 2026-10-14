@@ -442,6 +442,8 @@ fn sceneCell(w: vec3i) -> SceneCell {
   if (id == E_ROCK) { T = mix(SPAWNT(E_ROCK), SPAWNT(E_SNOW), volFrost(w.y)); }
   if (id == E_LAVA) { T = VOL_MAGMA_T; ctype = f32(E_STONE); }   // magma, which sets to stone
   if (id == E_CLONE) { ctype = f32(E_LAVA); }                    // the endless lava source
+  // PLANT comes only from volTree's crowns here, never ground grass (FOLIAGE_CTYPE).
+  if (id == E_PLANT) { ctype = f32(E_PLANT); }
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, VOL_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
   return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
 }

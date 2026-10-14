@@ -14,17 +14,16 @@ import { createLook } from './look.js';
 import { JEEP, buildJeep } from './jeep.js';
 import { HOVERBIKE, buildHoverbike } from './hoverbike.js';
 import { BOAT, buildBoat } from './boat.js';
+import { createVehicleHud } from './hud.js';
 import './vehicles.css';
 
 // Vehicles for first person (docs/vehicles.md): a Warthog-style jeep and a
 // drifty hoverbike and a small motorboat, rigid bodies in Rapier (physics.js) on a voxel collider
 // made from the CPU copy of the cells.
 //
-// Where they come from: "homes", each keeping one vehicle alive and bringing
-// it back RESPAWN_S after it's destroyed. A home is a Jeep, Hoverbike or Boat pad
-// (spawners.js, the palette's Entities) or an entry of spawnLayout(layout) (an
-// arena's list). Nothing loads (Rapier, the cells' copy) until a home exists
-// in first person.
+// Sandbox placements are one-shot entities, visible in god view too. Legacy
+// pads and spawnLayout arena homes alone replenish after RESPAWN_S.
+// Rapier and the cells' copy load lazily when either kind of home exists.
 //
 // The shell (pov/index.js) calls, each POV frame:
 //   vehicles.beforeBody(player)  // seated: the body sits in the seat
@@ -92,7 +91,7 @@ export function createVehicles(env) {
   const root = new THREE.Group();
   root.name = 'vehicles';
   env.scene.add(root);
-  const hud = createHud();
+  const hud = createVehicleHud();
   let frameInfo = null;
 
   // ---- grid ↔ metres
@@ -124,7 +123,7 @@ export function createVehicles(env) {
       cells = createWorldModel({ renderer: env.renderer, getSim: env.getSim });
       phys = createPhysics(R, cells);
     }).catch((err) => { failed = true; console.error('Vehicles: Rapier failed to load', err); })
-      .finally(() => { loading = false; });
+      .finally(() => { loading = false; env.requestRender?.(); });
     return false;
   }
 
@@ -167,10 +166,35 @@ export function createVehicles(env) {
     root.add(impl.root);
     vehicles.push(v);
     home.vehicle = v;
+    const placement = home.placement;
+    if (placement?.oneShot) {
+      const saved = placement.state;
+      if (saved?.position?.length === 3 && saved.position.every(Number.isFinite)) {
+        const [x, y, z] = saved.position;
+        impl.body.setTranslation({ x, y, z }, true);
+      }
+      if (saved?.rotation?.length === 4 && saved.rotation.every(Number.isFinite)) {
+        const [x, y, z, w] = saved.rotation;
+        impl.body.setRotation({ x, y, z, w }, true);
+      }
+      if (Number.isFinite(saved?.health)) v.health = Math.max(0.001, Math.min(k.spec.HEALTH, saved.health));
+      placement.snapshot = () => ({ consumed: !v.alive,
+        world: toGrid(posM(v)).add(env.getSim().origin).toArray(),
+        state: { position: posM(v).toArray(), rotation: rotQ(v).toArray(), health: v.health } });
+    }
     return v;
   }
   function remove(v) {
-    if (seated === v) seated = null;
+    if (seated === v) dismount(frameInfo?.player);
+    const placement = homes.get(v.home)?.placement;
+    if (placement?.oneShot && placement.snapshot) {
+      if (v.alive) {
+        const saved = placement.snapshot();
+        placement.world.fromArray(saved.world);
+        placement.state = saved.state;
+      }
+      placement.snapshot = null;   // never read a disposed Rapier body during a save
+    }
     v.removeTarget?.();
     v.impl.dispose();
     v.look.dispose();
@@ -199,7 +223,10 @@ export function createVehicles(env) {
     v.look.char(1);
     v.impl.driver.visible = false;
     const home = homes.get(v.home);
-    if (home && home.vehicle === v) { home.vehicle = null; home.wait = RESPAWN_S; }
+    if (home && home.vehicle === v) {
+      home.vehicle = null; home.wait = RESPAWN_S;
+      if (home.placement?.oneShot) env.getSpawners()?.consume(home.placement);
+    }
     const center = toGrid(posM(v));
     if (seated === v) {
       const player = frameInfo?.player;
@@ -272,7 +299,7 @@ export function createVehicles(env) {
       for (const kind of VEHICLE_KINDS) for (const s of sp.of(kind)) {
         const at = sp.feet(s);
         if (!at) continue;
-        want.set(`pad:${s.id}`, { kind, team: s.team ?? null, at: at.clone(), yaw: towardMiddle(at) });
+        want.set(`pad:${s.id}`, { kind, team: s.team ?? null, at: at.clone(), yaw: towardMiddle(at), placement: s });
       }
     }
     layout.forEach((e, i) => want.set(`layout:${i}`, e));
@@ -284,7 +311,7 @@ export function createVehicles(env) {
     for (const [key, e] of want) {
       const h = homes.get(key);
       if (h) { h.at.copy(e.at); continue; }
-      homes.set(key, { key, kind: e.kind, team: e.team, at: e.at.clone(), yaw: e.yaw, vehicle: null, wait: 0 });
+      homes.set(key, { key, kind: e.kind, team: e.team, at: e.at.clone(), yaw: e.yaw, placement: e.placement, vehicle: null, wait: 0 });
     }
   }
 
@@ -354,9 +381,7 @@ export function createVehicles(env) {
     v.driver = PLAYER;
     v.impl.driver.visible = true;
     player.vel.set(0, 0, 0);
-    env.hud?.toast?.(v.kind === 'boat'
-      ? 'Boat: W/S forward/reverse · A/D steer · motor needs water · E get out'
-      : `${v.spec.name}: W/S drive · A/D steer · Space ${v.kind === 'jeep' ? 'handbrake' : 'hop'} · Shift boost · E get out`);
+    hud.board(v.kind);
     povEvents.emit('vehicle:enter', { id: v.id, kind: v.kind });
   }
   // Out beside the driver's door, else the other side, behind, in front, on top: the first spot with room for the body.
@@ -364,6 +389,7 @@ export function createVehicles(env) {
     const v = seated;
     if (!v) return;
     seated = null;
+    hud.leave();
     v.driver = null;
     v.impl.driver.visible = false;
     povEvents.emit('vehicle:exit', { id: v.id, kind: v.kind });
@@ -457,19 +483,21 @@ export function createVehicles(env) {
     cells.update(dt);
     if (!cells.ready) return;
     for (const h of homes.values()) {
-      if (h.vehicle) continue;
+      if (h.vehicle || h.placement?.consumed) continue;
       h.wait -= dt;
-      if (h.wait <= 0 && padClear(h)) spawn(h);
+      // GMod permits overlapping placements; pads alone wait for their space.
+      if (h.wait <= 0 && (h.placement?.oneShot || padClear(h))) spawn(h);
     }
     centers.length = 0;
     for (const v of vehicles) centers.push(Object.assign(toGrid(posM(v)), { key: v.id, ...v.spec.GROUND }));
     phys.syncTerrain(centers);
-    phys.step(dt, (h) => {
+    if (dt > 0) phys.step(dt, (h) => {
       for (const v of vehicles) v.impl.step(h, !v.alive ? DEAD : v === seated ? drive : IDLE, cells);
     });
     const now = performance.now() / 1000;
     let moving = false;
     for (const v of [...vehicles]) {
+      if (dt <= 0) continue;
       if (v.alive && v.impl.state.hot) damage(v, HEAT_DAMAGE * dt, 'Burned');
       if (posM(v).y < FALL_OUT) { if (v.alive) explode(v); remove(v); continue; }
       if (v.alive) runOver(v, now, f.player, dt);
@@ -491,9 +519,14 @@ export function createVehicles(env) {
       v.impl.pose(dt);
     }
     root.visible = true;
-    if (moving || vehicles.length) env.requestRender?.();
+    if (dt > 0 && (moving || vehicles.length)) env.requestRender?.();
     // the HUD: what you drive, or what E would do
-    if (seated) hud.show({ seated: seated.spec.name, health: Math.max(0, seated.health / seated.spec.HEALTH), kmh: Math.abs(seated.impl.speed) * MS, boost: seated.impl.state.boost });
+    if (seated) hud.show({
+      seated: seated.spec.name, health: seated.health / seated.spec.HEALTH,
+      kmh: Math.abs(seated.impl.speed) * MS, boost: seated.impl.state.boost,
+      needsWater: seated.kind === 'boat' && !seated.impl.state.motorWet
+        && (Math.abs(drive.throttle) > 0.05 || Math.abs(seated.impl.speed) < 0.5),
+    });
     else if (f.live && f.player) {
       const v = nearest(f.player);
       hud.show(v ? { prompt: !v.alive ? null : upness(v) < OVERTURNED_UP ? `Flip the ${v.spec.name.toLowerCase()}` : v.kind === 'hoverbike' ? 'Ride the hoverbike' : `Drive the ${v.spec.name.toLowerCase()}` } : null);
@@ -511,6 +544,7 @@ export function createVehicles(env) {
     get list() { return vehicles; },
     get seated() { return seated; },
     get ready() { return !!phys && !!cells?.ready; },
+    get pending() { return !failed && wanted() && (!phys || !cells?.ready); },
     get physics() { return phys; },
     stats,
     get cells() { return cells; },
@@ -576,8 +610,13 @@ export function createVehicles(env) {
     // leaving POV (or a new scene): nobody drives, and the HUD goes
     reset(player) {
       if (seated) dismount(player);
-      hud.show(null);
-      root.visible = false;   // the god view doesn't step them: hidden, as the NPCs are
+      hud.leave();
+      root.visible = true;   // switching camera never resets an entity
+    },
+    worldReplaced() {
+      if (seated) dismount(frameInfo?.player);
+      for (const v of [...vehicles]) remove(v);
+      homes.clear();
     },
     setVisible(v) { root.visible = v; if (!v) hud.show(null); },
     // checks: hurt a vehicle (as a weapon would)
@@ -591,35 +630,3 @@ export function createVehicles(env) {
   };
 }
 const CHASE_WALL_GAP = 0.4;              // m the chase camera keeps off a wall behind it
-
-// ---- the HUD: a prompt near a vehicle, the vehicle's health and speed while driving
-function createHud() {
-  const el = document.createElement('div');
-  el.className = 'veh-hud';
-  el.innerHTML = '<div class="veh-prompt"><kbd>E</kbd> <span></span></div><div class="veh-panel"><b></b><i><s></s></i><em></em><u><s></s></u></div>';
-  document.body.append(el);
-  const prompt = el.querySelector('.veh-prompt'), promptText = prompt.querySelector('span');
-  const panel = el.querySelector('.veh-panel'), name = panel.querySelector('b'), bar = panel.querySelector('i s'), speed = panel.querySelector('em');
-  const boostBar = panel.querySelector('u'), boostFill = boostBar.querySelector('s');
-  let last = '';
-  return {
-    show(s) {
-      const key = s ? JSON.stringify(s, (k, v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v)) : '';
-      if (key === last) return;
-      last = key;
-      el.classList.toggle('on', !!s);
-      prompt.classList.toggle('on', !!s?.prompt);
-      panel.classList.toggle('on', !!s?.seated);
-      if (s?.prompt) promptText.textContent = s.prompt;
-      if (s?.seated) {
-        name.textContent = s.seated;
-        bar.style.width = `${s.health * 100}%`;
-        bar.classList.toggle('low', s.health < 0.3);
-        speed.textContent = `${Math.round(s.kmh)} km/h`;
-        boostBar.style.display = s.boost === undefined ? 'none' : '';
-        boostFill.style.width = `${(s.boost ?? 0) * 100}%`;
-      }
-    },
-    dispose() { el.remove(); },
-  };
-}

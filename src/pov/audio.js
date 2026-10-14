@@ -654,6 +654,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         break;
       }
       case 'axe:swing': case 'pickaxe:swing': play('swoosh', { at }); break;
+      case 'jackhammer:swing': play('drillGrind', { at, gain: 1.5 }); break;   // Rust's powered chatter, even between rock faces
       case 'knife:swing': play('swoosh', { at, rate: KNIFE_SWING_RATE }); break;
       case 'bomb:throw': case 'torch:throw': case 'lantern:throw': case 'flask:throw': play('swoosh', { at }); break;
       case 'flask:drink': play('plop', { at, rate: GULP_RATE }); break;   // a gulp (the shatter is its 'impact')

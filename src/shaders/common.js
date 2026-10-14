@@ -546,6 +546,9 @@ fn dbgOob() {${o.marks ? ' atomicAdd(&marks[MARK_DBG], 1u); ' : ''}}` : ''}
 // ---- the state's accessors (docs/webgpu.md C5, D8.1) ----
 ${accessorsWGSL(o)}
 fn eid(a: vec4f) -> i32 { return i32(floor(a.x + 0.5)); }
+// Render provenance only (src/foliage.js). A.w is ctype + the cell's seed;
+// A.z remains fuel/life. Ordinary PLANT, WOOD and ROCK keep their surfaces.
+fn isFoliage(a: vec4f) -> bool { return eid(a) == E_PLANT && i32(floor(a.w)) == E_PLANT; }
 ${electricityGLSL()}
 
 // ---- random streams ----
