@@ -14,6 +14,8 @@ import { createCrookController } from './crookController.js';
 import { createDebtBadge } from './debtBadge.js';
 import { ELEMENTS, K } from '../../elements.js';
 import { createCityBus, CITY_BUS_STOPS } from './bus.js';
+import { createBuildingRuntime } from './buildingRuntime.js';
+import { inReach } from './doors.js';
 import { CITY_FOLK_CITY } from '../../world/scenes/cityFolk/city.js';
 
 export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
@@ -30,7 +32,30 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   let punchAt = -Infinity, punchSerial = 0, kicking = false, reaction = '', reactionUntil = 0;
   let pendingPunch = null;
   let crook = null, crookModel = null, debtBadge = null, worldSeed = null;
-  let bodyFrom = null, crookMotionFrom = null;
+  let bodyFrom = null, crookMotionFrom = null, buildingRuntime = null, previousOrigin = new THREE.Vector3();
+  const islandPlayer = () => {
+    const p = getPlayer(); if (!p || !size) return null;
+    const q = p.pos.clone().add(app.getSim().origin);
+    return { x: q.x - size[0] / 2, y: q.y, z: q.z - size[2] / 2, height: p.height };
+  };
+  function buildingTerrainClear(from, to, floor = null) {
+    const p = getPlayer(), origin = app.getSim().origin;
+    if (!p?.cellAt) return true; // CPU adapters without terrain.
+    const solid = id => id < 0 || ELEMENTS[id]?.kind === K.SOLID || ELEMENTS[id]?.kind === K.POWDER;
+    const steps = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.z - from.z) / 0.5));
+    for (let i = 0; i <= steps; i++) {
+      const x = size[0] / 2 + from.x + (to.x - from.x) * i / steps - origin.x;
+      const z = size[2] / 2 + from.z + (to.z - from.z) * i / steps - origin.z;
+      const feet = (floor ?? from.y + (to.y - from.y) * i / steps) - origin.y;
+      for (let a = Math.floor(x - p.width / 2); a <= Math.floor(x + p.width / 2); a++)
+        for (let b = Math.floor(z - p.width / 2); b <= Math.floor(z + p.width / 2); b++) {
+          if (floor !== null && !solid(p.cellAt(a, Math.floor(feet - 0.1), b))) return false;
+          for (let y = Math.floor(feet); y < feet + p.height; y++)
+            if (solid(p.cellAt(a, y, b))) return false;
+        }
+    }
+    return true;
+  }
   const bus = createCityBus({
     getWorld: app.getWorld, getSim: app.getSim, getMode: app.getMode, getPlayer,
     active: () => enabled && live() && !document.hidden && !held && !interaction && !ui.opened,
@@ -110,7 +135,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function context() {
     const p = ownPosition(), active = enabled && live() && !document.hidden && !document.querySelector('.mm.open');
     return { active, home: active && room() === 0, dresser: active && room() === 0 && Math.hypot(p.x - DRESSER.x, p.z - DRESSER.z) <= 5.5,
-      player: p, state, crook: crookSnapshot(), warning: warning + (crook?.warning ?? ''), feedback, muted: speech.muted, tool, readout: toolReadout?.(), reaction: time < reactionUntil ? reaction : '',
+      player: p, state, catalogue: ['nookShop', 'emporium'].includes(buildingRuntime?.room(islandPlayer())?.id), crook: crookSnapshot(), warning: warning + (crook?.warning ?? ''), feedback, muted: speech.muted, tool, readout: toolReadout?.(), reaction: time < reactionUntil ? reaction : '',
       grip: interaction?.kind === 'grip' ? { name: ITEMS[interaction.item.kind].name, moving: !!interaction.move } : null,
       rest: ['sit', 'sleep'].includes(interaction?.kind) ? interaction.kind : null,
       busy: interaction?.kind === 'dresser' && interaction.phase !== 'open',
@@ -155,8 +180,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   function setPlayer(point, home = interaction?.home ?? 0) {
     const p = getPlayer(), origin = app.getSim().origin;
     if (!p) return;
-    p.pos.set(size[0] / 2 + HOMES[home] + point.x - origin.x, FLOOR - origin.y,
-      size[2] / 2 + HOME_Z + point.z - origin.z);
+    const building = interaction?.building;
+    p.pos.set(size[0] / 2 + (building ? 0 : HOMES[home]) + point.x - origin.x, (building?.floor ?? FLOOR) - origin.y,
+      size[2] / 2 + (building ? 0 : HOME_Z) + point.z - origin.z);
     p.vel.set(0, 0, 0); p.onGround = true;
     anchoredAt.copy(p.pos).add(origin);
   }
@@ -169,7 +195,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (drawer) drawer.position.z = interaction?.kind === 'dresser' ? -0.65 * interaction.drawer.extension : 0;
   }
   function beginInteraction(kind, item, position, yaw, extra = {}) {
-    const entry = roomPosition(extra.home ?? 0);
+    const entry = extra.building ? islandPlayer() : roomPosition(extra.home ?? 0);
     ui.close(); releaseInput(); releaseActions(); punchSerial++; punchAt = -Infinity; usingTool = false;
     interaction = { kind, home: 0, item: { ...item }, position: { x: position.x, z: position.z }, entry, yaw,
       radius: getPlayer().width / 2, elapsed: 0, pitch: camera.look.pitch, third: camera.third, ...extra };
@@ -183,16 +209,18 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!s) return {};
     let destination = s.move?.fromPlayer ?? s.position;
     if (relocate && ['sit', 'sleep'].includes(s.kind)) {
-      destination = standPosition(roomState(s.home), s.item, s.position, s.entry, getPlayer().width / 2,
-        p => charactersClear(s.home, s.position, p));
-      if (!destination && force) destination = HOME_ENTRY;
+      destination = s.building ? buildingRuntime.stand(s.item, s.position, s.entry, getPlayer().width / 2, getPlayer().size)
+        : standPosition(roomState(s.home), s.item, s.position, s.entry, getPlayer().width / 2,
+          p => charactersClear(s.home, s.position, p));
+      if (!destination && force) destination = s.building ? s.entry : HOME_ENTRY;
       if (!destination) return fail('There is no clear place to stand.');
     }
     const model = ownMeshes.get(s.item.id), saved = state.placed.find(i => i.id === s.item.id);
     if (model && saved) at(model, 0, saved);
     camera.look.pitch = s.pitch; camera.third = s.third;
-    interaction = null; feedback = '';
+    feedback = '';
     if (relocate && getPlayer() && !getPlayer().dead) setPlayer(destination, s.home);
+    interaction = null;
     drawInteraction(); releaseInput(); app.requestRender();
     return {};
   }
@@ -208,7 +236,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     const relocated = p && p.pos.clone().add(app.getSim().origin).distanceTo(anchoredAt) > 0.25;
     if (!p || p.dead || relocated) {
       ui.close(); endInteraction(false, true);
-    } else if (!context().active || room() !== interaction.home) {
+    } else if (!context().active || (interaction.building ? buildingRuntime?.room(islandPlayer()) !== interaction.building : room() !== interaction.home)) {
       ui.close(); endInteraction(true, true);
     }
   }
@@ -318,7 +346,23 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (bus.busy) return { title: 'Cancel bus journey', use: () => bus.cancel() };
     const stop = bus.nearby();
     if (stop) return { title: CITY_BUS_STOPS[stop].label, use: () => { releaseInput(); releaseActions(); void bus.board(stop); } };
-    const p = local(), home = room(p);
+    const p = local(), home = room(p), worldPlayer = islandPlayer(), forward = camera.forwardH(new THREE.Vector3());
+    const visit = buildingRuntime?.nearby(worldPlayer, forward);
+    if (visit) return { title: visit.title, use: () => {
+      if (visit.kind === 'door') { const result = buildingRuntime.doors.toggle(visit.door, worldPlayer, getPlayer().width / 2); if (result.error) return fail(result.error); app.requestRender(); return result; }
+      if (visit.kind === 'rest') {
+        const pose = buildingRuntime.rest(visit.item, worldPlayer, getPlayer().width / 2, getPlayer().size);
+        if (!pose) return fail('There is no clear way to rest there.');
+        return beginInteraction(pose.kind, visit.item, pose, pose.yaw, { pose, home: -1, building: visit.item.building });
+      }
+      const actor = visit.actor ?? buildingRuntime.actors.find(a => a.building === visit.item.building);
+      speaking = actor; chat(visit.item?.service, true); return {};
+    } };
+    // Talking is selectable before furniture: a neighbor must never be hidden
+    // behind the early home-furniture return.
+    const neighbor = residents.find(r => r.spec.home === home && inReach(worldPlayer,
+      { x: HOMES[home] + r.x, y: FLOOR, z: HOME_Z + r.z }, forward));
+    if (neighbor) return { title: `Talk to ${neighbor.spec.name}`, use: () => { speaking = neighbor; chat(undefined, true); } };
     if (crook?.visible && !crook.state.complete && p.y < 1 && p.z < -13
       && Math.hypot(p.x - HOMES[0] - crook.position.x, p.z - crook.position.z) < 7)
       return { title: 'Talk to Tim Crook', use: () => { if (crook.talk()) { speaking = crook; chat(); } } };
@@ -343,6 +387,28 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     return r ? { title: `Talk to ${r.spec.name}`, use: () => { speaking = r; chat(undefined, true); } } : null;
   }
   function chat(choiceId, first = false) {
+    if (speaking?.building) {
+      if (!context().active || buildingRuntime?.room(islandPlayer()) !== speaking.building) { ui.close(); return; }
+      const service = choiceId, spec = speaking.spec;
+      if (service === 'catalogue') { ui.close(); ui.open('catalogue'); return; }
+      if (['boy', 'girl'].includes(service)) { app.settings.villageCharacter = service; app.save?.(); }
+      const lines = {
+        coffee: 'Here is your freshly brewed cup. Warm paws, a quiet minute, and the sound of the creek. Stay for a seat if you like.',
+        fish: 'These little creek fish shelter among the reeds. Clear water and shady banks make a good nursery.',
+        tools: 'A well-used workbench: straight edges, careful joints, and offcuts saved for the next small invention.',
+        garden: 'Roots first, flowers later. Give these plants light, damp soil, and room to grow.',
+        clock: 'This pendulum clock once kept time in the first creek cottage. Its slow tick is still our favorite sound.',
+        notes: 'Town notes: the northern gate has the city bus. Supply and the emporium take furniture orders; the museum and café welcome visitors.',
+        show: 'Tonight’s miniature play: a seed dreams of being a tree. Rain arrives, then sunshine. At last it offers a tiny leaf to the audience. Thank you for coming!',
+        outfit: 'Choose a fresh look. We can fit the creek shirt or the flower dress for you.',
+        boy: 'The creek shirt fits nicely. Your new look is saved. Enjoy your day!',
+        girl: 'The flower dress is ready. Your new look is saved. Enjoy your day!',
+      };
+      const choices = service === 'outfit' ? [{ id: 'boy', label: 'Wear the creek shirt' }, { id: 'girl', label: 'Wear the flower dress' }]
+        : !service && spec.service ? [{ id: spec.service, label: { catalogue: 'Browse the catalogue', coffee: 'A cup, please', outfit: 'Choose an outfit', show: 'See the play', tools: 'Tell me about your work' }[spec.service] }] : [];
+      const text = lines[service] ?? spec.text;
+      ui.talk(spec, text, choices); speech.speak(text, spec.pitch); app.requestRender(); return;
+    }
     if (speaking === crook && crook) {
       if (!context().active) { ui.close(); return; }
       if (choiceId !== undefined) crook.answer(choiceId);
@@ -482,6 +548,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       releaseHeld();
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
       ui.update({ active: false }); camera.third = oldThird;
+      buildingRuntime?.dispose(); buildingRuntime = null;
       for (const child of [...root.children]) dispose(child);
       furnishings = null; residents = []; crook = crookModel = null; bodyFrom = crookMotionFrom = null; worldSeed = null; ownMeshes.clear(); return;
     }
@@ -517,6 +584,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     } catch { memoryWritable = false; }
     if (!memoryWritable) warning += ' Neighbor memories are temporary; the unreadable save will not be overwritten.';
     rebuildFurniture();
+    buildingRuntime = createBuildingRuntime(root, size, buildingTerrainClear);
     residents = RESIDENTS.map(spec => {
       const model = character(spec);
       const height = new THREE.Box3().setFromObject(model.root).max.y;
@@ -543,7 +611,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!enabled || !getPlayer()) return;
     if (bus.busy) { bus.freeze(input); return; }
     checkInteraction();
-    previous.copy(getPlayer().pos);
+    previous.copy(getPlayer().pos); previousOrigin.copy(app.getSim().origin);
     const l = local();
     bodyFrom = l && { x: l.x - HOMES[0], y: l.y, z: l.z };
     if (ui.opened) {
@@ -583,6 +651,16 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   }
   function collide() {
     const p = getPlayer(); if (!p) return;
+    // Preserve the absolute start across a streamed-origin shift during physics.
+    previous.add(previousOrigin).sub(app.getSim().origin); previousOrigin.copy(app.getSim().origin);
+    const oWorld = app.getSim().origin, start = { x: previous.x + oWorld.x - size[0] / 2, y: previous.y + oWorld.y, z: previous.z + oWorld.z - size[2] / 2 };
+    let end = islandPlayer();
+    if (p.vel.y <= 0) {
+      const top = buildingRuntime?.support(start, end, p.width / 2, p.height);
+      if (top !== null && top !== undefined) { p.pos.y = top - oWorld.y; p.vel.y = 0; p.onGround = true; end = islandPlayer(); }
+    }
+    const visitMotion = buildingRuntime?.collide(start, end, p.width / 2, 1.4 * p.size, p.height);
+    if (visitMotion) { p.pos.x = visitMotion.x + size[0] / 2 - oWorld.x; p.pos.z = visitMotion.z + size[2] / 2 - oWorld.z; if (visitMotion.blocked) p.vel.x = p.vel.z = 0; }
     const obstacles = characterObstacles(p), radius = 1.4 * p.size;
     // A charged jump must not fall down through a neighbor's body.
     for (const r of obstacles) if (p.vel.y <= 0 && previous.y >= r.top - 0.05 && p.pos.y <= r.top
@@ -630,7 +708,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!enabled && live() && app.getMode() === 'animalCrossing' && app.getWorld()?.scene.key === 'willowCove') setEnabled(true, app.getWorld().P);
     if (!enabled) return;
     if (app.getMode() !== 'animalCrossing' || app.getWorld()?.scene.key !== 'willowCove') { setEnabled(false); return; }
-    if (app.getWorld()?.P.seed !== worldSeed) { setEnabled(false); setEnabled(true, app.getWorld().P); return; }
+    if (app.getWorld()?.P.seed !== worldSeed || app.getWorld()?.P.size.some((n, i) => n !== size[i])) { setEnabled(false); setEnabled(true, app.getWorld().P); return; }
     if (avatar.root.userData.persona !== persona()) {
       if (interaction) { ui.close(); endInteraction(true, true); }
       // Keep the physical player, furniture and current tool; only replace the look.
@@ -666,6 +744,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       if (toolModel) toolModel.obj.visible = !held && (kicking || !punching) && !interaction;
     }
     const active = context().active;
+    buildingRuntime?.tick(active ? dt : 0, time, islandPlayer(), getPlayer()?.width / 2, speaking);
     tickCrook(dt, active);
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.
@@ -704,11 +783,12 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (held && (!context().active || room() !== 0)) { releaseHeld(); rebuildFurniture(); }
     updateHeld();
     const c = context(), home = room();
-    if ((!c.active || (ui.talking && speaking !== crook && home !== speaking?.spec.home)) && ui.opened) ui.close();
+    if ((!c.active || (ui.talking && speaking !== crook && (speaking?.building ? buildingRuntime?.room(islandPlayer()) !== speaking.building : home !== speaking?.spec.home))) && ui.opened) ui.close();
     const here = getPlayer()?.pos.clone().add(app.getSim().origin);
+    const visiting = buildingRuntime?.room(islandPlayer());
     const inCity = size[0] === 3072 && here && here.z - size[2] / 2 <= -280;
     ui.update({ active: c.active, place: bus.busy ? 'Bus journey · E / Esc to cancel' : home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home`
-      : inCity ? 'City square · return bus at the south end' : size[0] === 3072 ? 'Tinker Creek · city bus at the northern gate' : 'Tinker Creek' });
+      : visiting ? visiting.name : inCity ? 'City square · return bus at the south end' : size[0] === 3072 ? 'Tinker Creek · city bus at the northern gate' : 'Tinker Creek' });
   }
   function crookSnapshot() {
     return crook ? { state: crook.state, phase: crook.phase, position: crook.position } : null;
@@ -763,6 +843,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     }, update, punch, kick: () => punch(true),
     cycleTool(direction) { if (context().active && !ui.opened && !held && !interaction) equip(VILLAGE_TOOLS[(VILLAGE_TOOLS.findIndex(t => t.key === tool) + Math.sign(direction) + VILLAGE_TOOLS.length) % VILLAGE_TOOLS.length].key); },
     get bus() { return bus; },
+    get buildings() { return buildingRuntime?.buildings.map(b => ({ id: b.id, name: b.name })) ?? []; },
+    get doors() { return buildingRuntime?.doors.doors.map(({ id, progress, target }) => ({ id, progress, target })) ?? []; },
     get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held && !interaction && !bus.busy; },
     set usingTool(value) { usingTool = value; },
     get enabled() { return enabled; }, get blocked() { return enabled && (bus.holding || ui.opened || (!!interaction && interaction.kind !== 'grip')); },
