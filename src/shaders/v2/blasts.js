@@ -420,7 +420,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     for (var child=0u;child<parent.tail.z;child++) {
       let rank=atomicLoad(&control[5])+offset+child;
       if (rank>=atomicLoad(&control[4])) { break; }
-      let dest=atomicLoad(&control[D_FREE+rank]); let id=max(1u,dHash(parent.id ^ P.tick*2654435761u ^ (child+1u)*0x9e3779b9u));
+      let dest=atomicLoad(&control[D_FREE+rank]); let id=max(1u,dHash(parent.id ^ (P.tick*2654435761u) ^ ((child+1u)*0x9e3779b9u)));
       var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAYS.NEUT_V*60*CELL_M)};
       particles[dest]=born; atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
     }
@@ -432,7 +432,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     for (var slot=0u;slot<D_CAP;slot++) {
       if (particles[slot].id!=0u) { continue; }
       let emitted=u32(P.strength)-remaining;
-      let seed=max(1u,dHash(P.sequence ^ emitted*2654435761u ^ P.tick));
+      let seed=max(1u,dHash(P.sequence ^ (emitted*2654435761u) ^ P.tick));
       let position=P.center+dDir(seed)*P.radius*pow(dRandom(seed,11u),1.0/3.0);
       var m=Material(vec4u(D_NEUTRON,${RAYS.NEUT_LIFE}u,bitcast<u32>(${f(RAYS.NEUT_E_FAST)}),0u),0i);
       if (P.mode==7u) {

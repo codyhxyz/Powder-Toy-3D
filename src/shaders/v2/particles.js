@@ -58,9 +58,9 @@ fn dConductive(id: u32) -> bool { switch id {
 ${ELEMENTS.filter(e=>e.elec>0).map(e=>`case ${e.id}u: { return true; }`).join('\n')}
 default: { return false; } } }
 fn dHash(x0: u32) -> u32 { var x = x0; x = (x ^ (x >> 16u)) * 0x7feb352du; x = (x ^ (x >> 15u)) * 0x846ca68bu; return x ^ (x >> 16u); }
-fn dId(p: vec3i, rule: u32) -> u32 { let w = vec3u(p + P.origin); return max(1u, dHash(w.x * 73856093u ^ w.y * 19349663u ^ w.z * 83492791u ^ P.tick * 2654435761u ^ rule)); }
-fn dKey(id: u32) -> u32 { return dHash(id ^ P.tick * 2654435761u); }
-fn dRandom(id: u32, salt: u32) -> f32 { return f32(dHash(id ^ P.tick * 2654435761u ^ salt) >> 8u) / 16777216.0; }
+fn dId(p: vec3i, rule: u32) -> u32 { let w = vec3u(p + P.origin); return max(1u, dHash((w.x * 73856093u) ^ (w.y * 19349663u) ^ (w.z * 83492791u) ^ (P.tick * 2654435761u) ^ rule)); }
+fn dKey(id: u32) -> u32 { return dHash(id ^ (P.tick * 2654435761u)); }
+fn dRandom(id: u32, salt: u32) -> f32 { return f32(dHash(id ^ (P.tick * 2654435761u) ^ salt) >> 8u) / 16777216.0; }
 fn dDir(id: u32) -> vec3f { let z = 2.0 * dRandom(id, 51u) - 1.0; let a = dRandom(id, 91u) * 6.283185307; let r = sqrt(max(0.0, 1.0-z*z)); return vec3f(r*cos(a), z, r*sin(a)); }
 fn dMaterial(p: DParticle) -> Material { return Material(vec4u(p.c0, p.tail.xyz), bitcast<i32>(p.tail.w)); }
 fn dParticle(position: vec3f, velocity: vec3f, id: u32, m: Material) -> DParticle { return DParticle(position, id, velocity, m.core.x, vec4u(m.core.yzw, bitcast<u32>(m.bank))); }
