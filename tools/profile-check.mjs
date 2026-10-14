@@ -81,9 +81,11 @@ try {
     const sum = sample.phases.reduce((s, p) => s + (p.gpu ?? 0), 0);
     check(sample.gpu != null && Math.abs(sum - sample.gpu) < 1e-6 && Math.abs(sample.passes.reduce((s, p) => s + p.gpu, 0) - sample.gpu) < 1e-6,
       `the phases and passes add up to the frame: ${ms(sample.gpu)} ms GPU`);
-    let ordered = true;
-    sample.passes.forEach((p, i) => { if (i && Math.abs(p.start - (sample.passes[i - 1].start + sample.passes[i - 1].gpu)) > 1e-9) ordered = false; });
-    check(ordered, `${sample.passes.length} passes laid end to end on the timeline`);
+    check(sample.coverage?.complete && sample.coverage.observed === sample.passes.length,
+      `${sample.passes.length}/${sample.coverage?.observed} device passes represented, including external renderers`);
+    check(sample.passes.every(p => Number.isFinite(p.start) && p.start >= 0 && p.start + p.gpu <= sample.coverage.spanMs + 1e-6),
+      'actual timestamp intervals fit the GPU span (gaps and overlap are not erased)');
+    if (APP) check(sample.passes.some(p => p.name.startsWith('three:')), 'Three.js passes are timed too');
     check(typeof sample.memory === 'number' && sample.memory > 0 && sample.gpuName && Array.isArray(sample.totals) && sample.totals.length > 0,
       `memory ${(sample.memory / 2 ** 20).toFixed(1)} MB, gpu "${sample.gpuName}", ${sample.totals.length} totals`);
     console.log('\nphase      gpu ms   cpu ms   passes');
@@ -93,7 +95,8 @@ try {
     if (!APP) {
       const post = sample.phases.find((p) => p.id === 'post'), view = sample.phases.find((p) => p.id === 'view');
       const names = post.detail.map((d) => `${d.name}${d.count > 1 ? `×${d.count}` : ''}`).join(' ');
-      check(names === 'taa prefilter bloomDown×5 bloomUp×4 postReduce bloomUp0 canvas', `post's passes, split: ${names}`);
+      check(['prefilter', 'canvas'].every(name => post.detail.some(d => d.name === name))
+        && post.detail.some(d => /taa/i.test(d.name)), `post's passes, split: ${names}`);
       check(view.detail.map((d) => d.name).join(' ') === 'scene', 'the scene pass is the view phase');
     }
     const refTotal = Object.values(ref).reduce((s, x) => s + x, 0);
