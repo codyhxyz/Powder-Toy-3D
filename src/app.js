@@ -151,6 +151,7 @@ const DEFAULTS = {
   character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
+  materialStyle: 0,
   ...detailDefaults(),
   profiler: false,
 };
@@ -178,7 +179,7 @@ const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
-  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
+  'nearGI', 'glowLights', 'caustics', 'materialStyle', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -275,6 +276,7 @@ if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
 if (!['real', 'woman', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharacter = DEFAULTS.villageCharacter;
+if (![0, 1].includes(settings.materialStyle)) settings.materialStyle = DEFAULTS.materialStyle;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
 // ?physics=v2: the new physics' fast version (src/v2/physics.js, docs/v2.md 5) in box mode, loaded only
 // then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
@@ -495,7 +497,7 @@ const readySims = new WeakSet();   // simulations whose own pipelines are ready 
 let viewTime = 0;   // s the scene's animations have run (FrameUniforms.time: it runs with the simulation)
 
 let replicaMap = null;
-function build() {
+function build(savedWorldSize = null) {
   if (!mp.replica) { replicaMap = null; mp.resumeSolo?.(); }
   if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
@@ -513,6 +515,7 @@ function build() {
     sim.dispose();
   }
   worldMode = replicaMap?.mode === 'world' ? { win: replicaMap.dims, size: replicaMap.size } : settings.size in WORLDS ? worldModeOf(settings.size, settings.scene) : null;
+  if (worldMode && savedWorldSize) worldMode = { ...worldMode, size: savedWorldSize };
   if (worldMode && !wire('world')) {
     // (until the world's port lands: the box, and why)
     worldMode = null;
@@ -633,7 +636,8 @@ function setGrid(dims, meta = null) {
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
   if (meta?.mode === 'world') {
     const s = sceneByKey(meta.scene), expected = s && worldOf(WORLDS.world, s);
-    if (!s || s.key !== meta.scene || !expected.size.every((n, i) => n === meta.size[i]) || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
+    const supported = expected && [expected.size, s.legacySize].some(d => d?.every((n, i) => n === meta.size[i]));
+    if (!s || s.key !== meta.scene || !supported || dims[1] !== meta.size[1] || dims.some((n, i) => n > meta.size[i]) || !gridFits(dims)) return false;
     settings.size = 'world'; settings.scene = meta.scene; worldSeed = meta.seed;
     selectedMode = 'sandbox'; presentation.select(null);
   } else {
@@ -655,7 +659,9 @@ function gridFits(dims) {
 }
 
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild. False if the device can't hold it.
-function setSize(size) {
+function setSize(size, savedWorldSize = null) {
+  // Only an explicitly supported historical size can override a map's current size.
+  if (savedWorldSize && (!(size in WORLDS) || !sceneByKey(settings.scene).legacySize?.every((n, i) => n === savedWorldSize[i]))) return false;
   if (mp.frozen) { mp.resumeSolo(); replicaMap = null; }
   if (graphicsFailure) throw graphicsFailure;
   if (!gridFits(dimsOf(size))) return false;
@@ -664,7 +670,7 @@ function setSize(size) {
   const resolved = resolveMode(mapOf(settings), selectedMode);
   if (resolved.key !== selectedMode || mapOf(settings)?.size !== size) startMode('sandbox');
   if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
-  build();
+  build(savedWorldSize);
   save();
   return true;
 }
@@ -1427,6 +1433,12 @@ const settingsPanel = createSettings({
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
     weatherSection(weather, { enabled: () => !!win?.loaded && !mp.isGuest }),
+    { title: 'Material style', rows: [
+      { type: 'seg', key: 'materialStyle', options: [[0, 'Realistic'], [1, 'Cozy']],
+        disabled: () => settings.view !== 0 && 'Switch to Realistic view to see material artwork.',
+        onChange: (v) => { settings.materialStyle = v; save(); } },
+      { type: 'custom', el: h('p.row-note', { text: 'Cozy: drawn wood grain, patterned terrain and cartoon water.' }) },
+    ] },
     { title: 'Lighting', rows: [
       // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
@@ -2330,6 +2342,7 @@ let camShown = '';
 let loopCallbacks = 0;   // frames the loop has run (tools/idle-check.mjs: none while asleep)
 let captureNext = null;  // test.renderOnce({ capture }): takes the next presented frame's canvas
 let settledSleep = false;   // the last tick stopped the loop because the page had settled (deep idle)
+let materialStyleSeen = gfx.materialStyle;
 // The animation frame: false stops the loop (deep idle, or graphics stopped, or a parked test page).
 function frame(now) {
   loopCallbacks++;
@@ -2355,6 +2368,13 @@ function tick(now, renderOnly = false) {
   lastIdle = false;
   // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
   if (!renderOnly && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
+  if (materialStyleSeen !== settings.materialStyle) {
+    materialStyleSeen = gfx.materialStyle = settings.materialStyle;
+    post.reset();
+    meshFrames.drop();
+    sim.resetGI();
+    pacer.wake();
+  }
   if (prof.on !== settings.profiler) applyProfiler();
   applyOutputRatio();
   prof.beginFrame(now);
@@ -2431,7 +2451,7 @@ function tick(now, renderOnly = false) {
   if (renderOnly) updatePresentation();
   const present = renderOnly || pacer.present(now, wantFrame());
   const runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${gfx.materialStyle}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;

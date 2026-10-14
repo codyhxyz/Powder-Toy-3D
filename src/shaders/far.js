@@ -1290,6 +1290,20 @@ ${curved ? `  // optical distance is in flat material space, not display-ray t
 ` : ''}  let att = select(vec3f(0.0), exp(-SIGMA(lid) * s), s >= 0.0);
   return bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
 }
+// Geometry proximity from the coarse opaque field; do not clamp the world's
+// boundary into foam on the open ocean beyond it.
+fn cozyFarShore(p: vec3f) -> f32 {
+  if (any(p < vec3f(0.0)) || any(p >= vec3f(WORLD))) { return 0.0; }
+  var shore = 0.0;
+  for (var i = 0; i < 4; i++) {
+    let a = f32(i) * 1.5707963;
+    let q = p + vec3f(cos(a) * 0.55, -0.12, sin(a) * 0.55) / CELL_M;
+    if (any(q < vec3f(0.0)) || any(q >= vec3f(WORLD))) { continue; }
+    if (RCLASS(farIds(q).x) == R_GLASS) { continue; }
+    shore = max(shore, smoothstep(0.15, 0.65, farSample(q).r));
+  }
+  return shore;
+}
 // A liquid surface at p (liquid lid, an element) seen along rd: the sky and
 // the sun's glint off it (Fresnel), and through it the liquid's body down to
 // the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
@@ -1302,10 +1316,17 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  let refl = (skyColor(r) + sunGlint(n, -rd, ROUGH(lid), vec3f(sunVis))) * sky;
+  let cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
+  let rough = select(ROUGH(lid), 0.24, cartoon);
+  let refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
   var rt = refract(rd, n, 1.0 / IOR(lid));
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
   let body = farBody(p, rt, lid, sunVis, sky, bedY);
+  if (cartoon) {
+    let paint = cozyWaterPaint(p, footprint(p), cozyFarShore(p));
+    let light = skyAmbient(geometric) * sky + FU.sunCol * sunVis * max(FU.sun.y, 0.0);
+    return paint.rgb * light * paint.a + (1.0 - paint.a) * (F * refl * 0.35 + (1.0 - F) * body);
+  }
   return F * refl + (1.0 - F) * body;
 }
 

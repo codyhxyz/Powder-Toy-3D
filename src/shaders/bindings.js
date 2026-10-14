@@ -75,6 +75,7 @@ export const FRAME_UNIFORMS = [
   ['beacon', 'vec4f', 'uBeacon: world xyz, range in cells'],
   ['beaconDir', 'vec4f', 'uBeaconDir: unit direction, night gain'],
   ['beaconCell', 'vec4f', 'uBeaconCell: CRYSTAL switch world xyz'],
+  ['materialStyle', 'f32', 'uMaterialStyle: 0 realistic, 1 Cozy'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));

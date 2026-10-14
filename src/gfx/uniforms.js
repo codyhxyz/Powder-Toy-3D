@@ -31,6 +31,7 @@ const BEVEL_MAX = 0.45;
 export const gfx = {
   smoothing: 1,          // multiplier on every smooth channel's blur radius
   materials: 1,          // textured materials (0 = flat albedo, for A/B timing)
+  materialStyle: 0,      // 0 = realistic, 1 = Cozy surface artwork
   bevel: 0.12,           // crisp-voxel edge radius in cells (0 = sharp cubes)
   glints: 0.4,           // sun glints on sand, snow and gunpowder (untuned: kept low to avoid fireflies)
 };
@@ -55,6 +56,7 @@ export const gfxUniforms = {
   uGround: { value: [0, 0, 0] },
   uKeyLight: { value: [1, 1, 1] }, // the key light's colour scale (gfx/daylight.js)
   uMatDetail: { value: 1 },
+  uMaterialStyle: { value: 0 },
   uBevel: { value: 0.12 },
   uGlints: { value: 0.4 },
   uNearGI: { value: true },     // lighting upgrades (gfx/lighting.js), switched from Settings → Lighting
@@ -91,6 +93,7 @@ export function updateGfxUniforms(sim, sun, light) {
   gfxUniforms.uSimClock.value = sim.frame % SIM_CLOCK_WRAP;
   cloudShift(sim.frame, gfxUniforms.uCloudShift.value);
   gfxUniforms.uMatDetail.value = gfx.materials;
+  gfxUniforms.uMaterialStyle.value = gfx.materialStyle;
   gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), BEVEL_MAX);
   gfxUniforms.uGlints.value = gfx.glints;
   gfxUniforms.uDeco.value = decoShown(sim);
@@ -172,7 +175,7 @@ export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRe
     cam, time, sun, lightGain,
     sunExt: u.uSunExt.value, simClock: u.uSimClock.value, sunCol: u.uSunCol.value, pixScale: u.uPixScale.value,
     skyUp: u.uSkyUp.value, cloudSea: u.uCloudSea.value, ground: u.uGround.value, sea,
-    keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, jitter, cloudShift: u.uCloudShift.value,
+    keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, materialStyle: u.uMaterialStyle.value, jitter, cloudShift: u.uCloudShift.value,
     bevel: u.uBevel.value, glints: u.uGlints.value, view, frame: u.uFrame.value, shadowRes,
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
     beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,

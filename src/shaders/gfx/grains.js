@@ -678,7 +678,7 @@ fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
     let n = chipNormal(p, c, sa, R);
     s.n = n; s.ng = n; s.id = E_STONE; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
     m = baseMat(E_STONE);
-    if (FU.matDetail > 0.5) {
+    if (FU.matDetail > 0.5 && FU.materialStyle < 0.5) {
       // its own rock, shade, polish and mottle (gfx/surface.js PEB_*), in its own frame
       let typ = u01(&h);
       let shade = u01(&h);
@@ -729,9 +729,13 @@ fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
     let tp = p - vec3f(aH) + vec3f(ox, oy, oz) * GRAIN_TEX_SPREAD;
     m = matOf(id, tp, n, s.T, floor(a.w), fp);
   }
+  if (k == GK_PEBBLE && FU.matDetail > 0.5 && FU.materialStyle > 0.5) {
+    let contact = m.cav;
+    m = cozyMat(s.id, worldPos(p), s.ng, s.T, floor(fetchA(s.cell).w), fp);
+    m.cav *= contact;
+  }
   applyMat(&s, m);
   return s;
 }
 `;
 };
-
