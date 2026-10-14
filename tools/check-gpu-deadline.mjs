@@ -26,9 +26,10 @@ assert.deepEqual(inspectionFailure({ stage: 'orphan-environment', code: 'ETIMEDO
   status: null, stdout: 'SECRET', stderr: 'SECRET', message: 'SECRET' }),
 { stage: 'orphan-environment', code: 'ETIMEDOUT', signal: 'SIGTERM', status: null });
 
-for (const orphan of [false, true, 'tagless', 'ps-failure', 'closed-pipe', 'ps-failure-closed-pipe']) {
+for (const orphan of [false, true, 'tagless', 'ps-failure', 'closed-pipe', 'ps-failure-closed-pipe', 'slow-ps']) {
 const faultyPs = String(orphan).includes('ps-failure');
 const closedPipe = String(orphan).includes('closed-pipe');
+const slowPs = orphan==='slow-ps';
 const token = randomUUID();
 const leafArgs = ['-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"];
 if (orphan !== 'tagless') leafArgs.push('--', `--tpt-gpu-lease=${token}`);
@@ -53,11 +54,15 @@ try {
   if (faultyPs) {
     writeFileSync(join(dir, 'ps'), '#!/bin/sh\nif [ ! -e "$TPT_CPU_PS_FLAG" ]; then\n touch "$TPT_CPU_PS_FLAG"\n echo "PRIVATE_FAULT_DETAIL" >&2\n exit 7\nfi\nexec /bin/ps "$@"\n', { mode: 0o755 });
   }
-  const start = Date.now(), deadline = start + 1500;
+  if (slowPs) {
+    writeFileSync(join(dir, 'ps'), '#!/bin/sh\nif [ "$1" = "-axo" ]; then /bin/sleep 0.3; fi\nexec /bin/ps "$@"\n', { mode: 0o755 });
+  }
+  const budget=slowPs?3000:1500;
+  const start = Date.now(), deadline = start + budget;
   guard = spawn(process.execPath, [fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url)),
     String(owner.pid), owner.start, String(deadline), slot, String(statSync(slot).ino), token, String(start)],
   { stdio: ['pipe', 'pipe', 'pipe'],
-    env: faultyPs ? { ...process.env, PATH: `${dir}:${process.env.PATH}`, TPT_CPU_PS_FLAG: join(dir, 'failed-once') } : process.env });
+    env: faultyPs || slowPs ? { ...process.env, PATH: `${dir}:${process.env.PATH}`, TPT_CPU_PS_FLAG: join(dir, 'failed-once') } : process.env });
   let guardLog = '';
   guard.stderr.on('data', data => { guardLog += data.toString(); });
   const guardExit = once(guard, 'exit');
@@ -71,7 +76,8 @@ try {
   const report = JSON.parse(reportText);
   assert.equal(report.status, 'released');
   assert.equal(Date.parse(report.startedAt), start);
-  assert(report.occupancyMs < 1500 && report.finishedAt);
+  assert(report.occupancyMs < budget && report.finishedAt);
+  if(slowPs) assert.deepEqual(report.failures,[],'a 300ms ownership query must not abort a valid run');
   if (!closedPipe) assert.match(guardLog, /total GPU slot occupancy \d+ ms/);
   if (faultyPs) {
     assert.equal(report.failures[0].stage, 'process-table');
@@ -79,7 +85,7 @@ try {
     assert(!`${reportText}${guardLog}`.includes('PRIVATE_FAULT_DETAIL'), 'inspection diagnostics must not leak raw stderr');
   }
   assert.equal(signal, 'SIGKILL', 'independent guard stops a run that ignores graceful shutdown');
-  assert(Date.now() - start < 1500, 'cleanup must finish inside the complete slot budget');
+  assert(Date.now() - start < budget, 'cleanup must finish inside the complete slot budget');
   assert.equal(existsSync(slot), false);
   let state = '';
   try { state = execFileSync('ps', ['-o', 'stat=', '-p', String(child)], { encoding: 'utf8' }).trim(); } catch {}

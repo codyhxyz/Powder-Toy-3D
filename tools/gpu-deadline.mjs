@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 
 export const MAX_SLOT_MS = 10000;
 export const CLEANUP_MS = 1000;
+export const PROCESS_QUERY_MS = 500;
 export function budgetMs(value) {
   if (!Number.isFinite(value) || value <= CLEANUP_MS || value > MAX_SLOT_MS)
     throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${MAX_SLOT_MS} ms, including startup and cleanup`);
@@ -16,7 +17,7 @@ export function processTable() {
   let text;
   try {
     text = execFileSync('ps', ['-axo', 'pid=,ppid=,lstart=,stat=,args='],
-      { encoding: 'utf8', timeout: 200, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      { encoding: 'utf8', timeout: PROCESS_QUERY_MS, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) { throw inspectionError('process-table', error); }
   return text.trim().split('\n').map(line => {
     const [pid, ppid, ...rest] = line.trim().split(/\s+/);
@@ -138,7 +139,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.error(`[browser] GPU slot deadline: closing test pid ${owner.pid}; total budget includes compilation`);
       signal(owner, 'SIGTERM');
     }
-  }, Math.max(0, deadline - 2 * CLEANUP_MS - Date.now()));
+  }, Math.max(0, deadline - 2 * CLEANUP_MS - PROCESS_QUERY_MS - Date.now()));
   const force = () => {
     try {
       capture();
@@ -148,11 +149,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       for (const p of remaining.filter(p => p.pid === owner.pid)) signal(p, 'SIGKILL');
     } catch (error) { failedOwnership(error); }
   };
-  // Kill at 9s of a 10s lease, leaving time to confirm exit and release.
+  // Reserve the ownership query as well as cleanup; slower inspection must
+  // never extend the lease or make us signal an unverified process.
   const hard = setTimeout(() => {
     forced = releasing = true;
     force();
-  }, Math.max(0, deadline - CLEANUP_MS - Date.now()));
+  }, Math.max(0, deadline - CLEANUP_MS - PROCESS_QUERY_MS - Date.now()));
   const observe = setInterval(() => {
     try {
       capture();
