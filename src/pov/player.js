@@ -849,7 +849,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       emit('pogo', { step: pogoStep, timed: true, late: true, speed: v.y });
     }
 
-    // jetpack: thrust while jump is held in the air (swimming strokes instead). Never on a pogo:
+    // jetpack: thrust while jump is held with the head above liquid. Never on a pogo:
     // there jump is the spring's charge, held into the next landing (POGO_* above), as Keen's
     // pogo has no jetpack and a held jump just rides the bounce.
     // Lukki: while a limb touches a wall or ceiling the jet fires on an empty tank, and the tank holds
@@ -859,8 +859,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const levitating = p.status.has('LEVITATING');
     const jetRise = Math.min(JET_RISE * gait * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE * gait, PERK_SPEED_V));
     const jetWants = alive && !!input.jump && !pogoing && !input.chargeJump;
-    const clings = jetWants && !p.onGround && !swimming && ((perks.has('LUKKI') && clinging()) || levitating);
-    const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
+    // Swimming can settle waist-deep: hand off at the surface, not only below SWIM_SHARE.
+    const clings = jetWants && !p.onGround && !p.headInLiquid && ((perks.has('LUKKI') && clinging()) || levitating);
+    const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings);
     p.jetSpool = jet ? Math.min(1, p.jetSpool + dt / JET_SPOOL_UP_S) : Math.max(0, p.jetSpool - dt / JET_SPOOL_DOWN_S);
     const thrust = smooth01(p.jetSpool);
     // Noita's ease toward the climb, at most the ramp's push, as far as the jet has spooled

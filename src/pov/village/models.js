@@ -58,10 +58,11 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
   const smile = mesh(body, new THREE.TorusGeometry(0.23, 0.035, 6, 14, Math.PI), '#674b3e', [0, 3.51, -1.13]);
   smile.rotation.z = Math.PI;
   root.name = `village-${species}`;
-  const leap = createLeapAnimation(root, body, limbs);
+  const leap = createLeapAnimation(body, limbs);
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   let lastTime = 0, phase = 0, lean = 0;
-  return { root, reset: () => leap.reset(), animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, motion = null) {
+  return { root, hand: limbs[3], reset: () => leap.reset(),
+    animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, motion = null) {
     const dt = Math.max(0, Math.min(0.1, time - lastTime)); lastTime = time;
     const posing = leap.update(dt, motion, reducedMotion?.matches);
     // Animal Crossing speed-cheat silhouette: pitch forward and scramble, without a phase jump.
@@ -73,6 +74,8 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
       body.position.y = Math.sin(time * (talking ? 12 : 2)) * (talking ? 0.08 : 0.035);
       body.rotation.x = -lean;
     }
+    if (tool && !carrying) limbs[3].rotation.x = 0.9 + (using ? Math.sin(time * 18) * 0.4 : 0);
+    if (punch > 0 && !carrying) limbs[3].rotation.x = Math.sin(punch * Math.PI) * 1.9;
     body.rotation.z = talking ? Math.sin(time * 9) * 0.025 : 0;
     if (carrying) limbs.forEach((l, i) => { if (i % 2) l.rotation.x = 1.3; });
   } };

@@ -140,7 +140,7 @@ for (const reduced of [false, true]) {
   const avatar = character(), body = avatar.root.children[0];
   let time = 0;
   const pose = { jumpCharge: 1, onGround: true, leaping: false, vel: { y: 0 } };
-  const animate = n => { for (let i = 0; i < n; i++) avatar.animate(time += 1 / 60, 20, false, false, 0, pose); };
+  const animate = n => { for (let i = 0; i < n; i++) avatar.animate(time += 1 / 60, 20, false, false, 0, 0, false, false, pose); };
   try {
     animate(60);
     near(body.position.y, reduced ? -0.15 : -0.6);
@@ -151,6 +151,13 @@ for (const reduced of [false, true]) {
     assert.ok(body.rotation.x < (reduced ? -0.1 : -0.4), 'forward leap, not walking in air');
     const lean = body.rotation.x;
     animate(30); near(body.rotation.x, lean, 1e-8);
+    const arm = avatar.hand.rotation.x;
+    avatar.animate(time += 1 / 60, 20, false, false, 0, 0.5, false, false, pose);
+    near(avatar.hand.rotation.x, 1.9, 1e-8);
+    animate(1); near(avatar.hand.rotation.x, arm, 1e-8);
+    avatar.animate(time += 1 / 60, 20, false, false, 0, 0, true, false, pose);
+    near(avatar.hand.rotation.x, 0.9, 1e-8);
+    animate(1); near(avatar.hand.rotation.x, arm, 1e-8);
     pose.vel.y = -10; animate(20);
     assert.ok(body.rotation.x > lean, 'prepare feet for landing');
     Object.assign(pose, { onGround: true, leaping: false });

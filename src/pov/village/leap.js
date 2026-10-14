@@ -2,13 +2,16 @@ import * as THREE from 'three';
 
 // Three.js owns interpolation, crossfades and one-shot playback; physics owns takeoff/landing.
 // Minecraft horse-jump anticipation, with a forward-reaching toy silhouette.
-export function createLeapAnimation(root, body, limbs) {
-  const mixer = new THREE.AnimationMixer(root);
+export function createLeapAnimation(body, limbs) {
+  // Sample a separate pose so a punch/tool can override an arm without corrupting held mixer values.
+  const pose = new THREE.Group(), limbPoses = limbs.map(() => new THREE.Group());
+  pose.add(...limbPoses);
+  const mixer = new THREE.AnimationMixer(pose);
   const track = (node, property, times, values) =>
     new THREE.NumberKeyframeTrack(`${node.uuid}.${property}`, times, values, THREE.InterpolateSmooth);
   const clip = (name, times, { y, pitch, legs, arms }) => {
-    const tracks = [track(body, 'position[y]', times, y), track(body, 'rotation[x]', times, pitch)];
-    limbs.forEach((limb, i) => tracks.push(track(limb, 'rotation[x]', times, i % 2 ? arms : legs)));
+    const tracks = [track(pose, 'position[y]', times, y), track(pose, 'rotation[x]', times, pitch)];
+    limbPoses.forEach((limb, i) => tracks.push(track(limb, 'rotation[x]', times, i % 2 ? arms : legs)));
     const action = mixer.clipAction(new THREE.AnimationClip(name, -1, tracks));
     action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true;
     return action;
@@ -43,6 +46,8 @@ export function createLeapAnimation(root, body, limbs) {
       // Keep the physical arc, but soften nonessential motion through mixer weights.
       for (const a of Object.values(actions)) a.weight = reduced ? 0.25 : 1;
       mixer.update(dt);
+      body.position.y = pose.position.y; body.rotation.x = pose.rotation.x;
+      limbs.forEach((limb, i) => { limb.rotation.x = limbPoses[i].rotation.x; });
       return true;
     },
     reset() { mixer.stopAllAction(); state = action = null; wasLeaping = false; },

@@ -71,6 +71,7 @@ const GUNNER_PALETTE = {
 const GUNNER_EYE_GLOW = [4, 2.2, 0.2];
 const LOOK = { axeman: { palette: PALETTE, eyeGlow: EYE_GLOW }, gunner: { palette: GUNNER_PALETTE, eyeGlow: GUNNER_EYE_GLOW } };
 const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
+const AIMED_TOOLS = new Set(['GUN', 'SMG', 'SNIPER', 'ROCKET', 'LASER', 'BLOWTORCH', 'PHYSGUN']);
 const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
 // the tool's model for each tool the brain uses (models.js, by the catalog)
 const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'SMG', 'SNIPER', 'PHYSGUN', 'TROWEL', 'BLOWTORCH', 'BOMB', 'PICKAXE',
@@ -84,15 +85,17 @@ let nextId = 1;
 // an albedo, and createFigure lights it like the body. palette and eyeGlow are
 // this NPC's own arrays (copied from its style's LOOK): the meshes hold them, so
 // a team's colours (tint) are written into them in place.
-function buildWizard(held, palette, eyeGlow) {
+function buildWizard(held, hand, palette, eyeGlow) {
   return () => {
     const rig = buildCrasher({ palette, eyeGlow });
     const grip = new THREE.Group();
     grip.position.y = rig.handY;
     grip.scale.setScalar(HELD_SCALE);
     rig.elR.add(grip);
+    Object.assign(hand, { grip, shoulder: rig.shR, elbow: rig.elR });
     for (const [key, model] of Object.entries(MODEL_OF)) {
       const m = attachModel(grip, model, null, { arm: false });
+      m.obj.position.copy(m.info.grip).negate(); // the handle, not the model's bounding-box centre, sits in the mitten
       m.obj.traverse((o) => {
         if (!o.isMesh || !o.material?.color) return;
         const c = o.material.color;
@@ -123,13 +126,17 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true, id });
   body.team = team;
-  const held = {};
+  const held = {}, hand = {};
   const styleLook = LOOK[style] ?? LOOK.axeman;
   const palette = Object.fromEntries(Object.entries(styleLook.palette).map(([k, v]) => [k, [...v]]));
   const eyeGlow = [...styleLook.eyeGlow];
-  const figure = createFigure(buildWizard(held, palette, eyeGlow));
+  const figure = createFigure(buildWizard(held, hand, palette, eyeGlow));
   const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
-  const kit = createKit({ ...env, viewmodel, owner: id });
+  const kit = createKit({ ...env, viewmodel, owner: id, getMuzzleWorld(key) {
+    const model = held[key];
+    if (!model?.visible || body.dead || body.gibbed) return null;
+    return model.getObjectByName('muzzle')?.getWorldPosition(new THREE.Vector3()) ?? null;
+  } });
   let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
   const charmed = () => !!(body.status?.has('CHARMED') || world.player?.status?.has('CHARMED'));
   const agent = new (style === 'gunner' ? GunnerAgent : Agent)({
@@ -142,6 +149,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
   });
 
   let deadTime = 0, stuckT = 0, jumpWait = 0, spawned = false, yaw = 0, chopT = 0;
+  let carried = style === 'gunner' ? 'SMG' : 'AXE';
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   const eye = new THREE.Vector3(), dir = new THREE.Vector3(0, 0, -1), look = new THREE.Vector3();
   const vFeet = new THREE.Vector3(), tmp = new THREE.Vector3(), worldEye = new THREE.Vector3();
@@ -151,6 +159,8 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, player: body, viewBobbing: false,
   };
   const actor = { id, at: eye };
+  const down = new THREE.Vector3(0, -1, 0), localAim = new THREE.Vector3();
+  const parentQ = new THREE.Quaternion(), aimQ = new THREE.Quaternion(), aimEuler = new THREE.Euler(0, 0, 0, 'YXZ');
   body.status.actor = actor;   // its statuses' events say whose (status.js)
   // it hurt the player: a breather before its next attack
   const offLanded = povEvents.on('player:hit', (e) => { if (e.by === id) agent.landed(); });
@@ -283,6 +293,34 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
         povEvents.as(actor, () => body.kick(tmp));
       }
 
+      // Equipped is persistent; a frame with no attack intent does not holster the weapon (HL2 NPCs).
+      carried = it.tool ?? agent.weapon ?? carried;
+      if (agent.weapons && !agent.weapons.has(carried)) carried = [...agent.weapons].find((key) => held[key]) ?? null;
+      for (const [k, obj] of Object.entries(held)) obj.visible = alive && k === carried;
+      if ((it.tool === 'AXE' || it.tool === 'PICKAXE') && it.primaryPressed) chopT = CHOP_S;
+      chopT = Math.max(0, chopT - dt);
+      w.toWorld(body.pos, vFeet);
+      figure.setVisible(spawned && !body.gibbed);
+      figure.update(dt, {
+        feet: vFeet, scale: w.scale * body.size, yaw, worldToGrid: w.worldToGrid,
+        speedH: got / body.size, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
+        dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting, status: body.status,
+        chop: chopT > 0 ? 1 : it.chop, kick: body.kickPose,
+      });
+      if (hand.grip) {
+        hand.grip.quaternion.identity();
+        if (alive && AIMED_TOOLS.has(carried)) {
+          // Source's aim layer overrides the walking arm; the wizard keeps its one-mitten grip.
+          hand.shoulder.parent.getWorldQuaternion(parentQ).invert();
+          localAim.copy(dir).applyQuaternion(parentQ);
+          hand.shoulder.quaternion.setFromUnitVectors(down, localAim);
+          hand.elbow.quaternion.identity();
+          aimQ.setFromEuler(aimEuler.set(Math.atan2(dir.y, Math.hypot(dir.x, dir.z)), yaw, 0));
+          hand.elbow.getWorldQuaternion(parentQ);
+          hand.grip.quaternion.copy(parentQ).invert().multiply(aimQ);
+        }
+      }
+
       // the hands: the tool the brain wants, with its buttons, as this NPC
       if (alive && it.tool) {
         pick();
@@ -295,20 +333,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
         viewmodel.quaternion.setFromUnitVectors(look.set(0, 0, -1), dir);
         viewmodel.updateMatrixWorld(true);
         povEvents.as(actor, () => kit.use(it.tool, ctx));
-        if ((it.tool === 'AXE' || it.tool === 'PICKAXE') && it.primaryPressed) chopT = CHOP_S;
       } else if (kit.held) kit.putAway();
-
-      // the figure
-      chopT = Math.max(0, chopT - dt);
-      for (const [k, obj] of Object.entries(held)) obj.visible = alive && k === it.tool;
-      w.toWorld(body.pos, vFeet);
-      figure.setVisible(spawned && !body.gibbed);   // burst into meat: nothing left to draw
-      figure.update(dt, {
-        feet: vFeet, scale: w.scale * body.size, yaw, worldToGrid: w.worldToGrid,   // (Shrink: as the player's figure)
-        speedH: got / body.size, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
-        dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting, status: body.status,
-        chop: chopT > 0 ? 1 : it.chop, kick: body.kickPose,
-      });
     },
     setVisible(v) { figure.setVisible(v && spawned && !body.gibbed); },
     reset() { if (oneShot) return; spawned = false; kit.putAway(); figure.setVisible(false); },
