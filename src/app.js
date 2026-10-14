@@ -413,7 +413,7 @@ const camera = useWebGPUCamera(new THREE.PerspectiveCamera(40, innerWidth / inne
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.12;
-controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: null };
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 controls.zoomToCursor = true;
 controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };   // one finger paints (touchDown)
 // What gpu.three.prepare(object) compiles a new kind of mesh for (B5, F8):
@@ -824,8 +824,7 @@ const hover = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, 
 let painting = false;
 let strokePainted = false;    // the stroke under way has painted at least once
 let releasePending = false;   // its button went up before it had: it stops after its next paint
-let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the right-button eraser
-let strokeButton = 0;
+let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the tool gun's eraser
 let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
 let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
 let dragY = 0;
@@ -908,6 +907,8 @@ function pickRay(ro, rd, visible = false) {
   });
 }
 
+const isTool = () => settings.tool < 0;
+
 // an element's brush sits on the hovered face; a brush tool's (erase, heat) is centred in the hovered cell
 function hoverBrushCenter(out, tool = settings.tool) {
   const axis = Math.floor(hover.face / 2);
@@ -927,8 +928,7 @@ function updateBrush() {
     return;
   }
   if (pov?.active) { shapeDrag = null; updateGunBrush(); return; }
-  const tool = painting ? strokeTool : settings.tool;
-  if (isBrush(tool)) {
+  if (isBrush(settings.tool)) {
     if (painting || shapeDrag) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
@@ -944,13 +944,13 @@ function updateBrush() {
     return;
   }
   brush.set({
-    visible: brushValid && pointerInside && !uiHover && (!eyedropper || painting),
+    visible: brushValid && pointerInside && !uiHover && !eyedropper,
     position: presentationPoint(brushCenter, tmpV).multiplyScalar(scale).add(volume.position),   // (where the view shows it: a presentation effect bends it)
     radius: settings.radius * scale,
     shape: settings.shape,
-    color: toolById(tool).color,
+    color: toolById(settings.tool).color,
   });
-  builds?.update({ hover, active: isBuild(tool) && pointerInside && !uiHover && !eyedropper });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
 }
 
 // The brush's state as the view key sees it (the brush is ours, not in three's scene).
@@ -1645,22 +1645,19 @@ function press(e) {
   }
   const wasEditing = !!signs?.editing;
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
-  const erase = e.button === 2;
-  if ((e.button !== 0 && !erase) || e.altKey || (erase && e.shiftKey) || wasEditing) return; // Shift+right pans; finishing a sign edit doesn't paint
-  if ((painting && !releasePending) || shapeDrag) return;
+  if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  if (!erase && eyedropper) {
+  if (eyedropper) {
     if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     return;
   }
-  if (!erase && clickTool() !== null) return;
+  if (clickTool() !== null) return;
   // TPT's PropertyTool does nothing until its window holds a value that reads
-  if (!erase && settings.tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first (⌘P)'); openProp(); return; }
-  const tool = erase ? ERASE_TOOL : settings.tool;
-  dragY = hover.valid ? hoverBrushCenter(tmpV, tool).y : (tool < 0 ? 0.5 : settings.radius);
-  const mode = erase ? null : drawModeOf(e);
+  if (settings.tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first (⌘P)'); openProp(); return; }
+  dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
+  const mode = drawModeOf(e);
   if (mode === 'fill' && fills(settings.tool)) { fillAt(); return; }
-  if (!((mode === 'line' || mode === 'box') && isBrush(settings.tool) && startShape(mode))) startStroke(tool, e.button);
+  if (!((mode === 'line' || mode === 'box') && isBrush(settings.tool) && startShape(mode))) startStroke(settings.tool);
   if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
 }
 
@@ -1715,14 +1712,13 @@ function clickTool() {
 }
 
 // A brush stroke of `tool` from now until the button lets go (undone as one).
-function startStroke(tool, button = 0) {
+function startStroke(tool) {
   if (selectedMode === 'factory' || ctx.industry?.building) return;
   if (!mp.isGuest) {
     sim.snapshot(toolById(tool)?.name);
     toolbar.setUndoEnabled(true);
   }
   strokeTool = tool;
-  strokeButton = button;
   painting = true;
   strokePainted = releasePending = false;
   windFromValid = false;
@@ -1763,7 +1759,7 @@ const toolGun = {
   release() { painting = false; },
 };
 addEventListener('pointerup', (e) => {
-  if (e.button !== (shapeDrag ? 0 : strokeButton)) return;
+  if (e.button !== 0) return;
   // a click shorter than the GPU's frame (its frames still in flight, B3)
   // has painted nothing yet: it paints once, on the next tick that runs
   if (painting && !strokePainted) releasePending = true;
@@ -1880,11 +1876,11 @@ addEventListener('keydown', (e) => {
 });
 addEventListener('keyup', (e) => {
   if (e.key === 'Alt') controls.mouseButtons.LEFT = null;
-  if (e.key === 'Shift') controls.mouseButtons.RIGHT = null;
+  if (e.key === 'Shift') controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
 });
 addEventListener('blur', () => {
   controls.mouseButtons.LEFT = null;
-  controls.mouseButtons.RIGHT = null;
+  controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
   painting = false;
   shapeDrag = null;
 });
