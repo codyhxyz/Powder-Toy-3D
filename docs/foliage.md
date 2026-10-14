@@ -3,6 +3,11 @@
 Status: implemented on `feat/clustered-foliage`, pending GPU approval and runtime checks.
 No performance improvement is claimed. No game or GPU test ran during implementation.
 
+The user later approved a comparison with a ten-second maximum.
+The attempt stopped at the shared GPU lock because another process held it.
+No browser launched, no GPU work ran, and no timing samples were collected.
+The result is `/tmp/tpt-foliage-10s-result.json`. Runtime validation and deployment remain pending.
+
 ## Geometry and ownership
 
 Each tree-leaf voxel owns a three-blade cluster.
