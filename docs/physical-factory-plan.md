@@ -1,9 +1,9 @@
 # Physical factory delivery plan
 
-Status: modules integrated; controller and UI integration in progress. Nothing deployed yet.
+Status: controller and UI integrated. Native thermal validation is unresolved. Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
-The integration branch includes upstream updates through `6c375ce1beda29e90c0a1621e5cc3e24382c605c`.
+The integration branch includes upstream updates through `b573872e890a3283fe57db298b3f7b434cd8a46c`.
 
 ## Target player experience
 
@@ -45,12 +45,12 @@ Routing uses existing refractory blocks before specialized pieces.
 | Requirement | Evidence required before delivery | Current state |
 | --- | --- | --- |
 | Finite-fuel heat | Fuel exhaustion stops added heat. The heat source does not duplicate fuel. | CPU budget and conduction checks pass; GPU pending |
-| Useful temperatures | A constructed hearth melts the target scrap at normal timing. | Pending |
-| Ignition | A player can start the process without unrestricted Sandbox spawning. | Paid starter passes CPU conduction checks; native fixture pending |
+| Useful temperatures | A constructed hearth melts the target scrap at normal timing. | Small fuel batch failed; full-firebox result still unavailable |
+| Ignition | A player can start the process without unrestricted Sandbox spawning. | Paid starter observed on native GPU; useful melting still unverified |
 | Physical gate | Closed material blocks flow. Opening preserves material and temperature. | Pending |
-| Obstructed closure | Closure never overwrites grains, liquids, or unrelated solids. | CPU transition checks and shader type validation pass; GPU pending |
-| Gate lifecycle | Removal, damaged structure, pending actions, and saves preserve owned material. | CPU ownership and lifecycle checks pass; controller/save integration pending |
-| Controls | A Factory player can install and operate permitted controls without an economy bypass. | Pending |
+| Obstructed closure | Closure never overwrites grains, liquids, or unrelated solids. | Native WALL and falling-sand checks pass; other materials covered by shared preflight |
+| Gate lifecycle | Removal, damaged structure, pending actions, and saves preserve owned material. | CPU lifecycle/save guards and native tagged removal/damage checks pass |
+| Controls | A Factory player can install and operate permitted controls without an economy bypass. | Integrated CPU economy/UI checks and native control writes pass; browser interaction pending |
 | Diagnostics | Each reported condition comes from current machine state or bounded observations. | Async CPU regressions and shader type validation pass; controller/GPU pending |
 | Routing | The production line carries actual material between distinct hot and cold regions. | Pending |
 | Economy | Construction charges and refunds remain correct. Existing progression remains usable. | Pending |
@@ -96,6 +96,7 @@ These are open questions, not implementation claims.
 - Purchased metal costs five credits because shipping one metal cell earns four credits.
 - Cool metal at the intake. Cooled metal is a stationary solid, not belt cargo.
 - The vertical gate controls a lateral outlet. It is not a horizontal hopper lid.
+- Spent coal leaves ash. A usable firebox must allow ash removal and refueling.
 
 ### Current validation
 
@@ -105,7 +106,9 @@ These are open questions, not implementation claims.
 - Existing construction, controller, machine-transfer, and Quarry CPU suites pass.
 - Async-read and browser-launch policy checks pass.
 - The production build passes with isolated dependencies installed from the lockfile.
+- Native gate/control checks pass; total slot occupancy was 7093 ms.
 - No native GPU melting, drainage, cooling, or shipment test has passed for the new hearth yet.
+- See `physical-factory-validation.md` for failed checkpoints and measured slot occupancy.
 
 ## Work boundaries
 
