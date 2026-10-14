@@ -1,3 +1,4 @@
+import { routeNativePOV } from '../v2/interactions.js';
 import { NativeTransfer } from '../v2/transfer.js';
 import { coupleNativeBody } from '../v2/body.js';
 // The first person's GPU work on WebGPU (docs/webgpu.md G2): every write to
@@ -137,6 +138,10 @@ class PovGpu {
    * @returns {boolean} false when nothing was recorded (no box, or the kernel is still building)
    */
   edit(name, box, values, opts) {
+    if (this.sim.compact) {
+      const routed = routeNativePOV(this.sim, name, box, values);
+      if (routed !== null) return routed;
+    }
     if (this.sim.compact && name === 'povCouple') return !!box && coupleNativeBody(this.sim, values);
     const k = this.editKernel(name);
     if (!box || !ready(k.main) || (k.apply && !ready(k.apply))) return false;

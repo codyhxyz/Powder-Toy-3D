@@ -1,3 +1,4 @@
+import { routeNativePaint } from './v2/interactions.js';
 import { captureNativeSnapshot, restoreNativeSnapshot, validateNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
 import { nativeHostTick } from './v2/host.js';
 import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
@@ -846,6 +847,10 @@ export class Simulation {
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
     if (this.nativeTransition || this.nativeTransitionError) return false;
+    if (this.compact) {
+      const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, mask, filter, erase, prop });
+      if (routed !== null) return routed;
+    }
     if (this.compact && tool === TOOLS.find(t => t.key === 'WIND').id) {
       if (!this.nativeCapabilities.impulse) throw new Error('Native wind impulse is unavailable');
       if (!wind || !Math.hypot(...wind)) return;

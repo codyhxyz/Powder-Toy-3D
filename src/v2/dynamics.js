@@ -1,11 +1,12 @@
 import { RAYS } from '../rays.js';
 import { validateMaterialCore } from './materialValidation.js';
+import { EXTERNAL_BLAST_CAP, validExternalBlast, validateExternalBlasts } from './externalBlast.js';
 import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP } from '../shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase } from '../shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
 
@@ -29,6 +30,7 @@ const cloneRequest = r => ({ ...r, position:[...r.position], direction:[...r.dir
 /** Pure validation: callers may preflight a save before ANY app/GPU mutation. */
 export function validateDynamicState(snapshot,g) {
   const s=snapshot;
+  const external = validateExternalBlasts(s ?? {});
   if (!s || s.version!==1 || !equal(s.dims??[],[g.nx,g.ny,g.nz]) || !finiteVector(s.origin) ||
     !s.origin.every(Number.isInteger) || !(s.particles instanceof Uint32Array) || s.particles.length!==PARTICLE_CAP*12 ||
     !(s.air instanceof Uint32Array) || s.air.length!==g.nbricks*8 || !(s.control instanceof Uint32Array) || s.control.length!==32 ||
@@ -74,7 +76,7 @@ export function validateDynamicState(snapshot,g) {
     if(!new Float32Array(a.words.buffer,a.words.byteOffset,a.words.length).every(safeDynamicNumber)) throw new Error('Invalid archived native air values');
     archive.set(key(a.worldCell),new Uint32Array(a.words));
   }
-  return {requests,archive,outside,events};
+  return {requests,archive,outside,events,external};
 }
 
 /** Native recording driver. No method advancing physics submits, waits, or
@@ -88,7 +90,7 @@ export class NativeDynamics {
     this.owner=owner; this.gpu=owner.gpu; this.g=owner.g; this.blastBatch=blastBatch;
     this.origin=vector(owner.sim.origin); this.sequence=0; this.serial=0; this.airIndex=0;
     this.isReady=false; this.isIdle=false; this.disposed=false; this.stats=null;
-    this.rayRequests=new Map(); this.airArchive=new Map(); this.pendingOutside=new Map();
+    this.externalBlasts=new Map(); this.rayRequests=new Map(); this.airArchive=new Map(); this.pendingOutside=new Map();
     this.drawAdapter=null; this.holdSession=null; this.buffers=[];
     const gpu=this.gpu, g=this.g;
     const usage=GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST;
@@ -114,7 +116,7 @@ export class NativeDynamics {
     this.kernels={};
     for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','finish','rayEmit','workArgs'].includes(stage)) || (family==='particles' && stage==='holdCOM');
+        const single=(family==='blasts' && ['reset','normalize','allocate','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && stage==='holdCOM');
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -126,7 +128,7 @@ export class NativeDynamics {
   get capabilities() {
     const ready=this.isReady&&!this.disposed;
     return { impulse:ready, photon:ready, neutron:ready, wind:ready, pressure:ready, vacuum:ready, cyclone:ready,
-      physicsReady:ready, drawReady:ready&&this.drawAdapter?.isReady===true, physgun:ready, bodyCoupling:ready };
+      externalBlast:ready, physicsReady:ready, drawReady:ready&&this.drawAdapter?.isReady===true, physgun:ready, bodyCoupling:ready };
   }
   supportsToolKind(kind) { return [...IMPULSE_KINDS,'physgun'].includes(kind) && this.capabilities[kind]===true; }
   get renderState() { return { ...DYNAMICS_ABI, particles:this.particles, control:this.control, liveCountOffset:0,
@@ -160,7 +162,30 @@ export class NativeDynamics {
     this._record('particles','clear',Math.ceil(this.g.slots*4/64),tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
   }
+  applyExternalBlast(request) {
+    if(!this.isReady || this.disposed || !validExternalBlast(request)) return {status:'rejected',reason:'invalid or unavailable external blast'};
+    if(this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
+    let slot=0;while(this.externalBlasts.has(slot)) slot++;
+    if(slot>=EXTERNAL_BLAST_CAP) return {status:'rejected',reason:'external blast queue full; retry explicitly'};
+    const r={position:[...request.position],energy:request.energy,radius:request.radius,requestId:++this.sequence};
+    this.externalBlasts.set(slot,r);this.gpu.write(this.control,(externalBlastBase(this.g)+slot)*4,new Uint32Array([0]));
+    this._externalWork();this._recordExternalBlast(slot,r,this.owner.tick);
+    return {status:'queued',requestId:r.requestId};
+  }
+  _recordExternalBlast(slot,r,tick) {
+    const p={mode:14,center:r.position,strength:r.energy,radius:r.radius,sequence:r.requestId,substep:slot};
+    this._record('blasts','externalBegin',1,tick,p);
+    this._record('blasts','workArgs',1,tick,p);
+    this.gpu.frame.copy(this.control,20*4,this.dispatchArgs,0,48);
+    for(const stage of ['plan','sum','normalize','damagePlan','count','allocate','externalGate','apply','finish']) {
+      const offset=['normalize','allocate','externalGate','finish'].includes(stage)?32:
+        (['sum','count'].includes(stage)?16:0);
+      this._record('blasts',stage,{indirect:this.dispatchArgs,offset},tick,p);
+    }
+  }
   consumeMaterialEvents(tick) {
+    // GPU completion, not CPU readback latency, decides exactly-once execution.
+    for(const [slot,r] of this.externalBlasts) this._recordExternalBlast(slot,r,tick);
     // Deterministic bounded batches, not an unbounded GPU event loop. At the
     // default the service rate is 480 charges/s; remaining sources stay intact
     // and busy. Dense chains are explicitly latency-limited, not called parity.
@@ -291,14 +316,22 @@ export class NativeDynamics {
   async readActivity() {
     this._check(); const serial=this.serial,epoch=this.owner.epoch;
     const first=this.gpu.readback.buffer(this.control,0,80);
+    const externalEntries=[...this.externalBlasts];
+    const externalPending=this.gpu.readback.buffer(this.control,externalBlastBase(this.g)*4,EXTERNAL_BLAST_CAP*4);
     const pending=this.gpu.readback.buffer(this.control,rayRequestBase(this.g)*4,RAY_REQUEST_CAP*4);
-    const [raw,requests]=await Promise.all([first,pending]);
+    const [raw,requests,externalRaw]=await Promise.all([first,pending,externalPending]);
+    const done=new Uint32Array(externalRaw);
+    // A completed immutable request may be acknowledged while later ticks run.
+    // Identity protects restore/slot reuse; a serial check would fill the queue
+    // forever whenever GPU readback takes longer than one simulation tick.
+    if(!this.disposed) for(const [slot,request] of externalEntries)
+      if(done[slot] && this.externalBlasts.get(slot)===request) this.externalBlasts.delete(slot);
     const c=new Uint32Array(raw),r=new Uint32Array(requests);
     let queued=0; for (const [slot] of this.rayRequests) { queued+=r[slot]; if(r[slot]===0 && serial===this.serial) this.rayRequests.delete(slot); }
     const stats={particles:c[0],air:c[1],events:c[2],queued,capacityFallbacks:c[7],
-      outsideObligations:this.pendingOutside.size,blastBatch:this.blastBatch,outflowPackets:c[16],sweepRetries:c[19]};
+      externalBlasts:this.externalBlasts.size,outsideObligations:this.pendingOutside.size,blastBatch:this.blastBatch,outflowPackets:c[16],sweepRetries:c[19]};
     if (!this.disposed && serial===this.serial && epoch===this.owner.epoch) {
-      this.stats=stats; this.isIdle=stats.particles===0 && stats.air===0 && stats.events===0 && queued===0 && !stats.outsideObligations;
+      this.stats=stats; this.isIdle=stats.particles===0 && stats.air===0 && stats.events===0 && queued===0 && !stats.outsideObligations && !stats.externalBlasts;
     }
     return stats;
   }
@@ -308,22 +341,27 @@ export class NativeDynamics {
     this._check(); const g=this.g,origin=[...this.origin],serial=this.serial;
     const metadata={version:1,dims:[g.nx,g.ny,g.nz],origin,sequence:this.sequence,blastBatch:this.blastBatch,isIdle:this.isIdle,
       holdSession:this.holdSession?structuredClone(this.holdSession):null,
+      externalBlasts:[...this.externalBlasts].map(([slot,r])=>({slot,...r,position:[...r.position]})),
       requests:[...this.rayRequests].map(([slot,r])=>({slot,...cloneRequest(r)})),
       airArchive:[...this.airArchive].map(([worldCell,words])=>({worldCell:worldCell.split(',').map(Number),words:new Uint32Array(words)})),
       pendingEvents:[...this.pendingOutside].map(([worldCell,bits])=>({worldCell:worldCell.split(',').map(Number),bits}))};
     const reads=[this.particles,this.air[this.airIndex],this.control,this.owner.events].map(b=>this.gpu.readback.buffer(b,0,b.size));
     const [particles,air,control,events]=(await Promise.all(reads)).map(b=>new Uint32Array(b));
     for(let s=0;s<g.slots;s++) if(events[s]) metadata.pendingEvents.push({worldCell:slotCell(g,s).map((v,a)=>v+origin[a]),bits:events[s]});
-    return {...metadata,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
+    const externalBlastDone=control.slice(externalBlastBase(g),externalBlastBase(g)+EXTERNAL_BLAST_CAP);
+    const owned=new Set(metadata.externalBlasts.map(r=>r.slot));
+    for(let i=0;i<externalBlastDone.length;i++) if(!owned.has(i)) externalBlastDone[i]=0;
+    return {...metadata,externalBlastDone,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
   }
   restoreDynamicState(snapshot) {
     this._check(); const g=this.g,s=snapshot;
-    const { requests, archive, outside, events } = validateDynamicState(s, g);
+    const { requests, archive, outside, events, external } = validateDynamicState(s, g);
     // All validation precedes all writes. Bad saves never partially replace state.
     this.gpu.write(this.particles,0,s.particles);
     for(const b of this.air) this.gpu.write(b,0,s.air);
     this.gpu.frame.clear(this.control); this.gpu.write(this.control,0,s.control);
     this.gpu.write(this.control,rayRequestBase(g)*4,s.rayRemaining);
+    this.gpu.write(this.control,externalBlastBase(g)*4,external.done);this.externalBlasts=external.requests;
     this.gpu.write(this.control,heldBase(g)*4,s.held); this.gpu.write(this.control,shockBase(g)*4,s.shocks);
     this.gpu.write(this.owner.events,0,events); this.gpu.frame.clear(this.flight); this.gpu.frame.clear(this.claims); this.gpu.frame.clear(this.plans);
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; this.blastBatch=s.blastBatch;
