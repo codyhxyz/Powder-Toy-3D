@@ -1,6 +1,7 @@
 import { prelude, LAYOUT, STATE_OPTS } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
+import { MACHINE_GUARD_FIELDS, machineGuardWGSL } from './industry.js';
 
 // Exact cell transfer (src/pov/tools/transfer.js): taking cells out of the grid
 // and putting them back with nothing lost or duplicated.
@@ -45,6 +46,8 @@ export const TransferParams = uniformStruct('TransferParams', {
   maxHard: 'f32',     // take, breaking: the hardest solid that comes out (HARD units)
   only: 'u32',        // take: 1 = only the elements in `allow`
   allow: `array<vec4u, ${ALLOW_VEC4S}>`,   // take: a bit per element id (id >> 5 picks the u32, id & 31 the bit)
+  maxTemperature: 'f32', // take: exclusive upper bound; defaults to unbounded
+  ...MACHINE_GUARD_FIELDS, // optional atomic machine interlock (material -1 disables)
   slot: 'u32',        // the ring slot the answer goes to
   cells: `array<vec4f, ${TRANSFER_SLOTS}>`,
   items: `array<vec4f, ${TRANSFER_SLOTS}>`,
@@ -55,6 +58,7 @@ ${prelude(g, STATE_OPTS.STATE_RW)}
 ${TransferParams.wgsl}
 @group(3) @binding(1) var<uniform> P: TransferParams;
 ${ringWGSL()}
+${machineGuardWGSL}
 const TRANSFER_SLOTS: u32 = ${TRANSFER_SLOTS}u;
 const MODE_PUT: u32 = ${TRANSFER_PUT}u;
 var<workgroup> ranks: array<u32, ${TRANSFER_SLOTS}>;   // qualifying slots up to each one (inclusive)
@@ -62,7 +66,9 @@ var<workgroup> ranks: array<u32, ${TRANSFER_SLOTS}>;   // qualifying slots up to
 // Does slot i's cell, holding a, pass the transfer's filter?
 fn qualifies(i: u32, a: vec4f) -> bool {
   let id = eid(a);
+  if (!machineEnabled(P.guardBase, P.guardMaterial, P.guardPort, P.guardPowered)) { return false; }
   if (P.mode == MODE_PUT) { return id == E_EMPTY; }
+  if (a.y >= P.maxTemperature) { return false; }
   let want = i32(floor(P.cells[i].w + 0.5));
   if (id == E_EMPTY || (want >= 0 && id != want)) { return false; }
   if ((P.kinds & (1u << u32(KIND(id)))) == 0u) { return false; }

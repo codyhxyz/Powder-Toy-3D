@@ -176,7 +176,7 @@ export function createTransfer({ getSim }) {
   let inFlight = 0;
 
   // Record the transfer's one dispatch and read its answer back.
-  function run({ cells, wants, items, mode, kinds = 0, breakDebris = false, maxHard = ANY_HARD, allow = null, limit, vel }) {
+  function run({ cells, wants, items, mode, kinds = 0, breakDebris = false, maxHard = ANY_HARD, maxTemperature = 1e30, guard = null, allow = null, limit, vel }) {
     const sim = getSim();
     const n = Math.min(cells.length, TRANSFER_SLOTS);
     if (!sim || !n || limit <= 0 || inFlight >= MAX_IN_FLIGHT) return null;
@@ -193,6 +193,9 @@ export function createTransfer({ getSim }) {
     const count = slots.length;
     const answer = povGpu(sim).transfer({
       count, limit: Math.min(limit, TRANSFER_SLOTS), mode, kinds, breaks: breakDebris ? 1 : 0, maxHard, only: allow ? 1 : 0, allow: allow ?? [],
+      maxTemperature,
+      guardBase: guard?.base ?? [0, 0, 0], guardMaterial: guard?.material ?? -1,
+      guardPort: guard?.port ?? [0, 0, 0], guardPowered: guard?.powered ? 1 : 0,
       vel: vel ?? [0, 0, 0], cells: slots, items: items ? items.slice(0, TRANSFER_SLOTS) : [],
     });
     if (!answer) return null;   // (its kernel is still building: B5)
@@ -211,12 +214,15 @@ export function createTransfer({ getSim }) {
     // those no harder than maxHard (loose kinds come out as they are). ids: only
     // these elements (allowMask), or all. Returns a promise of the taken cells,
     // or null when nothing was issued (busy, full).
-    take(load, { cells, kinds, want = ANY_ID, breakDebris = false, maxHard = ANY_HARD, ids = null, limit = Infinity }) {
+    // maxTemperature is exclusive and tested atomically with removal. guard:
+    // {base:[x,y,z], material, port:[x,y,z], powered} requires an intact 4x4
+    // base and (optionally) native TPT control, also for put(). Both opt-in.
+    take(load, { cells, kinds, want = ANY_ID, breakDebris = false, maxHard = ANY_HARD, maxTemperature = 1e30, guard = null, ids = null, limit = Infinity }) {
       const n = Math.min(limit, load.free);
       if (n <= 0) return null;
       const mask = kinds.reduce((m, k) => m | KIND_BIT(k), 0);
       const wants = want === ANY_ID ? null : cells.map(() => want);
-      const p = run({ cells, wants, mode: TRANSFER_TAKE, kinds: mask, breakDebris, maxHard, allow: ids && allowMask(ids), limit: n });
+      const p = run({ cells, wants, mode: TRANSFER_TAKE, kinds: mask, breakDebris, maxHard, maxTemperature, guard, allow: ids && allowMask(ids), limit: n });
       if (!p) return null;
       load.reserved += n;
       return p.then((buf) => {
@@ -238,7 +244,7 @@ export function createTransfer({ getSim }) {
     // element `id`, if given) into the empty cells among `cells` (nearest first),
     // moving at `vel` cells/step. Returns a promise of how many landed; the rest
     // go back into the load.
-    put(load, { cells, max = Infinity, vel, id = ANY_ID }) {
+    put(load, { cells, max = Infinity, vel, id = ANY_ID, guard = null }) {
       const picked = [];   // indices into load.cells, newest first
       const want = Math.min(max, TRANSFER_SLOTS);
       for (let i = load.cells.length - 1; i >= 0 && picked.length < want; i--) {
@@ -247,7 +253,7 @@ export function createTransfer({ getSim }) {
       const n = picked.length;
       if (n <= 0) return null;
       const items = picked.map((i) => load.cells[i]);
-      const p = run({ cells, items, mode: TRANSFER_PUT, limit: n, vel });
+      const p = run({ cells, items, mode: TRANSFER_PUT, limit: n, vel, guard });
       if (!p) return null;
       const out = new Set(picked);
       load.cells = load.cells.filter((_, i) => !out.has(i));
