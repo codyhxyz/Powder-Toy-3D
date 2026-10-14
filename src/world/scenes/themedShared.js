@@ -1,5 +1,6 @@
 import { E } from '../../elements.js';
 import { pcg } from '../../rng.js';
+import { glf as glslFloat } from '../../glsl.js';
 
 // Shared machinery of the world scenes written once for GPU and CPU: the
 // themed ones (labWorld.js, volcanoWorld.js) and the island's generator
@@ -222,7 +223,6 @@ function helpersJs(seed) {
 // GLSL) and picks. A pick is a list of [name, weight] (weights summing to 1):
 // it gives each name an index, PREFIX_<PICK>_<NAME>, and a cumulative share
 // cut, PREFIX_<PICK>_<NAME>_CUT; pickGLSL writes the function that picks one.
-const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 function flatten(prefix, { ints = {}, floats = {}, salts = {}, picks = {} }) {
   const out = [];   // [name, js value, wgsl text, wgsl type]
   for (const [k, v] of Object.entries(ints)) out.push([`${prefix}_${k}`, v, String(v), 'i32']);

@@ -39,8 +39,8 @@
 import { MEDIA_NOISE_CELLS } from '../../gfx/materials.js';
 import { NOISE_FINEST_PERIOD } from '../../gfx/mediaNoise.js';
 import { CELL_M } from '../../scale.js';
+import { glf as f } from '../../glsl.js';
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 // Fine filament sizes (m): what resolves when the eye is inside a plume 1-3 m
 // across. Turned into whole-number scales of the noise tile.
 const FILAMENT_1_M = 0.2, FILAMENT_2_M = 0.05;

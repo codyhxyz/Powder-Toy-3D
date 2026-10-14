@@ -2,6 +2,7 @@ import { BRICK } from './common.js';
 import { E } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { libChecks } from './gfx/lib.js';
+import { glf } from '../glsl.js';
 
 // The far field's shared parts (docs/webgpu.md G1, J3): what the window's own
 // pipelines read of a massive world's far field, moved here from shaders/far.js
@@ -82,8 +83,6 @@ export function farLayout(size) {
     l2: level(BRICK * FAR_NODE * FAR_NODE),
   };
 }
-
-const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
 // The far shadow heights: a point's shadow test is soft over this half-width
 // (cells), after lifting the point this far (column tops are coarse).

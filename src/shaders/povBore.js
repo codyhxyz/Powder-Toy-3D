@@ -4,6 +4,7 @@ import { fold } from '../gpu/kernels.js';
 import { STRIKE } from './povTrace.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
 import { ddaWalkWGSL } from './dda.js';
+import { glf as lit, consts } from '../glsl.js';
 
 // GPU work for the two boring weapons: the burrower's drill and the laser
 // cannon (src/pov/tools/burrower.tool.js, laser.tool.js), on WebGPU
@@ -13,12 +14,6 @@ import { ddaWalkWGSL } from './dda.js';
 // Units: grid cells, cells/step, the sim's kinetic energy units (HARD) for the
 // drill, and the engine's heat (CAP · °C per cell, a water cell's CAP = 1) for
 // the laser.
-
-// A JS number as a WGSL f32 literal; a tuning block as typed consts (H1.7),
-// the keys in `ints` as i32 (loop bounds, array sizes)
-const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
-const consts = (prefix, obj, ints = []) => Object.entries(obj)
-  .map(([k, v]) => (ints.includes(k) ? `const ${prefix}_${k}: i32 = ${v};` : `const ${prefix}_${k}: f32 = ${lit(v)};`)).join('\n');
 
 // ---------------------------------------------------------------- burrower
 // A drill is power-limited, so it advances at its power over the work a cell

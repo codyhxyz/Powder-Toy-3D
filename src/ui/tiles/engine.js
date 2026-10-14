@@ -9,7 +9,7 @@
 // included. Only an element with its own special case in react.js (water,
 // fire, clone...) needs the same case added below; scripts/check-tile-engine.mjs
 // flags any that are missing.
-import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH } from '../../elements.js';
+import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH, mossBed, fungusFood, singEats } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { pcg } from '../../rng.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
@@ -83,8 +83,6 @@ const jet = (a, b) => (KIND[a] === K.LIQUID && isGasLike(b)) || (KIND[b] === K.L
 const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
 // growers: moss and fungus keep their damp in their ctype (activity.js grower, mossBed, fungusFood, dampOf)
 const grower = (id) => id === E.MOSS || id === E.FUNGUS;
-const mossBed = (id) => id === E.ROCK || id === E.BASALT || id === E.STONE || id === E.LIMESTONE || id === E.SANDSTONE;
-const fungusFood = (id) => id === E.WOOD || id === E.SAWDUST || id === E.PLANT;
 function dampOf(T, nid, nW) {
   if (T >= PHYS.DAMP_DRY_T) return 0;
   let h = 0;
@@ -184,8 +182,7 @@ function latentChance(T, Tp, C, L, rising) {
   lat.T = Tp;
   return rnd() * L < e;
 }
-// singularity (react.js singEats, singVacuum, singTakes)
-const singEats = (j) => j !== E.EMPTY && j !== E.WALL && j !== E.VOID && j !== E.SINGULARITY;
+// singularity (react.js singEats, singVacuum, singTakes; singEats is elements.js's)
 const singVacuum = (m) => Math.max(PHYS.P_MIN, -PHYS.SING_P_PER_MASS * m);
 const singTakes = (ma, a, mb, b) => ma > mb || (ma === mb && a < b);
 

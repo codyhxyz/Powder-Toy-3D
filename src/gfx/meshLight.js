@@ -40,14 +40,13 @@ import { lightingGLSL } from '../shaders/gfx/lighting.js';
 import { cloudDeckGLSL } from '../shaders/gfx/clouds.js';
 import { BRICK } from '../shaders/common.js';
 import { ELEMENTS, R } from '../elements.js';
+import { glf as f } from '../glsl.js';
 
 // Figures sit in the window's light at these offsets (cells): shadow lookups
 // move toward the sun (off the body's own cells), GI probes are read out along
 // the normal (figure.js's FIG_SHADOW_LIFT, FIG_GI_LIFT)
 export const SHADOW_LIFT = 0.6;
 export const GI_LIFT = 1.5;
-
-const f = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s) ? s : `${s}.0`; };
 
 // ---------------------------------------------------------------- the WGSL
 

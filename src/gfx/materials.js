@@ -35,6 +35,7 @@ import { ELEMENTS, K } from '../elements.js';
 import { bandGlow, LUMA_709 } from './incandescence.js';
 import { FLAME_COLOR } from './lamps.js';
 import { accessorsWGSL } from '../shaders/hostStruct.js';
+import { glf as f } from '../glsl.js';
 
 // sRGB decoding (IEC 61966-2-1)
 const SRGB_LINEAR_MAX = 0.04045;   // encoded value where the linear segment ends
@@ -583,7 +584,6 @@ export const MATERIAL_FIELDS = [
 // the Material struct sits in the prelude's Tables, so its accessors do too.
 export const materialAccessorsWGSL = () => `${accessorsWGSL('TB.mat', MATERIAL_FIELDS)}\n${accessorsWGSL('TB.elem', [FOAMS_FIELD])}`;
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const vec3 = (a) => `vec3f(${a.map(f).join(', ')})`;
 
 // The light matter gives off, as radiance: the thermal glow of its visible skin

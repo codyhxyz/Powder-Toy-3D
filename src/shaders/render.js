@@ -18,6 +18,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
 import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
 import { gateVariants } from '../gfx/detailGate.js';
+import { glf } from '../glsl.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -65,11 +66,6 @@ import { gateVariants } from '../gfx/detailGate.js';
 
 // ---- data views: WGSL generated from the colormaps in src/views.js ----
 
-const WGSL_DIGITS = 7;   // significant digits of generated float literals (float32 holds ~7)
-const glf = (x) => {
-  const s = String(+(+x).toPrecision(WGSL_DIGITS));
-  return /[.e]/.test(s) ? s : s + '.0';
-};
 const srgbOf = (hex) => [0, 2, 4].map((o) => parseInt(hex.slice(1 + o, 3 + o), 16) / 255);
 const vec3 = (v) => `vec3f(${v.map(glf).join(', ')})`;
 

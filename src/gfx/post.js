@@ -114,6 +114,7 @@ import {
 import { uniformStruct, fullscreenVert, luma as lumaWGSL, STAGE } from '../gpu/index.js';
 import { initRenderTarget, gpuTextureOf, createTemporalUpscaler } from '../gpu/three.js';
 import { IDENTITY, presentationWGSL } from './presentationMath.js';
+import { glf as f } from '../glsl.js';
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -296,8 +297,6 @@ const BUF = { COPY_SRC: 4, COPY_DST: 8, STORAGE: 128 };
 const HDR = 'rgba16float';
 const CLEAR = [0, 0, 0, 0];
 
-// a JS number as a WGSL f32 literal
-const f = (x) => (Number.isInteger(x) ? `${x}.0` : `${x}`);
 const vec2 = ([x, y]) => `vec2f(${f(x)}, ${f(y)})`;
 
 // ---------------------------------------------------------------- params

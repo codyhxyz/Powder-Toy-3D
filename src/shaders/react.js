@@ -1,10 +1,11 @@
 import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims } from './common.js';
 import { inertNearGLSL } from './activity.js';
-import { ELEMENTS } from '../elements.js';
+import { ELEMENTS, keysWith } from '../elements.js';
 import { electricReactGLSL } from '../electricity.js';
 import { simModesGLSL, SIM_MODE_FIELDS } from '../simModes.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
+import { idIsNot } from '../glsl.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
 // can't break anything, which lets almost every cell skip the impact check.
@@ -219,7 +220,7 @@ fn latentChance(T: ptr<function, f32>, Tp: f32, C: f32, L: f32, rising: bool, s:
 // Singularity (physics.js SING_*). What it swallows: any matter but the wall
 // and void (which drains it instead; another singularity merges), its partner
 // in the reactions' pairing.
-fn singEats(j: i32) -> bool { return j != E_EMPTY && j != E_WALL && j != E_VOID && j != E_SINGULARITY; }
+fn singEats(j: i32) -> bool { return ${idIsNot('j', ['EMPTY', ...keysWith('singProof')])}; }   // elements.js singEats
 // The vacuum one of mass m holds.
 fn singVacuum(m: f32) -> f32 { return max(P_MIN, -SING_P_PER_MASS * m); }
 // Of two touching singularities (mass, cell), does the first take the second?

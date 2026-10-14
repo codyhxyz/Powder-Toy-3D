@@ -37,6 +37,7 @@
 //     the Heat and Cool tools.
 import { ELEMENTS, E } from './elements.js';
 import { accessorsWGSL } from './shaders/hostStruct.js';
+import { glf as f } from './glsl.js';
 
 const SPARK_REST_STEPS = 4;   // ELEC.SPARK_REST, named here so LAMP_HOLD can build on it
 export const ELEC = {
@@ -107,16 +108,35 @@ export const powered = (id) => id === E.SWITCH || id === E.PCLN;
 // What a clone (CLONE, PCLN) takes as its ctype from a neighbour: not air, walls, clones or the silicon that powers them.
 export const cloneable = (j) => j !== E.EMPTY && j !== E.WALL && j !== E.CLONE && j !== E.PCLN && j !== E.PSCN && j !== E.NSCN;
 
+// A switch's life while off (SWITCH_ON while on)
+const SWITCH_OFF = 0;
+
 // Its table fields (the element tables' struct, shaders/common.js tablesWGSL;
-// shaders/hostStruct.js): CONDUCTS(id), WIRE(id) and SPARK_COST(id) in WGSL.
+// shaders/hostStruct.js): CONDUCTS(id), WIRE(id) and SPARK_COST(id) in WGSL,
+// and the per-element tests above, read from the JS rules so the WGSL can't
+// drift from them: powered(id), cloneable(j), tsnsSenses(j), and SPARK_GATED(id),
+// a conductor that takes a spark only while on (takesSpark).
 // SPARK_COST at the 6 significant digits its GLSL literal had.
 export const ELEC_FIELDS = [
   { name: 'sparkCost', type: 'f32', fn: 'SPARK_COST', get: (e) => +SPARK_COST[e.id].toPrecision(6) },
   { name: 'conducts', type: 'u32', fn: 'CONDUCTS', ret: 'bool', get: (e) => +CONDUCTS[e.id] },
   { name: 'wire', type: 'u32', fn: 'WIRE', ret: 'bool', get: (e) => +WIRE[e.id] },
+  { name: 'sparkGated', type: 'u32', fn: 'SPARK_GATED', ret: 'bool', get: (e) => +(takesSpark(e.id, ELEC.SWITCH_ON) && !takesSpark(e.id, SWITCH_OFF)) },
+  { name: 'switched', type: 'u32', fn: 'powered', ret: 'bool', get: (e) => +powered(e.id) },
+  { name: 'cloneSource', type: 'u32', fn: 'cloneable', ret: 'bool', get: (e) => +cloneable(e.id) },
+  { name: 'tsnsSensed', type: 'u32', fn: 'tsnsSenses', ret: 'bool', get: (e) => +tsnsSenses(e.id) },
 ];
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+// conductsInto as WGSL, from the JS rule over every pair of elements: the
+// pairs it blocks, grouped by the element the spark comes from. One
+// expression, no branches.
+function conductsIntoWGSL() {
+  const blocked = ELEMENTS.flatMap((from) => {
+    const to = ELEMENTS.filter((t) => !conductsInto(from.id, t.id)).map((t) => `to == E_${t.key}`);
+    return to.length ? [`(from_ == E_${from.key} && (${to.join(' || ')}))`] : [];
+  });
+  return `fn conductsInto(from_: i32, to: i32) -> bool { return !(${blocked.join(' || ') || 'false'}); }`;
+}
 
 // WGSL for the shared prelude (shaders/common.js; the name is the GLSL
 // version's, docs/webgpu.md W2): the constants, the tests above, and
@@ -146,16 +166,8 @@ fn cellSpark(a: vec4f) -> f32 {
   if (!sparkLive(id, ct)) { return 0.0; }
   return f32(sparkLevel(ct)) / f32(SPARK_V);
 }
-fn takesSpark(id: i32, life: f32) -> bool { return CONDUCTS(id) && (id != E_SWITCH || life == SWITCH_ON); }
-fn conductsInto(from_: i32, to: i32) -> bool {
-  if (to == E_PSCN && from_ == E_NSCN) { return false; }
-  if (to == E_SWITCH && (from_ == E_PSCN || from_ == E_NSCN)) { return false; }
-  if (from_ == E_SWITCH && (to == E_PSCN || to == E_NSCN || to == E_WATER)) { return false; }
-  return true;
-}
-fn tsnsSenses(j: i32) -> bool { return j != E_EMPTY && j != E_TSNS && !WIRE(j); }
-fn powered(id: i32) -> bool { return id == E_SWITCH || id == E_PCLN; }
-fn cloneable(j: i32) -> bool { return j != E_EMPTY && j != E_WALL && j != E_CLONE && j != E_PCLN && j != E_PSCN && j != E_NSCN; }
+fn takesSpark(id: i32, life: f32) -> bool { return CONDUCTS(id) && (!SPARK_GATED(id) || life == SWITCH_ON); }
+${conductsIntoWGSL()}
 // Spark cell state a (in place) with a full spark, if it conducts, can take a
 // spark and is ready. For a writer (shaders/common.js editMain): call it on
 // oA (the activity flags follow).

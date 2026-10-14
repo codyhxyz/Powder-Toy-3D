@@ -1,6 +1,7 @@
 import { libChecks } from './lib.js';
 import { ddaWalkWGSL } from '../dda.js';
 import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
+import { glf as f } from '../../glsl.js';
 
 // Shared render core: brick and field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals), in WGSL (the
@@ -33,7 +34,6 @@ import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
 // (binding 17, brickDistAt), not one of the 16 sampled textures, and the
 // light blur copied the same integer, so skipEmpty reads it from brickDist in
 // every view.
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const coreGLSL = (g, { flow = true, detail = {} } = {}) => /* wgsl */ `
 ${ddaGLSL(g)}
 // The pixel whose noise a function draws (ign, pixRand, the glow candidates,

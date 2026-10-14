@@ -3,6 +3,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { BODY_HEIGHT } from '../pov/constants.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
+import { consts } from '../glsl.js';
 
 // GPU work for the kick (src/pov/kick.js) and the hook (src/pov/tools/hook.tool.js).
 //
@@ -35,10 +36,6 @@ export const KICK = {
 };
 // w(r) on the CPU, matching the WGSL below: r = distance from the centre, cells
 export const kickWeight = (r) => Math.max(0, 1 - (r * r) / (KICK.RADIUS * KICK.RADIUS));
-
-// A JS number as a WGSL f32 literal; a tuning block as typed consts (H1.7)
-const lit = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
-const consts = (prefix, obj) => Object.entries(obj).map(([k, v]) => `const ${prefix}_${k}: f32 = ${lit(v)};`).join('\n');
 
 export const KickParams = uniformStruct('KickParams', {
   ...EDIT_FIELDS,

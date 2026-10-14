@@ -17,6 +17,7 @@
 // drifts the deck with the simulation clock (frozen when paused).
 import { CELL_M } from '../../scale.js';
 import { libChecks } from './lib.js';
+import { glf } from '../../glsl.js';
 
 export const CLOUD = {
   baseM: 1200,          // m above the sea: the flat bases (lifting condensation level of a humid day)
@@ -71,7 +72,6 @@ export function cloudShift(steps, out) {
   return out;
 }
 
-const glf = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s) ? s : s + '.0'; };
 const cells = (m) => glf(m / CELL_M);
 
 // The deck itself and the sunlight through it, in every pipeline that lights
