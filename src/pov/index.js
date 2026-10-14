@@ -222,7 +222,7 @@ export function createPov(app) {
   });
   const coop = () => app.mp.replica || (app.inWorld?.() && app.mp.role === 'host');
   const coopHint = () => hud.toast('Co-op exploration: walk, jump and jet. Use god view to edit; weapons, vehicles, perks and progression require solo play.');
-  const canUse = () => !coop() && !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon
+  const canUse = () => !village.enabled && !coop() && (isLocked() || touch.enabled);   // village furniture is not a weapon
   const canGrapple = () => !coop() && live() && !editing && canUse() && !vehicles.seated
     && !game.running && (app.gamemode?.() ?? 'sandbox') === 'sandbox' && !app.industryBuilding?.();
   const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
