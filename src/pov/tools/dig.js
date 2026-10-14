@@ -123,7 +123,18 @@ export function digger(env, { power, limit = Infinity, tools, reach }) {
       for (const [k, at] of dug) if (now - at > STALE_S) dug.delete(k);
       const min = biteMin(aim.cell, aim.face);
       const inward = (aim.face % 2 === 0 ? -1 : 1) * BLOCK, axis = aim.face >> 1;
-      while (dug.has(cornerKey(min))) min.setComponent(axis, min.getComponent(axis) + inward);
+      let advanced = false;
+      while (dug.has(cornerKey(min))) {
+        min.setComponent(axis, min.getComponent(axis) + inward);
+        advanced = true;
+      }
+      if (advanced) {
+        // A rapid tool can pass several stale bites before the GPU pick catches
+        // up. Its reach ends at the new face, not the original pick's distance.
+        const faceAt = min.getComponent(axis) + (inward < 0 ? BLOCK : 0);
+        const distance = (faceAt - ctx.eye.getComponent(axis)) / ctx.dir.getComponent(axis) * ctx.dir.length();
+        if (!(distance >= 0 && distance <= reach)) { show(null); return null; }
+      }
       const need = blowsFor(aim.id, power, limit, tools);
       const t = { aim, min, id: aim.id, need, key: `${min.x},${min.y},${min.z}:${aim.id}` };
       if (t.key !== hitKey) { hits = 0; hitKey = t.key; }

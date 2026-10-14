@@ -3,8 +3,7 @@ import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import { toolPass } from '../gpu.js';
 import { povEvents } from '../events.js';
-import { attachModel } from '../models.js';
-import { viewmodelRig } from '../viewmodel.js';
+import { heldModel } from './held.js';
 import { trigger, swing, toolDt } from './action.js';
 import { faceNormal, pack, cellsNear } from './transfer.js';
 import { digger } from './dig.js';
@@ -31,7 +30,7 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //   export default meleeTool({ ...gear(KEY),   // the tool definition (catalog.js, docs/pov.md)
 //     blow, frag,              // the blow's tuning (ENERGY ...) and its pass
 //     hit,                     // viewmodel.js HIT row for a landed blow
-//     refire,                  // s between swings
+//     refire, buffer?,         // s between swings; buffer: false drops cooldown taps
 //     reach?,                  // cells from the eye a blow lands (HAND_REACH)
 //     body: { damage, energy, cause },   // a blow on a body (an NPC): health taken, impact energy, cause of death
 //     bodyBlow?(ctx, target),  // this blow on this body, instead of `body` and `hit`: { damage, energy, cause,
@@ -40,6 +39,7 @@ import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 //                              //   (the knife raised for a backstab); target is the body in reach (rayTarget), or null
 //     pose: { pos, rest, hit, miss, roll, strike,   // the held model, in cells and rad (camera space)
 //             thrust?: [hit, miss],                 // cells it drives forward on a blow: a stab, not a chop
+//             gesture?: name,                      // holds.js third-person gesture override
 //             ready?, readyPos?: [x, y, z],         // rad and cells offset while tell() holds
 //             lethal?: { hit, miss, thrust } },     // a lethal blow's own motion (the backstab's plunge)
 //     dig });                  // { power, tools }: the blow digs a whole lattice block instead (dig.js, the pickaxe):
@@ -59,19 +59,15 @@ const DEBRIS = [...new Set(ELEMENTS.filter((e) => e.breakInto).map((e) => ELEMEN
 
 const TELL_RATE = 12;   // 1/s: the tell (pose.ready) eases in and out this fast, about 0.1 s (by eye, TF2's knife raise is a few frames)
 
-export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE, dig = null }) {
+export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, buffer = true, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE, dig = null }) {
   const source = key.toLowerCase();
 
   // The held tool: the model (models.js) on a hand of the viewmodel rig, turned about the hand by the swing.
   function buildModel(env) {
-    const rig = viewmodelRig(env);
-    const hand = rig.hand(POSE.pos);
-    const pivot = new THREE.Group();
-    hand.add(pivot);
-    // the swing seen from outside (held.js plays holds.js GESTURES on the body instead of the pivot's flick)
-    hand.userData.gesture = { since: Infinity, span: refire };
-    const mesh = attachModel(pivot, modelKey);
-    return { rig, hand, pivot, dispose() { mesh.dispose(); hand.removeFromParent(); } };
+    const model = heldModel(env, { model: modelKey, pos: POSE.pos, pivot: true });
+    // Third-person gestures are driven separately by held.js/holds.js.
+    model.hand.userData.gesture = { since: Infinity, span: refire, name: POSE.gesture };
+    return model;
   }
 
   return {
@@ -79,7 +75,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
     create(env) {
       const model = buildModel(env);
       const pass = toolPass(frag);
-      const button = trigger(refire);
+      const button = trigger(refire, { buffer });
       const motion = (m) => ({ rest: POSE.rest, hit: m.hit, miss: m.miss, strike: POSE.strike, settle: refire });
       const pose = swing(motion(POSE));
       const lethalPose = POSE.lethal ? swing(motion(POSE.lethal)) : pose;
@@ -161,8 +157,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
 
       return {
         update(ctx) {
-          model.hand.visible = true;
-          model.rig.update(ctx);
+          model.update(ctx);
           const dt = toolDt(ctx);
           model.hand.userData.gesture.since += dt;
           // the tell: the next blow would be special (a backstab lined up)
@@ -185,7 +180,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           const rp = POSE.readyPos ?? [0, 0, 0];
           model.pivot.position.set(rp[0] * tellK, rp[1] * tellK, rp[2] * tellK - driving.angle(dt));
         },
-        deselect() { model.hand.visible = false; digs?.hide(); button.reset(); pose.stop(); lethalPose.stop(); push.stop(); lethalPush.stop(); tellK = 0; telling = false; },
+        deselect() { model.deselect(); digs?.hide(); button.reset(); pose.stop(); lethalPose.stop(); push.stop(); lethalPush.stop(); tellK = 0; telling = false; },
         status: () => null,
         get telling() { return telling; },   // for checks: the tell (pose.ready) is up
         windowShifted(dx, dz) { if (lastHit) { lastHit.cell.x -= dx; lastHit.cell.z -= dz; } },   // (docs/scaling.md D11)
