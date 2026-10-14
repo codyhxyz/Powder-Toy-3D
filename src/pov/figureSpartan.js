@@ -15,21 +15,21 @@ const UPPER_ARM = 0.85, FOREARM = 0.85;
 function spartanPack(torso, plate) {
   const root = new THREE.Group();
   root.name = 'jetpack';
-  root.position.set(0, 1.12, 0.78);
+  root.position.set(0, 1.08, 0.8);
   torso.add(root);
-  plate(root, 'pack', [0.86, 0.36, 0.1], [0, 0.04, -0.02]);
+  plate(root, 'pack', [0.9, 0.2, 0.1], [0, 0.18, -0.04], TRIM);
   const nozzles = [], flames = [];
   const material = unlitMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   material.color.setRGB(6, 2.6, 0.7);
   for (const side of [-1, 1]) {
-    plate(root, 'thruster', [0.26, 0.42, 0.24], [side * 0.3, -0.02, 0.04]);
-    plate(root, 'exhaust', [0.14, 0.05, 0.14], [side * 0.3, -0.24, 0.04], DARK);
-    const bracket = new THREE.BoxGeometry(0.07, 0.06, 0.14);
-    bracket.translate(side * 0.3, 0.1, -0.12);
+    plate(root, 'thruster', [0.32, 0.52, 0.3], [side * 0.3, -0.02, 0.06], TRIM);
+    plate(root, 'exhaust', [0.16, 0.06, 0.16], [side * 0.3, -0.3, 0.06], DARK);
+    const bracket = new THREE.BoxGeometry(0.08, 0.06, 0.14);
+    bracket.translate(side * 0.3, 0.16, -0.12);
     part(root, bracket, DARK).name = 'jet-strap';
     const nozzle = new THREE.Group();
     nozzle.name = `jet-nozzle-${side < 0 ? 'left' : 'right'}`;
-    nozzle.position.set(side * 0.3, -0.26, 0.04);
+    nozzle.position.set(side * 0.3, -0.32, 0.06);
     root.add(nozzle);
     const flame = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.9, 12).rotateX(Math.PI).translate(0, -0.45, 0), material);
     flame.name = 'jet-flame';
