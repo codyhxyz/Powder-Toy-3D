@@ -126,7 +126,8 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
         const cone = THREE.MathUtils.lerp(spread.min, spread.max, Math.min(1, penalty / spread.penaltyMax))
           * THREE.MathUtils.lerp(1, ADS_SPREAD, aimed);
         const firstPerson = !povEvents.actor && env.viewmodel.visible && model.hand.visible;
-        const world = model.hand.visible && (firstPerson || env.heldOnBody?.()) ? model.muzzleWorld() : null;
+        const world = env.getMuzzleWorld?.(key)
+          ?? (model.hand.visible && (firstPerson || env.heldOnBody?.()) ? model.muzzleWorld() : null);
         const dir = scatter(aimDir, cone);
         const id = ballistics.fire(origin, dir, gravityScale(sim), {
           speed, energy: round.energy, depth: round.depth, damage: round.damage,

@@ -3,13 +3,52 @@ import { HOMES, FLOOR, HOME_Z, ITEMS, RESIDENTS, DRESSER, initialState, loadStat
 import { character, furniture, nameplate, dispose } from './models.js';
 import { createSpeech } from './speech.js';
 import { createVillageUi } from './ui.js';
+import { attachModel } from '../models.js';
+import { VILLAGE_TOOLS, PUNCH_COOLDOWN, PUNCH_DURATION, punchTarget, punchOccluded, stepResident } from './actions.js';
 
-export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, camera, onEnabled }) {
+export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, releaseActions, camera, onEnabled, onTool, useTool, toolReadout }) {
   const root = new THREE.Group(); root.name = 'willow-village'; root.visible = false; app.scene.add(root);
   const avatar = character(), speech = createSpeech(); app.scene.add(avatar.root); avatar.root.visible = false;
   let enabled = false, size = null, state = initialState(), writable = true, warning = '', saveKey = '';
   let residents = [], furnishings = null, time = 0, speaking = null, turn = 0, oldThird = false;
-  let held = null;
+  let held = null, tool = null, toolModel = null, toolMaterials = [], usingTool = false;
+  let punchAt = -Infinity, punchSerial = 0, reaction = '', reactionUntil = 0;
+  function equip(key) {
+    if (!VILLAGE_TOOLS.some(t => t.key === key)) return;
+    releaseActions(); punchSerial++; tool = key; onTool(key);
+    toolModel?.dispose(); toolModel = null;
+    toolMaterials.forEach(m => m.dispose()); toolMaterials = [];
+    if (key) {
+      toolModel = attachModel(avatar.hand, key.toLowerCase(), null, { arm: false });
+      toolModel.obj.position.set(0, -0.8, 0); toolModel.obj.rotation.x = -0.9; toolModel.obj.scale.setScalar(0.7);
+      toolModel.obj.traverse(o => {
+        if (!o.isMesh) return;
+        const material = new THREE.MeshBasicMaterial({ color: o.material.color ?? '#888888', vertexColors: !!o.geometry.attributes.color });
+        toolMaterials.push(material); o.material = material;
+      });
+    }
+  }
+  async function punch() {
+    if (!context().active || ui.opened || held || time - punchAt < PUNCH_COOLDOWN) return;
+    punchAt = time; const token = ++punchSerial, sim = app.getSim(), home = room(), l = local();
+    app.requestRender();
+    const target = punchTarget(l && { x: l.x - HOMES[home], y: l.y, z: l.z }, camera.look.yaw, residents, home);
+    if (!target) return;
+    const r = target.resident, origin = sim.origin.clone();
+    const start = getPlayer().pos.clone().add(new THREE.Vector3(0, 3, 0));
+    const end = new THREE.Vector3(size[0] / 2 + HOMES[home] + r.x, FLOOR + 3, size[2] / 2 + HOME_Z + r.z).sub(origin);
+    const distance = start.distanceTo(end), dir = end.clone().sub(start).normalize();
+    try {
+      const hit = await app.pickRay(start, dir);
+      if (token !== punchSerial || !context().active || ui.opened || held || app.getSim() !== sim || !sim.origin.equals(origin)
+        || room() !== home || getPlayer().pos.distanceTo(start.clone().setY(start.y - 3)) > 1) return;
+      const now = local(), still = punchTarget({ x: now.x - HOMES[home], y: now.y, z: now.z }, camera.look.yaw, residents, home);
+      if (time - punchAt > PUNCH_COOLDOWN || still?.resident !== r || punchOccluded(hit, start, distance)) return;
+      r.vx = dir.x * 15; r.vz = dir.z * 15; r.bonk = 0.8;
+      reaction = `${r.spec.name}: Hey! Boing!`; reactionUntil = time + 2;
+      speech.speak('Hey! Boing!', r.spec.pitch); speech.bonk(); app.requestRender();
+    } catch { /* A failed world probe must never punch through terrain. */ }
+  }
   const previous = new THREE.Vector3();
   const local = () => {
     const p = getPlayer(); if (!p || !size) return null;
@@ -23,7 +62,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
   function context() {
     const p = ownPosition(), active = enabled && live() && !document.querySelector('.mm.open');
     return { active, home: active && room() === 0, dresser: active && room() === 0 && Math.hypot(p.x - DRESSER.x, p.z - DRESSER.z) <= 5.5,
-      player: p, state, warning, muted: speech.muted,
+      player: p, state, warning, muted: speech.muted, tool, readout: toolReadout?.(), reaction: time < reactionUntil ? reaction : '',
       carry: held ? { name: ITEMS[held.item.kind].name, rotation: held.item.rotation, error: held.error } : null };
   }
   function at(root, home, item) {
@@ -71,6 +110,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     const c = context(), item = [...state.placed, ...state.pockets].find(i => i.id === id);
     if (!c.home || !item || (state.placed.includes(item) && distance(item) > 2.5)) return { error: 'Walk up to furniture in your own home to grab it.' };
     if (held) return { error: 'Set this piece down first.' };
+    punchSerial++;
     ui.close();
     const model = furniture(item.kind), carrying = new THREE.Group();
     const marker = new THREE.Mesh(new THREE.PlaneGeometry(ITEMS[item.kind].w, ITEMS[item.kind].d),
@@ -109,6 +149,12 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
   }
   function act(action) {
     if (!context().active) return { error: 'Enter the village to use your furniture.' };
+    if (action.type === 'punch') { void punch(); return {}; }
+    if (action.type === 'tool') { if (!ui.opened && !held) equip(action.key); return {}; }
+    if (action.type === 'tool-primary' || action.type === 'tool-secondary') {
+      if (!ui.opened && !held && tool) useTool(action.type === 'tool-primary' ? 'primary' : 'secondary');
+      return {};
+    }
     if (action.type === 'interact') { nearby()?.use(); return {}; }
     if (action.type === 'grab') return grab(action.id);
     if (action.type === 'cancel') { releaseHeld(true); rebuildFurniture(); app.requestRender(); return {}; }
@@ -134,7 +180,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     rebuildFurniture(); app.requestRender();
     return { state: structuredClone(state) };
   }
-  const ui = createVillageUi({ context, act, primary: nearby, onOpen() { releaseInput(); freeMouse(); },
+  const ui = createVillageUi({ context, act, primary: nearby, onOpen() { punchSerial++; releaseInput(); freeMouse(); },
     onClose() { speech.stop(); speaking = null; releaseInput(); app.requestRender(); },
     speakNext: chat, stopSpeech: speech.stop, toggleMute() { speech.muted = !speech.muted; } });
 
@@ -150,6 +196,8 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     }
     if (app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (ui.handleKey(e)) return;
+    const slot = /^Digit[1-4]$/.test(e.code) ? Number(e.code.slice(-1)) - 1 : -1;
+    if (slot >= 0) { e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat && !held) equip(VILLAGE_TOOLS[slot].key); return; }
     if (['KeyE', 'KeyM', 'KeyF', 'KeyV', 'Period', 'Comma', 'Tab'].includes(e.code) || /^Digit/.test(e.code)) {
       e.preventDefault(); e.stopImmediatePropagation();
     }
@@ -160,8 +208,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     on = !!on;
     if (on === enabled) return;
     enabled = on; document.body.classList.toggle('village-on', on);
-    releaseInput(); onEnabled(on);
+    releaseInput(); punchSerial++; punchAt = -Infinity; reactionUntil = 0;
+    onEnabled(on);
     if (!on) {
+      toolModel?.dispose(); toolModel = null; toolMaterials.forEach(m => m.dispose()); toolMaterials = []; tool = null;
       releaseHeld();
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
       ui.update({ active: false }); camera.third = oldThird;
@@ -169,6 +219,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
       furnishings = null; residents = []; return;
     }
     size = world.size; oldThird = camera.third; camera.third = true;
+    equip(null);
     saveKey = `willow-cove:furniture:v1:${world.seed}`;
     let saved;
     try { saved = loadState(localStorage, saveKey); }
@@ -177,7 +228,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     rebuildFurniture();
     residents = RESIDENTS.map(spec => {
       const model = character(spec); root.add(model.root);
-      return { spec, model, x: 0, z: 0 };
+      return { spec, model, x: 0, z: 0, vx: 0, vz: 0, bonk: 0 };
     });
     for (let home = 0; home < 4; home++) {
       const sign = nameplate(home ? `${RESIDENTS[home - 1].name}’s home` : 'Your home');
@@ -226,19 +277,20 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     if (p) {
       avatar.root.position.copy(p.pos).multiplyScalar(scale).add(vol.position); avatar.root.scale.setScalar(scale * p.size);
       avatar.root.rotation.y = yaw; avatar.root.visible = live() && shown;
-      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0);
+      const punching = Math.max(0, 1 - (time - punchAt) / PUNCH_DURATION);
+      avatar.animate(time, Math.hypot(p.vel.x, p.vel.z), false, !!held, p.onGround && !p.inLiquid ? p.sprintRush : 0, punching, !!tool, usingTool);
+      if (toolModel) toolModel.obj.visible = !held && !punching;
     }
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.
+      stepResident(r, dt, time, speaking !== r && !ui.opened);
       if (speaking !== r && !ui.opened) {
-        r.x = Math.sin(time * 0.28 + r.spec.home) * 0.65;
-        r.z = Math.sin(time * 0.42 + r.spec.home) * 4;
         r.model.root.rotation.y = Math.cos(time * 0.42 + r.spec.home) > 0 ? Math.PI : 0;
       } else if (p) {
         const l = local(); r.model.root.rotation.y = Math.atan2(HOMES[r.spec.home] + r.x - l.x, r.z - l.z);
       }
-      r.model.root.position.set(size[0] / 2 + HOMES[r.spec.home] + r.x, FLOOR, size[2] / 2 + HOME_Z + r.z);
-      r.model.animate(time, speaking === r ? 0 : 1.5, speaking === r && speech.stats.queued > 0);
+      r.model.root.position.set(size[0] / 2 + HOMES[r.spec.home] + r.x, FLOOR + (r.bonk > 0 ? Math.sin(r.bonk / 0.8 * Math.PI) * 0.65 : 0), size[2] / 2 + HOME_Z + r.z);
+      r.model.animate(time, speaking === r || r.bonk > 0 ? 0 : 1.5, (speaking === r || r.bonk > 0) && speech.stats.queued > 0);
     }
     if (held && room() !== 0) { releaseHeld(true); rebuildFurniture(); }
     updateHeld();
@@ -247,7 +299,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, c
     ui.update({ active: c.active, place: home === 0 ? 'Home, sweet home' : home > 0 ? `${RESIDENTS[home - 1].name}’s home` : 'Tinker Creek' });
   }
   return {
-    setEnabled, beforeBody, afterBody() { if (enabled) collide(); }, update,
+    setEnabled, beforeBody, afterBody() { if (enabled) collide(); }, update, punch,
+    cycleTool(direction) { if (context().active && !ui.opened && !held) equip(VILLAGE_TOOLS[(VILLAGE_TOOLS.findIndex(t => t.key === tool) + Math.sign(direction) + VILLAGE_TOOLS.length) % VILLAGE_TOOLS.length].key); },
+    get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held; },
+    set usingTool(value) { usingTool = value; },
     get enabled() { return enabled; }, get blocked() { return enabled && ui.opened; },
     get state() { return structuredClone(state); }, get residents() { return residents.map(r => ({ name: r.spec.name, species: r.spec.species, home: r.spec.home, x: r.x, z: r.z })); },
     get speech() { return speech.stats; }, get context() { return context(); }, get root() { return root; }, get avatar() { return avatar.root; },

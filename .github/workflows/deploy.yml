@@ -41,9 +41,13 @@ jobs:
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
+      - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread
+      - run: node tools/check-village.mjs && node tools/check-village-actions.mjs   # peaceful punches, tools and furniture
       - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode
       - run: node tools/firearm-aim-check.mjs && node tools/held-tools-check.mjs
       - run: node tools/torch-cpu-check.mjs   # water quenching and frame-rate-independent flame inertia
+      - run: node tools/npc-held-check.mjs
+      - run: node tools/shrine-interact-cpu-check.mjs
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: npm run build
