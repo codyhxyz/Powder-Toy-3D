@@ -192,14 +192,15 @@ try {
 
 const emptyMesh = () => ({ positions: new Float32Array(), normals: new Float32Array(), ids: new Uint8Array(), indices: new Uint16Array() });
 const triangle = () => ({ positions: new Float32Array(9), normals: new Float32Array(9), ids: new Uint8Array(3).fill(E.PLANT), indices: new Uint16Array([0, 1, 2]) });
-const token = { key: 0, x: 0, z: 0, step: 1, distance: 10, epoch: 0, revision: 0 };
+const token = { key: 0, x: 0, z: 0, step: 1, distance: 10, epoch: 0, revision: 0, version: 0 };
 const result = () => ({ token, ...triangle(), leaves: [triangle(), triangle()], liquid: false });
 function cache() {
   const allocated = [], retired = [], writes = [], draws = [], depths = [];
   const c = Object.assign(Object.create(WorldDetail.prototype), {
     entries: new Map(), wanted: [{ ...token }], blocked: new Set(), revisions: new Uint32Array(4), mask: new Uint32Array(4),
+    dirty: new Map(), simVersion: 0,
     bytes: 0, epoch: 0, nx: 2, nz: 2, disposed: false, visible: true, win: { size: [64, 8, 64] },
-    sim: { cur: 0, _retire: b => retired.push(b) },
+    sim: { cur: 0, version: 0, origin: { x: 0, y: 0, z: 0 }, g: { nx: 64, ny: 8, nz: 64 }, _retire: b => retired.push(b) },
     gpu: {
       createBuffer: spec => { const b = { ...spec }; allocated.push(b); return b; },
       write: (b, offset, data) => { assert.equal(c.mask[0], 0, 'ownership not published during uploads'); writes.push({ b, data }); },
@@ -236,6 +237,7 @@ check('leaf-only chunks receive ownership, keep liquids, and reject stale tokens
   assert.equal(c.entries.get(0).parts[0], null);
   assert.equal(c.mask[0], 2);
   assert.equal(allocated.length, 8);
+  c.sim.version++; // real content change, not just a window summary
   c.stale([0, 0, 0], [1, 1, 1]);
   c.accept(result());
   assert.equal(allocated.length, 8, 'stale revision allocates nothing');

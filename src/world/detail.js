@@ -33,7 +33,7 @@ export { DETAIL_CHUNK };
 // culled by the flat frustum: bent down, a chunk outside it can show.
 // Chunks are wanted where a coarse brick would span more than BRICK_PIXELS of
 // the screen, nearest first, one in flight at a time, at most MAX_CHUNKS of them
-// and MAX_BYTES of geometry; a chunk the window covers isn't kept. The cells
+// and MAX_BYTES of geometry, including chunks covered by the live window. The cells
 // kernel and both pipelines build the first time the far view is drawn
 // (B5: nothing of it builds in views that don't draw it).
 // The nearest MAX_CHUNKS in view are meshed; past them the coarse brick field
@@ -59,6 +59,8 @@ export class WorldDetail {
     this.entries = new Map();
     this.wanted = [];
     this.blocked = new Set();
+    this.dirty = new Map();
+    this.simVersion = this.sim.version;
     this.epoch = 0;
     this.bytes = 0;
     this.pending = null;
@@ -104,6 +106,8 @@ export class WorldDetail {
     this.maskDirty = true;
     this.wanted = [];
     this.blocked.clear();
+    this.dirty.clear();
+    this.simVersion = this.sim.version;
     this.revisions.fill(0);
   }
 
@@ -117,8 +121,8 @@ export class WorldDetail {
     if (this.mask[key]) { this.mask[key] = 0; this.maskDirty = true; }
   }
 
-  // Called before a leaving slab is replaced, and when the window is swept.
-  // A readback/worker job started before the edit can never publish afterward.
+  // Explicit destructive invalidation. Ordinary summaries use stale instead.
+  // A readback/worker job started before this call cannot publish afterward.
   invalidate(lo, size) {
     for (const key of this.chunksAround(lo, size)) {
       this.revisions[key]++;
@@ -127,16 +131,25 @@ export class WorldDetail {
     }
   }
 
-  // Called when a sweep re-reads live cells that chunks may pad into. Their
-  // meshes are only out of date at the window's edge, not wrong: they stay
-  // shown, and are rebuilt (tick: a step that matches no candidate's) and
-  // swapped in whole by accept. Older jobs for them are still rejected.
+  // Simulation writes dirty geometry; moving the window only moves ownership.
+  // Keep the last mesh until its replacement is ready, including leaving slabs.
   stale(lo, size) {
+    if (this.simVersion !== this.sim.version) {
+      const o = this.sim.origin, g = this.sim.g;
+      for (const key of this.chunksAround([o.x, o.y, o.z], [g.nx, g.ny, g.nz])) this.dirty.set(key, this.sim.version);
+      this.simVersion = this.sim.version;
+    }
     for (const key of this.chunksAround(lo, size)) {
-      this.revisions[key]++;
+      const changed = this.dirty.get(key);
+      if (changed === undefined) continue;
+      this.dirty.delete(key);
+      const entry = this.entries.get(key), pending = this.pending?.key === key ? this.pending : null;
+      // A mesh/readback started after these writes already includes them.
+      const oldEntry = entry && entry.version < changed, oldJob = pending && pending.version < changed;
+      if (!oldEntry && !oldJob) continue;
+      if (!pending || oldJob) this.revisions[key]++;
       this.blocked.delete(key);
-      const entry = this.entries.get(key);
-      if (entry) entry.step = 0;
+      if (oldEntry) entry.step = 0;
     }
   }
 
@@ -176,10 +189,9 @@ export class WorldDetail {
     const pixels = height / (2 * Math.tan((camera.fov ?? 60) * Math.PI / 360));
     camera.updateMatrixWorld?.();
     m.frustum.setFromProjectionMatrix(m.proj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
-    const g = this.sim.g, C = DETAIL_CHUNK, size = this.win.size, candidates = [];
+    const C = DETAIL_CHUNK, size = this.win.size, candidates = [];
     for (let z = 0; z < this.nz; z++) for (let x = 0; x < this.nx; x++) {
       const lo = [x * C, 0, z * C], hi = [Math.min(lo[0] + C, size[0]), size[1], Math.min(lo[2] + C, size[2])];
-      if (lo[0] >= o.x && hi[0] <= o.x + g.nx && lo[2] >= o.z && hi[2] <= o.z + g.nz) continue;
       const box = m.box.set(new Vector3(...lo), new Vector3(...hi));
       const distance = Math.max(1, box.distanceToPoint(eye));
       if (pixels * BRICK / distance < BRICK_PIXELS || (!bent && !m.frustum.intersectsBox(box.applyMatrix4(m.worldToScene)))) continue;
@@ -190,36 +202,32 @@ export class WorldDetail {
     }
     candidates.sort((a, b) => a.distance - b.distance);
     this.wanted = candidates;
-    // A cached chunk the view no longer wants stays as a spare (evicted first,
-    // oldest first: makeRoom) unless the live window now covers it.
-    const keep = new Set(this.wanted.map((c) => c.key));
-    for (const key of [...this.entries.keys()]) {
-      if (keep.has(key)) continue;
-      const cx = (key % this.nx) * C, cz = Math.floor(key / this.nx) * C;
-      if (cx + C > o.x && cx < o.x + g.nx && cz + C > o.z && cz < o.z + g.nz) this.drop(key);
-    }
+    // Cache residency is independent of physics residency. The shaders clip
+    // live-window fragments; keep their meshes ready for when the window moves.
   }
 
   // Is the cache full for a mesh `bytes` big (0: any mesh at all)?
-  full(bytes = 0) {
-    return this.entries.size >= MAX_CHUNKS || this.bytes + bytes > MAX_BYTES || (!bytes && this.bytes >= MAX_BYTES);
+  full(bytes = 0, replacing) {
+    const old = this.entries.get(replacing), used = this.bytes - (old?.bytes ?? 0);
+    return this.entries.size - (old ? 1 : 0) >= MAX_CHUNKS || used + bytes > MAX_BYTES || (!bytes && used >= MAX_BYTES);
   }
 
   // Evict until a mesh `bytes` big (0: just a slot) fits for a chunk at
   // `distance`: spares first, then wanted chunks farther than it, farthest
   // first. With `dry`, only report whether it would.
-  makeRoom(distance, bytes, dry = false) {
+  makeRoom(distance, bytes, dry = false, replacing) {
     const wanted = new Set(this.wanted.map((c) => c.key));
-    const victims = [...this.entries.keys()].filter((key) => !wanted.has(key));
+    const victims = [...this.entries.keys()].filter((key) => key !== replacing && !wanted.has(key));
     for (let i = this.wanted.length - 1; i >= 0 && this.wanted[i].distance > distance; i--)
-      if (this.entries.has(this.wanted[i].key)) victims.push(this.wanted[i].key);
-    if (dry) return !this.full(bytes) || victims.length > 0;
+      if (this.wanted[i].key !== replacing && this.entries.has(this.wanted[i].key)) victims.push(this.wanted[i].key);
+    if (bytes > MAX_BYTES) return false;
+    if (dry) return !this.full(bytes, replacing) || victims.length > 0;
     for (const key of victims) {
-      if (!this.full(bytes)) break;
+      if (!this.full(bytes, replacing)) break;
       this.drop(key);
       if (wanted.has(key)) this.blocked.add(key);
     }
-    return !this.full(bytes);
+    return !this.full(bytes, replacing);
   }
 
   // Every frame (far.tick): the nearest wanted chunk without its mesh, its
@@ -238,7 +246,7 @@ export class WorldDetail {
       return;
     }
     const sim = this.sim, o = sim.origin, g = sim.g, gpu = this.gpu, res = this.win.gen.res;
-    const token = { ...job, epoch: this.epoch, revision: this.revisions[job.key] };
+    const token = { ...job, epoch: this.epoch, revision: this.revisions[job.key], version: sim.version };
     this.pending = token;
     const origin = [job.x - PAD, -PAD, job.z - PAD], side = this.layout.side, height = this.win.size[1];
     // the scene's prepass over the columns the cells read (held to the world), then the cells
@@ -274,28 +282,27 @@ export class WorldDetail {
   }
 
   valid(token) {
-    return !this.disposed && token.epoch === this.epoch && token.revision === this.revisions[token.key]
-      && this.wanted.some((c) => c.key === token.key && c.step === token.step);
+    return !this.disposed && token.epoch === this.epoch && token.revision === this.revisions[token.key];
   }
 
-  accept({ token, positions, normals, ids, indices, leaves, liquid, error }) {
+  accept({ token, positions, normals, ids, indices, leaves = [], liquid, error }) {
     this.pending = null;
     if (!this.valid(token)) return;
     if (error) { console.error('world detail mesh', error); this.failed = true; return; }
+    const distance = this.wanted.find((c) => c.key === token.key)?.distance ?? Infinity;
     // One base mesh, two leaf-only LODs. Count allocated bytes, including
     // uint32 material attributes and index-buffer alignment, for every LOD.
     const meshes = [{ positions, normals, ids, indices }, ...leaves];
     const aligned = n => Math.max(4, Math.ceil(n / 4) * 4);
     const bytes = meshes.reduce((sum, m) => sum + (m.indices.length
       ? aligned(m.positions.byteLength) + aligned(m.normals.byteLength) + aligned(m.ids.length * 4) + aligned(m.indices.byteLength) : 0), 0);
-    this.drop(token.key);
     // Keep the nearest chunks, never cycle through them forever when the
     // budget is full. Reconsider rejected chunks only after the view changes.
-    if (!this.makeRoom(token.distance, bytes)) {
-      for (const c of this.wanted) if (c.distance >= token.distance && !this.entries.has(c.key)) this.blocked.add(c.key);
+    if (!this.makeRoom(distance, bytes, false, token.key)) {
+      this.blocked.add(token.key);
+      for (const c of this.wanted) if (c.distance >= distance && !this.entries.has(c.key)) this.blocked.add(c.key);
       return;
     }
-    if (!bytes) return;   // no base OR leaves: the field keeps ownership
     const gpu = this.gpu, buffers = [];
     const upload = (label, data, usage) => {
       const b = gpu.createBuffer({ label, size: aligned(data.byteLength), usage: usage | BUFFER.COPY_DST });
@@ -325,14 +332,15 @@ export class WorldDetail {
       this.failed = true;
       return;
     }
+    this.drop(token.key);
     this.entries.set(token.key, {
       buffers, parts, leafLOD: 0, count: (parts[0]?.count ?? 0) + (parts[1]?.count ?? 0),
-      x: token.x, z: token.z, bytes, step: token.step,
+      x: token.x, z: token.z, bytes, step: token.step, version: token.version,
     });
     this.bytes += bytes;
     // Publish the mesh and its ownership together; the raymarch must never
     // skip a chunk whose geometry is still being prepared.
-    this.mask[token.key] = liquid ? 2 : 1;
+    this.mask[token.key] = buffers.length ? (liquid ? 2 : 1) : 0;
     this.maskDirty = true;
   }
 
@@ -389,6 +397,7 @@ export class WorldDetail {
       const perspective = Math.hypot(matrix[3], matrix[7], matrix[11]);
       const pxCell = h * 0.5 * Math.hypot(matrix[1], matrix[5], matrix[9]) / (perspective || 1);
       for (const e of this.entries.values()) {
+        if (!e.count) continue;
         const lo = [e.x, 0, e.z], hi = [Math.min(e.x + DETAIL_CHUNK, this.win.size[0]), this.win.size[1], Math.min(e.z + DETAIL_CHUNK, this.win.size[2])];
         const distance = Math.max(1, Math.hypot(...params.eye.map((v, i) => Math.max(lo[i] - v, 0, v - hi[i]))));
         e.leafLOD = pxCell / (perspective ? distance : 1) >= 6 ? 0 : 1;
