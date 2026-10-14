@@ -81,7 +81,8 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
       ...(action ? [{ id: 'interact', label: action.title, key: 'E', codes: ['KeyE'], run: () => act({ type: 'interact' }) }] : []),
       ...(equipped.primary ? [{ id: 'tool-primary', label: equipped.primary, key: 'Click', run: () => run('tool-primary') }] : []),
       ...(equipped.secondary ? [{ id: 'tool-secondary', label: equipped.secondary, key: 'RMB', run: () => run('tool-secondary') }] : []),
-      { id: 'punch', label: 'Punch', key: 'F', codes: ['KeyF'], run: () => run('punch') },
+      ...(!c.tool ? [{ id: 'punch', label: 'Punch', key: 'Click', run: () => run('punch') }] : []),
+      { id: 'kick', label: 'Kick', key: 'F', codes: ['KeyF'], run: () => run('kick') },
       { id: 'pockets', label: 'Pockets', key: 'I', codes: ['KeyI', 'KeyQ'], run: () => open('pockets') },
     ]);
   }

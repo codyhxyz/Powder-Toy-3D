@@ -62,7 +62,7 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
   const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   let lastTime = 0, phase = 0, lean = 0;
   return { root, hand: limbs[3], reset: () => leap.reset(),
-    animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, motion = null) {
+    animate(time, walking = 0, talking = false, carrying = false, sprintRush = 0, punch = 0, tool = false, using = false, motion = null, kick = 0) {
     const dt = Math.max(0, Math.min(0.1, time - lastTime)); lastTime = time;
     const posing = leap.update(dt, motion, reducedMotion?.matches);
     // Animal Crossing speed-cheat silhouette: pitch forward and scramble, without a phase jump.
@@ -76,6 +76,7 @@ export function character({ species = 'human', color = '#edbd96', shirt = '#5c9a
     }
     if (tool && !carrying) limbs[3].rotation.x = 0.9 + (using ? Math.sin(time * 18) * 0.4 : 0);
     if (punch > 0 && !carrying) limbs[3].rotation.x = Math.sin(punch * Math.PI) * 1.9;
+    if (kick > 0 && !carrying) limbs[2].rotation.x = Math.sin(kick * Math.PI) * 1.7;
     body.rotation.z = talking ? Math.sin(time * 9) * 0.025 : 0;
     if (carrying) limbs.forEach((l, i) => { if (i % 2) l.rotation.x = 1.3; });
   } };
