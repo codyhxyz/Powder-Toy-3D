@@ -19,18 +19,20 @@ function worldBox(d, b) {
 function protectedSwing(d, p, radius) {
   if (!p || p.y >= d.floor + d.height || p.y + (p.height ?? 6) <= d.floor) return false;
   const q = local(d, p);
+  q.z *= d.swing;
   return q.x > -d.width / 2 - radius - 0.4 && q.x < d.width / 2 + radius + 0.4
     && q.z > -d.width - radius - 0.4 && q.z < radius + 1.2;
 }
 function leafSweeps(d, p, radius, from, to) {
   if (!protectedSwing(d, p, radius)) return false;
   const q = local(d, p), x = q.x + d.width / 2;
+  q.z *= d.swing;
   const angle = clamp(Math.atan2(-q.z, x), from * Math.PI / 2, to * Math.PI / 2);
   const reach = clamp(x * Math.cos(angle) - q.z * Math.sin(angle), 0, d.width);
   return Math.hypot(x - reach * Math.cos(angle), q.z + reach * Math.sin(angle)) < radius + 0.25;
 }
 export function createDoorController(specs) {
-  const doors = specs.map(d => ({ ...d, progress: 0, target: 0 }));
+  const doors = specs.map(d => ({ ...d, progress: 0, target: 0, swing: 1 }));
   return {
     doors,
     nearby(p, forward) { return doors.filter(d => inReach(p, { x: d.x, y: d.floor, z: d.z }, forward))
@@ -38,6 +40,8 @@ export function createDoorController(specs) {
     toggle(d, p, radius) {
       if (!doors.includes(d)) return { error: 'That door is no longer here.' };
       if (d.target === 1 && protectedSwing(d, p, radius)) return { error: 'Step clear of the doorway before closing it.' };
+      // Swing away from the opener, so entering and leaving are equally usable.
+      if (d.progress === 0 && p) d.swing = local(d, p).z < 0 ? -1 : 1;
       d.target = 1 - d.target;
       return {};
     },
@@ -53,7 +57,8 @@ export function createDoorController(specs) {
     colliders() {
       return doors.flatMap(d => {
         const angle = d.progress * Math.PI / 2;
-        const leaf = worldBox(d, { x: -d.width / 2 - 0.2, z: -Math.sin(angle) * d.width - 0.2, w: Math.cos(angle) * d.width + 0.4, d: Math.sin(angle) * d.width + 0.4 });
+        const depth = Math.sin(angle) * d.width;
+        const leaf = worldBox(d, { x: -d.width / 2 - 0.2, z: d.swing > 0 ? -depth - 0.2 : -0.2, w: Math.cos(angle) * d.width + 0.4, d: depth + 0.4 });
         return d.progress === 1 ? [leaf] : [leaf, worldBox(d, { x: -d.width / 2, z: -1, w: d.width, d: 2 })];
       });
     },

@@ -96,7 +96,7 @@ export function createBuildingRuntime(parent, size, terrainClear = () => true) {
     },
     tick(dt, time, p, radius, speaking) {
       doors.tick(dt, p, radius);
-      for (const d of doors.doors) models.get(d.id).rotation.y = d.progress * Math.PI / 2;
+      for (const d of doors.doors) models.get(d.id).rotation.y = d.swing * d.progress * Math.PI / 2;
       for (const a of actors) {
         if (speaking === a && p) a.model.root.rotation.y = Math.atan2(a.x - p.x, a.z - p.z);
         a.model.animate(time, 0, speaking === a);

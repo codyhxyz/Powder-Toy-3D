@@ -72,6 +72,12 @@ for (const spec of specs) {
   assert.ok(!c.toggle(d, outside, 0.8).error); c.tick(DOOR_SECONDS / 3, outside, 0.8);
   c.tick(DOOR_SECONDS, { x: d.x, y: d.floor, z: d.z, height: 6 }, 0.8);
   assert.equal(d.target, 1, 'entering closing sweep reverses door safely');
+  d.progress = d.target = 0;
+  const indoorOpener = { x: d.x - nx * 4, y: d.floor, z: d.z - nz * 4, height: 6 };
+  c.toggle(d, indoorOpener, 0.8); c.tick(DOOR_SECONDS, indoorOpener, 0.8);
+  assert.equal(d.swing, -1, 'doors swing away from an indoor opener');
+  assert.equal(d.progress, 1, 'leaving does not require standing in the hinge sweep');
+  assert.equal(resolveBoxMotion(inside, outside, 0.8, c.colliders()).blocked, false);
   c.dispose(); assert.equal(c.doors.length, 0);
 }
 assert.ok(inReach({ x: 0, y: 24, z: 5 }, { x: 0, y: 24, z: 0 }, { x: 0, z: -1 }));
