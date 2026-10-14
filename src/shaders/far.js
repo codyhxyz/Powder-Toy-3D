@@ -1233,7 +1233,10 @@ fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3
   let cav = clamp(m.cav, 0.0, 1.0);
   let c = sunTerm(vec3f(sunVis), dSun, cav, ggxSpec(ns, v, FU.sun, rough, F0));
   let ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
-  return c + kD * ambient + m.emit;
+  // Far surfaces use world cells; the shared local-light API uses grid cells.
+  var beacon = vec3f(0.0);
+  if (FU.beaconDir.w > 0.0) { beacon = beaconDiffuse(p - vec3f(H.origin), n, ns); }
+  return c + kD * (ambient + beacon) + m.emit;
 }
 
 // Light scattered toward the eye inside liquid lid, per unit (1 - transmittance) (interiorScatter, without the glow volume);

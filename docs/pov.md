@@ -165,13 +165,11 @@ break stops it). Nothing is added: struck cells become their own debris or are s
 ## Burrower and laser cannon (2026-10-10)
 
 Two heavy weapons, not `start` tools (palette Tools group or Q). Passes: `shaders/povBore.js`; check:
-`tools/burrower-laser-check.mjs`. Neither adds matter.
+`tools/burrower-laser-check.mjs`; CPU aim regression: `tools/burrower-aim-cpu-check.mjs`. Neither adds matter.
 
 **Burrower** (Explosives, `burrower.tool.js`): Cruelty Squad's Cerebral Bore, no health cost.
-- It homes on the nearest live body in `targets.js` (`nearestTarget`), else flies along the crosshair.
-- Guidance is proportional navigation (Zarchan, *Tactical and Strategic Missile Guidance*): the heading
-  turns `NAV_RATIO` (4) times the line-of-sight rate. While the target is more than 90° off, it uses pure
-  pursuit. The turn rate is clamped at `TURN_MAX` 3 rad/s. In the open it flies at 12 m/s.
+- It flies straight along the crosshair direction at launch, with no homing or steering after launch.
+  In the open it flies at 12 m/s. Lead moving targets yourself.
 - Speed through matter is power over work (Teale 1965: penetration rate = P / (SE·A)): `POWER` / Σ over the
   3.5-cell face disc of HARD (solids) or DENS·DRAG (powder, liquid). Sand runs at ~15 cells/s, rock ~8 and
   metal ~4. WALL on its axis stops it. A small readback pass (`burrowProbeFrag`, 12 slices ahead) tells

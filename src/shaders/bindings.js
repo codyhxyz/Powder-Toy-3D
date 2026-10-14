@@ -71,6 +71,10 @@ export const FRAME_UNIFORMS = [
   // the dig tools' aimed bite (pov/tools/dig.js), drawn on the surface itself (surface.js digMark)
   ['digMin', 'vec4f', 'uDigMin: its min corner, grid cells; w: share of the blows it needs that have landed (cracks)'],
   ['digMax', 'vec4f', 'uDigMax: its max corner; w: 1 + the aimed face\'s axis, 0: none shown'],
+  // Appended: the island's physical lighthouse (no lamp-slot or texture cost).
+  ['beacon', 'vec4f', 'uBeacon: world xyz, range in cells'],
+  ['beaconDir', 'vec4f', 'uBeaconDir: unit direction, night gain'],
+  ['beaconCell', 'vec4f', 'uBeaconCell: CRYSTAL switch world xyz'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));

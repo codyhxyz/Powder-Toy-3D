@@ -68,7 +68,7 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
     materialsGLSL(),
     coreGLSL(g, { flow: v.flow, detail }),
     noiseGLSL,
-    lightingGLSL(v),
+    lightingGLSL({ ...v, far }),
     crystalGLSL,
   ].join('\n');
 }

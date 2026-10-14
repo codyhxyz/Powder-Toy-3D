@@ -252,6 +252,10 @@ const PRESETS = {
 };
 // presets that play as seamless loops (one render each)
 const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge']);
+// Minecraft's rain bed and rolling thunder, through the existing mute/limiter.
+PRESETS.weatherRain = [.18, 0, 850, .05, 1, .05, 4, 1, , , , , , 4, , , , .5, , .15, -1800];
+PRESETS.weatherThunder = [.7, .08, 55, .04, .7, 2.8, 4, 1.4, -.15, , , , .1, 2, , .1, .1, .55, , , -450];
+LOOPS.add('weatherRain');
 
 // ---- material families: which sound a struck element makes. An element's
 // own (elements.js sound: glass shatters, wood thunks, metal pings), else its
@@ -788,7 +792,17 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   });
   tick();
 
-  return { play, stats };
+  function setWeather({ rain = 0, thunder = false, paused = false } = {}) {
+    const on = !paused && live() && !state().player?.dead && !document.hidden;
+    const gain = Number.isFinite(rain) ? Math.max(0, Math.min(1, rain)) : 0;
+    loop('weatherRain', on && gain > 0.001, { gain });
+    const playing = S.started && S.loops.weatherRain;
+    if (playing?.on) playing.audio.gain.gain.setTargetAtTime(gain, now(), LOOP_FADE_S);
+    if (!on) {
+      for (const voice of S.flat) if (voice.name === 'weatherThunder' && voice.audio.isPlaying) voice.audio.stop();
+    } else if (thunder) play('weatherThunder', { gain: 0.8 });
+  }
+  return { play, stats, setWeather };
 }
 
 // Debug state for checks: what's built, what's playing, what played last.

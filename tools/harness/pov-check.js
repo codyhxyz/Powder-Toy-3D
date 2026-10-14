@@ -287,9 +287,9 @@ test('stage:edits', async ({ size = 32 } = {}) => {
           { hold, carry: [0, 0, 0], steps: 4, gravity: sim.gravity, mode: PHYS_MODE.HOLD ?? 0, fling: [0, 0, 0] }, { bind: [{ buffer: this_com() }] }];
       }, (d, s0, s1) => d.some(([x, y, z]) => s1.id(x, y, z) === E.SAND && s1.b(x, y, z).slice(0, 3).some((v) => v !== 0))],
       ['povBlast', 'the blast pushes the sand down its cone', () => {
-        const muzzle = [17, 12, 7], dir = [0, -1, 0], reach = 8, pad = Math.max(BLAST.RADIUS0 + BLAST.SPREAD * reach, BLAST.PULSE_RADIUS);
+        const muzzle = [17, 12, 7], dir = [0, -1, 0], reach = 8, pad = BLAST.RADIUS0 + BLAST.SPREAD * reach;
         return [sim.touchCentres(muzzle.map((x, i) => Math.min(x, x + dir[i] * reach) - pad), muzzle.map((x, i) => Math.max(x, x + dir[i] * reach) + pad)),
-          { muzzle, reach, dir, pulseP: 0, pulse: [17, 8, 7] }];
+          { muzzle, reach, dir }];
       }, (d) => d.length > 0],
       ['povRocket', 'a rocket blows a crater in the rock', () => {
         const c = [20, 12.5, 20], r = ROCKET.PULSE_RADIUS;

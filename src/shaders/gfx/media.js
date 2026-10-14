@@ -237,6 +237,13 @@ fn gasLamps(p: vec3f, rd: vec3f, sigT: f32, g0: f32, bMul: f32) -> vec3f {
     }
     sum += FU.lampCol[i].rgb * lampFall(d2, R, FU.lampShape[i].x) * L;
   }
+  if (FU.beaconDir.w > 0.0) {
+    let E = beaconIrradiance(p); // unlike hand lamps, geometry shadows this beam
+    let dv = beaconPosition() - p;
+    let mu = dot(rd, dv) * inverseSqrt(max(dot(dv, dv), 1e-8));
+    // Single scattering by the real gas density below, never an air overlay.
+    sum += E * gasPhase(mu, g0);
+  }
   return sum;
 }
 
@@ -285,7 +292,7 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
       if (amb.x < 0.0) { amb = gasAmbient(ro + rd * (0.5 * (ta + tb))); }
       // FU.sunCol is irradiance / pi; so is a lamp's colour × falloff
       var Llamp = vec3f(0.0);
-      if (FU.lampCount > 0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }
+      if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }
       S = sigS * (PI_L * (FU.sunCol * Lsun + Llamp) + amb);
     }
     if (sig.z > 0.0 && m.z > FLAME_MIN_FIRE) {

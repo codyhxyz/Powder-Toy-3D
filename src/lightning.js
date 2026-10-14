@@ -26,14 +26,15 @@ const RESULT_SLOTS = 4;   // storm reads in flight at most (one a poll, POLL_STE
 const VEC4 = 4;
 
 // gpu: unused (each simulation's device is its own gpu); kept for the wire's call
-export function createLightning() {
+export function createLightning({ onReady = () => {} } = {}) {
   let k = null, simId = -1, frame = 0;
-  let nextPoll = 0, lastStrike = -Infinity, busy = false;
+  let nextPoll = 0, lastStrike = -Infinity, job = null, generation = 0;
   const rng = Math.random;
   const api = {
     strikes: 0,             // natural strikes so far (tools/mat-check)
     lastBolt: null,         // the last bolt's { from, to, segs, id } (tools/mat-check)
     strikeTool, update, strike,
+    reset() { generation++; job = null; nextPoll = 0; lastStrike = -Infinity; api.lastBolt = null; },
     /** Resolves when the current simulation's kernels are built. */
     get ready() { return k?.ready ?? Promise.resolve(); },
   };
@@ -59,9 +60,20 @@ export function createLightning() {
     simId = sim.id;
     nextPoll = sim.frame + STORM.POLL_STEPS;
     lastStrike = -Infinity;
-    busy = false;
+    job = null;
   }
   const built = (kernel) => kernel.state === 'ready';
+  const originOf = sim => [sim.origin.x, sim.origin.y, sim.origin.z];
+  const capture = (sim, context = {}) => ({
+    sim, id: sim.id, kernels: k, generation, origin: originOf(sim),
+    frame: sim.frame, paints: sim.paints, wholeWrites: sim.wholeWrites,
+    world: context.worldIdentity, epoch: context.worldEpoch,
+  });
+  const current = (sim, c, context = {}) => c.sim === sim && c.id === sim.id && c.kernels === k &&
+    c.generation === generation && !sim.disposed && !sim.gpu.failure &&
+    c.origin.every((v, i) => v === originOf(sim)[i]) && sim.frame >= c.frame &&
+    c.paints === sim.paints && c.wholeWrites === sim.wholeWrites &&
+    c.world === context.worldIdentity && c.epoch === context.worldEpoch;
 
   // Draw one bolt from `from` to `to` (cells, [x, y, z]). strikeR: the strike's
   // radius; origin and dischargeR: the cloud charge it spends (storms). Its
@@ -82,13 +94,16 @@ export function createLightning() {
     if (dischargeR > 0) grow(from, dischargeR);
     frame = (frame + 1) >>> 0;
     const values = { segA, segB, segs: segs.length, strike: to, strikeR, boltFrom: from, dischargeR, lo, hi, frame };
-    const write = () => sim.edit(k.bolt, sim.touchCentres(lo, hi), values);
+    job = null; // retire a natural decision superseded by this explicit strike
+    const write = () => {
+      sim.edit(k.bolt, sim.touchCentres(lo, hi), values);
+      api.lastBolt = { from, to, segs, id };
+    };
     if (built(k.bolt.main)) write();
     else {
-      const kernels = k;
-      kernels.bolt.ready.then(() => { if (k === kernels && !sim.disposed && !sim.gpu.failure) write(); }, () => {});
+      const kernels = k, captured = capture(sim);
+      kernels.bolt.ready.then(() => { if (current(sim, captured)) write(); }, () => {});
     }
-    api.lastBolt = { from, to, segs, id };
     return segs;
   }
 
@@ -104,47 +119,61 @@ export function createLightning() {
     return strike(sim, boltStart(to, rng, size), to, { strikeR: toolStrikeR(radius), id: hit.id });
   }
 
-  // Storms: call once per frame after the steps (host only).
-  function update(sim) {
+  // Call only during allowed host steps (including explicit manual stepping).
+  // Readback callbacks deposit results; only this entry point scans or strikes.
+  function update(sim, context = {}) {
+    if (sim.disposed || sim.gpu.failure) { job = null; return; }
     ensure(sim);
-    if (busy || sim.frame < nextPoll || !built(k.search) || !built(k.scan) || !built(k.bolt.main)) return;
+    if (job && !current(sim, job.capture, context)) { job = null; nextPoll = 0; }
+    if (job) {
+      if (!job.done) return;
+      const finished = job; job = null;
+      if (finished.stage === 'poll') {
+        if (finished.result) scan(sim, finished.result, context);
+      } else if (finished.result && sim.frame - lastStrike >= STORM.MIN_STEPS) {
+        lastStrike = sim.frame; api.strikes++;
+        strike(sim, finished.origin, finished.result.to, {
+          strikeR: STORM.STRIKE_R, dischargeR: STORM.DISCHARGE_R, id: finished.result.id,
+        });
+      }
+      return;
+    }
+    if (sim.frame < nextPoll || !built(k.search) || !built(k.scan) || !built(k.bolt.main)) return;
     nextPoll = sim.frame + STORM.POLL_STEPS;
     if (sim.frame - lastStrike < STORM.MIN_STEPS) return;
-    busy = true;
-    const id0 = sim.id, kernels = k, f = sim.gpu.frame;
+    const kernels = k, f = sim.gpu.frame;
     const slot = kernels.pick.next();
     f.clear(kernels.pick.buffer, kernels.pick.offset(slot), kernels.pick.slotBytes);   // (its key is an atomicMax)
     kernels.search.dispatch(f, fold(sim.g.nbricks), { bind: [sim.tables, sim.bindRO, kernels.pickGroup], header: sim.readHeader(), params: { slot } });
+    const pending = job = { stage: 'poll', capture: capture(sim, context), done: false, result: null };
     kernels.pick.read(slot).then((bytes) => {
+      if (job !== pending) return;
       const key = new Uint32Array(bytes)[0];
-      if (sim.id !== id0 || k !== kernels || sim.disposed || key === 0) return undefined;
+      if (key === 0) return;
       const [x, y, z] = slotCell(sim.g, STORM_KEY.SLOT_MAX - (key & STORM_KEY.SLOT_MAX));
-      return scan(sim, [x + 0.5, y + 0.5, z + 0.5]);
-    }).catch(() => {}).finally(() => { busy = false; });
+      pending.result = [x + 0.5, y + 0.5, z + 0.5];
+    }).catch(() => {}).finally(() => { pending.done = true; if (job === pending) onReady(); });
   }
 
-  function scan(sim, origin) {
-    const g = sim.g, id0 = sim.id, kernels = k;
+  function scan(sim, origin, context) {
+    const g = sim.g, kernels = k;
     const cols = stormColumns(origin, [g.nx, g.ny, g.nz]);
     const slot = kernels.scanRing.next();
     kernels.scan.dispatch(sim.gpu.frame, [1, 1, 1], {
       bind: [sim.tables, sim.bindRO, kernels.scanGroup], header: sim.readHeader(),
       params: { cols: cols.map((c) => [c[0], c[1], 0, 0]), count: cols.length, fromY: Math.floor(origin[1]), slot },
     });
-    return kernels.scanRing.read(slot).then((bytes) => {
-      if (sim.id !== id0 || k !== kernels || sim.disposed || sim.frame - lastStrike < STORM.MIN_STEPS) return;
+    const pending = job = { stage: 'scan', capture: capture(sim, context), origin, done: false, result: null };
+    kernels.scanRing.read(slot).then((bytes) => {
+      if (job !== pending) return;
       const buf = new Float32Array(bytes);
       const hits = cols.map((c, i) => ({ x: c[0], z: c[1], top: buf[i * VEC4], id: Math.round(buf[i * VEC4 + 1]), ok: buf[i * VEC4 + 2] > 0 }))
         .filter((h) => h.ok);
-      const best = pickStrike(origin, hits);
-      if (!best) return;
-      lastStrike = sim.frame;
-      api.strikes++;
-      strike(sim, origin, best.to, { strikeR: STORM.STRIKE_R, dischargeR: STORM.DISCHARGE_R, id: best.id });
-    });
+      pending.result = pickStrike(origin, hits);
+    }).catch(() => {}).finally(() => { pending.done = true; if (job === pending) onReady(); });
   }
 
   // (the rings are the device's, its kernels cached by source: nothing of ours to free)
-  api.dispose = () => { k = null; simId = -1; };
+  api.dispose = () => { api.reset(); k = null; simId = -1; };
   return api;
 }

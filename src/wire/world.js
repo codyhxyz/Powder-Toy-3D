@@ -125,6 +125,7 @@ const world = {
 
   // world mode: start the world over with the window at `origin` (world cells)
   worldLoad(app, origin) {
+    app.resetWeather?.();
     app.win.load(origin);
     app.placeVolume();
     app.post.reset();

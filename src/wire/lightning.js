@@ -7,9 +7,12 @@ const lightning = {
   name: 'lightning',
   ready: true,
 
-  boot(app) { app.lightning = createLightning(); },
+  boot(app) { app.lightning = createLightning({ onReady: () => app.pacer.wake() }); },
+  detach(app) { app.lightning?.reset(); },
   // storms: charged cloud strikes by itself (src/lightning.js)
-  afterStep(app) { if (app.stepping) app.lightning.update(app.sim); },
+  afterStep(app) {
+    if (app.stepping) app.lightning.update(app.sim, { worldEpoch: app.win?.epoch, worldIdentity: app.win });
+  },
 };
 
 export default lightning;
