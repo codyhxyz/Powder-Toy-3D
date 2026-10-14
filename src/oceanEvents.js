@@ -1,3 +1,4 @@
+import { createNativeWeatherKernel } from './v2/nativeWeather.js';
 import { fold } from './gpu/kernels.js';
 import { OCEAN_EVENT as C, OceanColumnsParams, OCEAN_COLUMNS_LAYOUT, oceanColumnsWGSL, oceanEventsEdit } from './shaders/oceanEvents.js';
 export { OCEAN_EVENT } from './shaders/oceanEvents.js';
@@ -94,7 +95,7 @@ export function createOceanEvents() {
     const layout = gpu.layout('OCEAN_COLUMNS', OCEAN_COLUMNS_LAYOUT);
     const probe = gpu.kernel({ name: 'oceanColumns', code: oceanColumnsWGSL(g),
       layouts: [sim.L.TABLES, sim.L.STATE_RO, layout], params: OceanColumnsParams });
-    const force = sim.editKernel('oceanForce', oceanEventsEdit);
+    const force = sim.compactOwner ? createNativeWeatherKernel(sim, 'oceanForce', oceanEventsEdit) : sim.editKernel('oceanForce', oceanEventsEdit);
     // GPUBufferUsage bits, so importing and CPU-mocking need no browser globals.
     const columns = gpu.createBuffer({ label: 'ocean columns', size: g.nx * g.nz * 8, usage: 0x80 | 0x04 });
     const edges = gpu.createBuffer({ label: 'ocean open edges', size: Math.max(g.nx, g.nz) * 16, usage: 0x80 | 0x08 });
@@ -196,10 +197,12 @@ export function createOceanEvents() {
       }
       if (lo.some((v, i) => v > hi[i])) return false;
       if (!updateColumns(context, r)) return false; // ordered before edit; authoritative live mask each forcing tick
-      sim.edit(r.force, { lo, hi }, {
+      const values = {
         sea, time: frame / C.stepsPerSecond, chop, surge, wind,
         source: event?.source ?? [0, 0], direction: event?.direction ?? [1, 0],
-      }, { bind: [{ buffer: r.columns }], scrub: !!surge });
+      };
+      if (sim.compactOwner) r.force.run({ lo, hi }, values, r.columns);
+      else sim.edit(r.force, { lo, hi }, values, { bind: [{ buffer: r.columns }], scrub: !!surge });
       // Keep the original phase when 60Hz ticks straddle a 240Hz-authored
       // pulse boundary (30 old ticks = 7.5 native ticks). Skip missed pulses
       // rather than drifting the source rate or performing unbounded catch-up.

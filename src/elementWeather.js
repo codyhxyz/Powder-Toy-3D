@@ -1,3 +1,4 @@
+import { createNativeWeatherKernel } from './v2/nativeWeather.js';
 import { fold } from './gpu/kernels.js';
 import { E } from './elements.js';
 import {
@@ -81,8 +82,9 @@ export function createElementWeather() {
     const group = gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: roof } }], 'element weather roofs');
     const scan = gpu.kernel({ name: 'weatherRoof', code: weatherRoofFrag(g),
       layouts: [sim.L.TABLES, sim.L.STATE_RO, layout], workgroupSize: [64, 1, 1] });
-    const source = sim.editKernel('elementWeather', {
-      update: weatherUpdateWGSL, params: WeatherParams, reads: 'neighbours',
+    const makeSource = sim.compactOwner ? (name, spec) => createNativeWeatherKernel(sim, name, spec) : (name, spec) => sim.editKernel(name, spec);
+    const source = makeSource('elementWeather', {
+      nativePrecipitation: true, update: weatherUpdateWGSL, params: WeatherParams, reads: 'neighbours',
       decls: weatherDeclsWGSL, layout: WEATHER_SOURCE_LAYOUT,
     });
     resources = { roof, group, scan, source, ready: Promise.all([scan.ready, source.ready]) };
@@ -132,7 +134,10 @@ export function createElementWeather() {
       // Separate thin bands bound the shared scratch and avoid dispatching the
       // empty column between sea fog and high clouds. At most five dispatches
       // per pulse: one roof scan and two phases per band, never a full-grid edit.
-      for (const box of boxes) sim.edit(source, box, values, { bind: [{ buffer: roof }] });
+      for (const box of boxes) {
+        if (sim.compactOwner) source.run(box, values, roof);
+        else sim.edit(source, box, values, { bind: [{ buffer: roof }] });
+      }
       pulses++; lastFrame = sim.frame; nextFrame = sim.frame + cadence;
       return true;
     },

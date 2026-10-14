@@ -1,3 +1,4 @@
+import { createNativeWeatherKernel } from './v2/nativeWeather.js';
 import {
   BoltParams, boltUpdateWGSL, boltDeclsWGSL, stormBrickFrag, stormScanFrag, StormParams, ScanParams, STORM_LAYOUT, STORM_KEY,
 } from './shaders/lightning.js';
@@ -50,8 +51,9 @@ export function createLightning({ onReady = () => {} } = {}) {
     const pick = gpu.readback.ring('storm pick', VEC4 * 4, RESULT_SLOTS);
     const scan = gpu.readback.ring('storm scan', STORM.CANDIDATES * VEC4 * 4, RESULT_SLOTS);
     const group = (ring, name) => gpu.bindGroup(L, [{ binding: 0, resource: { buffer: ring.buffer } }], name);
+    const makeBolt = sim.compactOwner ? (name, spec) => createNativeWeatherKernel(sim, name, spec) : (name, spec) => sim.editKernel(name, spec);
     k = {
-      bolt: sim.editKernel('bolt', { update: boltUpdateWGSL, params: BoltParams, reads: 'own', decls: boltDeclsWGSL }),
+      bolt: makeBolt('bolt', { update: boltUpdateWGSL, params: BoltParams, reads: 'own', decls: boltDeclsWGSL }),
       search: gpu.kernel({ name: 'stormSearch', code: stormBrickFrag(g), layouts, params: StormParams, build: 'idle' }),
       scan: gpu.kernel({ name: 'stormScan', code: stormScanFrag(g), layouts, params: ScanParams, build: 'idle' }),
       pick, scanRing: scan, pickGroup: group(pick, 'storm pick'), scanGroup: group(scan, 'storm scan'),
@@ -96,7 +98,8 @@ export function createLightning({ onReady = () => {} } = {}) {
     const values = { segA, segB, segs: segs.length, strike: to, strikeR, boltFrom: from, dischargeR, lo, hi, frame };
     job = null; // retire a natural decision superseded by this explicit strike
     const write = () => {
-      sim.edit(k.bolt, sim.touchCentres(lo, hi), values);
+      if (sim.compactOwner) k.bolt.run(sim.touchCentres(lo, hi), values);
+      else sim.edit(k.bolt, sim.touchCentres(lo, hi), values);
       api.lastBolt = { from, to, segs, id };
     };
     if (built(k.bolt.main)) write();
@@ -144,7 +147,7 @@ export function createLightning({ onReady = () => {} } = {}) {
     const kernels = k, f = sim.gpu.frame;
     const slot = kernels.pick.next();
     f.clear(kernels.pick.buffer, kernels.pick.offset(slot), kernels.pick.slotBytes);   // (its key is an atomicMax)
-    kernels.search.dispatch(f, fold(sim.g.nbricks), { bind: [sim.tables, sim.bindRO, kernels.pickGroup], header: sim.readHeader(), params: { slot } });
+    kernels.search.dispatch(f, fold(sim.g.nbricks), { bind: [sim.tables, sim.compact ? sim.bindPhysicalRO : sim.bindRO, kernels.pickGroup], header: sim.readHeader({ physical: true }), params: { slot } });
     const pending = job = { stage: 'poll', capture: capture(sim, context), done: false, result: null };
     kernels.pick.read(slot).then((bytes) => {
       if (job !== pending) return;
@@ -160,7 +163,7 @@ export function createLightning({ onReady = () => {} } = {}) {
     const cols = stormColumns(origin, [g.nx, g.ny, g.nz]);
     const slot = kernels.scanRing.next();
     kernels.scan.dispatch(sim.gpu.frame, [1, 1, 1], {
-      bind: [sim.tables, sim.bindRO, kernels.scanGroup], header: sim.readHeader(),
+      bind: [sim.tables, sim.compact ? sim.bindPhysicalRO : sim.bindRO, kernels.scanGroup], header: sim.readHeader({ physical: true }),
       params: { cols: cols.map((c) => [c[0], c[1], 0, 0]), count: cols.length, fromY: Math.floor(origin[1]), slot },
     });
     const pending = job = { stage: 'scan', capture: capture(sim, context), origin, done: false, result: null };
