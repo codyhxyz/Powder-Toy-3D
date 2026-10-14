@@ -71,6 +71,8 @@ export function airWGSL(g,nativeHead,stage) {
         events[s]&=~2u; // bit consumed only together with its bounded, once-only source
       }
     }
+    let shock=atomicExchange(&control[D_SHOCK+t],0u);
+    if (shock>0u) { a.vp.w+=f32(shock)/256.0; a.thermal.z=0.0; dWake(aBase(t)); }
     if (count>0u) {
       a.vp.w+=f32(count)*${f(AIR.gasPressure)}; a.thermal.x+=heat;
       a.thermal.y+=f32(count)/64.0; a.thermal.z=0.0; dWake(aBase(t));
@@ -87,7 +89,11 @@ export function airWGSL(g,nativeHead,stage) {
       gradient=gradient || any(abs(other.thermal.xy-before.thermal.xy)>=vec2f(A_SQ));
       var flux: DAir;
       if (side>0) { flux=aFlux(before,other,axis); } else { flux=aFlux(other,before,axis); }
-      next.vp-=f32(side)*open*flux.vp; next.thermal-=f32(side)*open*flux.thermal;
+      next.vp-=f32(side)*open*flux.vp;
+      // Closed fractions exert wall pressure too. Subtracting the cell's
+      // pressure baseline makes uniform pressure a rest state even at walls.
+      next.vp[axis]+=f32(side)*open*before.vp.w/A_RHO*A_DT/A_DX;
+      next.thermal-=f32(side)*open*flux.thermal;
     } }
     // Thermal expansion and gas buoyancy. No permanent acceleration in a
     // fully sealed brick: vertical open faces alone couple the two layers.
@@ -119,9 +125,9 @@ export function airWGSL(g,nativeHead,stage) {
     // Brush overlap includes the half-diagonal of a 4³ air cell.
     if (r<=P.radius+3.464101615) {
       let falloff=clamp(1.0-r/max(P.radius+3.464101615,0.001),0.0,1.0);
-      if (P.mode==3u) { a.vp=vec4f(a.vp.xyz+P.vector*P.strength*D_DT*falloff,a.vp.w); }
-      if (P.mode==4u || P.mode==5u) { a.vp.w+=select(1.0,-1.0,P.mode==5u)*P.strength*D_DT*falloff; }
-      if (P.mode==6u && length(delta.xz)>0.0) { a.vp=vec4f(a.vp.xyz+normalize(vec3f(delta.z,0,-delta.x))*P.strength*D_DT*falloff,a.vp.w); }
+      if (P.mode==3u) { a.vp=vec4f(a.vp.xyz+P.vector*P.strength*falloff,a.vp.w); }
+      if (P.mode==4u || P.mode==5u) { a.vp.w+=select(1.0,-1.0,P.mode==5u)*P.strength*falloff; }
+      if (P.mode==6u && length(delta.xz)>0.0) { a.vp=vec4f(a.vp.xyz+normalize(vec3f(delta.z,0,-delta.x))*P.strength*falloff,a.vp.w); }
       a.thermal.z=0.0; dWake(aBase(t));
     }
     airOut[t]=a;

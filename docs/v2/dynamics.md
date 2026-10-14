@@ -111,3 +111,28 @@ memory grows with explored active air; compression/eviction is not implemented.
   foundation adapter, square/rectangular grids, Naga, eight-buffer ceiling.
 - Each family exports `WGSL_CHECK` for the repo's discovery validator.
 - No GPU/browser runs were performed in this lane.
+
+## Correctness refinements after first tranche
+
+- Packet enthalpy excludes the stationary `AIR_CAPACITY_Q*cTq` carrier.
+  Extraction leaves EMPTY at source actual temperature, bank0. Landing adds
+  the packet's material-only enthalpy to ALL destination energy, including a
+  nonzero empty bank. `energyFits` gates landing and all ray heat. Fractures
+  re-encode the old exact energy under the debris capacity. Source packet
+  payload is bit-exact throughout flight; landing can change thermal encoding
+  to mix with the destination carrier without losing energy.
+- Blast energy scales with liquid fill, including compressed/partial charges.
+  Product heat is the declared quarter of scaled chemical J, plus all source
+  thermal energy; selection gates its representation before ANY blast work.
+  Acoustic pressure uses `sqrt(oldP²+addedP²)`, not additive sqrt kicks.
+  Material heat from products and accepted rays uses foundation source ledgers.
+- Photon core0 bits8..23 are life, bits24..31 last medium; its reserved bank
+  word stores the last crossed axis, so attenuating through a slab does not
+  skip refraction on exit. This tag-specific metadata is not a material bank.
+- DDA has an analytical nx+ny+nz+3 bound for in-box crossings; non-progress
+  retains the packet (or shields a blast), never skips a wall. Closed boxes
+  land matter at boundaries; ray outflow is explicitly counted at control[16].
+  World-window outflow retains every particle unchanged for future re-entry.
+- API inputs must fit finite f32-safe arithmetic (absolute magnitude<=1e12).
+  Restore validates live particle coordinates/energy and air floats before
+  any writes. Snapshot carries pending shock terms and held-membership storage.

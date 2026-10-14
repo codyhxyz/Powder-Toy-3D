@@ -13,7 +13,9 @@ export const storageLayout = (count, readonly = []) => Array.from({ length: coun
   ({ binding, visibility: STAGE.COMPUTE, buffer: { type: readonly.includes(binding) ? 'read-only-storage' : 'storage' } }));
 export const PARTICLES_LAYOUT = storageLayout(5, [3]);
 export const CONTROL = Object.freeze({ LIVE: 0, AIR: 1, PENDING: 2, BLAST: 3, FREE: 4, SPAWNS: 5, ENERGY: 6,
-  FREE_LIST: 16, PREFIX: 16 + PARTICLE_CAP });
+  OUTFLOW: 16, FREE_LIST: 32, PREFIX: 32 + PARTICLE_CAP });
+export const shockBase = g => 32 + 2 * PARTICLE_CAP + 3 * g.nbricks + 64;
+export const heldBase = g => shockBase(g) + g.nbricks;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
   `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
@@ -25,6 +27,8 @@ ${nativeHead(g)}
 const D_CAP: u32 = ${PARTICLE_CAP}u;
 const D_SLOTS: u32 = ${g.slots}u;
 const D_BRICKS: u32 = ${g.nbricks}u;
+const D_SWEEP_MAX: u32 = ${g.nx+g.ny+g.nz+3}u;
+const D_WINDOWED: bool = ${!!g.windowed};
 const D_NONE: u32 = 0xffffffffu;
 const D_CELL: f32 = ${f(CELL_M)};
 const D_DT: f32 = ${f(DT)};
@@ -34,6 +38,8 @@ const D_PHOTON: u32 = 254u;
 const D_FREE: u32 = ${CONTROL.FREE_LIST}u;
 const D_PREFIX: u32 = ${CONTROL.PREFIX}u;
 const D_COUNTS: u32 = D_PREFIX + D_BRICKS;
+const D_SHOCK: u32 = ${shockBase(g)}u;
+const D_HELD: u32 = ${heldBase(g)}u;
 struct DParticle { position: vec3f, id: u32, velocity: vec3f, c0: u32, tail: vec4u }
 struct DAir { vp: vec4f, thermal: vec4f } // m/s, Pa; excess K, gas fraction, quiet ticks, reserved
 ${table('dMass', 'f32', 'mass', 0.001)}
@@ -50,13 +56,16 @@ fn dDir(id: u32) -> vec3f { let z = 2.0 * dRandom(id, 51u) - 1.0; let a = dRando
 fn dMaterial(p: DParticle) -> Material { return Material(vec4u(p.c0, p.tail.xyz), bitcast<i32>(p.tail.w)); }
 fn dParticle(position: vec3f, velocity: vec3f, id: u32, m: Material) -> DParticle { return DParticle(position, id, velocity, m.core.x, vec4u(m.core.yzw, bitcast<u32>(m.bank))); }
 fn dEmpty() -> Material { return makeMaterial(0u, 20.0, 0u, 0u); }
-fn dAddHeat(m: Material, heat: f32) -> Material {
+fn dCarrier(m: Material) -> Material { return makeMaterial(0u,f32(cTq(m.core))*0.25-273.25,0u,0u); }
+fn dParticleEnergy(m: Material) -> vec2u { return energySub(energyOf(m),energyMul(65536u,cTq(m.core))); }
+fn dHeatEnergy(m: Material, heat: f32) -> vec2u {
   // One legacy cap*C = FULL*64*4 native energy units; fission's 150
   // exceeds signed32, so multiply/add in the foundation's signed64 pair.
   let amount = energyMul(u32(round(abs(heat)*256.0)),65536u);
-  if (heat < 0.0) { return withEnergy(m,energySub(energyOf(m),amount)); }
-  return withEnergy(m,energyAdd(energyOf(m),amount));
+  if (heat < 0.0) { return energySub(energyOf(m),amount); }
+  return energyAdd(energyOf(m),amount);
 }
+fn dAddHeat(m: Material, heat: f32) -> Material { return withEnergy(m,dHeatEnergy(m,heat)); }
 fn dWake(p: vec3i) {
   // New sources must wake the old and new neighbourhood, even across a brick boundary.
   for (var z = -1; z <= 1; z++) { for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
@@ -111,22 +120,25 @@ export function particlesWGSL(g, nativeHead, stage) {
     var particle = particles[t]; flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
     if (particle.id == 0u) { return; }
     atomicAdd(&control[0],1u);
-    let local = particle.position - vec3f(P.origin); let startCell = vec3i(floor(local));
+    let local = particle.position - vec3f(P.origin);
+    // Test in float BEFORE the i32 conversion: high-speed outflow may exceed
+    // i32 coordinates, and conversion must not wrap it back into the grid.
+    if (any(local<vec3f(0)) || any(local>=vec3f(${g.nx}.0,${g.ny}.0,${g.nz}.0))) { return; }
+    let startCell = vec3i(floor(local));
     // World-window exits are retained, not deleted. A later shift can bring them back.
-    if (!inGrid(startCell)) { return; }
     dWake(startCell);
     let m = dMaterial(particle); let id = cid(m.core); let neutron = id == D_NEUTRON; let photon = id == D_PHOTON;
     var v = particle.velocity; var acceleration = vec3f(0,-D_G,0);
     if (photon) {
-      let life = particle.c0 >> 8u; particle.c0 = D_PHOTON | (max(1u,life)-1u)<<8u;
+      let life = (particle.c0 >> 8u)&65535u; particle.c0 = (particle.c0&0xff0000ffu) | (max(1u,life)-1u)<<8u;
       acceleration = vec3f(0);
     } else if (neutron) {
       if (particle.tail.z > 0u) { return; } // pending children: allocator must account for every one
       if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); return; }
-      particle.tail.x -= 1u; acceleration = vec3f(0);
+      if ((particle.c0&256u)==0u) { particle.tail.x -= 1u; } acceleration = vec3f(0);
     } else {
       let wind = air[brickOfCell(startCell)].vp.xyz;
-      if (cls(id) == 4u) { acceleration = vec3f(0); }
+      if (cls(id) == 4u || atomicLoad(&control[D_HELD+t])!=0u) { acceleration = vec3f(0); }
       let relative = v - wind;
       // Implicit quadratic drag is stable at any speed; it is NOT a displacement cap.
       let drag = D_G / (dTerminal(id) * dTerminal(id));
@@ -141,18 +153,29 @@ export function particlesWGSL(g, nativeHead, stage) {
       next[a] = (f32(cell[a] + select(0,1,delta[a]>0.0)) - local[a]) / delta[a];
     } }
     var hit = D_NONE; var deposit = D_NONE; var hitT = 1.0; var kind = 0u; var energy = 0.0;
-    var entry = 0.0; var entryAxis = 1u; var optical = vec3f(0);
+    var entry = 0.0; var entryAxis = select(1u,particle.tail.w&3u,photon); var optical = vec3f(0);
+    var boundary=false; var crossed=0u;
     loop {
-      if (!inGrid(cell)) { break; }
+      // A straight segment crosses at most nx+ny+nz faces inside this box.
+      // The bound detects non-progress; it never skips a wall or clips speed.
+      if (crossed>D_SWEEP_MAX) { return; } crossed++;
+      if (!inGrid(cell)) {
+        if (!D_WINDOWED) {
+          if (neutron || photon) { particles[t].id=0u; atomicSub(&control[0],1u); atomicAdd(&control[16],1u); return; }
+          boundary=true; particle.velocity=vec3f(0); particle.position=vec3f(previous+P.origin)+0.5;
+          if (cid(loadMaterial(slotOf(previous)).core)==0u) { deposit=slotOf(previous); }
+        }
+        break;
+      }
       let slot = slotOf(cell); let destination = loadMaterial(slot); let targetId = cid(destination.core);
       var axis = 0u; if (next.y < next.x) { axis = 1u; } if (next.z < next[axis]) { axis = 2u; }
       let exit = min(1.0,next[axis]);
       if (photon) {
         let optics = dOptical(targetId); let segment = max(0.0,exit-entry)*length(delta);
-        let priorId = cid(loadMaterial(slotOf(previous)).core);
-        if ((particle.c0>>8u)==0u || optics.w<0.0 || any(optics.xyz>vec3f(0)) || dIOR(priorId)!=dIOR(targetId)) {
+        let priorId = select(cid(loadMaterial(slotOf(previous)).core),particle.c0>>24u,entry==0.0);
+        if (((particle.c0>>8u)&65535u)==0u || optics.w<0.0 || any(optics.xyz>vec3f(0)) || dIOR(priorId)!=dIOR(targetId)) {
           hit=slot; hitT=entry; energy=segment; kind=5u;
-          optical=vec3f(f32(entryAxis),dIOR(priorId)/dIOR(targetId),f32(step[entryAxis])); break;
+          optical=vec3f(f32(entryAxis+axis*4u),dIOR(priorId)/dIOR(targetId),f32(step[entryAxis])); break;
         }
       } else if (neutron) {
         var materialId = targetId;
@@ -176,7 +199,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       previous = cell; entry = next[axis]; entryAxis=axis; cell[axis] += step[axis]; next[axis] += stride[axis];
     }
     if (hit == D_NONE) {
-      particle.position = end + vec3f(P.origin);
+      if (!boundary) { particle.position = end + vec3f(P.origin); }
       // Gas packets hand back to an empty destination after each cell crossing.
       if (!neutron && !photon && cls(id) == 4u && inGrid(cell) && any(cell != startCell) && cid(loadMaterial(slotOf(cell)).core) == 0u) { deposit = slotOf(cell); }
     } else {
@@ -201,26 +224,37 @@ export function particlesWGSL(g, nativeHead, stage) {
       let id = cid(before.core); let cost = dToughness(id);
       if (cls(p.c0 & 255u) != 3u && dBreak(id) >= 0 && f.effect.x >= cost) {
         after.core.x = (before.core.x & 0xffffff00u) | u32(dBreak(id));
+        if (!energyFits(after,energyOf(before))) { particles[t].velocity=vec3f(0); return; }
+        after=withEnergy(after,energyOf(before));
         // Fracture spends KE, never manufactures heat. Stop at the first face;
         // remaining KE survives for the next swept segment.
         p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)));
+        flight[t].destination.y=D_NONE; // fracture is not a landing: retain unspent KE
       } else { p.velocity = vec3f(0); }
     } else if (f.destination.z == 5u) {
       let old = dPhotonEnergy(p); let optics = dOptical(cid(before.core)); var left = old;
-      let direction = normalize(p.velocity); var normal = vec3f(0); normal[u32(f.effect.y)] = -f.effect.w;
-      if ((p.c0>>8u)==0u) { left=vec3f(0); }
+      let direction = p.velocity/max(length(p.velocity),0.000001); var normal = vec3f(0); normal[u32(f.effect.y)&3u] = -f.effect.w;
+      if (((p.c0>>8u)&65535u)==0u) { left=vec3f(0); }
       else if (optics.w<0.0) {
-        left *= max(0.0,-optics.w-1.0); p.velocity=reflect(p.velocity,normal);
+        left *= max(0.0,-optics.w-1.0); p.velocity=reflect(p.velocity,normal); p.position-=direction*0.0002;
       } else if (f.effect.z!=1.0) {
         // Snell's law, with total internal reflection; TPT GLASS/WATR optics.
         let bent=refract(direction,normal,f.effect.z);
-        if (dot(bent,bent)<0.000001) { p.velocity=reflect(p.velocity,normal); }
-        else { p.velocity=normalize(bent)*length(p.velocity); p.position+=normalize(p.velocity)*0.0001; }
+        if (dot(bent,bent)<0.000001) { p.velocity=reflect(p.velocity,normal); p.position-=direction*0.0002; }
+        else {
+          p.velocity=normalize(bent)*length(p.velocity); p.position+=normalize(p.velocity)*0.0002;
+          p.c0=(p.c0&0x00ffffffu)|(cid(before.core)<<24u);
+        }
       } else {
         left *= exp(-optics.xyz*f.effect.x); p.position+=direction*(f.effect.x+0.0001);
+        // Remember the medium AND crossed exit face: the next sweep must
+        // refract on exit, even though attenuation advanced across that face.
+        p.c0=(p.c0&0x00ffffffu)|(cid(before.core)<<24u); p.tail.w=(u32(f.effect.y)>>2u)&3u;
       }
       if (max(left.x,max(left.y,left.z))<${f(RAYS.PHOTON_E_MIN)}) { left=vec3f(0); }
-      after=dAddHeat(before,dot(old-left,vec3f(${f(RAYS.PHOTON_HEAT/3)})));
+      let heat=dot(old-left,vec3f(${f(RAYS.PHOTON_HEAT/3)}));
+      if (!energyFits(before,dHeatEnergy(before,heat))) { return; } // retain all RGB energy for retry
+      after=dAddHeat(before,heat);
       p.tail=vec4u(bitcast<vec3u>(left),p.tail.w);
       if (all(left==vec3f(0))) { p.id=0u; atomicSub(&control[0],1u); }
     } else if (f.destination.z == 2u) {
@@ -232,20 +266,27 @@ export function particlesWGSL(g, nativeHead, stage) {
       p.velocity = dDir(p.id)*speed;
     } else {
       // Native energy-bank helper is supplied by the thermal foundation.
-      after = dAddHeat(before, select(${f(RAYS.CAPTURE_HEAT)},${f(RAYS.FISSION_HEAT)},f.destination.z==4u));
+      let heat=select(${f(RAYS.CAPTURE_HEAT)},${f(RAYS.FISSION_HEAT)},f.destination.z==4u);
+      if (!energyFits(before,dHeatEnergy(before,heat))) { particles[t].c0|=256u; return; }
+      after = dAddHeat(before,heat); p.c0&=~256u;
       if (f.destination.z == 4u) {
+        p.tail.x = ${RAYS.NEUT_LIFE}u;
         p.tail.y = bitcast<u32>(${f(RAYS.NEUT_E_FAST)});
+        atomicAdd(&control[D_SHOCK+brickOfCell(cellOf(s))],${Math.round(RAYS.FISSION_P*256)}u);
         p.tail.z = u32(floor(f.effect.x-1.0)) + select(0u,1u,dRandom(p.id,761u)<fract(f.effect.x-1.0));
         p.velocity = dDir(p.id)*${f(RAYS.NEUT_V*60*CELL_M)};
       } else { p.id = 0u; atomicSub(&control[0],1u); }
     }
+    if (f.destination.z>=3u) { noteEnergySource(cellOf(s),energySub(energyOf(after),energyOf(before))); }
     storeMaterial(s,before,after); dWake(cellOf(s)); particles[t] = p;
   `);
   if (stage === 'deposit') return h + main64(`
-    if (t >= D_CAP || particles[t].id == 0u) { return; }
+    if (t >= D_CAP || particles[t].id == 0u || atomicLoad(&control[D_HELD+t])!=0u) { return; }
     let s = flight[t].destination.y; if (!dWon(s,1u,t)) { return; }
     let before = loadMaterial(s); if (cid(before.core) != 0u) { return; }
-    storeMaterial(s,before,dMaterial(particles[t])); dWake(cellOf(s));
+    let incoming=dMaterial(particles[t]); let combined=energyAdd(energyOf(before),dParticleEnergy(incoming));
+    if (!energyFits(incoming,combined)) { return; }
+    storeMaterial(s,before,withEnergy(incoming,combined)); dWake(cellOf(s));
     particles[t].id = 0u; atomicSub(&control[0],1u);
   `);
   throw new Error(`Unknown particles stage ${stage}`);

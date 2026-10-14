@@ -140,3 +140,65 @@ test('one particle, even outside the window, prevents false idle',async()=>{
   new Uint32Array(d.control.bytes)[0]=0;await d.readActivity();assert.equal(d.isIdle,true);
   d.applyToolImpulse({kind:'neutron',position:[1000,2,3],count:1});assert.equal(d.isIdle,false);
 });
+
+test('hot/cold empty roundtrip conserves full64 energy including carrier banks and compressed partials',async()=>{
+  const {makeMaterial,energyOf,withEnergy,FULL}=await import('../../src/v2/layout.js');
+  const {extractPacket,depositPacket,particleEnergy}=await import('../../src/v2/dynamics-reference.js');
+  for(const amount of [1,FULL/3|0,FULL,FULL+12345]) for(const sourceT of [-20,20,300]) for(const destT of [-100,900]) {
+    const source=withEnergy(makeMaterial(E.WATER,sourceT,amount,0),energyOf(makeMaterial(E.WATER,sourceT,amount,0))+123n);
+    const destination=withEnergy(makeMaterial(0,destT,0,0),energyOf(makeMaterial(0,destT,0,0))-73n);
+    const {packet,source:carrier}=extractPacket(source);
+    assert.deepEqual(packet.core,source.core);assert.equal(packet.bank,source.bank);
+    assert.equal(energyOf(carrier)+particleEnergy(packet),energyOf(source));
+    const deposited=depositPacket(packet,destination); assert.ok(deposited);
+    assert.equal(energyOf(carrier)+energyOf(deposited),energyOf(source)+energyOf(destination));
+    assert.equal(deposited.core[1]&0xffffff,amount);
+  }
+});
+test('partial NITRO charge energy scales with exact fill, fracture re-encodes thermal capacity',async()=>{
+  const {makeMaterial,energyOf,FULL}=await import('../../src/v2/layout.js');
+  const {chargeEnergy,fractureMaterial}=await import('../../src/v2/dynamics-reference.js');
+  close(chargeEnergy(makeMaterial(E.NITRO,20,1,0))*FULL,chargeEnergy(makeMaterial(E.NITRO,20,FULL,0)),1e-6);
+  const glass=makeMaterial(E.GLASS,1300,FULL,0),broken=fractureMaterial(glass,E.SHARDS);
+  assert.ok(broken); assert.equal(energyOf(broken),energyOf(glass));assert.equal(broken.core[0]&255,E.SHARDS);
+});
+test('same-brick blast pressure adds exactly the declared acoustic energy without a cross term',async()=>{
+  const {pressureEnergy,addBlastPressure}=await import('../../src/v2/dynamics-reference.js');
+  for(const start of [-100,0,100]) {
+    let p=start;
+    for(let i=0;i<100;i++) p=addBlastPressure(p,500);
+    close(pressureEnergy(p)-pressureEnergy(start),100*500*0.25,1e-8);
+  }
+});
+test('photon slab exit refracts back, total internal reflection stays inside',async()=>{
+  const {refractDirection}=await import('../../src/v2/dynamics-reference.js');
+  const incoming=[0.6,-0.8,0],inside=refractDirection(incoming,[0,1,0],1/1.5);
+  const exit=refractDirection(inside,[0,1,0],1.5);
+  exit.forEach((x,i)=>close(x,incoming[i]));
+  assert.ok(refractDirection([0.9,Math.sqrt(1-.9**2),0],[0,-1,0],1.5)[1]<0);
+});
+test('actual generated shaders carry the reference conservation and numeric guards',async()=>{
+  const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  const {particlesWGSL}=await import('../../src/shaders/v2/particles.js');
+  const {blastsWGSL}=await import('../../src/shaders/v2/blasts.js');
+  const {airWGSL}=await import('../../src/shaders/v2/air.js'); const g=gridLayout(16,8,8);
+  const impact=particlesWGSL(g,nativeDynamicsHead,'impact'),deposit=particlesWGSL(g,nativeDynamicsHead,'deposit');
+  assert.match(impact,/flight\[t\]\.destination\.y=D_NONE/);
+  assert.match(impact,/energyFits\(before,dHeatEnergy/);
+  assert.match(impact,/p\.tail\.w=\(u32\(f\.effect\.y\)>>2u\)&3u/);
+  assert.match(deposit,/energyAdd\(energyOf\(before\),dParticleEnergy\(incoming\)\)/);
+  assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/after=dCarrier\(after\)/);
+  assert.match(blastsWGSL(g,nativeDynamicsHead,'finish'),/sqrt\(a\.vp\.w\*a\.vp\.w\+addedP2\)/);
+  assert.match(blastsWGSL(g,nativeDynamicsHead,'select'),/energyFits\(dProduct\(m\),dProductEnergy\(m\)\)/);
+  assert.match(particlesWGSL(g,nativeDynamicsHead,'integrate'),/crossed>D_SWEEP_MAX/);
+  const tool=airWGSL(g,nativeDynamicsHead,'tool');assert.doesNotMatch(tool,/P\.strength\*D_DT/);
+  assert.match(airWGSL(g,nativeDynamicsHead,'step'),/open\*before\.vp\.w\/A_RHO\*A_DT\/A_DX/);
+});
+test('API rejects f32-overflow inputs; invalid particle and air words cannot partially restore',async()=>{
+  const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
+  assert.equal(d.applyToolImpulse({kind:'impulse',position:[1e100,0,0],strength:1}).status,'rejected');
+  assert.equal(d.applyToolImpulse({kind:'wind',position:[1,0,0],strength:1e100}).status,'rejected');
+  const snapshot=await d.snapshotDynamicState();snapshot.particles[3]=1;snapshot.particles[0]=0x7fc00000;
+  assert.throws(()=>d.restoreDynamicState(snapshot),/coordinates/);
+  snapshot.particles[3]=0;snapshot.air[0]=0x7f800000;assert.throws(()=>d.restoreDynamicState(snapshot),/air values/);
+});

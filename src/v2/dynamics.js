@@ -1,6 +1,6 @@
 import { fold } from '../gpu/kernels.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
-import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT } from '../shaders/v2/particles.js';
+import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP } from '../shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
@@ -12,7 +12,10 @@ export const DYNAMICS_ABI = Object.freeze({ version: 1, particleBytes: PARTICLE_
   blastGroup1: ['events','particles','air','control','plans'], airGroup1: ['airIn(read)','airOut','events','control','faces'],
   maxStorageBuffers: 8, blastBatchDefault: 8, blastBatchMax: 64 });
 const vector = x => Array.isArray(x) || ArrayBuffer.isView(x) ? Array.from(x) : x ? [x.x,x.y,x.z] : [0,0,0];
-const finiteVector = x => { const v=vector(x); return v.length===3 && v.every(Number.isFinite) ? v : null; };
+// Finite JS numbers need not be safe shader inputs (1e100 packs to infinity).
+// 1e12 also keeps squared velocities/pressures within f32's finite range.
+export const safeDynamicNumber = n => Number.isFinite(n) && Math.abs(n)<=1e12 && Number.isFinite(Math.fround(n));
+const finiteVector = x => { const v=vector(x); return v.length===3 && v.every(safeDynamicNumber) ? v : null; };
 const key = p => p.join(',');
 const isInside = (p,g) => p.every((x,a) => x>=0 && x<[g.nx,g.ny,g.nz][a]);
 const equal = (a,b) => a.length===b.length && a.every((x,i)=>x===b[i]);
@@ -128,8 +131,8 @@ export class NativeDynamics {
     if (!this.isReady || this.disposed) return {status:'rejected',reason:'native dynamics not ready'};
     const kind=request?.kind,position=finiteVector(request?.position),direction=finiteVector(request?.direction??[0,0,0]);
     const radius=request?.radius??0, strength=request?.strength??0;
-    if (!this.supportsToolKind(kind) || !position || !direction || !Number.isFinite(radius) || radius<0 ||
-      !Number.isFinite(strength)) return {status:'rejected',reason:'invalid native tool request'};
+    if (!this.supportsToolKind(kind) || !position || !direction || !safeDynamicNumber(radius) || radius<0 ||
+      !safeDynamicNumber(strength)) return {status:'rejected',reason:'invalid native tool request'};
     if (this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
     const requestId=++this.sequence,tick=this.owner.tick;
     if (kind==='photon' || kind==='neutron') {
@@ -154,13 +157,13 @@ export class NativeDynamics {
   /** Enqueue beside the owner's idle read, at the SAME recording boundary. */
   async readActivity() {
     this._check(); const serial=this.serial,epoch=this.owner.epoch;
-    const first=this.gpu.readback.buffer(this.control,0,32);
+    const first=this.gpu.readback.buffer(this.control,0,68);
     const pending=this.gpu.readback.buffer(this.control,rayRequestBase(this.g)*4,RAY_REQUEST_CAP*4);
     const [raw,requests]=await Promise.all([first,pending]);
     const c=new Uint32Array(raw),r=new Uint32Array(requests);
     let queued=0; for (const [slot] of this.rayRequests) { queued+=r[slot]; if(r[slot]===0 && serial===this.serial) this.rayRequests.delete(slot); }
     const stats={particles:c[0],air:c[1],events:c[2],queued,capacityFallbacks:c[7],
-      outsideObligations:this.pendingOutside.size,blastBatch:this.blastBatch};
+      outsideObligations:this.pendingOutside.size,blastBatch:this.blastBatch,outflowPackets:c[16]};
     if (!this.disposed && serial===this.serial && epoch===this.owner.epoch) {
       this.stats=stats; this.isIdle=stats.particles===0 && stats.air===0 && stats.events===0 && queued===0 && !stats.outsideObligations;
     }
@@ -177,21 +180,31 @@ export class NativeDynamics {
     const reads=[this.particles,this.air[this.airIndex],this.control,this.owner.events].map(b=>this.gpu.readback.buffer(b,0,b.size));
     const [particles,air,control,events]=(await Promise.all(reads)).map(b=>new Uint32Array(b));
     for(let s=0;s<g.slots;s++) if(events[s]) metadata.pendingEvents.push({worldCell:slotCell(g,s).map((v,a)=>v+origin[a]),bits:events[s]});
-    return {...metadata,particles,air,control:control.slice(0,16),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
+    return {...metadata,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
   }
   restoreDynamicState(snapshot) {
     this._check(); const g=this.g,s=snapshot;
     if (!s || s.version!==1 || !equal(s.dims??[],[g.nx,g.ny,g.nz]) || !finiteVector(s.origin) ||
       !s.origin.every(Number.isInteger) || !(s.particles instanceof Uint32Array) || s.particles.length!==PARTICLE_CAP*12 ||
-      !(s.air instanceof Uint32Array) || s.air.length!==g.nbricks*8 || !(s.control instanceof Uint32Array) || s.control.length!==16 ||
+      !(s.air instanceof Uint32Array) || s.air.length!==g.nbricks*8 || !(s.control instanceof Uint32Array) || s.control.length!==32 ||
+      !(s.held instanceof Uint32Array) || s.held.length!==PARTICLE_CAP || !(s.shocks instanceof Uint32Array) || s.shocks.length!==g.nbricks ||
       !(s.rayRemaining instanceof Uint32Array) || s.rayRemaining.length!==RAY_REQUEST_CAP || !Array.isArray(s.requests) ||
       !Array.isArray(s.pendingEvents) || !Array.isArray(s.airArchive) || !Number.isInteger(s.sequence) || s.sequence<0 || s.sequence>0xfffffffe ||
       !Number.isInteger(s.blastBatch) || s.blastBatch<1 || s.blastBatch>64) throw new Error('Invalid native dynamics snapshot');
+    const particleFloats=new Float32Array(s.particles.buffer,s.particles.byteOffset,s.particles.length);
+    for(let i=0;i<PARTICLE_CAP;i++) {
+      if(!s.particles[i*12+3]) continue;
+      if([0,1,2,4,5,6].some(k=>!safeDynamicNumber(particleFloats[i*12+k]))) throw new Error('Invalid native particle coordinates/velocity');
+      const tag=s.particles[i*12+7]&255;
+      if(tag===254 && [8,9,10].some(k=>!safeDynamicNumber(particleFloats[i*12+k]) || particleFloats[i*12+k]<0)) throw new Error('Invalid native photon energy');
+      if(tag===255 && (!safeDynamicNumber(particleFloats[i*12+9]) || particleFloats[i*12+9]<0 || s.particles[i*12+10]>2)) throw new Error('Invalid native neutron payload');
+    }
+    if(!new Float32Array(s.air.buffer,s.air.byteOffset,s.air.length).every(safeDynamicNumber)) throw new Error('Invalid native air values');
     const requests=new Map(),archive=new Map(),outside=new Map(),events=new Uint32Array(g.slots);
     for (const r of s.requests) {
       if (!Number.isInteger(r.slot) || r.slot<0 || r.slot>=RAY_REQUEST_CAP || requests.has(r.slot) ||
         !['photon','neutron'].includes(r.kind) || !finiteVector(r.position) || !finiteVector(r.direction) ||
-        !Number.isFinite(r.radius) || r.radius<0 || !Number.isInteger(r.count) || r.count<1 || r.count>PARTICLE_CAP ||
+        !safeDynamicNumber(r.radius) || r.radius<0 || !Number.isInteger(r.count) || r.count<1 || r.count>PARTICLE_CAP ||
         !Number.isInteger(r.requestId) || r.requestId<1 || r.requestId>s.sequence || s.rayRemaining[r.slot]>r.count) throw new Error('Invalid queued native ray');
       requests.set(r.slot,cloneRequest(r));
     }
@@ -204,6 +217,7 @@ export class NativeDynamics {
     }
     for (const a of s.airArchive) {
       if (!finiteVector(a.worldCell) || !a.worldCell.every(Number.isInteger) || !(a.words instanceof Uint32Array) || a.words.length!==8 || archive.has(key(a.worldCell))) throw new Error('Invalid archived native air');
+      if(!new Float32Array(a.words.buffer,a.words.byteOffset,a.words.length).every(safeDynamicNumber)) throw new Error('Invalid archived native air values');
       archive.set(key(a.worldCell),new Uint32Array(a.words));
     }
     // All validation precedes all writes. Bad saves never partially replace state.
@@ -211,6 +225,7 @@ export class NativeDynamics {
     for(const b of this.air) this.gpu.write(b,0,s.air);
     this.gpu.frame.clear(this.control); this.gpu.write(this.control,0,s.control);
     this.gpu.write(this.control,rayRequestBase(g)*4,s.rayRemaining);
+    this.gpu.write(this.control,heldBase(g)*4,s.held); this.gpu.write(this.control,shockBase(g)*4,s.shocks);
     this.gpu.write(this.owner.events,0,events); this.gpu.frame.clear(this.flight); this.gpu.frame.clear(this.claims); this.gpu.frame.clear(this.plans);
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; this.blastBatch=s.blastBatch;
     this.rayRequests=requests; this.airArchive=archive; this.pendingOutside=outside;

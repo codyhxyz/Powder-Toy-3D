@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -11,7 +11,7 @@ export const CHILD_PREFIX = CONTROL.PREFIX;
 export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
 export const rayRequestBase = g => SPAWN_PREFIX + g.nbricks * 3;
-export const controlWords = g => rayRequestBase(g) + RAY_REQUEST_CAP;
+export const controlWords = g => heldBase(g) + PARTICLE_CAP;
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 const blastTables = dynamicsRows.filter(r => r.energy > 0).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
 function head(g, nativeHead) {
@@ -28,11 +28,22 @@ const D_SPAWN_PREFIX: u32 = ${SPAWN_PREFIX}u;
 const D_SPAWN_COUNTS: u32 = D_SPAWN_PREFIX + D_BRICKS;
 const D_ENERGY_SUMS: u32 = D_SPAWN_COUNTS + D_BRICKS;
 fn dExplosive(id: u32) -> DExplosive { switch id { ${blastTables} default: { return DExplosive(0.0,0u,20.0,0u); } } }
+fn dChargeEnergy(m: Material) -> f32 { return dExplosive(cid(m.core)).energy*dAmount(m); }
+fn dProduct(m: Material) -> Material {
+  let e=dExplosive(cid(m.core)); return makeMaterial(e.product,e.temperature,65536u,e.ctype);
+}
+fn dProductEnergy(m: Material) -> vec2u {
+  // cap=1 is a 27-litre water cell: 27kg *4184J/(kg K). The reserved
+  // quarter of scaled chemical energy heats products; all old energy remains.
+  let nativePerJ=16777216.0/${f(1000*CELL_M**3*4184)};
+  return energyAdd(energyOf(m),vec2u(u32(round(dChargeEnergy(m)*0.25*nativePerJ)),0u));
+}
 fn dShielded(source: vec3i, destination: vec3i) -> bool {
   let delta = vec3f(destination-source);
-  var cell = source; var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
+  var cell = source; var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta)); var crossed=0u;
   for (var a = 0u; a < 3u; a++) { if (delta[a] != 0.0) { stride[a] = abs(1.0/delta[a]); next[a] = 0.5*stride[a]; } }
   loop {
+    if (crossed>D_SWEEP_MAX) { return true; } crossed++; // non-progress is shielded, never transparent
     var a = 0u; if (next.y < next.x) { a = 1u; } if (next.z < next[a]) { a = 2u; }
     if (next[a] > 1.0) { return false; }
     cell[a] += step[a]; next[a] += stride[a];
@@ -62,7 +73,8 @@ export function blastsWGSL(g,nativeHead,stage) {
   if (stage === 'select') return h + main64(`
     if (t >= D_SLOTS || events[t] == 0u) { return; }
     atomicAdd(&control[2],1u); dWake(cellOf(t));
-    if ((events[t]&1u) != 0u && dExplosive(cid(loadMaterial(t).core)).energy > 0.0) { atomicMin(&control[3],t); }
+    let m=loadMaterial(t);
+    if ((events[t]&1u) != 0u && dChargeEnergy(m)>0.0 && energyFits(dProduct(m),dProductEnergy(m))) { atomicMin(&control[3],t); }
   `);
   if (stage === 'plan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
@@ -73,9 +85,9 @@ export function blastsWGSL(g,nativeHead,stage) {
     if (source != D_NONE) {
       if (t == source) { plan.flags |= 4u; }
       else if (id != 0u && (events[t]&1u)==0u) {
-        let sourcePos = cellOf(source); let explosion = dExplosive(cid(loadMaterial(source).core));
+        let sourcePos = cellOf(source); let explosionEnergy = dChargeEnergy(loadMaterial(source));
         let delta = vec3f(p-sourcePos); let r2 = max(0.25,dot(delta,delta));
-        let received = explosion.energy * 0.5 / (12.566370614359*r2);
+        let received = explosionEnergy * 0.5 / (12.566370614359*r2);
         if (received >= 0.01 && !dShielded(sourcePos,p)) {
           plan.energy = received;
           plan.velocity = normalize(delta);
@@ -131,7 +143,7 @@ export function blastsWGSL(g,nativeHead,stage) {
   if (stage === 'normalize') return h + main1(`
     var sum=0.0; for (var b=0u;b<D_BRICKS;b++) { sum += bitcast<f32>(atomicLoad(&control[D_ENERGY_SUMS+b])); }
     let source=atomicLoad(&control[3]); var scale=1.0;
-    if (source!=D_NONE) { scale=min(1.0,dExplosive(cid(loadMaterial(source).core)).energy*0.5/max(sum,0.000001)); }
+    if (source!=D_NONE) { scale=min(1.0,dChargeEnergy(loadMaterial(source))*0.5/max(sum,0.000001)); }
     atomicStore(&control[6],bitcast<u32>(scale));
   `);
   if (stage === 'damagePlan') return h + main64(`
@@ -139,7 +151,8 @@ export function blastsWGSL(g,nativeHead,stage) {
     let energy=plan.energy*bitcast<f32>(atomicLoad(&control[6])); plan.energy=energy;
     var kinetic=energy;
     if (energy>0.0 && k==1u) {
-      if (dBreak(id)>=0 && energy>=dToughness(id)) { plan.flags|=2u; plan.broken=u32(dBreak(id)); kinetic-=dToughness(id); }
+      var broken=m; broken.core.x=(broken.core.x&0xffffff00u)|u32(max(0,dBreak(id)));
+      if (dBreak(id)>=0 && energy>=dToughness(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u; plan.broken=u32(dBreak(id)); kinetic-=dToughness(id); }
       else { kinetic=0.0; }
     }
     if (kinetic>0.0 && (k==2u || k==3u || (plan.flags&2u)!=0u) && (plan.flags&8u)==0u) {
@@ -168,14 +181,18 @@ export function blastsWGSL(g,nativeHead,stage) {
   if (stage === 'apply') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; } let plan=plans[t]; if (plan.flags==0u) { return; }
     let before=loadMaterial(t); var after=before;
-    if ((plan.flags&2u)!=0u) { after.core.x=(after.core.x&0xffffff00u)|plan.broken; }
+    if ((plan.flags&2u)!=0u) {
+      after.core.x=(after.core.x&0xffffff00u)|plan.broken;
+      if (!energyFits(after,energyOf(before))) { dWake(cellOf(t)); return; }
+      after=withEnergy(after,energyOf(before));
+    }
     if ((plan.flags&1u)!=0u) {
       let rank=dRank(t);
       if ((plan.flags&8u)!=0u) {
         let neutron=Material(vec4u(D_NEUTRON,${RAYS.NEUT_LIFE}u,bitcast<u32>(${f(RAYS.NEUT_E_FAST)}),0u),0i);
         if (dSpawn(t,rank,neutron,dDir(dId(cellOf(t),4u))*${f(RAYS.NEUT_V*60*CELL_M)},4u)) { events[t]&=~4u; }
         else { atomicAdd(&control[7],1u); }
-      } else if (dSpawn(t,rank,after,plan.velocity,P.sequence ^ 0x53504157u)) { after=dEmpty(); }
+      } else if (dSpawn(t,rank,after,plan.velocity,P.sequence ^ 0x53504157u)) { after=dCarrier(after); }
       else { atomicAdd(&control[7],1u); } // authoritative grid fallback, never erase a failed launch
     }
     storeMaterial(t,before,after); dWake(cellOf(t));
@@ -201,7 +218,11 @@ export function blastsWGSL(g,nativeHead,stage) {
       let seed=max(1u,dHash(P.sequence ^ emitted*2654435761u ^ P.tick));
       let position=P.center+dDir(seed)*P.radius*pow(dRandom(seed,11u),1.0/3.0);
       var m=Material(vec4u(D_NEUTRON,${RAYS.NEUT_LIFE}u,bitcast<u32>(${f(RAYS.NEUT_E_FAST)}),0u),0i);
-      if (P.mode==7u) { m=Material(vec4u(D_PHOTON|(${RAYS.PHOTON_LIFE}u<<8u),bitcast<u32>(1.0),bitcast<u32>(1.0),bitcast<u32>(1.0)),0i); }
+      if (P.mode==7u) {
+        let local=vec3i(floor(position))-P.origin; var medium=0u;
+        if (inGrid(local)) { medium=cid(loadMaterial(slotOf(local)).core); }
+        m=Material(vec4u(D_PHOTON|(${RAYS.PHOTON_LIFE}u<<8u)|(medium<<24u),bitcast<u32>(1.0),bitcast<u32>(1.0),bitcast<u32>(1.0)),0i);
+      }
       var velocity=P.vector; if (length(velocity)<0.000001) { velocity=dDir(seed)*${f(RAYS.NEUT_V*60*CELL_M)}; }
       particles[slot]=dParticle(position,velocity,seed,m); remaining--; atomicAdd(&control[0],1u);
       let local=vec3i(floor(position))-P.origin; if (inGrid(local)) { dWake(local); }
@@ -213,14 +234,17 @@ export function blastsWGSL(g,nativeHead,stage) {
     let s=atomicLoad(&control[3]); if (s==D_NONE) { return; }
     let before=loadMaterial(s); let explosive=dExplosive(cid(before.core));
     if (explosive.energy<=0.0 || (events[s]&1u)==0u) { return; }
-    var after=makeMaterial(explosive.product,explosive.temperature,65536u,explosive.ctype);
-    after.bank=before.bank; // never discard a carried quantisation/latent remainder
+    let product=dProduct(before); let productEnergy=dProductEnergy(before);
+    // select() gated this BEFORE any damage: retry cannot duplicate a blast.
+    if (!energyFits(product,productEnergy)) { return; }
+    let after=withEnergy(product,productEnergy);
+    noteEnergySource(cellOf(s),energySub(productEnergy,energyOf(before)));
     storeMaterial(s,before,after);
     let b=brickOfCell(cellOf(s)); var a=air[b];
     // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE,
     // 1/4 hot products. Pressure energy p² V / (2 rho c²), not an arbitrary kick.
-    let dp=sqrt(2.0*${f(AIR.rho*AIR.sound**2)}*explosive.energy*0.25/${f(AIR.edge**3)});
-    a.vp.w += dp; a.thermal.z=0.0; air[b]=a;
+    let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(before)*0.25/${f(AIR.edge**3)};
+    a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); a.thermal.z=0.0; air[b]=a;
     events[s]&=~1u; dWake(cellOf(s));
   `);
   throw new Error(`Unknown blast stage ${stage}`);

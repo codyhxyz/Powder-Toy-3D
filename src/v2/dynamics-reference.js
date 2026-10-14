@@ -2,6 +2,7 @@
 // seconds, m/s, J and Pa. No legacy state is read by the native kernels.
 import { ELEMENTS, E, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
+import { energyOf, withEnergy, energyFits, makeMaterial, cTq, AIR_CAPACITY_Q } from './layout.js';
 export { CELL_M };
 export const PARTICLE_CAP = 65536;
 export const PARTICLE_BYTES = 48;
@@ -12,8 +13,9 @@ export const AIR = Object.freeze({ edge: 4 * CELL_M, rho: 1.225, sound: 50,
   substeps: 8, loss: 0.9999, diffusion: 0.04, pQuantum: 0.02, vQuantum: 0.0002,
   scalarQuantum: 1e-7, quietTicks: 8, gasPressure: 1.225 * 50 ** 2 / 64 });
 export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
+export const PHOTON_TAG = 254;
 export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
-if (ELEMENTS.length >= NEUTRON_TAG) throw new Error('Native neutron tag collides with a material');
+if (ELEMENTS.length >= PHOTON_TAG) throw new Error('Native neutron tag collides with a material');
 const SPECIFIC_J = { TNT: 4.184e6, C4: 5.858e6, NITRO: 6.28e6, GUNPOWDER: 3e6,
   THERMITE: 3.9e6, PROPANE: 46.4e6 };
 export const dynamicsRows = ELEMENTS.map(e => ({
@@ -103,9 +105,9 @@ export function blastPlan(source, targets, solidAt, energy) {
     const hit = sweep(source.map(x => x + 0.5), target.map(x => x + 0.5), p =>
       !p.every((x, a) => x === source[a]) && !p.every((x, a) => x === target[a]) && solidAt(p));
     const r2 = Math.max(0.25, target.reduce((s, x, a) => s + (x - source[a]) ** 2, 0));
-    return { target, energy: hit ? 0 : energy * 0.75 / (4 * Math.PI * r2) };
+    return { target, energy: hit ? 0 : energy * 0.5 / (4 * Math.PI * r2) };
   });
-  const sum = plans.reduce((s, p) => s + p.energy, 0), scale = Math.min(1, energy * 0.75 / Math.max(sum, 1e-30));
+  const sum = plans.reduce((s, p) => s + p.energy, 0), scale = Math.min(1, energy * 0.5 / Math.max(sum, 1e-30));
   return plans.map(p => ({ ...p, energy: p.energy * scale }));
 }
 // Finite-volume one-axis scalar reference. Each face is evaluated ONCE and
@@ -128,4 +130,32 @@ export function airSource(state, count) {
 export function airQuiet(state, neighbors = []) {
   return [state, ...neighbors].every(s => Math.abs(s.pressure) < AIR.pQuantum &&
     s.velocity.every(v => Math.abs(v) < AIR.vQuantum)) ? Math.min(AIR.quietTicks, state.quiet + 1) : 0;
+}
+
+// Exact native energy twins of the WGSL handoff. The stationary grid's air
+// carrier is NOT part of a flying material packet; its bank still is.
+export const particleEnergy = m => energyOf(m)-BigInt(AIR_CAPACITY_Q)*BigInt(cTq(m.core));
+export function extractPacket(m) {
+  return { packet:{core:new Uint32Array(m.core),bank:m.bank},
+    source:makeMaterial(0,cTq(m.core)*0.25-273.25,0,0) };
+}
+export function depositPacket(packet, destination) {
+  const energy=particleEnergy(packet)+energyOf(destination);
+  return energyFits(packet,energy) ? withEnergy(packet,energy) : null;
+}
+export function fractureMaterial(material, product) {
+  const after={core:new Uint32Array(material.core),bank:material.bank};
+  after.core[0]=(after.core[0]&0xffffff00)|product;
+  return energyFits(after,energyOf(material)) ? withEnergy(after,energyOf(material)) : null;
+}
+export function chargeEnergy(material) {
+  const id=material.core[0]&255,row=dynamicsRows[id];
+  return row.energy*(row.kind===K.LIQUID ? (material.core[1]&0xffffff)/65536 : 1);
+}
+export const pressureEnergy = p => p*p*AIR.edge**3/(2*AIR.rho*AIR.sound**2);
+export const addBlastPressure = (p,energy) => Math.sqrt(p*p+2*AIR.rho*AIR.sound**2*energy*0.25/AIR.edge**3);
+export function refractDirection(direction,normal,ratio) {
+  const dot=direction.reduce((s,x,i)=>s+x*normal[i],0),k=1-ratio*ratio*(1-dot*dot);
+  if(k<0) return direction.map((x,i)=>x-2*dot*normal[i]);
+  return direction.map((x,i)=>ratio*x-(ratio*dot+Math.sqrt(k))*normal[i]);
 }
