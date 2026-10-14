@@ -100,7 +100,8 @@ function boatModel(look, team) {
     m.position.set(...at); return m;
   };
   // Open dinghy: floor, gunwales, pointed bow, benches and a visible outboard.
-  box(root, [1.55, 0.22, 2.9], [0, -0.23, -0.25], '#655348');
+  // Raised inner deck stays above the waterline; the sealed volume is below it.
+  box(root, [1.55, 0.12, 2.9], [0, 0, -0.25], '#655348');
   for (const x of [-0.8, 0.8]) {
     box(root, [0.18, 0.65, 2.8], [x, 0, -0.35], color);
     const bow = box(root, [0.18, 0.65, 0.95], [x * 0.69, 0, 1.35], color);

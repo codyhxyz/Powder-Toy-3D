@@ -1,28 +1,37 @@
 // Real-shell smoke: normal palette + water click, pad spawn, E seat, W/S/A/D,
 // chase camera and exit. CPU physics coverage is boats-node-check.mjs.
-// Requires an owned dev server: node tools/boats-check.mjs --port 5497
-// Intentionally not run by the implementation worker (parent owns GPU budget).
+// node tools/boats-check.mjs --port 5497 (owned dev server), or --url https://tpt3d.codyh.xyz
 import assert from 'node:assert/strict';
-import { launchBrowser, newTestPage, ready } from './browser.mjs';
-const args = process.argv.slice(2), port = args[args.indexOf('--port') + 1] || '5497';
+import { launchBrowser, newTestPage, ready, render } from './browser.mjs';
+import { E, ELEMENTS } from '../src/elements.js';
+const args = process.argv.slice(2);
+const opt = (key, fallback) => { const i = args.indexOf(`--${key}`); return i < 0 ? fallback : args[i + 1]; };
+const url = new URL(opt('url', `http://localhost:${opt('port', '5497')}/`));
+url.searchParams.set('size', '128'); url.searchParams.set('preset', 'empty');
 const browser = await launchBrowser();
 try {
   const page = await newTestPage(browser, { mode: 'ui', viewport: { width: 960, height: 640 } });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto(`http://localhost:${port}/?size=128&preset=empty`);
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    const source = m.location().url;
+    // Local smoke does not start the optional multiplayer/AI relay.
+    if (/^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(source) && /ERR_CONNECTION_REFUSED/.test(m.text())) return;
+    errors.push(`${m.text()} (${source})`);
+  });
+  await page.goto(url.href);
   await ready(page);
   await page.waitForFunction(() => window.__app?.spawners && window.__app?.pov);
-  await page.evaluate(async () => {
-    const a = window.__app, { E, ELEMENTS } = await import('/src/elements.js');
-    const [A, B] = a.sim.blankState(), e = ELEMENTS[E.WATER], g = a.sim.g;
+  await page.evaluate(({ id, temp, life }) => {
+    const a = window.__app;
+    const [A, B] = a.sim.blankState(), g = a.sim.g;
     for (let y = 0; y < 20; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
       const i = a.sim.cellTexel(x, y, z) * 4;
-      A[i] = E.WATER; A[i + 1] = e.temp; A[i + 2] = e.life;
+      A[i] = id; A[i + 1] = temp; A[i + 2] = life;
     }
     a.sim.load(A, B); a.requestRender();
-  });
+  }, { id: E.WATER, temp: ELEMENTS[E.WATER].temp, life: ELEMENTS[E.WATER].life });
   await page.keyboard.press('t');
   await page.getByRole('button', { name: 'Entities', exact: true }).click();
   await page.getByRole('button', { name: 'Boat pad', exact: true }).click();
@@ -32,10 +41,10 @@ try {
     return { x: (p.x + 1) * innerWidth / 2, y: (1 - p.y) * innerHeight / 2 };
   });
   await page.mouse.move(click.x, click.y);
-  await page.waitForFunction(async () => {
-    const a = window.__app, { E } = await import('/src/elements.js');
-    return a.hover.valid && a.hover.id === E.WATER && a.hover.face === 2;
-  });
+  await page.waitForFunction((water) => {
+    const a = window.__app;
+    return a.hover.valid && a.hover.id === water && a.hover.face === 2;
+  }, E.WATER);
   await page.mouse.click(click.x, click.y);
   assert.equal(await page.evaluate(() => window.__app.spawners.of('boat').length), 1);
   assert.equal(await page.evaluate(() => window.__app.spawners.of('boat')[0].world.y), 20);
@@ -49,6 +58,7 @@ try {
   });
   await page.keyboard.press('e');
   await page.waitForFunction(() => window.__app.pov.vehicles.seated?.kind === 'boat');
+  await page.waitForFunction(() => document.querySelector('.veh-panel b')?.textContent === 'Boat');
   assert.equal(await page.locator('.veh-panel b').textContent(), 'Boat');
   assert.equal(await page.locator('.veh-panel u').isVisible(), false, 'boat has no boost meter');
   await page.keyboard.down('w');
@@ -61,6 +71,11 @@ try {
   await page.keyboard.up('s');
   const camera = await page.evaluate(() => window.__app.camera.position.toArray());
   assert.ok(camera.every(Number.isFinite));
+  if (opt('shot', null)) {
+    await render(page);
+    await page.screenshot({ path: opt('shot'), fullPage: true });
+    await page.evaluate(() => window.__app.test.resume());
+  }
   await page.keyboard.press('e');
   await page.waitForFunction(() => !window.__app.pov.vehicles.seated);
   await page.evaluate(() => window.__app.test.park());
