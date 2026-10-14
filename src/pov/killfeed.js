@@ -56,7 +56,7 @@ const EXPLAINS = { Shot: GUNS, 'Blown up': ['ROCKET', 'BOMB'], Burned: ['BLOWTOR
 const CAUSES = [   // [cause prefix, icon]: vitals.js, status.js, stains.js, ingest.js and the tools' hurt() causes
   ['Backstabbed', 'backstab'], ['Stabbed', 'KNIFE'], ['Axed', 'AXE'], ['Picked apart', 'PICKAXE'],
   ['Lasered', 'LASER'], ['Bored', 'BURROWER'], ['Kicked', 'kick'], ['Eaten by a worm', 'worm'], ['Wand', 'WAND'],
-  ['Run over by a hoverbike', 'hoverbike'], ['Run over', 'jeep'], ['Killed when the', 'explosion'], ['Blown up', 'explosion'],
+  ['Run over by a boat', 'impact'], ['Run over by a hoverbike', 'hoverbike'], ['Run over', 'jeep'], ['Killed when the', 'explosion'], ['Blown up', 'explosion'],
   ['Shot', 'shot'], ['Killed by lava', 'lava'], ['Drank lava', 'lava'], ['Burned', 'fire'], ['Dissolved', 'acid'],
   ['Froze', 'cold'], ['Drowned', 'drowned'], ['Buried', 'buried'], ['Fell', 'fall'], ['Slammed', 'impact'],
   ['Electrocuted', 'shock'], ['Poisoned', 'poison'], ['Sick', 'poison'],

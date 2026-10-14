@@ -33,9 +33,10 @@ export function hullSamples(hx, hy, hz, [nx, ny, nz]) {
 }
 
 // Apply this step's buoyancy and drag to `body` (a Rapier rigid body) from its
-// hull `samples` (local metres) displacing `volume` m³ in all. Returns
-// { wet: share of samples in liquid, hot: any sample in a hot cell, liquidId }.
-export function hullMatter(body, samples, volume, cells, h) {
+// hull `samples` (local metres) displacing `volume` m³ in all.
+// Optional dragCd lets a slender boat differ from the default bluff hull.
+// Returns { wet: share of samples in liquid, hot: any hot sample, liquidId }.
+export function hullMatter(body, samples, volume, cells, h, dragCd = DRAG_CD) {
   const t = body.translation(), rot = body.rotation();
   q.set(rot.x, rot.y, rot.z, rot.w);
   const lv = body.linvel(), av = body.angvel();
@@ -58,7 +59,7 @@ export function hullMatter(body, samples, volume, cells, h) {
     pv.crossVectors(ang, r).add(lin);
     const sp = pv.length();
     if (sp > 1e-3) {
-      const f = 0.5 * rho * DRAG_CD * area * sp * h;   // N·s per (m/s)
+      const f = 0.5 * rho * dragCd * area * sp * h;   // N·s per (m/s)
       // never more than stops the point's share of the body this step
       const k = Math.min(f, body.mass() / samples.length);
       body.applyImpulseAtPoint({ x: -pv.x * k, y: -pv.y * k, z: -pv.z * k }, wp, true);
