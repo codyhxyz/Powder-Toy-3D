@@ -806,7 +806,7 @@ fn openFaces(c: vec3i) -> f32 {
 
 var<workgroup> wgEm: array<vec4f, 64>;    // emission (rgb), summed
 var<workgroup> wgMax: array<vec4f, 64>;   // surface field, opaque, thin mask, media field
-var<workgroup> wgAir: array<vec4f, 64>;   // |pressure|, speed² (the core's cells)
+var<workgroup> wgAir: array<vec4f, 64>;   // |pressure|, speed² (core cells), liquid-interior violation (all cells)
 var<workgroup> wgOcc: atomic<u32>;        // a cell holds matter
 var<workgroup> wgGas: atomic<u32>;        // steam and smoke cells
 var<workgroup> wgFlags: atomic<u32>;      // air flags
@@ -852,6 +852,10 @@ ${listMainWGSL('LIST_FIELDS')}
     let bv = fetchBs(s);
     air = vec4f(abs(bv.w), dot(bv.xyz, bv.xyz), 0.0, 0.0);
   }
+  // Reuse the existing max reduction and texel load: no new resource/pass.
+  // A safety margin from the isovalue covers filtering roundoff. This is a
+  // certificate, not a surface approximation: uncertified bricks march normally.
+  air.z = max(1.0 - sf.x, max(sf.y, max(sf.z, sf.w)));
   wgAir[li] = air;
   workgroupBarrier();
   for (var w = 32u; w > 0u; w >>= 1u) {
@@ -873,7 +877,8 @@ ${listMainWGSL('LIST_FIELDS')}
     let hi = atomicLoad(&wgLiqHi);
     let mixed = hi != 0u && hi - 1u != u32(NE) - atomicLoad(&wgLiqLo);
     let bits = select(0u, BRICK_MEDIA, hasMedia) | select(0u, BRICK_SURF, hasSurf) | select(0u, BRICK_OPAQUE, hasOpaque)
-             | select(0u, BRICK_THIN, mx.z > 0.0) | select(0u, BRICK_MIXED, mixed);
+             | select(0u, BRICK_THIN, mx.z > 0.0) | select(0u, BRICK_MIXED, mixed)
+             | select(0u, BRICK_LIQUID_INTERIOR, wgAir[0].z < 0.499);
     var info = brickInfoWord(0u, flags, 0u, false);
     if (atomicLoad(&wgOcc) != 0u || hasSurf || hasMedia) { info = brickInfoWord(bits, flags, atomicLoad(&wgGas), true); }
     let rec = BrickInfo(wgEm[0].xyz / f32(BS * BS * BS), info);

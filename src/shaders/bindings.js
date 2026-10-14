@@ -100,8 +100,10 @@ ${FrameUniforms.wgsl}
 //              worth showing in the heat, pressure and flow views
 //   bits 8-14  the brick's steam and smoke cells, 0-64
 //   bit 15     BRICK_MATTER: the brick holds matter
+//   bit 16     BRICK_LIQUID_INTERIOR: every final-field texel is strictly inside
+//              liquid and outside opaque channels (not a material/air flag)
 // Matter bricks set bit 15; air-only bricks only bits 5-7; empty bricks are 0.
-export const BRICK_INFO = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16, AIR_SHIFT: 5, GAS_SHIFT: 8, MATTER: 1 << 15 };
+export const BRICK_INFO = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16, AIR_SHIFT: 5, GAS_SHIFT: 8, MATTER: 1 << 15, LIQUID_INTERIOR: 1 << 16 };
 export const AIR = { HOT: 1, PRESSURE: 2, FLOW: 4 };
 export const BRICK_GAS_DIV = 64;   // cells per brick: gas share = count / this
 // JS twins, for tools and the brick kernel's tests (bits: the BRICK_* sum, air: the AIR sum).
@@ -122,6 +124,7 @@ const BRICK_SURF: u32 = ${BRICK_INFO.SURF}u;
 const BRICK_OPAQUE: u32 = ${BRICK_INFO.OPAQUE}u;
 const BRICK_THIN: u32 = ${BRICK_INFO.THIN}u;
 const BRICK_MIXED: u32 = ${BRICK_INFO.MIXED}u;
+const BRICK_LIQUID_INTERIOR: u32 = ${BRICK_INFO.LIQUID_INTERIOR}u;
 const AIR_HOT: u32 = ${AIR.HOT}u;
 const AIR_PRESSURE: u32 = ${AIR.PRESSURE}u;
 const AIR_FLOW: u32 = ${AIR.FLOW}u;

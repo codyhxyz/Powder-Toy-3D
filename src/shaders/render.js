@@ -830,7 +830,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var bid = 0u;              // the brick's number (brickId(lastB)) ...
   var occM = vec2u(0u);      // ... and its occupancy mask (shaders/occupancy.js), loaded with flags
   var phiA = surfSample(${curved ? 'warpAt(walk.ray, walk.t)' : 'ro + rd * tEnter'});   // fields at the current segment start
-  var phiStale = false;
+  var phiStale = false;${curved ? '' : `
+  var interiorLiquid = false;   // final fields prove this brick has no surface crossing`}
   // the hit that ends the ray (HIT_*), shaded after the march
   var hitK = HIT_NONE;
   var hitCh = -1;
@@ -903,7 +904,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       bid = brickId(bc);
       flags = brickInfoOf(bid);
       gThin = brickThin(flags);
-      if (flags != 0u) { occM = occMaskOf(bid); }
+      if (flags != 0u) { occM = occMaskOf(bid); }${curved ? '' : `
+      interiorLiquid = false;
+      if (liq != E_EMPTY && (flags & BRICK_LIQUID_INTERIOR) != 0u) {
+        interiorLiquid = liquidInterior(bc);
+      }`}
     }
     if (flags == 0u) {
       ${curved ? 'warpSkip(&walk, bc, true);' : 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
@@ -1002,7 +1007,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       var tEv = tExit;
       var evN = vec3f(0.0);   // forced normal (else from the field)
       var phiB = vec4f(0.0);
-      if (brickSurf(flags)) {
+      // In certified liquid, keep every DDA segment, absorption, mixed ID,
+      // paint, mesh cut and grain test. Only omit impossible surface events.
+      // The else marks phi stale so leaving the certificate resamples the
+      // actual entry value; never propagate a synthetic field to a boundary.
+      if (brickSurf(flags)${curved ? '' : ' && !(liq != E_EMPTY && interiorLiquid)'}) {
         if (phiStale) {
           phiA = surfSample(ro + rd * tEnter);
           // Already inside a smooth material at the start of this segment: we
