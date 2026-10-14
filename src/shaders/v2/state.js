@@ -1,12 +1,14 @@
 import { phaseWGSL } from './phase.js';
 import { ELEMENTS } from '../../elements.js';
-import { capacityPerQuantum, AIR_CAPACITY_Q, FULL, MAX_FILL, FUEL_Q } from '../../v2/layout.js';
+import { capacityPerQuantum, AIR_CAPACITY_Q, FULL, MAX_FILL, FUEL_Q, lifeScale } from '../../v2/layout.js';
 
 // No additional table binding: these immutable format tables are shared by every family.
 export const nativeStateWGSL = /* wgsl */ `
 const MATERIAL_CAP = array<u32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `${capacityPerQuantum(e.id)}u`).join(',')});
-const MATERIAL_LIFE = array<u32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `${Math.round((e.life ?? 0) * FUEL_Q)}u`).join(',')});
-const MATERIAL_CONDUCTS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(!!e.conducts)).join(',')});
+const MATERIAL_LIFE = array<u32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `${Math.round((e.life ?? 0) * lifeScale(e.id))}u`).join(',')});
+const MATERIAL_LIFE_SCALE = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `${lifeScale(e.id)}.0`).join(',')});
+const MATERIAL_CONDUCTS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.elec > 0)).join(',')});
+const MATERIAL_BURNS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.burnRate > 0)).join(',')});
 const MAX_FILL: u32 = ${MAX_FILL}u;
 const FUEL_Q: f32 = ${FUEL_Q}.0;
 struct Material { core: vec4u, bank: i32 }
@@ -103,12 +105,15 @@ fn energyPacketFits(src: Material, dst: Material, packet: vec2u, n: u32) -> bool
   if (phaseLess(vec2u(0u), excessHi) && phaseLess(roomHi, phaseMulSmall(excessHi, 6u))) { return false; }
   return true;
 }
-fn ctypeOf(c: vec4u) -> u32 { if (isLiq(c)) { return c.y >> 24u; } return (c.y >> 16u) & 255u; }
-fn withCtype(c: vec4u, ct: u32) -> vec4u { var o = c; if (isLiq(c)) { o.y = (c.y & 0xffffffu) | ((ct & 255u) << 24u); } else { o.y = (c.y & 0xff00ffffu) | ((ct & 255u) << 16u); } return o; }
+fn ctypeOf(c: vec4u) -> u32 { if (isLiq(c)) { return (c.y >> 24u) & select(255u, 127u, MATERIAL_BURNS[cid(c)]); } return (c.y >> 16u) & 255u; }
+fn withCtype(c: vec4u, ct: u32) -> vec4u { var o = c; if (isLiq(c)) {
+  let mask = select(255u, 127u, MATERIAL_BURNS[cid(c)]);
+  o.y = (c.y & ~(mask << 24u)) | ((ct & mask) << 24u);
+} else { o.y = (c.y & 0xff00ffffu) | ((ct & 255u) << 16u); } return o; }
 fn payloadOf(c: vec4u) -> u32 { if (isLiq(c)) { return c.w >> 16u; } return c.y & 65535u; }
 fn withPayload(c: vec4u, v: u32) -> vec4u { var o = c; if (isLiq(c)) { o.w = (c.w & 65535u) | (v << 16u); } else { o.y = (c.y & 0xffff0000u) | v; } return o; }
-fn lifeOf(c: vec4u) -> f32 { return f32(payloadOf(c)) / FUEL_Q; }
-fn withLife(c: vec4u, v: f32) -> vec4u { return withPayload(c, u32(clamp(round(v * FUEL_Q), 0.0, 65535.0))); }
+fn lifeOf(c: vec4u) -> f32 { return f32(payloadOf(c)) / MATERIAL_LIFE_SCALE[cid(c)]; }
+fn withLife(c: vec4u, v: f32) -> vec4u { return withPayload(c, u32(clamp(round(v * MATERIAL_LIFE_SCALE[cid(c)]), 0.0, 65535.0))); }
 fn sparkOf(c: vec4u) -> u32 { if (isLiq(c)) { return (c.w >> 16u) & 4095u; } return c.w & 4095u; }
 fn withSpark(c: vec4u, code: u32) -> vec4u { var o = c; if (isLiq(c)) { o.w = (c.w & 0xf000ffffu) | ((code & 4095u) << 16u); } else { o.w = (c.w & 0xfffff000u) | (code & 4095u); } return o; }
 fn makeMaterial(id: u32, temperature: f32, amount: u32, ct: u32) -> Material {

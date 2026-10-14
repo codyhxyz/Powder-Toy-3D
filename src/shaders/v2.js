@@ -299,7 +299,8 @@ fn importA(a: vec4f) -> vec4u {
   } else if (k != C_AIR) {
     var life = a.z;
     if (k == C_GAS && fadeOf(id) > 0.0 && life <= 0.0) { life = 1.0; }
-    c.y = (u32(clamp(round(life * FUEL_Q), 0.0, 65535.0))) | (ct << 16u);
+    c.y = ct << 16u;
+    c = withLife(c, life);
     c.w = seed << 16u;
   }
   if (conductsNative(id)) { c = withSpark(c, legacyCtype); }

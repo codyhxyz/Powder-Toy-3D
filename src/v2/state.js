@@ -3,7 +3,7 @@
 // Arrays are little-endian raw u32 words; no float conversion may touch them.
 import { validatePhaseCore } from './phase.js';
 import { ELEMENTS } from '../elements.js';
-import { MATERIAL_VERSION, FULL, MAX_FILL, FUEL_Q, isLiquid, isConductor } from './layout.js';
+import { MATERIAL_VERSION, FULL, MAX_FILL, FUEL_Q, lifeScale, isLiquid, isConductor } from './layout.js';
 import { gridDims } from '../shaders/common.js';
 import { v2ActLayout, ARGS2 } from '../shaders/v2.js';
 
@@ -113,12 +113,12 @@ function migratePrototype(state) {
       if (isConductor(id)) c[s + 1] &= 0xffffff;
     } else {
       const life = halfFloat(c[s + 1] & 65535);
-      if (!Number.isFinite(life) || life < 0 || life * FUEL_Q > 65535) fail('invalid prototype life');
+      if (!Number.isFinite(life) || life < 0 || life * lifeScale(id) > 65535) fail('invalid prototype life');
       if (isConductor(id)) {
         c[s + 3] = (c[s + 3] & 0xffff0000) | ((c[s + 1] >>> 16) & 255);
         c[s + 1] &= 0xff00ffff;
       }
-      c[s + 1] = (c[s + 1] & 0xffff0000) | Math.round(life * FUEL_Q);
+      c[s + 1] = (c[s + 1] & 0xffff0000) | Math.round(life * lifeScale(id));
     }
   }
   state.version = V2_STATE_VERSION;

@@ -9,12 +9,13 @@ export const FULL = 65536;
 export const MAX_FILL = 16 * FULL;
 export const AIR_CAPACITY_Q = FULL;
 export const FUEL_Q = 2048; // total fuel, not concentration; 16 full cells fit u16.
+export const lifeScale = id => ELEMENTS[id]?.key === 'SINGULARITY' ? 256 : FUEL_Q;
 export const capacityPerQuantum = id => Math.max(1, Math.round((ELEMENTS[id]?.cap ?? 1) * 64));
 export const isLiquid = id => ELEMENTS[id]?.kind === K.LIQUID;
-export const isConductor = id => !!ELEMENTS[id]?.conducts;
+export const isConductor = id => (ELEMENTS[id]?.elec ?? 0) > 0;
 export function validateMaterialTable(elements = ELEMENTS) {
   for (const e of elements) {
-    if (e.kind === K.LIQUID && e.conducts && (e.burnRate || e.burn || e.flammable || e.fuel || e.life > 0)) throw new Error(`native liquid payload collision: ${e.key}`);
+    if (e.kind === K.LIQUID && e.elec > 0 && (e.burnRate || e.burn || e.flammable || e.fuel || e.life > 0)) throw new Error(`native liquid payload collision: ${e.key}`);
     if (Math.max(1, Math.round((e.cap ?? 1) * 64)) * MAX_FILL + AIR_CAPACITY_Q > 0x7fffffff) throw new Error(`native capacity overflow: ${e.key}`);
   }
 }
@@ -24,7 +25,7 @@ export const cRawTq = c => (c[0] >>> 8) & 65535;
 export const cTq = c => phaseTemperatureQ(cid(c), cRawTq(c));
 export const cFill = c => c[1] & 0xffffff;
 export const payloadOf = c => isLiquid(cid(c)) ? c[3] >>> 16 : c[1] & 65535;
-export const ctypeOf = c => isLiquid(cid(c)) ? c[1] >>> 24 : (c[1] >>> 16) & 255;
+export const ctypeOf = c => isLiquid(cid(c)) ? (c[1] >>> 24) & ((ELEMENTS[cid(c)]?.burnRate ?? 0) > 0 ? 127 : 255) : (c[1] >>> 16) & 255;
 export function capacityQ(c) {
   const id = cid(c);
   return AIR_CAPACITY_Q + (id === 0 ? 0 : isLiquid(id) ? cFill(c) : FULL) * capacityPerQuantum(id);
@@ -46,7 +47,7 @@ export function makeMaterial(id, temperature = 20, amount = FULL, ctype = 0) {
   const tq = Math.max(0, Math.min(PHASE_NORMAL_MAX, Math.round((temperature + 273.25) * 4)));
   if (isLiquid(id) && (!Number.isInteger(amount) || amount < 0 || amount > MAX_FILL)) throw new RangeError('native fill');
   const m = { core: new Uint32Array([id | tq << 8, isLiquid(id) ? amount | ctype << 24 : ctype << 16, 0, 0]), bank: 0 };
-  return withPayload(m, Math.round((ELEMENTS[id]?.life ?? 0) * FUEL_Q * (isLiquid(id) ? amount / FULL : 1)));
+  return withPayload(m, Math.round((ELEMENTS[id]?.life ?? 0) * lifeScale(id) * (isLiquid(id) ? amount / FULL : 1)));
 }
 export function withPayload(m, payload) {
   if (!Number.isInteger(payload) || payload < 0 || payload > 65535) throw new RangeError('native payload');

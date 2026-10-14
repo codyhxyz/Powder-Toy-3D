@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ELEMENTS, K } from '../../src/elements.js';
-import { FULL, MAX_FILL, FUEL_Q, makeMaterial, withPayload, payloadOf, cTq, cFill, cid, ctypeOf, capacityQ, energyOf, withEnergy, energyFits, cRawTq, advectReference, validateMaterialTable } from '../../src/v2/layout.js';
+import { FULL, MAX_FILL, FUEL_Q, lifeScale, isConductor, makeMaterial, withPayload, payloadOf, cTq, cFill, cid, ctypeOf, capacityQ, energyOf, withEnergy, energyFits, cRawTq, advectReference, validateMaterialTable } from '../../src/v2/layout.js';
 import { PHASE_ROWS, PHASE_NORMAL_MAX, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetEnergy, validatePhaseCore } from '../../src/v2/phase.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { gridLayout } from '../../src/sim.js';
@@ -53,8 +53,11 @@ for (let trial = 0; trial < 1000; trial++) {
   const transfers = materials.slice(1).map((m, i) => ({ from: i + 1, to: 0, amount: rnd(cFill(m.core) + 1) }));
   check(materials, transfers, same);
 }
-assert.throws(() => validateMaterialTable([{ key: 'bad', kind: K.LIQUID, conducts: true, burnRate: 0.01, cap: 1 }]), /collision/);
-assert.throws(() => validateMaterialTable([{ key: 'bad', kind: K.LIQUID, conducts: true, life: 1, cap: 1 }]), /collision/);
+assert.throws(() => validateMaterialTable([{ key: 'bad', kind: K.LIQUID, elec: 0.05, burnRate: 0.01, cap: 1 }]), /collision/);
+assert.throws(() => validateMaterialTable([{ key: 'bad', kind: K.LIQUID, elec: 0.05, life: 1, cap: 1 }]), /collision/);
+assert(isConductor(water), 'fresh water conducts even though the legacy conducts flag is false');
+assert.equal(lifeScale(id('SINGULARITY')), 256);
+assert.equal(payloadOf(withPayload(makeMaterial(id('SINGULARITY')), 200 * 256).core) / lifeScale(id('SINGULARITY')), 200);
 assert.equal(payloadOf(withPayload(makeMaterial(oil, 20, MAX_FILL), FUEL_Q * 16).core), 32768);
 const mercury = withPayload(makeMaterial(id('MERCURY')), 3608);
 assert.equal(payloadOf(mercury.core), 3608, 'spark codes fit the conductor tagged union');
