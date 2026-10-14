@@ -6,7 +6,7 @@ export function createMissionHud({ retry, leave }) {
   const tracker = h('section.mission-tracker.panel', { 'aria-label': 'Mission objectives' }, name, objective, targets);
   const title = h('h2'), detail = h('p');
   const result = h('section.mission-result.panel', { 'aria-live': 'polite' }, title, detail,
-    h('button', { text: 'Retry mission', on: { click: retry } }),
+    h('button', { text: 'Retry', on: { click: retry } }),
     h('button', { text: 'Leave mission', on: { click: leave } }));
   const root = h('div.mission-hud', { hidden: true }, tracker, result);
   document.body.append(root);
@@ -24,7 +24,7 @@ export function createMissionHud({ retry, leave }) {
       targets.replaceChildren(...state.targets.map((t) => h('div', { text: `${t.eliminated ? '✓' : '○'} ${t.name}` })));
       result.hidden = state.phase === 'active';
       title.textContent = state.phase === 'complete' ? 'Mission complete' : 'Mission failed';
-      detail.textContent = state.phase === 'complete' ? 'All targets eliminated. Extraction reached.' : 'You died. Retry starts the entire mission again.';
+      detail.textContent = state.phase === 'complete' ? 'All targets eliminated. Extraction reached.' : 'You died.';
     },
   };
 }

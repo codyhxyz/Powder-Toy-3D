@@ -461,7 +461,7 @@ export function createPov(app) {
       try {
         toolbelt = createToolbelt({
           renderer, scene,
-          getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
+          getSim: app.getSim, getWorld: app.getWorld, getVolume: app.getVolume, getScale: app.getScale, getCharacter: character,
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
           getAimCamera: () => povCam.pose.eyeDist <= FIGURE_HIDE_DIST ? camera : null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)

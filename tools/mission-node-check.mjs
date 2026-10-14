@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
 import { createMissionAttempt, validMission } from '../src/game/missionRules.js';
 import { createMission } from '../src/game/mission.js';
@@ -12,6 +13,12 @@ const manifest = () => ({ id: 'fixture', name: 'CPU fixture (not a playable map)
 const exit = { x: 50, y: 4, z: 20 };
 let checks = 0;
 function check(name, fn) { fn(); checks++; console.log(`PASS ${name}`); }
+check('result copy keeps Retry without redundant restart explanation', () => {
+  const source = readFileSync(new URL('../src/game/missionHud.js', import.meta.url), 'utf8');
+  assert.match(source, /text: 'Retry'/);
+  assert.match(source, /: 'You died\.'/);
+  assert.doesNotMatch(source, /Retry mission|Retry starts|entire mission again/);
+});
 check('unsupported maps remain ineligible; all registered missions validate', () => {
   for (const map of MAPS) if (!map.mission) assert.equal(resolveMode(map, 'crueltySquad').key, 'sandbox');
   for (const map of mapsFor('crueltySquad')) assert.ok(validMission(map.mission));
