@@ -420,6 +420,7 @@ export function createPov(app) {
           renderer, scene,
           getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
+          getAimCamera: () => povCam.pose.eyeDist <= FIGURE_HIDE_DIST ? camera : null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
           getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
           getMode: () => app.gamemode?.() ?? 'sandbox',   // the gamemode playing: Noita's wands only in it

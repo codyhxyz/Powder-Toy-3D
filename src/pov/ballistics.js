@@ -75,10 +75,10 @@ const KIND = ELEMENTS.map((e) => e.kind);
 const HARD = ELEMENTS.map((e) => e.hard);
 const BREAKS = ELEMENTS.map((e) => !!e.breakInto);
 const NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];   // face code → outward normal (−step)
+let nextId = 1; // round events share one bus across player and NPC ballistic instances
 
 export function createBallistics() {
   const rounds = [];                     // in flight, oldest first
-  let nextId = 1;
   // grid cells the window has moved over the world in all (docs/scaling.md
   // D11): a trace answers in the grid it was asked in, this much back
   const shifted = new THREE.Vector3();
