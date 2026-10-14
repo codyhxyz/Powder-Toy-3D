@@ -1,24 +1,24 @@
 // Matched states, alternating run order, real 128³ Lab, no render loop.
 // Compare an implementation candidate with its reference, including both
 // ping-pong copies, flags and flow. A few hundred explicit steps, then close.
-// node tools/sim-perf-check.mjs --candidate move-loop|react-tile
+// node tools/sim-perf-check.mjs --candidate move-loop|move-work
 import { launchBrowser } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
 import { writeFile } from 'node:fs/promises';
 
-const candidate = process.argv[process.argv.indexOf('--candidate') + 1] || 'react-tile';
-if (!['move-loop', 'react-tile'].includes(candidate)) throw new Error('Unknown candidate');
+const candidateAt = process.argv.indexOf('--candidate');
+const candidate = candidateAt < 0 ? 'move-work' : process.argv[candidateAt + 1];
+if (!['move-loop', 'move-work'].includes(candidate)) throw new Error('Unknown candidate');
 let browser, vite;
 try {
   browser = await launchBrowser({ lifetimeMs: 180000 });
   vite = await startVite({ harness: true });
-  const page = await openHarness(browser, vite, '/tools/harness/sim.html');
+  const page = await openHarness(browser, vite, '/tools/harness/sim-bench.html', { timeout: 15000 });
   const result = await page.evaluate(async candidate => {
     const { Simulation } = await import('/src/sim.js');
     const { buildPreset } = await import('/src/presets.js');
     const { moveBlockFrag } = await import('/src/shaders/move.js');
-    const { reactFrag } = await import('/src/shaders/react.js');
     const { EDGE } = await import('/src/simModes.js');
     const gpu = __harness.gpu, timing = gpu.timing;
     const seed = () => {
@@ -34,10 +34,10 @@ try {
     const rows = [[], []], checks = [];
     try {
       await Promise.all(sims.map(s => s.ready));
-      const kind = candidate === 'move-loop' ? 'move' : 'react';
+      const kind = 'move';
       const codes = sims.map((s, i) => candidate === 'move-loop'
         ? moveBlockFrag(s.g, { form: i ? 'loop' : 'unrolled' })
-        : reactFrag(s.g, { tiled: Boolean(i) }));
+        : moveBlockFrag(s.g, { optimize: Boolean(i) }));
       if (codes[0] === codes[1]) throw new Error('Candidate did not produce a different shader');
       for (let i = 0; i < 2; i++) {
         sims[i].kernels[kind] = gpu.kernel({ ...sims[i].kernels[kind].desc, name: `${kind} ${i ? 'candidate' : 'reference'}`, code: codes[i] });
@@ -70,7 +70,7 @@ try {
         checks.push({ edge, differences });
       };
       reset(EDGE.SOLID);
-      for (const s of sims) await steps(s, 32, false);
+      for (const s of sims) await steps(s, 128, false);
       for (let round = 0; round < 4; round++) {
         for (const i of round % 2 ? [1, 0] : [0, 1]) rows[i].push(await steps(sims[i], 8, true));
       }

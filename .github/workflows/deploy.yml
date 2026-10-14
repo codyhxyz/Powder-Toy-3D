@@ -35,6 +35,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
+      - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: npm run build
       - name: Deploy to Cloudflare Pages
