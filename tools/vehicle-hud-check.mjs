@@ -15,6 +15,9 @@ try {
     const page = await newTestPage(browser, { mode: 'ui', hasTouch: touch, viewport: { width: 960, height: 640 }, reducedMotion: 'reduce' });
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
+    page.on('console', m => {
+      if (m.type() === 'error' && !/^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(m.location().url)) errors.push(m.text());
+    });
     await page.goto(url.href); await ready(page);
     await page.waitForFunction(() => window.__app?.pov?.vehicles && window.__app?.industry);
     await page.evaluate(({ water, temp, life }) => {
@@ -39,7 +42,8 @@ try {
         const a = window.__app, p = a.pov, v = p.vehicles.list.find(v => v.kind === kind), t = v.impl.body.translation();
         p.vehicles.dismount(p.player);
         p.player.spawn(p.player.pos.clone().set(t.x / 0.3 + 5, t.y / 0.3, t.z / 0.3));
-        p.vehicles.use(p.player);
+        if (p.vehicles.use(p.player) === 'flip') p.vehicles.use(p.player);
+        if (p.vehicles.seated?.kind !== kind) throw new Error(`Could not board ${kind}`);
         a.test.resume();
       }, kind);
       await page.waitForFunction(kind => window.__app.pov.vehicles.seated?.kind === kind && document.querySelector('.veh-panel')?.classList.contains('on'), kind);
@@ -59,14 +63,16 @@ try {
     }
     assert(!await page.locator('.toasts').textContent().then(text => /W\/S|motor needs water/i.test(text)), 'no boarding toast');
     const sizes = touch ? [[390, 844], [844, 390], [320, 568]] : [[1280, 800], [960, 640], [390, 844], [320, 640]];
-    // Enable the actual developer overlay so its bounds are part of the assertion.
-    await page.evaluate(() => { window.__app.settings.profiler = true; window.__app.test.resume(); });
-    await page.waitForFunction(() => document.querySelector('.prof')?.classList.contains('show'));
-    await page.evaluate(() => window.__app.test.park());
+    // Test the real profiler's layout, not GPU timestamp capture (a separate suite).
     for (const [width, height] of sizes) {
       await page.setViewportSize({ width, height });
       // Keep the short-lived help present when measuring (timer behavior checked below).
       await page.locator('.veh-help').evaluate(el => el.classList.add('on'));
+      await page.locator('.prof').evaluate(el => el.classList.remove('show'));
+      const stats = await page.locator('.stats').boundingBox();
+      const panel = await page.locator('.veh-panel').boundingBox();
+      assert(stats && panel && separate(stats, panel), `${touch}/${width}: frame stats overlap vehicle HUD`);
+      await page.locator('.prof').evaluate(el => el.classList.add('show'));
       const selectors = ['.veh-panel', '.pov-vitals', '.veh-help', '.prof'];
       if (touch) selectors.push('.touch-stick', '.touch-actions');
       const boxes = [];
@@ -77,6 +83,7 @@ try {
         boxes.push([selector, box]);
       }
       if (opt('shot', null) && ((touch && width === 390) || (!touch && width === 960))) {
+        await page.locator('.prof').evaluate(el => el.classList.remove('show'));
         await render(page);
         await page.screenshot({ path: `${opt('shot')}-${touch ? 'touch' : 'desktop'}.png` });
       }
@@ -86,7 +93,7 @@ try {
     assert.equal(await page.locator('.industry').isVisible(), false);
     await page.keyboard.press('F1');
     assert.equal(await page.locator('.veh-panel').isVisible(), true);
-    await page.evaluate(() => { window.__app.settings.profiler = false; });
+    await page.locator('.prof').evaluate(el => el.classList.remove('show'));
     await board('jeep'); assert.equal(await page.locator('.veh-boost').isVisible(), false);
     await board('hoverbike'); assert.equal(await page.locator('.veh-boost').isVisible(), true);
     await board('boat');

@@ -25,6 +25,10 @@ body.pov-nohud .veh-hud { display: none; }
 /* Presentation only: leave the underlying on-foot visibility/state untouched. */
 body.pov-driving :is(.industry, .pov-hint, .hotbar, .hb-held, .pov-use, .pov-cross, .pov-nades, .readout) { display: none !important; }
 body.pov-nohud .industry { display: none !important; }
+body.pov-driving:has(.prof.show) .stats { display: none; }
+@media (min-width: 761px) {
+  body.pov-driving .stats { top: 80px; bottom: auto; }
+}
 /* The developer overlay gets the space above the driving HUD, not the vitals. */
 body.pov-driving .prof { top: 80px; bottom: auto; max-width: calc(100vw - 28px); max-height: max(24px, calc(100dvh - 280px)); box-sizing: border-box; }
 @media (max-width: 760px) {
