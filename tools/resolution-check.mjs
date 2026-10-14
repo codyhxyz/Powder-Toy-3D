@@ -5,6 +5,8 @@
 // only records (no WebGPU in Node), with three's TAAUNode jittering the camera
 // and a stand-in for its GPU work; then auto resolution and the pacer, as before.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { mock } from 'node:test';
 import * as THREE from 'three/webgpu';
 import { computeHaltonOffsets } from 'three/addons/tsl/utils/TAAUtils.js';
 import { createAutoResolution, createPost, UPSCALE, UPSCALE_FLOOR, AUTO_RES } from '../src/gfx/post.js';
@@ -271,6 +273,73 @@ assert.equal(auto.scale, frozen);
 assert.equal(sim.changes.length, count, 'tool disable freezes adaptation');
 console.log('PASS: GPU degradation, 30 Hz recovery, bounds, autoRes.enabled compatibility');
 
+// Execute the app's actual timing handoff: animation's 100 ms safety cap must
+// not hide a useful render-scale trial when both frames take over 100 ms.
+const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const handoff = app.slice(app.indexOf('  if (!renderOnly) clock.update(now);'),
+  app.indexOf('  // Set before pacing'));
+assert.ok(handoff.includes('autoRes.update'), 'exercise the live app timing handoff');
+const frameTiming = new Function('clock', 'now', 'renderOnly', 'renderedLast', 'post', 'autoRes', 'DT_MAX',
+  `${handoff}\nreturn dt;`);
+{
+  const slow = createAutoResolution();
+  let now = 0, frameDt = 0, updates = 0;
+  const clock = { update() { updates++; }, getDelta: () => frameDt, getElapsed: () => now };
+  const post = { settings: { taa: true } };
+  while (now < 12) {
+    frameDt = 0.1556 * slow.scale ** 2;
+    now += frameDt;
+    const dt = frameTiming(clock, now * 1000, false, true, post, slow, 0.1);
+    assert.equal(dt, Math.min(frameDt, 0.1), 'animation/gameplay keeps its capped delta');
+  }
+  assert.ok(slow.scale <= 0.65, '6 fps rendering accepts useful trials instead of reverting and backing off');
+  let samples = 0;
+  const probe = { update(dt) { samples++; assert.equal(dt, 0.1556); } };
+  frameDt = 0.1556;
+  frameTiming(clock, now * 1000, false, true, post, probe, 0.1);
+  assert.equal(samples, 1, 'resolution receives the full 155.6 ms frame');
+  const before = updates;
+  assert.equal(frameTiming(clock, now * 1000, true, true, post, probe, 0.1), 0);
+  assert.equal(updates, before, 'render-only checkpoints do not advance the clock');
+  frameTiming(clock, now * 1000, false, false, post, probe, 0.1);
+  post.settings.taa = false;
+  frameTiming(clock, now * 1000, false, true, post, probe, 0.1);
+  assert.equal(samples, 1, 'render-only, undrawn, and non-TAA frames do not feed adaptation');
+}
+console.log('PASS: app feeds real slow-frame timing to resolution, capped timing to gameplay');
+
+// Use the real Three Timer and app setup: a tab-away gap must not become a
+// slow-frame sample, while an actual slow visible frame still must.
+{
+  let now = 0;
+  const time = mock.method(performance, 'now', () => now);
+  const document = new EventTarget();
+  document.hidden = false;
+  const setup = app.slice(app.indexOf('const clock = new THREE.Timer();'), app.indexOf('let animTime ='));
+  const clock = new Function('THREE', 'document', `${setup}\nreturn clock;`)(THREE, document);
+  const samples = [];
+  const probe = { update: (dt) => samples.push(dt) };
+  const post = { settings: { taa: true } };
+  try {
+    now = 156;
+    frameTiming(clock, now, false, true, post, probe, 0.1);
+    document.hidden = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+    now += 120000;
+    frameTiming(clock, now, false, true, post, probe, 0.1);
+    assert.equal(samples.length, 1, 'hidden frames do not feed adaptation');
+    document.hidden = false;
+    document.dispatchEvent(new Event('visibilitychange'));
+    now += 16;
+    frameTiming(clock, now, false, true, post, probe, 0.1);
+    assert.deepEqual(samples, [0.156, 0.016], 'visibility resume excludes two minutes spent away');
+  } finally {
+    clock.dispose();
+    time.mock.restore();
+  }
+}
+console.log('PASS: real app Timer excludes hidden-tab gaps from adaptation');
+
 const cpu = createAutoResolution(), capped = run(cpu);
 capped.advance(240, () => 1 / 30);
 const drops = capped.changes.filter((c) => c.scale < c.before);
@@ -325,14 +394,14 @@ assert.equal(draws, settledDraws, 'idle really stops rendering');
 postKey++; // its own post/settings change must not unlock adaptation
 for (let i = 0; i < 240; i++) { tick(); assert.equal(idleAuto.scale, 1); }
 assert.equal(renderedLast, false);
-idleAuto.wake(); pacer.wake(); // existing input handler
-for (let i = 0; i < 40; i++) tick();
-assert.ok(idleAuto.scale < 1, 'input resumes adaptation');
+// A single input settles in eight frames, before the 1.2 s measurement
+// window. Sustained input is what should resume adaptation.
+for (let i = 0; i < 40; i++) { idleAuto.wake(); pacer.wake(); tick(); }
+assert.ok(idleAuto.scale < 1, 'sustained input resumes adaptation');
 for (let i = 0; i < 1200; i++) tick();
 assert.equal(renderedLast, false);
 assert.equal(idleAuto.scale, 1);
-tick(true); // worldChanged without an input event
-for (let i = 0; i < 40; i++) tick();
+for (let i = 0; i < 40; i++) tick(true); // ongoing world changes without input
 assert.ok(idleAuto.scale < 1, 'world state changes resume adaptation');
 
 idleAuto.enabled = false;

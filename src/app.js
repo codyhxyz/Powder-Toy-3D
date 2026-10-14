@@ -1957,6 +1957,7 @@ function applyProfiler() {
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
+clock.connect(document);   // hidden-tab time is not rendering cost
 let animTime = 0;   // s the simulation has run: the scene's own animations (perk orbs, arena banners)
 // The fps readout is the rate frames are drawn while drawing: a paused, still
 // scene draws nothing (render on demand) and reads as idle, not as a low rate.
@@ -2296,9 +2297,10 @@ function tick(now, renderOnly = false) {
   applyOutputRatio();
   prof.beginFrame(now);
   if (!renderOnly) clock.update(now);
-  const dt = renderOnly ? 0 : Math.min(clock.getDelta(), DT_MAX);
-  // only frames that rendered measure how expensive rendering is
-  if (!renderOnly && renderedLast && post.settings.taa) autoRes.update(dt, clock.getElapsed());
+  const frameDt = renderOnly ? 0 : clock.getDelta();
+  const dt = Math.min(frameDt, DT_MAX);
+  // Measure real rendering time: the animation cap hides improvements below 10 fps.
+  if (!renderOnly && renderedLast && post.settings.taa && frameDt > 0) autoRes.update(frameDt, clock.getElapsed());
   // Set before pacing's view key so a scale change always schedules a render.
   post.settings.resolutionScale = autoRes.scale;
   ctx.renderOnly = renderOnly;
