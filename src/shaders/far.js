@@ -1247,21 +1247,11 @@ fn farShadeBed(id: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, s
   let down = exp(-SIGMA(lid) * depth / max(FU.sun.y, FAR_SUN_Y_MIN));
   return alb * (FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0) * down + skyAmbient(n) * sky * exp(-SIGMA(lid) * depth));
 }
-// A liquid surface at p (liquid lid, an element) seen along rd: the sky and
-// the sun's glint off it (Fresnel), and through it the liquid's body down to
-// the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
-// Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
-fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
-  let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
-  // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
-  let n = liquidRipple(p, vec3f(0.0, 1.0, 0.0));
-  let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
-  var r = reflect(rd, n);
-  r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  let refl = (skyColor(r) + sunGlint(n, -rd, ROUGH(lid), vec3f(sunVis))) * sky;
-  var rt = refract(rd, n, 1.0 / IOR(lid));
-  if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }${curved ? `
-  // the refracted ray, displayed straight: a parabola under the surface too
+// Liquid lid's body seen from p along rt, under its surface: down to the bed
+// (the opaque field along rt when bedY < 0, else the plane y = bedY), dimmed
+// by the liquid on the way, plus the light it scatters toward the eye.
+fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> vec3f {${curved ? `
+  // the ray, displayed straight: a parabola under the surface too
   let transmitted = warpRay(warpPoint(p), normalize(warpVector(p, rt)));` : ''}
   var s = -1.0;
   var bed = vec3f(0.0);
@@ -1289,7 +1279,23 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
 ${curved ? `  // optical distance is in flat material space, not display-ray t
   if (s >= 0.0 && s < WARP_INF) { s = warpArc(transmitted, 0.0, s); }
 ` : ''}  let att = select(vec3f(0.0), exp(-SIGMA(lid) * s), s >= 0.0);
-  let body = bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
+  return bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
+}
+// A liquid surface at p (liquid lid, an element) seen along rd: the sky and
+// the sun's glint off it (Fresnel), and through it the liquid's body down to
+// the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
+// Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
+fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
+  let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
+  // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
+  let n = liquidRipple(p, vec3f(0.0, 1.0, 0.0));
+  let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
+  var r = reflect(rd, n);
+  r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
+  let refl = (skyColor(r) + sunGlint(n, -rd, ROUGH(lid), vec3f(sunVis))) * sky;
+  var rt = refract(rd, n, 1.0 / IOR(lid));
+  if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
+  let body = farBody(p, rt, lid, sunVis, sky, bedY);
   return F * refl + (1.0 - F) * body;
 }
 
@@ -1404,10 +1410,15 @@ struct FarOut {
       // came out of the window inside matter. Behind the window's ground: hidden
       // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
       // the sun, in the probes' light just inside the window (none in a cave).
-      // In its water, which the volume draws see-through: the water body's own
-      // light, as deep water shows, so the window's water carries on past its side.
+      // In its water, which the volume draws see-through: that water's body past
+      // the wall, so the window's water carries on past its side.
       if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
-      else { col = farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p)); }
+      else {
+        // the ray carries on through that water to whatever bed lies past the
+        // wall, as the open sea's body beside it does (farLiquid): bottomless
+        // in-scatter alone showed as a bright band along the window's far sides
+        col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0);
+      }
     } else {
       let sunVis = farSunLit(p, 0);
       if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
