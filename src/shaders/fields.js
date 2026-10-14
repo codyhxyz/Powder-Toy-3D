@@ -346,7 +346,10 @@ ${listMainWGSL('LIST_EMA')}
   if (jetAt(p)) { sv.x = 1.0; }   // a pour: full now (jetWGSL)
   ema[s] = pack4x8unorm(sv);
   ema[SLOTS + s] = pack4x8unorm(m);
-  ema[2u * SLOTS + s] = pack4x8unorm(vec4f(select(1.0, 0.0, crisp)));
+  var weight = vec4f(select(1.0, 0.0, crisp));
+  // Liquid/media touch smooth solids too; their blur must not carve an air gap.
+  if (ch > CH_LIQUID) { weight.x = 0.0; }
+  ema[2u * SLOTS + s] = pack4x8unorm(weight);
 }
 `;
 
