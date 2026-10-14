@@ -68,6 +68,8 @@ const LOOKAHEAD_FRAMES = 2;             // frames of flight traced beyond the la
 const FRAME_INIT = 1 / 60;              // s, frame time assumed before one is measured
 const SEGMENT_SAG_MAX = 0.1;            // cells: a traced chord strays at most this far from the arc (g·T²/8)
 const TRACE_RGBA = 4;
+const MAX_FLIGHT = 30;                 // seconds: even a stalled GPU readback cannot keep a projectile forever
+const MAX_ROUND_FLIGHT = 2;            // a bullet crosses the active grid in a fraction of a second
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const HARD = ELEMENTS.map((e) => e.hard);
@@ -237,6 +239,7 @@ export function createBallistics() {
   // one round's frame: strike, or fly on (and hit a body on the way)
   function fly(sim, r) {
     r.t += frameTime;
+    if (r.t >= (r.kind === 'round' ? MAX_ROUND_FLIGHT : MAX_FLIGHT)) { end(r); return; }
     const striking = r.hit && r.t >= r.hit.t && r.tClear >= r.hit.t;
     // shown only as far as the traces have cleared: a round never flies through what it hit
     const tAt = striking ? r.hit.t : Math.min(r.t, r.tClear, r.hit ? r.hit.t : Infinity);

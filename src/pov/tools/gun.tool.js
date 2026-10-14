@@ -31,5 +31,5 @@ export default firearm({
   hit: HIT.GUN,
   sound: { rate: 1, gain: 1, thump: 1 },
   // the held pistol, in cells (camera space: +x right, +y up, −z forward)
-  pose: { pos: [0.45, -0.42, -1.3], muzzle: [0, 0.17, -0.4] },
+  pose: { pos: [0.45, -0.42, -1.3] },
 });

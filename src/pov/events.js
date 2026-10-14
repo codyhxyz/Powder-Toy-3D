@@ -51,7 +51,9 @@ export const povEvents = {
   emit(name, payload = {}) {
     if (actor) {
       if (OWN_VIEW.has(name)) return;
-      payload = { ...payload, by: actor.id, from: actor.at?.clone?.() ?? null };
+      // A moving projectile's `from` is its segment start, not its shooter's eye.
+      const from = name === 'round:move' ? payload.from : actor.at?.clone?.() ?? null;
+      payload = { ...payload, by: actor.id, from };
     }
     bus.emit(name, payload);
   },
