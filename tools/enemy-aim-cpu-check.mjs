@@ -196,7 +196,6 @@ try {
   // Actual SMG trigger, ADS and bloom: no duplicate spread formula in the test.
   const hitRates = [];
   for (const moving of [false, true]) {
-    seed = 123456;
     const f = rig('objective');
     const eye = new THREE.Vector3(0, 5, 0), dir = new THREE.Vector3();
     let shots = 0, hitCount = 0, maxCone = 0;
@@ -210,6 +209,8 @@ try {
       } },
     });
     try {
+      // Three.js mesh UUIDs consume randomness; seed firing after cosmetic setup.
+      seed = 123456;
       for (let frame = 0; frame < 900; frame++) {
         // Strafe at 24 cells/s, reversing at +/-12 cells; stay in weapon range.
         if (moving) f.target.pos.x = 12 - Math.abs((frame * 24 / 60 + 12) % 48 - 24);

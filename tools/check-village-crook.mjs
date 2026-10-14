@@ -3,24 +3,47 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import * as THREE from 'three';
-import { initialCrookState, startCrook, answerCrook, crookDialogue, loadCrookState, CROOK_LINES } from '../src/pov/village/crook.js';
+import { initialCrookState, validCrookState, startCrook, answerCrook, crookDialogue, loadCrookState, CROOK_LINES } from '../src/pov/village/crook.js';
 import { HOMES, FLOOR, HOME_Z, HOME_ENTRY } from '../src/pov/village/state.js';
 import { createCrookController } from '../src/pov/village/crookController.js';
 
 const saves = new Map();
 const storage = { getItem: k => saves.get(k) ?? null, setItem: (k, v) => saves.set(k, v) };
-for (const answer of [0, 1]) {
+// All 64 routes deliver their chosen reactions, survive reload, and debit once.
+for (let route = 0; route < 64; route++) {
   let s = startCrook(initialCrookState());
   for (let i = 0; i < CROOK_LINES.length; i++) {
+    const answer = (route >> i) & 1;
     assert.equal(answerCrook(s, 'invalid'), s);
     const id = crookDialogue(s).choices[Math.min(answer, crookDialogue(s).choices.length - 1)].id;
     s = answerCrook(s, id);
     assert.equal(answerCrook(s, id), s);
+    if (!s.complete) {
+      assert.equal(s.balance, 0);
+      assert.equal(crookDialogue(s).text, `${CROOK_LINES[i].replies[answer]}\n\n${CROOK_LINES[i + 1].text}`);
+    }
+    storage.setItem('mid-dialogue', JSON.stringify(s));
+    assert.deepEqual(loadCrookState(storage, 'mid-dialogue').state, s);
   }
   assert.equal(s.balance, -56000); assert.equal(s.complete, true);
   storage.setItem('roundtrip', JSON.stringify(s));
   assert.deepEqual(loadCrookState(storage, 'roundtrip').state, s);
+  assert.equal(crookDialogue(s), null);
 }
+for (let step = 0; step < CROOK_LINES.length; step++) {
+  const legacy = { version: 1, started: true, step, complete: false, balance: 0 };
+  storage.setItem('legacy', JSON.stringify(legacy));
+  assert.deepEqual(loadCrookState(storage, 'legacy').state, legacy);
+  assert.equal(crookDialogue(legacy).text, CROOK_LINES[step].text);
+}
+const legacyComplete = { version: 1, started: true, step: 6, complete: true, balance: -56000 };
+storage.setItem('legacy', JSON.stringify(legacyComplete));
+assert.deepEqual(loadCrookState(storage, 'legacy').state, legacyComplete);
+assert.equal(crookDialogue(legacyComplete), null);
+for (const reply of [-1, 2, 0.5, '0', null]) {
+  assert.equal(validCrookState({ ...initialCrookState(), started: true, step: 1, reply }), false);
+}
+assert.equal(validCrookState({ ...initialCrookState(), reply: 0 }), false);
 for (const raw of ['{broken', '{"version":99}', '{"version":1,"started":true,"step":55}']) {
   storage.setItem('willow-cove:crook:v1:corrupt', raw);
   const c = createCrookController(storage, 'corrupt');
@@ -104,12 +127,15 @@ const gated = tick(); assert.equal(gated.jump, false); assert.equal(gated.charge
 village.act({ type: 'tool-primary' }); village.act({ type: 'kick' }); assert.equal(uses, 0);
 uiOptions.speakNext(lastTalk.choices[1].id);
 assert.equal(village.crook.state.step, 1);
+const firstReply = `${CROOK_LINES[0].replies[1]}\n\n${CROOK_LINES[1].text}`;
+assert.equal(lastTalk.text, firstReply, 'real UI receives the selected reaction before the next stage');
 village.close();
 tick(); assert.equal(village.blocked, false); assert.equal(village.crook.phase, 'idle');
 for (let i = 0; i < 10; i++) tick();
 assert.equal(village.blocked, false);
 village.act({ type: 'interact' });
 assert.equal(village.crook.state.step, 1); assert.equal(village.blocked, true);
+assert.equal(lastTalk.text, firstReply, 'closing and reopening preserves the reaction');
 while (!village.crook.state.complete) uiOptions.speakNext(lastTalk.choices[0].id);
 assert.equal(village.crook.state.balance, -56000); assert.equal(village.blocked, false);
 assert.equal(lastDebtBadge.updates.filter(u => u.reveal).length, 1, 'completion reveals the debt once');

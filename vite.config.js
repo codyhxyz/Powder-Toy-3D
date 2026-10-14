@@ -19,10 +19,8 @@ import { localMapPlugin } from './scripts/local-map-plugin.mjs';
 // 'virtual:world-bake' (a world harness page), not when the server starts:
 // most harness pages never import it, and the bake keeps a CPU busy a while.
 export default defineConfig(({ mode }) => ({
-  plugins: [taaBlackGuard(), wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), gameOnly(appPreloadPlugin()), localMapPlugin()],
+  plugins: [wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), gameOnly(appPreloadPlugin()), localMapPlugin()],
   optimizeDeps: {
-    // Let the shader guard run in dev too, rather than bypassing it in pre-bundling.
-    exclude: ['three/addons/tsl/display/TAAUNode.js'],
     // harness mode: scan only the harness pages for dependencies to pre-bundle (the game imports the bake)
     ...(mode === 'harness' ? { entries: ['tools/harness/*.html'] } : {}),
     // fengari (the console's Lua, src/console/lua.js) reads process.env.FENGARICONF
@@ -37,20 +35,6 @@ export default defineConfig(({ mode }) => ({
     assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined),
   },
 }));
-
-// Guard three r186's zero-luminance history lock without forking the upscaler.
-function taaBlackGuard() {
-  const unsafe = '.abs().div( meanLuma ).smoothstep( 0, 0.2 )';
-  return {
-    name: 'taa-black-guard',
-    enforce: 'pre',
-    transform(code, id) {
-      if (!/\/node_modules\/three\/examples\/jsm\/tsl\/display\/TAAUNode\.js(?:\?.*)?$/.test(id)) return;
-      if (code.split(unsafe).length !== 2) throw new Error('Three TAAU changed: review its zero-luminance guard before building.');
-      return { code: code.replace(unsafe, '.abs().div( meanLuma.max( 1e-6 ) ).smoothstep( 0, 0.2 )'), map: null };
-    },
-  };
-}
 
 // The bake plugin without its eager start: its load() bakes on first use.
 function lazyBake(plugin) {

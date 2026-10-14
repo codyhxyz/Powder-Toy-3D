@@ -83,7 +83,7 @@ async function loadBody(character, time) {
   });
   // the hat, skinned to his head bone as in the game
   const body = meshes.reduce((a, b) => (b.geometry.attributes.position.count > a.geometry.attributes.position.count ? b : a));
-  for (const [name, geo] of Object.entries(buildGarb(meshes))) {
+  for (const [name, geo] of Object.entries(buildGarb(meshes, { bag: character === 'stick' }))) {
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color().setRGB(...(GARB_COLORS[name] ?? GARB_COLORS.hat)), roughness: 0.85, side: THREE.DoubleSide,
     });
