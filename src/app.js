@@ -26,6 +26,7 @@ import { createGpu } from './gpu/device.js';
 import { createPresenter } from './gpu/present.js';
 import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/three.js';
 import { Simulation, GI_BLEND } from './sim.js';
+import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
 import { createVolume } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
@@ -1344,6 +1345,33 @@ function mapRow() {
   return { type: 'custom', el: h('div.map-row', {}, name, tag, change), sync };
 }
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
+function waveDemoRow() {
+  let busy = false;
+  const note = h('p.row-note');
+  const buttons = [['shore', 'Create shore wave'], ['ocean', 'Create offshore wave']].map(([kind, text]) =>
+    h('button', { type: 'button', text, on: { click: async () => {
+      if (busy) return;
+      busy = true; sync();
+      try {
+        const made = await seedWaveDemo(win, kind);
+        if (made) {
+          setSettingsOpen(false);
+          hud.toast(settings.paused ? 'Wave created. Unpause to let it move.' : 'Wave created. Undo restores the water.');
+          wakeLoop();
+        } else hud.toast('Move into sea water and try again.');
+      } catch (error) {
+        console.error('Wave demo:', error);
+        hud.toast('Could not create the wave.');
+      } finally { busy = false; sync(); }
+    } } }));
+  const sync = () => {
+    const why = mp.isGuest ? 'The host controls the water.'
+      : !win?.loaded || !(win.P.sea > 0) ? 'Requires a world with an ocean.' : '';
+    buttons.forEach(button => { button.disabled = busy || !!why; });
+    note.textContent = busy ? 'Preparing wave…' : why || 'One-shot physical waves, not automatic swells. Changes water volume; supports Undo. Use offshore waves in open sea.';
+  };
+  return { type: 'custom', el: h('div', {}, h('div.seg', { role: 'group', 'aria-label': 'Create a physical wave' }, buttons), note), sync };
+}
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -1352,6 +1380,7 @@ const settingsPanel = createSettings({
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
+      waveDemoRow(),
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
