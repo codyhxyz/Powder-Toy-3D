@@ -1,14 +1,10 @@
 import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetPerQuantum } from '../../v2/phase.js';
 import { ELEMENTS } from '../../elements.js';
 const field = (name, get) => {
-  const groups = new Map();
-  PHASE_ROWS.forEach((r, i) => {
-    const value = get(r, i);
-    if (value === 0) return; // Same as the default, including invalid IDs.
-    if (!groups.has(value)) groups.set(value, []);
-    groups.get(value).push(`${i}u`);
-  });
-  return `fn ${name}(id:u32)->i32 { switch id { ${[...groups].map(([value, ids]) => `case ${ids.join(', ')}: { return ${value}; }`).join('\n')} default: { return 0; } } }`;
+  // Small scalar tables avoid switch-return fanout without adding GPU bindings.
+  const values = PHASE_ROWS.map((r, i) => get(r, i));
+  return `const ${name}Table = array<i32, ${values.length}>(${values.join(',')});
+fn ${name}(id:u32)->i32 { if(id>=${values.length}u){return 0;} return ${name}Table[id]; }`;
 };
 // Requires foundation energyAdd/Sub/Signed/Mul; no bindings. vec2u is low,high.
 export const phaseWGSL = /* wgsl */ `
