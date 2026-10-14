@@ -30,7 +30,7 @@ assert.equal(nextYouZoom(0.01, -1e6), YOU_ZOOM_MIN);
 assert.equal(nextYouZoom(100, 1e6), YOU_ZOOM_MAX);
 console.log('PASS loading preview: Animal Crossing persona, and Skyrim wheel zoom');
 
-for (const name of ['you', 'you-woman', 'you-stick', 'you-spartan', 'you-boy', 'you-girl']) {
+for (const name of ['you', 'you-woman', 'you-bag', 'you-spartan', 'you-boy', 'you-girl']) {
   const bytes = readFileSync(new URL(`../public/${name}.webp`, import.meta.url));
   assert.equal(bytes.toString('ascii', 0, 4), 'RIFF');
   assert.equal(bytes.toString('ascii', 8, 12), 'WEBP');
@@ -38,6 +38,8 @@ for (const name of ['you', 'you-woman', 'you-stick', 'you-spartan', 'you-boy', '
 
 // Exercise the actual worker lifecycle without taking the player's GPU.
 const source = readFileSync(new URL('../src/ui/menu.js', import.meta.url), 'utf8');
+const YOU = runInNewContext(source.match(/^const YOU = .*;$/m)[0] + '\nYOU;');
+assert.equal(YOU('stick'), '/you-bag.webp', 'saved stick choice uses the new paper-bag asset, not a cached stickman');
 const workers = [], portraits = [], classes = new Set();
 const node = () => {
   const portrait = {
@@ -70,14 +72,14 @@ const context = {
     }
     terminate() { this.terminated = true; }
   },
-  YOU: (choice) => choice === 'real' ? '/you.webp' : `/you-${choice}.webp`,
+  YOU,
   YOU_MAX_DPR: 2, YOU_MAX_H: 560, YOU_ASPECT: 260 / 420, h: node,
   nextYouZoom,
 };
 const liveYou = runInNewContext(`(${source.slice(source.indexOf('function liveYou(')).replaceAll('import.meta.url', '"https://test.invalid/menu.js"')})`, context);
 const still = node(), preview = liveYou(fig, still);
 preview.start('stick');
-assert.equal(still.src, '/you-stick.webp');
+assert.equal(still.src, '/you-bag.webp');
 assert.equal(workers.at(-1).character, 'stick');
 workers.at(-1).onmessage({ data: 'ready' });
 assert.ok(classes.has('live'));

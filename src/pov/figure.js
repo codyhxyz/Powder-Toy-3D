@@ -482,8 +482,8 @@ export function createFigure(build = buildStick) {
       // or the beat would still be rising when the wings had already given up.
       if (!s.dead && s.flap > 0) {
         const w = s.flap;
-        shL.rotation.x -= 1.5 * w; shR.rotation.x -= 1.5 * w;
-        shL.rotation.z -= 0.9 * w; shR.rotation.z += 0.9 * w;
+        shL.rotation.x -= 2.4 * w; shR.rotation.x -= 2.4 * w;
+        shL.rotation.z -= 1.3 * w; shR.rotation.z += 1.3 * w;
         elL.rotation.x *= 1 - 0.6 * w; elR.rotation.x *= 1 - 0.6 * w;
       }
       const look = !s.dead && s.look ? s.look : null;

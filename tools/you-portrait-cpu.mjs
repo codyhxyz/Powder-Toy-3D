@@ -4,7 +4,6 @@
 import * as THREE from 'three';
 import { SVGRenderer } from 'three/addons/renderers/SVGRenderer.js';
 import { TessellateModifier } from 'three/addons/modifiers/TessellateModifier.js';
-import { buildStick } from '../src/pov/figure.js';
 import { buildSpartan } from '../src/pov/figureSpartan.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -30,13 +29,14 @@ globalThis.document = {
 
 const dir = mkdtempSync(join(tmpdir(), 'you-cpu-'));
 try {
-  for (const [character, build] of [['stick', buildStick], ['spartan', buildSpartan]]) {
+  // The paper-bag body is skinned; bake it with you-portrait.mjs, not the old stickman rig.
+  for (const [character, build] of [['spartan', buildSpartan]]) {
     const rig = build(), scene = new THREE.Scene(), holder = new THREE.Group();
     rig.body.position.y = rig.hipY;
     rig.body.rotation.y = Math.PI;
     const tessellate = new TessellateModifier(0.12, 7);
     rig.body.traverse((o) => {
-      if (!o.isMesh) return;
+      if (!o.isMesh || !o.userData.albedo) return; // jet flames have their own material
       // Small faces keep SVG's painter sorting correct where armor plates overlap.
       o.geometry = tessellate.modify(o.geometry);
       o.material = new THREE.MeshLambertMaterial({ color: new THREE.Color().setRGB(...o.userData.albedo) });

@@ -156,7 +156,50 @@ function createRig(env) {
   const sway = new THREE.Vector2();   // x: yaw, y: pitch
   let prevYaw = NaN, prevPitch = NaN;
   let time = 0, bobPhase = 0, bobAmp = 0, swim = 0;
-  const pos = new THREE.Vector3(), rot = new THREE.Euler();
+  const pos = new THREE.Vector3(), rot = new THREE.Euler(), flapE = new THREE.Euler(), flapQ = new THREE.Quaternion();
+  // Built on the first flap, not at rig creation: a mesh id draws from Math.random, and the
+  // gun's spread uses that same generator (firearm.js).
+  let wingArms = null, wingSleeve = null, wingSkin = null, wingGeo = null;
+  function wings() {
+    if (wingArms) return wingArms;
+    wingSleeve = new THREE.MeshLambertMaterial({ color: 0x8a3a2a, flatShading: true });
+    wingSkin = new THREE.MeshLambertMaterial({ color: 0xc48a5c, flatShading: true });
+    wingGeo = { fist: new THREE.BoxGeometry(0.22, 0.2, 0.24), fore: new THREE.BoxGeometry(0.2, 0.2, 2.4) };
+    wingArms = [-1, 1].map((side) => {
+      const g = new THREE.Group();
+      g.name = 'flap-wing';
+      const fist = new THREE.Mesh(wingGeo.fist, wingSkin);
+      const fore = new THREE.Mesh(wingGeo.fore, wingSleeve);
+      fore.position.z = 1.25;
+      g.add(fist, fore);
+      g.traverse((o) => o.layers.set(VIEWMODEL_LAYER));
+      root.add(g);
+      return { g, side };
+    });
+    return wingArms;
+  }
+  function poseFlap(wing) {
+    const beat = wing > 0 ? wing : 0;
+    if (beat <= 0.02 && !wingArms) return;
+    const heldRight = hands.some((h) => h.visible && h.userData.rest.x > 0.05);
+    const heldLeft = hands.some((h) => h.visible && h.userData.rest.x < -0.05);
+    for (const { g, side } of wings()) {
+      g.visible = beat > 0.02 && !(side > 0 && heldRight) && !(side < 0 && heldLeft);
+      // Shoulder at the lower corner. rotation.x 1.15 hangs the wing down; the beat throws it up across the view.
+      g.position.set(side * 0.9, -0.25 + beat * 1.15, -0.85);
+      g.rotation.set(1.15 - 2.8 * beat, side * 0.25, side * (-0.45 - 0.7 * beat));
+    }
+    for (const h of hands) {
+      const side = Math.sign(h.userData.rest.x) || 1;
+      h.traverse((o) => {
+        if (!o.userData.arm || o.parent?.userData.arm) return;
+        o.userData.flapRest ??= o.quaternion.clone();
+        flapE.set(-2.4 * beat, 0, side * beat);
+        o.quaternion.copy(o.userData.flapRest).multiply(flapQ.setFromEuler(flapE));
+      });
+    }
+    if (beat > 0) globalThis.__app?.requestRender?.();
+  }
 
   function stepSpring(dt) {
     for (const k in sp) {
@@ -223,14 +266,15 @@ function createRig(env) {
     for (const h of hands) {
       const side = Math.sign(h.userData.rest.x) || 1;
       h.position.copy(h.userData.rest).add(pos);
-      h.position.y += wing * 0.42;
-      h.position.x += side * wing * 0.12;
+      h.position.y += wing * 1.35;
+      h.position.x += side * wing * 0.55;
       h.rotation.copy(rot);
-      h.rotation.x -= wing * 1.05;
-      h.rotation.z += side * wing * 0.55;
+      h.rotation.x -= wing * 1.7;
+      h.rotation.z += side * wing * 0.85;
     }
-    if (wing > 0) globalThis.__app?.requestRender?.();
+    poseFlap(wing);
     updateViewmodelArms(root, env.getCharacter?.() ?? 'stick');
+    poseFlap(wing);   // the baked wizard arm arrives on the tool; swing that too
     setLayers(env.viewmodel);
     if (!settled()) globalThis.__app?.requestRender?.();
   }
@@ -263,7 +307,12 @@ function createRig(env) {
     get state() {
       return { pos: pos.clone(), rot: new THREE.Vector3(rot.x, rot.y, rot.z), spring: { ...sp } };
     },
-    dispose() { root.removeFromParent(); },
+    poseFlap,
+    dispose() {
+      wingSleeve?.dispose(); wingSkin?.dispose();
+      wingGeo?.fist.dispose(); wingGeo?.fore.dispose();
+      root.removeFromParent();
+    },
   };
 }
 
