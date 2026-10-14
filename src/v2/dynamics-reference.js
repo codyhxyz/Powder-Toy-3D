@@ -5,22 +5,13 @@ import { CELL_M } from '../scale.js';
 import { PHYS } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, AIR_CAPACITY_Q, withPayload, payloadOf, share } from './layout.js';
+import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
+export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
 export { CELL_M };
 export const PARTICLE_CAP = 65536;
 export const PARTICLE_BYTES = 48;
 export const DT = 1 / 60;
 export const GRAVITY = 19.6; // TF2's ~2 g, docs/v2.md §5.1.
-export const BLAST_SCALE = 1e-3; // Deliberate miniature TNT scale, R10.
-export const AIR = Object.freeze({ edge: 4 * CELL_M, rho: 1.225, sound: 50,
-  substeps: 8, loss: 0.9999, diffusion: 0.04, pQuantum: 0.02, vQuantum: 0.0002,
-  scalarQuantum: 1e-7, quietTicks: 8, gasPressure: 1.225 * 50 ** 2 / 64 });
-// Compatibility scale calibrated to the EXISTING gunpowder row, not an
-// independent pressure/J table. Native tools accept Pa; legacy adapters convert.
-export const GUNPOWDER_ENERGY_J = ELEMENTS[E.GUNPOWDER].dens * 100 * CELL_M ** 3 * 3e6 * BLAST_SCALE;
-export const GUNPOWDER_PRESSURE = ELEMENTS[E.GUNPOWDER].blast.P;
-export const LEGACY_PRESSURE_PA = Math.sqrt(GUNPOWDER_ENERGY_J * 0.25 * 2 * AIR.rho * AIR.sound ** 2 / AIR.edge ** 3) / GUNPOWDER_PRESSURE;
-export const legacyPressureToPa = value => value * LEGACY_PRESSURE_PA;
-export const specialBlastEnergy = legacyPressure => GUNPOWDER_ENERGY_J * (Math.max(0,Math.min(PHYS.P_MAX,legacyPressure))/GUNPOWDER_PRESSURE) ** 2;
 export const singularityVacuumPa = core => legacyPressureToPa(contactVacuum(core));
 export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;

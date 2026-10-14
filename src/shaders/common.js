@@ -1,5 +1,5 @@
 import { compactDecodeWGSL } from './compact.js';
-import { LEGACY_PRESSURE_PA } from '../v2/dynamics-reference.js';
+import { LEGACY_PRESSURE_PA } from '../v2/pressure.js';
 import { elementsGLSL, ELEMENTS, ELEMENT_FIELDS, RXDEF_FIELDS, K, REACTIONS, mechanismTables } from '../elements.js';
 import { electricityGLSL, ELEC_FIELDS } from '../electricity.js';
 import { incandescenceGLSL, INCAND, INCAND_KNOTS, LUMA_709 } from '../gfx/incandescence.js';
