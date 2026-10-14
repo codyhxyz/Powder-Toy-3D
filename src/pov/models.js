@@ -447,6 +447,8 @@ function arm(dir) {
 }
 
 const AXIS = { x: 0, y: 1, z: 2 };
+// Barrel exits in the parts' coordinates, before the model is centred and fitted.
+const MUZZLES = { pistol: [0, 0.2, -0.56], gun: [0, 0.21, -0.945], sniper: [0, 0.22, -1.73] };
 
 // A normalised model `key` (see MODELS), wrapped in a group whose origin is the
 // anchor, with the arm on its grip (unless withArm is false: a thrown bomb).
@@ -460,6 +462,12 @@ function normalised(key, withArm = true) {
   inner.position.copy(new THREE.Vector3(...def.anchor).multiply(size).add(box.min).multiplyScalar(-k));
   const outer = new THREE.Group();
   outer.add(inner);
+  if (MUZZLES[key]) {
+    const muzzle = new THREE.Object3D();
+    muzzle.name = 'muzzle';
+    muzzle.position.set(...MUZZLES[key]).multiplyScalar(k).add(inner.position);
+    outer.add(muzzle);
+  }
   if (withArm) {
     const hand = arm(def.arm);
     hand.position.copy(inner.position);   // the parts' origin is the grip
