@@ -64,7 +64,7 @@ const hooks = registerHooks({
     source = source.replace(/import .* from '\.\.\/gpu\.js';/, 'const volumeLight = () => null;');
     source = source.replace('import { loadRapier, createPhysics }', 'import { createPhysics }');
     source = source.replace("import './vehicles.css';", 'const loadRapier = async () => globalThis.__entityFixture.R;');
-    source = source.slice(0, source.indexOf('function createHud()')) + 'function createHud() { return { show() {}, dispose() {} }; }';
+    source = source.replace(/import .* from '\.\/hud\.js';/, 'const createVehicleHud = () => ({ show() {}, board() {}, leave() {}, dispose() {} });');
     return { format: 'module', source, shortCircuit: true };
   },
 });

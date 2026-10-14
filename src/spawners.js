@@ -110,7 +110,7 @@ export class Spawners {
   clear() { for (const s of [...this.list]) this.remove(s); }
 
   // The spawners for a save (saves/game.js), feet in world cells, and back.
-  consume(s) { if (s.oneShot) { s.consumed = true; this.onChange(); } }
+  consume(s) { if (s.oneShot && !s.consumed) { s.consumed = true; this.onChange(); } }
 
   toJSON() {
     return this.list.flatMap((s) => {

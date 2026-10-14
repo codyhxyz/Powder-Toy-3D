@@ -48,6 +48,7 @@ try {
       npc.update(999, world);
       assert.equal(npc.body.dead, oneShot);
       assert.equal(npc.body.spawns, oneShot ? 1 : 2, 'only legacy homes replenish');
+      assert.equal(npc.finished, oneShot, 'spent one-shot corpses can leave the runtime and let the editor idle');
       npc.reset(); npc.update(0, world);
       assert.equal(npc.body.dead, oneShot, 'reset cannot revive a one-shot NPC');
       assert.equal(npc.body.spawns, oneShot ? 1 : 3);

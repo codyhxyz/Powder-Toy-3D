@@ -3,7 +3,8 @@ import { MovingEntity, Vehicle, PursuitBehavior, SeekBehavior, WanderBehavior, V
 import { ELEMENTS, E, K } from '../elements.js';
 import { wormFrag, wormGiantFrag, WORM_BITE, WORM_GIANT_BITE } from '../shaders/povTools.js';
 import { toolPass } from './gpu.js';
-import { figureFrag } from './figure.js';
+import { figureMaterial, figureUniforms } from './figure.js';
+import { prepareMesh } from '../gfx/meshLight.js';
 import { addTarget, allTargets, spotAround, PLAYER } from './targets.js';
 import { povEvents, createEmitter } from './events.js';
 import { OUTSIDE } from './ai/world.js';
@@ -115,22 +116,6 @@ const isMatter = (id) => id === OUTSIDE || (id !== E.EMPTY && KIND[id] !== K.GAS
 const breaks = (id, energy) => id >= 0 && KIND[id] === K.SOLID && !!ELEMENTS[id].breakInto && ELEMENTS[id].hard <= energy;
 let nextId = 1;
 
-const instVert = /* glsl */ `
-uniform mat4 uWorldToGrid;
-out vec3 vGrid;
-out vec3 vN;
-void main() {
-#ifdef USE_INSTANCING
-  mat4 m = modelMatrix * instanceMatrix;
-#else
-  mat4 m = modelMatrix;
-#endif
-  vec4 w = m * vec4(position, 1.0);
-  vGrid = (uWorldToGrid * w).xyz;
-  vN = mat3(m) * normal;
-  gl_Position = projectionMatrix * viewMatrix * w;
-}`;
-
 const UNBOUND = new THREE.MeshBasicMaterial();   // until bind() builds the lit materials (figure.js)
 
 // The worm's look: segments as one InstancedMesh, the head with its jaws and eyes.
@@ -179,8 +164,8 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
   const DIG_STEP = BITE.DEPTH / 2;        // cells the head moves between bites (they overlap by half)
   const stops = (id) => id === OUTSIDE || (id >= 0 && KIND[id] === K.SOLID && !breaks(id, BITE.ENERGY));
   const look = buildLook(size);
-  const uniforms = { uEmit: { value: new THREE.Vector3() }, uWorldToGrid: { value: new THREE.Matrix4() } };
-  let mats = [], boundTo = null, compiled = null;
+  const uniforms = figureUniforms();
+  let mats = [];
   const pass = toolPass(size.frag);
 
   // the head is a Yuka vehicle: its position and velocity are the worm's
@@ -458,7 +443,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
   function draw(dt, w, near) {
     look.root.position.copy(w.toWorld(tmp.set(0, 0, 0), new THREE.Vector3()));
     look.root.scale.setScalar(w.scale);
-    uniforms.uWorldToGrid.value.copy(w.worldToGrid);
+    uniforms.worldToGrid.value.copy(w.worldToGrid);
     for (let i = 0; i < segs.length; i++) {
       const a = i === 0 ? headV.set(v.position.x, v.position.y, v.position.z) : segs[i - 1];
       dir.subVectors(a, segs[i]);
@@ -494,28 +479,21 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
   return {
     id, kind: 'worm',
     root: look.root,
-    bind(volume, g) {
-      if (boundTo === volume) return;
-      boundTo = volume;
-      for (const m of mats) m.dispose();
-      const frag = figureFrag(g);
+    bind() {
+      if (mats.length) return;
       const byColor = new Map();
       for (const [mesh, albedo] of look.parts) {
         const key = albedo.join();
         if (!byColor.has(key)) {
-          byColor.set(key, new THREE.ShaderMaterial({
-            vertexShader: instVert, fragmentShader: frag, side: THREE.DoubleSide,
-            uniforms: { ...volume.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...albedo) } },
-          }));
+          // The shared WebGPU figure material handles InstancedMesh transforms.
+          byColor.set(key, figureMaterial({ albedo, u: uniforms }));
         }
         mesh.material = byColor.get(key);
       }
       mats = [...byColor.values()];
     },
     compile(renderer, camera, scene) {
-      if (compiled === mats[0]) return Promise.resolve();
-      compiled = mats[0];
-      return renderer.compileAsync(look.root, camera, scene).catch(() => {});
+      return prepareMesh(look.root, { camera, scene });
     },
     // what the shell's per-NPC code reads (index.js: perks, the revenge blast): a worm takes no perks
     body: {
@@ -533,6 +511,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
       };
     },
     get segments() { return segs; },
+    get finished() { return oneShot && dead && deadTime >= CORPSE_S; },
     update(dt, w) {
       const sim = env.getSim();
       if (!sim) return;

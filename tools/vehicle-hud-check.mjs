@@ -53,7 +53,10 @@ try {
     for (const selector of ['.industry', '.hotbar', '.hb-held', '.pov-hint']) assert.equal(await page.locator(selector).isVisible(), false, selector);
     assert.equal(await page.locator('.pov-vitals').isVisible(), true);
     assert.equal(await page.locator('.veh-exit').isVisible(), !touch);
-    if (touch) assert.equal(await page.getByRole('button', { name: 'Get out', exact: true }).isVisible(), true);
+    if (touch) {
+      assert.equal(await page.getByRole('button', { name: 'Get out', exact: true }).isVisible(), true);
+      assert.equal(await page.getByRole('button', { name: 'Brake', exact: true }).isVisible(), false);
+    }
     assert(!await page.locator('.toasts').textContent().then(text => /W\/S|motor needs water/i.test(text)), 'no boarding toast');
     const sizes = touch ? [[390, 844], [844, 390], [320, 568]] : [[1280, 800], [960, 640], [390, 844], [320, 640]];
     // Enable the actual developer overlay so its bounds are part of the assertion.
@@ -84,7 +87,7 @@ try {
     await page.keyboard.press('F1');
     assert.equal(await page.locator('.veh-panel').isVisible(), true);
     await page.evaluate(() => { window.__app.settings.profiler = false; });
-    await board('jeep'); assert.equal(await page.locator('.veh-boost').isVisible(), true);
+    await board('jeep'); assert.equal(await page.locator('.veh-boost').isVisible(), false);
     await board('hoverbike'); assert.equal(await page.locator('.veh-boost').isVisible(), true);
     await board('boat');
     // Wall time, not game time: instructions fade even when parked, exit remains.

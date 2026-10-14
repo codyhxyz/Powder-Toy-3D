@@ -216,6 +216,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     bind(volume, g) { figure.bind(volume, g); },
     compile(r, camera, scene) { return figure.compile(r, camera, scene); },
     get body() { return body; },
+    get finished() { return oneShot && body.dead && deadTime >= RESPAWN_S; },
     get agent() { return agent; },
     get kit() { return kit; },
     // what it's doing (checks): its goal, weapon, tool, pack

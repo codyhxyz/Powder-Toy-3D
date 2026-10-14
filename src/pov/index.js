@@ -691,7 +691,9 @@ export function createPov(app) {
       }
       // a spawner taken away takes its NPC with it
       for (const [id, n] of npcs) {
-        if (homes.some((s) => s.id === id) || (npcsWanted === false && sp?.list.some((s) => s.id === id))) continue;
+        const home = homes.find((s) => s.id === id);
+        if (!n.finished && (home || (npcsWanted === false && sp?.list.some((s) => s.id === id)))) continue;
+        if (home?.oneShot) sp.remove(home);   // the corpse finished; no invisible body keeps the editor awake
         scene.remove(n.root); n.dispose(); npcs.delete(id);
       }
       if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
@@ -706,7 +708,7 @@ export function createPov(app) {
   function update(dt) {
     touch.update({
       live: live() && !village.blocked, tool: village.enabled ? null : toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
-      wantsWheel: !!toolbelt?.wantsWheel, driving: !!vehicles.seated, vehicles: vehicles.list.length > 0,
+      wantsWheel: !!toolbelt?.wantsWheel, driving: !!vehicles.seated, vehicleKind: vehicles.seated?.kind, vehicles: vehicles.list.length > 0,
     });
     descentFrame(dt);
     if (!active()) return;
