@@ -1,23 +1,14 @@
-// The outcome bench's engine on v2's fast version (docs/v2.md 5; src/v2/physics.js over
-// src/shaders/v2.js): today's Simulation holds the state its writers write, as the game's
-// ?physics=v2 does, and PhysicsV2 ticks beside it. Runs in tools/harness/outcomes.html
-// (?engine=v2, `node tools/outcomes.mjs --engine v2`). Contract: ./engine.js.
-//   clock     60 ticks a game second (Speed 1×), 2 g (19.6 m/s²)
-//   box       one edit of today's state (sim.editKernel, as engine-v1.js), which v2 imports:
-//             a liquid comes in full; thrown matter (v) isn't in this version
-//   read      v2's own cells: id, a liquid's fill (2⁻¹⁶ of a cell), T; no particles yet
-//   activity  awake bricks of v2's last tick, and its idle certificate: no brick awake and
-//             nothing written since; idleSince is the tick after the last busy one
-//   fall      R1's column-fall law, the column pass's own (shaders/v2.js fallCells)
-//   flight    none: particles (throws) aren't in this version
-// The full P2 adapter (docs/v2.md 11) adds velocities, particles, burning and pressure.
-import { Simulation } from '/src/sim.js';
-import { PhysicsV2 } from '/src/v2/physics.js';
-import { E, ELEMENTS } from '/src/elements.js';
-import { CELL_M } from '/src/scale.js';
-import { TICK_HZ, G_MS2, FULL, V2, v2Rows, fallCells } from '/src/shaders/v2.js';
-import { stepClock } from './engine.js';
-import { tally } from './lib.js';
+// Integrated production native engine; canonical material/particle/air readback.
+// Contract: ./engine.js. Velocity setup is checked before the first tick.
+import { Simulation } from '../../src/sim.js';
+import { PhysicsV2 } from '../../src/v2/physics.js';
+import { E, ELEMENTS } from '../../src/elements.js';
+import { CELL_M } from '../../src/scale.js';
+import { TICK_HZ, G_MS2, FULL, V2, v2Rows } from '../../src/shaders/v2.js';
+import { contactWGSL } from '../../src/shaders/v2/contact.js';
+import { NativeDynamics } from '../../src/v2/dynamics.js';
+import { readNativeState, toGrid, nativeTally, nativeFall, nativeFlight } from './native-grid.js';
+import { stepClock, SetupError } from './engine.js';
 
 // bench names that are named otherwise today
 const TODAY = { AIR: 'EMPTY', FLOUR: 'DUST' };
@@ -40,14 +31,15 @@ const BOX = {
  * @param {{ seed?: (s: number) => void }} [opts] seed: seeds Math.random (the blank state's cell seeds)
  */
 export function createEngine(gpu, { seed = () => {} } = {}) {
-  let sim = null, v2 = null, kernel = null, clock = stepClock(TICK_HZ);
+  let sim = null, v2 = null, kernel = null, clock = stepClock(TICK_HZ), launches = [];
   const idOf = (name) => { const k = TODAY[name] ?? name; return k in E ? E[k] : null; };
   const engine = {
     name: 'v2',
     info: {
-      label: `v2 fast version (src/v2/physics.js), ${gpu.adapterInfo.vendor} ${gpu.adapterInfo.architecture}${gpu.adapterInfo.isFallbackAdapter ? ' (fallback adapter)' : ''}`,
+      label: `v2 integrated native physics (src/v2/physics.js), ${gpu.adapterInfo.vendor} ${gpu.adapterInfo.architecture}${gpu.adapterInfo.isFallbackAdapter ? ' (fallback adapter)' : ''}`,
       stepsPerSecond: TICK_HZ, clock: `${TICK_HZ} ticks a game second (Speed 1×)`,
-      gravity: G_MS2, cellM: CELL_M, fillQuantum: 1 / FULL, velocity: false, pressure: false, airCell: null, burning: false,
+      gravity: G_MS2, cellM: CELL_M, fillQuantum: 1 / FULL, velocity: true, pressure: true, airCell: 4, burning: true,
+      velocityDetails: 'SI particles, powder fall, air; nonzero grid-liquid face flux has no unique cell velocity (NaN)',
     },
     id: idOf,
     nameOf: (id) => { const k = ELEMENTS[id]?.key ?? `#${id}`; return BENCH[k] ?? k; },
@@ -57,18 +49,32 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       seed(s);
       sim = new Simulation(gpu, nx, ny, nz, { debug: false });
       kernel = sim.editKernel('outcomeBoxV2', BOX);
-      v2 = new PhysicsV2(sim);
+      v2 = new PhysicsV2(sim, { contactWGSL, Dynamics: NativeDynamics });
       await Promise.all([sim.ready, kernel.ready, v2.ready]);
       clock = stepClock(TICK_HZ);
+      launches = [];
+      if (!v2.isReady || !v2.contactReady || !v2.dynamics?.isReady || !v2.jets?.isReady) throw new SetupError('v2: integrated native physics did not become ready');
     },
-    box(lo, hi, name, { T, v = [0, 0, 0], onlyEmpty = false } = {}) {
+    box(lo, hi, name, { T, v = [0, 0, 0], onlyEmpty = false, pressure } = {}) {
       const id = idOf(name);
       if (id === null) throw new Error(`v2: no element ${name}`);
-      if (v.some((c) => c)) throw new Error('v2: no thrown matter in the fast version (particles are left out)');
+      if (pressure !== undefined) throw new SetupError('v2: exact box pressure initialization is unsupported; native pressure readback is in Pa');
+      if (v.length !== 3 || !v.every(Number.isFinite)) throw new SetupError('v2: invalid SI velocity');
+      const thrown = v.some(c => c !== 0);
+      if (thrown && (onlyEmpty || ![V2.POWDER, V2.LIQUID, V2.GAS].includes(ROWS[id].cls)))
+        throw new SetupError('v2: exact velocity setup supports unconditional powder/liquid/gas boxes only');
       const e = ELEMENTS[id];
       sim.edit(kernel, { lo, hi }, { id, temp: T ?? e.temp, life: e.life, ctype: id === E.LAVA ? E.STONE : 0, onlyEmpty: onlyEmpty ? 1 : 0 });
+      if (thrown) {
+        v2.sync();
+        const result = v2.dynamics.applyBodyCoupling({ lo: lo.map(c => c + 0.5), hi: hi.map(c => c + 0.5),
+          velocity: v, pushFluid: 0, pushPowder: 0, lift: 0, ahead: [0, 0], only: id });
+        if (result.status !== 'queued') throw new SetupError(`v2: velocity setup rejected: ${result.reason}`);
+        launches.push({ lo: [...lo], hi: [...hi], id, v: [...v] });
+      }
     },
     async advance(seconds) {
+      await verifyLaunches();
       const n = clock.take(seconds);
       for (let k = 0; k < n; k += 16) {
         v2.ticks(Math.min(16, n - k));
@@ -78,25 +84,33 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
     get time() { return clock.time; },
     get steps() { return clock.steps; },
     async read() {
-      v2.sync();   // (a write since the last tick: v2 imports it first)
-      const c = await v2.readCells();
-      return { nx: sim.g.nx, ny: sim.g.ny, nz: sim.g.nz, id: c.id, amount: c.fill, T: c.T, burning: null, pressure: null, moving: null, vel: null, particles: [] };
+      await verifyLaunches();
+      return toGrid(await readNativeState(v2));
     },
-    async census() { return tally(await engine.read(), engine); },
+    async census() { return nativeTally(await engine.read(), engine); },
     async activity() {
       v2.sync();
-      const s = await v2.readStats();
-      const idle = s.awake === 0 && s.tick > 0 && v2.unwrittenSinceTick;
-      return { awake: s.awake, units: s.units, idle, idleSince: idle ? (s.lastBusy + 1) / TICK_HZ : undefined };
+      const [s] = await Promise.all([v2.readStats(), v2.dynamics.readActivity()]);
+      const idle = s.awake === 0 && s.tick > 0 && v2.unwrittenSinceTick && v2.dynamics.isIdle;
+      return { awake: s.awake, units: s.units, idle };
     },
-    fall(name, seconds) {
-      const id = idOf(name);
-      if (id === null || ROWS[id].cls !== V2.POWDER) return null;
-      return fallCells(id, Math.round(seconds * TICK_HZ));
-    },
-    flight: () => null,
+    fall(name, seconds) { return nativeFall(idOf(name), seconds); },
+    flight(name, velocity, seconds) { return nativeFlight(idOf(name), velocity, seconds); },
     park() {}, resume() {},
-    async dispose() { v2?.dispose(); sim?.dispose(); v2 = null; sim = null; kernel = null; },
+    async dispose() { v2?.dispose(); sim?.dispose(); v2 = null; sim = null; kernel = null; launches = []; },
   };
+  async function verifyLaunches() {
+    if (!launches.length) return;
+    const g = toGrid(await readNativeState(v2));
+    for (const { lo, hi, id, v } of launches) {
+      for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) for (let x = lo[0]; x <= hi[0]; x++) {
+        const ps = g.particles.filter(p => p.id === id && p.x === x + 0.5 && p.y === y + 0.5 && p.z === z + 0.5);
+        if (g.id[x + g.nx * (z + g.nz * y)] !== E.EMPTY || ps.length !== 1 ||
+          [ps[0].vx, ps[0].vy, ps[0].vz].some((c, a) => Math.abs(c - v[a]) > 1e-5))
+          throw new SetupError('v2: native allocator did not accept exact velocity setup (capacity or overlapping writes)');
+      }
+    }
+    launches = [];
+  }
   return engine;
 }

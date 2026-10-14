@@ -7,9 +7,8 @@
 // when the build offers it, else from the page's own /src/elements.js, which
 // only a dev server serves: a bundled build (a deploy, the /v1/ build) needs
 // the hook (today's app has none, so --app-url must be a dev server). Contract:
-// ./engine.js; box() is not offered (the scene is the game's), and read()
-// isn't either (a world window is half a million cells: census() counts in
-// the page).
+// ./engine.js; box() is not offered (the scene is the game's). Native read()
+// and census() include canonical grid/particles/air, including outside packets.
 //   clock     the game's steps a game second: sim.stepsPerSecond when it has
 //             one (v2's 60 ticks, Speed 1×: engine-v2.js), else settings.steps
 //             a frame at 60 frames a second (app.js tick; physics.js
@@ -17,6 +16,7 @@
 //   advance   __app.test.step(n) on the parked page (CLAUDE.md: manual mode)
 //   activity  __app.sim.readCounts() and __app.sim.idleCertified
 import { newTestPage } from '../browser.mjs';
+import { toGrid, nativeTally, nativeFall, nativeFlight } from './native-grid.js';
 import { stepClock, SetupError } from './engine.js';
 
 // A requested engine is not proof of the engine that actually stepped (worlds currently fall back).
@@ -73,17 +73,20 @@ export function createEngine(browser, { base, query = '', errors = [], expectedP
         const info = a.gpu?.adapterInfo ?? {};
         return {
           keys: table.map((e) => e?.key ?? ''), kinds: table.map((e) => e?.kind ?? 1),
-          physics: { mode: a.physics?.mode, active: a.physics?.active === true },
+          physics: { mode: a.physics?.mode, active: a.physics?.active === true, nativeReady: a.physics?.v2?.contactReady === true && a.physics?.v2?.dynamics?.isReady === true },
           stepsPerSecond: a.sim.stepsPerSecond, steps: a.settings.steps, size: [a.sim.g.nx, a.sim.g.ny, a.sim.g.nz],
           adapter: `${info.vendor ?? ''} ${info.architecture ?? ''}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}`,
         };
       });
+      if (meta.physics.active && !meta.physics.nativeReady) throw new SetupError('app: native contact/dynamics integration is unavailable');
       meta.sps = appPhysicsClock({ expectedPhysics, ...meta });
       clock = stepClock(meta.sps);
       Object.assign(engine.info, {
         label: `the game at ${base}${url}${query ? ` +${query}` : ''}, ${meta.adapter}`, stepsPerSecond: meta.sps,
         clock: meta.physics.active || meta.stepsPerSecond ? `${meta.sps} ticks a game second` : `${meta.sps} steps a game second (${meta.steps} a frame at 60 fps)`,
         fillQuantum: meta.physics.active ? 1 / 65536 : 1,
+        velocity: meta.physics.active, pressure: meta.physics.active, burning: meta.physics.active, airCell: meta.physics.active ? 4 : null,
+        gravity: meta.physics.active ? 19.6 : NaN,
       });
     },
     box() { throw new Error('app: the scene is the game\'s own (no box writes)'); },
@@ -103,21 +106,24 @@ export function createEngine(browser, { base, query = '', errors = [], expectedP
     },
     get time() { return clock.time; },
     get steps() { return clock.steps; },
-    async read() { throw new Error('app: read() is not offered (census() counts in the page)'); },
+    async read() {
+      if (!meta.physics.active) throw new Error('app: legacy read() is not offered');
+      const raw = await page.evaluate(async () => {
+        const v2 = window.__app.physics.v2;
+        v2.sync();
+        const d = v2.dynamics, origin = v2.sim.origin;
+        if (!v2.isReady || !v2.contactReady || !d?.isReady) throw new Error('app: native physics is not ready');
+        const buffers = [v2.cells, v2.aux, d.particles, d.air[d.airIndex]];
+        const reads = buffers.map(b => v2.gpu.readback.buffer(b, 0, b.size));
+        return { layout: v2.g, origin: [origin.x, origin.y, origin.z], words: (await Promise.all(reads)).map(b => Array.from(new Uint32Array(b))) };
+      });
+      const [cells, banks, particles, air] = raw.words.map(w => new Uint32Array(w).buffer);
+      return toGrid({ ...raw, cells, banks, particles, air });
+    },
     async census() {
+      if (meta.physics.active) return nativeTally(await engine.read(), engine);
       const c = await page.evaluate(async () => {
         const a = window.__app, sim = a.sim, g = sim.g, n = {}, liquid = {};
-        if (a.physics?.active) {
-          const v2 = a.physics.v2;
-          v2.sync();
-          const c = await v2.readCells();
-          for (let i = 0; i < c.id.length; i++) {
-            const id = c.id[i];
-            n[id] = (n[id] ?? 0) + 1;
-            if (c.fill[i] > 0) liquid[id] = (liquid[id] ?? 0) + c.fill[i];
-          }
-          return { n, liquid };
-        }
         const [A] = await sim.readState();
         for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
           const id = Math.floor(A[sim.cellTexel(x, y, z) * 4] + 0.5);
@@ -140,9 +146,9 @@ export function createEngine(browser, { base, query = '', errors = [], expectedP
         if (a.physics?.active) {
           const v2 = a.physics.v2;
           v2.sync();
-          const c = await v2.readStats();
-          return { awake: c.awake, units: c.units, idle: c.awake === 0 && c.tick > 0 && v2.unwrittenSinceTick,
-            idleSince: c.awake === 0 ? (c.lastBusy + 1) / 60 : undefined };
+          const [c] = await Promise.all([v2.readStats(), v2.dynamics.readActivity()]);
+          const idle = c.awake === 0 && c.tick > 0 && v2.unwrittenSinceTick && v2.dynamics.isIdle;
+          return { awake: c.awake, units: c.units, idle };
         }
         await sim.gpuSync();
         if (sim.idleRead) await sim.idleRead;
@@ -150,8 +156,8 @@ export function createEngine(browser, { base, query = '', errors = [], expectedP
         return { awake: c.awake, units: c.units, idle: sim.idleCertified };
       });
     },
-    fall: () => null,
-    flight: () => null,
+    fall: (name, seconds) => meta?.physics.active ? nativeFall(engine.id(name), seconds) : null,
+    flight: (name, v, seconds) => meta?.physics.active ? nativeFlight(engine.id(name), v, seconds) : null,
     park: () => page.evaluate(() => window.__app.test.park()),
     resume: () => page.evaluate(() => window.__app.test.resume()),
     async dispose() { await page?.close().catch(() => {}); page = null; },
