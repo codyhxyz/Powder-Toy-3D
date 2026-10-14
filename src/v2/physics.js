@@ -113,7 +113,7 @@ export class PhysicsV2 {
     for (const k of V2_KERNELS) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, code: k.name === 'v2block' ? k.code(g, contactWGSL) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        name: k.name, build: 'idle', code: k.name === 'v2block' ? k.code(g, contactWGSL) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
         layouts: [sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, familyLayouts[this.familyOf(k.name)]],
       });
     }

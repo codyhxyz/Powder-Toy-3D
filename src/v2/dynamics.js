@@ -118,7 +118,7 @@ export class NativeDynamics {
       for (const stage of stages) {
         const single=(family==='blasts' && ['reset','normalize','allocate','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && stage==='holdCOM');
         const name=`v2${family}_${stage}`;
-        this.kernels[`${family}/${stage}`]=gpu.kernel({name,code:generate(g,owner.nativeDynamics.head,stage),
+        this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
       }
     }

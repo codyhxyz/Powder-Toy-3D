@@ -11,7 +11,7 @@ export class NativeJets {
     this.group=gpu.bindGroup(layout,[owner.liquidScratch,owner.jetMask,dynamics.particles,dynamics.control]
       .map((buffer,binding)=>({binding,resource:{buffer}})),'native liquid jets');
     this.kernels=Object.fromEntries(JET_STAGES.map(stage=>[stage,gpu.kernel({
-      name:`v2jets_${stage}`,code:jetsWGSL(owner.g,stage),params:DynamicParams,
+      name:`v2jets_${stage}`,build:'idle',code:jetsWGSL(owner.g,stage),params:DynamicParams,
       workgroupSize:stage==='allocate'?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,layout],
     })]));
     this.ready=Promise.all(Object.values(this.kernels).map(k=>k.ready)).then(()=>{if(!this.disposed)this.isReady=true;return this;});
