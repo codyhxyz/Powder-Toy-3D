@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BODY_HEIGHT } from './constants.js';
 
-// The POV camera: mouse look, the eye with its head bob and landing dip, the
+// The POV camera: mouse look, the eye with its head bob and entry dip, the
 // over-the-shoulder third person, the death camera, and the swoop between the
 // god view and the eyes. Feel offsets (camera kick, trauma shake: feel.js)
 // ride on top of the look. Everything here is in grid cells (one cell ≈ 30 cm)
@@ -40,11 +40,8 @@ const BOB_RATE = 8;                     // 1/s: how fast the bob's size follows 
 // ground whether or not the bob shows (wading, View Bobbing off).
 const STEP_MIN_SPEED = 1;               // cells/s of ground speed below which footfalls aren't reported
 
-// Landing dip: a critically damped spring on the eye height, kicked downward.
+// Entry dip: a critically damped spring on the eye height, kicked downward.
 const DIP_STIFFNESS = 140;              // 1/s²
-const LAND_DIP_MIN_SPEED = 6;           // cells/s: softer landings don't dip
-const LAND_DIP_PER_SPEED = 0.25;        // cells/s of dip per cell/s of landing speed above the minimum
-const LAND_DIP_MAX = 7;                 // cells/s
 const ENTRY_DIP = 3;                    // cells/s: the settle as the swoop lands in the eyes
 
 // Third person: over the right shoulder, behind the eye.
@@ -177,10 +174,6 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       tp = third ? 1 : 0;
       tpArm = deathArm = 0;   // a new spot: the arms let out from the body as the traces find room
     },
-    land(speed) {
-      if (speed < LAND_DIP_MIN_SPEED) return;
-      dipVel -= Math.min((speed - LAND_DIP_MIN_SPEED) * LAND_DIP_PER_SPEED, LAND_DIP_MAX);
-    },
     // Fly from `from` ({pos, quat, fov}, world) into the eyes ('in'), or from
     // the current pose to `to` ('out'). The cells→world scale sizes the curve.
     startSwoop(kind, from, { to = null, duration = SWOOP_S } = {}) {
@@ -205,7 +198,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       pose.done = null;
       pose.footfall = false;
 
-      // head bob and landing dip, in cells. The stride runs on any ground
+      // head bob and entry dip, in cells. The stride runs on any ground
       // (footfalls); the bob only shows walking on dry ground.
       const striding = s.onGround && !s.dead;
       const walking = bobbing() && striding && !s.inLiquid;
@@ -227,9 +220,9 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       tp += ((third ? 1 : 0) - tp) * approach(TP_RATE, dt);
       if (!third && tp < ARM_REST) tp = 0;
       const tpK = smooth01(tp);
-      // what the eyes feel (the head bob, the landing dip, a tool's view punch) is the first person's
+      // what the eyes feel (the head bob, the entry dip, a tool's view punch) is the first person's
       // alone: the over-the-shoulder camera rides steady behind the body, as Garry's Mod's third person
-      // does, and keeps only the world's shake (a blast, a hard landing) and the drunk sway
+      // does, and keeps only the world's shake (a blast) and the drunk sway
       const fp = 1 - tpK;
 
       // live pose: the eye, swung over the shoulder by tpK, as far as the box and the arm let it
@@ -320,4 +313,3 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     },
   };
 }
-
