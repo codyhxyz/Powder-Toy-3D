@@ -93,7 +93,10 @@ function seatPack(pack, model) {
   let gap = Infinity;
   const v = new THREE.Vector3();
   model.traverse((o) => {
-    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'robe' || o.name === 'sleeves') return;
+    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'sleeves' || o.name === 'bung') return;
+    // She wears a barrel: the pack straps to that, not to the body inside it.
+    if (model.getObjectByName('robe') && o.name !== 'robe' && o.name !== 'hoops') return;
+    if (!model.getObjectByName('robe') && (o.name === 'robe' || o.name === 'hoops')) return;
     const n = o.geometry.attributes.position.count;
     for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 2000))) {
       o.getVertexPosition(i, v).applyMatrix4(o.matrixWorld);
@@ -104,7 +107,7 @@ function seatPack(pack, model) {
     }
   });
   const move = gap - PACK_RADIUS + PACK_EMBED;
-  if (!Number.isFinite(gap) || move <= 0.005) return;
+  if (!Number.isFinite(gap) || Math.abs(move) <= 0.005) return;
   pack.parent.worldToLocal(origin.addScaledVector(into, move));
   pack.position.copy(origin);
 }

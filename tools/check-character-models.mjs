@@ -9,6 +9,57 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { buildGarb } from '../src/pov/garb.js';
 
+const ARM_BONES = new Set(['upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r', 'hand_l', 'hand_r']);
+// Idle and a walking swing: no arm vertex sits in the stave wood.
+function armsClearBarrel(gltf, body, geos) {
+  const worn = geos.map((geo) => {
+    const mesh = new THREE.SkinnedMesh(geo, body.material);
+    mesh.bind(body.skeleton, body.bindMatrix);
+    body.parent.add(mesh);
+    return mesh;
+  });
+  const mixer = new THREE.AnimationMixer(gltf.scene);
+  const si = body.geometry.attributes.skinIndex, sw = body.geometry.attributes.skinWeight;
+  const bones = body.skeleton.bones;
+  const v = new THREE.Vector3();
+  const points = (mesh, pred) => {
+    mesh.skeleton.update();
+    const out = [], n = mesh.geometry.attributes.position.count;
+    for (let i = 0; i < n; i += pred ? 2 : 1) {
+      if (pred && !pred(i)) continue;
+      mesh.getVertexPosition(i, v).applyMatrix4(mesh.matrixWorld);
+      out.push(v.clone());
+    }
+    return out;
+  };
+  const armAt = (i) => {
+    const idx = [si.getX(i), si.getY(i), si.getZ(i), si.getW(i)];
+    const w = [sw.getX(i), sw.getY(i), sw.getZ(i), sw.getW(i)];
+    return ARM_BONES.has(bones[idx[w.indexOf(Math.max(...w))]].name);
+  };
+  let clear = true;
+  for (const [name, times] of [['idle', [0.6]], ['walk', [0.15, 0.4, 0.7]]]) {
+    const action = mixer.clipAction(gltf.animations.find((c) => c.name === name));
+    action.play();
+    for (const t of times) {
+      mixer.setTime(t);
+      gltf.scene.updateMatrixWorld(true);
+      const arms = points(body, armAt);
+      const wood = worn.flatMap((mesh) => points(mesh));
+      for (const a of arms) {
+        for (const w of wood) {
+          if (Math.abs(a.y - w.y) > 0.03) continue;
+          if (a.distanceTo(w) < 0.01) { clear = false; break; }
+        }
+        if (!clear) break;
+      }
+    }
+    mixer.stopAllAction();
+  }
+  for (const mesh of worn) mesh.removeFromParent();
+  return clear;
+}
+
 // Image decoding needs a browser; texture references and bytes are checked below.
 const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).register(parser => {
   parser.loadTextureImage = () => Promise.resolve(new THREE.Texture());
@@ -40,9 +91,10 @@ for (const file of ['body', 'woman']) {
   const garb = buildGarb(meshes);
   const { hat } = garb;
   if (file === 'woman') {
-    assert.ok(garb.robe, 'woman wears a robe');
+    assert.ok(garb.robe && garb.hoops && garb.bung, 'woman stands in a barrel');
     garb.robe.computeBoundingBox();
-    assert.ok(garb.robe.boundingBox.max.y - garb.robe.boundingBox.min.y > 0.4, 'robe covers the torso');
+    assert.ok(garb.robe.boundingBox.max.y - garb.robe.boundingBox.min.y > 0.4, 'barrel covers the torso');
+    assert.ok(armsClearBarrel(gltf, body, [garb.robe, garb.hoops]), 'hanging arms stay outside the staves');
   } else assert.equal(garb.robe, undefined);
   hat.computeBoundingBox();
   assert.ok(hat.boundingBox.min.toArray().every(Number.isFinite));
