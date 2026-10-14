@@ -32,7 +32,6 @@ Press `?` in the app for the full list.
 | Painting | |
 |---|---|
 | Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
-| Right-click or right-drag | erase without changing the selected element or tool |
 | `[` `]` or Shift + scroll | brush size |
 | Shift + left-drag | a line: the brush swept from where you pressed to where you let go (TPT's Shift-drag) |
 | ⌘ + left-drag (Ctrl on Windows) | a box between the two corners, as tall as the brush (TPT's Ctrl-drag) |
@@ -48,7 +47,7 @@ Press `?` in the app for the full list.
 
 | Camera | |
 |---|---|
-| ⌥ / Alt + left-drag | orbit |
+| Right-drag or ⌥-drag | orbit |
 | Shift + right-drag or middle-drag | pan |
 | Scroll | zoom |
 | `W` `A` `S` `D`, `Q` `E` | move, turn left/right (hold Shift to go faster) |
