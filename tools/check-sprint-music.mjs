@@ -12,14 +12,14 @@ assert.equal(SPRINT_MUSIC.bpm, 172);
 
 let previous = sprintMusicProfile(0);
 assert.deepEqual(previous, { cutoffHz: 125, gain: 0 });
-for (const [rush, min, max] of [[0.2, 120, 130], [0.5, 3800, 3850], [0.75, 6900, 6950], [0.9, 8750, 8800]]) {
+for (const [rush, min, max] of [[0.2, 120, 130], [0.5, 640, 660], [0.75, 2500, 2600], [0.9, 5700, 5850]]) {
   const { cutoffHz } = sprintMusicProfile(rush);
-  assert.ok(cutoffHz > min && cutoffHz < max, `linear-opening cutoff at ${rush}: ${cutoffHz}`);
+  assert.ok(cutoffHz > min && cutoffHz < max, `gradual breakthrough cutoff at ${rush}: ${cutoffHz}`);
 }
 for (let i = 1; i <= 1000; i++) {
   const profile = sprintMusicProfile(i / 1000);
   assert.ok(profile.cutoffHz >= previous.cutoffHz && profile.gain > previous.gain);
-  if (i > 200) assert.ok(Math.abs(profile.cutoffHz - previous.cutoffHz - 9875 / 800) < 1e-8, 'equal speed increments open equal Hz');
+  if (i > 200) assert.ok(Math.abs(profile.cutoffHz / previous.cutoffHz - 80 ** (1 / 800)) < 1e-10, 'equal speed increments open equal octaves, not equal Hz');
   else assert.equal(profile.cutoffHz, 125, 'retain the muffled launch');
   assert.ok(profile.gain - previous.gain < 0.003, 'no gain threshold/pop near rest');
   previous = profile;

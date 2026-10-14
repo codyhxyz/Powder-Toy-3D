@@ -57,8 +57,8 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
       { 'aria-pressed': 'false', title: t.hint })));
   const toolHelp = h('small.village-tool-help');
   const hud = h('div.village-hud', { hidden: true }, h('div.village-kit', {}, h('div.village-place', {}, icon('leaf'),
-    h('div', {}, location, h('small.village-keyhelp', { text: 'WASD to walk · click the scene to look' }),
-      h('small.village-touchhelp', { text: 'Left stick to walk · drag the scene to look' }))), tools, toolHelp),
+    h('div', {}, location, h('small.village-keyhelp', { text: 'WASD to walk · hold Space, release to leap' }),
+      h('small.village-touchhelp', { text: 'Left stick to walk · hold Jump, release to leap' }))), tools, toolHelp),
     h('div.village-controls', {}, hint, actions.root));
   document.body.append(hud, dialog);
 
@@ -95,7 +95,8 @@ export function createVillageUi({ context, act, primary, onOpen, onClose, speakN
       ...(action?.secondary ? [{ id: 'grab-near', label: action.secondary.title, key: 'G', codes: ['KeyG'], run: () => act({ type: 'secondary' }) }] : []),
       ...(equipped.primary ? [{ id: 'tool-primary', label: equipped.primary, key: 'Click', run: () => run('tool-primary') }] : []),
       ...(equipped.secondary ? [{ id: 'tool-secondary', label: equipped.secondary, key: 'RMB', run: () => run('tool-secondary') }] : []),
-      { id: 'punch', label: 'Punch', key: 'F', codes: ['KeyF'], run: () => run('punch') },
+      ...(!c.tool ? [{ id: 'punch', label: 'Punch', key: 'Click', run: () => run('punch') }] : []),
+      { id: 'kick', label: 'Kick', key: 'F', codes: ['KeyF'], run: () => run('kick') },
       { id: 'pockets', label: 'Pockets', key: 'I', codes: ['KeyI', 'KeyQ'], run: () => open('pockets') },
     ]);
   }

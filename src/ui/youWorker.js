@@ -1,7 +1,7 @@
 // The loading screen's live player (ui/youViewer.js) in a worker, drawing on
 // the OffscreenCanvas the menu hands it (ui/menu.js): its frames go on while
 // the page itself is held by the boot. Messages in:
-//   { canvas, width, height }   build him and draw one frame; posts 'ready' (or { failed })
+//   { canvas, width, height, character }   build and draw one frame; posts 'ready' (or { failed })
 //   { run: true|false }         breathe and turn, or stop
 //   { drag: 'start'|'end' }, { dx }   a drag, dx CSS px from where it started
 import { createYou, YOU_DRAG } from './youViewer.js';
@@ -29,7 +29,7 @@ function start() {
 self.onmessage = async ({ data }) => {
   if (data.canvas) {
     try {
-      you = await createYou({ canvas: data.canvas, width: data.width, height: data.height });
+      you = await createYou({ canvas: data.canvas, width: data.width, height: data.height, character: data.character });
     } catch (err) {
       self.postMessage({ failed: String(err) });
       return;

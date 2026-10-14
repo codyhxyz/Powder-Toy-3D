@@ -19,7 +19,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
   let memories = {}, memoryWritable = true, memoryKey = '';
   const ownMeshes = new Map(), anchoredAt = new THREE.Vector3();
   let held = null, tool = null, toolModel = null, toolMaterials = [], usingTool = false;
-  let punchAt = -Infinity, punchSerial = 0, reaction = '', reactionUntil = 0;
+  let punchAt = -Infinity, punchSerial = 0, kicking = false, reaction = '', reactionUntil = 0;
   function equip(key) {
     if (interaction || !VILLAGE_TOOLS.some(t => t.key === key)) return;
     releaseActions(); punchSerial++; tool = key; onTool(key);
@@ -35,9 +35,10 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       });
     }
   }
-  async function punch() {
-    if (!context().active || ui.opened || held || interaction || time - punchAt < PUNCH_COOLDOWN) return;
-    punchAt = time; const token = ++punchSerial, sim = app.getSim(), home = room(), l = local();
+  async function punch(kick = false) {
+    if (!context().active || ui.opened || held || interaction || (!kick && tool) || time - punchAt < PUNCH_COOLDOWN) return;
+    punchAt = time; kicking = kick;
+    const token = ++punchSerial, sim = app.getSim(), home = room(), l = local();
     app.requestRender();
     const target = punchTarget(l && { x: l.x - HOMES[home], y: l.y, z: l.z }, camera.look.yaw, residents, home);
     if (!target) return;
@@ -304,6 +305,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (!context().active) return { error: 'Enter the village to use your furniture.' };
     if (action.type === 'punch') { void punch(); return {}; }
     if (action.type === 'tool') { if (!ui.opened && !held && !interaction) equip(action.key); return {}; }
+    if (action.type === 'kick') { void punch(true); return {}; }
     if (action.type === 'tool-primary' || action.type === 'tool-secondary') {
       if (!ui.opened && !held && !interaction && tool) useTool(action.type === 'tool-primary' ? 'primary' : 'secondary');
       return {};
@@ -398,6 +400,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     onEnabled(on);
     if (!on) {
       ui.close(); endInteraction(true, true);
+      avatar.reset();
       toolModel?.dispose(); toolModel = null; toolMaterials.forEach(m => m.dispose()); toolMaterials = []; tool = null;
       releaseHeld();
       ui.close(); speech.stop(); root.visible = avatar.root.visible = false;
@@ -448,7 +451,9 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     if (input) {
       input.move.x = input.move.z = 0;
       input.jump = input.sprint = input.down = input.crouch = false;
+      input.cancelJump = true;
     }
+    getPlayer().cancelJump?.();
     setPlayer(interaction.position);
   }
   function characterObstacles(p) {
@@ -510,15 +515,17 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
     const p = getPlayer();
     if (p) {
       avatar.root.position.copy(p.pos).multiplyScalar(scale).add(vol.position); avatar.root.scale.setScalar(scale * p.size);
-      avatar.root.rotation.y = interaction?.yaw ?? yaw; avatar.root.visible = live() && (shown || !!interaction);
+      avatar.root.rotation.y = interaction?.yaw ?? (p.leaping ? Math.atan2(-p.vel.x, -p.vel.z) : yaw);
+      avatar.root.visible = live() && (shown || !!interaction);
       const punching = interaction ? 0 : Math.max(0, 1 - (time - punchAt) / PUNCH_DURATION);
       let pose = interaction?.pose ?? null;
       if (pose) avatar.root.position.y += pose.y * scale;
       if (interaction?.kind === 'grip') pose = { kind: 'grip', effort: interaction.move ? Math.sin(Math.PI * interaction.move.elapsed / 0.35) : 0 };
       if (interaction?.kind === 'dresser') pose = { kind: 'dresser', ...interaction.drawer };
       avatar.animate(time, interaction?.move ? 2 : Math.hypot(p.vel.x, p.vel.z), false, !!held,
-        !interaction && p.onGround && !p.inLiquid ? p.sprintRush : 0, punching, !!tool && !interaction, usingTool && !interaction, pose);
-      if (toolModel) toolModel.obj.visible = !held && !punching && !interaction;
+        !interaction && p.onGround && !p.inLiquid ? p.sprintRush : 0, kicking ? 0 : punching, !!tool && !interaction,
+        usingTool && !interaction, interaction ? null : p, kicking ? punching : 0, pose);
+      if (toolModel) toolModel.obj.visible = !held && (kicking || !punching) && !interaction;
     }
     for (const r of residents) {
       // ponytail: neighbors potter along their own clear aisle; outdoor schedules can replace this small local path.
@@ -554,7 +561,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       if (interaction && getPlayer()?.dead) { ui.close(); endInteraction(false, true); }
       if (interaction) setPlayer(interaction.position);
       else collide();
-    }, update, punch,
+    }, update, punch, kick: () => punch(true),
     cycleTool(direction) { if (context().active && !ui.opened && !held && !interaction) equip(VILLAGE_TOOLS[(VILLAGE_TOOLS.findIndex(t => t.key === tool) + Math.sign(direction) + VILLAGE_TOOLS.length) % VILLAGE_TOOLS.length].key); },
     get tool() { return tool; }, get canAct() { return context().active && !ui.opened && !held && !interaction; },
     set usingTool(value) { usingTool = value; },
