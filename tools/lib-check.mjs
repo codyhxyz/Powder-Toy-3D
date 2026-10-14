@@ -612,7 +612,7 @@ ${body}
     }
 
     // The cubic channels (gfx/materials.js CHANNELS cubic: liquid and granular)
-    // read cubic by their own thin-mask channel while gThin, or up close
+    // read cubic by their own thin-mask channel regardless of gThin, or up close
     // (DETAIL_CUBIC_CLOSE: cubicClose from gCubicEye, gCubicPixAng). The
     // reference takes the kernel's own trilinear, mask and cubic readings
     // (their filtering is checked above) and redoes the blend: which channels,
@@ -659,9 +659,9 @@ ${body}
           const s0 = at(0), th = at(1), cu = at(2);
           const fp = Math.hypot(...c.p.map((v, k) => v - eye[k])) * c.pixAng;
           const cl = close && c.pixAng > 0 ? 1 - smoothstep(FP_FULL, FP_NONE, fp) : 0;
-          const share = CH.map((on, k) => (on ? Math.max(c.thin ? th[k] : 0, cl) : 0));
+          const share = CH.map((on, k) => (on ? Math.max(th[k], cl) : 0));
           const band = CH.map((on, k) => on * (s0[k] > 0.3 ? 1 : 0) * (s0[k] < 0.85 ? 1 : 0));
-          const w = band.map((b, k) => b * Math.max(c.thin ? th[k] : 0, cl));
+          const w = band.map((b, k) => b * Math.max(th[k], cl));
           const sample = s0.map((v, k) => (w[k] > 0 ? v * (1 - w[k]) + cu[k] * w[k] : v));
           const chan = s0.map((v, k) => (share[k] > 0 ? v * (1 - share[k]) + cu[k] * share[k] : v));
           const got = [...at(3), ...at(4), ...at(5), at(6)[0]], want = [...sample, ...chan, ...share, cl];
@@ -676,6 +676,51 @@ ${body}
         check(`cubic channels (close ${close ? 'on' : 'off'}): ${N} points, surfSample, surfChannel, cubicShare, cubicClose max |err| ${fmt(err)}; `
           + `blended ${blended}, in the hand-off ${nearHand}, fully close ${closeAll}; molten and organic untouched`,
           err <= 2e-6 && exact && blended >= N / 8 && (close ? nearHand >= 8 && closeAll >= 8 : nearHand + closeAll === 0));
+      }
+    }
+
+    // A mask texel in the previous brick still contributes across the face.
+    // Changing the march's brick hint must not invent an isosurface there.
+    {
+      const grid = [g.nx, g.ny, g.nz];
+      const fs = volume(grid, (x) => {
+        const v = x === 3 ? 0.61 : x === 4 ? 0.40 : 0;
+        return [v, 0, v, 0];
+      });
+      const ft = volume(grid, (x) => [x === 3 ? 1 : 0, 0, x === 3 ? 1 : 0, 0]);
+      const extra = { '2.0': { tex: fs.tex }, '2.2': { tex: ft.tex } };
+      for (const [name, detail, angle] of [
+        ['off', {}, 0],
+        ['balanced transition', { DETAIL_CUBIC_CLOSE: 1 }, 0.0077],
+        ['fully close', { DETAIL_CUBIC_CLOSE: 1 }, 0.001],
+      ]) {
+        const body = `
+  let ch = select(CH_LIQUID, CH_GRANULAR, i >= 2u);
+  let forward = (i & 1u) == 0u;
+  let ro = vec3f(4.0);
+  let rd = vec3f(select(-0.01, 0.01, forward), sqrt(1.0 - 0.0001), 0.0);
+  gCubicEye = vec3f(0.0);
+  gCubicPixAng = ${angle};
+  gThin = forward;
+  let cached = surfSample(ro)[ch];
+  let channelBefore = surfChannel(ro, ch);
+  gThin = !forward;
+  let current = surfSample(ro)[ch];
+  let channelAfter = surfChannel(ro, ch);
+  let end = surfSample(ro + rd * 0.5)[ch];
+  let t = surfCross(ro, rd, ch, forward, 0.0, 0.5, 0.5, cached, end, end);
+  io[2u * i] = vec4f(cached, current, end, t);
+  io[2u * i + 1u] = vec4f(channelBefore, channelAfter, 0.0, 0.0);`;
+        const r = await run({ label: `brick face ${name}`, code: kernel(4, body, lib(g, { detail })),
+          groups: groupsFor(layouts, { extra, ioSize: 4 * 2 * 16 }), dispatch: [1, 1, 1] });
+        if (!ranOk(`brick face kernel (${name})`, r)) continue;
+        const out = f32s(r.outputs['3.2']);
+        for (let i = 0; i < 4; i++) {
+          const [cached, current, end, t, before, after] = out.subarray(8 * i, 8 * i + 6);
+          check(`brick face (${name}, ${i < 2 ? 'liquid' : 'granular'}, ${i % 2 ? 'reverse' : 'forward'}): no floating surface`,
+            cached === current && before === after && current < 0.5 && end < 0.5 && t === 1e9,
+            `cached=${cached}, current=${current}, end=${end}, crossing=${t}`);
+        }
       }
     }
 
