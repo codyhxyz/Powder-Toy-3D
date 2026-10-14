@@ -19,7 +19,7 @@ export function createHud() {
   const TOUCH_FIRST = matchMedia('(hover: none) and (pointer: coarse)').matches;
   const hint = h('div.hint.panel', { html: TOUCH_FIRST
     ? '<b>Drag</b> to pour. <b>Two fingers</b> to turn and zoom.'
-    : '<b>Drag</b> on the floor to pour. <b>Right-drag</b> to look around. Press <b>?</b> for shortcuts.' });
+    : '<b>Drag</b> to pour. <b>Right-drag</b> to erase. <b>Alt-drag</b> to look around. Press <b>?</b> for shortcuts.' });
 
   // colour key for data views (heat, pressure, ...); hidden in the realistic view
   const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });
@@ -80,6 +80,7 @@ export function createHelp(onClose) {
       h('div.cols', {},
         h('h3', { text: 'Painting' }),
         row('Paint', 'Left drag'),
+        row('Erase', 'Right drag'),
         row('Brush size', '[', ']'),
         row('Brush size', 'Shift', 'Scroll'),
         row('Sphere or cube brush', 'B'),
@@ -96,8 +97,7 @@ export function createHelp(onClose) {
         row('Undo last change', '⌘', 'Z'),
         row('Find an element', '/'),
         h('h3', { text: 'Camera' }),
-        row('Orbit', 'Right drag'),
-        row('Orbit (trackpad)', '⌥', 'Drag'),
+        row('Orbit', '⌥ / Alt', 'Left drag'),
         row('Pan', 'Shift', 'Right drag'),
         row('Zoom', 'Scroll'),
         row('Move', 'W', 'A', 'S', 'D'),
