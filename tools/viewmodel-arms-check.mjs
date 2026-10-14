@@ -7,6 +7,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { attachModel, MODELS } from '../src/pov/models.js';
 import { viewmodelRig } from '../src/pov/viewmodel.js';
 import { bakeViewArm } from '../src/pov/viewmodelArms.js';
+import { createCombat } from '../src/pov/combat.js';
 
 const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
 loader.register(parser => ({
@@ -99,6 +100,28 @@ try {
   model.obj.traverse(o => { if (o.geometry) { count++; o.geometry.addEventListener('dispose', () => freed++); } });
   model.dispose(); model.dispose();
   assert.equal(freed, count, 'original and realistic geometry disposed exactly once');
+  // Grenade combat can create the shared rig before a toolbelt exists.
+  const previousListener = globalThis.addEventListener;
+  globalThis.addEventListener = () => {};
+  let combat;
+  const combatVm = new THREE.Group();
+  try {
+    combat = createCombat({
+      scene: new THREE.Scene(), viewmodel: combatVm, getScale: () => 1, getCharacter: () => 'real',
+      getSim: () => null, getVolume: () => new THREE.Object3D(), ballistics: () => null,
+    });
+    combat.frags.throw = () => true;   // exercise the throw arm, not GPU projectiles
+    assert.equal(combat.throw({ grenades: 1 }, new THREE.Vector3(), new THREE.Vector3(0, 0, -1)), true);
+    const earlyRig = viewmodelRig({ viewmodel: combatVm, getScale: () => 1, getCharacter: () => 'real' });
+    const h = earlyRig.hand([0, 0, -3]), m = attachModel(h, 'jackhammer');
+    h.visible = true; earlyRig.update(ctx); await flush();
+    assert.ok(m.obj.getObjectByName('view-arm-real')?.visible, 'combat-first rig preserves character selection');
+    m.dispose(); earlyRig.releaseHand(h);
+  } finally {
+    combat?.dispose(); combatVm.userData.rig?.dispose();
+    if (previousListener) globalThis.addEventListener = previousListener;
+    else delete globalThis.addEventListener;
+  }
   console.log('PASS: all tool grips, live body selection, shared loading, late-load safety and disposal');
 } finally {
   model.dispose(); rig.dispose();
