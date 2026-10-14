@@ -1702,8 +1702,6 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
   let v = -rd;
   let ng = s.ng;
-  var ao: f32;
-  if (s.ch >= 0) { ao = fieldAO(s.p, ng); } else { ao = faceAO(s.cell, s.face, s.p); }
   var local = sampleLight(s.p + ng * LOCAL_PROBE_LIFT) * FU.lightGain;
   // keep the bumped normal on the visible side
   var n = s.n;
@@ -1721,7 +1719,7 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   }${grains ? `
   sh *= gGrainSun;   // a grain shaded by the grains next to it (gfx/grains.js)` : ''}${relief ? `
   sh *= reliefSunVis();   // in the shade of the relief (gfx/relief.js)` : ''}
-  var aoT = ao * s.cav;
+  var aoT = s.cav;   // (times the AO below: the near field's, or fieldAO / faceAO without it)
 
   // specular layer (F0) and the energy it takes from the diffuse one
   // (multiple-scattering GGX after Fdez-Agüera 2019)
@@ -1786,12 +1784,17 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   let blur = smoothstep(ENV_SHARP_ROUGH, ENV_BLUR_ROUGH, s.rough);
   let envSharp = mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r));
   let envL = mix(envSharp, giRadiance(gi, r, blur), blur);
-  // indirect diffuse: the probes' light times AO, or the traced near field
-  var ind = irr * aoT;
+  // indirect diffuse: the near field (gfx/lighting.js), or the probes' light times AO
+  var ind: vec3f;
   if (FU.nearGI != 0u) {
     var vis: f32;
     ind = nearField(s.p, ng, n, irr, &vis) * s.cav;
     aoT = vis * s.cav;
+  } else {
+    var ao: f32;
+    if (s.ch >= 0) { ao = fieldAO(s.p, ng); } else { ao = faceAO(s.cell, s.face, s.p); }
+    aoT *= ao;
+    ind = irr * aoT;
   }
   if (glowWorthIt(local, irr)) { local *= glowLightScale(s.p, ng, n); }
   // specular occlusion (Lagarde & de Rousiers 2014)
@@ -1874,12 +1877,16 @@ fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
   let ndl = max(FU.sun.y, 0.0);
   var sh = vec3f(1.0);
   if (FU.shadows != 0u) { sh = sunShadow(hp, n); }
-  var ao = min(faceAO(vec3i(i32(floor(hp.x)), -1, i32(floor(hp.z))), vec3i(0, 1, 0), hp), fieldAO(vec3f(hp.x, 0.0, hp.z), n));
   var local = sampleLight(vec3f(hp.x, 0.5, hp.z)) * FU.lightGain;
   let irr = giIrradiance(surfProbe(vec3f(hp.x, 0.0, hp.z), n), n);
-  var ind = irr * ao;
   let pf = vec3f(hp.x, 0.0, hp.z);
+  var ao: f32;
+  var ind: vec3f;
   if (FU.nearGI != 0u) { ind = nearField(pf, n, n, irr, &ao); }
+  else {
+    ao = min(faceAO(vec3i(i32(floor(hp.x)), -1, i32(floor(hp.z))), vec3i(0, 1, 0), hp), fieldAO(pf, n));
+    ind = irr * ao;
+  }
   if (glowWorthIt(local, irr)) { local *= glowLightScale(pf, n, n); }
   var lamps = vec3f(0.0);
   if (FU.lampCount > 0) { lamps = lampLight(pf, n, n); }
