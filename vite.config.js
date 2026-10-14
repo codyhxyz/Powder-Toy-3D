@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import wasm from 'vite-plugin-wasm';
 import { worldBakePlugin } from './scripts/world-bake-plugin.mjs';
 import { appPreloadPlugin } from './scripts/app-preload-plugin.mjs';
+import { localMapPlugin } from './scripts/local-map-plugin.mjs';
 
 // Vite's defaults, plus the World's build-time bake (scripts/world-bake-plugin.mjs),
 // the start menu's list of what to preload (scripts/app-preload-plugin.mjs), and
@@ -18,7 +19,7 @@ import { appPreloadPlugin } from './scripts/app-preload-plugin.mjs';
 // 'virtual:world-bake' (a world harness page), not when the server starts:
 // most harness pages never import it, and the bake keeps a CPU busy a while.
 export default defineConfig(({ mode }) => ({
-  plugins: [wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), gameOnly(appPreloadPlugin())],
+  plugins: [wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), gameOnly(appPreloadPlugin()), localMapPlugin()],
   optimizeDeps: {
     // harness mode: scan only the harness pages for dependencies to pre-bundle (the game imports the bake)
     ...(mode === 'harness' ? { entries: ['tools/harness/*.html'] } : {}),
