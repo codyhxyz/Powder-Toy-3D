@@ -1993,6 +1993,44 @@ function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
 // Lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
 // so the grid and the box outline fade by the render scale to keep their weight.
 let volumeDrawn = false;   // the last presented frame drew the volume (__app.view.volumeDrawn)
+let volumeFirst = false;  // this frame's volume drew before the scene pass (the opaque hook: world/far.js volumePass)
+// The volume's draw into rp (the scene pass, or its own pass first), its
+// options this frame's (cut.take(): the meshes' depth, once a frame).
+// Returns whether it drew.
+function drawVolume(rp) {
+  const view = viewKeyOf(settings.view);
+  const meshDepth = cut.take();
+  const warp = warpNow(), curved = !!warp && warp.k !== 0;
+  // Bent (the rolling log) the view draws its curved variant (gfx/volume.js),
+  // which builds on first use: the detail gate's choice when that one is built,
+  // else its base variant (building now) while the other builds at idle time.
+  let detail = frameDetail;
+  if (curved && view === 'realistic' && vol.pipeline(view, detail, 'idle', true).state !== 'ready') detail = baseDetail();
+  const drew = !testNoVolume && vol.draw(rp, {
+    view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
+  });
+  if (!drew && !testNoVolume) {
+    // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
+    const pipe = vol.pipeline(view, detail, 'now', curved);
+    coldShader.watch(pipe);
+    wakeWhen(pipe.ready);
+  }
+  return drew;
+}
+// A world's volume first (world/far.js volumeFirst, docs/webgpu.md F1): into
+// its own colour and depth after three's opaque meshes (it marches to their
+// depth), then the occluder the far view stops at, so the view skips what the
+// volume covers opaquely; drawScene composites it where it used to draw.
+function drawVolumeFirst(p) {
+  volumeFirst = false;
+  const far = win?.far;
+  if (blocks || !far?.volumeFirst(p.sceneTarget)) return;
+  const rp = far.volumePass(p.sceneTarget);
+  let drew = false;
+  try { drew = drawVolume(rp); } finally { rp.end(); }
+  far.occlude(p.sceneTarget, drew);
+  volumeFirst = true;
+}
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(settings.view);
@@ -2014,22 +2052,9 @@ function drawScene(rp) {
     brush.draw(rp);
     return;
   }
-  const meshDepth = cut.take();
-  const warp = warpNow(), curved = !!warp && warp.k !== 0;
-  // Bent (the rolling log) the view draws its curved variant (gfx/volume.js),
-  // which builds on first use: the detail gate's choice when that one is built,
-  // else its base variant (building now) while the other builds at idle time.
-  let detail = frameDetail;
-  if (curved && view === 'realistic' && vol.pipeline(view, detail, 'idle', true).state !== 'ready') detail = baseDetail();
-  const drew = volumeDrawn = !testNoVolume && vol.draw(rp, {
-    view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
-  });
-  if (!drew && !testNoVolume) {
-    // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
-    const pipe = vol.pipeline(view, detail, 'now', curved);
-    coldShader.watch(pipe);
-    wakeWhen(pipe.ready);
-  }
+  // the volume: drawn first this frame (volumeFirst), it composites over the far field now; else drawn here
+  volumeDrawn = volumeFirst ? win.far.drawVolume(rp) : drawVolume(rp);
+  volumeFirst = false;
   for (const w of after) w.scene(ctx, rp);
   if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
   brush.draw(rp);
@@ -2076,8 +2101,10 @@ const frameHooks = {
     // the kept scene, then the opaque meshes over it, depth-tested against its depth
     if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
-    if (frameMode === 'capture') return false;   // (the volume uncut: the meshes go over it in the meshes hook)
-    return threeMeshes(p, false) ? (blocks ? true : cut.capture(p.sceneTarget.depth)) : false;
+    if (frameMode === 'capture') { drawVolumeFirst(p); return false; }   // (the volume uncut: the meshes go over it in the meshes hook)
+    const drew = threeMeshes(p, false) ? (blocks ? true : cut.capture(p.sceneTarget.depth)) : false;
+    drawVolumeFirst(p);
+    return drew;
   },
   draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },
   meshes: (p) => {
