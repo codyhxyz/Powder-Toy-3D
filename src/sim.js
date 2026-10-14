@@ -226,14 +226,15 @@ export class Simulation {
    * @param {number} nx
    * @param {number} ny
    * @param {number} nz
-   * @param {{ windowed?: boolean, world?: number[], sleepUnit?: {x: number, y: number, z: number}, debug?: boolean, form?: string }} [opts]
+   * @param {{ windowed?: boolean, world?: number[], sleepUnit?: {x: number, y: number, z: number}, debug?: boolean, form?: string, nativeStartup?: boolean }} [opts]
    *   windowed: the grid is a window of a larger world (docs/scaling.md D11);
    *   world: that world's size (the GI's far layout, src/derived.js);
    *   sleepUnit: the sleeping unit in bricks (shaders/common.js SLEEP_UNIT; SUPER for an A/B);
    *   debug: every state access tests its cell and counts misses (readDebug; I2.8);
    *   form: the move's code form (shaders/move.js MOVE_FORMS; tools compare them, D2)
+   *   nativeStartup: defer legacy stepping kernels until prepareLegacy(); edits/imports still build now
    */
-  constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM } = {}) {
+  constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM, nativeStartup = false } = {}) {
     this.gpu = gpu;
     this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
@@ -330,19 +331,21 @@ export class Simulation {
     this._bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
     this._groups();
 
-    // ---- kernels (B5): built now, asynchronously; sim.ready resolves when they are ----
+    // ---- kernels (B5): native hosts need edits/imports now, not legacy stepping ----
     const dbg = { debug: this.debug };
     const kernel = (name, code, layouts, params, extra = {}) => gpu.kernel({ name, code, layouts: [this.L.TABLES, ...layouts], params, ...extra });
-    const build = (name, frag) => kernel(name, frag(g), [L.STATE_BUILD, L.BUILD], BuildParams);
+    const build = (name, frag, extra = {}) => kernel(name, frag(g), [L.STATE_BUILD, L.BUILD], BuildParams, extra);
+    const legacy = nativeStartup ? { build: 'manual' } : {};
+    this._legacyDeferred = nativeStartup;
     this.kernels = {
-      move: kernel('move', moveBlockFrag(g, { form, ...dbg }), [L.STATE_RW, L.MOVE], MoveParams),
-      react: kernel('react', reactFrag(g, dbg), [L.STATE_RW, L.REACT], ReactParams),
-      inertList: build('inertList', inertListFrag),
-      inert: kernel('inert', inertFrag(g, dbg), [L.STATE_BUILD], BuildParams),
-      quiet: build('quiet', quietFrag),
-      drawn: build('drawn', drawnFrag),
-      move1: build('move1', move1Frag),
-      args: build('args', argsFrag),
+      move: kernel('move', moveBlockFrag(g, { form, ...dbg }), [L.STATE_RW, L.MOVE], MoveParams, legacy),
+      react: kernel('react', reactFrag(g, dbg), [L.STATE_RW, L.REACT], ReactParams, legacy),
+      inertList: build('inertList', inertListFrag, legacy),
+      inert: kernel('inert', inertFrag(g, dbg), [L.STATE_BUILD], BuildParams, legacy),
+      quiet: build('quiet', quietFrag, legacy),
+      drawn: build('drawn', drawnFrag, legacy),
+      move1: build('move1', move1Frag, legacy),
+      args: build('args', argsFrag, legacy),
     };
     // the simulation's other passes (docs/webgpu.md D6, D7, C2): what a session
     // writes with (the brush, load, undo, the derived passes' note) built now
@@ -371,7 +374,7 @@ export class Simulation {
     if (windowed) for (const k of ['shift', 'flowShift', 'copy']) this.passOf(k);
     if (gpu.testMode) for (const k of ['toAtlas', 'copy']) this.passOf(k);
     // (the state starts blank once they are: load() needs its kernel)
-    this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready))
+    this.ready = Promise.all([...(nativeStartup ? [] : Object.values(this.kernels)), ...Object.values(this.passes)].map((k) => k.ready))
       .then(() => { if (!this.disposed && this.version === 0) this.clear(); return this; });
 
     // ---- activity (docs/webgpu.md D4, D5) ----
@@ -418,6 +421,14 @@ export class Simulation {
    * @param {...string} names
    */
   prepare(...names) { return Promise.all(names.map((n) => this.passOf(n).ready)); }
+
+  // Explicit engine-switch boundary. Build once, await every legacy step/activity
+  // kernel and the initial clear; a failure leaves legacy stepping disabled.
+  async prepareLegacy() {
+    await Promise.all([this.ready, ...Object.values(this.kernels).map((k) => k.build())]);
+    this._legacyDeferred = false;
+    return this;
+  }
 
   // Settings can change while asleep (including away and back during a readback).
   // gravity: cells/step², as the app's setting has it; read back, what pulls
@@ -643,6 +654,7 @@ export class Simulation {
       if (this.compact.isReady) nativeHostTick(this.compact);
       return;
     }
+    if (this._legacyDeferred) throw new Error('Legacy physics is not prepared: await sim.prepareLegacy() before stepping');
     const f = this.gpu.frame;   // (throws GraphicsFailure once graphics have stopped)
     this.frame++;   // simulation time and parity advance even when there is nothing to step
     // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,

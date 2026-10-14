@@ -539,7 +539,7 @@ function build(savedWorldSize = null) {
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win = null;
   nativeRayStroke = null;
-  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
+  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size, nativeStartup: physicsMode === 'v2' && !mp.isGuest });
   if (physicsMode === 'v2' && !mp.isGuest) {
     physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
     const owner = physicsV2;
@@ -2795,10 +2795,17 @@ try {
     setSimMode,      // (key, value): as the drawer's Simulation switches do (simModes.js SIM_MODE_KEYS)
     setSimModes,     // ({ gravityMode, airMode, ambientHeat, edgeMode }): a world's, at once (a save's)
     // the physics a box runs: 'v1' (today's) or 'v2' (the new physics' fast version, as ?physics=v2);
-    // resolves once v2's pipelines are built. Not persisted. physics: { mode, active, v2 (its PhysicsV2) }
+    // resolves once the requested engine's pipelines are built. Not persisted.
+    // Saved engine modes also use this boundary. physics: { mode, active, v2 (its PhysicsV2) }
     async setPhysics(mode) {
       if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
       if (mode === 'v2') V2mod ??= await loadNativePhysics();
+      if (mode === 'v1') {
+        // Keep native mode published while legacy builds: the running loop must
+        // not step unbuilt kernels. A map change meanwhile needs its own prepare.
+        let prepared;
+        do { prepared = sim; await prepared.prepareLegacy(); } while (prepared !== sim);
+      }
       physicsMode = mode;
       if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
       if (mode === 'v1' && physicsV2) {

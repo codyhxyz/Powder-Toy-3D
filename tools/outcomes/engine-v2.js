@@ -47,7 +47,7 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
     async create([nx, ny, nz], { seed: s = 1 } = {}) {
       await engine.dispose();
       seed(s);
-      sim = new Simulation(gpu, nx, ny, nz, { debug: false });
+      sim = new Simulation(gpu, nx, ny, nz, { debug: false, nativeStartup: true });
       kernel = sim.editKernel('outcomeBoxV2', BOX);
       v2 = new PhysicsV2(sim, { contactWGSL, Dynamics: NativeDynamics });
       await Promise.all([sim.ready, kernel.ready, v2.ready]);
