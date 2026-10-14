@@ -36,6 +36,7 @@ const pov = {
       // a Descent level: you start (and respawn) at its spawn
       dropAt: () => app.settings.preset === 'quarry' && !app.win ? new Vector3(...QUARRY_SPAWN) : app.villageSpawn() ?? app.descentSpawn?.(),
       getMode: () => app.gamemode, getWorld: () => app.win,   // the village switches on in Animal Crossing on Tinker Creek
+      withVillageFocus: (at, valid, visit) => app.withVillageFocus(at, valid, visit),
       requestRender: () => app.requestRender(),
       inWorld: () => !!app.win,
       gamemode: () => app.gamemode,   // Noita's rules (wands only) are its gamemode's, not Descent's: Sandbox there has the tools

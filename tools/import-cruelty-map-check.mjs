@@ -1,20 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CRUELTY_PROFILES, crueltyProfile } from '../src/world/import/crueltyProfiles.js';
 import { CRUELTY_MATERIALS, MATERIAL_LOSSES } from '../src/world/import/crueltyMaterials.js';
 import { crueltyExcludeNode, crueltyMission, hiddenActorHelper, actorBodyClear, actorFeetAt } from '../src/world/import/crueltyMission.js';
 import { parseGodot3Scene, embeddedMeshes, numbers, reference, transformPoint } from '../src/world/import/godot3.js';
 import { importedCell, voxelizeMeshes } from '../src/world/import/voxelize.js';
-import { createImportedMapScene } from '../src/world/scenes/importedMap.js';
+import { createImportedMapScene, fetchImportedWords } from '../src/world/scenes/importedMap.js';
 import { convertCrueltyMap } from './import-cruelty-map.mjs';
-import { localMapPlugin } from '../scripts/local-map-plugin.mjs';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { convexProjectionAxes, convexOverlapsBox } from '../src/world/import/convexVolume.js';
+
+// The published levels: public/local-maps ships with the site.
+const shippedDirectory = 'public/local-maps';
 
 test('four approved profiles; Sin source is explicitly blocked, never converted as a substitute', () => {
   assert.deepEqual(CRUELTY_PROFILES.filter((p) => !p.blocked).map((p) => p.level), [1, 2, 4, 6]);
@@ -41,19 +43,54 @@ test('explicitly hidden actor debug helpers excluded; hidden terrain collision r
   assert.equal(hiddenActorHelper({ parent: 'Actor', props: { visible: 'true' } }, scene), false);
   assert.equal(crueltyExcludeNode({ parent: 'Actor', props: { visible: 'true' } }, scene), true, 'living actor art is not static terrain');
 });
-test('DEV whitelist includes all four pairs, blocks Sin, unknown files and escaping symlinks', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'tpt-cruelty-check-'));
-  const directory = join(root, '.tmp-cruelty-import'); await mkdir(directory);
-  for (const p of CRUELTY_PROFILES.filter((p) => !p.blocked)) await writeFile(join(directory, `${p.id}.json`), '{}');
-  await writeFile(join(root, 'outside.bin'), 'do-not-serve');
-  await symlink(join(root, 'outside.bin'), join(directory, 'paradise.bin'));
-  let handler; localMapPlugin().configureServer({ config: { root }, middlewares: { use: (f) => { handler = f; } } });
-  const server = createServer((req, res) => handler(req, res, () => { res.statusCode = 404; res.end(); }));
+test('shipped levels are gzip-packed, decode, and hold every runtime actor clear', async () => {
+  for (const profile of CRUELTY_PROFILES.filter((p) => !p.blocked)) {
+    const map = JSON.parse(await readFile(join(shippedDirectory, `${profile.id}.json`), 'utf8'));
+    assert.equal(map.dataCompression, 'gzip'); assert.ok(map.dataFile.endsWith('.binpack'));
+    const packed = await readFile(join(shippedDirectory, map.dataFile));
+    // A raw map exceeds the host's 25 MiB per-file limit; packing must have happened.
+    assert.ok(packed.byteLength < 25 * 1024 * 1024, `${profile.id} is under the host limit`);
+    const buffer = gunzipSync(packed);
+    const words = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
+    const adapter = createImportedMapScene(map, words);
+    assert.deepEqual(adapter.size, map.size);
+    assert.ok(map.mission.spawn || map.mission.available === false);
+    for (const at of [map.mission.spawn, ...map.mission.targets.map((a) => a.at), ...map.mission.guards.map((a) => a.at)].filter(Boolean)) {
+      assert.equal(ELEMENTS[adapter.cell(Math.floor(at[0]), at[1] - 1, Math.floor(at[2]))]?.kind, K.SOLID);
+      assert.ok(actorBodyClear(map, words, at), `${profile.id} actor body clearance`);
+    }
+    assert.throws(() => createImportedMapScene({ ...map, dataCompression: undefined }), /gzip-packed/);
+    // Boot lists the map from its manifest alone: the far field asks for the
+    // border height then, and must get the loaded voxels' own median.
+    const lazy = createImportedMapScene(map);
+    assert.equal(lazy.ground(0, 0), map.plainHeight);
+    assert.throws(() => lazy.cell(0, 0, 0), /not loaded yet/);
+    const [wx, , wz] = map.size, heights = [];
+    for (let x = 0; x < wx; x++) heights.push(adapter.ground(x, 0), adapter.ground(x, wz - 1));
+    for (let z = 1; z < wz - 1; z++) heights.push(adapter.ground(0, z), adapter.ground(wx - 1, z));
+    heights.sort((a, b) => a - b);
+    assert.equal(map.plainHeight, heights[heights.length >> 1], `${profile.id} plain height matches its loaded border`);
+  }
+});
+test('packed geometry decodes whether or not the host pre-decodes it', async () => {
+  const packed = await readFile(join(shippedDirectory, 'paradise.binpack'));
+  const raw = gunzipSync(packed);
+  // A host that recognises the packed bytes as an encoded representation serves
+  // them with `Content-Encoding: gzip` (Vite does this for a `.gz` name), and
+  // the fetch layer then inflates them before the loader sees them.
+  const server = createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/octet-stream');
+    if (req.url === '/labeled') res.setHeader('Content-Encoding', 'gzip');
+    res.end(packed);
+  });
   try {
-    await new Promise((r) => server.listen(0, '127.0.0.1', r)); const base = `http://127.0.0.1:${server.address().port}`;
-    for (const p of CRUELTY_PROFILES.filter((p) => !p.blocked)) assert.equal((await fetch(`${base}/local-maps/${p.id}.json`)).status, 200);
-    for (const path of ['sinSpaceEngineering.json', 'unknown.json', 'paradise.bin', '%2e%2e/outside.bin']) assert.equal((await fetch(`${base}/local-maps/${path}`)).status, 404);
-  } finally { await new Promise((r) => server.close(r)); await rm(root, { recursive: true }); }
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const [asIs, decoded] = await Promise.all([fetchImportedWords(`${base}/packed`), fetchImportedWords(`${base}/labeled`)]);
+    const expected = new Uint32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
+    assert.deepEqual([...asIs], [...expected], 'the packed stream inflates to the original words');
+    assert.deepEqual([...decoded], [...expected], 'a response the host already decoded is not inflated twice');
+  } finally { await new Promise((r) => server.close(r)); }
 });
 test('authored arch SAT rejects corner inside bounds, accepts overlapping body', () => {
   const profile = [[-1, 0], [1, 0], [1, 1], [0, 2], [-1, 1]];
@@ -64,7 +101,7 @@ test('authored arch SAT rejects corner inside bounds, accepts overlapping body',
   assert.equal(convexOverlapsBox(axes, [0, 1, 2], [0.2, 0.4, 0.2]), false);
 });
 const sourceDirectory = process.env.CRUELTY_SOURCE_DIR;
-const generatedDirectory = process.env.CRUELTY_OUTPUT_DIR;
+const generatedDirectory = process.env.CRUELTY_OUTPUT_DIR ?? shippedDirectory;
 if (sourceDirectory) for (const profile of CRUELTY_PROFILES) test(`actual Level${profile.level}: all source materials/nodes and world collider decode`, async () => {
   const text = await readFile(join(sourceDirectory, `Level${profile.level}.tscn`), 'utf8');
   const scene = parseGodot3Scene(text), meshes = embeddedMeshes(scene, { excludeNode: crueltyExcludeNode });
@@ -94,8 +131,8 @@ if (sourceDirectory) for (const profile of CRUELTY_PROFILES) test(`actual Level$
   assert.ok(matched > 0, 'An authored concave world collider must verify the source byte stream');
   if (profile.blocked || !generatedDirectory) return;
   const map = JSON.parse(await readFile(join(generatedDirectory, `${profile.id}.json`), 'utf8'));
-  const buffer = await readFile(join(generatedDirectory, `${profile.id}.bin`));
-  const words = new Uint32Array(buffer.length / 4); for (let i = 0; i < words.length; i++) words[i] = buffer.readUInt32LE(i * 4);
+  const buffer = gunzipSync(await readFile(join(generatedDirectory, `${profile.id}.binpack`)));
+  const words = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
   const adapter = createImportedMapScene(map, words);
   assert.equal(map.provenance.sha256, createHash('sha256').update(text).digest('hex'));
   const expectedMission = crueltyMission(scene, map, words, profile); assert.deepEqual(map.mission, expectedMission);

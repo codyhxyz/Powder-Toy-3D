@@ -22,12 +22,11 @@ import { GAMEMODES, mapOf, mapByKey, mapsFor, DEFAULT_MAP, MOBILE_MAP } from './
 import { probeWebGPU } from './gpu/device.js';
 import { BOOT_RETRY, bootModuleRecovery } from './bootRecovery.js';
 
-// Privately converted game assets live outside public/ and are DEV-only.
-// Production has neither this import nor source-map entries without licensed assets.
-if (import.meta.env.DEV) {
-  try { await (await import('./world/import/localMap.js')).installLocalCrueltyMaps(); }
-  catch (error) { console.error('Local source-map imports failed; maps not registered', error); }
-}
+// The converted source levels (public/local-maps): their manifests register the
+// maps before the menu lists them, and each map's geometry loads when it is
+// opened. A map that fails to register is simply absent, never substituted.
+try { await (await import('./world/import/localMap.js')).installLocalCrueltyMaps(); }
+catch (error) { console.error('Converted source maps failed to register', error); }
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
 const TEAM_GAMES = Object.keys(import.meta.glob('./game/index.js')).length > 0;

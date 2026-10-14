@@ -81,6 +81,7 @@ import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
 import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
+import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
@@ -2608,6 +2609,14 @@ const ctx = {
   get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
   get villageFocus() { return villageFocus; },
   villageSpawn,
+  withVillageFocus(at, valid, visit) {
+    const world = win, epoch = modeEpoch;
+    return withCityBusFocus({ world, at,
+      valid: () => win === world && modeEpoch === epoch && selectedMode === 'animalCrossing' && valid(),
+      getFocus: () => villageFocus, setFocus: value => { villageFocus = value; pacer.wake(); },
+      move: () => wire('world')?.moveWindow(ctx), visit,
+    });
+  },
   get pov() { return pov; }, set pov(v) { pov = v; },
   get mp() { return mp; }, set mp(v) { mp = v ?? OFFLINE; },
   get signs() { return signs; }, set signs(v) { signs = v; },
