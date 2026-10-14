@@ -168,6 +168,11 @@ The separate city occupies `x = -160..160`, `z = -440..-280`.
 Its main façades are the Emporium, Tailor, and Theatre.
 Their entries are `[-88, -376]`, `[0, -384]`, and `[88, -376]`.
 The gate and town bus apron must remain clear after all overlays.
+`cfCityCell(x, y, z, id)` handles only the separate city district.
+`cfCityBusStopCell(x, y, z, id)` handles the town bus stop.
+Both return the input cell outside their owned geometry.
+The expanded scene applies both hooks after nature and town.
+The stop hook must preserve adjacent gate posts and boarding clearance.
 
 The transport lane supplies `createCityBus` with injected app adapters.
 Its `withVillageFocus(at, valid, visit)` adapter streams without replacing the world.
