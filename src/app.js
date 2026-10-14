@@ -1305,6 +1305,7 @@ const actions = {
     if (camState() === 'god') { painting = false; pov.enter(); }
   },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
+  openShaders: () => { setSettingsOpen(true); settingsPanel.focusViews(); },
   toggleHelp: () => help.setOpen(!help.isOpen),
   // the start menu over the game (src/main.js), the way Garry's Mod's Esc brings up its menu
   openMenu: () => { painting = false; launch.openMenu?.(); },
@@ -1382,7 +1383,7 @@ const settingsPanel = createSettings({
           on: { click: actions.toggleHelp } })) },
     ] },
     { title: 'Shader', rows: [
-      { type: 'select', key: 'view', label: 'Shader', options: VIEWS.map(v => [v.id, v.name]), onChange: setView },
+      { type: 'views', key: 'view', label: 'Shader', options: VIEWS, renderThumb, onChange: setView },
     ] },
     // the map playing (maps.js: a scene at its own size); the start menu changes it
     { title: 'Map', rows: [mapRow()] },

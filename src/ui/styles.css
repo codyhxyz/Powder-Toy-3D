@@ -165,11 +165,21 @@ kbd {
 .drawer h3 { margin: 0 0 8px; font-size: 12.5px; font-weight: 640; color: var(--text); }
 .drawer .footer { padding: 10px 16px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.settings-select {
-  width: 100%; min-height: 34px; padding: 6px 8px;
+.view-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.view-card {
+  min-width: 0; padding: 0; overflow: hidden; text-align: left; cursor: pointer;
   border: 1px solid var(--line); border-radius: var(--r-ctl);
-  background: var(--panel); color: var(--text); font: inherit; color-scheme: dark;
+  background: var(--raise); color: var(--text); font: inherit;
 }
+.view-card:hover { background: var(--raise-hi); border-color: var(--line-hi); }
+.view-card.on { border-color: var(--accent); }
+.view-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.view-card .thumb { display: block; position: relative; aspect-ratio: 8 / 5; background: var(--panel); }
+.view-card canvas { display: block; width: 100%; height: 100%; }
+.view-card .preview-status { position: absolute; inset: 0; align-content: center; text-align: center; font-size: 11px; color: var(--muted); }
+.view-card .name { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; font-size: 12px; font-weight: 600; }
+.view-card kbd { color: var(--muted); font-size: 10px; }
+.view-card .legend { display: block; height: 3px; margin: 0; }
 
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; padding: 3px; border-radius: var(--r-ctl); background: rgba(0, 0, 0, 0.25); }
 .seg button { border: 0; border-radius: 5px; padding: 6px 4px; background: transparent; cursor: pointer; color: var(--muted); font-weight: 560; font-size: 12px; }
@@ -635,7 +645,7 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
 
 @media (hover: none) and (pointer: coarse) {
   .toolbar .icon-btn { width: 44px; height: 44px; flex-shrink: 0; }
-  .camera-select, .toolbar .industry-build, .settings-select, .settings-actions .btn { min-height: 44px; }
+  .camera-select, .toolbar .industry-build, .settings-actions .btn { min-height: 44px; }
   .stats .pause-btn { width: 44px; height: 44px; }
   .brand { display: none; }
   .drawer { top: calc(max(12px, env(safe-area-inset-top)) + 60px); }

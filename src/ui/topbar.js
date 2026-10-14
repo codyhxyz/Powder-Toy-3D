@@ -22,9 +22,12 @@ export function createToolbar({ actions, available = {} }) {
       keydown: e => { if (e.code === 'Space' || e.code === 'Enter') e.stopPropagation(); } } }, 'Build');
   build.hidden = true;
   const undo = btn('undo', 'Undo (⌘Z)', actions.undo);
+  const shader = btn('shader', 'Change shader', () => actions.openShaders?.());
+  shader.setAttribute('aria-haspopup', 'dialog');
+  shader.addEventListener('keydown', e => e.stopPropagation());
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const bar = h('div.toolbar.panel', { role: 'group', 'aria-label': 'Simulation controls' },
-    camera, build, undo, gear);
+    camera, build, undo, shader, gear);
   document.body.append(bar);
 
   let industryVisible = false, industryOpen = false;

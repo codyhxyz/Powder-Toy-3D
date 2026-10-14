@@ -3,7 +3,7 @@ import { ICON } from './icons.js';
 
 // Settings drawer built from a declarative spec.
 //   { type: 'seg', key, options: [[value, label]], onChange }
-//   { type: 'select', key, label, options: [[value, label]], onChange }
+//   { type: 'views', key, label, options: VIEWS, renderThumb, onChange }
 //   { type: 'slider', key, label, min, max, step, def, fmt, onChange }
 //   { type: 'switch', key, label, desc?, badge?, tier?, onChange }   (badge: a cost label, styled by tier)
 //   { type: 'more', label, rows }   rows tucked under a collapsed disclosure
@@ -22,15 +22,49 @@ export function createSettings({ settings, sections, footer, onClose }) {
   };
 
   const rowEl = (r) => {
-    if (r.type === 'select') {
-      const select = h('select.settings-select', { 'aria-label': r.label,
-        on: {
-          change: () => { r.onChange(r.options.find(([value]) => String(value) === select.value)[0]); syncAll(); },
-          keydown: e => e.stopPropagation(),
-        },
-      }, r.options.map(([value, text]) => h('option', { value, text })));
-      syncers.push(() => { select.value = settings[r.key]; });
-      return select;
+    if (r.type === 'views') {
+      const cards = r.options.map(v => {
+        const canvas = h('canvas', { width: 320, height: 200, 'aria-hidden': 'true' });
+        const status = h('span.preview-status', { text: 'Loading preview…' });
+        const card = h('button.view-card', { type: 'button', title: v.desc, 'aria-label': v.name,
+          on: {
+            click: () => { r.onChange(v.id); syncAll(); },
+            keydown: e => e.stopPropagation(),
+          },
+        }, h('span.thumb', {}, canvas, status),
+        h('span.name', {}, v.name, h('kbd', { text: v.hotkey })),
+        v.legend ? h('span.legend', { style: { background: v.legend.css } }) : null);
+        return { v, card, canvas, status };
+      });
+      let wasOpen = false, lastView, generation = 0, queue = Promise.resolve();
+      syncers.push(() => {
+        const open = el.classList.contains('open'), view = settings[r.key];
+        for (const c of cards) {
+          c.card.classList.toggle('on', c.v.id === view);
+          c.card.setAttribute('aria-pressed', String(c.v.id === view));
+        }
+        if (open === wasOpen && view === lastView) return;
+        wasOpen = open;
+        lastView = view;
+        const run = ++generation;
+        if (!open) return;
+        // One GPU readback at a time, including when the drawer closes and reopens.
+        queue = queue.then(async () => {
+          for (const c of cards) {
+            if (run !== generation) return;
+            try {
+              const rendered = await r.renderThumb(c.v.id, c.canvas);
+              c.status.hidden = !!rendered || c.canvas.dataset.rendered === '1';
+              c.status.textContent = 'Select to preview';
+            } catch (err) {
+              c.status.textContent = 'Preview unavailable';
+              console.warn('views: no thumbnail', err);
+            }
+            await new Promise(requestAnimationFrame);
+          }
+        });
+      });
+      return h('div.view-grid', { role: 'group', 'aria-label': r.label }, cards.map(c => c.card));
     }
     if (r.type === 'seg') {
       const btns = r.options.map(([value, label]) => {
@@ -103,7 +137,12 @@ export function createSettings({ settings, sections, footer, onClose }) {
   return {
     el,
     sync: syncAll,
-    setOpen: (v) => { el.classList.toggle('open', v); if (v) syncAll(); },
+    focusViews() {
+      const grid = el.querySelector('.view-grid');
+      grid?.scrollIntoView({ block: 'nearest' });
+      grid?.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    },
+    setOpen: (v) => { el.classList.toggle('open', v); syncAll(); },
     get isOpen() { return el.classList.contains('open'); },
   };
 }
