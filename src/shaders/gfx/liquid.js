@@ -348,4 +348,29 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
   *ro = hp + rt * IFACE_NUDGE + geometric * IFACE_NUDGE;
   return false;
 }
+
+// Source/Garry's Mod's glass rule: reflect the room, not a painted highlight.
+// The transmitted ray crosses the analytic crystal and continues in the world.
+fn crystalInterface(s: Shard, hp: vec3f, n: vec3f, rd: vec3f, inside: bool, liquid: i32, bend: bool, limit: f32,
+                    T: f32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) -> CrystalPath {
+  let eta = IOR(E_CRYSTAL) / select(IOR(liquid), 1.0, liquid == E_EMPTY);
+  let path = crystalPath(s, hp, rd, n, eta, SIGMA(E_CRYSTAL) * mix(0.85, 1.15, s.seed), inside, bend, limit);
+  let gi = surfProbe(hp, n);
+  gSkyIn = skyInAt(gi);
+  var sunVis = vec3f(1.0);
+  if (FU.shadows != 0u) { sunVis = sunShadowAt(hp + n * IFACE_PROBE); }
+  if (path.frontF > 0.0) {
+    var env = envReflectGI(gi, n, -rd, ROUGH(E_CRYSTAL), sunVis);
+    env = reflectTrace(hp + n * REFL_START, reflect(rd, n), env);
+    *col += *trans * path.frontF * env;
+    if (FU.lampCount > 0) {
+      let f0 = pow((eta - 1.0) / (eta + 1.0), 2.0);
+      let lit = lampShade(hp, n, n, true, LampSpecIn(-rd, ROUGH(E_CRYSTAL), vec3f(f0), s.u, 0.0, true));
+      *col += *trans * lit.spec;
+    }
+  }
+  *col += *trans * path.glow * interiorScatter(E_CRYSTAL, hp, sunVis, T);
+  *trans *= path.through;
+  return path;
+}
 `;

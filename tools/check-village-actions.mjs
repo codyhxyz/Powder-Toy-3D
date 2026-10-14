@@ -20,15 +20,16 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
 } });
 const events = new Map();
 globalThis.addEventListener = (key, fn) => events.set(key, fn);
-globalThis.document = { body: { classList: { toggle() {} } }, querySelector: () => null,
+globalThis.document = { body: { classList: { toggle() {} } }, querySelector: () => null, addEventListener() {},
   createElement: () => ({ getContext: () => ({ beginPath() {}, roundRect() {}, moveTo() {}, lineTo() {}, fill() {}, fillText() {} }) }) };
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 globalThis.__villageSpeech = { stats: { played: 0 }, muted: false, bonks: 0, swings: 0,
   speak() { this.stats.played++; }, swing() { this.swings++; }, bonk() { this.bonks++; }, stop() {} };
 const { createVillage } = await import('../src/pov/village/index.js');
 const size = [384, 128, 256], sim = { origin: new THREE.Vector3() }, world = { scene: { key: 'willowCove' }, P: { size, seed: 1 } };
-const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), size: 1, onGround: true, sprintRush: 0 };
-const camera = { look: { yaw: 0, pitch: 0 }, third: false };
+const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), size: 1, width: 2, height: 5, onGround: true, sprintRush: 0 };
+const camera = { look: { yaw: 0, pitch: 0 }, third: false,
+  forwardH(out) { return out.set(-Math.sin(this.look.yaw), 0, -Math.cos(this.look.yaw)); } };
 let active = true, picked = { valid: false }, pending = null, mode = 'animalCrossing', modal = false, tool = null, used = null, inputReleases = 0, actionReleases = 0;
 const app = { settings: { villageCharacter: 'boy' }, scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(), getSim: () => sim, getMode: () => mode, getWorld: () => world,
   getScale: () => 1, getVolume: () => ({ position: new THREE.Vector3() }), requestRender() {}, isTyping: () => false,

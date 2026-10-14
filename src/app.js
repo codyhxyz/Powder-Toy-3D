@@ -876,7 +876,8 @@ function presentationPoint(p, out = new THREE.Vector3()) {
 // grid cells (presentationMath.js inverseRay), t along the displayed ray.
 function screenCurve(ray) {
   const r = inverseRay(ray.origin.clone().add(sim.origin).toArray(), ray.direction.toArray(), presentation.parameters);
-  r.C = r.C.map((v, i) => v - sim.origin.getComponent(i));
+  const origin = sim.origin.toArray();
+  r.C = r.C.map((v, i) => v - origin[i]);
   return r;
 }
 function screenAt(ray, t, out) { return out.fromArray(rayPoint(screenCurve(ray), t)); }

@@ -762,7 +762,7 @@ export function createPov(app) {
     readInput();
     if (!canGrapple()) toolbelt?.tool('HOOK')?.cancelGrapple();
     vehicles.beforeBody(player);
-    village.beforeBody();
+    village.beforeBody(input, dt);
     player.update(dt, input);
     village.afterBody();
     vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid });
