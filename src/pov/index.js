@@ -4,6 +4,7 @@ import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_
 import { createCameraArm } from './cameraArm.js';
 import { ELEMENTS } from '../elements.js';
 import { createBody } from './figureReal.js';
+import { characterForMode } from './character.js';
 import { STICK_HAND } from './figure.js';
 import { createHeld } from './held.js';
 import { gearByKey } from './tools/catalog.js';
@@ -146,9 +147,7 @@ export function createPov(app) {
     damageScale: PLAYER_DAMAGE_TAKEN, knockback: PLAYER_KNOCKBACK, knockUp: PLAYER_KNOCK_UP,
     onHurt: (amount) => povEvents.emit('player:hit', { amount }),   // inside the attacker's povEvents.as(): carries its id
   }));
-  // Halo's four modes use armor; Siege and sandbox keep the chosen body.
-  const character = () => game.running && ['slayer', 'ctf', 'koth', 'infection'].includes(game.mode)
-    ? 'spartan' : app.settings.character;
+  const character = () => characterForMode(game.running ? game.mode : 'sandbox', app.settings.character);
   // the jeep and the hoverbike (vehicles/index.js): Rapier loads on the first one
   const vehicles = createVehicles({
     renderer, scene, hud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
@@ -216,7 +215,7 @@ export function createPov(app) {
       if (cancelled) buttons[`${name}Pressed`] = false;
     },
     wheel: (notches) => { wheelNotches += notches; },
-    kick: () => { if (mode === 'on') { if (village.enabled) void village.punch(); else kickQueued = true; } },
+    kick: () => { if (mode === 'on') { if (village.enabled) void village.kick(); else kickQueued = true; } },
     useVehicle,
   });
   const canUse = () => !village.enabled && (isLocked() || touch.enabled);   // village furniture is not a weapon

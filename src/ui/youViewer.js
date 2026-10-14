@@ -1,6 +1,5 @@
-// "This is you." live: the loading screen's player (ui/menu.js), the realistic
-// body (figureReal.js's model, public/models/character/body.glb) in his wizard
-// hat (garb.js) and purple boxers, breathing in his idle clip on a small
+// "This is you." live: the loading screen's actual player (ui/menu.js): the
+// realistic wizard, stickman, or Spartan, using the game's models on a small
 // renderer of its own. Skyrim's loading screen: the model turns slowly by
 // itself, and a click and drag turns it left or right. The menu runs it in a
 // worker on an OffscreenCanvas (ui/youWorker.js), so he keeps breathing and
@@ -41,7 +40,23 @@ export const YOU_DRAG = (2 * Math.PI) / 360;   // rad per CSS px of drag: once r
 export const YOU_YAW = 0.42;                   // rad: the still's turn, a little to screen left (where the live one starts)
 export const YOU_TIME = 0.6;                   // s into the idle clip: the still's moment
 
-export async function createYou({ canvas, width, height, pixelRatio = 1, yaw = YOU_YAW, time = YOU_TIME, preserveDrawingBuffer = false }) {
+async function loadBody(character, time) {
+  if (character !== 'real') {
+    const build = character === 'spartan'
+      ? (await import('../pov/figureSpartan.js')).buildSpartan
+      : (await import('../pov/figure.js')).buildStick;
+    const rig = build();
+    const model = rig.body;
+    model.position.y = rig.hipY;
+    model.rotation.y = Math.PI; // procedural bodies face -z; the portrait camera faces +z
+    model.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material = new THREE.MeshStandardMaterial({
+        color: new THREE.Color().setRGB(...o.userData.albedo), roughness: 0.85,
+      });
+    });
+    return { model, mixer: null };
+  }
   const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
   const model = gltf.scene;
   const meshes = [];
@@ -65,6 +80,11 @@ export async function createYou({ canvas, width, height, pixelRatio = 1, yaw = Y
   const mixer = new THREE.AnimationMixer(model);
   mixer.clipAction(gltf.animations.find((c) => c.name === 'idle')).play();
   mixer.setTime(time);
+  return { model, mixer };
+}
+
+export async function createYou({ canvas, width, height, character = 'real', pixelRatio = 1, yaw = YOU_YAW, time = YOU_TIME, preserveDrawingBuffer = false }) {
+  const { model, mixer } = await loadBody(character, time);
   const holder = new THREE.Group();   // turned about his feet; the glTF faces +z, the camera
   holder.add(model);
   const scene = new THREE.Scene();
@@ -75,11 +95,12 @@ export async function createYou({ canvas, width, height, pixelRatio = 1, yaw = Y
   // fits the frame at every yaw
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
-  for (const m of meshes) {
-    m.skeleton.update();
+  model.traverse((m) => {
+    if (!m.isMesh) return;
+    m.skeleton?.update();
     const n = m.geometry.attributes.position.count;
     for (let i = 0; i < n; i++) box.expandByPoint(m.localToWorld(m.getVertexPosition(i, v)));
-  }
+  });
   const reach = Math.max(Math.abs(box.min.x), Math.abs(box.max.x), Math.abs(box.min.z), Math.abs(box.max.z));
   const centre = new THREE.Vector3(0, (box.min.y + box.max.y) / 2, 0);
   const tall = box.max.y - box.min.y;
@@ -115,16 +136,14 @@ export async function createYou({ canvas, width, height, pixelRatio = 1, yaw = Y
     frame(dt = 0, turn = false) {
       dt = Math.min(dt, MAX_DT);
       if (turn) you.yaw += YOU_SPIN * dt;
-      mixer.update(dt);
+      mixer?.update(dt);
       holder.rotation.y = you.yaw;
       renderer.render(scene, camera);
     },
     dispose() {
-      mixer.stopAllAction();
+      mixer?.stopAllAction();
       pmrem.dispose();
       scene.environment?.dispose();
-      hatMat.dispose();
-      hat.dispose();
       model.traverse((o) => {
         o.geometry?.dispose();
         for (const m of [o.material].flat().filter(Boolean)) {
