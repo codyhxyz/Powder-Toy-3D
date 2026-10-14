@@ -11,7 +11,11 @@ assert.ok(asset.includes(Buffer.from(SPRINT_MUSIC.artist)));
 assert.equal(SPRINT_MUSIC.bpm, 172);
 
 let previous = sprintMusicProfile(0);
-assert.deepEqual(previous, { cutoffHz: 250, gain: 0 });
+assert.deepEqual(previous, { cutoffHz: 80, gain: 0 });
+for (const [rush, min, max] of [[0.2, 120, 130], [0.5, 430, 460], [0.75, 1800, 1900], [0.9, 4900, 5000]]) {
+  const { cutoffHz } = sprintMusicProfile(rush);
+  assert.ok(cutoffHz > min && cutoffHz < max, `late-opening cutoff at ${rush}: ${cutoffHz}`);
+}
 for (let i = 1; i <= 1000; i++) {
   const profile = sprintMusicProfile(i / 1000);
   assert.ok(profile.cutoffHz > previous.cutoffHz && profile.gain > previous.gain);
@@ -59,6 +63,7 @@ try {
   };
   const { ctx, input, filter, gain, sources } = fixture();
   const music = createSprintMusic(ctx, input);
+  assert.equal(filter.frequency.value, 80, 'initial filter matches the closed end of the ramp');
   assert.equal(music.stats().ready, false);
   music.update(1);
   assert.equal(sources.length, 0, 'effects startup does not wait for the music download');
