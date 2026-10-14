@@ -1,4 +1,4 @@
-import { DEVICE_TYPES, FILTER_IDS, INDUSTRY_LIMIT } from './catalog.js';
+import { DEVICE_TYPES, FILTER_IDS, INDUSTRY_LIMIT, deviceCell } from './catalog.js';
 import { E } from '../elements.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 
@@ -16,6 +16,8 @@ export function deviceSpec(value, dims) {
     const { gateMode = 'open', gateClosed = false } = value;
     if (!['open', 'closed', 'signal'].includes(gateMode) || typeof gateClosed !== 'boolean') throw new Error('Invalid gate state');
     Object.assign(out, { gateMode, gateClosed });
+    const port = deviceCell(out, -1, 0, 1);
+    if (port.some((n, i) => n < 0 || n >= dims[i])) throw new Error('Gate control port must fit inside the grid');
   }
   return out;
 }

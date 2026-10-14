@@ -43,7 +43,7 @@ async function waitFor(predicate) {
 test('control parts are a paid whitelist of existing native materials', () => {
   assert.deepEqual(CONTROL_PART_KEYS, ['TSNS', 'SWITCH', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'INSULATOR']);
   assert.deepEqual(CONTROL_PART_KEYS.map(key => CONTROL_PARTS[key].material), [E.TSNS, E.SWITCH, E.BATTERY, E.METAL, E.PSCN, E.NSCN, E.INSULATOR]);
-  assert.deepEqual(CONTROL_PART_KEYS.map(key => CONTROL_PARTS[key].cost), [3, 2, 5, 1, 1, 1, 1]);
+  assert.deepEqual(CONTROL_PART_KEYS.map(key => CONTROL_PARTS[key].cost), [3, 2, 5, 5, 1, 1, 1]);
   for (const p of Object.values(CONTROL_PARTS)) assert.ok(p.description.length > 8);
   assert.equal(CONTROL_PARTS.TSNS.defaultThreshold, 200);
   assert.deepEqual(CONTROL_PART_THRESHOLD_BOUNDS, [-273.15, 10000]);

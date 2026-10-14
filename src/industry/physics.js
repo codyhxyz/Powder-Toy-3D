@@ -83,7 +83,7 @@ export function validateIndustryPhysics(data, devices, bounds = SAVE_BOUNDS) {
   }
   return { version: 1, pumps };
 }
-const machineState = device => ({ device: { ...device }, load: new Load(16), clock: 0, drillClock: 0, blocked: 0, busy: false, metal: false });
+const machineState = device => ({ device: { ...device }, load: new Load(16), clock: 0, drillClock: 0, blocked: 0, busy: false, metal: false, shipTarget: null });
 
 /** Call step ONLY alongside native simulation advancement. No timers or writes
  * from promise callbacks. pending counts in-flight transactions (including
@@ -94,11 +94,15 @@ const machineState = device => ({ device: { ...device }, load: new Load(16), clo
  * the matching terrain snapshot separately. Neither operation accepts pending
  * transfers. reset is for WORLD REPLACEMENT, not pause, mode toggles or save.
  */
-export function createIndustryPhysics({ getSim, onShip = () => {}, onError = console.error }) {
+export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = () => {}, onError = console.error }) {
   let sim = null, kernel = null, transfer = null, epoch = 0, disposed = false;
   let ready = Promise.resolve(), built = false, cursor = 0;
   let nativeFrame = null;
   const states = new Map();
+  function confirmedTransfer(device, event) {
+    try { onTransfer({ device: { ...device }, confirmed: true, ...event }); }
+    catch (error) { onError(error); }
+  }
   function reset() {
     epoch++;
     states.clear(); // detached Load objects may finish; no stale callback earns credit
@@ -147,14 +151,19 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
   }
   function ship(s, d) {
     const id = s.metal ? E.METAL : E.NUGGETS;
+    s.shipTarget = id;
     const p = transfer.take(s.load, { cells: machinePorts(d).mouth, kinds: [K.POWDER, K.SOLID],
       want: id, maxTemperature: id === E.METAL ? CASTING_TEMPERATURE : 1e30, guard: machineGuard(d), limit: 16 });
     if (track(s, p, got => {
-      // Credit only the actual atomically removed cells, never an estimate or
-      // a pre-read. Preserve exact per-cell temperature for progression.
+      // Credit and diagnostic evidence use only the actual atomically removed
+      // cells, never an estimate or a pre-read. Preserve each cell's temperature.
       s.load.cells.length = 0;
       s.load.version++;
-      for (const c of got) onShip({ id: c[0], count: 1, temperature: c[1] });
+      for (const c of got) {
+        const shipment = { id: c[0], count: 1, temperature: c[1] };
+        onShip(shipment);
+        confirmedTransfer(d, { operation: 'ship', ...shipment });
+      }
     })) { s.metal = !s.metal; s.clock = 0; }
   }
   function pump(s, active) {
@@ -166,10 +175,15 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
       const spill = !active || s.blocked >= 1;
       const cells = spill ? region(d, -1, 4, 1, 3, -2, 3) : ports.outlet;
       const p = transfer.put(s.load, { cells, max: 8, guard: spill ? null : machineGuard(d), vel: [0, 0, 0] });
-      if (track(s, p, n => { if (n) s.blocked = 0; })) s.clock = 0;
+      if (track(s, p, n => {
+        if (n) { s.blocked = 0; confirmedTransfer(d, { operation: 'pump-output', count: n }); }
+      })) s.clock = 0;
     } else if (active) {
       const p = transfer.take(s.load, { cells: ports.inlet, kinds: [K.LIQUID], guard: machineGuard(d), limit: 8 });
-      if (track(s, p, () => { s.blocked = 0; })) s.clock = 0;
+      if (track(s, p, got => {
+        s.blocked = 0;
+        if (got.length) confirmedTransfer(d, { operation: 'pump-input', count: got.length });
+      })) s.clock = 0;
     }
   }
   function step(dt, devices) {
@@ -256,6 +270,13 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
   return {
     get ready() { bind(); return ready; }, step,
     get pending() { return pending(); },
+    // Read-only target for the currently inspected intake; mutable alternation
+    // state remains private to the native transfer dispatcher.
+    expectedShipId(id) {
+      const state = [...states.values()].find(s => s.device.type === 'ship' && s.device.id === id);
+      if (!state) return E.NUGGETS;
+      return state.busy && state.shipTarget !== null ? state.shipTarget : state.metal ? E.METAL : E.NUGGETS;
+    },
     get buffered() { return [...states.values()].reduce((n, s) => n + s.load.cells.length, 0); },
     toJSON, fromJSON,
     reset,

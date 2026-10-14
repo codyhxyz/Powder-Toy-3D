@@ -13,7 +13,7 @@ export const CONTROL_PARTS = Object.freeze({
     description: 'A native SWCH relay; toggle this real cell on or off.' }),
   BATTERY: Object.freeze({ key: 'BATTERY', material: E.BATTERY, cost: 5, name: 'Battery',
     description: 'A native battery that energizes touching conductors.' }),
-  METAL: Object.freeze({ key: 'METAL', material: E.METAL, cost: 1, name: 'Metal conductor',
+  METAL: Object.freeze({ key: 'METAL', material: E.METAL, cost: 5, name: 'Metal conductor',
     description: 'Existing metal cell; carries native sparks and melts normally.' }),
   PSCN: Object.freeze({ key: 'PSCN', material: E.PSCN, cost: 1, name: 'P-type silicon',
     description: 'Native P-type conductor for switching and signal wiring.' }),
@@ -211,6 +211,12 @@ export function createFactoryControlParts({ getSim }) {
     place,
     toggle,
     get pending() { return pendingCount; },
+    reset() {
+      if (disposed) return;
+      // Fence queued/readback completions across scene replacement, even when
+      // the application reuses the same Sim object for the new terrain.
+      epoch++; sim = null; context = null; bindFailure = '';
+    },
     dispose() { if (disposed) return; disposed = true; epoch++; sim = null; context = null; },
   };
 }
