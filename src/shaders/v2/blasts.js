@@ -21,7 +21,12 @@ export const externalParticleBase = g => externalBlastBase(g) + EXTERNAL_BLAST_C
 export const externalAirBase = g => externalParticleBase(g) + PARTICLE_CAP*4;
 export const externalMaskBase = g => externalAirBase(g) + g.nbricks + 1;
 export const externalMaskWords = g => { const {width,height}=atlasDims(g);return Math.ceil(width*height/4); };
-export const controlWords = g => externalMaskBase(g) + externalMaskWords(g);
+// Ephemeral allocation metadata follows every persisted/external range. Counts
+// become exclusive bases in-place; never alias the final per-particle prefixes.
+export const ALLOCATION_CHUNKS = PARTICLE_CAP / 64;
+export const allocationScratchBase = g => externalMaskBase(g) + externalMaskWords(g);
+export const controlWords = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
+export const ALLOCATION_STAGES = ['freeCount','freeScan','freeScatter'];
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
 function head(g, nativeHead) {
@@ -357,16 +362,60 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     for (var s=t*64u;s<(t+1u)*64u;s++) { if ((plans[s].flags&1u)!=0u && (P.mode!=13u || dInBody(cellOf(s)))) { n++; } }
     atomicStore(&control[D_SPAWN_COUNTS+t],n);
   `);
-  if (stage === 'allocate') return h + main1(`
-    var free=0u; var children=0u;
-    for (var i=0u;i<D_CAP;i++) {
-      if (particles[i].id==0u) { atomicStore(&control[D_FREE+free],i); free++; }
-      atomicStore(&control[D_CHILD_PREFIX+i],D_NONE);
-      if (particles[i].id!=0u && particles[i].c0==D_NEUTRON && particles[i].tail.z>0u) {
-        atomicStore(&control[D_CHILD_PREFIX+i],children); children+=particles[i].tail.z;
-      }
+  if (stage === 'freeCount') return h + `
+var<workgroup> freeMasks: array<atomic<u32>,2>;
+var<workgroup> childSum: atomic<u32>;
+` + main64(`
+    // Exactly D_CAP/64 workgroups: every lane owns one canonical pool slot.
+    if(li==0u) { atomicStore(&freeMasks[0],0u); atomicStore(&freeMasks[1],0u); atomicStore(&childSum,0u); }
+    workgroupBarrier();
+    let particle=particles[t];
+    if(particle.id==0u) { atomicOr(&freeMasks[li/32u],1u<<(li&31u)); }
+    if(particle.id!=0u && particle.c0==D_NEUTRON && particle.tail.z>0u) { atomicAdd(&childSum,particle.tail.z); }
+    workgroupBarrier();
+    if(li==0u) {
+      let base=${allocationScratchBase(g)}u+(t/64u)*2u;
+      atomicStore(&control[base],countOneBits(atomicLoad(&freeMasks[0]))+countOneBits(atomicLoad(&freeMasks[1])));
+      atomicStore(&control[base+1u],atomicLoad(&childSum));
     }
-    atomicStore(&control[4],free); var total=0u;
+  `);
+  if (stage === 'freeScan') return h + main1(`
+    var free=0u; var children=0u;
+    for(var chunk=0u;chunk<${ALLOCATION_CHUNKS}u;chunk++) {
+      let base=${allocationScratchBase(g)}u+chunk*2u;
+      let freeCount=atomicLoad(&control[base]); let childCount=atomicLoad(&control[base+1u]);
+      atomicStore(&control[base],free); atomicStore(&control[base+1u],children);
+      free+=freeCount; children+=childCount; // Preserve the old u32 modular sum.
+    }
+    atomicStore(&control[4],free);
+  `);
+  if (stage === 'freeScatter') return h + `
+var<workgroup> freeMasks: array<atomic<u32>,2>;
+var<workgroup> childCounts: array<u32,64>;
+` + main64(`
+    if(li==0u) { atomicStore(&freeMasks[0],0u); atomicStore(&freeMasks[1],0u); }
+    workgroupBarrier();
+    let particle=particles[t];
+    let eligible=particle.id!=0u && particle.c0==D_NEUTRON && particle.tail.z>0u;
+    childCounts[li]=select(0u,particle.tail.z,eligible);
+    if(particle.id==0u) { atomicOr(&freeMasks[li/32u],1u<<(li&31u)); }
+    workgroupBarrier();
+    let base=${allocationScratchBase(g)}u+(t/64u)*2u;
+    if(particle.id==0u) {
+      let before=(1u<<(li&31u))-1u;
+      var rank=countOneBits(atomicLoad(&freeMasks[li/32u])&before);
+      if(li>=32u) { rank+=countOneBits(atomicLoad(&freeMasks[0])); }
+      atomicStore(&control[D_FREE+atomicLoad(&control[base])+rank],t);
+    }
+    var prefix=D_NONE;
+    if(eligible) {
+      prefix=atomicLoad(&control[base+1u]);
+      for(var lane=0u;lane<li;lane++) { prefix+=childCounts[lane]; }
+    }
+    atomicStore(&control[D_CHILD_PREFIX+t],prefix);
+  `);
+  if (stage === 'allocate') return h + main1(`
+    var total=0u;
     for (var b=0u;b<D_BRICKS;b++) { atomicStore(&control[D_SPAWN_PREFIX+b],total); total+=atomicLoad(&control[D_SPAWN_COUNTS+b]); }
     atomicStore(&control[5],total);
   `);
@@ -481,7 +530,7 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = ['reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

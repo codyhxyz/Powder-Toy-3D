@@ -56,7 +56,8 @@ test('allocation is canonical prefix, honest overflow, actual accepted face gate
   const code=jetsWGSL(gridLayout(32,32,32),'allocate');
   assert.equal(CONTROL.FREE_LIST,32);
   assert.match(code,/const D_FREE: u32 = 32u/);
-  assert.match(code,/requested-free/);assert.match(code,/control\[D_FREE\+free\],i/);
+  assert.match(code,/requested-free/);assert.match(code,/let free=atomicLoad\(&control\[4\]\)/);
+  assert.doesNotMatch(code.slice(code.lastIndexOf('@compute')),/particles\[/);
   const spawn=jetsWGSL(gridLayout(32,32,32),'spawn');
   assert.match(spawn,/rank<atomicLoad\(&control\[4\]\)/);assert.match(spawn,/accepted\|=1u<<f/);
   assert.match(liquidTransportWGSL,/energyPacketFits\(src, dst, heat, n\)/);

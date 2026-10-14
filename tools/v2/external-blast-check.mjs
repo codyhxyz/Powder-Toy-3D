@@ -18,7 +18,7 @@ const commands=[], writes=[];
 const make=({size,label})=>({size,label,bytes:new ArrayBuffer(size),destroy(){}});
 const write=(b,at,a)=>{writes.push(b.label);new Uint8Array(b.bytes).set(new Uint8Array(a.buffer,a.byteOffset,a.byteLength),at);};
 const gpu={createBuffer:make,queue:{writeBuffer:write},write,layout:(_n,e)=>e,bindGroup:(_l,e)=>e,
-  kernel:({name,code})=>({name,code,ready:Promise.resolve(),dispatch(_f,_n,o){commands.push({name,p:o.params});}}),
+  kernel:({name,code,params})=>({name,code,ready:Promise.resolve(),dispatch(_f,_n,o){params.pack(o.params);commands.push({name,p:o.params});}}),
   frame:{clear(b,at=0,n=b.size-at){new Uint8Array(b.bytes,at,n).fill(0);},copy(){}},
   readback:{buffer:(b,at,n)=>Promise.resolve(b.bytes.slice(at,at+n))}};
 const g=gridLayout(16,8,8),sim=Object.assign(Object.create(Simulation.prototype),{
@@ -39,8 +39,8 @@ mask[12]=0;const selection=d.externalBlasts.get(5).selection;
 assert.equal(new Uint8Array(selection.maskWords.buffer)[12],255,'queued masks own immutable bytes');
 assert.deepEqual(selection.end,[9,4,4]);assert.deepEqual(selection.grow,[2,1,0]);assert.equal(selection.filter,E.SAND);
 assert.deepEqual(selection.lo,[1,1,1]);assert.deepEqual(selection.hi,[6,6,6]);
-const stages=commands.slice(0,13).map(c=>c.name.split('_')[1]);
-assert.deepEqual(stages,['externalBegin','workArgs','plan','externalParticlePlan','sum','normalize','damagePlan','count','allocate','externalGate','externalParticleApply','apply','finish']);
+const stages=commands.slice(0,16).map(c=>c.name.split('_')[1]);
+assert.deepEqual(stages,['externalBegin','workArgs','plan','externalParticlePlan','sum','normalize','damagePlan','count','freeCount','freeScan','freeScatter','allocate','externalGate','externalParticleApply','apply','finish']);
 // Completion flags stay GPU-authoritative across repeated recordings, snapshots,
 // and restores. No readback is required between a blast and the next tick.
 const flags=new Uint32Array(d.control.bytes);flags[externalBlastBase(g)]=1;

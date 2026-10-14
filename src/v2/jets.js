@@ -22,6 +22,7 @@ export class NativeJets {
     const o=this.owner;
     for(const stage of JET_STAGES) {
       const count=stage==='allocate'?1:Math.ceil((stage==='count'?o.g.nbricks:o.g.slots)/64);
+      if(stage==='allocate') o.dynamics._prepareAllocation(tick,{substep});
       const k=this.kernels[stage];
       k.dispatch(o.gpu.frame,fold(count),{bind:[o.nativeDynamics.group,this.group],header:o.sim.header(),params:o.dynamics._params(tick,{substep})});
       o.sim.onPass?.(k.name,{kind:'compute',gpuMs:null});

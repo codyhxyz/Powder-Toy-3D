@@ -73,7 +73,7 @@ in J; density uses the existing element density table (100kg/m³ per unit).
 Default batch8, configurable1..64, bounds recording work. For1000 immediately
 eligible sources, ideal service latency is125 ticks (2.0833s) at default,
 16 ticks (0.2667s) at64; real chains/blocked capacity can take longer. This is
-NOT a claim of dense-explosion timing parity. Empty batch work is indirect-dispatched at zero workgroups; selection still scans events. Fixed-cap allocation scans and active full-grid plans remain a performance risk requiring parent-owned GPU evidence. Plans and claims each cost16B/cell, below128MiB/binding at6.3M cells.
+NOT a claim of dense-explosion timing parity. Empty batch work is indirect-dispatched at zero workgroups; selection still scans events. Allocation preparation runs directly even for empty indirect batches (see below). Active full-grid plans remain a performance risk requiring parent-owned GPU evidence. Plans and claims each cost16B/cell, below128MiB/binding at6.3M cells.
 
 Air is32B per4³ brick in two copies. Eight60Hz substeps use50m/s acoustic
 Rusanov exchange plus bounded conservative upwind/diffusive heat/gas transport.
@@ -82,6 +82,51 @@ Face openness comes from the actual two cell faces. The CFL budget is explicit;
 Gas events add one bounded1/64-brick source exactly once. Heat/gas scalars are
 not erased at sleep. Native gas drift swaps the complete Material in disjoint
 pairs. Surface wind lift and unsupported liquid jets feed the same allocator.
+
+### Parallel canonical pool preparation
+
+Both blast and liquid-jet allocators use `freeCount → freeScan → freeScatter`
+immediately before their unchanged per-brick request prefix pass. The blast
+`_record` hook covers ordinary/indirect batches, custom external blasts, body
+coupling, tools and air lift; jets call the same required helper after counting.
+Ray emission retains its existing serial lowest-free-slot behavior; later pool
+preparation sees those emitted slots. All three pipelines build idle and are
+included in dynamics readiness. No capacity, fixture or physics rule changes.
+
+- Count: 1024 workgroups of64 slots build two free masks and an atomic modular
+  neutron-child sum per chunk. Eligibility is exactly nonzero ID, **full**
+  `c0 == D_NEUTRON` (not masked material ID), and positive pending children.
+- Scan: one invocation scans only1024 chunks, replacing counts with exclusive
+  free/child bases in tail storage. It writes `control[4]` (total free slots).
+- Scatter: each workgroup recomputes free masks and64 child counts. Popcount of
+  earlier lanes gives free rank; summing preceding workgroup child counts gives
+  local child prefix. It writes free slots and final per-particle child prefixes
+  without modifying particles, core, events or the chunk bases.
+
+**Canonical parity:** chunk exclusive base plus lane exclusive rank equals the
+old serial count before that exact slot. Every free destination has one writer
+and slots remain ascending; every child prefix has one writer. Child addition
+is associative modulo2³², preserving overflow and the existing `0xffffffff`
+sentinel behavior exactly. Scatter metadata never aliases final child prefixes,
+so arbitrary workgroup arrival order cannot change a base while another reads it.
+The unchanged consumers retain grid-before-child service (child ranks start at
+requested grid count, not accepted count), lowest-slot selection, held-slot
+clearing, backpressure and all-or-nothing external-blast gating/completions.
+
+**Scratch/save ABI:** append2048 u32 (8192 bytes) at
+`externalMaskBase(g) + externalMaskWords(g)` in the existing control buffer.
+Each chunk uses two words (free and child counts, then bases). All prior offsets,
+buffers, eight-storage binding layouts and persisted fields are unchanged. Saves
+still capture only the first32 control words plus explicit held/shock/request and
+external fields; this tail is ephemeral and overwritten before use.
+
+**Unmeasured costs:** this replaces each allocator's serial65536-slot scan with
+three dispatches and a serial1024-chunk scan, not less simulation work or a
+smaller pool. It reads the pool twice, adds workgroup masks/child reductions and
+writes child prefixes even for jets. Direct preparation also runs before empty
+indirect batches: bounded extra dispatch/cache/memory traffic may offset gains
+in sparse scenes. GPU execution, parity and performance remain parent-owned;
+CPU models and Naga validation alone establish no timing improvement.
 
 ## Save / shift
 
@@ -102,6 +147,10 @@ memory grows with explored active air; compression/eviction is not implemented.
 
 ## Checks
 
+- `node --test tools/v2/allocation-check.mjs`: all65536 records compared with an
+  independent serial oracle (empty/full/alternating/sparse/children/u32 wrap),
+  backpressure/held/external retries, strict real-driver ordering/readiness and
+  appended-scratch ABI. CPU models do not execute WGSL.
 - `node --test tools/v2/dynamics-check.mjs`: packing, range, DDA, claims,
   capacity conservation, shielded budgets, toughness/liquid exclusion,
   scalar conservation/CFL/sleep/wake, recording ABI, atomic restore, shift.

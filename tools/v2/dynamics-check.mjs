@@ -91,7 +91,7 @@ function mockOwner() {
   const copy=(b,offset,src)=>{ const u=src instanceof ArrayBuffer?new Uint8Array(src):new Uint8Array(src.buffer,src.byteOffset,src.byteLength);new Uint8Array(b.bytes).set(u,offset); };
   const gpu={createBuffer:({size,label})=>{const b={size,label,bytes:new ArrayBuffer(size),destroy(){this.destroyed=true;}};buffers.push(b);return b;},
     queue:{writeBuffer:copy},write:copy,layout:(_name,l)=>l,bindGroup:(_l,b)=>b,
-    kernel:d=>({name:d.name,ready:Promise.resolve(),dispatch:(frame,size,opts)=>calls.push({name:d.name,size,opts})}),
+    kernel:d=>({name:d.name,ready:Promise.resolve(),dispatch:(frame,size,opts)=>{d.params.pack(opts.params);calls.push({name:d.name,size,opts});}}),
     frame:{clear:(b,offset=0,size=b.size-offset)=>new Uint8Array(b.bytes,offset,size).fill(0),
       copy:(src,offset,dest,to,size)=>new Uint8Array(dest.bytes,to,size).set(new Uint8Array(src.bytes,offset,size))},
     readback:{buffer:(b,offset,size)=>{calls.push({read:b.label});return Promise.resolve(b.bytes.slice(offset,offset+size));}}};

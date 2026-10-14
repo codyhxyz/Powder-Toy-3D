@@ -6,7 +6,7 @@ import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase } from '../shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES } from '../shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
 
@@ -116,7 +116,7 @@ export class NativeDynamics {
     this.kernels={};
     for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && stage==='holdCOM');
+        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && stage==='holdCOM');
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -141,8 +141,15 @@ export class NativeDynamics {
     return {busyIn,busyOut,...nativeModes(this.owner.sim),tick,nativeJets:+(this.owner.jets?.isReady===true),origin:vector(this.owner.sim.origin),sequence:this.sequence,...extra};
   }
   _check() { if (!this.isReady || this.disposed) throw new Error('NativeDynamics is not ready'); }
+  _prepareAllocation(tick,params={}) {
+    for(const stage of ALLOCATION_STAGES) this._record('blasts',stage,stage==='freeScan'?1:PARTICLE_CAP/64,tick,params);
+  }
   _record(family,stage,count,tick,params={}) {
-    this._check(); const k=this.kernels[`${family}/${stage}`];
+    this._check();
+    // Central hook also covers custom external-blast sequences and indirect
+    // batches. Preparation is direct even when the following batch is empty.
+    if(family==='blasts' && stage==='allocate') this._prepareAllocation(tick,params);
+    const k=this.kernels[`${family}/${stage}`];
     k.dispatch(this.gpu.frame,typeof count==='number'?fold(count):count,{bind:[this.owner.nativeDynamics.group,this.groups[family][this.airIndex]],
       header:this.owner.sim.header?.(),params:this._params(tick,params)});
     this.owner.sim.onPass?.(k.name,{kind:'compute',gpuMs:null});

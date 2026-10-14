@@ -54,9 +54,7 @@ export function jetsWGSL(g,stage) {
     atomicStore(&control[J_COUNTS+t],count);
   `);
   if(stage==='allocate') return h+main1(`
-    var free=0u;
-    for(var i=0u;i<D_CAP;i++) { if(particles[i].id==0u) { atomicStore(&control[D_FREE+free],i); free++; } }
-    atomicStore(&control[4],free); var requested=0u;
+    let free=atomicLoad(&control[4]); var requested=0u;
     for(var b=0u;b<D_BRICKS;b++) { atomicStore(&control[J_PREFIX+b],requested); requested+=atomicLoad(&control[J_COUNTS+b]); }
     atomicStore(&control[5],requested);
     if(requested>free) { atomicAdd(&control[7],requested-free); }

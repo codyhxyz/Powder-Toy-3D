@@ -43,7 +43,7 @@ test('real driver shares canonical pool and records every jet stage between snap
   assert.equal(owner.groups.liquid.entries.find(e=>e.binding===5).resource.buffer,owner.liquidScratch,'same scratch allocation reused');
   for(let substep=0;substep<SUB;substep++) {
     const candidate=commands.findIndex(c=>c.name==='v2jets_candidate'&&c.params.substep===substep);
-    assert.deepEqual(names.slice(candidate-1,candidate+5),['v2limit','v2jets_candidate','v2jets_count','v2jets_allocate','v2jets_spawn','v2gather']);
+    assert.deepEqual(names.slice(candidate-1,candidate+8),['v2limit','v2jets_candidate','v2jets_count','v2blasts_freeCount','v2blasts_freeScan','v2blasts_freeScatter','v2jets_allocate','v2jets_spawn','v2gather']);
     const jet=commands[candidate];assert.equal(jet.bind[0],owner.nativeDynamics.group);assert.equal(jet.bind[1],owner.jets.group);
     assert.deepEqual(jet.params.origin,sim.origin);
   }
