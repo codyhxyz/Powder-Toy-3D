@@ -6,6 +6,7 @@ import { MELEE_SOURCES } from './constants.js';
 import { lookOf } from './wands/look.js';
 import { PLAYER } from './targets.js';
 import { gridSpace } from './space.js';
+import { createSprintMusic } from './sprintMusic.js';
 
 // POV sound. Every noise in first person comes from an event (docs/pov.md,
 // "Gunplay v2"): the gun, the tools and the shell announce what happened on
@@ -342,7 +343,7 @@ function makeLoopable(s, sampleRate) {
 
 // ---- module state (one POV, one sound system), read by stats()
 const S = {
-  started: false, ctx: null, listener: null, lowpass: null,
+  started: false, ctx: null, listener: null, lowpass: null, sprintMusic: null,
   buffers: new Map(),            // preset or sample name → AudioBuffer[] (a sample's once its takes have loaded)
   lastTake: new Map(),           // sample name → the take played last (never twice running)
   positional: [], flat: [],      // voice pools: { audio, at: Vector3|null, name, t }
@@ -351,7 +352,7 @@ const S = {
   underwater: false, filterHz: OPEN_HZ, master: 0,
 };
 
-// (camera, grid → world) are the app's; state() → { active, player, toolbelt } is the shell's.
+// (camera, grid → world) are the app's; state() → { active, player, toolbelt, sprintMusic } is the shell's.
 export function createPovAudio({ camera, getVolume, getScale, state }) {
   let starting = false, gestured = false;
   let zz = null;
@@ -399,6 +400,8 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         audio.gain.gain.value = 0;
         S.loops[name] = { audio, on: false };
       }
+      S.sprintMusic = createSprintMusic(ctx, listener.getInput());
+      S.buffers.set('sprintMusic', [S.sprintMusic.buffer]);
       if (ctx.state !== 'running') ctx.resume().catch(() => {});
       S.started = true;
       warmUp();
@@ -520,7 +523,10 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       a.stop(LOOP_FADE_S * LOOP_STOP_AFTER);
     }
   }
-  const stopLoops = () => { for (const name of LOOPS) loop(name, false); };
+  const stopLoops = () => {
+    for (const name of LOOPS) loop(name, false);
+    S.sprintMusic?.update(0, false);
+  };
 
   // ---- events
   const live = () => S.started && state().active;
@@ -771,7 +777,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
       const pl = s.player;
       const rush = s.active && !document.hidden && pl && !pl.dead ? pl.sprintRush ?? 0 : 0;
-      const windGain = 0.7 * rush * rush;
+      S.sprintMusic.update(rush, s.sprintMusic !== false);
+      // Leave space for the break/bass; retain the original wind-only mix when disabled.
+      const windGain = (s.sprintMusic !== false ? 0.22 : 0.7) * rush * rush;
       loop('sprintWind', windGain > 0.001, { gain: windGain });
       if (S.loops.sprintWind.on) {
         const a = S.loops.sprintWind.audio;
@@ -832,6 +840,7 @@ export function stats() {
     played: S.played,
     seq: S.seq,
     loops: Object.fromEntries(Object.entries(S.loops).map(([k, l]) => [k, l.on])),
+    sprintMusic: S.sprintMusic?.stats() ?? null,
     underwater: S.underwater,
     filterHz: S.filterHz,
     filterNowHz: S.lowpass ? Math.round(S.lowpass.frequency.value) : 0,
