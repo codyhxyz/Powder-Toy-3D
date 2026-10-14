@@ -94,7 +94,8 @@ export default {
       if (!reach) return false;
       rig.hit(HIT.LASER);
       muzzle.updateWorldMatrix(true, false);
-      const muzzleWorld = hand.visible ? muzzle.getWorldPosition(new THREE.Vector3()) : null;
+      const muzzleWorld = env.getMuzzleWorld?.('LASER')
+        ?? (hand.visible && !povEvents.actor ? muzzle.getWorldPosition(new THREE.Vector3()) : null);
       const shot = { from, dir, muzzleWorld, actor: povEvents.actor, simId: sim.id, reach: null, stopId: -1 };
       shots.push(shot);
       reach.then((r) => { shot.reach = Math.min(Math.max(r.reach, 0), LASER.LENGTH); shot.stopId = r.stopId; },
