@@ -37,7 +37,7 @@ const EMBER_MAX = 90;             // a torch's embers (held and lying)
 const MOTE_MAX = 220;             // the laser's motes: drawn in while it charges, shed off the beam
 
 // ---- muzzle flash
-const FLASH_LIFE = 0.055;               // s
+const FLASH_LIFE = 0.025;               // s: a brief Halo-style muzzle pop, not a sustained flame
 const FLASH_SIZE = 0.55;                // cells across, the main bloom
 const FLASH_CORE_SIZE = 0.3;             // cells across, the hot core
 const FLASH_FORWARD = 0.2;              // cells ahead of the muzzle the main bloom sits
@@ -47,7 +47,7 @@ const FLASH_EMBERS = 5;                 // sparks thrown out of the muzzle
 const FLASH_EMBER_SPEED = [18, 34];     // cells/s along the aim
 const FLASH_EMBER_SPREAD = 0.35;        // share of the speed thrown sideways at most
 const FLASH_LIGHT_COLOR = 0xffb35a;
-const FLASH_LIGHT_TIME = 0.06;          // s, fading linearly
+const FLASH_LIGHT_TIME = 0.025;         // s, fading with the flash
 const FLASH_LIGHT_GAIN = 6;             // illuminance at one cell from the muzzle (scale-free)
 const FLASH_LIGHT_RANGE = 14;           // cells: no light beyond this
 
