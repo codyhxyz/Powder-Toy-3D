@@ -67,6 +67,9 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       const projection=worldSunProjection(size,direction);
       const wanted=worldSunBoundsTiles(projection,receiverBounds,2+2*WORLD_SUN_PITCH+SUN_TAN_RADIUS*(projection.depth[0]-projection.depth[1]));
       if(!wanted.length) return Object.freeze({status:'no-receivers',snapshot:snapshot()});
+      // The caller may clear/reuse its dirty accumulator as soon as prepare
+      // returns a promise. Capture physical tile meaning before any await.
+      const changedTiles=changedWorldBounds===undefined?null:new Set(worldSunBoundsTiles(projection,changedWorldBounds,8+2*WORLD_SUN_PITCH));
       input=await sourceFieldSnapshotProvider.acquire(); alive();
       if(id!==serial||!sourceFieldSnapshotProvider.isCurrent(input)) {releaseInputs();return Object.freeze({status:'stale'});}
       if(!input?.release||!Array.isArray(input.worldSize)||!equal(input.worldSize,size)||!Number.isInteger(input.epoch)||input.epoch<1||input.epoch>0xffffffff||input.source?.contentToken===undefined||input.source.sourceRevision===undefined||input.field?.publishedToken===undefined||input.field.complete!==true||input.field.sourceRevision!==input.source.sourceRevision||(!Number.isInteger(input.field.logicalFieldTick)||input.field.logicalFieldTick<0))throw new Error('complete consistent pinned source/field publication required');
@@ -100,7 +103,7 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       const first=borrowed.map((entries,i)=>group(i,entries));
       const feedbackGroup=group(3,[{binding:1,resource:{buffer:requests}}]);
       const slots=new Map(wanted.map((i,slot)=>[i,slot]));
-      const dirty=changedWorldBounds===undefined||changeBaseToken!==active?.token?null:new Set(worldSunBoundsTiles(projection,changedWorldBounds,8+2*WORLD_SUN_PITCH));
+      const dirty=changeBaseToken!==active?.token?null:changedTiles;
       // A supplied changed set is a complete semantic source AND field delta,
       // never an ownership/residency delta. New content without it rebuilds all.
       const reusable=active&&equal(key,active.key);

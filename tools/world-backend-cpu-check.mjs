@@ -5,7 +5,7 @@ import {test} from 'node:test';
 import {readFileSync,writeFileSync,mkdtempSync,rmSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {WGSL_CHECK as boxChecks,volumeFrag,pickFrag,VOLUME_LAYOUTS,PICK_LAYOUTS,REALISTIC_LEVELS,SHADOW_LAYOUTS} from '../src/shaders/render.js';
+import {WGSL_CHECK as boxChecks,volumeFrag,pickFrag,PickParams,VOLUME_LAYOUTS,PICK_LAYOUTS,REALISTIC_LEVELS,SHADOW_LAYOUTS} from '../src/shaders/render.js';
 import {WGSL_CHECK as worldChecks} from '../src/shaders/worldRender.js';
 import {lib} from '../src/shaders/gfx/lib.js';
 import {tableLayout} from '../src/shaders/common.js';
@@ -141,6 +141,12 @@ function fakeGPU(){
 const I=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
 test('actual world assembly, immutable frame conversion, view/pick resources and feedback lifetime',async()=>{
   const gpu=fakeGPU(),g={nx:128,ny:128,nz:128,sourceAppearance:true},sun=worldSunProjection([128,128,128],[1,.01,0]);
+  const compilePick=gpu.device.createComputePipelineAsync;
+  let finishPick;
+  gpu.device.createComputePipelineAsync=async d=>{
+    await new Promise(resolve=>{finishPick=resolve;});
+    return compilePick(d);
+  };
   const extra=worldSunFeedbackWords(sun.tiles);
   const atlas=new WorldRenderAtlas(gpu,{worldSize:[128,128,128],initialCapacity:1,feedbackExtraWords:extra,retire:fn=>fn()});
   const appearance=createWorldAppearance(gpu,{words:new Uint32Array([0x80000000,0x7fc12345,0xffffffff,0x12345678]),width:2,depth:1});
@@ -151,7 +157,7 @@ test('actual world assembly, immutable frame conversion, view/pick resources and
   assert.ok(Object.isFrozen(manifestSnapshot.sunManifest.params.depth));
   assert.notEqual(manifestSnapshot.sunManifest.params.depth,lighting.params.depth);
   assert.equal(manifestSnapshot.sunManifest.book,lighting.book);manifestSnapshot.release();
-  const volume=createWorldVolume(gpu,{g,atlas,tables:gpu.device.createBuffer({size:tableLayout().Tables.size}),lighting,appearance});await volume.ready;
+  const volume=createWorldVolume(gpu,{g,atlas,tables:gpu.device.createBuffer({size:tableLayout().Tables.size}),lighting,appearance});
   const original={cam:[200,20,30],viewProj:I,model:I,lampPos:[[1,2,3,4]],wandLightPosition:[[5,6,7,8]],digMin:[1,2,3,.5],digMax:[2,3,4,1],beacon:[100,100,100,10]};
   const before=JSON.stringify(original);const converted=worldFrameValues(original,[1536,0,512]);assert.deepEqual(converted.lampPos[0],[1537,2,515,4]);assert.deepEqual(converted.wandLightPosition[0],[1541,6,519,8]);assert.deepEqual(converted.cam,original.cam);assert.deepEqual(converted.beacon,original.beacon);assert.equal(JSON.stringify(original),before);
   const candidate=volume.prepare({frameUniforms:original,physicsOrigin:[1536,0,512],params:{meshInv:I,meshRes:[1,1],meshCut:0,marchNear:0,aerCopy:0,deco:1,warpK:0,warpAnchor:[0,0],warpDir:[0,1]},external:{mediaNoise:{},packedMesh:{}}});
@@ -159,7 +165,15 @@ test('actual world assembly, immutable frame conversion, view/pick resources and
   await candidate.draw(pass);assert.deepEqual(log,['pipe',0,1,2,3,14]);
   await candidate.draw(pass,{view:'heat',curved:true});assert.equal(log.at(-1),3);
   const encoder={beginComputePass(){return {...pass,dispatchWorkgroups:n=>log.push(['dispatch',n]),end:()=>log.push('end')};}};
-  await candidate.recordPick(encoder,{params:{ro:[[1,2,3,0]],rd:[[1,0,0,0]],warp:[[0,0,0,1]],slot:[[0,0,0,0]],n:1},output:gpu.device.createBuffer({size:32})});assert.equal(log.at(-1),'end');
+  const pickParams={ro:[[1,2,3,0]],rd:[[1,0,0,0]],warp:[[0,0,0,1]],slot:[[0,0,0,0]],n:1};
+  const picking=candidate.recordPick(encoder,{params:pickParams,output:gpu.device.createBuffer({size:32})});
+  pickParams.ro[0][0]=123;pickParams.slot[0][0]=99;pickParams.n=8;
+  finishPick();await picking;await volume.ready;
+  assert.equal(log.at(-1),'end');
+  const recordedPick=new DataView(gpu.buffers.find(b=>b.label==='world pick params').data.buffer);
+  assert.equal(recordedPick.getFloat32(PickParams.offsets.ro,true),1);
+  assert.equal(recordedPick.getUint32(PickParams.offsets.slot,true),0);
+  assert.equal(recordedPick.getUint32(PickParams.offsets.n,true),1);
   const words=new Uint32Array(atlas.feedbackBytes/4);assert.equal(candidate.decodeFeedback(words).incomplete,false);
   words[0]=1;words[atlas.bookLayout.requestBytes/4]=1;words[atlas.bookLayout.requestBytes/4+1]=2;
   words[3*atlas.bookLayout.planeWords]=4;words[5*atlas.bookLayout.planeWords]=8;
@@ -174,7 +188,11 @@ test('actual world assembly, immutable frame conversion, view/pick resources and
   assert.throws(()=>volume.prepare({frameUniforms:original,physicsOrigin:[0,0,0],lighting:{}}),/publication/);
   const stale=volume.prepare({frameUniforms:original,physicsOrigin:[0,0,0],params:{meshInv:I,meshRes:[1,1]},external:{mediaNoise:{},packedMesh:{}}});
   atlas.reset();await assert.rejects(()=>stale.draw(pass),/stale world candidate epoch/);stale.release();
-  volume.dispose();appearance.dispose();atlas.dispose();
+  const supplied=atlas.snapshot(),finalBook=supplied.book;
+  volume.dispose();
+  assert.throws(()=>volume.prepare(),/disposed/); // no default snapshot acquired
+  assert.throws(()=>volume.prepare({snapshot:supplied}),/disposed/); // transferred pin released
+  appearance.dispose();atlas.dispose();assert.equal(finalBook.dead,true);
 });
 
 test('native world point reader full shared library with independent LIGHT/source leafs fits 16 textures / six storage buffers',()=>{

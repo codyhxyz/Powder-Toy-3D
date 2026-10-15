@@ -206,6 +206,21 @@ test('source epoch changes reject late completion, and COW copy references survi
   const e=await f.lighting.prepare(f.options),ep=e.record(f.frame),et=f.tickets.at(-1);f.resetEpoch();et.submitted.resolve();et.done.resolve();et.read.resolve(et.words);assert.equal((await ep).status,'stale');
   const retry=await f.lighting.prepare(f.options);assert.equal(retry.params.version[0],2);assert.equal((await f.complete(retry)).status,'published');f.lighting.dispose();
 });
+test('dirty tile meaning is immutable before asynchronous source acquisition',async()=>{
+  for(const mutate of [bounds=>{bounds.length=0;},bounds=>{
+    bounds[0].min.fill(2500);bounds[0].max.fill(2501);
+  }]) {
+    const f=fixture();await f.complete(await f.lighting.prepare(f.options));
+    const old=f.lighting.snapshot();f.edit();f.events.length=0;
+    const bounds=[{min:[0,0,0],max:[3072,384,1024]}];
+    const preparing=f.lighting.prepare({...f.options,changedWorldBounds:bounds,changeBaseToken:old.token});
+    mutate(bounds);
+    const c=await preparing;assert.equal((await f.complete(c)).status,'published');
+    assert.equal(f.events.filter(e=>e==='dispatch').length,c.tiles.length);
+    assert.ok(c.tiles.length>0);assert.equal(f.events.filter(e=>e==='copy-texture').length,0);
+    old.release();f.lighting.dispose();
+  }
+});
 test('zero/unrun status, decoder misses, readback errors and discarded submissions fail closed with retry and balanced pins',async()=>{
   const f=fixture();
   for(const mode of ['unrun','decoder-missing','readback-failed','discarded']) {

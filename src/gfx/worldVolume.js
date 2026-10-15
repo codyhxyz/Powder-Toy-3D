@@ -66,12 +66,16 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   }
   // Parameters/resources are immutable per candidate, and caller pins the
   // external lighting/appearance/mesh/noise publication through final submission.
-  function prepare({snapshot=atlas.snapshot(),frameUniforms,physicsOrigin,params,external,lighting:light=lighting}={}) {
-    alive(); const owned=[]; let released=false;
+  // A supplied snapshot transfers ownership to this call, including failure.
+  // Acquire the default only after checking disposal, inside the cleanup scope.
+  function prepare({snapshot,frameUniforms,physicsOrigin,params,external,lighting:light=lighting}={}) {
+    const owned=[]; let released=false;
     const buffer=(label,bytes,usage=BU.UNIFORM|BU.COPY_DST)=>{
       const b=device.createBuffer({label,size:bytes.byteLength,usage}); owned.push(b); queue.writeBuffer(b,0,bytes); return b;
     };
     try {
+      alive();
+      snapshot ??= atlas.snapshot();
       if (snapshot.abi!==WORLD_ATLAS_ABI || snapshot.epoch!==atlas.epoch) throw new Error('stale atlas ABI/epoch');
       if (!light?.params || !light.book || !light.sun0 || !light.sun1) throw new Error('explicit immutable lighting publication/bindings required; no fully-lit fallback');
       if (!frameUniforms?.cam || !frameUniforms.model || !frameUniforms.viewProj) throw new Error('world eye/model/viewProj required');
@@ -108,13 +112,15 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
         },
         async recordPick(encoder,{params:pickParams,output}) {
           valid(); if (!output || output.size<32 || output.size>storageLimit) throw new Error('pick output buffer required');
-          if (!Number.isInteger(pickParams?.n) || pickParams.n<1 || pickParams.n>8) throw new RangeError('world pick batch must contain 1..8 rays');
-          for(let i=0;i<pickParams.n;i++) {
-            const slot=pickParams.slot?.[i>>2]?.[i&3];
+          const n=pickParams?.n, slots=pickParams?.slot?.map(vec);
+          if (!Number.isInteger(n) || n<1 || n>8) throw new RangeError('world pick batch must contain 1..8 rays');
+          for(let i=0;i<n;i++) {
+            const slot=slots?.[i>>2]?.[i&3];
             if (!Number.isInteger(slot) || slot<0 || (slot+1)*32>output.size) throw new RangeError('world pick slot outside output');
           }
+          const pickBytes=PickParams.pack({...pickParams,n,slot:slots});
           const pipe=await pickReady; valid();
-          const p=buffer('world pick params',PickParams.pack(pickParams));
+          const p=buffer('world pick params',pickBytes);
           const pg=group(pickLayouts[3],[b(0,p),...base,b(6,output)]);
           const pass=encoder.beginComputePass({label:'world pick'}); pass.setPipeline(pipe);
           [...first,pg].forEach((g,i)=>pass.setBindGroup(i,g)); pass.dispatchWorkgroups(1); pass.end();
@@ -124,7 +130,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
         // source/field submits, and no assumption that borrowed scratch survives.
         release(){if(!released){released=true;snapshot.release();owned.forEach(b=>b.destroy());}},
       });
-    } catch(e) {snapshot.release();owned.forEach(b=>b.destroy());throw e;}
+    } catch(e) {snapshot?.release();owned.forEach(b=>b.destroy());throw e;}
   }
   return Object.freeze({g:grid,layouts,pickLayouts,pipeline,prepare,ready:pickReady,
     dispose(){dead=true;/* candidates own their pinned lifetimes; no shared resource mutation */}});
