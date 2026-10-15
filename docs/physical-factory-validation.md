@@ -1,13 +1,14 @@
 # Physical factory validation
 
-Status: unreleased. The native backend batch passed; the actual-tool loading sequence remains incomplete.
+Status: unreleased. Native backend processing and actual-tool charge-first loading pass.
+The full hand-loaded batch remains below the melting threshold.
 Actual bucket handling and repeat refueling remain unverified.
 
 ## CPU evidence
 
 The integrated controller and UI pass:
 
-- `node --test tests/industry/*.test.js`: 48 tests.
+- `node --test tests/industry/*.test.js`: 56 tests.
 - `node scripts/check-industry-controller.mjs`: 11 checks.
 - `node scripts/check-industry-factory-ui.mjs`.
 - Existing construction, transfer, and Quarry checks.
@@ -367,6 +368,44 @@ Tool errors, unfinished required actions, and unsettled transfers now veto succe
 Confirmed pack decrease is recorded separately from surviving charge-row scrap.
 Neither attempt used a utilization override; both browsers and servers stopped.
 The loading order, aim poses, and physical charge retention need further investigation.
+
+### Charge-first loading: passed; full thermal batch: incomplete
+
+An ordinary foundation at `[20,15,16]` provides the external operator platform.
+It adds sixteen tungsten cells and four contacts with the shell; this heat sink is not omitted.
+The current actual-tool layout contains 89 buildable devices.
+The default backend fixture remains unchanged at 83 devices.
+
+The loading case first uses the real shovel to place four cold scrap cells against the interior side face.
+It checks their actual native PUT slots, not merely pack decrease or requested candidates.
+All four remain inside after confirmation, eight ticks, and thirty-two ticks.
+They settle into the four-cell floor bed.
+The shovel then loads six actual mined coal cells with full remaining fuel life.
+Their native accepted slots and observed matter agree.
+Four rear and two front fuel cells remain accounted for after loading.
+All four metal-bearing cells stay contained through another 128 native ticks.
+Fuel life decreases, the 48-cell shell stays intact, and no transfers remain pending.
+
+All sixteen loading checks passed after 556 native ticks.
+Total occupancy: **6242 ms**; report `~/.cache/tpt-headless/runs/49852-49888.json`.
+Result: `/tmp/sandustry-physical-loading-charge-first-v1.json`.
+This proves loading and short retention only, not melting or bucket handling.
+
+The full actual-tool line then used the same charge-first approach.
+All four scrap cells stayed inside through the 4800-tick cap.
+Their peak sampled temperature was **1333.69°C**; none became LAVA.
+The 2200°C fuel-source peak must not be mistaken for the scrap temperature.
+The four rear coal cells receive industrial heat; the two front cells receive ordinary combustion heat only.
+Fuel consumption, coolant flow, switch shutdown, ownership tags, and real loading checks passed.
+No bucket operation or shipment was confirmed, and ash pickup was skipped at the tick cap.
+No tool, trace, or pending-transfer error was recorded.
+Total occupancy: **8645 ms**; report `~/.cache/tpt-headless/runs/84781-84816.json`.
+Result: `/tmp/sandustry-physical-line-tools-charge-first-v3.json`.
+
+Both runs used normal utilization protection and stopped their browsers and servers.
+The physical layout and thermal result no longer justify treating loading failure as the only obstacle.
+Whole-firebox coal eligibility is being reviewed; no heat-rule change has been implemented.
+Actual walking, heat survival, bucket handling, repeat refueling, and precision fuel feeding remain unverified.
 
 ## Open requirements
 
