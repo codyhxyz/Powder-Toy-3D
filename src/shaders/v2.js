@@ -134,7 +134,22 @@ export function v2ActLayout(g) {
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
 // the indirect args and the stats the driver reads back (u32 words)
-export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, STATS: 12, words: 32 };
+export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32 };
+// Scratch's original slots*16 bytes are ALL live (including support atmosphere).
+// The production-only tail is a 16-byte counter header, then original u32 IDs.
+export function v2BlockCompactLayout(g, limits = {}) {
+  const { slots, nbricks } = gridDims(g);
+  const capacity = 8 * nbricks, header = slots * 16, list = header + 16;
+  const bytes = list + capacity * 4;
+  if (![slots, nbricks, capacity, header, bytes].every(Number.isSafeInteger) ||
+      slots <= 0 || slots % 64 !== 0 || capacity !== slots / 8 ||
+      bytes % 16 !== 0 || bytes / 4 > 0xffffffff ||
+      bytes > (limits.maxStorageBufferBindingSize ?? Number.MAX_SAFE_INTEGER) ||
+      bytes > (limits.maxBufferSize ?? Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError('v2 block compaction scratch exceeds aligned device/u32 bounds');
+  }
+  return { capacity, header, list, bytes };
+}
 // stats: [tick, awake bricks, busy bricks the tick before, quiet ticks in a row, last busy tick, columns]
 export const STATS = { TICK: 0, AWAKE: 1, BUSY: 2, QUIET: 3, LAST_BUSY: 4, COLS: 5, words: 8 };
 
@@ -147,6 +162,7 @@ export const V2_ARGS_LAYOUT = [...V2_LAYOUT, buf(3, 'storage')];
 export const V2_MATERIAL_LAYOUT = [...V2_LAYOUT, buf(4, 'storage')];
 export const V2_LIQUID_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage'), buf(6, 'storage'), buf(7, 'storage')];
 export const V2_CONTACT_LAYOUT = [...V2_MATERIAL_LAYOUT, buf(5, 'storage'), buf(6, 'storage')];
+export const V2_BLOCK_FINALIZE_LAYOUT = [buf(0, 'storage'), buf(1, 'storage')];
 // group 1 of the import and the bridge: today's state, its flags and marks (no activity arrays)
 export const V2_STATE_OPTS = { state: 'read_write', flags: true, marks: true };
 export const V2_STATE_LAYOUT = stateLayout(V2_STATE_OPTS);
@@ -642,51 +658,7 @@ ${MAIN} {
 // its element's drop test read from the support snapshot; diagonals for half the positions, hashed, so
 // heaps come out round), R3 sink and float (a denser movable over a lighter fluid swaps down), R4 gas
 // (lateral random swaps while young; a fading gas spends its life and leaves air).
-export const v2BlockWGSL = (g, contactWGSL = '') => /* wgsl */ `
-${v2Head(g, { state: false }, 'contact')}
-${contactWGSL}
-fn motionDensity(c: vec4u) -> f32 {
-  return ${/\bfn\s+contactDensity\s*\(/.test(contactWGSL) ? 'contactDensity(c)' : 'densOfE(cid(c))'};
-}
-// share of positions whose grains may topple diagonally (lean-sim MOORE 0.5: an octagon, not a square or diamond)
-const MOORE_U: u32 = 0x80000000u;
-// powder sinking through a fluid: this share of (1 - ρ_fluid/ρ_powder) a tick its pair is in one block
-const SINK_RATE: f32 = 0.6;
-const LIQ_SWAP: f32 = 0.3;   // a denser liquid over a lighter one
-const GAS_SWAP: f32 = 0.5;   // gas rising or sinking through air or gas, or bubbling up through a liquid
-const DIFFUSE: f32 = 0.25;   // a young gas's lateral swap with air
-fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
-fn supportAt(position: vec3i) -> bool {
-  let p=mEdge(position);
-  if (!inGrid(p)) { return P.edge != 1u; }
-  let s = slotOf(p);
-  let l = s & 63u;
-  return ((atomicLoad(&act2[V2_OCC + 2u * (s >> 6u) + (l >> 5u)]) >> (l & 31u)) & 1u) != 0u;
-}
-${MAIN} {
-  let e = foldId(wg, nwg) * 8u + li / 8u;
-  if (e >= useAwake()) { return; }
-  let b = atomicLoad(&act2[V2_LIST + e]);
-  let j = li % 8u;
-  let u = brickCoord(b) * BS + P.offset + 2 * vec3i(i32(j & 1u), i32((j >> 1u) & 1u), i32(j >> 2u));
-  let c0 = u - vec3i(1);
-  let down=mDown(vec3f(c0)+1.0);
-  let gravityOn=any(down!=vec3i(0));
-  // Every valid grid has at least eight event slots. Runtime bounds prevent
-  // backend expansion of eight copies of the large thermal/contact helpers.
-  let blockCount=min(8u,arrayLength(&events));
-  let columnCount=blockCount/2u;
-  var cs: array<vec4u, 8>;
-  var orig: array<vec4u, 8>;
-  var bs: array<i32, 8>; var oldBanks: array<i32, 8>;
-  var positions: array<vec3i, 8>; var requests: array<u32, 8>; var pending: array<u32, 8>;
-  for (var i = 0u; i < blockCount; i++) {
-    let p = mEdge(c0 + mBlockOffset(off8(i),down)); positions[i] = p;
-    cs[i] = cellAt(p); orig[i] = cs[i];
-    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
-    oldBanks[i] = bs[i];
-  }
-  ${contactWGSL === productionContactWGSL ? `
+const blockIdentityWGSL = /* wgsl */ `
   // Canonical full WATER at matching 20 C is also an exact identity. Flux
   // belongs to the later liquid passes: preserve all 48 packed bits verbatim.
   // Test the first word so ordinary AIR pays no extra scan.
@@ -714,7 +686,60 @@ ${MAIN} {
   // equal storeMaterial values would only rewrite identical cells/banks.
   // Support still snapshots ALL targets, including AIR that may move later.
   if (zeroWork) { return; }
-  ` : ''}
+  `;
+
+export const v2BlockWGSL = (g, contactWGSL = '', compact = false) => {
+  // Only exact production contact has the disjoint/frozen-read identity proof.
+  compact = compact && contactWGSL === productionContactWGSL;
+  const tail = compact ? v2BlockCompactLayout(g) : null;
+  return /* wgsl */ `
+${v2Head(g, { state: false }, 'contact')}
+${contactWGSL}
+fn motionDensity(c: vec4u) -> f32 {
+  return ${/\bfn\s+contactDensity\s*\(/.test(contactWGSL) ? 'contactDensity(c)' : 'densOfE(cid(c))'};
+}
+// share of positions whose grains may topple diagonally (lean-sim MOORE 0.5: an octagon, not a square or diamond)
+const MOORE_U: u32 = 0x80000000u;
+// powder sinking through a fluid: this share of (1 - ρ_fluid/ρ_powder) a tick its pair is in one block
+const SINK_RATE: f32 = 0.6;
+const LIQ_SWAP: f32 = 0.3;   // a denser liquid over a lighter one
+const GAS_SWAP: f32 = 0.5;   // gas rising or sinking through air or gas, or bubbling up through a liquid
+const DIFFUSE: f32 = 0.25;   // a young gas's lateral swap with air
+fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
+fn supportAt(position: vec3i) -> bool {
+  let p=mEdge(position);
+  if (!inGrid(p)) { return P.edge != 1u; }
+  let s = slotOf(p);
+  let l = s & 63u;
+  return ((atomicLoad(&act2[V2_OCC + 2u * (s >> 6u) + (l >> 5u)]) >> (l & 31u)) & 1u) != 0u;
+}
+${MAIN} {
+  ${compact ? `let index = foldId(wg, nwg) * 64u + li;
+  if (index >= liquidScratch[${tail.header / 16}u].x) { return; }
+  let t = liquidScratch[${tail.list / 16}u + index / 4u][index % 4u];
+  let e = t / 8u;` : 'let e = foldId(wg, nwg) * 8u + li / 8u;'}
+  if (e >= useAwake()) { return; }
+  let b = atomicLoad(&act2[V2_LIST + e]);
+  let j = ${compact ? 't' : 'li'} % 8u;
+  let u = brickCoord(b) * BS + P.offset + 2 * vec3i(i32(j & 1u), i32((j >> 1u) & 1u), i32(j >> 2u));
+  let c0 = u - vec3i(1);
+  let down=mDown(vec3f(c0)+1.0);
+  let gravityOn=any(down!=vec3i(0));
+  // Every valid grid has at least eight event slots. Runtime bounds prevent
+  // backend expansion of eight copies of the large thermal/contact helpers.
+  let blockCount=min(8u,arrayLength(&events));
+  let columnCount=blockCount/2u;
+  var cs: array<vec4u, 8>;
+  var orig: array<vec4u, 8>;
+  var bs: array<i32, 8>; var oldBanks: array<i32, 8>;
+  var positions: array<vec3i, 8>; var requests: array<u32, 8>; var pending: array<u32, 8>;
+  for (var i = 0u; i < blockCount; i++) {
+    let p = mEdge(c0 + mBlockOffset(off8(i),down)); positions[i] = p;
+    cs[i] = cellAt(p); orig[i] = cs[i];
+    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
+    oldBanks[i] = bs[i];
+  }
+  ${contactWGSL === productionContactWGSL && !compact ? blockIdentityWGSL : ''}
   // R2 topple
   for (var c = 0u; c < columnCount && gravityOn; c++) {
     let ti = 4u + c;
@@ -843,6 +868,56 @@ ${MAIN} {
   }
 }
 `;
+};
+
+// No production contact helpers/private contact frame in this small scan. The
+// atomic word view avoids vec4 component RMW races between adjacent appends.
+export const v2BlockClassifyWGSL = g => {
+  const tail = v2BlockCompactLayout(g);
+  return /* wgsl */ `
+${v2Head(g, { state: false }, 'contact').replace('liquidScratch: array<vec4u>', 'liquidScratch: array<atomic<u32>>')}
+fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
+${MAIN} {
+  let t = foldId(wg, nwg) * 64u + li;
+  let e = t / 8u;
+  if (e >= useAwake()) { return; }
+  let b = atomicLoad(&act2[V2_LIST + e]);
+  let j = t % 8u;
+  let u = brickCoord(b) * BS + P.offset + 2 * vec3i(i32(j & 1u), i32((j >> 1u) & 1u), i32(j >> 2u));
+  let c0 = u - vec3i(1);
+  let down=mDown(vec3f(c0)+1.0);
+  let blockCount=min(8u,arrayLength(&events));
+  var cs: array<vec4u, 8>;
+  var bs: array<i32, 8>;
+  var positions: array<vec3i, 8>; var pending: array<u32, 8>;
+  for (var i = 0u; i < blockCount; i++) {
+    let p = mEdge(c0 + mBlockOffset(off8(i),down)); positions[i] = p;
+    cs[i] = cellAt(p);
+    if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
+  }
+${blockIdentityWGSL}
+  let index = atomicAdd(&liquidScratch[${tail.header / 4}u], 1u);
+  atomicStore(&liquidScratch[${tail.list / 4}u + index], t);
+}
+`;
+};
+
+// Direct dispatch only: never writable-bind args while using it indirectly.
+export const v2BlockFinalizeWGSL = g => {
+  const tail = v2BlockCompactLayout(g);
+  return /* wgsl */ `
+@group(2) @binding(0) var<storage, read_write> scratch: array<u32>;
+@group(2) @binding(1) var<storage, read_write> args: array<u32>;
+@compute @workgroup_size(1) fn main() {
+  let count = scratch[${tail.header / 4}u];
+  let groups = (count + 63u) / 64u;
+  let y = max(1u, (groups + 65534u) / 65535u);
+  args[${ARGS2.COMPACT}u] = (groups + y - 1u) / y;
+  args[${ARGS2.COMPACT + 1}u] = y;
+  args[${ARGS2.COMPACT + 2}u] = 1u;
+}
+`;
+};
 
 // ---- R13 liquid flux (docs/v2.md 4.1; lean-sim flux): three passes a substep, a workgroup an awake brick.
 // faceFlux is the rule for the face between i and j = i + axis a, from i's stored flux on it: the drive
@@ -1301,3 +1376,9 @@ ${V2Params.wgsl}
   if (gid.x >= SLOTS) { return; }
   let m = loadMaterial(gid.x); storeMaterial(gid.x, m, withEnergy(m, energyOf(m))); markBusy(cellOf(gid.x));
 }`, layouts: () => [V2_DYNAMICS_LAYOUT, 'EMPTY', 'EMPTY'], dispatch: perBrick, tool: true });
+
+WGSL_CHECK.push(
+  { name: 'v2blockClassify', kind: 'compute', code: v2BlockClassifyWGSL, layouts: contact, dispatch: perBrick, tool: true },
+  { name: 'v2blockFinalize', kind: 'compute', code: v2BlockFinalizeWGSL, layouts: () => ['EMPTY', 'EMPTY', V2_BLOCK_FINALIZE_LAYOUT], dispatch: () => [1, 1, 1], tool: true },
+  { name: 'v2blockCompact', kind: 'compute', code: g => v2BlockWGSL(g, productionContactWGSL, true), layouts: contact, dispatch: perBrick, tool: true },
+);

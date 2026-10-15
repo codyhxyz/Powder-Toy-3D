@@ -96,7 +96,60 @@ The low byte is transient: no liquid consumer runs between Support and Limit.
 Limit fully rewrites each active cell's scratch for **both** liquid and nonliquid
 before jets/gather. Sleeping halo cells can retain transient low bits, but
 jets/gather reject sleeping faces before consuming limiter bits. There is no
-ACT resize, dispatch-argument change, persistent-state or save-format change.
+ACT resize, persistent-state or save-format change.
+
+### Production block compaction
+
+With the **exact** production `contactWGSL`, the driver now records:
+
+1. Unchanged Support over **all original targets**, including identity blocks.
+2. Clear only the 16-byte scratch-tail counter header (ending the compute pass).
+3. Small classifier, indirectly dispatched from original args words 6–8, using
+   the exact AIR/WATER predicates above. Nonidentity blocks append their original
+   `t = 64 * foldId + li`, not material-sorted or staged cells.
+4. Direct one-thread finalizer, binding only scratch and args, writing folded
+   survivor dispatch to existing args words 9–11 (byte **36**). Zero survivors
+   produce `[0,1,1]`. No new indirect buffer or argument copy is needed.
+5. Heavy block kernel indirectly dispatched at byte 36, recovering
+   `e = t / 8`, `j = t % 8`; original coordinates, corner order, RNG, motion,
+   production contact, boundary and final material/request stores are unchanged.
+
+Only one heavy variant compiles per instance. The reference emitter's default
+and custom/nonproduction WGSL keep their original emission and dispatch; they
+never enter production classification. There are no new user/debug controls.
+
+The original liquid scratch is exactly `slots * 16` bytes, with **no spare
+space**. Production extends it by a dedicated 16-byte counter header plus
+`8 * nbricks = slots / 8` original `u32` IDs: **1,048,592 extra bytes at 128³**.
+Allocation checks safe integer/u32 indexing, alignment, max buffer size and max
+storage binding size before allocating. The classifier uses an atomic-word view
+for independent append writes; heavy reads the same tail normally. Only the
+header is cleared per partition; cell-indexed support atmosphere is untouched.
+Liquid layouts gain no bindings (still at most eight storage buffers including
+the shared table). The classifier never writable-binds its indirect args.
+
+Unordered append is safe **only for this production contract**: resolved 2³
+blocks own disjoint cells (including periodic wrapping), outside occupancy and
+atmosphere are frozen before classification, pair operations remain block-local,
+and shared effects are idempotent activity/dirty marks and commuting integer
+ledger additions. Original closed/open excluded boundary stripes remain excluded.
+No pack/reload, material sorting, flux interpretation, ownership/capture or jets
+allocation/preparation ordering changes are involved. Future contact changes
+must re-prove these assumptions; arbitrary custom contact need not satisfy them.
+
+`node tools/v2/block-compact-check.mjs` checks emitted predicate equivalence,
+41,094 AIR/896 WATER cases and strict negatives, 168 offset/edge/gravity geometry
+cases, shuffled full-contact plus emitted-motion replay (including SMOKE through
+tick 48), partial wake and zero/full/fold/tail bounds, real driver order and
+bindings, minification, grouping and CPU Naga validation. Existing AIR/WATER
+checks retain the exact store/visibility identity proofs. The replay compares
+cores, banks, pending requests, opaque words, activity and energy ledgers; its
+changed-core visibility marks are conservative CPU checks, not a renderer oracle.
+The real benchmark fixture's **initial CPU import only** is 73.231–82.636%
+identity-eligible across eight offsets (first offset: 26,131 AIR, 28,380 WATER,
+18,193 survivors). These are not evolved/native GPU coverage or performance
+measurements. Dense nonidentity scenes may regress from the extra scan/dispatch;
+native Metal compilation/resource behavior and speed remain unmeasured.
 
 ### Dynamics-only helpers
 

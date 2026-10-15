@@ -1,3 +1,4 @@
+import { contactWGSL as productionContactWGSL } from '../shaders/v2/contact.js';
 import { NativeJets } from './jets.js';
 import { nativeModes, modeSignature } from './modes.js';
 import { fold } from '../gpu/kernels.js';
@@ -6,6 +7,7 @@ import { cTq } from './layout.js';
 import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
+  v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, V2_BLOCK_FINALIZE_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
@@ -53,6 +55,7 @@ export class PhysicsV2 {
   /** @param {import('../sim.js').Simulation} sim */
   constructor(sim, { contactWGSL = '', Dynamics = null } = {}) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);
+    this.blockCompact = contactWGSL === productionContactWGSL ? v2BlockCompactLayout(g, gpu.device?.limits) : null;
     this.sim = sim;
     this.modeSettings = nativeModes(sim);
     this.settingsSignature = modeSignature(this.modeSettings);
@@ -75,7 +78,7 @@ export class PhysicsV2 {
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${sim.id} v2 ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     this.cells = buf('cells', g.slots * 16);
     this.aux = buf('energy banks', g.slots * 4);
-    this.liquidScratch = buf('liquid snapshots', g.slots * 16);
+    this.liquidScratch = buf('liquid snapshots', this.blockCompact?.bytes ?? g.slots * 16);
     this.events = buf('material requests', g.slots * 4);
     this.jetMask = buf('jet acceptance and foam snapshot', g.slots * 4);
     // Explicit injection seams. These modules do not exist in the foundation alone.
@@ -105,18 +108,26 @@ export class PhysicsV2 {
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
       state: gpu.bindGroup(L.STATE, [b(0, sim.state.A), b(1, sim.state.B), b(2, sim.state.F), b(3, sim.marks)], 'v2 state'),
     };
+    if (this.blockCompact) {
+      L.BLOCK_FINALIZE = gpu.layout('V2_BLOCK_FINALIZE', V2_BLOCK_FINALIZE_LAYOUT);
+      this.groups.blockFinalize = gpu.bindGroup(L.BLOCK_FINALIZE, [b(0, this.liquidScratch), b(1, this.args)], 'v2 compact block args');
+    }
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid', v2foam: 'liquid' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid', v2foam: 'liquid' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
-    for (const k of V2_KERNELS) {
+    const specs = this.blockCompact ? [...V2_KERNELS,
+      { name: 'v2blockClassify', code: v2BlockClassifyWGSL },
+      { name: 'v2blockFinalize', code: v2BlockFinalizeWGSL, workgroupSize: [1, 1, 1] },
+    ] : V2_KERNELS;
+    for (const k of specs) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       // Contact is required and the long compile pole. Enqueue it before
       // graphics, not behind the idle queue; the shared two-build bound remains.
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? k.code(g, contactWGSL) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
-        layouts: [sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, familyLayouts[this.familyOf(k.name)]],
+        name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? k.code(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        layouts: [k.name === 'v2blockFinalize' ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, k.name === 'v2blockFinalize' ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
       });
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
@@ -310,7 +321,14 @@ export class PhysicsV2 {
     this.dynamics?.advanceParticles(this.tick);
     run(k.v2column, ind(ARGS2.COLS));
     run(k.v2support, ind(ARGS2.BRICKS));
-    run(k.v2block, ind(ARGS2.BLOCKS));
+    if (this.blockCompact) {
+      // Support above MUST cover every original target before the identity scan.
+      // Clear only the tail header, not the frozen cell-indexed atmosphere.
+      f.clear(this.liquidScratch, this.blockCompact.header, 16);
+      run(k.v2blockClassify, ind(ARGS2.BLOCKS));
+      run(k.v2blockFinalize, [1, 1, 1], [gpu.emptyGroup, gpu.emptyGroup, groups.blockFinalize]);
+      run(k.v2block, ind(ARGS2.COMPACT));
+    } else run(k.v2block, ind(ARGS2.BLOCKS));
     this.dynamics?.consumeMaterialEvents(this.tick);
     for (let s = 0; s < SUB; s++) {
       run(k.v2flux, ind(ARGS2.BRICKS));
