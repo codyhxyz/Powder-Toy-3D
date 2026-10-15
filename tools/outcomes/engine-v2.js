@@ -38,8 +38,8 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
     info: {
       label: `v2 integrated native physics (src/v2/physics.js), ${gpu.adapterInfo.vendor} ${gpu.adapterInfo.architecture}${gpu.adapterInfo.isFallbackAdapter ? ' (fallback adapter)' : ''}`,
       stepsPerSecond: TICK_HZ, clock: `${TICK_HZ} ticks a game second (Speed 1×)`,
-      gravity: G_MS2, cellM: CELL_M, fillQuantum: 1 / FULL, velocity: true, pressure: true, airCell: 4, burning: true,
-      velocityDetails: 'SI particles, powder fall, air; nonzero grid-liquid face flux has no unique cell velocity (NaN)',
+      gravity: G_MS2, cellM: CELL_M, fillQuantum: 1 / FULL, velocity: false, pressure: true, airCell: 4, burning: true,
+      velocityDetails: 'No complete cell velocities: partial SI particles, powder fall and air vectors do not establish resident-liquid kinetic energy',
     },
     id: idOf,
     nameOf: (id) => { const k = ELEMENTS[id]?.key ?? `#${id}`; return BENCH[k] ?? k; },

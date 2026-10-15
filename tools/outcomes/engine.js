@@ -9,9 +9,11 @@
 //   name                       'v1', 'lean', 'v2', 'app'
 //   info                       { label, stepsPerSecond, clock (what a game second is on it, in words),
 //                                gravity (m/s²), cellM (m), fillQuantum (cells: 1 for whole-cell liquids),
-//                                velocity: bool (read() gives cell velocities), pressure: bool (it has an
+//                                velocity: bool (read() gives complete cell velocities), pressure: bool (it has an
 //                                air pressure field), airCell (cells per side of its air grid's cell: 1 per
 //                                cell, 4 for 4³ bricks), burning: bool (it marks burning fuel) }
+//                              Partial particle/powder/air vectors do not establish resident-liquid kinetic
+//                              energy and do not qualify as complete cell velocities.
 //                              A game second is the engine's own, at the speed its tests are judged at:
 //                              v2's is 60 ticks (Speed 1×) whatever Speed the box runs at (engine-v2.js),
 //                              so every time limit means the same thing on every run

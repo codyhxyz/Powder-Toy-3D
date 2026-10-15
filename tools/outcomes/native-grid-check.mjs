@@ -114,7 +114,7 @@ test('adapter constructs actual contact, dynamics and jets, checks velocity allo
     const before = calls.length, pending = readNativeState(owner);
     assert.deepEqual(calls.slice(before).filter(c => c.read).map(c => c.read), [owner.cells.label, owner.aux.label, owner.dynamics.particles.label, owner.dynamics.air[1].label]);
     await pending;
-    assert.deepEqual([e.info.velocity,e.info.pressure,e.info.burning,e.info.airCell], [true,true,true,4]);
+    assert.deepEqual([e.info.velocity,e.info.pressure,e.info.burning,e.info.airCell], [false,true,true,4]);
     assert.throws(() => e.box([1,1,1],[1,1,1], 'WATER', {pressure: 1}), /unsupported/);
     e.box([2,3,4],[3,3,4], 'SAND', {v: [9,0,0]});
     const plan = calls.find(c => c.name === 'v2blasts_bodyPlan');
@@ -147,6 +147,7 @@ test('app compatibility uses canonical census and cannot certify particle-only a
   const app = createEngine({}, {base:'http://cpu-spy.invalid',expectedPhysics:'v2'});
   try {
     await app.create(null,{url:'/'});
+    assert.equal(app.info.velocity,false); assert.match(app.info.velocityDetails,/No complete cell velocities/);
     assert.equal(app.info.pressure,true); assert.equal(app.info.burning,true);
     const c = await app.census(); assert.equal(c.particles.WATER,.5); assert.equal(c.liquid.WATER,.5);
     assert.equal((await app.activity()).idle,false);

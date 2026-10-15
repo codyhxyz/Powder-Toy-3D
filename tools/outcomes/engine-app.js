@@ -85,7 +85,9 @@ export function createEngine(browser, { base, query = '', errors = [], expectedP
         label: `the game at ${base}${url}${query ? ` +${query}` : ''}, ${meta.adapter}`, stepsPerSecond: meta.sps,
         clock: meta.physics.active || meta.stepsPerSecond ? `${meta.sps} ticks a game second` : `${meta.sps} steps a game second (${meta.steps} a frame at 60 fps)`,
         fillQuantum: meta.physics.active ? 1 / 65536 : 1,
-        velocity: meta.physics.active, pressure: meta.physics.active, burning: meta.physics.active, airCell: meta.physics.active ? 4 : null,
+        velocity: false,
+        velocityDetails: meta.physics.active ? 'No complete cell velocities: partial SI particles, powder fall and air vectors do not establish resident-liquid kinetic energy' : 'Legacy app read() is not offered',
+        pressure: meta.physics.active, burning: meta.physics.active, airCell: meta.physics.active ? 4 : null,
         gravity: meta.physics.active ? 19.6 : NaN,
       });
     },
