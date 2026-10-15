@@ -165,7 +165,9 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 }
 .mm.loading .mm-shell { display: none; }
 .mm.loading .mm-load { display: grid; }
-.mm.loading .mm-backdrop { inset: 0; filter: brightness(0.55) saturate(1.1); }
+.mm.loading .mm-backdrop { inset: -30px; filter: blur(18px) brightness(0.55) saturate(1.1); }
+/* Only dedicated loading artwork is sharp; a card-sized fallback stays intentionally soft. */
+.mm.loading .mm-backdrop.sharp { inset: 0; filter: brightness(0.55) saturate(1.1); }
 .mm-load-copy { position: relative; z-index: 1; max-width: 560px; }
 .mm-load-mode { font: 400 11px/1 var(--mm-pixel); color: #c3c9d4; letter-spacing: 0.08em; text-transform: uppercase; }
 .mm-load-name { margin: 8px 0 0; font-weight: 800; font-size: 56px; line-height: 1; letter-spacing: -0.015em;
