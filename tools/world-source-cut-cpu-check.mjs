@@ -399,6 +399,7 @@ test('authentic cut/lease rejection, private staged SOURCE plus previous GI, fai
     const privateBook=f.atlas.prepareProducerSnapshot({lightJobs:jobs,sourcePhaseToken:staged.publication.sourcePhaseToken});
     assert.equal(f.atlas.generation,generation);assert.equal(f.h.lightingTick,0);assert.equal(privateBook.lightingProvenance(f.M).source.computeToken.lightingTick,1);assert.equal(privateBook.lightingProvenance(f.M).gi.computeToken.lightingTick,0);
     assert.throws(()=>privateBook.bindings(),/producer-only/);
+    assert.throws(()=>f.atlas.publish({lightJobs:jobs}),/private SOURCE/);
     const fb=f.gpu.createBuffer({size:f.atlas.feedbackBytes});assert.equal(f.atlas.producerBindings(old,privateBook,Object.fromEntries(['sunDepth','sunOptical','mediaNoise','sourceAppearance','packedMesh'].map(k=>[k,{}])),fb)[0][2].resource.buffer,privateBook.lightBook);
     privateBook.release();old.release();jobs.forEach(j=>f.atlas.cancel(j));staged.release();f.plan.abort();
     const retained=f.h.captureRestore(args),pending=f.job(retained),snapshot=f.atlas.snapshot();let count=0;

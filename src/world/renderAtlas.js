@@ -509,6 +509,7 @@ export class WorldRenderAtlas {
     }
     const jobs = explicit ? [...(input.cellJobs ?? []), ...(input.lightJobs ?? [])] : Array.isArray(input) ? input : [input];
     const ps = jobs.map(j => this._job(j)); check(new Set(ps).size === ps.length, 'duplicate publication job');
+    check(ps.every(p=>!p.producerOnly&&!p.restoreDeclarations?.gi?.publication.sourcePhaseToken),'private SOURCE/previous-GI closure cannot be presented');
     const dependencies = explicit && input.dependencyToken ? manifest(input.dependencyToken) : this.current.dependencies;
     const sun = explicit && Object.hasOwn(input, 'sunManifest') ? sunManifest(input.sunManifest) : this.current.sunManifest;
     check(dependencies.version >= this.current.dependencies.version, 'dependency manifest regression');
@@ -650,6 +651,7 @@ export class WorldRenderAtlas {
     check(required&&required.every(i=>seen.has(i)),'private closure omits selected SOURCE records');
     const s=this._snapshotState(this.entries.slice(),lights,this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation);
     s.producerOnly=true;
+    for(const job of lightJobs)this._job(job,'light').producerOnly=true;
     const out=this._snapshot(s);this._releaseSnapshot(s);return out;
   }
   // Producer-only: current CELL plus an exact pinned previous LIGHT book.
