@@ -8,6 +8,7 @@ export const SOURCE_RANK = Object.freeze({ unknown: 0, generated: 1, saved: 2, c
 export const SOURCE_GRID = Object.freeze(gridDims({ nx: 32, ny: 32, nz: 32 }));
 const USAGE = 0x80 | 0x08 | 0x04;
 const MAX_BINDING = 128 * 1024 * 1024;
+const ACCEPT_ALL = () => true;
 const originOf = (o) => Array.isArray(o) ? [...o] : [o.x, o.y, o.z];
 export const sourceBounds = (sim, origin = sim.origin) => {
   const lo = originOf(origin);
@@ -29,7 +30,7 @@ export function snapshotSource(sim, origin = sim.origin) {
 
 // Exact native-copy plans. Both ends use the original brick/tile layout.
 // Coalesce within a 4³ brick; partial edges are cell exact, never widened.
-export function planSourceCopies(src, dst, bounds, accept = () => true) {
+export function planSourceCopies(src, dst, bounds, accept = ACCEPT_ALL, acceptBrick = null) {
   for (const d of [src, dst]) {
     if (d.origin.some((v) => !Number.isInteger(v) || v % BRICK) || gridDims(d.g).slots !== d.g.slots) throw new Error('raw source copy requires original supertile layout and brick-aligned origin');
   }
@@ -42,6 +43,17 @@ export function planSourceCopies(src, dst, bounds, accept = () => true) {
   for (let bz = Math.floor(box.lo[2] / BRICK) * BRICK; bz < box.hi[2]; bz += BRICK)
     for (let by = Math.floor(box.lo[1] / BRICK) * BRICK; by < box.hi[1]; by += BRICK)
       for (let bx = Math.floor(box.lo[0] / BRICK) * BRICK; bx < box.hi[0]; bx += BRICK) {
+        if (bx >= box.lo[0] && by >= box.lo[1] && bz >= box.lo[2] &&
+            bx + BRICK <= box.hi[0] && by + BRICK <= box.hi[1] && bz + BRICK <= box.hi[2] &&
+            (accept === ACCEPT_ALL || acceptBrick)) {
+          const s = cellSlot(src.g, bx - src.origin[0], by - src.origin[1], bz - src.origin[2]);
+          const d = cellSlot(dst.g, bx - dst.origin[0], by - dst.origin[1], bz - dst.origin[2]);
+          // true/false accepts/rejects the complete contiguous brick. null
+          // requests cell-exact fallback for mixed authority or partial data.
+          const take = accept === ACCEPT_ALL ? true : acceptBrick(d, [bx, by, bz]);
+          if (take === true) { runs.push({ src: s, dst: d, cells: 64 }); continue; }
+          if (take === false) continue;
+        }
         let run = null;
         for (let t = 0; t < 64; t++) {
           const p = [bx + (t & 3), by + ((t >> 2 & 1) + (t >> 5) * 2), bz + (t >> 3 & 3)];
@@ -186,6 +198,12 @@ export class WorldRenderSource {
         c.pending[d] = rank === SOURCE_RANK.captured ? revision : 0;
         if (rank >= SOURCE_RANK.captured) c.aux[d] = (src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0);
         cells++; return true;
+      }, (d) => {
+        for (let i = d; i < d + 64; i++) if (rank < c.rank[i] || revision < c.revisions[i]) return null;
+        c.rank.fill(rank, d, d + 64); c.revisions.fill(revision, d, d + 64);
+        c.pending.fill(rank === SOURCE_RANK.captured ? revision : 0, d, d + 64);
+        if (rank >= SOURCE_RANK.captured) c.aux.fill((src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0), d, d + 64);
+        cells += 64; return true;
       });
       recordSourceCopies(frame, src, c, runs);
       // Absence is explicit zero, not permission to resurrect a previously
@@ -215,7 +233,9 @@ export class WorldRenderSource {
     const revision = this.nextRevision(), src = snapshotSource(sim, oldOrigin);
     // Leaving live cells transfer ownership to captured; they are not stale
     // static data and must be allowed to replace the previous live revision.
-    for (const c of this.chunks.values()) planSourceCopies(src, c, bounds, (d) => { c.rank[d] = Math.min(c.rank[d], SOURCE_RANK.captured); return false; });
+    for (const c of this.chunks.values()) planSourceCopies(src, c, bounds,
+      (d) => { c.rank[d] = Math.min(c.rank[d], SOURCE_RANK.captured); return false; },
+      (d) => { for (let i = d; i < d + 64; i++) c.rank[i] = Math.min(c.rank[i], SOURCE_RANK.captured); return false; });
     this._record(frame, src, bounds, SOURCE_RANK.captured, revision);
     return Object.freeze({ epoch: this.epoch, revision, bounds: { lo: [...bounds.lo], hi: [...bounds.hi] } });
   }

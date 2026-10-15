@@ -52,6 +52,25 @@ function stateWords(src, name, p) {
   const slot = cellSlot(src.g, ...p.map((v, i) => v - src.origin[i]));
   return [...wordView(src[name]).subarray(((src.copy ?? 0) * src.g.slots + slot) * 4, ((src.copy ?? 0) * src.g.slots + slot + 1) * 4)];
 }
+check('whole-brick copy planning matches cell-exact runs, including mixed and partial authority', () => {
+  const src = { origin: [1536, 0, 512], g: gridDims({ nx: 128, ny: 128, nz: 128 }) };
+  const dst = { origin: [1600, 32, 544], g: SOURCE_GRID };
+  const full = { lo: [...dst.origin], hi: dst.origin.map((v) => v + 32) };
+  const partial = { lo: full.lo.map((v) => v + 1), hi: full.hi.map((v) => v - 1) };
+  for (const bounds of [full, partial]) {
+    assert.deepEqual(planSourceCopies(src, dst, bounds), planSourceCopies(src, dst, bounds, () => true));
+    let cellCalls = 0, brickCalls = 0;
+    const selected = (_d, p) => (p[0] & 4) === 0;
+    const bulk = planSourceCopies(src, dst, bounds, (d, p) => { cellCalls++; return selected(d, p); },
+      (d, p) => { brickCalls++; return selected(d, p); });
+    assert.deepEqual(bulk, planSourceCopies(src, dst, bounds, selected));
+    assert(brickCalls > 0);
+    if (bounds === full) assert.equal(cellCalls, 0, 'aligned bulk copies must not visit individual cells');
+    else assert(cellCalls > 0, 'partial brick edges require exact per-cell checks');
+    const mixed = (_d, p) => (p[0] & 1) === 0;
+    assert.deepEqual(planSourceCopies(src, dst, bounds, mixed, () => null), planSourceCopies(src, dst, bounds, mixed));
+  }
+});
 check('complete A/B capture preserves all original words and auxiliary planes', () => {
   const f = fixture(); fillState(f);
   const live = snapshotSource(f.sim), revision = f.source.recordLiveCopy(f.frame, f.sim); f.flush();
