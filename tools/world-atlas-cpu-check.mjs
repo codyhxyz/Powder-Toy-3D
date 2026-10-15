@@ -1,0 +1,331 @@
+// CPU only: real public helpers and command-recording/memory GPU double.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import * as A from '../src/world/renderAtlas.js';
+import { worldAccessWGSL, worldPageWriterWGSL, worldPackedMeshWriterWGSL, worldShadowWriterWGSL, WGSL_CHECK } from '../src/shaders/worldAccess.js';
+import { checkPipeline } from './check-sampler-budget.mjs';
+import { cellSlot } from '../src/shaders/common.js';
+
+function fakeGPU(limits = {}) {
+  const buffers = [], textures = [], log = [], deferred = [];
+  const bytes = data => new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  const device = {
+    limits: { ...A.DEFAULT_WORLD_LIMITS, ...limits },
+    createBuffer(d) { const b = { ...d, data: new Uint8Array(d.size), destroyed: false, destroy() { assert.ok(!this.destroyed, 'double destroy buffer'); this.destroyed = true; } }; buffers.push(b); return b; },
+    createTexture(d) {
+      const bpp = d.format === 'rgba16float' ? 8 : 16;
+      const t = { ...d, bpp, data: new Map(), destroyed: false, createView(desc) { return { texture: t, ...desc }; }, destroy() { assert.ok(!this.destroyed, 'double destroy texture'); this.destroyed = true; },
+        get(p) { return this.data.get(p.join(',')) ?? new Uint8Array(bpp); },
+        set(p, v) { assert.ok(p.every((n, i) => n >= 0 && n < d.size[i]), `OOB ${p} ${d.size}`); this.data.set(p.join(','), v.slice()); },
+      }; textures.push(t); return t;
+    },
+    createCommandEncoder(d = {}) {
+      const ops = [];
+      return { copyTextureToTexture(src, dst, size) { assert.notEqual(src.texture, dst.texture, 'copy must not alias'); log.push(['copy', d.label, src, dst, size]); ops.push(() => {
+        assert.ok(!src.texture.destroyed && !dst.texture.destroyed, 'copy uses destroyed texture');
+        for (let z=0;z<size[2];z++) for(let y=0;y<size[1];y++) for(let x=0;x<size[0];x++) {
+          const off = [x,y,z]; dst.texture.set(dst.origin.map((v,i)=>v+off[i]), src.texture.get(src.origin.map((v,i)=>v+off[i])));
+        }
+      }); }, finish() { return ops; } };
+    },
+    queue: {
+      writeBuffer(b, off, v) { assert.ok(!b.destroyed); b.data.set(bytes(v), off); log.push(['writeBuffer', b.label]); },
+      writeTexture(dst, v, layout, size) {
+        assert.ok(!dst.texture.destroyed); const bpp = dst.texture.bpp, raw = bytes(v), row = layout.bytesPerRow ?? size[0]*bpp;
+        for(let z=0;z<size[2];z++) for(let y=0;y<size[1];y++) for(let x=0;x<size[0];x++) {
+          const start = z*row*size[1]+y*row+x*bpp;
+          dst.texture.set(dst.origin.map((n,i)=>n+[x,y,z][i]), raw.subarray(start,start+bpp));
+        }
+        log.push(['writeTexture', dst.texture.label]);
+      },
+      submit(commands) { log.push(['submit']); commands.flat().forEach(op=>op()); },
+      onSubmittedWorkDone() { return Promise.resolve(); },
+    },
+  };
+  const retire = fn => deferred.push(fn);
+  const flush = () => { while(deferred.length) deferred.shift()(); };
+  return { device, buffers, textures, log, retire, flush };
+}
+function setup(options = {}, limits = {}) {
+  const gpu = fakeGPU(limits);
+  const atlas = new A.WorldRenderAtlas(gpu, { worldSize: [128, 128, 128], initialCapacity: 2, retire: gpu.retire, ...options });
+  return { gpu, atlas };
+}
+function dataFor(job, seed = 0) {
+  const out = {};
+  // Full-range patterns, including signalling NaNs, infinities and signed zero.
+  const bits = [0, 0x80000000, 0x7f800000, 0xff800000, 0x7f800001, 0x7fc12345, 0xffffffff, 0x12345678];
+  for (const [name, [format, shape]] of Object.entries(A.PAGE_CHANNELS)) {
+    const length = (name==='aux' ? 132 : shape==='cells' ? 64 : 1)*4;
+    const d = format==='rgba32uint' ? new Uint32Array(length) : new Uint16Array(length);
+    for(let i=0;i<length;i++) d[i] = bits[(i+seed)%bits.length] ^ seed;
+    out[name] = d;
+  }
+  out.aux = A.packWorldAux({ ...job, brickInfo: new Uint32Array([0x7f800001,0x80000000,0x7fc12345,0]), flow: new Uint32Array(128).fill(0x7c018000), aeration: new Uint32Array(128).fill(0xfe017fff), deco: new Uint32Array(64).fill(0xfefdfcff) });
+  return out;
+}
+function readChannel(snapshot, name, pid) {
+  const [,shape,stride] = A.PAGE_CHANNELS[name], n = name==='aux' ? 132 : shape==='cells' ? 64 : 1;
+  const out = new Uint8Array(n*stride), t = snapshot.views[name].texture;
+  for(let s=0;s<n;s++) {
+    const p = name==='aux' ? A.auxTexel(pid,s,snapshot.layout) : shape==='cells' ? A.pageTexel(pid,s,snapshot.layout) : A.probeTexel(pid,snapshot.layout);
+    out.set(t.get(p),s*stride);
+  }
+  return out;
+}
+const rawBytes = d => new Uint8Array(d.buffer,d.byteOffset,d.byteLength);
+
+test('default layouts count exactly 16 sampled; all variants enforce default/device limits', () => {
+  const reader=A.worldReaderLayouts();
+  assert.equal(reader.length,4); assert.equal(reader.flat().filter(e=>e.texture).length,16);
+  assert.equal(reader.flat().filter(e=>e.buffer?.type.includes('storage')).length,2);
+  for(const k of [...Object.keys(A.WRITER_CHANNELS),'shadow','mesh']) A.worldWriterLayouts(k);
+  assert.throws(()=>A.worldReaderLayouts({maxSampledTexturesPerShaderStage:15}));
+  assert.throws(()=>A.worldWriterLayouts('raw',{maxStorageTexturesPerShaderStage:2}));
+  assert.throws(()=>A.assertWorldLayout([...reader,[]]));
+  assert.throws(()=>A.assertWorldLayout([[{visibility:4,buffer:{type:'storage',minBindingSize:128*1024**2+4}}]]));
+  assert.throws(()=>A.worldWriterLayouts('invalid'));
+  for (const pipeline of WGSL_CHECK) assert.deepEqual(checkPipeline({code:pipeline.code(),groups:pipeline.layouts(),kind:pipeline.kind}).problems,[],pipeline.name);
+});
+test('global book sizes, signed bounds, overflow and 384 high world', () => {
+  for(const [h,mib] of [[128,24],[384,72]]) {
+    const b=A.worldBookLayout([3072,h,1024]);
+    assert.equal(b.bytes,mib*1024**2); assert.equal(b.requestBytes,Math.ceil(b.count/32)*4);
+    assert.equal(A.worldBrickIndex(b,b.bricks.map(n=>n-1)),b.count-1);
+    assert.equal(A.worldCellAddress(b,b.worldSize.map(n=>n-1)).slot,63);
+    for(const c of [[-1,0,0],[3072,0,0],[0,h,0],[0,0,1024],[0.5,0,0],[NaN,0,0]]) assert.throws(()=>A.worldCellAddress(b,c));
+    assert.throws(()=>A.worldBrickIndex(b,[-1,0,0]));
+    assert.throws(()=>A.worldBrickIndex(b,[b.bricks[0],0,0]));
+  }
+  for(const size of [[0,4,4],[-4,4,4],[5,4,4],[2**31,4,4],[2**30,2**30,2**30],[4096,4096,4096]]) assert.throws(()=>A.worldBookLayout(size));
+  assert.throws(()=>A.worldBookLayout([3072,384,1024],{maxStorageBufferBindingSize:64*1024**2}));
+});
+test('original slot bijection, 32-core / page edges and array-layer geometry', () => {
+  const slots=new Set();
+  for(let z=0;z<4;z++) for(let y=0;y<4;y++) for(let x=0;x<4;x++) {
+    const s=A.worldLocalSlot([x,y,z]); slots.add(s); assert.deepEqual(A.worldSlotCell(s),[x,y,z]);
+    assert.equal(s,cellSlot({nx:128,ny:384,nz:128},x+32,y+124,z+64)&63);
+  }
+  assert.equal(slots.size,64);
+  const book=A.worldBookLayout([128,384,128]);
+  for(const p of [4,32,64]) for(const e of [-0.001,0,0.001]) assert.equal(A.worldCellAddress(book,[Math.floor(p+e),0,0]).brick[0],Math.floor((p+e)/4));
+  for(const cap of [1,64,65,128,129,257]) {
+    const l=A.worldAtlasLayout(cap,{maxTextureDimension2D:32,maxTextureArrayLayers:64});
+    const cells=new Set(), aux=new Set(), probes=new Set();
+    for(let pid=0;pid<cap;pid++) {
+      for(let s=0;s<64;s++) cells.add(A.pageTexel(pid,s,l).join(','));
+      for(let r=0;r<132;r++) aux.add(A.auxTexel(pid,r,l).join(','));
+      probes.add(A.probeTexel(pid,l).join(','));
+    }
+    assert.equal(cells.size,cap*64); assert.equal(aux.size,cap*132); assert.equal(probes.size,cap);
+    assert.ok(l.cells.width<=32 && l.aux.layers<=64);
+  }
+  assert.throws(()=>A.worldAtlasLayout(2**32));
+  assert.throws(()=>A.worldAtlasLayout(1024,{maxTextureDimension2D:8,maxTextureArrayLayers:1}));
+  const webIDL=Object.create(Object.defineProperties({}, {
+    maxTextureDimension2D:{get:()=>8}, maxTextureArrayLayers:{get:()=>1},
+    maxStorageBufferBindingSize:{get:()=>1024}, maxSampledTexturesPerShaderStage:{get:()=>15},
+  }));
+  assert.throws(()=>A.worldAtlasLayout(64,webIDL));
+  assert.throws(()=>A.worldBookLayout([128,128,128],webIDL));
+  assert.throws(()=>A.worldReaderLayouts(webIDL));
+});
+test('aux ABI preserves complete BrickInfo, flow/aer half words and cell paint', () => {
+  const job={epoch:17,sourceRevision:19,fieldTick:23,readyBits:15}, d=dataFor(job).aux;
+  assert.equal(d.length,132*4); assert.deepEqual([...d.subarray(0,4)],[15,17,19,23]);
+  assert.deepEqual([...d.subarray(4,8)],[0x7f800001,0x80000000,0x7fc12345,0]);
+  for(let s=0;s<64;s++) assert.deepEqual([...d.subarray(16+s*8,24+s*8)],[0x7c018000,0x7c018000,0xfe017fff,0xfe017fff,0xfefdfcff,0,0,0]);
+  assert.throws(()=>A.packWorldAux({...job,flow:new Uint32Array(64)}));
+});
+test('lossless uploads, immutable publication, replacement workspace, growth, snapshots, retirement', () => {
+  const {gpu,atlas}=setup({}, {maxTextureDimension2D:32,maxTextureArrayLayers:64});
+  assert.ok(gpu.textures.every(t=>t.usage===15 && t.dimension==='2d'),'copy/sample/storage flags on own array textures');
+  const a=atlas.allocate([7,7,7],{sourceRevision:1}), data=dataFor(a);
+  const before=atlas.snapshot(), generation=atlas.generation;
+  atlas.update(a,{stateA:data.stateA});
+  assert.throws(()=>atlas.publish(a),/partial/); assert.equal(atlas.generation,generation);
+  assert.equal(atlas.lookup([7,7,7]).incomplete,true);
+  atlas.update(a,data); atlas.publish(a);
+  const first=atlas.snapshot(); assert.equal(atlas.lookup([7,7,7]).physicalPageID,0);
+  assert.equal(new Uint32Array(before.book.data.buffer)[A.worldBrickIndex(atlas.bookLayout,[7,7,7])],0);
+  for(const name of Object.keys(data)) assert.deepEqual(readChannel(first,name,0),rawBytes(data[name]));
+  const replacement=atlas.allocate([7,7,7],{sourceRevision:2}); assert.notEqual(replacement.physicalPageID,a.physicalPageID);
+  const d2=dataFor(replacement,1); atlas.update(replacement,d2);
+  // Repack BOTH dimensions and array layers, while provider owns old outputs.
+  atlas.grow(257); const grown=atlas.snapshot();
+  assert.notEqual(first.views.stateA,grown.views.stateA);
+  assert.equal(first.layout.capacity,2); assert.equal(grown.layout.capacity,257);
+  for(const name of Object.keys(data)) assert.deepEqual(readChannel(grown,name,0),rawBytes(data[name]));
+  atlas.publish(replacement); const last=atlas.snapshot();
+  for(const name of Object.keys(data)) {
+    assert.deepEqual(readChannel(first,name,0),rawBytes(data[name]));
+    assert.deepEqual(readChannel(last,name,replacement.physicalPageID),rawBytes(d2[name]));
+  }
+  gpu.flush(); assert.ok(!first.views.stateA.texture.destroyed,'old snapshot owns resources');
+  before.release(); grown.release(); last.release(); first.release(); gpu.flush();
+  assert.ok(gpu.log.some(x=>x[0]==='copy'&&x[1]==='world pending repack'));
+  assert.ok(gpu.log.some(x=>x[0]==='copy'&&x[1]==='world atlas growth'));
+  atlas.dispose(); gpu.flush();
+  assert.ok(gpu.textures.every(t=>t.destroyed)); assert.ok(gpu.buffers.every(b=>b.destroyed));
+});
+test('revisions, readiness, stale work, required/pending/snapshot protection and ownership', () => {
+  const {gpu,atlas}=setup(); const j=atlas.allocate([0,0,0],{sourceRevision:9,fieldTick:8}); atlas.update(j,dataFor(j)); atlas.publish(j);
+  assert.throws(()=>atlas.allocate([0,0,0],{sourceRevision:8}));
+  assert.throws(()=>atlas.allocate([0,0,0],{sourceRevision:9,fieldTick:7}));
+  assert.throws(()=>atlas.allocate([0,0,0],{sourceRevision:10,readyBits:A.READY.RAW}));
+  atlas.require([[0,0,0]]); assert.throws(()=>atlas.remove([[0,0,0]]));
+  atlas.require([]); const snap=atlas.snapshot(); atlas.remove([[0,0,0]]); gpu.flush();
+  assert.ok(atlas.pages.has(j.physicalPageID),'snapshot pins old page'); snap.release(); gpu.flush(); assert.ok(!atlas.pages.has(j.physicalPageID));
+  const pending=atlas.allocate([0,0,0],{sourceRevision:10});
+  assert.throws(()=>atlas.remove([[0,0,0]])); assert.throws(()=>atlas.allocate([0,0,0],{sourceRevision:11}));
+  const bad=dataFor(pending); bad.aux[2]++; assert.throws(()=>atlas.update(pending,bad),/metadata/);
+  assert.equal(atlas.pages.get(pending.physicalPageID).written.size,0,'validation before ANY upload');
+  assert.throws(()=>atlas.update(pending,{stateA:new Float32Array(256)}));
+  atlas.reset(); assert.throws(()=>atlas.update(pending,dataFor(pending)),/stale/); assert.throws(()=>atlas.publish(j),/stale/);
+  const raw=atlas.allocate([0,0,0],{sourceRevision:0,readyBits:A.READY.RAW}); const d=dataFor(raw);
+  atlas.update(raw,{stateA:d.stateA,stateB:d.stateB,aux:d.aux}); atlas.publish(raw);
+  assert.equal(atlas.lookup([0,0,0],A.READY.RAW).known,true); assert.equal(atlas.lookup([0,0,0],A.READY.FIELD).incomplete,true);
+  const old=atlas.snapshot(), external=Object.fromEntries(['sunDepth','sunOptical','mediaNoise','sourceAppearance','packedMesh'].map(n=>[n,{external:n}]));
+  const feedback=gpu.device.createBuffer({size:atlas.bookLayout.requestBytes,usage:128});
+  const binding=old.bindings(external,feedback); assert.equal(binding.flat().length,19); assert.equal(binding[2][9].resource,external.packedMesh);
+  assert.throws(()=>old.bindings({},feedback)); assert.throws(()=>old.bindings(external,{size:4}));
+  atlas.dispose(); assert.throws(()=>atlas.snapshot(),/disposed/); assert.throws(()=>atlas.publish(raw),/disposed/);
+  gpu.flush(); assert.ok(!old.views.stateA.texture.destroyed); old.release(); old.release(); gpu.flush();
+  feedback.destroy(); assert.ok(gpu.textures.every(t=>t.destroyed)); assert.ok(gpu.buffers.every(b=>b.destroyed));
+  assert.equal(external.packedMesh.destroyed,undefined,'no external ownership');
+});
+test('batch publication is all-or-nothing and old snapshot params stay stable', () => {
+  const {atlas,gpu}=setup();
+  const a=atlas.allocate([0,0,0],{sourceRevision:1}), b=atlas.allocate([1,0,0],{sourceRevision:1});
+  const before=atlas.snapshot(), paramsBefore=before.params.data.slice(), generation=atlas.generation;
+  atlas.update(a,dataFor(a));
+  assert.throws(()=>atlas.publish([a,b]),/partial/);
+  assert.equal(atlas.generation,generation); assert.equal(atlas.lookup([0,0,0]).known,false);
+  atlas.update(b,dataFor(b)); atlas.publish([a,b]);
+  assert.equal(atlas.generation,generation+1); assert.equal(atlas.lookup([0,0,0]).known,true); assert.equal(atlas.lookup([1,0,0]).known,true);
+  assert.deepEqual(before.params.data,paramsBefore); assert.equal(before.generation,generation);
+  atlas.reset(); assert.deepEqual(before.params.data,paramsBefore);
+  before.release(); atlas.dispose(); gpu.flush();
+});
+test('publication/growth/reset allocation failures retain prior mapping, epoch and resources', () => {
+  const {atlas,gpu}=setup(), j=atlas.allocate([0,0,0],{sourceRevision:1}); atlas.update(j,dataFor(j));
+  const create=gpu.device.createBuffer;
+  const fail=()=>{gpu.device.createBuffer=d=>{if(d.label==='world immutable params') throw new Error('injected allocation failure');return create(d);};};
+  const generation=atlas.generation; fail();
+  assert.throws(()=>atlas.publish(j),/injected/); assert.equal(atlas.generation,generation); assert.equal(atlas.lookup([0,0,0]).known,false);
+  gpu.device.createBuffer=create; atlas.publish(j); const published=atlas.snapshot(), g=atlas.generation, epoch=atlas.epoch;
+  fail(); assert.throws(()=>atlas.grow(128),/injected/); assert.equal(atlas.generation,g); assert.equal(atlas.resources.layout.capacity,2);
+  assert.throws(()=>atlas.reset(),/injected/); assert.equal(atlas.epoch,epoch); assert.equal(atlas.lookup([0,0,0]).known,true);
+  const unchanged=atlas.snapshot(); assert.equal(unchanged.views.stateA,published.views.stateA); unchanged.release();
+  gpu.device.createBuffer=create; published.release(); atlas.dispose(); gpu.flush();
+  assert.ok(gpu.textures.every(t=>t.destroyed)); assert.ok(gpu.buffers.every(b=>b.destroyed));
+});
+test('provider writer snapshots have private outputs; no partial publication from one writer', () => {
+  const {atlas,gpu}=setup(); const job=atlas.allocate([0,0,0],{sourceRevision:1});
+  assert.throws(()=>atlas.recordPageWrite(job,'raw',{auxMetadata:[0,0,0,0],record(){}}));
+  const w=atlas.writerBindings(job,'raw'); assert.equal(w.outputs.length,3); assert.equal(w.params[0],job.physicalPageID);
+  atlas.recordPageWrite(job,'raw',{auxMetadata:[job.readyBits,job.epoch,job.sourceRevision,job.fieldTick],record(encoder,bindings){ assert.equal(bindings.outputs.length,3); }});
+  assert.throws(()=>atlas.publish(job),/partial/);
+  atlas.cancel(job); assert.throws(()=>atlas.writerBindings(job,'raw'),/stale/); atlas.dispose(); gpu.flush();
+});
+test('known empty vs unknown and canonical feedback (including bit31)', () => {
+  const {atlas,gpu}=setup(); const feedback=new Uint32Array(atlas.bookLayout.requestBytes/4);
+  for(const c of [[0,0,0],[31,0,0],[0,1,0]]) { const miss=atlas.lookup(c); assert.equal(miss.known,false); A.requestMissing(feedback,miss.request); }
+  assert.deepEqual(A.requestedBricks(feedback,atlas.bookLayout.count),[0,31,32]);
+  const j=atlas.allocate([0,0,0],{sourceRevision:0}); const d=dataFor(j); d.aux.fill(0,4); atlas.update(j,d); atlas.publish(j);
+  assert.equal(atlas.lookup([0,0,0]).known,true); assert.equal(atlas.lookup([1,0,0]).known,false);
+  atlas.dispose(); gpu.flush();
+});
+// Independent nested-lerp and Sigg-fold references to EXISTING core.js.
+function linearReference(fetch,p,size) {
+  const q=p.map((v,i)=>Math.max(.5,Math.min(size[i]-.5,v))-.5), base=q.map(Math.floor), f=q.map((v,i)=>v-base[i]);
+  const at=(x,y,z)=>fetch([x,y,z].map((v,i)=>Math.min(size[i]-1,base[i]+v)));
+  const mix=(a,b,t)=>a*(1-t)+b*t;
+  const row=(y,z)=>mix(at(0,y,z),at(1,y,z),f[0]);
+  const plane=z=>mix(row(0,z),row(1,z),f[1]);
+  return mix(plane(0),plane(1),f[2]);
+}
+function sigg(fetch,p,size) {
+  const q=p.map((v,i)=>Math.max(0,Math.min(size[i]-1,v-.5))), base=q.map(Math.floor), f=q.map((v,i)=>v-base[i]);
+  const w=f.map(t=>[(1-3*t+3*t*t-t*t*t)/6,(4-6*t*t+3*t*t*t)/6,(1+3*t+3*t*t-3*t*t*t)/6,t*t*t/6]), g=w.map(v=>[v[0]+v[1],v[2]+v[3]]);
+  const positions=w.map((v,i)=>[base[i]-.5+v[1]/g[i][0],base[i]+1.5+v[3]/g[i][1]]);
+  let out=0;
+  for(let z=0;z<2;z++) for(let y=0;y<2;y++) for(let x=0;x<2;x++) out+=linearReference(fetch,[positions[0][x],positions[1][y],positions[2][z]],size)*g[0][x]*g[1][y]*g[2][z];
+  return out;
+}
+test('8/64 tap interpolation + gradients independent of partitions/physical IDs; world-only edge clamp', () => {
+  const size=[68,40,36], l=A.worldAtlasLayout(2048), book=A.worldBookLayout(size);
+  const analytic=([x,y,z])=>Math.sin(x*.31)+Math.cos(y*.17)+z*z*.001;
+  const map=new Map(), pageMap=new Map(); let id=0;
+  for(let z=0;z<size[2];z++) for(let y=0;y<size[1];y++) for(let x=0;x<size[0];x++) {
+    const c=[x,y,z], a=A.worldCellAddress(book,c);
+    if(!pageMap.has(a.index)) pageMap.set(a.index,(id++*137)%2048);
+    map.set(A.pageTexel(pageMap.get(a.index),a.slot,l).join(','),analytic(c));
+  }
+  const fetch=c=>{const a=A.worldCellAddress(book,c); return map.get(A.pageTexel(pageMap.get(a.index),a.slot,l).join(','));};
+  const points=[];
+  for(const e of [-.001,0,.001]) for(const edge of [4,32,64]) points.push([edge+e,7.2,19.6]);
+  points.push([0,0,0],[68,40,36],[-5,8,7],[70,44,40]);
+  for(const p of points) for(const cubic of [false,true]) {
+    const actual=A.worldInterpolate(fetch,p,size,cubic), expected=cubic?sigg(analytic,p,size):linearReference(analytic,p,size);
+    assert.ok(Math.abs(actual-expected)<1e-12,`${p}: ${actual} != ${expected}`);
+    for(let axis=0;axis<3;axis++) {
+      const h=.0001, a=[...p], b=[...p]; a[axis]-=h; b[axis]+=h;
+      const gradient=(fn)=>(A.worldInterpolate(fn,b,size,cubic)-A.worldInterpolate(fn,a,size,cubic))/(2*h);
+      const expectedGradient=((cubic?sigg:linearReference)(analytic,b,size)-(cubic?sigg:linearReference)(analytic,a,size))/(2*h);
+      assert.ok(Math.abs(gradient(fetch)-expectedGradient)<1e-8);
+    }
+  }
+  let taps=0; A.worldInterpolate(()=>{taps++;return 1;},[32.1,4.1,4.1],size); assert.equal(taps,8);
+  taps=0; A.worldInterpolate(()=>{taps++;return 1;},[32.1,4.1,4.1],size,true); assert.equal(taps,64);
+});
+test('SH/probe and glow world-fixed spacing-four phase and edge extension', () => {
+  const size=[128,384,128], f=([x,y,z])=>[x,y,z,x+y+z];
+  assert.deepEqual(A.worldInterpolate(f,[2,2,2],size,false,4),[0,0,0,0]);
+  assert.deepEqual(A.worldInterpolate(f,[6,6,6],size,false,4),[1,1,1,3]);
+  assert.deepEqual(A.worldInterpolate(f,[4,4,4],size,false,4),[.5,.5,.5,1.5]);
+  assert.deepEqual(A.worldInterpolate(f,[128,384,128],size,false,4),[31,95,31,157]);
+  assert.deepEqual(A.worldInterpolate(f,[34,34,34],size,false,4),[8,8,8,24]);
+});
+test('packed mesh all half patterns + HDR/depth/coverage independent of colour/depth zero', () => {
+  for(let h=0;h<65536;h++) {
+    const halfWords=new Uint16Array([h,h^65535,0x7bff,0x8000]), depthBits=(h*65537)>>>0, coverageFlags=(h&1)?0xf0000001:0;
+    assert.deepEqual(A.unpackMeshWords(A.packMeshWords(halfWords,depthBits,coverageFlags)),{halfWords,depthBits,coverageFlags});
+  }
+  assert.throws(()=>A.packMeshWords([65536,0,0,0],0,0));
+});
+test('Naga validates ACTUAL new reader and every writer assembly, no GPU', () => {
+  const dir=mkdtempSync(join(tmpdir(),'world-atlas-wgsl-'));
+  try {
+    const reader=worldAccessWGSL()+`
+@fragment fn main() -> @location(0) vec4f {
+ worldBeginQuery(); let c=vec3i(4,32,3); let p=vec3f(4.01,32.01,3.01);
+ let a=worldFetchA(c)+worldFetchB(c)+vec4f(worldFlow(c),0.0)+worldAeration(c);
+ let b=worldFieldLinear(worldField0,p)+worldFieldCubic(worldField1,p)+worldFieldCubic(worldField2,p);
+ let gi=worldProbe(p); let bi=worldBrickInfo(c/4); let occ=worldBrickOccupancy(c/4);
+ let dist=worldBrickDistance(c/4); let mesh=worldMeshAt(vec2i(0));
+ let imports=textureLoad(worldSourceAppearance,vec3i(0),0);
+ let noise=textureLoad(worldMediaNoise,vec3i(0),0);
+ let sun=textureLoad(worldSunDepth,vec2i(0),0,0)+textureLoad(worldSunOptical,vec2i(0),0,0);
+ if(worldQueryIncomplete()) { discard; }
+ return a+b+gi.c0+gi.cx+gi.cy+gi.cz+vec4f(worldLight(p),0.0)+vec4f(bi.emit,0.0)+mesh.color+noise+sun+vec4f(f32(worldDeco(c)+occ.x+imports.x+bi.info)+f32(dist));
+}`;
+    const modules={reader,mesh:worldPackedMeshWriterWGSL(),shadow:worldShadowWriterWGSL()+`\n@compute @workgroup_size(1) fn main(){worldStoreShadow(vec2i(0),0,1.0,0.0);}`,...Object.fromEntries(Object.keys(A.WRITER_CHANNELS).map(k=>[k,worldPageWriterWGSL(k)]))};
+    for(const [name,code] of Object.entries(modules)) {
+      const path=join(dir,`${name}.wgsl`); writeFileSync(path,code);
+      const result=spawnSync(process.env.NAGA??'naga',[path],{encoding:'utf8'});
+      assert.equal(result.status,0,`${name}: ${result.error??''}\n${result.stdout}\n${result.stderr}`);
+    }
+    for(const fixture of WGSL_CHECK) {
+      const path=join(dir,`${fixture.name}.wgsl`); writeFileSync(path,fixture.code());
+      const result=spawnSync(process.env.NAGA??'naga',[path],{encoding:'utf8'});
+      assert.equal(result.status,0,`${fixture.name}: ${result.error??''}\n${result.stdout}\n${result.stderr}`);
+    }
+    assert.equal((reader.match(/var world\w+: texture_/g)??[]).length,16);
+    console.log(`Naga: ${Object.keys(modules).join(', ')} validated`);
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});
