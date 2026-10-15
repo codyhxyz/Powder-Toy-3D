@@ -83,9 +83,11 @@ fn main() {
     let p = P.baseCells[i].xyz;
     if (inGrid(p) && eid(fetchA(p)) == P.baseMaterial) { matched++; }
   }
-  var control = 1u;
-  if (P.guardEnabled != 0u && P.guardPowered != 0u) {
-    control = u32(machineEnabled(P.guardBase, P.guardMaterial, P.guardPort, P.guardPowered));
+  var control = 0u;
+  if (P.guardEnabled != 0u) {
+    // A port signal is independent of whether this machine requires it.
+    // A negative base material disables interlocking, not signal observation.
+    control = u32(industryControlActive(P.guardPort));
   }
   result[at] = vec4f(f32(matched), f32(P.baseCount), f32(control), f32(P.guardEnabled * P.guardPowered));
 

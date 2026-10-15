@@ -3,6 +3,7 @@ import {
   DEVICE_TYPES, FILTER_IDS, CASTING_TEMPERATURE, baseMaterial, deviceCell, deviceDirection,
 } from './catalog.js';
 import { controlCell, machineGuard, machinePorts, validMachine } from './physics.js';
+import { hearthRegions, HEARTH_FUEL_IDS } from './hearth.js';
 import {
   INDUSTRY_DIAGNOSTICS, INDUSTRY_DIAGNOSTICS_LAYOUT, IndustryDiagnosticsParams, industryDiagnosticsWGSL,
 } from '../shaders/industryDiagnostics.js';
@@ -131,6 +132,11 @@ function defaultRegions(device, overrides) {
       const targets = regionCells(device, 0, 3, 1, 3, 4, 7);
       add('work', work, { kinds: [K.POWDER], requiresSupport: true });
       add('target', targets, { kinds: [K.SOLID], breakableClear: true });
+    } else if (device.type === 'hearth') {
+      const cells = hearthRegions(device);
+      add('fuel', cells.fuel, { ids: HEARTH_FUEL_IDS, requiresPositiveLife: true });
+      add('charge', cells.charge);
+      add('outlet', cells.outlet);
     } else if (device.type === 'heater') {
       // Like TPT's heat tool, heating stops at its cap; the legacy heater still
       // guides already-molten lava forward, so hot lava remains eligible here.
@@ -238,7 +244,8 @@ function normalizeRequest(device, overrides, sim) {
       ? { primaryRegions: ['inlet'], requireExactInput: true, exactInputKnown: Number.isInteger(overrides.expectedShipId) }
       : ['belt', 'separator', 'lift'].includes(device.type) ? { primaryRegions: ['work'] }
         : device.type === 'miner' ? { primaryRegions: ['work', 'target'] }
-          : device.type === 'heater' ? { primaryRegions: ['work'] } : null);
+          : device.type === 'heater' ? { primaryRegions: ['work'] }
+            : device.type === 'hearth' ? { primaryRegions: ['fuel'], blockedRegion: 'outlet' } : null);
   if (policy !== null && (!record(policy) || !Array.isArray(policy.primaryRegions)
       || policy.primaryRegions.some(name => typeof name !== 'string')
       || (policy.blockedRegion !== undefined && typeof policy.blockedRegion !== 'string'))) return { error: 'invalid status policy' };
@@ -309,7 +316,7 @@ function decode(request, bytes, startedAt, completedAt) {
   };
   const control = {
     required: controlRequired,
-    active: controlRequired ? meta[2] > 0 : null,
+    active: request.guard ? meta[2] > 0 : null,
     port: request.guard?.port ?? null,
   };
   const status = industryDiagnosticStatus({ base, control, regions, policy: request.policy });
@@ -346,10 +353,8 @@ function withFreshness(cached, now, staleMs, pending = false) {
  * optional `maxTemperature`/`maxTemperatures`, `temperatureExemptIds`, `excludeId`,
  * `requiresSupport`, `requiresPositiveLife`, and `breakableClear`; cells are
  * absolute [x,y,z] coordinates from the owning hearth/gate geometry helper.
- * Hearth integration should pass `regions: { fuel: { cells: hearthRegions(device).fuel,
- * ids: HEARTH_FUEL_IDS, requiresPositiveLife: true } }` and
- * `statusPolicy: { primaryRegions: ['fuel'] }` (import the geometry and fuel IDs
- * from `industry/hearth.js`). Region results include observed temperature ranges.
+ * Hearth regions use the shared physical geometry by default. Fuel eligibility
+ * requires positive remaining life. Region results include observed temperatures.
  *
  * Standard port/transport regions mirror industry physics and its WGSL. Ship's
  * alternating nugget/metal target is private: until the parent supplies the

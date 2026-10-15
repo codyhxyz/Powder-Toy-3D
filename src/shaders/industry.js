@@ -9,6 +9,14 @@ export const MACHINE_GUARD_FIELDS = {
   guardPort: 'vec3i', guardPowered: 'u32',
 };
 export const machineGuardWGSL = /* wgsl */ `
+fn industryControlActive(port: vec3i) -> bool {
+  if (!inGrid(port)) { return false; }
+  let a = fetchA(port);
+  let id = eid(a);
+  if (id == E_BATTERY) { return true; }
+  if (id == E_SWITCH) { return a.z == SWITCH_ON; }
+  return sparkLive(id, floor(a.w));
+}
 fn machineEnabled(base: vec3i, material: i32, port: vec3i, controlled: u32) -> bool {
   if (material < 0) { return true; }
   for (var z = 0; z < 4; z++) {
@@ -19,12 +27,7 @@ fn machineEnabled(base: vec3i, material: i32, port: vec3i, controlled: u32) -> b
     }
   }
   if (controlled == 0u) { return true; }
-  if (!inGrid(port)) { return false; }
-  let a = fetchA(port);
-  let id = eid(a);
-  if (id == E_BATTERY) { return true; }
-  if (id == E_SWITCH) { return a.z == SWITCH_ON; }
-  return sparkLive(id, floor(a.w));
+  return industryControlActive(port);
 }
 `;
 export const INDUSTRY_KIND = Object.freeze({ belt: 0, separator: 1, lift: 2, miner: 3, heater: 4, hearth: 5 });

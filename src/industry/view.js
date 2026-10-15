@@ -19,14 +19,15 @@ function model(type) {
     return root;
   }
   if (type === 'hearth') {
-    // Sandustry keeps the finite fire physically behind the charge and its outlet.
-    box(root,[3.7,.28,3.7],[0,.24,0],'#424958');
-    for (const x of [-1.82,1.82]) box(root,[.24,1.55,3.7],[x,1,0],color);
-    for (const z of [-1.82,1.82]) box(root,[3.7,.42,.24],[0,.4,z],color);
-    box(root,[3.05,.14,.8],[0,.48,-1.32],'#ea8765'); // local fuel band: z=0, y=1..3
-    for (const z of [-.38,.38]) box(root,[2.7,.16,.62],[0,.55,z],'#747b89'); // charge: z=1..2
-    box(root,[2.5,.18,.62],[0,.75,1.56],'#dcbc74'); // catch the outlet at local z=3
-    box(root,[1.3,.18,.58],[0,.48,2.15],'#dcbc74');
+    // Trim labels the real voxel shell; it does not pretend to contain matter.
+    for (const x of [-1.94,1.94]) {
+      for (const z of [-1.94,1.94]) box(root,[.08,3.9,.08],[x,2,z],color);
+      box(root,[.08,.08,4],[x,3.96,0],color);
+    }
+    box(root,[4,.08,.08],[0,3.96,-1.94],color);
+    box(root,[1.8,.03,.8],[0,1.02,-.5],'#ea8765'); // six inside rear fuel cells
+    box(root,[1.8,.03,.8],[0,1.02,.5],'#747b89'); // six inside front charge cells
+    box(root,[1.95,.04,.08],[0,2.02,1.94],'#dcbc74'); // real raised lip, not an imaginary catch
     addPortMarker(root);
     return root;
   }
@@ -89,7 +90,7 @@ const MACHINE_HELP = {
   lift: 'Build a catch above the lift. It launches grains, not liquids or solid blocks.',
   pump: 'Moves water or molten metal. Feed the low inlet and catch the high outlet.',
   heater: 'Cool the melt in a separate catch. Keep finished metal away from the hot bed.',
-  hearth: 'Fuel goes at local z=0, y=1–3. Put charge in local z=1–2 and catch output at local z=3.',
+  hearth: 'Fuel goes in the rear inside row; scrap goes in the front inside row. Catch overflow beyond the raised lip. Extract molten charge before digging out ash; digging can also collect remaining fuel and scrap.',
   gate: 'Choose Open, Closed, or Signal when inspecting the gate. Signal opens while energized; blocked closure waits, and damage is reported.',
 };
 const UNLOCK_AT = { miner: 12, lift: 12, pump: 48, heater: 96, hearth: 96 };

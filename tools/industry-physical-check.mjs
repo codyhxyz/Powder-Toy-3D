@@ -6,6 +6,7 @@
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
 import { budgetMs, CLEANUP_MS } from './gpu-deadline.mjs';
 import { validateDevices } from '../src/industry/validation.js';
+import { hearthRegions, hearthStructureCells } from '../src/industry/hearth.js';
 
 const invokedAt = Date.now();
 const arg = name => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
@@ -20,18 +21,15 @@ const baseUrl = arg('--url') || `http://localhost:${port}/`;
 const useHarness = process.argv.includes('--harness');
 const thermalDevices = validateDevices([
   { id: 'physical-hearth', type: 'hearth', x: 48, y: 12, z: 48, rotation: 0 },
-  ...[[-4, 0], [4, 0], [0, -4], [0, 4]].flatMap(([dx, dz], side) =>
-    Array.from({ length: 4 }, (_, dy) => ({
-      id: `thermal-wall-${side}-${dy}`, type: 'foundation',
-      x: 48 + dx, y: 12 + dy, z: 48 + dz, rotation: 0,
-    }))),
 ], [128, 128, 128]);
+const thermalGeometry = { ...hearthRegions(thermalDevices[0]), structure: hearthStructureCells(thermalDevices[0]) };
 if (!['thermal', 'mechanisms'].includes(selectedCase)) {
   console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
   process.exit(2);
 }
 if (process.argv.includes('--preflight')) {
   console.log(JSON.stringify({ status: 'cpu-geometry-valid', devices: thermalDevices,
+    cells: Object.fromEntries(Object.entries(thermalGeometry).filter(([key]) => key !== 'outputDirection').map(([key, cells]) => [key, cells.length])),
     limitations: 'Bounds/overlap validation only; no heat, tools, browser, or GPU was exercised.' }));
   process.exit(0);
 }
@@ -68,7 +66,7 @@ try {
   url.searchParams.set('test', 'manual');
   await within(page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(4_000, workDeadline - Date.now())) }), workDeadline, 'app navigation');
   await within(useHarness ? page.waitForFunction(() => window.__harness?.ready) : ready(page), workDeadline, 'simulation ready');
-  const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness, thermalDevices }) => {
+  const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness, thermalDevices, thermalGeometry }) => {
     const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 500);
     const caseStarted = performance.now();
     const stage = name => console.log(`[physical-check] ${name} (${Math.round(performance.now() - caseStarted)} ms in page)`);
@@ -97,6 +95,11 @@ try {
     const read = async at => {
       const [cell] = await sim.readCell(...at);
       return { id: Math.round(cell[0]), temperature: cell[1], life: cell[2], ctype: Math.floor(cell[3]), seed: cell[3] - Math.floor(cell[3]) };
+    };
+    const readCells = async cells => {
+      const result = [];
+      for (let i = 0; i < cells.length; i += 8) result.push(...await Promise.all(cells.slice(i, i + 8).map(read)));
+      return result;
     };
     const box = (lo, hi, id, temperature = 20, life = 0, ctype = 0.125) =>
       sim.edit(fill, { lo, hi }, { material: [id, temperature, life, ctype] });
@@ -133,8 +136,7 @@ try {
         await Promise.all([a.test.ready(), fill.ready]);
         stage('industry pipelines ready');
 
-        // Real atomic construction: one hearth plus sixteen ordinary foundations.
-        // No unbuildable internal baffle or one-cell painted lining.
+        // Real atomic construction: the 48-cell thin shell, not a painted test wall.
         const { createConstruction } = await import('/src/industry/construction.js');
         const construction = createConstruction({ sim, gpu: a.gpu, requestRender() {} });
         await construction.ready;
@@ -142,35 +144,39 @@ try {
           if (Date.now() >= deadline) throw new Error('insufficient time to finish buildable tub construction');
           if (!await construction.run(d, 1)) throw new Error(`atomic construction failed: ${d.id}`);
         }
-        stage('atomic tub construction confirmed');
-        // Two shovel-loads can provide this finite cold batch in principle.
+        const shell = await readCells(thermalGeometry.structure);
+        if (shell.length !== 48 || shell.some(cell => cell.id !== E.TUNGSTEN || cell.temperature !== 20))
+          throw new Error('physical 48-cell tungsten chassis was not constructed');
+        stage('atomic hearth chassis confirmed');
+        // This finite batch fits the six-cell rear firebox.
         // Actual shovel aiming/refueling is NOT asserted by this numerical fixture.
-        box([48, 13, 48], [51, 15, 51], E.BROKENCOAL, 20, ELEMENTS[E.BROKENCOAL].life);
-        box([49, 13, 49], [50, 13, 50], E.SCRAP, 20, ELEMENTS[E.SCRAP].life ?? 0);
+        box([49, 13, 49], [50, 15, 49], E.BROKENCOAL, 20, ELEMENTS[E.BROKENCOAL].life);
+        box([49, 13, 50], [50, 14, 50], E.SCRAP, 20, ELEMENTS[E.SCRAP].life ?? 0);
         await a.gpu.fence();
         const hearthBase = Array.from({ length: 16 }, (_, i) => [48 + (i % 4), 12, 48 + Math.floor(i / 4)]);
         const [baseCells, controlCell, coalInitial, brokenInitial, scrapInitialCells] = await Promise.all([
-          Promise.all(hearthBase.map(read)), read([47, 12, 49]), read([48, 13, 48]), read([51, 13, 48]),
-          Promise.all([[49, 13, 49], [50, 13, 49], [49, 13, 50], [50, 13, 50]].map(read)),
+          readCells(hearthBase), read([47, 12, 49]), read([49, 13, 49]), read([50, 13, 49]),
+          readCells([[49, 13, 50], [50, 13, 50], [49, 14, 50], [50, 14, 50]]),
         ]);
         const scrapInitial = scrapInitialCells[1];
         const fixtureReady = baseCells.length === 16 && baseCells.every(cell => cell.id === E.TUNGSTEN && cell.temperature === 20)
-          && controlCell.id === E.TUNGSTEN && coalInitial.id === E.BROKENCOAL && coalInitial.temperature === 20 && coalInitial.life === ELEMENTS[E.BROKENCOAL].life
+          && controlCell.id === E.EMPTY && coalInitial.id === E.BROKENCOAL && coalInitial.temperature === 20 && coalInitial.life === ELEMENTS[E.BROKENCOAL].life
           && brokenInitial.id === E.BROKENCOAL && brokenInitial.temperature === 20 && brokenInitial.life === ELEMENTS[E.BROKENCOAL].life
           && scrapInitialCells.every(cell => cell.id === E.SCRAP && cell.temperature === 20);
-        if (!fixtureReady) throw new Error('cold physical fuel, charge, tungsten base, or foundation-backed port did not read back as built');
+        if (!fixtureReady) throw new Error('cold physical fuel, charge, tungsten base, or empty native port did not read back as built');
         stage('cold resources confirmed; stepping native physics');
         // Prime nativeFrame at the present frame. Every measured hearth update below
         // follows exactly four actual sim.step ticks (the app's native 240 Hz batch).
         updateIndustry();
         const startFrame = sim.frame;
-        const scrapCells = [[48, 13, 49], [49, 13, 49], [50, 13, 49], [51, 13, 49],
-          [49, 13, 50], [50, 13, 50], [49, 13, 51], [50, 13, 51]];
+        // Grains can redistribute between fuel and charge; sample both, not just
+        // the initial SCRAP coordinates. The retained heel also stays observable.
+        const scrapCells = [...thermalGeometry.fuel, ...thermalGeometry.charge, ...thermalGeometry.outlet, ...thermalGeometry.mouth];
         let coal = coalInitial, broken = brokenInitial;
         let scrapSamples = [scrapInitial];
         let alignedBatches = true, updates = 0, nativeTicks = 0, fences = 0;
         let ignition = false, fuelLifeReduced = false, melt = null;
-        let peakCoalTemperatureC = 20, peakBrokenCoalTemperatureC = 20, peakChargeTemperatureC = 20;
+        let peakFuelTemperatureC = 20, peakChargeTemperatureC = 20;
         let exhaustedBudget = false;
         // One invocation only. The wall-clock deadline, not an unbounded frame count,
         // determines how far real native heat transfer/phase change can progress.
@@ -183,13 +189,11 @@ try {
           if (batch % 12 !== 11 && batch !== 0) continue;
           if (Date.now() >= deadline) { exhaustedBudget = true; break; }
           await a.gpu.fence(); fences++;
-          [coal, broken, ...scrapSamples] = await Promise.all([
-            read([48, 13, 48]), read([51, 13, 48]), ...scrapCells.map(read),
-          ]);
-          ignition ||= coal.temperature >= ELEMENTS[E.COAL].ignite || broken.temperature >= ELEMENTS[E.BROKENCOAL].ignite;
-          fuelLifeReduced ||= coal.life < coalInitial.life - 1e-7 || broken.life < brokenInitial.life - 1e-7;
-          peakCoalTemperatureC = Math.max(peakCoalTemperatureC, coal.temperature);
-          peakBrokenCoalTemperatureC = Math.max(peakBrokenCoalTemperatureC, broken.temperature);
+          [coal, broken, ...scrapSamples] = await readCells([[49, 13, 49], [50, 13, 49], ...scrapCells]);
+          const fuel = scrapSamples.filter(cell => cell.id === E.COAL || cell.id === E.BROKENCOAL);
+          ignition ||= fuel.some(cell => cell.temperature >= ELEMENTS[cell.id].ignite);
+          fuelLifeReduced ||= fuel.some(cell => cell.life < 1 - 1e-7) || scrapSamples.some(cell => cell.id === E.ASH);
+          peakFuelTemperatureC = Math.max(peakFuelTemperatureC, ...fuel.map(cell => cell.temperature));
           peakChargeTemperatureC = Math.max(peakChargeTemperatureC, ...scrapSamples.filter(cell => cell.id === E.SCRAP || cell.id === E.LAVA).map(cell => cell.temperature));
           melt = scrapSamples.find(cell => cell.id === E.LAVA && cell.ctype === E.METAL) ?? null;
           if (melt) break;
@@ -197,18 +201,17 @@ try {
         if (Date.now() >= deadline) exhaustedBudget = true;
         if (updates && !fences) {
           await a.gpu.fence(); fences++;
-          [coal, broken, ...scrapSamples] = await Promise.all([
-            read([48, 13, 48]), read([51, 13, 48]), ...scrapCells.map(read),
-          ]);
-          ignition ||= coal.temperature >= ELEMENTS[E.COAL].ignite || broken.temperature >= ELEMENTS[E.BROKENCOAL].ignite;
-          fuelLifeReduced ||= coal.life < coalInitial.life - 1e-7 || broken.life < brokenInitial.life - 1e-7;
+          [coal, broken, ...scrapSamples] = await readCells([[49, 13, 49], [50, 13, 49], ...scrapCells]);
+          const fuel = scrapSamples.filter(cell => cell.id === E.COAL || cell.id === E.BROKENCOAL);
+          ignition ||= fuel.some(cell => cell.temperature >= ELEMENTS[cell.id].ignite);
+          fuelLifeReduced ||= fuel.some(cell => cell.life < 1 - 1e-7) || scrapSamples.some(cell => cell.id === E.ASH);
           melt = scrapSamples.find(cell => cell.id === E.LAVA && cell.ctype === E.METAL) ?? null;
         }
         const checks = {
           actual128Cube: bounds.every(n => n === 128),
           coldFuelAndScrapWithRemainingLife: fixtureReady,
           tungstenBaseAndUnpoweredGuard: fixtureReady && hearth.powered === false,
-          atomicFoundationContainment: thermalDevices.length === 17,
+          atomicRefractoryChassis: shell.length === 48,
           nativeBatch240Aligned: updates > 0 && alignedBatches && nativeTicks === updates * 4,
           ignitionObserved: ignition,
           physicalFuelLifeReduced: fuelLifeReduced,
@@ -220,15 +223,15 @@ try {
           case: caseName, status, checks, apiErrors: [...errors, ...(h?.failures ?? [])],
           observations: { bounds, integration: h ? 'native Simulation + Industry physics (no app UI)' : 'app controller',
             fixtureTemperatureC: 20, fuelStartLife: coalInitial.life, fuelId: E.BROKENCOAL,
-            loadedFuelCells: 44, containmentFoundationCells: 256,
-            peakFuelTemperatureC: Math.max(peakCoalTemperatureC, peakBrokenCoalTemperatureC), peakChargeTemperatureC,
-            fuelEnd: coal, otherFuelEnd: broken,
+            loadedFuelCells: 6, containmentChassisCells: shell.length,
+            peakFuelTemperatureC, peakChargeTemperatureC,
+            rearProbeEnd: coal, otherRearProbeEnd: broken,
             scrapSamples, melt, nativeTicks, industryUpdates: updates, nativeBatchSize: 4, fences,
             waterFixture: 'none; native ambient unchanged', elapsedCaseMs: Math.round(performance.now() - caseStarted) },
           residualGaps: [
             ...(!checks.nativeScrapMeltedToLavaWithMetalCtype ? ['bounded run did not observe a native SCRAP→LAVA(METAL) cell'] : []),
             'No pump/cooling/shipment end-to-end claim is made by this checkpoint.',
-            'Atomic foundation construction is exercised; real shovel loading, ash clearing and bucket extraction are not.',
+            'Atomic hearth construction is exercised; real shovel loading, ash clearing and bucket extraction are not.',
             ...(exhaustedBudget ? ['case deadline reached; no second attempt was made'] : []),
           ],
         };
@@ -364,7 +367,7 @@ try {
       thermalPhysics?.dispose();
       nativeSim?.dispose();
     }
-  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices }), workDeadline, 'physical checkpoint');
+  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices, thermalGeometry }), workDeadline, 'physical checkpoint');
   result = payload;
   if (browserErrors.length) {
     result.browserErrors = browserErrors;

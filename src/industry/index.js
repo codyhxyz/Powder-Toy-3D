@@ -339,7 +339,8 @@ export function createIndustry(app) {
     }
     // Inspect the actual native port signal independently of the machine's
     // optional drive setting; the backend still samples only this one cell.
-    return { regions, guard: { base: [0, 0, 0], material: -1, port: cell, powered: true } };
+    return { regions, ...(device.type === 'control-cell'
+      ? { guard: { base: [0, 0, 0], material: -1, port: cell, powered: true } } : {}) };
   }
   function observedControlPart(observation, cell) {
     const regions = observation?.evidence?.regions;

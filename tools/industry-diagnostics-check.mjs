@@ -94,6 +94,41 @@ const poweredPump = { ...pump, powered: true };
   assert.equal(onButEmpty.evidence.control.required, false);
 }
 
+// Read the real port even for built-in drive; an inactive optional port must not
+// disable an otherwise ready machine. Base damage and port state are independent.
+now += 101;
+{
+  const optionalOff = await issue(api, sim, pump, {}, {
+    control: 0, controlRequired: 0, regions: [[1, 1, 20, 20]],
+  });
+  assert.equal(optionalOff.status, 'ready');
+  assert.equal(optionalOff.evidence.control.required, false);
+  assert.equal(optionalOff.evidence.control.active, false);
+  now += 101;
+  const damagedWithLivePort = await issue(api, sim, poweredPump, {}, {
+    baseMatched: 15, control: 1, controlRequired: 1,
+  });
+  assert.equal(damagedWithLivePort.status, 'base damaged');
+  assert.equal(damagedWithLivePort.evidence.control.active, true);
+  assert.match(industryDiagnosticsWGSL(sim.g), /control = u32\(industryControlActive\(P\.guardPort\)\)/);
+}
+
+// Default hearth observations must work without a caller inventing its regions.
+{
+  const f = fixture(90);
+  const hearth = { id: 'default-hearth', type: 'hearth', x: 20, y: 4, z: 20, rotation: 1, powered: false };
+  const observed = await issue(f.api, f.sim, hearth, {}, {
+    control: 0, controlRequired: 0, regions: [[1, 1, 700, 700], [4, 4, 6400, 1600]],
+  });
+  assert.equal(observed.status, 'ready');
+  assert.equal(f.sim.test.params.sampleCount, 16);
+  assert.equal(observed.evidence.regions.fuel.sampled, 6);
+  assert.equal(observed.evidence.regions.charge.sampled, 6);
+  assert.equal(observed.evidence.regions.outlet.sampled, 4);
+  assert.equal(observed.evidence.regions.charge.maxTemperatureC, 1600);
+  f.api.dispose();
+}
+
 // An entirely occupied pump outlet is blocked; partial occupancy stays available.
 now += 101;
 {

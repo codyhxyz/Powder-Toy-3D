@@ -15,7 +15,7 @@ export const DEVICE_TYPES = Object.freeze({
   lift: { name: 'Grain lift', cost: 8, color: '#c8a7dc', description: 'Launches loose grains upward. Build a catch above it.' },
   pump: { name: 'Pump', cost: 14, color: '#7cbdd1', description: 'Moves real liquid from its inlet to an elevated outlet.' },
   heater: { name: 'Furnace', cost: 20, color: '#ea8765', factoryLegacy: true, description: 'Legacy built-in furnace. Existing machines keep their original heating behavior.' },
-  hearth: { name: 'Coal hearth', cost: 20, color: '#ea8765', description: 'Consumes real coal in its rear firebox. Load scrap in the middle and catch melt at the front.' },
+  hearth: { name: 'Coal hearth', cost: 20, color: '#ea8765', description: 'Thin tungsten shell. Feed coal behind the charge. Catch molten overflow beyond the raised front lip.' },
   gate: { name: 'Material gate', cost: 4, color: '#a6bd9c', description: 'A physical shutter. Open it to release material; closure waits for a clear opening.' },
 });
 export const FILTER_IDS = [E.NUGGETS, E.SAND, E.STONE, E.SCRAP, E.BROKENCOAL];

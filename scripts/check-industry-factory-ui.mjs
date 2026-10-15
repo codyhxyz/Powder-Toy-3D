@@ -117,8 +117,9 @@ const classNode = className => find(panel, element => element.className === clas
 assert.equal(machineButton('hearth')?.tagName, 'BUTTON');
 assert.equal(machineButton('gate')?.tagName, 'BUTTON');
 assert.equal(machineButton('heater'), undefined, 'legacy heater is absent from new placement choices');
-assert.match(classNode('industry-tip').textContent, /fuel goes at local z=0, y=1–3/i);
-assert.match(classNode('industry-tip').textContent, /charge in local z=1–2.*catch output at local z=3/i);
+assert.match(classNode('industry-tip').textContent, /fuel goes in the rear inside row/i);
+assert.match(classNode('industry-tip').textContent, /raised lip/i);
+assert.match(classNode('industry-tip').textContent, /scrap goes in the front inside row.*extract molten charge before digging out ash/i);
 assert.equal(classNode('industry-stage-hint').textContent, progression.hint);
 assert.equal(classNode('industry-stage-hint').hidden, false, 'current stage guidance is visible, not title-only');
 assert.deepEqual(machineTypes.includes('heater'), false);
