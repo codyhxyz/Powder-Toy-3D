@@ -164,7 +164,7 @@ export class WorldRenderSource {
   _chunk(origin) {
     const key = origin.join(','); let c = this.chunks.get(key);
     if (!c) {
-      c = { key, origin: [...origin], g: SOURCE_GRID, copy: 0,
+      c = { key, origin: [...origin], g: SOURCE_GRID, copy: 0, highestRevision: 0,
         A: this._buffer(`${key} A`, SOURCE_GRID.slots * 16), B: this._buffer(`${key} B`, SOURCE_GRID.slots * 16),
         rank: new Uint8Array(SOURCE_GRID.slots), revisions: new Float64Array(SOURCE_GRID.slots),
         pending: new Float64Array(SOURCE_GRID.slots), aux: new Uint8Array(SOURCE_GRID.slots), flow: null, aeration: null, deco: null };
@@ -191,7 +191,25 @@ export class WorldRenderSource {
     let cells = 0;
     for (const origin of this._cores(box)) {
       const c = this._chunk(origin); this._aux(c, src);
-      const runs = planSourceCopies(src, c, box, (d) => {
+      const setRange = (d, length) => {
+        c.rank.fill(rank, d, d + length); c.revisions.fill(revision, d, d + length);
+        c.pending.fill(rank === SOURCE_RANK.captured ? revision : 0, d, d + length);
+        if (rank >= SOURCE_RANK.captured) c.aux.fill((src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0), d, d + length);
+        cells += length;
+      };
+      // Fresh LIVE is the highest authority. Its contiguous copy runs can
+      // update metadata in bulk without rechecking every unchanged cell.
+      const freshLive = rank === SOURCE_RANK.live && revision >= c.highestRevision;
+      let livePlan;
+      if (freshLive) {
+        // Copy offsets within a state copy depend on layout/origin/bounds,
+        // not state.cur, bytes, or semantic revision. Retain only this core's
+        // latest geometry plan; native offsets still use the new snapshot.
+        const key = `${src.g.nx},${src.g.ny},${src.g.nz},${src.g.slots};${src.origin};${box.lo};${box.hi}`;
+        if (c.liveCopyPlan?.key !== key) c.liveCopyPlan = { key, runs: planSourceCopies(src, c, box) };
+        livePlan = c.liveCopyPlan.runs;
+      }
+      const runs = freshLive ? livePlan : planSourceCopies(src, c, box, (d) => {
         // A late static result cannot widen over a partial live/captured edge.
         if (rank < c.rank[d] || revision < c.revisions[d]) return false;
         c.rank[d] = rank; c.revisions[d] = revision;
@@ -200,11 +218,10 @@ export class WorldRenderSource {
         cells++; return true;
       }, (d) => {
         for (let i = d; i < d + 64; i++) if (rank < c.rank[i] || revision < c.revisions[i]) return null;
-        c.rank.fill(rank, d, d + 64); c.revisions.fill(revision, d, d + 64);
-        c.pending.fill(rank === SOURCE_RANK.captured ? revision : 0, d, d + 64);
-        if (rank >= SOURCE_RANK.captured) c.aux.fill((src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0), d, d + 64);
-        cells += 64; return true;
+        setRange(d, 64); return true;
       });
+      if (freshLive) for (const r of runs) setRange(r.dst, r.cells);
+      if (runs.length) c.highestRevision = Math.max(c.highestRevision, revision);
       recordSourceCopies(frame, src, c, runs);
       // Absence is explicit zero, not permission to resurrect a previously
       // allocated auxiliary buffer. Disabled-but-kept aeration is discovered
@@ -264,8 +281,11 @@ export class WorldRenderSource {
     if (this.disposed) return;
     this.noteContentChange();
     this.minimumStaticRevision = this.revision;
-    for (const c of this.chunks.values()) for (let i = 0; i < c.rank.length; i++) if (c.rank[i] === SOURCE_RANK.generated) {
-      c.rank[i] = SOURCE_RANK.unknown; c.revisions[i] = this.revision;
+    for (const c of this.chunks.values()) {
+      for (let i = 0; i < c.rank.length; i++) if (c.rank[i] === SOURCE_RANK.generated) {
+        c.rank[i] = SOURCE_RANK.unknown; c.revisions[i] = this.revision;
+      }
+      c.highestRevision = Math.max(c.highestRevision, this.revision);
     }
   }
   recordStore(bounds, token = this.token()) {
@@ -281,6 +301,7 @@ export class WorldRenderSource {
         if (c.rank[d] > SOURCE_RANK.saved || c.revisions[d] > token.revision) return false;
         c.rank[d] = SOURCE_RANK.saved; c.revisions[d] = token.revision; return true;
       });
+      if (runs.length) c.highestRevision = Math.max(c.highestRevision, token.revision);
       // Uploaded immutable store bytes only. Live state never reaches the CPU.
       for (const r of runs) for (const name of ['A', 'B']) this.gpu.write(c[name], r.dst * 16, words[name].subarray(r.src * 4, (r.src + r.cells) * 4));
     }

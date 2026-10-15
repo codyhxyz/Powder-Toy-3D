@@ -84,6 +84,36 @@ check('complete A/B capture preserves all original words and auxiliary planes', 
     assert.equal(wordView(out.chunk.deco.buffer)[out.slot], wordView(live.deco.buffer)[s]);
   }
 });
+check('bulk LIVE metadata never bypasses a newer partial source revision', () => {
+  const f = fixture(); fillState(f);
+  const src = snapshotSource(f.sim), p = [...src.origin], bounds = { lo: p, hi: p.map((v) => v + 1) };
+  f.source.recordPopulate(f.frame, { ...src, kind: 'saved', bounds }, { epoch: f.source.epoch, revision: 1000 });
+  f.flush();
+  const original = stateWords(f.source.getSource(p).chunk, 'A', p);
+  fillState(f, 700);
+  f.source.recordLiveCopy(f.frame, f.sim); f.flush();
+  const protectedCell = f.source.getSource(p);
+  assert.equal(protectedCell.kind, 'saved'); assert.equal(protectedCell.revision, 1000);
+  assert.deepEqual(stateWords(protectedCell.chunk, 'A', p), original);
+  assert.equal(f.source.getSource([p[0] + 1, p[1], p[2]]).kind, 'live');
+  f.source.revision = 1000;
+  f.source.recordLiveCopy(f.frame, f.sim); f.flush();
+  assert.equal(f.source.getSource(p).kind, 'live');
+  assert.deepEqual(stateWords(f.source.getSource(p).chunk, 'A', p), stateWords(snapshotSource(f.sim), 'A', p));
+});
+check('cached live geometry reuses plans across cur changes but not origin changes', () => {
+  const f = fixture(); fillState(f);
+  f.source.recordLiveCopy(f.frame, f.sim); f.flush();
+  const core = f.source.getSource([32, 0, 32]).chunk, first = core.liveCopyPlan;
+  f.sim.cur = 0; fillState(f, 800);
+  f.source.recordLiveCopy(f.frame, f.sim); f.flush();
+  assert.equal(core.liveCopyPlan, first);
+  assert.deepEqual(stateWords(core, 'B', [32, 0, 32]), stateWords(snapshotSource(f.sim), 'B', [32, 0, 32]));
+  f.sim.origin.x += 16;
+  f.source.recordLiveCopy(f.frame, f.sim); f.flush();
+  assert.notEqual(core.liveCopyPlan, first);
+  assert.deepEqual(stateWords(core, 'A', [48, 0, 32]), stateWords(snapshotSource(f.sim), 'A', [48, 0, 32]));
+});
 check('disabled-but-allocated aeration remains discoverable, while dropped aux cannot resurrect stale buffers', () => {
   const f = fixture(), previousUsage = globalThis.GPUBufferUsage;
   globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 0x04, COPY_DST: 0x08, INDIRECT: 0x100 };
