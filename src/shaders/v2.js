@@ -687,6 +687,17 @@ ${MAIN} {
     oldBanks[i] = bs[i];
   }
   ${contactWGSL === productionContactWGSL ? `
+  // Canonical full WATER at matching 20 C is also an exact identity. Flux
+  // belongs to the later liquid passes: preserve all 48 packed bits verbatim.
+  // Test the first word so ordinary AIR pays no extra scan.
+  if (cs[0].x == ((1173u << 8u) | ${E.WATER}u) && P.ambient == 20.0) {
+    var zeroWater = blockCount == 8u;
+    for (var k = 0u; k < blockCount; k++) {
+      if (!inGrid(positions[k]) || cs[k].x != ((1173u << 8u) | ${E.WATER}u) || cs[k].y != ${FULL}u ||
+          (cs[k].w & 0xffff0000u) != 0u || bs[k] != 0 || pending[k] != 0u) { zeroWater = false; }
+    }
+    if (zeroWater) { return; }
+  }
   // Proven zero-work domain, NOT a generic all-AIR skip. Custom contact
   // injections (including the ABI probe) have no such no-op guarantee.
   let rawTq = (cs[0].x >> 8u) & 65535u;

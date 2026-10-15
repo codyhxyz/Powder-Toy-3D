@@ -61,7 +61,7 @@ CO2 fraction and combustion oxygen ratio/ceiling use all six faces. Heat,
 reactions, plume, phase and sampled cloud/growth contacts still use owned faces.
 Out-of-grid faces retain `cellAt`'s WALL sentinel even at open outflow edges.
 
-R5 can return before motion/contact only for a proven zero-work block: all eight
+One proven zero-work domain lets R5 return before motion/contact: all eight
 resolved positions are in-grid, all cores are exactly `vec4u(rawTq << 8, 0, 0, 0)`
 with the same normal `rawTq <= 41093`, and every bank and pending request is zero.
 This excludes opaque history, high flags, life, velocity, latent codes and heat
@@ -76,6 +76,21 @@ legacy/dirty marks. The specialization is emitted only for the exact production
 full execution. Support still snapshots every target, including AIR halo cells
 that other material may occupy after motion. `tools/v2/block-air-zero-check.mjs`
 checks all 41,094 normal temperature codes against full production contacts.
+
+A separate exact-production-only identity covers **eight full WATER cells at
+20°C**: every resolved position is valid, core word 0 is exactly
+`(1173 << 8) | WATER` (no aeration), word 1 is exactly `65536` (zero ctype),
+word 3's upper half is zero (no life/voltage), and all banks/requests are zero.
+`P.ambient` must be exactly `20.0`, even with closed edges or ambient heat off.
+All 48 packed flux bits (word 2 and word 3's low half) are allowed and preserved
+verbatim. Uniform WATER cannot topple, exchange equal density, age as gas, or
+activate contact/boundary rules in this narrow state. Mixed AIR/WATER blocks,
+other temperatures, partial fills and other payloads still execute every rule.
+Support snapshots and the later liquid passes are **not** skipped.
+`tools/v2/block-water-zero-check.mjs` executes the emitted predicate and real
+production contacts/boundaries, checks mechanical/store guards and pins the
+WATER rule rows. It is a CPU identity proof, not a full native-block interpreter,
+GPU replay or performance measurement.
 
 The low byte is transient: no liquid consumer runs between Support and Limit.
 Limit fully rewrites each active cell's scratch for **both** liquid and nonliquid
