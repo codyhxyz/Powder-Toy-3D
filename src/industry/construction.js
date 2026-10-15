@@ -4,7 +4,7 @@ import { RING_LAYOUT, ringWGSL } from '../shaders/povBody.js';
 import { baseMaterial } from './catalog.js';
 import { deviceHeight } from './validation.js';
 
-const Params = uniformStruct('IndustryConstruction', { at: 'vec3i', material: 'i32', mode: 'u32', slot: 'u32', height: 'i32' });
+const Params = uniformStruct('IndustryConstruction', { at: 'vec3i', material: 'i32', mode: 'u32', slot: 'u32', height: 'i32', hearth: 'u32', rotation: 'u32' });
 // One invocation tests the entire machine before writing any cell. Unlike a
 // brush or sixteen independent transfers this cannot leave half a paid deck.
 export const constructionWGSL = g => /* wgsl */ `
@@ -12,6 +12,15 @@ ${prelude(g, STATE_OPTS.STATE_RW)}
 ${Params.wgsl}
 @group(3) @binding(1) var<uniform> P: IndustryConstruction;
 ${ringWGSL()}
+fn hearthStructureCell(x: i32, y: i32, z: i32) -> bool {
+  return y == 0 || (y >= 1 && y <= 3 && (x == 0 || x == 3 || z == 0 || (z == 3 && y == 1)));
+}
+fn rotateLocal(x: i32, z: i32) -> vec2i {
+  if (P.rotation == 1u) { return vec2i(3 - z, x); }
+  if (P.rotation == 2u) { return vec2i(3 - x, 3 - z); }
+  if (P.rotation == 3u) { return vec2i(z, 3 - x); }
+  return vec2i(x, z);
+}
 @compute @workgroup_size(1)
 fn main() {
   var clear = true;
@@ -22,15 +31,29 @@ fn main() {
   } } }
   // 0 probe, 1 place, 2 dismantle. Removal never erases fallen ore or liquid.
   if ((clear && P.mode == 1u) || P.mode == 2u) {
-    for (var z = 0; z < 4; z++) { for (var x = 0; x < 4; x++) {
-      let c = P.at + vec3i(x,0,z);
-      if (!inGrid(c)) { continue; }
-      let a = fetchA(c); let b = fetchB(c);
-      if (P.mode == 2u && eid(a) != P.material) { continue; }
-      let id = select(P.material, E_EMPTY, P.mode == 2u);
-      let out = vec4f(f32(id), airT(), 0.0, fract(a.w));
-      if (writeCell(c, a, b, fetchF(c), out, vec4f(0.0,0.0,0.0,b.w))) { markBrick(brickId(c >> vec3u(2u))); }
-    } }
+    if (P.hearth != 0u) {
+      for (var z = 0; z < 4; z++) { for (var y = 0; y < 4; y++) { for (var x = 0; x < 4; x++) {
+        if (!hearthStructureCell(x, y, z)) { continue; }
+        let r = rotateLocal(x, z);
+        let c = P.at + vec3i(r.x, y, r.y);
+        if (!inGrid(c)) { continue; }
+        let a = fetchA(c); let b = fetchB(c);
+        if (P.mode == 2u && eid(a) != P.material) { continue; }
+        let id = select(P.material, E_EMPTY, P.mode == 2u);
+        let out = vec4f(f32(id), airT(), 0.0, fract(a.w));
+        if (writeCell(c, a, b, fetchF(c), out, vec4f(0.0,0.0,0.0,b.w))) { markBrick(brickId(c >> vec3u(2u))); }
+      } } }
+    } else {
+      for (var z = 0; z < 4; z++) { for (var x = 0; x < 4; x++) {
+        let c = P.at + vec3i(x,0,z);
+        if (!inGrid(c)) { continue; }
+        let a = fetchA(c); let b = fetchB(c);
+        if (P.mode == 2u && eid(a) != P.material) { continue; }
+        let id = select(P.material, E_EMPTY, P.mode == 2u);
+        let out = vec4f(f32(id), airT(), 0.0, fract(a.w));
+        if (writeCell(c, a, b, fetchF(c), out, vec4f(0.0,0.0,0.0,b.w))) { markBrick(brickId(c >> vec3u(2u))); }
+      } }
+    }
   }
   ringOut[P.slot] = vec4f(select(0.0, 1.0, clear || P.mode == 2u), 0.0, 0.0, 0.0);
 }`;
@@ -49,7 +72,8 @@ export function createConstruction(app) {
       if (app.sim !== sim || sim.disposed) return false;
       const slot = ring.next();
       sim._dispatch(kernel, [1, 1, 1], { bind: [sim.tables, sim.bindRW, group], header: sim.header(),
-        params: { at: [d.x, d.y, d.z], material: baseMaterial(d.type), mode, slot, height: deviceHeight(d) } });
+        params: { at: [d.x, d.y, d.z], material: baseMaterial(d.type), mode, slot, height: deviceHeight(d),
+          hearth: d.type === 'hearth' ? 1 : 0, rotation: d.rotation } });
       if (mode) { sim.version++; sim.wake(); }
       app.requestRender();
       // Also works on an explicitly parked test page, without a frame pump.

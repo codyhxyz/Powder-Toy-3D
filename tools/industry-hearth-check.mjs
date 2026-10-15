@@ -10,12 +10,12 @@ import { spawnSync } from 'node:child_process';
 import { E, ELEMENTS } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
 import { World } from '../src/ui/tiles/engine.js';
-import { deviceDirection } from '../src/industry/catalog.js';
+import { deviceCell, deviceDirection } from '../src/industry/catalog.js';
 import {
   HEARTH_ENERGY_PER_LIFE, HEARTH_FUEL_IDS, HEARTH_IGNITION_MARGIN,
   HEARTH_IGNITION_TARGET, HEARTH_IGNITION_TEMPERATURE, HEARTH_LAYOUT,
   HEARTH_MAX_FUEL_TEMPERATURE, HEARTH_MAX_STEP_SECONDS, HEARTH_STEPS_PER_SECOND,
-  hearthFuelBudget, hearthRegions,
+  hearthFuelBudget, hearthRegions, hearthStructureCells,
 } from '../src/industry/hearth.js';
 import { HEARTH_UNIFORM_FIELDS, hearthUpdateWGSL } from '../src/shaders/hearth.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../src/shaders/industry.js';
@@ -41,17 +41,28 @@ check(coalNativeBudget >= sixTungstenFaceLoss,
 
 for (let rotation = 0; rotation < 4; rotation++) {
   const device = { x: 20, y: 8, z: 30, rotation };
-  const regions = hearthRegions(device);
-  check(regions.fuel.length === 12 && regions.charge.length === 24 && regions.outlet.length === 12 && regions.mouth.length === 12,
-    `rotation ${rotation}: fuel, charge, spout, and mouth capacities are fixed`);
+  const regions = hearthRegions(device), structure = hearthStructureCells(device);
+  check(regions.fuel.length === 6 && regions.charge.length === 6 && regions.outlet.length === 4 && regions.mouth.length === 4,
+    `rotation ${rotation}: working regions match the physical firebox, charge bed, outlet, and mouth`);
+  check(structure.length === 48 && new Set(structure.map(c => c.join(','))).size === 48,
+    `rotation ${rotation}: the shell has 48 unique tungsten cells`);
   check(JSON.stringify(regions.outputDirection) === JSON.stringify(deviceDirection(device)), `rotation ${rotation}: output points forward`);
   const key = c => c.join(',');
   const fuel = new Set(regions.fuel.map(key)), charge = new Set(regions.charge.map(key)), outlet = new Set(regions.outlet.map(key));
-  check(![...fuel].some(p => charge.has(p) || outlet.has(p)) && ![...charge].some(p => outlet.has(p)), `rotation ${rotation}: fuel, charge, and outlet do not overlap`);
-  for (const region of [regions.fuel, regions.charge, regions.outlet]) for (const [x, y, z] of region) {
-    check(x >= device.x && x < device.x + 4 && y >= device.y + 1 && y <= device.y + 3 && z >= device.z && z < device.z + 4,
-      `rotation ${rotation}: internal zones fit the existing working volume`);
+  const shell = new Set(structure.map(key));
+  check(![...fuel].some(p => charge.has(p) || outlet.has(p) || shell.has(p))
+    && ![...charge].some(p => outlet.has(p) || shell.has(p)) && ![...outlet].some(p => shell.has(p)),
+    `rotation ${rotation}: fuel, charge, outlet, and shell do not overlap`);
+  for (const [x, y, z] of [...regions.fuel, ...regions.charge, ...regions.outlet, ...structure]) {
+    check(x >= device.x && x < device.x + 4 && y >= device.y && y < device.y + 4 && z >= device.z && z < device.z + 4,
+      `rotation ${rotation}: every shell/working cell fits the existing 4×4×4 volume`);
   }
+  const expectedStructure = [];
+  for (let y = 0; y < 4; y++) for (let z = 0; z < 4; z++) for (let x = 0; x < 4; x++)
+    if (y === 0 || (y >= 1 && (x === 0 || x === 3 || z === 0 || (z === 3 && y === 1))))
+      expectedStructure.push(deviceCell(device, x, y, z));
+  check(JSON.stringify(structure.map(key).sort()) === JSON.stringify(expectedStructure.map(key).sort()),
+    `rotation ${rotation}: shell follows the approved open-top floor/wall/lip shape`);
 }
 
 const cold = { id: E.COAL, temperature: 20, life: 1 };

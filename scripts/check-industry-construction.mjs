@@ -1,5 +1,9 @@
 // CPU-only; no browser or GPU. Run: node scripts/check-industry-construction.mjs
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } from '../src/industry/validation.js';
 import { DEVICE_TYPES, QUARRY_STARTERS, baseMaterial, deviceCell, deviceDirection } from '../src/industry/catalog.js';
 import { E } from '../src/elements.js';
@@ -54,7 +58,17 @@ const code=constructionWGSL({nx:128,ny:128,nz:128});
 assert(code.includes('@workgroup_size(1)'));
 assert(code.includes('clear && P.mode == 1u'));
 assert(code.includes('P.mode == 2u && eid(a) != P.material'));
+assert(code.includes('hearthStructureCell(x, y, z)'));
+assert(code.includes('rotateLocal(x, z)'));
 assert.equal(WGSL_CHECK[0].name,'industryConstruction');
+const nagaDir=mkdtempSync(join(tmpdir(),'industry-construction-wgsl-'));
+try {
+  const shader=join(nagaDir,'industry-construction.wgsl');
+  writeFileSync(shader,WGSL_CHECK[0].code({nx:128,ny:128,nz:128}));
+  const naga=spawnSync('naga',[shader],{encoding:'utf8'});
+  if(naga.error?.code==='ENOENT') throw new Error('Install naga-cli for CPU-only construction WGSL validation; no browser fallback.');
+  assert.equal(naga.status,0,`Naga must accept the actual exported construction kernel:\n${naga.stdout}\n${naga.stderr}`);
+} finally { rmSync(nagaDir,{recursive:true,force:true}); }
 
 let loaded=0, absent=0, validated=0;
 registerSaveSection('test-legacy',{save:()=>({old:true}),load:()=>loaded++,absent:()=>absent++});

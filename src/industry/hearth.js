@@ -25,16 +25,17 @@ export const HEARTH_MAX_STEP_SECONDS = 0.1;
 export const HEARTH_STEPS_PER_SECOND = NOMINAL_STEP_RATE;
 
 // Coordinates are device-local and rotate with the existing 4×4 Industry
-// footprint. The tungsten deck is y=0; fuel sits in the rear row, charge in
-// the two middle rows, and molten output leaves through the front row (+z).
+// footprint. The refractory floor is y=0; fuel occupies the inside rear row,
+// charge the next inside row, and molten output leaves through the front (+z).
 export const HEARTH_LAYOUT = Object.freeze({
   footprint: 4,
   height: 4,
   deckY: 0,
-  fuel: Object.freeze({ x: Object.freeze([0, 3]), y: Object.freeze([1, 3]), z: Object.freeze([0, 0]) }),
-  charge: Object.freeze({ x: Object.freeze([0, 3]), y: Object.freeze([1, 3]), z: Object.freeze([1, 2]) }),
-  outlet: Object.freeze({ x: Object.freeze([0, 3]), y: Object.freeze([1, 3]), z: Object.freeze([3, 3]) }),
-  mouth: Object.freeze({ x: Object.freeze([0, 3]), y: Object.freeze([1, 3]), z: Object.freeze([4, 4]) }),
+  structure: Object.freeze({ floorY: 0, wallY: Object.freeze([1, 3]), sideX: Object.freeze([0, 3]), rearZ: 0, frontZ: 3, frontLipY: 1 }),
+  fuel: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([1, 3]), z: Object.freeze([1, 1]) }),
+  charge: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([1, 3]), z: Object.freeze([2, 2]) }),
+  outlet: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([2, 3]), z: Object.freeze([3, 3]) }),
+  mouth: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([2, 3]), z: Object.freeze([4, 4]) }),
   outputDirection: Object.freeze([0, 0, 1]),
 });
 
@@ -42,11 +43,34 @@ export const HEARTH_LAYOUT = Object.freeze({
  * four-cell mouth regions. The mouth is just beyond the existing footprint;
  * all other regions are inside its 4×4×4 working volume.
  */
-export function hearthRegions(device) {
+function validateHearthDevice(device) {
   if (!device || ![device.x, device.y, device.z, device.rotation].every(Number.isInteger)
       || device.rotation < 0 || device.rotation > 3) {
     throw new TypeError('A hearth needs integer coordinates and rotation 0–3');
   }
+}
+
+function isHearthStructureCell(x, y, z) {
+  const s = HEARTH_LAYOUT.structure;
+  if (y === s.floorY) return true;
+  if (y < s.wallY[0] || y > s.wallY[1]) return false;
+  return x === s.sideX[0] || x === s.sideX[1] || z === s.rearZ
+    || (z === s.frontZ && y === s.frontLipY);
+}
+
+/** Return the 48 rotated tungsten cells of the open-top physical shell. */
+export function hearthStructureCells(device) {
+  validateHearthDevice(device);
+  const out = [];
+  for (let y = 0; y < HEARTH_LAYOUT.height; y++) for (let z = 0; z < HEARTH_LAYOUT.footprint; z++)
+    for (let x = 0; x < HEARTH_LAYOUT.footprint; x++) {
+      if (isHearthStructureCell(x, y, z)) out.push(deviceCell(device, x, y, z));
+    }
+  return out;
+}
+
+export function hearthRegions(device) {
+  validateHearthDevice(device);
   const cells = region => {
     const out = [];
     for (let z = region.z[0]; z <= region.z[1]; z++)
