@@ -55,6 +55,27 @@ try {
           engine[method]=async(...args)=>{
             note({stage:method+'-start',args});
             const value=await original(...args);
+            if(method==='read' && testName==='hole') {
+              // Observe existing readback only: no extra step, GPU copy or changed criterion.
+              const g=value,ps=g.particles.filter(p=>engine.kindOf(p.id)==='liquid');
+              const flight=xs=>xs.reduce((s,p)=>({count:s.count+1,mass:s.mass+p.mass,
+                maxX:s.count?Math.max(s.maxX,p.x):p.x,maxVx:s.count?Math.max(s.maxVx,p.vx):p.vx}),
+                {count:0,mass:0,maxX:null,maxVx:null});
+              const band=[6,7,8].map(y=>{
+                let mass=0,weightedX=0;
+                for(let z=2;z<=4;z++)for(let x=9;x<g.nx;x++){
+                  const a=g.gridAmount[x+g.nx*(z+g.nz*y)];mass+=a;weightedX+=a*(x+0.5-9);
+                }
+                return {y,gridMass:mass,gridX:mass?weightedX/mass:null,
+                  flight:flight(ps.filter(p=>Math.floor(p.y)===y&&p.z>=2&&p.z<5&&p.x>=9&&p.x<g.nx))};
+              });
+              const mouth=[];
+              for(const x of [7,8,9])for(const y of [13,14,15]){
+                const s=x+g.nx*(3+g.nz*y);
+                mouth.push({x,y,id:engine.nameOf(g.id[s]),mass:g.gridAmount[s],moving:g.moving[s]});
+              }
+              note({stage:'hole-state',time:engine.time,flight:flight(ps),band,mouth});
+            }
             note({stage:method+'-ready',steps:engine.steps});
             return value;
           };
