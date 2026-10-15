@@ -160,7 +160,7 @@ async function run(o) {
     gitStatus = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
   } catch { /* URL-only runs need not have Git */ }
   const toolHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
-  const report = { schema: 1, createdAt: new Date().toISOString(), toolCommit: commit, gitStatus, toolHash, options: o,
+  const report = { schema: 1, complete: false, createdAt: new Date().toISOString(), toolCommit: commit, gitStatus, toolHash, options: o,
     parity: 'NON-PARITY: v2 is missing physics. Comparison with v1 is not equivalent work until the full physics suite passes.',
     methodology: [
       'Serialized frame latency, not live-loop FPS: parked app; v1 step(4) or v2 step(1), renderOnce(), gpu.fence().',
@@ -175,8 +175,18 @@ async function run(o) {
       'toolCommit identifies this checkout, not necessarily the build served by --url.',
     ], results: [], errors: [] };
   let vite, browser;
+  const checkpoint = (stage, result = report) => {
+    result.stage = stage;
+    console.error(`[frame-bench] ${stage}`);
+    if (o.out) {
+      mkdirSync(dirname(o.out), { recursive: true });
+      writeFileSync(o.out, JSON.stringify(report, null, 2) + '\n');
+    }
+  };
   try {
-    if (!o.url) vite = await startVite({ port: o.port ?? undefined });
+    checkpoint('CPU import preparation');
+    if (!o.url) vite = await startVite({ port: o.port ?? undefined, warmupEntries: ['/src/main.js'] });
+    checkpoint('GPU acquisition');
     // Both resources are inside this try: a launch failure must still close Vite.
     browser = await launchBrowser();
     report.browserVersion = browser.version();
@@ -203,11 +213,15 @@ async function run(o) {
         url.search = ''; url.hash = '';
         for (const [k, v] of Object.entries({ size: '128', preset: 'empty', view: o.view, physics: engine, test: 'visual', paused: '1' })) url.searchParams.set(k, v);
         result.url = url.href;
+        checkpoint(`${scene}/${engine}: navigation`, result);
         await page.goto(url.href);
+        checkpoint(`${scene}/${engine}: app readiness`, result);
         await ready(page);
+        checkpoint(`${scene}/${engine}: pipeline readiness`, result);
         await page.evaluate(async () => { const a = window.__app; a.test.park(); await a.test.ready(); await a.physics.v2?.ready; });
         result.adapter = await gpuInfo(page); // helper rejects fallback adapters on macOS
         await page.addScriptTag({ content: `window.__frameBenchFixture = ${buildFixture.toString()};` });
+        checkpoint(`${scene}/${engine}: fixture upload`, result);
         result.fixture = await page.evaluate(async ({ engine, compactPath, scene, seed }) => {
           const a = window.__app;
           if (a.physics.mode !== engine || (engine === 'v2' && !a.physics.active)) throw new Error('Wrong physics engine');
@@ -233,6 +247,7 @@ async function run(o) {
           if (!a.view.volumeDrawn) throw new Error('Scene renderer did not draw');
           return fixture.meta;
         }, { engine, compactPath, scene, seed: o.seed });
+        checkpoint(`${scene}/${engine}: warmup and measurement`, result);
         result.run = await page.evaluate(async ({ engine, compactPath, frames, warmup, split }) => {
           const a = window.__app, gpu = a.gpu, timing = gpu.timing;
           const stepCount = engine === 'v1' ? 4 : 1;
@@ -301,6 +316,7 @@ async function run(o) {
         const peer = report.results.find(r => r !== result && r.scene === scene && r.fixture);
         if (peer && peer.fixture.hash !== result.fixture.hash) throw new Error('Initial CPU fixtures differ');
         console.error(`${split ? 'SPLIT DIAGNOSTIC' : 'UNSPLIT'} ${scene}/${engine}${compactPath ? `/${compactPath}` : ''}: wall p50 ${result.summary.wallMs.p50.toFixed(2)} ms, p95 ${result.summary.wallMs.p95.toFixed(2)} ms (NON-PARITY)`);
+        checkpoint(`${scene}/${engine}: complete`, result);
       } catch (e) {
         result.errors.push(e.stack ?? String(e));
         // Preserve already completed raw frames if a later frame fails.
@@ -317,6 +333,7 @@ async function run(o) {
       try { await resource.close(); } catch (e) { report.errors.push(`cleanup: ${e.stack ?? e}`); }
     }
   }
+  report.complete = !report.errors.length && report.results.every(r => !r.errors.length);
   const json = JSON.stringify(report, null, 2) + '\n';
   if (o.out) { mkdirSync(dirname(o.out), { recursive: true }); writeFileSync(o.out, json); console.error(`Report: ${o.out}`); }
   else process.stdout.write(json);
