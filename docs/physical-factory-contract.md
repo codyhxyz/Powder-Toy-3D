@@ -33,8 +33,8 @@ The parent integrates modules after that wave.
 
 ## Hearth
 
-The new `hearth` shares the heater's four-cell footprint and working region.
-It has a tungsten base and ordinary physical fuel and charge cells.
+The new `hearth` uses a four-cell footprint and a four-cell-high reservation.
+It has a real 48-cell tungsten shell and ordinary physical fuel and charge cells.
 It does not change the behavior of the legacy `heater`.
 
 `src/industry/hearth.js` exports documented constants and pure geometry/budget helpers.
@@ -51,8 +51,16 @@ The device must ignite real fuel without requiring free Sandbox spawning.
 The charge still melts and cools through native phase-change rules.
 Do not directly convert scrap to molten metal.
 
-The agent defines an explicit fuel region, charge region, and safe output direction.
-The geometry must be buildable with existing refractory blocks.
+The atomic constructor places the shell, after checking all 64 reserved cells.
+The floor has 16 cells. The walls and raised front lip have 32 cells.
+`hearthStructureCells(device)` defines the rotated physical structure.
+Fuel occupies local x=1..2, y=1..3, z=1: six cells.
+Charge occupies local x=1..2, y=1..3, z=2: six cells.
+The outlet occupies local x=1..2, y=2..3, z=3: four cells.
+The mouth at z=4 is outside the reservation; it is not owned containment.
+The open top permits loading and extraction. The raised lip can retain a molten heel.
+Dismantling checks shell coordinates and material ID; it does not erase interior cargo.
+Other machines, including the legacy heater, retain their original 16-cell decks.
 Fuel cells retain authoritative temperature and remaining life in terrain saves.
 No hidden fuel counters are approved.
 The current calibration buys 300000 local heat units per fuel-life unit.
@@ -155,19 +163,20 @@ The report must distinguish module tests from a complete production-line test.
 
 No first-wave implementation agent starts a browser.
 The parent schedules GPU validation after integration.
-Each slot includes startup, compilation, assertions, and cleanup within ten seconds.
+Each slot includes startup, compilation, assertions, and cleanup within 25 seconds.
 If a required fixture cannot fit, report that limitation before changing its scope.
 
 ## Routing constraints
 
 The gate is a vertical shutter across a lateral outlet, not a horizontal hopper lid.
 Its opening does not push matter; use gravity, pressure, or an existing transport device.
-The hearth does not include invisible refractory walls.
-Build containment with existing tungsten foundations outside its working volume.
+The hearth shell consists of actual tungsten cells, not invisible refractory walls.
+The larger foundation-tub experiment failed to reach a useful charge temperature.
+The compact shell now passes native melting without that additional heat sink.
+Use existing foundations for external catches and channels, not a huge furnace lining.
 Keep the rear fuel row supplied and the front molten outlet clear.
-The current diagnostic fixture's internal one-cell baffle is not player-buildable.
-It is a thermal experiment, not an accepted construction plan.
-A buildable containment and refueling plan remains a release requirement.
+The old diagnostic fixture's painted internal baffle is not an accepted construction plan.
+Actual tool loading, ash clearing, and repeatable refueling remain release requirements.
 
 Cooled metal is a stationary solid; ordinary belts cannot carry it.
 Route molten metal to the shipping intake, then cool it there.
