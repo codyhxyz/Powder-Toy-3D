@@ -1,8 +1,6 @@
-// Descent's level switch (docs/descent-contract.md, "Events" and "D"). Every
-// level is its own world scene with a Holy Mountain at its bottom; walking
-// into the temple's exit loads the next level's scene in the same session (no
-// page reload) and puts the player at its spawn, run and all. Noita's seam:
-// biomes never touch, a Holy Mountain is always between.
+// Saved-terrain scenes hand off in inverse source space: vertical core seams
+// preserve position/motion; original native portals retain their endpoints.
+// Temple exit/spawn switching below remains only for legacy CPU fixtures.
 //
 // This file is plain logic, no three.js and no DOM, so a node check
 // (scripts/check-descent-switch.mjs) runs it: the app injects what loads a
@@ -10,6 +8,7 @@
 // createDescentRunner call). Positions are world cells (grid + sim.origin).
 
 import { BODY_HEIGHT, BODY_WIDTH } from '../constants.js';
+import { bandHandoff, nativePortalHandoff } from './terrainHandoff.js';
 
 export const NAME_SHOW_S = 2;          // s the level's name stays up on arrival (Noita shows the biome's name on entry for about this)
 export const WON_MENU_DELAY_S = 4;     // s "You reached the bottom" stays up before the map menu comes back
@@ -66,10 +65,16 @@ export function createDescentSwitch({ levels, emit }) {
     // alive in first person. Returns { from, next } (next null: that was the
     // last level) the frame the body enters the exit, else null. The exit fires
     // once per arrival.
-    update({ key: k, feet, live }) {
+    update({ key: k, feet, live, source = null }) {
       if (k !== key) { key = k; index = indexOf(k); inside = false; exited = false; }
       if (index < 0) return null;
-      const t = levels[index].temple;
+      const level = levels[index];
+      if (level.sourceRegion) {
+        if (!live || !source) return null;
+        const go = nativePortalHandoff(levels, level, source, feet) ?? bandHandoff(levels, level, source);
+        return go ? { from: index, ...go } : null;
+      }
+      const t = level.temple;
       const now = !!live && bodyInBox(feet, t?.box);
       if (now !== inside) { inside = now; emit('descent:temple', { level: index, inside }); }
       if (live && !exited && bodyInBox(feet, t?.exit)) {
@@ -105,13 +110,14 @@ export function createDescentRunner(deps) {
   const sw = createDescentSwitch({ levels, emit });
   let busy = false, arrivedFor = null;   // arrivedFor: the load (window) whose arrival was announced
 
-  async function descend(from, next) {
+  async function descend(from, next, transition = null) {
     busy = true;
     const before = deps.snapshot?.();
     try {
       overlay?.show('Descending…', `Leaving ${levels[from].name}`);
-      await deps.loadScene(next.key);
-      await deps.enterAt(next.spawn);
+      const arrival = transition?.source ? next.toWorld(transition.source) : next.spawn;
+      await deps.loadScene(next.key, arrival, transition);
+      await deps.enterAt(arrival, transition);
       arrivedFor = deps.loadId?.() ?? arrivedFor;
       sw.arrive(next.key);
       overlay?.show(next.name, `Level ${levels.indexOf(next) + 1}`, NAME_SHOW_S);
@@ -148,7 +154,7 @@ export function createDescentRunner(deps) {
     // one on a Descent scene that the body enters by hand (the map menu's
     // Descent, then F) gets its descent:level on its first live frame.
     // Returns the switch's promise when one starts, else null.
-    frame({ key, feet, live, load }) {
+    frame({ key, feet, live, load, source = null }) {
       if (busy) return null;
       if (live && sw.indexOf(key) >= 0 && arrivedFor !== load) {
         arrivedFor = load;
@@ -156,10 +162,10 @@ export function createDescentRunner(deps) {
         const lv = levels[sw.index];
         overlay?.show(lv.name, `Level ${sw.index + 1}`, NAME_SHOW_S);
       }
-      const go = sw.update({ key, feet, live });
+      const go = sw.update({ key, feet, live, source });
       if (!go) return null;
       if (!go.next) return win();
-      return descend(go.from, go.next);
+      return descend(go.from, go.next, go);
     },
   };
 }

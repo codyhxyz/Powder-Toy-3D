@@ -70,7 +70,6 @@ for (const bad of [
 ]) assert.throws(() => checkField(bad, 'fixture', fixtureValues), assert.AssertionError);
 
 assert.equal(PHASE_ROWS.length, ELEMENTS.length);
-assert.equal(PHASE_ROWS.length, 91);
 assert.equal(E.LAVA, 10, 'existing lava lookup source ID');
 // Independent existing CPU reference; no reads from the shader generator.
 const expected = {

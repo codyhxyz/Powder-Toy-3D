@@ -326,6 +326,17 @@ assert.equal(bucket.out, 1); assert.equal(await put, 1); assert.equal(bucket.out
 assert.deepEqual([...core.subarray(to * 4, to * 4 + 4)], material); assert.equal(bank[to], 0xffffff80);
 assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouched fractional material is bit-exact');
 
+// Folded-terrain band stores currently carry only the legacy projection.
+// Refuse before examining that store or changing exact native authority.
+assert(sim.compactOwner);
+const terrainCore = core.slice(), terrainBank = bank.slice();
+let terrainTouched = false;
+const terrainWindow = { sim, get loaded() { terrainTouched = true; throw new Error('legacy terrain touched'); } };
+await assert.rejects(WorldWindow.prototype.captureEdits.call(terrainWindow), /Native terrain edit capture is not supported/);
+await assert.rejects(WorldWindow.prototype.restoreEdits.call(terrainWindow, {}), /Native terrain edit restore is not supported/);
+assert.equal(terrainTouched, false);
+assert.deepEqual(core, terrainCore); assert.deepEqual(bank, terrainBank);
+
 const app = readFileSync('src/app.js', 'utf8');
 assert(app.includes("let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1'"), 'v1 remains default');
 assert(!app.includes("if (mode === 'v2' && !physicsV2 && !worldMode)"), 'no world-only v1 fallback');

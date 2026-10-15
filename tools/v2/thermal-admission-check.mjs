@@ -22,7 +22,6 @@ const STEPS = BigInt(PHASE_STEPS), NORMAL_MAX = BigInt(PHASE_NORMAL_MAX);
 const fills = [0, 1, FULL, MAX_FILL];
 const ctypes = Array.from({ length: 256 }, (_, i) => i);
 let maxCapacity = 0n, maxBucket = 0n, maxLatentProduct = 0n;
-assert.equal(ELEMENTS.length, 91);
 assert.equal(PHASE_ROWS.length, ELEMENTS.length);
 assert.equal(PHASE_NORMAL_MAX, 41093);
 assert.equal(PHASE_STEPS, 12220);

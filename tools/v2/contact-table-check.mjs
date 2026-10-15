@@ -9,6 +9,7 @@ import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout, appendContac
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { v2Table, v2Rows, v2BlockWGSL, V2_CONTACT_LAYOUT, nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { gridLayout } from '../../src/sim.js';
+import { ELEMENTS } from '../../src/elements.js';
 
 const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
 assert(block.includes('let count=min(8u,arrayLength(&events));'));
@@ -20,7 +21,7 @@ for(const dims of [[16,8,8],[32,32,32],[32,16,24],[128,128,128]]) {
   assert.equal(Math.min(8,g.slots),8,'every native block still processes all eight cells');
   assert.equal(Math.min(3,g.slots),3,'every native cell still visits all three neighbors');
 }
-assert.equal(CONTACT_ROWS.length,91);
+assert.equal(CONTACT_ROWS.length,ELEMENTS.length,'every material has a contact row');
 assert.equal(CONTACT_REACTIONS.length,14);
 const layout=contactTableLayout(CONTACT_ROWS.length,CONTACT_REACTIONS.length);
 // Independent prefix and stride expectations: all original EV offsets persist.
@@ -29,9 +30,9 @@ v2Rows().forEach((r,i)=>prefix.set([r.cls,r.drop,r.vt,r.dens,r.yieldHead,r.damp,
 const memory=v2Table(), bits=new Uint32Array(memory.buffer), signed=new Int32Array(memory.buffer);
 assert.equal(layout.rowOffset,prefix.length);
 assert.equal(layout.rowStride,40);
-assert.equal(layout.rxOffset,prefix.length+91*40);
+assert.equal(layout.rxOffset,prefix.length+ELEMENTS.length*40);
 assert.equal(layout.rxStride,12);
-assert.equal(memory.length,prefix.length+91*40+14*12);
+assert.equal(memory.length,prefix.length+ELEMENTS.length*40+14*12);
 assert.deepEqual(bits.slice(0,prefix.length),new Uint32Array(prefix.buffer),'EV prefix raw bits unchanged');
 assert.deepEqual(bits,new Uint32Array(appendContactTable(prefix,CONTACT_ROWS,CONTACT_REACTIONS).buffer));
 assert.throws(()=>appendContactTable(prefix.subarray(1),CONTACT_ROWS,CONTACT_REACTIONS),/prefix length/);

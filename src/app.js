@@ -1671,6 +1671,7 @@ function setBlocks(on) {
 }
 
 async function undo() {
+  if (ctx.descent?.terrainPending) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;
@@ -2475,13 +2476,16 @@ function updateFrameDetail() {
 // whether the loop should go on (false: nothing to do until something wakes it).
 function tick(now, renderOnly = false) {
   if (graphicsFailure) throw graphicsFailure;
+  // A terrain handoff drains GPU snapshots/restores, but no state writer may
+  // run meanwhile (paused alone still allows tools, scripts and stepOnce).
+  renderOnly ||= !!ctx.descent?.terrainPending;
   settledSleep = false;
   if (!coreReady) return false;   // (the grid's pipelines wake the loop when they are built)
   if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, { kind: 'hint', ms: CAP_NOTICE_MS });
   const t0 = performance.now();
   lastIdle = false;
   // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
-  if (!renderOnly && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
+  if ((!renderOnly || ctx.descent?.terrainPending) && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
   if (prof.on !== settings.profiler) applyProfiler();
   applyOutputRatio();
   prof.beginFrame(now);
@@ -2499,7 +2503,13 @@ function tick(now, renderOnly = false) {
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
     const nativeSpeed = settings.steps / DEFAULTS.steps;
     ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed)))) : null;
-    for (const w of live) if (!mp.replica || w.name === 'pov' || w.name === 'mp') w.beforeStep?.(ctx, sim.nativeTransition || sim.nativeTransitionError ? 0 : dt);   // the body, Descent's level switch
+    for (const w of live) {
+      if (ctx.descent?.terrainPending) break;
+      if (!mp.replica || w.name === 'pov' || w.name === 'mp') w.beforeStep?.(ctx, sim.nativeTransition || sim.nativeTransitionError ? 0 : dt);
+    }
+    // The switch can start in the hooks above: gate the very same tick too.
+    if (ctx.descent?.terrainPending) { renderOnly=true; ctx.renderOnly=true; }
+    if (!renderOnly) {
     // (after the body's update, which can leave it: then the god view moves this tick)
     if (!pov?.active) {
       rig.update(dt);
@@ -2520,6 +2530,7 @@ function tick(now, renderOnly = false) {
       strokePainted = true;
     } else windFromValid = false;
     if (releasePending) painting = releasePending = false;   // (the button went up before this tick: its one paint)
+    }
   }
   prof.phase('sim');
   if (physicsV2?.isReady) {
@@ -2555,7 +2566,7 @@ function tick(now, renderOnly = false) {
   if (!renderOnly && stepping && stepped > 0) nativeRayStroke = null;
   if (!renderOnly && !mp.replica) scripts?.endFrame();
   updateSun();
-  for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
+  if (!ctx.descent?.terrainPending) for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
   if (settings.time !== timeShown) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();

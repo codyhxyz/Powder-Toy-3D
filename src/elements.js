@@ -1148,6 +1148,21 @@ const defs = [
   { key: 'EMBER', abbr: 'EMBR', name: 'Embers', kind: K.SOLID, render: R.OPAQUE, color: '#c2502a', var: 0.15,
     cond: 0.01, cap: 0.4, hard: 3, breakInto: 'BROKENCOAL', sound: 'crack',
     desc: 'Embers. Smouldering coal glowing a dull orange in the dark. It gives light but no heat: it never spreads and never burns out.' },
+  // Native Noita terrain classes. Append to preserve all existing saved IDs.
+  // Base colors are means of the native material textures, not Wang mask colors.
+  // Snowrock is opaque ROCK, not meltable glass/ICE. Lush soil must stay solid.
+  { key: 'NOITA_SNOWROCK', abbr: 'NSRK', name: 'Noita snow rock', kind: K.SOLID, render: R.OPAQUE, color: '#3f5a77', var: 0.12,
+    cond: 0.03, cap: 0.5, hard: 21, breakInto: 'STONE', temp: -12,
+    desc: 'Blue rock from Noita. Opaque bedrock, not ice. Holds its shape and does not melt at zero degrees.' },
+  { key: 'NOITA_VAULT', abbr: 'NVRK', name: 'Noita Vault rock', kind: K.SOLID, render: R.OPAQUE, color: '#34483b', var: 0.12,
+    cond: 0.03, cap: 0.5, hard: 40, breakInto: 'STONE',
+    desc: 'Dark green rock from Noita’s Vault. Solid, breakable bedrock.' },
+  { key: 'NOITA_TEMPLE', abbr: 'NTRK', name: 'Noita temple stone', kind: K.SOLID, render: R.OPAQUE, color: '#4e4730', var: 0.12,
+    cond: 0.03, cap: 0.5, hard: 60, breakInto: 'STONE',
+    desc: 'Ochre temple stone from Noita. Solid, breakable masonry.' },
+  { key: 'NOITA_LUSH', abbr: 'NSOL', name: 'Noita lush soil', kind: K.SOLID, render: R.OPAQUE, color: '#6d8d32', var: 0.14,
+    cond: 0.03, cap: 0.5, hard: 15, breakInto: 'SAND', mossBed: true,
+    desc: 'Green soil from Noita’s Jungle. Solid ground, not loose sand.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
