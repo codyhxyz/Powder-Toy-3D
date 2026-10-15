@@ -211,6 +211,26 @@ GPU load does not establish that the user is playing.
 
 Interrupted runs do not establish complete accounting of outstanding loads and pending transfers.
 
+### Authorized verification attempts: infrastructure failures
+
+The user approved one line run and one UI run with only the utilization check bypassed.
+Both retained slot locking, ownership checks, watchdogs, and the 25-second cap.
+
+- The line attempt stopped before assertions because the watchdog's process-table query timed out.
+  It could not verify process ownership and closed fail-safe.
+  Total slot occupancy: **5303 ms**.
+  Report: `~/.cache/tpt-headless/runs/75077-75211.json`.
+- The operations UI attempt exceeded its seven-second app-ready deadline.
+  It reported no page exceptions; the optional local AI-quota endpoint was unavailable.
+  Total slot occupancy: **9680 ms**.
+  Report: `~/.cache/tpt-headless/runs/75845-75867.json`.
+
+These attempts supply no new gameplay assertions.
+The UI runner now allows twelve seconds for cold pipeline startup within its unchanged twenty-second work window.
+It also waits for actual Factory mode before interacting.
+The ownership safeguard is unchanged.
+Both utilization-check approvals were consumed.
+
 ## Open requirements
 
 - Diagnose the coolant hold/release and pump failure.

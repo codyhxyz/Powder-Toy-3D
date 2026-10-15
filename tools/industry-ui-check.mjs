@@ -36,11 +36,11 @@ async function bounded(label, fn, maxMs = 1_500) {
 const waitFor = (page, label, predicate, argValue, maxMs = 1_200) => bounded(label, () =>
   page.waitForFunction(predicate, argValue, { polling: 50, timeout: Math.min(maxMs, remaining()) }), maxMs + 100);
 const placeableTypes = Object.keys(DEVICE_TYPES).filter(type => !DEVICE_TYPES[type].factoryLegacy);
-let browser;
+let browser, page;
 const pageErrors = [], browserFailures = [];
 try {
   browser = await launchBrowser({ lifetimeMs: 24_500 });
-  const page = await newTestPage(browser, { mode: 'ui', viewport: { width: 1280, height: 800 } });
+  page = await newTestPage(browser, { mode: 'ui', viewport: { width: 1280, height: 800 } });
   page.setDefaultTimeout(1_000);
   page.setDefaultNavigationTimeout(3_000);
   page.on('pageerror', error => pageErrors.push(String(error)));
@@ -52,9 +52,13 @@ try {
   url.pathname = '/';
   url.search = '?map=quarry&mode=factory&view=plain';
   await bounded('navigate', () => page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 3_000 }), 3_200);
-  await bounded('app ready', () => ready(page), 7_000);
+  // __app is published only after the real grid/render pipelines compile.
+  // Let cold startup use more of the existing work window, never a longer slot.
+  await bounded('app ready', () => ready(page), 12_000);
   await bounded('fonts ready', () => page.evaluate(() => document.fonts.ready), 1_000);
-  await waitFor(page, 'Industry graphics ready', () => window.__app?.scene.getObjectByName('Industry')?.visible, null, 4_000);
+  await waitFor(page, 'Factory Industry ready', () => window.__app?.current().mode === 'factory'
+    && window.__app.industry?.state.progression
+    && window.__app.scene.getObjectByName('Industry')?.visible, null, 4_000);
   await bounded('park and camera fixture', () => page.evaluate(() => {
     const a = window.__app;
     a.test.park();
@@ -183,7 +187,9 @@ try {
       return targets.map(([x, y, z]) => {
         const p = new a.THREE.Vector3(x + .5, y + .5, z + .5).multiplyScalar(a.scale)
           .add(a.volume.position).project(a.camera);
-        return { cell: [x, y, z], x: (p.x + 1) * innerWidth / 2, y: (1 - p.y) * innerHeight / 2 };
+        const px = (p.x + 1) * innerWidth / 2, py = (1 - p.y) * innerHeight / 2;
+        return { cell: [x, y, z], x: px, y: py,
+          onCanvas: document.elementFromPoint(px, py) === a.renderer.domElement };
       });
     }, cells));
     const framePair = () => bounded('wait for normal app frames', () => page.evaluate(() => new Promise(resolve =>
@@ -199,7 +205,7 @@ try {
         if (x < nx && y < ny && z < nz) points.push([x, y, z]);
       }
       for (const point of await project(points)) {
-        if (point.x < 380 || point.x >= 1275 || point.y < 70 || point.y >= 795) continue;
+        if (!point.onCanvas || point.x < 380 || point.x >= 1275 || point.y < 70 || point.y >= 795) continue;
         await bounded(`move to ${key} canvas target`, () => page.mouse.move(point.x, point.y), 700);
         await framePair();
         const candidate = await page.evaluate(() => {
@@ -257,6 +263,7 @@ try {
       assert(device, `registered ${type} exists`);
       const aim = (await project([[device.x + 1, device.y, device.z + 1]]))[0];
       assert(aim.x > 380 && aim.x < 1275 && aim.y > 70 && aim.y < 795, `${type} fixture projects onto the canvas`);
+      assert(aim.onCanvas, `${type} fixture is not covered by a UI panel`);
       await bounded(`aim at registered ${type}`, () => page.mouse.move(aim.x, aim.y), 700);
       await framePair();
       await bounded(`inspect registered ${type} on canvas`, () => page.mouse.click(aim.x, aim.y), 700);
@@ -265,6 +272,7 @@ try {
     const inspectCellAt = async (cell, material) => {
       const aim = (await project([cell]))[0];
       assert(aim.x > 380 && aim.x < 1275 && aim.y > 70 && aim.y < 795, 'native cell projects onto the unobscured canvas');
+      assert(aim.onCanvas, 'native cell is not covered by a UI panel');
       await bounded('aim at native control cell', () => page.mouse.move(aim.x, aim.y), 700);
       await framePair();
       const hit = await page.evaluate(() => ({ valid: window.__app.hover.valid, id: window.__app.hover.id,
@@ -368,6 +376,20 @@ try {
   console.log(JSON.stringify(result));
 } catch (error) {
   const failure = { case: testCase, ok: false, stage, message: error?.message ?? String(error), pageErrors, browserFailures };
+  // A short read-only probe distinguishes cold pipeline startup from an app
+  // exception. It never waits past the existing work/cleanup boundary.
+  if (page && !page.isClosed() && remaining() > 300) {
+    let timer;
+    try {
+      failure.startup = await Promise.race([
+        page.evaluate(() => ({ readyState: document.readyState, app: !!window.__app, sim: !!window.__app?.sim,
+          mode: window.__app?.current().mode,
+          marks: performance.getEntriesByType('mark').slice(-30).map(mark => ({ name: mark.name, at: mark.startTime })) })),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ probe: 'timed out' }), 250); }),
+      ]);
+    } catch {}
+    finally { clearTimeout(timer); }
+  }
   writeFileSync(`${out}/${testCase}.json`, `${JSON.stringify(failure, null, 2)}\n`);
   console.error(JSON.stringify(failure));
   console.error(error?.stack ?? error);
