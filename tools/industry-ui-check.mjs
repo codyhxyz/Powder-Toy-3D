@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { DEVICE_TYPES } from '../src/industry/catalog.js';
 import { E } from '../src/elements.js';
 import { launchBrowser, newTestPage, ready, render } from './browser.mjs';
+import { CLEANUP_MS, MAX_SLOT_MS } from './gpu-deadline.mjs';
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -16,9 +17,8 @@ const base = arg('url', `http://127.0.0.1:${arg('port', '19543')}/`);
 const out = arg('out', '/tmp/factory-ui-review');
 mkdirSync(out, { recursive: true });
 
-// The launcher enforces the absolute 25 s slot cap and its busy-player guard.
-// Keep all work inside 20 s, leaving time for explicit browser cleanup.
-const workDeadline = Date.now() + 20_000;
+// Follow the current watchdog's cleanup reserve without extending its slot.
+const workDeadline = Date.now() + MAX_SLOT_MS - 2 * CLEANUP_MS - 500;
 let stage = 'browser launch';
 const remaining = () => Math.max(0, workDeadline - Date.now());
 async function bounded(label, fn, maxMs = 1_500) {
@@ -39,7 +39,7 @@ const placeableTypes = Object.keys(DEVICE_TYPES).filter(type => !DEVICE_TYPES[ty
 let browser, page;
 const pageErrors = [], browserFailures = [];
 try {
-  browser = await launchBrowser({ lifetimeMs: 24_500 });
+  browser = await launchBrowser({ lifetimeMs: MAX_SLOT_MS });
   page = await newTestPage(browser, { mode: 'ui', viewport: { width: 1280, height: 800 } });
   page.setDefaultTimeout(1_000);
   page.setDefaultNavigationTimeout(3_000);
