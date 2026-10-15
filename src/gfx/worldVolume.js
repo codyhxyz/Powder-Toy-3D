@@ -127,6 +127,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const values=worldFrameValues(frameUniforms,physicsOrigin);
       if (appearance) values.sourceAppearance=appearance.uniform;
       const fuBytes=WorldFrameStruct.pack(values);
+      const preparedCamera=vec(values.cam).map(Math.fround);
       const headerBytes=new ArrayBuffer(Header.size); Header.write(new DataView(headerBytes),0,{origin:[0,0,0]});
       const feedback=buffer('world candidate feedback',new Uint32Array(atlas.feedbackBytes/4),BU.STORAGE|BU.COPY_SRC|BU.COPY_DST);
       const fu=buffer('world candidate frame',fuBytes), header=buffer('world zero origin',headerBytes), sunParams=buffer('world sun publication',sunBytes);
@@ -186,7 +187,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       function captureSigns({camera,anchors,cells,count=anchors?.length,slot=0,output,presentation={k:0,anchor:[0,0],dir:[0,1]}}={}) {
         const finite=(v,n)=>{const a=vec(v??[]);if(a.length!==n||!a.every(x=>Number.isFinite(x)&&Number.isFinite(Math.fround(x))))throw new RangeError('finite global sign coordinates required');return a;};
         const cam=finite(camera,3);
-        if(cam.some((n,i)=>Math.fround(n)!==Math.fround(vec(values.cam)[i])))throw new RangeError('sign camera must match candidate frame');
+        if(cam.some((n,i)=>Math.fround(n)!==preparedCamera[i]))throw new RangeError('sign camera must match candidate frame');
         if(!Number.isInteger(count)||count<0||count>MAX_SIGNS||anchors?.length!==count||cells?.length!==count)throw new RangeError('world signs count/records mismatch');
         if(!Number.isInteger(slot)||slot<0||slot>0xffffffff)throw new RangeError('world signs slot');
         const size=(slot+1)*WORLD_SIGNS_BYTES;

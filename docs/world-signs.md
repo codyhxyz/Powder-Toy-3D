@@ -33,7 +33,9 @@ Options:
 
 Anchor coordinates must be finite f32, within [-1, worldSize+1]; sample cells
 are integer [-1, worldSize]. Camera coordinates must be finite f32 and match
-candidate frame camera after f32 packing. Default effect is identity. The original
+candidate frame camera after f32 packing. Preparation retains its own camera
+comparison values; later caller mutations cannot change this check.
+Default effect is identity. The original
 face endpoint cutoff (.02), grazing threshold (.03), raw opaque visibility,
 mean-SIGMA glass/liquid attenuation, gas/fire transparency and placeholder math
 are retained. Straight rays use the shared physical DDA; curved rays use the
@@ -103,6 +105,9 @@ physical-window movement does not invalidate a consistent older accepted cut.
 Clear/rebuild/owner changes invalidate queued frames. DOM placement uses only
 the accepted frozen camera, shared production warp and global model once.
 Editing retains original text/placeholder behavior and is not window-hidden.
+New signs remain hidden until their own accepted result, except while editing.
+Closing the editor restores that requirement. Returning ownership to BOX forces
+relocation, even if the physics origin has not moved.
 
 The future wire contract is **only** `app.win.render.signsOwner === 'world'`
 with `app.win.render.signFrame` containing that accepted envelope. Without an

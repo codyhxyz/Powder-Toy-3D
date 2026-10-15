@@ -131,7 +131,7 @@ export class Signs {
     this.dataDirty = true;
     this._renderText(sign);
     if (!this.worldOwner) this._place(sign, this._frameInfo());
-    else if (this._worldAccepted) {
+    else if (edit && this._worldAccepted) {
       const info=this._worldFrames.get(this._worldAccepted.frame);
       this._place(sign,{...info,anchor:c.toArray().map((v,i)=>v+0.5+n.getComponent(i)*0.5)});
     } else if (!edit) { sign.dom.root.style.display = 'none'; sign.dom.shown = false; }
@@ -227,6 +227,7 @@ export class Signs {
     this.worldOwner = active;
     this.generation++; // retire queued BOX/world results when ownership changes
     this._worldAccepted = null;
+    if (!active) { this.at.set(NaN, NaN, NaN); this.dataDirty = true; }
     if (active) for (const s of this.list) if (s!==this._edit) { s.dom.root.style.display = 'none'; s.dom.shown = false; }
   }
 
@@ -564,6 +565,9 @@ export class Signs {
   _endEdit(sign) {
     if (this._edit === sign) this._edit = null;
     sign.dom.root.classList.remove('is-editing');
+    if (this.worldOwner && !this._worldAccepted?.frame.request.records.some(r=>r.id===sign.id)) {
+      sign.dom.root.style.display = 'none'; sign.dom.shown = false;
+    }
   }
 
   _commit(sign, blur = true) {

@@ -41,12 +41,13 @@ function fixture() {
   const publish=()=>atlas.publish({sunManifest:{epoch:1,basisRevision:1,publishRevision:1,dependencySetID:0,dependencyVersion:0,book:lighting.book,sun0:lighting.sun0,sun1:lighting.sun1,params:lighting.params}});
   publish();
   const volume=createWorldVolume(gpu,{g,atlas,tables:device.createBuffer({size:tableLayout().Tables.size}),lighting});
-  const prepare=()=>volume.prepare({frameUniforms:{cam:[99,20,30],model:I,viewProj:I},physicsOrigin:[1536,0,512],params:{meshInv:I,meshRes:[1,1]},external:{mediaNoise:{},sourceAppearance:{},packedMesh:{}}});
+  const frameUniforms={cam:[99,20,30],model:I,viewProj:I};
+  const prepare=()=>volume.prepare({frameUniforms,physicsOrigin:[1536,0,512],params:{meshInv:I,meshRes:[1,1]},external:{mediaNoise:{},sourceAppearance:{},packedMesh:{}}});
   const candidate=prepare();
   function settle(test=()=>true,error) {for(const p of pending.splice(0)){if(test(p.d))error?p.reject(error):p.resolve();else pending.push(p);}}
   const log=[],pass={setPipeline:p=>log.push(['pipeline',p]),setBindGroup:(i,g)=>log.push(['group',i,g]),draw:n=>log.push(['draw',n])};
   const encoder={beginComputePass(d){log.push(['begin',d.label]);return {...pass,dispatchWorkgroups:n=>log.push(['dispatch',n]),end:()=>log.push(['end'])};}};
-  return {device,buffers,render,compute,pending,g,atlas,volume,candidate,prepare,publish,settle,log,pass,encoder,
+  return {device,buffers,render,compute,pending,g,atlas,volume,candidate,prepare,publish,settle,log,pass,encoder,frameUniforms,
     release(){candidate.release();volume.dispose();atlas.dispose();}};
 }
 const tick=()=>Promise.resolve();
@@ -66,6 +67,9 @@ test('native sign gate, immutable pre-await arrays, exact binding and synchronou
   assert.equal(group.entries.find(e=>e.binding===6).resource.size,WORLD_SIGNS_BYTES*2);
   for(const change of [{slot:-1},{slot:1.2},{count:65},{cells:[]},{camera:[NaN,0,0]},{camera:[0,0,0]},{anchors:[[1e100,2,3]]},{cells:[[1.5,2,3]]},{output:{size:WORLD_SIGNS_BYTES-1,usage:128}},{output:{size:WORLD_SIGNS_BYTES,usage:64}},{presentation:{k:1,anchor:[0,0],dir:[0,0]}}])
    assert.throws(()=>f.candidate.recordSignsReady(f.encoder,{camera:[99,20,30],anchors:[[1,2,3]],cells:[[1,2,3]],output,...change}));
+  f.frameUniforms.cam[0]=100;
+  assert.throws(()=>f.candidate.recordSignsReady(f.encoder,{camera:[100,20,30],anchors:[],cells:[],output}),/candidate frame/);
+  assert.equal(f.candidate.recordSignsReady(f.encoder,{camera:[99,20,30],anchors:[],cells:[],output}),true);
   f.candidate.release();assert.equal(output.dead,undefined);assert.equal(params.dead,true);
   assert.throws(()=>f.candidate.recordSignsReady(f.encoder,{}),/released/);
  }finally{f.settle();f.release();}
@@ -186,6 +190,38 @@ test('actual Signs DOM: default BOX behavior, immutable request, accepted-only c
   signs.clear();assert.equal(signs.commitWorldFrame(envelope),false);
   const floor=signs.add({cell:{x:5,y:-1,z:5},normal:{x:0,y:1,z:0},world:true,text:'floor',edit:false});
   assert.deepEqual(signs.worldRequest([3072,384,1024]).cells[0],[5,0,5]);assert.equal(floor.world.y,-1);
+ }finally{signs.dispose();}
+});
+test('WORLD to BOX handback relocates signs even when the physics origin has not moved',async()=>{
+ const {signs,sim}=await signsFixture();try{
+  signs.setWorldOwner();
+  const s=signs.add({cell:{x:100,y:20,z:0},normal:{x:0,y:0,z:1},world:true,text:'world',edit:false});
+  signs.at.copy(sim.origin);
+  assert.deepEqual(s.cell.toArray(),[0,0,0]);
+  signs._ensureProbe=()=>{};signs.pending=true;
+  signs.setWorldOwner(false);signs.update();
+  assert.deepEqual(s.cell.toArray(),[36,20,-64]);assert.equal(s.inside,false);
+  assert.equal(signs.dataDirty,true);assert.equal(s.dom.shown,false);
+ }finally{signs.dispose();}
+});
+test('new non-edit WORLD signs wait for their own accepted result, including after the editor closes',async()=>{
+ const {signs,camera}=await signsFixture();try{
+  signs.setWorldOwner();
+  signs.add({cell:{x:100,y:20,z:0},normal:{x:0,y:0,z:1},world:true,text:'first',edit:false});
+  const publication={},identity={},request=signs.worldRequest([3072,384,1024]);
+  const frame=signs.captureWorldFrame({request,camera,model:new THREE.Matrix4(),publication,identity});
+  const envelope={frame,publication,identity,results:new Float32Array([1,E.WATER,20,1,1,0,0,0]),feedback:{incomplete:false},completed:true,accepted:true};
+  assert.equal(signs.commitWorldFrame(envelope),true);
+  const second=signs.add({cell:{x:101,y:20,z:0},normal:{x:0,y:0,z:1},world:true,text:'second',edit:false});
+  assert.equal(second.dom.shown,false);assert.equal(second.live,null);
+  signs.update();assert.equal(second.dom.shown,false);
+  const editor=signs.add({cell:{x:102,y:20,z:0},normal:{x:0,y:0,z:1},world:true,text:'editor',edit:true});
+  assert.equal(editor.dom.shown,true);
+  signs._commit(editor);
+  assert.equal(signs.editing,false);assert.equal(editor.dom.shown,false);
+  const next=signs.captureWorldFrame({request:signs.worldRequest([3072,384,1024]),camera,model:new THREE.Matrix4(),publication,identity:{}});
+  assert.equal(signs.commitWorldFrame({...envelope,frame:next,identity:next.identity,results:new Float32Array(Array(3).fill([1,E.WATER,20,1,1,0,0,0]).flat())}),true);
+  assert.equal(second.dom.shown,true);assert.equal(editor.dom.shown,true);
  }finally{signs.dispose();}
 });
 test('actual typed world page/request/brick reader rejects missing RAW/FIELD/AUX for entire sign query',async()=>{
