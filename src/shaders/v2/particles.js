@@ -133,6 +133,64 @@ fn dLiquidStreamPasses(cell: vec3i, incoming: vec4u, resident: vec4u) -> bool {
   let support = loadCore(slotOf(below)); let kind = cls(cid(support));
   return !(kind==1u || kind==2u || (isLiq(support) && cFill(support)>=FULLU));
 }
+// One elected sender owns the full receiver headroom (not gather's six-way share).
+struct DDeposit { material: Material, accepted: bool }
+fn dDeposit(before: Material, incoming: Material, kinetic: f32) -> DDeposit {
+  let wet=dSameLiquid(incoming.core,before.core);
+  if (cid(before.core)!=0u && !wet) { return DDeposit(before,false); }
+  var after=incoming; var fill=0u;
+  if (wet) {
+    fill=cFill(before.core); let amount=cFill(incoming.core);
+    if (amount>MAX_FILL-min(fill,MAX_FILL)) { return DDeposit(before,false); }
+    var fuel=max(payloadOf(before.core),payloadOf(incoming.core));
+    if (!conductsNative(cid(incoming.core))) {
+      fuel=payloadOf(before.core)+payloadOf(incoming.core);
+      if (fuel>65535u) { return DDeposit(before,false); }
+    }
+    after=before;
+    after.core.y=(before.core.y&0xff000000u)|(fill+amount);
+    if (MATERIAL_BURNS[cid(incoming.core)]) { after.core.y |= incoming.core.y&0x80000000u; }
+    after.core=withPayload(after.core,fuel);
+  }
+  let combined=energyAdd(energyOf(before),dParticleEnergy(incoming));
+  if (!energyFits(after,combined)) { return DDeposit(before,false); }
+  after=withEnergy(after,combined);
+  if (cls(cid(incoming.core))==3u) {
+    let speed2=2.0*kinetic/max(dMass(cid(incoming.core))*dAmount(incoming),0.000001);
+    let foam=impactFoam(incoming.core.x>>24u,select(0u,before.core.x>>24u,wet),cFill(incoming.core),fill,speed2);
+    after.core.x=(after.core.x&0x00ffffffu)|(foam<<24u);
+  }
+  // Resting powder must not replay its launch-time fall state.
+  if (cls(cid(after.core))==2u) { after.core=setFall(after.core,0.0,0.0); }
+  return DDeposit(after,true);
+}
+fn dRecover(start: vec3i, local: vec3f, incoming: Material, kinetic: f32) -> u32 {
+  let embedded=loadMaterial(slotOf(start));
+  // A refused liquid or OTHER at the start is also a barrier. Compatible
+  // liquid admission has already been tried before invoking recovery.
+  if (cls(cid(incoming.core))!=2u || cid(embedded.core)!=cid(incoming.core)) { return D_NONE; }
+  var cell=start;
+  // Native bricks are four cells wide; this is local settlement, not a scan.
+  for (var step=0u;step<4u;step++) {
+    var direction=-mDown(vec3f(cell)+0.5);
+    if (all(direction==vec3i(0))) {
+      let fraction=fract(local); var nearest=2.0;
+      for (var face=0;face<6;face++) {
+        let axis=face>>1; let distance=select(1.0-fraction[axis],fraction[axis],(face&1)!=0);
+        if (distance<nearest) { nearest=distance; direction=face6(face); }
+      }
+    }
+    cell=mEdge(cell+direction);
+    if (!inGrid(cell) || all(cell==start)) { return D_NONE; }
+    let s=slotOf(cell); let before=loadMaterial(s);
+    if (cid(before.core)==0u || dSameLiquid(incoming.core,before.core)) {
+      if (dDeposit(before,incoming,kinetic).accepted) { return s; }
+      return D_NONE; // Refused liquid/AIR is a barrier, never a partial transfer.
+    }
+    if (cls(cid(incoming.core))!=2u || cid(before.core)!=cid(incoming.core)) { return D_NONE; }
+  }
+  return D_NONE;
+}
 fn dClaim(s: u32, kind: u32, key: u32) { if (s != D_NONE) { atomicMin(&claims[s * 4u + kind * 2u], key); } }
 fn dWon(s: u32, kind: u32, index: u32) -> bool { return s != D_NONE && atomicLoad(&claims[s*4u+kind*2u+1u]) == index; }
 fn dBefore(a: DParticle,b: DParticle) -> bool {
@@ -246,9 +304,18 @@ export function particlesWGSL(g, nativeHead, stage) {
         }
       } else if (targetId != 0u && cls(targetId) != 4u && !dLiquidStreamPasses(cell,m.core,destination.core)) {
         hit = slot; hitT = entry; kind = 1u;
-        if (inGrid(previous) && cid(loadMaterial(slotOf(previous)).core) == 0u) { deposit = slotOf(previous); }
         particle.velocity=v+acceleration*(D_DT*entry);
-        energy = 0.5*dMass(id)*dAmount(m)*dot(particle.velocity,particle.velocity); break;
+        energy = 0.5*dMass(id)*dAmount(m)*dot(particle.velocity,particle.velocity);
+        if (inGrid(previous) && cid(loadMaterial(slotOf(previous)).core) == 0u) { deposit = slotOf(previous); }
+        else if (dSameLiquid(m.core,destination.core) && dDeposit(destination,m,energy).accepted) { deposit=slot; }
+        else if (inGrid(previous)) {
+          let before=loadMaterial(slotOf(previous));
+          if (dSameLiquid(m.core,before.core) && dDeposit(before,m,energy).accepted) { deposit=slotOf(previous); }
+        }
+        if (deposit==D_NONE && entry==0.0 && atomicLoad(&control[D_HELD+t])==0u) {
+          deposit=dRecover(startCell,local,m,energy);
+        }
+        break;
       }
       if (next[axis] > 1.0) { break; }
       previous = cell; entry = next[axis]; entryAxis=axis; cell[axis] += step[axis]; next[axis] += stride[axis];
@@ -346,18 +413,10 @@ export function particlesWGSL(g, nativeHead, stage) {
   if (stage === 'deposit') return h + main64(`
     if (t >= D_CAP || particles[t].id == 0u || atomicLoad(&control[D_HELD+t])!=0u) { return; }
     let s = flight[t].destination.y; if (!dWon(s,1u,t)) { return; }
-    let before = loadMaterial(s); if (cid(before.core) != 0u) { return; }
-    let incoming=dMaterial(particles[t]); let combined=energyAdd(energyOf(before),dParticleEnergy(incoming));
-    if (!energyFits(incoming,combined)) { return; }
-    var after=withEnergy(incoming,combined);
-    if(cls(cid(incoming.core))==3u) {
-      let speed2=2.0*flight[t].effect.x/max(dMass(cid(incoming.core))*dAmount(incoming),0.000001);
-      let foam=impactFoam(incoming.core.x>>24u,0u,cFill(incoming.core),0u,speed2);
-      after.core.x=(after.core.x&0x00ffffffu)|(foam<<24u);
-    }
-    // Deposition is a resting contact, not a replay of launch-time fall state.
-    if(cls(cid(after.core))==2u) { after.core=setFall(after.core,0.0,0.0); }
-    storeMaterial(s,before,after); dWake(cellOf(s));
+    let before = loadMaterial(s);
+    let admitted=dDeposit(before,dMaterial(particles[t]),flight[t].effect.x);
+    if (!admitted.accepted) { return; }
+    storeMaterial(s,before,admitted.material); dWake(cellOf(s));
     particles[t].id = 0u; atomicSub(&control[0],1u);
   `);
   if(stage==='bodyCouple') return h+main64(`

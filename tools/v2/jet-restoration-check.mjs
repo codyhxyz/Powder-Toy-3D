@@ -179,8 +179,10 @@ test('ordinary DDA exemption executes exact emitted branch and liquid support he
   // statements. The enclosing DDA loop's break is a return in this single-cell
   // harness; no photon/neutron branches are adapted or replaced.
   const ordinary=syntax(branch.replace('} else if','if').replace('break;','return true;')
-    .replaceAll('v+acceleration*(D_DT*entry)','add(v,mul(acceleration,D_DT*entry))'));
+    .replaceAll('v+acceleration*(D_DT*entry)','add(v,mul(acceleration,D_DT*entry))')
+    .replaceAll('atomicLoad(&control[D_HELD+t])','atomicLoad([control,D_HELD+t])'));
   const f=fixture(),{ctx,p}=f, below=add(p,[0,-1,0]);
+  ctx.D_NONE=0xffffffff; // This predicate-only fixture always has previous AIR; recovery is entry-zero only.
   Object.assign(ctx,{D_DT:1/60,dMass:()=>1,dAmount:m=>cFill(m.core)/FULL,loadMaterial:s=>f.live.get(s)??makeMaterial(0)});
   const collides=new Function('ctx','cell','m','destination',`with(ctx) {
     let targetId=cid(destination.core),slot=slotOf(cell),previous=[3,3,3],particle={},id=cid(m.core);
