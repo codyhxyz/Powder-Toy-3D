@@ -205,8 +205,8 @@ const numerical = `${cozyFixture}
   FU.time = f32(j % 3u) * 2.0;
   fixtureHeat = vec3f(0.13, 0.24, 0.35);
   fixtureSpark = vec3f(0.03, 0.02, 0.01);
-${SWATCHES.slice(0, -1).map(([, id, n], i) => `
-  let m${i} = cozyMat(${id}, p, vec3f(${n.join(',')}), 900.0, 1.0, 0.01);
+${SWATCHES.slice(0, -1).map(([, id, n, ctype = 1], i) => `
+  let m${i} = cozyMat(${id}, p, vec3f(${n.join(',')}), 900.0, ${ctype}.0, 0.01);
   values[j * ${stride}u + ${i}u] = vec4f(m${i}.alb, m${i}.rough);`).join('\n')}
   values[j * ${stride}u + ${materialCount}u] = cozyWaterPaint(p, 0.01, f32(j % 5u) / 4.0);
   let cold = cozyMat(E_WOOD, p, vec3f(0, 0, 1), 900.0, 1.0, 0.01);
@@ -314,7 +314,7 @@ for (const entry of renderChecks().filter(e => e.view === 'cozy')) modules.push(
 for (const entry of renderChecks().filter(e => e.view === 'realistic')) {
   const code = entry.code(g);
   assert(!code.includes('FU.materialStyle'), 'Realistic has no runtime artwork branch');
-  assert.match(code, /if \(0\.0 > 0\.5 && cozySupported\(id\)\)/);
+  assert.match(code, /if \(0\.0 > 0\.5 && cozySupported\(id, ctype\)\)/);
 }
 for (const mesh of [false, true]) for (const curved of [false, true]) {
   modules.push([`far.${mesh ? 'mesh' : 'view'}.${curved ? 'curved' : 'flat'}`, farFrag(g, farLayout(WORLD_SIZE), mesh, { curved })]);
@@ -323,8 +323,8 @@ for (const [name, code] of modules) {
   for (const fn of ['cozyMat', 'cozyWaterPaint']) assert.equal((code.match(new RegExp(`fn ${fn}\\(`, 'g')) || []).length, 1, `${name}: helper defined once`);
   if (!name.startsWith('optics.') && !name.startsWith('seams.')) {
     const selector = name.startsWith('volume.cozy.') ? '1.0' : 'FU.materialStyle';
-    assert.ok(code.includes(`if (${selector} > 0.5 && cozySupported(id))`));
-    assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf(`if (${selector} > 0.5 && cozySupported(id))`), 'flat-texture mode still takes precedence');
+    assert.ok(code.includes(`if (${selector} > 0.5 && cozySupported(id, ctype))`));
+    assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf(`if (${selector} > 0.5 && cozySupported(id, ctype))`), 'flat-texture mode still takes precedence');
   }
   if (name.startsWith('far.')) assert.match(code, /cozyWaterPaint\(p, footprint\(p\), cozyFarShore\(p\)\)/);
   if (process.argv.includes('--validate-wgsl')) {

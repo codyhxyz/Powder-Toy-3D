@@ -96,10 +96,10 @@ bool cfTownReserved(int x, int z) {
 
 // a = across façade, b = toward entrance. Hollow supported shells have 8x12
 // doors (the original cottages use 8x11), and no invisible door colliders.
-int cfTownShell(int a, int y, int b, int f, int hx, int hz, int kind, int id) {
+int cfTownShellMaterial(int a, int y, int b, int f, int hx, int hz, int kind, int id) {
   if (abs(a) > hx + TOWN_ROOF_OVER || abs(b) > hz + TOWN_ROOF_OVER || y < 0 || y >= f + 36) return id;
   bool inside = abs(a) <= hx && abs(b) <= hz;
-  int wall = kind == 1 || kind == 4 ? E_LIMESTONE : E_WOOD;
+  int wall = kind == 1 || kind == 4 ? E_LIMESTONE : materialWord(E_WOOD, AP_PLANK_Y);
   int roofMaterial = kind == 3 || kind == 5 ? E_BASALT : E_BRICK;
   int roof = f + TOWN_WALL_H + max(2, 7 - thDiv(abs(a), 3));
   if (kind == 4) roof = f + TOWN_WALL_H + max(2, 7 - thDiv(abs(a), 4));
@@ -126,7 +126,7 @@ int cfTownShell(int a, int y, int b, int f, int hx, int hz, int kind, int id) {
   if (front && abs(a) >= 6 && abs(a) <= hx - 3 && y >= f + 4 && y < f + 11) return E_GLASS;
   // Textile stripes and supply's timber sign band distinguish the shops.
   if (front && kind == 3 && y >= f + 12 && y < f + 14) return thMod(a, 4) < 2 ? E_BRICK : E_LIMESTONE;
-  if (front && kind == 2 && y >= f + 12 && y < f + 14) return E_WOOD;
+  if (front && kind == 2 && y >= f + 12 && y < f + 14) return materialWord(E_WOOD, AP_PLANK_X);
   // Original leaf and crossed-needle voxel emblems.
   if (front && y >= f + 14 && y < f + 18) {
     if (kind == 2 && abs(a - (y - f - 16)) <= 2) return E_CERAMIC;
@@ -136,27 +136,29 @@ int cfTownShell(int a, int y, int b, int f, int hx, int hz, int kind, int id) {
   if (front || side || back) return wall;
   // Reception/supply shelves, tailor bench, museum plinths and café bar.
   // All leave the center aisle body-clear.
-  if (y < f + 5 && b <= -hz + 6 && abs(a) >= 6 && abs(a) <= hx - 3) return kind == 4 ? E_LIMESTONE : E_WOOD;
+  if (y < f + 5 && b <= -hz + 6 && abs(a) >= 6 && abs(a) <= hx - 3) return kind == 4 ? E_LIMESTONE : materialWord(E_WOOD, kind == 1 || kind == 5 ? AP_PLANK_Z : AP_PLANK_X);
   if (kind == 4 && y >= f + 5 && y < f + 9 && b <= -hz + 5 && abs(a) >= 9 && abs(a) <= 11) return E_BASALT;
   if (kind == 3 && y == f + 5 && b <= -hz + 6 && a >= 6 && a <= 10) return E_METAL;
-  if (kind == 5 && a <= -6 && a >= -8 && b >= -3 && b <= 3 && y < f + 5) return E_WOOD;
+  if (kind == 5 && a <= -6 && a >= -8 && b >= -3 && b <= 3 && y < f + 5) return materialWord(E_WOOD, AP_PLANK_Z);
   return E_EMPTY;
 }
+int cfTownShell(int a, int y, int b, int f, int hx, int hz, int kind, int id) { return materialId(cfTownShellMaterial(a, y, b, f, hx, hz, kind, id)); }
 
-int cfTownPlot(int a, int y, int b, int f, int id) {
+int cfTownPlotMaterial(int a, int y, int b, int f, int id) {
   if (abs(a) > TOWN_PLOT_HALF || abs(b) > TOWN_PLOT_HALF || y < 0 || y >= f + 10) return id;
   // Survey plots may overhang a river-bank pad: retain the base channel
   // beneath its deck, rather than damming the connected west waterfalls.
-  if (y < f - 1) return id == E_WATER ? id : E_ROCK;
+  if (y < f - 1) return materialId(id) == E_WATER ? id : E_ROCK;
   if (y == f - 1) return E_BRICK;
   // Survey stakes and a sign, leaving a wide southern entrance.
-  if (abs(a) >= TOWN_PLOT_HALF - 1 && abs(b) >= TOWN_PLOT_HALF - 1 && y < f + 4) return E_WOOD;
-  if (a >= 7 && a <= 11 && b == TOWN_PLOT_HALF && y >= f + 4 && y < f + 8) return E_WOOD;
-  if (a == 9 && b == TOWN_PLOT_HALF && y < f + 4) return E_WOOD;
+  if (abs(a) >= TOWN_PLOT_HALF - 1 && abs(b) >= TOWN_PLOT_HALF - 1 && y < f + 4) return materialWord(E_WOOD, AP_PLANK_Y);
+  if (a >= 7 && a <= 11 && b == TOWN_PLOT_HALF && y >= f + 4 && y < f + 8) return materialWord(E_WOOD, AP_PLANK_X);
+  if (a == 9 && b == TOWN_PLOT_HALF && y < f + 4) return materialWord(E_WOOD, AP_PLANK_Y);
   return E_EMPTY;
 }
+int cfTownPlot(int a, int y, int b, int f, int id) { return materialId(cfTownPlotMaterial(a, y, b, f, id)); }
 
-int cfTownCell(int x, int y, int z, int h, int id) {
+int cfTownCellMaterial(int x, int y, int z, int h, int id) {
   if (y < 0 || !cfTownReserved(x, z)) return id;
   int outId = id;
   if (cfTownPath(x, z) && y == h - 1) outId = E_BRICK;
@@ -167,20 +169,20 @@ int cfTownCell(int x, int y, int z, int h, int id) {
   }
   int ba = x - TOWN_BOARD_X, bb = z - TOWN_BOARD_Z;
   if (abs(ba) <= 8 && abs(bb) <= 1 && y >= TOWN_LOW && y < TOWN_LOW + 14) {
-    if (abs(ba) >= 6 || y >= TOWN_LOW + 12) outId = E_WOOD;
-    if (y >= TOWN_LOW + 5 && y < TOWN_LOW + 12) outId = abs(ba) < 5 && bb == 1 ? E_CERAMIC : E_WOOD;
+    if (abs(ba) >= 6 || y >= TOWN_LOW + 12) outId = materialWord(E_WOOD, abs(ba) >= 6 ? AP_PLANK_Y : AP_PLANK_X);
+    if (y >= TOWN_LOW + 5 && y < TOWN_LOW + 12) outId = abs(ba) < 5 && bb == 1 ? E_CERAMIC : materialWord(E_WOOD, AP_PLANK_X);
   }
-  outId = cfTownShell(z - TOWN_HALL_Z, y, TOWN_HALL_X - x, TOWN_LOW, TOWN_HALL_HALF_Z, TOWN_HALL_HALF_X, 1, outId);
-  outId = cfTownShell(x - TOWN_NOOK_X, y, z - TOWN_SHOP_Z, TOWN_LOW, TOWN_SHOP_HALF_X, TOWN_SHOP_HALF_Z, 2, outId);
-  outId = cfTownShell(x - TOWN_ABLE_X, y, z - TOWN_SHOP_Z, TOWN_LOW, TOWN_SHOP_HALF_X, TOWN_SHOP_HALF_Z, 3, outId);
-  outId = cfTownShell(x - TOWN_MUSEUM_X, y, z - TOWN_MUSEUM_Z, TOWN_MID, TOWN_MUSEUM_HALF_X, TOWN_MUSEUM_HALF_Z, 4, outId);
-  outId = cfTownShell(z - TOWN_CAFE_Z, y, TOWN_CAFE_X - x, TOWN_MID, TOWN_CAFE_HALF_Z, TOWN_CAFE_HALF_X, 5, outId);
-  outId = cfTownShell(x - TOWN_COTTAGE_A_X, y, z - TOWN_UPPER_Z, TOWN_HIGH, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
-  outId = cfTownShell(x - TOWN_COTTAGE_B_X, y, z - TOWN_UPPER_Z, TOWN_HIGH, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
-  outId = cfTownShell(x - TOWN_COTTAGE_A_X, y, z - TOWN_LOWER_Z, TOWN_LOW, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
-  outId = cfTownShell(x - TOWN_COTTAGE_B_X, y, z - TOWN_LOWER_Z, TOWN_LOW, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
-  outId = cfTownPlot(x - TOWN_PLOT_X, y, z - TOWN_UPPER_Z, TOWN_HIGH, outId);
-  outId = cfTownPlot(x - TOWN_PLOT_X, y, z - TOWN_LOWER_Z, TOWN_LOW, outId);
+  outId = cfTownShellMaterial(z - TOWN_HALL_Z, y, TOWN_HALL_X - x, TOWN_LOW, TOWN_HALL_HALF_Z, TOWN_HALL_HALF_X, 1, outId);
+  outId = cfTownShellMaterial(x - TOWN_NOOK_X, y, z - TOWN_SHOP_Z, TOWN_LOW, TOWN_SHOP_HALF_X, TOWN_SHOP_HALF_Z, 2, outId);
+  outId = cfTownShellMaterial(x - TOWN_ABLE_X, y, z - TOWN_SHOP_Z, TOWN_LOW, TOWN_SHOP_HALF_X, TOWN_SHOP_HALF_Z, 3, outId);
+  outId = cfTownShellMaterial(x - TOWN_MUSEUM_X, y, z - TOWN_MUSEUM_Z, TOWN_MID, TOWN_MUSEUM_HALF_X, TOWN_MUSEUM_HALF_Z, 4, outId);
+  outId = cfTownShellMaterial(z - TOWN_CAFE_Z, y, TOWN_CAFE_X - x, TOWN_MID, TOWN_CAFE_HALF_Z, TOWN_CAFE_HALF_X, 5, outId);
+  outId = cfTownShellMaterial(x - TOWN_COTTAGE_A_X, y, z - TOWN_UPPER_Z, TOWN_HIGH, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
+  outId = cfTownShellMaterial(x - TOWN_COTTAGE_B_X, y, z - TOWN_UPPER_Z, TOWN_HIGH, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
+  outId = cfTownShellMaterial(x - TOWN_COTTAGE_A_X, y, z - TOWN_LOWER_Z, TOWN_LOW, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
+  outId = cfTownShellMaterial(x - TOWN_COTTAGE_B_X, y, z - TOWN_LOWER_Z, TOWN_LOW, TOWN_HOUSE_HALF, TOWN_HOUSE_HALF, 0, outId);
+  outId = cfTownPlotMaterial(x - TOWN_PLOT_X, y, z - TOWN_UPPER_Z, TOWN_HIGH, outId);
+  outId = cfTownPlotMaterial(x - TOWN_PLOT_X, y, z - TOWN_LOWER_Z, TOWN_LOW, outId);
   if (cfTownRect(x, z, TOWN_GATE_X, TOWN_GATE_Z, TOWN_GATE_HALF_X, TOWN_GATE_HALF_Z)) {
     if (y < TOWN_HIGH - 1) return E_ROCK;
     if (y == TOWN_HIGH - 1) return E_BRICK;
@@ -189,6 +191,7 @@ int cfTownCell(int x, int y, int z, int h, int id) {
   }
   return outId;
 }
+int cfTownCell(int x, int y, int z, int h, int id) { return materialId(cfTownCellMaterial(x, y, z, h, id)); }
 `;
 
 export const CITY_FOLK_TOWN = Object.freeze({ ints: Object.freeze(ints), salts: Object.freeze({}), src, landmarks });

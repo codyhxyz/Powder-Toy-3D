@@ -11,6 +11,11 @@ import { HUMAN, MASONRY, TAU, odd } from './shared.js';
 import { STRUCTURES } from './structures.js';
 import { light } from './lights.js';
 
+// Minecraft's log rule: rings follow the member's axis, not its upward face.
+const LOG_X = { appearance: 'log-x' }, LOG_Y = { appearance: 'log-y' }, LOG_Z = { appearance: 'log-z' };
+const PLANK_X = { appearance: 'plank-x' }, PLANK_Y = { appearance: 'plank-y' }, PLANK_Z = { appearance: 'plank-z' };
+const BARK = { appearance: 'bark' }, LEAVES = { appearance: 'leaves' }, PLAIN = { appearance: 'plain' };
+
 // ---------------------------------------------------------------- houses
 
 // A house's sizes in cells at T = 1, on top of the human scale (shared.js).
@@ -56,7 +61,11 @@ export function house({ put, box, footing, rnd, T }, variant) {
     const frame = (x, y, z) => (y <= 2 ? MASONRY : y === H || post(x, z) ? 'METAL' : 'GLASS');
     for (let y = 1; y <= H; y++)
       for (let z = -hd; z <= hd; z++)
-        for (let x = -hw; x <= hw; x++) put(x, y, z, !edge(x, z) ? 'AIR' : green ? frame(x, y, z) : wall);
+        for (let x = -hw; x <= hw; x++) {
+          const o = cabin ? (Math.abs(z) === hd && (Math.abs(x) !== hw || y % 2) ? LOG_X : LOG_Z) : PLANK_Y;
+          put(x, y, z, !edge(x, z) ? 'AIR' : green ? frame(x, y, z) : wall,
+            edge(x, z) && wall === 'WOOD' ? o : undefined);
+        }
   }
 
   // log ends cross at the corners, alternating course by course
@@ -64,8 +73,8 @@ export function house({ put, box, footing, rnd, T }, variant) {
     for (let y = 1; y <= H; y++)
       for (const sx of [-1, 1])
         for (const sz of [-1, 1]) {
-          if (y % 2) put(sx * (hw + 1), y, sz * hd, 'WOOD');
-          else put(sx * hw, y, sz * (hd + 1), 'WOOD');
+          if (y % 2) put(sx * (hw + 1), y, sz * hd, 'WOOD', LOG_X);
+          else put(sx * hw, y, sz * (hd + 1), 'WOOD', LOG_Z);
         }
   }
 
@@ -78,8 +87,8 @@ export function house({ put, box, footing, rnd, T }, variant) {
       const zr = hd + 1 - i, y = H + 1 + i;
       for (let z = -zr; z <= zr; z++)
         for (let x = -hw - 1; x <= hw + 1; x++) {
-          if (Math.abs(z) >= zr - 1) put(x, y, z, slope(x, zr));
-          else if (Math.abs(x) === hw) put(x, y, z, gable);
+          if (Math.abs(z) >= zr - 1) put(x, y, z, slope(x, zr), roof === 'WOOD' ? PLANK_X : undefined);
+          else if (Math.abs(x) === hw) put(x, y, z, gable, gable === 'WOOD' ? (cabin ? LOG_Z : PLANK_Y) : undefined);
           else if (Math.abs(x) < hw) put(x, y, z, 'AIR');
         }
     }
@@ -116,7 +125,7 @@ export function house({ put, box, footing, rnd, T }, variant) {
       for (let z = cz - 1; z <= cz + 1; z++)
         for (let x = hw - 1; x <= hw + 1; x++) {
           const flue = x === hw && z === cz;
-          put(x, y, z, flue ? (y === 1 ? 'WOOD' : 'AIR') : MASONRY);
+          put(x, y, z, flue ? (y === 1 ? 'WOOD' : 'AIR') : MASONRY, flue && y === 1 ? LOG_Z : undefined);
         }
     box(hw - 1, 1, cz - 1, hw - 1, Math.round(HOUSE.FIRE_H * T), cz + 1, 'AIR'); // fireplace mouth
   }
@@ -127,13 +136,13 @@ export function house({ put, box, footing, rnd, T }, variant) {
     const [bl, bw] = HOUSE.BED.map((n) => Math.round(n * T)), [tl, tw] = HOUSE.TABLE.map((n) => Math.round(n * T));
     const x0 = -hw + 1, bz = -hd + 1, th = 1 + Math.round(HOUSE.TABLE_H * T) - 1;
     if (bl > hw || bw + tw + 2 > 2 * hd - 1) return; // too small a room to furnish
-    box(x0, 1, bz, x0 + bl - 1, 1, bz + bw - 1, 'WOOD');                // frame
-    box(x0, 2, bz, x0, 1 + Math.round(HOUSE.BED_HEAD * T), bz + bw - 1, 'WOOD'); // headboard
-    box(x0 + 1, 2, bz, x0 + bl - 1, 2, bz + bw - 1, 'PLANT');           // a straw tick under a green quilt
+    box(x0, 1, bz, x0 + bl - 1, 1, bz + bw - 1, 'WOOD', PLANK_X);       // frame
+    box(x0, 2, bz, x0, 1 + Math.round(HOUSE.BED_HEAD * T), bz + bw - 1, 'WOOD', PLANK_Z); // headboard
+    box(x0 + 1, 2, bz, x0 + bl - 1, 2, bz + bw - 1, 'PLANT', PLAIN);    // quilt, not vegetation
     const tz = hd - 1 - tw;                                             // a step clear of the front wall
-    box(x0 + 1, th, tz, x0 + tl, th, tz + tw - 1, 'WOOD');
+    box(x0 + 1, th, tz, x0 + tl, th, tz + tw - 1, 'WOOD', PLANK_X);
     for (const [lx, lz] of [[x0 + 1, tz], [x0 + tl, tz], [x0 + 1, tz + tw - 1], [x0 + tl, tz + tw - 1]])
-      box(lx, 1, lz, lx, th - 1, lz, 'WOOD');
+      box(lx, 1, lz, lx, th - 1, lz, 'WOOD', PLANK_Y);
   }
 
   // an electric wall light high on the back wall, between its windows: lamps
@@ -155,7 +164,7 @@ export function house({ put, box, footing, rnd, T }, variant) {
         if (s > 0 && Math.abs(x) <= (dw + 1) / 2) { put(x, 1, s * (hd - 1), MASONRY); continue; } // doorstep
         put(x, 1, s * (hd - 1), 'WATER');
         put(x, 1, s * (hd - 2), MASONRY);
-        if ((x + hw) % HOUSE.PLANT_EVERY === 1) put(x, 2, s * (hd - 1), 'PLANT');
+        if ((x + hw) % HOUSE.PLANT_EVERY === 1) put(x, 2, s * (hd - 1), 'PLANT', LEAVES);
       }
   }
 }
@@ -168,8 +177,8 @@ export const TREES = {
     const th = Math.round(H * rnd.range(0.36, 0.44));
     const tr = Math.max(0.5, 1.1 * T);
     footing(10);
-    rod(vec(0, 0, 0), vec(0, th, 0), tr + 0.4, 'WOOD');
-    disc(0, 0, 0, tr + 1.6, 'WOOD'); // root flare
+    rod(vec(0, 0, 0), vec(0, th, 0), tr + 0.4, 'WOOD', LOG_Y);
+    disc(0, 0, 0, tr + 1.6, 'WOOD', BARK); // root flare
     const crowns = [vec(0, th + H * 0.3, 0)];
     const n = rnd.int(3, 5), a0 = rnd() * TAU;
     for (let i = 0; i < n; i++) {
@@ -177,17 +186,17 @@ export const TREES = {
       const a = vec(0, th - rnd.int(0, 2), 0);
       const dir = vec(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el));
       const b = a.clone().addScaledVector(dir, H * rnd.range(0.26, 0.36));
-      rod(a, b, Math.max(0.5, tr * 0.6), 'WOOD');
+      rod(a, b, Math.max(0.5, tr * 0.6), 'WOOD', BARK);
       crowns.push(b);
     }
     for (const c of crowns)
-      ball(c.x, c.y, c.z, H * rnd.range(0.2, 0.26), 'PLANT', { sy: 0.75, rough: 0.35, holes: 0.04, soft: true });
+      ball(c.x, c.y, c.z, H * rnd.range(0.2, 0.26), 'PLANT', { ...LEAVES, sy: 0.75, rough: 0.35, holes: 0.04, soft: true });
   },
 
   pine({ disc, rod, vec, footing, rnd, T }) {
     const H = Math.round(rnd.range(26, 32) * T);
     footing(10);
-    rod(vec(0, 0, 0), vec(0, H - 2, 0), T > 1.5 ? 1 : 0.5, 'WOOD');
+    rod(vec(0, 0, 0), vec(0, H - 2, 0), T > 1.5 ? 1 : 0.5, 'WOOD', LOG_Y);
     const y0 = Math.round(H * rnd.range(0.14, 0.22));
     const R = H * rnd.range(0.22, 0.27);
     const tiers = Math.max(3, Math.round(rnd.range(4, 5.5) * Math.sqrt(T)));
@@ -195,7 +204,7 @@ export const TREES = {
       const u = (y - y0) / (H - y0);
       const phase = (u * tiers) % 1; // each tier flares at its bottom
       const r = R * Math.pow(1 - u, 0.9) * (1 - 0.5 * phase) + 0.6;
-      disc(0, y, 0, r, 'PLANT', { rough: 0.9, holes: 0.03, soft: true });
+      disc(0, y, 0, r, 'PLANT', { ...LEAVES, rough: 0.9, holes: 0.03, soft: true });
     }
   },
 
@@ -212,7 +221,7 @@ export const TREES = {
     }
     const tip = pts[pts.length - 1];
     pts.push(vec(tip.x, H - 2, tip.z));
-    for (let i = 1; i < pts.length; i++) rod(pts[i - 1], pts[i], tr, 'WOOD');
+    for (let i = 1; i < pts.length; i++) rod(pts[i - 1], pts[i], tr, 'WOOD', LOG_Y);
     const trunkAt = (y) => pts[Math.min(pts.length - 1, Math.round(y / 5))];
     // small, airy leaf clusters on short twigs
     const k = rnd.int(7, 10);
@@ -220,11 +229,11 @@ export const TREES = {
       const y = H * rnd.range(0.4, 0.9), az = rnd() * TAU, d = rnd.range(1, Math.max(1.5, H * 0.1));
       const base = trunkAt(y);
       const c = vec(base.x + Math.cos(az) * d, y, base.z + Math.sin(az) * d);
-      rod(vec(base.x, y - 1, base.z), c, 0.5, 'WOOD');
-      ball(c.x, c.y, c.z, H * rnd.range(0.07, 0.1), 'PLANT', { sy: 1.5, rough: 0.4, holes: 0.18, soft: true });
+      rod(vec(base.x, y - 1, base.z), c, 0.5, 'WOOD', BARK);
+      ball(c.x, c.y, c.z, H * rnd.range(0.07, 0.1), 'PLANT', { ...LEAVES, sy: 1.5, rough: 0.4, holes: 0.18, soft: true });
     }
     const top = pts[pts.length - 1];
-    ball(top.x, H - 1, top.z, H * 0.08, 'PLANT', { sy: 1.6, rough: 0.4, holes: 0.12, soft: true });
+    ball(top.x, H - 1, top.z, H * 0.08, 'PLANT', { ...LEAVES, sy: 1.6, rough: 0.4, holes: 0.12, soft: true });
   },
 
   palm({ ball, rod, vec, footing, rnd, T }) {
@@ -233,7 +242,7 @@ export const TREES = {
     const tr = T > 1.2 ? 1 : 0.5;
     footing(10);
     const at = (y) => { const k = (y / H) ** 2 * lean; return vec(Math.cos(az) * k, y, Math.sin(az) * k); };
-    for (let y = 0; y < H; y += 2) rod(at(y), at(Math.min(H, y + 2)), tr, 'WOOD');
+    for (let y = 0; y < H; y += 2) rod(at(y), at(Math.min(H, y + 2)), tr, 'WOOD', BARK);
     const top = at(H);
     // fronds rise a little, then droop; leaflets fan out sideways
     const n = rnd.int(7, 9), a0 = rnd() * TAU;
@@ -245,17 +254,17 @@ export const TREES = {
       for (let s = 1; s <= L; s++) {
         const p = top.clone().addScaledVector(dir, s);
         p.y += 0.7 * s - (1.25 * s * s) / L;
-        rod(prev, p, 0.5, 'PLANT', { soft: true });
+        rod(prev, p, 0.5, 'PLANT', { ...LEAVES, soft: true });
         const lw = Math.round(2.8 * T * (1 - s / L));
         if (lw > 0)
           for (const sg of [-1, 1])
-            rod(p, p.clone().addScaledVector(side, sg * lw).add(vec(0, -0.6 * lw, 0)), 0.5, 'PLANT', { soft: true });
+            rod(p, p.clone().addScaledVector(side, sg * lw).add(vec(0, -0.6 * lw, 0)), 0.5, 'PLANT', { ...LEAVES, soft: true });
         prev = p;
       }
     }
     for (let i = rnd.int(2, 4); i > 0; i--) {
       const a = rnd() * TAU;
-      ball(top.x + Math.cos(a) * 1.3, top.y - 1.5, top.z + Math.sin(a) * 1.3, 0.9, 'WOOD', { soft: true });
+      ball(top.x + Math.cos(a) * 1.3, top.y - 1.5, top.z + Math.sin(a) * 1.3, 0.9, 'WOOD', { ...PLAIN, soft: true });
     }
   },
 
@@ -264,17 +273,17 @@ export const TREES = {
     const tr = Math.max(0.5, 1.3 * T);
     const th = Math.round(H * 0.42);
     footing(10);
-    rod(vec(0, 0, 0), vec(0, th, 0), tr + 0.4, 'WOOD');
-    disc(0, 0, 0, tr + 1.4, 'WOOD');
+    rod(vec(0, 0, 0), vec(0, th, 0), tr + 0.4, 'WOOD', LOG_Y);
+    disc(0, 0, 0, tr + 1.4, 'WOOD', BARK);
     const R = H * rnd.range(0.48, 0.56); // a wide, low dome
     const cy = H - R * 0.45;
     const n = rnd.int(4, 6), a0 = rnd() * TAU;
     for (let i = 0; i < n; i++) {
       const a = a0 + (i / n) * TAU;
       rod(vec(0, th - 1, 0), vec(Math.cos(a) * R * 0.55, cy + rnd.range(-1, 2), Math.sin(a) * R * 0.55),
-        Math.max(0.5, tr * 0.55), 'WOOD');
+        Math.max(0.5, tr * 0.55), 'WOOD', BARK);
     }
-    ball(0, cy, 0, R, 'PLANT', { sy: 0.45, rough: 0.3, holes: 0.08, soft: true });
+    ball(0, cy, 0, R, 'PLANT', { ...LEAVES, sy: 0.45, rough: 0.3, holes: 0.08, soft: true });
     // curtains of strands hanging from the underside, longest at the rim
     const strands = Math.round(R * R * 0.9);
     for (let i = 0; i < strands; i++) {
@@ -283,7 +292,7 @@ export const TREES = {
       const y0 = cy - R * 0.45 * Math.sqrt(Math.max(0, 1 - (d / R) ** 2));
       const len = Math.max(0, rnd.range(0.35, 0.85) * (y0 - 2) * (0.4 + 0.6 * d / R));
       rod(vec(x, y0, z), vec(x + rnd.range(-0.6, 0.6), Math.max(2, y0 - len), z + rnd.range(-0.6, 0.6)), 0.5,
-        'PLANT', { soft: true });
+        'PLANT', { ...LEAVES, soft: true });
     }
   },
 
@@ -292,14 +301,14 @@ export const TREES = {
     footing(10);
     const grow = (a, dir, len, r, depth) => {
       const b = a.clone().addScaledVector(dir, len);
-      rod(a, b, r, 'WOOD');
+      rod(a, b, r, 'WOOD', depth === 3 ? LOG_Y : BARK);
       if (depth === 0) return;
       for (let i = rnd.int(2, 3); i > 0; i--) {
         const d = bend(dir, rnd.range(0.35, 0.8)).add(vec(0, 0.25, 0)).normalize();
         grow(b, d, len * rnd.range(0.55, 0.75), Math.max(0.5, r * 0.62), depth - 1);
       }
     };
-    disc(0, 0, 0, 1.2 * T + 1.2, 'WOOD');
+    disc(0, 0, 0, 1.2 * T + 1.2, 'WOOD', BARK);
     grow(vec(0, 0, 0), vec(rnd.range(-0.1, 0.1), 1, rnd.range(-0.1, 0.1)).normalize(), H * 0.42, Math.max(0.5, T), 3);
   },
 };
@@ -328,7 +337,7 @@ export function campfire({ put, ball, rod, vec, rnd, T }, variant) {
     }
   // logs leaning together; a lit fire starts above its ignition point
   const n = rnd.int(...CAMPFIRE.LOGS), a0 = rnd() * TAU, top = Math.round(R * CAMPFIRE.TOP);
-  const o = { temp: lit ? CAMPFIRE.IGNITE_T : undefined };
+  const o = { ...LOG_Y, temp: lit ? CAMPFIRE.IGNITE_T : undefined };
   for (let i = 0; i < n; i++) {
     const a = a0 + (i / n) * TAU;
     const foot = vec(Math.cos(a) * (R - 1), 0, Math.sin(a) * (R - 1));
@@ -427,8 +436,9 @@ export function barrel({ put, T }, variant) {
         const d = Math.hypot(x, z);
         if (d > R + 0.35) continue;
         // a shell band 1.5 cells wide is face-connected, so nothing seeps out diagonally
-        if (y === 0 || y === H - 1) put(x, y, z, shell);
-        else put(x, y, z, d > R - BARREL.SHELL ? band : fill);
+        if (y === 0 || y === H - 1) put(x, y, z, shell, keg ? PLANK_X : undefined);
+        else put(x, y, z, d > R - BARREL.SHELL ? band : fill,
+          keg && d > R - BARREL.SHELL && band === 'WOOD' ? PLANK_Y : undefined);
       }
   }
 }

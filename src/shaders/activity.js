@@ -94,7 +94,7 @@ fn dampOf(T: f32, nA: ptr<function, array<vec4f, 6>>) -> f32 {
   for (var i = 0; i < 6; i++) {
     let j = eid((*nA)[i]);
     if (j == E_WATER) { return DAMP_REACH; }
-    if (grower(j)) { h = max(h, floor((*nA)[i].w) - 1.0); }
+    if (grower(j)) { h = max(h, physicalCtype(j, (*nA)[i].w) - 1.0); }
   }
   return h;
 }
@@ -115,7 +115,7 @@ fn inertNear(c: vec3i, a: vec4f, nA: ptr<function, array<vec4f, 6>>) -> bool {
   // moss, an air face whose other faces, across its axis, touch bare rock:
   // cells along the edges of this one, read from the pass's input state)
   if (grower(id)) {
-    let h = floor(a.w);
+    let h = physicalCtype(id, a.w);
     if (dampOf(T, nA) != h) { return false; }
     if (h >= 1.0) {
       for (var i = 0; i < 6; i++) {

@@ -78,7 +78,7 @@ bool cfNatureRoot(int x, int z, int h, int radius, bool beach) {
   return true;
 }
 
-int cfNatureTree(int x, int y, int z, int h) {
+int cfNatureTreeMaterial(int x, int y, int z, int h) {
   int ax = thDiv(x, NATURE_PITCH) * NATURE_PITCH + NATURE_OFFSET;
   int az = thDiv(z, NATURE_PITCH) * NATURE_PITCH + NATURE_OFFSET;
   int kind = 0;
@@ -110,39 +110,40 @@ ${neighborhood.trees.map(({ at: [x, z], radius, kind }) => `  if (abs(x - (${x})
   if (dy < 0 || dy > NATURE_TOP || (kind != 4 && root != h)) return E_EMPTY;
   int cell = E_EMPTY;
   if (kind == 1) {
-    if (abs(dx) <= 1 && abs(dz) <= 1 && dy <= 26) cell = E_WOOD;
+    if (abs(dx) <= 1 && abs(dz) <= 1 && dy <= 26) cell = materialWord(E_WOOD, AP_LOG_Y);
     int tier = dy < 13 ? 7 - thDiv(max(dy - 7, 0), 2) : dy < 20 ? 5 - thDiv(dy - 13, 2) : 3 - thDiv(dy - 20, 2);
-    if (cell == E_EMPTY && dy >= 7 && dy <= 27 && max(abs(dx), abs(dz)) <= tier && abs(dx) + abs(dz) <= tier + 2) cell = E_MOSS;
+    if (materialId(cell) == E_EMPTY && dy >= 7 && dy <= 27 && max(abs(dx), abs(dz)) <= tier && abs(dx) + abs(dz) <= tier + 2) cell = materialWord(E_MOSS, AP_LEAVES);
   } else if (kind == 4) {
     int lean = thDiv(dy, 6);
-    if (abs(dx - lean) <= 1 && abs(dz) <= 1 && dy <= 20) cell = E_WOOD;
+    if (abs(dx - lean) <= 1 && abs(dz) <= 1 && dy <= 20) cell = materialWord(E_WOOD, AP_BARK);
     int fx = dx - 3, reach = max(abs(fx), abs(dz));
     int frond = 20 - thDiv(reach, 4);
-    if (cell == E_EMPTY && reach <= 7 && (abs(fx) <= 1 || abs(dz) <= 1 || abs(abs(fx) - abs(dz)) <= 1) && dy >= frond - 1 && dy <= frond) cell = E_PLANT;
-    if (cell == E_EMPTY && dy == 17 && abs(dx - 3) <= 2 && abs(dz) <= 2) cell = E_SANDSTONE;
+    if (materialId(cell) == E_EMPTY && reach <= 7 && (abs(fx) <= 1 || abs(dz) <= 1 || abs(abs(fx) - abs(dz)) <= 1) && dy >= frond - 1 && dy <= frond) cell = materialWord(E_PLANT, AP_LEAVES);
+    if (materialId(cell) == E_EMPTY && dy == 17 && abs(dx - 3) <= 2 && abs(dz) <= 2) cell = E_SANDSTONE;
   } else {
-    if (abs(dx) <= 1 && abs(dz) <= 1 && dy <= 17) cell = E_WOOD;
+    if (abs(dx) <= 1 && abs(dz) <= 1 && dy <= 17) cell = materialWord(E_WOOD, AP_LOG_Y);
     int cy = dy - 16;
     bool crown = dx * dx + dz * dz + 2 * cy * cy <= 81;
     // Red apple clusters attach to the crown, not loose powder/inventory.
-    if (cell == E_EMPTY && kind == 3 && dy >= 12 && dy <= 14 && ((abs(dx - 6) <= 1 && abs(dz) <= 1) || (abs(dx + 4) <= 1 && abs(dz - 4) <= 1))) cell = E_BRICK;
-    if (cell == E_EMPTY && crown) cell = E_PLANT;
+    if (materialId(cell) == E_EMPTY && kind == 3 && dy >= 12 && dy <= 14 && ((abs(dx - 6) <= 1 && abs(dz) <= 1) || (abs(dx + 4) <= 1 && abs(dz - 4) <= 1))) cell = E_BRICK;
+    if (materialId(cell) == E_EMPTY && crown) cell = materialWord(E_PLANT, AP_LEAVES);
   }
-  if (cell == E_EMPTY) return E_EMPTY;
+  if (materialId(cell) == E_EMPTY) return E_EMPTY;
   if (!cfNatureRoot(ax, az, root, kind == 4 ? 2 : radius, kind == 4)) return E_EMPTY;
   return cell;
 }
+int cfNatureTree(int x, int y, int z, int h) { return materialId(cfNatureTreeMaterial(x, y, z, h)); }
 
-int cfNatureCell(int x, int y, int z, int h, int id) {
+int cfNatureCellMaterial(int x, int y, int z, int h, int id) {
   if (y < h - 3 || y > h + NATURE_TOP || !cfNatureClear(x, z)) return id;
   // Preserve all authored matter, including cottage roofs and bridge timbers.
-  if (id != E_EMPTY && !(y == h - 1 && id == E_PLANT) && !(y == h - 2 && id == E_ROCK)) return id;
+  if (materialId(id) != E_EMPTY && !(y == h - 1 && materialId(id) == E_PLANT) && !(y == h - 2 && materialId(id) == E_ROCK)) return id;
   // Original cottages and the complete old village stay untouched even when
   // composed into the expanded map. Legacy-size worlds must skip this module.
   if (abs(x) < 192 || abs(x) > 920) return id;
   // Above the low scenery, reject empty silhouette cells before sampling any
   // terrain. Most streamed air therefore never calls the terrain twin again.
-  if (y > h + 2) return id == E_EMPTY ? cfNatureTree(x, y, z, h) : id;
+  if (y > h + 2) return materialId(id) == E_EMPTY ? cfNatureTreeMaterial(x, y, z, h) : id;
   int ground = cfTerrainCell(x, h - 1, z);
   bool grass = ground == E_PLANT && cfTerrainCell(x, h, z) == E_EMPTY;
   bool sand = ground == E_SAND && cfTerrainCell(x, h, z) == E_EMPTY;
@@ -169,7 +170,7 @@ ${neighborhood.rocks.map(({ at: [x, z], radius }) => `  if (grass && y >= h && y
   if (grass && x >= 240 && x <= 848 && abs(pz) <= 6) {
     if (abs(px) <= 10 && abs(pz) <= 5) {
       int fx = thMod(px + 2, 5) - 2, fz = thMod(pz + 2, 5) - 2;
-      if (y == h && fx == 0 && fz == 0) return E_PLANT;
+      if (y == h && fx == 0 && fz == 0) return materialWord(E_PLANT, AP_PLAIN);
       if (y == h + 1 && abs(fx) + abs(fz) <= 1) return thMod(thDiv(x, 5), 2) == 0 ? E_CERAMIC : E_BRICK;
     }
     int rx = abs(px) - 64;
@@ -185,9 +186,10 @@ ${neighborhood.rocks.map(({ at: [x, z], radius }) => `  if (grass && y >= h && y
     // Scalloped ivory half-shells, seated directly on the dry sand.
     if (abs(sx) <= 2 && sz >= -2 && sz <= 1 && sx * sx + sz * sz <= 5 && (y == h || (sz == 0 && abs(sx) <= 1))) return E_CERAMIC;
   }
-  if (id != E_EMPTY) return id;
-  int tree = cfNatureTree(x, y, z, h);
-  return tree == E_EMPTY ? id : tree;
+  if (materialId(id) != E_EMPTY) return id;
+  int tree = cfNatureTreeMaterial(x, y, z, h);
+  return materialId(tree) == E_EMPTY ? id : tree;
 }
+int cfNatureCell(int x, int y, int z, int h, int id) { return materialId(cfNatureCellMaterial(x, y, z, h, id)); }
 `,
 });

@@ -1,6 +1,7 @@
 import { E } from '../../elements.js';
 import { pcg } from '../../rng.js';
 import { glf as glslFloat } from '../../glsl.js';
+import { appearanceScope } from '../../appearance.js';
 
 // Shared machinery of the world scenes written once for GPU and CPU: the
 // themed ones (labWorld.js, volcanoWorld.js) and the island's generator
@@ -288,7 +289,7 @@ const functionNames = (src) =>
 // The JS twin of shared source src: an object of its functions, for world
 // seed `seed`, with the constants in `consts` (and the element ids) in scope.
 export function compileShared(src, seed, consts) {
-  const scope = { ...helpersJs(seed >>> 0), ...elementConstants, ...consts };
+  const scope = { ...helpersJs(seed >>> 0), ...elementConstants, ...appearanceScope, ...consts };
   const names = Object.keys(scope);
   const fns = functionNames(src);
   // eslint-disable-next-line no-new-func
