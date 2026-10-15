@@ -13,6 +13,7 @@ import { AUX_RECORDS, LIGHT_RECORDS, READY, WORLD_ATLAS_ABI, WRITER_CHANNELS, PA
 export function worldAccessWGSL(layout = {}) {
   worldReaderLayouts(layout.limits);
   const integrated = layout.backend === 'world';
+  const opticalWriter = layout.opticalWriter === true;
   const field = integrated ? ['tFS', 'tFM', 'tFT'] : ['worldField0', 'worldField1', 'worldField2'];
   const gi = integrated ? ['tGI0', 'tGI1', 'tGI2', 'tGI3'] : ['worldGI0', 'worldGI1', 'worldGI2', 'worldGI3'];
   const glow = integrated ? 'tLight' : 'worldGlow';
@@ -35,14 +36,14 @@ struct WorldParams {
 }
 @group(0) @binding(${integrated ? 3 : 0}) var<uniform> WA: WorldParams;
 @group(0) @binding(${integrated ? 4 : 1}) var<storage, read> worldBook: array<u32>;
-@group(0) @binding(${integrated ? 5 : 2}) var<storage, read> worldLightBook: array<u32>;
+${opticalWriter ? '' : `@group(0) @binding(${integrated ? 5 : 2}) var<storage, read> worldLightBook: array<u32>;`}
 @group(1) @binding(0) var worldStateA: texture_2d_array<u32>;
 @group(1) @binding(1) var worldStateB: texture_2d_array<u32>;
 @group(1) @binding(2) var ${field[0]}: texture_2d_array<f32>;
 @group(1) @binding(3) var ${field[1]}: texture_2d_array<f32>;
 @group(1) @binding(4) var ${field[2]}: texture_2d_array<f32>;
 @group(1) @binding(5) var worldAux: texture_2d_array<u32>;
-@group(2) @binding(0) var ${gi[0]}: texture_2d_array<f32>;
+${opticalWriter ? '' : `@group(2) @binding(0) var ${gi[0]}: texture_2d_array<f32>;
 @group(2) @binding(1) var ${gi[1]}: texture_2d_array<f32>;
 @group(2) @binding(2) var ${gi[2]}: texture_2d_array<f32>;
 @group(2) @binding(3) var ${gi[3]}: texture_2d_array<f32>;
@@ -51,7 +52,7 @@ struct WorldParams {
 @group(2) @binding(6) var worldSunOptical: texture_2d_array<f32>;
 @group(2) @binding(7) var ${integrated ? 'tMediaNoise' : 'worldMediaNoise'}: texture_3d<f32>;
 @group(2) @binding(8) var worldSourceAppearance: texture_3d<u32>;
-@group(2) @binding(9) var worldPackedMesh: texture_2d<u32>;
+@group(2) @binding(9) var worldPackedMesh: texture_2d<u32>;`}
 @group(3) @binding(${integrated ? 1 : 0}) var<storage, read_write> worldRequests: array<atomic<u32>>;
 var<private> worldIncomplete: bool;
 fn worldBeginQuery() { worldIncomplete = false; }
@@ -171,7 +172,7 @@ fn worldFieldCubic(t: texture_2d_array<f32>, p: vec3f) -> vec4f {
   } } }
   return value;
 }
-// LIGHT book IDs never pass through worldPage/cell auxiliary metadata.
+${opticalWriter ? '' : `// LIGHT book IDs never pass through worldPage/cell auxiliary metadata.
 fn worldLightMeta(id: u32, record: u32) -> vec4u {
   let a = worldLinearAddress(WA.light.x + id * ${LIGHT_RECORDS}u + record, WA.aux.xy);
   return textureLoad(worldAux, a.xy, a.z, 0);
@@ -222,7 +223,7 @@ struct WorldMesh { color: vec4f, depth: f32, coverageFlags: u32 }
 fn worldMeshAt(pixel: vec2i) -> WorldMesh {
   let m = textureLoad(worldPackedMesh, pixel, 0);
   return WorldMesh(vec4f(unpack2x16float(m.x),unpack2x16float(m.y)), bitcast<f32>(m.z), m.w);
-}
+}`}
 `;
 }
 

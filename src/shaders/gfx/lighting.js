@@ -17,6 +17,7 @@ export const SH_Y1 = 0.488603;          // Y1m = SH_Y1 * (x, y, z)
 export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sphere's upper half
 // The sun shadow map's layout and its test inside volumes (sunBasis, sunMapShadow
 // below), for CPU readers of the map too (pov/viewmodel.js: the sun on the hands).
+export const meanSigmaWGSL = 'fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }';
 export const SHADOW_TINT_ID_SCALE = 256;   // w = tint element id * this + optical depth (see below)
 export const SHADOW_PAD = 1;               // voxels the map's disc reaches past the box's bounding sphere
 export const VOLUME_SHADOW_BIAS = 0.6;     // depth bias (voxels) for points inside volumes (no normal)
@@ -194,7 +195,7 @@ const CAUSTIC_FILL: f32 = 0.7;        // share of the path below the liquid's to
 const CAUSTIC_MAX: f32 = 4.0;         // brightest focus (beams cross past it)
 const CAUSTIC_MIN: f32 = 0.3;         // darkest spread
 // Mean extinction of element id over the three channels (an optical depth's grey share).
-fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }
+${meanSigmaWGSL}
 // Whether a shadow-map texel sm, seen from depth d, has the receiver under a body of liquid tid.
 fn underPool(sm: vec4f, d: f32, tid: i32) -> bool {
   if (RCLASS(tid) != R_LIQUID || d <= sm.y || d >= sm.z + CAUSTIC_BED_GAP) { return false; }

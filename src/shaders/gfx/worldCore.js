@@ -4,15 +4,15 @@ export function renderBackend(backend = 'box') {
   if (backend !== 'box' && backend !== 'world') throw new Error(`render backend: ${backend}`);
   return backend;
 }
-export const worldCoreBindingsWGSL = /* wgsl */ `
+export const worldCoreBindingsWGSLForWriter = ({ samplers = false } = {}) => /* wgsl */ `
 ${brickInfoWGSL}
-@group(3) @binding(2) var linearClamp: sampler;
-@group(3) @binding(3) var linearRepeat: sampler;
+${samplers ? '@group(3) @binding(2) var linearClamp: sampler;\n@group(3) @binding(3) var linearRepeat: sampler;' : ''}
 fn fetchA(c: vec3i) -> vec4f { return worldFetchA(c); }
 fn fetchB(c: vec3i) -> vec4f { return worldFetchB(c); }
 fn brickAt(b: vec3i) -> BrickInfo { let w = worldBrickInfo(b); return BrickInfo(w.emit, w.info); }
 fn brickDistAt(b: vec3i) -> i32 { return worldBrickDistance(b); }
 `;
+export const worldCoreBindingsWGSL = worldCoreBindingsWGSLForWriter({ samplers: true });
 export const worldOccupancyWGSL = /* wgsl */ `
 // Conservative candidates, EXACT raw ids. Occupancy k is xyz-linear, NOT
 // the source's raw slot and never a physical atlas page id.

@@ -36,8 +36,8 @@ import { renderBackend, worldOccupancyWGSL, worldFieldWGSL } from './worldCore.j
 // (binding 17, brickDistAt), not one of the 16 sampled textures, and the
 // light blur copied the same integer, so skipEmpty reads it from brickDist in
 // every view.
-export const coreGLSL = (g, { flow = true, detail = {}, backend = 'box' } = {}) => /* wgsl */ `
-${ddaGLSL(g, { backend })}
+export const coreGLSL = (g, { flow = true, detail = {}, backend = 'box', physicalRays = false } = {}) => /* wgsl */ `
+${ddaGLSL(g, { backend, physicalRays })}
 // The pixel whose noise a function draws (ign, pixRand, the glow candidates,
 // the clouds' jitter): what gl_FragCoord.xy was. Every entry point sets it
 // first: a fragment shader to @builtin(position).xy (pixel centres, top-left
@@ -290,7 +290,7 @@ fn meshCutAt(d: f32, clipToGrid: mat4x4f, res: vec2f, rd: vec3f) -> f32 {
 // table accessors, so a kernel that walks the state alone (pick, the POV
 // trace: docs/webgpu.md F5, G2) pastes prelude(g) + materialsGLSL() +
 // ddaGLSL(g) and binds no lighting group. coreGLSL includes it.
-export const ddaGLSL = (g, { backend = 'box' } = {}) => /* wgsl */ `${renderBackend(backend) && ''}
+export const ddaGLSL = (g, { backend = 'box', physicalRays = false } = {}) => /* wgsl */ `${renderBackend(backend) && ''}
 const GRID: vec3i = vec3i(NX, NY, NZ);
 const MAX_STEPS: i32 = ${backend === 'world' ? g.nx + g.ny + g.nz + 8 : g.maxSteps ?? g.nx + g.ny + g.nz + 8};   // DDA steps that cross the box corner to corner
 
@@ -309,10 +309,10 @@ fn worldPos(p: vec3f) -> vec3f { return ${backend === 'world' ? 'p' : 'p + vec3f
 fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
 
 // ---- the DDA (shaders/dda.js: safeDir, argmin3, the walk's steps) ----
-${ddaWalk({ physicalDirection: backend === 'world' })}
+${ddaWalk({ physicalDirection: backend === 'world' || physicalRays })}
 // Ray (ro, rd) against the box [0, GRID]: (tNear, tFar, entry axis 0..2). A miss has tFar <= tNear.
 fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
-  ${backend === 'world' ? `// Parallel rays belong to the half-open voxel extent [0, GRID), not
+  ${backend === 'world' || physicalRays ? `// Parallel rays belong to the half-open voxel extent [0, GRID), not
   // the clamped last cell of a tangent ray on an outer maximum face.
   var tn = vec3f(-1e30);
   var tf = vec3f(1e30);

@@ -12,7 +12,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
   var oC = vec4f(SHADOW_NO_HIT, SHADOW_NO_HIT, SHADOW_NO_HIT, 0.0);
   let bh = boxHit(ro, rd);
   let t = max(bh.x, 0.0);
-  if (bh.y <= t) { return oC; }
+  if (bh.y <= t) { ${backend === 'world' ? 'if (rd.y < 0.0 && ro.y >= 0.0) { oC.x = ro.y / -rd.y; } ' : ''}return oC; }
   var istp: vec3i;
   var tDelta: vec3f;
   var cell: vec3i;
@@ -104,7 +104,7 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
-  if (!hit && rd.y < 0.0) { oC.x = ro.y / -rd.y; }   // floor
+  ${backend === 'world' ? 'if (!hit && !outside(cell)) { worldIncomplete = true; }\n  ' : ''}if (!hit && rd.y < 0.0${backend === 'world' ? ' && ro.y >= 0.0' : ''}) { oC.x = ro.y / -rd.y; }   // floor
   ${backend === 'world' ? '' : 'if (FU.far != 0u) { oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y)); }   // shaded from outside the window'}
   oC.w = f32(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
   return oC;

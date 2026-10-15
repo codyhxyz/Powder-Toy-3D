@@ -1,13 +1,13 @@
 import { worldAccessWGSL } from '../worldAccess.js';
 import { worldVolumeLayouts, worldQueryWGSL } from '../worldRenderBackend.js';
-import { renderBackend, worldCoreBindingsWGSL } from './worldCore.js';
+import { renderBackend, worldCoreBindingsWGSL, worldCoreBindingsWGSLForWriter } from './worldCore.js';
 import { prelude, STATE_OPTS, LAYOUT, STAGE } from '../common.js';
 import { frameBindings, lightingBindings, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod, fullscreenVert } from '../../gpu/wgsl.js';
 import { coreGLSL, ddaGLSL } from './core.js';
 import { noiseGLSL } from './noise.js';
-import { lightingGLSL } from './lighting.js';
+import { lightingGLSL, meanSigmaWGSL, SHADOW_TINT_ID_SCALE } from './lighting.js';
 import { crystalGLSL } from './crystal.js';
 import { sourceAppearanceWGSL, sourceAppearanceFallbackWGSL } from './sourceAppearance.js';
 import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
@@ -66,6 +66,15 @@ export const LIB_VARIANTS = {
  */
 export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box' } = {}) {
   renderBackend(backend);
+  if (backend === 'world' && variant === 'LIGHTING_SHADOW') {
+    // Optical compute has no dependency on GI, sun readers, appearance, mesh,
+    // flow, noise textures or samplers. Explicit subset, not a WGSL rewrite.
+    return [prelude(g, { state: false, backend }), frameBindings({ backend }),
+      worldAccessWGSL({ backend, opticalWriter: true }), worldCoreBindingsWGSLForWriter(),
+      glslMod, materialsGLSL(), coreGLSL(g, { flow: false, backend, physicalRays: true }),
+      noiseGLSL, crystalGLSL, meanSigmaWGSL,
+      `const SHADOW_TINT_ID_SCALE: f32 = ${SHADOW_TINT_ID_SCALE.toFixed(1)};`].join('\n');
+  }
   if (backend === 'world' && variant !== 'LIGHTING') throw new Error('world writer libraries require separate phase-4 layouts');
   const world = backend === 'world';
   const v = LIB_VARIANTS[variant];
