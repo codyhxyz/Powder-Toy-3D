@@ -25,6 +25,8 @@ import { worldMeshCutWGSL } from './gfx/worldMesh.js';
 import { worldAccessWGSL } from './worldAccess.js';
 import { worldVolumeLayouts, worldQueryWGSL } from './worldRenderBackend.js';
 import { renderBackend } from './gfx/worldCore.js';
+import { worldPlainWGSL, worldPlainPickWGSL } from './worldPlain.js';
+import { BLOCK_PLAIN_ABSORB, BLOCK_PLAIN_ADD } from './blockPlainShared.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -38,7 +40,8 @@ import { renderBackend } from './gfx/worldCore.js';
 // - smoke, steam and fire are density volumes.
 // Views 1-4 (heat, pressure, flow, X-ray) are false-colour data views with
 // their own marches (below); view 0 is the realistic render. The plain view
-// (5) isn't the volume's: the blocks renderer draws it (gfx/blocks.js).
+// (5) stays with gfx/blocks.js in BOX; WORLD evaluates the same voxel-face
+// look along global raw rays (worldPlain.js), without a local face pool.
 //
 // WGSL (docs/webgpu.md F2; the names are the GLSL version's, W2). Each view is
 // a module of its own, a vertex and a fragment entry (volumeFrag(g, { view,
@@ -128,7 +131,7 @@ const xrayMu = () => {
 // restarts the ray, so its path can be longer than one crossing of the box.
 const BEND_EXTRA_STEPS = 128;
 
-// The view modules: keys of src/views.js VIEWS (but plain: gfx/blocks.js draws it).
+// BOX volume modules. WORLD additionally accepts the explicit 'plain' variant.
 export const VOLUME_VIEWS = VIEWS.map((v) => v.key).filter((k) => k !== 'plain');
 const DATA_VIEWS = ['heat', 'pressure', 'flow', 'xray'];
 
@@ -1337,12 +1340,12 @@ export const VOLUME_SCREEN_VERTICES = 3;
 // realistic march), so its
 // depth is the nearer of its hit and the mesh's. Curved, the ray's spans in
 // the box are its parabola's (warpWalk); its mesh cut uses arc length.
-const volumeEntry = (view, cut, curved = false, backend = 'box') => /* wgsl */ `
+const volumeEntry = (view, cut, curved = false, backend = 'box', plain = false) => /* wgsl */ `
 struct VolumeFrag {
   @location(0) color: vec4f,
   @builtin(frag_depth) depth: f32,
 }
-@fragment fn fs(v: VolumeVarying) -> VolumeFrag {
+${plain ? 'fn worldPlainFragment(v: VolumeVarying, phase: u32)' : '@fragment fn fs(v: VolumeVarying)'} -> VolumeFrag {
   gFragCoord = v.position.xy;
   gAerCopy = P.aerCopy;${curved ? `
   warpUse(P.warpK, P.warpAnchor, P.warpDir);` : ''}
@@ -1360,17 +1363,20 @@ struct VolumeFrag {
   let bh = boxHit(ro, rd);
   let t0 = max(bh.x, P.marchNear);
   if (bh.y <= t0) { discard; return o; }`}
-  ${backend === 'world' ? `worldBeginQuery();${cut ? ' worldSunValidate();' : ''}` : ''}let h = traceView(ro, rd, t0, bh);
+  ${backend === 'world' ? `worldBeginQuery();${cut ? ' worldSunValidate();' : ''}` : ''}let h = traceView(ro, rd, t0, bh${plain ? ', phase' : ''});
   ${backend === 'world' ? 'worldEndQuery(); if (worldQueryIncomplete()) { discard; return o; }\n  ' : ''}if (!h.hit) { discard; return o; }
   o.color = h.color;
   o.depth = ${cut ? 'meshCutDepth(h.depth)' : 'h.depth'};
   return o;
-}`;
+}${plain ? `
+@fragment fn fsOpaque(v: VolumeVarying) -> VolumeFrag { return worldPlainFragment(v,0u); }
+@fragment fn fsAbsorb(v: VolumeVarying) -> VolumeFrag { return worldPlainFragment(v,1u); }
+@fragment fn fsScatter(v: VolumeVarying) -> VolumeFrag { return worldPlainFragment(v,2u); }` : ''}`;
 
 /**
  * The volume's WGSL module for grid g: a vertex entry `vs` and a fragment
  * entry `fs` drawing `view` (a key of src/views.js VIEWS: 'realistic',
- * 'heat', 'pressure', 'flow', 'xray'). detail: the close-up detail's
+ * 'heat', 'pressure', 'flow', 'xray'; WORLD also 'plain'). detail: the close-up detail's
  * defines (gfx/detail.js detailDefines), which only the realistic view reads.
  * curved: the rolling log's variant (docs/webgpu.md F2: a block this size and
  * its globals are a template switch, so the flat views carry none of it);
@@ -1381,11 +1387,12 @@ struct VolumeFrag {
  */
 export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, backend = 'box' } = {}) => {
   renderBackend(backend);
-  if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
+  const plain = backend === 'world' && view === 'plain';
+  if (!plain && !VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
   const parts = [
     `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
-    lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, backend }),
+    lib(plain ? { ...g, sourceAppearance: false } : g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, backend }),
     tracerWGSL(backend),
     curved ? presentationNearWGSL() : '',
     surfaceGLSL(d, { sourceAppearance: lit && g.sourceAppearance === true }),
@@ -1397,9 +1404,10 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     grainsGLSL(d),
   ];
   if (backend === 'world') parts.push(shadowOpticsWGSL({ backend }));
-  if (lit) parts.push(farHazeGLSL, realistic(d, curved, backend));
+  if (plain) parts.push(worldPlainWGSL({ curved }));
+  else if (lit) parts.push(farHazeGLSL, realistic(d, curved, backend));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved, backend), dataView(view));
-  parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved, backend));
+  parts.push(volumeVertOf(curved), volumeEntry(view, lit || plain, curved, backend, plain));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
   return parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
 };
@@ -1430,9 +1438,27 @@ export const volumePipeline = () => ({
   depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled: true, depthCompare: 'less-equal' },
 });
 
+/** WORLD Plain must be recorded in this order against the native scene target.
+ * Mesh HDR/depth/coverage must be packed before all three phases, not between
+ * them. The same immutable WORLD publication/params must survive every phase.
+ */
+export const WORLD_PLAIN_PHASES = Object.freeze(['opaque', 'absorb', 'scatter']);
+export const worldPlainPipelines = ({ curved = false } = {}) => Object.fromEntries(
+  WORLD_PLAIN_PHASES.map((phase, i) => [phase, {
+    vertex: { entry: 'vs' },
+    fragment: { entry: ['fsOpaque', 'fsAbsorb', 'fsScatter'][i], targets: [{
+      format: SCENE_FORMATS.color,
+      ...(i ? { blend: i === 1 ? BLOCK_PLAIN_ABSORB : BLOCK_PLAIN_ADD } : {}),
+    }] },
+    primitive: { topology: curved ? 'triangle-list' : 'triangle-strip', cullMode: 'front' },
+    depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled: i === 0, depthCompare: 'less-equal' },
+  }]),
+);
+
 // =====================================================================
 // Picking: march the queued rays (the hover ray, each pickRay) and report the
-// first non-gas voxel each hits, as the two texels the GLSL wrote: (cell xyz,
+// first non-gas voxel each hits (WORLD Plain: the first visible raw face),
+// as the two texels the GLSL wrote: (cell xyz,
 // face) and (id, T, P, life). One thread per ray (docs/webgpu.md F5), each
 // writing its 8 floats to its own slot of the pick result ring (B7). A ray
 // asked for on screen while the rolling log bends the view (ro.w = its k, not
@@ -1453,7 +1479,9 @@ export const PickParams = uniformStruct('PickParams', {
 });
 export const PICK_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 
-export const pickFrag = (g, { backend = 'box' } = {}) => /* wgsl */ `${renderBackend(backend) && ''}
+export const pickFrag = (g, { backend = 'box', view } = {}) => {
+  if (backend === 'world' && view === 'plain') return worldPlainPickWGSL(g, { params: PickParams, batch: PICK_BATCH });
+  return /* wgsl */ `${renderBackend(backend) && ''}
 ${prelude(g, backend === 'world' ? { state: false, backend } : STATE_OPTS.STATE_RO)}
 ${backend === 'world' ? worldAccessWGSL({ backend }) + worldQueryWGSL + `fn fetchA(c: vec3i) -> vec4f { return worldFetchA(c); }\nfn fetchB(c: vec3i) -> vec4f { return worldFetchB(c); }` : ''}${materialsGLSL()}
 ${ddaGLSL(g, { backend })}
@@ -1540,6 +1568,7 @@ fn pickCurved(ro: vec3f, rd: vec3f, skipLiquids: bool) -> Pick {
   picks[s + 1u] = r.what;
 }
 `;
+};
 export const PICK_LAYOUTS = ({ backend = 'box' } = {}) => {
   renderBackend(backend);
   return backend === 'world' ? worldVolumeLayouts({ pick: true, paramsSize: PickParams.size }) : [LAYOUT.TABLES, LAYOUT.STATE_RO, PICK_LAYOUT];
