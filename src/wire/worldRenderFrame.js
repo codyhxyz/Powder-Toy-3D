@@ -84,11 +84,13 @@ export async function prewarmWorldFrame(app, state, data, {view,detail={},curved
     sourceAppearance:!!data.appearance,sourceGrid:data.appearance?.sourceGrid}, atlas:state.data.atlas, tables:data.tables.buffer});
   await Promise.all([state.volume.viewReady(view,detail,curved), state.volume.pointReady,
     state.volume.signsReady, state.opaque.ready, app.post.sceneReady]);
+  requireReady(!state.dead && app.win?.render===state.data, 'WORLD preparation retired while awaiting pipelines');
 }
 
 // Real native point readback. Both feedback and all 80 output bytes belong to
 // this exact native publication. No BOX probe or outside-window substitute.
 export async function probeWorldFrameEye(app, state, data, frozenView = null) {
+  requireReady(!state.dead && app.win?.render===state.data, 'WORLD eye request retired');
   const values = frozenView ? {...data.frame.values,...frozenView.values} : data.frame.values;
   const {gpu}=app, ticket=createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame), pin=data.retain();
   let native,output,combined,count,read,recordingError;

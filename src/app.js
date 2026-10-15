@@ -2167,13 +2167,16 @@ function captureWorldRequest(reservation,state,dt,accepted) {
     ...values.caveAmbient,...values.skyUp,values.lightGain,values.cloudSea,values.clouds?1:0,
     values.nearGI?1:0,values.glowLights?1:0,values.caustics?1:0]).buffer));
   const rows=values.lampPos, origin=sim.origin.toArray();
-  const lamps=Array.from({length:values.lampCount},(_,i)=>({pos:rows[i].map((v,k)=>k<3?v+origin[k]:v),
+  const lamps=Array.from({length:values.lampCount},(_,i)=>({pos:Array.from(rows[i],(v,k)=>k<3?v+origin[k]:v),
     col:[...values.lampCol[i]],shape:[...values.lampShape[i]]}));
   const frame={values,physicsOrigin:origin,params:{marchNear:pov?.marchNear??0,warpK:warp.k,warpAnchor:warp.anchor,warpDir:warp.dir},
     globalKey:key,lamps,sun:{direction:[...values.sun],basisRevision:1},
     sceneVersion:modeEpoch,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
     external:{mediaNoise:state.noise.view,packedMesh:state.unused.createView(),sourceAppearance:state.emptyArtwork.createView()}};
-  // A camera-only birth preserves the accepted publication's source settings.
+  // Reuse source settings only when they really remain compatible. Camera or
+  // physics-origin changes alone must not turn a new light setting into stale data.
+  if(accepted && (JSON.stringify(key)!==JSON.stringify(accepted.frame.globalKey)
+    || JSON.stringify(lamps)!==JSON.stringify(accepted.frame.lamps)))frame.advance=true;
   if(!frame.advance && accepted)Object.assign(frame,{...accepted.frame,advance:false,external:frame.external});
   return {frame,view};
 }
@@ -2565,11 +2568,12 @@ function tick(now, renderOnly = false) {
     if(driver) {
       runView=driver.tick({present,dt,
         reserve:()=>{
-          const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${detailVersion}`);
+          const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
           const key=viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}`,viewSettings,gfx,post.settings);
           return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
         },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
       if(present || runView)driver.presentLast();
+      if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
     }
     lastFrameMode='world';
     if(runView && captureNext){const c=captureNext;captureNext=null;c(post.capture());}
