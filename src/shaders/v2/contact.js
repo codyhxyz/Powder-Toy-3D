@@ -18,6 +18,121 @@ const table = (name, struct, count, schema, offset, stride) => `fn ${name}(id:i3
  }).join(',')});
 }`;
 
+// A row view snapshots only its numeric EV base. Reject signed invalid IDs
+// before multiplication; field access returns the full-row ABI's typed zeros.
+const rowViews = `// BEGIN scalar contact row views
+fn ctRowBase(id:i32)->u32 {
+ if(id<0 || id>=${CONTACT_ROWS.length}){return 0xffffffffu;}
+ return ${layout.rowOffset / 4}u+u32(id)*${layout.rowStride / 4}u;
+}
+${CONTACT_ROW_SCHEMA.map(([key, type], i) => `fn ctRow_${key}(base:u32)->${type} {
+ if(base==0xffffffffu){return ${type === 'i32' ? '0' : '0.0'};}
+ return bitcast<${type}>(EV[base+${Math.floor(i / 4)}u].${'xyzw'[i % 4]});
+}`).join('\n')}
+// END scalar contact row views
+`;
+
+// Deliberately NOT a WGSL compiler: only immutable local row declarations and
+// scalar member reads in the existing kernel are supported. Fail closed on row
+// escapes, shadowing, unknown fields or new expression shapes. Edits retain all
+// other source bytes (including arithmetic, control flow and call ordering).
+export function lowerContactRowReads(source) {
+  const tokens = [...source.matchAll(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|[A-Za-z_]\w*|[^\s]/g)]
+    .filter(m => !m[0].startsWith('//') && !m[0].startsWith('/*'))
+    .map(m => ({ text: m[0], start: m.index, end: m.index + m[0].length }));
+  const text = i => tokens[i]?.text;
+  const fail = message => { throw Error(`contact row view: ${message}`); };
+  const close = (at, left, right) => {
+    if (text(at) !== left) fail(`expected ${left}`);
+    let depth = 1, i = at + 1;
+    for (; i < tokens.length; i++) {
+      if (text(i) === left) depth++;
+      if (text(i) === right && --depth === 0) return i;
+    }
+    fail(`unclosed ${left}`);
+  };
+  const fields = new Set(CONTACT_ROW_SCHEMA.map(([key]) => key));
+  const edits = [];
+  const replace = (first, last, value) => edits.push([tokens[first].start, tokens[last].end, value]);
+  const assertRead = (first, last) => {
+    const next = text(last + 1), after = text(last + 2);
+    if ((text(first - 1) === '&' && text(first - 2) !== '&') ||
+        (['+', '-'].includes(text(first - 1)) && text(first - 2) === text(first - 1)) ||
+        (next === '=' && after !== '=') ||
+        (['+', '-', '*', '/', '%', '&', '|', '^'].includes(next) &&
+         (after === '=' || (['+', '-'].includes(next) && after === next)))) fail('row member is not a scalar read');
+  };
+  const call = at => {
+    const end = close(at + 1, '(', ')');
+    const expr = source.slice(tokens[at + 2].start, tokens[end].start);
+    if (!/^(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?|ctNuclearId\([A-Za-z_]\w*\))$/.test(expr)) fail(`unsupported ID: ${expr}`);
+    return { end, expr };
+  };
+  for (let fn = 0; fn < tokens.length; fn++) {
+    if (text(fn) !== 'fn') continue;
+    const paramsEnd = close(fn + 2, '(', ')');
+    let begin = paramsEnd + 1;
+    while (text(begin) !== '{' && begin < tokens.length) begin++;
+    const end = close(begin, '{', '}');
+    if (text(fn + 1) === 'ctRow') { fn = end; continue; } // preserved public ABI
+    const rows = new Map();
+    for (let i = begin + 1; i < end; i++) {
+      if ((text(i) === 'let' || text(i) === 'var') && text(i + 2) === '=' && text(i + 3) === 'ctRow') {
+        const name = text(i + 1), ref = call(i + 3);
+        if (text(ref.end + 1) === '.') continue; // direct scalar initializer
+        if (text(ref.end + 1) !== ';' || rows.has(name)) fail(`ambiguous declaration: ${name}`);
+        rows.set(name, { at: i, last: ref.end + 1, base: `ctRowBase_${name}` });
+      }
+    }
+    for (const [name, row] of rows) {
+      // Reject even disjoint shadowing rather than infer a new scope contract.
+      for (let i = fn + 3; i < end; i++) {
+        if (text(i) === row.base) fail(`base collision: ${row.base}`);
+        if (text(i) === name && i !== row.at + 1 &&
+            (text(i + 1) === ':' || text(i - 1) === 'let' || text(i - 1) === 'var')) fail(`shadowed row: ${name}`);
+      }
+    }
+    const scopes = [new Set()];
+    let parens = 0;
+    for (let i = begin + 1; i < end; i++) {
+      if (text(i) === '(') parens++;
+      if (text(i) === ')') parens--;
+      if (rows.size && text(i) === 'var' && text(i + 1) === '<') fail('qualified local declaration');
+      if (text(i) === '{') scopes.push(new Set());
+      if (text(i) === '}') scopes.pop();
+      const declaration = rows.get(text(i + 1));
+      if (declaration?.at === i) {
+        if (parens) fail('row declaration in control header');
+        scopes.at(-1).add(text(i + 1));
+        // Keep the original declaration keyword/spacing and snapshot point.
+        replace(i + 1, i + 1, declaration.base);
+        replace(i + 3, i + 3, 'ctRowBase');
+        i = declaration.last;
+      } else if (text(i) === 'ctRow') {
+        const ref = call(i), field = text(ref.end + 2);
+        if (text(ref.end + 1) !== '.' || !fields.has(field)) fail('full row escape or unknown field');
+        assertRead(i, ref.end + 2);
+        replace(i, ref.end + 2, `ctRow_${field}(ctRowBase(${ref.expr}))`);
+        i = ref.end + 2;
+      } else if (rows.has(text(i))) {
+        const name = text(i), field = text(i + 2);
+        if (!scopes.some(scope => scope.has(name)) || text(i + 1) !== '.' || !fields.has(field)) fail(`escaped/out-of-scope row: ${name}`);
+        assertRead(i, i + 2);
+        replace(i, i + 2, `ctRow_${field}(${rows.get(name).base})`);
+        i += 2;
+      }
+    }
+    fn = end;
+  }
+  let result = source;
+  for (const [start, end, value] of edits.sort((a, b) => b[0] - a[0])) result = result.slice(0, start) + value + result.slice(end);
+  if ((result.match(/\bctRow\s*\(/g) || []).length !== 1 || !/fn ctRow\(id:i32\)->CTRow/.test(result)) fail('remaining full-row use');
+  const withoutABI = result.replace(table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA, layout.rowOffset, layout.rowStride), '')
+    .replace(/struct CTRow \{[^}]*\}/, '');
+  if (/\bCTRow\b/.test(withoutABI)) fail('remaining full-row type');
+  return result;
+}
+
 // These functions use an intentionally restricted source subset: no JS object
 // literals, closures, implicit integer division or dynamic member operations.
 // Naga validates the result with the explicit foundation ABI test fixture.
@@ -90,7 +205,7 @@ fn contactSpecialExplosion(core:vec4u,gunpowderEnergyJ:f32)->vec4f {
 }
 `;
 
-export const contactWGSL = /* wgsl */ `
+export const contactWGSL = lowerContactRowReads(/* wgsl */ `
 ${Object.entries(E).map(([k, id]) => `const CT_${k}:i32=${id};`).join('\n')}
 const DUST_MIN_FALL_SPEED:f32=${DUST_MIN_FALL_SPEED};
 const DUST_MIN_FALL_AGE:i32=${DUST_MIN_FALL_AGE};
@@ -103,6 +218,7 @@ struct CTRow { ${CONTACT_ROW_SCHEMA.map(([key, type]) => `${key}:${type}`).join(
 struct CTRx { ${CONTACT_RX_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
 ${table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA, layout.rowOffset, layout.rowStride)}
 ${table('ctRx', 'CTRx', CONTACT_REACTIONS.length, CONTACT_RX_SCHEMA, layout.rxOffset, layout.rxStride)}
+${rowViews}
 fn ctRxAt(a:i32,b:i32)->i32 {
  switch a*${ELEMENTS.length}+b {
  ${Array.from(CONTACT_RX_INDEX).flatMap((v, i) => v ? [`case ${i}: { return ${v}; }`] : []).join('\n')}
@@ -271,4 +387,4 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   if(cells[i].busy!=0){markBusy(positions[i]);}
  }
 }
-`;
+`);
