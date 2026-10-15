@@ -36,7 +36,7 @@ if (!['transfer', 'tools'].includes(operatorMode) || (operatorMode === 'tools' &
 if (process.argv.includes('--preflight')) {
   if (selectedCase === 'line') {
     const { purelineDeviceLayout } = await import('./fixtures/industry-line.js');
-    const devices = validateDevices(purelineDeviceLayout(), [128, 128, 128]);
+    const devices = validateDevices(purelineDeviceLayout({ operatorMode }), [128, 128, 128]);
     console.log(JSON.stringify({ status: 'cpu-geometry-valid', operatorMode, devices: devices.length, bounds: [128, 128, 128],
       limitations: 'Bounds/overlap only; no tools, mining, thermal, cargo, browser, or GPU validation.' }));
     process.exit(0);

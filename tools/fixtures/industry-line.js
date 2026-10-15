@@ -58,7 +58,7 @@ export const LINE_FOUNDATION_COLUMNS = Object.freeze([
 ]);
 
 /** Pure, checked 128³ physical line geometry; no simulation or GPU is created. */
-export function purelineDeviceLayout() {
+export function purelineDeviceLayout({ operatorMode = 'transfer' } = {}) {
   const devices = [
     { id: 'line-hearth', type: 'hearth', x: 16, y: 12, z: 16, rotation: 0 },
     { id: 'line-ship', type: 'ship', x: 44, y: 15, z: 52, rotation: 0 },
@@ -69,6 +69,12 @@ export function purelineDeviceLayout() {
   ];
   for (const [prefix, x, z, firstY, lastY] of LINE_FOUNDATION_COLUMNS)
     for (let y = firstY; y <= lastY; y++) devices.push(FOUNDATION(`${prefix}-${y}`, x, y, z));
+  if (operatorMode === 'tools') {
+    // Real pickup takes time. Build a normal supported work apron so loose
+    // miner output cannot fall into the empty world's abyss between strokes.
+    for (const [x, z] of [[92, 92], [92, 96], [96, 96], [92, 100], [96, 100]])
+      devices.push(FOUNDATION(`tool-source-apron-${x}-${z}`, x, 29, z));
+  }
   return devices;
 }
 
@@ -81,7 +87,7 @@ const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ')
 export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, operatorMode = 'transfer' } = {}) {
   const startedAt = Date.now();
   const until = Number.isFinite(deadline) ? deadline : startedAt + 20_000;
-  const devices = validateDevices(purelineDeviceLayout(), BOUNDS);
+  const devices = validateDevices(purelineDeviceLayout({ operatorMode }), BOUNDS);
   const byId = new Map(devices.map(device => [device.id, device]));
   const hearth = byId.get('line-hearth');
   const ship = byId.get('line-ship');
@@ -288,6 +294,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       physicalOperator = await bounded(createIndustryOperator({ sim, gpu, deadline: until, nativeStep }), 'operator tool setup');
       observations.operator = { mode: 'tools', owner: physicalOperator.owner, actions: [], initialLoads: physicalOperator.snapshot() };
     }
+    observations.operatorMode = operatorMode;
     construction = createConstruction({ sim, gpu, requestRender() {} });
     gates = createGatePhysics({ getSim: () => sim, onError: error => asyncErrors.push(cleanError(error)) });
     controls = createFactoryControlParts({ getSim: () => sim });
@@ -392,16 +399,27 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         exposed = (await readCells(coalSource)).some(cell => cell.id === E.BROKENCOAL);
       }
       const shovelLoad = physicalOperator.shovel.load;
-      const mineAction = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
-        pose: { feet: [98.5, 30, 94.5], target: [97, 30, 96] }, maxFrames: 240,
-        done: () => shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length >= 6,
-        label: 'shovel mine native BROKENCOAL' });
-      observations.operator.actions.push({ ...mineAction, exposedBeforeDig: exposed });
+      const stockCells = boxCells({ x: [95, 99], y: [30, 32], z: [92, 98] });
+      const miningActions = [];
+      for (let attempt = 0; attempt < 12 && shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length < 6; attempt++) {
+        const stock = await readCells(stockCells);
+        const at = stock.findIndex(cell => cell.id === E.BROKENCOAL);
+        if (at < 0) { await nativeStep(4); await fence('wait for real miner output'); continue; }
+        const before = shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length;
+        const action = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
+          pose: { feet: [98.5, 30, 94.5], target: stockCells[at] }, maxFrames: 12,
+          done: () => shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length > before,
+          label: 'shovel mine visible native BROKENCOAL' });
+        miningActions.push(action);
+        observations.operator.actions.push({ ...action, exposedBeforeDig: exposed });
+      }
       coalTaken = shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).map(cell => [...cell]);
       minedSnapshot = coalTaken.map(cell => [...cell]);
       observations.fuel.miningMethod = 'native Industry miner, actual POV shovel primary';
-      observations.fuel.operatorMining = { exposed, actionFrames: mineAction.frames, rayHitFrames: mineAction.hitFrames,
-        rayMissFrames: mineAction.missFrames, sourceSamples: mineAction.hitSamples };
+      observations.fuel.operatorMining = { exposed, actionFrames: miningActions.reduce((n, action) => n + action.frames, 0),
+        rayHitFrames: miningActions.reduce((n, action) => n + action.hitFrames, 0),
+        rayMissFrames: miningActions.reduce((n, action) => n + action.missFrames, 0),
+        sourceSamples: miningActions.flatMap(action => action.hitSamples) };
       const remainingCoalSource = await readCells(coalSource);
       observations.fuel.minerSourceAfterShovel = coalSource.map((at, i) => ({ at, ...remainingCoalSource[i] }));
 
@@ -410,6 +428,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         done: () => !shovelLoad.cells.some(cell => cell[0] === E.BROKENCOAL) && shovelLoad.out === 0,
         label: 'shovel throw mined coal into hearth' });
       observations.operator.actions.push(coalThrow);
+      observations.operator.requiredActions = [{ label: coalThrow.label, completed: coalThrow.completed }];
       await physicalOperator.waitFrames(8, 'settle real coal dump');
       const loadedFuelAfterCoal = await readCells(hotRegions.fuel);
       const loadedChargeAfterCoal = await readCells(hotRegions.charge);
@@ -455,18 +474,23 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         done: () => shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).length >= beforeScrap + 4,
         label: 'shovel mine finite SCRAP source' });
       observations.operator.actions.push(scrapMine);
+      observations.operator.requiredActions.push({ label: scrapMine.label, completed: scrapMine.completed });
       scrapTaken = shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).slice(beforeScrap).map(cell => [...cell]);
       scrapPayload = scrapTaken.map(cell => [...cell]);
       const remainingScrapSource = await readCells(scrapSource);
       observations.fuel.scrapSourceAfterShovel = scrapSource.map((at, i) => ({ at, ...remainingScrapSource[i] }));
+      const beforeScrapDump = shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).length;
       const scrapThrow = await physicalOperator.act({ tool: 'SHOVEL', button: 'secondary',
         pose: { feet: [19.5, 16, 17.5], target: [18, 12, 18] }, maxFrames: 180,
         done: () => !shovelLoad.cells.some(cell => cell[0] === E.SCRAP) && shovelLoad.out === 0,
         label: 'shovel throw SCRAP charge into hearth' });
       observations.operator.actions.push(scrapThrow);
+      observations.operator.requiredActions.push({ label: scrapThrow.label, completed: scrapThrow.completed });
       await physicalOperator.waitFrames(8, 'settle real charge dump');
       const [loadedFuel, loadedCharge] = await Promise.all([readCells(hotRegions.fuel), readCells(hotRegions.charge)]);
-      chargePut = loadedCharge.filter(cell => cell.id === E.SCRAP).length;
+      const retainedScrap = shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).map(cell => [...cell]);
+      chargePut = Math.max(0, beforeScrapDump - retainedScrap.length);
+      checks.operatorChargeDelivered = scrapTaken.length === 4 && chargePut === 4 && retainedScrap.length === 0;
       const rearCoal = hotRegions.fuel.flatMap((at, i) => loadedFuel[i].id === E.BROKENCOAL
         ? [{ at, ...loadedFuel[i] }] : []);
       const frontCoal = hotRegions.charge.flatMap((at, i) => loadedCharge[i].id === E.BROKENCOAL
@@ -476,10 +500,15 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         retainedPack: shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).map(cell => [...cell]),
         attemptedDumpFrames: scrapThrow.frames, dumpRayHitFrames: scrapThrow.hitFrames };
       observations.fuel.operatorChargeDump = { actionFrames: scrapThrow.frames, rayHitFrames: scrapThrow.hitFrames,
-        retainedScrap: shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).map(cell => [...cell]) };
+        confirmedPackDecrease: chargePut, retainedScrap,
+        observedChargeRowScrap: loadedCharge.filter(cell => cell.id === E.SCRAP).length };
+      observations.fuel.operatorChargeDistribution = [
+        ...hotRegions.fuel.map((at, i) => ({ at, ...loadedFuel[i] })),
+        ...hotRegions.charge.map((at, i) => ({ at, ...loadedCharge[i] })),
+      ].filter(cell => cell.id === E.SCRAP || cell.id === E.METAL || (cell.id === E.LAVA && cell.ctype === E.METAL));
       observations.fuel.loadedBrokenCoal = rearCoal.length;
       observations.fuel.loadedBrokenCoalAcrossHearth = coalStillInHearth;
-      observations.fuel.loadedScrap = chargePut;
+      observations.fuel.loadedScrap = loadedCharge.filter(cell => cell.id === E.SCRAP).length;
       if (!checks.physicalMinedCoalPreserved) residualGaps.push(`real shovel coal handling: mined=${coalTaken.length}, hearth=${fuelPut}, retained=${observations.fuel.operatorCoalDistribution.retainedPack.length}`);
     } else {
       const scrapLoad = new Load(4);
@@ -499,8 +528,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     observations.fuel.scrapPut = chargePut;
     if (operatorMode === 'transfer' && (scrapTaken.length !== 4 || chargePut !== 4 || observations.fuel.loadedScrap !== 4))
       throw new Error('four real SCRAP cells did not reach the physical charge bed');
-    if (operatorMode === 'tools' && (scrapTaken.length !== 4 || observations.fuel.loadedScrap !== 4))
-      residualGaps.push(`real shovel SCRAP handling: mined=${scrapTaken.length}, charge=${observations.fuel.loadedScrap}, retained=${physicalOperator.shovel.load.cells.filter(cell => cell[0] === E.SCRAP).length}`);
+    if (operatorMode === 'tools' && !checks.operatorChargeDelivered)
+      residualGaps.push(`real shovel SCRAP handling: captured=${scrapTaken.length}, confirmedDump=${chargePut}, retained=${physicalOperator.shovel.load.cells.filter(cell => cell[0] === E.SCRAP).length}`);
 
     markStage('open gate and release actual pumped coolant');
     const openGate = { ...currentGate, gateMode: 'open', gateClosed: true };
@@ -537,7 +566,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         if (hasMetalLava) checks.nativeMetalMelt = true;
         const fuelLife = sampled.filter(c => [E.COAL, E.BROKENCOAL].includes(c.id)).reduce((sum, c) => sum + Math.max(0, c.life), 0);
         if (fuelLife <= 0 && sampled.some(c => c.id === E.ASH)) exhausted = true;
-        if (operatorMode === 'tools' && hasMetalLava && !checks.bucketCarriedActualLava && bucketLoad.count === 0) {
+        if (operatorMode === 'tools' && hasMetalLava && bucketPoured < 4 && bucketLoad.count === 0) {
           markStage('actual BUCKET scoop of native METAL-ctype LAVA');
           const scoop = await physicalOperator.act({ tool: 'BUCKET', button: 'primary',
             pose: { feet: [16.5, 16, 17.5], target: [17, 14, 18] }, maxFrames: 60,
@@ -720,7 +749,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       let target = ashIndex >= 0 ? ashRegion[ashIndex] : null;
       for (let i = 0; i < 8 && target && Date.now() < until; i++) {
         const action = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
-          pose: { feet: [target[0] + 0.5, 16, target[2] + 0.5], target }, maxFrames: 18,
+          pose: { feet: [16.5, 16, target[2] + 0.5], target }, maxFrames: 18,
           done: () => shovelLoad.cells.filter(cell => cell[0] === E.ASH).length - carriedAshBefore >= ashInitially,
           label: `shovel actual ash cleanup ${i + 1}` });
         observations.operator.actions.push(action);
@@ -775,12 +804,20 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       observations.operator.finalLoads = physicalOperator.snapshot();
       observations.operator.actionFailures = observations.operator.actions.filter(action => action.failure)
         .map(({ label, failure }) => ({ label, failure }));
+      checks.operatorActionsWithoutErrors = observations.operator.actionFailures.length === 0;
+      checks.operatorRequiredActionsComplete = observations.operator.requiredActions?.length === 3
+        && observations.operator.requiredActions.every(action => action.completed);
+      checks.operatorBucketDelivered = bucketPoured === 4 && physicalOperator.bucket.load.count === 0
+        && observations.cargo.bucketCells.length === 4
+        && observations.cargo.bucketCells.every(cell => cell.id === E.LAVA && cell.ctype === E.METAL);
       observations.operator.cargoAccounting = { complete: false,
         note: 'Actual tool payloads and retained loads are recorded; this operator run does not claim complete world-wide cargo conservation.' };
       if (physicalOperator.shovel.load.count) observations.cargo.residuals.push({ kind: 'operator-shovel-pack',
         cells: physicalOperator.shovel.load.cells.map(cell => ({ id: cell[0], temperature: cell[1], life: cell[2], ctype: Math.floor(cell[3]), seed: cell[3] - Math.floor(cell[3]) })) });
-      if (physicalOperator.shovel.load.out || physicalOperator.bucket.load.out
-          || physicalOperator.belt.transfer.pending) residualGaps.push('operator cargo still had transfer work outstanding at final inspection');
+      checks.operatorTransfersSettled = !physicalOperator.shovel.load.out && !physicalOperator.bucket.load.out
+        && !physicalOperator.shovel.load.reserved && !physicalOperator.bucket.load.reserved
+        && !physicalOperator.belt.transfer.pending;
+      if (!checks.operatorTransfersSettled) residualGaps.push('operator cargo still had transfer work outstanding at final inspection');
     }
     observations.water.finalConfirmedInput = observations.water.confirmedInput;
     observations.water.finalConfirmedOutput = observations.water.confirmedOutput;

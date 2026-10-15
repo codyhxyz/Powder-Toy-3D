@@ -45,28 +45,25 @@ export async function firstOccupiedRayHit({ sim, eye, direction, deadline, flush
   for (let count = 0; count < maxSteps && distance <= HAND_REACH; count++) {
     if (Date.now() >= until) throw new Error('operator ray: case deadline reached');
     if (inside(cell, sim.g)) {
-      const pending = bounded(sim.readCell(cell[0], cell[1], cell[2]), until, 'operator ray cell probe');
-      // readCell records a GPU readback copy; flush it without advancing simulation
-      // time before waiting for the cell value and continuing DDA.
-      if (flush) await bounded(flush(), until, 'operator ray readback fence');
-      const [state] = await pending;
+      // Observe both promises immediately, including failures. Flush the copy
+      // without advancing physics; an unsuccessful fence must not orphan a read.
+      const [value] = await bounded(Promise.all([
+        sim.readCell(cell[0], cell[1], cell[2]),
+        Promise.resolve().then(() => flush?.()),
+      ]), until, 'operator ray cell probe');
+      const [state] = value;
       const id = Math.round(state[0]);
       if (id !== E.EMPTY) {
-        // Rays normally enter from a boundary. If the eye starts inside a solid,
-        // use its dominant ray axis as the only defensible outward face.
-        let entryFace = face;
-        if (entryFace < 0) {
-          let axis = 0;
-          for (let i = 1; i < 3; i++) if (Math.abs(ray[i]) > Math.abs(ray[axis])) axis = i;
-          entryFace = axis * 2 + (ray[axis] > 0 ? 1 : 0);
-        }
+        // Starting inside matter has no entry face. Reject that test pose
+        // rather than inventing a surface that a player could not aim at.
+        if (face < 0) return null;
         return {
           valid: true,
           cell: new THREE.Vector3(...cell),
           id,
           T: state[1],
           dist: Math.max(0, distance),
-          face: entryFace,
+          face,
         };
       }
     } else if (distance > 0) return null;
