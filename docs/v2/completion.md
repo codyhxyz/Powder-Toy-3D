@@ -142,11 +142,30 @@ Native records zero bridges. Means are 150.15 ms for v1 and 135.16 ms for native
 This one window has a 9.6% lower native median; it is not a repeatable equivalent-work speedup claim.
 Independent review `afa9f325` found no blocker in compaction, scalar IDs, resource fallback or headless prewarm.
 
-**Feature gate failure:** original `flameWood` at `60fa5165` lights 0 of 6 bays; at least 5 are required.
+**Repaired ignition gate:** original `flameWood` at `60fa5165` lights 0 of 6 bays; at least 5 are required.
 It completes 120 ticks normally with 9.489 s total occupancy; this is not a timeout.
-Contact activation already exists, but its documented stochastic hazard is insufficient for this short flame exposure.
-The fixture and pass threshold remain unchanged. A contact-ignition repair specification is under review.
-V2 remains non-parity and must not become the default yet.
+Contact activation already exists, but its stochastic hazard is insufficient for this short flame exposure.
+`9e027c71` adds deterministic activation by a live, sufficiently hot contact source.
+It retains existing thresholds, stochastic fallback, fuel spending and energy accounting. This is an explicit R8 behavior addition.
+The unchanged GPU fixture now lights 6 of 6 bays by 0.25 game seconds; total occupancy is 10.347 s.
+The original preheated-wood control also passes at 60 ticks; total occupancy is 10.405 s.
+CPU validation covers 12 new groups, exact ledgers, excluded sources, frozen snapshots and unchanged AIR/WATER identities.
+
+**Remaining liquid failure:** original `utube` at `cab5525f` ends 1.144867 cm apart, exceeding the unchanged 1 cm limit.
+Mass is exact and rest is certified at 6 game seconds, but equalization fails.
+The run completes 600 ticks normally with 10.204 s total occupancy.
+Pressure deadband and fractional-flux limiter arithmetic are under investigation; no acceptance threshold has changed.
+V2 remains incomplete and non-parity, and must not become the default yet.
+
+Other unchanged numeric controls at `cab5525f` pass after compaction:
+
+| Control | Ticks | Result | Total occupancy |
+| --- | ---: | --- | ---: |
+| `tankStill` | 240 | Flat, exact mass, rest at 2.4 s | 9.538 s |
+| `partial` | 480 | 0.11 cm variation, exact mass, rest at 4.5 s | 2.046 s |
+| `yield` | 300 | Mud peak 2.49 cells, water peak 0.25 | 5.358 s |
+| `puddle` | 360 | Exact mass, bounded edge, rest at 4 s, zero awake bricks | 10.726 s |
+| `sandFalls` | 90 | All 64 grains fall and land; all retained | 8.788 s |
 
 Local evidence:
 
@@ -172,6 +191,14 @@ Local evidence:
 - `/tmp/v2-water-v1-60fa5165.json`
 - `/tmp/v2-water-native-60fa5165.json`
 - `/tmp/v2-native-flameWood-60fa5165.jsonl`
+- `/tmp/v2-native-flameWood-9e027c71.jsonl`
+- `/tmp/v2-native-woodBurns-9e027c71.jsonl`
+- `/tmp/v2-native-utube-cab5525f.jsonl`
+- `/tmp/v2-native-tankStill-cab5525f.jsonl`
+- `/tmp/v2-native-partial-cab5525f.jsonl`
+- `/tmp/v2-native-yield-cab5525f.jsonl`
+- `/tmp/v2-native-puddle-cab5525f.jsonl`
+- `/tmp/v2-native-sandFalls-cab5525f.jsonl`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.
