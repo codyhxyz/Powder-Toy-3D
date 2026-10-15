@@ -50,6 +50,7 @@ jobs:
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/wood-endgrain-cpu-check.mjs
       - run: node tools/check-cozy-materials.mjs   # CPU artwork, shader-view selection and water scope
+      - run: node tools/check-ready-volume-view.mjs   # keep terrain visible while a replacement shader compiles
       - run: node tools/check-crystal-material.mjs
       - run: node tools/check-crystal-transmission.mjs
       - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
