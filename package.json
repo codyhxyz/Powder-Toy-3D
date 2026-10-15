@@ -17,6 +17,7 @@
     "check:world-lighting-restore": "node --test tools/world-lighting-restore-cpu-check.mjs tools/world-source-cut-cpu-check.mjs",
     "check:world-lighting-records": "node --test tools/world-lighting-records-cpu-check.mjs",
     "check:world-render-owner": "node --test tools/world-render-owner-cpu-check.mjs",
+    "check:world-render-frame": "node --test tools/world-render-frame-cpu-check.mjs",
     "check:world-lighting-inputs": "node --test tools/world-lighting-inputs-cpu-check.mjs",
     "check:world-cells": "node --test tools/world-cell-adapter-cpu-check.mjs",
     "check:world-source-cuts": "node --test tools/world-source-cut-cpu-check.mjs",
