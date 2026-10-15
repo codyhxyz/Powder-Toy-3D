@@ -32,6 +32,19 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Cache CPU WGSL validator
+        uses: actions/cache@v4
+        id: naga-cache
+        with:
+          path: ~/.cargo/bin/naga
+          key: ${{ runner.os }}-naga-cli-30.0.1
+      - name: Install CPU WGSL validator
+        if: steps.naga-cache.outputs.cache-hit != 'true'
+        run: cargo install naga-cli --version 30.0.1 --locked
+      - name: Verify CPU WGSL validator
+        run: |
+          test "$("$HOME/.cargo/bin/naga" --version)" = "30.0.1"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
@@ -39,6 +52,8 @@ jobs:
       - run: node tools/check-map-previews.mjs   # every menu map, including source imports, has a square preview
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
       - run: node tools/check-gpu-deadline.mjs   # CPU-only: enforce total slot budget and cleanup ownership
+      - run: node --test tools/pipeline-safety-cpu-check.mjs   # fake GPU: compiler concurrency, deadlines and cancellation
+      - run: node --experimental-vm-modules --test tools/startup-safety-cpu-check.mjs   # fake browser: startup failure and safe restart
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
       - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
       - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
@@ -50,6 +65,10 @@ jobs:
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/wood-endgrain-cpu-check.mjs
       - run: node tools/check-cozy-materials.mjs   # CPU artwork, shader-view selection and water scope
+      - run: node tools/check-ready-volume-view.mjs   # keep terrain visible while a replacement shader compiles
+      - run: node tools/check-appearance.mjs && node tools/check-far-appearance.mjs
+      - run: node tools/check-island-appearance.mjs && node tools/check-construction-appearance.mjs && node tools/check-wang-appearance.mjs
+      - run: node tools/check-map-appearance.mjs
       - run: node tools/check-crystal-material.mjs
       - run: node tools/check-crystal-transmission.mjs
       - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
@@ -60,7 +79,7 @@ jobs:
       - run: node tools/check-city-folk-terrain.mjs && node tools/check-city-folk-town.mjs && node tools/check-city-folk-nature.mjs && node tools/check-city-folk-bus.mjs
       - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
-      - run: node tools/mission-node-check.mjs && node --test tools/import-cruelty-map-check.mjs
+      - run: node tools/mission-node-check.mjs && node tools/mission-retry-cpu-check.mjs && node --test tools/import-cruelty-map-check.mjs
       - name: Ensure ImageMagick for source appearance fixtures
         run: |
           if ! command -v magick >/dev/null && ! command -v convert >/dev/null; then

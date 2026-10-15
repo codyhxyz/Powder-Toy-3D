@@ -100,12 +100,10 @@ const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the je
 // out (smoothstep: no jolt at either end) and changes the climb no faster than JET_RAMP_S allows.
 // The climb, tank and flight speed are Noita's still.
 const JET_SPOOL_UP_S = 0.2;            // s for the push to come on fully after a press
-// Minecraft-inspired chicken wingbeats, buffed to twice the lift and upward
-// speed limit. Taps help flight; holding the press still runs the jet.
+// Animal Crossing's Minecraft-inspired chicken wingbeats, buffed to twice the lift and upward speed limit.
 const FLAP_LIFT = 44;                  // cells/s per tap: twice the previous 22
 const FLAP_CEILING = 8;                // cells/s: twice the previous 4; no unbounded ascent
 const FLAP_GAP_S = 0.2;                // s between beats
-const FLAP_HOLD_S = 0.18;              // s an air press must be held before it is the jet, not a flap
 const JET_SPOOL_DOWN_S = 0.3;          // s for it to die away after a release: the climb crests instead of dropping
 const JET_RAMP_S = 0.15;               // s from a hover to the full climb at the jet's hardest push (caps it at climb / this)
 
@@ -749,6 +747,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     }
     if (!readOnly()) meat.update();
     if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; sprintCarry = false; sinceFlap = Infinity; airFlapHold = false; }
+    // chargeJump is enabled only by Animal Crossing; other modes keep their jet controls.
+    if (!input.chargeJump) { sinceFlap = Infinity; airFlapHold = false; }
     if (!input.chargeJump || input.cancelJump || vitals.dead) cancelJump();
     if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
@@ -896,18 +896,17 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jetWants = alive && !climbing && !!input.jump && !pogoing && !input.chargeJump && !cruelty;
     // Swimming can settle waist-deep: hand off at the surface, not only below SWIM_SHARE.
     const clings = jetWants && !p.onGround && !p.headInLiquid && ((perks.has('LUKKI') && clinging()) || levitating);
-    if (pressed && alive) airFlapHold = !p.onGround && !jumpedNow && !swimming && !pogoing && !p.headInLiquid && !rope?.hard;
+    if (pressed && alive) airFlapHold = !!input.chargeJump && !p.onGround && !jumpedNow && !swimming && !pogoing && !p.headInLiquid && !rope?.hard;
     if (!jumpDown) airFlapHold = false;
     sinceFlap += dt;
-    // A tap in the air is a wingbeat. Holding that press past FLAP_HOLD_S is the jet, as before.
+    // Only Animal Crossing air taps are wingbeats.
     if (pressed && airFlapHold && sinceFlap >= FLAP_GAP_S) {
       sinceFlap = 0;
       const lift = FLAP_LIFT * gait, ceiling = FLAP_CEILING * gait;
       if (v.y < ceiling) v.y = Math.min(ceiling, v.y + lift);
       if (!quiet) povEvents.emit('player:flap');
     }
-    const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings)
-      && (!airFlapHold || sinceJumpPress >= FLAP_HOLD_S);
+    const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings);
     p.jetSpool = jet ? Math.min(1, p.jetSpool + dt / JET_SPOOL_UP_S) : Math.max(0, p.jetSpool - dt / JET_SPOOL_DOWN_S);
     const thrust = smooth01(p.jetSpool);
     // Noita's ease toward the climb, at most the ramp's push, as far as the jet has spooled

@@ -3,9 +3,11 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { appearanceRegion, packAppearancePlanes, uploadAppearance, SOURCE_APPEARANCE_ENABLED } from '../src/gfx/sourceAppearance.js';
-import { volumeFrag } from '../src/shaders/render.js';
-import { WGSL_CHECK as farChecks } from '../src/shaders/far.js';
+import { volumeFrag, WGSL_CHECK as volumeChecks } from '../src/shaders/render.js';
+import { WGSL_CHECK as farChecks, farFrag, farLayout } from '../src/shaders/far.js';
+import { sourceAppearanceWGSL, sourceShadeWGSL } from '../src/shaders/gfx/sourceAppearance.js';
 import { gridLayout } from '../src/sim.js';
 import { validateAppearance } from '../src/world/import/appearance.js';
 import { APPEARANCE_HEADER as H } from '../src/world/import/appearanceFormat.js';
@@ -15,6 +17,11 @@ import { crueltyFrameSettings } from '../src/gfx/crueltyDisplay.js';
 import { FrameUniformsStruct, writeFrameUniforms } from '../src/gfx/uniforms.js';
 import { volumeShaderGrid } from '../src/gfx/volume.js';
 import { Matrix4, Vector3, PerspectiveCamera } from 'three/webgpu';
+// Match CI's pinned native WGSL validator. Reflection alone cannot validate
+// these full shaders (wgsl_reflect currently rejects valid vector constants).
+const naga = spawnSync('naga', ['--version'], { encoding: 'utf8' });
+assert.equal(naga.status, 0, 'Install the CPU validator: cargo install naga-cli --version 30.0.1 --locked');
+assert.equal(naga.stdout.trim(), '30.0.1', 'Use the same Naga version as deployment');
 
 test('appearance words survive the shared rgba16uint far-grid tail bit-exactly', () => {
   const words = Uint32Array.from({ length: 101 }, (_, i) => (i * 0x9876543) >>> 0);
@@ -97,25 +104,68 @@ test('source artwork and geometry prepare together once, retaining the interacti
   } finally { globalThis.fetch = savedFetch; }
 });
 
-test('production near and far shaders keep a single pixel reader and shared vector loads', () => {
-  const g = gridLayout(128, 128, 128);
-  const shaders = ['realistic', 'cozy'].map(view => volumeFrag(g, { view }));
-  for (const check of farChecks().filter(check => check.kind === 'render')) shaders.push(check.code(g));
-  for (const code of shaders) {
-    if (!code.includes('sourceMaterial(')) continue;
-    assert.match(code, /fn sourcePair/);
-    const sample = code.slice(code.indexOf('fn sourceTexture'), code.indexOf('struct SourceMaterial'));
+// Production generators, with capability taken from source fixture metadata.
+// All numerical/validation work here is CPU-only; no WebGPU/browser is started.
+const g = gridLayout(128, 128, 128), world = [1088, 488, 1184], L = farLayout(world);
+const sourceScene = { importManifest: appearanceFixture().map };
+const sourceGrid = volumeShaderGrid(g, world, !!sourceScene.importManifest.appearance);
+const ordinaryGrid = volumeShaderGrid(g, world);
+const variants = [
+  ...['realistic', 'cozy'].flatMap(view => [false, true].map(curved => ({
+    name: `near-${view}${curved ? '-curved' : ''}`,
+    ordinary: volumeFrag(ordinaryGrid, { view, curved }),
+    source: volumeFrag(sourceGrid, { view, curved }),
+  }))),
+  ...[{ mesh: false }, { mesh: false, curved: true }, { mesh: true }].map(({ mesh, curved = false }) => ({
+    name: `far-${mesh ? 'detail' : 'view'}${curved ? '-curved' : ''}`,
+    ordinary: farFrag(g, L, mesh, { curved }),
+    source: farFrag(g, L, mesh, { curved, sourceAppearance: true }),
+  })),
+];
+const expensiveSource = /fn source(?:Pair|Word|Float|Vec4|Pixel|Texture|Environment|Diffuse)\(/;
+const bindings = code => code.match(/@group\(\d+\)\s*@binding\(\d+\)[^;]*;/g);
+
+test('ordinary worlds, boxes and default WGSL checks omit source geometry, pixels and lights', () => {
+  assert.equal(ordinaryGrid.sourceAppearance, false);
+  assert.equal(volumeShaderGrid(g, null, true).sourceAppearance, false, 'boxes cannot bind source artwork');
+  for (const { name, ordinary, source } of variants) {
+    assert.doesNotMatch(ordinary, expensiveSource, name);
+    assert(!ordinary.includes(sourceShadeWGSL), `${name}: no source light loop`);
+    assert.match(ordinary, /fn sourceEnabled\(\) -> bool { return false; }/);
+    assert.notEqual(ordinary, source, `${name}: text-keyed shader caches cannot alias the variants`);
+    assert.deepEqual(bindings(ordinary), bindings(source), `${name}: binding ABI is unchanged`);
+  }
+  for (const check of [...volumeChecks(), ...farChecks()]) {
+    assert.doesNotMatch(check.code(g), expensiveSource, `default WGSL check: ${check.name}`);
+  }
+  assert.doesNotMatch(volumeFrag(volumeShaderGrid(g, null)), expensiveSource);
+  assert.equal(g.sourceAppearance, undefined, 'specialization never mutates simulation dimensions');
+});
+
+test('source near/far variants preserve the optimized original reader, lighting and filtering', () => {
+  for (const { name, source } of variants) {
+    assert(source.includes(sourceAppearanceWGSL(true, L.bricks.n)), `${name}: exact optimized source reader`);
+    assert(source.includes(sourceShadeWGSL), `${name}: original source light/material models`);
+    const sample = source.slice(source.indexOf('fn sourceTexture'), source.indexOf('struct SourceMaterial'));
     assert.equal((sample.match(/sourcePixel\(/g) ?? []).length, 1, 'one native sampling call site for all four original taps');
     assert.match(sample, /mix\(mix\(taps\[0\], taps\[1\]/);
+    assert.match(source, /FU.sourceStyle != 0u && FU.sourceAppearance.y >= 64u/, 'runtime style still gates source maps');
   }
-  const specialized = volumeFrag({ ...g, sourceGrid: [3, 5, 4] }, { view: 'realistic' });
+  const specialized = volumeFrag({ ...sourceGrid, sourceGrid: [3, 5, 4] });
   assert.match(specialized, /let x = 3u;\s+let z = 4u;/, 'fixed world atlas dimensions reach native compilation');
-  assert.deepEqual(volumeShaderGrid(g, [1088, 488, 1184]).sourceGrid, [272, 122, 296], 'far atlas uses four-cell bricks, not the source directory’s eight-cell bricks');
+  assert.deepEqual(sourceGrid.sourceGrid, [272, 122, 296], 'far atlas uses four-cell bricks, not the source directory’s eight-cell bricks');
   assert.deepEqual(volumeShaderGrid(g, null).sourceGrid, [1, 1, 1]);
-  assert.equal(g.sourceGrid, undefined, 'shader specialization never mutates simulation dimensions');
-  const preload = readFileSync(new URL('../src/preload.js', import.meta.url), 'utf8');
-  assert.match(preload, /volumeShaderGrid\(g, world\)/, 'menu warm-up uses the same specialization');
+  assert.equal(g.sourceGrid, undefined);
 });
+
+for (const { name, ordinary, source } of variants) {
+  for (const [capability, code] of [['ordinary', ordinary], ['source', source]]) {
+    test(`Naga validates ${name} ${capability} (CPU only)`, () => {
+      const result = spawnSync('naga', ['--stdin-file-path', `${name}-${capability}.wgsl`], { input: code, encoding: 'utf8', timeout: 30000 });
+      assert.equal(result.status, 0, result.stderr || result.error?.message);
+    });
+  }
+}
 
 test('source normal ignores saved night effect without changing the saved setting', () => {
   const saved = { cruelty: true, night: 0.9 };
@@ -127,6 +177,13 @@ test('source adapter retains shared near/far call sites behind the compile-time 
   const surface = readFileSync(new URL('../src/shaders/gfx/surface.js', import.meta.url), 'utf8');
   const far = readFileSync(new URL('../src/shaders/far.js', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const worldFar = readFileSync(new URL('../src/world/far.js', import.meta.url), 'utf8');
+  const worldDetail = readFileSync(new URL('../src/world/detail.js', import.meta.url), 'utf8');
+  assert.match(app, /createVolume\(gpu, sim, \{[^\n]*sourceAppearance: !!\(worldMode && sceneByKey\(settings.scene\).importManifest\?\.appearance\)/, 'near capability follows selected scene metadata, not mode/style');
+  assert.match(worldFar, /this.sourceAppearance = SOURCE_APPEARANCE_ENABLED && !!win.scene.importManifest\?\.appearance/);
+  assert.match(worldFar, /farFrag\(g, L, false, \{ sourceAppearance: this.sourceAppearance \}\)/);
+  assert.match(worldFar, /farFrag\(this.sim.g, this.L, false, \{ curved: true, sourceAppearance: this.sourceAppearance \}\)/);
+  assert.match(worldDetail, /farFrag\(g, L, true, \{ sourceAppearance: far.sourceAppearance \}\)/);
   assert.match(surface, /sourceMaterial\(id, p, n\)/);
   assert(surface.indexOf('let original = sourceMaterial') < surface.indexOf('if (FU.matDetail < 0.5)'));
   assert.match(far, /sourceShade\(p, normalize\(m.sourceNormal\)/);

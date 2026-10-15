@@ -7,11 +7,13 @@ import { CRUELTY_PROFILES } from './crueltyProfiles.js';
 // Only their manifests load at boot (the menu needs the names, sizes and modes);
 // each map's geometry is fetched when it is opened. A missing or invalid asset
 // never registers a substitute: the map is simply absent from the menu.
-async function installProfile(profile) {
-  const response = await fetch(`/local-maps/${profile.id}.json`);
+async function installProfile(profile, signal) {
+  if (signal?.aborted) return null;
+  const response = await fetch(`/local-maps/${profile.id}.json`, { signal });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Cannot read the converted ${profile.name} (${response.status})`);
   const scene = await loadImportedMap(`/local-maps/${profile.id}.json`, { response, key: `${profile.id}Local`, label: `${profile.name} (source import)` });
+  if (signal?.aborted) return null;
   if (scene.importManifest.id !== profile.id) throw new Error(`Converted map profile mismatch: ${profile.id}`);
   if (MAPS.some((m) => m.key === profile.id) || WORLD_SCENES.some((s) => s.key === scene.key)) throw new Error(`Duplicate map registration: ${profile.id}`);
   const omitted = scene.mission.placementFailures.filter((p) => p.role === 'guard').length;
@@ -24,9 +26,12 @@ async function installProfile(profile) {
   WORLD_SCENES.push(scene); MAPS.push(map);
   return map;
 }
-export async function installLocalCrueltyMaps() {
+export async function installLocalCrueltyMaps({ signal } = {}) {
   // One request per map, in parallel: each is small, and the menu waits for them.
   const installed = await Promise.all(CRUELTY_PROFILES.filter((p) => !p.blocked).map((profile) =>
-    installProfile(profile).catch((error) => { console.error(`Converted ${profile.name} not registered`, error); return null; })));
+    installProfile(profile, signal).catch((error) => {
+      if (!signal?.aborted) console.error(`Converted ${profile.name} not registered`, error);
+      return null;
+    })));
   return installed.filter(Boolean);
 }

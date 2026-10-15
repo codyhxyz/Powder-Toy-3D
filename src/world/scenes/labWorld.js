@@ -237,7 +237,7 @@ int labPit(uint h, int sw, int sd, int px, int py, int pz) {
 
 // Wooden towers with gunpowder cores, in a row or grid centred in the slot,
 // each with an oil puddle at its foot on its low-z side.
-int labTowers(uint h, int sw, int sd, int px, int py, int pz) {
+int labTowersMaterial(uint h, int sw, int sd, int px, int py, int pz) {
   int tw = thRange(thKey(h, LAB_K_W), LAB_TOWER_W_MIN, LAB_TOWER_W_MAX);
   int pitch = tw + LAB_TOWER_GAP;
   int ax = sw - 2 * LAB_MARGIN, az = sd - 2 * LAB_MARGIN - LAB_PUDDLE_D;
@@ -260,8 +260,9 @@ int labTowers(uint h, int sw, int sd, int px, int py, int pz) {
   if (uz >= tw || py >= height) return E_EMPTY;
   bool core = ux >= LAB_CORE_INSET && uz >= LAB_CORE_INSET && ux < tw - LAB_CORE_INSET && uz < tw - LAB_CORE_INSET
            && py >= LAB_CORE_BASE && py < height - LAB_CORE_TOP;
-  return core ? E_GUNPOWDER : E_WOOD;
+  return core ? E_GUNPOWDER : materialWord(E_WOOD, AP_PLANK_Y);
 }
+int labTowers(uint h, int sw, int sd, int px, int py, int pz) { return materialId(labTowersMaterial(h, sw, sd, px, py, pz)); }
 
 // A block of ice under a cap of snow.
 int labBlock(uint h, int sw, int sd, int px, int py, int pz) {
@@ -292,7 +293,7 @@ int labHang(uint sh, int sw, int sd, int px, int py, int pz) {
 int labSlots(int lay) { return lay == LAB_LAYOUT_QUAD ? 4 : lay == LAB_LAYOUT_HALVES ? 2 : 1; }
 
 // The element at world cell (x, y, z).
-int labCell(int x, int y, int z) {
+int labCellMaterial(int x, int y, int z) {
   if (y < LAB_FLOOR) return E_WALL;
   int py = y - LAB_FLOOR;
   if (y >= LAB_SKY) return E_EMPTY;
@@ -325,11 +326,12 @@ int labCell(int x, int y, int z) {
   int id = E_EMPTY;
   if (kind == LAB_STATION_TANK) id = labTank(sh, sw, sd, px, py, pz);
   else if (kind == LAB_STATION_PIT) id = labPit(sh, sw, sd, px, py, pz);
-  else if (kind == LAB_STATION_TOWERS) id = labTowers(sh, sw, sd, px, py, pz);
+  else if (kind == LAB_STATION_TOWERS) id = labTowersMaterial(sh, sw, sd, px, py, pz);
   else if (kind == LAB_STATION_BLOCK) id = labBlock(sh, sw, sd, px, py, pz);
-  if (id == E_EMPTY) id = labHang(sh, sw, sd, px, py, pz);
+  if (materialId(id) == E_EMPTY) id = labHang(sh, sw, sd, px, py, pz);
   return id;
 }
+int labCell(int x, int y, int z) { return materialId(labCellMaterial(x, y, z)); }
 
 // How much is going on in room (rx, rz): its stations' scores (start()).
 int labRoomScore(int rx, int rz) {
@@ -371,11 +373,12 @@ ${definesGLSL(P_, L)}
 ${helpersGLSL}
 ${srcWgsl ??= toWgsl(SRC, { consts: definesTypes(P_, L), uniforms: LAB_U.sceneTypes })}
 fn sceneCell(w: vec3i) -> SceneCell {
-  let id = labCell(w.x, w.y, w.z);
+  let word = labCellMaterial(w.x, w.y, w.z);
+  let id = materialId(word);
   var ctype = 0.0;
   if (id == E_LAVA) { ctype = f32(E_STONE); }   // lava remembers it was stone (the box lab's)
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, LAB_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), ctype + seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), appearanceCtype(id, ctype, materialAppearance(word)) + seed), vec4f(0.0));
 }
 `;
 

@@ -53,22 +53,25 @@ const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BIN
 /** A defines object's key: its switched-on names, sorted. */
 export const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
 // Shared with menu warm-up: the same world must produce identical shader text.
-export const volumeShaderGrid = (g, world) => ({
+export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
   ...g, sourceGrid: world ? farLayout(world).bricks.n : [1, 1, 1],
+  sourceAppearance: !!world && sourceAppearance === true,
 });
 
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim with its derived passes attached (sim.derived)
- * @param {{ shadows?: boolean }} [opts] shadows: the session's view reads the
+ * @param {{ shadows?: boolean, sourceAppearance?: boolean }} [opts] sourceAppearance:
+ *   the selected world's imported manifest has source artwork (not a view setting).
+ *   shadows: the session's view reads the
  *   shadow map (shaders/render.js viewShadows): its kernel builds now and
  *   `ready` waits for it; false, it builds when first wanted
  * @returns the volume (see the file header)
  */
-export function createVolume(gpu, sim, { shadows = true } = {}) {
+export function createVolume(gpu, sim, { shadows = true, sourceAppearance = false } = {}) {
   // The atlas dimensions are fixed for this world. Constant divisors avoid
   // repeating Metal's variable-integer-division expansion at every lookup.
-  const g = volumeShaderGrid(sim.g, sim.world);
+  const g = volumeShaderGrid(sim.g, sim.world, sourceAppearance);
   const derived = sim.derived;
   if (!derived) throw new Error('createVolume: the simulation has no derived passes (new Derived(sim) first)');
   const fu = frameUniformsOf(gpu);

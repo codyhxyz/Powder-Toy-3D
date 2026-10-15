@@ -177,7 +177,11 @@ export class Gpu {
 
     // Count every submit, three's included: they share this queue.
     const submit = this.queue.submit.bind(this.queue);
-    this.queue.submit = (buffers) => { this.stats.submits++; return submit(buffers); };
+    this.queue.submit = (buffers) => {
+      this._assertLive();
+      this.stats.submits++;
+      return submit(buffers);
+    };
 
     device.lost.then((lost) => {
       this.lost = true;
@@ -223,8 +227,12 @@ export class Gpu {
    * @returns {GpuFrame}
    */
   get frame() {
-    if (this.failure) throw this.failure;
+    this._assertLive();
     return this._frame;
+  }
+
+  _assertLive() {
+    if (this.failure || this.pipelines?.failure) throw this.failure || this.pipelines.failure;
   }
 
   _frameOrThrow() { return this.frame; }
@@ -278,6 +286,7 @@ export class Gpu {
    * @returns {GPUBindGroupLayout}
    */
   layout(name, entries) {
+    this._assertLive();
     const full = entries.map(withVisibility);
     const key = JSON.stringify(full);
     const had = this._layoutEntries.get(name);
@@ -302,6 +311,7 @@ export class Gpu {
    * @returns {GPUBindGroup}
    */
   bindGroup(layout, entries, label) {
+    this._assertLive();
     const group = this.device.createBindGroup({ label: label ?? layout.label, layout, entries });
     const reads = [];
     for (const e of entries) {
@@ -332,6 +342,7 @@ export class Gpu {
    * @returns {SharedUniforms}
    */
   uniforms(struct, label) {
+    this._assertLive();
     const u = new SharedUniforms(this, struct, label);
     (this._uniformsOf ??= new WeakMap()).set(u.buffer, u);
     return u;
@@ -342,14 +353,14 @@ export class Gpu {
    * @param {ConstructorParameters<typeof Kernel>[1]} desc
    * @returns {Kernel}
    */
-  kernel(desc) { return new Kernel(this, desc); }
+  kernel(desc) { this._assertLive(); return new Kernel(this, desc); }
 
   /**
    * A render pipeline of ours (B5).
    * @param {ConstructorParameters<typeof RenderPipe>[1]} desc
    * @returns {RenderPipe}
    */
-  renderPipeline(desc) { return new RenderPipe(this, desc); }
+  renderPipeline(desc) { this._assertLive(); return new RenderPipe(this, desc); }
 
   /** Resolves when every pipeline build started or queued so far has settled. */
   settled() { return this.pipelines.settled(); }
@@ -374,6 +385,7 @@ export class Gpu {
 
   // the params group (L.PARAMS) whose binding 1 is `bytes` long
   _paramsGroup(bytes) {
+    this._assertLive();
     let g = this._paramsGroups.get(bytes);
     if (!g) {
       const buffer = this.paramRing.buffer;
@@ -396,6 +408,7 @@ export class Gpu {
    * @returns {GPUBuffer}
    */
   createBuffer(desc) {
+    this._assertLive();
     return this._track(this.device.createBuffer(desc), desc.size, 'buffer');
   }
 
@@ -405,6 +418,7 @@ export class Gpu {
    * @returns {GPUTexture}
    */
   createTexture(desc) {
+    this._assertLive();
     const t = this.device.createTexture(desc);
     const bpp = TEXEL[desc.format]?.[0] ?? 4;
     const mips = desc.mipLevelCount ?? 1;
@@ -448,7 +462,7 @@ export class Gpu {
    * @param {{ ordered?: boolean }} [opts]
    */
   write(buffer, offset, data, { ordered = true } = {}) {
-    if (this.failure) throw this.failure;
+    this._assertLive();
     if (ordered && this._frame.flush('write')) this.stats.writeFlushes++;
     this.queue.writeBuffer(buffer, offset, data);
     this.stats.bytesUploaded += data.byteLength;
@@ -474,9 +488,12 @@ export class Gpu {
    */
   fail(error) {
     if (this.failure) return this.failure;
+    // Cleanup (including device.lost / late driver rejections) is not a new report.
+    if (this._destroyed) return this.pipelines.failure;
     const failure = GraphicsFailure.from(error);
     this.failure = failure;
-    this.readback._failAll(failure);
+    this.pipelines.stop(failure);
+    this.destroy();
     for (const fn of this._listeners) {
       try { fn(failure); } catch (e) { console.error(e); }
     }
@@ -488,7 +505,12 @@ export class Gpu {
 
   /** Tears the device down without reporting a failure (a test page's cleanup). */
   destroy() {
+    if (this._destroyed) return;
     this._destroyed = true;
-    this.device.destroy();
+    const stopped = this.pipelines.stop(this.failure ?? new GraphicsFailure('The WebGPU device was destroyed.'));
+    this.readback._failAll(stopped);
+    // WebGPU offers no way to cancel a compilation already in the driver.
+    // Destroy only our device, best-effort; never request a replacement.
+    try { this.device.destroy(); } catch { /* a failed device may already be gone */ }
   }
 }

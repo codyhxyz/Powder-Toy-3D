@@ -19,7 +19,7 @@ import { shaderFailure, GraphicsFailure } from './errors.js';
 export const STAGE = Object.freeze({ VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
 /** A kernel must build on the test device (SwiftShader) within this many ms, or be split (W23). */
 export const PIPELINE_BUDGET_MS = 30000;
-/** Background pipeline builds running at once (B5). */
+/** Native pipeline compilations running at once, including foreground builds (B5). */
 export const PIPELINE_CONCURRENCY = 2;
 /** The spec's maxComputeWorkgroupsPerDimension: fold() keeps every dimension within it. */
 export const MAX_WORKGROUPS = 65535;
@@ -74,44 +74,76 @@ export class PipelineCache {
     this.pipelines = new Map();
     this.pending = new Set();
     this.queue = [];
+    this.active = new Set();
     this.running = 0;
+    this.failure = null;
+    this.pipes = new Set();
+    this.idleQueue = [];
+    this.idleJobs = new Map();
     /** @type {Map<string, number>} ms each named pipeline took to create */
     this.times = new Map();
   }
 
-  /**
-   * The module for this source text (cached).
-   * @param {string} code
-   * @param {string} label
-   */
+  check() {
+    if (this.failure || this.gpu.failure) throw this.failure || this.gpu.failure;
+  }
+
+  track(pipe) {
+    if (this.failure) pipe.cancel(this.failure);
+    else this.pipes.add(pipe);
+  }
+
+  // Diagnostics must not delay stopping graphics: getCompilationInfo can hang,
+  // too. Enrich the same failure object if the browser eventually answers.
+  shaderFailed(name, module, error) {
+    if (this.failure) return this.failure;
+    const failure = new GraphicsFailure(`GPU shader failed: ${name}.\n${error?.message ?? String(error)}`, { cause: error });
+    this.gpu.fail(failure);
+    shaderFailure(name, module, error).then((detail) => { failure.message = detail.message; }, () => {});
+    return this.failure || failure;
+  }
+
+  /** The module for this source text (cached). */
   module(code, label) {
+    this.check();
     let m = this.modules.get(code);
     if (!m) {
-      // in an error scope, so a WGSL error fails as `GPU shader failed: <name>.`
-      // with the compiler's lines, not as an anonymous uncaptured error
       const device = this.gpu.device;
       device.pushErrorScope('validation');
-      m = device.createShaderModule({ label, code });
+      try {
+        m = device.createShaderModule({ label, code });
+      } catch (error) {
+        // Always balance the scope, even if a fake/lost device throws.
+        Promise.resolve(device.popErrorScope()).catch(() => {});
+        throw this.shaderFailed(label, m, error);
+      }
       const module = m;
-      device.popErrorScope().then(async (error) => {
-        if (error) this.gpu.fail(await shaderFailure(label, module, error));
-      }, () => {});
+      Promise.resolve(device.popErrorScope()).then((error) => {
+        if (error && !this.failure) this.shaderFailed(label, module, error);
+      }, (error) => { if (!this.failure) this.shaderFailed(label, module, error); });
       this.modules.set(code, m);
     }
     return m;
   }
 
-  // The pipeline layout for these group layouts, created inside an error scope
-  // so a per-stage limit overrun names its pipeline instead of reaching
-  // uncapturederror anonymously.
+  // Explicit layouts preserve the bind-group ABI. The active job's deadline
+  // includes this scope: some drivers never answer popErrorScope().
   async pipelineLayout(name, groups) {
+    this.check();
     const key = groups.map(idOf).join(',');
     let p = this.layouts.get(key);
     if (!p) {
       const device = this.gpu.device;
       device.pushErrorScope('validation');
-      const layout = device.createPipelineLayout({ label: `${name} layout`, bindGroupLayouts: groups });
-      p = device.popErrorScope().then((error) => {
+      let layout;
+      try {
+        layout = device.createPipelineLayout({ label: `${name} layout`, bindGroupLayouts: groups });
+      } catch (error) {
+        Promise.resolve(device.popErrorScope()).catch(() => {});
+        throw error;
+      }
+      p = Promise.resolve(device.popErrorScope()).then((error) => {
+        this.check();
         if (error) throw new GraphicsFailure(`GPU shader failed: ${name}.\nPipeline layout: ${error.message}`);
         return layout;
       });
@@ -120,78 +152,135 @@ export class PipelineCache {
     return p;
   }
 
-  /**
-   * Creates (or reuses) a pipeline; resolves to it, or fails graphics and rejects.
-   * @param {'compute' | 'render'} kind
-   * @param {string} name
-   * @param {string} key everything but the layouts that identifies the pipeline
-   * @param {GPUBindGroupLayout[]} groups
-   * @param {GPUShaderModule} module
-   * @param {(layout: GPUPipelineLayout) => object} descriptor
-   */
+  /** Creates (or reuses) a pipeline; every native build goes through pump(). */
   pipeline(kind, name, key, groups, module, descriptor) {
+    if (this.failure) return this.rejected(this.failure);
     const full = `${kind}|${idOf(module)}|${groups.map(idOf).join(',')}|${key}`;
-    let p = this.pipelines.get(full);
-    if (p) return p;
-    const { gpu } = this;
-    const stats = gpu.stats;
-    stats.pipelinesPending++;
-    const t0 = performance.now();
-    p = this.pipelineLayout(name, groups).then((layout) => {
-      const d = { label: name, layout, ...descriptor(layout) };
-      return kind === 'compute' ? gpu.device.createComputePipelineAsync(d) : gpu.device.createRenderPipelineAsync(d);
-    }).then((pipeline) => {
-      stats.pipelinesCreated++;
-      this.times.set(name, performance.now() - t0);
-      return pipeline;
-    }, async (error) => {
-      const failure = error instanceof GraphicsFailure ? error : await shaderFailure(name, module, error);
-      this.pipelines.delete(full);   // a retry after a fix in dev builds again
-      gpu.fail(failure);
-      throw failure;
-    }).finally(() => {
-      stats.pipelinesPending--;
-      this.pending.delete(p);
-    });
+    const cached = this.pipelines.get(full);
+    if (cached) return cached;
+    let resolve, reject;
+    const p = new Promise((res, rej) => { resolve = res; reject = rej; });
+    const job = { kind, name, full, groups, module, descriptor, p, resolve, reject, done: false, timer: null };
+    this.gpu.stats.pipelinesPending++;
     this.pending.add(p);
-    p.catch(() => {});   // the failure is reported through gpu.fail; awaiting callers still see it
     this.pipelines.set(full, p);
+    p.catch(() => {}); // gpu.fail reports it; awaiting callers still see it
+    this.queue.push(job);
+    this.pump();
     return p;
   }
 
-  /**
-   * Queues a build for idle time: at most PIPELINE_CONCURRENCY at once,
-   * through requestIdleCallback (setTimeout where there is none: Safari 26).
-   * @param {{ build: () => Promise<unknown> }} job
-   */
-  idle(job) {
-    this.queue.push(job);
-    this.pump();
+  rejected(error) {
+    const p = Promise.reject(error);
+    p.catch(() => {});
+    return p;
+  }
+
+  finish(job, error, pipeline) {
+    if (job.done) return;
+    job.done = true;
+    if (job.timer !== null) clearTimeout(job.timer);
+    this.active.delete(job);
+    this.running = this.active.size;
+    this.pending.delete(job.p);
+    this.gpu.stats.pipelinesPending--;
+    if (error) {
+      this.pipelines.delete(job.full);
+      job.reject(error);
+    } else {
+      this.gpu.stats.pipelinesCreated++;
+      this.times.set(job.name, performance.now() - job.t0);
+      job.resolve(pipeline);
+    }
   }
 
   pump() {
-    while (this.running < PIPELINE_CONCURRENCY && this.queue.length) {
+    while (!this.failure && this.running < PIPELINE_CONCURRENCY && this.queue.length) {
       const job = this.queue.shift();
-      this.running++;
-      idleCallback(() => {
-        Promise.resolve(job.build()).catch(() => {}).finally(() => { this.running--; this.pump(); });
+      this.active.add(job);
+      this.running = this.active.size;
+      job.t0 = performance.now();
+      // This limits our wait, not driver work: WebGPU cannot cancel an active
+      // compilation. Do not release a timed-out slot and start more work.
+      job.timer = setTimeout(() => {
+        if (!job.done) this.gpu.fail(new GraphicsFailure(
+          `GPU shader failed: ${job.name}.\nPipeline compilation exceeded ${PIPELINE_BUDGET_MS} ms.`));
+      }, PIPELINE_BUDGET_MS);
+      Promise.resolve().then(async () => {
+        this.check();
+        const layout = await this.pipelineLayout(job.name, job.groups);
+        this.check();
+        const d = { label: job.name, layout, ...job.descriptor(layout) };
+        this.check();
+        return job.kind === 'compute' ? this.gpu.device.createComputePipelineAsync(d) : this.gpu.device.createRenderPipelineAsync(d);
+      }).then((pipeline) => {
+        if (job.done || this.failure) return;
+        this.finish(job, null, pipeline);
+        this.pump();
+      }, (error) => {
+        if (job.done || this.failure) return;
+        if (error instanceof GraphicsFailure) this.gpu.fail(error);
+        else this.shaderFailed(job.name, job.module, error);
       });
+    }
+  }
+
+  /** Cancel every waiter, including manual pipes and already scheduled idle callbacks. */
+  stop(error) {
+    if (this.failure) return this.failure;
+    this.failure = GraphicsFailure.from(error);
+    const jobs = [...this.active, ...this.queue];
+    this.queue.length = 0;
+    for (const job of jobs) this.finish(job, this.failure);
+    for (const cancel of this.idleJobs.values()) cancel?.();
+    this.idleJobs.clear();
+    this.idleQueue.length = 0;
+    for (const pipe of this.pipes) pipe.cancel(this.failure);
+    this.pipes.clear();
+    return this.failure;
+  }
+
+  /**
+   * Idle scheduling is separate from the central native compilation semaphore.
+   * @param {{ build: () => Promise<unknown>, cancel?: (error: GraphicsFailure) => void }} job
+   */
+  idle(job) {
+    if (this.failure) { job.cancel?.(this.failure); return; }
+    this.idleQueue.push(job);
+    this.pumpIdle();
+  }
+
+  pumpIdle() {
+    while (!this.failure && this.idleJobs.size < PIPELINE_CONCURRENCY && this.idleQueue.length) {
+      const job = this.idleQueue.shift();
+      this.idleJobs.set(job, idleCallback(() => {
+        if (this.failure || !this.idleJobs.has(job)) return;
+        this.idleJobs.set(job, null);
+        Promise.resolve().then(() => { this.check(); return job.build(); }).catch(() => {}).finally(() => {
+          this.idleJobs.delete(job);
+          this.pumpIdle();
+        });
+      }));
     }
   }
 
   /** Resolves when every build started or queued so far has settled. */
   async settled() {
-    while (this.pending.size || this.queue.length || this.running) {
+    while (this.pending.size || this.idleQueue.length || this.idleJobs.size) {
       await Promise.allSettled([...this.pending]);
-      if (!this.pending.size && (this.queue.length || this.running)) await new Promise((r) => setTimeout(r, 16));
+      if (!this.pending.size && (this.idleQueue.length || this.idleJobs.size)) await new Promise((r) => setTimeout(r, 16));
     }
   }
 }
 
-/** requestIdleCallback where it exists (not in Safari 26), else setTimeout (detailGate.js idle()). */
+/** requestIdleCallback where available, else setTimeout. Returns a cancellation function. */
 export function idleCallback(fn) {
-  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => fn(), { timeout: 1000 });
-  else setTimeout(fn, 0);
+  if (typeof requestIdleCallback === 'function') {
+    const id = requestIdleCallback(() => fn(), { timeout: 1000 });
+    return () => globalThis.cancelIdleCallback?.(id);
+  }
+  const id = setTimeout(fn, 0);
+  return () => clearTimeout(id);
 }
 
 // Group layouts for a pipeline: as given, then group 3 is always L.PARAMS
@@ -226,6 +315,7 @@ class Pipe {
     this._settle = { resolve, reject };
     this.when = desc.build ?? 'now';
     if (!['now', 'idle', 'manual'].includes(this.when)) throw new Error(`${desc.name}: build is 'now', 'idle' or 'manual'`);
+    gpu.pipelines.track(this);
   }
 
   // called at the end of each subclass constructor, once key() can run
@@ -237,13 +327,31 @@ class Pipe {
 
   /** Starts creating the pipeline (once); returns `ready`. */
   build() {
-    if (this._started) return this.ready;
-    this.state = 'pending';
-    const module = this.gpu.pipelines.module(this.desc.code, this.name);
-    this._started = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module))
-      .then((p) => { this.pipeline = p; this.state = 'ready'; this._settle.resolve(this); },
-        (e) => { this.state = 'failed'; this._settle.reject(e); });
+    if (this._started || this.state === 'failed') return this.ready;
+    try {
+      this.gpu.pipelines.check();
+      this.state = 'pending';
+      const module = this.gpu.pipelines.module(this.desc.code, this.name);
+      this._started = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module))
+        .then((p) => {
+          if (this.state === 'failed') return;
+          this.gpu.pipelines.check();
+          this.pipeline = p;
+          this.state = 'ready';
+          this.gpu.pipelines.pipes.delete(this);
+          this._settle.resolve(this);
+        }).catch((e) => this.cancel(e));
+    } catch (e) {
+      this.cancel(this.gpu.fail(e));
+    }
     return this.ready;
+  }
+
+  cancel(error) {
+    if (this.state === 'ready' || this.state === 'failed') return;
+    this.state = 'failed';
+    this.gpu.pipelines.pipes.delete(this);
+    this._settle.reject(error);
   }
 
   // the ms this pipeline took to create (null until it is ready)

@@ -32,5 +32,5 @@ export function uploadAppearance(gpu, texture, words, region) {
     [x, region.planes, z],
   );
 }
-// Compile-time emergency switch; enable only with a bounded cold-app check.
+// The renderer separately specializes shaders for source-capable scenes.
 export const SOURCE_APPEARANCE_ENABLED = true;

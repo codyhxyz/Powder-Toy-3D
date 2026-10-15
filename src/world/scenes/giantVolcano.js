@@ -435,7 +435,7 @@ int gvGround(int x, int y, int z, int top) {
 // ground, if that is in the forest band (over the sea's spray, under the
 // snow, off the lava flows and the scar) and the forest's patch noise has
 // a tree there (Volcano isles' trees, half as big again).
-int gvTreePart(int x, int y, int z, int cx, int cz) {
+int gvTreePartMaterial(int x, int y, int z, int cx, int cz) {
   uint h = thHash2(cx, cz, GV_SALT_TREE);
   int tx = cx * GV_TREE_CELL + thRange(thKey(h, GV_K_X), GV_TREE_MARGIN, GV_TREE_CELL - 1 - GV_TREE_MARGIN);
   int tz = cz * GV_TREE_CELL + thRange(thKey(h, GV_K_Z), GV_TREE_MARGIN, GV_TREE_CELL - 1 - GV_TREE_MARGIN);
@@ -448,35 +448,37 @@ int gvTreePart(int x, int y, int z, int cx, int cz) {
   float ox = float(tx) + 0.5 - GV_CX, oz = float(tz) + 0.5 - GV_CZ;
   if (gvFlows(ox, oz) > 0.0 || gvScar(gvAlong(ox, oz), gvAcross(ox, oz)) > 0.0) return E_EMPTY;
   int trunk = thRange(thKey(h, GV_K_TRUNK), GV_TRUNK_MIN, GV_TRUNK_MAX);
-  if (dx == 0 && dz == 0 && y >= base && y < base + trunk) return E_WOOD;
+  if (dx == 0 && dz == 0 && y >= base && y < base + trunk) return materialWord(E_WOOD, AP_LOG_Y);
   int r2 = dx * dx + dz * dz;
   if (base >= GV_PINE_LINE) {
     // a pine: a cone of leaves, CROWN_R across at its skirt, narrowing to its tip
     int ch = trunk + GV_PINE_TIP - GV_PINE_SKIRT, u = y - base - GV_PINE_SKIRT;
     int w = GV_CROWN_R * (ch - u);
-    return u >= 0 && u < ch && r2 * ch * ch < w * w ? E_PLANT : E_EMPTY;
+    return u >= 0 && u < ch && r2 * ch * ch < w * w ? materialWord(E_PLANT, AP_LEAVES) : E_EMPTY;
   }
   // a round crown (the box volcano's)
   int cy = y - (base + trunk - 1 + GV_CROWN_UP);
-  return r2 + cy * cy < GV_CROWN_R2 ? E_PLANT : E_EMPTY;
+  return r2 + cy * cy < GV_CROWN_R2 ? materialWord(E_PLANT, AP_LEAVES) : E_EMPTY;
 }
+int gvTreePart(int x, int y, int z, int cx, int cz) { return materialId(gvTreePartMaterial(x, y, z, cx, cz)); }
 // An air cell's element: part of a tree (a crown reaches no farther than a
 // tree cell, so the ROW × ROW tree cells round are all that can reach it;
 // trunks before leaves) or air.
-int gvTree(int x, int y, int z, int top) {
+int gvTreeMaterial(int x, int y, int z, int top) {
   if (y > top + GV_TREE_REACH || top < GV_SEA) return E_EMPTY;
   int cx = thDiv(x, GV_TREE_CELL), cz = thDiv(z, GV_TREE_CELL);
   int found = E_EMPTY;
   for (int k = 0; k < GV_SLOTS; k++) {
-    int part = gvTreePart(x, y, z, cx + thMod(k, GV_ROW) - 1, cz + thDiv(k, GV_ROW) - 1);
-    if (part == E_WOOD) return E_WOOD;
-    if (part == E_PLANT) found = E_PLANT;
+    int part = gvTreePartMaterial(x, y, z, cx + thMod(k, GV_ROW) - 1, cz + thDiv(k, GV_ROW) - 1);
+    if (materialId(part) == E_WOOD) return part;
+    if (materialId(part) == E_PLANT) found = part;
   }
   return found;
 }
+int gvTree(int x, int y, int z, int top) { return materialId(gvTreeMaterial(x, y, z, top)); }
 
 // The element at world cell (x, y, z), its column's ground topping out at top (gvTop).
-int gvCellIn(int x, int y, int z, int top) {
+int gvCellInMaterial(int x, int y, int z, int top) {
   if (y < GV_FLOOR) return E_ROCK;
   if (y >= GV_SKY) return E_EMPTY;
   int vent = gvVent(x, y, z);
@@ -486,9 +488,11 @@ int gvCellIn(int x, int y, int z, int top) {
   float dx = float(x) + 0.5 - GV_CX, dz = float(z) + 0.5 - GV_CZ;
   // the lava tongue in the channel, from the vent down the scar
   if (y < top + GV_ACTIVE_DEPTH && gvInChannel(gvAlong(dx, dz), gvAcross(dx, dz))) return E_LAVA;
-  return gvTree(x, y, z, top);
+  return gvTreeMaterial(x, y, z, top);
 }
-int gvCell(int x, int y, int z) { return y >= GV_SKY ? E_EMPTY : gvCellIn(x, y, z, gvTop(x, z)); }
+int gvCellIn(int x, int y, int z, int top) { return materialId(gvCellInMaterial(x, y, z, top)); }
+int gvCellMaterial(int x, int y, int z) { return y >= GV_SKY ? E_EMPTY : gvCellInMaterial(x, y, z, gvTop(x, z)); }
+int gvCell(int x, int y, int z) { return materialId(gvCellMaterial(x, y, z)); }
 `;
 
 const twin = memoTwin((P) => P.seed, (P) => compileShared(SRC, P.seed, jsConstants(P_, G)));   // the JS twin per world seed
@@ -524,14 +528,15 @@ ${definesGLSL(P_, G)}
 ${helpersGLSL}
 ${srcWgsl ??= toWgsl(SRC, { consts: definesTypes(P_, G), uniforms: GV_U.sceneTypes })}
 fn sceneCell(w: vec3i) -> SceneCell {
-  let id = gvCell(w.x, w.y, w.z);
+  let word = gvCellMaterial(w.x, w.y, w.z);
+  let id = materialId(word);
   var T = SPAWNT(id);
   var ctype = 0.0;
   if (id == E_ROCK || id == E_BASALT) { T = mix(SPAWNT(id), SPAWNT(E_SNOW), gvFrost(w.x, w.y, w.z)); }   // frozen under the snow
   if (id == E_LAVA) { T = GV_MAGMA_T; ctype = f32(E_STONE); }   // hotter than spawned lava, setting to stone powder that rolls off the source
   if (id == E_CLONE) { ctype = f32(E_LAVA); }                   // the endless lava source
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, GV_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), appearanceCtype(id, ctype, materialAppearance(word)) + seed), vec4f(0.0));
 }
 `;
 

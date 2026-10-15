@@ -60,13 +60,13 @@ function shelf(x0, x1, z0, z1, top, { thick = SHELF_THICK, posts = true, beams =
     { box: [[x0 - 2, top, z0 - 2], [x1 + 2, top + 2, z1 + 2]], m: 'AIR', only: m },   // a flat top to walk
   ];
   if (beams) {
-    out.push({ box: [[x0, top - 1, z0], [x1, top, z0 + 1]], m: 'BEAM' }, { box: [[x0, top - 1, z1 - 1], [x1, top, z1]], m: 'BEAM' });
+    out.push({ box: [[x0, top - 1, z0], [x1, top, z0 + 1]], m: 'BEAM', appearance: 'plank-x' }, { box: [[x0, top - 1, z1 - 1], [x1, top, z1]], m: 'BEAM', appearance: 'plank-x' });
   }
   if (posts && top - thick > F + 1) {
     for (let x = x0 + 1; x < x1 - 1; x += POST_STEP) {
-      for (const z of [z0, z1 - 1]) out.push({ box: [[x, F, z], [x + 1, top - 1, z + 1]], m: 'BEAM', only: ['AIR', m] });
+      for (const z of [z0, z1 - 1]) out.push({ box: [[x, F, z], [x + 1, top - 1, z + 1]], m: 'BEAM', appearance: 'plank-y', only: ['AIR', m] });
     }
-    out.push(...[z0, z1 - 1].map((z) => ({ box: [[x1 - 2, F, z], [x1 - 1, top - 1, z + 1]], m: 'BEAM', only: ['AIR', m] })));
+    out.push(...[z0, z1 - 1].map((z) => ({ box: [[x1 - 2, F, z], [x1 - 1, top - 1, z + 1]], m: 'BEAM', appearance: 'plank-y', only: ['AIR', m] })));
   }
   return out;
 }
@@ -74,12 +74,12 @@ function shelf(x0, x1, z0, z1, top, { thick = SHELF_THICK, posts = true, beams =
 const stairsX = (x0, z0, z1, y0, top, rise = 1) => {
   const run = top - y0;
   const a = rise > 0 ? x0 : x0 - run;
-  return { stairs: [[a, y0, z0], [a + run, top, z1]], m: 'BEAM', axis: 'x', rise };
+  return { stairs: [[a, y0, z0], [a + run, top, z1]], m: 'BEAM', appearance: 'plank-z', axis: 'x', rise };
 };
 const stairsZ = (z0, x0, x1, y0, top, rise = 1) => {
   const run = top - y0;
   const a = rise > 0 ? z0 : z0 - run;
-  return { stairs: [[x0, y0, a], [x1, top, a + run]], m: 'BEAM', axis: 'z', rise };
+  return { stairs: [[x0, y0, a], [x1, top, a + run]], m: 'BEAM', appearance: 'plank-x', axis: 'z', rise };
 };
 // grass on what faces up, roots and drips under what faces down: every tile ends with these
 const growth = ({ cover = GRASS_COVER, roots = ROOT_N, fungus = 0 } = {}) => [
@@ -90,7 +90,7 @@ const growth = ({ cover = GRASS_COVER, roots = ROOT_N, fungus = 0 } = {}) => [
 // a crate: a wooden box (4 cells) round what it holds (Noita's skull crates hold gunpowder)
 const CRATE_FILL = { GUNPOWDER: 4, NUGGETS: 2, COAL: 2, TNT: 1, RUBBLE: 1 };
 const crate = (fill = CRATE_FILL) => [
-  { box: [[0, 0, 0], [4, 4, 4]], m: 'WOOD', only: 'AIR' },
+  { box: [[0, 0, 0], [4, 4, 4]], m: 'WOOD', appearance: 'plank-x', only: 'AIR' },
   { box: [[1, 1, 1], [3, 3, 3]], m: fill },
 ];
 // an explosive barrel: an iron drum of oil or gunpowder (Noita's red barrels)
@@ -113,7 +113,7 @@ const onShelf = (x0, x1, z0, z1, top, n, put) => ({ scatter: [[x0 + 1, top, z0 +
 // a water tank: a timber basin standing on a surface at y, full (Noita's water tanks on shelves)
 const TANK_FILL = { WATER: 8, OIL: 2, BLOOD: 1, TOXIC: 1 };
 const tank = (x0, x1, z0, z1, y, h = 4, fill = TANK_FILL) => [
-  { box: [[x0, y, z0], [x1, y + h, z1]], m: 'WOOD' },
+  { box: [[x0, y, z0], [x1, y + h, z1]], m: 'WOOD', appearance: 'plank-x' },
   { box: [[x0 + 1, y + 1, z0 + 1], [x1 - 1, y + h, z1 - 1]], m: fill },
 ];
 // a mine cart on rails along x at y: an iron tub of ore
@@ -133,7 +133,7 @@ const railsX = (x0, x1, y = F, zc = MID) => [
 // stick's foot. Tagged so a light rule can find them all, and they go last: see the end.
 const TORCH_STICK = 2;                 // cells of stick under the shelf
 const lantern = (x, y, z) => [
-  { box: [[x, y - TORCH_STICK, z], [x + 1, y, z + 1]], m: 'BEAM', lantern: true },
+  { box: [[x, y - TORCH_STICK, z], [x + 1, y, z + 1]], m: 'BEAM', appearance: 'plank-y', lantern: true },
   { box: [[x, y - TORCH_STICK - 1, z], [x + 1, y - TORCH_STICK, z + 1]], m: 'TORCH', lantern: true },
 ];
 // a hanging chain: iron, cells down from the ceiling at (x, z)
@@ -253,7 +253,7 @@ const tiles = [
       { box: [[22, F + 1, 8], [34, F + 7, 16]], m: 'ACID' },
       { box: [[25, F + 1, 10], [29, F + 2, 14]], m: 'GOLD' },               // the treasure
       { ball: [[31, F + 1.5, 12], [1.5, 1, 1.5]], m: 'NUGGETS' },
-      { box: [[21, F + 7, 7], [35, F + 8, 8]], m: 'BEAM' }, { box: [[21, F + 7, 16], [35, F + 8, 17]], m: 'BEAM' },
+      { box: [[21, F + 7, 7], [35, F + 8, 8]], m: 'BEAM', appearance: 'plank-x' }, { box: [[21, F + 7, 16], [35, F + 8, 17]], m: 'BEAM', appearance: 'plank-x' },
       lantern(28, TOP, 4),
       ...growth({ roots: 8 }),
     ],
@@ -279,10 +279,10 @@ const tiles = [
     ports: { W: 'D-R', E: 'D-R', ...SIDES_OPEN, D1: '-S', U1: '-S' },
     prims: [
       ...voidAll(),
-      ...[[6, 4], [18, 4], [6, 14], [18, 14]].map(([x, z]) => ({ box: [[x, F, z], [x + 1, TOP, z + 1]], m: 'BEAM' })),
-      { capsule: [[6.5, F, 4.5], [18.5, HF - 1, 4.5], 0.5], m: 'BEAM' }, { capsule: [[6.5, F, 14.5], [18.5, HF - 1, 14.5], 0.5], m: 'BEAM' },
-      { capsule: [[6.5, HF, 4.5], [18.5, TOP - 1, 4.5], 0.5], m: 'BEAM' },
-      { box: [[6, HF - 1, 4], [19, HF, 15]], m: 'WOOD' },                    // the platform
+      ...[[6, 4], [18, 4], [6, 14], [18, 14]].map(([x, z]) => ({ box: [[x, F, z], [x + 1, TOP, z + 1]], m: 'BEAM', appearance: 'plank-y' })),
+      { capsule: [[6.5, F, 4.5], [18.5, HF - 1, 4.5], 0.5], m: 'BEAM', appearance: 'plank-x' }, { capsule: [[6.5, F, 14.5], [18.5, HF - 1, 14.5], 0.5], m: 'BEAM', appearance: 'plank-x' },
+      { capsule: [[6.5, HF, 4.5], [18.5, TOP - 1, 4.5], 0.5], m: 'BEAM', appearance: 'plank-x' },
+      { box: [[6, HF - 1, 4], [19, HF, 15]], m: 'WOOD', appearance: 'plank-x' },                    // the platform
       stairsX(19, 8, 11, F, HF, -1),
       onShelf(6, 19, 4, 15, HF, 2, [{ any: [crate(), barrel(), nuggets(), remains()] }]),
       ...shelf(28, 44, 12, 21, UPPER_TOP - 2), stairsX(28, 12, 15, F, UPPER_TOP - 2, -1),
@@ -302,7 +302,7 @@ const tiles = [
       ...shelf(26, 44, 3, 12, HF), stairsZ(13, 22, 25, F, HF, -1),
       { scatter: [[4, F, 3], [44, F + 1, 21]], n: 3, put: remains() },
       onShelf(26, 44, 3, 12, HF, 3, [{ any: [crate(), remains(), nuggets()] }]),
-      ...[0, 1].map((i) => ({ box: [[28 + i * 6, F, 15], [32 + i * 6, F + 4, 19]], m: 'WOOD' })),   // crates by the wall
+      ...[0, 1].map((i) => ({ box: [[28 + i * 6, F, 15], [32 + i * 6, F + 4, 19]], m: 'WOOD', appearance: 'plank-x' })),   // crates by the wall
       lantern(34, HF - SHELF_THICK, 6), lantern(10, TOP, 16),
       ...growth({ fungus: 0.2 }),
     ],
@@ -362,8 +362,8 @@ const tiles = [
     prims: [
       { box: [[10, F, 4], [42, 14, U - B]], m: 'AIR', rough: 2.2 },
       { box: [[10, F - 1, 4], [42, F, 15]], m: 'ROCK' },
-      { box: [[12, F, 5], [16, F + 4, 9]], m: 'WOOD' }, { box: [[13, F + 1, 6], [15, F + 3, 8]], m: { GUNPOWDER: 1, NUGGETS: 1 } },
-      { box: [[12, F + 4, 5], [16, F + 7, 9]], m: 'WOOD' },
+      { box: [[12, F, 5], [16, F + 4, 9]], m: 'WOOD', appearance: 'plank-x' }, { box: [[13, F + 1, 6], [15, F + 3, 8]], m: { GUNPOWDER: 1, NUGGETS: 1 } },
+      { box: [[12, F + 4, 5], [16, F + 7, 9]], m: 'WOOD', appearance: 'plank-x' },
       { box: [[18, F, 5], [21, F + 2, 7]], m: 'GOLD' },
       lantern(26, 13, 5),
       ...growth({ roots: 4 }),

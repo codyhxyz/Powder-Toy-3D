@@ -17,6 +17,7 @@ import { GRAV as GRAV_MODE } from '../../simModes.js';
 import { PACE } from '../../shaders/move.js';
 import { SALT } from '../../shaders/common.js';
 import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
+import { appearanceOf, appearanceCtype, physicalCtype } from '../../appearance.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
 const col = (key) => Float32Array.from(ELEMENTS, (e) => e[key]);
@@ -88,7 +89,7 @@ function dampOf(T, nid, nW) {
   let h = 0;
   for (let q = 0; q < 4; q++) {
     if (nid[q] === E.WATER) return PHYS.DAMP_REACH;
-    if (grower(nid[q])) h = Math.max(h, nW[q] - 1);
+    if (grower(nid[q])) h = Math.max(h, physicalCtype(nid[q], nW[q]) - 1);
   }
   return h;
 }
@@ -813,7 +814,7 @@ export class World {
         let nWetMoss = 0, nWetFungus = 0, wetX = false, wetY = false, bedX = false, bedY = false;   // axes holding damp moss, bare rock
         let surface = false;   // a non-gas neighbour to condense onto (the floor counts, the sides and lid don't)
         for (let q = 0; q < 4; q++) {
-          const j = nid[q], wet = nW[q] >= 1, xAxis = q < 2;
+          const j = nid[q], wet = physicalCtype(j, nW[q]) >= 1, xAxis = q < 2;
           if (j === E.MOSS && wet) { nWetMoss++; if (xAxis) wetX = true; else wetY = true; }
           if (j === E.FUNGUS && wet) nWetFungus++;
           if (mossBed(j)) { if (xAxis) bedX = true; else bedY = true; }
@@ -906,7 +907,7 @@ export class World {
             out = E.MOSS; reset = true; ctype = 0;   // moss creeps over damp bare rock (react.js)
           }
         } else if (id === E.MOSS || id === E.FUNGUS) {
-          ctype = dampOf(T, nid, nW);
+          ctype = appearanceCtype(id, dampOf(T, nid, nW), appearanceOf(id, ctype));
         } else if (id === E.FUSE) {
           // safety fuse: burns with or without air at a steady speed; a flame lights it as gunpowder (react.js)
           if (life >= 1) {
@@ -1052,6 +1053,7 @@ export class World {
         if (nVoid > 0 && id !== E.EMPTY && KIND[id] !== K.SOLID) { out = E.EMPTY; reset = true; T = AMBIENT; vx = 0; vy = 0; ctype = 0; }
 
         if (out !== id) {
+          ctype = physicalCtype(id, ctype);
           if (CONDUCTS[id] && !CONDUCTS[out] && out !== E.LAVA) ctype = 0;   // its spark goes with it
           if (reset) life = SPAWNLIFE[out];
           if (grower(out) || grower(id)) ctype = 0;   // a new grower's damp comes in next step

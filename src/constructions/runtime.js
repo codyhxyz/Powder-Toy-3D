@@ -1,6 +1,7 @@
 import { ELEMENTS, E, K } from '../elements.js';
 import { LAMP_DC } from '../electricity.js';
 import { rng } from '../rng.js';
+import { appearanceCtype, resolveAppearance, rotateAppearanceCtype } from '../appearance.js';
 
 // The construction runtime: the small API every construction is written in.
 //
@@ -72,7 +73,7 @@ function checkRange(x, y, z) {
 }
 
 // A construction being assembled: sparse cells around its base point. Shapes
-// take options { temp, ctype, soft }; soft cells never replace cells already
+// take options { temp, ctype, appearance, soft }; soft cells never replace cells already
 // placed (leaves around branches, fire between logs).
 export class Model {
   constructor(rnd) {
@@ -91,7 +92,8 @@ export class Model {
     const had = this.cells.has(k);
     if (o?.soft && had) return;
     if (!had && this.cells.size >= MAX_CELLS) throw new Error(`Too many cells: the limit is ${MAX_CELLS}`);
-    this.cells.set(k, { x, y, z, id, temp: o?.temp ?? ELEMENTS[id].temp, ctype: o?.ctype ?? 0 });
+    const ctype = o?.appearance == null ? o?.ctype ?? 0 : appearanceCtype(id, o?.ctype ?? 0, o.appearance);
+    this.cells.set(k, { x, y, z, id, temp: o?.temp ?? ELEMENTS[id].temp, ctype });
   }
 
   // element id at a cell, or -1 where nothing is set
@@ -196,6 +198,7 @@ export function createApi(model, { size }) {
     if (typeof o !== 'object') throw new Error('Options must be an object like { temp, ctype, soft }');
     const out = { ...o };
     if (o.ctype != null) out.ctype = resolveElement(o.ctype);
+    if (o.appearance != null) out.appearance = resolveAppearance(o.appearance);
     if (o.temp != null && !Number.isFinite(o.temp)) throw new Error('temp must be a number in °C');
     return out;
   };
@@ -296,7 +299,7 @@ export function bake(cells, quarter) {
     ids[j] = id;
     data[j * 4] = id + 1;
     data[j * 4 + 1] = cells.temp[i];
-    data[j * 4 + 2] = cells.ctype[i];
+    data[j * 4 + 2] = rotateAppearanceCtype(id, cells.ctype[i], quarter);
     data[j * 4 + 3] = cells.foot && cells.y[i] === 0 && ELEMENTS[id].kind === K.SOLID ? 1 : 0;
   }
   return { w, h, d, data, ghost: ghostCells(ids, w, h, d), foot: cells.foot, base: { x: -min[0], y: -min[1], z: -min[2] } };

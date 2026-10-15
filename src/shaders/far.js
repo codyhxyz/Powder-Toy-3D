@@ -39,7 +39,7 @@ export {
 //   g  liquid share: the same for transparent liquids (farLiquid: water, oil, acid...)
 //   b  the dominant opaque element of the brick's own cells, a cell open above
 //      counting FAR.SURFACE_W times (a brick reads as its surface: grass on
-//      rock reads as grass)
+//      rock reads as grass); b's high byte holds its associated appearance
 //   a  glow, in FAR.LEVELS steps: how hot its open opaque cells are, from the
 //      incandescence's first knot up over FAR.GLOW_SPAN °C
 // and above them r's 256 whether it holds open opaque cells (the view reads a
@@ -118,16 +118,29 @@ fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID;
 fn farLiquid(id: i32) -> bool { return RCLASS(id) == R_LIQUID; }
 struct FarCount {
   w: array<f32, NE>,   // weights of the brick's own cells by element: opaque (their dominant one) and liquid
+  roles: array<array<f32, 11>, 3>, // WOOD, PLANT, cedar MOSS; never split physical votes
   open: f32,           // its open opaque cells...
   heat: f32,           // ...and their degrees above the glow's start
   s: f32,              // opaque and liquid cells of its cube
   l: f32,
 }
 // one of the brick's own cells: id at temperature T, with id 'above' over it
-fn farCell(c: ptr<function, FarCount>, id: i32, above: i32, T: f32) {
+fn farRoleSlot(id: i32) -> i32 {
+  if (id == E_WOOD) { return 0; }
+  if (id == E_PLANT) { return 1; }
+  if (id == E_MOSS) { return 2; }
+  return -1;
+}
+fn farVote(c: ptr<function, FarCount>, id: i32, appearance: i32, weight: f32) {
+  (*c).w[id] += weight;
+  let slot = farRoleSlot(id);
+  if (slot >= 0 && appearance >= AP_NONE && appearance <= AP_BARK) { (*c).roles[slot][appearance] += weight; }
+}
+fn farCell(c: ptr<function, FarCount>, word: i32, above: i32, T: f32) {
+  let id = materialId(word);
   if (farOpaque(id)) {
     let open = !farOpaque(above);
-    (*c).w[id] += select(1.0, FAR_SURFACE_W, open);
+    farVote(c, id, materialAppearance(word), select(1.0, FAR_SURFACE_W, open));
     if (open) { (*c).open += 1.0; (*c).heat += max(T - INCAND_T0, 0.0); }
   } else if (farLiquid(id)) {
     (*c).w[id] += 1.0;
@@ -147,6 +160,13 @@ fn farPack(c: ptr<function, FarCount>) -> vec4u {
   f.s = farLevel((*c).s / n);
   f.l = farLevel((*c).l / n);
   f.id = best;
+  f.appearance = AP_NONE;
+  let slot = farRoleSlot(best);
+  if (slot >= 0) {
+    for (var a = 1; a <= AP_BARK; a++) {
+      if ((*c).roles[slot][a] > (*c).roles[slot][f.appearance]) { f.appearance = a; }
+    }
+  }
   f.glow = farLevel(select(0.0, (*c).heat / (*c).open / FAR_GLOW_SPAN, (*c).open > 0.0));
   f.liquid = liquid;
   f.open = (*c).open > 0.0;
@@ -477,6 +497,7 @@ fn farTrees(c: ptr<function, FarCount>, b: vec3i, o: vec3i, y0: i32) {
   var ts = 0.0;
   var leaves = 0.0;
   var trunk = 0.0;
+  var bark = 0.0;
   for (var dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++) {
     for (var dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
       let nb = b.xz + vec2i(dx, dz);
@@ -491,12 +512,16 @@ fn farTrees(c: ptr<function, FarCount>, b: vec3i, o: vec3i, y0: i32) {
       ts = max(ts, f.x);
       leaves = max(leaves, f.y);
       trunk += f.z;
+      if (tr.variant == TV_PALM) { bark += f.z; }
     }
   }
   (*c).s = max((*c).s, ts * f32(FAR_CUBE * FAR_CUBE * FAR_CUBE));
   // their cells vote as open ones (FAR.SURFACE_W): a crown's outweigh the ground's, a thin trunk's don't
-  if (leaves > 0.0) { (*c).w[E_PLANT] += FAR_TREE_W; (*c).open += 1.0; }
-  else if (trunk > 0.0) { (*c).w[E_WOOD] += trunk * FAR_SURFACE_W; (*c).open += 1.0; }
+  if (leaves > 0.0) { farVote(c, E_PLANT, AP_LEAVES, FAR_TREE_W); (*c).open += 1.0; }
+  else if (trunk > 0.0) {
+    farVote(c, E_WOOD, select(AP_LOG_Y, AP_BARK, bark > trunk * 0.5), trunk * FAR_SURFACE_W);
+    (*c).open += 1.0;
+  }
 }
 `;
 
@@ -529,7 +554,7 @@ ${regionMain(/* wgsl */ `
         let id = eid(a);
         if (farOpaque(id)) { c.s += 1.0; }
         else if (farLiquid(id)) { c.l += 1.0; }
-        if (own && dy >= 0 && dy < BS) { farCell(&c, id, above, a.y); }
+        if (own && dy >= 0 && dy < BS) { farCell(&c, materialWord(id, appearanceOf(id, a.w)), above, a.y); }
         above = id;
       }
     }
@@ -544,8 +569,8 @@ ${regionMain(/* wgsl */ `
 //   - farSceneCellsFrag evaluates sceneCell once per cell of the chunk's
 //     columns and the FAR_CUBE_LO columns around them that its bricks' cubes
 //     reach (past the world's edge the edge repeats), every height, into a
-//     buffer of (id, °C) as two halves (pack2x16float: the half-float target
-//     they were), its scene cells;
+//     buffer with low-16 material word and high-16 temperature half,
+//     its transient scene cells; saved bricks retain their original raw A/B.
 //   - farSceneFrag summarizes the chunk's bricks from those cells exactly as
 //     farWinFrag does from the window's state (below the world rock, above it
 //     air), and for a scene with trees joins the trees in reach (farTrees),
@@ -591,7 +616,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var A = sceneCell(vec3i(col.x, c.y, col.y)).A;${live ? `
   let local = vec3i(col.x, c.y, col.y) - H.origin;
   if (inGrid(local)) { A = fetchA(local); }` : ''}
-  cells[i] = pack2x16float(A.xy);
+  let id = eid(A);
+  cells[i] = u32(materialWord(id, appearanceOf(id, A.w))) | (pack2x16float(vec2f(0.0, A.y)) & 0xffff0000u);
 }
 `;
 // The summary's group 2: the grid (written), the scene cells, the window
@@ -621,13 +647,18 @@ ${regionMain(/* wgsl */ `
       // top down through the cube [-lo, BS + lo)
       for (var dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
         let y = o.y + dy;
-        var a = vec2f(f32(E_EMPTY), AMBIENT);
-        if (y < 0) { a = vec2f(f32(E_ROCK), AMBIENT); }
-        else if (y < FSC_WORLD_Y) { a = unpack2x16float(cells[fscIndex(vec3i(col.x, y, col.y))]); }
-        let id = eid(vec4f(a, 0.0, 0.0));
+        var word = materialWord(E_EMPTY, AP_NONE);
+        var temperature = AMBIENT;
+        if (y < 0) { word = materialWord(E_ROCK, AP_NONE); }
+        else if (y < FSC_WORLD_Y) {
+          let packed = cells[fscIndex(vec3i(col.x, y, col.y))];
+          word = i32(packed & 65535u);
+          temperature = unpack2x16float(packed).y;
+        }
+        let id = materialId(word);
         if (farOpaque(id)) { c.s += 1.0; }
         else if (farLiquid(id)) { c.l += 1.0; }
-        if (own && dy >= 0 && dy < BS) { farCell(&c, id, above, a.y); }
+        if (own && dy >= 0 && dy < BS) { farCell(&c, word, above, temperature); }
         above = id;
       }
     }
@@ -964,10 +995,10 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 // along them, so the chunk and slab crossings of x and z are the flat ones.
 // The detail meshes bend in their vertex stage and shade along the displayed
 // ray, switched by P.warpK (a few lines, both variants of the mesh pass).
-export const farFrag = (g, L, mesh = false, { curved = false } = {}) => {
+export const farFrag = (g, L, mesh = false, { curved = false, sourceAppearance = false } = {}) => {
   return /* wgsl */ `
 // far view${curved ? ', curved' : ''}
-${lib({ ...g, sourceGrid: L.bricks.n }, { variant: 'LIGHTING', far: true, aeration: false })}
+${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: 'LIGHTING', far: true, aeration: false })}
 ${presentationWGSL}${curved ? `
 var<private> gFarRay: WarpRay;
 var<private> gFarWindow: vec4f;
@@ -984,7 +1015,7 @@ fn farPlaneHit(r: WarpRay, level: f32) -> f32 {
 fn farPath(ro: vec3f, rd: vec3f, t: f32) -> vec3f { return ${curved ? 'warpAt(gFarRay, t)' : 'ro + rd * t'}; }
 fn farDirection(rd: vec3f, t: f32) -> vec3f { return ${curved ? 'normalize(warpSlope(gFarRay, t))' : 'rd'}; }
 ${FAR_STANDINS}
-${surfaceGLSL({})}
+${surfaceGLSL({}, { sourceAppearance })}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
@@ -1190,14 +1221,14 @@ fn farAO(p: vec3f, n: vec3f) -> f32 {
 // deeper under the surface. Visible mesh materials use their vertex IDs.
 fn farElement(p: vec3f, n: vec3f) -> i32 {
   let q = p;
-  var a = farIds(q - n * FAR_ID_INSET);
-  if (a.z == 0) {
-    let b = farIds(q + n * FAR_ID_INSET);
-    if (b.z == 1 && b.x != E_EMPTY) { return b.x; }
-    let c = farIds(q - n * FAR_ID_DEEPER);
-    if (c.z == 1 || a.x == E_EMPTY) { a = c; }
+  var a = farUnpack(textureLoad(tFarGrid, farBrickOf(q - n * FAR_ID_INSET), 0));
+  if (!a.open) {
+    let b = farUnpack(textureLoad(tFarGrid, farBrickOf(q + n * FAR_ID_INSET), 0));
+    if (b.open && b.id != E_EMPTY) { return materialWord(b.id, b.appearance); }
+    let c = farUnpack(textureLoad(tFarGrid, farBrickOf(q - n * FAR_ID_DEEPER), 0));
+    if (c.open || a.id == E_EMPTY) { a = c; }
   }
-  return select(a.x, E_ROCK, a.x == E_EMPTY);
+  return select(materialWord(a.id, a.appearance), E_ROCK, a.id == E_EMPTY);
 }
 fn farGlowT(p: vec3f, n: vec3f) -> f32 {
   let a = farGlow(p - n * FAR_ID_INSET);
@@ -1207,9 +1238,10 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
 // A lit opaque far surface: its material (matOf, at the pixel's footprint, so
 // texture fades to its far look), the sun through the shadow heights, the sky
 // over its open share (none under the ground: FAR_SKY), its own glow.
-fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3f {
+fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, word: i32) -> vec3f {
+  let id = materialId(word);
   let fp = footprint(p);
-  var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);   // (foliage keeps its clumps: matOf's leafClumps)
+  var m = matOf(id, p, n, farGlowT(p, n), appearanceCtype(id, 0.0, materialAppearance(word)), fp);
   if (m.sourceKind != 0u) { return sourceShade(p, normalize(m.sourceNormal), rd, m.alb, m.rough, m.metal, m.f0, m.sourceKind, m.sourceFlags) + m.emit; }
   // the material's bump tilts the normal (applyMat), kept facing the eye (shadeSurf)
   let v = -rd;
@@ -1236,8 +1268,9 @@ fn farInScatter(lid: i32, sunVis: f32, sky: f32) -> vec3f {
 }
 // The bed under liquid lid at p (normal n, depth below the surface): lit by
 // sun and sky through the liquid above.
-fn farShadeBed(id: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, sky: f32) -> vec3f {
-let alb = matOf(id, p, n, AMBIENT, 0.0, footprint(p)).alb;
+fn farShadeBed(word: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, sky: f32) -> vec3f {
+let id = materialId(word);
+let alb = matOf(id, p, n, AMBIENT, appearanceCtype(id, 0.0, materialAppearance(word)), footprint(p)).alb;
 let down = exp(-SIGMA(lid) * depth / max(FU.sun.y, FAR_SUN_Y_MIN));
 // The same world-anchored sunlight pattern as the simulated bed.
 var focus = 1.0;

@@ -1,4 +1,5 @@
 import { ELEMENTS, K } from '../../elements.js';
+import { Appearance as AP, resolveAppearance } from '../../appearance.js';
 
 // Wang tile kits: the authoring format and its rasterizer (docs/wang-tiles.md).
 //
@@ -46,6 +47,7 @@ import { ELEMENTS, K } from '../../elements.js';
 //                                           length h along axis ('x', 'y', 'z')
 //     { capsule: [a, b, r], m }             a capsule from a to b
 //   and on any of them:
+//     appearance  canonical plank axis ('plank-x', 'plank-y', 'plank-z')
 //     rough   cells of noise on its surface (0: crisp; timber stays crisp)
 //     only    the material codes it may replace ('AIR', 'ROCK', or a list),
 //             so a fill pours only into what is carved and a vein only
@@ -120,8 +122,8 @@ export const isLiquid = (m) => LIQUIDS.includes(m);
 // wall), so the torch hangs on the wall even where a rough face was dug back.
 // lantern: true (a light added after the authoring: a kit puts these last).
 export const wallTorch = ([x, y, z], [dx, dz]) => [
-  { box: [[x + dx, y - 1, z + dz], [x + dx + 1, y, z + dz + 1]], m: 'BEAM', lantern: true },
-  { box: [[x, y - 1, z], [x + 1, y, z + 1]], m: 'BEAM', lantern: true },
+  { box: [[x + dx, y - 1, z + dz], [x + dx + 1, y, z + dz + 1]], m: 'BEAM', appearance: dx ? 'plank-x' : 'plank-z', lantern: true },
+  { box: [[x, y - 1, z], [x + 1, y, z + 1]], m: 'BEAM', appearance: dx ? 'plank-x' : 'plank-z', lantern: true },
   { box: [[x, y, z], [x + 1, y + 1, z + 1]], m: 'TORCH', lantern: true },
 ];
 
@@ -252,6 +254,7 @@ export function rasterTile(tile, index, G = GEOM) {
   // an open kit's tiles (geom.OPEN: Noita's Coal Pits and Snowy Depths, islands in a void) start
   // as air and keep no border: they meet their neighbours wherever their islands do
   const X = 2 * G.U, Y = G.H, Z = G.U, out = new Uint8Array(X * Y * Z).fill(G.OPEN ? MAT.AIR : MAT.ROCK);
+  out.appearance = new Uint8Array(out.length);
   const dims = [X, Y, Z], noiseIndex = tile.noise ?? index;
   coated = new Set();
   tile.prims.forEach((pr, pi) => applyPrim(out, dims, pr, NOISE_SALT + noiseIndex * NOISE_TILE_STRIDE + (pr.salt ?? tile.prims.indexOf(pr)) * NOISE_PRIM_STRIDE, tile.vseed ?? 0, pr.salt ?? pi));
@@ -263,7 +266,7 @@ export function rasterTile(tile, index, G = GEOM) {
     const side = !tile.open && (x < G.BORDER || x >= X - G.BORDER || z < G.BORDER || z >= Z - G.BORDER);
     if (side || y < G.BORDER || y >= Y - G.BORDER) {
       const i = x + X * (y + Y * z);
-      if (!coated.has(i)) out[i] = MAT.ROCK;
+      if (!coated.has(i)) { out[i] = MAT.ROCK; out.appearance[i] = AP.NONE; }
     }
   }
   settleLoose(out, dims);
@@ -300,7 +303,7 @@ function settleLoose(out, [X, Y, Z]) {
         const qx = x + dx, qz = z + dz;
         if (qx >= 0 && qz >= 0 && qx < X && qz < Z) hangs = drop(qx, y - 1, qz) > LOOSE_DROP_MAX;
       }
-      if (hangs) { out[i] = MAT.AIR; changed = true; }
+      if (hangs) { out[i] = MAT.AIR; out.appearance[i] = AP.NONE; changed = true; }
     }
   }
 }
@@ -361,12 +364,14 @@ function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'], posts = fa
     if (!far(x, y, z)) continue;
     const kind = lights[n % lights.length];
     if (post) {   // (always a torch: a crystal doesn't grow on a pole)
-      for (let k = 1; k <= POST_H; k++) out[at(x, y - k, z)] = MAT.BEAM;
+      for (let k = 1; k <= POST_H; k++) { out[at(x, y - k, z)] = MAT.BEAM; out.appearance[at(x, y - k, z)] = AP.PLANK_Y; }
       out[at(x, y, z)] = MAT.TORCH;
     } else if (kind === 'TORCH') {
       const [dx, dz] = wall;
       out[at(x + dx, y - 1, z + dz)] = MAT.BEAM;
       out[at(x, y - 1, z)] = MAT.BEAM;
+      out.appearance[at(x + dx, y - 1, z + dz)] = dx ? AP.PLANK_X : AP.PLANK_Z;
+      out.appearance[at(x, y - 1, z)] = dx ? AP.PLANK_X : AP.PLANK_Z;
       out[at(x, y, z)] = MAT.TORCH;
     } else {
       out[at(x, y - 1, z)] = MAT[kind];
@@ -386,6 +391,7 @@ function applyPrim(out, [X, Y, Z], pr, salt, vseed, pi) {
   if (pr.coat) return coat(out, [X, Y, Z], pr, salt);
   if (pr.scatter) return scatter(out, [X, Y, Z], pr, salt, vseed, pi);
   const m = codeOf(pr.m ?? 'AIR');
+  const appearance = resolveAppearance(pr.appearance ?? AP.NONE);
   const only = onlySet(pr);
   const rough = pr.rough ?? 0;
   // the primitive's box, padded by its roughness (a cheap bound)
@@ -403,6 +409,7 @@ function applyPrim(out, [X, Y, Z], pr, salt, vseed, pi) {
     const i = at(x, y, z);
     if (only && !only.has(out[i])) continue;
     out[i] = m;
+    out.appearance[i] = appearance;
   }
 }
 // { coat: [a, b], m, face, cover, only, depth }: growth on the surfaces in box
@@ -432,7 +439,8 @@ function coat(out, [X, Y, Z], pr, salt) {
       if (ok) { hits.push(at(x, y, z)); break; }
     }
   }
-  for (const i of hits) { out[i] = m; if (!passable(m)) coated.add(i); }
+  const appearance = resolveAppearance(pr.appearance ?? AP.NONE);
+  for (const i of hits) { out[i] = m; out.appearance[i] = appearance; if (!passable(m)) coated.add(i); }
 }
 // { scatter: [a, b], n, put: [prims], on }: n copies of `put` (prims in cells
 // relative to their spot) at random columns of box a..b. on 'floor' (default)

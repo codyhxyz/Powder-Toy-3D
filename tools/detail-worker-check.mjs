@@ -1,7 +1,7 @@
 // CPU integration of generation, real tree stamps, live state and stored edits.
 // node tools/detail-worker-check.mjs
 import assert from 'node:assert/strict';
-import { DataUtils } from 'three';
+import { packFarSceneCell } from '../src/shaders/farShared.js';
 import { E } from '../src/elements.js';
 import { encodeBrick, BRICK_FLOATS } from '../src/world/store.js';
 import { DETAIL_CHUNK, DETAIL_PAD, farSceneLayout, farLayout } from '../src/shaders/far.js';
@@ -19,7 +19,7 @@ const base = () => ({
 });
 function cell(d, x, y, z, id) {
   x -= d.origin[0]; z -= d.origin[2];
-  d.raw[x + side * (z + side * y)] = DataUtils.toHalfFloat(id) | (DataUtils.toHalfFloat(20) << 16);
+  d.raw[x + side * (z + side * y)] = packFarSceneCell(id, 20, 0);
 }
 function run(d) {
   self.onmessage({ data: d });
