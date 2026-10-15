@@ -252,12 +252,7 @@ ${fieldBinding === null ? '' : opticalFieldsWGSL(fieldBinding)}
 ${wgsl}
 ${Object.entries(OPTICS_DEFAULT_HOOKS).map(([key, value]) => hooks[key] ?? value).join('\n')}
 ${opticsClassWGSL}
-// Bounded interval of the real cell-centred isolated sphere.
-fn opticsSphere(p: vec3f, rd: vec3f, center: vec3f) -> vec2f {
-  let q = p-center; let b = dot(q, rd); let d = b*b-dot(q,q)+${THIN_RADIUS * THIN_RADIUS};
-  if (d < 0.0) { return vec2f(OPTICS_FAR, -OPTICS_FAR); }
-  let root = sqrt(d); return vec2f(-b-root, -b+root);
-}
+${dropSphereWGSL}
 fn opticsFresnel(cosine: f32, fromIOR: f32, toIOR: f32) -> f32 {
   if (fromIOR == toIOR) { return 0.0; }
   let eta = fromIOR / toIOR;
@@ -279,11 +274,7 @@ fn opticsBox(ro: vec3f, rd: vec3f, lower: vec3f, upper: vec3f) -> vec2f {
   }
   return vec2f(lo, hi);
 }
-fn opticsGridAt(uv: vec2f, depth: f32) -> vec3f {
-  let q = P.gridInv * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
-  return q.xyz / q.w;
-}
-fn opticsClip(p: vec3f) -> vec4f { return FU.viewProj * FU.model * vec4f(p, 1.0); }
+${dropRayWGSL}
 fn opticsPixel(clip: vec4f) -> vec2i {
   return vec2i(floor((clip.xy / clip.w * vec2f(0.5, -0.5) + 0.5) * P.size));
 }
@@ -519,10 +510,22 @@ ${particleBinding === null ? '' : dropEntriesWGSL}
 `;
 }
 
-// Project the enclosing cube, not a guessed screen radius. If any corner
-// crosses the eye/near plane, fullscreen is the conservative candidate.
-const dropEntriesWGSL = `
-struct DropVertex { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
+// Shared geometry: transport and exceptional fallback must agree exactly.
+const dropSphereWGSL = `// Bounded interval of the real cell-centred isolated sphere.
+fn opticsSphere(p: vec3f, rd: vec3f, center: vec3f) -> vec2f {
+  let q = p-center; let b = dot(q, rd); let d = b*b-dot(q,q)+${THIN_RADIUS * THIN_RADIUS};
+  if (d < 0.0) { return vec2f(OPTICS_FAR, -OPTICS_FAR); }
+  let root = sqrt(d); return vec2f(-b-root, -b+root);
+}
+`;
+const dropRayWGSL = `fn opticsGridAt(uv: vec2f, depth: f32) -> vec3f {
+  let q = P.gridInv * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+  return q.xyz / q.w;
+}
+fn opticsClip(p: vec3f) -> vec4f { return FU.viewProj * FU.model * vec4f(p, 1.0); }
+`;
+// Project the enclosing cube; near/eye-plane crossings use a fullscreen candidate.
+const dropVertexWGSL = `struct DropVertex { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
 @vertex fn dropVS(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> DropVertex {
   let d = drops[ii];
   var lo = vec2f(1); var hi = vec2f(-1); var full = false;
@@ -539,6 +542,47 @@ struct DropVertex { @builtin(position) position: vec4f, @location(0) @interpolat
   if (hpChannel(d.id) >= 2) { o.position = vec4f(2,2,2,1); }
   return o;
 }
+`;
+
+export const fallbackDropletBindings = [
+  { binding: 0, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
+  { binding: 1, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
+  { binding: 2, visibility: 3, buffer: { type: 'read-only-storage' } },
+  { binding: 3, visibility: 2, buffer: { type: 'read-only-storage' } },
+];
+// Only immutable optical outputs are sampled, never scene attachments.
+export const fallbackDropletWGSL = `
+${frameBindings()}
+${OpticsParams.wgsl}
+@group(3) @binding(1) var<uniform> P: OpticsParams;
+@group(2) @binding(0) var resolved: texture_2d<f32>;
+@group(2) @binding(1) var metadata: texture_2d<f32>;
+${instanceWGSL}
+${particleChannelWGSL}
+@group(2) @binding(2) var<storage, read> drops: array<HybridParticle>;
+@group(2) @binding(3) var<storage, read> fallbackGate: array<u32>;
+const OPTICS_FAR: f32 = 1e20;
+${dropSphereWGSL}
+${dropRayWGSL}
+${dropVertexWGSL}
+struct FallbackDropOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
+@fragment fn fs(v: DropVertex) -> FallbackDropOutput {
+  if (fallbackGate[0] == 0u) { discard; }
+  let rd = normalize(opticsGridAt(v.position.xy / P.size,0.5)-FU.cam);
+  let roots = opticsSphere(FU.cam,rd,drops[v.index].center);
+  if (roots.y <= 0.0 || roots.x > roots.y) { discard; }
+  let entry = max(0.0,roots.x);
+  let clip = opticsClip(FU.cam+rd*entry);
+  let depth = select(clamp(clip.z/clip.w,0.0,1.0),0.0,entry == 0.0);
+  let first = textureLoad(metadata,vec2i(v.position.xy),0).x;
+  // Tight device-depth agreement (not the loose snapshot world tolerance).
+  // Reject bulk optical pixels and droplets hidden by an earlier interface.
+  if (first >= 1.0 || abs(first-depth) > 0.000001) { discard; }
+  return FallbackDropOutput(textureLoad(resolved,vec2i(v.position.xy),0),depth);
+}`;
+
+const dropEntriesWGSL = `
+${dropVertexWGSL}
 struct DropOutput {
   @location(0) color: vec4f, @location(1) metadata: vec4f,
   @location(2) fallback: u32, @builtin(frag_depth) depth: f32,

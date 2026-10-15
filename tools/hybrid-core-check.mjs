@@ -11,6 +11,7 @@ import { drawWGSL, meshWGSL, compactWGSL, shadowWGSL, geometryCapacity } from '.
 import { gridDims,LAYOUT } from '../src/shaders/common.js';
 import { ELEMENTS,R } from '../src/elements.js';
 import { LOOK } from '../src/gfx/materials.js';
+import { withVisibility } from '../src/gpu/kernels.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -61,15 +62,38 @@ const pipe = desc => {
     assert(entry.resources.filter(v=>r.storage.includes(v)).length<=8,`${desc.name} ${entry.name} storage`);
     assert(entry.resources.filter(v=>r.textures.includes(v)).length<=16,`${desc.name} ${entry.name} textures`);
   }
+  const stages=desc.entry||(r.entry.compute.length&&!r.entry.vertex.length)
+    ? [['compute',4,desc.entry??'main']]
+    : [['vertex',1,desc.vertex?.entry??'vs'],...(desc.fragment===null?[]:[['fragment',2,desc.fragment?.entry??'fs']])];
+  for(const [stage,mask,name] of stages){
+    const entry=r.entry[stage].find(e=>e.name===name);
+    assert(entry,`${desc.name}: missing ${stage} entry ${name}`);
+    let storage=0,textures=0;
+    for(const layout of desc.layouts){
+      const entries=(Array.isArray(layout)?layout:layout?.entries)??[];
+      for(const e of entries.filter(e=>e.visibility&mask)){
+        storage+=/storage/.test(e.buffer?.type??'')?1:0;
+        textures+=e.texture?1:0;
+      }
+    }
+    assert(storage<=8&&textures<=16,`${desc.name} ${stage}: explicit layout limits`);
+    for(const v of entry.resources.filter(v=>v.group<desc.layouts.length)){
+      const layout=desc.layouts[v.group],entries=(Array.isArray(layout)?layout:layout?.entries)??[];
+      const binding=entries.find(e=>e.binding===v.binding);
+      assert(binding?.visibility&mask,`${desc.name} ${name}: group ${v.group} binding ${v.binding} lacks ${stage} visibility`);
+    }
+  }
   return { state: 'ready', ready: Promise.resolve(),
     dispatch(_f, size, args) { calls.push({ name: desc.name, size, ...args }); },
     draw(_rp, args) { calls.push({ name: desc.name, ...args }); },
   };
 };
 const gpu = {
+  emptyLayout:[],emptyGroup:{},
   device: { limits: { maxTextureDimension2D: 8192,maxBufferSize:128*1024**2,maxStorageBufferBindingSize:128*1024**2 }, createSampler: desc => ({ ...desc }) },
   queue: { writeBuffer() {}, writeTexture() {} },
   layout(name, entries) {
+    entries=entries.map(withVisibility);
     if (layouts.has(name)) assert.deepEqual(entries, layouts.get(name).entries, `layout collision: ${name}`);
     else layouts.set(name, { name, entries });
     return layouts.get(name);
@@ -87,7 +111,7 @@ const gpu = {
   } },
 };
 const sim = {
-  id: 1, g, cur: 0, version: 1, origin: { x: 0, y: 0, z: 0 }, tables: {}, bindRO: {},
+  id: 1, g, cur: 0, version: 1, state:{A:{},B:{}}, origin: { x: 0, y: 0, z: 0 }, tables: {}, bindRO: {},
   header() { return { origin: Object.values(this.origin), src: this.cur, dst: this.cur }; },
   derived: { views: { gi: [{}, {}, {}, {}], light: {} } },
 };
@@ -135,23 +159,58 @@ let resets=0;
 const post={settings:{upscale:1,taa:true,adaptive:false},inSize:[64,64],size:[64,64],
   get historyRevision(){return resets;},reset(){resets++;},setTemporalInputs(inputs){this.inputs=inputs;},
   withoutJitter:fn=>fn(),sceneTarget:{color,depth},sceneDescriptor:()=>({})};
+gpu.frameNo=0;
+gpu.timing={enabled:true,supported:true};
 const renderer = createHybridRenderer(gpu, sim,{post});
 await renderer.ready;
 const composed = calls.length;
-const input={sun:{x:0,y:1,z:0},model:new Matrix4()};
+const input={sun:{x:0,y:1,z:0},model:new Matrix4(),camera:new PerspectiveCamera(),paused:false};
+const samples=[],updateResolution=renderer.resolution.update;
+renderer.resolution.update=f=>{samples.push(f);return updateResolution(f);};
+const complete=frame=>gpu.timing.onFrame({frame,coverage:{complete:true},passes:[{kind:'render',gpu:25}]});
 assert.equal(renderer.prepare(input),true);
 assert.equal(renderer.update(input), true);
 assert(calls.length > composed, 'all producers and shared shadows record real commands');
 assert(renderer.drawOpaque(post));
-assert(renderer.compose(post,{...input,camera:new PerspectiveCamera()}));
-for(const pattern of [/scene acceptance/,/smooth.*build/,/particles.*finish/,/optics droplets/,/optics droplet depth/,/media integrate/,/motion.*vectors/,/scene composite/])
+assert(renderer.compose(post));
+assert.equal(post.inputs,undefined,'temporal capture waits for transparent meshes');
+assert(renderer.temporalFrame(post,{...input,transparentMeshes:true}));
+assert.equal(calls.findLast(c=>/motion.*vectors/.test(c.name)).params.untracked,1,'visible transparent meshes reject and capture coverage');
+assert(renderer.temporalFrame(post,input));
+assert.equal(calls.findLast(c=>/motion.*vectors/.test(c.name)).params.untracked,0);
+for(const pattern of [/scene acceptance/,/smooth.*build/,/particles.*finish/,/optics droplets/,/optics droplet depth/,/fallback droplets/,/media integrate/,/motion.*vectors/,/scene composite/])
   assert(calls.some(c=>pattern.test(c.name)),`missing production path ${pattern}`);
 assert(post.inputs.motion&&post.inputs.reactive,'real motion and coverage reach post');
 assert.equal(renderer.stats.compositions,1);
+const fallbackDraw=calls.find(c=>/fallback droplets/.test(c.name));
+assert.equal(fallbackDraw.indirect.buffer,renderer.legacyIndirect.buffer);
+assert.equal(fallbackDraw.indirect.offset,48,'exceptional instances are GPU-gated, not shaded/discarded on normal frames');
+assert.equal(calls.find(c=>/scene acceptance/.test(c.name)).bind[2].entries.find(e=>e.binding===3).resource.buffer,
+  renderer.particles.resources.opticalArgs,'same-frame particle count feeds exceptional indirect arguments');
+complete(1);
+assert.equal(samples.at(-1).stable,false,'first workload has no comparable baseline');
+gpu.frameNo=1;renderer.update(input);complete(2);
+assert.equal(samples.at(-1).stable,true,'held camera and producer workload are comparable');
+gpu.frameNo=2;renderer.update(input);
+input.camera.position.x=1;
+gpu.frameNo=3;renderer.update(input);complete(3);
+assert.equal(samples.at(-1).stable,false,'late samples from another camera workload cannot certify trials');
+complete(4);
+assert.equal(samples.at(-1).stable,false,'new camera workload restarts evidence');
+input.paused=true;gpu.frameNo=4;renderer.update(input);complete(5);
+assert.equal(samples.at(-1).paused,true,'pause state belongs to the submitted frame');
+const fields=[];
+sim.updateBricks=()=>{fields.push(sim.derived.particleSplit);sim.derived.frameNo++;};
+assert.equal(renderer.legacyStill(()=>{assert.equal(sim.derived.particleSplit,false);return 17;}),17);
+assert.deepEqual(fields,[false,true],'thumbnail renders complete fields, then restores the split');
+assert.equal(sim.derived.particleSplit,true);
+assert.throws(()=>renderer.legacyStill(()=>{throw Error('thumbnail failed');}),/thumbnail failed/);
+assert.equal(sim.derived.particleSplit,true,'failed thumbnails also restore ownership');
+assert.equal(renderer.stats.legacyStills,2);
 assert.equal(renderer.geometry.resources.status!==undefined,true);
 assert.equal(renderer.legacyIndirect.offset,32);
 assert.equal(renderer.prepare({view:'heat'}),true);
 assert.equal(renderer.enabled, false);
 assert.equal(sim.derived.particleSplit,false,'data view restores complete legacy fields');
 renderer.dispose();
-console.log(`PASS hybrid core: material bytes/mips/LOD, exact-change recording, allocation bounds, ALL scene producers/composition, motion-to-post, same-frame GPU fallback/lifecycle; CPU only. Naga ${semantic?'passed':'unavailable'}.`);
+console.log(`PASS hybrid core: material bytes/mips/LOD, exact-change recording, actual entry/layout stage masks, allocation bounds, ALL scene producers/composition, transparent coverage, workload/pause timing metadata, thumbnail ownership and fallback/lifecycle; CPU only. Naga ${semantic?'passed':'unavailable'}.`);

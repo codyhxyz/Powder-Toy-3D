@@ -93,7 +93,7 @@ export async function run(a){
     const inverse=new a.THREE.Matrix4().multiplyMatrices(fu.viewProj,fu.model).invert();
     probe.dispatch(gpu.frame,[Math.ceil(post.inSize[0]/8),Math.ceil(post.inSize[1]/8),1],
       {bind:[gpu._frameUniforms.group,a.sim.bindRO,group],header:a.sim.header(),params:{clipToGrid:inverse}});
-    const read=gpu.readback.buffer(counts,0,36),gate=gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,48);
+    const read=gpu.readback.buffer(counts,0,36),gate=gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,64);
     gpu.flush('hybrid full numerical readback');
     const [pixelBuffer,gateBuffer]=await Promise.all([read,gate]);
     const pixels=[...new Uint32Array(pixelBuffer)],acceptance=[...new Uint32Array(gateBuffer)];
@@ -104,6 +104,7 @@ export async function run(a){
     assert(pixels[7]>0,'glossy metal must be visible, not merely painted offscreen');
     assert(pixels[8]>0,'instanced optical droplet must write visible entry/depth pixels');
     assert(acceptance[0]===0&&acceptance[5]===1&&acceptance[9]===0,'normal hybrid scene must execute ZERO legacy volume instances');
+    assert(acceptance[12]===6&&acceptance[13]===0,'normal hybrid scene must execute ZERO exceptional droplet instances');
     cube(-2,[44.5,20.5,65.5],1);
     await a.test.render();await gpu.readback.idle();
     assert(hybrid.geometry.stats.rebuiltBricks===0,'temperature-only edit must rebuild zero bricks');

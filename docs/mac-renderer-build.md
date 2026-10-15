@@ -52,8 +52,11 @@ Known limits remain:
 - Straight world windows use the new local producers. Far-terrain LOD remains the existing subsystem.
 - The raster sun map has local opaque casters, not off-window terrain or coloured transparent shadows.
 - Unknown deformation and external animation reject history rather than invent motion.
+- Visible transparent Three meshes conservatively reject history for the whole frame.
+- Adaptive trials require a held camera and comparable producer diagnostics. Paused frames freeze adaptation.
 - Reflection resolution policy changes the tracing budget; reflections have no separate half-resolution image.
 - Unsupported hardware capacity is explicit. The new path does not silently truncate a producer.
+- Exceptional optical fallback uses a legacy-composited background. Hidden refracted content can differ from the accepted path.
 
 ### Validation
 
@@ -95,6 +98,16 @@ motion and reactive pixels, finite HDR, temperature-only reuse, and zero legacy 
 
 `tools/hybrid-check.mjs` passes all nine CPU suites covering the 12 features.
 Native validation, visual review, and performance comparison are still required.
+
+Independent review found five integration defects. The following CPU regressions now cover their fixes:
+
+- Smooth camera/shadow vertices have their own vertex-readable state layout and matching bind group.
+- CPU composition checks compare reflected entry-point resources with actual stage visibility.
+- Overflow has a droplet-only composition draw. Its GPU instance count is zero on accepted frames.
+  It shares the final render pass instead of adding an empty fullscreen attachment pass.
+- Motion/coverage capture follows transparent Three meshes and rejects their unknown blended motion.
+- Resolution submissions capture pause state and workload epochs. Changed views cannot validate old trials.
+- Legacy thumbnails temporarily build complete fields, then restore particle exclusion even after an error.
 Performance evidence and the blocked benchmark attempt are recorded in
 [`mac-renderer-performance.md`](mac-renderer-performance.md).
 
@@ -173,7 +186,7 @@ the combined rebuild-and-render cost against the existing marcher in static,
 close-up, and high-change scenes. Deployment follows successful integration
 and regression checks; an unvalidated rewrite does not replace production.
 
-## Decisions from the first build wave
+## Current contracts
 
 - The geometry producer compacts persistent face references on the GPU.
   Camera frames use one indirect draw per producer, not one draw per brick.
@@ -188,7 +201,7 @@ and regression checks; an unvalidated rewrite does not replace production.
   Physical grid axes define all directions. The view direction points toward the eye.
 - Shared resources use configurable binding offsets. The opaque pipeline uses
   group 2 binding 0 for faces, 1–4 for materials, 5–10 for lighting,
-  and 11–13 for shadows.
+  11–13 for shadows, 14 for reflection controls, and 15 for scene acceptance.
   Each final pipeline must pass the engine's resource-limit checks.
 - Shadow casters expose `drawShadow(rp, { matrix })`, `isReady`, and `revision`.
   The matrix maps physical grid coordinates to light clip coordinates.

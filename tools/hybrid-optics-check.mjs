@@ -1,9 +1,9 @@
 // CPU only: numerical oracles, generated WGSL reflection, resource contracts.
-// Not a WGSL compiler, GPU correctness, or integrated feature-completion claim.
+// Includes Naga semantic compilation, not GPU execution or visual validation.
 import assert from 'node:assert/strict';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { gridDims } from '../src/shaders/common.js';
-import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL } from '../src/shaders/hybrid/optics.js';
+import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL, fallbackDropletWGSL, fallbackDropletBindings } from '../src/shaders/hybrid/optics.js';
 import { interfaceEnergy, opticalTransmission, walkOpticalCells, traceOpticalReference,
   opticalFieldDensity, opticalFieldSegment, validateOpticsLimits, validateOpticsResources,
   createHybridOptics } from '../src/gfx/hybrid/optics.js';
@@ -178,7 +178,7 @@ const gpu = {
   kernel(d){ const k={state:'ready',ready:Promise.resolve(),dispatch(frame,size,args){ calls.push({name:d.name,frame,size,args}); }}; pipelines.push(k); return k; },
   renderPipeline(d){ const p={state:'ready',ready:Promise.resolve(),draw(pass,args){
     assert(!pass.ended); if (args.params) OpticsParams.pack(args.params,new DataView(new ArrayBuffer(OpticsParams.size)),0);
-    calls.push({name:'draw',args});
+    calls.push({name:'draw',args,pipeline:d});
   }}; pipelines.push(p); return p; },
   frame:{render(desc){ calls.push({name:'render',desc}); return {ended:false,end(){this.ended=true;}}; }},
 };
@@ -193,6 +193,7 @@ assert.deepEqual(calls.map(c=>c.name),['hybrid.optics.bounds','hybrid.optics.bou
 assert.equal(calls[0].frame,gpu.frame); assert.equal(calls[1].frame,gpu.frame);
 assert.deepEqual(calls[0].size,[grid.nbricks,1,1]); assert.equal(buffers[0].size,grid.nbricks*32); assert.equal(buffers[1].size,32);
 assert.equal(calls.at(-1).args.params.world,1);
+assert.equal(optics.drawFallbackDroplets(),false,'optional fallback disabled');
 assert.deepEqual(Object.keys(optics.output),['color','metadata','fallback']);
 optics.update({...frame,cameraRevision:2}); optics.record(); assert.equal(optics.stats.boundsBuilds,1);
 for (const change of [()=>sim.version++,()=>sim.cur=1,()=>sim.origin.x++]) {
@@ -242,11 +243,98 @@ assert(dropAttachments.every(t=>t.destroyed===0),'encoded resources must survive
 gpu.frame.flush();
 assert(dropAttachments.every(t=>t.destroyed===1),'retire exactly once after encoder changes');
 
+// Exceptional capacity fallback: never sample scene attachments or read counts.
+const fallbackReflect = new WgslReflect(fallbackDropletWGSL);
+assert.equal(fallbackReflect.textures.length,2);
+assert.equal(fallbackReflect.storage.length,2);
+for (const [stage, bit] of [['vertex',1],['fragment',2]]) {
+  for (const entry of fallbackReflect.entry[stage]) for (const resource of entry.resources) {
+    if (resource.group !== 2) continue;
+    assert(fallbackDropletBindings.find(e=>e.binding===resource.binding).visibility & bit,
+      `${stage} binding ${resource.binding} visibility`);
+  }
+}
+assert(!fallbackReflect.entry.vertex[0].resources.some(r=>r.name==='fallbackGate'));
+assert(fallbackReflect.entry.fragment[0].resources.some(r=>r.name==='fallbackGate'));
+assert.match(fallbackDropletWGSL,/if \(fallbackGate\[0\] == 0u\) \{ discard; \}/);
+assert.match(fallbackDropletWGSL,/roots.y <= 0.0 \|\| roots.x > roots.y/);
+assert.match(fallbackDropletWGSL,/first >= 1.0 \|\| abs\(first-depth\) > 0.000001/);
+assert.match(fallbackDropletWGSL,/0.0,entry == 0.0/); // camera-inside depth agrees with metadata
+assert.match(fallbackDropletWGSL,/FallbackDropOutput\(textureLoad\(resolved,vec2i\(v.position.xy\),0\),depth\)/);
+// Numerical coverage/depth oracle for rejected fragments: legacy stays intact.
+const fallbackPixel = ({gate=1, origin=[-1,0.5,0.5], first=0.1, scene=1}={}) => {
+  if (!gate) return null;
+  const roots=opticalParticleInterval(origin,[1,0,0],[0,0,0]);
+  if (!roots || roots[1]<=0) return null;
+  // Synthetic orthographic depth, sufficient to test the mask/depth contract.
+  const depth=Math.max(0,roots[0])*0.1;
+  return first>=1 || Math.abs(first-depth)>0.000001 || depth>scene ? null : depth;
+};
+assert.equal(fallbackPixel(),0.1);
+assert.equal(fallbackPixel({gate:0}),null,'accepted normal scene suppressed');
+assert.equal(fallbackPixel({origin:[-1,0.01,0.01]}),null,'billboard corners preserve scene');
+assert.equal(fallbackPixel({first:0.05}),null,'nearer bulk interface cannot be copied');
+assert.equal(fallbackPixel({first:1}),null,'no optical coverage');
+assert.equal(fallbackPixel({scene:0.05}),null,'legacy foreground depth wins');
+assert.equal(fallbackPixel({origin:[0.5,0.5,0.5],first:0}),0,'camera-inside entry');
+const { readFileSync } = await import('node:fs');
+const producer=readFileSync(new URL('../src/shaders/hybrid/particles.js',import.meta.url),'utf8');
+assert.match(producer,/opticalArgs\[1\] = vec4u\(6u, select\(n, 0u, overflow\), 0u, 0u\)/);
+const gate = {};
+const fallbackStart = pipelines.length;
+const fallback = createHybridOptics(gpu,sim,{particles:resources,fallbackGate:gate,
+  lighting:{hooks:{worldHit:'fn opticsWorldHit(h: OpticalHit) -> vec3f { return vec3f(1); }'}}});
+const target = {color:fakeTexture({size:[16,16],format:'rgba16float',usage:16}),
+  depth:fakeTexture({size:[16,16],format:'depth32float',usage:16})};
+assert.equal(fallback.drawFallbackDroplets(target),false,'no output before record');
+// The added pipeline participates in readiness, not just the transport pipelines.
+pipelines[fallbackStart+3].state='pending';
+assert.equal(fallback.isReady,false); assert.equal(fallback.record(frame),false);
+assert.equal(fallback.drawFallbackDroplets(target),false);
+pipelines[fallbackStart+3].state='ready'; await fallback.ready;
+gpu.frame.encoder={}; fallback.record(frame);
+assert.throws(()=>fallback.drawFallbackDroplets({...target,color:fallback.output.color}),/alias/);
+assert.throws(()=>fallback.drawFallbackDroplets({...target,depth:fallback.output.metadata}),/alias/);
+assert.throws(()=>fallback.drawFallbackDroplets({...target,color:frame.color}),/invalid/);
+const beforeFallback=calls.length;
+assert(fallback.drawFallbackDroplets(target));
+const fallbackCalls=calls.slice(beforeFallback);
+assert.deepEqual(fallbackCalls.map(c=>c.name),['render','draw']);
+const fallbackDraw=fallbackCalls[1];
+assert.deepEqual(fallbackDraw.args.indirect,{buffer:resources.opticalArgs,offset:16}); // producer six vertices, GPU live count
+assert.equal(fallbackDraw.args.count,undefined);
+assert.equal(fallbackDraw.pipeline.depthStencil.depthCompare,'less-equal');
+assert.equal(fallbackDraw.pipeline.depthStencil.depthWriteEnabled,true);
+assert.equal(fallbackCalls[0].desc.colorAttachments[0].loadOp,'load');
+assert.equal(fallbackCalls[0].desc.depthStencilAttachment.depthLoadOp,'load');
+const entries=fallbackDraw.args.bind[2].entries;
+assert.equal(entries[0].resource.texture,fallback.output.color);
+assert.equal(entries[1].resource.texture,fallback.output.metadata);
+assert.equal(entries[2].resource.buffer,resources.instances); assert.equal(entries[3].resource.buffer,gate);
+assert.equal(fallbackDraw.args.params.size[0],16);
+const oldOutput=Object.values(fallback.output);
+const larger={color:fakeTexture({size:[32,32],format:'rgba16float',usage:4}),depth:fakeTexture({size:[32,32],format:'depth32float',usage:4})};
+fallback.record(larger);
+assert.throws(()=>fallback.drawFallbackDroplets(target),/invalid/);
+const largerTarget={color:fakeTexture({size:[32,32],format:'rgba16float',usage:16}),depth:fakeTexture({size:[32,32],format:'depth32float',usage:16})};
+assert(fallback.drawFallbackDroplets(largerTarget));
+assert.equal(calls.at(-1).args.bind[2].entries[0].resource.texture,fallback.output.color);
+assert.equal(calls.at(-1).args.params.size[0],32);
+assert(oldOutput.every(t=>t.destroyed===0));
+gpu.frame.flush();
+assert(oldOutput.every(t=>t.destroyed===1));
+assert.throws(()=>fallback.drawFallbackDroplets(largerTarget),/same-frame/);
+fallback.dispose(); assert.equal(fallback.isReady,false);
+assert.throws(()=>fallback.drawFallbackDroplets(target),/disposed/);
+assert.equal(target.color.destroyed,0); assert.equal(largerTarget.depth.destroyed,0);
+assert.equal(resources.instances.destroyed,undefined); assert.equal(gate.destroyed,undefined);
+console.log('Fallback droplets: gate stage visibility/suppression, analytic coverage/inside/depth agreement, indirect offset/count ownership, load/depth test, no aliases, readiness/resize/disposal passed (CPU only)');
+
 {
   const { spawnSync } = await import('node:child_process');
   for (const [name, code] of [['bounds',boundsCode], ['field-optics',boundedCode],
     ['cell-optics',opticsShader(grid,{boundsBinding:2})], ['droplets',dropCode],
-    ['drop-depth',dropDepthWGSL], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
+    ['drop-depth',dropDepthWGSL], ['fallback-droplets',fallbackDropletWGSL], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
     const result = spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});
     assert.equal(result.status,0,`${name}: ${result.error ?? ''}${result.stdout}${result.stderr}`);
   }

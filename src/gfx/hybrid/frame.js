@@ -2,11 +2,12 @@ import { hybridGateWGSL,hybridCompositeWGSL } from '../../shaders/hybrid/frame.j
 
 /** Owns one depth snapshot and the same-frame GPU fallback/compose arguments. */
 export function createHybridFrame(gpu,sim) {
-  const gate=gpu.createBuffer({label:'hybrid scene gate',size:48,usage:0x80|0x100|0x04});
+  const gate=gpu.createBuffer({label:'hybrid scene gate',size:64,usage:0x80|0x100|0x04});
   const gateLayout=gpu.layout('HYBRID_SCENE_GATE',[
     {binding:0,visibility:4,buffer:{type:'read-only-storage'}},
     {binding:1,visibility:4,buffer:{type:'read-only-storage'}},
     {binding:2,visibility:4,buffer:{type:'storage'}},
+    {binding:3,visibility:4,buffer:{type:'read-only-storage'}},
   ]);
   const layout=gpu.layout('HYBRID_COMPOSE',[
     {binding:0,visibility:2,texture:{sampleType:'unfilterable-float'}},
@@ -25,11 +26,13 @@ export function createHybridFrame(gpu,sim) {
     gate,ready:Promise.all([kernel.ready,pipe.ready]),
     get isReady(){return !disposed&&kernel.state==='ready'&&pipe.state==='ready';},
     legacyIndirect:{buffer:gate,offset:32},
-    evaluate(geometry,smooth){
+    fallbackIndirect:{buffer:gate,offset:48},
+    evaluate(geometry,smooth,particles){
       const group=gpu.bindGroup(gateLayout,[
         {binding:0,resource:{buffer:geometry.resources.status}},
         {binding:1,resource:{buffer:smooth.resources.status}},
         {binding:2,resource:{buffer:gate}},
+        {binding:3,resource:{buffer:particles.resources.opticalArgs}},
       ]);
       kernel.dispatch(gpu.frame,[1,1,1],{bind:[undefined,undefined,group]});
     },
@@ -44,14 +47,17 @@ export function createHybridFrame(gpu,sim) {
       encoder=gpu.frame.encoder;
       return depth;
     },
-    compose(post,color,metadata){
+    compose(post,color,metadata,extraDraw){
       const group=gpu.bindGroup(layout,[
         {binding:0,resource:color.createView()},
         {binding:1,resource:depth.createView()},
         {binding:2,resource:metadata.createView()},
       ]);
       const rp=gpu.frame.render(post.sceneDescriptor({load:true}),'hybrid final color and depth');
-      try{pipe.draw(rp,{bind:[undefined,undefined,group],indirect:{buffer:gate,offset:16}});}finally{rp.end();}
+      try{
+        pipe.draw(rp,{bind:[undefined,undefined,group],indirect:{buffer:gate,offset:16}});
+        extraDraw?.(rp);
+      }finally{rp.end();}
     },
     dispose(){if(disposed)return;disposed=true;gpu.flush('hybrid frame dispose');
       gate.destroy();depth?.destroy();for(const r of retired)r.texture.destroy();retired.length=0;},

@@ -28,6 +28,8 @@ const tex = (binding, visibility) => ({ binding, visibility, texture: { sampleTy
 export const SMOOTH_EXTRACT_LAYOUT = [tex(0, STAGE.COMPUTE), ro(2), rw(3), rw(4), rw(5), rw(8)];
 export const SMOOTH_PREFIX_LAYOUT = [rw(4), rw(5), rw(6), rw(7)];
 export const SMOOTH_DRAW_LAYOUT = [ro(1, STAGE.VERTEX), ro(2, STAGE.VERTEX), ro(3, STAGE.VERTEX | STAGE.FRAGMENT)];
+// Cached vertices retain physical source slots; both camera and shadow VS read live A.
+export const SMOOTH_STATE_LAYOUT = [ro(0, STAGE.VERTEX | STAGE.FRAGMENT), ro(1, STAGE.VERTEX | STAGE.FRAGMENT)];
 
 /** Bind this small status buffer to the legacy smooth pass as read-only storage.
  * A nonzero flag means ALL granular/organic matter stays with legacy, not a

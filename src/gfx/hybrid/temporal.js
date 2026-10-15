@@ -5,7 +5,7 @@
 //  * Create createHybridTemporal(post, { invalidateCaches: () => meshFrames.drop() }).
 //    Do not use legacy meshFrames capture/restore for hybrid frames: it caches only
 //    colour/depth, not these per-pixel inputs. Supply fresh inputs on every full frame.
-//  * In render.prepare/compute AFTER beginScene has chosen post.inSize, call
+//  * After producers and transparent meshes, before post.finish, call
 //    temporal.update({ revision, motion, reactive }). revision must change for ANY
 //    visible simulation edits/steps/undo/load/window shift, not for camera jitter.
 //  * Record producers in that frame's encoder before post.finish reads the textures.
@@ -78,7 +78,7 @@ export function temporalMotionDecision({ historyValid = true, motion = null, rea
   return rejectUntracked ? 'reject' : 'camera';
 }
 
-/** Small lifecycle adapter; update ONLY once per rendered scene, in prepare/compute.
+/** Small lifecycle adapter; update once after scene coverage, before post.finish.
  * `changed` supplements revision for external animated/uncorresponded matter.
  * `cameraCut` forces a reset even below post's automatic teleport thresholds.
  * invalidateCaches must drop external colour/depth caches; no scheduling is added.

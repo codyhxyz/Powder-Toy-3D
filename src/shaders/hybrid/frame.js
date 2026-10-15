@@ -3,6 +3,7 @@ export const hybridGateWGSL = /* wgsl */ `
 @group(2) @binding(0) var<storage,read> geometryStatus:array<u32>;
 @group(2) @binding(1) var<storage,read> surfaceStatus:array<u32>;
 @group(2) @binding(2) var<storage,read_write> sceneGate:array<u32>;
+@group(2) @binding(3) var<storage,read> opticalArgs:array<u32>;
 @compute @workgroup_size(1) fn gate() {
   let bad=geometryStatus[2]|geometryStatus[3]|surfaceStatus[0];
   sceneGate[0]=bad;
@@ -10,6 +11,8 @@ export const hybridGateWGSL = /* wgsl */ `
   sceneGate[6]=0u; sceneGate[7]=0u;
   sceneGate[8]=36u; sceneGate[9]=select(0u,1u,bad!=0u);
   sceneGate[10]=0u; sceneGate[11]=0u;
+  sceneGate[12]=6u; sceneGate[13]=select(0u,opticalArgs[5],bad!=0u);
+  sceneGate[14]=0u; sceneGate[15]=0u;
 }`;
 export const hybridCompositeWGSL = /* wgsl */ `
 @group(2) @binding(0) var sceneColor:texture_2d<f32>;

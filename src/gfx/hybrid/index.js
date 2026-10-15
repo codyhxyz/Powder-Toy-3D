@@ -63,7 +63,7 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
   const segmentWGSL=hybridMediaSegmentWGSL({fieldGroup:2,fieldBinding:16,
     paramsGroup:2,paramsBinding:23,declareFrame:false,declareHeader:false,
     sunWGSL:'',sunVisibility:'hybridMediaSun'});
-  const optics=createHybridOptics(gpu,sim,{world,particles:particles.resources,lighting:{
+  const optics=createHybridOptics(gpu,sim,{world,particles:particles.resources,fallbackGate:frame.gate,lighting:{
     wgsl:opticalShader.wgsl+'\n'+mediaSun+'\n'+segmentWGSL,
     bindings:[...opticalShader.layout,...MEDIA_FIELD_LAYOUT.map(e=>({...e,binding:e.binding+16})),
       {binding:23,visibility:2,buffer:{type:'uniform'}}],
@@ -91,14 +91,26 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
   const producers=[geometry,materials,smooth,particles,optics,media,motion,frame];
   let ready=false,enabled=false,disposed=false,current={},lastDerived,lastBudget=32;
   let configuration='',historyRevision=post.historyRevision,origin='',lastSampleTime;
+  let workload='',workloadEpoch=0;
   const submitted=new Map(),timing=gpu.timing,oldTiming=timing?.onFrame,wasTiming=timing?.enabled;
   let enabledTiming=false;
-  const stats={reason:'not updated',producer:'complete hybrid scene',frames:0,compositions:0,
+  const stats={reason:'not updated',producer:'complete hybrid scene',frames:0,compositions:0,legacyStills:0,
     geometry:geometry.stats,smooth:smooth.stats,particles:particles.stats,shadows:shadows.stats,
     optics:optics.stats,media:media.stats,motion:motion.stats};
   const resetResolution=()=>{
     resolution.reset(post.settings);submitted.clear();lastSampleTime=undefined;
     historyRevision=post.historyRevision;
+  };
+  // Compare a held camera and completed producer diagnostics, not simulation
+  // version (which also changes for heat). Camera motion holds the last accepted
+  // allocation; it cannot certify a cheaper trial against a different view.
+  const workloadKey=f=>{
+    const camera=f.camera;
+    camera?.updateMatrixWorld();
+    const matrix=m=>m?.elements?.map(v=>Math.round(v*1e5));
+    return JSON.stringify([matrix(camera?.matrixWorld),camera?.fov,camera?.aspect,camera?.zoom,
+      matrix(f.model),sim.paints,Boolean(f.paused),Boolean(f.externalAnimated),
+      geometry.stats.rebuiltBricks,smooth.stats.count,particles.stats.count,particles.stats.droplets]);
   };
   const onTiming=sample=>{
     oldTiming?.(sample);
@@ -114,7 +126,8 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
     const dt=lastSampleTime===undefined?1/60:now-lastSampleTime;
     lastSampleTime=now;
     resolution.update({now,dt,sampleId:sample.frame,sampleGeneration:meta.generation,
-      gpuMs:passes.reduce((s,p)=>s+p.gpu,0),stable:true});
+      gpuMs:passes.reduce((s,p)=>s+p.gpu,0),paused:meta.paused,
+      stable:meta.stable&&meta.epoch===workloadEpoch&&meta.workload===workloadKey(current)});
   };
   if(timing)timing.onFrame=onTiming;
   const reasonFor=f=>hybridEligibility({...f,sourceAppearance})||
@@ -163,11 +176,14 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
         particleSplit:true,sourceStyle:false});
       lastDerived=revision;
       particles.update({size:post.inSize,sourceStyle:false});
-      frame.evaluate(geometry,smooth);
+      frame.evaluate(geometry,smooth,particles);
       shadows.update({sun:f.sun,casters:[geometry,smooth,particles],model:f.model,
         revision:`${geometry.revision}|${smooth.revision}|${particles.revision}`});
       optics.update({revision:sim.version});
-      if(timing?.enabled)submitted.set(gpu.frameNo+1,{generation:resolution.generation,now:performance.now()/1000});
+      const key=workloadKey(f),stable=!!f.camera&&key===workload&&!f.externalAnimated;
+      if(key!==workload){workload=key;workloadEpoch++;}
+      if(timing?.enabled)submitted.set(gpu.frameNo+1,{generation:resolution.generation,now:performance.now()/1000,
+        workload:key,epoch:workloadEpoch,stable,paused:!!f.paused});
       // Bound metadata even if timing gets disabled externally before completion.
       while(submitted.size>16)submitted.delete(submitted.keys().next().value);
       stats.frames++;
@@ -179,7 +195,7 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
       try{geometry.drawOpaque(rp);smooth.draw(rp);particles.draw(rp);return true;}finally{rp.end();}
     },
     /** After opaque scene + sky, before transparent scene meshes and post TAA. */
-    compose(p,{camera,...f}={}){
+    compose(p){
       if(!api.enabled)return false;
       const depth=frame.snapshot(p.sceneTarget.depth);
       const input={color:p.sceneTarget.color,depth,scale:resolution.scales.media/resolution.scales.surface};
@@ -189,14 +205,34 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
       if(!optical)throw new Error('hybrid optics unavailable in an accepted frame');
       const color=media.record({...input,color:optical.color,opticalDepth:optical.metadata});
       if(!color)throw new Error('hybrid media unavailable in an accepted frame');
-      frame.compose(p,color,optical.metadata);
-      const revision=`${sim.version}|${sim.cur}|${sim.origin.x},${sim.origin.y},${sim.origin.z}`;
-      const vectors=motion.record({depth:p.sceneTarget.depth,opticalDepth:optical.metadata,media:media.resources.media,
-        camera,post:p,model:f.model??current.model,revision,fieldRevision:sim.derived.frameNo,
-        externalAnimated:!!(f.externalAnimated??current.externalAnimated),world});
-      temporal.update({revision:`${revision}|${sim.derived.frameNo}`,...vectors});
+      frame.compose(p,color,optical.metadata,rp=>optics.drawFallbackDroplets(p.sceneTarget,
+        {pass:rp,indirect:frame.fallbackIndirect}));
       stats.compositions++;
       return true;
+    },
+    /** After transparent Three meshes too: their blended footprint has no motion. */
+    temporalFrame(p,{camera,transparentMeshes=false,...f}={}){
+      if(!api.enabled)return false;
+      const revision=`${sim.version}|${sim.cur}|${sim.origin.x},${sim.origin.y},${sim.origin.z}`;
+      const vectors=motion.record({depth:p.sceneTarget.depth,opticalDepth:optics.output.metadata,media:media.resources.media,
+        camera,post:p,model:f.model??current.model,revision,fieldRevision:sim.derived.frameNo,
+        externalAnimated:transparentMeshes||!!(f.externalAnimated??current.externalAnimated),world});
+      temporal.update({revision:`${revision}|${sim.derived.frameNo}`,...vectors});
+      return true;
+    },
+    /** Synchronous legacy thumbnail draw with complete fields, then restore ownership. */
+    legacyStill(draw){
+      const split=sim.derived.particleSplit;
+      try{
+        if(split){sim.derived.setParticleSplit(false);sim.updateBricks();}
+        return draw();
+      }
+      finally{
+        if(split){
+          sim.derived.setParticleSplit(true);sim.updateBricks();lastDerived=undefined;
+          motion.invalidate();temporal.reset();resetResolution();stats.legacyStills++;
+        }
+      }
     },
     dispose(){
       if(disposed)return;disposed=true;enabled=false;

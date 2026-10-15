@@ -49,6 +49,8 @@ The existing shadow and GI paths remain active.
 The old shadow map still serves the shared GI backend.
 The new raster map serves direct surface shading.
 Motion capture also compares previous cell identities when raw state changes.
+Adaptive trials freeze while paused and cancel evidence across changed camera workloads.
+They retain the last accepted allocation during camera motion.
 
 Apple GPUs favor bandwidth-efficient rasterization and reduced unnecessary shading.
 That supports the architecture, not a speed multiplier.

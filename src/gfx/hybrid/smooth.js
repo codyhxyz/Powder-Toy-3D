@@ -3,7 +3,7 @@
 import { frameUniformsOf } from '../uniforms.js';
 import { fold } from '../../gpu/kernels.js';
 import {
-  SmoothParams, SMOOTH_FLAGS, SMOOTH_EXTRACT_LAYOUT, SMOOTH_PREFIX_LAYOUT, SMOOTH_DRAW_LAYOUT,
+  SmoothParams, SMOOTH_FLAGS, SMOOTH_EXTRACT_LAYOUT, SMOOTH_PREFIX_LAYOUT, SMOOTH_DRAW_LAYOUT, SMOOTH_STATE_LAYOUT,
   smoothExtractWGSL, smoothDrawWGSL,
 } from '../../shaders/hybrid/smooth.js';
 export { smoothAcceptanceWGSL } from '../../shaders/hybrid/smooth.js';
@@ -55,6 +55,8 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
   const args = buffer('indirect', 16, STORAGE | INDIRECT);
   const ring = gpu.readback.ring(label('status results'), 16, 16);
   const b = (binding, buffer) => ({ binding, resource: { buffer } });
+  const vertexStateLayout = gpu.layout('HYBRID_SMOOTH_STATE_RO', SMOOTH_STATE_LAYOUT);
+  const vertexStateBind = gpu.bindGroup(vertexStateLayout, [b(0, sim.state.A), b(1, sim.state.B)], label('vertex state'));
   const prefixLayout = gpu.layout(label('prefix layout'), SMOOTH_PREFIX_LAYOUT);
   const shadowLayout = gpu.layout(label('shadow layout'), SMOOTH_DRAW_LAYOUT);
   const extractBind = gpu.bindGroup(extractLayout, [
@@ -73,11 +75,11 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
   const finish = gpu.kernel({ name: 'hybrid.smooth.finish', ...meshDesc, layouts: [sim.L.TABLES, sim.L.STATE_RO, prefixLayout], entry: 'finish', workgroupSize: [1, 1, 1] });
   const build = gpu.kernel({ name: 'hybrid.smooth.build', ...meshDesc, entry: 'build', workgroupSize: [128, 1, 1] });
   const drawCode = smoothDrawWGSL(g, { shadingWGSL: shader.wgsl });
-  const drawDesc = { code: drawCode, layouts: [fu.layout, sim.L.STATE_RO, drawLayout], params: SmoothParams,
+  const drawDesc = { code: drawCode, layouts: [fu.layout, vertexStateLayout, drawLayout], params: SmoothParams,
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' } };
   const drawPipe = gpu.renderPipeline({ name: 'hybrid.smooth.draw', ...drawDesc, fragment: { targets: [{ format: 'rgba16float' }] } });
-  const shadowPipe = gpu.renderPipeline({ name: 'hybrid.smooth.shadow', ...drawDesc, code: smoothDrawWGSL(g), layouts: [fu.layout, sim.L.STATE_RO, shadowLayout], vertex: { entry: 'shadowVS' }, fragment: null });
+  const shadowPipe = gpu.renderPipeline({ name: 'hybrid.smooth.shadow', ...drawDesc, code: smoothDrawWGSL(g), layouts: [fu.layout, vertexStateLayout, shadowLayout], vertex: { entry: 'shadowVS' }, fragment: null });
   const pipes = [extract, finish, build, drawPipe, shadowPipe];
   let disposed = false, key = null, lastRevision, lastOrigin, lastSplit, generation = 0, frameState = {};
   const stats = { builds: 0, maxVertices: capacity, count: 0, flags: 0, requiredVertices: 0,
@@ -146,12 +148,12 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
     },
     draw(rp) {
       if (!canDraw()) return false;
-      drawPipe.draw(rp, { bind: [fu.group, sim.bindRO, drawBind], header: sim.header(), params: params(), indirect: { buffer: args } });
+      drawPipe.draw(rp, { bind: [fu.group, vertexStateBind, drawBind], header: sim.header(), params: params(), indirect: { buffer: args } });
       return true;
     },
     drawShadow(rp, { matrix } = {}) {
       if (!matrix || !canDraw()) return false;
-      shadowPipe.draw(rp, { bind: [fu.group, sim.bindRO, shadowBind], header: sim.header(), params: params(matrix), indirect: { buffer: args } });
+      shadowPipe.draw(rp, { bind: [fu.group, vertexStateBind, shadowBind], header: sim.header(), params: params(matrix), indirect: { buffer: args } });
       return true;
     },
     invalidate() { key = null; generation++; stats.pending = false; fallback('invalidated'); },

@@ -5,7 +5,7 @@ import { Matrix4 } from 'three/webgpu';
 import { frameUniformsOf } from '../uniforms.js';
 import { retireMediaResources } from './fieldBounds.js';
 import {
-  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK, dropDepthWGSL,
+  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK, dropDepthWGSL, fallbackDropletWGSL, fallbackDropletBindings,
 } from '../../shaders/hybrid/optics.js';
 export { OPTICS_FALLBACK } from '../../shaders/hybrid/optics.js';
 
@@ -185,6 +185,8 @@ export function createHybridOptics(gpu, sim, options = {}) {
   // to first free pair after lighting). Views are refreshed for every record.
   const derived = options.derived ?? sim.derived;
   const particles = options.particles;
+  const fallbackGate = options.fallbackGate;
+  if (fallbackGate && !particles) throw new TypeError('fallbackGate requires optics particles');
   if (particles && (!particles.instances || !particles.opticalArgs)) throw new TypeError('optics particles require instances and opticalArgs');
   const hasFields = !!(derived?.views?.fieldSurf && derived?.views?.fieldThin);
   const fieldBinding = hasFields ? (options.fieldBinding ?? Math.max(2, ...(lighting.bindings ?? []).map(e => e.binding + 1))) : null;
@@ -221,6 +223,13 @@ export function createHybridOptics(gpu, sim, options = {}) {
     fragment: { targets: [] },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
   });
+  const fallbackLayout = fallbackGate && gpu.layout('HYBRID_FALLBACK_DROPLETS', fallbackDropletBindings);
+  const fallbackPipe = fallbackGate && gpu.renderPipeline({
+    name: 'hybrid fallback droplets', code: fallbackDropletWGSL,
+    layouts: [fu.layout, undefined, fallbackLayout], params: OpticsParams,
+    vertex: { entry: 'dropVS' }, fragment: { targets: [{ format: 'rgba16float' }] },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+  });
   const boundsLayout = gpu.layout('HYBRID_OPTICS_BOUNDS', opticsBoundsLayout);
   const brickBounds = gpu.createBuffer({ label: 'optics brick bounds', size: sim.g.nbricks * 32, usage: 128 });
   const bounds = gpu.createBuffer({ label: 'optics bounds', size: 32, usage: 128 });
@@ -241,14 +250,14 @@ export function createHybridOptics(gpu, sim, options = {}) {
     boundsKey = key; stats.boundsBuilds++; return true;
   }
   const inverse = new Matrix4();
-  let output = null, dropDepth = null, outputEncoder = null, current = {}, disposed = false;
+  let output = null, dropDepth = null, outputEncoder = null, current = {}, disposed = false, fallbackParams = null;
   const stats = { boundsBuilds: 0, draws: 0, allocations: 0, maxSteps, maxInterfaces, cellBoundarySurfaces: !hasFields };
   const live = () => { if (disposed) throw new Error('hybrid optics is disposed'); };
   const release = () => {
     if (output) retireMediaResources(gpu, { ...output, ...(dropDepth ? { dropDepth } : {}) }, outputEncoder);
-    output = null; dropDepth = null;
+    output = null; dropDepth = null; fallbackParams = null;
   };
-  const pipelines = [pipe, reduce, finish, ...(particles ? [dropPipe, depthPipe] : [])];
+  const pipelines = [pipe, reduce, finish, ...(particles ? [dropPipe, depthPipe] : []), ...(fallbackPipe ? [fallbackPipe] : [])];
   const api = {
     ready: Promise.all(pipelines.map(p => p.ready)),
     get isReady() { return !disposed && pipelines.every(p => p.state === 'ready'); },
@@ -325,8 +334,37 @@ export function createHybridOptics(gpu, sim, options = {}) {
         finally { drops.end(); }
       }
       outputEncoder = gpu.frame.encoder;
+      fallbackParams = params;
       stats.draws++;
       return output;
+    },
+    /** After frame.compose: sceneTarget is post.sceneTarget ({color, depth} GPUTextures).
+     * Exceptional capacity fallback only. Snapshot radiance may contain the legacy
+     * background; ordinary accepted optics remains untouched (GPU gate discard).
+     */
+    drawFallbackDroplets({ color, depth } = {}, { indirect = { buffer: particles?.opticalArgs, offset: 16 }, pass } = {}) {
+      live();
+      if (!fallbackPipe || !api.isReady || !output || !fallbackParams) return false;
+      if (outputEncoder !== gpu.frame.encoder) throw new Error('fallback droplets require same-frame optics.record');
+      const sampled = [output.color, output.metadata];
+      if (!color || !depth || color === depth || sampled.includes(color) || sampled.includes(depth)) throw new Error('fallback droplet sampled/attachment resources must not alias');
+      for (const [t, format] of [[color, 'rgba16float'], [depth, 'depth32float']]) {
+        if (t.format !== format || !(t.usage & TEX.RENDER_ATTACHMENT) || t.width !== output.color.width || t.height !== output.color.height
+            || (t.sampleCount ?? 1) !== 1 || (t.dimension ?? '2d') !== '2d' || (t.depthOrArrayLayers ?? 1) !== 1
+            || (t.mipLevelCount ?? 1) !== 1 || typeof t.createView !== 'function') throw new Error('invalid fallback droplet scene target');
+      }
+      const group = gpu.bindGroup(fallbackLayout, [
+        { binding: 0, resource: output.color.createView() }, { binding: 1, resource: output.metadata.createView() },
+        { binding: 2, resource: { buffer: particles.instances } }, { binding: 3, resource: { buffer: fallbackGate } },
+      ]);
+      const rp = pass ?? gpu.frame.render({
+        colorAttachments: [{ view: color.createView(), loadOp: 'load', storeOp: 'store' }],
+        depthStencilAttachment: { view: depth.createView(), depthLoadOp: 'load', depthStoreOp: 'store' },
+      }, 'hybrid fallback droplets');
+      try { fallbackPipe.draw(rp, { bind: [fu.group, undefined, group], params: fallbackParams,
+        indirect }); }
+      finally { if (!pass) rp.end(); }
+      return true;
     },
     draw(frame = current) { return api.record(frame); },
     dispose() { if (disposed) return; disposed = true; release(); retireMediaResources(gpu, { brickBounds, bounds }, gpu.frame.encoder); current = {}; },

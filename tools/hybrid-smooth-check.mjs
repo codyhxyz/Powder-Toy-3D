@@ -8,7 +8,7 @@ import { Derived } from '../src/derived.js';
 import { gridDims } from '../src/shaders/common.js';
 import { uniformStruct } from '../src/gpu/params.js';
 import { EmaParams, BoostParams, fieldEmaFrag, fieldBoostFrag, particleAgeFrag } from '../src/shaders/fields.js';
-import { SMOOTH_CASES, SMOOTH_EDGES, SMOOTH_TETS, SMOOTH_EXTRACT_LAYOUT, SMOOTH_PREFIX_LAYOUT, SMOOTH_DRAW_LAYOUT, smoothExtractWGSL, smoothDrawWGSL } from '../src/shaders/hybrid/smooth.js';
+import { SMOOTH_CASES, SMOOTH_EDGES, SMOOTH_TETS, SMOOTH_EXTRACT_LAYOUT, SMOOTH_PREFIX_LAYOUT, SMOOTH_DRAW_LAYOUT, SMOOTH_STATE_LAYOUT, smoothExtractWGSL, smoothDrawWGSL } from '../src/shaders/hybrid/smooth.js';
 import { createHybridSmooth } from '../src/gfx/hybrid/smooth.js';
 
 export const g = gridDims({ nx: 32, ny: 32, nz: 32 });
@@ -35,7 +35,7 @@ export function fixture(split = false) {
     flush() {},
   };
   const derived = { particleSplit: split, world: null, dlist: {}, fieldSurf: {}, fieldThin: {}, views: { fieldSurf: {}, fieldThin: {} } };
-  const sim = { id: 1, g, derived, fieldSurf: derived.fieldSurf, fieldThin: derived.fieldThin, L: { TABLES: [], STATE_RO: [] }, origin: { x: 0, y: 0, z: 0 }, version: 0, cur: 0, header: () => ({}) };
+  const sim = { id: 1, g, state:{A:{},B:{}}, derived, fieldSurf: derived.fieldSurf, fieldThin: derived.fieldThin, L: { TABLES: [], STATE_RO: [] }, origin: { x: 0, y: 0, z: 0 }, version: 0, cur: 0, header: () => ({}) };
   return { gpu, sim, log, buffers, rings, reads, pipelines };
 }
 
@@ -128,6 +128,10 @@ assert(renderer.stats.pending);
 assert(!renderer.stats.fallbackRequired);
 assert(renderer.draw({}));
 assert(renderer.drawShadow({}, { matrix: Array(16).fill(0) }));
+for(const p of f.pipelines) assert.deepEqual(p.layouts[1],SMOOTH_STATE_LAYOUT,'camera and shadow vertex state visibility');
+for(const draw of f.log.filter(c=>/smooth\.(draw|shadow)$/.test(c.name))){
+  assert.deepEqual(draw.bind[1].map(e=>e.resource.buffer),[f.sim.state.A,f.sim.state.B],'use the matching vertex-visible bind group');
+}
 assert.deepEqual(f.log.slice(0, 4).map(x => x.name), ['hybrid.smooth.extract', 'hybrid.smooth.finish', 'hybrid.smooth.build', 'hybrid.smooth.draw']);
 assert.equal(f.log[0].params.particleSplit, 1);
 for (let revision = 2; revision < 5; revision++) { assert(renderer.update({ revision })); assert(renderer.draw({})); }

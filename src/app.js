@@ -1718,11 +1718,12 @@ async function renderThumb(viewId, out) {
   useWebGPUCamera(thumbCam);
   const rawWas = post.settings.raw;
   const crueltyWas = post.settings.cruelty;
+  const splitWas = !!sim.derived.particleSplit;
   post.settings.raw = view === 'plain' ? false : !isMaterialView(view);
   post.settings.cruelty = selectedMode === 'crueltySquad' && isMaterialView(view);
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
-    presentation.neutral(() => post.renderStill({
+    const drawStill = () => presentation.neutral(() => post.renderStill({
       prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
@@ -1738,9 +1739,11 @@ async function renderThumb(viewId, out) {
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
     }, thumbCam, thumbTarget));
+    if (hybrid) hybrid.legacyStill(drawStill); else drawStill();
   } finally {
     post.settings.raw = rawWas;
     post.settings.cruelty = crueltyWas;
+    if (splitWas) { pacer.wake(); wakeLoop(); }
   }
   const px = await gpu.readback.texture(thumbTarget);
   const [w, hgt] = THUMB_SIZE;
@@ -2348,6 +2351,7 @@ const frameHooks = {
     for (const w of live) if (frameMode !== 'meshes' || !w.scene) w.compute?.(ctx);
     hybrid?.update({
       view: viewKeyOf(renderView), sun: SUN, model: volume.matrixWorld, warp: warpNow(),
+      camera, paused: settings.paused,
       disabled: !!blocks || testNoVolume,
       decoration: gfxUniforms.uDeco.value,
       externalAnimated: live.some(w => w.busy?.(ctx)),
@@ -2368,13 +2372,14 @@ const frameHooks = {
   },
   draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },
   meshes: (p) => {
-    hybrid?.compose(p, { camera, model: volume.matrixWorld });
+    hybrid?.compose(p);
     if (frameMode === 'capture') {
       // the scene as drawn, before the meshes, kept; then the opaque meshes over it
       if (volumeDrawn) meshFrames.capture(p); else meshFrames.drop();
       threeMeshes(p, false, camera, false);
     }
-    threeMeshes(p, true);
+    const transparentMeshes = threeMeshes(p, true);
+    hybrid?.temporalFrame(p, { camera, model: volume.matrixWorld, transparentMeshes });
   },
   overlay: overlayWires.length ? (rp) => { for (const w of overlayWires) w.overlay(ctx, rp); } : undefined,
 };
