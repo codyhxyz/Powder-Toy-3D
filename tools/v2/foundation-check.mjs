@@ -177,7 +177,9 @@ sim.ready = new Promise(resolve => { finishInitialization = () => {
   resolve(sim);
 }; });
 const engine = new PhysicsV2(sim);
-assert(Object.values(engine.kernels).every(k=>k.build==='idle'),'native cold builds use the bounded pipeline queue');
+assert.equal(Object.values(engine.kernels).filter(k => k.build === 'now').length, 1);
+for (const k of Object.values(engine.kernels))
+  assert.equal(k.build, k.name === 'v2block' ? 'now' : 'idle', 'only required contact gets early queue priority');
 await new Promise(resolve => setImmediate(resolve));
 assert.equal(engine.isReady, false, 'finished native kernels still wait for initial state');
 assert.equal(sim.version, 0);
