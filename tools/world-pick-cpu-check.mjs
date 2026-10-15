@@ -3,12 +3,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Matrix4,PerspectiveCamera,Ray,Vector3} from 'three/webgpu';
+import {readFileSync} from 'node:fs';
 import {fixture} from './world-volume-consumers-cpu-check.mjs';
 import {GpuFrame} from '../src/gpu/frame.js';
 import {queryWorldPick,displayedWorldRay,transportWorldRay,localWorldHover} from '../src/wire/worldPick.js';
 import {PickParams} from '../src/shaders/render.js';
 import {tableLayout} from '../src/shaders/common.js';
-const turn=()=>new Promise(r=>setImmediate(r));
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 function setup({unknown=false,reject=false}={}) {
   const f=fixture(),queue=deferred(),device=f.device;let pins=0,dispatches=0,captured;
@@ -84,4 +84,30 @@ test('displayed ray ignores live camera; legacy transport and origin-shift physi
  assert.equal(localWorldHover(hover,new Vector3(96,0,96),inside,i=>i===identity),true);assert.deepEqual(hover.cell.toArray(),[4,383,4]);
  assert.equal(localWorldHover(hover,new Vector3(128,0,128),inside,i=>i===identity),false);assert.equal(hover.valid,true);
  assert.equal(localWorldHover(hover,new Vector3(),inside,()=>false),false);assert.equal(hover.valid,false);
+});
+
+test('actual App mutation entry points refuse outside/stale global hover after origin shifts',()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const identity={},hover={valid:true,globalCell:new Vector3(4,5,4),cell:new Vector3(),frameIdentity:identity,worldToken:'tool'};
+ const sim={origin:new Vector3()},win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}}};
+ const inWindow=c=>c.x>=0&&c.x<32&&c.y>=0&&c.y<32&&c.z>=0&&c.z<32;
+ const sync=new Function('win','hover','sim','inWindow','localWorldHover','worldPickToken',`${extract('syncWorldHover')};return syncWorldHover;`)(win,hover,sim,inWindow,localWorldHover,()=> 'tool');
+ assert.equal(sync(),true);sim.origin.set(32,0,32);
+ for(const name of ['fillAt','clickTool']){
+   const action=new Function('win','syncWorldHover',`${extract(name)};return ${name};`)(win,sync);
+   assert.doesNotThrow(()=>action(),'must return before reaching ANY physical subsystem');
+   assert.equal(hover.valid,true,'physical refusal must not erase global visual validity');
+ }
+ assert.deepEqual(hover.cell.toArray(),[-28,5,-28]);
+ win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};
+ assert.equal(sync(),false);assert.equal(hover.valid,false);
+ // Brush guards run in both actual update paths before BOX-only clamps.
+ assert.match(extract('updateBrush'),/if\(win && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
+ assert.match(extract('updateGunBrush'),/if\(win && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
+ assert.match(source,/painting && brushValid && \(!win \|\| \(inWindow\(brushCenter\)/);
 });
