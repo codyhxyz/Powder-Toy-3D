@@ -83,19 +83,6 @@ before jets/gather. Sleeping halo cells can retain transient low bits, but
 jets/gather reject sleeping faces before consuming limiter bits. There is no
 ACT resize, dispatch-argument change, persistent-state or save-format change.
 
-The contact caller excludes only identity rule calls. A 1,036-byte scalar
-bitset identifies potential reactions, acid contact, and singularity contact.
-Completed pairs or pairs without potential rules bypass the five-call chain.
-Potential rules retain the full chain, including failed-roll busy marks.
-Heat still runs first. Singles still use the same frozen snapshot.
-Pairs with two negative pending products bypass phase resolution.
-Product ID zero remains eligible. Plume guards exclude only its existing
-identity cases. Final packing still uses each original core, preserving opaque
-history across intermediate material changes. No buffer, binding, rule,
-calibration, or stage order changes.
-`tools/v2/contact-applicability-check.mjs` compares the guarded caller with the
-unchanged scalar block reference and checks every oriented material pair.
-
 ### Dynamics-only helpers
 
 `specialContactWGSL` is a small standalone declaration string, without the
