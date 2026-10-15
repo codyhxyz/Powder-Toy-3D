@@ -456,10 +456,18 @@ The driver rejects ambiguous targets and refuses to credit a different declared 
 The attempted protected run was refused at **55% utilization** before browser gameplay assertions.
 Admission time was **2034 ms**; result `/tmp/sandustry-physical-line-tools-two-scrap-v1.json`.
 No utilization bypass was used. The server stopped; no further GPU retry is scheduled.
-CPU review of the comparison and Factory contact-safety prerequisites is pending.
-An initial connected-code audit confirms that local/host Factory POV runs player vitals.
+Independent CPU review found no concrete P1/P2 regression in the explicit comparison.
+Its 27 contract and geometry tests do not establish native processing.
+A connected-code audit confirms that local/host Factory POV runs player vitals.
 The numerical tool actor does not run those vitals.
 Hot tungsten is not intrinsically safe to stand on; ordinary Factory play is not a health-disabled substitute for a survival check.
+The real body also couples to loose matter, which the numerical actor omits.
+Its thermal neighborhood includes nearby floor and wall cells.
+The bucket stance at x20.01 straddles the x19 wall and x20 platform with the actual 1.6-cell body width.
+The platform's four wall interfaces are thermal contacts between materials, not four player contacts.
+Neither the wall nor platform temperature history has been measured.
+Their high melting point does not imply insulation, and the 2200°C source cap is not their measured temperature.
+Connected approaches, stable support, body clearance, heat exposure, and survival still need actual POV evidence.
 
 ## Open requirements
 
