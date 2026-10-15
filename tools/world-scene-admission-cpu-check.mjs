@@ -177,6 +177,40 @@ test('old-epoch submission rejection cannot clear a new-epoch pending admission 
   const next=f.admit(c);assert(next.accepted);assert.equal(f.draws.filter(d=>d.name==='motion').at(-1).params.historyValid,true);
   next.s.resolve();await c.ticket.confirmation;await f.completeAll();f.post.dispose();await turn();
 });
+test('a cache callback error does not discard a successfully submitted composite or its valid temporal history',async()=>{
+  const f=fixture();await f.post.sceneReady;
+  const a=f.record();await f.submit(a.opts);const first=f.admit(a);first.s.resolve();await a.ticket.confirmation;await f.completeAll();
+  const callbackError=new Error('cache callback failure'),b=f.record(f.options({onCommit(){throw callbackError;}}));
+  await f.submit(b.opts);const second=f.admit(b);second.s.resolve();
+  assert.equal(await b.ticket.confirmation,true);assert.equal(b.ticket.status,'committed');
+  assert.equal(b.ticket.error,undefined);assert.equal(b.ticket.callbackError,callbackError);
+  const show=f.submission();assert(f.post.presentLast({submission:show}));show.resolve();
+  const c=f.record();await f.submit(c.opts);const third=f.admit(c);assert(third.accepted);
+  assert.equal(f.draws.filter(d=>d.name==='motion').at(-1).params.historyValid,true);
+  third.s.resolve();await c.ticket.confirmation;await f.completeAll();f.post.dispose();await turn();
+});
+test('shared Post work remains resize-protected through reset, identity replacement and partial failure until queue completion',async()=>{
+  for(const mode of ['reset','identity','partial-error']){
+    const f=fixture();await f.post.sceneReady;
+    const a=f.record();await f.submit(a.opts);let final;
+    if(mode==='partial-error'){
+      final=f.submission();const finish=f.post.finish;f.post.finish=()=>{throw new Error('partial post encoding');};
+      assert.throws(()=>f.post.commitScene(a.ticket,{feedbackIdentity:a.opts.feedbackIdentity,feedback:{incomplete:false},submission:final}),/partial post/);
+      f.post.finish=finish;assert.equal(a.ticket.status,'failed');
+    }else final=f.admit(a).s;
+    const identity=mode==='identity'?{...f.identity,epoch:2}:f.identity;
+    if(mode==='identity')f.post.setSceneIdentity(identity);
+    if(mode==='reset')f.post.reset();
+    f.presenter.canvas.width=96;
+    const b=f.record(f.options({identity}));await f.submit(b.opts);
+    assert.equal(f.admit(b).accepted,false,`${mode}: unresolved final encoder still owns shared targets`);
+    final.reject(new Error('discarded final encoder'));await turn();
+    assert.equal(f.admit(b).accepted,false,`${mode}: rejected ticket still owns automatic prefixes`);
+    await f.completeAll();
+    const retry=f.admit(b);assert(retry.accepted,`${mode}: resize is available after old work finishes`);
+    retry.s.resolve();await b.ticket.confirmation;await f.completeAll();f.post.dispose();await turn();
+  }
+});
 test('BOX frame packing matches the pre-edit 2cafd380 byte fixture',()=>{
   const camera=new PerspectiveCamera(60,1.5,.25,4096);camera.coordinateSystem=WebGPUCoordinateSystem;
   camera.position.set(3,4,5);camera.updateProjectionMatrix();camera.updateMatrixWorld();

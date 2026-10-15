@@ -113,6 +113,9 @@ If the final submission fails, the ticket becomes `failed`.
 Post invalidates tentative temporal history and preserves the previous complete
 image. A late failure from an old scene identity cannot invalidate new history.
 An already submitted prefix cannot be rolled back.
+An `onCommit` callback error is separate from a graphics submission error.
+The submitted image and its history remain valid; `ticket.callbackError`
+records the callback error for the caller.
 
 The accepted final composite is retained in a separate texture.
 `post.presentLast({submission})` blits that exact image without another temporal,
@@ -139,8 +142,9 @@ No recording method blocks for GPU idle or privately submits.
 Commit and `presentLast` require their own final-use submission tickets. The
 last image outlives the scene's input pins and retires only after all its queued
 presentations complete. Reset/disposal stop new admission immediately; queued
-inputs survive their fences. A history resize waits for older admitted uses
-rather than resizing Three's targets under queued commands.
+inputs survive their fences. A history resize waits for every older shared
+Post use, including failed or obsolete tickets, rather than resizing Three's
+targets under queued commands.
 
 A native exception *after acceptance begins* cannot roll back already submitted
 Three/Frame work. The scene is failed, its pins remain fenced, and temporal

@@ -1854,6 +1854,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     const ticket = Object.freeze({id:t.id,identity:t.identity,publication:t.publication,feedbackIdentity:t.feedbackIdentity,
       worldModel:t.worldModel ? Object.freeze([...t.worldModel.elements]) : null,
       width:out.width,height:out.height,get status(){return t.status;},get error(){return t.error;},
+      get callbackError(){return t.callbackError;},
       get confirmation(){return t.confirmation;},get completion(){return t.completion;},recorded:submitted});
     sceneTickets.set(ticket,t);pendingScenes.add(t);liveScenes.add(t);
     Promise.resolve(options.submission.submitted).then(() => {t.submitted = true;}, () => retireScene(t,'failed'));
@@ -1906,7 +1907,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     // TAAU owns resizeable history targets. Do not resize them while an older
     // admitted scene still has an uncompleted final consumer.
     if (!t.still && (size.some((n,i)=>n!==t.sizes.size[i]) || inSize.some((n,i)=>n!==t.sizes.inSize[i]))
-      && [...liveScenes].some(other=>other!==t && other.status==='committed')) return false;
+      && [...liveScenes].some(other=>other!==t && other.sharedPostWork)) return false;
     const finished = sceneFence(options.submission);t.uses.push(finished);
     admitting = true;let image = null;
     try {
@@ -1914,6 +1915,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         post.onPass?.('scene',{kind:'render'});
         finishStill(t.slot.target,t.out,t.settings,t.sky);
       } else {
+        t.sharedPostWork=true;
         post.setSize(...t.sizes.size,t.sizes.inSize[0]/t.sizes.size[0]);
         taaNow = t.taa;
         if (taaNow !== lastTaa || stageCameraKey !== t.cameraKey || cameraJumped(t.camera)) {historyValid = false;keptPost = null;}
@@ -1948,7 +1950,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           t.status='discarded';if(image)retireImage(image);return false;
         }
         if(image){if(lastImage)retireImage(lastImage);lastImage=image;}
-        t.status='committed';syncHook(t.onCommit,ticket);return true;
+        t.status='committed';
+        try{syncHook(t.onCommit,ticket);}catch(error){t.callbackError=error;}
+        return true;
       },fail).catch(fail).finally(()=>{if(pendingSceneSubmission===t)pendingSceneSubmission=null;});
       return true;
     } catch (e) {retireScene(t,'failed');throw e;} finally {admitting = false;}
