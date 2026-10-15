@@ -34,6 +34,9 @@ mutable mode remains unchanged. Binding a newer raw revision requires an
 appropriate next logical `fieldTick`, as before; this API does not decide when
 to admit a build, advance a tick, replay history or replace an active renderer.
 After a world reset, bind the new cut then call the existing adapter `reset`.
+Changing only the cut configuration clears spatial captures and the matching
+Fields publication set. It carries their Atlas invalidations until publication
+succeeds. It does not reset EMA owners or manufacture a semantic Source change.
 
 ## What the cut owns
 

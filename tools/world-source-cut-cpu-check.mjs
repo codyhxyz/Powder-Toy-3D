@@ -118,6 +118,25 @@ test('actual CELL adapter binds a cut without replacing Fields/history and old s
   a.release();await drain(f.gpu);assert(!oldRaw.destroyed,'old provider owns its cut through asynchronous readers');
   pub.release();assert(!adapter.isCurrent(pub));b.release();await drain(f.gpu);adapter.dispose();atlas.dispose();await f.finish();
 });
+test('configuration-only cut binding invalidates spatial publications without resetting or advancing EMA history',async()=>{
+  const f=await fixture(),atlas=new WorldRenderAtlas(f.gpu,{worldSize:f.win.size,initialCapacity:4});
+  const adapter=new WorldCellAtlasAdapter({gpu:f.gpu,source:f.source,producer:f.producer,atlas,tables:f.sim.tables,worldBounds:{min:[0,0,0],max:f.win.size}});await adapter.ready;
+  const a=cut(f),fields=adapter.fields,requirement={brick:[7,1,1],channels:READY.CELL};adapter.bindCut(a);
+  const publish=async requirements=>{
+    const batch=adapter.record(f.gpu.frame,{fieldTick:0,requirements});f.gpu.flush();
+    adapter.commitAfterSourceFlush(batch).previousLightingSnapshot.release();await drain(f.gpu);
+  };
+  await publish([requirement]);assert(atlas.lookup(requirement.brick).known);
+  const owners=()=>[...fields.history.owners].map(([key,o])=>[key,o.page,o.age,o.lastTick]);
+  const before=owners(),token=adapter.lastSourceToken;
+  const b=f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:2});adapter.bindCut(b);
+  assert.equal(adapter.fields,fields);assert.equal(adapter.cache.size,0);assert.equal(fields.published.size,0);
+  assert(adapter.unpublishedInvalidations.has('0,0,0'));assert.equal(adapter.lastSourceToken,token);assert.deepEqual(owners(),before);
+  await publish([]);assert.equal(atlas.lookup(requirement.brick).known,false,'idle publication must clear old CELL mappings');
+  await publish([requirement]);assert(atlas.lookup(requirement.brick).known);assert.equal(adapter.cache.size,1);
+  assert.deepEqual(owners(),before,'same-clock re-derivation does not restart or advance EMA');
+  a.release();b.release();adapter.dispose();atlas.dispose();await f.finish();
+});
 
 test('final submission pins cover unsubmitted suffixes, reset/config invalidation and independent handle release',async()=>{
   const f=await fixture(),a=cut(f),native=a.source.chunks.get('0,0,0').A;

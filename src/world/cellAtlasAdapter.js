@@ -53,8 +53,12 @@ export class WorldCellAtlasAdapter {
     if(!cut?.isValid()||!cut.belongsTo(this.mutableSource))throw new Error('Invalid CELL Source cut');
     const held=cut.retain(),old=this.boundCut;
     if(old&&old.configuration!==held.configuration){
+      for(const key of this.fields.published)this.unpublishedInvalidations.add(key);
+      this.fields.published.clear();this.fields.publishedToken=null;
       for(const c of this.cache.values())this._dropCapture(c);this.cache.clear();
-      this.publication=null;this.lastSourcePublication=null;
+      this.publication=null;this.lightingDirty=true;
+      // Keep the semantic source token and EMA owners. A configuration-only
+      // change invalidates spatial publications, not the numerical history.
     }
     this.boundCut=held;this.source=held.source;this.producer=held.producer;
     old?.release();return this;
