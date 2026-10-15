@@ -436,8 +436,9 @@ export function createPov(app) {
     }
     return kernelsBuilt;
   }
-  // compile the figure's shader once the page has settled, not on the first F
-  if (createPlayer) {
+  // Optional prewarm must not compile invisible bodies during headless samples.
+  // Entering POV still awaits ensureFigure() below.
+  if (createPlayer && app.getSim()?.gpu?.testMode == null) {
     const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, PREWARM_DELAY_MS));
     setTimeout(() => idle(() => { if (app.getSim()) ensureFigure(); }), PREWARM_DELAY_MS);
   }
