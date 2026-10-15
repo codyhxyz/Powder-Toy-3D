@@ -207,6 +207,7 @@ async function run(o) {
       'Camera equality uses GPU f32 precision; raw CPU camera values remain recorded. Render-quality settings are compared unchanged.',
       'Memory is the app GPU resource registry, not total VRAM; excludes unregistered driver/three/timestamp scratch resources. JS heap is optional Chromium telemetry.',
       'toolCommit identifies this checkout, not necessarily the build served by --url.',
+      'Vite transforms the menu and its dynamically imported app on CPU before GPU acquisition; native shader compilation remains inside the slot.',
     ], results: [], errors: [] };
   let vite, browser;
   const checkpoint = (stage, result = report) => {
@@ -219,7 +220,7 @@ async function run(o) {
   };
   try {
     checkpoint('CPU import preparation');
-    if (!o.url) vite = await startVite({ port: o.port ?? undefined, warmupEntries: ['/src/main.js'] });
+    if (!o.url) vite = await startVite({ port: o.port ?? undefined, warmupEntries: ['/src/main.js', '/src/app.js'] });
     checkpoint('GPU acquisition');
     // Both resources are inside this try: a launch failure must still close Vite.
     browser = await launchBrowser();
