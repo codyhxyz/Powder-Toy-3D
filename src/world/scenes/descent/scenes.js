@@ -333,9 +333,9 @@ int dsSump(int k, int i, int j, int dx, int dz) {
 // row's open path the spawns stand on, and no cell under y BIOME_Y0. sites.js
 // (reachable, the loot candidates) reads the lattice through the twin and
 // must change with it.
-int dsTunnel(int x, int y, int z) {
+int dsTunnelMaterial(int x, int y, int z) {
   // a level with a Wang kit: its tiles instead (dsWang: the scene's glsl / the twin's bake)
-  if (DS_WANG == 1) return dsWang(x, y, z);
+  if (DS_WANG == 1) return dsWangMaterial(x, y, z);
   int k = thDiv(y - DS_BIOME_Y0, DS_LAYER_H);
   int yl = y - DS_BIOME_Y0 - k * DS_LAYER_H;
   int i = thDiv(x - DS_GRID_OFF + DS_GRID_HALF, DS_GRID);
@@ -350,7 +350,7 @@ int dsTunnel(int x, int y, int z) {
   if (k < 0 || k >= DS_LAYERS) return -1;
   // a shaft from the layer above, down through this one's rock to its floor, a ledge halfway
   bool inShaft = abs(dx) < DS_SHAFT_HALF && abs(dz) < DS_SHAFT_HALF;
-  if (inShaft && dsShaft(k + 1, i, j)) return yl == DS_LEDGE_Y && dx < 0 ? E_WOOD : E_EMPTY;
+  if (inShaft && dsShaft(k + 1, i, j)) return yl == DS_LEDGE_Y && dx < 0 ? materialWord(E_WOOD, AP_PLANK_X) : E_EMPTY;
   bool inX = abs(dz) < DS_TUN_HALF;
   bool inZ = abs(dx) < DS_TUN_HALF;
   int sx = dx < 0 ? i - 1 : i;
@@ -376,7 +376,7 @@ int dsTunnel(int x, int y, int z) {
   if (DS_LEVEL == 0) {
     // timber frames: posts at the walls and a lintel, every BEAM cells; a crystal lantern under the middle one
     if (thMod(rel, DS_BEAM) == 0) {
-      if (abs(side) == DS_TUN_HALF - 1 || yl == DS_TUN_H - 1) return E_WOOD;
+      if (abs(side) == DS_TUN_HALF - 1 || yl == DS_TUN_H - 1) return materialWord(E_WOOD, yl == DS_TUN_H - 1 ? (inX ? AP_PLANK_Z : AP_PLANK_X) : AP_PLANK_Y);
       if (rel == DS_LANTERN_REL && side == 0 && yl == DS_TUN_H - 2) return E_CRYSTAL;
     }
     return E_EMPTY;
@@ -396,6 +396,7 @@ int dsTunnel(int x, int y, int z) {
   }
   return yl == 0 ? E_SNOW : E_EMPTY;
 }
+int dsTunnel(int x, int y, int z) { return materialId(dsTunnelMaterial(x, y, z)); }
 
 // The biome's rock at (x, y, z): Mines rock with gold, Coal Pits rock with coal
 // seams and pockets, Snowy Depths rock with ice strata and crystal.
@@ -458,7 +459,7 @@ float dsMtn(int x, int z) {
 // the top of the rock (the first cell over it) at column (x, z)
 int dsTop(int x, int z) { return DS_SURF + thRound(dsHill(x, z) + dsMtn(x, z)); }
 // a tree's cell at (x, y, z) (WOOD, PLANT), or -1: one site per TREE_G square, off the mountain
-int dsTree(int x, int y, int z) {
+int dsTreeMaterial(int x, int y, int z) {
   int gx = thDiv(x, DS_TREE_G);
   int gz = thDiv(z, DS_TREE_G);
   uint h = thHash2(gx, gz, DS_SALT_TREE);
@@ -469,13 +470,14 @@ int dsTree(int x, int y, int z) {
   int mz = tz - DS_MTN_Z;
   if (mx * mx + mz * mz < DS_TREE_MTN_D * DS_TREE_MTN_D) return -1;
   int base = DS_SURF + thRound(dsHill(tx, tz));
-  if (x >= tx && x < tx + 2 && z >= tz && z < tz + 2 && y >= base - 1 && y < base + DS_TRUNK_H) return E_WOOD;
+  if (x >= tx && x < tx + 2 && z >= tz && z < tz + 2 && y >= base - 1 && y < base + DS_TRUNK_H) return materialWord(E_WOOD, AP_LOG_Y);
   float cx = float(x - tx) - 0.5;
   float cy = float(y - base - DS_TRUNK_H);
   float cz = float(z - tz) - 0.5;
-  if (cx * cx + cy * cy + cz * cz < DS_CROWN_R * DS_CROWN_R) return E_PLANT;
+  if (cx * cx + cy * cy + cz * cz < DS_CROWN_R * DS_CROWN_R) return materialWord(E_PLANT, AP_LEAVES);
   return -1;
 }
+int dsTree(int x, int y, int z) { return materialId(dsTreeMaterial(x, y, z)); }
 
 // the Wang levels' entry hall (see wangDerived), its torches hung in the ceiling, or -1
 int dsEntryHall(int x, int y, int z) {
@@ -486,7 +488,7 @@ int dsEntryHall(int x, int y, int z) {
   return E_EMPTY;
 }
 
-int dsMines(int x, int y, int z) {
+int dsMinesMaterial(int x, int y, int z) {
   // The way in, beside the top layer's main row (z RAMP_Z0 on, a wall between): a cut up
   // the west slope, open to the sky and rising 1 in 2 from the forest floor to the
   // mouth, over a causeway of rock; then a ramp down inside the mountain, 1 in 2, to
@@ -514,21 +516,22 @@ int dsMines(int x, int y, int z) {
     int top = DS_SURF + thRound(dsHill(x, z) + mtn);
     if (y >= top) {
       if (top >= DS_SNOW_LINE && y < top + DS_SNOW_D) return E_SNOW;
-      if (y == top && mtn < float(DS_GRASS_MTN)) return E_PLANT;
+      if (y == top && mtn < float(DS_GRASS_MTN)) return materialWord(E_PLANT, AP_GRASS);
       if (y < DS_TREE_TOP) {
-        int tree = dsTree(x, y, z);
+        int tree = dsTreeMaterial(x, y, z);
         if (tree >= 0) return tree;
       }
       return E_EMPTY;
     }
   }
-  int c = dsTunnel(x, y, z);
+  int c = dsTunnelMaterial(x, y, z);
   return c >= 0 ? c : dsRock(x, y, z);
 }
+int dsMines(int x, int y, int z) { return materialId(dsMinesMaterial(x, y, z)); }
 
 // ---- Coal Pits, Snowy Depths: under a roof of rock
 int dsRoof(int x, int z) { return DS_ROOF + thRound(thNoised(float(x) * DS_ROOF_F, float(z) * DS_ROOF_F, thStream(DS_SALT_ROOF, 0)) * DS_ROOF_A); }
-int dsDeep(int x, int y, int z) {
+int dsDeepMaterial(int x, int y, int z) {
   if (DS_WANG == 1) {
     int hall = dsEntryHall(x, y, z);
     if (hall >= 0) return hall;
@@ -537,15 +540,17 @@ int dsDeep(int x, int y, int z) {
     int top = dsRoof(x, z);
     if (y >= top) return DS_LEVEL == 2 && y < top + DS_SNOW_D ? E_SNOW : E_EMPTY;
   }
-  int c = dsTunnel(x, y, z);
+  int c = dsTunnelMaterial(x, y, z);
   return c >= 0 ? c : dsRock(x, y, z);
 }
+int dsDeep(int x, int y, int z) { return materialId(dsDeepMaterial(x, y, z)); }
 
-int dsCell(int x, int y, int z) {
+int dsCellMaterial(int x, int y, int z) {
   int t = dsTemple(x, y, z);
   if (t >= 0) return t;
-  return DS_LEVEL == 0 ? dsMines(x, y, z) : dsDeep(x, y, z);
+  return DS_LEVEL == 0 ? dsMinesMaterial(x, y, z) : dsDeepMaterial(x, y, z);
 }
+int dsCell(int x, int y, int z) { return materialId(dsCellMaterial(x, y, z)); }
 `;
 
 // ---- the Wang tilings (levels with a kit), one bake per level: CPU, ~150 ms,
@@ -571,16 +576,26 @@ export function descentWang(level) {
   return bakes.get(level);
 }
 // dsWang's JS twin: the element a Wang level's tile puts at a cell, -1 for its rock or outside it
+const dsWangMaterialJS = (W) => (W
+  ? (x, y, z) => { const word = W.wangCellMaterialJS(x, y, z), c = word % 256; return c === WANG_OUT || c === MAT.ROCK ? -1 : W.elementMaterialJS(word); }
+  : () => -1);
 const dsWangJS = (W) => (W
   ? (x, y, z) => { const c = W.wangCellJS(x, y, z); return c === WANG_OUT || c === MAT.ROCK ? -1 : W.elementJS(c); }
   : () => -1);
 // ...and on the GPU (after wangGLSL(kit): WGSL)
 const dsWangGLSL = (kit) => (kit ? /* wgsl */ `
 ${wangGLSL(kit)}
-fn dsWang(x: i32, y: i32, z: i32) -> i32 {
-  let c = wangCell(vec3i(x, y, z));
+fn dsWangMaterial(x: i32, y: i32, z: i32) -> i32 {
+  let word = wangCellMaterial(vec3i(x, y, z));
+  let c = materialId(word);
   if (c == WANG_OUT || c == WANG_ROCK) { return -1; }
-  return wangElement(c);
+  let id = wangElement(c);
+  return materialWord(id, select(AP_NONE, materialAppearance(word), appearanceAllowed(id, materialAppearance(word))));
+}
+fn dsWang(x: i32, y: i32, z: i32) -> i32 {
+  let word = dsWangMaterial(x, y, z);
+  if (word < 0) { return -1; }
+  return materialId(word);
 }
 // the temperature the kit lays the cell at w down at (its temps: burning coal, a lake's water), if
 // the cell is the tile's (id is what dsCell made of it); else T
@@ -591,12 +606,13 @@ fn dsWangT(w: vec3i, id: i32, T: f32) -> f32 {
   if (t > WANG_NO_TEMP) { return t; }
   return T;
 }` : /* wgsl */ `
+fn dsWangMaterial(x: i32, y: i32, z: i32) -> i32 { return -1; }
 fn dsWang(x: i32, y: i32, z: i32) -> i32 { return -1; }
 fn dsWangT(w: vec3i, id: i32, T: f32) -> f32 { return T; }`);
 
 // ---- the JS twins, one per level
 export const descentTwin = memoTwin((level) => level,
-  (level) => compileShared(SRC, DS_SEED, { ...jsConstants(PREFIX, tables(level)), dsWang: dsWangJS(descentWang(level)) }));
+  (level) => compileShared(SRC, DS_SEED, { ...jsConstants(PREFIX, tables(level)), dsWang: dsWangJS(descentWang(level)), dsWangMaterial: dsWangMaterialJS(descentWang(level)) }));
 // a level's constants, by name without the prefix (scripts/check-descent-levels.mjs, levels.js's sites)
 export function descentConstants(level) {
   const t = tables(level);
@@ -615,7 +631,7 @@ const srcWgsl = new Map();
 const glsl = (level) => () => {
   const U = structOf(level), t = tables(level);
   if (!srcWgsl.has(level)) {
-    srcWgsl.set(level, toWgsl(SRC, { consts: definesTypes(PREFIX, t), uniforms: U.sceneTypes, externs: { dsWang: 'i32' } }));
+    srcWgsl.set(level, toWgsl(SRC, { consts: definesTypes(PREFIX, t), uniforms: U.sceneTypes, externs: { dsWang: 'i32', dsWangMaterial: 'i32' } }));
   }
   return /* wgsl */ `
 ${sceneHeadWGSL(U, { data: !!DS_LEVEL_DEFS[level].kit })}
@@ -624,7 +640,8 @@ ${helpersGLSL}
 ${dsWangGLSL(DS_LEVEL_DEFS[level].kit)}
 ${srcWgsl.get(level)}
 fn sceneCell(w: vec3i) -> SceneCell {
-  let id = dsCell(w.x, w.y, w.z);
+  let word = dsCellMaterial(w.x, w.y, w.z);
+  let id = materialId(word);
   // room-temperature matter (and the air) at the level's air temperature; at or
   // under freezing, snow and ice no colder than it (they rest there, chilling nothing)
   var T = SPAWNT(id);
@@ -633,7 +650,7 @@ fn sceneCell(w: vec3i) -> SceneCell {
   if (DS_LEVEL == 2) { T = min(T, DS_COLD_T); }   // the Snowy Depths are frozen through
   if (dsTemple(w.x, w.y, w.z) < 0) { T = dsWangT(w, id, T); }   // ...but for what a kit lays down warm (or burning)
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, DS_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), appearanceCtype(id, 0.0, materialAppearance(word)) + seed), vec4f(0.0));
 }
 `;
 };

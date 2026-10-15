@@ -205,7 +205,10 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   } else if (tool == T_PROP) {
     let v = P.propValue;
     if (P.prop == PROP_PRESSURE) { (*oB).w = v; }
-    else if (P.prop == PROP_TYPE) { (*oA).x = v; }
+    else if (P.prop == PROP_TYPE) {
+      if (i32(v + 0.5) != id) { (*oA).w = physicalCtype(id, a.w) + fract(a.w); }
+      (*oA).x = v;
+    }
     else if (P.prop == PROP_CTYPE) { (*oA).w = v + fract(a.w); }
     else if (P.prop == PROP_TEMP) { (*oA).y = v; }
     else if (P.prop == PROP_LIFE) { (*oA).z = v; }

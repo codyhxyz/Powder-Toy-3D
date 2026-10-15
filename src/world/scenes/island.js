@@ -75,10 +75,11 @@ const ISLAND_FIELDS = {
 export const ISLAND_U = sceneStruct(ISLAND_FIELDS);
 // what the subset reads besides itself: the constants, the uniforms, the hooks' accessors and the columns
 const SUBSET_ENV = () => ({
-  consts: { ...islandDefinesTypes(), GEN_COLUMN_MARGIN: 'i32' },
+  consts: { ...islandDefinesTypes(), GEN_COLUMN_MARGIN: 'i32', AP_NONE: 'i32', AP_GRASS: 'i32' },
   uniforms: ISLAND_U.sceneTypes,
   externs: {
     ...landforms.externs,
+    materialWord: ['i32', true], materialId: ['i32', true], materialAppearance: ['i32', true],
     genColHeight: ['f32', true], genColBand: ['f32', true], genColMeadow: ['f32', true], genColWater: ['f32', true],
   },
 });
@@ -127,21 +128,23 @@ fn genColHeight(x: i32, z: i32) -> f32 { return genCol(x, z).x; }
 fn genColBand(x: i32, z: i32) -> f32 { return genCol(x, z).y; }
 fn genColMeadow(x: i32, z: i32) -> f32 { return genCol(x, z).z; }
 fn genColWater(x: i32, z: i32) -> f32 { return genCol(x, z).w; }
-${direct ? cellWgsl : `${cellWgsl.replace('fn islandCellBare(', 'fn islandCellBareDirect(')}
-// (the island before nature, from the prepass)
-${preReadWGSL('islandCellBare')}`}
+${direct ? cellWgsl : `${cellWgsl.replace('fn islandMaterialBare(', 'fn islandMaterialBareDirect(')}
+// (the island's material word before nature, from the prepass; physical
+// islandCellBare above decodes it for all nature and footing comparisons)
+${preReadWGSL('islandMaterialBare')}`}
 ${STRUCT_GLSL}
 // (the island before nature.js: what it changes bears weight before and after)
 fn structureGround(w: vec3i) -> i32 { return islandCellBare(w.x, w.y, w.z); }`;
 };
 
-// The prepass (scene.pre): the island before nature at each cell of the region.
+// The prepass (scene.pre): material words before nature, in the existing i32
+// slots. Both direct and cached physical wrappers return only physical IDs.
 export const islandPreFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${sceneHeadWGSL(ISLAND_U, { data: true, access: 'read_write' })}
 ${sourceHead()}
 ${cellPartWGSL(false)}
-${preMainWGSL('islandCellBareDirect')}`;
+${preMainWGSL('islandMaterialBareDirect')}`;
 
 // The scene's WGSL: the cell stage over the baked columns and the prepass, and sceneCell.
 export const islandGLSL = () => /* wgsl */ `
@@ -153,11 +156,13 @@ ${cellPartWGSL(false)}
 // settled damp in the ctype (world/island/nature.js islandDamp). Under snow the
 // ground's solids (but plant cover) are frozen near the snow line (genFrost).
 fn sceneCell(w: vec3i) -> SceneCell {
-  let id = structureCell(w, islandCell(w.x, w.y, w.z));
+  let word = structureMaterialCell(w, islandMaterial(w.x, w.y, w.z));
+  let id = materialId(word);
   var T = SPAWNT(id);
   if (SU.uGenSnow != 0u && KIND(id) == K_SOLID && id != E_PLANT) { T = mix(SPAWNT(id), SPAWNT(E_SNOW), genFrost(w.y)); }
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, GEN_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), islandDamp(w.y, id) + seed), vec4f(0.0));
+  let ctype = appearanceCtype(id, islandDamp(w.y, id), materialAppearance(word));
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
 }
 `;
 

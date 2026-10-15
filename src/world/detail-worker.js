@@ -1,4 +1,4 @@
-import { DataUtils } from 'three';
+import { appearanceOf, materialId, materialAppearance } from '../appearance.js';
 import { E, ELEMENTS, K, R } from '../elements.js';
 import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
@@ -13,6 +13,7 @@ self.onmessage = ({ data: d }) => {
     const { token, raw, layout: L, origin, height, pad, bounds, live, planted, wb, trees, edits } = d;
     const sy = height + 2 * pad, size = [L.side, sy, L.side];
     const ids = new Uint8Array(L.side * sy * L.side);
+    const appearances = new Uint8Array(ids.length);
     const index = (x, y, z) => x + L.side * (y + sy * z);
     const localIndex = (p) => index(p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]);
     const volume = [...origin, ...origin.map((v, i) => v + size[i])];
@@ -20,7 +21,9 @@ self.onmessage = ({ data: d }) => {
     // cell (x, y, z) of the chunk's columns at x + side · (z + side · y)
     for (let z = 0; z < L.side; z++) for (let y = 0; y < sy; y++) for (let x = 0; x < L.side; x++) {
       const wy = y - pad;
-      ids[index(x, y, z)] = wy < 0 ? E.ROCK : wy >= height ? E.EMPTY : DataUtils.fromHalfFloat(raw[x + L.side * (z + L.side * wy)] & 0xffff);
+      const word = wy < 0 ? E.ROCK : wy >= height ? E.EMPTY : raw[x + L.side * (z + L.side * wy)] & 0xffff;
+      ids[index(x, y, z)] = materialId(word);
+      appearances[index(x, y, z)] = materialAppearance(word);
     }
     // The same construction and rotation as WorldWindow.bakeTree. Only new
     // columns get generated trees: visited columns come from stored edits,
@@ -49,7 +52,10 @@ self.onmessage = ({ data: d }) => {
             if (!inside(p, volume) || inside(p, live)) break;
             const kind = ELEMENTS[ids[localIndex(p)]].kind;
             if (kind !== K.EMPTY && kind !== K.GAS && kind !== K.LIQUID) {
-              for (const at of fill) ids[at] = s.data[base] - 1;
+              for (const at of fill) {
+                ids[at] = s.data[base] - 1;
+                appearances[at] = appearanceOf(ids[at], s.data[base + 2]);
+              }
               break;
             }
             fill.push(localIndex(p));
@@ -58,7 +64,11 @@ self.onmessage = ({ data: d }) => {
         for (let y = 0; y < s.h; y++) {
           // Baked stamps encode id + 1; zero means "do not overwrite".
           const p = [wx, at[1] + y, wz], encoded = s.data[(x + s.w * (y + s.h * z)) * 4];
-          if (encoded && inside(p, volume) && !inside(p, live)) ids[localIndex(p)] = encoded - 1;
+          if (encoded && inside(p, volume) && !inside(p, live)) {
+            const at = localIndex(p);
+            ids[at] = encoded - 1;
+            appearances[at] = appearanceOf(ids[at], s.data[(x + s.w * (y + s.h * z)) * 4 + 2]);
+          }
         }
       }
     }
@@ -67,12 +77,16 @@ self.onmessage = ({ data: d }) => {
       decodeBrick(bytes, A, 0, B, 0);
       for (let z = 0; z < 4; z++) for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
         const p = [at[0] + x, at[1] + y, at[2] + z];
-        if (inside(p, volume) && !inside(p, live)) ids[localIndex(p)] = A[(x + 4 * (y + 4 * z)) * 4];
+        if (inside(p, volume) && !inside(p, live)) {
+          const at = localIndex(p), cell = (x + 4 * (y + 4 * z)) * 4;
+          ids[at] = A[cell];
+          appearances[at] = appearanceOf(ids[at], A[cell + 3]);
+        }
       }
     }
     const liquid = ids.some((id) => ELEMENTS[id]?.render === R.LIQUID);
     // Already indexed: positions, normals, ids (the element attribute), indices.
-    const mesh = buildSurfaceMesh(ids, { size, origin, bounds, step: token.step });
+    const mesh = buildSurfaceMesh(ids, { size, origin, bounds, step: token.step, appearances });
     const transfer = Object.values(mesh).filter((a) => ArrayBuffer.isView(a)).map((a) => a.buffer);
     self.postMessage({ token, ...mesh, liquid }, [...new Set(transfer)]);
   } catch (err) {

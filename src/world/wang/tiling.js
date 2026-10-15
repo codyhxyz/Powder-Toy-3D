@@ -51,6 +51,7 @@
 //      already coloured by a neighbour); a still-free open edge takes the
 //      tile's preferred colour. The kit's universal tile takes anything, so
 //      a pick always exists (compileKit insists on one).
+import { Appearance as AP, materialWord, materialId, materialAppearance, rotateAppearance } from '../../appearance.js';
 import { GEOM, COL, PORTS, SIDE_PORTS, MAT, WANG_OUT, rasterTile, compileKit, openCap } from './kit.js';
 
 // ---- generation constants
@@ -338,14 +339,23 @@ export function atlasLayout(kit) {
 export function bakeAtlas(kit) {
   const G = kit.geom, lay = atlasLayout(kit), [AX, AY, AZ] = lay.dims;
   const data = new Uint8Array(AX * AY * AZ).fill(MAT.ROCK);
+  // Six-bit MAT + two-bit NONE/X/Y/Z: no additional atlas bytes or bindings.
+  if (Object.values(MAT).some(c => c >= 64)) throw new Error('wang: appearance packing needs six-bit material codes');
+  const material = new Uint8Array(data.length).fill(MAT.ROCK);
   const X = 2 * G.U;
   kit.tiles.forEach((t, ti) => {
     const cells = rasterTile(t, ti, G), [, y0, z0] = lay.origin(ti);
     for (let z = 0; z < G.U; z++) for (let y = 0; y < G.H; y++) {
-      data.set(cells.subarray(X * (y + G.H * z), X * (y + G.H * z) + X), AX * (y0 + y + AY * (z0 + z)));
+      const src = X * (y + G.H * z), dst = AX * (y0 + y + AY * (z0 + z));
+      data.set(cells.subarray(src, src + X), dst);
+      for (let x = 0; x < X; x++) {
+        const a = cells.appearance[src + x];
+        if (a !== AP.NONE && (a < AP.PLANK_X || a > AP.PLANK_Z)) throw new Error('wang: atlas supports explicit plank axes only');
+        material[dst + x] = cells[src + x] | ((a ? a - AP.PLANK_X + 1 : 0) << 6);
+      }
     }
   });
-  return { data, dims: lay.dims, perCol: lay.perCol };
+  return { data, material, dims: lay.dims, perCol: lay.perCol };
 }
 // placement texels: RGBA8 per unit, laid out x = unit i, y = unit k, z = layer
 //   R tile (SOLID_TILE: rock)  G transform | XF_SECOND  B, A: the port colours,
@@ -379,6 +389,9 @@ export function portHash(x, y, z) {
 const JITTER_BIT = 16;   // which bit of the hash jitters a port's wall
 // code: the atlas's cell; ports: the packed 16 bits; (cx, cy, cz) canonical; r: region-relative cell
 export function cutPorts(G, code, ports, cx, cy, cz, rx, ry, rz) {
+  return materialId(cutPortsMaterial(G, code, ports, cx, cy, cz, rx, ry, rz));
+}
+export function cutPortsMaterial(G, code, ports, cx, cy, cz, rx, ry, rz) {
   const U = G.U, half = G.DOOR_W / 2, j = ((portHash(rx, ry, rz) >>> JITTER_BIT) & 1) * G.JITTER;
   for (let p = 0; p < SIDE_PORTS; p++) {
     const c = (ports >> (2 * p)) & 3;
@@ -390,7 +403,7 @@ export function cutPorts(G, code, ports, cx, cy, cz, rx, ry, rz) {
     const yb = c === COL.HIGH ? G.HIGH_FLOOR : G.FLOOR;
     if (cy < yb || cy >= yb + G.DOOR_H + j || lat < -half - j || lat >= half + j) continue;
     if (cy >= yb + G.DOOR_H || lat < -half || lat >= half) { code = MAT.AIR; continue; }  // the jittered rim
-    if (depth === G.FRAME_DEPTH && (lat === -half || lat === half - 1 || cy === yb + G.DOOR_H - 1)) return MAT.BEAM;
+    if (depth === G.FRAME_DEPTH && (lat === -half || lat === half - 1 || cy === yb + G.DOOR_H - 1)) return materialWord(MAT.BEAM, cy === yb + G.DOOR_H - 1 ? (p < 2 ? AP.PLANK_Z : AP.PLANK_X) : AP.PLANK_Y);
     if (c === COL.RAIL && cy === yb && (lat === -G.RAIL_GAUGE / 2 || lat === G.RAIL_GAUGE / 2 - 1)) return MAT.RAIL;
     return MAT.AIR;
   }
@@ -407,7 +420,7 @@ export function cutPorts(G, code, ports, cx, cy, cz, rx, ry, rz) {
 
 // The CPU twin of glsl.js wangCell over a bake's arrays: the kit's material
 // code at region-relative cell r (WANG_OUT outside the region).
-export function makeSampler({ kit, units, atlas, placement }) {
+export function makeSampler({ kit, units, atlas, placement }, material = false) {
   const G = kit.geom, [nx, ny, nz] = units, [AX, AY] = atlas.dims, U = G.U;
   return function wangAt(rx, ry, rz) {
     if (rx < 0 || ry < 0 || rz < 0) return WANG_OUT;
@@ -423,7 +436,11 @@ export function makeSampler({ kit, units, atlas, placement }) {
     const a = tr ? lz : lx, b = tr ? lx : lz;
     const cx = xf & 1 ? 2 * U - 1 - a : a, cz = xf & 2 ? U - 1 - b : b;
     const ty = Math.floor(tile / atlas.perCol) * G.H, tz = (tile % atlas.perCol) * U;
-    const code = openCap(G, atlas.data[cx + AX * (ty + ly + AY * (tz + cz))], l, ny, ly);
-    return cutPorts(G, code, placement[o + 2] | (placement[o + 3] << 8), cx, ly, cz, rx, ry, rz);
+    const at = cx + AX * (ty + ly + AY * (tz + cz));
+    const packed = (atlas.material ?? atlas.data)[at], axis = packed >> 6;
+    const original = packed & 63, code = openCap(G, original, l, ny, ly);
+    const a0 = code === original && axis ? AP.PLANK_X + axis - 1 : AP.NONE;
+    const word = cutPortsMaterial(G, materialWord(code, a0), placement[o + 2] | (placement[o + 3] << 8), cx, ly, cz, rx, ry, rz);
+    return material ? materialWord(materialId(word), rotateAppearance(materialAppearance(word), tr ? 1 : 0)) : materialId(word);
   };
 }

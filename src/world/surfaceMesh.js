@@ -1,4 +1,5 @@
 import { ELEMENTS, E, K, R } from '../elements.js';
+import { materialWord, materialId, materialAppearance } from '../appearance.js';
 
 const opaque = Uint8Array.from({ length: 256 }, (_, id) =>
   +(id !== 0 && !!ELEMENTS[id] && ELEMENTS[id].kind !== K.GAS && ELEMENTS[id].render !== R.LIQUID));
@@ -98,13 +99,14 @@ const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b
  * contacts may be non-manifold (several sheets sharing a vertex or edge).
  * Pure synchronous builder: caller owns mesh caching and invalidation.
  */
-export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
+export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1, appearances = null }) {
   if (!(ids instanceof Uint8Array) || size?.length !== 3 || origin?.length !== 3 ||
       bounds?.length !== 6 || ![1, 2, 4].includes(step) ||
       !size.every(v => Number.isSafeInteger(v) && v > 0) ||
       !origin.every(Number.isSafeInteger) || !bounds.every(Number.isFinite) ||
       size.some((_, a) => bounds[a] >= bounds[a + 3]) ||
-      ids.length !== size[0] * size[1] * size[2]) {
+      ids.length !== size[0] * size[1] * size[2] ||
+      (appearances !== null && (!(appearances instanceof Uint8Array) || appearances.length !== ids.length))) {
     throw new RangeError('Invalid surface mesh volume, bounds or step');
   }
   const start = origin.map((_, a) => (Math.floor((bounds[a] - step / 2) / step) - 1) * step);
@@ -118,32 +120,40 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
   // (wide), then the grid's own (samples).
   const [ex, ey, ez] = count.map(n => n + 2 * reach);
   const wide = new Uint8Array(ex * ey * ez);
+  const wideAppearances = new Uint8Array(wide.length);
   if (step === 1) for (let z = 0; z < ez; z++) for (let y = 0; y < ey; y++) {
     // (a sample is a cell: a row of cells is a row of samples)
     const from = start[0] - reach - origin[0] + sx * (start[1] - reach - origin[1] + y + sy * (start[2] - reach - origin[2] + z));
     const out = ex * (y + ey * z);
-    for (let x = 0; x < ex; x++) { const id = ids[from + x]; wide[out + x] = opaque[id] ? id : 0; }
+    for (let x = 0; x < ex; x++) {
+      const id = ids[from + x];
+      wide[out + x] = opaque[id] ? id : 0;
+      if (opaque[id]) wideAppearances[out + x] = appearances?.[from + x] ?? 0;
+    }
   }
   else for (let z = 0; z < ez; z++) for (let y = 0; y < ey; y++) for (let x = 0; x < ex; x++) {
     const bx = start[0] - origin[0] + (x - reach) * step;
     const by = start[1] - origin[1] + (y - reach) * step;
     const bz = start[2] - origin[2] + (z - reach) * step;
-    let material = 0;
+    let material = 0, appearance = 0;
     for (let dz = 0; dz < step && !material; dz++) {
       for (let dy = 0; dy < step && !material; dy++) {
         const offset = bx + sx * (by + dy + sy * (bz + dz));
         for (let dx = 0; dx < step; dx++) {
           const id = ids[offset + dx];
-          if (opaque[id]) { material = id; break; }
+          if (opaque[id]) { material = id; appearance = appearances?.[offset + dx] ?? 0; break; }
         }
       }
     }
     wide[x + ex * (y + ey * z)] = material;
+    wideAppearances[x + ex * (y + ey * z)] = appearance;
   }
   const samples = new Uint8Array(nx * ny * nz);
+  const sampleAppearances = new Uint8Array(samples.length);
   for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) {
     const from = reach + ex * (y + reach + ey * (z + reach));
     samples.set(wide.subarray(from, from + nx), nx * (y + ny * z));
+    sampleAppearances.set(wideAppearances.subarray(from, from + nx), nx * (y + ny * z));
   }
   // Negative occupancy gradient points from solid to empty. Leave it unnormalized
   // until interpolation, so empty/flat samples don't bias the direction.
@@ -220,7 +230,7 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
   // the one before it (0 ends the chain).
   let capacity = Math.max(64, mixed), vertexCount = 0, indexCount = 0;
   let positions = new Float32Array(capacity * 3), normals = new Float32Array(capacity * 3);
-  let materials = new Uint8Array(capacity), next = new Int32Array(capacity), flat = new Uint8Array(capacity);
+  let materials = new Uint16Array(capacity), next = new Int32Array(capacity), flat = new Uint8Array(capacity);
   let grounds = new Uint8Array(capacity);
   let indices = new Uint32Array(capacity * 6);
   const heads = new Int32Array(mixed), boundary = new Map(), planes = bounds.map(Math.fround);
@@ -399,14 +409,16 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
       // Loose ground takes the smoothed normal (SMOOTH); a plant sample not resting on soil is foliage.
       const solid = near ? index : index + strides[a], material = samples[solid], below = samples[solid - nx];
       const ground = loose[material] & +(material !== E.PLANT || (!!below && below !== E.PLANT && below !== E.WOOD));
-      emit(zero, one, two, material, ground);
-      emit(zero, two, three, material, ground);
+      const word = materialWord(material, sampleAppearances[solid]);
+      emit(zero, one, two, word, ground);
+      emit(zero, two, three, word, ground);
     }
   }
   return {
     positions: positions.slice(0, vertexCount * 3),
     normals: normals.slice(0, vertexCount * 3),
-    ids: materials.slice(0, vertexCount),
+    ids: Uint8Array.from(materials.subarray(0, vertexCount), materialId),
+    appearances: Uint8Array.from(materials.subarray(0, vertexCount), materialAppearance),
     // 0xFFFF is WebGL's primitive restart index, so Uint16 holds 65535 vertices.
     indices: vertexCount > 0xffff ? indices.slice(0, indexCount) : Uint16Array.from(indices.subarray(0, indexCount)),
   };

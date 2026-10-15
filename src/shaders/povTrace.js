@@ -208,6 +208,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
         let into = BREAKINTO(id);
         if (into < 0 || E < HARD(id)) { return; }
         (*oA).x = f32(into);
+        (*oA).w = physicalCtype(id, a.w) + fract(a.w);
         *oB = vec4f(P.dir * min(sqrt(2.0 * (E - HARD(id)) / DENS(into)), STRIKE_CHIP_MAX), b.w);
       } else if (kind == K_POWDER || kind == K_LIQUID) {
         *oB = vec4f(clamp(b.xyz + P.dir * min(sqrt(2.0 * E / DENS(id)), V_MAX), vec3f(-V_MAX), vec3f(V_MAX)), b.w);
