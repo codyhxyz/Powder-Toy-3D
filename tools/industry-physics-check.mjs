@@ -10,6 +10,7 @@ import { deviceCell, CASTING_TEMPERATURE } from '../src/industry/catalog.js';
 import { createIndustryPhysics, validateIndustryPhysics, controlCell, machineBox, machinePorts, validMachine } from '../src/industry/physics.js';
 import { createTransfer, Load } from '../src/pov/tools/transfer.js';
 import { WGSL_CHECK } from '../src/shaders/industry.js';
+import { constructionWGSL } from '../src/industry/construction.js';
 import { transferFrag, TransferParams } from '../src/shaders/transfer.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, INDIRECT: 4 };
@@ -320,12 +321,12 @@ await test('snapshot maximum capacities and current setting changes remain valid
   assert.deepEqual(validateIndustryPhysics(snapshot, pumps.map(p => ({ ...p.device, powered: true, filter: E.SAND }))), snapshot,
     'current powered/filter settings may differ without changing identity');
 });
-await test('Naga CPU validation of full industry and transfer WGSL at 32/128', () => {
+await test('Naga CPU validation of full industry, transfer and construction WGSL at 32/128', () => {
   assert.match(transferFrag({ nx: 32, ny: 32, nz: 32 }), /if \(a\.y > P\.maxTemperature\)/, 'temperature upper bound is inclusive');
   assert.ok(TransferParams.fields.some(f => f.name === 'maxTemperature'));
   const dir = mkdtempSync(join(tmpdir(), 'industry-wgsl-'));
   try {
-    for (const size of [32, 128]) for (const [name, code] of [['industry', WGSL_CHECK[0].code], ['transfer', transferFrag]]) {
+    for (const size of [32, 128]) for (const [name, code] of [['industry', WGSL_CHECK[0].code], ['transfer', transferFrag], ['construction', constructionWGSL]]) {
       const file = join(dir, `${name}-${size}.wgsl`);
       writeFileSync(file, code({ nx: size, ny: size, nz: size }));
       const r = spawnSync('naga', [file], { encoding: 'utf8' });
