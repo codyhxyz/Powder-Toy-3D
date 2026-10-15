@@ -37,7 +37,7 @@ const waitFor = (page, label, predicate, argValue, maxMs = 1_200) => bounded(lab
   page.waitForFunction(predicate, argValue, { polling: 50, timeout: Math.min(maxMs, remaining()) }), maxMs + 100);
 const placeableTypes = Object.keys(DEVICE_TYPES).filter(type => !DEVICE_TYPES[type].factoryLegacy);
 let browser, page;
-const pageErrors = [], browserFailures = [];
+const pageErrors = [], browserFailures = [], confirmedParts = {};
 try {
   browser = await launchBrowser({ lifetimeMs: MAX_SLOT_MS });
   page = await newTestPage(browser, { mode: 'ui', viewport: { width: 1280, height: 800 } });
@@ -305,12 +305,15 @@ try {
     await page.locator('.industry-build').click();
     await waitState('open Factory panel', () => window.__app.industry.building);
     const tsns = await placePartThroughCanvas('TSNS', 350, 0, E.TSNS);
+    confirmedParts.TSNS = tsns;
     await page.keyboard.press('Escape');
     await waitState('Escape cancels focused-part placement', () => !window.__app.industry.building, 700);
-    assert(await page.locator('.industry').isHidden(), 'Escape closes the builder after the canvas blurs the input');
+    await bounded('Escape hides the builder on the next UI update', () =>
+      page.locator('#industry-builder').waitFor({ state: 'hidden', timeout: 700 }), 800);
     await page.keyboard.press('q');
     await waitState('Q reopens Factory builder', () => window.__app.industry.building, 700);
     const swch = await placePartThroughCanvas('SWITCH', null, 3, E.SWITCH);
+    confirmedParts.SWITCH = swch;
     await page.keyboard.press('q');
     await waitState('Q cancels active construction', () => !window.__app.industry.building, 700);
     assert.equal((await state()).progression.partsSpent, 5);
@@ -321,7 +324,7 @@ try {
     await waitState('enable native switch inspection', () => window.__app.industry.state.inspectMode, 700);
     await inspectCellAt(swch.cell, E.SWITCH);
     const switchButton = page.locator('.industry-switch-toggle');
-    assert(await switchButton.isVisible(), 'inspection exposes the real switch toggle');
+    // Click waits for the next UI update to expose this control.
     await switchButton.click();
     await waitState('toggle real native switch', () => window.__app.industry.state.inspection?.controlPart?.on === true, 1_500);
     const switchedCell = await occupiedCell(swch.cell);
@@ -354,7 +357,6 @@ try {
     assert(driveDeviceId, 'starter conveyor remains registered');
     await clickDeviceAt('belt', driveDeviceId);
     const drive = page.locator('.industry-drive');
-    assert(await drive.isVisible());
     await drive.click();
     await waitState('native-drive UI state', id => window.__app.industry.state.devices.find(d => d.id === id)?.powered === true, 700, driveDeviceId);
 
@@ -395,7 +397,7 @@ try {
   writeFileSync(`${out}/${testCase}.json`, `${JSON.stringify(result, null, 2)}\n`);
   console.log(JSON.stringify(result));
 } catch (error) {
-  const failure = { case: testCase, ok: false, stage, message: error?.message ?? String(error), pageErrors, browserFailures };
+  const failure = { case: testCase, ok: false, stage, message: error?.message ?? String(error), pageErrors, browserFailures, confirmedParts };
   // A short read-only probe distinguishes cold pipeline startup from an app
   // exception. It never waits past the existing work/cleanup boundary.
   if (page && !page.isClosed() && remaining() > 300) {
