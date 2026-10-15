@@ -80,6 +80,14 @@ try {
               if([90,150,210].includes(engine.steps))
                 note({stage:'hole-particles',time:engine.time,particles:ps});
             }
+            if(method==='read'&&testName==='throw'){
+              const sand=engine.id('SAND'),materials={};
+              for(const id of value.id)if(engine.kindOf(id)!=='air'){
+                const name=engine.nameOf(id);materials[name]=(materials[name]??0)+1;
+              }
+              note({stage:'throw-state',time:engine.time,resident:materials.SAND??0,materials,
+                particles:value.particles.filter(p=>p.id===sand)});
+            }
             note({stage:method+'-ready',steps:engine.steps});
             return value;
           };
