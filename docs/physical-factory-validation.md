@@ -231,6 +231,16 @@ It also waits for actual Factory mode before interacting.
 The ownership safeguard is unchanged.
 Both utilization-check approvals were consumed.
 
+A later CPU review found an unserialized Node-local variable in the UI selection predicate.
+The runner now passes that value explicitly; isolated VM evaluation verifies the predicate.
+It also verifies current hover/candidate coordinates against the public screen-ray pick and bounds the whole assertion case.
+These are harness fixes, not evidence of successful player interaction.
+
+The next protected line attempt refused admission at 88% measured GPU utilization.
+It released its slot after **2560 ms**, without opening a browser.
+The conditional UI run did not start.
+No additional override was used.
+
 ## Open requirements
 
 - Diagnose the coolant hold/release and pump failure.
