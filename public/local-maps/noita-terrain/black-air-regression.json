@@ -1,0 +1,163 @@
+{
+  "airFraction": 0.9939973594522399,
+  "blackPixels": 455966,
+  "interpretation": "Reserved scene clearing/air; exceptions are saved gameplay material/debris, not overwritten.",
+  "pieces": [
+    {
+      "blackPixels": 46360,
+      "origin": [
+        1536,
+        12288
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/0.plz",
+      "savedMaterialCounts": {
+        "air": 46354,
+        "ice_slime_static": 6
+      }
+    },
+    {
+      "blackPixels": 21993,
+      "origin": [
+        1536,
+        12800
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/1.plz",
+      "savedMaterialCounts": {
+        "air": 21909,
+        "templebrick_noedge_static": 84
+      }
+    },
+    {
+      "blackPixels": 6144,
+      "origin": [
+        1536,
+        13312
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/2.plz",
+      "savedMaterialCounts": {
+        "air": 6143,
+        "smoke": 1
+      }
+    },
+    {
+      "blackPixels": 0,
+      "origin": [
+        2048,
+        12288
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/4.plz",
+      "savedMaterialCounts": {}
+    },
+    {
+      "blackPixels": 47894,
+      "origin": [
+        2048,
+        12800
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/5.plz",
+      "savedMaterialCounts": {
+        "air": 45338,
+        "blood": 9,
+        "bone": 2204,
+        "diamond": 4,
+        "ice_blood_static": 35,
+        "ice_slime_static": 2,
+        "ice_static": 1,
+        "lavarock_static": 6,
+        "magic_crystal": 90,
+        "metal_prop": 128,
+        "metal_sand_molten": 3,
+        "moss": 22,
+        "rock_static": 52
+      }
+    },
+    {
+      "blackPixels": 6144,
+      "origin": [
+        2048,
+        13312
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/6.plz",
+      "savedMaterialCounts": {
+        "air": 6141,
+        "smoke": 3
+      }
+    },
+    {
+      "blackPixels": 13591,
+      "origin": [
+        2560,
+        12288
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/8.plz",
+      "savedMaterialCounts": {
+        "acid": 1,
+        "air": 13566,
+        "moss": 23,
+        "slime": 1
+      }
+    },
+    {
+      "blackPixels": 125041,
+      "origin": [
+        2560,
+        12800
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/9.plz",
+      "savedMaterialCounts": {
+        "air": 124984,
+        "bone": 22,
+        "ice_blood_static": 2,
+        "plasma_fading": 1,
+        "smoke": 30,
+        "steam": 2
+      }
+    },
+    {
+      "blackPixels": 6487,
+      "origin": [
+        2560,
+        13312
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/10.plz",
+      "savedMaterialCounts": {
+        "air": 6485,
+        "smoke": 2
+      }
+    },
+    {
+      "blackPixels": 0,
+      "origin": [
+        3072,
+        12288
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/12.plz",
+      "savedMaterialCounts": {}
+    },
+    {
+      "blackPixels": 175656,
+      "origin": [
+        3072,
+        12800
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/13.plz",
+      "savedMaterialCounts": {
+        "air": 175653,
+        "smoke": 3
+      }
+    },
+    {
+      "blackPixels": 6656,
+      "origin": [
+        3072,
+        13312
+      ],
+      "path": "data/biome_impl/spliced/boss_arena/14.plz",
+      "savedMaterialCounts": {
+        "air": 6656
+      }
+    }
+  ],
+  "savedAirPixels": 453229,
+  "scope": "ONLY opaque reserved black in authoritative fixed-arena material PLZ"
+}
