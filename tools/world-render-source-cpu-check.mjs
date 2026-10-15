@@ -23,7 +23,7 @@ function fixture() {
   const frame = { copy(a, ao, b, bo, n) { assert(ao + n <= a.size && bo + n <= b.size); commands.push(() => b.bytes.set(a.bytes.subarray(ao, ao + n), bo)); },
     clear(b, at = 0, n = b.size) { commands.push(() => b.bytes.fill(0, at, at + n)); } };
   const gpu = { frame, stats: { flushes: 0 },
-    createBuffer({ size, label }) { const b = { size, label, bytes: new Uint8Array(size), destroy() {} }; owned.push(b); return b; },
+    createBuffer({ size, label }) { const b = { size, label, bytes: new Uint8Array(size), getMappedRange() { return this.bytes.buffer; }, unmap() {}, destroy() {} }; owned.push(b); return b; },
     write(b, at, data, { ordered = true } = {}) { if (ordered) flush(); b.bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), at); },
     layout(_name, e) { return e; }, bindGroup(layout, entries) { return { layout, entries }; },
     kernel(desc) { return { ...desc, ready: Promise.resolve(), dispatch(_frame, size, opts) { this.calls ??= []; this.calls.push({ size, opts }); } }; } };
@@ -200,7 +200,7 @@ check('lossless store decode uses actual cell layout and complete pressure/seed/
     assert.deepEqual([...decoded.A.subarray(d, d + 4)], [...au.subarray(l * 4, l * 4 + 4)]);
     assert.deepEqual([...decoded.B.subarray(d, d + 4)], [...bu.subarray(l * 4, l * 4 + 4)]);
   }
-  f.win.store.put(f.win.store.key(9, 1, 9), bytes); f.source.recordStore({ lo: [36, 4, 36], hi: [40, 8, 40] });
+  f.win.store.put(f.win.store.key(9, 1, 9), bytes); f.source.recordStore({ lo: [36, 4, 36], hi: [40, 8, 40] }); f.flush();
   assert.equal(f.source.getSource([36, 4, 36]).kind, 'saved');
   assert.deepEqual(stateWords(f.source.getSource([36, 4, 36]).chunk, 'A', [36, 4, 36]), [...au.subarray(0, 4)]);
 });

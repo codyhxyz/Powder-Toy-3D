@@ -471,7 +471,12 @@ export class WorldRenderAtlas {
     if (kind === 'raw') check(auxMetadata?.length === 4 && auxMetadata.every((v, i) => v === [p.readyBits, p.epoch, p.sourceRevision, p.fieldTick][i]), 'writer metadata mismatch');
     const encoder = this.device.createCommandEncoder({ label: 'world provider page' });
     this.recording = true;
-    try { const result = record(encoder, bindings); check(!result?.then, 'writer must be synchronous'); }
+    try {
+      // Native packed-half copies are legal only into this unpublished page.
+      const scoped = kind === 'fields' ? frozen({ ...bindings, destinations: frozen(WRITER_CHANNELS.fields.map(name =>
+        frozen({ texture: p.resources.textures[name], origin: frozen(pageTexel(p.id, 0, p.resources.layout)) }))) }) : bindings;
+      const result = record(encoder, scoped); check(!result?.then, 'writer must be synchronous');
+    }
     finally { this.recording = false; }
     this._job(job); this.queue.submit([encoder.finish()]);
     (kind === 'source' ? ['source'] : WRITER_CHANNELS[kind]).forEach(n => p.written.add(n)); return job;
@@ -499,7 +504,19 @@ export class WorldRenderAtlas {
     check(!sun || !oldSun || sun.basisRevision > oldSun.basisRevision || (sun.basisRevision === oldSun.basisRevision && sun.publishRevision >= oldSun.publishRevision), 'sun publication regression');
     if (sun && oldSun && sun.basisRevision === oldSun.basisRevision && sun.publishRevision === oldSun.publishRevision) check(
       ['book','sun0','sun1','dependencySetID','dependencyVersion'].every(k => sun[k] === oldSun[k]) && JSON.stringify(sun.params) === JSON.stringify(oldSun.params), 'changed sun publication requires new version');
+    const invalidations = explicit ? input.invalidations ?? [] : [];
+    const cleared = invalidations.map(({ brick, channels }) => {
+      check([READY.CELL, READY.LIGHT, READY.ALL].includes(channels), 'invalidation must clear complete pool domains');
+      return { index: worldBrickIndex(this.bookLayout, brick), channels };
+    });
     const nextCell = this.entries.slice(), nextLight = this.lightEntries.slice(), oldPages = [];
+    // Required demand remains required. Clear/install in ONE immutable commit;
+    // replacements below win, and older snapshots retain their original pins.
+    for (const { index, channels } of cleared) for (const [kind, entries, mask] of [['cell', nextCell, READY.CELL], ['light', nextLight, READY.LIGHT]]) {
+      if (!(channels & mask)) continue;
+      if (entries[index]) oldPages.push(this[kind].pages.get(entries[index] - 1));
+      entries[index] = 0;
+    }
     for (const p of ps) {
       check(this._needed(p).every(n => p.written.has(n)), 'cannot publish partial page');
       const entries = p.kind === 'cell' ? nextCell : nextLight;

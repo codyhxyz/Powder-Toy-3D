@@ -107,11 +107,13 @@ export class WorldFields {
     }
     return words;
   }
-  plan({ fieldTick, sourceSnapshot, wantedCores = [], changedBricks = [], smoothing = 1, full = false }) {
+  plan(options) { return this._plan(options, true); }
+  requiredSourceRegions(options) { return this._plan(options, false).regions; }
+  _plan({ fieldTick, sourceSnapshot, wantedCores = [], changedBricks = [], smoothing = 1, full = false }, preflight) {
     const source = sourceSnapshot, epoch = this.history.epoch;
     if (!Number.isSafeInteger(fieldTick) || fieldTick < 0 || (this.lastTick !== null && fieldTick < this.lastTick)) throw new Error('Stale field tick');
     if (!Number.isFinite(smoothing) || smoothing < 0) throw new Error('Invalid field smoothing');
-    if (!source || source.epoch !== epoch || source.sourceRevision == null || source.jetValidity !== 'producer-bounded-v1' ||
+    if (!source || source.epoch !== epoch || source.sourceRevision == null || (preflight && source.jetValidity !== 'producer-bounded-v1') ||
       source.isCurrent?.() !== true || !source.assertComplete || !source.recordGatherRaw) throw new Error('Incomplete/stale/unsupported world field source');
     if (fieldTick === this.lastTick && source.sourceRevision !== this.tickSource) throw new Error('Source changed within a committed field tick');
     const aerationActive = source.aerationActive !== false;
@@ -156,7 +158,7 @@ export class WorldFields {
       const origin = core.map((v) => v - 16);
       return { origin, lo: origin.map((v, i) => Math.max(v, this.bounds.min[i])), hi: origin.map((v, i) => Math.min(v + 64, this.bounds.max[i])) };
     });
-    assertComplete(source, regions); // all preflight before any GPU encoding/allocation
+    if (preflight) assertComplete(source, regions); // exact same demand calculation before population
     return { epoch, fieldTick, sourceRevision: source.sourceRevision, source, version: this.version, smoothing,
       owners, advancing, changedBricks, aerationActive, batches: [...batches.values()], jobs, regions };
   }
@@ -216,14 +218,19 @@ export class WorldFields {
           sizeFor: () => fold(this.g.nbricks), domainFor: (stage) => domain(origin, fieldInterval(stage)) });
         outputs.push(synchronous(this.publisher.recordOwnedFields(frame, { token: this._token(plan), scratchOrigin: origin,
           ownedWorldBricks: boxBricks(core, core.map((v) => v + 32), this.bounds), validBounds: domain(origin, fieldInterval('peak')),
-          textures: Object.fromEntries(FIELD_TEXTURES.map((name) => [name, r[name]])), sourceSnapshot: plan.source }), 'recordOwnedFields'));
+          textures: Object.fromEntries(FIELD_TEXTURES.map((name) => [name, r[name]])), raw: { A: r.A, B: r.B, g: this.g }, sourceSnapshot: plan.source }), 'recordOwnedFields'));
       }
       // Publication may reject the batch. Keep the old authoritative history
       // and its pages intact until the publisher accepts the complete batch.
       // A throwing publisher must leave its retained snapshot unchanged.
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during recording');
       const token = this._token(plan);
-      synchronous(this.publisher.publish({ token, outputs }), 'publish');
+      const invalidatedCoreKeys = [...this.published].filter(key => {
+        const core = key.split(',').map(Number);
+        return this.smoothing !== plan.smoothing || plan.advancing.some(o => touches(core, o.brick)) ||
+          plan.changedBricks.some(b => touches(core, b, 8));
+      });
+      synchronous(this.publisher.publish({ token, outputs, invalidatedCoreKeys }), 'publish');
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during publication');
       this.history.owners = owners;
       this.history.free.push(...replaced);
@@ -233,11 +240,7 @@ export class WorldFields {
       this.aerationActive = plan.aerationActive;
       // Invalid cached publications must not survive unseen settling/edits.
       // History remains resident; only spatial validity is invalidated.
-      for (const key of this.published) {
-        const core = key.split(',').map(Number);
-        if (this.smoothing !== plan.smoothing || plan.advancing.some((o) => touches(core, o.brick)) ||
-          plan.changedBricks.some((b) => touches(core, b, 8))) this.published.delete(key);
-      }
+      for (const key of invalidatedCoreKeys) this.published.delete(key);
       committed = true;
       this.publishedToken = token;
       this.publishedSource = plan.source;
@@ -247,10 +250,12 @@ export class WorldFields {
       // Caller retires uploads ONLY after frame submission + queue completion.
       return { token, outputs, retire: () => { for (const b of uploads) b.destroy(); } };
     } catch (error) {
-      if (!committed && plan.epoch === this.history.epoch) this.history.free.push(...allocated);
+      // Frame may already have submitted a prefix. Never recycle COW pages
+      // until the caller flushes the orphan suffix and waits for completion.
+      const releaseQuarantine = !committed ? this.history.quarantine(allocated, plan.epoch) : () => {};
       if (this.publishedToken?.historyVersion === plan.version + 1 && this.publishedToken.epoch === plan.epoch) this.publishedToken = null;
       // Even partial copies can reference uploads until the queue completes.
-      error.retireWorldFieldUploads = () => { for (const b of uploads) b.destroy(); };
+      error.retireWorldFieldUploads = () => { for (const b of uploads) b.destroy(); releaseQuarantine(); };
       throw error;
     }
   }

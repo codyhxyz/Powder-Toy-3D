@@ -1,8 +1,10 @@
 # World render atlas ABI v2 — independent lighting residency
 
-**Disabled foundation, not an application renderer switch.** No Source/Field
-provider, GI/glow/sun producer, scheduler, history initialization, compression,
-procedural recipe, or outside quality tier is added here. Box material/optical
+**Disabled foundation, not an application renderer switch.** The concrete
+[Source/Field/classified CELL adapter](world-cell-adapter.md) and
+[full optical Sun producer](world-sun-producer.md) now connect separate disabled
+pieces. GI/glow scheduling, history initialization/replay, application integration,
+compression, procedural recipes and any outside quality tier are not added here. Box material/optical
 math and importer ABI remain unchanged. CPU/Naga evidence is not GPU acceptance.
 
 ## Breaking migration from v1
@@ -226,8 +228,14 @@ mesh patterns, interpolation and legal address ceilings. Full world gate retains
 136 Box golden hashes and 132 actual world modules; four native point modules
 also compile. These tests do NOT execute material/GI/optical WGSL on a GPU.
 
-Phase4 still owns source/field adapters and exact source reduction, continuous
-GI gather/optical sun/glow producers, dependency closure, source-before-gather
+The concrete CELL adapter now captures shared fields/classification and packs
+lossless native pages. Atlas publication supports atomic pool invalidations for
+required pages (replacements win), and field record callbacks expose scoped native
+half-copy destinations without changing submission ownership. See its linked
+contract for ordered-orphan quarantine and conservative lighting invalidation.
+
+Phase4 still owns exact lighting source reduction, continuous GI gather/glow
+producers, dependency closure, source-before-gather
 barriers, world-owned probe history and reset/replay. No residency arrival may
 reset a probe or substitute sky; late cold demand must retain/replay the original
 logical tick history. No aliases/procedural profiles are claimed. Native figures,

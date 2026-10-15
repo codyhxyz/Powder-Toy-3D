@@ -16,6 +16,19 @@ export class WorldFieldHistory {
     this.owners = new Map();
     this.slabs = [];
     this.free = [];
+    this.quarantined = new Set();
+  }
+  quarantine(pages, epoch = this.epoch) {
+    for (const page of pages) this.quarantined.add(page);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const page of pages) {
+        this.quarantined.delete(page);
+        if (epoch === this.epoch) this.free.push(page);
+      }
+    };
   }
   allocate() {
     if (!this.free.length) {
@@ -43,5 +56,5 @@ export class WorldFieldHistory {
     this.owners.clear();
     this.free = [];
   }
-  dispose() { for (const buffer of this.slabs) buffer.destroy(); this.slabs = []; this.free = []; this.owners.clear(); }
+  dispose() { for (const buffer of this.slabs) buffer.destroy(); this.slabs = []; this.free = []; this.quarantined.clear(); this.owners.clear(); }
 }

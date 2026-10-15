@@ -34,6 +34,10 @@ state layout; unused flow/deco remain source/publication dependencies rather
 than unnecessary field scratch allocations. Writer layouts stay at <=8 storage
 buffers, <=4 storage textures, <=16 sampled textures, four groups.
 
+`requiredSourceRegions(options)` runs the very same demand calculation without
+raw completeness preflight, allowing the concrete producer to fill missing
+full-height core-XZ columns first. It does not record or advance history.
+
 `plan({fieldTick, sourceSnapshot, wantedCores, changedBricks, smoothing, full})`
 requires explicit logical FIELD ticks, not physics steps, camera jobs, atlas
 moves, or origin revisions. Settling owners continue advancing without visible
@@ -58,9 +62,16 @@ ordinary residency/origin changes must not call reset.
 
 Previously published spatial validity is invalidated by unseen settling or
 edits, so re-entry cannot reuse stale fields after histories settle offscreen.
+The exact invalidation list is computed BEFORE the publisher callback, including
+zero-output batches. New outputs replace same-core invalidations; both retained
+CPU manifests commit only when publication succeeds.
 Smoothing rebuilds spatial outputs without a second same-tick history advance.
 
-## Source injection contract (phase 1 connection still required)
+## Source injection contract
+
+The concrete [CELL adapter](world-cell-adapter.md) now connects the actual
+Source/Producer to this writer and immutable classified Atlas captures. This
+is disabled infrastructure, not application integration or GPU acceptance.
 
 No import of an in-progress source class is used. The caller supplies tables
 and their layouts (or standard TABLES/STATE_RO defaults), world bounds, and a
@@ -133,17 +144,23 @@ contracts and integration remain separate later work.
 The injected publisher implements:
 
 - `recordOwnedFields(frame, {token, scratchOrigin, ownedWorldBricks,
-  validBounds, textures, sourceSnapshot})`: record copies of owned outputs
+  validBounds, textures, raw: {A,B,g}, sourceSnapshot})`: record copies of owned outputs
   **before scratch reuse**, returning an opaque numerical/atlas handle. Never
   retain borrowed scratch textures for a deferred read.
-- `publish({token, outputs})`: atomically apply the complete batch to the
+- `publish({token, outputs, invalidatedCoreKeys})`: atomically apply the complete batch to the
   retained world snapshot. Numerically unchanged cores retain their previous
   fields; this is an incremental patch batch, not a claim that the batch alone
   is a complete standalone atlas.
 
 If `publish` throws, it must leave its retained snapshot unchanged. History,
 ticks, and replaced-page recycling commit only after publication succeeds.
-Discard the failed encoder before retrying the same plan. A proposed token
+A genuinely discardable test encoder may be discarded before retry. Production
+Frame can auto-submit and has no discard: flush its remaining failed commands
+as unpublished orphan work, then call `retireWorldFieldUploads()` only after
+queue completion. Failed COW pages remain quarantined until that callback and
+are returned only into the matching epoch; resetting cannot recycle them.
+This ordered-orphan path preserves old authoritative history and permits the
+same exact plan to retry. A proposed token
 becomes current only when `record` succeeds; publishers must not reenter it.
 
 Tokens contain epoch, field tick, source revision, history version, smoothing

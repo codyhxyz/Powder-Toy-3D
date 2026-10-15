@@ -40,6 +40,10 @@ const START_STEPS = 2;
 // settled world sleeps without waiting out AER_IDLE_STEPS.
 const FOAM_CHECK_STEPS = 8;
 
+// Internal producer ownership, not validation of arbitrary imported GPU bytes.
+// All writes of this class use the bounded original wake producer or zero/reset.
+export const isProducerBoundedAeration = (aeration) => aeration instanceof Aeration;
+
 class Aeration {
   constructor(sim) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);

@@ -8,8 +8,10 @@ checkpoint completes the unified renderer.
 PHASE3b-1 now provides the disabled shared full world shader backend and native
 world-volume assembly: [interface, finalized sun ABI, caller protocol and CPU
 limits of evidence](world-shader-backend.md). Box shader/layout hashes remain
-unchanged. Source/Field→Atlas providers, full lighting producers, complete-frame
-presentation and application switching are NOT implemented by that assembly.
+unchanged. The separate [concrete Source/Fields→classified CELL adapter](world-cell-adapter.md)
+and [full optical Sun producer](world-sun-producer.md) now provide disabled
+integration pieces. GI/glow producers, complete-frame presentation and application
+switching are NOT implemented by the native-volume assembly.
 
 Atlas ABI v2 now separates cell pages, compact lighting/source descriptors and
 probe slots, with a separate LIGHT book and six typed feedback planes in the

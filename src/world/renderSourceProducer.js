@@ -83,8 +83,8 @@ export class RawWorldSourceProducer {
     this._init(shapes.byteLength);
     const raw = this.buffers; raw.origin = origin; raw.copy = 0;
     // Ordered uploads cannot alter an earlier record that still reads scratch.
-    this.gpu.write(raw.columns, 0, mask);
-    if (shapes.length) this.gpu.write(this.shapes, 0, shapes, { ordered: false });
+    this.source.recordUpload(frame, raw.columns, 0, mask);
+    if (shapes.length) this.source.recordUpload(frame, this.shapes, 0, shapes);
     win.gen.res.prepassFor(origin, origin.map((v, i) => v + [g.nx, g.ny, g.nz][i]));
     const size = fold(Math.ceil(g.slots / 64)), header = (src = 0, dst = src) => ({ origin: [...origin], src, dst });
     const params = { at: [0, 0, 0], foot: 0, size: [0, 0, 0], seed: 0, base: 0 };
@@ -98,7 +98,7 @@ export class RawWorldSourceProducer {
       recordSourceCopies(frame, c, raw, runs, { aux: false });
       // Exact saved/edited/captured cells may support a new tree but are not
       // tree-owned writes. A/B store commit never relinquishes that authority.
-      for (const r of runs) this.gpu.write(raw.touched, r.dst * 4, new Uint32Array(r.cells).fill(0x80000000));
+      for (const r of runs) this.source.recordUpload(frame, raw.touched, r.dst * 4, new Uint32Array(r.cells).fill(0x80000000));
     }
     if (win.loaded || physicsBounds) {
       const live = snapshotSource(this.sim), liveBox = intersectBounds(box, sourceBounds(this.sim));
@@ -111,6 +111,9 @@ export class RawWorldSourceProducer {
       raw.copy = next;
     }
     const core = { lo: [coreXZ[0], 0, coreXZ[1]], hi: [coreXZ[0] + 32, win.size[1], coreXZ[1] + 32] };
+    // A synchronous scene/edit callback may also overtake recording. Encoded
+    // scratch work is orphaned, never advertised as current source authority.
+    if (this.disposed || token.epoch !== this.source.epoch || token.revision !== this.source.revision) return null;
     // Cached generated output is never allowed over a newer live/capture/save.
     this.source.recordPopulate(frame, { ...raw, origin: [...origin], bounds: core }, token);
     if (physicsBounds) {

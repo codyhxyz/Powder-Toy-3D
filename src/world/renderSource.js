@@ -1,6 +1,6 @@
 import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
-import { aerationForSource } from '../gfx/foam.js';
+import { aerationForSource, isProducerBoundedAeration } from '../gfx/foam.js';
 
 export const SOURCE_CORE = 32;
 export const SOURCE_BRICK = BRICK;
@@ -25,6 +25,7 @@ export function snapshotSource(sim, origin = sim.origin) {
   return Object.freeze({ g: Object.freeze({ ...sim.g }), origin: Object.freeze(originOf(origin)), copy: sim.cur,
     A: sim.state.A, B: sim.state.B, flow: sim.flow,
     aeration: aer?.buffer ?? null, aerCopy: aer?.cur ?? 0, aerGeneration: aer?.generation ?? 0,
+    boundedWake: !aer || isProducerBoundedAeration(aer),
     deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
 }
 
@@ -108,16 +109,54 @@ export class WorldRenderSource {
   nextRevision() { return ++this.revision; }
   // Semantic writes, never ownership transfers. Advance authority too so a
   // producer awaiting readiness cannot publish over an intervening user edit.
-  noteContentChange() {
+  noteContentChange(change = sourceBounds(this.sim)) {
     if (this.disposed) return;
     this.contentRevision++;
     this.nextRevision();
+    // Engine writers without a smaller box write only the live simulation.
+    // Scene/global writers must explicitly declare global, never origin moves.
+    const candidate = change && !change.global && (change.lo ? change : change.min ? { lo: change.min, hi: change.max } : null);
+    const box = candidate && ['lo', 'hi'].every(k => Array.isArray(candidate[k]) && candidate[k].length === 3 && candidate[k].every(Number.isFinite)) &&
+      candidate.lo.every((v, i) => v <= candidate.hi[i]) ? candidate : null;
+    this.changeJournal ??= [];
+    this.changeJournal.push({ revision: this.contentRevision, global: !box,
+      bounds: box ? { lo: [...box.lo], hi: [...box.hi] } : null });
+  }
+  changesSince(token) {
+    const current = this.contentToken();
+    if (!token || token.epoch !== this.epoch || token.sourceRevision > this.contentRevision) return { token: current, global: true, changedBricks: [] };
+    const changed = new Map();
+    for (const entry of this.changeJournal ?? []) if (entry.revision > token.sourceRevision) {
+      if (entry.global) return { token: current, global: true, changedBricks: [] };
+      const box = intersectBounds(entry.bounds, { lo: [0, 0, 0], hi: this.win.size });
+      if (box) for (let z = Math.floor(box.lo[2] / 4); z < Math.ceil(box.hi[2] / 4); z++)
+        for (let y = Math.floor(box.lo[1] / 4); y < Math.ceil(box.hi[1] / 4); y++)
+          for (let x = Math.floor(box.lo[0] / 4); x < Math.ceil(box.hi[0] / 4); x++) changed.set(`${x},${y},${z}`, [x, y, z]);
+    }
+    return { token: current, global: false, changedBricks: [...changed.values()] };
+  }
+  recordUpload(frame, target, offset, data) {
+    const buffer = this.gpu.createBuffer({ label: 'immutable world source upload', size: data.byteLength, usage: 4, mappedAtCreation: true });
+    new Uint8Array(buffer.getMappedRange()).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    buffer.unmap();
+    try { frame.copy(buffer, 0, target, offset, data.byteLength); }
+    finally { this.sim._retire(buffer); } // existing final-submit + completion retirement
+  }
+  assertBoundedWake(regions) {
+    for (const c of this.chunks.values()) for (const region of regions) {
+      const box = intersectBounds(region, { lo: c.origin, hi: c.origin.map(v => v + 32) });
+      if (!box) continue;
+      for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
+        const slot = cellSlot(c.g, x - c.origin[0], y - c.origin[1], z - c.origin[2]);
+        if ((c.aux[slot] & 2) && !c.wakeTrusted[slot]) throw new Error('Untrusted world aeration producer');
+      }
+    }
   }
   contentToken() { return Object.freeze({ epoch: this.epoch, sourceRevision: this.contentRevision }); }
   // Provider adapter contract. jetValidity must be attested by the adapter
   // after checking wake provenance; raw storage alone cannot prove bounded jets.
-  snapshotForFields({ jetValidity } = {}) {
-    if (this.needsLiveCopy()) this.recordLiveCopy(this.gpu.frame);
+  snapshotForFields({ jetValidity, refreshLive = true } = {}) {
+    if (refreshLive && this.needsLiveCopy()) this.recordLiveCopy(this.gpu.frame);
     const token = this.contentToken();
     const isCurrent = () => !this.disposed && token.epoch === this.epoch && token.sourceRevision === this.contentRevision;
     const assertCurrent = () => { if (!isCurrent()) throw new Error('Stale world content snapshot'); };
@@ -167,7 +206,7 @@ export class WorldRenderSource {
       c = { key, origin: [...origin], g: SOURCE_GRID, copy: 0, highestRevision: 0,
         A: this._buffer(`${key} A`, SOURCE_GRID.slots * 16), B: this._buffer(`${key} B`, SOURCE_GRID.slots * 16),
         rank: new Uint8Array(SOURCE_GRID.slots), revisions: new Float64Array(SOURCE_GRID.slots),
-        pending: new Float64Array(SOURCE_GRID.slots), aux: new Uint8Array(SOURCE_GRID.slots), flow: null, aeration: null, deco: null };
+        pending: new Float64Array(SOURCE_GRID.slots), aux: new Uint8Array(SOURCE_GRID.slots), wakeTrusted: new Uint8Array(SOURCE_GRID.slots).fill(1), flow: null, aeration: null, deco: null };
       this.chunks.set(key, c);
     }
     return c;
@@ -194,7 +233,8 @@ export class WorldRenderSource {
       const setRange = (d, length) => {
         c.rank.fill(rank, d, d + length); c.revisions.fill(revision, d, d + length);
         c.pending.fill(rank === SOURCE_RANK.captured ? revision : 0, d, d + length);
-        if (rank >= SOURCE_RANK.captured) c.aux.fill((src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0), d, d + length);
+        c.aux.fill((src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0), d, d + length);
+        c.wakeTrusted.fill(!src.aeration || (rank >= SOURCE_RANK.captured && src.boundedWake === true) ? 1 : 0, d, d + length);
         cells += length;
       };
       // Fresh LIVE is the highest authority. Its contiguous copy runs can
@@ -214,7 +254,8 @@ export class WorldRenderSource {
         if (rank < c.rank[d] || revision < c.revisions[d]) return false;
         c.rank[d] = rank; c.revisions[d] = revision;
         c.pending[d] = rank === SOURCE_RANK.captured ? revision : 0;
-        if (rank >= SOURCE_RANK.captured) c.aux[d] = (src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0);
+        c.aux[d] = (src.flow ? 1 : 0) | (src.aeration ? 2 : 0) | (src.deco ? 4 : 0);
+        c.wakeTrusted[d] = !src.aeration || (rank >= SOURCE_RANK.captured && src.boundedWake === true) ? 1 : 0;
         cells++; return true;
       }, (d) => {
         for (let i = d; i < d + 64; i++) if (rank < c.rank[i] || revision < c.revisions[i]) return null;
@@ -226,7 +267,7 @@ export class WorldRenderSource {
       // Absence is explicit zero, not permission to resurrect a previously
       // allocated auxiliary buffer. Disabled-but-kept aeration is discovered
       // by aerationForSource and therefore is NOT cleared here.
-      for (const r of rank >= SOURCE_RANK.captured ? runs : []) {
+      for (const r of runs) {
         if (!src.flow && c.flow) frame.clear(c.flow, r.dst * 8, r.cells * 8);
         if (!src.aeration && c.aeration) frame.clear(c.aeration, r.dst * 8, r.cells * 8);
         if (!src.deco && c.deco) frame.clear(c.deco.buffer, r.dst * 4, r.cells * 4);
@@ -279,7 +320,7 @@ export class WorldRenderSource {
   }
   invalidateGenerated() {
     if (this.disposed) return;
-    this.noteContentChange();
+    this.noteContentChange({ global: true });
     this.minimumStaticRevision = this.revision;
     for (const c of this.chunks.values()) {
       for (let i = 0; i < c.rank.length; i++) if (c.rank[i] === SOURCE_RANK.generated) {
@@ -303,7 +344,7 @@ export class WorldRenderSource {
       });
       if (runs.length) c.highestRevision = Math.max(c.highestRevision, token.revision);
       // Uploaded immutable store bytes only. Live state never reaches the CPU.
-      for (const r of runs) for (const name of ['A', 'B']) this.gpu.write(c[name], r.dst * 16, words[name].subarray(r.src * 4, (r.src + r.cells) * 4));
+      for (const r of runs) for (const name of ['A', 'B']) this.recordUpload(this.gpu.frame, c[name], r.dst * 16, words[name].subarray(r.src * 4, (r.src + r.cells) * 4));
     }
     for (const [key, bytes] of this.sim.deco?.store ?? []) {
       const origin = [key % wb[0] * 4, Math.floor(key / wb[0]) % wb[1] * 4, Math.floor(key / (wb[0] * wb[1])) * 4];
@@ -317,7 +358,7 @@ export class WorldRenderSource {
         if (c.aux[d] & 4 || c.rank[d] > SOURCE_RANK.saved) return false;
         c.aux[d] |= 4; return true;
       });
-      for (const r of runs) this.gpu.write(c.deco.buffer, r.dst * 4, words.subarray(r.src, r.src + r.cells));
+      for (const r of runs) this.recordUpload(this.gpu.frame, c.deco.buffer, r.dst * 4, words.subarray(r.src, r.src + r.cells));
     }
   }
   getSource(cell) {
@@ -348,7 +389,7 @@ export class WorldRenderSource {
   }
   reset(epoch = this.epoch + 1) {
     for (const c of this.chunks.values()) for (const b of [c.A, c.B, c.flow, c.aeration, c.deco?.buffer]) if (b) this.sim._retire(b);
-    this.chunks.clear(); this.epoch = epoch; this.revision = 0; this.contentRevision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
+    this.chunks.clear(); this.changeJournal = []; this.epoch = epoch; this.revision = 0; this.contentRevision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
   }
   dispose() { if (this.disposed) return; this.unsubscribeData?.(); this.reset(); this.disposed = true; }
 }
