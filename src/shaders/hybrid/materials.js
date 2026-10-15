@@ -58,7 +58,7 @@ fn hybridMaterialStateLod(id: i32, seed: f32, p: vec3f, normal: vec3f, temperatu
   let ng = normal * inverseSqrt(max(dot(normal, normal), 1e-12));
   let weights = abs(ng) / max(dot(abs(ng), vec3f(1.0)), 1e-8);
   let level = clamp(lod, 0.0, f32(textureNumLevels(hmColor) - 1u));
-  let uv = p * r.detail.y;
+  let uv = (p + vec3f(H.origin)) * r.detail.y;
   let layer = i32(r.detail.x);
   let cx = textureSampleLevel(hmColor, hmSampler, uv.yz, layer, level);
   let cy = textureSampleLevel(hmColor, hmSampler, uv.zx, layer, level);

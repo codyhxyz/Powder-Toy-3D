@@ -119,8 +119,8 @@ export function hybridDirectReference(m, normal, view, light) {
   const distribution = a2 / (Math.PI * d * d);
   const gv = nl * Math.sqrt(nv * nv * (1 - a2) + a2);
   const gl = nv * Math.sqrt(nl * nl * (1 - a2) + a2);
-  return m.baseColor.map((x) => {
-    const base = clamp(x, 0, 1), f0 = 0.04 * (1 - metal) + base * metal;
+  return m.baseColor.map((x,i) => {
+    const base = clamp(x, 0, 1), f0 = clamp(m.f0?.[i] ?? (0.04 * (1 - metal) + base * metal),0,1);
     const fresnel = f0 + (1 - f0) * (1 - clamp(vh, 0, 1)) ** 5;
     return ((1 - fresnel) * base * (1 - metal) + Math.PI * distribution *
       (0.5 / Math.max(gv + gl, 1e-5)) * fresnel) * nl;

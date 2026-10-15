@@ -118,7 +118,7 @@ fn hybridDirect(m: HybridMaterial, n: vec3f, v: vec3f, l: vec3f) -> vec3f {
   let nh = max(dot(n,h), 0.0);
   let base = clamp(m.baseColor, vec3f(0.0), vec3f(1.0));
   let metal = clamp(m.metalness, 0.0, 1.0);
-  let f0 = mix(vec3f(0.04), base, metal);
+  let f0 = clamp(m.f0,vec3f(0.0),vec3f(1.0));
   let fresnel = hybridFresnel(f0, max(dot(v,h), 0.0));
   let a = max(clamp(m.roughness, 0.0, 1.0) * clamp(m.roughness, 0.0, 1.0), 0.002);
   let a2 = a * a;
@@ -150,8 +150,8 @@ fn hybridGlow(p: vec3f) -> vec3f {
   }
   return light * max(FU.lightGain, 0.0);
 }
-fn hybridShade(m: HybridMaterial, p: vec3f, geometricNormal: vec3f, shadingNormal: vec3f,
-  viewDirection: vec3f, sunVisibility: vec3f, ao: f32) -> vec4f {
+fn hybridShadeSpecular(m: HybridMaterial, p: vec3f, geometricNormal: vec3f, shadingNormal: vec3f,
+  viewDirection: vec3f, sunVisibility: vec3f, ao: f32, reflected: vec4f) -> vec4f {
   let ng = hybridUnit(geometricNormal, vec3f(0.0, 1.0, 0.0));
   let n = hybridUnit(shadingNormal, ng);
   let v = hybridUnit(viewDirection, n);
@@ -163,11 +163,12 @@ fn hybridShade(m: HybridMaterial, p: vec3f, geometricNormal: vec3f, shadingNorma
   if (!inside) { indirect = hybridSkyAmbient(n); environment = hybridSkyAmbient(reflect(-v,n)); }
   let base = clamp(m.baseColor, vec3f(0.0), vec3f(1.0));
   let metal = clamp(m.metalness, 0.0, 1.0);
-  let f0 = mix(vec3f(0.04), base, metal);
+  let f0 = clamp(m.f0,vec3f(0.0),vec3f(1.0));
   let f = hybridFresnel(f0, max(dot(n,v), 0.0));
   var color = (1.0 - f) * base * (1.0 - metal) * (indirect * clamp(ao,0.0,1.0) + hybridGlow(p));
   // Low-frequency SH specular fallback, not a sharp reflection or split-sum LUT.
-  color += environment * f * (1.0 - 0.5 * clamp(m.roughness, 0.0, 1.0));
+  color += mix(environment * f, reflected.rgb, clamp(reflected.a,0.0,1.0))
+    * (1.0 - 0.5 * clamp(m.roughness, 0.0, 1.0));
   color += max(FU.sunCol,vec3f(0.0)) * clamp(sunVisibility,vec3f(0.0),vec3f(1.0)) * hybridDirect(m,n,v,sun);
   for (var i = 0; i < ${LAMP_MAX}; i++) {
     if (i >= clamp(FU.lampCount, 0, ${LAMP_MAX})) { break; }
@@ -188,6 +189,10 @@ fn hybridShade(m: HybridMaterial, p: vec3f, geometricNormal: vec3f, shadingNorma
   let opacity = clamp(m.opacity,0.0,1.0);
   // Keep finite highlights representable in the rgba16float HDR target.
   return vec4f(clamp(color,vec3f(0.0),vec3f(65504.0)) * opacity, opacity);
+}
+fn hybridShade(m: HybridMaterial, p: vec3f, geometricNormal: vec3f, shadingNormal: vec3f,
+  viewDirection: vec3f, sunVisibility: vec3f, ao: f32) -> vec4f {
+  return hybridShadeSpecular(m,p,geometricNormal,shadingNormal,viewDirection,sunVisibility,ao,vec4f(0.0));
 }
 fn hybridShadeWorld(m: HybridMaterial, worldCellP: vec3f, windowOrigin: vec3f, ng: vec3f, n: vec3f,
   viewDirection: vec3f, sunVisibility: vec3f, ao: f32) -> vec4f {

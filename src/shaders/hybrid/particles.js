@@ -180,7 +180,7 @@ fn hpUnit(vi: u32, detailed: bool) -> vec3f {
  * and the light lane; result is opaque linear HDR radiance (alpha is 1).
  * Additional bindings live at group 2; no other ABI is changed.
  */
-export const particleDrawWGSL = (g, { shadeWGSL = '' } = {}) => /* wgsl */ `
+export const particleDrawWGSL = (g, { shadeWGSL = '', shadeState = false } = {}) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${frameBindings()}
 ${materialsGLSL()}
@@ -226,7 +226,9 @@ fn hpDetailed(center: vec3f) -> bool {
   return o;
 }
 @fragment fn fs(i: VOut) -> @location(0) vec4f {
-  return vec4f(hybridParticleShade(eid(i.a), fract(i.a.w), i.grid, normalize(i.normal), i.a.y), 1.0);
+  ${shadeState ? `let footprint=max(length(dpdx(i.grid)),length(dpdy(i.grid)));
+  return hybridOpaqueShade(eid(i.a),i.a,i.grid,normalize(i.normal),footprint);`
+    : 'return vec4f(hybridParticleShade(eid(i.a), fract(i.a.w), i.grid, normalize(i.normal), i.a.y), 1.0);'}
 }`;
 
 /** matrix is grid -> light clip, WebGPU [0,1]; always full-detail geometry. */

@@ -69,7 +69,7 @@ export function createHybridParticles(gpu, sim, {
   const finish = gpu.kernel({ name: 'hybrid.particles.finish', ...meshDesc, entry: 'finish', workgroupSize: [1, 1, 1] });
   const depthStencil = { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' };
   const primitive = { topology: 'triangle-list', cullMode: 'none' };
-  const drawPipe = gpu.renderPipeline({ name: 'hybrid.particles.draw', code: particleDrawWGSL(g, { shadeWGSL: shader.wgsl }),
+  const drawPipe = gpu.renderPipeline({ name: 'hybrid.particles.draw', code: particleDrawWGSL(g, { shadeWGSL: shader.wgsl, shadeState: shader.shadeState }),
     layouts: [fu.layout, drawLayout, shader.layout], params: ParticleDrawParams,
     fragment: { targets: [{ format: 'rgba16float' }] }, depthStencil, primitive });
   const shadowPipe = gpu.renderPipeline({ name: 'hybrid.particles.shadow', code: particleShadowWGSL(),
