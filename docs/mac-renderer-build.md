@@ -56,7 +56,7 @@ Known limits remain:
 - Adaptive trials require a held camera and comparable producer diagnostics. Paused frames freeze adaptation.
 - Reflection resolution policy changes the tracing budget; reflections have no separate half-resolution image.
 - Unsupported hardware capacity is explicit. The new path does not silently truncate a producer.
-- Exceptional optical fallback uses a legacy-composited background. Hidden refracted content can differ from the accepted path.
+- Exceptional fallback traces complete optical paths without reusing legacy-composited snapshot radiance.
 
 ### Validation
 
@@ -95,19 +95,28 @@ No browser launched. Guard and cleanup occupancy was 2.09 seconds.
 Do not retry while the user occupies the GPU.
 The unexecuted full-scene check includes visible optics/media, smooth vertices, isolated droplets,
 motion and reactive pixels, finite HDR, temperature-only reuse, and zero legacy instances.
+It also injects a GPU capacity flag and checks molten matter transmitted through glass.
 
 `tools/hybrid-check.mjs` passes all nine CPU suites covering the 12 features.
 Native validation, visual review, and performance comparison are still required.
 
-Independent review found five integration defects. The following CPU regressions now cover their fixes:
+Independent review found five integration defects and a later mid-frame flush defect.
+The following CPU regressions cover their fixes:
 
 - Smooth camera/shadow vertices have their own vertex-readable state layout and matching bind group.
 - CPU composition checks compare reflected entry-point resources with actual stage visibility.
-- Overflow has a droplet-only composition draw. Its GPU instance count is zero on accepted frames.
-  It shares the final render pass instead of adding an empty fullscreen attachment pass.
+- Overflow keeps the complete optical layer, including particles behind glass/water.
+  Its background remains legacy. No extra droplet-only fullscreen composition pass is needed.
+- Optics receives depth captured before legacy transmitting/media surfaces write depth.
+  Unmeshed opaque world surfaces still stop fallback rays.
+- Output retirement protects the last open consumer encoder, even after automatic submission.
+  A legal mid-frame encoder change is not a stale-frame error.
 - Motion/coverage capture follows transparent Three meshes and rejects their unknown blended motion.
 - Resolution submissions capture pause state and workload epochs. Changed views cannot validate old trials.
 - Legacy thumbnails temporarily build complete fields, then restore particle exclusion even after an error.
+
+Follow-up review found no remaining concrete P1/P2 defects in these fixes.
+Native acceptance is still required.
 Performance evidence and the blocked benchmark attempt are recorded in
 [`mac-renderer-performance.md`](mac-renderer-performance.md).
 

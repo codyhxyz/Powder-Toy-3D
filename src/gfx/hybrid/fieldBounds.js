@@ -8,6 +8,9 @@ import { FIELD_BOUNDS_LAYOUT, fieldBoundsWGSL } from '../../shaders/hybrid/field
 const retirements = new WeakMap();
 export function retireMediaResources(gpu, resources, encoder) {
   if (!resources) return;
+  // External consumers may use an output after its producer auto-submits.
+  // The current encoder is the last possible unsubmitted consumer.
+  encoder = gpu.frame.encoder ?? encoder;
   const destroy = () => Object.values(resources).forEach((r) => r.destroy());
   if (!encoder || gpu.frame.encoder !== encoder || gpu.lost || gpu.failure) { destroy(); return; }
   const frame = gpu.frame;

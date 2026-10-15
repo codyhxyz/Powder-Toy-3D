@@ -5,6 +5,8 @@ import { frameBindings } from '../../src/shaders/bindings.js';
 import { uniformStruct } from '../../src/gpu/params.js';
 
 const ProbeParams=uniformStruct('ProbeParams',{clipToGrid:'mat4x4f'});
+export const forceOverflowWGSL=`@group(0) @binding(0) var<storage,read_write> status:array<u32>;
+@compute @workgroup_size(1) fn main(){status[0]=1u;}`;
 export const probeWGSL=g=>`${prelude(g,STATE_OPTS.STATE_RO)}
 ${frameBindings()}
 ${ProbeParams.wgsl}
@@ -35,6 +37,8 @@ ${ProbeParams.wgsl}
   let cell=vec3i(floor(q+normalize(q-FU.cam)*0.02));
   if(z<0.999999&&inGrid(cell)&&eid(fetchA(cell))==E_METAL){atomicAdd(&counts[7],1u);}
   if(z<0.999999&&inGrid(cell)&&cell.y>=35&&eid(fetchA(cell))==E_WATER){atomicAdd(&counts[8],1u);}
+  let rgb=textureLoad(color,p,0).rgb;
+  if(z<0.999999&&inGrid(cell)&&eid(fetchA(cell))==E_GLASS&&rgb.r>2.0&&rgb.r>2.0*rgb.g){atomicAdd(&counts[9],1u);}
 }`;
 
 export async function run(a){
@@ -56,6 +60,7 @@ export async function run(a){
       [E.WATER,[67,20,84],7],[E.GLASS,[45,20,84],5],[E.SMOKE,[85,25,84],5],
       [E.METAL,[64,37,70],5],[E.SAND,[57.5,34.5,82.5],.3],[E.WOOD,[61.5,34.5,82.5],.3],
       [E.WATER,[73.5,36.5,85.5],.3],[E.LAVA,[80,12,75],3],[E.FIRE,[85,33,83],2],
+      [E.LAVA,[43.5,17.5,76.5],.3], // isolated emitter behind the glass slab
     ])cube(id,p,r);
     a.volume.updateMatrixWorld();
     const display=p=>new V(...p).applyMatrix4(a.volume.matrixWorld);
@@ -75,7 +80,7 @@ export async function run(a){
     await a.test.renderOnce();await gpu.readback.idle();
     assert(hybrid.geometry.stats.builds===builds,'camera-only draw must reuse opaque geometry');
     assert(hybrid.shadows.stats.reuses>shadows,'camera-only draw must reuse raster shadow');
-    counts=gpu.createBuffer({label:'hybrid full probe',size:36,usage:128|4});
+    counts=gpu.createBuffer({label:'hybrid full probe',size:40,usage:128|4|8});
     const layout=gpu.layout('HYBRID_FULL_PROBE',[
       ...[0,1,2,3,4].map(binding=>({binding,visibility:4,texture:{sampleType:'unfilterable-float'}})),
       {binding:5,visibility:4,texture:{sampleType:'uint'}},
@@ -89,28 +94,55 @@ export async function run(a){
       inputs.motion,inputs.reactive,hybrid.optics.output.fallback,post.sceneTarget.depth];
     const group=gpu.bindGroup(layout,[...textures.map((t,binding)=>({binding,resource:t.createView()})),
       {binding:7,resource:{buffer:counts}}]);
-    const fu=gpu._frameUniforms.last;
-    const inverse=new a.THREE.Matrix4().multiplyMatrices(fu.viewProj,fu.model).invert();
-    probe.dispatch(gpu.frame,[Math.ceil(post.inSize[0]/8),Math.ceil(post.inSize[1]/8),1],
-      {bind:[gpu._frameUniforms.group,a.sim.bindRO,group],header:a.sim.header(),params:{clipToGrid:inverse}});
-    const read=gpu.readback.buffer(counts,0,36),gate=gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,64);
-    gpu.flush('hybrid full numerical readback');
-    const [pixelBuffer,gateBuffer]=await Promise.all([read,gate]);
-    const pixels=[...new Uint32Array(pixelBuffer)],acceptance=[...new Uint32Array(gateBuffer)];
+    const readPixels=async()=>{
+      const fu=gpu._frameUniforms.last;
+      const inverse=new a.THREE.Matrix4().multiplyMatrices(fu.viewProj,fu.model).invert();
+      gpu.frame.direct().clearBuffer(counts);
+      probe.dispatch(gpu.frame,[Math.ceil(post.inSize[0]/8),Math.ceil(post.inSize[1]/8),1],
+        {bind:[gpu._frameUniforms.group,a.sim.bindRO,group],header:a.sim.header(),params:{clipToGrid:inverse}});
+      const read=gpu.readback.buffer(counts,0,40),gate=gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,48);
+      gpu.flush('hybrid full numerical readback');
+      const [pixelBuffer,gateBuffer]=await Promise.all([read,gate]);
+      return{pixels:[...new Uint32Array(pixelBuffer)],acceptance:[...new Uint32Array(gateBuffer)]};
+    };
+    const {pixels,acceptance}=await readPixels();
     assert(pixels[0]===post.inSize[0]*post.inSize[1],'probe extent');
     assert(pixels[1]>0&&pixels[2]>0,'visible optical entry and smoke required');
     assert(pixels[3]>0&&pixels[5]>0,'both reusable motion and reactive pixels required');
     assert(pixels[4]===0&&pixels[6]===0,'no nonfinite HDR or routine optical fallback pixels');
     assert(pixels[7]>0,'glossy metal must be visible, not merely painted offscreen');
     assert(pixels[8]>0,'instanced optical droplet must write visible entry/depth pixels');
+    assert(pixels[9]>0,'isolated molten emitter must be visible through the glass');
     assert(acceptance[0]===0&&acceptance[5]===1&&acceptance[9]===0,'normal hybrid scene must execute ZERO legacy volume instances');
-    assert(acceptance[12]===6&&acceptance[13]===0,'normal hybrid scene must execute ZERO exceptional droplet instances');
+    // Fault injection exercises the actual GPU predicate without changing
+    // physics, shrinking production capacities, or trusting async diagnostics.
+    const forceLayout=gpu.layout('HYBRID_FULL_FAULT',[{binding:0,visibility:4,buffer:{type:'storage'}}]);
+    const force=gpu.kernel({name:'hybrid full injected capacity flag',code:forceOverflowWGSL,
+      layouts:[forceLayout],workgroupSize:[1,1,1]});
+    await force.ready;
+    const forceGroup=gpu.bindGroup(forceLayout,[{binding:0,resource:{buffer:hybrid.smooth.resources.status}}]);
+    const smoothUpdate=hybrid.smooth.update;
+    let fallback;
+    hybrid.smooth.update=function(...args){
+      const result=smoothUpdate.apply(this,args);
+      force.dispatch(gpu.frame,[1,1,1],{bind:[forceGroup]});
+      return result;
+    };
+    try{
+      await a.test.renderOnce();await gpu.readback.idle();
+      fallback=await readPixels();
+      assert(fallback.acceptance[0]!==0&&fallback.acceptance[9]===1,'fault must activate legacy background in the same frame');
+      assert(fallback.pixels[8]>0&&fallback.pixels[9]>0,'fallback must retain front droplets AND molten matter transmitted through glass');
+      assert(fallback.pixels[4]===0,'fallback HDR must remain finite');
+    }finally{
+      hybrid.smooth.update=smoothUpdate;hybrid.smooth.invalidate();
+    }
     cube(-2,[44.5,20.5,65.5],1);
     await a.test.render();await gpu.readback.idle();
     assert(hybrid.geometry.stats.rebuiltBricks===0,'temperature-only edit must rebuild zero bricks');
     const stats=structuredClone(hybrid.stats);
     assert(a.sim.frame===steps,'rendering must not step physics');
-    return{pixels,acceptance,stats,steps,sceneSize:post.inSize};
+    return{pixels,acceptance,fallback,stats,steps,sceneSize:post.inSize};
   }finally{
     a.test.park();post.setTemporalInputs=setter;
     gpu.flush('hybrid full cleanup');counts?.destroy();

@@ -224,7 +224,7 @@ fn opticsFieldSegment(p: vec3f, rd: vec3f, cellExit: f32) -> f32 {
 `;
 }
 
-export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, particleBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
+export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, particleBinding = null, fallbackBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
   for (const [name, n, limit] of [['maxSteps', maxSteps, 2048], ['maxInterfaces', maxInterfaces, 32]]) {
     if (!Number.isInteger(n) || n < 1 || n > limit) throw new RangeError(`${name} must be in 1..${limit}`);
   }
@@ -241,6 +241,9 @@ const OPTICS_FAR: f32 = 1e20;
 struct OpticalHit { position: vec3f, normal: vec3f, id: i32, state: vec4f, view: vec3f }
 ${boundsBinding === null ? '' : `${boundsStruct}
 @group(2) @binding(${boundsBinding}) var<storage, read> opticalBounds: OpticalBounds;`}
+${fallbackBinding === null ? '' : `@group(2) @binding(${fallbackBinding}) var<storage, read> fallbackGate: array<u32>;`}
+// Capacity fallback uses full transport; accepted mode retains cached/instanced ownership.
+fn opticsFallbackMode() -> bool { return ${fallbackBinding === null ? 'false' : 'fallbackGate[0] != 0u'}; }
 ${particleOwnershipWGSL}
 fn opticsParticleOwns(c: vec3i, world: bool) -> bool {
   return hybridParticleOwns(c, world) && (P.particleSplit != 0u || SURFCH(eid(fetchA(c))) >= 2);
@@ -281,6 +284,7 @@ fn opticsPixel(clip: vec4f) -> vec2i {
 // Returns -1 when no depth-validated camera sample exists: never substitute
 // the original camera background for a hidden or offscreen refracted hit.
 fn opticsSnapshot(h: OpticalHit) -> vec4f {
+  if (opticsFallbackMode()) { return vec4f(-1.0); }
   let clip = opticsClip(h.position);
   if (clip.w <= 0.0 || clip.z < 0.0 || clip.z >= clip.w) { return vec4f(-1.0); }
   let px = opticsPixel(clip);
@@ -324,8 +328,9 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
   out.color = original; out.metadata = vec4f(1.0, 0.0, 1.0, 0.0); out.fallback = 0u;
   let uv = v.position.xy / P.size;
   var rd = normalize(opticsGridAt(uv, 0.5) - FU.cam);
-  ${boundsBinding === null ? '' : 'if (!forced && opticalBounds.count == 0u) { return out; }'}
+  ${boundsBinding === null ? '' : 'if (!forced && !opticsFallbackMode() && opticalBounds.count == 0u) { return out; }'}
   var interval = opticsBox(FU.cam, rd, ${boundsBinding === null ? 'vec3f(0), vec3f(vec3i(NX, NY, NZ))' : 'vec3f(opticalBounds.lo), vec3f(opticalBounds.hi)'});
+  if (opticsFallbackMode()) { interval = opticsBox(FU.cam, rd, vec3f(0), vec3f(vec3i(NX, NY, NZ))); }
   if (forced) { interval = vec2f(entry, OPTICS_FAR); }
   if (interval.y < interval.x) { return out; }
   let sceneDepth = textureLoad(opticsDepth, px, 0);
@@ -360,8 +365,15 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
     if (opticsClass(medium) == 1) { covered = true; bent = true; out.metadata.x = 0.0; }
     else { medium = E_EMPTY; covered = false; bent = false; out.metadata.x = 1.0; }
   }`}
-  if (P.particleSplit != 0u && opticsParticleOwns(eyeCell, P.world != 0u) && !forced) {
+  if (P.particleSplit != 0u && opticsParticleOwns(eyeCell, P.world != 0u) && !forced && !opticsFallbackMode()) {
     medium = E_EMPTY; covered = false; bent = false; out.metadata.x = 1.0;
+  }
+  if (opticsFallbackMode() && opticsParticleOwns(eyeCell, P.world != 0u)) {
+    let roots = opticsSphere(FU.cam, rd, vec3f(eyeCell)+vec3f(0.5));
+    previous = fetchA(eyeCell);
+    let inside = roots.x <= 0.0 && roots.y > 0.0 && opticsClass(eid(previous)) == 1;
+    medium = select(E_EMPTY, eid(previous), inside);
+    covered = inside; bent = inside; out.metadata.x = select(1.0, 0.0, inside);
   }
   if (forced) {
     medium = E_EMPTY; previous = vec4f(0); covered = false; bent = false; out.metadata.x = 1.0;
@@ -400,7 +412,7 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
       if (dot(fnormal, fnormal) > 1e-8) { normal = normalize(fnormal); if (dot(normal, rd) > 0.0) { normal = -normal; } }
     }`}
     if (forced && step == 0) { a = source; id = eid(source); }
-    if (particle && P.particleSplit != 0u && !forced && !bent && SURFCH(eid(fetchA(cell))) < 2) {
+    if (particle && P.particleSplit != 0u && !forced && !bent && !opticsFallbackMode() && SURFCH(eid(fetchA(cell))) < 2) {
       a = vec4f(0); id = E_EMPTY;
     }
     let gas = id != E_EMPTY && KIND(id) == K_GAS;
@@ -439,6 +451,11 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
       complete = true; break;
     }
     if (RCLASS(id) == R_GLASS && optical == 0) { out.fallback |= ${OPTICS_FALLBACK.SURFACE}u; break; }
+    // Overflow removes raster world surfaces from the opaque depth snapshot.
+    // A real opaque hit before any interface still owns this primary pixel:
+    // retain legacy, rather than finding optical matter behind the wall.
+    if (opticsFallbackMode() && !bent && optical == 0 && id != E_EMPTY
+        && RCLASS(id) == R_OPAQUE && MEDIACH(id) < 0) { return out; }
     if (id != E_EMPTY && optical == 0 && bent) {
       // Snapshot if visible, otherwise the dedicated world-hit shading hook.
       let h = OpticalHit(p, normal, id, a, -rd);
@@ -449,7 +466,10 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
     }
     if (optical == 2) {
       covered = true;
-      let clip = opticsClip(p); out.metadata.x = min(out.metadata.x, clamp(clip.z / clip.w, 0.0, 1.0));
+      let clip = opticsClip(p);
+      if (!opticsFallbackMode() || out.metadata.x == 1.0) {
+        out.metadata.x = min(out.metadata.x, clamp(clip.z / clip.w, 0.0, 1.0));
+      }
       let h = OpticalHit(p, normal, id, a, -rd);
       sum += transmission * (ALBEDO(id) * opticsBody(p, id) + opticsMoltenEmission(a));
       transmission = vec3f(0.0); complete = true; break;
@@ -510,7 +530,7 @@ ${particleBinding === null ? '' : dropEntriesWGSL}
 `;
 }
 
-// Shared geometry: transport and exceptional fallback must agree exactly.
+// Shared geometry for primary, refracted and instanced transport.
 const dropSphereWGSL = `// Bounded interval of the real cell-centred isolated sphere.
 fn opticsSphere(p: vec3f, rd: vec3f, center: vec3f) -> vec2f {
   let q = p-center; let b = dot(q, rd); let d = b*b-dot(q,q)+${THIN_RADIUS * THIN_RADIUS};
@@ -544,43 +564,6 @@ const dropVertexWGSL = `struct DropVertex { @builtin(position) position: vec4f, 
 }
 `;
 
-export const fallbackDropletBindings = [
-  { binding: 0, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
-  { binding: 1, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
-  { binding: 2, visibility: 3, buffer: { type: 'read-only-storage' } },
-  { binding: 3, visibility: 2, buffer: { type: 'read-only-storage' } },
-];
-// Only immutable optical outputs are sampled, never scene attachments.
-export const fallbackDropletWGSL = `
-${frameBindings()}
-${OpticsParams.wgsl}
-@group(3) @binding(1) var<uniform> P: OpticsParams;
-@group(2) @binding(0) var resolved: texture_2d<f32>;
-@group(2) @binding(1) var metadata: texture_2d<f32>;
-${instanceWGSL}
-${particleChannelWGSL}
-@group(2) @binding(2) var<storage, read> drops: array<HybridParticle>;
-@group(2) @binding(3) var<storage, read> fallbackGate: array<u32>;
-const OPTICS_FAR: f32 = 1e20;
-${dropSphereWGSL}
-${dropRayWGSL}
-${dropVertexWGSL}
-struct FallbackDropOutput { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
-@fragment fn fs(v: DropVertex) -> FallbackDropOutput {
-  if (fallbackGate[0] == 0u) { discard; }
-  let rd = normalize(opticsGridAt(v.position.xy / P.size,0.5)-FU.cam);
-  let roots = opticsSphere(FU.cam,rd,drops[v.index].center);
-  if (roots.y <= 0.0 || roots.x > roots.y) { discard; }
-  let entry = max(0.0,roots.x);
-  let clip = opticsClip(FU.cam+rd*entry);
-  let depth = select(clamp(clip.z/clip.w,0.0,1.0),0.0,entry == 0.0);
-  let first = textureLoad(metadata,vec2i(v.position.xy),0).x;
-  // Tight device-depth agreement (not the loose snapshot world tolerance).
-  // Reject bulk optical pixels and droplets hidden by an earlier interface.
-  if (first >= 1.0 || abs(first-depth) > 0.000001) { discard; }
-  return FallbackDropOutput(textureLoad(resolved,vec2i(v.position.xy),0),depth);
-}`;
-
 const dropEntriesWGSL = `
 ${dropVertexWGSL}
 struct DropOutput {
@@ -588,6 +571,7 @@ struct DropOutput {
   @location(2) fallback: u32, @builtin(frag_depth) depth: f32,
 }
 @fragment fn dropFS(v: DropVertex) -> DropOutput {
+  if (opticsFallbackMode()) { discard; }
   let d = drops[v.index];
   let rd = normalize(opticsGridAt(v.position.xy / P.size,0.5)-FU.cam);
   let roots = opticsSphere(FU.cam,rd,d.center);

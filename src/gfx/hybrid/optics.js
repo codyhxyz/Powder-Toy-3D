@@ -5,7 +5,7 @@ import { Matrix4 } from 'three/webgpu';
 import { frameUniformsOf } from '../uniforms.js';
 import { retireMediaResources } from './fieldBounds.js';
 import {
-  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK, dropDepthWGSL, fallbackDropletWGSL, fallbackDropletBindings,
+  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK, dropDepthWGSL,
 } from '../../shaders/hybrid/optics.js';
 export { OPTICS_FALLBACK } from '../../shaders/hybrid/optics.js';
 
@@ -149,6 +149,10 @@ export function validateOpticsResources({ color, depth }, output) {
  * Optional particles: particles.resources adds GPU-indirect liquid/molten
  * billboards sharing the same transport and outputs. Requires actual particleSplit;
  * fullscreen primary bounds omit these cells, secondary rays retain sphere hits.
+ * Optional fallbackGate (GPUBuffer, word 0 != 0 on capacity failure) occupies
+ * the next binding after particles, fragment-only. It enables full-grid primary
+ * sphere transport and disables snapshot radiance reuse; opaque depth still cuts.
+ * No extra fallback draw: compose optical pixels where metadata.x < 1.
  * Thin masks blend liquid normals, not density. This is not
  * legacy tricubic/detail parity. Source/deco and hidden meshes remain flagged.
  * Reflections and untraced bounded tails use environment (not recursive rays).
@@ -193,16 +197,18 @@ export function createHybridOptics(gpu, sim, options = {}) {
   if (typeof lighting.hooks?.worldHit !== 'string') throw new TypeError('optics requires a dedicated lighting.hooks.worldHit WGSL callback');
   const boundsBinding = Math.max(2, ...(lighting.bindings ?? []).map(e => e.binding+1), hasFields ? fieldBinding+2 : 2);
   const particleBinding = particles ? boundsBinding + 1 : null;
+  const fallbackBinding = fallbackGate ? (particleBinding ?? boundsBinding) + 1 : null;
   const extraBindings = [...(lighting.bindings ?? []), ...(hasFields ? opticsFieldBindings(fieldBinding) : []),
     { binding: boundsBinding, visibility: 2, buffer: { type: 'read-only-storage' } },
-    ...(particles ? [{ binding: particleBinding, visibility: 3, buffer: { type: 'read-only-storage' } }] : [])];
+    ...(particles ? [{ binding: particleBinding, visibility: 3, buffer: { type: 'read-only-storage' } }] : []),
+    ...(fallbackGate ? [{ binding: fallbackBinding, visibility: 2, buffer: { type: 'read-only-storage' } }] : [])];
   if (extraBindings.some((e) => !Number.isInteger(e.binding) || e.binding < 2) || new Set(extraBindings.map((e) => e.binding)).size !== extraBindings.length) throw new Error('optics lighting bindings must be unique and >= 2');
   validateOpticsLimits(gpu.limits ?? gpu.device?.limits, extraBindings);
   if ((lighting.bindings ?? []).some((e) => e.texture) && typeof lighting.textures !== 'function') throw new TypeError('optics extension textures need lighting.textures(frame) for attachment alias checks');
   const fu = frameUniformsOf(gpu);
   const sceneLayout = gpu.layout('HYBRID_OPTICS_SCENE', [...opticsBindings(), ...extraBindings]);
   const stateLayout = gpu.layout('STATE_RO', OPTICS_STATE_LAYOUT);
-  const code = opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, particleBinding, wgsl: lighting.wgsl, hooks: lighting.hooks });
+  const code = opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, particleBinding, fallbackBinding, wgsl: lighting.wgsl, hooks: lighting.hooks });
   const pipe = gpu.renderPipeline({
     name: 'hybrid optics', code,
     layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
@@ -222,13 +228,6 @@ export function createHybridOptics(gpu, sim, options = {}) {
     name: 'hybrid optics droplet depth', code: dropDepthWGSL, layouts: [depthLayout],
     fragment: { targets: [] },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
-  });
-  const fallbackLayout = fallbackGate && gpu.layout('HYBRID_FALLBACK_DROPLETS', fallbackDropletBindings);
-  const fallbackPipe = fallbackGate && gpu.renderPipeline({
-    name: 'hybrid fallback droplets', code: fallbackDropletWGSL,
-    layouts: [fu.layout, undefined, fallbackLayout], params: OpticsParams,
-    vertex: { entry: 'dropVS' }, fragment: { targets: [{ format: 'rgba16float' }] },
-    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
   });
   const boundsLayout = gpu.layout('HYBRID_OPTICS_BOUNDS', opticsBoundsLayout);
   const brickBounds = gpu.createBuffer({ label: 'optics brick bounds', size: sim.g.nbricks * 32, usage: 128 });
@@ -250,14 +249,16 @@ export function createHybridOptics(gpu, sim, options = {}) {
     boundsKey = key; stats.boundsBuilds++; return true;
   }
   const inverse = new Matrix4();
-  let output = null, dropDepth = null, outputEncoder = null, current = {}, disposed = false, fallbackParams = null;
+  let output = null, dropDepth = null, current = {}, disposed = false;
   const stats = { boundsBuilds: 0, draws: 0, allocations: 0, maxSteps, maxInterfaces, cellBoundarySurfaces: !hasFields };
   const live = () => { if (disposed) throw new Error('hybrid optics is disposed'); };
   const release = () => {
-    if (output) retireMediaResources(gpu, { ...output, ...(dropDepth ? { dropDepth } : {}) }, outputEncoder);
-    output = null; dropDepth = null; fallbackParams = null;
+    // Automatic submission can replace the recording encoder mid-app-frame.
+    // Outputs may still be sampled by compose in the CURRENT open encoder.
+    if (output) retireMediaResources(gpu, { ...output, ...(dropDepth ? { dropDepth } : {}) }, gpu.frame.encoder);
+    output = null; dropDepth = null;
   };
-  const pipelines = [pipe, reduce, finish, ...(particles ? [dropPipe, depthPipe] : []), ...(fallbackPipe ? [fallbackPipe] : [])];
+  const pipelines = [pipe, reduce, finish, ...(particles ? [dropPipe, depthPipe] : [])];
   const api = {
     ready: Promise.all(pipelines.map(p => p.ready)),
     get isReady() { return !disposed && pipelines.every(p => p.state === 'ready'); },
@@ -303,14 +304,14 @@ export function createHybridOptics(gpu, sim, options = {}) {
       const entries = [...opticsEntries(color, depth), { binding: boundsBinding, resource: { buffer: bounds } }, ...(lighting.entries?.(frame) ?? []), ...(hasFields ? [
         { binding: fieldBinding, resource: derived.views.fieldSurf },
         { binding: fieldBinding + 1, resource: derived.views.fieldThin },
-      ] : []), ...(particles ? [{ binding: particleBinding, resource: { buffer: particles.instances } }] : [])];
+      ] : []), ...(particles ? [{ binding: particleBinding, resource: { buffer: particles.instances } }] : []),
+        ...(fallbackGate ? [{ binding: fallbackBinding, resource: { buffer: fallbackGate } }] : [])];
       const group = gpu.bindGroup(sceneLayout, entries, 'hybrid optics scene');
       const params = { gridInv: inverse, size: [color.width, color.height], unsupported, depthTolerance,
         world: (options.world ?? derived?.world) ? 1 : 0, particleSplit: particles ? 1 : 0 };
       const rp = gpu.frame.render({ colorAttachments: Object.values(output).map((t) => ({
         view: t.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0],
       })) }, 'hybrid optics');
-      outputEncoder = gpu.frame.encoder;
       try {
         pipe.draw(rp, {
           bind: [fu.group, sim.bindRO, group], header: sim.header(),
@@ -333,38 +334,8 @@ export function createHybridOptics(gpu, sim, options = {}) {
           indirect: { buffer: particles.opticalArgs, offset: 16 } }); }
         finally { drops.end(); }
       }
-      outputEncoder = gpu.frame.encoder;
-      fallbackParams = params;
       stats.draws++;
       return output;
-    },
-    /** After frame.compose: sceneTarget is post.sceneTarget ({color, depth} GPUTextures).
-     * Exceptional capacity fallback only. Snapshot radiance may contain the legacy
-     * background; ordinary accepted optics remains untouched (GPU gate discard).
-     */
-    drawFallbackDroplets({ color, depth } = {}, { indirect = { buffer: particles?.opticalArgs, offset: 16 }, pass } = {}) {
-      live();
-      if (!fallbackPipe || !api.isReady || !output || !fallbackParams) return false;
-      if (outputEncoder !== gpu.frame.encoder) throw new Error('fallback droplets require same-frame optics.record');
-      const sampled = [output.color, output.metadata];
-      if (!color || !depth || color === depth || sampled.includes(color) || sampled.includes(depth)) throw new Error('fallback droplet sampled/attachment resources must not alias');
-      for (const [t, format] of [[color, 'rgba16float'], [depth, 'depth32float']]) {
-        if (t.format !== format || !(t.usage & TEX.RENDER_ATTACHMENT) || t.width !== output.color.width || t.height !== output.color.height
-            || (t.sampleCount ?? 1) !== 1 || (t.dimension ?? '2d') !== '2d' || (t.depthOrArrayLayers ?? 1) !== 1
-            || (t.mipLevelCount ?? 1) !== 1 || typeof t.createView !== 'function') throw new Error('invalid fallback droplet scene target');
-      }
-      const group = gpu.bindGroup(fallbackLayout, [
-        { binding: 0, resource: output.color.createView() }, { binding: 1, resource: output.metadata.createView() },
-        { binding: 2, resource: { buffer: particles.instances } }, { binding: 3, resource: { buffer: fallbackGate } },
-      ]);
-      const rp = pass ?? gpu.frame.render({
-        colorAttachments: [{ view: color.createView(), loadOp: 'load', storeOp: 'store' }],
-        depthStencilAttachment: { view: depth.createView(), depthLoadOp: 'load', depthStoreOp: 'store' },
-      }, 'hybrid fallback droplets');
-      try { fallbackPipe.draw(rp, { bind: [fu.group, undefined, group], params: fallbackParams,
-        indirect }); }
-      finally { if (!pass) rp.end(); }
-      return true;
     },
     draw(frame = current) { return api.record(frame); },
     dispose() { if (disposed) return; disposed = true; release(); retireMediaResources(gpu, { brickBounds, bounds }, gpu.frame.encoder); current = {}; },
@@ -375,11 +346,14 @@ export function createHybridOptics(gpu, sim, options = {}) {
 /** CPU transport oracle, not a renderer: sample(cell) returns
  * {id, ior, sigma:[r,g,b], body:[r,g,b], opaque?, state?} or null for air.
  * worldHit(cell, material) and environment(position,direction) return radiance.
+ * isolated:true uses exact sphere roots; fallbackMode includes primary spheres
+ * otherwise reserved for instancing. This oracle does not model GPU snapshots.
  * mediaSegment(position,direction,length) is premultiplied RGBA, post-entry only.
  * Reports bounded termination separately from a geometric escape/hit. */
 export function traceOpticalReference(origin, direction, size, {
   sample, worldHit = () => [0, 0, 0], environment = () => [1, 1, 1],
   mediaSegment = () => [0, 0, 0, 0], maxSteps = 256, maxInterfaces = 8,
+  fallbackMode = false,
 } = {}) {
   const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
   const norm = a => { const n = Math.hypot(...a); if (!n) throw new RangeError('zero direction'); return a.map(v => v / n); };
@@ -391,10 +365,15 @@ export function traceOpticalReference(origin, direction, size, {
   const inside = c => c.every((v, i) => v >= 0 && v < size[i]);
   const at = (q, d = [0, 0, 0]) => {
     const cell = q.map((v, i) => Math.floor(v + d[i] * 1e-4));
-    return { cell, material: inside(cell) ? sample(cell) : null };
+    let material = inside(cell) ? sample(cell) : null;
+    if (material?.isolated) {
+      const roots = opticalParticleInterval(q, d, cell);
+      if (!roots || roots[0] > 1e-4 || roots[1] <= 1e-4) material = null;
+    }
+    return { cell, material };
   };
-  let medium = interval[0] === 0 ? at(origin).material : null;
-  if (medium?.opaque) medium = null;
+  let medium = interval[0] === 0 ? at(origin, rd).material : null;
+  if (medium?.opaque || (medium?.isolated && !fallbackMode)) medium = null;
   let covered = !!medium, interfaces = 0, thickness = 0, termination = 'budget';
   let normal = [0, 0, 0];
   const edge = p.map((v, i) => Math.min(Math.abs(v), Math.abs(size[i] - v)));
@@ -403,7 +382,13 @@ export function traceOpticalReference(origin, direction, size, {
   let pathSteps = 0;
   for (let step = 0; step < maxSteps + 8 * size.reduce((a, b) => a + b, 0); step++) {
     if (covered && pathSteps++ >= maxSteps) break;
-    const { cell, material } = at(p, rd);
+    let { cell, material } = at(p, rd);
+    const raw = inside(cell) ? sample(cell) : null;
+    if (raw?.isolated) {
+      const delta = p.map((v,i) => v-cell[i]-0.5);
+      if (Math.hypot(...delta) > 1e-8) { normal = norm(delta); if (dot(normal,rd) > 0) normal = normal.map(v => -v); }
+      if (!covered && !fallbackMode) material = null;
+    }
     if (!material?.opaque && (medium?.id ?? 0) !== (material?.id ?? 0)) {
       covered = true;
       if (interfaces >= maxInterfaces) break;
@@ -423,7 +408,11 @@ export function traceOpticalReference(origin, direction, size, {
     if (!inside(cell)) { termination = 'escape'; break; }
     if (material?.opaque) { add(worldHit(cell, material)); termination = 'opaque'; break; }
     const exits = rd.map((v, i) => Math.abs(v) < 1e-8 ? Infinity : Math.max(0, (cell[i] + (v > 0 ? 1 : 0) - p[i]) / v));
-    const length = Math.min(...exits), axis = exits.indexOf(length);
+    const axis = exits.indexOf(Math.min(...exits));
+    let length = exits[axis];
+    if (raw?.isolated) {
+      for (const root of opticalParticleInterval(p, rd, cell) ?? []) if (root > 0.00005) length = Math.min(length, root);
+    }
     segments.push({ origin: [...p], direction: [...rd], length, id: medium?.id ?? 0 });
     if (medium) {
       const t = opticalTransmission(medium.sigma ?? [0, 0, 0], length);

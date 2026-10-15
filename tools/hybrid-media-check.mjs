@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createFieldBounds, fieldBoundsReference, fieldRayBoundsReference } from '../src/gfx/hybrid/fieldBounds.js';
+import { createFieldBounds, fieldBoundsReference, fieldRayBoundsReference, retireMediaResources } from '../src/gfx/hybrid/fieldBounds.js';
 import { fieldBoundsWGSL } from '../src/shaders/hybrid/fieldBounds.js';
 import { MEDIA_FLOOR } from '../src/gfx/materials.js';
 import { Matrix4 } from 'three/webgpu';
@@ -169,6 +169,16 @@ assert.equal(flushes, 0); // no automatic submissions
 assert.equal(gpu.frame.flush(), true);
 assert.equal(firstBounds.destroyed, 1); assert.equal(resizedBounds.destroyed, 1);
 assert.equal(gpu.frame.flush, originalFlush);
+// A producer may submit before another module samples its output. Preserve
+// that output through the current consumer, not merely its original encoder.
+const producerEncoder={},consumerEncoder={};
+const retirementGpu={frame:{encoder:consumerEncoder,flush(){this.encoder=null;}}};
+const external={destroyed:0,destroy(){this.destroyed++;}};
+retireMediaResources(retirementGpu,{external},producerEncoder);
+await new Promise(resolve=>queueMicrotask(resolve));
+assert.equal(external.destroyed,0,'later external consumer still holds the resource');
+retirementGpu.frame.flush();
+assert.equal(external.destroyed,1,'release only after the last open consumer submits');
 console.log('hybrid-media-check: final-field bounds empty/miss/EMA ghost/resize/shift/reuse, rgba32float metadata and passive encoder retirement passed (CPU only)');
 
 const sunSeam = createHybridMedia(gpu, sim, { sun: {

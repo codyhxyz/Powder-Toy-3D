@@ -176,7 +176,7 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
         particleSplit:true,sourceStyle:false});
       lastDerived=revision;
       particles.update({size:post.inSize,sourceStyle:false});
-      frame.evaluate(geometry,smooth,particles);
+      frame.evaluate(geometry,smooth);
       shadows.update({sun:f.sun,casters:[geometry,smooth,particles],model:f.model,
         revision:`${geometry.revision}|${smooth.revision}|${particles.revision}`});
       optics.update({revision:sim.version});
@@ -192,12 +192,17 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
     drawOpaque(p,{load=false}={}){
       if(!api.enabled)return false;
       const rp=gpu.frame.render(p.sceneDescriptor({load}),'hybrid opaque surfaces and particles');
-      try{geometry.drawOpaque(rp);smooth.draw(rp);particles.draw(rp);return true;}finally{rp.end();}
+      try{geometry.drawOpaque(rp);smooth.draw(rp);particles.draw(rp);}finally{rp.end();}
+      // Legacy fallback writes transmitting/gas depth. It must not become
+      // the optical solver's opaque cut or hide particles behind that layer.
+      frame.snapshot(p.sceneTarget.depth);
+      return true;
     },
     /** After opaque scene + sky, before transparent scene meshes and post TAA. */
     compose(p){
       if(!api.enabled)return false;
-      const depth=frame.snapshot(p.sceneTarget.depth);
+      const depth=frame.opaqueDepth;
+      if(!depth)throw new Error('hybrid composition requires an opaque scene draw');
       const input={color:p.sceneTarget.color,depth,scale:resolution.scales.media/resolution.scales.surface};
       media.update(input);
       mediaUniforms.write(media.segment().params);
@@ -205,8 +210,7 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
       if(!optical)throw new Error('hybrid optics unavailable in an accepted frame');
       const color=media.record({...input,color:optical.color,opticalDepth:optical.metadata});
       if(!color)throw new Error('hybrid media unavailable in an accepted frame');
-      frame.compose(p,color,optical.metadata,rp=>optics.drawFallbackDroplets(p.sceneTarget,
-        {pass:rp,indirect:frame.fallbackIndirect}));
+      frame.compose(p,color,optical.metadata);
       stats.compositions++;
       return true;
     },

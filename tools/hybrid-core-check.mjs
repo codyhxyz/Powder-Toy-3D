@@ -12,6 +12,7 @@ import { gridDims,LAYOUT } from '../src/shaders/common.js';
 import { ELEMENTS,R } from '../src/elements.js';
 import { LOOK } from '../src/gfx/materials.js';
 import { withVisibility } from '../src/gpu/kernels.js';
+import { probeWGSL,forceOverflowWGSL } from './harness/hybrid-full.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -55,6 +56,10 @@ const resource = (desc, list) => {
   list.push(r); return r;
 };
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
+for(const code of [probeWGSL(g),forceOverflowWGSL]){
+  new WgslReflect(code);
+  if(semantic)execFileSync('naga',['--stdin-file-path','hybrid-full-check.wgsl'],{input:code,encoding:'utf8'});
+}
 const pipe = desc => {
   const r=new WgslReflect(desc.code);
   if(semantic)execFileSync('naga',['--stdin-file-path',desc.name+'.wgsl'],{input:desc.code,encoding:'utf8'});
@@ -172,21 +177,29 @@ assert.equal(renderer.prepare(input),true);
 assert.equal(renderer.update(input), true);
 assert(calls.length > composed, 'all producers and shared shadows record real commands');
 assert(renderer.drawOpaque(post));
+const opaqueCopy=calls.find(c=>c.name==='copy'&&c.args[0].texture===depth);
+assert(opaqueCopy,'opaque depth is captured before legacy volume can overwrite transmitting depth');
+const recordMedia=renderer.media.record;
+renderer.media.record=input=>{
+  const color=recordMedia(input);
+  gpu.frame.encoder={}; // legal automatic submission within the same app frame
+  return color;
+};
 assert(renderer.compose(post));
+renderer.media.record=recordMedia;
+assert.equal(calls.find(c=>c.name==='hybrid optics').bind[2].entries.find(e=>e.binding===1).resource.texture,
+  opaqueCopy.args[1].texture,'optical cut remains opaque-only, not legacy gas/glass depth');
 assert.equal(post.inputs,undefined,'temporal capture waits for transparent meshes');
 assert(renderer.temporalFrame(post,{...input,transparentMeshes:true}));
 assert.equal(calls.findLast(c=>/motion.*vectors/.test(c.name)).params.untracked,1,'visible transparent meshes reject and capture coverage');
 assert(renderer.temporalFrame(post,input));
 assert.equal(calls.findLast(c=>/motion.*vectors/.test(c.name)).params.untracked,0);
-for(const pattern of [/scene acceptance/,/smooth.*build/,/particles.*finish/,/optics droplets/,/optics droplet depth/,/fallback droplets/,/media integrate/,/motion.*vectors/,/scene composite/])
+for(const pattern of [/scene acceptance/,/smooth.*build/,/particles.*finish/,/optics droplets/,/optics droplet depth/,/media integrate/,/motion.*vectors/,/scene composite/])
   assert(calls.some(c=>pattern.test(c.name)),`missing production path ${pattern}`);
 assert(post.inputs.motion&&post.inputs.reactive,'real motion and coverage reach post');
 assert.equal(renderer.stats.compositions,1);
-const fallbackDraw=calls.find(c=>/fallback droplets/.test(c.name));
-assert.equal(fallbackDraw.indirect.buffer,renderer.legacyIndirect.buffer);
-assert.equal(fallbackDraw.indirect.offset,48,'exceptional instances are GPU-gated, not shaded/discarded on normal frames');
-assert.equal(calls.find(c=>/scene acceptance/.test(c.name)).bind[2].entries.find(e=>e.binding===3).resource.buffer,
-  renderer.particles.resources.opticalArgs,'same-frame particle count feeds exceptional indirect arguments');
+assert.equal(calls.find(c=>/scene composite/.test(c.name)).bind[2].entries.find(e=>e.binding===3).resource.buffer,
+  renderer.legacyIndirect.buffer,'composition masks the complete optical layer against the same GPU fallback predicate');
 complete(1);
 assert.equal(samples.at(-1).stable,false,'first workload has no comparable baseline');
 gpu.frameNo=1;renderer.update(input);complete(2);
