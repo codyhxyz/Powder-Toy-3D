@@ -20,7 +20,7 @@ import { preloadGame, gameFetched, refreshGameFiles } from './preload.js';
 import { GAMEMODES, mapOf, mapByKey, mapsFor, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
 import { probeWebGPU } from './gpu/device.js';
 import { BOOT_RETRY, bootModuleRecovery } from './bootRecovery.js';
-import { startupDeadline, safeStartupHref, loadSourceMapManifests } from './startupSafety.js';
+import { loadSourceMapManifests } from './startupSafety.js';
 
 // The converted source levels (public/local-maps): their manifests register the
 // maps before the menu lists them, and each map's geometry loads when it is
@@ -70,33 +70,7 @@ launch.menuOpen = () => menu.isOpen;
 
 // Menu browsing only fetches files. Hovering maps must not create devices or
 // queue shader compilations for worlds the player has not chosen to start.
-let finishStartup = null, startupComplete = false;
-function watchStartup() {
-  if (finishStartup || app) return;
-  finishStartup = startupDeadline((error) => {
-    launch.startupError = error;
-    showStartupError(error);
-    // Best effort only: a device request can itself still be pending.
-    // If it resolves late, stop that device rather than restarting the boot.
-    Promise.resolve(launch.gpu).then((gpu) => {
-      gpu?.fail(error);
-      showStartupError(error);
-    }, () => {});
-  });
-}
-function showStartupError(error) {
-  menu.close();
-  showError(`${error.message}\n\nYou can restart with source textures disabled and the Plain view.`
-    + (launch.save != null ? '\nSelect your save again after restarting.' : ''));
-  const el = document.getElementById('error');
-  el.style.flexDirection = 'column';
-  el.style.gap = '20px';
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.textContent = 'Restart with safe graphics';
-  button.onclick = () => location.assign(safeStartupHref(location.href, launch));
-  el.append(button);
-}
+let startupComplete = false;
 
 async function start(map, mode) {
   mark('click');
@@ -113,7 +87,6 @@ async function start(map, mode) {
 launch.ready = () => {
   if (launch.startupError) return;
   startupComplete = true;
-  finishStartup?.();
   menu.close();
   const url = new URL(location.href);
   if (url.searchParams.has(BOOT_RETRY)) {
@@ -122,10 +95,9 @@ launch.ready = () => {
   }
 };
 launch.failed = (error) => {
-  finishStartup?.();
   if (!startupComplete) {
     launch.startupError ??= error;
-    showStartupError(launch.startupError);
+    menu.close(); // app.js has already displayed the graphics failure.
   }
 };
 // The loading screen's steps as the boot reaches them (ui/menu.js STEPS): the
@@ -138,7 +110,6 @@ launch.status = (text) => { if (!launch.startupError && menu.isOpen) menu.progre
 // arriving (fetched in the background while the menu was up), then the build,
 // on screen before app.js holds the main thread building the map in one go.
 async function bootInSteps() {
-  watchStartup();
   menu.progress('fetch');
   await gameFetched();
   if (launch.startupError) return;
@@ -191,7 +162,6 @@ async function loadSave(what, meta) {
 // request's (app.js). The game can't draw without it, so the menu goes.
 let webgpuFailed = false;
 function showWebgpuError(why, reason) {
-  finishStartup?.();
   webgpuFailed = true;
   const lines = [`The game cannot start WebGPU right now. ${why}`];
   if (reason === 'no-adapter') {
@@ -220,7 +190,6 @@ This error does not identify the cause. Save your other work, then quit the brow
 If it keeps happening, chrome://gpu shows graphics availability, detected problems, and driver messages.`;
 
 async function boot() {
-  watchStartup();
   const p = await probe;
   if (launch.startupError) return;
   if (!p.ok) return;           // (the probe's handler explained)
@@ -229,11 +198,7 @@ async function boot() {
     if (new URL(location.href).searchParams.has(BOOT_RETRY)) await refreshGameFiles();
     app = await import('./app.js');
   } catch (err) {
-    finishStartup?.();
-    if (launch.startupError) {
-      showStartupError(launch.startupError);
-      return;
-    }
+    if (launch.startupError) return; // app.js has already explained the failure.
     // app.js's createGpu was refused a device: as good as no adapter (B2)
     if (err === launch.deviceError) {
       showWebgpuError(`The browser refused a WebGPU device: ${err.message || err.name || err}`, 'device-error');

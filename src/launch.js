@@ -9,7 +9,7 @@
 //                (the loading screen's status lines, ui/menu.js STEPS)
 //   ready()      set by main.js, called by app.js once the first map is on screen (and a match
 //                picked with it is running)
-//   failed(e)    stops the startup deadline on graphics failure; no automatic retry
+//   failed(e)    records a fatal startup graphics failure; no automatic retry
 //   startupError a fatal startup error; late async completion must not restart the game
 // WebGPU (docs/webgpu.md B2, B5, G5):
 //   adapter      set by main.js: the adapter its probe found (probeWebGPU), for createGpu

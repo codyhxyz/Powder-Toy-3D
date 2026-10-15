@@ -85,8 +85,7 @@ import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
-import { VIEWS, viewKey as viewKeyOf, isMaterialView } from './views.js';
-import { gpuSafeMode, startupView as viewForMode } from './startupSafety.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView, viewForMode } from './views.js';
 import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
@@ -227,7 +226,7 @@ if (params.get('scene')) settings.scene = params.get('scene');
 settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed: the island)
 // ?view=plain (or a view's id): the view to boot in. The test tools boot the
 // plain view, the cheapest to build (docs/webgpu.md B5, I1).
-const viewParam = gpuSafeMode() ? 'plain' : params.get('view');
+const viewParam = params.get('view');
 const linkedView = VIEWS.find((v) => v.key === viewParam || String(v.id) === viewParam);
 if (linkedView) settings.view = linkedView.id;
 // ?win=<x>[,<y>,<z>]: a world window of another size, for the test tools
@@ -271,7 +270,7 @@ if (bootMap) useMap(bootMap);
 // map or mode takes over a mode still starting (startMode)
 let selectedMode = bootMap ? resolveMode(bootMap, launch.mode ?? params.get('mode') ?? 'sandbox').key : 'sandbox', modeEpoch = 0;
 // Launch defaults supersede a saved shader, not an explicit URL or a later picker change.
-if (!linkedView) settings.view = viewForMode(modeByKey(selectedMode), settings.view, undefined, mapOf(settings));
+if (!linkedView) settings.view = viewForMode(modeByKey(selectedMode), settings.view, mapOf(settings));
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
@@ -705,7 +704,7 @@ function openMap(key, mode = 'sandbox') {
   // waits on the view's pipelines as they will draw (B5: the rolling log's
   // curved variants, behind the loading screen); startMode below finds them chosen
   const chosen = resolveMode(m, mode);
-  const modeView = viewForMode(chosen, settings.view, undefined, m);
+  const modeView = viewForMode(chosen, settings.view, m);
   if (modeView !== settings.view) setView(modeView);
   selectedMode = chosen.key;
   presentation.select(chosen.effect ?? null);
@@ -742,7 +741,7 @@ async function startMode(mode, { fresh = false } = {}) {
   const game = pov?.game;
   pov?.mission?.end();
   if (chosen.key !== selectedMode) {
-    const modeView = viewForMode(chosen, settings.view, undefined, mapOf(settings));
+    const modeView = viewForMode(chosen, settings.view, mapOf(settings));
     if (modeView !== settings.view) setView(modeView);
   }
   selectedMode = chosen.key;

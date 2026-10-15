@@ -19,33 +19,18 @@ An unavailable adapter alone does not prove a particular browser or driver fault
   The game does not automatically request another device after startup failure.
 - Optional source-map registration has a separate 10-second deadline. It aborts
   requests and prevents late registration after the menu is initialized.
-- Startup after an explicit Start has a 45-second deadline. It ends when the
-  first world and selected mode are ready, not when the app module downloads.
-  Adapter waits, file downloads, renderer initialization and world setup are
-  covered. Late completion cannot hide the error or resume the boot.
 
 These deadlines bound our waits when browser JavaScript remains responsive.
 They **cannot interrupt native driver compilation**, reset browser crash
 protection or guarantee that another tab stays responsive during a driver fault.
 
-## Safe restart
+## Startup behavior
 
-A startup failure offers **Restart with safe graphics**. This is an explicit
-user action, not an automatic retry.
-
-`?gpuSafe=1` disables source-art shaders, downloads and allocations before GPU
-work starts. It also selects the Plain view, including mode-default selection.
-The recovery link preserves the selected map and mode. It does not reduce
-level dimensions, physics fixtures, collision or actor counts.
-
-Example:
-
-```text
-https://tpt3d.codyh.xyz/?map=paradise&mode=crueltySquad&gpuSafe=1
-```
-
-Safe mode still needs a usable WebGPU adapter. It cannot bypass a browser GPU
-block or recover a device that the browser refuses to provide.
+There is no overall startup deadline or alternate safe-graphics mode.
+The game uses the selected view and the normal map and mode defaults.
+An elapsed 45 seconds alone does not abort a healthy startup.
+Actual graphics failures still stop queued builds and show their cause.
+Late completion cannot hide a fatal startup error or resume failed work.
 
 ## Verification
 
@@ -58,7 +43,7 @@ node --test tools/check-source-appearance.mjs
 
 Tests use fake devices, controlled clocks and the actual entry-module source.
 They cover stalled compilers, concurrency, cancellation, late results, cache
-reuse, metadata waits, safe-mode shader generation and unchanged binding layouts.
+reuse, metadata waits, ordinary/source shader selection and unchanged binding layouts.
 Deployment installs and caches Naga 30.0.1. Native WGSL validation is required
 for source and ordinary variants; it is not skipped when the tool is absent.
 

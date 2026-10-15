@@ -5,9 +5,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 import { test } from 'node:test';
-import { startupDeadline, safeStartupHref, gpuSafeMode, startupView, loadSourceMapManifests,
-  STARTUP_BUDGET_MS, SOURCE_MANIFEST_BUDGET_MS } from '../src/startupSafety.js';
-import { VIEWS } from '../src/views.js';
+import { loadSourceMapManifests, SOURCE_MANIFEST_BUDGET_MS } from '../src/startupSafety.js';
 import { installLocalCrueltyMaps } from '../src/world/import/localMap.js';
 import { MAPS } from '../src/maps.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
@@ -30,37 +28,6 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 const turn = () => new Promise(resolve => setImmediate(resolve));
-
-test('startup deadline clears on success and fires once when stalled', () => {
-  const time = clock(), failures = [];
-  const finish = startupDeadline(e => failures.push(e), time);
-  assert.equal([...time.jobs.values()][0].ms, STARTUP_BUDGET_MS);
-  const staleCallback = [...time.jobs.values()][0].fn;
-  finish(); finish(); staleCallback();
-  assert.equal(time.jobs.size, 0);
-  assert.equal(failures.length, 0);
-  const stop = startupDeadline(e => failures.push(e), time);
-  const timeout = [...time.jobs.values()][0].fn;
-  time.fire(STARTUP_BUDGET_MS); timeout(); stop();
-  assert.equal(failures.length, 1);
-  assert.equal(failures[0].name, 'GraphicsFailure');
-  assert.match(failures[0].message, /cannot be cancelled/);
-});
-
-test('safe restart preserves the selected map/mode without automatic retries or saved-settings edits', () => {
-  const url = new URL(safeStartupHref('https://example.test/?map=old&view=realistic&__boot_retry=1#test',
-    { map: 'paradise', mode: 'crueltySquad' }));
-  assert.equal(url.origin, 'https://example.test');
-  assert.equal(url.searchParams.get('map'), 'paradise');
-  assert.equal(url.searchParams.get('mode'), 'crueltySquad');
-  assert.equal(url.searchParams.get('view'), 'plain');
-  assert.equal(url.searchParams.has('__boot_retry'), false);
-  assert.equal(url.hash, '#test');
-  assert.equal(gpuSafeMode(url.search), true);
-  for (const search of ['', '?gpuSafe=0', '?gpuSafe=true']) assert.equal(gpuSafeMode(search), false);
-  assert.equal(startupView({ defaultView: 'cozy' }, 0, '?gpuSafe=1'), VIEWS.find(v => v.key === 'plain').id);
-  assert.equal(startupView({ defaultView: 'cozy' }, 0, ''), VIEWS.find(v => v.key === 'cozy').id);
-});
 
 test('map registration has a separate deadline before the menu and aborts late module downloads', async () => {
   const time = clock(), loader = deferred();
@@ -139,8 +106,7 @@ async function mainHarness({ search = '?map=fixture', probe: suppliedProbe, onIm
       DEFAULT_MAP: 'fixture', MOBILE_MAP: 'fixture' },
     './gpu/device.js': { probeWebGPU: () => suppliedProbe ?? Promise.resolve({ ok: true, adapter: {} }) },
     './bootRecovery.js': { BOOT_RETRY: '__boot_retry', bootModuleRecovery: () => null },
-    './startupSafety.js': { startupDeadline: callback => startupDeadline(callback, time), safeStartupHref,
-      loadSourceMapManifests: loader => loadSourceMapManifests(loader, time) },
+    './startupSafety.js': { loadSourceMapManifests: loader => loadSourceMapManifests(loader, time) },
     './world/import/localMap.js': { installLocalCrueltyMaps: async () => {} },
     './app.js': {},
   };
@@ -180,48 +146,51 @@ test('menu opening does not import the game or warm shaders', async () => {
   assert.equal(h.time.jobs.size, 0);
 });
 
-test('timeout waiting for adapter does not start a late game or automatically reload', async () => {
+test('slow adapter has no overall startup deadline or recovery UI', async () => {
   const probe = deferred(), h = await mainHarness({ probe: probe.promise });
-  h.time.fire(STARTUP_BUDGET_MS); await turn();
-  assert.equal(h.launch.startupError.name, 'GraphicsFailure');
-  assert.match(h.error.textContent, /cannot be cancelled/);
-  assert.equal(h.error.children[0].textContent, 'Restart with safe graphics');
+  assert.equal(h.time.jobs.size, 0);
+  h.time.fire(45000); await turn();
+  assert.equal(h.launch.startupError, null);
+  assert.equal(h.error.textContent, '');
+  assert.equal(h.buttons.length, 0);
   assert(!h.events.some(e => Array.isArray(e) && ['assign', 'replace'].includes(e[0])));
   probe.resolve({ ok: true, adapter: {} }); await turn();
-  assert(!h.imports.includes('./app.js'));
-  assert.equal(h.error.children.length, 1);
+  assert(h.imports.includes('./app.js'));
+  assert.equal(h.error.children.length, 0);
 });
 
-test('late device and module completion cannot hide a startup timeout or restart the boot', async () => {
-  const device = deferred(), app = deferred(), failures = [];
-  const h = await mainHarness({ appGate: app.promise, onImport: launch => { launch.gpu = device.promise; } });
+test('slow app download can finish normally without a forced restart or view override', async () => {
+  const app = deferred();
+  const h = await mainHarness({ appGate: app.promise });
   assert.equal(h.imports.filter(s => s === './app.js').length, 1);
-  h.time.fire(STARTUP_BUDGET_MS); await turn();
-  const original = h.launch.startupError;
-  device.resolve({ fail: e => failures.push(e) }); app.resolve(); await turn();
+  assert.equal(h.time.jobs.size, 0);
+  h.time.fire(45000); await turn();
+  assert.equal(h.launch.startupError, null);
+  app.resolve(); await turn();
   h.launch.ready();
-  assert.deepEqual(failures, [original]);
-  assert.equal(h.launch.startupError, original);
-  assert.match(h.error.textContent, /exceeded 45 seconds/);
-  assert.equal(h.error.children.length, 1);
+  assert.equal(h.launch.startupError, null);
+  assert.equal(h.error.textContent, '');
+  assert.equal(h.error.children.length, 0);
   assert.equal(h.imports.filter(s => s === './app.js').length, 1);
-  h.error.children[0].onclick();
-  assert(h.events.some(e => Array.isArray(e) && e[0] === 'assign' && e[1].includes('gpuSafe=1')));
+  assert(!h.events.some(e => Array.isArray(e) && ['assign', 'replace'].includes(e[0])));
 });
 
-test('successful boot clears the deadline; early GPU failure preserves its named cause', async () => {
+test('successful boot stays ready; actual GPU failure keeps its diagnostic without fallback UI', async () => {
   const good = await mainHarness();
   good.launch.ready();
   assert.equal(good.time.jobs.size, 0);
-  good.time.fire(STARTUP_BUDGET_MS);
+  good.time.fire(45000);
   assert.equal(good.launch.startupError, null);
   const bad = await mainHarness();
   const failure = Object.assign(new Error('GPU shader compilation timed out: far view'), { name: 'GraphicsFailure' });
+  bad.error.textContent = failure.message; // app.js displays this before launch.failed.
   bad.launch.failed(failure);
   assert.equal(bad.time.jobs.size, 0);
   assert.equal(bad.launch.startupError, failure);
   bad.launch.ready();
-  assert.match(bad.error.textContent, /far view/);
+  assert.equal(bad.error.textContent, failure.message);
+  assert.equal(bad.error.children.length, 0);
+  assert.equal(bad.buttons.length, 0);
 });
 
 test('no-adapter diagnostic does not misidentify a supported browser as unsupported', async () => {
@@ -284,29 +253,16 @@ test('actual app device block refuses cancelled imports before creation and late
   assert.equal(requests, 2);
 });
 
-test('safe URL excludes source shaders and artwork loading before any GPU work', () => {
+test('retired recovery parameter cannot disable source appearance; ordinary maps still exclude it', () => {
   const script = `
     import assert from 'node:assert/strict';
-    import {readFileSync} from 'node:fs';
     globalThis.location = { search: '?gpuSafe=1' };
     const {SOURCE_APPEARANCE_ENABLED} = await import('./src/gfx/sourceAppearance.js');
     const {volumeFrag} = await import('./src/shaders/render.js');
-    assert.equal(SOURCE_APPEARANCE_ENABLED, false);
+    assert.equal(SOURCE_APPEARANCE_ENABLED, true);
     const g = {nx:128, ny:128, nz:128, sourceGrid:[136,61,148], sourceAppearance:true};
-    assert.doesNotMatch(volumeFrag(g), /fn sourceWord|fn sourceTexture|fn sourceDiffuse/);
-    const {createImportedMapScene} = await import('./src/world/scenes/importedMap.js');
-    const root = new URL('./public/local-maps/', import.meta.url);
-    const map = JSON.parse(readFileSync(new URL('paradise.json', root)));
-    const urls = [];
-    globalThis.fetch = async url => {
-      urls.push(String(url));
-      return new Response(readFileSync(new URL(map.dataFile, root)));
-    };
-    const scene = createImportedMapScene(map, null, {dataURL:'https://fixture.test/paradise.binpack'});
-    await scene.prepare();
-    assert.deepEqual(urls, ['https://fixture.test/paradise.binpack']);
-    assert.equal(scene.appearanceWords, null);
-    assert(scene.interactionState);
+    assert.match(volumeFrag(g), /fn sourceWord/);
+    assert.doesNotMatch(volumeFrag({...g, sourceAppearance:false}), /fn sourceWord|fn sourceTexture|fn sourceDiffuse/);
   `;
   const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     cwd: new URL('../', import.meta.url), encoding: 'utf8', timeout: 15000,
