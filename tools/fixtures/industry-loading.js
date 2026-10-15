@@ -65,7 +65,10 @@ export async function runIndustryLoading({ sim, gpu, deadline, stage = () => {} 
     if (ticks !== 4 || observations.nativeTicks + ticks > 4800) throw new Error('loading native tick budget reached');
     await operator?.beforeNativeFrame();
     const before = sim.frame;
-    for (let n = 0; n < ticks; n++) sim.step();
+    for (let n = 0; n < ticks; n++) {
+      sim.step();
+      industry.nativeStep([hearth, miner]);
+    }
     if (sim.frame - before !== ticks) throw new Error('incorrect native tick advance');
     observations.nativeTicks += ticks;
     industry.step(ticks / 240, [hearth, miner]);

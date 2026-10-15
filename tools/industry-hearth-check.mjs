@@ -239,7 +239,7 @@ try {
   assert.equal(naga.status, 0, `Naga must accept the real composed Industry WGSL:\n${naga.stdout}\n${naga.stderr}`);
   const guardAt = code.indexOf('if (!machineEnabled(P.guardBase');
   const hearthAt = code.indexOf('hearthUpdate(p, a, b, P.corner');
-  check(guardAt >= 0 && hearthAt > guardAt && code.includes('if (P.kind == 5u)'),
+  check(guardAt >= 0 && hearthAt > guardAt && code.includes('if (P.kind == 5u || P.kind == 6u)'),
     'compiled actual Industry edit dispatch calls hearth only after its base/control guard');
 } finally {
   rmSync(dir, { recursive: true, force: true });

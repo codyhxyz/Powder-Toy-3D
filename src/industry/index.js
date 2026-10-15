@@ -469,6 +469,11 @@ export function createIndustry(app) {
   }
   let lastProbe = fail('Checking clearance…');
   const api = {
+    nativeStep() {
+      if (disposed) return;
+      if (app.sim !== lastSim || app.gamemode !== lastMode) modeChanged();
+      physics.nativeStep(active() && !pending ? devices : []);
+    },
     update, place, placeControlPart, remove, toggle, modeChanged, selectPart, setThreshold, toggleInspect,
     setDrive, setGateMode, toggleControl,
     get state() { return state(); }, get building() { return isBuilding(); },

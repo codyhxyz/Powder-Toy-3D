@@ -522,6 +522,43 @@ Result: `/tmp/sandustry-physical-line-tools-firebox-stream-v1.json`.
 No bypass was used, and the server stopped.
 Progressive collection and full actual-tool cold shipment remain unverified.
 
+### Native-tick draft correction: complete actual-tool batch passed
+
+A further protected attempt under the frame-batched draft peaked at **1494.42°C** without melting.
+Occupancy: **9440 ms**, report `~/.cache/tpt-headless/runs/85558-85589.json`.
+Result: `/tmp/sandustry-physical-line-tools-firebox-stream-v2.json`.
+The marginal 1514°C result was not a reliable furnace repair.
+
+The app previously advanced four native ticks before applying one capped draft update.
+Coal cooled every tick, while the CPU thermal calibration applied draft every tick.
+Increasing the elapsed-time budget did not restore the lost hot-source duty cycle.
+The production app and fixtures now apply guarded heat-only hearth edits after each native tick.
+Each tick still pays the existing finite per-cell fuel budget.
+The frame update guides melt separately with zero added heat, preserving its previous cadence.
+No source temperature, energy-per-life value, chemistry, footprint, or tool velocity changed.
+Clock tests cover deduplication, no-frame/no-heat, inactive/disposed suppression, and unchanged legacy-heater timing.
+Independent review `702a1903` found no concrete P1/P2 regressions.
+All 68 Industry tests, 17 physics checks, 360 hearth checks, diagnostics, Factory UI, Naga validation, and production build pass.
+
+The protected **89-device, six-coal, four-scrap actual-tool batch passed all 23 checks**.
+No refill was requested or needed.
+The actual shovel loaded cold scrap and mined full-life coal through native candidates.
+Metal-bearing material peaked at **1591.94°C**.
+The real finite bucket captured four native LAVA(METAL) cells and poured all four inside the shipping catch.
+Actual pumped water cooled the cargo.
+Four confirmed METAL shipments measured **79.24, 107.79, 150.36, and 100.16°C**.
+The actual shovel removed three ash cells while preserving all 48 hearth shell cells.
+The pump retained its tagged backplate, transferred 34 water cells forward, and reported zero fallback returns.
+Its switch shutdown held; the final bucket and pump buffer were empty.
+All tool-error, native receipt, full-target, and transfer-settlement checks passed; no residual gaps were reported.
+The ash remains accounted for in the shovel; this is not a claim of zero held cargo.
+
+Native ticks: **1672**.
+Total GPU slot occupancy: **7103 ms**, report `~/.cache/tpt-headless/runs/16884-17762.json`.
+Result: `/tmp/sandustry-physical-line-tools-native-cadence-v1.json`.
+No utilization bypass was used. The browser and server stopped.
+This proves real tool-transfer processing, not actual player walking, health survival, continuous automation, or precision fuel gating.
+
 - Verify repeat refueling and real player shovel/bucket gestures.
 - Verify precision fuel feeding; useful coolant release now passes.
 - Finish compatibility checks and independent review after the physical pump change.

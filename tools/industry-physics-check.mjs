@@ -9,7 +9,7 @@ import { E, K } from '../src/elements.js';
 import { deviceCell, CASTING_TEMPERATURE } from '../src/industry/catalog.js';
 import { createIndustryPhysics, validateIndustryPhysics, controlCell, machineBox, machinePorts, validMachine } from '../src/industry/physics.js';
 import { createTransfer, Load } from '../src/pov/tools/transfer.js';
-import { WGSL_CHECK } from '../src/shaders/industry.js';
+import { WGSL_CHECK, INDUSTRY_KIND } from '../src/shaders/industry.js';
 import { constructionWGSL } from '../src/industry/construction.js';
 import { transferFrag, TransferParams } from '../src/shaders/transfer.js';
 
@@ -40,6 +40,37 @@ function fixture() {
 const d = (type, extra = {}) => ({ id: type, type, x: 24, y: 8, z: 32, rotation: 0, ...extra });
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log(`PASS ${name}`); }
+
+await test('hearth pays once per native tick without accelerating legacy machinery', async () => {
+  const f = fixture();
+  f.sim.frame = 0;
+  const api = createIndustryPhysics({ getSim: () => f.sim });
+  await api.ready;
+  const devices = [d('hearth'), d('heater')];
+  api.nativeStep(devices);
+  assert.equal(f.edits.length, 0, 'no real tick means no heat');
+  for (let frame = 1; frame <= 4; frame++) {
+    f.sim.frame = frame;
+    api.nativeStep(devices);
+    api.nativeStep(devices);
+    assert.equal(f.edits.length, frame, 'repeated callbacks cannot charge a tick twice');
+    assert.equal(f.edits.at(-1).values.dt, 1 / 240);
+    assert.equal(f.edits.at(-1).values.kind, INDUSTRY_KIND.hearthHeat, 'native heat does not guide melt');
+  }
+  api.step(1 / 60, devices);
+  assert.equal(f.edits.length, 6, 'frame update adds guidance and legacy heater, not duplicate hearth heat');
+  assert.equal(f.edits.slice(4).find(edit => edit.values.kind === INDUSTRY_KIND.hearth).values.dt, 0,
+    'guidance cannot charge additional fuel');
+  assert.equal(f.edits.slice(4).find(edit => edit.values.kind === INDUSTRY_KIND.heater).values.dt, 1 / 60);
+  f.sim.frame++;
+  api.nativeStep([]);
+  api.nativeStep(devices);
+  assert.equal(f.edits.length, 6, 'inactive tick is not banked for later heating');
+  api.dispose();
+  f.sim.frame++;
+  api.nativeStep(devices);
+  assert.equal(f.edits.length, 6, 'disposed physics cannot heat');
+});
 
 await test('rotated ports, bounds and finite drilling footprint', () => {
   for (let rotation = 0; rotation < 4; rotation++) {

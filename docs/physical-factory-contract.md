@@ -76,6 +76,10 @@ The boost spends life only for delivered heat, not unused source headroom.
 Native combustion still consumes its own fuel normally.
 These are game rules, not measured coal chemistry.
 Hearth timing follows native simulation ticks, not presentation frames.
+The app calls `Industry.nativeStep()` after every native tick, including manual test stepping.
+Heat-only edits pay once per advanced native tick; repeated callbacks cannot spend fuel twice.
+The ordinary frame update applies melt guidance with zero additional heating.
+Legacy heaters, conveyors, pumps, and miners keep their existing frame cadence.
 Mining retains coal's remaining fuel life; it does not refill exhausted coal.
 
 ## Pump backing

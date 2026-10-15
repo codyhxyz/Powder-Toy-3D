@@ -36,7 +36,7 @@ fn hearthFinite(value: f32) -> bool {
 // conduction carries that finite budget into the charge. There is no recipe
 // counter, no remote heat grant, and no SCRAP→LAVA shortcut.
 fn hearthUpdate(p: vec3i, a: vec4f, b: vec4f, corner: vec3i, right: vec3i,
-    forward: vec3i, dt: f32, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+    forward: vec3i, dt: f32, guideMelt: bool, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   let rel = p - corner;
   let x = dot(vec3f(rel), vec3f(right));
   let y = f32(rel.y);
@@ -66,8 +66,10 @@ fn hearthUpdate(p: vec3i, a: vec4f, b: vec4f, corner: vec3i, right: vec3i,
   }
   // TPT's native phase rules make LAVA. This only points existing melt toward
   // the buildable +forward spout/outlet; it never changes a charge's element.
-  if (id == E_LAVA && (hearthChargeCell(x, y, z) || hearthOutletCell(x, y, z))) {
-    *oB = vec4f(vec3f(forward) * 0.3 + vec3f(0.0, max(b.y, 0.0), 0.0), b.w);
+  if (guideMelt) {
+    if (id == E_LAVA && (hearthChargeCell(x, y, z) || hearthOutletCell(x, y, z))) {
+      *oB = vec4f(vec3f(forward) * 0.3 + vec3f(0.0, max(b.y, 0.0), 0.0), b.w);
+    }
   }
 }
 `;

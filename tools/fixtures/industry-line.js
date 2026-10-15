@@ -267,7 +267,10 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     // The real operator runs once before the app-equivalent four native steps.
     if (physicalOperator) await physicalOperator.beforeNativeFrame();
     const before = sim.frame;
-    for (let i = 0; i < ticks; i++) sim.step(); // Simulation.step takes no batch argument.
+    for (let i = 0; i < ticks; i++) {
+      sim.step(); // Simulation.step takes no batch argument.
+      industry.nativeStep([hearth, pump, ship, miner]);
+    }
     if (sim.frame - before !== ticks) throw new Error('native simulation did not advance the requested tick count');
     observations.nativeTicks += ticks;
     // Registered machines stay present when OFF. The real SWITCH, not fixture

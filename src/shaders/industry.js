@@ -30,7 +30,7 @@ fn machineEnabled(base: vec3i, material: i32, port: vec3i, controlled: u32) -> b
   return industryControlActive(port);
 }
 `;
-export const INDUSTRY_KIND = Object.freeze({ belt: 0, separator: 1, lift: 2, miner: 3, heater: 4, hearth: 5 });
+export const INDUSTRY_KIND = Object.freeze({ belt: 0, separator: 1, lift: 2, miner: 3, heater: 4, hearth: 5, hearthHeat: 6 });
 export const IndustryParams = uniformStruct('IndustryParams', {
   ...EDIT_FIELDS, ...MACHINE_GUARD_FIELDS,
   forward: 'vec3i', right: 'vec3i', corner: 'vec3i',
@@ -39,8 +39,8 @@ export const IndustryParams = uniformStruct('IndustryParams', {
 export const industryUpdateWGSL = /* wgsl */ `
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   if (!machineEnabled(P.guardBase, P.guardMaterial, P.guardPort, P.guardPowered)) { return; }
-  if (P.kind == 5u) {
-    hearthUpdate(p, a, b, P.corner, P.right, P.forward, P.dt, oA, oB);
+  if (P.kind == 5u || P.kind == 6u) {
+    hearthUpdate(p, a, b, P.corner, P.right, P.forward, P.dt, P.kind == 5u, oA, oB);
     return;
   }
   let id = eid(a);

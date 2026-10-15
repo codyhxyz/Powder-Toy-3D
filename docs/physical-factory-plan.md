@@ -4,13 +4,14 @@ Status: the native backend batch and real control UI pass.
 Mined coal melted four scrap cells; all four reached the water catch and shipped below 400°C.
 Charge-first loading and short retention pass with actual tools.
 The old rear-only rule reached only 1334°C with the hand-loaded charge.
-The corrected rule reaches 1489°C with six coal cells; a real refill produces native molten metal.
-Progressive bucket collection, completed-batch reuse, and precision fuel gating remain unverified.
+The corrected native-tick draft now processes all four scrap cells using six coal cells, without refilling.
+Actual shovel loading, bucket collection, water cooling, cold shipment, and ash cleanup pass.
+Completed-batch reuse, actual walking/heat survival, and precision fuel gating remain unverified.
 The production rule now heats live coal anywhere inside the firebox with the existing finite budget.
 This removes the rear-only eligibility mismatch without changing molten transport.
 CPU and independent review of the heating correction pass.
-Runtime checks confirm whole-firebox heating and native melting with a finite refill, but not full cold shipment.
-The progressive collection retry was refused at 98% GPU load before assertions.
+The complete actual-tool batch passes all 23 checks in 1672 native ticks and 7103 ms total slot occupancy.
+Native heating runs each tick; existing melt guidance remains at its original frame cadence.
 Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
