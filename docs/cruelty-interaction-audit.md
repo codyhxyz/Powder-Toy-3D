@@ -1,5 +1,9 @@
 # Imported Cruelty Squad interactions
 
+Source motion and fixed appearance-envelope metadata are specified in
+[Door motion conversion ABI](cruelty-door-motion-conversion.md). All four published
+maps are regenerated through that shared pipeline and consumed by the runtime below.
+
 ## Evidence and supported adaptation
 
 Geometry/inventory: local `cruelty-vr-unpacked/Levels/Level{1,2,3,4,6}.tscn`.
@@ -11,16 +15,18 @@ Level 3 remains blocked by the existing full-bounds/storage budget; it is audite
 not cropped or silently enabled. Level 4 is included because it is a shipped map.
 
 - `Door.gd`: E/use toggles a 90-degree Y swing, default 2 radians/second.
-  Destination: instant **exclusive-cell voxel retraction**, E toggles closed/open.
-  No moving leaf, hinge sweep, source audio, source health pool, or intermediate
-  animation. Existing element physics/destruction still apply.
+  Motion-enabled imports: negative-Y hinge swing with a physical moving voxel
+  leaf and original triangle artwork. Progress is linear, endpoints clamp and
+  use reverses the current pose (deliberate safe adaptations of source quirks).
+  Source audio/health pool are not reproduced; element destruction still applies.
 - `Elevator_Door.gd`: use only starts opening from stopped/closed; slides along
   longest local horizontal dimension (ties move both), default 2 meters/second;
-  starts a 5-second one-shot closing timer. Destination: instant retraction,
-  **no manual close**, 5-second auto-close deferred until safe and fully resident.
+  starts a 5-second one-shot closing timer. Motion-enabled imports slide the
+  physical leaf in the original negative direction, **no manual close**. The
+  timer starts at use, not animation completion, and close steps defer if unsafe.
 - `down_door.gd`: E starts downward opening and a five-second closing timer.
-  Destination uses the same safe timed retraction. Its external `switch_use`
-  activation and moving leaf are not reproduced.
+  Motion-enabled imports use the same safe timed moving leaf. External
+  `switch_use` activation is not implemented.
 - Divine gates require `Global.soul_intact`, profane gates `Global.husk_mode`,
   terror gates `Global.hope_discarded`. These are NOT ordinary free doors.
   Destination: no progression implementation; E shows the unsupported requirement.
@@ -39,23 +45,73 @@ and source actor inventory; original normal/hell/chaos filtering remains unchang
 
 Ownership is triangle/cell intersection, not a bounding-box carve. A voxel touched
 by **any** non-door geometry or another door is disqualified, regardless of source
-material precedence. Opening captures only surviving matching-element voxels on
-GPU; closing restores only the captured survivors into EMPTY. It never restamps
-static overlaps, destroys walls/floors, or resurrects previously destroyed door cells.
-A cell replaced while the door is open is disqualified for future cycles.
-Same-element repainting cannot be distinguished from an original live cell.
+material precedence. Motion transforms immutable original cell centers then floors
+into world cells. A destination-owned two-phase `reads: 'neighbours'` edit reads
+old A/B before erasing matching previously placed cells and stamping only empty
+or owned destinations. Open leaves remain present and collidable. Live thermal/life
+fields follow placed cells. Coalesced cells retain separate logical alive bits;
+occlusion clears placement, not life, so cycles cannot shrink or resurrect leaves.
+Foreign replacements and static overlaps are never overwritten. Same-element
+repainting cannot be distinguished from an original live cell.
+
+Manifests without `door.motion` retain the legacy instant retraction path.
 
 The same sparse words serve CPU terrain and every subscribed GPU scene generator
 (including far generation). Only modified packed-word runs upload on interaction,
 never whole-map writes per frame. World streaming is locked through live-mask
-readback and canonical updates; use requires the entire door bounds resident.
-Open state therefore survives leaving/re-entering the window. Auto-close waits for
-residency and a player/NPC-free doorway. `WorldWindow.load` resets canonical words
-and interaction state before generation, covering retries and map reloads.
-Save files include open states, surviving-cell masks and timers; restoration runs
-before cell loading and far generation. Old saves reset to closed source doors.
+readback and canonical updates; motion requires the whole swept envelope resident.
+Outside the window poses freeze without blocking streaming, then resume. Each
+step checks a conservative continuous leaf-path bound against players/NPCs; pending
+time is retained across GPU readback, with catch-up bounded to 100 ms of source
+motion per edit. Round-robin scheduling advances simultaneous doors independently.
+Zero-delta renders do not advance motion. Actor obstructions clear accumulated time.
+Moving ordinary doors also wake the existing timer-driven world update path.
+`WorldWindow.load` resets changed canonical words and artwork before generation.
+Save-state v2 includes actual/desired progress, logical target, alive/placed masks,
+timer and captured foreign/cleared-path canonical overrides. Validation finishes before
+mutation. V1 open states migrate to the open endpoint with unplaced logical
+survivors: old saves contained a retracted leaf, not physical endpoint cells.
+Guarded live edits place these survivors without overwriting endpoint terrain.
+Missing states reset to source doors.
 Capture waits for transactions started during shader preparation too. Timers
 continue outside first-person view, but stop when the simulation is paused.
+
+Original 24-word triangle records are cached lazily. Rigid poses transform p0,
+normal/plane and UV/barycentric affine gradients without changing material IDs.
+Scene subscribers receive sorted coalesced dirty word ranges; far-grid updates
+round out to exact u32 pairs and split at atlas rows/planes, preserving adjacent
+words and padding. Full appearance upload occurs only on scene build; sampler
+WGSL and global resource bindings are unchanged.
+
+CPU regression: `node --test tools/imported-door-motion-check.mjs tools/imported-interactions-check.mjs tools/check-source-appearance.mjs`.
+This includes real runtime orchestration against snapshot-neighbour CPU emulation,
+affine/art uploads, save/reset/epoch tests, WGSL reflection and CPU Naga. GPU/browser
+validation uses `tools/cruelty-door-browser-check.mjs`: real click/E, intermediate
+native GPU poses and readback, moving artwork records, reversal and mode-scoped UI.
+
+Bounded native evidence:
+
+- Normal-sized Androgen Assault in plain view passed click/E, intermediate poses,
+  all 45 living cells, artwork changes and reversal in 8.227 seconds total.
+- `tools/source-appearance-gpu-check.mjs` passed on the Apple GPU in 2.562 seconds.
+  A nonuniform texture retains its exact sampled pixel after rotation, translation
+  and reset through the production affine helper, range uploader and WGSL reader.
+- A full realistic Androgen cold boot reached its guard at 23.985 seconds before
+  assertions. This is not a completed textured-scene visual check.
+- All four deployed geometry, appearance and motion payloads match local bytes.
+  A live plain-view diagnostic stopped at 22.148 seconds with the existing core
+  `move` pipeline still compiling, before the door kernel starts. This port does
+  not change that core shader. Full live-game cold-boot verification is pending.
+- `tools/cruelty-ui-browser-check.mjs` verifies the real interaction component
+  against byte-identical deployed CSS without world bootstrap. Desktop click,
+  Enter/focus, scoped readout restoration, disposal and coarse-touch tap passed
+  in 2.950 seconds total. Desktop is 62×28 pixels; touch is 44×44.
+
+The compact interaction control is a scoped input/accessibility adaptation.
+Original `weapon.gd` uses doors directly, without an ordinary-door hover card.
+Our Cruelty-only `[E] Open` button removes the card and redundant title, preserves
+click/touch and keyboard focus, and hides the overlapping material readout only
+while an imported interaction is focused. Other modes retain their controls.
 
 Conservative overlap ownership may leave frame/static voxels in the opening.
 Level 4 `QodotMap/entity_175_Door` and `QodotMap/entity_320_Door` have no exclusive

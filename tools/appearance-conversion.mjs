@@ -1,6 +1,7 @@
 import { APPEARANCE_VERSION, APPEARANCE_HEADER_WORDS as HW, APPEARANCE_TRIANGLE_WORDS as TW, APPEARANCE_MATERIAL_WORDS as MW, APPEARANCE_LIGHT_WORDS as LW, APPEARANCE_ENVIRONMENT_WORDS as EW, APPEARANCE_HEADER as H } from '../src/world/import/appearanceFormat.js';
 import { transformPoint } from '../src/world/import/godot3.js';
 import { sourceToCells } from '../src/world/import/voxelize.js';
+import { doorBrickKeys } from '../src/world/import/doorMotion.js';
 import { scalar, boolean, vector, sha256 } from './appearance-resources.mjs';
 const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
 const sub = (a, b) => a.map((v, i) => v - b[i]);
@@ -73,7 +74,8 @@ export function extractLighting(resources, context, map, options) {
   }, metadata: { lights: metadata, environment: { ...sourceNode(node), identity: env.identity, props: p, sky: skyMetadata } } };
 }
 export class AppearanceConversion {
-  constructor(resources, context, meshes, mapping) {
+  constructor(resources, context, meshes, mapping, doorAnalysis = null) {
+    this.doorAnalysis = doorAnalysis; this.appearanceTriangleIndices = {}; this.doorBrickMemberships = new Map();
     this.resources = resources; this.context = context; this.materials = []; this.surfaceMaterials = new Map(); this.triangles = []; this.bricks = new Map(); this.losses = new Map();
     const indices = new Map();
     for (const mesh of meshes) for (const s of mesh.surfaces) {
@@ -84,7 +86,7 @@ export class AppearanceConversion {
       this.surfaceMaterials.set(s, indices.get(key));
     }
   }
-  onTriangle = ({ surface, indexAt, triangle, brickDims }) => {
+  onTriangle = ({ surface, owner, indexAt, triangle, brickDims, origin, cellMeters }) => {
     const materialIndex = this.surfaceMaterials.get(surface), m = this.materials[materialIndex];
     if (!m) throw new Error(`No appearance material for ${surface.materialPath}`);
     if (!surface.uvs) throw new Error('Source triangle missing UV stream');
@@ -100,13 +102,29 @@ export class AppearanceConversion {
       return undefined;
     }
     const record = triangleAffine(triangle, uv), seen = new Set(); let index;
-    return p => {
-      if (index == null) { index = this.triangles.length; this.triangles.push({ ...record, materialIndex }); }
-      const b = p.map(v => Math.floor(v / 8)), key = b[0] + brickDims[0] * (b[1] + brickDims[1] * b[2]);
+    const add = key => {
       if (seen.has(key)) return;
       seen.add(key);
       if (!this.bricks.has(key)) this.bricks.set(key, []);
       this.bricks.get(key).push(index);
+    };
+    return p => {
+      if (index == null) {
+        index = this.triangles.length; this.triangles.push({ ...record, materialIndex });
+        const door = this.doorAnalysis?.doors.get(owner);
+        if (door?.supported) {
+          (this.appearanceTriangleIndices[owner] ??= []).push(index);
+          if (!this.doorBrickMemberships.has(owner)) {
+            const b = door.sweptSourceBounds, map = { origin, cellMeters };
+            this.doorBrickMemberships.set(owner, doorBrickKeys({ min: sourceToCells(map, b.min), max: sourceToCells(map, b.max) }, brickDims));
+          }
+          // Immutable directory envelopes; only existing 24-word affine
+          // records move at runtime. Native UV/material/pixel ABI is untouched.
+          for (const key of this.doorBrickMemberships.get(owner)) add(key);
+        }
+      }
+      const b = p.map(v => Math.floor(v / 8)), key = b[0] + brickDims[0] * (b[1] + brickDims[1] * b[2]);
+      add(key);
     };
   };
   pack(map, options) {
@@ -139,6 +157,7 @@ export class AppearanceConversion {
       if (!map.words[key]) throw new Error(`Appearance brick ${key} has no physics occupancy`);
       words[directoryAt + key] = at; words[at++] = list.length; words.set(list, at); at += list.length;
       maxBrickTriangles = Math.max(maxBrickTriangles, list.length);
+      if (list.length >= 1024) throw new Error(`Appearance brick ${key} has ${list.length} triangles; fixed sampler requires <1024 (no truncation permitted)`);
     }
     words[H.maxBrickTriangles] = maxBrickTriangles;
     this.triangles.forEach((t, i) => {

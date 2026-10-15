@@ -5,6 +5,9 @@ import { CELL_M } from '../../scale.js';
 import { ELEMENTS, K } from '../../elements.js';
 import { validateAppearanceManifest, validateAppearance } from '../import/appearance.js';
 import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
+import { createDoorAppearance } from '../import/doorAppearance.js';
+import { doorSweptBounds } from '../import/doorMotion.js';
+import { APPEARANCE_HEADER as H } from '../import/appearanceFormat.js';
 
 // A converted source level (tools/import-cruelty-map.mjs), served from
 // public/local-maps as a small manifest plus gzip-packed sparse bricks. The
@@ -32,11 +35,24 @@ export function validateImportedMapManifest(map) {
       const { min, max } = door.bounds ?? {};
       if (typeof door.sourcePath !== 'string' || paths.has(door.sourcePath) || !Array.isArray(min) || !Array.isArray(max) || min.length !== 3 || max.length !== 3 || !min.every((n, k) => Number.isSafeInteger(n) && Number.isSafeInteger(max[k]) && n >= 0 && max[k] > n && max[k] <= map.size[k]) || !Array.isArray(door.cells) || door.cells.length % 2) throw new Error('Invalid imported door bounds/ownership');
       paths.add(door.sourcePath);
+      if (door.motion) {
+        const m=door.motion, vector=v=>Array.isArray(v)&&v.length===3&&v.every(Number.isFinite);
+        if(m.version!==1 || !['swing','sliding','vertical'].includes(m.kind) || !Number.isFinite(m.durationSeconds) || m.durationSeconds<=0 ||
+            !Number.isFinite(m.speed) || m.speed<=0 || !(m.autoCloseSeconds==null || Number.isFinite(m.autoCloseSeconds)&&m.autoCloseSeconds>0) ||
+            !vector(m.sweptBounds?.min) || !vector(m.sweptBounds?.max) || !m.sweptBounds.min.every((v,k)=>v>=0&&m.sweptBounds.max[k]>v&&m.sweptBounds.max[k]<=map.size[k]) ||
+            (m.kind==='swing' ? !vector(m.pivot)||!vector(m.axis)||Math.abs(Math.hypot(...m.axis)-1)>1e-5||!Number.isFinite(m.angleRadians) : !vector(m.translation))) throw new Error('Invalid imported door motion');
+      }
+      if(door.appearanceTriangleIndices && (!Array.isArray(door.appearanceTriangleIndices)||!door.appearanceTriangleIndices.every(i=>Number.isSafeInteger(i)&&i>=0))) throw new Error('Invalid door appearance indices');
       if (door.supported && !['res://Scripts/Door.gd', 'res://Scripts/Elevator_Door.gd', 'res://Scripts/down_door.gd'].includes(door.sourceResource)) throw new Error('Unsupported gate cannot be an ordinary door');
       for (let i = 0; i < door.cells.length; i += 2) {
         const index = door.cells[i], id = door.cells[i + 1];
         if (!Number.isSafeInteger(index) || index < 0 || index >= volume || owned.has(index) || !Number.isInteger(id) || !id || !ELEMENTS[id] || !decodeImportedIndex(map, index).every((n, k) => n >= min[k] && n < max[k])) throw new Error('Invalid imported door cell');
         owned.add(index);
+      }
+      if(door.motion && door.cells.length) {
+        const points=door.cells.filter((_,i)=>i%2===0).map(index=>decodeImportedIndex(map,index).map(v=>v+0.5));
+        const swept=doorSweptBounds(door.motion,points), envelope=door.motion.sweptBounds;
+        if(!swept.min.every((v,k)=>Math.floor(v)>=envelope.min[k] && Math.floor(swept.max[k])+1<=envelope.max[k])) throw new Error('Door motion escapes its swept bounds');
       }
     }
   }
@@ -47,6 +63,13 @@ export function validateImportedMap(map, words) {
   if (!(words instanceof Uint32Array) || words.length < start || words.length % 4 || (words.length - start) % 128) throw new Error('Invalid imported data size');
   for (let i = 0; i < count; i++) if (words[i] && (words[i] < start || (words[i] - start) % 128 || words[i] + 128 > words.length)) throw new Error('Invalid imported brick pointer');
   for (let i = start; i < words.length; i++) for (let k = 0; k < 4; k++) if (!ELEMENTS[(words[i] >>> (k * 8)) & 255]) throw new Error('Unknown imported element');
+  for(const door of map.interactions?.doors??[]) if(door.motion) {
+    const {min,max}=door.motion.sweptBounds,d=map.brickDims;
+    for(let z=Math.floor(min[2]/8);z<Math.ceil(max[2]/8);z++)
+      for(let y=Math.floor(min[1]/8);y<Math.ceil(max[1]/8);y++)
+        for(let x=Math.floor(min[0]/8);x<Math.ceil(max[0]/8);x++)
+          if(!words[x+d[0]*(y+d[1]*z)]) throw new Error('Door swept bounds reference an empty brick');
+  }
 }
 /** Inflate the packed little-endian u32 brick words. */
 export async function fetchImportedWords(url) {
@@ -72,11 +95,17 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
   const cell = (x, y, z) => importedCell(map, loaded(), x, y, z);
   const listeners = new Set();
   const changed = (at, data) => { for (const fn of listeners) fn(at, data); };
-  let interactions = words ? createImportedInteractionState(map, words, changed) : null;
+  const appearanceListeners = new Set();
+  const appearanceChanged = (at,data) => { for(const fn of appearanceListeners) fn(at,data); };
+  let appearanceState = null;
+  const makeInteractions = () => createImportedInteractionState(map, words, changed,
+    (door,progress) => appearanceState?.pose(door,progress), () => appearanceState?.reset());
+  let interactions = words ? makeInteractions() : null;
   let appearanceWords = null, preparing = null;
   return {
     get interactionState() { return interactions; },
     subscribeData(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    subscribeAppearance(fn) { appearanceListeners.add(fn); return () => appearanceListeners.delete(fn); },
     reset() { interactions?.reset(); },
     key, label, size: [...map.size], shrine: false, mission: map.mission,
     importManifest: map,
@@ -92,6 +121,7 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
         validateImportedMap(map, geometry);
         if (appearance) {
           validateAppearance(map, appearance);
+          for(const door of map.interactions?.doors??[]) for(const index of door.appearanceTriangleIndices??[]) if(index>=appearance[H.triangleCount]) throw new Error('Invalid door appearance index');
           if (map.appearance.sha256) {
             const digest = await crypto.subtle.digest('SHA-256', appearance);
             const hash = Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, '0')).join('');
@@ -100,7 +130,14 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
         }
         words = geometry;
         appearanceWords = appearance;
-        interactions ??= createImportedInteractionState(map, words, changed);
+        if(appearance) {
+          appearanceState = createDoorAppearance(map,appearance,appearanceChanged);
+          for(const door of map.interactions?.doors??[]) {
+            const s=interactions?.states.get(door.sourcePath);
+            if(s && door.motion) appearanceState.pose(door,s.progress);
+          }
+        }
+        interactions ??= makeInteractions();
       })().finally(() => { preparing = null; });
       return preparing;
     },
