@@ -84,6 +84,11 @@ test('pure binned flight overlay with zero resident mass ignores unknown cell ma
   assert.equal(r.status,'pass'); assert.equal(r.numbers.ratio,.25); assert.equal(r.criteria[1].ok,true);
 });
 
+test('finite packet inputs cannot overflow energy into a false pass', async () => {
+  const r=await runTest(splash,fake({packet:p=>{p.vx=Number.MAX_VALUE;}}));
+  assert.equal(r.status,'error'); assert.match(r.reason,/setup:.*nonfinite kinetic energy/);
+});
+
 test('actual native capability returns n/a before create or GPU access', async () => {
   const gpu=new Proxy({adapterInfo:{}},{get(target,key){assert.equal(key,'adapterInfo');return target[key];}});
   const e=createEngine(gpu);
@@ -102,6 +107,7 @@ test('in-memory removal of new guards reproduces false pass for NaN postcontact 
     /        setup\(Number\.isFinite\(p\.x\)[\s\S]*?'splash: invalid matter packet position, velocity or mass'\);\n/,
     /        setup\(!g\.velocityKnown[^\n]+\n/,
     /        setup\(Number\.isFinite\(vx\)[^\n]+\n/,
+    /      setup\(Number\.isFinite\(all\)[^\n]+\n/,
   ];
   for (const guard of guards) { assert.match(source,guard); source=source.replace(guard,''); }
   source=source.replace(/from '([^']+)'/g,(_,path)=>`from '${new URL(path,url).href}'`);

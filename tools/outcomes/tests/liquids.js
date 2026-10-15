@@ -310,6 +310,7 @@ export const splash = {
         all += k; if (p.y >= S && p.vy >= 0) out += k;
         lowest = Math.min(lowest, Math.floor(p.y));
       }
+      setup(Number.isFinite(all) && Number.isFinite(out), 'splash: nonfinite kinetic energy');
       return { all, out, lowest, cellsOut };
     };
     let g = await e.read();
