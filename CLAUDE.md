@@ -2,6 +2,17 @@
 
 Many Claude sessions and their subagents work here at the same time, some in this checkout and some in their own worktrees. Leave things as tidy as you found them.
 
+## Recovery checkout — all agents
+
+On Cody's Mac, `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu` is a preserved recovery checkout, not the current source.
+Do not edit, commit, build, or deploy from that directory.
+Do not reset, clean, stash, or merge it.
+The clean local `main` checkout is `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu-main`.
+Use it for navigation, not concurrent edits.
+Create a task worktree from fetched `origin/main` before new work.
+Keep existing task worktrees intact; check their base before resuming.
+Pass these rules, the task worktree path, and the base commit to every subagent.
+
 ## Start here — every session and worktree
 
 Before code investigation, profiling, edits, or delegation:
