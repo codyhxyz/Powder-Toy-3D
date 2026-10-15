@@ -1,8 +1,8 @@
 # Physical factory validation
 
-Status: unreleased. Native backend processing and actual-tool charge-first loading pass.
+Status: deployed. Native full-batch actual-tool processing and live Factory boot pass.
 The full hand-loaded batch remains below the melting threshold.
-Actual bucket handling and repeat refueling remain unverified.
+Actual bucket handling passes; completed-batch reuse, walking, and heat survival remain unverified.
 
 ## CPU evidence
 
@@ -562,7 +562,25 @@ This proves real tool-transfer processing, not actual player walking, health sur
 - Verify repeat refueling and real player shovel/bucket gestures.
 - Verify precision fuel feeding; useful coolant release now passes.
 - Finish compatibility checks and independent review after the physical pump change.
-- Complete release checks, push main, watch deployment, and check the live site.
+- Continue validation of the remaining automation and actual-player requirements.
+
+## Release evidence
+
+Code commit `afad9acb6dffac2479c8f2b485f17ad12a21f036` was pushed to main.
+[Deployment run 38826077321](https://github.com/codyhxyz/Powder-Toy-3D/actions/runs/38826077321) passed all checks and deployed to Cloudflare Pages.
+The deployment now requires the Industry CPU suite and physical-factory shader/UI checks.
+
+A protected live check at https://tpt3d.codyh.xyz passed:
+
+- Factory booted with four starter devices and its economy.
+- The hearth placement UI was present.
+- Four manually advanced native ticks invoked the deployed Industry hook exactly four times.
+- The app remained parked, with no page or GPU errors.
+
+Total GPU slot occupancy: **7192 ms**, report `~/.cache/tpt-headless/runs/32381-32505.json`.
+Result: `/tmp/sandustry-physical-factory-live-afad9acb.json`.
+The browser closed. No dev server was started for the live check.
+This verifies the deployed app integration, not another full batch or actual player survival.
 
 Cooled metal is stationary matter; a conveyor cannot carry it to the intake.
 Neither melting, diagnostics, nor ash clearing alone counts as end-to-end evidence.

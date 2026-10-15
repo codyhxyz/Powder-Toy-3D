@@ -1,6 +1,6 @@
 # Physical factory delivery plan
 
-Status: the native backend batch and real control UI pass.
+Status: the furnace fix and physical-factory modules are deployed.
 Mined coal melted four scrap cells; all four reached the water catch and shipped below 400°C.
 Charge-first loading and short retention pass with actual tools.
 The old rear-only rule reached only 1334°C with the hand-loaded charge.
@@ -12,7 +12,8 @@ This removes the rear-only eligibility mismatch without changing molten transpor
 CPU and independent review of the heating correction pass.
 The complete actual-tool batch passes all 23 checks in 1672 native ticks and 7103 ms total slot occupancy.
 Native heating runs each tick; existing melt guidance remains at its original frame cadence.
-Nothing deployed yet.
+Code commit `afad9acb` deployed through [GitHub Actions](https://github.com/codyhxyz/Powder-Toy-3D/actions/runs/38826077321).
+The live Factory boot and native-tick hook pass; the live check is not a second full processing or player-survival test.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
 The integration branch includes fetched upstream `2c5cb27ded2a9683245e71f249b1ccfcee7edd4a`.
@@ -88,10 +89,10 @@ Preserve the proven full-floor coolant route while investigating fuel feeding.
 | Ash clearing | Existing tools clear spent fuel without destroying the hearth. | Native powder transfer cleared three ash cells and preserved all 48 shell cells; repeat refueling remains pending |
 | Economy | Construction charges and refunds remain correct. Existing progression remains usable. | CPU confirmed-charge, ledger, migration, and anti-arbitrage checks pass |
 | Compatibility | Existing saves, built-in drives, Sandbox sparks, and unrelated modes still work. | Existing construction, controller, physics, and Quarry CPU suites pass; final integration pending |
-| Hand-loaded batch | Real tool updates process the full charge without narrowed transfer candidates. | Native charge-first loading and 128-tick retention pass; the full batch retained all four scrap cells but peaked at 1334°C without melting |
-| End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Backend batch passed in 1920 native ticks; real tool strokes and fuel-gate automation remain separate requirements |
+| Hand-loaded batch | Real tool updates process the full charge without narrowed transfer candidates. | Passed: six mined coal cells, four scrap cells, real shovel/bucket updates, four cold shipments, and ash cleanup in 1672 native ticks |
+| End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Full tool-transfer batch passed; actual walking/survival and precision fuel-gate automation remain separate requirements |
 | Resource use | Tests use the shared browser helper and respect the total GPU-slot budget. | Recorded slots respect their limits; every utilization override had explicit user approval |
-| Release | Changes reach GitHub main, deployment succeeds, and the live site passes a focused check. | Pending |
+| Release | Changes reach GitHub main, deployment succeeds, and the live site passes a focused check. | Code `afad9acb` deployed; live Factory boot and one-hook-call-per-native-tick checks passed |
 
 ## Missing-feature investigation
 
