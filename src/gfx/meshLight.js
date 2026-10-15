@@ -518,7 +518,7 @@ export const getMeshGpu = () => meshGpu;
  *   alone: the object only, not what is under it
  * @returns {Promise<void>}
  */
-export function prepareMesh(object, { alone = false, ...opts } = {}) {
+export function prepareMesh(object, { alone = false, rejectOnFailure = false, ...opts } = {}) {
   const three = meshGpu?.three;
   if (!three || meshGpu.failure || meshGpu.lost) return Promise.resolve();
   for (const k of Object.keys(opts)) if (opts[k] === undefined) delete opts[k];   // (left out: the defaults')
@@ -549,7 +549,7 @@ export function prepareMesh(object, { alone = false, ...opts } = {}) {
   }
   return Promise.resolve(p).then(() => {
     for (const [o, m] of done) preparedWith.set(o, { material: m, key: keyOf(tSig, lSig, domainAtStart) });
-  }, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); });
+  }, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); if(rejectOnFailure)throw e; });
 }
 
 let prepares = 0;
@@ -589,7 +589,8 @@ const waiting = new WeakMap();        // mesh → the layers it goes back to
  *   target and scene: what the meshes are drawn into and lit by (prepareMesh's)
  * @returns {number} how many meshes wait
  */
-export function guardMeshes(root, camera, { target, scene, skip, onReady } = {}) {
+const guardCompilations = new WeakMap();
+export function guardMeshes(root, camera, { target, scene, skip, onReady, onPending } = {}) {
   if (!meshGpu?.three) return 0;
   let n = 0;
   const tSig = targetSig(target ?? meshGpu.three.defaults.target);
@@ -600,18 +601,30 @@ export function guardMeshes(root, camera, { target, scene, skip, onReady } = {})
     if (!o.visible || skip?.(o)) continue;
     for (const c of o.children) stack.push(c);
     if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) continue;
-    if (waiting.has(o)) { n++; continue; }
+    if (waiting.has(o)) { n++; const work=guardCompilations.get(o); if(work)onPending?.(work); continue; }
     if (!o.layers.test(camera.layers)) continue;
     const was = preparedWith.get(o);
     if (was && was.material === o.material && was.key === keyOf(tSig, lSig)) continue;
     waiting.set(o, o.layers.mask);
     n++;
-    prepareMesh(o, { camera, target, scene, alone: true }).then(() => {
+    // Keep the original failure observable even if a default-mode guard
+    // started it before a WORLD guard subscribed to the same compilation.
+    const work=prepareMesh(o, { camera, target, scene, alone: true, rejectOnFailure:true }).then(() => {
       // (a module that moved it to another layer meanwhile keeps its own)
       if (o.layers.mask === PENDING_MASK) o.layers.mask = waiting.get(o);
       waiting.delete(o);
+      guardCompilations.delete(o);
       onReady?.();
+    },error=>{
+      if(!onPending){
+        if(o.layers.mask===PENDING_MASK)o.layers.mask=waiting.get(o);
+        waiting.delete(o);guardCompilations.delete(o);onReady?.();
+      }
+      throw error;
     });
+    guardCompilations.set(o,work);
+    work.catch(() => {}); // failure remains parked and fail-closed
+    onPending?.(work);
     o.layers.set(PENDING_LAYER);
   }
   return n;

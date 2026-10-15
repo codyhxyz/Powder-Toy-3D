@@ -55,7 +55,8 @@ import { createShaderPicker } from './ui/shaders.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
-import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms } from './gfx/uniforms.js';
+import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms, frameUniformValues, frameUniformsOf } from './gfx/uniforms.js';
+import { freezeWorldView } from './wire/worldRenderFrame.js';
 import { cloudShift } from './shaders/gfx/clouds.js';
 import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
 import { createDetailGate, gateVariants } from './gfx/detailGate.js';
@@ -950,6 +951,7 @@ function screenPlane(ray, height, out) {
   return t == null ? null : out.fromArray(rayPoint(r, t));
 }
 function requestPick() {
+  if(win){hover.valid=false;pointerPickDirty=false;return;} // WORLD native pick owner is a separate, not-ready consumer.
   const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
   pointerPickDirty = false;
@@ -978,6 +980,7 @@ function requestPick() {
 // (from the eye through a pixel), which a presentation effect bends: it walks the
 // displayed ray then. Physics' rays (the ground, the body) keep the flat path.
 function pickRay(ro, rd, visible = false) {
+  if(win)return Promise.reject(Object.assign(new Error('WORLD pick consumer not ready'),{code:'WORLD_CONSUMER_NOT_READY'}));
   const o = sim.origin.clone(), from = sim, revision = presentation.revision;
   return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
@@ -1694,6 +1697,7 @@ const THUMB_SIZE = [320, 200];
 const thumbCam = useWebGPUCamera(new THREE.PerspectiveCamera());
 let thumbTarget = null;
 async function renderThumb(viewId, out) {
+  if(win)return false; // Explicit loading gate: never run the local still renderer under WORLD.
   if (graphicsFailure || !coreReady) return false;
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? gateVariants(settings).base : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
@@ -2143,6 +2147,37 @@ function saveScreenshot() {
   });
 }
 
+// A WORLD request captures source/lighting once, independently of the view.
+function captureWorldRequest(reservation,state,dt,accepted) {
+  updateGfxUniforms(sim,SUN,KEY_LIGHT);
+  wire('world').captureLighting(ctx);
+  post.settings.raw=!isMaterialView(renderView);
+  post.settings.upscale=presetOf()*DEVICE_RATIO/pixelRatio;
+  post.settings.adaptive=presetOf()<1;
+  post.settings.floor=UPSCALE_FLOOR*DEVICE_RATIO/pixelRatio;
+  post.settings.sprintBlur=0;
+  gfxUniforms.uNearGI.value=settings.nearGI;gfxUniforms.uGlowLights.value=settings.glowLights;gfxUniforms.uCaustics.value=settings.caustics;
+  const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
+  const captured=frameUniformValues({...frameValues(camera,renderView,[0,0]),model,far:false,sourceAppearance:[0,0,0,0]});
+  const values=Object.fromEntries(Object.entries(captured).map(([k,v])=>[k,v?.toArray?v.toArray():v]));
+  const view=freezeWorldView(ctx,values,{view:viewKeyOf(renderView),detail:frameDetail,curved:!!warpNow()?.k});
+  const warp=view.presentation.parameters;
+  // Exact uint words, no hash. Camera/origin/time are not global EMA resets.
+  const key=Array.from(new Uint32Array(new Float32Array([...values.sun,...values.sunCol,...values.keyLight,
+    ...values.caveAmbient,...values.skyUp,values.lightGain,values.cloudSea,values.clouds?1:0,
+    values.nearGI?1:0,values.glowLights?1:0,values.caustics?1:0]).buffer));
+  const rows=values.lampPos, origin=sim.origin.toArray();
+  const lamps=Array.from({length:values.lampCount},(_,i)=>({pos:rows[i].map((v,k)=>k<3?v+origin[k]:v),
+    col:[...values.lampCol[i]],shape:[...values.lampShape[i]]}));
+  const frame={values,physicsOrigin:origin,params:{marchNear:pov?.marchNear??0,warpK:warp.k,warpAnchor:warp.anchor,warpDir:warp.dir},
+    globalKey:key,lamps,sun:{direction:[...values.sun],basisRevision:1},
+    sceneVersion:modeEpoch,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
+    external:{mediaNoise:state.noise.view,packedMesh:state.unused.createView(),sourceAppearance:state.emptyArtwork.createView()}};
+  // A camera-only birth preserves the accepted publication's source settings.
+  if(!frame.advance && accepted)Object.assign(frame,{...accepted.frame,advance:false,external:frame.external});
+  return {frame,view};
+}
+
 // ---------------------------------------------------------------- a presented frame
 // FrameUniforms for a frame of `cam` in view `view` (gfx/uniforms.js): written
 // once per frame, in post's prepare hook, from the jittered camera.
@@ -2312,6 +2347,7 @@ const frameHooks = {
   // passes, the shadow map (views that read it), GI (the realistic view), the
   // wires' upkeep, the picks asked for this tick
   compute: () => {
+    if(win?.render)return; // WORLD has its own owned native transaction; no local union upkeep.
     if (blocks) {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
@@ -2514,7 +2550,8 @@ function tick(now, renderOnly = false) {
     volume.updateMatrixWorld();
     camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
-    selectRenderView();
+    if(win)renderView=settings.view;
+    else selectRenderView();
   }
   // Set before viewKey: changing source style invalidates the cached image.
   const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView(renderView);
@@ -2522,13 +2559,28 @@ function tick(now, renderOnly = false) {
     post.settings.cruelty = crueltyDisplay;
     post.reset(); // Never blend temporal history across source-style transitions.
   }
-  const runDerived = present && pacer.derived(
+  let runDerived=false, runView=false;
+  if(win) {
+    const driver=wire('world').prepareRender(ctx);
+    if(driver) {
+      runView=driver.tick({present,dt,
+        reserve:()=>{
+          const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${detailVersion}`);
+          const key=viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}`,viewSettings,gfx,post.settings);
+          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
+        },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
+      if(present || runView)driver.presentLast();
+    }
+    lastFrameMode='world';
+    if(runView && captureNext){const c=captureNext;captureNext=null;c(post.capture());}
+  } else {
+  runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
-  let runView = present && pacer.view(viewV, runDerived || wantFrame());
+  runView = present && pacer.view(viewV, runDerived || wantFrame());
   // Adaptation is scheduled separately below: forcing the view here would
   // restart TAA settling on every exposure update, forever until eyes settle.
   // three's meshes moved, and nothing else in the key (gfx/meshFrames.js), since the last view frame
@@ -2608,6 +2660,7 @@ function tick(now, renderOnly = false) {
     if (captureNext) { const c = captureNext; captureNext = null; c(post.capture()); }
     prof.phase('other');
   }
+  }
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
   if (runView) {
     if (wantShot) { wantShot = false; saveScreenshot(); }
@@ -2655,6 +2708,19 @@ const ctx = {
   // J3's app: { gpu, three, sim, derived, scene, camera, settings, pacer, post } (three is the renderer, also as `renderer`)
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
+  threeMeshes,
+  prepareWorldAfter(values,cam) {
+    // Local sprites/cursors retain their existing coordinate ABI; source lamp
+    // conversion remains based on data.frame.physicsOrigin, not this origin.
+    const model=new THREE.Matrix4().fromArray(values.model).multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray()));
+    const local={...values,model:model.toArray(),cam:values.cam.map((v,i)=>v-sim.origin.toArray()[i])};
+    const fu=frameUniformsOf(gpu);fu.uniforms.write(local);
+    fu.last.viewProj.fromArray(values.viewProj);fu.last.model.copy(model);fu.last.invViewProj.fromArray(values.invViewProj);
+    fu.last.eye.setFromMatrixPosition(cam.matrixWorld);fu.last.written=true;
+    wire('rays')?.beforeView(ctx);
+  },
+  drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
+  drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
   get renderView() { return renderView; },
   get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },

@@ -1854,6 +1854,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     const capturedPresentation = frozenPresentation(), capturedSky = freezeValues(sky);
     const worldModel = options.worldModel?.clone() ?? capturedPresentation?.worldToScene?.clone() ?? null;
     if (options.onCommit && (typeof options.onCommit !== 'function' || /^(AsyncFunction|AsyncGeneratorFunction)$/.test(options.onCommit.constructor?.name))) throw new TypeError('scene commit callback must be synchronous');
+    if (options.onPublicationTransferred && (typeof options.onPublicationTransferred !== 'function' || /^(AsyncFunction|AsyncGeneratorFunction)$/.test(options.onPublicationTransferred.constructor?.name))) throw new TypeError('publication transfer callback must be synchronous');
+    // Fallible snapshots precede publication ownership transfer.
+    const projection = camera.projectionMatrix.clone(), inverse = camera.projectionMatrixInverse.clone();
+    const view = camera.view ? {...camera.view} : null, aspect = camera.aspect;
     const sizes = postSizes(out.width,out.height,scale);
     slot.target.resize(...sizes.inSize);slot.target.refresh();slot.busy = true;
     const t = {slot, publication:options.publication, feedbackIdentity:options.feedbackIdentity, identity:sceneIdentity,
@@ -1868,9 +1872,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     sceneTickets.set(ticket,t);pendingScenes.add(t);liveScenes.add(t);
     Promise.resolve(options.submission.submitted).then(() => {t.submitted = true;}, () => retireScene(t,'failed'));
     const previousTarget = active, previousPixScale = pixScale?.value;
-    const projection = camera.projectionMatrix.clone(), inverse = camera.projectionMatrixInverse.clone();
-    const view = camera.view ? {...camera.view} : null, aspect = camera.aspect;
     try {
+      syncHook(options.onPublicationTransferred);
       camera.updateMatrixWorld();t.taa = !isStill && !!(s.taa && temporalOf());
       if (t.taa && !temporal.reserveJitter) throw new Error('staged TAA requires reversible jitter reservations');
       if (t.taa) camera.updateProjectionMatrix();

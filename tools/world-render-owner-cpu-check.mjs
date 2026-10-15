@@ -13,7 +13,7 @@ const words=b=>new Uint32Array(b.bytes),bytes=b=>new Uint8Array(b.bytes);
 class Exec extends WgslExec {_dispatchWorkgroup(fn,id,c){for(const a of fn.node.attributes??[])if(a.name==='workgroup_size'&&typeof a.value==='string')a.value=[a.value];return super._dispatchWorkgroup(fn,id,c);}}
 const tick=()=>new Promise(r=>setTimeout(r,0));
 async function settle(gpu,promise){let done=false,error,result;promise.then(r=>{done=true;result=r;},e=>{done=true;error=e;});for(let i=0;i<2000&&!done;i++){gpu.finish();await tick();}assert(done,'native final boundary failed to settle');if(error)throw error;return result;}
-async function setup({size=[16,8,8],feedback=true}={}) {
+export async function setup({size=[16,8,8],feedback=true}={}) {
   const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[],tablesUsed=[];
   const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128|4|8});
   const tableGroup=gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer:tableBuffer}}],'fixture TABLES');

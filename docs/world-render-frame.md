@@ -1,74 +1,73 @@
-# WORLD frame recording checkpoint (inactive, incomplete)
+# WORLD App main route — local integration, not release approval
 
-`src/wire/worldRenderFrame.js` contains concrete native frame functions. They
-are **not selected by App**. This checkpoint does not finish the WORLD renderer
-or change BOX. Do not activate merely because CPU tests/build pass.
+App now selects the WORLD transaction driver in its existing presentation branch.
+`world.prepareRender` installs the actual Source/Producer data owner after load,
+awaits immutable media noise/Post/native readiness, and stores `win.renderFrame`
+(the frozen `win.render` remains the data API). BOX retains its original branch.
 
-## Implemented functions
+## Boundaries
 
-- `createWorldFrameState(app,data,noise)` requires an already loaded actual
-  `win.render` data owner and awaits real Post/noise readiness. Allocates a real
-  stable 1x1 query-layout packed texture and actual opaque recorder. It is never
-  scene geometry. No Far grid is borrowed.
-- `prewarmWorldFrame(app,state,candidate,{view,detail,curved})` constructs actual
-  WorldVolume using the cut's artwork/grid and native table **buffer** (not its
-  TABLES group). Awaits actual view/all Plain phases, point/sign/opaque/Post
-  pipelines. Native material guard also gates scene recording before passes.
-- `probeWorldFrameEye(app,state,candidate)` dispatches the real 80-byte reader at
-  the frozen global eye and reads its entire feedback plus point output through
-  the existing normal-Frame feedback provider. Returns exact native publication
-  metadata, 20 floats and decoded feedback. Output/native/cut pins wait both
-  decode and final submission/queue completion, including blocked suffixes.
-- `recordWorldFrame(app,state,candidate,options)` requires captured camera,
-  view/detail/curved, exact frame identity, monotonic VM order, complete native
-  eye and optional real sign request. Calls actual viewmodels with explicit
-  WORLD lighting, then synchronous staged Post hooks: actual Three opaque,
-  actual HDR/depth/coverage packing, WorldVolume, after wires, transparent,
-  overlays. Requires real `app.threeMeshes`, `drawWorldAfter`,
-  `drawWorldOverlay`; these are **not yet exposed by App**. No fake callbacks or
-  fallback implementation is installed. Returns null on VM/Post backpressure.
-- `finishWorldFrame(app,state,recorded,eyeFeedback)` reads scene/sign feedback;
-  rejects entire misses before TAA; checks sign generation and VM baseline;
-  commits actual Post with another normal final ticket; awaits real data
-  acceptance of that confirmed Post; then commits VM smoothing and sign DOM.
-  All other outcomes discard VM/Post. Inputs stay pinned through final uses.
-- `disposeWorldFrame(state)` stops new recording and waits registered native
-  uses before destroying the stable query binding. Unknown recordable suffixes
-  deliberately keep disposal pending, not falsely settled.
+- Physics, actor `afterStep`, and pacer due/present remain in the normal tick.
+  The driver reserves derived/view settling once per pending transaction.
+  Ordinary newer physics/camera state coalesces implicitly in App; it cannot
+  replace the pending cut or frozen view. Promise completions only store/wake.
+- `freezeWorldView` captures global model/camera/projection/view style and Post /
+  presentation settings before the native eye query. Source time, artwork,
+  lighting and captured physics origin remain publication-owned.
+- Actual scene encoding runs only from the normal tick, after actor updates.
+  The then-current scene is encoded synchronously: mesh preflight, VM, opaque
+  Three, actual HDR/depth/coverage packing, full WorldVolume, after wires,
+  transparent meshes, overlays and final sign/feedback boundary. No pose clones,
+  skeleton snapshots, yields or per-object SH are introduced.
+- Native graph preflight owns query-layout bindings while tracked compilation
+  promises settle. `guardMeshes.onPending` exposes the same compilation on
+  repeated checks; strict failures remain parked/fail closed. Retirement waits
+  compilation and final queue completion. Default BOX preparation behavior is
+  preserved.
+- Complete eye + scene + signs precede TAA. Misses extend the SAME active cut
+  and view, with current actors chosen on the next attempt. Only confirmed Post
+  acceptance advances owner history, VM/sign UI and App screenshot/frame waiters.
+  `advance:false` camera births use accepted-compatible source settings, not
+  direct inactive `current()` admission. World GI age/phase policy stays in the
+  existing history owner, independent of Fields age and view/origin changes.
+- Pending work presents only exact `post.presentLast` with a real final ticket,
+  or explicit loading when no accepted image exists. No Far/local union fallback.
 
-Candidate caller handles remain caller-owned. Scene/query native handles are
-independent, with distinct publication references. The real data candidate must
-provide `tables.buffer`, `sunTextures`, `appearance`, `snapshot`, `lighting`,
-`frame` and `retain`; Parent's immutable-table/native-Sun seam supplies those.
-`worldSceneValues` replaces only camera/projection/jitter under actual Post
-capture, preserving frozen numerical settings/time. `worldSceneParams` derives
-inverse(VP*globalModel), actual input size and actual packed scene binding.
+## Ownership and seams
 
-## Required before App activation
+`probeWorldFrameEye(app,state,data,frozenView)` and `recordWorldFrame` share the
+same frozen view. Scene geometry binds only the actual Post target's packed
+opaque texture. The stable 1x1 query pack is LAYOUT ONLY. Absent artwork has an
+explicit empty binding; each cut's real artwork overrides it, including null.
+Native table buffer, Sun textures and appearance are borrowed under candidate
+pins. Data/eye/scene publications intentionally have different reference identities.
 
-1. Connect real loaded Source/Producer/native readiness and `installWorldRender`
-   in world wire. Do not construct another callback data owner.
-2. Connect the main-loop branch and actual mesh/after/overlay functions; suppress
-   Far/detail/haze/local-volume union entirely while building and use exact
-   `post.presentLast` (normal final ticket) or explicit loading.
-3. Implement frozen camera, Post/presentation settings and actor/VM pose capture
-   and restore. Existing functions require these and do not capture mutable App.
-4. Preserve original derived/GI settling scheduling and GI_SETTLE age contract;
-   hold/coalesce next physics/camera while resolving request -> typed misses ->
-   same-cut extend. Camera-only births use advance:false and unchanged key/cut.
-5. Dispose/scene/schema obsolescence must settle or block known final suffixes,
-   discard VM, invalidate sign requests and release caller candidate handles.
-6. World pick/edit/local physics, still/thumbnail and query ownership are Parent
-   followups; explicitly gate unsupported consumers, not local visual fallback.
-7. Validate actual recording (including partial allocation/recording failures),
-   continuous scheduling, resize/disposal and frozen rig integration. Current
-   tests do not execute the full App or full native recording functions.
+App exposes actual `threeMeshes`, `prepareWorldAfter`, `drawWorldAfter`, and
+`drawWorldOverlay`. Existing local sprites/cursors keep their coordinate ABI:
+App derives their local transform from the frozen global model and the current
+scene origin; source lamp/wand conversions use the separately captured source
+origin. Scoped view/settings overrides restore synchronously after encoding.
 
-## Evidence
+Post's additive synchronous `onPublicationTransferred` notification separates
+null/early failure (caller still owns) from registered-ticket failure (Post owns
+and retires through real final/queue fences). The frame helper also closes
+partial native/sign allocation prefixes before deferred cleanup. Unknown open
+suffix failure deliberately does not falsely settle.
 
-`npm run check:world-render-frame`: four CPU tests call actual new frame value,
-feedback and final-admission functions. Admission uses actual Post and existing
-normal feedback provider with fake native execution; owner acceptance and scene
-native feedback decoding are explicitly synthetic. Tests demonstrate scene,
-point and sign misses do not invoke TAA; actual final Post confirmation precedes
-owner/VM commit. No whole-App, GPU, visual or performance evidence is claimed.
+## Explicit limitations — DO NOT SHIP YET
+
+WORLD pickRay rejects with `WORLD_CONSUMER_NOT_READY`, pointer visual picking is
+parked, and legacy thumbnail/still rendering returns not-ready. Parent owns
+those native consumer followups. BOX picking/thumbnails are unchanged.
+
+CPU evidence executes the actual driver, actual Source/data owner and actual
+Post admission with explicitly mocked native math/scenegraph encoding. It also
+checks delayed/rejected mesh compilation, Post transfer failures/backpressure,
+frozen view overrides and actual App hook selection. It is NOT GPU, visual,
+full actor-scene rendering, performance, or other-consumer proof. Asset prewarms
+outside the guarded scene, resize/dispose stress across every native allocation
+site, and real native layout/readiness remain review/GPU risks. No deployment or
+global activation claim follows from this local integration.
+
+Run `npm run check:world-main-route` for CPU tests; `check:world-render-frame`
+retains native-value/feedback/final-admission tests. No browser/server is needed.

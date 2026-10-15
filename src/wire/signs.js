@@ -22,9 +22,9 @@ const signs = {
     // Future App contract: win.render.signsOwner === 'world' is exclusive,
     // signFrame is the accepted completion envelope documented in world-signs.md.
     // No accepted frame means retain accepted UI/loading, NEVER probe BOX.
-    if (app.win?.render?.signsOwner === 'world') {
+    if (app.win?.render) {
       app.signs.setWorldOwner(true);
-      app.signs.updateWorld(app.win.render.signFrame);
+      // Atomic results/projection are committed by the accepted frame driver.
     } else {
       app.signs.setWorldOwner(false);
       app.signs.update();

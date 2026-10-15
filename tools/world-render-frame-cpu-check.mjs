@@ -12,7 +12,7 @@ import {frameUniformValues,writeFrameUniforms,worldModelMatrix,FrameUniformsStru
 import {worldFrameValues} from '../src/gfx/worldVolume.js';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
-function fixture({limit=3}={}) {
+export function fixture({limit=3}={}) {
   const events=[],textures=[],done=[],copies=[],resolved=[],draws=[];
   const texture=({label='',size=[64,32],format='rgba16float',usage=31}={})=>{
     const t={label,width:size[0],height:size[1],format,usage,dead:false,createView(){return{texture:t};},destroy(){t.dead=true;events.push(`destroy:${label}`);}};
