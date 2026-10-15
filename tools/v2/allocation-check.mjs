@@ -2,13 +2,17 @@
 // plus production driver recording with strict, real uniform packing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { NativeJets } from '../../src/v2/jets.js';
 import { PARTICLE_CAP as CAP, NEUTRON_TAG } from '../../src/v2/dynamics-reference.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { CONTROL } from '../../src/shaders/v2/particles.js';
-import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, controlWords,
+import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, allocationArgsBase, controlWords,
   externalMaskBase, externalMaskWords, blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { jetsWGSL } from '../../src/shaders/v2/jets.js';
 const NONE=0xffffffff, WORDS=12;
@@ -136,24 +140,38 @@ test('backpressure, grid-before-children, held clearing and immutable external r
   assert.equal(ha[1],0,'reused slots clear old held ownership');
 });
 
+// Execute only the generated workArgs straight-line integer subset on the CPU.
+// The predicate and all three stored dispatch dimensions come from production WGSL.
+function executeWorkArgs(source,control,P) {
+  const body=source.slice(source.lastIndexOf('fn main() {')+'fn main() {'.length,-1)
+    .replace(/\b(\d+)u\b/g,'$1')
+    .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g,'control[$1]')
+    .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g,'control[$1]=$2;');
+  Function('control','P','D_NONE','select',body)(control,P,NONE,(no,yes,condition)=>condition?yes:no);
+}
 function recorder(gate=()=>Promise.resolve()) {
   globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,INDIRECT:8};
-  const calls=[],descriptors=[];
+  const calls=[],descriptors=[],copies=[];
   const copy=(b,offset,src)=>new Uint8Array(b.bytes).set(new Uint8Array(src.buffer??src,src.byteOffset??0,src.byteLength),offset);
   const gpu={
     createBuffer(d){return {...d,bytes:new ArrayBuffer(d.size),destroy(){}};},
     queue:{writeBuffer:copy},write:copy,layout:(name,entries)=>({name,entries}),
     bindGroup:(layout,entries)=>({layout,entries}),
     kernel(d){descriptors.push(d);return {...d,ready:gate(d.name),dispatch(frame,size,data){
-      d.params.pack(data.params);calls.push({name:d.name,size,...data});
+      d.params.pack(data.params);
+      if(d.name==='v2blasts_workArgs') executeWorkArgs(d.code,new Uint32Array(data.bind[1].entries[3].resource.buffer.bytes),data.params);
+      const args=size?.indirect?Array.from(new Uint32Array(size.indirect.bytes,size.offset??0,3)):size;
+      calls.push({name:d.name,size,args,...data});
     }};},
-    frame:{clear(){},copy(){}},readback:{buffer:(b,o,n)=>Promise.resolve(b.bytes.slice(o,o+n))},
+    frame:{clear(){},copy(src,so,dst,dof,n){
+      new Uint8Array(dst.bytes,dof,n).set(new Uint8Array(src.bytes,so,n));copies.push({src,so,dst,dof,n});
+    }},readback:{buffer:(b,o,n)=>Promise.resolve(b.bytes.slice(o,o+n))},
   };
   const g=gridLayout(16,8,8),owner={gpu,g,tick:3,epoch:0,sim:{origin:[0,0,0],header:()=>({})},
     nativeDynamics:{head:nativeDynamicsHead,layout:{entries:V2_DYNAMICS_LAYOUT},group:{}},wake(){},_params:()=>({busyIn:1,busyOut:2})};
   owner.events=gpu.createBuffer({size:g.slots*4});
   const d=owner.dynamics=new NativeDynamics(owner,{blastBatch:2});
-  return {owner,d,calls,descriptors};
+  return {owner,d,calls,descriptors,copies};
 }
 function assertPrepared(calls,expected) {
   const allocations=calls.map((c,i)=>({c,i})).filter(({c})=>['v2blasts_allocate','v2jets_allocate'].includes(c.name));
@@ -161,7 +179,10 @@ function assertPrepared(calls,expected) {
   for(const {c,i} of allocations) {
     const prep=calls.slice(i-3,i);
     assert.deepEqual(prep.map(p=>p.name),ALLOCATION_STAGES.map(s=>`v2blasts_${s}`));
-    assert.deepEqual(prep.map(p=>p.size),[[1024,1,1],[1,1,1],[1024,1,1]]);
+    const indirect=!Array.isArray(c.size) && c.size?.indirect;
+    assert.deepEqual(prep.map(p=>p.size),indirect?
+      [{indirect:c.size.indirect,offset:64},c.size,{indirect:c.size.indirect,offset:64}]:
+      [[1024,1,1],[1,1,1],[1024,1,1]]);
     for(const p of prep) assert.deepEqual(p.params,c.params,'preparation receives exactly the allocator uniforms');
   }
 }
@@ -195,8 +216,10 @@ test('all real allocation paths prepare immediately, including empty indirect ba
 test('preparation kernels build idle and every new stage is awaited; no optional missing-pipeline skip',async()=>{
   for(const stage of ALLOCATION_STAGES) {
     let resolve;const gate=new Promise(r=>resolve=r);
-    const {d,descriptors}=recorder(name=>name===`v2blasts_${stage}`?gate:Promise.resolve());
+    const {d,descriptors,copies}=recorder(name=>name===`v2blasts_${stage}`?gate:Promise.resolve());
     await Promise.resolve();assert.equal(d.isReady,false);assert.throws(()=>d._prepareAllocation(0),/not ready/);
+    assert.throws(()=>d._prepareAllocation(0,{}, {indirect:d.dispatchArgs,offset:32}),/not ready/);
+    assert.equal(copies.length,0,'no indirect-argument copy before required pipelines are ready');
     for(const s of ALLOCATION_STAGES) {
       const k=descriptors.find(k=>k.name===`v2blasts_${s}`);assert.equal(k.build,'idle');
       assert.deepEqual(k.workgroupSize,s==='freeScan'?[1,1,1]:[64,1,1]);
@@ -207,12 +230,13 @@ test('preparation kernels build idle and every new stage is awaited; no optional
   const {d}=recorder(name=>name==='v2blasts_freeScan'?Promise.reject(new Error('scan compile failed')):Promise.resolve());
   await assert.rejects(d.ready,/scan compile failed/);assert.equal(d.isReady,false);d.dispose();
 });
-test('scratch is exactly 8KiB after old external-mask end, without changed prefix/binding/save ABI',()=>{
+test('scratch is exactly 8KiB + 12 bytes after old mask end, with unchanged existing offsets/bindings/save ABI',()=>{
   assert.equal(ALLOCATION_CHUNKS,1024);
   assert.equal(CONTROL.FREE_LIST,32);assert.equal(CONTROL.PREFIX,32+CAP);
   for(const dims of [[16,8,8],[128,128,128],[48,16,32]]) {
     const g=gridLayout(...dims),base=externalMaskBase(g)+externalMaskWords(g);
-    assert.equal(allocationScratchBase(g),base);assert.equal((controlWords(g)-base)*4,8192);
+    assert.equal(allocationScratchBase(g),base);assert.equal(allocationArgsBase(g),base+2048);
+    assert.equal((controlWords(g)-base)*4,8192+12);
     for(const stage of ALLOCATION_STAGES) {
       const code=blastsWGSL(g,nativeDynamicsHead,stage);
       assert.equal([...code.matchAll(/var<storage,/g)].length,8);
@@ -221,7 +245,137 @@ test('scratch is exactly 8KiB after old external-mask end, without changed prefi
     }
     for(const code of [blastsWGSL(g,nativeDynamicsHead,'allocate'),jetsWGSL(g,'allocate')]) {
       const body=code.slice(code.lastIndexOf('@compute'));
-      assert.doesNotMatch(body,/D_CAP|particles\[/,'allocation only scans per-brick demand');
+      assert.doesNotMatch(body,/D_CAP|particles\[/,'allocation only scans request group sums');
+      assert.match(body,/group<\(D_BRICKS\+63u\)\/64u/);
+      assert.doesNotMatch(body,/PREFIX/,'allocator never overwrites local brick prefixes');
+    }
+  }
+});
+
+test('generated exact hasWork predicate gates all three prep dimensions, including wrapped/raw neutron obligations',async()=>{
+  const {d,calls,copies}=recorder();await d.ready;
+  const control=new Uint32Array(d.control.bytes);
+  for(const [source,neutrons,children,mode,work] of [
+    [NONE,0,0,0,false],[0,0,0,0,true],[NONE,1,0,0,true],
+    [NONE,0,1,0,true],[NONE,1,0,14,false],[NONE,0,1,14,false],
+    [0,0,0,14,true],[NONE,0,NONE,0,true],
+  ]) {
+    control[3]=source;control[17]=neutrons;control[18]=children;
+    calls.length=0;copies.length=0;
+    d._record('blasts','workArgs',1,3,{mode});
+    d.gpu.frame.copy(d.control,28*4,d.dispatchArgs,32,12);
+    d._record('blasts','allocate',{indirect:d.dispatchArgs,offset:32},3,{mode});
+    assertPrepared(calls,1);
+    assert.deepEqual(calls.filter(c=>ALLOCATION_STAGES.some(s=>c.name===`v2blasts_${s}`)).map(c=>c.args),
+      [[work?1024:0,1,1],[work?1:0,1,1],[work?1024:0,1,1]]);
+    assert.deepEqual(copies.at(-1),{src:d.control,so:allocationArgsBase(d.g)*4,dst:d.dispatchArgs,dof:64,n:12});
+  }
+  control[3]=NONE;control[17]=0;control[18]=0;d.blastBatch=8;calls.length=0;
+  d.consumeMaterialEvents(4);assertPrepared(calls,8);
+  const emptyPrep=calls.filter(c=>ALLOCATION_STAGES.some(s=>c.name===`v2blasts_${s}`));
+  assert.equal(emptyPrep.length,24);for(const c of emptyPrep) assert.deepEqual(c.args,[0,1,1]);
+  // A modular raw-neutron sum of zero was never an absence predicate. A
+  // selected source or pending grid neutron must still run preparation.
+  const code=blastsWGSL(d.g,nativeDynamicsHead,'workArgs');
+  assert.match(code,/let hasWork=atomicLoad\(&control\[3\]\)!=D_NONE \|\| \(P.mode!=14u && \(atomicLoad\(&control\[17\]\)>0u \|\| atomicLoad\(&control\[18\]\)>0u\)\)/);
+  for(const count of [0,1,[0,1,1],[1,1,1]]) {
+    calls.length=0;copies.length=0;
+    d._record('blasts','allocate',count,3);assertPrepared(calls,1);
+    assert.equal(copies.length,0,'direct descriptors do not consume workArgs scratch');
+  }
+  d.dispose();
+});
+
+// Independent full serial brick bases vs a model of the production 64-lane
+// workgroup-local prefix and in-place group-sum scan. Requests are immutable.
+function serialRequests(masks) {
+  const prefix=new Uint32Array(masks.length/64);let total=0;
+  for(let slot=0;slot<masks.length;slot++) {
+    if(slot%64===0) prefix[slot/64]=total;
+    total+=bits(masks[slot]);
+  }
+  return {prefix,total};
+}
+function hierarchicalRequests(masks) {
+  const bricks=masks.length/64,local=new Uint32Array(bricks),groups=new Uint32Array(Math.ceil(bricks/64));
+  for(let group=groups.length-1;group>=0;group--) {
+    const demand=new Uint32Array(64);
+    for(let lane=0;lane<64;lane++) {
+      const brick=group*64+lane;
+      if(brick<bricks) for(let slot=brick*64;slot<(brick+1)*64;slot++) demand[lane]+=bits(masks[slot]);
+    }
+    for(let lane=63;lane>=0;lane--) {
+      let previous=0;for(let prior=0;prior<lane;prior++) previous+=demand[prior];
+      if(group*64+lane<bricks) local[group*64+lane]=previous;
+      if(lane===63) groups[group]=previous+demand[lane];
+    }
+  }
+  let total=0;
+  for(let group=0;group<groups.length;group++) {const count=groups[group];groups[group]=total;total+=count;}
+  const prefix=local.map((value,brick)=>value+groups[brick>>>6]);
+  return {prefix,total};
+}
+const registeredDims=[[64,64,64],[96,96,96],[128,128,128],[160,96,160],[256,96,128],[128,384,128]];
+for(const bricks of [...new Set([1,16,63,64,65,127,129,...registeredDims.map(dims=>gridLayout(...dims).nbricks)])]) {
+  test(`${bricks} bricks: full serial prefixes, slot/face ranks, backpressure and grid-before-child offsets`,()=>{
+    for(const pattern of ['empty','dense','sparse','random','sixFaces','bodyBoxReject']) {
+      const masks=new Uint8Array(bricks*64);let seed=bricks;
+      for(let slot=0;slot<masks.length;slot++) {
+        seed=(Math.imul(seed,1664525)+1013904223)>>>0;
+        masks[slot]=pattern==='empty'?0:pattern==='dense'?1:pattern==='sparse'?(slot%997===0?1:0):
+          pattern==='sixFaces'?63:pattern==='bodyBoxReject'?(slot>=63*64+17 && slot<65*64-3?1:0):seed>>>26;
+      }
+      const serial=serialRequests(masks),hier=hierarchicalRequests(masks);
+      assert.deepEqual(hier,serial,pattern);
+      let rank=0,mismatch=false,within=0;
+      const frees=[0,1,31,64,CAP];
+      const serialAccepted=frees.map(()=>0),hierAccepted=frees.map(()=>0);
+      for(let slot=0;slot<masks.length;slot++) {
+        if(slot%64===0) within=0;
+        // dRank and jet spawn add the same immutable within-brick/face order.
+        let faceRank=hier.prefix[slot>>>6]+within;
+        for(let face=0;face<6;face++) if(masks[slot]&(1<<face)) {
+          if(faceRank!==rank) mismatch=true;
+          for(let i=0;i<frees.length;i++) {serialAccepted[i]+=+(rank<frees[i]);hierAccepted[i]+=+(faceRank<frees[i]);}
+          rank++;faceRank++;within++;
+        }
+      }
+      assert.equal(mismatch,false,`${pattern}: every requested slot/face rank is exact`);
+      assert.deepEqual(hierAccepted,serialAccepted,`${pattern}: identical pressure/accepted faces`);
+      for(const childPrefix of [0,1,63,64,NONE]) {
+        assert.equal((hier.total+childPrefix)>>>0,(serial.total+childPrefix)>>>0,'children start after all grid requests');
+      }
+      for(const free of frees) assert.equal(hier.total>free,serial.total>free,'external whole-request gate and retry identical');
+    }
+  });
+}
+
+test('minimum-world partial request group count and allocation modules validate with CPU Naga',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'allocation-prefix-'));
+  try {
+    const g=gridLayout(16,8,8);assert.equal(g.nbricks,16);
+    for(const stage of ['count','allocate']) for(const [family,source] of [
+      ['blasts',blastsWGSL(g,nativeDynamicsHead,stage)],['jets',jetsWGSL(g,stage)],
+    ]) {
+      const file=join(dir,`${family}-${stage}.wgsl`);writeFileSync(file,source);
+      const result=spawnSync('naga',[file],{encoding:'utf8'});
+      assert.equal(result.status,0,result.error?.message??result.stderr);
+    }
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('request counts retain all lanes at barriers and only group sums occupy the old count region',()=>{
+  for(const g of [gridLayout(16,8,8),gridLayout(48,16,32),gridLayout(128,128,128)]) {
+    assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/atomicLoad\(&control\[D_SPAWN_PREFIX\+b\]\)\+atomicLoad\(&control\[D_SPAWN_COUNTS\+b\/64u\]\)/);
+    assert.match(jetsWGSL(g,'spawn'),/atomicLoad\(&control\[J_PREFIX\+t\/64u\]\)\+atomicLoad\(&control\[J_COUNTS\+t\/4096u\]\)/);
+    for(const source of [blastsWGSL(g,nativeDynamicsHead,'count'),jetsWGSL(g,'count')]) {
+      const body=source.slice(source.lastIndexOf('@compute'));
+      assert.doesNotMatch(body,/return;/,'out-of-range and rejected box lanes cannot skip workgroupBarrier');
+      assert.match(body,/brickDemand\[li\]=\w+; workgroupBarrier\(\)/);
+      assert.match(body,/COUNTS\+t\/64u/);
+      assert.match(body,/PREFIX\+t\],prefix/);
+      assert.doesNotMatch(source,/array<[^>]*,\s*1024>/);
+      assert.ok([...source.matchAll(/var<storage,/g)].length<=8);
     }
   }
 });

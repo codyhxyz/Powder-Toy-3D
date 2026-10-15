@@ -86,7 +86,7 @@ pairs. Surface wind lift and unsupported liquid jets feed the same allocator.
 ### Parallel canonical pool preparation
 
 Both blast and liquid-jet allocators use `freeCount → freeScan → freeScatter`
-immediately before their unchanged per-brick request prefix pass. The blast
+immediately before their request group-base scan. The blast
 `_record` hook covers ordinary/indirect batches, custom external blasts, body
 coupling, tools and air lift; jets call the same required helper after counting.
 Ray emission retains its existing serial lowest-free-slot behavior; later pool
@@ -113,20 +113,43 @@ The unchanged consumers retain grid-before-child service (child ranks start at
 requested grid count, not accepted count), lowest-slot selection, held-slot
 clearing, backpressure and all-or-nothing external-blast gating/completions.
 
-**Scratch/save ABI:** append2048 u32 (8192 bytes) at
-`externalMaskBase(g) + externalMaskWords(g)` in the existing control buffer.
-Each chunk uses two words (free and child counts, then bases). All prior offsets,
-buffers, eight-storage binding layouts and persisted fields are unchanged. Saves
-still capture only the first32 control words plus explicit held/shock/request and
-external fields; this tail is ephemeral and overwritten before use.
+**Hierarchical request prefixes:** the existing count dispatch computes each
+brick's demand, then all64 lanes (including out-of-range and body-box-rejected
+lanes with zero demand) participate in a workgroup barrier. Each brick stores
+its local exclusive prefix in `SPAWN_PREFIX` / `J_PREFIX`; lane63 writes one
+64-brick group sum in the old count region. The single-invocation allocator now
+scans only `ceil(nbricks/64)` group sums (512 at128³), replacing them in-place
+with exclusive group bases. `dRank` and jet spawn add local prefix + group base
+before their unchanged within-brick slot/face ordering. `control[5]` is still the
+exact total requested count. Energy-sum storage is separate; count/prefix ranges
+are transient and retain their existing offsets.
 
-**Unmeasured costs:** this replaces each allocator's serial65536-slot scan with
-three dispatches and a serial1024-chunk scan, not less simulation work or a
-smaller pool. It reads the pool twice, adds workgroup masks/child reductions and
-writes child prefixes even for jets. Direct preparation also runs before empty
-indirect batches: bounded extra dispatch/cache/memory traffic may offset gains
-in sparse scenes. GPU execution, parity and performance remain parent-owned;
-CPU models and Naga validation alone establish no timing improvement.
+**Zero-work batches:** `workArgs` writes three additional u32 dispatch arguments
+`[hasWork ? 1024 : 0, 1, 1]` after the allocation tail. Its **existing** predicate
+is unchanged: selected source, or (outside mode14) pending grid neutron or
+positive child sum. A zero child sum alone is not an absence proof (u32 sums may
+wrap). For indirect allocators the central hook copies these args to a separate
+INDIRECT buffer; freeCount/freeScatter use them, and freeScan uses the allocator's
+existing 1-or-0 args from control28..30. All three dimensions are written/copied.
+Direct allocators and jets still prepare directly. All stages remain required
+and awaited, even when an indirect count is zero.
+
+**Scratch/save ABI:** append2048 u32 (8192 bytes) at
+`externalMaskBase(g) + externalMaskWords(g)`, followed by3 u32 (12 bytes) of
+allocation dispatch args, in the existing control buffer. Each chunk uses two
+words (free and child counts, then bases). All prior offsets, buffer/binding
+identities, eight-storage layouts and persisted fields are unchanged. The
+existing separate dispatch-args buffer grows from64 to80 aligned bytes. Saves
+still capture only the first32 control words plus explicit held/shock/request and
+external fields; this tail is ephemeral and overwritten before use. Restore
+clears the entire control buffer before restoring those explicit durable ranges.
+
+**Unmeasured costs:** nonempty pool preparation reads the pool twice, adds
+workgroup masks/child reductions and writes child prefixes even for jets. Request
+count adds up to63 workgroup-local additions per brick; allocator serial work
+falls by64×. Empty indirect batches still record dispatches/copies, but no pool
+invocations. GPU execution, parity and performance remain parent-owned; CPU
+models and Naga validation alone establish no timing improvement.
 
 ## Save / shift
 
@@ -149,8 +172,11 @@ memory grows with explored active air; compression/eviction is not implemented.
 
 - `node --test tools/v2/allocation-check.mjs`: all65536 records compared with an
   independent serial oracle (empty/full/alternating/sparse/children/u32 wrap),
-  backpressure/held/external retries, strict real-driver ordering/readiness and
-  appended-scratch ABI. CPU models do not execute WGSL.
+  backpressure/held/external retries, full serial vs hierarchical request prefixes
+  (partial groups, registered dimensions, all six faces), strict real-driver
+  ordering/readiness, exact zero/positive indirect argument triples and appended
+  scratch ABI. CPU models do not execute general WGSL; the straight-line
+  generated workArgs integer subset is interpreted for argument checks.
 - `node --test tools/v2/dynamics-check.mjs`: packing, range, DDA, claims,
   capacity conservation, shielded budgets, toughness/liquid exclusion,
   scalar conservation/CFL/sleep/wake, recording ABI, atomic restore, shift.

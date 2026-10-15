@@ -25,7 +25,8 @@ export const externalMaskWords = g => { const {width,height}=atlasDims(g);return
 // become exclusive bases in-place; never alias the final per-particle prefixes.
 export const ALLOCATION_CHUNKS = PARTICLE_CAP / 64;
 export const allocationScratchBase = g => externalMaskBase(g) + externalMaskWords(g);
-export const controlWords = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
+export const allocationArgsBase = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
+export const controlWords = g => allocationArgsBase(g) + 3;
 export const ALLOCATION_STAGES = ['freeCount','freeScan','freeScatter'];
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
@@ -145,7 +146,7 @@ fn dPlanSlot(linear: u32) -> u32 {
   return slotOf(p);
 }
 fn dRank(slot: u32) -> u32 {
-  let b = slot / 64u; var rank = atomicLoad(&control[D_SPAWN_PREFIX+b]);
+  let b = slot / 64u; var rank = atomicLoad(&control[D_SPAWN_PREFIX+b])+atomicLoad(&control[D_SPAWN_COUNTS+b/64u]);
   for (var s = b*64u; s < slot; s++) { if ((plans[s].flags & 1u) != 0u && (P.mode!=13u || dInBody(cellOf(s)))) { rank++; } }
   return rank;
 }
@@ -186,6 +187,8 @@ export function blastsWGSL(g,nativeHead,stage) {
     atomicStore(&control[24],select(0u,${fold(Math.ceil(g.nbricks/64))[0]}u,hasWork));
     atomicStore(&control[25],${fold(Math.ceil(g.nbricks/64))[1]}u); atomicStore(&control[26],1u);
     atomicStore(&control[28],select(0u,1u,hasWork)); atomicStore(&control[29],1u); atomicStore(&control[30],1u);
+    atomicStore(&control[${allocationArgsBase(g)}u],select(0u,${ALLOCATION_CHUNKS}u,hasWork));
+    atomicStore(&control[${allocationArgsBase(g)+1}u],1u); atomicStore(&control[${allocationArgsBase(g)+2}u],1u);
   `);
   if (stage === 'plan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
@@ -353,14 +356,25 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     }
     plans[t]=plan;
   `);
-  if (stage === 'count') return h + main64(`
-    if (t >= D_BRICKS) { return; } var n=0u;
-    if(P.mode==13u) {
-      let base=cellOf(t*64u)&vec3i(-4);
-      if(any(base+vec3i(3)<P.boxStart) || any(base>=P.boxStart+vec3i(P.boxSize))) { atomicStore(&control[D_SPAWN_COUNTS+t],0u);return; }
+  if (stage === 'count') return h + `
+var<workgroup> brickDemand: array<u32,64>;
+` + main64(`
+    var n=0u;
+    if(t<D_BRICKS) {
+      var selected=true;
+      if(P.mode==13u) {
+        let base=cellOf(t*64u)&vec3i(-4);
+        selected=!(any(base+vec3i(3)<P.boxStart) || any(base>=P.boxStart+vec3i(P.boxSize)));
+      }
+      if(selected) {
+        for(var s=t*64u;s<(t+1u)*64u;s++) { if((plans[s].flags&1u)!=0u && (P.mode!=13u || dInBody(cellOf(s)))) { n++; } }
+      }
     }
-    for (var s=t*64u;s<(t+1u)*64u;s++) { if ((plans[s].flags&1u)!=0u && (P.mode!=13u || dInBody(cellOf(s)))) { n++; } }
-    atomicStore(&control[D_SPAWN_COUNTS+t],n);
+    // Rejected and padding lanes must still participate in the barrier.
+    brickDemand[li]=n; workgroupBarrier();
+    var prefix=0u; for(var lane=0u;lane<li;lane++) { prefix+=brickDemand[lane]; }
+    if(t<D_BRICKS) { atomicStore(&control[D_SPAWN_PREFIX+t],prefix); }
+    if(li==63u) { atomicStore(&control[D_SPAWN_COUNTS+t/64u],prefix+n); }
   `);
   if (stage === 'freeCount') return h + `
 var<workgroup> freeMasks: array<atomic<u32>,2>;
@@ -416,7 +430,10 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   if (stage === 'allocate') return h + main1(`
     var total=0u;
-    for (var b=0u;b<D_BRICKS;b++) { atomicStore(&control[D_SPAWN_PREFIX+b],total); total+=atomicLoad(&control[D_SPAWN_COUNTS+b]); }
+    for(var group=0u;group<(D_BRICKS+63u)/64u;group++) {
+      let count=atomicLoad(&control[D_SPAWN_COUNTS+group]);
+      atomicStore(&control[D_SPAWN_COUNTS+group],total); total+=count;
+    }
     atomicStore(&control[5],total);
   `);
   if (stage === 'apply') return h + main64(/* wgsl */ `

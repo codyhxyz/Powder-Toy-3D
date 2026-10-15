@@ -46,23 +46,34 @@ export function jetsWGSL(g,stage) {
     for(var f=0u;f<6u;f++) { if(jetCandidate(cellOf(t),f)) { mask|=1u<<(f+8u); } }
     atomicStore(&jetMask[t],mask);
   `);
-  if(stage==='count') return h+main64(`
-    if(t>=D_BRICKS) { return; } var count=0u;
-    for(var s=t*64u;s<(t+1u)*64u;s++) {
-      if(inGrid(cellOf(s)) && awakeCell(cellOf(s))) { count+=countOneBits((atomicLoad(&jetMask[s])>>8u)&63u); }
+  if(stage==='count') return h+`
+var<workgroup> brickDemand: array<u32,64>;
+`+main64(`
+    var count=0u;
+    if(t<D_BRICKS) {
+      for(var s=t*64u;s<(t+1u)*64u;s++) {
+        if(inGrid(cellOf(s)) && awakeCell(cellOf(s))) { count+=countOneBits((atomicLoad(&jetMask[s])>>8u)&63u); }
+      }
     }
-    atomicStore(&control[J_COUNTS+t],count);
+    // Padding lanes contribute zero without skipping the barrier.
+    brickDemand[li]=count; workgroupBarrier();
+    var prefix=0u; for(var lane=0u;lane<li;lane++) { prefix+=brickDemand[lane]; }
+    if(t<D_BRICKS) { atomicStore(&control[J_PREFIX+t],prefix); }
+    if(li==63u) { atomicStore(&control[J_COUNTS+t/64u],prefix+count); }
   `);
   if(stage==='allocate') return h+main1(`
     let free=atomicLoad(&control[4]); var requested=0u;
-    for(var b=0u;b<D_BRICKS;b++) { atomicStore(&control[J_PREFIX+b],requested); requested+=atomicLoad(&control[J_COUNTS+b]); }
+    for(var group=0u;group<(D_BRICKS+63u)/64u;group++) {
+      let count=atomicLoad(&control[J_COUNTS+group]);
+      atomicStore(&control[J_COUNTS+group],requested); requested+=count;
+    }
     atomicStore(&control[5],requested);
     if(requested>free) { atomicAdd(&control[7],requested-free); }
   `);
   if(stage==='spawn') return h+main64(`
     if(t>=D_SLOTS || !inGrid(cellOf(t)) || !awakeCell(cellOf(t))) { return; }
     let p=cellOf(t); let candidates=(atomicLoad(&jetMask[t])>>8u)&63u;
-    var rank=atomicLoad(&control[J_PREFIX+t/64u]);
+    var rank=atomicLoad(&control[J_PREFIX+t/64u])+atomicLoad(&control[J_COUNTS+t/4096u]);
     for(var s=t/64u*64u;s<t;s++) { rank+=countOneBits((atomicLoad(&jetMask[s])>>8u)&63u); }
     var accepted=0u;
     for(var f=0u;f<6u;f++) {

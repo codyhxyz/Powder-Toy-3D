@@ -6,7 +6,7 @@ import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES } from '../shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, allocationArgsBase } from '../shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
 
@@ -101,7 +101,7 @@ export class NativeDynamics {
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
     this.faces=make('faces',g.nbricks*16);
     this.control=make('control',controlWords(g)*4);
-    this.dispatchArgs=make('dispatch args',64,GPUBufferUsage.INDIRECT);
+    this.dispatchArgs=make('dispatch args',80,GPUBufferUsage.INDIRECT);
     const args=new Uint32Array(16);args[13]=PARTICLE_CAP/64;args[14]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
     this.plans=make('plans',g.slots*16);
     const initial=new Float32Array(g.nbricks*8); for (let b=0;b<g.nbricks;b++) initial[b*8+6]=AIR.quietTicks;
@@ -141,14 +141,22 @@ export class NativeDynamics {
     return {busyIn,busyOut,...nativeModes(this.owner.sim),tick,nativeJets:+(this.owner.jets?.isReady===true),origin:vector(this.owner.sim.origin),sequence:this.sequence,...extra};
   }
   _check() { if (!this.isReady || this.disposed) throw new Error('NativeDynamics is not ready'); }
-  _prepareAllocation(tick,params={}) {
-    for(const stage of ALLOCATION_STAGES) this._record('blasts',stage,stage==='freeScan'?1:PARTICLE_CAP/64,tick,params);
+  _prepareAllocation(tick,params={},count) {
+    this._check();
+    // Match the kernel descriptor protocol: vectors are direct dispatches.
+    const indirect=!Array.isArray(count) && count?.indirect;
+    if(indirect) this.gpu.frame.copy(this.control,allocationArgsBase(this.g)*4,this.dispatchArgs,64,12);
+    for(const stage of ALLOCATION_STAGES) {
+      const size=indirect?(stage==='freeScan'?count:{indirect:this.dispatchArgs,offset:64}):
+        (stage==='freeScan'?1:PARTICLE_CAP/64);
+      this._record('blasts',stage,size,tick,params);
+    }
   }
   _record(family,stage,count,tick,params={}) {
     this._check();
-    // Central hook also covers custom external-blast sequences and indirect
-    // batches. Preparation is direct even when the following batch is empty.
-    if(family==='blasts' && stage==='allocate') this._prepareAllocation(tick,params);
+    // Central hook covers custom/external sequences too. The exact workArgs
+    // predicate gates pool preparation for indirect batches, never a CPU guess.
+    if(family==='blasts' && stage==='allocate') this._prepareAllocation(tick,params,count);
     const k=this.kernels[`${family}/${stage}`];
     k.dispatch(this.gpu.frame,typeof count==='number'?fold(count):count,{bind:[this.owner.nativeDynamics.group,this.groups[family][this.airIndex]],
       header:this.owner.sim.header?.(),params:this._params(tick,params)});
