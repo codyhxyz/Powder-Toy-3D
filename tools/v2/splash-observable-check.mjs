@@ -2,11 +2,11 @@
 // fake in-memory readbacks retain the original 32x16x32 / 3104-mass fixture.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { registerHooks } from 'node:module';
 import { test } from 'node:test';
 import { splash } from '../outcomes/tests/liquids.js';
 import { runTest } from '../outcomes/run.js';
 import { at, stepClock } from '../outcomes/engine.js';
-import { createEngine } from '../outcomes/engine-v2.js';
 import { OUTCOMES } from '../outcomes/thresholds.js';
 
 function fake({ ratio = .25, legacy = false, overlay = false, resident, packet } = {}) {
@@ -90,6 +90,13 @@ test('finite packet inputs cannot overflow energy into a false pass', async () =
 });
 
 test('actual native capability returns n/a before create or GPU access', async () => {
+  // Older production modules use /src imports. Resolve those paths only while
+  // importing the actual adapter; no browser, device or replacement model.
+  const hooks=registerHooks({resolve(specifier,context,nextResolve) {
+    return nextResolve(specifier.startsWith('/src/') ? new URL(`../../${specifier.slice(1)}`,import.meta.url).href : specifier,context);
+  }});
+  let createEngine;
+  try { ({createEngine}=await import('../outcomes/engine-v2.js')); } finally { hooks.deregister(); }
   const gpu=new Proxy({adapterInfo:{}},{get(target,key){assert.equal(key,'adapterInfo');return target[key];}});
   const e=createEngine(gpu);
   assert.equal(e.info.velocity,false);
