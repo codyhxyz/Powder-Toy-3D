@@ -71,8 +71,12 @@ ok('rollChest: deterministic, always gold, wands compile, spells exist', () => {
   console.log(`    900 chests: ${wands} wands, ${spells} spells, ${potions} potions`);
   assert.ok(wands > 0 && spells > 0 && potions > 0);
 });
-ok('levels.js: each level has 2–3 chests, 6 potions, ~25 gold sites', () => {
+ok('biomes have loot; sanctuaries and the arena do not have loose item clutter', () => {
   for (const L of DESCENT_LEVELS) {
+    if (L.role !== 'biome') {
+      assert.equal(L.chests.length + L.potions.length + L.loot.length, 0);
+      continue;
+    }
     assert.ok(L.chests.length >= 2 && L.chests.length <= 3, `${L.key} chests ${L.chests.length}`);
     assert.equal(L.potions.length, 6);
     assert.ok(L.loot.filter((l) => l.kind === 'gold').length >= 25);
@@ -83,7 +87,7 @@ ok('levels.js: each level has 2–3 chests, 6 potions, ~25 gold sites', () => {
 ok('the run keeps its flasks: item slots, poured contents, a level switch, a throw, a new run', () => {
   descentWands.reset(1);
   assert.equal(descentWands.potions.length, 0);
-  const L = DESCENT_LEVELS[0];
+  const L = DESCENT_LEVELS.find(l => l.role === 'biome');
   const picks = L.potions.map((s, i) => makeFlask(rollPotion(L.tier, `${L.key}:potion:${i}`), `${L.key}:potion:${i}`));
   for (let i = 0; i < POTION_SLOTS; i++) assert.equal(descentWands.givePotion(picks[i]), i);
   assert.equal(descentWands.givePotion(picks[4]), -1, 'Noita\'s four item slots: the fifth is refused');

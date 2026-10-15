@@ -10,11 +10,14 @@ import { createImportedMapScene } from '../src/world/scenes/importedMap.js';
 import { validateAppearance } from '../src/world/import/appearance.js';
 import { createHash } from 'node:crypto';
 import { ELEMENTS, K } from '../src/elements.js';
+import { DESCENT_LEVELS } from '../src/world/scenes/descent/levels.js';
 
 // Cloudflare Pages rejects any single asset over 25 MiB (docs/cruelty-source-comparison.md).
 const FILE_LIMIT = 25 * 1024 * 1024;
 const profiles = CRUELTY_PROFILES.filter((p) => !p.blocked);
-const expected = profiles.flatMap((p) => [`${p.id}.json`, `${p.id}.binpack`, `${p.id}.appearance.binpack`]).sort();
+const noita = new Map(DESCENT_LEVELS.map(l => [l.key, l]));
+const expected = [...profiles.flatMap((p) => [`${p.id}.json`, `${p.id}.binpack`, `${p.id}.appearance.binpack`]),
+  ...DESCENT_LEVELS.flatMap(l => [`${l.key}.json`, `${l.key}.binpack`])].sort();
 let packed = 0;
 
 for (const directory of ['public/local-maps', 'dist/local-maps']) {
@@ -27,10 +30,18 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
     const map = JSON.parse(await readFile(path, 'utf8'));
     assert.equal(map.id, name.slice(0, -5));
     const buffer = gunzipSync(await readFile(join(directory, `${map.id}.binpack`)));
+    const words = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
+    if (noita.has(map.id)) {
+      assert.equal(createHash('sha256').update(buffer).digest('hex'), map.geometrySha256);
+      assert.deepEqual(map.descent, noita.get(map.id), `${map.id}: current route metadata ships with the geometry`);
+      const scene = createImportedMapScene(map, words);
+      assert.deepEqual(scene.start(), [map.spawn[0], map.spawn[2]]);
+      assert.ok(actorBodyClear(map, words, map.spawn), `${map.id}: authored spawn fits the body`);
+      continue;
+    }
     const appearance = gunzipSync(await readFile(join(directory, map.appearance.dataFile)));
     validateAppearance(map, new Uint32Array(appearance.buffer, appearance.byteOffset, appearance.byteLength / 4));
     assert.equal(createHash('sha256').update(appearance).digest('hex'), map.appearance.sha256);
-    const words = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
     // Validates the manifest, every brick pointer and every packed element id.
     const scene = createImportedMapScene(map, words);
     assert.ok(map.size[0] % 16 === 0 && map.size[2] % 16 === 0, `${map.id}: horizontal bounds fit world streaming`);
@@ -46,4 +57,4 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
   }
   assert.ok(!expected.some((n) => n.endsWith('.bin')), `${directory} ships no uncompressed geometry`);
 }
-console.log(`PASS the build ships ${profiles.length} converted source levels with original appearance (${(packed / 1e6).toFixed(2)} MB packed, under the 25 MiB per-file limit)`);
+console.log(`PASS the build ships ${profiles.length} Cruelty levels with original appearance and ${noita.size} Noita scenes (${(packed / 1e6).toFixed(2)} MB packed, under the 25 MiB per-file limit)`);

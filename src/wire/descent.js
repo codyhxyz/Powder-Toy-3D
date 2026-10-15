@@ -50,6 +50,7 @@ const descent = {
       loadScene: (key) => descentLoad(app, key),
       enterAt: async (spawn) => {
         await pov.enter({ at: descentSpawn(app, { spawn }) });
+        pov.setLook(levelByScene(app.settings.scene)?.spawnYaw ?? 0, 0);
         if (!pov.active) throw new Error("the body didn't drop in");
       },
       snapshot: () => runSnapshot({ player: pov.player, gold: pov.descent?.gold ?? null, wands: descentWands }),
@@ -65,6 +66,12 @@ const descent = {
     if (!d) return;
     const p = pov?.player;
     const live = !!(win && p && pov.mode === 'on' && !p.dead);
+    // First entry from the menu uses the authored corridor direction too.
+    if (live && this.lookLoad !== win) {
+      this.lookLoad = win;
+      const lv = levelByScene(app.settings.scene);
+      if (lv) pov.setLook(lv.spawnYaw ?? 0, 0);
+    }
     d.frame({
       key: win ? app.settings.scene : null,
       feet: live ? descentFeet.copy(p.pos).add(sim.origin) : null,
