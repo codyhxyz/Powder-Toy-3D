@@ -325,6 +325,17 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
 // mirror: trace the scene in the reflection (else the sky only).
 fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i32, mirror: bool, ro: ptr<function, vec3f>, rd: ptr<function, vec3f>,
                    col: ptr<function, vec3f>, trans: ptr<function, vec3f>, mediumLight: ptr<function, vec3f>) -> bool {
+  let original = sourceMaterial(id, worldPos(hp), geometric);
+  if (original.kind != 0u) {
+    if (entering) {
+      let alpha = select(1.0, original.alpha, (original.flags & 1u) != 0u);
+      sourceBlend(sourceShade(worldPos(hp), original.normal, *rd, original.albedo,
+        original.roughness, original.metallic, original.f0, original.kind, original.flags) + original.emission,
+        alpha, original.flags, col, trans);
+    }
+    *ro = hp + *rd * IFACE_NUDGE + geometric * select(IFACE_NUDGE, -IFACE_NUDGE, entering);
+    return entering;
+  }
   let ior = IOR(id);
   var n = liquidOpticalNormal(*rd, n0, geometric, entering, ior);
   if (entering) {
@@ -389,8 +400,16 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
 // The transmitted ray crosses the analytic crystal and continues in the world.
 fn crystalInterface(s: Shard, hp: vec3f, n: vec3f, rd: vec3f, inside: bool, liquid: i32, bend: bool, limit: f32,
                     T: f32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) -> CrystalPath {
-  let eta = IOR(E_CRYSTAL) / select(IOR(liquid), 1.0, liquid == E_EMPTY);
-  let path = crystalPath(s, hp, rd, n, eta, SIGMA(E_CRYSTAL) * mix(0.85, 1.15, s.seed), inside, bend, limit);
+  let original = sourceMaterial(E_CRYSTAL, worldPos(hp), n);
+  let eta = select(IOR(E_CRYSTAL) / select(IOR(liquid), 1.0, liquid == E_EMPTY), 1.0, original.kind != 0u);
+  let sigma = select(SIGMA(E_CRYSTAL) * mix(0.85, 1.15, s.seed), vec3f(0.0), original.kind != 0u);
+  let path = crystalPath(s, hp, rd, n, eta, sigma, inside, bend, limit);
+  if (original.kind != 0u) {
+    let alpha = select(1.0, original.alpha, (original.flags & 1u) != 0u);
+    sourceBlend(sourceShade(worldPos(hp), original.normal, rd, original.albedo, original.roughness,
+      original.metallic, original.f0, original.kind, original.flags) + original.emission, alpha, original.flags, col, trans);
+    return path;
+  }
   let gi = surfProbe(hp, n);
   gSkyIn = skyInAt(gi);
   var sunVis = vec3f(1.0);

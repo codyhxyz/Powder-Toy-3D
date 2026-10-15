@@ -151,7 +151,7 @@ export function warmMap(key, mode = 'sandbox') {
   if (!m || !launch.adapter) return;
   const chosen = resolveMode(m, mode);
   const grid = { ...gridOf(m), curved: !!chosen.effect, view: chosen.defaultView };
-  const asked = `${grid.key}${grid.curved ? ' curved' : ''}${grid.view ? ` ${grid.view}` : ''}`;
+  const asked = `${grid.key}${grid.curved ? ' curved' : ''}${grid.view ? ` ${grid.view}` : ''}${grid.world ? ` world:${grid.world.join('x')}` : ''}`;
   if (warmed.has(asked)) return;
   grid.volumeOnly = [...warmed].some((key) => key === grid.key || key.startsWith(`${grid.key} `));
   warmed.add(asked);
@@ -184,6 +184,7 @@ async function startWarmer() {
   }
   const [sim, render, post, overlays, brush, detail, views, ...lists] = mods;
   const names = await layoutNames();
+  const { volumeShaderGrid } = await import('./gfx/volume.js');
   if (device !== made) return;   // (lost meanwhile: the next warmMap starts over)
   const settings = savedSettings(detail);
   const fallback = gpu.adapterInfo.isFallbackAdapter;
@@ -234,8 +235,11 @@ async function startWarmer() {
       // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick
       const volume = render.warmChecks(view, settings, { fallback, curved });
       const own = (e) => (e.name === 'shadow' ? { ...e, code: (gg) => render.shadowFrag(gg, world ? { world } : {}) } : e);
-      for (const e of volume.filter((x) => !x.idle)) build(own(e), g);
-      for (const e of volume.filter((x) => x.idle)) build(e, g);
+      // Match createVolume's specialization so menu warm-up is reused, not
+      // a second, expensive variable-division version of the same shader.
+      const volumeGrid = volumeShaderGrid(g, world);
+      for (const e of volume.filter((x) => !x.idle)) build(own(e), volumeGrid);
+      for (const e of volume.filter((x) => x.idle)) build(e, volumeGrid);
     },
   };
   for (const grid of wanted.splice(0)) warmer.grid(grid);

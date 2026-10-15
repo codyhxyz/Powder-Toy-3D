@@ -1699,7 +1699,9 @@ async function renderThumb(viewId, out) {
   thumbCam.aspect = THUMB_SIZE[0] / THUMB_SIZE[1];
   useWebGPUCamera(thumbCam);
   const rawWas = post.settings.raw;
+  const crueltyWas = post.settings.cruelty;
   post.settings.raw = view === 'plain' ? false : !isMaterialView(view);
+  post.settings.cruelty = selectedMode === 'crueltySquad' && isMaterialView(view);
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     presentation.neutral(() => post.renderStill({
@@ -1720,6 +1722,7 @@ async function renderThumb(viewId, out) {
     }, thumbCam, thumbTarget));
   } finally {
     post.settings.raw = rawWas;
+    post.settings.cruelty = crueltyWas;
   }
   const px = await gpu.readback.texture(thumbTarget);
   const [w, hgt] = THUMB_SIZE;
@@ -2137,6 +2140,8 @@ function frameValues(cam, view, jitter) {
   return {
     camera: cam, model: volume.matrixWorld, sun: SUN, view, shadowRes: vol.shadowRes, time: viewTime, lightGain: GLOW_GAIN,
     shadows: true, far: !!win?.far, sea: win?.P?.sea ?? 0, jitter,
+    sourceAppearance: win?.far?.appearance.uniform ?? [0, 0, 0, 0],
+    sourceStyle: selectedMode === 'crueltySquad' && isMaterialView(view),
   };
 }
 let frameDerived = false;   // this frame runs the derived passes (pacer.derived)
@@ -2466,6 +2471,12 @@ function tick(now, renderOnly = false) {
   if (worldChanged) viewTime += dt;
   if (renderOnly) updatePresentation();
   const present = renderOnly || pacer.present(now, wantFrame());
+  // Set before viewKey: changing source style invalidates the cached image.
+  const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView(settings.view);
+  if (post.settings.cruelty !== crueltyDisplay) {
+    post.settings.cruelty = crueltyDisplay;
+    post.reset(); // Never blend temporal history across source-style transitions.
+  }
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,

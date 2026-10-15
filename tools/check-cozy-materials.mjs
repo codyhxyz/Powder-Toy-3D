@@ -41,7 +41,9 @@ for (const mode of GAMEMODES) for (const saved of VIEWS) {
     'only Animal Crossing supplies a starting shader; other modes retain the selected view');
 }
 assert.equal(viewForMode(resolveMode(mapByKey('lab'), 'animalCrossing'), 0), 0, 'ineligible maps do not receive the mode default');
-const oldFields = Object.fromEntries(Object.entries(FRAME_UNIFORM_FIELDS).filter(([key]) => key !== 'materialStyle'));
+// Compare the ABI before Cozy was appended, not fields added by later styles.
+const entries = Object.entries(FRAME_UNIFORM_FIELDS);
+const oldFields = Object.fromEntries(entries.slice(0, entries.findIndex(([key]) => key === 'materialStyle')));
 const oldStruct = uniformStruct('OldFrameUniforms', oldFields);
 for (const [key, offset] of Object.entries(oldStruct.offsets)) assert.equal(FrameUniformsStruct.offsets[key], offset, `existing offset ${key}`);
 assert.equal(FRAME_UNIFORM_FIELDS.materialStyle, 'f32');

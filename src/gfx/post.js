@@ -120,6 +120,7 @@ import { initRenderTarget, gpuTextureOf, createTemporalUpscaler } from '../gpu/t
 import { IDENTITY, presentationWGSL } from './presentationMath.js';
 import { glf as f } from '../glsl.js';
 import { sprintBlurWGSL } from './sprintBlur.js';
+import { crueltyDisplayWGSL, crueltyFrameSettings } from './crueltyDisplay.js';
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -133,6 +134,7 @@ export const POST_DEFAULTS = {
   exposure: 0.7,
   sharpen: 0.25, // CAS-style post-TAA sharpen (0..1)
   sprintBlur: 0, // transient 0..1 speed effect, set by the POV shell; never stored or used in stills
+  cruelty: false, // transient gamemode treatment; original PaletteLimiter + screenmat (crueltyDisplay.js)
   look: 0.5, // 0 = AgX base, 1 = Blender's AgX "Punchy" look
   raw: false, // true = only encode to sRGB (false-colour data views keep exact legend colours)
   bloomThreshold: 1.6, // max-channel radiance where bloom starts…
@@ -339,7 +341,7 @@ const CompositeParams = uniformStruct('CompositeParams', {
   bloom: 'f32', exposure: 'f32', sharpen: 'f32', look: 'f32',
   raw: 'bool', adapt: 'bool', night: 'f32', nightGain: 'f32',
   nightSeed: 'u32', opaque: 'bool', viewmodel: 'bool', glow: 'bool',
-  vmNight: 'f32', peak: 'f32', sprintBlur: 'f32',
+  vmNight: 'f32', peak: 'f32', sprintBlur: 'f32', cruelty: 'bool', crueltyTime: 'f32',
   packed: 'bool',   // the resolved frame is TAAU's, in taaCompress's range (radiance())
   white: 'f32',   // the brightest value sent: srgbEncode(max(peak, 1)), once a frame rather than per pixel
   skyTop: 'vec3f', skyMid: 'vec3f', skyLow: 'vec3f', skyGlow: 'vec4f',
@@ -842,7 +844,11 @@ fn hdrGain(c: vec3f) -> f32 {
   if (x < GT_SHOULDER_SDR) { return 1.0; }
   return gtCurve(x, P.peak) / max(gtCurve(x, 1.0), 1e-6);
 }
-fn display(c: vec3f) -> vec3f { return tonemap(c) * hdrGain(c); }
+fn display(c: vec3f) -> vec3f {
+  // Original normal display: linear tone mapper, no AgX/look or HDR shoulder.
+  if (P.cruelty != 0u) { return clamp(c, vec3f(0.0), vec3f(1.0)); }
+  return tonemap(c) * hdrGain(c);
+}
 
 // The reversible tone map CAS works in, t = c / (1 + luma(c)): t, and its luma in w
 // (luma(c) / (1 + luma(c)): one luma and one reciprocal a tap)
@@ -899,6 +905,7 @@ fn sky(uv: vec2f) -> vec3f {
 }
 
 ${sprintBlurWGSL()}
+${crueltyDisplayWGSL()}
 @fragment fn fs(in: FullScreen) -> @location(0) vec4f {
   let p = vec2i(in.position.xy);
   let hi = vec2i(P.size) - 1;
@@ -945,9 +952,9 @@ ${sprintBlurWGSL()}
   }
   // ±½ LSB dither against 8-bit banding; keep exact zeros exact
   let ign = fract(IGN.z * fract(dot(vec2f(p), IGN.xy)));
-  o += (ign - 0.5) / DITHER_LEVELS * step(DITHER_BLACK, max(o.r, max(o.g, o.b)));
+  if (P.cruelty == 0u) { o += (ign - 0.5) / DITHER_LEVELS * step(DITHER_BLACK, max(o.r, max(o.g, o.b))); }
   let white = vec3f(P.white);   // SDR white, or the HDR peak
-  o = clamp(o, vec3f(0.0), white);
+  if (P.cruelty == 0u) { o = clamp(o, vec3f(0.0), white); }
 
   // The held tool (pov/viewmodel.js): straight colour → the same tone map at the
   // exposure, without the adaptation gain → sRGB, premultiplied over. Tone mapping is
@@ -966,7 +973,13 @@ ${sprintBlurWGSL()}
     }
   }
   // the hands' light, added over it all (its materials tone map themselves)
-  if (P.glow != 0u) { o = clamp(o + textureSampleLevel(tGlow, smp, uv, 0.0).rgb, vec3f(0.0), white); }
+  if (P.glow != 0u) {
+    o += textureSampleLevel(tGlow, smp, uv, 0.0).rgb;
+    if (P.cruelty == 0u) { o = clamp(o, vec3f(0.0), white); }
+  }
+  // Source canvas treatment sees the complete picture, including sky/hands/glow,
+  // not the HTML HUD. Quantize display RGB, then source noise, then final clamp.
+  if (P.cruelty != 0u) { o = clamp(crueltyDisplay(o, uv, P.crueltyTime), vec3f(0.0), white); }
   return vec4f(o, a);
 }
 `;
@@ -1180,6 +1193,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let size = [0, 0], inSize = [0, 0];
   let down = [], up = [], bloomImage = null, resolved = null;
   let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
+  let crueltyTime = 0; // render dt clock: dt=0 freezes noise; stills don't advance it
   let jitter = [0, 0], taaNow = false;
   // the cameras' view-projections: last frame's and this frame's unjittered, this frame's jittered (as the scene drew)
   const prevVP = new Matrix4(), curVP = new Matrix4(), jitVP = new Matrix4(), invVP = new Matrix4(), reproj = new Matrix4();
@@ -1204,6 +1218,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     camera.updateMatrixWorld();
     // Composite-only controls don't change radiance, bloom or the histogram.
     // The app still settles full frames on settings changes through its view key.
+    // cruelty stays in imageSettings: a mode flip must never reuse old images.
     const { exposure, sharpen, look, hotStart, hotFull, nightGain, sprintBlur, ...imageSettings } = s;
     return JSON.stringify([imageSettings, camera.matrixWorld.elements, camera.projectionMatrix.elements,
       presenter?.canvas.width, presenter?.canvas.height, presenter?.format, presenter?.hdrActive,
@@ -1232,7 +1247,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const ATTACH = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING | COPY;
   const STORE = TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | COPY;
 
-  const settingsOf = () => ({ ...POST_DEFAULTS, ...post.settings });
+  const settingsOf = () => crueltyFrameSettings({ ...POST_DEFAULTS, ...post.settings });
   const ready = Promise.all(allPipes().map((p) => p.ready)).then(() => post);
   ready.catch(() => {});
 
@@ -1491,6 +1506,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         }
       }
       frame++;
+      if (Number.isFinite(dt) && dt > 0) crueltyTime += dt;
 
       adaptOn = s.adapt && !s.raw;   // (the data views and the plain view keep their exact colours)
       const bloomOn = s.bloom > 0 && !s.raw;
@@ -1549,7 +1565,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           bloom: bloomOn ? s.bloom : 0, sharpen: taaNow && !s.raw ? s.sharpen : 0,
           adapt: adaptOn, night: s.raw ? 0 : s.night, nightSeed: frame, opaque: out.canvas,
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
-          peak: out.canvas && presenter?.hdrActive && !s.raw ? HDR_OUT.PEAK : 1, packed,
+          peak: out.canvas && presenter?.hdrActive && !s.raw && !s.cruelty ? HDR_OUT.PEAK : 1, packed,
           sprintBlur: s.raw ? 0 : s.sprintBlur,
         }),
       });
@@ -1723,6 +1739,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       size: outSize, thresh: [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)], hot: [s.hotStart, s.hotFull],
       bloom: o.bloom, exposure: 2 ** s.exposure, sharpen: o.sharpen, look: s.look,
       raw: s.raw, adapt: o.adapt, night: o.night, nightGain: s.nightGain,
+      cruelty: s.cruelty, crueltyTime,
       nightSeed: o.nightSeed >>> 0, opaque: o.opaque, viewmodel: o.viewmodel, glow: o.glow, vmNight: o.vmNight, peak: o.peak, packed: !!o.packed,
       white: srgbEncode(Math.max(o.peak, 1)),
       sprintBlur: Number.isFinite(o.sprintBlur) ? Math.max(0, Math.min(1, o.sprintBlur)) : 0,

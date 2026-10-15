@@ -38,7 +38,8 @@ fn beaconVisible(p: vec3f) -> bool {
     // Actual far occupancy, not generated terrain/scenery. Bounded coarse
     // shadow: narrow distant walls can fall between samples. The far field
     // is smoothed over 8 cells, so avoid receiver/emitter self-shadow there.
-    let dims = vec3i(textureDimensions(tFarGrid));
+    var dims = vec3i(textureDimensions(tFarGrid));
+    if (FU.sourceAppearance.y > 0u) { dims.y = i32(FU.sourceAppearance.x); }
     for (var i = 0; i < ${LIGHTHOUSE.farSamples}; i++) {
       let t = mix(8.0, max(d - 8.0, 8.0), (f32(i) + 0.5) / ${glf(LIGHTHOUSE.farSamples)});
       if (t >= end) { break; }

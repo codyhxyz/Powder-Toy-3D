@@ -4,12 +4,13 @@ import { CELL_M } from '../scale.js';
 import { povGpu } from './gpu.js';
 import { rayTarget, targetById, PLAYER } from './targets.js';
 import { povEvents } from './events.js';
-import { GRAPPENDIX_RANGE } from './grappendixPhysics.js';
+import { GRAPPENDIX_RANGE, GRAPPENDIX_MAX_CABLE } from './grappendixPhysics.js';
+import { traceGrappendix, grappleResident, grappleFarCells } from './grappendixTrace.js';
 
-// weapon.gd: Tertiary_Weapon toggles an instant, <20 m attachment. Player.gd supplies the force.
+// weapon.gd's toggle and Player.gd's force, with adapted range (docs/grappendix.md).
 // The original visual is four pulsating flesh orbs per meter, not a hemp rope or a flying claw.
 const ORBS_PER_M = 4, ORB_RADIUS = 0.173 / CELL_M;
-const MAX_ORBS = 512;   // shortcut: visual span capped at 128 m; raise if maps allow longer attached falls.
+const MAX_ORBS = Math.round(GRAPPENDIX_MAX_CABLE * CELL_M) * ORBS_PER_M;
 const solid = id => id < 0 || ELEMENTS[id]?.kind === K.SOLID;
 
 export function createGrappendix(env) {
@@ -22,62 +23,75 @@ export function createGrappendix(env) {
   env.scene.add(orbs);
   const center = new THREE.Vector3(), start = new THREE.Vector3(), end = new THREE.Vector3();
   const cell = new THREE.Vector3(), offset = new THREE.Vector3(), temp = new THREE.Vector3();
-  const hitBox = new THREE.Box3(), hitRay = new THREE.Ray(), hit = new THREE.Vector3();
   const pose = new THREE.Object3D();
   let body = null, target = null, targetId = null, targetEpoch = null, rope = null, checking = false, generation = 0, time = 1;
+  let pending = null, attachedSim = null, attachedWorld = null, attachedEpoch = null;
 
   function release(action = 'release') {
-    if (!rope) return;
-    if (body?.rope === rope) body.tether(null);
-    povEvents.emit('tool:action', { tool: 'hook', action, point: rope.anchor.clone() });
-    rope = target = targetId = body = null;
+    if (!rope && !pending) return;
+    if (rope) {
+      if (body?.rope === rope) body.tether(null);
+      povEvents.emit('tool:action', { tool: 'hook', action, point: rope.anchor.clone() });
+    }
+    rope = target = targetId = body = pending = attachedSim = attachedWorld = attachedEpoch = null;
     generation++; checking = false; orbs.visible = false; orbs.count = 0;
     env.requestRender?.();
   }
 
-  function toggle(ctx) {
-    if (rope) { release(); return; }
+  async function toggle(ctx) {
+    if (rope || pending) { release(); return; }
     const mine = ctx.player?.body ?? ctx.player;
     if (!mine?.tether || mine.dead) return;
-    const aim = ctx.aim;
-    let cellPoint = null;
-    if (aim?.valid) {
-      hitBox.min.copy(aim.cell); hitBox.max.copy(aim.cell).addScalar(1);
-      cellPoint = hitRay.set(ctx.eye, ctx.dir).intersectBox(hitBox, hit);
-    }
-    const blockDistance = cellPoint ? ctx.eye.distanceTo(cellPoint) : aim?.valid ? aim.dist : Infinity;
-    const who = rayTarget(ctx.eye, ctx.dir, Math.min(GRAPPENDIX_RANGE, blockDistance), PLAYER, null, true);
+    const sim = ctx.sim ?? env.getSim(), world = env.getWorld?.() ?? null;
+    const eye = ctx.eye.clone(), dir = ctx.dir.clone();
+    const gen = ++generation, epoch = mine.positionEpoch, worldEpoch = world?.epoch, previousRope = mine.rope;
+    pending = { sim, world, worldEpoch, mine, epoch };
+    let trace;
+    try { trace = await traceGrappendix(sim, world, eye, dir, GRAPPENDIX_RANGE); }
+    catch { if (gen === generation) pending = null; return; }
+    if (gen !== generation) return;
+    pending = null;
+    if (mine.dead || mine.positionEpoch !== epoch || mine.rope !== previousRope
+      || env.getSim() !== sim || (env.getWorld?.() ?? null) !== world || world?.epoch !== worldEpoch) return;
+    const aim = trace?.hit;
+    const who = trace && rayTarget(eye, dir, trace.distance, PLAYER, null, true);
     let point = null;
-    if (who?.target.body && ctx.eye.distanceTo(who.point) < GRAPPENDIX_RANGE) {
+    if (who?.target.body && eye.distanceTo(who.point) < GRAPPENDIX_RANGE) {
       target = who.target.body; targetId = who.target.id; targetEpoch = target.positionEpoch; point = who.point.clone();
       offset.subVectors(point, target.pos);
-    } else if (cellPoint && solid(aim.id)) {
-      point = cellPoint.clone();
-      if (ctx.eye.distanceTo(point) >= GRAPPENDIX_RANGE) point = null;
-      else { cell.copy(aim.cell); target = targetId = null; }
+    } else if (aim && solid(aim.id) && aim.dist < GRAPPENDIX_RANGE) {
+      point = aim.point.clone();
+      cell.copy(aim.cell); target = targetId = null;
     }
     if (!point) {
       target = targetId = null;
-      povEvents.emit('tool:action', { tool: 'hook', action: 'miss', point: ctx.eye.clone() });
+      povEvents.emit('tool:action', { tool: 'hook', action: 'miss', point: eye });
       return;
     }
-    body = mine;
+    body = mine; attachedSim = sim; attachedWorld = world; attachedEpoch = worldEpoch;
     rope = { anchor: point, grappendix: true, hard: false, reel: 0, length: Infinity };
     body.tether(rope);
     generation++;
-    povEvents.emit('tool:action', { tool: 'hook', action: 'fire', point: ctx.eye.clone() });
+    povEvents.emit('tool:action', { tool: 'hook', action: 'fire', point: eye });
     povEvents.emit('tool:action', { tool: 'hook', action: 'catch', id: who ? -1 : aim.id, point: point.clone() });
     env.requestRender?.();
   }
 
   function update(ctx) {
     time += ctx.dt;
+    const sim = ctx.sim ?? env.getSim(), world = env.getWorld?.() ?? null;
+    if (pending && (pending.sim !== sim || pending.world !== world || pending.worldEpoch !== world?.epoch
+      || pending.mine.dead || pending.mine.positionEpoch !== pending.epoch)) release();
     if (!rope) return;
-    if (body.dead || body.rope !== rope || target?.gibbed
+    if (sim !== attachedSim || world !== attachedWorld || world?.epoch !== attachedEpoch
+      || body.dead || body.rope !== rope || target?.gibbed
       || (target && target.positionEpoch !== targetEpoch)
       || (targetId && targetById(targetId)?.body !== target)) { release(); return; }
+    if (target) rope.anchor.copy(target.pos).add(offset);
+    // A safety release, not a hard rope constraint: preserve all launch momentum.
+    center.copy(body.pos).setY(body.pos.y + body.height / 2);
+    if (center.distanceTo(rope.anchor) > GRAPPENDIX_MAX_CABLE) { release(); return; }
     if (target) {
-      rope.anchor.copy(target.pos).add(offset);
       // EnemyHandler.gd: alive enemies are anchors; only corpses receive the reciprocal 22 m/s² pull.
       if (target.dead && target.vel) {
         temp.copy(body.pos).setY(body.pos.y + body.height / 2)
@@ -86,10 +100,11 @@ export function createGrappendix(env) {
       }
     }
     else if (!checking && cell.y >= 0) {
-      const sim = ctx.sim ?? env.getSim(), g = sim.g;
-      // Evicted cells are not destroyed cells. Keep the source's unlimited
-      // attachment distance; verify again when the anchor becomes resident.
-      const resident = !g.windowed || (cell.x >= 0 && cell.x < g.nx && cell.y < g.ny && cell.z >= 0 && cell.z < g.nz);
+      const resident = grappleResident(sim.g, cell);
+      if (!resident && sim.g.windowed) {
+        const far = grappleFarCells(world);
+        if (far && !solid(far(cell.x + sim.origin.x, cell.y, cell.z + sim.origin.z))) { release('tear'); return; }
+      }
       const read = resident && povGpu(sim).probe('povCells', { cells: [[cell.x, cell.y, cell.z, 0]], count: 1 });
       if (read) {
         checking = true;
@@ -125,7 +140,7 @@ export function createGrappendix(env) {
     toggle, update, release,
     get active() { return !!rope; },
     get rope() { return rope; },
-    windowShifted(dx, dz) { for (const v of [cell, rope?.anchor]) if (v) { v.x -= dx; v.z -= dz; } generation++; checking = false; },
+    windowShifted(dx, dz) { for (const v of [cell, rope?.anchor]) if (v) { v.x -= dx; v.z -= dz; } generation++; checking = false; pending = null; },
     dispose() { release(); orbs.removeFromParent(); geometry.dispose(); material.dispose(); },
   };
 }

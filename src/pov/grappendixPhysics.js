@@ -6,7 +6,11 @@ import { CELL_M } from '../scale.js';
 export const CRUELTY_GRAVITY = 22 / CELL_M;
 export const CRUELTY_JUMP = 8 / CELL_M;
 export const CRUELTY_SPEED = 9 / CELL_M;
-export const GRAPPENDIX_RANGE = 20 / CELL_M;
+// Long-range voxel adaptation, not source parity: flat-screen weapon.gd uses
+// <20 m; VRPlayer.tscn uses 30 m. Keep source force/controls, extend traversal
+// to 100 m and bound runaway/moving-anchor cables at 200 m (docs/grappendix.md).
+export const GRAPPENDIX_RANGE = 100 / CELL_M;
+export const GRAPPENDIX_MAX_CABLE = 200 / CELL_M;
 
 export function grappendixFactor(distanceCells) {
   const meters = distanceCells * CELL_M;

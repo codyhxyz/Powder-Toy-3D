@@ -156,7 +156,7 @@ const toGrid = new Matrix4();
  *   simulation); lightGain: the glow's gain (uLightGain); far: a world's far
  *   field is drawn; sea: its sea level; jitter: post.jitter
  */
-export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0] }) {
+export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
   const { uniforms, last } = frameUniformsOf(gpu);
   camera.updateMatrixWorld();
   last.viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -170,7 +170,7 @@ export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRe
     viewProj: last.viewProj, invViewProj: last.invViewProj, model: last.model,
     lampPos: vec4s(u.uLampPos.value), lampCol: vec4s(u.uLampCol.value), lampShape: vec4s(u.uLampShape.value),
     wandLightPosition: u.uWandLightPosition.value, wandLightColor: u.uWandLightColor.value,
-    cam, time, sun, lightGain,
+    cam, time, sun, lightGain, sourceAppearance, sourceStyle: !!sourceStyle,
     sunExt: u.uSunExt.value, simClock: u.uSimClock.value, sunCol: u.uSunCol.value, pixScale: u.uPixScale.value,
     skyUp: u.uSkyUp.value, cloudSea: u.uCloudSea.value, ground: u.uGround.value, sea,
     keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, materialStyle: materialStyleForView(view) ?? 0, jitter, cloudShift: u.uCloudShift.value,
