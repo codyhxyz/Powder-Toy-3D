@@ -10,6 +10,7 @@
     "check:wgsl": "node tools/check-wgsl.mjs",
     "check:world-backend": "node --test tools/world-backend-cpu-check.mjs",
     "check:world-plain": "node --test tools/world-plain-cpu-check.mjs",
+    "check:world-volume-consumers": "node --test tools/world-volume-consumers-cpu-check.mjs",
     "check:world-sun": "node --test tools/world-sun-producer-cpu-check.mjs",
     "check:world-cells": "node --test tools/world-cell-adapter-cpu-check.mjs",
     "check:world-source-cuts": "node --test tools/world-source-cut-cpu-check.mjs",

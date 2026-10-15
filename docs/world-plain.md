@@ -1,7 +1,8 @@
 # WORLD Plain shader checkpoint
 
-This is shader support, **not application activation or renderer completion**.
-BOX still uses its existing block mesher, face pool, draws and picker.
+This is shader and explicit native facade support, **not application activation
+or renderer completion**. BOX still uses its existing block mesher, face pool,
+draws and picker.
 
 ## Phase API
 
@@ -32,7 +33,8 @@ The 32-byte result remains `(cell.xyz, face)` and `(id, T, pressure, life)`.
 Face codes retain the original minus-step convention, including exits viewed
 from inside transparent cells. A miss is `face=-1`; an incomplete query is
 `face=-2`. Curvature uses the existing per-ray fields. The parent's WORLD
-facade must explicitly cache/select this picker; its existing cache is unchanged.
+facade caches/selects this picker separately; omitted `view` still selects the
+existing realistic picker.
 
 ## Appearance and traversal
 
@@ -100,9 +102,39 @@ call scopes) without rewriting emitted WGSL. Its bool/short-circuit behavior has
 a control test. Leaf raw/Sun inputs and test camera are mocks, not GPU execution
 or an independent whole-renderer numerical reference.
 
-The focused existing 136-BOX-hash check also passes, as do static imports,
-sampler budgets and the build. The unrelated 132-WORLD-module suite was not
-repeated. Driver compilation, visuals, performance, facade prewarm/record/picker
-selection and App activation with the existing Post background semantics remain
-parent integration work.
-No `worldVolume`, Post, gpuThree or App files were changed.
+## Explicit native facade (not App activation)
+
+`createWorldVolume(...).pipelineState('plain', detail, curved)` starts all three
+actual pipelines. Its aggregate `state` is `pending`, `failed` if any compilation
+fails, or `ready` only when all three **and the explicit Plain picker** are ready.
+`ready` / `viewReady('plain', detail, curved)` resolves to the ordered three
+pipelines; `pipelines` and `error` expose synchronous inspection. Other views
+retain their existing single-pipeline API. `plainPickState` and
+`pickPipelineState(view)` expose the separate picker; `ready` on the facade
+itself retains its existing default-realistic-pick meaning.
+
+Await `viewReady` **before opening the scene pass**, then call
+`candidate.recordDraw(pass, {view:'plain', curved})` synchronously. A pending or
+failed aggregate returns `false` without touching the pass. A ready draw records
+OPAQUE -> ABSORB -> SCATTER on that same caller-owned native pass, binding the
+same immutable groups for every phase (14 vertices each flat, 3 each curved).
+There is no async pass callback, hidden scene pass, repack, source change or
+queue submission. The legacy async `draw` convenience freezes options before
+awaiting, but must not be used as an async render-pass callback.
+
+`recordPickReady(frame, {view:'plain', params, output})` selects the raw picker;
+`recordPick` freezes view, output identity, n, slots and all packed bytes before
+its first await. Both retain the existing 32-byte result and shared feedback
+protocol. The candidate owns its params/feedback and transferred/default
+snapshot; the caller pins all borrowed publications and outputs until the last
+submitted use completes, including rejected candidates. See
+[world-point.md](world-point.md) for the native point consumer of that same
+publication and feedback.
+
+`npm run check:world-volume-consumers` adds actual fake-native descriptors,
+aggregate readiness/failure, exact blend/depth/order, immutable async view/pick/
+point inputs, output lifetimes, executed point output ABI and actual emitted
+Naga/resource-count checks. CPU evidence is not driver compilation, visuals,
+performance or App activation. App's opaque capture/Post wiring and final
+submission/queue pins remain parent integration work; Post, gpuThree, native
+mesh lighting and App are unchanged by this facade lane.

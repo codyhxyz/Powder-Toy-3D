@@ -144,7 +144,7 @@ test('actual world assembly, immutable frame conversion, view/pick resources and
   const compilePick=gpu.device.createComputePipelineAsync;
   let finishPick;
   gpu.device.createComputePipelineAsync=async d=>{
-    await new Promise(resolve=>{finishPick=resolve;});
+    if(d.label==='world pick')await new Promise(resolve=>{finishPick=resolve;});
     return compilePick(d);
   };
   const extra=worldSunFeedbackWords(sun.tiles);
