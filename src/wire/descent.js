@@ -73,11 +73,11 @@ export function createTerrainPersistence() {
       try {
         const store=await old.captureEdits();
         if (app.win!==old) throw new Error('Terrain capture was replaced');
-        cache.capture(old.scene.sourceRegion,store); captured=true;
+        cache.capture(old.scene.sourceRegion,store,old.scene.fold.config.cellScale); captured=true;
         await load(app,key,arrival);
         const target=app.win;
         if (identity(target)!==scope) throw new Error('Terrain source/fold changed during handoff');
-        await target.restoreEdits(cache.seed(target.scene.sourceRegion,target.wb));
+        await target.restoreEdits(cache.seed(target.scene.sourceRegion,target.wb,target.scene.fold.config.cellScale));
         if (app.win!==target) throw new Error('Terrain restore was replaced');
         observe(target);
       } catch (error) {

@@ -1642,6 +1642,7 @@ function setBlocks(on) {
 }
 
 function undo() {
+  if (ctx.descent?.terrainPending) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;

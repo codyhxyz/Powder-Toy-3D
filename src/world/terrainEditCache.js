@@ -8,15 +8,15 @@ export class TerrainEditCache {
   constructor() { this.reset(); }
   reset() { this.map = new Map(); }
 
-  band(region) {
-    const offset = (region.sourceTop + region.sourceHeight) / BRICK;
-    const height = region.sourceHeight / BRICK;
-    if (!Number.isInteger(offset) || !Number.isInteger(height)) throw new Error('Terrain bands must align with edit bricks');
+  band(region, cellScale = 1) {
+    const offset = (region.sourceTop + region.sourceHeight) * cellScale / BRICK;
+    const height = region.sourceHeight * cellScale / BRICK;
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(height) || height <= 0) throw new Error('Terrain bands must align with edit bricks');
     return { offset, height };
   }
 
-  capture(region, store) {
-    const { offset, height } = this.band(region), [nx, ny] = store.bricks;
+  capture(region, store, cellScale = 1) {
+    const { offset, height } = this.band(region, cellScale), [nx, ny] = store.bricks;
     if (ny !== height) throw new Error('Terrain snapshot has the wrong height');
     const next = new Map();
     for (const [key, bytes] of this.map) {
@@ -30,8 +30,8 @@ export class TerrainEditCache {
     this.map = next;
   }
 
-  seed(region, bricks) {
-    const { offset, height } = this.band(region), store = new BrickStore(bricks);
+  seed(region, bricks, cellScale = 1) {
+    const { offset, height } = this.band(region, cellScale), store = new BrickStore(bricks);
     if (bricks[1] !== height) throw new Error('Terrain destination has the wrong height');
     for (const [key,bytes] of this.map) {
       const [x,globalY,z]=key.split(',').map(Number), y=globalY+offset;

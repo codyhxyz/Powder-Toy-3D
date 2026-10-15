@@ -30,6 +30,19 @@ assert(!lower.has(lower.key(20,272/BRICK,33)),'baseline deletion must not resurr
 assert.deepEqual(lower.map.get(lower.key(10,40/BRICK,10)),damage,'lower-only edits survive an upper-band snapshot');
 assert.deepEqual(lower.map.get(lower.key(800,276/BRICK,800)),damage);
 cache.reset(); assert.equal(cache.map.size,0);
+for (const scale of [.5, 1.5, 2]) {
+  const dims=[wb[0],320*scale/BRICK,wb[2]], scaled=new BrickStore(dims);
+  const upY=16*scale/BRICK, downY=272*scale/BRICK;
+  scaled.put(scaled.key(20,upY,33),damage);
+  cache.capture(a,scaled,scale);
+  const down=cache.seed(b,dims,scale);
+  assert.deepEqual(down.map.get(down.key(20,downY,33)),damage,`scaled ${scale} overlap`);
+  down.put(down.key(20,downY,33),moreDamage);
+  cache.capture(b,down,scale);
+  assert.deepEqual(cache.seed(a,dims,scale).map.get(scaled.key(20,upY,33)),moreDamage);
+  cache.reset();
+}
+assert.throws(()=>cache.band(a,.51),/align/,'unaligned scale must fail before touching cached edits');
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 const events=[], prior=deferred();
@@ -122,4 +135,15 @@ assert.equal(runWriters(state,hooks,logs).renderOnly,true);
 assert.deepEqual(logs,['begin'],'same-tick gate stops all later writers, including paused stepOnce');
 logs.length=0; runWriters(state,hooks,logs); assert.deepEqual(logs,[],'subsequent capture/load ticks have no writers');
 assert(source.indexOf('gpu.endFrame();',end)>end,'GPU submissions remain outside the writer gate');
+const undoStart=source.indexOf('function undo() {');
+const undoBody=source.slice(undoStart,source.indexOf('\n}',undoStart)+2);
+const runUndo=new Function('ctx','sim',`
+const selectedMode='noita',mp={guard:()=>false},hud={toast:()=>{}},toolbar={setUndoEnabled:()=>{}};
+${undoBody}
+undo();`);
+let undoWrites=0;
+runUndo({descent:{terrainPending:true}},{undo:()=>{undoWrites++;return false;}});
+assert.equal(undoWrites,0,'event-driven undo cannot race the frozen snapshot');
+runUndo({descent:{terrainPending:false}},{undo:()=>{undoWrites++;return false;}});
+assert.equal(undoWrites,1,'ordinary undo remains available');
 console.log('Terrain edits: down/up overlap + remote XZ, baseline deletion, global-Y mapping, run reset, bounded capture/restore, failure retention, lifecycle and actual app writer gate passed');
