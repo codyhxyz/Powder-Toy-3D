@@ -59,8 +59,9 @@ try {
               // Observe existing readback only: no extra step, GPU copy or changed criterion.
               const g=value,ps=g.particles.filter(p=>engine.kindOf(p.id)==='liquid');
               const flight=xs=>xs.reduce((s,p)=>({count:s.count+1,mass:s.mass+p.mass,
+                xMoment:s.xMoment+p.mass*(Math.floor(p.x)+0.5-9),
                 maxX:s.count?Math.max(s.maxX,p.x):p.x,maxVx:s.count?Math.max(s.maxVx,p.vx):p.vx}),
-                {count:0,mass:0,maxX:null,maxVx:null});
+                {count:0,mass:0,xMoment:0,maxX:null,maxVx:null});
               const band=[6,7,8].map(y=>{
                 let mass=0,weightedX=0;
                 for(let z=2;z<=4;z++)for(let x=9;x<g.nx;x++){
@@ -72,9 +73,12 @@ try {
               const mouth=[];
               for(const x of [7,8,9])for(const y of [13,14,15]){
                 const s=x+g.nx*(3+g.nz*y);
-                mouth.push({x,y,id:engine.nameOf(g.id[s]),mass:g.gridAmount[s],moving:g.moving[s]});
+                mouth.push({x,y,id:engine.nameOf(g.id[s]),mass:g.gridAmount[s],moving:g.moving[s],
+                  air:[...g.airVel.subarray(s*3,s*3+3)]});
               }
               note({stage:'hole-state',time:engine.time,flight:flight(ps),band,mouth});
+              if([90,150,210].includes(engine.steps))
+                note({stage:'hole-particles',time:engine.time,particles:ps});
             }
             note({stage:method+'-ready',steps:engine.steps});
             return value;
