@@ -28,8 +28,12 @@ function fixture(opts = {}, held = []) {
     write(b, at, data) { this.queue.writeBuffer(b, at, data); },
     frame: { clear(b) { clears.push(b.label); b.data.fill(0); } },
     _frameOrThrow() {},
+    fail(error) { return error; },
     readback: { ring: (_name, bytes) => ({ next: () => 0, read: async () => new ArrayBuffer(bytes) }) },
     pipelines: {
+      pipes: new Set(), times: new Map(),
+      track(pipe) { this.pipes.add(pipe); },
+      check() {},
       module: () => ({}),
       pipeline(_kind, name) {
         builds.push(name);
