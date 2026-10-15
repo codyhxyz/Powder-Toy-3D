@@ -95,3 +95,135 @@ validateOpticsResources({color, depth}, output);
 assert.throws(() => validateOpticsResources({color, depth}, {...output,color}), /alias/);
 assert.throws(() => validateOpticsResources({color, depth}, {...output,metadata:texture('rgba16float')}), /metadata/);
 console.log('hybrid optics CPU: energy, submerged/mixed/TIR/Beer paths, bounded tails, opaque/media hooks, tetra roots, WGSL/layout reflection and resource limits passed (no GPU validation)');
+
+// Complete ownership, including ordinary liquids absent from the old six-ID list.
+const { ELEMENTS, R } = await import('../src/elements.js');
+const { LOOK, CHANNELS } = await import('../src/gfx/materials.js');
+const { opticsClass, OPTICS_IDS, opticalBounds, opticalBoundsInterval,
+  opticalFieldNormal, opticalFieldSource, opticalParticleInterval } = await import('../src/gfx/hybrid/optics.js');
+const { opticsBoundsShader, opticsBoundsLayout, OpticsParams } = await import('../src/shaders/hybrid/optics.js');
+for (const e of ELEMENTS) {
+  const channel = CHANNELS[LOOK[e.id].ch]?.key;
+  const expected = channel === 'MOLTEN' ? 2 : channel === 'LIQUID' || e.render === R.GLASS ? 1 : 0;
+  assert.equal(opticsClass(e.id), expected, e.key);
+  assert.equal(OPTICS_IDS.includes(e.key), expected !== 0, e.key);
+}
+assert(OPTICS_IDS.includes('BLOOD')); assert(OPTICS_IDS.length > 6);
+const id = key => ELEMENTS.find(e => e.key === key).id;
+const bounds = opticalBounds([{cell:[10,5,6], id:id('BLOOD')}, {cell:[30,0,31], id:id('LAVA')}, {cell:[0,0,0], id:id('SAND')}], [32,32,32]);
+assert.deepEqual(bounds, {count:2,lo:[8,0,4],hi:[32,8,32]});
+assert.equal(opticalBoundsInterval([0,0,0],[1,0,0],bounds), null);
+assert.equal(opticalBoundsInterval([0,5,6],[1,0,0],bounds,7), null);
+assert.deepEqual(opticalBoundsInterval([0,5,6],[1,0,0],bounds), [8,32]);
+assert.equal(opticalBoundsInterval([0,5,6],[1,0,0],opticalBounds([], [32,32,32])), null);
+// Every channel uses the identical tetra interval and gradient, including hidden
+// granular/organic and molten. A root is not rounded to a cell-box face.
+for (let ch=0; ch<4; ch++) {
+  const channels = q => [0,0,0,0].map((v,i) => i===ch ? field(q) : v);
+  const fetch = q => channels(q)[ch];
+  close(opticalFieldSegment([0.75,0.75,0.75],[1,0,0],0.25,fetch),0.125);
+  assert.deepEqual(opticalFieldNormal([0.8,0.7,0.6],fetch),[-1,0,0]);
+}
+const sand = {id:id('SAND'), state:[id('SAND'),180,0,0.37]};
+const sourceAt = q => q.join() === '1,1,1' ? sand : null;
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],sourceAt),sand);
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],sourceAt,() => true),null);
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],() => null),null);
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,0.49,0],sourceAt),null);
+assert.deepEqual(opticalParticleInterval([-1,0.5,0.5],[1,0,0],[0,0,0]),[1,2]);
+assert.equal(opticalParticleInterval([-1,0.01,0.01],[1,0,0],[0,0,0]),null, 'voxel corner is not sphere');
+const sphereHit = opticalParticleInterval([-1,0.8,0.5],[1,0,0],[0,0,0]);
+close(sphereHit[0],1.1); close(sphereHit[1],1.9);
+// Sphere entry normal (-.8,.6,0), not the cell's (-1,0,0).
+close((-1+sphereHit[0]-0.5)/0.5,-0.8);
+close((0.8-0.5)/0.5,0.6);
+const grid = gridDims({nx:32,ny:32,nz:32});
+const boundedCode = opticsShader(grid,{fieldBinding:2,boundsBinding:4});
+const boundedReflection = new WgslReflect(boundedCode);
+assert.equal(boundedReflection.storage.length,4); assert.equal(boundedReflection.textures.length,4);
+assert.match(boundedCode,/if \(opticalBounds.count == 0u\) \{ return out; \}/);
+assert(boundedCode.indexOf('if (interval.x >= cut)') < boundedCode.indexOf('previous = opticsFieldState'));
+assert.match(boundedCode,/optical == 0 && bent/);
+assert.doesNotMatch(boundedCode,/if \(!covered\) \{ return out; \}/);
+assert.match(boundedCode,/SURFCH\(id\) == CH_LIQUID \|\| RCLASS\(id\) == R_GLASS/);
+assert.equal((boundedCode.match(/const CH_LIQUID:/g) ?? []).length,1);
+const boundsCode = opticsBoundsShader(grid), boundsReflect = new WgslReflect(boundsCode);
+assert.equal(boundsReflect.entry.compute.length,2);
+assert.doesNotMatch(boundsCode,/atomic/);
+assert.equal(boundsReflect.storage.length,5); // tables, A/B, two bounds buffers
+assert(opticsBoundsLayout.every(e => e.visibility === 4 && e.buffer.type === 'storage'));
+// Budget with parent-style material/light/media additions: 16 sampled, 8 storage.
+const extras = [...opticsFieldBindings(),{binding:4,buffer:{type:'read-only-storage'}},
+  ...Array.from({length:12},(_,i) => ({binding:5+i,texture:{}})),
+  ...Array.from({length:4},(_,i) => ({binding:17+i,buffer:{type:'read-only-storage'}}))];
+validateOpticsLimits({},extras);
+assert.throws(() => validateOpticsLimits({},[...extras,{binding:21,texture:{}}]),/maxSampled/);
+assert.throws(() => validateOpticsLimits({},[...extras,{binding:21,buffer:{type:'read-only-storage'}}]),/maxStorage/);
+
+// Fake recording proves dependency order, cache identity, initialization and
+// ownership without creating a device, launching a browser, or reading counts.
+const { Matrix4 } = await import('three/webgpu');
+const calls = [], buffers = [], textures = [], pipelines = [];
+const fakeTexture = d => {
+  const t = {width:d.size[0],height:d.size[1],format:d.format,usage:d.usage,destroyed:0,
+    createView(){ assert.equal(this.destroyed,0); return {texture:this}; },destroy(){ this.destroyed++; }};
+  textures.push(t); return t;
+};
+const gpu = {
+  _frameUniforms:{layout:{},group:{},last:{written:true,viewProj:new Matrix4(),model:new Matrix4()}},
+  layout:(name,entries) => ({name,entries}),
+  bindGroup(layout,entries){ assert.deepEqual(entries.map(e=>e.binding).sort(),layout.entries.map(e=>e.binding).sort()); return {layout,entries}; },
+  createBuffer(d){ assert.equal(d.usage,128); const b={...d,destroyed:0,destroy(){this.destroyed++;}}; buffers.push(b); return b; },
+  createTexture:fakeTexture,
+  kernel(d){ const k={state:'ready',ready:Promise.resolve(),dispatch(frame,size,args){ calls.push({name:d.name,frame,size,args}); }}; pipelines.push(k); return k; },
+  renderPipeline(d){ const p={state:'ready',ready:Promise.resolve(),draw(pass,args){
+    assert(!pass.ended); OpticsParams.pack(args.params,new DataView(new ArrayBuffer(OpticsParams.size)),0);
+    calls.push({name:'draw',args});
+  }}; pipelines.push(p); return p; },
+  frame:{render(){ calls.push({name:'render'}); return {ended:false,end(){this.ended=true;}}; }},
+};
+const sim = {g:grid,L:{TABLES:{},STATE_RO:{}},tables:{},bindRO:{},header:()=>({}),version:1,cur:0,origin:{x:0,y:0,z:0},
+  derived:{world:true,fieldSurf:{},fieldThin:{},views:{fieldSurf:{},fieldThin:{}}}};
+const optics = createHybridOptics(gpu,sim,{lighting:{hooks:{worldHit:'fn opticsWorldHit(h: OpticalHit) -> vec3f { return vec3f(1); }'}}});
+const frame = {color:fakeTexture({size:[16,16],format:'rgba16float',usage:4}),depth:fakeTexture({size:[16,16],format:'depth32float',usage:4})};
+pipelines[1].state='pending'; assert.equal(optics.isReady,false); assert.equal(optics.update(frame),false); assert.equal(optics.record(frame),false); assert.equal(calls.length,0);
+pipelines[1].state='ready'; await optics.ready;
+assert(optics.record(frame)); // record initializes even without a successful update
+assert.deepEqual(calls.map(c=>c.name),['hybrid.optics.bounds','hybrid.optics.bounds.finish','render','draw']);
+assert.equal(calls[0].frame,gpu.frame); assert.equal(calls[1].frame,gpu.frame);
+assert.deepEqual(calls[0].size,[grid.nbricks,1,1]); assert.equal(buffers[0].size,grid.nbricks*32); assert.equal(buffers[1].size,32);
+assert.equal(calls.at(-1).args.params.world,1);
+assert.deepEqual(Object.keys(optics.output),['color','metadata','fallback']);
+optics.update({...frame,cameraRevision:2}); optics.record(); assert.equal(optics.stats.boundsBuilds,1);
+for (const change of [()=>sim.version++,()=>sim.cur=1,()=>sim.origin.x++]) {
+  const before=calls.length; change(); optics.update(frame);
+  assert.deepEqual(calls.slice(before).map(c=>c.name),['hybrid.optics.bounds','hybrid.optics.bounds.finish']);
+  optics.record();
+}
+assert.equal(optics.stats.boundsBuilds,4);
+optics.update({...frame,revision:'external-edit'}); optics.record(); assert.equal(optics.stats.boundsBuilds,5);
+const attachments=Object.values(optics.output);
+assert(attachments.every(t=>t.usage===20));
+optics.dispose(); optics.dispose(); assert(buffers.every(b=>b.destroyed===1)); assert(attachments.every(t=>t.destroyed===1));
+assert.equal(frame.color.destroyed,0); assert.equal(frame.depth.destroyed,0); assert.equal(optics.isReady,false);
+assert.throws(()=>optics.update(frame),/disposed/);
+console.log(`hybrid optics follow-up: ${ELEMENTS.length} IDs; bounds support/miss/occlusion; four-channel intervals, normals, live sources and sphere geometry; WG64 layouts; 16/8 budgets; same-frame recording/cache/disposal passed (CPU only)`);
+
+if (process.argv.includes('--naga')) {
+  const { spawnSync } = await import('node:child_process');
+  for (const [name, code] of [['bounds',boundsCode], ['field-optics',boundedCode],
+    ['cell-optics',opticsShader(grid,{boundsBinding:2})]]) {
+    const result = spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});
+    assert.equal(result.status,0,`${name}: ${result.error ?? ''}${result.stdout}${result.stderr}`);
+  }
+  console.log('Naga CPU semantic validation: bounds WG64 kernels and field/cell optics passed (no GPU execution)');
+}
+// Oblique hidden-surface gradient and nearest eligible source, retaining seed/temp.
+const affine = ([x,y,z]) => 0.2*x+0.3*y+0.4*z;
+const n = opticalFieldNormal([0.8,0.7,0.6],affine);
+[-0.2,-0.3,-0.4].forEach((v,i) => close(n[i],v/Math.hypot(0.2,0.3,0.4)));
+const fartherSand = {id:id('SAND'),state:[id('SAND'),900,0,0.91]};
+const twoSources = q => q.join() === '2,1,1' ? fartherSand : sourceAt(q);
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],twoSources),sand);
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],twoSources,q=>q.join()==='1,1,1'),fartherSand);
+assert.match(boundedCode,/\+ 64 \* \(NX \+ NY \+ NZ\)/,'four channels cannot consume the distant-entry budget');

@@ -1,13 +1,32 @@
+import { ELEMENTS, R } from '../../elements.js';
+import { LOOK, CHANNELS } from '../materials.js';
+import { fold } from '../../gpu/kernels.js';
 import { Matrix4 } from 'three/webgpu';
 import { frameUniformsOf } from '../uniforms.js';
 import {
-  opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK,
+  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK,
 } from '../../shaders/hybrid/optics.js';
 export { OPTICS_FALLBACK } from '../../shaders/hybrid/optics.js';
 
 const TEX = { TEXTURE_BINDING: 4, RENDER_ATTACHMENT: 16 };
 export const OPTICS_OUTPUT_FORMATS = Object.freeze({ color: 'rgba16float', metadata: 'rgba32float', fallback: 'r32uint' });
-export const OPTICS_IDS = Object.freeze(['WATER', 'OIL', 'ACID', 'ICE', 'GLASS', 'LAVA']);
+export function opticsClass(id) {
+  const ch = CHANNELS[LOOK[id]?.ch]?.key;
+  return ch === 'MOLTEN' ? 2 : ch === 'LIQUID' || ELEMENTS[id]?.render === R.GLASS ? 1 : 0;
+}
+export const OPTICS_IDS = Object.freeze(ELEMENTS.filter(e => opticsClass(e.id)).map(e => e.key));
+/** CPU oracle for support-expanded GPU bounds; live sources only, no EMA pruning. */
+export function opticalBounds(cells, size) {
+  const lo = [...size], hi = [0, 0, 0]; let count = 0;
+  for (const { cell, id } of cells) if (opticsClass(id)) {
+    count++; cell.forEach((v, i) => { lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v+1); });
+  }
+  return { count, lo: lo.map(v => Math.max(0,v-2)), hi: hi.map((v,i) => Math.min(size[i],v+2)) };
+}
+export function opticalBoundsInterval(origin, direction, bounds, far = Infinity) {
+  if (!bounds.count) return null;
+  return rayBoxInterval(origin.map((v,i) => v-bounds.lo[i]), direction, bounds.hi.map((v,i) => v-bounds.lo[i]), far);
+}
 
 /** Slab interval in cells, clipped to the forward half ray; null on miss. */
 export function rayBoxInterval(origin, direction, size, far = Infinity) {
@@ -124,12 +143,13 @@ export function validateOpticsResources({ color, depth }, output) {
  * dedicated worldHit hook. Optional mediaSegment replaces mean cell gas shading.
  * options.derived (default sim.derived) supplies fieldSurf/fieldThin textures and
  * views; fieldBinding reserves two group-2 slots after lighting by default.
- * Liquid geometry uses a 0.5 density isosurface with exact tetra-linear roots;
- * ice/glass remain cells. Thin masks blend normals, not density. This is not
+ * All four bulk channels use a 0.5 isosurface with exact tetra-linear roots;
+ * ice/glass remain cells; isolated granular/organic cells use real-centred spheres.
+ * Thin masks blend liquid normals, not density. This is not
  * legacy tricubic/detail parity. Source/deco and hidden meshes remain flagged.
  * Reflections and untraced bounded tails use environment (not recursive rays).
- * Recreate on sim grid replacement/device loss. No cached sim fields or idle
- * dispatches; window shifts, edits, undo/load read current sim state/header.
+ * Recreate on sim grid replacement/device loss. No idle
+ * dispatches; live-source optical bounds cache follows simulation revisions; window shifts, edits, undo/load read current sim state/header.
  */
 /** Explicit layout counts, including FRAME, state A/B, and the engine params group.
  * Filtering samplers must never be paired with the unfilterable metadata output.
@@ -163,7 +183,9 @@ export function createHybridOptics(gpu, sim, options = {}) {
   const hasFields = !!(derived?.views?.fieldSurf && derived?.views?.fieldThin);
   const fieldBinding = hasFields ? (options.fieldBinding ?? Math.max(2, ...(lighting.bindings ?? []).map(e => e.binding + 1))) : null;
   if (typeof lighting.hooks?.worldHit !== 'string') throw new TypeError('optics requires a dedicated lighting.hooks.worldHit WGSL callback');
-  const extraBindings = [...(lighting.bindings ?? []), ...(hasFields ? opticsFieldBindings(fieldBinding) : [])];
+  const boundsBinding = Math.max(2, ...(lighting.bindings ?? []).map(e => e.binding+1), hasFields ? fieldBinding+2 : 2);
+  const extraBindings = [...(lighting.bindings ?? []), ...(hasFields ? opticsFieldBindings(fieldBinding) : []),
+    { binding: boundsBinding, visibility: 2, buffer: { type: 'read-only-storage' } }];
   if (extraBindings.some((e) => !Number.isInteger(e.binding) || e.binding < 2) || new Set(extraBindings.map((e) => e.binding)).size !== extraBindings.length) throw new Error('optics lighting bindings must be unique and >= 2');
   validateOpticsLimits(gpu.limits ?? gpu.device?.limits, extraBindings);
   if ((lighting.bindings ?? []).some((e) => e.texture) && typeof lighting.textures !== 'function') throw new TypeError('optics extension textures need lighting.textures(frame) for attachment alias checks');
@@ -171,24 +193,42 @@ export function createHybridOptics(gpu, sim, options = {}) {
   const sceneLayout = gpu.layout('HYBRID_OPTICS_SCENE', [...opticsBindings(), ...extraBindings]);
   const stateLayout = gpu.layout('STATE_RO', OPTICS_STATE_LAYOUT);
   const pipe = gpu.renderPipeline({
-    name: 'hybrid optics', code: opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, wgsl: lighting.wgsl, hooks: lighting.hooks }),
+    name: 'hybrid optics', code: opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, wgsl: lighting.wgsl, hooks: lighting.hooks }),
     layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
     fragment: { targets: Object.values(OPTICS_OUTPUT_FORMATS).map((format) => ({ format })) },
   });
+  const boundsLayout = gpu.layout('HYBRID_OPTICS_BOUNDS', opticsBoundsLayout);
+  const brickBounds = gpu.createBuffer({ label: 'optics brick bounds', size: sim.g.nbricks * 32, usage: 128 });
+  const bounds = gpu.createBuffer({ label: 'optics bounds', size: 32, usage: 128 });
+  const boundsGroup = gpu.bindGroup(boundsLayout, [brickBounds, bounds].map((buffer,binding) => ({ binding, resource: { buffer } })));
+  const boundsDesc = { code: opticsBoundsShader(sim.g), layouts: [sim.L.TABLES, sim.L.STATE_RO, boundsLayout], workgroupSize: [64,1,1] };
+  const reduce = gpu.kernel({ name: 'hybrid.optics.bounds', ...boundsDesc });
+  const finish = gpu.kernel({ name: 'hybrid.optics.bounds.finish', ...boundsDesc, entry: 'finish' });
+  let boundsKey = null;
+  function recordBounds(frame) {
+    if (reduce.state !== 'ready' || finish.state !== 'ready') return false;
+    const o = sim.origin ?? {};
+    const key = `${sim.version}|${sim.cur}|${o.x},${o.y},${o.z}|${frame.revision ?? ''}`;
+    if (key === boundsKey) return true;
+    const args = { bind: [sim.tables, sim.bindRO, boundsGroup], header: sim.header() };
+    reduce.dispatch(gpu.frame, fold(sim.g.nbricks), args);
+    finish.dispatch(gpu.frame, [1,1,1], args);
+    boundsKey = key; stats.boundsBuilds++; return true;
+  }
   const inverse = new Matrix4();
   let output = null, current = {}, disposed = false;
-  const stats = { draws: 0, allocations: 0, maxSteps, maxInterfaces, cellBoundarySurfaces: !hasFields };
+  const stats = { boundsBuilds: 0, draws: 0, allocations: 0, maxSteps, maxInterfaces, cellBoundarySurfaces: !hasFields };
   const live = () => { if (disposed) throw new Error('hybrid optics is disposed'); };
   const release = () => { if (output) for (const t of Object.values(output)) t.destroy(); output = null; };
   const api = {
-    ready: pipe.ready,
-    get isReady() { return !disposed && pipe.state === 'ready'; },
+    ready: Promise.all([pipe.ready, reduce.ready, finish.ready]),
+    get isReady() { return !disposed && [pipe, reduce, finish].every(p => p.state === 'ready'); },
     stats,
     get output() { return output; },
-    update(frame = {}) { live(); current = { ...frame }; },
+    update(frame = {}) { live(); current = { ...frame }; return recordBounds(current); },
     record(frame = current) {
       live();
-      if (pipe.state !== 'ready') return false;
+      if (!api.isReady) return false;
       if (!fu.last.written) throw new Error('writeFrameUniforms before optics.record');
       const { color, depth } = frame;
       // Validate inputs before allocating or replacing any outputs.
@@ -215,11 +255,12 @@ export function createHybridOptics(gpu, sim, options = {}) {
       }
       validateOpticsResources(frame, output);
       if (sampled.some((t) => Object.values(output).includes(t))) throw new Error('optics extension sampled/attachment resources must not alias');
+      if (!recordBounds(frame)) return false;
       inverse.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();
       let unsupported = 0;
       if (frame.hasMeshes) unsupported |= OPTICS_FALLBACK.MESH;
       if (frame.sourceAppearance || frame.decoration) unsupported |= OPTICS_FALLBACK.APPEARANCE;
-      const entries = [...opticsEntries(color, depth), ...(lighting.entries?.(frame) ?? []), ...(hasFields ? [
+      const entries = [...opticsEntries(color, depth), { binding: boundsBinding, resource: { buffer: bounds } }, ...(lighting.entries?.(frame) ?? []), ...(hasFields ? [
         { binding: fieldBinding, resource: derived.views.fieldSurf },
         { binding: fieldBinding + 1, resource: derived.views.fieldThin },
       ] : [])];
@@ -230,14 +271,14 @@ export function createHybridOptics(gpu, sim, options = {}) {
       try {
         pipe.draw(rp, {
           bind: [fu.group, sim.bindRO, group], header: sim.header(),
-          params: { gridInv: inverse, size: [color.width, color.height], unsupported, depthTolerance }, count: 3,
+          params: { gridInv: inverse, size: [color.width, color.height], unsupported, depthTolerance, world: (options.world ?? derived?.world) ? 1 : 0 }, count: 3,
         });
       } finally { rp.end(); }
       stats.draws++;
       return output;
     },
     draw(frame = current) { return api.record(frame); },
-    dispose() { if (disposed) return; disposed = true; release(); current = {}; },
+    dispose() { if (disposed) return; disposed = true; release(); brickBounds.destroy(); bounds.destroy(); current = {}; },
   };
   return api;
 }
@@ -345,4 +386,34 @@ export function opticalFieldSegment(p, rd, cellExit, fetch) {
     if (root > 0.00005 && root < end) end = root;
   }
   return end;
+}
+
+/** CPU affine-tetra outward gradient, same vertex ordering as the shader. */
+export function opticalFieldNormal(p, fetch) {
+  const q = p.map(v => Math.floor(v-0.5)), f = p.map((v,i) => v-0.5-q[i]);
+  const axes = [0,1,2].sort((a,b) => f[b]-f[a]);
+  const a = [...q]; a[axes[0]]++;
+  const b = [...a]; b[axes[1]]++;
+  const values = [fetch(q),fetch(a),fetch(b),fetch(q.map(v => v+1))];
+  const gradient = [0,0,0]; axes.forEach((axis,i) => { gradient[axis] = values[i]-values[i+1]; });
+  const length = Math.hypot(...gradient);
+  return length ? gradient.map(v => v/length) : gradient;
+}
+/** Nearest live nonparticle source in two-cell support; EMA alone is not matter. */
+export function opticalFieldSource(p, density, sample, particle = () => false) {
+  const base = p.map(Math.floor); let best = Infinity, source = null;
+  for (let z=-2; z<=2; z++) for (let y=-2; y<=2; y++) for (let x=-2; x<=2; x++) {
+    const q = base.map((v,i) => v+[x,y,z][i]); const a = sample(q);
+    const ch = LOOK[a?.id]?.ch;
+    const d = q.reduce((sum,v,i) => sum+(v+0.5-p[i])**2,0);
+    if (ch >= 0 && ch < 4 && density[ch] >= 0.5 && d < best && !particle(q)) { best = d; source = a; }
+  }
+  return source;
+}
+/** Unit-direction sphere interval; null on miss, negative entry if submerged. */
+export function opticalParticleInterval(p, rd, cell, radius = 0.5) {
+  const q = p.map((v,i) => v-cell[i]-0.5);
+  const b = q.reduce((sum,v,i) => sum+v*rd[i],0);
+  const d = b*b-q.reduce((sum,v) => sum+v*v,0)+radius*radius;
+  return d < 0 ? null : [-b-Math.sqrt(d),-b+Math.sqrt(d)];
 }

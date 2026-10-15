@@ -2097,7 +2097,7 @@ const pacer = createPacer({
 // (gfx/pacing.js); viewKey.still, when what our own passes draw with does
 const viewKey = createViewKey({ still: [volume, floorGrid] });
 const viewSettings = createViewSettings(settings);
-bindViewInputWake(window, () => { autoRes.wake(); wakeLoop(); });
+  bindViewInputWake(window, () => { autoRes.wake(); hybrid?.wake(); wakeLoop(); });
 let lastVersion = -1, renderedLast = false;
 // the browser capping the page at 30 Hz (gfx/pacing.js createCapCheck): say so once
 const capCheck = createCapCheck();
@@ -2253,6 +2253,8 @@ function drawVolume(rp) {
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
   const drew = !testNoVolume && vol.draw(rp, {
     view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
+    // A valid hybrid frame has zero legacy instances, decided on the GPU.
+    indirect: hybrid?.legacyIndirect,
   });
   if (!drew && !testNoVolume) {
     // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
@@ -2269,6 +2271,7 @@ function drawVolume(rp) {
 function drawVolumeFirst(p) {
   volumeFirst = false;
   const far = win?.far;
+  if (hybrid?.enabled) { far?.occlude(p.sceneTarget, false); return; }
   if (blocks || !far?.volumeFirst(p.sceneTarget)) return;
   const rp = far.volumePass(p.sceneTarget);
   let drew = false;
@@ -2320,11 +2323,15 @@ const frameHooks = {
   // passes, the shadow map (views that read it), GI (the realistic view), the
   // wires' upkeep, the picks asked for this tick
   compute: () => {
+    const splitChanged = hybrid?.prepare({
+      view: viewKeyOf(renderView), model: volume.matrixWorld, warp: warpNow(),
+      disabled: !!blocks || testNoVolume, decoration: gfxUniforms.uDeco.value,
+    });
     if (blocks) {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
       blocks.update({ sun: SUN });
-    } else if (frameDerived) {
+    } else if (frameDerived || splitChanged) {
       prof.phase('derived');
       sim.updateBricks();
       if (viewShadows(viewKeyOf(renderView))) {
@@ -2343,7 +2350,7 @@ const frameHooks = {
       view: viewKeyOf(renderView), sun: SUN, model: volume.matrixWorld, warp: warpNow(),
       disabled: !!blocks || testNoVolume,
       decoration: gfxUniforms.uDeco.value,
-      animated: !settings.paused || live.some(w => w.busy?.(ctx)),
+      externalAnimated: live.some(w => w.busy?.(ctx)),
     });
     vol.recordPicks();
   },
@@ -2361,6 +2368,7 @@ const frameHooks = {
   },
   draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },
   meshes: (p) => {
+    hybrid?.compose(p, { camera, model: volume.matrixWorld });
     if (frameMode === 'capture') {
       // the scene as drawn, before the meshes, kept; then the opaque meshes over it
       if (volumeDrawn) meshFrames.capture(p); else meshFrames.drop();
@@ -2455,7 +2463,7 @@ function tick(now, renderOnly = false) {
   const frameDt = renderOnly ? 0 : clock.getDelta();
   const dt = Math.min(frameDt, DT_MAX);
   // Measure real rendering time: the animation cap hides improvements below 10 fps.
-  if (!renderOnly && renderedLast && post.settings.taa && frameDt > 0) autoRes.update(frameDt, clock.getElapsed());
+  if (!hybrid?.enabled && !renderOnly && renderedLast && post.settings.taa && frameDt > 0) autoRes.update(frameDt, clock.getElapsed());
   // Set before pacing's view key so a scale change always schedules a render.
   post.settings.resolutionScale = autoRes.scale;
   ctx.renderOnly = renderOnly;
@@ -2517,7 +2525,7 @@ function tick(now, renderOnly = false) {
   }
   prof.phase('other');
   const worldChanged = sim.version !== lastVersion;
-  if (worldChanged) autoRes.wake();
+  if (worldChanged) { autoRes.wake(); hybrid?.wake(); }
   lastVersion = sim.version;
   // Keep animation time tied to simulation, not the test preview's draw rate.
   if (worldChanged) viewTime += dt;
@@ -2538,6 +2546,11 @@ function tick(now, renderOnly = false) {
     post.settings.cruelty = crueltyDisplay;
     post.reset(); // Never blend temporal history across source-style transitions.
   }
+  const hybridScale = hybrid?.adapt({
+    view: viewKeyOf(renderView), model: volume.matrixWorld, warp: warpNow(),
+    disabled: !!blocks || testNoVolume, decoration: gfxUniforms.uDeco.value,
+  });
+  if (hybridScale != null) post.settings.resolutionScale = hybridScale;
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
@@ -2551,8 +2564,8 @@ function tick(now, renderOnly = false) {
   if (pacer.takeMeshWake() || (viewV !== viewSeen && viewKey.still === stillSeen)) meshesMoved = true;
   viewSeen = viewV;
   stillSeen = viewKey.still;
-  if (present && !runView && autoRes.recover(clock.getElapsed())) {
-    post.settings.resolutionScale = autoRes.scale;
+  if (present && !runView && (hybrid?.enabled ? hybrid.recover() : autoRes.recover(clock.getElapsed()))) {
+    post.settings.resolutionScale = hybrid?.enabled ? hybrid.resolution.resolutionScale : autoRes.scale;
     pacer.wake();   // settle the final full-quality still; don't wake auto resolution
     runView = true;
   }

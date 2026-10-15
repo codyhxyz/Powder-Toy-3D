@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { Matrix4 } from 'three/webgpu';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
+import { execFileSync,spawnSync } from 'node:child_process';
 import { matchingParticleCell, createHybridMotion } from '../src/gfx/hybrid/motion.js';
 import { motionWGSL, motionCaptureWGSL } from '../src/shaders/hybrid/motion.js';
 import { gridDims } from '../src/shaders/common.js';
@@ -12,7 +13,11 @@ assert.deepEqual(matchingParticleCell([4,4,4],[128,128,128],key,q => q.join() ==
 assert.equal(matchingParticleCell([4,4,4],[128,128,128],key,() => key),null,'ambiguous seed never invents motion');
 assert.equal(matchingParticleCell([4,4,4],[128,128,128],key,() => [0,0]),null,'large jumps reject');
 assert.deepEqual(matchingParticleCell([0,0,0],[128,128,128],key,q => q.join() === '0,0,0' ? key : [0,0]),[0,0,0]);
-for (const code of [motionWGSL(grid),motionCaptureWGSL(grid)]) new WgslReflect(code);
+const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
+for (const code of [motionWGSL(grid),motionCaptureWGSL(grid)]) {
+  new WgslReflect(code);
+  if (semantic) execFileSync('naga',['--stdin-file-path','hybrid-motion.wgsl'],{input:code,encoding:'utf8'});
+}
 assert(motionWGSL(grid).indexOf('dpdx(z)') < motionWGSL(grid).indexOf('if (P.valid'),'derivatives precede divergent rejection');
 const events=[],owned=[];
 const resource = d => {
@@ -61,4 +66,4 @@ gpu.frame.encoder={}; module.record(next);
 assert.equal(first.motion.destroyed,true);
 module.dispose(); module.dispose();
 assert.equal(module.isReady,false);
-console.log('PASS hybrid motion: exact/ambiguous particle identity, static camera/model recording, revision reuse, resize/shift rejection, deferred disposal and WGSL reflection; CPU only.');
+console.log(`PASS hybrid motion: exact/ambiguous particle identity, static camera/model recording, revision reuse, resize/shift rejection, deferred disposal and WGSL reflection; CPU only. Naga semantic validation ${semantic?'passed':'unavailable'}.`);

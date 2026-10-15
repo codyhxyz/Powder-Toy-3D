@@ -1,5 +1,6 @@
 // Deterministic reduced-resolution participating media; no temporal history.
 import { uniformStruct, Header } from '../../gpu/params.js';
+import { FIELD_BOUNDS_STRUCT } from './fieldBounds.js';
 import { fullscreenVert } from '../../gpu/wgsl.js';
 import { frameBindings } from '../bindings.js';
 import { MEDIA, MEDIA_FLOOR, HEAT_RANGE, MEDIA_NOISE_CELLS } from '../../gfx/materials.js';
@@ -15,6 +16,7 @@ export const MEDIA_FIELD_LAYOUT = [
   ...[0, 1, 2, 3].map((binding) => ({ binding, texture: { sampleType: 'float', viewDimension: '3d' } })),
   { binding: 4, sampler: { type: 'filtering' } },
   { binding: 5, sampler: { type: 'filtering' } },
+  { binding: 6, buffer: { type: 'read-only-storage' } },
 ];
 export const MEDIA_DEPTH_LAYOUT = [
   { binding: 0, texture: { sampleType: 'depth', viewDimension: '2d' } },
@@ -40,6 +42,8 @@ ${HybridMediaParams.wgsl}
 @group(1) @binding(3) var noise: texture_3d<f32>;
 @group(1) @binding(4) var linearClamp: sampler;
 @group(1) @binding(5) var linearRepeat: sampler;
+${FIELD_BOUNDS_STRUCT}
+@group(1) @binding(6) var<storage, read> mediaBounds: FieldBounds;
 const EXT: vec3f = ${vec(MEDIA.slice(0, 3).map((m) => m.ext))};
 const ALBEDO: vec3f = ${vec(MEDIA.slice(0, 3).map((m) => m.albedo))};
 const ANISO: vec3f = ${vec(MEDIA.slice(0, 3).map((m) => m.g))};
@@ -54,14 +58,17 @@ fn blackbody(tC: f32) -> vec3f {
 struct Ray { origin: vec3f, dir: vec3f, limit: f32 }
 // Explicit parallel-axis handling: neither 0 * infinity nor NaNs on box faces.
 fn rayBounds(ray: Ray) -> vec2f {
+  if (mediaBounds.count == 0u) { return vec2f(0.0); }
+  let boxLo = vec3f(mediaBounds.lo);
+  let boxHi = min(P.grid, vec3f(mediaBounds.hi));
   var lo = 0.0;
   var hi = ray.limit;
   for (var a = 0u; a < 3u; a++) {
     if (abs(ray.dir[a]) < 1e-8) {
-      if (ray.origin[a] < 0.0 || ray.origin[a] > P.grid[a]) { return vec2f(0.0); }
+      if (ray.origin[a] < boxLo[a] || ray.origin[a] > boxHi[a]) { return vec2f(0.0); }
     } else {
-      let x = -ray.origin[a] / ray.dir[a];
-      let y = (P.grid[a] - ray.origin[a]) / ray.dir[a];
+      let x = (boxLo[a] - ray.origin[a]) / ray.dir[a];
+      let y = (boxHi[a] - ray.origin[a]) / ray.dir[a];
       lo = max(lo, min(x, y)); hi = min(hi, max(x, y));
     }
   }
@@ -196,15 +203,15 @@ ${fullscreenVert()}
 // Keep all private symbols isolated when optics includes the same segment model.
 const privateNames = ['Header', 'H', 'P', 'EXT', 'ALBEDO', 'ANISO', 'FLOOR', 'SKY', 'BB', 'Ray', 'Gas',
   'blackbody', 'rayBounds', 'field', 'base', 'detailNoise', 'density', 'hg', 'phase', 'source', 'integrate',
-  'fieldMedia', 'glow', 'giDC', 'noise', 'linearClamp', 'linearRepeat'];
+  'FieldBounds', 'mediaBounds', 'fieldMedia', 'glow', 'giDC', 'noise', 'linearClamp', 'linearRepeat'];
 const isolate = (code) => code.replace(new RegExp(`\\b(${privateNames.join('|')})\\b`, 'g'), (name) => `hm${name}`);
 
 /**
  * Reusable fragment/compute segment integrator (same implementation as the screen pass).
  * Bindings: FRAME's FU; fields group bindings 0 media, 1 glow, 2 GI DC,
- * 3 shared media noise, 4 clamp sampler, 5 repeat sampler; params/header use
+ * 3 shared media noise, 4 clamp sampler, 5 repeat sampler, 6 read-only bounds storage; params/header use
  * HybridMediaParams/Header. Set declareFrame:false if FU is already declared.
- * fieldBinding offsets all six field/sampler bindings. declareHeader:false uses
+ * fieldBinding offsets all seven field/sampler/bounds bindings. declareHeader:false uses
  * the containing shader's headerName (default H), avoiding duplicate Header/H
  * declarations when composed with the optical prelude. Params stay explicit.
  * No scene textures, depth attachment, or stochastic history required. Optional sunWGSL/sunVisibility supplies opaque visibility; no beam lights; segment callers must bound at surfaces/interfaces.

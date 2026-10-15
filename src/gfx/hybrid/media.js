@@ -1,3 +1,4 @@
+import { createFieldBounds, retireMediaResources } from './fieldBounds.js';
 import { Matrix4 } from 'three/webgpu';
 import { frameUniformsOf } from '../uniforms.js';
 import { createMediaNoise } from '../mediaNoise.js';
@@ -17,7 +18,7 @@ function validate(frame, limit, owned = []) {
   const { color, depth, opticalDepth } = frame;
   const inputs = [color, depth, ...(opticalDepth ? [opticalDepth] : [])];
   if (!color || !depth || color.format !== 'rgba16float' || depth.format !== 'depth32float'
-      || (opticalDepth && opticalDepth.format !== 'r32float')) throw new TypeError('media requires rgba16float/depth32float snapshots and optional r32float optical depth');
+      || (opticalDepth && !['r32float', 'rgba32float'].includes(opticalDepth.format))) throw new TypeError('media requires rgba16float/depth32float snapshots and optional r32float/rgba32float optical depth');
   if (new Set(inputs).size !== inputs.length || inputs.some((t) => owned.includes(t))) throw new Error('media resources must not alias');
   for (const t of inputs) {
     if (!Number.isInteger(t.width) || !Number.isInteger(t.height) || t.width < 1 || t.height < 1
@@ -29,7 +30,7 @@ function validate(frame, limit, owned = []) {
 
 /** No submissions; FU is written by the app. output is a separate GPUTexture.
  * Optional sun={wgsl,visibility,layout,entries,textures}: extra group-1 bindings
- * >=6; visibility(p:vec3f)->f32 in grid space. textures() lists sampled textures
+ * >=7; visibility(p:vec3f)->f32 in grid space. textures() lists sampled textures
  * for alias checking. Use literal @group(1) @binding(N) seam declarations so
  * segment's fieldGroup/fieldBinding remapping also relocates sun resources.
  * segment() exposes exact Header/HybridMediaParams values plus field bindings;
@@ -41,14 +42,15 @@ export function createHybridMedia(gpu, sim, { scale = .5, maxSteps = 128, step =
   const limits = gpu.limits ?? gpu.device.limits;
   const extra = sun.layout ?? [];
   const layout = [...MEDIA_FIELD_LAYOUT, ...extra];
-  if (extra.some((e) => !Number.isInteger(e.binding) || e.binding < 6 || e.binding >= (limits?.maxBindingsPerBindGroup ?? 1000)) || new Set(layout.map((e) => e.binding)).size !== layout.length) throw new Error('media sun bindings must be unique and >=6');
+  if (extra.some((e) => !Number.isInteger(e.binding) || e.binding < 7 || e.binding >= (limits?.maxBindingsPerBindGroup ?? 1000)) || new Set(layout.map((e) => e.binding)).size !== layout.length) throw new Error('media sun bindings must be unique and >=7');
   if (extra.some((e) => e.texture) && typeof sun.textures !== 'function') throw new TypeError('sun textures() required');
   const required = { maxBindGroups: 4, maxColorAttachments: 2, maxColorAttachmentBytesPerSample: 12,
     maxUniformBuffersPerShaderStage: 3 + extra.filter((e) => e.buffer && (!e.buffer.type || e.buffer.type === 'uniform')).length,
-    maxStorageBuffersPerShaderStage: 1 + extra.filter((e) => e.buffer?.type?.includes('storage')).length,
+    maxStorageBuffersPerShaderStage: 2 + extra.filter((e) => e.buffer?.type?.includes('storage')).length,
     maxSampledTexturesPerShaderStage: 9 + extra.filter((e) => e.texture).length, maxSamplersPerShaderStage: 2 + extra.filter((e) => e.sampler).length };
   for (const [key, n] of Object.entries(required)) if ((limits?.[key] ?? n) < n) throw new RangeError(`media exceeds ${key}`);
   const fu = frameUniformsOf(gpu), noise = createMediaNoise(gpu);
+  const bounds = createFieldBounds(gpu, sim);
   const clamp = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
   const repeat = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' });
   const fields = gpu.layout('HYBRID_MEDIA_FIELDS', layout);
@@ -62,21 +64,12 @@ export function createHybridMedia(gpu, sim, { scale = .5, maxSteps = 128, step =
   const stats = { draws: 0, allocations: 0, maxSteps, step };
   const live = () => { if (disposed) throw new Error('hybrid media disposed'); };
   const destroy = (t) => { if (t) Object.values(t).forEach((v) => v.destroy()); };
-  // destroy() before submission invalidates already encoded texture uses.
-  // Retire against the encoder that last used this set; never flush it here.
-  const retire = (t, encoder) => {
-    const collect = () => {
-      if (encoder && gpu.frame.encoder === encoder && !gpu.lost && !gpu.failure) {
-        const timer = setTimeout(collect, 16); timer.unref?.();
-      } else destroy(t);
-    };
-    if (encoder && gpu.frame.encoder === encoder) queueMicrotask(collect);
-    else destroy(t);
-  };
+  const retire = (t, encoder) => retireMediaResources(gpu, t, encoder);
   const entries = (binding = 0) => {
     const v = sim.derived.views;
     if (!v.fieldMedia || !v.light || !v.gi?.[0]) throw new Error('media derived field/light/GI views required');
-    return [v.fieldMedia, v.light, v.gi[0], noise.view, clamp, repeat].map((resource, i) => ({ binding: binding + i, resource }));
+    if (!fu.last.written) throw new Error('writeFrameUniforms before media bounds');
+    return [v.fieldMedia, v.light, v.gi[0], noise.view, clamp, repeat, bounds.ensure()].map((resource, i) => ({ binding: binding + i, resource }));
   };
   const paramsFor = (frame) => {
       if (!fu.last.written) throw new Error('writeFrameUniforms before media uniforms');
@@ -89,9 +82,11 @@ export function createHybridMedia(gpu, sim, { scale = .5, maxSteps = 128, step =
         size: [color.width, color.height], lowSize: [w, h], enabled: 1, maxSteps, hasLight: 1, hasGI: 1, depthTolerance: .75, hasOptics: opticalDepth ? 1 : 0 };
   };
   const api = {
-    ready: Promise.all([integrate.ready, compose.ready, noise.ready]).then(() => { ready = true; return api; }),
-    get isReady() { return ready && !disposed && integrate.state === 'ready' && compose.state === 'ready'; },
+    ready: Promise.all([integrate.ready, compose.ready, noise.ready, bounds.ready]).then(() => { ready = true; return api; }),
+    get isReady() { return ready && !disposed && bounds.isReady && integrate.state === 'ready' && compose.state === 'ready'; },
     get output() { return targets?.color ?? null; }, stats,
+    resources: Object.freeze({ get media() { return targets?.media ?? null; }, get guide() { return targets?.guide ?? null; } }),
+    boundsStats: bounds.stats,
     // Base and sun bindings relocate together. Params are fresh from app FU,
     // available before screen recording so optics can use this segment first.
     segment({ binding = 0 } = {}) {
@@ -138,7 +133,7 @@ export function createHybridMedia(gpu, sim, { scale = .5, maxSteps = 128, step =
       current = { ...frame };
       return targets.color;
     },
-    dispose() { if (disposed) return; disposed = true; retire(targets, targetEncoder); targets = null; current = {}; lastParams = null; },
+    dispose() { if (disposed) return; disposed = true; bounds.dispose(); retire(targets, targetEncoder); targets = null; current = {}; lastParams = null; },
   };
   return api;
 }

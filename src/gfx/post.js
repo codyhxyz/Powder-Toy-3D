@@ -1218,7 +1218,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let active = main;
   let size = [0, 0], inSize = [0, 0];
   let down = [], up = [], bloomImage = null, resolved = null;
-  let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
+  let historyValid = false, historyRevision = 0, frame = 0, lastTaa = null, prevCamera = null;
   let motionInputs = temporalInputs(null, inSize);
   let temporalFrame = false;
   let motionResources = [null, null];
@@ -1305,6 +1305,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get size() { return [...size]; },
     /** The scene's size [w, h]: the output size × the render scale (the still's size during renderStill). */
     get inSize() { return active === still ? [still.width, still.height] : [...inSize]; },
+    get historyRevision() { return historyRevision; },
     /** This frame's jitter, scene pixels, y down: texel m sampled the view at m + ½ + jitter (three's TAAU's; FrameUniforms.jitter, F4); none during renderStill. */
     get jitter() { return active === still ? [0, 0] : [...jitter]; },
     /** The target the scene is drawn into now ({ rt, color, depth, width, height }): the main one, or the still's during renderStill. */
@@ -1375,6 +1376,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
     /** Drop the TAA history (call after scene swaps, teleports, etc.): the next frame takes the current view alone. */
     reset() {
+      historyRevision++;
       historyValid = false; keptPost = null;
       motionInputs = temporalInputs(null, inSize);
       motionResources = [null, null]; groups = new Map();

@@ -1,9 +1,9 @@
-// Persistent marching-tetra descriptors for granular/organic fields only.
+// Persistent marching-tetra cached vertices for granular/organic fields only.
 // Existing derived fields opt into isolated-particle subtraction; no physics writes.
 import { frameUniformsOf } from '../uniforms.js';
 import { fold } from '../../gpu/kernels.js';
 import {
-  SmoothParams, SMOOTH_FLAGS, SMOOTH_EXTRACT_LAYOUT, SMOOTH_DRAW_LAYOUT,
+  SmoothParams, SMOOTH_FLAGS, SMOOTH_EXTRACT_LAYOUT, SMOOTH_PREFIX_LAYOUT, SMOOTH_DRAW_LAYOUT,
   smoothExtractWGSL, smoothDrawWGSL,
 } from '../../shaders/hybrid/smooth.js';
 export { smoothAcceptanceWGSL } from '../../shaders/hybrid/smooth.js';
@@ -11,9 +11,9 @@ export { smoothAcceptanceWGSL } from '../../shaders/hybrid/smooth.js';
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const STORAGE = 0x80, INDIRECT = 0x100;
 
-/** createHybridSmooth(gpu,sim,{capacityPerBrick=768,shader={wgsl,layout,bind,
- * handlesAppearance}}). shader.wgsl defines shadeSmooth(gridPosition,normal,
- * elementId,stateA)->vec3f (linear HDR); bindings group 2, >=4.
+/** createHybridSmooth(gpu,sim,{maxVertices=2**21,shader={wgsl,layout,bind,
+ * handlesAppearance},onRead}). shader.wgsl defines shadeSmooth(gridPosition,normal,
+ * elementId,stateA,footprint)->vec3f (linear HDR); bindings group 2, >=4.
  *
  * update({revision,previousRevision,incremental,sourceStyle,force}) MUST follow
  * sim.updateBricks in the SAME open gpu.frame. revision identifies DERIVED
@@ -28,10 +28,14 @@ const STORAGE = 0x80, INDIRECT = 0x100;
  * generations, never partial meshes. Parent may gate legacy with GPU status.
  * draw(rp): rgba16float/depth32float. drawShadow(rp,{matrix}): depth32float,
  * matrix maps physical GRID -> light clip ([0,1] depth), not FU.model space.
+ * resources.vertices holds both 16-byte vertex arenas; status[4] selects one.
+ * Status words 0..3: flags, triangles, required vertices, changed bricks.
+ * onRead(stats) wakes the owner after diagnostics resolve (including errors).
  * Neither recording method opens/submits a pass or performs a GPU wait.
  */
-export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = {} } = {}) {
-  if (!Number.isSafeInteger(capacityPerBrick) || capacityPerBrick <= 0 || capacityPerBrick > 3000) throw new RangeError('Invalid smooth capacityPerBrick (1..3000)');
+export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {}, onRead } = {}) {
+  if (!Number.isSafeInteger(maxVertices) || maxVertices <= 0) throw new RangeError('Invalid smooth maxVertices');
+  if (onRead !== undefined && typeof onRead !== 'function') throw new TypeError('onRead must be a function');
   if (shader.wgsl !== undefined && typeof shader.wgsl !== 'string') throw new TypeError('shader.wgsl must be WGSL');
   if (shader.handlesAppearance && !shader.wgsl) throw new TypeError('Appearance support requires a shader adapter');
   if (Boolean(shader.layout) !== Boolean(shader.bind)) throw new TypeError('shader.layout and shader.bind must be supplied together');
@@ -39,39 +43,44 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = 
   const g = sim.g, derived = sim.derived, fu = frameUniformsOf(gpu);
   if (!derived?.dlist || !derived.views?.fieldSurf || !derived.views?.fieldThin) throw new Error('Hybrid smooth requires attached derived fields');
   const limit = Math.min(gpu.device.limits.maxStorageBufferBindingSize, gpu.device.limits.maxBufferSize ?? Infinity);
-  const capacity = Math.min(capacityPerBrick, Math.floor(limit / (g.nbricks * 4)));
-  if (capacity < 1 || g.nbricks * 12 > limit) throw new RangeError('Smooth descriptors exceed device storage limits');
+  const capacity = Math.min(maxVertices, Math.floor(limit / 16));
+  if (capacity < 1 || g.nbricks * 16 > limit) throw new RangeError('Smooth vertices exceed device storage limits');
   const label = (s) => `sim${sim.id} hybrid smooth ${s}`;
   const extractLayout = gpu.layout('HYBRID_SMOOTH_EXTRACT', SMOOTH_EXTRACT_LAYOUT);
   // Optional shared material/lighting bindings extend the existing group 2 ABI.
   const drawLayout = gpu.layout(label('draw layout'), [...SMOOTH_DRAW_LAYOUT, ...(shader.layout ?? [])]);
   const buffer = (s, size, usage = STORAGE) => gpu.createBuffer({ label: label(s), size, usage });
-  const triangles = buffer('triangles', g.nbricks * capacity * 4);
-  const meta = buffer('meta', g.nbricks * 12), status = buffer('status', 16);
+  const vertices = [buffer('vertices 0', capacity * 16), buffer('vertices 1', capacity * 16)];
+  const meta = buffer('meta', g.nbricks * 16), status = buffer('status', 32);
   const args = buffer('indirect', 16, STORAGE | INDIRECT);
   const ring = gpu.readback.ring(label('status results'), 16, 16);
   const b = (binding, buffer) => ({ binding, resource: { buffer } });
+  const prefixLayout = gpu.layout(label('prefix layout'), SMOOTH_PREFIX_LAYOUT);
+  const shadowLayout = gpu.layout(label('shadow layout'), SMOOTH_DRAW_LAYOUT);
   const extractBind = gpu.bindGroup(extractLayout, [
-    { binding: 0, resource: derived.views.fieldSurf }, { binding: 1, resource: derived.views.fieldThin },
-    ...[derived.dlist, triangles, meta, status, args, ring.buffer].map((v, i) => b(i + 2, v)),
+    { binding: 0, resource: derived.views.fieldSurf }, b(2, derived.dlist),
+    b(3, vertices[0]), b(4, meta), b(5, status), b(8, vertices[1]),
   ], label('extract'));
-  const baseEntries = [{ binding: 0, resource: derived.views.fieldSurf }, b(1, triangles), b(2, meta), b(3, status)];
+  const prefixBind = gpu.bindGroup(prefixLayout, [b(4, meta), b(5, status), b(6, args), b(7, ring.buffer)], label('prefix'));
+  const baseEntries = [b(1, vertices[0]), b(2, vertices[1]), b(3, status)];
+  const shadowBind = gpu.bindGroup(shadowLayout, baseEntries, label('shadow'));
   // bind is an array of GPUBindGroupEntry, or frame -> array; no allocation in
   // the draw loop. Refresh the composed bind only in update when necessary.
   let drawBind = null, extraEntries = null;
   const code = smoothExtractWGSL(g);
   const meshDesc = { code, layouts: [sim.L.TABLES, sim.L.STATE_RO, extractLayout], params: SmoothParams };
   const extract = gpu.kernel({ name: 'hybrid.smooth.extract', ...meshDesc, entry: 'extract', workgroupSize: [128, 1, 1] });
-  const finish = gpu.kernel({ name: 'hybrid.smooth.finish', ...meshDesc, entry: 'finish', workgroupSize: [1, 1, 1] });
+  const finish = gpu.kernel({ name: 'hybrid.smooth.finish', ...meshDesc, layouts: [sim.L.TABLES, sim.L.STATE_RO, prefixLayout], entry: 'finish', workgroupSize: [1, 1, 1] });
+  const build = gpu.kernel({ name: 'hybrid.smooth.build', ...meshDesc, entry: 'build', workgroupSize: [128, 1, 1] });
   const drawCode = smoothDrawWGSL(g, { shadingWGSL: shader.wgsl });
   const drawDesc = { code: drawCode, layouts: [fu.layout, sim.L.STATE_RO, drawLayout], params: SmoothParams,
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' } };
   const drawPipe = gpu.renderPipeline({ name: 'hybrid.smooth.draw', ...drawDesc, fragment: { targets: [{ format: 'rgba16float' }] } });
-  const shadowPipe = gpu.renderPipeline({ name: 'hybrid.smooth.shadow', ...drawDesc, vertex: { entry: 'shadowVS' }, fragment: null });
-  const pipes = [extract, finish, drawPipe, shadowPipe];
-  let disposed = false, key = null, lastRevision, lastOrigin, generation = 0, frameState = {};
-  const stats = { builds: 0, capacityPerBrick: capacity, count: 0, flags: 0, requiredPerBrick: 0,
+  const shadowPipe = gpu.renderPipeline({ name: 'hybrid.smooth.shadow', ...drawDesc, code: smoothDrawWGSL(g), layouts: [fu.layout, sim.L.STATE_RO, shadowLayout], vertex: { entry: 'shadowVS' }, fragment: null });
+  const pipes = [extract, finish, build, drawPipe, shadowPipe];
+  let disposed = false, key = null, lastRevision, lastOrigin, lastSplit, generation = 0, frameState = {};
+  const stats = { builds: 0, maxVertices: capacity, count: 0, flags: 0, requiredVertices: 0,
     rebuiltBricks: 0, pending: false, fallbackRequired: true, fallbackReason: 'not-built', readbackError: null };
   const fallback = (reason) => { stats.fallbackRequired = !!reason; stats.fallbackReason = reason; };
   function blocked(frame) {
@@ -88,7 +97,7 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = 
     get revision() { return `${generation}|${key}|${stats.fallbackReason}`; },
     capabilities: Object.freeze({ particleSplit: true, channels: [2, 3], thinGranular: true }),
     stats,
-    resources: { triangles, meta, status, args, capacityPerBrick: capacity, layout: drawLayout, get bind() { return drawBind; } },
+    resources: { vertices, meta, status, args, shadowLayout, shadowBind, maxVertices: capacity, layout: drawLayout, get bind() { return drawBind; } },
     update(frame = {}) {
       if (!api.isReady) return false;
       frameState = frame;
@@ -106,8 +115,9 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = 
         fallback(stats.readbackError ? 'status-readback-failed' : stats.flags & SMOOTH_FLAGS.OVERFLOW ? 'capacity-overflow' : stats.flags ? 'unsupported-surface' : '');
         return false;
       }
-      const full = !key || frame.force || !frame.incremental || frame.previousRevision !== lastRevision || lastOrigin !== `${o.x},${o.y},${o.z}`;
+      const full = !key || frame.force || !frame.incremental || frame.previousRevision !== lastRevision || lastOrigin !== `${o.x},${o.y},${o.z}` || lastSplit !== derived.particleSplit;
       lastOrigin = `${o.x},${o.y},${o.z}`;
+      lastSplit = derived.particleSplit;
       key = nextKey;
       lastRevision = frame.revision;
       const token = ++generation;
@@ -118,16 +128,19 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = 
       const p = { ...params(), full: full ? 1 : 0, unsupported: 0 };
       extract.dispatch(gpu.frame, fold(g.nbricks), { bind, header, params: p });
       const slot = ring.next();
-      finish.dispatch(gpu.frame, [1, 1, 1], { bind, header, params: { ...p, slot } });
+      finish.dispatch(gpu.frame, [1, 1, 1], { bind: [sim.tables, sim.bindRO, prefixBind], header, params: { ...p, slot } });
+      build.dispatch(gpu.frame, fold(g.nbricks), { bind, header, params: p });
       stats.builds++;
       ring.read(slot).then((bytes) => {
         if (disposed || token !== generation) return;
         const [flags, count, required, rebuilt] = new Uint32Array(bytes);
-        Object.assign(stats, { flags, count, requiredPerBrick: required, rebuiltBricks: rebuilt, pending: false });
+        Object.assign(stats, { flags, count, requiredVertices: required, rebuiltBricks: rebuilt, pending: false });
         fallback(blocked(frameState) || (flags & SMOOTH_FLAGS.OVERFLOW ? 'capacity-overflow' : flags ? 'unsupported-surface' : ''));
+        onRead?.(stats);
       }, (error) => {
         if (disposed || token !== generation) return;
         stats.pending = false; stats.readbackError = String(error); fallback('status-readback-failed');
+        onRead?.(stats);
       });
       return true;
     },
@@ -138,7 +151,7 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = 
     },
     drawShadow(rp, { matrix } = {}) {
       if (!matrix || !canDraw()) return false;
-      shadowPipe.draw(rp, { bind: [fu.group, sim.bindRO, drawBind], header: sim.header(), params: params(matrix), indirect: { buffer: args } });
+      shadowPipe.draw(rp, { bind: [fu.group, sim.bindRO, shadowBind], header: sim.header(), params: params(matrix), indirect: { buffer: args } });
       return true;
     },
     invalidate() { key = null; generation++; stats.pending = false; fallback('invalidated'); },
@@ -146,7 +159,7 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = 
       if (disposed) return;
       disposed = true; generation++; stats.pending = false; fallback('disposed');
       gpu.flush('hybrid smooth dispose'); ring.close();
-      for (const v of [triangles, meta, status, args]) v.destroy();
+      for (const v of [...vertices, meta, status, args]) v.destroy();
     },
   };
   function canDraw() {

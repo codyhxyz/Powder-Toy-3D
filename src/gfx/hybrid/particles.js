@@ -45,7 +45,7 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
  * Current source state has no subcell position; cell+.5 is its real location.
  */
 export function createHybridParticles(gpu, sim, {
-  world = false, capacity: requested = sim.g.slots, shader = {},
+  world = false, capacity: requested = sim.g.slots / 4, shader = {},
 } = {}) {
   if (shader.wgsl !== undefined && typeof shader.wgsl !== 'string') throw new TypeError('shader.wgsl must be WGSL');
   if (shader.handlesAppearance && !shader.wgsl) throw new TypeError('Appearance support requires a shader adapter');
@@ -92,6 +92,8 @@ export function createHybridParticles(gpu, sim, {
     get revision() { return `${generation}|${key}|${stats.fallbackReason}`; },
     capabilities: Object.freeze({ particleSplit: true, channels: [2, 3], liquids: false }),
     stats,
+    // A 2³ cell tile holds at most one isolated cell per channel: two / eight.
+    get guaranteedCapacity() { return capacity >= g.slots / 4; },
     resources: { instances, args, layout: drawLayout, bind: drawGroup, capacity, stride: PARTICLE_BYTES },
     /** size: positive integer render pixels. sourceStyle must be supplied for
      * source-art scenes. Actual Derived mode (and matching world halo) is required. */
@@ -142,7 +144,7 @@ export function createHybridParticles(gpu, sim, {
     draw(rp) {
       if (!canDraw()) return false;
       const extra = typeof shader.bind === 'function' ? shader.bind(frameState) : shader.bind;
-      drawPipe.draw(rp, { bind: [fu.group, drawGroup, extra], params: { matrix: IDENTITY, viewport }, indirect: { buffer: args } });
+      drawPipe.draw(rp, { bind: [fu.group, drawGroup, extra], header: sim.header(), params: { matrix: IDENTITY, viewport }, indirect: { buffer: args } });
       return true;
     },
     drawShadow(rp, { matrix } = {}) {

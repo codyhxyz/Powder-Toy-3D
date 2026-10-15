@@ -416,7 +416,7 @@ export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32
 export const fieldBoostFrag = (g, stage) => /* wgsl */ `
 ${prelude(g, stage === 0 ? STATE_OPTS.STATE_RO : { state: false })}
 ${dirtyListsWGSL(g)}
-${stage === 0 ? particleOwnershipWGSL : ''}
+${stage === 0 ? `${materialsGLSL()}\n${particleOwnershipWGSL}` : ''}
 ${BoostParams.wgsl}
 @group(3) @binding(1) var<uniform> P: BoostParams;
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;

@@ -6,8 +6,7 @@ import { uniformStruct } from '../../gpu/params.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 
 // Freudenthal subdivision: identical diagonals on both sides of every cube face.
-// Samples are fieldSurf texel centres. A triangle takes one u32 descriptor;
-// its interpolated vertices are reconstructed from the unchanged field at draw.
+// Samples are fieldSurf texel centres. Real vertices are cached at field revision time.
 export const SMOOTH_TETS = [[0, 1, 3, 7], [0, 3, 2, 7], [0, 2, 6, 7], [0, 6, 4, 7], [0, 4, 5, 7], [0, 5, 1, 7]];
 export const SMOOTH_EDGES = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
 export const SMOOTH_CASES = Array.from({ length: 16 }, (_, mask) => {
@@ -25,8 +24,10 @@ export const SmoothParams = uniformStruct('SmoothParams', { capacity: 'u32', ful
 const ro = (binding, visibility = STAGE.COMPUTE) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
 const rw = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } });
 const tex = (binding, visibility) => ({ binding, visibility, texture: { sampleType: 'unfilterable-float', viewDimension: '3d' } });
-export const SMOOTH_EXTRACT_LAYOUT = [tex(0, STAGE.COMPUTE), tex(1, STAGE.COMPUTE), ro(2), rw(3), rw(4), rw(5), rw(6), rw(7)];
-export const SMOOTH_DRAW_LAYOUT = [tex(0, STAGE.VERTEX), ro(1, STAGE.VERTEX), ro(2, STAGE.VERTEX), ro(3, STAGE.VERTEX | STAGE.FRAGMENT)];
+// Separate prefix layout avoids reserving unused storage slots in build pipelines.
+export const SMOOTH_EXTRACT_LAYOUT = [tex(0, STAGE.COMPUTE), ro(2), rw(3), rw(4), rw(5), rw(8)];
+export const SMOOTH_PREFIX_LAYOUT = [rw(4), rw(5), rw(6), rw(7)];
+export const SMOOTH_DRAW_LAYOUT = [ro(1, STAGE.VERTEX), ro(2, STAGE.VERTEX), ro(3, STAGE.VERTEX | STAGE.FRAGMENT)];
 
 /** Bind this small status buffer to the legacy smooth pass as read-only storage.
  * A nonzero flag means ALL granular/organic matter stays with legacy, not a
@@ -59,20 +60,33 @@ fn phi(q: vec3i, ch: u32) -> f32 {
 }
 // Existing state, never a new simulation. Nearest channel source in the field
 // kernel's two-cell support; missing sources (EMA ghosts) emit no triangles.
-fn smoothSource(p: vec3i, ch: i32) -> vec4f {
+fn smoothSource(p: vec3i, ch: i32) -> u32 {
   var best = 1e20;
-  var a = vec4f(0.0);
+  var a = SLOTS;
   for (var z = -2; z <= 2; z++) { for (var y = -2; y <= 2; y++) { for (var x = -2; x <= 2; x++) {
     let q = p + vec3i(x,y,z);
     if (inGrid(q)) {
       let s = fetchA(q);
       let d = dot(vec3f(q-p)-vec3f(0.5), vec3f(q-p)-vec3f(0.5));
-      if (SURFCH(eid(s)) == ch && d < best && !(P.particleSplit != 0u && hybridParticleOwns(q, P.world != 0u))) { best = d; a = s; }
+      if (SURFCH(eid(s)) == ch && d < best && !(P.particleSplit != 0u && hybridParticleOwns(q, P.world != 0u))) { best = d; a = slotOf(q); }
     }
   } } }
   return a;
 }
 `;
+
+const octCodec = `
+fn signNZ(v: vec2f) -> vec2f { return select(vec2f(-1.0), vec2f(1.0), v >= vec2f(0.0)); }
+fn octEncode(input: vec3f) -> vec2f {
+  let n = select(vec3f(0,1,0), input, dot(input,input) > 1e-12);
+  let p = n / (abs(n.x)+abs(n.y)+abs(n.z));
+  return select(p.xy, (vec2f(1.0)-abs(p.yx))*signNZ(p.xy), p.z < 0.0);
+}
+fn octDecode(p: vec2f) -> vec3f {
+  var n = vec3f(p, 1.0-abs(p.x)-abs(p.y));
+  if (n.z < 0.0) { n = vec3f((vec2f(1.0)-abs(n.yx))*signNZ(n.xy), n.z); }
+  return normalize(n);
+}`;
 
 export function smoothExtractWGSL(g) {
   const dl = dirtyLists(g);
@@ -81,108 +95,17 @@ ${materialsGLSL()}
 ${SmoothParams.wgsl}
 @group(3) @binding(1) var<uniform> P: SmoothParams;
 @group(2) @binding(0) var surf: texture_3d<f32>;
-@group(2) @binding(1) var thin: texture_3d<f32>;
 @group(2) @binding(2) var<storage, read> dirty: array<u32>;
-@group(2) @binding(3) var<storage, read_write> triangles: array<u32>;
-// Per brick: raw triangle count, fallback bits, exclusive triangle prefix.
-@group(2) @binding(4) var<storage, read_write> meta: array<u32>;
-// flags, raw total triangles, maximum required chunk capacity, rebuilt chunks.
+@group(2) @binding(3) var<storage, read_write> arena0: array<vec4u>;
+// Per brick: triangle count, old vertex prefix, new vertex prefix, changed.
+@group(2) @binding(4) var<storage, read_write> chunkMeta: array<u32>;
+// flags, total triangles, required vertices, changed bricks, active arena.
 @group(2) @binding(5) var<storage, read_write> status: array<u32>;
 @group(2) @binding(6) var<storage, read_write> args: array<u32>;
 @group(2) @binding(7) var<storage, read_write> results: array<vec4u>;
+@group(2) @binding(8) var<storage, read_write> arena1: array<vec4u>;
 ${tables()}
-var<workgroup> count: atomic<u32>;
-var<workgroup> flags: atomic<u32>;
-@compute @workgroup_size(128)
-fn extract(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
-  let b = foldId(wg, nwg);
-  if (b >= NBRICKS) { return; }
-  // DL_FMASK is the exact 3^3 neighborhood of the FIELDS list: include
-  // neighbors for interpolation, source lookup and normal-stencil halos.
-  if (P.full == 0u && dirty[${dl.fmask}u + b] == 0u) { return; }
-  if (li == 0u) { atomicStore(&count, 0u); atomicStore(&flags, 0u); }
-  workgroupBarrier();
-  if (li < 125u && cubeOwned(b, li)) {
-    let p = cubeBase(b, li);
-    for (var ch = 2u; ch <= 3u; ch++) {
-      var values: array<f32, 8>;
-      for (var c = 0u; c < 8u; c++) {
-        let q = p + corner(c);
-        values[c] = phi(q, ch);
-
-      }
-      var material = -1;
-      for (var t = 0u; t < 6u; t++) {
-        let tet = TETS[t];
-        var mask = 0u;
-        for (var v = 0u; v < 4u; v++) { if (values[tet[v]] >= 0.5) { mask |= 1u << v; } }
-        let n = TRI_COUNT[mask];
-        if (n == 0u) { continue; }
-        if (material < 0) {
-          material = eid(smoothSource(p, i32(ch)));
-
-        }
-        if (material == E_EMPTY) { continue; } // history without current bulk matter
-        let at = atomicAdd(&count, n);
-        if (at + n > P.capacity) { atomicOr(&flags, 1u); }
-        for (var tri = 0u; tri < n; tri++) {
-          if (at + tri < P.capacity) {
-            triangles[b * P.capacity + at + tri] = li | (t << 7u) | (mask << 10u) | (tri << 14u) | ((ch-2u) << 15u) | (u32(material) << 16u);
-          }
-        }
-      }
-    }
-  }
-  workgroupBarrier();
-  if (li == 0u) { meta[3u*b] = atomicLoad(&count); meta[3u*b+1u] = atomicLoad(&flags); }
-}
-// Prefixes compact the draw logically, without copying stable chunk records.
-// One bounded pass, only on a new derived revision; draw uses binary lookup.
-@compute @workgroup_size(1)
-fn finish() {
-  var total = 0u;
-  var bad = P.unsupported;
-  var required = 0u;
-  var rebuilt = 0u;
-  for (var b = 0u; b < NBRICKS; b++) {
-    meta[3u*b+2u] = total;
-    let n = meta[3u*b];
-    total += n;
-    required = max(required, n);
-    bad |= meta[3u*b+1u];
-    if (P.full != 0u || dirty[${dl.fmask}u+b] != 0u) { rebuilt++; }
-  }
-  status[0] = bad; status[1] = total; status[2] = required; status[3] = rebuilt;
-  results[P.slot] = vec4u(bad, total, required, rebuilt);
-  args[0] = select(0u, total * 3u, bad == 0u);
-  args[1] = 1u; args[2] = 0u; args[3] = 0u;
-}`;
-}
-
-const baselineShade = `
-fn shadeSmooth(cellPosition: vec3f, normal: vec3f, elementId: i32, stateA: vec4f) -> vec3f {
-  let hemi = normal.y * 0.5 + 0.5;
-  let light = mix(FU.ground, FU.skyUp, hemi) + FU.sunCol * FU.sunExt * max(0.0, dot(normal, FU.sun));
-  return ALBEDO(elementId) * light * FU.lightGain + cellEmission(elementId, stateA.y, floor(stateA.w));
-}`;
-
-/** Composition seam: group2 bindings >=4 are reserved for the supplied shading
- * WGSL and corresponding layout/entries. shadeSmooth receives GRID coordinates
- * (physical world = cellPosition + vec3f(H.origin)), outward grid normal, exact
- * element id, and current source state A. Returns unpremultiplied linear HDR
- * radiance; opaque coverage is 1. No tone mapping. */
-export function smoothDrawWGSL(g, { shadingWGSL = baselineShade } = {}) {
-  gridDims(g);
-  return `${prelude(g, STATE_OPTS.STATE_RO)}
-${frameBindings()}
-${materialsGLSL()}
-${SmoothParams.wgsl}
-@group(3) @binding(1) var<uniform> P: SmoothParams;
-@group(2) @binding(0) var surf: texture_3d<f32>;
-@group(2) @binding(1) var<storage, read> triangles: array<u32>;
-@group(2) @binding(2) var<storage, read> meta: array<u32>;
-@group(2) @binding(3) var<storage, read> status: array<u32>;
-${tables()}
+${octCodec}
 fn gradient(q: vec3i, ch: u32) -> vec3f {
   return vec3f(phi(q+vec3i(1,0,0),ch)-phi(q-vec3i(1,0,0),ch), phi(q+vec3i(0,1,0),ch)-phi(q-vec3i(0,1,0),ch), phi(q+vec3i(0,0,1),ch)-phi(q-vec3i(0,0,1),ch));
 }
@@ -197,6 +120,123 @@ fn smoothNormal(p: vec3f, ch: u32) -> vec3f {
   }
   return n / max(length(n), 1e-10);
 }
+
+fn putVertex(at: u32, value: vec4u) {
+  if (status[4] == 0u) { arena0[at] = value; } else { arena1[at] = value; }
+}
+fn emitTriangle(at: u32, p: vec3i, ch: u32, tet: vec4u, edges: vec3u, source: u32) {
+  var points: array<vec3f, 3>;
+  for (var v = 0u; v < 3u; v++) {
+    let edge = EDGES[edges[v]];
+    let a = p+corner(tet[edge.x]); let b = p+corner(tet[edge.y]);
+    let fa = phi(a,ch); let fb = phi(b,ch);
+    let w = clamp((0.5-fa)/(fb-fa), 0.0, 1.0);
+    points[v] = clamp(mix(vec3f(a),vec3f(b),w)+vec3f(0.5), vec3f(0.0), vec3f(f32(NX),f32(NY),f32(NZ)));
+  }
+  let normal = smoothNormal((points[0]+points[1]+points[2])/3.0,ch);
+  let flip = dot(cross(points[1]-points[0],points[2]-points[0]),normal) < 0.0;
+  for (var v = 0u; v < 3u; v++) {
+    var j = v; if (flip && v != 0u) { j = 3u-v; }
+    // Half floats preserve the full support; do not clamp relative position
+    // (texel-centre geometry can extend to 3.5 from a source at p-2).
+    let relative = points[j]-vec3f(cellOf(source));
+    let n = octEncode(smoothNormal(points[j],ch));
+    putVertex(at+v, vec4u(pack2x16float(relative.xy), pack2x16float(vec2f(relative.z,n.x)), pack2x16float(vec2f(n.y,0)), source));
+  }
+}
+var<workgroup> count: atomic<u32>;
+// Count and build share precisely the same source selection and tetra cases.
+fn scan(b: u32, li: u32, emit: bool) {
+  if (li < 125u && cubeOwned(b, li)) {
+    let p = cubeBase(b,li);
+    for (var ch = 2u; ch <= 3u; ch++) {
+      var values: array<f32,8>;
+      for (var c = 0u; c < 8u; c++) { values[c] = phi(p+corner(c),ch); }
+      var source = SLOTS;
+      var searched = false;
+      for (var t = 0u; t < 6u; t++) {
+        let tet = TETS[t]; var mask = 0u;
+        for (var v = 0u; v < 4u; v++) { if (values[tet[v]] >= 0.5) { mask |= 1u << v; } }
+        let n = TRI_COUNT[mask]; if (n == 0u) { continue; }
+        if (!searched) { source = smoothSource(p,i32(ch)); searched = true; }
+        if (source == SLOTS) { continue; } // EMA ghost or particle-owned only
+        let at = atomicAdd(&count,n);
+        if (emit) {
+          for (var tri = 0u; tri < n; tri++) {
+            emitTriangle(chunkMeta[4u*b+2u]+3u*(at+tri),p,ch,tet,TRI_EDGES[mask*2u+tri],source);
+          }
+        }
+      }
+    }
+  }
+}
+@compute @workgroup_size(128)
+fn extract(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let b = foldId(wg,nwg); if (b >= NBRICKS) { return; }
+  let changed = P.full != 0u || dirty[${dl.fmask}u+b] != 0u || status[0] != 0u;
+  if (li == 0u) { chunkMeta[4u*b+3u] = u32(changed); atomicStore(&count,0u); }
+  workgroupBarrier();
+  if (changed) { scan(b,li,false); }
+  workgroupBarrier();
+  if (li == 0u && changed) { chunkMeta[4u*b] = atomicLoad(&count); }
+}
+@compute @workgroup_size(1)
+fn finish() {
+  var total = 0u; var changed = 0u;
+  for (var b = 0u; b < NBRICKS; b++) {
+    chunkMeta[4u*b+1u] = chunkMeta[4u*b+2u]; chunkMeta[4u*b+2u] = total*3u;
+    total += chunkMeta[4u*b]; changed += chunkMeta[4u*b+3u];
+  }
+  let required = total*3u;
+  let bad = P.unsupported | select(0u,1u,required > P.capacity);
+  status[0] = bad; status[1] = total; status[2] = required; status[3] = changed;
+  if (changed != 0u && bad == 0u) { status[4] = 1u-status[4]; }
+  results[P.slot] = vec4u(bad,total,required,changed);
+  args[0] = select(0u,required,bad == 0u); args[1] = select(0u,1u,bad == 0u);
+  args[2] = 0u; args[3] = 0u;
+}
+@compute @workgroup_size(128)
+fn build(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let b = foldId(wg,nwg);
+  if (li == 0u) { atomicStore(&count,0u); }
+  workgroupBarrier();
+  if (b >= NBRICKS || status[0] != 0u || status[3] == 0u) { return; }
+  if (chunkMeta[4u*b+3u] == 0u) {
+    for (var i = li; i < chunkMeta[4u*b]*3u; i += 128u) {
+      let old = chunkMeta[4u*b+1u]+i;
+      var rec: vec4u;
+      if (status[4] == 0u) { rec = arena1[old]; } else { rec = arena0[old]; }
+      putVertex(chunkMeta[4u*b+2u]+i,rec);
+    }
+    return;
+  }
+  scan(b,li,true);
+}`;
+}
+
+const baselineShade = `
+fn shadeSmooth(cellPosition: vec3f, normal: vec3f, elementId: i32, stateA: vec4f, footprint: f32) -> vec3f {
+  let hemi = normal.y * 0.5 + 0.5;
+  let light = mix(FU.ground, FU.skyUp, hemi) + FU.sunCol * FU.sunExt * max(0.0, dot(normal, FU.sun));
+  return ALBEDO(elementId) * light * FU.lightGain + cellEmission(elementId, stateA.y, floor(stateA.w));
+}`;
+
+/** Composition seam: group2 bindings >=4 are reserved for the supplied shading
+ * WGSL and corresponding layout/entries. shadeSmooth receives GRID coordinates
+ * (physical world = cellPosition + vec3f(H.origin)), outward grid normal, exact
+ * element id, current source state A, and derivative footprint. Returns unpremultiplied linear HDR
+ * radiance; opaque coverage is 1. No tone mapping. */
+export function smoothDrawWGSL(g, { shadingWGSL = baselineShade } = {}) {
+  gridDims(g);
+  return `${prelude(g, STATE_OPTS.STATE_RO)}
+${frameBindings()}
+${materialsGLSL()}
+${SmoothParams.wgsl}
+@group(3) @binding(1) var<uniform> P: SmoothParams;
+@group(2) @binding(1) var<storage, read> arena0: array<vec4u>;
+@group(2) @binding(2) var<storage, read> arena1: array<vec4u>;
+@group(2) @binding(3) var<storage, read> status: array<u32>;
+${octCodec}
 struct SmoothVertex {
   @builtin(position) clip: vec4f,
   @location(0) cellPosition: vec3f,
@@ -205,37 +245,15 @@ struct SmoothVertex {
   @location(3) @interpolate(flat) elementId: i32,
 }
 fn vertex(vi: u32, shadow: bool) -> SmoothVertex {
-  let ti = vi / 3u;
-  var lo = 0u;
-  var hi = NBRICKS;
-  // upper_bound(prefix, ti)-1, including empty chunks with repeated prefixes.
-  while (lo + 1u < hi) {
-    let mid = (lo+hi)/2u;
-    if (meta[3u*mid+2u] <= ti) { lo = mid; } else { hi = mid; }
-  }
-  let rec = triangles[lo*P.capacity + ti-meta[3u*lo+2u]];
-  let p = cubeBase(lo, rec & 127u);
-  let ch = 2u + ((rec >> 15u) & 1u);
-  let tet = TETS[(rec >> 7u) & 7u];
-  let edges = TRI_EDGES[((rec >> 10u) & 15u)*2u + ((rec >> 14u) & 1u)];
-  var points: array<vec3f, 3>;
-  for (var v = 0u; v < 3u; v++) {
-    let edge = EDGES[edges[v]];
-    let a = p+corner(tet[edge.x]);
-    let b = p+corner(tet[edge.y]);
-    let fa = phi(a,ch);
-    let fb = phi(b,ch);
-    let w = clamp((0.5-fa)/(fb-fa), 0.0, 1.0);
-    points[v] = clamp(mix(vec3f(a),vec3f(b),w)+vec3f(0.5), vec3f(0.0), vec3f(f32(NX),f32(NY),f32(NZ)));
-  }
-  let normal = smoothNormal((points[0]+points[1]+points[2])/3.0,ch);
-  var v = vi%3u;
-  if (dot(cross(points[1]-points[0],points[2]-points[0]),normal) < 0.0) { if (v != 0u) { v = 3u-v; } }
+  var rec: vec4u;
+  if (status[4] == 0u) { rec = arena0[vi]; } else { rec = arena1[vi]; }
+  let xy = unpack2x16float(rec.x); let zn = unpack2x16float(rec.y);
+  let ny = unpack2x16float(rec.z).x;
   var o: SmoothVertex;
-  o.cellPosition = points[v];
-  o.normal = smoothNormal(o.cellPosition,ch);
-  o.stateA = smoothSource(p,i32(ch));
-  o.elementId = i32(rec >> 16u);
+  o.cellPosition = vec3f(cellOf(rec.w))+vec3f(xy,zn.x);
+  o.normal = octDecode(vec2f(zn.y,ny));
+  o.stateA = fetchA(cellOf(rec.w));
+  o.elementId = eid(o.stateA);
   o.clip = FU.viewProj * FU.model * vec4f(o.cellPosition,1.0);
   // Caster matrix maps GRID coordinates directly to WebGPU [0,1] depth.
   if (shadow) { o.clip = P.matrix * vec4f(o.cellPosition,1.0); }
@@ -245,7 +263,8 @@ fn vertex(vi: u32, shadow: bool) -> SmoothVertex {
 @vertex fn shadowVS(@builtin(vertex_index) vi: u32) -> SmoothVertex { return vertex(vi,true); }
 ${shadingWGSL}
 @fragment fn fs(v: SmoothVertex) -> @location(0) vec4f {
+  let footprint = max(length(dpdx(v.cellPosition)), length(dpdy(v.cellPosition)));
   if (status[0] != 0u) { discard; }
-  return vec4f(shadeSmooth(v.cellPosition, normalize(v.normal), v.elementId, v.stateA), 1.0);
+  return vec4f(shadeSmooth(v.cellPosition, normalize(v.normal), v.elementId, v.stateA, footprint), 1.0);
 }`;
 }

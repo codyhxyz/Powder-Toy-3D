@@ -1,14 +1,16 @@
 // CPU-only. Source reflection and command recording are NOT GPU validation.
 import assert from 'node:assert/strict';
-import { Matrix4 } from 'three';
+import { Matrix4,PerspectiveCamera } from 'three';
+import { execFileSync,spawnSync } from 'node:child_process';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { createHybridGeometry } from '../src/gfx/hybrid/geometry.js';
 import { createHybridRenderer, hybridEligibility } from '../src/gfx/hybrid/index.js';
 import { buildHybridMaterialTable, buildHybridDetailAtlas, createHybridMaterials } from '../src/gfx/hybrid/materials.js';
 import { hybridDetailLod, hybridMaterialsWGSL } from '../src/shaders/hybrid/materials.js';
 import { drawWGSL, meshWGSL, compactWGSL, shadowWGSL, geometryCapacity } from '../src/shaders/hybrid/geometry.js';
-import { gridDims } from '../src/shaders/common.js';
-import { ELEMENTS } from '../src/elements.js';
+import { gridDims,LAYOUT } from '../src/shaders/common.js';
+import { ELEMENTS,R } from '../src/elements.js';
+import { LOOK } from '../src/gfx/materials.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -35,23 +37,37 @@ assert.equal(hybridDetailLod(1 / 32, 1, 64, 7), 1);
 assert.throws(() => hybridDetailLod(-1, 1, 64, 7));
 assert.doesNotMatch(hybridMaterialsWGSL(), /textureSample\(/, 'divergent/compute-safe explicit LOD only');
 for (const code of [meshWGSL(g), compactWGSL(g), shadowWGSL(g), drawWGSL(g, { shadingWGSL: hybridMaterialsWGSL({ binding: 1 }) })]) new WgslReflect(code);
-for (const frame of [{ view: 'heat' }, { view: 'cozy' }, { world: true }, { sourceAppearance: true }, { decoration: true }, { warp: { k: 1 } }, { disabled: true }]) assert(hybridEligibility(frame));
+for (const frame of [{ view: 'heat' }, { view: 'cozy' }, { sourceAppearance: true }, { decoration: true }, { warp: { k: 1 } }, { disabled: true }]) assert(hybridEligibility(frame));
 assert.equal(hybridEligibility(), null);
+assert.equal(hybridEligibility({world:true}),null,'straight world windows use the same producers');
+for(const e of ELEMENTS.filter(e=>e.id)){
+  const l=LOOK[e.id];
+  const owners=[l.media>=0,l.ch===0||l.ch===1||e.render===R.GLASS,
+    l.ch===2||l.ch===3,e.render===R.OPAQUE&&l.ch<0&&l.media<0];
+  assert.equal(owners.filter(Boolean).length,1,`${e.key}: exactly one primary matter owner`);
+}
 
 const calls = [], buffers = [], textures = [], rings = [], layouts = new Map();
 const resource = (desc, list) => {
-  const r = { ...desc, createView() { return { texture: r }; }, destroy() { this.destroyed = true; } };
+  const r = { sampleCount:1,dimension:'2d',depthOrArrayLayers:desc.size?.[2]??1,mipLevelCount:1,
+    width:desc.size?.[0],height:desc.size?.[1],...desc, createView() { return { texture: r }; }, destroy() { this.destroyed = true; } };
   list.push(r); return r;
 };
+const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
 const pipe = desc => {
-  new WgslReflect(desc.code);
+  const r=new WgslReflect(desc.code);
+  if(semantic)execFileSync('naga',['--stdin-file-path',desc.name+'.wgsl'],{input:desc.code,encoding:'utf8'});
+  for(const stage of ['compute','vertex','fragment'])for(const entry of r.entry[stage]){
+    assert(entry.resources.filter(v=>r.storage.includes(v)).length<=8,`${desc.name} ${entry.name} storage`);
+    assert(entry.resources.filter(v=>r.textures.includes(v)).length<=16,`${desc.name} ${entry.name} textures`);
+  }
   return { state: 'ready', ready: Promise.resolve(),
     dispatch(_f, size, args) { calls.push({ name: desc.name, size, ...args }); },
     draw(_rp, args) { calls.push({ name: desc.name, ...args }); },
   };
 };
 const gpu = {
-  device: { limits: { maxTextureDimension2D: 8192 }, createSampler: desc => ({ ...desc }) },
+  device: { limits: { maxTextureDimension2D: 8192,maxBufferSize:128*1024**2,maxStorageBufferBindingSize:128*1024**2 }, createSampler: desc => ({ ...desc }) },
   queue: { writeBuffer() {}, writeTexture() {} },
   layout(name, entries) {
     if (layouts.has(name)) assert.deepEqual(entries, layouts.get(name).entries, `layout collision: ${name}`);
@@ -62,7 +78,8 @@ const gpu = {
   createBuffer: desc => resource(desc, buffers), createTexture: desc => resource(desc, textures),
   uniforms(_struct, name) { return { buffer: resource({ name, size: 4096 }, buffers), write() {} }; },
   kernel: pipe, renderPipeline: pipe, flush() {},
-  frame: { render() { calls.push({ name: 'render' }); return { end() { calls.push({ name: 'end' }); } }; } },
+  frame: { encoder:{},render() { calls.push({ name: 'render' }); return { end() { calls.push({ name: 'end' }); } }; },
+    direct(){return{copyTextureToTexture(...args){calls.push({name:'copy',args});}};} },
   readback: { ring() {
     let resolve; const read = new Promise(r => { resolve = r; });
     const ring = { buffer: {}, next: () => 0, read: () => read, resolve, close() { this.closed = true; } };
@@ -98,15 +115,43 @@ const materials = createHybridMaterials(gpu, sim, { size: 8 });
 assert.deepEqual(materials.entries({ binding: 1 }).map(e => e.binding), [1, 2, 3, 4]);
 materials.dispose(); materials.dispose();
 assert.throws(() => materials.entries(), /disposed/);
-const renderer = createHybridRenderer(gpu, sim);
+// Exercise the actual app composition, including all owned shader modules.
+sim.L={TABLES:LAYOUT.TABLES,STATE_RO:LAYOUT.STATE_RO};
+sim.derived.frameNo=1;
+sim.derived.world=null;
+sim.derived.dlist={};
+sim.derived.setParticleSplit=function(value){const changed=value!==this.particleSplit;this.particleSplit=value;return changed;};
+for(const name of ['fieldSurf','fieldThin','fieldMedia']){
+  sim.derived[name]={};sim.derived.views[name]={};
+  sim[name]=sim.derived[name];
+}
+gpu._mediaNoise={view:{},ready:Promise.resolve()};
+gpu._frameUniforms.last.written=true;
+gpu._frameUniforms.last.viewProj=new Matrix4();
+gpu._frameUniforms.last.model=new Matrix4();
+const color=gpu.createTexture({size:[64,64],format:'rgba16float',usage:20});
+const depth=gpu.createTexture({size:[64,64],format:'depth32float',usage:21});
+let resets=0;
+const post={settings:{upscale:1,taa:true,adaptive:false},inSize:[64,64],size:[64,64],
+  get historyRevision(){return resets;},reset(){resets++;},setTemporalInputs(inputs){this.inputs=inputs;},
+  withoutJitter:fn=>fn(),sceneTarget:{color,depth},sceneDescriptor:()=>({})};
+const renderer = createHybridRenderer(gpu, sim,{post});
 await renderer.ready;
 const composed = calls.length;
-assert.equal(renderer.update({ sun: { x: 0, y: 1, z: 0 }, model: new Matrix4() }), true);
-assert(calls.length > composed, 'core producer and shadows record real commands');
-assert.equal(renderer.update({ view: 'heat' }), false);
+const input={sun:{x:0,y:1,z:0},model:new Matrix4()};
+assert.equal(renderer.prepare(input),true);
+assert.equal(renderer.update(input), true);
+assert(calls.length > composed, 'all producers and shared shadows record real commands');
+assert(renderer.drawOpaque(post));
+assert(renderer.compose(post,{...input,camera:new PerspectiveCamera()}));
+for(const pattern of [/scene acceptance/,/smooth.*build/,/particles.*finish/,/optics/,/media integrate/,/motion.*vectors/,/scene composite/])
+  assert(calls.some(c=>pattern.test(c.name)),`missing production path ${pattern}`);
+assert(post.inputs.motion&&post.inputs.reactive,'real motion and coverage reach post');
+assert.equal(renderer.stats.compositions,1);
+assert.equal(renderer.geometry.resources.status!==undefined,true);
+assert.equal(renderer.legacyIndirect.offset,32);
+assert.equal(renderer.prepare({view:'heat'}),true);
 assert.equal(renderer.enabled, false);
+assert.equal(sim.derived.particleSplit,false,'data view restores complete legacy fields');
 renderer.dispose();
-const refused = createHybridRenderer(gpu, sim, { world: true });
-assert.equal(refused.enabled, false);
-refused.dispose();
-console.log('PASS hybrid core: material bytes/mips/LOD, exact-change recording, allocation bounds, composition, fallback/lifecycle; CPU only.');
+console.log(`PASS hybrid core: material bytes/mips/LOD, exact-change recording, allocation bounds, ALL scene producers/composition, motion-to-post, same-frame GPU fallback/lifecycle; CPU only. Naga ${semantic?'passed':'unavailable'}.`);

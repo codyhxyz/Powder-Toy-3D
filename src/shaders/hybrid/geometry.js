@@ -23,7 +23,7 @@ export const meshLayouts = () => [LAYOUT.TABLES, LAYOUT.STATE_RO, MESH_LAYOUT];
 export const drawLayouts = () => [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, FACES_LAYOUT];
 export const CLASSIFY_WGSL = /* wgsl */ `
 fn hybridCrispOpaque(id: i32) -> bool {
-  return id != E_EMPTY && KIND(id) == K_SOLID && RCLASS(id) == R_OPAQUE && SURFCH(id) < 0 && MEDIACH(id) < 0;
+  return id != E_EMPTY && RCLASS(id) == R_OPAQUE && SURFCH(id) < 0 && MEDIACH(id) < 0;
 }
 `;
 

@@ -1,6 +1,6 @@
 import { E } from '../../src/elements.js';
 
-// Same live app/device/state for A/B. Only the hybrid update is bypassed in A.
+// Same live app/device/state for A/B. Ownership switches BEFORE derived fields.
 // GPU pass sums exclude copies, compositor work and work on other devices.
 export async function run(a, { warmup = 6, frames = 24 } = {}) {
   const assert = (v, why) => { if (!v) throw new Error(why); };
@@ -12,7 +12,7 @@ export async function run(a, { warmup = 6, frames = 24 } = {}) {
   a.autoRes.scale = 1;
   a.day.fixed = { az: 215, el: 38 };
   const { gpu, hybrid, post } = a, timing = gpu.timing;
-  const update = hybrid.update, drawPost = post.render, oldPass = timing.onPass, oldFrame = timing.onFrame;
+  const prepare = hybrid.prepare, drawPost = post.render, oldPass = timing.onPass, oldFrame = timing.onFrame;
   let mode = 'hybrid', tag = '', sceneName = '', edit = false;
   const trials = [], byTag = new Map();
   const V = a.THREE.Vector3;
@@ -26,7 +26,7 @@ export async function run(a, { warmup = 6, frames = 24 } = {}) {
     a.camera.lookAt(a.controls.target);
     a.camera.updateMatrixWorld();
   };
-  hybrid.update = function (frame) { return update.call(this, { ...frame, disabled: mode === 'legacy' || frame.disabled }); };
+  hybrid.prepare = function (frame) { return prepare.call(this, { ...frame, disabled: mode === 'legacy' || frame.disabled }); };
   post.render = function (...args) {
     const start = performance.now();
     try { return drawPost.apply(this, args); }
@@ -43,9 +43,9 @@ export async function run(a, { warmup = 6, frames = 24 } = {}) {
     const sum = name => f.passes.filter(p => p.name === name).reduce((n, p) => n + p.gpu, 0);
     trial.gpu.push(f.gpu);
     trial.scene.push(sum('scene'));
-    trial.raster.push(sum('hybrid opaque terrain'));
+    trial.raster.push(sum('hybrid opaque surfaces and particles'));
     trial.sun.push(sum('hybrid sun shadows'));
-    if (trial.mode === 'hybrid' && !f.passes.some(p => p.name === 'hybrid opaque terrain')) trial.missingRaster++;
+    if (trial.mode === 'hybrid' && !f.passes.some(p => p.name === 'hybrid opaque surfaces and particles')) trial.missingRaster++;
   };
   const cube = (id, radius, center, erase = false) => a.sim.paint({
     center: new V(...center), radius, shape: 1, tool: id, rate: 1, replace: true, erase,
@@ -137,6 +137,6 @@ export async function run(a, { warmup = 6, frames = 24 } = {}) {
     await timing.settled();
     timing.enabled = false;
     timing.onPass = oldPass; timing.onFrame = oldFrame;
-    hybrid.update = update; post.render = drawPost;
+    hybrid.prepare = prepare; post.render = drawPost;
   }
 }

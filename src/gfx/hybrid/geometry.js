@@ -51,7 +51,7 @@ export function createHybridGeometry(gpu, sim, { world = false, facesPerBrick = 
     get isReady() { return !disposed && !gpu.failure && all.every(p => p.state === 'ready'); },
     get revision() { return key ?? 'unbuilt'; },
     stats,
-    resources: { faces: compact, args, layout: drawLayout, get bind() { return drawGroup; } },
+    resources: { faces: compact, args, status: control, layout: drawLayout, get bind() { return drawGroup; } },
     update(next = {}) {
       frame = next;
       if (!api.isReady || blocked(frame)) { stats.fallbackRequired = true; return false; }

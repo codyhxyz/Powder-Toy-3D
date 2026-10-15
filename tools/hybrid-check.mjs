@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const lanes = [
-  'geometry', 'materials', 'shadows', 'lighting', 'smooth', 'optics',
-  'media', 'particles', 'temporal', 'resolution', 'reflections',
+  // Core covers change tracking, geometry, materials, shared shadows and the
+  // production composition. Shading covers lighting and selective reflections.
+  'core', 'shading', 'smooth', 'optics', 'media', 'particles',
+  'motion', 'temporal', 'resolution',
 ];
 const root = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
