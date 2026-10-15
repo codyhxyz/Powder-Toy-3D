@@ -33,12 +33,11 @@ export const MAPS = [
   // (a world three times as tall: world/scenes/giantVolcano.js VOLC_SIZE, app.js checks)
   { key: 'giantVolcano', name: 'Giant Volcano', size: 'world', scene: 'giantVolcano', dims: [1024, 384, 1024],
     desc: 'A stratovolcano 100 m tall in the sea: lava pouring from a vent on its crater down a collapse scar, old basalt flows, side cones, snow on top, forest below.' },
-  // Noita's main path, three levels deep: world/scenes/descent (docs/descent-contract.md). It starts on its
-  // first level's scene; the others are its too (scenes), each its own 512×256×512 world (descent/scenes.js DS_WORLD)
-  // the Noita gamemode's map (wands and nothing else in hand there), and a Sandbox map as every map is
-  { key: 'descent', name: 'Descent', size: 'world', scene: 'descentMines', scenes: ['descentMines', 'descentCoal', 'descentSnow'],
-    dims: [512, 256, 512], modes: ['noita'],
-    desc: 'Down through the Mines, the Coal Pits and the Snowy Depths, with a Holy Mountain at the bottom of each. Find wands on the way.' },
+  // Source-derived, folded 3D Noita main route. Legacy Wang scenes are not this map.
+  { key: 'descent', name: 'Descent', size: 'world', scene: 'noitaHolyMountain',
+    scenes: ['noitaHolyMountain', 'noitaCoal', 'noitaSnow', 'noitaHiisi', 'noitaJungle', 'noitaVault', 'noitaTemple', 'noitaKolmi'],
+    dims: [512, 256, 512], modes: ['noita'], previewVersion: 2,
+    desc: 'Native Noita material scenes folded into 3D: Holy Mountain to Coal Pits, Snow, Hiisi, Jungle, Vault, Temple of the Art and the Sampo platform. Map route, not Kolmi combat.' },
   { key: 'damValley', name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
   { key: 'quarry', name: 'Open-Cut Quarry', size: '128', preset: 'quarry', dims: [128, 128, 128], modes: ['factory'],
@@ -59,7 +58,7 @@ export const GAMEMODES = [
   { key: 'sandbox', name: 'Sandbox', defaultView: 'realistic', desc: 'Pour, build, burn and blow it up. Every map.' },
   { key: 'factory', name: 'Factory', desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
   { key: 'crueltySquad', name: 'Cruelty Squad', desc: 'Eliminate every designated target, then reach extraction. Death fails the mission; retry from the beginning.' },
-  { key: 'noita', name: 'Noita', desc: 'Wands only. Go down through the Mines and the Holy Mountains, finding wands and spells on the way.' },
+  { key: 'noita', name: 'Noita', desc: 'Wands only. Explore the source-derived 3D Descent, with Holy Mountains between biomes. Ends at the Sampo platform; no boss combat yet.' },
   { key: 'animalCrossing', name: 'Animal Crossing', defaultView: 'cozy', effect: 'rollingLog', gravityScale: 0.5, desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Tinker Creek.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },

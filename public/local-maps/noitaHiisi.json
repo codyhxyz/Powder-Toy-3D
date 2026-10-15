@@ -1,0 +1,1454 @@
+{
+  "version": 1,
+  "id": "noitaHiisi",
+  "name": "Hiisi Base",
+  "encoding": "sparse-brick-u8-v1",
+  "cellMeters": 0.3,
+  "size": [
+    512,
+    256,
+    512
+  ],
+  "brickDims": [
+    64,
+    32,
+    64
+  ],
+  "plainHeight": 0,
+  "dataFile": "noitaHiisi.binpack",
+  "dataCompression": "gzip",
+  "spawn": [
+    95,
+    190,
+    110
+  ],
+  "descent": {
+    "key": "noitaHiisi",
+    "name": "Hiisi Base",
+    "tier": 3,
+    "spawn": [
+      95,
+      190,
+      110
+    ],
+    "spawnYaw": -1.5707963267948966,
+    "role": "biome",
+    "temple": {
+      "box": [
+        186,
+        14,
+        246,
+        318,
+        31,
+        267
+      ],
+      "pool": [
+        220,
+        10,
+        248,
+        236,
+        14,
+        264
+      ],
+      "altars": [
+        [
+          290,
+          14,
+          250
+        ],
+        [
+          298,
+          14,
+          250
+        ],
+        [
+          306,
+          14,
+          250
+        ]
+      ],
+      "shop": [
+        [
+          246,
+          14,
+          256
+        ],
+        [
+          254,
+          14,
+          256
+        ],
+        [
+          262,
+          14,
+          256
+        ],
+        [
+          270,
+          14,
+          256
+        ],
+        [
+          278,
+          14,
+          256
+        ]
+      ],
+      "refresher": [
+        266,
+        14,
+        263
+      ],
+      "exit": [
+        320,
+        4,
+        250,
+        330,
+        10,
+        263
+      ]
+    },
+    "loot": [
+      {
+        "x": 95,
+        "y": 190,
+        "z": 110,
+        "kind": "wand",
+        "tier": 3
+      },
+      {
+        "x": 127,
+        "y": 187,
+        "z": 110,
+        "kind": "wand",
+        "tier": 3
+      },
+      {
+        "x": 155,
+        "y": 184,
+        "z": 110,
+        "kind": "wand",
+        "tier": 3
+      },
+      {
+        "x": 187,
+        "y": 180,
+        "z": 110,
+        "kind": "wand",
+        "tier": 3
+      },
+      {
+        "x": 219,
+        "y": 175,
+        "z": 110,
+        "kind": "wand",
+        "tier": 3
+      },
+      {
+        "x": 247,
+        "y": 169,
+        "z": 110,
+        "kind": "spell",
+        "tier": 3
+      },
+      {
+        "x": 279,
+        "y": 163,
+        "z": 110,
+        "kind": "spell",
+        "tier": 3
+      },
+      {
+        "x": 311,
+        "y": 158,
+        "z": 119,
+        "kind": "spell",
+        "tier": 3
+      },
+      {
+        "x": 339,
+        "y": 153,
+        "z": 129,
+        "kind": "spell",
+        "tier": 3
+      },
+      {
+        "x": 355,
+        "y": 147,
+        "z": 151,
+        "kind": "spell",
+        "tier": 3
+      },
+      {
+        "x": 355,
+        "y": 141,
+        "z": 183,
+        "kind": "spell",
+        "tier": 3
+      },
+      {
+        "x": 355,
+        "y": 135,
+        "z": 211,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 355,
+        "y": 129,
+        "z": 243,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 355,
+        "y": 123,
+        "z": 275,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 355,
+        "y": 119,
+        "z": 303,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 355,
+        "y": 114,
+        "z": 335,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 343,
+        "y": 109,
+        "z": 355,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 315,
+        "y": 104,
+        "z": 355,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 283,
+        "y": 99,
+        "z": 355,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 251,
+        "y": 94,
+        "z": 355,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 223,
+        "y": 88,
+        "z": 354,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 191,
+        "y": 82,
+        "z": 352,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 163,
+        "y": 76,
+        "z": 351,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 135,
+        "y": 70,
+        "z": 346,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 135,
+        "y": 61,
+        "z": 312,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 135,
+        "y": 54,
+        "z": 284,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 139,
+        "y": 46,
+        "z": 256,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 190,
+        "y": 177,
+        "z": 126,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 190,
+        "y": 171,
+        "z": 155,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 190,
+        "y": 164,
+        "z": 187,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 210,
+        "y": 157,
+        "z": 208,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 238,
+        "y": 151,
+        "z": 218,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 270,
+        "y": 144,
+        "z": 230,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 302,
+        "y": 139,
+        "z": 230,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 330,
+        "y": 134,
+        "z": 230,
+        "kind": "gold",
+        "tier": 3
+      },
+      {
+        "x": 342,
+        "y": 128,
+        "z": 240,
+        "kind": "gold",
+        "tier": 3
+      }
+    ],
+    "chests": [
+      {
+        "x": 311,
+        "y": 119,
+        "z": 264,
+        "tier": 3
+      },
+      {
+        "x": 287,
+        "y": 111,
+        "z": 287,
+        "tier": 3
+      },
+      {
+        "x": 272,
+        "y": 104,
+        "z": 319,
+        "tier": 3
+      }
+    ],
+    "potions": [
+      {
+        "x": 257,
+        "y": 96,
+        "z": 351,
+        "tier": 3
+      },
+      {
+        "x": 383,
+        "y": 150,
+        "z": 135,
+        "tier": 3
+      },
+      {
+        "x": 392,
+        "y": 146,
+        "z": 160,
+        "tier": 3
+      },
+      {
+        "x": 119,
+        "y": 70,
+        "z": 350,
+        "tier": 3
+      },
+      {
+        "x": 95,
+        "y": 70,
+        "z": 354,
+        "tier": 3
+      },
+      {
+        "x": 95,
+        "y": 65,
+        "z": 387,
+        "tier": 3
+      }
+    ]
+  },
+  "airT": -12,
+  "ambient": [
+    0.025,
+    0.03,
+    0.04
+  ],
+  "torches": [
+    [
+      310,
+      19,
+      261
+    ],
+    [
+      112,
+      193,
+      115
+    ],
+    [
+      144,
+      190,
+      115
+    ],
+    [
+      176,
+      186,
+      115
+    ],
+    [
+      208,
+      181,
+      115
+    ],
+    [
+      240,
+      175,
+      115
+    ],
+    [
+      272,
+      169,
+      115
+    ],
+    [
+      304,
+      163,
+      122
+    ],
+    [
+      336,
+      158,
+      133
+    ],
+    [
+      355,
+      152,
+      153
+    ],
+    [
+      355,
+      146,
+      185
+    ],
+    [
+      355,
+      139,
+      217
+    ],
+    [
+      355,
+      133,
+      249
+    ],
+    [
+      355,
+      128,
+      281
+    ],
+    [
+      355,
+      123,
+      313
+    ],
+    [
+      355,
+      117,
+      345
+    ],
+    [
+      338,
+      112,
+      360
+    ],
+    [
+      306,
+      107,
+      360
+    ],
+    [
+      274,
+      102,
+      360
+    ],
+    [
+      242,
+      96,
+      359
+    ],
+    [
+      210,
+      90,
+      358
+    ],
+    [
+      178,
+      84,
+      357
+    ],
+    [
+      146,
+      77,
+      355
+    ],
+    [
+      135,
+      69,
+      334
+    ],
+    [
+      135,
+      61,
+      302
+    ],
+    [
+      135,
+      52,
+      270
+    ],
+    [
+      158,
+      38,
+      261
+    ],
+    [
+      190,
+      22,
+      261
+    ],
+    [
+      190,
+      179,
+      141
+    ],
+    [
+      190,
+      172,
+      173
+    ],
+    [
+      190,
+      165,
+      205
+    ],
+    [
+      222,
+      158,
+      217
+    ],
+    [
+      254,
+      151,
+      229
+    ],
+    [
+      286,
+      146,
+      235
+    ],
+    [
+      318,
+      141,
+      235
+    ],
+    [
+      350,
+      136,
+      235
+    ],
+    [
+      329,
+      128,
+      255
+    ],
+    [
+      297,
+      119,
+      280
+    ],
+    [
+      278,
+      111,
+      310
+    ],
+    [
+      263,
+      103,
+      342
+    ],
+    [
+      368,
+      155,
+      140
+    ],
+    [
+      392,
+      154,
+      148
+    ],
+    [
+      392,
+      148,
+      180
+    ],
+    [
+      109,
+      75,
+      355
+    ],
+    [
+      95,
+      72,
+      373
+    ]
+  ],
+  "geometrySha256": "624354cded03e47afd7601251bec9988858cc127891ff1ecdb8af93cc7755b3f",
+  "packedSha256": "0d4f192dd1266ac87686cfefbd52c78fb94fb4f432762e2f243640d1d2311218",
+  "provenance": {
+    "archive": "Noita-native/data/data.wak",
+    "archiveSha256": "c95a0c01a55ec29267afef6bbec8a0cae0ba2b350638e2203674ed4dfb9227c3",
+    "sources": [
+      {
+        "path": "data/biome/_pixel_scenes.xml",
+        "sha256": "78cf9b4c0abfc4fc24239ab9595d8c54e6e76b212773d8d2d2bf9be4f3fcdf58",
+        "bytes": 20082
+      },
+      {
+        "path": "data/biome/snowcastle.xml",
+        "sha256": "d5da15238a33e7b19d4aae284c58d051cb60d44ec92c96c1e69b6c20c391cc14",
+        "bytes": 3708
+      },
+      {
+        "path": "data/biome_impl/snowcastle/bar.png",
+        "sha256": "1cdb17062ca147ba80da2ec80a6c492461ab5e50f4cd3c8ccc87ccca0b746f91",
+        "bytes": 2083
+      },
+      {
+        "path": "data/biome_impl/snowcastle/bedroom.png",
+        "sha256": "9253ea74367c4aa5e95a6f6443234e5c2f30e6e1c91a8638048c5c0603ad7479",
+        "bytes": 18571
+      },
+      {
+        "path": "data/biome_impl/snowcastle/bridge.png",
+        "sha256": "a10041a49003b68f99ca0c385f294d198123d39ab9267c7bc2080b0aa53d862b",
+        "bytes": 1719
+      },
+      {
+        "path": "data/biome_impl/snowcastle/cargobay.png",
+        "sha256": "f183167c386e02f14f41665dbda116a777268fa8bad6fa729ebfde065802c599",
+        "bytes": 931
+      },
+      {
+        "path": "data/biome_impl/temple/altar.png",
+        "sha256": "2a185ef84dd1d9e469d1e6890783e4bfe4efe7f949497dc3b7fb2895c499ca9d",
+        "bytes": 2587
+      },
+      {
+        "path": "data/materials.xml",
+        "sha256": "122df34514edaf312e1a15a619b3d6a44d49ce605c929d5950c9051a57429d04",
+        "bytes": 418728
+      },
+      {
+        "path": "data/scripts/biome_scripts.lua",
+        "sha256": "8f9eb6966da9be87303fcf8dc4d43dd34b3907f8e421b04aa09b843b95f17793",
+        "bytes": 7431
+      },
+      {
+        "path": "data/scripts/biomes/snowcastle.lua",
+        "sha256": "e430ca0bb48e37b96ead0dba9b2af3039d8d0fbe8c497d871204d761d094b8e7",
+        "bytes": 33837
+      },
+      {
+        "path": "data/scripts/biomes/temple_altar.lua",
+        "sha256": "fe436f45a8ee8c4616083c4e48ac28d94472f04357100f6f70a62031e5928460",
+        "bytes": 7901
+      }
+    ],
+    "biome": "snowcastle",
+    "placements": [
+      {
+        "path": "data/biome_impl/temple/altar.png",
+        "nativeSize": [
+          512,
+          282
+        ],
+        "compiledSize": [
+          184,
+          101
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 63477,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "03dead",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_areachecks"
+          },
+          {
+            "rgb": "03deaf",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_fish"
+          },
+          {
+            "rgb": "03fade",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_spell_visualizer"
+          },
+          {
+            "rgb": "10822d",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_workshop"
+          },
+          {
+            "rgb": "2f554c",
+            "pixels": 4985,
+            "material": "water",
+            "element": "WATER"
+          },
+          {
+            "rgb": "33934c",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_all_shopitems"
+          },
+          {
+            "rgb": "363e21",
+            "pixels": 1154,
+            "material": "mud",
+            "element": "SANDSTONE"
+          },
+          {
+            "rgb": "420a3d",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_trigger_check_stats"
+          },
+          {
+            "rgb": "420a3f",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_trigger_check_stats_reference"
+          },
+          {
+            "rgb": "5a822d",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_workshop_extra"
+          },
+          {
+            "rgb": "6d934c",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_hp"
+          },
+          {
+            "rgb": "784dd2",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_worm_deflector"
+          },
+          {
+            "rgb": "786c42",
+            "pixels": 19176,
+            "material": "templebrick_static",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "786c44",
+            "pixels": 53391,
+            "material": "templebrick_noedge_static",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "a7a707",
+            "pixels": 4,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_lamp_long"
+          },
+          {
+            "rgb": "aaf06e",
+            "pixels": 116,
+            "material": "glowstone",
+            "element": "LAMP"
+          },
+          {
+            "rgb": "af9f6a",
+            "pixels": 1862,
+            "material": "templebrick_static_soft",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "c128ff",
+            "pixels": 5,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_rubble"
+          },
+          {
+            "rgb": "ffc931",
+            "pixels": 198,
+            "material": "glowstone_altar",
+            "element": "LAMP"
+          },
+          {
+            "rgb": "ffff00",
+            "pixels": 5,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffff81",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          }
+        ],
+        "center": [
+          256,
+          -42,
+          256
+        ],
+        "quarterTurn": 0,
+        "maxDepth": 54,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 187625
+      },
+      {
+        "path": "data/biome_impl/snowcastle/bar.png",
+        "nativeSize": [
+          260,
+          130
+        ],
+        "compiledSize": [
+          156,
+          78
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 19879,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "404040",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "404041",
+            "pixels": 2301,
+            "material": "steel_static",
+            "element": "METAL"
+          },
+          {
+            "rgb": "613e00",
+            "pixels": 844,
+            "material": "wood",
+            "element": "WOOD"
+          },
+          {
+            "rgb": "966400",
+            "pixels": 297,
+            "material": "wood_prop",
+            "element": "WOOD"
+          },
+          {
+            "rgb": "aedde6",
+            "pixels": 2365,
+            "material": "neon_tube_purple",
+            "element": "LAMP"
+          },
+          {
+            "rgb": "aedde7",
+            "pixels": 804,
+            "material": "neon_tube_cyan",
+            "element": "LAMP"
+          },
+          {
+            "rgb": "c80040",
+            "pixels": 25,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ff0000",
+            "pixels": 5,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffffff",
+            "pixels": 7279,
+            "material": "snowrock_static",
+            "element": "ICE",
+            "loss": "biome fill selected from biome XML (not native noise synthesis)"
+          }
+        ],
+        "center": [
+          135,
+          162,
+          110
+        ],
+        "quarterTurn": 0,
+        "maxDepth": 50,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 186549
+      },
+      {
+        "path": "data/biome_impl/snowcastle/bedroom.png",
+        "nativeSize": [
+          260,
+          130
+        ],
+        "compiledSize": [
+          156,
+          78
+        ],
+        "palette": [
+          {
+            "rgb": "000042",
+            "pixels": 25132,
+            "material": "air",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "00ff00",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "404041",
+            "pixels": 6101,
+            "material": "steel_static",
+            "element": "METAL"
+          },
+          {
+            "rgb": "c8c800",
+            "pixels": 4,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_lamp2"
+          },
+          {
+            "rgb": "fec390",
+            "pixels": 3,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: load_furniture_bunk"
+          },
+          {
+            "rgb": "ff0000",
+            "pixels": 4,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffa659",
+            "pixels": 7,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: load_furniture"
+          },
+          {
+            "rgb": "ffffff",
+            "pixels": 2548,
+            "material": "snowrock_static",
+            "element": "ICE",
+            "loss": "biome fill selected from biome XML (not native noise synthesis)"
+          }
+        ],
+        "center": [
+          355,
+          120,
+          135
+        ],
+        "quarterTurn": 1,
+        "maxDepth": 62,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 157949
+      },
+      {
+        "path": "data/biome_impl/snowcastle/cargobay.png",
+        "nativeSize": [
+          260,
+          130
+        ],
+        "compiledSize": [
+          156,
+          78
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 21171,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "404041",
+            "pixels": 2578,
+            "material": "steel_static",
+            "element": "METAL"
+          },
+          {
+            "rgb": "50a0f0",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "c88000",
+            "pixels": 4,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "c88d1a",
+            "pixels": 3,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "c8c800",
+            "pixels": 3,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_lamp2"
+          },
+          {
+            "rgb": "ff0000",
+            "pixels": 4,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffabab",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffffff",
+            "pixels": 10035,
+            "material": "snowrock_static",
+            "element": "ICE",
+            "loss": "biome fill selected from biome XML (not native noise synthesis)"
+          }
+        ],
+        "center": [
+          355,
+          80,
+          355
+        ],
+        "quarterTurn": 2,
+        "maxDepth": 74,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 282211
+      },
+      {
+        "path": "data/biome_impl/snowcastle/bridge.png",
+        "nativeSize": [
+          130,
+          260
+        ],
+        "compiledSize": [
+          50,
+          100
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 18651,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "50a0f0",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "cff7c8",
+            "pixels": 1739,
+            "material": "ice_static",
+            "element": "ICE"
+          },
+          {
+            "rgb": "f4f4f3",
+            "pixels": 6701,
+            "material": "snow",
+            "element": "ICE"
+          },
+          {
+            "rgb": "ff0000",
+            "pixels": 2,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffffff",
+            "pixels": 6706,
+            "material": "snowrock_static",
+            "element": "ICE",
+            "loss": "biome fill selected from biome XML (not native noise synthesis)"
+          }
+        ],
+        "center": [
+          135,
+          40,
+          350
+        ],
+        "quarterTurn": 3,
+        "maxDepth": 86,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 181143
+      }
+    ],
+    "connectors": [
+      {
+        "label": "Holy Mountain exit stair",
+        "points": [
+          [
+            310,
+            14,
+            256
+          ],
+          [
+            324,
+            6,
+            256
+          ]
+        ],
+        "radius": 4,
+        "material": "BRICK"
+      },
+      {
+        "label": "Main folded descent",
+        "points": [
+          [
+            95,
+            190,
+            110
+          ],
+          [
+            190,
+            180,
+            110
+          ],
+          [
+            285,
+            161,
+            110
+          ],
+          [
+            355,
+            150,
+            135
+          ],
+          [
+            355,
+            130,
+            230
+          ],
+          [
+            355,
+            110,
+            355
+          ],
+          [
+            255,
+            94,
+            355
+          ],
+          [
+            135,
+            70,
+            350
+          ],
+          [
+            135,
+            45,
+            256
+          ],
+          [
+            195,
+            14,
+            256
+          ]
+        ],
+        "radius": 5,
+        "material": "METAL"
+      },
+      {
+        "label": "Upper cross-link",
+        "points": [
+          [
+            190,
+            180,
+            110
+          ],
+          [
+            190,
+            160,
+            200
+          ],
+          [
+            270,
+            143,
+            230
+          ],
+          [
+            355,
+            130,
+            230
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      },
+      {
+        "label": "Drop gallery cross-link",
+        "points": [
+          [
+            355,
+            130,
+            230
+          ],
+          [
+            290,
+            112,
+            280
+          ],
+          [
+            255,
+            94,
+            355
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      },
+      {
+        "label": "East room branch",
+        "points": [
+          [
+            355,
+            150,
+            135
+          ],
+          [
+            392,
+            150,
+            135
+          ],
+          [
+            392,
+            142,
+            180
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      },
+      {
+        "label": "Lower room branch",
+        "points": [
+          [
+            135,
+            70,
+            350
+          ],
+          [
+            95,
+            70,
+            350
+          ],
+          [
+            95,
+            64,
+            390
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      }
+    ],
+    "fluids": {
+      "sourceLiquidCells": 12345,
+      "retainedLiquidCells": 4716,
+      "glassSealCells": 1284,
+      "loss": "four-cell sealed reservoirs; deep fluid replaced by glass/basalt"
+    },
+    "losses": [
+      "Authored 3D composition, not native seeded Wang generation",
+      "Nearest-neighbour downsampling; stepped variable-depth extrusion and quarter turns",
+      "Frozen snow/soil/sand/tissue kept structural; material approximations listed in palette",
+      "Native entities, visual/background layers, scripts, boss AI and ending not imported"
+    ]
+  },
+  "stats": {
+    "cells": 1010287,
+    "sourcePlacementCells": 995477,
+    "bricks": 4706,
+    "bytes": 2933760,
+    "gzipBytes": 44776
+  },
+  "route": {
+    "goal": [
+      324,
+      8,
+      256
+    ],
+    "body": {
+      "width": 1.6,
+      "height": 5.5
+    },
+    "validation": "scripts/check-noita-source.mjs: packed occupancy body walk",
+    "mainWaypoints": [
+      [
+        95,
+        190,
+        110
+      ],
+      [
+        190,
+        180,
+        110
+      ],
+      [
+        285,
+        161,
+        110
+      ],
+      [
+        355,
+        150,
+        135
+      ],
+      [
+        355,
+        130,
+        230
+      ],
+      [
+        355,
+        110,
+        355
+      ],
+      [
+        255,
+        94,
+        355
+      ],
+      [
+        135,
+        70,
+        350
+      ],
+      [
+        135,
+        45,
+        256
+      ],
+      [
+        195,
+        14,
+        256
+      ]
+    ]
+  }
+}

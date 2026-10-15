@@ -15,6 +15,10 @@ import { APPEARANCE_HEADER as H } from '../import/appearanceFormat.js';
 // map is opened (gpu.js awaits scene.prepare before scene.data).
 const IMPORT_U = sceneStruct({ uImportSize: 'vec3i', uImportBricks: 'vec3u' });
 
+// Generic imports need no Cruelty mission. Keep its unavailable-mission path intact.
+const authoredSpawn = (map) => map.spawn ?? map.descent?.spawn ??
+  (map.mission?.available === false ? sourceToCells(map, map.mission.sourceSpawn) : map.mission?.spawn);
+
 /** The manifest alone: what can be checked before its geometry is fetched. */
 export function validateImportedMapManifest(map) {
   if (map.appearance) validateAppearanceManifest(map.appearance);
@@ -26,7 +30,7 @@ export function validateImportedMapManifest(map) {
   if (!Array.isArray(map.size) || map.size.length !== 3 || !map.size.every((n) => Number.isSafeInteger(n) && n > 0 && n % 8 === 0) || !Array.isArray(map.brickDims) || map.brickDims.length !== 3 || !map.brickDims.every((n, i) => n === map.size[i] / 8)) throw new Error('Invalid imported dimensions');
   // The far field needs a level's border height before its geometry arrives.
   if (!Number.isFinite(map.plainHeight) || map.plainHeight < 0 || map.plainHeight > map.size[1]) throw new Error('Imported map has no plain height');
-  const authoredStart = map.mission?.available === false ? sourceToCells(map, map.mission.sourceSpawn) : map.mission?.spawn;
+  const authoredStart = authoredSpawn(map);
   if (!Array.isArray(authoredStart) || authoredStart.length !== 3 || !authoredStart.every((n, i) => Number.isFinite(n) && n >= 0 && n < map.size[i])) throw new Error('Imported map has no valid authored start');
   if (map.interactions) {
     if (map.interactions.version !== 1 || !Array.isArray(map.interactions.doors) || !Array.isArray(map.interactions.ladders)) throw new Error('Invalid imported interactions');
@@ -91,6 +95,14 @@ export async function fetchImportedWords(url) {
 export function createImportedMapScene(map, words = null, { key = `${map.id ?? 'imported'}Local`, label = `${map.name ?? 'Imported map'} (source import)`, dataURL = null } = {}) {
   validateImportedMapManifest(map);
   if (words) validateImportedMap(map, words);
+  const temple = map.descent?.temple?.box;
+  // Noita's sanctuary stays warm, including its pool below the walking floor.
+  const temperature = !Number.isFinite(map.airT) ? '' : `
+  var T = SPAWNT(id);
+  if (T == AMBIENT) { T = ${Number(map.airT).toFixed(1)}; }
+  if (id == E_ICE || id == E_SNOW) { T = min(T, ${Number(map.airT).toFixed(1)}); }
+  ${temple ? `if (all(w >= vec3i(${temple.slice(0, 3).map(n => n - 6).join(', ')})) && all(w < vec3i(${temple.slice(3).map(n => n + 6).join(', ')}))) { T = SPAWNT(id); }` : ''}
+`;
   const loaded = () => { if (!words) throw new Error(`${map.id}: its geometry is not loaded yet`); return words; };
   const cell = (x, y, z) => importedCell(map, loaded(), x, y, z);
   const listeners = new Set();
@@ -108,6 +120,8 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
     subscribeAppearance(fn) { appearanceListeners.add(fn); return () => appearanceListeners.delete(fn); },
     reset() { interactions?.reset(); },
     key, label, size: [...map.size], shrine: false, mission: map.mission,
+    ...(map.ambient ? { ambient: map.ambient } : {}),
+    ...(Number.isFinite(map.airT) ? { airT: map.airT } : {}),
     importManifest: map,
     get appearanceWords() { return appearanceWords; },
     // The generator's prepare (world/gpu.js) awaits this before data().
@@ -145,7 +159,7 @@ export function createImportedMapScene(map, words = null, { key = `${map.id ?? '
     uniformStruct: IMPORT_U,
     uniforms: (P) => ({ uSceneSeed: P.seed >>> 0, uImportSize: map.size, uImportBricks: map.brickDims }),
     data: () => ({ at: 0, words: loaded() }),
-    start: () => { const at = map.mission.spawn ?? sourceToCells(map, map.mission.sourceSpawn); return [at[0], at[2]]; },
+    start: () => { const at = authoredSpawn(map); return [at[0], at[2]]; },
     cell,
     ground: (x, z) => {
       // Before the geometry is fetched (the far field's border median, asked
@@ -172,7 +186,8 @@ fn importedId(w: vec3i) -> i32 {
 fn sceneCell(w: vec3i) -> SceneCell {
   let id = importedId(w);
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, 0x1a90u)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), seed), vec4f(0.0));
+  ${temperature}
+  return SceneCell(vec4f(f32(id), ${Number.isFinite(map.airT) ? 'T' : 'SPAWNT(id)'}, SPAWNLIFE(id), seed), vec4f(0.0));
 }
 `,
   };
