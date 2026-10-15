@@ -35,6 +35,16 @@ export const lineWaterSourceCells = () => boxCells(LINE_WATER_SOURCE_BOUNDS);
 export const isColdLineMinedCoal = (cell, initialLife = 1) => cell[0] === E.BROKENCOAL
   && Number.isFinite(cell[1]) && Math.abs(cell[1] - 20) <= 1 && cell[2] === initialLife;
 
+// Real surface aims: the original centre ray can first-hit accumulated ash.
+// These do not change the shovel's candidate sphere or select transfer cells.
+export const lineRefuelPoses = () => [
+  { feet: [21.5, 16, 16.5], point: [16.999, 14.7, 17.5], wall: [16, 14, 17], face: 0 },
+  { feet: [17.5, 16, 16.5], point: [16.999, 14.5, 17.5], wall: [16, 14, 17], face: 0 },
+  { feet: [18.5, 16, 16.5], point: [19.001, 14.5, 17.5], wall: [19, 14, 17], face: 1 },
+].map(({ feet, point, wall, face }) => ({
+  pose: { feet, direction: point.map((v, i) => v - feet[i] - (i === 1 ? 5 : 0)) }, wall, face,
+}));
+
 // Each foundation tile is an ordinary 4x4 build placed at every listed height.
 // Keep the sealed tank/catch walls explicit and CPU-check their corners below.
 export const LINE_FOUNDATION_COLUMNS = Object.freeze([
@@ -637,13 +647,28 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       // settling frames. No partial action is started beyond the native cap.
       if (observations.nativeTicks + (12 + 1 + 4) * 4 > MAX_NATIVE_TICKS)
         throw new Error('refuel native tick budget reached before bounded dose');
+      let dosePose = null;
+      refuel.aimProbes = [];
+      for (const candidate of lineRefuelPoses()) {
+        const hit = await physicalOperator.probeRay(candidate.pose);
+        refuel.aimProbes.push({ pose: candidate.pose, hit: hit ? {
+          at: hit.cell.toArray(), id: hit.id, face: hit.face,
+        } : null });
+        if (hit?.id === E.TUNGSTEN && hit.face === candidate.face
+            && hit.cell.toArray().every((v, i) => v === candidate.wall[i])) {
+          dosePose = candidate.pose;
+          break;
+        }
+      }
+      if (!dosePose) throw new Error('refuel inner-wall sightline is blocked; no misleading shot attempted');
+      refuel.dosePose = dosePose;
       markStage('one ordinary actual shovel refuel at sampled initial fuel exhaustion');
       refuel.attempts = 1;
       refuel.actionStartTick = observations.nativeTicks;
       const transferStart = physicalOperator.snapshot().transfers.length;
       const beforeCount = load.count;
       const action = await physicalOperator.act({ tool: 'SHOVEL', button: 'secondary',
-        pose: toolPoses.FUEL_POSE, maxFrames: 12,
+        pose: dosePose, maxFrames: 12,
         done: () => load.count < beforeCount && load.out === 0,
         label: 'shovel one bounded actual refuel dose' });
       observations.operator.actions.push(action);
