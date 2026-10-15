@@ -106,7 +106,13 @@ const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ')
  * Run one physical Sandustry batch in the caller-owned native simulation.
  * This function deliberately creates no browser, server, simulation, or bypass.
  */
-export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, operatorMode = 'transfer', refuelOnce = false } = {}) {
+export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, operatorMode = 'transfer', refuelOnce = false, scrapCells = 4 } = {}) {
+  // Reject comparison misuse before inspecting or constructing the caller's world.
+  if (!Number.isInteger(scrapCells) || ![2, 4].includes(scrapCells))
+    throw new RangeError('scrapCells must be the integer 2 or 4');
+  if (scrapCells === 2 && (operatorMode !== 'tools' || refuelOnce !== false))
+    throw new RangeError('scrapCells=2 requires operatorMode=tools and refuelOnce=false');
+  const meltBatchCheck = scrapCells === 2 ? 'operatorTwoCellMeltBatch' : 'operatorFourCellMeltBatch';
   const startedAt = Date.now();
   const until = Number.isFinite(deadline) ? deadline : startedAt + 20_000;
   const devices = validateDevices(purelineDeviceLayout({ operatorMode, refuelOnce }), BOUNDS);
@@ -130,7 +136,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
   const coalSource = [];
   for (let z = 96; z <= 97; z++) for (let x = 96; x <= 98; x++) coalSource.push([x, 30, z]);
   const scrapSource = [];
-  for (let z = 100; z <= 101; z++) for (let x = 96; x <= 97; x++) scrapSource.push([x, 30, z]);
+  for (let z = 100; z < 100 + scrapCells / 2; z++) for (let x = 96; x <= 97; x++) scrapSource.push([x, 30, z]);
   const switchAt = deviceCell(pump, -1, 0, 1);
   const catchCells = machinePorts(ship).mouth;
   const waterWatchCells = [...new Map([...waterSource, ...inletCells, ...outletCells, ...catchCells]
@@ -157,6 +163,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     nativeTickAccounting: false,
   };
   const observations = {
+    declaredScrapCells: scrapCells,
+    ...(scrapCells === 2 ? { comparisonScope: 'two-SCRAP physical workflow comparison only; unchanged native rules, geometry and 4,800-total-tick cap; not a four-cell batch or GPU cost reduction' } : {}),
     bounds: [sim?.g?.nx, sim?.g?.ny, sim?.g?.nz],
     deviceCount: devices.length,
     foundationCount: devices.filter(d => d.type === 'foundation').length,
@@ -429,14 +437,14 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     let chargePut = 0;
     const toolPoses = operatorMode === 'tools' ? await import('./industry-loading.js') : null;
     if (operatorMode === 'tools') {
-      checks.operatorFourCellMeltBatch = false;
-      markStage('actual shovel charge-first loading');
-      edit([96, 30, 100], [97, 30, 101], E.SCRAP, 20, scrapLife, 0.625);
+      checks[meltBatchCheck] = false;
+      markStage(scrapCells === 2 ? 'actual shovel charge-first loading (2 SCRAP comparison)' : 'actual shovel charge-first loading');
+      edit([96, 30, 100], [97, 30, 99 + scrapCells / 2], E.SCRAP, 20, scrapLife, 0.625);
       await fence('finite cold scrap source');
       const load = physicalOperator.shovel.load;
       const scrapMine = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
         pose: { feet: [98.5, 30, 94.5], target: [97, 30, 100] }, maxFrames: 120,
-        done: () => load.cells.filter(c => c[0] === E.SCRAP).length === 4, label: 'shovel mine finite SCRAP source' });
+        done: () => load.cells.filter(c => c[0] === E.SCRAP).length === scrapCells, label: 'shovel mine finite SCRAP source' });
       observations.operator.actions.push(scrapMine);
       observations.operator.requiredActions = [{ label: scrapMine.label, completed: scrapMine.completed }];
       scrapTaken = load.cells.filter(c => c[0] === E.SCRAP).map(c => [...c]);
@@ -459,9 +467,9 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         observations.fuel.operatorChargeSnapshots.push(chamber.flatMap((at, i) =>
           cells[i].id === E.SCRAP ? [{ at, ...cells[i] }] : []));
       }
-      checks.operatorChargeDelivered = scrapTaken.length === 4 && chargePut === 4
+      checks.operatorChargeDelivered = scrapTaken.length === scrapCells && chargePut === scrapCells
         && receipts.every(slot => chamberKeys.has(slot.at.join(',')))
-        && observations.fuel.operatorChargeSnapshots.every(cells => cells.length === 4)
+        && observations.fuel.operatorChargeSnapshots.every(cells => cells.length === scrapCells)
         && observations.fuel.operatorChargeSnapshots.at(-1).every(cell => cell.at[1] === 13);
       observations.fuel.operatorChargeDump = { confirmedPackDecrease: scrapTaken.length - load.count,
         confirmedPutSlots: receipts, retainedScrap: load.cells.map(c => [...c]) };
@@ -583,7 +591,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         ...hotRegions.fuel.map((at, i) => ({ at, ...loadedFuel[i] })),
         ...hotRegions.charge.map((at, i) => ({ at, ...loadedCharge[i] })),
       ].filter(cell => cell.id === E.SCRAP || cell.id === E.METAL || (cell.id === E.LAVA && cell.ctype === E.METAL));
-      checks.operatorChargeDelivered &&= observations.fuel.operatorChargeDistribution.length === 4;
+      checks.operatorChargeDelivered &&= observations.fuel.operatorChargeDistribution.length === scrapCells;
       observations.fuel.loadedBrokenCoal = rearCoal.length;
       observations.fuel.loadedBrokenCoalAcrossHearth = coalStillInHearth;
       observations.fuel.loadedScrap = loadedCharge.filter(cell => cell.id === E.SCRAP).length;
@@ -760,13 +768,13 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
           continue;
         }
         const molten = sampled.filter(c => c.id === E.LAVA && c.ctype === E.METAL);
-        if (operatorMode === 'tools' && molten.length === 4 && bucketPoured === 0) {
-          checks.operatorFourCellMeltBatch = true;
+        if (operatorMode === 'tools' && molten.length === scrapCells && bucketPoured === 0) {
+          checks[meltBatchCheck] = true;
           observations.operator.moltenBatch ??= molten.map(c => ({ ...c }));
         }
-        if (operatorMode === 'tools' && hasMetalLava && bucketPoured < 4 && bucketLoad.count === 0
+        if (operatorMode === 'tools' && hasMetalLava && bucketPoured < scrapCells && bucketLoad.count === 0
             && (!refuel || (checks.operatorRefuelDoseConfirmed && checks.operatorRefuelChargeRetained))
-            && (checks.operatorFourCellMeltBatch || molten.length === 4)
+            && (checks[meltBatchCheck] || molten.length === scrapCells)
             && observations.nativeTicks - lastScoopProbeTick >= 96) {
           lastScoopProbeTick = observations.nativeTicks;
           let pose = null;
@@ -820,10 +828,10 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
             const above = [at[0], at[1] + 1, at[2]];
             return pool[i].id === E.WATER && poolByCell.get(above.join(','))?.id === E.EMPTY ? [above] : [];
           });
-          if (operatorMode === 'tools' && water.length && bucketPoured < 4 && bucketLoad.count > 0) {
+          if (operatorMode === 'tools' && water.length && bucketPoured < scrapCells && bucketLoad.count > 0) {
             waterPeakBeforePour ??= Math.max(...water.map(cell => cell.temperature));
             const before = bucketLoad.count;
-            const wanted = Math.min(4 - bucketPoured, before);
+            const wanted = Math.min(scrapCells - bucketPoured, before);
             markStage('actual BUCKET pour from the real spout into the shipping catch');
             const pour = await physicalOperator.act({ tool: 'BUCKET', button: 'secondary',
               pose: { feet: [43.2, 19, 53.5], direction: [0.18, -1, 0] }, maxFrames: 120,
@@ -901,7 +909,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         if (bucketPoured && waterPeakBeforePour !== null) checks.waterInteractedWithMelt ||=
           observations.water.catchSteamCells > 0 || catchWaterCells.some(cell => cell.temperature > waterPeakBeforePour + 1);
         observations.water.catchMetalCells = catchWater.filter(c => c.id === E.METAL).length;
-        if (pumpStopped && bucketPoured === 4 && coldMetal.reduce((sum, shipment) => sum + shipment.count, 0) === 4
+        if (pumpStopped && bucketPoured === scrapCells && coldMetal.reduce((sum, shipment) => sum + shipment.count, 0) === scrapCells
             && checks.waterInteractedWithMelt) break;
       }
       // Promise callbacks and native readbacks must run between small native batches.
@@ -934,7 +942,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     checks.nativeMetalMelt ||= finalHearth.some(c => c.id === E.LAVA && c.ctype === E.METAL)
       || observations.cargo.bucketCells.some(c => c.id === E.LAVA && c.ctype === E.METAL);
     const coldShipments = observations.shipments.filter(s => s.id === E.METAL && Number.isFinite(s.temperature) && s.temperature <= 400);
-    checks.coldMetalConfirmedShipped = coldShipments.reduce((sum, shipment) => sum + shipment.count, 0) === 4;
+    checks.coldMetalConfirmedShipped = coldShipments.reduce((sum, shipment) => sum + shipment.count, 0) === scrapCells;
     observations.cargo.industryBufferAtEnd = industry.buffered;
     observations.shipments = observations.shipments.map(s => ({ ...s }));
 
@@ -1034,14 +1042,14 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       checks.operatorActionsWithoutErrors = observations.operator.actionFailures.length === 0;
       checks.operatorRequiredActionsComplete = observations.operator.requiredActions?.length === (refuel ? 5 : 3)
         && observations.operator.requiredActions.every(action => action.completed);
-      checks.operatorBucketDelivered = bucketPoured === 4 && physicalOperator.bucket.load.count === 0
-        && observations.cargo.bucketCells.length === 4
+      checks.operatorBucketDelivered = bucketPoured === scrapCells && physicalOperator.bucket.load.count === 0
+        && observations.cargo.bucketCells.length === scrapCells
         && observations.cargo.bucketCells.every(cell => cell.id === E.LAVA && cell.ctype === E.METAL);
       const nativePours = observations.operator.finalLoads.transfers
         .filter(r => r.tool === 'BUCKET' && r.mode === TRANSFER_PUT).flatMap(r => r.accepted)
         .filter(slot => slot.payload[0] === E.LAVA && Math.floor(slot.payload[3]) === E.METAL);
       const catchKeys = new Set(catchCells.map(at => at.join(',')));
-      checks.operatorBucketDelivered &&= nativePours.length === 4 && nativePours.every(slot => catchKeys.has(slot.at.join(',')));
+      checks.operatorBucketDelivered &&= nativePours.length === scrapCells && nativePours.every(slot => catchKeys.has(slot.at.join(',')));
       checks.operatorTraceIntegrity = observations.operator.finalLoads.traceErrors.length === 0
         && observations.operator.finalLoads.omittedTransfers === 0
         && observations.operator.finalLoads.transfers.every(r => !r.error && !r.pending);
@@ -1053,6 +1061,12 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         && !physicalOperator.shovel.load.reserved && !physicalOperator.bucket.load.reserved
         && !physicalOperator.belt.transfer.pending;
       if (!checks.operatorTransfersSettled) residualGaps.push('operator cargo still had transfer work outstanding at final inspection');
+      if (scrapCells === 2) {
+        // The comparison cannot credit unfinished actions or outstanding native work.
+        checks.operatorActionsComplete = observations.operator.actions.every(action => action.completed);
+        checks.nativeJobsSettled = industry.pending === 0 && industry.buffered === 0 && !gates.pending
+          && !controls.pending && !transfer.pending && !diagnostics.pending;
+      }
     }
     observations.water.finalConfirmedInput = observations.water.confirmedInput;
     observations.water.finalConfirmedOutput = observations.water.confirmedOutput;
@@ -1067,7 +1081,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     observations.elapsedMs = Date.now() - startedAt;
 
     const passed = Object.values(checks).every(Boolean) && asyncErrors.length === 0;
-    return { case: 'line', status: passed ? 'passed' : 'bounded-incomplete', checks, observations,
+    return { case: 'line', declaredScrapCells: scrapCells, status: passed ? 'passed' : 'bounded-incomplete', checks, observations,
       residualGaps: [...new Set(residualGaps)] };
   } catch (error) {
     observations.elapsedMs = Date.now() - startedAt;
@@ -1077,7 +1091,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     residualGaps.push('Interrupted runs do not establish complete accounting of outstanding loads and pending transfers.');
     observations.asyncErrors = [...asyncErrors];
     if (refuel && physicalOperator) refuel.interruptedLoads = physicalOperator.snapshot();
-    return { case: 'line', status: Date.now() >= until || (refuel && /bounded actual refuel mining|native tick budget reached/.test(observations.lastError))
+    return { case: 'line', declaredScrapCells: scrapCells, status: Date.now() >= until || (refuel && /bounded actual refuel mining|native tick budget reached/.test(observations.lastError))
       ? 'bounded-incomplete' : 'failed', checks, observations,
       residualGaps: [...new Set(residualGaps)] };
   } finally {
