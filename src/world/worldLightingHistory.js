@@ -1,7 +1,7 @@
 // World-owned packed histories. Birth is explicit initialization, not replay.
 import { GI_BG_EVERY, GI_SRC_EVERY, GI_SETTLE } from '../shaders/gi.js';
 import { GI_NEAR_DILATE, GI_RECENT } from '../shaders/fields.js';
-import { uint, frozenArray, worldLightingIndex } from '../gfx/worldLightingBatch.js';
+import { uint, frozenArray, worldLightingIndex, worldLightingNear } from '../gfx/worldLightingBatch.js';
 const same = (a,b) => a.length===b.length && a.every((v,i)=>Object.is(v,b[i]));
 const copyLamp = l => ({pos:Array.from(l.pos,Math.fround),col:Array.from(l.col,Math.fround),shape:Array.from(l.shape,Math.fround)});
 const lampEqual = (a,b) => !!a && !!b && ['pos','col','shape'].every(k=>same(a[k],b[k]));
@@ -186,7 +186,8 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
     const nextLamps=currentLamps.map(copyLamp),spheres=[];
     for(let i=0;i<Math.max(lamps.length,nextLamps.length);i++)if(!lampEqual(lamps[i],nextLamps[i]))for(const l of [lamps[i],nextLamps[i]])if(l)spheres.push({pos:l.pos.slice(0,3),radius:l.pos[3]+l.shape[0]+.5*l.shape[1]+2});
     const nextSettle=mode!==0||!same(key,nextKey)?GI_SETTLE:settle;
-    const effective=records.map(r=>({...r,age:births.has(index(r))?Math.min(r.age,lightingTick-births.get(index(r)).birthTick):r.age,near:!!(r.near||[...changed.values()].some(c=>c.tick<=lightingTick&&lightingTick-c.tick<GI_RECENT&&Math.max(...c.brick.map((n,k)=>Math.abs(n-r.brick[k])))<=GI_NEAR_DILATE))}));
+    const nearRecent=worldLightingNear(size,[...changed.values()].filter(c=>c.tick<=lightingTick&&lightingTick-c.tick<GI_RECENT).map(c=>c.brick),GI_NEAR_DILATE);
+    const effective=records.map(r=>({...r,age:births.has(index(r))?Math.min(r.age,lightingTick-births.get(index(r)).birthTick):r.age,near:!!(r.near||nearRecent(r.brick))}));
     const selection=selectWorldGI({records:effective,lightingTick,mode,settle:nextSettle,lampSpheres:spheres,allSources});
     const plan=transaction({lightingTick,selection,nextKey,nextLamps,nextSettle,records,initialization:!!initialization,cutToken:initialization?.cutToken??null});
     if(initialization){try{plan.expand(initialization);}catch(e){plan.abort();throw e;}}

@@ -13,6 +13,25 @@ import { AGE } from '../src/shaders/fields.js';
 import { BRICK_INFO } from '../src/shaders/bindings.js';
 import { cellSlot, brickIdOf } from '../src/shaders/common.js';
 import { SOURCE_GRID } from '../src/world/renderSource.js';
+import { worldLightingNear } from '../src/gfx/worldLightingBatch.js';
+test('indexed change neighborhoods exactly match clipped Chebyshev selection',()=>{
+ const size=[32,20,28],changed=[[0,0,0],[7,4,6],[2,3,1],[2,3,1]];
+ for(const points of [[],changed])for(const radius of [0,1,2,4]){
+   const near=worldLightingNear(size,points,radius);
+   for(let z=0;z<7;z++)for(let y=0;y<5;y++)for(let x=0;x<8;x++){
+     const b=[x,y,z],expected=points.some(c=>c.every((n,k)=>Math.abs(n-b[k])<=radius));
+     assert.equal(near(b),expected,`${b} radius ${radius}`);
+   }
+ }
+ const near=worldLightingNear(size,changed,0);changed[0][0]=4;
+ assert(near([0,0,0]),'change coordinates are captured, not caller-aliased');
+ assert.throws(()=>near([-1,0,0]),/global lighting brick/);
+});
+test('large initial change cohorts do not scan the entire cohort per record',()=>{
+ const points=Array.from({length:20000},(_,i)=>[i%64,Math.floor(i/64)%32,Math.floor(i/2048)]);
+ const near=worldLightingNear([256,128,256],points,2);
+ assert(points.every(near));assert(!near([63,31,63]));
+});
 const u32=b=>new Uint32Array(b.bytes);
 class Exec extends WgslExec {
   _dispatchWorkgroup(fn,id,context){for(const a of fn.node.attributes??[])if(a.name==='workgroup_size'&&typeof a.value==='string')a.value=[a.value];return super._dispatchWorkgroup(fn,id,context);}

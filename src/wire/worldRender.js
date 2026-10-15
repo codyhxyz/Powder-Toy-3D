@@ -7,7 +7,7 @@ import { createWorldLightingInputs, createWorldFeedbackProvider } from '../gfx/w
 import { createWorldGI } from '../gfx/worldGI.js';
 import { createWorldGlow, worldGlowPlan } from '../gfx/worldGlow.js';
 import { createWorldSunLighting } from '../gfx/worldSunLighting.js';
-import { createLightingTransport } from '../gfx/worldLightingBatch.js';
+import { createLightingTransport, worldLightingNear } from '../gfx/worldLightingBatch.js';
 import { createWorldAppearance } from '../gfx/worldAppearance.js';
 import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 
@@ -139,7 +139,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const classification=cells.acquireClassification({bricks:[...ids].map(brick)});
     try{t.batch=metadata.record(gpu.frame,{cut:t.cut,classification,derivedTick:t.tick});}catch(e){classification.release();throw e;}
     await t.batch.completion;
-    const records=t.batch.records([...ids]).map(r=>({...r,near:t.batch.changes.changedBricks.some(b=>Math.max(...b.map((n,k)=>Math.abs(n-r.brick[k])))<=2)}));
+    const nearChanged=worldLightingNear(size,t.batch.changes.changedBricks,2);
+    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick)}));
     const never=records.filter(r=>!ownedProbes.has(index(r.brick)));
     const requestedSources=[...t.requirements].filter(([i,bits])=>bits&READY.GI_SOURCE&&!ownedSources.has(i)).map(([i])=>brick(i));
     if(t.frame.advance)t.plan=history.begin({lightingTick:t.tick,globalKey:t.frame.globalKey,records,currentLamps:t.frame.lamps,mode:t.tick===0?2:0,initialization:{cutToken:t.cut.contentToken,sourceBricks:requestedSources,probeBricks:never.map(r=>r.brick),records}});

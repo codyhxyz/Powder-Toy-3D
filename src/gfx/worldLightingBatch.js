@@ -12,6 +12,21 @@ export function worldLightingIndex(size, b) {
   if (!Array.isArray(b) || b.length !== 3 || b.some((v, k) => !Number.isInteger(v) || v < 0 || v >= size[k] / 4)) throw new RangeError('global lighting brick');
   return b[0] + size[0] / 4 * (b[1] + size[1] / 4 * b[2]);
 }
+// Exact Chebyshev neighborhood, without scanning every change for every record.
+export function worldLightingNear(size, bricks, radius) {
+  if(!uint(radius))throw new RangeError('lighting neighborhood radius');
+  const [nx,ny,nz]=size.map(n=>n/4);
+  const changed=new Set(Array.from(bricks,b=>worldLightingIndex(size,b)));
+  return b=>{
+    if(changed.has(worldLightingIndex(size,b)))return true;
+    if(!changed.size)return false;
+    for(let z=Math.max(0,b[2]-radius);z<=Math.min(nz-1,b[2]+radius);z++)
+      for(let y=Math.max(0,b[1]-radius);y<=Math.min(ny-1,b[1]+radius);y++)
+        for(let x=Math.max(0,b[0]-radius);x<=Math.min(nx-1,b[0]+radius);x++)
+          if(changed.has(x+nx*(y+ny*z)))return true;
+    return false;
+  };
+}
 export function validateLightingInput(input, size) {
   if (!input || !uint(input.epoch) || input.epoch === 0 || !input.worldSize || input.worldSize.length !== 3 || input.worldSize.some((n, k) => n !== size[k]) ||
     !uint(input.source?.sourceRevision) || input.source.contentToken == null || input.field?.complete !== true || input.field.publishedToken == null ||
