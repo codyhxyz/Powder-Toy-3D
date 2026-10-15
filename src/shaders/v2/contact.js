@@ -3,20 +3,28 @@ import { CELL_M } from '../../scale.js';
 import { PHYS } from '../../physics.js';
 import { contactKernelWGSL } from './contact-kernel.js';
 import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, DUST_MIN_FALL_SPEED, CONTACT_G_TICK, CONTACT_HZ, CONTACT_ELEMENT_COUNT } from '../../v2/contact.js';
-import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout } from '../../v2/contactTable.js';
+import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout, CONTACT_ROW_UNIFORM } from '../../v2/contactTable.js';
 
 const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
 const layout = contactTableLayout(CONTACT_ROWS.length, CONTACT_REACTIONS.length);
 // Read the immutable tail of the existing EV buffer. No constant struct arrays
 // for the backend to inline; signed bounds/defaults and field precision persist.
-const table = (name, struct, count, schema, offset, stride) => `fn ${name}(id:i32)->${struct} {
+const table = (name, struct, count, schema, offset, stride, resource = 'EV') => `fn ${name}(id:i32)->${struct} {
  if(id<0 || id>=${count}){return ${struct}(${schema.map(([, type]) => type === 'i32' ? '0' : '0.0').join(',')});}
  let base=${offset / 4}u+u32(id)*${stride / 4}u;
  return ${struct}(${schema.map(([, type], i) => {
-   const load = `EV[base+${Math.floor(i / 4)}u].${'xyzw'[i % 4]}`;
+   const load = `${resource}[base+${Math.floor(i / 4)}u].${'xyzw'[i % 4]}`;
    return `bitcast<${type}>(${load})`;
  }).join(',')});
 }`;
+
+const rowAccessor = table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA, layout.rowOffset, layout.rowStride);
+const uniformRowAccessor = table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA,
+  CONTACT_ROW_UNIFORM.rowBase * 4, CONTACT_ROW_UNIFORM.rowStride * 4, 'CTU.words');
+if (layout.rowOffset * 4 !== CONTACT_ROW_UNIFORM.offset + CONTACT_ROW_UNIFORM.rowBase * 16 ||
+    layout.rxOffset * 4 !== CONTACT_ROW_UNIFORM.offset + CONTACT_ROW_UNIFORM.size) {
+  throw Error('contact rows exceed uniform window');
+}
 
 // These functions use an intentionally restricted source subset: no JS object
 // literals, closures, implicit integer division or dynamic member operations.
@@ -101,7 +109,7 @@ struct CTPair { a:CTCell,b:CTCell,changed:i32 }
 fn ctNeighborCount()->i32 { return i32(min(3u,arrayLength(&events))); }
 struct CTRow { ${CONTACT_ROW_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
 struct CTRx { ${CONTACT_RX_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
-${table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA, layout.rowOffset, layout.rowStride)}
+${rowAccessor}
 ${table('ctRx', 'CTRx', CONTACT_REACTIONS.length, CONTACT_RX_SCHEMA, layout.rxOffset, layout.rxStride)}
 fn ctRxAt(a:i32,b:i32)->i32 {
  switch a*${ELEMENTS.length}+b {
@@ -272,3 +280,10 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  }
 }
 `;
+
+// Only the immutable row accessor changes. ctRx and every rule/snapshot byte
+// continue to use the original canonical contact section above.
+if (contactWGSL.split(rowAccessor).length !== 2) throw Error('contact row accessor count');
+export const contactUniformWGSL = CONTACT_ROW_UNIFORM.struct.wgsl +
+  '@group(1) @binding(0) var<uniform> CTU: ContactRowUniform;\n' +
+  contactWGSL.replace(rowAccessor, uniformRowAccessor);

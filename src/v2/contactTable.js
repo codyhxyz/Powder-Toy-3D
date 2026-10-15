@@ -1,3 +1,5 @@
+import { uniformStruct } from '../gpu/params.js';
+
 // Pure contact-table ABI: no simulation/shader imports. Both the EV packer and
 // WGSL accessors use these ordered field types and vec4-padded row strides.
 export const CONTACT_ROW_SCHEMA = Object.freeze([
@@ -21,6 +23,22 @@ export function contactTableLayout(elementCount, reactionCount) {
   const rowOffset = elementCount * 8, rxOffset = rowOffset + elementCount * rowStride;
   return { rowOffset, rowStride, rxOffset, rxStride, words: rxOffset + reactionCount * rxStride };
 }
+
+// Immutable view of the existing production EV allocation, not another table.
+// Round down to a portable 256-byte binding boundary; six prefix vectors remain
+// before the rows. Fail on ABI growth rather than silently changing this window.
+const rowLayout = contactTableLayout(91, 0);
+const rowStart = rowLayout.rowOffset * 4, rowEnd = rowLayout.rxOffset * 4;
+const windowOffset = Math.floor(rowStart / 256) * 256;
+const RowUniform = uniformStruct('ContactRowUniform', { words: ['vec4u', (rowEnd - windowOffset) / 16] });
+if (rowStart !== 2912 || rowEnd !== 17472 || rowLayout.rowStride !== 40 ||
+    windowOffset !== 2816 || RowUniform.size !== 14656 || RowUniform.align !== 16) {
+  throw Error('contact uniform window ABI');
+}
+export const CONTACT_ROW_UNIFORM = Object.freeze({
+  struct: Object.freeze(RowUniform), offset: windowOffset, size: RowUniform.size,
+  rowBase: (rowStart - windowOffset) / 16, rowStride: rowLayout.rowStride / 4,
+});
 
 // Keep v2Table's Float32Array upload ABI, but copy the tail only as u32 words.
 // EV loads vec4u: integer metadata never passes through a float NaN payload.

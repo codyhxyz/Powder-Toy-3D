@@ -19,7 +19,7 @@ import { setFall } from '../../src/v2/fall.js';
 import * as C from '../../src/v2/contact.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows } from '../../src/shaders/v2.js';
+import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockUniformWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows } from '../../src/shaders/v2.js';
 import { buildFixture } from './frame-bench.mjs';
 import { wgslGroupingErrors } from './wgsl-grouping.mjs';
 
@@ -370,10 +370,10 @@ try {
   const bundle = await build({ configFile: false, logLevel: 'warn', build: { write: false, minify: true, lib: { entry: 'src/shaders/v2.js', formats: ['es'] } } });
   const chunk = (Array.isArray(bundle) ? bundle[0] : bundle).output.find(c => c.type === 'chunk' && c.isEntry), file = join(dir, 'v2.mjs');
   writeFileSync(file, chunk.code); const minified = await import(pathToFileURL(file));
-  for (const [name, code, emit] of [['classify', scan, m => m.v2BlockClassifyWGSL(g)], ['finalize', finalizeCode, m => m.v2BlockFinalizeWGSL(g)], ['heavy', heavy, m => m.v2BlockWGSL(g, contactWGSL, true)]]) {
+  for (const [name, code, emit] of [['classify', scan, m => m.v2BlockClassifyWGSL(g)], ['finalize', finalizeCode, m => m.v2BlockFinalizeWGSL(g)], ['heavy', heavy, m => m.v2BlockWGSL(g, contactWGSL, true)], ['uniform-compact', v2BlockUniformWGSL(g,true), m=>m.v2BlockUniformWGSL(g,true)], ['uniform-fallback', v2BlockUniformWGSL(g), m=>m.v2BlockUniformWGSL(g)]]) {
     assert.equal(emit(minified), code); assert.deepEqual(wgslGroupingErrors(code), []);
     const path = join(dir, `${name}.wgsl`); writeFileSync(path, code);
     const naga = spawnSync('naga', [path], { encoding: 'utf8' }); if (naga.error) throw naga.error; assert.equal(naga.status, 0, naga.stderr);
   }
 } finally { rmSync(dir, { recursive: true, force: true }); }
-console.log('Production minified classifier/finalizer/heavy identical; CPU Naga/grouping pass; no GPU');
+console.log('Production minified classifier/finalizer/storage+uniform heavy compact/noncompact identical; CPU Naga/grouping pass; no GPU');
