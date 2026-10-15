@@ -19,6 +19,8 @@ const caseDeadline = workDeadline - 300;
 const selectedCase = arg('--case');
 const operatorMode = arg('--operator') || (selectedCase === 'loading' ? 'tools' : 'transfer');
 const refuelOnce = process.argv.includes('--refuel-once');
+const hasScrapCells = process.argv.includes('--scrap-cells');
+const scrapCells = hasScrapCells ? Number(arg('--scrap-cells')) : 4;
 const port = arg('--port') || '19543';
 const baseUrl = arg('--url') || `http://localhost:${port}/`;
 const useHarness = process.argv.includes('--harness');
@@ -27,11 +29,16 @@ const thermalDevices = validateDevices([
 ], [128, 128, 128]);
 const thermalGeometry = { ...hearthRegions(thermalDevices[0]), structure: hearthStructureCells(thermalDevices[0]) };
 if (!['thermal', 'mechanisms', 'diagnostics', 'line', 'loading'].includes(selectedCase)) {
-  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics|line|loading [--operator transfer|tools] [--refuel-once] [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
+  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics|line|loading [--operator transfer|tools] [--refuel-once] [--scrap-cells 2|4] [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
   process.exit(2);
 }
 if (refuelOnce && (selectedCase !== 'line' || operatorMode !== 'tools')) {
   console.error('--refuel-once requires --case line --operator tools.');
+  process.exit(2);
+}
+if (![2, 4].includes(scrapCells) || (hasScrapCells && selectedCase !== 'line')
+    || (scrapCells === 2 && (operatorMode !== 'tools' || refuelOnce))) {
+  console.error('--scrap-cells accepts 2|4 for line only; 2 requires tools without --refuel-once.');
   process.exit(2);
 }
 if (!['transfer', 'tools'].includes(operatorMode)
@@ -46,7 +53,7 @@ if (process.argv.includes('--preflight')) {
       ? (await import('./fixtures/industry-line.js')).purelineDeviceLayout({ operatorMode, refuelOnce })
       : (await import('./fixtures/industry-loading.js')).loadingDeviceLayout();
     const devices = validateDevices(layout, [128, 128, 128]);
-    console.log(JSON.stringify({ status: 'cpu-geometry-valid', operatorMode, refuelOnce, devices: devices.length, bounds: [128, 128, 128],
+    console.log(JSON.stringify({ status: 'cpu-geometry-valid', operatorMode, refuelOnce, scrapCells, devices: devices.length, bounds: [128, 128, 128],
       limitations: 'Bounds/overlap only; no tools, mining, thermal, cargo, browser, or GPU validation.' }));
     process.exit(0);
   }
@@ -88,7 +95,7 @@ try {
   url.searchParams.set('test', 'manual');
   await within(page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(4_000, workDeadline - Date.now())) }), workDeadline, 'app navigation');
   await within(useHarness ? page.waitForFunction(() => window.__harness?.ready) : ready(page), workDeadline, 'simulation ready');
-  const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness, thermalDevices, thermalGeometry, operatorMode, refuelOnce }) => {
+  const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness, thermalDevices, thermalGeometry, operatorMode, refuelOnce, scrapCells }) => {
     const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 500);
     const caseStarted = performance.now();
     const stage = name => console.log(`[physical-check] ${name} (${Math.round(performance.now() - caseStarted)} ms in page)`);
@@ -148,7 +155,11 @@ try {
         const run = caseName === 'line'
           ? (await import('/tools/fixtures/industry-line.js')).runIndustryLine
           : (await import('/tools/fixtures/industry-loading.js')).runIndustryLoading;
-        const result = await run({ sim, gpu: a.gpu, deadline, stage, operatorMode, refuelOnce });
+        const result = await run({ sim, gpu: a.gpu, deadline, stage, operatorMode, refuelOnce, scrapCells });
+        if (caseName === 'line' && result.observations?.declaredScrapCells !== scrapCells) {
+          result.status = 'failed';
+          result.residualGaps.push('The requested scrap batch size was not attested; no comparison pass is credited.');
+        }
         if (operatorMode === 'tools' && result.observations?.operatorMode !== 'tools') {
           result.status = 'failed';
           result.residualGaps.push('Actual tool mode was requested but the fixture did not attest its activation.');
@@ -486,7 +497,7 @@ try {
       diagnostics?.dispose();
       nativeSim?.dispose();
     }
-  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices, thermalGeometry, operatorMode, refuelOnce }), workDeadline, 'physical checkpoint');
+  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices, thermalGeometry, operatorMode, refuelOnce, scrapCells }), workDeadline, 'physical checkpoint');
   result = payload;
   if (browserErrors.length) {
     result.browserErrors = browserErrors;
@@ -505,12 +516,12 @@ try {
   }
 }
 if (selectedCase === 'line' || selectedCase === 'loading') result.operatorMode = operatorMode;
-if (selectedCase === 'line') result.refuelOnce = refuelOnce;
+if (selectedCase === 'line') { result.refuelOnce = refuelOnce; result.scrapCells = scrapCells; }
 result.timing = { wallMs: Date.now() - invokedAt, slotBudgetMs };
 const outputPath = arg('--output');
 if (outputPath) {
   writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);
-  console.log(JSON.stringify({ case: result.case, operatorMode: result.operatorMode, refuelOnce: result.refuelOnce, status: result.status, checks: result.checks,
+  console.log(JSON.stringify({ case: result.case, operatorMode: result.operatorMode, refuelOnce: result.refuelOnce, scrapCells: result.scrapCells, status: result.status, checks: result.checks,
     error: result.error, stage: result.observations?.stage, output: outputPath, timing: result.timing }));
 } else console.log(JSON.stringify(result));
 if (result.status !== 'passed') process.exitCode = 1;

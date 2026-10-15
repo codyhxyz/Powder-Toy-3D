@@ -35,5 +35,29 @@ test('default line preflight preserves the backend fixture and does not request 
   const geometry = JSON.parse(result.stdout);
   assert.equal(geometry.operatorMode, 'transfer');
   assert.equal(geometry.refuelOnce, false);
+  assert.equal(geometry.scrapCells, 4);
   assert.equal(geometry.devices, 83);
+});
+
+test('two-cell comparison declares its distinct target without shrinking the grid', () => {
+  const result = run('--case', 'line', '--operator', 'tools', '--scrap-cells', '2');
+  assert.equal(result.status, 0, result.stderr);
+  const geometry = JSON.parse(result.stdout);
+  assert.equal(geometry.scrapCells, 2);
+  assert.equal(geometry.devices, 89);
+  assert.deepEqual(geometry.bounds, [128, 128, 128]);
+});
+
+test('invalid or ambiguous scrap targets fail before any browser launch', () => {
+  for (const args of [
+    ['--case', 'line', '--scrap-cells', '2'],
+    ['--case', 'loading', '--scrap-cells', '2'],
+    ['--case', 'line', '--operator', 'tools', '--refuel-once', '--scrap-cells', '2'],
+    ['--case', 'line', '--operator', 'tools', '--scrap-cells', '3'],
+    ['--case', 'line', '--operator', 'tools', '--scrap-cells'],
+  ]) {
+    const result = run(...args);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /--scrap-cells/);
+  }
 });
