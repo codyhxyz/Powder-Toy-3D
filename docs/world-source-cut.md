@@ -50,8 +50,18 @@ succeeds. It does not reset EMA owners or manufacture a semantic Source change.
   imported/interactive geometry. A private scene prepass group writes only the
   cut's data, using frozen prepass margins/capacity and compiled engine kernel.
 * Frozen scene/import metadata and a copied appearance configuration mirror.
-  Ordinary engine tables and compiled kernels are immutable borrowed engine
-  inputs; this API does not invent replacement tables or global frame state.
+* An exact native copy of Simulation's tables. Its mutable `airT` word must not
+  leak into an older cut. `cut.tables` borrows `{group,buffer}` under the cut's
+  lifetime. Generation, stamps and shared scene prepasses use that cut's group;
+  binding CELL switches the classifier and Fields to the same group.
+  Compiled kernels remain borrowed immutable engine inputs.
+
+Simulation tables support native `COPY_SRC`; capture copies them on the normal
+Frame, before subsequent ordered ambient writes. A changed authoritative
+`gpu._simTables.airT` value or table buffer invalidates generated Source content
+globally on the next capture. It does not invalidate older owned cuts or reset
+EMA history. Shared scene resources receive each producer's explicit table
+group rather than retaining a previous cut's group.
 
 Future dependency feedback uses `cut.producer`/`cut.source`, never newest live
 buffers or current window stores/parameters. Original full-height tree order,
@@ -73,7 +83,7 @@ than eagerly copying the entire mutable generated cache.
 ## Lifetime and validity
 
 Handles expose `identity`, `configuration`, `contentToken`, `retain`, idempotent
-`release`, `isValid`, `isLatest` and `snapshotForFields`. `isValid` deliberately
+`release`, `isValid`, `isLatest`, borrowed `tables` and `snapshotForFields`. `isValid` deliberately
 survives later physics/source revisions; `isLatest` does not. Parent reset,
 disposal or a changed scene/configuration version invalidates old cuts. Owned
 snapshot completeness/gather and production reject invalidated input.

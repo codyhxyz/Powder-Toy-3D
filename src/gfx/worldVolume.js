@@ -103,7 +103,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   // external lighting/appearance/mesh/noise publication through final submission.
   // A supplied snapshot transfers ownership to this call, including failure.
   // Acquire the default only after checking disposal, inside the cleanup scope.
-  function prepare({snapshot,frameUniforms,physicsOrigin,params,external,lighting:light=lighting}={}) {
+  function prepare({snapshot,frameUniforms,physicsOrigin,params,external,tableBuffer=tables,appearance:cutAppearance=appearance,lighting:light=lighting}={}) {
     const owned=[]; let released=false;
     const buffer=(label,bytes,usage=BU.UNIFORM|BU.COPY_DST)=>{
       const b=device.createBuffer({label,size:bytes.byteLength,usage}); owned.push(b); queue.writeBuffer(b,0,bytes); return b;
@@ -125,7 +125,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const suppliedSun=new ArrayBuffer(128); WorldSunParams.write(new DataView(suppliedSun),0,light.params);
       if (new Uint8Array(sunBytes).some((v,i)=>v!==new Uint8Array(suppliedSun)[i])) throw new Error('lighting params differ from pinned sun manifest');
       const values=worldFrameValues(frameUniforms,physicsOrigin);
-      if (appearance) values.sourceAppearance=appearance.uniform;
+      if (cutAppearance) values.sourceAppearance=cutAppearance.uniform;
       const fuBytes=WorldFrameStruct.pack(values);
       const preparedCamera=vec(values.cam).map(Math.fround);
       const headerBytes=new ArrayBuffer(Header.size); Header.write(new DataView(headerBytes),0,{origin:[0,0,0]});
@@ -133,8 +133,8 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const fu=buffer('world candidate frame',fuBytes), header=buffer('world zero origin',headerBytes), sunParams=buffer('world sun publication',sunBytes);
       const p=buffer('world view params',VolumeParams.pack(params));
       const b=(binding,buffer)=>({binding,resource:{buffer}});
-      const entries=snapshot.bindings({...external,sunDepth:light.sun1,sunOptical:light.sun0,sourceAppearance:appearance?.view??external?.sourceAppearance},feedback);
-      entries[0]=[b(0,tables),b(1,header),b(2,fu),...entries[0].map((e,i)=>({...e,binding:i+3}))];
+      const entries=snapshot.bindings({...external,sunDepth:light.sun1,sunOptical:light.sun0,sourceAppearance:cutAppearance?.view??external?.sourceAppearance},feedback);
+      entries[0]=[b(0,tableBuffer),b(1,header),b(2,fu),...entries[0].map((e,i)=>({...e,binding:i+3}))];
       const base=[...entries[3].map(e=>({...e,binding:1})),{binding:2,resource:linear},{binding:3,resource:repeat},b(4,sunParams),b(5,light.book)];
       const group=(layout,entries)=>device.createBindGroup({layout,entries});
       const first=entries.slice(0,3).map((e,i)=>group(layouts[i],e));

@@ -8,7 +8,7 @@ import { cellSlot } from '../shaders/common.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { SceneGpu } from './gpu.js';
 
-const versions = new WeakMap(), handles = new WeakMap();
+const versions = new WeakMap(), handles = new WeakMap(), tableInputs = new WeakMap();
 const buffersOf = c => [c.A,c.B,c.flow,c.aeration,c.deco?.buffer].filter(Boolean);
 const metadata = ['rank','revisions','pending','aux','wakeTrusted'];
 const sameToken = (a,b) => a?.epoch===b?.epoch && a?.sourceRevision===b?.sourceRevision;
@@ -68,6 +68,17 @@ function completeCore(c,size) {
   }
   return true;
 }
+function captureTables(parent,frame) {
+  const gpu=parent.gpu,original=gpu._simTables?.buffer;
+  if(!original)return null; // CPU fixtures without Simulation's native tables.
+  if(!(original.usage&4))throw new Error('Simulation tables require native COPY_SRC for an owned cut');
+  const buffer=gpu.createBuffer({label:'cut tables',size:original.size,usage:128|8|4});
+  try {
+    frame.copy(original,0,buffer,0,buffer.size);
+    const group=gpu.bindGroup(parent.sim.L.TABLES,[{binding:0,resource:{buffer}}],'cut tables');
+    return Object.freeze({buffer,group});
+  }catch(error){retire(gpu,buffer);throw error;}
+}
 function sceneResources(source, frame, previous, delta) {
   const gpu=source.gpu, original=source.win.gen.res;
   // SceneGpu's packed uniform mirror is configuration, not dynamic cell readback.
@@ -96,11 +107,12 @@ function sceneResources(source, frame, previous, delta) {
     const preKernel=original.preKernel, margin=[...(original.preMargin??[0,0,0])], capacity=original.preCells;
     const writeGroup=preKernel?gpu.bindGroup(gpu.layout('scene write',sceneLayout({data:true,write:true})),entries(),'cut scene prepass'):null;
     if(preKernel&&!data)throw new Error('Scene prepass has no owned data');
-    const resources={layout,entries,prepassFor(lo,hi){
+    const resources={layout,entries,prepassFor(lo,hi,tables){
       if(!preKernel)return;
+      if(!tables)throw new Error('Owned scene prepass requires its cut TABLES group');
       const dims=hi.map((v,i)=>v-lo[i]+2*margin[i]),min=lo.map((v,i)=>v-margin[i]),n=dims.reduce((a,b)=>a*b,1);
       if(n>capacity)throw new Error('Owned scene prepass capacity exceeded');
-      preKernel.dispatch(gpu.frame,fold(Math.ceil(n/64)),{bind:[source.sim.tables,gpu.emptyGroup,writeGroup],params:{lo:min,dims}});
+      preKernel.dispatch(gpu.frame,fold(Math.ceil(n/64)),{bind:[tables,gpu.emptyGroup,writeGroup],params:{lo:min,dims}});
     }};
     return {refs:1,original,originalData:original.data,uniformBytes,owned,resources};
   }catch(error){for(const b of owned)retire(gpu,b);throw error;}
@@ -111,12 +123,14 @@ function close(state){
   state.closed=true;state.producer?.dispose();
   for(const c of state.source?.chunks.values()??[])drop(state.parent.gpu,c);
   state.source?.chunks.clear();releaseScene(state.parent.gpu,state.scene);
+  if(state.tables)retire(state.parent.gpu,state.tables.buffer);
 }
 function handle(state){
   state.refs++;let released=false;
   const alive=()=>{if(released||!valid(state))throw new Error('Invalid owned Source cut');};
   const h=Object.freeze({identity:state.identity,configuration:state.configuration,
     source:state.source,producer:state.producer,contentToken:state.token,
+    get tables(){alive();return state.tables;},
     belongsTo:source=>source===state.parent,
     isValid:()=>!released&&valid(state),isLatest:()=>!released&&valid(state)&&sameToken(state.parent.contentToken(),state.token),
     snapshotForFields(options){alive();return state.source.snapshotForFields(options);},
@@ -146,21 +160,28 @@ export function recordWorldSourceCut(parent,frame,{previousCut=null,sceneVersion
   if(!primitive(sceneVersion)||!primitive(configVersion))throw new TypeError('Explicit immutable scene/configuration versions required');
   const producer=parent.win.sourceProducer;
   if(!producer?.sceneGroup||producer.disposed||producer.source!==parent)throw new Error('Await live Source producer readiness before capture');
+  const liveTables=parent.gpu._simTables;
+  if(liveTables?.buffer) {
+    const previous=tableInputs.get(parent),airT=Math.fround(liveTables.airT);
+    if(previous?.epoch===parent.epoch&&(previous.buffer!==liveTables.buffer||!Object.is(previous.airT,airT)))parent.invalidateGenerated();
+    tableInputs.set(parent,{epoch:parent.epoch,buffer:liveTables.buffer,airT});
+  }
   const old=previousCut&&handles.get(previousCut);
   if(previousCut&&(!old||old.parent!==parent||!previousCut.isValid()))throw new Error('Invalid previous Source cut');
   if(!parent.cutConfiguration||parent.cutConfiguration.epoch!==parent.epoch||!Object.is(parent.cutConfiguration.sceneVersion,sceneVersion)||!Object.is(parent.cutConfiguration.configVersion,configVersion))parent.cutConfiguration=Object.freeze({epoch:parent.epoch,sceneVersion,configVersion});
   const configuration=parent.cutConfiguration, compatible=old&&old.configuration===configuration;
   if(parent.needsLiveCopy())parent.recordLiveCopy(frame);
   const token=parent.contentToken(), authority=parent.token(), delta=parent.changesSince(compatible?old.token:null);
-  const state={parent,epoch:parent.epoch,configuration,token,identity:Object.freeze({epoch:parent.epoch,sourceRevision:token.sourceRevision,sceneVersion,configVersion}),refs:1,closed:false,source:null,producer:null,scene:null};
+  const state={parent,epoch:parent.epoch,configuration,token,identity:Object.freeze({epoch:parent.epoch,sourceRevision:token.sourceRevision,sceneVersion,configVersion}),refs:1,closed:false,source:null,producer:null,scene:null,tables:null};
   try {
     const w=parent.win;
     if(w.scene.trees&&w.scene.trees.treesIn!==treesIn)throw new Error('Unsupported mutable CPU tree generator');
     const scene=Object.freeze({key:w.scene.key,trees:w.scene.trees?Object.freeze({treesIn}):null,
       importManifest:w.scene.importManifest?freezeData(w.scene.importManifest):null,appearanceWords:w.scene.appearanceWords?.slice()??null});
+    state.tables=captureTables(parent,frame);
     state.scene=sceneResources(parent,frame,compatible?old.scene:null,delta);
     const context={size:Object.freeze([...w.size]),wb:Object.freeze([...w.wb]),P:freezeData(w.P),scene,
-      planted:w.planted.slice(),candidates:new Map(),treeGenerator:BUILTINS.TREE,store:{map:copyStore(w.store.map)},decoStore:copyStore(parent.sim.deco?.store),resources:state.scene.resources,
+      planted:w.planted.slice(),candidates:new Map(),treeGenerator:BUILTINS.TREE,store:{map:copyStore(w.store.map)},decoStore:copyStore(parent.sim.deco?.store),resources:state.scene.resources,tables:state.tables?.group??parent.sim.tables,
       isValid:()=>valid(state),retire:b=>retire(parent.gpu,b),adoptChunk:adopt,
       writableChunk:c=>{if(!valid(state))throw new Error('Invalid cut write');if(versions.get(c)?.refs>1){const next=cloneCore(state.source,c,frame);drop(parent.gpu,c);return next;}return c;}};
     const source=state.source=new parent.constructor(w,{context});

@@ -62,6 +62,10 @@ export class WorldCellAtlasAdapter {
       // change invalidates spatial publications, not the numerical history.
     }
     this.boundCut=held;this.source=held.source;this.producer=held.producer;
+    if(held.tables) {
+      this.tables=held.tables.group;
+      this.fields.tables=this.fields.deriver.tables=this.tables;
+    }
     old?.release();return this;
   }
   _destroyCapture(c){for(const b of [...c.buffers,c.classification,...c.uploads].filter(Boolean))this._retire(b);}

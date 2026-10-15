@@ -11,9 +11,11 @@ import { PickParams, worldPlainPipelines, WORLD_PLAIN_PHASES, volumeFrag, pickFr
 import { WorldPointParams, WORLD_POINT_BYTES, worldPointWGSL, worldPointLayouts, WGSL_CHECK } from '../src/shaders/worldPoint.js';
 import { worldQueryWGSL } from '../src/shaders/worldRenderBackend.js';
 import { checkPipeline } from './check-sampler-budget.mjs';
+import { FRAME_UNIFORM_FIELDS } from '../src/shaders/bindings.js';
+import { uniformStruct } from '../src/gpu/params.js';
 
 const I=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
-function fixture() {
+function fixture({appearance=null}={}) {
   const buffers=[], render=[], compute=[], pending=[];
   const device={limits:{},queue:{
     writeBuffer(b,off,raw){const a=raw instanceof ArrayBuffer?new Uint8Array(raw):new Uint8Array(raw.buffer,raw.byteOffset,raw.byteLength);b.data.set(a,off);},
@@ -35,8 +37,8 @@ function fixture() {
   const lighting={params:{...sun,physical:[256,8,64,1],version:[1,1,1,atlas.bookLayout.requestBytes/4+1]},book:device.createBuffer({size:sun.tiles[2]*sun.tiles[3]*32}),sun0:{},sun1:{}};
   const publish=()=>atlas.publish({sunManifest:{epoch:1,basisRevision:1,publishRevision:1,dependencySetID:0,dependencyVersion:0,book:lighting.book,sun0:lighting.sun0,sun1:lighting.sun1,params:lighting.params}});
   publish();
-  const volume=createWorldVolume(gpu,{g,atlas,tables:device.createBuffer({size:tableLayout().Tables.size}),lighting});
-  const prepare=()=>volume.prepare({frameUniforms:{cam:[99,20,30],model:I,viewProj:I},physicsOrigin:[1536,0,512],params:{meshInv:I,meshRes:[1,1]},external:{mediaNoise:{},sourceAppearance:{},packedMesh:{}}});
+  const volume=createWorldVolume(gpu,{g,atlas,tables:device.createBuffer({size:tableLayout().Tables.size}),lighting,appearance});
+  const prepare=(overrides={})=>volume.prepare({frameUniforms:{cam:[99,20,30],model:I,viewProj:I},physicsOrigin:[1536,0,512],params:{meshInv:I,meshRes:[1,1]},external:{mediaNoise:{},sourceAppearance:{},packedMesh:{}},...overrides});
   const candidate=prepare();
   function settle(test=()=>true,error) {for(const p of pending.splice(0)){if(test(p.d))error?p.reject(error):p.resolve();else pending.push(p);}}
   const log=[],pass={setPipeline:p=>log.push(['pipeline',p]),setBindGroup:(i,g)=>log.push(['group',i,g]),draw:n=>log.push(['draw',n])};
@@ -113,6 +115,27 @@ test('Plain/default picking caches actual different WGSL and freezes view/n/slot
     assert.equal(pg.entries.find(e=>e.binding===1).resource.buffer,f.candidate.feedback);
     f.candidate.release();assert.equal(output.dead,undefined,'caller output remains owned by caller');
   } finally {f.settle();f.release();}
+});
+
+test('cached factories bind each candidate table and artwork, never the previous cut inputs',async()=>{
+ const oldView={},newView={},f=fixture({appearance:{view:oldView,uniform:[4,256,128,128],sourceGrid:[128,0,128]}});let c;try{
+  f.settle();await f.volume.pointReady;
+  const tableBuffer=f.device.createBuffer({size:tableLayout().Tables.size,usage:128});
+  const uniform=[8,128,128,128];
+  c=f.prepare({tableBuffer,appearance:{view:newView,uniform}});
+  const output=f.device.createBuffer({size:80,usage:128});
+  assert.equal(c.recordPointReady(f.encoder,{position:[99,20,30],output}),true);
+  const entries=f.log.find(e=>e[0]==='group'&&e[1]===0)[2].entries;
+  assert.equal(entries.find(e=>e.binding===0).resource.buffer,tableBuffer);
+  const frame=entries.find(e=>e.binding===2).resource.buffer;
+  assert.deepEqual([...new Uint32Array(frame.data.buffer,uniformStruct('FrameUniforms',FRAME_UNIFORM_FIELDS).offsets.sourceAppearance,4)],uniform);
+  assert.equal(f.log.find(e=>e[0]==='group'&&e[1]===2)[2].entries.find(e=>e.binding===8).resource,newView);
+  c.release();assert.equal(tableBuffer.dead,undefined);
+  c=f.prepare({appearance:null});f.log.length=0;
+  assert.equal(c.recordPointReady(f.encoder,{position:[99,20,30],output}),true);
+  assert.notEqual(f.log.find(e=>e[0]==='group'&&e[1]===2)[2].entries.find(e=>e.binding===8).resource,oldView);
+  tableBuffer.destroy();output.destroy();
+ }finally{c?.release();f.settle();f.release();}
 });
 
 test('native point recording freezes global position/output, gates readiness, shares pinned groups and retains final-use ownership',async()=>{

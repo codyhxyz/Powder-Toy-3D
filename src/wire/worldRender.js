@@ -185,7 +185,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       // This is PROBE-READY, not scene-admitted: unknown scene dependencies
       // must still be checked by every real native consumer and staged Post.
       let refs=1;const sunPin=t.sun.snapshot();t.bundlePins++;
-      const held={snapshot,lighting:s,appearance:t.appearance,frame:t.viewFrame,cut:t.cut.identity,lightingTick:t.tick,logicalFieldTick:t.fieldTick,identity:Object.freeze({epoch:source.epoch,sceneToken:t.frame.sceneVersion,configVersion:t.frame.configVersion,transaction:t.id}),
+      const held={snapshot,lighting:s,sunTextures:sunPin.textures(),appearance:t.appearance,tables:t.cut.tables,frame:t.viewFrame,cut:t.cut.identity,lightingTick:t.tick,logicalFieldTick:t.fieldTick,identity:Object.freeze({epoch:source.epoch,sceneToken:t.frame.sceneVersion,configVersion:t.frame.configVersion,transaction:t.id}),
         retain(){if(!refs)throw new Error('released WORLD candidate');refs++;let released=false;return Object.freeze({...held,release(){if(!released){released=true;held.release();}}});},
         release(){if(refs&&!--refs){snapshot.release();sunPin.release();t.bundlePins--;dropResources(t);}}};
       t.bundle=Object.freeze(held);
@@ -194,7 +194,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   async function run(t) {
     try{
       await Promise.all([cells.ready,metadata.ready,transport.ready]);
-      const inputOptions={atlas,tables:tableBuffer,frameValues:t.frame.values,physicsOrigin:t.frame.physicsOrigin,params:t.frame.params,external:t.frame.external};
+      const inputOptions={atlas,tables:t.cut.tables?.buffer??tableBuffer,frameValues:t.frame.values,physicsOrigin:t.frame.physicsOrigin,params:t.frame.params,external:t.frame.external};
       const words=t.cut.source.context.scene.appearanceWords;
       t.appearance=words?createWorldAppearance(gpu,{words}):null;
       const {pins,...captured}=t.frame;

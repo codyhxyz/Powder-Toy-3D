@@ -28,9 +28,12 @@ const candidate = await data.request({
 `tableBuffer` is its matching native **buffer** (default:
 `gpu._simTables.buffer`). These are not interchangeable. Native reader bindings
 use the buffer; CELL/Fields dispatches use the group. Neither option copies or
-freezes mutable table contents. In particular, a lifetime pin does not freeze
-Simulation's `airT` word. The App route must own immutable table inputs for all
-pending readers, including late Source generation, before activation.
+freezes mutable table contents by itself. The actual Source cut now captures
+the native bytes. The owner uses that snapshot for generation, CELL/Fields and
+native lighting. `candidate.tables` borrows its `{group,buffer}` under candidate
+retention. Pass `tableBuffer:candidate.tables.buffer` to every volume/query
+`prepare()` call, including calls through a cached factory. A lifetime pin alone
+would not freeze Simulation's `airT` word.
 
 All pins implement `retain()->{release()}` and must cover the supplied native
 values; they are not readiness callbacks. Tables and external views must stay
@@ -46,6 +49,10 @@ factory default. `candidate.snapshot` is the exact final Atlas handle: pass
 `snapshot.retain()` to a consumer that transfers snapshot ownership (such as
 volume.prepare), not this borrowed handle itself. `candidate.lighting` is its
 matching native Sun publication.
+`candidate.sunTextures` borrows the actual `{sun0,sun1}` GPUTextures from the
+retained Sun snapshot. Native Three lighting must use these, not unwrap views.
+Pass `appearance:candidate.appearance` to `volume.prepare()` as well. Reused
+factories must not replace a new cut's artwork with their first handle.
 
 A successful `request()` returns a **probe-ready** owned handle, not an accepted
 image. It exposes `identity`, `cut`, `lightingTick`, `logicalFieldTick`, `frame`,

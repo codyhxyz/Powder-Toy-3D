@@ -14,11 +14,11 @@ class Exec extends WgslExec {_dispatchWorkgroup(fn,id,c){for(const a of fn.node.
 const tick=()=>new Promise(r=>setTimeout(r,0));
 async function settle(gpu,promise){let done=false,error,result;promise.then(r=>{done=true;result=r;},e=>{done=true;error=e;});for(let i=0;i<2000&&!done;i++){gpu.finish();await tick();}assert(done,'native final boundary failed to settle');if(error)throw error;return result;}
 async function setup({size=[16,8,8],feedback=true}={}) {
-  const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[];
-  const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128});
+  const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[],tablesUsed=[];
+  const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128|4|8});
   const tableGroup=gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer:tableBuffer}}],'fixture TABLES');
   f.sim.tables=tableGroup;gpu._simTables={buffer:tableBuffer,group:tableGroup};
-  gpu.onDispatch=(_kernel,options)=>assert.equal(options.bind?.[0],tableGroup,'normal kernels require TABLES bind group');
+  gpu.onDispatch=(_kernel,options)=>assert(options.bind?.[0]?.entries?.[0]?.resource.buffer.bytes instanceof ArrayBuffer,'normal kernels require TABLES bind group');
   const makeGroup=gpu.device.createBindGroup;
   gpu.device.createBindGroup=d=>{
     for(const entry of d.entries)if(entry.resource?.buffer)assert(entry.resource.buffer.bytes instanceof ArrayBuffer,'native binding requires a GPUBuffer, never a GPUBindGroup');
@@ -29,6 +29,7 @@ async function setup({size=[16,8,8],feedback=true}={}) {
   const original=gpu.encoder.bind(gpu);let owner;
   function dispatch(pipe,groups,n,push){
     const label=pipe.label??'',buf=(g,b)=>groups[g].entries.find(e=>e.binding===b).resource.buffer;
+    if(['world GI source','world GI gather','full world optical sun'].includes(label))tablesUsed.push(buf(0,0));
     if(label.startsWith('world lighting delta'))return push(()=>new Exec(new WgslParser().parse(pipe.compute.module.code)).dispatchWorkgroups('main',[n,1,1],{0:Object.fromEntries(groups[0].entries.map(e=>[e.binding,e.resource.buffer.bytes]))}));
     if(label==='world CELL raw/AUX pack')return push(()=>gpu._pack(groups));
     if(label==='world GI source'||label==='world GI gather')return push(()=>{
@@ -58,7 +59,7 @@ async function setup({size=[16,8,8],feedback=true}={}) {
   gpu.frame.compute=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,groups,n,fn=>gpu._push(fn))};};
   owner=installWorldRender(f.win);
   const frame={sceneVersion:'scene',schemaVersion:1,configVersion:1,values:{cam:[0,0,0]},physicsOrigin:[0,0,0],globalKey:[1],sun:{direction:[1,1,1],basisRevision:1},external:Object.fromEntries(['mediaNoise','packedMesh','sourceAppearance'].map(name=>[name,{name}]))};
-  return {...f,owner,events,sources,histories,frame,async close(){await settle(gpu,owner.dispose());await f.finish();}};
+  return {...f,owner,events,sources,histories,tablesUsed,frame,async close(){await settle(gpu,owner.dispose());await f.finish();}};
 }
 const complete={incomplete:false,requirements:[],sun:[]};
 function post(candidate,confirmation=Promise.resolve(true)){const feedbackIdentity={};return {feedbackIdentity,postTicket:{identity:candidate.identity,publication:candidate,feedbackIdentity,status:'committed',confirmation},feedback:complete};}
@@ -69,6 +70,11 @@ test('actual boot resolves UNKNOWN Sun, actual CELL and source closure; acceptan
   const candidate=await settle(f.gpu,f.owner.extend(initial,{incomplete:true,requirements:[{brick:[0,0,0],channels:READY.GLOW}],sun:[]}));initial.release();
   assert.equal(f.owner.state,'probe-ready');assert.equal(f.owner.current(),null);assert.equal(f.owner.metadata.derivedTick,-1);
   assert(f.events.includes('unknown Sun'));assert(f.events.includes('unknown CELL'));assert(f.events.includes('unknown SOURCE'));
+  assert(candidate.tables);assert.notEqual(candidate.tables.buffer,f.gpu._simTables.buffer);
+  assert(f.tablesUsed.length);assert(f.tablesUsed.every(b=>b===candidate.tables.buffer));
+  assert.equal(f.owner.cells.tables,candidate.tables.group);
+  assert.equal(candidate.sunTextures.sun0,candidate.lighting.sun0.texture);
+  assert.equal(candidate.sunTextures.sun1,candidate.lighting.sun1.texture);
   assert.equal(candidate.cut.sourceRevision,f.source.contentToken().sourceRevision);
   assert(f.events.filter(x=>x.startsWith('world glow ')).length===6,'actual six passes');
   assert(await settle(f.gpu,f.owner.accept(candidate,post(candidate))));

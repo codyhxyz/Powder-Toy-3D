@@ -40,6 +40,7 @@ export class RawWorldSourceProducer {
   constructor(win, source, { context = null, kernels = null } = {}) {
     this.win = win; this.context = context ?? win; this.source = source; this.sim = win.sim; this.gpu = win.gpu;
     this.resources = context?.resources ?? win.gen.res;
+    this.tables = context?.tables ?? this.sim.tables;
     this.g = rawSourceGrid(this.context.size[1]); this.disposed = false; this.buffers = null;
     const gpu = this.gpu, sim = this.sim;
     if (kernels) {
@@ -98,10 +99,10 @@ export class RawWorldSourceProducer {
     // Ordered uploads cannot alter an earlier record that still reads scratch.
     this.source.recordUpload(frame, raw.columns, 0, mask);
     if (shapes.length) this.source.recordUpload(frame, this.shapes, 0, shapes);
-    this.resources.prepassFor(origin, origin.map((v, i) => v + [g.nx, g.ny, g.nz][i]));
+    this.resources.prepassFor(origin, origin.map((v, i) => v + [g.nx, g.ny, g.nz][i]),this.tables);
     const size = fold(Math.ceil(g.slots / 64)), header = (src = 0, dst = src) => ({ origin: [...origin], src, dst });
     const params = { at: [0, 0, 0], foot: 0, size: [0, 0, 0], seed: 0, base: 0 };
-    this.generate.dispatch(frame, size, { bind: [this.sim.tables, this.group, this.sceneGroup], header: header(), params });
+    this.generate.dispatch(frame, size, { bind: [this.tables, this.group, this.sceneGroup], header: header(), params });
     const box = { lo: origin, hi: origin.map((v, i) => v + [g.nx, g.ny, g.nz][i]) };
     this.source.recordStore(box, token);
     // Store, then captured, then CURRENT live. All overlays are GPU copies;
@@ -119,7 +120,7 @@ export class RawWorldSourceProducer {
     }
     for (const t of trees) {
       const s = t.s, next = 1 - raw.copy;
-      this.stamp.dispatch(frame, size, { bind: [this.sim.tables, this.group], header: header(raw.copy, next),
+      this.stamp.dispatch(frame, size, { bind: [this.tables, this.group], header: header(raw.copy, next),
         params: { at: t.at, foot: Math.min(s.foot ?? 0, MAX_FOOT), size: [s.w, s.h, s.d], seed: t.seed, base: t.base } });
       raw.copy = next;
     }

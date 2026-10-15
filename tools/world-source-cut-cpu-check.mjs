@@ -10,7 +10,7 @@ import { sceneStruct, sceneHeadWGSL } from '../src/world/scenes/sceneGpu.js';
 import { SharedUniforms } from '../src/gpu/params.js';
 import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
 import { WorldRenderAtlas, READY } from '../src/world/renderAtlas.js';
-import { gridDims, atlasDims, cellSlot, brickIdOf, tableLayout } from '../src/shaders/common.js';
+import { gridDims, atlasDims, cellSlot, brickIdOf, tableLayout, tablesBuffer, tablesAirTOffset } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { setAeration, aerationForSource } from '../src/gfx/foam.js';
 import { worldParams, treesIn } from '../src/world/generator.js';
@@ -52,6 +52,41 @@ async function fixture({size=[96,8,8],pre=false,trees=false}={}) {
 const cut=f=>f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:1});
 function put(f,brick,value){const A=new Float32Array(256),B=new Float32Array(256);for(let s=0;s<64;s++){A.set([2,20,.5,value],s*4);new Uint32Array(B.buffer).set([0x80000000,0x7fc12345,s,value],s*4);}f.win.store.put(f.win.store.key(...brick),encodeBrick(A,0,B,0));}
 function read(source,p,name='A'){const c=source.getSource(p);return [...u32(c.chunk[name]).subarray(c.slot*4,c.slot*4+4)];}
+
+test('owned native tables survive later ambient writes, shared prepasses and final consumer retirement',async()=>{
+ const f=await fixture({pre:true}),data=tablesBuffer(),ambient=tablesAirTOffset()/4;
+ const buffer=f.gpu.createBuffer({label:'Simulation tables',size:data.byteLength,usage:128|4|8});
+ new Uint8Array(buffer.bytes).set(new Uint8Array(data));f32(buffer)[ambient]=20;
+ f.sim.tables=f.gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer}}],'TABLES');
+ f.gpu._simTables={buffer,group:f.sim.tables,airT:20};
+ const generate=f.gpu._generate;
+ f.gpu._generate=options=>{
+  generate(options);
+  const temp=f32(options.bind[0].entries[0].resource.buffer)[ambient],A=options.bind[1].entries[0].resource.buffer;
+  for(let s=0;s<A.size/16;s++)f32(A)[s*4+1]=temp; // synthetic math, actual selected native table.
+ };
+ const old=cut(f),oldTables=old.tables;
+ assert.notEqual(oldTables.buffer,buffer);
+ f.gpu.write(buffer,tablesAirTOffset(),new Float32Array([200]));f.gpu._simTables.airT=200;
+ old.producer.record(f.gpu.frame,[64,0]);f.gpu.flush();await drain(f.gpu);
+ assert.equal(f32(oldTables.buffer)[ambient],20);
+ assert.equal(new Float32Array(new Uint32Array(read(old.source,[80,0,0])).buffer)[1],20);
+ const newer=f.source.recordCut(f.gpu.frame,{previousCut:old,sceneVersion:'scene',configVersion:1});
+ assert(newer.contentToken.sourceRevision>old.contentToken.sourceRevision);
+ newer.producer.record(f.gpu.frame,[64,0]);f.gpu.flush();await drain(f.gpu);
+ assert.equal(new Float32Array(new Uint32Array(read(newer.source,[80,0,0])).buffer)[1],200);
+ const shared=f.source.recordCut(f.gpu.frame,{previousCut:newer,sceneVersion:'scene',configVersion:1}),newTables=newer.tables;
+ assert.equal(shared.source.context.resources,newer.source.context.resources,'unchanged scene data may share without sharing mutable table bindings');
+ newer.release();f.gpu.flush();await drain(f.gpu);assert(newTables.buffer.destroyed);
+ const start=f.gpu.trace.length;
+ shared.producer.record(f.gpu.frame,[32,0]);
+ for(const event of f.gpu.trace.slice(start))if(event.opts?.bind)assert.equal(event.opts.bind[0],shared.tables.group);
+ f.gpu.flush();await drain(f.gpu);assert.equal(f32(shared.tables.buffer)[ambient],200);
+ let submitted;const pin=old.retainUntilSubmitted(new Promise(r=>submitted=r));old.release();
+ await drain(f.gpu);assert(!oldTables.buffer.destroyed);
+ submitted();await drain(f.gpu);await pin;await drain(f.gpu);assert(oldTables.buffer.destroyed);
+ shared.release();await f.finish();
+});
 
 test('actual replica unpack captures the old origin before overwrite and claims full new state after flow/wake reset',async()=>{
   const f=await fixture();f.sim.cur=1;setAeration(f.sim,true);

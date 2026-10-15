@@ -189,7 +189,7 @@ function simLayouts(gpu) {
 function tablesOf(gpu) {
   if (!gpu._simTables) {
     const bytes = tablesBuffer();
-    const buffer = gpu.createBuffer({ label: 'tables', size: Math.ceil(bytes.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const buffer = gpu.createBuffer({ label: 'tables', size: Math.ceil(bytes.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     gpu.queue.writeBuffer(buffer, 0, bytes);
     gpu._simTables = {
       buffer, group: gpu.bindGroup(simLayouts(gpu).TABLES, [{ binding: 0, resource: { buffer } }], 'tables'),
