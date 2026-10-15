@@ -2,9 +2,10 @@
 // with software lighting (not a screenshot). No browser, simulation or GPU slot.
 // Rebuild: node tools/descent-thumb.mjs
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { descentMines, descentTwin, DS_WORLD } from '../src/world/scenes/descent/scenes.js';
-import { DESCENT_LEVELS } from '../src/world/scenes/descent/levels.js';
+import { importedCell } from '../src/world/import/voxelize.js';
 import { ELEMENTS, E } from '../src/elements.js';
 
 const unit = v => { const n = Math.hypot(...v); return v.map(x => x / n); };
@@ -43,19 +44,21 @@ export function trace(origin, direction, size, cell) {
 }
 
 export function renderDescent(size = 400) {
-  const T = descentTwin(0);
-  const [sx, sy, sz] = DS_WORLD;
+  // The first biome shows the spatial fold better than the initial sanctuary.
+  const map = JSON.parse(readFileSync(new URL('../public/local-maps/noitaCoal.json', import.meta.url)));
+  const bytes = gunzipSync(readFileSync(new URL(`../public/local-maps/${map.dataFile}`, import.meta.url)));
+  const words = new Uint32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  const [sx, sy, sz] = map.size;
   const cache = new Uint16Array(sx * sy * sz).fill(65535);
   const cell = (x, y, z) => {
     const i = x + sx * (y + sy * z);
-    if (cache[i] === 65535) cache[i] = T.dsCell(x, y, z);
+    if (cache[i] === 65535) cache[i] = importedCell(map, words, x, y, z);
     return cache[i];
   };
-  const target = DESCENT_LEVELS[0].spawn;
-  const offset = unit(descentMines.view.dir);
-  const eye = target.map((x, a) => x + offset[a] * descentMines.view.dist);
-  const forward = offset.map(x => -x), right = unit(cross(forward, [0, 1, 0])), up = cross(right, forward);
-  const fov = Math.tan(Math.PI / 8);
+  const target = [256, 105, 256], eye = [-80, 320, -100];
+  const forward = unit(target.map((x, a) => x - eye[a]));
+  const right = unit(cross(forward, [0, 1, 0])), up = cross(right, forward);
+  const fov = 0.35;
   const sun = unit([-0.55, 0.8, 0.35]);
   const palette = ELEMENTS.map(e => {
     const hex = parseInt(e.color.slice(1), 16);
@@ -66,16 +69,16 @@ export function renderDescent(size = 400) {
   for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
     const u = (2 * (px + 0.5) / size - 1) * fov, v = (1 - 2 * (py + 0.5) / size) * fov;
     const direction = unit(forward.map((x, a) => x + right[a] * u + up[a] * v));
-    const hit = trace(eye, direction, DS_WORLD, cell);
-    const sky = [174, 201, 223];
+    const hit = trace(eye, direction, map.size, cell);
+    const sky = [13, 17, 26];
     let colour = sky;
     if (hit) {
       materials.add(hit.id);
       const light = Math.max(0, dot(hit.normal, sun));
       const point = eye.map((x, a) => x + direction[a] * hit.distance + hit.normal[a] * 0.001);
-      const shadow = light > 0 && trace(point, sun, DS_WORLD, cell);
-      const shade = 0.35 + light * (shadow ? 0.12 : 0.7);
-      const fog = Math.min(0.18, hit.distance / 1800);
+      const shadow = light > 0 && trace(point, sun, map.size, cell);
+      const shade = 0.5 + light * (shadow ? 0.12 : 0.7);
+      const fog = Math.min(0.08, hit.distance / 5000);
       colour = palette[hit.id].map((x, a) => x * shade * (1 - fog) + sky[a] * fog);
     }
     for (let a = 0; a < 3; a++) rgb[(py * size + px) * 3 + a] = Math.max(0, Math.min(255, Math.round(colour[a])));

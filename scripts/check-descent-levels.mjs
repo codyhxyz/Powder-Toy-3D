@@ -15,7 +15,8 @@ import { descentTwin, descentConstants, DS_LEVEL_DEFS } from '../src/world/scene
 import { levelSites, reachable, crossingOf, feetAt, wangWalk, LOOT_COUNTS, CHEST_COUNT, POTION_COUNT } from '../src/world/scenes/descent/sites.js';
 import { GEOM } from '../src/world/wang/index.js';
 
-const LEVELS_JS = fileURLToPath(new URL('../src/world/scenes/descent/levels.js', import.meta.url));
+// Legacy Wang fixtures only. New source geometry: check-noita-source.mjs.
+const LEVELS_JS = fileURLToPath(new URL('../src/world/scenes/descent/legacyLevels.js', import.meta.url));
 const SHELL_SAMPLES = 400;   // cells of the band round the temple checked to be WALL
 const MAX_CLIMB = 1;         // cells a walk up the mouth's ramp may step up at a time (a body steps a cell)...
 const MAX_DROP = 8;          // ...or drop (under vitals.js SAFE_FALL_M, 10 cells)

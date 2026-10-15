@@ -61,6 +61,9 @@ export async function gpuBusyPct() {
 let slotHeld = false;
 let slotStarted = 0, slotDeadline = 0, slotInode = null, slotToken = '', slotGuardPid = 0, watchdog = null, launching = false, attempted = false;
 let guardFinished = Promise.resolve();
+// A spawned guard may have transferred the lease even if readiness fails.
+// Only its verified-release message permits local release/reset afterward.
+let slotGuarded = false;
 async function takeSlot() {
   fs.mkdirSync(BUDGET_DIR, { recursive: true });
   const until = Date.now() + SLOT_WAIT_MS;
@@ -73,18 +76,9 @@ async function takeSlot() {
         slotInode = fs.statSync(SLOT_FILE).ino; slotToken = randomUUID();
       } catch (e) {
         if (e.code !== 'EEXIST') throw e;
-        const holder = Number(readJSON(SLOT_FILE, 0));
-        if (holder === process.pid) {
-          const stat = fs.statSync(SLOT_FILE);
-          slotHeld = true; slotStarted ||= stat.mtimeMs; slotInode = stat.ino; slotToken ||= randomUUID();
-        }
-        else if (!holder || !alive(holder)) {
-          const stat = fs.statSync(SLOT_FILE);
-          // A fresh dead-owner lease may still be transferring to its guard.
-          if (Date.now() - stat.mtimeMs >= MAX_SLOT_MS &&
-              fs.statSync(SLOT_FILE).ino === stat.ino && Number(readJSON(SLOT_FILE, 0)) === holder) {
-            fs.rmSync(SLOT_FILE, { force: true }); continue;
-          }
+        const holder = readJSON(SLOT_FILE, null);
+        if (holder === process.pid || !Number.isSafeInteger(holder) || holder <= 1 || !alive(holder)) {
+          throw new Error('Headless GPU slot holder is dead or unverified; preserving the lease and report regardless of age. Require ownership/cleanup verification before recovery; do a CPU check instead.');
         }
         if (!slotHeld) {
           if (Date.now() > until) throw new Error(`Headless GPU slot still held by pid ${holder}; giving up. Do a CPU check instead.`);
@@ -103,14 +97,14 @@ async function takeSlot() {
 }
 function releaseSlot() {
   if (!slotHeld) return;
-  if (watchdog) {
-    watchdog.stdin.write('released\n'); // guard verifies browser descendants exited first
-    return;
+  if (slotGuarded) {
+    watchdog?.stdin.write('released\n'); // guard verifies browser descendants exited first
+    return; // disappearance, failed readiness, or a failed close is not release
   }
   slotHeld = false;
   try {
-    const owner = Number(readJSON(SLOT_FILE, 0));
-    if (fs.statSync(SLOT_FILE).ino === slotInode && (owner === process.pid || (slotGuardPid > 0 && owner === slotGuardPid)))
+    const owner = readJSON(SLOT_FILE, null);
+    if (fs.statSync(SLOT_FILE).ino === slotInode && owner === process.pid)
       fs.rmSync(SLOT_FILE, { force: true });
   } catch {}
   if (slotStarted && !slotGuardPid) console.error(`[browser] total GPU slot occupancy ${Date.now() - slotStarted} ms`);
@@ -128,7 +122,8 @@ async function guardSlot(limit) {
   watchdog = spawn(process.execPath, [
     fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url)),
     String(owner.pid), owner.start, String(slotDeadline), SLOT_FILE, String(slotInode), slotToken, String(slotStarted),
-  ], { stdio: ['pipe', 'pipe', 'inherit'] });
+  ], { detached: true, stdio: ['pipe', 'pipe', 'inherit'] });
+  slotGuarded = true;
   slotGuardPid = watchdog.pid;
   watchdog.stdin.on('error', () => {});
   const guard = watchdog;
@@ -140,6 +135,7 @@ async function guardSlot(limit) {
     if (output.includes('stop\n')) void stop(1, new Error('GPU deadline guard cannot verify ownership'));
     if (output.includes('released\n') && watchdog === guard) {
       watchdog = null;
+      slotGuarded = false;
       releaseSlot();
       finishGuard();
     }
@@ -149,12 +145,16 @@ async function guardSlot(limit) {
       const timer = setTimeout(() => reject(new Error('GPU deadline guard did not start')), 500);
       guard.once('error', error => { clearTimeout(timer); reject(error); });
       guard.once('exit', () => { clearTimeout(timer); reject(new Error('GPU deadline guard exited before readiness')); });
-      guard.stdout.once('data', () => { clearTimeout(timer); resolve(); });
+      const ready = () => {
+        if (!output.split('\n').includes('ready')) return;
+        clearTimeout(timer); guard.stdout.off('data', ready); resolve();
+      };
+      guard.stdout.on('data', ready);
     });
   } catch (error) {
     watchdog = null;
     finishGuard();
-    guard.kill('SIGTERM'); // our child only; no browser launch has started
+    guard.kill('SIGTERM'); // our child only; retain the uncertain lease, no browser started
     throw error;
   }
   guard.once('exit', () => {
