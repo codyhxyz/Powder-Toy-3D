@@ -7,11 +7,11 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 
 ## Current evidence — 2026-10-15
 
-Latest production integration: `a2e7afe4`, including fetched production `c59bbdf0`.
-Feature checkpoint `6398bdda` is 148 commits ahead and none behind that production base.
+Latest production integration: `4080185e`, including fetched production `6d239845`.
+This feature checkpoint is 151 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 Physics results describe the feature branch, not the live site.
-The separate test-safety fix is deployed.
+The separate test-safety and measurement-guard fixes are deployed.
 
 The native engine now includes contact rules, heat, phases, particles, air,
 jets, modes, exact persistence, and direct rendering.
@@ -231,7 +231,12 @@ They test measurement reliability, not splash physics.
 
 All 50 CPU check scripts and six adapter groups pass, along with the production build.
 Independent review `3b5410d1` finds no scoped blocker.
-The shared test-guard backport is prepared separately from native physics.
+The shared test-guard backport `6d239845` is deployed separately from native physics.
+
+Deploy run `38812593514` succeeds, and the live site returns HTTP 200.
+Its three files contain only the shared guard, contract comment and CPU regression.
+The native feature branch and material-row candidate are not deployed.
+V1 remains the default.
 
 **Historical safety interruption:** the `142e6114` pipe attempt returned no assertions.
 Its trace ends during startup and lease `19727-19749` lacks a final report.
