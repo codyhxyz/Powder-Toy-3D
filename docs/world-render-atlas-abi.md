@@ -45,7 +45,12 @@ The explicit reader has **exactly 16 sampled textures**, two storage buffers
 | 2 | GI0..3, glow, sunDepth, sunOptical, mediaNoise, sourceAppearance, packedMesh |
 | 3 | atomic missing-brick bitset storage |
 
-Sun depth and optical are caller-owned `r32float` 2D arrays; mediaNoise is
+This standalone ABI originally used caller-owned `r32float` depth/optical copy
+planes. The integrated full reader now uses sun1 `r32float` and sun0
+**`rgba32float`** 2D arrays, respectively, with the independent immutable SunBook,
+fixed pitch and final 128-byte SunParams specified in
+[world-shader-backend.md](world-shader-backend.md). The historical two-r32float
+copy helper is NOT a full optical sun producer. mediaNoise is
 float 3D; imported sourceAppearance is uint 3D; packedMesh is `rgba32uint` 2D.
 They are required bindings, never silently omitted/dummied by this module.
 The atlas owns only state/fields/aux/GI/glow, book and params. Shadow tiling,
@@ -63,7 +68,7 @@ is 3 groups of 64 (132 aux records), other page writers need one group.
 ## Producer / publication contract
 
 `new WorldRenderAtlas(deviceOrGpu, {worldSize, initialCapacity=64, retire,
-onChange})` allocates a dense book but **only a small resident atlas**, not a
+onChange, feedbackExtraWords=0})` allocates a dense book but **only a small resident atlas**, not a
 world Simulation. Allocation is lazy on explicit `allocate(brick, version)`
 demand. `require(bricks)` replaces the wanted set and returns missing indices;
 this set protects pages from `remove`. Allocation itself is an explicit request,
@@ -131,6 +136,11 @@ query would erase its parent's misses; begin only at the complete-query root.
 Raw access beyond genuine world bounds marks incomplete without an invalid
 request bit: the caller must handle world exterior before raw access.
 
+`feedbackExtraWords` reserves aligned u32 words AFTER the unchanged geometry
+bitset. `feedbackBytes` exposes the complete extent and snapshots bind it in
+full. The integrated backend reserves one status word plus virtual sun request
+words; see its caller protocol. Standalone defaults/layouts remain unchanged.
+
 Clear feedback before dispatch (not concurrently), read after completion,
 decode `requestedBricks`, and merge these requests into `require` before
 removing content. A known published all-zero page remains distinguishable from
@@ -159,7 +169,7 @@ Sigg, SH phase, unknown feedback, and all 65,536 half patterns in packed mesh.
 CPU/Naga checks do NOT prove GPU appearance, memory affordability or speed.
 
 Still required: Source capture/population wiring; FieldDeriver output and EMA
-ownership; continuous full primary/secondary ray backend; shared optical/GI
-producers and dependency closure; complete-frame scheduling; imported resources;
+ownership; production connection of the disabled shared full primary/secondary shader
+backend (see world-shader-backend.md); shared optical/GI producers and dependency closure; complete-frame scheduling; imported resources;
 picks/actors/Three/presentation/paused/replica/stills integration; GPU invariance,
 review and eventual full-path deployment. This phase enables none of that path.

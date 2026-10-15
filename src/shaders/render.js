@@ -12,7 +12,7 @@ import { mediaGLSL } from './gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
-import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
+import { decoViewGLSL, decoViewWGSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
 import { presentationNearWGSL } from './gfx/presentation.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
@@ -20,6 +20,11 @@ import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } fro
 import { gateVariants } from '../gfx/detailGate.js';
 import { glf } from '../glsl.js';
 import { shadowTilesWGSL, SHADOW_TILE } from './passes.js';
+import { shadowOpticsWGSL } from './gfx/shadowOptics.js';
+import { worldMeshCutWGSL } from './gfx/worldMesh.js';
+import { worldAccessWGSL } from './worldAccess.js';
+import { worldVolumeLayouts, worldQueryWGSL } from './worldRenderBackend.js';
+import { renderBackend } from './gfx/worldCore.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -153,9 +158,9 @@ export const VolumeParams = uniformStruct('VolumeParams', {
 // What every view's module defines beside the material library: the
 // tracer's events, soft blobs and the filmic curve the materials call back
 // (gfx/surface.js shows their stand-ins), its constants, and its params.
-const TRACER_WGSL = /* wgsl */ `
+const tracerWGSL = (backend = 'box') => /* wgsl */ `
 ${VolumeParams.wgsl}
-@group(3) @binding(1) var<uniform> P: VolumeParams;
+@group(3) @binding(${backend === 'world' ? 0 : 1}) var<uniform> P: VolumeParams;
 
 // A ray stops once its transmittance is below this: nothing behind can show.
 const RAY_MIN_TRANS: f32 = 0.01;
@@ -191,7 +196,7 @@ fn volumeDepth(p: vec3f) -> f32 {
   if (clip.w <= 0.0) { return 0.0; }
   return clipDepth(clip);
 }
-${meshCutGLSL}`;
+${backend === 'world' ? worldMeshCutWGSL : meshCutGLSL}`;
 
 // =====================================================================
 // Data views: heat (1), pressure (2), flow (3), X-ray (4).
@@ -743,7 +748,7 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
-const realistic = (detail, curved = false) => {
+const realistic = (detail, curved = false, backend = 'box') => {
   const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail);
   return /* wgsl */ `
@@ -770,9 +775,9 @@ const GLASS_IN_LIQUID_F: f32 = 0.3;
 // (reflectTrace, gfx/liquid.js); panes past them reflect the sky.
 const GLASS_TRACED_PANES: i32 = 2;
 const MAX_BENDS: i32 = 6;
-// Fade unresolved underwater scenery over two bricks at the simulation edge.
+${backend === 'world' ? '' : `// Fade unresolved underwater scenery over two bricks at the simulation edge.
 // The window bounds data availability, not the extent of the water.
-const LIQ_WINDOW_FADE: f32 = 2.0 * f32(BS);
+const LIQ_WINDOW_FADE: f32 = 2.0 * f32(BS);`}
 const BEND_EXTRA_STEPS: i32 = ${BEND_EXTRA_STEPS};
 
 // The opaque hit that ends the ray is recorded and shaded once, after the
@@ -1236,12 +1241,12 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     }
     if (sp == 0) {
       if (hitK != HIT_NONE) {
-        if (FU.far != 0u && liq != E_EMPTY) {
+        ${backend === 'world' ? '' : `if (FU.far != 0u && liq != E_EMPTY) {
           // Match the continuation below instead of drawing a hard seam where
           // a refracted ray just misses the last available bed/obstacle cell.
           let edge = min(min(hitP.x, f32(NX) - hitP.x), min(hitP.z, f32(NZ) - hitP.z));
           c = mix(interiorScatter(liq, hitP, mediumLight, AMBIENT), c, smoothstep(0.0, LIQ_WINDOW_FADE, edge));
-        }
+        }`}
         col += trans * c; trans = vec3f(0.0);
       }
       // floor of the box${curved ? `
@@ -1263,7 +1268,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       trans *= 1.0 - w;
     }` : ''}
   }
-  // A bent ray still submerged when it leaves the window must not reveal
+  ${backend === 'world' ? '' : `// A bent ray still submerged when it leaves the window must not reveal
   // the original camera ray's sky via alpha blending (pale, blob-shaped holes).
   // shortcut: homogeneous liquid beyond the local trace; replace with far-field
   // transmission when that can fit the view's texture-unit budget.
@@ -1272,7 +1277,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     let p = clamp(ro + rd * tEnter, vec3f(0.5), vec3f(GRID) - 0.5);
     col += trans * interiorScatter(liq, p, mediumLight, AMBIENT);
     trans = vec3f(0.0);
-  }
+  }`}
   // only thin gas: keep it (and its glow), at its depth
   if (!anyHit && (mOp > MEDIA_KEEP_ALPHA || dot(col, vec3f(1.0)) > MEDIA_KEEP_RADIANCE)) { anyHit = true; }
   var o: VolumeHit;
@@ -1330,7 +1335,7 @@ export const VOLUME_SCREEN_VERTICES = 3;
 // realistic march), so its
 // depth is the nearer of its hit and the mesh's. Curved, the ray's spans in
 // the box are its parabola's (warpWalk); its mesh cut uses arc length.
-const volumeEntry = (view, cut, curved = false) => /* wgsl */ `
+const volumeEntry = (view, cut, curved = false, backend = 'box') => /* wgsl */ `
 struct VolumeFrag {
   @location(0) color: vec4f,
   @builtin(frag_depth) depth: f32,
@@ -1353,8 +1358,8 @@ struct VolumeFrag {
   let bh = boxHit(ro, rd);
   let t0 = max(bh.x, P.marchNear);
   if (bh.y <= t0) { discard; return o; }`}
-  let h = traceView(ro, rd, t0, bh);
-  if (!h.hit) { discard; return o; }
+  ${backend === 'world' ? `worldBeginQuery();${cut ? ' worldSunValidate();' : ''}` : ''}let h = traceView(ro, rd, t0, bh);
+  ${backend === 'world' ? 'worldEndQuery(); if (worldQueryIncomplete()) { discard; return o; }\n  ' : ''}if (!h.hit) { discard; return o; }
   o.color = h.color;
   o.depth = ${cut ? 'meshCutDepth(h.depth)' : 'h.depth'};
   return o;
@@ -1372,25 +1377,27 @@ struct VolumeFrag {
  * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean }} [opts]
  * @returns {string}
  */
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false } = {}) => {
+export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, backend = 'box' } = {}) => {
+  renderBackend(backend);
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
   const parts = [
     `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
-    lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d }),
-    TRACER_WGSL,
+    lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, backend }),
+    tracerWGSL(backend),
     curved ? presentationNearWGSL() : '',
     surfaceGLSL(d, { sourceAppearance: lit && g.sourceAppearance === true }),
-    decoViewGLSL,
+    backend === 'world' ? decoViewWGSL({ backend }) : decoViewGLSL,
     liquidGLSL,
     decoSurfGLSL,
-    liquidDetailGLSL(d),
+    liquidDetailGLSL(d, { backend }),
     mediaGLSL(d),
     grainsGLSL(d),
   ];
-  if (lit) parts.push(farHazeGLSL, realistic(d, curved));
+  if (backend === 'world') parts.push(shadowOpticsWGSL({ backend }));
+  if (lit) parts.push(farHazeGLSL, realistic(d, curved, backend));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
-  parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
+  parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved, backend));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
   return parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
 };
@@ -1399,7 +1406,9 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
 
 // The volume's bind group layouts, groups 0-3: the render library's, group 0
 // with the meshes' depth and the decoration plane.
-export const VOLUME_LAYOUTS = () => {
+export const VOLUME_LAYOUTS = ({ backend = 'box' } = {}) => {
+  renderBackend(backend);
+  if (backend === 'world') return worldVolumeLayouts({ paramsSize: VolumeParams.size });
   const [, state, lighting, params] = libLayouts('LIGHTING');
   return [[...RENDER_LAYOUT.FRAME, MESH_DEPTH_ENTRY, DECO_PLANE_ENTRY], state, lighting, params];
 };
@@ -1442,14 +1451,14 @@ export const PickParams = uniformStruct('PickParams', {
 });
 export const PICK_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 
-export const pickFrag = (g) => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_RO)}
-${materialsGLSL()}
-${ddaGLSL(g)}
+export const pickFrag = (g, { backend = 'box' } = {}) => /* wgsl */ `${renderBackend(backend) && ''}
+${prelude(g, backend === 'world' ? { state: false, backend } : STATE_OPTS.STATE_RO)}
+${backend === 'world' ? worldAccessWGSL({ backend }) + worldQueryWGSL + `fn fetchA(c: vec3i) -> vec4f { return worldFetchA(c); }\nfn fetchB(c: vec3i) -> vec4f { return worldFetchB(c); }` : ''}${materialsGLSL()}
+${ddaGLSL(g, { backend })}
 ${presentationNearWGSL({ skip: false })}
 ${PickParams.wgsl}
-@group(2) @binding(0) var<storage, read_write> picks: array<vec4f>;   // the ring: two per slot
-@group(3) @binding(1) var<uniform> P: PickParams;
+@group(${backend === 'world' ? 3 : 2}) @binding(${backend === 'world' ? 6 : 0}) var<storage, read_write> picks: array<vec4f>;   // the ring: two per slot
+@group(3) @binding(${backend === 'world' ? 0 : 1}) var<uniform> P: PickParams;
 // Face codes are axis * 2 + (1 if the ray steps +axis); the face's normal is
 // minus that step. The floor is hit stepping down y.
 const PICK_FACE_FLOOR: i32 = 2;
@@ -1519,17 +1528,20 @@ fn pickCurved(ro: vec3f, rd: vec3f, skipLiquids: bool) -> Pick {
 // a batch is at most PICK_BATCH rays: one small workgroup, a thread each
 @compute @workgroup_size(${PICK_BATCH}) fn main(@builtin(local_invocation_index) i: u32) {
   if (i >= P.n) { return; }
-  var r: Pick;
+  ${backend === 'world' ? 'worldBeginQuery();' : ''}var r: Pick;
   if (P.ro[i].w != 0.0) {
     warpUse(P.ro[i].w, P.warp[i].xy, P.warp[i].zw);
     r = pickCurved(P.ro[i].xyz, P.rd[i].xyz, P.rd[i].w != 0.0);
   } else { r = pickRay(P.ro[i].xyz, P.rd[i].xyz, P.rd[i].w != 0.0); }
-  let s = P.slot[i / 4u][i % 4u] * 2u;
+  ${backend === 'world' ? 'worldEndQuery(); if (worldQueryIncomplete()) { r = Pick(vec4f(0.0,0.0,0.0,-2.0),vec4f(0.0)); }\n  ' : ''}let s = P.slot[i / 4u][i % 4u] * 2u;
   picks[s] = r.at;
   picks[s + 1u] = r.what;
 }
 `;
-export const PICK_LAYOUTS = () => [LAYOUT.TABLES, LAYOUT.STATE_RO, PICK_LAYOUT];
+export const PICK_LAYOUTS = ({ backend = 'box' } = {}) => {
+  renderBackend(backend);
+  return backend === 'world' ? worldVolumeLayouts({ pick: true, paramsSize: PickParams.size }) : [LAYOUT.TABLES, LAYOUT.STATE_RO, PICK_LAYOUT];
+};
 
 // =====================================================================
 // Shadow map: one ray per texel, marching from the sun toward the box.
@@ -1556,116 +1568,7 @@ export const shadowRes = (g) => Math.min(1024, 4 * Math.max(g.nx, g.ny, g.nz));
 export const shadowFrag = (g, { world = WORLD_SIZE } = {}) => /* wgsl */ `
 ${lib(g, { variant: 'LIGHTING_SHADOW', far: true, aeration: false })}
 ${farCastersGLSL(farLayout(world))}
-// Texel encoding, decoded by sunMapShadow (gfx/lighting.js, which defines
-// SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
-// depth (capped below it).
-const SHADOW_TAU_MAX: f32 = SHADOW_TINT_ID_SCALE - 1.0;
-const SHADOW_NO_HIT: f32 = 1e5;        // depth stored where nothing is hit: past any receiver
-const SHADOW_MEDIA_MIN_K: f32 = 1e-4;  // gas with less transport extinction (1/cell) casts nothing
-// The texel's ray (ro, rd) through the box: (opaque depth, translucent start,
-// translucent end, tint id · scale + optical depth).
-fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
-  var oC = vec4f(SHADOW_NO_HIT, SHADOW_NO_HIT, SHADOW_NO_HIT, 0.0);
-  let bh = boxHit(ro, rd);
-  let t = max(bh.x, 0.0);
-  if (bh.y <= t) { return oC; }
-  var istp: vec3i;
-  var tDelta: vec3f;
-  var cell: vec3i;
-  var tMax: vec3f;
-  ddaStart(ro, rd, t, &istp, &tDelta, &cell, &tMax);
-  var tEnter = t;
-  var lastB = vec3i(-1);
-  var flags = 0u;
-  var bid = 0u;           // the brick's number and occupancy mask (shaders/occupancy.js)
-  var occM = vec2u(0u);
-  var tid = 0;
-  var lid = E_WATER;
-  var tau = 0.0;
-  var hit = false;
-  var phiA = surfSample(ro + rd * tEnter);
-  var phiStale = false;
-  if (max(phiA.y, max(phiA.z, phiA.w)) >= SURF_ISO) { oC.x = tEnter; hit = true; }
-  for (var i = 0; i < MAX_STEPS; i++) {
-    if (hit || outside(cell)) { break; }
-    let bc = cell / BS;
-    if (any(bc != lastB)) {
-      lastB = bc;
-      bid = brickId(bc);
-      flags = brickInfoOf(bid);
-      gThin = brickThin(flags);
-      if (flags != 0u) { occM = occMaskOf(bid); }
-    }
-    if (flags == 0u) { skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter); phiStale = true; continue; }
-    let ax = argmin3(tMax);
-    let tExit = tMax[ax];
-    let id = occCellId(occM, bid, cell);   // eid(fetchA(cell)), from the brick's occupancy: nothing read for an empty cell
-    if (id == E_CRYSTAL) {
-      // Tint only the actual prism chord, not its cell or the air around it.
-      var th = tEnter;
-      var nh = vec3f(0.0);
-      if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) {
-        var exitN: vec3f;
-        let end = min(tExit, th + shardExit(gCrys, ro + rd * th, rd, &exitN));
-        if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = th; } tid = id; }
-        tau += meanSigma(id) * max(end - th, 0.0);
-        oC.z = end;
-      }
-      phiStale = true;
-    } else if (isCrisp(id)) {
-      if (RCLASS(id) != R_GLASS) { oC.x = tEnter; hit = true; break; }
-      if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = id; }
-      tau += meanSigma(id) * (tExit - tEnter);
-      oC.z = tExit;
-      phiStale = true;
-    } else if (brickSurf(flags) || brickMedia(flags)) {
-      if (phiStale) { phiA = surfSample(ro + rd * tEnter); }
-      let phiB = surfSample(ro + rd * tExit);
-      var tM = tExit;
-      var phiM = phiB;
-      if (SURFCH(id) >= 0 || (gThin && id == E_EMPTY)) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }   // (as the view's)
-      var tOp = NO_HIT;
-      for (var c = 1; c < 4; c++) {
-        tOp = min(tOp, surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]));
-      }
-      let tEnd = min(tOp, tExit);
-      // path length inside liquid: trapezoid over the three samples
-      let inL = step(vec3f(SURF_ISO), vec3f(phiA.x, phiM.x, phiB.x));
-      let lenL = 0.5 * ((inL.x + inL.y) * (tM - tEnter) + (inL.y + inL.z) * (tExit - tM));
-      if (lenL > 0.0) {
-        if (SURFCH(id) == CH_LIQUID) { lid = id; }
-        if (tid == 0 || RCLASS(tid) == R_GAS) { if (tid == 0) { oC.y = tEnter; } tid = lid; }
-        tau += meanSigma(lid) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
-        oC.z = tEnd;
-      }
-      if (brickMedia(flags)) {
-        // smoke and steam (gfx/media.js), with transport extinction: light
-        // scattered forward still gets through, so gas casts soft shadows
-        let m = mediaField(ro + rd * (0.5 * (tEnter + tEnd)));
-        let dm = max(m.xy - MEDIA_FLOOR, vec2f(0.0)) * (1.0 / (1.0 - MEDIA_FLOOR));
-        let k = dot(MD_EXT.xy * (1.0 - MD_ALBEDO.xy * MD_G.xy), dm);
-        if (k > SHADOW_MEDIA_MIN_K) {
-          if (tid == 0) { oC.y = tEnter; tid = select(E_STEAM, E_SMOKE, m.x > m.y); }
-          tau += k * (tEnd - tEnter);
-          oC.z = tEnd;
-        }
-      }
-      if (tOp < NO_HIT) { oC.x = tOp; hit = true; break; }
-      phiA = phiB;
-      phiStale = false;
-    } else {
-      phiStale = true;
-    }
-    tEnter = tExit;
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
-  }
-  if (!hit && rd.y < 0.0) { oC.x = ro.y / -rd.y; }   // floor
-  if (FU.far != 0u) { oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y)); }   // shaded from outside the window
-  oC.w = f32(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
-  return oC;
-}
-${shadowTilesWGSL(g)}
+${shadowOpticsWGSL().slice(1)}${shadowTilesWGSL(g)}
 // A workgroup per tile of the list src/derived.js shadowTiles made (the tiles
 // whose rays crossed a change, or all of them), a thread per texel.
 @compute @workgroup_size(${SHADOW_WORKGROUP}, ${SHADOW_WORKGROUP}) fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_id) lid: vec3u) {

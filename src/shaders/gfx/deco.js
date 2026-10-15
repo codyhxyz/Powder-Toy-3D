@@ -51,8 +51,8 @@ export const decoPackGLSL = '';
 // The binding, the lookups and the albedo tint (the realistic
 // tracer calls them). Needs the render library (slotOf, outside) and the
 // volume's params P (shaders/render.js VolumeParams: deco).
-export const decoViewGLSL = /* wgsl */ `
-@group(0) @binding(${DECO_PLANE_BINDING}) var<storage, read> decoPlane: array<u32>;   // RGBA8 per slot (src/deco.js)
+export const decoViewWGSL = ({ backend = 'box' } = {}) => /* wgsl */ `
+${backend === 'world' ? '' : `@group(0) @binding(${DECO_PLANE_BINDING}) var<storage, read> decoPlane: array<u32>;   // RGBA8 per slot (src/deco.js)`}
 const DECO_SIGMA: f32 = ${DECO_SIGMA.toFixed(1)};
 const DECO_DETAIL_MAX: f32 = ${DECO_DETAIL_MAX.toFixed(1)};
 const DECO_LUM_MIN: f32 = ${DECO_LUM_MIN};
@@ -60,7 +60,7 @@ const DECO_LUM: vec3f = vec3f(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance w
 // cell c's paint (sRGB colour and alpha, 0..1): none outside the grid or while P.deco is off
 fn decoAt(c: vec3i) -> vec4f {
   if (P.deco == 0u || outside(c)) { return vec4f(0.0); }
-  return unpack4x8unorm(decoPlane[slotOf(c)]);
+  return unpack4x8unorm(${backend === 'world' ? 'worldDeco(c)' : 'decoPlane[slotOf(c)]'});
 }
 fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }
 // albedo alb of an element whose mean albedo is base, painted with d
@@ -70,6 +70,8 @@ fn decoTint(alb: vec3f, base: vec3f, d: vec4f) -> vec3f {
   return mix(alb, decoLinear(d.rgb) * detail, d.a);
 }
 `;
+
+export const decoViewGLSL = decoViewWGSL();
 
 // The realistic view's hooks (with surfaceGLSL's Surf and liquidGLSL's
 // interiorLight).

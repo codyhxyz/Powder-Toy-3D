@@ -1,3 +1,6 @@
+import { worldAccessWGSL } from '../worldAccess.js';
+import { worldVolumeLayouts, worldQueryWGSL } from '../worldRenderBackend.js';
+import { renderBackend, worldCoreBindingsWGSL } from './worldCore.js';
 import { prelude, STATE_OPTS, LAYOUT, STAGE } from '../common.js';
 import { frameBindings, lightingBindings, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
@@ -61,19 +64,22 @@ export const LIB_VARIANTS = {
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
  * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object }} [opts]
  */
-export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {} } = {}) {
+export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box' } = {}) {
+  renderBackend(backend);
+  if (backend === 'world' && variant !== 'LIGHTING') throw new Error('world writer libraries require separate phase-4 layouts');
+  const world = backend === 'world';
   const v = LIB_VARIANTS[variant];
   if (!v) throw new Error(`lib: no variant ${variant} (${Object.keys(LIB_VARIANTS).join(', ')})`);
   return [
-    prelude(g, { ...STATE_OPTS.STATE_RO, debug }),
-    frameBindings(),
-    lightingBindings({ far, aeration, variant }),
+    prelude(g, world ? { state: false, backend } : { ...STATE_OPTS.STATE_RO, debug }),
+    frameBindings({ backend }),
+    world ? worldAccessWGSL({ backend }) + worldCoreBindingsWGSL + worldQueryWGSL : lightingBindings({ far, aeration, variant }),
     glslMod,
     materialsGLSL(),
-    coreGLSL(g, { flow: v.flow, detail }),
+    coreGLSL(g, { flow: v.flow, detail, backend }),
     noiseGLSL,
-    SOURCE_APPEARANCE_ENABLED && g.sourceAppearance === true && far ? sourceAppearanceWGSL(far, g.sourceGrid) : sourceAppearanceFallbackWGSL,
-    lightingGLSL({ ...v, far }),
+    SOURCE_APPEARANCE_ENABLED && g.sourceAppearance === true && (far || world) ? sourceAppearanceWGSL(true, g.sourceGrid, { backend }) : sourceAppearanceFallbackWGSL,
+    lightingGLSL({ ...v, far, backend }),
     crystalGLSL,
   ].join('\n');
 }
@@ -83,7 +89,14 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
  * groups 0-3, for gpu.layout(name, entries).
  * @param {string} [variant]
  */
-export const libLayouts = (variant = 'LIGHTING') => [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, RENDER_LAYOUT[variant], LAYOUT.PARAMS];
+export const libLayouts = (variant = 'LIGHTING', { backend = 'box' } = {}) => {
+  renderBackend(backend);
+  if (backend === 'world') {
+    if (variant !== 'LIGHTING') throw new Error('world writer layout not implemented');
+    return worldVolumeLayouts();
+  }
+  return [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, RENDER_LAYOUT[variant], LAYOUT.PARAMS];
+};
 
 // ---------------------------------------------------------------- the probes
 // Kernels that call every function the library exports, so check-wgsl and

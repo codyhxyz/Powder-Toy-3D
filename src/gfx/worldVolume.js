@@ -1,0 +1,125 @@
+// PHASE3b-1 explicit assembly, deliberately NOT selected by the application.
+// No Simulation, field producer, lighting scheduler, or presentation gate.
+import { volumeFrag, pickFrag, VOLUME_LAYOUTS, PICK_LAYOUTS, VolumeParams, PickParams,
+  volumePipeline, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES } from '../shaders/render.js';
+import { FRAME_UNIFORM_FIELDS } from '../shaders/bindings.js';
+import { uniformStruct } from '../gpu/params.js';
+import { Header } from '../shaders/common.js';
+import { WorldSunParams, worldSunFeedbackWords } from '../world/worldSun.js';
+import { requestedBricks } from '../world/renderAtlas.js';
+const BU={COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128};
+const WorldFrameStruct = uniformStruct('FrameUniforms', FRAME_UNIFORM_FIELDS);
+const vec = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
+// Native local lamp/wand/dig positions converted ONCE from a frozen origin.
+// Eye/model, beacon/cell, sun, cloud, source artwork and warp are already global.
+export function worldFrameValues(values, physicsOrigin) {
+  const origin=vec(physicsOrigin);
+  if (origin.length!==3 || !origin.every(Number.isFinite)) throw new RangeError('frozen physics origin required');
+  const out={...values};
+  for (const key of ['lampPos','wandLightPosition']) if (values[key]) {
+    const a=values[key];
+    const rows=typeof a[0]==='number' ? Array.from({length:a.length/4},(_,i)=>Array.from(a.slice(i*4,i*4+4))) : Array.from(a,vec);
+    out[key]=rows.map(p=>p.map((n,i)=>i<3 ? n+origin[i] : n));
+  }
+  for (const key of ['lampCol','lampShape','wandLightColor']) if (values[key] && typeof values[key][0]==='number') {
+    const a=values[key]; out[key]=Array.from({length:a.length/4},(_,i)=>Array.from(a.slice(i*4,i*4+4)));
+  }
+  for (const key of ['digMin','digMax']) if (values[key]) out[key]=vec(values[key]).map((n,i)=>i<3 ? n+origin[i] : n);
+  return out;
+}
+export function decodeWorldFeedback(words, book, sunTileCount) {
+  const at=book.requestBytes/4, sunWords=Math.ceil(sunTileCount/32);
+  if (!(words instanceof Uint32Array) || words.length<at+1+sunWords) throw new RangeError('complete feedback readback required');
+  const geometry=requestedBricks(words,book.count);
+  const sun=requestedBricks(words.subarray(at+1),sunTileCount);
+  return Object.freeze({incomplete:words[at]!==0||geometry.length!==0||sun.length!==0,status:words[at],geometry,sun});
+}
+export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}) {
+  const device=gpu.device ?? gpu, queue=device.queue;
+  if (!g || !atlas || !tables) throw new Error('world volume requires metadata g, atlas and tables (not a Simulation)');
+  if ([g.nx,g.ny,g.nz].some((n,i)=>n!==atlas.bookLayout.worldSize[i])) throw new Error('world metadata/atlas bounds differ');
+  const grid=Object.freeze({...g,sourceAppearance:g.sourceAppearance===true,sourceGrid:appearance?.sourceGrid??g.sourceGrid});
+  const descriptors=VOLUME_LAYOUTS({backend:'world'}), pickDescriptors=PICK_LAYOUTS({backend:'world'});
+  const storageLimit=Math.min(128*1024**2,device.limits?.maxStorageBufferBindingSize??128*1024**2);
+  if (tables.size<descriptors[0][0].buffer.minBindingSize || tables.size>storageLimit) throw new RangeError('world tables binding size');
+  const layouts=descriptors.map((entries,i)=>device.createBindGroupLayout({label:`world view ${i}`,entries}));
+  const pickLayouts=[...layouts.slice(0,3),device.createBindGroupLayout({label:'world pick 3',entries:pickDescriptors[3]})];
+  const pipelineLayout=device.createPipelineLayout({bindGroupLayouts:layouts});
+  const pickLayout=device.createPipelineLayout({bindGroupLayouts:pickLayouts});
+  const linear=device.createSampler({minFilter:'linear',magFilter:'linear'});
+  const repeat=device.createSampler({minFilter:'linear',magFilter:'linear',addressModeU:'repeat',addressModeV:'repeat',addressModeW:'repeat'});
+  const pipes=new Map(); let dead=false;
+  const alive=()=>{if(dead)throw new Error('world volume disposed');};
+  const module=(code,label)=>device.createShaderModule({code,label});
+  const pickReady=device.createComputePipelineAsync({label:'world pick',layout:pickLayout,
+    compute:{module:module(pickFrag(grid,{backend:'world'}),'world pick'),entryPoint:'main'}});
+  function pipeline(view='realistic',detail={},curved=false) {
+    alive(); const key=JSON.stringify([view,Object.keys(detail).filter(k=>detail[k]).sort(),curved]);
+    if (!pipes.has(key)) {
+      const {vertex,fragment,...desc}=volumePipeline();
+      const shader=module(volumeFrag(grid,{backend:'world',view,detail,curved}),`world ${key}`);
+      pipes.set(key,device.createRenderPipelineAsync({label:`world ${key}`,layout:pipelineLayout,...desc,
+        vertex:{module:shader,entryPoint:vertex.entry},fragment:{module:shader,entryPoint:fragment.entry,targets:fragment.targets}}));
+    }
+    return pipes.get(key);
+  }
+  // Parameters/resources are immutable per candidate, and caller pins the
+  // external lighting/appearance/mesh/noise publication through final submission.
+  function prepare({snapshot=atlas.snapshot(),frameUniforms,physicsOrigin,params,external,lighting:light=lighting}={}) {
+    alive(); const owned=[]; let released=false;
+    const buffer=(label,bytes,usage=BU.UNIFORM|BU.COPY_DST)=>{
+      const b=device.createBuffer({label,size:bytes.byteLength,usage}); owned.push(b); queue.writeBuffer(b,0,bytes); return b;
+    };
+    try {
+      if (!light?.params || !light.book || !light.sun0 || !light.sun1) throw new Error('explicit immutable lighting publication/bindings required; no fully-lit fallback');
+      if (!frameUniforms?.cam || !frameUniforms.model || !frameUniforms.viewProj) throw new Error('world eye/model/viewProj required');
+      const sun=light.params, tiles=sun.tiles;
+      if (!tiles || tiles.length!==4 || !Array.from(tiles).every(Number.isInteger) || tiles[2]<=0 || tiles[3]<=0) throw new Error('full world caster projection required even for unpublished lighting');
+      const tileCount=tiles[2]*tiles[3], extra=1+worldSunFeedbackWords(tiles), geomWords=atlas.bookLayout.requestBytes/4;
+      if (atlas.feedbackExtraWords<extra || sun.version?.[3]!==geomWords+1) throw new Error('atlas feedbackExtraWords / sun requestWordOffset mismatch');
+      if (light.book.size<tileCount*32 || light.book.size>storageLimit) throw new Error('SunBook binding size');
+      const sunBytes=new ArrayBuffer(128); WorldSunParams.write(new DataView(sunBytes),0,sun);
+      const values=worldFrameValues(frameUniforms,physicsOrigin);
+      if (appearance) values.sourceAppearance=appearance.uniform;
+      const fuBytes=WorldFrameStruct.pack(values);
+      const headerBytes=new ArrayBuffer(Header.size); Header.write(new DataView(headerBytes),0,{origin:[0,0,0]});
+      const feedback=buffer('world candidate feedback',new Uint32Array(atlas.feedbackBytes/4),BU.STORAGE|BU.COPY_SRC|BU.COPY_DST);
+      const fu=buffer('world candidate frame',fuBytes), header=buffer('world zero origin',headerBytes), sunParams=buffer('world sun publication',sunBytes);
+      const p=buffer('world view params',VolumeParams.pack(params));
+      const b=(binding,buffer)=>({binding,resource:{buffer}});
+      const entries=snapshot.bindings({...external,sunDepth:light.sun1,sunOptical:light.sun0,sourceAppearance:appearance?.view??external?.sourceAppearance},feedback);
+      entries[0]=[b(0,tables),b(1,header),b(2,fu),...entries[0].map((e,i)=>({...e,binding:i+3}))];
+      const base=[...entries[3].map(e=>({...e,binding:1})),{binding:2,resource:linear},{binding:3,resource:repeat},b(4,sunParams),b(5,light.book)];
+      const group=(layout,entries)=>device.createBindGroup({layout,entries});
+      const first=entries.slice(0,3).map((e,i)=>group(layouts[i],e));
+      const groups=[...first,group(layouts[3],[b(0,p),...base])];
+      const valid=()=>{alive();if(released)throw new Error('world candidate released');};
+      return Object.freeze({snapshot,feedback,groups,params,requiredProtocol:'submit -> read entire feedback -> withhold entire incomplete candidate; retain resources until final submitted use completes',
+        async draw(pass,{view='realistic',detail={},curved=false}={}) {
+          valid(); const pipe=await pipeline(view,detail,curved); valid();
+          pass.setPipeline(pipe); groups.forEach((g,i)=>pass.setBindGroup(i,g)); pass.draw(curved?VOLUME_SCREEN_VERTICES:VOLUME_VERTICES);
+          return {requiresFeedback:true};
+        },
+        async recordPick(encoder,{params:pickParams,output}) {
+          valid(); if (!output || output.size<32 || output.size>storageLimit) throw new Error('pick output buffer required');
+          if (!Number.isInteger(pickParams?.n) || pickParams.n<1 || pickParams.n>8) throw new RangeError('world pick batch must contain 1..8 rays');
+          for(let i=0;i<pickParams.n;i++) {
+            const slot=pickParams.slot?.[i>>2]?.[i&3];
+            if (!Number.isInteger(slot) || slot<0 || (slot+1)*32>output.size) throw new RangeError('world pick slot outside output');
+          }
+          const pipe=await pickReady; valid();
+          const p=buffer('world pick params',PickParams.pack(pickParams));
+          const pg=group(pickLayouts[3],[b(0,p),...base,b(6,output)]);
+          const pass=encoder.beginComputePass({label:'world pick'}); pass.setPipeline(pipe);
+          [...first,pg].forEach((g,i)=>pass.setBindGroup(i,g)); pass.dispatchWorkgroups(1); pass.end();
+        },
+        decodeFeedback:words=>{valid();return decodeWorldFeedback(words,atlas.bookLayout,tileCount);},
+        // ONLY after submitting the last use AND GPU completion. No hidden
+        // source/field submits, and no assumption that borrowed scratch survives.
+        release(){if(!released){released=true;snapshot.release();owned.forEach(b=>b.destroy());}},
+      });
+    } catch(e) {snapshot.release();owned.forEach(b=>b.destroy());throw e;}
+  }
+  return Object.freeze({g:grid,layouts,pickLayouts,pipeline,prepare,ready:pickReady,
+    dispose(){dead=true;/* candidates own their pinned lifetimes; no shared resource mutation */}});
+}

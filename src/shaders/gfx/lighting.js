@@ -4,6 +4,7 @@ import { LAMP_UNIT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 import { WAND_LIGHTS } from '../bindings.js';
 import { libChecks } from './lib.js';
 import { lighthouseGLSL } from './lighthouse.js';
+import { worldSunAccessWGSL, worldSunReaderWGSL } from './worldSun.js';
 
 // The count lives in shaders/bindings.js beside the uniform arrays it sizes
 // (gfx/uniforms.js imports it from here).
@@ -71,7 +72,7 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  * ambient floor in giIrradiance and giRadiance.
  * @param {{ shadowMap?: boolean, probes?: boolean, giUniforms?: boolean }} [opts]
  */
-export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false, far = false } = {}) => {
+export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false, far = false, backend = 'box' } = {}) => {
   // FU.caustics != 0u, FU.time, f32(FU.frame), or the GI passes' zeros
   const caustics = giUniforms ? 'false' : 'FU.caustics != 0u';
   const time = giUniforms ? '0.0' : 'FU.time';
@@ -80,7 +81,7 @@ export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = fal
   // (main's sim.js giUniforms), so giSource's bounce took none
   const caveAmbient = giUniforms ? 'vec3f(0.0)' : 'FU.caveAmbient';
   return /* wgsl */ `
-const PI_L: f32 = 3.14159265;
+${backend === 'world' ? worldSunAccessWGSL : ''}const PI_L: f32 = 3.14159265;
 // Lighting upgrades, each switchable at run time (Settings → Lighting):
 // FU.nearGI (traced voxel AO and nearby bounce light), FU.glowLights (lava and
 // fire as shadowed lights), FU.caustics (sun caustics through liquid).
@@ -319,7 +320,7 @@ fn shadowTexelAtt(sm: vec4f, d: f32) -> vec3f {
 
 // Sun visibility at a surface point hp with normal n, from the map (sunShadow
 // below adds the clouds).
-fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
+${backend === 'world' ? worldSunReaderWGSL({ caustics, frame }) : `fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var c: vec3f;
   var R: f32;
   var u: vec3f;
@@ -428,7 +429,7 @@ fn sunMapShadowAt(p: vec3f) -> vec3f {
   }
   if (${caustics} && cW > 0.0) { acc *= mix(1.0, causticGain(p, cD / cW), cW); }
   return acc;
-}
+}`}
 
 // Sunlight at grid point hp of a surface with normal n: the map, under the
 // clouds' shadow (a fully clouded point skips the map).
@@ -464,11 +465,11 @@ struct Probe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
 ${probes ? /* wgsl */ `
 // Trilinear probe lookup of band t at p (grid units): one hardware sample,
 // held to the edge probes' centres.
-fn probeTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
+${backend === 'world' ? `fn probeTex(t: texture_2d_array<f32>, p: vec3f) -> vec4f { return worldProbeTex(t,p); }` : `fn probeTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
   let B = vec3f(f32(BX), f32(BY), f32(BZ));
   let q = clamp(p / f32(BS), vec3f(0.5), B - 0.5);
   return textureSampleLevel(t, linearClamp, q / B, 0.0);
-}
+}`}
 // The probe at grid point p.
 fn probeAt(p: vec3f) -> Probe {
   return Probe(probeTex(tGI0, p), probeTex(tGI1, p), probeTex(tGI2, p), probeTex(tGI3, p));
@@ -528,9 +529,9 @@ fn wandLight(p: vec3f) -> vec3f {
 // one hardware trilinear sample held to the edge bricks' centres (the 8
 // manual taps clamped to the edge it replaces), plus the wand lights.
 fn sampleLight(gp: vec3f) -> vec3f {
-  let B = vec3f(f32(BX), f32(BY), f32(BZ));
+  ${backend === 'world' ? 'return worldLight(gp) + wandLight(gp);' : `let B = vec3f(f32(BX), f32(BY), f32(BZ));
   let q = clamp(gp / f32(BS), vec3f(0.5), B - 0.5);
-  return textureSampleLevel(tLight, linearClamp, q / B, 0.0).rgb + wandLight(gp);
+  return textureSampleLevel(tLight, linearClamp, q / B, 0.0).rgb + wandLight(gp);`}
 }
 
 // ---- ambient occlusion (near field; the probes cover the larger scale) ----
@@ -883,9 +884,9 @@ fn glowWorthIt(local: vec3f, irr: vec3f) -> bool {
 }
 // The glow volume's luminance at grid point gp (sampleLight's texture, no wand lights).
 fn glowLum(gp: vec3f) -> f32 {
-  let B = vec3f(f32(BX), f32(BY), f32(BZ));
+  ${backend === 'world' ? 'return dot(worldLight(gp), LUMA_709);' : `let B = vec3f(f32(BX), f32(BY), f32(BZ));
   let q = clamp(gp / f32(BS), vec3f(0.5), B - 0.5);
-  return dot(textureSampleLevel(tLight, linearClamp, q / B, 0.0).rgb, LUMA_709);
+  return dot(textureSampleLevel(tLight, linearClamp, q / B, 0.0).rgb, LUMA_709);`}
 }
 // The glow's scale at surface point p (geometric normal ng, shading normal n).
 fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
@@ -1087,7 +1088,7 @@ fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
   return lampShade(p, ng, n, soft, LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false)).diff;
 }
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f { return lampSum(p, ng, n, true); }
-${lighthouseGLSL({ far })}
+${lighthouseGLSL({ far: backend === 'world' ? false : far })}
 `;
 };
 

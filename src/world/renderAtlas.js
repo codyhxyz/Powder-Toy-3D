@@ -212,11 +212,15 @@ function paramWords(book, layout, epoch, generation) {
  * External bindings (sun/noise/appearance/mesh) stay caller-owned.
  */
 export class WorldRenderAtlas {
-  constructor(gpu, { worldSize, retire, onChange = () => {}, initialCapacity = 64 } = {}) {
+  constructor(gpu, { worldSize, retire, onChange = () => {}, initialCapacity = 64, feedbackExtraWords = 0 } = {}) {
     this.device = gpu.device ?? gpu; this.queue = this.device.queue;
     this.limits = limitsOf(this.device.limits);
     worldReaderLayouts(this.limits); for (const k of [...Object.keys(WRITER_CHANNELS), 'mesh', 'shadow']) worldWriterLayouts(k, this.limits);
     this.bookLayout = worldBookLayout(worldSize, this.limits);
+    check(integer(feedbackExtraWords), 'feedbackExtraWords must be u32');
+    this.feedbackExtraWords = feedbackExtraWords;
+    this.feedbackBytes = this.bookLayout.requestBytes + 4 * feedbackExtraWords;
+    check(this.feedbackBytes <= Math.min(this.limits.maxStorageBufferBindingSize, this.limits.maxBufferSize, 128 * 1024 ** 2), 'world feedback exceeds binding limit');
     this.retire = retire ?? (fn => { this.queue.onSubmittedWorkDone().then(fn, fn); });
     this.onChange = onChange; this.epoch = 1; this.generation = 0;
     this.required = new Set(); this.pages = new Map(); this.pending = new Map(); this.free = []; this.nextID = 0; this.dead = false;
@@ -383,13 +387,13 @@ export class WorldRenderAtlas {
       // Capture binding identities, not mutable atlas state.
       bindings: (external, feedback) => {
         if (released) throw new Error('snapshot released');
-        check(feedback?.size >= this.bookLayout.requestBytes && feedback.size <= Math.min(this.limits.maxStorageBufferBindingSize, 128 * 1024 ** 2), 'feedback binding size');
+        check(feedback?.size >= this.feedbackBytes && feedback.size <= Math.min(this.limits.maxStorageBufferBindingSize, 128 * 1024 ** 2), 'feedback binding size');
         const names = ['gi0', 'gi1', 'gi2', 'gi3', 'glow'];
         return [
           [{ binding: 0, resource: { buffer: s.params } }, { binding: 1, resource: { buffer: s.book } }],
           ['stateA', 'stateB', 'field0', 'field1', 'field2', 'aux'].map((n, binding) => ({ binding, resource: s.r.views[n] })),
           [...names.map(n => s.r.views[n]), ...['sunDepth', 'sunOptical', 'mediaNoise', 'sourceAppearance', 'packedMesh'].map(n => { check(external?.[n], `missing external ${n}`); return external[n]; })].map((resource, binding) => ({ binding, resource })),
-          [{ binding: 0, resource: { buffer: feedback, size: this.bookLayout.requestBytes } }],
+          [{ binding: 0, resource: { buffer: feedback, size: this.feedbackBytes } }],
         ];
       }, release: () => { if (!released) { released = true; this._releaseSnapshot(s); } } });
   }

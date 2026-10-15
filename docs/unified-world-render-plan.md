@@ -5,6 +5,12 @@ CPU/Naga validation is not GPU numerical or visual acceptance. The existing
 visible renderer is unchanged. Neither this phase nor the water/shadow
 checkpoint completes the unified renderer.
 
+PHASE3b-1 now provides the disabled shared full world shader backend and native
+world-volume assembly: [interface, finalized sun ABI, caller protocol and CPU
+limits of evidence](world-shader-backend.md). Box shader/layout hashes remain
+unchanged. Source/Field→Atlas providers, full lighting producers, complete-frame
+presentation and application switching are NOT implemented by that assembly.
+
 ## Required result
 
 Physics stays local. Graphics do not select quality from physics residency.

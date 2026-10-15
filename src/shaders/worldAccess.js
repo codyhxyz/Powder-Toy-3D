@@ -12,6 +12,10 @@ import { AUX_RECORDS, READY, WORLD_ATLAS_ABI, WRITER_CHANNELS, PAGE_CHANNELS, wo
  */
 export function worldAccessWGSL(layout = {}) {
   worldReaderLayouts(layout.limits);
+  const integrated = layout.backend === 'world';
+  const field = integrated ? ['tFS', 'tFM', 'tFT'] : ['worldField0', 'worldField1', 'worldField2'];
+  const gi = integrated ? ['tGI0', 'tGI1', 'tGI2', 'tGI3'] : ['worldGI0', 'worldGI1', 'worldGI2', 'worldGI3'];
+  const glow = integrated ? 'tLight' : 'worldGlow';
   return /* wgsl */ `
 const WORLD_ABI: u32 = ${WORLD_ATLAS_ABI}u;
 const WORLD_RAW: u32 = ${READY.RAW}u;
@@ -27,25 +31,25 @@ struct WorldParams {
   reserved0: vec4u,
   reserved1: vec4u,
 }
-@group(0) @binding(0) var<uniform> WA: WorldParams;
-@group(0) @binding(1) var<storage, read> worldBook: array<u32>;
+@group(0) @binding(${integrated ? 3 : 0}) var<uniform> WA: WorldParams;
+@group(0) @binding(${integrated ? 4 : 1}) var<storage, read> worldBook: array<u32>;
 @group(1) @binding(0) var worldStateA: texture_2d_array<u32>;
 @group(1) @binding(1) var worldStateB: texture_2d_array<u32>;
-@group(1) @binding(2) var worldField0: texture_2d_array<f32>;
-@group(1) @binding(3) var worldField1: texture_2d_array<f32>;
-@group(1) @binding(4) var worldField2: texture_2d_array<f32>;
+@group(1) @binding(2) var ${field[0]}: texture_2d_array<f32>;
+@group(1) @binding(3) var ${field[1]}: texture_2d_array<f32>;
+@group(1) @binding(4) var ${field[2]}: texture_2d_array<f32>;
 @group(1) @binding(5) var worldAux: texture_2d_array<u32>;
-@group(2) @binding(0) var worldGI0: texture_2d_array<f32>;
-@group(2) @binding(1) var worldGI1: texture_2d_array<f32>;
-@group(2) @binding(2) var worldGI2: texture_2d_array<f32>;
-@group(2) @binding(3) var worldGI3: texture_2d_array<f32>;
-@group(2) @binding(4) var worldGlow: texture_2d_array<f32>;
+@group(2) @binding(0) var ${gi[0]}: texture_2d_array<f32>;
+@group(2) @binding(1) var ${gi[1]}: texture_2d_array<f32>;
+@group(2) @binding(2) var ${gi[2]}: texture_2d_array<f32>;
+@group(2) @binding(3) var ${gi[3]}: texture_2d_array<f32>;
+@group(2) @binding(4) var ${glow}: texture_2d_array<f32>;
 @group(2) @binding(5) var worldSunDepth: texture_2d_array<f32>;
 @group(2) @binding(6) var worldSunOptical: texture_2d_array<f32>;
-@group(2) @binding(7) var worldMediaNoise: texture_3d<f32>;
+@group(2) @binding(7) var ${integrated ? 'tMediaNoise' : 'worldMediaNoise'}: texture_3d<f32>;
 @group(2) @binding(8) var worldSourceAppearance: texture_3d<u32>;
 @group(2) @binding(9) var worldPackedMesh: texture_2d<u32>;
-@group(3) @binding(0) var<storage, read_write> worldRequests: array<atomic<u32>>;
+@group(3) @binding(${integrated ? 1 : 0}) var<storage, read_write> worldRequests: array<atomic<u32>>;
 var<private> worldIncomplete: bool;
 fn worldBeginQuery() { worldIncomplete = false; }
 fn worldQueryIncomplete() -> bool { return worldIncomplete; }
@@ -110,7 +114,7 @@ fn worldAeration(c: vec3i) -> vec4f {
 fn worldDeco(c: vec3i) -> u32 { return worldCellAux(c, 1u).x; }
 struct WorldBrickInfo { emit: vec3f, info: u32 }
 fn worldBrickInfo(b: vec3i) -> WorldBrickInfo {
-  let pid = worldPage(b, WORLD_AUX);
+  let pid = worldPage(b, ${integrated ? 'WORLD_RAW | WORLD_FIELD | WORLD_AUX' : 'WORLD_AUX'});
   if (pid < 0) { return WorldBrickInfo(vec3f(0.0), 0u); }
   let m = worldPageMeta(u32(pid), 1u);
   return WorldBrickInfo(bitcast<vec3f>(m.xyz), m.w);
@@ -179,9 +183,9 @@ fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f) -> vec4f {
 }
 struct WorldProbe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
 fn worldProbe(p: vec3f) -> WorldProbe {
-  return WorldProbe(worldProbeTex(worldGI0,p), worldProbeTex(worldGI1,p), worldProbeTex(worldGI2,p), worldProbeTex(worldGI3,p));
+  return WorldProbe(worldProbeTex(${gi[0]},p), worldProbeTex(${gi[1]},p), worldProbeTex(${gi[2]},p), worldProbeTex(${gi[3]},p));
 }
-fn worldLight(p: vec3f) -> vec3f { return worldProbeTex(worldGlow,p).rgb; }
+fn worldLight(p: vec3f) -> vec3f { return worldProbeTex(${glow},p).rgb; }
 struct WorldMesh { color: vec4f, depth: f32, coverageFlags: u32 }
 fn worldMeshAt(pixel: vec2i) -> WorldMesh {
   let m = textureLoad(worldPackedMesh, pixel, 0);
