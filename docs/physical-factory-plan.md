@@ -6,8 +6,8 @@ Actual shovel/bucket gestures, repeat refueling, and precision fuel gating remai
 Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
-The integration branch includes fetched upstream `ea9bcb7ddb41506578df5066a64a686822da778e`.
-At `36c9825f`, the branch was 50 commits ahead and zero behind that remote.
+The integration branch includes fetched upstream `375301e7bd4a05afab9ebf130c6f90e930bd2309`.
+At merge `b8c7a5d0`, the branch was 61 commits ahead and zero behind that remote.
 Work continues only in `/tmp/sandustry-physical-factory-1b23e28b`.
 The original checkout is preserved recovery, not a build or deployment directory.
 
