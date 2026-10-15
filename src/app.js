@@ -1827,7 +1827,9 @@ async function renderThumb(viewId, out) {
 // Only the frozen view is captured here; actors are selected by the normal tick.
 async function renderWorldThumb(viewId,out) {
   const world=win,slot=world?.renderFrame,driver=slot?.driver;
-  if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame)return false;
+  const retired=()=>win!==world || world.renderFrame!==slot || slot.dead ||
+    (world.renderSource && world.renderSource.epoch!==slot.epoch);
+  if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame || retired())return false;
   const view=viewKeyOf(viewId),detail=isMaterialView(view) ? gateVariants(settings).base : {};
   const ownCamera=useWebGPUCamera(new THREE.PerspectiveCamera());
   camera.updateMatrixWorld();ownCamera.copy(camera,false);
@@ -1853,9 +1855,9 @@ async function renderWorldThumb(viewId,out) {
     usage:GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC});
   try {
     await driver.queueStill({view:frozen,target});
-    if(win!==world || world.renderFrame!==slot || slot.dead)return false;
+    if(retired())return false;
     const px=await gpu.readback.texture(target);
-    if(win!==world || world.renderFrame!==slot || slot.dead)return false;
+    if(retired())return false;
     const [w,h]=THUMB_SIZE,ctx2d=out.getContext('2d'),img=ctx2d.createImageData(w,h);
     for(let i=0;i<w*h*4;i+=4) {
       const a=px[i+3]/255 || 1;

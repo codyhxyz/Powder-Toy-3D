@@ -238,7 +238,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
     if(recordingError)throw recordingError;
     return null;
   }
-  return {data,sceneTicket,feedbackIdentity,hands,native,signFrame,signRequest,
+  return {data,sceneTicket,feedbackIdentity,hands,native,signFrame,signRequest,stillTarget,
     submitted:ticket.submitted,releaseAfter,read:submittedRead};
 }
 
@@ -247,9 +247,11 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
 export async function finishWorldFrame(app, state, recorded, eyeFeedback) {
   const {data,sceneTicket,feedbackIdentity,hands,native,signFrame,signRequest}=recorded;
   let accepted=false, finalSubmission=recorded.submitted;
+  const retiredStill=()=>recorded.stillTarget && (app.win?.render!==state.data ||
+    app.win?.renderSource?.epoch!==data.identity.epoch);
   try {
     const words=await recorded.read, count=native.feedback.size/4;
-    if(state.dead)return {accepted:false,feedback:{incomplete:false,requirements:[],sun:[]},restage:true};
+    if(state.dead || retiredStill()) {app.post.discardScene(sceneTicket);return {accepted:false,feedback:{incomplete:false,requirements:[],sun:[]},restage:true};}
     const feedback=mergeWorldFrameFeedback(eyeFeedback,native.decodeFeedback(words.subarray(0,count)));
     const signs=signRequest ? new Float32Array(words.slice(count).buffer).slice(0,signRequest.count*8) : null;
     if(signs)for(let i=0;i<signRequest.count;i++)if(signs[i*8+4]!==1)feedback.incomplete=true;
@@ -268,6 +270,7 @@ export async function finishWorldFrame(app, state, recorded, eyeFeedback) {
     if(!committed) {
       app.post.discardScene(sceneTicket);return {accepted:false,feedback,restage:true};
     }
+    if(retiredStill())return {accepted:false,feedback,restage:true};
     accepted=await state.data.accept(data,{feedback,feedbackIdentity,postTicket:sceneTicket});
     if(accepted && !state.dead) {
       requireReady(!hands.lighting || hands.lighting.commit(), 'accepted WORLD hands baseline changed');
@@ -353,15 +356,18 @@ export function createWorldFrameDriver(app,state,execution={}) {
   let displayedMainFrame=null, blockedPick=null, preferMain=false;
   const pickDemands=new Map(), stills=[];
   const emptyFeedback=()=>({incomplete:false,requirements:[],sun:[]});
+  const retiredStill=()=>app.win?.render!==state.data || (app.win?.renderSource &&
+    app.win.renderSource.epoch!==displayedMainFrame?.data.identity.epoch);
   // A failed target cannot be returned to the UI while an encoded prefix or
   // asynchronous native material compilation can still use it.
   const rejectStill=(p,error)=>{
     if(!p?.job || p.rejectionDrain)return;
-    p.rejectionDrain=Promise.allSettled([releasePreflight(app,p.preflight),...state.uses])
+    p.rejectionDrain=Promise.allSettled([p.work,releasePreflight(app,p.preflight),...state.uses])
       .then(()=>p.job.reject(error));
   };
   const queueStill=({view,target})=>{
     if(dead || failure || !accepted || !displayedMainFrame)return Promise.reject(failure??new Error('WORLD still not ready'));
+    if(retiredStill())return Promise.reject(new Error('reset WORLD owner before requesting stills'));
     if(!view?.camera || !target)return Promise.reject(new TypeError('frozen WORLD view and owned still target required'));
     return new Promise((resolve,reject)=>{stills.push({view,target,resolve,reject});wake();});
   };
@@ -407,6 +413,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
     tick({present,reserve,capture,dt=0}) {
       if(dead)return false;if(failure)throw failure;
       try {
+      if((pending?.job || stills.length) && retiredStill())throw new Error('reset WORLD owner before requesting stills');
       if(!pending && stills.length && !preferMain) {
         const job=stills.shift();
         pending={phase:'new',job,view:job.view,data:null,preflight:null,eye:null,work:null};

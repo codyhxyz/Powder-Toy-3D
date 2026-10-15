@@ -166,3 +166,11 @@ test('actual STILL opaque-pack prefix failure closes normal final ticket and ret
   assert.equal(t.driver.displayedMainFrame,display);assert.equal(t.p.events.filter(x=>x==='taa').length,taa);
   use.resolve();for(let i=0;i<20;i++){t.f.gpu.finish();await t.p.completeAll();}await job;await t.close();
 });
+
+test('epoch change during asynchronous still preparation withholds target until compilation drains',async()=>{
+  const t=await setup();await t.boot();const gate=deferred();t.controls.gate=gate;let rejected=false;
+  const job=assert.rejects(t.driver.queueStill({view:t.view(),target:{}}),/reset WORLD owner/).then(()=>{rejected=true;});
+  t.tick();await t.pump(()=>t.f.owner.state==='probe-ready');t.tick();
+  t.f.source.reset();assert.throws(()=>t.tick(),/reset WORLD owner/);await turn();assert.equal(rejected,false);
+  gate.resolve();await job;assert.equal(t.seen.filter(x=>x.still).length,0);await t.close();
+});
