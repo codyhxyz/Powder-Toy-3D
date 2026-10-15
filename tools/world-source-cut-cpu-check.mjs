@@ -139,6 +139,15 @@ test('partial auto-submit capture failure retires only after normal final orphan
   f.gpu.frame.copy=copy;await drain(f.gpu);assert(allocated.every(b=>b.destroyed));
   const retry=cut(f);assert(retry.isValid());retry.release();await f.finish();
 });
+test('discarded final cut-consumer submission keeps its pin until earlier prefix completion',async()=>{
+  const f=await fixture(),a=cut(f),snapshot=a.snapshotForFields();f.gpu.flush();
+  let reject;const submitted=new Promise((_resolve,no)=>{reject=no;});
+  const done=a.retainUntilSubmitted(submitted);let settled=false;done.catch(()=>{settled=true;});
+  a.release();reject(new Error('final consumer encoder discarded'));
+  await tick();assert.equal(settled,false);assert(snapshot.isCurrent(),'queued prefix must still own the cut');
+  f.gpu.finish();await assert.rejects(done,/discarded/);await drain(f.gpu);assert(!snapshot.isCurrent());
+  await f.finish();
+});
 
 test('scene prepass uses private native buffers and unknown generator ownership fails closed',async()=>{
   const f=await fixture({pre:true}),a=cut(f);f.editScene(71);a.producer.record(f.gpu.frame,[64,0]);

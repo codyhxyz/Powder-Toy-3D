@@ -122,7 +122,13 @@ function handle(state){
     snapshotForFields(options){alive();return state.source.snapshotForFields(options);},
     retain(){alive();return handle(state);},
     // Reserve BEFORE queued consumers, settle only after their FINAL submission.
-    retainUntilSubmitted(submitted){alive();if(!submitted?.then)throw new TypeError('Final submission promise required');const pin=handle(state);return Promise.resolve(submitted).then(()=> (state.parent.gpu.queue??state.parent.gpu.device.queue).onSubmittedWorkDone()).finally(()=>pin.release());},
+    retainUntilSubmitted(submitted){
+      alive();if(!submitted?.then)throw new TypeError('Final submission promise required');const pin=handle(state);
+      return Promise.resolve(submitted).then(()=>null,error=>({error})).then(async failure=>{
+        await (state.parent.gpu.queue??state.parent.gpu.device.queue).onSubmittedWorkDone();
+        if(failure)throw failure.error;
+      }).finally(()=>pin.release());
+    },
     release(){if(!released){released=true;if(!--state.refs)close(state);}}
   });handles.set(h,state);return h;
 }

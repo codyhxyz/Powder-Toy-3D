@@ -94,6 +94,10 @@ const completion = cut.retainUntilSubmitted(finalSubmissionPromise);
 await completion; // actual onSubmittedWorkDone, then releases the Source pin
 ```
 
+Both submission outcomes wait for queue completion. Rejection of the final
+encoder does not cancel earlier automatic submissions. The completion promise
+rejects only after those submissions finish.
+
 This does not pin unrelated Atlas/lighting resources; retain those snapshots
 separately. A completed automatic prefix is never the final fence. On last
 release or capture failure, native destruction waits until no open normal
