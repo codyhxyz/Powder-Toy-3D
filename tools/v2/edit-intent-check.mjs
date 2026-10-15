@@ -125,6 +125,10 @@ const decodeCtx={...base,KIND:id=>ELEMENTS[id].kind,K_LIQUID:K.LIQUID,K_EMPTY:K.
 const decodeBody=name=>scalar(body(compactDecodeWGSL,name)).replace(/c\.([xyzw])/g,(_s,c)=>`c[${'xyzw'.indexOf(c)}]`).replace(/ >> /g,' >>> ');
 const decode=new Function('ctx','p','c',`with(ctx) { ${decodeBody('compactA')} }`);
 decodeCtx.compactA=(p,c)=>decode(decodeCtx,p,c);
+const normalizeBody=decodeBody('compactProbeCore').replace('let core = c;', 'let core = c.slice();')
+ .replace(/core\.([xyzw])/g,(_s,c)=>`core[${'xyzw'.indexOf(c)}]`);
+const normalize=new Function('ctx','c',`with(ctx) { ${normalizeBody} }`);
+decodeCtx.compactProbeCore=c=>normalize(decodeCtx,c);
 const probe=new Function('ctx','p','c',`with(ctx) { ${decodeBody('compactProbeA')} }`);
 const hidden=L.makeMaterial(E.WATER,100,1);hidden.bank=-73;const hiddenBefore=structuredClone(hidden);
 assert.equal(decode(decodeCtx,vec(),hidden.core).x,E.EMPTY);
