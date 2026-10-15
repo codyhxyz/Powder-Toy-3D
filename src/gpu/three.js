@@ -102,9 +102,10 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
 /**
  * r186-only, renderer-instance interop: compileAsync's pipeline-cache hits do
  * not await the first creation, and WebGPUBackend catches native rejection.
- * Enroll the ORIGINAL native completion on every async getForRender, then
- * require the actual backend GPURenderPipeline handle before certifying it.
- * No device monkeypatch/error scopes; synchronous draw behavior is unchanged.
+ * Enroll the ORIGINAL native completion on every async getForRender, including
+ * sync-created pipelines' existing validation scopes, then require the actual
+ * backend GPURenderPipeline handle before certifying it. No native device
+ * mutations/new error scopes; synchronous draw behavior is unchanged.
  * Exported so CPU tests can exercise the actual Three Pipelines cache path.
  */
 const nativePipelineTrackers = new WeakSet();
@@ -116,10 +117,34 @@ export function trackNativeRenderPipelines(renderer) {
   const get = pipelines.getForRender;
   backend.createRenderPipeline = function (renderObject, promises) {
     const pipeline = renderObject.pipeline;
-    if (!promises) return create.call(this, renderObject, promises);
     const pending = [];
-    create.call(this, renderObject, pending);
+    let result;
+    if (!promises) {
+      const device = this.device;
+      // r186 PipelineUtils reads device once, then pops its existing scope
+      // synchronously. Forward native receivers for WebIDL brand checks; never
+      // change the shared device or leave this renderer-local facade installed.
+      this.device = new Proxy(device, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (key === 'popErrorScope') return (...args) => {
+            const completion = value.apply(target, args);
+            pending.push(completion); // no handlers before Three registers its own
+            return completion;
+          };
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      try { result = create.call(this, renderObject, promises); }
+      finally { this.device = device; }
+    } else {
+      // Keep Three's original async native creation + diagnostics completion.
+      result = create.call(this, renderObject, pending);
+    }
+    // For sync creation, Three's validation .then is already registered, so it
+    // sets pipelineData.error before this fence checks the handle/error pair.
     const work = Promise.allSettled(pending).then(results => {
+      if (!pending.length) throw new Error(`Three native mesh pipeline has no tracked completion (${pipeline.cacheKey})`);
       const failed = results.find(r => r.status === 'rejected');
       if (failed) throw failed.reason;
       if (!backend.get(pipeline).pipeline || backend.get(pipeline).error === true) {
@@ -129,7 +154,8 @@ export function trackNativeRenderPipelines(renderer) {
     });
     nativeWork.set(pipeline, work);
     work.catch(() => {}); // cache retains failures for later strict subscribers
-    promises.push(work);
+    if (promises) promises.push(work);
+    return result;
   };
   pipelines.getForRender = function (renderObject, promises) {
     const pipeline = get.call(this, renderObject, promises);
@@ -137,9 +163,9 @@ export function trackNativeRenderPipelines(renderer) {
       const work = nativeWork.get(pipeline);
       if (work) {
         if (!promises.includes(work)) promises.push(work);
-      } else if (!backend.get(pipeline).pipeline || backend.get(pipeline).error === true) {
-        // Never certify an untracked, handle-less cache entry as prepared.
-        const failed = Promise.reject(new Error(`Three native mesh pipeline has no tracked completion or native handle (${pipeline.cacheKey})`));
+      } else {
+        // A handle alone says nothing about outstanding native validation.
+        const failed = Promise.reject(new Error(`Three native mesh pipeline has no tracked completion (${pipeline.cacheKey})`));
         failed.catch(() => {});
         promises.push(failed);
       }
