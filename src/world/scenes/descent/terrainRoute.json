@@ -1,0 +1,3334 @@
+{
+  "encoding": "noita-folded-raster-u8-v1",
+  "fold": {
+    "angleSpan": 4.71238898038469,
+    "angleStart": -1.5707963267948966,
+    "cellScale": 1,
+    "margin": 32,
+    "shellThickness": 2,
+    "sourceMinX": -4608,
+    "sourceWidth": 9216,
+    "thickness": 48
+  },
+  "nativePortals": [
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": false
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-16-32",
+      "source": [
+        -1272,
+        1070
+      ],
+      "target": [
+        -677,
+        1350
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-16-33",
+      "source": [
+        -760,
+        1070
+      ],
+      "target": [
+        -677,
+        1350
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-16-34",
+      "source": [
+        -248,
+        1070
+      ],
+      "target": [
+        -677,
+        1350
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-16-35",
+      "source": [
+        264,
+        1070
+      ],
+      "target": [
+        -677,
+        1350
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-16-36",
+      "source": [
+        776,
+        1070
+      ],
+      "target": [
+        -677,
+        1350
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-16-37",
+      "source": [
+        1288,
+        1070
+      ],
+      "target": [
+        -677,
+        1350
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-16-38",
+      "source": [
+        1800,
+        1070
+      ],
+      "target": [
+        -677,
+        1350
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-31",
+      "source": [
+        -1784,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-32",
+      "source": [
+        -1272,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-33",
+      "source": [
+        -760,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-34",
+      "source": [
+        -248,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-35",
+      "source": [
+        264,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-36",
+      "source": [
+        776,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-37",
+      "source": [
+        1288,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-19-38",
+      "source": [
+        1800,
+        2606
+      ],
+      "target": [
+        -677,
+        2886
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-30",
+      "source": [
+        -2296,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-31",
+      "source": [
+        -1784,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-32",
+      "source": [
+        -1272,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-33",
+      "source": [
+        -760,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-34",
+      "source": [
+        -248,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-35",
+      "source": [
+        264,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-36",
+      "source": [
+        776,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-37",
+      "source": [
+        1288,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-38",
+      "source": [
+        1800,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": false,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-23-39",
+      "source": [
+        2312,
+        4654
+      ],
+      "target": [
+        -677,
+        4934
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-26-31",
+      "source": [
+        -1784,
+        6190
+      ],
+      "target": [
+        -677,
+        6470
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-26-32",
+      "source": [
+        -1272,
+        6190
+      ],
+      "target": [
+        -677,
+        6470
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-26-33",
+      "source": [
+        -760,
+        6190
+      ],
+      "target": [
+        -677,
+        6470
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-26-34",
+      "source": [
+        -248,
+        6190
+      ],
+      "target": [
+        -677,
+        6470
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-26-35",
+      "source": [
+        264,
+        6190
+      ],
+      "target": [
+        -677,
+        6470
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-26-36",
+      "source": [
+        776,
+        6190
+      ],
+      "target": [
+        -677,
+        6470
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-26-37",
+      "source": [
+        1288,
+        6190
+      ],
+      "target": [
+        -677,
+        6470
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-30",
+      "source": [
+        -2296,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-31",
+      "source": [
+        -1784,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-32",
+      "source": [
+        -1272,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-33",
+      "source": [
+        -760,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-34",
+      "source": [
+        -248,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-35",
+      "source": [
+        264,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-36",
+      "source": [
+        776,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-37",
+      "source": [
+        1288,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-30-38",
+      "source": [
+        1800,
+        8238
+      ],
+      "target": [
+        -677,
+        8518
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-29",
+      "source": [
+        -2808,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-30",
+      "source": [
+        -2296,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-31",
+      "source": [
+        -1784,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-32",
+      "source": [
+        -1272,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-33",
+      "source": [
+        -760,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-34",
+      "source": [
+        -248,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-35",
+      "source": [
+        264,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-36",
+      "source": [
+        776,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-37",
+      "source": [
+        1288,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-38",
+      "source": [
+        1800,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top template marker + spawn_portal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "default",
+        "variantVerified": false
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-34-39",
+      "source": [
+        2312,
+        10286
+      ],
+      "target": [
+        -677,
+        10566
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-29",
+      "source": [
+        -2806,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-30",
+      "source": [
+        -2294,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-31",
+      "source": [
+        -1782,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-33",
+      "source": [
+        -758,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-34",
+      "source": [
+        -246,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-35",
+      "source": [
+        266,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-36",
+      "source": [
+        778,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    },
+    {
+      "enabled": true,
+      "evidence": {
+        "coordinateSource": "altar_top_ending.png marker + spawn_endportal y-4",
+        "entityState": "Not decoded; source-authored portal graph, activation approximated.",
+        "relativeY": "Native component target.y=280 relative to portal center; engine default assumption",
+        "targetBodyAir": true,
+        "targetBodyCollisionFree": true,
+        "variant": "ending-authored-marker",
+        "variantVerified": true
+      },
+      "halfSize": [
+        15,
+        15
+      ],
+      "id": "native-39-37",
+      "source": [
+        1290,
+        12846
+      ],
+      "target": [
+        1891,
+        13126
+      ]
+    }
+  ],
+  "palette": [
+    {
+      "element": 0,
+      "name": "air"
+    },
+    {
+      "element": 9,
+      "name": "acid"
+    },
+    {
+      "element": 59,
+      "name": "acid_gas"
+    },
+    {
+      "element": 71,
+      "name": "alcohol_gas"
+    },
+    {
+      "element": 16,
+      "name": "aluminium_robot"
+    },
+    {
+      "element": 73,
+      "name": "blood"
+    },
+    {
+      "element": 73,
+      "name": "blood_cold"
+    },
+    {
+      "element": 11,
+      "name": "blood_cold_vapour"
+    },
+    {
+      "element": 73,
+      "name": "blood_fading"
+    },
+    {
+      "element": 73,
+      "name": "blood_fungi"
+    },
+    {
+      "element": 73,
+      "name": "blood_worm"
+    },
+    {
+      "element": 78,
+      "name": "bluefungi_static"
+    },
+    {
+      "element": 28,
+      "name": "bone"
+    },
+    {
+      "element": 16,
+      "name": "brass"
+    },
+    {
+      "element": 10,
+      "name": "brass_molten"
+    },
+    {
+      "element": 15,
+      "name": "ceiling_plant_material"
+    },
+    {
+      "element": 14,
+      "name": "cloth_box2d"
+    },
+    {
+      "element": 75,
+      "name": "cloud_slime"
+    },
+    {
+      "element": 30,
+      "name": "coal"
+    },
+    {
+      "element": 29,
+      "name": "coal_static"
+    },
+    {
+      "element": 14,
+      "name": "cocoon_box2d"
+    },
+    {
+      "element": 20,
+      "name": "concrete_static"
+    },
+    {
+      "element": 16,
+      "name": "copper"
+    },
+    {
+      "element": 25,
+      "name": "crystal_purple"
+    },
+    {
+      "element": 51,
+      "name": "diamond"
+    },
+    {
+      "element": 75,
+      "name": "endslime"
+    },
+    {
+      "element": 13,
+      "name": "fire"
+    },
+    {
+      "element": 13,
+      "name": "fire_blue"
+    },
+    {
+      "element": 13,
+      "name": "flame"
+    },
+    {
+      "element": 59,
+      "name": "fungal_gas"
+    },
+    {
+      "element": 78,
+      "name": "fungi"
+    },
+    {
+      "element": 78,
+      "name": "fungi_green"
+    },
+    {
+      "element": 27,
+      "name": "fungisoil"
+    },
+    {
+      "element": 25,
+      "name": "gem_box2d"
+    },
+    {
+      "element": 17,
+      "name": "glass_static"
+    },
+    {
+      "element": 78,
+      "name": "glowshroom"
+    },
+    {
+      "element": 87,
+      "name": "glowstone"
+    },
+    {
+      "element": 87,
+      "name": "glowstone_altar"
+    },
+    {
+      "element": 87,
+      "name": "glowstone_potion"
+    },
+    {
+      "element": 75,
+      "name": "glue"
+    },
+    {
+      "element": 47,
+      "name": "gold"
+    },
+    {
+      "element": 46,
+      "name": "gold_box2d"
+    },
+    {
+      "element": 10,
+      "name": "gold_molten"
+    },
+    {
+      "element": 15,
+      "name": "grass"
+    },
+    {
+      "element": 5,
+      "name": "gunpowder"
+    },
+    {
+      "element": 69,
+      "name": "gunpowder_tnt"
+    },
+    {
+      "element": 5,
+      "name": "gunpowder_unstable"
+    },
+    {
+      "element": 18,
+      "name": "ice_acid_static"
+    },
+    {
+      "element": 18,
+      "name": "ice_blood_static"
+    },
+    {
+      "element": 18,
+      "name": "ice_cold_static"
+    },
+    {
+      "element": 18,
+      "name": "ice_poison_static"
+    },
+    {
+      "element": 18,
+      "name": "ice_radioactive_static"
+    },
+    {
+      "element": 18,
+      "name": "ice_slime_static"
+    },
+    {
+      "element": 18,
+      "name": "ice_static"
+    },
+    {
+      "element": 16,
+      "name": "item_box2d"
+    },
+    {
+      "element": 10,
+      "name": "lava"
+    },
+    {
+      "element": 88,
+      "name": "lavarock_static"
+    },
+    {
+      "element": 2,
+      "name": "lavasand"
+    },
+    {
+      "element": 13,
+      "name": "liquid_fire"
+    },
+    {
+      "element": 25,
+      "name": "magic_crystal"
+    },
+    {
+      "element": 82,
+      "name": "magic_liquid_berserk"
+    },
+    {
+      "element": 84,
+      "name": "magic_liquid_charm"
+    },
+    {
+      "element": 80,
+      "name": "magic_liquid_faster_levitation"
+    },
+    {
+      "element": 80,
+      "name": "magic_liquid_faster_levitation_and_movement"
+    },
+    {
+      "element": 7,
+      "name": "magic_liquid_invisibility"
+    },
+    {
+      "element": 7,
+      "name": "magic_liquid_mana_regeneration"
+    },
+    {
+      "element": 80,
+      "name": "magic_liquid_movement_faster"
+    },
+    {
+      "element": 83,
+      "name": "magic_liquid_polymorph"
+    },
+    {
+      "element": 83,
+      "name": "magic_liquid_random_polymorph"
+    },
+    {
+      "element": 79,
+      "name": "magic_liquid_teleportation"
+    },
+    {
+      "element": 79,
+      "name": "magic_liquid_unstable_teleportation"
+    },
+    {
+      "element": 84,
+      "name": "magic_liquid_worm_attractor"
+    },
+    {
+      "element": 7,
+      "name": "material_confusion"
+    },
+    {
+      "element": 74,
+      "name": "material_darkness"
+    },
+    {
+      "element": 16,
+      "name": "metal_nohit"
+    },
+    {
+      "element": 10,
+      "name": "metal_nohit_molten"
+    },
+    {
+      "element": 16,
+      "name": "metal_prop"
+    },
+    {
+      "element": 10,
+      "name": "metal_prop_molten"
+    },
+    {
+      "element": 10,
+      "name": "metal_rust_molten"
+    },
+    {
+      "element": 23,
+      "name": "metal_sand"
+    },
+    {
+      "element": 10,
+      "name": "metal_sand_molten"
+    },
+    {
+      "element": 77,
+      "name": "moss"
+    },
+    {
+      "element": 65,
+      "name": "mud"
+    },
+    {
+      "element": 8,
+      "name": "oil"
+    },
+    {
+      "element": 29,
+      "name": "peat"
+    },
+    {
+      "element": 15,
+      "name": "plant_material"
+    },
+    {
+      "element": 15,
+      "name": "plant_material_red"
+    },
+    {
+      "element": 45,
+      "name": "plasma_fading"
+    },
+    {
+      "element": 45,
+      "name": "plasma_fading_pink"
+    },
+    {
+      "element": 3,
+      "name": "plastic_grey"
+    },
+    {
+      "element": 8,
+      "name": "plastic_grey_molten"
+    },
+    {
+      "element": 14,
+      "name": "plastic_prop"
+    },
+    {
+      "element": 8,
+      "name": "plastic_prop_molten"
+    },
+    {
+      "element": 14,
+      "name": "plastic_red"
+    },
+    {
+      "element": 8,
+      "name": "plastic_red_molten"
+    },
+    {
+      "element": 74,
+      "name": "poison"
+    },
+    {
+      "element": 59,
+      "name": "poison_gas"
+    },
+    {
+      "element": 17,
+      "name": "potion_glass_box2d"
+    },
+    {
+      "element": 53,
+      "name": "purifying_powder"
+    },
+    {
+      "element": 12,
+      "name": "radioactive_gas"
+    },
+    {
+      "element": 74,
+      "name": "radioactive_liquid"
+    },
+    {
+      "element": 20,
+      "name": "rock_hard"
+    },
+    {
+      "element": 1,
+      "name": "rock_hard_border"
+    },
+    {
+      "element": 20,
+      "name": "rock_static"
+    },
+    {
+      "element": 20,
+      "name": "rock_static_cursed"
+    },
+    {
+      "element": 20,
+      "name": "rock_static_grey"
+    },
+    {
+      "element": 20,
+      "name": "rock_static_noedge"
+    },
+    {
+      "element": 20,
+      "name": "rock_static_poison"
+    },
+    {
+      "element": 20,
+      "name": "rock_static_radioactive"
+    },
+    {
+      "element": 20,
+      "name": "rock_static_wet"
+    },
+    {
+      "element": 20,
+      "name": "rock_vault"
+    },
+    {
+      "element": 14,
+      "name": "root"
+    },
+    {
+      "element": 14,
+      "name": "root_growth"
+    },
+    {
+      "element": 85,
+      "name": "rotten_meat"
+    },
+    {
+      "element": 16,
+      "name": "rust_static"
+    },
+    {
+      "element": 2,
+      "name": "sand"
+    },
+    {
+      "element": 2,
+      "name": "sand_blue"
+    },
+    {
+      "element": 27,
+      "name": "sand_static"
+    },
+    {
+      "element": 27,
+      "name": "sand_static_rainforest"
+    },
+    {
+      "element": 27,
+      "name": "sand_static_rainforest_dark"
+    },
+    {
+      "element": 16,
+      "name": "silver"
+    },
+    {
+      "element": 75,
+      "name": "slime"
+    },
+    {
+      "element": 75,
+      "name": "slime_green"
+    },
+    {
+      "element": 12,
+      "name": "smoke"
+    },
+    {
+      "element": 12,
+      "name": "smoke_explosion"
+    },
+    {
+      "element": 12,
+      "name": "smoke_magic"
+    },
+    {
+      "element": 4,
+      "name": "snow"
+    },
+    {
+      "element": 18,
+      "name": "snow_static"
+    },
+    {
+      "element": 4,
+      "name": "snow_sticky"
+    },
+    {
+      "element": 18,
+      "name": "snowrock_static"
+    },
+    {
+      "element": 27,
+      "name": "soil"
+    },
+    {
+      "element": 27,
+      "name": "soil_dead"
+    },
+    {
+      "element": 27,
+      "name": "soil_lush"
+    },
+    {
+      "element": 27,
+      "name": "soil_lush_dark"
+    },
+    {
+      "element": 13,
+      "name": "spark"
+    },
+    {
+      "element": 13,
+      "name": "spark_blue"
+    },
+    {
+      "element": 45,
+      "name": "spark_electric"
+    },
+    {
+      "element": 13,
+      "name": "spark_green"
+    },
+    {
+      "element": 13,
+      "name": "spark_red"
+    },
+    {
+      "element": 13,
+      "name": "spark_white"
+    },
+    {
+      "element": 78,
+      "name": "spore_pod_stalk"
+    },
+    {
+      "element": 11,
+      "name": "steam"
+    },
+    {
+      "element": 16,
+      "name": "steel"
+    },
+    {
+      "element": 10,
+      "name": "steel_molten"
+    },
+    {
+      "element": 16,
+      "name": "steel_rust"
+    },
+    {
+      "element": 10,
+      "name": "steel_rust_molten"
+    },
+    {
+      "element": 16,
+      "name": "steel_rusted_no_holes"
+    },
+    {
+      "element": 23,
+      "name": "steel_sand"
+    },
+    {
+      "element": 16,
+      "name": "steel_static"
+    },
+    {
+      "element": 16,
+      "name": "steelmoss_static"
+    },
+    {
+      "element": 16,
+      "name": "steelpipe_static"
+    },
+    {
+      "element": 69,
+      "name": "sulphur_box2d"
+    },
+    {
+      "element": 65,
+      "name": "swamp"
+    },
+    {
+      "element": 41,
+      "name": "templebrick_noedge_static"
+    },
+    {
+      "element": 41,
+      "name": "templebrick_static"
+    },
+    {
+      "element": 41,
+      "name": "templebrick_static_broken"
+    },
+    {
+      "element": 41,
+      "name": "templebrick_static_soft"
+    },
+    {
+      "element": 41,
+      "name": "templebrick_thick_static"
+    },
+    {
+      "element": 41,
+      "name": "templebrick_thick_static_noedge"
+    },
+    {
+      "element": 41,
+      "name": "templebrickdark_static"
+    },
+    {
+      "element": 41,
+      "name": "templeslab_crumbling_static"
+    },
+    {
+      "element": 17,
+      "name": "tubematerial"
+    },
+    {
+      "element": 7,
+      "name": "water"
+    },
+    {
+      "element": 7,
+      "name": "water_fading"
+    },
+    {
+      "element": 18,
+      "name": "water_ice"
+    },
+    {
+      "element": 7,
+      "name": "water_swamp"
+    },
+    {
+      "element": 14,
+      "name": "wood_player"
+    },
+    {
+      "element": 14,
+      "name": "wood_prop"
+    },
+    {
+      "element": 14,
+      "name": "wood_static"
+    },
+    {
+      "element": 14,
+      "name": "wood_static_vertical"
+    }
+  ],
+  "regions": [
+    {
+      "core": [
+        1024,
+        1280
+      ],
+      "file": "noitaTerrain00.binpack",
+      "key": "noitaTerrain00",
+      "label": "Holy Mountain",
+      "sectionIndex": 0,
+      "sha256": "33505dc3e00a70b371a039a05ccb63779db83e1eed4d200d74cc7d17402bfc98",
+      "sourceHeight": 320,
+      "sourceTop": 992,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -695.5,
+        1156,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        1280,
+        1536
+      ],
+      "file": "noitaTerrain01.binpack",
+      "key": "noitaTerrain01",
+      "label": "Holy Mountain",
+      "sectionIndex": 0,
+      "sha256": "42b009ea537618844b21eec55aa60172f74fbeca909e29dc95278de390810f1c",
+      "sourceHeight": 320,
+      "sourceTop": 1248,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -605.5,
+        1399,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        1536,
+        1792
+      ],
+      "file": "noitaTerrain02.binpack",
+      "key": "noitaTerrain02",
+      "label": "Coal Pits",
+      "sectionIndex": 1,
+      "sha256": "6a8f90c2c4824b7e270ae733efc33282c8f1d454e030ec2a59bd2623422baa67",
+      "sourceHeight": 320,
+      "sourceTop": 1504,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        1626,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        1792,
+        2048
+      ],
+      "file": "noitaTerrain03.binpack",
+      "key": "noitaTerrain03",
+      "label": "Coal Pits",
+      "sectionIndex": 1,
+      "sha256": "c569b2142c60cad3f2a14ff80fb6c657156ba6f9d9d904f597c5857f0c8859fd",
+      "sourceHeight": 320,
+      "sourceTop": 1760,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -672.5,
+        1821,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        2048,
+        2304
+      ],
+      "file": "noitaTerrain04.binpack",
+      "key": "noitaTerrain04",
+      "label": "Coal Pits",
+      "sectionIndex": 1,
+      "sha256": "5377f3c9233fe168d10db0bb3e4413dfde0f5247d12b5c46b8b55c60eab0d52b",
+      "sourceHeight": 320,
+      "sourceTop": 2016,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -661.5,
+        2230,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        2304,
+        2560
+      ],
+      "file": "noitaTerrain05.binpack",
+      "key": "noitaTerrain05",
+      "label": "Coal Pits",
+      "sectionIndex": 1,
+      "sha256": "e6fed3a7625dff9122feef88135e1ae898dfacf7413d4bcee49ce3785e613153",
+      "sourceHeight": 320,
+      "sourceTop": 2272,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        2448,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        2560,
+        2816
+      ],
+      "file": "noitaTerrain06.binpack",
+      "key": "noitaTerrain06",
+      "label": "Holy Mountain",
+      "sectionIndex": 2,
+      "sha256": "83700e952273eb00ba859b2faf4e7cd775544391e1390ae9956e5248a5c6ce04",
+      "sourceHeight": 320,
+      "sourceTop": 2528,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -682.5,
+        2621,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        2816,
+        3072
+      ],
+      "file": "noitaTerrain07.binpack",
+      "key": "noitaTerrain07",
+      "label": "Holy Mountain",
+      "sectionIndex": 2,
+      "sha256": "fff9aa81690cf73b003c01c215afb6e04bb6937fb9d2369d1d441d7de290842b",
+      "sourceHeight": 320,
+      "sourceTop": 2784,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -678.5,
+        2947,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        3072,
+        3328
+      ],
+      "file": "noitaTerrain08.binpack",
+      "key": "noitaTerrain08",
+      "label": "Snowy Depths",
+      "sectionIndex": 3,
+      "sha256": "d3a2ee3af6fc9fba0f18d5398b80849eb73630a85c17d71a7d729972ad3ad1af",
+      "sourceHeight": 320,
+      "sourceTop": 3040,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -712.5,
+        3287,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        3328,
+        3584
+      ],
+      "file": "noitaTerrain09.binpack",
+      "key": "noitaTerrain09",
+      "label": "Snowy Depths",
+      "sectionIndex": 3,
+      "sha256": "35360d63a27eb27afb6efe2953608d23f42722bd2511789d5355849607f5612e",
+      "sourceHeight": 320,
+      "sourceTop": 3296,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -677.5,
+        3336,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        3584,
+        3840
+      ],
+      "file": "noitaTerrain10.binpack",
+      "key": "noitaTerrain10",
+      "label": "Snowy Depths",
+      "sectionIndex": 3,
+      "sha256": "17b57134285b30ac59abf7e583cbddd3b5c46a6eaaa8d34096002d3b06e14527",
+      "sourceHeight": 320,
+      "sourceTop": 3552,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -713.5,
+        3684,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        3840,
+        4096
+      ],
+      "file": "noitaTerrain11.binpack",
+      "key": "noitaTerrain11",
+      "label": "Snowy Depths",
+      "sectionIndex": 3,
+      "sha256": "02b96a1a4383a15763663dd692af9e60dff0d875bdb4c494b1f3c8c1e2c51a3e",
+      "sourceHeight": 320,
+      "sourceTop": 3808,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -596.5,
+        4046,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        4096,
+        4352
+      ],
+      "file": "noitaTerrain12.binpack",
+      "key": "noitaTerrain12",
+      "label": "Snowy Depths",
+      "sectionIndex": 3,
+      "sha256": "7c624d659bb6e5e0bef5f9fd1594504f5f87e6cc1d571a94a15692a07d5ffaa0",
+      "sourceHeight": 320,
+      "sourceTop": 4064,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -579.5,
+        4187,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        4352,
+        4608
+      ],
+      "file": "noitaTerrain13.binpack",
+      "key": "noitaTerrain13",
+      "label": "Snowy Depths",
+      "sectionIndex": 3,
+      "sha256": "4473497be85dc916c24efa33447606a3b8c296993d39f4ca24d8c8f63ac7ef70",
+      "sourceHeight": 320,
+      "sourceTop": 4320,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -716.5,
+        4493,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        4608,
+        4864
+      ],
+      "file": "noitaTerrain14.binpack",
+      "key": "noitaTerrain14",
+      "label": "Holy Mountain",
+      "sectionIndex": 4,
+      "sha256": "e90c668acd7ea4e2ac7171facc4f9847534976464e71b82aa9aa13687894215f",
+      "sourceHeight": 320,
+      "sourceTop": 4576,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -697.5,
+        4847,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        4864,
+        5120
+      ],
+      "file": "noitaTerrain15.binpack",
+      "key": "noitaTerrain15",
+      "label": "Holy Mountain",
+      "sectionIndex": 4,
+      "sha256": "e7f317f96371850bd861fe883bd34d1fa562983a3cf0c05fb5cf54b2bbb9329c",
+      "sourceHeight": 320,
+      "sourceTop": 4832,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -734.5,
+        4990,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        5120,
+        5376
+      ],
+      "file": "noitaTerrain16.binpack",
+      "key": "noitaTerrain16",
+      "label": "Hiisi Base",
+      "sectionIndex": 5,
+      "sha256": "c9f31a1b4377ad15b7eaaa64d9d159f61b6799cb2d164522534453629b61ef4a",
+      "sourceHeight": 320,
+      "sourceTop": 5088,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -677.5,
+        5173,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        5376,
+        5632
+      ],
+      "file": "noitaTerrain17.binpack",
+      "key": "noitaTerrain17",
+      "label": "Hiisi Base",
+      "sectionIndex": 5,
+      "sha256": "4e6027a1cf4a55389ed584b54e764a55d32115af58181444dd0fcbf81c0d0619",
+      "sourceHeight": 320,
+      "sourceTop": 5344,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -672.5,
+        5438,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        5632,
+        5888
+      ],
+      "file": "noitaTerrain18.binpack",
+      "key": "noitaTerrain18",
+      "label": "Hiisi Base",
+      "sectionIndex": 5,
+      "sha256": "4fa4ea110f8e8dd16a00050bb62ca0d8ab46fc31e096882434b638a2580d61a2",
+      "sourceHeight": 320,
+      "sourceTop": 5600,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -677.5,
+        5636,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        5888,
+        6144
+      ],
+      "file": "noitaTerrain19.binpack",
+      "key": "noitaTerrain19",
+      "label": "Hiisi Base",
+      "sectionIndex": 5,
+      "sha256": "a071689c806a9a5ba2f555f377dc1d7be3e0bc3f18f37bad37215ab31e4d97f2",
+      "sourceHeight": 320,
+      "sourceTop": 5856,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -662.5,
+        5957,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        6144,
+        6400
+      ],
+      "file": "noitaTerrain20.binpack",
+      "key": "noitaTerrain20",
+      "label": "Holy Mountain",
+      "sectionIndex": 6,
+      "sha256": "56f47908da482442492691d9869104dc2fca13d048ef6af9789aaa81e3d0395d",
+      "sourceHeight": 320,
+      "sourceTop": 6112,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -680.5,
+        6204,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        6400,
+        6656
+      ],
+      "file": "noitaTerrain21.binpack",
+      "key": "noitaTerrain21",
+      "label": "Holy Mountain",
+      "sectionIndex": 6,
+      "sha256": "863a495497f4d5933a38be368e66614d936c2d341196ca3dd5038bb87a844435",
+      "sourceHeight": 320,
+      "sourceTop": 6368,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -680.5,
+        6532,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        6656,
+        6912
+      ],
+      "file": "noitaTerrain22.binpack",
+      "key": "noitaTerrain22",
+      "label": "Underground Jungle",
+      "sectionIndex": 7,
+      "sha256": "7bb15c9d82ce68718221e4ae686e6184b35b973915633d6c6576b3345b69de6f",
+      "sourceHeight": 320,
+      "sourceTop": 6624,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -678.5,
+        6778,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        6912,
+        7168
+      ],
+      "file": "noitaTerrain23.binpack",
+      "key": "noitaTerrain23",
+      "label": "Underground Jungle",
+      "sectionIndex": 7,
+      "sha256": "4052011070e5a4377772ad04f99968d14e1807a20153144041bda28caa725032",
+      "sourceHeight": 320,
+      "sourceTop": 6880,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -670.5,
+        6924,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        7168,
+        7424
+      ],
+      "file": "noitaTerrain24.binpack",
+      "key": "noitaTerrain24",
+      "label": "Underground Jungle",
+      "sectionIndex": 7,
+      "sha256": "31b74d9ecea6459b98b31c715e0b4ea85ec5e8643f427c57f4c101a16f18cd10",
+      "sourceHeight": 320,
+      "sourceTop": 7136,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -670.5,
+        7309,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        7424,
+        7680
+      ],
+      "file": "noitaTerrain25.binpack",
+      "key": "noitaTerrain25",
+      "label": "Underground Jungle",
+      "sectionIndex": 7,
+      "sha256": "681dc1730f1ade30e9233243092b4032627b4dc13e3f28ffeda10b67071538e7",
+      "sourceHeight": 320,
+      "sourceTop": 7392,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -664.5,
+        7551,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        7680,
+        7936
+      ],
+      "file": "noitaTerrain26.binpack",
+      "key": "noitaTerrain26",
+      "label": "Underground Jungle",
+      "sectionIndex": 7,
+      "sha256": "9146c56cfaeaf271a6fee2db4da96cb78b6a4fb5a460a1d89906d88060420082",
+      "sourceHeight": 320,
+      "sourceTop": 7648,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -685.5,
+        7860,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        7936,
+        8192
+      ],
+      "file": "noitaTerrain27.binpack",
+      "key": "noitaTerrain27",
+      "label": "Underground Jungle",
+      "sectionIndex": 7,
+      "sha256": "9dedc0dce1a264526fb2f72700f55ce9cee9cfacb6a2b792c86dd7c657672a28",
+      "sourceHeight": 320,
+      "sourceTop": 7904,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -665.5,
+        8166,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        8192,
+        8448
+      ],
+      "file": "noitaTerrain28.binpack",
+      "key": "noitaTerrain28",
+      "label": "Holy Mountain",
+      "sectionIndex": 8,
+      "sha256": "6a415cb642f4dd89bfc9b65a0636b4a0cab4bedd6f9438a6b6afbee065e3622a",
+      "sourceHeight": 320,
+      "sourceTop": 8160,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -645.5,
+        8192,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        8448,
+        8704
+      ],
+      "file": "noitaTerrain29.binpack",
+      "key": "noitaTerrain29",
+      "label": "Holy Mountain",
+      "sectionIndex": 8,
+      "sha256": "3715dc50684144e91aa3cf76fc9adaa8e8289715713bfbcdc9640c05d34e6af0",
+      "sourceHeight": 320,
+      "sourceTop": 8416,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        8527,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        8704,
+        8960
+      ],
+      "file": "noitaTerrain30.binpack",
+      "key": "noitaTerrain30",
+      "label": "Vault",
+      "sectionIndex": 9,
+      "sha256": "4d0cfc15f171791d855ceb8d61c3053171242780da310a647acfe96961e7e57a",
+      "sourceHeight": 320,
+      "sourceTop": 8672,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -677.5,
+        8797,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        8960,
+        9216
+      ],
+      "file": "noitaTerrain31.binpack",
+      "key": "noitaTerrain31",
+      "label": "Vault",
+      "sectionIndex": 9,
+      "sha256": "899bb1280028e2621de0fd63846e3eb9585526d27b66c277a09e3ed297691e6f",
+      "sourceHeight": 320,
+      "sourceTop": 8928,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -653.5,
+        9034,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        9216,
+        9472
+      ],
+      "file": "noitaTerrain32.binpack",
+      "key": "noitaTerrain32",
+      "label": "Vault",
+      "sectionIndex": 9,
+      "sha256": "cf9cc488c42ef0f56823ba6653806ee405584246eff0ebc02b604657aca255fb",
+      "sourceHeight": 320,
+      "sourceTop": 9184,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        9289,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        9472,
+        9728
+      ],
+      "file": "noitaTerrain33.binpack",
+      "key": "noitaTerrain33",
+      "label": "Vault",
+      "sectionIndex": 9,
+      "sha256": "0f5bfab1dc406cdf17a2fae8f2b1de0489f9ce96717aef6e773964a464789315",
+      "sourceHeight": 320,
+      "sourceTop": 9440,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -678.5,
+        9608,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        9728,
+        9984
+      ],
+      "file": "noitaTerrain34.binpack",
+      "key": "noitaTerrain34",
+      "label": "Vault",
+      "sectionIndex": 9,
+      "sha256": "7c0aea3f5f3fc6bd7788f233a6257d37b46211497ddca180b489c4f3ab5f6ee6",
+      "sourceHeight": 320,
+      "sourceTop": 9696,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -673.5,
+        9728,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        9984,
+        10240
+      ],
+      "file": "noitaTerrain35.binpack",
+      "key": "noitaTerrain35",
+      "label": "Vault",
+      "sectionIndex": 9,
+      "sha256": "81da2ac386704aa97acab11160b320a7eaad0bcbdf9962caa9b4919b7e43a4c1",
+      "sourceHeight": 320,
+      "sourceTop": 9952,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -679.5,
+        9998,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        10240,
+        10496
+      ],
+      "file": "noitaTerrain36.binpack",
+      "key": "noitaTerrain36",
+      "label": "Holy Mountain",
+      "sectionIndex": 10,
+      "sha256": "7ff73418d52ed05b117b8cc20c7ed57916ed75c35587827fe6ea40e061474cbb",
+      "sourceHeight": 320,
+      "sourceTop": 10208,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -677.5,
+        10370,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        10496,
+        10752
+      ],
+      "file": "noitaTerrain37.binpack",
+      "key": "noitaTerrain37",
+      "label": "Holy Mountain",
+      "sectionIndex": 10,
+      "sha256": "f992b82430a5160362fd9c755e5281cbdde2d6ae7d6f7ca67f673538866ef73a",
+      "sourceHeight": 320,
+      "sourceTop": 10464,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -687.5,
+        10636,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        10752,
+        11008
+      ],
+      "file": "noitaTerrain38.binpack",
+      "key": "noitaTerrain38",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "197d9c4a2018522e84b8b55c7d41e0eaa048d321c82a961614cf34341c412ea5",
+      "sourceHeight": 320,
+      "sourceTop": 10720,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        10837,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        11008,
+        11264
+      ],
+      "file": "noitaTerrain39.binpack",
+      "key": "noitaTerrain39",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "9eac85997ee9392b8f4599ee70abc25352e97e1b91fb1d492c476bff9c7da41d",
+      "sourceHeight": 320,
+      "sourceTop": 10976,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -683.5,
+        11256,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        11264,
+        11520
+      ],
+      "file": "noitaTerrain40.binpack",
+      "key": "noitaTerrain40",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "a15964a2c313374fb895bedc56c3ba9d9b00af126a310361dc33e8cf95607e87",
+      "sourceHeight": 320,
+      "sourceTop": 11232,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        11327,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        11520,
+        11776
+      ],
+      "file": "noitaTerrain41.binpack",
+      "key": "noitaTerrain41",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "8b991ba3360976e85d1a2e1fc146ec9b00c9c3438f765251dfdb4f87e81f047d",
+      "sourceHeight": 320,
+      "sourceTop": 11488,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        11577,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        11776,
+        12032
+      ],
+      "file": "noitaTerrain42.binpack",
+      "key": "noitaTerrain42",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "7eb45e378c711b8da8079c8039fea233cfa6ce2263d0e4903770ebac414f27a0",
+      "sourceHeight": 320,
+      "sourceTop": 11744,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        11797,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        12032,
+        12288
+      ],
+      "file": "noitaTerrain43.binpack",
+      "key": "noitaTerrain43",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "13115b12b7cc20821c40648b534064f5c1d5bc95b3775f9c668983ae2859d43d",
+      "sourceHeight": 320,
+      "sourceTop": 12000,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        12276,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        12288,
+        12544
+      ],
+      "file": "noitaTerrain44.binpack",
+      "key": "noitaTerrain44",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "472060ce838cebec06834858f32c1b8f16e0adb266e09e6f97531e3a1268ad10",
+      "sourceHeight": 320,
+      "sourceTop": 12256,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -676.5,
+        12357,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        12544,
+        12800
+      ],
+      "file": "noitaTerrain45.binpack",
+      "key": "noitaTerrain45",
+      "label": "Temple of the Art",
+      "sectionIndex": 11,
+      "sha256": "ac78906bad0e3077fb5d810bb8280168c8d08385b26daf08430416de89fc041b",
+      "sourceHeight": 320,
+      "sourceTop": 12512,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -663.5,
+        12597,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        12800,
+        13056
+      ],
+      "file": "noitaTerrain46.binpack",
+      "key": "noitaTerrain46",
+      "label": "Kolmi Arena",
+      "sectionIndex": 12,
+      "sha256": "5e9ddbbebd3a68bb3fa40b97705835d57ae209e15823fe1fd9f2e81506a631ac",
+      "sourceHeight": 320,
+      "sourceTop": 12768,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        -720.5,
+        12880,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        13056,
+        13312
+      ],
+      "file": "noitaTerrain47.binpack",
+      "key": "noitaTerrain47",
+      "label": "Kolmi Arena",
+      "sectionIndex": 12,
+      "sha256": "ac4335ca13a416d93d0cb445f4262a0bc769d6b33dda38792f85578e50f33467",
+      "sourceHeight": 320,
+      "sourceTop": 13024,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        1.5,
+        13082,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        13312,
+        13568
+      ],
+      "file": "noitaTerrain48.binpack",
+      "key": "noitaTerrain48",
+      "label": "Kolmi Arena",
+      "sectionIndex": 12,
+      "sha256": "4539b1c9f940ef1edbbbf8e53cd846e98cd92b410b4eea1c91b6686311260ea2",
+      "sourceHeight": 320,
+      "sourceTop": 13280,
+      "spawnPolicy": "native-floor",
+      "spawnSource": [
+        4037.5,
+        13286,
+        0
+      ],
+      "spawnSupported": true
+    },
+    {
+      "core": [
+        13568,
+        13824
+      ],
+      "file": "noitaTerrain49.binpack",
+      "key": "noitaTerrain49",
+      "label": "Kolmi Arena",
+      "sectionIndex": 12,
+      "sha256": "807684c44b76e2487c15e80486d3f919162787e143d23e6c69543b56dddcac18",
+      "sourceHeight": 320,
+      "sourceTop": 13536,
+      "spawnPolicy": "hazardous-streaming-only",
+      "spawnSource": [
+        1544.5,
+        13542,
+        0
+      ],
+      "spawnSupported": false,
+      "warning": "Native lava band; entered by source-continuous streaming, not a safe starting scene"
+    },
+    {
+      "core": [
+        13824,
+        13888
+      ],
+      "file": "noitaTerrain50.binpack",
+      "key": "noitaTerrain50",
+      "label": "Kolmi Arena",
+      "sectionIndex": 12,
+      "sha256": "44029e8e8ffe4d43991b8ad089efe5166042027584d397c2411ef11fc9e0365e",
+      "sourceHeight": 320,
+      "sourceTop": 13792,
+      "spawnPolicy": "hazardous-streaming-only",
+      "spawnSource": [
+        1544.5,
+        13798,
+        0
+      ],
+      "spawnSupported": false,
+      "warning": "Native lava band; entered by source-continuous streaming, not a safe starting scene"
+    }
+  ],
+  "sections": [
+    {
+      "key": "holyMountain",
+      "label": "Holy Mountain",
+      "sourceRange": [
+        1024,
+        1536
+      ]
+    },
+    {
+      "key": "coal",
+      "label": "Coal Pits",
+      "sourceRange": [
+        1536,
+        2560
+      ]
+    },
+    {
+      "key": "mountainCoal",
+      "label": "Holy Mountain",
+      "sourceRange": [
+        2560,
+        3072
+      ]
+    },
+    {
+      "key": "snow",
+      "label": "Snowy Depths",
+      "sourceRange": [
+        3072,
+        4608
+      ]
+    },
+    {
+      "key": "mountainSnow",
+      "label": "Holy Mountain",
+      "sourceRange": [
+        4608,
+        5120
+      ]
+    },
+    {
+      "key": "hiisi",
+      "label": "Hiisi Base",
+      "sourceRange": [
+        5120,
+        6144
+      ]
+    },
+    {
+      "key": "mountainHiisi",
+      "label": "Holy Mountain",
+      "sourceRange": [
+        6144,
+        6656
+      ]
+    },
+    {
+      "key": "jungle",
+      "label": "Underground Jungle",
+      "sourceRange": [
+        6656,
+        8192
+      ]
+    },
+    {
+      "key": "mountainJungle",
+      "label": "Holy Mountain",
+      "sourceRange": [
+        8192,
+        8704
+      ]
+    },
+    {
+      "key": "vault",
+      "label": "Vault",
+      "sourceRange": [
+        8704,
+        10240
+      ]
+    },
+    {
+      "key": "mountainVault",
+      "label": "Holy Mountain",
+      "sourceRange": [
+        10240,
+        10752
+      ]
+    },
+    {
+      "key": "crypt",
+      "label": "Temple of the Art",
+      "sourceRange": [
+        10752,
+        12800
+      ]
+    },
+    {
+      "key": "arena",
+      "label": "Kolmi Arena",
+      "sourceRange": [
+        12800,
+        13888
+      ]
+    }
+  ],
+  "startScene": "noitaTerrain01",
+  "startSource": [
+    -677,
+    1350,
+    0
+  ],
+  "version": 1
+}

@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "world": "~/Library/Application Support/Noita-backups/before-mina4mac-20261014-231758/Nolla_Games_Noita/worlds/_archive/main-pre-inventory-restore-2026-05-21/world",
+  "wak": "~/Games/Noita-native/data/data.wak",
+  "biomeMap": "data/biome_impl/biome_map.png",
+  "biomeMapOrigin": [35, 14],
+  "chunkSize": 512,
+  "sourceY": [1024, 13888],
+  "coreHeight": 256,
+  "context": 32,
+  "rowEnvelopes": {
+    "16": [32, 38], "17": [31, 38], "18": [31, 38],
+    "19": [31, 38], "20": [30, 39], "21": [30, 39], "22": [30, 39],
+    "23": [30, 39], "24": [31, 37], "25": [31, 37],
+    "26": [31, 37], "27": [30, 38], "28": [30, 38], "29": [30, 38],
+    "30": [30, 38], "31": [29, 38], "32": [29, 39], "33": [29, 39],
+    "34": [29, 39], "35": [29, 39], "36": [29, 39], "37": [26, 39],
+    "38": [29, 37], "39": [29, 37]
+  },
+  "extraConnectedCells": [[26, 36]],
+  "explicitExcludedGaps": [{"origin": [-1536, 12800], "reason": "Ending wall cell absent in all 12 inspected backup/live world directories; outside authoritative fixed arena. Not converted, not inferred air or wall; its portal omitted."}],
+  "fixedScene": "data/biome_impl/spliced/boss_arena.xml",
+  "fixedOrigin": [1536, 12288],
+  "fixedShape": [2600, 1600],
+  "regularTempleRows": [16, 19, 23, 26, 30, 34],
+  "startSource": [-677, 1350, 0],
+  "fold": {"sourceMinX": -4608, "sourceWidth": 9216, "cellScale": 1, "angleStart": -1.5707963267948966, "angleSpan": 4.71238898038469, "thickness": 48, "shellThickness": 2, "margin": 32},
+  "sections": [
+    {"key": "holyMountain", "label": "Holy Mountain", "sourceRange": [1024, 1536]},
+    {"key": "coal", "label": "Coal Pits", "sourceRange": [1536, 2560]},
+    {"key": "mountainCoal", "label": "Holy Mountain", "sourceRange": [2560, 3072]},
+    {"key": "snow", "label": "Snowy Depths", "sourceRange": [3072, 4608]},
+    {"key": "mountainSnow", "label": "Holy Mountain", "sourceRange": [4608, 5120]},
+    {"key": "hiisi", "label": "Hiisi Base", "sourceRange": [5120, 6144]},
+    {"key": "mountainHiisi", "label": "Holy Mountain", "sourceRange": [6144, 6656]},
+    {"key": "jungle", "label": "Underground Jungle", "sourceRange": [6656, 8192]},
+    {"key": "mountainJungle", "label": "Holy Mountain", "sourceRange": [8192, 8704]},
+    {"key": "vault", "label": "Vault", "sourceRange": [8704, 10240]},
+    {"key": "mountainVault", "label": "Holy Mountain", "sourceRange": [10240, 10752]},
+    {"key": "crypt", "label": "Temple of the Art", "sourceRange": [10752, 12800]},
+    {"key": "arena", "label": "Kolmi Arena", "sourceRange": [12800, 13888]}
+  ]
+}
