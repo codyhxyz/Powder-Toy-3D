@@ -1,18 +1,19 @@
 # Physical factory validation
 
-Status: unreleased. The complete production loop has not passed.
+Status: unreleased. The native backend batch passed; actual tool strokes and repeat refueling remain unverified.
 
 ## CPU evidence
 
 The integrated controller and UI pass:
 
-- `node --test tests/industry/*.test.js`: 34 tests.
+- `node --test tests/industry/*.test.js`: 40 tests.
 - `node scripts/check-industry-controller.mjs`: 11 checks.
 - `node scripts/check-industry-factory-ui.mjs`.
 - Existing construction, transfer, and Quarry checks.
 - Hearth budget/conduction/structure checks: 356 checks, including finite native combustion and the rotated shell.
 - Diagnostics request ownership, freshness, reset, and disposal regressions.
-- Naga type validation of composed Industry, diagnostics, gate, and control shaders.
+- Naga type validation of composed Industry, transfer, construction, diagnostics, gate, and control shaders.
+- Pump backplate rotations, atomic construction, strict ownership, legacy preservation, and lossless marker saves.
 
 Fresh integration review found two additional input problems.
 Canvas placement now releases number-input focus, so Escape and Q remain available.
@@ -285,14 +286,58 @@ This case did not simulate player shovel/bucket strokes or full terrain-save res
 No page exceptions or native GPU validation errors occurred.
 The optional local AI-quota endpoint was unavailable; that unrelated request was recorded.
 
+### Pump backing investigation and passing native batch
+
+The 77-device fixture held all 120 source water cells behind the gate.
+It still delivered no water to the catch and shipped nothing.
+Its old output counter did not distinguish fallback returns from forward writes.
+That telemetry error is fixed; returned cargo now reports `pump-return`.
+Total occupancy: **8177 ms**; report `~/.cache/tpt-headless/runs/24552-24583.json`.
+Result: `/tmp/sandustry-physical-line-reservoir120.json`.
+
+A 0.6 outward-velocity trial also failed.
+The corrected counters recorded 370 intake cells, 367 actual outlet writes, and zero fallback returns.
+Those counts include repeated circulation of the same finite water, not unique volume.
+Bounded probes found water near the outlet but none in the catch.
+Total occupancy: **8010 ms**; report `~/.cache/tpt-headless/runs/29427-29458.json`.
+Result: `/tmp/sandustry-physical-line-nozzle06.json`.
+The ineffective velocity change was removed.
+
+The pump lacked real backing behind its raised outlet.
+New construction now adds a tagged tungsten backplate inside its existing reservation.
+Six outside foundation tiles also close the raised channel's diagonal corners.
+The resulting fixture has 83 buildable devices, including 78 ordinary foundations.
+
+The protected native batch **passed all sixteen checks**:
+
+- Atomic construction produced the 48-cell hearth shell and 40-cell pump structure.
+- All 120 water cells stayed behind the closed gate.
+- Mining preserved six usable broken-coal cells.
+- Finite fuel melted all four initially cold scrap cells through native phase changes.
+- A finite bucket load carried all four actual LAVA(METAL) cells into the wet catch.
+- The pump confirmed 37 intake cells and 37 outlet writes, with zero fallback returns.
+- Actual water reached the catch and warmed after contact with the melt.
+- The real pump switch completed OFF→ON→OFF; outlet counts stayed unchanged after OFF.
+- Four native metal shipments confirmed temperatures of 328.57, 337.14, 38.07, and 39.22°C.
+- Ash transfer removed three ash cells while preserving all 48 hearth cells.
+- All twenty-four pump tags survived 1920 native ticks.
+- Final bucket and pump buffers were empty. Three ash cells remained in the recorded shovel load.
+
+Total slot occupancy: **4947 ms**, including startup and cleanup.
+Report: `~/.cache/tpt-headless/runs/79615-79646.json`.
+Complete result: `/tmp/sandustry-physical-line-backplate.json`.
+No utilization override was used.
+
+This checkpoint used real transfer APIs with explicit candidate cells.
+It did not exercise the actual shovel/bucket update methods or player gestures.
+The gate controlled coolant, not precision coal feeding.
+It does not prove continuous automation or repeat refueling.
+
 ## Open requirements
 
-- Diagnose the coolant hold/release and pump failure.
-- Place actual molten metal into a separate shipping catch.
-- Cool it there with actual water and confirm all four shipments.
 - Verify repeat refueling and real player shovel/bucket gestures.
-- Verify useful material release through a gate; precision fuel feeding remains unverified.
-- Validate the combined controls and inspection panel in the real app.
+- Verify precision fuel feeding; useful coolant release now passes.
+- Finish compatibility checks and independent review after the physical pump change.
 - Complete release checks, push main, watch deployment, and check the live site.
 
 Cooled metal is stationary matter; a conveyor cannot carry it to the intake.

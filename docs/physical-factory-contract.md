@@ -60,7 +60,7 @@ The outlet occupies local x=1..2, y=2..3, z=3: four cells.
 The mouth at z=4 is outside the reservation; it is not owned containment.
 The open top permits loading and extraction. The raised lip can retain a molten heel.
 Dismantling checks shell coordinates and material ID; it does not erase interior cargo.
-Other machines, including the legacy heater, retain their original 16-cell decks.
+The legacy heater retains its original 16-cell deck.
 Fuel cells retain authoritative temperature and remaining life in terrain saves.
 No hidden fuel counters are approved.
 The current calibration buys 300000 local heat units per fuel-life unit.
@@ -70,6 +70,24 @@ Native combustion still consumes its own fuel normally.
 These are game rules, not measured coal chemistry.
 Hearth timing follows native simulation ticks, not presentation frames.
 Mining retains coal's remaining fuel life; it does not refill exhausted coal.
+
+## Pump backing
+
+The existing pump retains its seven-cell-high reservation and sixteen-cell floor.
+New construction adds 24 real tungsten cells at local x=0..3, y=1..6, z=3.
+This plate prevents raised outlet liquid from falling back into the open body.
+`pumpStructureCells(device)` defines all forty rotated cells.
+`pumpBackplateCells(device)` defines the twenty-four plate cells.
+The constructor checks the complete reservation before writing anything.
+
+Plate cells use `a.z = 1048572`; the fractional seed is preserved.
+Removal requires tungsten, that exact tag, and a registered plate coordinate.
+Foreign same-ID material and loose contents are preserved.
+Floor removal retains its existing material check.
+Old saves receive no implicit plate or repair; rebuilding adds the backing.
+No header field, inventory, or global physics rule is added.
+The floor guard is unchanged. A damaged plate can leak.
+Pump returns report `pump-return`, not successful forward `pump-output`.
 
 ## Physical gate
 

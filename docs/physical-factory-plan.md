@@ -1,8 +1,8 @@
 # Physical factory delivery plan
 
-Status: native melting, diagnostics, mining, bucket extraction, ash clearing, and real control UI pass.
-The sealed source holds water and the pump transfers it, but water has not reached the catch.
-Cooling, shipment, and physical-tool player gestures remain unverified.
+Status: the native backend batch and real control UI pass.
+Mined coal melted four scrap cells; all four reached the water catch and shipped below 400°C.
+Actual shovel/bucket gestures, repeat refueling, and precision fuel gating remain unverified.
 Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
@@ -28,7 +28,8 @@ Controls use existing electronics where practical.
 Routing uses existing refractory blocks before specialized pieces.
 
 The first batch-line checkpoint uses a gate for cooling water.
-The player loads fuel with existing tools and carries melt with the existing bucket.
+The checkpoint loads fuel through existing transfer APIs and carries melt in a bucket load.
+Actual tool strokes and their candidate geometry require separate verification.
 This reduced verification path does not prove precise coal metering or continuous automation.
 The ideal fuel-gate route remains an open requirement.
 
@@ -58,16 +59,16 @@ The ideal fuel-gate route remains an open requirement.
 | Finite-fuel heat | Fuel exhaustion stops added heat. The heat source does not duplicate fuel. | CPU exhaustion/budget checks pass; native ignition and fuel consumption observed |
 | Useful temperatures | A constructed hearth melts the target scrap at normal timing. | Passed: six broken-coal cells melted four scrap cells inside the real 48-cell shell |
 | Ignition | A player can start the process without unrestricted Sandbox spawning. | Native starter, mining, and existing tool-transfer loading pass; player gestures remain pending |
-| Physical gate | Closed material blocks flow. Opening preserves surrounding matter and temperature. | Tagged shutter checks pass; sealed source held all 24 water cells and released them toward the pump |
+| Physical gate | Closed material blocks flow. Opening preserves surrounding matter and temperature. | Tagged shutter checks pass; sealed source held all 120 water cells and released coolant toward the pump |
 | Obstructed closure | Closure never overwrites grains, liquids, or unrelated solids. | Native WALL and falling-sand checks pass; other materials covered by shared preflight |
 | Gate lifecycle | Removal, damaged structure, pending actions, and saves preserve owned material. | CPU lifecycle/save guards and native tagged removal/damage checks pass |
 | Controls | A Factory player can install and operate permitted controls without an economy bypass. | Real canvas TSNS/SWITCH purchases, native readbacks, threshold validation, switch toggle, drive controls, and credit ledger pass |
 | Diagnostics | Each reported condition comes from current machine state or bounded observations. | CPU/Naga and 14 native GPU assertions pass; real switch inspection and native toggle also pass |
-| Routing | The production line carries actual material between distinct hot and cold regions. | Native bucket extracted all four molten cells; placement into the cold catch remains pending |
+| Routing | The production line carries actual material between distinct hot and cold regions. | Native transfer carried all four molten cells into actual coolant; all four cold metal cells shipped |
 | Ash clearing | Existing tools clear spent fuel without destroying the hearth. | Native powder transfer cleared three ash cells and preserved all 48 shell cells; repeat refueling remains pending |
 | Economy | Construction charges and refunds remain correct. Existing progression remains usable. | CPU confirmed-charge, ledger, migration, and anti-arbitrage checks pass |
 | Compatibility | Existing saves, built-in drives, Sandbox sparks, and unrelated modes still work. | Existing construction, controller, physics, and Quarry CPU suites pass; final integration pending |
-| End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Latest batch confirmed two pump intake/output cells, but none reached the catch; no shipment |
+| End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Backend batch passed in 1920 native ticks; real tool strokes and fuel-gate automation remain separate requirements |
 | Resource use | Tests use the shared browser helper and respect the total GPU-slot budget. | Recorded slots respect their limits; every utilization override had explicit user approval |
 | Release | Changes reach GitHub main, deployment succeeds, and the live site passes a focused check. | Pending |
 
@@ -101,6 +102,11 @@ These are open questions, not implementation claims.
 - Runtime diagnostics do not exist. Add a bounded, inspected-device probe.
 - Existing foundation blocks, belts, lifts, and pumps cover general routing.
 - No additional general transport pieces are approved.
+- The existing pump needs physical backing behind its raised outlet to prevent recirculation into its open body.
+- New pump construction adds a tagged 24-cell tungsten plate inside the existing reservation.
+- Its original sixteen-cell floor and transfer velocity remain unchanged.
+- Existing pump saves are not rebuilt. Plate removal requires its tag, material, and registered coordinates.
+- Pump cargo returns are reported separately from actual outlet transfers.
 - Mining must preserve coal's remaining fuel life; the old miner incorrectly cleared it.
 - Ignition needs paid temperature headroom because native conduction precedes burning.
 - Gates must check their bases before actuation, not only their shutter cells.
