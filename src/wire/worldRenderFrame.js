@@ -7,10 +7,20 @@ import { createWorldFeedbackProvider } from '../gfx/worldLightingInputs.js';
 import { createNativeWorldMeshLightContext, guardMeshes } from '../gfx/meshLight.js';
 import { renderViewmodels } from '../pov/viewmodel.js';
 import { queryWorldPick, worldPickNotReady } from './worldPick.js';
+import { READY } from '../world/renderAtlas.js';
 
 const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
 const complete = f => f?.incomplete === false && !f.requirements.length && !f.sun.length;
+
+// A real CELL publication bootstraps the subsequent eye/scene feedback loop.
+// Outside-world views seed the nearest valid brick, not an assumed empty page.
+export function worldInitialCellDemand(position, size) {
+  const p=array(position);
+  if(p.length!==3 || size?.length!==3 || !p.every(Number.isFinite) ||
+    !Array.from(size).every(n=>Number.isInteger(n)&&n>0))throw new RangeError('finite world eye and dimensions required');
+  return [{brick:p.map((v,i)=>Math.floor(Math.max(0,Math.min(size[i]-1,v))/4)),channels:READY.CELL}];
+}
 
 // Only replace projection-dependent values under Post's ACTUAL jittered camera.
 // Owned data frame values are plain arrays, not Three Matrix4/Vector3 objects.
@@ -67,17 +77,24 @@ export async function createWorldFrameState(app, data, noise) {
   requireReady(app.win?.loaded && app.win.render === data, 'loaded actual WORLD data owner required');
   await Promise.all([noise.ready, app.post.sceneReady]);
   requireReady(!app.gpu.failure && !app.gpu.lost, 'WORLD graphics unavailable');
-  const unused = app.gpu.device.createTexture({label:'world unused query packed binding',
-    size:[1,1], format:'rgba32uint', usage:4|2});
-  app.gpu.device.queue.writeTexture({texture:unused}, new Uint32Array([0,0,0x3f800000,0]), {}, [1,1]);
-  const opaque = createWorldOpaqueCapture(app.gpu);
-  // sourceGrid is taken from each actual cut's appearance, not Far.grid.
-  const boundary=app.gpu.device.createBuffer({label:'WORLD presentation final boundary',size:16,usage:4|8});
-  const emptyArtwork=app.gpu.device.createTexture({label:'WORLD absent artwork binding',size:[1,1,1],dimension:'3d',format:'rgba16uint',usage:6});
-  app.gpu.device.queue.writeTexture({texture:emptyArtwork},new Uint16Array(4),{},[1,1,1]);
-  const state = {data, noise, unused, boundary, emptyArtwork, opaque, volume:null, uses:new Set(), dead:false};
-  try {await opaque.ready;} catch(error) {opaque.dispose();unused.destroy();boundary.destroy();emptyArtwork.destroy();throw error;}
-  return state;
+  let unused,opaque,boundary,emptyArtwork;
+  try {
+    unused=app.gpu.device.createTexture({label:'world unused query packed binding',
+      size:[1,1],format:'rgba32uint',usage:4|2});
+    app.gpu.device.queue.writeTexture({texture:unused},new Uint32Array([0,0,0x3f800000,0]),{},[1,1]);
+    opaque=createWorldOpaqueCapture(app.gpu);
+    boundary=app.gpu.device.createBuffer({label:'WORLD presentation final boundary',size:16,usage:4|8});
+    emptyArtwork=app.gpu.device.createTexture({label:'WORLD absent artwork binding',size:[1,1,1],dimension:'3d',format:'rgba16uint',usage:6});
+    app.gpu.device.queue.writeTexture({texture:emptyArtwork},new Uint16Array(4),{},[1,1,1]);
+    await opaque.ready;
+    return {data,noise,unused,boundary,emptyArtwork,opaque,volume:null,uses:new Set(),dead:false};
+  } catch(error) {
+    opaque?.dispose();
+    // Private initialization uploads may already be queued. No consumer has
+    // recorded these resources, but those uploads must finish before disposal.
+    try {await app.gpu.device.queue.onSubmittedWorkDone();} catch {}
+    unused?.destroy();boundary?.destroy();emptyArtwork?.destroy();throw error;
+  }
 }
 export async function prewarmWorldFrame(app, state, data, {view,detail={},curved=false}) {
   requireReady(!state.dead && data.tables?.buffer && data.sunTextures, 'pinned WORLD native inputs required');
@@ -167,7 +184,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
         app.prepareWorldAfter(fv,camera);
         native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView());
         context=meshContext(app,state,data,native,fv,state.noise.texture);context.bind();
-        requireReady(guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',onReady:()=>app.requestRender()})===0,
+        requireReady(guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',onReady:()=>app.wakeLoop()})===0,
           'native WORLD material graphs must be prewarmed before scene');
         if (signRequest) {
           signFrame=app.signs.captureWorldFrame({request:signRequest,camera,model,publication:native.publication,identity,
@@ -183,7 +200,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
       draw(rp) {requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');app.drawWorldAfter(rp);},
       meshes(p) {app.threeMeshes(p,true,camera);},
       overlay:rp=>app.drawWorldOverlay(rp),
-    },camera,{identity:data.identity,publication:postPublication,feedbackIdentity,submission:ticket,worldModel:model,
+    },camera,{identity:data.identity,publication:postPublication,feedbackIdentity,submission:ticket,worldModel:model,cameraIdentity:frozenView?.cameraIdentity??camera,
       onPublicationTransferred:()=>{transferred=true;},dt,viewmodel:hands.viewmodel,glow:hands.glow});
     if (!sceneTicket) hands.lighting?.discard();
   } catch(error) {
@@ -275,10 +292,10 @@ export function preflightWorldMeshes(app,p,camera) {
   p.context.bind();
   app.presentation.install(app.scene,camera);
   const n=guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',
-    target:app.post.sceneTarget.rt,onReady:()=>app.requestRender(),onPending:work=>{
+    target:app.post.sceneTarget.rt,onReady:()=>app.wakeLoop(),onPending:work=>{
       if(p.pending.has(work))return;
       p.pending.add(work);
-      work.then(()=>{p.pending.delete(work);app.requestRender();},error=>{p.failure=error;app.requestRender();});
+      work.then(()=>{p.pending.delete(work);app.wakeLoop();},error=>{p.failure=error;app.wakeLoop();});
     }});
   if(n && !p.pending.size)throw new Error('WORLD parked mesh has no live compilation');
   return n===0 && p.pending.size===0;
@@ -301,7 +318,7 @@ export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   camera.matrix.decompose(camera.position,camera.quaternion,camera.scale);
   const v=worldSceneValues(values,camera,[0,0]);
   const p=app.presentation;
-  return {camera,view,detail:{...detail},curved,values:{model:[...v.model],cam:[...v.cam],viewProj:[...v.viewProj],invViewProj:[...v.invViewProj],
+  return {camera,cameraIdentity:app.camera,view,detail:{...detail},curved,values:{model:[...v.model],cam:[...v.cam],viewProj:[...v.viewProj],invViewProj:[...v.invViewProj],
       ...Object.fromEntries(['view','materialStyle','sourceStyle','bevel','glints','matDetail'].filter(k=>values[k]!==undefined).map(k=>[k,values[k]]))},
     params:{marchNear:app.pov?.marchNear??0,warpK:p.parameters.k,warpAnchor:[...p.parameters.anchor],warpDir:[...p.parameters.dir]},
     settings:{...app.settings},post:{...app.post.settings},presentation:{parameters:structuredClone(p.parameters),
@@ -332,7 +349,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
   let pending=null, dead=false, order=0, accepted=null, failure=null, retirement=null;
   let displayedMainFrame=null, blockedPick=null;
   const pickDemands=new Map();
-  const wake=()=>app.requestRender();
+  const wake=()=>app.wakeLoop();
   const queuePickDemand=(feedback,display)=>{
     if(dead || display!==displayedMainFrame)return false;
     if(feedback.sun.length)throw new Error('raw WORLD pick must not demand Sun');

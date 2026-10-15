@@ -56,7 +56,8 @@ import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms, frameUniformValues, frameUniformsOf } from './gfx/uniforms.js';
-import { freezeWorldView } from './wire/worldRenderFrame.js';
+import { freezeWorldView, worldInitialCellDemand } from './wire/worldRenderFrame.js';
+import { GI_SETTLE } from './shaders/gi.js';
 import { displayedWorldRay, transportWorldRay, localWorldHover, worldPickNotReady } from './wire/worldPick.js';
 import { cloudShift } from './shaders/gfx/clouds.js';
 import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
@@ -2128,7 +2129,7 @@ let stepTime = 0, stepCount = 0, stepRate = 0;
 // longer), or at once without TAA (tools turn it off: no history to converge).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
-  derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
+  derivedSettle: () => Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY), win ? GI_SETTLE : 0),
   viewSettle: () => (post.settings.taa ? settleFrames(post.settleWeight) : 1),
   presentHz: testMode === 'preview' ? PREVIEW_HZ : MAX_FPS,
   onWake: wakeLoop,
@@ -2222,7 +2223,7 @@ function captureWorldRequest(reservation,state,dt,accepted) {
   if(accepted && (JSON.stringify(key)!==JSON.stringify(accepted.frame.globalKey)
     || JSON.stringify(lamps)!==JSON.stringify(accepted.frame.lamps)))frame.advance=true;
   if(!frame.advance && accepted)Object.assign(frame,{...accepted.frame,advance:false,external:frame.external});
-  return {frame,view};
+  return {frame,view,requirements:worldInitialCellDemand(view.values.cam,win.size)};
 }
 
 // ---------------------------------------------------------------- a presented frame
@@ -2822,6 +2823,7 @@ const ctx = {
   isTyping, selectTool, leaveBuild, setPaused, setRadius, setSimMode, setSimModes, resetSimModes, simModeLock,
   updateSun, save, camState, onNextFrame,
   requestRender: () => pacer.wake(),
+  wakeLoop, // Completion wakes do not refill temporal settling.
   // only three's meshes changed (the birds): a frame, which may keep the volume's scene (gfx/meshFrames.js)
   requestMeshFrame: () => pacer.wakeMeshes(),
 };

@@ -11,6 +11,10 @@ awaits immutable media noise/Post/native readiness, and stores `win.renderFrame`
   The driver reserves derived/view settling once per pending transaction.
   Ordinary newer physics/camera state coalesces implicitly in App; it cannot
   replace the pending cut or frozen view. Promise completions only store/wake.
+- Completion notifications wake the loop without refilling temporal settling.
+  WORLD allows the original 32 GI settling advances; BOX keeps its existing count.
+- App supplies an initial CELL demand at the nearest valid brick to the eye.
+  An outside-world eye does not imply empty world data.
 - `freezeWorldView` captures global model/camera/projection/view style and Post /
   presentation settings before the native eye query. Source time, artwork,
   lighting and captured physics origin remain publication-owned.
@@ -30,6 +34,8 @@ awaits immutable media noise/Post/native readiness, and stores `win.renderFrame`
   `advance:false` camera births use accepted-compatible source settings, not
   direct inactive `current()` admission. World GI age/phase policy stays in the
   existing history owner, independent of Fields age and view/origin changes.
+- Frozen camera clones carry the original camera identity into Post.
+  A new clone alone does not reset TAA history.
 - Pending work presents only exact `post.presentLast` with a real final ticket,
   or explicit loading when no accepted image exists. No Far/local union fallback.
 
@@ -90,6 +96,9 @@ full actor-scene rendering, performance, or other-consumer proof. Asset prewarms
 outside the guarded scene, resize/dispose stress across every native allocation
 site, and real native layout/readiness remain review/GPU risks. No deployment or
 global activation claim follows from this local integration.
+
+The CPU regressions also cover bootstrap, settling to idle, stable-camera TAA,
+and cleanup at each of the 15 initialization failure sites tested.
 
 Run `npm run check:world-main-route` for CPU tests; `check:world-render-frame`
 retains native-value/feedback/final-admission tests. No browser/server is needed.

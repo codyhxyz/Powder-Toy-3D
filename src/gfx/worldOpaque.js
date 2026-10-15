@@ -8,7 +8,8 @@ export function createWorldOpaqueCapture(gpu) {
   try {
     for(const drew of [0,1]) {
       const buffer=device.createBuffer({label:'world opaque immutable flag',size:32,usage:64,mappedAtCreation:true});
-      new Uint32Array(buffer.getMappedRange())[0]=drew;buffer.unmap();flags.push(buffer);
+      flags.push(buffer);
+      new Uint32Array(buffer.getMappedRange())[0]=drew;buffer.unmap();
     }
   } catch(e) {flags.forEach(b=>b.destroy());throw e;}
   const ready=Promise.resolve().then(()=>device.createComputePipelineAsync({

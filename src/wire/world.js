@@ -100,20 +100,20 @@ const world = {
       if(!previous.dead) {
         previous.dead=true;
         previous.ready=Promise.resolve(previous.ready).then(()=>previous.driver?.dispose()).then(()=>win.render?.dispose())
-          .then(()=>{if(app.win===win){delete win.renderFrame;app.requestRender();}})
-          .catch(error=>{previous.error=error;app.requestRender();});
+          .then(()=>{if(app.win===win){delete win.renderFrame;app.wakeLoop();}})
+          .catch(error=>{previous.error=error;app.wakeLoop();});
       }
       if(previous.error)throw previous.error;
       return null;
     }
     if(!win.renderFrame) {
       const slot=win.renderFrame={epoch:win.renderSource.epoch,dead:false,driver:null,error:null,ready:null};
-      const data=installWorldRender(win,{wake:()=>app.requestRender()});
+      const data=installWorldRender(win,{wake:()=>app.wakeLoop()});
       app.signs?.setWorldOwner(true);
       slot.ready=createWorldFrameState(app,data,createMediaNoise(app.gpu)).then(async state=>{
         if(slot.dead){await data.dispose();await disposeWorldFrame(state);return;}
-        slot.driver=createWorldFrameDriver(app,state);app.requestRender();
-      }).catch(error=>{slot.error=error;app.requestRender();});
+        slot.driver=createWorldFrameDriver(app,state);app.wakeLoop();
+      }).catch(error=>{slot.error=error;app.wakeLoop();});
     }
     if(win.renderFrame.error)throw win.renderFrame.error;
     return win.renderFrame.driver;

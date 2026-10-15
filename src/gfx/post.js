@@ -1863,7 +1863,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     const t = {slot, publication:options.publication, feedbackIdentity:options.feedbackIdentity, identity:sceneIdentity,
       generation:sceneGeneration, id:++sceneSequence, status:'recorded', retired:false, uses:[submitted], copies:[], completion:null,
       settings:s,sizes,out,still:isStill,dt:options.dt ?? ADAPT.DT,presentation:capturedPresentation,sky:capturedSky,worldModel,
-      cameraKey:camera, reservation:null, onCommit:options.onCommit};
+      cameraKey:options.cameraIdentity??camera, reservation:null, onCommit:options.onCommit};
     const ticket = Object.freeze({id:t.id,identity:t.identity,publication:t.publication,feedbackIdentity:t.feedbackIdentity,
       worldModel:t.worldModel ? Object.freeze([...t.worldModel.elements]) : null,
       width:out.width,height:out.height,get status(){return t.status;},get error(){return t.error;},

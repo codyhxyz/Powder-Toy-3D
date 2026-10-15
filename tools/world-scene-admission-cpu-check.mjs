@@ -56,6 +56,19 @@ test('WORLD opaque destination is lazy, per leased scene target, and survives re
   f.post.discardScene(b.ticket);await f.submit(b.opts);await f.completeAll();
   f.post.dispose();await turn();assert(next.dead);
 });
+test('frozen camera clones preserve TAA history only with their stable presentation camera identity',async()=>{
+  for(const stable of [false,true]){
+    const f=fixture();await f.post.sceneReady;f.post.settings.taa=true;
+    for(let i=0;i<2;i++){
+      const opts=f.options(stable?{cameraIdentity:f.camera}:{});
+      const ticket=f.post.recordScene({},f.camera.clone(),opts);
+      await f.submit(opts);const final=f.admit({ticket,opts});assert(final.accepted);
+      final.s.resolve();await turn();await f.completeAll();
+    }
+    assert.equal(f.draws.filter(d=>d.name==='motion').at(-1).params.historyValid,stable);
+    f.post.dispose();await f.completeAll();
+  }
+});
 test('real TAAU reservation restores camera, original matrices, offset and committed index; acceptance alone advances',()=>{
   const f=fixture(),c=f.camera;
   c.setViewOffset(64,32,1,2,64,32);const p=c.projectionMatrix.clone(),view={...c.view};

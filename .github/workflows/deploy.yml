@@ -64,6 +64,9 @@ jobs:
       - run: node tools/detail-residency-check.mjs && node tools/detail-worker-check.mjs && node tools/far-lod-check.mjs && node tools/surface-mesh-check.mjs   # full-detail terrain ownership, streaming and material seams
       - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
       - run: npm run check:world-scenes   # staged native scene admission, real Three jitter hooks + fake GPU (not app activation)
+      - run: npm run check:world-render-frame
+      - run: npm run check:world-main-route # CPU owner/driver/Post/pacer; not native rendering proof
+      - run: npm run check:world-pick
       - run: npm run check:world-viewmodel-eye   # original one-eye hands, accepted-only easing + real guard (CPU, not App activation)
       - run: npm run check:world-mesh-light   # actual Three fragment variants/Naga + CPU optical/SH references; not GPU evidence
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
