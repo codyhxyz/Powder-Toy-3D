@@ -6,8 +6,8 @@
 // ARENA_PRESETS) at its own grid size, or a world scene (world/scenes) in a
 // world. Its size is part of the map: there is no separate grid size to pick.
 //
-// This file is plain data with no imports: the menu loads before anything
-// heavy (src/main.js), so it must stay small. app.js checks it against its own
+// Only the small terrain manifest and pure fold math load with this menu.
+// app.js checks it against its own
 // tables (SIZES, WORLDS, WORLD_SCENES) when it boots.
 //   key      the map's id (?map=key, public/maps/<key>.webp: tools/map-thumbs.mjs renders those)
 //   name     its name on the menu
@@ -18,6 +18,9 @@
 //   scenes   optional: every world scene that is this map (Descent's levels), scene the one it starts on
 //   modes    the gamemodes it is built for besides Sandbox
 //   defaultView optional authored shader, overriding the gamemode's starting view
+import terrainRoute from './world/scenes/descent/terrainRoute.json' with { type: 'json' };
+import { createFold } from './world/scenes/descent/terrainFold.js';
+
 export const WORLD_DIMS = [1024, 128, 1024];   // shaders/far.js WORLD_SIZE (app.js checks)
 const TEAM_MODES = ['slayer', 'ctf', 'koth', 'infection', 'siege'];
 
@@ -34,10 +37,10 @@ export const MAPS = [
   { key: 'giantVolcano', name: 'Giant Volcano', size: 'world', scene: 'giantVolcano', dims: [1024, 384, 1024],
     desc: 'A stratovolcano 100 m tall in the sea: lava pouring from a vent on its crater down a collapse scar, old basalt flows, side cones, snow on top, forest below.' },
   // Source-derived, folded 3D Noita main route. Legacy Wang scenes are not this map.
-  { key: 'descent', name: 'Descent', size: 'world', scene: 'noitaHolyMountain',
-    scenes: ['noitaHolyMountain', 'noitaCoal', 'noitaSnow', 'noitaHiisi', 'noitaJungle', 'noitaVault', 'noitaTemple', 'noitaKolmi'],
-    dims: [512, 256, 512], modes: ['noita'], previewVersion: 2,
-    desc: 'Native Noita material scenes folded into 3D: Holy Mountain to Coal Pits, Snow, Hiisi, Jungle, Vault, Temple of the Art and the Sampo platform. Map route, not Kolmi combat.' },
+  { key: 'descent', name: 'Descent', size: 'world', scene: terrainRoute.startScene,
+    scenes: terrainRoute.regions.map((r) => r.key),
+    dims: createFold(terrainRoute.fold).size, modes: ['noita'], previewVersion: 3,
+    desc: 'Saved Noita terrain folded into a continuous 3D arc. Original Holy Mountain portals connect the main biomes; vertical bands load around the player.' },
   { key: 'damValley', name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
   { key: 'quarry', name: 'Open-Cut Quarry', size: '128', preset: 'quarry', dims: [128, 128, 128], modes: ['factory'],
