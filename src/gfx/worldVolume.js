@@ -3,6 +3,8 @@
 import { volumeFrag, pickFrag, VOLUME_LAYOUTS, PICK_LAYOUTS, VolumeParams, PickParams,
   volumePipeline, worldPlainPipelines, WORLD_PLAIN_PHASES, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES } from '../shaders/render.js';
 import { worldPointWGSL, worldPointLayouts, WorldPointParams, WORLD_POINT_BYTES } from '../shaders/worldPoint.js';
+import { worldSignsWGSL, worldSignsLayouts, WorldSignsParams, WORLD_SIGNS_BYTES } from '../shaders/worldSigns.js';
+import { MAX_SIGNS } from '../shaders/probe.js';
 import { FRAME_UNIFORM_FIELDS } from '../shaders/bindings.js';
 import { uniformStruct } from '../gpu/params.js';
 import { Header } from '../shaders/common.js';
@@ -47,6 +49,8 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   const layouts=descriptors.map((entries,i)=>device.createBindGroupLayout({label:`world view ${i}`,entries}));
   const pickLayouts=[...layouts.slice(0,3),device.createBindGroupLayout({label:'world pick 3',entries:pickDescriptors[3]})];
   const pointLayouts=[...layouts.slice(0,3),device.createBindGroupLayout({label:'world point 3',entries:worldPointLayouts()[3]})];
+  const signsLayouts=[...layouts.slice(0,3),device.createBindGroupLayout({label:'world signs 3',entries:worldSignsLayouts()[3]})];
+  const signsLayout=device.createPipelineLayout({bindGroupLayouts:signsLayouts});
   const pipelineLayout=device.createPipelineLayout({bindGroupLayouts:layouts});
   const pickLayout=device.createPipelineLayout({bindGroupLayouts:pickLayouts});
   const pointLayout=device.createPipelineLayout({bindGroupLayouts:pointLayouts});
@@ -67,6 +71,9 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   const pickPipelineState=(view='realistic')=>{alive();return view==='plain'?plainPickState:pickState;};
   const pointState=compiled(device.createComputePipelineAsync({label:'world point',layout:pointLayout,
     compute:{module:module(worldPointWGSL(grid),'world point'),entryPoint:'main'}}));
+  const signsState=compiled(device.createComputePipelineAsync({label:'world signs',layout:signsLayout,
+    compute:{module:module(worldSignsWGSL(grid),'world signs'),entryPoint:'main'}}));
+  const signsReady=signsState.ready;
   const pointReady=pointState.ready, pickReady=pickState.ready;
   function aggregate(states, pick) {
     const ready=Promise.all([...states.map(s=>s.ready),pick.ready]).then(p=>Object.freeze(p.slice(0,states.length)));
@@ -176,6 +183,31 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
         finally {pass.end();}
         return true;
       }
+      function captureSigns({camera,anchors,cells,count=anchors?.length,slot=0,output,presentation={k:0,anchor:[0,0],dir:[0,1]}}={}) {
+        const finite=(v,n)=>{const a=vec(v??[]);if(a.length!==n||!a.every(x=>Number.isFinite(x)&&Number.isFinite(Math.fround(x))))throw new RangeError('finite global sign coordinates required');return a;};
+        const cam=finite(camera,3);
+        if(cam.some((n,i)=>Math.fround(n)!==Math.fround(vec(values.cam)[i])))throw new RangeError('sign camera must match candidate frame');
+        if(!Number.isInteger(count)||count<0||count>MAX_SIGNS||anchors?.length!==count||cells?.length!==count)throw new RangeError('world signs count/records mismatch');
+        if(!Number.isInteger(slot)||slot<0||slot>0xffffffff)throw new RangeError('world signs slot');
+        const size=(slot+1)*WORLD_SIGNS_BYTES;
+        if(!output||!Number.isInteger(output.size)||output.size<size||output.size>storageLimit||output.size%4||
+          (output.usage!==undefined&&!(output.usage&BU.STORAGE)))throw new RangeError('world signs storage output size/usage');
+        const a=Array.from(anchors,p=>[...finite(p,3),0]),c=Array.from(cells,p=>[...finite(p,3),0]);
+        if(a.some(p=>p.some((n,i)=>i<3&&(n < -1 || n > [grid.nx,grid.ny,grid.nz][i]+1))) ||
+          c.some(p=>p.some((n,i)=>i<3&&(!Number.isInteger(n)||n < -1 || n > [grid.nx,grid.ny,grid.nz][i]))))throw new RangeError('world sign anchor/sample bounds');
+        const k=presentation.k,anchor=finite(presentation.anchor,2),dir=finite(presentation.dir,2);
+        if(!Number.isFinite(k)||!Number.isFinite(Math.fround(k))||k<0||Math.abs(Math.hypot(...dir)-1)>1e-5)throw new RangeError('world signs presentation');
+        return {bytes:WorldSignsParams.pack({cam,count,slot,k,anchor,dir,anchors:a,cells:c}),output,size};
+      }
+      function recordCapturedSigns(frame,{bytes,output,size}) {
+        valid();if(signsState.state!=='ready')return false;
+        const p=buffer('world signs params',bytes),sg=group(signsLayouts[3],[b(0,p),...base,{binding:6,resource:{buffer:output,offset:0,size}}]);
+        const encoder=frame.direct?frame.direct():frame;
+        const pass=encoder.beginComputePass({label:'world signs'});
+        try {pass.setPipeline(signsState.pipeline);[...first,sg].forEach((g,i)=>pass.setBindGroup(i,g));pass.dispatchWorkgroups(1);}
+        finally {pass.end();}
+        return true;
+      }
       // Associate readback with this exact pinned publication, not live atlas state.
       const publication=Object.freeze({abi:snapshot.abi,epoch:snapshot.epoch,generation:snapshot.generation,
         dependencies:snapshot.dependencies,sunManifest:snapshot.sunManifest});
@@ -195,6 +227,10 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
         async recordPoint(frame,options) {
           valid();const captured=capturePoint(options);await pointReady;valid();return recordCapturedPoint(frame,captured);
         },
+        recordSignsReady(frame,options) {valid();if(signsState.state!=='ready')return false;return recordCapturedSigns(frame,captureSigns(options));},
+        async recordSigns(frame,options) {
+          valid();const captured=captureSigns(options);await signsReady;valid();return recordCapturedSigns(frame,captured);
+        },
         decodeFeedback:words=>{valid();return decodeWorldFeedback(words,atlas.bookLayout,tileCount);},
         // ONLY after submitting the last use AND GPU completion. No hidden
         // source/field submits, and no assumption that borrowed scratch survives.
@@ -203,6 +239,6 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
     } catch(e) {snapshot?.release();owned.forEach(b=>b.destroy());throw e;}
   }
   return Object.freeze({g:grid,layouts,pickLayouts,pointLayouts,pipeline,pipelineState,viewReady,pickState,plainPickState,pickPipelineState,
-    pointState,pointReady,prepare,ready:pickReady,
+    pointState,pointReady,signsState,signsReady,signsLayouts,prepare,ready:pickReady,
     dispose(){dead=true;/* candidates own their pinned lifetimes; no shared resource mutation */}});
 }

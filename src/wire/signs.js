@@ -18,7 +18,18 @@ const signs = {
     });
   },
   attach(app) { app.signs.clear(); app.signs.rebuild(); },
-  beforeView(app) { app.signs.update(); },
+  beforeView(app) {
+    // Future App contract: win.render.signsOwner === 'world' is exclusive,
+    // signFrame is the accepted completion envelope documented in world-signs.md.
+    // No accepted frame means retain accepted UI/loading, NEVER probe BOX.
+    if (app.win?.render?.signsOwner === 'world') {
+      app.signs.setWorldOwner(true);
+      app.signs.updateWorld(app.win.render.signFrame);
+    } else {
+      app.signs.setWorldOwner(false);
+      app.signs.update();
+    }
+  },
 };
 
 export default signs;
