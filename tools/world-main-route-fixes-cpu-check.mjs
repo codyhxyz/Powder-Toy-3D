@@ -19,9 +19,11 @@ test('actual WORLD attachment never constructs or starts the retired Far/detail 
  for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
  const window={},sim={origin:{fromArray(v){this.value=v;}}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k};
  const Window=class{constructor(renderer,actualSim,options){assert.equal(actualSim,sim);assert.deepEqual(options.size,app.worldMode.size);return window;}};
- const attach=new Function('WorldWindow','world',`return ({${source.slice(start,end)}}).attach;`)(Window,{worldStart:()=>[32,0,64]});
+ const uniforms={uClouds:{value:false},uCloudSea:{value:0}};
+ const attach=new Function('WorldWindow','world','gfxUniforms','beyondLevel',`return ({${source.slice(start,end)}}).attach;`)(Window,{worldStart:()=>[32,0,64]},uniforms,()=>42);
  attach(app);assert.equal(app.win,window);assert.deepEqual(sim.origin.value,[32,0,64]);
  assert.equal(window.far,undefined);
+ assert.equal(uniforms.uClouds.value,true);assert.equal(uniforms.uCloudSea.value,42);
 });
 async function pump(f,work,p=null){
   let done=false,result,error;

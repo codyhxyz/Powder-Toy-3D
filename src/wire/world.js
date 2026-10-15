@@ -10,6 +10,7 @@ import { installWorldRender } from './worldRender.js';
 import { createMediaNoise } from '../gfx/mediaNoise.js';
 import { createWorldFrameState, createWorldFrameDriver, disposeWorldFrame } from './worldRenderFrame.js';
 import { bakedAir } from '../constructions/runtime.js';
+import { beyondLevel } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { isMaterialView } from '../views.js';
@@ -54,6 +55,10 @@ const world = {
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
+    // Preserve the original cumulus deck and its optical shadows without
+    // constructing the retired Far textures, kernels or detail queue.
+    gfxUniforms.uClouds.value=true;
+    gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
   },
   buildFarView(app, far) {
     far.detail.build();
