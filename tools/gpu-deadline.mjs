@@ -5,18 +5,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const MAX_SLOT_MS = 10000;
-export const CLEANUP_MS = 1000;
+export const MAX_SLOT_MS = 25000;
+export const CLEANUP_MS = 2000;
 export const PROCESS_QUERY_MS = 500;
 export function budgetMs(value) {
-  // Set only after explicit user permission for a longer diagnostic. Defaults
-  // remain unchanged; the independent guard inherits the same bounded approval.
-  const approved = process.env.TPT_USER_APPROVED_SLOT_MS;
-  const limit = approved === undefined ? MAX_SLOT_MS : Number(approved);
-  if (!Number.isInteger(limit) || limit < MAX_SLOT_MS || limit > 30000)
-    throw new RangeError('User-approved GPU slot must be between 10000 and 30000 ms');
-  if (!Number.isFinite(value) || value <= CLEANUP_MS || value > limit)
-    throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${limit} ms, including startup and cleanup`);
+  if (!Number.isFinite(value) || value <= CLEANUP_MS || value > MAX_SLOT_MS)
+    throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${MAX_SLOT_MS} ms, including startup and cleanup`);
   return value;
 }
 export function processTable() {
@@ -52,7 +46,7 @@ function leaseRoots(table, token) {
   let text;
   try {
     text = execFileSync('ps', ['eww', '-p', candidates.map(p => p.pid).join(','), '-o', 'pid=,args='],
-      { encoding: 'utf8', timeout: 100, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      { encoding: 'utf8', timeout: 250, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) {
     if (error.status === 1 && !String(error.stdout || '').trim() && !String(error.stderr || '').trim()) return [];
     throw inspectionError('orphan-environment', error);

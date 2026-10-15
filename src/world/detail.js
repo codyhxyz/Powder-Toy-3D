@@ -7,12 +7,13 @@ import {
   farDetailDepthFrag, farDetailDepthPipeline, FAR_DETAIL_DEPTH_FORMAT,
 } from '../shaders/far.js';
 import { TREE } from './generator.js';
+import { warpBox, IDENTITY } from '../gfx/presentationMath.js';
+import { materialWord } from '../appearance.js';
 
 export { DETAIL_CHUNK };
 
-// Render-only chunks (docs/world-lod.md; docs/webgpu.md G1): the world near
-// the window as meshes of its cells, so it doesn't turn into the far field's
-// coarse bricks a few steps outside the simulated window. A chunk's cells (the
+// Render-only chunks (docs/world-lod.md; docs/webgpu.md G1): the visible world
+// as meshes of its cells, independently of the simulated window. A chunk's cells (the
 // scene's sceneCell, the live window's state where it overlaps, the trees the
 // window would plant, the store's edits) are read back once (the scene cells
 // kernel, shaders/far.js farSceneCellsFrag's live variant), meshed in a worker
@@ -28,18 +29,16 @@ export { DETAIL_CHUNK };
 // isn't flooded by the coarse sea beyond (shaders/far.js farFrag: cached).
 // While the rolling log bends the view (gfx/presentation.js) the meshes bend
 // in their vertex stage, the prepass's too (the view's params carry the
-// effect), the chunks wanted change with it (the view key), and none is
-// culled by the flat frustum: bent down, a chunk outside it can show.
-// Chunks are wanted where a coarse brick would span more than BRICK_PIXELS of
-// the screen, nearest first, one in flight at a time, at most MAX_CHUNKS of them
-// and MAX_BYTES of geometry, including chunks covered by the live window. The cells
-// kernel and both pipelines build the first time the far view is drawn
-// (B5: nothing of it builds in views that don't draw it).
-// The nearest MAX_CHUNKS in view are meshed; past them the coarse brick field
-// shows. 96 ended cell detail ~100 m out on the Island (13 MB of geometry);
-// 192 reaches ~150 m and stays well inside MAX_BYTES.
-const PAD = DETAIL_PAD, MAX_CHUNKS = 192, MAX_BYTES = 96 * 1024 * 1024;
-const BRICK_PIXELS = 3; // a coarse brick spanning more pixels than this asks for real cells
+// effect), the chunks wanted change with it (the view key). Conservative
+// warped bounds keep frustum culling without rejecting curved geometry.
+// All view-intersecting columns are wanted at one-cell resolution, nearest
+// first within each priority class, with a bounded pool of mesh workers.
+// Exposed missing meshes precede live-window prewarming and stale replacements.
+// The cells kernel and both pipelines build alongside the far view at boot or
+// view switch (B5: nothing builds in views that don't draw it).
+// Only OFFSCREEN spares are bounded; wanted geometry is never budget-evicted.
+// Until a mesh arrives there is a loading gap, not a coarse opaque substitute.
+const PAD = DETAIL_PAD, SPARE_CHUNKS = 192, SPARE_BYTES = 96 * 1024 * 1024;
 const BUFFER = { VERTEX: 0x20, INDEX: 0x10, COPY_DST: 0x08, STORAGE: 0x80, COPY_SRC: 0x04 };   // (GPUBufferUsage's bits)
 const TEX = { COPY_SRC: 0x01, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };                   // (GPUTextureUsage's bits)
 
@@ -57,18 +56,18 @@ export class WorldDetail {
     this.revisions = new Uint32Array(this.mask.length);
     this.entries = new Map();
     this.wanted = [];
-    this.blocked = new Set();
     this.dirty = new Map();
     this.simVersion = this.sim.version;
     this.epoch = 0;
     this.bytes = 0;
-    this.pending = null;
+    this.pending = new Map();
     this.visible = false;
     this.viewKey = null;
     this.disposed = false;
+    this.onChange = null; // world wire → pacer: async results redraw even while paused
     this.layout = farSceneLayout(L, DETAIL_CHUNK + 2 * PAD);
     this.cells = gpu.createBuffer({ label: 'detail cells', size: this.layout.cells * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC });
-    // its kernel and pipelines build when the far view is first drawn (tick); the window's don't wait for them
+    // Its kernel and pipelines build with the far view; the window's don't wait for them.
     const scene = this.win.scene, sceneKey = JSON.stringify(SCENE_CELLS_LAYOUT_OF(scene));
     this.stage = gpu.kernel({
       name: `${scene.key} detailCells`, code: farSceneCellsFrag(g, L, scene.glsl(g), this.layout, true),
@@ -76,7 +75,7 @@ export class WorldDetail {
       params: SceneCellsParams, build: 'manual',
     });
     this.pipe = gpu.renderPipeline({
-      name: 'far detail', code: farFrag(g, L, true), layouts: [far.viewFrameLayout, this.sim.L.STATE_RO, gpu.L.LIGHTING],
+      name: 'far detail', code: farFrag(g, L, true, { sourceAppearance: far.sourceAppearance }), layouts: [far.viewFrameLayout, this.sim.L.STATE_RO, gpu.L.LIGHTING],
       params: FarViewParams, ...farMeshPipeline(), build: 'manual',
     });
     this.depthPipe = gpu.renderPipeline({
@@ -88,26 +87,28 @@ export class WorldDetail {
     this.depthView = null;
     this.group = null;   // the cells kernel's group 2 (the scene's resources: made on first use)
     this._m = { worldToScene: new Matrix4(), sceneToWorld: new Matrix4(), eye: new Vector3(), proj: new Matrix4(), frustum: new Frustum(), box: new Box3() };
-    this.worker = new Worker(new URL('./detail-worker.js', import.meta.url), { type: 'module' });
-    this.worker.onmessage = ({ data }) => this.accept(data);
-    this.worker.onerror = (err) => {
-      console.error('world detail worker', err);
-      this.failed = true;
-      this.pending = null; // the coarse field remains available
-    };
+    const capacity = Math.min(4, Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 6) - 2));
+    this.workers = Array.from({ length: capacity }, () => {
+      const worker = new Worker(new URL('./detail-worker.js', import.meta.url), { type: 'module' });
+      const slot = { worker, token: null };
+      worker.onmessage = ({ data }) => this.accept(data);
+      worker.onerror = (err) => this.fail('worker', err);
+      return slot;
+    });
   }
 
   reset() {
     this.epoch++;
+    this.pending.clear(); // occupied slots drain their old readback/mesh before reuse
     this.viewKey = null;
     for (const key of [...this.entries.keys()]) this.drop(key);
     this.mask.fill(0);
     this.maskDirty = true;
     this.wanted = [];
-    this.blocked.clear();
     this.dirty.clear();
     this.simVersion = this.sim.version;
     this.revisions.fill(0);
+    this.onChange?.();
   }
 
   drop(key) {
@@ -118,6 +119,7 @@ export class WorldDetail {
       this.entries.delete(key);
     }
     if (this.mask[key]) { this.mask[key] = 0; this.maskDirty = true; }
+    if (entry) this.onChange?.();
   }
 
   // Explicit destructive invalidation. Ordinary summaries use stale instead.
@@ -125,7 +127,6 @@ export class WorldDetail {
   invalidate(lo, size) {
     for (const key of this.chunksAround(lo, size)) {
       this.revisions[key]++;
-      this.blocked.delete(key);
       this.drop(key);
     }
   }
@@ -142,12 +143,11 @@ export class WorldDetail {
       const changed = this.dirty.get(key);
       if (changed === undefined) continue;
       this.dirty.delete(key);
-      const entry = this.entries.get(key), pending = this.pending?.key === key ? this.pending : null;
+      const entry = this.entries.get(key), pending = this.pending.get(key);
       // A mesh/readback started after these writes already includes them.
       const oldEntry = entry && entry.version < changed, oldJob = pending && pending.version < changed;
       if (!oldEntry && !oldJob) continue;
       if (!pending || oldJob) this.revisions[key]++;
-      this.blocked.delete(key);
       if (oldEntry) entry.step = 0;
     }
   }
@@ -180,73 +180,123 @@ export class WorldDetail {
     const eye = m.eye.copy(camera.position).applyMatrix4(m.sceneToWorld);
     const height = Math.max(1, Math.round((globalThis.innerHeight ?? 720) * (globalThis.devicePixelRatio ?? 1)));
     const o = this.sim.origin;
-    const bent = !!far.presentation?.active;
+    const bend = far.presentation?.active ? far.presentation.parameters : IDENTITY;
     const viewKey = `${camera.matrixWorld.elements}|${camera.fov}|${camera.aspect}|${height}|${o.x},${o.y},${o.z}|${far.presentation?.key}`;
     if (viewKey === this.viewKey) return;
     this.viewKey = viewKey;
-    this.blocked.clear();
-    const pixels = height / (2 * Math.tan((camera.fov ?? 60) * Math.PI / 360));
     camera.updateMatrixWorld?.();
-    m.frustum.setFromProjectionMatrix(m.proj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    m.frustum.setFromProjectionMatrix(m.proj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem);
     const C = DETAIL_CHUNK, size = this.win.size, candidates = [];
     for (let z = 0; z < this.nz; z++) for (let x = 0; x < this.nx; x++) {
       const lo = [x * C, 0, z * C], hi = [Math.min(lo[0] + C, size[0]), size[1], Math.min(lo[2] + C, size[2])];
       const box = m.box.set(new Vector3(...lo), new Vector3(...hi));
       const distance = Math.max(1, box.distanceToPoint(eye));
-      if (pixels * BRICK / distance < BRICK_PIXELS || (!bent && !m.frustum.intersectsBox(box.applyMatrix4(m.worldToScene)))) continue;
-      // Two geometric levels: real cells where coarse bricks span >BRICK_PIXELS,
-      // the existing coarse field otherwise. Adjacent cached chunks share a
-      // lattice; independent step sizes would open cracks between them.
+      if (!m.frustum.intersectsBox(warpBox(box, bend).applyMatrix4(m.worldToScene))) continue;
+      // One shared cell lattice at every distance, including adjacent seams.
       candidates.push({ key: x + z * this.nx, x: lo[0], z: lo[2], step: 1, distance });
     }
     candidates.sort((a, b) => a.distance - b.distance);
     this.wanted = candidates;
+    this.trimSpares();
     // Cache residency is independent of physics residency. The shaders clip
     // live-window fragments; keep their meshes ready for when the window moves.
   }
 
-  // Is the cache full for a mesh `bytes` big (0: any mesh at all)?
-  full(bytes = 0, replacing) {
-    const old = this.entries.get(replacing), used = this.bytes - (old?.bytes ?? 0);
-    return this.entries.size - (old ? 1 : 0) >= MAX_CHUNKS || used + bytes > MAX_BYTES || (!bytes && used >= MAX_BYTES);
-  }
-
-  // Evict until a mesh `bytes` big (0: just a slot) fits for a chunk at
-  // `distance`: spares first, then wanted chunks farther than it, farthest
-  // first. With `dry`, only report whether it would.
-  makeRoom(distance, bytes, dry = false, replacing) {
+  // Wanted entries do not consume spare budgets and are never victims.
+  trimSpares() {
     const wanted = new Set(this.wanted.map((c) => c.key));
-    const victims = [...this.entries.keys()].filter((key) => key !== replacing && !wanted.has(key));
-    for (let i = this.wanted.length - 1; i >= 0 && this.wanted[i].distance > distance; i--)
-      if (this.wanted[i].key !== replacing && this.entries.has(this.wanted[i].key)) victims.push(this.wanted[i].key);
-    if (bytes > MAX_BYTES) return false;
-    if (dry) return !this.full(bytes, replacing) || victims.length > 0;
-    for (const key of victims) {
-      if (!this.full(bytes, replacing)) break;
-      this.drop(key);
-      if (wanted.has(key)) this.blocked.add(key);
+    const spares = [...this.entries].filter(([key]) => !wanted.has(key));
+    let count = spares.length, bytes = spares.reduce((n, [, e]) => n + e.bytes, 0);
+    for (const [key, e] of spares) {
+      if (count <= SPARE_CHUNKS && bytes <= SPARE_BYTES) break;
+      this.drop(key); // oldest offscreen spare first
+      count--; bytes -= e.bytes;
     }
-    return !this.full(bytes, replacing);
   }
 
-  // Every frame (far.tick): the nearest wanted chunk without its mesh, its
-  // cells recorded now and read back, then meshed in the worker.
-  tick() {
-    if (this.failed || this.pending || !this.far.built || !this.visible || this.win.pending) return;
-    // (no mesh is made before all three are built: a published mask hands its chunk to a mesh that draws)
+  // A column is hidden only if the live volume covers its entire world height.
+  covered(c) {
+    const o = this.sim.origin, g = this.sim.g, size = this.win.size;
+    return o.x <= c.x && o.z <= c.z && o.y <= 0 && o.y + g.ny >= size[1] &&
+      o.x + g.nx >= Math.min(c.x + DETAIL_CHUNK, size[0]) &&
+      o.z + g.nz >= Math.min(c.z + DETAIL_CHUNK, size[2]);
+  }
+
+  jobs() {
+    return this.wanted.filter(c => !this.pending.has(c.key) && this.entries.get(c.key)?.step !== c.step)
+      .sort((a, b) => {
+        const rank = c => this.entries.has(c.key) ? 2 : this.covered(c) ? 1 : 0;
+        return rank(a) - rank(b) || a.distance - b.distance;
+      });
+  }
+
+  // Only runnable work keeps rAF awake. Async waits wake it on completion.
+  get busy() {
+    return !this.disposed && !this.failed && this.far.built && this.visible &&
+      this.workers.some(s => !s.token) && !this.building && !this.waitingWindow &&
+      this.jobs().length > 0;
+  }
+
+  sameJob(a, b) {
+    return !!a && !!b && ['key', 'epoch', 'revision', 'version'].every(k => a[k] === b[k]);
+  }
+
+  completed(token) {
+    if (this.sameJob(this.pending.get(token.key), token)) this.pending.delete(token.key);
+    const slot = this.workers.find(s => this.sameJob(s.token, token));
+    if (slot) slot.token = null;
+    if (!this.failed && !this.disposed) this.onChange?.();
+  }
+
+  fail(where, err) {
+    if (this.failed || this.disposed) return;
+    this.failed = true;
+    if (!this.gpu.failure) console.error(`world detail ${where}`, err);
+    for (const slot of this.workers) { slot.worker.terminate(); slot.token = null; }
+    this.pending.clear();
+    this.onChange?.();
+  }
+
+  // The world wire starts all three builds alongside the far-view build.
+  build() {
+    if (this.buildPromise) return this.buildPromise;
+    if (this.disposed || this.failed) return Promise.resolve();
     const pipes = [this.stage, this.pipe, this.depthPipe];
-    if (pipes.some((k) => k.state !== 'ready')) { for (const k of pipes) k.build(); return; }
-    const job = this.wanted.find((c) => !this.blocked.has(c.key) && this.entries.get(c.key)?.step !== c.step);
-    if (!job) return;
-    // A chunk that couldn't be kept isn't built: before this check the nearest
-    // one past the budget was read back, meshed and thrown away on every camera move.
-    if (!this.entries.has(job.key) && !this.makeRoom(job.distance, 0, true)) {   // (a stale one replaces its own)
-      for (const c of this.wanted) if (c.distance >= job.distance && !this.entries.has(c.key)) this.blocked.add(c.key);
+    if (pipes.every(k => k.state === 'ready')) return Promise.resolve();
+    this.buildPromise = this.building = Promise.all(pipes.map(k => k.build())).then(() => {
+      this.building = null;
+      if (!this.disposed && !this.failed) this.onChange?.();
+    }, err => { this.building = null; this.fail('build', err); });
+    return this.buildPromise;
+  }
+
+  // Each slot stays occupied through readback and meshing, including old epochs.
+  tick() {
+    if (this.disposed || this.failed || !this.far.built || !this.visible) return;
+    if (this.win.pending) {
+      if (!this.waitingWindow) this.waitingWindow = this.win.pending.then(() => {
+        this.waitingWindow = null;
+        if (!this.disposed && !this.failed) this.onChange?.();
+      }, err => { this.waitingWindow = null; this.fail('window transfer', err); });
       return;
     }
+    // No ownership is published before all three pipelines can draw.
+    if ([this.stage, this.pipe, this.depthPipe].some(k => k.state !== 'ready')) { this.build(); return; }
+    const jobs = this.jobs();
+    for (const slot of this.workers) {
+      if (slot.token) continue;
+      const job = jobs.shift();
+      if (!job) break;
+      try { this.submit(job, slot); }
+      catch (err) { this.fail('submission', err); break; }
+    }
+  }
+
+  submit(job, slot) {
     const sim = this.sim, o = sim.origin, g = sim.g, gpu = this.gpu, res = this.win.gen.res;
     const token = { ...job, epoch: this.epoch, revision: this.revisions[job.key], version: sim.version };
-    this.pending = token;
+    this.pending.set(job.key, token);
+    slot.token = token;
     const origin = [job.x - PAD, -PAD, job.z - PAD], side = this.layout.side, height = this.win.size[1];
     // the scene's prepass over the columns the cells read (held to the world), then the cells
     const c0 = [Math.max(0, origin[0]), Math.max(0, origin[2])], c1 = [Math.min(this.win.size[0], origin[0] + side), Math.min(this.win.size[2], origin[2] + side)];
@@ -267,67 +317,72 @@ export class WorldDetail {
           const bytes = this.win.store.map.get(this.win.store.key(bx, by, bz));
           if (bytes) edits.push({ at: [bx * BRICK, by * BRICK, bz * BRICK], bytes });
         }
+    // readback.buffer records a copy into its own staging buffer NOW, before
+    // the next dispatch overwrites shared cells. Keep dispatch/copy pairs ordered.
     gpu.readback.buffer(this.cells).then((buf) => {
-      if (!this.valid(token)) { this.pending = null; return; }
+      if (!this.valid(token)) { this.completed(token); return; }
       const raw = new Uint32Array(buf);
-      this.worker.postMessage({ token, raw, layout: this.layout, origin, height, pad: PAD,
+      slot.worker.postMessage({ token, raw, layout: this.layout, origin, height, pad: PAD,
         bounds: [job.x, 0, job.z, Math.min(job.x + DETAIL_CHUNK, this.win.size[0]), height, Math.min(job.z + DETAIL_CHUNK, this.win.size[2])],
         live, planted, wb, trees, edits }, [raw.buffer, planted.buffer]);
     }).catch((err) => {
-      if (!this.gpu.failure) console.error('world detail readback', err);
-      this.pending = null;
-      this.failed = true;
+      this.fail('readback', err);
+      this.completed(token);
     });
   }
 
   valid(token) {
-    return !this.disposed && token.epoch === this.epoch && token.revision === this.revisions[token.key];
+    return !this.disposed && !this.failed && token.epoch === this.epoch &&
+      token.revision === this.revisions[token.key] && this.sameJob(this.pending.get(token.key), token);
   }
 
-  accept({ token, positions, normals, ids, indices, liquid, error }) {
-    this.pending = null;
-    if (!this.valid(token)) return;
-    if (error) { console.error('world detail mesh', error); this.failed = true; return; }
-    const bytes = positions.byteLength + normals.byteLength + ids.length * 4 + (indices?.byteLength ?? 0);
-    const distance = this.wanted.find((c) => c.key === token.key)?.distance ?? Infinity;
-    // Keep the nearest chunks, never cycle through them forever when the
-    // budget is full. Reconsider rejected chunks only after the view changes.
-    if (!this.makeRoom(distance, bytes, false, token.key)) {
-      this.blocked.add(token.key);
-      for (const c of this.wanted) if (c.distance >= distance && !this.entries.has(c.key)) this.blocked.add(c.key);
-      return;
-    }
-    const gpu = this.gpu;
-    const upload = (label, data, usage) => {
-      const b = gpu.createBuffer({ label, size: Math.max(4, Math.ceil(data.byteLength / 4) * 4), usage: usage | BUFFER.COPY_DST });
-      gpu.write(b, 0, data, { ordered: false });
-      return b;
-    };
-    const u32 = indices instanceof Uint32Array;
-    // (16-bit indices padded to whole words: a buffer write is 4-byte aligned)
-    const index = !indices || u32 || indices.length % 2 === 0 ? indices : Uint16Array.from([...indices, 0]);
-    const buffers = indices?.length ? [
-      upload('detail positions', positions, BUFFER.VERTEX), upload('detail normals', normals, BUFFER.VERTEX),
-      upload('detail elements', Uint32Array.from(ids), BUFFER.VERTEX), upload('detail indices', index, BUFFER.INDEX),
-    ] : [];
-    this.drop(token.key);
-    this.entries.set(token.key, { buffers, count: indices?.length ?? 0, format: u32 ? 'uint32' : 'uint16', bytes, step: token.step, version: token.version,
-      bounds: new Box3().setFromArray(positions) });
-    this.bytes += bytes;
-    // Publish the mesh and its ownership together; the raymarch must never
-    // skip a chunk whose geometry is still being prepared.
-    this.mask[token.key] = buffers.length ? (liquid ? 2 : 1) : 0;
-    this.maskDirty = true;
+  accept({ token, positions, normals, ids, appearances, indices, liquid, error }) {
+    const uploaded = [];
+    try {
+      if (!this.valid(token)) return;
+      if (error) { this.fail('mesh', error); return; }
+      const bytes = positions.byteLength + normals.byteLength + ids.length * 4 + (indices?.byteLength ?? 0);
+      // A late offscreen result cannot displace wanted geometry or allocate an
+      // oversized spare. Wanted replacements have no geometry budget cutoff.
+      if (!this.wanted.some(c => c.key === token.key) && bytes > SPARE_BYTES) return;
+      const gpu = this.gpu;
+      const upload = (label, data, usage) => {
+        const b = gpu.createBuffer({ label, size: Math.max(4, Math.ceil(data.byteLength / 4) * 4), usage: usage | BUFFER.COPY_DST });
+        uploaded.push(b);
+        gpu.write(b, 0, data, { ordered: false });
+        return b;
+      };
+      const u32 = indices instanceof Uint32Array;
+      // (16-bit indices padded to whole words: a buffer write is 4-byte aligned)
+      const index = !indices || u32 || indices.length % 2 === 0 ? indices : Uint16Array.from([...indices, 0]);
+      const buffers = indices?.length ? [
+        upload('detail positions', positions, BUFFER.VERTEX), upload('detail normals', normals, BUFFER.VERTEX),
+        upload('detail materials', Uint32Array.from(ids, (id, i) => materialWord(id, appearances?.[i] ?? 0)), BUFFER.VERTEX), upload('detail indices', index, BUFFER.INDEX),
+      ] : [];
+      const bounds = new Box3().setFromArray(positions);
+      this.drop(token.key);
+      this.entries.set(token.key, { buffers, count: indices?.length ?? 0, format: u32 ? 'uint32' : 'uint16', bytes, step: token.step, version: token.version, bounds });
+      this.bytes += bytes;
+      // Publish the mesh and its ownership together; the raymarch must never
+      // skip a chunk whose geometry is still being prepared.
+      this.mask[token.key] = buffers.length ? (liquid ? 2 : 1) : 0;
+      this.maskDirty = true;
+      uploaded.length = 0; // ownership transferred to the entry
+      this.trimSpares();
+    } catch (err) {
+      for (const b of uploaded) this.sim._retire(b);
+      this.fail('upload', err);
+    } finally { this.completed(token); }
   }
 
   // Cache residency is not visibility. Use the actual jittered draw matrix;
-  // the flat frustum cannot bound the rolling log's curved geometry.
+  // Curved geometry needs warped bounds, not the flat mesh's box.
   *visibleDrawEntries(params) {
-    const bent = params.warpK !== 0;
-    const frustum = this._m.frustum;
-    if (!bent) frustum.setFromProjectionMatrix(params.worldToClip, WebGPUCoordinateSystem);
+    const frustum = this._m.frustum, box = this._m.box;
+    const bend = params.warpK ? { k: params.warpK, anchor: params.warpAnchor, dir: params.warpDir } : IDENTITY;
+    frustum.setFromProjectionMatrix(params.worldToClip, WebGPUCoordinateSystem);
     for (const e of this.entries.values()) {
-      if (e.count && (bent || frustum.intersectsBox(e.bounds))) yield e;
+      if (e.count && frustum.intersectsBox(warpBox(e.bounds, bend, box))) yield e;
     }
   }
 
@@ -392,7 +447,7 @@ export class WorldDetail {
   dispose() {
     this.disposed = true;
     this.reset();
-    this.worker.terminate();
+    for (const slot of this.workers) { slot.worker.terminate(); slot.token = null; }
     this.sim._retire(this.cells);
     this._dropDepth();
   }

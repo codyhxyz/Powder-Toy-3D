@@ -131,7 +131,7 @@ impacts sound like the material they hit, pitched by its hardness, and the world
 Sounds, level-matched, the blade's bite over its material's texture, five takes a sound (`public/sfx/dig`). Shots
 kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
 draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly and flat-shaded in the RuneScape style, and
-**Settings → First person** picks the body: the stickman, or a realistic one animated with
+**Settings → First person** picks the body: a male wizard, a female wizard, or that guy with a marker-drawn paper bag on his head, animated with
 [Quaternius](https://quaternius.com)'s CC0 animation library.
 
 Every death goes up in a killfeed in the top right, Garry's Mod's death notices with its layout, timing and colours

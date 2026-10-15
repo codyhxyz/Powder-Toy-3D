@@ -5,6 +5,8 @@ import {
 import { litColor, gridPosition, figNormalMappedFn, prepareMesh, getMeshGpu, unlitMaterial } from '../gfx/meshLight.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 import { limb as ikLimb, solveLimb } from './limbs.js';
+import { strikePose, sampleKickPose, kickBlend } from './strikePose.js';
+import { createFlapAnimation } from './flapPose.js';
 
 // The body you see in third person and when you die, built from three.js
 // primitives in grid cells and scaled into the world. createFigure(build)
@@ -92,15 +94,6 @@ const FALL_BOUNCE_HZ = 3;
 const CHOP_WINDUP = 0.7;                 // share of the swing spent winding up
 const CHOP_UP = [2.8, 0.7];              // rad: shoulder, elbow raised over the head
 const CHOP_DOWN = [0.45, 0.1];           // rad: arm down in front, the blow landed
-// The kick (kick.js): s.kick is its progress 0..1. A front kick's three phases,
-// as martial arts teach it: chamber (knee up, shin folded), extend (the leg
-// snaps straight out ahead), retract (back along the same line), with a lean
-// back to balance it. Right leg.
-const KICK_CHAMBER_END = 0.25;           // share of the kick spent chambering...
-const KICK_EXTEND_END = 0.45;            // ...then extending; the rest retracts
-const KICK_CHAMBER = [1.35, -1.9];       // rad: hip forward, knee folded
-const KICK_EXTEND = [1.5, -0.05];        // rad: leg straight out, about level
-const KICK_LEAN = -0.25;                 // rad: torso back, against the kick
 // Looking up and down (s.look: the look's pitch, and the share of it the torso
 // takes for a held tool's aim, holds.js): the head follows most of what's left
 export const HEAD_LOOK = 0.8;            // share of the look's pitch the head turns
@@ -293,6 +286,8 @@ export function buildStick() {
 }
 
 export function createFigure(build = buildStick) {
+  const kickPose = strikePose();
+  const wingAnimation = createFlapAnimation();
   const u = figureUniforms();
   const tint = [0, 0, 0, 0];
   const root = new THREE.Group();      // at the feet, turned to face the look direction
@@ -478,9 +473,17 @@ export function createFigure(build = buildStick) {
       shR.rotation.set(J.shR, 0, J.armOut);
       elL.rotation.x = J.elL;
       elR.rotation.x = J.elR;
+      if (s.dead) wingAnimation.reset();
+      const wingPose = wingAnimation.update(dt, s.dead ? 0 : s.flap ?? 0);
+      if (wingPose.weight > 0) {
+        shL.quaternion.slerp(wingPose.left, wingPose.weight);
+        shR.quaternion.slerp(wingPose.right, wingPose.weight);
+        elL.quaternion.slerp(wingPose.elbow, wingPose.weight);
+        elR.quaternion.slerp(wingPose.elbow, wingPose.weight);
+      }
       const look = !s.dead && s.look ? s.look : null;
       const aimLean = look ? look.pitch * look.spine : 0;
-      torso.rotation.x = -J.lean + aimLean;
+      torso.rotation.set(-J.lean + aimLean, 0, 0);
       neck.rotation.x = J.headPitch + (look ? THREE.MathUtils.clamp((look.pitch - aimLean) * HEAD_LOOK, -HEAD_LOOK_MAX, HEAD_LOOK_MAX) : 0);
       body.position.y = HIP - J.drop;
 
@@ -502,14 +505,11 @@ export function createFigure(build = buildStick) {
         elR.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(J.elR, CHOP_UP[1], up), CHOP_DOWN[1], down);
       }
       if (s.kick != null && !s.dead) {
-        const p = Math.min(Math.max(s.kick, 0), 1);
-        const chamber = smooth01(p / KICK_CHAMBER_END);
-        const extend = smooth01((p - KICK_CHAMBER_END) / (KICK_EXTEND_END - KICK_CHAMBER_END));
-        const back = smooth01((p - KICK_EXTEND_END) / (1 - KICK_EXTEND_END));
-        const at = (rest, i) => THREE.MathUtils.lerp(THREE.MathUtils.lerp(THREE.MathUtils.lerp(rest, KICK_CHAMBER[i], chamber), KICK_EXTEND[i], extend), rest, back);
-        hipR.rotation.x = at(J.hipR, 0);
-        knR.rotation.x = at(J.knR, 1);
-        torso.rotation.x = -J.lean - KICK_LEAN * (chamber - back);
+        sampleKickPose(s.kick, kickPose);
+        const weight = kickBlend(s.kick);
+        hipR.quaternion.slerp(kickPose.hip, weight);
+        knR.quaternion.slerp(kickPose.knee, weight);
+        torso.quaternion.premultiply(kickPose.torso);
       }
       contact.visible = s.onGround && !s.dead && !riding;
       updateJetFlames(flames, s);

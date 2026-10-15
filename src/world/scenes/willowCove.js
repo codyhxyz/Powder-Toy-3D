@@ -1,6 +1,16 @@
 import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared, groundScan, memoTwin } from './themedShared.js';
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';
+import { CITY_FOLK_TERRAIN } from './cityFolk/terrain.js';
+import { CITY_FOLK_TOWN } from './cityFolk/town.js';
+import { CITY_FOLK_NATURE } from './cityFolk/nature.js';
+import { CITY_FOLK_CITY } from './cityFolk/city.js';
+
+const overlays = [['TOWN', CITY_FOLK_TOWN], ['NATURE', CITY_FOLK_NATURE], ['CITY', CITY_FOLK_CITY]];
+const overlayConstants = () => Object.assign({}, ...overlays.map(([prefix, module]) => jsConstants(prefix, module)));
+const overlayTypes = () => Object.assign({}, ...overlays.map(([prefix, module]) => definesTypes(prefix, module)));
+
+export { CITY_FOLK_TERRAIN } from './cityFolk/terrain.js';
 
 // Animal Crossing's village/terraces, with Minecraft's one-cell stairs.
 // Fixed topology; the seed changes only material grain. All scenery is matter,
@@ -60,7 +70,10 @@ export const WILLOW_LANDMARKS = Object.freeze({
 const SRC = /* glsl */ `
 bool wcExpanded() { return uWillowWorldX > WC_LEGACY_WORLD_X; }
 
+${CITY_FOLK_TERRAIN.shapeSrc}
+
 int wcRadius(int x, int z) {
+  if (wcExpanded() && abs(x) >= 200) return cfRadius(x, z);
   // Stretch the terrain, not Animal Crossing's cottages, trees or river.
   int ax = thDiv(abs(x), wcExpanded() ? WC_LAND_STRETCH_X : 1);
   return max(max(ax, abs(z)), thDiv(3 * (ax + abs(z)), 4));
@@ -68,7 +81,7 @@ int wcRadius(int x, int z) {
 
 // Rock-backed octagonal shore; dry sand is a single supported layer bounded
 // by a rock lip at the same height, so it cannot topple into the sea.
-int wcHeight(int x, int z) {
+int wcBaseHeight(int x, int z) {
   int r = wcRadius(x, z);
   if (r > WC_RADIUS) return WC_FLOOR;
   if (r >= WC_SHORE) return max(WC_FLOOR, WC_BEACH - (r - WC_SHORE));
@@ -100,6 +113,10 @@ bool wcPath(int x, int z) {
   return abs(x - WC_PLAZA_X) <= WC_PLAZA_HALF_X && abs(z - WC_PLAZA_Z) <= WC_PLAZA_HALF_Z;
 }
 
+${CITY_FOLK_TERRAIN.src}
+
+int wcHeight(int x, int z) { return cfHeight(x, z); }
+
 int wcHouseX(int x) {
   if (x < WC_PLAZA_X - WC_PLAZA_HALF_X) return WC_COTTAGE_A;
   if (x < WC_RIVER_X) return WC_COTTAGE_B;
@@ -109,7 +126,7 @@ int wcHouseX(int x) {
 
 // Hollow timber shells, brick pitched roofs, glazed windows, 8x11 doors.
 // Returns EMPTY both outside and inside; only callers above the ground use it.
-int wcHouse(int x, int y, int z) {
+int wcHouseMaterial(int x, int y, int z) {
   int a = x - wcHouseX(x), b = z - WC_COTTAGE_Z;
   if (abs(a) > WC_HOUSE_HALF + WC_ROOF_OVER || abs(b) > WC_HOUSE_HALF + WC_ROOF_OVER) return E_EMPTY;
   int roof = WC_LOW + WC_WALL_H + max(0, WC_ROOF_H - thDiv(abs(a), 2));
@@ -122,10 +139,11 @@ int wcHouse(int x, int y, int z) {
   if (!front && !back && !side) return E_EMPTY;
   if (y >= WC_LOW + WC_WINDOW_LO && y < WC_LOW + WC_WINDOW_HI &&
       ((side && abs(b) < WC_WINDOW_HALF) || (back && abs(a) < WC_WINDOW_HALF))) return E_GLASS;
-  return E_WOOD;
+  return materialWord(E_WOOD, AP_PLANK_Y);
 }
+int wcHouse(int x, int y, int z) { return materialId(wcHouseMaterial(x, y, z)); }
 
-int wcTree(int x, int y, int z) {
+int wcTreeMaterial(int x, int y, int z) {
   bool orchard = x >= WC_ORCHARD_X && x < WC_ORCHARD_X + WC_GROVE_WIDTH && z >= WC_ORCHARD_Z && z < WC_ORCHARD_Z + WC_GROVE_WIDTH;
   bool woods = x >= WC_WOODS_X && x < WC_WOODS_X + WC_GROVE_WIDTH && z >= WC_WOODS_Z && z < WC_WOODS_Z + WC_GROVE_WIDTH;
   if (!orchard && !woods) return E_EMPTY;
@@ -136,17 +154,19 @@ int wcTree(int x, int y, int z) {
   int h = wcHeight(cx, cz);
   if (h != (orchard ? WC_LOW : WC_MID)) return E_EMPTY;
   int a = x - cx, b = z - cz, c = y - h;
-  if (abs(a) < WC_TREE_TRUNK_HALF && abs(b) < WC_TREE_TRUNK_HALF && c < WC_TREE_TRUNK_H) return E_WOOD;
+  if (abs(a) < WC_TREE_TRUNK_HALF && abs(b) < WC_TREE_TRUNK_HALF && c < WC_TREE_TRUNK_H) return materialWord(E_WOOD, AP_LOG_Y);
   int cy = c - WC_TREE_CROWN_Y;
-  if (a * a + b * b + cy * cy < WC_TREE_RADIUS * WC_TREE_RADIUS) return E_PLANT;
+  if (a * a + b * b + cy * cy < WC_TREE_RADIUS * WC_TREE_RADIUS) return materialWord(E_PLANT, AP_LEAVES);
   return E_EMPTY;
 }
+int wcTree(int x, int y, int z) { return materialId(wcTreeMaterial(x, y, z)); }
 
-int wcCell(int wx, int y, int wz) {
+int wcBaseCellMaterial(int wx, int y, int wz) {
   if (wx < 0 || wz < 0 || y < 0 || wx >= uWillowWorldX || wz >= uWillowWorldZ || y >= uWillowWorldY) return E_EMPTY;
   if (y < WC_FLOOR) return E_ROCK;
   if (y >= WC_SKY) return E_EMPTY;
   int x = wx - thDiv(uWillowWorldX, 2), z = wz - thDiv(uWillowWorldZ, 2);
+  if (cfOuter(x)) return cfOuterCellMaterial(x, y, z);
   int r = wcRadius(x, z);
   if (r > WC_RADIUS && !(abs(x - WC_PATH_X) <= WC_DOCK_HALF && z >= WC_DOCK_START && z < WC_DOCK_END))
     return y < WC_SEA ? E_WATER : E_EMPTY;
@@ -157,13 +177,13 @@ int wcCell(int wx, int y, int wz) {
   int bz = upperBridge ? WC_MID_PATH_Z : z < 0 ? WC_RUN_RETURN_Z : WC_LANE_Z;
   int bh = upperBridge ? WC_MID : WC_LOW;
   if (abs(z - bz) < WC_PATH_HALF && abs(x - WC_RIVER_X) <= WC_BRIDGE_HALF) {
-    if (y >= bh - WC_DECK_THICK && y < bh) return E_WOOD;
-    if (abs(z - bz) == WC_PATH_HALF - 1 && y >= bh && y < bh + WC_BRIDGE_RAIL_H) return E_WOOD;
-    if (abs(abs(x - WC_RIVER_X) - WC_BRIDGE_PILE_X) <= WC_PILE_HALF && abs(z - bz) >= WC_PATH_HALF - 2 && y >= WC_SEA && y < bh) return E_WOOD;
+    if (y >= bh - WC_DECK_THICK && y < bh) return materialWord(E_WOOD, AP_PLANK_Z);
+    if (abs(z - bz) == WC_PATH_HALF - 1 && y >= bh && y < bh + WC_BRIDGE_RAIL_H) return materialWord(E_WOOD, AP_PLANK_X);
+    if (abs(abs(x - WC_RIVER_X) - WC_BRIDGE_PILE_X) <= WC_PILE_HALF && abs(z - bz) >= WC_PATH_HALF - 2 && y >= WC_SEA && y < bh) return materialWord(E_WOOD, AP_PLANK_Y);
   }
   if (abs(x - WC_PATH_X) <= WC_DOCK_HALF && z >= WC_DOCK_START && z < WC_DOCK_END) {
-    if (y >= WC_BEACH - WC_DECK_THICK && y < WC_BEACH) return E_WOOD;
-    if (abs(x - WC_PATH_X) == WC_DOCK_HALF - 2 && thMod(z - WC_DOCK_PILE_Z, WC_DOCK_PITCH) < WC_DECK_THICK && y < WC_BEACH) return E_WOOD;
+    if (y >= WC_BEACH - WC_DECK_THICK && y < WC_BEACH) return materialWord(E_WOOD, AP_PLANK_X);
+    if (abs(x - WC_PATH_X) == WC_DOCK_HALF - 2 && thMod(z - WC_DOCK_PILE_Z, WC_DOCK_PITCH) < WC_DECK_THICK && y < WC_BEACH) return materialWord(E_WOOD, AP_PLANK_Y);
   }
 
   int dx = x - WC_RIVER_X, dz = z - WC_POND_Z;
@@ -193,21 +213,53 @@ int wcCell(int wx, int y, int wz) {
     if (wcPath(x, z) || doorstep || houseFloor) return E_BRICK;
     bool bank = (abs(dx) <= WC_BANK_HALF && z >= WC_RIVER_START) || dx * dx + dz * dz <= WC_POND_BANK * WC_POND_BANK;
     if (!bank && r > WC_BEACH_IN && r < WC_SHORE - 1) return E_SAND;
-    return r < WC_GRASS_IN && !bank ? E_PLANT : E_ROCK;
+    return r < WC_GRASS_IN && !bank ? materialWord(E_PLANT, AP_GRASS) : E_ROCK;
   }
   if (y < WC_SEA) return E_WATER;
   if (y >= WC_LOW && z >= WC_COTTAGE_Z - WC_HOUSE_HALF - WC_ROOF_OVER && z <= WC_COTTAGE_Z + WC_HOUSE_HALF + WC_ROOF_OVER) {
-    int id = wcHouse(x, y, z);
-    if (id != E_EMPTY) return id;
+    int id = wcHouseMaterial(x, y, z);
+    if (materialId(id) != E_EMPTY) return id;
   }
-  return wcTree(x, y, z);
+  return wcTreeMaterial(x, y, z);
 }
+int wcBaseCell(int wx, int y, int wz) { return materialId(wcBaseCellMaterial(wx, y, wz)); }
+
+// Public island-local BASE terrain API. It never invokes overlay modules.
+int cfTerrainCellMaterial(int x, int y, int z) {
+  return wcBaseCellMaterial(x + thDiv(uWillowWorldX, 2), y, z + thDiv(uWillowWorldZ, 2));
+}
+int cfTerrainCell(int x, int y, int z) { return materialId(cfTerrainCellMaterial(x, y, z)); }
+
+${CITY_FOLK_TOWN.src}
+${CITY_FOLK_NATURE.src}
+${CITY_FOLK_CITY.src}
+
+int wcCellMaterial(int wx, int y, int wz) {
+  // Bounds precede overlays: no authored foundation may leak outside the world.
+  if (wx < 0 || wz < 0 || y < 0 || wx >= uWillowWorldX || wz >= uWillowWorldZ || y >= uWillowWorldY) return E_EMPTY;
+  int x = wx - thDiv(uWillowWorldX, 2), z = wz - thDiv(uWillowWorldZ, 2);
+  if (!wcExpanded()) return cfTerrainCellMaterial(x, y, z);
+  // The district replaces every cell in its inclusive bounds, irrespective
+  // of the input ID. It never overlaps the town stop; no main-town work is
+  // relevant here (including the city's EMPTY interiors and sky).
+  if (x >= CITY_WEST && x <= CITY_EAST && z >= CITY_NORTH && z <= CITY_SOUTH) return cfCityCellMaterial(x, y, z, E_EMPTY);
+  int id = cfTerrainCellMaterial(x, y, z);
+  // Nature explicitly excludes this core; all town/stop footprints and
+  // approaches are outside it. The X=0 city was dispatched above, not skipped.
+  if (abs(x) < 192) return id;
+  int h = cfHeight(x, z);
+  id = cfNatureCellMaterial(x, y, z, h, id);
+  id = cfTownCellMaterial(x, y, z, h, id);
+  id = cfCityCellMaterial(x, y, z, id);
+  return cfCityBusStopCellMaterial(x, y, z, id);
+}
+int wcCell(int wx, int y, int wz) { return materialId(wcCellMaterial(wx, y, wz)); }
 `;
 
 // The JS twin per world (seed and size): the seed is in scope for any shared
 // hash calls.
 export const willowCoveTwin = memoTwin((P) => `${P.seed}:${P.size}`, (P) => compileShared(SRC, P.seed, {
-  ...jsConstants('WC', L), uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2],
+  ...jsConstants('WC', L), ...overlayConstants(), uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2],
 }));
 
 // The scene's WGSL (scenes/sceneGpu.js): its uniforms (the world's size,
@@ -218,12 +270,14 @@ let srcWgsl = null;
 const willowWgsl = () => /* wgsl */ `
 ${sceneHeadWGSL(WC_U)}
 ${definesGLSL('WC', L)}
+${overlays.map(([prefix, module]) => definesGLSL(prefix, module)).join('\n')}
 ${helpersGLSL}
-${srcWgsl ??= toWgsl(SRC, { consts: definesTypes('WC', L), uniforms: WC_U.sceneTypes })}
+${srcWgsl ??= toWgsl(SRC, { consts: { ...definesTypes('WC', L), ...overlayTypes() }, uniforms: WC_U.sceneTypes })}
 fn sceneCell(w: vec3i) -> SceneCell {
-  let id = wcCell(w.x, w.y, w.z);
+  let word = wcCellMaterial(w.x, w.y, w.z);
+  let id = materialId(word);
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, WC_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), SPAWNT(id), SPAWNLIFE(id), appearanceCtype(id, 0.0, materialAppearance(word)) + seed), vec4f(0.0));
 }
 `;
 
@@ -237,5 +291,5 @@ export const willowCove = {
   uniformStruct: WC_U,
   uniforms: (P) => ({ uSceneSeed: P.seed, uWillowWorldX: P.size[0], uWillowWorldY: P.size[1], uWillowWorldZ: P.size[2] }),
   start: (P) => [Math.floor(P.size[0] / 2) + L.ints.PLAZA_X, Math.floor(P.size[2] / 2) + L.ints.PLAZA_Z],
-  ground: (x, z, P) => groundScan(willowCoveTwin(P).wcCell, x, z, Math.min(P.size[1], L.ints.SKY)),
+  ground: (x, z, P) => groundScan(willowCoveTwin(P).wcCell, x, z, Math.min(P.size[1], P.size[0] > L.ints.LEGACY_WORLD_X ? P.size[1] : L.ints.SKY)),
 };

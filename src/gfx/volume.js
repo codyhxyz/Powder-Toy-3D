@@ -32,7 +32,7 @@
 // cut), a pipeline of its own that builds on first use like any variant; a
 // pick walks the displayed ray in the same pick kernel.
 import { Matrix4 } from 'three/webgpu';
-import { WORLD_SIZE } from '../shaders/farShared.js';
+import { WORLD_SIZE, farLayout } from '../shaders/farShared.js';
 import {
   volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES, VOLUME_VIEWS,
   shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, SHADOW_WORKGROUP,
@@ -42,6 +42,7 @@ import { frameUniformsOf } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
+import { isMaterialView } from '../views.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
@@ -51,17 +52,26 @@ const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BIN
 
 /** A defines object's key: its switched-on names, sorted. */
 export const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
+// Shared with menu warm-up: the same world must produce identical shader text.
+export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
+  ...g, sourceGrid: world ? farLayout(world).bricks.n : [1, 1, 1],
+  sourceAppearance: !!world && sourceAppearance === true,
+});
 
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim with its derived passes attached (sim.derived)
- * @param {{ shadows?: boolean }} [opts] shadows: the session's view reads the
+ * @param {{ shadows?: boolean, sourceAppearance?: boolean }} [opts] sourceAppearance:
+ *   the selected world's imported manifest has source artwork (not a view setting).
+ *   shadows: the session's view reads the
  *   shadow map (shaders/render.js viewShadows): its kernel builds now and
  *   `ready` waits for it; false, it builds when first wanted
  * @returns the volume (see the file header)
  */
-export function createVolume(gpu, sim, { shadows = true } = {}) {
-  const g = sim.g;
+export function createVolume(gpu, sim, { shadows = true, sourceAppearance = false } = {}) {
+  // The atlas dimensions are fixed for this world. Constant divisors avoid
+  // repeating Metal's variable-integer-division expansion at every lookup.
+  const g = volumeShaderGrid(sim.g, sim.world, sourceAppearance);
   const derived = sim.derived;
   if (!derived) throw new Error('createVolume: the simulation has no derived passes (new Derived(sim) first)');
   const fu = frameUniformsOf(gpu);
@@ -204,11 +214,11 @@ export function createVolume(gpu, sim, { shadows = true } = {}) {
      */
     pipeline(view, detail = {}, build = 'now', curved = false) {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
-      const d = view === 'realistic' ? drawable(detail) : {};
+    const d = isMaterialView(view) ? drawable(detail) : {};
       const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}`;
       let p = pipes.get(key);
       if (!p) {
-        const name = view === 'realistic' ? `volume.realistic(${detailKey(d) || 'off'})` : `volume.${view}`;
+      const name = isMaterialView(view) ? `volume.${view}(${detailKey(d) || 'off'})` : `volume.${view}`;
         pipes.set(key, p = gpu.renderPipeline({
           name: curved ? `${name}.curved` : name,
           code: volumeFrag(g, { view, detail: d, curved }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],

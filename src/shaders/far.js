@@ -39,7 +39,7 @@ export {
 //   g  liquid share: the same for transparent liquids (farLiquid: water, oil, acid...)
 //   b  the dominant opaque element of the brick's own cells, a cell open above
 //      counting FAR.SURFACE_W times (a brick reads as its surface: grass on
-//      rock reads as grass)
+//      rock reads as grass); b's high byte holds its associated appearance
 //   a  glow, in FAR.LEVELS steps: how hot its open opaque cells are, from the
 //      incandescence's first knot up over FAR.GLOW_SPAN °C
 // and above them r's 256 whether it holds open opaque cells (the view reads a
@@ -118,16 +118,29 @@ fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID;
 fn farLiquid(id: i32) -> bool { return RCLASS(id) == R_LIQUID; }
 struct FarCount {
   w: array<f32, NE>,   // weights of the brick's own cells by element: opaque (their dominant one) and liquid
+  roles: array<array<f32, 11>, 3>, // WOOD, PLANT, cedar MOSS; never split physical votes
   open: f32,           // its open opaque cells...
   heat: f32,           // ...and their degrees above the glow's start
   s: f32,              // opaque and liquid cells of its cube
   l: f32,
 }
 // one of the brick's own cells: id at temperature T, with id 'above' over it
-fn farCell(c: ptr<function, FarCount>, id: i32, above: i32, T: f32) {
+fn farRoleSlot(id: i32) -> i32 {
+  if (id == E_WOOD) { return 0; }
+  if (id == E_PLANT) { return 1; }
+  if (id == E_MOSS) { return 2; }
+  return -1;
+}
+fn farVote(c: ptr<function, FarCount>, id: i32, appearance: i32, weight: f32) {
+  (*c).w[id] += weight;
+  let slot = farRoleSlot(id);
+  if (slot >= 0 && appearance >= AP_NONE && appearance <= AP_BARK) { (*c).roles[slot][appearance] += weight; }
+}
+fn farCell(c: ptr<function, FarCount>, word: i32, above: i32, T: f32) {
+  let id = materialId(word);
   if (farOpaque(id)) {
     let open = !farOpaque(above);
-    (*c).w[id] += select(1.0, FAR_SURFACE_W, open);
+    farVote(c, id, materialAppearance(word), select(1.0, FAR_SURFACE_W, open));
     if (open) { (*c).open += 1.0; (*c).heat += max(T - INCAND_T0, 0.0); }
   } else if (farLiquid(id)) {
     (*c).w[id] += 1.0;
@@ -147,6 +160,13 @@ fn farPack(c: ptr<function, FarCount>) -> vec4u {
   f.s = farLevel((*c).s / n);
   f.l = farLevel((*c).l / n);
   f.id = best;
+  f.appearance = AP_NONE;
+  let slot = farRoleSlot(best);
+  if (slot >= 0) {
+    for (var a = 1; a <= AP_BARK; a++) {
+      if ((*c).roles[slot][a] > (*c).roles[slot][f.appearance]) { f.appearance = a; }
+    }
+  }
   f.glow = farLevel(select(0.0, (*c).heat / (*c).open / FAR_GLOW_SPAN, (*c).open > 0.0));
   f.liquid = liquid;
   f.open = (*c).open > 0.0;
@@ -477,6 +497,7 @@ fn farTrees(c: ptr<function, FarCount>, b: vec3i, o: vec3i, y0: i32) {
   var ts = 0.0;
   var leaves = 0.0;
   var trunk = 0.0;
+  var bark = 0.0;
   for (var dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++) {
     for (var dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
       let nb = b.xz + vec2i(dx, dz);
@@ -491,12 +512,16 @@ fn farTrees(c: ptr<function, FarCount>, b: vec3i, o: vec3i, y0: i32) {
       ts = max(ts, f.x);
       leaves = max(leaves, f.y);
       trunk += f.z;
+      if (tr.variant == TV_PALM) { bark += f.z; }
     }
   }
   (*c).s = max((*c).s, ts * f32(FAR_CUBE * FAR_CUBE * FAR_CUBE));
   // their cells vote as open ones (FAR.SURFACE_W): a crown's outweigh the ground's, a thin trunk's don't
-  if (leaves > 0.0) { (*c).w[E_PLANT] += FAR_TREE_W; (*c).open += 1.0; }
-  else if (trunk > 0.0) { (*c).w[E_WOOD] += trunk * FAR_SURFACE_W; (*c).open += 1.0; }
+  if (leaves > 0.0) { farVote(c, E_PLANT, AP_LEAVES, FAR_TREE_W); (*c).open += 1.0; }
+  else if (trunk > 0.0) {
+    farVote(c, E_WOOD, select(AP_LOG_Y, AP_BARK, bark > trunk * 0.5), trunk * FAR_SURFACE_W);
+    (*c).open += 1.0;
+  }
 }
 `;
 
@@ -529,7 +554,7 @@ ${regionMain(/* wgsl */ `
         let id = eid(a);
         if (farOpaque(id)) { c.s += 1.0; }
         else if (farLiquid(id)) { c.l += 1.0; }
-        if (own && dy >= 0 && dy < BS) { farCell(&c, id, above, a.y); }
+        if (own && dy >= 0 && dy < BS) { farCell(&c, materialWord(id, appearanceOf(id, a.w)), above, a.y); }
         above = id;
       }
     }
@@ -544,8 +569,8 @@ ${regionMain(/* wgsl */ `
 //   - farSceneCellsFrag evaluates sceneCell once per cell of the chunk's
 //     columns and the FAR_CUBE_LO columns around them that its bricks' cubes
 //     reach (past the world's edge the edge repeats), every height, into a
-//     buffer of (id, °C) as two halves (pack2x16float: the half-float target
-//     they were), its scene cells;
+//     buffer with low-16 material word and high-16 temperature half,
+//     its transient scene cells; saved bricks retain their original raw A/B.
 //   - farSceneFrag summarizes the chunk's bricks from those cells exactly as
 //     farWinFrag does from the window's state (below the world rock, above it
 //     air), and for a scene with trees joins the trees in reach (farTrees),
@@ -591,7 +616,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var A = sceneCell(vec3i(col.x, c.y, col.y)).A;${live ? `
   let local = vec3i(col.x, c.y, col.y) - H.origin;
   if (inGrid(local)) { A = fetchA(local); }` : ''}
-  cells[i] = pack2x16float(A.xy);
+  let id = eid(A);
+  cells[i] = u32(materialWord(id, appearanceOf(id, A.w))) | (pack2x16float(vec2f(0.0, A.y)) & 0xffff0000u);
 }
 `;
 // The summary's group 2: the grid (written), the scene cells, the window
@@ -621,13 +647,18 @@ ${regionMain(/* wgsl */ `
       // top down through the cube [-lo, BS + lo)
       for (var dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
         let y = o.y + dy;
-        var a = vec2f(f32(E_EMPTY), AMBIENT);
-        if (y < 0) { a = vec2f(f32(E_ROCK), AMBIENT); }
-        else if (y < FSC_WORLD_Y) { a = unpack2x16float(cells[fscIndex(vec3i(col.x, y, col.y))]); }
-        let id = eid(vec4f(a, 0.0, 0.0));
+        var word = materialWord(E_EMPTY, AP_NONE);
+        var temperature = AMBIENT;
+        if (y < 0) { word = materialWord(E_ROCK, AP_NONE); }
+        else if (y < FSC_WORLD_Y) {
+          let packed = cells[fscIndex(vec3i(col.x, y, col.y))];
+          word = i32(packed & 65535u);
+          temperature = unpack2x16float(packed).y;
+        }
+        let id = materialId(word);
         if (farOpaque(id)) { c.s += 1.0; }
         else if (farLiquid(id)) { c.l += 1.0; }
-        if (own && dy >= 0 && dy < BS) { farCell(&c, id, above, a.y); }
+        if (own && dy >= 0 && dy < BS) { farCell(&c, word, above, temperature); }
         above = id;
       }
     }
@@ -882,9 +913,6 @@ export const FAR_VIEW = {
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
   NORMAL_STEP: 2.0,        // the normal's difference step (half a brick)
   ID_INSET: 0.6,           // the element is read this far inside the surface (in the top cell)...
-  ID_JITTER: 5.0,          // ...at a point moved along it up to half this far by world noise (borders don't follow bricks)
-  ID_JITTER_F: 0.21,       // that noise's frequency, per cell
-  ID_DITHER: 2.0,          // ...plus up to half this per pixel and frame, which TAA blends into a soft border (LIQ_ID_DITHER)
   ID_DEEPER: 3.0,          // ...or this far inside, if that brick holds no open cells
   SUN_RAY: [2.5, 7.0, 15.0], // cells toward the sun of the short shadow ray's samples (crowns shading
                            // each other and the ground under them: the height field leaves crowns out)
@@ -967,10 +995,10 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 // along them, so the chunk and slab crossings of x and z are the flat ones.
 // The detail meshes bend in their vertex stage and shade along the displayed
 // ray, switched by P.warpK (a few lines, both variants of the mesh pass).
-export const farFrag = (g, L, mesh = false, { curved = false } = {}) => {
+export const farFrag = (g, L, mesh = false, { curved = false, sourceAppearance = false } = {}) => {
   return /* wgsl */ `
 // far view${curved ? ', curved' : ''}
-${lib(g, { variant: 'LIGHTING', far: true, aeration: false })}
+${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: 'LIGHTING', far: true, aeration: false })}
 ${presentationWGSL}${curved ? `
 var<private> gFarRay: WarpRay;
 var<private> gFarWindow: vec4f;
@@ -987,7 +1015,7 @@ fn farPlaneHit(r: WarpRay, level: f32) -> f32 {
 fn farPath(ro: vec3f, rd: vec3f, t: f32) -> vec3f { return ${curved ? 'warpAt(gFarRay, t)' : 'ro + rd * t'}; }
 fn farDirection(rd: vec3f, t: f32) -> vec3f { return ${curved ? 'normalize(warpSlope(gFarRay, t))' : 'rd'}; }
 ${FAR_STANDINS}
-${surfaceGLSL({})}
+${surfaceGLSL({}, { sourceAppearance })}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
@@ -1010,12 +1038,12 @@ fn detailAt(p: vec3f) -> u32 {
   let c = vec2i(p.xz) / DETAIL_CHUNK;
   return farOcc[FAR_DETAIL_AT + c.x + DETAIL_NX * c.y];
 }
-// The field a ray stops at: a meshed chunk's opaque matter is its mesh's
-// (drawn first, in front); its liquid surface, shallow water included
-// (opaque .3 + liquid .4), stays the field's.
+// Only liquid-bearing crossings stop the fullscreen ray. Opaque terrain is
+// ALWAYS the cell mesh's, ready or not. Keep the combined shallow-water field
+// (opaque .3 + liquid .4), but never stop in opaque-dominant matter.
 fn farTraceMatter(p: vec3f) -> f32 {
   let v = farSample(p);
-  if (detailAt(p) > 0u && v.r >= v.g) { return 0.0; }
+  if (v.r >= v.g) { return 0.0; }
   return v.r + v.g;
 }
 
@@ -1025,9 +1053,6 @@ const FAR_NEAR: f32 = ${glf(FAR_VIEW.NEAR)};
 const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
 const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
 const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
-const FAR_ID_JITTER: f32 = ${glf(FAR_VIEW.ID_JITTER)};
-const FAR_ID_JITTER_F: f32 = ${glf(FAR_VIEW.ID_JITTER_F)};
-const FAR_ID_DITHER: f32 = ${glf(FAR_VIEW.ID_DITHER)};
 const FAR_ID_DEEPER: f32 = ${glf(FAR_VIEW.ID_DEEPER)};
 const FAR_SUN_RAY_N: i32 = ${FAR_VIEW.SUN_RAY.length};
 var<private> FAR_SUN_RAY: array<f32, ${FAR_VIEW.SUN_RAY.length}> = array<f32, ${FAR_VIEW.SUN_RAY.length}>(${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
@@ -1088,7 +1113,11 @@ fn farRoot(ro: vec3f, rd: vec3f, ta0: f32, tb0: f32, fa0: f32, fb0: f32) -> f32 
     let fm = farTraceMatter(farPath(ro, rd, tm));
     if (fm < FAR_ISO) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
-  return mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
+  // Keep the continuous liquid field's interpolated root, but the liquid
+  // gate can jump at an opaque/water transition: never interpolate into opaque.
+  let hit = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
+  if (farTraceMatter(farPath(ro, rd, hit)) > 0.0) { return hit; }
+  return tb;
 }
 
 // The first point along ro + rd t, t in [t0, t1], where the matter field
@@ -1124,8 +1153,8 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
     if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
     if (detail == 1u) {
       let lo = floor(p.xz / f32(DETAIL_CHUNK)) * f32(DETAIL_CHUNK);
-      let tf = (lo + step(vec2f(0.0), inv.xz) * f32(DETAIL_CHUNK) - ro.xz) * inv.xz;
-      t = min(tf.x, tf.y) + FAR_NUDGE;
+      ${curved ? `t = warpExit(gFarRay, vec3f(lo.x, 0.0, lo.y), vec3f(lo.x + f32(DETAIL_CHUNK), f32(WORLD.y), lo.y + f32(DETAIL_CHUNK)), t).x + FAR_NUDGE;` : `let tf = (lo + step(vec2f(0.0), inv.xz) * f32(DETAIL_CHUNK) - ro.xz) * inv.xz;
+      t = min(tf.x, tf.y) + FAR_NUDGE;`}
       f = -1.0;
       continue;
     }
@@ -1145,12 +1174,13 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
       f = farTraceMatter(p);
       if (f >= FAR_ISO) { *cut = true; return t; }   // (started inside matter: past the window, or at the camera)
     }
-    let fe = farTraceMatter(farPath(ro, rd, max(t, te - FAR_NUDGE)));
+    let ts = max(t, te - FAR_NUDGE);
+    let fe = farTraceMatter(farPath(ro, rd, ts));
     if (max(f, fe) > FAR_NEAR) {
-      let tm = 0.5 * (t + te);
+      let tm = 0.5 * (t + ts);
       let fm = farTraceMatter(farPath(ro, rd, tm));
       if (fm >= FAR_ISO) { return farRoot(ro, rd, t, tm, f, fm); }
-      if (fe >= FAR_ISO) { return farRoot(ro, rd, tm, te, fm, fe); }
+      if (fe >= FAR_ISO) { return farRoot(ro, rd, tm, ts, fm, fe); }
     }
     f = fe;
     t = te + FAR_NUDGE;
@@ -1187,28 +1217,18 @@ fn farAO(p: vec3f, n: vec3f) -> f32 {
   return clamp(1.0 - FAR_AO_K * o, FAR_AO_MIN, 1.0);
 }
 
-// The opaque element at surface point p (normal n): the brick holding the
-// cells just under the surface, read at a point moved along the surface by
-// world noise so borders between materials meander instead of following
-// bricks. The surface is within a fraction of a cell of the matter's top, but
-// that top can be in the brick above or below: the first of the brick just
-// inside, the one outside and the one deeper that holds open cells (its
-// element is the surface's, not what lies buried under it).
-const FAR_ID_SALT_Y: f32 = 17.0;   // decorrelate the jitter noise's axes
-const FAR_ID_SALT_Z: f32 = 31.0;
+// Underwater bed lookup only: unwarped brick IDs just inside, outside or
+// deeper under the surface. Visible mesh materials use their vertex IDs.
 fn farElement(p: vec3f, n: vec3f) -> i32 {
-  let j = (vec3f(vnoise(p * FAR_ID_JITTER_F), vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Y),
-                 vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Z)) - 0.5) * FAR_ID_JITTER
-        + (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * FAR_ID_DITHER;   // spatiotemporal dither (noise.js stbn3)
-  let q = p + j - n * dot(n, j);
-  var a = farIds(q - n * FAR_ID_INSET);
-  if (a.z == 0) {
-    let b = farIds(q + n * FAR_ID_INSET);
-    if (b.z == 1 && b.x != E_EMPTY) { return b.x; }
-    let c = farIds(q - n * FAR_ID_DEEPER);
-    if (c.z == 1 || a.x == E_EMPTY) { a = c; }
+  let q = p;
+  var a = farUnpack(textureLoad(tFarGrid, farBrickOf(q - n * FAR_ID_INSET), 0));
+  if (!a.open) {
+    let b = farUnpack(textureLoad(tFarGrid, farBrickOf(q + n * FAR_ID_INSET), 0));
+    if (b.open && b.id != E_EMPTY) { return materialWord(b.id, b.appearance); }
+    let c = farUnpack(textureLoad(tFarGrid, farBrickOf(q - n * FAR_ID_DEEPER), 0));
+    if (c.open || a.id == E_EMPTY) { a = c; }
   }
-  return select(a.x, E_ROCK, a.x == E_EMPTY);
+  return select(materialWord(a.id, a.appearance), E_ROCK, a.id == E_EMPTY);
 }
 fn farGlowT(p: vec3f, n: vec3f) -> f32 {
   let a = farGlow(p - n * FAR_ID_INSET);
@@ -1218,9 +1238,11 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
 // A lit opaque far surface: its material (matOf, at the pixel's footprint, so
 // texture fades to its far look), the sun through the shadow heights, the sky
 // over its open share (none under the ground: FAR_SKY), its own glow.
-fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3f {
+fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, word: i32) -> vec3f {
+  let id = materialId(word);
   let fp = footprint(p);
-  var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);   // (foliage keeps its clumps: matOf's leafClumps)
+  var m = matOf(id, p, n, farGlowT(p, n), appearanceCtype(id, 0.0, materialAppearance(word)), fp);
+  if (m.sourceKind != 0u) { return sourceShade(p, normalize(m.sourceNormal), rd, m.alb, m.rough, m.metal, m.f0, m.sourceKind, m.sourceFlags) + m.emit; }
   // the material's bump tilts the normal (applyMat), kept facing the eye (shadeSurf)
   let v = -rd;
   let ns = faceView(bumpNormal(n, m.g), v);
@@ -1246,8 +1268,9 @@ fn farInScatter(lid: i32, sunVis: f32, sky: f32) -> vec3f {
 }
 // The bed under liquid lid at p (normal n, depth below the surface): lit by
 // sun and sky through the liquid above.
-fn farShadeBed(id: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, sky: f32) -> vec3f {
-let alb = matOf(id, p, n, AMBIENT, 0.0, footprint(p)).alb;
+fn farShadeBed(word: i32, p: vec3f, n: vec3f, depth: f32, lid: i32, sunVis: f32, sky: f32) -> vec3f {
+let id = materialId(word);
+let alb = matOf(id, p, n, AMBIENT, appearanceCtype(id, 0.0, materialAppearance(word)), footprint(p)).alb;
 let down = exp(-SIGMA(lid) * depth / max(FU.sun.y, FAR_SUN_Y_MIN));
 // The same world-anchored sunlight pattern as the simulated bed.
 var focus = 1.0;
@@ -1264,10 +1287,13 @@ fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> v
   let transmitted = warpRay(warpPoint(p), normalize(warpVector(p, rt)));` : ''}
   var s = -1.0;
   var bed = vec3f(0.0);
+  var bedPoint = p;
+  var bedNormal = vec3f(0.0, 1.0, 0.0);
+  var bedId = FAR_OCEAN_BED;
+  var bedSun = sunVis;
   if (bedY >= 0.0) {
     s = ${curved ? 'farPlaneHit(transmitted, bedY)' : '(p.y - bedY) / max(-rt.y, FAR_FLAT_EPS)'};
-    let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
-    bed = farShadeBed(FAR_OCEAN_BED, q, vec3f(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis, sky);
+    bedPoint = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
   } else {
     var ta = 0.0;
     var fa = farSample(p).r;
@@ -1276,14 +1302,18 @@ fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> v
       let fb = farSample(${curved ? 'warpAt(transmitted, tb)' : 'p + rt * tb'}).r;
       if (fb >= FAR_ISO) {
         s = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
-        let q = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
-        let nq = farNormal(q, 0);
-        bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0), sky);
+        bedPoint = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
+        bedNormal = farNormal(bedPoint, 0);
+        bedId = farElement(bedPoint, bedNormal);
+        bedSun = sunVis * farSunLit(bedPoint, 0);
         break;
       }
       ta = tb;
       fa = fb;
     }
+  }
+  if (s >= 0.0) {
+    bed = farShadeBed(bedId, bedPoint, bedNormal, p.y - bedPoint.y, lid, bedSun, sky);
   }
 ${curved ? `  // optical distance is in flat material space, not display-ray t
   if (s >= 0.0 && s < WARP_INF) { s = warpArc(transmitted, 0.0, s); }
@@ -1309,23 +1339,39 @@ fn cozyFarShore(p: vec3f) -> f32 {
 // the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
 // Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
 fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
-  let sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
-  // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
+  let original = sourceMaterial(lid, p, vec3f(0.0, 1.0, 0.0));
   let geometric = vec3f(0.0, 1.0, 0.0);
-  let n = liquidOpticalNormal(rd, liquidRipple(p, geometric), geometric, true, IOR(lid));
-  let F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
+  var sky = farSkyOpen(p);
+  var rt = rd;
+  var refl = vec3f(0.0);
+  var F = 0.0;
+  var cartoon = false;
+  var col = vec3f(0.0); var trans = vec3f(1.0);
+  if (original.kind != 0u) {
+    let alpha = select(1.0, original.alpha, (original.flags & 1u) != 0u);
+    sourceBlend(sourceShade(p, original.normal, rd, original.albedo, original.roughness, original.metallic, original.f0, original.kind, original.flags) + original.emission, alpha, original.flags, &col, &trans);
+  } else {
+  sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
+  // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
+  cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
+  var ripple = geometric;
+  if (cartoon) { ripple = cozyWaterNormal(p, geometric, footprint(p)); }
+  else { ripple = liquidRipple(p, geometric); }
+  let n = liquidOpticalNormal(rd, ripple, geometric, true, IOR(lid));
+  F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  let cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
-  let rough = select(ROUGH(lid), 0.24, cartoon);
-  let refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
-  var rt = refract(rd, n, 1.0 / IOR(lid));
+  let rough = select(ROUGH(lid), COZY_WATER_ROUGH, cartoon);
+  refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
+  rt = refract(rd, n, 1.0 / IOR(lid));
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
+  }
   let body = farBody(p, rt, lid, sunVis, sky, bedY);
+  if (original.kind != 0u) { return col + trans * body; }
   if (cartoon) {
     let paint = cozyWaterPaint(p, footprint(p), cozyFarShore(p));
     let light = skyAmbient(geometric) * sky + FU.sunCol * sunVis * max(FU.sun.y, 0.0);
-    return paint.rgb * light * paint.a + (1.0 - paint.a) * (F * refl * 0.35 + (1.0 - F) * body);
+    return paint.rgb * light * paint.a + (1.0 - paint.a) * (F * refl * COZY_WATER_REFLECT + (1.0 - F) * body);
   }
   return F * refl + (1.0 - F) * body;
 }
@@ -1333,7 +1379,8 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
 // The sky toward rd from ro, with the key light's disc (sun, or the moon at
 // night: FU.sunCol carries its colour), behind the cumulus deck (gfx/clouds.js).
 fn farSky(ro: vec3f, rd: vec3f) -> vec3f {
-  let c = skyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z)));
+  if (sourceEnabled()) { return sourceSky(rd); }
+  let c = analyticSkyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z)));
   let r = SUN_TAN_RADIUS;
   let mu = dot(rd, FU.sun);
   let disc = smoothstep(cos(r * (1.0 + FAR_SUN_DISC_EDGE)), cos(r * (1.0 - FAR_SUN_DISC_EDGE)), mu);
@@ -1401,17 +1448,16 @@ struct FarOut {
   if (t0 < t1) { tHit = farMarch(ro, rd, t0, t1, tw.x, tw.y, &cut); }
   // the open sea beyond the world (and a march that ran out of steps over it).
   // A world without one (sea 0: world/scenes) has an open plain beyond it at
-  // floor, and inside it a ray that met nothing reaches the world's bottom
-  // (rock below it: the summaries' floor), not a sea.
+  // floor. Inside the world, missing opaque meshes remain loading gaps rather
+  // than being replaced by a fullscreen rock floor.
   let plain = P.sea <= 0.0;
   let level = select(P.sea, P.floor, plain);
   var ps: vec3f;
   var seaOut: bool;
   var tSea = farSeaHit(ro, rd, level, &ps, &seaOut);
-  if (plain && !seaOut) { tSea = farSeaHit(ro, rd, 0.0, &ps, &seaOut); }
-  let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
-  let ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
-    && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));
+  // Only the exterior backdrop uses the plane. In-world water must be an
+  // actual liquid hit; otherwise missing dry terrain would turn into sea.
+  let ocean = seaOut && tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached);
   // A nearer exterior ocean or plain still hides a meshed chunk; inside one, a
   // dry pit below sea level isn't flooded by the coarse sea: the mesh shows.
   if (cached > 0.0 && tHit == NO_HIT && !ocean) { discard; }
@@ -1427,29 +1473,12 @@ struct FarOut {
   } else if (tHit < NO_HIT) {
     let p = farPath(ro, rd, tHit);
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
-    let v = farSample(p);
     if (cut) {
-      // came out of the window inside matter. Behind the window's ground: hidden
-      // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
-      // the sun, in the probes' light just inside the window (none in a cave).
-      // In its water, which the volume draws see-through: that water's body past
-      // the wall, so the window's water carries on past its side.
-      if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
-      else {
-        // the ray carries on through that water to whatever bed lies past the
-        // wall, as the open sea's body beside it does (farLiquid): bottomless
-        // in-scatter alone showed as a bright band along the window's far sides
-        col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0);
-      }
+      // Leaving the window already inside liquid: carry its body and bed on
+      // past the wall. There is deliberately no opaque cut shading branch.
+      col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0);
     } else {
-      let sunVis = farSunLit(p, 0);
-      if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
-      else {
-        let n = farNormal(p, 0);
-        var sv = sunVis;
-        if (sunVis > 0.0 && dot(n, FU.sun) > 0.0) { sv *= farSunRay(p, n); }
-        col = farShadeMaterial(p, n, localRd, sv, farElement(p, n));
-      }
+      col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), farSunLit(p, 0), -1.0);
     }
     col = farHaze(col, rd, tHit, farAirLit(ro - winLo, p - winLo));
     o.depth = farDepth(p);

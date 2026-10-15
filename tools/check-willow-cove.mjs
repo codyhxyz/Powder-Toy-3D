@@ -44,7 +44,7 @@ assert(scene.view.dir[1] > 0 && scene.view.dist > 0);
 // spawn temperature and life, at rest, its seed correctly rounded (H1.28)
 const wgsl = scene.glsl();
 assert.match(wgsl, /fn sceneCell\(w: vec3i\) -> SceneCell \{/);
-assert.match(wgsl, /SceneCell\(vec4f\(f32\(id\), SPAWNT\(id\), SPAWNLIFE\(id\), seed\), vec4f\(0\.0\)\)/);
+assert.match(wgsl, /SceneCell\(vec4f\(f32\(id\), SPAWNT\(id\), SPAWNLIFE\(id\), appearanceCtype\(id, 0\.0, materialAppearance\(word\)\) \+ seed\), vec4f\(0\.0\)\)/);
 assert.match(wgsl, /u32ToF32\(seedWorld\(w, SU\.uSceneSeed, WC_SALT_CELL\)\)/);
 assert.match(wgsl, /fn wcCell\(wx: i32, y: i32, wz: i32\) -> i32 \{/);
 assert.match(wgsl, /wx >= SU\.uWillowWorldX/);

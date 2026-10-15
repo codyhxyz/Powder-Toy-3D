@@ -17,13 +17,14 @@
 //   preset   a box's scene (settings.preset); scene: a world's (settings.scene)
 //   scenes   optional: every world scene that is this map (Descent's levels), scene the one it starts on
 //   modes    the gamemodes it is built for besides Sandbox
+//   defaultView optional authored shader, overriding the gamemode's starting view
 export const WORLD_DIMS = [1024, 128, 1024];   // shaders/far.js WORLD_SIZE (app.js checks)
 const TEAM_MODES = ['slayer', 'ctf', 'koth', 'infection', 'siege'];
 
 export const MAPS = [
   { key: 'island', name: 'Island', size: 'world', scene: 'island', dims: WORLD_DIMS,
     desc: 'Beaches, forest, cliffs and caves, a lighthouse and old mines. The world loads around you as you go.' },
-  { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: [3072, 128, 1024], modes: ['animalCrossing'],
+  { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: [3072, 128, 1024], modes: ['animalCrossing'], defaultView: 'cozy', previewVersion: 2,
     desc: 'A wide island village with cottages, an orchard and a kilometre-long running circuit across river bridges. Inspired by Animal Crossing.' },
   { key: 'volcanoWorld', name: 'Volcano Isles', size: 'world', scene: 'volcanoWorld', dims: WORLD_DIMS,
     desc: 'An archipelago of live volcanoes in open sea, lava pouring down to the water.' },
@@ -55,10 +56,11 @@ export const MAPS = [
 // Sandbox first. Team modes follow src/game/rules.js MODES (names and order);
 // the menu shows them only in builds that have src/game.
 export const GAMEMODES = [
-  { key: 'sandbox', name: 'Sandbox', desc: 'Pour, build, burn and blow it up. Every map.' },
+  { key: 'sandbox', name: 'Sandbox', defaultView: 'realistic', desc: 'Pour, build, burn and blow it up. Every map.' },
   { key: 'factory', name: 'Factory', desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
+  { key: 'crueltySquad', name: 'Cruelty Squad', desc: 'Eliminate every designated target, then reach extraction. Death fails the mission; retry from the beginning.' },
   { key: 'noita', name: 'Noita', desc: 'Wands only. Go down through the Mines and the Holy Mountains, finding wands and spells on the way.' },
-  { key: 'animalCrossing', name: 'Animal Crossing', effect: 'rollingLog', gravityScale: 0.5, desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Tinker Creek.' },
+  { key: 'animalCrossing', name: 'Animal Crossing', defaultView: 'cozy', effect: 'rollingLog', gravityScale: 0.5, desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Tinker Creek.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },
   { key: 'koth', name: 'King of the Hill', team: true, desc: 'Hold the hill alone to score. It moves every minute.' },
@@ -69,13 +71,43 @@ export const GAMEMODES = [
 // (aliases: a renamed map's new name also opens it; the key stays for saves and old links)
 export const mapByKey = (key) => MAPS.find((m) => m.key === key || m.aliases?.includes(key)) ?? null;
 export const modeByKey = (key) => GAMEMODES.find((m) => m.key === key) ?? null;
+// Imported maps opt in with an authored mission, never by renaming existing geometry.
+const point = (p) => Array.isArray(p) && p.length === 3 && p.every(Number.isFinite);
+const weapons = new Set(['AXE', 'GUN', 'SMG', 'SNIPER', 'ROCKET', 'LASER']);
+export function validMission(m) {
+  if (!m || typeof m.id !== 'string' || !m.id || typeof m.name !== 'string' || !m.name || !point(m.spawn)) return false;
+  if (m.spawnYaw != null && !Number.isFinite(m.spawnYaw)) return false;
+  if (!Array.isArray(m.targets) || !m.targets.length || !Array.isArray(m.guards)) return false;
+  const ids = new Set();
+  for (const a of [...m.targets, ...m.guards]) {
+    if (!a || typeof a.id !== 'string' || !a.id || ids.has(a.id) || typeof a.name !== 'string' || !a.name || !point(a.at)) return false;
+    if (a.style != null && !['axeman', 'gunner'].includes(a.style)) return false;
+    if (a.passive != null && typeof a.passive !== 'boolean') return false;
+    if (a.weapons != null && (!Array.isArray(a.weapons) || !a.weapons.every((k) => weapons.has(k)))) return false;
+    ids.add(a.id);
+  }
+  const validExit = e => !!e && point(e.at) && Number.isFinite(e.radius) && e.radius > 0
+    && Number.isFinite(e.height) && e.height > 0
+    && (!e.bounds || (point(e.bounds.min) && point(e.bounds.max) && e.bounds.max.every((n, i) => n > e.bounds.min[i])))
+    && (e.axes == null || (!!e.bounds && Array.isArray(e.axes) && e.axes.length > 0 && e.axes.every(a =>
+      point(a.normal) && a.normal.some(n => n !== 0) && Number.isFinite(a.min) && Number.isFinite(a.max) && a.max >= a.min)))
+    && (e.points == null || (!!e.bounds && Array.isArray(e.points) && e.points.length >= 4 && e.points.every(point)));
+  return validExit(m.extraction) && (m.extractions == null
+    || (Array.isArray(m.extractions) && m.extractions.length > 0 && m.extractions.every(validExit)));
+}
+
+const eligible = (map, mode) => !!map?.modes?.includes(mode) && (mode !== 'crueltySquad' || validMission(map.mission));
 // Public openMap, URL launch and the menu use the same eligibility rules.
 export function resolveMode(map, mode = 'sandbox') {
   const m = modeByKey(mode);
-  return m && (mode === 'sandbox' || map?.modes?.includes(mode)) ? m : GAMEMODES[0];
+  return m && (mode === 'sandbox' || eligible(map, mode)) ? m : GAMEMODES[0];
 }
-export const mapsFor = (mode) => (mode === 'sandbox' ? MAPS : MAPS.filter((m) => m.modes?.includes(mode)));
+export const mapsFor = (mode) => (mode === 'sandbox' ? MAPS : MAPS.filter((m) => eligible(m, mode)));
 export const isWorld = (m) => !m.preset;
+export function mapPreviewUrl(key) {
+  const map = mapByKey(key), revision = map?.previewVersion;
+  return `/maps/${map?.key ?? key}.webp${revision ? `?v=${revision}` : ''}`;
+}
 
 // The map a grid size and scene are (app.js settings), else null (a box size no map has: '64' with the lab is
 // still the lab; only Empty is size-free).

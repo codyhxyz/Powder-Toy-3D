@@ -31,11 +31,14 @@ const pov = {
       getSpawners: () => app.spawners,
       getPerkOrbs: () => app.perkOrbs,
       loadPreset: (name) => app.loadPreset(name, false),   // a team game's new round (src/game)
+      openMap: (key, mode) => app.openMap(key, mode),       // mission Retry reloads the authored world
+      setMode: (mode) => app.setMode(mode),                // leaving a mission returns to Sandbox
       getArena: () => app.arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
       // Tinker Creek's Animal Crossing: you start in front of your cottage (pov/village/state.js);
       // a Descent level: you start (and respawn) at its spawn
       dropAt: () => app.settings.preset === 'quarry' && !app.win ? new Vector3(...QUARRY_SPAWN) : app.villageSpawn() ?? app.descentSpawn?.(),
       getMode: () => app.gamemode, getWorld: () => app.win,   // the village switches on in Animal Crossing on Tinker Creek
+      withVillageFocus: (at, valid, visit) => app.withVillageFocus(at, valid, visit),
       requestRender: () => app.requestRender(),
       inWorld: () => !!app.win,
       gamemode: () => app.gamemode,   // Noita's rules (wands only) are its gamemode's, not Descent's: Sandbox there has the tools
@@ -60,7 +63,7 @@ const pov = {
     if (!app.renderOnly && !app.settings.paused && app.pov?.npcs.length) app.requestMeshFrame();
   },
   busy(app) {
-    return !!app.pov?.active || !!app.pov?.entitiesPending || (!app.settings.paused && (app.pov?.npcs.length > 0 || app.pov?.vehicles.list.length > 0));
+    return !!app.pov?.active || !!app.pov?.entitiesPending || (!app.settings.paused && (app.pov?.npcs.length > 0 || app.pov?.vehicles.list.length > 0 || app.pov?.importedInteractions?.timedDoor));
   },
 };
 

@@ -364,13 +364,15 @@ ${strata.src}
 
 ${caves.src}
 
-// The element at world cell (x, y, z) before what lives and lies in the
+// The material at world cell (x, y, z) before what lives and lies in the
 // caves: water below the column's water level, its cover over its bedrock
-// (strata), then carved (caves).
-int islandCellBare(int x, int y, int z) {
+// (strata), then carved (caves). Only authored meadow cover carries grass;
+// caves and nature continue to receive physical IDs through the wrappers.
+int islandMaterialBare(int x, int y, int z) {
   float h = genColHeight(x, z), water = genColWater(x, z);
   int top = thRound(h);
   int id = E_EMPTY;
+  int appearance = AP_NONE;
   if (y >= top) {
     if (float(y) < water) id = E_WATER;
   } else {
@@ -378,17 +380,25 @@ int islandCellBare(int x, int y, int z) {
     int cover = depth < GEN_COVER_DEPTH ? genCover(x, z) : GEN_COVER_NONE;
     if (cover == GEN_COVER_SAND && depth < GEN_SAND_DEPTH) id = E_SAND;
     else if (cover == GEN_COVER_SNOW && depth < GEN_SNOW_DEPTH) id = E_SNOW;
-    else if (cover == GEN_COVER_PLANT && depth == 0) id = E_PLANT;
+    else if (cover == GEN_COVER_PLANT && depth == 0) { id = E_PLANT; appearance = AP_GRASS; }
     else id = islandRock(x, y, z, h);
   }
-  return islandCave(x, y, z, h, water, id);
+  int carved = islandCave(x, y, z, h, water, id);
+  return materialWord(carved, carved == id ? appearance : AP_NONE);
 }
+// Physical twin/API retained for nature, tree placement, footings and tools.
+int islandCellBare(int x, int y, int z) { return materialId(islandMaterialBare(x, y, z)); }
 
 ${nature.src}
 
-// The element at world cell (x, y, z): the island's (islandCellBare), then
-// gold, moss and fungus (world/island/nature.js).
-int islandCell(int x, int y, int z) { return islandNature(x, y, z, islandCellBare(x, y, z)); }
+// The material at world cell (x, y, z), then gold, moss and fungus. Nature
+// replaces physical cells, never authors a grass/leaf role for cave growers.
+int islandMaterial(int x, int y, int z) {
+  int word = islandMaterialBare(x, y, z), id = materialId(word);
+  int living = islandNature(x, y, z, id);
+  return materialWord(living, living == id ? materialAppearance(word) : AP_NONE);
+}
+int islandCell(int x, int y, int z) { return materialId(islandMaterial(x, y, z)); }
 
 // Can a tree's trunk stand on world column (x, z) (treesIn's ground check),
 // and in which zone: GEN_ZONE_PALM (a beach), _MID, _HIGH or _NONE. Its
@@ -473,6 +483,8 @@ export const heightAt = (x, z, P) => islandTwin(P).genColumnHeight(x, z);
 // The element at world cell (x, y, z) (integers), as the GPU generates it but
 // for its trees (world/gpu.js stamps them).
 export const islandCellAt = (x, y, z, P) => islandTwin(P).islandCell(x, y, z);
+// The parallel authored-material API; physical callers keep islandCellAt.
+export const islandMaterialAt = (x, y, z, P) => islandTwin(P).islandMaterial(x, y, z);
 // What world column (x, z) holds: ground = the number of ground cells (y <
 // ground), the depths of its sand and snow layers (0: none), whether its top
 // cell is plant cover, and its slope. (Tools.)

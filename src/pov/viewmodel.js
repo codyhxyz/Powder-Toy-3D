@@ -3,6 +3,7 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 import { povEvents } from './events.js';
 import { flameOverlay } from './flame.js';
 import { updateViewmodelArms } from './viewmodelArms.js';
+import { createFlapAnimation } from './flapPose.js';
 import { useWebGPUCamera, gpuTextureOf } from '../gpu/three.js';
 import { guardMeshes, PENDING_MASK } from '../gfx/meshLight.js';
 import { BRICK } from '../shaders/common.js';
@@ -156,7 +157,61 @@ function createRig(env) {
   const sway = new THREE.Vector2();   // x: yaw, y: pitch
   let prevYaw = NaN, prevPitch = NaN;
   let time = 0, bobPhase = 0, bobAmp = 0, swim = 0;
-  const pos = new THREE.Vector3(), rot = new THREE.Euler();
+  const pos = new THREE.Vector3(), rot = new THREE.Euler(), wingAnimation = createFlapAnimation();
+  // Built on the first flap, not at rig creation: a mesh id draws from Math.random, and the
+  // gun's spread uses that same generator (firearm.js).
+  let wingArms = null, wingSleeve = null, wingSkin = null, wingGeo = null;
+  function wings() {
+    if (wingArms) return wingArms;
+    wingSleeve = new THREE.MeshLambertMaterial({ color: 0x8a3a2a, flatShading: true });
+    wingSkin = new THREE.MeshLambertMaterial({ color: 0xc48a5c, flatShading: true });
+    wingGeo = {
+      fist: new THREE.BoxGeometry(0.26, 0.3, 0.11),
+      finger: new THREE.BoxGeometry(0.048, 0.15, 0.09),
+      thumb: new THREE.BoxGeometry(0.08, 0.16, 0.1),
+      upper: new THREE.CapsuleGeometry(0.14, 0.52, 4, 8),
+      fore: new THREE.CapsuleGeometry(0.12, 0.66, 4, 8),
+    };
+    wingArms = [-1, 1].map((side) => {
+      const g = new THREE.Group();
+      g.name = 'flap-wing';
+      g.position.set(side * 0.65, -0.85, 0.25);
+      const upper = new THREE.Mesh(wingGeo.upper, wingSleeve);
+      upper.position.y = -0.4;
+      const elbow = new THREE.Group(); elbow.name = 'flap-elbow'; elbow.position.y = -0.8;
+      const fist = new THREE.Mesh(wingGeo.fist, wingSkin);
+      fist.name = 'flap-fist'; fist.position.y = -0.9;
+      for (const x of [-0.09, -0.03, 0.03, 0.09]) {
+        const finger = new THREE.Mesh(wingGeo.finger, wingSkin);
+        finger.position.set(x, -1.09, 0);
+        elbow.add(finger);
+      }
+      const thumb = new THREE.Mesh(wingGeo.thumb, wingSkin);
+      thumb.position.set(side * 0.16, -0.9, 0); thumb.rotation.z = -side * 0.5;
+      elbow.add(thumb);
+      const fore = new THREE.Mesh(wingGeo.fore, wingSkin);
+      fore.position.y = -0.45;
+      elbow.add(fist, fore); g.add(upper, elbow);
+      g.traverse((o) => o.layers.set(VIEWMODEL_LAYER));
+      root.add(g);
+      return { g, elbow, side };
+    });
+    return wingArms;
+  }
+  function poseFlap(wing, dt = 0) {
+    root.scale.setScalar(env.getScale());
+    const beat = wing > 0 ? wing : 0;
+    const wingPose = wingAnimation.update(dt, beat);
+    if (!wingAnimation.active && !wingArms) return;
+    const heldRight = hands.some((h) => h.visible && h.userData.rest.x > 0.05);
+    const heldLeft = hands.some((h) => h.visible && h.userData.rest.x < -0.05);
+    for (const { g, elbow, side } of wings()) {
+      g.visible = wingAnimation.active && !(side > 0 && heldRight) && !(side < 0 && heldLeft);
+      g.quaternion.identity().slerp(side < 0 ? wingPose.viewLeft : wingPose.viewRight, wingPose.weight);
+      elbow.quaternion.identity().slerp(wingPose.viewElbow, wingPose.weight);
+    }
+    if (wingAnimation.active) globalThis.__app?.requestRender?.();
+  }
 
   function stepSpring(dt) {
     for (const k in sp) {
@@ -224,6 +279,7 @@ function createRig(env) {
       h.rotation.copy(rot);
     }
     updateViewmodelArms(root, env.getCharacter?.() ?? 'stick');
+    // The shell advances the flap once per frame, after tools place their grips.
     setLayers(env.viewmodel);
     if (!settled()) globalThis.__app?.requestRender?.();
   }
@@ -256,7 +312,13 @@ function createRig(env) {
     get state() {
       return { pos: pos.clone(), rot: new THREE.Vector3(rot.x, rot.y, rot.z), spring: { ...sp } };
     },
-    dispose() { root.removeFromParent(); },
+    poseFlap,
+    resetFlap() { wingAnimation.reset(); wingArms?.forEach(({ g }) => { g.visible = false; }); },
+    dispose() {
+      wingSleeve?.dispose(); wingSkin?.dispose();
+      if (wingGeo) Object.values(wingGeo).forEach(geometry => geometry.dispose());
+      root.removeFromParent();
+    },
   };
 }
 

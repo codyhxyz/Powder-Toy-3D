@@ -21,6 +21,8 @@
 //     needs hoisting.
 // Anything outside the subset throws, with where.
 
+import { Appearance } from '../../appearance.js';
+
 const TYPES = { int: 'i32', uint: 'u32', float: 'f32', bool: 'bool', void: null };
 // WGSL's reserved words and keywords a subset name might hit (H1.24)
 const RESERVED = new Set(('of mod move set get new pass common from smooth shared super use with where as do ref target '
@@ -34,6 +36,7 @@ export const HELPER_SIGS = {
   thUnit: ['f32', true], thLattice: ['f32', true], thDiv: ['i32', true], thMod: ['i32', true], thFdiv: ['f32', true],
   thFloor: ['i32', true], thRound: ['i32', true], thStream: ['u32', true],
   thNoised: ['f32', false], thNoiseDx: ['f32', true], thNoiseDz: ['f32', true],
+  materialWord: ['i32', true], materialId: ['i32', true], materialAppearance: ['i32', true],
 };
 // builtins the subset may call (themedShared.js helpersJs): result type, 'arg' for the first argument's
 const BUILTINS = {
@@ -263,7 +266,8 @@ export function toWgsl(src, { consts = {}, uniforms = {}, externs = {}, uniformS
       for (let k = scopes.length - 1; k >= 0; k--) if (scopes[k].has(n)) return scopes[k].get(n);
       if (n in uniforms) return { type: uniforms[n], wgsl: uniforms[n] === 'bool' ? `(${uniformStruct}.${n} != 0u)` : `${uniformStruct}.${n}` };
       if (n in consts) return { type: consts[n], wgsl: n };
-      if (/^E_[A-Z0-9_]+$/.test(n)) return { type: 'i32', wgsl: n };
+    if (/^E_[A-Z0-9_]+$/.test(n)) return { type: 'i32', wgsl: n };
+    if (n.startsWith('AP_') && n.slice(3) in Appearance) return { type: 'i32', wgsl: n };
       throw new Error(`subset → WGSL: ${f.name} reads ${n}, which nothing declares`);
     };
     const where = (msg) => new Error(`subset → WGSL: ${f.name}: ${msg}`);

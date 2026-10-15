@@ -56,6 +56,8 @@ export function createSaves(app) {
       }
       // the conversion to the atlas order and the particles' kernels, built before the moment
       await Promise.all([sim.prepare('toAtlas'), sim.rays.prepare?.(), app.prepareCapture?.()]);
+      // Interaction readbacks can begin during preparation too.
+      while (win?.pending || sim.deco?.pending) await Promise.all([win?.pending, sim.deco?.pending]);
       if (sim !== app.getSim() || sim.disposed || win !== app.getWin() || identity !== win?.historyIdentity) throw new SaveRefused('The map changed while saving');
       // ---- from here to the readbacks, one task: everything below is the same moment ----
       const g = sim.g;
@@ -73,6 +75,7 @@ export function createSaves(app) {
         { key: 'settings', data: Object.fromEntries(savedSettingKeys().filter((k) => k in settings).map((k) => [k, settings[k]])) },
       ];
       if (win) core.push({ key: 'worldStore', data: win.store.toBytes() }, { key: 'worldNativeStore', data: win.nativeStore.toBytes() }, { key: 'worldPlanted', data: win.planted.slice() });
+      if (win?.scene.interactionState) core.push({ key: 'worldInteractions', data: win.scene.interactionState.snapshot() });
       const extra = collectSections();
       // ---- (the moment ends) ----
       const [[A, B], list, extras] = await Promise.all([reads[0], rays, extra]);
@@ -111,7 +114,7 @@ export function createSaves(app) {
       if (!win) throw new Error('a world save, but no world is loaded');
       const store = sections.get('worldStore'), planted = sections.get('worldPlanted');
       if (!store || !planted) throw new Error('this world save has no world edits');
-      win.loadSaved(header.world.origin, () => sim.load(A, B), store, planted, sections.get('worldNativeStore'));
+      win.loadSaved(header.world.origin, () => sim.load(A, B), store, planted, sections.get('worldInteractions'), sections.get('worldNativeStore'));
     } else sim.load(A, B);
     // the particles in flight (sim.load let the old ones go). The step counter
     // isn't saved: storms and the cloud deck time themselves by it, and it only runs forward.

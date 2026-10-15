@@ -120,11 +120,11 @@ export function validState(s) {
     && s.placed.every(i => !placementError(s, i));
 }
 // Atomic actions: a rejected move never removes an item from its original container.
-export function change(state, action, { home = false, dresser = false, player = null } = {}) {
+export function change(state, action, { home = false, catalogue = false, dresser = false, player = null } = {}) {
   if (!validState(state)) return { error: 'The furniture save is invalid.' };
   const next = structuredClone(state), { id, type } = action;
   if (type === 'order') {
-    if (!home) return { error: 'Order furniture from the catalogue in your own home.' };
+    if (!home && !catalogue) return { error: 'Order furniture at home, Creek Supply, or Lantern Emporium.' };
     if (!Object.hasOwn(ITEMS, action.kind) || action.kind === 'dresser') return { error: 'Choose a catalogue item.' };
     if (next.pockets.length >= POCKETS) return { error: 'Your pockets are full. Store or place something first.' };
     const all = [...next.placed, ...next.pockets, ...next.storage];

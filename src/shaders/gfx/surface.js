@@ -1,5 +1,7 @@
 import { liquidGLSL } from './liquid.js';
 import { cozySurfaceWGSL } from './cozy.js';
+import { sourceShadeWGSL, sourceShadeFallbackWGSL } from './sourceAppearance.js';
+import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
 import { mediaGLSL } from './media.js';
 import { grainsGLSL, GRAINS_ANY } from './grains.js';
@@ -32,7 +34,7 @@ import { glf as f } from '../../glsl.js';
 // non-uniform control flow, where WGSL has no derivatives, so the floor's
 // grid lines take their fwidth analytically from those ray derivatives
 // (floorFwidth). Nothing here samples with an implicit level.
-export const surfaceGLSL = (detail = {}) => {
+export const surfaceGLSL = (detail = {}, { sourceAppearance = false } = {}) => {
   const grains = !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
   return /* wgsl */ `
 ${grains ? `
@@ -65,6 +67,9 @@ struct Surf {
   tang: vec3f,
   trans: f32,       // backlit translucency (leaves)
   emit: vec3f,      // emitted radiance (incandescence)
+  sourceNormal: vec3f,
+  sourceKind: u32,  // 0 ordinary, 1 imported lit material, 2 imported unshaded
+  sourceFlags: u32,
 }
 
 // ---- view: set once per pixel by the tracer, in uniform control flow ----
@@ -304,6 +309,7 @@ struct Mat {
   sssCol: vec3f,
   rough: f32, metal: f32, f0: f32, sss: f32, glint: f32, glintDens: f32, cav: f32, aniso: f32, trans: f32,
   slopeVar: f32,  // the bump's slope variance a pixel covers but can't show, per axis (specular AA: aaRough)
+  sourceNormal: vec3f, sourceKind: u32, sourceFlags: u32,
 }
 
 fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
@@ -314,6 +320,9 @@ fn mixMat(a0: Mat, b: Mat, k: f32) -> Mat {
   a.sss = mix(a.sss, b.sss, k); a.glint = mix(a.glint, b.glint, k); a.glintDens = mix(a.glintDens, b.glintDens, k);
   a.cav = mix(a.cav, b.cav, k); a.aniso = mix(a.aniso, b.aniso, k); a.trans = mix(a.trans, b.trans, k);
   a.slopeVar = mix(a.slopeVar, b.slopeVar, k);
+  a.sourceNormal = mix(a.sourceNormal, b.sourceNormal, k);
+  a.sourceKind = select(a.sourceKind, b.sourceKind, k >= 0.5);
+  a.sourceFlags = select(a.sourceFlags, b.sourceFlags, k >= 0.5);
   return a;
 }
 
@@ -799,9 +808,22 @@ fn matFlat(id: i32, T: f32, ctype: f32) -> Mat {
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
 ${cozySurfaceWGSL}
 fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
+  if (sourceEnabled()) {
+    let original = sourceMaterial(id, p, n);
+    if (original.kind != 0u) {
+      var authored = matBase(id);
+      authored.alb = original.albedo; authored.rough = original.roughness;
+      authored.metal = original.metallic; authored.f0 = original.f0;
+      authored.glint = 0.0; authored.sss = 0.0;
+      authored.emit = original.emission + cellEmission(id, T, ctype) + sparkEmit(id, ctype);
+      authored.sourceNormal = original.normal; authored.sourceKind = original.kind;
+      authored.sourceFlags = original.flags;
+      return authored;
+    }
+  }
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (FU.matDetail < 0.5) { return matFlat(id, T, ctype); }   // (no texture: the cells' own glow)
-  if (FU.materialStyle > 0.5 && cozySupported(id)) { return cozyMat(id, p, n, T, ctype, fp); }
+  if (FU.materialStyle > 0.5 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
@@ -1021,31 +1043,34 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const FURROW_CAV: f32 = 0.3;              // cavity term down in a furrow
     const FLAKE_SALT: vec3f = vec3f(13.1);    // noise offsets (decorrelate the layers)
     const FIB_SALT: vec3f = vec3f(5.7);
-    var mv: vec4f;
-    var c: vec4f;
-    var fr: f32;   // 0 down a fissure .. 1 on a ridge
-    let pl = woodPlates(p, fp, &mv, &c, &fr);
-    // narrow furrows alias sooner than the plate frequency says
-    let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
-    let lwL = lodFade(FLAKE_FV, fp);
-    let lwB = lodFade(FIB_FH, fp);
-    // flakes and fibres only while drawn (each term below is × its weight)
-    var fl = vec4f(0.0);
-    var fb = vec4f(0.0);
-    if (lwL > 0.0) { fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT); }
-    if (lwB > 0.0) { fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT); }
-    let ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
-    let rl = mix(RIDGE_MEAN, ridge, lwF);
-    let plate = mix(vec3f(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3f(1.0), GREY, c.w), lwF);
-    // (fissures keep the bark's mean albedo: they darken their share, the ridges make it up)
-    m.alb *= mix(FURROW, plate, rl) * mix(FURROW, vec3f(1.0), fr) / mix(FURROW, vec3f(1.0), WOOD_FISSURE_MEAN) * (1.0 + MEANDER_ALB * mv.x)
-           * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5)) * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
-    m.g = pl.yzw + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
-    m.cav = mix(FURROW_CAV, 1.0, rl) * mix(FURROW_CAV, 1.0, fr);
+    let top = woodEndGrain(n);
+    // Fully sawn faces replace every bark result below. Avoid generating it.
+    if (top < 1.0) {
+      var mv: vec4f;
+      var c: vec4f;
+      var fr: f32;   // 0 down a fissure .. 1 on a ridge
+      let pl = woodPlates(p, fp, &mv, &c, &fr);
+      // narrow furrows alias sooner than the plate frequency says
+      let lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
+      let lwL = lodFade(FLAKE_FV, fp);
+      let lwB = lodFade(FIB_FH, fp);
+      // flakes and fibres only while drawn (each term below is × its weight)
+      var fl = vec4f(0.0);
+      var fb = vec4f(0.0);
+      if (lwL > 0.0) { fl = mNoiseJ(p, TURN_Y30 * mat3x3f(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT); }
+      if (lwB > 0.0) { fb = mNoiseJ(p, TURN_Y30 * mat3x3f(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT); }
+      let ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
+      let rl = mix(RIDGE_MEAN, ridge, lwF);
+      let plate = mix(vec3f(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3f(1.0), GREY, c.w), lwF);
+      // (fissures keep the bark's mean albedo: they darken their share, the ridges make it up)
+      m.alb *= mix(FURROW, plate, rl) * mix(FURROW, vec3f(1.0), fr) / mix(FURROW, vec3f(1.0), WOOD_FISSURE_MEAN) * (1.0 + MEANDER_ALB * mv.x)
+             * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5)) * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
+      m.g = pl.yzw + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
+      m.cav = mix(FURROW_CAV, 1.0, rl) * mix(FURROW_CAV, 1.0, fr);
+    }
     // Sawn end grain on top faces: growth rings around the pith of each log
     // (piths on a coarse jittered lattice), wobbling with the grain, latewood
     // bands darker, heartwood darker than sapwood.
-    let top = woodEndGrain(n);
     if (top > 0.0) {
       const LOG_SIZE: f32 = 1.28 / CELL_M;    // cells between piths (1.28 m)
       const RING_M: f32 = 0.013;              // m, growth ring spacing
@@ -1403,6 +1428,8 @@ fn bumpNormal(ng: vec3f, g: vec3f) -> vec3f {
   return normalize(ng - gt);
 }
 fn applyMat(s: ptr<function, Surf>, m: Mat) {
+  (*s).sourceNormal = m.sourceNormal; (*s).sourceKind = m.sourceKind;
+  (*s).sourceFlags = m.sourceFlags;
   (*s).albedo = max(m.alb, vec3f(0.0)); (*s).rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0); (*s).metal = m.metal; (*s).f0 = m.f0;
   (*s).sss = m.sss; (*s).sssCol = m.sssCol; (*s).glint = m.glint; (*s).glintDens = m.glintDens;
   (*s).cav = clamp(m.cav, 0.0, 1.0); (*s).aniso = m.aniso; (*s).tang = m.tang; (*s).trans = m.trans; (*s).emit = m.emit;
@@ -1892,9 +1919,14 @@ fn digMark(s: ptr<function, Surf>) {
   (*s).albedo *= 1.0 - dark;
 }
 
+${SOURCE_APPEARANCE_ENABLED && sourceAppearance === true ? sourceShadeWGSL : sourceShadeFallbackWGSL}
 fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
   digMark(&s);
+  if (s.sourceKind != 0u) {
+    return sourceShade(worldPos(s.p), normalize(s.sourceNormal), rd, s.albedo, s.rough, s.metal, s.f0, s.sourceKind, s.sourceFlags) + s.emit
+      + s.albedo * (sampleLight(s.p) * FU.lightGain + wandLight(s.p));
+  }
   let v = -rd;
   let ng = s.ng;
   // AO, unless the traced near field replaces it below (FU.nearGI: it brings its own occlusion)

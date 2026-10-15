@@ -144,7 +144,7 @@ assert.deepEqual((await decodeSave(new DataView(wrapper.buffer, 4, saved.length)
 sim.origin = { x: 0, y: 0, z: 0, set(x, y, z) { Object.assign(this, { x, y, z }); } };
 sim.dropHistory = () => {};
 const world = Object.assign(Object.create(WorldWindow.prototype), {
-  sim, loaded: true, pending: null, size: [64, 32, 64], epoch: 0,
+  sim, scene: {}, loaded: true, pending: null, size: [64, 32, 64], epoch: 0,
   store: new BrickStore([16, 8, 16]), nativeStore: new NativeBrickStore([16, 8, 16]), planted: new Uint8Array(16 * 16),
 });
 const nativeBrick = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 0x12345, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-321));

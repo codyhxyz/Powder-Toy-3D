@@ -18,6 +18,7 @@ import { FRAME_UNIFORM_FIELDS, RENDER_LAYOUT } from '../shaders/bindings.js';
 import { tablesBuffer } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { decoShown } from '../deco.js';
+import { materialStyleForView } from '../views.js';
 export { WAND_LIGHTS };
 
 // The media detail clock (simulation steps) wraps here, seamlessly for the
@@ -31,7 +32,6 @@ const BEVEL_MAX = 0.45;
 export const gfx = {
   smoothing: 1,          // multiplier on every smooth channel's blur radius
   materials: 1,          // textured materials (0 = flat albedo, for A/B timing)
-  materialStyle: 0,      // 0 = realistic, 1 = Cozy surface artwork
   bevel: 0.12,           // crisp-voxel edge radius in cells (0 = sharp cubes)
   glints: 0.4,           // sun glints on sand, snow and gunpowder (untuned: kept low to avoid fireflies)
 };
@@ -56,7 +56,6 @@ export const gfxUniforms = {
   uGround: { value: [0, 0, 0] },
   uKeyLight: { value: [1, 1, 1] }, // the key light's colour scale (gfx/daylight.js)
   uMatDetail: { value: 1 },
-  uMaterialStyle: { value: 0 },
   uBevel: { value: 0.12 },
   uGlints: { value: 0.4 },
   uNearGI: { value: true },     // lighting upgrades (gfx/lighting.js), switched from Settings → Lighting
@@ -93,7 +92,6 @@ export function updateGfxUniforms(sim, sun, light) {
   gfxUniforms.uSimClock.value = sim.frame % SIM_CLOCK_WRAP;
   cloudShift(sim.frame, gfxUniforms.uCloudShift.value);
   gfxUniforms.uMatDetail.value = gfx.materials;
-  gfxUniforms.uMaterialStyle.value = gfx.materialStyle;
   gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), BEVEL_MAX);
   gfxUniforms.uGlints.value = gfx.glints;
   gfxUniforms.uDeco.value = decoShown(sim);
@@ -158,7 +156,7 @@ const toGrid = new Matrix4();
  *   simulation); lightGain: the glow's gain (uLightGain); far: a world's far
  *   field is drawn; sea: its sea level; jitter: post.jitter
  */
-export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0] }) {
+export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
   const { uniforms, last } = frameUniformsOf(gpu);
   camera.updateMatrixWorld();
   last.viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -172,10 +170,10 @@ export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRe
     viewProj: last.viewProj, invViewProj: last.invViewProj, model: last.model,
     lampPos: vec4s(u.uLampPos.value), lampCol: vec4s(u.uLampCol.value), lampShape: vec4s(u.uLampShape.value),
     wandLightPosition: u.uWandLightPosition.value, wandLightColor: u.uWandLightColor.value,
-    cam, time, sun, lightGain,
+    cam, time, sun, lightGain, sourceAppearance, sourceStyle: !!sourceStyle,
     sunExt: u.uSunExt.value, simClock: u.uSimClock.value, sunCol: u.uSunCol.value, pixScale: u.uPixScale.value,
     skyUp: u.uSkyUp.value, cloudSea: u.uCloudSea.value, ground: u.uGround.value, sea,
-    keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, materialStyle: u.uMaterialStyle.value, jitter, cloudShift: u.uCloudShift.value,
+    keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, materialStyle: materialStyleForView(view) ?? 0, jitter, cloudShift: u.uCloudShift.value,
     bevel: u.uBevel.value, glints: u.uGlints.value, view, frame: u.uFrame.value, shadowRes,
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
     beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,

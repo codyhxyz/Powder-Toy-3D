@@ -12,11 +12,12 @@ import {
 } from '../shaders/far.js';
 import { gfxUniforms, frameUniformsOf } from '../gfx/uniforms.js';
 import { WorldDetail } from './detail.js';
+import { appearanceRegion, uploadAppearance, SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
 
 // The far field of a massive world (docs/scaling.md D11, phase W4;
 // docs/webgpu.md G1; the WGSL and the far grid's layout are in
-// shaders/far.js): a brick-resolution grid of the whole world, drawn wherever
-// the window isn't.
+// shaders/far.js): a brick-resolution grid of the whole world, lighting and
+// liquids beyond the window. Cell meshes own opaque terrain at every distance.
 //
 // Built from the world's scene (world/scenes), progressively: the window's
 // region from its state at once, then the rest a chunk at a time from the
@@ -67,9 +68,9 @@ import { WorldDetail } from './detail.js';
 // as big as the volume's; B5: the data views never build it): the far field
 // shows once it is ready.
 //
-// Near the window the detail meshes (world/detail.js, docs/world-lod.md:
-// render-only meshes of the chunks' cells) replace the coarse field: drawn
-// just before the view, which leaves their chunks' opaque field to them, and
+// Throughout the view the detail meshes (world/detail.js, docs/world-lod.md:
+// render-only meshes of the chunks' cells) own opaque terrain: drawn
+// just before the view, which never draws coarse opaque terrain, and
 // before the scene pass their depth (prepass), where the view's march stops.
 //
 // The rolling log (gfx/presentation.js: `presentation`, set by
@@ -122,7 +123,11 @@ export class FarField {
     const [bx, by, bz] = L.bricks.n;
     const tex3 = (label, format) => gpu.createTexture({ label, size: [bx, by, bz], dimension: '3d', format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
     const tex2 = (label, format) => gpu.createTexture({ label, size: [bx, bz], format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
-    this.grid = tex3('far grid', FAR_FORMATS.grid);      // raw shares, ids, glow (shaders/far.js)
+    // Capability comes from the actual imported scene, never the selected view/style.
+    this.sourceAppearance = SOURCE_APPEARANCE_ENABLED && !!win.scene.importManifest?.appearance;
+    this.appearance = appearanceRegion(L.bricks.n, this.sourceAppearance ? win.scene.importManifest.appearance.totalWords : 0, gpu.device.limits.maxTextureDimension3D);
+    this.grid = gpu.createTexture({ label: 'far grid + source appearance', size: this.appearance.size, dimension: '3d',
+      format: FAR_FORMATS.grid, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC | TEX.COPY_DST });
     this.field = tex3('far field', FAR_FORMATS.field);   // what the view draws (farBoostFrag)
     this.top = tex2('far tops', FAR_FORMATS.top);
     this.shadow = tex2('far shadow heights', FAR_FORMATS.shadow);
@@ -198,7 +203,7 @@ export class FarField {
     this.fu = frameUniformsOf(gpu);
     this.viewFrameLayout = layout('FAR_VIEW_FRAME', FAR_VIEW_FRAME);
     this.viewPipe = gpu.renderPipeline({
-      name: 'far view', code: farFrag(g, L), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
+      name: 'far view', code: farFrag(g, L, false, { sourceAppearance: this.sourceAppearance }), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
       params: FarViewParams, ...farViewPipeline(), build: 'manual',
     });
     // the rolling log's view (made the first time it is wanted)
@@ -232,7 +237,7 @@ export class FarField {
   get viewPipeline() {
     if (!this.curved) return this.viewPipe;
     return (this.viewPipeCurved ??= this.gpu.renderPipeline({
-      name: 'far view curved', code: farFrag(this.sim.g, this.L, false, { curved: true }),
+      name: 'far view curved', code: farFrag(this.sim.g, this.L, false, { curved: true, sourceAppearance: this.sourceAppearance }),
       layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
       params: FarViewParams, ...farViewPipeline(), build: 'manual',
     }));
@@ -323,6 +328,9 @@ export class FarField {
     const t0 = performance.now();
     const L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
     this.groups();
+    // Generator preparation has loaded and validated both files. Terrain
+    // kernels only write the original brick region, never these tail planes.
+    if (this.appearance.planes) uploadAppearance(this.gpu, this.grid, this.scene.appearanceWords, this.appearance);
     this.region(this.k.clear, this.groupsFixed.clear, [0, 0], [bx, bz]);
     this.winMask.fill(0);
     this.maskDirty = true;

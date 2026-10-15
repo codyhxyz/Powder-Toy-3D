@@ -7,6 +7,7 @@ import { MATERIAL_FIELDS, FOAMS_FIELD, materialAccessorsWGSL } from '../gfx/mate
 import { physicsGLSL, PHYS } from '../physics.js';
 import { CELL_M } from '../scale.js';
 import { hostStruct } from './hostStruct.js';
+import { appearanceWGSL } from '../appearance.js';
 
 // Shared WGSL prelude (docs/webgpu.md C5). The 3D grid (NX × NY × NZ) lives
 // in storage buffers, and every kernel reaches a cell through the functions
@@ -532,6 +533,7 @@ const AIR_T_IN_NEAR: bool = ${AIR_T_IN_NEAR};   // an air cell's temperature can
 // ---- the element tables (docs/webgpu.md C6) ----
 ${elementsGLSL()}
 ${tablesWGSL()}
+${appearanceWGSL}
 // The scene's ambient air temperature, °C (the tables' airT; the WebGL build's
 // uAirT): what the air relaxes to and rests at. PHYS.AMBIENT unless a world
 // scene sets its own (Simulation.airT).

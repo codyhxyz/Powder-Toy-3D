@@ -194,6 +194,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   }
   if (KIND(id) == K_SOLID && into >= 0 && E >= HARD(id)) {
     (*oA).x = f32(into);
+    (*oA).w = physicalCtype(id, a.w) + fract(a.w);
     // what the cut doesn't use flies off with the chip: ½·DENS·v² = E − hard
     let v = min(sqrt(2.0 * (E - HARD(id)) / DENS(into)), P.chipMax);
     *oB = vec4f(push * v, b.w);
@@ -515,6 +516,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     let into = BREAKINTO(id);
     if (x >= 1.0 || into < 0 || E < HARD(id)) { return; }
     (*oA).x = f32(into);
+    (*oA).w = physicalCtype(id, a.w) + fract(a.w);
     *oB = vec4f(away * min(sqrt(2.0 * (E - HARD(id)) / DENS(into)), ROCKET_CHIP_MAX), b.w);
   } else if (isGasLike(id) && r < ROCKET_FIRE_RADIUS && rnd(&rs) < ROCKET_FIRE_SPAWN) {
     let seed = rnd(&rs) * SEED_MAX;

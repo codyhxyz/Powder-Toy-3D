@@ -92,10 +92,10 @@ export function addTarget(t) {
 
 // The nearest live target a ray from `origin` along unit `dir` enters within
 // maxDist: { target, dist, point }, or null. Slab test against each box.
-export function rayTarget(origin, dir, maxDist, exclude = null, ignored = null) {
+export function rayTarget(origin, dir, maxDist, exclude = null, ignored = null, deadBodies = false) {
   let best = null;
   for (const t of targets) {
-    if (!t.alive || t.id === exclude || ignored?.has(t.id) || rules?.passes(exclude ?? PLAYER, t)) continue;
+    if ((!t.alive && !(deadBodies && t.body?.dead && !t.body.gibbed)) || t.id === exclude || ignored?.has(t.id) || rules?.passes(exclude ?? PLAYER, t)) continue;
     t.box(lo, hi);
     let t0 = 0, t1 = maxDist;
     for (const a of ['x', 'y', 'z']) {

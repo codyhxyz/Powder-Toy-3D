@@ -661,7 +661,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   var surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
   for (var i = 0; i < faces; i++) {
     let j = nid[i];
-    let wet = floor(na[i].w) >= 1.0;
+    let wet = physicalCtype(j, na[i].w) >= 1.0;
     if (j == E_MOSS && wet) { nWetMoss++; wetMoss[i >> 1u] = true; }
     if (j == E_FUNGUS && wet) { nWetFungus++; }
     if (mossBed(j)) { bed[i >> 1u] = true; }
@@ -770,7 +770,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       nidOut = E_MOSS; reset = true; ctype = 0.0;   // its damp comes in next step
     }
   } else if (id == E_MOSS || id == E_FUNGUS) {
-    ctype = dampOf(T, &na);
+    ctype = appearanceCtype(id, dampOf(T, &na), appearanceOf(id, a.w));
   } else if (id == E_FUSE) {
     // Safety fuse: a black-powder core in a tarred jute sheath. The powder
     // carries its own oxidiser, so it burns with or without air, at a steady
@@ -944,6 +944,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   }
 
   if (nidOut != id) {
+    ctype = physicalCtype(id, ctype);   // appearance belongs to its original material, never debris/fire
     if (CONDUCTS(id) && !CONDUCTS(nidOut) && nidOut != E_LAVA) { ctype = 0.0; }   // its spark goes with it
     if (reset) { life = SPAWNLIFE(nidOut); }
     if (grower(nidOut) || grower(id)) { ctype = 0.0; }   // a new grower's damp comes in next step; an old one's goes

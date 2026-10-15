@@ -14,6 +14,9 @@ import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
 import { nativeBodyGravity } from '../v2/modes.js';
 import { bodyEditStepRate, nativeBodyPressureFactor } from '../v2/body.js';
+import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
+import { ladderVelocity } from './ladder.js';
+import { FLAP_SIGNAL_S } from './flapPose.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -99,6 +102,10 @@ const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the je
 // out (smoothstep: no jolt at either end) and changes the climb no faster than JET_RAMP_S allows.
 // The climb, tank and flight speed are Noita's still.
 const JET_SPOOL_UP_S = 0.2;            // s for the push to come on fully after a press
+// Animal Crossing's Minecraft-inspired chicken wingbeats, buffed to twice the lift and upward speed limit.
+const FLAP_LIFT = 44;                  // cells/s per tap: twice the previous 22
+const FLAP_CEILING = 8;                // cells/s: twice the previous 4; no unbounded ascent
+const FLAP_GAP_S = 0.2;                // s between beats
 const JET_SPOOL_DOWN_S = 0.3;          // s for it to die away after a release: the climb crests instead of dropping
 const JET_RAMP_S = 0.15;               // s from a hover to the full climb at the jet's hardest push (caps it at climb / this)
 
@@ -247,10 +254,12 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const events = createEmitter('body');
   let kicker = null;   // the kick (kick.js), made once the body is
   let rope = null;     // { anchor (Vector3, grid; the setter keeps it current), length, reel (cells/s, 0 holds), hard, brace }
+  let crueltyFlight = false;   // retain the source game's air physics through release, until landing
+  let positionEpoch = 0;       // a teleport/respawn replaces attachment-local coordinates, unlike a window shift
   let revengeWait = 0, revengeDue = false;
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
-  let prevJump = false, sinceJumpPress = Infinity, sinceBounce = Infinity;
+  let prevJump = false, sinceJumpPress = Infinity, sinceBounce = Infinity, sinceFlap = Infinity, airFlapHold = false;
   let jumpCharge = null;
   let gibDue = false;   // vitals.js GIB_HEALTH: the body bursts into meat at the next update (it needs the sim)
   const meat = createMeat({ renderer, getSim });
@@ -302,7 +311,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
   const p = {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(),
-    onGround: false, inLiquid: false, headInLiquid: false, liquidId: -1,
+    onGround: false, inLiquid: false, headInLiquid: false, liquidId: -1, climbing: false,
     submerged: 0,                 // share of the body under liquid, 0..1
     jetFuel: 1,                   // jetpack tank, 0..1
     jetting: false,               // the jetpack is firing this frame
@@ -319,6 +328,11 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       return speed <= sprintWalk ? 0
         : Math.min(1, (speed - sprintWalk) / Math.max(EPS, sprintCeiling - sprintWalk));
     },
+    // 1 on the tap, back to 0 as the wings settle. The viewmodel and the body read it.
+    get flap() {
+    if (vitals.dead || sinceFlap >= FLAP_SIGNAL_S) return 0;
+    return 1 - Math.min(1, sinceFlap / FLAP_SIGNAL_S);
+    },
     knock: 0,                     // cells/s the body was pushed from outside last update (pressure, impulses): feel.js's blast shake
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
@@ -328,6 +342,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     perks,                        // its perks (perks.js)
     get size() { return size; },  // × the plain body's size (Shrink)
     get height() { return H; },   // cells, feet to crown
+    get positionEpoch() { return positionEpoch; },
     get width() { return 2 * HW; },   // cells, the square footprint's side
     get eyeHeight() { return EYE; },  // cells above the feet
     get buriedId() { return env.buriedId; },   // the powder or solid the head is buried in, or -1
@@ -705,6 +720,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   // ---------------------------------------------------------------- update
   const wish = new THREE.Vector2();
   function update(dtIn, input = {}) {
+    p.climbing = false;
     const sim = getSim();
     if (!sim) return;
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
@@ -732,7 +748,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       meat.gib(p.pos, p.vel, stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
     }
     if (!readOnly()) meat.update();
-    if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; sprintCarry = false; }
+    if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; sprintCarry = false; sinceFlap = Infinity; airFlapHold = false; }
+    // chargeJump is enabled only by Animal Crossing; other modes keep their jet controls.
+    if (!input.chargeJump) { sinceFlap = Infinity; airFlapHold = false; }
     if (!input.chargeJump || input.cancelJump || vitals.dead) cancelJump();
     if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
@@ -749,19 +767,24 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const v = p.vel;
     const v0 = v.clone();   // an axis that runs into unprobed cells keeps this (its time didn't pass)
     const stalled = [false, false, false];
-    // Native grid, flight and body share one TF2-like SI force. The body
-    // stores cells/s, so only the modes helper converts metres to cells.
-    const nativeGravity = sim.compact ? nativeBodyGravity(sim, p.pos.toArray()) : null;
-    const grav = nativeGravity ? Math.hypot(...nativeGravity) : GRAVITY * sim.gravity / SIM_GRAVITY_REF;
     const swimming = sub >= SWIM_SHARE;
+    const climbing = alive && !swimming && !rope && !!input.ladder;
+    p.climbing = climbing;
+    const cruelty = !swimming && !climbing && (!!input.cruelty || !!rope?.grappendix || crueltyFlight);
+    // Preserve native gravity direction/off modes and the equipment's
+    // relative gravity adjustment. Body velocities remain in cells/s.
+    const gravityScale = cruelty ? CRUELTY_GRAVITY / GRAVITY : 1;
+    const nativeGravity = sim.compact ? nativeBodyGravity(sim, p.pos.toArray()).map(g => g * gravityScale) : null;
+    const grav = nativeGravity ? Math.hypot(...nativeGravity) : GRAVITY * gravityScale * sim.gravity / SIM_GRAVITY_REF;
+    if (rope?.grappendix && alive) pullGrappendix(v, vB.copy(p.pos).setY(p.pos.y + H / 2), rope.anchor, grav, dt);
 
     // the jump button's timing (the pogo's timed presses)
-    const jumpDown = alive && !!input.jump;
+    const jumpDown = alive && !climbing && !!input.jump;
     const pressed = jumpDown && !prevJump;
     prevJump = jumpDown;
     sinceJumpPress = pressed ? 0 : sinceJumpPress + dt;
     sinceBounce += dt;
-    const pogoing = alive && pogoHold && !swimming && !input.chargeJump;   // village Space belongs to the leap
+    const pogoing = alive && pogoHold && !swimming && !climbing && !input.chargeJump && !cruelty;   // village Space belongs to the leap
     pogoHold = false;
     p.pogoing = pogoing;
     if (!pogoing) pogoStep = 0;
@@ -779,7 +802,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     // controls
     wish.set(alive ? input.move?.x ?? 0 : 0, alive ? input.move?.z ?? 0 : 0);
-    if (wish.length() > 1) wish.normalize();
+    if (wish.length() > 1 && !cruelty) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
     // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
@@ -788,7 +811,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const sprinting = alive && input.sprint && crouch === 0;
     const footScale = p.speedScale * p.aimScale * p.status.moveScale * gait
       * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
-    const running = sprinting && wish.lengthSq() > 0 && !swimming && !p.jetting && !rope?.hard;
+    const running = sprinting && wish.lengthSq() > 0 && !swimming && !p.jetting && !rope?.hard && !cruelty;
     const along = vh.dot(wish);
     // No charge at rest, into a wall, or through a reversal; a hop keeps its run-up.
     if (!running || along < 0 || (p.onGround && along < WALK_SPEED * footScale * 0.5)) p.sprintBuild = 0;
@@ -803,7 +826,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jetRun = Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H));
     const runSpeed = footRun + (jetRun - footRun) * smooth01(p.jetSpool);   // the flight speed spools with the jet
     const swingingOnRope = !!rope?.hard && !p.onGround && !swimming;
-    if (swingingOnRope || p.leaping) {
+    if (cruelty) {
+      const sourceVelocity = vC.set(vh.x, v.y, vh.y);
+      jumpedNow = crueltyMove(sourceVelocity, wish, {
+        grounded: p.onGround, jumpPressed: pressed, yaw: input.jumpYaw ?? 0,
+        speedScale: p.speedScale * p.aimScale * p.status.moveScale * gait * crouchShare(crouch, 2 / 3),
+        jumpScale: gait,
+      }, dt);
+      vh.set(sourceVelocity.x, sourceVelocity.z); v.y = sourceVelocity.y;
+      if (jumpedNow) p.onGround = false;
+    } else if (swingingOnRope || p.leaping) {
       // on a rope in the air: Noita's ease only ever adds speed toward the wished
       // direction (it never brakes), so a swing keeps its momentum and can be pumped
       if (wish.lengthSq() > 0) {
@@ -867,9 +899,19 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Levitating (Levitatium, potions.js): Noita's Faster Levitation, 75% faster, and here the tank holds
     const levitating = p.status.has('LEVITATING');
     const jetRise = Math.min(JET_RISE * gait * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE * gait, PERK_SPEED_V));
-    const jetWants = alive && !!input.jump && !pogoing && !input.chargeJump;
+    const jetWants = alive && !climbing && !!input.jump && !pogoing && !input.chargeJump && !cruelty;
     // Swimming can settle waist-deep: hand off at the surface, not only below SWIM_SHARE.
     const clings = jetWants && !p.onGround && !p.headInLiquid && ((perks.has('LUKKI') && clinging()) || levitating);
+    if (pressed && alive) airFlapHold = !!input.chargeJump && !p.onGround && !jumpedNow && !swimming && !pogoing && !p.headInLiquid && !rope?.hard;
+    if (!jumpDown) airFlapHold = false;
+    sinceFlap += dt;
+    // Only Animal Crossing air taps are wingbeats.
+    if (pressed && airFlapHold && sinceFlap >= FLAP_GAP_S) {
+      sinceFlap = 0;
+      const lift = FLAP_LIFT * gait, ceiling = FLAP_CEILING * gait;
+      if (v.y < ceiling) v.y = Math.min(ceiling, v.y + lift);
+      if (!quiet) povEvents.emit('player:flap');
+    }
     const jet = jetWants && !p.onGround && !jumpedNow && !p.headInLiquid && (p.jetFuel > 0 || clings);
     p.jetSpool = jet ? Math.min(1, p.jetSpool + dt / JET_SPOOL_UP_S) : Math.max(0, p.jetSpool - dt / JET_SPOOL_DOWN_S);
     const thrust = smooth01(p.jetSpool);
@@ -903,6 +945,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const k = (VISCOUS_DRAG * env2.dragL / (size * size) + FORM_DRAG * env2.densL / BODY_DENS * v.length() / size) * sub;   // (Shrink: Stokes 1/s², form 1/s)
       v.multiplyScalar(Math.exp(-k * dt));
     }
+    if (climbing) ladderVelocity(v, input.climb);
 
     // pressure: a = −∇P·P_ACCEL/ρ per step², for each step the sim took
     vK.copy(v);   // (what pressure and impulses change from here is the knock)
@@ -924,7 +967,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     } else v.add(impulse);
     impulse.set(0, 0, 0);
     p.knock = vK.sub(v).length();
-    if (rope && alive) pullRope(v, dt);
+    if (rope && !rope.grappendix && alive) pullRope(v, dt);
     if (v.length() > MAX_SPEED) v.setLength(MAX_SPEED);
 
     // move, with collisions
@@ -968,14 +1011,14 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     else if (sprintingNow) sprintCarry = true;
     else if (Math.hypot(v.x, v.z) <= sprintWalk) sprintCarry = false;
     // follow the ground down small ledges
-    if (!p.onGround && wasGround && !jumped && !swimming) {
+    if (!p.onGround && wasGround && !jumped && !swimming && !climbing) {
       const r = sweep(1, -STEP_DOWN);
       if (r.id !== null && r.id !== UNKNOWN) { p.pos.y += r.d; p.onGround = true; v.y = Math.min(v.y, 0); }
     }
 
     if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_GROUND / tankS);
     else if (p.jetIdleS > JET_AIR_WAIT_S) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_AIR / tankS);
-    if (p.onGround) p.leaping = false;
+    if (p.onGround) { p.leaping = false; if (!rope?.grappendix) crueltyFlight = false; }
 
     // landing and impacts. Landings never hurt, as in Noita (no fall damage);
     // being thrown into a wall or ceiling (a blast) still does. On a pogo the
@@ -1007,7 +1050,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const closing = v.dot(ropeDir);
       // across the rope: damped toward still; along it: eased toward the reel speed
       const across = ropeCross.copy(v).addScaledVector(ropeDir, -closing);
-      if (!rope.swing) v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
+      v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
       if (closing < rope.reel) v.addScaledVector(ropeDir, (rope.reel - closing) * ease(ROPE_EASE, dt));
     }
     if (!rope.hard) return;
@@ -1039,10 +1082,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (![feet?.x, feet?.y, feet?.z].every(Number.isFinite)) return false;
     rope = null;   // a hook rope would yank the body back across the jump
     p.pos.copy(feet);
+    positionEpoch++;
+    crueltyFlight = false;
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; sinceJumpPress = Infinity; sinceBounce = Infinity;
+    sinceFlap = Infinity; airFlapHold = false;
     cancelJump();
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     p.jetSpool = 0; p.knock = 0; p.sprintBuild = 0; sprintingNow = false; sprintCarry = false;
@@ -1112,11 +1158,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get kicker() { return kicker; },   // for checks (kicker.walked: the cells the last kick's ray crossed)
     // Hang on a rope (see ROPE_*): { anchor, length, reel, hard, brace }, kept by reference (the setter
     // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
-    tether(r) {
-      // Keep air steering additive after releasing a sandbox swing (Noita's momentum-preserving leap).
-      if (!r && rope?.swing && !p.onGround) p.leaping = true;
-      rope = r;
-    },
+    tether(r) { rope = r; if (r?.grappendix) crueltyFlight = true; },
     ropeHand(out = new THREE.Vector3()) { return out.set(p.pos.x, p.pos.y + ropeHandY(), p.pos.z); },
     on: events.on,
   });

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Character viewer</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #12151c; color: #e8e6e3; }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+    canvas.dragging { cursor: grabbing; }
+    nav {
+      position: fixed; z-index: 2; left: 12px; bottom: 12px; display: flex; gap: 6px; flex-wrap: wrap;
+      font: 13px/1 system-ui, sans-serif;
+    }
+    #err { position: fixed; z-index: 2; left: 12px; top: 12px; color: #ff9a9a; font: 13px/1.4 system-ui, sans-serif; }
+    button {
+      border: 0; border-radius: 6px; padding: 8px 10px; color: inherit;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    button[aria-pressed='true'] { background: #5a4a88; }
+  </style>
+</head>
+<body>
+  <!-- Dev tool, not shipped (vite.config.js builds index.html only).
+       vite, then /tools/harness/character.html?character=woman
+       Drag turns, the wheel zooms, same viewer as the loading screen. -->
+  <canvas id="view"></canvas>
+  <p id="err"></p>
+  <nav>
+    <button type="button" data-character="woman">Female wizard</button>
+    <button type="button" data-character="real">Male wizard</button>
+    <button type="button" data-character="stick">Paper bag</button>
+    <button type="button" data-character="spartan">Spartan</button>
+    <button type="button" data-character="boy">Boy</button>
+    <button type="button" data-character="girl">Girl</button>
+    <button type="button" data-character="maple">Maple</button>
+    <button type="button" data-character="clover">Clover</button>
+    <button type="button" data-character="pippin">Pippin</button>
+    <button type="button" data-character="crook">Tim Crook</button>
+    <button type="button" data-view="front">Front</button>
+    <button type="button" data-view="side">Side</button>
+    <button type="button" data-view="rear">Rear</button>
+    <button type="button" id="spin" aria-pressed="true">Auto-rotate</button>
+  </nav>
+  <script type="module" src="./character.js"></script>
+</body>
+</html>

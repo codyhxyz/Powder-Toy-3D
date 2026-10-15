@@ -6,6 +6,7 @@ import { BUILTINS, SHRINE_ALTARS } from '../constructions/builtins.js';
 import { islandTwin, layersAt, pcg, TREE } from './generator.js';
 import { LANDFORMS } from './island/landforms.js';
 import { bakeFor, structureWorker } from './bake.js';
+import { appearanceOf, materialWord, materialId } from '../appearance.js';
 
 // The world's structures (docs/structures.md): houses, villages, docks, wrecks,
 // towers, standing stones and mines, placed by a scene from its seed as it
@@ -547,9 +548,10 @@ const FOOT_BIT = 128;
 const INFO_W = 3;
 
 const textures = new Map();
-export function structureData(P, list = structuresOf(P)) {
+export function structureData(P, list) {
   const k = JSON.stringify(P);
   if (textures.has(k)) return textures.get(k);
+  list ??= structuresOf(P);
   const BX = P.size[0] / BRICK, BZ = P.size[2] / BRICK;
   const index = new Uint8Array(BX * BZ * 4);
   const info = new Int32Array(Math.max(1, list.length) * INFO_W * 4);
@@ -563,7 +565,7 @@ export function structureData(P, list = structuresOf(P)) {
   });
   const AW = Math.max(1, list.length ? Math.max(...list.map((st, i) => at[i][0] + st.s.w)) : 1);
   const AH = Math.max(1, ...list.map((st) => st.s.h)), AD = Math.max(1, az + rowD);
-  const cells = new Uint8Array(AW * AH * AD);
+  const cells = new Uint16Array(AW * AH * AD);
   const R = TREE.REACH;
   list.forEach((st, slot) => {
     const { s } = st, [aX, aZ] = at[slot], y0 = st.y - s.base.y;
@@ -572,7 +574,7 @@ export function structureData(P, list = structuresOf(P)) {
         for (let x = 0; x < s.w; x++) {
           const j = (z * s.h + y) * s.w + x, id = s.data[j * 4] - 1;
           if (id < 0) continue;
-          cells[((aZ + z) * AH + y) * AW + aX + x] = (id + 1) | (s.data[j * 4 + 3] > 0.5 ? FOOT_BIT : 0);
+          cells[((aZ + z) * AH + y) * AW + aX + x] = (id + 1) | (s.data[j * 4 + 3] > 0.5 ? FOOT_BIT : 0) | (appearanceOf(id, s.data[j * 4 + 2]) << 8);
         }
     info.set([st.x0, y0, st.z0, s.foot, s.w, s.h, s.d, aX, aZ, 0, 0, 0], slot * INFO_W * 4);
     for (let bz = Math.floor((st.z0 - R) / BRICK); bz <= Math.floor((st.z0 + s.d - 1 + R) / BRICK); bz++)
@@ -603,6 +605,11 @@ export function structureClear(P, x, z) {
 // scene's own cell there; cellAt(y) the scene's cell at height y in this
 // column (the footing's search). (CPU twin of structureCell.)
 export function structureCellAt(P, x, y, z, id, cellAt) {
+  return materialId(structureMaterialAt(x, y, z, id, P, cellAt));
+}
+
+// Parallel authored-material API, preserving the existing physical wrapper.
+export function structureMaterialAt(x, y, z, id, P, cellAt) {
   if (!P.structures) return id;
   const { index, cells, info, size: [AW, AH], BX, BZ } = structureData(P);
   const bx = Math.floor(x / BRICK), bz = Math.floor(z / BRICK);
@@ -613,20 +620,21 @@ export function structureCellAt(P, x, y, z, id, cellAt) {
   const qx = x - I(0), qy = y - I(1), qz = z - I(2);
   if (qx < 0 || qz < 0 || qx >= I(4) || qz >= I(6) || qy >= I(5) || qy < -I(3)) return id;
   const cell = (yy) => cells[((I(8) + qz) * AH + yy) * AW + I(7) + qx];
-  if (qy >= 0) { const c = cell(qy) & (FOOT_BIT - 1); return c ? c - 1 : id; }
+  const word = c => materialWord((c & (FOOT_BIT - 1)) - 1, c >> 8);
+  if (qy >= 0) { const c = cell(qy); return (c & (FOOT_BIT - 1)) ? word(c) : id; }
   const c = cell(0);
   if (!(c & FOOT_BIT) || bears(id)) return id;
   for (let yy = I(1) - 1; yy > y; yy--) if (bears(cellAt(yy))) return id;
-  for (let i = 1; i <= I(3); i++) { const yy = I(1) - i; if (yy < 0 || bears(cellAt(yy))) return (c & (FOOT_BIT - 1)) - 1; }
+  for (let i = 1; i <= I(3); i++) { const yy = I(1) - i; if (yy < 0 || bears(cellAt(yy))) return word(c); }
   return id;
 }
-const bears = (id) => id !== E.EMPTY && ELEMENTS[id].kind !== K.GAS && ELEMENTS[id].kind !== K.LIQUID;
+const bears = word => { const id = materialId(word); return id !== E.EMPTY && ELEMENTS[id].kind !== K.GAS && ELEMENTS[id].kind !== K.LIQUID; };
 
 // ---------------------------------------------------------------- GPU
 // World P's structures as part of its scene's data (scenes/sceneGpu.js SD,
 // docs/webgpu.md G1: storage, not integer textures), from word uStructAt on
 // (the scene places them): the index, a word per world brick column (r | g <<
-// 8), then the info, INFO_W vec4i a slot, then the cell atlas, four cells a
+// 8), then the info, INFO_W vec4i a slot, then the cell atlas, two cells a
 // word; and the island's uniform fields that find them (STRUCT_FIELDS, the
 // offsets within its words). Until a worker has placed them
 // (structuresReady), empty: the window asks again after prepare. One set per
@@ -641,11 +649,11 @@ export function structureWords(P) {
   let w = words.get(k);
   if (!w) {
     const d = ready ? structureData(P) : structureData(P, Object.assign([], { pending: true }));
-    const nIndex = d.BX * d.BZ, nInfo = d.info.length, nCells = Math.ceil(d.cells.length / 4);
+    const nIndex = d.BX * d.BZ, nInfo = d.info.length, nCells = Math.ceil(d.cells.length / 2);
     const data = new Uint32Array(nIndex + nInfo + nCells);
     data.set(new Uint32Array(d.index.buffer, d.index.byteOffset, nIndex), 0);
     data.set(new Uint32Array(d.info.buffer, d.info.byteOffset, nInfo), nIndex);
-    new Uint8Array(data.buffer, (nIndex + nInfo) * 4, d.cells.length).set(d.cells);
+    new Uint16Array(data.buffer, (nIndex + nInfo) * 4, d.cells.length).set(d.cells);
     w = {
       data,
       values: {
@@ -669,7 +677,7 @@ export function disposeStructureTextures() { words.clear(); }
 export const STRUCT_GLSL = /* wgsl */ `
 const STRUCT_FOOT_BIT: u32 = ${FOOT_BIT}u;
 const STRUCT_INFO_W: i32 = ${INFO_W};
-fn structBears(id: i32) -> bool { return id != E_EMPTY && KIND(id) != K_GAS && KIND(id) != K_LIQUID; }
+fn structBears(word: i32) -> bool { let id = materialId(word); return id != E_EMPTY && KIND(id) != K_GAS && KIND(id) != K_LIQUID; }
 // brick column bc's index entry: x the slot + 1 over it (0: none), y 1 where trees give way
 fn structIndex(bc: vec2i) -> vec2u {
   let w = sdWord(SU.uStructAt + u32(bc.x + SU.uStructBX * bc.y));
@@ -683,13 +691,17 @@ fn structInfo(n: i32, slot: i32) -> vec4i {
 // the cell atlas at c: id + 1 (0: the scene's cell), + STRUCT_FOOT_BIT on a base cell that grows a footing
 fn structCell(c: vec3i) -> u32 {
   let i = u32(c.x + SU.uStructAW * (c.y + SU.uStructAH * c.z));
-  return (sdWord(SU.uStructAt + SU.uStructCellsAt + (i >> 2u)) >> ((i & 3u) * 8u)) & 255u;
+  return (sdWord(SU.uStructAt + SU.uStructCellsAt + (i >> 1u)) >> ((i & 1u) * 16u)) & 65535u;
 }
 fn structureClears(bc: vec2i) -> bool {
   if (SU.uStructOn == 0u || any(bc < vec2i(0)) || bc.x >= SU.uStructBX || bc.y >= SU.uStructBZ) { return false; }
   return structIndex(bc).y > 0u;
 }
 fn structureCell(w: vec3i, id: i32) -> i32 {
+  return materialId(structureMaterialCell(w, id));
+}
+fn structMaterial(c: u32) -> i32 { return materialWord(i32(c & (STRUCT_FOOT_BIT - 1u)) - 1, i32(c >> 8u)); }
+fn structureMaterialCell(w: vec3i, id: i32) -> i32 {
   if (SU.uStructOn == 0u) { return id; }
   let bc = w.xz / BS;
   if (any(w.xz < vec2i(0)) || bc.x >= SU.uStructBX || bc.y >= SU.uStructBZ) { return id; }
@@ -701,8 +713,8 @@ fn structureCell(w: vec3i, id: i32) -> i32 {
   let q = w - lo.xyz;
   if (q.x < 0 || q.z < 0 || q.x >= box.x || q.z >= box.z || q.y >= box.y || q.y < -lo.w) { return id; }
   if (q.y >= 0) {
-    let c = structCell(vec3i(box.w + q.x, q.y, az + q.z)) & (STRUCT_FOOT_BIT - 1u);
-    if (c > 0u) { return i32(c) - 1; }
+    let c = structCell(vec3i(box.w + q.x, q.y, az + q.z));
+    if ((c & (STRUCT_FOOT_BIT - 1u)) > 0u) { return structMaterial(c); }
     return id;
   }
   // a footing: the base cell above grows one, down through what bears no weight
@@ -717,11 +729,11 @@ fn structureCell(w: vec3i, id: i32) -> i32 {
       let i = k - above + 1;
       if (i > lo.w) { break; }
       y = lo.y - i;
-      if (y < 0) { return i32(c & (STRUCT_FOOT_BIT - 1u)) - 1; }
+      if (y < 0) { return structMaterial(c); }
     }
     let bears = structBears(structureGround(vec3i(w.x, y, w.z)));
     if (k < above && bears) { return id; }
-    if (k >= above && bears) { return i32(c & (STRUCT_FOOT_BIT - 1u)) - 1; }
+    if (k >= above && bears) { return structMaterial(c); }
   }
   return id;
 }

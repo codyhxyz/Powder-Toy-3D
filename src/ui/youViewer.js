@@ -48,10 +48,13 @@ function clampZoom(zoom) {
 }
 
 async function loadBody(character, time) {
-  if (character === 'boy' || character === 'girl') {
+  if (['boy', 'girl', 'maple', 'clover', 'pippin', 'crook'].includes(character)) {
     // The village avatar you drop in as (village/models.js), not the hidden physics body.
     const { character: buildVillage } = await import('../pov/village/models.js');
-    const avatar = buildVillage({ persona: character });
+    const { RESIDENTS } = await import('../pov/village/residents.js');
+    const { TIM_CROOK } = await import('../pov/village/crook.js');
+    const spec = character === 'crook' ? TIM_CROOK : RESIDENTS.find(r => r.name.toLowerCase() === character);
+    const avatar = buildVillage(spec ?? { persona: character });
     avatar.root.rotation.y = Math.PI; // faces -z; the portrait camera faces +z
     let clock = time;
     return { model: avatar.root, step(dt) { clock += dt; avatar.animate(clock, 0); } };
@@ -65,7 +68,7 @@ async function loadBody(character, time) {
     model.position.y = rig.hipY;
     model.rotation.y = Math.PI; // procedural bodies face -z; the portrait camera faces +z
     model.traverse((o) => {
-      if (!o.isMesh) return;
+      if (!o.isMesh || !o.userData.albedo) return;   // jet flames have their own material
       o.material = new THREE.MeshStandardMaterial({
         color: new THREE.Color().setRGB(...o.userData.albedo), roughness: 0.85,
       });
@@ -83,7 +86,7 @@ async function loadBody(character, time) {
   });
   // the hat, skinned to his head bone as in the game
   const body = meshes.reduce((a, b) => (b.geometry.attributes.position.count > a.geometry.attributes.position.count ? b : a));
-  for (const [name, geo] of Object.entries(buildGarb(meshes))) {
+  for (const [name, geo] of Object.entries(buildGarb(meshes, { bag: character === 'stick' }))) {
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color().setRGB(...(GARB_COLORS[name] ?? GARB_COLORS.hat)), roughness: 0.85, side: THREE.DoubleSide,
     });

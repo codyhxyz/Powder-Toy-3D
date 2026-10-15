@@ -77,6 +77,9 @@ fn wangHash(r: vec3i) -> u32 {
 }
 // The ports a placed tile has open, cut into its cell (canonical c, region-relative r)
 fn wangPorts(code_in: i32, ports: i32, c: vec3i, r: vec3i) -> i32 {
+  return materialId(wangPortsMaterial(code_in, ports, c, r));
+}
+fn wangPortsMaterial(code_in: i32, ports: i32, c: vec3i, r: vec3i) -> i32 {
   var code = code_in;
   let half_ = WANG_DOOR_W / 2;
   let j = i32((wangHash(r) >> WANG_JITTER_BIT) & 1u) * WANG_JITTER;
@@ -97,7 +100,7 @@ fn wangPorts(code_in: i32, ports: i32, c: vec3i, r: vec3i) -> i32 {
     let yb = select(WANG_FLOOR, WANG_HIGH_FLOOR, col == WANG_COL_HIGH);
     if (c.y < yb || c.y >= yb + WANG_DOOR_H + j || lat < -half_ - j || lat >= half_ + j) { continue; }
     if (c.y >= yb + WANG_DOOR_H || lat < -half_ || lat >= half_) { code = WANG_AIR; continue; }
-    if (depth == WANG_FRAME_DEPTH && (lat == -half_ || lat == half_ - 1 || c.y == yb + WANG_DOOR_H - 1)) { return WANG_BEAM; }
+    if (depth == WANG_FRAME_DEPTH && (lat == -half_ || lat == half_ - 1 || c.y == yb + WANG_DOOR_H - 1)) { return materialWord(WANG_BEAM, select(AP_PLANK_Y, select(AP_PLANK_X, AP_PLANK_Z, p < 2), c.y == yb + WANG_DOOR_H - 1)); }
     if (col == WANG_COL_RAIL && c.y == yb && (lat == -WANG_RAIL_GAUGE / 2 || lat == WANG_RAIL_GAUGE / 2 - 1)) { return WANG_RAIL; }
     return WANG_AIR;
   }
@@ -116,6 +119,9 @@ fn wangPorts(code_in: i32, ports: i32, c: vec3i, r: vec3i) -> i32 {
   return code;
 }
 fn wangCell(w: vec3i) -> i32 {
+  return materialId(wangCellMaterial(w));
+}
+fn wangCellMaterial(w: vec3i) -> i32 {
   let r = w - SU.uWangOrigin;
   if (any(r < vec3i(0))) { return WANG_OUT; }
   let u = vec3i(r.x / WANG_U, r.y / WANG_H, r.z / WANG_U);
@@ -135,10 +141,18 @@ fn wangCell(w: vec3i) -> i32 {
   let t0 = vec3i(0, (tile / WANG_ATLAS_PER_COL) * WANG_H, (tile % WANG_ATLAS_PER_COL) * WANG_U);
   let ac = t0 + c;
   let ai = u32(ac.x + SU.uWangAX * (ac.y + SU.uWangAY * ac.z));
-  var code = i32((sdWord(SU.uWangAtlasAt + (ai >> 2u)) >> ((ai & 3u) * 8u)) & 255u);
+  let packed = i32((sdWord(SU.uWangAtlasAt + (ai >> 2u)) >> ((ai & 3u) * 8u)) & 255u);
+  let axis = packed >> 6u;
+  var code = materialWord(packed & 63, select(AP_NONE, AP_PLANK_X + axis - 1, axis != 0));
   // an open kit's caps (kit.js openCap)
   if (WANG_OPEN == 1 && ((u.y == SU.uWangUnits.y - 1 && c.y >= WANG_H - WANG_BORDER) || (u.y == 0 && c.y < WANG_FLOOR))) { code = WANG_ROCK; }
-  return wangPorts(code, i32(q.b) | (i32(q.a) << 8u), c, r);
+  let word = wangPortsMaterial(code, i32(q.b) | (i32(q.a) << 8u), c, r);
+  var appearance = materialAppearance(word);
+  if (tr) {
+    if (appearance == AP_PLANK_X) { appearance = AP_PLANK_Z; }
+    else if (appearance == AP_PLANK_Z) { appearance = AP_PLANK_X; }
+  }
+  return materialWord(materialId(word), appearance);
 }
 `;
 }
@@ -157,7 +171,8 @@ export function wangData({ kit, units, origin, atlas, placement }) {
   words.set(Uint32Array.from(palette, (v) => v >>> 0), 0);
   new Float32Array(words.buffer, MAT_COUNT * 4, MAT_COUNT).set(temps);
   words.set(new Uint32Array(placement.buffer.slice(placement.byteOffset, placement.byteOffset + nPlace * 4)), 2 * MAT_COUNT);
-  new Uint8Array(words.buffer, (2 * MAT_COUNT + nPlace) * 4, atlas.data.length).set(atlas.data);
+  const packedAtlas = atlas.material ?? atlas.data;
+  new Uint8Array(words.buffer, (2 * MAT_COUNT + nPlace) * 4, packedAtlas.length).set(packedAtlas);
   return {
     words,
     values: {

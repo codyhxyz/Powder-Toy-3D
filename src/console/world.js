@@ -1,5 +1,6 @@
 import { ELEMENTS, E } from '../elements.js';
 import { PHYS } from '../physics.js';
+import { physicalCtype } from '../appearance.js';
 
 // The console's view of the world (docs/console.md, "Reads and writes").
 //
@@ -111,6 +112,7 @@ export function applyEdit(c, e) {
     c.ctype = el.id === E.LAVA ? E.STONE : 0;   // the brush's lava remembers stone (shaders/passes.js paintFrag)
     c.vx = c.vy = c.vz = 0;
   }
+  if ((e.mask & EDIT.TYPE) && c.id !== v[0]) c.ctype = physicalCtype(c.id, c.ctype);
   for (let s = 0; s < FIELD_LIST.length; s++) if (e.mask & FIELD_LIST[s].bit) c[SLOT_NAMES[s]] = v[s];
   return true;
 }
@@ -130,6 +132,10 @@ function merge(prev, next) {
   const pc = prev.mask & COND, nc = next.mask & COND;
   const spawned = (prev.mask & EDIT.SPAWN) !== 0;
   const pid = prev.v[0];
+  // Type changes strip the old material's appearance. Collapsing a round trip
+  // (WOOD -> FIRE -> WOOD), or moving a ctype write after TYPE, can revive it.
+  if ((next.mask & EDIT.TYPE) && ((prev.mask & EDIT.CTYPE) ||
+      ((prev.mask & EDIT.TYPE) && pid !== next.v[0]))) return FLUSH;
   if (next.mask & EDIT.SPAWN) {
     if (!nc) return next;
     if (spawned && !pc) {   // the cell's element after prev is known

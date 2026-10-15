@@ -94,7 +94,7 @@ export function createPovHud() {
       ? [h('span.pov-dot', { text: '·' }), 'God to leave']
       : [h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'])));
 
-  const grappleHint = h('span', {}, key('E'), ' grapple / release · jump to pull');
+  const grappleHint = h('span', {}, key('E'), ' grappendix / release · 100 m reach · jump to launch');
   const hint = h('div.pov-hint.panel', {},
     h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
     h('span', {}, key('Space'), ' jump, hold to fly'),
@@ -252,7 +252,7 @@ export function createPovHud() {
       set(fx.hurt, 'opacity', String(round((f.hurt ?? 0) * HURT_FLASH_GAIN)));
 
       // death screen
-      set(death, '.show', !!s.dead);
+      set(death, '.show', !!s.dead && !s.mission);
       if (s.dead) {
         set(hint, '.show', false);
         set(deathCause, 'text', s.cause || '');

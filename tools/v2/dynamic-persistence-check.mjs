@@ -120,7 +120,7 @@ sim.origin.x = 16; assert.throws(() => sim.undo(), /retained-world history/); as
 // retained stores before restoring global particles. Deposits made after the
 // snapshot outside the old overlap cannot survive beside the old flight copy.
 const wb = [32, 8, 32], notified = [];
-const world = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu, size: [128, 32, 128], wb,
+const world = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu, scene: {}, size: [128, 32, 128], wb,
   historyIdentity: {}, historyReaders: 0, epoch: 1, pending: null, loaded: true,
   store: new BrickStore(wb), nativeStore: new NativeBrickStore(wb), planted: new Uint8Array(wb[0] * wb[2]),
   far: { build() { notified.push('far rebuilt'); } },
@@ -305,7 +305,7 @@ await assert.rejects(worldSaves.apply(await encodeSave(badOrigin, [...coherent.s
 // Direct loadSaved must also preflight, not just the outer save controller.
 for (const bad of [malformedLegacy, malformedRun, trailingLegacy]) {
   assert.throws(() => world.store.fromBytes(bad)); unchanged();
-  assert.throws(() => world.loadSaved([16, 0, 0], () => { throw new Error('fill must not run'); }, bad, world.planted, stateBefore.nativeBytes));
+  assert.throws(() => world.loadSaved([16, 0, 0], () => { throw new Error('fill must not run'); }, bad, world.planted, null, stateBefore.nativeBytes));
   unchanged();
 }
 const mutations = [[0, ELEMENTS.length | (1173 << 8)], [0, E.WOOD | (PHASE_HOT_BASE << 8)], [1, MAX_FILL + 1], [2, 0x7c003c00]];
@@ -314,7 +314,7 @@ for (const [word, value] of mutations) {
   new DataView(bad.buffer).setUint32(12 + word * 4, value, true);
   await corruptSection('worldNativeStore', bad);
   assert.throws(() => world.nativeStore.fromBytes(bad)); unchanged();
-  assert.throws(() => world.loadSaved([16, 0, 0], () => { throw new Error('fill must not run'); }, stateBefore.legacyBytes, world.planted, bad));
+  assert.throws(() => world.loadSaved([16, 0, 0], () => { throw new Error('fill must not run'); }, stateBefore.legacyBytes, world.planted, null, bad));
   unchanged();
 }
 // Forge raw dynamic payload bytes after valid encoding, so the real decoder

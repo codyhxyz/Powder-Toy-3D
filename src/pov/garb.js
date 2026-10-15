@@ -1,11 +1,12 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // The wizard's hat for the realistic body (figureReal.js): a lathe (brim and
 // cone, the tip bent back), built once per loaded model, seated on the head and
 // skinned wholly to the head bone, so every clip (walk, swim, death...) carries
 // it. Below it he wears only his boxers, dyed the hat's purple when the model is
-// packed (tools/character-pack.mjs): wizard boxers. She gets a robe over the
-// bikini the female mesh ships in, skinned to the spine so it walks with her.
+// packed (tools/character-pack.mjs): wizard boxers. She stands in a barrel
+// (Minecraft's: oak staves, iron hoops), skinned to the spine so it walks with her.
 //
 // Lengths are in model units (metres); the body's own scale takes them to cells.
 
@@ -23,7 +24,14 @@ const HAT_SEAT = 0.4;                    // brim sits this share of the head's h
 const HAT_TILT = 0.12;                   // rad back
 const HAT_RINGS = 14, HAT_SEGMENTS = 28;
 
-export const GARB_COLORS = { hat: [0.16, 0.06, 0.35], robe: [0.11, 0.035, 0.26] };   // albedo, linear
+export const GARB_COLORS = {
+  hat: [0.16, 0.06, 0.35],
+  robe: [0.40, 0.20, 0.07],   // oak staves
+  hoops: [0.16, 0.15, 0.14],  // iron
+  bung: [0.33, 0.18, 0.08],   // cork
+  bag: [0.62, 0.50, 0.32],    // grocery-bag paper
+  marker: [0.04, 0.05, 0.16], // blue Sharpie
+};   // albedo, linear
 
 // Every body vertex in the bind pose, with its skin influences and its main bone.
 function bodyVertices(meshes) {
@@ -94,35 +102,145 @@ function skinTo(geo, index) {
   return geo;
 }
 
-// A closed robe from mid-thigh to the shoulders, a little clear of the body.
-// Sleeveless: the arms leave at the sides instead of punching holes in the cloth.
-function buildRobe(verts, boneIndex) {
-  const torso = verts.filter((p) => ROBE_BONES.includes(p.bone));
+// A barrel she stands in. Staves are separate planks with seams. The side planks
+// stop under her hands, so the hanging arms fall outside the wood instead of through it.
+const STAVES = 14;
+const STAVE_GAP = 0.05;          // rad of seam between planks
+const STAVE_THICK = 0.016;
+const ARM_NOTCH = 0.95;          // rad from ±x (the arms) with no wood above the hands
+const NOTCH_Y = 0.78;            // m: side planks end below the idle hands
+
+function radiusAt(y, hem, top, radius) {
+  const t = Math.max(0, Math.min(1, (y - hem) / (top - hem)));
+  return radius * (0.9 + 0.16 * Math.sin(t * Math.PI));
+}
+function fromSide(ang) {
+  const a = Math.abs(Math.atan2(Math.sin(ang), Math.cos(ang)));
+  return Math.min(a, Math.PI - a);   // 0 on the arms' sides, π/2 front and back
+}
+function pushTri(idx, a, b, c) { idx.push(a, b, c); }
+function addQuad(idx, a, b, c, d) { pushTri(idx, a, b, c); pushTri(idx, a, c, d); }
+
+function buildStaves(hem, top, radius) {
+  const pos = [], nrm = [], idx = [];
+  const half = Math.PI / STAVES - STAVE_GAP / 2;
+  const steps = 6;
+  for (let s = 0; s < STAVES; s++) {
+    const ang = (s + 0.5) * (Math.PI * 2 / STAVES);
+    const y1 = fromSide(ang) < ARM_NOTCH ? Math.min(top, NOTCH_Y) : top;
+    const base = pos.length / 3;
+    for (let i = 0; i <= steps; i++) {
+      const y = hem + (y1 - hem) * (i / steps);
+      const r = radiusAt(y, hem, top, radius);
+      for (const side of [-1, 1]) {
+        const a = ang + side * half, c = Math.cos(a), z = Math.sin(a);
+        for (const layer of [0, 1]) {
+          const rr = r + layer * STAVE_THICK;
+          pos.push(rr * c, y, rr * z);
+          nrm.push(layer ? c : -c, 0, layer ? z : -z);
+        }
+      }
+    }
+    const ring = 4;
+    for (let i = 0; i < steps; i++) {
+      const o = base + i * ring;
+      addQuad(idx, o + 1, o + 5, o + 7, o + 3);   // outer, facing out
+      addQuad(idx, o + 0, o + 2, o + 6, o + 4);   // inner, facing in
+      addQuad(idx, o + 0, o + 4, o + 5, o + 1);   // left edge
+      addQuad(idx, o + 3, o + 7, o + 6, o + 2);   // right edge
+    }
+    const top0 = base + steps * ring;
+    addQuad(idx, base + 0, base + 2, base + 3, base + 1);       // bottom cap
+    addQuad(idx, top0 + 1, top0 + 3, top0 + 2, top0 + 0);       // top cap
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
+function buildBarrel(verts, boneIndex) {
   const hips = verts.filter((p) => p.bone === 'pelvis' || p.bone.startsWith('thigh'));
   const boneY = Object.fromEntries(ROBE_BONES.map((name) => {
     const pts = verts.filter((p) => p.bone === name);
     return [name, pts.reduce((s, p) => s + p.y, 0) / pts.length];
   }));
   const nearest = (y) => ROBE_BONES.reduce((a, b) => Math.abs(boneY[b] - y) < Math.abs(boneY[a] - y) ? b : a);
-  const hem = Math.min(...hips.map((p) => p.y)) + 0.05;
-  // Stop at the shoulders. The spine reaches the neck; a tube that high floats off her.
-  const neck = Math.min(Math.max(...torso.map((p) => p.y)), boneY.spine_03 + 0.08);
-  const profile = [];
-  for (let i = 0; i <= 7; i++) {
-    const t = i / 7, y = hem + (neck - hem) * t;
-    let r = 0.07;
-    for (const p of torso.concat(hips)) if (Math.abs(p.y - y) <= 0.07) r = Math.max(r, Math.hypot(p.x, p.z));
-    profile.push([r + 0.018 + (1 - t) * 0.03, y]);
-  }
-  const robe = skinTo(new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), 18), 0);
-  const pos = robe.attributes.position, idx = robe.attributes.skinIndex;
+  let hipR = 0.16;
+  for (const p of hips) if (Math.abs(p.y - boneY.pelvis) < 0.1) hipR = Math.max(hipR, Math.hypot(p.x, p.z));
+  const radius = hipR + 0.08;
+  const hem = Math.min(...hips.map((p) => p.y)) + 0.04;
+  // Front and back run up over the chest. The sides stay open so the arms hang out.
+  const top = boneY.spine_03 + 0.16;
+  const robe = skinByHeight(buildStaves(hem, top, radius), boneIndex, nearest);
+  const hoops = buildHoops(hem, top, radius, boneIndex, nearest);
+  const bung = new THREE.CylinderGeometry(0.02, 0.018, 0.045, 8);
+  bung.rotateX(Math.PI / 2);
+  bung.translate(0, hem + (top - hem) * 0.42, radiusAt(hem + (top - hem) * 0.42, hem, top, radius) + 0.03);
+  return { robe, hoops, bung: skinTo(bung, boneIndex(nearest(hem + (top - hem) * 0.42))) };
+}
+
+function skinByHeight(geo, boneIndex, nearest) {
+  skinTo(geo, 0);
+  const pos = geo.attributes.position, idx = geo.attributes.skinIndex;
   for (let i = 0; i < pos.count; i++) idx.setX(i, boneIndex(nearest(pos.getY(i))));
-  return robe;
+  return geo;
+}
+
+function buildHoops(hem, top, radius, boneIndex, nearest) {
+  const parts = [];
+  const add = (geo, y) => parts.push(skinTo(geo, boneIndex(nearest(y))));
+  for (const t of [0.04, 0.28]) {
+    const y = hem + (NOTCH_Y - hem) * t;
+    const hoop = new THREE.TorusGeometry(radiusAt(y, hem, top, radius) + STAVE_THICK + 0.008, 0.02, 6, 22);
+    hoop.rotateX(Math.PI / 2);
+    hoop.translate(0, y, 0);
+    add(hoop, y);
+  }
+  // Front and back bands only: a full hoop here would run through the hanging arms.
+  for (const t of [0.55, 0.96]) {
+    const y = hem + (top - hem) * t;
+    const r = radiusAt(y, hem, top, radius) + STAVE_THICK + 0.008;
+    const arcLen = Math.PI * 0.22;
+    // Center each band on the front and the back. An arc that starts on that
+    // axis runs out into the arms.
+    for (const center of [Math.PI / 2, -Math.PI / 2]) {
+      const arc = new THREE.TorusGeometry(r, 0.016, 6, 10, arcLen);
+      arc.rotateX(Math.PI / 2);
+      arc.rotateY(arcLen / 2 - center);
+      arc.translate(0, y, 0);
+      add(arc, y);
+    }
+  }
+  return mergeSkinned(parts);
+}
+
+function mergeSkinned(parts) {
+  const n = parts.reduce((s, g) => s + g.attributes.position.count, 0);
+  const p = new Float32Array(n * 3), normal = new Float32Array(n * 3);
+  const skinI = new Uint16Array(n * 4), skinW = new Float32Array(n * 4);
+  let at = 0;
+  for (const g of parts) {
+    const count = g.attributes.position.count;
+    p.set(g.attributes.position.array, at * 3);
+    normal.set(g.attributes.normal.array, at * 3);
+    skinI.set(g.attributes.skinIndex.array, at * 4);
+    skinW.set(g.attributes.skinWeight.array, at * 4);
+    at += count;
+    g.dispose();
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
+  merged.setAttribute('skinIndex', new THREE.BufferAttribute(skinI, 4));
+  merged.setAttribute('skinWeight', new THREE.BufferAttribute(skinW, 4));
+  return merged;
 }
 
 // The hat's geometry, from the model's skinned meshes (bind pose). Skin indices
 // refer to meshes[0].skeleton's bones.
-export function buildGarb(meshes) {
+export function buildGarb(meshes, { bag = false } = {}) {
   const bones = meshes[0].skeleton.bones;
   const boneIndex = (name) => {
     const i = bones.findIndex((b) => b.name === name);
@@ -130,7 +248,85 @@ export function buildGarb(meshes) {
     return i;
   };
   const verts = bodyVertices(meshes);
-  const garb = { hat: buildHat(verts, boneIndex) };
-  if (meshes.some((m) => m.material?.name === 'MI_Superhero_Female')) garb.robe = buildRobe(verts, boneIndex);
+  const female = meshes.some((m) => m.material?.name === 'MI_Superhero_Female');
+  const garb = {};
+  if (bag) Object.assign(garb, buildPaperBag(verts, boneIndex));
+  else garb.hat = buildHat(verts, boneIndex);
+  if (female && !bag) Object.assign(garb, buildBarrel(verts, boneIndex));
   return garb;
 }
+
+// A grocery bag over the head, with a Sharpie face. Rigid on the head bone.
+function buildPaperBag(verts, boneIndex) {
+  const head = verts.filter((p) => p.bone === HEAD_BONE);
+  let x1 = 0.08, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of head) {
+    x1 = Math.max(x1, Math.abs(p.x));
+    y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+    z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z);
+  }
+  const width = x1 * 2 + 0.05, depth = (z1 - z0) + 0.07, height = (y1 - y0) + 0.06;
+  const bottom = y0 - 0.03, cz = (z0 + z1) / 2 + 0.012;
+  const bag = new THREE.BoxGeometry(width, height, depth);
+  bag.translate(0, bottom + height / 2, cz);
+  const p = bag.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    if (p.getY(i) > bottom + height * 0.72) {
+      p.setX(i, p.getX(i) * 0.9);
+      p.setZ(i, p.getZ(i) * 0.9);
+    }
+  }
+  bag.computeVertexNormals();
+  const cuff = new THREE.BoxGeometry(width * 1.06, 0.018, depth * 1.06);
+  cuff.translate(0, bottom + 0.01, cz);
+  const paper = mergeGeometries([bag, cuff]);
+  const front = cz + depth / 2 + 0.006;
+  const eyeY = bottom + height * 0.58;
+  const marker = mergeGeometries([
+    ...stroke(ring(-width * 0.22, eyeY, front, width * 0.16, 8, 0.16), 0.011),
+    ...stroke(ring(width * 0.24, eyeY + 0.008, front, width * 0.13, 7, 0.24), 0.01),
+    ...stroke(smile(0, bottom + height * 0.32, front, width * 0.7), 0.01),
+    ...stroke([[-width * 0.34, eyeY + width * 0.2, front], [-width * 0.08, eyeY + width * 0.26, front]], 0.008),
+    ...stroke(star(width * 0.34, bottom + height * 0.38, front, width * 0.1), 0.007),
+  ]);
+  const headBone = boneIndex(HEAD_BONE);
+  return { bag: skinTo(paper, headBone), marker: skinTo(marker, headBone) };
+}
+
+function ring(cx, cy, z, r, n, wobble) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    const rr = r * (1 + wobble * Math.sin(i * 2.1));
+    pts.push([cx + Math.cos(t) * rr, cy + Math.sin(t) * rr * 0.82, z]);
+  }
+  return pts;
+}
+function smile(cx, cy, z, w) {
+  return [-1, -0.4, 0.15, 0.7, 1.15].map((t, i) => [
+    cx + t * w * 0.45,
+    cy - Math.abs(t) * w * 0.12 + (i % 2 ? 0.008 : -0.006),
+    z,
+  ]);
+}
+function star(cx, cy, z, r) {
+  const pts = [[cx, cy + r, z]];
+  for (let i = 1; i <= 5; i++) {
+    const t = -Math.PI / 2 + i * (Math.PI * 4 / 5);
+    pts.push([cx + Math.cos(t) * r, cy + Math.sin(t) * r, z]);
+  }
+  return pts;
+}
+function stroke(points, width) {
+  const geos = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = new THREE.Vector3(...points[i]), b = new THREE.Vector3(...points[i + 1]);
+    const len = Math.max(0.004, a.distanceTo(b));
+    const geo = new THREE.BoxGeometry(width, width * 0.55, len);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), b.clone().sub(a).normalize());
+    geo.applyMatrix4(new THREE.Matrix4().compose(a.clone().lerp(b, 0.5), q, new THREE.Vector3(1, 1, 1)));
+    geos.push(geo);
+  }
+  return geos;
+}
+

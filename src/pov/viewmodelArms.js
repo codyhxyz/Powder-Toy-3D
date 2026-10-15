@@ -95,7 +95,7 @@ function armFor(choice, key) {
 // Leave tool geometry, grip position, recoil and third-person models untouched.
 // Every added mesh owns its geometry; attachModel's existing dispose frees it.
 export function updateViewmodelArms(root, character) {
-  const choice = character === 'real' || character === 'woman' ? character : 'stick';
+  const choice = character === 'woman' ? 'woman' : character === 'real' || character === 'stick' ? 'real' : 'stick';
   for (const hand of root.children) {
     if (!hand.visible) continue;
     hand.traverse(obj => {

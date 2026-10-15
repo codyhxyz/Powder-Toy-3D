@@ -139,6 +139,7 @@ export class WorldWindow {
     this.store.clear();
     this.nativeStore.clear();
     this.persistenceError = null;
+    this.scene.reset?.();   // imported interaction state is per loaded run, not per cached scene
     sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
@@ -161,10 +162,11 @@ export class WorldWindow {
   // derived passes over. The far field is rebuilt from the scene and the
   // window: stored edits outside the window show from afar once the window has
   // passed over them.
-  loadSaved(origin, fillState, storeBytes, planted, nativeBytes = null) {
+  loadSaved(origin, fillState, storeBytes, planted, interactions = null, nativeBytes = null) {
     const sim = this.sim;
     const next = decodeWorldState({ size: this.size, origin }, [sim.g.nx, sim.g.ny, sim.g.nz], storeBytes, planted, nativeBytes);
     if (sim.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
+    this.scene.interactionState?.restore(interactions);
     this.historyIdentity = {};
     this.epoch++;
     this.persistenceError = null;

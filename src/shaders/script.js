@@ -58,7 +58,11 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     else { *oA = vec4f(f32(n), SPAWNT(n), SPAWNLIFE(n), ctype + seed); }
     *oB = vec4f(0.0, 0.0, 0.0, b.w);
   }
-  if ((m & EDIT_TYPE) != 0u) { (*oA).x = f32(i32(va.x + 0.5)); }
+  if ((m & EDIT_TYPE) != 0u) {
+    let n = i32(va.x + 0.5);
+    if ((m & EDIT_SPAWN) == 0u && n != id) { (*oA).w = physicalCtype(id, a.w) + seed; }
+    (*oA).x = f32(n);
+  }
   if ((m & EDIT_TEMP) != 0u) { (*oA).y = va.y; }
   if ((m & EDIT_LIFE) != 0u) { (*oA).z = va.z; }
   if ((m & EDIT_CTYPE) != 0u) { (*oA).w = va.w + seed; }

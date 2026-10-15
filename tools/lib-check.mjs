@@ -1056,7 +1056,7 @@ ${body}
       const L = farM.farLayout(farM.WORLD_SIZE);
       for (let i = 0; i < N; i++) {
         const t = { s: Math.floor(rand() * 256), l: Math.floor(rand() * 256), glow: Math.floor(rand() * 256),
-          id: Math.floor(rand() * 256), liquid: Math.floor(rand() * 256), open: rand() < 0.5 };
+          id: Math.floor(rand() * 256), liquid: Math.floor(rand() * 256), open: rand() < 0.5, appearance: Math.floor(rand() * 11) };
         if (i === 0) Object.assign(t, { s: 255, l: 255, glow: 255, id: 255, liquid: 255, open: true });
         words.set(farM.packFarTexel(t), 4 * i);
         texels.push(t);
@@ -1065,7 +1065,7 @@ ${body}
       const code = `${head}\n${farM.farLayoutGLSL(L)}\n` + kernel(N, `  let t = bitcast<vec4u>(io[i]);
   let f = farUnpack(t);
   io[NIN + 2u * i] = bitcast<vec4f>(vec4u(u32(f.s), u32(f.l), u32(f.glow), u32(f.id)));
-  io[NIN + 2u * i + 1u] = bitcast<vec4f>(vec4u(u32(f.liquid), select(0u, 1u, f.open), 0u, 0u));
+  io[NIN + 2u * i + 1u] = bitcast<vec4f>(vec4u(u32(f.liquid), select(0u, 1u, f.open), u32(f.appearance), 0u));
   io[3u * NIN + i] = bitcast<vec4f>(farPackTexel(f));`).slice(head.length);
       const r = await run({ label: 'far texel', code, groups: groupsFor(layouts, { io }), dispatch: [N / 64, 1, 1] });
       if (ranOk('far texel kernel', r)) {
@@ -1073,9 +1073,9 @@ ${body}
         const bad = [];
         texels.forEach((t, i) => {
           const o = 4 * (N + 2 * i), u = farM.unpackFarTexel(Array.from(words.subarray(4 * i, 4 * i + 4)));
-          const got = { s: out[o], l: out[o + 1], glow: out[o + 2], id: out[o + 3], liquid: out[o + 4], open: out[o + 5] === 1 };
+          const got = { s: out[o], l: out[o + 1], glow: out[o + 2], id: out[o + 3], liquid: out[o + 4], open: out[o + 5] === 1, appearance: out[o + 6] };
           const back = Array.from(out.subarray(4 * (3 * N + i), 4 * (3 * N + i) + 4));
-          const same = (x) => ['s', 'l', 'glow', 'id', 'liquid', 'open'].every((k) => x[k] === t[k]);
+          const same = (x) => ['s', 'l', 'glow', 'id', 'liquid', 'open', 'appearance'].every((k) => x[k] === t[k]);
           if (!same(got) || !same(u)
               || back.join() !== Array.from(words.subarray(4 * i, 4 * i + 4)).join()) bad.push(i);
         });

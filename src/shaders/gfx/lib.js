@@ -6,6 +6,8 @@ import { coreGLSL, ddaGLSL } from './core.js';
 import { noiseGLSL } from './noise.js';
 import { lightingGLSL } from './lighting.js';
 import { crystalGLSL } from './crystal.js';
+import { sourceAppearanceWGSL, sourceAppearanceFallbackWGSL } from './sourceAppearance.js';
+import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { cloudsGLSL } from './clouds.js';
 import { farLayout, farLayoutGLSL, farSkyGLSL, farHazeFor, farCastersGLSL, farGIGLSL, WORLD_SIZE } from '../farShared.js';
 
@@ -47,6 +49,8 @@ export const LIB_VARIANTS = {
 
 /**
  * The render library's WGSL for grid g (a gridLayout: nx, ny, nz, maxSteps).
+ * Source artwork is compiled only with explicit g.sourceAppearance === true;
+ * ordinary grids and shader checks never include the source-data readers.
  *   variant   which L.LIGHTING layout the pipeline binds (LIB_VARIANTS)
  *   far       declare the far textures (11-13): needed by farCastersGLSL and
  *             farGIGLSL (shaders/farShared.js); the layout has them either way
@@ -68,6 +72,7 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
     materialsGLSL(),
     coreGLSL(g, { flow: v.flow, detail }),
     noiseGLSL,
+    SOURCE_APPEARANCE_ENABLED && g.sourceAppearance === true && far ? sourceAppearanceWGSL(far, g.sourceGrid) : sourceAppearanceFallbackWGSL,
     lightingGLSL({ ...v, far }),
     crystalGLSL,
   ].join('\n');

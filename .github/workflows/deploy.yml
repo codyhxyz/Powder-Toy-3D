@@ -26,34 +26,73 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # immutable pre-feature generator for exact legacy cell acceptance
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
+      - name: Cache CPU WGSL validator
+        uses: actions/cache@v4
+        id: naga-cache
+        with:
+          path: ~/.cargo/bin/naga
+          key: ${{ runner.os }}-naga-cli-30.0.1
+      - name: Install CPU WGSL validator
+        if: steps.naga-cache.outputs.cache-hit != 'true'
+        run: cargo install naga-cli --version 30.0.1 --locked
+      - name: Verify CPU WGSL validator
+        run: |
+          test "$("$HOME/.cargo/bin/naga" --version)" = "30.0.1"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
+      - run: node --test tools/check-mode-icons.mjs   # CPU-only: every gamemode has a valid credited menu emblem
+      - run: node tools/check-map-previews.mjs   # every menu map, including source imports, has a square preview
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
       - run: node tools/check-gpu-deadline.mjs   # CPU-only: enforce total slot budget and cleanup ownership
+      - run: node --test tools/pipeline-safety-cpu-check.mjs   # fake GPU: compiler concurrency, deadlines and cancellation
+      - run: node --experimental-vm-modules --test tools/startup-safety-cpu-check.mjs   # fake browser: startup failure and safe restart
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
       - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
       - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
       - run: node tools/detail-culling-cpu-check.mjs
+      - run: node tools/detail-residency-check.mjs && node tools/detail-worker-check.mjs && node tools/far-lod-check.mjs && node tools/surface-mesh-check.mjs   # full-detail terrain ownership, streaming and material seams
       - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
+      - run: node tools/check-opaque-surface.mjs   # liquid transitions must not skip opaque walls
       - run: node tools/check-normal-mapped-surfaces.mjs
-      - run: node tools/check-cozy-materials.mjs   # CPU artwork execution, material-style plumbing and water scope
+      - run: node tools/wood-endgrain-cpu-check.mjs
+      - run: node tools/check-cozy-materials.mjs   # CPU artwork, shader-view selection and water scope
+      - run: node tools/check-ready-volume-view.mjs   # keep terrain visible while a replacement shader compiles
+      - run: node tools/check-appearance.mjs && node tools/check-far-appearance.mjs
+      - run: node tools/check-island-appearance.mjs && node tools/check-construction-appearance.mjs && node tools/check-wang-appearance.mjs
+      - run: node tools/check-map-appearance.mjs
       - run: node tools/check-crystal-material.mjs
       - run: node tools/check-crystal-transmission.mjs
       - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
       - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
+      - run: node tools/check-strikes.mjs   # CPU quaternion strikes/wingbeats, bone frames, grips and repeat recovery
       - run: node tools/check-willow-cove.mjs   # CPU terrain: body-clear running circuit and village routes
-      - run: node tools/grapple-cpu-check.mjs   # CPU sandbox tether: swing, jump pull, momentum and lifecycle
+      - run: node --test tools/check-city-folk.mjs   # composed world, exact legacy geometry, city bus/edit lifecycle
+      - run: node tools/check-city-folk-terrain.mjs && node tools/check-city-folk-town.mjs && node tools/check-city-folk-nature.mjs && node tools/check-city-folk-bus.mjs
+      - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
+      - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
+      - run: node tools/mission-node-check.mjs && node tools/mission-retry-cpu-check.mjs && node --test tools/import-cruelty-map-check.mjs
+      - name: Ensure ImageMagick for source appearance fixtures
+        run: |
+          if ! command -v magick >/dev/null && ! command -v convert >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y imagemagick
+          fi
+      - run: node --test tools/appearance-conversion-check.mjs tools/check-source-appearance.mjs tools/check-cruelty-post.mjs
+      - run: node --test tools/imported-interactions-check.mjs && node tools/imported-door-passage-check.mjs
+      - run: node tools/ladder-cpu-check.mjs && node tools/cruelty-enemies-cpu-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
       - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips
       - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread
-      - run: node tools/check-village.mjs && node tools/check-village-actions.mjs && node tools/check-village-punch.mjs && node tools/check-village-speech.mjs && node tools/check-village-residents.mjs   # peaceful punches, tools, furniture and neighbor dialogue
+      - run: node tools/check-village.mjs && node tools/check-village-shapes.mjs && node tools/check-village-actions.mjs && node tools/check-village-punch.mjs && node tools/check-village-speech.mjs && node tools/check-village-residents.mjs   # character shapes, peaceful punches, tools, furniture and neighbor dialogue
       - run: node tools/check-village-crook.mjs && node tools/check-village-debt-badge.mjs   # CPU doorstep dialogue, persistent debt and shrink/glide HUD
       - run: node tools/check-character-models.mjs && node tools/check-loading-character.mjs   # CPU-only bodies, selection and portraits
       - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode
@@ -67,6 +106,7 @@ jobs:
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: npm run build
+      - run: node tools/check-local-map-build.mjs
       - name: Deploy to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

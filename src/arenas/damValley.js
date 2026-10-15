@@ -1,4 +1,5 @@
 import { E } from '../elements.js';
+import { Appearance, appearanceOf } from '../appearance.js';
 import { runGenerator, makeRng } from '../constructions/runtime.js';
 import { BUILTINS, SHRINE_ALTARS } from '../constructions/builtins.js';
 
@@ -295,20 +296,25 @@ export const DAM_VALLEY_BANNERS = ['red', 'blue'].flatMap((side) => [
 // index (y * NZ + z) * NX + x. Returns { ids, layout }.
 export function buildDamValley() {
   const ids = new Uint8Array(NX * NY * NZ);
+  const appearances = new Uint8Array(ids.length);
   const at = (x, y, z) => (y * NZ + z) * NX + x;
   const inside = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < NX && y < NY && z < NZ;
-  const put = (x, y, z, id) => { if (inside(x, y, z)) ids[at(x, y, z)] = id; };
+  const put = (x, y, z, id, appearance = Appearance.NONE) => {
+    if (!inside(x, y, z)) return;
+    const i = at(x, y, z);
+    ids[i] = id; appearances[i] = appearance;
+  };
   const get = (x, y, z) => (inside(x, y, z) ? ids[at(x, y, z)] : E.WALL);
   // [x0, x1) × [y0, y1) × [z0, z1)
-  const box = (x0, y0, z0, x1, y1, z1, id) => {
-    for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) put(x, y, z, id);
+  const box = (x0, y0, z0, x1, y1, z1, id, appearance) => {
+    for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) put(x, y, z, id, appearance);
   };
   // a ceiling light under roof cell (x, roof, z): a battery set into the roof
   // and a lamp under it (ids only: the lamp goes on direct current, lit, in the first step)
   const light = (x, roof, z) => { put(x, roof, z, E.BATTERY); put(x, roof - 1, z, E.LAMP); };
   // a construction's cells with its base point at (x, y, z), its x flipped when `flip`
   const stamp = (cells, x, y, z, flip = false) => {
-    for (let i = 0; i < cells.n; i++) put(x + (flip ? -cells.x[i] : cells.x[i]), y + cells.y[i], z + cells.z[i], cells.id[i]);
+    for (let i = 0; i < cells.n; i++) put(x + (flip ? -cells.x[i] : cells.x[i]), y + cells.y[i], z + cells.z[i], cells.id[i], appearanceOf(cells.id[i], cells.ctype[i]));
   };
 
   // ---- the ground: rock, with grass on the valley's soft ground
@@ -321,7 +327,7 @@ export function buildDamValley() {
       const xr = mirror(x);
       const grassy = h >= FLOOR_Y - 1 && h <= CREST_Y && xr >= BASE_X1 && Math.min(z, NZ - 1 - z) > RIDGE_W
         && !inLake(x, z) && rectDist(xr, z, LAKE_X0, MID_X, DAM_Z0, LAKE_Z1) > LAKE_CLEAR;
-      if (grassy) put(x, h - 1, z, E.PLANT);
+      if (grassy) put(x, h - 1, z, E.PLANT, Appearance.GRASS);
     }
   // the basin's dry riverbed: a layer of sand on its flat floor
   for (let z = BASIN_Z0; z < DAM_Z0; z++)
@@ -375,8 +381,8 @@ export function buildDamValley() {
   // the pump room in the middle, its sluice gate in the back wall, a window band onto the basin
   box(ROOM_X0, TUN_Y, ROOM_Z0, NX - ROOM_X0, TUN_Y + ROOM_H, ROOM_Z1, E.EMPTY);
   box(ROOM_X0, TUN_Y - 1, ROOM_Z0, NX - ROOM_X0, TUN_Y, ROOM_Z1, E.WALL);
-  box(ROOM_X0, TUN_Y, ROOM_Z1, ROOM_X0 + GATE_W, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
-  box(NX - ROOM_X0 - GATE_W, TUN_Y, ROOM_Z1, NX - ROOM_X0, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
+  box(ROOM_X0, TUN_Y, ROOM_Z1, ROOM_X0 + GATE_W, TUN_Y + GATE_H, DAM_Z1, E.WOOD, Appearance.PLANK_X);
+  box(NX - ROOM_X0 - GATE_W, TUN_Y, ROOM_Z1, NX - ROOM_X0, TUN_Y + GATE_H, DAM_Z1, E.WOOD, Appearance.PLANK_X);
   box(ROOM_X0, TUN_Y + ROOM_WINDOW_Y0, DAM_Z0, NX - ROOM_X0, TUN_Y + ROOM_WINDOW_Y0 + ROOM_WINDOW_H, ROOM_Z0, E.GLASS);
   for (let i = 0; i < ROOM_LIGHTS / 2; i++) {   // red's half, mirrored
     const x = Math.floor(ROOM_X0 + (NX - 2 * ROOM_X0) * (i + 0.5) / ROOM_LIGHTS);
@@ -390,7 +396,7 @@ export function buildDamValley() {
   // ---- the bases
   for (const side of ['red', 'blue']) {
     const fx = (x0, x1) => (side === 'red' ? [x0, x1] : [NX - x1, NX - x0]);   // an x span on this side
-    const B = (x0, y0, z0, x1, y1, z1, id) => { const [a, b] = fx(x0, x1); box(a, y0, z0, b, y1, z1, id); };
+    const B = (x0, y0, z0, x1, y1, z1, id, appearance) => { const [a, b] = fx(x0, x1); box(a, y0, z0, b, y1, z1, id, appearance); };
     const top = BASE_Y + FORT_H;
     // the plateau under the whole base is flattened: rock up to the floor, clear air above
     B(0, BEDROCK_Y, PLATEAU_Z0, BASE_X1, BASE_Y, NZ - PLATEAU_Z0, E.ROCK);
@@ -399,7 +405,7 @@ export function buildDamValley() {
     B(FORT_X0, BASE_Y - 1, FORT_Z0, FORT_X1, BASE_Y, FORT_Z1, E.WALL);
     B(FORT_X0, BASE_Y, FORT_Z0, FORT_X1, top, FORT_Z1, E.ROCK);
     B(FORT_X0 + FORT_WALL, BASE_Y, FORT_Z0 + FORT_WALL, FORT_X1 - FORT_WALL, top, FORT_Z1 - FORT_WALL, E.EMPTY);
-    B(FORT_X0, top, FORT_Z0, FORT_X1, top + 1, FORT_Z1, E.WOOD);
+    B(FORT_X0, top, FORT_Z0, FORT_X1, top + 1, FORT_Z1, E.WOOD, Appearance.PLANK_X);
     // lights hung under the roof: a battery against it, a lamp under that
     for (let x = FORT_X0 + FORT_WALL + FORT_LIGHT_EVERY / 2; x < FORT_X1 - FORT_WALL; x += FORT_LIGHT_EVERY)
       for (let z = FORT_Z0 + FORT_WALL + FORT_LIGHT_EVERY / 2; z < FORT_Z1 - FORT_WALL; z += FORT_LIGHT_EVERY) {
@@ -417,7 +423,7 @@ export function buildDamValley() {
     // towers on the front corners, over the roof (a lookout down the valley)
     for (const [z0, z1] of [[FORT_Z0, FORT_Z0 + TOWER], [FORT_Z1 - TOWER, FORT_Z1]]) {
       B(FORT_X1 - TOWER, top, z0, FORT_X1, top + TOWER_RISE, z1, E.ROCK);
-      B(FORT_X1 - TOWER, top + TOWER_RISE, z0, FORT_X1, top + TOWER_RISE + 1, z1, E.WOOD);
+      B(FORT_X1 - TOWER, top + TOWER_RISE, z0, FORT_X1, top + TOWER_RISE + 1, z1, E.WOOD, Appearance.PLANK_X);
       for (let k = 0; k < TOWER; k += 2) {
         B(FORT_X1 - TOWER + k, top + TOWER_RISE + 1, z0, FORT_X1 - TOWER + k + 1, top + TOWER_RISE + 3, z0 + 1, E.ROCK);
         B(FORT_X1 - TOWER + k, top + TOWER_RISE + 1, z1 - 1, FORT_X1 - TOWER + k + 1, top + TOWER_RISE + 3, z1, E.ROCK);
@@ -440,8 +446,8 @@ export function buildDamValley() {
     B(SIDE_DOOR_X[1] + 1, wy0, FORT_Z0, FORT_X1 - FORT_WALL - 1, wy1, FORT_Z0 + FORT_WALL, E.GLASS);
     B(SPAWN_X1 + FORT_WALL + 1, wy0, FORT_Z1 - FORT_WALL, SIDE_DOOR_X[0] - 1, wy1, FORT_Z1, E.GLASS);
     B(SIDE_DOOR_X[1] + 1, wy0, FORT_Z1 - FORT_WALL, FORT_X1 - FORT_WALL - 1, wy1, FORT_Z1, E.GLASS);
-    B(FORT_X0 + 3, wy0, FORT_Z0, SPAWN_X1 - 1, wy1, FORT_Z0 + FORT_WALL, E.WOOD);
-    B(FORT_X0 + 3, wy0, FORT_Z1 - FORT_WALL, SPAWN_X1 - 1, wy1, FORT_Z1, E.WOOD);
+    B(FORT_X0 + 3, wy0, FORT_Z0, SPAWN_X1 - 1, wy1, FORT_Z0 + FORT_WALL, E.WOOD, Appearance.PLANK_X);
+    B(FORT_X0 + 3, wy0, FORT_Z1 - FORT_WALL, SPAWN_X1 - 1, wy1, FORT_Z1, E.WOOD, Appearance.PLANK_X);
     // the flag stand: a steel plinth in the hall
     B(STAND_X - STAND_R, BASE_Y, STAND_Z - STAND_R, STAND_X + STAND_R + 1, BASE_Y + PAD_H, STAND_Z + STAND_R + 1, E.METAL);
     // vehicle pads: steel-edged concrete, flush with the plateau
@@ -476,7 +482,7 @@ export function buildDamValley() {
       for (let i = 0; i < cells.n; i++) {
         const x = x0 + (flip ? -cells.x[i] : cells.x[i]), y = t.h + cells.y[i], z = t.z + cells.z[i];
         if (cells.id[i] === E.PLANT && get(x, y, z) !== E.EMPTY) continue;
-        put(x, y, z, cells.id[i]);
+        put(x, y, z, cells.id[i], appearanceOf(cells.id[i], cells.ctype[i]));
       }
     }
   }
@@ -493,6 +499,5 @@ export function buildDamValley() {
       }
     stamp(shrine, x, y, z);
   }
-  return { ids, layout: DAM_VALLEY_LAYOUT };
+  return { ids, appearances, layout: DAM_VALLEY_LAYOUT };
 }
-

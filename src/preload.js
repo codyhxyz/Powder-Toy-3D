@@ -9,13 +9,10 @@
 // browser is idle, so it never slows the menu down, and not at all when the
 // browser asks to save data. The dev server lists nothing: the game loads on Start.
 //
-// Warming (docs/webgpu.md B5, W18; the user's call: compile while the player
-// is busy choosing, the way a catalogue site loads behind its first page):
-// once the menu is idle, the WebGPU device is made here (createGpu, on the
-// adapter main.js's probe found) and the selected map's pipelines start
-// building for its grid, at most PIPELINE_CONCURRENCY at a time and at idle
-// time, so nothing blocks the menu. Selecting or hovering a map with another
-// grid starts that grid's set too, before the click. The set is what each
+// Explicit diagnostic warming only; production menu hover/idle does not call
+// warmMap or create a device. Network prefetch above is still automatic.
+// Warming (docs/webgpu.md B5, W18): diagnostic tools can explicitly make a
+// device here and build a selected map's pipelines. The set is what each
 // module's WGSL_CHECK list says a session builds (the lists
 // tools/check-wgsl.mjs builds): not the tools' kernels (`tool`), not the test
 // probes (`warm: false`), a world's kernels only on a world's grid
@@ -23,7 +20,7 @@
 // settings draw (shaders/render.js warmChecks). The device made here is the
 // one app.js uses (launch.gpu), and pipelines are cached by their source and
 // descriptor (gpu/kernels.js), so new Simulation and the renderer then find
-// them built or building: Start waits only for what is still pending, behind
+// them built or building: a diagnostic Start waits for what is pending, behind
 // the loading screen, which shows only if Start comes first. A device lost
 // while the menu is up (no game on it yet) is dropped: the next warm-up, or
 // Start, makes a new one.
@@ -31,6 +28,7 @@ import { BODY_MODEL_URL } from './pov/bodyModel.js';
 import { launch } from './launch.js';
 import { mapByKey, isWorld, resolveMode } from './maps.js';
 import { refreshBootFiles } from './bootRecovery.js';
+import { sceneByKey } from './world/scenes/index.js';
 
 const PRELOAD_LIST = 'app-preload';   // scripts/app-preload-plugin.mjs PRELOAD_LIST
 const IDLE_TIMEOUT_MS = 2000;         // the longest it waits for an idle moment once the page has loaded
@@ -82,15 +80,13 @@ const whenIdle = (fn) => (window.requestIdleCallback
 
 /**
  * Fetches the game once the page has loaded and the browser is idle, and
- * warms its pipelines up for `map` (a maps.js key) on the adapter main.js's
- * probe found (launch.adapter; none: no warm-up). warmMap(key) adds another
- * map's grid later (the menu's hover and selection).
+ * does not create a GPU device or compile shaders. Explicit warmMap calls
+ * remain available to diagnostic tools, not menu hover/idle handlers.
  * @param {{ map?: string | null }} [opts]
  */
-export function preloadGame({ map = null } = {}) {
+export function preloadGame() {
   const start = () => whenIdle(() => {
     preload();
-    if (map) warmMap(map);
   });
   if (document.readyState === 'complete') start();
   else addEventListener('load', start, { once: true });
@@ -149,10 +145,11 @@ function deviceLost(p) {
 export function warmMap(key, mode = 'sandbox') {
   const m = mapByKey(key);
   if (!m || !launch.adapter) return;
-  const grid = { ...gridOf(m), curved: !!resolveMode(m, mode).effect };
-  const asked = grid.curved ? `${grid.key} curved` : grid.key;
+  const chosen = resolveMode(m, mode);
+  const grid = { ...gridOf(m), curved: !!chosen.effect, view: m.defaultView ?? chosen.defaultView };
+  const asked = `${grid.key}${grid.curved ? ' curved' : ''}${grid.view ? ` ${grid.view}` : ''}${grid.world ? ` world:${grid.world.join('x')}` : ''} source:${grid.sourceAppearance ? 1 : 0}`;
   if (warmed.has(asked)) return;
-  grid.volumeOnly = warmed.has(grid.key) || warmed.has(`${grid.key} curved`);
+  grid.volumeOnly = [...warmed].some((key) => key === grid.key || key.startsWith(`${grid.key} `));
   warmed.add(asked);
   if (warmer) warmer.grid(grid);
   else if (wanted.push(grid) === 1) startWarmer();
@@ -162,7 +159,8 @@ export function warmMap(key, mode = 'sandbox') {
 function gridOf(m) {
   const windowed = isWorld(m);
   const dims = windowed ? [WORLD_WINDOW[0], m.dims[1], WORLD_WINDOW[1]] : m.dims;
-  return { dims, windowed, world: windowed ? m.dims : null, key: `${dims.join('x')}${windowed ? 'w' : ''}` };
+  return { dims, windowed, world: windowed ? m.dims : null, key: `${dims.join('x')}${windowed ? 'w' : ''}`,
+    sourceAppearance: windowed && !!sceneByKey(m.scene).importManifest?.appearance };
 }
 
 // The device, the modules that list pipelines, then each grid's set as it is asked for.
@@ -183,9 +181,9 @@ async function startWarmer() {
   }
   const [sim, render, post, overlays, brush, detail, views, ...lists] = mods;
   const names = await layoutNames();
+  const { volumeShaderGrid } = await import('./gfx/volume.js');
   if (device !== made) return;   // (lost meanwhile: the next warmMap starts over)
   const settings = savedSettings(detail);
-  const view = views.viewKey(settings.view);
   const fallback = gpu.adapterInfo.isFallbackAdapter;
   const pipes = [];
   const state = launch.warm = {
@@ -219,7 +217,7 @@ async function startWarmer() {
   // the grid's own first (the simulation's kernels take longest), then post
   // (the canvas's composite and the stills'), the overlays and the brush
   warmer = {
-    grid({ dims, windowed, world, key, curved = false, volumeOnly = false }) {
+    grid({ dims, windowed, world, key, curved = false, view = views.viewKey(settings.view), volumeOnly = false, sourceAppearance = false }) {
       const g = sim.gridLayout(...dims);
       g.windowed = windowed;
       if (!gpu.fits(g)) return;
@@ -234,8 +232,11 @@ async function startWarmer() {
       // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick
       const volume = render.warmChecks(view, settings, { fallback, curved });
       const own = (e) => (e.name === 'shadow' ? { ...e, code: (gg) => render.shadowFrag(gg, world ? { world } : {}) } : e);
-      for (const e of volume.filter((x) => !x.idle)) build(own(e), g);
-      for (const e of volume.filter((x) => x.idle)) build(e, g);
+      // Match createVolume's specialization so menu warm-up is reused, not
+      // a second, expensive variable-division version of the same shader.
+      const volumeGrid = volumeShaderGrid(g, world, sourceAppearance);
+      for (const e of volume.filter((x) => !x.idle)) build(own(e), volumeGrid);
+      for (const e of volume.filter((x) => x.idle)) build(e, volumeGrid);
     },
   };
   for (const grid of wanted.splice(0)) warmer.grid(grid);
