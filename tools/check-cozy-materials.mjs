@@ -193,7 +193,7 @@ for (const view of VIEWS) {
 }
 assert.equal(viewForMode(modeByKey('crueltySquad'), cozy.id), cozy.id, 'Cruelty retains its existing shader selection policy');
 assert.match(app, /sourceStyle: selectedMode === 'crueltySquad' && isMaterialView\(view\)/);
-assert.match(app, /const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView\(settings\.view\)/,
+assert.match(app, /const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView\(renderView\)/,
   'Cruelty source rendering and post style remain tied to its mode, not Sandbox defaults');
 assert.match(app, /post\.settings\.raw = blocks \? false : !isMaterialView\(renderView\)/);
 assert.match(app, /post\.settings\.raw = view === 'plain' \? false : !isMaterialView\(view\)/, 'Cozy thumbnails retain tone mapping');

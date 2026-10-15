@@ -2501,14 +2501,23 @@ function tick(now, renderOnly = false) {
   if (worldChanged) viewTime += dt;
   if (renderOnly) updatePresentation();
   const present = renderOnly || pacer.present(now, wantFrame());
+  if (present) {
+    // CPU-only inspection, before scheduling derived work: a late-ready view
+    // can reset GI here and must start its settling passes in this same frame.
+    // Uniform uploads and scene hooks stay draw-only for post-only reuse.
+    volume.updateMatrixWorld();
+    camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+    selectRenderView();
+  }
   // Set before viewKey: changing source style invalidates the cached image.
-  const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView(settings.view);
+  const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView(renderView);
   if (post.settings.cruelty !== crueltyDisplay) {
     post.settings.cruelty = crueltyDisplay;
     post.reset(); // Never blend temporal history across source-style transitions.
   }
   const runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
@@ -2558,10 +2567,6 @@ function tick(now, renderOnly = false) {
   if (runView && !postOnly) {
     prof.phase('view');
     updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
-    volume.updateMatrixWorld();
-    camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-    frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
-    selectRenderView();
     frameMode = renderOnly ? 'full' : planMeshFrame(runDerived);
     meshesMoved = false;
     viewClock(frameMode !== 'full');   // (before the wires read it: the meshes' light under the clouds)

@@ -6,6 +6,8 @@ import { createReadyVolumeView } from '../src/gfx/readyVolumeView.js';
 import { VIEWS, viewKey as viewKeyOf, isMaterialView } from '../src/views.js';
 import { viewShadows } from '../src/shaders/render.js';
 import { writeFrameUniforms } from '../src/gfx/uniforms.js';
+import { createPacer } from '../src/gfx/pacing.js';
+import { canPostFrame } from '../src/gfx/postFrames.js';
 
 const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 function pipeline(state = 'pending') {
@@ -150,4 +152,93 @@ assert(app.indexOf('selectRenderView();') < app.indexOf('for (const w of live) w
 assert.match(source('src/wire/world.js'), /far\?\.view\(app\.volume, isMaterialView\(app\.renderView\)/);
 assert.match(source('src/wire/weather.js'), /enabled\(app\) && isMaterialView\(app\.renderView\)/);
 assert.match(source('src/shaders/far.js'), /if \(all\(v\.world\.xz >= winLo\.xz\) && all\(v\.world\.xz < winLo\.xz \+ GRID_XZ\)\) \{ discard; \}/, 'actual live-window ownership unchanged');
-console.log('ready-volume-view: pending/idle/failed pipelines, async completion, repeated material switches, far/shadow dependencies, detail retention, rebuild isolation and consistent FrameUniforms passed (CPU only)');
+// Paused, settled world: requested Realistic stays pending long enough for
+// all earlier keys to settle. Pipeline completion only wakes VIEW pacing;
+// the actual selected view must re-key DERIVED pacing after resetting GI.
+const scheduleCode = app.slice(app.indexOf('  const present = renderOnly || pacer.present('), app.indexOf('  const viewV = present ?'));
+const viewScheduleCode = app.match(/  let runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\)\);/)[0];
+const wakeCode = app.slice(app.indexOf('const waited = new WeakSet();'), app.indexOf('// the wires that draw into the scene pass'));
+assert.equal((scheduleCode.match(/selectRenderView\(\);/g) ?? []).length, 1, 'select exactly once before scheduling');
+assert.equal((app.match(/    selectRenderView\(\);/g) ?? []).length, 1, 'no second selection after scheduling');
+const latePipe = pipeline();
+const settlingVolume = {
+  shadowState: 'ready', shadowTextures: {}, shadowRes: 1,
+  pipeline: view => view === 'cozy' ? ready : latePipe,
+};
+const paused = new Function('helpers', `
+  const { createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, viewShadows,
+    writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol } = helpers;
+  const settings = { view: 6, paused: true }, readyVolumeView = createReadyVolumeView();
+  const pacer = createPacer({ derivedSettle: 3, viewSettle: 2 });
+  let renderView = settings.view, frameDetail = {}, frameMode = 'full', frameDerived = false, gi = 1;
+  const events = [], blocks = null, blocksOn = false, overlayWires = [], live = [];
+  const win = { far: { viewPipeline: { state: 'ready' } } };
+  const post = { settings: { cruelty: false }, renderScale: 1, reset() { events.push('post.reset'); } };
+  const meshFrames = { drop() {} }, prof = { phase() {} };
+  const sim = { id: 1, version: 1, g: { nx: 32, ny: 32, nz: 32 },
+    resetGI() { gi = 0; events.push('GI.reset'); },
+    updateBricks() { events.push('bricks'); },
+    updateGI() { gi = 1; events.push('GI.update'); } };
+  vol.recordShadow = () => { events.push('shadow'); return true; };
+  vol.recordPicks = () => { events.push('picks'); };
+  const ctx = { get renderView() { return renderView; } }, wire = () => ({ buildFarView() {} });
+  const warpNow = () => null, baseDetail = () => ({}), coldShader = { watch() {} };
+  const detailGate = { setView() {}, update: () => ({}) }, plainView = id => viewKeyOf(id) === 'plain';
+  const setBlocks = () => {}, prepareGI = () => {}, settingsPanel = { sync() {} }, shaderPanel = { sync() {} };
+  const hud = { setLegend() {} }, save = () => {};
+  const volume = { matrixWorld: new Matrix4(), updateMatrixWorld() {} };
+  const camGrid = new Vector3(), invVol = new Matrix4(), canvas = { height: 600 };
+  const selectedMode = 'sandbox', renderOnly = false, wantFrame = () => false;
+  const SUN = new Vector3(0, 1, 0), KEY_LIGHT = [1, 1, 1], gfx = { smoothing: 1 }, detailVersion = 0, giBuilt = 1;
+  const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: SUN, view });
+  ${wakeCode}\n${setCode}\n${selectCode}\n${hooksCode}
+  let now = 0;
+  return { setView, tick() {
+    events.length = 0;
+    now += 20;
+    ${scheduleCode}
+    const viewV = 'still camera and world';
+    ${viewScheduleCode}
+    if (runView) {
+      frameDerived = runDerived;
+      frameHooks.prepare({ jitter: [0, 0] });
+      frameHooks.compute();
+    }
+    const postOnlyEligible = canPostFrame({ renderOnly, runView, runDerived, settled: pacer.settled,
+      viewChanged: false, worldChanged: false, meshesMoved: false, pointerDirty: false,
+      painting: false, povActive: false, busy: false });
+    return { runDerived, runView, renderView, gi, events: [...events], settled: pacer.settled, postOnlyEligible };
+  } };
+`)({ createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, viewShadows,
+  writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol: settlingVolume });
+for (let i = 0; i < 12; i++) paused.tick();
+let settled = paused.tick();
+assert(settled.settled && !settled.runDerived && !settled.runView);
+paused.setView(0);
+for (let i = 0; i < 12; i++) {
+  const f = paused.tick();
+  assert.equal(f.renderView, 6);
+  assert.equal(f.gi, 1, 'request alone leaves old GI intact');
+}
+latePipe.finish();
+await latePipe.ready; // Actual wakeWhen callback wakes the real pacer.
+const promotion = paused.tick();
+assert.equal(promotion.renderView, 0);
+assert.equal(promotion.runDerived, true, 'late promotion restarts derived work despite unchanged paused sim');
+assert.equal(promotion.runView, true);
+assert.equal(promotion.gi, 1, 'GI reset is refilled in the promotion frame');
+assert(promotion.events.indexOf('GI.reset') < promotion.events.indexOf('GI.update'), 'reset precedes GI update');
+assert.equal(written.view, 0);
+assert.equal(written.materialStyle, 0, 'promoted derived frame uses Realistic style');
+let updates = promotion.events.filter(e => e === 'GI.update').length;
+for (let i = 0; i < 12; i++) {
+  const f = paused.tick();
+  updates += f.events.filter(e => e === 'GI.update').length;
+  assert(!f.events.includes('GI.reset'), 'no reset after derived scheduling or during settling');
+  assert.equal(f.gi, 1);
+}
+assert.equal(updates, 3, 'real pacer completes all derived settling frames');
+settled = paused.tick();
+assert(settled.settled && settled.postOnlyEligible);
+assert.deepEqual(settled.events, [], 'unchanged post-only candidate records no GI/scene/pick commands');
+console.log('ready-volume-view: async view/detail retention and consistent style passed; paused late promotion resets then refills GI for all real-pacer settling frames; unchanged post-only preparation stays GPU-clean (CPU only)');
