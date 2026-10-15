@@ -86,3 +86,37 @@ The parent reviews every lane, resolves integration requirements, and compares
 the combined rebuild-and-render cost against the existing marcher in static,
 close-up, and high-change scenes. Deployment follows successful integration
 and regression checks; an unvalidated rewrite does not replace production.
+
+## Decisions from the first build wave
+
+- The geometry producer compacts persistent face references on the GPU.
+  Camera frames use one indirect draw per producer, not one draw per brick.
+- The material entry point is
+  `hybridMaterial(id:i32, seed:f32, gridPosition:vec3f, normal:vec3f, temperature:f32)`.
+  The seed is in `[0, 1)`. Temperature is in Celsius.
+- `HybridMaterial` contains `baseColor`, `roughness`, `metalness`, `emission`,
+  and `opacity`. It can also contain `normal` and `f0`.
+- Shared lighting uses
+  `hybridShade(material, gridPosition, geometricNormal, shadingNormal, viewDirection, sunVisibility, ao)`.
+  It returns premultiplied HDR color. `sunVisibility` is an explicit RGB argument.
+  Physical grid axes define all directions. The view direction points toward the eye.
+- Shared resources use configurable binding offsets. The parent reserves group 2
+  bindings 0–3 for materials and starts lighting resources at binding 4.
+  Each final pipeline must pass the engine's resource-limit checks.
+- Shadow casters expose `drawShadow(rp, { matrix })`, `isReady`, and `revision`.
+  The matrix maps physical grid coordinates to light clip coordinates.
+  The shadow texture uses `depth32float`. An unavailable caster returns `false`.
+- Optics and reflections use compact, nonrecursive world-hit shading callbacks.
+  The parent composes those callbacks from shared materials and lighting.
+  Screen-color reprojection is valid only when scene depth confirms the hit.
+- Particles initially own only isolated granular or organic cells.
+  The ownership predicate checks all 26 neighbouring cells across brick boundaries.
+  Liquids, molten matter, and glass remain with optics.
+  Particle rendering stays disabled until the smooth-field exclusion is proven.
+- Media can expose `hybridMediaSegment(ro, rd, tNear, tFar)` for refracted paths.
+  This function returns premultiplied radiance with opacity in alpha.
+  A front-media pass must stop at the nearest optical interface when optics uses this hook.
+  Optical/media overlap stays unsupported until both paths use the same ordering.
+- Temporal inputs are frame-local. Explicit motion includes camera and presentation motion.
+  Unknown simulation correspondence rejects history instead of inventing motion.
+  Hybrid rendering does not reuse the old color/depth-only mesh-frame cache.
