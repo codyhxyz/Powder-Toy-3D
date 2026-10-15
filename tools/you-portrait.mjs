@@ -18,7 +18,7 @@ const keepPng = opt('png', null);
 const characters = opt('character', 'real').split(',');
 if (characters.some((c) => !['real', 'woman', 'stick', 'spartan', 'boy', 'girl'].includes(c))) throw new Error('Unknown character');
 
-const SHOWN_W = 260, SHOWN_H = 420;   // CSS px the loading screen shows him at, at most (menu.css .mm-you)
+const SHOWN_H = 560, SHOWN_W = Math.round(SHOWN_H * 260 / 420); // match menu.css .mm-you's largest size
 const DENSITY = 2;                     // the file's px per CSS px: sharp on a 2x screen
 const SUPERSAMPLE = 2;                 // rendered this much bigger, then scaled down: smooth edges on the hat and hair
 const QUALITY = 82;                    // webp quality (alpha kept lossless at its edges by cwebp's -exact)

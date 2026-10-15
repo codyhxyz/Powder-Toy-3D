@@ -25,17 +25,17 @@ const FOV = 20;                       // degrees: a long lens, little distortion
 const FRAME_MARGIN = 1.03;            // room round his box
 const LOW_ANGLE = 0.06;               // rad the camera looks up at him: a little heroic
 const EYEBROWS = [0.06, 0.035, 0.02]; // figureReal.js TINT_BY_MATERIAL.MI_Hair_1: dark brown over the greyscale mask
-const ROOM = 0.4;                     // the room's light on him
-const KEY = 2.6;                      // key light, warm, from up front left
-const KEY_COLOR = 0xffe2c4;
+const ROOM = 0.6;                     // soft room light, without flattening the key's shadows
+const KEY = 2.0;                      // key light, warm, from up front left
+const KEY_COLOR = 0xfff1df;
 const KEY_DIR = [-2, 3, 3.2];
-const RIM = 6;                        // rim light, cool, from behind right: the menu's blue (menu.css --mm-blue-hi)
-const RIM_COLOR = 0x5aa4ee;
+const RIM = 1.8;                      // a restrained cool edge, not a blue plastic sheen
+const RIM_COLOR = 0xb8d2ed;
 const RIM_DIR = [2.4, 1.8, -3];
-const FILL = 1.6;                     // a purple fill from behind left: the hat's colour
-const FILL_COLOR = 0x9a63db;
+const FILL = 0.5;                     // a subtle purple fill from behind left
+const FILL_COLOR = 0xc9bddc;
 const FILL_DIR = [-2.6, 0.6, -2];
-const EXPOSURE = 1.05;
+const EXPOSURE = 1.0;
 const MAX_DT = 0.1;                   // s: a frame after a stall steps no further
 // Skyrim's loading screen: the model turns by itself, slowly, and the mouse turns it
 export const YOU_SPIN = (2 * Math.PI) / 40;    // rad/s it turns by itself: once round in 40 s
@@ -88,7 +88,10 @@ async function loadBody(character, time) {
   const body = meshes.reduce((a, b) => (b.geometry.attributes.position.count > a.geometry.attributes.position.count ? b : a));
   for (const [name, geo] of Object.entries(buildGarb(meshes, { bag: character === 'stick' }))) {
     const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color().setRGB(...(GARB_COLORS[name] ?? GARB_COLORS.hat)), roughness: 0.85, side: THREE.DoubleSide,
+      color: new THREE.Color().setRGB(...(GARB_COLORS[name] ?? GARB_COLORS.hat)),
+      roughness: name === 'hoops' ? 0.55 : 0.95,
+      metalness: name === 'hoops' ? 0.8 : 0,
+      side: THREE.DoubleSide,
     });
     const mesh = new THREE.SkinnedMesh(geo, mat);
     mesh.frustumCulled = false;
@@ -137,6 +140,9 @@ export async function createYou({ canvas, width, height, character = 'real', zoo
   camera.lookAt(centre);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer });
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(width, height, false);
   renderer.setClearColor(0x000000, 0);
@@ -149,6 +155,15 @@ export async function createYou({ canvas, width, height, character = 'real', zoo
     const light = new THREE.DirectionalLight(color, intensity);
     light.position.set(...dir).add(centre);
     light.target.position.copy(centre);
+    if (intensity === KEY) {
+      // The hat and barrel need contact with the body; unshadowed lights make them look pasted on.
+      light.castShadow = true;
+      light.shadow.mapSize.set(1024, 1024);
+      Object.assign(light.shadow.camera, { left: -tall, right: tall, top: tall, bottom: -tall, near: 0.1, far: 20 });
+      light.shadow.normalBias = 0.012;
+      light.shadow.bias = -0.0001;
+      light.shadow.camera.updateProjectionMatrix();
+    }
     scene.add(light, light.target);
   }
 
@@ -171,6 +186,7 @@ export async function createYou({ canvas, width, height, character = 'real', zoo
       stop?.();
       pmrem.dispose();
       scene.environment?.dispose();
+      scene.traverse((o) => { if (o.isLight) o.dispose(); });
       model.traverse((o) => {
         o.geometry?.dispose();
         for (const m of [o.material].flat().filter(Boolean)) {

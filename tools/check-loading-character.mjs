@@ -34,6 +34,8 @@ for (const name of ['you', 'you-woman', 'you-bag', 'you-spartan', 'you-boy', 'yo
   const bytes = readFileSync(new URL(`../public/${name}.webp`, import.meta.url));
   assert.equal(bytes.toString('ascii', 0, 4), 'RIFF');
   assert.equal(bytes.toString('ascii', 8, 12), 'WEBP');
+  assert.equal(bytes.toString('ascii', 12, 16), 'VP8X', 'portrait carries transparency');
+  assert.ok(bytes.readUIntLE(27, 3) + 1 >= 1120, 'fallback covers the largest portrait at 2x density');
 }
 
 // Exercise the actual worker lifecycle without taking the player's GPU.
