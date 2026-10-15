@@ -11,6 +11,7 @@
     "check:world-backend": "node --test tools/world-backend-cpu-check.mjs",
     "check:world-plain": "node --test tools/world-plain-cpu-check.mjs",
     "check:world-signs": "node --test tools/world-signs-cpu-check.mjs",
+    "check:world-opaque": "node --test tools/world-opaque-cpu-check.mjs",
     "check:world-volume-consumers": "node --test tools/world-volume-consumers-cpu-check.mjs",
     "check:world-sun": "node --test tools/world-sun-producer-cpu-check.mjs",
     "check:world-lighting-restore": "node --test tools/world-lighting-restore-cpu-check.mjs tools/world-source-cut-cpu-check.mjs",

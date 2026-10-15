@@ -1086,7 +1086,7 @@ export function skyColours() {
 // colour is rgba16float, its depth depth32float (F1).
 function createSceneTarget(gpu, label) {
   let three;   // (decided at the first resize: make post after three's renderer)
-  let rt = null, color = null, depth = null, width = 0, height = 0, version = 0;
+  let rt = null, color = null, depth = null, packedOpaque = null, width = 0, height = 0, version = 0;
   const target = {
     label,
     /** three's RenderTarget (meshes render into it with loadOp load), or null */
@@ -1095,6 +1095,13 @@ function createSceneTarget(gpu, label) {
     get color() { return color; },
     /** @returns {GPUTexture} */
     get depth() { return depth; },
+    // Allocated only by WORLD. Staged targets are bounded and leased until
+    // every scene/final consumer finishes, including discarded submissions.
+    get packedOpaque() {
+      if(!color)throw new Error('size scene target before opaque capture');
+      return packedOpaque??=gpu.createTexture({label:`${label} packed opaque`,size:[width,height],
+        format:'rgba32uint',usage:TEX.STORAGE_BINDING|TEX.TEXTURE_BINDING|TEX.COPY_SRC});
+    },
     get width() { return width; },
     get height() { return height; },
     /** changes whenever the GPUTextures do */
@@ -1106,6 +1113,7 @@ function createSceneTarget(gpu, label) {
       // the old textures go now (ours and three's alike): commands recorded
       // with them must be submitted first, or the submit fails validation
       if (color) gpu.flush('post resize');
+      packedOpaque?.destroy();packedOpaque=null;
       if (three) {
         if (!rt) {
           rt = new RenderTarget(w, h, {
@@ -1142,6 +1150,7 @@ function createSceneTarget(gpu, label) {
     destroy() {
       if (color) gpu.flush('post dispose');
       if (rt) { rt.depthTexture?.dispose(); rt.dispose(); } else { color?.destroy(); depth?.destroy(); }
+      packedOpaque?.destroy();packedOpaque=null;
       rt = color = depth = null; width = height = 0;
     },
   };

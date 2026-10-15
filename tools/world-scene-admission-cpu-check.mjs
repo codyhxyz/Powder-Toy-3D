@@ -41,6 +41,21 @@ function fixture({limit=3}={}) {
   function admit({ticket,opts},extra={}){const s=submission();const accepted=post.commitScene(ticket,{feedbackIdentity:opts.feedbackIdentity,feedback:{incomplete:false},submission:s,...extra});return{accepted,s};}
   return{post,gpu,presenter,camera,node,events,textures,copies,resolved,draws,identity,presentation,options,record,submit,completeAll,admit,submission};
 }
+test('WORLD opaque destination is lazy, per leased scene target, and survives rejected prefixes until reuse is safe',async()=>{
+  const f=fixture({limit:1});await f.post.sceneReady;
+  assert(!f.textures.some(t=>t.format==='rgba32uint'),'BOX/default allocates no world destination');
+  let packed;
+  const a=f.record(f.options(),{prepare(p){packed=p.sceneTarget.packedOpaque;assert.equal(p.sceneTarget.packedOpaque,packed);}});
+  assert.equal(packed.format,'rgba32uint');assert.equal(packed.usage,13);assert.equal(packed.width,64);
+  f.presenter.canvas.width=80;assert.equal(f.record().ticket,null);assert(!packed.dead);
+  a.opts.submission.reject(new Error('discarded final scene after prefix'));await turn();
+  assert(!packed.dead);await f.completeAll();
+  let next;
+  const b=f.record(f.options(),{prepare(p){next=p.sceneTarget.packedOpaque;}});
+  assert(b.ticket);assert(packed.dead);assert.notEqual(next,packed);assert.equal(next.width,80);
+  f.post.discardScene(b.ticket);await f.submit(b.opts);await f.completeAll();
+  f.post.dispose();await turn();assert(next.dead);
+});
 test('real TAAU reservation restores camera, original matrices, offset and committed index; acceptance alone advances',()=>{
   const f=fixture(),c=f.camera;
   c.setViewOffset(64,32,1,2,64,32);const p=c.projectionMatrix.clone(),view={...c.view};
