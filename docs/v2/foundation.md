@@ -110,8 +110,31 @@ have 12221 codes / 12220 intervals. `cTq` and `compactTq` decode their physical
 threshold temperature; `cRawTq` exposes the stored tag. `energyOf` includes phase
 reference offset and latent progress in wide integer units. `withEnergy` first
 encodes an exact latent plateau, then sensible heat plus a signed residual.
-`energyFits` is the required exact round-trip check before a rule commits an
-extreme total that may not fit. The JS helper throws on bank overflow.
+`energyFits` is the required exact admission check before a rule commits an
+extreme total that may not fit. The grid WGSL predicate no longer encodes and
+decodes merely to test representability. It checks hot/cold latent intervals
+first (cold STEAM can lie below the normal interval), then checks signed sensible
+energy in `[-2^31, capacity*41093 + (2^31-1)]`. All subtraction/addition wraps
+modulo u64 and comparisons use signed two-limb `phaseLess`, matching the original
+WGSL round trip even at signed-64 extremes. Latent bases use ctype zero, as grid
+encoding does; normal offsets use the material's actual ctype. Packet admission,
+encoding and residual bookkeeping are unchanged. The JS helper still throws on
+bank overflow.
+
+`node tools/v2/thermal-admission-check.mjs` computes the necessary domain proof
+from all 91 rows and valid fill extremes (0, minimum nonzero, FULL, MAX_FILL):
+maximum capacity **67,174,400 < 2^31**, maximum latent bucket
+`ceil(totalLatent/12220)` **20,978,385 < 2^31**, and maximum
+`totalLatent*12220` **3,132,668,615,065,600 < 2^64**. It asserts that every
+latent-bearing offset is ctype-independent and LAVA has no latent side; changes
+to these facts fail the CPU check instead of silently permitting truncation.
+An independent old-WGSL oracle masks u64 arithmetic and casts banks to i32,
+without calling JS `withEnergy`. Its **6,183,436 cases / zero mismatches** cover
+all rows, all 256 LAVA ctypes, fill extremes, latent endpoints ±1, bank boundaries,
+signed-64 boundaries, random64 energies and every raw normal/hot/cold code. The
+check also pins the actual production predicate to the tested model. This is
+CPU correctness evidence, not measured GPU speedup; the parent owns native
+performance validation.
 
 Liquid admission reserves a sixth of destination fuel and energy headroom for
 each face. Its energy bounds are affine over amount for the destination's current

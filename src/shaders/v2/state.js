@@ -131,7 +131,27 @@ fn encodeMaterialEnergy(m: Material, e: vec2u, capacity: u32, phaseCtype: u32) -
 }
 // Call before committing a transfer/rule: an extreme signed bank is allowed,
 // but a sum outside the format must remain at its source, never truncate.
-fn energyFits(m: Material, e: vec2u) -> bool { return all(energyOf(withEnergy(m, e)) == e); }
+fn energyFits(m: Material, e: vec2u) -> bool {
+  let id = cid(m.core); let amount = materialAmount(m.core); let capacity = capacityQ(m.core);
+  // Grid latent encoding uses ctype=0, unlike packet encoding. Check plateaus
+  // first: cold STEAM can extend below the normal interval. The CPU admission
+  // proof checks every row/fill: latent bucket residuals and capacity fit i32,
+  // latent*PHASE_STEPS fits u64, and latent-bearing offsets ignore ctype.
+  for (var side = 0u; side < 2u; side++) {
+    let hot = side == 0u;
+    let per = select(phaseColdLatent(id), phaseHotLatent(id), hot);
+    if (per <= 0 || amount == 0u) { continue; }
+    let latent = energyMul(u32(per), amount);
+    let base = energyAdd(phaseMaterialOffsetEnergy(id, amount, 0u),
+      energyMul(capacity, u32(select(phaseColdQ(id), phaseHotQ(id), hot))));
+    var progress = energySub(base, e);
+    if (hot) { progress = energySub(e, base); }
+    if (!phaseLess(progress, vec2u(0u)) && !phaseLess(latent, progress)) { return true; }
+  }
+  let sensible = energySub(e, phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core)));
+  let hi = energyAdd(energyMul(capacity, 41093u), energySigned(2147483647));
+  return !phaseLess(sensible, energySigned(-2147483648)) && !phaseLess(hi, sensible);
+}
 struct EnergyBounds { lo: vec2u, hi: vec2u }
 // This affine interval contains all supported liquid plateaus. Restricting
 // a tagged receiver to its plateau incorrectly dams hot/cold arrivals.
