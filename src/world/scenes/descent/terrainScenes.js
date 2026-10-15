@@ -26,7 +26,9 @@ fn sceneCell(w: vec3i) -> SceneCell {
   var temperature = SPAWNT(id);
   if (temperature == AMBIENT) { temperature = SU.uAirT; }
   if (id == E_ICE || id == E_SNOW) { temperature = min(temperature, SU.uAirT); }
-  let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, 0x1a90u)) * UINT_TO_UNIT * SEED_MAX;
+  // The same source voxel keeps its grain/physics seed in overlapping bands.
+  let globalCell = w - vec3i(0, i32((SU.uFoldC.x + SU.uFoldC.y) * SU.uFoldB.y), 0);
+  let seed = u32ToF32(seedWorld(globalCell, SU.uSceneSeed, 0x1a90u)) * UINT_TO_UNIT * SEED_MAX;
   return SceneCell(vec4f(f32(id), temperature, SPAWNLIFE(id), seed), vec4f(0.0));
 }
 `;
@@ -56,6 +58,7 @@ export function createTerrainScene(route, region, { fetchWords = fetchImportedWo
     // Source illumination is not synthesized here; the existing POV lamp is separate.
     ambient: [0,0,0], torches: () => [], view: { dir: [-11,7,6], dist: 95, lift: 0 },
     toWorld, querySource, cell,
+    mayContainCellsXZ: (lo, hi, padding) => fold.mayContainCellsXZ(lo, hi, padding),
     setArrival(point) { arrival = point ? [...point] : null; },
     start() { const p = arrival ?? toWorld(spawnSource); return [p[0],p[2]]; },
     params: ({seed=0}={}) => ({ size:[...size],seed,sea:0,floor:0 }),
@@ -64,7 +67,7 @@ export function createTerrainScene(route, region, { fetchWords = fetchImportedWo
     async prepare() {
       if (packed) return;
       if (!preparing) preparing = (async () => {
-        const raster = await fetchWords(`/local-maps/noita-terrain/${region.file}`);
+        const raster = await fetchWords(`/local-maps/noita-terrain/${region.file}?v=${region.sha256}`);
         const data = await prepareTerrainWords(route,region,raster);
         words = raster; packed = data;
       })().finally(() => { preparing = null; });

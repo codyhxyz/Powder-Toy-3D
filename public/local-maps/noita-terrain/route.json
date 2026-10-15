@@ -3938,7 +3938,7 @@
       "name": "rock_static_wet"
     },
     {
-      "element": 20,
+      "element": 92,
       "name": "rock_vault"
     },
     {
@@ -4014,7 +4014,7 @@
       "name": "snow_sticky"
     },
     {
-      "element": 18,
+      "element": 91,
       "name": "snowrock_static"
     },
     {
@@ -4026,7 +4026,7 @@
       "name": "soil_dead"
     },
     {
-      "element": 27,
+      "element": 94,
       "name": "soil_lush"
     },
     {
@@ -4110,35 +4110,35 @@
       "name": "swamp"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_noedge_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_static_broken"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_static_soft"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_thick_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_thick_static_noedge"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrickdark_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templeslab_crumbling_static"
     },
     {
@@ -31058,7 +31058,7 @@
         "source_bytes": 21698
       }
     ],
-    "compiler_sha256": "224ea0922ed611260e912960819d46673fde70a9d7ed9e887b2484d6fa095dbf",
+    "compiler_sha256": "f70ed3957237ee4a35deae9218b4ae59bf6b5b15a82190826b0723600e2b11be",
     "configuration": [
       {
         "path": "noita-terrain-source.json",
@@ -31066,11 +31066,11 @@
       },
       {
         "path": "noita-terrain-materials.json",
-        "sha256": "644c587cc702ceb7fba0338e43945d77e81bfd85dfd1bb1d1ce374b28ff3c0a7"
+        "sha256": "27f17cb401ca0a8a9faa6203ad7662eb4fafeae1c12320b25a55c2f9265bef80"
       }
     ],
     "decoder_sha256": "905f9c54b40110d3d29eef8417127ff0f63c50afef9bff085aeaaf7d87a3d563",
-    "elements_sha256": "d2ea21acad981afafc5b885acd1172cf4beb7a6b091216bd50d677f3c2a68247",
+    "elements_sha256": "fb29b5aceffbe7cf4f819b44448ec11b85e05fae83f0c2ea93d5fcdd87e9127b",
     "fixedScene": {
       "blackAirProof": {
         "airFraction": 0.9939973594522399,

@@ -49,7 +49,9 @@ def json_bytes(value):
 def packed(data):
     compressed = bytearray(gzip.compress(data, compresslevel=9, mtime=0))
     compressed[9] = 255  # platform-independent gzip OS field
-    return bytes(compressed) + bytes((-len(compressed)) % 4)
+    # Only the DECOMPRESSED raster needs u32 alignment. Web DecompressionStream
+    # rejects junk/padding after a gzip member, unlike Python gzip.decompress.
+    return bytes(compressed)
 
 
 def make_palette(names, mapping, elements):

@@ -6,7 +6,12 @@ export const PALETTE_WORDS = 256;
 export function validateTerrainManifest(route) {
   if (route.version !== 1 || route.encoding !== 'noita-folded-raster-u8-v1') throw new Error('Unsupported terrain raster');
   if (!Array.isArray(route.palette) || route.palette.length < 1 || route.palette.length > 255 || route.palette[0].name !== 'air' || route.palette[0].element !== 0) throw new Error('Invalid native terrain palette');
-  for (const p of route.palette) if (!p.name || !Number.isInteger(p.element) || !ELEMENTS[p.element]) throw new Error(`Unmapped native material: ${p.name}`);
+  const names = new Set();
+  for (const p of route.palette) {
+    if (!p.name || names.has(p.name) || !Number.isInteger(p.element) || !ELEMENTS[p.element] ||
+        (p.element === 0) !== (p.name === 'air')) throw new Error(`Unmapped native material: ${p.name}`);
+    names.add(p.name);
+  }
   if (!Number.isSafeInteger(route.fold.sourceWidth) || route.fold.sourceWidth <= 0) throw new Error('Invalid raster width');
   for (const [i,r] of route.regions.entries()) {
     const coreHeight=r.core[1]-r.core[0], terminal=i===route.regions.length-1;

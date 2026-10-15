@@ -1954,7 +1954,7 @@
       "name": "rock_static_wet"
     },
     {
-      "element": 20,
+      "element": 92,
       "name": "rock_vault"
     },
     {
@@ -2030,7 +2030,7 @@
       "name": "snow_sticky"
     },
     {
-      "element": 18,
+      "element": 91,
       "name": "snowrock_static"
     },
     {
@@ -2042,7 +2042,7 @@
       "name": "soil_dead"
     },
     {
-      "element": 27,
+      "element": 94,
       "name": "soil_lush"
     },
     {
@@ -2126,35 +2126,35 @@
       "name": "swamp"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_noedge_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_static_broken"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_static_soft"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_thick_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrick_thick_static_noedge"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templebrickdark_static"
     },
     {
-      "element": 41,
+      "element": 93,
       "name": "templeslab_crumbling_static"
     },
     {

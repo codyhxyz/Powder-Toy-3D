@@ -10,18 +10,17 @@ import { createImportedMapScene } from '../src/world/scenes/importedMap.js';
 import { validateAppearance } from '../src/world/import/appearance.js';
 import { createHash } from 'node:crypto';
 import { ELEMENTS, K } from '../src/elements.js';
-import { DESCENT_LEVELS } from '../src/world/scenes/descent/levels.js';
+import terrainRoute from '../src/world/scenes/descent/terrainRoute.json' with { type: 'json' };
+import { createTerrainScene } from '../src/world/scenes/descent/terrainScenes.js';
 
 // Cloudflare Pages rejects any single asset over 25 MiB (docs/cruelty-source-comparison.md).
 const FILE_LIMIT = 25 * 1024 * 1024;
 const profiles = CRUELTY_PROFILES.filter((p) => !p.blocked);
-const noita = new Map(DESCENT_LEVELS.map(l => [l.key, l]));
-const expected = [...profiles.flatMap((p) => [`${p.id}.json`, `${p.id}.binpack`, `${p.id}.appearance.binpack`]),
-  ...DESCENT_LEVELS.flatMap(l => [`${l.key}.json`, `${l.key}.binpack`])].sort();
+const expected = profiles.flatMap((p) => [`${p.id}.json`, `${p.id}.binpack`, `${p.id}.appearance.binpack`]).sort();
 let packed = 0;
 
 for (const directory of ['public/local-maps', 'dist/local-maps']) {
-  assert.deepEqual((await readdir(directory)).sort(), expected, `${directory} holds exactly the converted levels`);
+  assert.deepEqual((await readdir(directory)).sort(), [...expected, 'noita-terrain'].sort(), `${directory} holds exactly the converted levels`);
   for (const name of expected) {
     const path = join(directory, name), info = await stat(path);
     assert.ok(info.size < FILE_LIMIT, `${path} is under the host's per-file limit`);
@@ -31,14 +30,6 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
     assert.equal(map.id, name.slice(0, -5));
     const buffer = gunzipSync(await readFile(join(directory, `${map.id}.binpack`)));
     const words = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
-    if (noita.has(map.id)) {
-      assert.equal(createHash('sha256').update(buffer).digest('hex'), map.geometrySha256);
-      assert.deepEqual(map.descent, noita.get(map.id), `${map.id}: current route metadata ships with the geometry`);
-      const scene = createImportedMapScene(map, words);
-      assert.deepEqual(scene.start(), [map.spawn[0], map.spawn[2]]);
-      assert.ok(actorBodyClear(map, words, map.spawn), `${map.id}: authored spawn fits the body`);
-      continue;
-    }
     const appearance = gunzipSync(await readFile(join(directory, map.appearance.dataFile)));
     validateAppearance(map, new Uint32Array(appearance.buffer, appearance.byteOffset, appearance.byteLength / 4));
     assert.equal(createHash('sha256').update(appearance).digest('hex'), map.appearance.sha256);
@@ -56,5 +47,27 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
     }
   }
   assert.ok(!expected.some((n) => n.endsWith('.bin')), `${directory} ships no uncompressed geometry`);
+  const nativeDir = join(directory, 'noita-terrain');
+  const route = JSON.parse(await readFile(join(nativeDir, 'route.json'), 'utf8'));
+  for (const key of ['version', 'encoding', 'fold', 'palette', 'regions', 'sections', 'startScene', 'startSource']) {
+    assert.deepEqual(route[key], terrainRoute[key], `${directory}: runtime and shipped native ${key} agree`);
+  }
+  const portal = p => ({ id:p.id, source:p.source, halfSize:p.halfSize, target:p.target, enabled:p.enabled });
+  assert.deepEqual(route.nativePortals.map(portal), terrainRoute.nativePortals.map(portal), 'native portal endpoints ship unchanged');
+  const nativeFiles = ['route.json', 'README.md', 'black-air-regression.json', ...route.regions.map(r => r.file)];
+  assert.deepEqual((await readdir(nativeDir)).sort(), nativeFiles.sort());
+  for (const file of nativeFiles) assert.ok((await stat(join(nativeDir, file))).size < FILE_LIMIT, file);
+  for (const region of route.regions) {
+    const path = join(nativeDir, region.file), info = await stat(path);
+    assert.ok(info.size < FILE_LIMIT, `${path} is under the host's per-file limit`);
+    const bytes = gunzipSync(await readFile(path));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), region.sha256, `${region.key}: immutable native pixels ship unchanged`);
+    if (directory === 'public/local-maps') packed += info.size;
+    const words = new Uint32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    const scene = createTerrainScene(route, region, { fetchWords: async () => words });
+    await scene.prepare();
+    assert.deepEqual(scene.size, scene.fold.dimensions(region.sourceHeight));
+    assert.deepEqual(scene.start(), scene.toWorld(region.key === route.startScene ? route.startSource : region.spawnSource).filter((_, i) => i !== 1));
+  }
 }
-console.log(`PASS the build ships ${profiles.length} Cruelty levels with original appearance and ${noita.size} Noita scenes (${(packed / 1e6).toFixed(2)} MB packed, under the 25 MiB per-file limit)`);
+console.log(`PASS the build ships ${profiles.length} Cruelty levels and ${terrainRoute.regions.length} folded native Noita bands (${(packed / 1e6).toFixed(2)} MB packed, under the 25 MiB per-file limit)`);

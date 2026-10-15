@@ -2,7 +2,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { createTerrainScene } from '../src/world/scenes/descent/terrainScenes.js';
 import { createFold } from '../src/world/scenes/descent/terrainFold.js';
@@ -11,12 +10,15 @@ import { BODY_HEIGHT, BODY_WIDTH } from '../src/pov/constants.js';
 import { bandHandoff, nativePortalHandoff } from '../src/pov/descent/terrainHandoff.js';
 const root=resolve(process.argv[2] ?? 'public/local-maps/noita-terrain');
 const route=JSON.parse(readFileSync(resolve(root,'route.json'),'utf8'));
-const fold=createFold(route.fold), raster=(region)=>gunzipSync(readFileSync(resolve(root,region.file)));
+const fold=createFold(route.fold);
+const raster=async region=>new Uint8Array(await new Response(
+  new Blob([readFileSync(resolve(root,region.file))]).stream().pipeThrough(new DecompressionStream('gzip'))
+).arrayBuffer());
 const levels=route.regions.map(r=>({key:r.key,sourceRegion:r,fold:route.fold,nativePortals:route.nativePortals}));
 const start=route.regions.find(r=>r.key===route.startScene);
 assert(start);
 const scene=createTerrainScene(route,start,{fetchWords:async()=>{
-  const bytes=raster(start), words=new Uint32Array(bytes.length/4), view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  const bytes=await raster(start), words=new Uint32Array(bytes.length/4), view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   for(let i=0;i<words.length;i++) words[i]=view.getUint32(i*4,true);
   return words;
 }});
@@ -39,7 +41,7 @@ for(let z=Math.floor(world[2]-BODY_WIDTH/2);z<Math.ceil(world[2]+BODY_WIDTH/2);z
 const arrivalSupported=supported;
 let seams=0, previous=null, previousBytes=null;
 for (const region of route.regions) {
-  const bytes=raster(region);
+  const bytes=await raster(region);
   assert.equal(createHash('sha256').update(bytes).digest('hex'),region.sha256,`native raster hash ${region.key}`);
   for(const n of bytes) if(n!==255 && n>=route.palette.length) assert.fail(`Unknown native palette index ${region.key}: ${n}`);
   if(previous && previous.core[1]===region.core[0]) {

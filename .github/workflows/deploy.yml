@@ -48,6 +48,14 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check native terrain decoder and compiler
+        run: |
+          python -m pip install numpy==2.0.1 Pillow==12.2.0
+          python -B -m unittest discover -s tools -p 'test_noita_save_decode.py'
+          python -B tools/import-noita-terrain-test.py
       - run: node --test tools/check-mode-icons.mjs   # CPU-only: every gamemode has a valid credited menu emblem
       - run: node tools/check-map-previews.mjs   # every menu map, including source imports, has a square preview
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
@@ -80,7 +88,8 @@ jobs:
       - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
       - run: node tools/mission-node-check.mjs && node tools/mission-retry-cpu-check.mjs && node --test tools/import-cruelty-map-check.mjs
-      - run: node scripts/check-noita-source.mjs && node scripts/check-descent-switch.mjs && node scripts/check-descent-temple.mjs && node scripts/check-descent-items.mjs   # CPU source occupancy, full route, run carry-over and item rules
+      - run: node scripts/check-noita-fold.mjs && node scripts/check-noita-materials.mjs && node scripts/check-noita-source.mjs && node scripts/check-terrain-handoff.mjs && node scripts/check-terrain-raster.mjs --naga && node scripts/check-terrain-edits.mjs && node tools/gpu-readback-check.mjs   # immutable terrain, invertible fold, persistent handoffs and CPU validation of full GPU shaders
+      - run: node scripts/check-descent-switch.mjs && node scripts/check-descent-temple.mjs && node scripts/check-descent-items.mjs   # legacy fixtures and shared run/item rules
       - name: Ensure ImageMagick for source appearance fixtures
         run: |
           if ! command -v magick >/dev/null && ! command -v convert >/dev/null; then

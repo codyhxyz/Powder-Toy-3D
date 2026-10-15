@@ -14,6 +14,8 @@ const region = {key:'fixture',label:'Snowy Depths',sourceTop:992,sourceHeight:32
 const route = {version:1,encoding:'noita-folded-raster-u8-v1',fold:foldConfig,palette:[{name:'air',element:E.EMPTY},{name:'rock_static',element:E.ROCK}],regions:[region],sections:[],startScene:'fixture',startSource:region.spawnSource,nativePortals:[]};
 validateTerrainManifest(route);
 assert.throws(()=>validateTerrainManifest({...route,palette:[...route.palette,{name:'unknown'}]}),/Unmapped/);
+assert.throws(()=>validateTerrainManifest({...route,palette:[...route.palette,{name:'rock_static',element:E.ROCK}]}),/Unmapped/);
+assert.throws(()=>validateTerrainManifest({...route,palette:[...route.palette,{name:'not_air',element:E.EMPTY}]}),/Unmapped/);
 let fetches=0;
 const scene=createTerrainScene(route,region,{fetchWords:async()=>{fetches++;return words;}});
 await Promise.all([scene.prepare(),scene.prepare()]);

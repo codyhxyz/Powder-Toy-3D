@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import unittest
+import zlib
 
 import numpy as np
 
@@ -75,7 +76,9 @@ class UnitChecks(unittest.TestCase):
         self.assertEqual(a, b)
         self.assertEqual(a[4:8], bytes(4))
         self.assertEqual(a[9], 255)
-        self.assertEqual(len(a) % 4, 0)
+        stream = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        self.assertEqual(stream.decompress(a), raw)
+        self.assertEqual(stream.unused_data, b'', 'Web gzip decoding rejects trailing padding')
         self.assertEqual(gzip.decompress(a), raw)
         c = json.loads((ROOT / 'tools/noita-terrain-source.json').read_text())
         changed = copy.deepcopy(c)
