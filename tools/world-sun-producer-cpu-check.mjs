@@ -180,6 +180,14 @@ test('actual native writer ordering, explicit feedback ABI, source pin through s
   const cached=await f.lighting.prepare(f.options);assert.equal(cached.status,'cached');cached.snapshot.release();
   f.lighting.reset();assert.ok(!b.sun0.texture.dead);s.release();assert.equal(b.sun0.texture.dead,true);assert.throws(()=>s.bindings(),/released/);f.lighting.dispose();
 });
+test('Sun textures accessor borrows actual native textures under the existing snapshot pin and rejects after release',async()=>{
+  const f=fixture();await f.complete(await f.lighting.prepare(f.options));
+  const first=f.lighting.snapshot(),second=f.lighting.snapshot(),native=first.textures(),views=first.bindings();
+  assert(Object.isFrozen(native));assert.equal(native.sun0,views.sun0.texture);assert.equal(native.sun1,views.sun1.texture);
+  assert.equal(native.release,undefined);f.lighting.reset();assert.ok(!native.sun0.dead);
+  first.release();assert.throws(()=>first.textures(),/released/);assert.ok(!native.sun0.dead);assert.equal(second.textures().sun0,native.sun0);
+  second.release();assert.equal(native.sun0.dead,true);assert.equal(native.sun1.dead,true);f.lighting.dispose();
+});
 test('missing/failed/stale candidate never publishes; retry and reset preserve queued pins',async()=>{
   const f=fixture();await f.complete(await f.lighting.prepare(f.options));const previous=f.lighting.snapshot(),token=previous.token;
   f.edit();f.missing(true);const bad=await f.lighting.prepare(f.options);const missing=await f.complete(bad);assert.equal(missing.status,'incomplete');assert.deepEqual(missing.failedTiles,[...bad.tiles]);const unchanged=f.lighting.snapshot();assert.equal(unchanged.token,token);unchanged.release();

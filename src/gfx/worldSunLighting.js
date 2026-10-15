@@ -55,6 +55,7 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
     return Object.freeze({token:p.token,params:p.params,release(){if(!released){released=true;drop(p);}},
       // This handle owns a reference; each queued consumer must retain a handle
       // until ITS submission AND GPU completion, not merely until draw returns.
+      textures(){if(released)throw new Error('released sun snapshot');return Object.freeze({sun0:p.sun0,sun1:p.sun1});},
       bindings(){if(released)throw new Error('released sun snapshot');return Object.freeze({params:p.params,book:p.book,sun0:p.view0,sun1:p.view1,token:p.token});}});
   }
   const snapshot=()=>{alive();return handle(active);};

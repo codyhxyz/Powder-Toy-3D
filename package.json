@@ -14,6 +14,7 @@
     "check:world-source-cuts": "node --test tools/world-source-cut-cpu-check.mjs",
     "check:world-gi-glow": "node --test tools/world-gi-glow-cpu-check.mjs",
     "check:world-scenes": "node --test tools/world-scene-admission-cpu-check.mjs",
+    "check:world-mesh-light": "node --test tools/world-mesh-light-cpu-check.mjs",
     "check:fields": "node tools/field-deriver-cpu-check.mjs && node tools/world-field-cpu-check.mjs",
     "check:imports": "node tools/check-imports.mjs",
     "check:gpu": "node tools/gpu-foundation-check.mjs",

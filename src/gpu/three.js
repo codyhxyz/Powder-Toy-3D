@@ -11,7 +11,7 @@
 // three into their module graph.
 
 import {
-  WebGPURenderer, ExternalTexture, WebGPUCoordinateSystem, RenderTarget, DepthTexture, QuadMesh, NodeMaterial,
+  WebGPURenderer, ExternalTexture, StorageBufferAttribute, WebGPUCoordinateSystem, RenderTarget, DepthTexture, QuadMesh, NodeMaterial,
   RGBAFormat, RedFormat, RGFormat, RGBAIntegerFormat, RedIntegerFormat,
   HalfFloatType, FloatType, UnsignedByteType, UnsignedIntType, IntType,
   LinearFilter, NearestFilter, ClampToEdgeWrapping, NoColorSpace,
@@ -175,7 +175,7 @@ const FORMATS = {
  * dispose the old one. Float32 textures bind as unfilterable (the device has
  * no float32-filterable, W3): read them in TSL with textureLoad only.
  * @param {GPUTexture} gpuTexture
- * @param {{ dimension?: '2d' | '3d', format?: GPUTextureFormat, type?: number, width?: number, height?: number, depth?: number }} [opts]
+ * @param {{ dimension?: '2d' | '3d' | '2d-array', format?: GPUTextureFormat, type?: number, width?: number, height?: number, depth?: number }} [opts]
  * @returns {ExternalTexture}
  */
 export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, format = gpuTexture.format, type, width, height, depth } = {}) {
@@ -185,6 +185,7 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
   tex.type = type ?? t;
   tex.image = { width: width ?? gpuTexture.width, height: height ?? gpuTexture.height, depth: depth ?? gpuTexture.depthOrArrayLayers };
   if (dimension === '3d') tex.is3DTexture = true;
+  if (dimension === '2d-array') tex.isArrayTexture = true;
   const filterable = tex.type === HalfFloatType || tex.type === UnsignedByteType;
   tex.minFilter = tex.magFilter = filterable ? LinearFilter : NearestFilter;
   tex.wrapS = tex.wrapT = tex.wrapR = ClampToEdgeWrapping;
@@ -192,6 +193,21 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
   tex.flipY = false;
   tex.colorSpace = NoColorSpace;
   return tex;
+}
+
+/** Adopt an immutable native storage binding without upload or ownership transfer.
+ * r186 AttributeUtils skips creation for an adopted backend buffer, and
+ * NodeStorageBuffer reads its current attribute on every bindings update.
+ * The one-word array is a uint type witness, NEVER an upload/readback mirror.
+ * Keep the native owner pinned until final submission AND completion. Do not
+ * attach this attribute to geometry or ask Three to delete/destroy it.
+ */
+export function externalStorageAttribute(renderer, buffer, count) {
+  if (!renderer?.backend?.get || !buffer || !Number.isSafeInteger(count) || count < 1 || buffer.size < count * 4) throw new TypeError('external uint storage extent/renderer required');
+  const attribute = new StorageBufferAttribute(new Uint32Array(1), 1);
+  attribute.count = count;
+  renderer.backend.get(attribute).buffer = buffer;
+  return attribute;
 }
 
 /**
