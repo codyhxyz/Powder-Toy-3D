@@ -1,14 +1,14 @@
 # Physics v2 completion gates
 
-Audit base: `b64183051da3ba978ab85f1e38399756fc842daf`, fetched from `origin/main` on 2026-10-14.
+Original audit base: `b64183051da3ba978ab85f1e38399756fc842daf`, fetched from `origin/main` on 2026-10-14.
 
 **Status: incomplete.** Renderer integration is one milestone, not completion of physics v2.
 The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` was superseded.
 
 ## Current evidence — 2026-10-15
 
-Integration checkpoint: `dcd03636`, including fetched production `ea9bcb7d`.
-At that checkpoint, the feature is 117 commits ahead and none behind production.
+Latest production integration: `1cd24b54`, including fetched production `375301e7`.
+Feature checkpoint `533da63c` is 134 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 These results do not describe the live site.
 
@@ -151,10 +151,22 @@ The unchanged GPU fixture now lights 6 of 6 bays by 0.25 game seconds; total occ
 The original preheated-wood control also passes at 60 ticks; total occupancy is 10.405 s.
 CPU validation covers 12 new groups, exact ledgers, excluded sources, frozen snapshots and unchanged AIR/WATER identities.
 
-**Remaining liquid failure:** original `utube` at `cab5525f` ends 1.144867 cm apart, exceeding the unchanged 1 cm limit.
-Mass is exact and rest is certified at 6 game seconds, but equalization fails.
-The run completes 600 ticks normally with 10.204 s total occupancy.
-Pressure deadband and fractional-flux limiter arithmetic are under investigation; no acceptance threshold has changed.
+**U-tube gate:** original `utube` at `cab5525f` ends 1.144867 cm apart, exceeding the unchanged 1 cm limit.
+That failed run conserves mass and rests, with 10.204 s total occupancy.
+`064728ef` preserves fractional stored flux until after proportional limiting, matching the prototype's ordering.
+It also adds canonical receiver-headroom admission before any debit.
+Deadbands, snapping, damping, yield and substeps are unchanged.
+The original GPU gate now passes at **0.9992980957 cm**, with exact mass and rest at 6 game seconds.
+It completes 600 ticks with 11.944 s total occupancy. The passing margin is narrow, not a general accuracy guarantee.
+Original partial-pool, still-tank and yield regressions also pass, with occupancies of 10.532 s, 9.413 s and 5.192 s.
+Independent review `46f65d5d` found no R8/R13 blocker; it did not attest feature completeness or stable performance.
+
+**Remaining jet failure:** original `hole` at `1cd24b54` has 94.05% reach error against the unchanged 5% limit.
+Mass and stream continuity pass; total occupancy is 10.392 s.
+Existing-readback diagnostics at `533da63c` reproduce the failure with 9.806 s occupancy.
+All three checkpoint reads contain zero airborne WATER; the measured stream is resident liquid.
+The outlet and cell below it contain WATER. This does not prove that no particles were ever born.
+Native launch velocity also differs from the documented static-head rule. A bounded prototype-restoration specification is under review.
 V2 remains incomplete and non-parity, and must not become the default yet.
 
 Other unchanged numeric controls at `cab5525f` pass after compaction:
@@ -199,6 +211,12 @@ Local evidence:
 - `/tmp/v2-native-yield-cab5525f.jsonl`
 - `/tmp/v2-native-puddle-cab5525f.jsonl`
 - `/tmp/v2-native-sandFalls-cab5525f.jsonl`
+- `/tmp/v2-native-utube-064728ef.jsonl`
+- `/tmp/v2-native-partial-064728ef.jsonl`
+- `/tmp/v2-native-tankStill-064728ef.jsonl`
+- `/tmp/v2-native-yield-064728ef.jsonl`
+- `/tmp/v2-native-hole-1cd24b54.jsonl`
+- `/tmp/v2-native-hole-probe-533da63c.jsonl`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.

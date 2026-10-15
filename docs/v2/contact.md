@@ -104,7 +104,9 @@ one exact accepted-amount helper with the existing K/tag layout. This is numeric
 transport calibration, not a contact-kernel change or a byte-equivalent transport
 optimization. Canonical admission also rejects a packet exceeding one sixth of
 frozen destination headroom before any debit; rejected mass, heat and fuel remain
-at the source. See `docs/v2.md` §4.1 for scope and outstanding native acceptance.
+at the source. See `docs/v2.md` §4.1 for scope.
+Original native U-tube, partial-pool, still-tank and yield gates pass at `064728ef`.
+The U-tube margin is narrow: 0.9992980957 cm against the unchanged 1 cm limit.
 
 ### Production block compaction
 
@@ -167,9 +169,10 @@ The clean two-frame split at `60fa5165` measures contact kernels at 4.744 ms
 including classification and finalization, versus 10.739 ms before compaction.
 Fixture, quality and tick windows match. Total occupancy is 3.438 s.
 At tick 5, the heavy list has 38,166 of 96,512 blocks.
-Full-frame medians from one clean 12-frame pair are native 131.5 ms and
+Full-frame medians from one clean 12-frame pair at `60fa5165` are native 131.5 ms and
 v1 145.5 ms. This is not a repeatability or equivalent-work claim.
-The original flame-to-wood gate still fails; see `completion.md`.
+The original flame-to-wood gate passes 6/6 after the separate R8 addition at `9e027c71`.
+This is not an ignition effect of compaction. The hole-jet gate remains failed; see `completion.md`.
 
 ### Dynamics-only helpers
 
