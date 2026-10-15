@@ -1,0 +1,269 @@
+// CPU interpretation/reference + real factories/Naga + fake native GPU.
+// None of these are GPU execution, GPU==CPU, visual or performance evidence.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { WgslExec, WgslParser, VectorData, ScalarData } from 'wgsl_reflect/wgsl_reflect.module.js';
+import { giSourceFrag, giGatherFrag, giKeyFrag, giSelectFrag, giArgsFrag, giSrcWGSL } from '../src/shaders/gi.js';
+import { blurFrag } from '../src/shaders/passes.js';
+import { WGSL_CHECK as GI_CHECK, worldGISource, worldGIGather } from '../src/shaders/worldGI.js';
+import { WGSL_CHECK as GLOW_CHECK, worldGlow } from '../src/shaders/worldGlow.js';
+import { createWorldGI } from '../src/gfx/worldGI.js';
+import { createWorldGlow, worldGlowPlan } from '../src/gfx/worldGlow.js';
+import { worldLightingTransportSpec } from '../src/gfx/worldLightingBatch.js';
+import { createWorldLightingHistory, selectWorldGI } from '../src/world/worldLightingHistory.js';
+import { checkPipeline } from './check-sampler-budget.mjs';
+import { lightingFixture } from './world-gi-glow-fixture.mjs';
+
+class ShaderExec extends WgslExec {
+  _dispatchWorkgroup(fn, id, context) {
+    // Parser 1.6.0 represents @workgroup_size(64) as string "64";
+    // dispatcher otherwise treats it as 6x4. Normalize AST metadata only.
+    for (const a of fn.node.attributes ?? []) if (a.name === 'workgroup_size' && typeof a.value === 'string') a.value = [a.value];
+    return super._dispatchWorkgroup(fn, id, context);
+  }
+  _callBuiltinFunction(node, context) {
+    // 1.6.0 truncates its half builtin. Supply specified IEEE RNE semantics;
+    // this checks production arithmetic/layout, NOT a GPU half implementation.
+    if (node.name === 'pack2x16float') { const v = this.evalExpression(node.args[0], context).data; return new ScalarData(pair(v[0], v[1]), this.getTypeInfo('u32')); }
+    return super._callBuiltinFunction(node, context);
+  }
+  // 1.6.0 generic vecNu constructors otherwise route uints through f32,
+  // losing packed words even in a literal vec4u(0,0,0,0x1ff7fdff).
+  _callConstructorVec(node, context) {
+    const type = this.getTypeInfo(node.type), format = type.format?.name;
+    if (!['u32', 'i32'].includes(format)) return super._callConstructorVec(node, context);
+    const n = Number(type.name.at(-1)); let values = [];
+    if (node.isVector) values = Array.from(node.vectorValue);
+    else if (node.args) for (const arg of node.args) { const v = this.evalExpression(arg, context); values.push(...(v.data && v.data.length > 1 ? Array.from(v.data) : [v.value])); }
+    if (!values.length) values = Array(n).fill(0); if (values.length === 1) values = Array(n).fill(values[0]);
+    return new VectorData(format === 'u32' ? new Uint32Array(values.slice(0, n)) : new Int32Array(values.slice(0, n)), type).getSubData(this, node.postfix, context);
+  }
+  _makeCwiseData(values, type) {
+    if (type.name.startsWith('vec') && ['u32', 'i32'].includes(type.format?.name)) return new VectorData(type.format.name === 'u32' ? new Uint32Array(values) : new Int32Array(values), type);
+    return super._makeCwiseData(values, type);
+  }
+  // wgsl_reflect 1.6.0's void-call scope workaround, as other CPU gates use.
+  _call(node, context) {
+    const fn = context.getFunction(node.name); if (!fn) return super._call(node, context);
+    const values = node.args.map(arg => this.evalExpression(arg, context)), scope = context.clone(); scope.currentFunctionName = node.name;
+    fn.node.args.forEach((arg, i) => scope.createVariable(arg.name, values[i], arg)); this._execStatements(fn.node.body, scope);
+  }
+}
+function naga(code, label) { const r = spawnSync('naga', ['--stdin-file-path', `${label}.wgsl`], { input: code, encoding: 'utf8' }); assert.equal(r.status, 0, `${label}: ${r.stdout}\n${r.stderr}`); }
+const f = Math.fround, near = (a, b, e = 2e-6) => assert.ok(Math.abs(a - b) <= e * Math.max(1, Math.abs(b)), `${a} != ${b}`);
+function fnBody(code, name) { const at = code.indexOf(`fn ${name}(`); assert.ok(at >= 0); let end = code.indexOf('{', at), depth = 1; while (depth && ++end < code.length) { if (code[end] === '{') depth++; if (code[end] === '}') depth--; } return code.slice(at, end + 1); }
+// Independent IEEE binary16 conversion, round-to-nearest ties-to-even.
+function half(v) {
+  const b = new ArrayBuffer(4), d = new DataView(b); d.setFloat32(0, v, true); const x = d.getUint32(0, true), sign = x >>> 16 & 0x8000, e = (x >>> 23 & 255) - 127, m = x & 0x7fffff;
+  if (e > 15) return sign | 0x7c00; if (e < -25) return sign;
+  const sig = e < -14 ? m | 0x800000 : m, shift = e < -14 ? -e - 1 : 13;
+  let q = sig >>> shift, tail = sig - q * 2 ** shift, midpoint = 2 ** (shift - 1);
+  if (tail > midpoint || tail === midpoint && (q & 1)) q++;
+  return sign | (e < -14 ? q : (e + 15) * 1024 + q);
+}
+const pair = (x, y) => (half(x) | half(y) << 16) >>> 0;
+
+test('seven pre-edit original GI/key/select/args and glow emissions remain byte-identical', () => {
+  const g = { nx: 128, ny: 128, nz: 128 };
+  const hashes = ['aac61b9dbb6cd0498a8aefd1f2f6af93e336b962fa18fef589f1f700d34fc97a', '81854d10eedbc2bc15e10547b704fe704941fadf7ff2340eda1c9f6c2877ec4d', '1a91dc1119cb6b3e1dc09f538dd421185e030535e759bdda36bb5b320a3b5960', '3a5f9de16181e2c8ffae7b40be5bdb348dd5e23fc125a2a0154046da563313a0', 'cada58ed2d401ab4c01ab23cb7297f228515b4cabb759a9ce31a43f05652f596', '342312e643e09ee362ecb5ebab5ca3c2e1d7e0d6900eeb054d62c180a0e7a4b4', '02f1d27270f026a1748622d8fe0cab4c4c394c2cf83539bf60a27c55859bfb9f'];
+  [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
+});
+test('actual eight world GI/two glow/three exact transport modules validate Naga and default budgets', () => {
+  let count = 0;
+  for (const c of [...GI_CHECK(), ...GLOW_CHECK()]) {
+    const code = c.code(), groups = c.layouts(); assert.deepEqual(checkPipeline({ code, groups, kind: 'compute' }).problems, [], c.name); naga(code, c.name); count++;
+    if (c.name.startsWith('worldGI')) {
+      assert.equal(groups.length, 4); assert.equal(groups.flat().filter(e => e.texture).length, 16);
+      assert.ok(groups.flat().filter(e => e.buffer?.type.includes('storage')).length <= 8);
+      assert.doesNotMatch(code, /fn farBeyond\(/); if (c.name.includes('gather')) assert.match(code, /GI_STEPS: i32 = (1064|1128)/);
+    }
+  }
+  for (const kind of ['source', 'gi', 'glow']) { const c = worldLightingTransportSpec(kind); assert.deepEqual(checkPipeline({ code: c.code, groups: c.groups, kind: 'compute' }).problems, []); naga(c.code, `transport.${kind}`); count++; }
+  console.log(`Naga: ${count} actual GI/glow/transport modules passed; 16 sampled / <=8 storage / <=4 images`);
+  const source = worldGISource({ nx: 3072, ny: 384, nz: 1024 });
+  assert.ok(source.indexOf('head[6] == 0u') < source.indexOf('let pr = Probe(worldProbeLoad'), 'liquid/media early exit before previous GI');
+  assert.match(worldGIGather({ nx: 3072, ny: 384, nz: 1024 }), /worldGISourceStaged\(b\)/);
+});
+test('executed production source packing preserves canonical air, half saturation, directions and mixed transport', () => {
+  const cases = [[0, 0, 0, 0, 0, 0, 0, 0, 0], [2, .25, .125, .5, .75, 1, -1, 0, 1], [1e6, -.01, 65504, 1, .07, .02, .2, -.4, .9], [.001, .0002, .5, .11, .35, .95, 0, 0, 0]];
+  const code = `${giSrcWGSL}\n@group(0) @binding(0) var<storage,read> src:array<vec4f>; @group(0) @binding(1) var<storage,read_write> dst:array<vec4u>; @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) p:vec3u){let i=p.x;dst[i]=giSrcPack(src[3u*i].xyz,src[3u*i+1u].xyz,src[3u*i+2u].xyz);}`;
+  naga(code, 'source.pack'); const input = new Float32Array(cases.flatMap(c => [c[0], c[1], c[2], 0, c[3], c[4], c[5], 0, c[6], c[7], c[8], 0])), output = new Uint32Array(cases.length * 4);
+  new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main', cases.length, { 0: { 0: input, 1: output } });
+  for (let i = 0; i < cases.length; i++) {
+    const c = cases[i].map(f), q = c.slice(6).map(n => Math.floor(f(f(Math.max(-1, Math.min(1, n)) * 511) + 511) + .5));
+    const clamp = n => Math.max(-65504, Math.min(65504, n));
+    assert.deepEqual([...output.subarray(i * 4, i * 4 + 4)], [pair(clamp(c[0]), clamp(c[1])), pair(clamp(c[2]), c[3]), pair(c[4], c[5]), (q[0] | q[1] << 10 | q[2] << 20) >>> 0]);
+  }
+  assert.deepEqual([...output.subarray(0, 4)], [0, 0, 0, 0x1ff7fdff]);
+});
+test('executed original 32-ray world march reaches far sources beyond step12, true exterior only, sticky secondary unknown', () => {
+  const production = worldGIGather({ nx: 512, ny: 512, nz: 512 });
+  const start = production.indexOf('    let pc = vec3f(bc) + 0.5;'), end = production.indexOf('    var vis = 0.0;', start);
+  assert.ok(start > 0 && end > start); const trace = production.slice(start, end);
+  const constants = ['GI_RAYS', 'GI_STEPS', 'GI_NEAR_STEPS', 'GI_FAR_STRIDE', 'GI_T_MIN', 'GI_FACING', 'GOLDEN_ANGLE'].map(name => production.match(new RegExp(`const ${name}:[^;]+;`))?.[0]).join('\n');
+  const code = `${giSrcWGSL}\n${constants}\nconst BS:i32=4; var<private> worldIncomplete:bool; var<private> testMode:u32;
+fn worldGISourceStaged(b:vec3i)->vec4u {
+  if(testMode==1u && b.x==30){worldIncomplete=true;}
+  if(testMode!=2u && b.x==60){return giSrcPack(vec3f(2.0,1.0,0.5),vec3f(1.0),vec3f(0.0));}
+  return giSrcPack(vec3f(0.0),vec3f(0.0),vec3f(0.0));
+}
+fn beyond(p:vec3f,d:vec3f)->vec3f{return vec3f(0.1,0.2,0.3);}
+${fnBody(production, 'giDir')}
+@group(0)@binding(0)var<storage,read_write> out:array<vec4f>;
+@group(0)@binding(1)var<storage,read_write> status:array<u32>;
+@compute@workgroup_size(1)fn main(@builtin(global_invocation_id) gid:vec3u){
+let ray=gid.x%32u;testMode=gid.x/32u;worldIncomplete=false;
+let bc=vec3i(4,64,64);let bmax=vec3i(128);${trace}
+out[gid.x]=vec4f(L,T);status[gid.x]=select(0u,1u,worldIncomplete);
+}`;
+  naga(code, 'world.gi.continuous'); const out = new Float32Array(96 * 4), flags = new Uint32Array(96);
+  new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main', 96, { 0: { 0: out, 1: flags } });
+  let distantHits = 0, misses = 0;
+  for (let mode = 0; mode < 3; mode++) for (let ray = 0; ray < 32; ray++) {
+    const y = f(1 - f(f(2 * ray + 1) / 32)), radius = f(Math.sqrt(Math.max(f(1 - f(y * y)), 0))), angle = f(ray * f(2.399963229728653)), d = [f(radius * f(Math.cos(angle))), y, f(radius * f(Math.sin(angle)))];
+    let q = [4.5, 64.5, 64.5], hit = false, missing = false, hitStep = -1;
+    for (let k = 0; k < 392; k++) { q = q.map((v, a) => f(v + f(d[a] * (k < 6 ? 1 : 2)))); const b = q.map(Math.floor); if (b.some(v => v < 0 || v >= 128)) break; if (mode === 1 && b[0] === 30) missing = true; if (mode !== 2 && b[0] === 60) { hit = true; hitStep = k; break; } }
+    const at = (mode * 32 + ray) * 4; for (let c = 0; c < 3; c++) near(out[at + c], hit ? [2, 1, .5][c] : [.1, .2, .3][c], 2e-5);
+    assert.equal(flags[mode * 32 + ray], missing ? 1 : 0); if (missing) misses++; if (hit && hitStep > 12) distantHits++;
+  }
+  assert.ok(distantHits > 0 && misses > 0); console.log(`CPU production GI march: 96 rays, ${distantHits} real far-source hits, ${misses} sticky unknown rays`);
+});
+test('executed private source overlay resolves global keys independent of physical IDs and retains nonselected dependencies', () => {
+  const production = worldGIGather({ nx: 3072, ny: 384, nz: 1024 });
+  const code = `struct Params{counts:vec4u} const WGI=Params(vec4u(4u,0u,0u,0u));
+@group(0)@binding(0)var<storage,read>worldGIJobs:array<vec4u>;
+@group(0)@binding(1)var<storage,read>worldGISources:array<vec4u>;
+@group(0)@binding(2)var<storage,read>query:array<vec4u>;
+@group(0)@binding(3)var<storage,read_write>out:array<vec4u>;
+fn worldBookIndex(b:vec3i)->u32{return u32(b.x);}
+fn worldGISource(b:vec3i)->vec4u{return vec4u(0u,0u,0u,0x1ff7fdffu);}
+${fnBody(production, 'worldGISourceStaged')}
+@compute@workgroup_size(1)fn main(@builtin(global_invocation_id) p:vec3u){out[p.x]=worldGISourceStaged(vec3i(i32(query[p.x].x),0,0));}`;
+  naga(code, 'world.gi.overlay'); const indices = [2, 111, 100000, 18874367], q = [1, 2, 3, 111, 222, 100000, 18874367], jobs = new Uint32Array(indices.flatMap(n => [n, 0, 0, 0])), sources = new Uint32Array(indices.flatMap((n, i) => [i + 1, n, n + 1, 0x1ff7fdff])), output = new Uint32Array(q.length * 4);
+  new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main', q.length, { 0: { 0: jobs, 1: sources, 2: new Uint32Array(q.flatMap(n => [n, 0, 0, 0])), 3: output } });
+  q.forEach((n, i) => { const slot = indices.indexOf(n); assert.deepEqual([...output.subarray(i * 4, i * 4 + 4)], slot < 0 ? [0, 0, 0, 0x1ff7fdff] : [...sources.subarray(slot * 4, slot * 4 + 4)]); });
+});
+test('executed original f32 blend writes exactly the packed halves used for four bands over many ticks', () => {
+  const production = worldGIGather({ nx: 64, ny: 128, nz: 64 }), blend = fnBody(production, 'giBlend');
+  const code = `${giSrcWGSL}\nstruct Params{counts:vec4u} const WGI=Params(vec4u(0u,1u,0u,0u)); @group(0) @binding(0) var<storage,read_write> worldGIHistory:array<vec2u>; @group(0) @binding(1) var<storage,read> incoming:array<vec4f>; @group(0) @binding(2) var<storage,read_write> result:array<vec4f>; ${blend}\n@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) p:vec3u){result[p.x]=giBlend(p.x,0u,incoming[p.x],0.4);}`;
+  naga(code, 'gi.blend'); const history = new Uint32Array(8), input = new Float32Array([1.9, .03, .4, .8, -.4, -.8, .7, .2, .1, .3, -.5, .9, .7, .2, 1.8, -.1]), result = new Float32Array(16);
+  for (let tick = 0; tick < 12; tick++) {
+    // Fresh context: 1.6.0 retains old bindings across dispatch calls.
+    new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main', 4, { 0: { 0: history, 1: input, 2: result } });
+    for (let k = 0; k < 4; k++) assert.deepEqual([...history.subarray(k * 2, k * 2 + 2)], [pair(result[k * 4], result[k * 4 + 1]), pair(result[k * 4 + 2], result[k * 4 + 3])]);
+  }
+  assert.ok(result[0] > 1.89 && result[0] < 1.9);
+});
+
+const weights = [.10, .22, .36, .22, .10].map(f);
+function blurReference(values, dims, axis) {
+  const out = new Float32Array(values.length);
+  for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++) {
+    const p = [x, y, z], at = (x + dims[0] * (y + dims[1] * z)) * 4;
+    for (let c = 0; c < 3; c++) { let s = 0; for (let k = 0; k < 5; k++) { const q = [...p]; q[axis] += k - 2; if (q[axis] < 0 || q[axis] >= dims[axis]) continue; s = f(s + f(values[(q[0] + dims[0] * (q[1] + dims[1] * q[2])) * 4 + c] * weights[k])); } out[at + c] = f(s * f(1.15)); } out[at + 3] = 1;
+  }
+  return out;
+}
+function packGlowParams(pass, dims, i) { const raw = new ArrayBuffer(96), s = new Int32Array(raw), u = new Uint32Array(raw); s.set(pass.input.min); u.set([...pass.input.size, pass.input.size.reduce((a, n) => a * n, 1)], 4); s.set(pass.output.min, 8); u.set([...pass.output.size, pass.output.size.reduce((a, n) => a * n, 1)], 12); s.set(dims, 16); u[19] = pass.axis; u[20] = i; return u; }
+test('executed actual six glow passes equal contiguous f32/half output across 32core/4brick boundaries and world exterior', () => {
+  const dims = [16, 16, 16], all = new Float32Array(16 ** 3 * 4);
+  for (let z = 0; z < 16; z++) for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) { const at = (x + 16 * (y + 16 * z)) * 4; all.set([f((x * 7 + y * 11 + z * 13) % 19 / 17), x === 7 ? 13 : .01, y === 0 ? 3 : .2, 0], at); }
+  let reference = all; for (const axis of [0, 1, 2, 0, 1, 2]) reference = blurReference(reference, dims, axis);
+  // Non-final production kernel has the SAME shared coefficient/loop body as
+  // final; final additionally stores these f32 values to rgba16float.
+  for (const core of [[0, 0, 0], [1, 1, 1]]) {
+    const plan = worldGlowPlan([64, 64, 64], core), n = plan.input.size.reduce((a, n) => a * n, 1), feedback = new Uint32Array(6); let src = new Float32Array(n * 4);
+    for (let z = 0; z < plan.input.size[2]; z++) for (let y = 0; y < plan.input.size[1]; y++) for (let x = 0; x < plan.input.size[0]; x++) { const p = [x, y, z].map((v, k) => v + plan.input.min[k]), i = x + plan.input.size[0] * (y + plan.input.size[1] * z); src.set(all.subarray((p[0] + 16 * (p[1] + 16 * p[2])) * 4, (p[0] + 16 * (p[1] + 16 * p[2])) * 4 + 4), i * 4); }
+    for (let i = 0; i < 6; i++) { const pass = plan.passes[i], p = packGlowParams(pass, dims, i), dst = new Float32Array(p[15] * 4); new ShaderExec(new WgslParser().parse(worldGlow())).dispatchWorkgroups('main', Math.ceil(p[15] / 64), { 0: { 0: p, 1: src, 2: dst, 3: feedback } }); src = dst; }
+    assert.deepEqual([...feedback], [1, 1, 1, 1, 1, 1]);
+    for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { const p = [x, y, z].map((v, k) => v + plan.output.min[k]), a = (x + 8 * (y + 8 * z)) * 4, b = (p[0] + 16 * (p[1] + 16 * p[2])) * 4; for (let c = 0; c < 4; c++) { near(src[a + c], reference[b + c], 2e-7); assert.equal(half(src[a + c]), half(reference[b + c])); } }
+  }
+});
+
+test('native world GI global source barrier, sorted/reversed jobs, final submission AND completion pins, exact Atlas transport', async () => {
+  const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
+  const c = await gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[2, 1, 1], [1, 1, 1]], gatherBricks: [[1, 1, 1], [2, 1, 1]] });
+  assert.equal(f.state.pins, 1); const done = c.record(); assert.equal(f.state.pins, 1); await Promise.resolve(); assert.equal(f.state.pins, 1, 'early readback is not a submission fence');
+  assert.deepEqual(f.events.filter(e => e.startsWith('dispatch:world GI ')), ['dispatch:world GI source', 'dispatch:world GI gather']);
+  assert.ok(f.events.indexOf('previous-history-record') < f.events.indexOf('dispatch:world GI source'));
+  assert.ok(f.events.indexOf('readback-boundary') > f.events.indexOf('dispatch:world GI gather'));
+  f.tickets[0].submitted.resolve(); await Promise.resolve(); assert.equal(f.state.pins, 1); f.tickets[0].done.resolve(); assert.equal((await done).status, 'published'); assert.equal(f.state.pins, 0);
+  const out = gi.snapshot(); assert.deepEqual(out.sources, [...out.sources].sort((a, b) => a - b)); const held = out.retain();
+  const cached = await gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1], [2, 1, 1]], gatherBricks: [[2, 1, 1], [1, 1, 1]] }); assert.equal(cached.status, 'cached'); cached.snapshot.release();
+  const calls = [], atlas = { recordLightWrite(job, kind, { record }) { calls.push(kind); record(f.encoder, { params: new Uint32Array([3, 1, 1, 0, 256, 1, 0, 0, 256, 1, 0, 0, 132, 0, 0, 0]), outputs: Array.from({ length: kind === 'gi' ? 4 : 1 }, (_, binding) => ({ binding, resource: { output: true } })) }); f.device.queue.submit([]); } };
+  const job = { kind: 'light', brick: [1, 1, 1], epoch: 1, sourceRevision: 1, sourceTick: 0, giTick: 0, dependencies: { source: { id: 7, version: 1 }, gi: { id: 7, version: 1 } } };
+  await out.writeAtlas(atlas, job, 'source'); await out.writeAtlas(atlas, job, 'gi'); assert.deepEqual(calls, ['source', 'gi']);
+  await assert.rejects(out.writeAtlas(atlas, { ...job, sourceRevision: 99 }, 'gi'), /provenance/);
+  gi.dispose(); assert.equal(held.bindings().history.dead, false); out.release(); held.release(); assert.equal(f.state.pins, 0);
+});
+
+test('newer physics does not cancel a queued coherent owned cut; same-tick retry never seeds from its own output', async () => {
+  const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
+  const args = { lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]], gatherBricks: [[1, 1, 1]] };
+  const c = await gi.prepare(args), done = c.record();
+  // Source latest is separate from the owned admitted cut (state.current).
+  f.state.latestPhysicsRevision = 27; await f.complete(); assert.equal((await done).status, 'published');
+  const old = gi.snapshot(); assert.equal(old.token.sourceRevision, 1);
+  // An uncommitted retry from a newer admitted immutable cut still reads tick-1,
+  // NOT the first candidate's tick0 output. No authoritative history advances.
+  f.state.current = 2; const retry = await gi.prepare(args), q = retry.record(); await f.complete(); assert.equal((await q).status, 'published');
+  const next = gi.snapshot(); assert.equal(next.token.previousToken, old.token.previousToken); assert.equal(next.token.sourceRevision, 2); next.release(); old.release(); gi.dispose();
+});
+test('dispose during asynchronous cut acquisition releases its eventual pin without binding mutable input', async () => {
+  const f = lightingFixture(); let resume; const gate = new Promise(r => { resume = r; });
+  const provider = { ...f.snapshotProvider, async acquire(args) { await gate; return f.snapshotProvider.acquire(args); } };
+  const gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: provider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
+  const prep = gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]] }); gi.dispose(); resume(); await assert.rejects(prep, /disposed/); assert.equal(f.state.pins, 0); assert.equal(f.events.filter(e => e.startsWith('dispatch:')).length, 0);
+});
+test('GI incomplete/secondary misses, stale epoch, encode/readback/discard failures preserve old output and same-plan retry', async () => {
+  for (const failure of ['missing', 'encodeFailure', 'readFailure', 'epoch', 'discard', 'historyFailure']) {
+    const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
+    const args = { lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]], gatherBricks: [[1, 1, 1]] };
+    const first = await gi.prepare(args), d = first.record(); await f.complete(); assert.equal((await d).status, 'published'); const old = gi.snapshot();
+    f.state.previousTick = 0; const nextArgs = { ...args, lightingTick: 1, reset: false };
+    if (failure in f.state && failure !== 'epoch') f.state[failure] = true;
+    const next = await gi.prepare(nextArgs), q = next.record(); assert.equal(f.state.pins, 1);
+    if (failure === 'epoch') f.state.epoch++;
+    if (failure === 'discard') f.tickets.at(-1).submitted.reject(new Error('encoders discarded')); else await f.complete();
+    const result = await q; assert.equal(result.status, failure === 'missing' ? 'incomplete' : failure === 'epoch' ? 'stale' : 'failed');
+    const retained = gi.snapshot(); assert.equal(retained.token, old.token); retained.release(); assert.equal(f.state.pins, 0);
+    if (failure === 'epoch') f.state.epoch--; if (failure in f.state && failure !== 'epoch') f.state[failure] = false;
+    const retry = await gi.prepare(nextArgs), r = retry.record(); await f.complete(); assert.equal((await r).status, 'published'); old.release(); gi.dispose();
+  }
+});
+test('queued reset/dispose retains orphan commands and source pins until final completion, never assumes Frame rollback', async () => {
+  const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
+  const c = await gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]], gatherBricks: [[1, 1, 1]] }), done = c.record(); gi.reset(); gi.dispose(); assert.equal(f.state.pins, 1); await f.complete(); assert.equal((await done).status, 'stale'); assert.equal(f.state.pins, 0); assert.ok(f.textures.every(t => t.dead));
+});
+test('cold/unknown history, wrong clocks and public candidate aliases reject before publication', async () => {
+  const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
+  f.state.previousTick = 4; await assert.rejects(gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]] }), /previous history/); assert.equal(f.state.pins, 0);
+  f.state.previousTick = -1; f.state.resetSeed = false; await assert.rejects(gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]] }), /reset seed/); gi.dispose();
+});
+test('native glow six-phase ordering, complete emission halo, cached handles, stale/unknown outputs and transport lifetime', async () => {
+  const f = lightingFixture(), glow = createWorldGlow(f.gpu, { g: f.g, emissionProvider: f.emissionProvider, submissionProvider: f.submissionProvider }), args = { core: [0, 1, 0], lightingTick: 0, configVersion: 1 };
+  const c = await glow.prepare(args), done = c.record(); assert.equal(f.state.pins, 1); assert.equal(f.events.filter(e => e.startsWith('dispatch:world glow ')).length, 6); await f.complete(); assert.equal((await done).status, 'published');
+  const out = glow.snapshot(), cached = await glow.prepare(args); assert.equal(cached.status, 'cached'); cached.snapshot.release();
+  const history = out.bindings().values; glow.reset(); assert.equal(history.dead, false); out.release(); assert.equal(history.dead, true);
+  f.state.missing = true; const missing = await glow.prepare({ ...args, lightingTick: 1 }), q = missing.record(); await f.complete(); assert.equal((await q).status, 'incomplete'); assert.equal(glow.snapshot(), null); glow.dispose();
+});
+test('original world-fixed checkerboard/background/source phases and lamp/change-driven scheduler never use origin/allocation', () => {
+  const records = Array.from({ length: 8 }, (_, i) => ({ brick: [i & 1, i >> 1 & 1, i >> 2], matter: true, near: false, age: 50 }));
+  for (let tick = 0; tick < 8; tick++) {
+    const s = selectWorldGI({ records, lightingTick: tick }); assert.equal(s.gatherBricks.length, 1); assert.equal(s.sourceBricks.length, 2); assert.equal(s.gatherBricks[0].background, true);
+    const near = selectWorldGI({ records: records.map(r => ({ ...r, near: true })), lightingTick: tick }); assert.equal(near.sourceBricks.length, 8); assert.equal(near.gatherBricks.length, 4);
+  }
+  const lit = selectWorldGI({ records, lightingTick: 0, lampSpheres: [{ pos: [0, 0, 0], radius: 50 }] }); assert.equal(lit.sourceBricks.length, 8); assert.equal(lit.gatherBricks.length, 4);
+  assert.throws(() => selectWorldGI({ records: [{ brick: [0, 0, 0] }], lightingTick: 0 }), /complete world GI/);
+});
+test('world histories retain packed native backing across ticks/transfers and reject missing/reset-on-arrival/duplicate commit', async () => {
+  const h = createWorldLightingHistory({ worldSize: [64, 128, 64], epoch: 1 }), records = [{ brick: [1, 1, 1], matter: true, near: true, age: 0 }];
+  let refs = 0; const bits = { history: { label: 'known packed bands' } }, owned = { token: { epoch: 1, lightingTick: 0 }, sources: [529], probes: [529], retain() { refs++; return { release() { refs--; }, bindings() { return bits; }, retain: owned.retain }; } };
+  const p = h.begin({ lightingTick: 0, globalKey: [1], records, mode: 2 }); p.commit(owned); assert.equal(h.lightingTick, 0); assert.equal(refs, 1); assert.throws(() => p.commit(owned), /duplicate/);
+  const snapshot = h.capture({ lightingTick: 0, indices: [529] }); assert.equal(refs, 2); assert.throws(() => h.capture({ lightingTick: 0, indices: [530] }), /unknown world GI history/);
+  const copies = []; snapshot.recordHistory({ direct() { return { copyBufferToBuffer(...a) { copies.push(a); } }; } }, { indices: [529], destination: {}, format: 'band-major-4x-vec2u' }); assert.equal(copies.length, 4); assert.deepEqual(copies.map(c => c[1]), [0, 8, 16, 24]);
+  assert.throws(() => h.begin({ lightingTick: 1, globalKey: [1], records, mode: 2 }), /never on arrival/);
+  const q = h.begin({ lightingTick: 1, globalKey: [1], records }); q.abort(); assert.equal(h.lightingTick, 0); h.dispose(); assert.equal(refs, 1); snapshot.release(); assert.equal(refs, 0);
+});

@@ -75,7 +75,7 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
       noiseGLSL, crystalGLSL, meanSigmaWGSL,
       `const SHADOW_TINT_ID_SCALE: f32 = ${SHADOW_TINT_ID_SCALE.toFixed(1)};`].join('\n');
   }
-  if (backend === 'world' && variant !== 'LIGHTING') throw new Error('world writer libraries require separate phase-4 layouts');
+  if (backend === 'world' && !['LIGHTING', 'LIGHTING_GISRC', 'LIGHTING_GI'].includes(variant)) throw new Error('world writer libraries require separate phase-4 layouts');
   const world = backend === 'world';
   const v = LIB_VARIANTS[variant];
   if (!v) throw new Error(`lib: no variant ${variant} (${Object.keys(LIB_VARIANTS).join(', ')})`);

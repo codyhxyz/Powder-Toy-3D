@@ -947,13 +947,25 @@ ${regionMainWGSL}
 // which every view reads, and storage buffers don't count against the 16
 // sampled textures, so nothing reads the light volume's alpha. One thread
 // per brick of the pass's region (REGIONS: region = REGIONS.LIGHT + pass).
+export const glowBlurWeightsWGSL = /* wgsl */ `// tent-ish 5-tap weights (sum 1), and a gain that makes up for light spread past the box
+const LIGHT_BLUR_GAIN: f32 = 1.15;
+var<private> W: array<f32, 5> = array<f32, 5>(0.10, 0.22, 0.36, 0.22, 0.10);`;
+// Structural leaf composition only: Box emission and arithmetic stay identical.
+export const glowBlurWGSL = ({ lookup = 'src[brickId(q)].rgb', store = 'dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);', hi = 'vec3i(BX, BY, BZ) - 1' } = {}) => /* wgsl */ `  var dir = vec3i(0);
+  dir[P.axis] = 1;
+  let hi = ${hi};
+  var s = vec3f(0.0);
+  for (var k = 0; k < 5; k++) {
+    let q = bc + dir * (k - 2);
+    if (any(q < vec3i(0)) || any(q > hi)) { continue; }   // skipped, not renormalised, as before
+    s += ${lookup} * W[k];
+  }
+  ${store}`;
 export const BlurParams = uniformStruct('BlurParams', { axis: 'u32', region: 'u32' });
 export const blurFrag = (g, { last = false } = {}) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${boxesWGSL}
-// tent-ish 5-tap weights (sum 1), and a gain that makes up for light spread past the box
-const LIGHT_BLUR_GAIN: f32 = 1.15;
-var<private> W: array<f32, 5> = array<f32, 5>(0.10, 0.22, 0.36, 0.22, 0.10);
+${glowBlurWeightsWGSL}
 ${BlurParams.wgsl}
 @group(3) @binding(1) var<uniform> P: BlurParams;
 @group(2) @binding(0) var<storage, read> src: array<vec4f>;   // a texel per brick, brickId order
@@ -962,16 +974,7 @@ ${last
     : '@group(2) @binding(1) var<storage, read_write> dst: array<vec4f>;'}
 @group(2) @binding(2) var<storage, read> boxes: array<u32>;
 ${regionMainWGSL}
-  var dir = vec3i(0);
-  dir[P.axis] = 1;
-  let hi = vec3i(BX, BY, BZ) - 1;
-  var s = vec3f(0.0);
-  for (var k = 0; k < 5; k++) {
-    let q = bc + dir * (k - 2);
-    if (any(q < vec3i(0)) || any(q > hi)) { continue; }   // skipped, not renormalised, as before
-    s += src[brickId(q)].rgb * W[k];
-  }
-  ${last ? 'textureStore(dstTex, bc, vec4f(s * LIGHT_BLUR_GAIN, 1.0));' : 'dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);'}
+${glowBlurWGSL({ store: last ? 'textureStore(dstTex, bc, vec4f(s * LIGHT_BLUR_GAIN, 1.0));' : 'dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);' })}
 }
 `;
 
