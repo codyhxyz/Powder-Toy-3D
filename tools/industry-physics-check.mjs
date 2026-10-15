@@ -141,6 +141,7 @@ await test('pump conserves blocked cargo and spills after dismantling without gu
   f.answer(); await settle(); assert.equal(p.pending, 0); assert.equal(p.buffered, 2);
   p.step(0.1, []); p.step(0.1, []);
   assert.equal(f.calls[2].guardMaterial, -1, 'removed machine can spill without base');
+  assert.deepEqual(f.calls[2].vel, [0, 0, 0], 'cargo returns are not pressurized nozzle output');
   f.answer([[0, 0, 0, 0], [1, 0, 0, 0]]); await settle();
   assert.equal(p.pending, 0);
   assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
@@ -149,16 +150,21 @@ await test('pump conserves blocked cargo and spills after dismantling without gu
   p.dispose();
 });
 await test('successful pump outlet reports output rather than returned cargo', async () => {
+  for (let rotation = 0; rotation < 4; rotation++) {
   const f = fixture(), transfers = [];
   const p = createIndustryPhysics({ getSim: () => f.sim, onTransfer: event => transfers.push(event) }); await p.ready;
-  p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
+  const device = d('pump', { rotation });
+  p.step(0.1, [device]); p.step(0.1, [device]);
   f.answer([[E.WATER, 24, 0, 0.2]]); await settle();
-  p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
+  p.step(0.1, [device]); p.step(0.1, [device]);
+  assert.deepEqual(f.calls[1].vel, [[0, 0, 0.6], [-0.6, 0, 0], [0, 0, -0.6], [0.6, 0, 0]][rotation],
+    'the real output impulse rotates with the spout');
   f.answer([[0, 0, 0, 0]]); await settle();
   assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
     [['pump-input', 1], ['pump-output', 1]]);
   assert.equal(p.buffered, 0);
   p.dispose();
+  }
 });
 await test('readback rejection releases reservations and reports once', async () => {
   const f = fixture(), errors = [], p = createIndustryPhysics({ getSim: () => f.sim, onError: e => errors.push(e.message) }); await p.ready;
