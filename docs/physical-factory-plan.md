@@ -8,8 +8,8 @@ Bucket handling, repeat refueling, and precision fuel gating remain unverified.
 Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
-The integration branch includes fetched upstream `130dba1057e2b3885e464629995089d21e49a038`.
-At merge `0c29e02c`, the branch was 71 commits ahead and zero behind that remote.
+The integration branch includes fetched upstream `c59bbdf04a60ff8676f6baddf41ab354a6912b9e`.
+At merge `df563821`, the branch was 73 commits ahead and zero behind that remote.
 Work continues only in `/tmp/sandustry-physical-factory-1b23e28b`.
 The original checkout is preserved recovery, not a build or deployment directory.
 
@@ -142,7 +142,7 @@ These are open questions, not implementation claims.
 ### Current validation
 
 - 356 hearth CPU budget, conduction, geometry, and composed-shader checks pass.
-- All 56 Industry unit tests and 11 controller checks pass.
+- All 63 Industry unit tests and 11 controller checks pass.
 - 17 gate/control CPU tests pass, including native switch-bank shutdown and gate shader type validation.
 - Diagnostics pass mocked asynchronous ownership, mutation, staleness, and disposal regressions.
 - Existing construction, controller, machine-transfer, and Quarry CPU suites pass.
@@ -173,6 +173,12 @@ These are open questions, not implementation claims.
 - Six real mined fuel cells remained accounted for, with four rear and two front after loading.
 - A full actual-tool batch retained all four scrap cells but peaked at 1333.69°C without melting; occupancy was 8645 ms.
 - The current industrial heat rule excludes the two front fuel cells. Whole-firebox eligibility is under review, not implemented.
+- A separate refuel comparison supplied twelve coal cells in two finite batches.
+- The second batch was actually mined, carried, and shovel-placed inside; all four scrap cells stayed contained.
+- It still produced no melt: peak 1333.24°C, occupancy 6158 ms, 4800-tick cap.
+- That comparison required two ordinary miner-output catch tiles, for 91 devices; normal tools remain 89 and backend 83.
+- A separately declared two-cell scrap comparison is being prepared. It cannot count as a four-cell batch pass.
+- Production heat rules remain unchanged while the existing-workflow comparison is incomplete.
 - Real bucket handling, repeat refueling, precision fuel gating, release, and the live-site check remain pending.
 - See `physical-factory-validation.md` for failed checkpoints and measured slot occupancy.
 

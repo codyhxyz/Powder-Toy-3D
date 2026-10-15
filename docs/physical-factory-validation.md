@@ -8,7 +8,7 @@ Actual bucket handling and repeat refueling remain unverified.
 
 The integrated controller and UI pass:
 
-- `node --test tests/industry/*.test.js`: 56 tests.
+- `node --test tests/industry/*.test.js`: 63 tests.
 - `node scripts/check-industry-controller.mjs`: 11 checks.
 - `node scripts/check-industry-factory-ui.mjs`.
 - Existing construction, transfer, and Quarry checks.
@@ -405,7 +405,50 @@ Result: `/tmp/sandustry-physical-line-tools-charge-first-v3.json`.
 Both runs used normal utilization protection and stopped their browsers and servers.
 The physical layout and thermal result no longer justify treating loading failure as the only obstacle.
 Whole-firebox coal eligibility is being reviewed; no heat-rule change has been implemented.
-Actual walking, heat survival, bucket handling, repeat refueling, and precision fuel feeding remain unverified.
+Actual walking, heat survival, bucket handling, completed-batch reuse, and precision fuel feeding remain unverified.
+
+### Unchanged-rule refuel comparison
+
+`--case line --operator tools --refuel-once` preserves the four-cell metal target.
+It permits exactly one additional six-cell cold coal input, not unlimited replenishment.
+The second source is provisioned only after all original source coordinates read empty.
+It is lab-provisioned ore, not proof of a closed, preseeded world.
+The real miner and shovel process both finite batches.
+The second batch stays in the real pack while the first burns.
+Refilling uses an actual clear wall sightline; ash can obstruct the original centre aim.
+Only native accepted PUT slots count as a dose; rejected or retained material is not credited.
+
+The first attempt stopped during pickup after collecting four of the second six cells.
+Those two missing cells were not located, and no complete material accounting is claimed.
+No refill, new thermal result, or bucket operation was established.
+Occupancy: **7463 ms**, report `~/.cache/tpt-headless/runs/13671-13702.json`.
+Result: `/tmp/sandustry-physical-line-tools-refuel-v1.json`.
+Unreached checks remain false; that does not establish new pump or ownership failures.
+
+The miner drives debris backwards off its deck.
+The corrected comparison adds two ordinary catch tiles at `[92,29,88]` and `[96,29,88]`.
+Its bounded pickup search covers the apron, not only the original 105-cell subset.
+This comparison has **91 devices**; the normal tool fixture stays 89, and the backend fixture stays 83.
+The hearth, its operator platform, fuel budget, native physics, and coolant route are unchanged.
+
+The corrected native attempt collected all six additional BROKENCOAL cells with full life and cold payloads.
+At tick 1268, one actual shovel dose placed all six inside the chamber.
+Native PUT receipts confirm the locations; all four scrap cells remained contained.
+No tool, trace, or pending-transfer error occurred.
+The real refuel mechanics passed, but useful processing did not.
+No LAVA formed; metal-bearing material peaked at **1333.24°C** across the 4800-tick cap.
+All four cells remained SCRAP.
+Both finite fuel batches were consumed in the sampled chamber; no chemical fuel remained in the tool pack.
+Cooling, bucket handling, shipment, and final ash pickup were not proved.
+Occupancy: **6158 ms**, report `~/.cache/tpt-headless/runs/15283-15314.json`.
+Result: `/tmp/sandustry-physical-line-tools-refuel-v2.json`.
+
+Architecture review holds heat-rule changes pending comparison with a smaller actual-source batch.
+Any future expanded eligibility must preserve the original molten-velocity region.
+Material eligibility does not filter existing temperature aggregates: generic area peaks are not scrap temperatures.
+Overlapping probe regions must not duplicate physical counts or fuel-life sums.
+The separately declared two-cell comparison is being prepared; it has no native result yet.
+It keeps the 128³ simulation and cannot satisfy or replace the default four-cell acceptance test.
 
 ## Open requirements
 
