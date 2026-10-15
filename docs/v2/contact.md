@@ -155,7 +155,13 @@ measurements. The native 16³ census at `87aa3328` passes 120 ticks and 20 check
 zero water, sand or wall drift. Both new pipelines compiled and ran.
 Total GPU occupancy was 10.721 s (`/tmp/v2-native-census-87aa3328.jsonl`).
 Dense nonidentity scenes may regress from the extra scan/dispatch.
-Full-frame speed remains unmeasured for compaction.
+The clean two-frame split at `60fa5165` measures contact kernels at 4.744 ms
+including classification and finalization, versus 10.739 ms before compaction.
+Fixture, quality and tick windows match. Total occupancy is 3.438 s.
+At tick 5, the heavy list has 38,166 of 96,512 blocks.
+Full-frame medians from one clean 12-frame pair are native 131.5 ms and
+v1 145.5 ms. This is not a repeatability or equivalent-work claim.
+The original flame-to-wood gate still fails; see `completion.md`.
 
 ### Dynamics-only helpers
 

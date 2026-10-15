@@ -86,12 +86,12 @@ Both engines now complete full-frame measurement at `f86a20c8`, without pipeline
 The CPU fixture hashes, f32 cameras and complete render-quality keys match.
 Three warmups precede 12 measured frames for each engine.
 
-| Current merged reference | Median frame | p95 frame | Total occupancy |
+| Earlier `f86a20c8` reference | Median frame | p95 frame | Total occupancy |
 | --- | ---: | ---: | ---: |
 | v1 | 168.4 ms | 259.4 ms | 11.028 s |
 | Native direct | 192.8 ms | 209.3 ms | 16.160 s |
 
-The native median is 14.5% slower. The performance target is not met.
+At that checkpoint, the native median is 14.5% slower.
 Evolved states differ, so neither median nor tail establishes equivalent-work performance.
 These are serialized frame latencies, not live gameplay FPS.
 Further diagnostics must separate compute from rendering without interpreting coalesced labels as individual kernel costs.
@@ -120,7 +120,33 @@ The scratch tail adds 1,048,592 bytes at 128³; existing args supply its indirec
 Devices without tail capacity retain the original native scratch and dispatch.
 CPU tests cover the full heavy-body identity, shuffled invocation order, custom fallback and exact-limit resource behavior.
 The native census at `87aa3328` passes 120 ticks and 20 checks with zero mass drift.
-Both new pipelines ran; total GPU occupancy was 10.721 s. Full-frame timing remains pending.
+Both new pipelines ran; total GPU occupancy was 10.721 s.
+
+The clean two-frame split at `60fa5165` reduces contact kernels from 10.739 to 4.744 ms, including classification and finalization.
+Fixture, camera, quality and tick windows match; total occupancy was 3.438 s.
+At tick 5, 58,346 of 96,512 blocks skip the heavy kernel.
+At tick 15, 49,491 of 113,472 skip it: evolved coverage is lower than the initial CPU estimate.
+
+A fast cached boot exposed another optional timer: POV's two-second avatar prewarm compiled during samples.
+Those two cases are invalid, not performance evidence; occupancies were 3.267 s and 3.457 s.
+Headless modes now skip that background timer. Normal prewarm and awaited POV entry remain unchanged.
+The compile guard still rejects the whole case and now records pipeline labels.
+
+| Latest clean pair, `60fa5165` | Median frame | p95 frame | Total occupancy |
+| --- | ---: | ---: | ---: |
+| v1 | 145.5 ms | 210.7 ms | 9.993 s |
+| Native direct | 131.5 ms | 158.0 ms | 10.702 s |
+
+Each case has three warmups and 12 samples, identical CPU fixture and quality keys, and no measured compilation.
+Native records zero bridges. Means are 150.15 ms for v1 and 135.16 ms for native.
+This one window has a 9.6% lower native median; it is not a repeatable equivalent-work speedup claim.
+Independent review `afa9f325` found no blocker in compaction, scalar IDs, resource fallback or headless prewarm.
+
+**Feature gate failure:** original `flameWood` at `60fa5165` lights 0 of 6 bays; at least 5 are required.
+It completes 120 ticks normally with 9.489 s total occupancy; this is not a timeout.
+Contact activation already exists, but its documented stochastic hazard is insufficient for this short flame exposure.
+The fixture and pass threshold remain unchanged. A contact-ignition repair specification is under review.
+V2 remains non-parity and must not become the default yet.
 
 Local evidence:
 
@@ -141,6 +167,11 @@ Local evidence:
 - `/tmp/v2-water-compat-956a7169.json`
 - `/tmp/v2-water-native-id-6f3383d5.json`
 - `/tmp/v2-native-census-87aa3328.jsonl`
+- `/tmp/v2-water-native-compact-f41c15e0.json`
+- `/tmp/v2-water-native-compact-split-60fa5165.json`
+- `/tmp/v2-water-v1-60fa5165.json`
+- `/tmp/v2-water-native-60fa5165.json`
+- `/tmp/v2-native-flameWood-60fa5165.jsonl`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.
