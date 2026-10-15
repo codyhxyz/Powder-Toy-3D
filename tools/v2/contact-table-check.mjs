@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../../src/v2/contact.js';
-import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout, appendContactTable, CONTACT_ROW_UNIFORM } from '../../src/v2/contactTable.js';
-import { contactWGSL, contactUniformWGSL } from '../../src/shaders/v2/contact.js';
+import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout, appendContactTable } from '../../src/v2/contactTable.js';
+import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { v2Table, v2Rows, v2BlockWGSL, V2_CONTACT_LAYOUT, nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { gridLayout } from '../../src/sim.js';
 
@@ -115,72 +115,6 @@ assert.ok(baked,'dynamics uses raw-u32 EV too');
 assert.equal(Number(baked[1]),CONTACT_ROWS.length*2,'no contact tail baked into dynamics');
 const bakedWords=[...baked[2].matchAll(/\b(\d+)u/g)].map(m=>Number(m[1]));
 assert.deepEqual(bakedWords,Array.from(new Uint32Array(prefix.buffer)),'dynamics prefix bytes unchanged');
-
-// Parse and execute the ACTUAL emitted accessors independently of the emitter.
-// Keep raw words alongside typed values: JS NaN conversions cannot stand in for
-// the shader's payload-preserving bitcast, including negative zero.
-const window = CONTACT_ROW_UNIFORM;
-assert.equal(memory.byteLength,18144);
-assert.equal(window.offset,2816); assert.equal(window.size,14656);
-assert.equal(window.struct.align,16); assert.equal(window.struct.size,14656);
-assert.deepEqual(window.struct.fields.map(f=>[f.name,f.type,f.offset,f.size]),[['words','array<vec4u, 916>',0,14656]]);
-assert.equal(window.rowBase,6); assert.equal(window.rowStride,10);
-assert.equal(window.offset+window.size,layout.rxOffset*4);
-const uniformWords=new Uint32Array(memory.buffer,window.offset,window.size/4);
-assert.deepEqual(uniformWords.slice(24),bits.slice(layout.rowOffset,layout.rxOffset),'exact existing row/window bytes');
-function parseAccessor(source,resource) {
-  const match=source.match(/fn ctRow\(id:i32\)->CTRow \{\n if\(id<0 \|\| id>=(\d+)\)\{return CTRow\(([^]*?)\);\}\n let base=(\d+)u\+u32\(id\)\*(\d+)u;\n return CTRow\(([^]*?)\);\n\}/);
-  assert(match,'actual signed accessor shape');
-  const [,count,zero,base,stride,expression]=match;
-  const struct=source.match(/struct CTRow \{ ([^}]+) \}/)[1].split(',').map(s=>s.split(':'));
-  const loads=expression.split(',').map(s=>{
-    const m=s.match(/^bitcast<(i32|f32)>\(([^[]+)\[base\+(\d+)u\]\.([xyzw])\)$/);
-    assert(m,s); assert.equal(m[2],resource); return {type:m[1],word:4*Number(m[3])+'xyzw'.indexOf(m[4])};
-  });
-  assert.deepEqual(struct,CONTACT_ROW_SCHEMA);
-  assert.equal(loads.length,struct.length);
-  const zeros=zero.split(',');
-  loads.forEach((load,i)=>{assert.equal(load.type,struct[i][1]);assert.equal(zeros[i],load.type==='i32'?'0':'0.0');});
-  return {text:match[0],read(id,words) {
-    return loads.map(load=>{
-      const raw=id<0||id>=Number(count)?0:words[4*(Number(base)+id*Number(stride))+load.word];
-      const view=new DataView(new Uint32Array([raw]).buffer);
-      return {raw,value:load.type==='i32'?view.getInt32(0,true):view.getFloat32(0,true),type:load.type};
-    });
-  }};
-}
-const storageAccessor=parseAccessor(contactWGSL,'EV'),uniformAccessor=parseAccessor(contactUniformWGSL,'CTU.words');
-const prefixUniform=window.struct.wgsl+'@group(1) @binding(0) var<uniform> CTU: ContactRowUniform;\n';
-assert.equal(contactUniformWGSL.slice(prefixUniform.length).replace(uniformAccessor.text,storageAccessor.text),contactWGSL,'every non-accessor rule/snapshot byte identical');
-const ids=[-2147483648,-1,...Array.from({length:256},(_,id)=>id),2147483647];
-function compareAccessors(words) {
-  const view=words.subarray(window.offset/4,(window.offset+window.size)/4);
-  for(const id of ids) {
-    const storage=storageAccessor.read(id,words),uniform=uniformAccessor.read(id,view);
-    assert.deepEqual(uniform,storage,`actual accessor execution id ${id}`);
-    storage.forEach((field,i)=>{
-      const expected=id>=0&&id<91?words[layout.rowOffset+id*40+i]:0;
-      assert.equal(field.raw,expected,`raw field ${id}.${CONTACT_ROW_SCHEMA[i][0]}`);
-      if(id<0||id>=91)assert(Object.is(field.value,0),'typed ZERO, never EMPTY metadata');
-    });
-  }
-}
-compareAccessors(bits);
-for(const value of [-2147483648,-123456789,-1,0,2147483647]) {
-  const rows=CONTACT_ROWS.map(row=>({...row,...Object.fromEntries(CONTACT_ROW_SCHEMA.map(([key,type])=>[key,type==='i32'?value:-0]))}));
-  const words=new Uint32Array(appendContactTable(prefix,rows,CONTACT_REACTIONS).buffer);
-  compareAccessors(words);
-  for(let id=0;id<91;id++) CONTACT_ROW_SCHEMA.forEach(([,type],i)=>assert.equal(words[layout.rowOffset+id*40+i],type==='i32'?value>>>0:0x80000000));
-}
-// Adversarial raw payloads are read, not repacked through JS floats. Padding
-// stays uninterpreted and present in the same buffer window.
-for(const pattern of [0x80000000,0x7fc12345,0xff812345,0xffffffff,0x12345678]) {
-  const words=bits.slice();
-  words.fill(pattern,layout.rowOffset,layout.rxOffset); compareAccessors(words);
-  const view=words.subarray(window.offset/4,(window.offset+window.size)/4);
-  for(let id=0;id<91;id++)assert.deepEqual(view.slice(24+id*40,24+(id+1)*40),words.slice(layout.rowOffset+id*40,layout.rowOffset+(id+1)*40));
-}
-console.log('Actual storage/uniform accessors: all fields, IDs0..255, signed extremes, negative zero/raw payloads/padding; non-accessor bytes identical');
 
 // Dynamic lookup fixture and actual full foundation/contact, compiled by CPU Naga.
 const dir=mkdtempSync(join(tmpdir(),'contact-table-'));

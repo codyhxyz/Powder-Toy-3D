@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { contactWGSL, contactUniformWGSL } from '../../src/shaders/v2/contact.js';
+import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { contactPrelude, contactEntry } from './contact-prelude.mjs';
 import { wgslGroupingErrors } from './wgsl-grouping.mjs';
 // Chromium's WGSL parser rejects ungrouped arithmetic mixed with XOR, even
@@ -27,14 +27,11 @@ try {
   const module = join(dir, 'contact.mjs'); writeFileSync(module, chunk.code);
   const minified = await import(pathToFileURL(module));
   assert.equal(minified.contactWGSL, contactWGSL, 'minification cannot change generated WGSL');
-  assert.equal(minified.contactUniformWGSL, contactUniformWGSL, 'minification cannot change uniform contact');
-  for (const [name,contact] of [['storage',minified.contactWGSL],['uniform',minified.contactUniformWGSL]]) {
-    const source=contactPrelude + contact + contactEntry;
-    assert.deepEqual(wgslGroupingErrors(source),[],'production contact mixed operators require grouping');
-    const file = join(dir, `contact-${name}.wgsl`); writeFileSync(file, source);
-    const naga = spawnSync('naga', [file], { encoding: 'utf8' });
-    if (naga.error) throw naga.error;
-    assert.equal(naga.status, 0, naga.stderr);
-  }
-  console.log('Production minified storage/uniform native contact bundle: identical WGSL; Naga valid; no GPU');
+  const source=contactPrelude + minified.contactWGSL + contactEntry;
+  assert.deepEqual(wgslGroupingErrors(source),[],'production contact mixed operators require grouping');
+  const file = join(dir, 'contact.wgsl'); writeFileSync(file, source);
+  const naga = spawnSync('naga', [file], { encoding: 'utf8' });
+  if (naga.error) throw naga.error;
+  assert.equal(naga.status, 0, naga.stderr);
+  console.log('Production minified native contact bundle: identical WGSL; Naga valid; no GPU');
 } finally { rmSync(dir, { recursive: true, force: true }); }

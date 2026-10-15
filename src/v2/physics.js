@@ -1,14 +1,13 @@
 import { contactWGSL as productionContactWGSL } from '../shaders/v2/contact.js';
 import { NativeJets } from './jets.js';
 import { nativeModes, modeSignature } from './modes.js';
-import { fold, STAGE } from '../gpu/kernels.js';
-import { CONTACT_ROW_UNIFORM } from './contactTable.js';
+import { fold } from '../gpu/kernels.js';
 import { fallVelocity } from './fall.js';
 import { cTq } from './layout.js';
 import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
-  v2BlockUniformWGSL, v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, V2_BLOCK_FINALIZE_LAYOUT,
+  v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, V2_BLOCK_FINALIZE_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
@@ -46,23 +45,10 @@ export function offsetOf(tick) {
 function tableOf(gpu) {
   if (!gpu._v2Table) {
     const t = v2Table();
-    gpu._v2Table = gpu.createBuffer({ label: 'v2 elements', size: Math.ceil(t.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM });
+    gpu._v2Table = gpu.createBuffer({ label: 'v2 elements', size: Math.ceil(t.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     gpu.queue.writeBuffer(gpu._v2Table, 0, t);
   }
   return gpu._v2Table;
-}
-
-// Old device-scoped/HMR allocations may be storage-only. Never replace them,
-// raise requested limits, or compile both heavy variants to probe support.
-function supportsRowUniform(gpu, table) {
-  const { offset, size } = CONTACT_ROW_UNIFORM, limits = gpu.device?.limits;
-  const alignment = limits?.minUniformBufferOffsetAlignment;
-  return !!(table.usage & GPUBufferUsage.UNIFORM) &&
-    Number.isSafeInteger(alignment) && alignment > 0 && offset % alignment === 0 &&
-    Number.isSafeInteger(table.size) && offset + size <= table.size &&
-    size <= limits.maxUniformBufferBindingSize && table.size <= limits.maxBufferSize &&
-    limits.maxUniformBuffersPerShaderStage >= 3 && limits.maxBindGroups >= 4 &&
-    limits.maxBindingsPerBindGroup >= 7 && limits.maxStorageBuffersPerShaderStage >= 7;
 }
 
 export class PhysicsV2 {
@@ -114,13 +100,7 @@ export class PhysicsV2 {
       CONTACT: gpu.layout('V2_CONTACT', V2_CONTACT_LAYOUT), IMPORT: gpu.layout('V2_IMPORT', V2_IMPORT_LAYOUT),
     };
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
-    const table = tableOf(gpu);
-    const rowUniform = contactWGSL === productionContactWGSL && supportsRowUniform(gpu, table);
-    if (rowUniform) L.ROW_UNIFORM = gpu.layout('V2_CONTACT_ROW_UNIFORM', [{
-      binding: 0, visibility: STAGE.COMPUTE,
-      buffer: { type: 'uniform', hasDynamicOffset: false, minBindingSize: CONTACT_ROW_UNIFORM.size },
-    }]);
-    const own = [b(0, this.cells), b(1, this.act), b(2, table)];
+    const own = [b(0, this.cells), b(1, this.act), b(2, tableOf(gpu))];
     this.groups = {
       read: gpu.bindGroup(sim.L.STATE_RO, [b(0, this.cells), b(1, sim.state.B)], 'compact readers'),
       invalidate: gpu.bindGroup(L.INVALIDATE, [b(3, sim.marks)], 'compact invalidation'),
@@ -132,9 +112,6 @@ export class PhysicsV2 {
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
       state: gpu.bindGroup(L.STATE, [b(0, sim.state.A), b(1, sim.state.B), b(2, sim.state.F), b(3, sim.marks)], 'v2 state'),
     };
-    if (rowUniform) this.groups.rowUniform = gpu.bindGroup(L.ROW_UNIFORM, [{
-      binding: 0, resource: { buffer: table, offset: CONTACT_ROW_UNIFORM.offset, size: CONTACT_ROW_UNIFORM.size },
-    }], 'v2 immutable contact rows');
     if (this.blockCompact) {
       L.BLOCK_FINALIZE = gpu.layout('V2_BLOCK_FINALIZE', V2_BLOCK_FINALIZE_LAYOUT);
       this.groups.blockFinalize = gpu.bindGroup(L.BLOCK_FINALIZE, [b(0, this.liquidScratch), b(1, this.args)], 'v2 compact block args');
@@ -153,8 +130,8 @@ export class PhysicsV2 {
       // Contact is required and the long compile pole. Enqueue it before
       // graphics, not behind the idle queue; the shared two-build bound remains.
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? (rowUniform ? v2BlockUniformWGSL(g, !!this.blockCompact) : k.code(g, contactWGSL, !!this.blockCompact)) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
-        layouts: [k.name === 'v2blockFinalize' ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2block' && rowUniform ? L.ROW_UNIFORM : k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, k.name === 'v2blockFinalize' ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
+        name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? k.code(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        layouts: [k.name === 'v2blockFinalize' ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, k.name === 'v2blockFinalize' ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
       });
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
@@ -336,7 +313,7 @@ export class PhysicsV2 {
     const header = sim.header();
     const own = [sim.tables, gpu.emptyGroup, groups.v2];
     const invalidation = [sim.tables, groups.invalidate, groups.v2];
-    const run = (kernel, size, bind = [sim.tables, kernel.name === 'v2block' ? groups.rowUniform ?? gpu.emptyGroup : gpu.emptyGroup, groups[this.familyOf(kernel.name)]], p = params) => {
+    const run = (kernel, size, bind = [sim.tables, gpu.emptyGroup, groups[this.familyOf(kernel.name)]], p = params) => {
       kernel.dispatch(f, size, { bind, header, params: p });
       sim.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
     };

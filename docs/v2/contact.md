@@ -408,21 +408,3 @@ Also checked: foundation's 1534 conservative advection cases and 10000 wide
 products, save round trips, production build and shader binding budgets.
 These are CPU/integration evidence, **not** runtime GPU, visual, performance or
 live-site acceptance. Parent integration owns those gates and deployment.
-
-### Immutable production row uniform view (CPU-checked only)
-
-Production R5 can bind the existing once-uploaded EV allocation as a compute-only,
-non-dynamic group 1/binding 0 uniform: byte offset 2816, size 14656, containing
-`array<vec4u,916>`. Material rows start at vector `6 + u32(id)*10`; their schema,
-raw words, signed invalid-ID typed-zero default and full `CTRow` snapshots are
-unchanged. `ctRx`, phase and other EV readers remain storage-backed. R5 still
-uses seven storage buffers and now three uniforms; other passes are unchanged.
-
-Only initial EV creation adds `UNIFORM` usage. The runtime checks the actual
-allocation usage/range and device alignment/binding limits; unsupported devices
-or retained storage-only allocations use the unchanged storage shader/layout.
-It never replaces the table, adds an upload or compiles a second heavy variant.
-This covers compact R5 and its noncompact scratch fallback, not custom sources.
-The raw/default emitters remain unchanged. CPU raw-bit/source checks, runtime
-recorders, minification and Naga validation are not Metal numerical, compile-time,
-original-pipe completion or full-frame performance evidence. v1 remains default.

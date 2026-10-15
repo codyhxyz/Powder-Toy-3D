@@ -9,7 +9,7 @@ import { edgeCell } from '../../src/v2/modes.js';
 import { EDGE } from '../../src/simModes.js';
 import { gridLayout } from '../../src/sim.js';
 import { V2_KERNELS, V2_CONTACT_LAYOUT, V2Params, v2SupportWGSL, v2ActLayout } from '../../src/shaders/v2.js';
-import { contactWGSL, contactUniformWGSL } from '../../src/shaders/v2/contact.js';
+import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { LAYOUT } from '../../src/shaders/common.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 const cell = (id, T = ELEMENTS[id].temp) => C.ctNew(id, Math.round((T + 273.25) * 4), 65536);
@@ -42,29 +42,7 @@ for (const id of [E.CLOUD,E.PLANT,E.FUNGUS,E.MOSS,E.ICE,E.WATER,E.DUST]) {
   const c = cell(id);
   assert.deepEqual(step(closed,[3,0,0,3],c), C.ctStep(c,closed,1), ELEMENTS[id].key);
 }
-// WATER -> STEAM outside a later block changes its live gas denominator.
-// Frozen atmosphere must retain the pre-R5 liquid classification regardless of
-// which block runs first. Keep the actual latent transition, not a fake ID swap.
-const water=cell(E.WATER), waterRow=C.ctRow(E.WATER);
-const readyWater=C.ctSetEnergy(water,BigInt(C.ctCapacity(water))*BigInt(waterRow.hotQ)+C.ctOffset(water)+BigInt(waterRow.hotL)*65536n);
-const steam=C.ctPhase(readyWater,1,0);assert.equal(steam.id,E.STEAM);
-const outsideCounts=neighbors=>neighbors.reduce((out,c)=>{
-  out[0]+=+(c.id===E.EMPTY);out[1]+=+(c.id===E.OXYGEN);
-  out[2]+=+(c.id===E.CO2);out[3]+=+([0,4].includes(C.ctRow(c.id).kind));return out;
-},[0,0,0,0]);
-const frozenOutside=outsideCounts([cell(E.EMPTY),cell(E.CO2),readyWater]);
-const liveOutside=outsideCounts([cell(E.EMPTY),cell(E.CO2),steam]);
-assert.deepEqual(frozenOutside,[1,0,1,2]);assert.deepEqual(liveOutside,[1,0,1,3]);
-const local=owned(E.EMPTY,E.WOOD,E.WOOD);
-assert.equal(step(local,frozenOutside).burning,0,'frozen liquid outside: 1/3 CO2 extinguishes');
-assert.equal(step(local,liveOutside).burning,1,'counterexample: live STEAM would lower CO2 to 1/4');
-for(const source of [contactWGSL,contactUniformWGSL]) {
-  const block=source.slice(source.indexOf('fn contactBlock('));
-  assert(!block.includes('loadCore('),'uniform path must not reload live outside atmosphere');
-  assert(block.includes('ctStepAtmosphere(cells[i],ns,'));
-  assert(block.includes('(*cores)[i]=ctPack(cells[i],(*cores)[i])'),'pack into original cores, never a stage pack');
-}
-console.log('Atmosphere: six-face extinction, true CO2 fraction, O2/FIRE-O2, unchanged sampled rules, frozen WATER->STEAM counterexample');
+console.log('Atmosphere: six-face extinction, true CO2 fraction, O2/FIRE-O2, unchanged sampled rules');
 
 const off8 = i => [i&1,i>>2,(i>>1)&1];
 const plus = (a,b) => a.map((x,i)=>x+b[i]);

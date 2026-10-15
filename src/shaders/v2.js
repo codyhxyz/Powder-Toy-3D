@@ -12,7 +12,7 @@ import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
-import { contactWGSL as productionContactWGSL, contactUniformWGSL } from './v2/contact.js';
+import { contactWGSL as productionContactWGSL } from './v2/contact.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -687,14 +687,6 @@ const blockIdentityWGSL = /* wgsl */ `
   // Support still snapshots ALL targets, including AIR that may move later.
   if (zeroWork) { return; }
   `;
-
-// Runtime-only production view. Always make identity/compaction decisions with
-// canonical contact first; a uniform section is never a custom contact source.
-export function v2BlockUniformWGSL(g, compact = false) {
-  const code = v2BlockWGSL(g, productionContactWGSL, compact);
-  if (code.split(productionContactWGSL).length !== 2) throw Error('production contact section count');
-  return code.replace(productionContactWGSL, contactUniformWGSL);
-}
 
 export const v2BlockWGSL = (g, contactWGSL = '', compact = false) => {
   // Only exact production contact has the disjoint/frozen-read identity proof.
