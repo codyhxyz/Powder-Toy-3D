@@ -4,7 +4,8 @@ import { Vector3 } from 'three';
 import { E } from '../../src/elements.js';
 import { hearthStructureCells } from '../../src/industry/hearth.js';
 import { FUEL_POSE } from '../../tools/fixtures/industry-loading.js';
-import { lineRefuelPoses } from '../../tools/fixtures/industry-line.js';
+import { lineRefuelPoses, purelineDeviceLayout } from '../../tools/fixtures/industry-line.js';
+import { validateDevices } from '../../src/industry/validation.js';
 import { firstOccupiedRayHit } from '../../tools/fixtures/industry-operator.js';
 
 const cells = new Map(hearthStructureCells({
@@ -39,4 +40,15 @@ test('bounded refuel poses stand on real supports and can see the intended side 
   assert.equal(hit.id, E.TUNGSTEN);
   assert.deepEqual(hit.cell.toArray(), candidates[0].wall);
   assert.equal(hit.face, candidates[0].face);
+});
+
+test('only the refuel comparison extends the physical miner-output apron', () => {
+  const ordinary = purelineDeviceLayout({ operatorMode: 'tools' });
+  const refuel = validateDevices(purelineDeviceLayout({ operatorMode: 'tools', refuelOnce: true }), [128, 128, 128]);
+  assert.equal(ordinary.length, 89);
+  assert.equal(refuel.length, 91);
+  for (const x of [92, 96]) {
+    assert.ok(refuel.some(d => d.type === 'foundation' && d.x === x && d.y === 29 && d.z === 88));
+    assert.ok(!ordinary.some(d => d.x === x && d.y === 29 && d.z === 88));
+  }
 });

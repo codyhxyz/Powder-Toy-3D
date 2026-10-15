@@ -74,7 +74,7 @@ export const LINE_FOUNDATION_COLUMNS = Object.freeze([
 ]);
 
 /** Pure, checked 128³ physical line geometry; no simulation or GPU is created. */
-export function purelineDeviceLayout({ operatorMode = 'transfer' } = {}) {
+export function purelineDeviceLayout({ operatorMode = 'transfer', refuelOnce = false } = {}) {
   const devices = [
     { id: 'line-hearth', type: 'hearth', x: 16, y: 12, z: 16, rotation: 0 },
     { id: 'line-ship', type: 'ship', x: 44, y: 15, z: 52, rotation: 0 },
@@ -91,6 +91,11 @@ export function purelineDeviceLayout({ operatorMode = 'transfer' } = {}) {
     for (const [x, z] of [[92, 92], [92, 96], [96, 96], [92, 100], [96, 100]])
       devices.push(FOUNDATION(`tool-source-apron-${x}-${z}`, x, 29, z));
     devices.push(FOUNDATION('operator-platform', 20, 15, 16));
+    if (refuelOnce) {
+      // The miner drives debris off its rear deck at 0.6 cells/step.
+      // A second pickup needs an ordinary physical apron beyond that deck.
+      for (const x of [92, 96]) devices.push(FOUNDATION(`refuel-output-apron-${x}`, x, 29, 88));
+    }
   }
   return devices;
 }
@@ -104,7 +109,7 @@ const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ')
 export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, operatorMode = 'transfer', refuelOnce = false } = {}) {
   const startedAt = Date.now();
   const until = Number.isFinite(deadline) ? deadline : startedAt + 20_000;
-  const devices = validateDevices(purelineDeviceLayout({ operatorMode }), BOUNDS);
+  const devices = validateDevices(purelineDeviceLayout({ operatorMode, refuelOnce }), BOUNDS);
   const byId = new Map(devices.map(device => [device.id, device]));
   const hearth = byId.get('line-hearth');
   const ship = byId.get('line-ship');
@@ -463,7 +468,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       if (!checks.operatorChargeDelivered || !scrapMine.completed || !scrapThrow.completed)
         throw new Error('actual charge-first loading was not retained; stopped before fuel');
     }
-    // Both finite sources use the same stock-105 scan and ordinary retargets.
+    // Both finite sources use the same bounded stock scan and ordinary retargets.
     const collectToolCoal = async (receipt = {}) => {
       let exposed = false;
       for (let batch = 0; batch < 120 && !exposed; batch++) {
@@ -472,7 +477,10 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         exposed = (await readCells(coalSource)).some(cell => cell.id === E.BROKENCOAL);
       }
       const shovelLoad = physicalOperator.shovel.load;
-      const stockCells = boxCells({ x: [95, 99], y: [30, 32], z: [92, 98] });
+      const stockCells = refuel
+        ? boxCells({ x: [92, 99], y: [30, 32], z: [88, 103] })
+        : boxCells({ x: [95, 99], y: [30, 32], z: [92, 98] });
+      receipt.stockSearchCells = stockCells.length;
       const miningActions = [];
       receipt.actions = miningActions;
       for (let poll = 0; poll < 120 && shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length < 6; poll++) {
@@ -490,6 +498,15 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       }
       receipt.exposed = exposed;
       receipt.payload = shovelLoad.cells.map(cell => [...cell]);
+      if (refuel && receipt.payload.length !== 6) {
+        const remaining = await readCells(stockCells);
+        receipt.observedStockRemainder = stockCells.flatMap((at, i) =>
+          remaining[i].id === E.BROKENCOAL ? [{ at, ...remaining[i] }] : []);
+        const belowApron = boxCells({ x: [92, 99], y: [0, 2], z: [72, 91] });
+        const fallen = await readCells(belowApron);
+        receipt.observedBelowApron = belowApron.flatMap((at, i) =>
+          fallen[i].id === E.BROKENCOAL ? [{ at, ...fallen[i] }] : []);
+      }
       return { exposed, miningActions };
     };
     if (operatorMode === 'tools') {

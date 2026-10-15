@@ -43,7 +43,7 @@ if (!['transfer', 'tools'].includes(operatorMode)
 if (process.argv.includes('--preflight')) {
   if (selectedCase === 'line' || selectedCase === 'loading') {
     const layout = selectedCase === 'line'
-      ? (await import('./fixtures/industry-line.js')).purelineDeviceLayout({ operatorMode })
+      ? (await import('./fixtures/industry-line.js')).purelineDeviceLayout({ operatorMode, refuelOnce })
       : (await import('./fixtures/industry-loading.js')).loadingDeviceLayout();
     const devices = validateDevices(layout, [128, 128, 128]);
     console.log(JSON.stringify({ status: 'cpu-geometry-valid', operatorMode, refuelOnce, devices: devices.length, bounds: [128, 128, 128],

@@ -8,13 +8,13 @@ const run = (...args) => spawnSync(process.execPath, [driver, ...args, '--prefli
   encoding: 'utf8', timeout: 10_000,
 });
 
-test('refueling comparison preflights the unchanged real-tool geometry without a browser', () => {
+test('refueling comparison preflights its physical apron without a browser', () => {
   const result = run('--case', 'line', '--operator', 'tools', '--refuel-once');
   assert.equal(result.status, 0, result.stderr);
   const geometry = JSON.parse(result.stdout);
   assert.equal(geometry.operatorMode, 'tools');
   assert.equal(geometry.refuelOnce, true);
-  assert.equal(geometry.devices, 89);
+  assert.equal(geometry.devices, 91);
 });
 
 test('refueling comparison rejects non-tool and non-line cases before launch', () => {
