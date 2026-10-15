@@ -82,6 +82,8 @@ Those errors are corrected. No GPU benchmark ran.
 
 `tools/hybrid-check.mjs` still reports undelivered lane checks.
 It is not a passing acceptance suite for the full renderer.
+Performance evidence and the blocked benchmark attempt are recorded in
+[`mac-renderer-performance.md`](mac-renderer-performance.md).
 
 ## Ownership
 
