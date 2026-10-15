@@ -69,8 +69,9 @@ const component = (v, i) => (v.getComponent ? v.getComponent(i) : v[i]);
  * @param {object} gpu (kept for the call's shape; the pipelines are the volume's)
  * @param {() => void} [onReady] a variant the view should now draw has become ready (redraw)
  * @param {() => void} [onCompile] a variant the view wants is still building (tell the user)
+ * @param {{ prefetch?: boolean }} [options] proactive near compilation; demand still builds immediately
  */
-export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) {
+export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}, { prefetch = true } = {}) {
   let volume = null;                // gfx/volume.js: its pipeline(view, detail, build)
   let view = 'realistic';           // the view drawn now (a VIEWS key)
   let base = {}, near = {};         // define sets of the two variants
@@ -106,7 +107,7 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) 
     }
     clearTimeout(timer);
     const vol = volume, askedView = view;
-    if (nearFadeM) timer = setTimeout(() => { if (volume === vol && view === askedView && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
+    if (prefetch && nearFadeM) timer = setTimeout(() => { if (volume === vol && view === askedView && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
   }
 
   return {

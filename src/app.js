@@ -30,7 +30,7 @@ import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/thr
 import { Simulation, GI_BLEND } from './sim.js';
 import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
-import { createVolume } from './gfx/volume.js';
+import { createVolume, detailKey } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
@@ -1557,7 +1557,9 @@ const settingsPanel = createSettings({
 let detailVersion = 0;
 // Pending material views retain the last complete variant (readyVolumeView).
 // At initial load without one, coldShader reports the wait; readiness wakes the loop.
-const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
+// Headless checkpoints request their actual view explicitly: an unfired prefetch
+// timer is invisible to gpu.settled() and could start compiling during a sample.
+const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'), { prefetch: testMode == null });
 const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   for (const w of live) w.detail?.(ctx);   // whitewater's per-step field (src/wire/foam.js)
@@ -2450,6 +2452,21 @@ function frame(now) {
     return false;
   }
 }
+// Shared with parked checkpoints: footprint uses the next render's resolution,
+// including a directly edited upscale preset, rather than the previous frame's.
+function syncRenderResolution(resolutionScale = post.settings.resolutionScale) {
+  post.settings.resolutionScale = resolutionScale;
+  post.settings.upscale = presetOf() * DEVICE_RATIO / pixelRatio;
+  post.settings.adaptive = presetOf() < 1;
+  post.settings.floor = UPSCALE_FLOOR * DEVICE_RATIO / pixelRatio;
+}
+
+function updateFrameDetail() {
+  volume.updateMatrixWorld();
+  camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+  return detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+}
+
 // One tick: input, the steps, and, when due, a presented frame. Returns
 // whether the loop should go on (false: nothing to do until something wakes it).
 function tick(now, renderOnly = false) {
@@ -2551,9 +2568,8 @@ function tick(now, renderOnly = false) {
     // CPU-only inspection, before scheduling derived work: a late-ready view
     // can reset GI here and must start its settling passes in this same frame.
     // Uniform uploads and scene hooks stay draw-only for post-only reuse.
-    volume.updateMatrixWorld();
-    camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-    frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+    syncRenderResolution();
+    frameDetail = updateFrameDetail();
     selectRenderView();
   }
   // Set before viewKey: changing source style invalidates the cached image.
@@ -2623,10 +2639,8 @@ function tick(now, renderOnly = false) {
       && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
     post.settings.sprintBlur = blurAllowed
       ? sprintBlurStep(post.settings.sprintBlur, pov.player?.sprintRush ?? 0, dt) : 0;
-    // The preset is a share of the screen's (device) pixels, FSR 2's; post takes shares of the canvas's.
-    post.settings.upscale = presetOf() * DEVICE_RATIO / pixelRatio;
-    post.settings.adaptive = presetOf() < 1;
-    post.settings.floor = UPSCALE_FLOOR * DEVICE_RATIO / pixelRatio;
+    // beforeView hooks may edit presentation settings; retain the final sync.
+    syncRenderResolution();
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
@@ -2785,10 +2799,8 @@ function bootReady(pending = null) {
   requestAnimationFrame(() => requestAnimationFrame(check));
 }
 
-// Everything the session's settings draw with is built (docs/webgpu.md B5):
-// the grid's pipelines, the view's module (the realistic view's base
-// variant), the shadow kernel if the view reads it, and whatever else is
-// still building (the near-detail variant's prefetch, a wire's meshes).
+// Everything the current view demands is built (docs/webgpu.md B5), including
+// close-up/curved detail for parked captures, plus all native and pending work.
 async function allReady() {
   for (;;) {
     const s = sim, v = vol;
@@ -2801,14 +2813,29 @@ async function allReady() {
       if (s === sim && v === vol && coreReady && blocksOn) return;
       continue;
     }
-    // (bent by a presentation effect: the view's curved variant, and a world's curved far view)
+    if (s !== sim || v !== vol || !coreReady) continue;
+    applyOutputRatio();
+    syncRenderResolution(autoRes.scale);
+    updateFrameDetail();
+    // level is demand, unlike the shown fallback while a near shader is pending.
+    const near = isMaterialView(view) && detailGate.level === 1;
+    const detail = near ? gateVariants(settings).near : baseDetail();
     const curved = !!warpNow()?.k, far = win?.far;
-    await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
+    await Promise.all([v.viewReady(view, detail, curved),
+      // update() uses flat-near readiness even when the drawn view is curved.
+      ...(near && curved ? [v.viewReady(view, detail, false)] : []),
+      ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
       ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady] : []),
       ...(far && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
-    if (s === sim && v === vol && coreReady) return;   // (rebuilt meanwhile: wait for the new grid)
+    if (s !== sim || v !== vol || !coreReady || blocksOn || view !== viewKeyOf(settings.view) || curved !== !!warpNow()?.k) continue;
+    applyOutputRatio();
+    syncRenderResolution(autoRes.scale);
+    updateFrameDetail();
+    if (near === (isMaterialView(view) && detailGate.level === 1) &&
+        detailKey(detail) === detailKey(near ? gateVariants(settings).near : baseDetail())) return;
+    // Camera, resolution, switches or grid changed while awaiting compilation.
   }
 }
 
