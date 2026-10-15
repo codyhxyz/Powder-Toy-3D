@@ -166,7 +166,8 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
     sample:{identity:eye,publication:eye.publication,frameIdentity:identity,position:eye.position,words:eye.words}};
   const ticket=createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame), feedbackIdentity=Object.freeze({identity});
   let hands;
-  try {hands=stillTarget ? {ready:true} : app.presentation.neutral(() => renderViewmodels(app.renderer,app.scene,camera,post,{worldLighting}));}
+  try {hands=stillTarget ? {ready:true} : app.presentation.neutral(() => renderViewmodels(app.renderer,app.scene,camera,post,{
+    worldLighting,onReady:()=>app.wakeLoop(),onPending:work=>trackWorldCompilation(app,preflight,work)}));}
   catch(error) {
     const pin=data.retain(),read=ticket.record(gpu.frame,state.boundary);read.catch(()=>{});
     retireWorldUse(state,gpu,Promise.allSettled([ticket.submitted,read]),()=>pin.release());throw error;
@@ -293,16 +294,17 @@ export function createWorldMeshPreflight(app,state,data,frozenView) {
   catch(error) {native.release();throw error;}
   return {native,context,pending:new Set(),failure:null,dead:false};
 }
+function trackWorldCompilation(app,p,work) {
+  if(p.pending.has(work))return;
+  p.pending.add(work);
+  work.then(()=>{p.pending.delete(work);app.wakeLoop();},error=>{p.failure=error;app.wakeLoop();});
+}
 export function preflightWorldMeshes(app,p,camera) {
   requireReady(!p.dead && !p.failure, p.failure?.message ?? 'retired WORLD preflight');
   p.context.bind();
   app.presentation.install(app.scene,camera);
   const n=guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',
-    target:app.post.sceneTarget.rt,onReady:()=>app.wakeLoop(),onPending:work=>{
-      if(p.pending.has(work))return;
-      p.pending.add(work);
-      work.then(()=>{p.pending.delete(work);app.wakeLoop();},error=>{p.failure=error;app.wakeLoop();});
-    }});
+    target:app.post.sceneTarget.rt,onReady:()=>app.wakeLoop(),onPending:work=>trackWorldCompilation(app,p,work)});
   if(n && !p.pending.size)throw new Error('WORLD parked mesh has no live compilation');
   return n===0 && p.pending.size===0;
 }
