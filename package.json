@@ -8,6 +8,7 @@
     "preview": "vite preview",
     "harness": "node tools/harness/serve.mjs",
     "check:wgsl": "node tools/check-wgsl.mjs",
+    "check:fields": "node tools/field-deriver-cpu-check.mjs && node tools/world-field-cpu-check.mjs",
     "check:imports": "node tools/check-imports.mjs",
     "check:gpu": "node tools/gpu-foundation-check.mjs",
     "check:budget": "node tools/budget-check.mjs",

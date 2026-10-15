@@ -1,0 +1,35 @@
+{
+  "base": "bb2b07d85016b6ab58701e2cabb3d9720522bdee",
+  "hashes": {
+    "32": {
+      "fieldEma": "c697662a9e564086fb98b1c06f82e357d76a13f4d9e81357b00f3cdb3876b168",
+      "fieldBlur": "12cb9088582b2a3cbbfa3ce68ce137cfb6102a4079f9101e955d61414114d224",
+      "fieldFinal": "a55183ce9b7b61ed42eb35868d1846e8e756a4831e72e40c4340b4c08df63bbc",
+      "fieldBoost0": "8d36f0754cc5e4bee86b722dc2fed797e40f4189eb83e3ff9e18bf6a86d9dd78",
+      "fieldBoost": "12236b7febe79ba8b8586fd01b1ca3e52b5591aeef4db4561b49b568e532378f",
+      "fieldPeak": "ea00e8047fd222573554bcbf7217bb8705a8f9f5d2daf4ed98d83125fa28c994",
+      "fieldShift": "40c73ada640bce46e33f246eb0ea9298ea0e2b5da51247c5f127640d723d484b",
+      "fieldMax": "5ec322e032310b2606f9767e42c019d208b126be0cb6755193dfcc4a00ac7b9a"
+    },
+    "64": {
+      "fieldEma": "261d55da644f63ecc551a386b2be1251a0ab1c8a7034792ecaa82262c153a0d4",
+      "fieldBlur": "a1e730886a0235970936844e3d7b4d15afd19e8c638cdfe93d7a3d83f1ce7566",
+      "fieldFinal": "b912937ed5ceeab0aa9324eecd52d3f27c08ee1ddb366fee418c08f921cbd673",
+      "fieldBoost0": "53d66242ec2c1d86d14b84f77048cbef272359e3122390bb25a9f14aae61a0d1",
+      "fieldBoost": "b301351fe25bea19273e6003627e0b1a6f241ff27aca385bb5655d1212705a6b",
+      "fieldPeak": "e306fc716a473ad01388aad7211f6b354bb8b37265d01fe16190185f3f07f779",
+      "fieldShift": "ff17398db1ec0dbe62b4d77a1c8c875c0995dbccdf7346c6937639089ce6b2e2",
+      "fieldMax": "8a1a32aec5c119ab6e41a4c22515c0ec555e961b5feb81ccfe9094b95868269d"
+    },
+    "128": {
+      "fieldEma": "584dc214348a6d02e5e40f0b92e212eefce2df606ada8bbf23634ac762cf83cb",
+      "fieldBlur": "9dccea79fb9dcf14e3c30ca279eb235d3eb88b1b43f85cf14c2eae21718b25b1",
+      "fieldFinal": "7a7e1c722fd128f56edee3e378130a881495c8e4c86ed970fe6379f56f65fa8d",
+      "fieldBoost0": "2abb2d69f0fa2e71cf9ea3b08a96b0ebdc4dfbdb6f5f03213cca553dd7e5312b",
+      "fieldBoost": "2e08d74f77997597d21fdb0fac38f75406e91874039f0a2a1fd7d3d40c065a0b",
+      "fieldPeak": "fbf8d24cbc8092df7e4d6a63027f4e41d9baa79f4cec8c9a2ba7b0f0e22f3ecc",
+      "fieldShift": "6e82b74d7656ded550250d7a494786a5cf639b50588562771f9b95b153309d10",
+      "fieldMax": "ff24fe1b77c7959b05e092211331091371282bf4ff279a832a2c41013b109220"
+    }
+  }
+}
