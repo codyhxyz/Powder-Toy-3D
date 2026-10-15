@@ -145,14 +145,18 @@ export async function createIndustryOperator({ sim, gpu, deadline, nativeStep } 
     hit: hit ? { cell: hit.cell.toArray(), face: hit.face, id: hit.id } : null,
   } : null, { putMode: TRANSFER_PUT });
 
-  function setPose(pose) {
+  function rayForPose(pose) {
     const feet = vec(pose.feet);
-    player.pos.copy(feet);
     const eye = feet.clone().add(new THREE.Vector3(0, 5, 0));
     let direction;
     if (pose.direction) direction = vec(pose.direction).normalize();
     else if (pose.target) direction = vec(pose.target).addScalar(0.5).sub(eye).normalize();
     else throw new TypeError('operator pose requires a ray target or direction');
+    return { feet, eye, direction };
+  }
+  function setPose(pose) {
+    const { feet, eye, direction } = rayForPose(pose);
+    player.pos.copy(feet);
     return { eye, direction };
   }
 
@@ -247,6 +251,10 @@ export async function createIndustryOperator({ sim, gpu, deadline, nativeStep } 
     shovel,
     bucket,
     beforeNativeFrame,
+    async probeRay(pose) {
+      const { eye, direction } = rayForPose(pose);
+      return firstOccupiedRayHit({ sim, eye, direction, deadline: until, flush: () => gpu.fence() });
+    },
     act,
     waitFrames,
     snapshot() {

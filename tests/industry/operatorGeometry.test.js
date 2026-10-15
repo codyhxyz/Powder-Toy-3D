@@ -75,7 +75,7 @@ test('operator observes read and fence failures without orphaned rejections', as
 test('only tool mode adds a buildable apron supporting every source neighbour', () => {
   assert.equal(purelineDeviceLayout().length, 83);
   const devices = validateDevices(purelineDeviceLayout({ operatorMode: 'tools' }), [128, 128, 128]);
-  assert.equal(devices.length, 88);
+  assert.equal(devices.length, 89);
   const support = new Set();
   for (const d of devices) if (d.y === 29)
     for (let z = d.z; z < d.z + 4; z++) for (let x = d.x; x < d.x + 4; x++) support.add(`${x},${z}`);

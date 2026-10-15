@@ -49,3 +49,19 @@ test('six-cell fuel prediction requires an observed four-cell scrap bed', async 
   assert.deepEqual(firstEmpty, [[18, 14, 17], [17, 14, 17], [18, 15, 17],
     [18, 14, 18], [17, 15, 17], [17, 14, 18]]);
 });
+
+test('external platform can sight a real liquid surface without aiming through the wall', async () => {
+  const occupied = new Map(shell);
+  for (const x of [17, 18]) for (const z of [17, 18]) occupied.set(`${x},13,${z}`, E.LAVA);
+  occupied.set('17,14,18', E.ASH);
+  const eye = new Vector3(20.01, 21, 18.5);
+  const direction = new Vector3(18.5, 13.999, 18.5).sub(eye).normalize();
+  const hit = await firstOccupiedRayHit({
+    sim: { g: { nx: 128, ny: 128, nz: 128 },
+      readCell: async (x, y, z) => [[occupied.get(`${x},${y},${z}`) ?? E.EMPTY, 20, 0, 0]] },
+    eye, direction, deadline: Date.now() + 1000,
+  });
+  assert.equal(hit.id, E.LAVA);
+  assert.deepEqual(hit.cell.toArray(), [18, 13, 18]);
+  assert.equal(hit.face, 2);
+});

@@ -9,10 +9,7 @@ import { createIndustryOperator } from './industry-operator.js';
 
 export const CHARGE_POSE = Object.freeze({ feet: [21.5, 16, 18.5], target: [16, 13, 18] });
 export const FUEL_POSE = Object.freeze({ feet: [21.5, 16, 17.5], target: [16, 13, 17] });
-export const loadingDeviceLayout = () => [
-  ...purelineDeviceLayout({ operatorMode: 'tools' }),
-  { id: 'operator-platform', type: 'foundation', x: 20, y: 15, z: 16, rotation: 0 },
-];
+export const loadingDeviceLayout = () => purelineDeviceLayout({ operatorMode: 'tools' });
 const box = (lo, hi) => {
   const out = [];
   for (let z = lo[2]; z <= hi[2]; z++) for (let y = lo[1]; y <= hi[1]; y++)

@@ -9,6 +9,7 @@ import { hearthRegions, hearthStructureCells } from '../../src/industry/hearth.j
 import { createTransfer, Load } from '../../src/pov/tools/transfer.js';
 import { createIndustryDiagnostics } from '../../src/industry/diagnostics.js';
 import { PUMP_BACKPLATE_TAG, pumpBackplateCells, pumpStructureCells } from '../../src/industry/pumpStructure.js';
+import { TRANSFER_PUT } from '../../src/shaders/transfer.js';
 
 const BOUNDS = [128, 128, 128];
 const NATIVE_DT = 4 / 240;
@@ -79,6 +80,7 @@ export function purelineDeviceLayout({ operatorMode = 'transfer' } = {}) {
     // miner output cannot fall into the empty world's abyss between strokes.
     for (const [x, z] of [[92, 92], [92, 96], [96, 96], [92, 100], [96, 100]])
       devices.push(FOUNDATION(`tool-source-apron-${x}-${z}`, x, 29, z));
+    devices.push(FOUNDATION('operator-platform', 20, 15, 16));
   }
   return devices;
 }
@@ -249,6 +251,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     if (remainingFuel.some(cell => cell.life < 1 - 1e-7) || records.some(cell => cell.id === E.ASH))
       checks.realFuelSpent = true;
     observations.heat.peakC = Math.max(observations.heat.peakC ?? 20, ...records.map(c => c.temperature));
+    observations.heat.metalPeakC = Math.max(observations.heat.metalPeakC ?? 20,
+      ...[...scrap, ...lava].map(c => c.temperature));
     observations.heat.lavaMetalCells = lava.length;
     observations.heat.scrapCells = scrap.length;
     observations.heat.remainingFuelCells = remainingFuel.length;
@@ -396,6 +400,47 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     let scrapTaken = [];
     let scrapPayload = [];
     let chargePut = 0;
+    const toolPoses = operatorMode === 'tools' ? await import('./industry-loading.js') : null;
+    if (operatorMode === 'tools') {
+      checks.operatorFourCellMeltBatch = false;
+      markStage('actual shovel charge-first loading');
+      edit([96, 30, 100], [97, 30, 101], E.SCRAP, 20, scrapLife, 0.625);
+      await fence('finite cold scrap source');
+      const load = physicalOperator.shovel.load;
+      const scrapMine = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
+        pose: { feet: [98.5, 30, 94.5], target: [97, 30, 100] }, maxFrames: 120,
+        done: () => load.cells.filter(c => c[0] === E.SCRAP).length === 4, label: 'shovel mine finite SCRAP source' });
+      observations.operator.actions.push(scrapMine);
+      observations.operator.requiredActions = [{ label: scrapMine.label, completed: scrapMine.completed }];
+      scrapTaken = load.cells.filter(c => c[0] === E.SCRAP).map(c => [...c]);
+      scrapPayload = scrapTaken.map(c => [...c]);
+      const scrapThrow = await physicalOperator.act({ tool: 'SHOVEL', button: 'secondary',
+        pose: toolPoses.CHARGE_POSE, maxFrames: 120, settleFrames: 0,
+        done: () => load.count === 0 && load.out === 0, label: 'shovel charge-first side-face throw' });
+      observations.operator.actions.push(scrapThrow);
+      observations.operator.requiredActions.push({ label: scrapThrow.label, completed: scrapThrow.completed });
+      const chamber = [...hotRegions.fuel, ...hotRegions.charge];
+      const chamberKeys = new Set(chamber.map(at => at.join(',')));
+      const receipts = physicalOperator.snapshot().transfers.filter(r => r.tool === 'SHOVEL' && r.mode === TRANSFER_PUT)
+        .flatMap(r => r.accepted).filter(slot => slot.payload[0] === E.SCRAP);
+      chargePut = receipts.length;
+      observations.fuel.operatorChargeSnapshots = [];
+      for (const frames of [0, 2, 6]) {
+        if (frames) await physicalOperator.waitFrames(frames, 'settle charge-first scrap');
+        await fence('charge retention probe');
+        const cells = await readCells(chamber);
+        observations.fuel.operatorChargeSnapshots.push(chamber.flatMap((at, i) =>
+          cells[i].id === E.SCRAP ? [{ at, ...cells[i] }] : []));
+      }
+      checks.operatorChargeDelivered = scrapTaken.length === 4 && chargePut === 4
+        && receipts.every(slot => chamberKeys.has(slot.at.join(',')))
+        && observations.fuel.operatorChargeSnapshots.every(cells => cells.length === 4)
+        && observations.fuel.operatorChargeSnapshots.at(-1).every(cell => cell.at[1] === 13);
+      observations.fuel.operatorChargeDump = { confirmedPackDecrease: scrapTaken.length - load.count,
+        confirmedPutSlots: receipts, retainedScrap: load.cells.map(c => [...c]) };
+      if (!checks.operatorChargeDelivered || !scrapMine.completed || !scrapThrow.completed)
+        throw new Error('actual charge-first loading was not retained; stopped before fuel');
+    }
     if (operatorMode === 'tools') {
       let exposed = false;
       for (let batch = 0; batch < 120 && !exposed; batch++) {
@@ -431,11 +476,11 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       observations.fuel.minerSourceAfterShovel = coalSource.map((at, i) => ({ at, ...remainingCoalSource[i] }));
 
       const coalThrow = await physicalOperator.act({ tool: 'SHOVEL', button: 'secondary',
-        pose: { feet: [16.5, 16, 17.5], target: [17, 12, 17] }, maxFrames: 120,
+        pose: toolPoses.FUEL_POSE, maxFrames: 120,
         done: () => !shovelLoad.cells.some(cell => cell[0] === E.BROKENCOAL) && shovelLoad.out === 0,
         label: 'shovel throw mined coal into hearth' });
       observations.operator.actions.push(coalThrow);
-      observations.operator.requiredActions = [{ label: coalThrow.label, completed: coalThrow.completed }];
+      observations.operator.requiredActions.push({ label: coalThrow.label, completed: coalThrow.completed });
       await physicalOperator.waitFrames(8, 'settle real coal dump');
       const loadedFuelAfterCoal = await readCells(hotRegions.fuel);
       const loadedChargeAfterCoal = await readCells(hotRegions.charge);
@@ -471,33 +516,13 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     }
     observations.fuel.minedCount = coalTaken.length;
     observations.fuel.minedPayload = minedSnapshot.map(c => ({ id: c[0], temperature: c[1], life: c[2], ctype: Math.floor(c[3]), seed: c[3] - Math.floor(c[3]) }));
-    edit([96, 30, 100], [97, 30, 101], E.SCRAP, 20, scrapLife, 0.625);
-    await fence('finite cold scrap source');
+    if (operatorMode === 'transfer') {
+      edit([96, 30, 100], [97, 30, 101], E.SCRAP, 20, scrapLife, 0.625);
+      await fence('finite cold scrap source');
+    }
     if (operatorMode === 'tools') {
       const shovelLoad = physicalOperator.shovel.load;
-      const beforeScrap = shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).length;
-      const scrapMine = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
-        pose: { feet: [98.5, 30, 94.5], target: [97, 30, 100] }, maxFrames: 120,
-        done: () => shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).length >= beforeScrap + 4,
-        label: 'shovel mine finite SCRAP source' });
-      observations.operator.actions.push(scrapMine);
-      observations.operator.requiredActions.push({ label: scrapMine.label, completed: scrapMine.completed });
-      scrapTaken = shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).slice(beforeScrap).map(cell => [...cell]);
-      scrapPayload = scrapTaken.map(cell => [...cell]);
-      const remainingScrapSource = await readCells(scrapSource);
-      observations.fuel.scrapSourceAfterShovel = scrapSource.map((at, i) => ({ at, ...remainingScrapSource[i] }));
-      const beforeScrapDump = shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).length;
-      const scrapThrow = await physicalOperator.act({ tool: 'SHOVEL', button: 'secondary',
-        pose: { feet: [19.5, 16, 17.5], target: [18, 12, 18] }, maxFrames: 180,
-        done: () => !shovelLoad.cells.some(cell => cell[0] === E.SCRAP) && shovelLoad.out === 0,
-        label: 'shovel throw SCRAP charge into hearth' });
-      observations.operator.actions.push(scrapThrow);
-      observations.operator.requiredActions.push({ label: scrapThrow.label, completed: scrapThrow.completed });
-      await physicalOperator.waitFrames(8, 'settle real charge dump');
       const [loadedFuel, loadedCharge] = await Promise.all([readCells(hotRegions.fuel), readCells(hotRegions.charge)]);
-      const retainedScrap = shovelLoad.cells.filter(cell => cell[0] === E.SCRAP).map(cell => [...cell]);
-      chargePut = Math.max(0, beforeScrapDump - retainedScrap.length);
-      checks.operatorChargeDelivered = scrapTaken.length === 4 && chargePut === 4 && retainedScrap.length === 0;
       const rearCoal = hotRegions.fuel.flatMap((at, i) => loadedFuel[i].id === E.BROKENCOAL
         ? [{ at, ...loadedFuel[i] }] : []);
       const frontCoal = hotRegions.charge.flatMap((at, i) => loadedCharge[i].id === E.BROKENCOAL
@@ -505,14 +530,12 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       const coalStillInHearth = rearCoal.length + frontCoal.length;
       observations.fuel.operatorCoalDistribution = { rearFuel: rearCoal, frontCharge: frontCoal,
         retainedPack: shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).map(cell => [...cell]),
-        attemptedDumpFrames: scrapThrow.frames, dumpRayHitFrames: scrapThrow.hitFrames };
-      observations.fuel.operatorChargeDump = { actionFrames: scrapThrow.frames, rayHitFrames: scrapThrow.hitFrames,
-        confirmedPackDecrease: chargePut, retainedScrap,
-        observedChargeRowScrap: loadedCharge.filter(cell => cell.id === E.SCRAP).length };
+        loadingOrder: 'charge-first' };
       observations.fuel.operatorChargeDistribution = [
         ...hotRegions.fuel.map((at, i) => ({ at, ...loadedFuel[i] })),
         ...hotRegions.charge.map((at, i) => ({ at, ...loadedCharge[i] })),
       ].filter(cell => cell.id === E.SCRAP || cell.id === E.METAL || (cell.id === E.LAVA && cell.ctype === E.METAL));
+      checks.operatorChargeDelivered &&= observations.fuel.operatorChargeDistribution.length === 4;
       observations.fuel.loadedBrokenCoal = rearCoal.length;
       observations.fuel.loadedBrokenCoalAcrossHearth = coalStillInHearth;
       observations.fuel.loadedScrap = loadedCharge.filter(cell => cell.id === E.SCRAP).length;
@@ -560,6 +583,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     let exhausted = false;
     let waterPeakBeforePour = null;
     let pumpOutputAtOff = null;
+    let lastScoopProbeTick = -Infinity;
     const pumpOutputTarget = 32;
     observations.water.pumpOutputTarget = pumpOutputTarget;
     const pollEveryTicks = 24;
@@ -573,18 +597,41 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         if (hasMetalLava) checks.nativeMetalMelt = true;
         const fuelLife = sampled.filter(c => [E.COAL, E.BROKENCOAL].includes(c.id)).reduce((sum, c) => sum + Math.max(0, c.life), 0);
         if (fuelLife <= 0 && sampled.some(c => c.id === E.ASH)) exhausted = true;
-        if (operatorMode === 'tools' && hasMetalLava && bucketPoured < 4 && bucketLoad.count === 0) {
-          markStage('actual BUCKET scoop of native METAL-ctype LAVA');
-          const scoop = await physicalOperator.act({ tool: 'BUCKET', button: 'primary',
-            pose: { feet: [16.5, 16, 17.5], target: [17, 14, 18] }, maxFrames: 60,
-            done: () => bucketLoad.count > 0, label: 'bucket scoop observed native LAVA' });
-          observations.operator.actions.push(scoop);
-          const payload = bucketLoad.cells.map(c => ({ id: c[0], temperature: c[1], life: c[2], ctype: Math.floor(c[3]), seed: c[3] - Math.floor(c[3]) }));
-          observations.cargo.bucketCells.push(...payload);
-          observations.cargo.bucketAfterScoop = { count: bucketLoad.count, payload };
-          if (payload.length > 0 && payload.every(c => c.id === E.LAVA && c.ctype === E.METAL)) {
-            checks.bucketCarriedActualLava = true;
-          } else residualGaps.push('real BUCKET did not carry only observed native LAVA(METAL) cells');
+        const molten = sampled.filter(c => c.id === E.LAVA && c.ctype === E.METAL);
+        if (operatorMode === 'tools' && molten.length === 4 && bucketPoured === 0) {
+          checks.operatorFourCellMeltBatch = true;
+          observations.operator.moltenBatch ??= molten.map(c => ({ ...c }));
+        }
+        if (operatorMode === 'tools' && hasMetalLava && bucketPoured < 4 && bucketLoad.count === 0
+            && (checks.operatorFourCellMeltBatch || molten.length === 4)
+            && observations.nativeTicks - lastScoopProbeTick >= 96) {
+          lastScoopProbeTick = observations.nativeTicks;
+          let pose = null;
+          // Aim at a real visible surface, not a fixed cell hidden by ash/coal.
+          // Both feet positions are on the already constructed external platform.
+          for (const cell of molten) {
+            for (const z of [17.5, 18.5]) {
+              const feet = [20.01, 16, z];
+              const candidate = { feet, direction: [cell.at[0] + 0.5 - feet[0],
+                cell.at[1] + 0.999 - 21, cell.at[2] + 0.5 - feet[2]] };
+              const hit = await physicalOperator.probeRay(candidate);
+              if (hit?.id === E.LAVA) { pose = candidate; break; }
+            }
+            if (pose) break;
+          }
+          if (pose) {
+            markStage('actual BUCKET scoop of visible native METAL-ctype LAVA');
+            const scoop = await physicalOperator.act({ tool: 'BUCKET', button: 'primary',
+              pose, maxFrames: 24,
+              done: () => bucketLoad.count > 0, label: 'bucket scoop observed native LAVA' });
+            observations.operator.actions.push(scoop);
+            const payload = bucketLoad.cells.map(c => ({ id: c[0], temperature: c[1], life: c[2], ctype: Math.floor(c[3]), seed: c[3] - Math.floor(c[3]) }));
+            observations.cargo.bucketCells.push(...payload);
+            observations.cargo.bucketAfterScoop = { count: bucketLoad.count, payload };
+            if (payload.length > 0 && payload.every(c => c.id === E.LAVA && c.ctype === E.METAL)) {
+              checks.bucketCarriedActualLava = true;
+            } else residualGaps.push('real BUCKET did not carry only observed native LAVA(METAL) cells');
+          } else observations.operator.blockedScoopProbes = (observations.operator.blockedScoopProbes ?? 0) + 1;
         } else if (operatorMode === 'transfer' && hasMetalLava && bucketPoured + (bucketLoad?.count ?? 0) < 4) {
           markStage('bucket actual native METAL-ctype LAVA');
           bucketLoad ??= new Load(4);
@@ -820,6 +867,14 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       checks.operatorBucketDelivered = bucketPoured === 4 && physicalOperator.bucket.load.count === 0
         && observations.cargo.bucketCells.length === 4
         && observations.cargo.bucketCells.every(cell => cell.id === E.LAVA && cell.ctype === E.METAL);
+      const nativePours = observations.operator.finalLoads.transfers
+        .filter(r => r.tool === 'BUCKET' && r.mode === TRANSFER_PUT).flatMap(r => r.accepted)
+        .filter(slot => slot.payload[0] === E.LAVA && Math.floor(slot.payload[3]) === E.METAL);
+      const catchKeys = new Set(catchCells.map(at => at.join(',')));
+      checks.operatorBucketDelivered &&= nativePours.length === 4 && nativePours.every(slot => catchKeys.has(slot.at.join(',')));
+      checks.operatorTraceIntegrity = observations.operator.finalLoads.traceErrors.length === 0
+        && observations.operator.finalLoads.omittedTransfers === 0
+        && observations.operator.finalLoads.transfers.every(r => !r.error && !r.pending);
       observations.operator.cargoAccounting = { complete: false,
         note: 'Actual tool payloads and retained loads are recorded; this operator run does not claim complete world-wide cargo conservation.' };
       if (physicalOperator.shovel.load.count) observations.cargo.residuals.push({ kind: 'operator-shovel-pack',
