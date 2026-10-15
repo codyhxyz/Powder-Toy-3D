@@ -24,7 +24,8 @@ Both fixes have CPU regressions.
 The commands used an isolated Vite server on strict port 19973.
 Each invocation used `tools/browser.mjs`.
 Earlier runs used ten-second slots. The fetched policy now allows 25 seconds total.
-One busy-check override had explicit user approval; the later normal runs did not bypass protection.
+Every busy-check override had explicit user approval.
+The later protected retries did not bypass protection.
 Browsers closed after each run.
 
 ### Gates and controls: passed
@@ -240,6 +241,49 @@ The next protected line attempt refused admission at 88% measured GPU utilizatio
 It released its slot after **2560 ms**, without opening a browser.
 The conditional UI run did not start.
 No additional override was used.
+
+### Protected retries: sealed source and real UI
+
+Fetched upstream `ea9bcb7` includes the revised ownership-query and cleanup policy.
+Both runners retain the 25-second total cap.
+The UI runner now derives its work deadline from the shared cleanup reserve.
+No utilization override was used for these retries.
+
+The 63-device batch ran for **8444 ms**.
+Report: `~/.cache/tpt-headless/runs/1258-1329.json`.
+Complete result: `/tmp/sandustry-physical-line-sealed.json`.
+
+- All 24 water cells stayed behind the closed gate.
+- The opened gate exposed all 12 shutter cells without deleting water.
+- The pump confirmed two input cells and two output cells.
+- Its base remained intact and its real native switch was ON.
+- Mining preserved six usable broken-coal cells.
+- All four scrap cells melted and entered the existing bucket load.
+- Ash clearing preserved the full refractory shell.
+- No water reached the catch. No melt was poured there and nothing shipped.
+
+The first UI attempt stopped on an incorrect harness assertion after placing TSNS.
+Escape hides `#industry-builder`, not the persistent `.industry` wallet/HUD.
+That assertion now targets the actual builder and waits for its UI update.
+This attempt occupied **6967 ms**; report `~/.cache/tpt-headless/runs/13350-13389.json`.
+
+The corrected UI case **passed**, occupying **5339 ms**.
+Report: `~/.cache/tpt-headless/runs/17253-17284.json`.
+Result: `/tmp/sandustry-physical-factory-operations/operations.json`.
+
+- Actual canvas clicks placed TSNS at `(48,8,64)` and SWITCH at `(48,9,64)`.
+- Native readback confirmed TSNS threshold 350°C and both material IDs.
+- Confirmed spending was three credits, then five credits total.
+- Invalid threshold input kept the last valid controller value.
+- Focused-input Q handling, canvas blur, Escape closure, and Q reopening passed.
+- Actual switch inspection/toggle changed native switch life to 10.
+- The drive button enabled native control on the registered starter output belt.
+- Gate-mode controls and the paid-ledger header round trip passed.
+
+The gate registration was an explicit UI-only fixture, not a physical-flow test.
+This case did not simulate player shovel/bucket strokes or full terrain-save restoration.
+No page exceptions or native GPU validation errors occurred.
+The optional local AI-quota endpoint was unavailable; that unrelated request was recorded.
 
 ## Open requirements
 
