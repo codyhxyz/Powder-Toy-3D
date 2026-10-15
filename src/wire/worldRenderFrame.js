@@ -43,7 +43,7 @@ export function mergeWorldFrameFeedback(...feedback) {
 // The caller holds candidate and returned native consumers through LAST use.
 function nativeCandidate(state, data, values, params, packedMesh) {
   return state.volume.prepare({snapshot:data.snapshot.retain(), tableBuffer:data.tables.buffer,
-    frameUniforms:values, physicsOrigin:data.frame.physicsOrigin, params,
+    appearance:data.appearance, frameUniforms:values, physicsOrigin:data.frame.physicsOrigin, params,
     lighting:data.lighting, external:{...data.frame.external, packedMesh}});
 }
 function meshPublication(data) {
@@ -79,7 +79,7 @@ export async function createWorldFrameState(app, data, noise) {
 export async function prewarmWorldFrame(app, state, data, {view,detail={},curved=false}) {
   requireReady(!state.dead && data.tables?.buffer && data.sunTextures, 'pinned WORLD native inputs required');
   state.volume ??= createWorldVolume(app.gpu, {g:{nx:app.win.size[0],ny:app.win.size[1],nz:app.win.size[2],
-    sourceAppearance:!!data.appearance}, atlas:state.data.atlas, tables:data.tables.buffer, appearance:data.appearance});
+    sourceAppearance:!!data.appearance,sourceGrid:data.appearance?.sourceGrid}, atlas:state.data.atlas, tables:data.tables.buffer});
   await Promise.all([state.volume.viewReady(view,detail,curved), state.volume.pointReady,
     state.volume.signsReady, state.opaque.ready, app.post.sceneReady]);
 }
