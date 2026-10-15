@@ -11,22 +11,23 @@
 // navigator.gpu (on plain http, because WebGPU needs a secure origin), no
 // adapter, only a software adapter (?software=1 uses it anyway), or a device
 // request app.js was refused. Nothing redirects: there is no WebGL2 build.
-// While the menu is up, the device is made and the picked map's pipelines
-// build in the background (preload.js).
+// While the menu is up, only game files are prefetched (preload.js).
 import './fonts.css';   // Archivo and Silkscreen, self-hosted
 import './ui/menu.css';
 import { createMenu } from './ui/menu.js';
 import { launch, mark } from './launch.js';
-import { preloadGame, gameFetched, refreshGameFiles, warmMap } from './preload.js';
+import { preloadGame, gameFetched, refreshGameFiles } from './preload.js';
 import { GAMEMODES, mapOf, mapByKey, mapsFor, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
 import { probeWebGPU } from './gpu/device.js';
 import { BOOT_RETRY, bootModuleRecovery } from './bootRecovery.js';
+import { startupDeadline, safeStartupHref, loadSourceMapManifests } from './startupSafety.js';
 
 // The converted source levels (public/local-maps): their manifests register the
 // maps before the menu lists them, and each map's geometry loads when it is
 // opened. A map that fails to register is simply absent, never substituted.
-try { await (await import('./world/import/localMap.js')).installLocalCrueltyMaps(); }
-catch (error) { console.error('Converted source maps failed to register', error); }
+let sourceMapError = null;
+try { await loadSourceMapManifests(() => import('./world/import/localMap.js')); }
+catch (error) { sourceMapError = error; console.error('Converted source maps failed to register', error); }
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
 const TEAM_GAMES = Object.keys(import.meta.glob('./game/index.js')).length > 0;
@@ -58,7 +59,7 @@ const menu = createMenu({
 });
 
 // No usable adapter: the error page, the menu closed.
-probe.then((p) => { if (!p.ok) showWebgpuError(p.message || p.reason); });
+probe.then((p) => { if (!p.ok && !launch.startupError) showWebgpuError(p.message || p.reason, p.reason); });
 
 // (opts.saves: on the Saves list)
 launch.openMenu = (opts = {}) => {
@@ -67,24 +68,35 @@ launch.openMenu = (opts = {}) => {
 };
 launch.menuOpen = () => menu.isOpen;
 
-// Before the game runs, a map hovered or picked on the menu starts its grid's
-// pipelines (preload.js warmMap; once per grid). The menu's cards carry their
-// map (data-map) and the picked one aria-selected (ui/menu.js).
-const menuEl = () => document.querySelector('.mm');
-const pickedMap = () => menuEl()?.querySelector('.mm-card[aria-selected="true"][data-map]')?.dataset.map ?? null;
-const pickedMode = () => menuEl()?.querySelector('.mm-mode[aria-pressed="true"][data-mode]')?.dataset.mode ?? 'sandbox';
-function warmFrom(e) {
-  if (app) return;
-  const card = e.target.closest?.('.mm-card[data-map]');
-  if (card) warmMap(card.dataset.map, pickedMode());
-  // a click may have picked another map, or another mode whose maps start
-  // elsewhere: read the pick once the menu's own click handler has run (a
-  // task later; a microtask would still run before it, this listener being
-  // the document's capture-phase one)
-  if (e.type === 'click') setTimeout(() => { const m = pickedMap(); if (m && !app) warmMap(m, pickedMode()); }, 0);
+// Menu browsing only fetches files. Hovering maps must not create devices or
+// queue shader compilations for worlds the player has not chosen to start.
+let finishStartup = null, startupComplete = false;
+function watchStartup() {
+  if (finishStartup || app) return;
+  finishStartup = startupDeadline((error) => {
+    launch.startupError = error;
+    showStartupError(error);
+    // Best effort only: a device request can itself still be pending.
+    // If it resolves late, stop that device rather than restarting the boot.
+    Promise.resolve(launch.gpu).then((gpu) => {
+      gpu?.fail(error);
+      showStartupError(error);
+    }, () => {});
+  });
 }
-document.addEventListener('pointerover', warmFrom, { passive: true });
-document.addEventListener('click', warmFrom, { passive: true, capture: true });
+function showStartupError(error) {
+  menu.close();
+  showError(`${error.message}\n\nYou can restart with source textures disabled and the Plain view.`
+    + (launch.save != null ? '\nSelect your save again after restarting.' : ''));
+  const el = document.getElementById('error');
+  el.style.flexDirection = 'column';
+  el.style.gap = '20px';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Restart with safe graphics';
+  button.onclick = () => location.assign(safeStartupHref(location.href, launch));
+  el.append(button);
+}
 
 async function start(map, mode) {
   mark('click');
@@ -99,6 +111,9 @@ async function start(map, mode) {
   await bootInSteps();
 }
 launch.ready = () => {
+  if (launch.startupError) return;
+  startupComplete = true;
+  finishStartup?.();
   menu.close();
   const url = new URL(location.href);
   if (url.searchParams.has(BOOT_RETRY)) {
@@ -106,20 +121,30 @@ launch.ready = () => {
     history.replaceState(history.state, '', url.href);
   }
 };
+launch.failed = (error) => {
+  finishStartup?.();
+  if (!startupComplete) {
+    launch.startupError ??= error;
+    showStartupError(launch.startupError);
+  }
+};
 // The loading screen's steps as the boot reaches them (ui/menu.js STEPS): the
 // download and the build's start here, then app.js's pipeline builds, world,
 // and a team mode's match being set up behind the screen (its status line).
-launch.progress = (step) => menu.progress(step);
-launch.status = (text) => { if (menu.isOpen) menu.progress('match', text); };
+launch.progress = (step) => { if (!launch.startupError) menu.progress(step); };
+launch.status = (text) => { if (!launch.startupError && menu.isOpen) menu.progress('match', text); };
 
 // The boot from the menu, its first two steps shown: the game's modules
 // arriving (fetched in the background while the menu was up), then the build,
 // on screen before app.js holds the main thread building the map in one go.
 async function bootInSteps() {
+  watchStartup();
   menu.progress('fetch');
   await gameFetched();
+  if (launch.startupError) return;
   menu.progress('build');
   await painted();
+  if (launch.startupError) return;
   await boot();
 }
 
@@ -165,10 +190,17 @@ async function loadSave(what, meta) {
 // software adapter, which ?software=1 uses anyway) or the refused device
 // request's (app.js). The game can't draw without it, so the menu goes.
 let webgpuFailed = false;
-function showWebgpuError(why) {
+function showWebgpuError(why, reason) {
+  finishStartup?.();
   webgpuFailed = true;
-  const lines = [`Powder Toy 3D draws with WebGPU, and this browser won't start it. ${why}`,
-    'It runs in Chrome and Edge (macOS, Windows, ChromeOS, Android) and in Safari 26 (macOS, iOS, iPadOS).'];
+  const lines = [`The game cannot start WebGPU right now. ${why}`];
+  if (reason === 'no-adapter') {
+    lines.push('No shader compilation or map generation started. This error does not identify why GPU access is unavailable.',
+      'If this followed a browser hang, save your other work, then quit and reopen the browser.',
+      'Chrome: chrome://gpu. Edge: edge://gpu. Check WebGPU status and reported problems.');
+  } else {
+    lines.push('WebGPU is available in Chrome, Edge and Safari 26 on supported systems. Graphics acceleration must be available.');
+  }
   if (TEST_PAGE) lines.push('Under test, run Chromium with --enable-unsafe-webgpu (tools/browser.mjs does).');
   menu.close();
   showError(lines.join('\n'));
@@ -188,16 +220,23 @@ This error does not identify the cause. Save your other work, then quit the brow
 If it keeps happening, chrome://gpu shows graphics availability, detected problems, and driver messages.`;
 
 async function boot() {
+  watchStartup();
   const p = await probe;
+  if (launch.startupError) return;
   if (!p.ok) return;           // (the probe's handler explained)
   launch.adapter = p.adapter;  // app.js: createGpu on it, unless preload.js made the device already (launch.gpu)
   try {
     if (new URL(location.href).searchParams.has(BOOT_RETRY)) await refreshGameFiles();
     app = await import('./app.js');
   } catch (err) {
+    finishStartup?.();
+    if (launch.startupError) {
+      showStartupError(launch.startupError);
+      return;
+    }
     // app.js's createGpu was refused a device: as good as no adapter (B2)
     if (err === launch.deviceError) {
-      showWebgpuError(`The browser refused a WebGPU device: ${err.message || err.name || err}`);
+      showWebgpuError(`The browser refused a WebGPU device: ${err.message || err.name || err}`, 'device-error');
       return;
     }
     menu.close();
@@ -229,14 +268,21 @@ async function boot() {
 }
 
 if (location.search) {
-  linkMode(new URLSearchParams(location.search));
-  boot();
+  const params = new URLSearchParams(location.search);
+  if (params.get('map') && !mapByKey(params.get('map'))) {
+    menu.close();
+    showError(`${sourceMapError ? `${sourceMapError.message}\n` : ''}`
+      + `The requested map "${params.get('map')}" is unavailable. Select another map from the home page.`);
+  } else {
+    linkMode(params);
+    boot();
+  }
 } else {
   menu.open();
-  // the game downloads while the menu is up, and its pipelines build, if it can run here
+  // Network prefetch only. GPU compilation starts after an explicit Start.
   probe.then((p) => {
     if (!p.ok || webgpuFailed) return;
     launch.adapter = p.adapter;
-    preloadGame({ map: pickedMap() ?? firstMap });
+    preloadGame();
   });
 }

@@ -10,7 +10,8 @@ import { swatchCode, SWATCHES } from './cozy-fixture.mjs';
 import { WgslParser, WgslExec } from 'wgsl_reflect/wgsl_reflect.module.js';
 
 const cpu = process.argv.includes('--cpu');
-const size = cpu ? 48 : 144, width = size * SWATCHES.length;
+const swatches = SWATCHES;
+const size = cpu ? 48 : 144, width = size * swatches.length;
 let beforeWGSL = '';
 const beforeArg = process.argv.indexOf('--before');
 if (beforeArg >= 0) {
@@ -62,13 +63,13 @@ for (let i = 0; i < width * height; i++) {
     rgb[i * 3 + c] = Math.round(255 * Math.min(1, srgb));
   }
 }
-for (let row = 0; row < rows; row++) for (let tile = 0; tile < SWATCHES.length; tile++) {
+for (let row = 0; row < rows; row++) for (let tile = 0; tile < swatches.length; tile++) {
   let min = Infinity, max = -Infinity;
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     const red = pixels[((row * size + y) * width + tile * size + x) * 4];
     min = Math.min(min, red); max = Math.max(max, red);
   }
-  if (SWATCHES[tile][0] !== 'Metal') assert(max - min > 0.003, `${SWATCHES[tile][0]} must show pattern, not a flat shader failure`);
+  if (swatches[tile][0] !== 'Metal') assert(max - min > 0.003, `${swatches[tile][0]} row ${row}: red range ${min}..${max}; expected pattern variation`);
 }
 mkdirSync('/tmp/tpt-cozy-visual', { recursive: true });
 const output = `/tmp/tpt-cozy-visual/materials${beforeWGSL ? '-comparison' : ''}${cpu ? '-cpu' : ''}.png`;
@@ -77,7 +78,7 @@ const image = spawnSync('magick', ['ppm:-', output], {
 });
 assert.ifError(image.error);
 assert.equal(image.status, 0, String(image.stderr));
-console.log('Left to right:', SWATCHES.map(([name]) => name).join(', '));
+console.log('Left to right:', swatches.map(([name]) => name).join(', '));
 console.log(cpu ? 'CPU execution of actual WGSL; no GPU/browser used.' : 'GPU artwork; browser and Vite closed.');
 if (beforeWGSL) console.log('Top: previous Cozy. Bottom: new Cozy. Same world coordinates, flat light, footprint, and production tone mapper. Not gameplay.');
 console.log(output);

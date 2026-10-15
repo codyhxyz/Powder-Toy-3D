@@ -1,4 +1,5 @@
 import { E } from '../../elements.js';
+import { APPEARANCE_BASE, appearanceOf, materialWord, materialId, materialAppearance } from '../../appearance.js';
 import { compileKit, MAT, MAT_NAMES, MAT_COUNT, WANG_OUT, WANG_NO_TEMP } from './kit.js';
 import { generateTiling, bakeAtlas, atlasLayout, packPlacement, makeSampler } from './tiling.js';
 import { wangGLSL, wangData } from './glsl.js';
@@ -43,9 +44,15 @@ export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, e
   const atlas = bakeAtlas(kit);
   const placement = packPlacement(tiling);
   const sample = makeSampler({ kit, units, atlas, placement });
+  const sampleMaterial = makeSampler({ kit, units, atlas, placement }, true);
   const wangCellJS = (x, y, z) => (Array.isArray(x) ? sample(x[0] - origin[0], x[1] - origin[1], x[2] - origin[2]) : sample(x - origin[0], y - origin[1], z - origin[2]));
+  const wangCellMaterialJS = (x, y, z) => (Array.isArray(x) ? sampleMaterial(x[0] - origin[0], x[1] - origin[1], x[2] - origin[2]) : sampleMaterial(x - origin[0], y - origin[1], z - origin[2]));
   const palette = MAT_NAMES.slice(0, MAT_COUNT).map((n) => E[kit.palette[n]]);
   const elementJS = (code) => (code >= 0 && code < MAT_COUNT ? palette[code] : E.ROCK);
+  const elementMaterialJS = (word) => {
+    const id = elementJS(materialId(word));
+    return materialWord(id, appearanceOf(id, APPEARANCE_BASE + materialAppearance(word)));
+  };
   const tempJS = (code) => kit.temps?.[MAT_NAMES[code]] ?? WANG_NO_TEMP;
   // a brick's world box, and a canonical point of a placed tile in world cells
   const brickBox = (b) => {
@@ -88,7 +95,7 @@ export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, e
   return {
     kit, units, origin, glsl: wangGLSL(kit), tiling, atlas, placement, sites, torches,
     data: () => (data ??= wangData({ kit, units, origin, atlas, placement })),
-    wangCellJS, elementJS, tempJS,
+    wangCellJS, wangCellMaterialJS, elementJS, elementMaterialJS, tempJS,
     entry: shaftMouth(tiling.entryEdge, origin[1] + units[1] * G.H),
     exit: shaftMouth(tiling.exitEdge, origin[1]),
     mainPath: tiling.mainPath.map((id) => brickBox(tiling.bricks[id])),

@@ -29,8 +29,8 @@ fn cozyCell(uv: vec2f, size: f32, salt: f32) -> vec4f {
   }
   return vec4f(local, seed, second - first);
 }
-fn cozySupported(id: i32) -> bool {
-  return RCLASS(id) == R_OPAQUE && (id == E_WOOD || id == E_PLANT || id == E_SAND || id == E_STONE || id == E_WALL
+fn cozySupported(id: i32, ctype: f32) -> bool {
+  return RCLASS(id) == R_OPAQUE && (id == E_WOOD || id == E_PLANT || (id == E_MOSS && appearanceOf(id, ctype) == AP_LEAVES) || id == E_SAND || id == E_STONE || id == E_WALL
       || id == E_BRICK || id == E_RUBBLE || id == E_CERAMIC || id == E_CLAY || id == E_MUD
       || id == E_ASH || id == E_SNOW || id == E_SAWDUST || SURF(id) == SURF_CRAG
       || SURF(id) == SURF_BRUSHED || SURF(id) == SURF_POLISHED);
@@ -186,37 +186,92 @@ fn cozyPattern(id: i32, uv: vec2f, fp: f32, grass: bool) -> vec3f {
   if (id == E_CLAY || id == E_MUD) { return cozySoil(uv, fp); }
   return cozyRock(uv, fp);
 }
+// Animal Crossing's furniture uses readable boards, not the tree's bark.
+// These seams and slender grain follow an authored timber axis in cozyMat.
+fn cozyPlanks(uv: vec2f, fp: f32) -> vec3f {
+  let width = 0.46;
+  if (cozyFade(width, fp) <= 0.0) { return vec3f(1.0); }
+  let board = floor(uv.x / width);
+  let h = hash33(vec3f(board, 43.0, 19.0));
+  let along = uv.y + h.x * 2.8;
+  let local = vec2f(fract(uv.x / width) - 0.5, fract(along / 2.8) - 0.5);
+  let aa = max(fp * 1.3, 0.001);
+  let seamWidth = max(0.012, aa);
+  let jointWidth = max(0.009, aa);
+  let seam = 1.0 - smoothstep(seamWidth - aa, seamWidth + aa, (0.5 - abs(local.x)) * width);
+  let joint = 1.0 - smoothstep(jointWidth - aa, jointWidth + aa, (0.5 - abs(local.y)) * 2.8);
+  let r = (local - (h.yz - 0.5) * vec2f(0.35, 0.45)) / vec2f(0.16, 0.10);
+  let bend = 0.11 * sin(along * 2.2 + h.y * COZY_TAU) + 0.16 * r.x * exp(-dot(r, r));
+  let grain = cozyStroke(sin((uv.x / 0.11 + bend) * COZY_TAU), 0.13, max(fp * 60.0, 0.015));
+  let knot = cozyStroke(length(r) - 0.7, 0.09, max(fp * 22.0, 0.02)) * smoothstep(0.48, 0.65, h.z);
+  let tone = 1.0 + (h.y - 0.5) * 0.18 - grain * 0.13 - knot * 0.19;
+  let body = vec3f(1.55, 1.35, 1.14) * tone;
+  let paint = mix(body, vec3f(0.57, 0.53, 0.48), max(seam, joint));
+  return mix(vec3f(1.0), paint, cozyFade(width, fp));
+}
+fn cozyTimberPattern(uv: vec2f, fp: f32, plank: bool) -> vec3f {
+  if (plank) { return cozyPlanks(uv, fp); }
+  return cozyWood(uv, fp);
+}
+fn cozyAuthoredPattern(id: i32, uv: vec2f, fp: f32, grass: bool, foliage: bool) -> vec3f {
+  if (foliage) { return cozyPlant(uv, fp, false); }
+  return cozyPattern(id, uv, fp, grass);
+}
 fn cozyMat(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   var m = matBase(id);
   let wp = p * CELL_M;
   let pixel = fp * CELL_M;
   let an = abs(n);
   let w = an * an / max(dot(an, an), 1e-5);
+  let appearance = appearanceOf(id, ctype);
+  if (appearance == AP_PLAIN) {
+    m.emit = cellEmission(id, T, ctype) + sparkEmit(id, ctype);
+    return m;
+  }
   if (id == E_WOOD) {
-    // shortcut: E_WOOD has no plank/log axis metadata; keep the existing horizontal-face end-grain rule until authored material tags exist.
-    let end = woodEndGrain(n);
-    var paint = vec3f(0.0);
-    if (end < 1.0) {
-      var side = vec3f(0.0);
-      if (w.x > 0.0) { side += cozyWood(wp.zy, pixel) * w.x; }
-      if (w.z > 0.0) { side += cozyWood(wp.xy, pixel) * w.z; }
-      paint += side / max(w.x + w.z, 1e-5) * (1.0 - end);
+    var q = wp;
+    var qn = n;
+    if (appearance == AP_LOG_X || appearance == AP_PLANK_X) { q = wp.yxz; qn = n.yxz; }
+    if (appearance == AP_LOG_Z || appearance == AP_PLANK_Z) { q = wp.xzy; qn = n.xzy; }
+    let aw = abs(qn) * abs(qn);
+    let tw = aw / max(dot(abs(qn), abs(qn)), 1e-5);
+    let plank = appearance >= AP_PLANK_X && appearance <= AP_PLANK_Z;
+    if (plank || appearance == AP_BARK) {
+      var paint = vec3f(0.0);
+      if (tw.x > 0.0) { paint += cozyTimberPattern(q.zy, pixel, plank) * tw.x; }
+      if (tw.y > 0.0) { paint += cozyTimberPattern(q.xz, pixel, plank) * tw.y; }
+      if (tw.z > 0.0) { paint += cozyTimberPattern(q.xy, pixel, plank) * tw.z; }
+      m.alb *= paint;
+    } else {
+      // Unknown cells keep the old upward-end convention; labelled logs have
+      // rings on both ends of their explicit X/Y/Z axis.
+      let end = select(woodEndGrain(qn), woodEndGrain(abs(qn)), appearance != AP_NONE);
+      var paint = vec3f(0.0);
+      if (end < 1.0) {
+        var side = vec3f(0.0);
+        if (tw.x > 0.0) { side += cozyWood(q.zy, pixel) * tw.x; }
+        if (tw.z > 0.0) { side += cozyWood(q.xy, pixel) * tw.z; }
+        paint += side / max(tw.x + tw.z, 1e-5) * (1.0 - end);
+      }
+      if (end > 0.0) { paint += cozyRings(q.xz, pixel) * end; }
+      m.alb *= paint;
     }
-    if (end > 0.0) { paint += cozyRings(wp.xz, pixel) * end; }
-    m.alb *= paint;
   } else {
-    // shortcut: all vegetation is E_PLANT; orientation separates ground triangles from leafy side faces until vegetation tags exist.
-    let grass = n.y > 0.7;
+    // Labels decide identity; normals only project the selected artwork.
+    // Unknown legacy/imported plants keep their old rendering fallback.
+    let grass = appearance == AP_GRASS;
+    let foliage = appearance == AP_LEAVES;
+    let oldGrass = appearance == AP_NONE && n.y > 0.7;
     var paint = vec3f(0.0);
-    if (w.x > 0.0) { paint += cozyPattern(id, wp.zy, pixel, false) * w.x; }
-    if (w.y > 0.0) { paint += cozyPattern(id, wp.xz, pixel, grass) * w.y; }
-    if (w.z > 0.0) { paint += cozyPattern(id, wp.xy, pixel, false) * w.z; }
+    if (w.x > 0.0) { paint += cozyAuthoredPattern(id, wp.zy, pixel, grass, foliage) * w.x; }
+    if (w.y > 0.0) { paint += cozyAuthoredPattern(id, wp.xz, pixel, grass || oldGrass, foliage) * w.y; }
+    if (w.z > 0.0) { paint += cozyAuthoredPattern(id, wp.xy, pixel, grass, foliage) * w.z; }
     m.alb *= paint;
   }
   m.glint = 0.0;
   m.rough = max(m.rough, select(0.72, 0.38, m.metal > 0.5));
   if (id == E_CERAMIC) { m.rough = 0.43; }
-  if (id == E_PLANT) { m.trans = 0.25; }
+  if (id == E_PLANT || appearance == AP_LEAVES) { m.trans = 0.25; }
   // Painted albedo must not change the thermal skin/oxide emission model.
   m.emit = cellEmission(id, T, ctype) + sparkEmit(id, ctype);
   return m;

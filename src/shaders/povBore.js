@@ -177,6 +177,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
       let into = BREAKINTO(id);
       if (into < 0) { return; }
       (*oA).x = f32(into);
+      (*oA).w = physicalCtype(id, a.w) + fract(a.w);
     }
     *oB = vec4f(-P.dir * BURROW_SPOIL_SPEED, b.w);
     return;

@@ -1,4 +1,5 @@
 import { E, ELEMENTS } from './elements.js';
+import { Appearance, appearanceCtype } from './appearance.js';
 import { SEED_MAX } from './shaders/common.js';
 import { ARENA_SIZE, buildDamValley } from './arenas/damValley.js';
 import { buildQuarry } from './industry/quarry.js';
@@ -22,7 +23,7 @@ export function buildPreset(name, sim) {
     A[i] = id;
     A[i + 1] = extra.temp ?? e.temp;
     A[i + 2] = e.life;
-    A[i + 3] = (extra.ctype ?? 0) + Math.random() * SEED_MAX;
+    A[i + 3] = appearanceCtype(id, extra.ctype ?? 0, extra.appearance ?? Appearance.NONE) + Math.random() * SEED_MAX;
   };
   const box = (x0, y0, z0, x1, y1, z1, id, extra) => {
     for (let y = y0; y < y1; y++)
@@ -46,7 +47,7 @@ export function buildPreset(name, sim) {
       for (let z = 0; z < az; z++)
         for (let x = 0; x < ax; x++) {
           const id = ids[(y * az + z) * ax + x];
-          if (id !== E.EMPTY) set(x, y, z, id);
+          if (id !== E.EMPTY) set(x, y, z, id, { appearance: built.appearances?.[(y * az + z) * ax + x] ?? Appearance.NONE });
         }
     layout = built.layout;
   } else if (name === 'lab') {
@@ -69,7 +70,7 @@ export function buildPreset(name, sim) {
     // wooden tower with gunpowder core
     const w0 = Math.round(20 * s), w1 = Math.round(34 * s);
     const zz0 = Math.round(80 * s), zz1 = Math.round(94 * s);
-    box(w0, 0, zz0, w1, Math.round(50 * s), zz1, E.WOOD);
+    box(w0, 0, zz0, w1, Math.round(50 * s), zz1, E.WOOD, { appearance: Appearance.PLANK_Y });
     box(w0 + 3, Math.round(4 * s), zz0 + 3, w1 - 3, Math.round(46 * s), zz1 - 3, E.GUNPOWDER);
     box(w0 + 5, 0, zz0 - 6, w1 - 5, Math.round(3 * s), zz0, E.OIL);
 
@@ -106,12 +107,12 @@ export function buildPreset(name, sim) {
       const x = Math.round(cx + Math.cos(ang) * d), z = Math.round(cz + Math.sin(ang) * d);
       const base = Math.max(0, Math.round(H * (1 - d / R)));
       const th = Math.round(8 * s);
-      box(x, base, z, x + 1, base + th, z + 1, E.WOOD);
+      box(x, base, z, x + 1, base + th, z + 1, E.WOOD, { appearance: Appearance.LOG_Y });
       for (let y = 0; y < 5 * s; y++)
         for (let dz = -3; dz <= 3; dz++)
           for (let dx = -3; dx <= 3; dx++)
             if (dx * dx + dz * dz + (y - 2) * (y - 2) < 9 * s * s)
-              set(x + dx, base + th + y - 1, z + dz, E.PLANT);
+              set(x + dx, base + th + y - 1, z + dz, E.PLANT, { appearance: Appearance.LEAVES });
     }
     // snow cap
     for (let z = 0; z < nz; z++)

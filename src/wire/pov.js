@@ -31,6 +31,8 @@ const pov = {
       getSpawners: () => app.spawners,
       getPerkOrbs: () => app.perkOrbs,
       loadPreset: (name) => app.loadPreset(name, false),   // a team game's new round (src/game)
+      openMap: (key, mode) => app.openMap(key, mode),       // mission Retry reloads the authored world
+      setMode: (mode) => app.setMode(mode),                // leaving a mission returns to Sandbox
       getArena: () => app.arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
       // Tinker Creek's Animal Crossing: you start in front of your cottage (pov/village/state.js);
       // a Descent level: you start (and respawn) at its spawn

@@ -356,7 +356,7 @@ int volGround(int x, int y, int z, int top, int slot) {
 // Its trunk stands on its column's ground, if that is in the forest band
 // (above the beach, below the snow, away from craters) and the forest's patch
 // noise has a tree there.
-int volTreePart(int x, int y, int z, int cx, int cz) {
+int volTreePartMaterial(int x, int y, int z, int cx, int cz) {
   uint h = thHash2(cx, cz, VOL_SALT_TREE);
   int tx = cx * VOL_TREE_CELL + thRange(thKey(h, VOL_K_X), VOL_TREE_MARGIN, VOL_TREE_CELL - 1 - VOL_TREE_MARGIN);
   int tz = cz * VOL_TREE_CELL + thRange(thKey(h, VOL_K_Z), VOL_TREE_MARGIN, VOL_TREE_CELL - 1 - VOL_TREE_MARGIN);
@@ -369,36 +369,38 @@ int volTreePart(int x, int y, int z, int cx, int cz) {
   if (base < VOL_SEA + VOL_TREE_ABOVE_SEA || base > VOL_SNOW_LINE - thRound(VOL_SNOW_JITTER) - VOL_TREE_SNOW_GAP) return E_EMPTY;
   if (volCraterDist(tx, tz, volSlot(col), true) < VOL_TREE_CRATER_GAP) return E_EMPTY;
   int trunk = thRange(thKey(h, VOL_K_TRUNK), VOL_TRUNK_MIN, VOL_TRUNK_MAX);
-  if (dx == 0 && dz == 0 && y >= base && y < base + trunk) return E_WOOD;
+  if (dx == 0 && dz == 0 && y >= base && y < base + trunk) return materialWord(E_WOOD, AP_LOG_Y);
   int r2 = dx * dx + dz * dz;
   if (base >= VOL_PINE_LINE) {
     // a pine: a cone of leaves, CROWN_R across at its skirt, narrowing to its tip
     int ch = trunk + VOL_PINE_TIP - VOL_PINE_SKIRT, u = y - base - VOL_PINE_SKIRT;
     int w = VOL_CROWN_R * (ch - u);
-    return u >= 0 && u < ch && r2 * ch * ch < w * w ? E_PLANT : E_EMPTY;
+    return u >= 0 && u < ch && r2 * ch * ch < w * w ? materialWord(E_PLANT, AP_LEAVES) : E_EMPTY;
   }
   // a round crown (the box volcano's)
   int cy = y - (base + trunk - 1 + VOL_CROWN_UP);
-  return r2 + cy * cy < VOL_CROWN_R2 ? E_PLANT : E_EMPTY;
+  return r2 + cy * cy < VOL_CROWN_R2 ? materialWord(E_PLANT, AP_LEAVES) : E_EMPTY;
 }
+int volTreePart(int x, int y, int z, int cx, int cz) { return materialId(volTreePartMaterial(x, y, z, cx, cz)); }
 
 // An air cell's element: part of a tree (a crown reaches no farther than a
 // tree cell, so the ROW × ROW tree cells around are all that can reach it;
 // trunks before leaves) or air.
-int volTree(int x, int y, int z, int top) {
+int volTreeMaterial(int x, int y, int z, int top) {
   if (y > top + VOL_TREE_REACH) return E_EMPTY;
   int cx = thDiv(x, VOL_TREE_CELL), cz = thDiv(z, VOL_TREE_CELL);
   int found = E_EMPTY;
   for (int k = 0; k < VOL_SLOTS; k++) {
-    int part = volTreePart(x, y, z, cx + thMod(k, VOL_ROW) - 1, cz + thDiv(k, VOL_ROW) - 1);
-    if (part == E_WOOD) return E_WOOD;
-    if (part == E_PLANT) found = E_PLANT;
+    int part = volTreePartMaterial(x, y, z, cx + thMod(k, VOL_ROW) - 1, cz + thDiv(k, VOL_ROW) - 1);
+    if (materialId(part) == E_WOOD) return part;
+    if (materialId(part) == E_PLANT) found = part;
   }
   return found;
 }
+int volTree(int x, int y, int z, int top) { return materialId(volTreeMaterial(x, y, z, top)); }
 
 // The element at world cell (x, y, z), its column being col (volColumn).
-int volCellIn(int x, int y, int z, int col) {
+int volCellInMaterial(int x, int y, int z, int col) {
   if (y < VOL_FLOOR) return E_ROCK;
   if (y >= VOL_SKY) return E_EMPTY;
   int top = volTop(col), slot = volSlot(col);
@@ -406,9 +408,11 @@ int volCellIn(int x, int y, int z, int col) {
   if (vent != E_WALL) return vent;
   if (y < top) return volGround(x, y, z, top, slot);
   if (y < VOL_SEA) return E_WATER;
-  return volTree(x, y, z, top);
+  return volTreeMaterial(x, y, z, top);
 }
-int volCell(int x, int y, int z) { return y >= VOL_SKY ? E_EMPTY : volCellIn(x, y, z, volColumn(x, z)); }
+int volCellIn(int x, int y, int z, int col) { return materialId(volCellInMaterial(x, y, z, col)); }
+int volCellMaterial(int x, int y, int z) { return y >= VOL_SKY ? E_EMPTY : volCellInMaterial(x, y, z, volColumn(x, z)); }
+int volCell(int x, int y, int z) { return materialId(volCellMaterial(x, y, z)); }
 
 `;
 
@@ -436,14 +440,15 @@ ${definesGLSL(P_, V)}
 ${helpersGLSL}
 ${srcWgsl ??= toWgsl(SRC, { consts: definesTypes(P_, V), uniforms: VOL_U.sceneTypes })}
 fn sceneCell(w: vec3i) -> SceneCell {
-  let id = volCell(w.x, w.y, w.z);
+  let word = volCellMaterial(w.x, w.y, w.z);
+  let id = materialId(word);
   var T = SPAWNT(id);
   var ctype = 0.0;
   if (id == E_ROCK) { T = mix(SPAWNT(E_ROCK), SPAWNT(E_SNOW), volFrost(w.y)); }
   if (id == E_LAVA) { T = VOL_MAGMA_T; ctype = f32(E_STONE); }   // magma, which sets to stone
   if (id == E_CLONE) { ctype = f32(E_LAVA); }                    // the endless lava source
   let seed = u32ToF32(seedWorld(w, SU.uSceneSeed, VOL_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), ctype + seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), T, SPAWNLIFE(id), appearanceCtype(id, ctype, materialAppearance(word)) + seed), vec4f(0.0));
 }
 `;
 

@@ -98,7 +98,7 @@ const tiles = openTiles([
     prims: island(105, {
       blobs: [low(1, 0, [8, 3, 5]), low(1, 1, [8, 3, 5])],
       dress: [...cage(22, LOW, 4, 2.5, 'GUNPOWDER'), ...cage(26, LOW, 20, 2.5, 'GUNPOWDER'),
-        { box: [[18, LOW, 18], [21, LOW + 3, 21]], m: 'TNT' }, { box: [[17, LOW, 17], [22, LOW + 1, 22]], m: 'WOOD', only: 'AIR' },
+      { box: [[18, LOW, 18], [21, LOW + 3, 21]], m: 'TNT' }, { box: [[17, LOW, 17], [22, LOW + 1, 22]], m: 'WOOD', appearance: 'plank-x', only: 'AIR' },
         ...barrel(30, LOW, 5, 'GUNPOWDER'), ...barrel(44, SPINE, MID - 3, 'OIL'), ...barrel(4, SPINE, MID + 3, 'GUNPOWDER')],
     }),
     sites: [onSpine(24)],

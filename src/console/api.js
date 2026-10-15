@@ -1,6 +1,7 @@
 import { ELEMENTS, E, K, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL } from '../elements.js';
 import { registerConsoleApi as fn, registerConsoleValue as value, multi } from './registry.js';
 import { EDIT, FIELDS } from './world.js';
+import { physicalCtype } from '../appearance.js';
 
 // The console's built-in API (docs/console.md): The Powder Toy's Lua names
 // (src/lua/LuaSimulation.cpp, LuaElements.cpp, LuaMisc.cpp, and the
@@ -83,6 +84,7 @@ export function installBuiltins(host) {
     if (key === 'y') return y;
     if (key === 'z') return z;
     if (key === 'id') return i;
+    if (key === 'ctype') return physicalCtype(c.id, c.ctype);
     return c[key];
   };
   // a write of one field: TPT's partProperty (IF_MATTER) or a cell's (unconditional)

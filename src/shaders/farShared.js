@@ -3,6 +3,8 @@ import { E } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { libChecks } from './gfx/lib.js';
 import { glf } from '../glsl.js';
+import { DataUtils } from 'three';
+import { Appearance, appearanceOf, materialWord, materialId, materialAppearance } from '../appearance.js';
 
 // The far field's shared parts (docs/webgpu.md G1, J3): what the window's own
 // pipelines read of a massive world's far field, moved here from shaders/far.js
@@ -93,12 +95,40 @@ export const FAR_SHADOW_BIAS = 1.0;
 // brick, exact integers in 8-bit fields:
 //   r  opaque share (FAR.LEVELS steps) | 256 if the brick holds opaque cells open above
 //   g  liquid share
-//   b  the dominant opaque element of the brick's own cells
+//   b  opaque physical ID in low 8, authored appearance in high 8
 //   a  glow (FAR.LEVELS steps) | the dominant transparent liquid (E_EMPTY: none) << 8
 // shaders/far.js has what each value means. JS twin of farPackTexel, for
 // tools and CPU-side writers: [r, g, b, a].
-export const packFarTexel = ({ s, l, glow, id, liquid, open }) => [s | (open ? 256 : 0), l, id, glow | (liquid << 8)];
-export const unpackFarTexel = ([r, g, b, a]) => ({ s: r & 255, l: g & 255, id: b & 255, glow: a & 255, liquid: a >> 8, open: (r >> 8) !== 0 });
+export const packFarTexel = ({ s, l, glow, id, appearance = Appearance.NONE, liquid, open }) => [s | (open ? 256 : 0), l, id | (appearance << 8), glow | (liquid << 8)];
+export const unpackFarTexel = ([r, g, b, a]) => ({ s: r & 255, l: g & 255, id: b & 255, appearance: b >> 8, glow: a & 255, liquid: a >> 8, open: (r >> 8) !== 0 });
+
+// Transient readback format, not saved bricks: exact low-16 material word
+// and the existing temperature half in high 16.
+export const packFarSceneCell = (id, temperature, ctype = 0) =>
+  (materialWord(id, appearanceOf(id, ctype)) | (DataUtils.toHalfFloat(temperature) << 16)) >>> 0;
+export const unpackFarSceneCell = word => ({
+  id: materialId(word & 0xffff), appearance: materialAppearance(word & 0xffff),
+  temperature: DataUtils.fromHalfFloat(word >>> 16),
+});
+
+// Physical IDs vote first: splitting wood into roles must not let grass win.
+// Opaque cells: {id, appearance, weight}; ties use lower ID/appearance.
+export function dominantFarMaterial(cells) {
+  const weights = new Map(), roles = new Map();
+  for (const { id, appearance = Appearance.NONE, weight = 1 } of cells) {
+    weights.set(id, (weights.get(id) ?? 0) + weight);
+    const word = materialWord(id, appearance);
+    roles.set(word, (roles.get(word) ?? 0) + weight);
+  }
+  let id = E.EMPTY, weight = 0;
+  for (const [candidate, w] of weights) if (w > weight || (w === weight && candidate < id)) { id = candidate; weight = w; }
+  let appearance = Appearance.NONE, roleWeight = 0;
+  for (const [word, w] of roles) if (materialId(word) === id) {
+    const a = materialAppearance(word);
+    if (w > roleWeight || (w === roleWeight && a < appearance)) { appearance = a; roleWeight = w; }
+  }
+  return materialWord(id, appearance);
+}
 
 /**
  * WGSL consts of the far layout L (farLayout) and the grid texel's record:
@@ -150,19 +180,20 @@ fn farInWorld(xz: vec2f) -> bool { return all(xz >= vec2f(0.0)) && all(xz < vec2
 fn farShadowLit(y: f32, s: f32) -> f32 { return smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, y + FAR_SHADOW_BIAS - s); }
 // A far grid texel: its shares and glow (levels), its opaque and liquid
 // elements (E_EMPTY: none) and whether it holds open opaque cells.
-struct FarTexel { s: i32, l: i32, glow: i32, id: i32, liquid: i32, open: bool }
+struct FarTexel { s: i32, l: i32, glow: i32, id: i32, liquid: i32, open: bool, appearance: i32 }
 fn farUnpack(t: vec4u) -> FarTexel {
   var f: FarTexel;
   f.s = i32(t.r & 255u);
   f.l = i32(t.g & 255u);
   f.id = i32(t.b & 255u);
+  f.appearance = i32(t.b >> 8u);
   f.glow = i32(t.a & 255u);
   f.liquid = i32(t.a >> 8u);
   f.open = (t.r >> 8u) != 0u;
   return f;
 }
 fn farPackTexel(f: FarTexel) -> vec4u {
-  return vec4u(u32(f.s) | select(0u, 256u, f.open), u32(f.l), u32(f.id), u32(f.glow) | (u32(f.liquid) << 8u));
+  return vec4u(u32(f.s) | select(0u, 256u, f.open), u32(f.l), u32(f.id) | (u32(f.appearance) << 8u), u32(f.glow) | (u32(f.liquid) << 8u));
 }
 `;
 

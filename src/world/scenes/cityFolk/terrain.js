@@ -181,12 +181,12 @@ bool cfBridge(int x, int z) {
   if (!cfPath(x, z)) return false;
   return abs(z - WC_LANE_Z) < WC_PATH_HALF || abs(z - WC_RUN_RETURN_Z) < WC_PATH_HALF || abs(z - cfWoodsZ(x)) <= 6 || abs(z - cfCliffZ(x)) <= 6 || (x < 0 && abs(z + 94) <= 5) || abs(z - 100) <= 6 || abs(z - cfBeachZ(x)) <= 6;
 }
-int cfOuterCell(int x, int y, int z) {
+int cfOuterCellMaterial(int x, int y, int z) {
   int r = wcRadius(x, z), h = cfHeight(x, z);
   if (r > WC_RADIUS) return y < WC_SEA ? E_WATER : E_EMPTY;
   bool water = cfRiver(x, z) || cfPond(x, z);
   bool bank = cfBank(x, z);
-  if (cfBridge(x, z) && y >= h - 2 && y < h) return E_WOOD;
+  if (cfBridge(x, z) && y >= h - 2 && y < h) return materialWord(E_WOOD, AP_PLANK_Z);
   if (water) {
     if (y < cfBed(x, z)) return E_ROCK;
     return y < cfWater(x, z) ? E_WATER : E_EMPTY;
@@ -199,10 +199,11 @@ int cfOuterCell(int x, int y, int z) {
     if (bank || r >= WC_SHORE - 1) return E_ROCK;
     if (r >= WC_BEACH_IN) return E_SAND;
     if (r >= WC_GRASS_IN) return E_ROCK;
-    return E_PLANT;
+    return materialWord(E_PLANT, AP_GRASS);
   }
   return y < WC_SEA ? E_WATER : E_EMPTY;
 }
+int cfOuterCell(int x, int y, int z) { return materialId(cfOuterCellMaterial(x, y, z)); }
 `;
 
 const wave = a => Math.floor(Math.abs(((a % 256) + 256) % 256 - 128) / 8) - 8;

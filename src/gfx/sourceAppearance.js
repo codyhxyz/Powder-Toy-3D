@@ -1,3 +1,5 @@
+import { gpuSafeMode } from '../startupSafety.js';
+
 // A source level's read-only appearance shares the far grid's allocation,
 // after its terrain Y planes. The far view already uses all 16 texture slots;
 // each rgba16uint texel carries two exact u32 words, with no new binding.
@@ -32,5 +34,6 @@ export function uploadAppearance(gpu, texture, words, region) {
     [x, region.planes, z],
   );
 }
-// Compile-time emergency switch; enable only with a bounded cold-app check.
-export const SOURCE_APPEARANCE_ENABLED = true;
+// Evaluated before WGSL generation, not a shader uniform. The recovery link
+// excludes source shaders, downloads and allocations without changing saves.
+export const SOURCE_APPEARANCE_ENABLED = !gpuSafeMode();

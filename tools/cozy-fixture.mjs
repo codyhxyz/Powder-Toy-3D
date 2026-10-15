@@ -8,6 +8,7 @@ import { cozySurfaceWGSL, cozyWaterWGSL } from '../src/shaders/gfx/cozy.js';
 import { noiseGLSL } from '../src/shaders/gfx/noise.js';
 import { glslMod } from '../src/gpu/wgsl.js';
 import { compositeWGSL } from '../src/gfx/post.js';
+import { appearanceWGSL, Appearance as AP, appearanceCtype } from '../src/appearance.js';
 
 const surface = surfaceGLSL({});
 const definition = (name) => {
@@ -28,6 +29,7 @@ fn ${name}(id: i32) -> ${type} { return FIX_${name}[clamp(id, 0, ${values.length
 
 export const cozyFixture = `
 ${Object.entries(E).map(([name, id]) => `const E_${name}: i32 = ${id};`).join('\n')}
+${appearanceWGSL}
 ${SURFS.map((name, id) => `const SURF_${name}: i32 = ${id};`).join('\n')}
 const R_OPAQUE: i32 = 1;
 const CELL_M: f32 = ${scalar(CELL_M)};
@@ -56,8 +58,11 @@ ${cozyWaterWGSL}
 export const SWATCHES = [
   ['Wood', E.WOOD, [0, 0, 1]],
   ['End grain', E.WOOD, [0, 1, 0]],
-  ['Grass', E.PLANT, [0, 1, 0]],
-  ['Leaves', E.PLANT, [0, 0, 1]],
+  ['Grass', E.PLANT, [0, 1, 0], appearanceCtype(E.PLANT, 0, AP.GRASS)],
+  ['Leaves', E.PLANT, [0, 0, 1], appearanceCtype(E.PLANT, 0, AP.LEAVES)],
+  ['Grass side', E.PLANT, [0, 0, 1], appearanceCtype(E.PLANT, 0, AP.GRASS)],
+  ['Leaf top', E.PLANT, [0, 1, 0], appearanceCtype(E.PLANT, 0, AP.LEAVES)],
+  ['Planks', E.WOOD, [0, 1, 0], appearanceCtype(E.WOOD, 0, AP.PLANK_X)],
   ['Rock', E.ROCK, [0, 0, 1]],
   ['Sand', E.SAND, [0, 1, 0]],
   ['Brick', E.BRICK, [0, 0, 1]],
@@ -89,25 +94,21 @@ ${tone}
   let fp = 3.0 / ${size}.0 / CELL_M;
   FU.time = 4.0;
   P.look = 0.5;
-  var colour: vec3f;
-  switch tile {
-${SWATCHES.map(([, id, n], i) => {
+  var colour = vec3f(0.0);
+${SWATCHES.map(([, id, n, ctype = 0], i) => {
   const p = n[1] ? 'vec3f(metres.x, 0.0, metres.y)' : 'vec3f(metres.x, metres.y, 0.0)';
-  return i === SWATCHES.length - 1
-    ? `case ${i}u: {
-      var paint: vec4f;
-      ${before ? `if (gid.y < ${size}u) { paint = before_cozyWaterPaint(${p} / CELL_M, fp, clamp(1.0 - uv.x * 2.5, 0.0, 1.0)); } else` : ''}
-      { paint = cozyWaterPaint(${p} / CELL_M, fp, clamp(1.0 - uv.x * 2.5, 0.0, 1.0)); }
+  return id === E.WATER
+    ? `if (tile == ${i}u) {
+      var paint = cozyWaterPaint(${p} / CELL_M, fp, clamp(1.0 - uv.x * 2.5, 0.0, 1.0));
+      ${before ? `if (gid.y < ${size}u) { paint = before_cozyWaterPaint(${p} / CELL_M, fp, clamp(1.0 - uv.x * 2.5, 0.0, 1.0)); }` : ''}
       let bed = mix(vec3f(0.14, 0.35, 0.31), vec3f(0.015, 0.1, 0.23), uv.x);
       colour = (paint.rgb * paint.a + bed * (1.0 - paint.a)) * 2.0;
     }`
-    : `case ${i}u: {
-      ${before ? `if (gid.y < ${size}u) { colour = before_cozyMat(${id}, ${p} / CELL_M, vec3f(${n.join(',')}), 20.0, 0.0, fp).alb * 2.0; } else` : ''}
-      { colour = cozyMat(${id}, ${p} / CELL_M, vec3f(${n.join(',')}), 20.0, 0.0, fp).alb * 2.0; }
+    : `if (tile == ${i}u) {
+      ${before ? `if (gid.y < ${size}u) { colour = before_cozyMat(${id}, ${p} / CELL_M, vec3f(${n.join(',')}), 20.0, ${ctype}.0, fp).alb * 2.0; } else` : ''}
+      { colour = cozyMat(${id}, ${p} / CELL_M, vec3f(${n.join(',')}), 20.0, ${ctype}.0, fp).alb * 2.0; }
     }`;
-}).join('\n')}
-    default: { colour = vec3f(0.0); }
-  }
+}).join(' else ')}
   // Flat-lit artwork through the game's actual tone mapper; not gameplay.
   pixels[gid.y * width + gid.x] = vec4f(agx(colour), 1.0);
 }`;

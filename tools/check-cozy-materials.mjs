@@ -17,6 +17,7 @@ import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { cozyFixture, SWATCHES } from './cozy-fixture.mjs';
 import { E } from '../src/elements.js';
 import { VIEWS, viewKey, viewForMode, isMaterialView, materialStyleForView } from '../src/views.js';
+import { startupView } from '../src/startupSafety.js';
 import { GAMEMODES, mapByKey, mapOf, modeByKey, resolveMode } from '../src/maps.js';
 import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
 import { detailDefaults } from '../src/gfx/detail.js';
@@ -74,7 +75,7 @@ assert(!('materialStyle' in view));
 const app = source('src/app.js');
 const linkedViewCode = app.slice(app.indexOf('const viewParam ='), app.indexOf('// ?win='));
 const bootModeCode = app.slice(app.indexOf('let selectedMode ='), app.indexOf('if (!toolById'));
-const bootView = new Function('settings', 'params', 'bootMap', 'launch', 'VIEWS', 'resolveMode', 'modeByKey', 'viewForMode', 'mapOf',
+const bootView = new Function('settings', 'params', 'bootMap', 'launch', 'VIEWS', 'resolveMode', 'modeByKey', 'viewForMode', 'mapOf', 'gpuSafeMode = () => false',
   `${linkedViewCode}\n${bootModeCode}\nreturn settings.view;`);
 for (const [mapKey, query, savedView, expected] of [
   ['island', '', 0, 0], // fresh ordinary Sandbox
@@ -93,12 +94,15 @@ for (const [mapKey, query, savedView, expected] of [
   const map = mapByKey(mapKey);
   const settings = { view: savedView, size: map.size, scene: map.scene, preset: map.preset };
   assert.equal(bootView(settings, new URLSearchParams(query), map, {},
-    VIEWS, resolveMode, modeByKey, viewForMode, mapOf), expected, `${mapKey}?${query}: actual boot policy`);
+    VIEWS, resolveMode, modeByKey, startupView, mapOf), expected, `${mapKey}?${query}: actual boot policy`);
 }
 assert.equal(bootView({ view: 5, size: 'world', scene: 'willowCove' }, new URLSearchParams(), mapByKey('willowCove'), { mode: 'animalCrossing' },
-  VIEWS, resolveMode, modeByKey, viewForMode, mapOf), cozy.id, 'menu launch also overrides an old saved view');
+  VIEWS, resolveMode, modeByKey, startupView, mapOf), cozy.id, 'menu launch also overrides an old saved view');
 assert.equal(bootView({ view: cozy.id, size: 'world', scene: 'island' }, new URLSearchParams(), null, {},
-  VIEWS, resolveMode, modeByKey, viewForMode, mapOf), 0, 'legacy scene/size boot without a named map starts Realistic');
+  VIEWS, resolveMode, modeByKey, startupView, mapOf), 0, 'legacy scene/size boot without a named map starts Realistic');
+assert.equal(bootView({ view: cozy.id }, new URLSearchParams('gpuSafe=1&view=realistic'), mapByKey('willowCove'), { mode: 'animalCrossing' },
+  VIEWS, resolveMode, modeByKey, startupView, mapOf, () => true), VIEWS.find(v => v.key === 'plain').id,
+  'safe boot overrides both the saved view and an explicit expensive view');
 const modeCode = app.slice(app.indexOf('async function startMode('), app.indexOf('// maps.js is plain data'));
 const makeMode = new Function('settings', 'helpers', `
   const { resolveMode, mapOf, viewForMode } = helpers;
@@ -110,7 +114,7 @@ const makeMode = new Function('settings', 'helpers', `
   return startMode;
 `);
 const modeSettings = { view: 0, size: 'world', scene: 'willowCove' };
-const startMode = makeMode(modeSettings, { resolveMode, mapOf, viewForMode });
+const startMode = makeMode(modeSettings, { resolveMode, mapOf, viewForMode: startupView });
 await startMode('animalCrossing');
 assert.equal(modeSettings.view, cozy.id, 'entering the running mode selects Cozy');
 modeSettings.view = 1;
@@ -141,7 +145,10 @@ const makeMapOpener = new Function('settings', 'mapByKey', 'resolveMode', 'viewF
   return openMap;
 `);
 const mapSettings = { view: cozy.id, size: 'world', scene: 'willowCove' };
-const openMap = makeMapOpener(mapSettings, mapByKey, resolveMode, viewForMode, m => !m.preset);
+const openMap = makeMapOpener(mapSettings, mapByKey, resolveMode, startupView, m => !m.preset);
+assert.equal(startupView(modeByKey('sandbox'), 0, '', mapByKey('willowCove')), cozy.id);
+assert.equal(startupView(modeByKey('sandbox'), cozy.id, 'gpuSafe=1', mapByKey('willowCove')), 5,
+  'explicit safe graphics wins over authored map artwork');
 for (const [key, mode, expected] of [
   ['island', 'sandbox', 0], ['willowCove', 'sandbox', cozy.id],
   ['lab', 'sandbox', 0], ['empty', 'sandbox', 0],
@@ -270,8 +277,8 @@ const numerical = `${cozyFixture}
   FU.time = f32(j % 3u) * 2.0;
   fixtureHeat = vec3f(0.13, 0.24, 0.35);
   fixtureSpark = vec3f(0.03, 0.02, 0.01);
-${SWATCHES.slice(0, -1).map(([, id, n], i) => `
-  let m${i} = cozyMat(${id}, p, vec3f(${n.join(',')}), 900.0, 1.0, 0.01);
+${SWATCHES.slice(0, -1).map(([, id, n, ctype = 1], i) => `
+  let m${i} = cozyMat(${id}, p, vec3f(${n.join(',')}), 900.0, ${ctype}.0, 0.01);
   values[j * ${stride}u + ${i}u] = vec4f(m${i}.alb, m${i}.rough);`).join('\n')}
   values[j * ${stride}u + ${materialCount}u] = cozyWaterPaint(p, 0.01, f32(j % 5u) / 4.0);
   let cold = cozyMat(E_WOOD, p, vec3f(0, 0, 1), 900.0, 1.0, 0.01);
@@ -379,7 +386,7 @@ for (const entry of renderChecks().filter(e => e.view === 'cozy')) modules.push(
 for (const entry of renderChecks().filter(e => e.view === 'realistic')) {
   const code = entry.code(g);
   assert(!code.includes('FU.materialStyle'), 'Realistic has no runtime artwork branch');
-  assert.match(code, /if \(0\.0 > 0\.5 && cozySupported\(id\)\)/);
+  assert.match(code, /if \(0\.0 > 0\.5 && cozySupported\(id, ctype\)\)/);
 }
 for (const mesh of [false, true]) for (const curved of [false, true]) {
   modules.push([`far.${mesh ? 'mesh' : 'view'}.${curved ? 'curved' : 'flat'}`, farFrag(g, farLayout(WORLD_SIZE), mesh, { curved })]);
@@ -388,8 +395,8 @@ for (const [name, code] of modules) {
   for (const fn of ['cozyMat', 'cozyWaterPaint']) assert.equal((code.match(new RegExp(`fn ${fn}\\(`, 'g')) || []).length, 1, `${name}: helper defined once`);
   if (!name.startsWith('optics.') && !name.startsWith('seams.')) {
     const selector = name.startsWith('volume.cozy.') ? '1.0' : 'FU.materialStyle';
-    assert.ok(code.includes(`if (${selector} > 0.5 && cozySupported(id))`));
-    assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf(`if (${selector} > 0.5 && cozySupported(id))`), 'flat-texture mode still takes precedence');
+    assert.ok(code.includes(`if (${selector} > 0.5 && cozySupported(id, ctype))`));
+    assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf(`if (${selector} > 0.5 && cozySupported(id, ctype))`), 'flat-texture mode still takes precedence');
   }
   if (name.startsWith('far.')) assert.match(code, /cozyWaterPaint\(p, footprint\(p\), cozyFarShore\(p\)\)/);
   if (process.argv.includes('--validate-wgsl')) {

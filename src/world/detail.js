@@ -8,6 +8,7 @@ import {
 } from '../shaders/far.js';
 import { TREE } from './generator.js';
 import { warpBox, IDENTITY } from '../gfx/presentationMath.js';
+import { materialWord } from '../appearance.js';
 
 export { DETAIL_CHUNK };
 
@@ -74,7 +75,7 @@ export class WorldDetail {
       params: SceneCellsParams, build: 'manual',
     });
     this.pipe = gpu.renderPipeline({
-      name: 'far detail', code: farFrag(g, L, true), layouts: [far.viewFrameLayout, this.sim.L.STATE_RO, gpu.L.LIGHTING],
+      name: 'far detail', code: farFrag(g, L, true, { sourceAppearance: far.sourceAppearance }), layouts: [far.viewFrameLayout, this.sim.L.STATE_RO, gpu.L.LIGHTING],
       params: FarViewParams, ...farMeshPipeline(), build: 'manual',
     });
     this.depthPipe = gpu.renderPipeline({
@@ -335,7 +336,7 @@ export class WorldDetail {
       token.revision === this.revisions[token.key] && this.sameJob(this.pending.get(token.key), token);
   }
 
-  accept({ token, positions, normals, ids, indices, liquid, error }) {
+  accept({ token, positions, normals, ids, appearances, indices, liquid, error }) {
     const uploaded = [];
     try {
       if (!this.valid(token)) return;
@@ -356,7 +357,7 @@ export class WorldDetail {
       const index = !indices || u32 || indices.length % 2 === 0 ? indices : Uint16Array.from([...indices, 0]);
       const buffers = indices?.length ? [
         upload('detail positions', positions, BUFFER.VERTEX), upload('detail normals', normals, BUFFER.VERTEX),
-        upload('detail elements', Uint32Array.from(ids), BUFFER.VERTEX), upload('detail indices', index, BUFFER.INDEX),
+        upload('detail materials', Uint32Array.from(ids, (id, i) => materialWord(id, appearances?.[i] ?? 0)), BUFFER.VERTEX), upload('detail indices', index, BUFFER.INDEX),
       ] : [];
       const bounds = new Box3().setFromArray(positions);
       this.drop(token.key);

@@ -123,7 +123,9 @@ export class FarField {
     const [bx, by, bz] = L.bricks.n;
     const tex3 = (label, format) => gpu.createTexture({ label, size: [bx, by, bz], dimension: '3d', format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
     const tex2 = (label, format) => gpu.createTexture({ label, size: [bx, bz], format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
-    this.appearance = appearanceRegion(L.bricks.n, SOURCE_APPEARANCE_ENABLED ? (win.scene.importManifest?.appearance?.totalWords ?? 0) : 0, gpu.device.limits.maxTextureDimension3D);
+    // Capability comes from the actual imported scene, never the selected view/style.
+    this.sourceAppearance = SOURCE_APPEARANCE_ENABLED && !!win.scene.importManifest?.appearance;
+    this.appearance = appearanceRegion(L.bricks.n, this.sourceAppearance ? win.scene.importManifest.appearance.totalWords : 0, gpu.device.limits.maxTextureDimension3D);
     this.grid = gpu.createTexture({ label: 'far grid + source appearance', size: this.appearance.size, dimension: '3d',
       format: FAR_FORMATS.grid, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC | TEX.COPY_DST });
     this.field = tex3('far field', FAR_FORMATS.field);   // what the view draws (farBoostFrag)
@@ -201,7 +203,7 @@ export class FarField {
     this.fu = frameUniformsOf(gpu);
     this.viewFrameLayout = layout('FAR_VIEW_FRAME', FAR_VIEW_FRAME);
     this.viewPipe = gpu.renderPipeline({
-      name: 'far view', code: farFrag(g, L), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
+      name: 'far view', code: farFrag(g, L, false, { sourceAppearance: this.sourceAppearance }), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
       params: FarViewParams, ...farViewPipeline(), build: 'manual',
     });
     // the rolling log's view (made the first time it is wanted)
@@ -235,7 +237,7 @@ export class FarField {
   get viewPipeline() {
     if (!this.curved) return this.viewPipe;
     return (this.viewPipeCurved ??= this.gpu.renderPipeline({
-      name: 'far view curved', code: farFrag(this.sim.g, this.L, false, { curved: true }),
+      name: 'far view curved', code: farFrag(this.sim.g, this.L, false, { curved: true, sourceAppearance: this.sourceAppearance }),
       layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
       params: FarViewParams, ...farViewPipeline(), build: 'manual',
     }));
