@@ -275,7 +275,7 @@ export const splash = {
   name: 'splash', group: 'liquids', size: [32, 16, 32], needs: ['WATER'], cost: 70,
   title: 'a block dropped into a pool splashes at most 0.3 of its kinetic energy out of it',
   audit: 'audit-liquids B5, B6: a liquid cell that lands gets a random sideways speed of 0.9 cells/step plus 0.3·|vy| (per component up to V_MAX), so a landing makes kinetic energy, not spends it (×160-210 from a 1-cell drop)',
-  expressible: (e) => (e.info.velocity ? null : `${e.name} reports no cell velocities`),
+  expressible: (e) => (e.info.velocity ? null : `${e.name} reports no complete cell velocities`),
   async run(e) {
     const O = OUTCOMES.splash, S = 3;   // the pool's surface: layers y 0-2 are full
     // a pool 3 deep over the whole floor, and a 4×4×2 block of water whose foot is 6 cells over it
@@ -288,13 +288,19 @@ export const splash = {
       let all = 0, out = 0, lowest = Infinity, cellsOut = 0;
       const inFlight = new Map();   // (amount bins each particle into its cell: the cell's own fill is the rest)
       for (const p of g.particles ?? []) {
+        setup(Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) &&
+          Number.isFinite(p.vx) && Number.isFinite(p.vy) && Number.isFinite(p.vz) &&
+          Number.isFinite(p.mass) && p.mass >= 0, 'splash: invalid matter packet position, velocity or mass');
         const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
         if (inGrid(g, x, y, z)) inFlight.set(at(g, x, y, z), (inFlight.get(at(g, x, y, z)) ?? 0) + p.mass);
       }
       for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
         const i = at(g, x, y, z), a = g.id[i] === water ? g.amount[i] - (inFlight.get(i) ?? 0) : 0;
         if (!(a > 0)) continue;
-        const vx = g.vel[3 * i], vy = g.vel[3 * i + 1], vz = g.vel[3 * i + 2], k = a * (vx * vx + vy * vy + vz * vz);
+        setup(!g.velocityKnown || g.velocityKnown[i] !== 0, `splash: unknown resident-water velocity at ${x},${y},${z}`);
+        const vx = g.vel[3 * i], vy = g.vel[3 * i + 1], vz = g.vel[3 * i + 2];
+        setup(Number.isFinite(vx) && Number.isFinite(vy) && Number.isFinite(vz), `splash: nonfinite resident-water velocity at ${x},${y},${z}`);
+        const k = a * (vx * vx + vy * vy + vz * vz);
         all += k;
         if (y >= S && vy >= 0) { out += k; if (k > 0) cellsOut++; }
         if (y >= S) lowest = Math.min(lowest, y);
@@ -304,6 +310,7 @@ export const splash = {
         all += k; if (p.y >= S && p.vy >= 0) out += k;
         lowest = Math.min(lowest, Math.floor(p.y));
       }
+      setup(Number.isFinite(all) && Number.isFinite(out), 'splash: nonfinite kinetic energy');
       return { all, out, lowest, cellsOut };
     };
     let g = await e.read();
