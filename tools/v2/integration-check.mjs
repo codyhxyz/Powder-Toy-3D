@@ -17,7 +17,7 @@ import { createPacker, createUnpacker, encodeFrame, decodeFrame, FRAME_KEY } fro
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
 
-const g = gridLayout(32, 32, 32), calls = [], shifts = [], requests = [];
+const g = gridLayout(32, 32, 32), calls = [], shifts = [], requests = [], builds = [];
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 4, COPY_DST: 8, INDIRECT: 0x100 };
 const buffer = ({ size, ...desc }) => ({ ...desc, size, data: new Uint8Array(size), destroy() {} });
 const words = b => new Uint32Array(b.data.buffer);
@@ -81,7 +81,10 @@ const gpu = {
   queue: { writeBuffer(b, at, data) { b.data.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), at); } },
   write(b, at, data) { this.queue.writeBuffer(b, at, data); },
   frame: { copy(a, at, b, to, n) { b.data.set(a.data.subarray(at, at + n), to); }, clear(b, at = 0, n = b.size - at) { b.data.fill(0, at, at + n); } },
-  kernel: ({ name }) => ({ name, state: 'ready', ready: Promise.resolve(), dispatch(f, size, opts) { calls.push({ name, size, opts }); referenceDispatch(name, opts); } }),
+  kernel: ({ name, build }) => {
+    builds.push({ name, build });
+    return { name, state: 'ready', ready: Promise.resolve(), dispatch(f, size, opts) { calls.push({ name, size, opts }); referenceDispatch(name, opts); } };
+  },
   readback: { buffer: (b, at, n, opts) => { const copy = b.data.slice(at, at + n); if (opts?.into) new Uint8Array(opts.into).set(copy); return Promise.resolve(copy.buffer); } },
   flush() {},
 };
@@ -96,6 +99,10 @@ const sim = Object.assign(Object.create(Simulation.prototype), {
   passOf: name => gpu.kernel({ name }), passes: { paint: {}, undoShift: gpu.kernel({ name: 'undoShift' }) },
 });
 const owner = new PhysicsV2(sim); await owner.ready;
+for (const name of Object.keys(owner.kernels)) {
+  const desc = builds.find(b => b.name === name);
+  assert.equal(desc.build, name === 'v2block' ? 'now' : 'idle', 'required contact must not wait behind idle graphics builds');
+}
 // The foundation lane owns allocation; this fixture supplies it on old bases.
 owner.aux ??= buffer({ size: g.slots * 4 });
 const adapter = owner.nativeDynamics;
