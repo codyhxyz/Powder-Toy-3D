@@ -1,5 +1,6 @@
 import { EDIT_FIELDS, EDIT_SCRATCH_BINDING, LAYOUT, editKernelWGSL } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
+import { hearthUpdateWGSL } from './hearth.js';
 
 // Sandustry: machines act on grains, never item inventories. Control is TPT's
 // existing spark automaton, including a direct battery or enabled SWCH.
@@ -8,6 +9,14 @@ export const MACHINE_GUARD_FIELDS = {
   guardPort: 'vec3i', guardPowered: 'u32',
 };
 export const machineGuardWGSL = /* wgsl */ `
+fn industryControlActive(port: vec3i) -> bool {
+  if (!inGrid(port)) { return false; }
+  let a = fetchA(port);
+  let id = eid(a);
+  if (id == E_BATTERY) { return true; }
+  if (id == E_SWITCH) { return a.z == SWITCH_ON; }
+  return sparkLive(id, floor(a.w));
+}
 fn machineEnabled(base: vec3i, material: i32, port: vec3i, controlled: u32) -> bool {
   if (material < 0) { return true; }
   for (var z = 0; z < 4; z++) {
@@ -18,15 +27,10 @@ fn machineEnabled(base: vec3i, material: i32, port: vec3i, controlled: u32) -> b
     }
   }
   if (controlled == 0u) { return true; }
-  if (!inGrid(port)) { return false; }
-  let a = fetchA(port);
-  let id = eid(a);
-  if (id == E_BATTERY) { return true; }
-  if (id == E_SWITCH) { return a.z == SWITCH_ON; }
-  return sparkLive(id, floor(a.w));
+  return industryControlActive(port);
 }
 `;
-export const INDUSTRY_KIND = Object.freeze({ belt: 0, separator: 1, lift: 2, miner: 3, heater: 4 });
+export const INDUSTRY_KIND = Object.freeze({ belt: 0, separator: 1, lift: 2, miner: 3, heater: 4, hearth: 5, hearthHeat: 6 });
 export const IndustryParams = uniformStruct('IndustryParams', {
   ...EDIT_FIELDS, ...MACHINE_GUARD_FIELDS,
   forward: 'vec3i', right: 'vec3i', corner: 'vec3i',
@@ -35,6 +39,10 @@ export const IndustryParams = uniformStruct('IndustryParams', {
 export const industryUpdateWGSL = /* wgsl */ `
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   if (!machineEnabled(P.guardBase, P.guardMaterial, P.guardPort, P.guardPowered)) { return; }
+  if (P.kind == 5u || P.kind == 6u) {
+    hearthUpdate(p, a, b, P.corner, P.right, P.forward, P.dt, P.kind == 5u, oA, oB);
+    return;
+  }
   let id = eid(a);
   if (id == E_EMPTY) { return; }
   let rel = p - P.corner;
@@ -58,7 +66,8 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
       if (KIND(eid(fetchA(q))) == K_SOLID) { return; }
     }
     (*oA).x = f32(BREAKINTO(id));
-    (*oA).z = 0.0;
+    // TPT fracture retains coal's remaining fuel; mining must not exhaust or refill it.
+    (*oA).z = select(0.0, max(a.z, 0.0), id == E_COAL);
     (*oA).w = fract(a.w);
     *oB = vec4f(-vec3f(P.forward) * 0.35 + vec3f(0.0, 0.1, 0.0), b.w);
     return;
@@ -90,7 +99,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
 }
 `;
 export const INDUSTRY_EDIT = {
-  params: IndustryParams, reads: 'neighbours', decls: machineGuardWGSL, update: industryUpdateWGSL,
+  params: IndustryParams, reads: 'neighbours', decls: machineGuardWGSL + hearthUpdateWGSL, update: industryUpdateWGSL,
 };
 export const WGSL_CHECK = [{
   name: 'industry', kind: 'compute', code: g => editKernelWGSL(g, INDUSTRY_EDIT),

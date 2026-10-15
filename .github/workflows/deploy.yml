@@ -59,6 +59,13 @@ jobs:
       - run: node --test tools/check-mode-icons.mjs   # CPU-only: every gamemode has a valid credited menu emblem
       - run: node tools/check-map-previews.mjs   # every menu map, including source imports, has a square preview
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
+      - run: node --test tests/industry/*.test.js
+      - name: Check physical factory logic and shaders without a GPU
+        run: |
+          node tools/industry-hearth-check.mjs
+          node tools/industry-physics-check.mjs
+          node tools/industry-diagnostics-check.mjs
+          node scripts/check-industry-factory-ui.mjs
       - run: node tools/check-gpu-deadline.mjs   # CPU-only: enforce total slot budget and cleanup ownership
       - run: node --test tools/pipeline-safety-cpu-check.mjs   # fake GPU: compiler concurrency, deadlines and cancellation
       - run: node --experimental-vm-modules --test tools/startup-safety-cpu-check.mjs   # fake browser: startup failure and safe restart

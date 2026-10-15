@@ -4,6 +4,7 @@ import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { createTransfer, Load } from '../pov/tools/transfer.js';
 import { povGpu } from '../pov/gpu.js';
 import { deviceHeight } from './validation.js';
+import { NOMINAL_STEP_RATE } from '../physics.js';
 
 // Ports are integer local cells, rotated exactly like construction geometry.
 export const controlCell = d => deviceCell(d, -1, 0, 1);
@@ -22,7 +23,7 @@ export const machinePorts = d => ({
 });
 export function machineBox(d) {
   const ends = d.type === 'miner' ? [deviceCell(d, 0, 1, 0), deviceCell(d, 3, 3, 7)]
-    : [deviceCell(d, 0, d.type === 'heater' ? 0 : 1, 0), deviceCell(d, 3, d.type === 'heater' ? 3 : 1, 3)];
+    : [deviceCell(d, 0, ['heater', 'hearth'].includes(d.type) ? 0 : 1, 0), deviceCell(d, 3, ['heater', 'hearth'].includes(d.type) ? 3 : 1, 3)];
   return { lo: ends[0].map((n, i) => Math.min(n, ends[1][i])), hi: ends[0].map((n, i) => Math.max(n, ends[1][i])) };
 }
 const signature = d => [d.id, d.type, d.x, d.y, d.z, d.rotation].join(':');
@@ -82,7 +83,7 @@ export function validateIndustryPhysics(data, devices, bounds = SAVE_BOUNDS) {
   }
   return { version: 1, pumps };
 }
-const machineState = device => ({ device: { ...device }, load: new Load(16), clock: 0, drillClock: 0, blocked: 0, busy: false, metal: false });
+const machineState = device => ({ device: { ...device }, load: new Load(16), clock: 0, drillClock: 0, blocked: 0, busy: false, metal: false, shipTarget: null });
 
 /** Call step ONLY alongside native simulation advancement. No timers or writes
  * from promise callbacks. pending counts in-flight transactions (including
@@ -93,14 +94,20 @@ const machineState = device => ({ device: { ...device }, load: new Load(16), clo
  * the matching terrain snapshot separately. Neither operation accepts pending
  * transfers. reset is for WORLD REPLACEMENT, not pause, mode toggles or save.
  */
-export function createIndustryPhysics({ getSim, onShip = () => {}, onError = console.error }) {
+export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = () => {}, onError = console.error }) {
   let sim = null, kernel = null, transfer = null, epoch = 0, disposed = false;
   let ready = Promise.resolve(), built = false, cursor = 0;
+  let nativeFrame = null, guidedFrame = null;
   const states = new Map();
+  function confirmedTransfer(device, event) {
+    try { onTransfer({ device: { ...device }, confirmed: true, ...event }); }
+    catch (error) { onError(error); }
+  }
   function reset() {
     epoch++;
     states.clear(); // detached Load objects may finish; no stale callback earns credit
     sim = null; kernel = null; transfer = null; built = false;
+    nativeFrame = guidedFrame = null;
     ready = Promise.resolve();
   }
   function bind() {
@@ -110,6 +117,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
     reset();
     if (!next) return;
     sim = next;
+    nativeFrame = guidedFrame = Number.isFinite(sim.frame) ? sim.frame : null;
     const generation = epoch;
     try {
       kernel = sim.editKernel('industry', INDUSTRY_EDIT);
@@ -143,14 +151,19 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
   }
   function ship(s, d) {
     const id = s.metal ? E.METAL : E.NUGGETS;
+    s.shipTarget = id;
     const p = transfer.take(s.load, { cells: machinePorts(d).mouth, kinds: [K.POWDER, K.SOLID],
       want: id, maxTemperature: id === E.METAL ? CASTING_TEMPERATURE : 1e30, guard: machineGuard(d), limit: 16 });
     if (track(s, p, got => {
-      // Credit only the actual atomically removed cells, never an estimate or
-      // a pre-read. Preserve exact per-cell temperature for progression.
+      // Credit and diagnostic evidence use only the actual atomically removed
+      // cells, never an estimate or a pre-read. Preserve each cell's temperature.
       s.load.cells.length = 0;
       s.load.version++;
-      for (const c of got) onShip({ id: c[0], count: 1, temperature: c[1] });
+      for (const c of got) {
+        const shipment = { id: c[0], count: 1, temperature: c[1] };
+        onShip(shipment);
+        confirmedTransfer(d, { operation: 'ship', ...shipment });
+      }
     })) { s.metal = !s.metal; s.clock = 0; }
   }
   function pump(s, active) {
@@ -162,21 +175,60 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
       const spill = !active || s.blocked >= 1;
       const cells = spill ? region(d, -1, 4, 1, 3, -2, 3) : ports.outlet;
       const p = transfer.put(s.load, { cells, max: 8, guard: spill ? null : machineGuard(d), vel: [0, 0, 0] });
-      if (track(s, p, n => { if (n) s.blocked = 0; })) s.clock = 0;
+      if (track(s, p, n => {
+        if (n) { s.blocked = 0; confirmedTransfer(d, { operation: spill ? 'pump-return' : 'pump-output', count: n }); }
+      })) s.clock = 0;
     } else if (active) {
       const p = transfer.take(s.load, { cells: ports.inlet, kinds: [K.LIQUID], guard: machineGuard(d), limit: 8 });
-      if (track(s, p, () => { s.blocked = 0; })) s.clock = 0;
+      if (track(s, p, got => {
+        s.blocked = 0;
+        if (got.length) confirmedTransfer(d, { operation: 'pump-input', count: got.length });
+      })) s.clock = 0;
+    }
+  }
+  function editDevice(d, dt, drill = false, kind = INDUSTRY_KIND[d.type]) {
+    const guard = machineGuard(d), forward = deviceDirection(d), right = [forward[2], 0, -forward[0]];
+    sim.edit(kernel, machineBox(d), {
+      guardBase: guard.base, guardMaterial: guard.material, guardPort: guard.port, guardPowered: +guard.powered,
+      corner: deviceCell(d, 0, 0, 0), forward, right, kind,
+      selectedId: FILTER_IDS.includes(d.filter) ? d.filter : E.NUGGETS,
+      dt, drill: +drill,
+    });
+  }
+  // Like TPT conduction, paid draft runs beside each native tick, not once
+  // after a presentation-frame batch has already cooled its hot sources.
+  function nativeStep(devices) {
+    if (disposed) return;
+    const list = (Array.isArray(devices) ? devices : []).slice(0, INDUSTRY_LIMIT);
+    if (!list.some(d => d?.type === 'hearth')) {
+      if (sim && sim === getSim()) nativeFrame = Number.isFinite(sim.frame) ? sim.frame : null;
+      return;
+    }
+    bind();
+    const frame = sim && Number.isFinite(sim.frame) ? sim.frame : null;
+    const ticks = frame !== null && nativeFrame !== null ? Math.max(0, frame - nativeFrame) : 0;
+    nativeFrame = frame;
+    if (!sim || !built || ticks <= 0) return;
+    const seen = new Set();
+    for (const d of list) {
+      if (!validMachine(d, sim.g) || seen.has(d.id)) continue;
+      seen.add(d.id);
+      if (d.type === 'hearth') editDevice(d, ticks / NOMINAL_STEP_RATE, false, INDUSTRY_KIND.hearthHeat);
     }
   }
   function step(dt, devices) {
     if (disposed || !Number.isFinite(dt) || dt <= 0) return;
     bind();
     if (!sim || !built) return;
+    const frame = Number.isFinite(sim.frame) ? sim.frame : null;
+    const guide = frame !== null && guidedFrame !== null && frame > guidedFrame;
+    guidedFrame = frame;
+    nativeStep(devices); // fallback for callers advancing a whole batch themselves
     dt = Math.min(dt, 0.1);
     const seen = new Set(), active = [];
     for (const d of (Array.isArray(devices) ? devices : []).slice(0, INDUSTRY_LIMIT)) {
       // Structural decks are ordinary matter, never a default kind-0 conveyor.
-      if (d?.type === 'foundation' || !validMachine(d, sim.g) || seen.has(d.id)) continue;
+      if (['foundation', 'gate'].includes(d?.type) || !validMachine(d, sim.g) || seen.has(d.id)) continue;
       seen.add(d.id);
       const key = signature(d);
       let s = states.get(key);
@@ -206,13 +258,12 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
         continue;
       }
       if (!present) continue;
-      const guard = machineGuard(d), forward = deviceDirection(d), right = [forward[2], 0, -forward[0]];
+      if (d.type === 'hearth') {
+        if (guide) editDevice(d, 0); // original frame-cadence guidance, no duplicate heat
+        continue;
+      }
       const drill = s.drillClock >= 0.35;
-      sim.edit(kernel, machineBox(d), {
-        guardBase: guard.base, guardMaterial: guard.material, guardPort: guard.port, guardPowered: +guard.powered,
-        corner: deviceCell(d, 0, 0, 0), forward, right, kind: INDUSTRY_KIND[d.type],
-        selectedId: FILTER_IDS.includes(d.filter) ? d.filter : E.NUGGETS, dt, drill: +drill,
-      });
+      editDevice(d, dt, drill);
       if (drill) s.drillClock = 0;
     }
   }
@@ -245,8 +296,15 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onError = con
   }
   bind();
   return {
-    get ready() { bind(); return ready; }, step,
+    get ready() { bind(); return ready; }, step, nativeStep,
     get pending() { return pending(); },
+    // Read-only target for the currently inspected intake; mutable alternation
+    // state remains private to the native transfer dispatcher.
+    expectedShipId(id) {
+      const state = [...states.values()].find(s => s.device.type === 'ship' && s.device.id === id);
+      if (!state) return E.NUGGETS;
+      return state.busy && state.shipTarget !== null ? state.shipTarget : state.metal ? E.METAL : E.NUGGETS;
+    },
     get buffered() { return [...states.values()].reduce((n, s) => n + s.load.cells.length, 0); },
     toJSON, fromJSON,
     reset,
