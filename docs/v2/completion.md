@@ -8,7 +8,7 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 ## Current evidence — 2026-10-15
 
 Latest production integration: `1cd24b54`, including fetched production `375301e7`.
-Feature checkpoint `533da63c` is 134 commits ahead and none behind that production base.
+Feature checkpoint `d1897f8e` is 138 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 These results do not describe the live site.
 
@@ -139,6 +139,8 @@ The compile guard still rejects the whole case and now records pipeline labels.
 
 Each case has three warmups and 12 samples, identical CPU fixture and quality keys, and no measured compilation.
 Native records zero bridges. Means are 150.15 ms for v1 and 135.16 ms for native.
+This pair predates the hot-contact, full-f16 limiter and jet-restoration changes.
+It is not a speed result for the current physics.
 This one window has a 9.6% lower native median; it is not a repeatable equivalent-work speedup claim.
 Independent review `afa9f325` found no blocker in compaction, scalar IDs, resource fallback or headless prewarm.
 
@@ -166,10 +168,26 @@ Mass and stream continuity pass; total occupancy is 10.392 s.
 Existing-readback diagnostics at `533da63c` reproduce the failure with 9.806 s occupancy.
 All three checkpoint reads contain zero airborne WATER; the measured stream is resident liquid.
 The outlet and cell below it contain WATER. This does not prove that no particles were ever born.
-Native launch velocity also differs from the documented static-head rule. A bounded prototype-restoration specification is under review.
+`d1897f8e` restores bounded static-head launch and the prototype's thin-stream predicates.
+Jets now form: checkpoint reads contain 222, 400 and 573 WATER packets.
+Mass and continuity pass, but reach errors are 1.89%, 13.66% and 12.67%.
+The unchanged 5% gate still fails; occupancy is 11.625 s.
+The same original test on the unmodified CPU prototype also fails, at 12.78% worst reach error.
+This remaining hydraulic-model gap is not established as a native port regression.
+Independent review `c725db97` confirms the approved R14 rules, but also proves a liquid handback trap in a fixed-grid CPU witness.
+Matching film traversal can leave a stopped packet without an admissible deposition target.
+A canonical same-liquid handback repair is specified, not yet implemented.
+
+**Remaining throw settlement failure:** at `c6625d49`, the original throw lands four resident grains at the exact predicted centre, with passing spread.
+Its final eight-resident-grain gate fails. Total occupancy is 12.997 s.
+Readback diagnostics at `e176248a` retain all eight grains: four resident and four stationary particles overlapping that row.
+Diagnostic occupancy is 1.336 s. This is settlement failure, not measured mass loss.
+Setup now counts seeded whole particles; the final landing count remains resident-only.
+A bounded geometry-recovery specification addresses this distinct pre-R14 defect. GPU acceptance remains pending.
 V2 remains incomplete and non-parity, and must not become the default yet.
 
-Other unchanged numeric controls at `cab5525f` pass after compaction:
+Other unchanged numeric controls pass after compaction.
+The first five rows use `cab5525f`; heaps and vessel use `5ddd0932`.
 
 | Control | Ticks | Result | Total occupancy |
 | --- | ---: | --- | ---: |
@@ -178,6 +196,9 @@ Other unchanged numeric controls at `cab5525f` pass after compaction:
 | `yield` | 300 | Mud peak 2.49 cells, water peak 0.25 | 5.358 s |
 | `puddle` | 360 | Exact mass, bounded edge, rest at 4 s, zero awake bricks | 10.726 s |
 | `sandFalls` | 90 | All 64 grains fall and land; all retained | 8.788 s |
+| `heapSand` | 314 | 432 grains, roundness 0.95, slope 0.97; rest 1.2 s after pouring | 12.725 s |
+| `heapFlour` | 314 | 432 grains, roundness 0.96, slope 1.67; rest 1.7 s after pouring | 1.960 s |
+| `vessel` | 615 | 94.17% pressure kept after 10 s; outside pressure zero; all 296 walls intact | 11.635 s |
 
 Local evidence:
 
@@ -217,6 +238,13 @@ Local evidence:
 - `/tmp/v2-native-yield-064728ef.jsonl`
 - `/tmp/v2-native-hole-1cd24b54.jsonl`
 - `/tmp/v2-native-hole-probe-533da63c.jsonl`
+- `/tmp/v2-native-hole-d1897f8e.jsonl`
+- `/tmp/v2-hole-lean-d1897f8e.json`
+- `/tmp/v2-native-heapSand-5ddd0932.jsonl`
+- `/tmp/v2-native-heapFlour-5ddd0932.jsonl`
+- `/tmp/v2-native-vessel-5ddd0932.jsonl`
+- `/tmp/v2-native-throw-c6625d49.jsonl`
+- `/tmp/v2-native-throw-probe-e176248a.jsonl`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.
