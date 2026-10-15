@@ -7,6 +7,8 @@ import { gridDims, cellSlot, slotCell } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { WorldWindow } from '../src/world/window.js';
 import { Simulation } from '../src/sim.js';
+import { Deco } from '../src/deco.js';
+import { WorldGenerator } from '../src/world/gpu.js';
 import { setAeration, dropAeration, aerationForSource } from '../src/gfx/foam.js';
 import { cellWordsDiffer, cellDiffersWGSL } from '../src/shaders/generate.js';
 import { STAMP_LIB, stampLib } from '../src/shaders/stamp.js';
@@ -21,7 +23,7 @@ function fixture() {
   const frame = { copy(a, ao, b, bo, n) { assert(ao + n <= a.size && bo + n <= b.size); commands.push(() => b.bytes.set(a.bytes.subarray(ao, ao + n), bo)); },
     clear(b, at = 0, n = b.size) { commands.push(() => b.bytes.fill(0, at, at + n)); } };
   const gpu = { frame, stats: { flushes: 0 },
-    createBuffer({ size, label }) { const b = { size, label, bytes: new Uint8Array(size) }; owned.push(b); return b; },
+    createBuffer({ size, label }) { const b = { size, label, bytes: new Uint8Array(size), destroy() {} }; owned.push(b); return b; },
     write(b, at, data, { ordered = true } = {}) { if (ordered) flush(); b.bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), at); },
     layout(_name, e) { return e; }, bindGroup(layout, entries) { return { layout, entries }; },
     kernel(desc) { return { ...desc, ready: Promise.resolve(), dispatch(_frame, size, opts) { this.calls ??= []; this.calls.push({ size, opts }); } }; } };
@@ -208,11 +210,11 @@ check('actual window control ordering captures before origin mutation; no incomp
   const f = fixture(), order = [], win = f.win, sim = f.sim;
   sim.origin.clone = () => ({ ...sim.origin }); sim.shift = (dx, dz) => { order.push('shift'); sim.origin.x += dx; sim.origin.z += dz; sim.cur = 1 - sim.cur; };
   win.renderSource = { recordLeavingCopy(_frame, _sim, bounds, old) { order.push('capture'); assert.deepEqual(old, [32, 0, 32]); assert.deepEqual(bounds.lo, [32, 0, 32]); return {}; },
-    restoreCaptured() { order.push('restoreCaptured'); }, recordLiveCopy() { order.push('publishLive'); } };
+    recordStore() { order.push('recordStore'); }, restoreCaptured() { order.push('restoreCaptured'); }, recordLiveCopy() { order.push('publishLive'); } };
   win.gen = { diff() { order.push('diff'); }, fill() { order.push('fill'); } }; win.leave = {}; win.readBack = () => order.push('readBack'); win.restore = () => { order.push('restoreStore'); return 0; };
   win.plant = () => { order.push('plant'); return 0; }; win.scene.trees = {};
   WorldWindow.prototype.shift.call(win, 16, 0);
-  assert.deepEqual(order, ['capture', 'diff', 'readBack', 'shift', 'fill', 'restoreStore', 'restoreCaptured', 'plant', 'publishLive']);
+  assert.deepEqual(order, ['capture', 'diff', 'readBack', 'shift', 'fill', 'recordStore', 'restoreStore', 'restoreCaptured', 'plant', 'publishLive']);
 });
 check('raw producer rejects an epoch/revision overtaken before recording; separate default-limit layouts', () => {
   const f = fixture(); f.win.gen = { ready: Promise.resolve(), res: { layout: [] } }; f.win.scene.glsl = () => '';
@@ -263,6 +265,170 @@ check('source owns only its cache buffers; disposal idempotent and scene appeara
   assert(!f.retired.includes(f.sim.state.A)); assert(!f.retired.includes(f.sim.flow));
   assert.equal(f.source.recordPopulate(f.frame, snapshotSource(f.sim)), 0);
 });
+// Production JS orchestration with CPU command buffers. Dispatch below stands
+// in for WGSL, not a numerical GPU proof; equality deliberately models the
+// existing restore writer, so native restoration must repair signed zero.
+function windowFixture() {
+  const f = fixture(), { sim, win, gpu } = f;
+  Object.assign(sim.origin, { set(x, y, z) { Object.assign(this, { x, y, z }); }, clone() { return { x: this.x, y: this.y, z: this.z }; } });
+  Object.assign(sim, { worldRenderSource: f.source, shiftKeepsHistory: true, _shiftListeners: [], rays: { reset() {} },
+    L: { FLOW_SHIFT: [] }, wake() {}, noteWrite: Simulation.prototype.noteWrite, edit: Simulation.prototype.edit,
+    freshFlags: Simulation.prototype.freshFlags, shift: Simulation.prototype.shift, stillFlow: Simulation.prototype.stillFlow,
+    _clip: Simulation.prototype._clip, _editGroup() { return {}; }, passOf: (name) => name });
+  sim.header = (src = sim.cur, dst = src) => ({ src, dst, origin: [sim.origin.x, 0, sim.origin.z] });
+  const shiftWords = (a, b, width, dx, dz, srcCopy = 0, dstCopy = 0) => {
+    const src = wordView(a).slice(srcCopy * sim.g.slots * width, (srcCopy + 1) * sim.g.slots * width), dst = wordView(b);
+    for (let z = 0; z < sim.g.nz; z++) for (let y = 0; y < sim.g.ny; y++) for (let x = 0; x < sim.g.nx; x++) {
+      const d = (dstCopy * sim.g.slots + cellSlot(sim.g, x, y, z)) * width, sx = x + dx, sz = z + dz;
+      if (sx < 0 || sx >= sim.g.nx || sz < 0 || sz >= sim.g.nz) dst.fill(0, d, d + width);
+      else { const s = cellSlot(sim.g, sx, y, sz) * width; dst.set(src.subarray(s, s + width), d); }
+    }
+  };
+  sim._dispatch = (kernel, _size, { params = {}, header = sim.header() } = {}) => {
+    f.flush();
+    if (kernel === 'shift') for (const name of ['A', 'B']) shiftWords(sim.state[name], sim.state[name], 4, params.shift[0], params.shift[2], header.src, header.dst);
+    if (kernel === 'flowShift') shiftWords(sim.flow, sim.flowTmp, 2, params.shift[0], params.shift[2]);
+    if (kernel === 'brush') wordView(sim.state.A)[(sim.cur * sim.g.slots + cellSlot(sim.g, ...params.editLo)) * 4 + 3] = 0xdeadbeef;
+    if (kernel === 'fill' || kernel === 'restore') {
+      const au = wordView(sim.state.A), bu = wordView(sim.state.B);
+      const af = new Float32Array(au.buffer), bf = new Float32Array(bu.buffer);
+      const raw = win.restoreBuf && new Uint32Array(win.restoreBuf.bytes.buffer);
+      const saved = raw && new Float32Array(raw.buffer);
+      for (let z = params.editLo[2]; z <= params.editHi[2]; z++) for (let y = params.editLo[1]; y <= params.editHi[1]; y++) for (let x = params.editLo[0]; x <= params.editHi[0]; x++) {
+        const d = (sim.cur * sim.g.slots + cellSlot(sim.g, x, y, z)) * 4;
+        if (kernel === 'fill') { au.fill(0, d, d + 4); bu.fill(0, d, d + 4); continue; }
+        const p = [x, y, z].map((v, i) => v - params.lo[i]), brick = p.map(v => v >> 2);
+        const index = raw[brick[0] + params.bricks[0] * (brick[1] + params.bricks[1] * brick[2])];
+        if (!index) continue;
+        const s = params.cellsAt * 4 + (index - 1) * 512 + ((p[0] & 3) + 4 * ((p[1] & 3) + 4 * (p[2] & 3))) * 4;
+        if ([0, 1, 2, 3].every(c => af[d + c] === saved[s + c] && bf[d + c] === saved[s + 256 + c])) continue;
+        au.set(raw.subarray(s, s + 4), d); bu.set(raw.subarray(s + 256, s + 260), d);
+      }
+    }
+  };
+  sim._shiftListeners.push((dx, dz) => {
+    shiftWords(sim.aeration.buffer, sim.aeration.buffer, 2, dx, dz, sim.aeration.cur, sim.aeration.cur);
+    shiftWords(sim.decoPlane.buffer, sim.decoPlane.buffer, 1, dx, dz);
+  });
+  win.gen = { P: {}, sim, res: { resources: [], prepassFor() {} }, kernels: { fill: { main: 'fill' } }, fill: WorldGenerator.prototype.fill, diff() {} };
+  win.P = win.gen.P; win.restoreKernel = { main: 'restore' }; win.restore = WorldWindow.prototype.restore;
+  win.storeRevisions = new Map(); win.leave = {}; win.readBack = () => {}; win.loaded = true;
+  sim.dropHistory = () => {}; win.far = null;
+  return f;
+}
+const oldUsage = globalThis.GPUBufferUsage;
+globalThis.GPUBufferUsage = { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 };
+try {
+  check('actual cold loadSaved + shift/reentry restores signed zero, NaN payload, tiny heat, pressure and appearance words', () => {
+    const f = windowFixture(), { win, sim } = f;
+    const outside = new BrickStore(win.wb), A = new Float32Array(256), B = new Float32Array(256);
+    const au = new Uint32Array(A.buffer), bu = new Uint32Array(B.buffer);
+    bu[3] = 0x80000000; // cell differs ONLY by signed zero: equality restore skips it
+    au[4 + 1] = 0x7fc12345; au[8 + 1] = 0x00000001; bu[12 + 3] = 0x3f800001; au[16 + 3] = 0xdeadbeef;
+    const key = outside.key(16, 1, 9); outside.put(key, encodeBrick(A, 0, B, 0));
+    WorldWindow.prototype.loadSaved.call(win, [32, 0, 32], () => {}, outside.toBytes(), win.planted.slice());
+    assert.equal(f.source.getSource([64, 4, 36]).kind, 'unknown', 'saved-only; no warm cache');
+    WorldWindow.prototype.shift.call(win, 16, 0); f.flush();
+    assert(!win.store.has(key));
+    const verify = () => {
+      for (let i = 0; i < 64; i++) {
+        const p = [64 + (i & 3), 4 + (i >> 2 & 3), 36 + (i >> 4)];
+        const out = f.source.getSource(p);
+        for (const [name, words] of [['A', au], ['B', bu]]) {
+          assert.deepEqual(stateWords(snapshotSource(sim), name, p), [...words.subarray(i * 4, i * 4 + 4)]);
+          assert.deepEqual(stateWords(out.chunk, name, p), [...words.subarray(i * 4, i * 4 + 4)]);
+        }
+      }
+    };
+    verify(); WorldWindow.prototype.shift.call(win, -16, 0); WorldWindow.prototype.shift.call(win, 16, 0); f.flush(); verify();
+    assert.equal(f.source.bindings.appearanceWords, win.scene.appearanceWords);
+  });
+  check('actual no-step window departure/reentry preserves content token and every A/B/flow/aer/deco word', () => {
+    const f = windowFixture(); fillState(f); f.source.recordLiveCopy(f.frame); f.flush();
+    const before = snapshotSource(f.sim), originals = {};
+    for (const name of ['A', 'B']) originals[name] = wordView(before[name]).slice(before.copy * before.g.slots * 4, (before.copy + 1) * before.g.slots * 4);
+    originals.flow = wordView(before.flow).slice(); originals.aer = wordView(before.aeration).slice(before.aerCopy * before.g.slots * 2, (before.aerCopy + 1) * before.g.slots * 2); originals.deco = wordView(before.deco.buffer).slice();
+    const token = f.source.contentToken(), authority = f.source.revision;
+    const pinned = f.source.snapshotForFields();
+    WorldWindow.prototype.shift.call(f.win, 16, 0); WorldWindow.prototype.shift.call(f.win, -16, 0); f.flush();
+    assert.deepEqual(f.source.contentToken(), token); assert(f.source.revision > authority); assert(pinned.isCurrent());
+    const after = snapshotSource(f.sim);
+    for (const name of ['A', 'B']) assert.deepEqual(wordView(after[name]).slice(after.copy * after.g.slots * 4, (after.copy + 1) * after.g.slots * 4), originals[name]);
+    assert.deepEqual(wordView(after.flow), originals.flow);
+    assert.deepEqual(wordView(after.aeration).slice(after.aerCopy * after.g.slots * 2, (after.aerCopy + 1) * after.g.slots * 2), originals.aer);
+    assert.deepEqual(wordView(after.deco.buffer), originals.deco);
+    pinned.assertComplete([sourceBounds(f.sim)]);
+    assert.throws(() => pinned.assertComplete([{ lo: [0, 0, 0], hi: [4, 4, 4] }]), /Incomplete/);
+    const dst = { A: f.gpu.createBuffer({ size: SOURCE_GRID.slots * 16 }), B: f.gpu.createBuffer({ size: SOURCE_GRID.slots * 16 }), aeration: f.gpu.createBuffer({ size: SOURCE_GRID.slots * 8 }) };
+    pinned.recordGatherRaw(f.frame, { resources: dst, g: SOURCE_GRID, scratchOrigin: before.origin, sourceRevision: token.sourceRevision }); f.flush();
+    assert.deepEqual(wordView(dst.A), originals.A); assert.deepEqual(wordView(dst.B), originals.B); assert.deepEqual(wordView(dst.aeration), originals.aer);
+  });
+  check('content snapshots ignore ownership transfers but reject writes and resets; shift callbacks are not suppressed', () => {
+    const f = windowFixture();
+    const pin = f.source.snapshotForFields(), token = f.source.contentToken();
+    f.source.recordStore(sourceBounds(f.sim));
+    f.source.recordPopulate(f.frame, { ...snapshotSource(f.sim), kind: 'generated' });
+    f.source.recordLiveCopy(f.frame); assert.deepEqual(f.source.contentToken(), token); assert(pin.isCurrent());
+    f.sim._shiftListeners.push(() => f.sim.edit({ main: 'brush' }, { lo: [1, 1, 1], hi: [1, 1, 1] }));
+    WorldWindow.prototype.shift.call(f.win, 16, 0);
+    assert(!pin.isCurrent(), 'real listener edit during synchronous residency move must not be suppressed');
+    assert.throws(() => pin.assertComplete([]), /Stale/);
+    const pin2 = f.source.snapshotForFields(); f.source.reset(f.source.epoch + 1); assert(!pin2.isCurrent());
+  });
+  check('actual paused edit, whole write, physics step, aeration reset/idle and scene changes advance content', () => {
+    const f = windowFixture(), { sim, source } = f;
+    const advances = (fn) => { const before = source.contentRevision; fn(); assert(source.contentRevision > before); };
+    advances(() => sim.edit({ main: 'brush' }, { lo: [0, 0, 0], hi: [0, 0, 0] }));
+    advances(() => sim.noteWrite()); advances(() => sim.stillFlow()); advances(() => source.invalidateGenerated());
+    Object.assign(sim, { frame: 0, actAge: 0, actSteps: 0, kernels: { move: 'move', react: 'react' }, rays: { active: false }, aeration: null });
+    advances(() => Simulation.prototype.step.call(sim));
+    sim.onShift = () => () => {}; sim.attachAeration = (a) => { sim.aeration = a; };
+    const aer = setAeration(sim, true); aer._dispatch = () => {}; aer._group = () => ({});
+    advances(() => aer.reset());
+    // Actual idle method invokes actual _run, not a mirrored revision model.
+    for (const k of Object.values(aer.kernels)) k.state = 'ready';
+    f.gpu.readback = { buffer: async () => new Uint32Array([1]).buffer };
+    aer.idleSteps = 0; advances(() => aer.idle(f.frame));
+    dropAeration(sim);
+  });
+  {
+    const f = windowFixture(), token = f.source.token();
+    const producer = new RawWorldSourceProducer(Object.assign(f.win, { scene: { ...f.win.scene, glsl: () => '' }, gen: { ready: Promise.resolve(), res: { layout: [] } } }), f.source);
+    let release; const delayed = new Promise(resolve => { release = resolve; });
+    const result = delayed.then(() => producer.record(f.frame, [32, 32], token));
+    f.sim.edit({ main: 'brush' }, { lo: [1, 1, 1], hi: [1, 1, 1] });
+    const edited = f.source.contentRevision; release(); assert.equal(await result, null); assert.equal(f.source.contentRevision, edited);
+    f.source.recordLiveCopy(f.frame); f.flush();
+    const brush = f.source.getSource([33, 1, 33]);
+    assert.equal(stateWords(brush.chunk, 'A', [33, 1, 33])[3], 0xdeadbeef, 'intervening user words survive delayed producer rejection');
+    producer.dispose(); assertions++; console.log('PASS ongoing paused edit during delayed producer invalidates old token without suppression');
+  }
+  for (const newer of [22, 0, 'fail']) {
+    const f = fixture(), requests = []; f.gpu.readback = { buffer() { return new Promise((resolve, reject) => requests.push({ resolve, reject })); } };
+    f.sim._dispatch = () => {}; // GPU dispatch only; actual Deco stage/group/read orchestration runs
+    f.sim.worldRenderSource = f.source;
+    const deco = new Deco(f.sim); await deco.ready; for (const k of Object.values(deco.k)) k.state = 'ready';
+    const beforeUpload = f.source.contentRevision;
+    deco.upload(new Uint8Array(f.sim.g.width * f.sim.g.height * 4));
+    assert(f.source.contentRevision > beforeUpload);
+    deco.active = true;
+    deco.leave([0, 0, 0], [1, 1, 1], () => 7); const olderRead = deco.pending;
+    deco.leave([0, 0, 0], [1, 1, 1], () => 7); const newerRead = [...deco.storeReads][1];
+    const bytes = v => new Uint32Array(64).fill(v).buffer;
+    if (newer === 'fail') {
+      const savedError = console.error; console.error = () => {};
+      try { requests[1].reject(new Error('intentional delayed readback failure')); await newerRead; } finally { console.error = savedError; }
+    } else { requests[1].resolve(bytes(newer)); await newerRead; }
+    assert.equal(deco.pending, olderRead, 'newer completion must keep older outstanding read visible');
+    requests[0].resolve(bytes(11)); await olderRead;
+    assert.equal(deco.pending, null); assert.equal(deco.storeReads.size, 0);
+    if (newer === 22) assert.equal(new Uint32Array(deco.store.get(7).buffer)[0], 22);
+    else assert(!deco.store.has(7), 'older read must not resurrect newer deletion or failed newer capture');
+    deco.leave([0, 0, 0], [1, 1, 1], () => 7); const stale = deco.pending; deco.reset();
+    requests[2].resolve(bytes(99)); await stale; assert(!deco.store.has(7)); assert.equal(deco.pending, null);
+    deco.dispose(); assertions++; console.log(`PASS actual Deco.leave reversed newer ${newer} + epoch/error/pending cleanup`);
+  }
+} finally { if (oldUsage === undefined) delete globalThis.GPUBufferUsage; else globalThis.GPUBufferUsage = oldUsage; }
 const windowCode = readFileSync(new URL('../src/world/window.js', import.meta.url), 'utf8');
 assert(windowCode.includes('this.sourceProducer.record('));
 assert(readFileSync(new URL('../src/sim.js', import.meta.url), 'utf8').includes('this.worldRenderSource?.recordLiveCopy(f, this)'));

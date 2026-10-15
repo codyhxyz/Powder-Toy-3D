@@ -84,7 +84,7 @@ export function recordSourceCopies(frame, src, dst, runs, { aux = true } = {}) {
 export class WorldRenderSource {
   constructor(win) {
     this.win = win; this.sim = win.sim; this.gpu = win.gpu;
-    this.chunks = new Map(); this.epoch = win.epoch; this.revision = 0;
+    this.chunks = new Map(); this.epoch = win.epoch; this.revision = 0; this.contentRevision = 0;
     this.disposed = false; this.liveVersion = -1; this.minimumStaticRevision = 0;
     this.unsubscribeData = win.scene.subscribeData?.(() => this.invalidateGenerated());
     this.auxContract = Object.freeze({ flow: 'original vec2u/slot', aeration: 'original vec2u/slot; captured current copy',
@@ -92,8 +92,59 @@ export class WorldRenderSource {
       histories: 'EMA/GI are renderer-owned; phase 2 must supply persistent world ownership',
       sourceStyle: 'scene importManifest/appearanceWords remain scene-owned; SourceStyle is view policy, not residency'  });
   }
-  token() { return Object.freeze({ epoch: this.epoch, revision: this.revision }); }
+  token() { return Object.freeze({ epoch: this.epoch, revision: this.revision, contentRevision: this.contentRevision }); }
   nextRevision() { return ++this.revision; }
+  // Semantic writes, never ownership transfers. Advance authority too so a
+  // producer awaiting readiness cannot publish over an intervening user edit.
+  noteContentChange() {
+    if (this.disposed) return;
+    this.contentRevision++;
+    this.nextRevision();
+  }
+  contentToken() { return Object.freeze({ epoch: this.epoch, sourceRevision: this.contentRevision }); }
+  // Provider adapter contract. jetValidity must be attested by the adapter
+  // after checking wake provenance; raw storage alone cannot prove bounded jets.
+  snapshotForFields({ jetValidity } = {}) {
+    if (this.needsLiveCopy()) this.recordLiveCopy(this.gpu.frame);
+    const token = this.contentToken();
+    const isCurrent = () => !this.disposed && token.epoch === this.epoch && token.sourceRevision === this.contentRevision;
+    const assertCurrent = () => { if (!isCurrent()) throw new Error('Stale world content snapshot'); };
+    // World auxiliary ownership is not the local simulation's enable switch:
+    // captured outside foam remains authoritative, absent cells gather zero.
+    return Object.freeze({ ...token, jetValidity, aerationActive: true,
+      scene: this.win.scene, appearanceWords: this.win.scene.appearanceWords ?? null,
+      importManifest: this.win.scene.importManifest ?? null, auxContract: this.auxContract,
+      isCurrent,
+      assertComplete: (regions) => { assertCurrent(); return this.assertComplete(regions); },
+      recordGatherRaw: (frame, request) => {
+        assertCurrent();
+        if (request.sourceRevision !== token.sourceRevision) throw new Error('Mismatched world content revision');
+        return this.recordGatherRaw(frame, request);
+      } });
+  }
+  assertComplete(regions) {
+    for (const region of regions) {
+      const box = intersectBounds(region, { lo: [0, 0, 0], hi: this.win.size });
+      if (!box) continue;
+      for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
+        if (this.getSource([x, y, z]).kind === 'unknown') throw new Error('Incomplete in-world raw source');
+      }
+    }
+    return true;
+  }
+  recordGatherRaw(frame, { resources, g, scratchOrigin, sourceRevision, stateCopy = 0, aerationCopy = 0 }) {
+    if (sourceRevision !== this.contentRevision) throw new Error('Stale world content gather');
+    const bounds = { lo: scratchOrigin, hi: scratchOrigin.map((v, i) => v + [g.nx, g.ny, g.nz][i]) };
+    this.assertComplete([bounds]); // preflight before encoding ANY work
+    const dst = { ...resources, g, origin: [...scratchOrigin], copy: stateCopy, aerCopy: aerationCopy };
+    // Outside-world scratch and explicitly absent aux are zero, not stale data.
+    for (const name of ['A', 'B']) frame.clear(resources[name], stateCopy * g.slots * 16, g.slots * 16);
+    if (resources.aeration) frame.clear(resources.aeration, aerationCopy * g.slots * 8, g.slots * 8);
+    for (const c of this.chunks.values()) {
+      const runs = planSourceCopies(c, dst, bounds, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] !== SOURCE_RANK.unknown);
+      recordSourceCopies(frame, c, dst, runs);
+    }
+  }
   _buffer(label, bytes) {
     if (bytes > Math.min(MAX_BINDING, this.gpu.device?.limits?.maxStorageBufferBindingSize ?? MAX_BINDING)) throw new Error('raw source buffer exceeds default storage binding limit');
     return this.gpu.createBuffer({ label: `world source ${label}`, size: bytes, usage: USAGE });
@@ -151,12 +202,12 @@ export class WorldRenderSource {
   recordLiveCopy(frame, sim = this.sim, bounds = sourceBounds(sim)) {
     const revision = this.nextRevision(), src = snapshotSource(sim);
     this._record(frame, src, bounds, SOURCE_RANK.live, revision);
-    this.liveVersion = sim.version; this.liveSnapshot = src;
+    this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
     return revision;
   }
   needsLiveCopy(sim = this.sim) {
     const a = this.liveSnapshot, b = snapshotSource(sim);
-    return this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy ||
+    return this.liveContentRevision !== this.contentRevision || this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy ||
       a.origin.some((v, i) => v !== b.origin[i]) || a.flow !== b.flow || a.aeration !== b.aeration ||
       a.aerCopy !== b.aerCopy || a.aerGeneration !== b.aerGeneration || a.deco?.buffer !== b.deco?.buffer || a.deco?.offset !== b.deco?.offset;
   }
@@ -191,7 +242,8 @@ export class WorldRenderSource {
   }
   invalidateGenerated() {
     if (this.disposed) return;
-    this.minimumStaticRevision = this.nextRevision();
+    this.noteContentChange();
+    this.minimumStaticRevision = this.revision;
     for (const c of this.chunks.values()) for (let i = 0; i < c.rank.length; i++) if (c.rank[i] === SOURCE_RANK.generated) {
       c.rank[i] = SOURCE_RANK.unknown; c.revisions[i] = this.revision;
     }
@@ -234,7 +286,7 @@ export class WorldRenderSource {
     return { kind: Object.keys(SOURCE_RANK).find((k) => SOURCE_RANK[k] === rank), chunk: c, slot, revision: c.revisions[slot],
       pending: !!c.pending[slot], aux: c.aux[slot], epoch: this.epoch };
   }
-  get bindings() { return { epoch: this.epoch, revision: this.revision, chunks: this.chunks, auxContract: this.auxContract,
+  get bindings() { return { epoch: this.epoch, revision: this.revision, contentRevision: this.contentRevision, chunks: this.chunks, auxContract: this.auxContract,
     importManifest: this.win.scene.importManifest ?? null, appearanceWords: this.win.scene.appearanceWords ?? null, scene: this.win.scene }; }
   // Restore captured cells (including already committed exact source) AFTER
   // fill/store and BEFORE publishing live authority. No CPU readback.
@@ -250,12 +302,12 @@ export class WorldRenderSource {
     // Native A/B restore bypasses edit writers' F updates. Reclassify with
     // the existing prewarmed fresh pass; stale generated flags must not make
     // captured live matter inert on its next physical step.
-    if (count) sim.freshFlags();
+    if (count) sim.freshFlags({ residency: true });
     return count;
   }
   reset(epoch = this.epoch + 1) {
     for (const c of this.chunks.values()) for (const b of [c.A, c.B, c.flow, c.aeration, c.deco?.buffer]) if (b) this.sim._retire(b);
-    this.chunks.clear(); this.epoch = epoch; this.revision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
+    this.chunks.clear(); this.epoch = epoch; this.revision = 0; this.contentRevision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
   }
   dispose() { if (this.disposed) return; this.unsubscribeData?.(); this.reset(); this.disposed = true; }
 }

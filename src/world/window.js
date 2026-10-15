@@ -230,10 +230,14 @@ export class WorldWindow {
     sim.shift(dx, dz);
     // 3.
     const o = sim.origin;
-    this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi);
+    this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi, { residency: true });
+    const incoming = { lo: enterLo.map((v, i) => v + [o.x, o.y, o.z][i]), hi: enterHi.map((v, i) => v + [o.x, o.y, o.z][i]) };
+    // Preserve exact saved words BEFORE restore's floating equality can skip
+    // signed-zero-only changes and before it drops the store entries.
+    this.renderSource.recordStore(incoming);
     const restored = this.restore(enterLo, bricks);
     sim.deco?.enter(enterLo, bricks, (x, y, z) => this.store.key(o.x / BRICK + enterLo[0] / BRICK + x, y, o.z / BRICK + enterLo[2] / BRICK + z));
-    this.renderSource.restoreCaptured(this.gpu.frame, sim, { lo: enterLo.map((v, i) => v + [o.x, o.y, o.z][i]), hi: enterHi.map((v, i) => v + [o.x, o.y, o.z][i]) });
+    this.renderSource.restoreCaptured(this.gpu.frame, sim, incoming);
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;
@@ -336,7 +340,7 @@ export class WorldWindow {
     const ordered = this.restoreRead === this.gpu.stats.flushes;
     this.gpu.write(this.restoreBuf, 0, index, { ordered });
     this.gpu.write(this.restoreBuf, cellsAt * VEC4, cells, { ordered: false });   // (the first flushed, if it had to)
-    sim.edit(this.restoreKernel, { lo, hi: lo.map((v, i) => v + bricks[i] * BRICK - 1) }, { lo, bricks, cellsAt }, { bind: [{ buffer: this.restoreBuf }] });
+    sim.edit(this.restoreKernel, { lo, hi: lo.map((v, i) => v + bricks[i] * BRICK - 1) }, { lo, bricks, cellsAt }, { bind: [{ buffer: this.restoreBuf }], residency: true });
     this.restoreRead = this.gpu.stats.flushes;
     for (const key of keys) this.store.drop(key);
     return keys.length;
@@ -366,7 +370,7 @@ export class WorldWindow {
         trees += result.trees;
       }
     for (const k of fresh) this.planted[k] = 1;
-    sim.noteWrite();
+    sim.noteWrite({ residency: true });
     if (this.plantCost) this.plantCost.bakeMs += performance.now() - t0;
     return trees;
   }

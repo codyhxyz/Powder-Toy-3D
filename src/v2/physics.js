@@ -216,6 +216,7 @@ export class PhysicsV2 {
   // after ticks: today's state changed (the bridge), so the derived passes' key moves; then the idle read
   _ran() {
     this.sim.version++;
+    this.sim.worldRenderSource?.noteContentChange();
     this.seenVersion = this.sim.version;
     this._readIdle();
   }

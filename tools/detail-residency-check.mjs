@@ -38,7 +38,7 @@ function fixture(nx = 16, nz = 16) {
   });
   const win = Object.assign(Object.create(WorldWindow.prototype), {
     sim, size: [nx * 32, 64, nz * 32], scene: {}, gpu: { frame: {} },
-    renderSource: { recordLeavingCopy() { return {}; }, restoreCaptured() {}, recordLiveCopy() {} },
+    renderSource: { recordLeavingCopy() { return {}; }, recordStore() {}, restoreCaptured() {}, recordLiveCopy() {} },
     gen: { diff() {}, fill() { sim.version++; } }, readBack() {},
     restore() { sim.version++; return 0; },
   });

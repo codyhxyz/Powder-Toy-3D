@@ -90,6 +90,28 @@ Public recording API (all bounds are half-open WORLD cells):
 - `recordStore(bounds, token)`, `commitStoreRevision(keys, token)`,
   `restoreCaptured(frame, sim, bounds)`, `needsLiveCopy(sim)`, `getSource(cell)`, `bindings`,
   `reset(epoch)`, `dispose()`.
+- `contentRevision`, `contentToken()` => `{epoch, sourceRevision}`: semantic
+  content/dependency identity, distinct from ownership/store-ordering `revision`.
+  Pure generated/saved/captured/live copies, origin and buffer transfers leave
+  this token unchanged. Actual edits/steps, flow resets, aeration writes/resets/
+  drops, deco writes/resets/undo, and scene-data changes advance it immediately.
+  Direct writers outside Simulation (POV transfers, industry, v2) hook it too.
+  Only individual residency fill/restore/fresh/plant writers opt out; no mutable
+  suppression flag spans callbacks or awaits. New semantic writers must call
+  `noteContentChange()`; `sim.version` alone mixes residency and edits.
+- `snapshotForFields({jetValidity})` pins that content token as `sourceRevision`,
+  provides `isCurrent()`, complete in-world bounds checks, and native raw/aux
+  gather helpers. It refreshes live data before pinning, never reads GPU state
+  back to CPU, and rejects semantic changes/epoch resets. Pure residency can
+  preserve the pinned snapshot. Missing raw neighbors throw before encoding;
+  absent aux is explicitly zero. Allocations remain source-owned until epoch
+  reset/disposal; callers must retain them through queue completion.
+
+The parent provider adapter still owns field epoch/tick/dirty scheduling and
+wake-provenance validation. `jetValidity` has **no default attestation**: raw
+storage does not prove bounded imported jets. WorldFields must reject this
+snapshot until the adapter supplies the validated `producer-bounded-v1` claim.
+Use content `sourceRevision`, never `bindings.revision`, for field identity.
 
 `WorldWindow` records outgoing copies before origin/cur mutation and restores
 captured authority after incoming fill/store but before tree population/live

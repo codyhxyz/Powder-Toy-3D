@@ -202,6 +202,7 @@ class PovGpu {
   // next step rebuilds the map; the GPU marked the changed bricks).
   _wrote() {
     this.sim.version++;
+    this.sim.worldRenderSource?.noteContentChange();
     this.sim.wake();
   }
 

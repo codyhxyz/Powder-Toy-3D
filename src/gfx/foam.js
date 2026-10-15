@@ -130,6 +130,7 @@ class Aeration {
       this._dispatch(step, fold(this.g.nbricks), { bind: [sim.tables, sim.bindAct, this._group(ref, moveSrc)], header, params: { ...params, all: 1 } });
     }
     this.cur = 1 - this.cur;
+    sim.worldRenderSource?.noteContentChange();
   }
 
   _group(fd, moveSrc) {
@@ -176,6 +177,7 @@ class Aeration {
     this.allSteps = START_STEPS;
     this.idleSteps = AER_IDLE_STEPS + 1;   // nothing left to burst
     this.generation++;
+    this.sim.worldRenderSource?.noteContentChange();
   }
 
   /**
@@ -251,4 +253,5 @@ export function dropAeration(sim) {
   if (sim.aeration === aer && !sim.disposed) sim.attachAeration(null);
   aer.dispose();
   kept.delete(sim);
+  sim.worldRenderSource?.noteContentChange();
 }
