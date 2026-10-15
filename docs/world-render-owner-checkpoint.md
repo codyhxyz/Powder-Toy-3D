@@ -157,3 +157,19 @@ format, missing Glow halo and capture pins through replacement/final completion.
 
 No GPU/browser/server/deployment was run. These tests do not establish visual
 parity, numerical GPU parity, affordability, full owner/App completion or acceptance.
+
+## Follow-up: retained-channel seam implemented (still no owner)
+
+Ledger-authenticated SOURCE/GI restore now exists; see the concrete APIs in
+`world-gi-history-policy.md` under Authenticated retained transport. It includes
+real owned-Cut validation, separate exact current-cut validation stamps,
+immutable original channel provenance, mixed-generation native restoration and
+producer-only complete staged-SOURCE/previous-GI books. Thus remaining blocking
+items 1–2 above are resolved as a transport seam, not as renderer completion.
+Remaining owner ordering, metadata/change clocks, Glow computation, admission,
+application integration and production acceptance remain unchanged. Default
+direct writes and default Glow transport remain strict. Authenticated restored
+computational dependency IDs remain original; they are not represented as the
+current closure's dependency validation (unrestored channels remain strict).
+CPU fake-native/actual-class tests plus imports/build pass; no GPU/browser parity
+or deployment evidence is claimed.

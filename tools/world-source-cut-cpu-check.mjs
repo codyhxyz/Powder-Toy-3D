@@ -350,6 +350,8 @@ test('ledger restores R into R+1 without recomputation, then mixed compute gener
     const job=f.job(bundle);await drain(f.gpu);const flushes=f.gpu.flushes;
     f.source.noteContentChange();assert.equal(f.current.isValid(),true);assert.equal(f.current.isLatest(),false);
     await f.write(bundle,[job]);assert.equal(f.gpu.flushes,flushes+1);
+    const sourceBinding=f.atlas.writerBindings(job,'source');
+    assert.deepEqual([...new Uint32Array(sourceBinding.outputs[0].resource.texture.bytes,sourceBinding.params[12]*16,4)],[11,12,13,14]);
     assert.equal(f.initial.token,original);assert.equal(f.h.lightingTick,0);
     f.atlas.publish({lightJobs:[job],dependencyToken:{version:1,sets:[{id:7,version:1}]}});
     const first=f.atlas.snapshot(),manifest=first.lightingProvenance(f.M);
@@ -384,7 +386,8 @@ test('authentic cut/lease rejection, private staged SOURCE plus previous GI, fai
     const released=f.current.retain();released.release();assert.throws(()=>f.h.captureRestore({...args,cut:released}),/owned Source cut/);
     const bundle=f.h.captureRestore(args),lease=bundle.leases[0];
     assert.throws(()=>validateWorldLightingRestore({...lease}),/restore lease/);
-    const bad=f.atlas.allocateLight(f.M,{sourceRevision:args.cut.contentToken.sourceRevision,readyBits:READY.GLOW});
+    const bad=f.atlas.allocateLight(f.M,{publication:bundle.publication,sourceRevision:args.cut.contentToken.sourceRevision,sourceTick:lease.token.lightingTick,readyBits:READY.GI,dependencies:{source:{id:lease.token.dependencySetID,version:lease.token.dependencyVersion}}});
+    assert.throws(()=>validateWorldLightingRestore(lease,{job:{...bad,publication:{...bundle.publication}}}),/provenance mismatch/);
     await assert.rejects(f.transport.restore(f.gpu,f.atlas,[{job:bad,lease}]),/provenance mismatch|readiness/);f.atlas.cancel(bad);
     bundle.release();assert.throws(()=>validateWorldLightingRestore(lease),/restore lease/);
     f.plan=f.h.begin({lightingTick:1,globalKey:[2],records:f.records});
@@ -405,5 +408,24 @@ test('authentic cut/lease rejection, private staged SOURCE plus previous GI, fai
     f.atlas.cancel(pending);snapshot.release();retained.release();
     const wrong=f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:99});assert.throws(()=>f.h.captureRestore({...args,cut:wrong}),/owned Source cut/);wrong.release();
     assert.throws(()=>f.h.captureRestore(args),/owned Source cut/);
+  }finally{await f.close();}
+});
+
+test('wrong epoch/reset proofs reject and failed recordable suffix retains native pins until final queue closure',async()=>{
+  const f=await restoreFixture();try{
+    f.advance();
+    const args={cut:f.current,configVersion:2,sourceIndices:[1],probeIndices:[1]};
+    const other=createWorldLightingHistory({worldSize:f.win.size,epoch:2,sourceOwner:f.source,configuration:f.current.configuration});
+    assert.throws(()=>other.captureRestore(args),/owned Source cut/);other.dispose();
+    const bundle=f.h.captureRestore(args),job=f.job(bundle),native=f.initial.bindings().source;
+    await drain(f.gpu);
+    const flush=f.gpu.flush.bind(f.gpu);f.gpu.flush=()=>{throw new Error('recordable suffix failure');};
+    await assert.rejects(f.transport.restore(f.gpu,f.atlas,bundle.leases.map(lease=>({job,lease}))),/recordable suffix failure/);
+    assert.equal(f.gpu.frame.open,true);assert.equal(f.h.lightingTick,0);assert.throws(()=>f.atlas.publish({lightJobs:[job]}),/partial page/);
+    f.source.reset();assert.throws(()=>validateWorldLightingRestore(bundle.leases[0]),/owned Source cut/);
+    bundle.release();f.initial.release();f.h.dispose();f.gi.dispose();
+    assert.equal(native.dead,false,'in-flight native source remains pinned after ledger/output disposal');
+    f.gpu.flush=flush;await drain(f.gpu);await tick();
+    assert.equal(native.dead,true,'pins retire only after recordable suffix and final queue close');f.atlas.cancel(job);
   }finally{await f.close();}
 });

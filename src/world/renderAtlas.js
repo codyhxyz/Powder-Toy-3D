@@ -635,9 +635,10 @@ export class WorldRenderAtlas {
   // readiness, generation, or demand; only producerBindings may consume it.
   prepareProducerSnapshot({lightJobs,dependencyToken,sourcePhaseToken}) {
     this._alive();check(sourcePhaseToken!=null,'private SOURCE phase identity required');
-    const lights=new Uint32Array(this.bookLayout.count),seen=new Set();
+    const lights=new Uint32Array(this.bookLayout.count),seen=new Set(),target=lightJobs[0]?.publication;
     for(const job of lightJobs){
       const p=this._job(job,'light');check(!seen.has(p.index),'duplicate private light job');seen.add(p.index);
+      check(p.publication===target,'private closure target identity mismatch');
       check(!(p.readyBits&READY.GLOW)&&this._needed(p).every(n=>p.written.has(n)),'private channels must be completely written SOURCE/GI');
       check(p.restoreDeclarations?.source?.publication.sourcePhaseToken===sourcePhaseToken,'authenticated private SOURCE phase required');
       for(const [kind,lease]of Object.entries(p.restoreDeclarations??{}))validateWorldLightingRestore(lease,{job,kind});
