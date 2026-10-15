@@ -1,6 +1,7 @@
 import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
 import { aerationForSource, isProducerBoundedAeration } from '../gfx/foam.js';
+import { recordWorldSourceCut } from './sourceCut.js';
 
 export const SOURCE_CORE = 32;
 export const SOURCE_BRICK = BRICK;
@@ -95,11 +96,12 @@ export function recordSourceCopies(frame, src, dst, runs, { aux = true } = {}) {
 // Data/construction ownership only. No optical draw domains, field histories,
 // force buffers, page table, eviction budget, or renderer bind-group additions.
 export class WorldRenderSource {
-  constructor(win) {
-    this.win = win; this.sim = win.sim; this.gpu = win.gpu;
+  constructor(win, { context = null } = {}) {
+    this.win = win; this.context = context ?? win; this.ownedContext = context;
+    this.sim = win.sim; this.gpu = win.gpu;
     this.chunks = new Map(); this.epoch = win.epoch; this.revision = 0; this.contentRevision = 0;
     this.disposed = false; this.liveVersion = -1; this.minimumStaticRevision = 0;
-    this.unsubscribeData = win.scene.subscribeData?.(() => this.invalidateGenerated());
+    this.unsubscribeData = !context && win.scene.subscribeData?.(() => this.invalidateGenerated());
     this.auxContract = Object.freeze({ flow: 'original vec2u/slot', aeration: 'original vec2u/slot; captured current copy',
       deco: 'original RGBA8 u32/slot', persistence: 'A/B only; aux remains GPU-owned after store commit',
       histories: 'EMA/GI are renderer-owned; phase 2 must supply persistent world ownership',
@@ -110,6 +112,7 @@ export class WorldRenderSource {
   // Semantic writes, never ownership transfers. Advance authority too so a
   // producer awaiting readiness cannot publish over an intervening user edit.
   noteContentChange(change = sourceBounds(this.sim)) {
+    if (this.ownedContext) throw new Error('An owned Source cut cannot accept current writes');
     if (this.disposed) return;
     this.contentRevision++;
     this.nextRevision();
@@ -128,7 +131,7 @@ export class WorldRenderSource {
     const changed = new Map();
     for (const entry of this.changeJournal ?? []) if (entry.revision > token.sourceRevision) {
       if (entry.global) return { token: current, global: true, changedBricks: [] };
-      const box = intersectBounds(entry.bounds, { lo: [0, 0, 0], hi: this.win.size });
+      const box = intersectBounds(entry.bounds, { lo: [0, 0, 0], hi: this.context.size });
       if (box) for (let z = Math.floor(box.lo[2] / 4); z < Math.ceil(box.hi[2] / 4); z++)
         for (let y = Math.floor(box.lo[1] / 4); y < Math.ceil(box.hi[1] / 4); y++)
           for (let x = Math.floor(box.lo[0] / 4); x < Math.ceil(box.hi[0] / 4); x++) changed.set(`${x},${y},${z}`, [x, y, z]);
@@ -140,7 +143,7 @@ export class WorldRenderSource {
     new Uint8Array(buffer.getMappedRange()).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
     buffer.unmap();
     try { frame.copy(buffer, 0, target, offset, data.byteLength); }
-    finally { this.sim._retire(buffer); } // existing final-submit + completion retirement
+    finally { this._retire(buffer); }
   }
   assertBoundedWake(regions) {
     for (const c of this.chunks.values()) for (const region of regions) {
@@ -153,18 +156,23 @@ export class WorldRenderSource {
     }
   }
   contentToken() { return Object.freeze({ epoch: this.epoch, sourceRevision: this.contentRevision }); }
+  recordCut(frame, options) {
+    if (this.ownedContext) throw new Error('Capture cuts from the authoritative mutable Source');
+    return recordWorldSourceCut(this, frame, options);
+  }
+  _retire(buffer) { return this.ownedContext ? this.ownedContext.retire(buffer) : this.sim._retire(buffer); }
   // Provider adapter contract. jetValidity must be attested by the adapter
   // after checking wake provenance; raw storage alone cannot prove bounded jets.
   snapshotForFields({ jetValidity, refreshLive = true } = {}) {
     if (refreshLive && this.needsLiveCopy()) this.recordLiveCopy(this.gpu.frame);
     const token = this.contentToken();
-    const isCurrent = () => !this.disposed && token.epoch === this.epoch && token.sourceRevision === this.contentRevision;
+    const isCurrent = () => !this.disposed && (this.ownedContext ? this.ownedContext.isValid() : token.epoch === this.epoch && token.sourceRevision === this.contentRevision);
     const assertCurrent = () => { if (!isCurrent()) throw new Error('Stale world content snapshot'); };
     // World auxiliary ownership is not the local simulation's enable switch:
     // captured outside foam remains authoritative, absent cells gather zero.
     return Object.freeze({ ...token, jetValidity, aerationActive: true,
-      scene: this.win.scene, appearanceWords: this.win.scene.appearanceWords ?? null,
-      importManifest: this.win.scene.importManifest ?? null, auxContract: this.auxContract,
+      scene: this.context.scene, appearanceWords: this.context.scene.appearanceWords ?? null,
+      importManifest: this.context.scene.importManifest ?? null, auxContract: this.auxContract,
       isCurrent,
       assertComplete: (regions) => { assertCurrent(); return this.assertComplete(regions); },
       recordGatherRaw: (frame, request) => {
@@ -174,8 +182,9 @@ export class WorldRenderSource {
       } });
   }
   assertComplete(regions) {
+    if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
     for (const region of regions) {
-      const box = intersectBounds(region, { lo: [0, 0, 0], hi: this.win.size });
+      const box = intersectBounds(region, { lo: [0, 0, 0], hi: this.context.size });
       if (!box) continue;
       for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
         if (this.getSource([x, y, z]).kind === 'unknown') throw new Error('Incomplete in-world raw source');
@@ -184,6 +193,7 @@ export class WorldRenderSource {
     return true;
   }
   recordGatherRaw(frame, { resources, g, scratchOrigin, sourceRevision, stateCopy = 0, aerationCopy = 0 }) {
+    if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
     if (sourceRevision !== this.contentRevision) throw new Error('Stale world content gather');
     const bounds = { lo: scratchOrigin, hi: scratchOrigin.map((v, i) => v + [g.nx, g.ny, g.nz][i]) };
     this.assertComplete([bounds]); // preflight before encoding ANY work
@@ -201,18 +211,24 @@ export class WorldRenderSource {
     return this.gpu.createBuffer({ label: `world source ${label}`, size: bytes, usage: USAGE });
   }
   _chunk(origin) {
+    if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
     const key = origin.join(','); let c = this.chunks.get(key);
+    if (c && this.ownedContext) {
+      c = this.ownedContext.writableChunk(c);
+      this.chunks.set(key, c);
+    }
     if (!c) {
       c = { key, origin: [...origin], g: SOURCE_GRID, copy: 0, highestRevision: 0,
         A: this._buffer(`${key} A`, SOURCE_GRID.slots * 16), B: this._buffer(`${key} B`, SOURCE_GRID.slots * 16),
         rank: new Uint8Array(SOURCE_GRID.slots), revisions: new Float64Array(SOURCE_GRID.slots),
         pending: new Float64Array(SOURCE_GRID.slots), aux: new Uint8Array(SOURCE_GRID.slots), wakeTrusted: new Uint8Array(SOURCE_GRID.slots).fill(1), flow: null, aeration: null, deco: null };
       this.chunks.set(key, c);
+      this.ownedContext?.adoptChunk(c);
     }
     return c;
   }
   *_cores(bounds) {
-    const box = intersectBounds(bounds, { lo: [0, 0, 0], hi: this.win.size });
+    const box = intersectBounds(bounds, { lo: [0, 0, 0], hi: this.context.size });
     if (!box) return;
     for (let z = Math.floor(box.lo[2] / 32) * 32; z < box.hi[2]; z += 32)
       for (let y = Math.floor(box.lo[1] / 32) * 32; y < box.hi[1]; y += 32)
@@ -225,7 +241,7 @@ export class WorldRenderSource {
   }
   _record(frame, src, bounds, rank, revision, epoch = this.epoch) {
     if (this.disposed || epoch !== this.epoch) return 0;
-    const box = intersectBounds(bounds, { lo: [0, 0, 0], hi: this.win.size });
+    const box = intersectBounds(bounds, { lo: [0, 0, 0], hi: this.context.size });
     if (!box) return 0;
     let cells = 0;
     for (const origin of this._cores(box)) {
@@ -276,18 +292,21 @@ export class WorldRenderSource {
     return cells;
   }
   recordLiveCopy(frame, sim = this.sim, bounds = sourceBounds(sim)) {
+    if (this.ownedContext) throw new Error('A Source cut cannot read newer live state');
     const revision = this.nextRevision(), src = snapshotSource(sim);
     this._record(frame, src, bounds, SOURCE_RANK.live, revision);
     this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
     return revision;
   }
   needsLiveCopy(sim = this.sim) {
+    if (this.ownedContext) return false;
     const a = this.liveSnapshot, b = snapshotSource(sim);
     return this.liveContentRevision !== this.contentRevision || this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy ||
       a.origin.some((v, i) => v !== b.origin[i]) || a.flow !== b.flow || a.aeration !== b.aeration ||
       a.aerCopy !== b.aerCopy || a.aerGeneration !== b.aerGeneration || a.deco?.buffer !== b.deco?.buffer || a.deco?.offset !== b.deco?.offset;
   }
   recordLeavingCopy(frame, sim, bounds, oldOrigin = sim.origin) {
+    if (this.ownedContext) throw new Error('A Source cut cannot transfer current authority');
     const revision = this.nextRevision(), src = snapshotSource(sim, oldOrigin);
     // Leaving live cells transfer ownership to captured; they are not stale
     // static data and must be allowed to replace the previous live revision.
@@ -306,6 +325,7 @@ export class WorldRenderSource {
       SOURCE_RANK[chunk.kind ?? 'generated'], revision.revision, revision.epoch);
   }
   commitStoreRevision(keys, revision) {
+    if (this.ownedContext) throw new Error('A Source cut freezes pending persistence');
     if (this.disposed || revision.epoch !== this.epoch) return;
     const wanted = new Set(keys);
     for (const c of this.chunks.values()) for (let d = 0; d < c.g.slots; d++) {
@@ -319,6 +339,7 @@ export class WorldRenderSource {
     }
   }
   invalidateGenerated() {
+    if (this.ownedContext) throw new Error('A Source cut freezes generator inputs');
     if (this.disposed) return;
     this.noteContentChange({ global: true });
     this.minimumStaticRevision = this.revision;
@@ -331,8 +352,8 @@ export class WorldRenderSource {
   }
   recordStore(bounds, token = this.token()) {
     if (this.disposed || token.epoch !== this.epoch) return;
-    const wb = this.win.wb;
-    for (const [key, bytes] of this.win.store.map) {
+    const wb = this.context.wb;
+    for (const [key, bytes] of this.context.store.map) {
       const origin = [key % wb[0] * 4, Math.floor(key / wb[0]) % wb[1] * 4, Math.floor(key / (wb[0] * wb[1])) * 4];
       const box = intersectBounds(bounds, { lo: origin, hi: origin.map((v) => v + 4) });
       if (!box) continue;
@@ -346,7 +367,7 @@ export class WorldRenderSource {
       // Uploaded immutable store bytes only. Live state never reaches the CPU.
       for (const r of runs) for (const name of ['A', 'B']) this.recordUpload(this.gpu.frame, c[name], r.dst * 16, words[name].subarray(r.src * 4, (r.src + r.cells) * 4));
     }
-    for (const [key, bytes] of this.sim.deco?.store ?? []) {
+    for (const [key, bytes] of this.ownedContext ? this.context.decoStore : this.sim.deco?.store ?? []) {
       const origin = [key % wb[0] * 4, Math.floor(key / wb[0]) % wb[1] * 4, Math.floor(key / (wb[0] * wb[1])) * 4];
       const box = intersectBounds(bounds, { lo: origin, hi: origin.map((v) => v + 4) });
       if (!box) continue;
@@ -362,6 +383,7 @@ export class WorldRenderSource {
     }
   }
   getSource(cell) {
+    if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
     const c = this.chunks.get(cell.map((v) => Math.floor(v / 32) * 32).join(','));
     if (!c) return { kind: 'unknown', epoch: this.epoch };
     const slot = cellSlot(c.g, ...cell.map((v, i) => v - c.origin[i])), rank = c.rank[slot];
@@ -369,10 +391,11 @@ export class WorldRenderSource {
       pending: !!c.pending[slot], aux: c.aux[slot], epoch: this.epoch };
   }
   get bindings() { return { epoch: this.epoch, revision: this.revision, contentRevision: this.contentRevision, chunks: this.chunks, auxContract: this.auxContract,
-    importManifest: this.win.scene.importManifest ?? null, appearanceWords: this.win.scene.appearanceWords ?? null, scene: this.win.scene }; }
+    importManifest: this.context.scene.importManifest ?? null, appearanceWords: this.context.scene.appearanceWords ?? null, scene: this.context.scene }; }
   // Restore captured cells (including already committed exact source) AFTER
   // fill/store and BEFORE publishing live authority. No CPU readback.
   restoreCaptured(frame, sim, bounds) {
+    if(this.ownedContext)throw new Error('An owned Source cut cannot restore current physics');
     const dst = snapshotSource(sim); let count = 0;
     for (const c of this.chunks.values()) {
       const runs = planSourceCopies(c, dst, bounds, (_d, p) => {
@@ -388,7 +411,8 @@ export class WorldRenderSource {
     return count;
   }
   reset(epoch = this.epoch + 1) {
-    for (const c of this.chunks.values()) for (const b of [c.A, c.B, c.flow, c.aeration, c.deco?.buffer]) if (b) this.sim._retire(b);
+    if (this.ownedContext) throw new Error('Release the owning Source cut instead of resetting it');
+    for (const c of this.chunks.values()) for (const b of [c.A, c.B, c.flow, c.aeration, c.deco?.buffer]) if (b) this._retire(b);
     this.chunks.clear(); this.changeJournal = []; this.epoch = epoch; this.revision = 0; this.contentRevision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
   }
   dispose() { if (this.disposed) return; this.unsubscribeData?.(); this.reset(); this.disposed = true; }

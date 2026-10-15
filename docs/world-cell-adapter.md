@@ -51,7 +51,10 @@ No await or source mutation is allowed between source flush and synchronous
 `commitAfterSourceFlush`. It rejects an open Frame or stale source/epoch, freezes
 native buffer selections, submits all consuming Atlas work synchronously, then
 publishes. Source buffers themselves remain source-owned and mutable: the CPU
-identity token does not make their bytes immutable.
+identity token does not make their bytes immutable. The optional
+[`recordCut` / `bindCut` ownership path](world-source-cut.md) instead pins native
+Source versions and frozen generation context for delayed dependency feedback,
+without replacing `WorldFields`/history or pausing physics.
 
 `abort(batch)` requires the source Frame flushed. It abandons Atlas packing,
 not a successfully committed Fields tick: valid captures remain cached for a

@@ -17,6 +17,7 @@ export class WorldCellAtlasAdapter {
     if (!gpu || !source || !producer || !atlas || !tables || !worldBounds) throw new TypeError('Concrete Source/Producer/Atlas/tables/bounds required');
     if (worldBounds.min.some(v=>v!==0) || worldBounds.max.some((v,i)=>v!==source.win.size[i] || v!==atlas.bookLayout.worldSize[i])) throw new Error('CELL source/atlas/world bounds mismatch');
     Object.assign(this,{gpu,source,producer,atlas,tables});
+    this.mutableSource=source;this.boundCut=null;
     this.bounds={min:[...worldBounds.min],max:[...worldBounds.max]};
     this.cache=new Map(); this.retiredCaptures=new WeakSet(); this.pending=null; this.dead=false; this.publication=null; this.lastSourceToken=null; this.dependencyID=dependencyID++;
     // Fields may commit while its Atlas publication is aborted or retried.
@@ -46,7 +47,18 @@ export class WorldCellAtlasAdapter {
     const b=this.gpu.createBuffer({label,size:data.byteLength,usage,mappedAtCreation:true});
     new Uint8Array(b.getMappedRange()).set(new Uint8Array(data.buffer,data.byteOffset,data.byteLength));b.unmap();return b;
   }
-  _retire(b){this.source.sim._retire(b);}
+  _retire(b){this.source._retire(b);}
+  bindCut(cut){
+    this._alive();if(this.pending)throw new Error('Cannot switch a pending CELL cut');
+    if(!cut?.isValid()||!cut.belongsTo(this.mutableSource))throw new Error('Invalid CELL Source cut');
+    const held=cut.retain(),old=this.boundCut;
+    if(old&&old.configuration!==held.configuration){
+      for(const c of this.cache.values())this._dropCapture(c);this.cache.clear();
+      this.publication=null;this.lastSourcePublication=null;
+    }
+    this.boundCut=held;this.source=held.source;this.producer=held.producer;
+    old?.release();return this;
+  }
   _dropCapture(c){if(this.retiredCaptures.has(c))return;this.retiredCaptures.add(c);for(const b of [...c.buffers,c.classification,...c.uploads].filter(Boolean))this._retire(b);}
   _options({fieldTick,requirements=[],changedBricks=[],smoothing=1,full=false}){
     const cores=new Map(), normalized=[];
@@ -201,14 +213,18 @@ export class WorldCellAtlasAdapter {
     for(const [key,c] of batch.before)if(this.cache.get(key)!==c)this._dropCapture(c);
   }
   acquire(){
-    this._alive();if(!this.publication||!same(this.publication.source,this.source.contentToken()))throw new Error('No current submitted CELL publication');
-    const p=this.publication,atlas=this.atlas.snapshot();let released=false;
+    this._alive();if((this.boundCut&&!this.boundCut.isValid())||!this.publication||!same(this.publication.source,this.source.contentToken()))throw new Error('No current submitted CELL publication');
+    const p=this.publication,atlas=this.atlas.snapshot(),ownedCut=this.boundCut?.retain();let released=false;
     return Object.freeze({identity:p.identity,worldSize:Object.freeze([...this.bounds.max]),epoch:this.source.epoch,
       source:Object.freeze({contentToken:p.source,sourceRevision:p.source.sourceRevision}),field:Object.freeze({publishedToken:p.fieldToken,complete:true,sourceRevision:p.source.sourceRevision,logicalFieldTick:p.fieldTick}),
-      atlas,changedBricks:p.changedBricks,invalidatedCoreKeys:p.invalidatedCoreKeys,dependencySetID:p.dependencySetID,dependencyVersion:p.dependencyVersion,
-      release(){if(!released){released=true;atlas.release();}},isReleased:()=>released});
+      atlas,ownedCut,changedBricks:p.changedBricks,invalidatedCoreKeys:p.invalidatedCoreKeys,dependencySetID:p.dependencySetID,dependencyVersion:p.dependencyVersion,
+      release(){if(!released){released=true;atlas.release();ownedCut?.release();}},isReleased:()=>released});
   }
-  isCurrent(snapshot){return !this.dead&&!snapshot?.isReleased?.()&&snapshot?.identity===this.publication?.identity&&snapshot.epoch===this.source.epoch&&same(this.publication.source,this.source.contentToken());}
+  isCurrent(snapshot){
+    if(this.dead||!snapshot||snapshot.isReleased?.())return false;
+    if(snapshot.ownedCut)return snapshot.ownedCut.belongsTo(this.mutableSource)&&snapshot.ownedCut.isValid()&&snapshot.epoch===this.mutableSource.epoch;
+    return snapshot.identity===this.publication?.identity&&snapshot.epoch===this.source.epoch&&same(this.publication.source,this.source.contentToken());
+  }
   reset(){
     this._alive();if(this.pending)throw new Error('Finish pending CELL work before reset');
     if(this.source.epoch<=this.fields.history.epoch)throw new Error('Source epoch must advance before CELL reset');
@@ -220,6 +236,7 @@ export class WorldCellAtlasAdapter {
   dispose(){
     this._alive();if(this.pending||this.gpu.frame.open)throw new Error('Finish/flush pending CELL work before dispose');
     for(const c of this.cache.values())this._dropCapture(c);this.cache.clear();this._retire(this.zero);this.dead=true;this.publication=null;
+    this.boundCut?.release();this.boundCut=null;
     if(this.ownsFields){const queue=this.gpu.queue??this.gpu.device.queue;Promise.resolve(queue.onSubmittedWorkDone()).then(()=>this.fields.dispose(),()=>this.fields.dispose());}
   }
 }
