@@ -17,6 +17,11 @@ import { crueltyFrameSettings } from '../src/gfx/crueltyDisplay.js';
 import { FrameUniformsStruct, writeFrameUniforms } from '../src/gfx/uniforms.js';
 import { volumeShaderGrid } from '../src/gfx/volume.js';
 import { Matrix4, Vector3, PerspectiveCamera } from 'three/webgpu';
+// Match CI's pinned native WGSL validator. Reflection alone cannot validate
+// these full shaders (wgsl_reflect currently rejects valid vector constants).
+const naga = spawnSync('naga', ['--version'], { encoding: 'utf8' });
+assert.equal(naga.status, 0, 'Install the CPU validator: cargo install naga-cli --version 30.0.1 --locked');
+assert.equal(naga.stdout.trim(), '30.0.1', 'Use the same Naga version as deployment');
 
 test('appearance words survive the shared rgba16uint far-grid tail bit-exactly', () => {
   const words = Uint32Array.from({ length: 101 }, (_, i) => (i * 0x9876543) >>> 0);

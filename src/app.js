@@ -85,7 +85,8 @@ import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
-import { VIEWS, viewKey as viewKeyOf, viewForMode, isMaterialView } from './views.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView } from './views.js';
+import { gpuSafeMode, startupView as viewForMode } from './startupSafety.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
 import weatherWire, { weather } from './wire/weather.js';
@@ -225,7 +226,7 @@ if (params.get('scene')) settings.scene = params.get('scene');
 settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed: the island)
 // ?view=plain (or a view's id): the view to boot in. The test tools boot the
 // plain view, the cheapest to build (docs/webgpu.md B5, I1).
-const viewParam = params.get('view');
+const viewParam = gpuSafeMode() ? 'plain' : params.get('view');
 const linkedView = VIEWS.find((v) => v.key === viewParam || String(v.id) === viewParam);
 if (linkedView) settings.view = linkedView.id;
 // ?win=<x>[,<y>,<z>]: a world window of another size, for the test tools
@@ -297,16 +298,20 @@ function save() {
 // else one now. A refused device is the WebGPU error page's case, not a bug
 // in here: main.js tells them apart by launch.deviceError (G5).
 let gpu;
+if (launch.startupError) throw launch.startupError;
 try {
   gpu = await (launch.gpu ??= createGpu({ adapter: launch.adapter ?? undefined, label: 'tpt3d' }));
+  if (launch.startupError) { gpu.fail(launch.startupError); throw launch.startupError; }
   // The menu's device lost (or stopped) while the menu was up: the GPU
   // process restarted, a phone put the tab away. Nothing of the game lived on
   // it yet (B9's "no restore" is about the state on the GPU, which starts
   // here), so the game starts on a new one, on a new adapter: an adapter
   // makes one device.
   if (gpu.lost || gpu.failure) {
+    if (launch.startupError) throw launch.startupError;
     gpu.destroy();
     gpu = await (launch.gpu = createGpu({ label: 'tpt3d' }));
+    if (launch.startupError) { gpu.fail(launch.startupError); throw launch.startupError; }
   }
 } catch (err) {
   launch.deviceError = err;
@@ -320,6 +325,7 @@ const canvas = document.createElement('canvas');
 document.getElementById('app').appendChild(canvas);
 const presenter = createPresenter(gpu, canvas);
 const renderer = await createThreeRenderer(gpu, canvas, { hdr: presenter.hdr });
+if (launch.startupError) { gpu.fail(launch.startupError); throw launch.startupError; }
 // The canvas matches the screen's pixels (up to RETINA_MAX), so the browser no
 // longer stretches a CSS-sized picture 2× on a Retina display. The Upscaling
 // presets are shares of these real pixels, as AMD FSR 2 defines its modes
@@ -380,6 +386,7 @@ function stopGraphics(error) {
     const lost = failureKind(error.message) === 'deviceLost' ? `\n${lossDetails(gpuLoss.snapshot())}` : '';
     el.textContent = `${error.message}${lost}\n\nRendering and simulation stopped. Reload to restart.\nUnsaved simulation changes may be lost.`;
     console.error('Graphics stopped:', error);
+    launch.failed?.(error);
   }
   return graphicsFailure;
 }
@@ -2683,6 +2690,7 @@ function bootReady(pending = null) {
   let settled = !pending;   // (a save picked on the menu: it loads first)
   pending?.finally(() => { settled = true; });
   const check = async () => {
+    if (graphicsFailure || launch.startupError) return;
     if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) {
       if (win && !win.loaded) launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
       setTimeout(check, READY_POLL_MS);
@@ -2694,6 +2702,7 @@ function bootReady(pending = null) {
       const match = startMode(launch.mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
       await Promise.race([match, new Promise((r) => setTimeout(r, MATCH_WAIT_MS))]);
     } else if (bootMap) startMode(params.get('mode') ?? launch.mode ?? 'sandbox');   // ?mode=, or Sandbox: its effect (Sandbox's none)
+    if (graphicsFailure || launch.startupError) return;
     mark('ready');
     launch.ready?.();
   };

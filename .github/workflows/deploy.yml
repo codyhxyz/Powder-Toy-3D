@@ -32,6 +32,19 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Cache CPU WGSL validator
+        uses: actions/cache@v4
+        id: naga-cache
+        with:
+          path: ~/.cargo/bin/naga
+          key: ${{ runner.os }}-naga-cli-30.0.1
+      - name: Install CPU WGSL validator
+        if: steps.naga-cache.outputs.cache-hit != 'true'
+        run: cargo install naga-cli --version 30.0.1 --locked
+      - name: Verify CPU WGSL validator
+        run: |
+          test "$("$HOME/.cargo/bin/naga" --version)" = "30.0.1"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
@@ -39,6 +52,8 @@ jobs:
       - run: node tools/check-map-previews.mjs   # every menu map, including source imports, has a square preview
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
       - run: node tools/check-gpu-deadline.mjs   # CPU-only: enforce total slot budget and cleanup ownership
+      - run: node --test tools/pipeline-safety-cpu-check.mjs   # fake GPU: compiler concurrency, deadlines and cancellation
+      - run: node --experimental-vm-modules --test tools/startup-safety-cpu-check.mjs   # fake browser: startup failure and safe restart
       - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
       - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
       - run: node tools/check-move-work.mjs && node tools/render-read-cpu-check.mjs
