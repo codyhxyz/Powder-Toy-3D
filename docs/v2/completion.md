@@ -7,9 +7,10 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 
 ## Current evidence — 2026-10-15
 
-Feature commit: `17817ba`. The common production base is `92470c5`.
-Fetched production is `b570540`: the feature is 93 commits ahead and 146 behind.
-Production reconciliation remains required. These results do not describe the live site.
+Integration checkpoint: `dcd03636`, including fetched production `ea9bcb7d`.
+At that checkpoint, the feature is 117 commits ahead and none behind production.
+Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
+These results do not describe the live site.
 
 The native engine now includes contact rules, heat, phases, particles, air,
 jets, modes, exact persistence, and direct rendering.
@@ -21,12 +22,16 @@ CPU coverage does not establish complete GPU feature parity.
 | Full tank, `3a89a96` | 240 ticks, exact mass, flat surface, rest certified at 2.4 game seconds | 23.023 s |
 | Wood control, `8ac7816` | Control passed after the frozen six-face exposure fix | 15.532 s |
 | Census, `aed9af3` | 120 ticks, 20 checks, no measured water/particle, sand, or wall drift | 12.391 s |
+| Census, `668ab1a7` | 120 ticks, 20 checks, zero measured drift after the WATER identity shortcut | 11.734 s |
+| Wood control, `668ab1a7` | 60 ticks; original control passes with resident and airborne wood included | 1.563 s |
 | Contact heat, `a2ee677` | 32 ticks, two metal cells, exactly 2,535,663,075,328 energy units retained | 10.382 s |
 | Blast control, `17817ba` | Allocation path completed without GPU errors | 10.082 s |
 
 All listed slots closed without forced cleanup or reported ownership errors.
-The wood control counts grid wood, not airborne wood.
-Its pass alone does not prove complete fuel conversion.
+The historical `8ac7816` wood counter excluded airborne wood.
+The current counter includes packet amounts, temperatures and burning flags, including packets outside the grid.
+Its CPU regression rejects cold wood merely lofted into packets.
+The updated GPU pass does not establish complete fuel chemistry or energy accounting.
 The blast control removed the entire floor from the grid.
 That saturated footprint does not establish crater roundness or retained airborne mass.
 
@@ -37,6 +42,14 @@ The source changes preserve calibration:
 - Empty blast batches skip pool preparation through existing indirect arguments.
 - Exact thermal admission replaces an encode/decode round trip. Its CPU oracle covers 6,183,436 cases without a mismatch.
 - Uniform canonical AIR blocks skip only byte-identical work. The proof covers all 41,094 normal temperature codes.
+- Full WATER blocks at exactly 20°C skip only proven identity work, preserving all 48 packed flux bits.
+  Support snapshots and liquid passes still execute. Mixed blocks, other temperatures and pending requests retain the full path.
+- Gather skips strict dry-AIR and balanced homogeneous-liquid identities. Phase endpoints retain the full transport path.
+- Read-only cell sampling shares one decode instead of expanding three decoder call paths.
+- Required contact compilation enters the bounded queue before graphics. The two-build concurrency limit remains unchanged.
+
+Two scalar contact-row experiments passed CPU checks but exceeded Metal's startup allowance.
+Both were reverted. Contact retains its GPU-verified row representation.
 
 ### Renderer-connected measurements
 
@@ -52,6 +65,11 @@ Native frames use no legacy bridge dispatches.
 These runs use different sample windows.
 Both engines also evolve different states from the same fixture.
 The table is diagnostic evidence, not a final speedup claim.
+It predates production reconciliation and the latest identity shortcuts.
+An unfired detail-prefetch timer could also start shader compilation after readiness returned.
+The old tool did not reject that potential measurement confound.
+Headless checkpoints now request actual visible detail, including close-up and curved views, without that speculative timer.
+Normal gameplay keeps its prefetch behavior. Measured windows now reject new pipeline work instead of discarding affected samples.
 The second run occupied 25.744 seconds under the earlier explicit 30-second exception.
 Subsequent runs use the fetched 25-second policy.
 
@@ -61,19 +79,27 @@ Scene rendering costs about 38.11 ms.
 The overlapping motion interval is not an additional scene cost.
 Allocation scans no longer dominate the compute timings.
 
+Current merged full-frame runs have not returned a valid timing window.
+The visible volume shader still exceeded the setup allowance after unused near-detail prefetch was removed.
+This is a startup failure, not a failed physics assertion.
+Readonly volume-format specialization remains under implementation; no timing benefit is established.
+
 Local evidence:
 
 - `/tmp/v2-native-slab-profile-3a89a96.jsonl`
 - `/tmp/v2-native-tankStill-3a89a96.json`
 - `/tmp/v2-native-woodBurns-8ac7816.json`
 - `/tmp/v2-native-census-aed9af3.json`
+- `/tmp/v2-native-census-668ab1a7.jsonl`
+- `/tmp/v2-native-woodBurns-668ab1a7.jsonl`
 - `/tmp/v2-contact-thermal-a2ee677.json`
 - `/tmp/v2-native-blast-17817ba.json`
 - `/tmp/v2-native-water-matched-17817ba.json`
 - `/tmp/v2-native-water-split-17817ba.json`
+- `/tmp/v2-water-native-8d5ad463.json.startup.jsonl`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
-production reconciliation, independent review, deployment, and a live-site check.
+fresh production checks, independent review, deployment, and a live-site check.
 V1 remains the default.
 
 ## Earlier startup checks — 2026-10-14 (historical)
