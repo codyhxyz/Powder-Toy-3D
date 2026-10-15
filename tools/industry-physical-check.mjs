@@ -4,12 +4,16 @@
 //   node tools/industry-physical-check.mjs --case mechanisms --port 19543
 // CPU geometry check: --case thermal --preflight. Compute-only: --case thermal --harness.
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
+import { budgetMs, CLEANUP_MS } from './gpu-deadline.mjs';
 import { validateDevices } from '../src/industry/validation.js';
 
 const invokedAt = Date.now();
-const totalDeadline = invokedAt + 8_500; // leave >=1.5s for browser/slot cleanup
-const caseDeadline = invokedAt + 6_300;  // finish before evaluate's deadline, with time to return observations
 const arg = name => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
+const slotBudgetMs = budgetMs(Number(arg('--budget-ms') || 10_000));
+// The independent watchdog starts graceful shutdown two cleanup intervals
+// before the slot ends. Return observations BEFORE that shutdown, not during it.
+const workDeadline = invokedAt + slotBudgetMs - 2 * CLEANUP_MS - 500;
+const caseDeadline = workDeadline - 300;
 const selectedCase = arg('--case');
 const port = arg('--port') || '19543';
 const baseUrl = arg('--url') || `http://localhost:${port}/`;
@@ -23,7 +27,7 @@ const thermalDevices = validateDevices([
     }))),
 ], [128, 128, 128]);
 if (!['thermal', 'mechanisms'].includes(selectedCase)) {
-  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms [--harness] [--preflight] [--port PORT | --url URL]');
+  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
   process.exit(2);
 }
 if (process.argv.includes('--preflight')) {
@@ -41,14 +45,18 @@ let browser = null;
 let page = null;
 let result = { case: selectedCase, status: 'not-run', checks: {}, residualGaps: [] };
 const browserErrors = [];
+let lastStage = 'not-launched';
 
 try {
-  if (Date.now() >= totalDeadline - 1_500) throw new Error('insufficient budget before browser launch');
-  browser = await launchBrowser({ lifetimeMs: 10_000 });
-  if (Date.now() >= totalDeadline - 2_500) throw new Error('insufficient bounded time remains after browser startup');
+  if (Date.now() >= workDeadline - 1_500) throw new Error('insufficient budget before browser launch');
+  browser = await launchBrowser({ lifetimeMs: slotBudgetMs });
+  if (Date.now() >= workDeadline - 1_000) throw new Error('insufficient bounded time remains after browser startup');
   page = await newTestPage(browser, { mode: 'manual', viewport: { width: 400, height: 300 } });
   page.on('pageerror', error => browserErrors.push(`page: ${cleanError(error)}`));
   page.on('console', message => {
+    if (message.text().startsWith('[physical-check]')) {
+      lastStage = message.text(); console.error(lastStage);
+    }
     if (/GPU (validation|internal)|Error while parsing WGSL/.test(message.text())) browserErrors.push(`console: ${message.text().slice(0, 400)}`);
   });
   const url = new URL(baseUrl);
@@ -58,17 +66,20 @@ try {
   url.searchParams.set('mode', 'sandbox');
   url.searchParams.set('view', 'plain');
   url.searchParams.set('test', 'manual');
-  await within(page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(4_000, totalDeadline - Date.now() - 1_500)) }), totalDeadline - 1_300, 'app navigation');
-  await within(useHarness ? page.waitForFunction(() => window.__harness?.ready) : ready(page), totalDeadline - 1_300, 'simulation ready');
+  await within(page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(4_000, workDeadline - Date.now())) }), workDeadline, 'app navigation');
+  await within(useHarness ? page.waitForFunction(() => window.__harness?.ready) : ready(page), workDeadline, 'simulation ready');
   const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness, thermalDevices }) => {
     const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 500);
     const caseStarted = performance.now();
+    const stage = name => console.log(`[physical-check] ${name} (${Math.round(performance.now() - caseStarted)} ms in page)`);
+    stage('simulation setup');
     const h = useHarness ? window.__harness : null;
     const nativeSim = h ? await h.make(128, { debug: false }) : null;
     const a = h ? { sim: nativeSim, gpu: h.gpu, test: {
       mode: 'manual', park() {}, ready: () => nativeSim.ready,
       step(n) { for (let i = 0; i < n; i++) nativeSim.step(); },
     } } : window.__app;
+    stage('native simulation ready');
     if (!a?.sim || !a.test || a.test.mode !== 'manual') throw new Error('manual 128³ app baseline is unavailable');
     a.test.park();
     const sim = a.sim;
@@ -120,6 +131,7 @@ try {
           assisted: true, physics: emptyPhysics });
         const updateIndustry = () => h ? thermalPhysics.step(1 / 60, [hearth]) : a.industry.update(1 / 60, true);
         await Promise.all([a.test.ready(), fill.ready]);
+        stage('industry pipelines ready');
 
         // Real atomic construction: one hearth plus sixteen ordinary foundations.
         // No unbuildable internal baffle or one-cell painted lining.
@@ -130,6 +142,7 @@ try {
           if (Date.now() >= deadline) throw new Error('insufficient time to finish buildable tub construction');
           if (!await construction.run(d, 1)) throw new Error(`atomic construction failed: ${d.id}`);
         }
+        stage('atomic tub construction confirmed');
         // Two shovel-loads can provide this finite cold batch in principle.
         // Actual shovel aiming/refueling is NOT asserted by this numerical fixture.
         box([48, 13, 48], [51, 15, 51], E.BROKENCOAL, 20, ELEMENTS[E.BROKENCOAL].life);
@@ -146,6 +159,7 @@ try {
           && brokenInitial.id === E.BROKENCOAL && brokenInitial.temperature === 20 && brokenInitial.life === ELEMENTS[E.BROKENCOAL].life
           && scrapInitialCells.every(cell => cell.id === E.SCRAP && cell.temperature === 20);
         if (!fixtureReady) throw new Error('cold physical fuel, charge, tungsten base, or foundation-backed port did not read back as built');
+        stage('cold resources confirmed; stepping native physics');
         // Prime nativeFrame at the present frame. Every measured hearth update below
         // follows exactly four actual sim.step ticks (the app's native 240 Hz batch).
         updateIndustry();
@@ -199,11 +213,11 @@ try {
           ignitionObserved: ignition,
           physicalFuelLifeReduced: fuelLifeReduced,
           nativeScrapMeltedToLavaWithMetalCtype: !!melt,
-          noAsyncApiErrors: errors.length === 0,
+          noAsyncApiErrors: errors.length === 0 && (!h || h.failures.length === 0),
         };
         const status = Object.values(checks).every(Boolean) ? 'passed' : 'bounded-incomplete';
         return {
-          case: caseName, status, checks, apiErrors: errors,
+          case: caseName, status, checks, apiErrors: [...errors, ...(h?.failures ?? [])],
           observations: { bounds, integration: h ? 'native Simulation + Industry physics (no app UI)' : 'app controller',
             fixtureTemperatureC: 20, fuelStartLife: coalInitial.life, fuelId: E.BROKENCOAL,
             loadedFuelCells: 44, containmentFoundationCells: 256,
@@ -350,14 +364,15 @@ try {
       thermalPhysics?.dispose();
       nativeSim?.dispose();
     }
-  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices }), totalDeadline - 1_200, 'physical checkpoint');
+  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices }), workDeadline, 'physical checkpoint');
   result = payload;
   if (browserErrors.length) {
     result.browserErrors = browserErrors;
     result.status = 'failed';
   }
 } catch (error) {
-  result = { case: selectedCase, status: 'failed', checks: {}, error: cleanError(error), residualGaps: ['validation did not complete; no pass is claimed'] };
+  result = { case: selectedCase, status: 'failed', checks: {}, error: cleanError(error), lastStage,
+    residualGaps: ['validation did not complete; no pass is claimed'] };
 } finally {
   if (browser) {
     try { await browser.close(); }
@@ -367,6 +382,6 @@ try {
     }
   }
 }
-result.timing = { wallMs: Date.now() - invokedAt, slotBudgetMs: 10_000 };
+  result.timing = { wallMs: Date.now() - invokedAt, slotBudgetMs };
 console.log(JSON.stringify(result));
 if (result.status !== 'passed') process.exitCode = 1;
