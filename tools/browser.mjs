@@ -77,11 +77,7 @@ async function takeSlot() {
       } catch (e) {
         if (e.code !== 'EEXIST') throw e;
         const holder = readJSON(SLOT_FILE, null);
-        if (holder === process.pid) {
-          const stat = fs.statSync(SLOT_FILE);
-          slotHeld = true; slotStarted ||= stat.mtimeMs; slotInode = stat.ino; slotToken ||= randomUUID();
-        }
-        else if (!Number.isSafeInteger(holder) || holder <= 1 || !alive(holder)) {
+        if (holder === process.pid || !Number.isSafeInteger(holder) || holder <= 1 || !alive(holder)) {
           throw new Error('Headless GPU slot holder is dead or unverified; preserving the lease and report regardless of age. Require ownership/cleanup verification before recovery; do a CPU check instead.');
         }
         if (!slotHeld) {

@@ -83,7 +83,7 @@ const guardFile = fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url));
 // Exercise private launcher functions with CPU stubs, never importing Playwright.
 const launcher = readFileSync(new URL('./browser.mjs', import.meta.url), 'utf8');
 const takeSource = launcher.slice(launcher.indexOf('async function takeSlot()'), launcher.indexOf('function releaseSlot()'));
-for (const age of [100, MAX_SLOT_MS + 10000]) for (const text of ['99', '0', '-1', '1.5', 'not-json', 'null', 'true', '{}', '[42]', '"42"']) {
+for (const age of [100, MAX_SLOT_MS + 10000]) for (const text of ['99', '42', '0', '-1', '1.5', 'not-json', 'null', 'true', '{}', '[42]', '"42"']) {
   const dir = mkdtempSync(join(tmpdir(), 'gpu-lease-refusal-cpu-')), slot = join(dir, 'fake-slot'), report = join(dir, 'fake-report');
   try {
     writeFileSync(slot, text); writeFileSync(report, 'incomplete report sentinel');
@@ -93,7 +93,7 @@ for (const age of [100, MAX_SLOT_MS + 10000]) for (const text of ['99', '0', '-1
       slotHeld: false, BUDGET_DIR: dir, SLOT_FILE: slot, SLOT_WAIT_MS: 0, MAX_SLOT_MS,
       Date, process: { pid: 42 }, fs,
       readJSON(file, fallback) { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return fallback; } },
-      alive: () => false,
+      alive: pid => pid === 42,
       gpuBusyPct() { assert.fail('must not proceed without acquiring the slot'); },
     });
     await assert.rejects(take(), /dead or unverified.*preserving/);
@@ -134,7 +134,7 @@ function privateGuard() {
   assert.equal(test.removed(), 1, 'pre-guard/no-browser cancellation can release its verified own lease');
   assert.equal(test.context.slotHeld, false);
 }
-for (const outcome of ['released', 'exit', 'readiness-failure', 'readiness-exit', 'uncertain-close']) {
+for (const outcome of ['released', 'exit', 'readiness-failure', 'readiness-exit', 'stdout-close']) {
   const test = privateGuard();
   const ready = test.context.guardSlot(budgetMs(6000));
   if (outcome.startsWith('readiness-')) {
@@ -147,7 +147,7 @@ for (const outcome of ['released', 'exit', 'readiness-failure', 'readiness-exit'
     await ready;
     if (outcome === 'released') test.guard.stdout.write('released\n');
     if (outcome === 'exit') test.guard.emit('exit', 1, null);
-    if (outcome === 'uncertain-close') test.guard.stdout.emit('close');
+    if (outcome === 'stdout-close') test.guard.stdout.emit('close');
   }
   test.context.releaseSlot(); // same path used by launch failure, disconnect and process exit
   assert.equal(test.removed(), outcome === 'released' ? 1 : 0);
@@ -156,19 +156,22 @@ for (const outcome of ['released', 'exit', 'readiness-failure', 'readiness-exit'
   if (outcome === 'exit') assert.equal(test.stopped(), 1);
 }
 const stopSource = launcher.slice(launcher.indexOf('async function stop('), launcher.indexOf('const handlers ='));
-let acknowledge;
-const guardFinished = new Promise(resolve => { acknowledge = resolve; });
-const exits = [];
-const stop = vm.runInNewContext(`(${stopSource})`, {
-  stopping: false, guardFinished, slotDeadline: Date.now() + MAX_SLOT_MS, Date, Promise,
-  browsers: new Set(), process: { exit: code => exits.push(code) },
-  setTimeout: () => 1, clearTimeout() {},
-});
-const stopped = stop(1);
-await Promise.resolve(); await Promise.resolve();
-assert.deepEqual(exits, [], 'parent must wait for guard timing/release, not exit after browser.close');
-acknowledge(); await stopped;
-assert.deepEqual(exits, [1]);
+for (const closeFails of [false, true]) {
+  let acknowledge, closeCalls = 0;
+  const guardFinished = new Promise(resolve => { acknowledge = resolve; });
+  const exits = [];
+  const stop = vm.runInNewContext(`(${stopSource})`, {
+    stopping: false, guardFinished, slotDeadline: Date.now() + MAX_SLOT_MS, Date, Promise,
+    browsers: closeFails ? new Set([{ close() { closeCalls++; return Promise.reject(new Error('fixture close failure')); } }]) : new Set(),
+    process: { exit: code => exits.push(code) }, setTimeout: () => 1, clearTimeout() {},
+  });
+  const stopped = stop(1);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(closeCalls, closeFails ? 1 : 0);
+  assert.deepEqual(exits, [], 'parent must await guard even after rejected browser.close (fallback timer stubbed)');
+  acknowledge(); await stopped;
+  assert.deepEqual(exits, [1]);
+}
 console.log('GPU deadline CPU: fresh/old dead and malformed leases preserved; private detached spawn, guarded release/failure/close, parent acknowledgment passed.');
 
 // Deliberately fail before any child PID output; finally must still recover
