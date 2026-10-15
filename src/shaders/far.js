@@ -964,10 +964,10 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 // along them, so the chunk and slab crossings of x and z are the flat ones.
 // The detail meshes bend in their vertex stage and shade along the displayed
 // ray, switched by P.warpK (a few lines, both variants of the mesh pass).
-export const farFrag = (g, L, mesh = false, { curved = false } = {}) => {
+export const farFrag = (g, L, mesh = false, { curved = false, sourceAppearance = false } = {}) => {
   return /* wgsl */ `
 // far view${curved ? ', curved' : ''}
-${lib({ ...g, sourceGrid: L.bricks.n }, { variant: 'LIGHTING', far: true, aeration: false })}
+${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: 'LIGHTING', far: true, aeration: false })}
 ${presentationWGSL}${curved ? `
 var<private> gFarRay: WarpRay;
 var<private> gFarWindow: vec4f;
@@ -984,7 +984,7 @@ fn farPlaneHit(r: WarpRay, level: f32) -> f32 {
 fn farPath(ro: vec3f, rd: vec3f, t: f32) -> vec3f { return ${curved ? 'warpAt(gFarRay, t)' : 'ro + rd * t'}; }
 fn farDirection(rd: vec3f, t: f32) -> vec3f { return ${curved ? 'normalize(warpSlope(gFarRay, t))' : 'rd'}; }
 ${FAR_STANDINS}
-${surfaceGLSL({})}
+${surfaceGLSL({}, { sourceAppearance })}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}

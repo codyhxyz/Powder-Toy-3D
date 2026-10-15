@@ -34,7 +34,7 @@ import { glf as f } from '../../glsl.js';
 // non-uniform control flow, where WGSL has no derivatives, so the floor's
 // grid lines take their fwidth analytically from those ray derivatives
 // (floorFwidth). Nothing here samples with an implicit level.
-export const surfaceGLSL = (detail = {}) => {
+export const surfaceGLSL = (detail = {}, { sourceAppearance = false } = {}) => {
   const grains = !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
   return /* wgsl */ `
 ${grains ? `
@@ -1919,7 +1919,7 @@ fn digMark(s: ptr<function, Surf>) {
   (*s).albedo *= 1.0 - dark;
 }
 
-${SOURCE_APPEARANCE_ENABLED ? sourceShadeWGSL : sourceShadeFallbackWGSL}
+${SOURCE_APPEARANCE_ENABLED && sourceAppearance === true ? sourceShadeWGSL : sourceShadeFallbackWGSL}
 fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   var s = s0;
   digMark(&s);

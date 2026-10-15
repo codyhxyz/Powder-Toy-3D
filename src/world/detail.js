@@ -74,7 +74,7 @@ export class WorldDetail {
       params: SceneCellsParams, build: 'manual',
     });
     this.pipe = gpu.renderPipeline({
-      name: 'far detail', code: farFrag(g, L, true), layouts: [far.viewFrameLayout, this.sim.L.STATE_RO, gpu.L.LIGHTING],
+      name: 'far detail', code: farFrag(g, L, true, { sourceAppearance: far.sourceAppearance }), layouts: [far.viewFrameLayout, this.sim.L.STATE_RO, gpu.L.LIGHTING],
       params: FarViewParams, ...farMeshPipeline(), build: 'manual',
     });
     this.depthPipe = gpu.renderPipeline({
