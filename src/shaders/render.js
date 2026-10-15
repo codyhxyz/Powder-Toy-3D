@@ -828,6 +828,9 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var lightY = 0.0;
   let liqDither = (stbn3(gFragCoord, f32(FU.frame)) - 0.5) * LIQ_ID_DITHER;   // spatiotemporal, not white: no speckle on mixed liquids (noise.js)
   var bends = 0;
+  // Mark terminal surfaces explicitly. On Metal, a post-loop hitK test
+  // dropped opaque shading in some lanes, losing both colour and opacity.
+  // Use the same boolean for traversal and shading (check-opaque-surface.mjs).
   var stop = false;
   // the nearest opaque mesh (gfx/meshCut.js), counted along the ray's path:
   // tCut is in the current ray's t, which restarts at every bend.
@@ -871,8 +874,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       hitPos = hp;
       if (ch != CH_LIQUID) {
         // started inside it, not at the box wall (the camera in a pile, or its near clip): the cut faces the eye
-        hitK = HIT_SMOOTH; hitP = hp; hitN = select(n0, -rd, t0 > bh.x); hitCh = ch;
-        stop = true;
+        hitK = HIT_SMOOTH; stop = true; hitP = hp; hitN = select(n0, -rd, t0 > bh.x); hitCh = ch;
       } else {
         let lid = liquidIdAt(hp - n0 * IFACE_PROBE, E_WATER);
         // An immersed camera/near clip is not an air-water interface.
@@ -986,7 +988,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           if (th > tCut) { cut = true; break; }   // (a bevelled voxel's face behind the mesh)
           let hp = ro + rd * th;
           if (!anyHit) { anyHit = true; hitPos = hp; }
-          hitK = HIT_CRISP; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = fetchA(cell);
+          hitK = HIT_CRISP; stop = true; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = fetchA(cell);
           break;
         }
         phiStale = true;
@@ -1142,9 +1144,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       if (ev != EV_NONE) {
         let hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }${grains ? `
-        if (ev == EV_GRAIN) { hitK = HIT_GRAIN; hitP = hp; break; }` : ''}
+        if (ev == EV_GRAIN) { hitK = HIT_GRAIN; stop = true; hitP = hp; break; }` : ''}
         if (ev == EV_OPAQUE) {
-          hitK = HIT_SMOOTH; hitP = hp; hitN = evN; hitCh = evCh;
+          hitK = HIT_SMOOTH; stop = true; hitP = hp; hitN = evN; hitCh = evCh;
           break;
         } else {
           // liquid surface: refract in or out
@@ -1169,7 +1171,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             // restarted inside something opaque (sand under the water line)
             let oc = surfInsideOpaque(phiA);
             if (oc > 0) {
-              hitK = HIT_SMOOTH; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
+              hitK = HIT_SMOOTH; stop = true; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
               break;
             }
             continue;
@@ -1217,11 +1219,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
   var shadeRd = rd;
   for (var sp = 0; sp < passes; sp++) {${grains ? `
     if (sp == 1) {
-      hitK = select(HIT_SMOOTH, HIT_GRAIN, gAltGeom); hitP = gAltP; hitN = vec3f(0.0); hitCh = CH_GRANULAR;
+      hitK = select(HIT_SMOOTH, HIT_GRAIN, gAltGeom); stop = true; hitP = gAltP; hitN = vec3f(0.0); hitCh = CH_GRANULAR;
       gHitA = gAltA; gHitK = gAltK; shadeRd = gAltRd;
     }` : ''}
     var c = vec3f(0.0);
-    if (hitK != HIT_NONE) {
+    if (stop) {
       var s: Surf;
       if (hitK == HIT_CRISP) { s = crispSurf(hitCell, hitId, hitA, hitP, hitN); }${grains ? `
       else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
@@ -1235,7 +1237,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)` : ''}
     }
     if (sp == 0) {
-      if (hitK != HIT_NONE) {
+      if (stop) {
         if (FU.far != 0u && liq != E_EMPTY) {
           // Match the continuation below instead of drawing a hard seam where
           // a refracted ray just misses the last available bed/obstacle cell.
