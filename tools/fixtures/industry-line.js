@@ -300,8 +300,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     const inletWater = heldInlet.filter(c => c.id === E.WATER).length;
     checks.gateClosedSourceHeld = gates.status(currentGate.id)?.status === GATE_STATUS.CLOSED
       && sourceWater === waterSource.length && inletWater === 0;
-    observations.gate = { closedStatus: gates.status(currentGate.id)?.status, sourceWaterHeld: sourceWater,
-      sourceCells: waterSource.length, pumpInletWaterBeforeRelease: inletWater };
+    Object.assign(observations.gate, { closedStatus: gates.status(currentGate.id)?.status, sourceWaterHeld: sourceWater,
+      sourceCells: waterSource.length, pumpInletWaterBeforeRelease: inletWater });
     if (!checks.gateClosedSourceHeld) residualGaps.push('coolant source hold was not fully observed before opening the real gate');
 
     markStage('load finite coal and scrap through physical transfer rules');
@@ -543,6 +543,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     observations.lastError = cleanError(error);
     observations.partialStage = observations.stage ?? 'setup';
     if (!residualGaps.length) residualGaps.push('bounded native physical batch did not complete; no unobserved phase or cargo is credited');
+    residualGaps.push('Interrupted runs do not establish complete accounting of outstanding loads and pending transfers.');
     observations.asyncErrors = [...asyncErrors];
     return { case: 'line', status: Date.now() >= until ? 'bounded-incomplete' : 'failed', checks, observations,
       residualGaps: [...new Set(residualGaps)] };
