@@ -12,6 +12,7 @@ import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
+import { contactWGSL as productionContactWGSL } from './v2/contact.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -685,6 +686,24 @@ ${MAIN} {
     if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
     oldBanks[i] = bs[i];
   }
+  ${contactWGSL === productionContactWGSL ? `
+  // Proven zero-work domain, NOT a generic all-AIR skip. Custom contact
+  // injections (including the ABI probe) have no such no-op guarantee.
+  let rawTq = (cs[0].x >> 8u) & 65535u;
+  let canonicalAir = vec4u(rawTq << 8u, 0u, 0u, 0u);
+  var zeroWork = blockCount == 8u && rawTq <= 41093u;
+  for (var k = 0u; k < blockCount; k++) {
+    if (!inGrid(positions[k]) || any(cs[k] != canonicalAir) || bs[k] != 0 || pending[k] != 0u) { zeroWork = false; }
+  }
+  // Match the boundary wrapper's exact f32 round/clamp encoding. Even an
+  // interior open-edge block conservatively requires ambient equality.
+  if (P.edge == 1u && mAirHeat() && rawTq != u32(clamp(round((P.ambient+273.25)*4.0),0.0,65535.0))) { zeroWork = false; }
+  // AIR cannot topple, equal-density AIR cannot swap, AIR is not ageing gas.
+  // Uniform normal AIR emits no contact/boundary heat, requests or ledgers;
+  // equal storeMaterial values would only rewrite identical cells/banks.
+  // Support still snapshots ALL targets, including AIR that may move later.
+  if (zeroWork) { return; }
+  ` : ''}
   // R2 topple
   for (var c = 0u; c < columnCount && gravityOn; c++) {
     let ti = 4u + c;

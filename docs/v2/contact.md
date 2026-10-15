@@ -61,6 +61,22 @@ CO2 fraction and combustion oxygen ratio/ceiling use all six faces. Heat,
 reactions, plume, phase and sampled cloud/growth contacts still use owned faces.
 Out-of-grid faces retain `cellAt`'s WALL sentinel even at open outflow edges.
 
+R5 can return before motion/contact only for a proven zero-work block: all eight
+resolved positions are in-grid, all cores are exactly `vec4u(rawTq << 8, 0, 0, 0)`
+with the same normal `rawTq <= 41093`, and every bank and pending request is zero.
+This excludes opaque history, high flags, life, velocity, latent codes and heat
+gradients; it is **not** a generic all-AIR skip. Open edges with ambient heat also
+require equality with the boundary wrapper's identical f32 round/clamp ambient
+encoding (even for interior blocks). Closed/periodic edges and disabled ambient
+heat need no ambient equality. Uniform AIR cannot topple, swap density or age,
+and production contact/boundary emit no changes, requests, busy marks or energy
+ledgers; equal material stores only rewrite identical values, preserving existing
+legacy/dirty marks. The specialization is emitted only for the exact production
+`contactWGSL` string: custom injections and the side-effectful ABI probe retain
+full execution. Support still snapshots every target, including AIR halo cells
+that other material may occupy after motion. `tools/v2/block-air-zero-check.mjs`
+checks all 41,094 normal temperature codes against full production contacts.
+
 The low byte is transient: no liquid consumer runs between Support and Limit.
 Limit fully rewrites each active cell's scratch for **both** liquid and nonliquid
 before jets/gather. Sleeping halo cells can retain transient low bits, but
