@@ -1830,7 +1830,11 @@ async function renderWorldThumb(viewId,out) {
   if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame)return false;
   const view=viewKeyOf(viewId),detail=isMaterialView(view) ? gateVariants(settings).base : {};
   const ownCamera=useWebGPUCamera(new THREE.PerspectiveCamera());
-  ownCamera.copy(camera,false);
+  camera.updateMatrixWorld();ownCamera.copy(camera,false);
+  // Detach from any POV rig without turning its world pose into a local pose.
+  ownCamera.matrix.copy(camera.matrixWorld);ownCamera.matrixWorld.copy(camera.matrixWorld);
+  ownCamera.matrixWorldInverse.copy(camera.matrixWorldInverse);
+  ownCamera.matrix.decompose(ownCamera.position,ownCamera.quaternion,ownCamera.scale);
   ownCamera.aspect=THUMB_SIZE[0]/THUMB_SIZE[1];
   useWebGPUCamera(ownCamera);
   const frame=driver.accepted.frame;

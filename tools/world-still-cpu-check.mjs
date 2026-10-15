@@ -72,7 +72,8 @@ async function setup() {
 
 test('off-camera still extends same cut before target confirmation, preserves MAIN identity/TAA/VM/sign/waiters; fairness services picks and normal work between two targets',async()=>{
   const t=await setup();await t.boot();
-  const display=t.driver.displayedMainFrame,accepted=t.driver.accepted,offset=t.p.node._sampleIndex,taa=t.p.events.filter(x=>x==='taa').length;
+  const display=t.driver.displayedMainFrame,accepted=t.driver.accepted,offset=t.p.node._jitterIndex,taa=t.p.events.filter(x=>x==='taa').length;
+  assert(Number.isInteger(offset),'inspect actual committed Three jitter index');
   const vm=t.counts.vm,sign=t.counts.sign,main=t.counts.main,reserves=t.counts.reserve,probes=t.counts.probe;
   const target1=t.p.gpu.createTexture({size:[320,200],format:'rgba8unorm'}),target2=t.p.gpu.createTexture({size:[320,200],format:'rgba8unorm'});
   let first=false,second=false;t.controls.miss=true;
@@ -86,7 +87,7 @@ test('off-camera still extends same cut before target confirmation, preserves MA
   assert.equal(t.driver.accepted,accepted);assert.equal(t.driver.displayedMainFrame,display);
   const current=t.f.owner.current();assert.notEqual(current.identity,display.data.identity);current.release();
   assert.equal(t.f.owner.metadata.derivedTick,0);assert.equal(t.counts.reserve,reserves);assert.equal(t.counts.probe,probes);
-  assert.equal(t.p.node._sampleIndex,offset);assert.equal(t.p.events.filter(x=>x==='taa').length,taa);
+  assert.equal(t.p.node._jitterIndex,offset);assert.equal(t.p.events.filter(x=>x==='taa').length,taa);
   assert.equal(t.counts.vm,vm);assert.equal(t.counts.sign,sign);assert.equal(t.counts.main,main);
   // Coalesced pick demand forces the normal request before the second card.
   t.tick();await t.pump(()=>t.driver.displayedMainFrame!==display);await t.pump(()=>second);await b;
@@ -121,6 +122,7 @@ function extract(source,name) {const start=source.indexOf(`async function ${name
 test('actual App WORLD thumbnail hook executes own-camera queue, readback, unpremultiply, and target retirement; BOX body unchanged',async()=>{
   const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
   const gate=deferred(),events=[],camera=useWebGPUCamera(new THREE.PerspectiveCamera());camera.add(new THREE.Object3D());
+  const rig=new THREE.Group();rig.position.x=20;rig.add(camera);rig.updateMatrixWorld(true);
   const presentation=createPresentation(),post={settings:{}},settings={view:0},model=new THREE.Matrix4();let job;
   const driver={accepted:{frame:{values:{model:model.toArray()}}},displayedMainFrame:{},queueStill(j){job=j;events.push('queue');return gate.promise;}};
   const win={renderFrame:{driver}},target={destroy(){events.push('destroy');}},gpu={createTexture:()=>target,
@@ -129,7 +131,7 @@ test('actual App WORLD thumbnail hook executes own-camera queue, readback, unpre
   const run=new Function('win','graphicsFailure','coreReady','THREE','useWebGPUCamera','camera','THUMB_SIZE','viewKeyOf','isMaterialView','gateVariants','settings','post','selectedMode','frameUniformValues','presentation','freezeWorldView','pov','gpu','GPUTextureUsage','volume','sim',
     `${extract(source,'renderWorldThumb')};return renderWorldThumb;`)(win,false,true,THREE,useWebGPUCamera,camera,[1,1],()=> 'realistic',()=>true,()=>({base:{}}),settings,post,'sandbox',frameUniformValues,presentation,freezeWorldView,null,gpu,{RENDER_ATTACHMENT:16,COPY_SRC:1},{matrixWorld:model},{origin:new THREE.Vector3()});
   let image;const out={dataset:{},getContext:()=>({createImageData:()=>({data:new Uint8ClampedArray(4)}),putImageData:i=>image=i})};
-  const result=run(0,out);assert.deepEqual(events,['queue']);assert.notEqual(job.view.camera,camera);assert.equal(job.view.camera.children.length,0);assert.equal(job.view.curved,false);
+  const result=run(0,out);assert.deepEqual(events,['queue']);assert.notEqual(job.view.camera,camera);assert.equal(job.view.camera.children.length,0);assert.equal(job.view.curved,false);assert.equal(job.view.values.cam[0],20,'detached thumbnail retains POV rig world pose');
   gate.resolve(true);assert.equal(await result,true);assert.deepEqual(events,['queue','read','fence','destroy']);assert.equal(out.dataset.rendered,'1');assert.deepEqual([...image.data],[40,20,10,128]);
   assert.match(extract(source,'renderThumb'),/if\(win\)return renderWorldThumb\(viewId,out\)/);
   presentation.dispose();
@@ -137,10 +139,30 @@ test('actual App WORLD thumbnail hook executes own-camera queue, readback, unpre
 
 test('actual shared native frame helper records opaque → pack → full volume → transparent STILL with real context/feedback/final retirement and no hands or overlays',async()=>{
   const t=await setup();await t.boot();t.controls.nativeStill=true;
-  const display=t.driver.displayedMainFrame,offset=t.p.node._sampleIndex,vm=t.counts.vm;
+  const display=t.driver.displayedMainFrame,offset=t.p.node._jitterIndex,vm=t.counts.vm;
   const target=t.p.gpu.createTexture({size:[320,200],format:'rgba8unorm'});let done=false;
   const job=t.driver.queueStill({view:t.view(12),target}).then(()=>{done=true;});t.tick();await t.pump(()=>done);await job;
   assert.deepEqual(t.phases,['opaque','pack','volume','transparent']);
-  assert.equal(t.driver.displayedMainFrame,display);assert.equal(t.p.node._sampleIndex,offset);assert.equal(t.counts.vm,vm);
+  assert.equal(t.driver.displayedMainFrame,display);assert.equal(t.p.node._jitterIndex,offset);assert.equal(t.counts.vm,vm);
   assert.equal(t.state.uses.size,0);await t.close();
+});
+
+test('source epoch/schema retirement rejects queued stills before native recording without replacing displayed MAIN',async()=>{
+  const t=await setup();await t.boot();const display=t.driver.displayedMainFrame;
+  const a=assert.rejects(t.driver.queueStill({view:t.view(),target:{}}),/reset WORLD owner/);
+  const b=assert.rejects(t.driver.queueStill({view:t.view(),target:{}}),/reset WORLD owner/);
+  t.f.source.reset();assert.throws(()=>t.tick(),/reset WORLD owner/);await Promise.all([a,b]);
+  assert.equal(t.driver.displayedMainFrame,display);assert.equal(t.seen.filter(x=>x.still).length,0);await t.close();
+});
+
+test('actual STILL opaque-pack prefix failure closes normal final ticket and retains target while final resources remain uncertain',async()=>{
+  const t=await setup();await t.boot();t.controls.nativeStill=true;
+  const display=t.driver.displayedMainFrame,taa=t.p.events.filter(x=>x==='taa').length;
+  t.state.opaque.recordReady=()=>{throw Error('opaque pack prefix failed');};
+  const use=deferred();t.state.uses.add(use.promise);let rejected=false;
+  const job=assert.rejects(t.driver.queueStill({view:t.view(),target:t.p.gpu.createTexture({size:[320,200],format:'rgba8unorm'})}),/opaque pack prefix failed/).then(()=>{rejected=true;});
+  t.tick();for(let i=0;i<100&&!t.driver.failure;i++){t.f.gpu.finish();await t.p.completeAll();try{t.tick();}catch{}}
+  assert(t.driver.failure);assert(t.state.uses.size>1,'real native prefix registered before throwing');assert.equal(rejected,false);
+  assert.equal(t.driver.displayedMainFrame,display);assert.equal(t.p.events.filter(x=>x==='taa').length,taa);
+  use.resolve();for(let i=0;i<20;i++){t.f.gpu.finish();await t.p.completeAll();}await job;await t.close();
 });

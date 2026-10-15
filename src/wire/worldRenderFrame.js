@@ -146,10 +146,11 @@ function retireWorldUse(state,gpu,submitted,release) {
  * Caller supplies the real App threeMeshes/draw-overlay methods, not services
  * or readiness callbacks. Frozen view/settings, but then-current actors: this
  * entire SceneAttempt is synchronous after preparation. No pass yields.
+ * stillTarget uses the same scene readers, but no MAIN eye/VM/sign/UI readers.
  */
 export function recordWorldFrame(app, state, data, {camera, view, detail={}, curved=false,
   eye, identity, order, signRequest=null, dt=0, frozenView=null, preflight=null, stillTarget=null}) {
-  requireReady(!state.dead && app.win?.loaded && app.win.render===state.data, 'live WORLD main frame required');
+  requireReady(!state.dead && app.win?.loaded && app.win.render===state.data, 'live WORLD frame required');
   requireReady(['threeMeshes','drawWorldAfter','drawWorldOverlay'].every(k=>typeof app[k]==='function'),
     'actual App opaque/after/overlay functions must be connected before recording');
   requireReady(stillTarget || (complete(eye.feedback) && eye.words.length===20 && eye.words[19]===1), 'complete native eye required before hands');
