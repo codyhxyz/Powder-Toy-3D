@@ -268,7 +268,8 @@ if (bootMap) useMap(bootMap);
 // Set from the first frame: Noita's wands-only toolbelt reads it (pov gamemode). modeEpoch: a later
 // map or mode takes over a mode still starting (startMode)
 let selectedMode = bootMap ? resolveMode(bootMap, launch.mode ?? params.get('mode') ?? 'sandbox').key : 'sandbox', modeEpoch = 0;
-if (!linkedView) settings.view = viewForMode(modeByKey(selectedMode), settings.view);
+// Launch defaults supersede a saved shader, not an explicit URL or a later picker change.
+if (!linkedView) settings.view = viewForMode(modeByKey(selectedMode), settings.view, mapOf(settings));
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
@@ -696,7 +697,7 @@ function openMap(key, mode = 'sandbox') {
   // waits on the view's pipelines as they will draw (B5: the rolling log's
   // curved variants, behind the loading screen); startMode below finds them chosen
   const chosen = resolveMode(m, mode);
-  const modeView = viewForMode(chosen, settings.view);
+  const modeView = viewForMode(chosen, settings.view, m);
   if (modeView !== settings.view) setView(modeView);
   selectedMode = chosen.key;
   presentation.select(chosen.effect ?? null);
@@ -732,7 +733,10 @@ async function startMode(mode, { fresh = false } = {}) {
   const chosen = resolveMode(mapOf(settings), mode);
   const game = pov?.game;
   pov?.mission?.end();
-  if (chosen.key !== selectedMode && chosen.defaultView) setView(viewForMode(chosen, settings.view));
+  if (chosen.key !== selectedMode) {
+    const modeView = viewForMode(chosen, settings.view, mapOf(settings));
+    if (modeView !== settings.view) setView(modeView);
+  }
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
   applyGravity();

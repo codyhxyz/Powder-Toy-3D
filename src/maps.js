@@ -17,13 +17,14 @@
 //   preset   a box's scene (settings.preset); scene: a world's (settings.scene)
 //   scenes   optional: every world scene that is this map (Descent's levels), scene the one it starts on
 //   modes    the gamemodes it is built for besides Sandbox
+//   defaultView optional authored shader, overriding the gamemode's starting view
 export const WORLD_DIMS = [1024, 128, 1024];   // shaders/far.js WORLD_SIZE (app.js checks)
 const TEAM_MODES = ['slayer', 'ctf', 'koth', 'infection', 'siege'];
 
 export const MAPS = [
   { key: 'island', name: 'Island', size: 'world', scene: 'island', dims: WORLD_DIMS,
     desc: 'Beaches, forest, cliffs and caves, a lighthouse and old mines. The world loads around you as you go.' },
-  { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: [3072, 128, 1024], modes: ['animalCrossing'], previewVersion: 2,
+  { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: [3072, 128, 1024], modes: ['animalCrossing'], defaultView: 'cozy', previewVersion: 2,
     desc: 'A wide island village with cottages, an orchard and a kilometre-long running circuit across river bridges. Inspired by Animal Crossing.' },
   { key: 'volcanoWorld', name: 'Volcano Isles', size: 'world', scene: 'volcanoWorld', dims: WORLD_DIMS,
     desc: 'An archipelago of live volcanoes in open sea, lava pouring down to the water.' },
@@ -55,7 +56,7 @@ export const MAPS = [
 // Sandbox first. Team modes follow src/game/rules.js MODES (names and order);
 // the menu shows them only in builds that have src/game.
 export const GAMEMODES = [
-  { key: 'sandbox', name: 'Sandbox', desc: 'Pour, build, burn and blow it up. Every map.' },
+  { key: 'sandbox', name: 'Sandbox', defaultView: 'realistic', desc: 'Pour, build, burn and blow it up. Every map.' },
   { key: 'factory', name: 'Factory', desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
   { key: 'crueltySquad', name: 'Cruelty Squad', desc: 'Eliminate every designated target, then reach extraction. Death fails the mission; retry from the beginning.' },
   { key: 'noita', name: 'Noita', desc: 'Wands only. Go down through the Mines and the Holy Mountains, finding wands and spells on the way.' },
