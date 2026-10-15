@@ -121,8 +121,12 @@ now += 101;
     control: 0, controlRequired: 0, regions: [[1, 1, 700, 700], [4, 4, 6400, 1600]],
   });
   assert.equal(observed.status, 'ready');
-  assert.equal(f.sim.test.params.sampleCount, 16);
-  assert.equal(observed.evidence.regions.fuel.sampled, 6);
+  assert.equal(f.sim.test.params.sampleCount, 22);
+  assert.equal(observed.evidence.regions.fuel.sampled, 12);
+  assert.deepEqual(f.sim.test.params.samples.slice(0, 12).map(p => p.slice(0, 3)),
+    hearthRegions(hearth).firebox, 'default fuel observation includes naturally loaded coal in either row');
+  assert.deepEqual(f.sim.test.params.rules[0], [0, ...HEARTH_FUEL_IDS, -1]);
+  assert.equal(f.sim.test.params.limits[0][3] & 8, 8, 'spent coal is not usable fuel anywhere in the firebox');
   assert.equal(observed.evidence.regions.charge.sampled, 6);
   assert.equal(observed.evidence.regions.outlet.sampled, 4);
   assert.equal(observed.evidence.regions.charge.maxTemperatureC, 1600);

@@ -444,7 +444,7 @@ Cooling, bucket handling, shipment, and final ash pickup were not proved.
 Occupancy: **6158 ms**, report `~/.cache/tpt-headless/runs/15283-15314.json`.
 Result: `/tmp/sandustry-physical-line-tools-refuel-v2.json`.
 
-Architecture review holds heat-rule changes pending comparison with a smaller actual-source batch.
+The initial architecture review held heat-rule changes pending comparison with a smaller actual-source batch.
 Any future expanded eligibility must preserve the original molten-velocity region.
 Material eligibility does not filter existing temperature aggregates: generic area peaks are not scrap temperatures.
 Overlapping probe regions must not duplicate physical counts or fuel-life sums.
@@ -470,6 +470,27 @@ Their high melting point does not imply insulation, and the 2200°C source cap i
 Connected approaches, stable support, body clearance, heat exposure, and survival still need actual POV evidence.
 
 ## Open requirements
+
+### Implemented firebox eligibility correction; native verification blocked
+
+The furnace previously boosted coal only in the six rear cells.
+Real loading retains coal in both rows, leaving front fuel at ordinary combustion temperature.
+After the failed unchanged-rule refill comparison, the production rule now covers the unique twelve-cell interior.
+It still heats only live COAL or BROKENCOAL and debits the same heat budget from each cell's remaining life.
+Ignition, source cap, timestep, guards, native melting, and molten velocity are unchanged.
+The old rear/front placement regions remain disjoint; inventory probes do not sum overlapping firebox regions.
+Fuel diagnostics now observe twelve cells.
+The UI labels generic regional temperature peaks and the front chamber, not filtered scrap temperatures.
+Player instructions describe charge-first loading and warn about hot surfaces.
+
+The 66 Industry tests, 360 hearth checks, diagnostics checks, 16 physics checks, and Naga validation pass.
+Independent review `baa17701` found no concrete P1/P2 defects in the core correction.
+The production build passes.
+The protected full four-cell tool-operated attempt was refused at **59% GPU utilization**.
+Total admission occupancy was **2139 ms**; no simulation assertions ran.
+Result: `/tmp/sandustry-physical-line-tools-firebox-fix-v1.json`.
+The server stopped, no utilization bypass was used, and nothing was deployed.
+This is an implemented fix, not verified native melting or a completed playable loop.
 
 - Verify repeat refueling and real player shovel/bucket gestures.
 - Verify precision fuel feeding; useful coolant release now passes.

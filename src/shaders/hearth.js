@@ -24,7 +24,7 @@ const HEARTH_SOURCE_MAX_T: f32 = ${f32(HEARTH_MAX_FUEL_TEMPERATURE)};
 const HEARTH_STEPS_PER_SECOND: f32 = ${f32(HEARTH_STEPS_PER_SECOND)};
 const HEARTH_MAX_STEP_SECONDS: f32 = ${f32(HEARTH_MAX_STEP_SECONDS)};
 
-${regionWGSL('hearthFuelCell', HEARTH_LAYOUT.fuel)}
+${regionWGSL('hearthFuelCell', HEARTH_LAYOUT.firebox)}
 ${regionWGSL('hearthChargeCell', HEARTH_LAYOUT.charge)}
 ${regionWGSL('hearthOutletCell', HEARTH_LAYOUT.outlet)}
 fn hearthFinite(value: f32) -> bool {

@@ -62,7 +62,7 @@ export function createProgression(saved) {
       'Watch the starter sorter. Catch more shallow paydirt; only gold entering the intake earns credits.',
       'Build a mining agent facing the exposed gold wall. Catch its nuggets with belts and a lift.',
       'Pump the finite east reservoir toward a cooling catch. Keep shipping gold to unlock the coal hearth.',
-      `Mine coal and scrap. Feed coal to the rear firebox and scrap to the middle. Catch and cool the melt below ${CASTING_TEMPERATURE}°C; solid metal will not ride belts.`,
+    `Mine coal and scrap. Load scrap first, then coal inside the hearth. Keep off hot surfaces. Catch and cool the melt below ${CASTING_TEMPERATURE}°C; solid metal will not ride belts.`,
       'Freeplay: all machines stay unlocked. Extend the quarry; dismantling refunds the full price.',
     ];
     return { version: 1, credits, earned, partsSpent, stage, goal: goals[stage], hint: hints[stage],

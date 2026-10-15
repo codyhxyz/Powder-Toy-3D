@@ -25,8 +25,8 @@ export const HEARTH_MAX_STEP_SECONDS = 0.1;
 export const HEARTH_STEPS_PER_SECOND = NOMINAL_STEP_RATE;
 
 // Coordinates are device-local and rotate with the existing 4×4 Industry
-// footprint. The refractory floor is y=0; fuel occupies the inside rear row,
-// charge the next inside row, and molten output leaves through the front (+z).
+// footprint. Rear/front rows remain placement and transport regions; naturally
+// mixed coal receives the same paid draft anywhere inside the firebox.
 export const HEARTH_LAYOUT = Object.freeze({
   footprint: 4,
   height: 4,
@@ -34,15 +34,12 @@ export const HEARTH_LAYOUT = Object.freeze({
   structure: Object.freeze({ floorY: 0, wallY: Object.freeze([1, 3]), sideX: Object.freeze([0, 3]), rearZ: 0, frontZ: 3, frontLipY: 1 }),
   fuel: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([1, 3]), z: Object.freeze([1, 1]) }),
   charge: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([1, 3]), z: Object.freeze([2, 2]) }),
+  firebox: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([1, 3]), z: Object.freeze([1, 2]) }),
   outlet: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([2, 3]), z: Object.freeze([3, 3]) }),
   mouth: Object.freeze({ x: Object.freeze([1, 2]), y: Object.freeze([2, 3]), z: Object.freeze([4, 4]) }),
   outputDirection: Object.freeze([0, 0, 1]),
 });
 
-/** Return rotated world cells for the buildable fuel, charge, outlet, and
- * four-cell mouth regions. The mouth is just beyond the existing footprint;
- * all other regions are inside its 4×4×4 working volume.
- */
 function validateHearthDevice(device) {
   if (!device || ![device.x, device.y, device.z, device.rotation].every(Number.isInteger)
       || device.rotation < 0 || device.rotation > 3) {
@@ -69,6 +66,9 @@ export function hearthStructureCells(device) {
   return out;
 }
 
+/** Rear/front placement regions are disjoint; firebox is their unique union.
+ * The four-cell mouth lies just beyond the existing footprint.
+ */
 export function hearthRegions(device) {
   validateHearthDevice(device);
   const cells = region => {
@@ -81,6 +81,7 @@ export function hearthRegions(device) {
   return {
     fuel: cells(HEARTH_LAYOUT.fuel),
     charge: cells(HEARTH_LAYOUT.charge),
+    firebox: cells(HEARTH_LAYOUT.firebox),
     outlet: cells(HEARTH_LAYOUT.outlet),
     mouth: cells(HEARTH_LAYOUT.mouth),
     outputDirection: deviceDirection(device),
@@ -100,7 +101,7 @@ const noBudget = (cell, status) => ({
 /** Pure one-cell preview of the hearth's finite local heat budget.
  * `cell` uses {id, temperature, life}, corresponding to a terrain cell's
  * authoritative element id, T, and life fields. This never mutates its input.
- * Call once per real cell in HEARTH_LAYOUT.fuel; `enabled` represents the
+ * Call once per real cell in HEARTH_LAYOUT.firebox; `enabled` represents the
  * existing machine base/control guard. This helper is a budget oracle, not a
  * CPU twin of surrounding 3D conduction or native phase changes.
  */

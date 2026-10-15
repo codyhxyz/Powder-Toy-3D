@@ -90,7 +90,7 @@ const MACHINE_HELP = {
   lift: 'Build a catch above the lift. It launches grains, not liquids or solid blocks.',
   pump: 'Moves water or molten metal. Feed the low inlet and catch the high outlet.',
   heater: 'Cool the melt in a separate catch. Keep finished metal away from the hot bed.',
-  hearth: 'Fuel goes in the rear inside row; scrap goes in the front inside row. Catch overflow beyond the raised lip. Extract molten charge before digging out ash; digging can also collect remaining fuel and scrap.',
+  hearth: 'Load scrap first, then coal inside the firebox. Either inside row heats real fuel. Keep off hot surfaces. Catch overflow beyond the raised lip. Extract melt before digging out ash; digging can also collect fuel and scrap.',
   gate: 'Choose Open, Closed, or Signal when inspecting the gate. Signal opens while energized; blocked closure waits, and damage is reported.',
 };
 const UNLOCK_AT = { miner: 12, lift: 12, pump: 48, heater: 96, hearth: 96 };

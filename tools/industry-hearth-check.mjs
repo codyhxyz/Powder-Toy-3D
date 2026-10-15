@@ -44,6 +44,10 @@ for (let rotation = 0; rotation < 4; rotation++) {
   const regions = hearthRegions(device), structure = hearthStructureCells(device);
   check(regions.fuel.length === 6 && regions.charge.length === 6 && regions.outlet.length === 4 && regions.mouth.length === 4,
     `rotation ${rotation}: working regions match the physical firebox, charge bed, outlet, and mouth`);
+  check(regions.firebox.length === 12
+    && new Set(regions.firebox.map(c => c.join(','))).size === 12
+    && [...regions.fuel, ...regions.charge].every(c => regions.firebox.some(p => p.join(',') === c.join(','))),
+    `rotation ${rotation}: the draft covers both rows exactly once without changing transport regions`);
   check(structure.length === 48 && new Set(structure.map(c => c.join(','))).size === 48,
     `rotation ${rotation}: the shell has 48 unique tungsten cells`);
   check(JSON.stringify(regions.outputDirection) === JSON.stringify(deviceDirection(device)), `rotation ${rotation}: output points forward`);

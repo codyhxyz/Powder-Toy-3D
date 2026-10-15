@@ -171,8 +171,9 @@ export function createOperationsView(parent, actions = {}) {
       const regions = Object.entries(details.observation?.evidence?.regions ?? {});
       samples.hidden = !regions.length;
       text(samples, regions.map(([name, region]) => {
-        const heat = Number.isFinite(region.maxTemperatureC) ? ` · peak ${Math.round(region.maxTemperatureC)}°C` : '';
-        return `${name}: ${region.eligible ?? '?'} eligible / ${region.sampled ?? '?'} sampled${heat}`;
+        const heat = Number.isFinite(region.maxTemperatureC) ? ` · region peak ${Math.round(region.maxTemperatureC)}°C` : '';
+        const label = device?.type === 'hearth' && name === 'charge' ? 'front chamber' : name;
+        return `${label}: ${region.eligible ?? '?'} eligible / ${region.sampled ?? '?'} sampled${heat}`;
       }).join(' · '));
       observation.setAttribute('data-status', presented.status);
       freshness.setAttribute('data-freshness', presented.freshness);

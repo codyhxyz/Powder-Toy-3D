@@ -54,8 +54,15 @@ Do not directly convert scrap to molten metal.
 The atomic constructor places the shell, after checking all 64 reserved cells.
 The floor has 16 cells. The walls and raised front lip have 32 cells.
 `hearthStructureCells(device)` defines the rotated physical structure.
-Fuel occupies local x=1..2, y=1..3, z=1: six cells.
-Charge occupies local x=1..2, y=1..3, z=2: six cells.
+Rear placement is local x=1..2, y=1..3, z=1: six cells.
+Front placement is local x=1..2, y=1..3, z=2: six cells.
+These remain separate transport and inventory regions, not fuel-only and charge-only restrictions.
+The unique twelve-cell interior is the firebox.
+Live COAL or BROKENCOAL receives the same fuel-paid draft in either row.
+This increases the eligible positions from six to twelve, not heat per fuel-life unit.
+No boost applies to scrap, ash, outlets, shell cells, or fuel outside the firebox.
+Fuel diagnostics sample all twelve cells and require positive life.
+Temperature summaries remain whole-region measurements, not material-filtered charge temperatures.
 The outlet occupies local x=1..2, y=2..3, z=3: four cells.
 The mouth at z=4 is outside the reservation; it is not owned containment.
 The open top permits loading and extraction. The raised lip can retain a molten heel.
@@ -192,7 +199,7 @@ The hearth shell consists of actual tungsten cells, not invisible refractory wal
 The larger foundation-tub experiment failed to reach a useful charge temperature.
 The compact shell now passes native melting without that additional heat sink.
 Use existing foundations for external catches and channels, not a huge furnace lining.
-Keep the rear fuel row supplied and the front molten outlet clear.
+Keep live coal inside the firebox and the front molten outlet clear.
 The old diagnostic fixture's painted internal baffle is not an accepted construction plan.
 Actual tool loading, ash clearing, and repeatable refueling remain release requirements.
 

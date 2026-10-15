@@ -134,7 +134,7 @@ function defaultRegions(device, overrides) {
       add('target', targets, { kinds: [K.SOLID], breakableClear: true });
     } else if (device.type === 'hearth') {
       const cells = hearthRegions(device);
-      add('fuel', cells.fuel, { ids: HEARTH_FUEL_IDS, requiresPositiveLife: true });
+      add('fuel', cells.firebox, { ids: HEARTH_FUEL_IDS, requiresPositiveLife: true });
       add('charge', cells.charge);
       add('outlet', cells.outlet);
     } else if (device.type === 'heater') {

@@ -117,9 +117,10 @@ const classNode = className => find(panel, element => element.className === clas
 assert.equal(machineButton('hearth')?.tagName, 'BUTTON');
 assert.equal(machineButton('gate')?.tagName, 'BUTTON');
 assert.equal(machineButton('heater'), undefined, 'legacy heater is absent from new placement choices');
-assert.match(classNode('industry-tip').textContent, /fuel goes in the rear inside row/i);
+assert.match(classNode('industry-tip').textContent, /load scrap first, then coal inside the firebox/i);
+assert.match(classNode('industry-tip').textContent, /keep off hot surfaces/i);
 assert.match(classNode('industry-tip').textContent, /raised lip/i);
-assert.match(classNode('industry-tip').textContent, /scrap goes in the front inside row.*extract molten charge before digging out ash/i);
+assert.match(classNode('industry-tip').textContent, /either inside row heats real fuel.*extract melt before digging out ash/i);
 assert.equal(classNode('industry-stage-hint').textContent, progression.hint);
 assert.equal(classNode('industry-stage-hint').hidden, false, 'current stage guidance is visible, not title-only');
 assert.deepEqual(machineTypes.includes('heater'), false);
@@ -193,7 +194,7 @@ tick({ ...state, inspectMode: true, part: null, partCandidate: null, inspection:
 assert.equal(inspectToggle.getAttribute('aria-pressed'), 'true');
 assert.equal(classNode('industry-observation').textContent, 'Ready — transfer not confirmed');
 assert.equal(classNode('industry-freshness').textContent, 'Sample: stale');
-assert.match(classNode('industry-observed-regions').textContent, /fuel: 4 eligible \/ 12 sampled · peak 1860°C/);
+assert.match(classNode('industry-observed-regions').textContent, /fuel: 4 eligible \/ 12 sampled · region peak 1860°C/);
 assert.doesNotMatch(classNode('industry-observation').textContent, /running|throughput/i);
 const drive = classNode('industry-drive');
 assert.equal(drive.hidden, false);
@@ -201,6 +202,18 @@ drive.onclick();
 assert.deepEqual(calls.at(-1), ['setDrive', 'saved-heater', false]);
 assert.equal(classNode('industry-gate-modes').hidden, true, 'gate controls appear only for inspected gates');
 assert.equal(classNode('industry-switch-toggle').hidden, true, 'switch toggle is not shown without an inspected switch');
+
+tick({ ...state, inspection: {
+  device: { ...heater, type: 'hearth' },
+  observation: { status: 'ready', freshness: 'fresh', evidence: { regions: {
+    fuel: { eligible: 6, sampled: 12, maxTemperatureC: 2200 },
+    charge: { eligible: 6, sampled: 6, maxTemperatureC: 2200 },
+  } } },
+} });
+assert.match(classNode('industry-observed-regions').textContent,
+  /front chamber: 6 eligible \/ 6 sampled · region peak 2200°C/);
+assert.doesNotMatch(classNode('industry-observed-regions').textContent, /charge:/,
+  'a hot fuel cell in the front chamber is not presented as a charge temperature');
 
 const inspectedGate = { ...gate, powered: false, gateMode: 'closed' };
 tick({ ...state, inspectMode: true, part: null, partCandidate: null,

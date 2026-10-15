@@ -5,11 +5,15 @@ Mined coal melted four scrap cells; all four reached the water catch and shipped
 Charge-first loading and short retention pass with actual tools.
 The full hand-loaded batch retained its charge but reached only 1334°C and produced no melt.
 Bucket handling, repeat refueling, and precision fuel gating remain unverified.
+The production rule now heats live coal anywhere inside the firebox with the existing finite budget.
+This removes the rear-only eligibility mismatch without changing molten transport.
+CPU and independent review pass; the post-fix four-cell runtime attempt was refused at 59% GPU load.
+No post-fix runtime assertions have run.
 Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
-The integration branch includes fetched upstream `c59bbdf04a60ff8676f6baddf41ab354a6912b9e`.
-At merge `df563821`, the branch was 73 commits ahead and zero behind that remote.
+The integration branch includes fetched upstream `6d23984527188cb8071a901f0adf7ebb83780e26`.
+Merge `aa432704` includes the latest upstream outcome-validation fix.
 Work continues only in `/tmp/sandustry-physical-factory-1b23e28b`.
 The original checkout is preserved recovery, not a build or deployment directory.
 
