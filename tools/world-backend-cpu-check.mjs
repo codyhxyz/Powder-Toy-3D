@@ -15,7 +15,7 @@ import {createWorldVolume,worldFrameValues,decodeWorldFeedback} from '../src/gfx
 import {createWorldAppearance} from '../src/gfx/worldAppearance.js';
 import {WorldSunParams,WORLD_SUN_PITCH,worldSunProjection,worldSunTile,worldSunSlot,worldSunFeedbackWords,worldSunResolve} from '../src/world/worldSun.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
-test('136 pre-edit Box hashes, explicit Box defaults and layouts remain identical',()=>{
+test('136 independent production Box hashes, explicit Box defaults and layouts remain identical',()=>{
   const hashes=JSON.parse(readFileSync(new URL('./fixtures/world-backend-box-hashes.json',import.meta.url)));
   for(const sourceAppearance of [false,true])for(const size of [32,128]){
     const g={nx:size,ny:size,nz:size,sourceAppearance,sourceGrid:[384,16,128]};

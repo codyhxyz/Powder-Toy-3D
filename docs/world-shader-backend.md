@@ -224,6 +224,11 @@ exact production commit. Its Metal opaque-terminal fix intentionally changes
 96 hashes. The integrated default Box shaders match that independent baseline;
 the WORLD backend does not bypass the production fix.
 
+After production `2c5cb27d` added element constants, all 136 view hashes and the
+seven GI/Glow hashes were regenerated from an independent clean checkout of
+that exact commit. The integrated BOX emissions match it byte for byte.
+These expectations were not generated from the task renderer.
+
 These are CPU/reference/static/fake-device and actual Naga compilation results,
 **not execution of WGSL material/ray arithmetic on a GPU**, HDR/depth invariance,
 visual/performance/memory-affordability evidence or shader driver compilation

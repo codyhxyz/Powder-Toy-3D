@@ -65,9 +65,10 @@ function half(v) {
 }
 const pair = (x, y) => (half(x) | half(y) << 16) >>> 0;
 
-test('seven pre-edit original GI/key/select/args and glow emissions remain byte-identical', () => {
+test('seven independent production GI/key/select/args and glow emissions remain byte-identical', () => {
   const g = { nx: 128, ny: 128, nz: 128 };
-  const hashes = ['aac61b9dbb6cd0498a8aefd1f2f6af93e336b962fa18fef589f1f700d34fc97a', '81854d10eedbc2bc15e10547b704fe704941fadf7ff2340eda1c9f6c2877ec4d', '1a91dc1119cb6b3e1dc09f538dd421185e030535e759bdda36bb5b320a3b5960', '3a5f9de16181e2c8ffae7b40be5bdb348dd5e23fc125a2a0154046da563313a0', 'cada58ed2d401ab4c01ab23cb7297f228515b4cabb759a9ce31a43f05652f596', '342312e643e09ee362ecb5ebab5ca3c2e1d7e0d6900eeb054d62c180a0e7a4b4', '02f1d27270f026a1748622d8fe0cab4c4c394c2cf83539bf60a27c55859bfb9f'];
+  // Independent clean production 2c5cb27d, including its new element constants.
+  const hashes = ['9a0284d58bcec62ba9c7bd470775b3ed29de2ba923aefcc4c1fbe554d4a91675', '98cf28c3a150d1bdd8fe30f16f5710b9dc094942b7fe640949da0aa9f5165832', 'd2daecfbd07fb445f5295714cb22293d3b6a2d7d409e38cc972953683e086734', '89a027a627bc1e13b9c0bfb7a9f6d5351efeea2868b06a0cb107645a71fd7fa8', 'e95391017d1f3a3d79e23012ae2a35cdc130caff3b2f8cca6220bb5e4dba514b', '4318b9cc2d7b00cc5ee0ad72f578354bfdfa7df9e85cd762e7e59cdbe36d4266', '695dcc6cca142c9e6ce7c3d61ea57f6239b42cdeb501999dcef2b16b991e609a'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow/three exact transport modules validate Naga and default budgets', () => {
