@@ -59,14 +59,16 @@ Changing presentation cadence still changes temporal history. Use visual mode fo
 The helper closes its browsers on uncaught exceptions, rejected promises, and termination signals.
 Each GPU slot lasts at most **25 seconds total**. This limit includes player detection, browser startup, compilation, warmup, assertions, and cleanup.
 `TPT_TEST_TIMEOUT_MS` can shorten this limit, but cannot extend it.
-An independent watchdog requests closure before the deadline and terminates only the test's own processes if closure fails.
-It reserves two seconds for forced cleanup and verified release.
-Process-table queries have a 500 ms timeout to tolerate compilation load without disabling ownership checks.
+An independent watchdog runs in its own session/process group, requests closure before the deadline, and terminates only the test's own processes if closure fails.
+It reserves four seconds for forced cleanup and verified release, without extending the absolute deadline.
+Process-table queries have a 1000 ms timeout; orphan-environment inspection has a 250 ms timeout. Inspection failure never authorizes an unverified kill or release.
 Process identity checks and a unique launch marker prevent another session's processes from becoming cleanup targets.
 One launch attempt is allowed per test process. Additional pages must reuse that browser.
 
 The machine-wide slot remains at `~/.cache/tpt-headless/slot`.
-If the player uses the GPU, the launcher releases the slot and refuses the test.
+A dead or malformed holder is unverified: the launcher refuses acquisition and preserves the lease/report regardless of age. A dead numeric PID does not prove that orphan browsers are absent; recovery requires separate ownership/cleanup verification, not automatic reclamation.
+Once a guard is spawned, only its verified `released` acknowledgment allows the launcher to release/reset that guarded lease. Unexpected guard exit, failed readiness, and uncertain browser closure preserve it.
+If the player uses the GPU, the launcher releases its pre-guard slot and refuses the test.
 It no longer holds the slot while waiting for the player.
 Explicit `finally` cleanup is still preferred.
 
