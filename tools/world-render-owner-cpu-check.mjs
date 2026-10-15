@@ -15,7 +15,15 @@ const tick=()=>new Promise(r=>setTimeout(r,0));
 async function settle(gpu,promise){let done=false,error,result;promise.then(r=>{done=true;result=r;},e=>{done=true;error=e;});for(let i=0;i<2000&&!done;i++){gpu.finish();await tick();}assert(done,'native final boundary failed to settle');if(error)throw error;return result;}
 async function setup({size=[16,8,8],feedback=true}={}) {
   const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[];
-  f.sim.tables=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128});
+  const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128});
+  const tableGroup=gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer:tableBuffer}}],'fixture TABLES');
+  f.sim.tables=tableGroup;gpu._simTables={buffer:tableBuffer,group:tableGroup};
+  gpu.onDispatch=(_kernel,options)=>assert.equal(options.bind?.[0],tableGroup,'normal kernels require TABLES bind group');
+  const makeGroup=gpu.device.createBindGroup;
+  gpu.device.createBindGroup=d=>{
+    for(const entry of d.entries)if(entry.resource?.buffer)assert(entry.resource.buffer.bytes instanceof ArrayBuffer,'native binding requires a GPUBuffer, never a GPUBindGroup');
+    return makeGroup(d);
+  };
   gpu.device.createSampler=d=>d;
   gpu.device.createBuffer=d=>{const b=gpu.createBuffer(d);b.mapAsync=()=>gpu.queue.onSubmittedWorkDone();return b;};
   const original=gpu.encoder.bind(gpu);let owner;
@@ -67,6 +75,43 @@ test('actual boot resolves UNKNOWN Sun, actual CELL and source closure; acceptan
   assert.equal(f.owner.metadata.derivedTick,0);assert(f.owner.metadata.indices.includes(3));
   await assert.rejects(f.owner.accept(candidate,post(candidate)),/exact complete/);
   const current=f.owner.current();assert.equal(current.identity,candidate.identity);current.release();candidate.release();await f.close();
+});
+
+test('native table buffers and normal kernel TABLES groups are distinct required inputs',async()=>{
+ const f=await fixture();try{
+  const buffer=f.gpu.createBuffer({size:tableLayout().Tables.size,usage:128});
+  f.sim.tables=f.gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer}}],'TABLES');
+  assert.throws(()=>installWorldRender(f.win,{tableBuffer:f.sim.tables}),/distinct TABLES/);
+  assert.throws(()=>installWorldRender(f.win,{tables:buffer,tableBuffer:buffer}),/distinct TABLES/);
+  assert.throws(()=>installWorldRender(f.win),/distinct TABLES/);
+  assert.equal(f.win.render,undefined);
+ }finally{await f.finish();}
+});
+
+test('concurrent discard cannot clear the replacement queued cut or leak its external pin',async()=>{
+ const f=await setup({feedback:false});let pins=0;
+ const pin={retain(){pins++;return {release(){pins--;}};}};
+ const demand=[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}];
+ const first=await settle(f.gpu,f.owner.request(f.frame,demand));
+ const queued=f.owner.request({...f.frame,pins:[pin]},demand);
+ const retiring=f.owner.discard(first);
+ const duplicate=assert.rejects(f.owner.discard(first),/foreign WORLD discard/);
+ await settle(f.gpu,retiring);await duplicate;
+ const next=await settle(f.gpu,queued);
+ assert(next);assert.equal(f.owner.state,'probe-ready');assert.equal(pins,1);
+ await settle(f.gpu,f.owner.discard(next));next.release();first.release();
+ await f.close();assert.equal(pins,0);
+});
+
+test('retry reserves its transition before awaiting native prefix completion',async()=>{
+ const f=await setup({feedback:false}),flush=f.gpu.flush.bind(f.gpu);let reject=true;
+ f.gpu.flush=label=>{flush();if(reject&&label==='world final feedback boundary'){reject=false;throw new Error('closed suffix');}};
+ await assert.rejects(settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}])),/closed suffix/);
+ const retry=f.owner.retry();
+ const duplicate=assert.rejects(f.owner.retry(),/only definitively rejected/);
+ const c=await settle(f.gpu,retry);await duplicate;
+ assert.equal(f.owner.state,'probe-ready');assert.equal(f.owner.failure,null);
+ await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
 });
 
 test('ordinary newer physics coalesces, rejected submitted image preserves accepted bundle and exact previous packed GI',async()=>{

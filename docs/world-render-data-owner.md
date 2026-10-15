@@ -12,7 +12,7 @@ feedback readback, Post and production activation.
 After the real Source/Producer and native external publications are ready:
 
 ```js
-const data = installWorldRender(win, { gpu, source, producer, tables, wake });
+const data = installWorldRender(win, { gpu, source, producer, tables, tableBuffer, wake });
 const candidate = await data.request({
   sceneVersion, schemaVersion, configVersion,
   values: frozenFrameUniformValues, physicsOrigin: capturedOrigin,
@@ -23,6 +23,14 @@ const candidate = await data.request({
   advance: true,
 }, typedRequirements);
 ```
+
+`tables` is the normal kernel's TABLES **bind group** (default: `sim.tables`).
+`tableBuffer` is its matching native **buffer** (default:
+`gpu._simTables.buffer`). These are not interchangeable. Native reader bindings
+use the buffer; CELL/Fields dispatches use the group. Neither option copies or
+freezes mutable table contents. In particular, a lifetime pin does not freeze
+Simulation's `airT` word. The App route must own immutable table inputs for all
+pending readers, including late Source generation, before activation.
 
 All pins implement `retain()->{release()}` and must cover the supplied native
 values; they are not readiness callbacks. Tables and external views must stay
@@ -115,6 +123,8 @@ new admission and retains unresolved native pins, including metadata pins. It
 cannot retry/reset over the orphan. Terminal graphics reclamation is deliberately
 not implemented; retire the graphics owner/device. A blocked `dispose()` does
 not falsely resolve cleanup.
+Retry and discard reserve their transitions before waiting. A concurrent
+duplicate cannot restart the same work or clear a replacement queued cut.
 
 `reset({sceneVersion,schemaVersion})` requires Source to have authoritatively
 advanced exactly one epoch. It stops admission, waits old normal suffix/queue

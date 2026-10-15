@@ -24,9 +24,10 @@ function observedFeedback(gpu,options,wake) {
  * Native tables/external resources remain caller-owned, with explicit pins.
  * request() captures the active cut synchronously; newer requests coalesce.
  */
-export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,wake=()=>{}}={}) {
+export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{}}={}) {
   if(win.render)throw new Error('WORLD data owner already installed');
   if(!source||!producer||source.win!==win||source.gpu!==gpu)throw new TypeError('actual WORLD Source/Producer required');
+  if(!tables||Number.isInteger(tables.size)||!Number.isInteger(tableBuffer?.size)||tableBuffer.size<16)throw new TypeError('distinct TABLES bind group and native table buffer required');
   const size=[...win.size], dims=size.map(n=>n/4), g={nx:size[0],ny:size[1],nz:size[2],sourceAppearance:!!win.scene.appearanceWords};
   const bound=Math.ceil(Math.hypot(...size)/(256*WORLD_SUN_PITCH))+2;
   const atlas=new WorldRenderAtlas(gpu,{worldSize:size,feedbackExtraWords:Math.ceil(bound*bound/32)});
@@ -193,7 +194,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   async function run(t) {
     try{
       await Promise.all([cells.ready,metadata.ready,transport.ready]);
-      const inputOptions={atlas,tables,frameValues:t.frame.values,physicsOrigin:t.frame.physicsOrigin,params:t.frame.params,external:t.frame.external};
+      const inputOptions={atlas,tables:tableBuffer,frameValues:t.frame.values,physicsOrigin:t.frame.physicsOrigin,params:t.frame.params,external:t.frame.external};
       const words=t.cut.source.context.scene.appearanceWords;
       t.appearance=words?createWorldAppearance(gpu,{words}):null;
       const {pins,...captured}=t.frame;
@@ -248,8 +249,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       t.plan.seal({cutToken:t.cut.contentToken,feedback});t.plan.commit();t.plan=null;metadataChanges(t);
       for(const out of t.outputs){out.sources.forEach(i=>ownedSources.add(i));out.probes.forEach(i=>ownedProbes.add(i));}for(const [i,bits]of t.requirements)if(bits&READY.GLOW)ownedGlow.add(i);
       const old=accepted;accepted={bundle:t.bundle.retain(),cut:t.cut.retain(),frame:t.frame,fieldTick:t.fieldTick};await retire(t);active=null;if(old){old.bundle.release();old.cut.release();}next();return true;},
-    async retry(){live();const t=active;if(!t||t.state!=='rejected')throw new Error('only definitively rejected WORLD work can retry');await fence();if(active!==t||dead)return null;t.error=null;t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
-    async discard(candidate=null){live();const t=active;if(!t||(t.bundle?candidate?.identity!==t.bundle.identity:t.state!=='rejected'))throw new Error('foreign WORLD discard');if(t.state==='accepting')throw new Error('wait for final Post confirmation before discarding WORLD');t.state='retiring';await retire(t);active=null;next();},
+    async retry(){live();const t=active;if(!t||t.state!=='rejected')throw new Error('only definitively rejected WORLD work can retry');t.state='retrying';try{await fence();}catch(e){rejected(t,e);throw e;}if(active!==t||dead)return null;t.error=null;t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
+    async discard(candidate=null){live();const t=active;if(t?.state==='accepting')throw new Error('wait for final Post confirmation before discarding WORLD');if(!t||!['probe-ready','rejected'].includes(t.state)||(t.bundle?candidate?.identity!==t.bundle.identity:t.state!=='rejected'))throw new Error('foreign WORLD discard');t.state='retiring';await retire(t);if(active!==t||dead)return;active=null;next();},
     reset({sceneVersion=active?.frame.sceneVersion??accepted?.frame.sceneVersion,schemaVersion=active?.frame.schemaVersion??accepted?.frame.schemaVersion}={}){
       live();if(source.epoch!==atlas.epoch+1||sceneVersion==null||schemaVersion==null)throw new Error('WORLD reset requires next authoritative Source epoch and explicit scene/schema identity');
       resetting=true;
