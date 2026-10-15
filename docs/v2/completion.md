@@ -79,13 +79,22 @@ Scene rendering costs about 38.11 ms.
 The overlapping motion interval is not an additional scene cost.
 Allocation scans no longer dominate the compute timings.
 
-Current merged full-frame runs have not returned a valid timing window.
-The visible volume shader still exceeded the setup allowance after unused near-detail prefetch was removed.
-This is a startup failure, not a failed physics assertion.
 Readonly volume-format specialization is integrated at `7cf968dd`.
 Generic and writer hashes remain unchanged against the merged production checkpoint.
 CPU tests cover formats 0/2/3, engine transitions, deferred readiness and shader validation.
-Metal execution and timing remain unmeasured; no timing benefit is established.
+Both engines now complete full-frame measurement at `f86a20c8`, without pipeline activity during samples.
+The CPU fixture hashes, f32 cameras and complete render-quality keys match.
+Three warmups precede 12 measured frames for each engine.
+
+| Current merged reference | Median frame | p95 frame | Total occupancy |
+| --- | ---: | ---: | ---: |
+| v1 | 168.4 ms | 259.4 ms | 11.028 s |
+| Native direct | 192.8 ms | 209.3 ms | 16.160 s |
+
+The native median is 14.5% slower. The performance target is not met.
+Evolved states differ, so neither median nor tail establishes equivalent-work performance.
+These are serialized frame latencies, not live gameplay FPS.
+Further diagnostics must separate compute from rendering without interpreting coalesced labels as individual kernel costs.
 
 Local evidence:
 
@@ -100,6 +109,8 @@ Local evidence:
 - `/tmp/v2-native-water-matched-17817ba.json`
 - `/tmp/v2-native-water-split-17817ba.json`
 - `/tmp/v2-water-native-8d5ad463.json.startup.jsonl`
+- `/tmp/v2-water-native-f86a20c8.json`
+- `/tmp/v2-water-v1-f86a20c8.json`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.

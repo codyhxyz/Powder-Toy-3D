@@ -20,6 +20,7 @@ const HELP = `Usage: node tools/v2/frame-bench.mjs [options]
   --out FILE       raw JSON report (otherwise stdout)
   --seed N         unsigned 32-bit fixture seed (default 12345)
   --split          also replay fresh cases with split GPU passes (diagnostic only)
+  --split-only     diagnostic replay only; reuse an existing unsplit reference
   --trace-startup  record native pipeline creation before app readiness
   --self-check     CPU statistics/arguments/fixtures checks; no GPU
 Fixed: 128³ box, 1280×720 viewport, DPR 1, Quality upscale, autoRes OFF.
@@ -28,8 +29,8 @@ Non-parity: v2 is missing physics; no equivalent-work speedup claim until the fu
 
 export function parseArgs(argv) {
   const o = { frames: 60, warmup: 12, engine: 'both', 'v2-path': 'direct', scene: 'all', view: 'realistic', seed: 12345,
-    port: null, url: null, out: null, split: false, traceStartup: false, selfCheck: false, help: false };
-  const flags = { '--split': 'split', '--trace-startup': 'traceStartup', '--self-check': 'selfCheck', '--help': 'help' };
+    port: null, url: null, out: null, split: false, splitOnly: false, traceStartup: false, selfCheck: false, help: false };
+  const flags = { '--split': 'split', '--split-only': 'splitOnly', '--trace-startup': 'traceStartup', '--self-check': 'selfCheck', '--help': 'help' };
   const values = new Set(['frames', 'warmup', 'engine', 'v2-path', 'scene', 'view', 'seed', 'port', 'url', 'out']);
   const seen = new Set();
   for (let i = 0; i < argv.length; i++) {
@@ -50,12 +51,15 @@ export function parseArgs(argv) {
     if (!allowed.includes(o[key])) throw new Error(`${key} must be ${allowed.join('|')}`);
   }
   if ([5173, 8787].includes(o.port)) throw new Error('Use a private port, not 5173 or 8787');
+  if (o.split && o.splitOnly) throw new Error('--split and --split-only are mutually exclusive');
   if (o.url) {
     if (!['http:', 'https:'].includes(new URL(o.url).protocol)) throw new Error('url must be HTTP(S)');
     if (o.port !== null) throw new Error('--url and --port are mutually exclusive');
   }
   return o;
 }
+
+const passModes = o => o.splitOnly ? [true] : o.split ? [false, true] : [false];
 
 // Nearest-rank percentiles; no rounding or silent deletion of invalid samples.
 export function stats(values) {
@@ -152,9 +156,13 @@ async function selfCheck() {
   assert.throws(() => stats([NaN])); assert.throws(() => stats([-1]));
   assert.equal(parseArgs([]).view, 'realistic');
   assert.equal(parseArgs(['--warmup', '0', '--seed', '0', '--split']).split, true);
+  assert.deepEqual(passModes(parseArgs([])), [false]);
+  assert.deepEqual(passModes(parseArgs(['--split'])), [false, true]);
+  assert.deepEqual(passModes(parseArgs(['--split-only'])), [true], 'diagnostic-only never creates headline samples');
   for (const argv of [['--frames', '0'], ['--warmup', '-1'], ['--frames', '1.5'], ['--seed', '4294967296'],
     ['--engine', 'v3'], ['--v2-path', 'unknown'], ['--view', 'cheap'], ['--port', '5173'], ['--url', 'file:///tmp/a'],
-    ['--url', 'http://localhost', '--port', '43199'], ['--out'], ['--oops'], ['--split', '--split']]) assert.throws(() => parseArgs(argv));
+    ['--url', 'http://localhost', '--port', '43199'], ['--out'], ['--oops'], ['--split', '--split'],
+    ['--split', '--split-only']]) assert.throws(() => parseArgs(argv));
   const { gridLayout, cellTexel } = await import('../../src/sim.js');
   const { E } = await import('../../src/elements.js');
   const { SEED_MAX } = await import('../../src/shaders/common.js');
@@ -241,7 +249,7 @@ async function run(o) {
     const cases = engines.flatMap(engine => engine === 'v1' ? [{ engine, compactPath: null }]
       : (o['v2-path'] === 'both' ? ['direct', 'compatibility'] : [o['v2-path']]).map(compactPath => ({ engine, compactPath })));
     const scenes = o.scene === 'all' ? ['sand', 'water', 'settled'] : [o.scene];
-    for (const split of o.split ? [false, true] : [false]) for (const scene of scenes) for (const { engine, compactPath } of cases) {
+    for (const split of passModes(o)) for (const scene of scenes) for (const { engine, compactPath } of cases) {
       const result = { engine, compactPath, scene, diagnosticSplit: split, errors: [], warnings: [], samples: [] };
       report.results.push(result);
       const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
