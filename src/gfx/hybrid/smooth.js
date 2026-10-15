@@ -1,5 +1,5 @@
 // Persistent marching-tetra descriptors for granular/organic fields only.
-// No simulation changes, no isolated-particle subtraction, no optics ownership.
+// Existing derived fields opt into isolated-particle subtraction; no physics writes.
 import { frameUniformsOf } from '../uniforms.js';
 import { fold } from '../../gpu/kernels.js';
 import {
@@ -11,7 +11,7 @@ export { smoothAcceptanceWGSL } from '../../shaders/hybrid/smooth.js';
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const STORAGE = 0x80, INDIRECT = 0x100;
 
-/** createHybridSmooth(gpu,sim,{capacityPerBrick=256,shader={wgsl,layout,bind,
+/** createHybridSmooth(gpu,sim,{capacityPerBrick=768,shader={wgsl,layout,bind,
  * handlesAppearance}}). shader.wgsl defines shadeSmooth(gridPosition,normal,
  * elementId,stateA)->vec3f (linear HDR); bindings group 2, >=4.
  *
@@ -23,15 +23,14 @@ const STORAGE = 0x80, INDIRECT = 0x100;
  * incremental. invalidate() after untracked resets. Recreate on grid/device
  * or derived resource replacement. Shared FrameUniforms must already be written.
  *
- * Until the small async status validates a generation, fallbackRequired is true.
- * Parent must retain the ENTIRE legacy granular/organic producer when true,
- * never combine a truncated mesh with legacy. Geometry remains approximate
- * piecewise-linear tetrahedra; granular cubic thin boost explicitly falls back.
+ * Extraction/finish and indirect draw record in the SAME frame. Status reads
+ * report exceptional fallback asynchronously; GPU args suppress whole overflow
+ * generations, never partial meshes. Parent may gate legacy with GPU status.
  * draw(rp): rgba16float/depth32float. drawShadow(rp,{matrix}): depth32float,
  * matrix maps physical GRID -> light clip ([0,1] depth), not FU.model space.
  * Neither recording method opens/submits a pass or performs a GPU wait.
  */
-export function createHybridSmooth(gpu, sim, { capacityPerBrick = 256, shader = {} } = {}) {
+export function createHybridSmooth(gpu, sim, { capacityPerBrick = 768, shader = {} } = {}) {
   if (!Number.isSafeInteger(capacityPerBrick) || capacityPerBrick <= 0 || capacityPerBrick > 3000) throw new RangeError('Invalid smooth capacityPerBrick (1..3000)');
   if (shader.wgsl !== undefined && typeof shader.wgsl !== 'string') throw new TypeError('shader.wgsl must be WGSL');
   if (shader.handlesAppearance && !shader.wgsl) throw new TypeError('Appearance support requires a shader adapter');
@@ -77,16 +76,17 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 256, shader = 
   const fallback = (reason) => { stats.fallbackRequired = !!reason; stats.fallbackReason = reason; };
   function blocked(frame) {
     if (gpu.failure || sim.disposed || sim.g !== g || sim.derived !== derived || sim.fieldSurf !== derived.fieldSurf || sim.fieldThin !== derived.fieldThin) return 'grid-or-device-unavailable';
+    if (frame.particleSplit && !derived.particleSplit) return 'ownership-not-split';
     if (typeof frame.revision !== 'string' && !(typeof frame.revision === 'number' && Number.isFinite(frame.revision))) return 'derived-revision-required';
     if (!shader.handlesAppearance && (frame.sourceStyle || fu.last?.sourceStyle || sim.deco?.active)) return 'source-or-decoration-unsupported';
     return '';
   }
-  const params = (matrix = IDENTITY) => ({ capacity, full: 0, unsupported: 0, slot: 0, matrix });
+  const params = (matrix = IDENTITY) => ({ capacity, full: 0, unsupported: 0, slot: 0, matrix, particleSplit: derived.particleSplit ? 1 : 0, world: derived.world ? 1 : 0 });
   const api = {
     ready: Promise.all(pipes.map((p) => p.ready)).then(() => api),
     get isReady() { return !disposed && !gpu.failure && pipes.every((p) => p.state === 'ready'); },
     get revision() { return `${generation}|${key}|${stats.fallbackReason}`; },
-    capabilities: Object.freeze({ particleSplit: false, channels: [2, 3], thinGranular: false }),
+    capabilities: Object.freeze({ particleSplit: true, channels: [2, 3], thinGranular: true }),
     stats,
     resources: { triangles, meta, status, args, capacityPerBrick: capacity, layout: drawLayout, get bind() { return drawBind; } },
     update(frame = {}) {
@@ -101,9 +101,9 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 256, shader = 
       }
       const o = sim.origin;
       const context = `${sim.version}|${sim.cur}|${o.x},${o.y},${o.z}`;
-      const nextKey = `${context}|${frame.revision}`;
+      const nextKey = `${context}|${derived.particleSplit}|${frame.revision}`;
       if (key === nextKey && !frame.force) {
-        fallback(stats.readbackError ? 'status-readback-failed' : stats.pending ? 'status-pending' : stats.flags ? 'unsupported-surface' : '');
+        fallback(stats.readbackError ? 'status-readback-failed' : stats.flags & SMOOTH_FLAGS.OVERFLOW ? 'capacity-overflow' : stats.flags ? 'unsupported-surface' : '');
         return false;
       }
       const full = !key || frame.force || !frame.incremental || frame.previousRevision !== lastRevision || lastOrigin !== `${o.x},${o.y},${o.z}`;
@@ -112,7 +112,8 @@ export function createHybridSmooth(gpu, sim, { capacityPerBrick = 256, shader = 
       lastRevision = frame.revision;
       const token = ++generation;
       stats.pending = true; stats.readbackError = null;
-      fallback('status-pending');
+      stats.flags = 0;
+      fallback('');
       const bind = [sim.tables, sim.bindRO, extractBind], header = sim.header();
       const p = { ...params(), full: full ? 1 : 0, unsupported: 0 };
       extract.dispatch(gpu.frame, fold(g.nbricks), { bind, header, params: p });

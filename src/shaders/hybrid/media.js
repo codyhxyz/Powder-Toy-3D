@@ -27,7 +27,8 @@ export const MEDIA_COMPOSITE_LAYOUT = [
 ];
 const vec = (a) => `vec3f(${a.map((x) => Number(x).toFixed(8)).join(', ')})`;
 
-const segmentLibrary = () => /* wgsl */ `
+const segmentLibrary = ({ sunVisibility = 'hybridMediaOpaqueVisibility', sunWGSL = 'fn hybridMediaOpaqueVisibility(p: vec3f) -> f32 { return 1.0; }' } = {}) => /* wgsl */ `
+${sunWGSL}
 ${frameBindings()}
 ${Header.wgsl}
 @group(3) @binding(0) var<uniform> H: Header;
@@ -111,10 +112,10 @@ fn source(p: vec3f, ray: Ray, gas: Gas) -> vec3f {
     if (P.hasLight != 0u && FU.glowLights != 0u) {
       ambient += textureSampleLevel(glow, linearClamp, p / P.grid, 0.0).rgb * FU.lightGain;
     }
-    // Short deterministic self-shadow; opaque sun visibility is a documented integration limitation.
+    // Short deterministic self-shadow multiplied by the optional opaque receiver.
     let ahead = clamp(p + FU.sun * 2.0, vec3f(0.0), P.grid);
     let sunT = exp(-dot(EXT, base(field(ahead))) * 4.0);
-    S = scatter * (ambient + 3.14159265 * FU.sunCol * phase(dot(ray.dir, FU.sun), g) * sunT);
+    S = scatter * (ambient + 3.14159265 * FU.sunCol * phase(dot(ray.dir, FU.sun), g) * sunT * clamp(${sunVisibility}(p), 0.0, 1.0));
     for (var i = 0; i < FU.lampCount; i++) {
       let axis = FU.lampPos[i].xyz;
       let v = p - axis;
@@ -206,12 +207,11 @@ const isolate = (code) => code.replace(new RegExp(`\\b(${privateNames.join('|')}
  * fieldBinding offsets all six field/sampler bindings. declareHeader:false uses
  * the containing shader's headerName (default H), avoiding duplicate Header/H
  * declarations when composed with the optical prelude. Params stay explicit.
- * No scene textures, depth attachment, or stochastic history required. No opaque
- * sun shadows/beam lights; segment callers must bound at surfaces/interfaces.
+ * No scene textures, depth attachment, or stochastic history required. Optional sunWGSL/sunVisibility supplies opaque visibility; no beam lights; segment callers must bound at surfaces/interfaces.
  */
 export function hybridMediaSegmentWGSL({ frameGroup = 0, frameBinding = 1, fieldGroup = 1, fieldBinding = 0,
-  paramsGroup = 3, paramsBinding = 1, headerBinding = 0, declareFrame = true, declareHeader = true, headerName = 'H' } = {}) {
-  let code = segmentLibrary();
+  paramsGroup = 3, paramsBinding = 1, headerBinding = 0, declareFrame = true, declareHeader = true, headerName = 'H', sunVisibility, sunWGSL } = {}) {
+  let code = segmentLibrary({ sunVisibility, sunWGSL });
   const frame = frameBindings();
   code = code.replace(frame, declareFrame ? frame.replace('@group(0) @binding(1)', `@group(${frameGroup}) @binding(${frameBinding})`) : '');
   if (!declareHeader) code = code.replace(Header.wgsl, '').replace('@group(3) @binding(0) var<uniform> H: Header;', '');
@@ -222,8 +222,8 @@ export function hybridMediaSegmentWGSL({ frameGroup = 0, frameBinding = 1, field
   return declareHeader ? code : code.replace(/\bhmH\b/g, headerName);
 }
 
-export const hybridMediaIntegrateWGSL = () => isolate(/* wgsl */ `
-${segmentLibrary()}
+export const hybridMediaIntegrateWGSL = (options) => isolate(/* wgsl */ `
+${segmentLibrary(options)}
 ${screenLibrary()}
 struct MediaOutput { @location(0) media: vec4f, @location(1) guide: f32 }
 @fragment fn fs(in: FullScreen) -> MediaOutput {
@@ -232,8 +232,8 @@ struct MediaOutput { @location(0) media: vec4f, @location(1) guide: f32 }
   return MediaOutput(integrate(ray), ray.limit);
 }`);
 
-export const hybridMediaCompositeWGSL = () => isolate(/* wgsl */ `
-${segmentLibrary()}
+export const hybridMediaCompositeWGSL = (options) => isolate(/* wgsl */ `
+${segmentLibrary(options)}
 ${screenLibrary()}
 @group(2) @binding(1) var sceneColor: texture_2d<f32>;
 @group(2) @binding(2) var lowMedia: texture_2d<f32>;

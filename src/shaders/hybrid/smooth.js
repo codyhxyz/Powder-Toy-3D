@@ -1,3 +1,4 @@
+import { particleOwnershipWGSL } from './particles.js';
 import { prelude, STATE_OPTS, STAGE, gridDims } from '../common.js';
 import { frameBindings } from '../bindings.js';
 import { dirtyLists } from '../fields.js';
@@ -20,7 +21,7 @@ export const SMOOTH_CASES = Array.from({ length: 16 }, (_, mask) => {
   return [[q[0], q[1], q[2]], [q[0], q[2], q[3]]];
 });
 export const SMOOTH_FLAGS = Object.freeze({ OVERFLOW: 1, THIN: 2, NO_MATERIAL: 4, APPEARANCE: 8 });
-export const SmoothParams = uniformStruct('SmoothParams', { capacity: 'u32', full: 'u32', unsupported: 'u32', slot: 'u32', matrix: 'mat4x4f' });
+export const SmoothParams = uniformStruct('SmoothParams', { capacity: 'u32', full: 'u32', unsupported: 'u32', slot: 'u32', matrix: 'mat4x4f', particleSplit: 'u32', world: 'u32' });
 const ro = (binding, visibility = STAGE.COMPUTE) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
 const rw = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } });
 const tex = (binding, visibility) => ({ binding, visibility, texture: { sampleType: 'unfilterable-float', viewDimension: '3d' } });
@@ -36,6 +37,7 @@ export function smoothAcceptanceWGSL({ group = 2, binding = 0, name = 'smoothSta
 }
 
 const tables = () => `
+${particleOwnershipWGSL}
 const TETS = array<vec4u, 6>(${SMOOTH_TETS.map((v) => `vec4u(${v.join(',')})`).join(',')});
 const EDGES = array<vec2u, 6>(${SMOOTH_EDGES.map((v) => `vec2u(${v.join(',')})`).join(',')});
 const TRI_COUNT = array<u32, 16>(${SMOOTH_CASES.map((v) => `${v.length}u`).join(',')});
@@ -56,7 +58,7 @@ fn phi(q: vec3i, ch: u32) -> f32 {
   return textureLoad(surf, q, 0)[ch];
 }
 // Existing state, never a new simulation. Nearest channel source in the field
-// kernel's two-cell support; missing sources (EMA ghosts) explicitly fallback.
+// kernel's two-cell support; missing sources (EMA ghosts) emit no triangles.
 fn smoothSource(p: vec3i, ch: i32) -> vec4f {
   var best = 1e20;
   var a = vec4f(0.0);
@@ -65,7 +67,7 @@ fn smoothSource(p: vec3i, ch: i32) -> vec4f {
     if (inGrid(q)) {
       let s = fetchA(q);
       let d = dot(vec3f(q-p)-vec3f(0.5), vec3f(q-p)-vec3f(0.5));
-      if (SURFCH(eid(s)) == ch && d < best) { best = d; a = s; }
+      if (SURFCH(eid(s)) == ch && d < best && !(P.particleSplit != 0u && hybridParticleOwns(q, P.world != 0u))) { best = d; a = s; }
     }
   } } }
   return a;
@@ -107,12 +109,7 @@ fn extract(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u
       for (var c = 0u; c < 8u; c++) {
         let q = p + corner(c);
         values[c] = phi(q, ch);
-        // Granular's cubic thin boost is NOT approximated by trilinear
-        // triangles. Disjoint whole-producer fallback retains grains/clods,
-        // lone particles and all legacy close-up detail without double draw.
-        if (ch == 2u && inGrid(q)) {
-          if (textureLoad(thin, q, 0).z > 0.0) { atomicOr(&flags, 2u); }
-        }
+
       }
       var material = -1;
       for (var t = 0u; t < 6u; t++) {
@@ -123,8 +120,9 @@ fn extract(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u
         if (n == 0u) { continue; }
         if (material < 0) {
           material = eid(smoothSource(p, i32(ch)));
-          if (material == E_EMPTY) { atomicOr(&flags, 4u); }
+
         }
+        if (material == E_EMPTY) { continue; } // history without current bulk matter
         let at = atomicAdd(&count, n);
         if (at + n > P.capacity) { atomicOr(&flags, 1u); }
         for (var tri = 0u; tri < n; tri++) {

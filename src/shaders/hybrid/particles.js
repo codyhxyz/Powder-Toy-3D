@@ -5,6 +5,8 @@ import { frameBindings } from '../bindings.js';
 import { materialsGLSL, THIN_RADIUS } from '../../gfx/materials.js';
 import { uniformStruct } from '../../gpu/params.js';
 
+export const PARTICLE_OWNERSHIP = Object.freeze({ channels: Object.freeze([2, 3]), liquids: false, molten: false, glass: false });
+
 export const PARTICLE_BYTES = 32;
 export const PARTICLE_VERTICES = 96; // subdivided octahedron (32 triangles)
 export const PARTICLE_RADIUS = THIN_RADIUS;

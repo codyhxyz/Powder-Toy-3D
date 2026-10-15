@@ -12,7 +12,9 @@ function settings(input) {
   for (const name of ['upscale', 'floor']) {
     if (!(Number.isFinite(s[name]) && s[name] > 0 && s[name] <= 1)) throw new RangeError(`${name} must be in (0, 1]`);
   }
-  if (!(Number.isFinite(s.targetHz) && s.targetHz > 0)) throw new RangeError('targetHz must be positive');
+  if (!(Number.isFinite(s.targetHz) && s.targetHz > 0 && Number.isFinite(1000 / s.targetHz))) {
+    throw new RangeError('targetHz must yield a finite positive budget');
+  }
   return s;
 }
 
@@ -35,9 +37,11 @@ function settings(input) {
  * Feed each complete timing once, with an increasing integer sampleId (frame
  * number) and the generation captured when that frame was submitted. Prefer
  * complete GPU render-pass timings (ms, excluding simulation); renderMs is
- * uncapped wall render cost; frameMs is a last-resort presentation interval.
+ * active wall render cost (no pacing, simulation, waits or readback).
+ * frameMs remains an accepted argument for compatibility but is NEVER cost:
+ * even an uncapped presentation interval may include idle or simulation time.
  * Do NOT submit partial GPU coverage as a complete GPU sample. Missing timings
- * do nothing; a capped interval alone cannot justify lowering resolution.
+ * do nothing; an interval alone cannot justify lowering resolution.
  * stable certifies comparable camera/workload across baseline and trial windows;
  * false cancels trials. Paused/idle/nonrendered frames never change allocations.
  * No polling or extra frames are requested by this controller.
@@ -57,7 +61,12 @@ function settings(input) {
  * size media/reflection targets from output size * their absolute scales
  * (round and clamp each dimension to >= 1), NOT scene size * absolute scales.
  * Reallocate/invalidate temporal histories only when update/reset/recover returns
- * true. Store generation with each submitted timing. No GPU resources required.
+ * true; external resize/cut/device resets must invalidate histories regardless
+ * of that return value (reset always advances generation). Store generation
+ * with each submitted timing. Use actual output texture device dimensions,
+ * not CSS size. Measure normal passes without enabling profiler split mode;
+ * never sum partial/overlapping coverage or include simulation passes.
+ * No GPU resources required.
  */
 export function createHybridResolution(options = {}) {
   let config = settings(options);
@@ -68,6 +77,8 @@ export function createHybridResolution(options = {}) {
   let downAt = 0, upAt = 0, upHold = AUTO_RES.HOLD;
   let blocked = { effects: false, surface: false };
   let observedMs = null;
+  let acceptedSamples = 0, rejectedSamples = 0, lastRejection = null;
+  const reject = reason => { rejectedSamples++; lastRejection = reason; return false; };
 
   const clearWindow = () => { elapsed = samples = sum = 0; };
   const clearEvidence = () => { clearWindow(); over = under = 0; source = null; };
@@ -92,6 +103,7 @@ export function createHybridResolution(options = {}) {
     if (!changed) generation++;
     resting = false; lastId = -1; lastNow = -Infinity;
     trial = lastTrial = null; observedMs = null;
+    acceptedSamples = rejectedSamples = 0; lastRejection = null;
     blocked = { effects: false, surface: false };
     downAt = 0; upAt = AUTO_RES.HOLD; upHold = AUTO_RES.HOLD;
     clearEvidence();
@@ -108,6 +120,9 @@ export function createHybridResolution(options = {}) {
         generation, adaptive, resting, source, observedMs,
         budgetMs: 1000 / config.targetHz, ceiling, minimum,
         effectMultiplier: effects, blocked: { ...blocked }, samples,
+        surfaceScale: surface, resolutionScale: surface / ceiling,
+        targetHz: config.targetHz, acceptedSamples, rejectedSamples, lastRejection,
+        overWindows: over, underWindows: under, downAt, upAt,
         trial: trial ? { direction: trial.direction, stage: trial.stage, baselineMs: trial.baseline, source: trial.source } : null,
         lastTrial: lastTrial ? { ...lastTrial } : null,
       };
@@ -119,8 +134,9 @@ export function createHybridResolution(options = {}) {
       return assign(ceiling, 1);
     },
     update(frame = {}) {
-      const { now, dt, sampleId, sampleGeneration, gpuMs, renderMs, frameMs,
-        stable = true, paused = false, idle = false, rendered = true, capped = false } = frame;
+      if (!frame || typeof frame !== 'object') return reject('malformed-frame');
+      const { now, dt, sampleId, sampleGeneration, gpuMs, renderMs,
+        stable = true, paused = false, idle = false, rendered = true } = frame;
       if (resting || !adaptive) return false;
       if (paused || idle || !rendered) {
         // Freeze allocations, but don't compare a trial with a post-idle scene.
@@ -128,22 +144,29 @@ export function createHybridResolution(options = {}) {
         clearEvidence();
         return false;
       }
-      if (!(Number.isFinite(now) && now >= lastNow && Number.isFinite(dt) && dt > 0)) return false;
-      if (sampleGeneration !== generation || !Number.isSafeInteger(sampleId) || sampleId <= lastId) return false;
+      if (!(Number.isFinite(now) && now > lastNow && Number.isFinite(dt) && dt > 0)) return reject('invalid-time');
+      if (sampleGeneration !== generation) return reject('stale-generation');
+      if (!Number.isSafeInteger(sampleId) || sampleId < 0 || sampleId <= lastId) return reject('invalid-sample-id');
       // Late samples from retired allocations cannot invalidate a current trial.
       if (!stable || trial?.invalid) return cancelTrial();
-      const nextSource = cost(gpuMs) ? 'gpu' : cost(renderMs) ? 'render' : !capped && cost(frameMs) ? 'frame' : null;
-      if (!nextSource) { clearWindow(); over = under = 0; return false; }
+      // Explicit malformed costs must not silently fall back to another source.
+      if ((gpuMs !== undefined && !cost(gpuMs)) || (renderMs !== undefined && !cost(renderMs))) {
+        return reject('invalid-cost');
+      }
+      const nextSource = cost(gpuMs) ? 'gpu' : cost(renderMs) ? 'render' : null;
+      if (!nextSource) { clearWindow(); over = under = 0; return reject('missing-render-cost'); }
       // A measurement source change is not evidence of an improvement.
       if (source && source !== nextSource) {
         if (trial) return cancelTrial();
         clearEvidence();
       }
       source = nextSource; lastNow = now; lastId = sampleId;
-      const ms = source === 'gpu' ? gpuMs : source === 'render' ? renderMs : frameMs;
-      sum += ms; samples++; elapsed += Math.min(dt, 0.1);
+      const ms = source === 'gpu' ? gpuMs : renderMs;
+      // Online mean avoids overflow for finite (but very large) supplied costs.
+      samples++; sum += (ms - sum) / samples;
+      acceptedSamples++; lastRejection = null; elapsed += Math.min(dt, 0.1);
       if (elapsed + 1e-9 < AUTO_RES.WINDOW || samples < MIN_SAMPLES) return false;
-      const avg = sum / samples;
+      const avg = sum;
       observedMs = avg;
       clearWindow();
       const budget = 1000 / config.targetHz;

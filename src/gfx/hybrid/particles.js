@@ -1,14 +1,14 @@
 // Opt-in isolated matter renderer; NOT independent simulation particles.
 // Integration contract:
 // 1. Smooth must exclude hybridParticleOwns cells before field blur/EMA,
-//    including historical tails. Set ownershipReady only once that split is
-//    actually implemented. Existing sim.fieldSurf/fieldThin are NOT split.
+//    including historical tails. Derived.setParticleSplit(true) before updateBricks
+//    enables the split; caller ownershipReady assertions are not trusted.
 // 2. Write shared FrameUniforms once before recording readers. update({size,
 //    revision, sourceStyle}) precedes the scene pass. size=[renderWidth,height].
 //    No update/draw submission or synchronous readback occurs here.
 // 3. If stats.fallbackRequired, retain the ENTIRE legacy scene for this
 //    revision (not just the missing cells). draw/drawShadow return false.
-//    Limited-capacity generations wait for their small async count result;
+//    All generations record in the same frame; async counts only report errors.
 //    overflow suppresses the whole indirect draw, never a partial append.
 // 4. draw(rp) targets linear premultiplied rgba16float + depth32float.
 //    drawShadow(rp,{matrix}) targets depth32float, matrix=grid->light clip.
@@ -32,20 +32,20 @@ import {
   ParticleMeshParams, ParticleDrawParams, particleCapacity,
   particleMeshWGSL, particleDrawWGSL, particleShadowWGSL,
 } from '../../shaders/hybrid/particles.js';
-export { particleOwns, particleOwnershipWGSL } from '../../shaders/hybrid/particles.js';
+export { PARTICLE_OWNERSHIP, particleOwns, particleOwnershipWGSL } from '../../shaders/hybrid/particles.js';
 
 const STORAGE = 0x80, INDIRECT = 0x100;
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 /** createHybridParticles(gpu,sim,{world=false,capacity=allCells,
- * ownershipReady=false,shader}) -> {ready,isReady,stats,revision,resources,
+ * shader}) -> {ready,isReady,stats,revision,resources,
  * update,draw,drawShadow,invalidate,dispose}. Optics owns ALL liquids,
  * molten matter and glass, including isolated droplets. Organic/granular
  * ownership is the exact 26-neighbour same-channel predicate exported above.
  * Current source state has no subcell position; cell+.5 is its real location.
  */
 export function createHybridParticles(gpu, sim, {
-  world = false, capacity: requested = sim.g.slots, ownershipReady = false, shader = {},
+  world = false, capacity: requested = sim.g.slots, shader = {},
 } = {}) {
   if (shader.wgsl !== undefined && typeof shader.wgsl !== 'string') throw new TypeError('shader.wgsl must be WGSL');
   if (shader.handlesAppearance && !shader.wgsl) throw new TypeError('Appearance support requires a shader adapter');
@@ -53,7 +53,7 @@ export function createHybridParticles(gpu, sim, {
   const g = sim.g, fu = frameUniformsOf(gpu);
   const capacity = particleCapacity(g.slots, Math.min(gpu.device.limits.maxStorageBufferBindingSize,
     gpu.device.limits.maxBufferSize ?? Infinity), requested);
-  const bounded = capacity < g.slots;
+  const derived = sim.derived;
   const label = (s) => `sim${sim.id} hybrid particles ${s}`;
   const meshLayout = gpu.layout('HYBRID_PARTICLE_MESH', PARTICLE_MESH_LAYOUT);
   const drawLayout = gpu.layout('HYBRID_PARTICLE_DRAW', PARTICLE_DRAW_LAYOUT);
@@ -75,14 +75,14 @@ export function createHybridParticles(gpu, sim, {
   const shadowPipe = gpu.renderPipeline({ name: 'hybrid.particles.shadow', code: particleShadowWGSL(),
     layouts: [undefined, drawLayout], params: ParticleDrawParams, fragment: null, depthStencil, primitive });
   const pipes = [mesh, finish, drawPipe, shadowPipe];
-  let disposed = false, key = null, generation = 0, validated = 0, frameState = {};
+  let disposed = false, key = null, generation = 0, frameState = {};
   let viewport = [1, 1];
   const stats = { builds: 0, count: 0, capacity, overflow: false, pending: false,
     fallbackRequired: true, fallbackReason: 'ownership-not-split', readbackError: null };
   function fallback(reason) { stats.fallbackRequired = !!reason; stats.fallbackReason = reason; }
   function blocked(frame) {
     if (gpu.failure || sim.disposed || sim.g !== g) return 'grid-or-device-unavailable';
-    if (!(frame.ownershipReady ?? ownershipReady)) return 'ownership-not-split';
+    if (!derived?.particleSplit || sim.derived !== derived || !!derived.world !== !!world) return 'ownership-not-split';
     if (!shader.handlesAppearance && (frame.sourceStyle || fu.last?.sourceStyle || sim.deco?.active)) return 'source-or-decoration-unsupported';
     return '';
   }
@@ -90,10 +90,11 @@ export function createHybridParticles(gpu, sim, {
     ready: Promise.all(pipes.map((p) => p.ready)).then(() => api),
     get isReady() { return !disposed && !gpu.failure && pipes.every((p) => p.state === 'ready'); },
     get revision() { return `${generation}|${key}|${stats.fallbackReason}`; },
+    capabilities: Object.freeze({ particleSplit: true, channels: [2, 3], liquids: false }),
     stats,
     resources: { instances, args, layout: drawLayout, bind: drawGroup, capacity, stride: PARTICLE_BYTES },
     /** size: positive integer render pixels. sourceStyle must be supplied for
-     * source-art scenes. ownershipReady is an explicit per-frame override. */
+     * source-art scenes. Actual Derived mode (and matching world halo) is required. */
     update(frame = {}) {
       if (!api.isReady) return false;
       frameState = frame;
@@ -106,7 +107,7 @@ export function createHybridParticles(gpu, sim, {
       const o = sim.origin;
       const nextKey = `${sim.version}|${sim.cur}|${o.x},${o.y},${o.z}|${frame.revision ?? ''}`;
       if (key === nextKey && !frame.force) {
-        fallback(stats.readbackError ? 'count-readback-failed' : stats.overflow ? 'capacity-overflow' : bounded && validated !== generation ? 'capacity-validation-pending' : '');
+        fallback(stats.readbackError ? 'count-readback-failed' : stats.overflow ? 'capacity-overflow' : '');
         return false;
       }
       key = nextKey;
@@ -114,7 +115,7 @@ export function createHybridParticles(gpu, sim, {
       stats.pending = true;
       stats.overflow = false;
       stats.readbackError = null;
-      fallback(bounded ? 'capacity-validation-pending' : '');
+      fallback('');
       const bind = [sim.tables, sim.bindRO, meshGroup], header = sim.header();
       const params = { capacity, slot: 0, world: world ? 1 : 0 };
       mesh.dispatch(gpu.frame, fold(g.nbricks), { bind, header, params });
@@ -124,7 +125,6 @@ export function createHybridParticles(gpu, sim, {
       ring.read(slot).then((bytes) => {
         if (disposed || token !== generation) return;
         const [n, overflow] = new Uint32Array(bytes);
-        validated = token;
         stats.count = n;
         stats.pending = false;
         stats.overflow = !!overflow;

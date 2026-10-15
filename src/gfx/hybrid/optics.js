@@ -1,7 +1,7 @@
 import { Matrix4 } from 'three/webgpu';
 import { frameUniformsOf } from '../uniforms.js';
 import {
-  opticsShader, opticsBindings, opticsEntries, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK,
+  opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK,
 } from '../../shaders/hybrid/optics.js';
 export { OPTICS_FALLBACK } from '../../shaders/hybrid/optics.js';
 
@@ -26,6 +26,7 @@ export function rayBoxInterval(origin, direction, size, far = Infinity) {
 /** Schlick plus total internal reflection; reflected + transmitted = 1. */
 export function interfaceEnergy(cosine, fromIOR = 1, toIOR = 1.33) {
   if (!(fromIOR > 0 && toIOR > 0)) throw new RangeError('IOR must be positive');
+  if (fromIOR === toIOR) return { reflected: 0, transmitted: 1 };
   const c = Math.max(0, Math.min(1, cosine));
   const eta = fromIOR / toIOR;
   const f0 = ((fromIOR - toIOR) / (fromIOR + toIOR)) ** 2;
@@ -108,20 +109,25 @@ export function validateOpticsResources({ color, depth }, output) {
  *    fallback is r32uint OPTICS_FALLBACK bits. Nonzero color is deliberately
  *    unchanged snapshot, NOT a correct transparent result: composite a valid
  *    fallback on GPU or keep legacy for unsupported scenes. No readback here.
- * 5. Optional lighting = {wgsl, hooks, bindings, entries(frame), textures(frame)} adds group 2
- *    bindings >= 2. hooks documented in shaders/hybrid/optics.js. Supply shared
- *    material/PBR lighting for hidden crisp hits, reflection/body, and optional
+ * 5. lighting = {wgsl, hooks, bindings, entries(frame), textures(frame)} adds group 2
+ *    bindings >= 2; hooks.worldHit is required. Other hooks are optional.
+ *    Hooks documented in shaders/hybrid/optics.js. Supply shared
+ *    material/PBR lighting for hidden opaque hits, reflection/body, and optional
  *    media segments. No recursive reflections/diffuse walks in callbacks.
  *    textures(frame) must list every extension GPUTexture (not its view) to
  *    check attachment aliasing; extension storage resources must be read-only.
  *    Callback distances/extinction use cells; temperature is Celsius.
  *
- * Unsupported: underwater; adjacent heterogeneous media; hidden meshes; exit
- * while submerged at grid bounds; crystals; hidden smooth/granular backgrounds;
- * source/deco/detail/smooth optical parity. Scene flags force explicit validity
- * bits. Finite bounded traversal is reported, never silently accepted. Optical
- * reflections use the lighting environment callback, not recursive world rays.
- * The normal hook alters shading/refraction, NOT the cell-boundary geometry.
+ * Supported transport: submerged starts, heterogeneous IOR interfaces, exact
+ * cell traversal, grid exits, and bounded environment tails. No primary legacy
+ * renderer callback. Hidden/offscreen opaque hits (including sand) REQUIRE the
+ * dedicated worldHit hook. Optional mediaSegment replaces mean cell gas shading.
+ * options.derived (default sim.derived) supplies fieldSurf/fieldThin textures and
+ * views; fieldBinding reserves two group-2 slots after lighting by default.
+ * Liquid geometry uses a 0.5 density isosurface with exact tetra-linear roots;
+ * ice/glass remain cells. Thin masks blend normals, not density. This is not
+ * legacy tricubic/detail parity. Source/deco and hidden meshes remain flagged.
+ * Reflections and untraced bounded tails use environment (not recursive rays).
  * Recreate on sim grid replacement/device loss. No cached sim fields or idle
  * dispatches; window shifts, edits, undo/load read current sim state/header.
  */
@@ -130,6 +136,9 @@ export function validateOpticsResources({ color, depth }, output) {
  * The pass itself uses textureLoad only; extension resources stay caller-owned.
  */
 export function validateOpticsLimits(limits = {}, bindings = []) {
+  limits = { maxSampledTexturesPerShaderStage: 16, maxStorageBuffersPerShaderStage: 8, ...limits };
+  limits.maxSampledTexturesPerShaderStage = Math.min(16, limits.maxSampledTexturesPerShaderStage);
+  limits.maxStorageBuffersPerShaderStage = Math.min(8, limits.maxStorageBuffersPerShaderStage);
   const counts = { maxSampledTexturesPerShaderStage: 2, maxSamplersPerShaderStage: 0,
     maxStorageBuffersPerShaderStage: 3, maxUniformBuffersPerShaderStage: 3 };
   for (const e of bindings) {
@@ -148,21 +157,27 @@ export function validateOpticsLimits(limits = {}, bindings = []) {
 export function createHybridOptics(gpu, sim, options = {}) {
   const { lighting = {}, maxSteps = 256, maxInterfaces = 8, depthTolerance = 0.15 } = options;
   if (!(depthTolerance >= 0 && Number.isFinite(depthTolerance))) throw new RangeError('depthTolerance must be finite and nonnegative');
-  const extraBindings = lighting.bindings ?? [];
+  // Additions: options.derived (defaults to sim.derived), fieldBinding (defaults
+  // to first free pair after lighting). Views are refreshed for every record.
+  const derived = options.derived ?? sim.derived;
+  const hasFields = !!(derived?.views?.fieldSurf && derived?.views?.fieldThin);
+  const fieldBinding = hasFields ? (options.fieldBinding ?? Math.max(2, ...(lighting.bindings ?? []).map(e => e.binding + 1))) : null;
+  if (typeof lighting.hooks?.worldHit !== 'string') throw new TypeError('optics requires a dedicated lighting.hooks.worldHit WGSL callback');
+  const extraBindings = [...(lighting.bindings ?? []), ...(hasFields ? opticsFieldBindings(fieldBinding) : [])];
   if (extraBindings.some((e) => !Number.isInteger(e.binding) || e.binding < 2) || new Set(extraBindings.map((e) => e.binding)).size !== extraBindings.length) throw new Error('optics lighting bindings must be unique and >= 2');
   validateOpticsLimits(gpu.limits ?? gpu.device?.limits, extraBindings);
-  if (extraBindings.some((e) => e.texture) && typeof lighting.textures !== 'function') throw new TypeError('optics extension textures need lighting.textures(frame) for attachment alias checks');
+  if ((lighting.bindings ?? []).some((e) => e.texture) && typeof lighting.textures !== 'function') throw new TypeError('optics extension textures need lighting.textures(frame) for attachment alias checks');
   const fu = frameUniformsOf(gpu);
   const sceneLayout = gpu.layout('HYBRID_OPTICS_SCENE', [...opticsBindings(), ...extraBindings]);
   const stateLayout = gpu.layout('STATE_RO', OPTICS_STATE_LAYOUT);
   const pipe = gpu.renderPipeline({
-    name: 'hybrid optics', code: opticsShader(sim.g, { maxSteps, maxInterfaces, wgsl: lighting.wgsl, hooks: lighting.hooks }),
+    name: 'hybrid optics', code: opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, wgsl: lighting.wgsl, hooks: lighting.hooks }),
     layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
     fragment: { targets: Object.values(OPTICS_OUTPUT_FORMATS).map((format) => ({ format })) },
   });
   const inverse = new Matrix4();
   let output = null, current = {}, disposed = false;
-  const stats = { draws: 0, allocations: 0, maxSteps, maxInterfaces, cellBoundarySurfaces: true };
+  const stats = { draws: 0, allocations: 0, maxSteps, maxInterfaces, cellBoundarySurfaces: !hasFields };
   const live = () => { if (disposed) throw new Error('hybrid optics is disposed'); };
   const release = () => { if (output) for (const t of Object.values(output)) t.destroy(); output = null; };
   const api = {
@@ -187,7 +202,8 @@ export function createHybridOptics(gpu, sim, options = {}) {
       }
       const limit = gpu.limits?.maxTextureDimension2D ?? gpu.device?.limits?.maxTextureDimension2D ?? 8192;
       if (color.width > limit || color.height > limit) throw new RangeError('optics extent exceeds maxTextureDimension2D');
-      const sampled = [color, depth, ...(lighting.textures?.(frame) ?? [])];
+      if (hasFields && (sim.derived && sim.derived !== derived)) throw new Error('recreate optics after derived grid replacement');
+      const sampled = [color, depth, ...(hasFields ? [derived.fieldSurf, derived.fieldThin] : []), ...(lighting.textures?.(frame) ?? [])];
       if (output && sampled.some((t) => Object.values(output).includes(t))) throw new Error('optics sampled/attachment resources must not alias');
       if (!output || output.color.width !== color.width || output.color.height !== color.height) {
         // Texture destruction is deferred by WebGPU; no submit/flush in hook.
@@ -203,9 +219,10 @@ export function createHybridOptics(gpu, sim, options = {}) {
       let unsupported = 0;
       if (frame.hasMeshes) unsupported |= OPTICS_FALLBACK.MESH;
       if (frame.sourceAppearance || frame.decoration) unsupported |= OPTICS_FALLBACK.APPEARANCE;
-      if (frame.liquidDetail || frame.smoothSurfaces) unsupported |= OPTICS_FALLBACK.SURFACE;
-      if (frame.overlappingMedia && !lighting.hooks?.mediaSegment) unsupported |= OPTICS_FALLBACK.MEDIA;
-      const entries = [...opticsEntries(color, depth), ...(lighting.entries?.(frame) ?? [])];
+      const entries = [...opticsEntries(color, depth), ...(lighting.entries?.(frame) ?? []), ...(hasFields ? [
+        { binding: fieldBinding, resource: derived.views.fieldSurf },
+        { binding: fieldBinding + 1, resource: derived.views.fieldThin },
+      ] : [])];
       const group = gpu.bindGroup(sceneLayout, entries, 'hybrid optics scene');
       const rp = gpu.frame.render({ colorAttachments: Object.values(output).map((t) => ({
         view: t.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0],
@@ -223,4 +240,109 @@ export function createHybridOptics(gpu, sim, options = {}) {
     dispose() { if (disposed) return; disposed = true; release(); current = {}; },
   };
   return api;
+}
+
+/** CPU transport oracle, not a renderer: sample(cell) returns
+ * {id, ior, sigma:[r,g,b], body:[r,g,b], opaque?, state?} or null for air.
+ * worldHit(cell, material) and environment(position,direction) return radiance.
+ * mediaSegment(position,direction,length) is premultiplied RGBA, post-entry only.
+ * Reports bounded termination separately from a geometric escape/hit. */
+export function traceOpticalReference(origin, direction, size, {
+  sample, worldHit = () => [0, 0, 0], environment = () => [1, 1, 1],
+  mediaSegment = () => [0, 0, 0, 0], maxSteps = 256, maxInterfaces = 8,
+} = {}) {
+  const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
+  const norm = a => { const n = Math.hypot(...a); if (!n) throw new RangeError('zero direction'); return a.map(v => v / n); };
+  let rd = norm(direction);
+  const interval = rayBoxInterval(origin, rd, size);
+  const color = [0, 0, 0], throughput = [1, 1, 1], segments = [];
+  if (!interval) return { color: environment(origin, rd), throughput, segments, termination: 'miss', interfaces: 0, thickness: 0 };
+  let p = origin.map((v, i) => v + rd[i] * interval[0]);
+  const inside = c => c.every((v, i) => v >= 0 && v < size[i]);
+  const at = (q, d = [0, 0, 0]) => {
+    const cell = q.map((v, i) => Math.floor(v + d[i] * 1e-4));
+    return { cell, material: inside(cell) ? sample(cell) : null };
+  };
+  let medium = interval[0] === 0 ? at(origin).material : null;
+  if (medium?.opaque) medium = null;
+  let covered = !!medium, interfaces = 0, thickness = 0, termination = 'budget';
+  let normal = [0, 0, 0];
+  const edge = p.map((v, i) => Math.min(Math.abs(v), Math.abs(size[i] - v)));
+  normal[edge.indexOf(Math.min(...edge))] = -Math.sign(rd[edge.indexOf(Math.min(...edge))]);
+  const add = light => color.forEach((_, i) => { color[i] += throughput[i] * light[i]; });
+  let pathSteps = 0;
+  for (let step = 0; step < maxSteps + 8 * size.reduce((a, b) => a + b, 0); step++) {
+    if (covered && pathSteps++ >= maxSteps) break;
+    const { cell, material } = at(p, rd);
+    if (!material?.opaque && (medium?.id ?? 0) !== (material?.id ?? 0)) {
+      covered = true;
+      if (interfaces >= maxInterfaces) break;
+      const from = medium?.ior ?? 1, to = material?.ior ?? 1;
+      const c = Math.max(0, -dot(rd, normal)), eta = from / to;
+      const energy = interfaceEnergy(c, from, to);
+      const reflected = rd.map((v, i) => v + 2 * c * normal[i]);
+      interfaces++;
+      if (energy.reflected === 1) { rd = norm(reflected); continue; }
+      add(environment(p, reflected).map(v => v * energy.reflected));
+      throughput.forEach((_, i) => { throughput[i] *= energy.transmitted; });
+      const k = Math.sqrt(Math.max(0, 1 - eta * eta * (1 - c * c)));
+      rd = norm(rd.map((v, i) => eta * v + (eta * c - k) * normal[i]));
+      medium = material;
+      continue;
+    }
+    if (!inside(cell)) { termination = 'escape'; break; }
+    if (material?.opaque) { add(worldHit(cell, material)); termination = 'opaque'; break; }
+    const exits = rd.map((v, i) => Math.abs(v) < 1e-8 ? Infinity : Math.max(0, (cell[i] + (v > 0 ? 1 : 0) - p[i]) / v));
+    const length = Math.min(...exits), axis = exits.indexOf(length);
+    segments.push({ origin: [...p], direction: [...rd], length, id: medium?.id ?? 0 });
+    if (medium) {
+      const t = opticalTransmission(medium.sigma ?? [0, 0, 0], length);
+      add(t.map((v, i) => (1 - v) * (medium.body?.[i] ?? 0)));
+      throughput.forEach((_, i) => { throughput[i] *= t[i]; }); thickness += length;
+    } else if (covered) {
+      const m = mediaSegment(p, rd, length); add(m);
+      throughput.forEach((_, i) => { throughput[i] *= 1 - Math.min(1, Math.max(0, m[3])); });
+    }
+    p = p.map((v, i) => v + rd[i] * length);
+    normal = [0, 0, 0]; normal[axis] = -Math.sign(rd[axis]);
+  }
+  if (termination !== 'opaque') add(environment(p, rd));
+  return { color, throughput, segments, termination, interfaces, thickness };
+}
+
+/** Same texel-centred Freudenthal-linear density as the optional WGSL field.
+ * fetch(integerCell) must return zero outside the grid. */
+export function opticalFieldDensity(position, fetch) {
+  const q = position.map(v => Math.floor(v - 0.5));
+  const f = position.map((v, i) => v - 0.5 - q[i]);
+  const axes = [0, 1, 2].sort((a, b) => f[b] - f[a]);
+  const a = [...q]; a[axes[0]]++;
+  const b = [...a]; b[axes[1]]++;
+  return fetch(q) * (1 - f[axes[0]]) + fetch(a) * (f[axes[0]] - f[axes[1]])
+    + fetch(b) * (f[axes[1]] - f[axes[2]]) + fetch(q.map(v => v + 1)) * f[axes[2]];
+}
+/** Next cell/tetra boundary or exact iso-root, not fixed-step ray marching. */
+export function opticalFieldSegment(p, rd, cellExit, fetch) {
+  const base = p.map((v, i) => Math.floor(v + rd[i] * 1e-4 - 0.5));
+  let end = cellExit;
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(rd[i]) > 1e-8) {
+      const t = (base[i] + 0.5 + (rd[i] > 0 ? 1 : 0) - p[i]) / rd[i];
+      if (t > 0.00005) end = Math.min(end, t);
+    }
+    for (let j = i + 1; j < 3; j++) {
+      const slope = rd[i] - rd[j];
+      if (Math.abs(slope) > 1e-8) {
+        const t = (base[i] - base[j] - p[i] + p[j]) / slope;
+        if (t > 0.00005) end = Math.min(end, t);
+      }
+    }
+  }
+  const a = opticalFieldDensity(p, fetch) - 0.5;
+  const b = opticalFieldDensity(p.map((v, i) => v + rd[i] * end), fetch) - 0.5;
+  if (Math.abs(b - a) > 1e-8) {
+    const root = -a * end / (b - a);
+    if (root > 0.00005 && root < end) end = root;
+  }
+  return end;
 }
