@@ -74,7 +74,7 @@ assert(!('materialStyle' in view));
 const app = source('src/app.js');
 const linkedViewCode = app.slice(app.indexOf('const viewParam ='), app.indexOf('// ?win='));
 const bootModeCode = app.slice(app.indexOf('let selectedMode ='), app.indexOf('if (!toolById'));
-const bootView = new Function('settings', 'params', 'bootMap', 'launch', 'VIEWS', 'resolveMode', 'modeByKey', 'viewForMode',
+const bootView = new Function('settings', 'params', 'bootMap', 'launch', 'VIEWS', 'resolveMode', 'modeByKey', 'viewForMode', 'gpuSafeMode = () => false',
   `${linkedViewCode}\n${bootModeCode}\nreturn settings.view;`);
 for (const [query, expected] of [
   ['mode=animalCrossing', cozy.id], ['mode=animalCrossing&view=heat', 1],
@@ -85,6 +85,9 @@ for (const [query, expected] of [
 }
 assert.equal(bootView({ view: 5 }, new URLSearchParams(), mapByKey('willowCove'), { mode: 'animalCrossing' },
   VIEWS, resolveMode, modeByKey, viewForMode), cozy.id, 'menu launch also overrides an old saved view');
+assert.equal(bootView({ view: cozy.id }, new URLSearchParams('gpuSafe=1&view=realistic'), mapByKey('willowCove'), { mode: 'animalCrossing' },
+  VIEWS, resolveMode, modeByKey, viewForMode, () => true), VIEWS.find(v => v.key === 'plain').id,
+  'safe boot overrides both the saved view and an explicit expensive view');
 const modeCode = app.slice(app.indexOf('async function startMode('), app.indexOf('// maps.js is plain data'));
 const makeMode = new Function('settings', 'helpers', `
   const { resolveMode, mapOf, viewForMode } = helpers;
