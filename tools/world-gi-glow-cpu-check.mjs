@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { WgslExec, WgslParser, VectorData, ScalarData } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { giSourceFrag, giGatherFrag, giKeyFrag, giSelectFrag, giArgsFrag, giSrcWGSL } from '../src/shaders/gi.js';
 import { blurFrag } from '../src/shaders/passes.js';
-import { WGSL_CHECK as GI_CHECK, worldGISource, worldGIGather } from '../src/shaders/worldGI.js';
+import { WGSL_CHECK as GI_CHECK, worldGISource, worldGIGather, worldGIBirthWGSL } from '../src/shaders/worldGI.js';
 import { WGSL_CHECK as GLOW_CHECK, worldGlow } from '../src/shaders/worldGlow.js';
 import { createWorldGI } from '../src/gfx/worldGI.js';
 import { createWorldGlow, worldGlowPlan } from '../src/gfx/worldGlow.js';
@@ -83,7 +83,7 @@ test('actual eight world GI/two glow/three exact transport modules validate Naga
   for (const kind of ['source', 'gi', 'glow']) { const c = worldLightingTransportSpec(kind); assert.deepEqual(checkPipeline({ code: c.code, groups: c.groups, kind: 'compute' }).problems, []); naga(c.code, `transport.${kind}`); count++; }
   console.log(`Naga: ${count} actual GI/glow/transport modules passed; 16 sampled / <=8 storage / <=4 images`);
   const source = worldGISource({ nx: 3072, ny: 384, nz: 1024 });
-  assert.ok(source.indexOf('head[6] == 0u') < source.indexOf('let pr = Probe(worldProbeLoad'), 'liquid/media early exit before previous GI');
+  assert.ok(source.indexOf('head[6] == 0u') < source.indexOf('let pr = worldGIPreviousProbe'), 'liquid/media early exit before previous GI');
   assert.match(worldGIGather({ nx: 3072, ny: 384, nz: 1024 }), /worldGISourceStaged\(b\)/);
 });
 test('executed production source packing preserves canonical air, half saturation, directions and mixed transport', () => {
@@ -155,6 +155,31 @@ test('executed original f32 blend writes exactly the packed halves used for four
     for (let k = 0; k < 4; k++) assert.deepEqual([...history.subarray(k * 2, k * 2 + 2)], [pair(result[k * 4], result[k * 4 + 1]), pair(result[k * 4 + 2], result[k * 4 + 3])]);
   }
   assert.ok(result[0] > 1.89 && result[0] < 1.9);
+});
+
+test('executed production birth leaf uses original zero previous only for declared jobs and blend1 without resetting known bands',()=>{
+  const source=worldGISource({nx:64,ny:128,nz:64});
+  const previous=fnBody(source,'worldGIPreviousProbe');
+  const code=`${worldGIBirthWGSL}
+struct Probe { a:vec4f,b:vec4f,c:vec4f,d:vec4f }
+const WORLD_GI:u32=16u;const tGI0:u32=0u;const tGI1:u32=1u;const tGI2:u32=2u;const tGI3:u32=3u;
+var<private> loads:u32;var<private> missing:bool;
+fn worldProbeLoad(band:u32,bc:vec3i,kind:u32)->vec4f { loads++;if(bc.x==2){missing=true;return vec4f(0.0);}return vec4f(8.0); }
+@group(0)@binding(0)var<storage,read>worldGIJobs:array<vec4u>;
+@group(0)@binding(1)var<storage,read_write>out:array<vec4f>;
+${previous}
+@compute@workgroup_size(1)fn main(@builtin(global_invocation_id) p:vec3u){loads=0u;missing=false;let pr=worldGIPreviousProbe(p.x,vec3i(i32(p.x),0,0));out[p.x]=vec4f(pr.a.x,f32(loads),worldGIJobBlend(0.4,worldGIJobs[p.x].y),select(0.0,16.0,missing));}`;
+  naga(code,'birth.previous');const out=new Float32Array(12);
+  new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main',3,{0:{0:new Uint32Array([0,0,0,0,1,2,0,0,2,0,0,0]),1:out}});
+  assert.deepEqual([...out],[8,4,f(.4),0,0,0,1,0,0,4,f(.4),16]);
+  const production=worldGIGather({nx:64,ny:128,nz:64}),blend=fnBody(production,'giBlend');
+  const blending=`${giSrcWGSL}\n${worldGIBirthWGSL}\nstruct Params{counts:vec4u}const WGI=Params(vec4u(0u,2u,0u,0u));
+@group(0)@binding(0)var<storage,read_write>worldGIHistory:array<vec2u>;@group(0)@binding(1)var<storage,read_write>out:array<vec4f>;
+${blend}
+@compute@workgroup_size(1)fn main(@builtin(global_invocation_id)p:vec3u){out[p.x]=giBlend(0u,p.x,vec4f(1.0),worldGIJobBlend(0.4,select(0u,2u,p.x==1u)));}`;
+  naga(blending,'birth.blend');const history=new Uint32Array(16).fill(pair(8,8)),result=new Float32Array(8);
+  new ShaderExec(new WgslParser().parse(blending)).dispatchWorkgroups('main',2,{0:{0:history,1:result}});
+  assert.deepEqual([...result.slice(4)],[1,1,1,1]);assert.ok(result[0]>5.19&&result[0]<5.21);
 });
 
 const weights = [.10, .22, .36, .22, .10].map(f);
@@ -327,9 +352,9 @@ test('original world-fixed checkerboard/background/source phases and lamp/change
 });
 test('world histories retain packed native backing across ticks/transfers and reject missing/reset-on-arrival/duplicate commit', async () => {
   const h = createWorldLightingHistory({ worldSize: [64, 128, 64], epoch: 1 }), records = [{ brick: [1, 1, 1], matter: true, near: true, age: 0 }];
-  let refs = 0; const bits = { history: { label: 'known packed bands' } }, owned = { token: { epoch: 1, lightingTick: 0 }, sources: [529], probes: [529], retain() { refs++; return { release() { refs--; }, bindings() { return bits; }, retain: owned.retain }; } };
-  const p = h.begin({ lightingTick: 0, globalKey: [1], records, mode: 2 }); p.commit(owned); assert.equal(h.lightingTick, 0); assert.equal(refs, 1); assert.throws(() => p.commit(owned), /duplicate/);
-  const snapshot = h.capture({ lightingTick: 0, indices: [529] }); assert.equal(refs, 2); assert.throws(() => h.capture({ lightingTick: 0, indices: [530] }), /unknown world GI history/);
+  let refs = 0; const bits = { history: { label: 'known packed bands' } }, owned = { token: { epoch: 1, lightingTick: 0 }, sources: [529], probes: [529], retain() { refs++; return { ...owned, release() { refs--; }, bindings() { return bits; } }; } };
+  const p = h.begin({ lightingTick: 0, globalKey: [1], records, mode: 2 }); p.commit(owned); assert.equal(h.lightingTick, 0); assert.equal(refs, 2); assert.throws(() => p.commit(owned), /duplicate/);
+  const snapshot = h.capture({ lightingTick: 0, indices: [529] }); assert.equal(refs, 3); assert.throws(() => h.capture({ lightingTick: 0, indices: [530] }), /unknown world GI history/);
   const copies = []; snapshot.recordHistory({ direct() { return { copyBufferToBuffer(...a) { copies.push(a); } }; } }, { indices: [529], destination: {}, format: 'band-major-4x-vec2u' }); assert.equal(copies.length, 4); assert.deepEqual(copies.map(c => c[1]), [0, 8, 16, 24]);
   assert.throws(() => h.begin({ lightingTick: 1, globalKey: [1], records, mode: 2 }), /never on arrival/);
   const q = h.begin({ lightingTick: 1, globalKey: [1], records }); q.abort(); assert.equal(h.lightingTick, 0); h.dispose(); assert.equal(refs, 1); snapshot.release(); assert.equal(refs, 0);

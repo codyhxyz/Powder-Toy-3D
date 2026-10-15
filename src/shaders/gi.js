@@ -298,7 +298,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 
   // pass 2: light leaving the exposed faces (neighbours inside the brick come
   // from the mask). Last frame's light here: sky and bounce on the faces.
-  let pr = Probe(${backend === 'world' ? 'worldProbeLoad(tGI0, bc, WORLD_GI), worldProbeLoad(tGI1, bc, WORLD_GI), worldProbeLoad(tGI2, bc, WORLD_GI), worldProbeLoad(tGI3, bc, WORLD_GI)' : 'textureLoad(tGI0, bc, 0), textureLoad(tGI1, bc, 0), textureLoad(tGI2, bc, 0), textureLoad(tGI3, bc, 0)'});
+  ${backend === 'world' ? 'let pr = worldGIPreviousProbe(job, bc);' : 'let pr = Probe(textureLoad(tGI0, bc, 0), textureLoad(tGI1, bc, 0), textureLoad(tGI2, bc, 0), textureLoad(tGI3, bc, 0));'}
   var rad = vec3f(0.0);
   var dir = vec3f(0.0);
   var nf = 0.0;
@@ -446,6 +446,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let entry = worldGIJobs[WGI.counts.x + probe];
     bc = brickCoord(entry.x);
     if ((entry.y & 1u) != 0u) { blend = P.blendBg; }
+    blend = worldGIJobBlend(blend, entry.y);
     if (entry.x >= NBRICKS || WGI.config.x != WA.world.w) { worldIncomplete = true; }
   }` : `if (P.list != 0u) {
     live = probe < gsWord(GS_PRB_LAST);

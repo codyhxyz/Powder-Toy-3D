@@ -2,6 +2,7 @@
 // this is not the application's scheduler, cold-history replay, or frame gate.
 import { GiParams, giBgBlend } from '../shaders/gi.js';
 import { worldGISource, worldGIGather, worldGILayouts } from '../shaders/worldGI.js';
+import { validateWorldGIInitialization } from '../world/worldLightingHistory.js';
 import { BU, TU, uint, frozenArray, worldLightingIndex, validateLightingInput, sameLightingProvenance, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
 
 export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider, feedbackProvider } = {}) {
@@ -37,7 +38,7 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
     };
     return Object.freeze(h);
   }
-  async function prepare({ lightingTick, sourceBricks = [], gatherBricks = [], reset = false, shadows = true, configVersion } = {}) {
+  async function prepare({ lightingTick, sourceBricks = [], gatherBricks = [], reset = false, shadows = true, configVersion, initialization = null } = {}) {
     alive();
     if (!uint(lightingTick) || configVersion == null || reset !== (lightingTick === 0)) throw new TypeError('world logical lighting tick/config/reset');
     const canonical = (entries, gather) => {
@@ -53,14 +54,21 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
     const destroy = () => owned.splice(0).forEach(r => r.destroy());
     const release = () => { input?.release(); input = null; };
     try {
-      input = await snapshotProvider.acquire({ lightingTick, reset, sourceIndices: frozenArray(sources.map(j => j.index)), probeIndices: frozenArray(probes.map(j => j.index)) });
+      input = await snapshotProvider.acquire({ lightingTick, reset, sourceIndices: frozenArray(sources.map(j => j.index)), probeIndices: frozenArray(probes.map(j => j.index)), initialization });
       validateLightingInput(input, size);
+      const validateInitialization = () => {
+        if (!initialization) { if (input.initialization) throw new Error('explicit initialization manifest required'); return; }
+        if (input.initialization !== initialization || input.previous?.initialization !== initialization) throw new Error('pinned initialization/previous manifest mismatch');
+        validateWorldGIInitialization(initialization, { epoch: input.epoch, lightingTick, sourceIndices: sources.map(j=>j.index), probeIndices: probes.map(j=>j.index), previousToken: input.previous?.token, cutToken: input.source.contentToken, sourcePhaseToken: input.sourcePhaseToken });
+      };
+      validateInitialization();
       if (input.previous?.complete !== true || input.previous.token == null || input.previous.lightingTick !== lightingTick - 1 || typeof input.previous.recordHistory !== 'function' || input.previous.recordHistory.constructor.name === 'AsyncFunction' ||
         reset && input.previous.resetSeed !== true) throw new Error('exact pinned previous history or explicit original reset seed required');
-      const pipes = await ready; alive();
+      const pipes = await ready; alive(); validateInitialization();
       if (id !== serial || !snapshotProvider.isCurrent(input)) { release(); return Object.freeze({ status: 'stale', retry: true }); }
+      const births = new Set(initialization?.indices ?? []);
       const key = JSON.stringify([lightingTick, reset, shadows, sources, probes]);
-      if (active?.token.lightingTick === lightingTick && active.key === key && sameLightingProvenance(active.token,input) && active.token.configVersion === configVersion && active.token.previousToken === input.previous.token) {
+      if (active?.token.initialization === initialization && active?.token.lightingTick === lightingTick && active.key === key && sameLightingProvenance(active.token,input) && active.token.configVersion === configVersion && active.token.previousToken === input.previous.token) {
         release(); return Object.freeze({ status: 'cached', snapshot: handle(active) });
       }
       // A different uncommitted slab/retry may use the SAME logical tick, but
@@ -72,7 +80,7 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       const buffer = (label, bytes, usage, data) => { const b = resources.buffer(label, bytes, usage, data); owned.push(b); return b; };
       const requests = buffer('world GI typed feedback', fb.wordCount * 4, BU.STORAGE | BU.COPY_SRC | BU.COPY_DST);
       const words = new Uint32Array(Math.max(4, count * 4));
-      [...sources, ...probes].forEach((j, i) => words.set([j.index, j.background ? 1 : 0, 0, 0], i * 4));
+      [...sources, ...probes].forEach((j, i) => words.set([j.index, (j.background ? 1 : 0) | (births.has(j.index) ? 2 : 0), 0, 0], i * 4));
       const jobs = buffer('world GI global jobs', words.byteLength, BU.STORAGE, words);
       const source = buffer('private world GI sources', sources.length * 16, BU.STORAGE | BU.COPY_SRC);
       const history = buffer('COW world GI packed history', probes.length * 32, BU.STORAGE | BU.COPY_SRC | BU.COPY_DST);
@@ -97,6 +105,7 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       const candidate = { get status() { return status; }, get completion() { return completion; },
         record(frame = gpu.frame) {
           alive(); if (recorded || finished) throw new Error('world GI candidate already consumed');
+          try { validateInitialization(); } catch (error) { candidate.cancel(); throw error; }
           if (id !== serial || !snapshotProvider.isCurrent(input)) { candidate.cancel(); status = 'stale'; completion = Promise.resolve(Object.freeze({ status, retry: true })); return completion; }
           const dispatch = (phase, group, n) => { if (!n) return; frame._command(); const pass = frame.compute(`world GI ${phase}`, { dispatch: true }); pass.setPipeline(pipes[phase === 'source' ? 0 : 1]); [...first, group].forEach((b, i) => pass.setBindGroup(i, b)); pass.dispatchWorkgroups(Math.min(n, 65535), Math.ceil(n / 65535), 1); frame._commandDone(`world GI ${phase}`); };
           try {
@@ -112,7 +121,8 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
                 const decoded = fb.decode(words), failures = Array.from({ length: count }, (_, i) => i).filter(i => words[fb.jobStatusWordOffset + i] !== 1);
                 if (decoded.incomplete || failures.length) { status = 'incomplete'; return Object.freeze({ status, feedback: decoded, failedJobs: frozenArray(failures), retry: true }); }
                 if (dead || id !== serial || !snapshotProvider.isCurrent(input)) { status = 'stale'; return Object.freeze({ status, retry: true }); }
-                const token = Object.freeze({ epoch: input.epoch, sourceRevision: input.source.sourceRevision, sourceContentToken: input.source.contentToken, fieldPublishedToken: input.field.publishedToken, logicalFieldTick: input.field.logicalFieldTick, previousToken: input.previous.token, lightingTick, configVersion, dependencySetID: input.dependencySetID, dependencyVersion: input.dependencyVersion });
+                validateInitialization();
+                const token = Object.freeze({ initialization, epoch: input.epoch, sourceRevision: input.source.sourceRevision, sourceContentToken: input.source.contentToken, fieldPublishedToken: input.field.publishedToken, logicalFieldTick: input.field.logicalFieldTick, previousToken: input.previous.token, lightingTick, configVersion, dependencySetID: input.dependencySetID, dependencyVersion: input.dependencyVersion });
                 const retainedResources = [source, history, ...textures]; for (const r of retainedResources) owned.splice(owned.indexOf(r), 1);
                 const next = { refs: 1, owned: retainedResources, source, history, textures, views, sources: frozenArray(sources.map(j => j.index)), probes: frozenArray(probes.map(j => j.index)), token, key };
                 const old = active; active = next; drop(old); status = 'published'; return Object.freeze({ status, token });

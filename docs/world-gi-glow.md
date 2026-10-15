@@ -1,5 +1,10 @@
 # World GI/glow producers (disabled phase 4b)
 
+[Explicit persistent birth cohorts](world-gi-history-policy.md) supersede the
+internal never-owned tick0-reference replay requirement in plan `7daa5101`.
+Existing owners never reset on arrival. First-use lighting transients remain
+possible. This policy is not exact replay or a renderer-completion claim.
+
 These producers are **not enabled in the application**. They do not complete the
 unified renderer, implement SourceCuts, or replace complete-frame admission.
 Physics/source/fields/Atlas/application ownership stays with their existing
@@ -40,7 +45,7 @@ five storage buffers, four groups, separate cell/LIGHT/Sun books. Group3 adds:
 
 Thus source uses seven storage buffers; gather uses eight and four storage
 images. Outputs never alias sampled previous bands. Job words are global brick
-index, background flag bit0, zero, zero. WorldGIParams contains source count,
+index, background flag bit0 and authenticated birth flag bit1, zero, zero. WorldGIParams contains source count,
 probe count, absolute first status word, logical tick, epoch and three zeros.
 The fixed output row width is256; probe slot `i` is `(i%256,floor(i/256),0)`.
 Source records are16 bytes; history is `8*(band*probeCount+slot)` bytes. Each
@@ -63,7 +68,7 @@ status storage3, final storage image4 only.
 
 `createWorldGI(gpu,{g,snapshotProvider,readerBindingProvider,feedbackProvider})`
 uses the existing `gpu.frame`. `prepare({lightingTick,sourceBricks,gatherBricks,
-reset,shadows,configVersion})` accepts global4-brick triples; gather entries may
+reset,shadows,configVersion,initialization})` accepts global4-brick triples; gather entries may
 be `{brick,background:true}`. Each phase is copied, sorted and deduplicated.
 
 `await snapshotProvider.acquire({lightingTick,reset,sourceIndices,probeIndices})`
@@ -80,9 +85,10 @@ EXACT four packed previous bands into the new private destination. No readback,
 unsubmitted scratch alias, async recorder, or old-history overwrite is allowed.
 Reset is explicit scene tick0 only: previous tick-1 has `resetSeed:true` and the
 original zero histories/previous GI textures. The provider must separately bind
-that complete previous probe snapshot for source reads. Cold unknown history
-must be retained/replayed or explicitly initialized at the original reset; the
-producer never silently restarts an existing probe on arrival.
+that complete previous probe snapshot for source reads. Never-owned history can
+also use an authentic ledger birth manifest. This explicit initial condition
+requires first full gathers and complete dependency closure before adoption.
+The producer never silently restarts an existing probe on arrival.
 
 `readerBindingProvider(cut)` returns exact native entry arrays G0..G3 for that
 cut's full world reader, no pick output. Its bound A/B/fields/aux/books, previous
@@ -169,7 +175,11 @@ adopts one completed output or compatible disjoint bounded slabs covering the
 ENTIRE selection exactly once, only after caller's coherent publication.
 `abort()` advances nothing. Capture pins and native-copies exact prior bands.
 Known histories remain owned across page/physics transfers; missing history
-throws. It does not manufacture cold replay or an arrival-based reset seed.
+throws. Explicit birth transactions provide declared first initialization,
+not cold replay or an arrival-based reset of existing owners. The ledger retains
+the previous generation and exact source records for same-clock augmentation.
+The [birth API and admission procedure](world-gi-history-policy.md) specify the
+source-phase barrier, authentic manifests, closure expansion and atomic adoption.
 
 ## Checked gate and remaining scope
 
@@ -183,7 +193,7 @@ generic integer vectors, scalar workgroup-size AST, fresh-dispatch bindings and
 IEEE half builtin. Those are CPU harness limitations, not GPU parity evidence.
 
 Still caller-owned: real immutable SourceCut/Field/Atlas callbacks, private
-cross-slab source publication, exact late cold-history replay, bounded source/
-history eviction policy, coherent all-channel admission, figures/hands/readAt,
+cross-slab native source publication, bounded source/history storage policy,
+coherent all-channel admission, figures/hands/readAt,
 application switching/proxy removal, GPU numerical/origin-shift/visual and
 performance acceptance. Do not deploy this disabled checkpoint as completion.

@@ -17,16 +17,30 @@ export function worldGILayouts({ gather = false, limits } = {}) {
   return assertWorldLayout(groups, limits);
 }
 
+export const worldGIBirthWGSL = /* wgsl */ `
+const WORLD_GI_BIRTH: u32 = 2u;
+fn worldGIJobBlend(ordinary: f32, flags: u32) -> f32 {
+  return select(ordinary, 1.0, (flags & WORLD_GI_BIRTH) != 0u);
+}
+`;
 function declarations(gather) { return /* wgsl */ `
 ${shadowOpticsWGSL({ backend: 'world' })}
 ${GiParams.wgsl}
 @group(3) @binding(6) var<uniform> P: GiParams;
 struct WorldGIParams { counts: vec4u, config: vec4u }
 // counts: source count, gather count, absolute first job-status word, logical tick.
-// config: scene epoch, reserved. Jobs are source-first, each phase sorted by GLOBAL index.
+// config: scene epoch, reserved. Job flags: bit0 background, bit1 ledger-authenticated birth.
+// Jobs are source-first, each phase sorted by GLOBAL index.
 @group(3) @binding(7) var<uniform> WGI: WorldGIParams;
 @group(3) @binding(8) var<storage, read> worldGIJobs: array<vec4u>;
 @group(3) @binding(9) var<storage, read_write> worldGISources: array<vec4u>;
+${worldGIBirthWGSL}
+fn worldGIPreviousProbe(job: u32, bc: vec3i) -> Probe {
+  if ((worldGIJobs[job].y & WORLD_GI_BIRTH) != 0u) {
+    return Probe(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
+  }
+  return Probe(worldProbeLoad(tGI0, bc, WORLD_GI), worldProbeLoad(tGI1, bc, WORLD_GI), worldProbeLoad(tGI2, bc, WORLD_GI), worldProbeLoad(tGI3, bc, WORLD_GI));
+}
 fn worldGIReport(job: u32) {
   atomicOr(&worldRequests[WGI.counts.z + job], select(1u, 3u, worldQueryIncomplete()));
 }
