@@ -3,7 +3,7 @@ import { createConstruction } from '../../src/industry/construction.js';
 import { createFactoryControlParts } from '../../src/industry/controlParts.js';
 import { createGatePhysics, GATE_STATUS, gateGeometry } from '../../src/industry/gates.js';
 import { createIndustryPhysics, machinePorts } from '../../src/industry/physics.js';
-import { baseMaterial, deviceCell } from '../../src/industry/catalog.js';
+import { deviceCell } from '../../src/industry/catalog.js';
 import { validateDevices } from '../../src/industry/validation.js';
 import { hearthRegions, hearthStructureCells } from '../../src/industry/hearth.js';
 import { createTransfer, Load } from '../../src/pov/tools/transfer.js';
@@ -21,6 +21,7 @@ export function purelineDeviceLayout() {
     { id: 'line-pump', type: 'pump', x: 52, y: 12, z: 52, rotation: 1, powered: true },
     { id: 'line-coolant-gate', type: 'gate', x: 56, y: 12, z: 52, rotation: 1,
       gateMode: 'closed', gateClosed: false },
+    { id: 'line-miner', type: 'miner', x: 96, y: 29, z: 92, rotation: 0 },
   ];
   const column = (prefix, x, z, firstY, lastY) => {
     for (let y = firstY; y <= lastY; y++) devices.push(FOUNDATION(`${prefix}-${y}`, x, y, z));
@@ -53,6 +54,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
   const hearth = byId.get('line-hearth');
   const ship = byId.get('line-ship');
   const pump = byId.get('line-pump');
+  const miner = byId.get('line-miner');
   const initialGate = byId.get('line-coolant-gate');
   const constructionDevices = devices;
   const hotRegions = hearthRegions(hearth);
@@ -65,8 +67,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
   const scrapSource = [];
   for (let z = 100; z <= 101; z++) for (let x = 96; x <= 97; x++) scrapSource.push([x, 30, z]);
   const switchAt = deviceCell(pump, -1, 0, 1);
-  const shippingTargets = [];
-  for (let y = 17; y <= 18; y++) for (let z = 52; z <= 55; z++) for (let x = 44; x <= 47; x++) shippingTargets.push([x, y, z]);
+  const catchCells = machinePorts(ship).mouth;
   const ashRegion = [];
   for (let z = 17; z <= 19; z++) for (let y = 13; y <= 15; y++) for (let x = 17; x <= 19; x++) ashRegion.push([x, y, z]);
 
@@ -81,8 +82,11 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     bucketCarriedActualLava: false,
     bucketPouredActualLavaIntoCatch: false,
     realWaterPumpConfirmed: false,
+    waterReachedShippingCatch: false,
+    waterInteractedWithMelt: false,
     coldMetalConfirmedShipped: false,
     ashRemovedWithoutWallLoss: false,
+    nativeTickAccounting: false,
   };
   const observations = {
     bounds: [sim?.g?.nx, sim?.g?.ny, sim?.g?.nz],
@@ -162,13 +166,17 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     if (status?.status !== expected) throw new Error(`${label}: gate reported ${status?.status ?? 'no state'}, expected ${expected}`);
     return status;
   };
-  const nativeStep = async (ticks = 4, { includePump = pumpActive } = {}) => {
+  const nativeFrameStart = sim.frame;
+  const nativeStep = async (ticks = 4) => {
     ensureTime('native simulation step');
     if (observations.nativeTicks + ticks > MAX_NATIVE_TICKS) throw new Error('native tick budget reached');
-    sim.step(ticks);
+    const before = sim.frame;
+    for (let i = 0; i < ticks; i++) sim.step(); // Simulation.step takes no batch argument.
+    if (sim.frame - before !== ticks) throw new Error('native simulation did not advance the requested tick count');
     observations.nativeTicks += ticks;
-    const active = [hearth, ...(includePump ? [pump] : []), ship];
-    industry.step(ticks / 240, active);
+    // Registered machines stay present when OFF. The real SWITCH, not fixture
+    // omission, must stop the pump. Empty hearth frames still advance its clock.
+    industry.step(ticks / 240, [hearth, pump, ship, miner]);
     if (currentGate) gates.step(ticks / 240, [currentGate]);
   };
   const scanHearth = async () => {
@@ -180,6 +188,10 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     const lava = records.filter(c => c.id === E.LAVA && c.ctype === E.METAL);
     const scrap = records.filter(c => c.id === E.SCRAP);
     const remainingFuel = records.filter(c => [E.COAL, E.BROKENCOAL].includes(c.id));
+    observations.fuel.sampledRemainingLife = remainingFuel.reduce((sum, cell) => sum + Math.max(0, cell.life), 0);
+    observations.fuel.sampledLiveFuelCells = remainingFuel.filter(cell => cell.life > 0).length;
+    if (remainingFuel.some(cell => cell.life < 1 - 1e-7) || records.some(cell => cell.id === E.ASH))
+      checks.realFuelSpent = true;
     observations.heat.peakC = Math.max(observations.heat.peakC ?? 20, ...records.map(c => c.temperature));
     observations.heat.lavaMetalCells = lava.length;
     observations.heat.scrapCells = scrap.length;
@@ -280,9 +292,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     await fence('cold water seed fence');
     for (let i = 0; i < 3; i++) {
       ensureTime('gate hold native steps');
-      sim.step(4);
-      observations.nativeTicks += 4;
-      gates.step(NATIVE_DT, [currentGate]);
+      await nativeStep(4);
       if (gates.pending) await waitGate(GATE_STATUS.CLOSED, 'gate holds cold source');
     }
     const [heldSource, heldInlet] = await Promise.all([readCells(waterSource), readCells(inletCells)]);
@@ -298,21 +308,30 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     const coalLife = ELEMENTS[E.COAL].life ?? 0;
     const scrapLife = ELEMENTS[E.SCRAP].life ?? 0;
     edit([96, 30, 96], [98, 30, 97], E.COAL, 20, coalLife, 0.375);
-    edit([96, 30, 100], [97, 30, 101], E.SCRAP, 20, scrapLife, 0.625);
     await fence('finite cold material source fence');
 
-    // The pickaxe's exact transfer operation: solid source → its configured debris,
-    // retaining the real cell payload instead of minting six BROKENCOAL cells.
+    // Exercise the real miner's COAL→BROKENCOAL output, including remaining life.
+    // Collect each exposed row before its next native movement, like a continuously
+    // held shovel. This is backend evidence, not a claim about player aiming.
     const minedCoal = new Load(6);
-    const coalTaken = await transferTake(minedCoal, { cells: coalSource, kinds: [K.SOLID], want: E.BROKENCOAL,
-      breakDebris: true, maxHard: ELEMENTS[E.COAL].hard ?? 1e30, limit: 6 }, 'physical coal pickaxe transfer');
+    const coalTaken = [];
+    for (let batch = 0; batch < 120 && minedCoal.count < 6; batch++) {
+      await nativeStep(4);
+      await fence('native miner output');
+      const source = await readCells(coalSource);
+      if (source.some(cell => cell.id === E.BROKENCOAL)) coalTaken.push(...await transferTake(minedCoal,
+        { cells: coalSource, kinds: [K.POWDER], want: E.BROKENCOAL, limit: 6 - minedCoal.count }, 'collect actual miner output'));
+    }
     const minedSnapshot = minedCoal.cells.map(c => [...c]);
     observations.fuel.minedCount = coalTaken.length;
     observations.fuel.minedPayload = minedSnapshot.map(c => ({ id: c[0], temperature: c[1], life: c[2], ctype: Math.floor(c[3]), seed: c[3] - Math.floor(c[3]) }));
     if (coalTaken.length !== 6 || minedSnapshot.some(c => c[0] !== E.BROKENCOAL || c[1] !== 20 || c[2] !== coalLife)) {
-      throw new Error(`physical pickaxe transfer did not preserve six cold COAL→BROKENCOAL cells (got ${coalTaken.length})`);
+      throw new Error(`native miner did not preserve six cold COAL→BROKENCOAL cells (got ${coalTaken.length})`);
     }
+    observations.fuel.miningMethod = 'native Industry miner, then existing shovel transfer';
     const fuelPut = await transferPut(minedCoal, hotRegions.fuel, 6, 'real broken-coal loading');
+    edit([96, 30, 100], [97, 30, 101], E.SCRAP, 20, scrapLife, 0.625);
+    await fence('finite cold scrap source');
     const scrapLoad = new Load(4);
     const scrapTaken = await transferTake(scrapLoad, { cells: scrapSource, kinds: [K.POWDER, K.SOLID], want: E.SCRAP,
       ids: [E.SCRAP], limit: 4 }, 'physical scrap transfer');
@@ -348,12 +367,13 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     let bucketLoad = null;
     let bucketPoured = 0;
     let pumpStopped = false;
-    let coldMetalSample = null;
     let exhausted = false;
+    let waterPeakBeforePour = null;
+    let pumpOutputAtOff = null;
     const pumpOutputTarget = 12;
-    const pollEveryTicks = 48;
+    const pollEveryTicks = 24;
     while (Date.now() < until && observations.nativeTicks < MAX_NATIVE_TICKS) {
-      await nativeStep(4, { includePump: pumpActive });
+      await nativeStep(4);
       if (observations.nativeTicks % 32 === 0 || industry.pending) await fence('native batch/readback fence');
       if (observations.nativeTicks - lastSampleTick >= pollEveryTicks) {
         const sampled = await scanHearth();
@@ -361,23 +381,35 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
         const hasMetalLava = sampled.some(c => c.id === E.LAVA && c.ctype === E.METAL);
         if (hasMetalLava) checks.nativeMetalMelt = true;
         const fuelLife = sampled.filter(c => [E.COAL, E.BROKENCOAL].includes(c.id)).reduce((sum, c) => sum + Math.max(0, c.life), 0);
-        observations.fuel.remainingLife = fuelLife;
-        if (fuelLife <= 0 && observations.fuel.loadedBrokenCoal === 6) exhausted = true;
-        if (hasMetalLava && !bucketLoad) {
+        if (fuelLife <= 0 && sampled.some(c => c.id === E.ASH)) exhausted = true;
+        if (hasMetalLava && bucketPoured + (bucketLoad?.count ?? 0) < 4) {
           markStage('bucket actual native METAL-ctype LAVA');
-          bucketLoad = new Load(4);
+          bucketLoad ??= new Load(4);
           const lavaCells = [...hotRegions.fuel, ...hotRegions.charge, ...hotRegions.outlet, ...hotRegions.mouth];
           const taken = await transferTake(bucketLoad, { cells: lavaCells, kinds: [K.LIQUID], want: E.LAVA,
-            ids: [E.LAVA], limit: 4 }, 'actual molten-metal bucket take');
-          const payload = bucketLoad.cells.map(c => ({ id: c[0], temperature: c[1], life: c[2], ctype: Math.floor(c[3]), seed: c[3] - Math.floor(c[3]) }));
-          observations.cargo.bucketCells = payload;
-          if (taken > 0 && payload.every(c => c.id === E.LAVA && c.ctype === E.METAL)) {
+            ids: [E.LAVA], limit: 4 - bucketPoured - bucketLoad.count }, 'actual molten-metal bucket take');
+          const payload = taken.map(c => ({ id: c[0], temperature: c[1], life: c[2], ctype: Math.floor(c[3]), seed: c[3] - Math.floor(c[3]) }));
+          observations.cargo.bucketCells.push(...payload);
+          if (taken.length > 0 && payload.every(c => c.id === E.LAVA && c.ctype === E.METAL)) {
             checks.bucketCarriedActualLava = true;
-            const placed = await transferPut(bucketLoad, shippingTargets, 4, 'actual bucket pour into shipping catch');
-            bucketPoured += placed;
-            checks.bucketPouredActualLavaIntoCatch = placed > 0;
-            observations.cargo.bucketPoured = bucketPoured;
           } else residualGaps.push('molten-metal bucket transfer did not confirm native LAVA(METAL) cargo');
+        }
+        if (bucketLoad?.count) {
+          const pool = await readCells(catchCells);
+          const poolByCell = new Map(catchCells.map((at, i) => [at.join(','), pool[i]]));
+          const water = pool.filter(cell => cell.id === E.WATER);
+          checks.waterReachedShippingCatch ||= water.length > 0;
+          const pourCells = catchCells.flatMap((at, i) => {
+            const above = [at[0], at[1] + 1, at[2]];
+            return pool[i].id === E.WATER && poolByCell.get(above.join(','))?.id === E.EMPTY ? [above] : [];
+          });
+          if (pourCells.length) {
+            waterPeakBeforePour ??= Math.max(...water.map(cell => cell.temperature));
+            const placed = await transferPut(bucketLoad, pourCells, 4, 'actual bucket pour above observed coolant');
+            bucketPoured += placed;
+            checks.bucketPouredActualLavaIntoCatch ||= placed > 0;
+            observations.cargo.bucketPoured = bucketPoured;
+          }
         }
       }
       if (!pumpStopped && observations.water.confirmedOutput >= pumpOutputTarget && industry.pending === 0 && industry.buffered === 0) {
@@ -385,16 +417,17 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
         pumpActive = false;
         pumpStopped = true;
         observations.gate.pumpSwitchOffAfterConfirmedCells = observations.water.confirmedOutput;
+        pumpOutputAtOff = observations.water.confirmedOutput;
         checks.nativePumpSwitchOffOnOffSequence = observations.gate.pumpSwitchInitial === 'OFF'
           && switchState === false && observations.water.confirmedOutput >= pumpOutputTarget;
       }
       if (observations.nativeTicks - lastPumpCheckpoint >= 96) {
         lastPumpCheckpoint = observations.nativeTicks;
         await fence('water-flow checkpoint');
-        const catchWater = await readCells(shippingTargets);
+        const catchWater = await readCells(catchCells);
         const coldMetal = observations.shipments.filter(s => s.id === E.METAL && s.temperature <= 400);
-        if (coldMetal.length) coldMetalSample = coldMetal[coldMetal.length - 1];
         const catchWaterCells = catchWater.filter(c => c.id === E.WATER);
+        checks.waterReachedShippingCatch ||= catchWaterCells.length > 0;
         observations.water.catchWaterCells = catchWaterCells.length;
         observations.water.catchWaterHeatC = catchWaterCells.length ? {
           min: Math.min(...catchWaterCells.map(c => c.temperature)),
@@ -403,15 +436,20 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
         } : null;
         observations.water.catchSteamCells = catchWater.filter(c => c.id === E.STEAM).length;
         observations.water.steamObserved = Math.max(observations.water.steamObserved, observations.water.catchSteamCells);
+        if (bucketPoured && waterPeakBeforePour !== null) checks.waterInteractedWithMelt ||=
+          observations.water.catchSteamCells > 0 || catchWaterCells.some(cell => cell.temperature > waterPeakBeforePour + 1);
         observations.water.catchMetalCells = catchWater.filter(c => c.id === E.METAL).length;
-        if (checks.nativeMetalMelt && checks.bucketCarriedActualLava && coldMetalSample) break;
+        if (bucketPoured === 4 && coldMetal.reduce((sum, shipment) => sum + shipment.count, 0) === 4
+            && checks.waterInteractedWithMelt) break;
       }
       // Promise callbacks and native readbacks must run between small native batches.
       if (observations.nativeTicks % 16 === 0) await Promise.resolve();
     }
     if (observations.nativeTicks >= MAX_NATIVE_TICKS) residualGaps.push('4,800-tick native safety cap reached');
     if (pumpActive) {
-      if (industry.pending === 0 && industry.buffered === 0) await ensureSwitch(false);
+      while (industry.pending) await fence('settle pre-shutdown pump transactions');
+      await ensureSwitch(false);
+      pumpOutputAtOff = observations.water.confirmedOutput;
       pumpActive = false;
     }
     observations.water.finalConfirmedInput = observations.water.confirmedInput;
@@ -429,7 +467,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     checks.nativeMetalMelt ||= finalHearth.some(c => c.id === E.LAVA && c.ctype === E.METAL)
       || observations.cargo.bucketCells.some(c => c.id === E.LAVA && c.ctype === E.METAL);
     const coldShipments = observations.shipments.filter(s => s.id === E.METAL && Number.isFinite(s.temperature) && s.temperature <= 400);
-    checks.coldMetalConfirmedShipped = coldShipments.length > 0;
+    checks.coldMetalConfirmedShipped = coldShipments.reduce((sum, shipment) => sum + shipment.count, 0) === 4;
     observations.cargo.industryBufferAtEnd = industry.buffered;
     observations.shipments = observations.shipments.map(s => ({ ...s }));
 
@@ -438,15 +476,15 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     }
     // Let remaining real fuel exhaust only while time and native tick budget permit.
     while (!exhausted && Date.now() < until && observations.nativeTicks + 4 <= MAX_NATIVE_TICKS) {
-      await nativeStep(4, { includePump: false });
+      await nativeStep(4);
       if (observations.nativeTicks % 48 === 0) {
         const sampled = await scanHearth();
         exhausted = sampled.filter(c => [E.COAL, E.BROKENCOAL].includes(c.id)).every(c => c.life <= 0);
       }
       if (observations.nativeTicks % 16 === 0) await fence('fuel exhaustion fence');
     }
-    checks.realFuelSpent = exhausted || (observations.fuel.remainingLife === 0);
-    if (!checks.realFuelSpent) residualGaps.push('real finite fuel exhaustion was not observed before the bounded attempt ended');
+    observations.fuel.sampledChamberFuelExhausted = exhausted;
+    if (!checks.realFuelSpent) residualGaps.push('no actual fuel-life decrease or naturally produced ash was observed');
 
     const ashLoads = [];
     const wallsBefore = await readCells(shellCells);
@@ -484,12 +522,17 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     observations.water.sourceWaterRemaining = (await readCells(waterSource)).filter(c => c.id === E.WATER).length;
     observations.water.inletWaterRemaining = (await readCells(inletCells)).filter(c => c.id === E.WATER).length;
     observations.cargo.industryBufferAtEnd = industry.buffered;
+    if (bucketLoad?.count) observations.cargo.residuals.push({ kind: 'bucket-cargo', cells: bucketLoad.cells.map(cell => [...cell]) });
+    observations.water.finalConfirmedInput = observations.water.confirmedInput;
+    observations.water.finalConfirmedOutput = observations.water.confirmedOutput;
+    checks.nativePumpSwitchOffOnOffSequence &&= observations.water.confirmedOutput === pumpOutputAtOff;
     if (industry.buffered) observations.cargo.residuals.push({ kind: 'industry-pump-buffer', cells: industry.buffered });
     if (observations.gate.basePeakC >= 100) residualGaps.push('gate INSULATOR base did not remain cold (<100°C)');
     if (gateBaseEnd.some(c => c.id !== E.INSULATOR) || observations.gate.basePeakC >= 100) throw new Error('coolant-gate INSULATOR base was damaged or heated');
     checks.gateClosedSourceHeld = checks.gateClosedSourceHeld && gateBaseEnd.every(c => c.id === E.INSULATOR && c.temperature < 100);
     if (asyncErrors.length) residualGaps.push(`native module callback errors: ${asyncErrors.join('; ')}`);
     observations.asyncErrors = asyncErrors;
+    checks.nativeTickAccounting = sim.frame - nativeFrameStart === observations.nativeTicks && observations.nativeTicks > 0;
     observations.elapsedMs = Date.now() - startedAt;
 
     const passed = Object.values(checks).every(Boolean) && asyncErrors.length === 0;

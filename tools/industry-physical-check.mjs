@@ -23,11 +23,18 @@ const thermalDevices = validateDevices([
   { id: 'physical-hearth', type: 'hearth', x: 48, y: 12, z: 48, rotation: 0 },
 ], [128, 128, 128]);
 const thermalGeometry = { ...hearthRegions(thermalDevices[0]), structure: hearthStructureCells(thermalDevices[0]) };
-if (!['thermal', 'mechanisms', 'diagnostics'].includes(selectedCase)) {
-  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
+if (!['thermal', 'mechanisms', 'diagnostics', 'line'].includes(selectedCase)) {
+  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics|line [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
   process.exit(2);
 }
 if (process.argv.includes('--preflight')) {
+  if (selectedCase === 'line') {
+    const { purelineDeviceLayout } = await import('./fixtures/industry-line.js');
+    const devices = validateDevices(purelineDeviceLayout(), [128, 128, 128]);
+    console.log(JSON.stringify({ status: 'cpu-geometry-valid', devices: devices.length, bounds: [128, 128, 128],
+      limitations: 'Bounds/overlap only; no mining, thermal, cargo, browser, or GPU validation.' }));
+    process.exit(0);
+  }
   console.log(JSON.stringify({ status: 'cpu-geometry-valid', devices: thermalDevices,
     cells: Object.fromEntries(Object.entries(thermalGeometry).filter(([key]) => key !== 'outputDirection').map(([key, cells]) => [key, cells.length])),
     limitations: 'Bounds/overlap validation only; no heat, tools, browser, or GPU was exercised.' }));
@@ -122,6 +129,12 @@ try {
     });
 
     try {
+      if (caseName === 'line') {
+        const { runIndustryLine } = await import('/tools/fixtures/industry-line.js');
+        const result = await runIndustryLine({ sim, gpu: a.gpu, deadline, stage });
+        if (h?.failures?.length) return { ...result, status: 'failed', apiErrors: h.failures.map(cleanError) };
+        return result;
+      }
       if (caseName === 'diagnostics') {
         const { createConstruction } = await import('/src/industry/construction.js');
         const { createIndustryDiagnostics } = await import('/src/industry/diagnostics.js');
