@@ -17,6 +17,7 @@ import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { cozyFixture, SWATCHES } from './cozy-fixture.mjs';
 import { E } from '../src/elements.js';
 import { VIEWS, viewKey, viewForMode, isMaterialView, materialStyleForView } from '../src/views.js';
+import { startupView } from '../src/startupSafety.js';
 import { GAMEMODES, mapByKey, mapOf, modeByKey, resolveMode } from '../src/maps.js';
 import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
 import { detailDefaults } from '../src/gfx/detail.js';
@@ -37,8 +38,8 @@ assert(viewShadows('cozy'));
 const animalCrossing = modeByKey('animalCrossing');
 assert.equal(animalCrossing.defaultView, 'cozy');
 for (const mode of GAMEMODES) for (const saved of VIEWS) {
-  assert.equal(viewForMode(mode, saved.id), mode === animalCrossing ? cozy.id : saved.id,
-    'only Animal Crossing supplies a starting shader; other modes retain the selected view');
+  assert.equal(viewForMode(mode, saved.id), mode === animalCrossing ? cozy.id : mode.key === 'sandbox' ? 0 : saved.id,
+    'Sandbox starts Realistic, Animal Crossing starts Cozy, other modes retain the selected view');
 }
 assert.equal(viewForMode(resolveMode(mapByKey('lab'), 'animalCrossing'), 0), 0, 'ineligible maps do not receive the mode default');
 // Compare the ABI before Cozy was appended, not fields added by later styles.
@@ -74,19 +75,33 @@ assert(!('materialStyle' in view));
 const app = source('src/app.js');
 const linkedViewCode = app.slice(app.indexOf('const viewParam ='), app.indexOf('// ?win='));
 const bootModeCode = app.slice(app.indexOf('let selectedMode ='), app.indexOf('if (!toolById'));
-const bootView = new Function('settings', 'params', 'bootMap', 'launch', 'VIEWS', 'resolveMode', 'modeByKey', 'viewForMode', 'gpuSafeMode = () => false',
+const bootView = new Function('settings', 'params', 'bootMap', 'launch', 'VIEWS', 'resolveMode', 'modeByKey', 'viewForMode', 'mapOf', 'gpuSafeMode = () => false',
   `${linkedViewCode}\n${bootModeCode}\nreturn settings.view;`);
-for (const [query, expected] of [
-  ['mode=animalCrossing', cozy.id], ['mode=animalCrossing&view=heat', 1],
-  ['mode=animalCrossing&view=5', 5], ['mode=animalCrossing&view=bogus', cozy.id], ['mode=sandbox', 0],
+for (const [mapKey, query, savedView, expected] of [
+  ['island', '', 0, 0], // fresh ordinary Sandbox
+  ['island', '', cozy.id, 0], // persisted Cozy must not leak from the previous session
+  ['lab', '', cozy.id, 0], // box/mobile Sandbox too
+  ['empty', 'view=cozy', 0, cozy.id], ['island', 'view=6', 0, cozy.id],
+  ['island', 'view=heat', cozy.id, 1], ['island', 'view=bogus', cozy.id, 0],
+  ['willowCove', 'mode=animalCrossing', 0, cozy.id],
+  ['willowCove', 'mode=animalCrossing&view=heat', 0, 1],
+  ['willowCove', 'mode=animalCrossing&view=5', 0, 5],
+  ['willowCove', 'mode=animalCrossing&view=bogus', 0, cozy.id],
+  ['willowCove', 'mode=sandbox', 0, cozy.id], // authored map exception even in Sandbox
+  ['tinkerCreek', 'mode=sandbox', 0, cozy.id], // old links keep the same exception
+  ['lab', 'mode=animalCrossing', cozy.id, 0], // ineligible mode falls back to ordinary Sandbox
 ]) {
-  assert.equal(bootView({ view: 0 }, new URLSearchParams(query), mapByKey('willowCove'), {},
-    VIEWS, resolveMode, modeByKey, viewForMode), expected, 'actual boot code applies mode defaults but honors valid explicit links');
+  const map = mapByKey(mapKey);
+  const settings = { view: savedView, size: map.size, scene: map.scene, preset: map.preset };
+  assert.equal(bootView(settings, new URLSearchParams(query), map, {},
+    VIEWS, resolveMode, modeByKey, startupView, mapOf), expected, `${mapKey}?${query}: actual boot policy`);
 }
-assert.equal(bootView({ view: 5 }, new URLSearchParams(), mapByKey('willowCove'), { mode: 'animalCrossing' },
-  VIEWS, resolveMode, modeByKey, viewForMode), cozy.id, 'menu launch also overrides an old saved view');
+assert.equal(bootView({ view: 5, size: 'world', scene: 'willowCove' }, new URLSearchParams(), mapByKey('willowCove'), { mode: 'animalCrossing' },
+  VIEWS, resolveMode, modeByKey, startupView, mapOf), cozy.id, 'menu launch also overrides an old saved view');
+assert.equal(bootView({ view: cozy.id, size: 'world', scene: 'island' }, new URLSearchParams(), null, {},
+  VIEWS, resolveMode, modeByKey, startupView, mapOf), 0, 'legacy scene/size boot without a named map starts Realistic');
 assert.equal(bootView({ view: cozy.id }, new URLSearchParams('gpuSafe=1&view=realistic'), mapByKey('willowCove'), { mode: 'animalCrossing' },
-  VIEWS, resolveMode, modeByKey, viewForMode, () => true), VIEWS.find(v => v.key === 'plain').id,
+  VIEWS, resolveMode, modeByKey, startupView, mapOf, () => true), VIEWS.find(v => v.key === 'plain').id,
   'safe boot overrides both the saved view and an explicit expensive view');
 const modeCode = app.slice(app.indexOf('async function startMode('), app.indexOf('// maps.js is plain data'));
 const makeMode = new Function('settings', 'helpers', `
@@ -99,18 +114,50 @@ const makeMode = new Function('settings', 'helpers', `
   return startMode;
 `);
 const modeSettings = { view: 0, size: 'world', scene: 'willowCove' };
-const startMode = makeMode(modeSettings, { resolveMode, mapOf, viewForMode });
+const startMode = makeMode(modeSettings, { resolveMode, mapOf, viewForMode: startupView });
 await startMode('animalCrossing');
 assert.equal(modeSettings.view, cozy.id, 'entering the running mode selects Cozy');
 modeSettings.view = 1;
 await startMode('animalCrossing');
 assert.equal(modeSettings.view, 1, 'a manual shader change is not forced back during the same mode');
 await startMode('sandbox');
-assert.equal(modeSettings.view, 1, 'other modes do not override the selected shader');
+assert.equal(modeSettings.view, cozy.id, 'Sandbox retains the authored Willow Cove exception');
 await startMode('animalCrossing');
 assert.equal(modeSettings.view, cozy.id, 're-entering Animal Crossing applies its default again');
+modeSettings.scene = 'island';
+await startMode('sandbox');
+assert.equal(modeSettings.view, 0, 'returning to ordinary Sandbox clears the previous mode shader');
+modeSettings.view = cozy.id;
+await startMode('sandbox');
+assert.equal(modeSettings.view, cozy.id, 'manual Cozy remains usable within the running Sandbox map');
 const openMapCode = app.slice(app.indexOf('function openMap('), app.indexOf('// Animal Crossing on Tinker Creek'));
 assert(openMapCode.indexOf('setView(modeView)') < openMapCode.indexOf('setSize(m.size)'), 'new maps choose their shader before building pipelines');
+const useMapCode = app.slice(app.indexOf('function useMap('), app.indexOf('// The start menu\'s Start'));
+const makeMapOpener = new Function('settings', 'mapByKey', 'resolveMode', 'viewForMode', 'isWorld', `
+  const mp = { frozen: false, guard: () => false, guardWorld: () => false, role: 'solo' };
+  const graphicsFailure = null, pov = null, wire = () => true, gridFits = () => true, dimsOf = () => [];
+  const hud = { toast() {} }, scoreboard = { reset() {} }, presentation = { select() {} };
+  let modeEpoch = 0, selectedMode = 'sandbox', boxSize;
+  const setView = id => { settings.view = id; }, setSize = size => { settings.size = size; };
+  const loadPreset = preset => { settings.preset = preset; }, startMode = async () => {};
+  ${useMapCode}
+  ${openMapCode}
+  return openMap;
+`);
+const mapSettings = { view: cozy.id, size: 'world', scene: 'willowCove' };
+const openMap = makeMapOpener(mapSettings, mapByKey, resolveMode, startupView, m => !m.preset);
+assert.equal(startupView(modeByKey('sandbox'), 0, '', mapByKey('willowCove')), cozy.id);
+assert.equal(startupView(modeByKey('sandbox'), cozy.id, 'gpuSafe=1', mapByKey('willowCove')), 5,
+  'explicit safe graphics wins over authored map artwork');
+for (const [key, mode, expected] of [
+  ['island', 'sandbox', 0], ['willowCove', 'sandbox', cozy.id],
+  ['lab', 'sandbox', 0], ['empty', 'sandbox', 0],
+  ['willowCove', 'animalCrossing', cozy.id], ['island', 'sandbox', 0],
+]) {
+  mapSettings.view = 1;
+  assert.equal(openMap(key, mode), true);
+  assert.equal(mapSettings.view, expected, `${key}/${mode}: actual map launch applies its default instead of previous/manual view`);
+}
 const preload = source('src/preload.js');
 const warmMapCode = preload.slice(preload.indexOf('export function warmMap('), preload.indexOf("// The grid a map's")).replace('export ', '');
 const makeWarmer = new Function('mapByKey', 'resolveMode', `
@@ -128,6 +175,10 @@ assert.equal(warmer.calls.length, 2, 'same-grid shader variants have separate wa
 assert.equal(warmer.calls[1].view, 'cozy');
 assert.equal(warmer.calls[1].curved, true);
 assert.equal(warmer.calls[1].volumeOnly, true, 'mode changes reuse the grid kernels');
+assert.equal(warmer.calls[0].view, 'realistic', 'ordinary Sandbox warms its default rather than a saved Cozy view');
+warmer.warmMap('willowCove', 'sandbox');
+assert.equal(warmer.calls[2].view, 'cozy', 'the authored map exception warms Cozy without requiring Animal Crossing');
+assert.equal(warmer.calls[2].curved, false, 'Sandbox does not inherit the Animal Crossing presentation effect');
 assert.match(preload, /view = views\.viewKey\(settings\.view\)/);
 assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved \}\)/);
 assert.doesNotMatch(app, /materialStyle|Material style/, 'separate preference and drawer control removed');
@@ -135,7 +186,23 @@ assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE'))
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
 const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
 for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
-assert.match(app, /post\.settings\.raw = blocks \? false : !isMaterialView\(settings\.view\)/);
+const selectView = new Function('settings', 'VIEWS', 'isMaterialView', `
+  const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} }, detailGate = { setView() {} };
+  const setBlocks = () => {}, plainView = () => false, prepareGI = () => {}, viewKeyOf = () => 'cozy';
+  const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {} }, save = () => {};
+  ${runtime}
+  return setView;
+`)(modeSettings, VIEWS, isMaterialView);
+for (const view of VIEWS) {
+  selectView(view.id);
+  await startMode('sandbox');
+  assert.equal(modeSettings.view, view.id, 'actual manual picker setter remains usable; repeated mode setup does not reapply defaults');
+}
+assert.equal(viewForMode(modeByKey('crueltySquad'), cozy.id), cozy.id, 'Cruelty retains its existing shader selection policy');
+assert.match(app, /sourceStyle: selectedMode === 'crueltySquad' && isMaterialView\(view\)/);
+assert.match(app, /const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView\(renderView\)/,
+  'Cruelty source rendering and post style remain tied to its mode, not Sandbox defaults');
+assert.match(app, /post\.settings\.raw = blocks \? false : !isMaterialView\(renderView\)/);
 assert.match(app, /post\.settings\.raw = view === 'plain' \? false : !isMaterialView\(view\)/, 'Cozy thumbnails retain tone mapping');
 for (const file of ['src/app.js', 'src/wire/world.js', 'src/wire/weather.js']) {
   assert.doesNotMatch(source(file), /settings\.view [!=]== 0/, `${file}: lit rendering includes Cozy`);

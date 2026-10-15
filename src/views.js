@@ -156,8 +156,8 @@ export const VIEWS = [
 /** A view's key (its shader module in src/shaders/render.js) from its id; unknown ids are the realistic view. */
 export const viewKey = (id) => VIEWS.find((v) => v.id === id)?.key ?? 'realistic';
 
-/** A gamemode's starting view, otherwise the player's current selection. */
-export const viewForMode = (mode, fallback) => VIEWS.find((v) => v.key === mode?.defaultView)?.id ?? fallback;
+/** Launch defaults only: authored map, then gamemode, otherwise the player's selection. */
+export const viewForMode = (mode, fallback, map = null) => VIEWS.find((v) => v.key === (map?.defaultView ?? mode?.defaultView))?.id ?? fallback;
 
 /** Material artwork for a view key or id; data and Plain views have none. */
 export const materialStyleForView = (view) => VIEWS.find((v) => v.id === view || v.key === view)?.materialStyle;

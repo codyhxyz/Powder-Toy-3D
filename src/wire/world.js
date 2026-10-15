@@ -86,8 +86,8 @@ const world = {
     const { win } = app;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
     torchLights.update(win?.scene ?? null, app.camGrid, app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
-    if (win?.far && isMaterialView(app.settings.view)) world.buildFarView(app, win.far);
-    win?.far?.view(app.volume, isMaterialView(app.settings.view), app.camera);
+    if (win?.far && isMaterialView(app.renderView)) world.buildFarView(app, win.far);
+    win?.far?.view(app.volume, isMaterialView(app.renderView), app.camera);
   },
   // the detail meshes' distances, before the scene pass (world/far.js prepass: their own render pass)
   compute(app) { app.win?.far?.prepass(app.post?.sceneTarget); },

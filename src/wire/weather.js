@@ -95,7 +95,7 @@ const wire = {
     weather.setOceanEligible(enabled(app) && app.win.P.sea > 0);
     app.lighthouse.update({ time: clock }, {
       world: app.win, sim: app.sim, dayPhase: dayPhase(app.day.clock),
-      enabled: enabled(app) && isMaterialView(app.settings.view),
+      enabled: enabled(app) && isMaterialView(app.renderView),
     });
     // Sound follows actual committed bolts, never an independent flash timer.
     const bolt = app.lightning?.lastBolt;

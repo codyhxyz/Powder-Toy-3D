@@ -10,8 +10,8 @@ export const SOURCE_MANIFEST_BUDGET_MS = 10000;
 export const gpuSafeMode = (search = globalThis.location?.search ?? '') =>
   new URLSearchParams(search).get(GPU_SAFE_PARAM) === '1';
 
-export const startupView = (mode, fallback, search) => gpuSafeMode(search)
-  ? VIEWS.find(view => view.key === 'plain').id : viewForMode(mode, fallback);
+export const startupView = (mode, fallback, search, map = null) => gpuSafeMode(search)
+  ? VIEWS.find(view => view.key === 'plain').id : viewForMode(mode, fallback, map);
 
 // Optional map metadata must not hold the entry module forever. Abort fetches
 // and prevent a late module download from registering maps after menu setup.

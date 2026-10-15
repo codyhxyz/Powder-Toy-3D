@@ -146,7 +146,7 @@ export function warmMap(key, mode = 'sandbox') {
   const m = mapByKey(key);
   if (!m || !launch.adapter) return;
   const chosen = resolveMode(m, mode);
-  const grid = { ...gridOf(m), curved: !!chosen.effect, view: chosen.defaultView };
+  const grid = { ...gridOf(m), curved: !!chosen.effect, view: m.defaultView ?? chosen.defaultView };
   const asked = `${grid.key}${grid.curved ? ' curved' : ''}${grid.view ? ` ${grid.view}` : ''}${grid.world ? ` world:${grid.world.join('x')}` : ''} source:${grid.sourceAppearance ? 1 : 0}`;
   if (warmed.has(asked)) return;
   grid.volumeOnly = [...warmed].some((key) => key === grid.key || key.startsWith(`${grid.key} `));
