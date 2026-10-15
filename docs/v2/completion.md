@@ -96,6 +96,22 @@ Evolved states differ, so neither median nor tail establishes equivalent-work pe
 These are serialized frame latencies, not live gameplay FPS.
 Further diagnostics must separate compute from rendering without interpreting coalesced labels as individual kernel costs.
 
+The two-frame split diagnostic at `956a7169` used 12.443 s total.
+Scene and motion cover the same overlapping interval, about 137 ms; do not add them.
+Gather averages 10.814 ms per frame; contact averages 10.739 ms.
+This replay is diagnostic, not another headline sample window.
+
+The native compatibility projection averages 168.975 ms, with a 171.1 ms median and 11.856 s total occupancy.
+Its fixture, quality keys, native ticks and rendered-frame indices match the direct reference.
+It adds one bridge dispatch per frame. Its scene interval averages 109.738 ms versus 135.075 ms direct.
+This suggests representation overhead; it does not prove identical pixels or provide an equivalent-work speedup claim.
+The direct renderer remains the intended path.
+
+Native volume ID-only probes now use a CPU-verified scalar decoder.
+It preserves visual dithering, physical nonzero-fill visibility and canonical slot coordinates.
+The full-decoder oracle passes 405,024 cases; six generic/writer/picking shader hashes remain unchanged.
+Metal performance remains unmeasured for this change.
+
 Local evidence:
 
 - `/tmp/v2-native-slab-profile-3a89a96.jsonl`
@@ -111,6 +127,8 @@ Local evidence:
 - `/tmp/v2-water-native-8d5ad463.json.startup.jsonl`
 - `/tmp/v2-water-native-f86a20c8.json`
 - `/tmp/v2-water-v1-f86a20c8.json`
+- `/tmp/v2-water-native-split-956a7169.json`
+- `/tmp/v2-water-compat-956a7169.json`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.

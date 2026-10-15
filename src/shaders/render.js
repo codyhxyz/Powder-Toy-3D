@@ -1381,6 +1381,19 @@ struct VolumeFrag {
   return o;
 }`;
 
+// ID-only probes need neither temperature tables nor life/colour decoding.
+// Use the same raw cell and canonical dither coordinate as fetchAs; debug
+// readers retain their original access-count instrumentation.
+const volumeIdWGSL = format => /* wgsl */ `
+fn volumeId(p: vec3i) -> i32 {
+  let c = fetchNativeCore(p);
+  let id = i32(c.x & 255u);
+  let k = KIND(id);
+  if (k == K_EMPTY) { return E_EMPTY; }
+  if (k == K_LIQUID && ${format === 3 ? '(c.y & 0xffffffu) == 0u' : '(c.y & 0xffffffu) <= (seed3(cellOf(slotOf(p)), 0u, 4243u) >> 16u)'}) { return E_EMPTY; }
+  return id;
+}
+`;
 /**
  * The volume's WGSL module for grid g: a vertex entry `vs` and a fragment
  * entry `fs` drawing `view` (a key of src/views.js VIEWS: 'realistic',
@@ -1397,9 +1410,11 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   readFormatWGSL(fixedReadFormat);
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
+  const nativeIds = !debug && (fixedReadFormat === 2 || fixedReadFormat === 3);
   const parts = [
     `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
     lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, fixedReadFormat }),
+    ...(nativeIds ? [volumeIdWGSL(fixedReadFormat)] : []),
     TRACER_WGSL,
     curved ? presentationNearWGSL() : '',
     surfaceGLSL(d, { sourceAppearance: lit && g.sourceAppearance === true }),
@@ -1414,7 +1429,9 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
-  return parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
+  const code = parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
+  // Literal cell identifiers only, not a general WGSL expression rewrite.
+  return nativeIds ? code.replace(/\beid\(fetchA\((cell|c|lc|oc|q|nc|cj)\)\)/g, 'volumeId($1)') : code;
 };
 
 // ---- the pipeline (docs/webgpu.md F1, F2) ----
