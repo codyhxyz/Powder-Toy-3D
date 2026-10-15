@@ -8,7 +8,7 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 ## Current evidence — 2026-10-15
 
 Latest production integration: `a2e7afe4`, including fetched production `c59bbdf0`.
-This feature checkpoint is 142 commits ahead and none behind that production base.
+Feature checkpoint `c325250c` is 145 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 Physics results describe the feature branch, not the live site.
 The separate test-safety fix is deployed.
@@ -50,7 +50,20 @@ The source changes preserve calibration:
 - Required contact compilation enters the bounded queue before graphics. The two-build concurrency limit remains unchanged.
 
 Two scalar contact-row experiments passed CPU checks but exceeded Metal's startup allowance.
-Both were reverted. Contact retains its GPU-verified row representation.
+Both were reverted. Full row snapshots remain. The candidate below changes their read resource.
+
+**Material-row access candidate (`f05eef58`):** production R5 reuses the existing table through an aligned, 14,656-byte uniform view.
+It adds no table buffer, upload, or pass.
+Rule-body bytes and default/custom emitter output remain unchanged.
+Capability and old-buffer checks retain the storage fallback.
+All 49 CPU check scripts, imports, minification, Naga validation and the build pass.
+Parent checks and independent review `a253087d` find no blocker within the inspected scope.
+
+On-device selection, compilation, numerical acceptance and performance remain unverified.
+The first census attempt at `c325250c` does not launch because player detection finds the GPU 56% busy.
+The launcher releases its slot after 2.080 s.
+No simulation or GPU backend compilation starts, and no outcome returns.
+No override or automatic retry occurs.
 
 ### Renderer-connected measurements
 
@@ -199,7 +212,16 @@ Total occupancy is 9.986 s. No packets are counted as landed grains.
 The original mixed-material census also passes 120 ticks and 20 checks with zero drift.
 Water remains 72 cells, sand 528 and walls 156; occupancy is 8.846 s.
 Water in flight falls from 0.227 cells at 0.5 s to zero by 1 s.
-Fresh independent handback review timed out; it does not count as completed review.
+The earlier independent handback review timed out and does not count as completed review.
+Fresh source-only review `2acb0bd4` finds no scoped blocker.
+Four-cell recovery and OTHER-material refusals remain intentional limits.
+
+**Open splash observable:** source review `5025fae4` finds no resident-liquid kinetic state in native authority.
+The unchanged benchmark requires resident-plus-flight energy.
+Unknown velocity can silently understate peak upward energy, so it must not produce a pass.
+A GPU run cannot supply the missing model definition.
+The original fixture, 0.3 cap and mass criterion remain binding.
+This gate remains open.
 
 **Historical safety interruption:** the `142e6114` pipe attempt returned no assertions.
 Its trace ends during startup and lease `19727-19749` lacks a final report.
@@ -301,6 +323,8 @@ Local evidence:
 - `/tmp/v2-lease-smoke-c59bbdf0.log`
 - `/tmp/v2-native-pipe-a2e7afe4.jsonl`
 - `/tmp/v2-native-pipe-a2e7afe4-run.log`
+- `/tmp/v2-native-census-c325250c.jsonl`
+- `/tmp/v2-native-census-c325250c-run.log`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.
