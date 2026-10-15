@@ -1,10 +1,12 @@
 // Descent's level switch, the pure parts (src/pov/descent/switch.js): the body
 // against the temple's box and exit, the event order of a level change and of
 // the run's end, and that a switch hands over the run it started with.
-// Runs against A's real levels.js. No browser.
+// The legacy three-level fixture exercises detailed event order and failures.
+// check-noita-source.mjs exercises every seam of the current eight-scene route.
+// No browser.
 //   node scripts/check-descent-switch.mjs
 
-import { DESCENT_LEVELS } from '../src/world/scenes/descent/levels.js';
+import { DESCENT_LEVELS } from '../src/world/scenes/descent/legacyLevels.js';
 import { bodyInBox, createDescentSwitch, createDescentRunner, runSnapshot, runLost, spawnColumn } from '../src/pov/descent/switch.js';
 
 let failed = 0;
