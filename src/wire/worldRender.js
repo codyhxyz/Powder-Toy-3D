@@ -140,11 +140,13 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     try{t.batch=metadata.record(gpu.frame,{cut:t.cut,classification,derivedTick:t.tick});}catch(e){classification.release();throw e;}
     await t.batch.completion;
     const nearChanged=worldLightingNear(size,t.batch.changes.changedBricks,2);
-    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick)}));
-    const never=records.filter(r=>!ownedProbes.has(index(r.brick)));
+    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick),probeEligible:ownedProbes.has(index(r.brick))||!!(t.requirements.get(index(r.brick))&READY.GI)}));
+    // Reflective SOURCE self-reads discover GI demand through typed feedback.
+    // Matter (including liquids), SOURCE and CELL alone do not imply a probe.
+    const never=records.filter(r=>r.probeEligible&&!ownedProbes.has(index(r.brick)));
     const requestedSources=[...t.requirements].filter(([i,bits])=>bits&READY.GI_SOURCE&&!ownedSources.has(i)).map(([i])=>brick(i));
     if(t.frame.advance)t.plan=history.begin({lightingTick:t.tick,globalKey:t.frame.globalKey,records,currentLamps:t.frame.lamps,mode:t.tick===0?2:0,initialization:{cutToken:t.cut.contentToken,sourceBricks:requestedSources,probeBricks:never.map(r=>r.brick),records}});
-    else t.plan=history.beginBirth({cutToken:t.cut.contentToken,sourceBricks:never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick),probeBricks:never.map(r=>r.brick),records});
+    else t.plan=history.beginBirth({cutToken:t.cut.contentToken,sourceBricks:[...new Map([...requestedSources,...never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick)].map(b=>[index(b),b])).values()],probeBricks:never.map(r=>r.brick),records});
     // Every owned offscreen record remains a causal input. BUILDING is never
     // returned by probe(); the previous accepted bundle remains independently pinned.
     const invalidations=[];for(let i=0;i<atlas.lightEntries.length;i++)if(atlas.lightEntries[i])invalidations.push({brick:brick(i),channels:READY.LIGHT});

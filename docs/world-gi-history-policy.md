@@ -60,6 +60,17 @@ They do not supply a physics-distance quality tier.
 Birth age stays world-keyed in the ledger.
 Normal selection retains the original checkerboard, settling, and background rules.
 
+Metadata/data dependencies, probe recipients, and SOURCE recipients are distinct.
+The WORLD owner marks records with optional `probeEligible`: existing owned probes
+or actual typed `READY.GI` requirements, including SOURCE self-read feedback.
+The selector excludes records marked false from gathers in every mode, including
+mode2; omitted eligibility preserves the original API. Birth declarations use the
+same eligibility. SOURCE selection remains independent over all metadata records,
+including retained offscreen sources, at its original cadence. Matter, RAW/CELL,
+GLOW input, and SOURCE demand alone cannot establish a new probe owner.
+This changes birth timing relative to over-eager metadata ownership; it is not a
+bitwise-parity or performance/affordability claim.
+
 `beginBirth()` augments the committed clock without advancing it:
 
 ```js

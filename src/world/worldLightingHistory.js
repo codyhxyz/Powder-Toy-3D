@@ -34,7 +34,9 @@ export function selectWorldGI({records,lightingTick,mode=0,settle=0,lampSpheres=
     else if(mode!==0||settle!==0){source=true;probe=board;}
     else{source=r.age===0||r.matter&&(near||((x&1)|((z&1)<<1))===lightingTick%GI_SRC_EVERY);probe=near?board:((x&1)|((y&1)<<1)|((z&1)<<2))===lightingTick%GI_BG_EVERY;background=!near;}
     if(source||allSources)sourceBricks.push(frozenArray(r.brick));
-    if(probe)gatherBricks.push(Object.freeze({brick:frozenArray(r.brick),background}));
+    // Metadata and SOURCE dependencies are not necessarily probe recipients.
+    // Omission preserves the original selector contract for existing callers.
+    if(probe&&r.probeEligible!==false)gatherBricks.push(Object.freeze({brick:frozenArray(r.brick),background}));
   }
   return Object.freeze({sourceBricks:frozenArray(sourceBricks),gatherBricks:frozenArray(gatherBricks)});
 }

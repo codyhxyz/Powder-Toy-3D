@@ -57,7 +57,7 @@ test('actual driver/owner/Post reaches 32 accepted GI advances and then idles wi
   const state={data:f.owner,uses:new Set(),volume:{dispose(){}},opaque:{dispose(){}},
     unused:{destroy(){}},boundary:{destroy(){}},emptyArtwork:{destroy(){}}};
   const driver=createWorldFrameDriver(app,state,{
-    prewarm:async()=>{},probe:async()=>({feedback:complete}),createPreflight:()=>({}),preflight:()=>true,releasePreflight:async()=>{},
+    prewarm:async()=>{},probe:async()=>({feedback:f.owner.atlas.lookup([0,0,0],READY.GI).known?complete:{incomplete:true,requirements:[{brick:[0,0,0],channels:READY.GI}],sun:[]}}),createPreflight:()=>({}),preflight:()=>true,releasePreflight:async()=>{},
     record(_app,_state,data){
       const submission=createWorldFeedbackProvider(f.gpu,{}).reserve(f.gpu.frame),feedbackIdentity={};
       const sceneTicket=p.post.recordScene({},app.camera,{identity:data.identity,publication:data.retain(),feedbackIdentity,submission});

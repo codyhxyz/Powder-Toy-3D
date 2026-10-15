@@ -9,12 +9,42 @@ import { fixture, drain } from './world-lighting-records-fixture.mjs';
 import { installWorldRender } from '../src/wire/worldRender.js';
 import { READY } from '../src/world/renderAtlas.js';
 import { tableLayout } from '../src/shaders/common.js';
+import { worldGISource, worldGIBirthWGSL } from '../src/shaders/worldGI.js';
+import { selectWorldGI } from '../src/world/worldLightingHistory.js';
 const words=b=>new Uint32Array(b.bytes),bytes=b=>new Uint8Array(b.bytes);
 class Exec extends WgslExec {_dispatchWorkgroup(fn,id,c){for(const a of fn.node.attributes??[])if(a.name==='workgroup_size'&&typeof a.value==='string')a.value=[a.value];return super._dispatchWorkgroup(fn,id,c);}}
 const tick=()=>new Promise(r=>setTimeout(r,0));
+// Execute the actual SOURCE early exits and self-read leaf. Classification,
+// packing and lighting math remain synthetic; no native shader execution.
+const sourceCode=worldGISource({nx:16,ny:8,nz:8});
+function body(code,name){const start=code.indexOf(`fn ${name}(`);let end=code.indexOf('{',start),depth=1;while(depth&&++end<code.length){if(code[end]==='{')depth++;if(code[end]==='}')depth--;}return code.slice(start,end+1);}
+function selfMiss(kind,flags){
+  const air=sourceCode.slice(sourceCode.indexOf('  if (!brickMatter(brickOcc(bc)))'),sourceCode.indexOf('  let l = vec3i'));
+  const media=sourceCode.slice(sourceCode.indexOf('  let m = vec2u(head'),sourceCode.indexOf('  var rad = vec3f'));
+  assert(air&&media,'production SOURCE classification leaves');
+  const code=`${worldGIBirthWGSL}
+struct Probe{a:vec4f,b:vec4f,c:vec4f,d:vec4f}
+const WORLD_GI:u32=16u;const tGI0:u32=0u;const tGI1:u32=1u;const tGI2:u32=2u;const tGI3:u32=3u;
+const BS:i32=4;const BRICK_CELLS:u32=64u;const FACE_CELLS:u32=16u;
+@group(0)@binding(0)var<storage,read>worldGIJobs:array<vec4u>;
+@group(0)@binding(1)var<storage,read_write>worldGISources:array<vec4u>;
+@group(0)@binding(2)var<storage,read_write>miss:array<u32>;
+fn worldProbeLoad(band:u32,bc:vec3i,channel:u32)->vec4f{miss[0]=channel;return vec4f(0.0);}
+fn brickOcc(bc:vec3i)->u32{return ${kind==='air'?'0':'1'}u;}
+fn brickMatter(occ:u32)->bool{return occ!=0u;}
+fn giSrcPack(a:vec3f,b:vec3f,c:vec3f)->vec4u{return vec4u(0u);}
+fn worldGIReport(job:u32){}
+${body(sourceCode,'worldGIPreviousProbe')}
+@compute@workgroup_size(1)fn main(){let job=0u;let li=0u;let bc=vec3i(0);${air}
+let head=array<u32,7>(${kind==='opaque'?'1':'0'}u,0u,0u,0u,0u,0u,${kind==='crystal'?'1':'0'}u);${media}}
+`;
+  const miss=new Uint32Array(1);
+  new Exec(new WgslParser().parse(code)).dispatchWorkgroups('main',1,{0:{0:new Uint32Array([0,flags,0,0]),1:new Uint32Array(4),2:miss}});
+  return miss[0]===READY.GI;
+}
 async function settle(gpu,promise){let done=false,error,result;promise.then(r=>{done=true;result=r;},e=>{done=true;error=e;});for(let i=0;i<2000&&!done;i++){gpu.finish();await tick();}assert(done,'native final boundary failed to settle');if(error)throw error;return result;}
-export async function setup({size=[16,8,8],feedback=true}={}) {
-  const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[],tablesUsed=[];
+export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
+  const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[],tablesUsed=[],giJobs=[];
   const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128|4|8});
   const tableGroup=gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer:tableBuffer}}],'fixture TABLES');
   f.sim.tables=tableGroup;gpu._simTables={buffer:tableBuffer,group:tableGroup};
@@ -33,12 +63,21 @@ export async function setup({size=[16,8,8],feedback=true}={}) {
     if(label.startsWith('world lighting delta'))return push(()=>new Exec(new WgslParser().parse(pipe.compute.module.code)).dispatchWorkgroups('main',[n,1,1],{0:Object.fromEntries(groups[0].entries.map(e=>[e.binding,e.resource.buffer.bytes]))}));
     if(label==='world CELL raw/AUX pack')return push(()=>gpu._pack(groups));
     if(label==='world GI source'||label==='world GI gather')return push(()=>{
+      if(sourceKinds&&label==='world GI gather')assert.match(pipe.compute.module.code,/const GI_RAYS: i32 = 32;/);
       events.push(label);const p=words(buf(3,7)),jobs=words(buf(3,8)),out=words(buf(3,9)),fb=words(buf(3,1)),sun=words(buf(3,5)),book=words(buf(0,5));
       const start=label==='world GI source'?0:p[0],count=label==='world GI source'?p[0]:p[1];
       let missing=false;
       if(feedback&&label==='world GI source'&&!sun[6]){fb[owner.atlas.bookLayout.sunWord]|=1;missing=true;events.push('unknown Sun');}
       if(feedback&&label==='world GI gather'&&!book[1]){const plane=owner.atlas.bookLayout.requestBytes/4/6;fb[plane*3]|=2;missing=true;events.push('unknown SOURCE');}
-      for(let i=0;i<count;i++){fb[p[2]+start+i]=missing?3:1;if(label==='world GI source')out.set([jobs[4*i],p[3],101,202],i*4);}
+      for(let i=0;i<count;i++){
+        const job=start+i,id=jobs[4*job],flags=jobs[4*job+1];let selfMissing=false;
+        if(label==='world GI source'&&sourceKinds&&selfMiss(sourceKinds[id]??'air',flags)){
+          const plane=owner.atlas.bookLayout.requestBytes/4/6;
+          fb[plane*4+(id>>>5)]|=1<<(id&31);selfMissing=true;events.push('typed GI self-miss');
+        }
+        giJobs.push({phase:label,index:id,flags,tick:p[3]});
+        fb[p[2]+job]=missing||selfMissing?3:1;if(label==='world GI source')out.set([id,p[3],101,202],i*4);
+      }
       if(label==='world GI source')sources.push([...out]);else{const h=words(buf(3,10));histories.push([...h]);for(let i=0;i<h.length;i++)h[i]++;}
     });
     if(label==='full world optical sun')return push(()=>{
@@ -59,10 +98,82 @@ export async function setup({size=[16,8,8],feedback=true}={}) {
   gpu.frame.compute=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,groups,n,fn=>gpu._push(fn))};};
   owner=installWorldRender(f.win);
   const frame={sceneVersion:'scene',schemaVersion:1,configVersion:1,values:{cam:[0,0,0]},physicsOrigin:[0,0,0],globalKey:[1],sun:{direction:[1,1,1],basisRevision:1},external:Object.fromEntries(['mediaNoise','packedMesh','sourceAppearance'].map(name=>[name,{name}]))};
-  return {...f,owner,events,sources,histories,tablesUsed,frame,async close(){await settle(gpu,owner.dispose());await f.finish();}};
+  return {...f,owner,events,sources,histories,tablesUsed,giJobs,frame,async close(){await settle(gpu,owner.dispose());await f.finish();}};
 }
 const complete={incomplete:false,requirements:[],sun:[]};
 function post(candidate,confirmation=Promise.resolve(true)){const feedbackIdentity={};return {feedbackIdentity,postTicket:{identity:candidate.identity,publication:candidate,feedbackIdentity,status:'committed',confirmation},feedback:complete};}
+
+test('mode2 keeps SOURCE/data dependencies without invented probes; typed air GI still births',async()=>{
+  const f=await setup({feedback:false,sourceKinds:{0:'air',1:'liquid'}});
+  let c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE},{brick:[1,0,0],channels:READY.GI_SOURCE},{brick:[2,0,0],channels:READY.CELL}]));
+  assert.equal(f.giJobs.filter(j=>j.phase==='world GI gather').length,0);
+  assert(f.giJobs.some(j=>j.index===0&&j.phase==='world GI source'));
+  assert(f.giJobs.some(j=>j.index===1&&j.phase==='world GI source'));
+  assert(f.owner.cells.acquireClassification({bricks:[[2,0,0]]}).release()===undefined);
+  assert.equal(f.owner.atlas.lookup([0,0,0],READY.GI_SOURCE).known,true);
+  assert.equal(f.owner.atlas.lookup([0,0,0],READY.GI).known,false);
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  const at=f.giJobs.length;
+  c=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:[0,0,0],channels:READY.GI}]));
+  const gathers=f.giJobs.slice(at).filter(j=>j.phase==='world GI gather');
+  assert.deepEqual(gathers.map(j=>j.index),[0]);assert(gathers.every(j=>(j.flags&2)!==0));
+  assert(f.histories.at(-1).every(n=>n===0),'authenticated birth previous is packed zero');
+  await settle(f.gpu,f.owner.accept(c,post(c)));assert.equal(f.owner.metadata.derivedTick,0);
+  c.release();await f.close();
+});
+
+for(const kind of ['opaque','crystal'])test(`${kind} SOURCE actual self-read feedback requires full birth before admission`,async()=>{
+  const f=await setup({feedback:false,sourceKinds:{0:kind}});
+  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE}]));
+  assert(f.events.includes('typed GI self-miss'));
+  const gathers=f.giJobs.filter(j=>j.phase==='world GI gather');assert.deepEqual(gathers.map(j=>j.index),[0]);
+  assert.equal(gathers[0].flags&2,2);assert.equal(f.owner.atlas.lookup([0,0,0],READY.GI).known,true);
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
+});
+
+test('same-clock SOURCE-only augmentation retains exact bytes/tokens and native previous generation; mature offscreen owner never rebirths',async()=>{
+  const f=await setup({feedback:false,sourceKinds:{0:'air',1:'liquid',2:'air'}});
+  let c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}]));
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  f.source.noteContentChange();
+  c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[1,0,0],channels:READY.GI_SOURCE}]));
+  await settle(f.gpu,f.owner.accept(c,post(c)));
+  c.release();
+  c=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:[1,0,0],channels:READY.CELL}]));
+  await settle(f.gpu,f.owner.accept(c,post(c)));
+  const known=c.snapshot.lightingProvenance([0,0,0]),source=known.source;
+  const before=[...words(source.nativeBuffer).subarray(source.ranges[0].from/4,source.ranges[0].from/4+4)];
+  const at=f.giJobs.length;
+  const augmented=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:[2,0,0],channels:READY.GI_SOURCE}]));
+  const retained=augmented.snapshot.lightingProvenance([0,0,0]).source;
+  assert.equal(retained.computeToken,source.computeToken);
+  assert.deepEqual([...words(retained.nativeBuffer).subarray(retained.ranges[0].from/4,retained.ranges[0].from/4+4)],before);
+  assert(f.giJobs.slice(at).every(j=>j.phase==='world GI source'&&(j.flags&2)===0));
+  assert.equal(augmented.lightingTick,1);assert.equal(f.owner.metadata.records([0])[0].age,1);
+  await settle(f.gpu,f.owner.accept(augmented,post(augmented)));c.release();augmented.release();
+  const retainedNew=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:[2,0,0],channels:READY.CELL}]));
+  const newSource=retainedNew.snapshot.lightingProvenance([2,0,0]).source;
+  assert.equal(newSource.previousHistoryToken,source.previousHistoryToken);
+  assert.equal(newSource.computeToken.previousToken.lightingTick,0);
+  await settle(f.gpu,f.owner.accept(retainedNew,post(retainedNew)));retainedNew.release();
+  f.source.noteContentChange();const nextAt=f.giJobs.length;
+  const next=await settle(f.gpu,f.owner.request(f.frame,[{brick:[2,0,0],channels:READY.CELL}]));
+  assert(f.giJobs.slice(nextAt).filter(j=>j.index===0).every(j=>(j.flags&2)===0));
+  assert.equal(next.snapshot.lightingProvenance([0,0,0]).gi.computeToken,known.gi.computeToken);
+  assert.equal(f.owner.metadata.records([0])[0].age,1,'pending records are not adopted early');
+  await settle(f.gpu,f.owner.accept(next,post(next)));assert.equal(f.owner.metadata.records([0])[0].age,2);
+  next.release();await f.close();
+});
+
+test('optional probe eligibility changes only gathers across reset, settling and ordinary cadence',()=>{
+  const records=[{brick:[0,0,0],age:40,matter:true,near:false},{brick:[1,0,0],age:0,matter:false,near:true}];
+  for(const mode of [0,1,2])for(const settle of [0,1])for(let lightingTick=0;lightingTick<8;lightingTick++){
+    const options={records,mode,settle,lightingTick},original=selectWorldGI(options);
+    const filtered=selectWorldGI({...options,records:records.map((r,i)=>({...r,probeEligible:i===0}))});
+    assert.deepEqual(filtered.sourceBricks,original.sourceBricks);
+    assert.deepEqual(filtered.gatherBricks,original.gatherBricks.filter(r=>r.brick[0]===0));
+  }
+});
 
 test('actual boot resolves UNKNOWN Sun, actual CELL and source closure; acceptance adopts metadata once',async()=>{
   const f=await setup();const demand=[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}];
