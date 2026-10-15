@@ -104,6 +104,12 @@ export function tracePipelines(Device, note) {
   return () => restore.forEach(fn => fn());
 }
 
+export function assertNoPipelineActivity(activity, stats, baseline) {
+  if (activity !== 0 || stats.pipelinesPending !== 0 ||
+      !Number.isSafeInteger(stats.pipelinesCreated) || stats.pipelinesCreated !== baseline)
+    throw new Error('Pipeline compilation during measurement; the entire case is invalid');
+}
+
 // Self-contained CPU builder, installed unchanged in the page. No GPU settling,
 // random browser state, heat sources, or per-engine scene generation differences.
 // The settled case is inert architecture, NOT pre-settled sand/water.
@@ -182,6 +188,11 @@ async function selfCheck() {
   await promise; await Promise.resolve();
   assert.equal(events.filter(e => e.stage === 'ready').length, 2);
   restore(); assert.equal(Device.prototype.createComputePipelineAsync, original);
+  const quiet = { pipelinesPending: 0, pipelinesCreated: 10 };
+  assertNoPipelineActivity(0, quiet, 10);
+  assert.throws(() => assertNoPipelineActivity(1, quiet, 10), /entire case is invalid/);
+  assert.throws(() => assertNoPipelineActivity(0, { ...quiet, pipelinesPending: 1 }, 10));
+  assert.throws(() => assertNoPipelineActivity(0, { ...quiet, pipelinesCreated: 11 }, 10));
   console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures, GPU-f32 camera quality checks');
 }
 
@@ -208,6 +219,7 @@ async function run(o) {
       'Memory is the app GPU resource registry, not total VRAM; excludes unregistered driver/three/timestamp scratch resources. JS heap is optional Chromium telemetry.',
       'toolCommit identifies this checkout, not necessarily the build served by --url.',
       'Vite transforms the menu and its dynamically imported app on CPU before GPU acquisition; native shader compilation remains inside the slot.',
+      'Measured windows reject native pipeline API calls, pending app builds, or app pipeline-count changes; contaminated frames are not silently discarded.',
     ], results: [], errors: [] };
   let vite, browser;
   const checkpoint = (stage, result = report) => {
@@ -270,7 +282,9 @@ async function run(o) {
         checkpoint(`${scene}/${engine}: pipeline readiness`, result);
         await checked(page.evaluate(async () => { const a = window.__app; a.test.park(); await a.test.ready(); await a.physics.v2?.ready; window.__stopCompileTrace?.(); }));
         result.adapter = await gpuInfo(page); // helper rejects fallback adapters on macOS
-        await page.addScriptTag({ content: `window.__frameBenchFixture = ${buildFixture.toString()};` });
+        await page.addScriptTag({ content: `window.__frameBenchFixture = ${buildFixture.toString()};
+          window.__frameBenchObservePipelines = ${tracePipelines.toString()};
+          window.__frameBenchNoPipelineActivity = ${assertNoPipelineActivity.toString()};` });
         checkpoint(`${scene}/${engine}: fixture upload`, result);
         result.fixture = await page.evaluate(async ({ engine, compactPath, scene, seed }) => {
           const a = window.__app;
@@ -320,11 +334,17 @@ async function run(o) {
           await gpu.fence();
           timing.split = split; timing.enabled = true;
           const samples = window.__frameBenchSamples = [];
+          const pipelineBaseline = gpu.stats.pipelinesCreated;
+          let pipelineActivity = 0;
+          const checkPipelines = () => window.__frameBenchNoPipelineActivity(pipelineActivity, gpu.stats, pipelineBaseline);
+          checkPipelines();
+          const restorePipelines = window.__frameBenchObservePipelines(globalThis.GPUDevice, () => { pipelineActivity++; });
           let bridges = 0;
           const onPass = a.sim.onPass;
           a.sim.onPass = (name, info) => { if (name === 'v2bridge') bridges++; onPass?.(name, info); };
           try {
             for (let i = 0; i < frames; i++) {
+              checkPipelines();
               const start = snapshot();
               bridges = 0;
               const t0 = performance.now();
@@ -340,11 +360,12 @@ async function run(o) {
                 renderScale: a.post.renderScale, volumeDrawn: a.view.volumeDrawn };
               sample.awake = await awake(); // diagnostic readback, outside wall/timestamp samples
               await gpu.fence();
+              checkPipelines();
               samples.push(sample);
               if (engine === 'v2' && compactPath === 'direct' && bridges !== 0) throw new Error('Direct tick/render unexpectedly exported legacy cells');
               if (!sample.volumeDrawn || sample.renderScale !== initialSettings.renderScale || a.autoRes.enabled || a.autoRes.scale !== 1) throw new Error('Rendering/quality changed during measurement');
             }
-          } finally { timing.enabled = false; timing.split = false; a.sim.onPass = onPass; }
+          } finally { restorePipelines(); timing.enabled = false; timing.split = false; a.sim.onPass = onPass; }
           return { initialSettings, finalSettings: settings(), before, after: snapshot(), memoryBefore, memoryAfter: memory(),
             timestampSupported: timing.supported, stepCount, samples };
         }, { engine, compactPath, frames: o.frames, warmup: o.warmup, split });
