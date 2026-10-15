@@ -28,10 +28,14 @@ fn compactA(p: vec3i, c: vec4u) -> vec4f {
     select(f32((c.y >> 16u) & 255u), f32(c.w & 4095u), COMPACT_CONDUCTS[u32(id)]) + f32(c.w >> 16u) * (SEED_MAX / 65536.0));
 }
 // Physics probes must see even one quantum of liquid, independent of visual dither.
-fn compactProbeA(p: vec3i, c: vec4u) -> vec4f {
+fn compactProbeCore(c: vec4u) -> vec4u {
+  var core = c;
   if (KIND(i32(c.x & 255u)) == K_LIQUID && (c.y & 0xffffffu) != 0u) {
-    return compactA(p, vec4u(c.x, (c.y & 0xff000000u) | max(65536u, c.y & 0xffffffu), c.z, c.w));
+    core.y = (c.y & 0xff000000u) | max(65536u, c.y & 0xffffffu);
   }
-  return compactA(p, c);
+  return core;
+}
+fn compactProbeA(p: vec3i, c: vec4u) -> vec4f {
+  return compactA(p, compactProbeCore(c));
 }
 `;
