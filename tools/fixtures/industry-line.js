@@ -14,6 +14,48 @@ const NATIVE_DT = 4 / 240;
 const MAX_NATIVE_TICKS = 4_800;
 const FOUNDATION = (id, x, y, z) => ({ id, type: 'foundation', x, y, z, rotation: 0 });
 
+// Inclusive ranges make the finite cold-water fill and its CPU checks share one
+// source of truth. The 120-cell edit is a fixture, not a player-filled bucket.
+export const LINE_WATER_SOURCE_BOUNDS = Object.freeze({
+  x: Object.freeze([58, 67]), y: Object.freeze([13, 15]), z: Object.freeze([52, 55]),
+});
+const boxCells = bounds => {
+  const cells = [];
+  for (let z = bounds.z[0]; z <= bounds.z[1]; z++)
+    for (let y = bounds.y[0]; y <= bounds.y[1]; y++)
+      for (let x = bounds.x[0]; x <= bounds.x[1]; x++) cells.push([x, y, z]);
+  return cells;
+};
+export const lineWaterSourceCells = () => boxCells(LINE_WATER_SOURCE_BOUNDS);
+
+// Each foundation tile is an ordinary 4x4 build placed at every listed height.
+// Keep the sealed tank/catch walls explicit and CPU-check their corners below.
+export const LINE_FOUNDATION_COLUMNS = Object.freeze([
+  ['spout-tower', 48, 52, 12, 16],
+  ['catch-left', 40, 52, 15, 18],
+  ['catch-rear', 44, 48, 15, 18],
+  ['catch-front', 44, 56, 15, 18],
+  ['spout-channel-back', 48, 48, 17, 18],
+  ['spout-channel-front', 48, 56, 17, 18],
+  ['tank-north-west', 52, 48, 13, 15],
+  ['tank-north-east', 56, 48, 13, 15],
+  ['tank-south-west', 52, 56, 13, 15],
+  ['tank-south-east', 56, 56, 13, 15],
+  ['tank-rear', 68, 52, 13, 15],
+  ['tank-rear-north-corner', 68, 48, 13, 15],
+  ['tank-rear-south-corner', 68, 56, 13, 15],
+  ['tank-front-north-corner', 48, 48, 13, 16],
+  ['tank-front-south-corner', 48, 56, 13, 16],
+  ['catch-left-rear-corner', 40, 48, 15, 18],
+  ['catch-left-front-corner', 40, 56, 15, 18],
+  ['source-floor-west', 60, 52, 12, 12],
+  ['source-floor-east', 64, 52, 12, 12],
+  ['tank-north-middle', 60, 48, 13, 15],
+  ['tank-north-east-extension', 64, 48, 13, 15],
+  ['tank-south-middle', 60, 56, 13, 15],
+  ['tank-south-east-extension', 64, 56, 13, 15],
+]);
+
 /** Pure, checked 128³ physical line geometry; no simulation or GPU is created. */
 export function purelineDeviceLayout() {
   const devices = [
@@ -24,28 +66,8 @@ export function purelineDeviceLayout() {
       gateMode: 'closed', gateClosed: false },
     { id: 'line-miner', type: 'miner', x: 96, y: 29, z: 92, rotation: 0 },
   ];
-  const column = (prefix, x, z, firstY, lastY) => {
+  for (const [prefix, x, z, firstY, lastY] of LINE_FOUNDATION_COLUMNS)
     for (let y = firstY; y <= lastY; y++) devices.push(FOUNDATION(`${prefix}-${y}`, x, y, z));
-  };
-  column('spout-tower', 48, 52, 12, 16);
-  column('catch-left', 40, 52, 15, 18);
-  column('catch-rear', 44, 48, 15, 18);
-  column('catch-front', 44, 56, 15, 18);
-  column('spout-channel-back', 48, 48, 17, 18);
-  column('spout-channel-front', 48, 56, 17, 18);
-  for (const [x, z, name] of [
-    [52, 48, 'tank-north-west'], [56, 48, 'tank-north-east'],
-    [52, 56, 'tank-south-west'], [56, 56, 'tank-south-east'],
-  ]) column(name, x, z, 13, 15);
-  column('tank-rear', 60, 52, 13, 15);
-  // Native TPT diagonal toppling tests the diagonal column, not both face
-  // walls. Close the corner columns with ordinary buildable foundations.
-  column('tank-rear-north-corner', 60, 48, 13, 15);
-  column('tank-rear-south-corner', 60, 56, 13, 15);
-  column('tank-front-north-corner', 48, 48, 13, 16);
-  column('tank-front-south-corner', 48, 56, 13, 16);
-  column('catch-left-rear-corner', 40, 48, 15, 18);
-  column('catch-left-front-corner', 40, 56, 15, 18);
   return devices;
 }
 
@@ -68,15 +90,20 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
   const constructionDevices = devices;
   const hotRegions = hearthRegions(hearth);
   const shellCells = hearthStructureCells(hearth);
-  const waterSource = [];
-  for (let z = 52; z <= 55; z++) for (let y = 13; y <= 15; y++) for (let x = 58; x <= 59; x++) waterSource.push([x, y, z]);
-  const inletCells = machinePorts(pump).inlet;
+  const waterSource = lineWaterSourceCells();
+  const waterSourceLo = [LINE_WATER_SOURCE_BOUNDS.x[0], LINE_WATER_SOURCE_BOUNDS.y[0], LINE_WATER_SOURCE_BOUNDS.z[0]];
+  const waterSourceHi = [LINE_WATER_SOURCE_BOUNDS.x[1], LINE_WATER_SOURCE_BOUNDS.y[1], LINE_WATER_SOURCE_BOUNDS.z[1]];
+  const pumpPorts = machinePorts(pump);
+  const inletCells = pumpPorts.inlet;
+  const outletCells = pumpPorts.outlet;
   const coalSource = [];
   for (let z = 96; z <= 97; z++) for (let x = 96; x <= 98; x++) coalSource.push([x, 30, z]);
   const scrapSource = [];
   for (let z = 100; z <= 101; z++) for (let x = 96; x <= 97; x++) scrapSource.push([x, 30, z]);
   const switchAt = deviceCell(pump, -1, 0, 1);
   const catchCells = machinePorts(ship).mouth;
+  const waterWatchCells = [...new Map([...waterSource, ...inletCells, ...outletCells, ...catchCells]
+    .map(at => [at.join(','), at])).values()];
   const ashRegion = [];
   for (let z = 17; z <= 19; z++) for (let y = 13; y <= 15; y++) for (let x = 17; x <= 19; x++) ashRegion.push([x, y, z]);
 
@@ -106,7 +133,9 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     gate: {},
     fuel: {},
     heat: {},
-    water: { seededCells: waterSource.length, confirmedInput: 0, confirmedOutput: 0, steamObserved: 0 },
+    water: { seededCells: waterSource.length, sourceBounds: LINE_WATER_SOURCE_BOUNDS,
+      setup: 'finite cold-WATER fixture edit; not a player-filled bucket claim',
+      confirmedInput: 0, confirmedOutput: 0, steamObserved: 0 },
     cargo: { bucketCells: [], ashTaken: 0, industryBufferAtEnd: 0, residuals: [] },
     shipments: [],
     elapsedMs: 0,
@@ -298,11 +327,11 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     if (!switchPlaced.ok) throw new Error(switchPlaced.reason || 'native pump-port SWITCH placement failed');
     await ensureSwitch(false);
     observations.gate.pumpSwitchInitial = 'OFF';
-    await edit([58, 13, 52], [59, 15, 55], E.WATER, 20, 0, 0.125);
+    await edit(waterSourceLo, waterSourceHi, E.WATER, 20, 0, 0.125);
     await fence('cold water seed fence');
     const seededWater = await readCells(waterSource);
     observations.water.actualSeededWater = seededWater.filter(cell => cell.id === E.WATER).length;
-    if (observations.water.actualSeededWater !== 24) throw new Error('cold water source was not fully written before native stepping');
+    if (observations.water.actualSeededWater !== waterSource.length) throw new Error('finite cold water source was not fully written before native stepping');
     for (let i = 0; i < 3; i++) {
       ensureTime('gate hold native steps');
       await nativeStep(4);
@@ -384,7 +413,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     let exhausted = false;
     let waterPeakBeforePour = null;
     let pumpOutputAtOff = null;
-    const pumpOutputTarget = 12;
+    const pumpOutputTarget = 32;
+    observations.water.pumpOutputTarget = pumpOutputTarget;
     const pollEveryTicks = 24;
     while (Date.now() < until && observations.nativeTicks < MAX_NATIVE_TICKS) {
       await nativeStep(4);
@@ -412,7 +442,11 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
           const pool = await readCells(catchCells);
           const poolByCell = new Map(catchCells.map((at, i) => [at.join(','), pool[i]]));
           const water = pool.filter(cell => cell.id === E.WATER);
-          checks.waterReachedShippingCatch ||= water.length > 0;
+          if (water.length) {
+            checks.waterReachedShippingCatch = true;
+            observations.water.catchWaterObservedAtTick ??= observations.nativeTicks;
+            observations.water.catchWaterObservedCells = Math.max(observations.water.catchWaterObservedCells ?? 0, water.length);
+          }
           const pourCells = catchCells.flatMap((at, i) => {
             const above = [at[0], at[1] + 1, at[2]];
             return pool[i].id === E.WATER && poolByCell.get(above.join(','))?.id === E.EMPTY ? [above] : [];
@@ -426,14 +460,21 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
           }
         }
       }
-      if (!pumpStopped && observations.water.confirmedOutput >= pumpOutputTarget && industry.pending === 0 && industry.buffered === 0) {
+      if (!pumpStopped && observations.water.confirmedOutput >= pumpOutputTarget && checks.waterReachedShippingCatch
+          && industry.pending === 0 && industry.buffered === 0) {
         await ensureSwitch(false);
         pumpActive = false;
         pumpStopped = true;
         observations.gate.pumpSwitchOffAfterConfirmedCells = observations.water.confirmedOutput;
         pumpOutputAtOff = observations.water.confirmedOutput;
+        observations.water.pumpShutdownCatchWaterCells = observations.water.catchWaterObservedCells ?? 0;
+        observations.water.pumpShutdownCatchWaterObservedAtTick = observations.water.catchWaterObservedAtTick ?? null;
+        observations.water.pumpShutdownAtTick = observations.nativeTicks;
+        observations.water.pumpShutdownConditionsMet = true;
         checks.nativePumpSwitchOffOnOffSequence = observations.gate.pumpSwitchInitial === 'OFF'
-          && switchState === false && observations.water.confirmedOutput >= pumpOutputTarget;
+          && switchState === false && observations.water.confirmedOutput >= pumpOutputTarget
+          && observations.water.pumpShutdownCatchWaterCells > 0
+          && observations.water.pumpShutdownCatchWaterObservedAtTick <= observations.water.pumpShutdownAtTick;
       }
       if (observations.nativeTicks - lastPumpCheckpoint >= 96) {
         lastPumpCheckpoint = observations.nativeTicks;
@@ -442,10 +483,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
           const probe = await diagnostics.inspect(pump);
           observations.water.firstRunningPumpProbe = { status: probe.status, evidence: probe.evidence };
           observations.water.runningSwitch = await readCell(switchAt);
-          const warehouse = [];
-          for (let y = 13; y <= 16; y++) for (let z = 52; z <= 55; z++) for (let x = 52; x <= 59; x++) warehouse.push([x, y, z]);
-          const contents = await readCells(warehouse);
-          observations.water.releasedWaterLocations = warehouse.flatMap((at, i) =>
+          const contents = await readCells(waterWatchCells);
+          observations.water.releasedWaterLocations = waterWatchCells.flatMap((at, i) =>
             contents[i].id === E.WATER ? [{ at, ...contents[i] }] : []);
         }
         const catchWater = await readCells(catchCells);
@@ -453,6 +492,10 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
         const catchWaterCells = catchWater.filter(c => c.id === E.WATER);
         checks.waterReachedShippingCatch ||= catchWaterCells.length > 0;
         observations.water.catchWaterCells = catchWaterCells.length;
+        if (catchWaterCells.length) {
+          observations.water.catchWaterObservedAtTick ??= observations.nativeTicks;
+          observations.water.catchWaterObservedCells = Math.max(observations.water.catchWaterObservedCells ?? 0, catchWaterCells.length);
+        }
         observations.water.catchWaterHeatC = catchWaterCells.length ? {
           min: Math.min(...catchWaterCells.map(c => c.temperature)),
           max: Math.max(...catchWaterCells.map(c => c.temperature)),
@@ -463,7 +506,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
         if (bucketPoured && waterPeakBeforePour !== null) checks.waterInteractedWithMelt ||=
           observations.water.catchSteamCells > 0 || catchWaterCells.some(cell => cell.temperature > waterPeakBeforePour + 1);
         observations.water.catchMetalCells = catchWater.filter(c => c.id === E.METAL).length;
-        if (bucketPoured === 4 && coldMetal.reduce((sum, shipment) => sum + shipment.count, 0) === 4
+        if (pumpStopped && bucketPoured === 4 && coldMetal.reduce((sum, shipment) => sum + shipment.count, 0) === 4
             && checks.waterInteractedWithMelt) break;
       }
       // Promise callbacks and native readbacks must run between small native batches.
@@ -478,9 +521,14 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     }
     observations.water.finalConfirmedInput = observations.water.confirmedInput;
     observations.water.finalConfirmedOutput = observations.water.confirmedOutput;
+    observations.water.pumpShutdownConditionsMet ??= false;
+    observations.water.pumpOutputTargetReached = observations.water.confirmedOutput >= pumpOutputTarget;
+    observations.water.pumpCatchWaterObserved = checks.waterReachedShippingCatch;
+    observations.water.pumpSwitchOffAfterConditions = pumpStopped;
+    observations.water.pumpOutputAtOff = pumpOutputAtOff;
     checks.realWaterPumpConfirmed = observations.water.confirmedInput > 0 && observations.water.confirmedOutput > 0;
     checks.gateReleaseAndPumpConfirmed = checks.gateReleaseAndPumpConfirmed && checks.realWaterPumpConfirmed;
-    if (!checks.nativePumpSwitchOffOnOffSequence) residualGaps.push('native pump SWITCH did not complete OFF→ON→OFF after at least twelve confirmed outlet cells');
+    if (!checks.nativePumpSwitchOffOnOffSequence) residualGaps.push(`native pump SWITCH did not complete OFF→ON→OFF after ${pumpOutputTarget} confirmed outlet cells and observed water in the real shipping catch`);
     if (!checks.realWaterPumpConfirmed) residualGaps.push('real coolant pump did not confirm both native water intake and outlet transfers');
     if (!checks.bucketCarriedActualLava) residualGaps.push('no actual LAVA(METAL) cell was carried out by the bounded bucket transfer');
     if (!checks.bucketPouredActualLavaIntoCatch) residualGaps.push('bucket cargo did not confirm placement into the real shipping catch');
