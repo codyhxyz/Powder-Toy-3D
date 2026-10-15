@@ -13,6 +13,7 @@
     "check:world-volume-consumers": "node --test tools/world-volume-consumers-cpu-check.mjs",
     "check:world-sun": "node --test tools/world-sun-producer-cpu-check.mjs",
     "check:world-lighting-restore": "node --test tools/world-lighting-restore-cpu-check.mjs tools/world-source-cut-cpu-check.mjs",
+    "check:world-lighting-records": "node --test tools/world-lighting-records-cpu-check.mjs",
     "check:world-lighting-inputs": "node --test tools/world-lighting-inputs-cpu-check.mjs",
     "check:world-cells": "node --test tools/world-cell-adapter-cpu-check.mjs",
     "check:world-source-cuts": "node --test tools/world-source-cut-cpu-check.mjs",
