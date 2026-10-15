@@ -209,9 +209,11 @@ test('real save codec restores open doors, destruction masks, timers and canonic
 });
 
 test('door WGSL parses on CPU with main entry and bounded storage bindings', () => {
-  const module = new WgslReflect(WGSL_CHECK[0].code(gridLayout(32, 32, 32)));
-  assert.deepEqual(module.entry.compute.map(e => e.name), ['main']);
-  assert.ok(module.storage.length <= 8);
+  for (const check of WGSL_CHECK) {
+    const module = new WgslReflect(check.code(gridLayout(32, 32, 32)));
+    assert.deepEqual(module.entry.compute.map(e => e.name), check.name === 'importedDoorMotion' ? ['main', 'apply'] : ['main']);
+    assert.ok(module.storage.length <= 8);
+  }
 });
 
 test('actor metadata retains only authored finite primitive properties and world yaw', () => {

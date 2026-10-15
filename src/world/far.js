@@ -12,7 +12,7 @@ import {
 } from '../shaders/far.js';
 import { gfxUniforms, frameUniformsOf } from '../gfx/uniforms.js';
 import { WorldDetail } from './detail.js';
-import { appearanceRegion, uploadAppearance, SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
+import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
 
 // The far field of a massive world (docs/scaling.md D11, phase W4;
 // docs/webgpu.md G1; the WGSL and the far grid's layout are in
@@ -330,7 +330,15 @@ export class FarField {
     this.groups();
     // Generator preparation has loaded and validated both files. Terrain
     // kernels only write the original brick region, never these tail planes.
-    if (this.appearance.planes) uploadAppearance(this.gpu, this.grid, this.scene.appearanceWords, this.appearance);
+    this.unsubscribeAppearance?.();
+    this.unsubscribeAppearance = null;
+    if (this.appearance.planes) {
+      const scene = this.scene;
+      uploadAppearance(this.gpu, this.grid, scene.appearanceWords, this.appearance);
+      this.unsubscribeAppearance = scene.subscribeAppearance?.((at, data) => {
+        if (!this.disposed && this.scene === scene) uploadAppearanceRange(this.gpu, this.grid, scene.appearanceWords, this.appearance, at, data.length);
+      });
+    }
     this.region(this.k.clear, this.groupsFixed.clear, [0, 0], [bx, bz]);
     this.winMask.fill(0);
     this.maskDirty = true;
@@ -661,6 +669,8 @@ export class FarField {
 
   dispose() {
     this.disposed = true;
+    this.unsubscribeAppearance?.();
+    this.unsubscribeAppearance = null;
     this._dropUnder();
     this.detail.dispose();
     this.queue = [];

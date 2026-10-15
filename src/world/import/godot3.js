@@ -89,6 +89,7 @@ export function parseGodot3Resource(text) {
     visiting.add(node.path);
     const local = node.props.transform ? numbers(node.props.transform, 'Transform') : IDENTITY;
     if (local.length !== 12) fail(`Invalid transform: ${node.path}`);
+    node.localTransform = [...local];
     const parent = node.parent == null ? null : nodes.get(node.parent);
     // Overrides inside external PackedScenes cannot be resolved without that
     // scene. They are retained in the inventory, not assigned fake geometry.
@@ -149,7 +150,17 @@ export function decodeSurface(body) {
     if (index >= count) fail('Vertex index out of range');
     triangles[i] = index;
   }
-  return { positions, uvs, uvBits, indices: triangles, material: p.material ? reference(p.material) : null, format };
+  // Mesh.get_aabb() uses the stored surface AABB (which can include source
+  // padding), not the baked world vertices. Retain it for script motion rules.
+  const aabb = p.aabb ? numbers(p.aabb, 'AABB') : null;
+  if (aabb && (aabb.length !== 6 || aabb.slice(3).some(v => v < 0))) fail('Invalid surface AABB');
+  const rawLocalBounds = aabb ? { min: aabb.slice(0, 3), max: aabb.slice(0, 3).map((v, k) => v + aabb[k + 3]) }
+    : { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+  if (!aabb) for (let i = 0; i < positions.length; i++) {
+    const k = i % 3;
+    rawLocalBounds.min[k] = Math.min(rawLocalBounds.min[k], positions[i]); rawLocalBounds.max[k] = Math.max(rawLocalBounds.max[k], positions[i]);
+  }
+  return { positions, rawLocalBounds, uvs, uvBits, indices: triangles, material: p.material ? reference(p.material) : null, format };
 }
 export function materialPath(scene, ref) {
   if (ref.kind === 'ExtResource') return scene.external.get(ref.id)?.path ?? fail(`Missing external material ${ref.id}`);
@@ -179,7 +190,8 @@ export function embeddedMeshes(scene, { excludeNode = () => false } = {}) {
         albedoResource: resource?.props.albedo_texture ? reference(resource.props.albedo_texture) : null,
         materialPath: material ? materialPath(scene, material) : '__default__' };
     });
-    meshes.push({ nodePath: node.path, surfaces });
+    const rawLocalBounds = { min: [0, 1, 2].map(k => Math.min(...surfaces.map(s => s.rawLocalBounds.min[k]))), max: [0, 1, 2].map(k => Math.max(...surfaces.map(s => s.rawLocalBounds.max[k]))) };
+    meshes.push({ nodePath: node.path, rawLocalBounds, surfaces });
   }
   return meshes;
 }

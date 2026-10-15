@@ -8,7 +8,7 @@ import { importedCell, voxelizeMeshes } from '../src/world/import/voxelize.js';
 import { CRUELTY_MATERIALS, MATERIAL_LOSSES } from '../src/world/import/crueltyMaterials.js';
 import { crueltyExcludeNode, crueltyMission, hiddenActorHelper, actorVisualAncestor } from '../src/world/import/crueltyMission.js';
 import { CRUELTY_PROFILES, crueltyProfile } from '../src/world/import/crueltyProfiles.js';
-import { crueltyInteractions, doorAncestor } from '../src/world/import/crueltyInteractions.js';
+import { crueltyInteractions, analyzeCrueltyDoors } from '../src/world/import/crueltyInteractions.js';
 import { CELL_M } from '../src/scale.js';
 import { E } from '../src/elements.js';
 import { ELEMENTS, K } from '../src/elements.js';
@@ -39,16 +39,17 @@ export function convertCrueltyMap(text, profile, { sourceRoot, gdre, magick } = 
   if (profile.blocked) throw new Error(`${profile.name} not imported: ${profile.blocked}`);
   const scene = parseGodot3Scene(text);
   const meshes = embeddedMeshes(scene, { excludeNode: crueltyExcludeNode });
+  const doorAnalysis = analyzeCrueltyDoors(scene, meshes, { cellMeters: CELL_M });
   const resources = sourceRoot ? new AppearanceResources(sourceRoot, { gdre, magick }) : null;
   if (resources) {
     const info = JSON.parse(resources.read(`res://Levels/Level${profile.level}.json`).toString('utf8'));
     if (info.name !== profile.name) throw new Error(`Canonical Level${profile.level} name mismatch: ${info.name} != ${profile.name}`);
   }
-  const appearance = resources ? new AppearanceConversion(resources, resources.context(scene, `res://Levels/Level${profile.level}.tscn`, text), meshes, CRUELTY_MATERIALS) : null;
+  const appearance = resources ? new AppearanceConversion(resources, resources.context(scene, `res://Levels/Level${profile.level}.tscn`, text), meshes, CRUELTY_MATERIALS, doorAnalysis) : null;
   // Horizontal streaming advances in16-cell steps. Shared SAT hits drive
   // physical occupancy, door ownership and authored appearance together.
   const voxel = voxelizeMeshes(meshes, CRUELTY_MATERIALS, { cellMeters: CELL_M, alignment: [16, 8, 16],
-    ownerForMesh: m => doorAncestor(m, scene), onTriangle: appearance?.onTriangle });
+    ownerForMesh: doorAnalysis.ownerForMesh, reserveBounds: doorAnalysis.sweptBounds, onTriangle: appearance?.onTriangle });
   const packedAppearance = appearance?.pack(voxel, { excludeNode: crueltyExcludeNode });
   const { words, ownedCells, ...manifest } = voxel;
   const elementNames = Object.fromEntries(Object.entries(E).map(([name, id]) => [id, name]));
@@ -64,7 +65,7 @@ export function convertCrueltyMap(text, profile, { sourceRoot, gdre, magick } = 
     id: profile.id, name: profile.name,
     plainHeight: plainHeight(voxel, words),
     mission: crueltyMission(scene, voxel, words, profile),
-    interactions: crueltyInteractions(scene, meshes, voxel, ownedCells),
+    interactions: crueltyInteractions(scene, meshes, voxel, ownedCells, doorAnalysis, appearance?.appearanceTriangleIndices),
     preview: true,
     provenance: { sourceFile: `Levels/Level${profile.level}.tscn`, sha256: createHash('sha256').update(text).digest('hex'), originalFormat: 'Godot 3 text scene format=2', distribution: 'Local conversion only; game asset redistribution permission not established', coordinateRule: 'Godot Y-up, identity axes; meters / CELL_M, then integer bounds translation; Qodot scale already applied in .tscn' },
     materialMapping: Object.fromEntries(Object.entries(usage).sort(([a], [b]) => a.localeCompare(b)).map(([path, u]) => [path, u.element])),
@@ -76,7 +77,7 @@ export function convertCrueltyMap(text, profile, { sourceRoot, gdre, magick } = 
     excludedActorVisuals: [...scene.nodes.values()].filter(n => n.props.mesh && actorVisualAncestor(n, scene)).map(n => ({ path: n.path, visible: n.props.visible ?? 'inherited', reason: 'Animated actor represented by destination NPC, not terrain' })),
     collision: { method: 'Conservative triangle/cell intersection; generated elements use existing voxel collision and destruction', originalShapes: [...scene.resources.values()].reduce((counts, r) => { if (/Shape$/.test(r.type)) counts[r.type] = (counts[r.type] ?? 0) + 1; return counts; }, {}) },
     unresolvedPackedScenes: [...scene.external.values()].filter((r) => r.type === 'PackedScene').map((r) => r.path).sort(),
-    limitations: ['Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.', 'Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.', 'Ordinary and elevator doors use exclusive-cell voxel retraction, not animated swing/slide; elevator doors close after 5 seconds when safely resident. Special gates retain unsupported progression requirements. Elevator platforms and other scripted movers remain at rest; see interactions.inventory.', 'Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.', 'All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.', 'NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.', 'Source texture names translate to audited physical materials; original texture pixels and shader effects are not copied.'],
+    limitations: ['Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.', 'Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.', 'Supported ordinary doors carry source-derived rigid motion descriptors, exclusive voxel ownership, reserved empty swept bricks and fixed appearance triangle envelopes. Timed doors close 5 seconds from activation (vertical switch_use has no timer). Unsupported transforms and special progression gates remain closed with diagnostics. Other scripted movers remain at rest; see interactions.inventory.', 'Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.', 'All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.', 'NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.', 'Source texture names translate to audited physical materials; original texture pixels and shader effects are not copied.'],
   });
   if (packedAppearance) {
     manifest.appearance = packedAppearance.metadata;

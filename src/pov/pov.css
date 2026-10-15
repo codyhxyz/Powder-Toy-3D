@@ -198,6 +198,30 @@ body.pov-locked canvas { cursor: none; }
   .pov-use.key-only .action-label { display: inline; }
   .pov-use.key-only .action-key { display: none; }
 }
+/* The recovered ordinary-door use path has no hover card. Keep an unboxed
+   accessibility/input adaptation only in Cruelty mode; no claim of original font.
+   Locked_Door.gd's explanation is plain gray (#999), not a colored panel. */
+.pov-use.source-use { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 0;
+  background: none; border: 0; border-radius: 0; box-shadow: none; text-align: center;
+  text-shadow: 0 1px 3px #000; }
+.pov-use.source-use.compact-use .pov-use-title { display: none; }
+.pov-use.source-use .pov-use-lines { color: #999; }
+.pov-use.source-use .action-buttons { grid-column: 1; grid-row: auto; justify-content: center; }
+.pov-use.source-use .action-button { gap: 6px; min-width: 44px; min-height: 28px; padding: 2px 4px;
+  background: none; border: 0; border-radius: 0; box-shadow: none; text-shadow: inherit; }
+.pov-use.source-use .action-button:hover .action-label { text-decoration: underline; text-underline-offset: 3px; }
+.pov-use.source-use .action-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.pov-use.source-use .action-key { display: inline-flex; align-items: center; justify-content: center;
+  white-space: nowrap; order: -1; padding: 0; border: 0; border-radius: 0; font-size: inherit; }
+.pov-use.source-use .action-key::before { content: '['; }
+.pov-use.source-use .action-key::after { content: ']'; }
+/* Do not obscure the focused imported interaction with the voxel's Rock label.
+   Derive this from the visible prompt so loss of focus/mode/disposal restores it. */
+body:has(.pov-use.source-use.imported-use.show) .readout { visibility: hidden; }
+@media (hover: none) and (pointer: coarse) {
+  .pov-use.source-use .action-button { min-height: 44px; }
+  .pov-use.source-use .action-key { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .pov-use { transition: none; }
 }

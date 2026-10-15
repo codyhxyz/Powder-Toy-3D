@@ -19,7 +19,7 @@ const REACH = HAND_REACH * 1.5;   // cells from the eye: a bit past the hands (N
 const SHRINE_REACH = 1.2 / CELL_M; // Noita's altar choice: stand at the plinth, not within mining reach.
 const MIN_RADIUS = 0.75;          // cells: the smallest target the crosshair has to land on
 
-export function createInteract() {
+export function createInteract({ getMode = () => 'sandbox' } = {}) {
   const providers = new Set();
   const title = h('b.pov-use-title');
   const lines = h('span.pov-use-lines');
@@ -30,14 +30,23 @@ export function createInteract() {
   let focus = null, shownKey = '';
 
   function show(t) {
-    const key = t ? `${t.id}|${t.title}|${t.lines?.join('|')}|${t.verb}` : '';
+    const sourceMode = getMode() === 'crueltySquad';
+    const imported = !!t?.id?.startsWith('imported:');
+    // Cruelty Squad's weapon.gd dispatches use directly, without a door card.
+    // This small button is our click/touch + E adaptation, not original HUD art.
+    // Refresh scope before the cache check: a live mode change can keep the target.
+    prompt.classList.toggle('source-use', sourceMode);
+    prompt.classList.toggle('imported-use', imported);
+    prompt.classList.toggle('compact-use', imported && ['Open', 'Close', 'Auto-closes'].includes(t.verb));
+    const verb = sourceMode && imported && t.verb === 'Auto-closes' ? 'Use' : t?.verb ?? 'Take';
+    const key = t ? `${sourceMode}|${t.id}|${t.title}|${t.lines?.join('|')}|${verb}` : '';
     if (key === shownKey) return;
     shownKey = key;
     prompt.classList.toggle('show', !!t);
     prompt.classList.toggle('key-only', !!t?.proximity);
-    actions.update(t ? [{ id: 'use', label: t.verb ?? 'Take', key: 'E', run: use }] : []);
+    actions.update(t ? [{ id: 'use', label: verb, key: 'E', run: use }] : []);
     if (!t) return;
-    actions.root.querySelector('button').setAttribute('aria-label', `${t.verb ?? 'Take'} ${t.title}`);
+    actions.root.querySelector('button').setAttribute('aria-label', `${verb} ${t.title}`);
     title.textContent = t.title;
     lines.replaceChildren(...(t.lines ?? []).map((l) => h('span', { text: l })));
   }
