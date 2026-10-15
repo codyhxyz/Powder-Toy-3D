@@ -1,7 +1,7 @@
 // CPU-only: every menu map, including source imports, needs a square preview.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { MAPS, mapPreviewUrl } from '../src/maps.js';
+import { MAPS, mapPreviewUrl, mapLoadingUrl } from '../src/maps.js';
 import { installLocalCrueltyMaps } from '../src/world/import/localMap.js';
 import { CRUELTY_PROFILES } from '../src/world/import/crueltyProfiles.js';
 import { E } from '../src/elements.js';
@@ -13,6 +13,8 @@ import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 assert.equal(mapPreviewUrl('willowCove'), '/maps/willowCove.webp?v=2', 'replace the four-hour cached legacy preview');
 assert.equal(mapPreviewUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'aliases use the current canonical preview');
 assert.equal(mapPreviewUrl('island'), '/maps/island.webp', 'unrelated previews keep their URLs');
+assert.equal(mapLoadingUrl('island'), mapPreviewUrl('island'), 'maps without loading art retain a thumbnail fallback');
+assert.equal(mapLoadingUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'loading fallback resolves aliases too');
 const crossing = geometry(32), cozy = shader(32);
 assert.equal(crossing.hits.length, 32 * 32 * 12);
 assert(crossing.hits.every(Number.isFinite));
@@ -41,25 +43,35 @@ try {
   globalThis.fetch = fetch;
 }
 
-for (const map of MAPS) {
-  const b = readFileSync(new URL(`../public/maps/${map.key}.webp`, import.meta.url));
-  assert.equal(b.toString('ascii', 0, 4), 'RIFF', map.key);
-  assert.equal(b.toString('ascii', 8, 12), 'WEBP', map.key);
+function imageSize(b, label) {
+  assert.equal(b.toString('ascii', 0, 4), 'RIFF', label);
+  assert.equal(b.toString('ascii', 8, 12), 'WEBP', label);
   const kind = b.toString('ascii', 12, 16);
   let width, height;
   if (kind === 'VP8 ') {
-    assert.equal(b.toString('hex', 23, 26), '9d012a', map.key);
+    assert.equal(b.toString('hex', 23, 26), '9d012a', label);
     width = b.readUInt16LE(26) & 0x3fff; height = b.readUInt16LE(28) & 0x3fff;
   } else if (kind === 'VP8X') {
     width = b.readUIntLE(24, 3) + 1; height = b.readUIntLE(27, 3) + 1;
   } else {
-    assert.equal(kind, 'VP8L', map.key);
-    assert.equal(b[20], 0x2f, map.key);
+    assert.equal(kind, 'VP8L', label);
+    assert.equal(b[20], 0x2f, label);
     const bits = b.readUInt32LE(21);
     width = (bits & 0x3fff) + 1; height = ((bits >>> 14) & 0x3fff) + 1;
   }
+  return [width, height];
+}
+for (const map of MAPS) {
+  const b = readFileSync(new URL(`../public/maps/${map.key}.webp`, import.meta.url));
+  const [width, height] = imageSize(b, map.key);
   assert.equal(width, height, `${map.key}: square preview`);
   assert.ok(width >= 400 && b.length > 100, `${map.key}: real full-resolution image`);
+  if (map.loadingArtVersion) {
+    assert.equal(mapLoadingUrl(map.key), `/maps/${map.key}-loading.webp?v=${map.loadingArtVersion}`);
+    const art = readFileSync(new URL(`../public/maps/${map.key}-loading.webp`, import.meta.url));
+    assert.deepEqual(imageSize(art, map.key), [2560, 1600], `${map.key}: native fullscreen artwork`);
+    assert.ok(art.length > b.length, `${map.key}: loading artwork carries more detail than the card`);
+  }
 }
 
 const cell = (x, y, z) => x === 1 && y === 1 && z === 1 ? E.ROCK : E.EMPTY;

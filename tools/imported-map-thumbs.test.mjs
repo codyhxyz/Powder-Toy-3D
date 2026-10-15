@@ -28,6 +28,12 @@ for (const [id, view] of Object.entries(VIEWS)) {
     const first = renderImported(scene, view, 48);
     const second = renderImported(scene, view, 48);
     assert.deepEqual(first.rgb, second.rgb, 'no random render variation');
+    const landscape = renderImported(scene, view, [80, 48]);
+    assert.equal(landscape.rgb.length, 80 * 48 * 3, 'landscape is rendered at its native dimensions');
+    for (let y = 0; y < 48; y++) {
+      assert.deepEqual(landscape.rgb.subarray((y * 80 + 16) * 3, (y * 80 + 64) * 3),
+        first.rgb.subarray(y * 48 * 3, (y + 1) * 48 * 3), 'landscape extends the view, never stretches it');
+    }
     assert.ok(first.hits > 48 * 48 * 0.4, 'meaningful scene coverage');
     assert.ok(first.materials.size >= 5, 'visible source material diversity');
     for (const [material, { at }] of first.materials) {
@@ -47,6 +53,10 @@ for (const [id, view] of Object.entries(VIEWS)) {
     assert.ok(+colours > 1000, 'not a flat placeholder');
     assert.ok(+entropy > 0.4, 'nontrivial rendered image detail');
     assert.ok(statSync(file).size > 4000);
+    const loading = fileURLToPath(new URL(`../public/maps/${id}-loading.webp`, import.meta.url));
+    const loadingDimensions = execFileSync('magick', ['identify', '-format', '%wx%h', loading], { encoding: 'utf8' });
+    assert.equal(loadingDimensions, '2560x1600', 'dedicated fullscreen artwork, not the 400px thumbnail');
+    assert.ok(statSync(loading).size > statSync(file).size);
     console.log(`${id}: ${occupied} shipped cells, ${sourceMaterials.size} source / ${first.materials.size} visible materials, ${colours} encoded colours, entropy ${entropy}`);
   });
 }

@@ -1,6 +1,6 @@
 import { h } from './dom.js';
 import { logoMark } from './logo.js';
-import { MAPS, mapByKey, mapsFor, isWorld, sizeTag, mapPreviewUrl as THUMB } from '../maps.js';
+import { MAPS, mapByKey, mapsFor, isWorld, sizeTag, mapPreviewUrl as THUMB, mapLoadingUrl } from '../maps.js';
 import { listSaves, getSave, putSave, deleteSave, downloadSave, pickSaveFile } from '../saves/local.js';
 import { readSaveHeader } from '../saves/format.js';
 import { MODEICONS, MODEICON_BOX } from './modeicons.js';
@@ -91,6 +91,22 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   }
 
   const backdrop = h('div.mm-backdrop');
+  const decodedArt = new Set();
+  let backdropUrl = '';
+  const mapBackdrop = (m) => {
+    const url = mapLoadingUrl(m.key);
+    backdropUrl = url;
+    backdrop.classList.toggle('sharp', !!m.loadingArtVersion && decodedArt.has(url));
+    // Fetch the full-size artwork while choosing, before shader compilation stalls the page.
+    backdrop.style.backgroundImage = `url(${url}), url(${THUMB(m.key)})`;
+    if (!m.loadingArtVersion || decodedArt.has(url)) return;
+    const image = new Image();
+    image.src = url;
+    image.decode().then(() => {
+      decodedArt.add(url);
+      if (backdropUrl === url) backdrop.classList.add('sharp');
+    }).catch(() => {}); // Missing artwork keeps the thumbnail blurred.
+  };
   const nav = h('nav.mm-modes', { 'aria-label': 'Gamemodes' });
   const modeEmblem = h('div.mm-emblem');
   const modeTitle = h('h2');
@@ -196,7 +212,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     pick = m;
     for (const c of cards) c.card.setAttribute('aria-selected', String(c.m === m));
     pickThumb.src = THUMB(m.key);
-    backdrop.style.backgroundImage = `url(${THUMB(m.key)})`;
+    mapBackdrop(m);
     pickName.textContent = m.name;
     pickMeta.innerHTML = modeIcon(isWorld(m) ? 'world' : 'box', 'mm-ico');
     pickMeta.append(isWorld(m) ? `World · ${dimsText(m)}, simulated around you` : `Box · ${dimsText(m)}`);
@@ -252,6 +268,8 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     pickThumb.src = sv?.thumbnail ?? '';
     pickThumb.style.visibility = sv?.thumbnail ? '' : 'hidden';
     backdrop.style.backgroundImage = sv?.thumbnail ? `url(${sv.thumbnail})` : '';
+    backdropUrl = '';
+    backdrop.classList.remove('sharp');
     pickName.textContent = sv ? sv.name : 'No saves yet';
     pickMeta.textContent = sv ? [sv.mapName ?? 'Custom', sv.world ? 'World' : (sv.dims ?? []).join(' × '), `${(sv.bytes / MB).toFixed(1)} MB`].join(' · ') : '';
     pickDesc.textContent = sv ? `Saved ${fmtDate(sv.created)}` : '';
@@ -363,7 +381,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     loading(status, { map: mk, mode: md, name = null } = {}) {
       busy = true;
       if (md && modes.some((m) => m.key === md)) modeKey = md;
-      if (mapByKey(mk)) { pick = mapByKey(mk); backdrop.style.backgroundImage = `url(${THUMB(pick.key)})`; }
+      if (mapByKey(mk)) { pick = mapByKey(mk); mapBackdrop(pick); }
       const mo = modes.find((m) => m.key === modeKey);
       const save = name != null;   // (a save brings its own cells: no map's world step)
       loadMode.textContent = save ? 'Save' : mo.name;
