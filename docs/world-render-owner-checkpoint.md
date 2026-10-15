@@ -182,3 +182,17 @@ Top-level restore leases expire when ledger ownership advances. Retained old
 images remain pinned, but their expired proofs cannot admit superseded GI.
 CPU fake-native/actual-class tests plus imports/build pass; no GPU/browser parity
 or deployment evidence is claimed.
+
+## Follow-up: actual data owner (explicit install, still no App activation)
+
+`src/wire/worldRender.js` now constructs and runs the real ordinary transaction:
+Source/Fields/CELL, submitted metadata, sparse Sun, all SOURCE slabs before
+private previous-GI gathers, current six-pass Glow, final LIGHT/Sun publication,
+and accepted-only history/metadata adoption after complete scene/native feedback
+and confirmed Post. See [the exact Parent API](world-render-data-owner.md).
+Intermediate Atlas publications are BUILDING-only; use owner probe/current
+handles, never the adapter's publication as scene admission. This is not a game
+route switch or GPU/visual proof. Fields capture clocks may advance on an
+explicitly abandoned cut while accepted GI/metadata clocks do not; this separate
+clock contract was explicitly supervisor-approved. Fatal uncertain suffixes
+retain pins and block admission; terminal graphics reclamation is not supplied.
