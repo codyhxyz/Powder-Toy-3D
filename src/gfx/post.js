@@ -1220,6 +1220,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const stagedTargets = [], sceneTickets = new WeakMap(), pendingScenes = new Set(), liveScenes = new Set();
   let stageContext = null, sceneIdentity = null, sceneGeneration = 0, sceneSequence = 0, admittedSequence = 0;
   let admitting = false, disposed = false, stageCameraKey = null, lastImage = null, stageBlit = null;
+  let pendingSceneSubmission = null;
   const imageStamp = (camera, s) => {
     camera.updateMatrixWorld();
     // Composite-only controls don't change radiance, bloom or the histogram.
@@ -1779,7 +1780,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     if (!submission?.submitted?.then) throw new TypeError('final-submission ticket required');
     const queue = gpu.queue ?? gpu.device.queue;
     if (!queue?.onSubmittedWorkDone) throw new TypeError('queue completion service required');
-    const done = Promise.resolve(submission.submitted).then(() => queue.onSubmittedWorkDone());
+    const done = Promise.resolve(submission.submitted).then(()=>null,error=>({error})).then(async failure=>{
+      await queue.onSubmittedWorkDone();
+      if(failure)throw failure.error;
+    });
     done.catch(() => {});return done;
   }
   function retireImage(image) {
@@ -1849,7 +1853,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       cameraKey:camera, reservation:null, onCommit:options.onCommit};
     const ticket = Object.freeze({id:t.id,identity:t.identity,publication:t.publication,feedbackIdentity:t.feedbackIdentity,
       worldModel:t.worldModel ? Object.freeze([...t.worldModel.elements]) : null,
-      width:out.width,height:out.height,get status(){return t.status;},get completion(){return t.completion;},recorded:submitted});
+      width:out.width,height:out.height,get status(){return t.status;},get error(){return t.error;},
+      get confirmation(){return t.confirmation;},get completion(){return t.completion;},recorded:submitted});
     sceneTickets.set(ticket,t);pendingScenes.add(t);liveScenes.add(t);
     Promise.resolve(options.submission.submitted).then(() => {t.submitted = true;}, () => retireScene(t,'failed'));
     const previousTarget = active, previousPixScale = pixScale?.value;
@@ -1895,12 +1900,15 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       retireScene(t,'discarded');return false;
     }
     if (!post.isReady || compositeFor(t.out.format).state !== 'ready') return false;
+    // A following TAA resolve cannot depend on a final encoder whose
+    // submission is still unknown. This waits for CPU submission, not GPU idle.
+    if(pendingSceneSubmission?.generation===sceneGeneration)return false;
     // TAAU owns resizeable history targets. Do not resize them while an older
     // admitted scene still has an uncompleted final consumer.
     if (!t.still && (size.some((n,i)=>n!==t.sizes.size[i]) || inSize.some((n,i)=>n!==t.sizes.inSize[i]))
       && [...liveScenes].some(other=>other!==t && other.status==='committed')) return false;
     const finished = sceneFence(options.submission);t.uses.push(finished);
-    admitting = true;
+    admitting = true;let image = null;
     try {
       if (t.still) {
         post.onPass?.('scene',{kind:'render'});
@@ -1913,7 +1921,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         prevPos.setFromMatrixPosition(t.camera.matrixWorld);prevQuat.setFromRotationMatrix(t.camera.matrixWorld);
         curVP.copy(t.curVP);jitVP.copy(t.jitVP);jitter = [...t.jitter];
         t.reservation?.commit(t.camera);
-        let image = null, out = t.out;
+        let out = t.out;
         if (out.canvas) {
           image = {texture:gpu.createTexture({label:'last admitted scene',size:t.sizes.size,format:out.format,usage:TEX.RENDER_ATTACHMENT|TEX.TEXTURE_BINDING|TEX.COPY_SRC}),
             width:out.width,height:out.height,uses:[finished],retired:false};
@@ -1923,11 +1931,26 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           post.onPass?.('scene',{kind:'render'});
           post.finish({dt:t.dt,viewmodel:t.viewmodel,glow:t.glow,sceneTarget:t.slot.target,frameSettings:t.settings,
             framePresentation:t.presentation,frameSky:t.sky,output:out,target:t.out.canvas ? null : options.target ?? t.out});
-          if (image) {blitLast(image);if(lastImage)retireImage(lastImage);lastImage=image;}
+          if (image) blitLast(image);
         } catch (e) {if(image)retireImage(image);historyValid=false;throw e;}
         admittedSequence = t.id;
       }
-      retireScene(t,'committed');syncHook(t.onCommit,ticket);return true;
+      retireScene(t,'admitted');
+      pendingSceneSubmission=t;
+      const fail=error=>{
+        t.status='failed';t.error=error;
+        if(image){if(lastImage===image)lastImage=null;retireImage(image);}
+        if(t.generation===sceneGeneration&&sameIdentity(t.identity,sceneIdentity)){historyValid=false;keptPost=null;}
+        return false;
+      };
+      t.confirmation=Promise.resolve(options.submission.submitted).then(()=>{
+        if(disposed||t.generation!==sceneGeneration||!sameIdentity(t.identity,sceneIdentity)){
+          t.status='discarded';if(image)retireImage(image);return false;
+        }
+        if(image){if(lastImage)retireImage(lastImage);lastImage=image;}
+        t.status='committed';syncHook(t.onCommit,ticket);return true;
+      },fail).catch(fail).finally(()=>{if(pendingSceneSubmission===t)pendingSceneSubmission=null;});
+      return true;
     } catch (e) {retireScene(t,'failed');throw e;} finally {admitting = false;}
   }
 

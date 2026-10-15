@@ -73,10 +73,12 @@ test('accepted snapshots survive newer camera/physics; only monotonic complete t
   assert.equal(f.resolved[0].elements[12],12);assert.equal(f.camera.position.x,24);assert.equal(f.camera.matrixWorld.elements[12],24);
   assert.equal(f.admit(a).accepted,false);assert.equal(callbacks,0);assert.equal(f.node._jitterIndex,1);
   const taaCount=f.events.filter(e=>e==='taa').length;
+  assert.equal(b.ticket.status,'admitted');assert.equal(f.post.presentLast(),false);
+  accepted.s.resolve();assert.equal(await b.ticket.confirmation,true);
   const re=f.submission();assert.equal(f.post.presentLast({submission:re}),true);
   assert.equal(f.events.filter(e=>e==='taa').length,taaCount,'presentLast never resolves or meters again');
   assert.ok(f.events.includes('blit rgba8unorm'));
-  assert.equal(b.opts.publication.releases,0);accepted.s.resolve();re.resolve();await turn();await f.completeAll();
+  assert.equal(b.opts.publication.releases,0);re.resolve();await turn();await f.completeAll();
   assert.equal(b.opts.publication.releases,1);f.post.dispose();await turn();
 });
 test('bounded target pool and copied viewmodel/glow stay pinned through final submitted use and queue completion',async()=>{
@@ -116,8 +118,8 @@ test('staged stills validate before tone mapping, skip temporal state, and async
 });
 test('a rejected scene after admission changes neither previous matrices nor last image; next accepted motion uses last accepted camera',async()=>{
   const f=fixture();await f.post.sceneReady;let callbacks=0;
-  const a=f.record(f.options({onCommit(){callbacks++;}}));await f.submit(a.opts);const first=f.admit(a);assert.ok(first.accepted);assert.equal(callbacks,1);
-  first.s.resolve();await turn();await f.completeAll();
+  const a=f.record(f.options({onCommit(){callbacks++;}}));await f.submit(a.opts);const first=f.admit(a);assert.ok(first.accepted);assert.equal(callbacks,0);
+  first.s.resolve();assert.equal(await a.ticket.confirmation,true);assert.equal(callbacks,1);await f.completeAll();
   const originalProjection=f.camera.projectionMatrix.clone();
   f.camera.position.x=.01;f.camera.updateMatrixWorld();const b=f.record();await f.submit(b.opts);
   assert.equal(f.admit(b,{feedback:{incomplete:true}}).accepted,false);assert.equal(f.node._jitterIndex,1);assert.equal(callbacks,1);
@@ -138,6 +140,42 @@ test('partial native hook errors close the pass, restore jitter and retain orpha
   assert.ok(f.events.includes('end:scene'));assert.equal(f.node._jitterIndex,0);assert.equal(f.events.includes('taa'),false);
   assert.equal(opts.publication.releases,0);await f.submit(opts);assert.equal(opts.publication.releases,0);
   await f.completeAll();assert.equal(opts.publication.releases,1);f.post.dispose();await turn();
+});
+test('discarded scene submissions retain copied images and publication pins until the automatic prefix finishes',async()=>{
+  const f=fixture();await f.post.sceneReady;
+  const a=f.record(f.options({viewmodel:f.gpu.createTexture()})),image=f.copies[0].b.texture;
+  a.opts.submission.reject(new Error('final scene encoder discarded'));await turn();
+  assert.equal(a.ticket.status,'failed');assert(f.gpu.queue);assert.equal(a.opts.publication.releases,0);
+  assert.equal(image.dead,false);await f.completeAll();
+  assert.equal(a.opts.publication.releases,1);assert.equal(image.dead,true);f.post.dispose();await turn();
+});
+test('final post rejection preserves the previous complete image, blocks dependent admission and invalidates tentative TAA',async()=>{
+  const f=fixture();await f.post.sceneReady;let callbacks=0;
+  const a=f.record(f.options({onCommit(){callbacks++;}}));await f.submit(a.opts);
+  const first=f.admit(a);first.s.resolve();assert.equal(await a.ticket.confirmation,true);await f.completeAll();
+  const oldImage=f.post.allTargets.at(-1);
+  const b=f.record(f.options({onCommit(){callbacks+=100;}}));await f.submit(b.opts);const second=f.admit(b);
+  assert(second.accepted);assert.equal(b.ticket.status,'admitted');assert.equal(f.post.allTargets.at(-1),oldImage);
+  const c=f.record();await f.submit(c.opts);assert.equal(f.admit(c).accepted,false,'no TAA dependency on an unconfirmed final encoder');
+  second.s.reject(new Error('final post encoder discarded'));assert.equal(await b.ticket.confirmation,false);
+  assert.equal(b.ticket.status,'failed');assert.match(b.ticket.error.message,/discarded/);assert.equal(callbacks,1);
+  assert.equal(f.post.allTargets.at(-1),oldImage);assert.equal(oldImage.dead,false);
+  const show=f.submission();assert(f.post.presentLast({submission:show}));show.resolve();
+  const retry=f.admit(c);assert(retry.accepted);
+  assert.equal(f.draws.filter(d=>d.name==='motion').at(-1).params.historyValid,false);
+  retry.s.resolve();assert.equal(await c.ticket.confirmation,true);await f.completeAll();
+  assert.equal(b.opts.publication.releases,1);f.post.dispose();await turn();
+});
+test('old-epoch submission rejection cannot clear a new-epoch pending admission or its temporal history',async()=>{
+  const f=fixture();await f.post.sceneReady;
+  const a=f.record();await f.submit(a.opts);const old=f.admit(a);
+  const identity={...f.identity,epoch:2};f.post.setSceneIdentity(identity);
+  const b=f.record(f.options({identity}));await f.submit(b.opts);const fresh=f.admit(b);assert(fresh.accepted);
+  old.s.reject(new Error('old epoch discarded'));assert.equal(await a.ticket.confirmation,false);
+  const c=f.record(f.options({identity}));await f.submit(c.opts);assert.equal(f.admit(c).accepted,false);
+  fresh.s.resolve();assert.equal(await b.ticket.confirmation,true);
+  const next=f.admit(c);assert(next.accepted);assert.equal(f.draws.filter(d=>d.name==='motion').at(-1).params.historyValid,true);
+  next.s.resolve();await c.ticket.confirmation;await f.completeAll();f.post.dispose();await turn();
 });
 test('BOX frame packing matches the pre-edit 2cafd380 byte fixture',()=>{
   const camera=new PerspectiveCamera(60,1.5,.25,4096);camera.coordinateSystem=WebGPUCoordinateSystem;

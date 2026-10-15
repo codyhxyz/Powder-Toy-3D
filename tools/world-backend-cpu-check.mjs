@@ -168,6 +168,9 @@ test('actual world assembly, immutable frame conversion, view/pick resources and
   assert.equal(realistic.state,'ready');assert.ok(realistic.pipeline);
   log.length=0;assert.equal(candidate.recordDraw(pass),true);assert.deepEqual(log,['pipe',0,1,2,3,14]);
   await candidate.draw(pass,{view:'heat',curved:true});assert.equal(log.at(-1),3);
+  const drawOptions={view:'realistic',detail:{},curved:false},drawing=candidate.draw(pass,drawOptions);
+  drawOptions.view='heat';drawOptions.curved=true;drawOptions.detail.media=true;
+  await drawing;assert.equal(log.at(-1),14,'draw uses the privately captured view/detail/curvature after await');
   const encoder={beginComputePass(){return {...pass,dispatchWorkgroups:n=>log.push(['dispatch',n]),end:()=>log.push('end')};}};
   const pickParams={ro:[[1,2,3,0]],rd:[[1,0,0,0]],warp:[[0,0,0,1]],slot:[[0,0,0,0]],n:1};
   const pickOutput=gpu.device.createBuffer({size:32}),beforePendingPick=[...log];

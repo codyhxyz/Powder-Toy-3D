@@ -141,8 +141,10 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       return Object.freeze({snapshot,feedback,groups,params,requiredProtocol:'submit -> read entire feedback -> withhold entire incomplete candidate; retain resources until final submitted use completes',
         recordDraw,
         async draw(pass,options={}) {
-          valid();await viewReady(options.view,options.detail,options.curved);valid();
-          recordDraw(pass,options);return {requiresFeedback:true};
+          valid();const captured={view:options.view??'realistic',detail:{...options.detail},curved:options.curved??false};
+          await viewReady(captured.view,captured.detail,captured.curved);valid();
+          if(!recordDraw(pass,captured))throw new Error('World draw pipeline unavailable after compilation');
+          return {requiresFeedback:true};
         },
         recordPickReady(frame,options) {valid();if(pickState.state!=='ready')return false;return recordCapturedPick(frame,capturePick(options));},
         async recordPick(frame,options) {
