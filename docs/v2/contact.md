@@ -83,18 +83,6 @@ before jets/gather. Sleeping halo cells can retain transient low bits, but
 jets/gather reject sleeping faces before consuming limiter bits. There is no
 ACT resize, dispatch-argument change, persistent-state or save-format change.
 
-Production WGSL reads contact rows through schema-generated scalar EV getters,
-not temporary 37-field `CTRow` aggregates. Each local view snapshots its numeric
-EV base at the original row declaration, including before `ctElectric`/`ctPhase`
-can change the cell ID; direct field reads use the same signed-ID guard. Invalid
-IDs return typed zeros before EV indexing, and valid fields retain raw i32/f32
-bits. The full `ctRow(id)->CTRow` ABI remains available for probes/custom callers;
-EV layout, bindings, `CTRx`, rule order and original-core packing are unchanged.
-The restricted lowering rejects escapes, shadowing and unsupported shapes.
-`tools/v2/contact-row-view-check.mjs` checks all 91×37 fields, source equivalence,
-phase-change snapshots and the tick-48 opaque SMOKE→EMPTY→SMOKE history on CPU.
-This does not establish GPU compile-time or runtime performance.
-
 ### Dynamics-only helpers
 
 `specialContactWGSL` is a small standalone declaration string, without the
