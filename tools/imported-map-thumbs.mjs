@@ -1,5 +1,6 @@
 // CPU voxel renders of the shipped Cruelty source imports, NOT screenshots.
-// Rebuild: node tools/imported-map-thumbs.mjs [profile.id ...] (ImageMagick required).
+// Rebuild: node tools/imported-map-thumbs.mjs [--loading] [profile.id ...] (ImageMagick required).
+// --loading renders dedicated 2560×1600 artwork from the cells, never upscales the card.
 // Orthographic dollhouse views use the game's element colours, not source texture
 // pixels (which the import does not ship). No actors, props or invented geometry.
 // The three interior views are explicitly roof/upper-storey CUTAWAYS: cells at
@@ -49,6 +50,7 @@ export function loadScene(id) {
 }
 
 export function renderImported(scene, view, size = 400) {
+  const [width, height] = Array.isArray(size) ? size : [size, size];
   const bounds = [...scene.size];
   bounds[1] = Math.min(bounds[1], view.ceiling ?? bounds[1]);
   const offset = unit(view.offset), forward = offset.map(x => -x);
@@ -57,14 +59,14 @@ export function renderImported(scene, view, size = 400) {
   const eye = view.target.map((v, a) => v + offset[a] * distance);
   const sun = unit([-0.55, 0.85, -0.35]);
   const sky = [174, 201, 223];
-  const rgb = Buffer.alloc(size * size * 3), materials = new Map();
+  const rgb = Buffer.alloc(width * height * 3), materials = new Map();
   let hits = 0;
   // Use the scene's actual sparse lookup; trace bounds apply only the documented
   // horizontal cut plane. Nothing is filled, recoloured or synthesized.
   const cell = (x, y, z) => scene.cell(x, y, z);
-  for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
-    const u = ((px + 0.5) / size - 0.5) * view.span;
-    const v = (0.5 - (py + 0.5) / size) * view.span;
+  for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
+    const u = ((px + 0.5) / width - 0.5) * view.span * width / height;
+    const v = (0.5 - (py + 0.5) / height) * view.span;
     const origin = eye.map((x, a) => x + right[a] * u + up[a] * v);
     const hit = trace(origin, forward, bounds, cell);
     let colour = sky;
@@ -79,20 +81,23 @@ export function renderImported(scene, view, size = 400) {
       const shade = 0.48 + light * (shadow ? 0.1 : 0.62);
       colour = palette[hit.id].map(x => x * shade);
     }
-    for (let a = 0; a < 3; a++) rgb[(py * size + px) * 3 + a] = Math.max(0, Math.min(255, Math.round(colour[a])));
+    for (let a = 0; a < 3; a++) rgb[(py * width + px) * 3 + a] = Math.max(0, Math.min(255, Math.round(colour[a])));
   }
   return { rgb, hits, materials };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const ids = process.argv.slice(2);
+  const loading = process.argv.includes('--loading');
+  const ids = process.argv.slice(2).filter(a => a !== '--loading');
+  const size = loading ? [2560, 1600] : [400, 400];
+  const quality = loading ? 90 : 80;
   for (const id of ids.length ? ids : Object.keys(VIEWS)) {
     const start = performance.now();
     const scene = loadScene(id);
-    const { rgb, hits, materials } = renderImported(scene, VIEWS[id]);
-    const file = fileURLToPath(new URL(`../public/maps/${id}.webp`, import.meta.url));
-    execFileSync('magick', ['ppm:-', '-quality', '80', file], { input: Buffer.concat([Buffer.from('P6\n400 400\n255\n'), rgb]) });
-    console.log(JSON.stringify({ id, file, size: [400, 400], quality: 80, cutaway: VIEWS[id].ceiling ?? null,
+    const { rgb, hits, materials } = renderImported(scene, VIEWS[id], size);
+    const file = fileURLToPath(new URL(`../public/maps/${id}${loading ? '-loading' : ''}.webp`, import.meta.url));
+    execFileSync('magick', ['ppm:-', '-quality', String(quality), file], { input: Buffer.concat([Buffer.from(`P6\n${size.join(' ')}\n255\n`), rgb]) });
+    console.log(JSON.stringify({ id, file, size, quality, cutaway: VIEWS[id].ceiling ?? null,
       hits, materials: Object.fromEntries([...materials].map(([id, stats]) => [ELEMENTS[id].name, stats])),
       seconds: +((performance.now() - start) / 1000).toFixed(2), gpuSeconds: 0 }));
   }

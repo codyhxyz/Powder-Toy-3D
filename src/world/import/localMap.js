@@ -19,7 +19,7 @@ async function installProfile(profile, signal) {
   const omitted = scene.mission.placementFailures.filter((p) => p.role === 'guard').length;
   const blocked = scene.mission.available === false;
   const map = { key: profile.id, name: profile.name, size: 'world', scene: scene.key, dims: scene.size,
-    modes: blocked ? [] : ['crueltySquad'], mission: scene.mission,
+    modes: blocked ? [] : ['crueltySquad'], mission: scene.mission, loadingArtVersion: 1,
     desc: `The original Level ${profile.level} layout, converted into physical voxels. ${blocked
       ? 'Sandbox only: a target has no clear standing volume for this game\'s body. '
       : `${omitted ? `${omitted} obstructed guard${omitted === 1 ? '' : 's'} omitted. ` : ''}`}Characters are this game's NPCs, not the original AI. Use E to open ordinary doors; special gates need unsupported progression. Other script losses are inventoried in the manifest.` };

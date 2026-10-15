@@ -108,6 +108,10 @@ export function mapPreviewUrl(key) {
   const map = mapByKey(key), revision = map?.previewVersion;
   return `/maps/${map?.key ?? key}.webp${revision ? `?v=${revision}` : ''}`;
 }
+export function mapLoadingUrl(key) {
+  const map = mapByKey(key);
+  return map?.loadingArtVersion ? `/maps/${map.key}-loading.webp?v=${map.loadingArtVersion}` : mapPreviewUrl(key);
+}
 
 // The map a grid size and scene are (app.js settings), else null (a box size no map has: '64' with the lab is
 // still the lab; only Empty is size-free).

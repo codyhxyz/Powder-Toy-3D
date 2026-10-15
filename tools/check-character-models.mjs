@@ -98,8 +98,30 @@ for (const file of ['body', 'woman']) {
   }
   if (file === 'woman') {
     assert.ok(garb.robe && garb.hoops && garb.bung, 'woman stands in a barrel');
+    assert.equal(garb.hoops.index?.count, 3024, 'all six iron bands retain their torus triangle indices');
+    for (const i of garb.hoops.index.array) assert.ok(i < garb.hoops.attributes.position.count);
+    const barrelBone = body.skeleton.bones.findIndex(b => b.name === 'spine_01');
+    for (const geo of [garb.robe, garb.hoops, garb.bung]) {
+      const { skinIndex, skinWeight } = geo.attributes;
+      for (let i = 0; i < skinIndex.count; i++) {
+        assert.equal(skinIndex.getX(i), barrelBone, 'wood, iron and cork share one rigid attachment');
+        assert.equal(skinWeight.getX(i), 1);
+        assert.equal(skinWeight.getY(i) + skinWeight.getZ(i) + skinWeight.getW(i), 0);
+      }
+    }
     garb.robe.computeBoundingBox();
     assert.ok(garb.robe.boundingBox.max.y - garb.robe.boundingBox.min.y > 0.4, 'barrel covers the torso');
+    const { position, normal } = garb.robe.attributes;
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), face = new THREE.Vector3();
+    for (let i = 0; i < position.count; i += 3) {
+      a.fromBufferAttribute(position, i); b.fromBufferAttribute(position, i + 1); c.fromBufferAttribute(position, i + 2);
+      face.subVectors(b, a).cross(c.sub(a)).normalize();
+      assert.ok(face.dot(b.fromBufferAttribute(normal, i)) > 0.999, 'plank face normals match their triangles');
+      if (Math.abs(face.y) > 0.999) {
+        assert.equal(Math.sign(face.y), Math.abs(a.y - garb.robe.boundingBox.min.y) < 1e-6 ? -1 : 1,
+          'plank bottom faces down and top faces up');
+      }
+    }
     assert.ok(armsClearBarrel(gltf, body, [garb.robe, garb.hoops]), 'hanging arms stay outside the staves');
   } else assert.equal(garb.robe, undefined);
   hat.computeBoundingBox();
