@@ -86,7 +86,8 @@ jobs:
             sudo apt-get update && sudo apt-get install -y imagemagick
           fi
       - run: node --test tools/appearance-conversion-check.mjs tools/check-source-appearance.mjs tools/check-cruelty-post.mjs
-      - run: node --test tools/imported-interactions-check.mjs && node tools/imported-door-passage-check.mjs
+      - run: node --test tools/imported-interactions-check.mjs tools/door-motion-check.mjs tools/imported-door-motion-check.mjs && node tools/imported-door-passage-check.mjs
+      - run: node tools/cruelty-use-cpu-check.mjs   # compact source-only prompt, real actions and keyboard/touch guards
       - run: node tools/ladder-cpu-check.mjs && node tools/cruelty-enemies-cpu-check.mjs
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
       - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust

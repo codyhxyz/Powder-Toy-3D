@@ -1,9 +1,8 @@
 # Imported Cruelty Squad interactions
 
 Source motion and fixed appearance-envelope metadata are specified in
-[Door motion conversion ABI](cruelty-door-motion-conversion.md). That initial
-conversion-only work did not regenerate public assets or claim runtime integration;
-the motion-enabled runtime described below consumes that ABI.
+[Door motion conversion ABI](cruelty-door-motion-conversion.md). All four published
+maps are regenerated through that shared pipeline and consumed by the runtime below.
 
 ## Evidence and supported adaptation
 
@@ -55,8 +54,7 @@ occlusion clears placement, not life, so cycles cannot shrink or resurrect leave
 Foreign replacements and static overlaps are never overwritten. Same-element
 repainting cannot be distinguished from an original live cell.
 
-Manifests without `door.motion` retain the legacy instant retraction path. This
-runtime change alone does not regenerate shipped map payloads.
+Manifests without `door.motion` retain the legacy instant retraction path.
 
 The same sparse words serve CPU terrain and every subscribed GPU scene generator
 (including far generation). Only modified packed-word runs upload on interaction,
@@ -64,12 +62,17 @@ never whole-map writes per frame. World streaming is locked through live-mask
 readback and canonical updates; motion requires the whole swept envelope resident.
 Outside the window poses freeze without blocking streaming, then resume. Each
 step checks a conservative continuous leaf-path bound against players/NPCs; pending
-time never accumulates into a teleport (at most 1/30 second of motion per edit).
+time is retained across GPU readback, with catch-up bounded to 100 ms of source
+motion per edit. Round-robin scheduling advances simultaneous doors independently.
+Zero-delta renders do not advance motion. Actor obstructions clear accumulated time.
 Moving ordinary doors also wake the existing timer-driven world update path.
 `WorldWindow.load` resets changed canonical words and artwork before generation.
 Save-state v2 includes actual/desired progress, logical target, alive/placed masks,
 timer and captured foreign/cleared-path canonical overrides. Validation finishes before
-mutation. V1 states migrate to endpoints; missing states reset to source doors.
+mutation. V1 open states migrate to the open endpoint with unplaced logical
+survivors: old saves contained a retracted leaf, not physical endpoint cells.
+Guarded live edits place these survivors without overwriting endpoint terrain.
+Missing states reset to source doors.
 Capture waits for transactions started during shader preparation too. Timers
 continue outside first-person view, but stop when the simulation is paused.
 
@@ -83,7 +86,8 @@ WGSL and global resource bindings are unchanged.
 CPU regression: `node --test tools/imported-door-motion-check.mjs tools/imported-interactions-check.mjs tools/check-source-appearance.mjs`.
 This includes real runtime orchestration against snapshot-neighbour CPU emulation,
 affine/art uploads, save/reset/epoch tests, WGSL reflection and CPU Naga. GPU/browser
-execution remains a separate parent-owned validation step.
+validation uses `tools/cruelty-door-browser-check.mjs`: real click/E, intermediate
+native GPU poses and readback, moving artwork records, reversal and mode-scoped UI.
 
 Conservative overlap ownership may leave frame/static voxels in the opening.
 Level 4 `QodotMap/entity_175_Door` and `QodotMap/entity_320_Door` have no exclusive

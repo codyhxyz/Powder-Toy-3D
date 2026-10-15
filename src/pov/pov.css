@@ -211,7 +211,8 @@ body.pov-locked canvas { cursor: none; }
   background: none; border: 0; border-radius: 0; box-shadow: none; text-shadow: inherit; }
 .pov-use.source-use .action-button:hover .action-label { text-decoration: underline; text-underline-offset: 3px; }
 .pov-use.source-use .action-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
-.pov-use.source-use .action-key { order: -1; padding: 0; border: 0; border-radius: 0; font-size: inherit; }
+.pov-use.source-use .action-key { display: inline-flex; align-items: center; justify-content: center;
+  white-space: nowrap; order: -1; padding: 0; border: 0; border-radius: 0; font-size: inherit; }
 .pov-use.source-use .action-key::before { content: '['; }
 .pov-use.source-use .action-key::after { content: ']'; }
 /* Do not obscure the focused imported interaction with the voxel's Rock label.
@@ -219,6 +220,7 @@ body.pov-locked canvas { cursor: none; }
 body:has(.pov-use.source-use.imported-use.show) .readout { visibility: hidden; }
 @media (hover: none) and (pointer: coarse) {
   .pov-use.source-use .action-button { min-height: 44px; }
+  .pov-use.source-use .action-key { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pov-use { transition: none; }

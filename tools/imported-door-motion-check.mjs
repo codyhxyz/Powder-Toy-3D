@@ -72,7 +72,7 @@ function fixture({ swing=false, duration=0.4, timer=null, points=[[10,4,10],[11,
   const state=()=>scene.interactionState.states.get('door');
   async function tick(dt=1/30) { runtime.update(dt); await world.pending; }
   async function finish() { for(let i=0;i<100&&state().progress!==state().desiredProgress;i++) await tick(); assert.equal(state().progress,state().desiredProgress); }
-  return {map,door,scene,sim,world,app,runtime,gpuCells,bodies,retired,reads,edits,state,tick,finish,setReady:p=>{delayReady=p;},setReadHook:fn=>{readHook=fn;}};
+  return {map,door,scene,sim,world,app,runtime,gpuCells,bodies,retired,reads,edits,state,tick,finish,setCell:set,setReady:p=>{delayReady=p;},setReadHook:fn=>{readHook=fn;}};
 }
 function checkCanonical(f) {
   for(const [k,v] of f.gpuCells) assert.equal(f.scene.cell(...k.split(',').map(Number)),v.id,k);
@@ -145,7 +145,7 @@ test('occupied player/NPC path defers; timed wake, pending clock, bounded jumps,
   assert.equal(await f.runtime.use(f.door),false,'manual timed close ignored');
   f.bodies.push({pos:{x:7,y:4,z:10},size:0.1,height:0.5});
   await f.tick(5); assert.equal(f.state().progress,1); assert.equal(f.state().desiredProgress,0);
-  f.bodies.length=0; await f.tick(100); assert.ok(f.state().progress>=1-(1/30)/0.4-1e-10,'long dt does not teleport'); await f.finish();
+  f.bodies.length=0; await f.tick(100); assert.ok(f.state().progress>=1-0.1/0.4-1e-10,'long dt does not teleport'); await f.finish();
   const g=fixture({timer:5}); await g.runtime.use(g.door); g.world.pending=Promise.resolve(); g.runtime.update(2); assert.equal(g.state().elapsed,2); g.world.pending=null;
   g.sim.origin.x=20; await g.tick(); assert.equal(g.state().progress,0); assert.equal(g.runtime.timedDoor,false); g.sim.origin.x=0; await g.tick(); assert.ok(g.state().progress>0);
 });
@@ -160,6 +160,65 @@ test('midpose save v2, v1 migration, invalid-save atomicity, retry reset and art
   f.scene.reset(); assert.equal(f.scene.cell(10,4,10),E.WOOD); assert.equal(f.scene.interactionState.states.size,0);
   f.scene.interactionState.restore({version:1,doors:[{sourcePath:'door',open:true,alive:[0,1,1],elapsed:2}]});
   assert.equal(f.state().progress,1); assert.equal(f.state().elapsed,2); assert.deepEqual([...f.state().alive],[0,1,1]);
+});
+
+test('legacy-open saves keep logical survivors unplaced and close without clobbering endpoint terrain',async()=>{
+  const f=fixture({staticPoints:[[6,4,10]]});
+  for(const p of doorCellPositions(f.map,f.door,0)) f.gpuCells.delete(key(p));
+  f.scene.interactionState.restore({version:1,doors:[{sourcePath:'door',open:true,alive:[1,1,1],elapsed:2}]});
+  assert.equal(f.scene.cell(6,4,10),E.STONE);
+  assert.deepEqual([...f.state().placed],[0,0,0],'v1 saved no physical open leaf');
+  assert.equal(f.scene.cell(7,4,10),0);
+  await f.runtime.use(f.door);
+  await f.finish();
+  assert.deepEqual([...f.state().alive],[1,1,1]);
+  assert.deepEqual([...f.state().placed],[1,1,1]);
+  assert.equal(f.gpuCells.get('6,4,10').id,E.STONE);
+  assert.equal(f.scene.cell(6,4,10),E.STONE);
+  checkCanonical(f);
+});
+
+test('independent doors share source time instead of waiting for the first leaf to finish',async()=>{
+  const f=fixture({duration:1}),second=structuredClone(f.door);
+  second.sourcePath='second';
+  second.bounds.min[2]+=4; second.bounds.max[2]+=4;
+  const points=doorCellPositions(f.map,f.door,0).map(p=>[p[0],p[1],p[2]+4]);
+  second.cells=points.flatMap(p=>[p[0]+32*(p[1]+16*p[2]),E.WOOD]);
+  f.map.interactions.doors.push(second);
+  for(const p of points) { f.setCell(p,E.WOOD); f.gpuCells.set(key(p),{id:E.WOOD,temp:350,life:70}); }
+  await f.runtime.use(f.door); await f.runtime.use(second);
+  for(let i=0;i<15;i++) await f.tick();
+  const other=f.scene.interactionState.states.get('second');
+  assert.ok(f.state().progress>0.4 && other.progress>0.4);
+  assert.ok(Math.abs(f.state().progress-other.progress)<=1/30+1e-9);
+  for(let i=0;i<17;i++) await f.tick();
+  assert.equal(f.state().progress,1); assert.equal(other.progress,1);
+});
+
+test('pending GPU work banks motion time, zero-dt renders stay parked, and reversal is accepted in flight',async()=>{
+  const f=fixture({duration:1});
+  await f.runtime.use(f.door);
+  let release;
+  const blocked=new Promise(r=>{release=r;});
+  f.setReadHook(()=>blocked);
+  f.runtime.update(1/30);
+  for(let i=0;i<3;i++) f.runtime.update(1/30);
+  release(); await f.world.pending; f.setReadHook(null);
+  const before=f.state().progress,edits=f.edits.length;
+  f.runtime.update(0);
+  assert.equal(f.state().progress,before); assert.equal(f.edits.length,edits);
+  await f.tick(); await f.tick();
+  assert.ok(Math.abs(f.state().progress-0.2)<1e-9,'readback did not discard elapsed animation time');
+  let arrived;
+  const submitted=new Promise(r=>{arrived=r;});
+  const again=new Promise(r=>{release=r;});
+  f.setReadHook(()=>{arrived();return again;});
+  f.runtime.update(1/30); await submitted;
+  assert.equal(await f.runtime.use(f.door),true,'input need not wait for the GPU readback');
+  release(); await f.world.pending; f.setReadHook(null);
+  await f.finish();
+  assert.equal(f.state().progress,0);
+  checkCanonical(f);
 });
 
 test('real save codec preserves an in-flight pose, damage, logical direction and use timer before refill',async()=>{

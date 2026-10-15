@@ -97,6 +97,8 @@ export function importedDoorOccupied(door, bodies, origin) {
 }
 export function createImportedInteractions({ app, interact, getBodies, toast = () => {} }) {
   const kernels = new WeakMap(), motionKernels = new WeakMap();
+  const motionTime = new WeakMap();
+  let nextDoor = 0;
   let lastError = null, disposed = false;
   const current = () => {
     if (disposed) return null;
@@ -122,7 +124,7 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
     };
     const transaction = (async () => {
       await kernel.ready;
-      if (!valid() || occupied()) return false;
+      if (!valid() || occupied() || (progress - from) * (previous.desiredProgress - from) <= 0) return false;
       const plan = prepareDoorMove(map, door, previous, progress, origin);
       const buffer = sim.gpu.createBuffer({ label: 'moving imported door sources', size: plan.data.byteLength, usage: 0x80 | 0x08 | 0x04 });
       try {
@@ -146,15 +148,17 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
   }
   async function use(door, automatic = false) {
     const c = current();
-    if (!c || c.world.pending || !resident(door, c)) return false;
+    if (!c || !c.map.interactions?.doors.includes(door) || !resident(door, c)) return false;
     if (!door.supported) { if (!automatic) toast(door.requirement); return false; }
     const { world, sim, state, map, origin } = c;
     if (door.motion) {
       if (!door.cells.length) { if (!automatic) toast('No exclusive door cells to move'); return false; }
       const previous = state.ensure(door), opening = !previous.targetOpen;
       if (!opening && autoClose(door) && !automatic) { toast('Closes automatically after 5 seconds'); return false; }
+      if (opening && autoClose(door) && previous.progress > 0 && !automatic) { toast('Wait for the door to close'); return false; }
       state.target(door, opening); app.requestRender?.(); return true;
     }
+    if (world.pending) return false;
     const previous = state.states.get(door.sourcePath), opening = !previous?.open;
     if (!opening && door.autoCloseSeconds && !automatic) { toast('Closes automatically after 5 seconds'); return false; }
     if (!opening && importedDoorOccupied(door, getBodies(), origin)) {
@@ -226,27 +230,57 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
     },
     update(dt) {
       const c = current();
-      if (!c || !Number.isFinite(dt) || dt < 0) return;
-      // Timers start at use, and keep ticking while another edit is pending.
-      for (const door of c.map.interactions?.doors ?? []) {
-        const s=c.state.states.get(door.sourcePath);
-        if (s?.open && autoClose(door)) s.elapsed += dt;
+      if (!c || !Number.isFinite(dt) || dt <= 0) return;
+      const doors = c.map.interactions?.doors ?? [];
+      for (const door of doors) {
+        const s = c.state.states.get(door.sourcePath);
+        if (!s) continue;
+        if (s.open && autoClose(door)) s.elapsed += dt;
+        if (!door.motion) continue;
+        if (s.open && autoClose(door) && s.elapsed >= autoClose(door) && resident(door, c)) {
+          s.open = s.targetOpen = false;
+          s.desiredProgress = 0;
+        }
+        let clock = motionTime.get(s);
+        if (!clock || clock.target !== s.targetOpen) {
+          clock = { target: s.targetOpen, seconds: 0 };
+          motionTime.set(s, clock);
+        }
+        // Preserve source time while GPU readback/another leaf is pending.
+        // Streaming and actor obstructions pause motion rather than bank a jump.
+        clock.seconds = !resident(door, c) || s.progress === s.desiredProgress ? 0
+          : Math.min(door.motion.durationSeconds, clock.seconds + dt);
       }
       if (c.world.pending) return;
-      for (const door of c.map.interactions?.doors ?? []) {
-        const s=c.state.states.get(door.sourcePath);
-        if (!s || !resident(door,c)) continue;
-        if (s.open && autoClose(door) && s.elapsed>=autoClose(door)) {
-          if (door.motion) { s.open=s.targetOpen=false; s.desiredProgress=0; }
-          else { void use(door,true); break; }
+      // Round-robin edits keep independently activated leaves moving together.
+      for (let offset = 0; offset < doors.length; offset++) {
+        const index = (nextDoor + offset) % doors.length, door = doors[index];
+        const s = c.state.states.get(door.sourcePath);
+        if (!s || !resident(door, c)) continue;
+        if (!door.motion) {
+          if (s.open && autoClose(door) && s.elapsed >= autoClose(door)) {
+            nextDoor = (index + 1) % doors.length;
+            void use(door, true);
+            break;
+          }
+          continue;
         }
-        if (!door.motion || s.progress===s.desiredProgress) continue;
-        // Never accumulate a large pose jump behind GPU readback or streaming.
-        const step=Math.min(dt,1/30)/door.motion.durationSeconds;
-        const progress=s.desiredProgress>s.progress?Math.min(s.desiredProgress,s.progress+step):Math.max(s.desiredProgress,s.progress-step);
-        if(progress!==s.progress && !importedDoorOccupied({bounds:doorStepBounds(c.map,door,s.progress,progress,s.alive)},getBodies(),c.origin)) {
-          void move(door,progress,c); break;
+        const clock = motionTime.get(s);
+        if (s.progress === s.desiredProgress || !clock?.seconds) continue;
+        // Bound catch-up to 100 ms of source motion per edit. Analytic swept
+        // bounds guard the entire interval, not only the destination cells.
+        const step = Math.min(clock.seconds, 0.1) / door.motion.durationSeconds;
+        const progress = s.desiredProgress > s.progress
+          ? Math.min(s.desiredProgress, s.progress + step)
+          : Math.max(s.desiredProgress, s.progress - step);
+        if (importedDoorOccupied({ bounds: doorStepBounds(c.map, door, s.progress, progress, s.alive) }, getBodies(), c.origin)) {
+          clock.seconds = 0;
+          continue;
         }
+        clock.seconds = Math.max(0, clock.seconds - Math.abs(progress - s.progress) * door.motion.durationSeconds);
+        nextDoor = (index + 1) % doors.length;
+        void move(door, progress, c).then(applied => { if (!applied) clock.seconds = 0; });
+        break;
       }
     },
     dispose() { disposed=true; removeProvider(); },

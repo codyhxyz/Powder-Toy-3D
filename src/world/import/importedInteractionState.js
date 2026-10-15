@@ -73,7 +73,9 @@ export function createImportedInteractionState(map, words, changed = () => {}, p
           const mask=v=>Array.isArray(v)&&v.length===n&&v.every(x=>x===0||x===1);
           const fraction=v=>Number.isFinite(v)&&v>=0&&v<=1;
           if(!door?.supported||seen.has(s.sourcePath)||typeof s.open!=='boolean'||!mask(s.alive)||!Number.isFinite(s.elapsed)||s.elapsed<0) throw new Error('Invalid saved door state');
-          const v=saved.version===1 ? {...s,targetOpen:s.open,progress:door.motion&&s.open?1:0,desiredProgress:s.open?1:0,placed:s.alive.map(v=>door.motion?v:s.open?0:v)} : s;
+          // A v1 open door was retracted, not a physical leaf at its endpoint.
+          // Keep its survivors unplaced until a guarded live edit can stamp them.
+          const v=saved.version===1 ? {...s,targetOpen:s.open,progress:door.motion&&s.open?1:0,desiredProgress:s.open?1:0,placed:s.alive.map(v=>s.open?0:v)} : s;
           if(typeof v.targetOpen!=='boolean'||v.open!==v.targetOpen||!fraction(v.progress)||!fraction(v.desiredProgress)||v.desiredProgress!==(v.targetOpen?1:0)||!mask(v.placed)||v.placed.some((x,i)=>x&&!v.alive[i])) throw new Error('Invalid saved door state');
           // Preflight all target addresses BEFORE resetting or mutating words.
           for(const index of door.cells.filter((_,i)=>i%2===0)) address(index);

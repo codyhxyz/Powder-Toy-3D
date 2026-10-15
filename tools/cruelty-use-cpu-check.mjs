@@ -100,6 +100,10 @@ assert.match(css, /\.pov-use\.source-use \{[^}]*padding: 0;[^}]*background: none
 assert.match(css, /\.pov-use\.source-use \.action-button:focus-visible \{ outline: 2px solid currentColor;/);
 assert.match(css, /@media \(hover: none\) and \(pointer: coarse\) \{\s*\.pov-use\.source-use \.action-button \{ min-height: 44px; \}/);
 assert.match(css, /\.pov-use\.source-use \.action-button \{[^}]*min-width: 44px;/s);
+assert.match(css, /\.pov-use\.source-use \.action-key \{ display: inline-flex;[^}]*white-space: nowrap;/s,
+  'bracket pseudos stay in one row, not the shared kbd grid');
+assert.match(css, /\.pov-use\.source-use \.action-button \{ min-height: 44px; \}\s*\.pov-use\.source-use \.action-key \{ display: none; \}/,
+  'touch keeps a large target without a desktop-only E hint');
 const index = readFileSync(new URL('../src/pov/index.js', import.meta.url), 'utf8');
 assert.match(index, /createInteract\(\{ getMode: \(\) => app\.gamemode\?\.\(\) \?\? 'sandbox' \}\)/);
 assert.match(index, /const VEHICLE_KEY = 'KeyE'/);
