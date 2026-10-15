@@ -89,6 +89,28 @@ test('forged/duplicate/known-owner initialization and stale manifest cache hits 
   const next=await f.produce({sourceBricks:[B],gatherBricks:[]});assert.notEqual(next.token.initialization,old);next.release();
   p.abort();assert.deepEqual(packed(f,M),before);assert.equal(f.h.birth(id(B)),null);f.dispose();
 });
+test('a failed cohort expansion preserves its manifest, worklists, birth flags and completed private source ownership',async()=>{
+  const f=await fixture(),p=f.h.beginBirth({cutToken:1,sourceBricks:[B],probeBricks:[B],records:[record(B)]});f.setPlan(p);
+  const source=await f.produce({gatherBricks:[]});p.stage(source);const native=source.bindings().source;source.release();
+  const manifest=p.initialization;
+  assert.throws(()=>p.expand({sourceBricks:[C],probeBricks:[C],records:[record(C),{...record(C),age:-1}]}),/age\/matter\/near/);
+  assert.equal(p.initialization,manifest);assert.equal(p.sourcesComplete,true);assert.equal(native.dead,false);
+  assert.deepEqual(p.sourceBricks,[B]);assert.deepEqual(p.gatherBricks.map(r=>r.brick),[B]);assert.deepEqual(manifest.indices,[id(B)]);
+  assert.throws(()=>validateWorldGIInitialization(manifest,{epoch:1,lightingTick:0,sourceIndices:[id(C)],previousToken:manifest.previousToken,cutToken:1}),/outside/);
+  const gather=await f.produce({sourceBricks:[]});p.stage(gather);gather.release();p.seal({cutToken:1,feedback:closed}).commit();
+  assert(f.h.birth(id(B)));assert.equal(f.h.birth(id(C)),null);f.dispose();
+});
+test('mixed mature and born previous slots preserve native half words when only the born ranges are cleared',async()=>{
+  const f=await fixture(),before=packed(f,M);
+  const p=f.h.begin({lightingTick:1,globalKey:[1],records:[record(M),record(B)],initialization:{cutToken:1,sourceBricks:[B],probeBricks:[B],records:[record(B)]}});f.setPlan(p);
+  const previous=p.capturePrevious({indices:[id(M),id(B)]}),dst=f.device.createBuffer({size:64});
+  dst.words.fill(0xffffffff);previous.recordHistory(f.frame,{indices:[id(M),id(B)],destination:dst,format:'band-major-4x-vec2u'});
+  for(let k=0;k<4;k++){
+    assert.deepEqual([...dst.words.subarray(k*4,k*4+2)],before.slice(k*2,k*2+2));
+    assert.deepEqual([...dst.words.subarray(k*4+2,k*4+4)],[0,0]);
+  }
+  previous.release();p.abort();dst.destroy();f.dispose();
+});
 
 test('unknown inputs and reversed failed outputs cannot adopt births; disposal keeps queued pins through rejected final submission and completion',async()=>{
   const f=await fixture(),before=packed(f,M),p=f.h.beginBirth({cutToken:1,sourceBricks:[B],probeBricks:[B],records:[record(B)]});f.setPlan(p);

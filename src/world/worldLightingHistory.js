@@ -79,10 +79,14 @@ export function createWorldLightingHistory({worldSize,epoch}={}){
       if(new Set(addSources).size!==addSources.length||new Set(addProbes).size!==addProbes.length)throw new Error('duplicate initialization declaration');
       if(addProbes.some(i=>probes.has(i)||born.has(i)))throw new Error('cannot initialize an existing/duplicate world probe');
       if(sameClock&&addSources.some(i=>sources.has(i)))throw new Error('same-clock initialization cannot recompute retained sources');
+      const preparedRecords=moreRecords.map(r=>{
+        selectWorldGI({records:[r],lightingTick});
+        return [index(r),Object.freeze({...r,brick:frozenArray(r.brick)})];
+      });
       // Expansion invalidates private work, never committed authoritative history.
       staged.splice(0).forEach(o=>o.release());stagedSources.clear();stagedProbes.clear();
       addSources.forEach(i=>sourceIDs.add(i));addProbes.forEach(i=>{born.add(i);probeIDs.add(i);background.set(i,false);});
-      for(const r of moreRecords){selectWorldGI({records:[r],lightingTick});declarations.set(index(r),Object.freeze({...r,brick:frozenArray(r.brick)}));}
+      for(const [i,r]of preparedRecords)declarations.set(i,r);
       updateManifest();return plan;
     }
     function stage(output){

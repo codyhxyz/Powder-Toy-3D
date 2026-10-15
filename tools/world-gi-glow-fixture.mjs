@@ -44,7 +44,7 @@ export function lightingFixture(g = { nx: 64, ny: 128, nz: 64 }) {
       },
     };
   }
-  const encoder = { copyBufferToBuffer(src, from, dst, to, size) { events.push('native-copy'); dst.bytes.set(src.bytes.subarray(from, from + size), to); }, clearBuffer(b) { events.push('history-seed'); b.bytes.fill(0); }, beginComputePass: pass };
+  const encoder = { copyBufferToBuffer(src, from, dst, to, size) { events.push('native-copy'); dst.bytes.set(src.bytes.subarray(from, from + size), to); }, clearBuffer(b, offset=0, size=b.size-offset) { events.push('history-seed'); b.bytes.fill(0,offset,offset+size); }, beginComputePass: pass };
   const frame = { direct() { return encoder; }, _command() {}, _commandDone() {}, compute: pass };
   const gpu = { device, frame };
   function publication() {

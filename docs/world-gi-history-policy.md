@@ -78,6 +78,8 @@ The ledger retains the actual previous generation for new source evaluation.
 
 `plan.expand({sourceBricks,probeBricks,records})` adds never-owned dependencies.
 Duplicate probe declarations and existing owners reject initialization.
+Expansion validates every record before it changes worklists or ownership.
+A rejected expansion preserves the previous manifest and staged native outputs.
 `plan.expandFeedback(feedback)` interprets typed GI_SOURCE/GI misses.
 Its `restore` result names known dependencies that need residency restoration, not reinitialization.
 Its `requirements` result preserves raw, field, auxiliary, and glow misses.
