@@ -131,8 +131,8 @@ export function buildHybridDetailAtlas({ size = 64, seed = 0x68bc21eb } = {}) {
     const normal = new Float32Array(size * size * 3);
     const at = (x, y) => heights[((y + size) % size) * size + (x + size) % size];
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-      const dx = (at(x + 1, y) - at(x - 1, y)) * size * f.height * 0.5;
-      const dy = (at(x, y + 1) - at(x, y - 1)) * size * f.height * 0.5;
+      const dx = (at(x + 1, y) - at(x - 1, y)) * size * f.height / f.metres * 0.5;
+      const dy = (at(x, y + 1) - at(x, y - 1)) * size * f.height / f.metres * 0.5;
       const length = Math.hypot(dx, dy, 1);
       normal.set([-dx / length, -dy / length, 1 / length], (x + y * size) * 3);
     }

@@ -12,6 +12,77 @@ Integration checkout: `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu-mac-b
 The recovery checkout is not a source, dependency, build, or deployment directory.
 Children work only in their tool-assigned managed worktrees based on this checkout.
 
+## Implementation status: October 15, 2026
+
+**This renderer is incomplete. Production still uses the existing renderer.**
+All eleven first-wave workers and six recovery workers timed out.
+Their partial implementations are preserved. Worker completion labels are not evidence that the features work.
+
+The parent completed one runnable path for straight, undecorated boxes:
+
+- Exact GPU material-ID comparison and neighbour invalidation.
+- Persistent opaque faces with one indirect camera draw.
+- Shared material rows, mipmapped detail textures, lighting, and existing GI probes.
+- A cached raster shadow map for those opaque faces.
+- Depth transfer to the existing volume renderer.
+- Conservative temporal rejection after simulation or presentation changes.
+
+Use `?renderer=hybrid&view=realistic` to select this experimental path.
+Smooth surfaces, optics, smoke, and particles still use the existing volume renderer.
+Data views, worlds, source artwork, visible decoration, and curved presentation retain the existing renderer.
+
+The remaining modules are not integrated:
+
+| Feature | Current state |
+| --- | --- |
+| Smooth surfaces | Runtime and shader prototype. Extraction, capacity, appearance, and field revision checks need native tests. |
+| Water and glass | Optical runtime and shader prototype. Legacy fallback composition needs integration and native tests. |
+| Smoke, steam, and fire | Shader prototype. The resource owner and pass integration are missing. |
+| Grains and droplets | Runtime and shader prototype. Particle ownership is disabled until smooth-field exclusion is correct. Liquids remain excluded. |
+| Temporal reconstruction | Optional motion/reactive inputs have CPU checks. Dynamic surfaces do not yet produce reliable motion buffers. |
+| Adaptive resolution | Pure controller prototype. Timing integration and controller tests are missing. |
+| Selective reflections | Shader/helper prototype. Shared hit shading and application integration are missing. |
+
+The opaque path also has limits. It uses sharp cell faces, not bevelled or smooth geometry.
+Its new shadow map contains only opaque crisp casters.
+Static landscapes, close-up sand, and explosions still need combined rebuild-and-render benchmarks.
+No speed improvement or image-quality equivalence is established.
+
+### Validation
+
+CPU checks:
+
+```sh
+node tools/hybrid-core-check.mjs
+node tools/hybrid-temporal-check.mjs
+node tools/post-reuse-cpu-check.mjs
+node tools/check-imports.mjs
+node tools/check-state-access.mjs
+node tools/check-browser-launch.mjs
+npm run build
+```
+
+Native checks use separate, serialized GPU slots:
+
+```sh
+node tools/hybrid-gpu-check.mjs
+node tools/hybrid-app-check.mjs
+```
+
+The M5 native core check passed with a 128³ grid.
+Heating a cell rebuilt zero bricks. Removing a boundary cell rebuilt seven bricks.
+The overflow fixture suppressed the entire mesh. Covered-pixel checks passed.
+The successful slot occupied 2.72 seconds, including startup and cleanup.
+
+The app check passed hybrid rendering, legacy volume composition, data-view fallback, and default rendering.
+It advanced no physics steps. The successful slot occupied 15.79 seconds.
+The local account/AI relay was offline. The check records that specific network error separately.
+Other native attempts exposed a barrier error, a fixture error, and a layout-name collision.
+Those errors are corrected. No GPU benchmark ran.
+
+`tools/hybrid-check.mjs` still reports undelivered lane checks.
+It is not a passing acceptance suite for the full renderer.
+
 ## Ownership
 
 | Lane | Owns | Initial delivery |
@@ -100,8 +171,9 @@ and regression checks; an unvalidated rewrite does not replace production.
   `hybridShade(material, gridPosition, geometricNormal, shadingNormal, viewDirection, sunVisibility, ao)`.
   It returns premultiplied HDR color. `sunVisibility` is an explicit RGB argument.
   Physical grid axes define all directions. The view direction points toward the eye.
-- Shared resources use configurable binding offsets. The parent reserves group 2
-  bindings 0–3 for materials and starts lighting resources at binding 4.
+- Shared resources use configurable binding offsets. The opaque pipeline uses
+  group 2 binding 0 for faces, 1–4 for materials, 5–10 for lighting,
+  and 11–13 for shadows.
   Each final pipeline must pass the engine's resource-limit checks.
 - Shadow casters expose `drawShadow(rp, { matrix })`, `isReady`, and `revision`.
   The matrix maps physical grid coordinates to light clip coordinates.

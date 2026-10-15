@@ -282,6 +282,8 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
 // switches back to it while the body is out, and to v2 again after). __app.setPhysics('v2' | 'v1') for tools.
 let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+// Experimental opt-in, not persisted. The default renderer remains unchanged.
+const hybridModule = params.get('renderer') === 'hybrid' ? await import('./gfx/hybrid/index.js') : null;
 let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
 let physicsV2 = null;    // the box's PhysicsV2 while the mode is v2
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
@@ -357,7 +359,7 @@ function applyOutputRatio() {
 }
 
 // the grid: the simulation, its derived passes and its volume (made per grid: build)
-let sim, derived, vol, scale;
+let sim, derived, vol, scale, hybrid = null;
 // The blocks renderer (gfx/blocks.js) draws the Plain view (src/views.js):
 // the world as its cells' visible faces, Minecraft's way, and nothing that
 // only feeds the volume's march runs (the derived passes, GI, the volume's
@@ -512,6 +514,8 @@ function build(savedWorldSize = null) {
     for (const w of live) w.detach?.(ctx);
     // (what is recorded on the old grid goes out first: each dispose flushes)
     vol.dispose();
+    hybrid?.dispose();
+    hybrid = null;
     blocks?.dispose();
     blocks = null;
     derived.dispose?.();
@@ -548,6 +552,10 @@ function build(savedWorldSize = null) {
   derived = new Derived(sim);
   blocksOn = plainView();
   vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance) });
+  hybrid = hybridModule?.createHybridRenderer(gpu, sim, {
+    post, invalidateCaches: () => meshFrames.drop(), onRead: () => wakeLoop(),
+    world: !!worldMode, sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance),
+  }) ?? null;
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: !!worldMode });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -560,7 +568,7 @@ function build(savedWorldSize = null) {
   // the pipelines a frame needs (warm from the start menu, or building now)
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
-  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
+  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybrid?.ready,
     blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
@@ -2331,6 +2339,12 @@ const frameHooks = {
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
     for (const w of live) if (frameMode !== 'meshes' || !w.scene) w.compute?.(ctx);
+    hybrid?.update({
+      view: viewKeyOf(renderView), sun: SUN, model: volume.matrixWorld, warp: warpNow(),
+      disabled: !!blocks || testNoVolume,
+      decoration: gfxUniforms.uDeco.value,
+      animated: !settings.paused || live.some(w => w.busy?.(ctx)),
+    });
     vol.recordPicks();
   },
   // (the blocks' faces are depth-tested against the meshes: no copy of their depth for the volume's cut)
@@ -2339,7 +2353,9 @@ const frameHooks = {
     if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
     if (frameMode === 'capture') { drawVolumeFirst(p); return false; }   // (the volume uncut: the meshes go over it in the meshes hook)
-    const drew = threeMeshes(p, false) ? (blocks ? true : cut.capture(p.sceneTarget.depth)) : false;
+    let drew = threeMeshes(p, false);
+    if (hybrid?.drawOpaque(p, { load: drew })) drew = true;
+    if (drew && !blocks) cut.capture(p.sceneTarget.depth);
     drawVolumeFirst(p);
     return drew;
   },
@@ -2366,7 +2382,7 @@ let frameDetailSeen = null, frameDetailV = 0;   // (the detail variant drawn, th
 function planMeshFrame(runDerived) {
   if (frameDetail !== frameDetailSeen) { frameDetailSeen = frameDetail; frameDetailV++; }
   if (!threeHasVisible(scene, camera)) { meshFrames.release(); return 'full'; }
-  if (runDerived || blocks || testNoVolume || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
+  if (hybrid || runDerived || blocks || testNoVolume || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
     meshFrames.drop();
     return 'full';
   }
@@ -2799,6 +2815,7 @@ try {
     volume, get vol() { return vol; }, get shadowMap() { return vol.shadowTextures; },
     // the blocks renderer (gfx/blocks.js: stats, pipelines), the Plain view's; null in the others
     get blocks() { return blocks; },
+    get hybrid() { return hybrid; },
     get pov() { return pov; },
     get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },

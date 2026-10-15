@@ -96,12 +96,12 @@ fn mesh(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     }
   }
   if (li == 0u) { bricks[b].rebuilt = select(0u, 1u, dirty); atomicStore(&count, 0u); }
-  // dirty is uniform for the entire workgroup.
-  if (!dirty) { return; }
+  // Storage-derived flags are not uniform to WGSL's validator. All lanes
+  // reach both barriers; only dirty bricks change persistent face slots.
   workgroupBarrier();
   let s = b * 64u + li;
   let p = cellOf(s);
-  if (hybridCrispOpaque(eid(fetchA(p)))) {
+  if (dirty && hybridCrispOpaque(eid(fetchA(p)))) {
     for (var side = 0u; side < 6u; side++) {
       if (!occupied(p + faceDir(side))) {
         let at = atomicAdd(&count, 1u);
@@ -110,7 +110,7 @@ fn mesh(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     }
   }
   workgroupBarrier();
-  if (li == 0u) { bricks[b].count = atomicLoad(&count); }
+  if (li == 0u && dirty) { bricks[b].count = atomicLoad(&count); }
 }
 `;
 
@@ -199,11 +199,12 @@ fn hybridVertex(vi: u32, ii: u32) -> HybridVertex {
 }
 `;
 
-export const drawWGSL = grid => /* wgsl */ `
+export const drawWGSL = (grid, { shadingWGSL = '', shade = null } = {}) => /* wgsl */ `
 ${prelude(grid, STATE_OPTS.STATE_RO)}
 ${frameBindings()}
 ${materialsGLSL()}
 ${VERTEX_WGSL}
+${shadingWGSL}
 struct VOut {
   @builtin(position) position: vec4f,
   @location(0) grid: vec3f,
@@ -215,12 +216,14 @@ struct VOut {
   return VOut(FU.viewProj * FU.model * vec4f(v.grid, 1.0), v.grid, v.normal, v.slot);
 }
 @fragment fn fs(v: VOut) -> @location(0) vec4f {
+  let footprint = max(length(dpdx(v.grid)), length(dpdy(v.grid)));
   let a = fetchA(cellOf(v.slot));
   let id = eid(a);
+  ${shade ? `return ${shade}(id, a, v.grid, v.normal, footprint);` : `
   let tint = 1.0 + COLORVAR(id) * (fract(a.w) * 2.0 - 1.0);
   let alb = ALBEDO(id) * tint;
   let diffuse = alb * (FU.sunCol * max(dot(v.normal, FU.sun), 0.0) + FU.skyUp * (0.35 + 0.65 * max(v.normal.y, 0.0)) + FU.caveAmbient);
-  return vec4f((diffuse + cellEmission(id, a.y, a.w) + sparkEmit(id, a.w)) * FU.lightGain, 1.0);
+  return vec4f((diffuse + cellEmission(id, a.y, a.w) + sparkEmit(id, a.w)) * FU.lightGain, 1.0);`}
 }
 `;
 export const shadowWGSL = grid => /* wgsl */ `
