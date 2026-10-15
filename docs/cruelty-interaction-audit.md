@@ -1,5 +1,10 @@
 # Imported Cruelty Squad interactions
 
+The runtime/public-asset behavior below describes the legacy retraction port.
+New conversion-only source motion and fixed appearance-envelope metadata are
+specified in [Door motion conversion ABI](cruelty-door-motion-conversion.md);
+that work does not regenerate public assets or claim runtime integration.
+
 ## Evidence and supported adaptation
 
 Geometry/inventory: local `cruelty-vr-unpacked/Levels/Level{1,2,3,4,6}.tscn`.

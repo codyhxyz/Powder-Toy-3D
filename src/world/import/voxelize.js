@@ -1,6 +1,7 @@
 // Conservative voxelization of authored triangle surfaces, not a new map.
 // A cell is occupied iff its unit cube intersects a source triangle. Interiors
 // are NOT invented/flood-filled: disconnected/open Qodot surfaces stay open.
+import { doorBrickKeys } from './doorMotion.js';
 export const IMPORT_BRICK = 8;
 const sub = (a, b) => a.map((v, i) => v - b[i]);
 const dot = (a, b) => a.reduce((n, v, i) => n + v * b[i], 0);
@@ -31,7 +32,7 @@ export function triangleIntersectsCell(triangle, cell) {
   if (axes.some(separating) || separating(cross(edges[0], edges[1]))) return false;
   return !edges.some((edge) => axes.some((axis) => separating(cross(edge, axis))));
 }
-export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16, alignment = 8, maxCandidates = 100000000, ownerForMesh = null, onTriangle } = {}) {
+export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16, alignment = 8, maxCandidates = 100000000, ownerForMesh = null, onTriangle, reserveBounds = [] } = {}) {
   const align = Array.isArray(alignment) ? alignment : [alignment, alignment, alignment];
   if (!(cellMeters > 0) || !Number.isFinite(cellMeters) || !Number.isInteger(padding) || padding < 1 || align.length !== 3 || !align.every(n => Number.isInteger(n) && n >= 8 && n % 8 === 0)) throw new Error('Invalid voxel scale/bounds');
   const ownerNames = [...new Set(meshes.map(m => ownerForMesh?.(m)).filter(Boolean))];
@@ -48,6 +49,10 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
       if (!Number.isFinite(v)) throw new Error('Nonfinite geometry');
       lo[k] = Math.min(lo[k], v); hi[k] = Math.max(hi[k], v);
     }
+  }
+  for (const bounds of reserveBounds) for (let k = 0; k < 3; k++) {
+    if (!Number.isFinite(bounds.min[k]) || !Number.isFinite(bounds.max[k]) || bounds.min[k] > bounds.max[k]) throw new Error('Invalid reserved motion bounds');
+    lo[k] = Math.min(lo[k], bounds.min[k] / cellMeters); hi[k] = Math.max(hi[k], bounds.max[k] / cellMeters);
   }
   const origin = lo.map((v) => Math.floor(v) - padding);
   const size = hi.map((v, k) => Math.ceil((Math.ceil(v) - origin[k] + padding + 1) / align[k]) * align[k]);
@@ -85,7 +90,7 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
       if (Math.abs(normal[dominant]) < 1e-10) continue;
       // One geometry walk: appearance receives the exact cells accepted by
       // physics SAT, including overlaps. No approximate second voxelizer.
-      const onHit = onTriangle?.({ surface: s, indexAt: i, triangle: t, element: id, origin, size, brickDims, cellMeters });
+      const onHit = onTriangle?.({ surface: s, owner: ownerNames[owner - 1] ?? null, indexAt: i, triangle: t, element: id, origin, size, brickDims, cellMeters });
       const u = (dominant + 1) % 3, v = (dominant + 2) % 3;
       const min = [0, 1, 2].map((k) => Math.floor(Math.min(...t.map((p) => p[k])) - 1e-8));
       const max = [0, 1, 2].map((k) => Math.floor(Math.max(...t.map((p) => p[k])) + 1e-8));
@@ -103,6 +108,15 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
           }
         }
       }
+    }
+  }
+  // Reserve physical storage only. No cells are filled/carved, no ownership
+  // changes, and no second SAT walk. Runtime can write every swept pose.
+  let reservedBricks = 0;
+  for (const bounds of reserveBounds) {
+    const cellsBounds = { min: sourceToCells({ cellMeters, origin }, bounds.min), max: sourceToCells({ cellMeters, origin }, bounds.max) };
+    for (const key of doorBrickKeys(cellsBounds, brickDims)) if (!bricks.has(key)) {
+      bricks.set(key, new Uint8Array(512)); reservedBricks++;
     }
   }
   // SD table: 0 = empty brick, otherwise absolute word offset of its 128
@@ -124,7 +138,7 @@ export function voxelizeMeshes(meshes, mapping, { cellMeters = 0.3, padding = 16
       ownedCells[ownerNames[own[i] - 1]].push(p[0] + size[0] * (p[1] + size[1] * p[2]), data[i]);
     }
   }
-  return { ...(ownerForMesh ? { ownedCells } : {}), version: 1, encoding: 'sparse-brick-u8-v1', cellMeters, origin, size, brickDims, words, stats: { triangles, candidates, cells, bricks: bricks.size, bytes: words.byteLength } };
+  return { ...(ownerForMesh ? { ownedCells } : {}), version: 1, encoding: 'sparse-brick-u8-v1', cellMeters, origin, size, brickDims, words, stats: { triangles, candidates, cells, bricks: bricks.size, reservedBricks, bytes: words.byteLength } };
 }
 export function importedCell(map, words, x, y, z) {
   const p = [x, y, z];
