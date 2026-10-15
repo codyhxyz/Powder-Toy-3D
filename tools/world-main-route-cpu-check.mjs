@@ -136,7 +136,7 @@ test('actual App hooks select driver, reserve only inside callback, and suppress
   assert.match(app,/driver\.tick\(\{present,dt/);assert.match(app,/capture:\(reservation,state\)=>captureWorldRequest/);
   assert.match(app,/if\(win\?\.render\)return; \/\/ WORLD/);
   for(const hook of ['threeMeshes','prepareWorldAfter','drawWorldAfter','drawWorldOverlay'])assert.match(app,new RegExp(hook));
-  assert.match(app,/if\(win\)return false; \/\/ Explicit loading gate/);
+  assert.match(app,/if\(win\)return renderWorldThumb\(viewId,out\)/);
   assert.doesNotMatch(app,/WORLD_CONSUMER_NOT_READY/);
   assert.match(app,/if\(win && visible\)/);
   assert.match(app,/driver\.pick\(\{ray/);

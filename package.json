@@ -20,6 +20,7 @@
     "check:world-render-frame": "node --test tools/world-render-frame-cpu-check.mjs",
     "check:world-main-route": "node --test tools/world-main-route-cpu-check.mjs tools/world-main-route-fixes-cpu-check.mjs",
     "check:world-pick": "node --test tools/world-pick-cpu-check.mjs",
+    "check:world-still": "node --test tools/world-still-cpu-check.mjs",
     "check:world-lighting-inputs": "node --test tools/world-lighting-inputs-cpu-check.mjs",
     "check:world-cells": "node --test tools/world-cell-adapter-cpu-check.mjs",
     "check:world-source-cuts": "node --test tools/world-source-cut-cpu-check.mjs",

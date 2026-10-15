@@ -1765,7 +1765,7 @@ const THUMB_SIZE = [320, 200];
 const thumbCam = useWebGPUCamera(new THREE.PerspectiveCamera());
 let thumbTarget = null;
 async function renderThumb(viewId, out) {
-  if(win)return false; // Explicit loading gate: never run the local still renderer under WORLD.
+  if(win)return renderWorldThumb(viewId,out);
   if (graphicsFailure || !coreReady) return false;
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? gateVariants(settings).base : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
@@ -1821,6 +1821,49 @@ async function renderThumb(viewId, out) {
   ctx2d.putImageData(img, 0, 0);
   out.dataset.rendered = '1';
   return true;
+}
+
+// Each WORLD card owns its camera and RGBA8 target through final readback.
+// Only the frozen view is captured here; actors are selected by the normal tick.
+async function renderWorldThumb(viewId,out) {
+  const world=win,slot=world?.renderFrame,driver=slot?.driver;
+  if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame)return false;
+  const view=viewKeyOf(viewId),detail=isMaterialView(view) ? gateVariants(settings).base : {};
+  const ownCamera=useWebGPUCamera(new THREE.PerspectiveCamera());
+  ownCamera.copy(camera,false);
+  ownCamera.aspect=THUMB_SIZE[0]/THUMB_SIZE[1];
+  useWebGPUCamera(ownCamera);
+  const frame=driver.accepted.frame;
+  // Source/time/light/artwork stay in accepted data; only view style changes.
+  const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
+  const style=frameUniformValues({camera:ownCamera,model,
+    view:viewId,sourceStyle:selectedMode==='crueltySquad' && isMaterialView(view)});
+  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov},
+    {...frame.values,model:model.toArray(),view:style.view,materialStyle:style.materialStyle,sourceStyle:style.sourceStyle},
+    {view,detail,curved:false}));
+  frozen.settings.view=viewId;
+  frozen.post.raw=view==='plain' ? false : !isMaterialView(view);
+  frozen.post.cruelty=selectedMode==='crueltySquad' && isMaterialView(view);
+  frozen.params.warpK=0;
+  const target=gpu.createTexture({label:'WORLD view thumbnail',size:THUMB_SIZE,format:'rgba8unorm',
+    usage:GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC});
+  try {
+    await driver.queueStill({view:frozen,target});
+    if(win!==world || world.renderFrame!==slot || slot.dead)return false;
+    const px=await gpu.readback.texture(target);
+    if(win!==world || world.renderFrame!==slot || slot.dead)return false;
+    const [w,h]=THUMB_SIZE,ctx2d=out.getContext('2d'),img=ctx2d.createImageData(w,h);
+    for(let i=0;i<w*h*4;i+=4) {
+      const a=px[i+3]/255 || 1;
+      img.data[i]=Math.min(255,px[i]/a);img.data[i+1]=Math.min(255,px[i+1]/a);
+      img.data[i+2]=Math.min(255,px[i+2]/a);img.data[i+3]=px[i+3];
+    }
+    ctx2d.putImageData(img,0,0);out.dataset.rendered='1';return true;
+  } finally {
+    // A rejected job has already drained its native prefix/compilation. Keep
+    // the UI-owned target alive through readback's own queue use as well.
+    await gpu.device.queue.onSubmittedWorkDone();target.destroy();
+  }
 }
 
 // ---------------------------------------------------------------- input

@@ -65,7 +65,27 @@ suffix failure deliberately does not falsely settle.
 WORLD pointer/requestPick and visible pickRay/pickScreenRay now use native global
 picks against `driver.displayedMainFrame = {data, view, frameIdentity}` retained on
 confirmed main-image acceptance. `pickRay(..., false)` remains local physics;
-BOX picking is unchanged. Legacy thumbnail/still rendering remains not-ready.
+BOX picking is unchanged. WORLD view-menu thumbnails now enqueue concrete
+`driver.queueStill({view,target})` jobs (`requestStill` is the same API). The UI
+owns a childless camera at 320×200 aspect and one RGBA8 target per job through
+readback. Initial loading without an accepted main image returns not-ready;
+there is never a local-volume fallback.
+
+The existing single transaction slot chooses stills only between MAIN requests.
+After one STILL, normal/pick-demand work gets a scheduling opportunity before
+another STILL. Stills do not reserve or refill pacer counters. They request an
+accepted-compatible `advance:false` source frame with an explicit eye CELL seed;
+scene misses extend that same cut/view monotonically. Actual actors are selected
+only in the synchronous normal-tick scene attempt after preparation. Shared native
+mesh preflight, opaque HDR/depth pack, full volume, transparent meshes and whole
+final feedback remain mandatory. Flat presentation and captured view/post style
+are scoped synchronously; stills skip hands/eye sampling, signs and MAIN gizmos.
+Only confirmed Post final submission permits source-history acceptance and UI
+readback. STILL acceptance never replaces `accepted` or `displayedMainFrame`,
+advances TAA/view clocks/VM/DOM, or satisfies MAIN frame/screenshot waiters.
+Dispose rejects queued jobs and drains active preparation, compilation and native
+prefix uses before returning their targets. Unknown open final suffixes remain
+blocked, not falsely clean. The existing MAIN screenshot capture is unchanged.
 
 `driver.pick({ray,skipLiquids})` freezes global ray/warp/slot before compilation,
 records actual WorldVolume into the normal Frame, and reads whole typed feedback
@@ -105,5 +125,8 @@ global activation claim follows from this local integration.
 The CPU regressions also cover bootstrap, settling to idle, stable-camera TAA,
 and cleanup at each of the 15 initialization failure sites tested.
 
+Run `npm run check:world-still` for serialized still births, target ownership,
+MAIN isolation, lifecycle failures, actual shared scene recording and executable
+App thumbnail-hook tests (explicit native math/scenegraph transport mocks).
 Run `npm run check:world-main-route` for CPU tests; `check:world-render-frame`
 retains native-value/feedback/final-admission tests. No browser/server is needed.

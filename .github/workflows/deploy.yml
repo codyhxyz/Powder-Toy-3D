@@ -67,6 +67,7 @@ jobs:
       - run: npm run check:world-render-frame
       - run: npm run check:world-main-route # CPU owner/driver/Post/pacer; not native rendering proof
       - run: npm run check:world-pick
+      - run: npm run check:world-still # CPU actual owner/driver/Post; explicit native scene transport mocks
       - run: npm run check:world-viewmodel-eye   # original one-eye hands, accepted-only easing + real guard (CPU, not App activation)
       - run: npm run check:world-mesh-light   # actual Three fragment variants/Naga + CPU optical/SH references; not GPU evidence
       - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs

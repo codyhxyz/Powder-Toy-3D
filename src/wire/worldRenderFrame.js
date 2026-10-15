@@ -148,23 +148,24 @@ function retireWorldUse(state,gpu,submitted,release) {
  * entire SceneAttempt is synchronous after preparation. No pass yields.
  */
 export function recordWorldFrame(app, state, data, {camera, view, detail={}, curved=false,
-  eye, identity, order, signRequest=null, dt=0, frozenView=null, preflight=null}) {
+  eye, identity, order, signRequest=null, dt=0, frozenView=null, preflight=null, stillTarget=null}) {
   requireReady(!state.dead && app.win?.loaded && app.win.render===state.data, 'live WORLD main frame required');
   requireReady(['threeMeshes','drawWorldAfter','drawWorldOverlay'].every(k=>typeof app[k]==='function'),
     'actual App opaque/after/overlay functions must be connected before recording');
-  requireReady(complete(eye.feedback) && eye.words.length===20 && eye.words[19]===1, 'complete native eye required before hands');
+  requireReady(stillTarget || (complete(eye.feedback) && eye.words.length===20 && eye.words[19]===1), 'complete native eye required before hands');
+  if(stillTarget)signRequest=null;
   requireReady(state.volume.pipelineState(view,detail,curved).state==='ready', 'prewarm WORLD view before recording');
   requireReady(preflight && preflightWorldMeshes(app, preflight, camera), 'WORLD mesh preparation required before hands');
   const values=frozenView ? {...data.frame.values,...frozenView.values} : data.frame.values, {gpu,post}=app;
   const params={...data.frame.params,...frozenView?.params};
-  const worldLighting={publication:eye.publication,position:eye.position,
+  const worldLighting=stillTarget ? null : {publication:eye.publication,position:eye.position,
     frame:{identity,scene:data.frame.sceneVersion,epoch:data.identity.epoch,domain:'world',order,time:values.time,
       sunDirection:values.sun,sunColor:values.sunCol,keyLight:values.keyLight,
       settings:{exposure:post.settings.exposure,raw:post.settings.raw}},
     sample:{identity:eye,publication:eye.publication,frameIdentity:identity,position:eye.position,words:eye.words}};
   const ticket=createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame), feedbackIdentity=Object.freeze({identity});
   let hands;
-  try {hands=app.presentation.neutral(() => renderViewmodels(app.renderer,app.scene,camera,post,{worldLighting}));}
+  try {hands=stillTarget ? {ready:true} : app.presentation.neutral(() => renderViewmodels(app.renderer,app.scene,camera,post,{worldLighting}));}
   catch(error) {
     const pin=data.retain(),read=ticket.record(gpu.frame,state.boundary);read.catch(()=>{});
     retireWorldUse(state,gpu,Promise.allSettled([ticket.submitted,read]),()=>pin.release());throw error;
@@ -181,7 +182,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
     sceneTicket=post.recordScene({
       prepare(p) {
         const fv=worldSceneValues(values,camera,p.jitter);
-        app.prepareWorldAfter(fv,camera);
+        if(!stillTarget)app.prepareWorldAfter(fv,camera);
         native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView());
         context=meshContext(app,state,data,native,fv,state.noise.texture);context.bind();
         requireReady(guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',onReady:()=>app.wakeLoop()})===0,
@@ -197,11 +198,12 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
       opaque(p) {drew=app.threeMeshes(p,false,camera);return drew;},
       capture(p) {requireReady(state.opaque.recordReady(gpu.frame,{color:p.sceneTarget.color,depth:p.sceneTarget.depth,
         output:p.sceneTarget.packedOpaque,drew,submitted:ticket.submitted}), 'WORLD opaque capture not ready');},
-      draw(rp) {requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');app.drawWorldAfter(rp);},
+      draw(rp) {requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');if(!stillTarget)app.drawWorldAfter(rp);},
       meshes(p) {app.threeMeshes(p,true,camera);},
-      overlay:rp=>app.drawWorldOverlay(rp),
+      overlay:stillTarget ? undefined : rp=>app.drawWorldOverlay(rp),
     },camera,{identity:data.identity,publication:postPublication,feedbackIdentity,submission:ticket,worldModel:model,cameraIdentity:frozenView?.cameraIdentity??camera,
-      onPublicationTransferred:()=>{transferred=true;},dt,viewmodel:hands.viewmodel,glow:hands.glow});
+      onPublicationTransferred:()=>{transferred=true;},dt,viewmodel:hands.viewmodel,glow:hands.glow,
+      ...(stillTarget ? {still:true,target:stillTarget} : {})});
     if (!sceneTicket) hands.lighting?.discard();
   } catch(error) {
     hands.lighting?.discard();
@@ -312,7 +314,7 @@ export async function releaseWorldMeshPreflight(app,p) {
 // deliberately not copied from current globals after the point readback.
 export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   app.camera.updateMatrixWorld();
-  const camera=app.camera.clone();camera.parent=null;
+  const camera=app.camera.clone(false);camera.parent=null;
   camera.matrix.copy(app.camera.matrixWorld);camera.matrixWorld.copy(app.camera.matrixWorld);
   camera.matrixWorldInverse.copy(app.camera.matrixWorldInverse);
   camera.matrix.decompose(camera.position,camera.quaternion,camera.scale);
@@ -347,8 +349,21 @@ export function createWorldFrameDriver(app,state,execution={}) {
   const {prewarm=prewarmWorldFrame,probe=probeWorldFrameEye,createPreflight=createWorldMeshPreflight,
     preflight=preflightWorldMeshes,record=recordWorldFrame,releasePreflight=releaseWorldMeshPreflight}=execution;
   let pending=null, dead=false, order=0, accepted=null, failure=null, retirement=null;
-  let displayedMainFrame=null, blockedPick=null;
-  const pickDemands=new Map();
+  let displayedMainFrame=null, blockedPick=null, preferMain=false;
+  const pickDemands=new Map(), stills=[];
+  const emptyFeedback=()=>({incomplete:false,requirements:[],sun:[]});
+  // A failed target cannot be returned to the UI while an encoded prefix or
+  // asynchronous native material compilation can still use it.
+  const rejectStill=(p,error)=>{
+    if(!p?.job || p.rejectionDrain)return;
+    p.rejectionDrain=Promise.allSettled([releasePreflight(app,p.preflight),...state.uses])
+      .then(()=>p.job.reject(error));
+  };
+  const queueStill=({view,target})=>{
+    if(dead || failure || !accepted || !displayedMainFrame)return Promise.reject(failure??new Error('WORLD still not ready'));
+    if(!view?.camera || !target)return Promise.reject(new TypeError('frozen WORLD view and owned still target required'));
+    return new Promise((resolve,reject)=>{stills.push({view,target,resolve,reject});wake();});
+  };
   const wake=()=>app.wakeLoop();
   const queuePickDemand=(feedback,display)=>{
     if(dead || display!==displayedMainFrame)return false;
@@ -363,15 +378,18 @@ export function createWorldFrameDriver(app,state,execution={}) {
   const wait=(p,work,next)=>{p.phase='waiting';p.work=Promise.resolve(work).then(value=>{
     if(dead || pending!==p){value?.release?.();return;}
     p.result=value;p.phase=next;wake();
-  },error=>{if(!dead&&pending===p){failure=error;p.phase='failed';wake();}});};
-  const prepare=p=>wait(p,prewarm(app,state,p.data,p.view).then(()=>probe(app,state,p.data,p.view)),'eye');
+  },error=>{if(!dead&&pending===p){failure=error;p.phase='failed';rejectStill(p,error);for(const job of stills.splice(0))job.reject(error);wake();}});};
+  // Stills have no hands, so do not manufacture an eye query/result. The whole
+  // native scene feedback remains mandatory before any target is tonemapped.
+  const prepare=p=>wait(p,prewarm(app,state,p.data,p.view).then(()=>p.job ? {feedback:emptyFeedback()} : probe(app,state,p.data,p.view)),'eye');
   const extend=(p,feedback)=>{
     const old=p.data;p.data=null;
     const preflight=p.preflight;p.preflight=null;
     wait(p,Promise.all([state.data.extend(old,feedback),releasePreflight(app,preflight)]).then(([data])=>data).finally(()=>old.release()),'data');
   };
   return {
-    get busy(){return !!pending || !!pickDemands.size;},get failure(){return failure;},get accepted(){return accepted;},
+    get busy(){return !!pending || !!pickDemands.size || !!stills.length;},get failure(){return failure;},get accepted(){return accepted;},
+    queueStill,requestStill:queueStill,
     get displayedMainFrame(){return displayedMainFrame;},queuePickDemand,
     pick(options){
       const display=displayedMainFrame;
@@ -387,6 +405,13 @@ export function createWorldFrameDriver(app,state,execution={}) {
     },
     tick({present,reserve,capture,dt=0}) {
       if(dead)return false;if(failure)throw failure;
+      try {
+      if(!pending && stills.length && !preferMain) {
+        const job=stills.shift();
+        pending={phase:'new',job,view:job.view,data:null,preflight:null,eye:null,work:null};
+        wait(pending,state.data.request({...accepted.frame,advance:false},
+          worldInitialCellDemand(job.view.values.cam,app.win.size)),'data');
+      }
       if(!pending && (present || pickDemands.size)) {
         const reservation={...reserve()};
         if(pickDemands.size)reservation.runView=true;
@@ -399,6 +424,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
           wait(pending,state.data.request(request.frame,requirements),'data');
         }
       }
+      if(!pending && preferMain) {preferMain=false;wake();}
       const p=pending;if(!p)return false;
       if(p.phase==='data') {p.data=p.result;p.result=null;if(!p.data)throw new Error('WORLD request retired');prepare(p);}
       else if(p.phase==='eye') {
@@ -407,14 +433,16 @@ export function createWorldFrameDriver(app,state,execution={}) {
         p.preflight=createPreflight(app,state,p.data,p.view);p.phase='scene';
       }
       if(p.phase==='scene') {
-        const recorded=withWorldView(app,p.view,()=>{
+        const attempt=()=>withWorldView(app,p.view,()=>{
           if(!preflight(app,p.preflight,p.view.camera))return null;
           app.post.setSceneIdentity(p.data.identity);
           p.frameIdentity=Object.freeze({order:++order});
           return record(app,state,p.data,{...p.view,frozenView:p.view,preflight:p.preflight,
             eye:p.eye,identity:p.frameIdentity,order,dt,
-            signRequest:app.signs?.worldRequest(app.win.size)??null});
+            stillTarget:p.job?.target??null,
+            signRequest:p.job ? null : app.signs?.worldRequest(app.win.size)??null});
         });
+        const recorded=p.job ? app.presentation.neutral(attempt) : attempt();
         if(recorded)wait(p,finishWorldFrame(app,state,recorded,p.eye.feedback),'finished');
       }
       if(p.phase==='finished') {
@@ -423,23 +451,38 @@ export function createWorldFrameDriver(app,state,execution={}) {
           if(!complete(result.feedback)){extend(p,result.feedback);return false;}
           p.phase='scene';wake();return false;
         }
-        accepted={frame:p.data.frame,reservation:p.reservation};
-        const old=displayedMainFrame;
-        const pin=p.data.retain();
-        displayedMainFrame=Object.freeze({data:pin,view:p.view,frameIdentity:p.frameIdentity});
-        old?.data.release();
+        if(!p.job) {
+          accepted={frame:p.data.frame,reservation:p.reservation};
+          const old=displayedMainFrame;
+          const pin=p.data.retain();
+          displayedMainFrame=Object.freeze({data:pin,view:p.view,frameIdentity:p.frameIdentity});
+          old?.data.release();
+        }
         p.data.release();p.data=null;
         wait(p,releasePreflight(app,p.preflight),'released');
       }
-      if(p.phase==='released'){pending=null;wake();return true;}
+      if(p.phase==='released'){
+        pending=null;preferMain=!!p.job;
+        if(p.job)p.job.resolve(true);
+        wake();return !p.job;
+      }
       return false;
+      } catch(error) {
+        failure=error;
+        if(pending){pending.phase='failed';rejectStill(pending,error);}
+        for(const job of stills.splice(0))job.reject(error);
+        throw error;
+      }
     },
     dispose(){
       return retirement??=(async()=>{
         dead=true;state.dead=true;const p=pending;pending=null;
-        if(p){await p.work?.catch(()=>{});p.result?.release?.();await releasePreflight(app,p.preflight);p.data?.release();}
+        const error=new Error('WORLD still driver disposed');
+        for(const job of stills.splice(0))job.reject(error);
+        if(p){await p.work?.catch(()=>{});p.result?.release?.();await p.rejectionDrain;await releasePreflight(app,p.preflight);p.data?.release();}
         displayedMainFrame?.data.release();displayedMainFrame=null;pickDemands.clear();
         await Promise.allSettled([...state.uses]);
+        p?.job?.reject(error);
         await state.data.dispose();
         await disposeWorldFrame(state);
       })();
