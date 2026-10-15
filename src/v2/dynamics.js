@@ -6,7 +6,7 @@ import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, allocationArgsBase } from '../shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES } from '../shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
 
@@ -101,7 +101,7 @@ export class NativeDynamics {
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
     this.faces=make('faces',g.nbricks*16);
     this.control=make('control',controlWords(g)*4);
-    this.dispatchArgs=make('dispatch args',80,GPUBufferUsage.INDIRECT);
+    this.dispatchArgs=make('dispatch args',64,GPUBufferUsage.INDIRECT);
     const args=new Uint32Array(16);args[13]=PARTICLE_CAP/64;args[14]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
     this.plans=make('plans',g.slots*16);
     const initial=new Float32Array(g.nbricks*8); for (let b=0;b<g.nbricks;b++) initial[b*8+6]=AIR.quietTicks;
@@ -145,9 +145,11 @@ export class NativeDynamics {
     this._check();
     // Match the kernel descriptor protocol: vectors are direct dispatches.
     const indirect=!Array.isArray(count) && count?.indirect;
-    if(indirect) this.gpu.frame.copy(this.control,allocationArgsBase(this.g)*4,this.dispatchArgs,64,12);
+    if(indirect && (indirect!==this.dispatchArgs || count.offset!==32)) throw new Error('Unsupported native allocation dispatch');
+    // Existing ray args are [hasWork ? 1 : 0, CAP/64, 1]; dThread folds
+    // their two dimensions into exactly the same canonical pool slots.
     for(const stage of ALLOCATION_STAGES) {
-      const size=indirect?(stage==='freeScan'?count:{indirect:this.dispatchArgs,offset:64}):
+      const size=indirect?(stage==='freeScan'?count:{indirect:this.dispatchArgs,offset:48}):
         (stage==='freeScan'?1:PARTICLE_CAP/64);
       this._record('blasts',stage,size,tick,params);
     }

@@ -73,7 +73,7 @@ in J; density uses the existing element density table (100kg/m³ per unit).
 Default batch8, configurable1..64, bounds recording work. For1000 immediately
 eligible sources, ideal service latency is125 ticks (2.0833s) at default,
 16 ticks (0.2667s) at64; real chains/blocked capacity can take longer. This is
-NOT a claim of dense-explosion timing parity. Empty batch work is indirect-dispatched at zero workgroups; selection still scans events. Allocation preparation runs directly even for empty indirect batches (see below). Active full-grid plans remain a performance risk requiring parent-owned GPU evidence. Plans and claims each cost16B/cell, below128MiB/binding at6.3M cells.
+NOT a claim of dense-explosion timing parity. Empty batch work and allocation preparation are indirect-dispatched at zero workgroups; selection still scans events. Active full-grid plans remain a performance risk requiring parent-owned GPU evidence. Plans and claims each cost16B/cell, below128MiB/binding at6.3M cells.
 
 Air is32B per4³ brick in two copies. Eight60Hz substeps use50m/s acoustic
 Rusanov exchange plus bounded conservative upwind/diffusive heat/gas transport.
@@ -124,22 +124,22 @@ before their unchanged within-brick slot/face ordering. `control[5]` is still th
 exact total requested count. Energy-sum storage is separate; count/prefix ranges
 are transient and retain their existing offsets.
 
-**Zero-work batches:** `workArgs` writes three additional u32 dispatch arguments
-`[hasWork ? 1024 : 0, 1, 1]` after the allocation tail. Its **existing** predicate
-is unchanged: selected source, or (outside mode14) pending grid neutron or
-positive child sum. A zero child sum alone is not an absence proof (u32 sums may
-wrap). For indirect allocators the central hook copies these args to a separate
-INDIRECT buffer; freeCount/freeScatter use them, and freeScan uses the allocator's
-existing 1-or-0 args from control28..30. All three dimensions are written/copied.
+**Zero-work batches:** pool preparation reuses the existing particle dispatch
+arguments at byte48: `[hasWork ? 1 : 0, 1024, 1]`. `dThread` folds these into
+the same canonical slot order as direct `[1024, 1, 1]`. No extra argument
+storage or copies are needed. The **existing** predicate is unchanged: selected
+source, or (outside mode14) pending grid neutron or positive child sum. A zero
+child sum alone is not an absence proof (u32 sums may wrap).
+FreeCount/freeScatter use these args; freeScan uses the allocator's existing
+1-or-0 args at byte32. Unsupported indirect allocation descriptors fail closed.
 Direct allocators and jets still prepare directly. All stages remain required
 and awaited, even when an indirect count is zero.
 
 **Scratch/save ABI:** append2048 u32 (8192 bytes) at
-`externalMaskBase(g) + externalMaskWords(g)`, followed by3 u32 (12 bytes) of
-allocation dispatch args, in the existing control buffer. Each chunk uses two
+`externalMaskBase(g) + externalMaskWords(g)` in the existing control buffer. Each chunk uses two
 words (free and child counts, then bases). All prior offsets, buffer/binding
 identities, eight-storage layouts and persisted fields are unchanged. The
-existing separate dispatch-args buffer grows from64 to80 aligned bytes. Saves
+existing separate dispatch-args buffer remains64 bytes. Saves
 still capture only the first32 control words plus explicit held/shock/request and
 external fields; this tail is ephemeral and overwritten before use. Restore
 clears the entire control buffer before restoring those explicit durable ranges.
@@ -147,7 +147,7 @@ clears the entire control buffer before restoring those explicit durable ranges.
 **Unmeasured costs:** nonempty pool preparation reads the pool twice, adds
 workgroup masks/child reductions and writes child prefixes even for jets. Request
 count adds up to63 workgroup-local additions per brick; allocator serial work
-falls by64×. Empty indirect batches still record dispatches/copies, but no pool
+falls by64×. Empty indirect batches still record dispatches, but no pool
 invocations. GPU execution, parity and performance remain parent-owned; CPU
 models and Naga validation alone establish no timing improvement.
 

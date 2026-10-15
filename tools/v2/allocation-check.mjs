@@ -12,7 +12,7 @@ import { NativeJets } from '../../src/v2/jets.js';
 import { PARTICLE_CAP as CAP, NEUTRON_TAG } from '../../src/v2/dynamics-reference.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { CONTROL } from '../../src/shaders/v2/particles.js';
-import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, allocationArgsBase, controlWords,
+import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, controlWords,
   externalMaskBase, externalMaskWords, blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { jetsWGSL } from '../../src/shaders/v2/jets.js';
 const NONE=0xffffffff, WORDS=12;
@@ -181,7 +181,7 @@ function assertPrepared(calls,expected) {
     assert.deepEqual(prep.map(p=>p.name),ALLOCATION_STAGES.map(s=>`v2blasts_${s}`));
     const indirect=!Array.isArray(c.size) && c.size?.indirect;
     assert.deepEqual(prep.map(p=>p.size),indirect?
-      [{indirect:c.size.indirect,offset:64},c.size,{indirect:c.size.indirect,offset:64}]:
+      [{indirect:c.size.indirect,offset:48},c.size,{indirect:c.size.indirect,offset:48}]:
       [[1024,1,1],[1,1,1],[1024,1,1]]);
     for(const p of prep) assert.deepEqual(p.params,c.params,'preparation receives exactly the allocator uniforms');
   }
@@ -230,13 +230,13 @@ test('preparation kernels build idle and every new stage is awaited; no optional
   const {d}=recorder(name=>name==='v2blasts_freeScan'?Promise.reject(new Error('scan compile failed')):Promise.resolve());
   await assert.rejects(d.ready,/scan compile failed/);assert.equal(d.isReady,false);d.dispose();
 });
-test('scratch is exactly 8KiB + 12 bytes after old mask end, with unchanged existing offsets/bindings/save ABI',()=>{
+test('scratch is exactly 8KiB after old mask end, with unchanged existing offsets/bindings/save ABI',()=>{
   assert.equal(ALLOCATION_CHUNKS,1024);
   assert.equal(CONTROL.FREE_LIST,32);assert.equal(CONTROL.PREFIX,32+CAP);
   for(const dims of [[16,8,8],[128,128,128],[48,16,32]]) {
     const g=gridLayout(...dims),base=externalMaskBase(g)+externalMaskWords(g);
-    assert.equal(allocationScratchBase(g),base);assert.equal(allocationArgsBase(g),base+2048);
-    assert.equal((controlWords(g)-base)*4,8192+12);
+    assert.equal(allocationScratchBase(g),base);
+    assert.equal((controlWords(g)-base)*4,8192);
     for(const stage of ALLOCATION_STAGES) {
       const code=blastsWGSL(g,nativeDynamicsHead,stage);
       assert.equal([...code.matchAll(/var<storage,/g)].length,8);
@@ -264,16 +264,19 @@ test('generated exact hasWork predicate gates all three prep dimensions, includi
     calls.length=0;copies.length=0;
     d._record('blasts','workArgs',1,3,{mode});
     d.gpu.frame.copy(d.control,28*4,d.dispatchArgs,32,12);
+    d.gpu.frame.copy(d.control,28*4,d.dispatchArgs,48,4);
+    const priorCopies=copies.length;
     d._record('blasts','allocate',{indirect:d.dispatchArgs,offset:32},3,{mode});
     assertPrepared(calls,1);
     assert.deepEqual(calls.filter(c=>ALLOCATION_STAGES.some(s=>c.name===`v2blasts_${s}`)).map(c=>c.args),
-      [[work?1024:0,1,1],[work?1:0,1,1],[work?1024:0,1,1]]);
-    assert.deepEqual(copies.at(-1),{src:d.control,so:allocationArgsBase(d.g)*4,dst:d.dispatchArgs,dof:64,n:12});
+      [[work?1:0,1024,1],[work?1:0,1,1],[work?1:0,1024,1]]);
+    assert.equal(copies.length,priorCopies,'pool preparation reuses existing args without another copy');
   }
   control[3]=NONE;control[17]=0;control[18]=0;d.blastBatch=8;calls.length=0;
   d.consumeMaterialEvents(4);assertPrepared(calls,8);
   const emptyPrep=calls.filter(c=>ALLOCATION_STAGES.some(s=>c.name===`v2blasts_${s}`));
-  assert.equal(emptyPrep.length,24);for(const c of emptyPrep) assert.deepEqual(c.args,[0,1,1]);
+  assert.equal(emptyPrep.length,24);
+  for(const c of emptyPrep) assert.deepEqual(c.args,c.name==='v2blasts_freeScan'?[0,1,1]:[0,1024,1]);
   // A modular raw-neutron sum of zero was never an absence predicate. A
   // selected source or pending grid neutron must still run preparation.
   const code=blastsWGSL(d.g,nativeDynamicsHead,'workArgs');
@@ -282,6 +285,15 @@ test('generated exact hasWork predicate gates all three prep dimensions, includi
     calls.length=0;copies.length=0;
     d._record('blasts','allocate',count,3);assertPrepared(calls,1);
     assert.equal(copies.length,0,'direct descriptors do not consume workArgs scratch');
+  }
+  for(const count of [{indirect:d.control,offset:32},{indirect:d.dispatchArgs,offset:0}])
+    assert.throws(()=>d._prepareAllocation(3,{},count),/Unsupported native allocation dispatch/);
+  assert.equal(d.dispatchArgs.size,64);
+  // Both direct [1024,1,1] and reused [1,1024,1] cover each slot exactly once.
+  for(const [nx,ny] of [[1024,1],[1,1024]]) {
+    const seen=new Uint8Array(CAP);
+    for(let y=0;y<ny;y++) for(let x=0;x<nx;x++) for(let lane=0;lane<64;lane++) seen[(y*nx+x)*64+lane]++;
+    assert.ok(seen.every(n=>n===1));
   }
   d.dispose();
 });

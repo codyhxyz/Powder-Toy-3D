@@ -25,8 +25,7 @@ export const externalMaskWords = g => { const {width,height}=atlasDims(g);return
 // become exclusive bases in-place; never alias the final per-particle prefixes.
 export const ALLOCATION_CHUNKS = PARTICLE_CAP / 64;
 export const allocationScratchBase = g => externalMaskBase(g) + externalMaskWords(g);
-export const allocationArgsBase = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
-export const controlWords = g => allocationArgsBase(g) + 3;
+export const controlWords = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
 export const ALLOCATION_STAGES = ['freeCount','freeScan','freeScatter'];
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
@@ -187,8 +186,6 @@ export function blastsWGSL(g,nativeHead,stage) {
     atomicStore(&control[24],select(0u,${fold(Math.ceil(g.nbricks/64))[0]}u,hasWork));
     atomicStore(&control[25],${fold(Math.ceil(g.nbricks/64))[1]}u); atomicStore(&control[26],1u);
     atomicStore(&control[28],select(0u,1u,hasWork)); atomicStore(&control[29],1u); atomicStore(&control[30],1u);
-    atomicStore(&control[${allocationArgsBase(g)}u],select(0u,${ALLOCATION_CHUNKS}u,hasWork));
-    atomicStore(&control[${allocationArgsBase(g)+1}u],1u); atomicStore(&control[${allocationArgsBase(g)+2}u],1u);
   `);
   if (stage === 'plan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
