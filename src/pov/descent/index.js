@@ -6,6 +6,7 @@ import { createPurse, siteNuggets, splitGold, enemyGold, DROP_LIFETIME_S, DROP_B
 import { rollShop, buy } from './shop.js';
 import { hashString, mixSeed } from '../../rng.js';
 import { createDescentItems } from './items.js';
+import { startsDescentRun } from './terrainHandoff.js';
 
 // The Holy Mountain (docs/descent-contract.md, C): Noita's temple between biomes,
 // and the gold that pays for it. On a Descent level (A's levels.js) it keeps:
@@ -144,9 +145,12 @@ export function createDescent({ app, scene, hud, interact, events, getToolbelt =
   }
 
   function arrive(lv) {
+    // A saved-terrain run can start in band 01 and revisit band 00 upwards.
+    // Band indices are residency, never a signal to erase the run's gold.
+    const newRun = startsDescentRun(level, lv, DESCENT_LEVELS);
     leave();
     level = lv;
-    if (DESCENT_LEVELS.indexOf(lv) === 0) { purse.reset(0); runSeed = (Math.random() * 2 ** 32) >>> 0; }   // a new run (Noita's starts with 0 gold)
+    if (newRun) { purse.reset(0); runSeed = (Math.random() * 2 ** 32) >>> 0; }   // a new run (Noita's starts with 0 gold)
     levelSeed = mixSeed(runSeed, hashString(lv.key));
     const t = lv.temple, tier = lv.tier;
     // the shop
