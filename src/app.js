@@ -971,7 +971,7 @@ function requestWorldPick() {
   const fromPov=!!pov?.active;
   if(pickPending || (!pointerInside && !fromPov))return;
   syncWorldHover();
-  if(!display){hover.valid=false;return;}
+  if(!display){hover.valid=false;hover.worldReady=false;return;}
   const ndc=fromPov?[0,0]:pointer.toArray(),token=worldPickToken(),from=sim;
   pointerPickDirty=false;pickPending=true;
   driver.pick({ray:displayedWorldRay(display,ndc),skipLiquids:fromPov&&skipPickLiquids()}).then(hit=>{
@@ -985,7 +985,7 @@ function requestWorldPick() {
       syncWorldHover();
     }
     wakeLoop();
-  },()=>{hover.valid=false;}).finally(()=>{pickPending=false;});
+  },()=>{hover.valid=false;hover.worldReady=false;}).finally(()=>{pickPending=false;});
 }
 function requestPick() {
   if(win){requestWorldPick();return;}

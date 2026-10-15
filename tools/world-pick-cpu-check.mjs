@@ -175,3 +175,23 @@ test('actual App brush dispatch permits certified sky misses, but not unknown or
  hover.valid=false;win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};assert.equal(click(),false);
  assert.match(source,/inWindow\(brushCenter\) && worldMutationReady\(\)/,'air placement still validates its computed center');
 });
+
+test('actual rejected App pick revokes previous sky readiness',async()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const identity={},hover={valid:true,worldReady:true,frameIdentity:identity,worldToken:'tool'};
+ const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity},pick:()=>Promise.reject(new Error('failed readback'))}}};
+ const pointer={x:0,y:0,toArray:()=>[0,0]};
+ const request=new Function('win','hover','pointer','sim','worldPickToken','displayedWorldRay','syncWorldHover',
+   `let pickPending=false,pointerInside=true,pointerPickDirty=true,pov=null;
+    ${extract('requestWorldPick')};return requestWorldPick;`)(win,hover,pointer,{},()=> 'tool',()=>({}),()=>true);
+ request();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(hover.valid,false);assert.equal(hover.worldReady,false);
+ const ready=new Function('win','hover','worldPickToken','syncWorldHover',
+   `${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',()=>true);
+ assert.equal(ready(),false,'failed readback must not become a certified sky miss');
+});
