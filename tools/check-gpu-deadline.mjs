@@ -150,7 +150,7 @@ for (const outcome of ['released', 'exit', 'readiness-failure', 'readiness-exit'
     if (outcome === 'stdout-close') test.guard.stdout.emit('close');
   }
   test.context.releaseSlot(); // same path used by launch failure, disconnect and process exit
-  assert.equal(test.removed(), outcome === 'released' ? 1 : 0);
+  assert.equal(test.removed(), 0, 'guard acknowledgment resets local ownership; the guard alone unlinks its lease');
   assert.equal(test.context.slotHeld, outcome !== 'released');
   assert.equal(test.context.slotGuarded, outcome !== 'released');
   if (outcome === 'exit') assert.equal(test.stopped(), 1);

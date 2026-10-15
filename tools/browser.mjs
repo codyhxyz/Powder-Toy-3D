@@ -104,7 +104,7 @@ function releaseSlot() {
   slotHeld = false;
   try {
     const owner = readJSON(SLOT_FILE, null);
-    if (fs.statSync(SLOT_FILE).ino === slotInode && (owner === process.pid || (slotGuardPid > 0 && owner === slotGuardPid)))
+    if (fs.statSync(SLOT_FILE).ino === slotInode && owner === process.pid)
       fs.rmSync(SLOT_FILE, { force: true });
   } catch {}
   if (slotStarted && !slotGuardPid) console.error(`[browser] total GPU slot occupancy ${Date.now() - slotStarted} ms`);

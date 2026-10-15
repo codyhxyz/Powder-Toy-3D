@@ -68,7 +68,7 @@ One launch attempt is allowed per test process. Additional pages must reuse that
 The machine-wide slot remains at `~/.cache/tpt-headless/slot`.
 A dead or malformed holder is unverified: the launcher refuses acquisition and preserves the lease/report regardless of age. A dead numeric PID does not prove that orphan browsers are absent; recovery requires separate ownership/cleanup verification, not automatic reclamation.
 An existing lease is not adopted merely because its holder matches this process's PID.
-Once a guard is spawned, only its verified `released` acknowledgment allows the launcher to release/reset that guarded lease. Unexpected guard exit, failed readiness, and uncertain browser closure preserve it.
+Once a guard is spawned, only its verified `released` acknowledgment allows the launcher to reset local ownership. The guard alone unlinks its lease. Unexpected guard exit, failed readiness, and uncertain browser closure preserve it.
 If the player uses the GPU, the launcher releases its pre-guard slot and refuses the test.
 It no longer holds the slot while waiting for the player.
 Explicit `finally` cleanup is still preferred.
