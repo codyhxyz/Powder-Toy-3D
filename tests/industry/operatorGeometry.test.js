@@ -5,7 +5,7 @@ import { Vector3 } from 'three';
 import { E } from '../../src/elements.js';
 import { HAND_REACH } from '../../src/pov/constants.js';
 import { validateDevices } from '../../src/industry/validation.js';
-import { purelineDeviceLayout } from '../../tools/fixtures/industry-line.js';
+import { purelineDeviceLayout, isColdLineMinedCoal } from '../../tools/fixtures/industry-line.js';
 import { firstOccupiedRayHit } from '../../tools/fixtures/industry-operator.js';
 
 function scene(occupied) {
@@ -83,4 +83,12 @@ test('only tool mode adds a buildable apron supporting every source neighbour', 
     for (let z = firstZ; z <= firstZ + 1; z++) for (let x = 96; x <= maxX; x++)
       for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++)
         assert(support.has(`${x + dx},${z + dz}`), 'source grains cannot topple off an unsupported edge');
+});
+
+test('cold mined payload permits native friction heating, not hot or spent fuel', () => {
+  assert(isColdLineMinedCoal([E.BROKENCOAL, 20.15653, 1, 0.375]));
+  assert(!isColdLineMinedCoal([E.BROKENCOAL, 550, 1, 0.375]));
+  assert(!isColdLineMinedCoal([E.BROKENCOAL, 20, 0.99, 0.375]));
+  assert(!isColdLineMinedCoal([E.COAL, 20, 1, 0.375]));
+  assert(!isColdLineMinedCoal([E.BROKENCOAL, NaN, 1, 0.375]));
 });

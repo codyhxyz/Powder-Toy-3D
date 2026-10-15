@@ -2,7 +2,8 @@
 
 Status: the native backend batch and real control UI pass.
 Mined coal melted four scrap cells; all four reached the water catch and shipped below 400°C.
-Actual shovel/bucket gestures, repeat refueling, and precision fuel gating remain unverified.
+The actual-tool loading sequence remains incomplete: it moved coal and scrap but produced no melt.
+Bucket handling, repeat refueling, and precision fuel gating remain unverified.
 Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
@@ -79,6 +80,7 @@ Preserve the proven full-floor coolant route while investigating fuel feeding.
 | Ash clearing | Existing tools clear spent fuel without destroying the hearth. | Native powder transfer cleared three ash cells and preserved all 48 shell cells; repeat refueling remains pending |
 | Economy | Construction charges and refunds remain correct. Existing progression remains usable. | CPU confirmed-charge, ledger, migration, and anti-arbitrage checks pass |
 | Compatibility | Existing saves, built-in drives, Sandbox sparks, and unrelated modes still work. | Existing construction, controller, physics, and Quarry CPU suites pass; final integration pending |
+| Hand-loaded batch | Real tool updates process the full charge without narrowed transfer candidates. | Incomplete: shovel moved six coal and four scrap cells, but only one scrap cell was observed in the chamber after settling; no melt |
 | End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Backend batch passed in 1920 native ticks; real tool strokes and fuel-gate automation remain separate requirements |
 | Resource use | Tests use the shared browser helper and respect the total GPU-slot budget. | Recorded slots respect their limits; every utilization override had explicit user approval |
 | Release | Changes reach GitHub main, deployment succeeds, and the live site passes a focused check. | Pending |
@@ -139,7 +141,7 @@ These are open questions, not implementation claims.
 ### Current validation
 
 - 356 hearth CPU budget, conduction, geometry, and composed-shader checks pass.
-- All 34 Industry unit tests and 11 controller checks pass.
+- All 48 Industry unit tests and 11 controller checks pass.
 - 17 gate/control CPU tests pass, including native switch-bank shutdown and gate shader type validation.
 - Diagnostics pass mocked asynchronous ownership, mutation, staleness, and disposal regressions.
 - Existing construction, controller, machine-transfer, and Quarry CPU suites pass.
@@ -155,13 +157,17 @@ These are open questions, not implementation claims.
 - The 24-cell coolant-source hold check failed. Source review found open tank corner columns.
 - Closing tank and catch corners passed native confirmation: all 24 source cells stayed behind the shutter.
 - The sealed batch confirmed two pump intake/output cells, but no water reached the catch; occupancy was 8444 ms.
-- A larger finite reservoir and later pump shutdown are being prepared; this revised route is not yet verified.
+- The larger reservoir and tagged pump backplate passed the native backend batch: all four cold metal cells shipped.
+- That batch occupied 4947 ms and did not exercise actual tool updates.
 - Real control UI operations pass, including actual paid TSNS/SWITCH placement and switch inspection/toggle.
 - The same UI case passes threshold bounds, Escape/Q, optional native drive, and a gate-mode header round trip.
 - Gate UI serialization used an explicit registration fixture; it is not a second native gate-flow test.
 - Total UI slot occupancy was 5339 ms; there were no page exceptions or native GPU validation errors.
 - A follow-up probe was refused before browser launch at 89% measured GPU load.
-- Real shovel/bucket loading gestures, refueling, cooling, shipment, release, and the live-site check remain pending.
+- Two actual-tool checkpoints remain incomplete; total occupancy was 8794 ms and 6191 ms.
+- The second used the real shovel to collect and dump six coal and four scrap cells.
+- It observed only one scrap cell in the chamber after settling and produced no melt.
+- Real bucket handling, repeat refueling, precision fuel gating, release, and the live-site check remain pending.
 - See `physical-factory-validation.md` for failed checkpoints and measured slot occupancy.
 
 ## Work boundaries

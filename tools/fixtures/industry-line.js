@@ -29,6 +29,11 @@ const boxCells = bounds => {
 };
 export const lineWaterSourceCells = () => boxCells(LINE_WATER_SOURCE_BOUNDS);
 
+// Real pickup allows native motion between strokes. Friction can warm the
+// initially 20°C stock slightly; remaining chemical fuel-life must stay exact.
+export const isColdLineMinedCoal = (cell, initialLife = 1) => cell[0] === E.BROKENCOAL
+  && Number.isFinite(cell[1]) && Math.abs(cell[1] - 20) <= 1 && cell[2] === initialLife;
+
 // Each foundation tile is an ordinary 4x4 build placed at every listed height.
 // Keep the sealed tank/catch walls explicit and CPU-check their corners below.
 export const LINE_FOUNDATION_COLUMNS = Object.freeze([
@@ -417,6 +422,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       coalTaken = shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).map(cell => [...cell]);
       minedSnapshot = coalTaken.map(cell => [...cell]);
       observations.fuel.miningMethod = 'native Industry miner, actual POV shovel primary';
+      observations.fuel.sourceTemperatureToleranceC = 1;
       observations.fuel.operatorMining = { exposed, actionFrames: miningActions.reduce((n, action) => n + action.frames, 0),
         rayHitFrames: miningActions.reduce((n, action) => n + action.hitFrames, 0),
         rayMissFrames: miningActions.reduce((n, action) => n + action.missFrames, 0),
@@ -445,7 +451,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       observations.fuel.loadedBrokenCoalAcrossHearth = fuelPut;
       observations.fuel.operatorCoalDistributionAtDump = { rearFuel: rearCoal, frontCharge: frontCoal };
       checks.physicalMinedCoalPreserved = coalTaken.length === 6 && fuelPut === 6
-        && minedSnapshot.every(cell => cell[0] === E.BROKENCOAL && cell[1] === 20 && cell[2] === coalLife)
+        && minedSnapshot.every(cell => isColdLineMinedCoal(cell, coalLife))
         && [...rearCoal, ...frontCoal].every(cell => cell.id === E.BROKENCOAL);
     } else {
       minedCoal = new Load(6);

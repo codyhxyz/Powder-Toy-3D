@@ -1,12 +1,13 @@
 # Physical factory validation
 
-Status: unreleased. The native backend batch passed; actual tool strokes and repeat refueling remain unverified.
+Status: unreleased. The native backend batch passed; the actual-tool loading sequence remains incomplete.
+Actual bucket handling and repeat refueling remain unverified.
 
 ## CPU evidence
 
 The integrated controller and UI pass:
 
-- `node --test tests/industry/*.test.js`: 40 tests.
+- `node --test tests/industry/*.test.js`: 48 tests.
 - `node scripts/check-industry-controller.mjs`: 11 checks.
 - `node scripts/check-industry-factory-ui.mjs`.
 - Existing construction, transfer, and Quarry checks.
@@ -14,6 +15,7 @@ The integrated controller and UI pass:
 - Diagnostics request ownership, freshness, reset, and disposal regressions.
 - Naga type validation of composed Industry, transfer, construction, diagnostics, gate, and control shaders.
 - Pump backplate rotations, atomic construction, strict ownership, legacy preservation, and lossless marker saves.
+- Operator ray bounds, obstruction faces, gas filtering, readback failures, support geometry, and cold-payload checks.
 
 Fresh integration review found two additional input problems.
 Canvas placement now releases number-input focus, so Escape and Q remain available.
@@ -332,6 +334,39 @@ This checkpoint used real transfer APIs with explicit candidate cells.
 It did not exercise the actual shovel/bucket update methods or player gestures.
 The gate controlled coolant, not precision coal feeding.
 It does not prove continuous automation or repeat refueling.
+
+### Actual-tool checkpoints: incomplete
+
+The optional `--operator tools` case uses the real toolbelt's shovel and finite Factory bucket.
+It does not replace their transfer candidates or throw velocities.
+Five ordinary foundation tiles support loose stock during pickup; this layout contains 88 devices.
+The fixture supplies body poses and native ray hits, not real mouse input or player traversal.
+Health and heat exposure are not tested.
+
+The first run collected only three coal cells before advancing past the miner stage.
+Its ray also stopped at fire, unlike the player's non-gas picker.
+It produced no melt or shipment.
+Total occupancy: **8794 ms**; report `~/.cache/tpt-headless/runs/44054-44126.json`.
+Result: `/tmp/sandustry-physical-line-tools-v1.json`.
+
+The corrected run collected all six mined coal cells with full remaining fuel life.
+Their temperatures were 20–20.157°C after native movement.
+The real shovel dumped six coal cells and all four scrap cells; no scrap remained in its pack.
+Coal settled across both rows. Only one scrap cell was observed in the chamber after settling.
+The bounded probe did not locate the other three scrap cells.
+No LAVA(METAL), bucket operation, or metal shipment was confirmed.
+The run reached the 4800-tick cap; ash pickup was therefore skipped.
+No tool errors or outstanding tool transfers remained at final inspection.
+Total occupancy: **6191 ms**; report `~/.cache/tpt-headless/runs/46944-46975.json`.
+Result: `/tmp/sandustry-physical-line-tools-v2.json`.
+
+The cold-fuel assertion incorrectly required exactly 20°C despite native friction heating.
+It now permits a 1°C difference while requiring exact remaining fuel life.
+This CPU assertion correction does not change either failed result.
+Tool errors, unfinished required actions, and unsettled transfers now veto success.
+Confirmed pack decrease is recorded separately from surviving charge-row scrap.
+Neither attempt used a utilization override; both browsers and servers stopped.
+The loading order, aim poses, and physical charge retention need further investigation.
 
 ## Open requirements
 
