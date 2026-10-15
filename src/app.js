@@ -567,7 +567,8 @@ function build(savedWorldSize = null) {
   // the pipelines a frame needs (warm from the start menu, or building now)
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
-  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
+  const nativeOwner = physicsV2;
+  const core = coreWait = Promise.all([...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
     blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
@@ -1728,10 +1729,10 @@ async function renderThumb(viewId, out) {
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? gateVariants(settings).base : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
   // blank; the volume's views from Plain draw the bricks as they were when Plain began)
-  const v = vol, b = view === 'plain' ? blocks : null;
+  const v = vol, format = v.format, b = view === 'plain' ? blocks : null;
   if (view === 'plain' && !b) return false;
   await (b ? b.ready : Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
-  if (graphicsFailure || v !== vol || (b && b !== blocks)) return false;
+  if (graphicsFailure || v !== vol || format !== v.format || (b && b !== blocks)) return false;
   thumbTarget ??= gpu.createTexture({
     label: 'view thumbnail', size: THUMB_SIZE, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
@@ -2236,12 +2237,15 @@ function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
 // Lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
 // so the grid and the box outline fade by the render scale to keep their weight.
 let volumeDrawn = false;   // the last presented frame drew the volume (__app.view.volumeDrawn)
+let volumeFormat;
 let volumeFirst = false;  // this frame's volume drew before the scene pass (the opaque hook: world/far.js volumePass)
 // Select once, before any presentation consumer writes uniforms or draws.
 // The far meshes discard live-window columns even without a local draw; a
 // pending shader must therefore keep the actual previous full-resolution view.
 function selectRenderView() {
-  let next = { view: viewKeyOf(settings.view), detail: frameDetail, curved: !!warpNow()?.k };
+  const format = vol.format;
+  if (volumeFormat !== format) { post.reset(); meshFrames.drop(); sim.resetGI(); volumeFormat = format; }
+  let next = { view: viewKeyOf(settings.view), detail: frameDetail, curved: !!warpNow()?.k, format };
   if (blocks) {
     readyVolumeView.reset();
   } else {
@@ -2579,9 +2583,9 @@ function tick(now, renderOnly = false) {
     post.reset(); // Never blend temporal history across source-style transitions.
   }
   const runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
+    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
   let runView = present && pacer.view(viewV, runDerived || wantFrame());
@@ -2820,7 +2824,7 @@ async function allReady() {
     // level is demand, unlike the shown fallback while a near shader is pending.
     const near = isMaterialView(view) && detailGate.level === 1;
     const detail = near ? gateVariants(settings).near : baseDetail();
-    const curved = !!warpNow()?.k, far = win?.far;
+    const curved = !!warpNow()?.k, far = win?.far, format = v.format;
     await Promise.all([v.viewReady(view, detail, curved),
       // update() uses flat-near readiness even when the drawn view is curved.
       ...(near && curved ? [v.viewReady(view, detail, false)] : []),
@@ -2829,7 +2833,7 @@ async function allReady() {
       ...(far && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
-    if (s !== sim || v !== vol || !coreReady || blocksOn || view !== viewKeyOf(settings.view) || curved !== !!warpNow()?.k) continue;
+    if (s !== sim || v !== vol || format !== v.format || !coreReady || blocksOn || view !== viewKeyOf(settings.view) || curved !== !!warpNow()?.k) continue;
     applyOutputRatio();
     syncRenderResolution(autoRes.scale);
     updateFrameDetail();

@@ -82,13 +82,26 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}, 
   let nearPipe = null;              // the near variant's pipeline, once asked for
   let told = false;                 // onCompile has said so for the near variant wanted now
   let timer = 0;
+  let format, generation = 0;
+
+  function refreshFormat() {
+    if (!volume || format === volume.format) return;
+    format = volume.format;
+    generation++;
+    clearTimeout(timer);
+    nearPipe = null;
+    told = false;
+    applied = base;
+    stale = 'fresh';
+    if (isMaterialView(view)) enter();
+  }
 
   function askNear(build) {
     if (keyOf(near) === keyOf(base)) return;
     nearPipe = volume.pipeline(view, near, build);
     if (build === 'now') nearPipe.build();
-    const p = nearPipe, v = volume;
-    p.ready.then(() => { if (volume === v && nearPipe === p && wantNear) onReady(); }, () => {});
+    const p = nearPipe, v = volume, epoch = generation, askedFormat = format;
+    p.ready.then(() => { if (volume === v && generation === epoch && v.format === askedFormat && nearPipe === p && wantNear) onReady(); }, () => {});
   }
   const showNear = () => wantNear && nearPipe?.state === 'ready' && applied === base;
   // a lit material view is up: its base variant builds now (if it isn't yet),
@@ -100,14 +113,14 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}, 
       else {
         // a switch changed: the base variant builds; the view keeps the old one until then
         onCompile();
-        const v = volume, b = base, askedView = view;
-        p.ready.then(() => { if (volume === v && view === askedView && base === b) { applied = b; onReady(); } }, () => {});
+        const v = volume, b = base, askedView = view, epoch = generation, askedFormat = format;
+        p.ready.then(() => { if (volume === v && generation === epoch && v.format === askedFormat && view === askedView && base === b) { applied = b; onReady(); } }, () => {});
       }
       stale = null;
     }
     clearTimeout(timer);
-    const vol = volume, askedView = view;
-    if (prefetch && nearFadeM) timer = setTimeout(() => { if (volume === vol && view === askedView && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
+    const vol = volume, askedView = view, epoch = generation, askedFormat = format;
+    if (prefetch && nearFadeM) timer = setTimeout(() => { if (volume === vol && generation === epoch && vol.format === askedFormat && view === askedView && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
   }
 
   return {
@@ -118,10 +131,12 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}, 
      * @param {string | number} [nextView] the view drawn now: a src/views.js key or id (settings.view)
      */
     configure(vol, next, nextView = view) {
+      if (vol === volume) refreshFormat();
       const nextKey = viewKey(nextView);
       const fresh = vol !== volume || nextKey !== view;
       view = nextKey;
       volume = vol;
+      if (fresh) { format = vol.format; generation++; }
       const { base: nextBase, near: nextNear, nearFadeM: fade } = gateVariants(next);
       nearFadeM = fade;
       if (fresh || keyOf(nextNear) !== keyOf(near)) { nearPipe = null; told = false; }
@@ -159,6 +174,7 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}, 
      * @returns {object}
      */
     update(camera, camGrid, dims, heightPx) {
+      refreshFormat();
       if (!volume || !nearFadeM || !isMaterialView(view)) return applied;
       let d2 = 0;
       for (let i = 0; i < 3; i++) {

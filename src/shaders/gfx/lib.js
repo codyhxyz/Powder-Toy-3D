@@ -59,13 +59,13 @@ export const LIB_VARIANTS = {
  *   detail    the close-up detail's defines (gfx/detail.js: { DETAIL_CUBIC_CLOSE: 1, … });
  *             core reads DETAIL_CUBIC_CLOSE (the volume's; other passes leave it out)
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
- * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object }} [opts]
+ * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  */
-export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {} } = {}) {
+export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, fixedReadFormat } = {}) {
   const v = LIB_VARIANTS[variant];
   if (!v) throw new Error(`lib: no variant ${variant} (${Object.keys(LIB_VARIANTS).join(', ')})`);
   return [
-    prelude(g, { ...STATE_OPTS.STATE_RO, debug }),
+    prelude(g, { ...STATE_OPTS.STATE_RO, debug, fixedReadFormat }),
     frameBindings(),
     lightingBindings({ far, aeration, variant }),
     glslMod,

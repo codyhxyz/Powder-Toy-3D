@@ -58,6 +58,15 @@ export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
   sourceAppearance: !!world && sourceAppearance === true,
 });
 
+// Compile the intended native representation before its initialization finishes.
+// Actual draw headers are checked separately, so legacy buffers are never read
+// through a forecast native pipeline.
+export function volumeReadFormat(sim, gpu, header) {
+  const owner = sim.compact;
+  if (owner && !owner.disposed && !owner.isReady && !(owner.forceCompatibility && gpu.testMode)) return 2;
+  return (header ?? sim.readHeader()).format ?? 0;
+}
+
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim with its derived passes attached (sim.derived)
@@ -191,6 +200,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
 
   const volume = {
     sim,
+    get format() { return volumeReadFormat(sim, gpu); },
     /** The shadow map's texels per side (FrameUniforms.shadowRes). */
     shadowRes: res,
     /** The shadow map's two textures (F5): rgba32float, and its .x as r32float. */
@@ -211,17 +221,18 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      *   on a software adapter without SOFTWARE_UNDRAWABLE)
      * @param {'now' | 'idle' | 'manual'} [build] when to build it if it isn't yet
      * @param {boolean} [curved] the rolling log's variant
+     * @param {0 | 2 | 3} [format] draw's captured representation (otherwise volume.format)
      */
-    pipeline(view, detail = {}, build = 'now', curved = false) {
+    pipeline(view, detail = {}, build = 'now', curved = false, format = volume.format) {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
     const d = isMaterialView(view) ? drawable(detail) : {};
-      const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}`;
+      const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}|format${format}`;
       let p = pipes.get(key);
       if (!p) {
       const name = isMaterialView(view) ? `volume.${view}(${detailKey(d) || 'off'})` : `volume.${view}`;
         pipes.set(key, p = gpu.renderPipeline({
-          name: curved ? `${name}.curved` : name,
-          code: volumeFrag(g, { view, detail: d, curved }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
+          name: `${curved ? `${name}.curved` : name}.format${format}`,
+          code: volumeFrag(g, { view, detail: d, curved, fixedReadFormat: format }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
           params: VolumeParams, ...volumePipeline(), build,
         }));
       } else if (build === 'now' && p.state === 'idle') p.build();
@@ -249,12 +260,14 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      */
     draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null } = {}) {
       const curved = isCurved(warp);
-      const pipe = volume.pipeline(view, detail, 'now', curved);
+      const header = sim.readHeader(), format = volumeReadFormat(sim, gpu, header);
+      if ((header.format ?? 0) !== format) return false;
+      const pipe = volume.pipeline(view, detail, 'now', curved, format);
       if (pipe.state !== 'ready') return false;
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
-        bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header: sim.readHeader(),
+        bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header,
         params: {
           meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
           deco: decoShown(sim) && sim.decoPlane ? 1 : 0,

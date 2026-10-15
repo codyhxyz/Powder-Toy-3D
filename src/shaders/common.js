@@ -337,11 +337,20 @@ export const Header = hostStruct('Header', HEADER_FIELDS, { space: 'uniform' });
 //          (atomics: the activity build and the AER list kernel)
 //   debug  every accessor tests its cell and counts misses in marks' dbg word
 //          (when the marks are bound; ?gpudebug=1, the harness, sim-check)
-function stateOpts({ state = 'read', flags = false, marks = false, act = false, debug = false } = {}) {
+// A readonly pipeline may commit to one representation; generic readers and
+// every writer retain the dynamic header ABI.
+export function readFormatWGSL(format) {
+  if (format === undefined) return 'H.format';
+  if (![0, 2, 3].includes(format)) throw new Error(`prelude: fixedReadFormat ${format}`);
+  return `${format}u`;
+}
+function stateOpts({ state = 'read', flags = false, marks = false, act = false, debug = false, fixedReadFormat } = {}) {
+  readFormatWGSL(fixedReadFormat);
+  if (fixedReadFormat !== undefined && state !== 'read') throw new Error('prelude: fixedReadFormat requires readonly state');
   if (state !== false && state !== 'read' && state !== 'read_write') throw new Error(`prelude: state ${state}`);
   if (act !== false && act !== true && act !== 'read' && act !== 'read_write') throw new Error(`prelude: act ${act}`);
   return {
-    state, flags: state === 'read_write' || (state !== false && !!flags), marks: !!marks,
+    state, fixedReadFormat, flags: state === 'read_write' || (state !== false && !!flags), marks: !!marks,
     act: act === true ? 'read' : act, debug: !!debug,
   };
 }
@@ -406,30 +415,31 @@ fn ${name}s(s: u32) -> ${type} {
   ${slot('src')}return ${buf}[H.src * SLOTS + s];
 }`;
   // Read-only A is raw words: compact payloads may contain NaN float bit patterns.
-  // H.src remains a copy index; H.format alone selects the storage representation.
+  // H.src remains a copy index; the header or fixed readonly variant selects storage.
+  const format = readFormatWGSL(o.fixedReadFormat);
   const out = o.state === 'read' ? [compactDecodeWGSL, `
 fn fetchAs(s: u32) -> vec4f {
-  ${slot('src')}if (H.format == 2u || H.format == 3u) {
+  ${slot('src')}if (${format} == 2u || ${format} == 3u) {
     var core = A[s];
-    if (H.format == 3u) { core = compactProbeCore(core); }
+    if (${format} == 3u) { core = compactProbeCore(core); }
     return compactA(cellOf(s), core);
   }
   return bitcast<vec4f>(A[H.src * SLOTS + s]);
 }
 fn fetchA(p: vec3i) -> vec4f { ${cell('src')}return fetchAs(slotOf(p)); }
 fn fetchNativeCore(p: vec3i) -> vec4u {
-  ${cell('src')}if (H.format != 2u && H.format != 3u) { return vec4u(0u); }
+  ${cell('src')}if (${format} != 2u && ${format} != 3u) { return vec4u(0u); }
   return A[slotOf(p)];
 }
 fn fetchNativeAeration(p: vec3i) -> vec3f {
-  ${cell('src')}if (H.format != 2u && H.format != 3u) { return vec3f(0.0); }
+  ${cell('src')}if (${format} != 2u && ${format} != 3u) { return vec3f(0.0); }
   let core = A[slotOf(p)];
   if (KIND(i32(core.x & 255u)) != K_LIQUID || (core.y & 0xffffffu) == 0u) { return vec3f(0.0); }
   return vec3f(f32(core.x >> 24u) / 255.0, 1.0, 1.0);
 }
 fn fetchBs(s: u32) -> vec4f {
-  ${slot('src')}if (H.format == 2u) { return vec4f(0.0); }
-  if (H.format == 3u) {
+  ${slot('src')}if (${format} == 2u) { return vec4f(0.0); }
+  if (${format} == 3u) {
     // Physical readers bind current native coarse air in B (two vec4s/brick).
     // Return the existing probe ABI, not Pa disguised as legacy pressure.
     let air = B[(s >> 6u) * 2u];

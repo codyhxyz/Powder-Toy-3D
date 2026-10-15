@@ -84,6 +84,7 @@ const camera = new PerspectiveCamera();
 const runtime = new Function('helpers', `
   const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, viewShadows, writeFrameUniforms, vol, far, gpu, camera, Matrix4, Vector3 } = helpers;
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
+  let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeFirst = false, volumeDrawn = false;
   const blocks = null, blocksOn = false, testNoVolume = false, overlayWires = [], win = { far };
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
@@ -155,6 +156,7 @@ assert.match(source('src/shaders/far.js'), /if \(all\(v\.world\.xz >= winLo\.xz\
 // Paused, settled world: requested Realistic stays pending long enough for
 // all earlier keys to settle. Pipeline completion only wakes VIEW pacing;
 // the actual selected view must re-key DERIVED pacing after resetting GI.
+const resolutionCode = app.slice(app.indexOf('function syncRenderResolution('), app.indexOf('// One tick: input'));
 const scheduleCode = app.slice(app.indexOf('  const present = renderOnly || pacer.present('), app.indexOf('  const viewV = present ?'));
 const viewScheduleCode = app.match(/  let runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\)\);/)[0];
 const wakeCode = app.slice(app.indexOf('const waited = new WeakSet();'), app.indexOf('// the wires that draw into the scene pass'));
@@ -170,6 +172,7 @@ const paused = new Function('helpers', `
     writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol } = helpers;
   const settings = { view: 6, paused: true }, readyVolumeView = createReadyVolumeView();
   const pacer = createPacer({ derivedSettle: 3, viewSettle: 2 });
+  let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', frameDerived = false, gi = 1;
   const events = [], blocks = null, blocksOn = false, overlayWires = [], live = [];
   const win = { far: { viewPipeline: { state: 'ready' } } };
@@ -188,10 +191,11 @@ const paused = new Function('helpers', `
   const hud = { setLegend() {} }, save = () => {};
   const volume = { matrixWorld: new Matrix4(), updateMatrixWorld() {} };
   const camGrid = new Vector3(), invVol = new Matrix4(), canvas = { height: 600 };
+  const presetOf = () => 1, DEVICE_RATIO = 1, pixelRatio = 1, UPSCALE_FLOOR = 0.5;
   const selectedMode = 'sandbox', renderOnly = false, wantFrame = () => false;
   const SUN = new Vector3(0, 1, 0), KEY_LIGHT = [1, 1, 1], gfx = { smoothing: 1 }, detailVersion = 0, giBuilt = 1;
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: SUN, view });
-  ${wakeCode}\n${setCode}\n${selectCode}\n${hooksCode}
+  ${resolutionCode}\n${wakeCode}\n${setCode}\n${selectCode}\n${hooksCode}
   let now = 0;
   return { setView, tick() {
     events.length = 0;

@@ -1,5 +1,5 @@
 import { CELL_M } from '../../scale.js';
-import { prelude, STATE_OPTS, LAYOUT, STAGE, stateLayout } from '../common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, stateLayout, readFormatWGSL } from '../common.js';
 import { ARGS } from '../activity.js';
 import { simModesGLSL, SIM_MODE_FIELDS } from '../../simModes.js';
 import { uniformStruct } from '../../gpu/params.js';
@@ -127,7 +127,8 @@ const wgslArray = (xs) => `array<f32, ${xs.length}>(${xs.map(g).join(', ')})`;
 /** Native compact foam is always compiled; legacy detail switches still gate their effects. */
 export const LIQ_DETAIL = () => true;
 
-export const liquidDetailGLSL = (detail = {}) => {
+export const liquidDetailGLSL = (detail = {}, fixedReadFormat) => {
+  const format = readFormatWGSL(fixedReadFormat);
   const ripples = !!detail.DETAIL_LIQ_RIPPLES;
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
   const foam = true; // native §4.3 foam is independent of the legacy Whitewater switch
@@ -222,7 +223,7 @@ const AER_PROBE: f32 = 0.25;         // cells into the liquid (against n) where 
 const AER_LIQ_MIN: f32 = 0.02;       // liquid weight below which the read is no liquid's
 fn aerTap(c: vec3i) -> vec3f {
   if (outside(c)) { return vec3f(0.0); }
-  if (H.format == 2u || H.format == 3u) {
+  if (${format} == 2u || ${format} == 3u) {
     return fetchNativeAeration(c);
   }
   let w = aeration[gAerCopy * SLOTS + slotOf(c)];
@@ -320,7 +321,7 @@ fn liquidDetail(hp: vec3f, n0: vec3f, id: i32, col: ptr<function, vec3f>, trans:
   var n = n0;${ripples ? `
   n = liquidCapillary(hp, n);` : ''}${meniscus ? `
   n = liquidMeniscus(hp, n, id);` : ''}${foam ? `
-  if (H.format == 2u || H.format == 3u || ${!!detail.DETAIL_LIQ_FOAM}) { liquidFoam(hp, &n, id, col, trans); }` : ''}
+  if (${format} == 2u || ${format} == 3u || ${!!detail.DETAIL_LIQ_FOAM}) { liquidFoam(hp, &n, id, col, trans); }` : ''}
   return n;` : `
   return n0;   // (no liquid detail compiled in)`}
 }

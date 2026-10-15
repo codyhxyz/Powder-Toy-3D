@@ -1,4 +1,4 @@
-import { STATE_OPTS, LAYOUT, prelude } from './common.js';
+import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL } from './common.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { ELEMENTS } from '../elements.js';
 import { COLORMAPS, VIEWS, xrayDensity, isMaterialView } from '../views.js';
@@ -743,7 +743,8 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
-const realistic = (detail, curved = false) => {
+const realistic = (detail, curved = false, fixedReadFormat) => {
+  const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail);
   return /* wgsl */ `
@@ -1245,7 +1246,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       c = shadeSurf(s, shadeRd);
       // Native molten liquids share compact foam, not water's refraction or
       // detail eligibility. Layer only reflected light; retain heat emission.
-      if ((H.format == 2u || H.format == 3u) && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+      if ((${format} == 2u || ${format} == 3u) && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
         var foamCol = vec3f(0.0);
         var foamTrans = vec3f(1.0);
         var foamN = s.n;
@@ -1389,26 +1390,27 @@ struct VolumeFrag {
  * its globals are a template switch, so the flat views carry none of it);
  * its draw is VOLUME_SCREEN_VERTICES.
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
- * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean }} [opts]
+ * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  * @returns {string}
  */
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false } = {}) => {
+export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, fixedReadFormat } = {}) => {
+  readFormatWGSL(fixedReadFormat);
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
   const parts = [
     `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
-    lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d }),
+    lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, fixedReadFormat }),
     TRACER_WGSL,
     curved ? presentationNearWGSL() : '',
     surfaceGLSL(d, { sourceAppearance: lit && g.sourceAppearance === true }),
     decoViewGLSL,
     liquidGLSL,
     decoSurfGLSL,
-    liquidDetailGLSL(d),
+    liquidDetailGLSL(d, fixedReadFormat),
     mediaGLSL(d),
     grainsGLSL(d),
   ];
-  if (lit) parts.push(farHazeGLSL, realistic(d, curved));
+  if (lit) parts.push(farHazeGLSL, realistic(d, curved, fixedReadFormat));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
@@ -1823,7 +1825,8 @@ export const WGSL_CHECK = () => [
  *   variants, the only ones it draws
  * @returns {object[]}
  */
-export function warmChecks(view, settings, { fallback = false, curved = false } = {}) {
+export function warmChecks(view, settings, { fallback = false, curved = false, fixedReadFormat } = {}) {
+  readFormatWGSL(fixedReadFormat);
   const out = [];
   const tag = curved ? '.curved' : '';
   if (isMaterialView(view)) {
@@ -1833,7 +1836,8 @@ export function warmChecks(view, settings, { fallback = false, curved = false } 
   } else if (VOLUME_VIEWS.includes(view)) out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));   // (plain: the blocks renderer's)
   if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
   out.push(PICK_CHECK);
-  return out;
+  return out.map(e => e.name.startsWith('volume.') && fixedReadFormat !== undefined
+    ? { ...e, name: `${e.name}.format${fixedReadFormat}`, code: g => volumeFrag(g, { view, detail: e.detail, curved, fixedReadFormat }) } : e);
 }
 
 // check-wgsl (b)'s exceptions on SwiftShader (W23), each with why. These are

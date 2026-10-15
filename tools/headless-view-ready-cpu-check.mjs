@@ -38,11 +38,11 @@ function watch(p) { let done = false; p.then(() => { done = true; }, () => { don
 const settings = () => ({ view: 'realistic', upscale: 'quality', detail_smoothClose: true });
 function fakeVolume() {
   const pipes = new Map(), requests = [];
-  const key = (view, detail, curved = false) => `${view}|${detailKey(detail)}|${curved}`;
+  const key = (view, detail, curved = false) => `${view}|${detailKey(detail)}|${curved}|${api.format}`;
   const api = {
-    pipes, requests,
+    format: 0, pipes, requests,
     pipeline(view, detail, build = 'now', curved = false) {
-      const k = key(view, detail, curved); requests.push({ view, detail, build, curved });
+      const k = key(view, detail, curved); requests.push({ view, detail, build, curved, format: api.format });
       if (!pipes.has(k)) {
         const d = deferred(), near = !!detail.DETAIL_CUBIC_CLOSE;
         const p = { state: near ? 'idle' : 'ready', ready: d.promise,
@@ -189,11 +189,33 @@ try {
   await turn(); curvature.curved = true; curvature.vol.near().resolve(); await turn();
   assert.equal(kd(), false); assert(curvature.vol.near(true)); curvature.vol.near(true).resolve(); await kp;
 
+  const transition = context({ close: true }); transition.vol.format = 2;
+  const trp = transition.ready(), trd = watch(trp); await turn();
+  const oldFormatNear = transition.vol.near();
+  transition.vol.format = 0; oldFormatNear.resolve(); await turn();
+  assert.equal(trd(), false, 'format transition re-waits instead of using a ready old-format shader');
+  assert.notEqual(transition.vol.near(), oldFormatNear);
+  assert.equal(transition.detailGate.level, 1, 'format refresh retains demanded near level');
+  transition.vol.near().resolve(); await trp;
+
+  const stale = fakeVolume(); stale.format = 2;
+  let wakes = 0;
+  const staleGate = createDetailGate(null, () => { wakes++; }, undefined, { prefetch: false });
+  staleGate.configure(stale, settings(), 'realistic');
+  const cam = { fov: 60 };
+  staleGate.update(cam, [16, 16, 16], [32, 32, 32], 720);
+  const priorNear = stale.near(); stale.format = 0;
+  const edge = gateVariants(settings()).nearFadeM * 720 / (CELL_M * 2 * Math.tan(Math.PI / 6));
+  staleGate.update(cam, [-edge * 1.1, 16, 16], [32, 32, 32], 720);
+  assert.equal(staleGate.level, 1, 'representation change preserves hysteresis');
+  priorNear.resolve(); await turn(); assert.equal(wakes, 0, 'stale promise cannot wake replacement');
+  stale.near().resolve(); await turn(); assert.equal(wakes, 1); staleGate.dispose();
+
   const plain = context({ close: true }), blocks = deferred(); plain.blocksOn = true; plain.blocks = { ready: blocks.promise };
   const pp = plain.ready(), pd = watch(pp); await turn(); assert.equal(pd(), false);
   blocks.resolve(); await pp; assert.equal(plain.updates.length, 0, 'Plain branch stays unchanged');
   assert.equal(plain.vol.near(), undefined);
-  for (const c of [far, near, bent, scale, moved, native, rejected, integration, changed, switches, dependencies, curvature, plain]) c.detailGate.dispose();
+  for (const c of [far, near, bent, scale, moved, native, rejected, integration, changed, switches, dependencies, curvature, transition, plain]) c.detailGate.dispose();
   assert.equal(timers.size, 0);
   console.log('Headless view CPU: default timer retained; far opt-out; demanded flat/curved detail; real transforms/hysteresis; first-frame upscale/DPR/floor; grid/view/camera/curvature changes; native/integration/Plain waits passed');
 } finally {

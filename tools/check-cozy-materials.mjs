@@ -177,7 +177,7 @@ warmer.warmMap('willowCove', 'sandbox');
 assert.equal(warmer.calls[2].view, 'cozy', 'the authored map exception warms Cozy without requiring Animal Crossing');
 assert.equal(warmer.calls[2].curved, false, 'Sandbox does not inherit the Animal Crossing presentation effect');
 assert.match(preload, /view = views\.viewKey\(settings\.view\)/);
-assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved \}\)/);
+assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved, fixedReadFormat: 0 \}\)/);
 assert.doesNotMatch(app, /materialStyle|Material style/, 'separate preference and drawer control removed');
 assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'view'/);
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
