@@ -110,6 +110,23 @@ test('actual driver + actual owner + actual Post: pending/same-cut eye miss/acce
   assert(admitted);assert.equal(reservations,1);assert.equal(captures,1);assert.equal(probes,2);
   assert.equal(cuts[0],cuts[1],'same SourceCut extended despite latest desired movement');
   assert.equal(commits,1);assert.equal(f.owner.metadata.derivedTick,0);assert(wakes>0);
+  const display=driver.displayedMainFrame;
+  const retainedCurrent=f.owner.current();assert.equal(display.data.identity,retainedCurrent.identity);retainedCurrent.release();
+  assert.equal(display.view.values.cam[0],1,'displayed camera is not latest input');
+  const demand=channels=>({incomplete:true,requirements:[{brick:[0,0,0],channels}],sun:[]});
+  assert.equal(driver.queuePickDemand(demand(READY.CELL),{}),false,'foreign display cannot enqueue');
+  assert.equal(driver.queuePickDemand(demand(READY.CELL),display),true);
+  driver.queuePickDemand(demand(READY.AUX),display);
+  assert.equal((await driver.pick({})).ready,false,'no query dispatch/allocation while display incomplete');
+  let capturedDemand=0;
+  const quietTick=()=>driver.tick({present:false,reserve:()=>({runView:false,runDerived:false}),capture:()=>{
+    capturedDemand++;return {frame:{...driver.accepted.frame,advance:false},view:display.view};}});
+  quietTick();assert.equal(capturedDemand,1,'typed demands force a view despite quiet pacer');
+  let born=false;for(let i=0;i<300&&!born;i++){f.gpu.finish();await p.completeAll();born=quietTick();}
+  assert(born);assert.equal(capturedDemand,1,'coalesced demands reserve only one stable transaction');
+  assert.equal(f.owner.metadata.derivedTick,0,'compatible dependency birth does not advance physics/field clock');
+  assert.notEqual(driver.displayedMainFrame,display);
+  assert.equal(driver.queuePickDemand(demand(READY.CELL),display),false,'old display cannot affect next cut');
   const disposing=driver.dispose();for(let i=0;i<10;i++){f.gpu.finish();await p.completeAll();}await disposing;
   p.post.dispose();await p.completeAll();presentation.dispose();await f.finish();
 });
@@ -120,5 +137,8 @@ test('actual App hooks select driver, reserve only inside callback, and suppress
   assert.match(app,/if\(win\?\.render\)return; \/\/ WORLD/);
   for(const hook of ['threeMeshes','prepareWorldAfter','drawWorldAfter','drawWorldOverlay'])assert.match(app,new RegExp(hook));
   assert.match(app,/if\(win\)return false; \/\/ Explicit loading gate/);
-  assert.match(app,/WORLD_CONSUMER_NOT_READY/);
+  assert.doesNotMatch(app,/WORLD_CONSUMER_NOT_READY/);
+  assert.match(app,/if\(win && visible\)/);
+  assert.match(app,/driver\.pick\(\{ray/);
+  assert.match(app,/if\(!renderOnly && \(pointerPickDirty \|\| runView \|\| pov\?\.active\)\)requestPick\(\)/);
 });

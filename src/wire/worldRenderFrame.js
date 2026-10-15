@@ -6,6 +6,7 @@ import { createWorldOpaqueCapture } from '../gfx/worldOpaque.js';
 import { createWorldFeedbackProvider } from '../gfx/worldLightingInputs.js';
 import { createNativeWorldMeshLightContext, guardMeshes } from '../gfx/meshLight.js';
 import { renderViewmodels } from '../pov/viewmodel.js';
+import { queryWorldPick, worldPickNotReady } from './worldPick.js';
 
 const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
@@ -329,7 +330,19 @@ export function createWorldFrameDriver(app,state,execution={}) {
   const {prewarm=prewarmWorldFrame,probe=probeWorldFrameEye,createPreflight=createWorldMeshPreflight,
     preflight=preflightWorldMeshes,record=recordWorldFrame,releasePreflight=releaseWorldMeshPreflight}=execution;
   let pending=null, dead=false, order=0, accepted=null, failure=null, retirement=null;
+  let displayedMainFrame=null, blockedPick=null;
+  const pickDemands=new Map();
   const wake=()=>app.requestRender();
+  const queuePickDemand=(feedback,display)=>{
+    if(dead || display!==displayedMainFrame)return false;
+    if(feedback.sun.length)throw new Error('raw WORLD pick must not demand Sun');
+    blockedPick=display;
+    for(const r of feedback.requirements){
+      const key=r.brick.join(','),old=pickDemands.get(key);
+      pickDemands.set(key,{brick:[...r.brick],channels:(old?.channels??0)|r.channels});
+    }
+    wake();return true;
+  };
   const wait=(p,work,next)=>{p.phase='waiting';p.work=Promise.resolve(work).then(value=>{
     if(dead || pending!==p){value?.release?.();return;}
     p.result=value;p.phase=next;wake();
@@ -341,7 +354,13 @@ export function createWorldFrameDriver(app,state,execution={}) {
     wait(p,Promise.all([state.data.extend(old,feedback),releasePreflight(app,preflight)]).then(([data])=>data).finally(()=>old.release()),'data');
   };
   return {
-    get busy(){return !!pending;},get failure(){return failure;},get accepted(){return accepted;},
+    get busy(){return !!pending || !!pickDemands.size;},get failure(){return failure;},get accepted(){return accepted;},
+    get displayedMainFrame(){return displayedMainFrame;},queuePickDemand,
+    pick(options){
+      const display=displayedMainFrame;
+      if(dead || !display || blockedPick===display)return Promise.resolve(worldPickNotReady());
+      return queryWorldPick(app,state,display,options,d=>!dead&&displayedMainFrame===d,queuePickDemand);
+    },
     presentLast(){
       const ticket=createWorldFeedbackProvider(app.gpu,{}).reserve(app.gpu.frame);
       try{return app.post.presentLast({submission:ticket});}finally{
@@ -351,12 +370,16 @@ export function createWorldFrameDriver(app,state,execution={}) {
     },
     tick({present,reserve,capture,dt=0}) {
       if(dead)return false;if(failure)throw failure;
-      if(!pending && present) {
-        const reservation=reserve();
+      if(!pending && (present || pickDemands.size)) {
+        const reservation={...reserve()};
+        if(pickDemands.size)reservation.runView=true;
         if(reservation.runView){
           const request=capture(reservation,state);
+          const requirements=mergeWorldFrameFeedback({requirements:request.requirements??[],sun:[]},
+            {requirements:[...pickDemands.values()],sun:[]}).requirements;
+          pickDemands.clear();
           pending={phase:'new',view:request.view,reservation,data:null,preflight:null,eye:null,work:null};
-          wait(pending,state.data.request(request.frame,request.requirements??[]),'data');
+          wait(pending,state.data.request(request.frame,requirements),'data');
         }
       }
       const p=pending;if(!p)return false;
@@ -370,8 +393,9 @@ export function createWorldFrameDriver(app,state,execution={}) {
         const recorded=withWorldView(app,p.view,()=>{
           if(!preflight(app,p.preflight,p.view.camera))return null;
           app.post.setSceneIdentity(p.data.identity);
+          p.frameIdentity=Object.freeze({order:++order});
           return record(app,state,p.data,{...p.view,frozenView:p.view,preflight:p.preflight,
-            eye:p.eye,identity:Object.freeze({order:++order}),order,dt,
+            eye:p.eye,identity:p.frameIdentity,order,dt,
             signRequest:app.signs?.worldRequest(app.win.size)??null});
         });
         if(recorded)wait(p,finishWorldFrame(app,state,recorded,p.eye.feedback),'finished');
@@ -383,6 +407,10 @@ export function createWorldFrameDriver(app,state,execution={}) {
           p.phase='scene';wake();return false;
         }
         accepted={frame:p.data.frame,reservation:p.reservation};
+        const old=displayedMainFrame;
+        const pin=p.data.retain();
+        displayedMainFrame=Object.freeze({data:pin,view:p.view,frameIdentity:p.frameIdentity});
+        old?.data.release();
         p.data.release();p.data=null;
         wait(p,releasePreflight(app,p.preflight),'released');
       }
@@ -393,6 +421,8 @@ export function createWorldFrameDriver(app,state,execution={}) {
       return retirement??=(async()=>{
         dead=true;state.dead=true;const p=pending;pending=null;
         if(p){await p.work?.catch(()=>{});p.result?.release?.();await releasePreflight(app,p.preflight);p.data?.release();}
+        displayedMainFrame?.data.release();displayedMainFrame=null;pickDemands.clear();
+        await Promise.allSettled([...state.uses]);
         await state.data.dispose();
         await disposeWorldFrame(state);
       })();

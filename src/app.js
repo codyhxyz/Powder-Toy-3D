@@ -57,6 +57,7 @@ import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms, frameUniformValues, frameUniformsOf } from './gfx/uniforms.js';
 import { freezeWorldView } from './wire/worldRenderFrame.js';
+import { displayedWorldRay, transportWorldRay, localWorldHover, worldPickNotReady } from './wire/worldPick.js';
 import { cloudShift } from './shaders/gfx/clouds.js';
 import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
 import { createDetailGate, gateVariants } from './gfx/detailGate.js';
@@ -950,8 +951,35 @@ function screenPlane(ray, height, out) {
   const r = screenCurve(ray), t = planeRoots(r, 1, height).find((x) => x >= 0);
   return t == null ? null : out.fromArray(rayPoint(r, t));
 }
+const worldPickToken = () => `${modeEpoch}:${presentation.revision}:${settings.tool}:${pov?.toolbelt?.selectedKey}:${skipPickLiquids()}`;
+function syncWorldHover() {
+  if(!win)return hover.valid;
+  return localWorldHover(hover,sim.origin,inWindow,identity=>
+    win.renderFrame?.driver?.displayedMainFrame?.frameIdentity===identity && hover.worldToken===worldPickToken());
+}
+function requestWorldPick() {
+  const driver=win?.renderFrame?.driver,display=driver?.displayedMainFrame;
+  const fromPov=!!pov?.active;
+  if(pickPending || (!pointerInside && !fromPov))return;
+  syncWorldHover();
+  if(!display){hover.valid=false;return;}
+  const ndc=fromPov?[0,0]:pointer.toArray(),token=worldPickToken(),from=sim;
+  pointerPickDirty=false;pickPending=true;
+  driver.pick({ray:displayedWorldRay(display,ndc),skipLiquids:fromPov&&skipPickLiquids()}).then(hit=>{
+    if(from!==sim || token!==worldPickToken() || driver.displayedMainFrame!==display
+      || (!fromPov && (ndc[0]!==pointer.x || ndc[1]!==pointer.y)))return;
+    hover.valid=hit.ready && hit.valid;
+    if(hit.ready){
+      Object.assign(hover,{face:hit.face,id:hit.id,T:hit.T,P:hit.P,life:hit.life,raw:hit.raw,
+        frameIdentity:hit.frameIdentity,worldToken:token,globalCell:new THREE.Vector3().fromArray(hit.cell)});
+      syncWorldHover();
+    }
+    wakeLoop();
+  },()=>{hover.valid=false;}).finally(()=>{pickPending=false;});
+}
 function requestPick() {
-  if(win){hover.valid=false;pointerPickDirty=false;return;} // WORLD native pick owner is a separate, not-ready consumer.
+  if(win){requestWorldPick();return;}
+  hover.globalCell=null;
   const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
   pointerPickDirty = false;
@@ -980,7 +1008,16 @@ function requestPick() {
 // (from the eye through a pixel), which a presentation effect bends: it walks the
 // displayed ray then. Physics' rays (the ground, the body) keep the flat path.
 function pickRay(ro, rd, visible = false) {
-  if(win)return Promise.reject(Object.assign(new Error('WORLD pick consumer not ready'),{code:'WORLD_CONSUMER_NOT_READY'}));
+  if(win && visible){
+    const driver=win.renderFrame?.driver,display=driver?.displayedMainFrame;
+    if(!display)return Promise.resolve(worldPickNotReady());
+    const from=sim,token=worldPickToken();
+    const ray=transportWorldRay(display,ro,rd,volume.matrixWorld,camera);
+    return driver.pick({ray}).then(hit=>{
+      if(from!==sim || token!==worldPickToken() || display!==driver.displayedMainFrame)return worldPickNotReady('WORLD_PICK_OBSOLETE');
+      return hit.ready?{...hit,globalCell:new THREE.Vector3().fromArray(hit.cell),cell:new THREE.Vector3().fromArray(hit.cell)}:hit;
+    });
+  }
   const o = sim.origin.clone(), from = sim, revision = presentation.revision;
   return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
@@ -1002,6 +1039,7 @@ function hoverBrushCenter(out, tool = settings.tool) {
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const tmpV = new THREE.Vector3();
 function updateBrush() {
+  syncWorldHover();
   brushValid = false;
   if (ctx.industry?.building || selectedMode === 'factory') {
     brush.set({ visible: false });
@@ -1013,12 +1051,13 @@ function updateBrush() {
     if (painting || shapeDrag) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
-    } else if (hover.valid) {
+    } else if (hover.valid && (!win || syncWorldHover())) {
       hoverBrushCenter(brushCenter);
       brushValid = true;
     }
   }
-  if (brushValid) clampToGrid(brushCenter);
+  if(win && brushValid && !inWindow(brushCenter))brushValid=false;
+  if (brushValid && !win) clampToGrid(brushCenter);
   if (shapeDrag) {
     if (brushValid) shapeDrag.end.copy(brushCenter);
     showShapeDrag();
@@ -1031,7 +1070,7 @@ function updateBrush() {
     shape: settings.shape,
     color: toolById(settings.tool).color,
   });
-  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper && (!win || syncWorldHover()) });
 }
 
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
@@ -1170,6 +1209,7 @@ const FILL_REFUSED = {
   gone: 'The world changed before the fill: try again',
 };
 function fillAt() {
+  if(win && !syncWorldHover())return;
   if (mp.replica && !mp.isGuest) { mp.guard(); return; }
   if (!hover.valid) { hud.toast('Click a surface to fill from', { kind: 'error' }); return; }
   const tool = settings.tool, st = brushStroke(tool);
@@ -1184,6 +1224,7 @@ function fillAt() {
     if (id < 0) { hud.toast(FILL_REFUSED.start, { kind: 'error' }); return; }
     if (st.filter >= 0 && id !== st.filter) { hud.toast(`${editModeText()}: click ${ELEMENTS[st.filter].name} to fill it`); return; }
   }
+  if(win && !inWindow(cell))return;
   const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
   delete req.stroke.center;
   hud.dismissHint();
@@ -1202,6 +1243,7 @@ const isBrush = (id) => id !== SIGN_TOOL && !isBuild(id) && !isSpawnerTool(id);
 // stays on its drag plane, so a held pour doesn't climb up its own heap toward
 // you; a brush tool's (erase, heat) follows the crosshair into what it works on.
 function updateGunBrush() {
+  syncWorldHover();
   const g = sim.g;
   const out = toolGunOut;
   toolGunOut = false;   // the gun says so again next frame (toolGun.aim), while it's in hand
@@ -1213,12 +1255,13 @@ function updateGunBrush() {
         screenAt(povRay, strokeDist, brushCenter);   // (along the displayed aim: the rolling log bends it)
         brushValid = !win || inWindow(brushCenter);
       }
-    } else if (hover.valid) {
+    } else if (hover.valid && (!win || syncWorldHover())) {
       hoverBrushCenter(brushCenter, tool);
       brushValid = true;
     }
   }
-  if (brushValid) {
+  if(win && brushValid && !inWindow(brushCenter))brushValid=false;
+  if (brushValid && !win) {
     brushCenter.x = THREE.MathUtils.clamp(brushCenter.x, 0, g.nx);
     brushCenter.y = THREE.MathUtils.clamp(brushCenter.y, 0, g.ny);
     brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
@@ -1230,7 +1273,7 @@ function updateGunBrush() {
     shape: settings.shape,
     color: toolById(tool).color,
   });
-  builds?.update({ hover, active: out && isBuild(settings.tool), crosshair: true });
+  builds?.update({ hover, active: out && isBuild(settings.tool) && (!win || syncWorldHover()), crosshair: true });
 }
 
 // ---------------------------------------------------------------- UI
@@ -1824,6 +1867,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
+  if(win && !syncWorldHover())return false;
   if ((settings.tool === SIGN_TOOL || isDecoTool(settings.tool) || isSpawnerTool(settings.tool)) && mp.guardEntities?.()) return false;
   if (selectedMode === 'factory' || ctx.industry?.building) return false;
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
@@ -2498,7 +2542,7 @@ function tick(now, renderOnly = false) {
 
     prof.phase('paint');
     if (selectedMode === 'factory' || ctx.industry?.building) painting = false;
-  if (painting && brushValid) {
+  if (painting && brushValid && (!win || (inWindow(brushCenter) && (!hover.globalCell || syncWorldHover())))) {
       tmpV.copy(brushCenter).add(sim.origin);   // world cells
       const wind = windFromValid ? [tmpV.x - windFrom.x, tmpV.y - windFrom.y, tmpV.z - windFrom.z] : null;
       windFrom.copy(tmpV);
@@ -2574,6 +2618,7 @@ function tick(now, renderOnly = false) {
         },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
       if(present || runView)driver.presentLast();
       if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
+      if(!renderOnly && (pointerPickDirty || runView || pov?.active))requestPick();
     }
     lastFrameMode='world';
     if(runView && captureNext){const c=captureNext;captureNext=null;c(post.capture());}

@@ -15,7 +15,7 @@ import { FRAME_UNIFORM_FIELDS } from '../src/shaders/bindings.js';
 import { uniformStruct } from '../src/gpu/params.js';
 
 const I=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
-function fixture({appearance=null}={}) {
+export function fixture({appearance=null}={}) {
   const buffers=[], render=[], compute=[], pending=[];
   const device={limits:{},queue:{
     writeBuffer(b,off,raw){const a=raw instanceof ArrayBuffer?new Uint8Array(raw):new Uint8Array(raw.buffer,raw.byteOffset,raw.byteLength);b.data.set(a,off);},
@@ -43,7 +43,7 @@ function fixture({appearance=null}={}) {
   function settle(test=()=>true,error) {for(const p of pending.splice(0)){if(test(p.d))error?p.reject(error):p.resolve();else pending.push(p);}}
   const log=[],pass={setPipeline:p=>log.push(['pipeline',p]),setBindGroup:(i,g)=>log.push(['group',i,g]),draw:n=>log.push(['draw',n])};
   const encoder={beginComputePass(d){log.push(['begin',d.label]);return {...pass,dispatchWorkgroups:n=>log.push(['dispatch',n]),end:()=>log.push(['end'])};}};
-  return {device,buffers,render,compute,pending,g,atlas,volume,candidate,prepare,publish,settle,log,pass,encoder,
+  return {device,buffers,render,compute,pending,g,atlas,volume,candidate,prepare,publish,settle,log,pass,encoder,lighting,
     release(){candidate.release();volume.dispose();atlas.dispose();}};
 }
 const tick=()=>Promise.resolve();

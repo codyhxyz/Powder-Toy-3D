@@ -56,9 +56,31 @@ suffix failure deliberately does not falsely settle.
 
 ## Explicit limitations — DO NOT SHIP YET
 
-WORLD pickRay rejects with `WORLD_CONSUMER_NOT_READY`, pointer visual picking is
-parked, and legacy thumbnail/still rendering returns not-ready. Parent owns
-those native consumer followups. BOX picking/thumbnails are unchanged.
+WORLD pointer/requestPick and visible pickRay/pickScreenRay now use native global
+picks against `driver.displayedMainFrame = {data, view, frameIdentity}` retained on
+confirmed main-image acceptance. `pickRay(..., false)` remains local physics;
+BOX picking is unchanged. Legacy thumbnail/still rendering remains not-ready.
+
+`driver.pick({ray,skipLiquids})` freezes global ray/warp/slot before compilation,
+records actual WorldVolume into the normal Frame, and reads whole typed feedback
+plus all 32 output bytes through the real final provider. Pins survive both
+submission outcomes and queue completion. Hits carry global cells/publication /
+displayed identity; incomplete and obsolete return explicit `ready:false` codes.
+Raw picks must not request Sun. Unknown feedback never means empty space.
+
+Missing requirements coalesce in `queuePickDemand(feedback,display)` for the NEXT
+initial main request, never an inactive accepted candidate or a different active
+cut. Demand forces a view even with a quiet pacer; compatible camera/dependency
+births use the existing advance:false capture path. No further query dispatch
+occurs against an incomplete displayed identity. App retries after acceptance,
+discards stale pointer/tool/effect/scene/display results, and exposes global
+visual hover separately from its explicitly converted current-local cell.
+Physical mutation guards recheck current origin/window and reject outside hits
+without clamping them into edge cells. Driver disposal drains query uses before
+retiring the owner/Atlas.
+
+`npm run check:world-pick` exercises actual WorldVolume and normal GpuFrame/final
+provider with explicit mocked compute output words (not native math/GPU proof).
 
 CPU evidence executes the actual driver, actual Source/data owner and actual
 Post admission with explicitly mocked native math/scenegraph encoding. It also
