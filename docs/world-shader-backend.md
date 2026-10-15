@@ -206,8 +206,8 @@ region-index limitations are explicit in the fixture; this is not GPU parity.
 ## Checked evidence and limits
 
 `npm run check:world-backend` is a required CPU CI gate (Naga CLI required;
-CI installs pinned 30.0.1). It checks 136 pre-edit Box shader hashes from
-35450775 plus original Box layouts, explicit Box defaults, **132 actual world
+CI installs pinned 30.0.1). It checks 136 production Box shader hashes plus
+original Box layouts, explicit Box defaults, **132 actual world
 modules** (all registered views/detail levels, curved twins, source capability
 on/off and heights128/384), native binding types/default limits, the real
 assembly with a fake device and command encoder, immutable global conversion,
@@ -217,6 +217,12 @@ compile the same full lighting library plus shared optical leafs at both heights
 with source capability on/off; these are not a figure/hand/point runtime switch. Existing
 source, quantized field and Atlas checks cover full state/pressure/seed/history,
 films/media/paint/interpolation and packed mesh bits. They remain separate gates.
+
+The original Box hashes were captured at `35450775`. After merging production
+`ea9bcb7d`, the fixture was regenerated from a separate clean checkout of that
+exact production commit. Its Metal opaque-terminal fix intentionally changes
+96 hashes. The integrated default Box shaders match that independent baseline;
+the WORLD backend does not bypass the production fix.
 
 These are CPU/reference/static/fake-device and actual Naga compilation results,
 **not execution of WGSL material/ray arithmetic on a GPU**, HDR/depth invariance,

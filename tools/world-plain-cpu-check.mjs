@@ -228,6 +228,10 @@ ${fn(pickProduction,'plainFlatPick')}${fn(pickProduction,'plainCurvePick')}
 @compute@workgroup_size(${PICK_BATCH})${fn(pickProduction,'main')}`;
   naga(code,'plain-pick-executed');const ast=new WgslParser().parse(code);
   const cases=[
+    {x:4,ro:[3.99995,383.5,512.5],rd:[1,0,0],expected:4,face:1},
+    {x:3,ro:[4.00005,383.5,512.5],rd:[-1,0,0],expected:3,face:0},
+    {x:32,ro:[31.99995,383.5,512.5],rd:[1,-0,0],expected:32,face:1},
+    {x:31,ro:[32.00005,383.5,512.5],rd:[-1,0,-0],expected:31,face:0},
     ...[3,4,31,32,1536,3071].map(x=>({x,ro:[-.5,383.5,512.5],rd:[1,0,-0],expected:x,face:1})),
     {x:1536,ro:[.5,383.5,512.5],rd:[1,-1e-12,-0],expected:1536,face:1},
     {x:1536,ro:[3072.5,383.5,512.5],rd:[-1,-0,-1e-9],expected:1536,face:0},

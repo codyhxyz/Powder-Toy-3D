@@ -41,10 +41,21 @@ fn ddaInit(ro: vec3f, rd: vec3f, c: vec3i, istp: ptr<function, vec3i>, tDelta: p
   *tMax = ddaNext(ro, rd, c);
 }
 // Start a walk where ray (ro, rd) enters the box (t0, from boxHit, or 0 when
-// it starts inside): in the cell DDA_START_NUDGE past it, held in the grid.
+// it starts inside): ${physicalDirection ? 'exact boundary-time ownership, without a positional nudge.' : 'in the cell DDA_START_NUDGE past it, held in the grid.'}
 fn ddaStart(ro: vec3f, rd: vec3f, t0: f32, istp: ptr<function, vec3i>, tDelta: ptr<function, vec3f>,
             cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>) {
-  *cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), vec3i(NX, NY, NZ) - 1);
+  ${physicalDirection ? `var c = vec3i(floor(ro + rd * t0));
+  for (var k = 0; k < 3; k++) {
+    if (rd[k] == 0.0) { continue; }
+    let a = (f32(c[k]) - ro[k]) / rd[k];
+    let b = (f32(c[k] + 1) - ro[k]) / rd[k];
+    if (rd[k] > 0.0) {
+      if (a > t0) { c[k] -= 1; } else if (b <= t0) { c[k] += 1; }
+    } else {
+      if (b > t0) { c[k] += 1; } else if (a <= t0) { c[k] -= 1; }
+    }
+  }
+  *cell = clamp(c, vec3i(0), vec3i(NX, NY, NZ) - 1);` : '*cell = clamp(vec3i(floor(ro + rd * (t0 + DDA_START_NUDGE))), vec3i(0), vec3i(NX, NY, NZ) - 1);'}
   ddaInit(ro, rd, *cell, istp, tDelta, tMax);
 }
 // Step into the next cell, across the axis whose boundary is nearest; returns

@@ -85,8 +85,11 @@ is introduced. Parent App should retain the original Post background stage.
 original BOX block hashes; 12 actual WORLD modules spanning both heights,
 presentations and source-capability flags; all three actual phase entries and
 original BOX blend/depth descriptors; executed shared shading/AO/metadata,
-optical attenuation, order-free composition, 18 global raw picks, and flat/curved
+optical attenuation, order-free composition, 22 global raw picks, and flat/curved
 traces through covered HDR meshes, raw opaque cells and unknown dependencies.
+WORLD starts a flat cell walk with exact boundary-time ownership, not BOX's
+legacy positional nudge. Both-sign picks within 0.00005 cells of 4/32 boundaries
+must still see the approaching opaque face.
 A colored-glass/nonuniform HDR-destination numerical control (also illustrating
 the hypothetical colored-SKY case) proves why a scalar-over replacement is
 insufficient for the existing opaque HDR scene. Unknown AO feedback is observable in trace tests.
