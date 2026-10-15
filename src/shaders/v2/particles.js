@@ -62,6 +62,9 @@ fn dId(p: vec3i, rule: u32) -> u32 { let w = vec3u(p + P.origin); return max(1u,
 fn dKey(id: u32) -> u32 { return dHash(id ^ (P.tick * 2654435761u)); }
 fn dRandom(id: u32, salt: u32) -> f32 { return f32(dHash(id ^ (P.tick * 2654435761u) ^ salt) >> 8u) / 16777216.0; }
 fn dDir(id: u32) -> vec3f { let z = 2.0 * dRandom(id, 51u) - 1.0; let a = dRandom(id, 91u) * 6.283185307; let r = sqrt(max(0.0, 1.0-z*z)); return vec3f(r*cos(a), z, r*sin(a)); }
+fn dSameLiquid(a: vec4u, b: vec4u) -> bool {
+  return isLiq(a) && isLiq(b) && cid(a)==cid(b) && (cid(a)!=${E.LAVA}u || ctypeOf(a)==ctypeOf(b));
+}
 fn dMaterial(p: DParticle) -> Material { return Material(vec4u(p.c0, p.tail.xyz), bitcast<i32>(p.tail.w)); }
 fn dParticle(position: vec3f, velocity: vec3f, id: u32, m: Material) -> DParticle { return DParticle(position, id, velocity, m.core.x, vec4u(m.core.yzw, bitcast<u32>(m.bank))); }
 fn dEmpty() -> Material { return makeMaterial(0u, 20.0, 0u, 0u); }
@@ -120,6 +123,16 @@ fn dIOR(id: u32) -> f32 { switch id {
 case ${E.GLASS}u: { return 1.5; } case ${E.WATER}u: { return 1.333; } case ${E.ICE}u: { return 1.31; }
 default: { return 1.0; } } }
 fn dPhotonEnergy(p: DParticle) -> vec3f { return bitcast<vec3f>(p.tail.xyz); }
+fn dLiquidStreamPasses(cell: vec3i, incoming: vec4u, resident: vec4u) -> bool {
+  if (!dSameLiquid(incoming,resident)) { return false; }
+  let down = mDown(vec3f(cell)+0.5);
+  if (all(down==vec3i(0))) { return false; }
+  if (cFill(resident)<FULLU/2u) { return true; }
+  let below = mEdge(cell+down);
+  if (!inGrid(below)) { return D_WINDOWED || P.edge==1u; }
+  let support = loadCore(slotOf(below)); let kind = cls(cid(support));
+  return !(kind==1u || kind==2u || (isLiq(support) && cFill(support)>=FULLU));
+}
 fn dClaim(s: u32, kind: u32, key: u32) { if (s != D_NONE) { atomicMin(&claims[s * 4u + kind * 2u], key); } }
 fn dWon(s: u32, kind: u32, index: u32) -> bool { return s != D_NONE && atomicLoad(&claims[s*4u+kind*2u+1u]) == index; }
 fn dBefore(a: DParticle,b: DParticle) -> bool {
@@ -231,7 +244,7 @@ export function particlesWGSL(g, nativeHead, stage) {
           if (choice < cross.x) { kind = 2u; } else if (choice < cross.x+cross.y) { kind = 3u; } else { kind = 4u; }
           energy = mix(n.nuT,n.nuF,fast); break;
         }
-      } else if (targetId != 0u && cls(targetId) != 4u) {
+      } else if (targetId != 0u && cls(targetId) != 4u && !dLiquidStreamPasses(cell,m.core,destination.core)) {
         hit = slot; hitT = entry; kind = 1u;
         if (inGrid(previous) && cid(loadMaterial(slotOf(previous)).core) == 0u) { deposit = slotOf(previous); }
         particle.velocity=v+acceleration*(D_DT*entry);

@@ -14,8 +14,32 @@ const J_PREFIX: u32 = ${SPAWN_PREFIX}u;
 const J_COUNTS: u32 = J_PREFIX + D_BRICKS;
 fn liquidFlux(s: u32) -> vec3f { return qOf(loadCore(s)); }
 ${liquidTransportWGSL}
-fn jetSpeed(p: vec3i, face: u32) -> f32 {
+fn jetDischargeSpeed(p: vec3i, face: u32) -> f32 {
   return max(0.0, faceQ(p,face)) * D_CELL * ${SUB*TICK_HZ}.0 / FULLF;
+}
+fn jetHeadOf(c: vec4u) -> f32 {
+  let fill = f32(cFill(c));
+  if (fill <= FULLF) { return fill / FULLF; }
+  return 1.0 + (fill - FULLF) / (COMP * FULLF);
+}
+fn jetStaticHead(p: vec3i) -> f32 {
+  let src = snapshot(slotOf(p)).core; var head = jetHeadOf(src);
+  // Head-only neighbours use current cores, including sleeping cells whose
+  // liquidScratch is stale. Self remains the frozen transport source.
+  for (var face = 0u; face < 6u; face++) {
+    let n = mEdge(p+face6(i32(face))); if (!inGrid(n)) { continue; }
+    let c = loadCore(slotOf(n));
+    if (cFill(c)==0u || !dSameLiquid(src,c)) { continue; }
+    let axis = i32(face/2u);
+    var elevation = -mFaceDrive(p,axis);
+    if ((face&1u)!=0u) { elevation = mFaceDrive(n,axis); }
+    head = max(head,jetHeadOf(c)+elevation);
+  }
+  return max(head-0.5*length(mGravity(vec3f(p)+0.5))/D_G,0.0);
+}
+fn jetLaunchSpeed(p: vec3i) -> f32 {
+  // Decoded pressure head already uses reference gravity; do not scale twice.
+  return sqrt(2.0*D_G*D_CELL*jetStaticHead(p));
 }
 fn jetMaterial(p: vec3i, face: u32) -> Material {
   let src = snapshot(slotOf(p)); let packet = sendOf(p,face);
@@ -27,11 +51,22 @@ fn jetMaterial(p: vec3i, face: u32) -> Material {
   return m;
 }
 fn jetCandidate(p: vec3i, face: u32) -> bool {
-  if (face/2u == 1u || !awakeCell(p)) { return false; }
-  let q = mEdge(p+face6(i32(face))); let below = mEdge(q+vec3i(0,-1,0));
-  if (!inGrid(q) || !inGrid(below) || !awakeCell(q)) { return false; }
-  // Sideways transfer into air above air, never a falling grid column.
-  if (cid(snapshot(slotOf(q)).core)!=0u || cid(loadCore(slotOf(below)))!=0u || jetSpeed(p,face)<=1.0) { return false; }
+  if (!inGrid(p) || !awakeCell(p)) { return false; }
+  let sourceDown = mDown(vec3f(p)+0.5);
+  if (dot(sourceDown,face6(i32(face)))!=0) { return false; }
+  let q = mEdge(p+face6(i32(face)));
+  if (!inGrid(q) || !awakeCell(q) || jetDischargeSpeed(p,face)<=1.0) { return false; }
+  let src = snapshot(slotOf(p)).core; let dst = snapshot(slotOf(q)).core;
+  let targetDown = mDown(vec3f(q)+0.5);
+  // Zero-down pressure-driven births are isotropic, AIR-only, with no drop test.
+  if (all(sourceDown==vec3i(0)) || all(targetDown==vec3i(0))) {
+    if (cid(dst)!=0u) { return false; }
+  } else {
+    if (cid(dst)!=0u && !dSameLiquid(src,dst)) { return false; }
+    let below = mEdge(q+targetDown); if (!inGrid(below)) { return false; }
+    let support = loadCore(slotOf(below));
+    if (cid(support)!=0u && !(dSameLiquid(src,support) && cFill(support)<FULLU/16u)) { return false; }
+  }
   let packet=sendOf(p,face); if (packet.amount==0u) { return false; }
   // Refuse unrepresentable particle banks without changing ordinary transport.
   return all(dParticleEnergy(jetMaterial(p,face)) == packet.heat);
@@ -81,7 +116,7 @@ var<workgroup> brickDemand: array<u32,64>;
       if(rank<atomicLoad(&control[4])) {
         let dest=atomicLoad(&control[D_FREE+rank]); let direction=vec3f(face6(i32(f)));
         particles[dest]=dParticle(vec3f(p+P.origin)+0.5+direction*0.501,
-          direction*jetSpeed(p,f),dId(p,0x4a000u+P.substep*8u+f),jetMaterial(p,f));
+          direction*jetLaunchSpeed(p),dId(p,0x4a000u+P.substep*8u+f),jetMaterial(p,f));
         atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u);
         accepted|=1u<<f; dWake(p);
       }
