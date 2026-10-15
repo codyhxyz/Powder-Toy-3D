@@ -1072,10 +1072,57 @@ ${gatherHead(g)}
 fn liquidFlux(s: u32) -> vec3f { return vec3f(unpack2x16float(cells[s].z), unpack2x16float(atomicLoad(&cells[s].w) & 65535u).x); }
 ${liquidTransportWGSL}
 
+// 0: full gather; 1: identical storage; 2: identical storage, retain motion wake.
+// Only immutable snapshots/masks and the immutable flux lanes describe neighbors.
+fn gatherIdentity(p: vec3i, s: u32, before: vec4u, src: Material) -> u32 {
+  let raw = cRawTq(src.core); let id = cid(src.core);
+  if (raw > 41093u || src.bank != 0 || banks[s] != 0 ||
+      src.core.w != 0u || cAge(src.core) != 0u ||
+      any(before.xy != src.core.xy) || (before.w >> 16u) != 0u) { return 0u; }
+  if (id == 0u) {
+    for (var face = 0u; face < 6u; face++) {
+      let q = mEdge(p + face6(i32(face)));
+      if (inGrid(q) && awakeCell(q)) {
+        if (isLiq(snapshot(slotOf(q)).core)) { return 0u; }
+      }
+      if (faceQ(p, face) != 0.0) { return 0u; }
+    }
+    return 1u;
+  }
+  if (!isLiq(src.core) || cFill(src.core) == 0u ||
+      (MATERIAL_BURNS[id] && (src.core.y & 0x80000000u) != 0u)) { return 0u; }
+  // Normal codes at latent endpoints are NOT canonical: re-encoding can tag them.
+  if (phaseHotLatent(id) > 0 && i32(raw) >= phaseHotQ(id)) { return 0u; }
+  if (phaseColdLatent(id) > 0 && i32(raw) <= phaseColdQ(id)) { return 0u; }
+  let frozen = liquidScratch[s];
+  if ((frozen.x & 0xffffffu) != 65535u || atomicLoad(&jetMask[s]) != 0u) { return 0u; }
+  for (var face = 0u; face < 6u; face++) {
+    let q = mEdge(p + face6(i32(face)));
+    if (!inGrid(q) || !awakeCell(q)) { return 0u; }
+    let other = slotOf(q);
+    if (any(liquidScratch[other] != frozen) || atomicLoad(&jetMask[other]) != 0u) { return 0u; }
+  }
+  var moving = false;
+  for (var axis = 0u; axis < 3u; axis++) {
+    let positive = faceQ(p, axis * 2u); let negative = faceQ(p, axis * 2u + 1u);
+    if (positive + negative != 0.0) { return 0u; }
+    moving = moving || positive != 0.0;
+  }
+  // Equal accepted amounts carry n*(offsetPerQuantum + capacityPerQuantum*raw).
+  // Admission cannot reject normal, equal-temperature packets; heat and mass
+  // cancel pairwise. Zero payload/age and zero divergence leave no other writes.
+  return select(1u, 2u, moving);
+}
+
 ${MAIN} {
 ${brickCell}
   let before = loadCore(s); let src = snapshot(s);
   if (!isOpenC(src.core)) { return; }
+  let identity = gatherIdentity(p, s, before, src);
+  if (identity != 0u) {
+    if (identity == 2u) { markBusy(p); }
+    return;
+  }
   var fill = i32(cFill(src.core)); var energy = energyOf(src);
   var payload = i32(payloadOf(src.core)); var id = cid(src.core); var ct = ctypeOf(src.core);
   var strongest = 0u; var code = payloadOf(src.core);

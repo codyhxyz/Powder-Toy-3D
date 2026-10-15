@@ -76,6 +76,16 @@ z-flux share a word: neighboring flux reads and upper-payload writes are atomic,
 and the lower16 flux bits never change in gather. x/y/bank writes are strictly
 destination-local; neighbors do not read them. There is no concurrent foam gather.
 
+Gather skips two exact fixed points before it constructs packets. A normal,
+zero-bank AIR cell with no usable liquid neighbor and zero face flux stays
+unchanged. Homogeneous liquid requires seven equal frozen snapshots, zero bank,
+payload, age and jet masks, full limiters, and paired face fluxes that cancel.
+Strict phase guards exclude latent endpoints. Equal packets preserve mass and
+heat, and normal-temperature admission cannot reject them. Moving liquid still
+marks its cell busy. Flux lanes remain unchanged, and all other cases use the
+full gather path. `node tools/v2/gather-identity-check.mjs` checks the production
+predicate, exact integer packets, old gated advection, and minified WGSL on CPU.
+
 Each incoming face is capped to one sixth of the receiver's remaining sixteen-
 cell compression headroom, minus a half-float rounding guard. This conservative
 cap may slow near-limit compression; it never discards an arrival to fit storage.
