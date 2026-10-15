@@ -8,6 +8,7 @@ import { validateDevices } from '../../src/industry/validation.js';
 import { hearthRegions, hearthStructureCells } from '../../src/industry/hearth.js';
 import { createTransfer, Load } from '../../src/pov/tools/transfer.js';
 import { createIndustryDiagnostics } from '../../src/industry/diagnostics.js';
+import { PUMP_BACKPLATE_TAG, pumpBackplateCells, pumpStructureCells } from '../../src/industry/pumpStructure.js';
 
 const BOUNDS = [128, 128, 128];
 const NATIVE_DT = 4 / 240;
@@ -111,6 +112,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
 
   const checks = {
     atomicStructures: false,
+    pumpBackplateOwnership: false,
     gateClosedSourceHeld: false,
     nativePumpSwitchOffOnOffSequence: false,
     gateReleaseAndPumpConfirmed: false,
@@ -308,6 +310,11 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     }
     await fence('constructed layout fence');
     const shell = await readCells(shellCells);
+    const pumpBuilt = await readCells(pumpStructureCells(pump));
+    const pumpPlate = await readCells(pumpBackplateCells(pump));
+    if (pumpBuilt.length !== 40 || pumpBuilt.some(c => c.id !== E.TUNGSTEN || c.temperature !== 20)
+        || pumpPlate.length !== 24 || pumpPlate.some(c => c.life !== PUMP_BACKPLATE_TAG))
+      throw new Error('atomic pump construction did not produce its real tagged backplate');
     const hearthBase = [];
     for (let z = 16; z <= 19; z++) for (let x = 16; x <= 19; x++) hearthBase.push([x, 12, z]);
     const gateBase = [];
@@ -319,7 +326,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
         || gateBaseCells.some(c => c.id !== E.INSULATOR || c.temperature !== 20)) throw new Error('atomic refractory/chassis materials did not read back as built and cold');
     checks.atomicStructures = constructed === devices.length;
     observations.structures = { constructed, tungstenHearthCells: shell.length, hearthBaseCells: hearthBaseCells.length,
-      gateBaseMaterial: E.INSULATOR, gateBaseCells: gateBaseCells.length, initialGateLeafCells: gateLeaf.length };
+      gateBaseMaterial: E.INSULATOR, gateBaseCells: gateBaseCells.length, initialGateLeafCells: gateLeaf.length,
+      tungstenPumpCells: pumpBuilt.length, taggedPumpBackplateCells: pumpPlate.length };
 
     markStage('close coolant material gate and verify cold source hold');
     await gateStepTo(initialGate, GATE_STATUS.CLOSED, 'cold coolant-gate closure');
@@ -596,6 +604,9 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     observations.gate.basePeakC = Math.max(...gateBaseEnd.map(c => c.temperature));
     observations.water.sourceWaterRemaining = (await readCells(waterSource)).filter(c => c.id === E.WATER).length;
     observations.water.inletWaterRemaining = (await readCells(inletCells)).filter(c => c.id === E.WATER).length;
+    const pumpPlateEnd = await readCells(pumpBackplateCells(pump));
+    checks.pumpBackplateOwnership = pumpPlateEnd.length === 24
+      && pumpPlateEnd.every(c => c.id === E.TUNGSTEN && c.life === PUMP_BACKPLATE_TAG);
     const spoutEnd = await readCells(spoutCells);
     observations.water.spoutContents = spoutCells.flatMap((at, i) => spoutEnd[i].id !== E.EMPTY
       ? [{ at, ...spoutEnd[i] }] : []);

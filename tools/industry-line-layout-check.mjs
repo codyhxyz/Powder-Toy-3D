@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { LINE_FOUNDATION_COLUMNS, LINE_WATER_SOURCE_BOUNDS, lineWaterSourceCells, purelineDeviceLayout } from './fixtures/industry-line.js';
 import { deviceCell } from '../src/industry/catalog.js';
 import { hearthStructureCells } from '../src/industry/hearth.js';
+import { pumpStructureCells } from '../src/industry/pumpStructure.js';
 import { gateGeometry } from '../src/industry/gates.js';
 import { machinePorts } from '../src/industry/physics.js';
 import { deviceHeight, overlaps, validateDevices } from '../src/industry/validation.js';
@@ -44,6 +45,7 @@ for (const d of devices) {
 }
 const gateLeaf = gateGeometry(gate, { nx: 128, ny: 128, nz: 128 }).aperture;
 for (const p of gateLeaf) solid.add(p.join(','));
+for (const p of pumpStructureCells(pump)) solid.add(p.join(','));
 for (const z of [51, 56]) for (let y = 16; y <= 18; y++)
   assert(solid.has([52, y, z].join(',')), 'real outside columns close the raised spout corners');
 assert(waterSource.every(p => !solid.has(p.join(','))), 'finite reservoir occupies clear volume behind actual walls');
