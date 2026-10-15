@@ -5,7 +5,81 @@ Audit base: `b64183051da3ba978ab85f1e38399756fc842daf`, fetched from `origin/mai
 **Status: incomplete.** Renderer integration is one milestone, not completion of physics v2.
 The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` was superseded.
 
-## Runtime checks — 2026-10-14
+## Current evidence — 2026-10-15
+
+Feature commit: `17817ba`. The common production base is `92470c5`.
+Fetched production is `b570540`: the feature is 93 commits ahead and 146 behind.
+Production reconciliation remains required. These results do not describe the live site.
+
+The native engine now includes contact rules, heat, phases, particles, air,
+jets, modes, exact persistence, and direct rendering.
+CPU coverage does not establish complete GPU feature parity.
+
+| GPU check | Result | Total slot occupancy |
+| --- | --- | ---: |
+| Full native slab, `3a89a96` | 83 ticks, 576 grains retained, one layer, correct fall and landing | 15.761 s |
+| Full tank, `3a89a96` | 240 ticks, exact mass, flat surface, rest certified at 2.4 game seconds | 23.023 s |
+| Wood control, `8ac7816` | Control passed after the frozen six-face exposure fix | 15.532 s |
+| Census, `aed9af3` | 120 ticks, 20 checks, no measured water/particle, sand, or wall drift | 12.391 s |
+| Contact heat, `a2ee677` | 32 ticks, two metal cells, exactly 2,535,663,075,328 energy units retained | 10.382 s |
+| Blast control, `17817ba` | Allocation path completed without GPU errors | 10.082 s |
+
+All listed slots closed without forced cleanup or reported ownership errors.
+The wood control counts grid wood, not airborne wood.
+Its pass alone does not prove complete fuel conversion.
+The blast control removed the entire floor from the grid.
+That saturated footprint does not establish crater roundness or retained airborne mass.
+
+The source changes preserve calibration:
+
+- Scalar phase arrays replaced switch-return fanout. The contact pipeline now compiles and executes.
+- Parallel pool and request prefixes preserve slot order and backpressure.
+- Empty blast batches skip pool preparation through existing indirect arguments.
+- Exact thermal admission replaces an encode/decode round trip. Its CPU oracle covers 6,183,436 cases without a mismatch.
+- Uniform canonical AIR blocks skip only byte-identical work. The proof covers all 41,094 normal temperature codes.
+
+### Renderer-connected measurements
+
+The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
+The benchmark includes physics, rendering, and the GPU completion fence.
+Native frames use no legacy bridge dispatches.
+
+| Feature commit | Warmup / measured frames | v1 median | Native median |
+| --- | --- | ---: | ---: |
+| `aed9af3` | 1 / 4 | 75.2 ms | 104.1 ms |
+| `17817ba` | 3 / 12 | 103.6 ms | 93.9 ms |
+
+These runs use different sample windows.
+Both engines also evolve different states from the same fixture.
+The table is diagnostic evidence, not a final speedup claim.
+The second run occupied 25.744 seconds under the earlier explicit 30-second exception.
+Subsequent runs use the fetched 25-second policy.
+
+At `17817ba`, the split diagnostic occupied 19.093 seconds.
+Gather still costs about 12.14 ms per frame, and contact costs 9.82 ms.
+Scene rendering costs about 38.11 ms.
+The overlapping motion interval is not an additional scene cost.
+Allocation scans no longer dominate the compute timings.
+
+Local evidence:
+
+- `/tmp/v2-native-slab-profile-3a89a96.jsonl`
+- `/tmp/v2-native-tankStill-3a89a96.json`
+- `/tmp/v2-native-woodBurns-8ac7816.json`
+- `/tmp/v2-native-census-aed9af3.json`
+- `/tmp/v2-contact-thermal-a2ee677.json`
+- `/tmp/v2-native-blast-17817ba.json`
+- `/tmp/v2-native-water-matched-17817ba.json`
+- `/tmp/v2-native-water-split-17817ba.json`
+
+Remaining gates include full GPU feature coverage, reliable matched performance,
+production reconciliation, independent review, deployment, and a live-site check.
+V1 remains the default.
+
+## Earlier startup checks — 2026-10-14 (historical)
+
+These notes describe attempts before the scalar phase arrays.
+They do not supersede the current evidence.
 
 At base `88a2334`, `tools/v2/column-browser-check.mjs` executed the production
 R1 shader in Chromium/WebGPU. It used the existing slab fixture: 576 sand
@@ -50,13 +124,13 @@ Subsequent full-engine diagnostics also returned no outcome assertions:
 
 All five lease reports confirm release. None counts as a physics pass.
 At `8c1c1aa`, all 33 v2 CPU suites and the production build passed.
-Read-only contact-table buffer work remains under implementation; its GPU
-compile cost has not been measured.
+Read-only contact-table buffer work was incomplete at that point.
+Its GPU compile cost was unknown.
 
-## What exists
+## What existed at the audit base
 
 `src/v2/physics.js` drives `src/shaders/v2.js` behind `?physics=v2`.
-The implementation contains:
+The implementation contained:
 
 - A fixed 60 Hz clock for boxes, with bounded catch-up.
 - One 16-byte compact cell array, alongside the legacy simulation allocation.
@@ -67,8 +141,8 @@ The implementation contains:
 The complete legacy allocations still exist. Sixteen bytes per compact cell does not describe total memory use.
 The quoted traffic reduction is an estimate, not a measured frame-time improvement.
 
-The fetched branches contain no later committed implementation of these v2 modules.
-The historical `origin/claude/v2` and `origin/ship-physics` branches do not contain a completed physics engine.
+The fetched branches contained no later implementation of these v2 modules at the audit base.
+The historical `origin/claude/v2` and `origin/ship-physics` branches did not contain a completed physics engine.
 
 ## Required work
 
