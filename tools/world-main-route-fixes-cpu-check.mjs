@@ -13,6 +13,16 @@ import {GI_SETTLE} from '../src/shaders/gi.js';
 import {READY} from '../src/world/renderAtlas.js';
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 const complete={incomplete:false,requirements:[],sun:[]};
+test('actual WORLD attachment never constructs or starts the retired Far/detail pipeline',()=>{
+ const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
+ const start=source.indexOf('  attach(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
+ for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
+ const window={},sim={origin:{fromArray(v){this.value=v;}}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k};
+ const Window=class{constructor(renderer,actualSim,options){assert.equal(actualSim,sim);assert.deepEqual(options.size,app.worldMode.size);return window;}};
+ const attach=new Function('WorldWindow','world',`return ({${source.slice(start,end)}}).attach;`)(Window,{worldStart:()=>[32,0,64]});
+ attach(app);assert.equal(app.win,window);assert.deepEqual(sim.origin.value,[32,0,64]);
+ assert.equal(window.far,undefined);
+});
 async function pump(f,work,p=null){
   let done=false,result,error;
   work.then(value=>{result=value;done=true;},e=>{error=e;done=true;});

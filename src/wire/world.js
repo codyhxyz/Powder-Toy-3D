@@ -10,7 +10,6 @@ import { installWorldRender } from './worldRender.js';
 import { createMediaNoise } from '../gfx/mediaNoise.js';
 import { createWorldFrameState, createWorldFrameDriver, disposeWorldFrame } from './worldRenderFrame.js';
 import { bakedAir } from '../constructions/runtime.js';
-import { FarField } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { isMaterialView } from '../views.js';
@@ -47,20 +46,14 @@ const world = {
   ready: true,
   order: -1,   // the far field draws before the volume (docs/webgpu.md F1)
 
-  // A world's grid: the window over it (app.worldMode set by build()), its far field.
+  // A world's physical window. Rendering is installed separately from its
+  // immutable Source, never from a second coarse/detailed representation.
   // The window's size is the simulation's: build() made it worldMode.win, ?win= applied.
   attach(app) {
     const { sim } = app;
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
-    win.far = new FarField(app.renderer, win, { sun: app.sun });
-    win.far.detail.onChange = () => app.pacer?.wake();
-    win.far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
-    win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window
-    // its view builds with the view that draws it (B5: at boot in the realistic view, else on switching to it),
-    // and the frame that follows its build draws it
-    if (isMaterialView(app.settings.view)) world.buildFarView(app, win.far);
   },
   buildFarView(app, far) {
     far.detail.build();
