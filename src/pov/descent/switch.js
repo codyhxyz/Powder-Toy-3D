@@ -130,7 +130,8 @@ export function createDescentRunner(deps) {
 
   async function win() {
     busy = true;
-    overlay?.show('You reached the bottom', 'The run is won', WON_MENU_DELAY_S);
+    const completion = sw.level?.completion;
+    overlay?.show(completion?.title ?? 'You reached the bottom', completion?.subtitle ?? 'The run is won', WON_MENU_DELAY_S);
     toast('You reached the bottom');
     await wait(WON_MENU_DELAY_S);
     busy = false;

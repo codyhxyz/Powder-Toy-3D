@@ -108,10 +108,11 @@ import { labWorld } from './labWorld.js';
 import { volcanoWorld } from './volcanoWorld.js';
 import { giantVolcano } from './giantVolcano.js';
 import { DESCENT_SCENES } from './descent/scenes.js';
-import { DESCENT_LEVELS } from './descent/levels.js';
+import { DESCENT_LEVELS as LEGACY_LEVELS } from './descent/legacyLevels.js';
+import { NOITA_SOURCE_SCENES } from './descent/sourceScenes.js';
 
 // Descent's levels (descent/scenes.js; docs/descent-contract.md) start at their levels.js spawns
-DESCENT_SCENES.forEach((s, i) => s.setSpawn(DESCENT_LEVELS[i].spawn));
+DESCENT_SCENES.forEach((s, i) => s.setSpawn(LEGACY_LEVELS[i].spawn));
 
-export const WORLD_SCENES = [island, willowCove, labWorld, volcanoWorld, giantVolcano, ...DESCENT_SCENES];
+export const WORLD_SCENES = [island, willowCove, labWorld, volcanoWorld, giantVolcano, ...DESCENT_SCENES, ...NOITA_SOURCE_SCENES];
 export const sceneByKey = (key) => WORLD_SCENES.find((s) => s.key === key) ?? island;
