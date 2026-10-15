@@ -32,6 +32,19 @@ skipping; producers must publish correct field-support flags and conservative
 empty-space distances. Unknown/unready pages remain incomplete even if a
 placeholder temporarily takes an empty/sky branch.
 
+### Physical world rays
+
+The shared structural DDA factory has a world-only physical-direction option:
+`safeDir` is the identity, including tiny negative components and signed zero.
+Zero axes get finite noncompetitive crossing times with nonzero denominators;
+slabs explicitly test parallel membership in the half-open voxel extent
+`[0, GRID)`. A ray on a maximum outer face parallel to it is outside, while
+an inward ray may enter there. Entry-cell nudging is unchanged. Box/POV use
+the original helper emission. World jumps resolve reconstructed cell ownership
+using boundary times, then keep non-exit coordinates inside the jumped box
+before assigning the exit cell. This prevents f32 reconstruction onto the
+wrong side of a plane with tiny components, without changing the ray.
+
 ### Dedicated layout
 
 | group | bindings |
@@ -163,6 +176,20 @@ sizes are rejected. Storage bindings must still fit the device and 128 MiB.
    **only after final submission AND GPU completion**. Retain external resources
    for the same interval. Volume disposal does not destroy borrowed resources
    or prematurely release candidates. No binding getter submits source work.
+
+## P1 numerical regression gate
+
+`node --test tools/world-ray-shadow-cpu-check.mjs` runs production factory
+DDA/slab functions and the production PCSS reader in the CPU WGSL interpreter,
+with Naga validation of the fixtures. Independent slab geometry covers full
+3072×384×1024 rays, isolated voxels, cardinal/tiny/signed-zero directions,
+exact bounds, parallel planes/edges/corners, and 4/32/128-cell skips. PCSS
+fixtures use actual quantized texel centres, both slope signs/axes, rotations,
+partial real blockers and unoccluded planes. Blocker depths are recentered as
+`sm - (d - q.z)` before averaging; comparison bias, weights and optical payloads
+are unchanged. The review's blocker average ≈1046.202 gives the correct 2.1-cell
+penumbra instead of a negative radius. Interpreter lexical-call and integer
+region-index limitations are explicit in the fixture; this is not GPU parity.
 
 ## Checked evidence and limits
 

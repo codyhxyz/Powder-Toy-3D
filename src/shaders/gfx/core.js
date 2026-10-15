@@ -1,5 +1,5 @@
 import { libChecks } from './lib.js';
-import { ddaWalkWGSL } from '../dda.js';
+import { ddaWalk } from '../dda.js';
 import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
 import { glf as f } from '../../glsl.js';
 import { occupancyReadWGSL } from '../occupancy.js';
@@ -309,13 +309,29 @@ fn worldPos(p: vec3f) -> vec3f { return ${backend === 'world' ? 'p' : 'p + vec3f
 fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
 
 // ---- the DDA (shaders/dda.js: safeDir, argmin3, the walk's steps) ----
-${ddaWalkWGSL}
+${ddaWalk({ physicalDirection: backend === 'world' })}
 // Ray (ro, rd) against the box [0, GRID]: (tNear, tFar, entry axis 0..2). A miss has tFar <= tNear.
 fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
-  let t0 = (vec3f(0.0) - ro) / rd;
+  ${backend === 'world' ? `// Parallel rays belong to the half-open voxel extent [0, GRID), not
+  // the clamped last cell of a tangent ray on an outer maximum face.
+  var tn = vec3f(-1e30);
+  var tf = vec3f(1e30);
+  var moving = false;
+  for (var k = 0; k < 3; k++) {
+    if (rd[k] == 0.0) {
+      if (ro[k] < 0.0 || ro[k] >= f32(GRID[k])) { return vec3f(0.0, -1.0, 0.0); }
+    } else {
+      moving = true;
+      let a = -ro[k] / rd[k];
+      let b = (f32(GRID[k]) - ro[k]) / rd[k];
+      tn[k] = min(a, b);
+      tf[k] = max(a, b);
+    }
+  }
+  if (!moving) { return vec3f(0.0, -1.0, 0.0); }` : `let t0 = (vec3f(0.0) - ro) / rd;
   let t1 = (vec3f(GRID) - ro) / rd;
   let tn = min(t0, t1);
-  let tf = max(t0, t1);
+  let tf = max(t0, t1);`}
   let n = max(max(tn.x, tn.y), tn.z);
   var axis = 2.0;
   if (tn.x >= tn.y && tn.x >= tn.z) { axis = 0.0; } else if (tn.y >= tn.z) { axis = 1.0; }

@@ -86,7 +86,8 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   for (var i=0; i<PCSS_TAPS; i++) {
     let o=R2*VOGEL[i]*rs; let pixel=vec2i(floor(q.xy+o*WS.depth.w));
     let d=worldSunReceiverDepth(q,pixel,slope); let sm=worldSunDepthTap(pixel);
-    if (sm+PCSS_BIAS<d) { bSum+=sm; bN+=1.0; }
+    // Compare at the tap's plane depth, but average at the centre receiver.
+    if (sm+PCSS_BIAS<d) { bSum+=sm-(d-q.z); bN+=1.0; }
   }
   var pen=0.0; if (bN>0.0) { pen=SUN_TAN_RADIUS*(q.z-bSum/bN); }
   if (pen<PCSS_HARD_TEXELS*WS.depth.z) { return acc; }

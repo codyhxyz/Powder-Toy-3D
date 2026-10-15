@@ -109,6 +109,7 @@ jobs:
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node --test tools/world-atlas-cpu-check.mjs   # isolated sparse world ABI, publication/copy invariants + Naga (no GPU)
       - run: npm run check:world-backend   # shared full world shader/assembly + actual Naga; NOT application activation
+      - run: node --test tools/world-ray-shadow-cpu-check.mjs   # production DDA/PCSS CPU arithmetic + Naga, not GPU parity
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: npm run build
       - run: node tools/check-local-map-build.mjs

@@ -517,7 +517,7 @@ ${march('marchPressure', 'AIR_PRESSURE', /* wgsl */ `
       }`,
 }, curved)}`;
 
-const FLOW = (curved) => /* wgsl */ `
+const FLOW = (curved, backend = 'box') => /* wgsl */ `
 // ---- flow ----
 // Can particle a displace b moving down (0), up (1) or sideways (2)? Mirrors
 // canMove() in common.js.
@@ -650,7 +650,7 @@ ${march('marchFlow', 'AIR_FLOW', /* wgsl */ `
         // brick with matter: its stroke is composited once the ray gets
         // past it, and dropped if a surface hides it first
         let bmin = vec3f(bc * BS);
-        let tb = (mix(bmin, bmin + f32(BS), step(vec3f(0.0), rd)) - ro) / rd;
+        let tb = ${backend === 'world' ? 'ddaCrossing(mix(bmin, bmin + f32(BS), step(vec3f(0.0), rd)) - ro, rd)' : '(mix(bmin, bmin + f32(BS), step(vec3f(0.0), rd)) - ro) / rd'};
         var v: vec3f;
         gAl = FLOW_STROKE_ALPHA * brickStroke(bc, ro, rd, tEnter, min(tb.x, min(tb.y, tb.z)), true, &v, &gT);
         let sp = length(v);
@@ -1396,7 +1396,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   ];
   if (backend === 'world') parts.push(shadowOpticsWGSL({ backend }));
   if (lit) parts.push(farHazeGLSL, realistic(d, curved, backend));
-  else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
+  else parts.push(DATA_COMMON, DATA_CODE[view](curved, backend), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved, backend));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
   return parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
