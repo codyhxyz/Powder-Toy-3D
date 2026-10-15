@@ -23,19 +23,34 @@
 // z < 0 or nonfinite xyz = reject. w unused. Clear to zero for static background.
 // Motion is sampled at the current JITTERED scene pixel but excludes both jitters.
 // reactive: same size/usage, r8unorm/r16float/rgba8unorm/rgba16float. R > 0 or
-// nonfinite rejects history, including when motion is reliable. R == 0 retains.
+// nonfinite rejects history, including when motion is reliable. Post dilates this
+// rejection by 2 scene pixels (a clamped 5x5 footprint). R == 0 otherwise retains.
 // It must cover ALL changed/uncorresponded matter, disocclusions, and translucent
 // mixtures (including their old footprints); flow alone is not such a mask.
 // Inputs are caller-owned and frame-local; post never destroys them. Invalid size
 // or format throws rather than sampling unrelated pixels after dynamic resize.
 
 const MASK_FORMATS = new Set(['r8unorm', 'r16float', 'rgba8unorm', 'rgba16float']);
+export const TEMPORAL_REACTIVE_RADIUS = 2;
+
+/** CPU reference for the shader's clamped reactive footprint; not GPU execution. */
+export function temporalReactiveAt(load, x, y, width, height) {
+  for (let dy = -TEMPORAL_REACTIVE_RADIUS; dy <= TEMPORAL_REACTIVE_RADIUS; dy++) {
+    for (let dx = -TEMPORAL_REACTIVE_RADIUS; dx <= TEMPORAL_REACTIVE_RADIUS; dx++) {
+      const r = load(Math.max(0, Math.min(width - 1, x + dx)), Math.max(0, Math.min(height - 1, y + dy)));
+      if (!Number.isFinite(r) || r > 0) return true;
+    }
+  }
+  return false;
+}
 
 /** Validate/snapshot a frame's optional GPUTextures; null preserves legacy motion. */
-export function temporalInputs(inputs = {}, size) {
+export function temporalInputs(inputs = {}, size, forbidden = []) {
   const { motion = null, reactive = null, rejectUntracked = false } = inputs ?? {};
+  if (motion && motion === reactive) throw new Error('temporal inputs: motion/reactive alias');
   for (const [name, t] of [['motion', motion], ['reactive', reactive]]) {
     if (!t) continue;
+    if (forbidden.includes(t)) throw new Error(`temporal ${name}: scene/resolve attachment alias`);
     if (typeof t.createView !== 'function' || t.width !== size[0] || t.height !== size[1]) {
       throw new Error(`temporal ${name}: expected scene-sized GPUTexture (${size.join('x')})`);
     }
@@ -74,7 +89,8 @@ export function createHybridTemporal(post, { invalidateCaches = () => {} } = {})
     update({ revision: next, motion = null, reactive = null, changed = false, cameraCut = false } = {}) {
       if (disposed) throw new Error('hybrid temporal: disposed');
       if (cameraCut) helper.reset();
-      const dirty = changed || !seen || !Object.is(revision, next);
+      // An omitted revision is not proof that simulation correspondence is static.
+      const dirty = changed || next == null || !seen || !Object.is(revision, next);
       const inputs = temporalInputs({ motion, reactive, rejectUntracked: dirty && !reactive }, post.inSize);
       if (dirty) invalidateCaches();
       post.setTemporalInputs(inputs);

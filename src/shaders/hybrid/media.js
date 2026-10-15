@@ -7,7 +7,7 @@ import { INCAND, INCAND_KNOTS } from '../../gfx/incandescence.js';
 
 export const HybridMediaParams = uniformStruct('HybridMediaParams', {
   clipToGrid: 'mat4x4f', grid: 'vec3f', step: 'f32', size: 'vec2f', lowSize: 'vec2f',
-  enabled: 'u32', maxSteps: 'u32', hasLight: 'u32', hasGI: 'u32', depthTolerance: 'f32',
+  enabled: 'u32', maxSteps: 'u32', hasLight: 'u32', hasGI: 'u32', depthTolerance: 'f32', hasOptics: 'u32',
 });
 
 // Group 0 is the existing FRAME ABI, group 3 the engine's params ABI.
@@ -16,7 +16,10 @@ export const MEDIA_FIELD_LAYOUT = [
   { binding: 4, sampler: { type: 'filtering' } },
   { binding: 5, sampler: { type: 'filtering' } },
 ];
-export const MEDIA_DEPTH_LAYOUT = [{ binding: 0, texture: { sampleType: 'depth', viewDimension: '2d' } }];
+export const MEDIA_DEPTH_LAYOUT = [
+  { binding: 0, texture: { sampleType: 'depth', viewDimension: '2d' } },
+  { binding: 4, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
+];
 export const MEDIA_COMPOSITE_LAYOUT = [
   ...MEDIA_DEPTH_LAYOUT,
   ...[1, 2].map((binding) => ({ binding, texture: { sampleType: 'float', viewDimension: '2d' } })),
@@ -164,6 +167,7 @@ fn hybridMediaSegment(ro: vec3f, rd: vec3f, tNear: f32, tFar: f32) -> vec4f {
 
 const screenLibrary = () => /* wgsl */ `
 @group(2) @binding(0) var sceneDepth: texture_depth_2d;
+@group(2) @binding(4) var opticalDepth: texture_2d<f32>;
 fn gridPoint(uv: vec2f, z: f32) -> vec3f {
   let h = P.clipToGrid * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
   return h.xyz / h.w;
@@ -172,7 +176,8 @@ fn rayAt(pixel: vec2i) -> Ray {
   let uv = (vec2f(pixel) + 0.5) / P.size;
   let near = gridPoint(uv, 0.0);
   let dir = normalize(gridPoint(uv, 0.999999) - near);
-  let z = textureLoad(sceneDepth, pixel, 0);
+  var z = textureLoad(sceneDepth, pixel, 0);
+  if (P.hasOptics != 0u) { z = min(z, textureLoad(opticalDepth, pixel, 0).x); }
   var limit = SKY;
   if (z < 1.0) { limit = max(0.0, dot(gridPoint(uv, z) - near, dir)); }
   return Ray(near, dir, limit);
@@ -198,18 +203,23 @@ const isolate = (code) => code.replace(new RegExp(`\\b(${privateNames.join('|')}
  * Bindings: FRAME's FU; fields group bindings 0 media, 1 glow, 2 GI DC,
  * 3 shared media noise, 4 clamp sampler, 5 repeat sampler; params/header use
  * HybridMediaParams/Header. Set declareFrame:false if FU is already declared.
+ * fieldBinding offsets all six field/sampler bindings. declareHeader:false uses
+ * the containing shader's headerName (default H), avoiding duplicate Header/H
+ * declarations when composed with the optical prelude. Params stay explicit.
  * No scene textures, depth attachment, or stochastic history required. No opaque
  * sun shadows/beam lights; segment callers must bound at surfaces/interfaces.
  */
-export function hybridMediaSegmentWGSL({ frameGroup = 0, frameBinding = 1, fieldGroup = 1,
-  paramsGroup = 3, paramsBinding = 1, headerBinding = 0, declareFrame = true } = {}) {
+export function hybridMediaSegmentWGSL({ frameGroup = 0, frameBinding = 1, fieldGroup = 1, fieldBinding = 0,
+  paramsGroup = 3, paramsBinding = 1, headerBinding = 0, declareFrame = true, declareHeader = true, headerName = 'H' } = {}) {
   let code = segmentLibrary();
   const frame = frameBindings();
   code = code.replace(frame, declareFrame ? frame.replace('@group(0) @binding(1)', `@group(${frameGroup}) @binding(${frameBinding})`) : '');
-  code = code.replaceAll('@group(1)', `@group(${fieldGroup})`)
+  if (!declareHeader) code = code.replace(Header.wgsl, '').replace('@group(3) @binding(0) var<uniform> H: Header;', '');
+  code = code.replace(/@group\(1\) @binding\((\d+)\)/g, (_, b) => `@group(${fieldGroup}) @binding(${fieldBinding + Number(b)})`)
     .replace('@group(3) @binding(0)', `@group(${paramsGroup}) @binding(${headerBinding})`)
     .replace('@group(3) @binding(1)', `@group(${paramsGroup}) @binding(${paramsBinding})`);
-  return isolate(code);
+  code = isolate(code);
+  return declareHeader ? code : code.replace(/\bhmH\b/g, headerName);
 }
 
 export const hybridMediaIntegrateWGSL = () => isolate(/* wgsl */ `

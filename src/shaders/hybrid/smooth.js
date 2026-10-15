@@ -2,6 +2,7 @@ import { prelude, STATE_OPTS, STAGE, gridDims } from '../common.js';
 import { frameBindings } from '../bindings.js';
 import { dirtyLists } from '../fields.js';
 import { uniformStruct } from '../../gpu/params.js';
+import { materialsGLSL } from '../../gfx/materials.js';
 
 // Freudenthal subdivision: identical diagonals on both sides of every cube face.
 // Samples are fieldSurf texel centres. A triangle takes one u32 descriptor;
@@ -19,11 +20,11 @@ export const SMOOTH_CASES = Array.from({ length: 16 }, (_, mask) => {
   return [[q[0], q[1], q[2]], [q[0], q[2], q[3]]];
 });
 export const SMOOTH_FLAGS = Object.freeze({ OVERFLOW: 1, THIN: 2, NO_MATERIAL: 4, APPEARANCE: 8 });
-export const SmoothParams = uniformStruct('SmoothParams', { capacity: 'u32', full: 'u32', unsupported: 'u32', pad: 'u32', matrix: 'mat4x4f' });
+export const SmoothParams = uniformStruct('SmoothParams', { capacity: 'u32', full: 'u32', unsupported: 'u32', slot: 'u32', matrix: 'mat4x4f' });
 const ro = (binding, visibility = STAGE.COMPUTE) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
 const rw = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } });
 const tex = (binding, visibility) => ({ binding, visibility, texture: { sampleType: 'unfilterable-float', viewDimension: '3d' } });
-export const SMOOTH_EXTRACT_LAYOUT = [tex(0, STAGE.COMPUTE), tex(1, STAGE.COMPUTE), ro(2), rw(3), rw(4), rw(5), rw(6)];
+export const SMOOTH_EXTRACT_LAYOUT = [tex(0, STAGE.COMPUTE), tex(1, STAGE.COMPUTE), ro(2), rw(3), rw(4), rw(5), rw(6), rw(7)];
 export const SMOOTH_DRAW_LAYOUT = [tex(0, STAGE.VERTEX), ro(1, STAGE.VERTEX), ro(2, STAGE.VERTEX), ro(3, STAGE.VERTEX | STAGE.FRAGMENT)];
 
 /** Bind this small status buffer to the legacy smooth pass as read-only storage.
@@ -74,6 +75,7 @@ fn smoothSource(p: vec3i, ch: i32) -> vec4f {
 export function smoothExtractWGSL(g) {
   const dl = dirtyLists(g);
   return `${prelude(g, STATE_OPTS.STATE_RO)}
+${materialsGLSL()}
 ${SmoothParams.wgsl}
 @group(3) @binding(1) var<uniform> P: SmoothParams;
 @group(2) @binding(0) var surf: texture_3d<f32>;
@@ -85,6 +87,7 @@ ${SmoothParams.wgsl}
 // flags, raw total triangles, maximum required chunk capacity, rebuilt chunks.
 @group(2) @binding(5) var<storage, read_write> status: array<u32>;
 @group(2) @binding(6) var<storage, read_write> args: array<u32>;
+@group(2) @binding(7) var<storage, read_write> results: array<vec4u>;
 ${tables()}
 var<workgroup> count: atomic<u32>;
 var<workgroup> flags: atomic<u32>;
@@ -152,6 +155,7 @@ fn finish() {
     if (P.full != 0u || dirty[${dl.fmask}u+b] != 0u) { rebuilt++; }
   }
   status[0] = bad; status[1] = total; status[2] = required; status[3] = rebuilt;
+  results[P.slot] = vec4u(bad, total, required, rebuilt);
   args[0] = select(0u, total * 3u, bad == 0u);
   args[1] = 1u; args[2] = 0u; args[3] = 0u;
 }`;
@@ -173,6 +177,7 @@ export function smoothDrawWGSL(g, { shadingWGSL = baselineShade } = {}) {
   gridDims(g);
   return `${prelude(g, STATE_OPTS.STATE_RO)}
 ${frameBindings()}
+${materialsGLSL()}
 ${SmoothParams.wgsl}
 @group(3) @binding(1) var<uniform> P: SmoothParams;
 @group(2) @binding(0) var surf: texture_3d<f32>;

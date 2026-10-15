@@ -186,7 +186,8 @@ fn hybridShade(m: HybridMaterial, p: vec3f, geometricNormal: vec3f, shadingNorma
   }
   color += max(m.emission,vec3f(0.0));
   let opacity = clamp(m.opacity,0.0,1.0);
-  return vec4f(max(color,vec3f(0.0)) * opacity, opacity);
+  // Keep finite highlights representable in the rgba16float HDR target.
+  return vec4f(clamp(color,vec3f(0.0),vec3f(65504.0)) * opacity, opacity);
 }
 fn hybridShadeWorld(m: HybridMaterial, worldCellP: vec3f, windowOrigin: vec3f, ng: vec3f, n: vec3f,
   viewDirection: vec3f, sunVisibility: vec3f, ao: f32) -> vec4f {

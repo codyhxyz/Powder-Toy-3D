@@ -45,8 +45,9 @@ export function reflectionBindingDescriptors(location) {
 /** Derived.lightingEntries() binding 17 is the existing occupancy+distance buffer. */
 export function reflectionBindEntries(sim, location) {
   const { binding } = occupancyLocation(location);
-  const source = sim?.derived?.lightingEntries().find((e) => e.binding === 17);
-  if (!source) throw new Error('reflections: fresh derived occupancy is required');
+  const entries = sim?.derived?.lightingEntries?.();
+  const source = entries?.find((e) => e.binding === 17);
+  if (!source?.resource) throw new Error('reflections: fresh derived occupancy is required');
   return [{ binding, resource: source.resource }];
 }
 

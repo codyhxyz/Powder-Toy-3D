@@ -75,7 +75,8 @@ export function reflectionGate({ roughness, projectedPixels, reflectance, budget
   const p = reflectionOptions(options);
   if (!(roughness >= 0 && roughness < p.roughnessStop)
       || !(projectedPixels > p.coverageStart && projectedPixels <= 1e8)
-      || !(reflectance > p.reflectanceStart && reflectance <= 1) || !(budget > 0)) return 0;
+      || !(reflectance > p.reflectanceStart && reflectance <= 1)
+      || !Number.isInteger(budget) || budget <= 0 || budget > 0xffffffff) return 0;
   return (1 - smooth(p.roughnessFull, p.roughnessStop, roughness))
     * smooth(p.coverageStart, p.coverageFull, projectedPixels)
     * smooth(p.reflectanceStart, p.reflectanceFull, reflectance);

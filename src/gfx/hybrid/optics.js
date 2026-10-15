@@ -76,7 +76,10 @@ export function validateOpticsResources({ color, depth }, output) {
   const textures = [color, depth, ...Object.values(output)];
   if (new Set(textures).size !== textures.length) throw new Error('optics sampled/attachment resources must not alias');
   for (const t of textures) {
-    if (t.width !== color.width || t.height !== color.height || (t.sampleCount ?? 1) !== 1 || !t.createView) throw new Error('optics textures must have matching extents, one sample, and createView');
+    if (!Number.isInteger(t.width) || t.width < 1 || !Number.isInteger(t.height) || t.height < 1
+        || t.width !== color.width || t.height !== color.height || (t.sampleCount ?? 1) !== 1
+        || (t.dimension ?? '2d') !== '2d' || (t.depthOrArrayLayers ?? 1) !== 1 || (t.mipLevelCount ?? 1) !== 1
+        || typeof t.createView !== 'function') throw new Error('optics textures must have matching positive 2d extents, one layer/mip/sample, and createView');
   }
   for (const [key, format] of Object.entries(OPTICS_OUTPUT_FORMATS)) {
     if (output[key]?.format !== format || !(output[key].usage & TEX.RENDER_ATTACHMENT)) throw new Error(`optics output ${key} must be renderable ${format}`);
@@ -105,10 +108,13 @@ export function validateOpticsResources({ color, depth }, output) {
  *    fallback is r32uint OPTICS_FALLBACK bits. Nonzero color is deliberately
  *    unchanged snapshot, NOT a correct transparent result: composite a valid
  *    fallback on GPU or keep legacy for unsupported scenes. No readback here.
- * 5. Optional lighting = {wgsl, hooks, bindings, entries(frame)} adds group 2
+ * 5. Optional lighting = {wgsl, hooks, bindings, entries(frame), textures(frame)} adds group 2
  *    bindings >= 2. hooks documented in shaders/hybrid/optics.js. Supply shared
  *    material/PBR lighting for hidden crisp hits, reflection/body, and optional
  *    media segments. No recursive reflections/diffuse walks in callbacks.
+ *    textures(frame) must list every extension GPUTexture (not its view) to
+ *    check attachment aliasing; extension storage resources must be read-only.
+ *    Callback distances/extinction use cells; temperature is Celsius.
  *
  * Unsupported: underwater; adjacent heterogeneous media; hidden meshes; exit
  * while submerged at grid bounds; crystals; hidden smooth/granular backgrounds;
@@ -119,11 +125,33 @@ export function validateOpticsResources({ color, depth }, output) {
  * Recreate on sim grid replacement/device loss. No cached sim fields or idle
  * dispatches; window shifts, edits, undo/load read current sim state/header.
  */
+/** Explicit layout counts, including FRAME, state A/B, and the engine params group.
+ * Filtering samplers must never be paired with the unfilterable metadata output.
+ * The pass itself uses textureLoad only; extension resources stay caller-owned.
+ */
+export function validateOpticsLimits(limits = {}, bindings = []) {
+  const counts = { maxSampledTexturesPerShaderStage: 2, maxSamplersPerShaderStage: 0,
+    maxStorageBuffersPerShaderStage: 3, maxUniformBuffersPerShaderStage: 3 };
+  for (const e of bindings) {
+    if (e.storageTexture || e.buffer?.type === 'storage') throw new Error('optics extensions must be read-only');
+    if (e.texture) counts.maxSampledTexturesPerShaderStage++;
+    if (e.sampler) counts.maxSamplersPerShaderStage++;
+    if (e.buffer) counts[e.buffer.type === 'read-only-storage' ? 'maxStorageBuffersPerShaderStage' : 'maxUniformBuffersPerShaderStage']++;
+  }
+  for (const [key, n] of Object.entries({ ...counts, maxBindGroups: 4, maxBindingsPerBindGroup: Math.max(2, ...bindings.map((e) => e.binding + 1)),
+    maxColorAttachments: 3, maxColorAttachmentBytesPerSample: 28 })) {
+    if (limits[key] !== undefined && n > limits[key]) throw new RangeError(`optics exceeds ${key}: ${n} > ${limits[key]}`);
+  }
+  return true;
+}
+
 export function createHybridOptics(gpu, sim, options = {}) {
   const { lighting = {}, maxSteps = 256, maxInterfaces = 8, depthTolerance = 0.15 } = options;
   if (!(depthTolerance >= 0 && Number.isFinite(depthTolerance))) throw new RangeError('depthTolerance must be finite and nonnegative');
   const extraBindings = lighting.bindings ?? [];
-  if (extraBindings.some((e) => e.binding < 2) || new Set(extraBindings.map((e) => e.binding)).size !== extraBindings.length) throw new Error('optics lighting bindings must be unique and >= 2');
+  if (extraBindings.some((e) => !Number.isInteger(e.binding) || e.binding < 2) || new Set(extraBindings.map((e) => e.binding)).size !== extraBindings.length) throw new Error('optics lighting bindings must be unique and >= 2');
+  validateOpticsLimits(gpu.limits ?? gpu.device?.limits, extraBindings);
+  if (extraBindings.some((e) => e.texture) && typeof lighting.textures !== 'function') throw new TypeError('optics extension textures need lighting.textures(frame) for attachment alias checks');
   const fu = frameUniformsOf(gpu);
   const sceneLayout = gpu.layout('HYBRID_OPTICS_SCENE', [...opticsBindings(), ...extraBindings]);
   const stateLayout = gpu.layout('STATE_RO', OPTICS_STATE_LAYOUT);
@@ -139,17 +167,28 @@ export function createHybridOptics(gpu, sim, options = {}) {
   const release = () => { if (output) for (const t of Object.values(output)) t.destroy(); output = null; };
   const api = {
     ready: pipe.ready,
-    get isReady() { return !disposed && pipe.isReady; },
+    get isReady() { return !disposed && pipe.state === 'ready'; },
     stats,
     get output() { return output; },
     update(frame = {}) { live(); current = { ...frame }; },
     record(frame = current) {
       live();
-      if (!pipe.isReady) return false;
+      if (pipe.state !== 'ready') return false;
       if (!fu.last.written) throw new Error('writeFrameUniforms before optics.record');
       const { color, depth } = frame;
       // Validate inputs before allocating or replacing any outputs.
       if (!color || !depth || color.format !== 'rgba16float' || depth.format !== 'depth32float') throw new TypeError('optics needs rgba16float/depth32float immutable snapshots');
+      // Validate complete input descriptors before a resize can destroy old outputs.
+      for (const t of [color, depth]) {
+        if (!(t.usage & TEX.TEXTURE_BINDING) || !Number.isInteger(t.width) || t.width < 1 || !Number.isInteger(t.height) || t.height < 1
+            || t.width !== color.width || t.height !== color.height || (t.sampleCount ?? 1) !== 1
+            || (t.dimension ?? '2d') !== '2d' || (t.depthOrArrayLayers ?? 1) !== 1 || (t.mipLevelCount ?? 1) !== 1
+            || typeof t.createView !== 'function') throw new Error('invalid optics snapshot descriptor');
+      }
+      const limit = gpu.limits?.maxTextureDimension2D ?? gpu.device?.limits?.maxTextureDimension2D ?? 8192;
+      if (color.width > limit || color.height > limit) throw new RangeError('optics extent exceeds maxTextureDimension2D');
+      const sampled = [color, depth, ...(lighting.textures?.(frame) ?? [])];
+      if (output && sampled.some((t) => Object.values(output).includes(t))) throw new Error('optics sampled/attachment resources must not alias');
       if (!output || output.color.width !== color.width || output.color.height !== color.height) {
         // Texture destruction is deferred by WebGPU; no submit/flush in hook.
         release();
@@ -159,6 +198,7 @@ export function createHybridOptics(gpu, sim, options = {}) {
         stats.allocations++;
       }
       validateOpticsResources(frame, output);
+      if (sampled.some((t) => Object.values(output).includes(t))) throw new Error('optics extension sampled/attachment resources must not alias');
       inverse.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();
       let unsupported = 0;
       if (frame.hasMeshes) unsupported |= OPTICS_FALLBACK.MESH;

@@ -47,7 +47,7 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 export function createHybridParticles(gpu, sim, {
   world = false, capacity: requested = sim.g.slots, ownershipReady = false, shader = {},
 } = {}) {
-  if (shader.wgsl && typeof shader.wgsl !== 'string') throw new TypeError('shader.wgsl must be WGSL');
+  if (shader.wgsl !== undefined && typeof shader.wgsl !== 'string') throw new TypeError('shader.wgsl must be WGSL');
   if (shader.handlesAppearance && !shader.wgsl) throw new TypeError('Appearance support requires a shader adapter');
   if (Boolean(shader.layout) !== Boolean(shader.bind)) throw new TypeError('shader.layout and shader.bind must be supplied together');
   const g = sim.g, fu = frameUniformsOf(gpu);
@@ -89,7 +89,7 @@ export function createHybridParticles(gpu, sim, {
   const api = {
     ready: Promise.all(pipes.map((p) => p.ready)).then(() => api),
     get isReady() { return !disposed && !gpu.failure && pipes.every((p) => p.state === 'ready'); },
-    get revision() { return key; },
+    get revision() { return `${generation}|${key}|${stats.fallbackReason}`; },
     stats,
     resources: { instances, args, layout: drawLayout, bind: drawGroup, capacity, stride: PARTICLE_BYTES },
     /** size: positive integer render pixels. sourceStyle must be supplied for
@@ -155,6 +155,7 @@ export function createHybridParticles(gpu, sim, {
       if (disposed) return;
       disposed = true;
       generation++;
+      stats.pending = false;
       fallback('disposed');
       gpu.flush('hybrid particles dispose');
       ring.close();

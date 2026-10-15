@@ -121,7 +121,7 @@ import { IDENTITY, presentationWGSL } from './presentationMath.js';
 import { glf as f } from '../glsl.js';
 import { sprintBlurWGSL } from './sprintBlur.js';
 import { crueltyDisplayWGSL, crueltyFrameSettings } from './crueltyDisplay.js';
-import { temporalInputs } from './hybrid/temporal.js';
+import { temporalInputs, TEMPORAL_REACTIVE_RADIUS } from './hybrid/temporal.js';
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -488,8 +488,14 @@ struct Motion {
   if (P.historyValid == 0u) { return o; }
   // Bitwise finite tests survive finite-math compiler assumptions, as sanitize does.
   if (P.reactive != 0u) {
-    let r = textureLoad(tReactive, p, 0).r;
-    if ((bitcast<u32>(r) & F32_ABS) >= F32_INF || r > 0.0) { return o; }
+    // Reject the complete 2-scene-pixel neighbourhood, including at target edges.
+    let hi = vec2i(textureDimensions(tReactive)) - 1;
+    for (var y = -${TEMPORAL_REACTIVE_RADIUS}; y <= ${TEMPORAL_REACTIVE_RADIUS}; y++) {
+      for (var x = -${TEMPORAL_REACTIVE_RADIUS}; x <= ${TEMPORAL_REACTIVE_RADIUS}; x++) {
+        let r = textureLoad(tReactive, clamp(p + vec2i(x, y), vec2i(0), hi), 0).r;
+        if ((bitcast<u32>(r) & F32_ABS) >= F32_INF || r > 0.0) { return o; }
+      }
+    }
   }
   if (P.explicitMotion != 0u) {
     let m = textureLoad(tMotion, p, 0).xyz;
@@ -1214,6 +1220,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let down = [], up = [], bloomImage = null, resolved = null;
   let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
   let motionInputs = temporalInputs(null, inSize);
+  let temporalFrame = false;
   let motionResources = [null, null];
   let crueltyTime = 0; // render dt clock: dt=0 freezes noise; stills don't advance it
   let jitter = [0, 0], taaNow = false;
@@ -1378,11 +1385,13 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * before finish. Null restores camera-only motion. Throws on size/format
      * mismatch, never silently rescales. Inputs are caller-owned. renderStill
      * ignores these (it has no temporal resolve and must not alter history).
+     * Opted-in frames cannot seed post-only reuse: their fields are frame-local.
      */
     setTemporalInputs(inputs = null) {
       if (active === still) return;
       if (!jittered) throw new Error('post.setTemporalInputs: call inside a scene');
-      motionInputs = temporalInputs(inputs, inSize);
+      motionInputs = temporalInputs(inputs, inSize, [main.color, main.depth]);
+      temporalFrame = inputs != null;
       keptPost = null;
     },
 
@@ -1400,6 +1409,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     beginScene(camera, { target = null } = {}) {
       keptPost = null;
       motionInputs = temporalInputs(null, inSize); // never replay last frame's moving matter
+      temporalFrame = false;
       if (jittered) restore(jittered);   // (a scene left unended: don't jitter twice)
       const s = settingsOf();
       const scale = post.renderScale;
@@ -1521,7 +1531,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(presentation.sceneToWorld, invVP);
           else reproj.multiplyMatrices(prevVP, invVP);
           // Revalidate at consumption too (a caller may have resized/replaced inputs).
-          const mi = temporalInputs(motionInputs, inSize);
+          const mi = temporalInputs(motionInputs, inSize, [scene, depth, inputs.velocity, inputs.color]);
           const motion = mi.motion ?? blank, reactive = mi.reactive ?? blank;
           if (motionResources[0] !== motion || motionResources[1] !== reactive) {
             groups = new Map(); // do not retain bind groups for retired producer textures
@@ -1621,7 +1631,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       });
       rp.end();
       post.onPass?.('composite', { kind: 'render' });
-      if (!postOnly && !target && !viewmodel && !glow && adaptOn && !s.night && !s.meter) {
+      if (!postOnly && !temporalFrame && !target && !viewmodel && !glow && adaptOn && !s.night && !s.meter) {
         keptPost = { color, packed, camera: prevCamera, stamp: imageStamp(prevCamera, s) };
       }
     },

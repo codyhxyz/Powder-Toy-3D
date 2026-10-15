@@ -99,23 +99,30 @@ export function createHybridShadows(gpu, sim, options = {}) {
      */
     update({ sun, revision, casters = [], model = IDENTITY_MODEL, origin = sim.origin ?? [0, 0, 0], size = [sim.g.nx, sim.g.ny, sim.g.nz], force = false } = {}) {
       if (!api.isReady) { disable(); return false; }
-      const next = shadowProjection(sun, size, resolution, padding);
-      const dimensions = shadowVector(size, 'size'), worldOrigin = shadowVector(origin, 'origin');
-      const matrix = shadowModel(model);
-      const rev = revision ?? sim.version;
-      revisionValue(rev);
-      if (!Array.isArray(casters)) throw new TypeError('hybrid shadows: casters must be an array');
-      const active = casters.filter((c) => c?.enabled !== false);
-      const casterKeys = active.map((c) => {
-        if (!c || typeof c.drawShadow !== 'function') throw new TypeError('hybrid shadows: caster needs drawShadow(rp, {matrix})');
-        revisionValue(c.revision ?? rev);
-        return [identity(c), identity(c.drawShadow), c.revision ?? rev];
-      });
-      const key = JSON.stringify([
-        identity(sim.g), identity(sim.bindRO), next.sun, rev, revision == null ? sim.cur ?? 0 : null,
-        worldOrigin, dimensions, matrix, casterKeys,
-      ]);
-      if (active.some((c) => c.isReady === false)) {
+      let next, active, key;
+      try {
+        next = shadowProjection(sun, size, resolution, padding);
+        const dimensions = shadowVector(size, 'size'), worldOrigin = shadowVector(origin, 'origin');
+        const matrix = shadowModel(model);
+        const rev = revision ?? sim.version;
+        revisionValue(rev);
+        if (!Array.isArray(casters)) throw new TypeError('hybrid shadows: casters must be an array');
+        active = casters.filter((c) => c?.enabled !== false);
+        const casterKeys = active.map((c) => {
+          if (!c || typeof c.drawShadow !== 'function') throw new TypeError('hybrid shadows: caster needs drawShadow(rp, {matrix})');
+          revisionValue(c.revision ?? rev);
+          return [identity(c), identity(c.drawShadow), c.revision ?? rev];
+        });
+        key = JSON.stringify([
+          identity(sim.g), identity(sim.bindRO), next.sun, rev, revision == null ? sim.cur ?? 0 : null,
+          worldOrigin, dimensions, matrix, casterKeys,
+        ]);
+      } catch (error) {
+        // Invalid/unsupported frame inputs must not leave last frame's map live.
+        disable();
+        throw error;
+      }
+      if (active.some((c) => c.isReady !== true)) {
         stats.blocked++; disable(); return false;
       }
       if (!force && key === lastKey && stats.valid) { stats.reuses++; return false; }

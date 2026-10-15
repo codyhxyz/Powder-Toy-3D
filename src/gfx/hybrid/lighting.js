@@ -48,11 +48,11 @@ export function createHybridLighting(gpu, sim, options = {}) {
   const api = {
     layout, groupIndex: config.group, wgsl: hybridLightingWGSL(config), stats,
     ready: Promise.resolve(),
-    get isReady() { return !disposed && group !== null; },
+    get isReady() { return !disposed && !gpu.lost && group !== null; },
     get group() { return group; },
     update({ derived = sim?.derived } = {}) {
       if (disposed) throw new Error('hybrid lighting disposed');
-      if (!derived?.views) { group = null; resources = []; return false; }
+      if (gpu.lost || !derived?.views) { group = null; resources = []; return false; }
       let entries;
       try { entries = hybridLightingEntries(derived.views, sampler, config); }
       catch (error) { group = null; resources = []; throw error; }

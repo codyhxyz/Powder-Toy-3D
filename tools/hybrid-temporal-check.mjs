@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { PerspectiveCamera, WebGPUCoordinateSystem, Matrix4 } from 'three';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { createPost, WGSL_CHECK, motionWGSL } from '../src/gfx/post.js';
-import { temporalInputs, temporalMotionDecision as decide, createHybridTemporal } from '../src/gfx/hybrid/temporal.js';
+import { temporalInputs, temporalReactiveAt, temporalMotionDecision as decide, createHybridTemporal } from '../src/gfx/hybrid/temporal.js';
 
 assert.equal(decide(), 'camera', 'legacy/static fallback');
 assert.equal(decide({ motion: [0, 0, 0] }), 'camera');
@@ -35,6 +35,18 @@ for (const t of [texture({ size: [32, 32] }), texture({ format: 'rg16float' }), 
 }
 assert.throws(() => temporalInputs({ reactive: texture({ format: 'r32float' }) }, [64, 32]), /unsupported format/);
 assert.throws(() => temporalInputs({ reactive }, [128, 64]), /scene-sized/);
+assert.throws(() => temporalInputs({ motion, reactive: motion }, [64, 32]), /alias/);
+assert.throws(() => temporalInputs({ motion }, [64, 32], [motion]), /attachment alias/);
+
+// Exact 2px square dilation, no accidental 3px spread; nonfinite and edge handling.
+for (const value of [1 / 255, NaN, Infinity, -Infinity]) {
+  const load = (x, y) => x === 4 && y === 4 ? value : 0;
+  for (let y = 0; y < 9; y++) for (let x = 0; x < 9; x++) {
+    assert.equal(temporalReactiveAt(load, x, y, 9, 9), Math.abs(x - 4) <= 2 && Math.abs(y - 4) <= 2);
+  }
+}
+assert.equal(temporalReactiveAt((x, y) => x === 0 && y === 0 ? 1 : 0, 2, 2, 5, 5), true);
+assert.equal(temporalReactiveAt(() => -1, 0, 0, 1, 1), false);
 
 // Reflection verifies source structure/binding ABI, not WGSL validation on Metal.
 for (const entry of WGSL_CHECK) new WgslReflect(entry.code());
@@ -43,6 +55,8 @@ assert.match(wgsl, /P.historyValid == 0u/);
 assert.match(wgsl, /bitcast<vec3u>\(m\)/);
 assert.match(wgsl, /P.rejectUntracked != 0u/);
 assert.match(wgsl, /presentationReproject\(vec4f\(ndc/);
+assert.match(wgsl, /var y = -2; y <= 2; y\+\+/);
+assert.match(wgsl, /var x = -2; x <= 2; x\+\+/);
 
 const calls = [], groups = [];
 const pipe = (desc) => ({ state: 'ready', ready: Promise.resolve(),
@@ -89,6 +103,8 @@ c = run({ motion, reactive });
 assert.equal(c.params.explicitMotion, true); assert.equal(c.params.reactive, true);
 assert.equal(c.bind[2].entries[2].resource.texture, motion);
 assert.equal(c.bind[2].entries[3].resource.texture, reactive);
+assert.equal(post.canReuse(camera), false, 'frame-local fields never seed stale post-only reuse');
+assert.equal(post.render(null, camera, null, 0, { postOnly: true }), false);
 const explicitBind = c.bind[2];
 assert.equal(run({ motion, reactive }).bind[2], explicitBind, 'unchanged resources reused');
 const replacement = texture();
@@ -123,6 +139,13 @@ assert.equal(run().params.prevK, 0);
 presenter.canvas.width = 128;
 assert.throws(() => run({ motion }), /scene-sized/, 'dynamic scene resize requires fresh inputs');
 assert.equal(run().params.explicitMotion, false, 'fallback after resize stays usable');
+assert.throws(() => run({ motion: post.targets.scene }), /attachment alias/);
+assert.throws(() => run({ motion, reactive: motion }), /alias/);
+const previousInputs = temporal.inputs;
+const aliasedOutput = texture({ size: post.inSize });
+temporal.inputs = (w, h) => ({ velocity: texture({ size: [w, h], format: 'rg16float' }), color: aliasedOutput });
+assert.throws(() => run({ motion: aliasedOutput }), /attachment alias/);
+temporal.inputs = previousInputs;
 const resizedMotion = texture({ size: post.inSize });
 assert.equal(run({ motion: resizedMotion }).params.explicitMotion, true);
 assert.throws(() => post.render({ prepare(p) { p.setTemporalInputs({ motion: resizedMotion }); resizedMotion.width++; } }, camera), /scene-sized/,
@@ -142,6 +165,7 @@ const update = (frame) => {
 };
 assert.equal(update({ revision: 1 }).rejectUntracked, true, 'initial unknown matter is conservative');
 assert.equal(update({ revision: 1 }).rejectUntracked, false, 'static scene settles normally');
+assert.equal(post.canReuse(camera), false, 'even static hybrid frames cannot reuse incomplete external caches');
 assert.equal(invalidations, 1);
 assert.equal(update({ revision: 2 }).rejectUntracked, true, 'simulation change without correspondence');
 assert.equal(update({ revision: 2 }).rejectUntracked, false);
@@ -152,6 +176,8 @@ assert.equal(update({ revision: 3, cameraCut: true, motion: resizedMotion }).his
 helper.reset();
 assert.equal(post.canReuse(camera), false, 'external cache/reset invalidates post-only images');
 assert.equal(update({ revision: 3 }).historyValid, false);
+assert.equal(update({}).rejectUntracked, true, 'missing revision has unknown correspondence');
+assert.equal(update({}).rejectUntracked, true, 'missing revision never becomes static evidence');
 helper.dispose();
 assert.throws(() => update({ revision: 4 }), /disposed/);
 post.dispose();

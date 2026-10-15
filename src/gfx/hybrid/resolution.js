@@ -128,9 +128,10 @@ export function createHybridResolution(options = {}) {
         clearEvidence();
         return false;
       }
-      if (!stable || trial?.invalid) return cancelTrial();
       if (!(Number.isFinite(now) && now >= lastNow && Number.isFinite(dt) && dt > 0)) return false;
       if (sampleGeneration !== generation || !Number.isSafeInteger(sampleId) || sampleId <= lastId) return false;
+      // Late samples from retired allocations cannot invalidate a current trial.
+      if (!stable || trial?.invalid) return cancelTrial();
       const nextSource = cost(gpuMs) ? 'gpu' : cost(renderMs) ? 'render' : !capped && cost(frameMs) ? 'frame' : null;
       if (!nextSource) { clearWindow(); over = under = 0; return false; }
       // A measurement source change is not evidence of an improvement.
