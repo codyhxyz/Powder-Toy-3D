@@ -8,7 +8,7 @@ Actual bucket handling and repeat refueling remain unverified.
 
 The integrated controller and UI pass:
 
-- `node --test tests/industry/*.test.js`: 63 tests.
+- `node --test tests/industry/*.test.js`: 66 tests.
 - `node scripts/check-industry-controller.mjs`: 11 checks.
 - `node scripts/check-industry-factory-ui.mjs`.
 - Existing construction, transfer, and Quarry checks.
@@ -438,7 +438,8 @@ No tool, trace, or pending-transfer error occurred.
 The real refuel mechanics passed, but useful processing did not.
 No LAVA formed; metal-bearing material peaked at **1333.24°C** across the 4800-tick cap.
 All four cells remained SCRAP.
-Both finite fuel batches were consumed in the sampled chamber; no chemical fuel remained in the tool pack.
+No live fuel remained in the sampled chamber or actual tool pack.
+This does not prove that all twelve fuel cells disappeared globally.
 Cooling, bucket handling, shipment, and final ash pickup were not proved.
 Occupancy: **6158 ms**, report `~/.cache/tpt-headless/runs/15283-15314.json`.
 Result: `/tmp/sandustry-physical-line-tools-refuel-v2.json`.
@@ -447,8 +448,18 @@ Architecture review holds heat-rule changes pending comparison with a smaller ac
 Any future expanded eligibility must preserve the original molten-velocity region.
 Material eligibility does not filter existing temperature aggregates: generic area peaks are not scrap temperatures.
 Overlapping probe regions must not duplicate physical counts or fuel-life sums.
-The separately declared two-cell comparison is being prepared; it has no native result yet.
+The separately declared two-cell comparison passes CPU argument, scope, geometry, and source-pose checks.
 It keeps the 128³ simulation and cannot satisfy or replace the default four-cell acceptance test.
+Its source contains two cold scrap cells, with the same six coal cells, 120 water cells, and 89 devices.
+It still requires both cells to melt, travel through the actual bucket, cool, and ship, with real ash removal and settled jobs.
+The driver rejects ambiguous targets and refuses to credit a different declared batch size.
+The attempted protected run was refused at **55% utilization** before browser gameplay assertions.
+Admission time was **2034 ms**; result `/tmp/sandustry-physical-line-tools-two-scrap-v1.json`.
+No utilization bypass was used. The server stopped; no further GPU retry is scheduled.
+CPU review of the comparison and Factory contact-safety prerequisites is pending.
+An initial connected-code audit confirms that local/host Factory POV runs player vitals.
+The numerical tool actor does not run those vitals.
+Hot tungsten is not intrinsically safe to stand on; ordinary Factory play is not a health-disabled substitute for a survival check.
 
 ## Open requirements
 

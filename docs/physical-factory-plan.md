@@ -142,7 +142,7 @@ These are open questions, not implementation claims.
 ### Current validation
 
 - 356 hearth CPU budget, conduction, geometry, and composed-shader checks pass.
-- All 63 Industry unit tests and 11 controller checks pass.
+- All 66 Industry unit tests and 11 controller checks pass.
 - 17 gate/control CPU tests pass, including native switch-bank shutdown and gate shader type validation.
 - Diagnostics pass mocked asynchronous ownership, mutation, staleness, and disposal regressions.
 - Existing construction, controller, machine-transfer, and Quarry CPU suites pass.
@@ -177,7 +177,8 @@ These are open questions, not implementation claims.
 - The second batch was actually mined, carried, and shovel-placed inside; all four scrap cells stayed contained.
 - It still produced no melt: peak 1333.24°C, occupancy 6158 ms, 4800-tick cap.
 - That comparison required two ordinary miner-output catch tiles, for 91 devices; normal tools remain 89 and backend 83.
-- A separately declared two-cell scrap comparison is being prepared. It cannot count as a four-cell batch pass.
+- A separately declared two-cell scrap comparison passes CPU checks. Its protected native attempt was refused at 55% utilization before assertions.
+- That 2034 ms admission attempt does not count as a two-cell or four-cell processing pass; no further GPU retry is scheduled.
 - Production heat rules remain unchanged while the existing-workflow comparison is incomplete.
 - Real bucket handling, repeat refueling, precision fuel gating, release, and the live-site check remain pending.
 - See `physical-factory-validation.md` for failed checkpoints and measured slot occupancy.
