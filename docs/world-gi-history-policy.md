@@ -178,3 +178,57 @@ Seven original Box shader hashes remain unchanged.
 
 These checks are not GPU numerical parity, visual acceptance, performance evidence, or completed App integration.
 The caller still owns native private-publication construction, complete feedback, channel admission, and final submission tickets.
+
+## Authenticated retained transport (disabled owner prerequisite)
+
+Construct the ledger with `{worldSize,epoch,sourceOwner,configuration:cut.configuration}`.
+This binds the real Source owner and scene/schema configuration, not changing
+light uniforms. `history.captureRestore({cut,configVersion,sourceIndices,
+probeIndices})` pins exact retained channels. Real frozen recordCut handles are
+required: cloned, foreign, released, reset or incompatible configuration cuts
+reject. Ordinary physics after capture does not invalidate the owned cut.
+The packed schema is `world-packed-source-gi-v1`; incompatible scene/schema
+configuration requires a new ledger/epoch, not silent mature-history reseeding.
+Changing ordinary light `configVersion` is deliberately permitted: previous
+SOURCE/GI are causal temporal inputs with their ORIGINAL config/compute tokens.
+
+The bundle has frozen `.publication` (explicitly `current-cut-validation`) and
+`.leases`. Allocate each Atlas job with `publication:bundle.publication`, current
+`sourceRevision`, ORIGINAL per-channel sourceTick/giTick and dependency IDs.
+`createLightingTransport(gpu.device,['source','gi']).restore(gpu,atlas,entries)`
+accepts `entries=[{job,lease},...]`. It prevalidates all requested prepared
+channels, batches exact packed native copies on normal gpu.frame, flushes once,
+then invokes unchanged Atlas native writers. GLOW is never restored here.
+Keep the bundle alive through publish (and every consumer through final submit
+and queue completion); release it afterwards. Transport's independent pins
+survive failed/partial writes, suffix closure and queue completion. An uncertain
+still-recordable failed suffix deliberately retains allocations until terminal
+retirement. The default output.writeAtlas provenance guard remains strict.
+
+`snapshot.lightingProvenance(brick)` returns a frozen per-channel manifest with
+original compute token, previous history token, ledger ownership token, native
+buffer/ranges, packed schema and separate current-cut validation publication.
+Native descriptor sourceTick/giTick are original compute clocks, never restored
+publication clocks. Atlas still requires every ready payload actually written.
+Neither transport nor private publication advances ledger history.
+
+For gathers, `plan.captureRestore({...args,sourcePhase:true})` requires ALL
+selected SOURCE slabs staged, overrides retained sources with those actual
+current outputs, and takes GI from the plan's exact previous map. Its requested
+sourceIndices must include ALL selected sources plus retained dependencies.
+After restoring jobs, `atlas.prepareProducerSnapshot({lightJobs,
+sourcePhaseToken:bundle.publication.sourcePhaseToken,dependencyToken})` creates
+an independently pinned private LightBook with SOURCE and previous GI together.
+It does not replace Atlas.current, generation, readiness or presentable demand;
+its direct bindings reject. Pass it as `previousAtlas` to existing lighting
+inputs/producerBindings, with the current CELL snapshot as `atlas`. Keep that
+private snapshot, bundle and jobs pinned until gathers' final completion; then
+release snapshot, cancel private jobs and release bundle. Final publication
+uses separate jobs containing final GI and current computed GLOW.
+
+The dependency-free restore registry is trusted internal engine issuance, not a
+security sandbox against malicious code importing private implementation APIs.
+Only the real ledger calls its internal issuer; caller clones/objects have no
+WeakMap brand. Import-order tests prevent the Atlas/history/shader TDZ cycle.
+These delayed fake-native tests establish transport/provenance/lifetime evidence,
+not GPU numerical parity, owner integration, visual parity or affordability.

@@ -308,3 +308,102 @@ test('a compatible unchanged capture stays available after its original Source c
   assert.equal(lease.publication.ownedCut.isValid(),true);lease.release();await drain(f.gpu);
   b.release();adapter.dispose();atlas.dispose();await f.finish();
 });
+
+// Retained-channel seam: real cuts, ledger, GI output handles and Atlas. The
+// native fake below emulates ONLY existing transport stores, not lighting math.
+import { createWorldLightingHistory, validateWorldLightingRestore } from '../src/world/worldLightingHistory.js';
+import { createLightingTransport } from '../src/gfx/worldLightingBatch.js';
+import { createWorldGI } from '../src/gfx/worldGI.js';
+import { lightingFixture } from './world-gi-glow-fixture.mjs';
+async function restoreFixture(){
+  const f=await fixture({size:[64,128,64]}),l=lightingFixture(),M=[1,0,0],N=[2,0,0],records=[M,N].map(brick=>({brick,age:0,matter:true,near:false}));
+  let current=cut(f),plan;
+  const h=createWorldLightingHistory({worldSize:f.win.size,epoch:1,sourceOwner:f.source,configuration:current.configuration});
+  const gi=createWorldGI(l.gpu,{g:l.g,feedbackProvider:l.feedbackProvider,readerBindingProvider:l.readerBindingProvider,snapshotProvider:{isCurrent:()=>current.isValid(),async acquire(args){
+    const p=await l.snapshotProvider.acquire(args),previous=plan.capturePrevious({indices:args.probeIndices});
+    return {...p,source:{sourceRevision:current.contentToken.sourceRevision,contentToken:current.contentToken},field:{...p.field,sourceRevision:current.contentToken.sourceRevision},previous,initialization:args.initialization,release(){previous.release();p.release();}};
+  }}});
+  async function produce(sourceBricks=plan.sourceBricks,gatherBricks=plan.gatherBricks){
+    const c=await gi.prepare({lightingTick:plan.lightingTick,reset:plan.lightingTick===0,configVersion:plan.lightingTick+1,initialization:plan.initialization,sourceBricks,gatherBricks});
+    const done=c.record();await l.complete();assert.equal((await done).status,'published');return gi.snapshot();
+  }
+  plan=h.begin({lightingTick:0,globalKey:[1],records,mode:2,initialization:{cutToken:current.contentToken,sourceBricks:[M,N],probeBricks:[M,N],records}});
+  const initial=await produce();initial.bindings().source.words.set([11,12,13,14,21,22,23,24]);initial.bindings().history.words.set(Array.from({length:16},(_,i)=>0x34003400+i));
+  plan.stage(initial).seal({cutToken:current.contentToken,feedback:{incomplete:false,requirements:[],sun:[]}}).commit();
+  const atlas=new WorldRenderAtlas(f.gpu.device,{worldSize:f.win.size,initialCapacity:2,initialLightCapacity:4,initialProbeCapacity:4,epoch:1,retire:fn=>fn()});
+  const transport=createLightingTransport(f.gpu.device,['source','gi']);await transport.ready;
+  f.gpu._pack=groups=>{
+    const input=b=>groups[0].entries.find(e=>e.binding===b).resource.buffer,p=u32(input(0)),data=new Uint8Array(input(1).bytes),out=groups[1].entries.map(e=>e.resource.texture);
+    if(out.length===1)new Uint8Array(out[0].bytes).set(data.subarray(0,16),p[12]*16);
+    else out.forEach((t,k)=>new Uint8Array(t.bytes).set(data.subarray(k*8,k*8+8),p[0]*8));
+  };
+  const advance=()=>{f.source.noteContentChange();const old=current;current=cut(f);old.release();return current;};
+  const job=(bundle,b=M)=>{const s=bundle.leases.find(x=>x.kind==='source'&&x.index===b[0]),g=bundle.leases.find(x=>x.kind==='gi'&&x.index===b[0]);return atlas.allocateLight(b,{publication:bundle.publication,sourceRevision:current.contentToken.sourceRevision,sourceTick:s.token.lightingTick,giTick:g.token.lightingTick,readyBits:READY.GI_SOURCE|READY.GI,dependencies:{source:{id:s.token.dependencySetID,version:s.token.dependencyVersion},gi:{id:g.token.dependencySetID,version:g.token.dependencyVersion}}});};
+  const write=async(bundle,jobs)=>{let settled=false,error;const promise=transport.restore(f.gpu,atlas,jobs.flatMap(job=>bundle.leases.filter(x=>x.index===job.brick[0]).map(lease=>({job,lease})))).then(()=>{settled=true;},e=>{settled=true;error=e;});for(let i=0;i<30&&!settled;i++){f.gpu.finish();await tick();}await promise;if(error)throw error;await drain(f.gpu);};
+  return {...f,l,h,gi,atlas,transport,M,N,records,initial,produce,advance,job,write,get current(){return current;},set plan(p){plan=p;},get plan(){return plan;},async close(){initial.release();gi.dispose();h.dispose();atlas.dispose();current.release();await f.finish();}};
+}
+
+test('ledger restores R into R+1 without recomputation, then mixed compute generations with exact native ranges',async()=>{
+  const f=await restoreFixture();try{
+    const original=f.initial.token;f.advance();
+    const bundle=f.h.captureRestore({cut:f.current,configVersion:2,sourceIndices:[1],probeIndices:[1]});
+    const job=f.job(bundle);await drain(f.gpu);const flushes=f.gpu.flushes;
+    f.source.noteContentChange();assert.equal(f.current.isValid(),true);assert.equal(f.current.isLatest(),false);
+    await f.write(bundle,[job]);assert.equal(f.gpu.flushes,flushes+1);
+    assert.equal(f.initial.token,original);assert.equal(f.h.lightingTick,0);
+    f.atlas.publish({lightJobs:[job],dependencyToken:{version:1,sets:[{id:7,version:1}]}});
+    const first=f.atlas.snapshot(),manifest=first.lightingProvenance(f.M);
+    assert.equal(manifest.source.computeToken,original);assert.equal(manifest.gi.computeToken,original);assert(Object.isFrozen(manifest.source));assert.equal(manifest.source.publication.meaning,'current-cut-validation');
+    assert.equal(job.sourceTick,0);assert.equal(job.sourceRevision,bundle.publication.sourceRevision);
+    bundle.release();
+    // Ordinary changing-light config2 retains mature GI from config1, while
+    // SOURCE is selected at tick1. This is temporal input, not incompatible schema.
+    f.advance();f.plan=f.h.begin({lightingTick:1,globalKey:[2],records:f.records});
+    f.l.state.current=2;const output=await f.produce();f.plan.commit(output);output.release();
+    const mixed=f.h.captureRestore({cut:f.current,configVersion:3,sourceIndices:[1],probeIndices:[1]});
+    const next=f.job(mixed);assert.equal(next.sourceTick,1);assert.equal(next.giTick,0);
+    const gi=mixed.leases.find(x=>x.kind==='gi');assert.deepEqual(gi.bindings().ranges.map(x=>x.from),[0,16,32,48]);
+    const expected=gi.bindings().ranges.flatMap(x=>[...new Uint8Array(gi.bindings().buffer.bytes).slice(x.from,x.from+x.size)]);
+    await f.write(mixed,[next]);
+    const params=f.atlas.writerBindings(next,'gi').params,views=f.atlas.writerBindings(next,'gi').outputs;
+    assert.deepEqual(views.flatMap(e=>[...new Uint8Array(e.resource.texture.bytes).slice(params[0]*8,params[0]*8+8)]),expected);
+    f.atlas.publish({lightJobs:[next],dependencyToken:{version:2,sets:[{id:7,version:2}]}});const now=f.atlas.snapshot();
+    assert.equal(now.lightingProvenance(f.M).source.computeToken.lightingTick,1);assert.equal(now.lightingProvenance(f.M).gi.computeToken,original);
+    assert.equal(first.lightingProvenance(f.M),manifest);now.release();first.release();mixed.release();
+    await assert.rejects(f.initial.writeAtlas(f.atlas,next,'source'),/provenance mismatch/);
+  }finally{await f.close();}
+});
+
+test('authentic cut/lease rejection, private staged SOURCE plus previous GI, failed transport never adopts',async()=>{
+  const f=await restoreFixture();try{
+    f.advance();
+    const args={cut:f.current,configVersion:2,sourceIndices:[1,2],probeIndices:[1,2]};
+    assert.throws(()=>f.h.captureRestore({...args,cut:{...f.current}}),/owned Source cut/);
+    const foreign=await fixture({size:[64,128,64]}),foreignCut=cut(foreign);
+    assert.throws(()=>f.h.captureRestore({...args,cut:foreignCut}),/owned Source cut/);foreignCut.release();await foreign.finish();
+    const released=f.current.retain();released.release();assert.throws(()=>f.h.captureRestore({...args,cut:released}),/owned Source cut/);
+    const bundle=f.h.captureRestore(args),lease=bundle.leases[0];
+    assert.throws(()=>validateWorldLightingRestore({...lease}),/restore lease/);
+    const bad=f.atlas.allocateLight(f.M,{sourceRevision:args.cut.contentToken.sourceRevision,readyBits:READY.GLOW});
+    await assert.rejects(f.transport.restore(f.gpu,f.atlas,[{job:bad,lease}]),/provenance mismatch|readiness/);f.atlas.cancel(bad);
+    bundle.release();assert.throws(()=>validateWorldLightingRestore(lease),/restore lease/);
+    f.plan=f.h.begin({lightingTick:1,globalKey:[2],records:f.records});
+    const source=await f.produce(f.plan.sourceBricks,[]);f.plan.stage(source);source.release();
+    const staged=f.plan.captureRestore({...args,sourcePhase:true});
+    const jobs=[f.job(staged,f.M),f.job(staged,f.N)],old=f.atlas.snapshot(),generation=f.atlas.generation;
+    await f.write(staged,jobs);
+    assert.throws(()=>f.atlas.prepareProducerSnapshot({lightJobs:[jobs[0]],sourcePhaseToken:staged.publication.sourcePhaseToken}),/omits/);
+    const privateBook=f.atlas.prepareProducerSnapshot({lightJobs:jobs,sourcePhaseToken:staged.publication.sourcePhaseToken});
+    assert.equal(f.atlas.generation,generation);assert.equal(f.h.lightingTick,0);assert.equal(privateBook.lightingProvenance(f.M).source.computeToken.lightingTick,1);assert.equal(privateBook.lightingProvenance(f.M).gi.computeToken.lightingTick,0);
+    assert.throws(()=>privateBook.bindings(),/producer-only/);
+    const fb=f.gpu.createBuffer({size:f.atlas.feedbackBytes});assert.equal(f.atlas.producerBindings(old,privateBook,Object.fromEntries(['sunDepth','sunOptical','mediaNoise','sourceAppearance','packedMesh'].map(k=>[k,{}])),fb)[0][2].resource.buffer,privateBook.lightBook);
+    privateBook.release();old.release();jobs.forEach(j=>f.atlas.cancel(j));staged.release();f.plan.abort();
+    const retained=f.h.captureRestore(args),pending=f.job(retained),snapshot=f.atlas.snapshot();let count=0;
+    const record=f.atlas.recordLightWrite.bind(f.atlas);f.atlas.recordLightWrite=(...a)=>{if(++count===2)throw new Error('partial restore');return record(...a);};
+    await assert.rejects(f.write(retained,[pending]),/partial restore/);
+    assert.throws(()=>f.atlas.publish({lightJobs:[pending]}),/partial page/);assert.equal(f.h.lightingTick,0);assert.equal(f.atlas.generation,generation);assert.equal(snapshot.generation,generation);
+    f.atlas.cancel(pending);snapshot.release();retained.release();
+    const wrong=f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:99});assert.throws(()=>f.h.captureRestore({...args,cut:wrong}),/owned Source cut/);wrong.release();
+    assert.throws(()=>f.h.captureRestore(args),/owned Source cut/);
+  }finally{await f.close();}
+});

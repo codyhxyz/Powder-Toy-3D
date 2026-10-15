@@ -5,6 +5,9 @@ import { uint, frozenArray, worldLightingIndex } from '../gfx/worldLightingBatch
 const same = (a,b) => a.length===b.length && a.every((v,i)=>Object.is(v,b[i]));
 const copyLamp = l => ({pos:Array.from(l.pos,Math.fround),col:Array.from(l.col,Math.fround),shape:Array.from(l.shape,Math.fround)});
 const lampEqual = (a,b) => !!a && !!b && ['pos','col','shape'].every(k=>same(a[k],b[k]));
+import { validateWorldSourceCut } from './sourceCut.js';
+import { _issueWorldLightingRestore, validateWorldLightingRestore } from './worldLightingRestore.js';
+export { validateWorldLightingRestore } from './worldLightingRestore.js';
 const manifests = new WeakMap();
 
 // Only the real ledger can issue a seed declaration. Caller metadata alone is
@@ -36,7 +39,7 @@ export function selectWorldGI({records,lightingTick,mode=0,settle=0,lampSpheres=
   return Object.freeze({sourceBricks:frozenArray(sourceBricks),gatherBricks:frozenArray(gatherBricks)});
 }
 
-export function createWorldLightingHistory({worldSize,epoch}={}){
+export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,configuration=null}={}){
   if(!Array.isArray(worldSize)||worldSize.length!==3||worldSize.some(n=>!uint(n)||!n||n%4)||!uint(epoch)||!epoch)throw new TypeError('world history epoch/size');
   const size=frozenArray(worldSize),probes=new Map(),sources=new Map(),births=new Map(),changed=new Map();
   let previous=new Map(),previousToken=null,committedCut=null,tick=-1,revision=0,settle=0,key=[],lamps=[],pending=null,dead=false;
@@ -57,6 +60,27 @@ export function createWorldLightingHistory({worldSize,epoch}={}){
         const encoder=frame.direct();requested.forEach((i,slot)=>{const p=held.get(i);for(let k=0;k<4;k++){const to=(k*requested.length+slot)*8;if(zeros.has(i))encoder.clearBuffer(destination,to,8);else encoder.copyBufferToBuffer(p.output.bindings().history,(k*p.count+p.slot)*8,destination,to,8);}});
       },release(){if(!released){released=true;drop(held);}}
     });
+  }
+  function issueRestore({cut,configVersion,sourceIndices=[],probeIndices=[]},sourceMap=sources,probeMap=probes,ownership=publicationToken,extraValid=()=>true,sourcePhaseToken=null){
+    alive();
+    const check=()=>{alive();if(!sourceOwner||!configuration||configVersion==null)throw new Error('restore requires ledger Source owner/configuration');validateWorldSourceCut(cut,{sourceOwner,epoch,configuration});if(!same(sourceOwner.win.size,size))throw new Error('restore Source world size mismatch');};
+    check();
+    const publication=Object.freeze({meaning:'current-cut-validation',epoch,sourceRevision:cut.contentToken.sourceRevision,cutIdentity:cut.identity,configuration,configVersion,sourcePhaseToken,sourceIndices:frozenArray(sourceIndices)});
+    const leases=[];
+    try{for(const [kind,ids,map]of [['source',sourceIndices,sourceMap],['gi',probeIndices,probeMap]])for(const i of new Set(ids)){
+      const p=map.get(i);if(!p)throw new Error(`unknown retained ${kind} ${i}`);
+      if(p.output.token.epoch!==epoch)throw new Error('restore output epoch mismatch');
+      const make=()=>{
+        check();const output=p.output.retain(),native=output.bindings(),token=output.token;let released=false;
+        const buffer=kind==='source'?native.source:native.history;
+        const ranges=frozenArray(kind==='source'?[Object.freeze({from:p.slot*16,to:0,size:16})]:Array.from({length:4},(_,k)=>Object.freeze({from:(k*p.count+p.slot)*8,to:k*8,size:8})));
+        const provenance=Object.freeze({schema:'world-packed-source-gi-v1',kind,index:i,computeToken:token,previousHistoryToken:token.previousToken,historyOwnershipToken:ownership,publication,nativeBuffer:buffer,ranges});
+        const lease=Object.freeze({kind,index:i,token,publication,provenance,bindings(){validateWorldLightingRestore(lease);return Object.freeze({buffer,ranges});},retain(){validateWorldLightingRestore(lease);return make();},release(){if(!released){released=true;output.release();}}});
+        _issueWorldLightingRestore(lease,{size,check,valid:()=>!released&&!dead&&extraValid()});return lease;
+      };leases.push(make());
+    }}catch(e){leases.forEach(l=>l.release());throw e;}
+    let released=false;
+    return Object.freeze({publication,leases:frozenArray(leases),release(){if(!released){released=true;leases.forEach(l=>l.release());}}});
   }
   function transaction({lightingTick,selection,nextKey=key,nextLamps=lamps,nextSettle=settle,cutToken=null,sameClock=false,initialization=false,records=[]}){
     if(pending)throw new Error('world lighting tick already planned');
@@ -115,6 +139,17 @@ export function createWorldLightingHistory({worldSize,epoch}={}){
       },
       capturePrevious({indices=[...probeIDs]}={}){alive();if(!valid())throw new Error('closed initialization transaction');return captured(prevMap,prevToken,lightingTick-1,indices,born,manifest);},
       stage,
+      captureRestore({cut,configVersion,sourceIndices=[],probeIndices=[],sourcePhase=false}={}){
+        alive();if(!valid())throw new Error('closed restore transaction');
+        const v=version, merged=new Map(sources);
+        if(sourcePhase){
+          if(!sourcesDone())throw new Error('complete private SOURCE phase required');
+          for(const o of staged)for(let slot=0;slot<o.sources.length;slot++)merged.set(o.sources[slot],{output:o,slot,count:o.sources.length});
+          if([...sourceIDs].some(i=>!sourceIndices.includes(i)))throw new Error('private SOURCE publication must include ALL selected sources');
+          for(const i of sourceIDs){const t=merged.get(i).output.token;if(t.sourceContentToken!==cut.contentToken||t.configVersion!==configVersion)throw new Error('staged SOURCE current cut/config mismatch');}
+        }
+        return issueRestore({cut,configVersion,sourceIndices,probeIndices},merged,prevMap,prevToken,()=>valid()&&version===v,sourcePhase?(manifest?.sourcePhaseToken??plan):null);
+      },
       captureStagedSources(){
         alive();if(!valid()||!initialization||!sourcesDone())throw new Error('complete private SOURCE phase required');
         const outputs=[];try{for(const o of staged)if(o.sources.length)outputs.push(o.retain());}catch(e){outputs.forEach(o=>o.release());throw e;}
@@ -162,7 +197,7 @@ export function createWorldLightingHistory({worldSize,epoch}={}){
     const plan=transaction({lightingTick,selection:{sourceBricks:[],gatherBricks:[]},sameClock:true,initialization:true,cutToken,records});
     try{plan.expand({sourceBricks,probeBricks,records});}catch(e){plan.abort();throw e;}return plan;
   }
-  return Object.freeze({begin,beginBirth,
+  return Object.freeze({begin,beginBirth,captureRestore:options=>issueRestore(options),
     capture({lightingTick,indices}){alive();if(lightingTick!==tick)throw new Error('history capture must name the exact previous world clock');return captured(probes,publicationToken,tick,indices);},
     captureSources({indices}){alive();const held=new Map();try{for(const i of indices){const p=sources.get(i);if(!p)throw new Error('unknown retained GI source');if(!held.has(i))held.set(i,{...p,output:p.output.retain()});}}catch(e){drop(held);throw e;}let released=false;return Object.freeze({token:publicationToken,lightingTick:tick,bindingsFor(i){if(released||!held.has(i))throw new Error('uncaptured retained source');const p=held.get(i);return Object.freeze({buffer:p.output.bindings().source,byteOffset:p.slot*16,token:p.output.token});},release(){if(!released){released=true;drop(held);}}});},
     get lightingTick(){return tick;},get epoch(){return epoch;},get token(){return publicationToken;},

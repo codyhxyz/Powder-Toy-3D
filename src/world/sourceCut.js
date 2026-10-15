@@ -133,6 +133,13 @@ function handle(state){
   });handles.set(h,state);return h;
 }
 
+// Brand check: duck-typed/cloned handles cannot authorize retained publication.
+export function validateWorldSourceCut(cut,{sourceOwner,epoch,configuration}={}) {
+  const state=handles.get(cut);
+  if(!state || !cut.isValid() || state.parent!==sourceOwner || state.epoch!==epoch || state.configuration!==configuration) throw new Error('invalid owned Source cut proof');
+  return cut;
+}
+
 export function recordWorldSourceCut(parent,frame,{previousCut=null,sceneVersion,configVersion}={}) {
   if(parent.disposed||frame!==parent.gpu.frame)throw new Error('Source cut requires the live normal Frame');
   if(!parent.win.loaded)throw new Error('Load the authoritative world before capturing a Source cut');

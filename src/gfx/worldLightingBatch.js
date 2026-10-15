@@ -3,6 +3,7 @@
 // delegates to the existing Atlas recordLightWrite endpoint (which owns submit).
 import { worldPageWriterWGSL } from '../shaders/worldAccess.js';
 import { worldWriterLayouts } from '../world/renderAtlas.js';
+import { validateWorldLightingRestore } from '../world/worldLightingRestore.js';
 export const BU = Object.freeze({ COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128 });
 export const TU = Object.freeze({ COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8 });
 export const uint = n => Number.isInteger(n) && n >= 0 && n <= 0xffffffff;
@@ -119,7 +120,44 @@ export function createLightingTransport(device, kinds) {
       await device.queue.onSubmittedWorkDone();
     } finally { owned.forEach(b => b.destroy()); held.release(); }
   }
-  return { ready, write };
+  // Copies for the whole closure share one normal Frame boundary. Atlas owns
+  // the subsequent texture-writer submits; no per-brick source flush/readback.
+  async function restore(gpu,atlas,entries) {
+    await ready;
+    const held=[],owned=[],prepared=[];
+    const retire=()=>{
+      if(gpu.failure||gpu.pipelines?.failure)return; // uncertain suffix: retain
+      if(gpu.frame.open){setTimeout(retire,0);return;}
+      const drop=()=>{owned.forEach(b=>b.destroy());held.forEach(l=>l.release());};
+      Promise.resolve(device.queue.onSubmittedWorkDone()).then(drop,drop);
+    };
+    try {
+      for(const {job,lease}of entries){
+        validateWorldLightingRestore(lease,{job});
+        if(!['source','gi'].includes(lease.kind))throw new Error('only SOURCE/GI can be restored');
+        // Validate readiness before any native copy or partial write.
+        atlas.writerBindings(job,lease.kind);
+        const pin=lease.retain();held.push(pin);
+        const scratch=buffer('world retained exact transport',lease.kind==='gi'?32:16,BU.STORAGE|BU.COPY_DST);owned.push(scratch);
+        prepared.push({job,lease,pin,scratch});
+      }
+      for(const {pin,scratch}of prepared){const {buffer:source,ranges}=pin.bindings();for(const c of ranges)gpu.frame.direct().copyBufferToBuffer(source,c.from,scratch,c.to,c.size);}
+      gpu.flush('world retained lighting closure');
+      for(const {job,lease,scratch}of prepared){
+        validateWorldLightingRestore(lease,{job});
+        const {layouts,pipe}=pipelines.get(lease.kind);
+        atlas.recordLightWrite(job,lease.kind,{restoreDeclaration:lease,record(encoder,bindings){
+          const params=buffer('world retained transport params',64,BU.UNIFORM,bindings.params);owned.push(params);
+          const inputs=device.createBindGroup({layout:layouts[0],entries:[{binding:0,resource:{buffer:params}},{binding:1,resource:{buffer:scratch}}]});
+          const outputs=device.createBindGroup({layout:layouts[1],entries:bindings.outputs});
+          const pass=encoder.beginComputePass({label:'world retained Atlas transport'});
+          pass.setPipeline(pipe);pass.setBindGroup(0,inputs);pass.setBindGroup(1,outputs);pass.dispatchWorkgroups(1,1,1);pass.end();
+        }});
+      }
+      await device.queue.onSubmittedWorkDone();
+    } finally {retire();}
+  }
+  return { ready, write, restore };
 }
 export const WGSL_CHECK = () => ['source', 'gi', 'glow'].map(kind => {
   const spec = worldLightingTransportSpec(kind);

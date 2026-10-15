@@ -1,6 +1,7 @@
 // World render ABI v2. Render-only; never allocates a Simulation.
 // Public snapshots are immutable. Providers upload COMPLETE replacement pages;
 // publication is a queue-ordered transaction, not an incremental readiness mask.
+import { validateWorldLightingRestore } from './worldLightingRestore.js';
 export const WORLD_ATLAS_ABI = 2;
 export const READY = Object.freeze({ RAW: 1, FIELD: 2, AUX: 4, GI_SOURCE: 8, GI: 16, GLOW: 32, CELL: 7, LIGHT: 56, ALL: 63 });
 export const LIGHT_RECORDS = 5;
@@ -336,7 +337,12 @@ export class WorldRenderAtlas {
   }
   _commit(entries, lightEntries, r = this.resources, epoch = this.epoch, dependencies = this.current?.dependencies ?? manifest(), sun = this.current?.sunManifest ?? null) {
     check(this.generation < U32_MAX, 'world generation overflow');
-    const previous = this.current, generation = this.generation + 1;
+    const previous=this.current,generation=this.generation+1;
+    this.current=this._snapshotState(entries,lightEntries,r,epoch,dependencies,sun,generation);
+    this.entries=entries;this.lightEntries=lightEntries;this.generation=generation;this.epoch=epoch;
+    if(previous)this._releaseSnapshot(previous);
+  }
+  _snapshotState(entries,lightEntries,r,epoch,dependencies,sun,generation) {
     let book, lightBook, params;
     try {
       book = this._buffer('world immutable book', entries.byteLength, BU.STORAGE | BU.COPY_DST | BU.COPY_SRC, entries);
@@ -349,9 +355,7 @@ export class WorldRenderAtlas {
       if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
     }
     r.refs++;
-    this.current = { book, lightBook, params, r, pins, refs: 1, epoch, generation, dependencies, sunManifest: sun };
-    this.entries = entries; this.lightEntries = lightEntries; this.generation = generation; this.epoch = epoch;
-    if (previous) this._releaseSnapshot(previous);
+    return { book, lightBook, params, r, pins, refs: 1, epoch, generation, dependencies, sunManifest: sun };
   }
   _releaseSnapshot(s) {
     if (--s.refs) return;
@@ -397,11 +401,11 @@ export class WorldRenderAtlas {
     this._alive(); check(integer(sourceRevision) && integer(fieldTick) && integer(readyBits, 1, READY.CELL), 'invalid cell version/readiness');
     return this._allocate('cell', brick, { sourceRevision, fieldTick, readyBits });
   }
-  allocateLight(brick, { sourceRevision, sourceTick = 0, giTick = 0, glowTick = 0, readyBits = READY.LIGHT, dependencies = {} } = {}) {
+  allocateLight(brick, { sourceRevision, sourceTick = 0, giTick = 0, glowTick = 0, readyBits = READY.LIGHT, dependencies = {}, publication = null } = {}) {
     this._alive();
     check([sourceRevision, sourceTick, giTick, glowTick].every(v => integer(v)) && integer(readyBits, 1, READY.LIGHT) && !(readyBits & READY.CELL), 'invalid light version/readiness');
     const deps = frozen(Object.fromEntries(['source', 'gi', 'glow'].map(k => [k, dependency(dependencies[k])])));
-    return this._allocate('light', brick, { sourceRevision, sourceTick, giTick, glowTick, readyBits, dependencies: deps });
+    return this._allocate('light', brick, { sourceRevision, sourceTick, giTick, glowTick, readyBits, dependencies: deps, publication });
   }
   _allocate(kind, brick, version) {
     const index = worldBrickIndex(this.bookLayout, brick), pool = this[kind], entries = kind === 'cell' ? this.entries : this.lightEntries;
@@ -444,6 +448,8 @@ export class WorldRenderAtlas {
       if (name === 'aux') check(bytes[0] === p.readyBits && bytes[1] === p.epoch && bytes[2] === p.sourceRevision && bytes[3] === p.fieldTick, 'page metadata mismatch');
     }
     for (const [name, bytes] of Object.entries(data)) {
+      const channel=name==='source'?'source':name.startsWith('gi')?'gi':null;
+      if(channel&&p.provenance?.[channel]){const next={...p.provenance};delete next[channel];p.provenance=frozen(next);delete p.restoreDeclarations[channel];}
       const l = p.resources.layout;
       if (name === 'source') this.queue.writeTexture({ texture: p.resources.textures.aux, origin: lightTexel(p.id, 4, l) }, bytes, {}, [1, 1, 1]);
       else if (name === 'aux') for (let r = 0; r < AUX_RECORDS; r++) this.queue.writeTexture({ texture: p.resources.textures.aux, origin: auxTexel(p.id, r, l) }, bytes.subarray(r * 4, r * 4 + 4), {}, [1, 1, 1]);
@@ -456,7 +462,14 @@ export class WorldRenderAtlas {
     return job;
   }
   updateLight(job, data) { this._job(job, 'light'); return this.update(job, data); }
-  recordLightWrite(job, kind, options) { this._job(job, 'light'); return this.recordPageWrite(job, kind, options); }
+  recordLightWrite(job, kind, options) {
+    const p=this._job(job,'light'),lease=options.restoreDeclaration;
+    if(lease)validateWorldLightingRestore(lease,{job,kind});
+    const result=this.recordPageWrite(job,kind,options);
+    if(lease){p.restoreDeclarations??={};p.restoreDeclarations[kind]=lease;p.provenance=frozen({...p.provenance,[kind]:lease.provenance});}
+    else if(p.provenance?.[kind]){const next={...p.provenance};delete next[kind];p.provenance=frozen(next);delete p.restoreDeclarations[kind];}
+    return result;
+  }
   writerBindings(job, kind) {
     const p = this._job(job), names = kind === 'source' ? ['source'] : WRITER_CHANNELS[kind];
     check(names && names.every(n => this._needed(p).includes(n)), 'writer does not belong to job/readiness');
@@ -520,6 +533,7 @@ export class WorldRenderAtlas {
     }
     for (const p of ps) {
       check(this._needed(p).every(n => p.written.has(n)), 'cannot publish partial page');
+      for(const [kind,lease]of Object.entries(p.restoreDeclarations??{}))validateWorldLightingRestore(lease,{job:p.job,kind});
       const entries = p.kind === 'cell' ? nextCell : nextLight;
       if (entries[p.index]) oldPages.push(this[p.kind].pages.get(entries[p.index] - 1));
       entries[p.index] = p.id + 1;
@@ -532,7 +546,9 @@ export class WorldRenderAtlas {
       const p = this.light.pages.get(v - 1);
       for (const [channel, bit] of [['source', READY.GI_SOURCE], ['gi', READY.GI], ['glow', READY.GLOW]]) if (p.readyBits & bit) {
         const d = p.dependencies[channel];
-        check(!d.id || dependencies.sets.some(x => x.id === d.id && x.version === d.version), 'incompatible channel dependency version');
+        const retained=p.provenance?.[channel];
+        if(retained)check(retained.publication===p.publication&&retained.publication.epoch===p.epoch&&retained.publication.sourceRevision===p.sourceRevision,'incompatible retained publication');
+        else check(!d.id || dependencies.sets.some(x => x.id === d.id && x.version === d.version), 'incompatible channel dependency version');
       }
     }
     if (sun?.dependencySetID) check(dependencies.sets.some(d => d.id === sun.dependencySetID && d.version === sun.dependencyVersion), 'incompatible sun dependency version');
@@ -583,6 +599,11 @@ export class WorldRenderAtlas {
     s.refs++; let released = false;
     const handle = frozen({ abi: WORLD_ATLAS_ABI, epoch: s.epoch, generation: s.generation, layout: s.r.layout, book: s.book, lightBook: s.lightBook, params: s.params, views: s.r.views,
       dependencies: s.dependencies, sunManifest: s.sunManifest,
+      lightingProvenance: brick => {
+        if(released)throw new Error('snapshot released');
+        check(s.epoch===this.epoch,'stale world snapshot epoch');
+        return s.pins.find(p=>p.kind==='light'&&p.index===worldBrickIndex(this.bookLayout,brick))?.provenance??null;
+      },
       retain: () => {
         if (released) throw new Error('snapshot released');
         check(s.epoch === this.epoch, 'stale world snapshot epoch');
@@ -597,6 +618,7 @@ export class WorldRenderAtlas {
       },
       bindings: (external, feedback) => {
         if (released) throw new Error('snapshot released');
+        check(!s.producerOnly,'private LIGHT closure is producer-only');
         check(s.epoch === this.epoch, 'stale world snapshot epoch');
         check(feedback?.size >= this.feedbackBytes && feedback.size <= Math.min(this.limits.maxStorageBufferBindingSize, 128 * 1024 ** 2), 'feedback binding size');
         return [
@@ -608,6 +630,26 @@ export class WorldRenderAtlas {
       }, release: () => { if (!released) { released = true; this._releaseSnapshot(s); } } });
     this.snapshotStates.set(handle, { s, live: () => !released });
     return handle;
+  }
+  // A private all-SOURCE/previous-GI closure. It never changes current books,
+  // readiness, generation, or demand; only producerBindings may consume it.
+  prepareProducerSnapshot({lightJobs,dependencyToken,sourcePhaseToken}) {
+    this._alive();check(sourcePhaseToken!=null,'private SOURCE phase identity required');
+    const lights=new Uint32Array(this.bookLayout.count),seen=new Set();
+    for(const job of lightJobs){
+      const p=this._job(job,'light');check(!seen.has(p.index),'duplicate private light job');seen.add(p.index);
+      check(!(p.readyBits&READY.GLOW)&&this._needed(p).every(n=>p.written.has(n)),'private channels must be completely written SOURCE/GI');
+      check(p.restoreDeclarations?.source?.publication.sourcePhaseToken===sourcePhaseToken,'authenticated private SOURCE phase required');
+      for(const [kind,lease]of Object.entries(p.restoreDeclarations??{}))validateWorldLightingRestore(lease,{job,kind});
+      check(p.restoreDeclarations?.gi?.publication===p.restoreDeclarations.source.publication||!(p.readyBits&READY.GI),'private GI/SOURCE target mismatch');
+      check(p.resources===this.resources,'private closure must use current pool prefix');
+      this._writeDescriptor(p);lights[p.index]=p.id+1;
+    }
+    const required=lightJobs[0]&&this._job(lightJobs[0],'light').restoreDeclarations?.source?.publication.sourceIndices;
+    check(required&&required.every(i=>seen.has(i)),'private closure omits selected SOURCE records');
+    const s=this._snapshotState(this.entries.slice(),lights,this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation);
+    s.producerOnly=true;
+    const out=this._snapshot(s);this._releaseSnapshot(s);return out;
   }
   // Producer-only: current CELL plus an exact pinned previous LIGHT book.
   // Default render snapshots and their coherent bindings are unchanged.
