@@ -374,8 +374,19 @@ async function run(o) {
               if (!sample.volumeDrawn || sample.renderScale !== initialSettings.renderScale || a.autoRes.enabled || a.autoRes.scale !== 1) throw new Error('Rendering/quality changed during measurement');
             }
           } finally { restorePipelines(); timing.enabled = false; timing.split = false; a.sim.onPass = onPass; }
+          // Last partition only, outside every measured wall/timestamp interval.
+          let blockCompaction = null;
+          const native = engine === 'v2' ? a.physics.v2 : null;
+          if (native?.blockCompact && samples.length) {
+            const last = samples.at(-1).awake;
+            const originalBlocks = last.awake * 8;
+            const heavyBlocks = new Uint32Array(await gpu.readback.buffer(native.liquidScratch, native.blockCompact.header, 4))[0];
+            if (heavyBlocks > originalBlocks) throw new Error('Compacted block count exceeds the original partition');
+            blockCompaction = { tick: last.tick, originalBlocks, heavyBlocks, identityBlocks: originalBlocks - heavyBlocks,
+              addedScratchBytes: native.blockCompact.bytes - a.sim.g.slots * 16 };
+          }
           return { initialSettings, finalSettings: settings(), before, after: snapshot(), memoryBefore, memoryAfter: memory(),
-            timestampSupported: timing.supported, stepCount, samples };
+            timestampSupported: timing.supported, stepCount, samples, blockCompaction };
         }, { engine, compactPath, frames: o.frames, warmup: o.warmup, split });
         result.samples = result.run.samples;
         delete result.run.samples;

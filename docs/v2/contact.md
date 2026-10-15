@@ -151,8 +151,11 @@ changed-core visibility marks are conservative CPU checks, not a renderer oracle
 The real benchmark fixture's **initial CPU import only** is 73.231–82.636%
 identity-eligible across eight offsets (first offset: 26,131 AIR, 28,380 WATER,
 18,193 survivors). These are not evolved/native GPU coverage or performance
-measurements. Dense nonidentity scenes may regress from the extra scan/dispatch;
-native Metal compilation/resource behavior and speed remain unmeasured.
+measurements. The native 16³ census at `87aa3328` passes 120 ticks and 20 checks:
+zero water, sand or wall drift. Both new pipelines compiled and ran.
+Total GPU occupancy was 10.721 s (`/tmp/v2-native-census-87aa3328.jsonl`).
+Dense nonidentity scenes may regress from the extra scan/dispatch.
+Full-frame speed remains unmeasured for compaction.
 
 ### Dynamics-only helpers
 
