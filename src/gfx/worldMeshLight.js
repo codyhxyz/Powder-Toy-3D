@@ -51,6 +51,7 @@ export function createWorldMeshLightContext(gpu,{publication,worldSize,frameValu
   try {
     const renderer=gpu?.three?.renderer,device=gpu?.device;
     check(publication?.release&&publication.atlas&&publication.sun,'owned atlas/Sun scene publication required');
+    check(!publication.atlas.producerOnly,'private producer LIGHT cannot light scene meshes');
     check(renderer?.backend?.get&&device?.queue,'native Three renderer/device required');
     check(typeof install==='function'&&typeof isCompatible==='function','mesh-light installer and scene/config compatibility callback required');
     const A=publication.atlas,S=publication.sun.bindings?publication.sun.bindings():publication.sun;

@@ -106,7 +106,8 @@ export function createWorldLightingInputs(gpu, { atlas, tables, frameValues, phy
         const groups = input.previousAtlas
           ? atlas.producerBindings(input.atlas, input.previousAtlas, native, input.feedback)
           : input.atlas.bindings(native, input.feedback);
-        groups[0] = [...first(input.atlas)[0], { binding: 5, resource: { buffer: input.previousAtlas?.lightBook ?? input.atlas.lightBook } }];
+        // Preserve producer-selected private generation/params and exact books.
+        groups[0] = [...first(input.atlas)[0].slice(0,3), ...groups[0].map(e=>({...e,binding:e.binding+3}))];
         const packed = new ArrayBuffer(WorldSunParams.size);
         WorldSunParams.write(new DataView(packed), 0, light.params);
         const params = buffer('owned world Sun reader params', packed);

@@ -171,5 +171,14 @@ application integration and production acceptance remain unchanged. Default
 direct writes and default Glow transport remain strict. Authenticated restored
 computational dependency IDs remain original; they are not represented as the
 current closure's dependency validation (unrestored channels remain strict).
+Each closure must contain every requested SOURCE and previous-GI channel.
+Source-only closures can omit previous GI only when their authenticated request
+does not require it. Private descriptor and reader parameters share a private
+N+1 generation; the public counter and books stay at N. The actual reader
+provider preserves those selected parameters. Preallocate capacity or reacquire
+and rebuild after growth; stale pool/generation combinations fail closed.
+Private snapshots cannot supply scene bindings or native mesh lighting.
+Top-level restore leases expire when ledger ownership advances. Retained old
+images remain pinned, but their expired proofs cannot admit superseded GI.
 CPU fake-native/actual-class tests plus imports/build pass; no GPU/browser parity
 or deployment evidence is claimed.

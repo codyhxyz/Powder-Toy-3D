@@ -10,7 +10,7 @@ import { sceneStruct, sceneHeadWGSL } from '../src/world/scenes/sceneGpu.js';
 import { SharedUniforms } from '../src/gpu/params.js';
 import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
 import { WorldRenderAtlas, READY } from '../src/world/renderAtlas.js';
-import { gridDims, atlasDims, cellSlot, brickIdOf } from '../src/shaders/common.js';
+import { gridDims, atlasDims, cellSlot, brickIdOf, tableLayout } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { setAeration, aerationForSource } from '../src/gfx/foam.js';
 import { worldParams, treesIn } from '../src/world/generator.js';
@@ -315,6 +315,7 @@ import { createWorldLightingHistory, validateWorldLightingRestore } from '../src
 import { createLightingTransport } from '../src/gfx/worldLightingBatch.js';
 import { createWorldGI } from '../src/gfx/worldGI.js';
 import { lightingFixture } from './world-gi-glow-fixture.mjs';
+import { createWorldLightingInputs } from '../src/gfx/worldLightingInputs.js';
 async function restoreFixture(){
   const f=await fixture({size:[64,128,64]}),l=lightingFixture(),M=[1,0,0],N=[2,0,0],records=[M,N].map(brick=>({brick,age:0,matter:true,near:false}));
   let current=cut(f),plan;
@@ -338,8 +339,8 @@ async function restoreFixture(){
     else out.forEach((t,k)=>new Uint8Array(t.bytes).set(data.subarray(k*8,k*8+8),p[0]*8));
   };
   const advance=()=>{f.source.noteContentChange();const old=current;current=cut(f);old.release();return current;};
-  const job=(bundle,b=M)=>{const s=bundle.leases.find(x=>x.kind==='source'&&x.index===b[0]),g=bundle.leases.find(x=>x.kind==='gi'&&x.index===b[0]);return atlas.allocateLight(b,{publication:bundle.publication,sourceRevision:current.contentToken.sourceRevision,sourceTick:s.token.lightingTick,giTick:g.token.lightingTick,readyBits:READY.GI_SOURCE|READY.GI,dependencies:{source:{id:s.token.dependencySetID,version:s.token.dependencyVersion},gi:{id:g.token.dependencySetID,version:g.token.dependencyVersion}}});};
-  const write=async(bundle,jobs)=>{let settled=false,error;const promise=transport.restore(f.gpu,atlas,jobs.flatMap(job=>bundle.leases.filter(x=>x.index===job.brick[0]).map(lease=>({job,lease})))).then(()=>{settled=true;},e=>{settled=true;error=e;});for(let i=0;i<30&&!settled;i++){f.gpu.finish();await tick();}await promise;if(error)throw error;await drain(f.gpu);};
+  const job=(bundle,b=M,readyBits=READY.GI_SOURCE|READY.GI)=>{const s=bundle.leases.find(x=>x.kind==='source'&&x.index===b[0]),g=bundle.leases.find(x=>x.kind==='gi'&&x.index===b[0]);return atlas.allocateLight(b,{publication:bundle.publication,sourceRevision:current.contentToken.sourceRevision,sourceTick:s?.token.lightingTick??0,giTick:g?.token.lightingTick??0,readyBits,dependencies:{...(s?{source:{id:s.token.dependencySetID,version:s.token.dependencyVersion}}:{}),...(g?{gi:{id:g.token.dependencySetID,version:g.token.dependencyVersion}}:{})}});};
+  const write=async(bundle,jobs)=>{let settled=false,error;const promise=transport.restore(f.gpu,atlas,jobs.flatMap(job=>bundle.leases.filter(x=>x.index===job.brick[0]&&(job.readyBits&(x.kind==='source'?READY.GI_SOURCE:READY.GI))).map(lease=>({job,lease})))).then(()=>{settled=true;},e=>{settled=true;error=e;});for(let i=0;i<30&&!settled;i++){f.gpu.finish();await tick();}await promise;if(error)throw error;await drain(f.gpu);};
   return {...f,l,h,gi,atlas,transport,M,N,records,initial,produce,advance,job,write,get current(){return current;},set plan(p){plan=p;},get plan(){return plan;},async close(){initial.release();gi.dispose();h.dispose();atlas.dispose();current.release();await f.finish();}};
 }
 
@@ -409,6 +410,63 @@ test('authentic cut/lease rejection, private staged SOURCE plus previous GI, fai
     f.atlas.cancel(pending);snapshot.release();retained.release();
     const wrong=f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:99});assert.throws(()=>f.h.captureRestore({...args,cut:wrong}),/owned Source cut/);wrong.release();
     assert.throws(()=>f.h.captureRestore(args),/owned Source cut/);
+  }finally{await f.close();}
+});
+
+test('private readers preserve descriptor generation through actual input binding and require requested previous GI',async()=>{
+  const f=await restoreFixture();try{
+    f.advance();f.plan=f.h.begin({lightingTick:1,globalKey:[2],records:f.records});
+    const source=await f.produce(f.plan.sourceBricks,[]);f.plan.stage(source);source.release();
+    const args={cut:f.current,configVersion:2,sourceIndices:[1,2],sourcePhase:true};
+    const full=f.plan.captureRestore({...args,probeIndices:[1,2]});
+    const missing=[f.job(full,f.M,READY.GI_SOURCE),f.job(full,f.N,READY.GI_SOURCE)];
+    await f.write(full,missing);
+    assert.throws(()=>f.atlas.prepareProducerSnapshot({lightJobs:missing,sourcePhaseToken:full.publication.sourcePhaseToken}),/previous GI/);
+    missing.forEach(j=>f.atlas.cancel(j));full.release();
+    // A real source-only closure needs no fictional previous GI/probe allocation.
+    const bundle=f.plan.captureRestore({...args,probeIndices:[]});
+    const jobs=[f.job(bundle,f.M,READY.GI_SOURCE),f.job(bundle,f.N,READY.GI_SOURCE)];
+    await f.write(bundle,jobs);
+    const generation=f.atlas.generation,current=f.atlas.snapshot();
+    const privateBook=f.atlas.prepareProducerSnapshot({lightJobs:jobs,sourcePhaseToken:bundle.publication.sourcePhaseToken});
+    assert.equal(privateBook.producerOnly,true);assert.equal(current.producerOnly,false);
+    f.gpu.device.createSampler=d=>d;
+    const ext=Object.fromEntries(['sunDepth','sunOptical','mediaNoise','sourceAppearance','packedMesh'].map(n=>[n,{}]));
+    const borrowed=[],buffer=size=>{const b=f.gpu.createBuffer({size});borrowed.push(b);return b;};
+    const inputs=createWorldLightingInputs(f.gpu,{atlas:f.atlas,tables:buffer(tableLayout().Tables.size),frameValues:{cam:[0,0,0]},physicsOrigin:[0,0,0],external:ext});
+    const sunBook=buffer(16),sun={bindings:()=>({sun0:ext.sunOptical,sun1:ext.sunDepth,book:sunBook,params:{worldToLight:new Array(16).fill(0),depth:[1,0,1,1],tiles:[0,0,1,1],physical:[256,8,64,1],version:[1,1,1,f.atlas.bookLayout.sunWord]}})};
+    const groups=inputs.reader({atlas:current,previousAtlas:privateBook,sun,feedback:buffer(f.atlas.feedbackBytes)});
+    assert.equal(groups[0][3].resource.buffer,privateBook.params);
+    assert.equal(groups[0][4].resource.buffer,current.book);
+    assert.equal(groups[0][5].resource.buffer,privateBook.lightBook);
+    await drain(f.gpu);
+    const wa=u32(groups[0][3].resource.buffer),nativeAux=new Uint32Array(current.textures().aux.bytes);
+    for(const j of jobs){
+      const record3=wa[20]+j.lightDescriptorID*5+3,stamp=nativeAux[record3*4+3];
+      assert(stamp>0&&stamp<=wa[7],`actual production descriptor generation predicate: descriptor=${stamp}, reader=${wa[7]}`);
+      assert.equal(stamp,privateBook.generation);
+    }
+    assert.equal(f.atlas.generation,generation);assert.equal(current.generation,generation);
+    privateBook.release();current.release();inputs.release();jobs.forEach(j=>f.atlas.cancel(j));bundle.release();f.plan.abort();
+    await drain(f.gpu);borrowed.forEach(b=>b.destroy());
+  }finally{await f.close();}
+});
+
+test('a completed ledger commit revokes superseded restore proofs before pending Atlas admission',async()=>{
+  const f=await restoreFixture();try{
+    f.advance();
+    const old=f.h.captureRestore({cut:f.current,configVersion:2,sourceIndices:[2],probeIndices:[2]}),pending=f.job(old,f.N);
+    await f.write(old,[pending]);
+    f.plan=f.h.begin({lightingTick:1,globalKey:[2],records:f.records});f.l.state.current=2;
+    const output=await f.produce();f.plan.commit(output);output.release();
+    const fresh=f.h.captureRestore({cut:f.current,configVersion:2,sourceIndices:[2],probeIndices:[2]});
+    assert.equal(fresh.leases.find(l=>l.kind==='gi').token.lightingTick,1);
+    for(const lease of old.leases)assert.throws(()=>validateWorldLightingRestore(lease),/restore lease/);
+    assert.throws(()=>f.atlas.publish({lightJobs:[pending]}),/restore lease/);
+    f.atlas.cancel(pending);old.release();
+    const next=f.job(fresh,f.N);await f.write(fresh,[next]);f.atlas.publish({lightJobs:[next]});
+    const accepted=f.atlas.snapshot();assert.equal(accepted.lightingProvenance(f.N).gi.computeToken.lightingTick,1);
+    accepted.release();fresh.release();
   }finally{await f.close();}
 });
 

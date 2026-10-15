@@ -91,6 +91,11 @@ test('height384 world book extent is legal without allocating a CPU mirror',()=>
   f.publication.sun.params.version[3]=book.sunWord;f.options.feedback.size=(book.sunWord+1)*4;
   const c=createNativeWorldMeshLightContext(f.gpu,f.options);assert.equal(f.publication.atlas.lightBook.size,72*1024**2);c.cancel();assert.equal(f.pins,0);
 });
+test('private SOURCE/previous-GI snapshots cannot become native scene lighting',()=>{
+  const f=fixture();f.publication.atlas.producerOnly=true;
+  assert.throws(()=>createNativeWorldMeshLightContext(f.gpu,f.options),/private producer/);
+  assert.equal(f.pins,0);
+});
 test('contexts own frozen values and pins through final submit AND completion including rejected prefixes, and reject old scene/epoch',async()=>{
   for(const reject of [false,true]){
     const f=fixture(),c=createNativeWorldMeshLightContext(f.gpu,f.options);f.frameValues.sun.fill(99);f.frameValues.model.elements.fill(99);f.frameValues.wandLightPosition[0].fill(99);

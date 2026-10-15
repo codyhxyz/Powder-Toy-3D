@@ -598,7 +598,7 @@ export class WorldRenderAtlas {
   snapshot() { this._alive(); return this._snapshot(this.current); }
   _snapshot(s) {
     s.refs++; let released = false;
-    const handle = frozen({ abi: WORLD_ATLAS_ABI, epoch: s.epoch, generation: s.generation, layout: s.r.layout, book: s.book, lightBook: s.lightBook, params: s.params, views: s.r.views,
+    const handle = frozen({ abi: WORLD_ATLAS_ABI, producerOnly:!!s.producerOnly, epoch: s.epoch, generation: s.generation, layout: s.r.layout, book: s.book, lightBook: s.lightBook, params: s.params, views: s.r.views,
       dependencies: s.dependencies, sunManifest: s.sunManifest,
       lightingProvenance: brick => {
         if(released)throw new Error('snapshot released');
@@ -636,20 +636,27 @@ export class WorldRenderAtlas {
   // readiness, generation, or demand; only producerBindings may consume it.
   prepareProducerSnapshot({lightJobs,dependencyToken,sourcePhaseToken}) {
     this._alive();check(sourcePhaseToken!=null,'private SOURCE phase identity required');
-    const lights=new Uint32Array(this.bookLayout.count),seen=new Set(),target=lightJobs[0]?.publication;
+    check(this.generation<U32_MAX,'world generation overflow');
+    const lights=new Uint32Array(this.bookLayout.count),seen=new Set(),sourceCovered=new Set(),probeCovered=new Set(),target=lightJobs[0]?.publication;
     for(const job of lightJobs){
       const p=this._job(job,'light');check(!seen.has(p.index),'duplicate private light job');seen.add(p.index);
       check(p.publication===target,'private closure target identity mismatch');
       check(!(p.readyBits&READY.GLOW)&&this._needed(p).every(n=>p.written.has(n)),'private channels must be completely written SOURCE/GI');
-      check(p.restoreDeclarations?.source?.publication.sourcePhaseToken===sourcePhaseToken,'authenticated private SOURCE phase required');
+      const declaration=p.restoreDeclarations?.source??p.restoreDeclarations?.gi;
+      check(declaration?.publication===target&&declaration.publication.sourcePhaseToken===sourcePhaseToken,'authenticated private SOURCE phase required');
       for(const [kind,lease]of Object.entries(p.restoreDeclarations??{}))validateWorldLightingRestore(lease,{job,kind});
-      check(p.restoreDeclarations?.gi?.publication===p.restoreDeclarations.source.publication||!(p.readyBits&READY.GI),'private GI/SOURCE target mismatch');
+      for(const [kind,channel]of [['source',READY.GI_SOURCE],['gi',READY.GI]])if(p.readyBits&channel)check(p.restoreDeclarations?.[kind]?.publication===target,'private channel target mismatch');
       check(p.resources===this.resources,'private closure must use current pool prefix');
+      if(p.readyBits&READY.GI_SOURCE)sourceCovered.add(p.index);
+      if(p.readyBits&READY.GI)probeCovered.add(p.index);
       this._writeDescriptor(p);lights[p.index]=p.id+1;
     }
-    const required=lightJobs[0]&&this._job(lightJobs[0],'light').restoreDeclarations?.source?.publication.sourceIndices;
-    check(required&&required.every(i=>seen.has(i)),'private closure omits selected SOURCE records');
-    const s=this._snapshotState(this.entries.slice(),lights,this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation);
+    const required=target?.sourceIndices,probes=target?.probeIndices;
+    check(required?.every(i=>sourceCovered.has(i)),'private closure omits selected SOURCE records');
+    check(probes?.every(i=>probeCovered.has(i)),'private closure omits requested previous GI records');
+    // This is a private reader generation, not a public commit. Descriptors
+    // use the same N+1 stamp; public books/counter remain at N.
+    const s=this._snapshotState(this.entries.slice(),lights,this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation+1);
     s.producerOnly=true;
     for(const job of lightJobs)this._job(job,'light').producerOnly=true;
     const out=this._snapshot(s);this._releaseSnapshot(s);return out;
@@ -660,10 +667,13 @@ export class WorldRenderAtlas {
     this._alive();
     const a = this.snapshotStates.get(cellSnapshot), b = this.snapshotStates.get(previousSnapshot);
     check(a?.live() && b?.live(), 'owned live producer snapshots required');
-    check(a.s.epoch === this.epoch && b.s.epoch === this.epoch && a.s.generation >= b.s.generation, 'producer snapshot epoch/generation mismatch');
+    check(a.s.epoch === this.epoch && b.s.epoch === this.epoch &&
+      (b.s.producerOnly ? a.s.generation===this.generation&&b.s.generation===this.generation+1 : a.s.generation>=b.s.generation), 'producer snapshot epoch/generation mismatch');
     check(a.s.r === this.resources, 'producer CELL snapshot must use current pool prefix');
+    if(b.s.producerOnly)check(b.s.r===this.resources,'private LIGHT pool changed; rebuild closure');
     for (const p of b.s.pins) if (p.kind === 'light') check(p.pins > 0 && this.light.pages.get(p.id) === p, 'previous LIGHT pool lifetime mismatch');
     const groups = cellSnapshot.bindings(external, feedback);
+    if(b.s.producerOnly)groups[0][0]={binding:0,resource:{buffer:b.s.params}};
     groups[0][2] = { binding: 2, resource: { buffer: b.s.lightBook } };
     return groups;
   }

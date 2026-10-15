@@ -61,11 +61,11 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
       },release(){if(!released){released=true;drop(held);}}
     });
   }
-  function issueRestore({cut,configVersion,sourceIndices=[],probeIndices=[]},sourceMap=sources,probeMap=probes,ownership=publicationToken,extraValid=()=>true,sourcePhaseToken=null){
+  function issueRestore({cut,configVersion,sourceIndices=[],probeIndices=[]},sourceMap=sources,probeMap=probes,ownership=publicationToken,extraValid=()=>ownership===publicationToken,sourcePhaseToken=null){
     alive();
     const check=()=>{alive();if(!sourceOwner||!configuration||configVersion==null)throw new Error('restore requires ledger Source owner/configuration');validateWorldSourceCut(cut,{sourceOwner,epoch,configuration});if(!same(sourceOwner.win.size,size))throw new Error('restore Source world size mismatch');};
     check();
-    const publication=Object.freeze({meaning:'current-cut-validation',epoch,sourceRevision:cut.contentToken.sourceRevision,cutIdentity:cut.identity,configuration,configVersion,sourcePhaseToken,sourceIndices:frozenArray(sourceIndices)});
+    const publication=Object.freeze({meaning:'current-cut-validation',epoch,sourceRevision:cut.contentToken.sourceRevision,cutIdentity:cut.identity,configuration,configVersion,sourcePhaseToken,sourceIndices:frozenArray(sourceIndices),probeIndices:frozenArray(probeIndices)});
     const leases=[];
     try{for(const [kind,ids,map]of [['source',sourceIndices,sourceMap],['gi',probeIndices,probeMap]])for(const i of new Set(ids)){
       const p=map.get(i);if(!p)throw new Error(`unknown retained ${kind} ${i}`);
