@@ -6,11 +6,12 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { parseGodot3Scene, parseGodot3Resource, decodeSurface, halfFloat, embeddedMeshes } from '../src/world/import/godot3.js';
-import { voxelizeMeshes, importedCell, triangleIntersectsCell } from '../src/world/import/voxelize.js';
+import { voxelizeMeshes, importedCell, triangleIntersectsCell, sourceToCells } from '../src/world/import/voxelize.js';
 import { APPEARANCE_VERSION, APPEARANCE_HEADER as H, APPEARANCE_HEADER_WORDS, APPEARANCE_TRIANGLE_WORDS as TW, APPEARANCE_MATERIAL_WORDS as MW, APPEARANCE_LIGHT_WORDS, APPEARANCE_FLAGS as F, APPEARANCE_MODES as M } from '../src/world/import/appearanceFormat.js';
 import { AppearanceResources, sha256, imageMagick } from './appearance-resources.mjs';
 import { AppearanceConversion, triangleAffine, extractLighting, littleEndianWords } from './appearance-conversion.mjs';
 import { convertCrueltyMap, writeConvertedMap } from './import-cruelty-map.mjs';
+import { doorBrickKeys } from '../src/world/import/doorMotion.js';
 import { CRUELTY_PROFILES } from '../src/world/import/crueltyProfiles.js';
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
 const evalAffine = (a, p) => a[0] * p[0] + a[1] * p[1] + a[2] * p[2] + a[3];
@@ -59,6 +60,19 @@ test('ABI constants and both verified Godot half-UV layouts preserve position/in
     assert.deepEqual([...s.indices], [2, 1, 0]); assert.deepEqual([...s.uvs], [1, -2, 1, -2, 1, -2]);
     assert.equal(s.uvBits[0], 0x3c00);
   }
+  const withBounds = decodeSurface(stream(97559).replace('"format":', '"aabb": AABB( -4, -5, -6, 10, 20, 30 ),\n"format":'));
+  assert.deepEqual(withBounds.rawLocalBounds, { min: [-4,-5,-6], max: [6,15,24] });
+  const meshScene = parseGodot3Scene(`[gd_scene format=2]
+[sub_resource type="ArrayMesh" id=1]
+surfaces/0 = ${stream(97559).replace('"format":', '"aabb": AABB( -4, -5, -6, 10, 20, 30 ),\n"format":')}
+[node name="Root" type="Spatial"]
+[node name="Mesh" type="MeshInstance" parent="."]
+transform = Transform( 0, 0, -1, 0, 1, 0, 1, 0, 0, 100, 200, 300 )
+mesh = SubResource( 1 )
+`);
+  const localMesh = embeddedMeshes(meshScene)[0];
+  assert.deepEqual(localMesh.rawLocalBounds, withBounds.rawLocalBounds);
+  assert.equal(localMesh.surfaces[0].positions[0], 100);
   assert.equal(decodeSurface(stream(97559, [0x7c00, 0])).uvs[0], Infinity, 'undefined UV does not break legacy physics');
   assert.throws(() => decodeSurface(stream(97559).replace('97559', '97560')), /Unsupported Godot ArrayMesh/);
 });
@@ -264,3 +278,39 @@ if (process.env.CRUELTY_SOURCE_ROOT) for (const profile of CRUELTY_PROFILES.filt
   assert.equal(a.losses.reduce((n,l) => n+l.triangleCount,0), profile.level === 4 ? 240 : 0);
   assert.ok(a.sources.some(s => s.path === `res://Levels/Level${profile.level}.tscn`));
 });
+
+test('fixed door sweep directories cover every brick without changing 24-word triangles, UVs or pixels', () => fixture(({ root, put, png }) => {
+  png('door.png', '#7f2311');
+  put('door.tres', '[gd_resource type="SpatialMaterial" format=2]\n[ext_resource path="res://door.png" type="Texture" id=1]\n[resource]\nalbedo_texture = ExtResource( 1 )\n');
+  const scene = emptyScene();
+  scene.external.set(1, { path:'res://door.tres', type:'Material' });
+  const make = () => [{ nodePath:'Door/Mesh', surfaces:[surface({ kind:'ExtResource', id:1 })] }];
+  const resources = new AppearanceResources(root), context = resources.context(scene, 'res://scene.tscn');
+  const meshes = make(), baseline = new AppearanceConversion(resources,context,meshes,{'res://door.png':2,'__default__':2});
+  const physical = voxelizeMeshes(meshes,{'__default__':2},{cellMeters:1,onTriangle:baseline.onTriangle});
+  const original = baseline.pack(physical);
+  const sweptSourceBounds = {min:[-20,-2,-20],max:[20,2,20]};
+  const analysis = {doors:new Map([['Door',{supported:true,sweptSourceBounds}]])};
+  const moving = new AppearanceConversion(resources,context,meshes,{'__default__':2},analysis);
+  const map = voxelizeMeshes(meshes,{'__default__':2},{cellMeters:1,ownerForMesh:()=> 'Door',reserveBounds:[sweptSourceBounds],onTriangle:moving.onTriangle});
+  const packed = moving.pack(map), indices = moving.appearanceTriangleIndices.Door;
+  assert.deepEqual(indices,[0]); assert.equal(TW,24);
+  const cellBounds = {min:sourceToCells(map,sweptSourceBounds.min),max:sourceToCells(map,sweptSourceBounds.max)};
+  for(const key of doorBrickKeys(cellBounds,map.brickDims)) {
+    assert.ok(map.words[key],`reserved physical brick ${key}`);
+    const at = packed.words[H.directoryAt]+key, pointer = packed.words[at];
+    assert.ok(pointer); assert.equal(packed.words[pointer],1); assert.equal(packed.words[pointer+1],0);
+  }
+  // Origins may differ after extending the world. Native UV gradients and
+  // per-plane values at corresponding source points must still agree.
+  const a = new Float32Array(original.words.buffer), b = new Float32Array(packed.words.buffer);
+  const oa = original.words[H.trianglesAt], ob = packed.words[H.trianglesAt];
+  const point=[3,0,4], pa=sourceToCells(physical,point), pb=sourceToCells(map,point);
+  for(const offset of [4,8,16,20]) close(evalAffine(a.slice(oa+offset,oa+offset+4),pa),evalAffine(b.slice(ob+offset,ob+offset+4),pb));
+  assert.equal(original.words[oa+3],packed.words[ob+3]);
+  assert.deepEqual([...original.words.slice(original.metadata.textures[0].at)], [...packed.words.slice(packed.metadata.textures[0].at)]);
+  assert.deepEqual(original.metadata.materials[0].texture,packed.metadata.materials[0].texture);
+  assert.equal(packed.metadata.maxBrickTriangles,1);
+  moving.bricks.set(doorBrickKeys(cellBounds,map.brickDims)[0],new Array(1024).fill(0));
+  assert.throws(()=>moving.pack(map),/requires <1024.*no truncation/);
+}));

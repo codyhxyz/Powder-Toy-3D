@@ -124,7 +124,7 @@ export function createPov(app) {
   let marchNear = 0;          // cells (render.js uMarchNear), this frame's
   const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
-  const interact = createInteract();   // look + E (interact.js): perks, and Descent's pickups and shop
+  const interact = createInteract({ getMode: () => app.gamemode?.() ?? 'sandbox' });   // live gamemode, not POV's on/exiting state
   // the Descent map's Holy Mountain and gold (descent/index.js); idle off that map
   const descent = createDescent({ app, scene, hud, interact, events: povEvents, getToolbelt: () => toolbelt });
   // feedback: everything here hears povEvents (events.js) and the body's events
