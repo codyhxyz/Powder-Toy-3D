@@ -232,9 +232,16 @@ export function createUnpacker() {
       const k = kernel, b = buffer;
       const apply = () => {
         if (k !== kernel || sim.disposed || gpu.failure || !valid()) return false;
+        const source = sim.worldRenderSource;
+        // Preserve the old origin/current copy before the replica moves or
+        // overwrites it. A previously claimed native version needs no recopy.
+        if (source?.needsLiveCopy()) source.recordLiveCopy(gpu.frame);
         gpu.write(b, 0, bytes.subarray(0, b.size));
         commit(); // origin and cells share the same GPU recording
         write(sim);
+        // The claim follows both unpack and the flow/wake reset. Old owned
+        // cuts stay immutable; the next cut sees this complete replica input.
+        sim.worldRenderSource?.recordLiveCopy(gpu.frame);
         return true;
       };
       pending = pending.then(() => k.ready).then(apply);

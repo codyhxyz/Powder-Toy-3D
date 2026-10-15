@@ -108,6 +108,18 @@ Frame can contain an unsubmitted suffix, then waits for submitted work. Failed
 unclosed graphics encoding is conservatively retained, not recycled. Release
 cannot manufacture a new Frame, force a flush or prevent ongoing simulation.
 
+## Replica input recording
+
+The actual network unpacker claims outgoing live data before its commit callback
+can move the origin or overwrite the current copy. It skips this capture if
+Source already owns that version. After unpack and flow/wake reset, it claims
+the complete incoming data through the simulation's current Source owner.
+The existing network encoding and BOX path do not change.
+
+Origin movement does not invalidate an owned cut. A map replacement must still
+dispose or reset the old owner and update the scene epoch. The unpacker does not
+infer map identity from cell bytes.
+
 ## Evidence and limits
 
 `npm run check:world-source-cuts` runs delayed-command CPU/fake-native tests with
@@ -116,6 +128,9 @@ full A/B and auxiliary bit transport (signed zero/NaN payloads included), old-cu
 late saved/generator feedback during newer physics, pending-save ownership,
 core sharing/COW, private prepass bindings, provider pins, configuration/reset
 invalidation and failed automatic-prefix/unsubmitted-suffix retirement.
+The actual unpacker test covers initial and already-claimed outgoing versions,
+two origin shifts, overlapping/incoming raw words, cleared flow/wakes, immutable
+older cuts, owner replacement, rejected input and the no-Source BOX path.
 Tree placement/shape tests execute the original CPU generator. Fake native
 shader outputs are synthetic: these are **not GPU numerical/visual parity or
 performance evidence**. Existing shared shader checks remain applicable.

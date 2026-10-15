@@ -10,10 +10,11 @@ import { sceneStruct, sceneHeadWGSL } from '../src/world/scenes/sceneGpu.js';
 import { SharedUniforms } from '../src/gpu/params.js';
 import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
 import { WorldRenderAtlas, READY } from '../src/world/renderAtlas.js';
-import { gridDims, cellSlot } from '../src/shaders/common.js';
+import { gridDims, atlasDims, cellSlot } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { setAeration, aerationForSource } from '../src/gfx/foam.js';
 import { worldParams, treesIn } from '../src/world/generator.js';
+import { createUnpacker } from '../src/net/codec.js';
 const u32=b=>new Uint32Array(b.bytes),f32=b=>new Float32Array(b.bytes);
 const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 async function drain(gpu){for(let i=0;i<3;i++){gpu.finish();await tick();}}
@@ -51,6 +52,56 @@ async function fixture({size=[96,8,8],pre=false,trees=false}={}) {
 const cut=f=>f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:1});
 function put(f,brick,value){const A=new Float32Array(256),B=new Float32Array(256);for(let s=0;s<64;s++){A.set([2,20,.5,value],s*4);new Uint32Array(B.buffer).set([0x80000000,0x7fc12345,s,value],s*4);}f.win.store.put(f.win.store.key(...brick),encodeBrick(A,0,B,0));}
 function read(source,p,name='A'){const c=source.getSource(p);return [...u32(c.chunk[name]).subarray(c.slot*4,c.slot*4+4)];}
+
+test('actual replica unpack captures the old origin before overwrite and claims full new state after flow/wake reset',async()=>{
+  const f=await fixture();f.sim.cur=1;setAeration(f.sim,true);
+  Object.assign(f.sim.g,atlasDims(f.sim.g));
+  const aer=aerationForSource(f.sim);u32(aer.buffer).fill(0x12345678);
+  const events=[],unpack=createUnpacker(),bytes=new Uint8Array(f.sim.g.width*f.sim.g.height*4);bytes[0]=99;
+  let claims=0,old;const claim=f.source.recordLiveCopy.bind(f.source);f.source.recordLiveCopy=(...args)=>{claims++;return claim(...args);};
+  f.sim.bindRW={};f.sim.L.STATE_RW=f.gpu.layout('STATE_RW',[]);
+  f.sim.noteWrite=()=>{events.push('write');f.sim.version++;f.sim.worldRenderSource?.noteContentChange();};
+  f.sim.stillFlow=()=>{events.push('still');f.gpu._push(()=>{u32(f.sim.flow).fill(0);u32(aer.buffer).fill(0);});f.sim.worldRenderSource?.noteContentChange();};
+  const execute=f.gpu.onExecute;
+  f.gpu.onExecute=(kernel,options)=>{
+    execute?.(kernel,options);
+    if(kernel.name!=='unpack')return;
+    const marker=new Uint8Array(options.bind[2].entries[0].resource.buffer.bytes)[0],start=f.sim.cur*f.sim.g.slots;
+    for(let s=start;s<start+f.sim.g.slots;s++){f32(f.sim.state.A).set([2,30,.25,marker],s*4);u32(f.sim.state.B).set([0x80000000,0x7fc54321,s,0x55667788],s*4);}
+  };
+  assert.equal(await unpack.unpack(f.sim,bytes,{valid:()=>false,commit(){throw new Error('must not commit');}}),false);
+  assert.equal(f.source.chunks.size,0);assert.equal(f.sim.version,0);
+  assert.equal(await unpack.unpack(f.sim,bytes,{commit(){old=cut(f);events.push('origin');f.sim.origin.x=16;}}),true);
+  await drain(f.gpu);
+  const original=[2,20,.5,.125],bits=[...new Uint32Array(new Float32Array(original).buffer)];
+  assert.equal(f32(f.sim.state.A)[f.sim.cur*f.sim.g.slots*4+3],99,'synthetic unpack writes the actual current native copy');
+  assert.deepEqual(read(old.source,[20,0,0]),bits);assert.deepEqual(read(f.source,[0,0,0]),bits);
+  assert.equal(new Float32Array(new Uint32Array(read(f.source,[20,0,0])).buffer)[3],99,`overlap words ${read(f.source,[20,0,0])}`);
+  assert.equal(new Float32Array(new Uint32Array(read(f.source,[40,0,0])).buffer)[3],99);
+  assert.deepEqual(read(f.source,[40,0,0],'B').slice(0,2),[0x80000000,0x7fc54321]);
+  const leaving=f.source.getSource([0,0,0]),incoming=f.source.getSource([40,0,0]);
+  assert.notEqual(u32(leaving.chunk.flow)[leaving.slot*2+1],0);
+  assert.deepEqual([...u32(incoming.chunk.flow).subarray(incoming.slot*2,incoming.slot*2+2)],[0,0]);
+  assert.equal(u32(leaving.chunk.aeration)[leaving.slot*2],0x12345678);assert.equal(u32(incoming.chunk.aeration)[incoming.slot*2],0);
+  assert.deepEqual(events,['origin','write','still']);assert.equal(old.isValid(),true);assert.equal(old.isLatest(),false);
+  assert.equal(claims,2); // Initial outgoing capture, then complete incoming claim.
+  bytes[0]=101;
+  assert.equal(await unpack.unpack(f.sim,bytes,{commit(){f.sim.origin.x=32;}}),true);await drain(f.gpu);
+  assert.equal(claims,3,'an already claimed outgoing version needs no duplicate copy');
+  assert.equal(new Float32Array(new Uint32Array(read(f.source,[20,0,0])).buffer)[3],99);
+  assert.equal(new Float32Array(new Uint32Array(read(f.source,[40,0,0])).buffer)[3],101);
+  assert.deepEqual(read(old.source,[20,0,0]),bits);
+  const replacement=new WorldRenderSource({...f.win,epoch:2});
+  bytes[0]=103;
+  assert.equal(await unpack.unpack(f.sim,bytes,{commit(){f.source.dispose();f.sim.worldRenderSource=replacement;}}),true);await drain(f.gpu);
+  assert.equal(new Float32Array(new Uint32Array(read(replacement,[40,0,0])).buffer)[3],103);
+  assert.equal(old.isValid(),false,'replaced scene ownership invalidates old cuts, unlike an origin shift');
+  assert.equal(claims,3,'replacement is claimed through the current simulation owner');
+  replacement.dispose();f.sim.worldRenderSource=null;bytes[0]=104;
+  assert.equal(await unpack.unpack(f.sim,bytes),true);await drain(f.gpu);
+  assert.equal(f32(f.sim.state.A)[f.sim.cur*f.sim.g.slots*4+3],104,'BOX/no-Source retains its existing unpack path');
+  old.release();await f.finish();
+});
 
 test('owned native cut preserves old live/full auxiliary words while current physics changes and late feedback resolves OLD saved/generator input',async()=>{
   const f=await fixture();setAeration(f.sim,true);const aer=aerationForSource(f.sim);aer.cur=1;
