@@ -85,6 +85,11 @@ Physical mutation guards recheck current origin/window and reject outside hits
 without clamping them into edge cells. Driver disposal drains query uses before
 retiring the owner/Atlas.
 
+The App tool-ray adapter keeps its existing local-cell return ABI and also
+returns `globalCell`. Native driver results and visual hover remain global.
+Delayed erase/touch actions revalidate the global cell against the current
+origin, tool and displayed frame before mutation.
+
 `npm run check:world-pick` exercises actual WorldVolume and normal GpuFrame/final
 provider with explicit mocked compute output words (not native math/GPU proof).
 

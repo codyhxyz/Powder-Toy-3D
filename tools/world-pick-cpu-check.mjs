@@ -111,3 +111,28 @@ test('actual App mutation entry points refuse outside/stale global hover after o
  assert.match(extract('updateGunBrush'),/if\(win && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
  assert.match(source,/painting && brushValid && \(!win \|\| \(inWindow\(brushCenter\)/);
 });
+
+test('actual App visible tool ray preserves local-cell ABI and revalidates global hits at delayed mutation',async()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const frameIdentity={},display={frameIdentity},sim={origin:new Vector3(96,0,96)};
+ const driver={displayedMainFrame:display,async pick(){return {ready:true,valid:true,cell:[100,5,100],frameIdentity};}};
+ const win={renderFrame:{driver}},inside=c=>c.x>=0&&c.x<32&&c.z>=0&&c.z<32;
+ let token='tool';
+ // Native transport is covered above. Here execute the actual App ABI adapter.
+ const pick=new Function('win','sim','worldPickToken','transportWorldRay','volume','camera','THREE','inWindow',
+   `${extract('pickRay')};return pickRay;`)(win,sim,()=>token,()=>({}),{matrixWorld:new Matrix4()},{},{Vector3},inside);
+ const physical=new Function('win','sim','worldPickToken','inWindow',
+   `${extract('physicalPickCell')};return physicalPickCell;`)(win,sim,()=>token,inside);
+ const hit=await pick(new Vector3(),new Vector3(0,0,-1),true);
+ assert(hit.valid);assert.deepEqual(hit.cell.toArray(),[4,5,4]);assert.deepEqual(hit.globalCell.toArray(),[100,5,100]);
+ sim.origin.set(98,0,98);assert.deepEqual(physical(hit).toArray(),[2,5,2]);
+ sim.origin.set(128,0,128);assert.equal(physical(hit),null);
+ sim.origin.set(96,0,96);token='other tool';assert.equal(physical(hit),null);
+ token='tool';driver.displayedMainFrame={frameIdentity:{}};assert.equal(physical(hit),null);
+ assert.match(source,/const cell=physicalPickCell\(hit\)/,'erase/touch mutation must revalidate delayed hits');
+});

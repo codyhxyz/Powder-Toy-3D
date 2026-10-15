@@ -952,7 +952,7 @@ function screenPlane(ray, height, out) {
   const r = screenCurve(ray), t = planeRoots(r, 1, height).find((x) => x >= 0);
   return t == null ? null : out.fromArray(rayPoint(r, t));
 }
-const worldPickToken = () => `${modeEpoch}:${presentation.revision}:${settings.tool}:${pov?.toolbelt?.selectedKey}:${skipPickLiquids()}`;
+const worldPickToken = () => `${modeEpoch}:${presentation.revision}:${settings.tool}:${!!pov?.active}:${pov?.toolbelt?.selectedKey}:${skipPickLiquids()}`;
 function syncWorldHover() {
   if(!win)return hover.valid;
   return localWorldHover(hover,sim.origin,inWindow,identity=>
@@ -1016,7 +1016,11 @@ function pickRay(ro, rd, visible = false) {
     const ray=transportWorldRay(display,ro,rd,volume.matrixWorld,camera);
     return driver.pick({ray}).then(hit=>{
       if(from!==sim || token!==worldPickToken() || display!==driver.displayedMainFrame)return worldPickNotReady('WORLD_PICK_OBSOLETE');
-      return hit.ready?{...hit,globalCell:new THREE.Vector3().fromArray(hit.cell),cell:new THREE.Vector3().fromArray(hit.cell)}:hit;
+      if(!hit.ready)return hit;
+      const globalCell=new THREE.Vector3().fromArray(hit.cell),cell=globalCell.clone().sub(sim.origin);
+      // This App interface serves physical tools. The native driver and hover
+      // retain global visual validity, but tool cells keep their local ABI.
+      return {...hit,valid:hit.valid&&inWindow(cell),globalCell,cell,worldToken:token};
     });
   }
   const o = sim.origin.clone(), from = sim, revision = presentation.revision;
@@ -1024,6 +1028,17 @@ function pickRay(ro, rd, visible = false) {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
     return { valid: from === sim && (!visible || revision === presentation.revision) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
   });
+}
+
+function physicalPickCell(hit) {
+  if(!hit.valid)return null;
+  if(win&&hit.globalCell){
+    if(hit.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
+      hit.worldToken!==worldPickToken())return null;
+    const cell=hit.globalCell.clone().sub(sim.origin);
+    return inWindow(cell)?cell:null;
+  }
+  return hit.cell.clone();
 }
 
 const isTool = () => settings.tool < 0;
@@ -1811,12 +1826,13 @@ async function eraseClick(e) {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   const from = sim, ray = gridRay(), stroke = brushStroke(ERASE_TOOL);
   const hit = await pickRay(ray.origin, ray.direction, true);
-  if (from !== sim || !hit.valid || hit.id < 0 || !canEraseClick()) return;
+  const cell=physicalPickCell(hit);
+  if (from !== sim || !cell || hit.id < 0 || !canEraseClick()) return;
   if (!mp.isGuest) {
     sim.snapshot(toolById(ERASE_TOOL).name);
     toolbar.setUndoEnabled(true);
   }
-  paintStroke({ ...stroke, center: hit.cell.clone().addScalar(0.5) });
+  paintStroke({ ...stroke, center: cell.addScalar(0.5) });
   pacer.wake();
   hud.dismissHint();
 }
@@ -1990,8 +2006,10 @@ function touchDown(e) {
   Promise.all([pickRay(ray.origin, ray.direction, true), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
     if (touchPress !== id) return;
     touchPress = 0;
-    Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P });
-    hover.cell.copy(hit.cell);
+    const cell=physicalPickCell(hit);if(!cell)return;
+    Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P,
+      globalCell:hit.globalCell??null,frameIdentity:hit.frameIdentity,worldToken:hit.worldToken });
+    hover.cell.copy(cell);
     press(e);
     if (painting && !touchesDown.size) setTimeout(() => { if (!touchesDown.size) painting = false; }, TOUCH_TAP_MS);
   }).catch(() => { if (touchPress === id) touchPress = 0; });
