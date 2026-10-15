@@ -7,7 +7,9 @@ import { spawnSync } from 'node:child_process';
 import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } from '../src/industry/validation.js';
 import { DEVICE_TYPES, QUARRY_STARTERS, baseMaterial, deviceCell, deviceDirection } from '../src/industry/catalog.js';
 import { E } from '../src/elements.js';
-import { constructionWGSL, WGSL_CHECK } from '../src/industry/construction.js';
+import { constructionWGSL, createConstruction, WGSL_CHECK } from '../src/industry/construction.js';
+import { GATE_OWNER_MARKER } from '../src/industry/gates.js';
+import { PUMP_BACKPLATE_TAG, pumpBackplateCells, pumpStructureCells } from '../src/industry/pumpStructure.js';
 import { registerSaveSection, unregisterSaveSection, collectSections, applySections, validateSections } from '../src/saves/sections.js';
 
 const dims = [128,128,128];
@@ -61,6 +63,36 @@ assert(code.includes('P.mode == 2u && eid(a) != P.material'));
 assert(code.includes('hearthStructureCell(x, y, z)'));
 assert(code.includes('rotateLocal(x, z)'));
 assert.equal(WGSL_CHECK[0].name,'industryConstruction');
+assert.equal(PUMP_BACKPLATE_TAG,1048572);
+assert.equal(new Float32Array([PUMP_BACKPLATE_TAG])[0],PUMP_BACKPLATE_TAG);
+assert.notEqual(PUMP_BACKPLATE_TAG,GATE_OWNER_MARKER);
+for(let rotation=0;rotation<4;rotation++) {
+  const pump={...base,type:'pump',rotation};
+  assert.equal(pumpBackplateCells(pump).length,24);
+  assert.equal(new Set(pumpBackplateCells(pump).map(p=>p.join(','))).size,24);
+  assert.equal(pumpStructureCells(pump).length,40);
+  for(const [x,y,z] of pumpStructureCells(pump)) {
+    assert(x>=pump.x && x<pump.x+4 && y>=pump.y && y<pump.y+deviceHeight(pump) && z>=pump.z && z<pump.z+4);
+  }
+}
+assert(code.includes('P.pump != 0u'));
+assert(code.includes('eid(a) == E_TUNGSTEN && a.z == INDUSTRY_PUMP_BACKPLATE_TAG'));
+assert(code.includes('INDUSTRY_PUMP_BACKPLATE_TAG: f32 = 1048572.0'));
+assert(code.includes('pump: u32'));
+
+const dispatches=[];
+let ringSlot=0;
+const sim={g:{nx:128,ny:128,nz:128},L:{TABLES:[],STATE_RW:[]},tables:{},bindRW:{},version:0,disposed:false,
+  header:()=>({}),wake(){},_dispatch(_kernel,_size,args){dispatches.push(args);}};
+const gpu={layout:()=>({}),readback:{ring:()=>({buffer:{},next:()=>ringSlot++,read:async()=>new Float32Array([1]).buffer})},
+  bindGroup:()=>({}),kernel:()=>({ready:Promise.resolve()}),flush(){}};
+const app={sim,gpu,requestRender(){}};
+const construction=createConstruction(app);
+await construction.ready;
+for(const type of Object.keys(DEVICE_TYPES)) assert.equal(await construction.run({...base,type},1),true);
+assert.deepEqual(dispatches.map(call=>call.params.pump),Object.keys(DEVICE_TYPES).map(type=>type==='pump'?1:0),
+  'only pump placement opts into its owned plate');
+
 const nagaDir=mkdtempSync(join(tmpdir(),'industry-construction-wgsl-'));
 try {
   const shader=join(nagaDir,'industry-construction.wgsl');
