@@ -173,7 +173,7 @@ for (const [id, move, expected, perk] of [
       let t = 0, since = 1, top = body.pos.y;
       while (body.pos.y > 1.2 && t < 3) {
         const jump = flap && since >= 0.2 && !body.onGround;
-        await run(1 / 60, jump ? { jump: true } : {});
+        await run(1 / 60, { chargeJump: true, jump });
         since = jump ? 0 : since + 1 / 60;
         t += 1 / 60;
         top = Math.max(top, body.pos.y);
@@ -187,21 +187,27 @@ for (const [id, move, expected, perk] of [
     assert.ok(flapped.t < 3, 'bounded wingbeats still descend without the jet');
     assert.ok(flapped.top < 41, 'wingbeats cannot bank unlimited upward speed');
 
-    body.spawn(new THREE.Vector3(512, 8, 512));
+    body.spawn(new THREE.Vector3(512, 100, 512));
     await run(0.12);
     const before = body.vel.y;
-    await run(1 / 60, { jump: true });
+    await run(1 / 60, { chargeJump: true, jump: true });
     assert.ok(!body.jetting, 'a tap is not the jet');
     assert.ok(body.flap > 0.8, 'a new animation beat starts on the tap');
     assert.ok(body.vel.y <= 8.01);
     assert.ok(body.vel.y > before, 'a flap shaves the fall');
     const after = body.vel.y;
-    await run(1 / 60);
-    await run(1 / 60, { jump: true });
+    await run(1 / 60, { chargeJump: true });
+    await run(1 / 60, { chargeJump: true, jump: true });
     assert.ok(body.vel.y < after, 'the next tap inside the wingbeat adds no lift');
     let jetted = false;
-    await run(0.25, { jump: true }, (b) => { if (b.jetting) jetted = true; });
-    assert.ok(jetted, 'holding the air press still jets');
+    await run(0.25, { chargeJump: true, jump: true }, (b) => { if (b.jetting) jetted = true; });
+    assert.ok(!jetted, 'Animal Crossing keeps its no-jet charged-jump controls');
+    await run(1 / 60, { chargeJump: true });
+    await run(1 / 60, { chargeJump: true, jump: true });
+    assert.ok(body.flap > 0.8, 'switch modes during an active wingbeat');
+    await run(1 / 60, { jump: true });
+    assert.equal(body.flap, 0, 'leaving Animal Crossing clears the flap signal');
+    assert.ok(body.jetting, 'leaving Animal Crossing restores held-jump jet controls immediately');
     body.spawn(new THREE.Vector3(512, 1, 512));
     await run(0.15);
     assert.ok(body.onGround);
@@ -217,7 +223,7 @@ for (const fps of [20, 60, 144]) {
       body.spawn(new THREE.Vector3(512, 100, 512));
       await run(0.1);
       body.vel.y = vy;
-      await run(1 / fps, jump ? { jump: true } : {});
+      await run(1 / fps, { chargeJump: true, jump });
       return body.vel.y;
     };
     const falling = await tap(false, -80), lifted = await tap(true, -80);
@@ -228,6 +234,19 @@ for (const fps of [20, 60, 144]) {
     const gravityOnly = await tap(false, 0), capped = await tap(true, 0);
     near(capped - gravityOnly, 8, 1e-6);
     assert.ok(capped <= 8, 'doubled upward cap, accounting for this frame gravity');
+  } finally { body.dispose(); }
+}
+
+for (const input of [{}, { chargeJump: false }, { cruelty: true }]) {
+  const { body, run } = await fixture();
+  try {
+    body.spawn(new THREE.Vector3(512, 100, 512));
+    await run(0.1, input);
+    body.vel.y = -80;
+    await run(1 / 60, { ...input, jump: true });
+    assert.equal(body.flap, 0, 'non-Animal Crossing air taps never flap');
+    assert.ok(body.vel.y < -80, 'non-Animal Crossing air taps add no wingbeat lift');
+    assert.equal(body.jetting, !input.cruelty, 'normal jet taps have no wingbeat hold delay; Cruelty keeps its own controls');
   } finally { body.dispose(); }
 }
 
