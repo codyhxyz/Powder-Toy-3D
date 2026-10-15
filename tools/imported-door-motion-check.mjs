@@ -226,11 +226,16 @@ test('real save codec preserves an in-flight pose, damage, logical direction and
   const expected=f.scene.interactionState.snapshot(); assert.ok(expected.doors[0].progress>0&&expected.doors[0].progress<1);
   Object.assign(f.sim.g,gridLayout(32,16,32)); f.sim.origin=new Vector3();
   const blank=()=>[new Float32Array(f.sim.g.width*f.sim.g.height*4),new Float32Array(f.sim.g.width*f.sim.g.height*4)];
-  Object.assign(f.sim,{rays:{active:false},prepare:async()=>{},readState:async()=>blank(),blankState:blank,load(){},dropHistory(){}});
-  Object.assign(f.world,{sim:f.sim,loaded:true,epoch:0,size:f.map.size,store:new BrickStore([8,4,8]),planted:new Uint8Array(64),loadSaved:WorldWindow.prototype.loadSaved});
+  const sourceEvents=[];
+  f.sim.gpu.frame={};
+  const renderSource={reset(epoch){sourceEvents.push(['reset',epoch]);},
+    recordLiveCopy(frame,sim){assert.equal(frame,f.sim.gpu.frame);assert.equal(sim,f.sim);sourceEvents.push(['live']);}};
+  Object.assign(f.sim,{rays:{active:false},prepare:async()=>{},readState:async()=>blank(),blankState:blank,load(){sourceEvents.push(['state']);},dropHistory(){}});
+  Object.assign(f.world,{sim:f.sim,gpu:f.sim.gpu,renderSource,storeRevisions:new Map(),loaded:true,epoch:0,size:f.map.size,store:new BrickStore([8,4,8]),planted:new Uint8Array(64),loadSaved:WorldWindow.prototype.loadSaved});
   const saves=createSaves({settings:{},getSim:()=>f.sim,getWin:()=>f.world,header:()=>({map:'test',world:{scene:'test',seed:0}}),prepare:async()=>true,finish(){},onSettings(){}});
   const bytes=await saves.capture('midpose'); assert.deepEqual((await decodeSave(bytes)).sections.get('worldInteractions'),expected);
   f.scene.reset(); await saves.apply(bytes); assert.deepEqual(f.scene.interactionState.snapshot(),expected);
+  assert.deepEqual(sourceEvents,[['reset',1],['state'],['live']]);
 });
 
 test('epoch/world/dispose guards reject stale async commits and retire buffers',async()=>{
