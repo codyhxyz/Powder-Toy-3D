@@ -325,11 +325,19 @@ class Compiler:
         # Prefer central native route, away from raster caps.
         if len(candidates):
             score = np.abs(candidates[:, 1] + self.minx + 677)
-            for i in np.argsort(score, kind='stable'):
-                dy, ix = candidates[i]
-                x, y = float(ix + self.minx) + .5, int(dy + lo)
-                if y - 6 >= resident_top and self.body(x, y) and np.all(np.isin(self.raster[y - self.miny, ix - 1:ix + 2], support_ids)):
-                    return [x, y, 0], dict(spawnPolicy='native-floor', spawnSupported=True)
+            ordered = np.argsort(score, kind='stable')
+            # Debug starts/respawns prefer actual open rooms, not isolated
+            # six-pixel pockets. Native arrivals and handoffs never use these.
+            for open_view in [True, False]:
+                for i in ordered:
+                    dy, ix = candidates[i]
+                    x, y = float(ix + self.minx) + .5, int(dy + lo)
+                    row = y - self.miny
+                    if open_view and (y < lo + 8 or y >= hi - 8 or y - 12 < resident_top or ix < 2 or ix + 21 > self.width or
+                                      not np.all(self.raster[row - 12:row, ix - 2:ix + 21] == 0)):
+                        continue
+                    if y - 6 >= resident_top and self.body(x, y) and np.all(np.isin(self.raster[row, ix - 1:ix + 2], support_ids)):
+                        return [x, y, 0], dict(spawnPolicy='native-floor', spawnSupported=True, spawnOpenView=open_view)
         if allow_context and lo >= 13312:
             # Bottom guard bands need not invent an independent safe start.
             context_lo = max(self.c['sourceY'][0], lo - self.c['context'])

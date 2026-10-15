@@ -19,7 +19,7 @@ The surface, Mines, parallel worlds, and distant side biomes are outside the cro
 | Sample the source during play | `terrainScenes.js`, `terrainRaster.js` | Native raster bands and their manifest |
 
 Native palette IDs remain separate from physical element IDs.
-Changing the fold or material appearance does not change the native raster.
+Changing the bend, thickness, or material appearance does not change the native raster.
 Changing the source crop changes only the selected source pixels.
 The compiler produces deterministic gzip payloads with per-band hashes.
 
@@ -32,6 +32,10 @@ The runtime uses 256-pixel vertical cores with 32-pixel context on each side.
 The last core is shorter because the source arena ends there.
 All 51 resident bands remain 320 cells tall.
 Native portal coordinates connect Holy Mountains without tunnels through their walls.
+Portal facing follows the destination's fold tangent.
+Terrain damage survives band crossings and native portals.
+The cache stores changed bricks in global coordinates.
+Capture freezes simulation, tools, and undo before the old window disappears.
 
 ## Source evidence
 
@@ -44,6 +48,11 @@ The crop contains 63,257,088 selected pixels and 170 native materials.
 The manifest records 244 saved chunks and their hashes.
 The saved material names come from each chunk's own palette.
 Numeric material IDs from another build are not substitutes.
+
+![Coal Pits source raster and its folded CPU cutaway](../public/maps/noita-terrain-proof.webp)
+
+This comparison records the initial source snapshot and default fold.
+It is a geometry inspection, not an in-game screenshot.
 
 Missing arena pixels use the native, assembled boss arena at its XML-authored world coordinates.
 The compiler does not move or arrange its pieces.
@@ -74,6 +83,7 @@ node scripts/check-noita-materials.mjs
 node scripts/check-terrain-source.mjs
 node scripts/check-terrain-raster.mjs
 node scripts/check-terrain-handoff.mjs
+node scripts/check-terrain-edits.mjs
 node tools/descent-thumb.mjs
 npm run build
 node tools/check-local-map-build.mjs
@@ -93,6 +103,7 @@ The source archive and installed game files remain read-only.
 The independent archive check compares all 77,660,160 published saved-source cells, including overlapping context.
 Every native material name matches.
 The fixed-source check compares all 1,309,440 published fallback cells against the original arena files.
+The CPU source check tests full 3D body clearance at debug starts and every portal destination.
 The 50 overlapping band pairs contain identical native bytes.
 Fold tests cover inverse round trips, caps, unchanged source data, and conservative empty-column culling.
 

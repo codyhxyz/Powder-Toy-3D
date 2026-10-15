@@ -113,7 +113,10 @@ const descent = {
       },
       enterAt: (spawn, transition) => persistence.enter(async () => {
         await pov.enter({ at: descentSpawn(app, { spawn }), swoop: 0, hint: false });
-        if (motion) restoreMotion(pov.player, (yaw, pitch) => pov.setLook(yaw, pitch), motion, transition.preserveMomentum);
+        // Portals preserve facing relative to the native chart, not the old
+        // world's heading (the Kolmi offshoot has a different arc tangent).
+        if (motion) restoreMotion(pov.player, (yaw, pitch) => pov.setLook(yaw, pitch),
+          { ...motion, yaw: motion.yaw + (transition.yawDelta ?? 0) }, transition.preserveMomentum);
         else pov.setLook(levelByScene(app.settings.scene)?.spawnYaw ?? 0, 0);
         this.lookLoad = app.win;
         if (!pov.active) throw new Error("the body didn't drop in");

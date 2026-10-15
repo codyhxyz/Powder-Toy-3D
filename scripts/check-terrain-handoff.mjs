@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { bandHandoff, captureMotion, restoreMotion, nativePortalHandoff, startsDescentRun } from '../src/pov/descent/terrainHandoff.js';
 import { createDescentRunner, runSnapshot } from '../src/pov/descent/switch.js';
-const fold = { sourceMinX: -4608, sourceWidth: 9216, thickness: 48 };
+const fold = { sourceMinX: -4608, sourceWidth: 9216, thickness: 48, angleSpan: Math.PI*1.5 };
 const levels = [0, 1, 2].map((i) => ({ key: `r${i}`, name: `Band ${i}`, fold, sourceRegion: { core: [1024 + i * 256, 1280 + i * 256] }, nativePortals: [], toWorld: ([x,y,d]) => [x + 5000, 1024 + i * 256 + 288 - y, d + 2000] }));
 assert.equal(startsDescentRun(null,levels[1],levels),true,'initial band 01 starts a run');
 assert.equal(startsDescentRun(levels[1],levels[0],levels),false,'upward seam into band 00 cannot reset purse');
@@ -33,6 +33,13 @@ const portal = {id:'fixture-native',source:[-677,1100],halfSize:[15,15],target:[
 levels[0].nativePortals=[portal];
 assert.deepEqual(nativePortalHandoff(levels,levels[0],[-677,1100,3.25]).source,[-500,1600,3.25]);
 assert.equal(nativePortalHandoff(levels,levels[0],[-677,1100,3.25]).next,levels[2]);
+const portalMove=nativePortalHandoff(levels,levels[0],[-677,1100,3.25]);
+const oldAngle=1, newAngle=oldAngle+177*fold.angleSpan/fold.sourceWidth;
+const oldYaw=Math.PI-oldAngle;
+assert.ok(Math.abs(oldYaw+portalMove.yawDelta-(Math.PI-newAngle))<1e-12,'native +X facing follows the destination tangent');
+restoreMotion(player,(yaw,pitch)=>{look=[yaw,pitch];},{...motion,yaw:motion.yaw+portalMove.yawDelta},false);
+assert.deepEqual([player.vel.x,player.vel.y,player.vel.z],[0,0,0],'native portal resets momentum');
+assert.equal(look[0],motion.yaw+portalMove.yawDelta);
 assert.equal(nativePortalHandoff(levels,levels[0],[-700,1100,3.25]),null);
 await runner.frame({key:'r0',source:[-677,1100,3.25],live:true,load:3});
 assert.equal(calls[4][1],'r2');

@@ -41,7 +41,9 @@ Never infer missing saved terrain as air.
 4. Apply the separately editable fold configuration.
 5. Load the same raster through matching CPU and GPU fold samplers.
 
-Do not bake steps 1–3 into step 4. Changing a fold must not change source hashes.
+Do not bake steps 1–3 into step 4.
+Changing bend, thickness, or material appearance must not change source hashes.
+The source extent fields control the crop, not just the fold.
 
 ## Fold and streaming contract
 
@@ -60,6 +62,9 @@ Pad beyond the selected source domain with OUTSIDE, never air or terrain.
 The context contains actual neighboring source terrain, never invented overlap.
 Crossing a core boundary loads its neighbor at the SAME source position.
 Preserve depth, facing, velocity, and run inventory on that handoff.
+Keep terrain damage in global brick coordinates across bands and portals.
+Freeze all writers during capture, including event-driven undo.
+Capture and restore in bounded slabs. A complete snapshot removes stale edits.
 Native portal handoffs use native entry and destination source coordinates.
 
 The lateral crop boundary is sealed. Treat its caps as explicit domain boundaries,
@@ -108,7 +113,9 @@ All regions use the same palette and fold. Region keys are stable.
 Data is row-major native material palette indices: `[y,x]`, X fastest.
 Reserve byte 255 for OUTSIDE the selected source domain. This is not air.
 Air is palette entry 0. Limit native palette entries to 255; reject overflow.
-Gzip each raster deterministically. Pad the end to four bytes if needed.
+Align the uncompressed raster to four bytes.
+Gzip each raster deterministically without trailing padding.
+Browser `DecompressionStream` rejects padding after a gzip member.
 The physical-element mapping is in the manifest, not baked into the native raster.
 Keep file names, chunk hashes, coverage, and source limitations in `source`.
 Use `/local-maps/noita-terrain/` for runtime URLs.

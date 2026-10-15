@@ -17,20 +17,25 @@ const raster=async region=>new Uint8Array(await new Response(
 const levels=route.regions.map(r=>({key:r.key,sourceRegion:r,fold:route.fold,nativePortals:route.nativePortals}));
 const start=route.regions.find(r=>r.key===route.startScene);
 assert(start);
-const scene=createTerrainScene(route,start,{fetchWords:async()=>{
-  const bytes=await raster(start), words=new Uint32Array(bytes.length/4), view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+const wordsFrom=bytes=>{
+  const words=new Uint32Array(bytes.length/4), view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   for(let i=0;i<words.length;i++) words[i]=view.getUint32(i*4,true);
   return words;
-}});
+};
+const scene=createTerrainScene(route,start,{fetchWords:async()=>wordsFrom(await raster(start))});
 await scene.prepare();
-const world=scene.toWorld(route.startSource), failures=[];
-for(let x=Math.floor(world[0]-BODY_WIDTH/2);x<Math.ceil(world[0]+BODY_WIDTH/2);x++)
-for(let y=Math.floor(world[1]);y<Math.ceil(world[1]+BODY_HEIGHT);y++)
-for(let z=Math.floor(world[2]-BODY_WIDTH/2);z<Math.ceil(world[2]+BODY_WIDTH/2);z++) {
-  const element=scene.cell(x,y,z), kind=ELEMENTS[element].kind;
-  if(kind===K.SOLID || kind===K.POWDER) failures.push({world:[x,y,z],query:scene.querySource([x+.5,y+.5,z+.5])});
+function bodyClear(scene,source,label) {
+  const world=scene.toWorld(source), failures=[];
+  for(let x=Math.floor(world[0]-BODY_WIDTH/2);x<Math.ceil(world[0]+BODY_WIDTH/2);x++)
+  for(let y=Math.floor(world[1]);y<Math.ceil(world[1]+BODY_HEIGHT);y++)
+  for(let z=Math.floor(world[2]-BODY_WIDTH/2);z<Math.ceil(world[2]+BODY_WIDTH/2);z++) {
+    const kind=ELEMENTS[scene.cell(x,y,z)].kind;
+    if(kind===K.SOLID || kind===K.POWDER) failures.push({world:[x,y,z],query:scene.querySource([x+.5,y+.5,z+.5])});
+  }
+  assert.deepEqual(failures,[],`${label}: full player body must be clear; never repair terrain to pass`);
+  return world;
 }
-assert.deepEqual(failures,[],'full player body must be clear; do not repair terrain to pass');
+const world=bodyClear(scene,route.startSource,'native first arrival');
 let supported=false;
 for(let x=Math.floor(world[0]-BODY_WIDTH/2);x<Math.ceil(world[0]+BODY_WIDTH/2);x++)
 for(let z=Math.floor(world[2]-BODY_WIDTH/2);z<Math.ceil(world[2]+BODY_WIDTH/2);z++) {
@@ -40,10 +45,18 @@ for(let z=Math.floor(world[2]-BODY_WIDTH/2);z<Math.ceil(world[2]+BODY_WIDTH/2);z
 // Native teleport arrival is intentionally airborne; never add support.
 const arrivalSupported=supported;
 let seams=0, previous=null, previousBytes=null;
+const targets=new Set(route.nativePortals.filter(p=>p.enabled).map(p=>route.regions.find(r=>r.core[0]<=p.target[1] && p.target[1]<r.core[1])?.key));
+const targetScenes=new Map();
 for (const region of route.regions) {
   const bytes=await raster(region);
   assert.equal(createHash('sha256').update(bytes).digest('hex'),region.sha256,`native raster hash ${region.key}`);
   for(const n of bytes) if(n!==255 && n>=route.palette.length) assert.fail(`Unknown native palette index ${region.key}: ${n}`);
+  if(region.spawnSupported || targets.has(region.key)) {
+    const s=createTerrainScene(route,region,{fetchWords:async()=>wordsFrom(bytes)});
+    await s.prepare();
+    if(region.spawnSupported) bodyClear(s,region.spawnSource,`${region.key} debug start`);
+    if(targets.has(region.key)) targetScenes.set(region.key,s);
+  }
   if(previous && previous.core[1]===region.core[0]) {
     assert.deepEqual(previousBytes.subarray(256*route.fold.sourceWidth),bytes.subarray(0,64*route.fold.sourceWidth));
     const source=[route.startSource[0],region.core[0]+.125,3.25];
@@ -63,6 +76,7 @@ for(const p of route.nativePortals.filter(p=>p.enabled)) {
   assert(current,`portal ${p.id} needs an entry region`);
   const go=nativePortalHandoff(levels,current,[...p.source,2.5]);
   assert(go,`portal ${p.id} needs a destination region`);
+  bodyClear(targetScenes.get(go.next.key),go.source,`native portal ${p.id} arrival`);
   assert.deepEqual(go.source,[...p.target,2.5]); portals++;
 }
 console.log(`Actual source: full-body start clear at ${route.startSource} (supported=${arrivalSupported}; native airborne arrival preserved); ${seams} byte-identical context seams, bidirectional same-XZ handoffs; ${portals} native portal endpoints passed; start element ${E.EMPTY}`);

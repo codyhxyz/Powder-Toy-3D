@@ -4191,10 +4191,11 @@
       "sha256": "33505dc3e00a70b371a039a05ccb63779db83e1eed4d200d74cc7d17402bfc98",
       "sourceHeight": 320,
       "sourceTop": 992,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -695.5,
-        1156,
+        -277.5,
+        1103,
         0
       ],
       "spawnSupported": true
@@ -4211,10 +4212,11 @@
       "sha256": "42b009ea537618844b21eec55aa60172f74fbeca909e29dc95278de390810f1c",
       "sourceHeight": 320,
       "sourceTop": 1248,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -605.5,
-        1399,
+        -788.5,
+        1385,
         0
       ],
       "spawnSupported": true
@@ -4231,10 +4233,11 @@
       "sha256": "6a8f90c2c4824b7e270ae733efc33282c8f1d454e030ec2a59bd2623422baa67",
       "sourceHeight": 320,
       "sourceTop": 1504,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -676.5,
-        1626,
+        -653.5,
+        1610,
         0
       ],
       "spawnSupported": true
@@ -4251,10 +4254,11 @@
       "sha256": "c569b2142c60cad3f2a14ff80fb6c657156ba6f9d9d904f597c5857f0c8859fd",
       "sourceHeight": 320,
       "sourceTop": 1760,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -672.5,
-        1821,
+        -794.5,
+        2008,
         0
       ],
       "spawnSupported": true
@@ -4271,10 +4275,11 @@
       "sha256": "5377f3c9233fe168d10db0bb3e4413dfde0f5247d12b5c46b8b55c60eab0d52b",
       "sourceHeight": 320,
       "sourceTop": 2016,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -661.5,
-        2230,
+        -589.5,
+        2285,
         0
       ],
       "spawnSupported": true
@@ -4291,10 +4296,11 @@
       "sha256": "e6fed3a7625dff9122feef88135e1ae898dfacf7413d4bcee49ce3785e613153",
       "sourceHeight": 320,
       "sourceTop": 2272,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -676.5,
-        2448,
+        -690.5,
+        2490,
         0
       ],
       "spawnSupported": true
@@ -4311,6 +4317,7 @@
       "sha256": "83700e952273eb00ba859b2faf4e7cd775544391e1390ae9956e5248a5c6ce04",
       "sourceHeight": 320,
       "sourceTop": 2528,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -682.5,
@@ -4331,9 +4338,10 @@
       "sha256": "fff9aa81690cf73b003c01c215afb6e04bb6937fb9d2369d1d441d7de290842b",
       "sourceHeight": 320,
       "sourceTop": 2784,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -678.5,
+        -668.5,
         2947,
         0
       ],
@@ -4351,10 +4359,11 @@
       "sha256": "d3a2ee3af6fc9fba0f18d5398b80849eb73630a85c17d71a7d729972ad3ad1af",
       "sourceHeight": 320,
       "sourceTop": 3040,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -712.5,
-        3287,
+        -744.5,
+        3267,
         0
       ],
       "spawnSupported": true
@@ -4371,10 +4380,11 @@
       "sha256": "35360d63a27eb27afb6efe2953608d23f42722bd2511789d5355849607f5612e",
       "sourceHeight": 320,
       "sourceTop": 3296,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -677.5,
-        3336,
+        -670.5,
+        3351,
         0
       ],
       "spawnSupported": true
@@ -4391,6 +4401,7 @@
       "sha256": "17b57134285b30ac59abf7e583cbddd3b5c46a6eaaa8d34096002d3b06e14527",
       "sourceHeight": 320,
       "sourceTop": 3552,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -713.5,
@@ -4411,10 +4422,11 @@
       "sha256": "02b96a1a4383a15763663dd692af9e60dff0d875bdb4c494b1f3c8c1e2c51a3e",
       "sourceHeight": 320,
       "sourceTop": 3808,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -596.5,
-        4046,
+        -593.5,
+        4037,
         0
       ],
       "spawnSupported": true
@@ -4431,10 +4443,11 @@
       "sha256": "7c624d659bb6e5e0bef5f9fd1594504f5f87e6cc1d571a94a15692a07d5ffaa0",
       "sourceHeight": 320,
       "sourceTop": 4064,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -579.5,
-        4187,
+        -556.5,
+        4178,
         0
       ],
       "spawnSupported": true
@@ -4451,10 +4464,11 @@
       "sha256": "4473497be85dc916c24efa33447606a3b8c296993d39f4ca24d8c8f63ac7ef70",
       "sourceHeight": 320,
       "sourceTop": 4320,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -716.5,
-        4493,
+        -721.5,
+        4487,
         0
       ],
       "spawnSupported": true
@@ -4471,10 +4485,11 @@
       "sha256": "e90c668acd7ea4e2ac7171facc4f9847534976464e71b82aa9aa13687894215f",
       "sourceHeight": 320,
       "sourceTop": 4576,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -697.5,
-        4847,
+        -503.5,
+        4623,
         0
       ],
       "spawnSupported": true
@@ -4491,10 +4506,11 @@
       "sha256": "e7f317f96371850bd861fe883bd34d1fa562983a3cf0c05fb5cf54b2bbb9329c",
       "sourceHeight": 320,
       "sourceTop": 4832,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -734.5,
-        4990,
+        -749.5,
+        4983,
         0
       ],
       "spawnSupported": true
@@ -4511,10 +4527,11 @@
       "sha256": "c9f31a1b4377ad15b7eaaa64d9d159f61b6799cb2d164522534453629b61ef4a",
       "sourceHeight": 320,
       "sourceTop": 5088,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -677.5,
-        5173,
+        -710.5,
+        5262,
         0
       ],
       "spawnSupported": true
@@ -4531,10 +4548,11 @@
       "sha256": "4e6027a1cf4a55389ed584b54e764a55d32115af58181444dd0fcbf81c0d0619",
       "sourceHeight": 320,
       "sourceTop": 5344,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -672.5,
-        5438,
+        -627.5,
+        5436,
         0
       ],
       "spawnSupported": true
@@ -4551,10 +4569,11 @@
       "sha256": "4fa4ea110f8e8dd16a00050bb62ca0d8ab46fc31e096882434b638a2580d61a2",
       "sourceHeight": 320,
       "sourceTop": 5600,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -677.5,
-        5636,
+        -608.5,
+        5767,
         0
       ],
       "spawnSupported": true
@@ -4571,10 +4590,11 @@
       "sha256": "a071689c806a9a5ba2f555f377dc1d7be3e0bc3f18f37bad37215ab31e4d97f2",
       "sourceHeight": 320,
       "sourceTop": 5856,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -662.5,
-        5957,
+        -720.5,
+        6027,
         0
       ],
       "spawnSupported": true
@@ -4591,9 +4611,10 @@
       "sha256": "56f47908da482442492691d9869104dc2fca13d048ef6af9789aaa81e3d0395d",
       "sourceHeight": 320,
       "sourceTop": 6112,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -680.5,
+        -725.5,
         6204,
         0
       ],
@@ -4611,10 +4632,11 @@
       "sha256": "863a495497f4d5933a38be368e66614d936c2d341196ca3dd5038bb87a844435",
       "sourceHeight": 320,
       "sourceTop": 6368,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -680.5,
-        6532,
+        -686.5,
+        6530,
         0
       ],
       "spawnSupported": true
@@ -4631,10 +4653,11 @@
       "sha256": "7bb15c9d82ce68718221e4ae686e6184b35b973915633d6c6576b3345b69de6f",
       "sourceHeight": 320,
       "sourceTop": 6624,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -678.5,
-        6778,
+        -659.5,
+        6777,
         0
       ],
       "spawnSupported": true
@@ -4651,10 +4674,11 @@
       "sha256": "4052011070e5a4377772ad04f99968d14e1807a20153144041bda28caa725032",
       "sourceHeight": 320,
       "sourceTop": 6880,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -670.5,
-        6924,
+        -592.5,
+        6979,
         0
       ],
       "spawnSupported": true
@@ -4671,10 +4695,11 @@
       "sha256": "31b74d9ecea6459b98b31c715e0b4ea85ec5e8643f427c57f4c101a16f18cd10",
       "sourceHeight": 320,
       "sourceTop": 7136,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -670.5,
-        7309,
+        -717.5,
+        7303,
         0
       ],
       "spawnSupported": true
@@ -4691,6 +4716,7 @@
       "sha256": "681dc1730f1ade30e9233243092b4032627b4dc13e3f28ffeda10b67071538e7",
       "sourceHeight": 320,
       "sourceTop": 7392,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -664.5,
@@ -4711,10 +4737,11 @@
       "sha256": "9146c56cfaeaf271a6fee2db4da96cb78b6a4fb5a460a1d89906d88060420082",
       "sourceHeight": 320,
       "sourceTop": 7648,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -685.5,
-        7860,
+        -649.5,
+        7878,
         0
       ],
       "spawnSupported": true
@@ -4731,6 +4758,7 @@
       "sha256": "9dedc0dce1a264526fb2f72700f55ce9cee9cfacb6a2b792c86dd7c657672a28",
       "sourceHeight": 320,
       "sourceTop": 7904,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -665.5,
@@ -4751,10 +4779,11 @@
       "sha256": "6a415cb642f4dd89bfc9b65a0636b4a0cab4bedd6f9438a6b6afbee065e3622a",
       "sourceHeight": 320,
       "sourceTop": 8160,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -645.5,
-        8192,
+        -748.5,
+        8265,
         0
       ],
       "spawnSupported": true
@@ -4771,6 +4800,7 @@
       "sha256": "3715dc50684144e91aa3cf76fc9adaa8e8289715713bfbcdc9640c05d34e6af0",
       "sourceHeight": 320,
       "sourceTop": 8416,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -676.5,
@@ -4791,10 +4821,11 @@
       "sha256": "4d0cfc15f171791d855ceb8d61c3053171242780da310a647acfe96961e7e57a",
       "sourceHeight": 320,
       "sourceTop": 8672,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -677.5,
-        8797,
+        -747.5,
+        8778,
         0
       ],
       "spawnSupported": true
@@ -4811,10 +4842,11 @@
       "sha256": "899bb1280028e2621de0fd63846e3eb9585526d27b66c277a09e3ed297691e6f",
       "sourceHeight": 320,
       "sourceTop": 8928,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -653.5,
-        9034,
+        -577.5,
+        9005,
         0
       ],
       "spawnSupported": true
@@ -4831,10 +4863,11 @@
       "sha256": "cf9cc488c42ef0f56823ba6653806ee405584246eff0ebc02b604657aca255fb",
       "sourceHeight": 320,
       "sourceTop": 9184,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -676.5,
-        9289,
+        -717.5,
+        9437,
         0
       ],
       "spawnSupported": true
@@ -4851,10 +4884,11 @@
       "sha256": "0f5bfab1dc406cdf17a2fae8f2b1de0489f9ce96717aef6e773964a464789315",
       "sourceHeight": 320,
       "sourceTop": 9440,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -678.5,
-        9608,
+        -671.5,
+        9597,
         0
       ],
       "spawnSupported": true
@@ -4871,10 +4905,11 @@
       "sha256": "7c0aea3f5f3fc6bd7788f233a6257d37b46211497ddca180b489c4f3ab5f6ee6",
       "sourceHeight": 320,
       "sourceTop": 9696,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -673.5,
-        9728,
+        -726.5,
+        9737,
         0
       ],
       "spawnSupported": true
@@ -4891,10 +4926,11 @@
       "sha256": "81da2ac386704aa97acab11160b320a7eaad0bcbdf9962caa9b4919b7e43a4c1",
       "sourceHeight": 320,
       "sourceTop": 9952,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -679.5,
-        9998,
+        -664.5,
+        10045,
         0
       ],
       "spawnSupported": true
@@ -4911,10 +4947,11 @@
       "sha256": "7ff73418d52ed05b117b8cc20c7ed57916ed75c35587827fe6ea40e061474cbb",
       "sourceHeight": 320,
       "sourceTop": 10208,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -677.5,
-        10370,
+        -734.5,
+        10300,
         0
       ],
       "spawnSupported": true
@@ -4931,10 +4968,11 @@
       "sha256": "f992b82430a5160362fd9c755e5281cbdde2d6ae7d6f7ca67f673538866ef73a",
       "sourceHeight": 320,
       "sourceTop": 10464,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -687.5,
-        10636,
+        -714.5,
+        10628,
         0
       ],
       "spawnSupported": true
@@ -4951,6 +4989,7 @@
       "sha256": "197d9c4a2018522e84b8b55c7d41e0eaa048d321c82a961614cf34341c412ea5",
       "sourceHeight": 320,
       "sourceTop": 10720,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -676.5,
@@ -4971,10 +5010,11 @@
       "sha256": "9eac85997ee9392b8f4599ee70abc25352e97e1b91fb1d492c476bff9c7da41d",
       "sourceHeight": 320,
       "sourceTop": 10976,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -683.5,
-        11256,
+        -617.5,
+        11154,
         0
       ],
       "spawnSupported": true
@@ -4991,6 +5031,7 @@
       "sha256": "a15964a2c313374fb895bedc56c3ba9d9b00af126a310361dc33e8cf95607e87",
       "sourceHeight": 320,
       "sourceTop": 11232,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -676.5,
@@ -5011,9 +5052,10 @@
       "sha256": "8b991ba3360976e85d1a2e1fc146ec9b00c9c3438f765251dfdb4f87e81f047d",
       "sourceHeight": 320,
       "sourceTop": 11488,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -676.5,
+        -694.5,
         11577,
         0
       ],
@@ -5031,9 +5073,10 @@
       "sha256": "7eb45e378c711b8da8079c8039fea233cfa6ce2263d0e4903770ebac414f27a0",
       "sourceHeight": 320,
       "sourceTop": 11744,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -676.5,
+        -719.5,
         11797,
         0
       ],
@@ -5051,10 +5094,11 @@
       "sha256": "13115b12b7cc20821c40648b534064f5c1d5bc95b3775f9c668983ae2859d43d",
       "sourceHeight": 320,
       "sourceTop": 12000,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -676.5,
-        12276,
+        -649.5,
+        12157,
         0
       ],
       "spawnSupported": true
@@ -5071,10 +5115,11 @@
       "sha256": "472060ce838cebec06834858f32c1b8f16e0adb266e09e6f97531e3a1268ad10",
       "sourceHeight": 320,
       "sourceTop": 12256,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -676.5,
-        12357,
+        -683.5,
+        12356,
         0
       ],
       "spawnSupported": true
@@ -5091,6 +5136,7 @@
       "sha256": "ac78906bad0e3077fb5d810bb8280168c8d08385b26daf08430416de89fc041b",
       "sourceHeight": 320,
       "sourceTop": 12512,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         -663.5,
@@ -5111,9 +5157,10 @@
       "sha256": "5e9ddbbebd3a68bb3fa40b97705835d57ae209e15823fe1fd9f2e81506a631ac",
       "sourceHeight": 320,
       "sourceTop": 12768,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -720.5,
+        -739.5,
         12880,
         0
       ],
@@ -5131,10 +5178,11 @@
       "sha256": "ac4335ca13a416d93d0cb445f4262a0bc769d6b33dda38792f85578e50f33467",
       "sourceHeight": 320,
       "sourceTop": 13024,
+      "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        1.5,
-        13082,
+        1400.5,
+        13064,
         0
       ],
       "spawnSupported": true
@@ -5151,6 +5199,7 @@
       "sha256": "4539b1c9f940ef1edbbbf8e53cd846e98cd92b410b4eea1c91b6686311260ea2",
       "sourceHeight": 320,
       "sourceTop": 13280,
+      "spawnOpenView": false,
       "spawnPolicy": "native-floor",
       "spawnSource": [
         4037.5,
@@ -31058,7 +31107,7 @@
         "source_bytes": 21698
       }
     ],
-    "compiler_sha256": "f70ed3957237ee4a35deae9218b4ae59bf6b5b15a82190826b0723600e2b11be",
+    "compiler_sha256": "eb5ec634eecc0e5e6fa7bc3f76caa8a6ba51dcf03dac3bb1e23263bf315d5e69",
     "configuration": [
       {
         "path": "noita-terrain-source.json",

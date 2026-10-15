@@ -144,6 +144,11 @@ class PublishedChecks(unittest.TestCase):
             self.assertNotIn(255, body)
             if r['spawnSupported']:
                 self.assertTrue(np.all(body == 0))
+            if r.get('spawnOpenView'):
+                ix, iy = int(np.floor(x)) + 4608, int(y) - r['sourceTop']
+                view = a[iy - 12:iy, ix - 2:ix + 21]
+                self.assertEqual(view.shape, (12, 23))
+                self.assertTrue(np.all(view == 0), 'debug camera uses an actual open room, never carved space')
             else:
                 self.assertTrue(all(self.route['palette'][int(i)]['element'] in {0, 7, 8, 9, 10, 73, 74, 75, 79} for i in np.unique(body)))
             if not r['spawnSupported']:

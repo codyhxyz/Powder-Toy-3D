@@ -28,7 +28,8 @@ export function nativePortalHandoff(levels, current, source, feet = null) {
   for (const portal of current.nativePortals ?? []) {
     if (!portal.enabled || minX > portal.source[0]+portal.halfSize[0] || maxX < portal.source[0]-portal.halfSize[0] || minY > portal.source[1]+portal.halfSize[1] || maxY < portal.source[1]-portal.halfSize[1]) continue;
     const next = levels.find((l) => portal.target[1] >= l.sourceRegion.core[0] && portal.target[1] < l.sourceRegion.core[1]);
-    if (next) return { next, source: [portal.target[0], portal.target[1], depth], kind: 'portal', portalId: portal.id, preserveMomentum: false };
+    if (next) return { next, source: [portal.target[0], portal.target[1], depth], kind: 'portal', portalId: portal.id, preserveMomentum: false,
+      yawDelta: -(portal.target[0] - x) * current.fold.angleSpan / current.fold.sourceWidth };
   }
   return null;
 }
