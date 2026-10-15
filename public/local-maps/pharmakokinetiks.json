@@ -21,8 +21,9 @@
     "triangles": 12903,
     "candidates": 6919848,
     "cells": 2029628,
-    "bricks": 23986,
-    "bytes": 13377536
+    "bricks": 24015,
+    "reservedBricks": 29,
+    "bytes": 13392384
   },
   "id": "pharmakokinetiks",
   "name": "Pharmakokinetiks",
@@ -2064,8 +2065,95 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": 5,
+        "motion": {
+          "version": 1,
+          "kind": "sliding",
+          "pivot": [
+            259.6666666666667,
+            65,
+            426.6666666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "translation": [
+            -13.666666666666666,
+            0,
+            0
+          ],
+          "distance": 13.666666666666666,
+          "speed": 6.666666666666667,
+          "sourceSpeed": 2,
+          "speedProperty": "speed",
+          "durationSeconds": 2.05,
+          "autoCloseSeconds": 5,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_5_Elevator_Door/entity_5_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -2,
+              -2,
+              -0.25
+            ],
+            "max": [
+              2,
+              2.0000099999999996,
+              0.25
+            ]
+          },
+          "sourceRebase": [
+            -2,
+            0,
+            -0.25
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Elevator_Door.gd:3-4,17-22,27-37,44-89"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              229.20256505152892,
+              54.86923171819558,
+              421.5358983848622
+            ],
+            "max": [
+              263.1307682818044,
+              75.13076828180442,
+              430.1307682818044
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10534,
+          10535,
+          10536,
+          10537,
+          10538,
+          10539,
+          10540,
+          10541,
+          10542,
+          10543,
+          10544,
+          10545
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_6_Door",
@@ -2137,8 +2225,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            245.08333333333334,
+            61.66666666666667,
+            466.6666666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_6_Door/entity_6_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.125,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.125,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              241.20256505152892,
+              54.86923171819558,
+              459.84329098973785
+            ],
+            "max": [
+              251.90670901026215,
+              68.46410161513776,
+              470.5474349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10546,
+          10547,
+          10548,
+          10549,
+          10550,
+          10551,
+          10552,
+          10553,
+          10554,
+          10555,
+          10556,
+          10557
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_7_Door",
@@ -2234,8 +2404,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            245.08333333333334,
+            61.66666666666667,
+            453.33333333333337
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_7_Door/entity_7_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.125,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.125,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              241.20256505152892,
+              54.86923171819558,
+              446.50995765640454
+            ],
+            "max": [
+              251.90670901026215,
+              68.46410161513776,
+              457.2141016151378
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10558,
+          10559,
+          10560,
+          10561,
+          10562,
+          10563,
+          10564,
+          10565,
+          10566,
+          10567,
+          10568,
+          10569
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_8_Door",
@@ -2331,8 +2583,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            325.08333333333337,
+            91.66666666666667,
+            390
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_8_Door/entity_8_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.125,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.125,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              321.2025650515289,
+              84.86923171819558,
+              383.17662432307117
+            ],
+            "max": [
+              331.90670901026215,
+              98.46410161513776,
+              393.8807682818044
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10570,
+          10571,
+          10572,
+          10573,
+          10574,
+          10575,
+          10576,
+          10577,
+          10578,
+          10579,
+          10580,
+          10581
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_9_Door",
@@ -2428,8 +2762,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            325.08333333333337,
+            91.66666666666667,
+            360
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_9_Door/entity_9_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.125,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.125,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              321.2025650515289,
+              84.86923171819558,
+              353.17662432307117
+            ],
+            "max": [
+              331.90670901026215,
+              98.46410161513776,
+              363.8807682818044
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10582,
+          10583,
+          10584,
+          10585,
+          10586,
+          10587,
+          10588,
+          10589,
+          10590,
+          10591,
+          10592,
+          10593
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_10_Door",
@@ -2489,8 +2905,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            306.33333333333337,
+            91.66666666666667,
+            395.4166666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_10_Door/entity_10_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.125
+            ],
+            "max": [
+              0.5,
+              1.00001,
+              0.125
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              299.5099576564045,
+              84.86923171819558,
+              388.59329098973785
+            ],
+            "max": [
+              310.2141016151378,
+              98.46410161513776,
+              399.2974349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10594,
+          10595,
+          10596,
+          10597,
+          10598,
+          10599,
+          10600,
+          10601,
+          10602,
+          10603,
+          10604,
+          10605
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_11_Door",
@@ -2538,8 +3036,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            279.6666666666667,
+            91.66666666666667,
+            395.4166666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_11_Door/entity_11_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.125
+            ],
+            "max": [
+              0.5,
+              1.00001,
+              0.125
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              272.84329098973785,
+              84.86923171819558,
+              388.59329098973785
+            ],
+            "max": [
+              283.5474349484711,
+              98.46410161513776,
+              399.2974349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10606,
+          10607,
+          10608,
+          10609,
+          10610,
+          10611,
+          10612,
+          10613,
+          10614,
+          10615,
+          10616,
+          10617
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_12_Elevator_Door",
@@ -3187,8 +3767,95 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": 5,
+        "motion": {
+          "version": 1,
+          "kind": "sliding",
+          "pivot": [
+            233,
+            55,
+            301.6666666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "translation": [
+            -13.666666666666666,
+            0,
+            0
+          ],
+          "distance": 13.666666666666666,
+          "speed": 6.666666666666667,
+          "sourceSpeed": 2,
+          "speedProperty": "speed",
+          "durationSeconds": 2.05,
+          "autoCloseSeconds": 5,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_12_Elevator_Door/entity_12_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -2,
+              -2,
+              -0.25
+            ],
+            "max": [
+              2,
+              2.0000099999999996,
+              0.25
+            ]
+          },
+          "sourceRebase": [
+            -2,
+            0,
+            -0.25
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Elevator_Door.gd:3-4,17-22,27-37,44-89"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              202.53589838486224,
+              44.86923171819558,
+              296.53589838486226
+            ],
+            "max": [
+              236.46410161513776,
+              65.13076828180442,
+              305.1307682818044
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10618,
+          10619,
+          10620,
+          10621,
+          10622,
+          10623,
+          10624,
+          10625,
+          10626,
+          10627,
+          10628,
+          10629
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_13_Elevator_Door",
@@ -3428,8 +4095,95 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": 5,
+        "motion": {
+          "version": 1,
+          "kind": "sliding",
+          "pivot": [
+            196.33333333333331,
+            53.333333333333336,
+            395.83333333333337
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "translation": [
+            -7.000000000000001,
+            0,
+            0
+          ],
+          "distance": 7.000000000000001,
+          "speed": 6.666666666666667,
+          "sourceSpeed": 2,
+          "speedProperty": "speed",
+          "durationSeconds": 1.05,
+          "autoCloseSeconds": 5,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_13_Elevator_Door/entity_13_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -1,
+              -1.5,
+              -0.25
+            ],
+            "max": [
+              1,
+              1.50001,
+              0.25
+            ]
+          },
+          "sourceRebase": [
+            -1,
+            0,
+            -0.25
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Elevator_Door.gd:3-4,17-22,27-37,44-89"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              179.20256505152892,
+              44.86923171819558,
+              390.7025650515289
+            ],
+            "max": [
+              199.79743494847108,
+              61.79743494847109,
+              399.2974349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10630,
+          10631,
+          10632,
+          10633,
+          10634,
+          10635,
+          10636,
+          10637,
+          10638,
+          10639,
+          10640,
+          10641
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_56_Door",
@@ -3489,8 +4243,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            250.70833333333334,
+            62.083333333333336,
+            510
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_56_Door/entity_56_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.0625,
+              -0.875,
+              -0.5
+            ],
+            "max": [
+              0.0625,
+              0.8750100000000001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              247.03589838486224,
+              55.702565051528914,
+              503.1960609803036
+            ],
+            "max": [
+              257.5122723530297,
+              68.46410161513776,
+              513.672434948471
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10642,
+          10643,
+          10644,
+          10645,
+          10646,
+          10647,
+          10648,
+          10649,
+          10650,
+          10651,
+          10652,
+          10653
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_57_Door",
@@ -3538,8 +4374,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            250.70833333333334,
+            62.083333333333336,
+            496.6666666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_57_Door/entity_57_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.0625,
+              -0.875,
+              -0.5
+            ],
+            "max": [
+              0.0625,
+              0.8750100000000001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              247.03589838486224,
+              55.702565051528914,
+              489.86272764697026
+            ],
+            "max": [
+              257.5122723530297,
+              68.46410161513776,
+              500.3391016151378
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10654,
+          10655,
+          10656,
+          10657,
+          10658,
+          10659,
+          10660,
+          10661,
+          10662,
+          10663,
+          10664,
+          10665
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_63_Door",
@@ -3635,8 +4553,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            204.25,
+            51.666666666666664,
+            340
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_63_Door/entity_63_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.125,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.125,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              200.36923171819558,
+              44.86923171819558,
+              333.17662432307117
+            ],
+            "max": [
+              211.0733756769288,
+              58.46410161513775,
+              343.8807682818044
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10722,
+          10723,
+          10724,
+          10725,
+          10726,
+          10727,
+          10728,
+          10729,
+          10730,
+          10731,
+          10732,
+          10733
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_64_Door",
@@ -3732,8 +4732,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            325.08333333333337,
+            91.66666666666667,
+            323.3333333333333
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_64_Door/entity_64_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.125,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.125,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              321.2025650515289,
+              84.86923171819558,
+              316.50995765640454
+            ],
+            "max": [
+              331.90670901026215,
+              98.46410161513776,
+              327.21410161513774
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          10734,
+          10735,
+          10736,
+          10737,
+          10738,
+          10739,
+          10740,
+          10741,
+          10742,
+          10743,
+          10744,
+          10745
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_71_DivineDoor",
@@ -3793,8 +4875,13 @@
         "requirement": "Requires intact soul (unsupported)",
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": null,
+        "diagnostics": [
+          "Unsupported source progression gate"
+        ],
+        "appearanceTriangleIndices": [],
         "ownershipWarning": null,
-        "adaptation": "Closed; original progression is not implemented"
+        "adaptation": "Closed; unsupported source motion or progression; see diagnostics"
       },
       {
         "sourcePath": "QodotMap/entity_83_Door",
@@ -3842,8 +4929,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            234.45833333333334,
+            91.66666666666667,
+            326.6666666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_83_Door/entity_83_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.0625,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.0625,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              230.78589838486224,
+              84.86923171819558,
+              319.8627276469703
+            ],
+            "max": [
+              241.26227235302972,
+              98.46410161513776,
+              330.33910161513774
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11478,
+          11479,
+          11480,
+          11481,
+          11482,
+          11483,
+          11484,
+          11485,
+          11486,
+          11487,
+          11488,
+          11489
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_85_Door",
@@ -3903,8 +5072,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            234.45833333333334,
+            91.66666666666667,
+            385
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_85_Door/entity_85_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.0625,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.0625,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              230.78589838486224,
+              84.86923171819558,
+              378.1960609803036
+            ],
+            "max": [
+              241.26227235302972,
+              98.46410161513776,
+              388.6724349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11502,
+          11503,
+          11504,
+          11505,
+          11506,
+          11507,
+          11508,
+          11509,
+          11510,
+          11511,
+          11512,
+          11513
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_91_Door",
@@ -3964,8 +5215,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            127.79166666666666,
+            51.666666666666664,
+            370
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_91_Door/entity_91_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.0625,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.0625,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              124.11923171819556,
+              44.86923171819558,
+              363.1960609803036
+            ],
+            "max": [
+              134.59560568636306,
+              58.46410161513775,
+              373.6724349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11550,
+          11551,
+          11552,
+          11553,
+          11554,
+          11555,
+          11556,
+          11557,
+          11558,
+          11559,
+          11560,
+          11561
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_92_Door",
@@ -4061,8 +5394,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            176.75,
+            51.666666666666664,
+            363.33333333333337
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_92_Door/entity_92_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.125,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.125,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              172.86923171819558,
+              44.86923171819558,
+              356.5099576564045
+            ],
+            "max": [
+              183.5733756769288,
+              58.46410161513775,
+              367.2141016151378
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11562,
+          11563,
+          11564,
+          11565,
+          11566,
+          11567,
+          11568,
+          11569,
+          11570,
+          11571,
+          11572,
+          11573
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_93_Door",
@@ -4110,8 +5525,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            149.66666666666666,
+            51.666666666666664,
+            380.625
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_93_Door/entity_93_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.0625
+            ],
+            "max": [
+              0.5,
+              1.00001,
+              0.0625
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              142.86272764697028,
+              44.86923171819558,
+              373.8210609803036
+            ],
+            "max": [
+              153.33910161513774,
+              58.46410161513775,
+              384.2974349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11574,
+          11575,
+          11576,
+          11577,
+          11578,
+          11579,
+          11580,
+          11581,
+          11582,
+          11583,
+          11584,
+          11585
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_95_Door",
@@ -4171,8 +5668,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            136.33333333333331,
+            51.666666666666664,
+            427.2916666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_95_Door/entity_95_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.0625
+            ],
+            "max": [
+              0.5,
+              1.00001,
+              0.0625
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              129.52939431363694,
+              44.86923171819558,
+              420.48772764697026
+            ],
+            "max": [
+              140.00576828180442,
+              58.46410161513775,
+              430.9641016151378
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11586,
+          11587,
+          11588,
+          11589,
+          11590,
+          11591,
+          11592,
+          11593,
+          11594,
+          11595,
+          11596,
+          11597
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_99_Door",
@@ -4244,8 +5823,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            206.125,
+            95,
+            466.6666666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_99_Door/entity_99_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.0625,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.0625,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              202.45256505152892,
+              88.20256505152892,
+              459.86272764697026
+            ],
+            "max": [
+              212.92893901969637,
+              101.79743494847109,
+              470.3391016151378
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11622,
+          11623,
+          11624,
+          11625,
+          11626,
+          11627,
+          11628,
+          11629,
+          11630,
+          11631,
+          11632,
+          11633
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_100_Door",
@@ -4305,8 +5966,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            153,
+            51.666666666666664,
+            443.5416666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_100_Door/entity_100_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.0625
+            ],
+            "max": [
+              0.5,
+              1.00001,
+              0.0625
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              146.19606098030363,
+              44.86923171819558,
+              436.73772764697026
+            ],
+            "max": [
+              156.6724349484711,
+              58.46410161513775,
+              447.2141016151378
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          11634,
+          11635,
+          11636,
+          11637,
+          11638,
+          11639,
+          11640,
+          11641,
+          11642,
+          11643,
+          11644,
+          11645
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_150_Door",
@@ -4378,8 +6121,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            149.66666666666666,
+            95,
+            483.125
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_150_Door/entity_150_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.0625
+            ],
+            "max": [
+              0.5,
+              1.00001,
+              0.0625
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              142.86272764697028,
+              88.20256505152892,
+              476.3210609803036
+            ],
+            "max": [
+              153.33910161513774,
+              101.79743494847109,
+              486.7974349484711
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          12486,
+          12487,
+          12488,
+          12489,
+          12490,
+          12491,
+          12492,
+          12493,
+          12494,
+          12495,
+          12496,
+          12497
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_153_Door",
@@ -4451,8 +6276,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            176.125,
+            95,
+            446.6666666666667
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_153_Door/entity_153_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.0625,
+              -1,
+              -0.5
+            ],
+            "max": [
+              0.0625,
+              1.00001,
+              0.5
+            ]
+          },
+          "sourceRebase": [
+            0,
+            0,
+            -0.5
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              172.4525650515289,
+              88.20256505152892,
+              439.86272764697026
+            ],
+            "max": [
+              182.92893901969637,
+              101.79743494847109,
+              450.3391016151378
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          12498,
+          12499,
+          12500,
+          12501,
+          12502,
+          12503,
+          12504,
+          12505,
+          12506,
+          12507,
+          12508,
+          12509
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_154_ProfaneDoor",
@@ -4548,8 +6455,13 @@
         "requirement": "Requires husk mode (unsupported)",
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": null,
+        "diagnostics": [
+          "Unsupported source progression gate"
+        ],
+        "appearanceTriangleIndices": [],
         "ownershipWarning": null,
-        "adaptation": "Closed; original progression is not implemented"
+        "adaptation": "Closed; unsupported source motion or progression; see diagnostics"
       },
       {
         "sourcePath": "QodotMap/entity_159_Door",
@@ -4609,8 +6521,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            123,
+            51.666666666666664,
+            496.45833333333337
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_159_Door/entity_159_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.0625
+            ],
+            "max": [
+              0.5,
+              1.00001,
+              0.0625
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              116.1960609803036,
+              44.86923171819558,
+              489.65439431363694
+            ],
+            "max": [
+              126.67243494847109,
+              58.46410161513775,
+              500.1307682818044
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          12834,
+          12835,
+          12836,
+          12837,
+          12838,
+          12839,
+          12840,
+          12841,
+          12842,
+          12843,
+          12844,
+          12845
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_160_Door",
@@ -4706,8 +6700,90 @@
         "requirement": null,
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": {
+          "version": 1,
+          "kind": "swing",
+          "pivot": [
+            218,
+            51.666666666666664,
+            239.06231666886666
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "angleRadians": -1.5707963267948966,
+          "speed": 2,
+          "sourceSpeed": 2,
+          "speedProperty": "rotation_speed",
+          "durationSeconds": 0.7853981633974483,
+          "autoCloseSeconds": null,
+          "switchUseAutoCloseSeconds": null,
+          "closedSourceOffset": [
+            0,
+            0,
+            0
+          ],
+          "selectedMesh": "QodotMap/entity_160_Door/entity_160_mesh_instance",
+          "rawLocalBounds": {
+            "min": [
+              -0.5,
+              -1,
+              -0.21875
+            ],
+            "max": [
+              0.5000100000000001,
+              1.0000100136,
+              0.21875999868
+            ]
+          },
+          "sourceRebase": [
+            -0.5,
+            0,
+            0.000004999340000005903
+          ],
+          "defaults": {
+            "rotation_speed": 2,
+            "speed": 2,
+            "clearance": 0.1,
+            "autoCloseSeconds": 5
+          },
+          "defaultCitations": [
+            "Scripts/Door.gd:5-6,26-40,55-64"
+          ],
+          "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation",
+          "units": "world-cells; radians; seconds",
+          "sweptBounds": {
+            "min": [
+              211.1237407915624,
+              44.86923171819558,
+              232.18606458271807
+            ],
+            "max": [
+              222.19325161733775,
+              58.46410161513775,
+              243.25560161513775
+            ]
+          }
+        },
+        "diagnostics": [],
+        "appearanceTriangleIndices": [
+          12846,
+          12847,
+          12848,
+          12849,
+          12850,
+          12851,
+          12852,
+          12853,
+          12854,
+          12855,
+          12856,
+          12857
+        ],
         "ownershipWarning": null,
-        "adaptation": "Instant voxel retraction; no moving leaf, source hinge/speed/audio not simulated"
+        "adaptation": "Nominal clamped endpoint; no one-tick overshoot or stop/toggle quirk; timer measured from activation"
       },
       {
         "sourcePath": "QodotMap/entity_161_Terror_Door",
@@ -5163,8 +7239,13 @@
         "requirement": "Requires hope discarded (unsupported)",
         "sourceProperties": {},
         "autoCloseSeconds": null,
+        "motion": null,
+        "diagnostics": [
+          "Unsupported source progression gate"
+        ],
+        "appearanceTriangleIndices": [],
         "ownershipWarning": null,
-        "adaptation": "Closed; original progression is not implemented"
+        "adaptation": "Closed; unsupported source motion or progression; see diagnostics"
       }
     ],
     "ladders": [
@@ -5381,63 +7462,63 @@
         "sourceResource": "res://Scripts/Elevator_Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_6_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_7_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_8_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_9_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_10_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_11_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_12_Elevator_Door",
         "sourceResource": "res://Scripts/Elevator_Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_13_Elevator_Door",
         "sourceResource": "res://Scripts/Elevator_Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_14_E_Civilian1",
@@ -5738,14 +7819,14 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_57_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_58_Destructible",
@@ -5787,14 +7868,14 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_64_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_65_E_Elite",
@@ -5920,7 +8001,7 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_84_Destructible",
@@ -5934,7 +8015,7 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_86_random_food",
@@ -5976,21 +8057,21 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_92_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_93_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_94_E_Security",
@@ -6004,7 +8085,7 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_96_E_Grunt",
@@ -6032,14 +8113,14 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_100_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_101_random_food",
@@ -6347,7 +8428,7 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_151_E_Grunt",
@@ -6368,7 +8449,7 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_154_ProfaneDoor",
@@ -6382,14 +8463,14 @@
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_160_Door",
         "sourceResource": "res://Scripts/Door.gd",
         "sourceProperties": {},
         "sourceYaw": 0,
-        "treatment": "exclusive-cell-voxel-retraction"
+        "treatment": "source-rigid-voxel-leaf-motion"
       },
       {
         "sourcePath": "QodotMap/entity_161_Terror_Door",
@@ -9943,7 +12024,7 @@
   "limitations": [
     "Embedded level geometry only: external PackedScene props, actors, and scripts are not executed or expanded.",
     "Surface voxels preserve authored triangles within cell resolution; enclosed interiors are not flood-filled.",
-    "Ordinary and elevator doors use exclusive-cell voxel retraction, not animated swing/slide; elevator doors close after 5 seconds when safely resident. Special gates retain unsupported progression requirements. Elevator platforms and other scripted movers remain at rest; see interactions.inventory.",
+    "Supported ordinary doors carry source-derived rigid motion descriptors, exclusive voxel ownership, reserved empty swept bricks and fixed appearance triangle envelopes. Timed doors close 5 seconds from activation (vertical switch_use has no timer). Unsupported transforms and special progression gates remain closed with diagnostics. Other scripted movers remain at rest; see interactions.inventory.",
     "Actor source pivots are preserved in sourceAt; fixed X/Z feet require SOLID support and full ordinary body clearance within 3 meters below. Obstructed guards are explicit placementFailures; obstructed targets/spawn disable mission eligibility.",
     "All authored normal exits are retained in extractions; exact bounds take precedence over inscribed cylinder compatibility fields.",
     "NPC types/weapons are destination representations, not original AI parity; unsupported and hell/chaos actors remain in sourceActors inventory.",
@@ -9953,14 +12034,14 @@
     "version": 1,
     "encoding": "source-triangle-appearance-u32-v1",
     "compression": "gzip",
-    "totalWords": 3289774,
-    "wordCount": 3289774,
+    "totalWords": 3294401,
+    "wordCount": 3294401,
     "triangleCount": 12903,
     "materialCount": 71,
     "lightCount": 1,
     "maxBrickTriangles": 157,
     "brickCount": 274176,
-    "occupiedBricks": 23986,
+    "occupiedBricks": 24015,
     "materials": [
       {
         "index": 0,
@@ -9989,7 +12070,7 @@
         "flags": 4194564,
         "mode": 0,
         "parameters": {},
-        "textureAt": 705070,
+        "textureAt": 709697,
         "texture": {
           "identity": "res://Maps/textures/base/Marble1.png",
           "width": 128,
@@ -10055,7 +12136,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 721454,
+        "textureAt": 726081,
         "texture": {
           "identity": "res://Maps/textures/base/star_tile.png",
           "width": 128,
@@ -10127,7 +12208,7 @@
         "flags": 37748740,
         "mode": 0,
         "parameters": {},
-        "textureAt": 737838,
+        "textureAt": 742465,
         "texture": {
           "identity": "res://Maps/textures/base/Wood2.png",
           "width": 128,
@@ -10193,7 +12274,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 754222,
+        "textureAt": 758849,
         "texture": {
           "identity": "res://Maps/textures/base/Diamond_Tile.png",
           "width": 128,
@@ -10259,7 +12340,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 770606,
+        "textureAt": 775233,
         "texture": {
           "identity": "res://Maps/textures/base/Stone2.png",
           "width": 128,
@@ -10325,7 +12406,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 786990,
+        "textureAt": 791617,
         "texture": {
           "identity": "res://Maps/textures/base/Stone4.png",
           "width": 129,
@@ -10420,7 +12501,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 803502,
+        "textureAt": 808129,
         "texture": {
           "identity": "res://Maps/textures/base/MarbleFace1.png",
           "width": 128,
@@ -10486,7 +12567,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 819886,
+        "textureAt": 824513,
         "texture": {
           "identity": "res://Maps/textures/base/Stone2face.png",
           "width": 128,
@@ -10552,7 +12633,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 836270,
+        "textureAt": 840897,
         "texture": {
           "identity": "res://Maps/textures/base/plain_wall.png",
           "width": 128,
@@ -10618,7 +12699,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 852654,
+        "textureAt": 857281,
         "texture": {
           "identity": "res://Maps/textures/base/Teal_Tile2.png",
           "width": 128,
@@ -10684,7 +12765,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 869038,
+        "textureAt": 873665,
         "texture": {
           "identity": "res://Maps/textures/base/Granite1.png",
           "width": 128,
@@ -10750,7 +12831,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 885422,
+        "textureAt": 890049,
         "texture": {
           "identity": "res://Maps/textures/base/psycho_tile.png",
           "width": 128,
@@ -10816,7 +12897,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 901806,
+        "textureAt": 906433,
         "texture": {
           "identity": "res://Maps/textures/base/RedWall.png",
           "width": 64,
@@ -10882,7 +12963,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 905902,
+        "textureAt": 910529,
         "texture": {
           "identity": "res://Maps/textures/base/non_slip_tile.png",
           "width": 128,
@@ -10948,7 +13029,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 922286,
+        "textureAt": 926913,
         "texture": {
           "identity": "res://Maps/textures/base/cyber_2.png",
           "width": 128,
@@ -11014,7 +13095,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 938670,
+        "textureAt": 943297,
         "texture": {
           "identity": "res://Maps/textures/base/cyber_1.png",
           "width": 128,
@@ -11080,7 +13161,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 955054,
+        "textureAt": 959681,
         "texture": {
           "identity": "res://Maps/textures/base/frog1.png",
           "width": 128,
@@ -11182,7 +13263,7 @@
         "flags": 276,
         "mode": 0,
         "parameters": {},
-        "textureAt": 971438,
+        "textureAt": 976065,
         "texture": {
           "identity": "res://Maps/textures/base/mosaic_1.png",
           "width": 128,
@@ -11248,7 +13329,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 987822,
+        "textureAt": 992449,
         "texture": {
           "identity": "res://Maps/textures/base/rug1.png",
           "width": 256,
@@ -11314,7 +13395,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1053358,
+        "textureAt": 1057985,
         "texture": {
           "identity": "res://Maps/textures/base/Wall_Crusty.png",
           "width": 128,
@@ -11380,7 +13461,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1069742,
+        "textureAt": 1074369,
         "texture": {
           "identity": "res://Maps/textures/base/TealWall.png",
           "width": 64,
@@ -11446,7 +13527,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1073838,
+        "textureAt": 1078465,
         "texture": {
           "identity": "res://Maps/textures/base/Wall_Crusty_face.png",
           "width": 128,
@@ -11512,7 +13593,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1090222,
+        "textureAt": 1094849,
         "texture": {
           "identity": "res://Maps/textures/base/Stone_Wall_1.png",
           "width": 128,
@@ -11611,7 +13692,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1106606,
+        "textureAt": 1111233,
         "texture": {
           "identity": "res://Maps/textures/base/grass.png",
           "width": 128,
@@ -11677,7 +13758,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1122990,
+        "textureAt": 1127617,
         "texture": {
           "identity": "res://Maps/textures/base/Stone_wall_2.png",
           "width": 128,
@@ -11743,7 +13824,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1139374,
+        "textureAt": 1144001,
         "texture": {
           "identity": "res://Maps/textures/base/freak_tile.png",
           "width": 128,
@@ -11809,7 +13890,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1155758,
+        "textureAt": 1160385,
         "texture": {
           "identity": "res://Maps/textures/base/grate.png",
           "width": 128,
@@ -11875,7 +13956,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1172142,
+        "textureAt": 1176769,
         "texture": {
           "identity": "res://Maps/textures/base/Wood1.png",
           "width": 128,
@@ -11941,7 +14022,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1188526,
+        "textureAt": 1193153,
         "texture": {
           "identity": "res://Maps/textures/base/building_2.png",
           "width": 256,
@@ -12007,7 +14088,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1254062,
+        "textureAt": 1258689,
         "texture": {
           "identity": "res://Maps/textures/base/BlackWall.png",
           "width": 64,
@@ -12073,7 +14154,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1258158,
+        "textureAt": 1262785,
         "texture": {
           "identity": "res://Maps/textures/base/Tile_Wall.png",
           "width": 128,
@@ -12139,7 +14220,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1274542,
+        "textureAt": 1279169,
         "texture": {
           "identity": "res://Maps/textures/base/building_1.png",
           "width": 256,
@@ -12205,7 +14286,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1340078,
+        "textureAt": 1344705,
         "texture": {
           "identity": "res://Maps/textures/base/building_3_no_logo.png",
           "width": 256,
@@ -12271,7 +14352,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1405614,
+        "textureAt": 1410241,
         "texture": {
           "identity": "res://Maps/textures/base/airduct.png",
           "width": 128,
@@ -12343,7 +14424,7 @@
         "flags": 4194580,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1421998,
+        "textureAt": 1426625,
         "texture": {
           "identity": "res://Maps/textures/base/Marble1red.png",
           "width": 128,
@@ -12380,7 +14461,7 @@
             }
           ]
         },
-        "roughnessTextureAt": 705070,
+        "roughnessTextureAt": 709697,
         "roughnessTexture": {
           "identity": "res://Maps/textures/base/Marble1.png",
           "width": 128,
@@ -12444,7 +14525,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1438382,
+        "textureAt": 1443009,
         "texture": {
           "identity": "res://Maps/textures/base/cobble1.png",
           "width": 128,
@@ -12511,7 +14592,7 @@
         "flags": 277,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1454766,
+        "textureAt": 1459393,
         "texture": {
           "identity": "res://Maps/textures/base/chainlink.png",
           "width": 64,
@@ -12578,7 +14659,7 @@
         "flags": 790,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1458862,
+        "textureAt": 1463489,
         "texture": {
           "identity": "res://Maps/textures/base/noise.tres::1",
           "width": 256,
@@ -12641,7 +14722,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1655470,
+        "textureAt": 1660097,
         "texture": {
           "identity": "res://Maps/textures/base/plain_wall_dark.png",
           "width": 128,
@@ -12707,7 +14788,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1671854,
+        "textureAt": 1676481,
         "texture": {
           "identity": "res://Maps/textures/base/maario.png",
           "width": 128,
@@ -12773,7 +14854,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1688238,
+        "textureAt": 1692865,
         "texture": {
           "identity": "res://Maps/textures/base/alien_1.png",
           "width": 128,
@@ -12839,7 +14920,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1704622,
+        "textureAt": 1709249,
         "texture": {
           "identity": "res://Maps/textures/base/greenplank.png",
           "width": 128,
@@ -12909,7 +14990,7 @@
         "flags": 4194580,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1721006,
+        "textureAt": 1725633,
         "texture": {
           "identity": "res://Maps/textures/base/Marble1green.png",
           "width": 128,
@@ -12975,7 +15056,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1737390,
+        "textureAt": 1742017,
         "texture": {
           "identity": "res://Maps/textures/base/Granite2.png",
           "width": 128,
@@ -13041,7 +15122,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1753774,
+        "textureAt": 1758401,
         "texture": {
           "identity": "res://Maps/textures/base/Teal_Tile.png",
           "width": 64,
@@ -13117,7 +15198,7 @@
           "snapRes": "50.0",
           "albedoTex": "ExtResource( 1 )"
         },
-        "textureAt": 1757870,
+        "textureAt": 1762497,
         "texture": {
           "identity": "res://Maps/textures/base/flesh.png",
           "width": 128,
@@ -13183,7 +15264,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1774254,
+        "textureAt": 1778881,
         "texture": {
           "identity": "res://Maps/textures/base/chessboard.png",
           "width": 128,
@@ -13249,7 +15330,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1790638,
+        "textureAt": 1795265,
         "texture": {
           "identity": "res://Maps/textures/pyramid/dirt1.png",
           "width": 128,
@@ -13315,7 +15396,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1807022,
+        "textureAt": 1811649,
         "texture": {
           "identity": "res://Maps/textures/base/bluewall.png",
           "width": 64,
@@ -13381,7 +15462,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1811118,
+        "textureAt": 1815745,
         "texture": {
           "identity": "res://Maps/textures/base/building_3.png",
           "width": 256,
@@ -13447,7 +15528,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1876654,
+        "textureAt": 1881281,
         "texture": {
           "identity": "res://Maps/textures/base/OliveWall.png",
           "width": 64,
@@ -13513,7 +15594,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1880750,
+        "textureAt": 1885377,
         "texture": {
           "identity": "res://Maps/textures/office/3.png",
           "width": 128,
@@ -13579,7 +15660,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1897134,
+        "textureAt": 1901761,
         "texture": {
           "identity": "res://Maps/textures/office/4.png",
           "width": 128,
@@ -13645,7 +15726,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1913518,
+        "textureAt": 1918145,
         "texture": {
           "identity": "res://Maps/textures/office/2.png",
           "width": 128,
@@ -13744,7 +15825,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1929902,
+        "textureAt": 1934529,
         "texture": {
           "identity": "res://Maps/textures/base/bl_red_cyan.png",
           "width": 128,
@@ -13810,7 +15891,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1946286,
+        "textureAt": 1950913,
         "texture": {
           "identity": "res://Maps/textures/base/red_water.png",
           "width": 64,
@@ -13876,7 +15957,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1950382,
+        "textureAt": 1955009,
         "texture": {
           "identity": "res://Maps/textures/base/Stone_Tile.png",
           "width": 128,
@@ -13942,7 +16023,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1966766,
+        "textureAt": 1971393,
         "texture": {
           "identity": "res://Maps/textures/base/flesh2.png",
           "width": 128,
@@ -14008,7 +16089,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1983150,
+        "textureAt": 1987777,
         "texture": {
           "identity": "res://Maps/textures/base/greenwall.png",
           "width": 64,
@@ -14084,7 +16165,7 @@
           "snapRes": "50.0",
           "albedoTex": "ExtResource( 2 )"
         },
-        "textureAt": 1987246,
+        "textureAt": 1991873,
         "texture": {
           "identity": "res://Maps/textures/base/water.png",
           "width": 64,
@@ -14150,7 +16231,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 1991342,
+        "textureAt": 1995969,
         "texture": {
           "identity": "res://Maps/textures/base/Wood_Door2.png",
           "width": 128,
@@ -14216,7 +16297,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 2007726,
+        "textureAt": 2012353,
         "texture": {
           "identity": "res://Maps/textures/base/metal_door.png",
           "width": 128,
@@ -14282,7 +16363,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 2024110,
+        "textureAt": 2028737,
         "texture": {
           "identity": "res://Maps/textures/base/GreyWall.png",
           "width": 64,
@@ -14348,7 +16429,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 2028206,
+        "textureAt": 2032833,
         "texture": {
           "identity": "res://Maps/textures/base/divinedoor.png",
           "width": 256,
@@ -14414,7 +16495,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 2093742,
+        "textureAt": 2098369,
         "texture": {
           "identity": "res://Maps/textures/base/profanedoor.png",
           "width": 256,
@@ -14480,7 +16561,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 2159278,
+        "textureAt": 2163905,
         "texture": {
           "identity": "res://Maps/textures/base/catacomb.png",
           "width": 128,
@@ -14546,7 +16627,7 @@
         "flags": 260,
         "mode": 0,
         "parameters": {},
-        "textureAt": 2175662,
+        "textureAt": 2180289,
         "texture": {
           "identity": "res://Maps/textures/base/helldoor.png",
           "width": 256,
@@ -14593,7 +16674,7 @@
     ],
     "textures": [
       {
-        "at": 705070,
+        "at": 709697,
         "words": 16384,
         "sha256": "f7e97717b34df9cc6a7aa11065ed0b3ab48c08b2188cad712f43fe500a783cb5",
         "identity": "res://Maps/textures/base/Marble1.png",
@@ -14632,7 +16713,7 @@
         ]
       },
       {
-        "at": 721454,
+        "at": 726081,
         "words": 16384,
         "sha256": "f504cadb64c72b96c06d6635233a1e2ba152fea7b252aaa40478196a458ad612",
         "identity": "res://Maps/textures/base/star_tile.png",
@@ -14671,7 +16752,7 @@
         ]
       },
       {
-        "at": 737838,
+        "at": 742465,
         "words": 16384,
         "sha256": "71b0d9d19cd96fec2d63e004bdaffad423f87d335a9f57301b99e411669cbe4e",
         "identity": "res://Maps/textures/base/Wood2.png",
@@ -14710,7 +16791,7 @@
         ]
       },
       {
-        "at": 754222,
+        "at": 758849,
         "words": 16384,
         "sha256": "b5b7ff8132631a1fd35865bb3d362323b0f958e448845062785b5187feb310df",
         "identity": "res://Maps/textures/base/Diamond_Tile.png",
@@ -14749,7 +16830,7 @@
         ]
       },
       {
-        "at": 770606,
+        "at": 775233,
         "words": 16384,
         "sha256": "84035c3324cdc519228aee3ef4cfc93f5ea2c73abcac5f76474cdca4ad3c1a2e",
         "identity": "res://Maps/textures/base/Stone2.png",
@@ -14788,7 +16869,7 @@
         ]
       },
       {
-        "at": 786990,
+        "at": 791617,
         "words": 16512,
         "sha256": "feeea71a50bf45344dff830d537817d87510e9faa69b1f3cceb42b75daaf407c",
         "identity": "res://Maps/textures/base/Stone4.png",
@@ -14827,7 +16908,7 @@
         ]
       },
       {
-        "at": 803502,
+        "at": 808129,
         "words": 16384,
         "sha256": "d258862880b8d61c6c00774980ba38ec6ce44ce446c115a76b9627b071e238ca",
         "identity": "res://Maps/textures/base/MarbleFace1.png",
@@ -14866,7 +16947,7 @@
         ]
       },
       {
-        "at": 819886,
+        "at": 824513,
         "words": 16384,
         "sha256": "7756ebcb61f70dba5f07dc1e3d994b6b3ef276ca8d9df51b5d6bdef37e19fb54",
         "identity": "res://Maps/textures/base/Stone2face.png",
@@ -14905,7 +16986,7 @@
         ]
       },
       {
-        "at": 836270,
+        "at": 840897,
         "words": 16384,
         "sha256": "602300a417a2b883adddc495acfacc8c3e4d99eebfbb0fb1619ee8801c160ddb",
         "identity": "res://Maps/textures/base/plain_wall.png",
@@ -14944,7 +17025,7 @@
         ]
       },
       {
-        "at": 852654,
+        "at": 857281,
         "words": 16384,
         "sha256": "2a7a4cdd90fc7d6c7b6d95b80aac17b083ca1966cc5dd60da60d0665f4055dc3",
         "identity": "res://Maps/textures/base/Teal_Tile2.png",
@@ -14983,7 +17064,7 @@
         ]
       },
       {
-        "at": 869038,
+        "at": 873665,
         "words": 16384,
         "sha256": "93d93e4476e1432e83c589849d3ed5f41c04a0c742bf7b7fc666cf561c46e4e1",
         "identity": "res://Maps/textures/base/Granite1.png",
@@ -15022,7 +17103,7 @@
         ]
       },
       {
-        "at": 885422,
+        "at": 890049,
         "words": 16384,
         "sha256": "5a04b31c14c430a129461e9a1d16da0ae7d310d145a8ca6ea977cbb830077cae",
         "identity": "res://Maps/textures/base/psycho_tile.png",
@@ -15061,7 +17142,7 @@
         ]
       },
       {
-        "at": 901806,
+        "at": 906433,
         "words": 4096,
         "sha256": "f5dab1b56b39822c56936808a2fb38d4a4f1d512bcfe2b4ee9ca691ebe9d4a7a",
         "identity": "res://Maps/textures/base/RedWall.png",
@@ -15100,7 +17181,7 @@
         ]
       },
       {
-        "at": 905902,
+        "at": 910529,
         "words": 16384,
         "sha256": "9307cea4806b5e56b3e867c90f2b5f18403ebae80c791662508d60fe57ac34db",
         "identity": "res://Maps/textures/base/non_slip_tile.png",
@@ -15139,7 +17220,7 @@
         ]
       },
       {
-        "at": 922286,
+        "at": 926913,
         "words": 16384,
         "sha256": "2eefc0f38d317cae4cb70710f2a0c54641b80118a5d26e2f60fcb9447a1f2c9a",
         "identity": "res://Maps/textures/base/cyber_2.png",
@@ -15178,7 +17259,7 @@
         ]
       },
       {
-        "at": 938670,
+        "at": 943297,
         "words": 16384,
         "sha256": "fab98e733b056a9bdda2eb9ae982c1e78cd7346682a7bd60a63d23c30f4cfb01",
         "identity": "res://Maps/textures/base/cyber_1.png",
@@ -15217,7 +17298,7 @@
         ]
       },
       {
-        "at": 955054,
+        "at": 959681,
         "words": 16384,
         "sha256": "600c0516b13653ea98270dd66bf20b39b7d892a6c44f253cd4b800f6b20c7c89",
         "identity": "res://Maps/textures/base/frog1.png",
@@ -15256,7 +17337,7 @@
         ]
       },
       {
-        "at": 971438,
+        "at": 976065,
         "words": 16384,
         "sha256": "ecf76f8056f10e18f5ceb1fb4fa190f58555f4999100e05a41208afb1a7a8a36",
         "identity": "res://Maps/textures/base/mosaic_1.png",
@@ -15295,7 +17376,7 @@
         ]
       },
       {
-        "at": 987822,
+        "at": 992449,
         "words": 65536,
         "sha256": "17b5c2e4cf33ef8e52c12e9d902cf6dd03abf25a31272d62969850592f6b8a54",
         "identity": "res://Maps/textures/base/rug1.png",
@@ -15334,7 +17415,7 @@
         ]
       },
       {
-        "at": 1053358,
+        "at": 1057985,
         "words": 16384,
         "sha256": "0d7c466cd7f79e7b252255b71a02a8c006824be5fd8f6c7fafb7ccad21598ab8",
         "identity": "res://Maps/textures/base/Wall_Crusty.png",
@@ -15373,7 +17454,7 @@
         ]
       },
       {
-        "at": 1069742,
+        "at": 1074369,
         "words": 4096,
         "sha256": "c3f6744d51425bf802358f4f548ed3cc79a33e60bef27e8c606a4f0bd1d5672e",
         "identity": "res://Maps/textures/base/TealWall.png",
@@ -15412,7 +17493,7 @@
         ]
       },
       {
-        "at": 1073838,
+        "at": 1078465,
         "words": 16384,
         "sha256": "d3069b4bcba3b8376e95dc47f4d9d20cfcabe8cd52950794335152ca0f191a09",
         "identity": "res://Maps/textures/base/Wall_Crusty_face.png",
@@ -15451,7 +17532,7 @@
         ]
       },
       {
-        "at": 1090222,
+        "at": 1094849,
         "words": 16384,
         "sha256": "eb0fea58f30412cb146ade620eba875a59a8f7a0b5064a79f4829ad4ec9024e1",
         "identity": "res://Maps/textures/base/Stone_Wall_1.png",
@@ -15490,7 +17571,7 @@
         ]
       },
       {
-        "at": 1106606,
+        "at": 1111233,
         "words": 16384,
         "sha256": "5e5e7b864af45cc5991287d3fc3be84d01b4ea5f2cc7d5f12fc11d9ed2d36fea",
         "identity": "res://Maps/textures/base/grass.png",
@@ -15529,7 +17610,7 @@
         ]
       },
       {
-        "at": 1122990,
+        "at": 1127617,
         "words": 16384,
         "sha256": "82da6875bde3484f41e0b48a4b068ee1e7733738ba9854c2bce9f0236be11b42",
         "identity": "res://Maps/textures/base/Stone_wall_2.png",
@@ -15568,7 +17649,7 @@
         ]
       },
       {
-        "at": 1139374,
+        "at": 1144001,
         "words": 16384,
         "sha256": "67ee94d1d9cc82af8bc0659679b4cc68b8747cff463baf2b4bb7b87adc92daf8",
         "identity": "res://Maps/textures/base/freak_tile.png",
@@ -15607,7 +17688,7 @@
         ]
       },
       {
-        "at": 1155758,
+        "at": 1160385,
         "words": 16384,
         "sha256": "9d5121f96f431e6c626dbb28ee590f95d35184cf597dc408a824b732dde45fe2",
         "identity": "res://Maps/textures/base/grate.png",
@@ -15646,7 +17727,7 @@
         ]
       },
       {
-        "at": 1172142,
+        "at": 1176769,
         "words": 16384,
         "sha256": "86b6d7abf8c792fe26199900a51ac2271133d4b03a25bd5a96be205e7626936a",
         "identity": "res://Maps/textures/base/Wood1.png",
@@ -15685,7 +17766,7 @@
         ]
       },
       {
-        "at": 1188526,
+        "at": 1193153,
         "words": 65536,
         "sha256": "1b51f8d53f6dfdd35322114656ab2124423d9e70d205c6afff87f665fc10feb7",
         "identity": "res://Maps/textures/base/building_2.png",
@@ -15724,7 +17805,7 @@
         ]
       },
       {
-        "at": 1254062,
+        "at": 1258689,
         "words": 4096,
         "sha256": "c237817acc60c770f8915e46b6be259afa7f93ad020a036e5c7adf70d38b7f02",
         "identity": "res://Maps/textures/base/BlackWall.png",
@@ -15763,7 +17844,7 @@
         ]
       },
       {
-        "at": 1258158,
+        "at": 1262785,
         "words": 16384,
         "sha256": "d3bcde9f3a208794d9f9cc88636418d43433a28dabb95a513025eedf16d94cea",
         "identity": "res://Maps/textures/base/Tile_Wall.png",
@@ -15802,7 +17883,7 @@
         ]
       },
       {
-        "at": 1274542,
+        "at": 1279169,
         "words": 65536,
         "sha256": "25f481c769da0e2f28d9cabe9bf8b352a222132084780ad5857171a96d9ee4af",
         "identity": "res://Maps/textures/base/building_1.png",
@@ -15841,7 +17922,7 @@
         ]
       },
       {
-        "at": 1340078,
+        "at": 1344705,
         "words": 65536,
         "sha256": "03dbb3ce4c9720a0cb445b2ceac87cec223f4d79fdd17955eeb088b12e08be12",
         "identity": "res://Maps/textures/base/building_3_no_logo.png",
@@ -15880,7 +17961,7 @@
         ]
       },
       {
-        "at": 1405614,
+        "at": 1410241,
         "words": 16384,
         "sha256": "991a311b7502abc55086932c3badaf1122f4b01ae870f342f3d7eaca7359b5c3",
         "identity": "res://Maps/textures/base/airduct.png",
@@ -15919,7 +18000,7 @@
         ]
       },
       {
-        "at": 1421998,
+        "at": 1426625,
         "words": 16384,
         "sha256": "d9dc66055f3ca476e13c1187afb742fff3d190f86a6cfc14b829d4a042498d0f",
         "identity": "res://Maps/textures/base/Marble1red.png",
@@ -15958,7 +18039,7 @@
         ]
       },
       {
-        "at": 1438382,
+        "at": 1443009,
         "words": 16384,
         "sha256": "206ee53f8e47b3c22369822ec83c0e6ea99bea12d01623d7a8750e5519ae3817",
         "identity": "res://Maps/textures/base/cobble1.png",
@@ -15997,7 +18078,7 @@
         ]
       },
       {
-        "at": 1454766,
+        "at": 1459393,
         "words": 4096,
         "sha256": "46920e971628e895451b1d66f995549105a07aac736d1e2f388a684c15468564",
         "identity": "res://Maps/textures/base/chainlink.png",
@@ -16036,7 +18117,7 @@
         ]
       },
       {
-        "at": 1458862,
+        "at": 1463489,
         "words": 196608,
         "sha256": "bc1513849dbdd52a9c266fd6c440cfc427460f324a09bb04233b83b434672f12",
         "identity": "res://Maps/textures/base/noise.tres::1",
@@ -16072,7 +18153,7 @@
         ]
       },
       {
-        "at": 1655470,
+        "at": 1660097,
         "words": 16384,
         "sha256": "1d112c6d3e4df25c4c603bbff71fec045cafeba8a3d67200e75204a056c04e48",
         "identity": "res://Maps/textures/base/plain_wall_dark.png",
@@ -16111,7 +18192,7 @@
         ]
       },
       {
-        "at": 1671854,
+        "at": 1676481,
         "words": 16384,
         "sha256": "53e21969ab04751145fa6dfaea3e9813b32bec4f60a6d9a2eb0e4ce2887231b7",
         "identity": "res://Maps/textures/base/maario.png",
@@ -16150,7 +18231,7 @@
         ]
       },
       {
-        "at": 1688238,
+        "at": 1692865,
         "words": 16384,
         "sha256": "a39f01140aa08d456967291131a46dc53eafef2634327269d55842b830dc42f8",
         "identity": "res://Maps/textures/base/alien_1.png",
@@ -16189,7 +18270,7 @@
         ]
       },
       {
-        "at": 1704622,
+        "at": 1709249,
         "words": 16384,
         "sha256": "7eb4503a1a92a8af89919533a452808619259d21b8b82a4f0a4a54275aeb059a",
         "identity": "res://Maps/textures/base/greenplank.png",
@@ -16228,7 +18309,7 @@
         ]
       },
       {
-        "at": 1721006,
+        "at": 1725633,
         "words": 16384,
         "sha256": "73b3fc320d8a6f7cd2cf55039e1a9a20da5d9a364407495dcc7de29c8905ff1c",
         "identity": "res://Maps/textures/base/Marble1green.png",
@@ -16267,7 +18348,7 @@
         ]
       },
       {
-        "at": 1737390,
+        "at": 1742017,
         "words": 16384,
         "sha256": "443ec3ea5371f65551c679de8b157374fe0bf71cf9ef63a15e2e93a715b5fef7",
         "identity": "res://Maps/textures/base/Granite2.png",
@@ -16306,7 +18387,7 @@
         ]
       },
       {
-        "at": 1753774,
+        "at": 1758401,
         "words": 4096,
         "sha256": "f44ce3535c45a7e1f0d9c863ce3a7a3542f0e0d6d1bf012a3952be8c11c7747b",
         "identity": "res://Maps/textures/base/Teal_Tile.png",
@@ -16345,7 +18426,7 @@
         ]
       },
       {
-        "at": 1757870,
+        "at": 1762497,
         "words": 16384,
         "sha256": "eed0346cc2ebc1cef6dea97c473d6b2ee58c6c09028ae7072fa6d23b859b7171",
         "identity": "res://Maps/textures/base/flesh.png",
@@ -16384,7 +18465,7 @@
         ]
       },
       {
-        "at": 1774254,
+        "at": 1778881,
         "words": 16384,
         "sha256": "f5dc2aac99f2b97a51eb21eb930decbb528c49e0182cffebd0ef8fcf8ec4aec2",
         "identity": "res://Maps/textures/base/chessboard.png",
@@ -16423,7 +18504,7 @@
         ]
       },
       {
-        "at": 1790638,
+        "at": 1795265,
         "words": 16384,
         "sha256": "2792d8329b1c51496f1579933239b276e9951ce712115519bd8808b152ff25ea",
         "identity": "res://Maps/textures/pyramid/dirt1.png",
@@ -16462,7 +18543,7 @@
         ]
       },
       {
-        "at": 1807022,
+        "at": 1811649,
         "words": 4096,
         "sha256": "b0529d5a1b074eb1626aa75f6721afded135a2de888bf8bbe7de95c9d9e31270",
         "identity": "res://Maps/textures/base/bluewall.png",
@@ -16501,7 +18582,7 @@
         ]
       },
       {
-        "at": 1811118,
+        "at": 1815745,
         "words": 65536,
         "sha256": "eb8c2f056463415a5f55767994c7853a42961c24c3ceed8d4976d257d8376ffb",
         "identity": "res://Maps/textures/base/building_3.png",
@@ -16540,7 +18621,7 @@
         ]
       },
       {
-        "at": 1876654,
+        "at": 1881281,
         "words": 4096,
         "sha256": "9fa319753c9759e8979168a0e0f31567a322130af9f67e3701448f582dbb7b70",
         "identity": "res://Maps/textures/base/OliveWall.png",
@@ -16579,7 +18660,7 @@
         ]
       },
       {
-        "at": 1880750,
+        "at": 1885377,
         "words": 16384,
         "sha256": "50f378936b55eb9d83cc572cce6f09421e5b82b9f228fb1a45a3bc7dc591cd8d",
         "identity": "res://Maps/textures/office/3.png",
@@ -16618,7 +18699,7 @@
         ]
       },
       {
-        "at": 1897134,
+        "at": 1901761,
         "words": 16384,
         "sha256": "984f7927cb001a93f40673b5b5d9a7db7bb7cf9946714ce201da9be3f030d588",
         "identity": "res://Maps/textures/office/4.png",
@@ -16657,7 +18738,7 @@
         ]
       },
       {
-        "at": 1913518,
+        "at": 1918145,
         "words": 16384,
         "sha256": "1e4c1320c50afd83d68901c0a183f8e271a6901313450bad52bd932552ca4218",
         "identity": "res://Maps/textures/office/2.png",
@@ -16696,7 +18777,7 @@
         ]
       },
       {
-        "at": 1929902,
+        "at": 1934529,
         "words": 16384,
         "sha256": "3c19e40329fe2953a8396496a55e2df556fe5f3f84bdb7875ed99663132f56ef",
         "identity": "res://Maps/textures/base/bl_red_cyan.png",
@@ -16735,7 +18816,7 @@
         ]
       },
       {
-        "at": 1946286,
+        "at": 1950913,
         "words": 4096,
         "sha256": "a9d398007694c969bdc02e19f64740be7af9d964e74f14567ccffbaa92be2d5b",
         "identity": "res://Maps/textures/base/red_water.png",
@@ -16774,7 +18855,7 @@
         ]
       },
       {
-        "at": 1950382,
+        "at": 1955009,
         "words": 16384,
         "sha256": "0c2e400c2d4ec4ed7472741d532752cfb441b94b6a95734eabb2f3e601329f8e",
         "identity": "res://Maps/textures/base/Stone_Tile.png",
@@ -16813,7 +18894,7 @@
         ]
       },
       {
-        "at": 1966766,
+        "at": 1971393,
         "words": 16384,
         "sha256": "7bc5e3220080a4182a85d32c69768208b9b2865bf1aceab41cd4e5684fcbf6c9",
         "identity": "res://Maps/textures/base/flesh2.png",
@@ -16852,7 +18933,7 @@
         ]
       },
       {
-        "at": 1983150,
+        "at": 1987777,
         "words": 4096,
         "sha256": "816bdcb9e19c36a2766c74b325bf130f61e113876f5551facab4a4436a105238",
         "identity": "res://Maps/textures/base/greenwall.png",
@@ -16891,7 +18972,7 @@
         ]
       },
       {
-        "at": 1987246,
+        "at": 1991873,
         "words": 4096,
         "sha256": "fd932b2376de0054257a522a2ceecd5657577cf7dfc4e4ee0c3a0db30df332d8",
         "identity": "res://Maps/textures/base/water.png",
@@ -16930,7 +19011,7 @@
         ]
       },
       {
-        "at": 1991342,
+        "at": 1995969,
         "words": 16384,
         "sha256": "50c6d48d18a387e90735c6ade06fb092749a1ed2683977aa9869394ae88de1cb",
         "identity": "res://Maps/textures/base/Wood_Door2.png",
@@ -16969,7 +19050,7 @@
         ]
       },
       {
-        "at": 2007726,
+        "at": 2012353,
         "words": 16384,
         "sha256": "380a53da229c9389f82ed60c05bc976fa2f5e2f3370d069c594f21aafa9d2406",
         "identity": "res://Maps/textures/base/metal_door.png",
@@ -17008,7 +19089,7 @@
         ]
       },
       {
-        "at": 2024110,
+        "at": 2028737,
         "words": 4096,
         "sha256": "23a1dd005baf1505f334fbe8f8019a1470d9ba0a083615066772756719d0404e",
         "identity": "res://Maps/textures/base/GreyWall.png",
@@ -17047,7 +19128,7 @@
         ]
       },
       {
-        "at": 2028206,
+        "at": 2032833,
         "words": 65536,
         "sha256": "23d120439b35a71400d0969c5b91b5ac541973fc6692a097ec9ebf67106915dc",
         "identity": "res://Maps/textures/base/divinedoor.png",
@@ -17086,7 +19167,7 @@
         ]
       },
       {
-        "at": 2093742,
+        "at": 2098369,
         "words": 65536,
         "sha256": "01a29aaef66b492b41a0bdd65404dcd3c818972e23733f001c2433e5a27b776c",
         "identity": "res://Maps/textures/base/profanedoor.png",
@@ -17125,7 +19206,7 @@
         ]
       },
       {
-        "at": 2159278,
+        "at": 2163905,
         "words": 16384,
         "sha256": "2a1f45b2fb7921664391baa56fda063730700c79aa74718b5135b470fbf98f60",
         "identity": "res://Maps/textures/base/catacomb.png",
@@ -17164,7 +19245,7 @@
         ]
       },
       {
-        "at": 2175662,
+        "at": 2180289,
         "words": 65536,
         "sha256": "9b752df08909ed9ac249d5ee8bcce989ef3e3d3c196d221cd370895b120cdd6c",
         "identity": "res://Maps/textures/base/helldoor.png",
@@ -17203,7 +19284,7 @@
         ]
       },
       {
-        "at": 2241198,
+        "at": 2245825,
         "words": 1048576,
         "sha256": "adeadcf49a59059f6c9d13c38ff2fb22df51257f8a6eb1eaf82dde013800eb42",
         "identity": "res://Textures/sky2.png",
@@ -17284,7 +19365,7 @@
           }
         }
       },
-      "panoramaAt": 2241198,
+      "panoramaAt": 2245825,
       "panorama": {
         "identity": "res://Textures/sky2.png",
         "width": 1024,
@@ -18112,10 +20193,10 @@
     ],
     "dataFile": "pharmakokinetiks.appearance.binpack",
     "dataCompression": "gzip",
-    "bytes": 13159096,
-    "packedBytes": 1774388,
-    "sha256": "ad32d5cbbe838ee4cdbda3faa6340df53a0911f4632a0e5477474ff66fe041aa",
-    "packedSha256": "f5085a295fecffd2344130277bfb531bad4d1ad86072eebec49df05adfa6bd7e"
+    "bytes": 13177604,
+    "packedBytes": 1775914,
+    "sha256": "beae97fb085cabe3e9def4cf8cb008e195169debcdbacf221f638d1d3c60ecfa",
+    "packedSha256": "08365bbd4d21a1c970aef9f02572d48bb330b4f16176c552bb793b2f20311b9b"
   },
   "dataFile": "pharmakokinetiks.binpack",
   "dataCompression": "gzip"
