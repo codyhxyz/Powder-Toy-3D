@@ -110,7 +110,15 @@ The direct renderer remains the intended path.
 Native volume ID-only probes now use a CPU-verified scalar decoder.
 It preserves visual dithering, physical nonzero-fill visibility and canonical slot coordinates.
 The full-decoder oracle passes 405,024 cases; six generic/writer/picking shader hashes remain unchanged.
-Metal performance remains unmeasured for this change.
+The 12-frame Metal window at `6f3383d5` completes at 181.9 ms median and 206.5 ms p95.
+Total occupancy is 13.876 s. This is an observed reduction from the 192.8 ms reference, not a robust speedup claim.
+It still trails the v1 reference median; the performance target remains unmet.
+
+Production block compaction is integrated at `5c79d173`, pending native GPU checks.
+It keeps support snapshots for all targets and dispatches original IDs only for nonidentity blocks.
+The scratch tail adds 1,048,592 bytes at 128³; existing args supply its indirect dispatch.
+Devices without tail capacity retain the original native scratch and dispatch.
+CPU tests cover the full heavy-body identity, shuffled invocation order, custom fallback and exact-limit resource behavior.
 
 Local evidence:
 
@@ -129,6 +137,7 @@ Local evidence:
 - `/tmp/v2-water-v1-f86a20c8.json`
 - `/tmp/v2-water-native-split-956a7169.json`
 - `/tmp/v2-water-compat-956a7169.json`
+- `/tmp/v2-water-native-id-6f3383d5.json`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.

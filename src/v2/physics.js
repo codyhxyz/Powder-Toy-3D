@@ -55,7 +55,11 @@ export class PhysicsV2 {
   /** @param {import('../sim.js').Simulation} sim */
   constructor(sim, { contactWGSL = '', Dynamics = null } = {}) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);
-    this.blockCompact = contactWGSL === productionContactWGSL ? v2BlockCompactLayout(g, gpu.device?.limits) : null;
+    const compactLayout = contactWGSL === productionContactWGSL ? v2BlockCompactLayout(g) : null;
+    const scratchLimit = Math.min(gpu.device?.limits?.maxStorageBufferBindingSize ?? Infinity,
+      gpu.device?.limits?.maxBufferSize ?? Infinity);
+    // This optimization must not reject a grid whose original scratch fits.
+    this.blockCompact = compactLayout && compactLayout.bytes <= scratchLimit ? compactLayout : null;
     this.sim = sim;
     this.modeSettings = nativeModes(sim);
     this.settingsSignature = modeSignature(this.modeSettings);

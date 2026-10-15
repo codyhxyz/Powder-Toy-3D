@@ -122,7 +122,10 @@ The original liquid scratch is exactly `slots * 16` bytes, with **no spare
 space**. Production extends it by a dedicated 16-byte counter header plus
 `8 * nbricks = slots / 8` original `u32` IDs: **1,048,592 extra bytes at 128³**.
 Allocation checks safe integer/u32 indexing, alignment, max buffer size and max
-storage binding size before allocating. The classifier uses an atomic-word view
+storage binding size before allocating.
+If the tail exceeds a device limit, the driver retains the original scratch and
+block dispatch. This keeps otherwise supported native grids available.
+The classifier uses an atomic-word view
 for independent append writes; heavy reads the same tail normally. Only the
 header is cleared per partition; cell-indexed support atmosphere is untouched.
 Liquid layouts gain no bindings (still at most eight storage buffers including

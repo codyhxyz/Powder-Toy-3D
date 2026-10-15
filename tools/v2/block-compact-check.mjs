@@ -189,10 +189,10 @@ console.log('168 offset/edge/gravity permutations; partial wake, original IDs/co
 // Actual driver, recorded without GPU. No writable args on classifier; direct
 // finalizer has only scratch+args; custom dispatch/resources remain original.
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
-async function record(contact) {
+async function record(contact, limits = {}, expectCompact = contact === contactWGSL) {
   const commands = [], buffers = [], compiled = [];
   const gpu = {
-    device: { limits: { maxStorageBufferBindingSize: 134217728, maxBufferSize: 268435456 } },
+    device: { limits: { maxStorageBufferBindingSize: 134217728, maxBufferSize: 268435456, ...limits } },
     createBuffer(d) { const b = { ...d, destroy() {} }; buffers.push(b); return b; },
     queue: { writeBuffer() {} }, write() {}, layout(name, entries) { return { name, entries }; },
     bindGroup(layout, entries) { assert.equal(entries.length, layout.entries.length); return { layout, entries }; },
@@ -211,7 +211,7 @@ async function record(contact) {
   }
   assert.equal(buffers.filter(b => b.usage & GPUBufferUsage.INDIRECT).length, 1);
   const supportAt = commands.findIndex(c => c.name === 'v2support');
-  if (contact === contactWGSL) {
+  if (expectCompact) {
     assert.deepEqual(commands.slice(supportAt, supportAt + 5).map(c => c.name), ['v2support', 'clear', 'v2blockClassify', 'v2blockFinalize', 'v2block']);
     const [support, clear, classify, final, block] = commands.slice(supportAt, supportAt + 5);
     assert.equal(support.size.offset, ARGS2.BRICKS * 4);
@@ -225,6 +225,7 @@ async function record(contact) {
     assert.equal(engine.liquidScratch.size, tail.bytes);
     assert.equal(engine.kernels.v2block.code, heavy);
   } else {
+    assert.equal(engine.blockCompact, null, 'custom contact or insufficient tail capacity keeps original dispatch');
     assert.deepEqual(commands.slice(supportAt, supportAt + 2).map(c => c.name), ['v2support', 'v2block']);
     assert.equal(commands[supportAt + 1].size.offset, 24);
     assert.equal(engine.liquidScratch.size, g.slots * 16);
@@ -233,6 +234,9 @@ async function record(contact) {
   }
 }
 for (const contact of [contactWGSL, '', contactWGSL + '\n']) await record(contact);
+await record(contactWGSL, { maxStorageBufferBindingSize: g.slots * 16 }, false);
+await record(contactWGSL, { maxBufferSize: g.slots * 16 }, false);
+await record(contactWGSL, { maxStorageBufferBindingSize: tail.bytes, maxBufferSize: tail.bytes });
 for (const k of WGSL_CHECK.filter(k => /v2block(Classify|Finalize|Compact)/.test(k.name))) {
   const storage = k.layouts(g).flatMap(l => typeof l === 'string' ? LAYOUT[l] ?? [] : l).filter(e => e?.buffer?.type?.includes('storage')).length;
   assert(storage <= 8);
