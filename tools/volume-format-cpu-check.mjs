@@ -1,5 +1,7 @@
 // CPU only. Execute production host methods; shader snapshots are the pre-change
-// 8d5ad463 generic ABI. No browser/device or timing claim.
+// dcd03636 generic ABI, captured before specialization after production merge.
+// Only volume/detail changed from 8d5ad463, retaining production's cave fixes.
+// No browser/device or timing claim.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -21,8 +23,8 @@ const baseline = {
   rw: '7cace457fd34ae24250c20222ef0181d9e843d11bbfc0b9809715fef2d604683',
   move: 'c630fbf8f7dd7a5fe0858cc661c873534ce73b1961ad796016d94ffb229b7c13',
   pick: '4a9ce710be24487274c398f64c59475f606ffb31a67561a16ba63f8ff4bd33d2',
-  volume: 'b3ebec44f3407a3919b273d67b5a095fc0ffdddc53ad3d38eb296c8277b2f169',
-  detail: '11b580f9bd7553b8896756c2dc5fc80f9014c0575f3ace85a1e5214537bc914a',
+  volume: 'e7276182d5e3018c105ed4ec9dad61188291c022a6754709c0dd5b72282f177e',
+  detail: 'fb12d4c0fe104295689dd0c0fdac69ccf3c308d9f326abc5ec9d8052120cb9bd',
 };
 const sources = { ro: prelude(g, STATE_OPTS.STATE_RO), rw: prelude(g, STATE_OPTS.STATE_RW), move: moveBlockFrag(g), pick: pickFrag(g),
   volume: volumeFrag(g), detail: volumeFrag(g, { detail: { DETAIL_LIQ_FOAM: 1, DETAIL_LIQ_RIPPLES: 1 }, curved: true }) };

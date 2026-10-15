@@ -82,7 +82,10 @@ Allocation scans no longer dominate the compute timings.
 Current merged full-frame runs have not returned a valid timing window.
 The visible volume shader still exceeded the setup allowance after unused near-detail prefetch was removed.
 This is a startup failure, not a failed physics assertion.
-Readonly volume-format specialization remains under implementation; no timing benefit is established.
+Readonly volume-format specialization is integrated at `7cf968dd`.
+Generic and writer hashes remain unchanged against the merged production checkpoint.
+CPU tests cover formats 0/2/3, engine transitions, deferred readiness and shader validation.
+Metal execution and timing remain unmeasured; no timing benefit is established.
 
 Local evidence:
 
