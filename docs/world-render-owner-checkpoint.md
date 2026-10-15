@@ -77,6 +77,12 @@ retained computation or complete temporal restoration.
 submitted adapter captures plus their CELL/Source publication. Returned records
 are `{brick,index,buffer,byteOffset}` for the original classifier's 16-byte record.
 Missing classification throws an error with typed CELL `.requirements`.
+Selection uses an exact manifest installed after successful Atlas publication,
+not the working cache changed by a queued Fields batch. An aborted batch cannot
+pair its new bytes with the previous publication. A retired installed capture
+is unavailable until another successful publication installs valid captures.
+Numerically compatible captures can survive their original input cut closing;
+the installed manifest and current publication validate reuse.
 
 * `lease.recordMetadata(frame)` batches native record copies into one buffer for
   optional small classification-only readback. No raw A/B geometry is read.

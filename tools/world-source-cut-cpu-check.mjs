@@ -278,3 +278,33 @@ test('submitted classification lease preserves original f32 emission/UINT info a
   f.gpu.flush();await drain(f.gpu);await drain(f.gpu);
   assert(capture.classification.destroyed);assert(metadata.destroyed);a.release();b.release();adapter.dispose();atlas.dispose();await f.finish();
 });
+test('classification leases use the submitted manifest, never queued or aborted next-tick captures',async()=>{
+  const f=await fixture({size:[32,8,8]}),atlas=new WorldRenderAtlas(f.gpu,{worldSize:f.win.size,initialCapacity:4});
+  const adapter=new WorldCellAtlasAdapter({gpu:f.gpu,source:f.source,producer:f.producer,atlas,tables:f.sim.tables,worldBounds:{min:[0,0,0],max:f.win.size}});await adapter.ready;
+  const a=cut(f);adapter.bindCut(a);const requirements=[[0,0,0]];
+  const first=adapter.record(f.gpu.frame,{fieldTick:0,requirements});f.gpu.flush();adapter.commitAfterSourceFlush(first).previousLightingSnapshot.release();await drain(f.gpu);
+  const installed=adapter.cache.get('0,0,0');u32(installed.classification).set([0x3f800000,0x40000000,0x40400000,0x8000]);
+  const identity=adapter.publication.identity,expected=[...u32(installed.classification).slice(0,4)];
+  const next=adapter.record(f.gpu.frame,{fieldTick:1,requirements}),queued=adapter.cache.get('0,0,0');assert.notEqual(queued,installed);
+  const lease=adapter.acquireClassification({bricks:requirements});assert.equal(lease.publication.identity,identity);
+  assert.equal(lease.records[0].buffer,installed.classification);assert.notEqual(lease.records[0].buffer,queued.classification);
+  const metadata=lease.recordMetadata(f.gpu.frame);f.gpu.flush();adapter.abort(next);await drain(f.gpu);
+  assert.deepEqual([...u32(metadata).slice(0,4)],expected);
+  assert.throws(()=>adapter.acquireClassification({bricks:requirements}),e=>e.requirements?.[0].channels===READY.CELL);
+  const retry=adapter.record(f.gpu.frame,{fieldTick:1,requirements});f.gpu.flush();adapter.commitAfterSourceFlush(retry).previousLightingSnapshot.release();await drain(f.gpu);
+  const current=adapter.acquireClassification({bricks:requirements});assert.equal(current.records[0].buffer,adapter.cache.get('0,0,0').classification);
+  current.release();lease.release();await drain(f.gpu);a.release();adapter.dispose();atlas.dispose();await f.finish();
+});
+test('a compatible unchanged capture stays available after its original Source cut closes',async()=>{
+  const f=await fixture({size:[32,8,8]}),atlas=new WorldRenderAtlas(f.gpu,{worldSize:f.win.size,initialCapacity:4});
+  const adapter=new WorldCellAtlasAdapter({gpu:f.gpu,source:f.source,producer:f.producer,atlas,tables:f.sim.tables,worldBounds:{min:[0,0,0],max:f.win.size}});await adapter.ready;
+  const a=cut(f);adapter.bindCut(a);const requirements=[[0,0,0]];
+  const first=adapter.record(f.gpu.frame,{fieldTick:0,requirements});f.gpu.flush();adapter.commitAfterSourceFlush(first).previousLightingSnapshot.release();await drain(f.gpu);
+  const capture=adapter.cache.get('0,0,0'),b=f.source.recordCut(f.gpu.frame,{previousCut:a,sceneVersion:'scene',configVersion:1});
+  adapter.bindCut(b);a.release();assert.equal(capture.source.isCurrent(),false);
+  const next=adapter.record(f.gpu.frame,{fieldTick:0,requirements});f.gpu.flush();adapter.commitAfterSourceFlush(next).previousLightingSnapshot.release();await drain(f.gpu);
+  assert.equal(adapter.cache.get('0,0,0'),capture);assert(!capture.classification.destroyed);
+  const lease=adapter.acquireClassification({bricks:requirements});assert.equal(lease.records[0].buffer,capture.classification);
+  assert.equal(lease.publication.ownedCut.isValid(),true);lease.release();await drain(f.gpu);
+  b.release();adapter.dispose();atlas.dispose();await f.finish();
+});

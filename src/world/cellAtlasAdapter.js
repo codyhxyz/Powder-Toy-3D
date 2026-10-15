@@ -10,6 +10,7 @@ import { worldCellClassifierWGSL, WorldBrickParams, WORLD_CLASSIFIER_LAYOUT, wor
 const BU = { COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128 };
 const same = (a,b) => a?.epoch === b?.epoch && a?.sourceRevision === b?.sourceRevision;
 const coreFor = b => b.map(v => Math.floor(v/8)*32);
+const submittedCaptures = new WeakMap();
 let dependencyID = 1;
 
 export class WorldCellAtlasAdapter {
@@ -68,11 +69,13 @@ export class WorldCellAtlasAdapter {
   // Submitted classification only: no raw geometry readback. Captures are
   // selected synchronously and pinned independently of later cache replacement.
   acquireClassification({bricks}={}){
-    this._alive();const publication=this.acquire(),captures=new Set(),records=[];
+    this._alive();const publication=this.acquire(),installed=submittedCaptures.get(publication.identity),captures=new Set(),records=[];
     try{
       for(const brick of bricks){
-        const index=worldBrickIndex(this.atlas.bookLayout,brick),core=coreFor(brick),c=this.cache.get(brickKey(core));
-        if(!c||this.retiredCaptures.has(c)||!c.source.isCurrent()){
+        const index=worldBrickIndex(this.atlas.bookLayout,brick),core=coreFor(brick),c=installed?.get(brickKey(core));
+        // Installation proves retained numerical compatibility with this
+        // publication. Its original input cut may since have been released.
+        if(!c||this.retiredCaptures.has(c)){
           const error=new Error('Unknown world classification dependency');error.requirements=[{brick:[...brick],index,channels:READY.CELL}];throw error;
         }
         const local=brick.map((n,k)=>n-core[k]/4);
@@ -246,6 +249,7 @@ export class WorldCellAtlasAdapter {
       batch.state='published';this.pending=null;
       const old=this.publication;
       this.publication=Object.freeze({identity:Object.freeze({generation:publication}),source:batch.contentToken,fieldToken:batch.fieldToken,fieldTick:batch.fieldToken.fieldTick,changedBricks:Object.freeze([...this.unpublishedChanges.values()]),invalidatedCoreKeys:Object.freeze([...this.unpublishedInvalidations]),dependencySetID:this.dependencyID,dependencyVersion:publication});
+      submittedCaptures.set(this.publication.identity,new Map(this.cache));
       this.unpublishedInvalidations.clear();this.unpublishedChanges.clear();this.lightingDirty=false;
       for(const [key,c] of batch.before)if(this.cache.get(key)!==c)this._dropCapture(c);
       const queue=this.gpu.queue??device.queue;
