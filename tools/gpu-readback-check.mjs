@@ -73,34 +73,28 @@ pending.resolve();
 await flush();
 assert(!probe.ready, 'disposal rejects pending data');
 
-// The window's restore below is still the WebGL build's (src/world/window.js,
-// U10's): its stand-in renderer says whether the context is lost.
-const renderer = { getContext: () => ({ isContextLost: () => lost }), setRenderTarget() {} };
-Object.assign(sim, { run: () => passes++ });
-try {
-  // Restore must not remove a stored edit before the GPU accepts its upload.
+// Restore must not remove compressed edits before WebGPU accepts both its
+// upload and edit dispatch. These mocks exercise the current window API.
+{
   const store = new BrickStore([4, 4, 4]);
   const a = new Float32Array(64 * 4), b = new Float32Array(a.length);
   for (let i = 0; i < 64; i++) { a[i * 4] = E.GOLD; a[i * 4 + 1] = 20; }
   const key = store.key(0, 0, 0), encoded = encodeBrick(a, 0, b, 0);
   store.put(key, encoded);
-  const win = {
-    sim: { ...sim, pass() { throw new Error('upload failed'); } }, renderer, store,
-    editIdx: new Float32Array(64), editIdxTex: {}, mats: { edit: { uniforms: { tEditA: {}, tEditB: {} } } },
+  const restoreGpu = {
+    stats: { flushes: 0 }, createBuffer: ({size}) => ({size}),
+    write() { throw new Error('upload failed'); },
   };
-  assert.throws(() => WorldWindow.prototype.restore.call(win, [0, 0, 0], [1, 1, 1]), /upload failed/);
-  assert.equal(store.map.get(key), encoded);
-  win.sim.pass = () => {};
-  lost = true;
-  WorldWindow.prototype.restore.call(win, [0, 0, 0], [1, 1, 1]);
-  assert.equal(store.map.get(key), encoded, 'a lost-context no-op is not a successful upload');
-  lost = false;
-  WorldWindow.prototype.restore.call(win, [0, 0, 0], [1, 1, 1]);
+  const win = { sim: { ...sim, edit() {} }, gpu: restoreGpu, store, restoreRead: -1 };
+  assert.throws(() => WorldWindow.prototype.restore.call(win,[0,0,0],[1,1,1]),/upload failed/);
+  assert.equal(store.map.get(key),encoded);
+  restoreGpu.write = () => {};
+  win.sim.edit = () => { throw new Error('device lost'); };
+  assert.throws(() => WorldWindow.prototype.restore.call(win,[0,0,0],[1,1,1]),/device lost/);
+  assert.equal(store.map.get(key),encoded,'failed dispatch retains stored edit');
+  win.sim.edit = () => {};
+  WorldWindow.prototype.restore.call(win,[0,0,0],[1,1,1]);
   assert(!store.has(key));
-  console.log('PASS: CPU edit preservation on failed uploads');
-} catch (e) {
-  // (the WebGL window's restore leans on helpers the port removed until U10 lands its own: J3 stubs)
-  if (!/removed in the WebGPU port/.test(e?.message ?? '')) throw e;
-  console.log(`skipped: the window's restore (src/world/window.js, U10's port): ${e.message}`);
+  console.log('PASS: CPU edit preservation on failed uploads and dispatches');
 }
 console.log('PASS: probe failure/suspend/reset/dispose');

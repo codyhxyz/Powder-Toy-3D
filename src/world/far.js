@@ -348,7 +348,14 @@ export class FarField {
     const mid = [(o.x + g.nx / 2) / BRICK, (o.z + g.nz / 2) / BRICK];   // the window's centre, brick columns
     const dist = ([x, z]) => Math.hypot(x + C / 2 - mid[0], z + C / 2 - mid[1]);
     this.queue = [];
-    for (let z = 0; z < bz; z += C) for (let x = 0; x < bx; x += C) this.queue.push([x, z]);
+    for (let z = 0; z < bz; z += C) for (let x = 0; x < bx; x += C) {
+      // Sparse folded terrain can prove an entire column empty. Include the
+      // far filter's sample halo; all other scenes keep the existing queue.
+      const halo = (FAR.CUBE - BRICK) / 2;
+      if (this.scene.mayContainCellsXZ?.([x * BRICK, z * BRICK],
+        [Math.min(x + C, bx) * BRICK, Math.min(z + C, bz) * BRICK], halo) === false) continue;
+      this.queue.push([x, z]);
+    }
     this.queue.sort((a, b) => dist(b) - dist(a));
     this.chunksDrawn = 0;
     this.buildFrames = 0;

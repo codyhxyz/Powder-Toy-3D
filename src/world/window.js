@@ -89,6 +89,8 @@ export class WorldWindow {
     this.baked = new Map();
     this.candidates = new Map();                                  // tree candidates by brick column (treesIn)
     this.pending = null;                                          // the leaving slab's readback
+    this.readbackError = null;
+    this.capturing = false;
     this.epoch = 0;                                               // bumped by load and dispose: older readbacks are dropped
     this.last = null;                                             // what the last move cost (tools)
     this.plantCost = null;                                        // the move's tree placing and baking, ms (tools)
@@ -129,6 +131,7 @@ export class WorldWindow {
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
+    this.readbackError = null;
     this.scene.reset?.();   // imported interaction state is per loaded run, not per cached scene
     sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
@@ -171,7 +174,7 @@ export class WorldWindow {
   update(fx, fz) {
     if (!this.loaded) return null;
     this.far?.tick();
-    if (this.pending || this.sim.deco?.pending) return null;
+    if (this.capturing || this.pending || this.sim.deco?.pending) return null;
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;
     const off = [fx - (o.x + g.nx / 2), fz - (o.z + g.nz / 2)];
     const at = [o.x, o.z], span = [g.nx, g.nz], world = [this.size[0], this.size[2]];
@@ -187,8 +190,50 @@ export class WorldWindow {
     return move;
   }
 
+  // Capture every resident brick through the existing bounded slab diff/readback,
+  // retaining off-resident edits already in the store. Caller must freeze state
+  // writers for the entire operation; update() cannot move this window meanwhile.
+  async captureEdits() {
+    if (!this.loaded || this.capturing) throw new Error('Window is not available for edit capture');
+    this.capturing = true;
+    const epoch = this.epoch, g = this.sim.g, origin = this.sim.origin;
+    const check = () => {
+      if (this.readbackError) throw this.readbackError;
+      if (epoch !== this.epoch || this.sim.disposed) throw new Error('Window changed during edit capture');
+      if (this.gpu.failure) throw this.gpu.failure;
+    };
+    try {
+      await this.pending;
+      check();
+      for (let x=0;x<g.nx;x+=WIN_STEP) {
+        const bricks=[Math.min(WIN_STEP,g.nx-x)/BRICK,g.ny/BRICK,g.nz/BRICK];
+        this.gen.diff(this.P,[x,0,0],bricks,this.leave);
+        this.readBack([origin.x/BRICK+x/BRICK,0,origin.z/BRICK],bricks);
+        await this.pending;
+        check();
+      }
+      return this.store;
+    } finally { this.capturing = false; }
+  }
+
+  // A band cache supplies its complete compressed store after the normal load.
+  // Restore in bounded slabs too: a fully edited tall window can exceed the
+  // device's storage-buffer limit if uploaded as one dense restore operation.
+  async restoreEdits(store) {
+    if (!this.loaded || this.pending) throw new Error('Window is not ready for edit restore');
+    if (!store.bricks.every((n,i)=>n===this.wb[i])) throw new Error('Edit store dimensions do not match window');
+    const epoch=this.epoch, g=this.sim.g;
+    this.store.clear();
+    for (const [key,bytes] of store.map) this.store.put(key,bytes);
+    for (let x=0;x<g.nx;x+=WIN_STEP) this.restore([x,0,0],[Math.min(WIN_STEP,g.nx-x)/BRICK,g.ny/BRICK,g.nz/BRICK]);
+    await this.gpu.fence();
+    if (this.gpu.failure) throw this.gpu.failure;
+    if (this.epoch !== epoch || this.sim.disposed) throw new Error('Window changed during edit restore');
+  }
+
   // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–4 above.
   shift(dx, dz) {
+    if (this.capturing) throw new Error('Cannot shift a window during edit capture');
     const t0 = performance.now();
     const sim = this.sim, g = sim.g, before = sim.origin.clone();
     // the slab that leaves (grid cells before the move) and the one the move uncovers (after it)
@@ -263,6 +308,7 @@ export class WorldWindow {
       const L = last();
       if (L && epoch === this.epoch) Object.assign(L, { flagsMs: t1 - t0, readbackMs: t1 - t0, keepMs: performance.now() - t1, kept, landedAt: performance.now() });
     }).catch((err) => {
+      if (epoch === this.epoch) this.readbackError = err;
       if (!this.gpu.failure) console.error('world window: a leaving slab could not be read back; its edits are lost', err);
     }).finally(() => { this.pending = null; });
   }
