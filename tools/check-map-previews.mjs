@@ -13,6 +13,7 @@ import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 assert.equal(mapPreviewUrl('willowCove'), '/maps/willowCove.webp?v=2', 'replace the four-hour cached legacy preview');
 assert.equal(mapPreviewUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'aliases use the current canonical preview');
 assert.equal(mapPreviewUrl('island'), '/maps/island.webp', 'unrelated previews keep their URLs');
+assert.equal(mapPreviewUrl('descent'), '/maps/descent.webp?v=2', 'source conversion replaces the legacy mountain preview');
 assert.equal(mapLoadingUrl('island'), mapPreviewUrl('island'), 'maps without loading art retain a thumbnail fallback');
 assert.equal(mapLoadingUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'loading fallback resolves aliases too');
 const crossing = geometry(32), cozy = shader(32);
@@ -80,6 +81,6 @@ assert.deepEqual(trace([2.5, 1.5, 1.5], [-1, 0, 0], [3, 3, 3], cell).normal, [1,
 assert.equal(trace([0.5, 0.5, 0.5], [-1, 0, 0], [3, 3, 3], cell), null);
 assert.equal(trace([-1, 1, 1], [0, 1, 0], [3, 3, 3], cell), null);
 const sample = renderDescent(32);
-assert.ok(sample.materials.has(E.SNOW) && sample.materials.has(E.ROCK) && sample.materials.has(E.PLANT), 'real Mines terrain, not a placeholder');
+assert.ok(sample.materials.has(E.WOOD) && sample.materials.has(E.ROCK), 'actual source-derived Coal Pits geometry, not the legacy Mines');
 assert.ok(new Set(sample.rgb).size > 32, 'shaded scene has image detail');
 console.log(`PASS ${MAPS.length} square map previews; current Crossing geometry, production Cozy WGSL, cache revisions and CPU Descent render.`);

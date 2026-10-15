@@ -80,6 +80,7 @@ jobs:
       - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
       - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
       - run: node tools/mission-node-check.mjs && node tools/mission-retry-cpu-check.mjs && node --test tools/import-cruelty-map-check.mjs
+      - run: node scripts/check-noita-source.mjs && node scripts/check-descent-switch.mjs && node scripts/check-descent-temple.mjs && node scripts/check-descent-items.mjs   # CPU source occupancy, full route, run carry-over and item rules
       - name: Ensure ImageMagick for source appearance fixtures
         run: |
           if ! command -v magick >/dev/null && ! command -v convert >/dev/null; then

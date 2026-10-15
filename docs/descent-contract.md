@@ -1,5 +1,9 @@
 # Descent: build contract
 
+> The playable map now uses the eight-scene source route in
+> [noita-source-import.md](noita-source-import.md).
+> This document describes the retained legacy Wang generator and the shared gameplay systems.
+
 Descent is a Noita-style map: the starting mountain and the first three levels
 of Noita's main path, in 3D, with wands to find. Three agents build it in
 parallel against this contract; each owns its files, and integration merges them.

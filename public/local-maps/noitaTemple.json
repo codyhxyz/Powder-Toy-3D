@@ -1,0 +1,1400 @@
+{
+  "version": 1,
+  "id": "noitaTemple",
+  "name": "Temple of the Art",
+  "encoding": "sparse-brick-u8-v1",
+  "cellMeters": 0.3,
+  "size": [
+    512,
+    256,
+    512
+  ],
+  "brickDims": [
+    64,
+    32,
+    64
+  ],
+  "plainHeight": 0,
+  "dataFile": "noitaTemple.binpack",
+  "dataCompression": "gzip",
+  "spawn": [
+    95,
+    190,
+    110
+  ],
+  "descent": {
+    "key": "noitaTemple",
+    "name": "Temple of the Art",
+    "tier": 6,
+    "spawn": [
+      95,
+      190,
+      110
+    ],
+    "spawnYaw": -1.5707963267948966,
+    "role": "biome",
+    "temple": {
+      "box": [
+        186,
+        14,
+        246,
+        318,
+        31,
+        267
+      ],
+      "pool": [
+        220,
+        10,
+        248,
+        236,
+        14,
+        264
+      ],
+      "altars": [
+        [
+          290,
+          14,
+          250
+        ],
+        [
+          298,
+          14,
+          250
+        ],
+        [
+          306,
+          14,
+          250
+        ]
+      ],
+      "shop": [
+        [
+          246,
+          14,
+          256
+        ],
+        [
+          254,
+          14,
+          256
+        ],
+        [
+          262,
+          14,
+          256
+        ],
+        [
+          270,
+          14,
+          256
+        ],
+        [
+          278,
+          14,
+          256
+        ]
+      ],
+      "refresher": [
+        266,
+        14,
+        263
+      ],
+      "exit": [
+        320,
+        4,
+        250,
+        330,
+        10,
+        263
+      ]
+    },
+    "loot": [
+      {
+        "x": 95,
+        "y": 190,
+        "z": 110,
+        "kind": "wand",
+        "tier": 6
+      },
+      {
+        "x": 127,
+        "y": 187,
+        "z": 110,
+        "kind": "wand",
+        "tier": 6
+      },
+      {
+        "x": 155,
+        "y": 184,
+        "z": 110,
+        "kind": "wand",
+        "tier": 6
+      },
+      {
+        "x": 187,
+        "y": 180,
+        "z": 110,
+        "kind": "wand",
+        "tier": 6
+      },
+      {
+        "x": 219,
+        "y": 175,
+        "z": 110,
+        "kind": "wand",
+        "tier": 6
+      },
+      {
+        "x": 247,
+        "y": 169,
+        "z": 110,
+        "kind": "spell",
+        "tier": 6
+      },
+      {
+        "x": 279,
+        "y": 163,
+        "z": 110,
+        "kind": "spell",
+        "tier": 6
+      },
+      {
+        "x": 311,
+        "y": 158,
+        "z": 119,
+        "kind": "spell",
+        "tier": 6
+      },
+      {
+        "x": 339,
+        "y": 153,
+        "z": 129,
+        "kind": "spell",
+        "tier": 6
+      },
+      {
+        "x": 355,
+        "y": 147,
+        "z": 151,
+        "kind": "spell",
+        "tier": 6
+      },
+      {
+        "x": 355,
+        "y": 141,
+        "z": 183,
+        "kind": "spell",
+        "tier": 6
+      },
+      {
+        "x": 355,
+        "y": 135,
+        "z": 211,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 355,
+        "y": 129,
+        "z": 243,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 355,
+        "y": 123,
+        "z": 275,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 355,
+        "y": 119,
+        "z": 303,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 355,
+        "y": 114,
+        "z": 335,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 343,
+        "y": 109,
+        "z": 355,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 315,
+        "y": 104,
+        "z": 355,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 283,
+        "y": 99,
+        "z": 355,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 251,
+        "y": 94,
+        "z": 355,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 223,
+        "y": 88,
+        "z": 354,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 191,
+        "y": 82,
+        "z": 352,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 163,
+        "y": 76,
+        "z": 351,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 135,
+        "y": 70,
+        "z": 346,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 135,
+        "y": 61,
+        "z": 312,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 135,
+        "y": 54,
+        "z": 284,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 139,
+        "y": 46,
+        "z": 256,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 190,
+        "y": 177,
+        "z": 126,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 190,
+        "y": 171,
+        "z": 155,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 190,
+        "y": 164,
+        "z": 187,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 210,
+        "y": 157,
+        "z": 208,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 238,
+        "y": 151,
+        "z": 218,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 270,
+        "y": 144,
+        "z": 230,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 302,
+        "y": 139,
+        "z": 230,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 330,
+        "y": 134,
+        "z": 230,
+        "kind": "gold",
+        "tier": 6
+      },
+      {
+        "x": 342,
+        "y": 128,
+        "z": 240,
+        "kind": "gold",
+        "tier": 6
+      }
+    ],
+    "chests": [
+      {
+        "x": 311,
+        "y": 119,
+        "z": 264,
+        "tier": 6
+      },
+      {
+        "x": 287,
+        "y": 111,
+        "z": 287,
+        "tier": 6
+      },
+      {
+        "x": 272,
+        "y": 104,
+        "z": 319,
+        "tier": 6
+      }
+    ],
+    "potions": [
+      {
+        "x": 257,
+        "y": 96,
+        "z": 351,
+        "tier": 6
+      },
+      {
+        "x": 383,
+        "y": 150,
+        "z": 135,
+        "tier": 6
+      },
+      {
+        "x": 392,
+        "y": 146,
+        "z": 160,
+        "tier": 6
+      },
+      {
+        "x": 119,
+        "y": 70,
+        "z": 350,
+        "tier": 6
+      },
+      {
+        "x": 95,
+        "y": 70,
+        "z": 354,
+        "tier": 6
+      },
+      {
+        "x": 95,
+        "y": 65,
+        "z": 387,
+        "tier": 6
+      }
+    ]
+  },
+  "airT": 18,
+  "ambient": [
+    0.025,
+    0.03,
+    0.04
+  ],
+  "torches": [
+    [
+      310,
+      19,
+      261
+    ],
+    [
+      112,
+      193,
+      115
+    ],
+    [
+      144,
+      190,
+      115
+    ],
+    [
+      176,
+      186,
+      115
+    ],
+    [
+      208,
+      181,
+      115
+    ],
+    [
+      240,
+      175,
+      115
+    ],
+    [
+      272,
+      169,
+      115
+    ],
+    [
+      304,
+      163,
+      122
+    ],
+    [
+      336,
+      158,
+      133
+    ],
+    [
+      355,
+      152,
+      153
+    ],
+    [
+      355,
+      146,
+      185
+    ],
+    [
+      355,
+      139,
+      217
+    ],
+    [
+      355,
+      133,
+      249
+    ],
+    [
+      355,
+      128,
+      281
+    ],
+    [
+      355,
+      123,
+      313
+    ],
+    [
+      355,
+      117,
+      345
+    ],
+    [
+      338,
+      112,
+      360
+    ],
+    [
+      306,
+      107,
+      360
+    ],
+    [
+      274,
+      102,
+      360
+    ],
+    [
+      242,
+      96,
+      359
+    ],
+    [
+      210,
+      90,
+      358
+    ],
+    [
+      178,
+      84,
+      357
+    ],
+    [
+      146,
+      77,
+      355
+    ],
+    [
+      135,
+      69,
+      334
+    ],
+    [
+      135,
+      61,
+      302
+    ],
+    [
+      135,
+      52,
+      270
+    ],
+    [
+      158,
+      38,
+      261
+    ],
+    [
+      190,
+      22,
+      261
+    ],
+    [
+      190,
+      179,
+      141
+    ],
+    [
+      190,
+      172,
+      173
+    ],
+    [
+      190,
+      165,
+      205
+    ],
+    [
+      222,
+      158,
+      217
+    ],
+    [
+      254,
+      151,
+      229
+    ],
+    [
+      286,
+      146,
+      235
+    ],
+    [
+      318,
+      141,
+      235
+    ],
+    [
+      350,
+      136,
+      235
+    ],
+    [
+      329,
+      128,
+      255
+    ],
+    [
+      297,
+      119,
+      280
+    ],
+    [
+      278,
+      111,
+      310
+    ],
+    [
+      263,
+      103,
+      342
+    ],
+    [
+      368,
+      155,
+      140
+    ],
+    [
+      392,
+      154,
+      148
+    ],
+    [
+      392,
+      148,
+      180
+    ],
+    [
+      109,
+      75,
+      355
+    ],
+    [
+      95,
+      72,
+      373
+    ]
+  ],
+  "geometrySha256": "71199aebf2eb9c372c9ef9f0b3d955d3a966ad687aa55ff8fa9d98c8a1e04944",
+  "packedSha256": "85d0618cfee1a2515673edcab0f8c1ec2b0322a337f49fa54e13d3372ab71ec9",
+  "provenance": {
+    "archive": "Noita-native/data/data.wak",
+    "archiveSha256": "c95a0c01a55ec29267afef6bbec8a0cae0ba2b350638e2203674ed4dfb9227c3",
+    "sources": [
+      {
+        "path": "data/biome/_pixel_scenes.xml",
+        "sha256": "78cf9b4c0abfc4fc24239ab9595d8c54e6e76b212773d8d2d2bf9be4f3fcdf58",
+        "bytes": 20082
+      },
+      {
+        "path": "data/biome/crypt.xml",
+        "sha256": "56a4c842a084925df38c417c3fc31a4883d5dba6b39e30e84754e6fe2df5b8cc",
+        "bytes": 6781
+      },
+      {
+        "path": "data/biome_impl/crypt/cathedral.png",
+        "sha256": "55a58ca4728ec8e8cafc1a25b2fc76fa09de0ae60725a91c67e3cd8485b95355",
+        "bytes": 2112
+      },
+      {
+        "path": "data/biome_impl/crypt/mining.png",
+        "sha256": "fbde596e3241c900be957516e0b0314d5825e6d439a0ddf5846bc214a0944f4d",
+        "bytes": 3696
+      },
+      {
+        "path": "data/biome_impl/crypt/room_gate_drop.png",
+        "sha256": "afc099864c48f619790652a654b1d3ed63c09a8cf09e96cf8692fe23567aee00",
+        "bytes": 20124
+      },
+      {
+        "path": "data/biome_impl/crypt/stairs_right.png",
+        "sha256": "ef1ec8b49f90de92869e6e574eb82f0b4cca0f6add3496fd1981c6b8ccb0a8ef",
+        "bytes": 203
+      },
+      {
+        "path": "data/biome_impl/temple/altar.png",
+        "sha256": "2a185ef84dd1d9e469d1e6890783e4bfe4efe7f949497dc3b7fb2895c499ca9d",
+        "bytes": 2587
+      },
+      {
+        "path": "data/materials.xml",
+        "sha256": "122df34514edaf312e1a15a619b3d6a44d49ce605c929d5950c9051a57429d04",
+        "bytes": 418728
+      },
+      {
+        "path": "data/scripts/biome_scripts.lua",
+        "sha256": "8f9eb6966da9be87303fcf8dc4d43dd34b3907f8e421b04aa09b843b95f17793",
+        "bytes": 7431
+      },
+      {
+        "path": "data/scripts/biomes/crypt.lua",
+        "sha256": "1f601e8a98801a877897fbed5ce24b9a0f887fb06f460048e2e1e786eb3eea17",
+        "bytes": 26650
+      },
+      {
+        "path": "data/scripts/biomes/temple_altar.lua",
+        "sha256": "fe436f45a8ee8c4616083c4e48ac28d94472f04357100f6f70a62031e5928460",
+        "bytes": 7901
+      }
+    ],
+    "biome": "crypt",
+    "placements": [
+      {
+        "path": "data/biome_impl/temple/altar.png",
+        "nativeSize": [
+          512,
+          282
+        ],
+        "compiledSize": [
+          184,
+          101
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 63477,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "03dead",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_areachecks"
+          },
+          {
+            "rgb": "03deaf",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_fish"
+          },
+          {
+            "rgb": "03fade",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_spell_visualizer"
+          },
+          {
+            "rgb": "10822d",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_workshop"
+          },
+          {
+            "rgb": "2f554c",
+            "pixels": 4985,
+            "material": "water",
+            "element": "WATER"
+          },
+          {
+            "rgb": "33934c",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_all_shopitems"
+          },
+          {
+            "rgb": "363e21",
+            "pixels": 1154,
+            "material": "mud",
+            "element": "SANDSTONE"
+          },
+          {
+            "rgb": "420a3d",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_trigger_check_stats"
+          },
+          {
+            "rgb": "420a3f",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_trigger_check_stats_reference"
+          },
+          {
+            "rgb": "5a822d",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_workshop_extra"
+          },
+          {
+            "rgb": "6d934c",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_hp"
+          },
+          {
+            "rgb": "784dd2",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_worm_deflector"
+          },
+          {
+            "rgb": "786c42",
+            "pixels": 19176,
+            "material": "templebrick_static",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "786c44",
+            "pixels": 53391,
+            "material": "templebrick_noedge_static",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "a7a707",
+            "pixels": 4,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_lamp_long"
+          },
+          {
+            "rgb": "aaf06e",
+            "pixels": 116,
+            "material": "glowstone",
+            "element": "LAMP"
+          },
+          {
+            "rgb": "af9f6a",
+            "pixels": 1862,
+            "material": "templebrick_static_soft",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "c128ff",
+            "pixels": 5,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_rubble"
+          },
+          {
+            "rgb": "ffc931",
+            "pixels": 198,
+            "material": "glowstone_altar",
+            "element": "LAMP"
+          },
+          {
+            "rgb": "ffff00",
+            "pixels": 5,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffff81",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          }
+        ],
+        "center": [
+          256,
+          -42,
+          256
+        ],
+        "quarterTurn": 0,
+        "maxDepth": 54,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 187625
+      },
+      {
+        "path": "data/biome_impl/crypt/cathedral.png",
+        "nativeSize": [
+          440,
+          220
+        ],
+        "compiledSize": [
+          156,
+          78
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 71229,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "50a0f0",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "786c42",
+            "pixels": 14990,
+            "material": "templebrick_static",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "c8001a",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_ghost_crystal"
+          },
+          {
+            "rgb": "c8c800",
+            "pixels": 3,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_lamp2"
+          },
+          {
+            "rgb": "ff0000",
+            "pixels": 5,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffabab",
+            "pixels": 4,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffffff",
+            "pixels": 10567,
+            "material": "templebrickdark_static",
+            "element": "BRICK",
+            "loss": "biome fill selected from biome XML (not native noise synthesis)"
+          }
+        ],
+        "center": [
+          135,
+          162,
+          110
+        ],
+        "quarterTurn": 0,
+        "maxDepth": 50,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 122416
+      },
+      {
+        "path": "data/biome_impl/crypt/stairs_right.png",
+        "nativeSize": [
+          40,
+          40
+        ],
+        "compiledSize": [
+          100,
+          100
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 760,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "786c42",
+            "pixels": 840,
+            "material": "templebrick_static",
+            "element": "BRICK"
+          }
+        ],
+        "center": [
+          355,
+          120,
+          135
+        ],
+        "quarterTurn": 1,
+        "maxDepth": 62,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 282658
+      },
+      {
+        "path": "data/biome_impl/crypt/room_gate_drop.png",
+        "nativeSize": [
+          440,
+          220
+        ],
+        "compiledSize": [
+          156,
+          78
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 44221,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "2d6dbc",
+            "pixels": 996,
+            "material": "rock_box2d_hard",
+            "element": "ROCK"
+          },
+          {
+            "rgb": "378ec4",
+            "pixels": 7,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: load_small_background_scene"
+          },
+          {
+            "rgb": "613e02",
+            "pixels": 406,
+            "material": "wood_player_b2",
+            "element": "WOOD"
+          },
+          {
+            "rgb": "786c42",
+            "pixels": 20683,
+            "material": "templebrick_static",
+            "element": "BRICK"
+          },
+          {
+            "rgb": "78ffff",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "80ff5a",
+            "pixels": 3,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_vines"
+          },
+          {
+            "rgb": "c8c800",
+            "pixels": 1,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_lamp2"
+          },
+          {
+            "rgb": "ff0000",
+            "pixels": 2,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "unresolved color omitted; NOT rock"
+          },
+          {
+            "rgb": "ffffff",
+            "pixels": 30480,
+            "material": "templebrickdark_static",
+            "element": "BRICK",
+            "loss": "biome fill selected from biome XML (not native noise synthesis)"
+          }
+        ],
+        "center": [
+          355,
+          80,
+          355
+        ],
+        "quarterTurn": 2,
+        "maxDepth": 74,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 404562
+      },
+      {
+        "path": "data/biome_impl/crypt/mining.png",
+        "nativeSize": [
+          440,
+          220
+        ],
+        "compiledSize": [
+          132,
+          66
+        ],
+        "palette": [
+          {
+            "rgb": "000000",
+            "pixels": 24136,
+            "material": "mask-clear",
+            "element": "EMPTY"
+          },
+          {
+            "rgb": "90fe40",
+            "pixels": 21117,
+            "material": "sandstone",
+            "element": "SANDSTONE"
+          },
+          {
+            "rgb": "a07864",
+            "pixels": 6,
+            "material": null,
+            "element": "EMPTY",
+            "loss": "script entity omitted: spawn_scavengers"
+          },
+          {
+            "rgb": "ebcd00",
+            "pixels": 8040,
+            "material": "sand",
+            "element": "SANDSTONE"
+          },
+          {
+            "rgb": "ffffff",
+            "pixels": 43501,
+            "material": "templebrickdark_static",
+            "element": "BRICK",
+            "loss": "biome fill selected from biome XML (not native noise synthesis)"
+          }
+        ],
+        "center": [
+          135,
+          40,
+          350
+        ],
+        "quarterTurn": 3,
+        "maxDepth": 86,
+        "crop": null,
+        "thickness": "taper by abs(u-width/2)/8; ledges by (v/12+u/23)%3",
+        "addedCells": 500840
+      }
+    ],
+    "connectors": [
+      {
+        "label": "Holy Mountain exit stair",
+        "points": [
+          [
+            310,
+            14,
+            256
+          ],
+          [
+            324,
+            6,
+            256
+          ]
+        ],
+        "radius": 4,
+        "material": "BRICK"
+      },
+      {
+        "label": "Main folded descent",
+        "points": [
+          [
+            95,
+            190,
+            110
+          ],
+          [
+            190,
+            180,
+            110
+          ],
+          [
+            285,
+            161,
+            110
+          ],
+          [
+            355,
+            150,
+            135
+          ],
+          [
+            355,
+            130,
+            230
+          ],
+          [
+            355,
+            110,
+            355
+          ],
+          [
+            255,
+            94,
+            355
+          ],
+          [
+            135,
+            70,
+            350
+          ],
+          [
+            135,
+            45,
+            256
+          ],
+          [
+            195,
+            14,
+            256
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      },
+      {
+        "label": "Upper cross-link",
+        "points": [
+          [
+            190,
+            180,
+            110
+          ],
+          [
+            190,
+            160,
+            200
+          ],
+          [
+            270,
+            143,
+            230
+          ],
+          [
+            355,
+            130,
+            230
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      },
+      {
+        "label": "Drop gallery cross-link",
+        "points": [
+          [
+            355,
+            130,
+            230
+          ],
+          [
+            290,
+            112,
+            280
+          ],
+          [
+            255,
+            94,
+            355
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      },
+      {
+        "label": "East room branch",
+        "points": [
+          [
+            355,
+            150,
+            135
+          ],
+          [
+            392,
+            150,
+            135
+          ],
+          [
+            392,
+            142,
+            180
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      },
+      {
+        "label": "Lower room branch",
+        "points": [
+          [
+            135,
+            70,
+            350
+          ],
+          [
+            95,
+            70,
+            350
+          ],
+          [
+            95,
+            64,
+            390
+          ]
+        ],
+        "radius": 5,
+        "material": "ROCK"
+      }
+    ],
+    "fluids": {
+      "sourceLiquidCells": 12345,
+      "retainedLiquidCells": 4716,
+      "glassSealCells": 1284,
+      "loss": "four-cell sealed reservoirs; deep fluid replaced by glass/basalt"
+    },
+    "losses": [
+      "Authored 3D composition, not native seeded Wang generation",
+      "Nearest-neighbour downsampling; stepped variable-depth extrusion and quarter turns",
+      "Frozen snow/soil/sand/tissue kept structural; material approximations listed in palette",
+      "Native entities, visual/background layers, scripts, boss AI and ending not imported"
+    ]
+  },
+  "stats": {
+    "cells": 1478797,
+    "sourcePlacementCells": 1498101,
+    "bricks": 5266,
+    "bytes": 3220480,
+    "gzipBytes": 44906
+  },
+  "route": {
+    "goal": [
+      324,
+      8,
+      256
+    ],
+    "body": {
+      "width": 1.6,
+      "height": 5.5
+    },
+    "validation": "scripts/check-noita-source.mjs: packed occupancy body walk",
+    "mainWaypoints": [
+      [
+        95,
+        190,
+        110
+      ],
+      [
+        190,
+        180,
+        110
+      ],
+      [
+        285,
+        161,
+        110
+      ],
+      [
+        355,
+        150,
+        135
+      ],
+      [
+        355,
+        130,
+        230
+      ],
+      [
+        355,
+        110,
+        355
+      ],
+      [
+        255,
+        94,
+        355
+      ],
+      [
+        135,
+        70,
+        350
+      ],
+      [
+        135,
+        45,
+        256
+      ],
+      [
+        195,
+        14,
+        256
+      ]
+    ]
+  }
+}
