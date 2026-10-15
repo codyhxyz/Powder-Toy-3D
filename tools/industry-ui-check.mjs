@@ -86,6 +86,9 @@ try {
   };
   const result = { case: testCase, ok: true, pageErrors, browserFailures, fixtures: [] };
 
+  // Also bound the whole case: DOM actions and synchronous header fixtures that
+  // do not need individual probes cannot borrow time reserved for cleanup.
+  await bounded(`${testCase} assertions`, async () => {
   if (testCase === 'layout') {
     const machine = type => page.locator(`[data-machine="${type}"]`);
     const unobscured = locator => locator.evaluate(el => {
@@ -179,7 +182,7 @@ try {
       if (!a.settings.paused) throw new Error('operations fixture requires paused physics');
       a.test.resume();
     });
-    const state = () => page.evaluate(() => window.__app.industry.state);
+    const state = () => bounded('read Industry state', () => page.evaluate(() => window.__app.industry.state));
     const waitState = (label, predicate, maxMs = 1_500, argValue = null) => waitFor(page, label,
       predicate, argValue, maxMs);
     const project = cells => bounded('project real canvas aim', () => page.evaluate(targets => {
@@ -192,36 +195,54 @@ try {
           onCanvas: document.elementFromPoint(px, py) === a.renderer.domElement };
       });
     }, cells));
-    const framePair = () => bounded('wait for normal app frames', () => page.evaluate(() => new Promise(resolve =>
-      requestAnimationFrame(() => requestAnimationFrame(resolve)))), 500);
+    const syncAim = async (point, label, partKey = null) => {
+      await bounded(`${label}: move pointer`, () => page.mouse.move(point.x, point.y), 700);
+      const hit = await bounded(`${label}: pick current screen ray`, () => page.evaluate(async p => {
+        const a = window.__app, raycaster = new a.THREE.Raycaster();
+        raycaster.setFromCamera(new a.THREE.Vector2(p.x * 2 / innerWidth - 1, 1 - p.y * 2 / innerHeight), a.camera);
+        const ray = raycaster.ray.clone().applyMatrix4(a.volume.matrixWorld.clone().invert());
+        const picked = await a.pickScreenRay(ray.origin, ray.direction);
+        const cell = picked.cell.toArray(), placement = [...cell];
+        if (picked.id >= 0) placement[Math.floor(picked.face / 2)] += picked.face % 2 === 0 ? 1 : -1;
+        return { valid: picked.valid, cell, face: picked.face, id: picked.id, placement };
+      }, point), 900);
+      if (!hit.valid) return null;
+      await waitFor(page, `${label}: current hover and candidate`, ({ expected, key }) => {
+        const a = window.__app, h = a.hover, s = a.industry.state;
+        if (!h.valid || h.id !== expected.id || h.face !== expected.face
+          || String([h.cell.x, h.cell.y, h.cell.z]) !== String(expected.cell)) return false;
+        return !key || (s.part === key && s.partCandidate?.type === key
+          && String([s.partCandidate.x, s.partCandidate.y, s.partCandidate.z]) === String(expected.placement));
+      }, { expected: hit, key: partKey }, 900);
+      return hit;
+    };
     const occupiedCell = async cell => bounded('read one native cell', () => page.evaluate(async xyz => {
       const [a] = await window.__app.sim.readCell(...xyz);
       return Array.from(a);
     }, cell), 900);
     const canvasPointForPart = async key => {
-      const { nx, ny, nz } = await page.evaluate(() => window.__app.sim.g);
+      const { nx, ny, nz } = await bounded('read grid bounds', () => page.evaluate(() => window.__app.sim.g));
       const points = [];
       for (const y of [8, 12, 16, 20]) for (const z of [64, 68, 72, 76, 80]) for (const x of [40, 44, 48, 52, 56, 60, 64]) {
         if (x < nx && y < ny && z < nz) points.push([x, y, z]);
       }
       for (const point of await project(points)) {
         if (!point.onCanvas || point.x < 380 || point.x >= 1275 || point.y < 70 || point.y >= 795) continue;
-        await bounded(`move to ${key} canvas target`, () => page.mouse.move(point.x, point.y), 700);
-        await framePair();
-        const candidate = await page.evaluate(() => {
+        if (!await syncAim(point, `${key} placement`, key)) continue;
+        const candidate = await bounded('read synchronized candidate', () => page.evaluate(() => {
           const a = window.__app, s = a.industry.state;
           if (!a.hover.valid || !s.partCandidate || !s.partCandidateResult?.ok) return null;
           return { cell: [s.partCandidate.x, s.partCandidate.y, s.partCandidate.z], type: s.partCandidate.type,
             hover: [a.hover.cell.x, a.hover.cell.y, a.hover.cell.z, a.hover.face, a.hover.id] };
-        });
+        }));
         if (!candidate || candidate.type !== key) continue;
         const [x, y, z] = candidate.cell;
         const device = await occupiedCell(candidate.cell);
         if (Math.round(device[0]) !== E.EMPTY) continue;
-        const afterRead = await page.evaluate(() => {
+        const afterRead = await bounded('recheck placement identity', () => page.evaluate(() => {
           const a = window.__app, s = a.industry.state;
           return { valid: a.hover.valid, part: s.part, cell: s.partCandidate && [s.partCandidate.x, s.partCandidate.y, s.partCandidate.z], result: s.partCandidateResult?.ok };
-        });
+        }));
         if (!afterRead.valid || afterRead.part !== key || !afterRead.result || String(afterRead.cell) !== String(candidate.cell)) continue;
         return { point, cell: [x, y, z], hover: candidate.hover };
       }
@@ -229,7 +250,7 @@ try {
     };
     const placePartThroughCanvas = async (key, threshold, spentBefore, expectedMaterial) => {
       await page.locator(`[data-part="${key}"]`).click();
-      await waitState(`${key}: select through DOM`, () => window.__app.industry.state.part === key, 700);
+      await waitState(`${key}: select through DOM`, selected => window.__app.industry.state.part === selected, 700, key);
       if (key === 'TSNS') {
         const input = page.getByRole('spinbutton', { name: 'Temperature sensor threshold in degrees Celsius' });
         await input.fill(String(threshold));
@@ -253,7 +274,7 @@ try {
       const native = await occupiedCell(aim.cell);
       assert.equal(Math.round(native[0]), expectedMaterial, `${key}: clicked cell contains the native material`);
       if (key === 'TSNS') assert.ok(Math.abs(native[1] - threshold) < .01, 'native TSNS cell stores the bounded threshold');
-      const economy = await page.evaluate(() => window.__app.industry.state.progression);
+      const economy = (await state()).progression;
       assert.equal(economy.partsSpent, expectedSpend, `${key}: confirmed paid ledger`);
       assert.equal(economy.credits, 24 - economy.partsSpent, `${key}: initial Factory credit debit`);
       return { cell: aim.cell, threshold: key === 'TSNS' ? native[1] : null, partsSpent: economy.partsSpent };
@@ -264,8 +285,7 @@ try {
       const aim = (await project([[device.x + 1, device.y, device.z + 1]]))[0];
       assert(aim.x > 380 && aim.x < 1275 && aim.y > 70 && aim.y < 795, `${type} fixture projects onto the canvas`);
       assert(aim.onCanvas, `${type} fixture is not covered by a UI panel`);
-      await bounded(`aim at registered ${type}`, () => page.mouse.move(aim.x, aim.y), 700);
-      await framePair();
+      assert(await syncAim(aim, `registered ${type}`), `current screen ray hits ${type}`);
       await bounded(`inspect registered ${type} on canvas`, () => page.mouse.click(aim.x, aim.y), 700);
       await waitState(`inspection of ${type}`, id => window.__app.industry.state.inspection?.device?.id === id, 2_000, desiredId);
     };
@@ -273,10 +293,8 @@ try {
       const aim = (await project([cell]))[0];
       assert(aim.x > 380 && aim.x < 1275 && aim.y > 70 && aim.y < 795, 'native cell projects onto the unobscured canvas');
       assert(aim.onCanvas, 'native cell is not covered by a UI panel');
-      await bounded('aim at native control cell', () => page.mouse.move(aim.x, aim.y), 700);
-      await framePair();
-      const hit = await page.evaluate(() => ({ valid: window.__app.hover.valid, id: window.__app.hover.id,
-        cell: [window.__app.hover.cell.x, window.__app.hover.cell.y, window.__app.hover.cell.z] }));
+      const hit = await syncAim(aim, 'native control inspection');
+      assert(hit, 'current screen ray hits a native control cell');
       assert.equal(hit.valid, true, 'real canvas ray hits a cell');
       assert.deepEqual(hit.cell, cell, 'real canvas ray selects the purchased cell');
       assert.equal(hit.id, material, 'real canvas ray sees the purchased native material');
@@ -366,7 +384,9 @@ try {
       'confirmed credits/partsSpent', 'switch inspection/toggle and native cell assertion', 'Escape/Q cancellation and focused-input Q handling',
       'native drive button state', 'gate-mode buttons and industry.toJSON/fromJSON paid-ledger round trip'];
   }
+  }, remaining());
 
+  if (!remaining()) throw new Error('Industry UI work deadline reached before success reporting');
   assert.deepEqual(browserFailures.filter(event => event.kind === 'console'
     && /GPUValidationError|uncaptured|createComputePipeline|parsing WGSL|shader compilation|device lost/i.test(event.message)),
   [], 'no native GPU validation errors');
@@ -395,5 +415,7 @@ try {
   console.error(error?.stack ?? error);
   process.exitCode = 1;
 } finally {
+  // Shared close retains the launcher's independent slot watchdog throughout
+  // cleanup, including a stalled browser. Never disable that ownership guard.
   if (browser) await browser.close();
 }
