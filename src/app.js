@@ -86,6 +86,7 @@ import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeB
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
 import { VIEWS, viewKey as viewKeyOf, viewForMode, isMaterialView } from './views.js';
+import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
 import weatherWire, { weather } from './wire/weather.js';
@@ -1522,9 +1523,8 @@ const settingsPanel = createSettings({
 // and into the view only while the camera is near enough for them to show
 // (gfx/detailGate.js). The shadow map sees every switched-on feature.
 let detailVersion = 0;
-// A view or detail variant whose pipeline is still building when the frame
-// wants it is drawn without the volume meanwhile, with a toast after a moment
-// (gfx/coldShader.js); its ready wakes the frame loop.
+// Pending material views retain the last complete variant (readyVolumeView).
+// At initial load without one, coldShader reports the wait; readiness wakes the loop.
 const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
 const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
@@ -1595,12 +1595,12 @@ function setPaused(p) {
   hud.setPaused(settings.paused);
 }
 
-// A view (src/views.js) is a pipeline of its own (shaders/render.js): one not
-// drawn yet this session builds now, the frame drawing without the volume
-// meanwhile (B5); the shadow map's kernel builds with the first view that reads it.
+// A view (src/views.js) builds on first use. Settings/UI select it now, but
+// material presentation keeps its complete predecessor until the new pipelines
+// are ready; its history and GI reset when the rendered view actually switches.
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
-  if (settings.view !== id) {
+  if (settings.view !== id && !(isMaterialView(settings.view) && isMaterialView(id))) {
     post.reset();
     meshFrames.drop();
     sim.resetGI();
@@ -2149,7 +2149,9 @@ function frameValues(cam, view, jitter) {
   };
 }
 let frameDerived = false;   // this frame runs the derived passes (pacer.derived)
-let frameDetail = {};       // the realistic view's detail this frame (gfx/detailGate.js)
+let frameDetail = {};       // the material view's ready detail this frame
+let renderView = settings.view;   // settings.view is the request; this is the complete presented view
+const readyVolumeView = createReadyVolumeView();
 const camGrid = new THREE.Vector3();   // the eye in grid cells (the volume's uCam)
 // wakes the frame loop once a pipeline the frame wanted is built
 const waited = new WeakSet();
@@ -2199,18 +2201,42 @@ function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
 // so the grid and the box outline fade by the render scale to keep their weight.
 let volumeDrawn = false;   // the last presented frame drew the volume (__app.view.volumeDrawn)
 let volumeFirst = false;  // this frame's volume drew before the scene pass (the opaque hook: world/far.js volumePass)
+// Select once, before any presentation consumer writes uniforms or draws.
+// The far meshes discard live-window columns even without a local draw; a
+// pending shader must therefore keep the actual previous full-resolution view.
+function selectRenderView() {
+  let next = { view: viewKeyOf(settings.view), detail: frameDetail, curved: !!warpNow()?.k };
+  if (blocks) {
+    readyVolumeView.reset();
+  } else {
+    if (next.curved && isMaterialView(next.view)
+      && vol.pipeline(next.view, next.detail, 'idle', true).state !== 'ready') next.detail = baseDetail();
+    const pipe = vol.pipeline(next.view, next.detail, 'now', next.curved);
+    const required = [pipe];
+    if (pipe.state !== 'ready') { coldShader.watch(pipe); wakeWhen(pipe.ready); }
+    if (viewShadows(next.view)) {
+      if (vol.shadowState !== 'ready') wakeWhen(vol.shadowReady());
+      required.push({ state: vol.shadowState });
+    }
+    const far = win?.far;
+    if (far && isMaterialView(next.view)) {
+      wire('world').buildFarView(ctx, far);
+      required.push(far.viewPipeline);
+    }
+    next = readyVolumeView.select(vol, next, required);
+  }
+  const id = VIEWS.find((v) => v.key === next.view).id;
+  if (renderView !== id) { post.reset(); meshFrames.drop(); sim.resetGI(); }
+  renderView = id;
+  frameDetail = next.detail;
+}
 // The volume's draw into rp (the scene pass, or its own pass first), its
 // options this frame's (cut.take(): the meshes' depth, once a frame).
 // Returns whether it drew.
 function drawVolume(rp) {
-  const view = viewKeyOf(settings.view);
+  const view = viewKeyOf(renderView), detail = frameDetail;
   const meshDepth = cut.take();
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
-  // Bent (the rolling log) the view draws its curved variant (gfx/volume.js),
-  // which builds on first use: the detail gate's choice when that one is built,
-  // else its base variant (building now) while the other builds at idle time.
-  let detail = frameDetail;
-  if (curved && isMaterialView(view) && vol.pipeline(view, detail, 'idle', true).state !== 'ready') detail = baseDetail();
   const drew = !testNoVolume && vol.draw(rp, {
     view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
   });
@@ -2238,7 +2264,7 @@ function drawVolumeFirst(p) {
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 function drawScene(rp) {
-  const g = sim.g, view = viewKeyOf(settings.view);
+  const g = sim.g, view = viewKeyOf(renderView);
   // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
   // daylit scene disagreed with what its water and metal mirrored); the data views keep the page's sky
   const lit = !win && isMaterialView(view);
@@ -2274,7 +2300,7 @@ const frameHooks = {
   prepare: (p) => {
     // (the kept scene is for other targets: post's sizes changed with this frame's settings)
     if (frameMode === 'meshes' && !meshFrames.fits(p)) { meshFrames.drop(); frameMode = 'full'; }
-    writeFrameUniforms(gpu, frameValues(camera, settings.view, p.jitter));
+    writeFrameUniforms(gpu, frameValues(camera, renderView, p.jitter));
   },
   // E1's work that reads FrameUniforms, after it is written: the derived
   // passes, the shadow map (views that read it), GI (the realistic view), the
@@ -2287,11 +2313,11 @@ const frameHooks = {
     } else if (frameDerived) {
       prof.phase('derived');
       sim.updateBricks();
-      if (viewShadows(viewKeyOf(settings.view))) {
+      if (viewShadows(viewKeyOf(renderView))) {
         prof.phase('shadow');
         if (!vol.recordShadow()) wakeWhen(vol.shadowReady());   // (its kernel builds: the derived key moves when it is ready)
       }
-      if (isMaterialView(settings.view)) {
+      if (isMaterialView(renderView)) {
         prof.phase('gi');
         sim.updateGI(SUN, vol.shadowTextures, vol.shadowRes);
       }
@@ -2532,15 +2558,16 @@ function tick(now, renderOnly = false) {
   if (runView && !postOnly) {
     prof.phase('view');
     updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
+    volume.updateMatrixWorld();
+    camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+    selectRenderView();
     frameMode = renderOnly ? 'full' : planMeshFrame(runDerived);
     meshesMoved = false;
     viewClock(frameMode !== 'full');   // (before the wires read it: the meshes' light under the clouds)
     for (const w of live) w.beforeView?.(ctx, dt);   // the world's far field and ambient, signs, the held tool
-    volume.updateMatrixWorld();
-    camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-    frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
-    // (the blocks' faces are radiance, as the realistic view's; the data views are finished colours)
-    post.settings.raw = blocks ? false : !isMaterialView(settings.view);
+    // (the blocks' faces are radiance, as the material views'; data views are finished colours)
+    post.settings.raw = blocks ? false : !isMaterialView(renderView);
     const blurAllowed = settings.sprintBlur && !REDUCED_MOTION.matches && pov?.mode === 'on'
       && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
     post.settings.sprintBlur = blurAllowed
@@ -2618,6 +2645,7 @@ const ctx = {
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
+  get renderView() { return renderView; },
   get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },
   get win() { return win; }, set win(v) { win = v; },
   get worldSeed() { return worldSeed; }, set worldSeed(v) { worldSeed = v; },
@@ -2721,10 +2749,10 @@ async function allReady() {
       continue;
     }
     // (bent by a presentation effect: the view's curved variant, and a world's curved far view)
-    const curved = !!warpNow(), far = win?.far;
+    const curved = !!warpNow()?.k, far = win?.far;
     await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
       ...(physicsV2 ? [physicsV2.ready] : []),
-      ...(far && curved && isMaterialView(view) ? [far.buildView()] : [])]);
+      ...(far && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
     if (s === sim && v === vol && coreReady) return;   // (rebuilt meanwhile: wait for the new grid)
@@ -2817,10 +2845,11 @@ try {
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     gpu,           // the WebGPU device and its frame, stats, readback (src/gpu)
     // the volume's per-frame values that were uniforms (tools read them): its animation clock, the frame counter, the detail drawn
-    // volumeDrawn: the last presented frame drew the volume (false while its pipeline builds)
+    // volumeDrawn: the last presented frame drew the volume (material transitions retain a ready view)
     // meshFrames: the last view frame's kind ('full', 'capture', 'meshes': gfx/meshFrames.js) and the kept scene's state
     view: {
       get time() { return viewTime; }, get frame() { return gfxUniforms.uFrame.value; }, get detailShown() { return detailGate.shown; }, get volumeDrawn() { return volumeDrawn; },
+      get renderView() { return renderView; },
       get meshFrames() { return { mode: lastFrameMode, ...meshFrames.state }; },
     },
     // the frame loop: asleep when settled (deep idle, F7); callbacks: animation frames it ran

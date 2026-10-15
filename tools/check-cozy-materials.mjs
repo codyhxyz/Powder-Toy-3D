@@ -179,13 +179,13 @@ assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE'))
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
 const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
 for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
-const selectView = new Function('settings', 'VIEWS', `
+const selectView = new Function('settings', 'VIEWS', 'isMaterialView', `
   const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} }, detailGate = { setView() {} };
   const setBlocks = () => {}, plainView = () => false, prepareGI = () => {}, viewKeyOf = () => 'cozy';
   const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {} }, save = () => {};
   ${runtime}
   return setView;
-`)(modeSettings, VIEWS);
+`)(modeSettings, VIEWS, isMaterialView);
 for (const view of VIEWS) {
   selectView(view.id);
   await startMode('sandbox');
@@ -193,9 +193,9 @@ for (const view of VIEWS) {
 }
 assert.equal(viewForMode(modeByKey('crueltySquad'), cozy.id), cozy.id, 'Cruelty retains its existing shader selection policy');
 assert.match(app, /sourceStyle: selectedMode === 'crueltySquad' && isMaterialView\(view\)/);
-assert.match(app, /const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView\(settings\.view\)/,
+assert.match(app, /const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView\(renderView\)/,
   'Cruelty source rendering and post style remain tied to its mode, not Sandbox defaults');
-assert.match(app, /post\.settings\.raw = blocks \? false : !isMaterialView\(settings\.view\)/);
+assert.match(app, /post\.settings\.raw = blocks \? false : !isMaterialView\(renderView\)/);
 assert.match(app, /post\.settings\.raw = view === 'plain' \? false : !isMaterialView\(view\)/, 'Cozy thumbnails retain tone mapping');
 for (const file of ['src/app.js', 'src/wire/world.js', 'src/wire/weather.js']) {
   assert.doesNotMatch(source(file), /settings\.view [!=]== 0/, `${file}: lit rendering includes Cozy`);
