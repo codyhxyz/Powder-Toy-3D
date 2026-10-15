@@ -91,7 +91,7 @@ const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ')
  * Run one physical Sandustry batch in the caller-owned native simulation.
  * This function deliberately creates no browser, server, simulation, or bypass.
  */
-export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, operatorMode = 'transfer' } = {}) {
+export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, operatorMode = 'transfer', refuelOnce = false } = {}) {
   const startedAt = Date.now();
   const until = Number.isFinite(deadline) ? deadline : startedAt + 20_000;
   const devices = validateDevices(purelineDeviceLayout({ operatorMode }), BOUNDS);
@@ -157,6 +157,14 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     shipments: [],
     elapsedMs: 0,
   };
+  const refuel = refuelOnce ? { requested: true, providedCoalCells: 0, attempts: 0 } : null;
+  if (refuel) {
+    observations.operator = { refuel };
+    checks.operatorRefuelColdMined = false;
+    checks.operatorRefuelSourceSettled = false;
+    checks.operatorRefuelDoseConfirmed = false;
+    checks.operatorRefuelChargeRetained = false;
+  }
   const residualGaps = [];
   const asyncErrors = [];
   let construction = null, gates = null, controls = null, industry = null, transfer = null, diagnostics = null;
@@ -294,6 +302,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
   try {
     if (!sim || !gpu || !Number.isFinite(sim.g?.nx) || sim.disposed) throw new TypeError('runIndustryLine requires the live native simulation and GPU');
     if (!['transfer', 'tools'].includes(operatorMode)) throw new RangeError(`unknown industry operator mode: ${operatorMode}`);
+    if (typeof refuelOnce !== 'boolean' || (refuelOnce && operatorMode !== 'tools'))
+      throw new RangeError('refuelOnce requires a boolean and operatorMode=tools');
     if (observations.bounds.some((n, i) => n !== BOUNDS[i])) throw new Error(`expected native 128³ bounds, got ${observations.bounds.join('x')}`);
     ensureTime('fixture setup');
     markStage('native industry fixture setup');
@@ -301,7 +311,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       markStage('prepare real shovel and finite bucket operator');
       const { createIndustryOperator } = await import('./industry-operator.js');
       physicalOperator = await bounded(createIndustryOperator({ sim, gpu, deadline: until, nativeStep }), 'operator tool setup');
-      observations.operator = { mode: 'tools', owner: physicalOperator.owner, actions: [], initialLoads: physicalOperator.snapshot() };
+      observations.operator = { mode: 'tools', owner: physicalOperator.owner, actions: [], initialLoads: physicalOperator.snapshot(),
+        ...(refuel ? { refuel } : {}) };
     }
     observations.operatorMode = operatorMode;
     construction = createConstruction({ sim, gpu, requestRender() {} });
@@ -389,6 +400,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     const scrapLife = ELEMENTS[E.SCRAP].life ?? 0;
     edit([96, 30, 96], [98, 30, 97], E.COAL, 20, coalLife, 0.375);
     await fence('finite cold material source fence');
+    if (refuel) refuel.providedCoalCells = 6;
 
     // Exercise the real miner's COAL→BROKENCOAL output, including remaining life.
     // The optional branch uses the carried shovel itself; the default keeps the
@@ -441,7 +453,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       if (!checks.operatorChargeDelivered || !scrapMine.completed || !scrapThrow.completed)
         throw new Error('actual charge-first loading was not retained; stopped before fuel');
     }
-    if (operatorMode === 'tools') {
+    // Both finite sources use the same stock-105 scan and ordinary retargets.
+    const collectToolCoal = async (receipt = {}) => {
       let exposed = false;
       for (let batch = 0; batch < 120 && !exposed; batch++) {
         await nativeStep(4);
@@ -451,6 +464,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       const shovelLoad = physicalOperator.shovel.load;
       const stockCells = boxCells({ x: [95, 99], y: [30, 32], z: [92, 98] });
       const miningActions = [];
+      receipt.actions = miningActions;
       for (let poll = 0; poll < 120 && shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length < 6; poll++) {
         const stock = await readCells(stockCells);
         const at = stock.findIndex(cell => cell.id === E.BROKENCOAL);
@@ -464,6 +478,13 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         miningActions.push(action);
         observations.operator.actions.push({ ...action, exposedBeforeDig: exposed });
       }
+      receipt.exposed = exposed;
+      receipt.payload = shovelLoad.cells.map(cell => [...cell]);
+      return { exposed, miningActions };
+    };
+    if (operatorMode === 'tools') {
+      const { exposed, miningActions } = await collectToolCoal();
+      const shovelLoad = physicalOperator.shovel.load;
       coalTaken = shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).map(cell => [...cell]);
       minedSnapshot = coalTaken.map(cell => [...cell]);
       observations.fuel.miningMethod = 'native Industry miner, actual POV shovel primary';
@@ -561,6 +582,97 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     if (operatorMode === 'tools' && !checks.operatorChargeDelivered)
       residualGaps.push(`real shovel SCRAP handling: captured=${scrapTaken.length}, confirmedDump=${chargePut}, retained=${physicalOperator.shovel.load.cells.filter(cell => cell[0] === E.SCRAP).length}`);
 
+    if (refuel) {
+      markStage('stage one additional finite cold coal source and prefetch with actual shovel');
+      const load = physicalOperator.shovel.load;
+      if (!checks.physicalMinedCoalPreserved || !checks.operatorChargeDelivered || load.count || load.out
+          || load.reserved || physicalOperator.belt.transfer.pending)
+        throw new Error('refuel staging requires the first six fuel and four charge delivered and settled');
+      const before = await readCells(coalSource);
+      refuel.stagedSource = { atTick: observations.nativeTicks, cells: coalSource,
+        before: coalSource.map((at, i) => ({ at, ...before[i] })),
+        setup: 'ONE lab-provisioned finite six-cell cold COAL edit; not self-replenishing world or closed preseeded matter proof' };
+      if (!before.every(cell => cell.id === E.EMPTY))
+        throw new Error('refuel source contains foreign matter; no edit performed');
+      edit([96, 30, 96], [98, 30, 97], E.COAL, 20, 1, 0.375);
+      await fence('one finite cold refuel source');
+      const staged = await readCells(coalSource);
+      refuel.stagedSource.seeded = coalSource.map((at, i) => ({ at, ...staged[i] }));
+      if (!staged.every(cell => cell.id === E.COAL && cell.temperature === 20 && cell.life === 1 && cell.seed === 0.375))
+        throw new Error('finite refuel source did not read back as six cold full-life COAL cells');
+      refuel.providedCoalCells = 12;
+      refuel.prefetched = { startedAtTick: observations.nativeTicks };
+      await collectToolCoal(refuel.prefetched);
+      await fence('prefetched refuel proof fence');
+      const sourceAfter = await readCells(coalSource);
+      refuel.prefetched.atTick = observations.nativeTicks;
+      refuel.prefetched.sourceAfter = coalSource.map((at, i) => ({ at, ...sourceAfter[i] }));
+      checks.operatorRefuelColdMined = load.count === 6 && refuel.prefetched.payload.length === 6
+        && refuel.prefetched.payload.every(cell => isColdLineMinedCoal(cell));
+      checks.operatorRefuelSourceSettled = sourceAfter.every(cell => cell.id === E.EMPTY)
+        && !load.out && !load.reserved && !physicalOperator.belt.transfer.pending;
+      observations.operator.requiredActions.push({ label: 'prefetch six actual cold mined refuel cells',
+        completed: checks.operatorRefuelColdMined && checks.operatorRefuelSourceSettled });
+      if (!checks.operatorRefuelColdMined || !checks.operatorRefuelSourceSettled)
+        throw new Error('bounded actual refuel mining did not collect and settle six cold full-life BROKENCOAL cells');
+    }
+
+    const refuelChamber = [...hotRegions.fuel, ...hotRegions.charge];
+    const refuelChamberKeys = new Set(refuelChamber.map(at => at.join(',')));
+    const doseRefuel = async sampled => {
+      refuel.firstExhaustionTick = observations.nativeTicks;
+      refuel.chamberBefore = sampled.filter(cell => refuelChamberKeys.has(cell.at.join(',')));
+      const isCharge = cell => cell.id === E.SCRAP || cell.id === E.METAL
+        || (cell.id === E.LAVA && cell.ctype === E.METAL);
+      const load = physicalOperator.shovel.load;
+      refuel.initialChamberLife = refuel.chamberBefore.filter(cell => [E.COAL, E.BROKENCOAL].includes(cell.id))
+        .reduce((sum, cell) => sum + Math.max(0, cell.life), 0);
+      refuel.payloadBeforeDose = load.cells.map(cell => [...cell]);
+      refuel.carriedUnchanged = load.cells.length === refuel.prefetched.payload.length
+        && load.cells.every((cell, i) => cell.every((value, j) => value === refuel.prefetched.payload[i][j]));
+      if (refuel.chamberBefore.filter(isCharge).length !== 4 || load.count !== 6 || !refuel.carriedUnchanged
+          || !load.cells.every(cell => isColdLineMinedCoal(cell)) || load.out || load.reserved)
+        throw new Error('refuel requires all four chamber charge cells and six unchanged cold carried fuel cells');
+      // Reserve room for at most 12 ordinary action frames, release, and four
+      // settling frames. No partial action is started beyond the native cap.
+      if (observations.nativeTicks + (12 + 1 + 4) * 4 > MAX_NATIVE_TICKS)
+        throw new Error('refuel native tick budget reached before bounded dose');
+      markStage('one ordinary actual shovel refuel at sampled initial fuel exhaustion');
+      refuel.attempts = 1;
+      refuel.actionStartTick = observations.nativeTicks;
+      const transferStart = physicalOperator.snapshot().transfers.length;
+      const beforeCount = load.count;
+      const action = await physicalOperator.act({ tool: 'SHOVEL', button: 'secondary',
+        pose: toolPoses.FUEL_POSE, maxFrames: 12,
+        done: () => load.count < beforeCount && load.out === 0,
+        label: 'shovel one bounded actual refuel dose' });
+      observations.operator.actions.push(action);
+      observations.operator.requiredActions.push({ label: action.label, completed: action.completed });
+      refuel.action = action;
+      refuel.retainedPayload = load.cells.map(cell => [...cell]);
+      await physicalOperator.waitFrames(4, 'settle ordinary refuel dose');
+      const snapshot = physicalOperator.snapshot();
+      refuel.doseTransfers = snapshot.transfers.slice(transferStart);
+      refuel.acceptedSlots = refuel.doseTransfers.filter(r => r.tool === 'SHOVEL' && r.mode === TRANSFER_PUT)
+        .flatMap(r => r.accepted);
+      refuel.acceptedCount = refuel.acceptedSlots.length;
+      refuel.retainedPayload = load.cells.map(cell => [...cell]);
+      refuel.settledAtTick = observations.nativeTicks;
+      const after = await readCells(refuelChamber);
+      refuel.chamberAfter = refuelChamber.map((at, i) => ({ at, ...after[i] }));
+      checks.operatorRefuelDoseConfirmed = refuel.attempts === 1 && action.completed && !action.failure
+        && refuel.acceptedCount > 0 && beforeCount - load.count === refuel.acceptedCount
+        && refuel.acceptedSlots.every(slot => refuelChamberKeys.has(slot.at.join(',')) && isColdLineMinedCoal(slot.payload))
+        && load.cells.every(cell => isColdLineMinedCoal(cell))
+        && !load.out && !load.reserved && !physicalOperator.belt.transfer.pending
+        && !snapshot.omittedTransfers && !snapshot.traceErrors.length
+        && snapshot.transfers.every(r => !r.pending && !r.error);
+      checks.operatorRefuelChargeRetained = refuel.chamberBefore.filter(isCharge).length === 4
+        && refuel.chamberAfter.filter(isCharge).length === 4;
+      if (!checks.operatorRefuelDoseConfirmed || !checks.operatorRefuelChargeRetained)
+        residualGaps.push('one actual refuel dose did not confirm a positive chamber-only PUT and all four retained charge cells');
+    };
+
     markStage('open gate and release actual pumped coolant');
     const openGate = { ...currentGate, gateMode: 'open', gateClosed: true };
     await gateStepTo(openGate, GATE_STATUS.OPEN, 'coolant gate release');
@@ -597,12 +709,21 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
         if (hasMetalLava) checks.nativeMetalMelt = true;
         const fuelLife = sampled.filter(c => [E.COAL, E.BROKENCOAL].includes(c.id)).reduce((sum, c) => sum + Math.max(0, c.life), 0);
         if (fuelLife <= 0 && sampled.some(c => c.id === E.ASH)) exhausted = true;
+        const initialChamberLife = refuel && sampled.filter(c => refuelChamberKeys.has(c.at.join(','))
+          && [E.COAL, E.BROKENCOAL].includes(c.id)).reduce((sum, c) => sum + Math.max(0, c.life), 0);
+        if (refuel && refuel.attempts === 0 && initialChamberLife <= 0) {
+          await doseRefuel(sampled);
+          // Exhaustion of the first batch is not exhaustion of the new dose.
+          exhausted = false;
+          continue;
+        }
         const molten = sampled.filter(c => c.id === E.LAVA && c.ctype === E.METAL);
         if (operatorMode === 'tools' && molten.length === 4 && bucketPoured === 0) {
           checks.operatorFourCellMeltBatch = true;
           observations.operator.moltenBatch ??= molten.map(c => ({ ...c }));
         }
         if (operatorMode === 'tools' && hasMetalLava && bucketPoured < 4 && bucketLoad.count === 0
+            && (!refuel || (checks.operatorRefuelDoseConfirmed && checks.operatorRefuelChargeRetained))
             && (checks.operatorFourCellMeltBatch || molten.length === 4)
             && observations.nativeTicks - lastScoopProbeTick >= 96) {
           lastScoopProbeTick = observations.nativeTicks;
@@ -815,6 +936,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       }
       ashTotal = shovelLoad.cells.filter(cell => cell[0] === E.ASH).length - carriedAshBefore;
       observations.cargo.operatorAshPayload = shovelLoad.cells.filter(cell => cell[0] === E.ASH).map(cell => [...cell]);
+      if (refuel) observations.cargo.operatorAshMixedPayload = shovelLoad.cells.map(cell => [...cell]);
       if (target && observations.nativeTicks + 8 > MAX_NATIVE_TICKS)
         observations.cargo.ashCleanupSkippedReason = 'native tick budget reached';
       ashAfter = await readCells(ashRegion);
@@ -859,10 +981,16 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     if (bucketLoad?.count) observations.cargo.residuals.push({ kind: 'bucket-cargo', cells: bucketLoad.cells.map(cell => [...cell]) });
     if (physicalOperator) {
       observations.operator.finalLoads = physicalOperator.snapshot();
+      if (refuel) {
+        refuel.finalRetainedPayload = physicalOperator.shovel.load.cells.map(cell => [...cell]);
+        refuel.carriedChemicalFuelLife = refuel.finalRetainedPayload.filter(cell => [E.COAL, E.BROKENCOAL].includes(cell[0]))
+          .reduce((sum, cell) => sum + Math.max(0, cell[2]), 0);
+        refuel.exhaustionScope = 'sampled chamber only; retained chemical fuel in actual tool cargo is not spent';
+      }
       observations.operator.actionFailures = observations.operator.actions.filter(action => action.failure)
         .map(({ label, failure }) => ({ label, failure }));
       checks.operatorActionsWithoutErrors = observations.operator.actionFailures.length === 0;
-      checks.operatorRequiredActionsComplete = observations.operator.requiredActions?.length === 3
+      checks.operatorRequiredActionsComplete = observations.operator.requiredActions?.length === (refuel ? 5 : 3)
         && observations.operator.requiredActions.every(action => action.completed);
       checks.operatorBucketDelivered = bucketPoured === 4 && physicalOperator.bucket.load.count === 0
         && observations.cargo.bucketCells.length === 4
@@ -906,7 +1034,9 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
     if (!residualGaps.length) residualGaps.push('bounded native physical batch did not complete; no unobserved phase or cargo is credited');
     residualGaps.push('Interrupted runs do not establish complete accounting of outstanding loads and pending transfers.');
     observations.asyncErrors = [...asyncErrors];
-    return { case: 'line', status: Date.now() >= until ? 'bounded-incomplete' : 'failed', checks, observations,
+    if (refuel && physicalOperator) refuel.interruptedLoads = physicalOperator.snapshot();
+    return { case: 'line', status: Date.now() >= until || (refuel && /bounded actual refuel mining|native tick budget reached/.test(observations.lastError))
+      ? 'bounded-incomplete' : 'failed', checks, observations,
       residualGaps: [...new Set(residualGaps)] };
   } finally {
     // Tear down only this fixture's own async Industry jobs; the caller owns sim/gpu.
