@@ -111,7 +111,7 @@ export function tracePipelines(Device, note) {
 export function assertNoPipelineActivity(activity, stats, baseline) {
   if (activity !== 0 || stats.pipelinesPending !== 0 ||
       !Number.isSafeInteger(stats.pipelinesCreated) || stats.pipelinesCreated !== baseline)
-    throw new Error('Pipeline compilation during measurement; the entire case is invalid');
+    throw new Error(`Pipeline compilation during measurement; the entire case is invalid (activity=${activity}, pending=${stats.pipelinesPending}, created=${stats.pipelinesCreated}, baseline=${baseline})`);
 }
 
 // Self-contained CPU builder, installed unchanged in the page. No GPU settling,
@@ -250,7 +250,7 @@ async function run(o) {
       : (o['v2-path'] === 'both' ? ['direct', 'compatibility'] : [o['v2-path']]).map(compactPath => ({ engine, compactPath })));
     const scenes = o.scene === 'all' ? ['sand', 'water', 'settled'] : [o.scene];
     for (const split of passModes(o)) for (const scene of scenes) for (const { engine, compactPath } of cases) {
-      const result = { engine, compactPath, scene, diagnosticSplit: split, errors: [], warnings: [], samples: [] };
+      const result = { engine, compactPath, scene, diagnosticSplit: split, errors: [], warnings: [], samples: [], measurementPipelines: [] };
       report.results.push(result);
       const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
       let rejectFailure;
@@ -261,6 +261,13 @@ async function run(o) {
         result.errors.push(`pageerror: ${e.message}`); checkpoint('page failure', result); rejectFailure(e);
       });
       page.on('console', m => {
+        if (m.text().startsWith('FRAME_BENCH_MEASURE ')) {
+          const event = JSON.parse(m.text().slice('FRAME_BENCH_MEASURE '.length));
+          result.measurementPipelines.push(event);
+          console.error('Measurement compilation:', JSON.stringify(event));
+          checkpoint(`${scene}/${engine}: invalid measurement compilation`, result);
+          return;
+        }
         if (m.text().startsWith('FRAME_BENCH_BOOT ')) {
           const line = m.text().slice('FRAME_BENCH_BOOT '.length);
           if (o.out) appendFileSync(o.out + '.startup.jsonl', line + '\n');
@@ -346,7 +353,10 @@ async function run(o) {
           let pipelineActivity = 0;
           const checkPipelines = () => window.__frameBenchNoPipelineActivity(pipelineActivity, gpu.stats, pipelineBaseline);
           checkPipelines();
-          const restorePipelines = window.__frameBenchObservePipelines(globalThis.GPUDevice, () => { pipelineActivity++; });
+          const restorePipelines = window.__frameBenchObservePipelines(globalThis.GPUDevice, event => {
+            pipelineActivity++;
+            console.info('FRAME_BENCH_MEASURE ' + JSON.stringify({ ms: performance.now(), ...event }));
+          });
           let bridges = 0;
           const onPass = a.sim.onPass;
           a.sim.onPass = (name, info) => { if (name === 'v2bridge') bridges++; onPass?.(name, info); };
