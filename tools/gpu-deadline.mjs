@@ -6,7 +6,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const MAX_SLOT_MS = 25000;
-export const CLEANUP_MS = 2000;
+// Each capture can spend 1000 ms on the table plus 250 ms on orphan
+// environments. Reserve a delayed observer, the hard kill's fresh capture,
+// and exit verification (3 * 1250 ms + the 100 ms poll), without moving the
+// absolute slot deadline. More inspection allowance means earlier cleanup.
+export const CLEANUP_MS = 4000;
 export function budgetMs(value) {
   if (!Number.isFinite(value) || value <= CLEANUP_MS || value > MAX_SLOT_MS)
     throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${MAX_SLOT_MS} ms, including startup and cleanup`);
@@ -16,7 +20,7 @@ export function processTable() {
   let text;
   try {
     text = execFileSync('ps', ['-axo', 'pid=,ppid=,lstart=,stat=,args='],
-      { encoding: 'utf8', timeout: 500, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      { encoding: 'utf8', timeout: 1000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) { throw inspectionError('process-table', error); }
   return text.trim().split('\n').map(line => {
     const [pid, ppid, ...rest] = line.trim().split(/\s+/);

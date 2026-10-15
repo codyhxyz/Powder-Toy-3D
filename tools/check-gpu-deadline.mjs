@@ -9,11 +9,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import vm from 'node:vm';
-import { MAX_SLOT_MS, budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
+import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
 
 assert.equal(MAX_SLOT_MS, 25000);
+assert.equal(CLEANUP_MS, 4000);
+assert(CLEANUP_MS >= 3 * (1000 + 250) + 100, 'reserve delayed observation, fresh kill verification, and exit verification');
 for (const n of [5000, 10000, 25000]) assert.equal(budgetMs(n), n);
-for (const n of [0, -1, NaN, Infinity, 1000, 2000, 25001, 180000]) assert.throws(() => budgetMs(n), RangeError);
+for (const n of [0, -1, NaN, Infinity, 1000, 2000, 4000, 25001, 180000]) assert.throws(() => budgetMs(n), RangeError);
 const table = [
   { pid: 100, ppid: 1, start: 'ours' }, { pid: 101, ppid: 100, start: 'driver' },
   { pid: 102, ppid: 101, start: 'browser' }, { pid: 103, ppid: 102, start: 'gpu' },
@@ -27,8 +29,11 @@ assert.deepEqual(inspectionFailure({ stage: 'orphan-environment', code: 'ETIMEDO
   status: null, stdout: 'SECRET', stderr: 'SECRET', message: 'SECRET' }),
 { stage: 'orphan-environment', code: 'ETIMEDOUT', signal: 'SIGTERM', status: null });
 
-for (const orphan of [false, true, 'tagless', 'ps-failure', 'closed-pipe', 'ps-failure-closed-pipe']) {
+for (const orphan of [false, true, 'tagless', 'ps-failure', 'closed-pipe', 'ps-failure-closed-pipe', 'slow-ps', 'ps-timeout']) {
 const faultyPs = String(orphan).includes('ps-failure');
+const slowPs = orphan === 'slow-ps';
+const timeoutPs = orphan === 'ps-timeout';
+const customPs = faultyPs || slowPs || timeoutPs;
 const closedPipe = String(orphan).includes('closed-pipe');
 const token = randomUUID();
 const leafArgs = ['-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"];
@@ -44,6 +49,7 @@ const fixture = spawn(process.execPath, ['-e', `
 `], { stdio: ['ignore', 'pipe', 'pipe'] });
 const fixtureExit = once(fixture, 'exit');
 let guard, child, childIdentity;
+const safetyTimer = setTimeout(() => { fixture.kill('SIGKILL'); guard?.kill('SIGKILL'); }, 12000);
 try {
   child = Number((await once(fixture.stdout, 'data'))[0].toString().trim());
   const owner = processTable().find(p => p.pid === fixture.pid);
@@ -54,25 +60,65 @@ try {
   if (faultyPs) {
     writeFileSync(join(dir, 'ps'), '#!/bin/sh\nif [ ! -e "$TPT_CPU_PS_FLAG" ]; then\n touch "$TPT_CPU_PS_FLAG"\n echo "PRIVATE_FAULT_DETAIL" >&2\n exit 7\nfi\nexec /bin/ps "$@"\n', { mode: 0o755 });
   }
-  const start = Date.now(), deadline = start + 1500;
+  if (slowPs) {
+    writeFileSync(join(dir, 'ps'), '#!/bin/sh\nif [ "$1" = "-axo" ]; then /bin/sleep 0.55; fi\nexec /bin/ps "$@"\n', { mode: 0o755 });
+  }
+  if (timeoutPs) {
+    // No child exists during the timeout delay, so killing this stand-in
+    // cannot leave an unowned sleeping subprocess.
+    writeFileSync(join(dir, 'ps'), `#!/bin/sh
+if [ "$1" = "-axo" ]; then exec "${process.execPath}" "${join(dir, 'slow-table.cjs')}" "$@"; fi
+exec /bin/ps "$@"
+`, { mode: 0o755 });
+    writeFileSync(join(dir, 'slow-table.cjs'), `
+const fs = require('node:fs');
+if (fs.existsSync(process.env.TPT_CPU_PS_FLAG))
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
+process.stdout.write(require('node:child_process').execFileSync('/bin/ps', process.argv.slice(2)));
+`);
+    writeFileSync(join(dir, 'failed-once'), '');
+  }
+  const budget = slowPs || timeoutPs ? 6000 : 1500;
+  const start = Date.now(), deadline = start + budget;
   guard = spawn(process.execPath, [fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url)),
     String(owner.pid), owner.start, String(deadline), slot, String(statSync(slot).ino), token, String(start)],
   { stdio: ['pipe', 'pipe', 'pipe'],
-    env: faultyPs ? { ...process.env, PATH: `${dir}:${process.env.PATH}`, TPT_CPU_PS_FLAG: join(dir, 'failed-once') } : process.env });
-  let guardLog = '';
+    env: customPs ? { ...process.env, PATH: `${dir}:${process.env.PATH}`, TPT_CPU_PS_FLAG: join(dir, 'failed-once') } : process.env });
+  let guardLog = '', guardOutput = '';
   guard.stderr.on('data', data => { guardLog += data.toString(); });
+  guard.stdout.on('data', data => { guardOutput += data.toString(); });
   const guardExit = once(guard, 'exit');
   await once(guard.stdout, 'data');
   assert.equal(readFileSync(slot, 'utf8').trim(), String(guard.pid), 'live watchdog retains the slot after owner death');
   guard.stdin.write('capture\n');
   if (closedPipe) { guard.stdout.destroy(); guard.stderr.destroy(); }
+  if (timeoutPs) {
+    while (!guardOutput.includes('stop\n')) await once(guard.stdout, 'data');
+    assert.equal(readFileSync(slot, 'utf8').trim(), String(guard.pid), 'failed verification must retain the slot');
+    const live = processTable();
+    assert(live.some(p => p.pid === owner.pid && p.start === owner.start), 'failed verification must not signal owner');
+    assert(live.some(p => p.pid === childIdentity.pid && p.start === childIdentity.start), 'failed verification must not signal descendant');
+    const failedReport = JSON.parse(readFileSync(join(dir, 'runs', `${owner.pid}-${guard.pid}.json`), 'utf8'));
+    assert.equal(failedReport.status, 'inspection-failed');
+    assert.equal(failedReport.failures[0].code, 'ETIMEDOUT');
+    rmSync(join(dir, 'failed-once')); // Only now allow fresh, successful verification.
+  }
   const [, signal] = await fixtureExit;
   await guardExit;
   const reportText = readFileSync(join(dir, 'runs', `${owner.pid}-${guard.pid}.json`), 'utf8');
   const report = JSON.parse(reportText);
   assert.equal(report.status, 'released');
   assert.equal(Date.parse(report.startedAt), start);
-  assert(report.occupancyMs < 1500 && report.finishedAt);
+  assert.equal(Date.parse(report.deadlineAt), deadline, 'inspection allowance must not extend the absolute deadline');
+  assert(report.occupancyMs < budget && report.finishedAt);
+  if (slowPs) {
+    assert.deepEqual(report.failures, [], 'valid inspections slower than 500 ms must not fail');
+    assert(!guardOutput.includes('stop\n'), 'slow valid inspection must not request browser shutdown');
+  }
+  if (timeoutPs) {
+    assert.equal(report.failures[0].stage, 'process-table');
+    assert.equal(report.failures[0].code, 'ETIMEDOUT');
+  }
   if (!closedPipe) assert.match(guardLog, /total GPU slot occupancy \d+ ms/);
   if (faultyPs) {
     assert.equal(report.failures[0].stage, 'process-table');
@@ -80,7 +126,7 @@ try {
     assert(!`${reportText}${guardLog}`.includes('PRIVATE_FAULT_DETAIL'), 'inspection diagnostics must not leak raw stderr');
   }
   assert.equal(signal, 'SIGKILL', 'independent guard stops a run that ignores graceful shutdown');
-  assert(Date.now() - start < 1500, 'cleanup must finish inside the complete slot budget');
+  assert(Date.now() - start < budget, 'cleanup must finish inside the complete slot budget');
   assert.equal(existsSync(slot), false);
   let state = '';
   try { state = execFileSync('ps', ['-o', 'stat=', '-p', String(child)], { encoding: 'utf8' }).trim(); } catch {}
@@ -88,6 +134,7 @@ try {
   assert(processTable().some(p => p.pid === process.pid), 'the unrelated test runner survives');
   console.log(`GPU deadline CPU: ${orphan === true ? 'orphan before capture' : orphan || 'unresponsive owner'} stopped and reported inside budget; no GPU/browser.`);
 } finally {
+  clearTimeout(safetyTimer);
   fixture.kill('SIGKILL'); guard?.kill('SIGKILL');
   if (childIdentity && processTable().some(p => p.pid === childIdentity.pid && p.start === childIdentity.start))
     process.kill(childIdentity.pid, 'SIGKILL');
