@@ -2,7 +2,7 @@
 // node tools/v2/frame-bench.mjs --frames 60 --warmup 12 --out /tmp/frame-bench.json
 // node tools/v2/frame-bench.mjs --self-check   # CPU only; no server/browser
 // --split adds a SEPARATE diagnostic replay; headline samples always keep passes unsplit.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,6 +20,7 @@ const HELP = `Usage: node tools/v2/frame-bench.mjs [options]
   --out FILE       raw JSON report (otherwise stdout)
   --seed N         unsigned 32-bit fixture seed (default 12345)
   --split          also replay fresh cases with split GPU passes (diagnostic only)
+  --trace-startup  record native pipeline creation before app readiness
   --self-check     CPU statistics/arguments/fixtures checks; no GPU
 Fixed: 128³ box, 1280×720 viewport, DPR 1, Quality upscale, autoRes OFF.
 One frame: v1 test.step(4) / v2 test.step(1), then renderOnce + GPU fence.
@@ -27,8 +28,8 @@ Non-parity: v2 is missing physics; no equivalent-work speedup claim until the fu
 
 export function parseArgs(argv) {
   const o = { frames: 60, warmup: 12, engine: 'both', 'v2-path': 'direct', scene: 'all', view: 'realistic', seed: 12345,
-    port: null, url: null, out: null, split: false, selfCheck: false, help: false };
-  const flags = { '--split': 'split', '--self-check': 'selfCheck', '--help': 'help' };
+    port: null, url: null, out: null, split: false, traceStartup: false, selfCheck: false, help: false };
+  const flags = { '--split': 'split', '--trace-startup': 'traceStartup', '--self-check': 'selfCheck', '--help': 'help' };
   const values = new Set(['frames', 'warmup', 'engine', 'v2-path', 'scene', 'view', 'seed', 'port', 'url', 'out']);
   const seen = new Set();
   for (let i = 0; i < argv.length; i++) {
@@ -78,6 +79,29 @@ export function qualityKey(s) {
     camera:{position:f32(s.camera.position),quaternion:f32(s.camera.quaternion),projection:f32(s.camera.projection)},
     gfx:s.gfx,upscale:s.app.upscale,nearGI:s.app.nearGI,glowLights:s.app.glowLights,
     caustics:s.app.caustics,taa:s.post.taa,bloom:s.post.bloom,view:s.app.view });
+}
+
+// Observe without replacing a native promise or changing a synchronous return.
+export function tracePipelines(Device, note) {
+  const restore = [];
+  if (!Device) return () => {};
+  for (const method of ['createComputePipeline', 'createComputePipelineAsync', 'createRenderPipeline', 'createRenderPipelineAsync']) {
+    const original = Device.prototype[method];
+    if (!original) continue;
+    Device.prototype[method] = function(desc) {
+      const label = desc.label;
+      note({ method, label, stage: 'start' });
+      try {
+        const value = original.call(this, desc);
+        if (value?.then) value.then(() => note({ method, label, stage: 'ready' }),
+          error => note({ method, label, stage: 'failed', error: String(error) }));
+        else note({ method, label, stage: 'ready' });
+        return value;
+      } catch (error) { note({ method, label, stage: 'failed', error: String(error) }); throw error; }
+    };
+    restore.push(() => { Device.prototype[method] = original; });
+  }
+  return () => restore.forEach(fn => fn());
 }
 
 // Self-contained CPU builder, installed unchanged in the page. No GPU settling,
@@ -148,6 +172,16 @@ async function selfCheck() {
   assert.notEqual(qualityKey(quality),qualityKey(lower));
   const invalid=structuredClone(quality);invalid.camera.position[0]=Infinity;
   assert.throws(()=>qualityKey(invalid),/Invalid benchmark camera/);
+  const events = [], promise = Promise.resolve({});
+  class Device { createComputePipelineAsync() { return promise; } createRenderPipeline() { return 7; } }
+  const original = Device.prototype.createComputePipelineAsync;
+  const restore = tracePipelines(Device, event => events.push(event));
+  const device = new Device();
+  assert.equal(device.createComputePipelineAsync({ label: 'compute' }), promise);
+  assert.equal(device.createRenderPipeline({ label: 'render' }), 7);
+  await promise; await Promise.resolve();
+  assert.equal(events.filter(e => e.stage === 'ready').length, 2);
+  restore(); assert.equal(Device.prototype.createComputePipelineAsync, original);
   console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures, GPU-f32 camera quality checks');
 }
 
@@ -198,27 +232,42 @@ async function run(o) {
       const result = { engine, compactPath, scene, diagnosticSplit: split, errors: [], warnings: [], samples: [] };
       report.results.push(result);
       const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
-      page.on('pageerror', e => result.errors.push(`pageerror: ${e.message}`));
+      let rejectFailure;
+      const failure = new Promise((_, reject) => { rejectFailure = reject; });
+      failure.catch(() => {}); // A page can fail before navigation resolves.
+      const checked = promise => Promise.race([promise, failure]);
+      page.on('pageerror', e => {
+        result.errors.push(`pageerror: ${e.message}`); checkpoint('page failure', result); rejectFailure(e);
+      });
       page.on('console', m => {
+        if (m.text().startsWith('FRAME_BENCH_BOOT ')) {
+          const line = m.text().slice('FRAME_BENCH_BOOT '.length);
+          if (o.out) appendFileSync(o.out + '.startup.jsonl', line + '\n');
+          console.error(line);
+          return;
+        }
         if (m.type() !== 'error') return;
         const url = m.location().url;
         // The optional local account/AI relay is not part of the simulation benchmark.
         const optionalRelay = /^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(url ?? '');
         (optionalRelay && /ERR_CONNECTION_REFUSED/.test(m.text()) ? result.warnings : result.errors)
           .push(`console: ${m.text()} (${url ?? ''})`);
+        if (result.errors.length) { checkpoint('console failure', result); rejectFailure(new Error(m.text())); }
       });
       try {
+        if (o.traceStartup) await page.addInitScript({ content:
+          `window.__stopCompileTrace=(${tracePipelines.toString()})(globalThis.GPUDevice,r=>console.info('FRAME_BENCH_BOOT '+JSON.stringify({ms:performance.now(),...r})));` });
         const url = new URL(o.url ?? vite.url('/'));
         // Ignore unrelated URL switches (world/save/shot/etc could change the fixture).
         url.search = ''; url.hash = '';
         for (const [k, v] of Object.entries({ size: '128', preset: 'empty', view: o.view, physics: engine, test: 'visual', paused: '1' })) url.searchParams.set(k, v);
         result.url = url.href;
         checkpoint(`${scene}/${engine}: navigation`, result);
-        await page.goto(url.href);
+        await checked(page.goto(url.href));
         checkpoint(`${scene}/${engine}: app readiness`, result);
-        await ready(page);
+        await checked(ready(page));
         checkpoint(`${scene}/${engine}: pipeline readiness`, result);
-        await page.evaluate(async () => { const a = window.__app; a.test.park(); await a.test.ready(); await a.physics.v2?.ready; });
+        await checked(page.evaluate(async () => { const a = window.__app; a.test.park(); await a.test.ready(); await a.physics.v2?.ready; window.__stopCompileTrace?.(); }));
         result.adapter = await gpuInfo(page); // helper rejects fallback adapters on macOS
         await page.addScriptTag({ content: `window.__frameBenchFixture = ${buildFixture.toString()};` });
         checkpoint(`${scene}/${engine}: fixture upload`, result);
