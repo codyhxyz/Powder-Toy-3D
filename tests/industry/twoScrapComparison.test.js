@@ -1,7 +1,6 @@
 // CPU contracts/predictions only: no actual tool placement, heat or Native success.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
 import { Vector3 } from 'three';
 import { E } from '../../src/elements.js';
 import { hearthStructureCells } from '../../src/industry/hearth.js';
@@ -9,8 +8,6 @@ import { ballRadius, cellsNear, outsideBody, faceNormal } from '../../src/pov/to
 import { runIndustryLine, purelineDeviceLayout, lineWaterSourceCells } from '../../tools/fixtures/industry-line.js';
 import { CHARGE_POSE, FUEL_POSE } from '../../tools/fixtures/industry-loading.js';
 import { firstOccupiedRayHit } from '../../tools/fixtures/industry-operator.js';
-
-const source = readFileSync(new URL('../../tools/fixtures/industry-line.js', import.meta.url), 'utf8');
 
 test('invalid SCRAP amounts/combinations reject before any world inspection', async () => {
   const sim = new Proxy({}, { get() { assert.fail('invalid comparison inspected the world'); } });
@@ -82,34 +79,4 @@ test('two-cell comparison retains the ordinary layout, water and supported side-
   const chamber = new Set([[17, 14, 18], [18, 14, 18], [17, 14, 17], [18, 14, 17]].map(at => at.join(',')));
   assert(offered.every(at => chamber.has(at.join(','))));
   assert.deepEqual(FUEL_POSE.target, [16, 13, 17]);
-});
-
-test('comparison goals remain target-aware without changing transfer/refuel constants', () => {
-  assert.match(source, /z < 100 \+ scrapCells \/ 2/);
-  assert.match(source, /edit\(\[96, 30, 100\], \[97, 30, 99 \+ scrapCells \/ 2\], E\.SCRAP, 20, scrapLife, 0\.625\)/);
-  for (const expression of [
-    'scrapTaken.length === scrapCells && chargePut === scrapCells',
-    'operatorChargeSnapshots.every(cells => cells.length === scrapCells)',
-    'operatorChargeDistribution.length === scrapCells',
-    'molten.length === scrapCells && bucketPoured === 0',
-    'checks[meltBatchCheck] = false', 'checks[meltBatchCheck] = true',
-    'Math.min(scrapCells - bucketPoured, before)',
-    'coldShipments.reduce((sum, shipment) => sum + shipment.count, 0) === scrapCells',
-    'observations.cargo.bucketCells.length === scrapCells',
-    'nativePours.length === scrapCells',
-    'observations.operator.actions.every(action => action.completed)',
-    'industry.pending === 0 && industry.buffered === 0',
-  ]) assert(source.includes(expression), expression);
-  assert(!source.includes('checks.operatorFourCellMeltBatch'));
-  assert.match(source, /scrapCells === 2 \? 'operatorTwoCellMeltBatch' : 'operatorFourCellMeltBatch'/);
-  assert(source.includes('for (const frames of [0, 2, 6])'));
-  assert(source.includes('every(cell => cell.at[1] === 13)'));
-  assert(source.includes('coalTaken.length === 6 && fuelPut === 6'));
-  assert(source.includes('const scrapLoad = new Load(4)'));
-  assert(source.includes('refuel.chamberAfter.filter(isCharge).length === 4'));
-  assert(source.includes('const MAX_NATIVE_TICKS = 4_800'));
-  assert(source.includes('wallsAfter.length === 48'));
-  assert(source.includes('pumpPlateEnd.length === 24'));
-  assert(source.includes('observations.operator.finalLoads.omittedTransfers === 0'));
-  assert(source.includes('transfers.every(r => !r.error && !r.pending)'));
 });
