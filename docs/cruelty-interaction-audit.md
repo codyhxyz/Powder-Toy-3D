@@ -89,6 +89,22 @@ affine/art uploads, save/reset/epoch tests, WGSL reflection and CPU Naga. GPU/br
 validation uses `tools/cruelty-door-browser-check.mjs`: real click/E, intermediate
 native GPU poses and readback, moving artwork records, reversal and mode-scoped UI.
 
+Bounded native evidence:
+
+- Normal-sized Androgen Assault in plain view passed click/E, intermediate poses,
+  all 45 living cells, artwork changes and reversal in 8.227 seconds total.
+- `tools/source-appearance-gpu-check.mjs` passed on the Apple GPU in 2.562 seconds.
+  A nonuniform texture retains its exact sampled pixel after rotation, translation
+  and reset through the production affine helper, range uploader and WGSL reader.
+- A full realistic Androgen cold boot reached its guard at 23.985 seconds before
+  assertions. This is not a completed textured-scene visual check.
+
+The compact interaction control is a scoped input/accessibility adaptation.
+Original `weapon.gd` uses doors directly, without an ordinary-door hover card.
+Our Cruelty-only `[E] Open` button removes the card and redundant title, preserves
+click/touch and keyboard focus, and hides the overlapping material readout only
+while an imported interaction is focused. Other modes retain their controls.
+
 Conservative overlap ownership may leave frame/static voxels in the opening.
 Level 4 `QodotMap/entity_175_Door` and `QodotMap/entity_320_Door` have no exclusive
 voxels; the prompt explicitly reports this rather than carving static terrain.
