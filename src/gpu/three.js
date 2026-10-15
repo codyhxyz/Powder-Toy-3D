@@ -44,6 +44,7 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
   const renderer = new WebGPURenderer({ device: gpu.device, canvas, antialias: false, alpha: false, ...(hdr && { outputType: HalfFloatType }) });
   renderer._getFallback = null;
   await renderer.init();
+  trackNativeRenderPipelines(renderer);
   renderer.autoClear = false;
   renderer._animation.stop();
   renderer.onError = (info) => gpu.fail(new GraphicsFailure(gpuErrorMessage(info?.originalEvent?.error ?? info), { cause: info }));
@@ -96,6 +97,56 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
     },
   };
   return renderer;
+}
+
+/**
+ * r186-only, renderer-instance interop: compileAsync's pipeline-cache hits do
+ * not await the first creation, and WebGPUBackend catches native rejection.
+ * Enroll the ORIGINAL native completion on every async getForRender, then
+ * require the actual backend GPURenderPipeline handle before certifying it.
+ * No device monkeypatch/error scopes; synchronous draw behavior is unchanged.
+ * Exported so CPU tests can exercise the actual Three Pipelines cache path.
+ */
+const nativePipelineTrackers = new WeakSet();
+export function trackNativeRenderPipelines(renderer) {
+  if (nativePipelineTrackers.has(renderer)) return;
+  const { backend, _pipelines: pipelines } = renderer;
+  const nativeWork = new WeakMap();
+  const create = backend.createRenderPipeline;
+  const get = pipelines.getForRender;
+  backend.createRenderPipeline = function (renderObject, promises) {
+    const pipeline = renderObject.pipeline;
+    if (!promises) return create.call(this, renderObject, promises);
+    const pending = [];
+    create.call(this, renderObject, pending);
+    const work = Promise.allSettled(pending).then(results => {
+      const failed = results.find(r => r.status === 'rejected');
+      if (failed) throw failed.reason;
+      if (!backend.get(pipeline).pipeline || backend.get(pipeline).error === true) {
+        // Three has discarded the native error: do not invent its cause.
+        throw new Error(`Three native mesh pipeline unavailable after compilation (${pipeline.cacheKey}); WebGPUBackend may have swallowed the native creation error. Check Three/WebGPU diagnostics.`);
+      }
+    });
+    nativeWork.set(pipeline, work);
+    work.catch(() => {}); // cache retains failures for later strict subscribers
+    promises.push(work);
+  };
+  pipelines.getForRender = function (renderObject, promises) {
+    const pipeline = get.call(this, renderObject, promises);
+    if (promises) {
+      const work = nativeWork.get(pipeline);
+      if (work) {
+        if (!promises.includes(work)) promises.push(work);
+      } else if (!backend.get(pipeline).pipeline || backend.get(pipeline).error === true) {
+        // Never certify an untracked, handle-less cache entry as prepared.
+        const failed = Promise.reject(new Error(`Three native mesh pipeline has no tracked completion or native handle (${pipeline.cacheKey})`));
+        failed.catch(() => {});
+        promises.push(failed);
+      }
+    }
+    return pipeline;
+  };
+  nativePipelineTrackers.add(renderer);
 }
 
 // three r186 gives every texture view `swizzle: 'rgba'` (GPUTextureViewDescriptor.js:84),

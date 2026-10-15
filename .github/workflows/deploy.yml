@@ -124,6 +124,7 @@ jobs:
       - run: npm run check:world-lighting-records   # submitted metadata, precise native word delta, logical ages (CPU/Naga only)
       - run: npm run check:world-lighting-inputs   # concrete native reader/ticket/pool-prefix seams; no app activation
       - run: npm run check:world-render-owner   # actual data owner + delayed native transport; NOT App/GPU/visual acceptance
+      - run: npm run check:world-native-preflight   # actual Three cache/native-backend completion; CPU stubs, no GPU claims
       - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
       - run: npm run check:world-gi-birth   # explicit native-history initialization/adoption; CPU fake transport, no app activation

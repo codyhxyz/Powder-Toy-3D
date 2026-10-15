@@ -514,13 +514,15 @@ export const getMeshGpu = () => meshGpu;
  * culling is off for the compile. Resolves when three's pipelines are built;
  * at once when there is no device yet.
  * @param {object} object
- * @param {{ camera?: object, scene?: object, target?: object, alone?: boolean }} [opts]
+ * @param {{ camera?: object, scene?: object, target?: object, alone?: boolean, rejectOnFailure?: boolean }} [opts]
  *   alone: the object only, not what is under it
  * @returns {Promise<void>}
  */
 export function prepareMesh(object, { alone = false, rejectOnFailure = false, ...opts } = {}) {
   const three = meshGpu?.three;
-  if (!three || meshGpu.failure || meshGpu.lost) return Promise.resolve();
+  if (!three) return Promise.resolve();
+  if (meshGpu.failure || meshGpu.lost) return rejectOnFailure
+    ? Promise.reject(meshGpu.failure ?? new Error('prepareMesh: GPU device lost')) : Promise.resolve();
   for (const k of Object.keys(opts)) if (opts[k] === undefined) delete opts[k];   // (left out: the defaults')
   const saved = [], done = [];
   const tSig = targetSig(opts.target ?? three.defaults.target);
@@ -543,6 +545,8 @@ export function prepareMesh(object, { alone = false, rejectOnFailure = false, ..
   let p;
   try {
     p = three.prepare(object, opts);   // (three reads visibility, and the key, before its first await)
+  } catch (error) {
+    p = Promise.reject(error);
   } finally {
     info.calls = calls;
     for (const [o, v, fc] of saved) { o.visible = v; o.frustumCulled = fc; }
@@ -585,7 +589,7 @@ const waiting = new WeakMap();        // mesh → the layers it goes back to
  * which skip(o) is true are left alone with everything under them.
  * @param {object} root
  * @param {object} camera
- * @param {{ target?: object, scene?: object, skip?: (o: object) => boolean, onReady?: () => void }} [opts]
+ * @param {{ target?: object, scene?: object, skip?: (o: object) => boolean, onReady?: () => void, onPending?: (work: Promise<void>) => void }} [opts]
  *   target and scene: what the meshes are drawn into and lit by (prepareMesh's)
  * @returns {number} how many meshes wait
  */
@@ -601,14 +605,20 @@ export function guardMeshes(root, camera, { target, scene, skip, onReady, onPend
     if (!o.visible || skip?.(o)) continue;
     for (const c of o.children) stack.push(c);
     if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) continue;
-    if (waiting.has(o)) { n++; const work=guardCompilations.get(o); if(work)onPending?.(work); continue; }
+    if (waiting.has(o)) {
+      n++;
+      const record = guardCompilations.get(o);
+      if (record && onPending) { record.strict = true; onPending(record.work); }
+      continue;
+    }
     if (!o.layers.test(camera.layers)) continue;
     const was = preparedWith.get(o);
     if (was && was.material === o.material && was.key === keyOf(tSig, lSig)) continue;
     waiting.set(o, o.layers.mask);
     n++;
-    // Keep the original failure observable even if a default-mode guard
-    // started it before a WORLD guard subscribed to the same compilation.
+    // Policy belongs to the pending record, not the initiating closure: a
+    // later WORLD subscriber must upgrade a default-started compilation.
+    const record = { strict: Boolean(onPending), work: null };
     const work=prepareMesh(o, { camera, target, scene, alone: true, rejectOnFailure:true }).then(() => {
       // (a module that moved it to another layer meanwhile keeps its own)
       if (o.layers.mask === PENDING_MASK) o.layers.mask = waiting.get(o);
@@ -616,13 +626,14 @@ export function guardMeshes(root, camera, { target, scene, skip, onReady, onPend
       guardCompilations.delete(o);
       onReady?.();
     },error=>{
-      if(!onPending){
+      if(!record.strict){
         if(o.layers.mask===PENDING_MASK)o.layers.mask=waiting.get(o);
         waiting.delete(o);guardCompilations.delete(o);onReady?.();
       }
       throw error;
     });
-    guardCompilations.set(o,work);
+    record.work = work;
+    guardCompilations.set(o,record);
     work.catch(() => {}); // failure remains parked and fail-closed
     onPending?.(work);
     o.layers.set(PENDING_LAYER);
