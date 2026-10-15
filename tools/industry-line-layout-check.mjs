@@ -9,8 +9,8 @@ import { deviceHeight, overlaps, validateDevices } from '../src/industry/validat
 const devices = validateDevices(purelineDeviceLayout(), [128, 128, 128]);
 const foundationCount = LINE_FOUNDATION_COLUMNS.reduce((count, [, , , firstY, lastY]) => count + lastY - firstY + 1, 0);
 const machineCount = 5;
-assert.equal(foundationCount, 72);
-assert.equal(devices.length, 77);
+assert.equal(foundationCount, 78);
+assert.equal(devices.length, 83);
 assert.equal(devices.length, foundationCount + machineCount, 'all real foundations and five machines are uniquely laid out');
 assert.equal(devices.filter(d => d.type === 'foundation').length, foundationCount);
 for (const type of ['hearth', 'ship', 'pump', 'gate', 'miner']) assert.equal(devices.filter(d => d.type === type).length, 1);
@@ -44,6 +44,8 @@ for (const d of devices) {
 }
 const gateLeaf = gateGeometry(gate, { nx: 128, ny: 128, nz: 128 }).aperture;
 for (const p of gateLeaf) solid.add(p.join(','));
+for (const z of [51, 56]) for (let y = 16; y <= 18; y++)
+  assert(solid.has([52, y, z].join(',')), 'real outside columns close the raised spout corners');
 assert(waterSource.every(p => !solid.has(p.join(','))), 'finite reservoir occupies clear volume behind actual walls');
 const closedGatePlaneX = Math.max(...gateLeaf.map(([x]) => x));
 assert(waterSource.every(([x]) => x > closedGatePlaneX)

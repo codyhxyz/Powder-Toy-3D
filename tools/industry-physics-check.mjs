@@ -151,19 +151,18 @@ await test('pump conserves blocked cargo and spills after dismantling without gu
 });
 await test('successful pump outlet reports output rather than returned cargo', async () => {
   for (let rotation = 0; rotation < 4; rotation++) {
-  const f = fixture(), transfers = [];
-  const p = createIndustryPhysics({ getSim: () => f.sim, onTransfer: event => transfers.push(event) }); await p.ready;
-  const device = d('pump', { rotation });
-  p.step(0.1, [device]); p.step(0.1, [device]);
-  f.answer([[E.WATER, 24, 0, 0.2]]); await settle();
-  p.step(0.1, [device]); p.step(0.1, [device]);
-  assert.deepEqual(f.calls[1].vel, [[0, 0, 0.6], [-0.6, 0, 0], [0, 0, -0.6], [0.6, 0, 0]][rotation],
-    'the real output impulse rotates with the spout');
-  f.answer([[0, 0, 0, 0]]); await settle();
-  assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
-    [['pump-input', 1], ['pump-output', 1]]);
-  assert.equal(p.buffered, 0);
-  p.dispose();
+    const f = fixture(), transfers = [];
+    const p = createIndustryPhysics({ getSim: () => f.sim, onTransfer: event => transfers.push(event) }); await p.ready;
+    const device = d('pump', { rotation });
+    p.step(0.1, [device]); p.step(0.1, [device]);
+    f.answer([[E.WATER, 24, 0, 0.2]]); await settle();
+    p.step(0.1, [device]); p.step(0.1, [device]);
+    assert.deepEqual(f.calls[1].vel, [0, 0, 0], 'gravity handles the actual outlet material');
+    f.answer([[0, 0, 0, 0]]); await settle();
+    assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
+      [['pump-input', 1], ['pump-output', 1]]);
+    assert.equal(p.buffered, 0);
+    p.dispose();
   }
 });
 await test('readback rejection releases reservations and reports once', async () => {

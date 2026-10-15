@@ -174,11 +174,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
       // No overwrite: blocked return also stays in the conserved Load.
       const spill = !active || s.blocked >= 1;
       const cells = spill ? region(d, -1, 4, 1, 3, -2, 3) : ports.outlet;
-      // Noita-inspired liquid spray: use the existing belt's 0.6 launch speed
-      // to clear the raised spout, then let native drag/gravity handle the flow.
-      // Returns remain still; they are not nozzle discharge.
-      const vel = spill ? [0, 0, 0] : deviceDirection(d).map(n => n * 0.6);
-      const p = transfer.put(s.load, { cells, max: 8, guard: spill ? null : machineGuard(d), vel });
+      const p = transfer.put(s.load, { cells, max: 8, guard: spill ? null : machineGuard(d), vel: [0, 0, 0] });
       if (track(s, p, n => {
         if (n) { s.blocked = 0; confirmedTransfer(d, { operation: spill ? 'pump-return' : 'pump-output', count: n }); }
       })) s.clock = 0;
