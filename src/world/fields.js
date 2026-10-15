@@ -218,9 +218,13 @@ export class WorldFields {
           ownedWorldBricks: boxBricks(core, core.map((v) => v + 32), this.bounds), validBounds: domain(origin, fieldInterval('peak')),
           textures: Object.fromEntries(FIELD_TEXTURES.map((name) => [name, r[name]])), sourceSnapshot: plan.source }), 'recordOwnedFields'));
       }
-      // Copy-on-write pages mean a recording failure/retry never advances the
-      // old authoritative EMA. Metadata commit follows complete recording.
+      // Publication may reject the batch. Keep the old authoritative history
+      // and its pages intact until the publisher accepts the complete batch.
+      // A throwing publisher must leave its retained snapshot unchanged.
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during recording');
+      const token = this._token(plan);
+      synchronous(this.publisher.publish({ token, outputs }), 'publish');
+      if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during publication');
       this.history.owners = owners;
       this.history.free.push(...replaced);
       this.lastTick = plan.fieldTick;
@@ -235,11 +239,8 @@ export class WorldFields {
           plan.changedBricks.some((b) => touches(core, b, 8))) this.published.delete(key);
       }
       committed = true;
-      const token = this._token(plan);
       this.publishedToken = token;
       this.publishedSource = plan.source;
-      synchronous(this.publisher.publish({ token, outputs }), 'publish');
-      if (plan.epoch !== this.history.epoch || this.version !== plan.version + 1) throw new Error('World field epoch changed during publication');
       this.smoothing = plan.smoothing;
       for (const core of plan.jobs) this.published.add(brickKey(core));
       this.generation++;

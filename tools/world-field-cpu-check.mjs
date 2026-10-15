@@ -196,6 +196,45 @@ function wordsOf(fields) {
     Array.from(new Uint32Array(owner.page.buffer.bytes, owner.page.offset, 192))]));
 }
 function record(ctx, plan) { const result = ctx.fields.record(ctx.gpu.frame, plan); result.retire(); return result; }
+// A rejected publication must not commit history that only exists in an
+// encoder the caller discards. Exercise initial and replacement publications.
+for (const replacing of [false, true]) {
+  const ctx = setup(), control = setup(true);
+  await Promise.all([ctx.fields.ready, control.fields.ready]);
+  if (replacing) {
+    record(ctx, ctx.plan(0)); record(control, control.plan(0));
+    ctx.state.revision = control.state.revision = 1;
+  }
+  const tick = replacing ? 1 : 0;
+  const changedBricks = replacing ? Array.from({ length: 8 }, (_, i) => [7 + (i & 1), (i >> 1) & 1, i >> 2]) : [];
+  const plan = ctx.plan(tick, { changedBricks, full: true });
+  const prior = { owners: ctx.fields.history.owners, words: wordsOf(ctx.fields),
+    version: ctx.fields.version, tick: ctx.fields.lastTick, token: ctx.fields.publishedToken,
+    published: [...ctx.fields.published], snapshots: [...ctx.published] };
+  const copies = [], copy = ctx.gpu.frame.copy, publish = ctx.fields.publisher.publish;
+  ctx.gpu.frame.copy = (...args) => copies.push(args);
+  ctx.gpu.emulateEMA = false; // Nothing from the discarded encoder executes.
+  ctx.fields.publisher.publish = () => { throw new Error('Injected publication failure'); };
+  let error;
+  try { ctx.fields.record(ctx.gpu.frame, plan); } catch (e) { error = e; }
+  assert.match(error?.message ?? '', /Injected publication failure/);
+  assert(copies.length > 0);
+  assert.equal(ctx.fields.history.owners, prior.owners);
+  assert.deepEqual(wordsOf(ctx.fields), prior.words);
+  assert.equal(ctx.fields.version, prior.version);
+  assert.equal(ctx.fields.lastTick, prior.tick);
+  assert.equal(ctx.fields.publishedToken, prior.token);
+  assert.deepEqual([...ctx.fields.published], prior.published);
+  assert.deepEqual(ctx.published, prior.snapshots);
+  copies.length = 0; // Discard rather than submit the failed recording.
+  error.retireWorldFieldUploads();
+  ctx.gpu.frame.copy = copy; ctx.gpu.emulateEMA = true;
+  ctx.fields.publisher.publish = publish;
+  record(ctx, plan); // The SAME plan must remain valid.
+  record(control, control.plan(tick, { changedBricks, full: true }));
+  assert.deepEqual(wordsOf(ctx.fields), wordsOf(control.fields));
+  ctx.fields.dispose(); control.fields.dispose();
+}
 const a = setup(), b = setup(true); await a.fields.ready; await b.fields.ready;
 assert.deepEqual(a.gpu.kernels.map((k) => k.name), ['fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0', 'fieldBoost', 'fieldPeak']);
 const scratch = a.fields.scratch;

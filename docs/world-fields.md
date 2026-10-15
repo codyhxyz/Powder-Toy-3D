@@ -141,6 +141,11 @@ The injected publisher implements:
   fields; this is an incremental patch batch, not a claim that the batch alone
   is a complete standalone atlas.
 
+If `publish` throws, it must leave its retained snapshot unchanged. History,
+ticks, and replaced-page recycling commit only after publication succeeds.
+Discard the failed encoder before retrying the same plan. A proposed token
+becomes current only when `record` succeeds; publishers must not reenter it.
+
 Tokens contain epoch, field tick, source revision, history version, smoothing
 and publication generation. `isCurrent(token)` rejects superseded generations.
 The caller keeps publication/source lifetime discipline and later atlas
