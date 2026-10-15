@@ -490,7 +490,37 @@ The protected full four-cell tool-operated attempt was refused at **59% GPU util
 Total admission occupancy was **2139 ms**; no simulation assertions ran.
 Result: `/tmp/sandustry-physical-line-tools-firebox-fix-v1.json`.
 The server stopped, no utilization bypass was used, and nothing was deployed.
-This is an implemented fix, not verified native melting or a completed playable loop.
+At this checkpoint the fix had no post-change native melting evidence.
+
+### Post-fix native comparison and progressive collection correction
+
+After merging upstream `2c5cb27d` at `c8d936e7`, the protected full four-cell run reached **1488.67°C**.
+All four scrap cells remained contained; the six-cell fuel charge expired before melting.
+All six loaded coal cells received the paid draft, including front-row cells.
+Occupancy: **9421 ms**, report `~/.cache/tpt-headless/runs/17918-17949.json`.
+Result: `/tmp/sandustry-physical-line-tools-firebox-fix-v2.json`.
+
+The real refill comparison then provided twelve finite coal cells across two source batches.
+The second shovel dose placed five cells and retained one full-life cell in its actual pack.
+Native molten metal was observed, with a metal-bearing peak of **1514.07°C**.
+Final observations contained two METAL and two SCRAP cells; no bucket collection or shipment occurred.
+The fixture unnecessarily waited for all four cells to be molten simultaneously before allowing collection.
+This withheld the normal extraction step and allowed early melt to solidify in the hearth.
+Occupancy: **6376 ms**, report `~/.cache/tpt-headless/runs/29264-29295.json`.
+Result: `/tmp/sandustry-physical-line-tools-firebox-refuel-v1.json`.
+
+The operator now attempts to collect each visible native melt before it freezes.
+The complete declared target still requires four molten-metal cargo cells, confirmed real bucket placement inside the catch, and four cold shipments.
+Partial, foreign, solid, and extra cargo cannot satisfy the molten-cargo test.
+The 68 Industry CPU tests pass.
+Independent review `44e4cc25` found no concrete P1/P2 defects in progressive collection or full-target acceptance.
+The post-merge production build and Factory UI checks pass.
+This changes the test operator's handling sequence, not production heat, tool candidates, or the four-cell delivery target.
+The next protected run was refused at **98% GPU utilization** before simulation assertions.
+Total admission occupancy: **2002 ms**.
+Result: `/tmp/sandustry-physical-line-tools-firebox-stream-v1.json`.
+No bypass was used, and the server stopped.
+Progressive collection and full actual-tool cold shipment remain unverified.
 
 - Verify repeat refueling and real player shovel/bucket gestures.
 - Verify precision fuel feeding; useful coolant release now passes.

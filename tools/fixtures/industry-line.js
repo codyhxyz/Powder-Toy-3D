@@ -16,6 +16,13 @@ const NATIVE_DT = 4 / 240;
 const MAX_NATIVE_TICKS = 4_800;
 const FOUNDATION = (id, x, y, z) => ({ id, type: 'foundation', x, y, z, rotation: 0 });
 
+// Collect successive native melts before they freeze; the full declared cargo
+// must still reach the cold shipping intake, not just appear molten at once.
+export function lineMoltenCargoComplete(cells, target) {
+  return [2, 4].includes(target) && cells.length === target
+    && cells.every(cell => cell.id === E.LAVA && cell.ctype === E.METAL);
+}
+
 // Inclusive ranges make the finite cold-water fill and its CPU checks share one
 // source of truth. The 120-cell edit is a fixture, not a player-filled bucket.
 export const LINE_WATER_SOURCE_BOUNDS = Object.freeze({
@@ -768,13 +775,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
           continue;
         }
         const molten = sampled.filter(c => c.id === E.LAVA && c.ctype === E.METAL);
-        if (operatorMode === 'tools' && molten.length === scrapCells && bucketPoured === 0) {
-          checks[meltBatchCheck] = true;
-          observations.operator.moltenBatch ??= molten.map(c => ({ ...c }));
-        }
         if (operatorMode === 'tools' && hasMetalLava && bucketPoured < scrapCells && bucketLoad.count === 0
             && (!refuel || (checks.operatorRefuelDoseConfirmed && checks.operatorRefuelChargeRetained))
-            && (checks[meltBatchCheck] || molten.length === scrapCells)
             && observations.nativeTicks - lastScoopProbeTick >= 96) {
           lastScoopProbeTick = observations.nativeTicks;
           let pose = null;
@@ -798,6 +800,11 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
             observations.operator.actions.push(scoop);
             const payload = bucketLoad.cells.map(c => ({ id: c[0], temperature: c[1], life: c[2], ctype: Math.floor(c[3]), seed: c[3] - Math.floor(c[3]) }));
             observations.cargo.bucketCells.push(...payload);
+            checks[meltBatchCheck] = lineMoltenCargoComplete(observations.cargo.bucketCells, scrapCells);
+            if (checks[meltBatchCheck]) {
+              observations.operator.moltenBatch = observations.cargo.bucketCells.map(cell => ({ ...cell }));
+              observations.operator.moltenBatchScope = 'cumulative native molten cargo collected through the real bucket';
+            }
             observations.cargo.bucketAfterScoop = { count: bucketLoad.count, payload };
             if (payload.length > 0 && payload.every(c => c.id === E.LAVA && c.ctype === E.METAL)) {
               checks.bucketCarriedActualLava = true;

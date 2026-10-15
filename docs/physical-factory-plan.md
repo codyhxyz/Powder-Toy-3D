@@ -3,17 +3,19 @@
 Status: the native backend batch and real control UI pass.
 Mined coal melted four scrap cells; all four reached the water catch and shipped below 400°C.
 Charge-first loading and short retention pass with actual tools.
-The full hand-loaded batch retained its charge but reached only 1334°C and produced no melt.
-Bucket handling, repeat refueling, and precision fuel gating remain unverified.
+The old rear-only rule reached only 1334°C with the hand-loaded charge.
+The corrected rule reaches 1489°C with six coal cells; a real refill produces native molten metal.
+Progressive bucket collection, completed-batch reuse, and precision fuel gating remain unverified.
 The production rule now heats live coal anywhere inside the firebox with the existing finite budget.
 This removes the rear-only eligibility mismatch without changing molten transport.
-CPU and independent review pass; the post-fix four-cell runtime attempt was refused at 59% GPU load.
-No post-fix runtime assertions have run.
+CPU and independent review of the heating correction pass.
+Runtime checks confirm whole-firebox heating and native melting with a finite refill, but not full cold shipment.
+The progressive collection retry was refused at 98% GPU load before assertions.
 Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
-The integration branch includes fetched upstream `6d23984527188cb8071a901f0adf7ebb83780e26`.
-Merge `aa432704` includes the latest upstream outcome-validation fix.
+The integration branch includes fetched upstream `2c5cb27ded2a9683245e71f249b1ccfcee7edd4a`.
+Merge `c8d936e7` includes the latest upstream terrain-fold changes.
 Work continues only in `/tmp/sandustry-physical-factory-1b23e28b`.
 The original checkout is preserved recovery, not a build or deployment directory.
 
