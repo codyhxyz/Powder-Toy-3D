@@ -93,13 +93,14 @@ test('actual App mutation entry points refuse outside/stale global hover after o
    for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
    return source.slice(start,i);
  };
- const identity={},hover={valid:true,globalCell:new Vector3(4,5,4),cell:new Vector3(),frameIdentity:identity,worldToken:'tool'};
+ const identity={},hover={valid:true,worldReady:true,globalCell:new Vector3(4,5,4),cell:new Vector3(),frameIdentity:identity,worldToken:'tool'};
  const sim={origin:new Vector3()},win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}}};
  const inWindow=c=>c.x>=0&&c.x<32&&c.y>=0&&c.y<32&&c.z>=0&&c.z<32;
  const sync=new Function('win','hover','sim','inWindow','localWorldHover','worldPickToken',`${extract('syncWorldHover')};return syncWorldHover;`)(win,hover,sim,inWindow,localWorldHover,()=> 'tool');
+ const ready=new Function('win','hover','worldPickToken','syncWorldHover',`${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',sync);
  assert.equal(sync(),true);sim.origin.set(32,0,32);
  for(const name of ['fillAt','clickTool']){
-   const action=new Function('win','syncWorldHover',`${extract(name)};return ${name};`)(win,sync);
+   const action=new Function('win','syncWorldHover','worldMutationReady',`${extract(name)};return ${name};`)(win,sync,ready);
    assert.doesNotThrow(()=>action(),'must return before reaching ANY physical subsystem');
    assert.equal(hover.valid,true,'physical refusal must not erase global visual validity');
  }
@@ -135,4 +136,42 @@ test('actual App visible tool ray preserves local-cell ABI and revalidates globa
  sim.origin.set(96,0,96);token='other tool';assert.equal(physical(hit),null);
  token='tool';driver.displayedMainFrame={frameIdentity:{}};assert.equal(physical(hit),null);
  assert.match(source,/const cell=physicalPickCell\(hit\)/,'erase/touch mutation must revalidate delayed hits');
+});
+
+test('actual world.moveWindow preserves a displayed global hit beyond the new physical window',()=>{
+ const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
+ const start=source.indexOf('  moveWindow(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
+ for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
+ const move=new Function(`return ({${source.slice(start,end)}}).moveWindow;`)();
+ const identity={},sim={origin:new Vector3(96,0,96)};
+ const hover={valid:true,globalCell:new Vector3(100,5,100),cell:new Vector3(4,5,4),frameIdentity:identity};
+ const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}},update(){sim.origin.x+=16;return[16,0];}};
+ const app={mp:{replica:false},win,sim,hover,controls:{target:new Vector3()},scale:1,anchor:{x:0,y:0},
+   placeVolume(){},inWindow:p=>p.x>=0&&p.x<32&&p.z>=0&&p.z<32};
+ assert.deepEqual(move(app),[16,0]);assert(hover.valid);assert.deepEqual(hover.cell.toArray(),[-12,5,4]);
+ win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};move(app);assert(!hover.valid);
+ hover.globalCell=null;hover.valid=true;hover.cell.set(4,5,4);move(app);assert(!hover.valid,'legacy local hit remains bounded');
+});
+
+test('actual App brush dispatch permits certified sky misses, but not unknown or outside-window hits',()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const identity={},hover={valid:false,worldReady:true,frameIdentity:identity,worldToken:'tool'};
+ const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}}};
+ let inside=false;
+ const ready=new Function('win','hover','worldPickToken','syncWorldHover',
+   `${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',()=>inside);
+ const click=new Function('win','worldMutationReady','settings','SIGN_TOOL','LIGHTNING_TOOL',
+   'isDecoTool','isSpawnerTool','isBuild','mp','selectedMode','ctx',
+   `${extract('clickTool')};return clickTool;`)(win,ready,{tool:1},-1,-2,()=>false,()=>false,()=>false,{},'sandbox',{});
+ assert.equal(click(),null,'a brush can reach its existing air-pouring path');
+ hover.worldReady=false;assert.equal(click(),false,'missing dependencies are not sky');
+ hover.worldReady=true;hover.valid=true;assert.equal(click(),false,'outside-window surface cannot anchor an edit');
+ inside=true;assert.equal(click(),null);
+ hover.valid=false;win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};assert.equal(click(),false);
+ assert.match(source,/inWindow\(brushCenter\) && worldMutationReady\(\)/,'air placement still validates its computed center');
 });

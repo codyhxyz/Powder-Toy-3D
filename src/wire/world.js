@@ -277,9 +277,16 @@ const world = {
     const [dx, dz] = move;
     app.placeVolume();
     pov?.windowShifted(dx, dz);
-    hover.cell.x -= dx;   // the last pick, in the moved grid (signs follow sim.origin themselves)
-    hover.cell.z -= dz;
-    if (hover.valid && !app.inWindow(hover.cell)) hover.valid = false;
+    if(hover.globalCell){
+      // Streaming the physical window does not invalidate a displayed global
+      // hit. Physical tools check their own current-window bounds.
+      hover.cell.copy(hover.globalCell).sub(sim.origin);
+      if(hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity)hover.valid=false;
+    }else{
+      hover.cell.x -= dx; // Legacy local picks retain their original behavior.
+      hover.cell.z -= dz;
+      if(hover.valid&&!app.inWindow(hover.cell))hover.valid=false;
+    }
     return move;
   },
 };

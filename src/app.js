@@ -958,6 +958,14 @@ function syncWorldHover() {
   return localWorldHover(hover,sim.origin,inWindow,identity=>
     win.renderFrame?.driver?.displayedMainFrame?.frameIdentity===identity && hover.worldToken===worldPickToken());
 }
+function worldMutationReady() {
+  if(!win)return true;
+  if(!hover.worldReady || hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
+    hover.worldToken!==worldPickToken())return false;
+  // A certified sky miss permits air placement. An unknown/stale query does
+  // not. Hit-anchored operations still need their own in-window surface.
+  return !hover.valid || syncWorldHover();
+}
 function requestWorldPick() {
   const driver=win?.renderFrame?.driver,display=driver?.displayedMainFrame;
   const fromPov=!!pov?.active;
@@ -970,6 +978,7 @@ function requestWorldPick() {
     if(from!==sim || token!==worldPickToken() || driver.displayedMainFrame!==display
       || (!fromPov && (ndc[0]!==pointer.x || ndc[1]!==pointer.y)))return;
     hover.valid=hit.ready && hit.valid;
+    hover.worldReady=hit.ready===true;
     if(hit.ready){
       Object.assign(hover,{face:hit.face,id:hit.id,T:hit.T,P:hit.P,life:hit.life,raw:hit.raw,
         frameIdentity:hit.frameIdentity,worldToken:token,globalCell:new THREE.Vector3().fromArray(hit.cell)});
@@ -1020,7 +1029,7 @@ function pickRay(ro, rd, visible = false) {
       const globalCell=new THREE.Vector3().fromArray(hit.cell),cell=globalCell.clone().sub(sim.origin);
       // This App interface serves physical tools. The native driver and hover
       // retain global visual validity, but tool cells keep their local ABI.
-      return {...hit,valid:hit.valid&&inWindow(cell),globalCell,cell,worldToken:token};
+      return {...hit,globalValid:hit.valid,valid:hit.valid&&inWindow(cell),globalCell,cell,worldToken:token};
     });
   }
   const o = sim.origin.clone(), from = sim, revision = presentation.revision;
@@ -1884,7 +1893,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
-  if(win && !syncWorldHover())return false;
+  if(win && !worldMutationReady())return false;
   if ((settings.tool === SIGN_TOOL || isDecoTool(settings.tool) || isSpawnerTool(settings.tool)) && mp.guardEntities?.()) return false;
   if (selectedMode === 'factory' || ctx.industry?.building) return false;
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
@@ -2006,9 +2015,11 @@ function touchDown(e) {
   Promise.all([pickRay(ray.origin, ray.direction, true), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
     if (touchPress !== id) return;
     touchPress = 0;
-    const cell=physicalPickCell(hit);if(!cell)return;
+    const cell=win?(hit.globalValid?physicalPickCell(hit):hit.cell):hit.cell;
+    if(win&&(!hit.ready || !cell || hit.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
+      hit.worldToken!==worldPickToken()))return;
     Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P,
-      globalCell:hit.globalCell??null,frameIdentity:hit.frameIdentity,worldToken:hit.worldToken });
+      globalCell:hit.globalCell??null,frameIdentity:hit.frameIdentity,worldToken:hit.worldToken,worldReady:hit.ready===true });
     hover.cell.copy(cell);
     press(e);
     if (painting && !touchesDown.size) setTimeout(() => { if (!touchesDown.size) painting = false; }, TOUCH_TAP_MS);
@@ -2561,7 +2572,7 @@ function tick(now, renderOnly = false) {
 
     prof.phase('paint');
     if (selectedMode === 'factory' || ctx.industry?.building) painting = false;
-  if (painting && brushValid && (!win || (inWindow(brushCenter) && (!hover.globalCell || syncWorldHover())))) {
+  if (painting && brushValid && (!win || (inWindow(brushCenter) && worldMutationReady()))) {
       tmpV.copy(brushCenter).add(sim.origin);   // world cells
       const wind = windFromValid ? [tmpV.x - windFrom.x, tmpV.y - windFrom.y, tmpV.z - windFrom.z] : null;
       windFrom.copy(tmpV);
