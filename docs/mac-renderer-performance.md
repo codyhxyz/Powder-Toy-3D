@@ -6,6 +6,8 @@ No legacy-versus-hybrid timing result exists yet.
 The first benchmark attempt stopped at the GPU safety check because utilization was 56%.
 The launcher released its slot without starting a browser.
 Total check and cleanup time was 2.08 seconds. The benchmark collected no samples.
+The later full-scene correctness check was also refused, at 55% utilization.
+It used 2.09 seconds and did not launch a browser.
 
 Earlier native checks establish work reuse, not speed:
 
@@ -18,31 +20,35 @@ They are not frame times or speedups.
 
 ## Cost model
 
-The current prototype adds work before the existing volume renderer:
+The integrated path replaces normal primary volume traversal:
 
 ```text
-legacy = common rendering + original volume
-hybrid = common rendering + surface updates + extra shadows
-       + raster surfaces + depth transfer + residual volume
+legacy = common rendering + original primary volume
+hybrid = common rendering + producer updates + raster shadows
+       + opaque/particle raster + dedicated optics + reduced-resolution media
+       + composition, depth transfer, and motion capture
 
 hybrid wins only if:
-original volume - residual volume
-  > surface updates + extra shadows + raster surfaces + depth transfer
+removed primary work > the replacement work
 ```
 
 Static opaque surfaces offer the best opportunity.
 Cached geometry removes repeated opaque hit shading. Camera motion does not rebuild the mesh.
-The current depth cut does not remove the entire volume traversal.
-
-Smooth sand, water, and smoke remain volume-rendered.
-A scene with no opaque crisp surfaces has no new shading savings.
-The prototype still records an empty opaque pass and depth transfer in that case.
+Normal accepted frames give the legacy primary draw zero GPU instances.
+Capacity failures can enable it in the same frame.
+Smooth sand has cached vertices. Water/glass have dedicated transport.
+Isolated liquids use instanced optical billboards.
+Smoke, steam, and fire use a bounded lower-resolution integration.
+Empty optical/media bounds skip their expensive traversal, but not all fullscreen overhead.
 
 Changing scenes can cost more.
 Every new simulation version compares all 2,097,152 cells, even if material identity stays unchanged.
 The GPU rebuilds only affected brick faces, but the comparison and prefix scan are not sparse.
 The new shadow cache also keys on simulation version, not solely on topology.
 The existing shadow and GI paths remain active.
+The old shadow map still serves the shared GI backend.
+The new raster map serves direct surface shading.
+Motion capture also compares previous cell identities when raw state changes.
 
 Apple GPUs favor bandwidth-efficient rasterization and reduced unnecessary shading.
 That supports the architecture, not a speed multiplier.
@@ -56,11 +62,16 @@ At 128³, buffer and texture sizes imply these additional resource allocations:
 | Geometry, comparison state, and metadata | 104.50 MiB |
 | 2048² raster shadow depth | 16.00 MiB |
 | Material rows and mipmapped detail | 0.30 MiB |
-| Subtotal | 120.80 MiB |
-| Depth-copy texture at 1280×800 | 3.91 MiB |
+| Two default smooth vertex arenas | 64.00 MiB |
+| Default four-channel particle arena | 32.00 MiB |
+| Previous cell identities for motion | 16.00 MiB |
+| Listed subtotal | 232.80 MiB |
 
 These are resource sizes, not measured resident memory or memory traffic.
-The subtotal excludes small uniforms, staging allocations, and allocator overhead.
+The subtotal excludes field bounds, smooth metadata, uniforms, staging, and allocator overhead.
+It also excludes output-sized optics, media, motion, coverage, and depth textures.
+Those targets grow with the selected rendering resolution.
+Unified memory does not make these allocations or their bandwidth free.
 
 ## Benchmark procedure
 
@@ -68,12 +79,12 @@ The new runner is `node tools/hybrid-bench.mjs`.
 Its statistics self-check passes with `--self-test`. Native execution remains unverified.
 
 The runner uses one app and device, a 128³ grid, and fixed 1280×800 output.
-Legacy trials bypass the hybrid update in the same build.
+Legacy trials bypass hybrid preparation before Derived assigns field ownership.
 Trials use ABBA ordering, a moving camera, and normal visual cadence.
 Compute passes remain unsplit. Timestamp coverage must be complete.
 Compilation during measured intervals invalidates a trial.
 
-The workloads are opaque walls, a smooth-sand control, and changing walls.
+The workloads are opaque walls, smooth sand, and changing walls.
 The changing-wall workload uses synthetic edits, not explosion physics.
 Physics stays paused in both paths. No global frame-rate limit changes.
 
@@ -82,8 +93,9 @@ CPU figures cover the post/render encoding call, not the entire application fram
 This short probe does not establish sustained FPS, thermals, or battery life.
 
 The two images are not quality-equivalent.
-The prototype uses sharp faces and a simpler opaque lighting model.
-World rendering still falls back to the existing renderer.
+The prototype uses sharp faces and shared compact lighting.
+Straight world windows are eligible; curved presentation still falls back.
+Far-terrain LOD remains the existing subsystem.
 Performance and image-quality comparisons remain required before deployment.
 
 Reference: [Apple GPU and tile-based rendering guidance](https://developer.apple.com/documentation/metal/tailor-your-apps-for-apple-gpus-and-tile-based-deferred-rendering).

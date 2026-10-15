@@ -14,47 +14,53 @@ Children work only in their tool-assigned managed worktrees based on this checko
 
 ## Implementation status: October 15, 2026
 
-**This renderer is incomplete. Production still uses the existing renderer.**
-All eleven first-wave workers and six recovery workers timed out.
-Their partial implementations are preserved. Worker completion labels are not evidence that the features work.
+**All 12 features now have application wiring and CPU checks. Native acceptance is still blocked.**
+Production still uses the existing renderer. This is not a completed or deployed rewrite.
 
-The parent completed one runnable path for straight, undecorated boxes:
+The first eleven workers and six recovery workers timed out.
+Their work was preserved. Focused follow-ups completed the missing producers.
+The earlier opaque-only delivery did not meet the approved scope.
 
-- Exact GPU material-ID comparison and neighbour invalidation.
-- Persistent opaque faces with one indirect camera draw.
-- Shared material rows, mipmapped detail textures, lighting, and existing GI probes.
-- A cached raster shadow map for those opaque faces.
-- Depth transfer to the existing volume renderer.
-- Conservative temporal rejection after simulation or presentation changes.
+Use `?renderer=hybrid&view=realistic` to select the experimental path.
+Normal sand, terrain, water, glass, smoke, and isolated matter have dedicated owners.
+The GPU gives the legacy volume zero instances when the new scene is accepted.
+Capacity failures select an exceptional legacy draw in that same frame.
+Particle draws remain paired with their field exclusion during that fallback.
 
-Use `?renderer=hybrid&view=realistic` to select this experimental path.
-Smooth surfaces, optics, smoke, and particles still use the existing volume renderer.
-Data views, worlds, source artwork, visible decoration, and curved presentation retain the existing renderer.
+| Approved feature | Application implementation | CPU evidence |
+| --- | --- | --- |
+| 1. Surface change tracking | Exact ID comparison and neighbouring-brick invalidation | `hybrid-core-check.mjs` |
+| 2. Opaque meshes | Persistent packed faces and one indirect draw | `hybrid-core-check.mjs` |
+| 3. PBR materials | Shared rows, world-stable mipmapped detail, explicit texture LOD | `hybrid-core-check.mjs`, `hybrid-shading-check.mjs` |
+| 4. Raster sun shadows | One cached map with opaque, smooth, and particle casters | `hybrid-core-check.mjs`, `hybrid-particles-check.mjs` |
+| 5. Shared lighting/GI | Shared sun, sky, lamps, emission, and existing world-space probes | `hybrid-shading-check.mjs` |
+| 6. Smooth terrain | Dirty-field extraction into compact cached vertices | `hybrid-smooth-check.mjs` |
+| 7. Water/glass | Dedicated bounded transport, mixed IOR, absorption, hidden-surface shading | `hybrid-optics-check.mjs` |
+| 8. Smoke/steam/fire | Bounded lower-resolution integration and depth-aware composition | `hybrid-media-check.mjs` |
+| 9. Grains/droplets/debris | Four-channel isolated-cell instances; separate optical droplet billboards | `hybrid-particles-check.mjs`, `hybrid-optics-check.mjs` |
+| 10. Temporal reconstruction | Camera/model motion, identity-checked particles, current/previous translucent coverage | `hybrid-motion-check.mjs`, `hybrid-temporal-check.mjs` |
+| 11. Adaptive rendering | Completed render-pass timings, generation checks, effects-first policy, full-quality idle recovery | `hybrid-resolution-check.mjs`, application composition checks |
+| 12. Selective reflections | Bounded roughness/coverage gating and nonrecursive shared hit shading | `hybrid-shading-check.mjs` |
 
-The remaining modules are not integrated:
+These checks include numerical references, recording mocks, resource limits, and Naga semantic compilation.
+They do not prove native pixels, equal image quality, frame rate, thermals, or battery use.
 
-| Feature | Current state |
-| --- | --- |
-| Smooth surfaces | Runtime and shader prototype. Extraction, capacity, appearance, and field revision checks need native tests. |
-| Water and glass | Optical runtime and shader prototype. Legacy fallback composition needs integration and native tests. |
-| Smoke, steam, and fire | Shader prototype. The resource owner and pass integration are missing. |
-| Grains and droplets | Runtime and shader prototype. Particle ownership is disabled until smooth-field exclusion is correct. Liquids remain excluded. |
-| Temporal reconstruction | Optional motion/reactive inputs have CPU checks. Dynamic surfaces do not yet produce reliable motion buffers. |
-| Adaptive resolution | Pure controller prototype. Timing integration and controller tests are missing. |
-| Selective reflections | Shader/helper prototype. Shared hit shading and application integration are missing. |
+Known limits remain:
 
-The opaque path also has limits. It uses sharp cell faces, not bevelled or smooth geometry.
-Its new shadow map contains only opaque crisp casters.
-Static landscapes, close-up sand, and explosions still need combined rebuild-and-render benchmarks.
-No speed improvement or image-quality equivalence is established.
+- Crisp opaque faces are sharp, not bevelled.
+- Source artwork, visible decoration, data views, and curved presentation retain the existing renderer.
+- Straight world windows use the new local producers. Far-terrain LOD remains the existing subsystem.
+- The raster sun map has local opaque casters, not off-window terrain or coloured transparent shadows.
+- Unknown deformation and external animation reject history rather than invent motion.
+- Reflection resolution policy changes the tracing budget; reflections have no separate half-resolution image.
+- Unsupported hardware capacity is explicit. The new path does not silently truncate a producer.
 
 ### Validation
 
 CPU checks:
 
 ```sh
-node tools/hybrid-core-check.mjs
-node tools/hybrid-temporal-check.mjs
+node tools/hybrid-check.mjs
 node tools/post-reuse-cpu-check.mjs
 node tools/check-imports.mjs
 node tools/check-state-access.mjs
@@ -67,21 +73,28 @@ Native checks use separate, serialized GPU slots:
 ```sh
 node tools/hybrid-gpu-check.mjs
 node tools/hybrid-app-check.mjs
+node tools/hybrid-full-check.mjs
 ```
 
-The M5 native core check passed with a 128³ grid.
+The earlier opaque-only M5 native core check passed with a 128³ grid.
 Heating a cell rebuilt zero bricks. Removing a boundary cell rebuilt seven bricks.
 The overflow fixture suppressed the entire mesh. Covered-pixel checks passed.
 The successful slot occupied 2.72 seconds, including startup and cleanup.
 
-The app check passed hybrid rendering, legacy volume composition, data-view fallback, and default rendering.
+The earlier app check passed opaque hybrid rendering, residual volume composition, data-view fallback, and default rendering.
 It advanced no physics steps. The successful slot occupied 15.79 seconds.
 The local account/AI relay was offline. The check records that specific network error separately.
 Other native attempts exposed a barrier error, a fixture error, and a layout-name collision.
-Those errors are corrected. No GPU benchmark ran.
+Those errors are corrected. This evidence does not cover the later full composition.
 
-`tools/hybrid-check.mjs` still reports undelivered lane checks.
-It is not a passing acceptance suite for the full renderer.
+The full-scene native attempt was refused at 55% GPU utilization.
+No browser launched. Guard and cleanup occupancy was 2.09 seconds.
+Do not retry while the user occupies the GPU.
+The unexecuted full-scene check includes visible optics/media, smooth vertices, isolated droplets,
+motion and reactive pixels, finite HDR, temperature-only reuse, and zero legacy instances.
+
+`tools/hybrid-check.mjs` passes all nine CPU suites covering the 12 features.
+Native validation, visual review, and performance comparison are still required.
 Performance evidence and the blocked benchmark attempt are recorded in
 [`mac-renderer-performance.md`](mac-renderer-performance.md).
 
@@ -183,14 +196,15 @@ and regression checks; an unvalidated rewrite does not replace production.
 - Optics and reflections use compact, nonrecursive world-hit shading callbacks.
   The parent composes those callbacks from shared materials and lighting.
   Screen-color reprojection is valid only when scene depth confirms the hit.
-- Particles initially own only isolated granular or organic cells.
+- Particles now own isolated liquid, molten, granular, and organic cells.
   The ownership predicate checks all 26 neighbouring cells across brick boundaries.
-  Liquids, molten matter, and glass remain with optics.
-  Particle rendering stays disabled until the smooth-field exclusion is proven.
+  Derived fields remove those same cells after history blending.
+  Liquids and molten droplets use instanced optical transport, not opaque spheres.
+  Glass remains with bulk optics. The tight instance bound is half the cell count.
 - Media can expose `hybridMediaSegment(ro, rd, tNear, tFar)` for refracted paths.
   This function returns premultiplied radiance with opacity in alpha.
   A front-media pass must stop at the nearest optical interface when optics uses this hook.
-  Optical/media overlap stays unsupported until both paths use the same ordering.
+  The composed optics and media passes now use this ordering.
 - Temporal inputs are frame-local. Explicit motion includes camera and presentation motion.
   Unknown simulation correspondence rejects history instead of inventing motion.
   Hybrid rendering does not reuse the old color/depth-only mesh-frame cache.
