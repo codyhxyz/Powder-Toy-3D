@@ -226,7 +226,11 @@ test('GI incomplete/secondary misses, stale epoch, encode/readback/discard failu
     if (failure in f.state && failure !== 'epoch') f.state[failure] = true;
     const next = await gi.prepare(nextArgs), q = next.record(); assert.equal(f.state.pins, 1);
     if (failure === 'epoch') f.state.epoch++;
-    if (failure === 'discard') f.tickets.at(-1).submitted.reject(new Error('encoders discarded')); else await f.complete();
+    if (failure === 'discard') {
+      const t=f.tickets.at(-1);t.submitted.reject(new Error('encoders discarded'));
+      await Promise.resolve();await Promise.resolve();
+      assert.equal(f.state.pins,1);t.done.resolve();
+    } else await f.complete();
     const result = await q; assert.equal(result.status, failure === 'missing' ? 'incomplete' : failure === 'epoch' ? 'stale' : 'failed');
     const retained = gi.snapshot(); assert.equal(retained.token, old.token); retained.release(); assert.equal(f.state.pins, 0);
     if (failure === 'epoch') f.state.epoch--; if (failure in f.state && failure !== 'epoch') f.state[failure] = false;
@@ -248,6 +252,69 @@ test('native glow six-phase ordering, complete emission halo, cached handles, st
   const out = glow.snapshot(), cached = await glow.prepare(args); assert.equal(cached.status, 'cached'); cached.snapshot.release();
   const history = out.bindings().values; glow.reset(); assert.equal(history.dead, false); out.release(); assert.equal(history.dead, true);
   f.state.missing = true; const missing = await glow.prepare({ ...args, lightingTick: 1 }), q = missing.record(); await f.complete(); assert.equal((await q).status, 'incomplete'); assert.equal(glow.snapshot(), null); glow.dispose();
+});
+test('GI/glow caches require complete cut provenance, including new epochs and dependencies',async()=>{
+  for(const kind of ['gi','glow'])for(const changed of ['epoch','sourceRevision','fieldTick','dependencySetID','dependencyVersion']){
+    const f=lightingFixture(),provider=kind==='gi'?f.snapshotProvider:f.emissionProvider;
+    const original=provider.acquire;let vary=false;
+    provider.acquire=async args=>{
+      const p=await original(args);if(!vary)return p;
+      return {...p,
+        ...(changed==='sourceRevision'?{source:{...p.source,sourceRevision:2},field:{...p.field,sourceRevision:2}}:{}),
+        ...(changed==='fieldTick'?{field:{...p.field,logicalFieldTick:18}}:{}),
+        ...(changed==='dependencySetID'?{dependencySetID:8}:{}),
+        ...(changed==='dependencyVersion'?{dependencyVersion:2}:{})};
+    };
+    const owner=kind==='gi'
+      ?createWorldGI(f.gpu,{g:f.g,snapshotProvider:provider,readerBindingProvider:f.readerBindingProvider,feedbackProvider:f.feedbackProvider})
+      :createWorldGlow(f.gpu,{g:f.g,emissionProvider:provider,submissionProvider:f.submissionProvider});
+    const args=kind==='gi'?{lightingTick:0,reset:true,configVersion:1,sourceBricks:[[1,1,1]],gatherBricks:[[1,1,1]]}:{lightingTick:0,configVersion:1,core:[0,0,0]};
+    const first=await owner.prepare(args),done=first.record();await f.complete();assert.equal((await done).status,'published');
+    vary=true;if(changed==='epoch')f.state.epoch++;
+    const next=await owner.prepare(args);
+    assert.equal(next.status,'prepared',`${kind}/${changed} must not return the old handle`);
+    next.cancel();assert.equal(f.state.pins,0);owner.dispose();
+  }
+});
+test('a new epoch may restart lighting ticks without stale-cache tick regression',async()=>{
+  for(const kind of ['gi','glow']){
+    const f=lightingFixture();f.state.previousTick=0;
+    const owner=kind==='gi'
+      ?createWorldGI(f.gpu,{g:f.g,snapshotProvider:f.snapshotProvider,readerBindingProvider:f.readerBindingProvider,feedbackProvider:f.feedbackProvider})
+      :createWorldGlow(f.gpu,{g:f.g,emissionProvider:f.emissionProvider,submissionProvider:f.submissionProvider});
+    const args=kind==='gi'?{lightingTick:1,reset:false,configVersion:1,sourceBricks:[[1,1,1]]}:{lightingTick:1,configVersion:1,core:[0,0,0]};
+    const c=await owner.prepare(args),done=c.record();await f.complete();assert.equal((await done).status,'published');
+    f.state.epoch++;f.state.previousTick=-1;
+    const next=await owner.prepare({...args,lightingTick:0,...(kind==='gi'?{reset:true}:{})});
+    assert.equal(next.status,'prepared');next.cancel();owner.dispose();
+  }
+});
+test('glow cache keys use the owned core plan, not caller arrays after acquire',async()=>{
+  const f=lightingFixture(),acquire=f.emissionProvider.acquire;let resume;
+  const gate=new Promise(resolve=>{resume=resolve;});
+  f.emissionProvider.acquire=async args=>{const p=await acquire(args);await gate;return p;};
+  const glow=createWorldGlow(f.gpu,{g:f.g,emissionProvider:f.emissionProvider,submissionProvider:f.submissionProvider});
+  const core=[0,0,0],preparing=glow.prepare({core,lightingTick:0,configVersion:1});core[0]=1;resume();
+  const c=await preparing,done=c.record();await f.complete();assert.equal((await done).status,'published');
+  const next=await glow.prepare({core:[1,0,0],lightingTick:0,configVersion:1});
+  assert.equal(next.status,'prepared');assert.deepEqual(next.plan.core,[1,0,0]);next.cancel();glow.dispose();
+});
+test('discarded final lighting tickets fence earlier submits even without a readback result',async()=>{
+  for(const kind of ['gi','glow']){
+    const f=lightingFixture(),provider=kind==='gi'?f.feedbackProvider:f.submissionProvider,reserve=provider.reserve;
+    provider.reserve=()=>{const t=reserve();return {...t,record(...args){t.record(...args);return new Promise(()=>{});}};};
+    const owner=kind==='gi'
+      ?createWorldGI(f.gpu,{g:f.g,snapshotProvider:f.snapshotProvider,readerBindingProvider:f.readerBindingProvider,feedbackProvider:provider})
+      :createWorldGlow(f.gpu,{g:f.g,emissionProvider:f.emissionProvider,submissionProvider:provider});
+    const c=await owner.prepare(kind==='gi'?{lightingTick:0,reset:true,configVersion:1,sourceBricks:[[1,1,1]],gatherBricks:[[1,1,1]]}:{lightingTick:0,configVersion:1,core:[0,0,0]});
+    const done=c.record(),t=f.tickets.at(-1);let settled=false;done.then(()=>{settled=true;});
+    t.submitted.reject(new Error('final encoder discarded after an earlier prefix'));
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.ok(f.events.includes('completion-boundary'));assert.equal(settled,false);assert.equal(f.state.pins,1);
+    const output=f.buffers.find(b=>b.label===(kind==='gi'?'private world GI sources':'world glow f32 pass0'));
+    assert.equal(output.dead,false);t.done.resolve();
+    assert.equal((await done).status,'failed');assert.equal(f.state.pins,0);assert.equal(output.dead,true);owner.dispose();
+  }
 });
 test('original world-fixed checkerboard/background/source phases and lamp/change-driven scheduler never use origin/allocation', () => {
   const records = Array.from({ length: 8 }, (_, i) => ({ brick: [i & 1, i >> 1 & 1, i >> 2], matter: true, near: false, age: 50 }));

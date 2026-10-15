@@ -2,7 +2,7 @@
 // this is not the application's scheduler, cold-history replay, or frame gate.
 import { GiParams, giBgBlend } from '../shaders/gi.js';
 import { worldGISource, worldGIGather, worldGILayouts } from '../shaders/worldGI.js';
-import { BU, TU, uint, frozenArray, worldLightingIndex, validateLightingInput, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
+import { BU, TU, uint, frozenArray, worldLightingIndex, validateLightingInput, sameLightingProvenance, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
 
 export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider, feedbackProvider } = {}) {
   if (!g || ![g.nx, g.ny, g.nz].every(n => Number.isInteger(n) && n > 0 && n % 4 === 0) ||
@@ -60,12 +60,12 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       const pipes = await ready; alive();
       if (id !== serial || !snapshotProvider.isCurrent(input)) { release(); return Object.freeze({ status: 'stale', retry: true }); }
       const key = JSON.stringify([lightingTick, reset, shadows, sources, probes]);
-      if (active?.token.lightingTick === lightingTick && active.key === key && active.token.sourceContentToken === input.source.contentToken && active.token.fieldPublishedToken === input.field.publishedToken && active.token.configVersion === configVersion && active.token.previousToken === input.previous.token) {
+      if (active?.token.lightingTick === lightingTick && active.key === key && sameLightingProvenance(active.token,input) && active.token.configVersion === configVersion && active.token.previousToken === input.previous.token) {
         release(); return Object.freeze({ status: 'cached', snapshot: handle(active) });
       }
       // A different uncommitted slab/retry may use the SAME logical tick, but
       // MUST seed from tick-1 again. Producing outputs is not history adoption.
-      if (active && lightingTick < active.token.lightingTick) throw new Error('world GI tick regression');
+      if (active?.token.epoch === input.epoch && lightingTick < active.token.lightingTick) throw new Error('world GI tick regression');
       const fb = feedbackProvider.layout({ snapshot: input, jobCount: count });
       const typedWords = 6 * Math.ceil(size[0] / 4 * (size[1] / 4) * (size[2] / 4) / 32) + 1;
       if (!uint(fb?.wordCount) || !uint(fb.reservedWords) || fb.reservedWords < typedWords || !uint(fb.jobStatusWordOffset) || fb.jobStatusWordOffset < fb.reservedWords || fb.jobStatusWordOffset + count > fb.wordCount || fb.wordCount * 4 > resources.limit || typeof fb.decode !== 'function') throw new RangeError('explicit nonoverlapping typed/Sun/job feedback ranges required');

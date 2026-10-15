@@ -19,6 +19,9 @@ export class WorldCellAtlasAdapter {
     Object.assign(this,{gpu,source,producer,atlas,tables});
     this.bounds={min:[...worldBounds.min],max:[...worldBounds.max]};
     this.cache=new Map(); this.retiredCaptures=new WeakSet(); this.pending=null; this.dead=false; this.publication=null; this.lastSourceToken=null; this.dependencyID=dependencyID++;
+    // Fields may commit while its Atlas publication is aborted or retried.
+    // Keep that publication debt until a successful atomic Atlas patch.
+    this.unpublishedInvalidations=new Set();this.unpublishedChanges=new Map();this.lightingDirty=false;
     if (fields && (fields.publishedToken || fields.history.owners.size)) throw new Error('Cannot replace an active Fields publisher');
     this.ownsFields=!fields;
     this.fields=fields??new WorldFields(gpu,{worldBounds,tables,publisher:this});
@@ -88,6 +91,9 @@ export class WorldCellAtlasAdapter {
       const plan=this.fields.plan({...demand.options,sourceSnapshot:source});
       batch.source=source;batch.contentToken=this.source.contentToken();batch.plan=plan;
       batch.result=this.fields.record(frame,plan);batch.state='captured';this.lastSourceToken=batch.contentToken;
+      for(const key of batch.invalidated)this.unpublishedInvalidations.add(key);
+      for(const brick of batch.options.changedBricks)this.unpublishedChanges.set(brickKey(brick),Object.freeze([...brick]));
+      this.lightingDirty ||= !same(this.publication?.source,batch.contentToken) || plan.advancing.length>0 || batch.result.outputs.length>0 || batch.invalidated.length>0;
       return batch.handle;
     }catch(error){
       this.cache=batch.before;
@@ -133,7 +139,7 @@ export class WorldCellAtlasAdapter {
     const jobs=[], clears=[...invalidations], device=this.gpu.device, ephemeral=[];
     const previousLighting=this.atlas.snapshot();
     try{
-      const derivedChanged = !same(this.publication?.source,batch.contentToken) || batch.plan.advancing.length > 0 || batch.result.outputs.length > 0 || batch.invalidated.length > 0;
+      const derivedChanged = this.lightingDirty;
       // Without a proven lighting dependency closure, no old channel may be
       // relabelled as newly computed. Preserve it only in the pinned snapshot;
       // the lighting owner can supply explicit compatible replacements below.
@@ -143,7 +149,7 @@ export class WorldCellAtlasAdapter {
       }
       for(const [index,entry] of this.atlas.entries.entries())if(entry){
         const b=[index%this.atlas.bookLayout.bricks[0],Math.floor(index/this.atlas.bookLayout.bricks[0])%this.atlas.bookLayout.bricks[1],Math.floor(index/(this.atlas.bookLayout.bricks[0]*this.atlas.bookLayout.bricks[1]))];
-        if(batch.invalidated.includes(brickKey(coreFor(b))))clears.push({brick:b,channels:READY.CELL});
+        if(this.unpublishedInvalidations.has(brickKey(coreFor(b))))clears.push({brick:b,channels:READY.CELL});
       }
       const seen=new Set();
       for(const r of batch.options.requirements){
@@ -172,7 +178,8 @@ export class WorldCellAtlasAdapter {
       const publication=this.atlas.publish({cellJobs:jobs,lightJobs,invalidations:clears,...(dependencyToken?{dependencyToken}:{}),...(sunManifest!==undefined?{sunManifest}:derivedChanged?{sunManifest:null}:{})});
       batch.state='published';this.pending=null;
       const old=this.publication;
-      this.publication=Object.freeze({identity:Object.freeze({generation:publication}),source:batch.contentToken,fieldToken:batch.fieldToken,fieldTick:batch.fieldToken.fieldTick,changedBricks:batch.options.changedBricks.map(b=>Object.freeze([...b])),invalidatedCoreKeys:Object.freeze([...batch.invalidated]),dependencySetID:this.dependencyID,dependencyVersion:publication});
+      this.publication=Object.freeze({identity:Object.freeze({generation:publication}),source:batch.contentToken,fieldToken:batch.fieldToken,fieldTick:batch.fieldToken.fieldTick,changedBricks:Object.freeze([...this.unpublishedChanges.values()]),invalidatedCoreKeys:Object.freeze([...this.unpublishedInvalidations]),dependencySetID:this.dependencyID,dependencyVersion:publication});
+      this.unpublishedInvalidations.clear();this.unpublishedChanges.clear();this.lightingDirty=false;
       for(const [key,c] of batch.before)if(this.cache.get(key)!==c)this._dropCapture(c);
       const queue=this.gpu.queue??device.queue;
       Promise.resolve(queue.onSubmittedWorkDone()).then(()=>batch.result.retire(),()=>batch.result.retire());
@@ -207,6 +214,7 @@ export class WorldCellAtlasAdapter {
     if(this.source.epoch<=this.fields.history.epoch)throw new Error('Source epoch must advance before CELL reset');
     if(this.atlas.epoch!==this.source.epoch){if(this.atlas.epoch+1!==this.source.epoch)throw new Error('Source/Atlas epoch mismatch');this.atlas.reset();}
     for(const c of this.cache.values())this._dropCapture(c);this.cache=new Map();this.publication=null;this.lastSourceToken=null;
+    this.unpublishedInvalidations.clear();this.unpublishedChanges.clear();this.lightingDirty=false;
     this.fields.reset(this.source.epoch);
   }
   dispose(){

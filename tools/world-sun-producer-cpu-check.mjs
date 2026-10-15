@@ -228,7 +228,10 @@ test('zero/unrun status, decoder misses, readback errors and discarded submissio
     if(mode==='unrun')t.words.fill(0);
     if(mode==='decoder-missing')t.words[17]=1;
     if(mode==='readback-failed')t.read.reject(new Error('readback fixture failure'));else t.read.resolve(t.words);
-    if(mode==='discarded')t.submitted.reject(new Error('encoder discarded'));else {t.submitted.resolve();t.done.resolve();}
+    if(mode==='discarded'){
+      t.submitted.reject(new Error('encoder discarded'));
+      await Promise.resolve();await Promise.resolve();assert.equal(f.pins,1);t.done.resolve();
+    }else {t.submitted.resolve();t.done.resolve();}
     const r=await p;assert.equal(r.status,mode==='unrun'||mode==='decoder-missing'?'incomplete':'failed');assert.equal(r.retry,true);assert.equal(f.lighting.snapshot(),null);assert.equal(f.pins,0);
   }
   const unused=await f.lighting.prepare(f.options);f.edit();assert.equal((await unused.record(f.frame)).status,'stale');assert.equal(f.pins,0);
@@ -237,6 +240,22 @@ test('zero/unrun status, decoder misses, readback errors and discarded submissio
   const acquire=f.sourceFieldSnapshotProvider.acquire;
   f.sourceFieldSnapshotProvider.acquire=async()=>({...await acquire(),field:{complete:false}});
   await assert.rejects(()=>f.lighting.prepare(f.options),/complete consistent/);assert.equal(f.pins,0);f.lighting.dispose();
+});
+test('sun cache provenance includes dependency-only changes',async()=>{
+  const f=fixture();await f.complete(await f.lighting.prepare(f.options));
+  const acquire=f.sourceFieldSnapshotProvider.acquire;
+  f.sourceFieldSnapshotProvider.acquire=async()=>({...await acquire(),dependencyVersion:99});
+  const c=await f.lighting.prepare(f.options);assert.equal(c.status,'prepared');c.cancel();f.lighting.dispose();
+});
+test('discarded final sun encoder retains earlier prefix resources until queue completion',async()=>{
+  const f=fixture(),c=await f.lighting.prepare(f.options),done=c.record(f.frame),t=f.tickets.at(-1);
+  let settled=false;done.then(()=>{settled=true;});
+  t.submitted.reject(new Error('final encoder discarded')); // readback never resolves
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  assert.ok(f.events.includes('queue-done-request'));assert.equal(f.pins,1);assert.equal(settled,false);
+  assert.ok(f.textures.every(t=>!t.dead));t.done.resolve();
+  assert.equal((await done).status,'failed');assert.equal(f.pins,0);assert.ok(f.textures.every(t=>t.dead));
+  f.lighting.dispose();
 });
 test('partial encode failure closes readback boundary and retains inputs until final submit/completion',async()=>{
   const f=fixture(),c=await f.lighting.prepare(f.options);

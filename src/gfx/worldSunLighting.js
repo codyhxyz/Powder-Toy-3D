@@ -75,7 +75,7 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       if(!input?.release||!Array.isArray(input.worldSize)||!equal(input.worldSize,size)||!Number.isInteger(input.epoch)||input.epoch<1||input.epoch>0xffffffff||input.source?.contentToken===undefined||input.source.sourceRevision===undefined||input.field?.publishedToken===undefined||input.field.complete!==true||input.field.sourceRevision!==input.source.sourceRevision||(!Number.isInteger(input.field.logicalFieldTick)||input.field.logicalFieldTick<0))throw new Error('complete consistent pinned source/field publication required');
       if(![input.dependencySetID,input.dependencyVersion].every(n=>Number.isInteger(n)&&n>=0&&n<=0xffffffff))throw new TypeError('explicit dependency closure reference/version required');
       const key=[sceneToken,input.epoch,basisRevision,configVersion,...projection.basis.sun];
-      const content=[input.source.contentToken,input.field.publishedToken,input.field.sourceRevision,input.field.logicalFieldTick];
+      const content=[input.source.contentToken,input.field.publishedToken,input.field.sourceRevision,input.field.logicalFieldTick,input.dependencySetID,input.dependencyVersion];
       if(active&&equal(key,active.key)&&equal(content,active.content)&&wanted.every(i=>active.slots.has(i))) {releaseInputs();return Object.freeze({status:'cached',snapshot:snapshot()});}
       const layers=Math.ceil(wanted.length/64), limit=device.limits?.maxTextureArrayLayers??256;
       if(layers>limit||(device.limits?.maxTextureDimension2D??8192)<2048)throw new RangeError('sun coverage exceeds legal physical array capacity; never lower texel density');
@@ -149,8 +149,11 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
           catch(e) {feedback=Promise.resolve(deferredError(e));}
           // Attach rejection handling immediately, even before submission.
           feedback=feedback.catch(deferredError);
-          completion=Promise.resolve(ticket.submitted).then(async()=>{
-            await queue.onSubmittedWorkDone(); const words=await feedback;
+          const submitted=Promise.resolve(ticket.submitted).then(()=>null,error=>({error}));
+          completion=submitted.then(async submissionFailure=>{
+            await queue.onSubmittedWorkDone();
+            if(submissionFailure)throw submissionFailure.error;
+            const words=await feedback;
             if(encodingError)throw encodingError;
             if(words?.error)throw words.error;
             if(!(words instanceof Uint32Array)||words.length!==fb.wordCount)throw new Error('complete sun feedback readback required');

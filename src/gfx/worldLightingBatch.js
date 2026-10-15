@@ -17,6 +17,15 @@ export function validateLightingInput(input, size) {
     input.field.sourceRevision !== input.source.sourceRevision || !uint(input.field.logicalFieldTick) ||
     !uint(input.dependencySetID) || !uint(input.dependencyVersion) || typeof input.release !== 'function') throw new TypeError('pinned complete source/field/dependency publication required');
 }
+export function sameLightingProvenance(token, input) {
+  return token?.epoch === input.epoch &&
+    token.sourceRevision === input.source.sourceRevision &&
+    token.sourceContentToken === input.source.contentToken &&
+    token.fieldPublishedToken === input.field.publishedToken &&
+    token.logicalFieldTick === input.field.logicalFieldTick &&
+    token.dependencySetID === input.dependencySetID &&
+    token.dependencyVersion === input.dependencyVersion;
+}
 export function createLightingResources(device) {
   const limit = Math.min(128 * 1024 ** 2, device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 ** 2);
   function buffer(label, size, usage, data) {
@@ -46,6 +55,11 @@ export function completeLightingBatch({ frame, queue, feedbackBuffer, wordCount,
     if (result.error) throw result.error;
     if (!(result.words instanceof Uint32Array) || result.words.length !== wordCount) throw new TypeError('entire lighting feedback readback required');
     return finish(result.words);
+  }, async error => {
+    // Discard of the final encoder does not undo earlier automatic submits.
+    // Keep every input/output pinned until that prefix also finishes.
+    await queue.onSubmittedWorkDone();
+    throw error;
   });
 }
 

@@ -74,6 +74,41 @@ test('zero-output unseen settling invalidates retained required CELL pages atomi
   f.gpu.flush();f.adapter.commitAfterSourceFlush(next).previousLightingSnapshot.release();f.gpu.finish();assert.deepEqual(f.atlas.required,required);
   assert(f.atlas.lookup(req[0].brick).incomplete);assert(!lookupSnapshot(old,req[0].brick).incomplete);old.release();await cleanup(f);
 });
+test('aborted settling retains CELL/LIGHT/Sun invalidations until successful Atlas publication, even after fields become idle',async()=>{
+  const f=fixture();await f.adapter.ready;const r=[req[0]],lightBrick=[20,0,0];
+  let batch=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements:r});f.gpu.flush();f.adapter.commitAfterSourceFlush(batch).previousLightingSnapshot.release();f.gpu.finish();
+  const light=f.atlas.allocateLight(lightBrick,{sourceRevision:0,readyBits:READY.GI_SOURCE});
+  f.atlas.updateLight(light,{source:new Uint32Array([123,456,789,0x1ff7fdff])});
+  f.atlas.publish({lightJobs:[light],sunManifest:{epoch:1,basisRevision:1,publishRevision:1,dependencySetID:0,dependencyVersion:0,book:{},sun0:{},sun1:{},
+    params:{worldToLight:Array(16).fill(0),depth:[1,0,1,1],tiles:[0,0,1,1],physical:[256,8,64,1],version:[1,1,1,f.atlas.bookLayout.sunWord]}}});f.gpu.finish();
+  const old=f.atlas.snapshot();
+  for(let tick=1;tick<=13;tick++){
+    batch=f.adapter.record(f.gpu.frame,{fieldTick:tick,requirements:[]});f.gpu.flush();f.adapter.abort(batch);f.gpu.finish();await Promise.resolve();
+  }
+  batch=f.adapter.record(f.gpu.frame,{fieldTick:14,requirements:[]});
+  assert.equal(f.adapter.pending.plan.advancing.length,0);assert.equal(f.adapter.pending.invalidated.length,0);
+  assert(f.adapter.unpublishedInvalidations.has('0,0,0'));assert(f.adapter.lightingDirty);f.gpu.flush();
+  const publish=f.atlas.publish.bind(f.atlas);f.atlas.publish=()=>{throw new Error('Atlas patch rejected');};
+  assert.throws(()=>f.adapter.commitAfterSourceFlush(batch),/Atlas patch rejected/);
+  assert(f.adapter.unpublishedInvalidations.has('0,0,0'));assert(f.adapter.lightingDirty);
+  assert(!f.atlas.lookup(r[0].brick).incomplete);assert(!f.atlas.lookup(lightBrick,READY.GI_SOURCE).incomplete);
+  f.atlas.publish=publish;f.adapter.commitAfterSourceFlush(batch).previousLightingSnapshot.release();f.gpu.finish();
+  assert(f.atlas.lookup(r[0].brick).incomplete);assert(f.atlas.lookup(lightBrick,READY.GI_SOURCE).incomplete);
+  const now=f.atlas.snapshot();assert.equal(now.sunManifest,null);now.release();
+  assert(!lookupSnapshot(old,r[0].brick).incomplete);assert(old.sunManifest);
+  assert.equal(f.adapter.unpublishedInvalidations.size,0);assert.equal(f.adapter.lightingDirty,false);
+  old.release();await cleanup(f);
+});
+test('source changes consumed by an aborted Fields record remain in the eventual publication delta',async()=>{
+  const f=fixture();await f.adapter.ready;
+  let b=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements:[req[0]]});f.gpu.flush();f.adapter.commitAfterSourceFlush(b).previousLightingSnapshot.release();f.gpu.finish();
+  f.source.noteContentChange({lo:[0,0,0],hi:[1,1,1]});
+  b=f.adapter.record(f.gpu.frame,{fieldTick:1,requirements:[]});f.gpu.flush();f.adapter.abort(b);f.gpu.finish();
+  b=f.adapter.record(f.gpu.frame,{fieldTick:2,requirements:[]});assert.equal(f.adapter.pending.options.changedBricks.length,0);
+  f.gpu.flush();f.adapter.commitAfterSourceFlush(b).previousLightingSnapshot.release();f.gpu.finish();
+  const publication=f.adapter.acquire();assert(publication.changedBricks.some(b=>b.join(',')==='0,0,0'));
+  assert(Object.isFrozen(publication.changedBricks));publication.release();await cleanup(f);
+});
 
 test('publisher rejection after partial auto-submit quarantines COW pages, preserves both manifests and retries exact SAME plan',async()=>{
   const f=fixture();await f.adapter.ready;f.gpu.autoFlush=10;

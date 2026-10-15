@@ -1,6 +1,6 @@
 // Full original six-pass glow on a bounded construction core, no app switch.
 import { worldGlow, worldGlowLayouts, WORLD_GLOW_AXES, WORLD_GLOW_SUPPORT } from '../shaders/worldGlow.js';
-import { BU, TU, uint, frozenArray, worldLightingIndex, validateLightingInput, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
+import { BU, TU, uint, frozenArray, worldLightingIndex, validateLightingInput, sameLightingProvenance, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
 const product = a => a.reduce((n, v) => n * v, 1);
 const region = (min, max) => Object.freeze({ min: frozenArray(min), size: frozenArray(max.map((n, k) => n - min[k])), max: frozenArray(max) });
 export function worldGlowPlan(worldSize, core) {
@@ -55,11 +55,11 @@ export function createWorldGlow(gpu, { g, emissionProvider, submissionProvider }
         emission.byteLength !== product(plan.input.size) * 16 || emission.byteLength > resources.limit || !uint(emission.byteOffset ?? 0) || (emission.byteOffset ?? 0) % 256 || (emission.byteOffset ?? 0) + emission.byteLength > emission.buffer.size) throw new TypeError('complete original brick emission with exact four-brick halo required');
       const pipes = await ready; alive();
       if (id !== serial || !emissionProvider.isCurrent(input)) { release(); return Object.freeze({ status: 'stale', retry: true }); }
-      const key = core.join(',');
-      if (active?.token.lightingTick === lightingTick && active.key === key && active.token.sourceContentToken === input.source.contentToken && active.token.fieldPublishedToken === input.field.publishedToken && active.token.configVersion === configVersion) {
+      const key = plan.core.join(',');
+      if (active?.token.lightingTick === lightingTick && active.key === key && sameLightingProvenance(active.token,input) && active.token.configVersion === configVersion) {
         release(); return Object.freeze({ status: 'cached', snapshot: handle(active) });
       }
-      if (active && lightingTick < active.token.lightingTick) throw new Error('glow tick regression');
+      if (active?.token.epoch === input.epoch && lightingTick < active.token.lightingTick) throw new Error('glow tick regression');
       const buffer = (label, bytes, usage, data) => { const b = resources.buffer(label, bytes, usage, data); owned.push(b); return b; };
       const feedback = buffer('world glow pass status', 6 * 4, BU.STORAGE | BU.COPY_SRC | BU.COPY_DST);
       const count = product(plan.output.size), texture = device.createTexture({ label: 'private world glow half output', size: [256, Math.max(1, Math.ceil(count / 256)), 1], format: 'rgba16float', usage: TU.STORAGE_BINDING | TU.TEXTURE_BINDING | TU.COPY_SRC }); owned.push(texture);
