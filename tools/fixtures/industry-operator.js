@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { E, K, ELEMENTS } from '../../src/elements.js';
 import { HAND_REACH } from '../../src/pov/constants.js';
+import { TRANSFER_PUT } from '../../src/shaders/transfer.js';
+import { traceIndustryTransfers } from './industry-transfer-trace.js';
 
 const DT = 1 / 60;
 const STEPS = 4;
@@ -111,8 +113,10 @@ export async function createIndustryOperator({ sim, gpu, deadline, nativeStep } 
   let frameHits = 0;
   let frameMisses = 0;
   let hitSamples = [];
+  let updatingTool = false;
+  let actionLabel = null;
 
-  const { preparePov } = await import('../../src/pov/gpu.js');
+  const { preparePov, povGpu } = await import('../../src/pov/gpu.js');
   await bounded(preparePov(sim), until, 'operator POV kernels ready');
   ensureTime('operator toolbelt setup');
   const { createToolbelt } = await import('../../src/pov/tools/index.js');
@@ -136,6 +140,10 @@ export async function createIndustryOperator({ sim, gpu, deadline, nativeStep } 
   const shovel = belt.tool('SHOVEL');
   const bucket = belt.tool('BUCKET');
   if (!shovel?.load || !bucket?.load) throw new Error('real industry shovel/bucket were not created');
+  const trace = traceIndustryTransfers(povGpu(sim), () => updatingTool ? {
+    tool: belt.selectedKey, action: actionLabel, nativeFrame: sim.frame,
+    hit: hit ? { cell: hit.cell.toArray(), face: hit.face, id: hit.id } : null,
+  } : null, { putMode: TRANSFER_PUT });
 
   function setPose(pose) {
     const feet = vec(pose.feet);
@@ -161,19 +169,21 @@ export async function createIndustryOperator({ sim, gpu, deadline, nativeStep } 
       } else frameMisses++;
       aim = hit ?? { valid: false };
     } else hit = null;
-    belt.update({
+    updatingTool = true;
+    try { belt.update({
       sim, dt: DT, stepsPerFrame: STEPS, toolRate: 1,
       eye: input.eye.clone(), dir: input.direction.clone(), aim,
       primary: input.primary, secondary: input.secondary,
       primaryPressed: input.primaryPressed, secondaryPressed: input.secondaryPressed,
       wheel: 0, drink: false, drinkPressed: false, player,
-    });
+    }); } finally { updatingTool = false; }
     input.primaryPressed = false;
     input.secondaryPressed = false;
   }
 
   async function frame(label) {
     ensureTime(label);
+    actionLabel = label;
     await bounded(nativeStep(4), until, label);
     await bounded(gpu.fence(), until, `${label} GPU fence`);
     await Promise.resolve();
@@ -245,11 +255,13 @@ export async function createIndustryOperator({ sim, gpu, deadline, nativeStep } 
         selectedKey: belt.selectedKey,
         shovel: { count: shovel.load.count, reserved: shovel.load.reserved, out: shovel.load.out, payload: payload(shovel.load) },
         bucket: { count: bucket.load.count, reserved: bucket.load.reserved, out: bucket.load.out, payload: payload(bucket.load) },
+        transfers: trace.receipts, traceErrors: trace.errors, omittedTransfers: trace.omitted,
       };
     },
     async dispose() {
       if (disposed) return;
       disposed = true;
+      trace.dispose();
       if (input) { input.primary = false; input.secondary = false; }
       try { belt.setVisible(false); } catch {}
       try { belt.dispose(); } finally {

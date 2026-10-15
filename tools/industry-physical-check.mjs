@@ -17,7 +17,7 @@ const slotBudgetMs = budgetMs(Number(arg('--budget-ms') || MAX_SLOT_MS));
 const workDeadline = invokedAt + slotBudgetMs - 2 * CLEANUP_MS - 500;
 const caseDeadline = workDeadline - 300;
 const selectedCase = arg('--case');
-const operatorMode = arg('--operator') || 'transfer';
+const operatorMode = arg('--operator') || (selectedCase === 'loading' ? 'tools' : 'transfer');
 const port = arg('--port') || '19543';
 const baseUrl = arg('--url') || `http://localhost:${port}/`;
 const useHarness = process.argv.includes('--harness');
@@ -25,18 +25,22 @@ const thermalDevices = validateDevices([
   { id: 'physical-hearth', type: 'hearth', x: 48, y: 12, z: 48, rotation: 0 },
 ], [128, 128, 128]);
 const thermalGeometry = { ...hearthRegions(thermalDevices[0]), structure: hearthStructureCells(thermalDevices[0]) };
-if (!['thermal', 'mechanisms', 'diagnostics', 'line'].includes(selectedCase)) {
-  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics|line [--operator transfer|tools] [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
+if (!['thermal', 'mechanisms', 'diagnostics', 'line', 'loading'].includes(selectedCase)) {
+  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics|line|loading [--operator transfer|tools] [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
   process.exit(2);
 }
-if (!['transfer', 'tools'].includes(operatorMode) || (operatorMode === 'tools' && selectedCase !== 'line')) {
-  console.error('--operator tools requires --case line; valid operators are transfer and tools.');
+if (!['transfer', 'tools'].includes(operatorMode)
+    || (operatorMode === 'tools' && !['line', 'loading'].includes(selectedCase))
+    || (selectedCase === 'loading' && operatorMode !== 'tools')) {
+  console.error('--operator tools requires --case line or loading; loading requires tools.');
   process.exit(2);
 }
 if (process.argv.includes('--preflight')) {
-  if (selectedCase === 'line') {
-    const { purelineDeviceLayout } = await import('./fixtures/industry-line.js');
-    const devices = validateDevices(purelineDeviceLayout({ operatorMode }), [128, 128, 128]);
+  if (selectedCase === 'line' || selectedCase === 'loading') {
+    const layout = selectedCase === 'line'
+      ? (await import('./fixtures/industry-line.js')).purelineDeviceLayout({ operatorMode })
+      : (await import('./fixtures/industry-loading.js')).loadingDeviceLayout();
+    const devices = validateDevices(layout, [128, 128, 128]);
     console.log(JSON.stringify({ status: 'cpu-geometry-valid', operatorMode, devices: devices.length, bounds: [128, 128, 128],
       limitations: 'Bounds/overlap only; no tools, mining, thermal, cargo, browser, or GPU validation.' }));
     process.exit(0);
@@ -135,9 +139,11 @@ try {
     });
 
     try {
-      if (caseName === 'line') {
-        const { runIndustryLine } = await import('/tools/fixtures/industry-line.js');
-        const result = await runIndustryLine({ sim, gpu: a.gpu, deadline, stage, operatorMode });
+      if (caseName === 'line' || caseName === 'loading') {
+        const run = caseName === 'line'
+          ? (await import('/tools/fixtures/industry-line.js')).runIndustryLine
+          : (await import('/tools/fixtures/industry-loading.js')).runIndustryLoading;
+        const result = await run({ sim, gpu: a.gpu, deadline, stage, operatorMode });
         if (operatorMode === 'tools' && result.observations?.operatorMode !== 'tools') {
           result.status = 'failed';
           result.residualGaps.push('Actual tool mode was requested but the fixture did not attest its activation.');
@@ -488,7 +494,7 @@ try {
     }
   }
 }
-if (selectedCase === 'line') result.operatorMode = operatorMode;
+  if (selectedCase === 'line' || selectedCase === 'loading') result.operatorMode = operatorMode;
 result.timing = { wallMs: Date.now() - invokedAt, slotBudgetMs };
 const outputPath = arg('--output');
 if (outputPath) {
