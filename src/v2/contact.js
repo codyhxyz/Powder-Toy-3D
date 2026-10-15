@@ -339,6 +339,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   let damp = 0;
   let dust = 0;
   let hotTouch = false;
+  let hotFront = false;
   let fuseTouch = false;
   let fuseEnd = true;
   let clone = 0;
@@ -352,6 +353,10 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (b.id === E.EMPTY) air++;
     if (b.id === E.OXYGEN || (b.id === E.FIRE && b.ctype === E.OXYGEN)) oxygen++;
     if (b.id === E.FIRE || (br.burn > 0 && b.burning !== 0)) fire++;
+    // TPT FIRE.cpp separates contact ignition from bulk thermal transition
+    // (upstream uses Flammable/1000). Our hot front uses existing igniteQ,
+    // not a new rate; tq is decoded, post-pair/pre-self snapshot temperature.
+    hotFront = hotFront || (b.done === 0 && b.pending < 0 && (b.request & 5) === 0 && b.tq >= r.igniteQ && b.life > 0 && ((b.id === E.FIRE && b.tq >= 2493) || (br.burn > 0 && b.burning !== 0)));
     if (br.kind === 0 || br.kind === 4) gas++;
     else surface++;
     if (b.id === E.CO2) co2++;
@@ -410,7 +415,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       if (canLight) {
         c.busy = 1;
         // Noita/TPT flammability: 0.5/s per flame, at 60 Hz, face correction 2.
-        if (c.burning !== 0 || c.tq >= r.igniteQ || (r.flashQ < r.igniteQ && c.tq >= r.flashQ && fire > 0) || random < ctF(fire) / 60) {
+        if (c.burning !== 0 || c.tq >= r.igniteQ || (r.flashQ < r.igniteQ && c.tq >= r.flashQ && fire > 0) || (hotFront && (r.flashQ >= r.igniteQ || c.tq >= r.flashQ)) || random < ctF(fire) / 60) {
           c.burning = 1;
           if (c.life === 0) return ctExhaust(c, random);
           let oxy = 1.0;

@@ -248,6 +248,37 @@ retry; no gas request is emitted before conversion succeeds.
 
 ### Fuel, devices and burning
 
+Ordinary fuel retains thermal certainty, existing low-flash certainty and the
+unchanged stochastic `random < fire/60` fallback. An additional deterministic
+surface-front route uses the existing three local neighbors in the **post-pair,
+pre-self frozen snapshot**: a valid source must not be done, have a pending
+conversion, or carry DETONATE/NEUTRON requests; its decoded `tq` must reach the
+recipient's existing `igniteQ`. It must be either FIRE with positive life and
+`tq >= 2493` (350°C extinction floor), or ordinary fuel with positive burn rate,
+burning flag and positive life. Low-flash recipients (`flashQ < igniteQ`) also
+need their own temperature at least `flashQ`. This adds no threshold, rate, RNG
+call, storage, outside-material read or exothermic ignition temperature jump.
+TPT's `FIRE.cpp` motivates separating contact ignition from bulk thermal
+transition, but upstream uses stochastic `Flammable/1000`, not this deterministic
+surface-front abstraction.
+
+The recipient still needs its existing six-face oxygenated exposure and CO₂
+fraction below 30%. FIRE is not newly an ordinary-air face. Outside faces supply
+only Support-frozen atmosphere counters, never hot-source eligibility. The
+existing burn body debits recipient fuel and records only actual enthalpy gain;
+the catalytic source gets no artificial debit/refund. Cold/dead FIRE and stale
+burning flags still contribute to the old stochastic fallback exactly as before.
+Snapshot liveness permits a source to extinguish during its own later self-step
+(one-tick extinction latency), but newly ignited fuel cannot cascade within the
+same self loop. Phase/electric processing and pending-conversion early returns
+remain before ignition; latent tags/banks are not source temperatures.
+
+WATER/SALTWATER, raw MEAT and inert matter are not newly combustible; one water
+neighbor does not create a WOOD moisture field or guarantee immunity. No new
+source types (sparks, BATTERY, PLASMA, inert hot solids or unburning hot fuel),
+FUSE/explosive rules, modes or plume behavior are introduced. AIR_OFF is not
+vacuum. Full moving-fixture ignition acceptance remains a parent GPU gate.
+
 - Fuel/life is an extensive integer at foundation `FUEL_Q=2048`. Compressed
   liquid fuel scales with fill; sixteen full cells fit the u16 payload.
 - Switch/PCLN logical life 10 is raw 20480; TSNS logical life 1 is raw 2048.
@@ -346,6 +377,7 @@ CPU only; no GPU or browser was launched in this lane:
 node tools/v2/contact-kernel.mjs --write   # after changing scalar kernels
 node tools/v2/contact-kernel.mjs           # stale-artifact check
 node tools/v2/contact-check.mjs
+node tools/v2/contact-hot-ignition-check.mjs
 node tools/v2/contact-build-check.mjs
 ```
 
@@ -353,6 +385,10 @@ The first check currently has 31 passing groups, including 250 mixed-block
 source/sink property cases, all phase products, edge valid-mask conservation,
 requests, and finite thermal rest. Naga validates both an explicit shared ABI
 fixture and the actual foundation `v2BlockWGSL` with contact installed.
+The hot-ignition check covers live sources, threshold boundaries, exclusions and
+legacy hit/miss outputs, oxygen/CO₂ and flash gates, phases, finite fuel, exact
+ledgers, opaque state, actual post-pair heating, frozen cascade prevention,
+shuffled disjoint-block replay, custom contacts and AIR/WATER identities.
 The build check minifies a Vite library and verifies byte-identical WGSL plus
 Naga validity. Runtime never depends on `Function.toString()` surviving a
 minifier: scalar WGSL is a checked generated artifact.
